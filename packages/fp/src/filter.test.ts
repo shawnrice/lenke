@@ -1,3 +1,4 @@
+import { describe, expect, test } from 'bun:test';
 import { filter } from './filter';
 
 describe('functional iterator tests', () => {

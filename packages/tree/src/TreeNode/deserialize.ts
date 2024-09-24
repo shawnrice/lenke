@@ -1,6 +1,6 @@
-import { identity } from '../../identity';
+import { identity } from '@pl-graph/utils/src/identity';
 import { TreeNode } from './TreeNode';
-import { SerializedTreeNode } from './types';
+import type { SerializedTreeNode } from './types';
 
 export const deserialize = <T>(
   serialized: SerializedTreeNode<T>[],

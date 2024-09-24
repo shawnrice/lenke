@@ -1,6 +1,9 @@
-import { Predicate, UnaryFn } from './types';
+import type { Predicate, UnaryFn } from "./types";
 
-function* internalFilter<T>(predicate: Predicate<T>, iterable: Iterable<T>): Iterable<T> {
+function* internalFilter<T>(
+  predicate: Predicate<T>,
+  iterable: Iterable<T>,
+): Iterable<T> {
   for (const iteration of iterable) {
     if (predicate(iteration)) {
       yield iteration;
@@ -9,12 +12,17 @@ function* internalFilter<T>(predicate: Predicate<T>, iterable: Iterable<T>): Ite
 }
 
 export function filter<T>(predicate: Predicate<T>): UnaryFn<Iterable<T>>;
-export function filter<T>(predicate: Predicate<T>, iterable: Iterable<T>): Iterable<T>;
+export function filter<T>(
+  predicate: Predicate<T>,
+  iterable: Iterable<T>,
+): Iterable<T>;
 export function filter<T>(
   predicate: Predicate<T>,
   iterable?: Iterable<T>,
 ): UnaryFn<Iterable<T>> | Iterable<T> {
-  return iterable ? internalFilter(predicate, iterable) : x0 => internalFilter(predicate, x0);
+  return iterable
+    ? internalFilter(predicate, iterable)
+    : (x0) => internalFilter(predicate, x0);
 }
 
 export const select = filter;

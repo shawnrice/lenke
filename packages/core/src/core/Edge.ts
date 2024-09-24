@@ -13,6 +13,10 @@ export type AddEdgeParams<F extends Vertex, T extends Vertex, P extends Record<s
   properties: P;
 };
 
+const isEdge = <F extends Vertex, T extends Vertex, P extends Record<string, any>>(
+  x: unknown,
+): x is Edge<F, T, P> => x instanceof Edge;
+
 export class Edge<
   F extends Vertex = Vertex, // From
   T extends Vertex = F, // To
@@ -31,8 +35,10 @@ export class Edge<
    *
    * Does not actually check the `F`, `T`, or `P` of the `Edge<F, T, P>`
    */
-  static isEdge<F, T, P>(x: unknown): x is Edge<F, T, P> {
-    return x instanceof Edge;
+  static isEdge<F extends Vertex, T extends Vertex, P extends Record<string, any>>(
+    x: unknown,
+  ): x is Edge<F, T, P> {
+    return isEdge<F, T, P>(x);
   }
 
   constructor(params: AddEdgeParams<F, T, P>) {
@@ -173,10 +179,6 @@ export class Edge<
    */
   evict(): void {
     this.#graph = null;
-    // @ts-expect-error: this is fine
-    this.#from = this.#from.id;
-    // @ts-expect-error: this is fine
-    this.#to = this.#to.id;
   }
 
   toJSON(): Record<string, any> {

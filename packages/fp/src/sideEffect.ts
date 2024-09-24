@@ -1,4 +1,4 @@
-import { UnaryFn } from './types';
+import type { UnaryFn } from './types';
 
 function* internalSideEffect<T>(effect: UnaryFn<T, any>, iterable: Iterable<T>): Iterable<T> {
   for (const iteration of iterable) {

@@ -1,4 +1,4 @@
-import { UnaryFn } from './types';
+import type { UnaryFn } from './types';
 import { maybeOptimizeIterable } from './utils';
 
 export function pipe<A, B>(x0: UnaryFn<A, B>): UnaryFn<A, B>;

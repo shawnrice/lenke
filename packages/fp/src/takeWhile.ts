@@ -1,4 +1,4 @@
-import { Predicate, UnaryFn } from './types';
+import type { Predicate, UnaryFn } from './types';
 
 function* internalTakeWhile<T>(predicate: Predicate<T>, iterable: Iterable<T>): Iterable<T> {
   for (const iteration of iterable) {
