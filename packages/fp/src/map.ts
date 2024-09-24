@@ -1,5 +1,4 @@
-/* eslint-disable no-plusplus, no-restricted-syntax, functional/no-let, func-style  */
-import { MapFn, UnaryFn } from './types';
+import type { MapFn, UnaryFn } from './types';
 
 function* internalMap<T, R = T>(mapper: MapFn<T, R>, x0: Iterable<T>): Iterable<R> {
   let index = 0;

@@ -1,10 +1,10 @@
 /* eslint-disable consistent-this, no-param-reassign, no-restricted-syntax */
 /* eslint-disable @typescript-eslint/no-this-alias */
 
-import { equals } from '../../fp/src';
-import { identity } from '../../identity';
-import { List } from '../../list/src';
-import { rando } from '../../rando';
+import { equals } from '@pl-graph/fp/src/equals';
+import { identity } from '@pl-graph/utils/src/identity';
+import { List } from '@pl-graph/list/src/List';
+import { rando } from '@pl-graph/utils/src/rando';
 import { deserialize } from './deserialize';
 import { serialize } from './serialize';
 

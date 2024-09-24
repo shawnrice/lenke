@@ -1,4 +1,4 @@
-import { SortFn, UnaryFn } from './types';
+import type { SortFn, UnaryFn } from './types';
 
 /**
  * This is not lazy

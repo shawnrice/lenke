@@ -1,4 +1,4 @@
-import { UnaryFn } from './types';
+import type { UnaryFn } from './types';
 
 export function take<T>(x: number): UnaryFn<Iterable<T>>;
 export function take<T>(x: number, iterable: Iterable<T>): Iterable<T>;

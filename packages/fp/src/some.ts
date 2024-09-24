@@ -1,4 +1,4 @@
-import { Predicate } from './types';
+import type { Predicate } from './types';
 
 export function some<T>(predicate: Predicate<T>, iterable: Iterable<T>): boolean {
   for (const iteration of iterable) {

@@ -1,4 +1,4 @@
-import { Predicate, UnaryFn } from './types';
+import type { Predicate, UnaryFn } from './types';
 
 function internalEvery<T>(predicate: Predicate<T>, iterable: Iterable<T>): boolean {
   for (const iteration of iterable) {

@@ -12,11 +12,7 @@ import type { UnaryFn } from '@pl-graph/fp/src';
 import type { UnknownObject } from '@pl-graph/utils/src/types';
 
 import type { AddEdgeParams } from './Edge';
-import type {
-  GraphEvent,
-  GraphEvents,
-  GraphEventType,
-} from './GraphEvents';
+import type { GraphEvent, GraphEvents, GraphEventType } from './GraphEvents';
 import type { VertexParams } from './Vertex';
 type AddVertexParams<V> = Pick<VertexParams<V>, 'id' | 'labels' | 'properties'>;
 

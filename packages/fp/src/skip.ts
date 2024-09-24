@@ -1,4 +1,4 @@
-import { UnaryFn } from './types';
+import type { UnaryFn } from './types';
 
 function* internalSkip<T>(x: number, iterable: Iterable<T>): Iterable<T> {
   let count = 0;

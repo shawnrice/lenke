@@ -4,11 +4,11 @@
   "type": "module",
   "scripts": {},
   "devDependencies": {
-    "@types/bun": "^1.0.2",
+    "@types/bun": "^1.1.9",
     "@types/debug": "^4.1.12",
     "bun-types": "latest",
-    "debug": "^4.3.4",
-    "prettier": "^3.2.5"
+    "debug": "^4.3.7",
+    "prettier": "^3.3.3"
   },
   "peerDependencies": {
     "typescript": "^5.0.0"

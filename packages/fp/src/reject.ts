@@ -1,5 +1,5 @@
 import { filter } from './filter';
-import { Predicate, UnaryFn } from './types';
+import type { Predicate, UnaryFn } from './types';
 
 export function reject<T>(predicate: Predicate<T>): UnaryFn<Iterable<T>>;
 export function reject<T>(predicate: Predicate<T>, iterable: Iterable<T>): Iterable<T>;

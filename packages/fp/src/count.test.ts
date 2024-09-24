@@ -1,4 +1,5 @@
 import { count } from './count';
+import { describe, expect, test } from 'bun:test';
 
 describe('functional iterator tests', () => {
   test('count works with an array', () => {
