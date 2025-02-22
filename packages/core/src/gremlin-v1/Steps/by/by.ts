@@ -7,10 +7,10 @@ import { isElement } from '@pl-graph/core/src/core/Element';
 
 import { Traversal } from '../../Traversal';
 import { Traverser } from '../../Traverser';
-import { Step } from '../types';
+import { type Step } from '../types';
 import { pathElementPropertyProjection } from './pathElementPropertyProjection';
 
-import type { UnaryFn } from '@pl-graph/fp/src';
+import type { UnaryFn } from '@pl-graph/fp';
 
 const findLastRealStep = (traversal: Traversal): Step<any, any> | null => {
   for (let i = traversal.steps.length - 1; i >= 0; i--) {

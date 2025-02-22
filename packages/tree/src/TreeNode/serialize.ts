@@ -1,4 +1,4 @@
-import { identity } from '@pl-graph/utils/src/identity';
+import { identity } from '@pl-graph/utils';
 import { TreeNode } from './TreeNode';
 import type { SerializedTreeNode } from './types';
 

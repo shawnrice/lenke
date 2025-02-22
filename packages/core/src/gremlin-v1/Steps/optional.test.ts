@@ -1,8 +1,6 @@
+import { describe, expect, test } from 'bun:test';
 import { createTestTinkerGraph } from '../../fixtures/createTestTinkerGraph';
-import {
-  in_,
-  out,
-} from './';
+import { in_, out } from './';
 
 describe('Gremlin tests', () => {
   const tinkerGraph = createTestTinkerGraph();

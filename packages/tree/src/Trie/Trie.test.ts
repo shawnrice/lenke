@@ -1,5 +1,6 @@
 /* eslint-disable max-lines-per-function */
 import { Trie } from './Trie';
+import { describe, expect, test } from 'bun:test';
 
 describe('Trie tests', () => {
   test('we can add two words', () => {
@@ -197,10 +198,7 @@ describe('Trie tests', () => {
   });
 
   test('Trie.from works with an array of tuples', () => {
-    const trie = Trie.from<number>([
-      ['word', 1],
-      ['words', 2],
-    ]);
+    const trie = Trie.from<number>([['word', 1], ['words', 2]] as Iterable<[string, number]>);
     expect(trie.has('word')).toBe(true);
     expect(trie.has('words')).toBe(true);
   });

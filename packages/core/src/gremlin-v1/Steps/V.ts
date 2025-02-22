@@ -1,4 +1,4 @@
-import { map, UnaryFn } from '../../../../fp/src';
+import { map, type UnaryFn } from '@pl-graph/fp';
 import { Vertex } from '../../core/Vertex';
 import { Traversal } from '../Traversal';
 import { Traverser } from '../Traverser';

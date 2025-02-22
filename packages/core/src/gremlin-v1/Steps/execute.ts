@@ -1,9 +1,9 @@
 /* eslint-disable func-style */
 /* eslint-disable no-restricted-syntax, functional/immutable-data */
-import { UnaryFn } from '../../../../fp/src/types';
+import { type UnaryFn } from '@pl-graph/fp';
 import { Traversal } from '../Traversal';
 import { Traverser } from '../Traverser';
-import { TraverserFunction } from './types';
+import { type TraverserFunction } from './types';
 
 type OverloadedFn = {
   (x: Traversal): Traversal;

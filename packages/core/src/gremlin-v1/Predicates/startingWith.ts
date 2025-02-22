@@ -1,4 +1,4 @@
-import { StringPredicate } from './types';
+import type { StringPredicate } from './types';
 
 export const startingWith =
   <D extends string>(x0: D): StringPredicate<D> =>

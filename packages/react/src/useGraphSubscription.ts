@@ -1,9 +1,9 @@
-import React from 'react';
+import React from "react";
 
-import type { NullaryFn } from '@pl-graph/fp/src';
+import type { NullaryFn } from "@pl-graph/fp";
 
-import { useGraphContext } from './GraphContext';
-import { useForceUpdate } from './useForceUpdate';
+import { useGraphContext } from "./GraphContext";
+import { useForceUpdate } from "./useForceUpdate";
 
 /**
  * Subscribes to the graph
@@ -14,5 +14,8 @@ export const useGraphSubscription = (listener?: NullaryFn): void => {
   const { graph } = useGraphContext();
   const update = useForceUpdate();
 
-  React.useEffect(() => graph.subscribe(listener ?? update), [graph, listener, update]);
+  React.useEffect(
+    () => graph.subscribe(listener ?? update),
+    [graph, listener, update],
+  );
 };

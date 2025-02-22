@@ -1,4 +1,4 @@
-import { rando } from '@pl-graph/utils/src';
+import { rando } from '@pl-graph/utils';
 
 import { Graph } from './Graph';
 import { Vertex } from './Vertex';

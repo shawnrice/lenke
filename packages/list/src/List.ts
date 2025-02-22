@@ -20,9 +20,15 @@ import {
   take,
   takeWhile,
   type UnaryFn,
-} from '../../fp/src';
+} from '@pl-graph/fp';
 import { empty, from, isList, of } from './functions';
 
+/**
+ * A list is list an array or a Set but better for iterators
+ *
+ * It also has a length property. If the length is unknown,
+ * then it will be `Infinity`.
+ */
 export class List<T> {
   length: number;
 

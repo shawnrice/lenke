@@ -3,7 +3,7 @@ import { isElement } from '../../core/Element';
 import { Traversal } from '../Traversal';
 import { Traverser } from '../Traverser';
 import { execute } from './execute';
-import { GremlinStep, StepGenus } from './types';
+import type { GremlinStep, StepGenus } from './types';
 
 const genus: StepGenus = 'map';
 const species = 'properties';

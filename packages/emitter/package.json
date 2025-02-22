@@ -1,9 +1,14 @@
 {
   "name": "@pl-graph/emitter",
-  "module": "src/index.ts",
+  "module": "dist/esm/index.mjs",
+  "main": "dist/cjs/index.js",
+  "types": "dist/types/index.d.ts",
   "type": "module",
-  "scripts": {},
+  "scripts": {
+    "build": "bun build.ts"
+  },
   "devDependencies": {
+    "@pl-graph/dev": "workspace:*",
     "@types/bun": "^1.0.2",
     "@types/debug": "^4.1.12",
     "bun-types": "latest",

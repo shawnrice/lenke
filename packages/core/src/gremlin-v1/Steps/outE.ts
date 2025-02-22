@@ -3,7 +3,7 @@ import { Vertex } from '../../core/Vertex';
 import { Traversal } from '../Traversal';
 import { Traverser } from '../Traverser';
 import { execute } from './execute';
-import { GremlinStep, TraverserFunction } from './types';
+import type { GremlinStep, TraverserFunction } from './types';
 
 export const outE: GremlinStep<string[]> = (...edgeLabels) => {
   const callback: TraverserFunction = function* outEdges(prev: Iterable<Traverser<Vertex>>) {

@@ -1,7 +1,7 @@
 import { Traversal } from '../Traversal';
 import { Traverser } from '../Traverser';
 import { execute } from './execute';
-import { GremlinStep } from './types';
+import type { GremlinStep } from './types';
 
 const genus = 'map';
 const species = 'select';

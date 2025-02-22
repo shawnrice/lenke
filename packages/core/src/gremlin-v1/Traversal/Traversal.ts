@@ -1,6 +1,6 @@
-import type { UnaryFn } from '@pl-graph/fp/src';
-import { List } from '@pl-graph/list/src';
-import { arraysAreEqual } from '@pl-graph/utils/src';
+import type { UnaryFn } from '@pl-graph/fp';
+import { List } from '@pl-graph/list';
+import { arraysAreEqual } from '@pl-graph/utils';
 
 import { Edge } from '../../core/Edge';
 import { Graph } from '../../core/Graph';

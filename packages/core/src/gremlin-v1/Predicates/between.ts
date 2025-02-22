@@ -1,4 +1,4 @@
-import { NumberPredicate } from './types';
+import type { NumberPredicate } from './types';
 
 export const between =
   <D extends number>(x: D, y: D): NumberPredicate<D> =>

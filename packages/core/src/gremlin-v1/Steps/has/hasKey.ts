@@ -4,7 +4,7 @@ import { isElement } from '@pl-graph/core/src/core/Element';
 import { Traversal } from '../../Traversal';
 import { Traverser } from '../../Traverser';
 
-import type { UnaryFn } from '@pl-graph/fp/src';
+import type { UnaryFn } from '@pl-graph/fp';
 
 // TODO add hasKey(predicate: StringPredicate)
 

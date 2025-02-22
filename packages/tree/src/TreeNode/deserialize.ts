@@ -1,4 +1,4 @@
-import { identity } from '@pl-graph/utils/src/identity';
+import { identity } from '@pl-graph/utils';
 import { TreeNode } from './TreeNode';
 import type { SerializedTreeNode } from './types';
 
@@ -10,7 +10,7 @@ export const deserialize = <T>(
 
   let root: TreeNode<T> | null = null;
 
-  serialized.forEach(x => {
+  for (const x of serialized) {
     if (x.parentId && nodeMap.has(x.parentId)) {
       const parent = nodeMap.get(x.parentId)!;
       const child = parent.createChild(deserializeValue(x.value), x.id);
@@ -23,9 +23,8 @@ export const deserialize = <T>(
       root = new TreeNode(null, deserializeValue(x.value), x.id);
       nodeMap.set(root.id, root);
     }
-  });
+  }
 
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
   if (!root) {
     throw new Error('Failed to find a root node');
   }

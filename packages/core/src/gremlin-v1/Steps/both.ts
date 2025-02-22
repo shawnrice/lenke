@@ -1,4 +1,4 @@
-import { UnaryFn } from '../../../../fp/src/types';
+import { type UnaryFn } from '@pl-graph/fp';
 import { Vertex } from '../../core/Vertex';
 import { Traversal } from '../Traversal';
 import { Traverser } from '../Traverser';

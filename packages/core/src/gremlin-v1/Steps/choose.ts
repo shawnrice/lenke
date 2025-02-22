@@ -1,5 +1,5 @@
 /* eslint-disable no-restricted-syntax */
-import { UnaryFn } from '../../../../fp/src/types';
+import { type UnaryFn } from '@pl-graph/fp';
 import { Traversal } from '../Traversal';
 import { Traverser } from '../Traverser';
 import { execute } from './execute';

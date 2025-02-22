@@ -1,4 +1,4 @@
-import { List } from '../../../../list/src';
+import { List } from '@pl-graph/list';
 import { Traversal } from '../Traversal';
 import { Traverser } from '../Traverser';
 

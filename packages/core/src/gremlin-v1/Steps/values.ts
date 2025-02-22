@@ -1,4 +1,4 @@
-import { filter, map as fpMap, pipe, UnaryFn } from '../../../../fp/src';
+import { filter, map as fpMap, pipe, type UnaryFn } from '../../../../fp/src';
 import { isElement } from '../../core/Element';
 import { Traversal } from '../Traversal';
 import { Traverser } from '../Traverser';
