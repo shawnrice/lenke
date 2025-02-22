@@ -1,13 +1,7 @@
+import { describe, expect, test } from 'bun:test';
 import { createTestTinkerGraph } from '../../fixtures/createTestTinkerGraph';
 import * as P from '../Predicates';
-import {
-  hasLabel,
-  identity,
-  in_,
-  option,
-  out,
-  values,
-} from './';
+import { hasLabel, identity, in_, option, out, values } from './';
 
 describe('Gremlin tests', () => {
   const tinkerGraph = createTestTinkerGraph();

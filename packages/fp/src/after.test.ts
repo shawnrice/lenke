@@ -1,4 +1,5 @@
 import { after } from './after';
+import { describe, expect, test } from 'bun:test';
 
 describe('functional iterator tests', () => {
   test('after works', () => {

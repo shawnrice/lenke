@@ -1,5 +1,5 @@
-import { EmitterEvent } from '@pl-graph/emitter/src';
-import { rando } from '@pl-graph/utils/src';
+import { EmitterEvent } from '@pl-graph/emitter';
+import { rando } from '@pl-graph/utils';
 
 import { Graph } from './Graph';
 import { Vertex } from './Vertex';
@@ -117,7 +117,11 @@ export class Edge<
 
   setProperty<V extends any>(key: string, value: V): void {
     const event = this.#graph?.emit(
-      new EmitterEvent('@graph/EdgePropertyChanged', { edge: this, key, value }),
+      new EmitterEvent('@graph/EdgePropertyChanged', {
+        edge: this,
+        key,
+        value,
+      }),
     );
 
     if (event?.defaultPrevented) {

@@ -1,4 +1,4 @@
-import { EmitterEvent } from '../../../emitter/src';
+import { EmitterEvent } from '@pl-graph/emitter';
 import { Edge } from './Edge';
 import { Vertex } from './Vertex';
 

@@ -1,3 +1,4 @@
+import { describe, expect, test } from 'bun:test';
 import { createTestTinkerGraph } from '../../fixtures/createTestTinkerGraph';
 import * as P from '../Predicates';
 

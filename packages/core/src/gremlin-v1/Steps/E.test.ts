@@ -1,3 +1,4 @@
+import { describe, expect, test } from 'bun:test';
 import { createTestTinkerGraph } from '../../fixtures/createTestTinkerGraph';
 
 /// TODO UPDATE TESTS FOR E (THESE WERE COPIED FROM V)

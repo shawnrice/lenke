@@ -6,13 +6,14 @@
   "module": "dist/pl-graph--react.mjs",
   "types": "dist/index.d.ts",
   "scripts": {
-    "build": "vite build",
-    "coverage": "vitest run --coverage",
-    "test": "vitest run"
+    "build": "nx vite:build",
+    "coverage": "nx vite:test run --coverage",
+    "test": "nx vite:test run"
   },
   "dependencies": {},
   "peerDependencies": {
-    "react": "^18.0.0"
+    "react": "^18.0.0",
+    "@pl-graph/fp": "*"
   },
   "devDependencies": {
     "@swc/core": "^1.3.83",

@@ -4,7 +4,7 @@ import { Vertex } from '../../core/Vertex';
 import { Traversal } from '../Traversal';
 import { Traverser } from '../Traverser';
 import { execute } from './execute';
-import { GremlinStep } from './types';
+import type { GremlinStep } from './types';
 
 const genus = 'filter';
 const species = 'none';

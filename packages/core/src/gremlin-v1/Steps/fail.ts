@@ -1,4 +1,4 @@
-import { UnaryFn } from '../../../../fp/src/types';
+import { type UnaryFn } from '@pl-graph/fp';
 import { Traversal } from '../Traversal';
 
 import type { StepGenus } from './types';

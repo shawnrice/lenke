@@ -1,4 +1,4 @@
-import { ObjectPredicate } from './types';
+import type { ObjectPredicate } from './types';
 
 export const without =
   <D extends Record<string, unknown>>(...x: D[]): ObjectPredicate<D> =>

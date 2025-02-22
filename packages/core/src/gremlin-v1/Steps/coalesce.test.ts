@@ -1,17 +1,10 @@
-import { UnaryFn } from '../../../../fp/src/types';
+import { describe, expect, test } from 'bun:test';
+import { type UnaryFn } from '@pl-graph/fp';
 import { Vertex } from '../../core/Vertex';
 import { createTestTinkerGraph } from '../../fixtures/createTestTinkerGraph';
 import * as P from '../Predicates';
 import { Traverser } from '../Traverser';
-import {
-  hasLabel,
-  identity,
-  in_,
-  option,
-  out,
-  outE,
-  values,
-} from './';
+import { hasLabel, identity, in_, option, out, outE, values } from './';
 
 describe('Gremlin tests', () => {
   const tinkerGraph = createTestTinkerGraph();

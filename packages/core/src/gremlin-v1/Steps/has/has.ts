@@ -1,6 +1,6 @@
 import { isElement } from '@pl-graph/core/src/core/Element';
 
-import { Predicate } from '../../Predicates';
+import { type Predicate } from '../../Predicates';
 import { Traversal } from '../../Traversal';
 import { Traverser } from '../../Traverser';
 

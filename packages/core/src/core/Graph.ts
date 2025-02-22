@@ -1,15 +1,14 @@
 /* eslint-disable @typescript-eslint/unified-signatures */
-import { Emitter, EmitterEvent } from '@pl-graph/emitter/src';
-import { timer } from '@pl-graph/utils/src/timer';
+import { Emitter, EmitterEvent } from '@pl-graph/emitter';
+import { timer } from '@pl-graph/utils';
+import type { UnaryFn } from '@pl-graph/fp';
+import type { UnknownObject } from '@pl-graph/utils';
 
 import { Traversal } from '../gremlin-v1/Traversal';
 import { deserialize } from '../pg-format/deserialize';
 import { serialize } from '../pg-format/serialize';
 import { Edge } from './Edge';
 import { Vertex } from './Vertex';
-
-import type { UnaryFn } from '@pl-graph/fp/src';
-import type { UnknownObject } from '@pl-graph/utils/src/types';
 
 import type { AddEdgeParams } from './Edge';
 import type { GraphEvent, GraphEvents, GraphEventType } from './GraphEvents';

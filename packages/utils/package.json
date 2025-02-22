@@ -1,9 +1,14 @@
 {
   "name": "@pl-graph/utils",
-  "module": "src/index.ts",
+  "module": "src/index.js",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "type": "module",
-  "scripts": {},
+  "scripts": {
+    "build": "bun build.ts"
+  },
   "devDependencies": {
+    "@pl-graph/dev": "workspace:*",
     "@types/bun": "latest",
     "@types/debug": "^4.1.12",
     "bun-types": "latest",

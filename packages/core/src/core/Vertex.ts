@@ -1,10 +1,10 @@
-import { EmitterEvent } from '@pl-graph/emitter/src';
-import { rando } from '@pl-graph/utils/src';
+import { EmitterEvent } from '@pl-graph/emitter';
+import { rando } from '@pl-graph/utils';
 
 import { Edge } from './Edge';
 import { Graph } from './Graph';
 
-import type { UnknownObject } from '@pl-graph/utils/src/types';
+import type { UnknownObject } from '@pl-graph/utils';
 
 export type VertexParams<P extends { [key: string]: any }> = {
   id?: string;

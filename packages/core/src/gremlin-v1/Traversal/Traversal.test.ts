@@ -1,7 +1,7 @@
-import { List } from '../../../../list/src';
+import { List } from '@pl-graph/list';
 import { createTestGraph } from '../../fixtures/createTestGraph';
 import { createTestTinkerGraph } from '../../fixtures/createTestTinkerGraph';
-
+import { describe, expect, test } from 'bun:test';
 describe('Gremlin tests', () => {
   describe('Traversal tests', () => {
     const tinkerGraph = createTestTinkerGraph();

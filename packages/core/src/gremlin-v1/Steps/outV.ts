@@ -2,7 +2,7 @@ import { Edge } from '../../core/Edge';
 import { Traversal } from '../Traversal';
 import { Traverser } from '../Traverser';
 import { execute } from './execute';
-import { GremlinStep, StepGenus, TraverserFunction } from './types';
+import type { GremlinStep, StepGenus, TraverserFunction } from './types';
 
 const genus: StepGenus = 'flatmap';
 const species = 'outV';

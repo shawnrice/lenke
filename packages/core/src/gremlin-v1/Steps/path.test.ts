@@ -1,3 +1,4 @@
+import { describe, expect, test } from 'bun:test';
 import { Vertex } from '../../core/Vertex';
 import { createTestTinkerGraph } from '../../fixtures/createTestTinkerGraph';
 

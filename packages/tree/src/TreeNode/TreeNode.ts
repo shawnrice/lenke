@@ -1,10 +1,8 @@
 /* eslint-disable consistent-this, no-param-reassign, no-restricted-syntax */
 /* eslint-disable @typescript-eslint/no-this-alias */
 
-import { equals } from '@pl-graph/fp/src/equals';
-import { identity } from '@pl-graph/utils/src/identity';
-import { List } from '@pl-graph/list/src/List';
-import { rando } from '@pl-graph/utils/src/rando';
+import { equals } from '@pl-graph/fp';
+import { identity, rando } from '@pl-graph/utils';
 import { deserialize } from './deserialize';
 import { serialize } from './serialize';
 
@@ -506,21 +504,6 @@ export class TreeNode<T> {
 
   toArray(): TreeNode<T>[] {
     return this.castDepthFirst();
-  }
-
-  /**
-   * Casts the Tree depth-first to a List.
-   *
-   * If you want to cast breadth-first, just call:
-   *
-   * ```
-   * new List(() => TreeNode.breadthFirst());
-   * ```
-   *
-   * Note: you'll need to wrap it in an extra function, otherwise, you'll lose the `this` context.
-   */
-  toList(): List<TreeNode<T>> {
-    return List.from(this);
   }
 
   /**

@@ -3,7 +3,7 @@ import type { UnaryFn } from '@pl-graph/fp/src';
 import { Traversal } from '../Traversal';
 import { Traverser } from '../Traverser';
 import { execute } from './execute';
-import { GremlinStep, StepGenus } from './types';
+import type { GremlinStep, StepGenus } from './types';
 
 const genus: StepGenus = 'sideEffect';
 const species = 'sideEffect';
