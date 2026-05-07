@@ -43,9 +43,7 @@ export class Trie<T> {
     let node = this.root;
     const path: TrieNode<T>[] = [];
 
-    for (let i = 0; i < key.length; i++) {
-      const char = key[i];
-
+    for (const char of key) {
       if (!node.children.has(char)) {
         node.addChild(new TrieNode<T>(char));
         this.nodes++;
