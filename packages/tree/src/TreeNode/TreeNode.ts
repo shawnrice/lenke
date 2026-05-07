@@ -6,8 +6,8 @@ import { identity, rando } from '@pl-graph/utils';
 import { deserialize } from './deserialize.js';
 import { serialize } from './serialize.js';
 
-type UnaryFn<T extends any = any, R extends any = T> = (x0: T) => R;
-type BinaryFn<A extends any = any, B = A, R = A> = (x0: A, x1: B) => R;
+type UnaryFn<T = any, R = T> = (x0: T) => R;
+type BinaryFn<A = any, B = A, R = A> = (x0: A, x1: B) => R;
 
 export type TreeNodeJSON = {
   id: string;
@@ -51,9 +51,7 @@ export class TreeNode<T> {
 
   #value: T;
 
-  #children: Set<TreeNode<T>>;
-
-  #childrenById: Map<string, TreeNode<T>>;
+  #children: Map<string, TreeNode<T>>;
 
   /**
    * Deserializes a serialized TreeNode<T>
@@ -83,7 +81,9 @@ export class TreeNode<T> {
     comparator: BinaryFn<T, T, boolean> = Object.is,
   ): boolean {
     const inner = (x: TreeNode<T>, y: TreeNode<T>): boolean =>
-      x.id === y.id && comparator(x.value, y.value);
+      x.id === y.id &&
+      (x.parent?.id ?? null) === (y.parent?.id ?? null) &&
+      comparator(x.value, y.value);
 
     return equals(a, b, inner);
   }
@@ -106,14 +106,14 @@ export class TreeNode<T> {
 
     if (node.isRoot() && node.childCount === 1) {
       // So, now we are removing the root node, and there is one child
-      const [child] = node.#children;
+      const [child] = node.#children.values();
 
       if (!child) {
         return null;
       }
 
-      child.removeParent();
-      node.delistChild(child);
+      child.#parent = null;
+      node.#children.delete(child.id);
 
       // And the child is the new root, so return that
       return child;
@@ -134,14 +134,12 @@ export class TreeNode<T> {
     }
 
     // Here, we have a more normal use case of removing a leaf node or a branch
-    node.setParent(null);
+    node.detach();
 
-    node.children.forEach((child) => {
-      // This should re-home the child appropriately
+    for (const child of node.children) {
+      child.detach();
       nextParent.addChild(child);
-    });
-
-    node.#parent = null;
+    }
 
     return nextParent.root;
   }
@@ -150,8 +148,7 @@ export class TreeNode<T> {
     this.#value = value;
     this.#parent = parent ?? null;
     this.#id = id ?? rando();
-    this.#children = new Set();
-    this.#childrenById = new Map();
+    this.#children = new Map();
   }
 
   get id(): string {
@@ -167,7 +164,7 @@ export class TreeNode<T> {
   }
 
   get children(): TreeNode<T>[] {
-    return Array.from(this.#children);
+    return Array.from(this.#children.values());
   }
 
   get childCount(): number {
@@ -179,7 +176,13 @@ export class TreeNode<T> {
   }
 
   get depth(): number {
-    return this.ancestors.length;
+    let count = 0;
+    let node = this.#parent;
+    while (node) {
+      count++;
+      node = node.#parent;
+    }
+    return count;
   }
 
   get value(): T {
@@ -187,29 +190,44 @@ export class TreeNode<T> {
   }
 
   /**
-   * Adds an Extant TreeNode<T> as a child of this TreeNode<T>
+   * Adds a parentless TreeNode<T> as a child of this TreeNode<T>
+   *
+   * The argument must have no parent. If you want to move a node from elsewhere,
+   * call `node.detach()` first.
    */
   addChild(node: TreeNode<T>): TreeNode<T> {
-    // Always test from the top of the tree to ensure that this tree doesn't cycle
-    if (node.castDepthFirst().some((n) => this.root.contains(n) || this.root === n)) {
-      throw new Error('Operation would create a cycle');
+    if (node === this) {
+      throw new Error('Cannot add a node as a child of itself');
     }
 
-    this.#children.add(node);
-    this.#childrenById.set(node.id, node);
-    node.setParent(this);
+    if (node.parent !== null) {
+      throw new Error(
+        'Cannot add a node that already has a parent. Call detach() first to move it.',
+      );
+    }
+
+    if (node.contains(this)) {
+      throw new Error('Cannot add a node whose subtree contains this node (would create a cycle)');
+    }
+
+    this.#children.set(node.id, node);
+    node.#parent = this;
 
     return this;
   }
 
   /**
-   * Removes a child. Its children will become this node's children
+   * Removes a child. No-op if the node is not actually a child of this.
    *
    * @returns The current tree node
    */
   removeChild(node: TreeNode<T>): TreeNode<T> {
-    this.delistChild(node);
-    node.removeParent();
+    if (!this.#children.has(node.id)) {
+      return this;
+    }
+
+    this.#children.delete(node.id);
+    node.#parent = null;
 
     return this;
   }
@@ -221,8 +239,7 @@ export class TreeNode<T> {
    */
   createChild(value: T, id: string | null = null): TreeNode<T> {
     const node = new TreeNode(this, value, id);
-    this.#children.add(node);
-    this.#childrenById.set(node.id, node);
+    this.#children.set(node.id, node);
     return node;
   }
 
@@ -230,7 +247,7 @@ export class TreeNode<T> {
    * Checks if a TreeNode has the passed TreeNode as a child
    */
   hasChild(node: TreeNode<T>): boolean {
-    return this.#childrenById.has(node.id);
+    return this.#children.has(node.id);
   }
 
   /**
@@ -265,18 +282,19 @@ export class TreeNode<T> {
    * Checks if a TreeNode contains another TreeNode as a descendant
    */
   contains(needle: TreeNode<T>): boolean {
-    const queue: TreeNode<T>[] = Array.from(this.#children);
+    const queue: TreeNode<T>[] = Array.from(this.#children.values());
+    let head = 0;
 
-    while (queue.length) {
-      const node = queue.shift();
+    while (head < queue.length) {
+      const node = queue[head++];
 
       if (node === needle) {
         return true;
       }
 
-      node?.children.forEach((child) => {
+      for (const child of node.#children.values()) {
         queue.push(child);
-      });
+      }
     }
 
     return false;
@@ -288,7 +306,7 @@ export class TreeNode<T> {
   *depthFirst(): Generator<TreeNode<T>> {
     yield this;
 
-    for (const child of this.#children) {
+    for (const child of this.#children.values()) {
       yield* child.depthFirst();
     }
   }
@@ -297,21 +315,17 @@ export class TreeNode<T> {
    * Filter Breadth First, returns a generator of TreeNodes that match the predicate
    */
   *filterBreadthFirst(predicate: UnaryFn<TreeNode<T>, boolean>): Generator<TreeNode<T>> {
-    const queue = [this];
+    const queue: TreeNode<T>[] = [this];
+    let head = 0;
 
-    while (queue.length) {
-      const node = queue.shift();
-
-      if (!node) {
-        continue; // eslint-disable-line
-      }
+    while (head < queue.length) {
+      const node = queue[head++];
 
       if (predicate(node)) {
         yield node;
       }
 
-      for (const child of node.children) {
-        // @ts-expect-error: the child might be instantiated with a different type
+      for (const child of node.#children.values()) {
         queue.push(child);
       }
     }
@@ -339,7 +353,7 @@ export class TreeNode<T> {
       yield this;
     }
 
-    for (const child of this.#children) {
+    for (const child of this.#children.values()) {
       yield* child.filterDepthFirst(predicate);
     }
   }
@@ -362,17 +376,13 @@ export class TreeNode<T> {
    * A breadth-first iterator for tree nodes
    */
   *breadthFirst(): Generator<TreeNode<T>> {
-    const queue = [this];
+    const queue: TreeNode<T>[] = [this];
+    let head = 0;
 
-    while (queue.length) {
-      const node = queue.shift();
+    while (head < queue.length) {
+      const node = queue[head++];
 
-      if (!node) {
-        continue; // eslint-disable-line
-      }
-
-      for (const child of node.children) {
-        // @ts-expect-error: the child might be instantiated with a different type
+      for (const child of node.#children.values()) {
         queue.push(child);
       }
 
@@ -401,11 +411,11 @@ export class TreeNode<T> {
    * If no node is found, we return `null`
    */
   getDescendantById(id: string): TreeNode<T> | null {
-    if (this.#childrenById.has(id)) {
-      return this.#childrenById.get(id) as TreeNode<T>;
+    if (this.#children.has(id)) {
+      return this.#children.get(id) as TreeNode<T>;
     }
 
-    for (const child of this.#children) {
+    for (const child of this.#children.values()) {
       const node = child.getDescendantById(id);
 
       if (node) {
@@ -425,17 +435,6 @@ export class TreeNode<T> {
     this.#value = callback(this.#value);
 
     return this;
-  }
-
-  private delistChild(child: TreeNode<T>): void {
-    this.#children.has(child) && this.#children.delete(child);
-    this.#childrenById.has(child?.id) && this.#childrenById.delete(child?.id);
-  }
-
-  private removeParent() {
-    if (this.#parent) {
-      this.#parent = null;
-    }
   }
 
   /**
@@ -472,34 +471,16 @@ export class TreeNode<T> {
   }
 
   /**
-   * Internal method for setting parents
-   *
-   * If you want to alter trees, use detach, addChild, createChild, or removeNode
-   */
-  private setParent(node: TreeNode<T> | null) {
-    if (this.#parent === node) {
-      // no-op
-      return this;
-    }
-
-    this.#parent?.removeChild(this);
-    this.#parent = node;
-    return this;
-  }
-
-  /**
    * Gets all the ancestors of a node in order
    */
   getAncestors(): TreeNode<T>[] {
-    let node: TreeNode<T> | null = this;
-    const queue: TreeNode<T>[] = [];
-
+    const ancestors: TreeNode<T>[] = [];
+    let node = this.#parent;
     while (node) {
-      node = node.parent;
-      node && queue.unshift(node);
+      ancestors.push(node);
+      node = node.#parent;
     }
-
-    return queue;
+    return ancestors.reverse();
   }
 
   toArray(): TreeNode<T>[] {
