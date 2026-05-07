@@ -1,9 +1,13 @@
 {
   "name": "@pl-graph/gremlin",
   "type": "module",
-  "main": "dist/cjs/index.js",
-  "module": "dist/esm/index.mjs",
-  "types": "dist/types/index.d.ts",
+  "types": "./dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "default": "./dist/esm/index.mjs"
+    }
+  },
   "scripts": {
     "build": "bun build.ts",
     "test": "bun test"
