@@ -20,7 +20,7 @@ export const deserialize = <T>(
         throw new Error('More than one root');
       }
 
-      root = new TreeNode(null, deserializeValue(x.value), x.id);
+      root = TreeNode.from(deserializeValue(x.value), x.id);
       nodeMap.set(root.id, root);
     }
   }

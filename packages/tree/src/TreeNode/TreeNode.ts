@@ -144,7 +144,7 @@ export class TreeNode<T> {
     return nextParent.root;
   }
 
-  constructor(parent: TreeNode<T> | null, value: T, id: string | null = null) {
+  private constructor(parent: TreeNode<T> | null, value: T, id: string | null = null) {
     this.#value = value;
     this.#parent = parent ?? null;
     this.#id = id ?? rando();
@@ -438,28 +438,15 @@ export class TreeNode<T> {
   }
 
   /**
-   * Clones a SubTree starting at this node
+   * Clones a SubTree starting at this node. Ids are preserved so the clone
+   * is structurally identical to the source.
    */
   clone(): TreeNode<T> {
-    // Some algo to create a new TreeNode for each tree node from here down.
-    const nodeMap = new Map<string, TreeNode<T>>();
-
-    for (const original of this.breadthFirst()) {
-      // if we have a parent, and if we have already cloned the parent, then
-      // we'll grab the cloned parent, and create this node as its child
-      if (original.parent && nodeMap.has(original.parent.id)) {
-        const parent = nodeMap.get(original.parent.id)!;
-        const next = parent.createChild(original.value, original.id);
-        nodeMap.set(next.id, next);
-      } else {
-        // We don't have a parent that has been cloned, which likely means that
-        // we're at the root, so we'll just create a new node with no parent.
-        const next = new TreeNode(null, original.value, original.id);
-        nodeMap.set(next.id, next);
-      }
+    const next = TreeNode.from(this.#value, this.#id);
+    for (const child of this.#children.values()) {
+      next.addChild(child.clone());
     }
-
-    return nodeMap.get(this.id)!;
+    return next;
   }
 
   /**
