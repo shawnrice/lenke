@@ -1,18 +1,15 @@
-import React from 'react';
-
-import type { NullaryFn } from '@pl-graph/fp';
+import { useEffect } from 'react';
 
 import { useGraphContext } from './GraphContext.js';
-import { useForceUpdate } from './useForceUpdate.js';
 
 /**
- * Subscribes to the graph
- *
- * This will force a re-render whenever the graph creates a new snapshot
+ * Subscribe a side-effect callback to graph changes. The listener fires once
+ * per graph mutation (after `enableEvents` / `disableEvents` rules are
+ * applied). Returns nothing — for derived values that should drive renders,
+ * use `useGraphSelector` instead.
  */
-export const useGraphSubscription = (listener?: NullaryFn): void => {
+export const useGraphSubscription = (listener: () => void): void => {
   const { graph } = useGraphContext();
-  const update = useForceUpdate();
 
-  React.useEffect(() => graph.subscribe(listener ?? update), [graph, listener, update]);
+  useEffect(() => graph.subscribe(listener), [graph, listener]);
 };
