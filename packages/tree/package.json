@@ -12,7 +12,8 @@
     }
   },
   "scripts": {
-    "build": "bun build.ts"
+    "build": "bun build.ts",
+    "test": "bun test"
   },
   "dependencies": {
     "@pl-graph/fp": "workspace:*",
