@@ -1,15 +1,15 @@
 import { describe, expect, mock, test } from 'bun:test';
 
-import { sideEffect } from './sideEffect';
-import { slice } from './slice';
+import { sideEffect } from './sideEffect.js';
+import { slice } from './slice.js';
 
-function* range(start: number, stop: number) {
+const range = function* (start: number, stop: number) {
   let x = start;
   while (x <= stop) {
     // eslint-disable-next-line no-plusplus
     yield x++;
   }
-}
+};
 
 describe('functional iterator tests', () => {
   test('slice works', () => {

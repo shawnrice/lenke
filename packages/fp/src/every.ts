@@ -1,6 +1,7 @@
-import type { Predicate, UnaryFn } from './types';
+import { type Boundary, boundary } from './boundary.js';
+import type { Predicate, UnaryFn } from './types.js';
 
-function internalEvery<T>(predicate: Predicate<T>, iterable: Iterable<T>): boolean {
+const internalEvery = <T>(predicate: Predicate<T>, iterable: Iterable<T>): boolean => {
   for (const iteration of iterable) {
     if (!predicate(iteration)) {
       return false;
@@ -8,13 +9,12 @@ function internalEvery<T>(predicate: Predicate<T>, iterable: Iterable<T>): boole
   }
 
   return true;
-}
+};
 
-export function every<T>(predicate: Predicate<T>): UnaryFn<Iterable<T>, boolean>;
+export function every<T>(predicate: Predicate<T>): Boundary<UnaryFn<Iterable<T>, boolean>>;
 export function every<T>(predicate: Predicate<T>, iterable: Iterable<T>): boolean;
-export function every<T>(
-  predicate: Predicate<T>,
-  iterable?: Iterable<T>,
-): UnaryFn<Iterable<T>, boolean> | boolean {
-  return iterable ? internalEvery(predicate, iterable) : x0 => internalEvery(predicate, x0);
+export function every<T>(predicate: Predicate<T>, iterable?: Iterable<T>) {
+  return iterable
+    ? internalEvery(predicate, iterable)
+    : boundary((x0: Iterable<T>) => internalEvery(predicate, x0));
 }

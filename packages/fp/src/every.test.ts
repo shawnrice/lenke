@@ -1,5 +1,6 @@
-import { every } from './every';
 import { describe, expect, mock, test } from 'bun:test';
+
+import { every } from './every.js';
 
 describe('functional iterator tests', () => {
   test('every works', () => {
