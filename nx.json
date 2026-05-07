@@ -1,37 +1,24 @@
 {
   "$schema": "./node_modules/nx/schemas/nx-schema.json",
+  "namedInputs": {
+    "default": ["{projectRoot}/**/*", "sharedGlobals"],
+    "production": [
+      "default",
+      "!{projectRoot}/**/*.test.@(ts|tsx)",
+      "!{projectRoot}/vite.config.@(ts|js|mts|mjs)",
+      "!{projectRoot}/build.ts"
+    ],
+    "sharedGlobals": []
+  },
   "targetDefaults": {
     "build": {
-      "dependsOn": [
-        "^build"
-      ],
-      "outputs": [
-        "{projectRoot}/dist"
-      ],
-      "cache": true
-    },
-    "build:esm": {
-      "dependsOn": [
-        "^build:esm"
-      ],
-      "outputs": [
-        "{projectRoot}/dist"
-      ],
-      "cache": true
-    },
-    "build:types": {
-      "dependsOn": [
-        "^build:types"
-      ],
-      "outputs": [
-        "{projectRoot}/dist"
-      ],
+      "dependsOn": ["^build"],
+      "inputs": ["production", "^production"],
+      "outputs": ["{projectRoot}/dist"],
       "cache": true
     },
     "coverage": {
-      "outputs": [
-        "{projectRoot}/.coverage"
-      ],
+      "outputs": ["{projectRoot}/.coverage"],
       "cache": true
     },
     "test": {
