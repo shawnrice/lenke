@@ -19,7 +19,7 @@ describe('barrier and store', () => {
       run(traversal(V(), hasLabel('SOFTWARE'), store('softs'), values('name'), cap('softs')), g),
     ) as unknown[][];
     expect(r).toHaveLength(1);
-    const bag = r[0];
+    const [bag] = r;
     expect(bag).toHaveLength(2);
   });
 

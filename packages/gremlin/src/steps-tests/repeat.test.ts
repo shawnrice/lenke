@@ -7,7 +7,6 @@ import {
   count,
   has,
   hasLabel,
-  identity,
   is,
   loops,
   out,

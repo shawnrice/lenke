@@ -3,7 +3,7 @@
  */
 import * as React from 'react';
 
-import { act, renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook } from '@testing-library/react';
 
 import { createTestTinkerGraph } from './fixtures/createTestTinkerGraph';
 import { GraphProvider } from './GraphProvider';
