@@ -1,0 +1,77 @@
+import { describe, expect, test } from 'bun:test';
+
+import { run } from '../executor.js';
+import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
+import { V, count, group, hasLabel, label, values } from '../steps.js';
+import { traversal } from '../traversal.js';
+
+const arr = (r: Iterable<unknown>): unknown[] => [...r];
+
+describe('STEP, group', () => {
+  const g = createTestTinkerGraph();
+
+  // doc: g.V().hasLabel('person').values('age').group() — group by the value itself.
+  test('group by self (no keyBy/valueBy) collects ages into a Map', () => {
+    const result = arr(run(traversal(V(), hasLabel('PERSON'), values('age'), group()), g));
+    expect(result).toHaveLength(1);
+    const map = result[0] as Map<unknown, unknown[]>;
+    expect(map).toBeInstanceOf(Map);
+    expect(map.get(29)).toEqual([29]);
+    expect(map.get(27)).toEqual([27]);
+    expect(map.get(32)).toEqual([32]);
+    expect(map.get(35)).toEqual([35]);
+  });
+
+  // doc: g.V().hasLabel('person').group().by('age').by('name') — group names by age.
+  test('group by name keyed by age', () => {
+    const result = arr(
+      run(traversal(V(), hasLabel('PERSON'), group({ keyBy: 'age', valueBy: 'name' })), g),
+    );
+    const map = result[0] as Map<unknown, unknown[]>;
+    expect(map.get(29)).toEqual(['marko']);
+    expect(map.get(27)).toEqual(['vadas']);
+    expect(map.get(32)).toEqual(['josh']);
+    expect(map.get(35)).toEqual(['peter']);
+  });
+
+  // doc: g.V().group().by('lang') — software vertices grouped by lang; non-software produce undefined keys.
+  test('group by property (lang) collapses missing-key vertices into one bucket', () => {
+    const result = arr(run(traversal(V(), group({ keyBy: 'lang', valueBy: 'name' })), g));
+    const map = result[0] as Map<unknown, unknown[]>;
+    expect(map.get('java')).toEqual(['lop', 'ripple']);
+    // Persons lack `lang`, so they all bucket under `undefined`.
+    expect(map.get(undefined)).toEqual(['marko', 'vadas', 'josh', 'peter']);
+  });
+
+  // doc: g.V().group().by(label) — [software:[v[3],v[5]],person:[v[1],v[2],v[4],v[6]]]
+  test('group by(label())', () => {
+    const result = arr(run(traversal(V(), group().by(label())), g));
+    const map = result[0] as Map<unknown, unknown[]>;
+    expect(map.get('PERSON')).toHaveLength(4);
+    expect(map.get('SOFTWARE')).toHaveLength(2);
+  });
+
+  // doc: g.V().group().by(label).by('name') — [software:[lop,ripple],person:[marko,vadas,josh,peter]]
+  test('group by(label()).by("name")', () => {
+    const result = arr(run(traversal(V(), group().by(label()).by('name')), g));
+    const map = result[0] as Map<unknown, unknown[]>;
+    expect((map.get('SOFTWARE') as string[]).slice().sort()).toEqual(['lop', 'ripple']);
+    expect((map.get('PERSON') as string[]).slice().sort()).toEqual([
+      'josh',
+      'marko',
+      'peter',
+      'vadas',
+    ]);
+  });
+
+  // doc: g.V().group().by(label).by(count())
+  // Note: count() is a sub-traversal that returns 1 per traverser (per-bucket
+  // count in pure Gremlin requires fold semantics inside the value-by). Our
+  // executor runs the sub-traversal per traverser, so values are arrays of 1s.
+  test('group by(label()).by(count()) yields per-bucket count lists', () => {
+    const result = arr(run(traversal(V(), group().by(label()).by(count())), g));
+    const map = result[0] as Map<unknown, number[]>;
+    expect((map.get('PERSON') as number[]).reduce((a, b) => a + b, 0)).toBe(4);
+    expect((map.get('SOFTWARE') as number[]).reduce((a, b) => a + b, 0)).toBe(2);
+  });
+});

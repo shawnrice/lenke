@@ -1,0 +1,22 @@
+{
+  "name": "@pl-graph/gremlin",
+  "type": "module",
+  "main": "dist/cjs/index.js",
+  "module": "dist/esm/index.mjs",
+  "types": "dist/types/index.d.ts",
+  "scripts": {
+    "build": "bun build.ts"
+  },
+  "dependencies": {
+    "@pl-graph/core": "workspace:*",
+    "@pl-graph/fp": "workspace:*"
+  },
+  "devDependencies": {
+    "@pl-graph/dev": "workspace:*",
+    "@types/bun": "^1.0.2",
+    "bun-types": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^6.0.0"
+  }
+}
