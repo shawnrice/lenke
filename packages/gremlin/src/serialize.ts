@@ -1,0 +1,83 @@
+import type { Plan, Step } from './ast.js';
+
+/**
+ * The set of step kinds that carry a JS closure. Plans containing any of
+ * these cannot be serialized — the closure won't survive `JSON.stringify`.
+ */
+const CLOSURE_KINDS: ReadonlySet<Step['kind']> = new Set([
+  'mapFn',
+  'flatMapFn',
+  'filterFn',
+  'sideEffectFn',
+  'foldFn',
+] as const);
+
+/**
+ * Recursively walk a plan and collect any closure-bearing step kinds. Returns
+ * a list of paths (e.g. `['repeat.body', 'mapFn']`) so callers can pinpoint
+ * which steps prevent serialization.
+ */
+export const findClosures = (plan: Plan, prefix = ''): string[] => {
+  const found: string[] = [];
+  for (let i = 0; i < plan.steps.length; i++) {
+    const step = plan.steps[i]!;
+    const path = prefix ? `${prefix}.${i}.${step.kind}` : `${i}.${step.kind}`;
+    if (CLOSURE_KINDS.has(step.kind)) {
+      found.push(path);
+    }
+    // Recurse into sub-plans.
+    for (const [field, value] of Object.entries(step)) {
+      if (value && typeof value === 'object' && 'steps' in value) {
+        found.push(...findClosures(value as Plan, `${path}.${field}`));
+      }
+      if (Array.isArray(value)) {
+        for (let j = 0; j < value.length; j++) {
+          const v = value[j];
+          if (v && typeof v === 'object' && 'steps' in v) {
+            found.push(...findClosures(v as Plan, `${path}.${field}[${j}]`));
+          }
+          // `branch.options` is `[{ match, plan }, ...]` — recurse via `.plan`.
+          if (v && typeof v === 'object' && 'plan' in v && (v as { plan: unknown }).plan) {
+            const inner = (v as { plan: Plan }).plan;
+            if (inner && typeof inner === 'object' && 'steps' in inner) {
+              found.push(...findClosures(inner, `${path}.${field}[${j}].plan`));
+            }
+          }
+        }
+      }
+    }
+  }
+  return found;
+};
+
+/**
+ * Whether a plan can be serialized (i.e. contains no closure-bearing steps).
+ */
+export const isSerializable = (plan: Plan): boolean => findClosures(plan).length === 0;
+
+/**
+ * Serialize a plan to JSON. Throws if any step in the plan (or any of its
+ * sub-plans) carries a closure — those don't survive the round-trip and
+ * silently dropping them would be a footgun.
+ *
+ * If you need to ship a closure-bearing plan, you'll have to either rewrite
+ * the closures as sub-plans (e.g. `map(v => v.id)` → `map(pipe(id()))`), or
+ * build a custom serializer that registers named closures somewhere both
+ * sides can resolve.
+ */
+export const serialize = (plan: Plan): string => {
+  const closures = findClosures(plan);
+  if (closures.length > 0) {
+    throw new Error(
+      `Plan contains closure-bearing steps and cannot be serialized:\n  ${closures.join('\n  ')}\n` +
+        `Rewrite these as sub-plans (e.g. map(pipe(...))) to make the plan serializable.`,
+    );
+  }
+  return JSON.stringify(plan);
+};
+
+/**
+ * Deserialize a plan from JSON. The resulting plan only contains the
+ * sub-plan forms — closures cannot round-trip.
+ */
+export const deserialize = (json: string): Plan => JSON.parse(json) as Plan;
