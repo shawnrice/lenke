@@ -5,7 +5,8 @@
   "module": "dist/esm/index.mjs",
   "types": "dist/types/index.d.ts",
   "scripts": {
-    "build": "bun build.ts"
+    "build": "bun build.ts",
+    "test": "bun test"
   },
   "dependencies": {
     "@pl-graph/core": "workspace:*",

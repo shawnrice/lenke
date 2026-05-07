@@ -15,6 +15,7 @@
   },
   "scripts": {
     "build": "bun build.ts",
+    "test": "bun test",
     "clean:stray-types": "find src -type f \\( -name '*.d.ts' -o -name '*.d.ts.map' \\) -delete"
   },
   "dependencies": {},
