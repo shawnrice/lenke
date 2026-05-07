@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from 'bun:test';
 
-import { skipWhile } from './skipWhile';
+import { skipWhile } from './skipWhile.js';
 
 describe('functional iterator tests', () => {
   const arr = [1, 2, 3, 5, 6, 7];

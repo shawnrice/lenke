@@ -1,8 +1,10 @@
 import { describe, expect, mock, test } from 'bun:test';
 
-import { map } from './map';
-import { pipe } from './pipe';
-import { take } from './take';
+import { map } from './map.js';
+import { pipe } from './pipe.js';
+import { take } from './take.js';
+import { range } from './range.js';
+import { skip } from './skip.js';
 
 describe('functional iterator tests', () => {
   test('map works', () => {
@@ -24,5 +26,17 @@ describe('functional iterator tests', () => {
 
     expect(Array.from(doMyThing([1, 2, 3, 4]))).toEqual([true, false]);
     expect(isOdd).toHaveBeenCalledTimes(2);
+  });
+
+  test('map over range with skip also works', () => {
+    const val = pipe<Iterable<number>>()(
+      skip(100),
+      map((x) => x * 2),
+      take(5),
+    )(range());
+
+    const x1 = Array.from(val);
+
+    expect(x1).toEqual([200, 202, 204, 206, 208]);
   });
 });

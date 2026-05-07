@@ -1,8 +1,8 @@
 import { describe, expect, mock, test } from 'bun:test';
 
-import { distinct } from './distinct';
-import { filter } from './filter';
-import { take } from './take';
+import { distinct } from './distinct.js';
+import { filter } from './filter.js';
+import { take } from './take.js';
 
 describe('functional iterator tests', () => {
   test('distinct works', () => {

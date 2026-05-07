@@ -1,15 +1,16 @@
 import { describe, expect, mock, test } from 'bun:test';
 
-import { distinct } from './distinct';
-import { map } from './map';
-import { pipe } from './pipe';
-import { take } from './take';
+import { distinct } from './distinct.js';
+import { map } from './map.js';
+import { pipe } from './pipe.js';
+import { take } from './take.js';
+import { toArray } from './toArray.js';
 
 describe('functional iterator tests', () => {
   test('we can pipe', () => {
     const isOdd = mock((x: number): boolean => !!(x % 2));
 
-    const fn = pipe(map(isOdd), distinct, take(3), Array.from);
+    const fn = pipe(map(isOdd), distinct, take(3), toArray);
 
     const iterable = Array.from({ length: 100 }).map((_, i) => i + 1);
 
@@ -23,6 +24,7 @@ describe('functional iterator tests', () => {
         yield x + 1;
       }
     });
+    // biome-ignore lint/suspicious/noShadowRestrictedNames: bleh
     const toString = mock(function* tostring(x0: Iterable<number>) {
       for (const x of x0) {
         yield `${x}`;
