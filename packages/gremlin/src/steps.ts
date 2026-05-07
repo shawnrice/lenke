@@ -1,3 +1,4 @@
+/* eslint-disable no-shadow -- parameter names intentionally match the gremlin step builder API (e.g. label, value, match) */
 import {
   appendStep,
   type By,

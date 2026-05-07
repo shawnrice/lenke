@@ -18,6 +18,7 @@ describe('functional iterator tests', () => {
     const a = [1, 2, 3, 4, 5];
     const b = ['1', '2', '3', '4', '5'];
     expect(equals<string | number>(a, b)).toBe(false);
+    // eslint-disable-next-line eqeqeq -- intentional loose equality to verify the custom comparator path
     expect(equals<string | number>(a, b, (x, y) => x == y)).toBe(true);
   });
 

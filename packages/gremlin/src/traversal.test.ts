@@ -43,7 +43,7 @@ describe('traversal AST', () => {
         .emit(simplePath()),
     );
 
-    const repeatStep = plan.steps[1];
+    const [, repeatStep] = plan.steps;
     expect(repeatStep.kind).toBe('repeat');
     if (repeatStep.kind !== 'repeat') {
       return;
@@ -58,6 +58,7 @@ describe('traversal AST', () => {
 
   test('AST is JSON-serializable end-to-end', () => {
     const plan = traversal(V(1), out('knows'), has('age', gt(30)), take(5));
+    // eslint-disable-next-line unicorn/prefer-structured-clone -- the assertion is specifically about JSON-serializability, not deep cloning
     const roundTripped = JSON.parse(JSON.stringify(plan));
     expect(roundTripped).toEqual(plan as unknown as typeof roundTripped);
   });

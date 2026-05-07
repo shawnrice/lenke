@@ -1,3 +1,4 @@
+/* eslint-disable max-params -- pipe overloads intentionally span arities 1..N */
 import type { UnaryFn } from './types.js';
 import { isIterable, maybeOptimizeIterable } from './utils.js';
 
