@@ -12,6 +12,22 @@ const CLOSURE_KINDS: ReadonlySet<Step['kind']> = new Set([
   'foldFn',
 ] as const);
 
+const isPlan = (x: unknown): x is Plan => !!x && typeof x === 'object' && 'steps' in x;
+
+const findClosuresInArrayItem = (v: unknown, path: string): string[] => {
+  if (isPlan(v)) {
+    return findClosures(v, path);
+  }
+  // `branch.options` is `[{ match, plan }, ...]` — recurse via `.plan`.
+  if (v && typeof v === 'object' && 'plan' in v) {
+    const inner = (v as { plan: unknown }).plan;
+    if (isPlan(inner)) {
+      return findClosures(inner, `${path}.plan`);
+    }
+  }
+  return [];
+};
+
 /**
  * Recursively walk a plan and collect any closure-bearing step kinds. Returns
  * a list of paths (e.g. `['repeat.body', 'mapFn']`) so callers can pinpoint
@@ -27,22 +43,12 @@ export const findClosures = (plan: Plan, prefix = ''): string[] => {
     }
     // Recurse into sub-plans.
     for (const [field, value] of Object.entries(step)) {
-      if (value && typeof value === 'object' && 'steps' in value) {
-        found.push(...findClosures(value as Plan, `${path}.${field}`));
+      if (isPlan(value)) {
+        found.push(...findClosures(value, `${path}.${field}`));
       }
       if (Array.isArray(value)) {
         for (let j = 0; j < value.length; j++) {
-          const v = value[j];
-          if (v && typeof v === 'object' && 'steps' in v) {
-            found.push(...findClosures(v as Plan, `${path}.${field}[${j}]`));
-          }
-          // `branch.options` is `[{ match, plan }, ...]` — recurse via `.plan`.
-          if (v && typeof v === 'object' && 'plan' in v && (v as { plan: unknown }).plan) {
-            const inner = (v as { plan: Plan }).plan;
-            if (inner && typeof inner === 'object' && 'steps' in inner) {
-              found.push(...findClosures(inner, `${path}.${field}[${j}].plan`));
-            }
-          }
+          found.push(...findClosuresInArrayItem(value[j], `${path}.${field}[${j}]`));
         }
       }
     }

@@ -25,6 +25,8 @@ type Traverser<T> = {
 
 const emptyTags: ReadonlyMap<string, readonly unknown[]> = new Map();
 
+const isEmptyPlan = (plan: Plan): boolean => plan.steps.length === 0;
+
 const startTraverser = <T>(value: T): Traverser<T> => ({
   value,
   path: [value],
@@ -161,6 +163,7 @@ const sourceFromIds = function* <T extends { readonly id: string }>(
   }
 };
 
+// eslint-disable-next-line complexity -- step-kind dispatch; complexity is inherent to the switch arity, not cognitive load
 const applyStep = (
   step: Step,
   stream: Iterable<Traverser<unknown>>,
@@ -228,18 +231,15 @@ const applyStep = (
 
     case 'dedupe': {
       const seen = new Set<unknown>();
-      const labels = step.labels;
+      const {labels} = step;
       const by = step.bys?.[0];
       return filterTraverser(stream, (t) => {
         // Multi-label form: dedupe by the tuple of tagged values at the given
         // labels. Joining with a NUL separator gives a stable string key for
         // the Set without colliding across reasonable inputs.
+        const fallback = by !== undefined ? evalBy(by, t.value, graph, ctx) : t.value;
         const k =
-          labels && labels.length > 0
-            ? tupleKey(labels.map((l) => t.tags.get(l)))
-            : by
-              ? evalBy(by, t.value, graph, ctx)
-              : t.value;
+          labels && labels.length > 0 ? tupleKey(labels.map((l) => t.tags.get(l))) : fallback;
         if (seen.has(k)) {
           return false;
         }
@@ -403,6 +403,7 @@ const applyStep = (
 
     case 'none':
       // Drain and emit nothing.
+      // eslint-disable-next-line require-yield -- generator-shaped but intentionally yields nothing
       return (function* () {
         for (const _ of stream) {
           // intentionally drop
@@ -1153,6 +1154,7 @@ const orderStep = function* (
 
 // `fail` throws as soon as the first traverser arrives. Useful as an
 // assertion: `traversal(V(), hasLabel('Person'), out('knows'), fail('expected no neighbors'))`.
+// eslint-disable-next-line require-yield -- throws before yielding; the generator shape is required by the step protocol
 const failStep = function* (
   stream: Iterable<Traverser<unknown>>,
   message: string | undefined,
@@ -1254,12 +1256,11 @@ const repeatStep = function* (
 ): Iterable<Traverser<unknown>> {
   // Cap iterations to `times` if given; else 100 to avoid runaway.
   const maxIterations = step.times ?? 100;
-  const isEmpty = (plan: Plan) => plan.steps.length === 0;
   // `until(plan)` empty means "no until" — let `times` be the only stopper.
   // `emit(plan)` empty means "emit every traverser at every level".
-  const hasUntil = step.until !== undefined && !isEmpty(step.until);
+  const hasUntil = step.until !== undefined && !isEmptyPlan(step.until);
   const hasEmit = step.emit !== undefined;
-  const emitAll = hasEmit && step.emit !== undefined && isEmpty(step.emit);
+  const emitAll = hasEmit && step.emit !== undefined && isEmptyPlan(step.emit);
 
   let frontier: Traverser<unknown>[] = [...stream].map(incLoops);
 
