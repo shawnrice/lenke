@@ -1,33 +1,35 @@
 {
   "name": "@pl-graph/dev",
   "version": "1.0.0",
+  "files": [
+    "dist",
+    "oxlintrc.base.json",
+    "oxfmtrc.base.json"
+  ],
   "type": "module",
+  "types": "./dist/types/index.d.ts",
   "exports": {
     ".": {
-      "import": "./dist/esm/index.mjs",
-      "require": "./dist/cjs/index.js",
-      "types": "./dist/types/index.d.ts"
-    }
+      "types": "./dist/types/index.d.ts",
+      "default": "./dist/esm/index.mjs"
+    },
+    "./oxlintrc.base.json": "./oxlintrc.base.json",
+    "./oxfmtrc.base.json": "./oxfmtrc.base.json"
   },
-  "main": "./dist/cjs/index.js",
-  "module": "./dist/esm/index.mjs",
-  "types": "./dist/types/index.d.ts",
-  "files": [
-    "dist"
-  ],
   "scripts": {
     "build": "bun build.ts"
+  },
+  "dependencies": {
+    "debug": "^4.3.7",
+    "oxfmt": "^0.41.0",
+    "oxlint": "^1.56.0"
   },
   "devDependencies": {
     "@types/bun": "^1.1.9",
     "@types/debug": "^4.1.12",
-    "bun-types": "latest",
-    "prettier": "^3.3.3"
+    "bun-types": "latest"
   },
   "peerDependencies": {
-    "typescript": "^5.0.0"
-  },
-  "dependencies": {
-    "debug": "^4.3.7"
+    "typescript": "^6.0.0"
   }
 }

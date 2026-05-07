@@ -1,12 +1,17 @@
 {
   "name": "@pl-graph/utils",
-  "module": "src/index.js",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
   "type": "module",
+  "types": "./dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "default": "./dist/esm/index.mjs"
+    }
+  },
   "scripts": {
     "build": "bun build.ts"
   },
+  "dependencies": {},
   "devDependencies": {
     "@pl-graph/dev": "workspace:*",
     "@types/bun": "latest",
@@ -16,7 +21,6 @@
     "prettier": "^3.3.3"
   },
   "peerDependencies": {
-    "typescript": "^5.0.0"
-  },
-  "dependencies": {}
+    "typescript": "^6.0.0"
+  }
 }

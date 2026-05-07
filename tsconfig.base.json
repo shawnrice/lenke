@@ -1,9 +1,10 @@
 {
   "compilerOptions": {
     // Enable latest features
-    "lib": ["ESNext"],
+    "lib": ["ESNext", "DOM"],
     "target": "ES2022",
-    "module": "ESNext",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
     "moduleDetection": "force",
     "jsx": "react-jsx",
     "allowJs": true,
@@ -11,13 +12,9 @@
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true,
-    "composite": true,
 
-    // Bundler mode
-    "moduleResolution": "bundler",
-    "allowImportingTsExtensions": true,
+    "sourceMap": true,
+
     "verbatimModuleSyntax": true,
     "noEmit": true,
 
@@ -25,6 +22,9 @@
     "strict": true,
     "skipLibCheck": true,
     "noFallthroughCasesInSwitch": true,
+
+    // Bun's test runner provides `bun:test` types
+    "types": ["bun"],
 
     // Some stricter flags (disabled by default)
     "noUnusedLocals": false,

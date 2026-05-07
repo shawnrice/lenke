@@ -1,12 +1,17 @@
 {
   "name": "@pl-graph/emitter",
-  "module": "dist/esm/index.mjs",
-  "main": "dist/cjs/index.js",
-  "types": "dist/types/index.d.ts",
   "type": "module",
+  "types": "./dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "default": "./dist/esm/index.mjs"
+    }
+  },
   "scripts": {
     "build": "bun build.ts"
   },
+  "dependencies": {},
   "devDependencies": {
     "@pl-graph/dev": "workspace:*",
     "@types/bun": "^1.0.2",
@@ -16,7 +21,6 @@
     "prettier": "^3.2.5"
   },
   "peerDependencies": {
-    "typescript": "^5.0.0"
-  },
-  "dependencies": {}
+    "typescript": "^6.0.0"
+  }
 }

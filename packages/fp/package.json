@@ -1,15 +1,23 @@
 {
   "name": "@pl-graph/fp",
   "type": "module",
-  "main": "dist/cjs/index.js",
-  "module": "dist/esm/index.mjs",
-  "browser": "dist/cjs.min/index.js",
-  "types": "dist/types/index.d.ts",
+  "sideEffects": false,
+  "types": "./dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "default": "./dist/esm/index.mjs"
+    },
+    "./*": {
+      "types": "./dist/types/*.d.ts",
+      "default": "./dist/esm/*.mjs"
+    }
+  },
   "scripts": {
     "build": "bun build.ts",
-    "build:esm": "bun build src/index.ts --splitting --minify --format esm --outdir dist",
-    "build:types": "bun run tsc --emitDeclarationOnly --outDir dist"
+    "clean:stray-types": "find src -type f \\( -name '*.d.ts' -o -name '*.d.ts.map' \\) -delete"
   },
+  "dependencies": {},
   "devDependencies": {
     "@pl-graph/dev": "workspace:*",
     "@types/bun": "latest",
@@ -19,7 +27,6 @@
     "prettier": "^3.3.3"
   },
   "peerDependencies": {
-    "typescript": "^5.0.0"
-  },
-  "dependencies": {}
+    "typescript": "^6.0.0"
+  }
 }
