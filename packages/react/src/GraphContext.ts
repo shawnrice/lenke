@@ -1,7 +1,7 @@
 import * as React from 'react';
 
-import type { Edge, Vertex } from '@pl-graph/core/src';
-import { Graph } from '@pl-graph/core/src';
+import type { Edge, Vertex } from '@pl-graph/core';
+import { Graph } from '@pl-graph/core';
 
 export type GraphState<V extends Vertex = Vertex, E extends Edge = Edge> = { graph: Graph<V, E> };
 
