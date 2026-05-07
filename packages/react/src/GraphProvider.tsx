@@ -1,6 +1,6 @@
 import * as React from 'react';
 
-import { GraphContext } from './GraphContext';
+import { GraphContext } from './GraphContext.js';
 
 import type { Edge, Graph, Vertex } from '@pl-graph/core';
 
