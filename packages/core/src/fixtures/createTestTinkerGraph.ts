@@ -1,20 +1,4 @@
-/* eslint-disable @typescript-eslint/no-magic-numbers */
-/* eslint-disable sort-keys */
-import { Edge } from '../core/Edge';
-import { Graph } from '../core/Graph';
-import { Vertex } from '../core/Vertex';
-
-type Person = Vertex<{ name: string; age: number }>;
-type Software = Vertex<{ name: string; lang: string }>;
-
-type TinkerGraphVertex = Person | Software;
-
-type PersonKnows = Edge<Person, Person, { weight: number }>;
-type PersonCreated = Edge<Person, Software, { weight: number }>;
-
-type TinkerGraphEdge = PersonKnows | PersonCreated;
-
-type TinkerGraph = Graph<TinkerGraphVertex, TinkerGraphEdge>;
+import { Graph } from '../core/Graph.js';
 
 /**
  * Creates an instance of the example graph from the gremlin documentation
@@ -22,8 +6,8 @@ type TinkerGraph = Graph<TinkerGraphVertex, TinkerGraphEdge>;
  * @see https://tinkerpop.apache.org/docs/current/reference/#graph-computing
  * @see https://tinkerpop.apache.org/docs/current/images/tinkerpop-modern.png
  */
-export const createTestTinkerGraph = (): TinkerGraph => {
-  const graph = new Graph<TinkerGraphVertex, TinkerGraphEdge>();
+export const createTestTinkerGraph = (): Graph => {
+  const graph = new Graph();
   graph.disableEvents();
 
   const people = [
