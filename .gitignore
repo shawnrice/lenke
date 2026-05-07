@@ -182,3 +182,4 @@ dist
 packages/*/src/**/*.d.ts
 packages/*/src/**/*.d.ts.map
 packages/*/src/**/*.js.map
+.tsc_d

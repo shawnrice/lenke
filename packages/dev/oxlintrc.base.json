@@ -8,6 +8,7 @@
     "no-else-return": ["error", { "allowElseIf": false }],
     "yoda": ["error", "never", { "exceptRange": true }],
     "no-unused-vars": "off",
+    "no-unused-expressions": ["error", { "allowShortCircuit": true, "allowTernary": true }],
     "no-param-reassign": ["error", { "props": false }],
     "no-return-assign": "error",
     "no-multi-assign": "error",
