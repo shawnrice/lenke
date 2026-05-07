@@ -10,7 +10,6 @@ import {
   hasLabel,
   not,
   outE,
-  values,
 } from '../steps.js';
 import { traversal } from '../traversal.js';
 
