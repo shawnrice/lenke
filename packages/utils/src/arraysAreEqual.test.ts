@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { arraysAreEqual } from './arraysAreEqual';
+import { arraysAreEqual } from './arraysAreEqual.js';
 
 describe('arraysAreEqual', () => {
   test('arrays of different lengths are not equal', () => {

@@ -1,4 +1,4 @@
-import { EmitterEvent } from './EmitterEvent';
+import { EmitterEvent } from './EmitterEvent.js';
 
 type NullaryFn<T = any> = () => T;
 

@@ -21,7 +21,7 @@ import {
   takeWhile,
   type UnaryFn,
 } from '@pl-graph/fp';
-import { empty, from, isList, of } from './functions';
+import { empty, from, isList, of } from './functions/index.js';
 
 /**
  * A list is list an array or a Set but better for iterators

@@ -1,7 +1,7 @@
 /**
  * Checks if two arrays are equal with `===` equality for items
  */
-export const arraysAreEqual = (a: any[], b: any[]): boolean => {
+export const arraysAreEqual = (a: unknown[], b: unknown[]): boolean => {
   if (a.length !== b.length) {
     return false;
   }

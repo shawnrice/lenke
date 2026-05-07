@@ -1,6 +1,6 @@
 /* eslint-disable func-names */
 
-import { List } from '../List';
+import { List } from '../List.js';
 
 export function of<T>(...args: T[] | readonly T[]): List<T> {
   return new List<T>(function* () {

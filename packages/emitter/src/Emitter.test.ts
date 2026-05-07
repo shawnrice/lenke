@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from 'bun:test';
 
-import { Emitter } from './Emitter';
-import { EmitterEvent } from './EmitterEvent';
+import { Emitter } from './Emitter.js';
+import { EmitterEvent } from './EmitterEvent.js';
 
 describe('Emitter', () => {
   test('it emits', () => {

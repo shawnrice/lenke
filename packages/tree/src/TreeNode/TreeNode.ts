@@ -1,10 +1,10 @@
 /* eslint-disable consistent-this, no-param-reassign, no-restricted-syntax */
 /* eslint-disable @typescript-eslint/no-this-alias */
 
-import { equals } from '@pl-graph/fp';
+import { equals } from '@pl-graph/fp/equals';
 import { identity, rando } from '@pl-graph/utils';
-import { deserialize } from './deserialize';
-import { serialize } from './serialize';
+import { deserialize } from './deserialize.js';
+import { serialize } from './serialize.js';
 
 type UnaryFn<T extends any = any, R extends any = T> = (x0: T) => R;
 type BinaryFn<A extends any = any, B = A, R = A> = (x0: A, x1: B) => R;
@@ -136,7 +136,7 @@ export class TreeNode<T> {
     // Here, we have a more normal use case of removing a leaf node or a branch
     node.setParent(null);
 
-    node.children.forEach(child => {
+    node.children.forEach((child) => {
       // This should re-home the child appropriately
       nextParent.addChild(child);
     });
@@ -191,7 +191,7 @@ export class TreeNode<T> {
    */
   addChild(node: TreeNode<T>): TreeNode<T> {
     // Always test from the top of the tree to ensure that this tree doesn't cycle
-    if (node.castDepthFirst().some(n => this.root.contains(n) || this.root === n)) {
+    if (node.castDepthFirst().some((n) => this.root.contains(n) || this.root === n)) {
       throw new Error('Operation would create a cycle');
     }
 
@@ -274,7 +274,7 @@ export class TreeNode<T> {
         return true;
       }
 
-      node?.children.forEach(child => {
+      node?.children.forEach((child) => {
         queue.push(child);
       });
     }
@@ -349,7 +349,7 @@ export class TreeNode<T> {
    * the TreeNode parts
    */
   castDepthFirstValue(): T[] {
-    return this.castDepthFirst().map(x => x.#value);
+    return this.castDepthFirst().map((x) => x.#value);
   }
 
   forEach(callback: UnaryFn<TreeNode<T>, any>): void {
@@ -392,7 +392,7 @@ export class TreeNode<T> {
    * the TreeNode parts
    */
   castBreadthFirstValue(): T[] {
-    return this.castBreadthFirst().map(x => x.#value);
+    return this.castBreadthFirst().map((x) => x.#value);
   }
 
   /**
@@ -515,7 +515,7 @@ export class TreeNode<T> {
 
   toJSON(): TreeNodeJSON {
     return {
-      children: this.children.map(child => child.toJSON()),
+      children: this.children.map((child) => child.toJSON()),
       id: this.#id,
       parentId: this.#parent?.id ?? null,
       value: this.#value,

@@ -25,9 +25,12 @@ describe('useGraphTraversal Hooks', () => {
 
     const wrapper = ({ children }) => <GraphProvider graph={tinkerGraph}>{children}</GraphProvider>;
 
-    const { result } = renderHook(() => useGraphTraversal(x => x.V('1').values('name').toArray()), {
-      wrapper,
-    });
+    const { result } = renderHook(
+      () => useGraphTraversal((x) => x.V('1').values('name').toArray()),
+      {
+        wrapper,
+      },
+    );
 
     expect(result.current).toEqual(['marko']);
   });
@@ -37,7 +40,7 @@ describe('useGraphTraversal Hooks', () => {
     const { tinkerGraph, wrapper } = createTinkerWrapper();
 
     const { result } = renderHook(
-      () => useGraphTraversal(x => x.V('15').values('name').toArray()),
+      () => useGraphTraversal((x) => x.V('15').values('name').toArray()),
       {
         wrapper,
       },
@@ -66,7 +69,7 @@ describe('useGraphTraversal Hooks', () => {
     const { tinkerGraph, wrapper } = createTinkerWrapper();
 
     const { result } = renderHook(
-      () => useGraphTraversal(x => x.V('15').values('name').toArray()),
+      () => useGraphTraversal((x) => x.V('15').values('name').toArray()),
       {
         wrapper,
         legacyRoot: true, // this causes react to show errors in the console
@@ -94,7 +97,7 @@ describe('useGraphTraversal Hooks', () => {
     const { tinkerGraph, wrapper } = createTinkerWrapper();
 
     const { result, unmount } = renderHook(
-      () => useGraphTraversal(x => x.V('1').values('name').toArray()),
+      () => useGraphTraversal((x) => x.V('1').values('name').toArray()),
       {
         wrapper,
       },
@@ -111,7 +114,7 @@ describe('useGraphTraversal Hooks', () => {
   test('we can prevent default', () => {
     const { tinkerGraph, wrapper } = createTinkerWrapper();
 
-    const preventNewVertices = vi.fn(event => {
+    const preventNewVertices = vi.fn((event) => {
       if (event.type === '@graph/VertexAdded') {
         return event.preventDefault();
       }
@@ -120,7 +123,7 @@ describe('useGraphTraversal Hooks', () => {
     tinkerGraph.on('@graph/VertexAdded', preventNewVertices);
 
     const { result } = renderHook(
-      () => useGraphTraversal(x => x.V('15').values('name').toArray()),
+      () => useGraphTraversal((x) => x.V('15').values('name').toArray()),
       {
         wrapper,
       },
