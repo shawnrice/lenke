@@ -1,8 +1,8 @@
 /* eslint-disable yoda */
 import { describe, expect, test } from 'bun:test';
 
-import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph';
-import { graph2PGJSON } from './serialize';
+import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
+import { graph2PGJSON } from './serialize.js';
 
 describe('serialize tests', () => {
   /**

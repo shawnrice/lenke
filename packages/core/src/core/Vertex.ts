@@ -1,58 +1,50 @@
 import { EmitterEvent } from '@pl-graph/emitter';
 import { rando } from '@pl-graph/utils';
 
-import { Edge } from './Edge';
-import { Graph } from './Graph';
+import type { Edge } from './Edge.js';
+import type { Graph } from './Graph.js';
 
-import type { UnknownObject } from '@pl-graph/utils';
-
-export type VertexParams<P extends { [key: string]: any }> = {
+export type VertexParams = {
   id?: string;
   labels: string[];
-  graph: Graph<any, any>;
-  properties: P;
+  graph: Graph;
+  properties: Record<string, unknown>;
 };
 
-export type VertexJSON<T extends Record<string, any>> = {
+export type VertexJSON = {
   id: string;
   labels: string[];
-  properties: T;
+  properties: Record<string, unknown>;
 };
 
-export class Vertex<
-  T extends Record<string, any> = Record<string, any>, // Properties
-> {
+export class Vertex {
   #id: string;
+  #graph: Graph | null;
 
-  #graph: Graph<any, any> | null;
-
-  static from<T extends UnknownObject>(params: VertexParams<T>): Vertex<T> {
-    return new Vertex<T>(params);
+  static from(params: VertexParams): Vertex {
+    return new Vertex(params);
   }
 
   /**
    * TypeCheck if something is a `Vertex`
-   *
-   * Does not actually check the `T` of the `Vertex<T>`
    */
-  static isVertex<T extends UnknownObject = UnknownObject>(x: unknown): x is Vertex<T> {
+  static isVertex(x: unknown): x is Vertex {
     return x instanceof Vertex;
   }
 
-  constructor(params: VertexParams<T>) {
+  constructor(params: VertexParams) {
     const { id = rando(), labels = [], graph, properties = {} } = params;
     this.#id = id;
     this.#graph = graph;
-    // @ts-expect-error: this is inevitable
-    this.properties = Object.assign({}, properties);
+    this.properties = { ...properties };
     this.labels = labels;
   }
 
-  get graph(): Graph<any, any> {
+  get graph(): Graph {
     return this.#graph!;
   }
 
-  set graph(graph: Graph<any, any>) {
+  set graph(graph: Graph) {
     this.#graph = graph;
   }
 
@@ -68,19 +60,19 @@ export class Vertex<
     this.#graph!.elementLabels.set(this.id, new Set(labels));
   }
 
-  get properties(): T {
-    return (this.#graph?.elementProperties.get(this.#id) ?? {}) as T;
+  get properties(): Record<string, unknown> {
+    return this.#graph?.elementProperties.get(this.#id) ?? {};
   }
 
-  set properties(properties: T) {
+  set properties(properties: Record<string, unknown>) {
     this.#graph!.elementProperties.set(this.#id, { ...properties });
   }
 
-  getProperty<K extends string>(key: K): T[K] {
+  getProperty(key: string): unknown {
     return this.properties[key];
   }
 
-  setProperty<K extends string>(key: K, value: T[K]): void {
+  setProperty(key: string, value: unknown): void {
     const event = this.#graph?.emit(
       new EmitterEvent('@graph/VertexPropertyChanged', { vertex: this, key, value }),
     );
@@ -92,7 +84,7 @@ export class Vertex<
     this.properties = { ...this.properties, [key]: value };
   }
 
-  setProperties(props: Partial<T>): void {
+  setProperties(props: Record<string, unknown>): void {
     const event = this.#graph?.emit(
       new EmitterEvent('@graph/VertexPropertiesChanged', {
         vertex: this,
@@ -105,14 +97,13 @@ export class Vertex<
     }
 
     if (!this.#graph) {
-      console.error('NO GRAPH');
-      throw new Error('No graph');
+      throw new Error('Vertex has no graph');
     }
 
     this.properties = { ...this.properties, ...props };
   }
 
-  removeProperty<K extends string>(key: K): void {
+  removeProperty(key: string): void {
     if (!this.hasProperty(key)) {
       return;
     }
@@ -127,7 +118,7 @@ export class Vertex<
 
     this.properties = Object.fromEntries(
       Object.entries(this.properties).filter(([k]) => key !== k),
-    ) as T;
+    );
   }
 
   removeProperties(keys: string[]): void {
@@ -141,7 +132,7 @@ export class Vertex<
 
     this.properties = Object.fromEntries(
       Object.entries(this.properties).filter(([k]) => !keys.includes(k)),
-    ) as T;
+    );
   }
 
   hasProperty(key: string): boolean {
@@ -152,12 +143,12 @@ export class Vertex<
     return this.labels.has(label);
   }
 
-  addLabel(label: string): Vertex<T> {
+  addLabel(label: string): Vertex {
     this.#graph?.addLabelToVertex(label, this);
     return this;
   }
 
-  removeLabel(label: string): Vertex<T> {
+  removeLabel(label: string): Vertex {
     this.#graph?.removeLabelFromVertex(label, this);
     return this;
   }
@@ -166,11 +157,11 @@ export class Vertex<
     this.#graph = null;
   }
 
-  edgesFromByLabel(label: string): Set<Edge<Vertex<T>, any, any>> {
+  edgesFromByLabel(label: string): Set<Edge> {
     return this.#graph?.edgesFromByLabel.get(this.id)?.get(label) ?? new Set();
   }
 
-  edgesToByLabel(label: string): Set<Edge<any, Vertex<T>, any>> {
+  edgesToByLabel(label: string): Set<Edge> {
     return this.#graph?.edgesToByLabel.get(this.id)?.get(label) ?? new Set();
   }
 
@@ -178,7 +169,7 @@ export class Vertex<
     return `Vertex (${this.id}) {}`;
   }
 
-  toJSON(): VertexJSON<T> {
+  toJSON(): VertexJSON {
     return {
       id: this.id,
       labels: Array.from(this.labels),

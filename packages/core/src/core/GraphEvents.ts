@@ -1,6 +1,6 @@
-import { EmitterEvent } from '@pl-graph/emitter';
-import { Edge } from './Edge';
-import { Vertex } from './Vertex';
+import type { EmitterEvent } from '@pl-graph/emitter';
+import type { Edge } from './Edge.js';
+import type { Vertex } from './Vertex.js';
 
 export type VertexAddedEvent = EmitterEvent<'@graph/VertexAdded', Vertex>;
 
@@ -96,7 +96,6 @@ export type GraphEvents = {
 };
 
 type Primitive = string | number | boolean | bigint | symbol | null | undefined;
-type Builtin = Primitive | Function | Date | Error | RegExp;
 type Expand<T> = T extends Primitive ? T : { [K in keyof T]: T[K] };
 
 export type GraphEventType = Expand<keyof GraphEvents>;
