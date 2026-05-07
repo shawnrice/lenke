@@ -1,7 +1,7 @@
 import { useRef, useSyncExternalStore, useDebugValue } from 'react';
 
-import { Traversal } from '@pl-graph/core/src';
-import { arraysAreEqual } from '@pl-graph/utils/src';
+import { Traversal } from '@pl-graph/core';
+import { arraysAreEqual } from '@pl-graph/utils';
 
 import { useGraphContext } from './GraphContext.js';
 

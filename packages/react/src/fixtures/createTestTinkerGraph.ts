@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-magic-numbers */
 /* eslint-disable sort-keys */
-import type { Edge, Vertex } from '@pl-graph/core/src';
-import { Graph } from '@pl-graph/core/src';
+import type { Edge, Vertex } from '@pl-graph/core';
+import { Graph } from '@pl-graph/core';
 
 type Person = Vertex<{ name: string; age: number }>;
 type Software = Vertex<{ name: string; lang: string }>;
