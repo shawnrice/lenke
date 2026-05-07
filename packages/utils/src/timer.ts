@@ -3,6 +3,7 @@
 // ts-expect-error: we're not defining the __DEV__ flag on globalThis
 const isPerformanceAvailable =
   // Do not expose timings on production
+  // biome-ignore lint/suspicious/noExplicitAny: we're editing globalThis with a hack, so cast to any
   !(globalThis as any).__DEV__ &&
   // `performance.now` does not exist in Jest
   typeof performance !== 'undefined' &&

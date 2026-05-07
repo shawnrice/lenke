@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { isGeneratorFunction } from './isGeneratorFunction';
+import { isGeneratorFunction } from './isGeneratorFunction.js';
 
 type MapFn<T, R> = (value: T, index: number) => R;
 function* internalMap<T, R = T>(mapper: MapFn<T, R>, x0: Iterable<T>): Iterable<R> {

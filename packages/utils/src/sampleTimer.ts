@@ -5,6 +5,7 @@ export type SampleTimer = {
 
 // ts-expect-error: we're not defining the __DEV__ flag on globalThis
 const isPerformanceAvailable =
+  // biome-ignore lint/suspicious/noExplicitAny: we're editing globalThis with a hack, so cast to any
   !(globalThis as any).__DEV__ &&
   typeof performance !== 'undefined' &&
   typeof performance.now !== 'undefined';
@@ -39,7 +40,7 @@ export const sampleTimer = (name: string): SampleTimer => {
     const n = samples.length;
     const total = samples.reduce((acc, sample) => acc + sample, 0);
     const mean = total / n;
-    const squareDistances = samples.map(x => (x - mean) ** 2);
+    const squareDistances = samples.map((x) => (x - mean) ** 2);
     const totalSquareDistances = squareDistances.reduce((acc, x) => acc + x, 0);
     const stdDeviation = Math.sqrt(totalSquareDistances / n);
     const sorted = [...samples].sort((a, b) => a - b);

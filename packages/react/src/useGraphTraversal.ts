@@ -3,7 +3,7 @@ import { useRef, useSyncExternalStore, useDebugValue } from 'react';
 import { Traversal } from '@pl-graph/core/src';
 import { arraysAreEqual } from '@pl-graph/utils/src';
 
-import { useGraphContext } from './GraphContext';
+import { useGraphContext } from './GraphContext.js';
 
 type Equality<T> = (a: T, b: T) => boolean;
 

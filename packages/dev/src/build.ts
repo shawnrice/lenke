@@ -1,25 +1,39 @@
-import { type BuildConfig } from 'bun';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import ts from 'typescript';
 
-export interface BuildOptions {
+export type BuildOptions = {
   packageRoot: string;
   entrypoints: string[];
   minify?: boolean;
   sourcemap?: 'inline' | 'external' | 'linked' | false;
   clean?: boolean;
-}
+};
 
-export interface PackageConfig {
+export type PackageConfig = {
   packageRoot?: string;
   additionalEntrypoints?: string[];
   skipTypes?: boolean;
   skipEsm?: boolean;
   skipCjs?: boolean;
+  skipMin?: boolean;
+  perFile?: boolean;
   typesConfigPath?: string;
-}
+};
+
+const collectSourceEntrypoints = (packageRoot: string): string[] => {
+  const srcDir = join(packageRoot, 'src');
+  return readdirSync(srcDir, { recursive: true, withFileTypes: true })
+    .filter(
+      (entry) =>
+        entry.isFile() &&
+        entry.name.endsWith('.ts') &&
+        !entry.name.endsWith('.test.ts') &&
+        !entry.name.endsWith('.d.ts'),
+    )
+    .map((entry) => join('src', entry.parentPath.slice(srcDir.length).replace(/^\//, ''), entry.name));
+};
 
 const getExternals = (packageRoot: string) => {
   const pkg = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'));
@@ -39,10 +53,12 @@ const buildEsm = async (options: BuildOptions) => {
   }
 
   await Bun.build({
-    entrypoints: entrypoints.map(entry => join(packageRoot, entry)),
+    entrypoints: entrypoints.map((entry) => join(packageRoot, entry)),
+    root: join(packageRoot, 'src'),
     external: getExternals(packageRoot),
     sourcemap,
     minify,
+    splitting: entrypoints.length > 1,
     target: 'node',
     outdir: outPath,
     format: 'esm',
@@ -63,7 +79,8 @@ const buildCjs = async (options: BuildOptions) => {
   }
 
   await Bun.build({
-    entrypoints: entrypoints.map(entry => join(packageRoot, entry)),
+    entrypoints: entrypoints.map((entry) => join(packageRoot, entry)),
+    root: join(packageRoot, 'src'),
     external: getExternals(packageRoot),
     sourcemap,
     minify,
@@ -73,10 +90,10 @@ const buildCjs = async (options: BuildOptions) => {
   });
 };
 
-interface TypescriptBuildOptions {
+type TypescriptBuildOptions = {
   packageRoot: string;
   configFile: string;
-}
+};
 
 const runTsc = ({ packageRoot, configFile }: TypescriptBuildOptions): Promise<void> => {
   return new Promise((resolve, reject) => {
@@ -104,7 +121,7 @@ const runTsc = ({ packageRoot, configFile }: TypescriptBuildOptions): Promise<vo
 
     if (allDiagnostics.length > 0) {
       const formatHost: ts.FormatDiagnosticsHost = {
-        getCanonicalFileName: path => path,
+        getCanonicalFileName: (path) => path,
         getCurrentDirectory: ts.sys.getCurrentDirectory,
         getNewLine: () => ts.sys.newLine,
       };
@@ -113,9 +130,8 @@ const runTsc = ({ packageRoot, configFile }: TypescriptBuildOptions): Promise<vo
       if (emitResult.emitSkipped) {
         reject(new Error(`TypeScript compilation failed:\n${diagnosticsText}`));
         return;
-      } else {
-        console.warn(diagnosticsText);
       }
+      console.warn(diagnosticsText);
     }
 
     resolve();
@@ -129,15 +145,21 @@ export const buildPackage = async (config: PackageConfig = {}) => {
     skipTypes = false,
     skipEsm = false,
     skipCjs = false,
+    skipMin = false,
+    perFile = false,
     typesConfigPath = 'tsconfig.types.json',
   } = config;
 
-  const entrypoints = ['src/index.ts', ...additionalEntrypoints];
+  const entrypoints = perFile
+    ? await collectSourceEntrypoints(packageRoot)
+    : ['src/index.ts', ...additionalEntrypoints];
   const tasks: Promise<void>[] = [];
 
   if (!skipEsm) {
     tasks.push(buildEsm({ packageRoot, entrypoints }));
-    tasks.push(buildEsm({ packageRoot, entrypoints, minify: true }));
+    if (!skipMin) {
+      tasks.push(buildEsm({ packageRoot, entrypoints, minify: true }));
+    }
   }
 
   if (!skipTypes) {
@@ -146,10 +168,12 @@ export const buildPackage = async (config: PackageConfig = {}) => {
 
   if (!skipCjs) {
     tasks.push(buildCjs({ packageRoot, entrypoints }));
-    tasks.push(buildCjs({ packageRoot, entrypoints, minify: true }));
+    if (!skipMin) {
+      tasks.push(buildCjs({ packageRoot, entrypoints, minify: true }));
+    }
   }
 
-  return Promise.all(tasks).catch(error => {
+  return Promise.all(tasks).catch((error) => {
     console.error('Build failed:', error);
     process.exit(1);
   });

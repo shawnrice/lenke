@@ -1,5 +1,5 @@
 /* eslint-disable max-lines-per-function */
-import { Trie } from './Trie';
+import { Trie } from './Trie.js';
 import { describe, expect, test } from 'bun:test';
 
 describe('Trie tests', () => {
@@ -139,7 +139,7 @@ describe('Trie tests', () => {
 
     const node = trie.get('happ')!;
 
-    expect(Array.from(node.descendants(), t => t.word)).toEqual([
+    expect(Array.from(node.descendants(), (t) => t.word)).toEqual([
       'happy',
       'happen',
       'happenstance',
@@ -156,7 +156,7 @@ describe('Trie tests', () => {
 
     const node = trie.get('happi')!;
 
-    expect(Array.from(node.descendants(), t => t.word)).toEqual(['happier', 'happiest']);
+    expect(Array.from(node.descendants(), (t) => t.word)).toEqual(['happier', 'happiest']);
   });
 
   test('descendantsOf works', () => {
@@ -169,7 +169,7 @@ describe('Trie tests', () => {
 
     const nodes = trie.descendantsOf('happi')!;
 
-    expect(Array.from(nodes, t => t.word)).toEqual(['happier', 'happiest']);
+    expect(Array.from(nodes, (t) => t.word)).toEqual(['happier', 'happiest']);
   });
 
   test('toMap works', () => {
@@ -198,7 +198,10 @@ describe('Trie tests', () => {
   });
 
   test('Trie.from works with an array of tuples', () => {
-    const trie = Trie.from<number>([['word', 1], ['words', 2]] as Iterable<[string, number]>);
+    const trie = Trie.from<number>([
+      ['word', 1],
+      ['words', 2],
+    ] as Iterable<[string, number]>);
     expect(trie.has('word')).toBe(true);
     expect(trie.has('words')).toBe(true);
   });
@@ -211,5 +214,92 @@ describe('Trie tests', () => {
     const trie = Trie.from<number>(map);
     expect(trie.has('word')).toBe(true);
     expect(trie.has('words')).toBe(true);
+  });
+
+  describe('Trie.add duplicate-key semantics (Map-like)', () => {
+    test('adding the same key twice does not double-count words', () => {
+      const trie = new Trie<number>();
+      trie.add('word', 1);
+      trie.add('word', 1);
+
+      expect(trie.words).toBe(1);
+    });
+
+    test('adding the same key twice does not inflate node counts', () => {
+      const trie = new Trie<number>();
+      trie.add('word', 1);
+      trie.add('word', 1);
+
+      // After one remove, the word should be fully gone — not "still there with count 1"
+      trie.remove('word');
+
+      expect(trie.has('word')).toBe(false);
+      expect(trie.words).toBe(0);
+      expect(trie.nodes).toBe(1);
+    });
+
+    test('re-adding a key updates the value (Map.set semantics)', () => {
+      const trie = new Trie<number>();
+      trie.add('word', 1);
+      trie.add('word', 2);
+
+      expect(trie.words).toBe(1);
+      expect(trie.get('word')?.value).toBe(2);
+    });
+  });
+
+  describe('Trie.remove off-by-one: removing a non-stored prefix should be a noop', () => {
+    test('removing a prefix-only key does not damage the longer stored word', () => {
+      const trie = new Trie<number>();
+      trie.add('words', 2);
+
+      trie.remove('word');
+
+      expect(trie.has('words')).toBe(true);
+      expect(trie.get('words')?.value).toBe(2);
+    });
+
+    test('removing a prefix-only key does not decrement the word count', () => {
+      const trie = new Trie<number>();
+      trie.add('words', 2);
+
+      trie.remove('word');
+
+      expect(trie.words).toBe(1);
+    });
+
+    test('removing a prefix-only key does not delete any nodes', () => {
+      const trie = new Trie<number>();
+      trie.add('words', 2);
+      const nodesBefore = trie.nodes;
+
+      trie.remove('word');
+
+      expect(trie.nodes).toBe(nodesBefore);
+    });
+
+    test('removing a shared-prefix word keeps node count and removes only that word', () => {
+      const trie = new Trie<number>();
+      trie.add('word', 1);
+      trie.add('words', 2);
+
+      expect(trie.nodes).toBe(6);
+
+      trie.remove('word');
+
+      expect(trie.nodes).toBe(6);
+      expect(trie.has('word')).toBe(false);
+      expect(trie.has('words')).toBe(true);
+      expect(trie.get('words')?.value).toBe(2);
+    });
+
+    test('removing a prefix-only key leaves entries() intact', () => {
+      const trie = new Trie<number>();
+      trie.add('words', 2);
+
+      trie.remove('word');
+
+      expect(Array.from(trie.entries())).toEqual([['words', 2]]);
+    });
   });
 });

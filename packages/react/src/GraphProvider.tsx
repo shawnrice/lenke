@@ -1,8 +1,8 @@
 import * as React from 'react';
 
-import { Edge, Graph, Vertex } from '@pl-graph/core/src';
-
 import { GraphContext } from './GraphContext';
+
+import type { Edge, Graph, Vertex } from '@pl-graph/core/src';
 
 type GraphProviderProps<V = Vertex, E = Edge> = { graph: Graph<V, E>; children: React.ReactNode };
 

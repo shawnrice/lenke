@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { List } from '../List';
-import { empty } from './empty';
+import { List } from '../List.js';
+import { empty } from './empty.js';
 
 describe('List functional tests', () => {
   test('empty works', () => {
