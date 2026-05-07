@@ -20,22 +20,12 @@
       "outputs": ["{projectRoot}/.coverage"],
       "cache": true
     },
-    "lint": {
-      "outputs": ["{projectRoot}"],
-      "cache": true
-    },
     "test": {
       "cache": true
     }
   },
   "defaultBase": "main",
   "plugins": [
-    {
-      "plugin": "@nx/eslint/plugin",
-      "options": {
-        "targetName": "lint"
-      }
-    },
     {
       "plugin": "@nx/vite/plugin",
       "options": {

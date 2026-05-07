@@ -1,13 +1,19 @@
 {
   "name": "@pl-graph/list",
-  "module": "dist/index.js",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
   "type": "module",
+  "types": "./dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "default": "./dist/esm/index.mjs"
+    }
+  },
   "scripts": {
-    "build": "bun run build:esm && bun run build:types",
-    "build:esm": "bun build src/index.ts --minify --splitting --sourcemap --format esm --outdir dist",
-    "build:types": "bun run tsc --emitDeclarationOnly --outDir dist"
+    "build": "bun build.ts"
+  },
+  "dependencies": {
+    "@pl-graph/fp": "workspace:*",
+    "debug": "^4.3.7"
   },
   "devDependencies": {
     "@types/bun": "^1.1.9",
@@ -16,10 +22,6 @@
     "prettier": "^3.3.3"
   },
   "peerDependencies": {
-    "typescript": "^5.0.0"
-  },
-  "dependencies": {
-    "@pl-graph/fp": "workspace:*",
-    "debug": "^4.3.7"
+    "typescript": "^6.0.0"
   }
 }

@@ -1,0 +1,9 @@
+{
+  "$schema": "./node_modules/@pl-graph/dev/node_modules/oxfmt/configuration_schema.json",
+  "printWidth": 100,
+  "semi": true,
+  "singleQuote": true,
+  "trailingComma": "all",
+  "arrowParens": "always",
+  "ignorePatterns": ["node_modules/", "dist/", ".tsc_d/", ".nx/"]
+}
