@@ -29,25 +29,27 @@ export const bothEdgesOf = (
 ): Iterable<Edge> =>
   iterBoth(graph.edgesFromByLabel.get(v.id), graph.edgesToByLabel.get(v.id), labels);
 
-const iterByLabel = function*(
+// With labels, yield edges per label (in label-arg order). With no labels,
+// yield every edge once across all label-buckets — an edge that's indexed
+// under multiple labels still only emits once.
+const iterByLabel = function* (
   byLabel: Map<string, Set<Edge>> | undefined,
   labels: readonly string[],
 ): Iterable<Edge> {
   if (!byLabel) {
     return;
   }
-  if (labels.length === 0) {
-    const seen = new Set<Edge>();
-    for (const set of byLabel.values()) {
-      for (const e of set) {
-        if (!seen.has(e)) {
-          seen.add(e);
-          yield e;
-        }
-      }
-    }
+  if (labels.length > 0) {
+    yield* iterLabeled(byLabel, labels);
     return;
   }
+  yield* iterAllDeduped(byLabel);
+};
+
+const iterLabeled = function* (
+  byLabel: Map<string, Set<Edge>>,
+  labels: readonly string[],
+): Iterable<Edge> {
   for (const label of labels) {
     const set = byLabel.get(label);
     if (set) {
@@ -56,10 +58,23 @@ const iterByLabel = function*(
   }
 };
 
+const iterAllDeduped = function* (byLabel: Map<string, Set<Edge>>): Iterable<Edge> {
+  const seen = new Set<Edge>();
+  for (const set of byLabel.values()) {
+    for (const e of set) {
+      if (seen.has(e)) {
+        continue;
+      }
+      seen.add(e);
+      yield e;
+    }
+  }
+};
+
 // Out-edges first, then in-edges, to match TinkerPop's `both`/`bothE` ordering.
 // Within each direction, iteration follows label-arg order (or insertion order
 // when no labels are given).
-const iterBoth = function*(
+const iterBoth = function* (
   fromByLabel: Map<string, Set<Edge>> | undefined,
   toByLabel: Map<string, Set<Edge>> | undefined,
   labels: readonly string[],
