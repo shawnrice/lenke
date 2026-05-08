@@ -12,7 +12,7 @@
 import type { Edge, Graph, Vertex } from '@pl-graph/core';
 
 import type { By, Plan } from '../ast.js';
-// Cycle: `_internals.ts` ↔ `dispatch.ts`. ESM handles this safely because
+// Cycle: `runtime.ts` ↔ `dispatch.ts`. ESM handles this safely because
 // neither module dereferences the other at init time — `applyPlanToStream`
 // is only called from inside `evalBy`, by which time both modules' exports
 // are bound. Same shape as `applyStep`/`applyPlanToStream` mutual-recursion.

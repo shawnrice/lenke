@@ -5,7 +5,7 @@ import {
   type Step,
   type StepFn,
   toBy,
-} from './_internals.js';
+} from './framework.js';
 
 // Project to property values for the named keys.
 export const values = (...keys: string[]): StepFn => appendStep({ kind: 'values', keys });

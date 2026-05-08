@@ -8,7 +8,7 @@ import {
   type SideEffectClosure,
   type StepFn,
   type SubPlan,
-} from './_internals.js';
+} from './framework.js';
 
 // `map(plan)` or `map(fn)`. Sub-plan: replace value with the plan's first
 // output; drop traverser if empty. Closure: `(value, traverser) => unknown`.

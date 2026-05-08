@@ -6,7 +6,7 @@ import {
   POP_TO_STR,
   type Step,
   type StepFn,
-} from './_internals.js';
+} from './framework.js';
 
 // Yield the path of values seen by each traverser. With `.by(...)` modulators,
 // each path element is projected through the modulator round-robin.

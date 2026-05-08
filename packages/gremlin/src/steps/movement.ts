@@ -1,4 +1,4 @@
-import { appendStep, type StepFn } from './_internals.js';
+import { appendStep, type StepFn } from './framework.js';
 
 // Vertex → vertex: follow edges by direction.
 export const out = (...labels: string[]): StepFn => appendStep({ kind: 'out', labels });

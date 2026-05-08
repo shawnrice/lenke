@@ -5,7 +5,7 @@ import {
   type Predicate,
   type StepFn,
   type SubPlan,
-} from './_internals.js';
+} from './framework.js';
 
 // Logical combinators over sub-plans, each starting from the current traverser.
 export const and = (...plans: SubPlan[]): StepFn =>

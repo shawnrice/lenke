@@ -3,7 +3,7 @@
 // `run(plan, graph)` is the primary entry point — runs a plan and yields the
 // final traverser values. `toArray` and `toSet` are eager terminals.
 //
-// Implementation lives in sibling files: `_internals.ts` for shared types
+// Implementation lives in sibling files: `runtime.ts` for shared types
 // and helpers, `dispatch.ts` for the kind-routing switch + recursive
 // `applyPlanToStream`, and per-category files (`movement.ts`, `filters.ts`,
 // `aggregation.ts`, etc.) for the step-impl generators.
@@ -11,7 +11,7 @@
 import type { Graph } from '@pl-graph/core';
 
 import type { Plan } from '../ast.js';
-import { newContext, type Traverser, unwrap } from './_internals.js';
+import { newContext, type Traverser, unwrap } from './runtime.js';
 import { applyStep } from './dispatch.js';
 import { applySource } from './sources.js';
 

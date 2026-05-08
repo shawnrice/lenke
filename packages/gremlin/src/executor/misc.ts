@@ -3,7 +3,7 @@
 // the current traverser value (coerced to Number). Other identifiers throw —
 // full Gremlin math() with `as`-bound names is not yet supported.
 
-import { extend, type Traverser } from './_internals.js';
+import { extend, type Traverser } from './runtime.js';
 
 export const mathStep = function* (
   stream: Iterable<Traverser<unknown>>,

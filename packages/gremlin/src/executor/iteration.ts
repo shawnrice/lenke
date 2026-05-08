@@ -1,7 +1,7 @@
 import type { Graph } from '@pl-graph/core';
 
 import type { Plan, Step } from '../ast.js';
-import { hasAny, incLoops, isEmptyPlan, type RunContext, type Traverser } from './_internals.js';
+import { hasAny, incLoops, isEmptyPlan, type RunContext, type Traverser } from './runtime.js';
 import { applyPlanToStream } from './dispatch.js';
 
 export const unionStep = function* (

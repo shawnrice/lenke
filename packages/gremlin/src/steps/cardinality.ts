@@ -1,4 +1,4 @@
-import { appendStep, scopeTokenOf, type StepFn } from './_internals.js';
+import { appendStep, scopeTokenOf, type StepFn } from './framework.js';
 
 // Each takes an optional first `Scope` argument. With `Scope.local`, the
 // operation slices each traverser's iterable value (typical use: after

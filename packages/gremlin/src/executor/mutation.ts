@@ -15,7 +15,7 @@ import {
   isVertex,
   type RunContext,
   type Traverser,
-} from './_internals.js';
+} from './runtime.js';
 import { applyPlanToStream, applyStep } from './dispatch.js';
 import { applySource } from './sources.js';
 

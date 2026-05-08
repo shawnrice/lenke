@@ -6,7 +6,7 @@ import {
   type Plan,
   type StepFn,
   type SubPlan,
-} from './_internals.js';
+} from './framework.js';
 
 /**
  * Insert a new vertex into the graph and emit it as the next traverser.

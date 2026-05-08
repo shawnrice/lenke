@@ -11,7 +11,7 @@ import {
   type Step,
   type StepFn,
   type SubPlan,
-} from './_internals.js';
+} from './framework.js';
 
 // `has` accepts four shapes (TinkerPop parity):
 //   has(key, predicate)        — filter by predicate against property value
