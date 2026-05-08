@@ -56,18 +56,14 @@ const iterByLabel = function*(
   }
 };
 
+// Out-edges first, then in-edges, to match TinkerPop's `both`/`bothE` ordering.
+// Within each direction, iteration follows label-arg order (or insertion order
+// when no labels are given).
 const iterBoth = function*(
   fromByLabel: Map<string, Set<Edge>> | undefined,
   toByLabel: Map<string, Set<Edge>> | undefined,
   labels: readonly string[],
 ): Iterable<Edge> {
-  if (labels.length === 0) {
-    yield* iterByLabel(fromByLabel, labels);
-    yield* iterByLabel(toByLabel, labels);
-    return;
-  }
-  for (const label of labels) {
-    yield* iterByLabel(fromByLabel, [label]);
-    yield* iterByLabel(toByLabel, [label]);
-  }
+  yield* iterByLabel(fromByLabel, labels);
+  yield* iterByLabel(toByLabel, labels);
 };

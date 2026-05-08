@@ -9,9 +9,10 @@ const arr = (r: Iterable<unknown>): unknown[] => [...r];
 describe('both tests', () => {
   const tinkerGraph = createTestTinkerGraph();
 
+  // Out-neighbors first (CREATED → ripple, lop), then in-neighbors (KNOWS → marko).
   test('toy test', () => {
     const result = arr(run(traversal(V('4'), both('KNOWS', 'CREATED', 'BLAH')), tinkerGraph));
-    expect(result.map((x: any) => x.properties.name)).toEqual(['marko', 'ripple', 'lop']);
+    expect(result.map((x: any) => x.properties.name)).toEqual(['ripple', 'lop', 'marko']);
   });
 
   test('get a specific label', () => {
@@ -24,13 +25,11 @@ describe('both tests', () => {
     expect(result.map((x: any) => x.properties.name)).toEqual(['ripple', 'lop', 'marko']);
   });
 
-  // doc: g.V(4).both('knows','created','blah') — TinkerPop emits v[5],v[3],v[1]
-  // (out-neighbors then in-neighbors). Our impl iterates per-label, yielding
-  // [1,5,3]. Same set; assert parity rather than order.
-  test('both(knows,created,blah) on v[4] yields {v[1], v[5], v[3]} (set parity with docs)', () => {
+  // doc: g.V(4).both('knows','created','blah') → v[5], v[3], v[1]
+  test('both(knows,created,blah) on v[4] yields v[5], v[3], v[1]', () => {
     const result = arr(
       run(traversal(V('4'), both('KNOWS', 'CREATED', 'blah')), tinkerGraph),
     ) as Array<{ id: string }>;
-    expect(new Set(result.map((v) => v.id))).toEqual(new Set(['5', '3', '1']));
+    expect(result.map((v) => v.id)).toEqual(['5', '3', '1']);
   });
 });

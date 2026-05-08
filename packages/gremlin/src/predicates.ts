@@ -73,5 +73,7 @@ export const matches = (pred: Predicate, value: unknown): boolean => {
       return typeof value === 'string' && !value.includes(pred.value);
     case 'regex':
       return typeof value === 'string' && new RegExp(pred.value).test(value);
+    case 'not':
+      return !matches(pred.predicate, value);
   }
 };
