@@ -45,5 +45,13 @@ describe('Gremlin tests', () => {
       ) as Array<{ id: string }>;
       expect(r.map((v) => v.id)).toEqual(['1', '2']);
     });
+
+    // doc: g.V().hasLabel('person') — v[1]; v[2]; v[4]; v[6]
+    test('hasLabel(person) returns all four person vertices', () => {
+      const r = arr(run(traversal(V(), hasLabel('PERSON')), tinkerGraph)) as Array<{
+        id: string;
+      }>;
+      expect(r.map((v) => v.id)).toEqual(['1', '2', '4', '6']);
+    });
   });
 });

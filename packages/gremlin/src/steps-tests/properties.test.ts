@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
-import { V, hasId, properties } from '../steps.js';
+import { V, count, hasId, properties } from '../steps.js';
 import { traversal } from '../traversal.js';
 
 const arr = (r: Iterable<unknown>): unknown[] => [...r];
@@ -41,6 +41,14 @@ describe('Gremlin tests', () => {
         { key: 'name', value: 'lop' },
         { key: 'lang', value: 'java' },
       ]);
+    });
+
+    // doc: g.V(v).properties('name').count() — count of name properties for one vertex.
+    test('properties + count returns the number of property objects', () => {
+      const result = arr(
+        run(traversal(V(), hasId('1'), properties('name'), count()), tinkerGraph),
+      );
+      expect(result).toEqual([1]);
     });
   });
 });

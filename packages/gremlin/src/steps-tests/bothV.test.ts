@@ -14,4 +14,12 @@ describe('bothV tests', () => {
     expect((result[0] as any).properties.name).toBe('marko');
     expect((result[1] as any).properties.name).toBe('josh');
   });
+
+  // doc: g.V(4).inE().bothV() — v[1]; v[4]
+  test('inE().bothV() on v[4] yields v[1] and v[4]', () => {
+    const result = arr(run(traversal(V('4'), inE(), bothV()), tinkerGraph)) as Array<{
+      id: string;
+    }>;
+    expect(result.map((v) => v.id)).toEqual(['1', '4']);
+  });
 });

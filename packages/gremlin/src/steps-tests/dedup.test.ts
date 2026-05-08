@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
 import type { Vertex } from '@pl-graph/core';
-import { V, as_, dedupe, hasLabel, in_, inV, out, outE, select, values } from '../steps.js';
+import { T, V, as_, dedupe, hasLabel, in_, inV, out, outE, select, values } from '../steps.js';
 import { traversal } from '../traversal.js';
 
 const arr = (r: Iterable<unknown>): unknown[] => [...r];
@@ -101,6 +101,16 @@ describe('Gremlin tests', () => {
         { a: get('6'), b: get('3'), c: get('4') },
         { a: get('6'), b: get('3'), c: get('6') },
       ]);
+    });
+
+    // doc: g.V().dedup().by(label).values('name') — marko; lop
+    // Keep one vertex per distinct label.
+    test('dedupe().by(T.label) keeps one vertex per label', () => {
+      const r = arr(
+        run(traversal(V(), dedupe().by(T.label), values('name')), tinkerGraph),
+      );
+      // First PERSON (marko), first SOFTWARE (lop in fixture order).
+      expect(r).toEqual(['marko', 'lop']);
     });
 
     // doc: g.V().hasLabel("person").out("created").dedup() — v[3]; v[5]

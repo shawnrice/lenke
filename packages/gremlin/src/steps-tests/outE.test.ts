@@ -35,6 +35,12 @@ describe('outE tests', () => {
     expect(result[3]).toBeUndefined();
   });
 
+  // doc: g.V(4).outE() — e[10][4-created->5]; e[11][4-created->3]
+  test('outE() on v[4] yields edges 10 and 11', () => {
+    const result = arr(run(traversal(V('4'), outE()), tinkerGraph)) as Array<{ id: string }>;
+    expect(result.map((e) => e.id)).toEqual(['10', '11']);
+  });
+
   test('getting all the labels is like asking for none of the labels', () => {
     const a = arr(run(traversal(V('1'), outE('CREATED', 'KNOWS')), tinkerGraph));
     const b = arr(run(traversal(V('1'), outE()), tinkerGraph));

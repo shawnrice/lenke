@@ -54,5 +54,23 @@ describe('Gremlin tests', () => {
         ['1', '4', 'josh'],
       ]);
     });
+
+    // doc: g.V().out().out().path().by('name').by('age')
+    // by()'s are applied round-robin to each path element.
+    test('path with multiple by() modulators rotates per element', () => {
+      const result = arr(
+        run(
+          traversal(V(), out(), out(), path().by('name').by('age')),
+          tinkerGraph,
+        ),
+      );
+      // marko->josh->ripple : [name(marko)='marko', age(josh)=32, name(ripple)='ripple']
+      // marko->josh->lop    : [name(marko)='marko', age(josh)=32, name(lop)=undefined→'lop']
+      // round robin: by(0)='name', by(1)='age', by(2)='name'.
+      expect(result).toEqual([
+        ['marko', 32, 'ripple'],
+        ['marko', 32, 'lop'],
+      ]);
+    });
   });
 });

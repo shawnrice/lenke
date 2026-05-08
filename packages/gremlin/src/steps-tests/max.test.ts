@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
-import { V, inject, max, values } from '../steps.js';
+import { V, both, inject, max, repeat, values } from '../steps.js';
 import { traversal } from '../traversal.js';
 
 const arr = (r: Iterable<unknown>): unknown[] => [...r];
@@ -18,6 +18,15 @@ describe('Gremlin tests', () => {
     test('max works with strings, again', () => {
       const r = run(traversal(V(), values('name'), max()), tinkerGraph);
       expect(arr(r)).toEqual(['vadas']);
+    });
+
+    // doc: g.V().repeat(both()).times(3).values('age').max() — 35
+    test('max after repeat(both()).times(3)', () => {
+      const r = run(
+        traversal(V(), repeat(both()).times(3), values('age'), max()),
+        tinkerGraph,
+      );
+      expect(arr(r)).toEqual([35]);
     });
 
     test('max filters out null', () => {

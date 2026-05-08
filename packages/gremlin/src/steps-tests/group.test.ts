@@ -74,4 +74,30 @@ describe('STEP, group', () => {
     expect((map.get('PERSON') as number[]).reduce((a, b) => a + b, 0)).toBe(4);
     expect((map.get('SOFTWARE') as number[]).reduce((a, b) => a + b, 0)).toBe(2);
   });
+
+  // doc: g.V().group().by('age').by('name') — [32:[josh],35:[peter],27:[vadas],29:[marko]]
+  // Software vertices have no 'age', so they bucket under undefined.
+  test('group by(age) valued by(name)', () => {
+    const result = arr(run(traversal(V(), group({ keyBy: 'age', valueBy: 'name' })), g));
+    const map = result[0] as Map<unknown, unknown[]>;
+    expect(map.get(29)).toEqual(['marko']);
+    expect(map.get(27)).toEqual(['vadas']);
+    expect(map.get(32)).toEqual(['josh']);
+    expect(map.get(35)).toEqual(['peter']);
+  });
+
+  // doc: g.V().group().by('name').by('age') — software vertices map to [] in TinkerPop
+  // because they have no age. Our impl drops the missing-age values, so software
+  // names bucket to empty arrays.
+  test('group by(name) valued by(age)', () => {
+    const result = arr(run(traversal(V(), group({ keyBy: 'name', valueBy: 'age' })), g));
+    const map = result[0] as Map<unknown, unknown[]>;
+    expect(map.get('marko')).toEqual([29]);
+    expect(map.get('vadas')).toEqual([27]);
+    expect(map.get('josh')).toEqual([32]);
+    expect(map.get('peter')).toEqual([35]);
+    // Software vertices: name keys exist, but value-by 'age' yields nothing.
+    expect(map.has('lop')).toBe(true);
+    expect(map.has('ripple')).toBe(true);
+  });
 });

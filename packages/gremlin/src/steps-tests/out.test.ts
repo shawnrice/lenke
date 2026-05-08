@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
-import { out, V } from '../steps.js';
+import { eq } from '../predicates.js';
+import { has, out, V, values } from '../steps.js';
 import { traversal } from '../traversal.js';
 
 const arr = (r: Iterable<unknown>): unknown[] => [...r];
@@ -50,5 +51,19 @@ describe('out tests', () => {
   test('out().out() chained reaches grand-children', () => {
     const result = arr(run(traversal(V(), out(), out()), tinkerGraph));
     expect((result as any[]).map((v) => v.properties.name)).toEqual(['ripple', 'lop']);
+  });
+
+  // doc: g.V(marko).out('knows').values('name') — vadas; josh
+  test('out(knows) on marko yields vadas and josh', () => {
+    const result = arr(
+      run(traversal(V(), has('name', eq('marko')), out('KNOWS'), values('name')), tinkerGraph),
+    );
+    expect(result).toEqual(['vadas', 'josh']);
+  });
+
+  // doc: g.V(4).out() — v[5]; v[3]
+  test('out() on v[4] yields ripple and lop', () => {
+    const result = arr(run(traversal(V('4'), out()), tinkerGraph)) as Array<{ id: string }>;
+    expect(result.map((v) => v.id)).toEqual(['5', '3']);
   });
 });

@@ -125,20 +125,22 @@ describe('elementMap tests', () => {
     expect(r).toEqual([{ id: '1', label: 'PERSON', name: 'marko', age: 29 }]);
   });
 
-  // doc: g.E(...).elementMap() — edges include IN/OUT submaps in Gremlin docs.
-  // v2 elementMap on edges only emits id+label+props (no IN/OUT submaps).
-  // This diverges from the doc; skipping with a note.
-  test.skip(
-    'elementMap on edges emits IN/OUT submaps (v2 emits flat id+label+props only)',
-    () => {},
-  );
-
-  // doc: g.V(1).outE('created').elementMap()
-  test('elementMap on outE shows id+label+weight (no IN/OUT in v2)', () => {
+  // doc: g.E(...).elementMap() — edges include IN/OUT submaps with each
+  // endpoint's id+label.
+  test('elementMap on edges emits IN/OUT submaps', () => {
     const r = arr(
       run(traversal(V('1'), outE('CREATED'), elementMap()), tinkerGraph),
     );
-    expect(r).toEqual([{ id: '9', label: 'CREATED', weight: 0.4 }]);
+    // marko (1) -[CREATED]-> lop (3), weight 0.4
+    expect(r).toEqual([
+      {
+        id: '9',
+        label: 'CREATED',
+        IN: { id: '3', label: 'SOFTWARE' },
+        OUT: { id: '1', label: 'PERSON' },
+        weight: 0.4,
+      },
+    ]);
   });
 
   // Sanity: elementMap on edges via E()

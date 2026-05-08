@@ -22,6 +22,12 @@ describe('Gremlin tests', () => {
       expect(result).toEqual([29, 27]);
     });
 
+    // doc: g.V().values('age').is(inside(30, 40)) — 32; 35
+    test('is(inside(30, 40)) — josh and peter', () => {
+      const result = arr(run(traversal(V(), values('age'), is(inside(30, 40))), tinkerGraph));
+      expect((result as number[]).sort()).toEqual([32, 35]);
+    });
+
     test('it works with the inside predicate', () => {
       // age in (27, 35) → marko (29), josh (32). Strict open interval.
       const result = arr(run(traversal(V(), values('age'), is(inside(27, 35))), tinkerGraph));

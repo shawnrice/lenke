@@ -29,4 +29,12 @@ describe('in_ tests', () => {
     const b = arr(run(traversal(V('3'), in_()), tinkerGraph));
     expect(a).toEqual(b);
   });
+
+  // doc: g.V(2).in('knows') — v[1] (vadas is known by marko)
+  test('in_(knows) on vadas yields marko', () => {
+    const result = arr(run(traversal(V('2'), in_('KNOWS')), tinkerGraph)) as Array<{
+      id: string;
+    }>;
+    expect(result.map((v) => v.id)).toEqual(['1']);
+  });
 });

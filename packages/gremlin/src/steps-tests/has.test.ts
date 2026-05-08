@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
-import { inside, outside, startsWith, within } from '../predicates.js';
-import { V, has, hasLabel, out, outE, values } from '../steps.js';
+import { eq, inside, outside, regex, startsWith, within, without } from '../predicates.js';
+import { V, elementMap, has, hasLabel, not, out, outE, values } from '../steps.js';
 import { traversal } from '../traversal.js';
 
 const arr = (r: Iterable<unknown>): unknown[] => [...r];
@@ -76,5 +76,113 @@ describe('Gremlin tests', () => {
 
     // v1's has(null, 'vadas') edge case — n/a in v2 since key is required.
     test.skip('calling with a first arg of null is empty (n/a in v2)', () => {});
+
+    // doc: g.V().has('age',inside(20,30)).values('age') — 29; 27
+    test('has(age, inside) on all vertices', () => {
+      const result = arr(
+        run(traversal(V(), has('age', inside(20, 30)), values('age')), tinkerGraph),
+      );
+      expect(result).toEqual([29, 27]);
+    });
+
+    // doc: g.V().has('age',outside(20,30)).values('age') — 32; 35
+    test('has(age, outside) on all vertices', () => {
+      const result = arr(
+        run(traversal(V(), has('age', outside(20, 30)), values('age')), tinkerGraph),
+      );
+      expect(result).toEqual([32, 35]);
+    });
+
+    // doc: g.V().has('name',within('josh','marko')).elementMap()
+    test('has(name, within) projected via elementMap', () => {
+      const result = arr(
+        run(
+          traversal(V(), has('name', within('josh', 'marko')), elementMap()),
+          tinkerGraph,
+        ),
+      );
+      expect(result).toEqual([
+        { id: '1', label: 'PERSON', name: 'marko', age: 29 },
+        { id: '4', label: 'PERSON', name: 'josh', age: 32 },
+      ]);
+    });
+
+    // doc: g.V().has('name',without('josh','marko')).elementMap()
+    test('has(name, without) projected via elementMap', () => {
+      const result = arr(
+        run(
+          traversal(V(), has('name', without('josh', 'marko')), elementMap()),
+          tinkerGraph,
+        ),
+      );
+      expect(result).toEqual([
+        { id: '2', label: 'PERSON', name: 'vadas', age: 27 },
+        { id: '6', label: 'PERSON', name: 'peter', age: 35 },
+        { id: '3', label: 'SOFTWARE', name: 'lop', lang: 'java' },
+        { id: '5', label: 'SOFTWARE', name: 'ripple', lang: 'java' },
+      ]);
+    });
+
+    // doc: g.V().has('name', not(within('josh','marko'))).elementMap()
+    // Our `not(...)` step takes a sub-traversal, not a predicate, so we
+    // express the equivalent via not(has(...)) wrapping.
+    test('not(has(name, within)) is equivalent to has(name, without)', () => {
+      const result = arr(
+        run(
+          traversal(V(), not(has('name', within('josh', 'marko'))), elementMap()),
+          tinkerGraph,
+        ),
+      );
+      expect(result).toEqual([
+        { id: '2', label: 'PERSON', name: 'vadas', age: 27 },
+        { id: '6', label: 'PERSON', name: 'peter', age: 35 },
+        { id: '3', label: 'SOFTWARE', name: 'lop', lang: 'java' },
+        { id: '5', label: 'SOFTWARE', name: 'ripple', lang: 'java' },
+      ]);
+    });
+
+    // doc: g.V().has('person', 'name', regex('r')).values('name') — marko; peter
+    // Our has() is two-arg; combine hasLabel + has(name, regex).
+    test('hasLabel + has(name, regex) finds names containing the pattern', () => {
+      const result = arr(
+        run(
+          traversal(V(), hasLabel('PERSON'), has('name', regex('r')), values('name')),
+          tinkerGraph,
+        ),
+      );
+      expect((result as string[]).sort()).toEqual(['marko', 'peter']);
+    });
+
+    // doc: g.V().hasLabel('person').out().has('name',within('vadas','josh')).outE().hasLabel('created')
+    test('chained hasLabel + has + outE + hasLabel selects edges 10 and 11', () => {
+      const result = arr(
+        run(
+          traversal(
+            V(),
+            hasLabel('PERSON'),
+            out(),
+            has('name', within('vadas', 'josh')),
+            outE(),
+            hasLabel('CREATED'),
+          ),
+          tinkerGraph,
+        ),
+      ) as Array<{ id: string }>;
+      expect(result.map((e) => e.id)).toEqual(['10', '11']);
+    });
+
+    // Marker: has(label, key, value) 3-arg form is not implemented in v2;
+    // express via hasLabel + has(key, eq(value)).
+    test('hasLabel + has(name, eq) yields only marko (3-arg has surrogate)', () => {
+      const result = arr(
+        run(
+          traversal(V(), hasLabel('PERSON'), has('name', eq('marko')), values('name')),
+          tinkerGraph,
+        ),
+      );
+      expect(result).toEqual(['marko']);
+      // Suppress unused-import noise — startsWith is exercised above.
+      void startsWith;
+    });
   });
 });

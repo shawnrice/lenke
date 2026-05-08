@@ -30,4 +30,10 @@ describe('V tests', () => {
     const result = arr(run(traversal(V('1')), tinkerGraph));
     expect((result[0] as any).properties.name).toBe('marko');
   });
+
+  // doc: g.V(1) — v[1]
+  test('V(id) returns the single matching vertex', () => {
+    const result = arr(run(traversal(V('1')), tinkerGraph)) as Array<{ id: string }>;
+    expect(result.map((v) => v.id)).toEqual(['1']);
+  });
 });
