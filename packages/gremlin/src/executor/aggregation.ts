@@ -3,6 +3,7 @@ import type { Graph } from '@pl-graph/core';
 import type { By } from '../ast.js';
 import {
   evalBy,
+  isSliceable,
   type RunContext,
   startTraverser,
   type Traverser,
@@ -66,6 +67,62 @@ export const countStep = function* (
     n++;
   }
   yield startTraverser(n);
+};
+
+// ---------- Scope.local aggregations (per-traverser) ----------
+//
+// Each `*Local` helper computes the aggregate of a single traverser's
+// iterable VALUE (post-`fold()` array, list-cardinality projection, etc.).
+// For non-iterable values, the traverser is treated as a one-element
+// sequence — `count` returns 1, `sum`/`min`/`max`/`mean` return the value
+// itself when numeric. Empty iterables return `null` to mirror the
+// global-scope behavior on empty streams.
+
+const elementsOf = (v: unknown): unknown[] => (isSliceable(v) ? [...v] : [v]);
+
+export const countLocal = (v: unknown): number => elementsOf(v).length;
+
+export const sumLocal = (v: unknown): number | null => {
+  const items = elementsOf(v).filter((x) => x != null);
+  if (items.length === 0) {
+    return null;
+  }
+  return items.reduce<number>((s, x) => s + Number(x), 0);
+};
+
+export const meanLocal = (v: unknown): number | null => {
+  const items = elementsOf(v).filter((x) => x != null);
+  if (items.length === 0) {
+    return null;
+  }
+  return items.reduce<number>((s, x) => s + Number(x), 0) / items.length;
+};
+
+export const minLocal = (v: unknown): unknown =>
+  reduceComparable(elementsOf(v), 'min');
+
+export const maxLocal = (v: unknown): unknown =>
+  reduceComparable(elementsOf(v), 'max');
+
+const reduceComparable = (items: readonly unknown[], kind: 'min' | 'max'): unknown => {
+  let best: unknown;
+  let saw = false;
+  for (const x of items) {
+    if (x == null) {
+      continue;
+    }
+    if (!saw) {
+      best = x;
+      saw = true;
+      continue;
+    }
+    const lhs = x as number | string;
+    const rhs = best as number | string;
+    if (kind === 'min' ? lhs < rhs : lhs > rhs) {
+      best = x;
+    }
+  }
+  return saw ? best : null;
 };
 
 // `order` materializes the stream, sorts, then re-yields. Boundary step.

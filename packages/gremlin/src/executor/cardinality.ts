@@ -1,4 +1,4 @@
-import type { Traverser } from './_internals.js';
+import { isSliceable, type Traverser } from './_internals.js';
 
 export const takeTraversers = function* (
   stream: Iterable<Traverser<unknown>>,
@@ -44,16 +44,8 @@ export const tailTraversers = function* (
 
 // Local-scope slice helpers. Operate on a single traverser's iterable value
 // (typically an array produced by `fold()` or a list-cardinality projection).
-// Strings are not unfolded; they pass through unchanged. Maps fall back to
-// their entries iterator for slicing (matching TinkerPop's Scope.local
-// behavior on map values).
-export const isSliceable = (v: unknown): v is Iterable<unknown> => {
-  if (v === null || v === undefined || typeof v === 'string') {
-    return false;
-  }
-  return typeof (v as { [Symbol.iterator]?: unknown })[Symbol.iterator] === 'function';
-};
-
+// `isSliceable` lives in `_internals.ts` (shared with the local-scope
+// aggregations).
 export const sliceLocal = (v: unknown, start: number, end: number): unknown => {
   if (!isSliceable(v)) {
     return v;

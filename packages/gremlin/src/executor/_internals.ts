@@ -161,6 +161,22 @@ export const filterTraverser = function* (
   }
 };
 
+// ---------- Local-scope iteration (Scope.local consumers) ----------
+
+/**
+ * True for non-string objects that expose `Symbol.iterator`. Used by every
+ * `Scope.local` consumer (slice family + aggregation family) to decide
+ * whether to operate on a traverser's value as a sequence or pass it through
+ * unchanged. Strings are deliberately excluded — TinkerPop's `Scope.local`
+ * doesn't treat a string as a sequence of characters.
+ */
+export const isSliceable = (v: unknown): v is Iterable<unknown> => {
+  if (v === null || v === undefined || typeof v === 'string') {
+    return false;
+  }
+  return typeof (v as { [Symbol.iterator]?: unknown })[Symbol.iterator] === 'function';
+};
+
 // ---------- Tag recall (select / where-compare / addE) ----------
 
 export type Pop = 'first' | 'last' | 'all';

@@ -175,15 +175,18 @@ export type Step =
   // `bys` cycles across path elements: `path().by('name').by('age')` projects
   // the 1st, 3rd, 5th... element via 'name' and the 2nd, 4th... via 'age'.
   | { kind: 'path'; bys?: readonly By[] }
-  // Terminals (executor produces a scalar)
-  | { kind: 'count' }
+  // Terminals (executor produces a scalar). With `scope: 'local'` (Gremlin's
+  // `Scope.local`), the aggregate is computed over each traverser's iterable
+  // VALUE rather than across the stream — useful after `fold()` or on
+  // list-shaped projections. Default is `'global'` (across the stream).
+  | { kind: 'count'; scope?: 'global' | 'local' }
   | { kind: 'fold' }
   | { kind: 'toList' }
   // Numeric/comparable aggregates — return a one-element stream (Gremlin semantics)
-  | { kind: 'sum' }
-  | { kind: 'min' }
-  | { kind: 'max' }
-  | { kind: 'mean' }
+  | { kind: 'sum'; scope?: 'global' | 'local' }
+  | { kind: 'min'; scope?: 'global' | 'local' }
+  | { kind: 'max'; scope?: 'global' | 'local' }
+  | { kind: 'mean'; scope?: 'global' | 'local' }
   // Sort. Legacy `key` projects each element to a comparable property; `bys`
   // is the modulator form (`order().by('age')`). The first `by` projects;
   // additional `by`s are tie-breakers (Gremlin semantics). `desc` flips order
