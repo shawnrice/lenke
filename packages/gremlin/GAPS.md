@@ -50,9 +50,3 @@ is unreachable today.
 `math('a + b').by('age')` references named positions tagged with `as_`.
 We don't resolve those — `math` only sees the current value.
 
-### `where(label, predicate)` form
-
-TinkerPop's docs include rich examples of `where('a', gt('b')).by('age')`
-that compare two `as_`-tagged values. We don't support the two-label
-form.
-

@@ -188,7 +188,17 @@ export type Step =
   // Stop the stream with an error.
   | { kind: 'fail'; message?: string }
   // Sub-traversal filters: keep traverser if the sub-plan produces ≥1 result.
+  // `where` has two shapes that share the same `kind`. TS narrows on the
+  // presence of `plan` vs `startKey` so the executor can dispatch without
+  // nullable fields.
+  //
+  //  - `where(subPlan)`: filter traversers whose sub-plan emits anything.
+  //  - `where(startKey, predicate)`: compare the value tagged at `startKey`
+  //    to the value tagged at `pred.value` (treated as another `as_` label
+  //    name), via the predicate's op. Optional `bys` apply round-robin to
+  //    the start- and end-tag values.
   | { kind: 'where'; plan: Plan }
+  | { kind: 'where'; startKey: string; pred: Predicate; bys?: readonly By[] }
   // Logical combinators over sub-plans (each plan starts from the current traverser).
   | { kind: 'and'; plans: readonly Plan[] }
   | { kind: 'or'; plans: readonly Plan[] }
