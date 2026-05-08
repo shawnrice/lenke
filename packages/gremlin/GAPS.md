@@ -39,11 +39,6 @@ where applicable.
 `executor.ts` throws "not yet implemented" for the `subgraph` step;
 `subgraph.test.ts` is a `test.skip` stub.
 
-### `tree().by(modulator)` not implemented
-
-The `tree` step constructs the tree shape but ignores `.by(...)`
-modulators. TODO comment in `steps.ts`.
-
 ### `Scope.local` not wired through `limit`/`range`
 
 The `Scope.local` symbol is exported but the executor doesn't dispatch
@@ -55,26 +50,9 @@ is unreachable today.
 `math('a + b').by('age')` references named positions tagged with `as_`.
 We don't resolve those — `math` only sees the current value.
 
-### `elementMap()` strips IN/OUT submaps for edges
-
-TinkerPop's `g.E(...).elementMap()` includes `IN: {id, label}` and
-`OUT: {id, label}` submaps for edges. Our v2 impl emits a flat
-`{id, label, ...props}` shape.
-
 ### `where(label, predicate)` form
 
 TinkerPop's docs include rich examples of `where('a', gt('b')).by('age')`
 that compare two `as_`-tagged values. We don't support the two-label
 form.
 
-### `inject` doesn't auto-unfold arrays
-
-TinkerPop's `inject([1,2,3])` injects three traversers; ours injects one
-array traverser. To get N traversers you have to spread:
-`inject(1, 2, 3)`. Worth aligning if convenient.
-
-### `emit`-before-`repeat` modulator placement
-
-Only the after-form (`repeat(...).emit()`) is supported. TinkerPop also
-allows `emit().repeat(...)` which emits before each iteration including
-the input. Documented in `steps.ts` comments.

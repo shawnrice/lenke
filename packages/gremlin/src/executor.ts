@@ -535,7 +535,7 @@ const applyStep = (
       return projectStep(stream, step.keys, step.bys, graph, ctx);
 
     case 'tree':
-      return treeStep(stream);
+      return treeStep(stream, step.bys, graph, ctx);
 
     case 'branch':
       return branchStep(stream, step.test, step.options, step.default, graph);
@@ -1352,17 +1352,23 @@ const repeatStep = function* (
   const hasUntil = step.until !== undefined && !isEmptyPlan(step.until);
   const hasEmit = step.emit !== undefined;
   const emitAll = hasEmit && step.emit !== undefined && isEmptyPlan(step.emit);
+  const emitBefore = step.emitBefore === true;
+
+  const matchesEmit = (t: Traverser<unknown>): boolean => {
+    if (emitAll) {
+      return true;
+    }
+    return hasAny(applyPlanToStream(step.emit!, [t], graph));
+  };
 
   let frontier: Traverser<unknown>[] = [...stream].map(incLoops);
 
   for (let i = 0; i < maxIterations && frontier.length > 0; i++) {
-    // Emit-before-loop: yield any traversers that pass the emit predicate or
-    // all of them if emit() with no plan was specified.
-    if (hasEmit) {
+    // Pre-form emit (TinkerPop's `emit(...).repeat(body)`): emit before each
+    // body application, including the input traverser at level 0.
+    if (hasEmit && emitBefore) {
       for (const t of frontier) {
-        if (emitAll) {
-          yield t;
-        } else if (hasAny(applyPlanToStream(step.emit!, [t], graph))) {
+        if (matchesEmit(t)) {
           yield t;
         }
       }
@@ -1386,11 +1392,27 @@ const repeatStep = function* (
       next.push(incLoops(t));
     }
     frontier = next;
+
+    // Post-form emit (TinkerPop's default `repeat(body).emit(...)`): emit
+    // after each body application. The final iteration's body output is
+    // emitted here, so no additional post-loop yield is needed.
+    if (hasEmit && !emitBefore) {
+      for (const t of frontier) {
+        if (matchesEmit(t)) {
+          yield t;
+        }
+      }
+    }
   }
 
-  // After max iterations (or empty frontier), yield whatever's left if there's
-  // no `until` (or for `times` mode).
-  if (!hasUntil) {
+  // Post-loop yield rules:
+  //   - With `until()`: traversers exit via the until-yield above; nothing more.
+  //   - With post-form emit: every body output was already emitted; nothing more.
+  //   - With pre-form emit: pre-emit caught input + intermediates, but the
+  //     final body output never had a "next iteration" to be pre-emitted, so
+  //     yield it here.
+  //   - With no emit: yield the final frontier (the natural repeat result).
+  if (!hasUntil && (!hasEmit || emitBefore)) {
     yield* frontier;
   }
 };
@@ -1482,18 +1504,24 @@ const capStep = function* (
 // becomes a chain of map keys: path[0] -> path[1] -> ... -> {}.
 const treeStep = function* (
   stream: Iterable<Traverser<unknown>>,
+  bys: readonly By[] | undefined,
+  graph: Graph,
+  ctx: RunContext,
 ): Iterable<Traverser<unknown>> {
   const root = new Map<unknown, unknown>();
   for (const t of stream) {
     let cursor = root;
-    for (const node of t.path) {
-      let next = cursor.get(node) as Map<unknown, unknown> | undefined;
+    t.path.forEach((node, i) => {
+      // by(...) modulators are applied round-robin to successive path
+      // positions, matching `path()`'s by-rotation semantics.
+      const key = bys && bys.length > 0 ? evalBy(bys[i % bys.length]!, node, graph, ctx) : node;
+      let next = cursor.get(key) as Map<unknown, unknown> | undefined;
       if (!next) {
         next = new Map<unknown, unknown>();
-        cursor.set(node, next);
+        cursor.set(key, next);
       }
       cursor = next;
-    }
+    });
   }
   yield startTraverser(root);
 };

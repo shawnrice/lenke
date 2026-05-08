@@ -39,18 +39,16 @@ describe('Repeat / iterative reachability', () => {
     expect(sorted).toEqual(['marko|josh|lop', 'marko|josh|ripple', 'marko|lop']);
   });
 
-  // Reachability: everything reachable from marko within 2 hops, emitted.
-  test('repeat(out()).times(2).emit() emits each level', () => {
+  // Reachability: post-form emit() yields each body output (level 1, level 2).
+  // To include the start vertex (level 0), use .emitBefore().
+  test('repeat(out()).times(2).emit() emits each body output', () => {
     const r = arr(
       run(traversal(V('1'), repeat(out()).times(2).emit(), values('name')), g),
     );
-    // Our emit() implementation also emits level 0 (the input vertex),
-    // then level 1 (vadas, josh, lop), then level 2 (ripple, lop).
     expect((r as string[]).sort()).toEqual([
       'josh',
       'lop',
       'lop',
-      'marko',
       'ripple',
       'vadas',
     ]);

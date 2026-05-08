@@ -449,21 +449,23 @@ export const barrier = (): StepFn => appendStep({ kind: 'barrier' });
 // Read back the named bag from `aggregate` / `store`. Replaces the stream.
 export const cap = (key: string): StepFn => appendStep({ kind: 'cap', key });
 
-// Iteration: `repeat(body)` followed by `.times(n)` / `.until(...)` / `.emit(...)` modifiers.
+// Iteration: `repeat(body)` followed by `.times(n)` / `.until(...)` / `.emit(...)` /
+// `.emitBefore(...)` modifiers.
 //
-// LIMITATION vs TinkerPop: TinkerPop distinguishes modulator placement
-// relative to `repeat(...)`:
-//   - `until()` BEFORE `repeat()` is a do-while; AFTER is a while.
-//   - `emit()`  BEFORE `repeat()` emits at level 0 (the input); AFTER emits
-//     each level after the body runs.
-// Our DSL only supports the AFTER form (`repeat(body).times/until/emit`),
-// matching the AFTER-placement semantics. The BEFORE-placement variants are
-// not implemented. Without `until()` and without `times()`, repeat is capped
-// at 100 iterations to avoid runaway loops.
+// `.emit(pred?)` is TinkerPop's `repeat(body).emit(pred?)` post-form: emits
+// AFTER each body application. `.emitBefore(pred?)` is the pre-form (TP's
+// `emit(pred?).repeat(body)`): emits BEFORE each body application, including
+// the input traverser at level 0.
+//
+// LIMITATION vs TinkerPop: until() placement (BEFORE→do-while vs AFTER→while)
+// is not yet distinguished. Our until() always behaves as BEFORE-placement
+// (do-while: check before applying body each iteration). Without `until()`
+// and without `times()`, repeat is capped at 100 iterations.
 type RepeatBuilder = StepFn & {
   times: (n: number) => RepeatBuilder;
   until: (pred: SubPlan) => RepeatBuilder;
   emit: (pred?: SubPlan) => RepeatBuilder;
+  emitBefore: (pred?: SubPlan) => RepeatBuilder;
 };
 
 export const repeat = (body: SubPlan): RepeatBuilder => {
@@ -471,13 +473,17 @@ export const repeat = (body: SubPlan): RepeatBuilder => {
     body: Plan;
     until?: Plan;
     emit?: Plan;
+    emitBefore?: boolean;
     times?: number;
   }): RepeatBuilder => {
     const fn: StepFn = appendStep({ kind: 'repeat', ...config });
     return Object.assign(fn, {
       times: (n: number) => make({ ...config, times: n }),
       until: (pred: SubPlan) => make({ ...config, until: buildPlan(pred) }),
-      emit: (pred?: SubPlan) => make({ ...config, emit: pred ? buildPlan(pred) : { steps: [] } }),
+      emit: (pred?: SubPlan) =>
+        make({ ...config, emit: pred ? buildPlan(pred) : { steps: [] }, emitBefore: false }),
+      emitBefore: (pred?: SubPlan) =>
+        make({ ...config, emit: pred ? buildPlan(pred) : { steps: [] }, emitBefore: true }),
     });
   };
 
@@ -595,7 +601,8 @@ export const toList = (): StepFn => appendStep({ kind: 'toList' });
 
 // Terminal: collect paths into a nested Map.
 // TODO: support `by()` modulators to project path elements (separate agent).
-export const tree = (): StepFn => appendStep({ kind: 'tree' });
+export const tree = (): ByableStep<Extract<Step, { kind: 'tree' }>> =>
+  makeByable<Extract<Step, { kind: 'tree' }>>((bys) => ({ kind: 'tree', bys }));
 
 // Random subset of N traversers (materializes the stream).
 export const sample = (n: number): StepFn => appendStep({ kind: 'sample', n });

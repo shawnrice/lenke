@@ -53,6 +53,24 @@ describe('tree tests', () => {
     expect(markoChildren.size).toBe(1); // marko -> lop
   });
 
+  // doc: g.V().out().out().tree().by('name')
+  // — keys are name strings rather than vertex references; round-robin if
+  // multiple by()s.
+  test("tree().by('name') keys nodes by their name property", () => {
+    const r = arr(run(traversal(V('1'), out(), out(), tree().by('name')), tinkerGraph));
+    expect(r).toHaveLength(1);
+    const root = r[0] as Map<unknown, unknown>;
+    // marko at root.
+    expect([...root.keys()]).toEqual(['marko']);
+    const markoChildren = root.get('marko') as Map<unknown, unknown>;
+    // marko's out: vadas, josh, lop. Only josh has further out (ripple, lop).
+    // Path elements are [v1, vN, vM] for tree built from 2-hop paths.
+    // 2-hop paths from marko: marko->josh->ripple, marko->josh->lop.
+    expect([...markoChildren.keys()]).toEqual(['josh']);
+    const joshChildren = markoChildren.get('josh') as Map<unknown, unknown>;
+    expect(new Set(joshChildren.keys())).toEqual(new Set(['ripple', 'lop']));
+  });
+
   test('tree is empty when stream is empty', () => {
     const r = arr(
       run(traversal(V(), has('name', { op: 'eq', value: 'nobody' }), tree()), tinkerGraph),

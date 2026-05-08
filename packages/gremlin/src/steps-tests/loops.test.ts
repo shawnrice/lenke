@@ -82,7 +82,10 @@ describe('loops tests', () => {
   // doc: loops() outside repeat is undefined; here we sanity-check that
   // loops() inside repeat(...) participates in the body's filter clause.
   test('loops() inside body filters iterations', () => {
-    // Only emit body output during iteration 1 (loops()==1).
+    // Post-form emit fires AFTER each body application. iter1 body emits
+    // {vadas, josh} (PERSON children of marko). iter2 body output is empty
+    // (vadas/josh have no PERSON children); nothing emitted. iter3 frontier
+    // is empty. Input (marko) is NOT emitted in post-form.
     const r = arr(
       run(
         traversal(
@@ -93,8 +96,6 @@ describe('loops tests', () => {
         tinkerGraph,
       ),
     );
-    // iter0 emits start (marko); iter1 emits {vadas, josh}; iter2 frontier
-    // empty (vadas/josh have no PERSON children).
-    expect((r as string[]).sort()).toEqual(['josh', 'marko', 'vadas']);
+    expect((r as string[]).sort()).toEqual(['josh', 'vadas']);
   });
 });
