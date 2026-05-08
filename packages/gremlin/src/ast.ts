@@ -122,11 +122,15 @@ export type Step =
   // in the executor; tracked as TODO). `bys` is the projection modulator
   // (e.g. `dedupe().by('name')` dedupes on the `name` property).
   | { kind: 'dedupe'; labels?: readonly string[]; bys?: readonly By[] }
-  // Cardinality
-  | { kind: 'take'; n: number }
-  | { kind: 'skip'; n: number }
-  | { kind: 'range'; start: number; end: number } // end < 0 means open-ended
-  | { kind: 'tail'; n: number }
+  // Cardinality. With `scope: 'local'`, the operation slices each
+  // traverser's iterable value in place (typical use: after `fold()` or on
+  // list-shaped values from `valueMap`/`select(...all)`). With `scope:
+  // 'global'` (default, omitted), the operation slices the stream of
+  // traversers itself.
+  | { kind: 'take'; n: number; scope?: 'global' | 'local' }
+  | { kind: 'skip'; n: number; scope?: 'global' | 'local' }
+  | { kind: 'range'; start: number; end: number; scope?: 'global' | 'local' } // end < 0 means open-ended
+  | { kind: 'tail'; n: number; scope?: 'global' | 'local' }
   // Iteration
   | {
       kind: 'repeat';

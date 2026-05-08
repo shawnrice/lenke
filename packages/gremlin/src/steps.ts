@@ -54,10 +54,11 @@ export const Order = {
 
 // Scope of a barrier-like step. `global` (default) operates over the whole
 // stream; `local` confines the operation to each traverser's value (typically
-// when that value is itself a list/map). Symbols are exported now so callers
-// can write `count(Scope.local)`-style expressions; wiring them through
-// `count`/`limit`/`range`/`sum`/etc. is a separate task — today they're
-// declarative-only and any step that receives one will throw.
+// when that value is itself a list/map).
+//
+// Wired through `take`/`skip`/`limit`/`range`/`tail` today. Other consumers
+// (`count`/`sum`/`min`/`max`/`mean`/etc.) accept the symbol at the type
+// level but don't yet branch on it — those are tracked in `GAPS.md`.
 export const Scope = {
   global: Symbol.for('@pl-graph/gremlin/Scope.global'),
   local: Symbol.for('@pl-graph/gremlin/Scope.local'),
@@ -243,12 +244,69 @@ export const dedupe = (...labels: string[]): ByableStep<Extract<Step, { kind: 'd
   }));
 
 // Cardinality
-export const take = (n: number): StepFn => appendStep({ kind: 'take', n });
-export const skip = (n: number): StepFn => appendStep({ kind: 'skip', n });
-export const limit = (n: number): StepFn => appendStep({ kind: 'take', n });
-export const range = (start: number, end: number): StepFn =>
-  appendStep({ kind: 'range', start, end });
-export const tail = (n = 1): StepFn => appendStep({ kind: 'tail', n });
+//
+// Each takes an optional first `Scope` argument. With `Scope.local`, the
+// operation slices each traverser's iterable value (typical use: after
+// `fold()` or on list-shaped projections); with `Scope.global` (default,
+// equivalent to omitting the scope) it slices the stream of traversers.
+//
+// The Symbol → string-token translation happens here so the AST stays
+// JSON-serializable (Symbols don't survive `JSON.stringify`).
+const scopeTokenOf = (s: symbol): 'global' | 'local' => {
+  if (s === Scope.local) {
+    return 'local';
+  }
+  if (s === Scope.global) {
+    return 'global';
+  }
+  throw new Error('Expected Scope.local or Scope.global');
+};
+
+export function take(n: number): StepFn;
+export function take(scope: symbol, n: number): StepFn;
+export function take(a: number | symbol, b?: number): StepFn {
+  if (typeof a === 'symbol') {
+    return appendStep({ kind: 'take', n: b!, scope: scopeTokenOf(a) });
+  }
+  return appendStep({ kind: 'take', n: a });
+}
+
+export function skip(n: number): StepFn;
+export function skip(scope: symbol, n: number): StepFn;
+export function skip(a: number | symbol, b?: number): StepFn {
+  if (typeof a === 'symbol') {
+    return appendStep({ kind: 'skip', n: b!, scope: scopeTokenOf(a) });
+  }
+  return appendStep({ kind: 'skip', n: a });
+}
+
+export function limit(n: number): StepFn;
+export function limit(scope: symbol, n: number): StepFn;
+export function limit(a: number | symbol, b?: number): StepFn {
+  if (typeof a === 'symbol') {
+    return appendStep({ kind: 'take', n: b!, scope: scopeTokenOf(a) });
+  }
+  return appendStep({ kind: 'take', n: a });
+}
+
+export function range(start: number, end: number): StepFn;
+export function range(scope: symbol, start: number, end: number): StepFn;
+export function range(a: number | symbol, b: number, c?: number): StepFn {
+  if (typeof a === 'symbol') {
+    return appendStep({ kind: 'range', start: b, end: c!, scope: scopeTokenOf(a) });
+  }
+  return appendStep({ kind: 'range', start: a, end: b });
+}
+
+export function tail(): StepFn;
+export function tail(n: number): StepFn;
+export function tail(scope: symbol, n: number): StepFn;
+export function tail(a: number | symbol = 1, b?: number): StepFn {
+  if (typeof a === 'symbol') {
+    return appendStep({ kind: 'tail', n: b!, scope: scopeTokenOf(a) });
+  }
+  return appendStep({ kind: 'tail', n: a });
+}
 
 // Predicates / no-ops / sources
 export const is = (pred: Predicate): StepFn => appendStep({ kind: 'is', pred });
