@@ -1,6 +1,15 @@
 import type { Edge, Graph, Vertex } from '@pl-graph/core';
 
-import type { By, ID, Plan, Step } from './ast.js';
+import type {
+  AddEEndpoint,
+  By,
+  FlatMapClosure,
+  ID,
+  Plan,
+  ReducerClosure,
+  SideEffectClosure,
+  Step,
+} from './ast.js';
 import { bothEdgesOf, inEdgesOf, outEdgesOf } from './graph-queries.js';
 import { matches } from './predicates.js';
 
@@ -71,6 +80,29 @@ type RunContext = {
 const newContext = (): RunContext => ({ sideEffects: new Map() });
 
 /**
+ * Project a runtime `Traverser` plus the run's side-effects into the
+ * read-only view that user closures see. Built lazily per-call (rather than
+ * stored on every traverser) because side-effects are per-run, not per-
+ * traverser; threading the same Map reference avoids per-traverser overhead.
+ */
+const closureView = (
+  t: Traverser<unknown>,
+  ctx: RunContext,
+): {
+  value: unknown;
+  path: readonly unknown[];
+  loopCount: number;
+  tags: ReadonlyMap<string, readonly unknown[]>;
+  sideEffects: ReadonlyMap<string, readonly unknown[]>;
+} => ({
+  value: t.value,
+  path: t.path,
+  loopCount: t.loopCount,
+  tags: t.tags,
+  sideEffects: ctx.sideEffects,
+});
+
+/**
  * Run a plan against a graph. Always returns an `Iterable<unknown>` —
  * terminal steps (`count`, `fold`, `toList`) yield exactly one value; other
  * steps yield zero or more. This matches Gremlin's "every step is a stream"
@@ -133,8 +165,15 @@ const applySource = (
       return sourceFromIds(graph.edges, step.ids, (id) => graph.getEdgeById(String(id)));
     case 'inject':
       return injectAsSource(step.values);
+    case 'addV':
+      // `g.addV()`-style source: emit exactly one freshly-created vertex.
+      return addVStep([startTraverser(undefined)], graph, step.label);
+    case 'addE':
+      // `g.addE(label)`-style source: emit one new edge, but only if both
+      // endpoints are explicitly provided (no input traverser to default to).
+      return addEStep([startTraverser(undefined)], graph, step, newContext());
     default:
-      throw new Error(`Plan must start with V(), E(), or inject(), got ${step.kind}`);
+      throw new Error(`Plan must start with V(), E(), inject(), addV(), or addE(), got ${step.kind}`);
   }
 };
 
@@ -217,10 +256,17 @@ const applyStep = (
 
     case 'hasKey':
       return filterStream(stream, (v) => {
-        if (!isVertex(v) && !isEdge(v)) {
-          return false;
+        // Element form: vertex/edge with one of the given property keys.
+        if (isVertex(v) || isEdge(v)) {
+          return step.keys.some((k) => k in v.properties);
         }
-        return step.keys.some((k) => k in v.properties);
+        // Property-object form: filter the stream produced by `properties()`,
+        // which yields `{key, value}` per property. Match if the object's
+        // `key` field equals one of the given keys.
+        if (v !== null && typeof v === 'object' && 'key' in v) {
+          return step.keys.includes((v as { key: unknown }).key as string);
+        }
+        return false;
       });
 
     case 'simplePath':
@@ -402,13 +448,29 @@ const applyStep = (
       return localStep(stream, step.plan, graph, ctx);
 
     case 'none':
-      // Drain and emit nothing.
-      // eslint-disable-next-line require-yield -- generator-shaped but intentionally yields nothing
-      return (function* () {
-        for (const _ of stream) {
-          // intentionally drop
+      if (step.pred === undefined) {
+        // Legacy: drain and emit nothing.
+        // eslint-disable-next-line require-yield -- generator-shaped but intentionally yields nothing
+        return (function* () {
+          for (const _ of stream) {
+            // intentionally drop
+          }
+        })();
+      }
+      // TinkerPop 3.8: keep traversers whose iterable value has NO element
+      // satisfying the predicate. Non-iterable values are filtered out.
+      return filterTraverser(stream, (t) => {
+        const v = t.value;
+        if (v === null || v === undefined || typeof (v as { [Symbol.iterator]?: unknown })[Symbol.iterator] !== 'function') {
+          return false;
         }
-      })();
+        for (const x of v as Iterable<unknown>) {
+          if (matches(step.pred!, x)) {
+            return false;
+          }
+        }
+        return true;
+      });
 
     case 'aggregate':
     case 'store':
@@ -426,9 +488,18 @@ const applyStep = (
       return mapTraverser(stream, (v) => (isVertex(v) || isEdge(v) ? v.id : undefined));
 
     case 'label':
-      return mapTraverser(stream, (v) =>
-        isVertex(v) || isEdge(v) ? (firstLabel(v.labels) ?? null) : undefined,
-      );
+      return mapTraverser(stream, (v) => {
+        if (isVertex(v) || isEdge(v)) {
+          return firstLabel(v.labels) ?? null;
+        }
+        // For `{key, value}` property objects produced by `properties()`,
+        // `label()` returns the key — matching TinkerPop's behavior of
+        // treating the property's key field as its "label".
+        if (v !== null && typeof v === 'object' && 'key' in v) {
+          return (v as { key: unknown }).key;
+        }
+        return undefined;
+      });
 
     case 'path':
       return pathStep(stream, step.bys, graph, ctx);
@@ -476,28 +547,34 @@ const applyStep = (
       return mapStep(stream, step.plan, graph);
 
     case 'mapFn':
-      return mapTraverser(stream, (v, t) => step.fn(v, t));
+      return mapTraverser(stream, (v, t) => step.fn(v, closureView(t, ctx)));
 
     case 'flatMapFn':
-      return flatMapFnStep(stream, step.fn);
+      return flatMapFnStep(stream, step.fn, ctx);
 
     case 'filterFn':
-      return filterTraverser(stream, (t) => step.fn(t.value, t));
+      return filterTraverser(stream, (t) => step.fn(t.value, closureView(t, ctx)));
 
     case 'sideEffectFn':
-      return sideEffectFnStep(stream, step.fn);
+      return sideEffectFnStep(stream, step.fn, ctx);
 
     case 'foldFn':
-      return foldFnStep(stream, step.seed, step.fn);
+      return foldFnStep(stream, step.seed, step.fn, ctx);
 
     case 'sample':
       return sampleStep(stream, step.n);
 
     case 'addV':
+      return addVStep(stream, graph, step.label);
+
     case 'addE':
+      return addEStep(stream, graph, step, ctx);
+
     case 'property':
+      return propertyStep(stream, step.key, step.value);
+
     case 'drop':
-      throw new Error(`${step.kind} is not implemented yet`);
+      return dropStep(stream, graph);
   }
 };
 
@@ -1046,6 +1123,10 @@ const pathStep = function* (
 
 // `elementMap(...keys?)` projects each element to `{ id, label, ...properties }`.
 // With no keys, all properties are included; with keys, only those.
+//
+// Edges additionally get `IN` and `OUT` submaps holding `{ id, label }` for
+// the in/out vertex — matching the Gremlin reference output for
+// `g.E().elementMap()`. Vertices have no IN/OUT.
 const projectElementMap = function* (
   stream: Iterable<Traverser<unknown>>,
   keys: readonly string[] | undefined,
@@ -1059,6 +1140,16 @@ const projectElementMap = function* (
       id: t.value.id,
       label: firstLabel(t.value.labels) ?? null,
     };
+    if (isEdge(t.value)) {
+      out.IN = {
+        id: t.value.to.id,
+        label: firstLabel(t.value.to.labels) ?? null,
+      };
+      out.OUT = {
+        id: t.value.from.id,
+        label: firstLabel(t.value.from.labels) ?? null,
+      };
+    }
     const targetKeys = keys && keys.length > 0 ? keys : Object.keys(props);
     for (const k of targetKeys) {
       if (k in props) {
@@ -1456,10 +1547,11 @@ const flatMapStep = function* (
 
 const flatMapFnStep = function* (
   stream: Iterable<Traverser<unknown>>,
-  fn: (value: unknown, t: Traverser<unknown>) => Iterable<unknown>,
+  fn: FlatMapClosure,
+  ctx: RunContext,
 ): Iterable<Traverser<unknown>> {
   for (const t of stream) {
-    for (const v of fn(t.value, t)) {
+    for (const v of fn(t.value, closureView(t, ctx))) {
       yield extend(t, v);
     }
   }
@@ -1467,10 +1559,11 @@ const flatMapFnStep = function* (
 
 const sideEffectFnStep = function* (
   stream: Iterable<Traverser<unknown>>,
-  fn: (value: unknown, t: Traverser<unknown>) => void,
+  fn: SideEffectClosure,
+  ctx: RunContext,
 ): Iterable<Traverser<unknown>> {
   for (const t of stream) {
-    fn(t.value, t);
+    fn(t.value, closureView(t, ctx));
     yield t;
   }
 };
@@ -1480,11 +1573,12 @@ const sideEffectFnStep = function* (
 const foldFnStep = function* (
   stream: Iterable<Traverser<unknown>>,
   seed: unknown,
-  fn: (acc: unknown, value: unknown, t: Traverser<unknown>) => unknown,
+  fn: ReducerClosure,
+  ctx: RunContext,
 ): Iterable<Traverser<unknown>> {
   let acc = seed;
   for (const t of stream) {
-    acc = fn(acc, t.value, t);
+    acc = fn(acc, t.value, closureView(t, ctx));
   }
   yield startTraverser(acc);
 };
@@ -1519,6 +1613,136 @@ const sampleStep = function* (
   }
   for (let i = 0; i < k; i++) {
     yield buf[i]!;
+  }
+};
+
+// --- Mutation helpers --------------------------------------------------
+//
+// `addV` / `addE` / `property` / `drop` mutate the graph in place. The
+// underlying `Graph.addVertex` / `addEdge` / `removeVertex` / `removeEdge`
+// methods emit events, so subscribers see changes as they happen during
+// traversal. Callers who need a transactional "all or nothing" semantic
+// should clone the graph first (`graph.clone()`).
+
+const addVStep = function* (
+  stream: Iterable<Traverser<unknown>>,
+  graph: Graph,
+  label: string | undefined,
+): Iterable<Traverser<unknown>> {
+  for (const t of stream) {
+    const v = graph.addVertex({
+      labels: label ? [label] : [],
+      properties: {},
+    });
+    yield extend(t, v);
+  }
+};
+
+// Run an AddE endpoint sub-plan. The sub-plan may start with a source step
+// (`V('2')`, `inject(...)`) or may be rooted at the current traverser. We
+// detect the source case and route through `applySource` accordingly so
+// that `addE('X').to(V('2'))` works alongside `addE('X').to(out('knows'))`.
+const runEndpointPlan = (
+  plan: Plan,
+  graph: Graph,
+  ctx: RunContext,
+  rooted: Traverser<unknown>,
+): Iterable<Traverser<unknown>> => {
+  if (plan.steps.length === 0) {
+    return [rooted];
+  }
+  const first = plan.steps[0]!;
+  if (first.kind === 'V' || first.kind === 'E' || first.kind === 'inject') {
+    let stream: Iterable<Traverser<unknown>> = applySource(first, graph);
+    for (let i = 1; i < plan.steps.length; i++) {
+      stream = applyStep(plan.steps[i]!, stream, graph, ctx);
+    }
+    return stream;
+  }
+  return applyPlanToStream(plan, [rooted], graph, ctx);
+};
+
+const resolveAddEEndpoint = (
+  endpoint: AddEEndpoint | undefined,
+  t: Traverser<unknown>,
+  graph: Graph,
+  ctx: RunContext,
+): Vertex | null => {
+  if (endpoint === undefined) {
+    return isVertex(t.value) ? t.value : null;
+  }
+  if (endpoint.kind === 'tag') {
+    // Pop.last semantics — most recent tagged value wins.
+    const list = t.tags.get(endpoint.label);
+    if (!list || list.length === 0) {
+      return null;
+    }
+    const v = list[list.length - 1];
+    return isVertex(v) ? v : null;
+  }
+  for (const result of runEndpointPlan(endpoint.plan, graph, ctx, t)) {
+    return isVertex(result.value) ? result.value : null;
+  }
+  return null;
+};
+
+const addEStep = function* (
+  stream: Iterable<Traverser<unknown>>,
+  graph: Graph,
+  step: { label: string; from?: AddEEndpoint; to?: AddEEndpoint },
+  ctx: RunContext,
+): Iterable<Traverser<unknown>> {
+  for (const t of stream) {
+    if (step.from === undefined && step.to === undefined) {
+      throw new Error(
+        `addE('${step.label}'): at least one of .from() or .to() must be specified`,
+      );
+    }
+    const from = resolveAddEEndpoint(step.from, t, graph, ctx);
+    const to = resolveAddEEndpoint(step.to, t, graph, ctx);
+    if (!from || !to) {
+      throw new Error(
+        `addE('${step.label}'): could not resolve endpoint vertices (from=${!!from}, to=${!!to})`,
+      );
+    }
+    const e = graph.addEdge({
+      from,
+      to,
+      labels: [step.label],
+      properties: {},
+    });
+    yield extend(t, e);
+  }
+};
+
+const propertyStep = function* (
+  stream: Iterable<Traverser<unknown>>,
+  key: string,
+  value: unknown,
+): Iterable<Traverser<unknown>> {
+  for (const t of stream) {
+    const v = t.value;
+    if (isVertex(v) || isEdge(v)) {
+      v.setProperty(key, value);
+      yield t;
+    }
+    // Non-element traversers are silently dropped — `property` only makes
+    // sense on a vertex/edge.
+  }
+};
+
+const dropStep = function* (
+  stream: Iterable<Traverser<unknown>>,
+  graph: Graph,
+): Iterable<Traverser<unknown>> {
+  for (const t of stream) {
+    const v = t.value;
+    if (isVertex(v)) {
+      graph.removeVertex(v);
+    } else if (isEdge(v)) {
+      graph.removeEdge(v);
+    }
+    // `drop` is a sink — emit nothing for any traverser regardless of type.
   }
 };
 

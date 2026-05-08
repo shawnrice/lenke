@@ -34,7 +34,10 @@ export type Predicate =
   | { op: 'endingWith'; value: string }
   | { op: 'containing'; value: string }
   | { op: 'notContaining'; value: string }
-  | { op: 'regex'; value: string };
+  | { op: 'regex'; value: string }
+  // Negation: `has('name', not(within('a','b')))` — built via the
+  // polymorphic `not(...)` step constructor when called with a predicate.
+  | { op: 'not'; predicate: Predicate };
 
 /**
  * The `by()` modulator. Attached to a parent step (path, order, dedupe,
@@ -69,7 +72,17 @@ type CTraverser = {
   readonly value: unknown;
   readonly path: readonly unknown[];
   readonly loopCount: number;
+  /**
+   * Per-traverser tags assigned via `as(label)`. A label can carry multiple
+   * values inside iterative steps (e.g. `repeat(out().as('a'))`).
+   */
   readonly tags: ReadonlyMap<string, unknown>;
+  /**
+   * Per-run side-effect bags (the same Map that backs `aggregate(key)` /
+   * `store(key)` / `cap(key)`). Closures can read but should not mutate;
+   * the runtime hands out a read-only view of the live map.
+   */
+  readonly sideEffects: ReadonlyMap<string, readonly unknown[]>;
 };
 export type MapClosure = (value: unknown, t: CTraverser) => unknown;
 export type FlatMapClosure = (value: unknown, t: CTraverser) => Iterable<unknown>;
@@ -130,7 +143,10 @@ export type Step =
   // simply yields no traversers.
   //
   // Anything chained after `none()` will see an empty stream.
-  | { kind: 'none' }
+  //
+  // With a `pred` (TinkerPop 3.8): list-predicate filter — keep the traverser
+  // iff no element of its iterable value satisfies the predicate.
+  | { kind: 'none'; pred?: Predicate }
   // Inject literals into the stream (source or mid-stream)
   | { kind: 'inject'; values: readonly unknown[] }
   // Unfold one level of an iterable (excluding strings)
@@ -292,11 +308,51 @@ export type Step =
   | { kind: 'match'; patterns: readonly Plan[] }
   // Side-effect: accumulate matching edges into a named subgraph. STUBBED.
   | { kind: 'subgraph'; key: string }
-  // --- Mutation (graph-write) — STUBBED. Executor throws "not yet implemented". ---
+  // --- Mutation (graph-write) -------------------------------------------
+  //
+  // `addV(label?)` inserts a fresh vertex into the graph. The output stream
+  // contains the new vertex. Subsequent `property(...)` calls bind values to
+  // it. With no label, the vertex is created label-less.
   | { kind: 'addV'; label?: string }
-  | { kind: 'addE'; label: string }
-  | { kind: 'property'; key: string; value: unknown }
+  // `addE(label).from(X).to(Y)` inserts an edge between two vertex endpoints.
+  // Each endpoint is one of:
+  //   - undefined   → fall back to the current traverser value
+  //   - tag string  → recall a previously `as(label)`-tagged vertex
+  //   - sub-plan    → run a sub-plan and use its first emitted vertex
+  // If both `from` and `to` are undefined the current traverser is treated as
+  // the OUT (from) endpoint and the executor throws — IN must be specified.
+  // The output stream contains the new edge.
+  | {
+      kind: 'addE';
+      label: string;
+      from?: AddEEndpoint;
+      to?: AddEEndpoint;
+    }
+  // `property(key, value)` overwrites a single property on the current
+  // vertex/edge. Output stream contains the (mutated) element.
+  // `cardinality` is recorded for spec parity but v2 stores properties as
+  // `Record<string, unknown>` (single-valued); `'list'` and `'set'` currently
+  // behave the same as `'single'`. Once multi-cardinality lands, this is the
+  // hook the executor will read.
+  | {
+      kind: 'property';
+      key: string;
+      value: unknown;
+      cardinality?: 'single' | 'list' | 'set';
+    }
+  // `drop()` removes the current vertex/edge from the graph and emits nothing
+  // for that traverser. Dropping a vertex cascades through any edges
+  // attached to it (per `Graph.removeVertex`).
   | { kind: 'drop' };
+
+/**
+ * Endpoint specification for `addE(...).from(X)` / `.to(X)`.
+ *  - `'tag'`  — recall a previously `as(label)`-tagged vertex by name
+ *  - `'plan'` — run a sub-plan and use its first emitted vertex
+ */
+export type AddEEndpoint =
+  | { kind: 'tag'; label: string }
+  | { kind: 'plan'; plan: Plan };
 
 // --- Future-work notes (not yet modeled) --------------------------------
 // - `index()` step (enumerate)
@@ -339,4 +395,5 @@ export type TraverserView = {
   readonly path: readonly unknown[];
   readonly loopCount: number;
   readonly tags: ReadonlyMap<string, unknown>;
+  readonly sideEffects: ReadonlyMap<string, readonly unknown[]>;
 };

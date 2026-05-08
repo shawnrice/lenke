@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
-import { eq, inside, outside, regex, startsWith, within, without } from '../predicates.js';
+import { eq, gt, inside, outside, regex, startsWith, within, without } from '../predicates.js';
 import { V, elementMap, has, hasLabel, not, out, outE, values } from '../steps.js';
 import { traversal } from '../traversal.js';
 
@@ -171,17 +171,30 @@ describe('Gremlin tests', () => {
       expect(result.map((e) => e.id)).toEqual(['10', '11']);
     });
 
-    // Marker: has(label, key, value) 3-arg form is not implemented in v2;
-    // express via hasLabel + has(key, eq(value)).
-    test('hasLabel + has(name, eq) yields only marko (3-arg has surrogate)', () => {
+    // doc: g.V().has('name', 'marko') — shorthand for has('name', eq('marko'))
+    test('has(key, value) is shorthand for has(key, eq(value))', () => {
+      const result = arr(run(traversal(V(), has('name', 'marko'), values('name')), tinkerGraph));
+      expect(result).toEqual(['marko']);
+    });
+
+    // doc: g.V().has('person', 'name', 'marko') — 3-arg label+key+value
+    test('has(label, key, value) filters by label AND property', () => {
       const result = arr(
-        run(
-          traversal(V(), hasLabel('PERSON'), has('name', eq('marko')), values('name')),
-          tinkerGraph,
-        ),
+        run(traversal(V(), has('PERSON', 'name', 'marko'), values('name')), tinkerGraph),
       );
       expect(result).toEqual(['marko']);
-      // Suppress unused-import noise — startsWith is exercised above.
+    });
+
+    // doc: g.V().has('person', 'age', gt(30)) — 3-arg with predicate
+    test('has(label, key, predicate) filters by label AND property predicate', () => {
+      const result = arr(
+        run(traversal(V(), has('PERSON', 'age', gt(30)), values('name')), tinkerGraph),
+      );
+      // marko=29, vadas=27, josh=32, peter=35 → josh, peter
+      expect(result).toEqual(['josh', 'peter']);
+
+      // Suppress unused-import noise — eq/startsWith are exercised above.
+      void eq;
       void startsWith;
     });
   });

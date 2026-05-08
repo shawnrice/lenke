@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
-import { gt } from '../predicates.js';
-import { V, count, elementMap, hasLabel, is, not, out, values } from '../steps.js';
+import { gt, within } from '../predicates.js';
+import { V, count, elementMap, has, hasLabel, is, not, out, values } from '../steps.js';
 import { traversal } from '../traversal.js';
 
 const arr = (r: Iterable<unknown>): unknown[] => [...r];
@@ -43,5 +43,17 @@ describe('not tests', () => {
       { id: '3', label: 'SOFTWARE', name: 'lop', lang: 'java' },
       { id: '5', label: 'SOFTWARE', name: 'ripple', lang: 'java' },
     ]);
+  });
+
+  // doc: g.V().has('name', not(within('vadas','marko'))).values('name')
+  // — josh, peter, lop, ripple (everyone except vadas/marko)
+  test('not(predicate) negates a predicate inside has()', () => {
+    const r = arr(
+      run(
+        traversal(V(), has('name', not(within('vadas', 'marko'))), values('name')),
+        tinkerGraph,
+      ),
+    );
+    expect(r).toEqual(['josh', 'peter', 'lop', 'ripple']);
   });
 });

@@ -92,25 +92,53 @@ type ByableStep<S extends Step> = StepFn & {
   readonly by: (modulator?: ByModulator, comparator?: OrderSym) => ByableStep<S>;
 };
 
-const buildPlan = (fn: StepFn): Plan => fn({ steps: [] });
+/**
+ * What every sub-plan combinator (`where`, `filter`, `map`, `repeat`,
+ * `union`, `choose`, ...) accepts. In TinkerPop terms: anywhere a `Traversal`
+ * is expected — anonymous (`__.out()`) or rooted (`g.V()`). We accept both:
+ *
+ *   - `StepFn`  — what `out()`, `pipe(...)`, etc. produce
+ *   - `Plan`    — what `traversal(...)` produces
+ *
+ * Closure-bearing combinators (`map`, `filter`, `flatMap`, `sideEffect`)
+ * additionally accept a raw closure; the dispatch in each constructor
+ * routes by shape.
+ */
+export type SubPlan = StepFn | Plan;
+
+const isPlan = (x: unknown): x is Plan =>
+  typeof x === 'object' && x !== null && 'steps' in (x as object);
+
+/**
+ * True if `x` is a sub-plan in either accepted shape (a `traversal(...)` or a
+ * branded `StepFn`). Used by combinators that *also* accept a closure
+ * (`map`, `filter`, `flatMap`, `sideEffect`) to route to the sub-plan branch.
+ */
+const isSubPlan = (x: unknown): x is SubPlan => isPlan(x) || isStepFn(x);
+
+/**
+ * Coerce either form to a `Plan`. The runtime accepts both; this is the one
+ * conversion point so call sites stay shape-agnostic.
+ */
+const buildPlan = (sub: SubPlan): Plan =>
+  isPlan(sub) ? sub : sub({ steps: [] });
 
 /**
  * Compose multiple step constructors into a single branded StepFn.
  *
- * Use to build sub-plans for `where`, `filter`, `map`, etc. without falling
- * out of the closure-vs-stepfn dispatch:
+ * Use to build sub-plans inline:
  *
  *     filter(pipe(label(), is(eq('PERSON'))))   // sub-plan form, branded
  *     filter((v) => v.id === 1)                 // closure form
+ *
+ * `traversal(...)` works in the same slots now, so reach for whichever is
+ * more readable for the call site.
  */
 export const pipe = (...steps: StepFn[]): StepFn => {
   const fn = (plan: Plan): Plan => steps.reduce((p, s) => s(p), plan);
   Object.defineProperty(fn, STEP_FN, { value: true, enumerable: false });
   return fn as StepFn;
 };
-
-const isPlan = (x: unknown): x is Plan =>
-  typeof x === 'object' && x !== null && 'steps' in (x as object);
 
 const toBy = (modulator: ByModulator | undefined, comparator?: OrderSym): By => {
   const direction = comparator !== undefined ? ORDER_TO_DIR.get(comparator) : undefined;
@@ -175,7 +203,31 @@ export const bothV = (): StepFn => appendStep({ kind: 'bothV' });
 export const otherV = (): StepFn => appendStep({ kind: 'otherV' });
 
 // Filters
-export const has = (key: string, pred: Predicate): StepFn => appendStep({ kind: 'has', key, pred });
+//
+// `has` accepts four shapes (TinkerPop parity):
+//   has(key, predicate)        — filter by predicate against property value
+//   has(key, value)            — shorthand for has(key, eq(value))
+//   has(label, key, predicate) — shorthand for hasLabel(label).has(key, pred)
+//   has(label, key, value)     — shorthand for hasLabel(label).has(key, eq(value))
+//
+// Predicates are objects with an `op` discriminant; raw values are anything
+// else. The runtime detection is preferred over compile-time overloads
+// because TypeScript's `Predicate` union is structural and any plain object
+// could in principle be a predicate; we'd rather have the dispatch live in
+// one place than scattered through caller-side casts.
+const isPredicate = (x: unknown): x is Predicate =>
+  typeof x === 'object' && x !== null && 'op' in x;
+
+export function has(key: string, valueOrPred: unknown): StepFn;
+export function has(label: string, key: string, valueOrPred: unknown): StepFn;
+export function has(a: string, b: unknown, c?: unknown): StepFn {
+  if (c === undefined) {
+    const pred = isPredicate(b) ? b : { op: 'eq' as const, value: b };
+    return appendStep({ kind: 'has', key: a, pred });
+  }
+  const pred = isPredicate(c) ? c : { op: 'eq' as const, value: c };
+  return appendStep({ kind: 'hasLabelAnd', label: a, key: b as string, pred });
+}
 export const hasLabel = (...labels: string[]): StepFn => appendStep({ kind: 'hasLabel', labels });
 export const hasId = (...ids: ID[]): StepFn => appendStep({ kind: 'hasId', ids });
 export const hasKey = (...keys: string[]): StepFn => appendStep({ kind: 'hasKey', keys });
@@ -212,7 +264,16 @@ export const identity = (): StepFn => appendStep({ kind: 'identity' });
  *
  * @see https://tinkerpop.apache.org/docs/current/reference/#none-step
  */
-export const none = (): StepFn => appendStep({ kind: 'none' });
+// `none` is polymorphic:
+//   none()          — legacy: drain and emit nothing (debug-noop).
+//   none(predicate) — TinkerPop 3.8: keep the traverser iff its iterable
+//                     value has no element satisfying the predicate.
+//                     Typically chained after `fold()`.
+export function none(): StepFn;
+export function none(pred: Predicate): StepFn;
+export function none(pred?: Predicate): StepFn {
+  return appendStep({ kind: 'none', pred });
+}
 export const inject = (...values: unknown[]): StepFn => appendStep({ kind: 'inject', values });
 export const unfold = (): StepFn => appendStep({ kind: 'unfold' });
 
@@ -239,33 +300,46 @@ export const fail = (message?: string): StepFn => appendStep({ kind: 'fail', mes
 // --- Sub-traversal combinators -----------------------------------------
 
 // Filter: keep traversers where the sub-plan yields at least one result.
-export const where = (plan: StepFn): StepFn =>
+export const where = (plan: SubPlan): StepFn =>
   appendStep({ kind: 'where', plan: buildPlan(plan) });
 
 // Logical combinators over sub-plans, each starting from the current traverser.
-export const and = (...plans: StepFn[]): StepFn =>
+export const and = (...plans: SubPlan[]): StepFn =>
   appendStep({ kind: 'and', plans: plans.map(buildPlan) });
 
-export const or = (...plans: StepFn[]): StepFn =>
+export const or = (...plans: SubPlan[]): StepFn =>
   appendStep({ kind: 'or', plans: plans.map(buildPlan) });
 
-export const not = (plan: StepFn): StepFn =>
-  appendStep({ kind: 'not', plan: buildPlan(plan) });
+// `not` is polymorphic:
+//   not(subPlan)   → a step that filters out traversers whose sub-plan emits
+//   not(predicate) → a negated predicate, usable inside has/is/etc.
+//
+// Disambiguation by the same `op`-discriminant check used in `has`. SubPlans
+// are either functions (`StepFn`) or plan objects (`{ steps }`); predicates
+// are objects with an `op` field.
+export function not(plan: SubPlan): StepFn;
+export function not(predicate: Predicate): Predicate;
+export function not(arg: SubPlan | Predicate): StepFn | Predicate {
+  if (isPredicate(arg)) {
+    return { op: 'not', predicate: arg };
+  }
+  return appendStep({ kind: 'not', plan: buildPlan(arg) });
+}
 
 // Run each sub-plan from the current traverser; merge outputs in order.
-export const union = (...plans: StepFn[]): StepFn =>
+export const union = (...plans: SubPlan[]): StepFn =>
   appendStep({ kind: 'union', plans: plans.map(buildPlan) });
 
 // First non-empty sub-plan wins per traverser.
-export const coalesce = (...plans: StepFn[]): StepFn =>
+export const coalesce = (...plans: SubPlan[]): StepFn =>
   appendStep({ kind: 'coalesce', plans: plans.map(buildPlan) });
 
 // Run plan; if empty, yield the original traverser unchanged.
-export const optional = (plan: StepFn): StepFn =>
+export const optional = (plan: SubPlan): StepFn =>
   appendStep({ kind: 'optional', plan: buildPlan(plan) });
 
 // If/then[/else] over sub-plans.
-export const choose = (test: StepFn, thenPlan: StepFn, elsePlan?: StepFn): StepFn =>
+export const choose = (test: SubPlan, thenPlan: SubPlan, elsePlan?: SubPlan): StepFn =>
   appendStep({
     kind: 'choose',
     test: buildPlan(test),
@@ -274,11 +348,13 @@ export const choose = (test: StepFn, thenPlan: StepFn, elsePlan?: StepFn): StepF
   });
 
 // `filter(plan)` keeps traversers whose plan yields ≥1; `filter(fn)` keeps
-// traversers where `fn(value, traverser)` returns truthy.
+// traversers where `fn(value, traverser)` returns truthy. Sub-plans accept
+// either a branded `StepFn` (e.g. `pipe(...)`) or a `Plan` (e.g.
+// `traversal(...)`); a raw closure routes to the closure form.
 export const filter = (
-  arg: StepFn | FilterClosure,
+  arg: SubPlan | FilterClosure,
 ): StepFn =>
-  isStepFn(arg)
+  isSubPlan(arg)
     ? appendStep({ kind: 'filter', plan: buildPlan(arg) })
     : appendStep({ kind: 'filterFn', fn: arg as FilterClosure });
 
@@ -300,7 +376,7 @@ export const index = (): StepFn => appendStep({ kind: 'index' });
 export const math = (expr: string): StepFn => appendStep({ kind: 'math', expr });
 
 // Declarative pattern match. STUBBED — executor throws.
-export const match = (...patterns: StepFn[]): StepFn =>
+export const match = (...patterns: SubPlan[]): StepFn =>
   appendStep({ kind: 'match', patterns: patterns.map(buildPlan) });
 
 // Side-effect subgraph builder. STUBBED — executor throws.
@@ -325,16 +401,17 @@ export const constant = (value: unknown): StepFn => appendStep({ kind: 'constant
 export const loops = (): StepFn => appendStep({ kind: 'loops' });
 
 // Run a plan or closure for its effect, then yield the original traverser
-// unchanged. Closure form: `(value, traverser) => void`.
+// unchanged. Sub-plans accept a `StepFn` or `Plan`; closure form is
+// `(value, traverser) => void`.
 export const sideEffect = (
-  arg: StepFn | SideEffectClosure,
+  arg: SubPlan | SideEffectClosure,
 ): StepFn =>
-  isStepFn(arg)
+  isSubPlan(arg)
     ? appendStep({ kind: 'sideEffect', plan: buildPlan(arg) })
     : appendStep({ kind: 'sideEffectFn', fn: arg as SideEffectClosure });
 
 // Run a sub-plan with a barrier: each traverser sees only itself.
-export const local = (plan: StepFn): StepFn =>
+export const local = (plan: SubPlan): StepFn =>
   appendStep({ kind: 'local', plan: buildPlan(plan) });
 
 // Side-effect: stash each traverser into a named bag for later `cap()`.
@@ -345,6 +422,25 @@ export const aggregate = (key: string): StepFn => appendStep({ kind: 'aggregate'
 // future optimizer can introduce a barrier on `aggregate` without touching
 // `store`.
 export const store = (key: string): StepFn => appendStep({ kind: 'store', key });
+
+/**
+ * Filter closure: keep traversers whose value is *present* in the named
+ * side-effect bag (populated by `aggregate(key)` / `store(key)` upstream).
+ *
+ * Sugar over the closure-with-sideEffects pattern. Use as
+ * `filter(withinBag('seen'))`. Mirrors the spec form `where(within('seen'))`.
+ */
+export const withinBag = (key: string): FilterClosure =>
+  (v, t) => (t.sideEffects.get(key) ?? []).includes(v);
+
+/**
+ * Filter closure: keep traversers whose value is *absent* from the named
+ * side-effect bag. Inverse of `withinBag`. Common in "exclude already-seen"
+ * patterns: `aggregate('seen')` upstream, then `filter(withoutBag('seen'))`
+ * downstream. Mirrors the spec form `where(without('seen'))`.
+ */
+export const withoutBag = (key: string): FilterClosure =>
+  (v, t) => !(t.sideEffects.get(key) ?? []).includes(v);
 
 // Force materialization of the upstream stream before continuing. Useful when
 // a downstream step needs side-effects (e.g. `aggregate`) populated upstream.
@@ -366,11 +462,11 @@ export const cap = (key: string): StepFn => appendStep({ kind: 'cap', key });
 // at 100 iterations to avoid runaway loops.
 type RepeatBuilder = StepFn & {
   times: (n: number) => RepeatBuilder;
-  until: (pred: StepFn) => RepeatBuilder;
-  emit: (pred?: StepFn) => RepeatBuilder;
+  until: (pred: SubPlan) => RepeatBuilder;
+  emit: (pred?: SubPlan) => RepeatBuilder;
 };
 
-export const repeat = (body: StepFn): RepeatBuilder => {
+export const repeat = (body: SubPlan): RepeatBuilder => {
   const make = (config: {
     body: Plan;
     until?: Plan;
@@ -380,8 +476,8 @@ export const repeat = (body: StepFn): RepeatBuilder => {
     const fn: StepFn = appendStep({ kind: 'repeat', ...config });
     return Object.assign(fn, {
       times: (n: number) => make({ ...config, times: n }),
-      until: (pred: StepFn) => make({ ...config, until: buildPlan(pred) }),
-      emit: (pred?: StepFn) => make({ ...config, emit: pred ? buildPlan(pred) : { steps: [] } }),
+      until: (pred: SubPlan) => make({ ...config, until: buildPlan(pred) }),
+      emit: (pred?: SubPlan) => make({ ...config, emit: pred ? buildPlan(pred) : { steps: [] } }),
     });
   };
 
@@ -507,29 +603,29 @@ export const sample = (n: number): StepFn => appendStep({ kind: 'sample', n });
 // `flatMap(plan)` or `flatMap(fn)`. Sub-plan form yields each output of the
 // plan. Closure form: `(value, traverser) => Iterable<unknown>`.
 export const flatMap = (
-  arg: StepFn | FlatMapClosure,
+  arg: SubPlan | FlatMapClosure,
 ): StepFn =>
-  isStepFn(arg)
+  isSubPlan(arg)
     ? appendStep({ kind: 'flatMap', plan: buildPlan(arg) })
     : appendStep({ kind: 'flatMapFn', fn: arg as FlatMapClosure });
 
 // `map(plan)` or `map(fn)`. Sub-plan: replace value with the plan's first
 // output; drop traverser if empty. Closure: `(value, traverser) => unknown`.
 export const map = (
-  arg: StepFn | MapClosure,
+  arg: SubPlan | MapClosure,
 ): StepFn =>
-  isStepFn(arg)
+  isSubPlan(arg)
     ? appendStep({ kind: 'map', plan: buildPlan(arg) })
     : appendStep({ kind: 'mapFn', fn: arg as MapClosure });
 
 // --- Branch (switch over a sub-plan's result) --------------------------
 // Builder: `branch(test).option(value, plan).option(value, plan).none(plan)`.
 type BranchBuilder = StepFn & {
-  option: (match: unknown, plan: StepFn) => BranchBuilder;
-  none: (plan: StepFn) => BranchBuilder;
+  option: (match: unknown, plan: SubPlan) => BranchBuilder;
+  none: (plan: SubPlan) => BranchBuilder;
 };
 
-export const branch = (test: StepFn): BranchBuilder => {
+export const branch = (test: SubPlan): BranchBuilder => {
   const make = (config: {
     test: Plan;
     options: readonly { match: unknown; plan: Plan }[];
@@ -537,17 +633,120 @@ export const branch = (test: StepFn): BranchBuilder => {
   }): BranchBuilder => {
     const fn: StepFn = appendStep({ kind: 'branch', ...config });
     return Object.assign(fn, {
-      option: (match: unknown, plan: StepFn) =>
+      option: (match: unknown, plan: SubPlan) =>
         make({ ...config, options: [...config.options, { match, plan: buildPlan(plan) }] }),
-      none: (plan: StepFn) => make({ ...config, default: buildPlan(plan) }),
+      none: (plan: SubPlan) => make({ ...config, default: buildPlan(plan) }),
     });
   };
   return make({ test: buildPlan(test), options: [] });
 };
 
-// --- Mutation (write) — stubbed; executor throws "not yet implemented". ---
+// --- Mutation (graph write) ---------------------------------------------
+
+/**
+ * Insert a new vertex into the graph and emit it as the next traverser.
+ *
+ * Subsequent `property(key, value)` calls bind values to the new vertex.
+ * The label is optional; without one, the vertex is created label-less.
+ *
+ * Example: `traversal(addV('PERSON'), property('name', 'marko'))`.
+ *
+ * @see https://tinkerpop.apache.org/docs/current/reference/#addvertex-step
+ */
 export const addV = (label?: string): StepFn => appendStep({ kind: 'addV', label });
-export const addE = (label: string): StepFn => appendStep({ kind: 'addE', label });
-export const property = (key: string, value: unknown): StepFn =>
-  appendStep({ kind: 'property', key, value });
+
+type AddEEndpointArg = string | SubPlan;
+
+const toAddEEndpoint = (arg: AddEEndpointArg) =>
+  typeof arg === 'string'
+    ? ({ kind: 'tag' as const, label: arg })
+    : ({ kind: 'plan' as const, plan: buildPlan(arg) });
+
+/**
+ * Builder returned by `addE(label)`. Both `.from()` and `.to()` are optional;
+ * if only one is set, the current traverser fills the other slot. If neither
+ * is set, the executor throws (an edge needs both endpoints).
+ *
+ * Each accepts a tag string (recalled via prior `as(label)`) or a sub-plan
+ * (`traversal(V('2'))`, `inject(someVertex)`, etc.).
+ */
+type AddEBuilder = StepFn & {
+  from: (arg: AddEEndpointArg) => AddEBuilder;
+  to: (arg: AddEEndpointArg) => AddEBuilder;
+};
+
+/**
+ * Insert a new edge and emit it as the next traverser.
+ *
+ * Common shapes:
+ *   - `traversal(V('1'), addE('KNOWS').to(V('2')))`           // input is FROM
+ *   - `traversal(V('1'), as_('a'), V('2'), addE('KNOWS').from('a'))` // tag-form
+ *   - `traversal(addE('KNOWS').from(V('1')).to(V('2')))`      // both explicit
+ *
+ * @see https://tinkerpop.apache.org/docs/current/reference/#addedge-step
+ */
+export const addE = (label: string): AddEBuilder => {
+  const make = (config: {
+    label: string;
+    from?: { kind: 'tag'; label: string } | { kind: 'plan'; plan: Plan };
+    to?: { kind: 'tag'; label: string } | { kind: 'plan'; plan: Plan };
+  }): AddEBuilder => {
+    const fn: StepFn = appendStep({ kind: 'addE', ...config });
+    return Object.assign(fn, {
+      from: (arg: AddEEndpointArg) => make({ ...config, from: toAddEEndpoint(arg) }),
+      to: (arg: AddEEndpointArg) => make({ ...config, to: toAddEEndpoint(arg) }),
+    });
+  };
+  return make({ label });
+};
+
+type CardinalitySym = (typeof Cardinality)[keyof typeof Cardinality];
+
+const CARDINALITY_TO_KIND: ReadonlyMap<symbol, 'single' | 'list' | 'set'> = new Map([
+  [Cardinality.single, 'single'],
+  [Cardinality.list, 'list'],
+  [Cardinality.set, 'set'],
+]);
+
+/**
+ * Set a property on the current vertex/edge.
+ *
+ * Two forms:
+ *   - `property(key, value)` — single-cardinality (overwrite). Default.
+ *   - `property(Cardinality.X, key, value)` — explicit cardinality. v2's
+ *     storage model is single-valued (`Record<string, unknown>`), so `list`
+ *     and `set` currently behave identically to `single`. The cardinality is
+ *     still threaded through the AST so a future multi-cardinality executor
+ *     pass can pick it up without a DSL break.
+ *
+ * @see https://tinkerpop.apache.org/docs/current/reference/#addproperty-step
+ */
+export function property(key: string, value: unknown): StepFn;
+export function property(
+  cardinality: CardinalitySym,
+  key: string,
+  value: unknown,
+): StepFn;
+export function property(
+  ...args:
+    | [string, unknown]
+    | [CardinalitySym, string, unknown]
+): StepFn {
+  if (typeof args[0] === 'symbol') {
+    const cardinality = CARDINALITY_TO_KIND.get(args[0]);
+    if (cardinality === undefined) {
+      throw new Error(`property(): unrecognized cardinality symbol ${String(args[0])}`);
+    }
+    return appendStep({ kind: 'property', key: args[1] as string, value: args[2], cardinality });
+  }
+  return appendStep({ kind: 'property', key: args[0] as string, value: args[1] });
+}
+
+/**
+ * Remove the current vertex or edge from the graph. The traverser is dropped
+ * (no value is emitted for it). Dropping a vertex cascades — any edges
+ * incident to it are also removed.
+ *
+ * @see https://tinkerpop.apache.org/docs/current/reference/#drop-step
+ */
 export const drop = (): StepFn => appendStep({ kind: 'drop' });
