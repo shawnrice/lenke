@@ -33,9 +33,18 @@ import {
 } from './_internals.js';
 
 // Per-category step impls.
-import { countStep, aggregateNumber, aggregateComparable, orderStep } from './aggregation.js';
 import {
-  isSliceable as _isSliceable,
+  aggregateComparable,
+  aggregateNumber,
+  countLocal,
+  countStep,
+  maxLocal,
+  meanLocal,
+  minLocal,
+  orderStep,
+  sumLocal,
+} from './aggregation.js';
+import {
   sampleStep,
   skipTraversers,
   sliceLocal,
@@ -83,12 +92,6 @@ import {
   sideEffectStep,
   unfoldStream,
 } from './stream.js';
-
-// Suppress unused-import warning — referenced via `_isSliceable` for symmetry
-// with the slice helpers, but the dispatch logic uses them indirectly through
-// `sliceLocal`/`tailLocal`. Keep the alias so cardinality.ts's surface is
-// usable from elsewhere if needed.
-void _isSliceable;
 
 export const applyPlanToStream = (
   plan: Plan,
@@ -233,13 +236,21 @@ export const applyStep = (
       return unfoldStream(stream);
 
     case 'sum':
-      return aggregateNumber(stream, 'sum');
+      return step.scope === 'local'
+        ? mapTraverser(stream, sumLocal)
+        : aggregateNumber(stream, 'sum');
     case 'min':
-      return aggregateComparable(stream, 'min');
+      return step.scope === 'local'
+        ? mapTraverser(stream, minLocal)
+        : aggregateComparable(stream, 'min');
     case 'max':
-      return aggregateComparable(stream, 'max');
+      return step.scope === 'local'
+        ? mapTraverser(stream, maxLocal)
+        : aggregateComparable(stream, 'max');
     case 'mean':
-      return aggregateNumber(stream, 'mean');
+      return step.scope === 'local'
+        ? mapTraverser(stream, meanLocal)
+        : aggregateNumber(stream, 'mean');
 
     case 'values':
       return projectValues(stream, step.keys);
@@ -423,7 +434,9 @@ export const applyStep = (
       return pathStep(stream, step.bys, graph, ctx);
 
     case 'count':
-      return countStep(stream);
+      return step.scope === 'local'
+        ? mapTraverser(stream, countLocal)
+        : countStep(stream);
 
     case 'fold':
     case 'toList':

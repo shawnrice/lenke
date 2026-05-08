@@ -2,16 +2,46 @@ import {
   appendStep,
   type ByableStep,
   makeByable,
+  scopeTokenOf,
   type Step,
   type StepFn,
 } from './_internals.js';
 
-// Numeric/comparable aggregates (return a one-element stream)
-export const count = (): StepFn => appendStep({ kind: 'count' });
-export const sum = (): StepFn => appendStep({ kind: 'sum' });
-export const min = (): StepFn => appendStep({ kind: 'min' });
-export const max = (): StepFn => appendStep({ kind: 'max' });
-export const mean = (): StepFn => appendStep({ kind: 'mean' });
+// Numeric/comparable aggregates (return a one-element stream).
+//
+// Each accepts an optional first `Scope` argument. With `Scope.local`, the
+// aggregate is computed over each traverser's iterable VALUE rather than
+// across the stream — typical use: `g.V().valueMap('age').fold().count(Scope.local)`.
+// With `Scope.global` (default), the aggregate runs across the stream.
+export function count(): StepFn;
+export function count(scope: symbol): StepFn;
+export function count(scope?: symbol): StepFn {
+  return appendStep({ kind: 'count', scope: scope ? scopeTokenOf(scope) : undefined });
+}
+
+export function sum(): StepFn;
+export function sum(scope: symbol): StepFn;
+export function sum(scope?: symbol): StepFn {
+  return appendStep({ kind: 'sum', scope: scope ? scopeTokenOf(scope) : undefined });
+}
+
+export function min(): StepFn;
+export function min(scope: symbol): StepFn;
+export function min(scope?: symbol): StepFn {
+  return appendStep({ kind: 'min', scope: scope ? scopeTokenOf(scope) : undefined });
+}
+
+export function max(): StepFn;
+export function max(scope: symbol): StepFn;
+export function max(scope?: symbol): StepFn {
+  return appendStep({ kind: 'max', scope: scope ? scopeTokenOf(scope) : undefined });
+}
+
+export function mean(): StepFn;
+export function mean(scope: symbol): StepFn;
+export function mean(scope?: symbol): StepFn {
+  return appendStep({ kind: 'mean', scope: scope ? scopeTokenOf(scope) : undefined });
+}
 
 // Sort. With no args, natural order on the values themselves; with a `key`,
 // sort by that property (vertex/edge); pass `desc: true` to flip. The
