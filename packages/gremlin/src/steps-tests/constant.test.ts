@@ -37,4 +37,16 @@ describe('constant tests', () => {
     );
     expect(r).toEqual(['marko', 'vadas', 'josh', 'peter', 'inhuman', 'inhuman']);
   });
+
+  // doc: g.V().constant('foo') — replace every traverser's value with 'foo'.
+  test('constant replaces every traverser with the same value', () => {
+    const r = arr(run(traversal(V(), constant('foo')), tinkerGraph));
+    expect(r).toEqual(['foo', 'foo', 'foo', 'foo', 'foo', 'foo']);
+  });
+
+  // doc: constant works with non-string scalars too.
+  test('constant works with numeric values', () => {
+    const r = arr(run(traversal(V(), hasLabel('SOFTWARE'), constant(42)), tinkerGraph));
+    expect(r).toEqual([42, 42]);
+  });
 });

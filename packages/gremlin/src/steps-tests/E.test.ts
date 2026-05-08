@@ -26,4 +26,17 @@ describe('E tests', () => {
     expect((result[0] as any).to.id).toBe('2');
     expect([...(result[0] as any).labels]).toEqual(['KNOWS']);
   });
+
+  // doc: g.E(11) — e[11][4-created->3]
+  test('E(id) returns the single matching edge', () => {
+    const result = arr(run(traversal(E('11')), tinkerGraph)) as Array<{
+      id: string;
+      from: { id: string };
+      to: { id: string };
+    }>;
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe('11');
+    expect(result[0].from.id).toBe('4');
+    expect(result[0].to.id).toBe('3');
+  });
 });

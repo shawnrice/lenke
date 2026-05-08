@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
-import { V, fold, in_, out, unfold, union, values } from '../steps.js';
+import { V, count, fold, hasLabel, in_, out, pipe, unfold, union, values } from '../steps.js';
 import { traversal } from '../traversal.js';
 
 const arr = (r: Iterable<unknown>): unknown[] => [...r];
@@ -47,5 +47,54 @@ describe('union tests', () => {
       ),
     );
     expect(r).toEqual([29, 'java', 'java']);
+  });
+
+  // doc: g.V(1,4).union(out().values('name'), in_().values('name')) — names
+  // of out-neighbors and in-neighbors merged per starting vertex.
+  test('union of out and in flattens both branches', () => {
+    const r = arr(
+      run(
+        traversal(
+          V('1', '4'),
+          union(pipe(out(), values('name')), pipe(in_(), values('name'))),
+        ),
+        tinkerGraph,
+      ),
+    );
+    // marko(1): out -> {vadas, josh, lop}; in -> {} (no incoming).
+    // josh(4): out -> {ripple, lop}; in -> {marko}.
+    expect((r as string[]).sort()).toEqual([
+      'josh',
+      'lop',
+      'lop',
+      'marko',
+      'ripple',
+      'vadas',
+    ]);
+  });
+
+  // doc: g.V(1,4).union(out().count(), in_().count()) — per-vertex counts.
+  test('union with terminal counts emits one count per branch per traverser', () => {
+    const r = arr(
+      run(
+        traversal(V('1', '4'), union(pipe(out(), count()), pipe(in_(), count()))),
+        tinkerGraph,
+      ),
+    );
+    // marko: out=3, in=0; josh: out=2, in=1.
+    expect(r).toEqual([3, 0, 2, 1]);
+  });
+
+  // doc: parent traversal continues after union; output of union feeds the
+  // next step. Here: g.V(1,4).union(out(), in_()).hasLabel('PERSON').values('name').
+  test('union output feeds the parent traversal', () => {
+    const r = arr(
+      run(
+        traversal(V('1', '4'), union(out(), in_()), hasLabel('PERSON'), values('name')),
+        tinkerGraph,
+      ),
+    );
+    // marko: out PERSON = {vadas, josh}; in = {}; josh: out PERSON = {}; in = {marko}.
+    expect((r as string[]).sort()).toEqual(['josh', 'marko', 'vadas']);
   });
 });

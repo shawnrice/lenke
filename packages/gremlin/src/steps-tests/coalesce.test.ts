@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
-import { V, coalesce, hasLabel, inV, outE, values } from '../steps.js';
+import { V, coalesce, hasLabel, inV, label, outE, path, values } from '../steps.js';
 import { traversal } from '../traversal.js';
 
 const arr = (r: Iterable<unknown>): unknown[] => [...r];
@@ -35,6 +35,43 @@ describe('coalesce tests', () => {
       ),
     );
     expect(r).toEqual(['lop']);
+  });
+
+  // doc: g.V(1).coalesce(outE('knows'), outE('created')).inV().path().by('name').by(label)
+  // — [marko,KNOWS,vadas]; [marko,KNOWS,josh]
+  test('coalesce(knows-first) emits the KNOWS edge paths', () => {
+    const r = arr(
+      run(
+        traversal(
+          V('1'),
+          coalesce(outE('KNOWS'), outE('CREATED')),
+          inV(),
+          path().by('name').by(label()),
+        ),
+        tinkerGraph,
+      ),
+    ) as Array<Array<unknown>>;
+    expect(r).toEqual([
+      ['marko', 'KNOWS', 'vadas'],
+      ['marko', 'KNOWS', 'josh'],
+    ]);
+  });
+
+  // doc: g.V(1).coalesce(outE('created'), outE('knows')).inV().path().by('name').by(label)
+  // — [marko,CREATED,lop]
+  test('coalesce(created-first) emits only the CREATED path', () => {
+    const r = arr(
+      run(
+        traversal(
+          V('1'),
+          coalesce(outE('CREATED'), outE('KNOWS')),
+          inV(),
+          path().by('name').by(label()),
+        ),
+        tinkerGraph,
+      ),
+    ) as Array<Array<unknown>>;
+    expect(r).toEqual([['marko', 'CREATED', 'lop']]);
   });
 
   // legacy: g.V('1').coalesce(outE('KNOWS'), outE('CREATED')).inV().values('name') — vadas, josh

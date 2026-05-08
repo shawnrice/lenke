@@ -13,4 +13,12 @@ describe('outV tests', () => {
     const result = arr(run(traversal(V('4'), inE(), outV()), tinkerGraph));
     expect((result[0] as any).properties.name).toBe('marko');
   });
+
+  // doc: g.V(4).inE().outV() — v[1]
+  test('inE().outV() on v[4] yields v[1]', () => {
+    const result = arr(run(traversal(V('4'), inE(), outV()), tinkerGraph)) as Array<{
+      id: string;
+    }>;
+    expect(result.map((v) => v.id)).toEqual(['1']);
+  });
 });

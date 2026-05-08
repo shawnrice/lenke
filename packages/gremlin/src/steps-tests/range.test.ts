@@ -27,5 +27,30 @@ describe('Gremlin tests', () => {
       const xs = arr(r) as Array<{ properties: { name: string } }>;
       expect(xs.map((x) => x.properties.name)).toEqual(['peter', 'lop', 'ripple']);
     });
+
+    // doc: g.V().range(0, 3) — v[1]; v[2]; v[3]
+    test('range(0, 3) yields the first three vertices', () => {
+      const xs = arr(run(traversal(V(), range(0, 3)), tinkerGraph)) as Array<{
+        id: string;
+      }>;
+      // v2 fixture order: 1, 2, 4, 6, 3, 5
+      expect(xs.map((v) => v.id)).toEqual(['1', '2', '4']);
+    });
+
+    // doc: g.V().range(1, 3) — v[2]; v[3]
+    test('range(1, 3) skips first and yields next two', () => {
+      const xs = arr(run(traversal(V(), range(1, 3)), tinkerGraph)) as Array<{
+        id: string;
+      }>;
+      expect(xs.map((v) => v.id)).toEqual(['2', '4']);
+    });
+
+    // doc: g.V().range(1, -1) — v[2]; v[3]; v[4]; v[5]; v[6]
+    test('range(1, -1) skips first and emits the rest', () => {
+      const xs = arr(run(traversal(V(), range(1, -1)), tinkerGraph)) as Array<{
+        id: string;
+      }>;
+      expect(xs.map((v) => v.id)).toEqual(['2', '4', '6', '3', '5']);
+    });
   });
 });

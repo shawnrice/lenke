@@ -35,4 +35,27 @@ describe('STEP, groupCount', () => {
     expect(map.get('PERSON')).toBe(4);
     expect(map.get('SOFTWARE')).toBe(2);
   });
+
+  // doc: g.V().hasLabel('person').groupCount().by('age') — [32:1,35:1,27:1,29:1]
+  test('groupCount by("age") on persons', () => {
+    const result = arr(
+      run(traversal(V(), hasLabel('PERSON'), groupCount({ by: 'age' })), g),
+    );
+    const map = result[0] as Map<unknown, number>;
+    expect(map.get(29)).toBe(1);
+    expect(map.get(27)).toBe(1);
+    expect(map.get(32)).toBe(1);
+    expect(map.get(35)).toBe(1);
+  });
+
+  // doc: g.V().groupCount().by('age') — counts only over vertices with `age`.
+  // Software vertices have no age; they bucket under `undefined` in our impl.
+  test('groupCount by("age") across all vertices', () => {
+    const result = arr(run(traversal(V(), groupCount({ by: 'age' })), g));
+    const map = result[0] as Map<unknown, number>;
+    expect(map.get(29)).toBe(1);
+    expect(map.get(27)).toBe(1);
+    expect(map.get(32)).toBe(1);
+    expect(map.get(35)).toBe(1);
+  });
 });

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
-import { V, hasKey } from '../steps.js';
+import { V, hasKey, properties, value } from '../steps.js';
 import { traversal } from '../traversal.js';
 
 const arr = (r: Iterable<unknown>): unknown[] => [...r];
@@ -29,9 +29,14 @@ describe('Gremlin tests', () => {
       expect(result).toEqual([]);
     });
 
-    // v1 test: g.V().properties().hasKey('age').value() — v2 `hasKey` filters
-    // vertices/edges by property existence; it does not filter the
-    // `{key, value}` objects produced by `properties()`. Different shape.
-    test.skip('we can filter properties stream by key (n/a in v2)', () => {});
+    // doc: g.V().properties().hasKey('age').value() — filter the property
+    // stream by key, then unwrap to the value.
+    test('we can filter properties stream by key', () => {
+      const result = arr(
+        run(traversal(V(), properties(), hasKey('age'), value()), tinkerGraph),
+      );
+      // Persons' ages: marko=29, vadas=27, josh=32, peter=35.
+      expect((result as number[]).sort((a, b) => a - b)).toEqual([27, 29, 32, 35]);
+    });
   });
 });

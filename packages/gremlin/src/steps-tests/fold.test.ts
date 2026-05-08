@@ -19,9 +19,22 @@ describe('Gremlin tests', () => {
       expect(arr(r2)).toEqual([['vadas', 'josh']]);
     });
 
-    // fold(seed, reducer) (bifunctor form) is not supported in v2 — functions
-    // aren't serializable in the AST.
-    test.skip('fold works with a bifunctor', () => {});
+    // doc: g.V().out('knows').values('age').fold(0, (a, v) => a + v)
+    test('fold(seed, reducer) — bifunctor closure form', () => {
+      const r = arr(
+        run(
+          traversal(
+            V('1'),
+            out('KNOWS'),
+            values('age'),
+            fold(0, (acc, v) => (acc as number) + (v as number)),
+          ),
+          tinkerGraph,
+        ),
+      );
+      // marko knows vadas (27) + josh (32) → sum = 59
+      expect(r).toEqual([59]);
+    });
 
     // doc: g.V().fold().unfold().values('name')
     test('fold().unfold() round-trips', () => {
@@ -34,6 +47,38 @@ describe('Gremlin tests', () => {
       const r = arr(run(traversal(V(), hasLabel('PERSON'), fold()), tinkerGraph));
       expect(r).toHaveLength(1);
       expect((r[0] as Array<{ id: string }>).map((v) => v.id)).toEqual(['1', '2', '4', '6']);
+    });
+
+    // doc: g.V(1).out('knows').values('name').fold(0) {a,b -> a + b.length()} — 9
+    // marko knows vadas (5) + josh (4) = 9
+    test('fold(seed, reducer) summing string lengths', () => {
+      const r = arr(
+        run(
+          traversal(
+            V('1'),
+            out('KNOWS'),
+            values('name'),
+            fold(0, (acc, v) => (acc as number) + (v as string).length),
+          ),
+          tinkerGraph,
+        ),
+      );
+      expect(r).toEqual([9]);
+    });
+
+    // doc: g.V().values('age').fold(0) {a,b -> a + b} — 123
+    test('fold(seed, reducer) summing all ages', () => {
+      const r = arr(
+        run(
+          traversal(
+            V(),
+            values('age'),
+            fold(0, (acc, v) => (acc as number) + (v as number)),
+          ),
+          tinkerGraph,
+        ),
+      );
+      expect(r).toEqual([123]);
     });
   });
 });

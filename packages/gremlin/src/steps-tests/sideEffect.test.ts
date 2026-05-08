@@ -47,6 +47,26 @@ describe('sideEffect tests', () => {
     expect(bag).toEqual(['1', '2', '4', '6']);
   });
 
+  // doc: g.V().sideEffect(_ -> println(_)) — closure form for observation.
+  test('sideEffect(closure) observes each traverser without altering the stream', () => {
+    const seen: string[] = [];
+    const r = arr(
+      run(
+        traversal(
+          V(),
+          hasLabel('PERSON'),
+          sideEffect((v: unknown) => {
+            seen.push((v as { properties: { name: string } }).properties.name);
+          }),
+          values('name'),
+        ),
+        tinkerGraph,
+      ),
+    );
+    expect(r).toEqual(['marko', 'vadas', 'josh', 'peter']);
+    expect(seen).toEqual(['marko', 'vadas', 'josh', 'peter']);
+  });
+
   test('sideEffect from a single root preserves identity', () => {
     const r = arr(
       run(traversal(V('1'), sideEffect(pipe(out(), out())), values('name')), tinkerGraph),

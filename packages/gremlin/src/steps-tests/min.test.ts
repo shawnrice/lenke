@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
-import { V, inject, min, values } from '../steps.js';
+import { V, both, inject, min, repeat, values } from '../steps.js';
 import { traversal } from '../traversal.js';
 
 const arr = (r: Iterable<unknown>): unknown[] => [...r];
@@ -18,6 +18,15 @@ describe('Gremlin tests', () => {
     test('min works with strings, again', () => {
       const r = run(traversal(V(), values('name'), min()), tinkerGraph);
       expect(arr(r)).toEqual(['josh']);
+    });
+
+    // doc: g.V().repeat(both()).times(3).values('age').min() — 27
+    test('min after repeat(both()).times(3)', () => {
+      const r = run(
+        traversal(V(), repeat(both()).times(3), values('age'), min()),
+        tinkerGraph,
+      );
+      expect(arr(r)).toEqual([27]);
     });
 
     test('min filters out null', () => {
