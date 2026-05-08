@@ -300,8 +300,37 @@ export const fail = (message?: string): StepFn => appendStep({ kind: 'fail', mes
 // --- Sub-traversal combinators -----------------------------------------
 
 // Filter: keep traversers where the sub-plan yields at least one result.
-export const where = (plan: SubPlan): StepFn =>
-  appendStep({ kind: 'where', plan: buildPlan(plan) });
+// `where` is polymorphic:
+//   where(subPlan)              — keep traversers whose sub-plan emits.
+//   where(startKey, predicate)  — keep traversers whose `startKey`-tagged value
+//                                 matches `predicate` against the value tagged
+//                                 at `predicate.value` (treated as an `as_`
+//                                 label). Returns a `ByableStep` so callers
+//                                 can append `.by(...)` modulators.
+//
+// The two forms share the `'where'` AST kind; the variants are distinguished
+// by which fields are set (`plan` vs `startKey`/`pred`), so downstream
+// pattern-matching narrows via TS's discriminated-union support without
+// needing nullable fields.
+export function where(plan: SubPlan): StepFn;
+export function where(
+  startKey: string,
+  pred: Predicate,
+): ByableStep<Extract<Step, { kind: 'where'; startKey: string }>>;
+export function where(
+  arg: SubPlan | string,
+  pred?: Predicate,
+): StepFn | ByableStep<Extract<Step, { kind: 'where'; startKey: string }>> {
+  if (typeof arg === 'string' && pred !== undefined) {
+    return makeByable<Extract<Step, { kind: 'where'; startKey: string }>>((bys) => ({
+      kind: 'where',
+      startKey: arg,
+      pred,
+      bys,
+    }));
+  }
+  return appendStep({ kind: 'where', plan: buildPlan(arg as SubPlan) });
+}
 
 // Logical combinators over sub-plans, each starting from the current traverser.
 export const and = (...plans: SubPlan[]): StepFn =>

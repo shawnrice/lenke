@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
-import { eq, gte } from '../predicates.js';
-import { V, and, bothE, count, hasId, in_, is, not, or, otherV, out, outE, values, where } from '../steps.js';
+import { eq, gte, gt, neq } from '../predicates.js';
+import { V, and, as_, bothE, count, hasId, hasLabel, in_, is, not, or, otherV, out, outE, values, where } from '../steps.js';
 import { traversal } from '../traversal.js';
 
 const arr = (r: Iterable<unknown>): unknown[] => [...r];
@@ -134,5 +134,56 @@ describe('where tests', () => {
       ),
     );
     expect(r).toEqual(['marko']);
+  });
+
+  // doc: g.V().has('age').as('a').out().in().has('age').as('b')
+  //         .where('a', gt('b')).by('age').values('name')
+  // Compares `a`'s age to `b`'s age via `gt`, projecting both via `.by('age')`.
+  // After the where, the traverser's current value is `b` (the round-trip
+  // vertex), so values('name') yields b's name.
+  test("where('a', gt('b')).by('age') compares two as-tagged values", () => {
+    const r = arr(
+      run(
+        traversal(
+          V(),
+          hasLabel('PERSON'),
+          as_('a'),
+          out('CREATED'),
+          in_('CREATED'),
+          hasLabel('PERSON'),
+          as_('b'),
+          where('a', gt('b')).by('age'),
+          values('name'),
+        ),
+        tinkerGraph,
+      ),
+    ) as string[];
+    // Pairs where a.age > b.age via lop (the only multi-creator software):
+    //   josh(32) > marko(29) → b=marko
+    //   peter(35) > marko(29) → b=marko
+    //   peter(35) > josh(32)  → b=josh
+    expect(r.sort()).toEqual(['josh', 'marko', 'marko']);
+  });
+
+  // doc: g.V(1).as('a').out('created').in('created').where('a', neq('b')).by('name')
+  // (rebound here as: 'a' tags marko, 'b' tags the round-trip co-creator).
+  test("where('a', neq('b')).by('name') filters self-matches via tag projection", () => {
+    const r = arr(
+      run(
+        traversal(
+          V('1'),
+          as_('a'),
+          out('CREATED'),
+          in_('CREATED'),
+          as_('b'),
+          where('a', neq('b')).by('name'),
+          values('name'),
+        ),
+        tinkerGraph,
+      ),
+    ) as string[];
+    // marko (a) -created-> lop -created<- {marko, josh, peter}. The neq
+    // filter drops marko (b matches a); josh and peter remain.
+    expect(r.sort()).toEqual(['josh', 'peter']);
   });
 });
