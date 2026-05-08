@@ -5,7 +5,7 @@ import {
   scopeTokenOf,
   type Step,
   type StepFn,
-} from './_internals.js';
+} from './framework.js';
 
 // Numeric/comparable aggregates (return a one-element stream).
 //

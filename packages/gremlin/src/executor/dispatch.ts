@@ -30,7 +30,7 @@ import {
   type Traverser,
   tupleKey,
   evalBy,
-} from './_internals.js';
+} from './runtime.js';
 
 // Per-category step impls.
 import {

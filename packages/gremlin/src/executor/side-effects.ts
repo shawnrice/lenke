@@ -1,4 +1,4 @@
-import { type RunContext, startTraverser, type Traverser } from './_internals.js';
+import { type RunContext, startTraverser, type Traverser } from './runtime.js';
 
 export const aggregateStep = function* (
   stream: Iterable<Traverser<unknown>>,

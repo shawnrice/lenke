@@ -1,5 +1,5 @@
 import type { Plan } from '../ast.js';
-import { STEP_FN, type StepFn } from './_internals.js';
+import { STEP_FN, type StepFn } from './framework.js';
 
 /**
  * Compose multiple step constructors into a single branded StepFn.

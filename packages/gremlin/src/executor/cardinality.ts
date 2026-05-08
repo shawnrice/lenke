@@ -1,4 +1,4 @@
-import { isSliceable, type Traverser } from './_internals.js';
+import { isSliceable, type Traverser } from './runtime.js';
 
 export const takeTraversers = function* (
   stream: Iterable<Traverser<unknown>>,
@@ -44,7 +44,7 @@ export const tailTraversers = function* (
 
 // Local-scope slice helpers. Operate on a single traverser's iterable value
 // (typically an array produced by `fold()` or a list-cardinality projection).
-// `isSliceable` lives in `_internals.ts` (shared with the local-scope
+// `isSliceable` lives in `runtime.ts` (shared with the local-scope
 // aggregations).
 export const sliceLocal = (v: unknown, start: number, end: number): unknown => {
   if (!isSliceable(v)) {

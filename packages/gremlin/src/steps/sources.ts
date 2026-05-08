@@ -1,4 +1,4 @@
-import { appendStep, type ID, type StepFn } from './_internals.js';
+import { appendStep, type ID, type StepFn } from './framework.js';
 
 // Sources start a traversal. `V`/`E` read from the graph; `inject` injects
 // arbitrary values as a fresh stream.

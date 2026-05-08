@@ -7,7 +7,7 @@ import {
   type RunContext,
   startTraverser,
   type Traverser,
-} from './_internals.js';
+} from './runtime.js';
 
 export const aggregateNumber = function* (
   stream: Iterable<Traverser<unknown>>,

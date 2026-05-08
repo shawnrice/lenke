@@ -5,7 +5,7 @@ import {
   type Plan,
   type StepFn,
   type SubPlan,
-} from './_internals.js';
+} from './framework.js';
 
 // Run each sub-plan from the current traverser; merge outputs in order.
 export const union = (...plans: SubPlan[]): StepFn =>

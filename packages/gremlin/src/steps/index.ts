@@ -11,7 +11,7 @@ export {
   Cardinality,
   Pop,
   type SubPlan,
-} from './_internals.js';
+} from './framework.js';
 
 // Step constructors, one file per category.
 export * from './pipe.js';

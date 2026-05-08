@@ -1,7 +1,7 @@
 import type { Edge, Graph, Vertex } from '@pl-graph/core';
 
 import { bothEdgesOf, inEdgesOf, outEdgesOf } from '../graph-queries.js';
-import { extend, isEdge, isVertex, type Traverser } from './_internals.js';
+import { extend, isEdge, isVertex, type Traverser } from './runtime.js';
 
 export type AdjacencyKind = 'out' | 'in' | 'both' | 'outE' | 'inE' | 'bothE';
 

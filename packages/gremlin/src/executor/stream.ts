@@ -7,7 +7,7 @@ import {
   type RunContext,
   startTraverser,
   type Traverser,
-} from './_internals.js';
+} from './runtime.js';
 import { applyPlanToStream } from './dispatch.js';
 
 // `map(plan)` — first output of the sub-plan replaces the traverser value.

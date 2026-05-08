@@ -1,4 +1,4 @@
-import { appendStep, type Predicate, type StepFn } from './_internals.js';
+import { appendStep, type Predicate, type StepFn } from './framework.js';
 
 // Identity step — pass-through (useful as a placeholder in branch defaults).
 export const identity = (): StepFn => appendStep({ kind: 'identity' });

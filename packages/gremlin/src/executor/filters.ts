@@ -8,7 +8,7 @@ import {
   recallTag,
   type RunContext,
   type Traverser,
-} from './_internals.js';
+} from './runtime.js';
 import { applyPlanToStream } from './dispatch.js';
 
 // `fail` throws as soon as the first traverser arrives. Useful as an

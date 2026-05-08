@@ -1,4 +1,4 @@
-import { appendStep, type FilterClosure, type StepFn } from './_internals.js';
+import { appendStep, type FilterClosure, type StepFn } from './framework.js';
 
 // Side-effect: stash each traverser into a named bag for later `cap()`.
 export const aggregate = (key: string): StepFn => appendStep({ kind: 'aggregate', key });

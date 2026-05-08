@@ -1,7 +1,7 @@
 import type { Graph } from '@pl-graph/core';
 
 import type { ID, Step } from '../ast.js';
-import { newContext, startTraverser, type Traverser } from './_internals.js';
+import { newContext, startTraverser, type Traverser } from './runtime.js';
 import { addEStep, addVStep } from './mutation.js';
 
 export const applySource = (
