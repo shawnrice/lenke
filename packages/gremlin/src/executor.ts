@@ -296,19 +296,29 @@ const applyStep = (
     }
 
     case 'take':
-      return takeTraversers(stream, step.n);
+      return step.scope === 'local'
+        ? mapTraverser(stream, (v) => sliceLocal(v, 0, step.n))
+        : takeTraversers(stream, step.n);
 
     case 'skip':
-      return skipTraversers(stream, step.n);
+      return step.scope === 'local'
+        ? mapTraverser(stream, (v) => sliceLocal(v, step.n, Infinity))
+        : skipTraversers(stream, step.n);
 
     case 'range':
+      if (step.scope === 'local') {
+        const end = step.end < 0 ? Infinity : step.end;
+        return mapTraverser(stream, (v) => sliceLocal(v, step.start, end));
+      }
       if (step.end < 0) {
         return skipTraversers(stream, step.start);
       }
       return takeTraversers(skipTraversers(stream, step.start), Math.max(0, step.end - step.start));
 
     case 'tail':
-      return tailTraversers(stream, step.n);
+      return step.scope === 'local'
+        ? mapTraverser(stream, (v) => tailLocal(v, step.n))
+        : tailTraversers(stream, step.n);
 
     case 'is':
       return filterTraverser(stream, (t) => matches(step.pred, t.value));
@@ -861,6 +871,34 @@ const tailTraversers = function* (
     }
   }
   yield* buf;
+};
+
+// Local-scope slice helpers. Operate on a single traverser's iterable value
+// (typically an array produced by `fold()` or a list-cardinality projection).
+// Strings are not unfolded; they pass through unchanged. Maps fall back to
+// their entries iterator for slicing (matching TinkerPop's Scope.local
+// behavior on map values).
+const isSliceable = (v: unknown): v is Iterable<unknown> => {
+  if (v === null || v === undefined || typeof v === 'string') {
+    return false;
+  }
+  return typeof (v as { [Symbol.iterator]?: unknown })[Symbol.iterator] === 'function';
+};
+
+const sliceLocal = (v: unknown, start: number, end: number): unknown => {
+  if (!isSliceable(v)) {
+    return v;
+  }
+  const arr = [...v];
+  return arr.slice(start, end === Infinity ? undefined : end);
+};
+
+const tailLocal = (v: unknown, n: number): unknown => {
+  if (!isSliceable(v)) {
+    return v;
+  }
+  const arr = [...v];
+  return n >= arr.length ? arr : arr.slice(arr.length - n);
 };
 
 const injectMidStream = function* (

@@ -39,11 +39,13 @@ where applicable.
 `executor.ts` throws "not yet implemented" for the `subgraph` step;
 `subgraph.test.ts` is a `test.skip` stub.
 
-### `Scope.local` not wired through `limit`/`range`
+### `Scope.local` on aggregation steps
 
-The `Scope.local` symbol is exported but the executor doesn't dispatch
-on it for these steps. Doc form `g.V(1).out().values('age').limit(Scope.local, 1)`
-is unreachable today.
+`Scope.local` is wired through `take`/`skip`/`limit`/`range`/`tail` —
+they slice each traverser's iterable value when given the local-scope
+arg. Not yet wired through `count`/`sum`/`min`/`max`/`mean`. Doc form
+`g.V().valueMap().count(Scope.local)` (count keys per map) is reachable
+on the slice-family but not the aggregate-family.
 
 ### `math()` doesn't resolve `as_`-bound names
 
