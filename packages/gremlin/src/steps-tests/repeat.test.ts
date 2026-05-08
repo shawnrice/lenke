@@ -55,13 +55,13 @@ describe('repeat tests', () => {
     expect(r).toEqual(['ripple']);
   });
 
-  // doc: g.V(1).repeat(out()).times(2).emit() — emit at every iteration.
-  test('repeat(out()).times(2).emit() yields every visited traverser', () => {
+  // doc: g.V(1).repeat(out()).times(2).emit() — post-form: emit AFTER each
+  // body application. Input (marko) is NOT emitted; for that, use emitBefore.
+  test('repeat(out()).times(2).emit() yields every body output', () => {
     const r = arr(
       run(traversal(V('1'), repeat(out()).times(2).emit(), values('name')), tinkerGraph),
     );
-    // Per executor: emit-before-loop on each iteration including iter 0.
-    expect(r).toEqual(['marko', 'vadas', 'josh', 'lop', 'ripple', 'lop']);
+    expect(r).toEqual(['vadas', 'josh', 'lop', 'ripple', 'lop']);
   });
 
   // doc: g.V(1).repeat(out()).times(2).emit(has('lang')).path().by('name')
@@ -75,15 +75,12 @@ describe('repeat tests', () => {
     expect(r).toEqual(['lop', 'ripple', 'lop']);
   });
 
-  // doc: g.V(1).repeat(out()).until(outE().count().is(0)).path().by('name')
-  // — terminate when current vertex is a sink (no out edges).
-  // doc: g.V(1).emit().repeat(out()).times(2).path().by('name')
-  // emit-before form yields the start vertex too.
-  test('emit-before-repeat() includes start vertex', () => {
+  // doc: g.V(1).emit().repeat(out()).times(2) — pre-form via .emitBefore():
+  // emit BEFORE each body application, including the input (marko at level 0).
+  test('emitBefore() yields the start vertex plus every level', () => {
     const r = arr(
-      run(traversal(V('1'), repeat(out()).times(2).emit(), values('name')), tinkerGraph),
+      run(traversal(V('1'), repeat(out()).times(2).emitBefore(), values('name')), tinkerGraph),
     );
-    // Same as times(2).emit() — emit fires for every iteration including iter 0.
     expect((r as string[]).sort()).toEqual(['josh', 'lop', 'lop', 'marko', 'ripple', 'vadas']);
   });
 
@@ -147,16 +144,13 @@ describe('repeat tests', () => {
     expect(r).toEqual([]);
   });
 
-  test('repeat(out()).times(3).emit() emits each level after the body', () => {
+  test('repeat(out()).times(3).emit() emits each body output (post-form)', () => {
     const r = arr(
       run(traversal(V('1'), repeat(out()).times(3).emit(), values('name')), tinkerGraph),
     );
-    // Per the existing executor: emit fires at the start of each iteration on
-    // the current frontier. Iter0 emits start (marko); Iter1 emits frontier
-    // after first body application ({vadas, josh, lop}); Iter2 emits the
-    // 2-hop frontier ({ripple, lop} from josh). Iter3: frontier becomes empty
-    // (sinks), so nothing more is emitted.
-    expect((r as string[]).sort()).toEqual(['josh', 'lop', 'lop', 'marko', 'ripple', 'vadas']);
+    // iter1: body=[vadas,josh,lop] → emit. iter2: body=[ripple,lop] → emit.
+    // iter3: body=[] (all sinks) → nothing. Input (marko) not emitted.
+    expect((r as string[]).sort()).toEqual(['josh', 'lop', 'lop', 'ripple', 'vadas']);
   });
 
   test('repeat(out()).times(3).emit(hasLabel(SOFTWARE)) selectively emits software vertices', () => {
@@ -196,10 +190,10 @@ describe('repeat tests', () => {
 
   // doc: using loops() inside the body via where(loops().is(lt(N)))
   test('repeat(traversal(out(), where(loops().is(lt(2))))).times(5).emit() self-limits via loops', () => {
-    // loopCount is incremented BEFORE each iteration body, so iter0 has
-    // loopCount=1, iter1 has loopCount=2. where(loops().is(lt(2))) keeps
-    // traversers only at iter0; at iter1 the where filters to empty.
-    // With .emit() we still see what was emitted before the body runs.
+    // Post-form emit fires AFTER each body application. iter1: body produces
+    // [vadas, josh, lop] (loopCount 1, 1<2 passes); emit them. iter2: body's
+    // where(lt(2)) filters all (loopCount=2, not <2); frontier empties; nothing
+    // emitted. Input (marko) not emitted in post-form.
     const r = arr(
       run(
         traversal(
@@ -210,10 +204,7 @@ describe('repeat tests', () => {
         tinkerGraph,
       ),
     );
-    // iter0 emits start (marko) then body advances frontier to 1-hop;
-    // iter1 emits {vadas, josh, lop}; body filters all (loopCount=2, not <2);
-    // frontier empties.
-    expect((r as string[]).sort()).toEqual(['josh', 'lop', 'marko', 'vadas']);
+    expect((r as string[]).sort()).toEqual(['josh', 'lop', 'vadas']);
   });
 
   // ----- Edge cases -----

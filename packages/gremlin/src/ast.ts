@@ -128,7 +128,18 @@ export type Step =
   | { kind: 'range'; start: number; end: number } // end < 0 means open-ended
   | { kind: 'tail'; n: number }
   // Iteration
-  | { kind: 'repeat'; body: Plan; until?: Plan; emit?: Plan; times?: number }
+  | {
+      kind: 'repeat';
+      body: Plan;
+      until?: Plan;
+      emit?: Plan;
+      // TinkerPop placement: `repeat(body).emit(...)` (post-form) emits AFTER
+      // each body application; `emit(...).repeat(body)` (pre-form, our
+      // `.emitBefore()`) emits BEFORE each body application, including the
+      // input traverser at level 0.
+      emitBefore?: boolean;
+      times?: number;
+    }
   // Predicates on the current value
   | { kind: 'is'; pred: Predicate }
   // Identity / no-op
@@ -273,7 +284,7 @@ export type Step =
   // Terminal: collect all traversers' paths into a nested map. Each path
   // becomes a chain of map keys (path[0] -> path[1] -> ... -> {}).
   // TODO: support `by()` modulators to project path elements before nesting.
-  | { kind: 'tree' }
+  | { kind: 'tree'; bys?: readonly By[] }
   // Switch over a sub-plan's first result. Per traverser, run `test`; route
   // to the first option whose `match` equals that result, else `default`.
   | {
