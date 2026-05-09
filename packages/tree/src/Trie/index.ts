@@ -1,1 +1,1 @@
-export * from './Trie';
+export * from './Trie.js';

@@ -1,6 +1,4 @@
-import type { UnaryFn } from './types';
-
-function* internalSkip<T>(x: number, iterable: Iterable<T>): Iterable<T> {
+const internalSkip = function* <T>(x: number, iterable: Iterable<T>): Iterable<T> {
   let count = 0;
 
   for (const iteration of iterable) {
@@ -10,10 +8,10 @@ function* internalSkip<T>(x: number, iterable: Iterable<T>): Iterable<T> {
       yield iteration;
     }
   }
-}
+};
 
-export function skip<T>(x: number): UnaryFn<Iterable<T>>;
+export function skip(x: number): <T>(iterable: Iterable<T>) => Iterable<T>;
 export function skip<T>(x: number, iterable: Iterable<T>): Iterable<T>;
-export function skip<T>(x: number, iterable?: Iterable<T>): UnaryFn<Iterable<T>> | Iterable<T> {
-  return iterable ? internalSkip(x, iterable) : x0 => internalSkip(x, x0);
+export function skip<T>(x: number, iterable?: Iterable<T>) {
+  return iterable ? internalSkip(x, iterable) : <U>(x0: Iterable<U>) => internalSkip(x, x0);
 }

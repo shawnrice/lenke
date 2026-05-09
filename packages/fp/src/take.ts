@@ -1,21 +1,19 @@
-import type { UnaryFn } from './types';
+const internalTake = function* <T>(x: number, iterable: Iterable<T>): Iterable<T> {
+  let count = 0;
 
-export function take<T>(x: number): UnaryFn<Iterable<T>>;
-export function take<T>(x: number, iterable: Iterable<T>): Iterable<T>;
-export function take<T>(x: number, iterable?: Iterable<T>): UnaryFn<Iterable<T>> | Iterable<T> {
-  function* internalTake(x0: Iterable<T>) {
-    let count = 0;
+  for (const iteration of iterable) {
+    if (count < x) {
+      yield iteration;
+    }
 
-    for (const iteration of x0) {
-      if (count < x) {
-        yield iteration;
-      }
-
-      if (++count >= x) {
-        break;
-      }
+    if (++count >= x) {
+      break;
     }
   }
+};
 
-  return iterable ? internalTake(iterable) : internalTake;
+export function take(x: number): <T>(iterable: Iterable<T>) => Iterable<T>;
+export function take<T>(x: number, iterable: Iterable<T>): Iterable<T>;
+export function take<T>(x: number, iterable?: Iterable<T>) {
+  return iterable ? internalTake(x, iterable) : <U>(x0: Iterable<U>) => internalTake(x, x0);
 }

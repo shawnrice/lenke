@@ -1,49 +1,34 @@
-import { useRef, useSyncExternalStore, useDebugValue } from 'react';
+import { bind, type GremlinBound } from '@pl-graph/gremlin';
+import { arraysAreEqual } from '@pl-graph/utils';
 
-import { Traversal } from '@pl-graph/core/src';
-import { arraysAreEqual } from '@pl-graph/utils/src';
-
-import { useGraphContext } from './GraphContext';
+import { useGraphSelector } from './useGraphSelector.js';
 
 type Equality<T> = (a: T, b: T) => boolean;
 
 const defaultIsEqual = <T>(a: T, b: T): boolean => {
-  if (a instanceof Traversal && b instanceof Traversal) {
-    return a.isEqual(b);
-  }
-
   if (Array.isArray(a) && Array.isArray(b)) {
     return arraysAreEqual(a, b);
   }
-
-  return a === b;
+  return Object.is(a, b);
 };
 
+/**
+ * Run a gremlin query against the current graph snapshot, re-running on
+ * each graph change. The query receives a `GremlinBound` facade closed
+ * over the latest snapshot — call `g.toArray(plan)`, `g.toSet(plan)`, or
+ * iterate the lazy `g.query(plan)` inside the callback.
+ *
+ * Results are stabilized by `isEqual` (default: elementwise equality for
+ * arrays, otherwise `Object.is`) so React can short-circuit re-renders
+ * when the materialized value didn't change even though the snapshot
+ * reference did.
+ *
+ * @example
+ *   const names = useGraphTraversal((g) =>
+ *     g.toArray(traversal(V(), values('name'))) as string[],
+ *   );
+ */
 export const useGraphTraversal = <T>(
-  traversal: (graph: Traversal<any, any>) => T,
+  query: (g: GremlinBound) => T,
   isEqual: Equality<T> = defaultIsEqual,
-): T => {
-  const { graph } = useGraphContext();
-  const cache = useRef<T | null>(null);
-
-  const snapshot = useSyncExternalStore(
-    (onStoreChange: () => any) => graph.subscribe(onStoreChange),
-    () => graph.snapshot(), // store.getState
-    undefined,
-  );
-
-  const next = snapshot.traverse(traversal);
-
-  if (cache.current === null) {
-    // @ts-expect-error type: these are a few TS2345 errors
-    cache.current = next;
-    // @ts-expect-error type
-  } else if (!isEqual(cache.current, next)) {
-    // @ts-expect-error type
-    cache.current = next;
-  }
-
-  useDebugValue(cache.current);
-
-  return cache.current!;
-};
+): T => useGraphSelector((graph) => query(bind(graph.snapshot())), isEqual);

@@ -1,4 +1,4 @@
-import type { BinaryFn } from './types';
+import type { BinaryFn } from './types.js';
 
 const defaultComparator = <T>(a: T, b: T): boolean => a === b;
 

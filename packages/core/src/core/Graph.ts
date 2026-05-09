@@ -1,20 +1,26 @@
-/* eslint-disable @typescript-eslint/unified-signatures */
-import { Emitter, EmitterEvent } from '@pl-graph/emitter/src';
-import { timer } from '@pl-graph/utils/src/timer';
+import { Emitter, EmitterEvent } from '@pl-graph/emitter';
+import { timer } from '@pl-graph/utils';
 
-import { Traversal } from '../gremlin-v1/Traversal';
-import { deserialize } from '../pg-format/deserialize';
-import { serialize } from '../pg-format/serialize';
-import { Edge } from './Edge';
-import { Vertex } from './Vertex';
+import { deserialize } from '../pg-format/deserialize.js';
+import { serialize } from '../pg-format/serialize.js';
+import { Edge } from './Edge.js';
+import { Vertex } from './Vertex.js';
 
-import type { UnaryFn } from '@pl-graph/fp/src';
-import type { UnknownObject } from '@pl-graph/utils/src/types';
+import type { GraphEvent, GraphEvents, GraphEventType } from './GraphEvents.js';
 
-import type { AddEdgeParams } from './Edge';
-import type { GraphEvent, GraphEvents, GraphEventType } from './GraphEvents';
-import type { VertexParams } from './Vertex';
-type AddVertexParams<V> = Pick<VertexParams<V>, 'id' | 'labels' | 'properties'>;
+type AddVertexParams = {
+  id?: string;
+  labels: string[];
+  properties: Record<string, unknown>;
+};
+
+type AddEdgeArgs = {
+  id?: string;
+  from: Vertex;
+  to: Vertex;
+  labels: string[];
+  properties: Record<string, unknown>;
+};
 
 type GraphOptions = {
   eagerSnapshot: boolean;
@@ -23,42 +29,33 @@ type GraphOptions = {
 /**
  * A Property-Label graph.
  *
- * More
+ * Vertices and Edges are concrete (non-generic) classes. Property types are
+ * `Record<string, unknown>` at this layer; cast at the application boundary
+ * if you need typed access (`vertex.properties as Person`), or wrap the
+ * graph with a schema-aware layer.
  */
-export class Graph<
-  V extends Vertex<any> = Vertex<any>,
-  E extends Edge<any, any, any> = Edge<any, any, any>,
-> {
-  verticesById: Map<string, V>;
+export class Graph {
+  verticesById: Map<string, Vertex>;
+  verticesByLabel: Map<string, Set<Vertex>>;
+  vertices: Set<Vertex>;
 
-  verticesByLabel: Map<string, Set<V>>;
-
-  vertices: Set<V>;
-
-  edgesById: Map<string, E>;
-
-  edges: Set<E>;
-
-  edgesByLabel: Map<string, Set<E>>;
-
-  edgesFromByLabel: Map<string, Map<string, Set<E>>>;
-
-  edgesToByLabel: Map<string, Map<string, Set<E>>>;
-
-  edgesByVertex: Map<string, Set<E>>;
+  edgesById: Map<string, Edge>;
+  edges: Set<Edge>;
+  edgesByLabel: Map<string, Set<Edge>>;
+  edgesFromByLabel: Map<string, Map<string, Set<Edge>>>;
+  edgesToByLabel: Map<string, Map<string, Set<Edge>>>;
+  edgesByVertex: Map<string, Set<Edge>>;
 
   eagerSnapshot: boolean;
 
   elementLabels: Map<string, Set<string>>;
+  elementProperties: Map<string, Record<string, unknown>>;
 
-  elementProperties: Map<string, UnknownObject>;
+  private readonly listeners: Set<() => unknown>;
 
-  private readonly listeners: Set<() => any>;
-
-  public nextSnapshot: Graph<V, E> | null;
+  public nextSnapshot: Graph | null;
 
   private nextSnapshotIsStale: boolean;
-
   private createNextSnapshot: number | undefined;
 
   emitter: Emitter<keyof GraphEvents, GraphEvents>;
@@ -92,8 +89,6 @@ export class Graph<
     };
 
     const markIsStale = (event: GraphEvent) => {
-      // We're creating this as a function so that we can delay its execution with `queueMicrotask`
-      // This should allow other user-defined
       const doTheWork = () => {
         if (event.defaultPrevented) {
           return;
@@ -105,8 +100,8 @@ export class Graph<
           window.cancelIdleCallback(this.createNextSnapshot!);
           this.createNextSnapshot = window.requestIdleCallback(callback);
         } else {
-          global.clearTimeout(this.createNextSnapshot);
-          global.setTimeout(callback, 1);
+          globalThis.clearTimeout(this.createNextSnapshot);
+          globalThis.setTimeout(callback, 1);
         }
       };
 
@@ -136,20 +131,23 @@ export class Graph<
       this.emit(new EmitterEvent('@graph/mutate', { original: event }));
     };
 
-    graphMutationEvents.forEach(type => {
-      this.on(type, markIsStale);
-      this.on(type, onMutate);
+    graphMutationEvents.forEach((type) => {
+      // The same listener is registered against many event types; we erase
+      // the per-event listener type here.
+      this.on(type, markIsStale as never);
+      this.on(type, onMutate as never);
     });
 
-    this.eagerSnapshot && this.prepareNextSnapshotLazy();
+    if (this.eagerSnapshot) {
+      this.prepareNextSnapshotLazy();
+    }
   }
 
   /**
    * Creates a graph from a pg-format string
-   * @returns Graph
    */
-  static from<V extends Vertex<any>, E extends Edge<any, any, any>>(value: string): Graph<V, E> {
-    return deserialize(value, new Graph<V, E>());
+  static from(value: string): Graph {
+    return deserialize(value, new Graph());
   }
 
   get size(): number {
@@ -175,24 +173,18 @@ export class Graph<
     return this.edges.size;
   }
 
-  public subscribe = (callback: () => any): (() => void) => {
+  public subscribe = (callback: () => unknown): (() => void) => {
     this.listeners.add(callback);
-
-    const unsubscribe = () => {
+    return () => {
       this.listeners.delete(callback);
     };
-
-    return unsubscribe;
   };
 
   /**
    * Clones the graph as well as all the vertices and edges
-   *
-   * @returns Graph<V,E>
    */
-  public clone = (options: Partial<GraphOptions> = {}): Graph<V, E> => {
-    // So, we need to copy EVERYTHING
-    const next = new Graph<V, E>(options);
+  public clone = (options: Partial<GraphOptions> = {}): Graph => {
+    const next = new Graph(options);
     next.disableEvents();
 
     next.verticesById = new Map(this.verticesById);
@@ -239,12 +231,11 @@ export class Graph<
     }
   };
 
-  private readonly prepareNextSnapshot = (): Graph<V, E> => {
+  private readonly prepareNextSnapshot = (): Graph => {
     if (this.nextSnapshot && !this.nextSnapshotIsStale) {
       return this.nextSnapshot;
     }
 
-    /* eslint-disable functional/immutable-data */
     const timeSnapshotCreation = timer(
       `Cloning the graph with ${this.vertexCount} vertices and ${this.edgeCount} edges`,
     );
@@ -252,46 +243,38 @@ export class Graph<
     this.nextSnapshot = this.clone({ eagerSnapshot: false });
     timeSnapshotCreation();
     this.nextSnapshotIsStale = false;
-    /* eslint-enable functional/immutable-data */
 
-    // Notify listeners that there is a new snapshot available
     this.notify();
 
     return this.nextSnapshot;
   };
 
   private readonly prepareNextSnapshotLazy = (): void => {
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-    const rIC =
+    const rIC: (cb: () => unknown, opts?: IdleRequestOptions) => unknown =
       typeof window !== 'undefined' && 'requestIdleCallback' in window
         ? window.requestIdleCallback
-        : (cb: () => any) => setTimeout(cb, 1);
+        : (cb) => setTimeout(cb, 1);
     rIC(() => this.prepareNextSnapshot(), { timeout: undefined });
   };
 
-  public snapshot = (): Graph<V, E> => {
+  public snapshot = (): Graph => {
     return this.prepareNextSnapshot();
   };
 
   /* Mutation methods */
 
   /**
-   * Adds a Vertex to the Graph
+   * Adds a Vertex to the Graph. Accepts either an existing Vertex or params
+   * to construct a new one.
    */
-  public addVertex: {
-    <T extends Vertex<any>>(vertex: Vertex<T>): Vertex<T>;
-    <T extends V['properties']>(params: AddVertexParams<T>): Vertex<T>;
-  } = <T extends V['properties'] | Vertex<any>>(
-    params: AddVertexParams<T> | Vertex<T>,
-  ): Vertex<T> => {
+  public addVertex = (params: AddVertexParams | Vertex): Vertex => {
     if (params.id && this.getVertexById(params.id)) {
-      // We have already added a vertex with this ID
       return this.getVertexById(params.id)!;
     }
 
-    const vertex: Vertex<T> = Vertex.isVertex<T>(params)
+    const vertex = Vertex.isVertex(params)
       ? params
-      : new Vertex<T>({ ...params, graph: this });
+      : new Vertex({ ...params, graph: this });
 
     const event = this.emit(new EmitterEvent('@graph/VertexAdded', vertex));
 
@@ -310,17 +293,16 @@ export class Graph<
   };
 
   /**
-   * Removes a Vertex from the Graph
-   *
-   * This also removes any edges that the Vertex was part of
+   * Removes a Vertex from the Graph. Also removes any edges the Vertex was
+   * part of.
    */
-  public removeVertex = (vertex: V | string): V => {
+  public removeVertex = (vertex: Vertex | string): Vertex | null => {
     if (typeof vertex === 'string') {
-      if (!this.verticesById.has(vertex)) {
-        return null as any;
+      const found = this.verticesById.get(vertex);
+      if (!found) {
+        return null;
       }
-
-      return this.removeVertex(this.verticesById.get(vertex)!);
+      return this.removeVertex(found);
     }
 
     const event = this.emit(new EmitterEvent('@graph/VertexRemoved', vertex));
@@ -347,7 +329,7 @@ export class Graph<
     return vertex;
   };
 
-  public addLabelToVertex = (label: string, vertex: Vertex<any>): Vertex<any> => {
+  public addLabelToVertex = (label: string, vertex: Vertex): Vertex => {
     const event = this.emit(new EmitterEvent('@graph/LabelAddedToVertex', { label, vertex }));
 
     if (event.defaultPrevented) {
@@ -362,7 +344,7 @@ export class Graph<
     return vertex;
   };
 
-  public removeLabelFromVertex = (label: string, vertex: Vertex<any>): Vertex<any> => {
+  public removeLabelFromVertex = (label: string, vertex: Vertex): Vertex => {
     const event = this.emit(new EmitterEvent('@graph/LabelRemovedFromVertex', { label, vertex }));
 
     if (event.defaultPrevented) {
@@ -376,26 +358,18 @@ export class Graph<
     return vertex;
   };
 
-  // TODO fix the type signature so that it's internally consistent. It's currently optimized for use
-  public addEdge: {
-    <From extends V, To extends V, P extends UnknownObject>(
-      params: Omit<AddEdgeParams<From, To, P>, 'graph'>,
-    ): Edge<From, To, P>;
-    <From extends E['from'], To extends E['to'], P extends UnknownObject>(
-      edge: Edge<From, To, P>,
-    ): Edge<Vertex<From>, Vertex<To>, P>;
-  } = <From extends E['from'], To extends E['to'], P extends UnknownObject>(
-    params:
-      | Omit<AddEdgeParams<Vertex<From>, Vertex<To>, P>, 'graph'>
-      | Edge<Vertex<From>, Vertex<To>, P>,
-  ) => {
+  /**
+   * Adds an Edge to the Graph. Accepts either an existing Edge or params to
+   * construct a new one.
+   */
+  public addEdge = (params: AddEdgeArgs | Edge): Edge => {
     if (params.id && this.getEdgeById(params.id)) {
       return this.getEdgeById(params.id)!;
     }
 
-    const edge: E = Edge.isEdge(params)
+    const edge = Edge.isEdge(params)
       ? params
-      : new Edge<From, To, P>({ ...params, graph: this });
+      : new Edge({ ...params, graph: this });
 
     if (!edge.from || !edge.to) {
       console.error('Cannot create edge with missing vertices.');
@@ -429,7 +403,7 @@ export class Graph<
     return edge;
   };
 
-  public removeEdge = (edge: E): E => {
+  public removeEdge = (edge: Edge): Edge => {
     const event = this.emit(new EmitterEvent('@graph/EdgeRemoved', edge));
 
     if (event.defaultPrevented) {
@@ -451,12 +425,8 @@ export class Graph<
     return edge;
   };
 
-  public addLabelToEdge = <From extends V, To extends V, P extends UnknownObject>(
-    label: string,
-    edge: Edge<From, To, P>,
-  ): Edge<From, To, P> => {
+  public addLabelToEdge = (label: string, edge: Edge): Edge => {
     if (edge.labels.has(label)) {
-      // Already added....
       return edge;
     }
 
@@ -475,12 +445,8 @@ export class Graph<
     return edge;
   };
 
-  public removeLabelFromEdge = <From extends V, To extends V, P extends UnknownObject>(
-    label: string,
-    edge: Edge<From, To, P>,
-  ): Edge<From, To, P> => {
+  public removeLabelFromEdge = (label: string, edge: Edge): Edge => {
     if (!edge.labels.has(label)) {
-      // Already removed...
       return edge;
     }
 
@@ -501,7 +467,7 @@ export class Graph<
 
   /* Query methods */
 
-  public hasVertex = (vertex: V | string): boolean => {
+  public hasVertex = (vertex: Vertex | string): boolean => {
     if (typeof vertex === 'string') {
       return this.verticesById.has(vertex);
     }
@@ -509,46 +475,30 @@ export class Graph<
     return this.vertices.has(vertex);
   };
 
-  public owns = (x: V | E): boolean => {
+  public owns = (x: Vertex | Edge): boolean => {
     return (Vertex.isVertex(x) && this.vertices.has(x)) || (Edge.isEdge(x) && this.edges.has(x));
   };
 
-  /**
-   * Walk a Graph using a Gremlin Query
-   */
-  public traverse: {
-    <T = any>(query: UnaryFn<Traversal, Traversal | any[]>): Traversal<T> | any[];
-    <T = any>(...fns: any[]): Traversal<any, T>;
-  } = (...fns: any[]) => {
-    const traversal = Traversal.with<any, any>(this);
-
-    if (fns.length) {
-      return fns.reduce((g, f) => f(g), traversal);
-    }
-
-    return traversal;
+  public getVertexById = (id: string): Vertex | null => {
+    return this.verticesById.get(id) ?? null;
   };
 
-  public getVertexById = <X extends V>(id: string): X | null => {
-    return (this.verticesById.get(id) ?? null) as X | null;
+  public getEdgeById = (id: string): Edge | null => {
+    return this.edgesById.get(id) ?? null;
   };
 
-  public getEdgeById = <X extends E>(id: string): X | null => {
-    return (this.edgesById.get(id) ?? null) as X | null;
-  };
-
-  public getVerticesByLabel = (label: string): Set<V> => {
+  public getVerticesByLabel = (label: string): Set<Vertex> => {
     return new Set(this.verticesByLabel.get(label) ?? []);
   };
 
-  public getEdgesByLabel = (label: string): Set<E> => {
+  public getEdgesByLabel = (label: string): Set<Edge> => {
     return new Set(this.edgesByLabel.get(label) ?? []);
   };
 
   /**
    * Deserializes a string from pg-format into this graph
    */
-  deserialize(value: string): Graph<V, E> {
+  deserialize(value: string): Graph {
     return deserialize(value, this);
   }
 
@@ -558,55 +508,35 @@ export class Graph<
     return this.emitter.isEnabled();
   };
 
-  /**
-   * Enables the GraphEvents to fire
-   */
   public enableEvents = (): void => {
     this.emitter.enable();
   };
 
-  /**
-   * Disables the GraphEvents
-   *
-   * This is potentially useful when hydrating a Graph so as not to create too many snapshots
-   */
   public disableEvents = (): void => {
     this.emitter.disable();
   };
 
-  /**
-   * Adds an EventListener on a GraphEvent type
-   */
   public on = <T extends keyof GraphEvents>(
     type: T,
-    listener: (event: GraphEvents[T]) => any,
+    listener: (event: GraphEvents[T]) => unknown,
   ): void => {
     this.emitter.on(type, listener);
   };
 
-  /**
-   * Adds an EventListener on a GraphEvent type that will be run only once
-   */
   public once = <T extends keyof GraphEvents>(
     type: T,
-    listener: (event: GraphEvents[T]) => any,
+    listener: (event: GraphEvents[T]) => unknown,
   ): void => {
     this.emitter.once(type, listener);
   };
 
-  /**
-   * Emits a GraphEvent
-   */
   public emit = <T extends EmitterEvent<any, any>>(event: T): T => {
-    return this.emitter.emit(event);
+    return this.emitter.emit(event as never) as T;
   };
 
   /* Internal Methods */
 
-  /**
-   * Adds a vertex to all appropriate indices based on a label
-   */
-  private readonly indexVertexLabel = (label: string, vertex: V): void => {
+  private readonly indexVertexLabel = (label: string, vertex: Vertex): void => {
     if (!this.verticesByLabel.has(label)) {
       this.verticesByLabel.set(label, new Set());
     }
@@ -614,21 +544,16 @@ export class Graph<
     this.verticesByLabel.get(label)?.add(vertex);
   };
 
-  /**
-   * Removes a Vertex from indices based on a label
-   */
-  private readonly deIndexVertexLabel = (label: string, vertex: V): void => {
-    if (this.verticesByLabel.get(label)?.delete(vertex)) {
-      if (this.verticesByLabel.get(label)?.size === 0) {
-        this.verticesByLabel.delete(label);
-      }
+  private readonly deIndexVertexLabel = (label: string, vertex: Vertex): void => {
+    if (
+      this.verticesByLabel.get(label)?.delete(vertex) &&
+      this.verticesByLabel.get(label)?.size === 0
+    ) {
+      this.verticesByLabel.delete(label);
     }
   };
 
-  /**
-   * Convenience for adding an edge to all the indices based on labels
-   */
-  private readonly indexEdgeLabel = (label: string, edge: E) => {
+  private readonly indexEdgeLabel = (label: string, edge: Edge) => {
     if (!this.edgesByLabel.has(label)) {
       this.edgesByLabel.set(label, new Set());
     }
@@ -660,26 +585,23 @@ export class Graph<
     edgesTo.get(label)!.add(edge);
   };
 
-  /**
-   * Convenience for removing an edge from all the indices
-   *
-   * This should be called when removing a label from an edge or deleting an edge
-   */
-  private readonly deIndexEdgeLabel = (label: string, edge: E) => {
+  private readonly deIndexEdgeLabel = (label: string, edge: Edge) => {
     this.edgesByLabel.get(label)?.delete(edge);
 
     const fromId = edge.from.id;
-    if (this.edgesFromByLabel.get(fromId)?.get(label)?.delete(edge)) {
-      if (this.edgesFromByLabel.get(fromId)?.get(label)?.size === 0) {
-        this.edgesFromByLabel.get(fromId)?.delete(label);
-      }
+    if (
+      this.edgesFromByLabel.get(fromId)?.get(label)?.delete(edge) &&
+      this.edgesFromByLabel.get(fromId)?.get(label)?.size === 0
+    ) {
+      this.edgesFromByLabel.get(fromId)?.delete(label);
     }
 
     const toId = edge.to.id;
-    if (this.edgesToByLabel.get(toId)?.get(label)?.delete(edge)) {
-      if (this.edgesToByLabel.get(toId)?.get(label)?.size === 0) {
-        this.edgesToByLabel.get(toId)?.delete(label);
-      }
+    if (
+      this.edgesToByLabel.get(toId)?.get(label)?.delete(edge) &&
+      this.edgesToByLabel.get(toId)?.get(label)?.size === 0
+    ) {
+      this.edgesToByLabel.get(toId)?.delete(label);
     }
   };
 }

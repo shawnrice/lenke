@@ -1,4 +1,4 @@
-import { root } from './root';
+import { root } from './root.js';
 
 /**
  * A regular TrieNode, except that we can store values in it.
@@ -95,26 +95,11 @@ export class TrieNode<T> {
    * ```
    */
   *descendants(): Generator<TrieNode<T>> {
-    const queue: TrieNode<T>[] = Array.from(this.children.values());
-
-    while (queue.length > 0) {
-      const current = queue.shift();
-
-      if (typeof current === 'undefined') {
-        break;
+    for (const child of this.children.values()) {
+      if (child.isEndOfWord) {
+        yield child;
       }
-
-      if (current.isEndOfWord) {
-        yield current;
-      }
-
-      const children = Array.from(current.children.values());
-
-      // node.children is a map that respects insertion order, so we want to push things to the
-      // front of the stack backwards
-      for (let i = children.length - 1; i >= 0; i--) {
-        queue.unshift(children[i]);
-      }
+      yield* child.descendants();
     }
   }
 }

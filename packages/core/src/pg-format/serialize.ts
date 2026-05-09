@@ -1,10 +1,7 @@
-import { Edge, Graph, Vertex } from '../';
-import { PGFormat } from './types';
+import type { Graph } from '../core/Graph.js';
+import type { PGFormat } from './types.js';
 
-export const graph2PGJSON = <
-  V extends Vertex<any> = Vertex<any>,
-  E extends Edge<any, any, any> = Edge<any, any, any>,
->(graph: Graph<V, E>): PGFormat => {
+export const graph2PGJSON = (graph: Graph): PGFormat => {
   const nodes: PGFormat['nodes'] = [];
   const edges: PGFormat['edges'] = [];
 
@@ -12,7 +9,7 @@ export const graph2PGJSON = <
     nodes.push({
       id: vertex.id,
       labels: [...vertex.labels],
-      properties: vertex.properties,
+      properties: vertex.properties as PGFormat['nodes'][number]['properties'],
     });
   }
 
@@ -23,15 +20,12 @@ export const graph2PGJSON = <
       to: edge.to.id,
       undirected: false,
       labels: [...edge.labels],
-      properties: edge.properties,
+      properties: edge.properties as PGFormat['edges'][number]['properties'],
     });
   }
 
   return { nodes, edges };
 };
 
-export const serialize = <
-  V extends Vertex<any> = Vertex<any>,
-  E extends Edge<any, any, any> = Edge<any, any, any>,
->(graph: Graph<V, E>, space?: string | number): string =>
+export const serialize = (graph: Graph, space?: string | number): string =>
   JSON.stringify(graph2PGJSON(graph), null, space);

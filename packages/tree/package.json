@@ -1,19 +1,33 @@
 {
   "name": "@pl-graph/tree",
-  "module": "src/main.ts",
+  "files": [
+    "dist"
+  ],
   "type": "module",
-  "scripts": {},
+  "types": "./dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "default": "./dist/esm/index.mjs"
+    }
+  },
+  "scripts": {
+    "build": "bun build.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@pl-graph/fp": "workspace:*",
+    "@pl-graph/utils": "workspace:*"
+  },
   "devDependencies": {
+    "@pl-graph/dev": "workspace:*",
     "@types/bun": "latest",
     "@types/debug": "^4.1.12",
     "bun-types": "latest",
-    "debug": "^4.3.4",
-    "prettier": "^3.3.3"
+    "debug": "^4.4.3",
+    "prettier": "^3.5.2"
   },
   "peerDependencies": {
-    "typescript": "^5.0.0"
-  },
-  "dependencies": {
-    "@pl-graph/utils": "workspace:*"
+    "typescript": "^6.0.0"
   }
 }

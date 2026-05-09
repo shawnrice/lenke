@@ -1,6 +1,4 @@
-import { Edge } from '../core/Edge';
-import { Graph } from '../core/Graph';
-import { Vertex } from '../core/Vertex';
+import type { Graph } from '../core/Graph.js';
 
 /**
  * Deserialize a pg-format string into a graph
@@ -8,13 +6,7 @@ import { Vertex } from '../core/Vertex';
  * @see https://pg-format.readthedocs.io/en/0.3/contents/reference.html
  *
  */
-export const deserialize = <
-  V extends Vertex<any> = Vertex<any>,
-  E extends Edge<any, any, any> = Edge<any, any, any>,
->(
-  value: string,
-  graph: Graph<V, E>,
-): Graph<V, E> => {
+export const deserialize = (value: string, graph: Graph): Graph => {
   // Todo, guard this in case there's bad json data
   const data = JSON.parse(value);
 

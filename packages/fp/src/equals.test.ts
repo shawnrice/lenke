@@ -1,12 +1,13 @@
-import { equals } from './equals';
 import { describe, expect, test } from 'bun:test';
 
-function* range(start: number, stop: number) {
+import { equals } from './equals.js';
+
+const range = function* (start: number, stop: number) {
   let x = start;
   while (x <= stop) {
     yield x++;
   }
-}
+};
 
 describe('functional iterator tests', () => {
   test('equals works', () => {
@@ -17,7 +18,7 @@ describe('functional iterator tests', () => {
     const a = [1, 2, 3, 4, 5];
     const b = ['1', '2', '3', '4', '5'];
     expect(equals<string | number>(a, b)).toBe(false);
-    // eslint-disable-next-line eqeqeq
+    // eslint-disable-next-line eqeqeq -- intentional loose equality to verify the custom comparator path
     expect(equals<string | number>(a, b, (x, y) => x == y)).toBe(true);
   });
 

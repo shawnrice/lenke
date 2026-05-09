@@ -1,5 +1,5 @@
-import { List } from '../List';
-import { isGeneratorFunction } from './isGeneratorFunction';
+import { List } from '../List.js';
+import { isGeneratorFunction } from './isGeneratorFunction.js';
 
 export function from<T>(iterable: Iterable<T>): List<T> {
   if (isGeneratorFunction<T>(iterable)) {

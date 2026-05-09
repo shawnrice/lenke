@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { reject } from './reject';
+
+import { reject } from './reject.js';
 
 describe('functional iterator tests', () => {
   test('reject works', () => {

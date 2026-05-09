@@ -1,15 +1,15 @@
 import { describe, expect, test } from 'bun:test';
 
-import { isGeneratorFunction } from './isGeneratorFunction';
+import { isGeneratorFunction } from './isGeneratorFunction.js';
 
 type MapFn<T, R> = (value: T, index: number) => R;
-function* internalMap<T, R = T>(mapper: MapFn<T, R>, x0: Iterable<T>): Iterable<R> {
+const internalMap = function* <T, R = T>(mapper: MapFn<T, R>, x0: Iterable<T>): Iterable<R> {
   let index = 0;
 
   for (const iteration of x0) {
     yield mapper(iteration, index++);
   }
-}
+};
 
 describe('isGeneratorFunction', () => {
   test('isGeneratorFunction returns true for generator functions', () => {

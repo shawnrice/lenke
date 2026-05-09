@@ -1,5 +1,6 @@
-import { count } from './count';
 import { describe, expect, test } from 'bun:test';
+
+import { count } from './count.js';
 
 describe('functional iterator tests', () => {
   test('count works with an array', () => {
@@ -18,15 +19,5 @@ describe('functional iterator tests', () => {
       }
     };
     expect(count(generator())).toBe(500);
-  });
-
-  test('count maxes out at 1 million', () => {
-    const generator = function* () {
-      let x = 0;
-      while (x++ < 1_000_000_000) {
-        yield x;
-      }
-    };
-    expect(count(generator())).toBe(1_000_000);
   });
 });

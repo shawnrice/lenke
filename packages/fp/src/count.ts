@@ -1,12 +1,13 @@
+import { boundary } from './boundary.js';
+
 type IterableWithLength<T> = Iterable<T> & { length: number };
 type IterableWithSize<T> = Iterable<T> & { size: number };
 
 /**
- * Counts an iterable
- *
- * Will short-circuit at 1 million
+ * Counts an iterable. Materializes the input — pair with `take` (or wrap with
+ * `bounded`) if the source may be infinite.
  */
-export function count<T>(iterable: Iterable<T>): number {
+export const count = boundary(<T>(iterable: Iterable<T>): number => {
   if (
     'length' in iterable &&
     typeof (iterable as Iterable<T> & { length: unknown }).length === 'number'
@@ -24,13 +25,8 @@ export function count<T>(iterable: Iterable<T>): number {
   let i = 0;
 
   for (const _ of iterable) {
-    i++; // eslint-disable-line no-plusplus
-
-    // eslint-disable-next-line yoda, @typescript-eslint/no-magic-numbers
-    if (i >= 1_000_000) {
-      return i;
-    }
+    i++;
   }
 
   return i;
-}
+});

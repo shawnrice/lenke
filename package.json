@@ -1,15 +1,34 @@
 {
   "name": "pl-graph",
-  "module": "index.ts",
-  "type": "module",
   "private": true,
   "workspaces": [
     "packages/*"
   ],
+  "type": "module",
+  "scripts": {
+    "build": "nx run-many -t build",
+    "test": "nx run-many -t test",
+    "lint": "oxlint .",
+    "lint:fix": "oxlint --fix .",
+    "fmt": "oxfmt .",
+    "fmt:check": "oxfmt --check .",
+    "typecheck": "bunx tsc --noEmit",
+    "check": "bun run typecheck && bun run lint && bun run fmt:check"
+  },
+  "dependencies": {},
   "devDependencies": {
-    "@types/bun": "latest"
+    "@nx/vite": "22.7.1",
+    "@nx/vitest": "22.7.1",
+    "@nx/web": "22.7.1",
+    "@pl-graph/dev": "workspace:*",
+    "@types/bun": "^1.2.19",
+    "@vitest/ui": "4.1.5",
+    "nx": "22.7.1",
+    "vite": "7.3.3",
+    "vitest": "4.1.5"
   },
   "peerDependencies": {
-    "typescript": "^5.0.0"
-  }
+    "typescript": "^6.0.0"
+  },
+  "packageManager": "bun@1.3.13"
 }

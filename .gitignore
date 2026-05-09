@@ -173,3 +173,17 @@ dist
 
 # Finder (MacOS) folder config
 .DS_Store
+
+
+
+.nx/cache
+.nx/workspace-data
+# TypeScript build output that should never live in src/
+packages/*/src/**/*.d.ts
+packages/*/src/**/*.d.ts.map
+packages/*/src/**/*.js.map
+.tsc_d
+
+.claude/worktrees
+.nx/polygraph
+.nx/self-healing

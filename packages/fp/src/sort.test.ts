@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { sort } from './sort';
+import { sort } from './sort.js';
 
 describe('functional iterator tests', () => {
   test('sort works', () => {

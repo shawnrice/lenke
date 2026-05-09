@@ -1,27 +1,21 @@
-import { rando } from '@pl-graph/utils/src';
+import { rando } from '@pl-graph/utils';
 
-import { Graph } from './Graph';
-import { Vertex } from './Vertex';
+import type { Graph } from './Graph.js';
+import type { Vertex } from './Vertex.js';
 
-type Property<T = any> = Record<string, unknown>;
+type Property = { key: string; value: unknown };
 
 type GraphElement = {
   get id(): string;
   get label(): string;
-
-  get graph(): Graph<any, any>;
+  get graph(): Graph;
 
   keys: () => Set<string>;
-
-  property: <V = any>(key: string, value?: V) => Property<V> | null;
-
-  value: <V = any>(key: string) => Property<V> | null;
-
+  property: (key: string, value?: unknown) => Iterable<Property>;
+  value: (key: string) => unknown;
   remove: () => void;
-
-  values: <V>(...keys: string[]) => Iterable<V>;
-
-  properties: <V>(...keys: string[]) => Iterable<Property<V>>;
+  values: (...keys: string[]) => Iterable<unknown>;
+  properties: (...keys: string[]) => Iterable<Property>;
 };
 
 type VertexPropertyParams = {
@@ -38,22 +32,17 @@ export const Cardinality = {
 
 export class VertexProperty implements GraphElement {
   #id: string;
-
   #labels: Set<string>;
-
   #vertex: Vertex;
-
-  #store: Map<string, any[]>;
+  #store: Map<string, unknown[]>;
 
   static Cardinality = Cardinality;
-
   static DEFAULT_LABEL = 'vertexProperty';
 
   constructor(params: VertexPropertyParams) {
     this.#id = params.id ?? rando();
     this.#labels = new Set(params.labels ?? []);
     this.#vertex = params.vertex;
-
     this.#store = new Map();
   }
 
@@ -62,11 +51,10 @@ export class VertexProperty implements GraphElement {
   }
 
   get label(): string {
-    // this is a bit wonky
     return Array.from(this.#labels)[0]!;
   }
 
-  get graph(): Graph<any, any> {
+  get graph(): Graph {
     return this.#vertex.graph;
   }
 
@@ -78,25 +66,21 @@ export class VertexProperty implements GraphElement {
     return this.#vertex;
   }
 
-  property(key: string): any;
-  property(key: string, value: any): any;
-  property(cardinality: symbol, key: string, value: any): any;
-  *property(...args: any[]): any {
+  *property(...args: unknown[]): Iterable<Property> {
     if (args.length === 1) {
-      const [key] = args;
-      const set = this.#store.get(key) ?? new Set();
+      const [key] = args as [string];
+      const set = this.#store.get(key) ?? [];
       for (const v of set) {
         yield { key, value: v };
       }
     } else if (args.length === 2) {
-      const [key, value] = args;
+      const [key, value] = args as [string, unknown];
       if (!this.#store.has(key)) {
         this.#store.set(key, []);
       }
-
       this.#store.get(key)!.push(value);
     } else if (args.length === 3) {
-      const [cardinality, key, value] = args as [symbol, string, any];
+      const [cardinality, key, value] = args as [symbol, string, unknown];
       if (!this.#store.has(key)) {
         this.#store.set(key, []);
       }
@@ -114,7 +98,11 @@ export class VertexProperty implements GraphElement {
     }
   }
 
-  *properties<V>(...keys: string[]): Iterable<Property<V>> {
+  value(key: string): unknown {
+    return this.#store.get(key)?.[0];
+  }
+
+  *properties(...keys: string[]): Iterable<Property> {
     if (keys.length === 0) {
       for (const [key, set] of this.#store) {
         for (const value of set) {
@@ -123,7 +111,7 @@ export class VertexProperty implements GraphElement {
       }
     } else {
       for (const key of keys) {
-        for (const value of this.#store.get(key) ?? new Set()) {
+        for (const value of this.#store.get(key) ?? []) {
           yield { key, value };
         }
       }
@@ -137,14 +125,14 @@ export class VertexProperty implements GraphElement {
     // this.#vertex.removeProperty(this);
   }
 
-  *values(...keys: string[]): Iterable<any> {
+  *values(...keys: string[]): Iterable<unknown> {
     if (keys.length === 0) {
-      for (const [set] of this.#store) {
+      for (const set of this.#store.values()) {
         yield* set;
       }
     } else {
       for (const key of keys) {
-        yield* this.#store.get(key) ?? new Set();
+        yield* this.#store.get(key) ?? [];
       }
     }
   }
