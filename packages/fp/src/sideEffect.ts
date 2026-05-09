@@ -1,17 +1,20 @@
-import type { UnaryFn } from './types';
+import type { UnaryFn } from './types.js';
 
-function* internalSideEffect<T>(effect: UnaryFn<T, any>, iterable: Iterable<T>): Iterable<T> {
+const internalSideEffect = function* <T>(
+  effect: UnaryFn<T, unknown>,
+  iterable: Iterable<T>,
+): Iterable<T> {
   for (const iteration of iterable) {
     effect(iteration);
     yield iteration;
   }
-}
+};
 
-export function sideEffect<T>(effect: UnaryFn<T, any>): UnaryFn<Iterable<T>>;
-export function sideEffect<T>(effect: UnaryFn<T, any>, iterable: Iterable<T>): Iterable<T>;
+export function sideEffect<T>(effect: UnaryFn<T, unknown>): UnaryFn<Iterable<T>>;
+export function sideEffect<T>(effect: UnaryFn<T, unknown>, iterable: Iterable<T>): Iterable<T>;
 export function sideEffect<T>(
-  effect: UnaryFn<T, any>,
+  effect: UnaryFn<T, unknown>,
   iterable?: Iterable<T>,
 ): UnaryFn<Iterable<T>> | Iterable<T> {
-  return iterable ? internalSideEffect(effect, iterable) : x0 => internalSideEffect(effect, x0);
+  return iterable ? internalSideEffect(effect, iterable) : (x0) => internalSideEffect(effect, x0);
 }

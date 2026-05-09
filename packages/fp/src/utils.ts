@@ -12,15 +12,18 @@ const isString = (x: unknown): x is string => {
 export const isIndexed = <T>(x: unknown): x is Iterable<T> & { [key: number]: T; length: number } =>
   Array.isArray(x) || isTypedArray(x) || isString(x);
 
+export const isIterable = <T>(x: unknown): x is Iterable<T> =>
+  x != null && typeof (x as { [Symbol.iterator]?: unknown })[Symbol.iterator] === 'function';
+
 export const wrapIndexedIterable = <T>(
   x: Iterable<T> & { [key: number]: T; length: number },
 ): Iterable<T> => ({
   [Symbol.iterator](): Iterator<T> {
     const { length } = x;
-    let count = -1; // eslint-disable-line
+    let count = -1;
     return {
       next(): IteratorResult<T> {
-        return ++count < length ? { value: x[count]!, done: false } : { value: void 0, done: true };
+        return ++count < length ? { value: x[count], done: false } : { value: void 0, done: true };
       },
     };
   },

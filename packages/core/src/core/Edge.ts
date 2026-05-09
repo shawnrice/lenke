@@ -1,52 +1,37 @@
-import { EmitterEvent } from '@pl-graph/emitter/src';
-import { rando } from '@pl-graph/utils/src';
+import { EmitterEvent } from '@pl-graph/emitter';
+import { rando } from '@pl-graph/utils';
 
-import { Graph } from './Graph';
-import { Vertex } from './Vertex';
+import type { Graph } from './Graph.js';
+import { Vertex } from './Vertex.js';
 
-export type AddEdgeParams<F extends Vertex, T extends Vertex, P extends Record<string, unknown>> = {
+export type AddEdgeParams = {
   id?: string;
-  from: F;
-  graph: Graph<any, any>;
-  to: T;
+  from: Vertex;
+  graph: Graph;
+  to: Vertex;
   labels: string[];
-  properties: P;
+  properties: Record<string, unknown>;
 };
 
-const isEdge = <F extends Vertex, T extends Vertex, P extends Record<string, any>>(
-  x: unknown,
-): x is Edge<F, T, P> => x instanceof Edge;
-
-export class Edge<
-  F extends Vertex = Vertex, // From
-  T extends Vertex = F, // To
-  P extends Record<string, any> = Record<string, any>, // Properties
-> {
+export class Edge {
   #id: string;
-
   #from: string;
-
   #to: string;
-
-  #graph: Graph<any, any> | null;
+  #graph: Graph | null;
 
   /**
    * TypeCheck if something is an `Edge`
-   *
-   * Does not actually check the `F`, `T`, or `P` of the `Edge<F, T, P>`
    */
-  static isEdge<F extends Vertex, T extends Vertex, P extends Record<string, any>>(
-    x: unknown,
-  ): x is Edge<F, T, P> {
-    return isEdge<F, T, P>(x);
+  static isEdge(x: unknown): x is Edge {
+    return x instanceof Edge;
   }
 
-  constructor(params: AddEdgeParams<F, T, P>) {
+  constructor(params: AddEdgeParams) {
     const { id = rando(), from, graph, to, labels = [], properties = {} } = params;
     this.#id = id;
     this.#graph = graph;
     this.labels = labels;
-    this.properties = properties as P;
+    this.properties = { ...properties };
     this.#from = from instanceof Vertex ? from.id : from;
     this.#to = to instanceof Vertex ? to.id : to;
   }
@@ -55,20 +40,20 @@ export class Edge<
     return this.#id;
   }
 
-  get graph(): Graph<any, any> {
+  get graph(): Graph {
     return this.#graph!;
   }
 
-  set graph(graph: Graph<any, any>) {
+  set graph(graph: Graph) {
     this.#graph = graph;
   }
 
-  get from(): F {
-    return this.#graph!.getVertexById(this.#from)! as F;
+  get from(): Vertex {
+    return this.#graph!.getVertexById(this.#from)!;
   }
 
-  get to(): T {
-    return this.#graph!.getVertexById(this.#to)! as T;
+  get to(): Vertex {
+    return this.#graph!.getVertexById(this.#to)!;
   }
 
   get labels(): Set<string> {
@@ -79,45 +64,41 @@ export class Edge<
     this.#graph!.elementLabels.set(this.id, new Set(labels));
   }
 
-  get properties(): P {
-    return (this.#graph?.elementProperties.get(this.#id) ?? {}) as P;
+  get properties(): Record<string, unknown> {
+    return this.#graph?.elementProperties.get(this.#id) ?? {};
   }
 
-  set properties(properties: P) {
+  set properties(properties: Record<string, unknown>) {
     this.#graph!.elementProperties.set(this.id, { ...properties });
   }
 
-  addLabel(label: string): Edge<F, T, P> | null {
+  addLabel(label: string): Edge | null {
     return this.#graph?.addLabelToEdge(label, this) ?? null;
   }
 
-  removeLabel(label: string): Edge<F, T, P> | null {
+  removeLabel(label: string): Edge | null {
     return this.#graph?.removeLabelFromEdge(label, this) ?? null;
   }
 
-  hasLabel(label: string): boolean;
-  hasLabel(...labels: string[]): boolean;
   hasLabel(...labels: string[]): boolean {
-    for (const label of labels) {
-      if (this.labels.has(label)) {
-        return true;
-      }
-    }
-
-    return false;
+    return labels.some((label) => this.labels.has(label));
   }
 
   hasProperty(prop: string): boolean {
     return prop in this.properties;
   }
 
-  getProperty(prop: string): any {
+  getProperty(prop: string): unknown {
     return this.properties[prop];
   }
 
-  setProperty<V extends any>(key: string, value: V): void {
+  setProperty(key: string, value: unknown): void {
     const event = this.#graph?.emit(
-      new EmitterEvent('@graph/EdgePropertyChanged', { edge: this, key, value }),
+      new EmitterEvent('@graph/EdgePropertyChanged', {
+        edge: this,
+        key,
+        value,
+      }),
     );
 
     if (event?.defaultPrevented) {
@@ -127,7 +108,7 @@ export class Edge<
     this.properties = { ...this.properties, [key]: value };
   }
 
-  setProperties(props: Partial<P>): void {
+  setProperties(props: Record<string, unknown>): void {
     const event = this.#graph?.emit(
       new EmitterEvent('@graph/EdgePropertiesChanged', {
         edge: this,
@@ -157,7 +138,7 @@ export class Edge<
 
     this.properties = Object.fromEntries(
       Object.entries(this.properties).filter(([k]) => key !== k),
-    ) as P;
+    );
   }
 
   removeProperties(keys: string[]): void {
@@ -171,7 +152,7 @@ export class Edge<
 
     this.properties = Object.fromEntries(
       Object.entries(this.properties).filter(([k]) => !keys.includes(k)),
-    ) as P;
+    );
   }
 
   /**
@@ -181,7 +162,7 @@ export class Edge<
     this.#graph = null;
   }
 
-  toJSON(): Record<string, any> {
+  toJSON(): Record<string, unknown> {
     return {
       id: this.id,
       from: this.from.id,

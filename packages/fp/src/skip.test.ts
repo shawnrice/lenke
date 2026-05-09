@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { skip } from './skip';
+
+import { skip } from './skip.js';
 
 describe('functional iterator tests', () => {
   test('skip works', () => {

@@ -1,17 +1,27 @@
 {
   "name": "@pl-graph/utils",
-  "module": "src/index.ts",
   "type": "module",
-  "scripts": {},
+  "types": "./dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "default": "./dist/esm/index.mjs"
+    }
+  },
+  "scripts": {
+    "build": "bun build.ts",
+    "test": "bun test"
+  },
+  "dependencies": {},
   "devDependencies": {
+    "@pl-graph/dev": "workspace:*",
     "@types/bun": "latest",
     "@types/debug": "^4.1.12",
     "bun-types": "latest",
-    "debug": "^4.3.4",
+    "debug": "^4.4.3",
     "prettier": "^3.3.3"
   },
   "peerDependencies": {
-    "typescript": "^5.0.0"
-  },
-  "dependencies": {}
+    "typescript": "^6.0.0"
+  }
 }

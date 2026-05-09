@@ -1,8 +1,8 @@
 /* eslint-disable yoda */
 import { describe, expect, mock, test } from 'bun:test';
 
-import { createTestGraph, edgeId, vertexId } from '../fixtures/createTestGraph';
-import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph';
+import { createTestGraph, edgeId, vertexId } from '../fixtures/createTestGraph.js';
+import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
 
 describe('Graph Tests', () => {
   const graph = createTestGraph();
@@ -23,14 +23,14 @@ describe('Graph Tests', () => {
   test('We can filter manually', () => {
     // Note, this is us using the indices manually, which isn't the best practice
     const moviesFromTheEarlyMidNineties = Array.from(graph.getVerticesByLabel('Movie'))
-      .filter(x => {
+      .filter((x) => {
         if (!x.properties.released) {
           return false;
         }
 
         return 1992 <= x.properties.released && x.properties.released < 1995;
       })
-      .map(x => x.properties.title);
+      .map((x) => x.properties.title);
 
     expect(moviesFromTheEarlyMidNineties).toEqual([
       'A Few Good Men',
@@ -58,8 +58,8 @@ describe('Graph Tests', () => {
     const movies = clientEastwood.edgesFromByLabel('DIRECTED');
 
     const [unforgiven] = Array.from(movies)
-      .filter(x => x.to.id === vertexId('97'))
-      .map(x => x.to);
+      .filter((x) => x.to.id === vertexId('97'))
+      .map((x) => x.to);
     expect(unforgiven?.properties.title).toBe('Unforgiven');
   });
 
@@ -79,9 +79,9 @@ describe('Graph Tests', () => {
   test('the emitter works', () => {
     let type: string | null = null;
     let id: string | null = null;
-    const listener = mock(event => {
-      type = event.type;
-      id = event.value.id;
+    const listener = mock((event) => {
+      ({ type } = event);
+      ({ id } = event.value);
     });
     graph.emitter.once('@graph/VertexAdded', listener);
 

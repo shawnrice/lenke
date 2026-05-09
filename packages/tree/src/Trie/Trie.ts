@@ -1,5 +1,5 @@
-import { root } from './root';
-import { TrieNode } from './TrieNode';
+import { root } from './root.js';
+import { TrieNode } from './TrieNode.js';
 
 /**
  * A regular Trie, except that it inserts a different `value` for each `word` or `key`.
@@ -41,32 +41,30 @@ export class Trie<T> {
    */
   public add(key: string, value: T): Trie<T> {
     let node = this.root;
+    const path: TrieNode<T>[] = [];
 
-    for (let i = 0; i < key.length; i++) {
-      const char = key[i];
-      const isEndOfWord = i === key.length - 1;
-
+    for (const char of key) {
       if (!node.children.has(char)) {
-        // we will need to add a new node
         node.addChild(new TrieNode<T>(char));
         this.nodes++;
       }
 
-      const next = node.children.get(char)!;
-      node.addChild(next);
-
-      if (isEndOfWord) {
-        next.word = key;
-        next.isEndOfWord = true;
-        next.value = value;
-      }
-
-      next.count++;
-
-      node = next;
+      node = node.children.get(char)!;
+      path.push(node);
     }
 
-    this.words++;
+    const isUpdate = node.isEndOfWord && node.word === key;
+
+    node.word = key;
+    node.isEndOfWord = true;
+    node.value = value;
+
+    if (!isUpdate) {
+      for (const n of path) {
+        n.count++;
+      }
+      this.words++;
+    }
 
     return this;
   }
@@ -80,7 +78,7 @@ export class Trie<T> {
 
     for (let i = 0; i < key.length; i++) {
       const char = key[i];
-      const isLast = i === key.length;
+      const isLast = i === key.length - 1;
 
       if (!node.children.has(char)) {
         // We didn't actually store this, so lets do nothing.
@@ -202,23 +200,9 @@ export class Trie<T> {
    * turn the iterator into an array and sort it
    */
   public *entries(): Generator<[string, T]> {
-    const queue: TrieNode<T>[] = [this.root];
-
-    while (queue.length) {
-      const node = queue.shift();
-
-      if (!node) {
-        break;
-      }
-
-      if (node.isEndOfWord && node.word && node.value !== null) {
+    for (const node of this.root.descendants()) {
+      if (node.word && node.value !== null) {
         yield [node.word, node.value];
-      }
-
-      const children = Array.from(node.children.values());
-      // Follow insertion order
-      for (let i = children.length - 1; i >= 0; i--) {
-        queue.unshift(children[i]);
       }
     }
   }

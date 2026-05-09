@@ -1,13 +1,13 @@
-/**
- * @jest-environment jsdom
- */
+// @vitest-environment jsdom
 import * as React from 'react';
+import { describe, expect, test, vi } from 'vitest';
 
-import { act, renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook } from '@testing-library/react';
+import { traversal, V, values } from '@pl-graph/gremlin';
 
-import { createTestTinkerGraph } from './fixtures/createTestTinkerGraph';
-import { GraphProvider } from './GraphProvider';
-import { useGraphTraversal } from './useGraphTraversal';
+import { createTestTinkerGraph } from './fixtures/createTestTinkerGraph.js';
+import { GraphProvider } from './GraphProvider.js';
+import { useGraphTraversal } from './useGraphTraversal.js';
 
 const createTinkerWrapper = () => {
   const tinkerGraph = createTestTinkerGraph();
@@ -19,33 +19,27 @@ const createTinkerWrapper = () => {
   return { tinkerGraph, wrapper };
 };
 
+const namesOf = (id: string) =>
+  useGraphTraversal((g) => g.toArray(traversal(V(id), values('name'))) as string[]);
+
 describe('useGraphTraversal Hooks', () => {
   test('we can query for marko', () => {
-    const tinkerGraph = createTestTinkerGraph();
+    const { wrapper } = createTinkerWrapper();
 
-    const wrapper = ({ children }) => <GraphProvider graph={tinkerGraph}>{children}</GraphProvider>;
-
-    const { result } = renderHook(() => useGraphTraversal(x => x.V('1').values('name').toArray()), {
-      wrapper,
-    });
+    const { result } = renderHook(() => namesOf('1'), { wrapper });
 
     expect(result.current).toEqual(['marko']);
   });
 
-  test('mutating the graph works', () => {
+  test('mutating the graph works', async () => {
     vi.useFakeTimers();
     const { tinkerGraph, wrapper } = createTinkerWrapper();
 
-    const { result } = renderHook(
-      () => useGraphTraversal(x => x.V('15').values('name').toArray()),
-      {
-        wrapper,
-      },
-    );
+    const { result } = renderHook(() => namesOf('15'), { wrapper });
 
     expect(result.current).toEqual([]);
 
-    act(() => {
+    await act(async () => {
       tinkerGraph.addVertex({
         id: '15',
         labels: ['PERSON'],
@@ -54,37 +48,10 @@ describe('useGraphTraversal Hooks', () => {
           age: 39,
         },
       });
-    });
-
-    vi.runOnlyPendingTimers();
-
-    expect(result.current).toEqual(['Shawn']);
-  });
-
-  test.skip('mutating the graph works with a legacy root', () => {
-    vi.useFakeTimers();
-    const { tinkerGraph, wrapper } = createTinkerWrapper();
-
-    const { result } = renderHook(
-      () => useGraphTraversal(x => x.V('15').values('name').toArray()),
-      {
-        wrapper,
-        legacyRoot: true, // this causes react to show errors in the console
-      },
-    );
-
-    expect(result.current).toEqual([]);
-
-    act(() => {
-      tinkerGraph.addVertex({
-        id: '15',
-        labels: ['PERSON'],
-        properties: {
-          name: 'Shawn',
-          age: 39,
-        },
-      });
-      vi.runOnlyPendingTimers();
+      // markIsStale queues a microtask that schedules a timer; runAllTimersAsync
+      // flushes microtasks between timer ticks so the chain (microtask → timer
+      // → notify) actually completes before we assert.
+      await vi.runAllTimersAsync();
     });
 
     expect(result.current).toEqual(['Shawn']);
@@ -93,25 +60,21 @@ describe('useGraphTraversal Hooks', () => {
   test('we can unsubscribe when the component unmounts', () => {
     const { tinkerGraph, wrapper } = createTinkerWrapper();
 
-    const { result, unmount } = renderHook(
-      () => useGraphTraversal(x => x.V('1').values('name').toArray()),
-      {
-        wrapper,
-      },
-    );
+    const { result, unmount } = renderHook(() => namesOf('1'), { wrapper });
 
     expect(result.current).toEqual(['marko']);
-    expect(tinkerGraph.listeners.size).toBe(1);
+    // Accessing the private snapshot-listener set for test introspection.
+    expect((tinkerGraph as unknown as { listeners: Set<unknown> }).listeners.size).toBe(1);
 
     unmount();
 
-    expect(tinkerGraph.listeners.size).toBe(0);
+    expect((tinkerGraph as unknown as { listeners: Set<unknown> }).listeners.size).toBe(0);
   });
 
   test('we can prevent default', () => {
     const { tinkerGraph, wrapper } = createTinkerWrapper();
 
-    const preventNewVertices = vi.fn(event => {
+    const preventNewVertices = vi.fn((event) => {
       if (event.type === '@graph/VertexAdded') {
         return event.preventDefault();
       }
@@ -119,12 +82,7 @@ describe('useGraphTraversal Hooks', () => {
 
     tinkerGraph.on('@graph/VertexAdded', preventNewVertices);
 
-    const { result } = renderHook(
-      () => useGraphTraversal(x => x.V('15').values('name').toArray()),
-      {
-        wrapper,
-      },
-    );
+    const { result } = renderHook(() => namesOf('15'), { wrapper });
 
     expect(result.current).toEqual([]);
 

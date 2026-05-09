@@ -1,5 +1,6 @@
-import { before } from './before';
 import { describe, expect, test } from 'bun:test';
+
+import { before } from './before.js';
 
 describe('functional iterator tests', () => {
   test('before works', () => {

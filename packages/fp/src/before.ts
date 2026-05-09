@@ -1,6 +1,6 @@
-import type { Predicate, UnaryFn } from './types';
+import type { Predicate, UnaryFn } from './types.js';
 
-function* internalBefore<T>(predicate: Predicate<T>, iterable: Iterable<T>): Iterable<T> {
+const internalBefore = function* <T>(predicate: Predicate<T>, iterable: Iterable<T>): Iterable<T> {
   let found = false;
 
   for (const iteration of iterable) {
@@ -10,7 +10,7 @@ function* internalBefore<T>(predicate: Predicate<T>, iterable: Iterable<T>): Ite
       yield iteration;
     }
   }
-}
+};
 
 export function before<T>(predicate: Predicate<T>): UnaryFn<Iterable<T>>;
 export function before<T>(predicate: Predicate<T>, iterable: Iterable<T>): Iterable<T>;
@@ -18,5 +18,5 @@ export function before<T>(
   predicate: Predicate<T>,
   iterable?: Iterable<T>,
 ): UnaryFn<Iterable<T>> | Iterable<T> {
-  return iterable ? internalBefore(predicate, iterable) : x0 => internalBefore(predicate, x0);
+  return iterable ? internalBefore(predicate, iterable) : (x0) => internalBefore(predicate, x0);
 }

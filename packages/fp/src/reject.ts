@@ -1,5 +1,6 @@
-import { filter } from './filter';
-import type { Predicate, UnaryFn } from './types';
+import { filter } from './filter.js';
+
+import type { Predicate, UnaryFn } from './types.js';
 
 export function reject<T>(predicate: Predicate<T>): UnaryFn<Iterable<T>>;
 export function reject<T>(predicate: Predicate<T>, iterable: Iterable<T>): Iterable<T>;
@@ -8,5 +9,5 @@ export function reject<T>(
   iterable?: Iterable<T>,
 ): UnaryFn<Iterable<T>> | Iterable<T> {
   const fn = (x: T) => !predicate(x);
-  return iterable ? filter(fn, iterable) : x0 => filter(fn, x0);
+  return iterable ? filter(fn, iterable) : (x0) => filter(fn, x0);
 }

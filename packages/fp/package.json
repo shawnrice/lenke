@@ -1,17 +1,33 @@
 {
   "name": "@pl-graph/fp",
-  "module": "src/main.ts",
   "type": "module",
-  "scripts": {},
+  "sideEffects": false,
+  "types": "./dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "default": "./dist/esm/index.mjs"
+    },
+    "./*": {
+      "types": "./dist/types/*.d.ts",
+      "default": "./dist/esm/*.mjs"
+    }
+  },
+  "scripts": {
+    "build": "bun build.ts",
+    "test": "bun test",
+    "clean:stray-types": "find src -type f \\( -name '*.d.ts' -o -name '*.d.ts.map' \\) -delete"
+  },
+  "dependencies": {},
   "devDependencies": {
-    "@types/bun": "^1.1.9",
+    "@pl-graph/dev": "workspace:*",
+    "@types/bun": "latest",
     "@types/debug": "^4.1.12",
     "bun-types": "latest",
-    "debug": "^4.3.7",
+    "debug": "^4.4.3",
     "prettier": "^3.3.3"
   },
   "peerDependencies": {
-    "typescript": "^5.0.0"
-  },
-  "dependencies": {}
+    "typescript": "^6.0.0"
+  }
 }

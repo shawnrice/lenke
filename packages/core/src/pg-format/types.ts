@@ -8,7 +8,7 @@ type Node = {
   id: NodeId;
   labels: string[];
   properties: Record<string, PropValue>;
-}
+};
 
 type Edge = {
   /**
@@ -21,7 +21,7 @@ type Edge = {
   undirected: boolean;
   labels: string[];
   properties: Record<string, PropValue>;
-}
+};
 
 export type PGFormat = {
   nodes: Node[];

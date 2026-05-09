@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from 'bun:test';
 
-import { some } from './some';
+import { some } from './some.js';
 
 describe('functional iterator tests', () => {
   test('some works', () => {
