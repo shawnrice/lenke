@@ -375,14 +375,32 @@ export const parse = (src: string): Query => {
     return parsePostfixPredicate();
   };
 
-  // Postfix predicates: `x IS [NOT] NULL`, `x [NOT] IN list`.
+  // Postfix predicates: `x IS [NOT] NULL`, `x IS [NOT] TRUE|FALSE|UNKNOWN`,
+  // `x [NOT] IN list`.
   const parsePostfixPredicate = (): Expr => {
     const e = parseComparison();
     if (checkKeyword('is')) {
       advance();
       const negated = checkKeyword('not') ? (advance(), true) : false;
-      expectKeyword('null');
-      return { kind: 'isNull', expr: e, negated };
+      if (checkKeyword('null')) {
+        advance();
+        return { kind: 'isNull', expr: e, negated };
+      }
+      // ISO `<boolean test>`: IS [NOT] TRUE | FALSE | UNKNOWN. UNKNOWN is a
+      // contextual identifier (not a reserved keyword in this engine).
+      if (checkKeyword('true')) {
+        advance();
+        return { kind: 'isTruth', expr: e, truth: true, negated };
+      }
+      if (checkKeyword('false')) {
+        advance();
+        return { kind: 'isTruth', expr: e, truth: false, negated };
+      }
+      if (check('ident') && peek().value.toLowerCase() === 'unknown') {
+        advance();
+        return { kind: 'isTruth', expr: e, truth: null, negated };
+      }
+      throw new GqlSyntaxError('Expected NULL, TRUE, FALSE, or UNKNOWN after IS', peek().pos);
     }
     if (checkKeyword('in')) {
       advance();

@@ -766,3 +766,30 @@ describe('GQL: ORDER BY NULLS FIRST / LAST (ISO <null ordering>)', () => {
     ]);
   });
 });
+
+describe('GQL: IS TRUE / FALSE / UNKNOWN (ISO <boolean test>)', () => {
+  const g = createTestSocialGraph();
+
+  test('truth-value tests collapse three-valued logic to a definite boolean', () => {
+    const r = query(
+      g,
+      `MATCH (n:Person {name: 'marko'}) RETURN
+         true IS TRUE AS a,
+         (1 = 2) IS FALSE AS b,
+         null IS UNKNOWN AS c,
+         true IS NOT FALSE AS d,
+         null IS NOT TRUE AS e,
+         null IS TRUE AS f`,
+    );
+    expect(r).toEqual([{ a: true, b: true, c: true, d: true, e: true, f: false }]);
+  });
+
+  test('IS TRUE / IS NOT TRUE resolve UNKNOWN predicates in WHERE', () => {
+    // n.foo is missing → `n.foo = 1` is UNKNOWN. IS TRUE makes that definite-false
+    // (excluded); IS NOT TRUE makes it definite-true (kept).
+    expect(query(g, `MATCH (n:Person) WHERE (n.foo = 1) IS TRUE RETURN n.name`)).toEqual([]);
+    expect(query(g, `MATCH (n:Person) WHERE (n.foo = 1) IS NOT TRUE RETURN n.name`)).toHaveLength(
+      4,
+    );
+  });
+});

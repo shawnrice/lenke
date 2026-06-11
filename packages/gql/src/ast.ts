@@ -215,5 +215,8 @@ export type Expr =
   | { kind: 'xor'; left: Expr; right: Expr }
   | { kind: 'not'; expr: Expr }
   | { kind: 'isNull'; expr: Expr; negated: boolean }
+  // ISO `<boolean test>`: `x IS [NOT] TRUE|FALSE|UNKNOWN`. `truth` is the target
+  // truth value (`null` = UNKNOWN); the predicate is always TRUE or FALSE.
+  | { kind: 'isTruth'; expr: Expr; truth: boolean | null; negated: boolean }
   | { kind: 'in'; expr: Expr; list: Expr; negated: boolean }
   | { kind: 'func'; name: string; args: readonly Expr[]; distinct: boolean; star: boolean };
