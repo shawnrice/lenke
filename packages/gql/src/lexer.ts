@@ -104,6 +104,41 @@ const isIdentStart = (c: string): boolean =>
   (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c === '_';
 const isIdentPart = (c: string): boolean => isIdentStart(c) || isDigit(c);
 
+/** The ISO/IEC 39075 single-character string escapes (besides the quote forms). */
+const SIMPLE_ESCAPES: Record<string, string> = {
+  '\\': '\\',
+  "'": "'",
+  '"': '"',
+  t: '\t',
+  n: '\n',
+  r: '\r',
+  b: '\b',
+  f: '\f',
+};
+
+/**
+ * Decode the backslash escape beginning at `src[i]` (the backslash). Handles the
+ * ISO simple escapes plus `\\uXXXX` / `\\UXXXXXX` Unicode escapes; an unknown
+ * escape yields the escaped character verbatim. Returns the decoded text and the
+ * index just past the escape.
+ */
+const readEscape = (src: string, i: number): { text: string; next: number } => {
+  const esc = src[i + 1]!;
+  const simple = SIMPLE_ESCAPES[esc];
+  if (simple !== undefined) {
+    return { text: simple, next: i + 2 };
+  }
+  if (esc === 'u' || esc === 'U') {
+    const width = esc === 'u' ? 4 : 6;
+    const hex = src.slice(i + 2, i + 2 + width);
+    if (hex.length !== width || !/^[0-9a-fA-F]+$/.test(hex)) {
+      throw new GqlSyntaxError(`Invalid \\${esc} escape (expected ${width} hex digits)`, i);
+    }
+    return { text: String.fromCodePoint(parseInt(hex, 16)), next: i + 2 + width };
+  }
+  return { text: esc, next: i + 2 };
+};
+
 export const tokenize = (src: string): Token[] => {
   const tokens: Token[] = [];
   let i = 0;
@@ -212,8 +247,9 @@ export const tokenize = (src: string): Token[] => {
       let str = '';
       while (i < src.length && src[i] !== quote) {
         if (src[i] === '\\' && i + 1 < src.length) {
-          str += src[i + 1];
-          i += 2;
+          const { text, next } = readEscape(src, i);
+          str += text;
+          i = next;
           continue;
         }
         str += src[i];

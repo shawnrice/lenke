@@ -417,6 +417,37 @@ describe('TCK Literals1/2/3/4/5/6: literals', () => {
   });
 });
 
+// Literals6 — string escape sequences. ISO/IEC 39075 defines `\t \n \r \\ \' \"`
+// and `\uXXXX` / `\UXXXXXX`; they must be *decoded*, not left as the literal
+// escaped character. (String.raw keeps the backslash from JS so our lexer, not
+// the test file, does the decoding.)
+describe('TCK Literals6: string escape sequences (ISO)', () => {
+  const lit = (raw: string) => query(empty, raw)[0]!.literal;
+
+  test('control-character escapes decode', () => {
+    expect(lit(String.raw`RETURN '\n' AS literal`)).toBe('\n');
+    expect(lit(String.raw`RETURN '\t' AS literal`)).toBe('\t');
+    expect(lit(String.raw`RETURN '\r' AS literal`)).toBe('\r');
+  });
+
+  test('escaped backslash and quotes decode', () => {
+    expect(lit(String.raw`RETURN '\\' AS literal`)).toBe('\\');
+    expect(lit(String.raw`RETURN '\'' AS literal`)).toBe("'");
+    expect(lit(String.raw`RETURN "\"" AS literal`)).toBe('"');
+  });
+
+  test('unicode escapes \\uXXXX and \\UXXXXXX decode to code points', () => {
+    const bs = String.fromCharCode(92); // a single backslash, kept out of the source
+    expect(lit(`RETURN '${bs}u0041' AS literal`)).toBe('A');
+    expect(lit(`RETURN '${bs}u01FF' AS literal`)).toBe('ǿ');
+    expect(lit(String.raw`RETURN '\U01F600' AS literal`)).toBe('😀');
+  });
+
+  test('a malformed unicode escape is a syntax error', () => {
+    expect(() => query(empty, String.raw`RETURN '\uH' AS x`)).toThrow();
+  });
+});
+
 // ReturnSkipLimit2/3 — LIMIT and SKIP. (UNWIND sources adapted to inserts.)
 describe('TCK ReturnSkipLimit: SKIP / LIMIT', () => {
   const seed = () => {
