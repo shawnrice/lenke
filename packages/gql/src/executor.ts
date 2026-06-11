@@ -406,6 +406,30 @@ const compareValues = (a: unknown, b: unknown): number => {
   return x > y ? 1 : 0;
 };
 
+/**
+ * Compare two ORDER BY keys, honoring direction and ISO `NULLS FIRST/LAST`. Null
+ * placement is absolute (first or last in the final order), independent of the
+ * direction applied to non-null values. With no explicit null ordering it
+ * defaults to treating null as the largest value (ASC → last, DESC → first).
+ */
+const compareSort = (
+  a: unknown,
+  b: unknown,
+  descending: boolean,
+  nullsFirst: boolean | undefined,
+): number => {
+  const aNull = isNullish(a);
+  const bNull = isNullish(b);
+  if (aNull && bNull) {
+    return 0;
+  }
+  if (aNull || bNull) {
+    const first = nullsFirst ?? descending;
+    return aNull === first ? -1 : 1;
+  }
+  return compareValues(a, b) * (descending ? -1 : 1);
+};
+
 /** Stable distinct key for a projected binding; graph elements key by id. */
 const valueKey = (v: unknown): string => {
   if (v && typeof v === 'object' && 'id' in v) {
@@ -419,7 +443,7 @@ const rowKey = (b: Binding): string => [...b].map(([k, v]) => `${k}=${valueKey(v
 
 /** A projected output column: its name and the closure producing its value. */
 type CReturnItem = { name: string; fn: CompiledExpr; isAgg: boolean };
-type CSortItem = { fn: CompiledExpr; descending: boolean };
+type CSortItem = { fn: CompiledExpr; descending: boolean; nullsFirst?: boolean };
 
 /**
  * A compiled projection body (shared by `RETURN` and `WITH`). All the structural
@@ -454,7 +478,11 @@ const compileProjection = (projection: Projection): CProjection => {
   // Resolve a bare-alias ORDER BY key to the projected expression at compile time.
   const orderBy: CSortItem[] = (projection.orderBy ?? []).map((s) => {
     const aliased = s.expr.kind === 'var' ? aliases.get(s.expr.name) : undefined;
-    return { fn: compileExpr(aliased ?? s.expr), descending: s.descending };
+    return {
+      fn: compileExpr(aliased ?? s.expr),
+      descending: s.descending,
+      nullsFirst: s.nullsFirst,
+    };
   });
   return {
     star: projection.star,
@@ -538,7 +566,8 @@ const applyProjection = (
   if (orderBy.length > 0) {
     rows = [...rows].sort((a, b) => {
       for (let i = 0; i < orderBy.length; i += 1) {
-        const cmp = compareValues(a.keys[i], b.keys[i]) * (orderBy[i]!.descending ? -1 : 1);
+        const s = orderBy[i]!;
+        const cmp = compareSort(a.keys[i], b.keys[i], s.descending, s.nullsFirst);
         if (cmp !== 0) {
           return cmp;
         }

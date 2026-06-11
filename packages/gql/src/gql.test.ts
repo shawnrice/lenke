@@ -712,3 +712,57 @@ describe('GQL: financial graph (GQL/SQL-PGQ literature example)', () => {
     expect(names(rows, 'f.name')).toEqual(['alice', 'dave']);
   });
 });
+
+describe('GQL: ORDER BY NULLS FIRST / LAST (ISO <null ordering>)', () => {
+  const g = createTestSocialGraph();
+  // Software nodes (lop, ripple) have no `age`, so `n.age` is null for them.
+  const ages = (q: string) => query(g, q).map((r) => r['age']);
+
+  test('default: nulls sort last on ASC, first on DESC', () => {
+    expect(ages(`MATCH (n) RETURN n.age AS age ORDER BY n.age ASC`)).toEqual([
+      27,
+      29,
+      32,
+      35,
+      null,
+      null,
+    ]);
+    expect(ages(`MATCH (n) RETURN n.age AS age ORDER BY n.age DESC`)).toEqual([
+      null,
+      null,
+      35,
+      32,
+      29,
+      27,
+    ]);
+  });
+
+  test('NULLS FIRST overrides the ascending default', () => {
+    expect(ages(`MATCH (n) RETURN n.age AS age ORDER BY n.age ASC NULLS FIRST`)).toEqual([
+      null,
+      null,
+      27,
+      29,
+      32,
+      35,
+    ]);
+  });
+
+  test('NULLS LAST overrides the descending default', () => {
+    expect(ages(`MATCH (n) RETURN n.age AS age ORDER BY n.age DESC NULLS LAST`)).toEqual([
+      35,
+      32,
+      29,
+      27,
+      null,
+      null,
+    ]);
+  });
+
+  test('NULLS / FIRST / LAST stay usable as ordinary identifiers', () => {
+    // Only `NULLS FIRST|LAST` following a sort key is special (contextual parse).
+    expect(query(g, `MATCH (n:Person {name: 'marko'}) RETURN n.name AS first`)).toEqual([
+      { first: 'marko' },
+    ]);
+  });
+});

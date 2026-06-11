@@ -537,14 +537,30 @@ export const parse = (src: string): Query => {
 
   const parseSortItem = (): SortItem => {
     const expr = parseExpr();
+    let descending = false;
     if (checkKeyword('desc') || checkKeyword('descending')) {
       advance();
-      return { expr, descending: true };
-    }
-    if (checkKeyword('asc') || checkKeyword('ascending')) {
+      descending = true;
+    } else if (checkKeyword('asc') || checkKeyword('ascending')) {
       advance();
     }
-    return { expr, descending: false };
+    // ISO `<null ordering>`: optional NULLS FIRST | NULLS LAST. Parsed as
+    // contextual identifiers so NULLS/FIRST/LAST stay usable as variable names.
+    let nullsFirst: boolean | undefined;
+    if (check('ident') && peek().value.toLowerCase() === 'nulls') {
+      advance();
+      const where = check('ident') ? peek().value.toLowerCase() : '';
+      if (where === 'first') {
+        nullsFirst = true;
+        advance();
+      } else if (where === 'last') {
+        nullsFirst = false;
+        advance();
+      } else {
+        throw new GqlSyntaxError('Expected FIRST or LAST after NULLS', peek().pos);
+      }
+    }
+    return { expr, descending, nullsFirst };
   };
 
   // The shared projection body of WITH and RETURN.
