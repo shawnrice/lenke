@@ -1,8 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 
 import type { MatchClause, Query } from './ast.js';
+import { createFinancialGraph } from './fixtures/createFinancialGraph.js';
 import { createTestSocialGraph } from './fixtures/createTestSocialGraph.js';
-import { gql, parseQuery, query } from './index.js';
+import { compile, gql, parseQuery, prepare, query } from './index.js';
 
 /** The first clause of a query's first linear part is its MATCH (in these tests). */
 const firstMatch = (q: Query): MatchClause => q.parts[0]!.clauses[0] as MatchClause;
@@ -576,5 +577,138 @@ describe('GQL: ISO (not Cypher) syntax', () => {
     expect(
       firstMatch(parseQuery(`MATCH (a)<->(b) RETURN a`)).patterns[0]!.segments[0]!.rel.direction,
     ).toBe('both');
+  });
+});
+
+describe('GQL: compile / prepare (reusable plans)', () => {
+  test('a prepared plan runs without re-parsing', () => {
+    const plan = prepare(`MATCH (a:Person)-[:KNOWS]->(b) RETURN b.name`);
+    expect(names(plan(g), 'b.name')).toEqual(['josh', 'vadas']);
+  });
+
+  test('one plan, many param bindings (reentrant — no shared state)', () => {
+    const plan = prepare(`MATCH (n:Person) WHERE n.name = $who RETURN n.age`);
+    expect(plan(g, { who: 'marko' })).toEqual([{ 'n.age': 29 }]);
+    expect(plan(g, { who: 'peter' })).toEqual([{ 'n.age': 35 }]);
+    // Re-running an earlier binding still yields its own result (no carryover).
+    expect(plan(g, { who: 'marko' })).toEqual([{ 'n.age': 29 }]);
+  });
+
+  test('one plan runs against independent graphs', () => {
+    const plan = prepare(`MATCH (n:Person) RETURN count(*) AS c`);
+    const g1 = createTestSocialGraph();
+    const g2 = createTestSocialGraph();
+    query(g2, `INSERT (n:Person {name: 'newbie', age: 1})`);
+    expect(plan(g1)).toEqual([{ c: 4 }]);
+    expect(plan(g2)).toEqual([{ c: 5 }]);
+  });
+
+  test('compile accepts a pre-parsed AST', () => {
+    const plan = compile(parseQuery(`MATCH (n:Person) WHERE n.age > $min RETURN n.name`));
+    expect(names(plan(g, { min: 31 }), 'n.name')).toEqual(['josh', 'peter']);
+  });
+});
+
+// The running example from the GQL / SQL/PGQ research literature: a financial
+// network layered over a social one. Every expected result below is computed by
+// hand from `createFinancialGraph`'s fixed instance. See that fixture for the
+// full data and the laundering-trail diagram.
+describe('GQL: financial graph (GQL/SQL-PGQ literature example)', () => {
+  const fg = createFinancialGraph();
+
+  test('label expressions partition the two node kinds', () => {
+    expect(query(fg, `MATCH (p:Person) RETURN count(*) AS n`)).toEqual([{ n: 5 }]);
+    expect(query(fg, `MATCH (a:Account) RETURN count(*) AS n`)).toEqual([{ n: 4 }]);
+  });
+
+  test('implicit grouping: people per city', () => {
+    const rows = query(fg, `MATCH (p:Person) RETURN p.city AS city, count(*) AS n ORDER BY city`);
+    expect(rows).toEqual([
+      { city: 'Berlin', n: 1 },
+      { city: 'London', n: 3 },
+      { city: 'Paris', n: 1 },
+    ]);
+  });
+
+  test('aggregation over a numeric edge property: total money moved', () => {
+    expect(
+      query(
+        fg,
+        `MATCH (:Account)-[t:TRANSFER]->(:Account) RETURN sum(t.amount) AS total, count(*) AS n`,
+      ),
+    ).toEqual([{ total: 2400, n: 3 }]);
+  });
+
+  test('incoming aggregation: amount received per account', () => {
+    const rows = query(
+      fg,
+      `MATCH (a:Account)<-[t:TRANSFER]-(:Account) RETURN a.name AS account, sum(t.amount) AS received ORDER BY account`,
+    );
+    // acc-dave never receives, so it isn't in the result.
+    expect(rows).toEqual([
+      { account: 'acc-alice', received: 500 },
+      { account: 'acc-bob', received: 900 },
+      { account: 'acc-carol', received: 1000 },
+    ]);
+  });
+
+  test('the motivating "money-laundering" query', () => {
+    // Friends in the same city who transfer to each other via a common friend
+    // who lives elsewhere, with a decreasing amount along the trail.
+    const rows = query(
+      fg,
+      `MATCH (x:Person)-[:FRIENDS]-(y:Person),
+             (x)-[:OWNS]->(ax),
+             (y)-[:OWNS]->(ay),
+             (z:Person)-[:OWNS]->(az),
+             (ax)-[t1:TRANSFER]->(az)-[t2:TRANSFER]->(ay)
+       WHERE x.city = y.city AND x.city <> z.city AND t2.amount < t1.amount
+       RETURN x.name AS name1, y.name AS name2`,
+    );
+    // alice & bob (London friends) launder via carol (Paris): 1000 then 900.
+    expect(rows).toEqual([{ name1: 'alice', name2: 'bob' }]);
+  });
+
+  test('variable-length money flow follows the whole trail', () => {
+    const rows = query(
+      fg,
+      `MATCH (s:Account {name: 'acc-dave'})-[:TRANSFER]->+(r:Account) RETURN r.name`,
+    );
+    // acc-dave → acc-alice → acc-carol → acc-bob.
+    expect(names(rows, 'r.name')).toEqual(['acc-alice', 'acc-bob', 'acc-carol']);
+  });
+
+  test('OPTIONAL MATCH keeps the account-less person', () => {
+    const rows = query(
+      fg,
+      `MATCH (p:Person) OPTIONAL MATCH (p)-[:OWNS]->(a) RETURN p.name, a.name`,
+    );
+    expect(rows).toHaveLength(5);
+    const accounts = rows.map((r) => r['a.name']).filter(Boolean) as string[];
+    expect(accounts.sort()).toEqual(['acc-alice', 'acc-bob', 'acc-carol', 'acc-dave']);
+    // erin owns nothing → a property access on her null account column is NULL.
+    expect(rows.find((r) => r['p.name'] === 'erin')!['a.name']).toBeNull();
+  });
+
+  test('WITH aggregation then HAVING-style filter: who sent ≥ 900', () => {
+    const rows = query(
+      fg,
+      `MATCH (p:Person)-[:OWNS]->(:Account)-[t:TRANSFER]->(:Account)
+       WITH p.name AS name, sum(t.amount) AS sent
+       WHERE sent >= 900
+       RETURN name, sent ORDER BY name`,
+    );
+    // alice's account sent 1000, carol's 900; dave's 500 is filtered out.
+    expect(rows).toEqual([
+      { name: 'alice', sent: 1000 },
+      { name: 'carol', sent: 900 },
+    ]);
+  });
+
+  test('undirected friendship matches from either endpoint', () => {
+    // bob is only ever the *target* of a FRIENDS edge (alice→bob), yet an
+    // undirected pattern still finds his friends.
+    const rows = query(fg, `MATCH (:Person {name: 'bob'})-[:FRIENDS]-(f) RETURN f.name`);
+    expect(names(rows, 'f.name')).toEqual(['alice', 'dave']);
   });
 });
