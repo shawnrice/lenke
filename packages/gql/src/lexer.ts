@@ -194,7 +194,10 @@ export const tokenize = (src: string): Token[] => {
       '<': 'lt',
       '>': 'gt',
     };
-    const singleType = single[c];
+    // A `.` immediately followed by a digit is a leading-dot float (`.5`), not
+    // the property-access dot — let it fall through to the number scanner below.
+    const dotNumber = c === '.' && isDigit(src[i + 1] ?? '');
+    const singleType = dotNumber ? undefined : single[c];
     if (singleType) {
       push(singleType, c, i);
       i += 1;

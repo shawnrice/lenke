@@ -344,6 +344,11 @@ export const parse = (src: string): Query => {
   // predicates, comparison, `||`, +/-, *///%, unary, primary.
   const parseExpr = (): Expr => parseOrXor();
 
+  // ISO/IEC 39075 `<boolean value expression>`: OR and XOR share one (loosest)
+  // precedence level and are left-associative, so `a OR b XOR c` parses as
+  // `(a OR b) XOR c`. AND (`<boolean term>`) binds tighter, NOT tighter still.
+  // NB: a deliberate divergence from Cypher, which gives XOR higher precedence
+  // than OR — we follow the ISO grammar, not Cypher.
   const parseOrXor = (): Expr => {
     let left = parseAnd();
     while (checkKeyword('or') || checkKeyword('xor')) {

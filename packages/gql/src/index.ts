@@ -1,14 +1,21 @@
 import type { Graph } from '@pl-graph/core';
 
 import type { Query } from './ast.js';
-import { execute, type Row } from './executor.js';
+import { compile, execute, type Plan, type Row } from './executor.js';
 import { parse } from './parser.js';
 
 export type { Query, MatchClause, PathPattern, NodePattern, RelPattern, Expr } from './ast.js';
-export type { Row } from './executor.js';
+export type { Plan, Row } from './executor.js';
 export { GqlSyntaxError } from './lexer.js';
 export { parse } from './parser.js';
-export { execute } from './executor.js';
+export { compile, execute } from './executor.js';
+
+/**
+ * Parse + compile a query string into a reusable `Plan`. Do this once for a hot
+ * query, then call the plan with just `(graph, params)` — no re-parse, no
+ * re-analysis per run.
+ */
+export const prepare = (text: string): Plan => compile(parse(text));
 
 /** Parse + run a query string against a graph in one call, with optional `$params`. */
 export const query = (graph: Graph, text: string, params?: Record<string, unknown>): Row[] =>
