@@ -168,6 +168,7 @@ const hasAggregate = (expr: Expr): boolean => {
     case 'neg':
     case 'not':
     case 'isNull':
+    case 'isTruth':
       return hasAggregate(expr.expr);
     case 'arith':
     case 'concat':
@@ -292,6 +293,16 @@ const compileExpr = (expr: Expr): CompiledExpr => {
       return (b, p, g) => {
         const isnull = isNullish(fn(b, p, g));
         return negated ? !isnull : isnull;
+      };
+    }
+    case 'isTruth': {
+      // `x IS [NOT] TRUE|FALSE|UNKNOWN` collapses three-valued logic to a
+      // definite boolean: it tests whether x's truth value equals the target.
+      const fn = compileExpr(expr.expr);
+      const { truth, negated } = expr;
+      return (b, p, g) => {
+        const matches = asTruth(fn(b, p, g)) === truth;
+        return negated ? !matches : matches;
       };
     }
     case 'in': {
