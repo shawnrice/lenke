@@ -176,10 +176,12 @@ export type Projection = {
   limit?: number;
 };
 
-/** One `ORDER BY` key. */
+/** One `ORDER BY` key, with optional ISO `NULLS FIRST` / `NULLS LAST`. */
 export type SortItem = {
   expr: Expr;
   descending: boolean;
+  /** `true` = NULLS FIRST, `false` = NULLS LAST, `undefined` = engine default. */
+  nullsFirst?: boolean;
 };
 
 /** A single RETURN expression with an optional `AS` alias. */
