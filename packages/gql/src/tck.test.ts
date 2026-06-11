@@ -506,3 +506,27 @@ describe('TCK ReturnOrderBy6: aggregation inside ORDER BY', () => {
     ]);
   });
 });
+
+// WithWhere1/3 — WITH projects, then a following WHERE filters the projected
+// rows (HAVING-style). The cartesian self-join is the `WithWhere3` identity case.
+describe('TCK WithWhere1/3: WITH then WHERE', () => {
+  test('[1] WHERE after WITH filters the carried rows', () => {
+    const g = new Graph();
+    query(g, `INSERT ({name: 'A'}), ({name: 'B'}), ({name: 'C'})`);
+    const r = query(g, `MATCH (a) WITH a WHERE a.name = 'B' RETURN a.name AS name`);
+    expect(r).toEqual([{ name: 'B' }]);
+  });
+
+  test('[3.1] cartesian self-join filtered by identity', () => {
+    const g = new Graph();
+    query(g, `INSERT ({k: 'A'}), ({k: 'B'})`);
+    const r = query(
+      g,
+      `MATCH (a), (b) WITH a, b WHERE a = b RETURN a.k AS ak, b.k AS bk ORDER BY ak`,
+    );
+    expect(r).toEqual([
+      { ak: 'A', bk: 'A' },
+      { ak: 'B', bk: 'B' },
+    ]);
+  });
+});
