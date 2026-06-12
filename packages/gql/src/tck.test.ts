@@ -532,3 +532,52 @@ describe('TCK WithWhere1/3: WITH then WHERE', () => {
     ]);
   });
 });
+
+// MatchWhere2 / With2 — multi-variable filtering and forwarding a value as a
+// join key. (Cypher's `--` undirected edge is a comment in ISO; uses `~`.)
+describe('TCK MatchWhere2 / With2: multi-variable joins', () => {
+  test('[MatchWhere2.1] undirected 4-cycle with a chord, filtered on two variables', () => {
+    const g = new Graph();
+    query(g, `INSERT (a:A {n: 'a'}), (b:B {n: 'b', id: 1}), (c:C {n: 'c', id: 2}), (d:D {n: 'd'})`);
+    query(
+      g,
+      `MATCH (a:A), (b:B), (c:C), (d:D)
+       INSERT (a)-[:T]->(b), (a)-[:T]->(c), (a)-[:T]->(d),
+              (b)-[:T]->(c), (b)-[:T]->(d), (c)-[:T]->(d)`,
+    );
+    const rows = query(
+      g,
+      `MATCH (a)~(b)~(c)~(d)~(a), (b)~(d) WHERE a.id = 1 AND c.id = 2 RETURN d.n AS dn ORDER BY dn`,
+    );
+    expect(rows).toEqual([{ dn: 'a' }, { dn: 'd' }]);
+  });
+
+  test('[With2.1] WITH forwards a property as a join key', () => {
+    // TCK labels Begin/End; END is reserved in ISO, so renamed Source/Sink.
+    const g = new Graph();
+    query(g, `INSERT (a:Sink {num: 42, id: 0}), (:Sink {num: 3}), (:Source {num: a.id})`);
+    const rows = query(
+      g,
+      `MATCH (a:Source) WITH a.num AS property MATCH (b) WHERE b.id = property RETURN b.num AS num`,
+    );
+    expect(rows).toEqual([{ num: 42 }]);
+  });
+});
+
+// Mathematical3/4/5 — arithmetic and NULL propagation.
+describe('TCK Mathematical: arithmetic with null propagation', () => {
+  const v = (e: string): unknown => query(empty, `RETURN ${e} AS r`)[0]!.r;
+
+  test('subtraction, multiplication, division', () => {
+    expect(v('7 - 2')).toBe(5);
+    expect(v('3 * 4')).toBe(12);
+    expect(v('6 / 2')).toBe(3);
+  });
+
+  test('any null operand yields null', () => {
+    expect(v('null - 1')).toBeNull();
+    expect(v('2 - null')).toBeNull();
+    expect(v('null * 3')).toBeNull();
+    expect(v('5 / null')).toBeNull();
+  });
+});
