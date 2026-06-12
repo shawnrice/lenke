@@ -861,3 +861,47 @@ describe('GQL: CASE expression (ISO <case expression>)', () => {
     expect(one(`nullif(7, 8)`)).toBe(7);
   });
 });
+
+describe('GQL: ISO numeric & string value functions', () => {
+  const g = createTestSocialGraph();
+  const v = (e: string): unknown =>
+    query(g, `MATCH (n:Person {name: 'marko'}) RETURN ${e} AS r`)[0]!.r;
+
+  test('numeric value functions', () => {
+    expect(v('abs(-5)')).toBe(5);
+    expect(v('ceil(2.1)')).toBe(3);
+    expect(v('ceiling(2.1)')).toBe(3);
+    expect(v('floor(2.9)')).toBe(2);
+    expect(v('sqrt(9)')).toBe(3);
+    expect(v('sign(-4)')).toBe(-1);
+    expect(v('power(2, 10)')).toBe(1024);
+    expect(v('mod(7, 3)')).toBe(1);
+    expect(v('log10(1000)')).toBe(3);
+    expect(v('log(2, 8)')).toBe(3); // general log: base 2 of 8
+  });
+
+  test('trigonometric and angle conversion', () => {
+    expect(v('radians(180)')).toBeCloseTo(Math.PI);
+    expect(v('degrees(radians(90))')).toBeCloseTo(90);
+    expect(v('sin(0)')).toBe(0);
+  });
+
+  test('string value functions', () => {
+    expect(v(`char_length('hello')`)).toBe(5);
+    expect(v(`character_length('hello')`)).toBe(5);
+    expect(v(`upper('abc')`)).toBe('ABC');
+    expect(v(`lower('ABC')`)).toBe('abc');
+    expect(v(`left('hello', 2)`)).toBe('he');
+    expect(v(`right('hello', 2)`)).toBe('lo');
+    expect(v(`right('hi', 0)`)).toBe('');
+    expect(v(`ltrim('  hi ')`)).toBe('hi ');
+    expect(v(`rtrim('  hi ')`)).toBe('  hi');
+    expect(v(`btrim('  hi  ')`)).toBe('hi');
+  });
+
+  test('null argument yields null', () => {
+    expect(v('sqrt(null)')).toBeNull();
+    expect(v('power(null, 2)')).toBeNull();
+    expect(v(`left(null, 2)`)).toBeNull();
+  });
+});
