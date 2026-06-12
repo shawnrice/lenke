@@ -64,6 +64,11 @@ type CompiledExpr = (binding: Binding, params: Params, group?: readonly Binding[
  */
 export type Plan = (graph: Graph, params?: Params) => Row[];
 
+// The graph being queried, for the duration of one synchronous Plan run. Only
+// EXISTS subqueries read it (every other expression is graph-independent). Set
+// and restored by the Plan runner, so nested plans/recursion stay correct.
+let activeGraph: Graph | undefined;
+
 // --- binding helpers ---------------------------------------------------------
 
 const withBinding = (binding: Binding, name: string | undefined, value: Bound): Binding => {
@@ -398,7 +403,33 @@ const compileExpr = (expr: Expr): CompiledExpr => {
     }
     case 'case':
       return compileCase(expr);
+    case 'exists':
+      return compileExists(expr);
   }
+};
+
+/**
+ * Compile an ISO EXISTS subquery. The sub-pattern is compiled once (like a MATCH
+ * clause); at run time it is matched against the current graph, seeded with the
+ * outer binding (so it is correlated), and the predicate is TRUE iff at least one
+ * match exists. The graph comes from the execution-scoped `activeGraph` the Plan
+ * runner sets — the only expression that consults the graph.
+ */
+const compileExists = (expr: Extract<Expr, { kind: 'exists' }>): CompiledExpr => {
+  const sub: CMatch = {
+    kind: 'match',
+    optional: false,
+    patterns: expr.patterns.map(compilePath),
+    where: expr.where ? compileExpr(expr.where) : undefined,
+    nullVars: [],
+  };
+  return (binding, params) => {
+    if (!activeGraph) {
+      return false;
+    }
+    const matches = matchClauseBindings(activeGraph, sub, binding, params)[Symbol.iterator]();
+    return !matches.next().done;
+  };
 };
 
 /**
@@ -1265,11 +1296,19 @@ export const compile = (query: Query): Plan => {
     ops: query.ops,
   };
   return (graph, params = {}) => {
-    let rows = runLinear(compiled.parts[0]!, graph, params);
-    compiled.ops.forEach((op, i) => {
-      rows = combineRows(op, rows, runLinear(compiled.parts[i + 1]!, graph, params));
-    });
-    return rows;
+    // Expose the graph to EXISTS subqueries for this synchronous run; restore
+    // afterward so nested/sequential plan runs stay correct.
+    const previousGraph = activeGraph;
+    activeGraph = graph;
+    try {
+      let rows = runLinear(compiled.parts[0]!, graph, params);
+      compiled.ops.forEach((op, i) => {
+        rows = combineRows(op, rows, runLinear(compiled.parts[i + 1]!, graph, params));
+      });
+      return rows;
+    } finally {
+      activeGraph = previousGraph;
+    }
   };
 };
 

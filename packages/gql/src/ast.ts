@@ -219,6 +219,10 @@ export type Expr =
   // truth value (`null` = UNKNOWN); the predicate is always TRUE or FALSE.
   | { kind: 'isTruth'; expr: Expr; truth: boolean | null; negated: boolean }
   | { kind: 'in'; expr: Expr; list: Expr; negated: boolean }
+  // ISO `<exists predicate>`: `EXISTS { p1, p2, … [WHERE pred] }` — TRUE when the
+  // (correlated) sub-pattern has at least one match. Carries its own patterns and
+  // optional WHERE, like a MATCH clause.
+  | { kind: 'exists'; patterns: readonly PathPattern[]; where?: Expr }
   // ISO `<case expression>`. With `subject`: a simple CASE (`subject = when`);
   // without: a searched CASE (`when` is a boolean condition). `elseExpr` is the
   // ELSE result, defaulting to NULL.
