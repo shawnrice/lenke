@@ -793,3 +793,71 @@ describe('GQL: IS TRUE / FALSE / UNKNOWN (ISO <boolean test>)', () => {
     );
   });
 });
+
+describe('GQL: CASE expression (ISO <case expression>)', () => {
+  const g = createTestSocialGraph();
+  // Evaluate an expression against a single, fixed row.
+  const one = (e: string): unknown =>
+    query(g, `MATCH (n:Person {name: 'marko'}) RETURN ${e} AS r`)[0]!.r;
+
+  test('searched CASE returns the first TRUE branch', () => {
+    expect(one(`CASE WHEN 1 > 2 THEN 'a' WHEN 2 > 1 THEN 'b' ELSE 'c' END`)).toBe('b');
+  });
+
+  test('searched CASE with no match falls to ELSE', () => {
+    expect(one(`CASE WHEN false THEN 'a' ELSE 'z' END`)).toBe('z');
+  });
+
+  test('searched CASE with no ELSE and no match is NULL', () => {
+    expect(one(`CASE WHEN false THEN 'a' END`)).toBeNull();
+  });
+
+  test('an UNKNOWN condition is not TRUE, so its branch is skipped', () => {
+    // n.foo is missing → `n.foo = 1` is UNKNOWN, which is not a match.
+    expect(one(`CASE WHEN n.foo = 1 THEN 'x' ELSE 'y' END`)).toBe('y');
+  });
+
+  test('simple CASE over integers (TCK Conditional2)', () => {
+    const r = (v: string) =>
+      one(
+        `CASE ${v} WHEN -10 THEN 'minus ten' WHEN 0 THEN 'zero' WHEN 5 THEN 'five' ELSE 'else' END`,
+      );
+    expect(r('0')).toBe('zero');
+    expect(r('5')).toBe('five');
+    expect(r('-10')).toBe('minus ten');
+    expect(r('42')).toBe('else');
+  });
+
+  test('simple CASE: a NULL subject never matches (→ ELSE)', () => {
+    expect(one(`CASE n.foo WHEN 1 THEN 'a' ELSE 'none' END`)).toBe('none');
+  });
+
+  test('CASE drives a computed RETURN column', () => {
+    const rows = query(
+      g,
+      `MATCH (n:Person)
+       RETURN n.name AS name,
+              CASE WHEN n.age >= 30 THEN 'senior' ELSE 'junior' END AS band
+       ORDER BY name`,
+    );
+    expect(rows).toEqual([
+      { name: 'josh', band: 'senior' },
+      { name: 'marko', band: 'junior' },
+      { name: 'peter', band: 'senior' },
+      { name: 'vadas', band: 'junior' },
+    ]);
+  });
+
+  test('CASE inside an aggregate (conditional sum)', () => {
+    const rows = query(
+      g,
+      `MATCH (n:Person) RETURN sum(CASE WHEN n.age >= 30 THEN 1 ELSE 0 END) AS seniors`,
+    );
+    expect(rows).toEqual([{ seniors: 2 }]); // josh (32) and peter (35)
+  });
+
+  test('NULLIF (ISO case abbreviation)', () => {
+    expect(one(`nullif(7, 7)`)).toBeNull();
+    expect(one(`nullif(7, 8)`)).toBe(7);
+  });
+});
