@@ -386,8 +386,7 @@ export const parse = (src: string): Query => {
         advance();
         return { kind: 'isNull', expr: e, negated };
       }
-      // ISO `<boolean test>`: IS [NOT] TRUE | FALSE | UNKNOWN. UNKNOWN is a
-      // contextual identifier (not a reserved keyword in this engine).
+      // ISO `<boolean test>`: IS [NOT] TRUE | FALSE | UNKNOWN.
       if (checkKeyword('true')) {
         advance();
         return { kind: 'isTruth', expr: e, truth: true, negated };
@@ -400,7 +399,15 @@ export const parse = (src: string): Query => {
         advance();
         return { kind: 'isTruth', expr: e, truth: null, negated };
       }
-      throw new GqlSyntaxError('Expected NULL, TRUE, FALSE, or UNKNOWN after IS', peek().pos);
+      // ISO `<labeled predicate>`: IS [NOT] LABELED <label expression>.
+      if (checkKeyword('labeled')) {
+        advance();
+        return { kind: 'isLabeled', expr: e, label: parseLabelExpr(), negated };
+      }
+      throw new GqlSyntaxError(
+        'Expected NULL, TRUE, FALSE, UNKNOWN, or LABELED after IS',
+        peek().pos,
+      );
     }
     if (checkKeyword('in')) {
       advance();

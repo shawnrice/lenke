@@ -99,6 +99,10 @@ const evalLabelExpr = (expr: LabelExpr, labels: ReadonlySet<string>): boolean =>
   }
 };
 
+/** Does a label set satisfy a label expression? (For the ISO `IS LABELED` test.) */
+export const labelsMatch = (labels: ReadonlySet<string>, expr: LabelExpr): boolean =>
+  evalLabelExpr(expr, labels);
+
 /** A node matches when it has no label constraint or its label set satisfies it. */
 export const matchesLabel = (v: Vertex, expr: LabelExpr | undefined): boolean =>
   expr === undefined || evalLabelExpr(expr, v.labels);

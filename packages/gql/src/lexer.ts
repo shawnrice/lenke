@@ -91,6 +91,7 @@ const KEYWORDS = new Set([
   'count',
   'nulls',
   'unknown',
+  'labeled',
   'limit',
   'union',
   'except',

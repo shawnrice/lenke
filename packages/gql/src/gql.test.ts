@@ -996,3 +996,43 @@ describe('GQL: COUNT subquery (ISO count subquery)', () => {
     expect(query(h, 'MATCH (n:Tally) RETURN n.`count` AS c')).toEqual([{ c: 9 }]);
   });
 });
+
+describe('GQL: IS LABELED predicate & ELEMENT_ID (ISO)', () => {
+  const g = createTestSocialGraph();
+
+  test('IS LABELED tests an element against a label expression', () => {
+    expect(names(query(g, `MATCH (x) WHERE x IS LABELED Person RETURN x.name`), 'x.name')).toEqual([
+      'josh',
+      'marko',
+      'peter',
+      'vadas',
+    ]);
+    expect(query(g, `MATCH (x) WHERE x IS LABELED Software RETURN count(*) AS c`)).toEqual([
+      { c: 2 },
+    ]);
+  });
+
+  test('IS NOT LABELED negates the predicate', () => {
+    expect(query(g, `MATCH (x) WHERE x IS NOT LABELED Person RETURN count(*) AS c`)).toEqual([
+      { c: 2 }, // the two Software nodes
+    ]);
+  });
+
+  test('IS LABELED accepts a boolean label expression', () => {
+    const h = createTestSocialGraph();
+    h.addVertex({ labels: ['Person', 'Admin'], properties: { name: 'boss' } });
+    expect(
+      names(query(h, `MATCH (x) WHERE x IS LABELED Person & Admin RETURN x.name`), 'x.name'),
+    ).toEqual(['boss']);
+    // disjunction spans both kinds: 5 Person (incl. boss) + 2 Software.
+    expect(query(h, `MATCH (x) WHERE x IS LABELED Person | Software RETURN count(*) AS c`)).toEqual(
+      [{ c: 7 }],
+    );
+  });
+
+  test('ELEMENT_ID returns the element identifier', () => {
+    expect(query(g, `MATCH (n:Person {name: 'marko'}) RETURN element_id(n) AS id`)).toEqual([
+      { id: '1' },
+    ]);
+  });
+});

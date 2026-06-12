@@ -218,6 +218,8 @@ export type Expr =
   // ISO `<boolean test>`: `x IS [NOT] TRUE|FALSE|UNKNOWN`. `truth` is the target
   // truth value (`null` = UNKNOWN); the predicate is always TRUE or FALSE.
   | { kind: 'isTruth'; expr: Expr; truth: boolean | null; negated: boolean }
+  // ISO `<labeled predicate>`: `x IS [NOT] LABELED <label expression>`.
+  | { kind: 'isLabeled'; expr: Expr; label: LabelExpr; negated: boolean }
   | { kind: 'in'; expr: Expr; list: Expr; negated: boolean }
   // ISO `<exists predicate>`: `EXISTS { p1, p2, … [WHERE pred] }` — TRUE when the
   // (correlated) sub-pattern has at least one match. Carries its own patterns and
