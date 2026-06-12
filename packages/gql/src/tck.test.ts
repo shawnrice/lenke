@@ -631,3 +631,37 @@ describe('TCK Match1: match nodes', () => {
     expect(query(g, `MATCH (a:A&B) RETURN count(*) AS c`)).toEqual([{ c: 2 }]);
   });
 });
+
+// Match2 / Match3 — matching relationships and fixed-length patterns.
+// (Scenarios needing type()/labels() are skipped — not added without confirming
+// those are ISO, not Cypher; elements are identified by properties instead.)
+describe('TCK Match2 / Match3: relationships and fixed-length patterns', () => {
+  test('[Match2.1] matching non-existent relationships returns empty', () => {
+    expect(query(new Graph(), `MATCH ()-[r]->() RETURN r.x AS x`)).toEqual([]);
+  });
+
+  test('[Match2.2] relationship pattern with a label predicate on both sides', () => {
+    const g = new Graph();
+    query(
+      g,
+      `INSERT (:A)-[:T1 {id: 1}]->(:B), (:B)-[:T2 {id: 2}]->(:A),
+              (:B)-[:T3 {id: 3}]->(:B), (:A)-[:T4 {id: 4}]->(:A)`,
+    );
+    // Only the A → B edge (T1) satisfies both endpoint labels.
+    expect(query(g, `MATCH (:A)-[r]->(:B) RETURN r.id AS id`)).toEqual([{ id: 1 }]);
+  });
+
+  test('[Match3.1] get neighbours across a typed relationship', () => {
+    const g = new Graph();
+    query(g, `INSERT (:A {num: 1})-[:KNOWS]->(:B {num: 2})`);
+    const rows = query(g, `MATCH (n1)-[rel:KNOWS]->(n2) RETURN n1.num AS a, n2.num AS b`);
+    expect(rows).toEqual([{ a: 1, b: 2 }]);
+  });
+
+  test('[Match3.2] directed match binds source, relationship, and target', () => {
+    const g = new Graph();
+    query(g, `INSERT (:A {k: 'a'})-[:LOOP {k: 'r'}]->(:B {k: 'b'})`);
+    const rows = query(g, `MATCH (a)-[r]->(b) RETURN a.k AS a, r.k AS r, b.k AS b`);
+    expect(rows).toEqual([{ a: 'a', r: 'r', b: 'b' }]);
+  });
+});
