@@ -176,8 +176,7 @@ const COMPARE: Record<CompareOp, (a: number | string, b: number | string) => boo
 
 type FuncExpr = Extract<Expr, { kind: 'func' }>;
 
-// `collect_list` is the ISO name; `collect` is kept as a convenient alias.
-const AGGREGATES = new Set(['count', 'sum', 'avg', 'min', 'max', 'collect', 'collect_list']);
+const AGGREGATES = new Set(['count', 'sum', 'avg', 'min', 'max', 'collect_list']);
 
 /** Does an expression contain an aggregate anywhere (→ implicit grouping)? */
 const hasAggregate = (expr: Expr): boolean => {
@@ -223,7 +222,6 @@ const UNARY_NUM: Record<string, (n: number) => number> = {
   exp: Math.exp,
   ln: Math.log,
   log10: Math.log10,
-  sign: Math.sign,
   sin: Math.sin,
   cos: Math.cos,
   tan: Math.tan,
@@ -536,7 +534,6 @@ const compileAggregate = (expr: FuncExpr): CompiledExpr => {
         return values.length === 0
           ? null
           : values.reduce((m, v) => (compareValues(v, m) > 0 ? v : m));
-      case 'collect':
       case 'collect_list':
         return values;
       default:

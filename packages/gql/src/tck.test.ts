@@ -279,7 +279,10 @@ describe('TCK Aggregation2/3/5: null handling in aggregates', () => {
   test('collect filters nulls', () => {
     const g = new Graph();
     query(g, `INSERT (:Lonely)`);
-    const r = query(g, `MATCH (n) OPTIONAL MATCH (n)-[:NOT_EXIST]->(x) RETURN collect(x) AS xs`);
+    const r = query(
+      g,
+      `MATCH (n) OPTIONAL MATCH (n)-[:NOT_EXIST]->(x) RETURN collect_list(x) AS xs`,
+    );
     expect(r).toEqual([{ xs: [] }]);
   });
 });
