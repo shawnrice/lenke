@@ -405,24 +405,27 @@ const compileExpr = (expr: Expr): CompiledExpr => {
       return compileCase(expr);
     case 'exists':
       return compileExists(expr);
+    case 'countSubquery':
+      return compileCountSubquery(expr);
   }
 };
 
 /**
- * Compile an ISO EXISTS subquery. The sub-pattern is compiled once (like a MATCH
- * clause); at run time it is matched against the current graph, seeded with the
- * outer binding (so it is correlated), and the predicate is TRUE iff at least one
- * match exists. The graph comes from the execution-scoped `activeGraph` the Plan
- * runner sets — the only expression that consults the graph.
+ * Compile a braced subquery body (`{ pattern, … [WHERE pred] }`) into a MATCH
+ * clause. The sub-pattern is compiled once; at run time it is matched seeded with
+ * the outer binding, so EXISTS/COUNT are correlated.
  */
+const compileSubMatch = (sub: { patterns: readonly PathPattern[]; where?: Expr }): CMatch => ({
+  kind: 'match',
+  optional: false,
+  patterns: sub.patterns.map(compilePath),
+  where: sub.where ? compileExpr(sub.where) : undefined,
+  nullVars: [],
+});
+
+/** ISO EXISTS: TRUE iff the correlated sub-pattern has at least one match. */
 const compileExists = (expr: Extract<Expr, { kind: 'exists' }>): CompiledExpr => {
-  const sub: CMatch = {
-    kind: 'match',
-    optional: false,
-    patterns: expr.patterns.map(compilePath),
-    where: expr.where ? compileExpr(expr.where) : undefined,
-    nullVars: [],
-  };
+  const sub = compileSubMatch(expr);
   return (binding, params) => {
     if (!activeGraph) {
       return false;
@@ -430,6 +433,13 @@ const compileExists = (expr: Extract<Expr, { kind: 'exists' }>): CompiledExpr =>
     const matches = matchClauseBindings(activeGraph, sub, binding, params)[Symbol.iterator]();
     return !matches.next().done;
   };
+};
+
+/** ISO count subquery: the number of matches of the correlated sub-pattern. */
+const compileCountSubquery = (expr: Extract<Expr, { kind: 'countSubquery' }>): CompiledExpr => {
+  const sub = compileSubMatch(expr);
+  return (binding, params) =>
+    activeGraph ? [...matchClauseBindings(activeGraph, sub, binding, params)].length : 0;
 };
 
 /**

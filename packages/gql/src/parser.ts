@@ -467,16 +467,9 @@ export const parse = (src: string): Query => {
     return parsePrimary();
   };
 
-  // ISO `<exists predicate>`: `EXISTS { pattern, … [WHERE pred] }`. EXISTS is a
-  // contextual keyword (so `exists` stays usable as an identifier); the brace
-  // disambiguates it. An optional leading MATCH (the match-statement form) is
-  // accepted. The parenthesized form is not supported — `EXISTS ( … )` is
-  // indistinguishable from a function call in this grammar.
-  const isExists = (): boolean =>
-    check('ident') && peek().value.toLowerCase() === 'exists' && tokens[pos + 1]?.type === 'lbrace';
-
-  const parseExists = (): Expr => {
-    advance(); // the `exists` identifier
+  // The body shared by the braced subqueries `EXISTS { … }` and `COUNT { … }`:
+  // `{ pattern, … [WHERE pred] }`, with an optional leading MATCH keyword.
+  const parseBracedSubquery = (): { patterns: PathPattern[]; where?: Expr } => {
     expect('lbrace', "'{'");
     if (checkKeyword('match')) {
       advance();
@@ -488,7 +481,24 @@ export const parse = (src: string): Query => {
     }
     const where = checkKeyword('where') ? (advance(), parseExpr()) : undefined;
     expect('rbrace', "'}'");
-    return { kind: 'exists', patterns, where };
+    return { patterns, where };
+  };
+
+  // EXISTS / COUNT are contextual keywords (so `exists`/`count` stay usable as
+  // identifiers); the following brace disambiguates them from a plain name or a
+  // `count(...)` aggregate. The parenthesized subquery form is not supported — it
+  // is indistinguishable from a function call in this grammar.
+  const subqueryAhead = (name: string): boolean =>
+    check('ident') && peek().value.toLowerCase() === name && tokens[pos + 1]?.type === 'lbrace';
+
+  const parseExists = (): Expr => {
+    advance(); // the `exists` identifier
+    return { kind: 'exists', ...parseBracedSubquery() };
+  };
+
+  const parseCountSubquery = (): Expr => {
+    advance(); // the `count` identifier
+    return { kind: 'countSubquery', ...parseBracedSubquery() };
   };
 
   // ISO `<case expression>`: `CASE [subject] (WHEN test THEN result)+ [ELSE r] END`.
@@ -536,8 +546,11 @@ export const parse = (src: string): Query => {
     if (checkKeyword('case')) {
       return parseCase();
     }
-    if (isExists()) {
+    if (subqueryAhead('exists')) {
       return parseExists();
+    }
+    if (subqueryAhead('count')) {
+      return parseCountSubquery();
     }
     if (t.type === 'lparen') {
       advance();

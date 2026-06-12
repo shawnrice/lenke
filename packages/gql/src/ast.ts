@@ -223,6 +223,10 @@ export type Expr =
   // (correlated) sub-pattern has at least one match. Carries its own patterns and
   // optional WHERE, like a MATCH clause.
   | { kind: 'exists'; patterns: readonly PathPattern[]; where?: Expr }
+  // ISO count subquery: `COUNT { p1, … [WHERE pred] }` — the number of matches of
+  // the (correlated) sub-pattern. A scalar per outer row, distinct from the
+  // `count(...)` grouping aggregate.
+  | { kind: 'countSubquery'; patterns: readonly PathPattern[]; where?: Expr }
   // ISO `<case expression>`. With `subject`: a simple CASE (`subject = when`);
   // without: a searched CASE (`when` is a boolean condition). `elseExpr` is the
   // ELSE result, defaulting to NULL.
