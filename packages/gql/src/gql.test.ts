@@ -962,3 +962,36 @@ describe('GQL: EXISTS subquery (ISO <exists predicate>)', () => {
     expect(query(h, `MATCH (n:Flag {exists: true}) RETURN n.exists AS e`)).toEqual([{ e: true }]);
   });
 });
+
+describe('GQL: COUNT subquery (ISO count subquery)', () => {
+  const g = createTestSocialGraph();
+
+  test('COUNT { … } returns the correlated match count per row', () => {
+    const rows = query(
+      g,
+      `MATCH (n:Person) RETURN n.name AS name, COUNT { (n)-[:CREATED]->() } AS c ORDER BY name`,
+    );
+    expect(rows).toEqual([
+      { name: 'josh', c: 2 }, // ripple + lop
+      { name: 'marko', c: 1 }, // lop
+      { name: 'peter', c: 1 }, // lop
+      { name: 'vadas', c: 0 }, // creates nothing
+    ]);
+  });
+
+  test('COUNT subquery in WHERE', () => {
+    const rows = query(
+      g,
+      `MATCH (n:Person) WHERE COUNT { (n)-[:CREATED]->() } > 1 RETURN n.name AS name`,
+    );
+    expect(names(rows, 'name')).toEqual(['josh']);
+  });
+
+  test('the count(...) aggregate is unaffected (paren vs brace)', () => {
+    expect(query(g, `MATCH (n:Person) RETURN count(*) AS c`)).toEqual([{ c: 4 }]);
+    // `count` also still works as a plain identifier.
+    const h = createTestSocialGraph();
+    h.addVertex({ labels: ['Tally'], properties: { count: 9 } });
+    expect(query(h, `MATCH (count:Tally) RETURN count.count AS c`)).toEqual([{ c: 9 }]);
+  });
+});
