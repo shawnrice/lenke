@@ -56,6 +56,8 @@ export type Token = {
   value: string;
   /** Number value, only set for `number` tokens. */
   num?: number;
+  /** True for a backtick-delimited identifier — may be any word, even reserved. */
+  delimited?: boolean;
   /** Zero-based offset in the source, for error messages. */
   pos: number;
 };
@@ -91,7 +93,6 @@ const KEYWORDS = new Set([
   'count',
   'nulls',
   'unknown',
-  'labeled',
   'limit',
   'union',
   'except',
@@ -108,6 +109,46 @@ const KEYWORDS = new Set([
   'false',
   'null',
 ]);
+
+/**
+ * The complete ISO/IEC 39075 reserved-word list (`<reserved word>` plus
+ * `<pre-reserved word>`). A reserved word may not be used as a bare identifier
+ * (variable, label, property key, alias) — only as a function name in call
+ * position or as a delimited identifier. `KEYWORDS` above is the structural
+ * subset the parser dispatches on; this is the full set the parser uses to
+ * reject identifiers. Verbatim from the standard so the list can't drift.
+ */
+const RESERVED = new Set<string>(
+  (
+    'abs acos all all_different and any array as asc ascending asin at atan avg big bigint ' +
+    'binary bool boolean both btrim by byte_length bytes call cardinality case cast ceil ceiling ' +
+    'char char_length character_length characteristics close coalesce collect_list commit copy cos ' +
+    'cosh cot count create current_date current_graph current_property_graph current_schema ' +
+    'current_time current_timestamp date datetime day dec decimal degrees delete desc descending ' +
+    'detach distinct double drop duration duration_between element_id else end except exists exp ' +
+    'false filter finish float float16 float32 float64 float128 float256 floor for from group having ' +
+    'home_graph home_property_graph home_schema hour if implies in insert int integer int8 integer8 ' +
+    'int16 integer16 int32 integer32 int64 integer64 int128 integer128 int256 integer256 intersect ' +
+    'interval is leading left let like limit list ln local local_datetime local_time ' +
+    'local_timestamp log log10 lower ltrim match max min minute mod month next nodetach normalize ' +
+    'not nothing null nulls nullif octet_length of offset optional or order otherwise parameter ' +
+    'parameters path path_length paths percentile_cont percentile_disc power precision ' +
+    'property_exists radians real record remove replace reset return right rollback rtrim same ' +
+    'schema second select session session_user set signed sin sinh size skip small smallint sqrt ' +
+    'start stddev_pop stddev_samp string sum tan tanh then time timestamp trailing trim true typed ' +
+    'ubigint uint uint8 uint16 uint32 uint64 uint128 uint256 union unknown unsigned upper use ' +
+    'usmallint value varbinary varchar variable when where with xor year yield zoned zoned_datetime ' +
+    'zoned_time ' +
+    // <pre-reserved word> (reserved for future use)
+    'abstract aggregate aggregates alter catalog clear clone constraint current_role current_user ' +
+    'data directory dryrun exact existing function gqlstatus grant instant infinity number numeric ' +
+    'on open partition procedure product project query records reference rename revoke substring ' +
+    'system_user temporal unique unit values whitespace'
+  ).split(' '),
+);
+
+/** Is `word` (case-insensitive) an ISO reserved word, hence not a bare identifier? */
+export const isReserved = (word: string): boolean => RESERVED.has(word.toLowerCase());
 
 const isDigit = (c: string): boolean => c >= '0' && c <= '9';
 const isIdentStart = (c: string): boolean =>
@@ -287,7 +328,7 @@ export const tokenize = (src: string): Token[] => {
         throw new GqlSyntaxError('Unterminated delimited identifier', start);
       }
       i += 1; // closing backtick
-      push('ident', name, start);
+      tokens.push({ type: 'ident', value: name, pos: start, delimited: true });
       continue;
     }
 
