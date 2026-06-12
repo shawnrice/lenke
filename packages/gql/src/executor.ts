@@ -52,22 +52,29 @@ export type Row = Record<string, unknown>;
 type Params = Record<string, unknown>;
 
 /**
- * A compiled expression. The structural `switch (expr.kind)` happens once, at
- * compile time; what's left is this closure, evaluated against a binding (and,
- * for aggregates, the `group` of bindings it folds over).
+ * The environment a compiled expression evaluates against: the current binding,
+ * the query params, the graph (only EXISTS/COUNT subqueries read it), and — for
+ * aggregates — the `group` of bindings being folded. Passing this explicitly
+ * keeps expression evaluation a pure function of its inputs (no run-state global).
  */
-type CompiledExpr = (binding: Binding, params: Params, group?: readonly Binding[]) => unknown;
+type EvalEnv = {
+  binding: Binding;
+  params: Params;
+  graph: Graph;
+  group?: readonly Binding[];
+};
+
+/**
+ * A compiled expression. The structural `switch (expr.kind)` happens once, at
+ * compile time; what's left is this closure, evaluated against an `EvalEnv`.
+ */
+type CompiledExpr = (env: EvalEnv) => unknown;
 
 /**
  * A reusable execution plan: bind a graph and params, get rows. This is the
  * artifact `compile` produces — analyze once, run many.
  */
 export type Plan = (graph: Graph, params?: Params) => Row[];
-
-// The graph being queried, for the duration of one synchronous Plan run. Only
-// EXISTS subqueries read it (every other expression is graph-independent). Set
-// and restored by the Plan runner, so nested plans/recursion stay correct.
-let activeGraph: Graph | undefined;
 
 // --- binding helpers ---------------------------------------------------------
 
@@ -307,26 +314,26 @@ const compileExpr = (expr: Expr): CompiledExpr => {
     }
     case 'var': {
       const { name } = expr;
-      return (b) => b.get(name);
+      return (env) => env.binding.get(name);
     }
     case 'param': {
       const { name } = expr;
-      return (_b, params) => params[name];
+      return (env) => env.params[name];
     }
     case 'prop': {
       const { variable, key } = expr;
-      return (b) => propOf(b.get(variable), key);
+      return (env) => propOf(env.binding.get(variable), key);
     }
     case 'list': {
       const items = expr.items.map(compileExpr);
-      return (b, p, g) => items.map((f) => f(b, p, g));
+      return (env) => items.map((f) => f(env));
     }
     case 'func':
       return compileFunc(expr);
     case 'neg': {
       const fn = compileExpr(expr.expr);
-      return (b, p, g) => {
-        const v = numOf(fn(b, p, g));
+      return (env) => {
+        const v = numOf(fn(env));
         return v === null ? null : -v;
       };
     }
@@ -334,24 +341,24 @@ const compileExpr = (expr: Expr): CompiledExpr => {
       const l = compileExpr(expr.left);
       const r = compileExpr(expr.right);
       const op = ARITH[expr.op];
-      return (b, p, g) => {
-        const lv = numOf(l(b, p, g));
-        const rv = numOf(r(b, p, g));
+      return (env) => {
+        const lv = numOf(l(env));
+        const rv = numOf(r(env));
         return lv === null || rv === null ? null : op(lv, rv);
       };
     }
     case 'concat': {
       const l = compileExpr(expr.left);
       const r = compileExpr(expr.right);
-      return (b, p, g) => {
-        const lv = l(b, p, g);
-        const rv = r(b, p, g);
+      return (env) => {
+        const lv = l(env);
+        const rv = r(env);
         return isNullish(lv) || isNullish(rv) ? null : String(lv) + String(rv);
       };
     }
     case 'not': {
       const fn = compileExpr(expr.expr);
-      return (b, p, g) => not3(asTruth(fn(b, p, g)));
+      return (env) => not3(asTruth(fn(env)));
     }
     case 'and':
     case 'or':
@@ -359,13 +366,13 @@ const compileExpr = (expr: Expr): CompiledExpr => {
       const l = compileExpr(expr.left);
       const r = compileExpr(expr.right);
       const fn = BOOL3[expr.kind];
-      return (b, p, g) => fn(asTruth(l(b, p, g)), asTruth(r(b, p, g)));
+      return (env) => fn(asTruth(l(env)), asTruth(r(env)));
     }
     case 'isNull': {
       const fn = compileExpr(expr.expr);
       const { negated } = expr;
-      return (b, p, g) => {
-        const isnull = isNullish(fn(b, p, g));
+      return (env) => {
+        const isnull = isNullish(fn(env));
         return negated ? !isnull : isnull;
       };
     }
@@ -374,8 +381,8 @@ const compileExpr = (expr: Expr): CompiledExpr => {
       // definite boolean: it tests whether x's truth value equals the target.
       const fn = compileExpr(expr.expr);
       const { truth, negated } = expr;
-      return (b, p, g) => {
-        const matches = asTruth(fn(b, p, g)) === truth;
+      return (env) => {
+        const matches = asTruth(fn(env)) === truth;
         return negated ? !matches : matches;
       };
     }
@@ -383,8 +390,8 @@ const compileExpr = (expr: Expr): CompiledExpr => {
       const e = compileExpr(expr.expr);
       const list = compileExpr(expr.list);
       const { negated } = expr;
-      return (b, p, g) => {
-        const result = inList(e(b, p, g), list(b, p, g));
+      return (env) => {
+        const result = inList(e(env), list(env));
         return negated ? not3(result) : result;
       };
     }
@@ -392,9 +399,9 @@ const compileExpr = (expr: Expr): CompiledExpr => {
       const l = compileExpr(expr.left);
       const r = compileExpr(expr.right);
       const op = COMPARE[expr.op];
-      return (b, p, g) => {
-        const lv = l(b, p, g);
-        const rv = r(b, p, g);
+      return (env) => {
+        const lv = l(env);
+        const rv = r(env);
         if (isNullish(lv) || isNullish(rv)) {
           return null; // UNKNOWN
         }
@@ -426,11 +433,8 @@ const compileSubMatch = (sub: { patterns: readonly PathPattern[]; where?: Expr }
 /** ISO EXISTS: TRUE iff the correlated sub-pattern has at least one match. */
 const compileExists = (expr: Extract<Expr, { kind: 'exists' }>): CompiledExpr => {
   const sub = compileSubMatch(expr);
-  return (binding, params) => {
-    if (!activeGraph) {
-      return false;
-    }
-    const matches = matchClauseBindings(activeGraph, sub, binding, params)[Symbol.iterator]();
+  return (env) => {
+    const matches = matchClauseBindings(env.graph, sub, env.binding, env.params)[Symbol.iterator]();
     return !matches.next().done;
   };
 };
@@ -438,8 +442,7 @@ const compileExists = (expr: Extract<Expr, { kind: 'exists' }>): CompiledExpr =>
 /** ISO count subquery: the number of matches of the correlated sub-pattern. */
 const compileCountSubquery = (expr: Extract<Expr, { kind: 'countSubquery' }>): CompiledExpr => {
   const sub = compileSubMatch(expr);
-  return (binding, params) =>
-    activeGraph ? [...matchClauseBindings(activeGraph, sub, binding, params)].length : 0;
+  return (env) => [...matchClauseBindings(env.graph, sub, env.binding, env.params)].length;
 };
 
 /**
@@ -451,24 +454,24 @@ const compileCase = (expr: Extract<Expr, { kind: 'case' }>): CompiledExpr => {
   const subject = expr.subject ? compileExpr(expr.subject) : undefined;
   const whens = expr.whens.map((w) => ({ when: compileExpr(w.when), then: compileExpr(w.then) }));
   const elseFn = expr.elseExpr ? compileExpr(expr.elseExpr) : undefined;
-  return (b, p, g) => {
+  return (env) => {
     if (subject) {
-      const s = subject(b, p, g);
+      const s = subject(env);
       for (const w of whens) {
-        const wv = w.when(b, p, g);
+        const wv = w.when(env);
         // `subject = when` with SQL/ISO null semantics: NULL never matches.
         if (!isNullish(s) && !isNullish(wv) && s === wv) {
-          return w.then(b, p, g);
+          return w.then(env);
         }
       }
     } else {
       for (const w of whens) {
-        if (asTruth(w.when(b, p, g)) === true) {
-          return w.then(b, p, g);
+        if (asTruth(w.when(env)) === true) {
+          return w.then(env);
         }
       }
     }
-    return elseFn ? elseFn(b, p, g) : null;
+    return elseFn ? elseFn(env) : null;
   };
 };
 
@@ -478,10 +481,10 @@ const compileFunc = (expr: FuncExpr): CompiledExpr => {
   }
   const { name } = expr;
   const args = expr.args.map(compileExpr);
-  return (b, p, g) =>
+  return (env) =>
     callScalar(
       name,
-      args.map((f) => f(b, p, g)),
+      args.map((f) => f(env)),
     );
 };
 
@@ -493,12 +496,12 @@ const compileFunc = (expr: FuncExpr): CompiledExpr => {
 const compileAggregate = (expr: FuncExpr): CompiledExpr => {
   const { name, star, distinct } = expr;
   const argFn = expr.args[0] ? compileExpr(expr.args[0]) : undefined;
-  return (binding, params, g) => {
-    const group = g ?? [binding];
+  return (env) => {
+    const group = env.group ?? [env.binding];
     if (name === 'count' && star) {
       return group.length;
     }
-    const raw = group.map((b) => argFn!(b, params, group));
+    const raw = group.map((b) => argFn!({ ...env, binding: b, group }));
     const nonNull = raw.filter((v) => !isNullish(v));
     const values = distinct ? [...new Set(nonNull)] : nonNull;
     switch (name) {
@@ -654,14 +657,16 @@ const projectBinding = (
   proj: CProjection,
   binding: Binding,
   params: Params,
+  graph: Graph,
   group?: readonly Binding[],
 ): Binding => {
   if (proj.star) {
     return new Map(binding);
   }
+  const env: EvalEnv = { binding, params, graph, group };
   const out = new Map<string, unknown>();
   for (const item of proj.items) {
-    out.set(item.name, item.fn(binding, params, group));
+    out.set(item.name, item.fn(env));
   }
   return out;
 };
@@ -675,6 +680,7 @@ const applyProjection = (
   proj: CProjection,
   bindings: readonly Binding[],
   params: Params,
+  graph: Graph,
 ): Binding[] => {
   const { orderBy } = proj;
   type Keyed = { b: Binding; keys: readonly unknown[] };
@@ -683,7 +689,9 @@ const applyProjection = (
   if (proj.aggregating) {
     const groups = new Map<string, Binding[]>();
     for (const b of bindings) {
-      const key = JSON.stringify(proj.groupKeys.map((fn) => valueKey(fn(b, params))));
+      const key = JSON.stringify(
+        proj.groupKeys.map((fn) => valueKey(fn({ binding: b, params, graph }))),
+      );
       const existing = groups.get(key);
       if (existing) {
         existing.push(b);
@@ -697,14 +705,14 @@ const applyProjection = (
     rows = [...groups.values()].map((group) => {
       const rep: Binding = group[0] ?? new Map();
       return {
-        b: projectBinding(proj, rep, params, group),
-        keys: orderBy.map((s) => s.fn(rep, params, group)),
+        b: projectBinding(proj, rep, params, graph, group),
+        keys: orderBy.map((s) => s.fn({ binding: rep, params, graph, group })),
       };
     });
   } else {
     rows = bindings.map((b) => ({
-      b: projectBinding(proj, b, params),
-      keys: orderBy.map((s) => s.fn(b, params)),
+      b: projectBinding(proj, b, params, graph),
+      keys: orderBy.map((s) => s.fn({ binding: b, params, graph })),
     }));
   }
 
@@ -789,13 +797,20 @@ const compilePath = (pattern: PathPattern): CPath => ({
  * against `binding`, which already includes this element's own variable, so
  * `(n WHERE n.age > 30)` can reference `n`.
  */
-const satisfies = (element: Bound, pred: CPredicate, binding: Binding, params: Params): boolean => {
+const satisfies = (
+  element: Bound,
+  pred: CPredicate,
+  binding: Binding,
+  params: Params,
+  graph: Graph,
+): boolean => {
+  const env: EvalEnv = { binding, params, graph };
   for (const { key, value } of pred.props) {
-    if (propOf(element, key) !== value(binding, params)) {
+    if (propOf(element, key) !== value(env)) {
       return false;
     }
   }
-  return pred.where === undefined || pred.where(binding, params) === true;
+  return pred.where === undefined || pred.where(env) === true;
 };
 
 // --- matching ----------------------------------------------------------------
@@ -805,6 +820,7 @@ const matchNode = (
   node: CNode,
   vertex: Vertex,
   params: Params,
+  graph: Graph,
 ): Binding | null => {
   if (!matchesLabel(vertex, node.label)) {
     return null;
@@ -813,7 +829,7 @@ const matchNode = (
     return null;
   }
   const bound = withBinding(binding, node.variable, vertex);
-  if (!satisfies(vertex, node.pred, bound, params)) {
+  if (!satisfies(vertex, node.pred, bound, params, graph)) {
     return null;
   }
   return bound;
@@ -834,7 +850,7 @@ const matchPattern = function* (
       : candidateVertices(graph, pattern.start.label);
 
   for (const seed of seeds) {
-    const seeded = matchNode(binding, pattern.start, seed, params);
+    const seeded = matchNode(binding, pattern.start, seed, params, graph);
     if (seeded) {
       yield* walkSegments(graph, pattern, 0, seed, seeded, params);
     }
@@ -861,7 +877,7 @@ const walkSegments = function* (
   // var-length segments — a known simplification.)
   if (rel.quantifier) {
     for (const end of reachable(graph, from, rel, rel.quantifier)) {
-      const matched = matchNode(binding, node, end, params);
+      const matched = matchNode(binding, node, end, params, graph);
       if (matched) {
         yield* walkSegments(graph, pattern, index + 1, end, matched, params);
       }
@@ -874,10 +890,10 @@ const walkSegments = function* (
       continue;
     }
     const withEdge = withBinding(binding, rel.variable, edge);
-    if (!satisfies(edge, rel.pred, withEdge, params)) {
+    if (!satisfies(edge, rel.pred, withEdge, params, graph)) {
       continue;
     }
-    const matched = matchNode(withEdge, node, nextVertex, params);
+    const matched = matchNode(withEdge, node, nextVertex, params, graph);
     if (matched) {
       yield* walkSegments(graph, pattern, index + 1, nextVertex, matched, params);
     }
@@ -1053,10 +1069,12 @@ const evalProps = (
   props: readonly CProp[],
   b: Binding,
   params: Params,
+  graph: Graph,
 ): Record<string, unknown> => {
+  const env: EvalEnv = { binding: b, params, graph };
   const out: Record<string, unknown> = {};
   for (const { key, value } of props) {
-    out[key] = value(b, params);
+    out[key] = value(env);
   }
   return out;
 };
@@ -1073,7 +1091,7 @@ const ensureNode = (
   }
   const vertex = graph.addVertex({
     labels: [...node.labels],
-    properties: evalProps(node.props, binding, params),
+    properties: evalProps(node.props, binding, params, graph),
   });
   if (node.variable) {
     binding.set(node.variable, vertex);
@@ -1092,7 +1110,7 @@ const runInsert = (graph: Graph, clause: CInsert, binding: Binding, params: Para
         from,
         to,
         labels: [...rel.labels],
-        properties: evalProps(rel.props, out, params),
+        properties: evalProps(rel.props, out, params, graph),
       });
       if (rel.variable) {
         out.set(rel.variable, edge);
@@ -1118,7 +1136,7 @@ const runSet = (graph: Graph, clause: CSet, binding: Binding, params: Params): v
         graph.addLabelToVertex(item.label, el);
       }
     } else {
-      el.properties = { ...el.properties, [item.key]: item.value(binding, params) };
+      el.properties = { ...el.properties, [item.key]: item.value({ binding, params, graph }) };
     }
   }
 };
@@ -1145,7 +1163,7 @@ const runRemove = (graph: Graph, clause: CRemove, binding: Binding): void => {
 
 const runDelete = (graph: Graph, clause: CDelete, binding: Binding, params: Params): void => {
   for (const target of clause.targets) {
-    const el = target(binding, params);
+    const el = target({ binding, params, graph });
     if (isEdge(el)) {
       graph.removeEdge(el);
     } else if (isElement(el)) {
@@ -1174,7 +1192,7 @@ const matchClauseBindings = function* (
     current = next;
   }
   for (const b of current) {
-    if (clause.where === undefined || clause.where(b, params) === true) {
+    if (clause.where === undefined || clause.where({ binding: b, params, graph }) === true) {
       yield b;
     }
   }
@@ -1222,11 +1240,11 @@ const runLinear = (linear: CLinear, graph: Graph, params: Params): Row[] => {
         bindings = runMatch(graph, clause, bindings, params);
         break;
       case 'with': {
-        const projected = applyProjection(clause.projection, bindings, params);
+        const projected = applyProjection(clause.projection, bindings, params, graph);
         bindings =
           clause.where === undefined
             ? projected
-            : projected.filter((b) => clause.where!(b, params) === true);
+            : projected.filter((b) => clause.where!({ binding: b, params, graph }) === true);
         break;
       }
       case 'insert':
@@ -1250,7 +1268,7 @@ const runLinear = (linear: CLinear, graph: Graph, params: Params): Row[] => {
       case 'finish':
         return [];
       case 'return':
-        return applyProjection(clause.projection, bindings, params).map(mapToRow);
+        return applyProjection(clause.projection, bindings, params, graph).map(mapToRow);
     }
   }
   return []; // a write-only query produces no rows
@@ -1306,19 +1324,11 @@ export const compile = (query: Query): Plan => {
     ops: query.ops,
   };
   return (graph, params = {}) => {
-    // Expose the graph to EXISTS subqueries for this synchronous run; restore
-    // afterward so nested/sequential plan runs stay correct.
-    const previousGraph = activeGraph;
-    activeGraph = graph;
-    try {
-      let rows = runLinear(compiled.parts[0]!, graph, params);
-      compiled.ops.forEach((op, i) => {
-        rows = combineRows(op, rows, runLinear(compiled.parts[i + 1]!, graph, params));
-      });
-      return rows;
-    } finally {
-      activeGraph = previousGraph;
-    }
+    let rows = runLinear(compiled.parts[0]!, graph, params);
+    compiled.ops.forEach((op, i) => {
+      rows = combineRows(op, rows, runLinear(compiled.parts[i + 1]!, graph, params));
+    });
+    return rows;
   };
 };
 
