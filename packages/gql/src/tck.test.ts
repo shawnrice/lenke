@@ -608,3 +608,26 @@ describe('TCK MatchWhere3 / With1 / ReturnOrderBy5', () => {
     expect(rows.map((r) => r['n'])).toEqual([-5, 1, 3]);
   });
 });
+
+// Match1 — matching nodes, including by a conjunctive label expression.
+describe('TCK Match1: match nodes', () => {
+  test('[1] matching non-existent nodes returns empty', () => {
+    expect(query(new Graph(), `MATCH (n) RETURN n.x AS x`)).toEqual([]);
+  });
+
+  test('[2] matching all nodes regardless of label', () => {
+    const g = new Graph();
+    query(g, `INSERT (:A), (:B {name: 'b'}), ({name: 'c'})`);
+    expect(query(g, `MATCH (n) RETURN count(*) AS c`)).toEqual([{ c: 3 }]);
+  });
+
+  test('[3] matching by a conjunctive label expression (Cypher :A:B → ISO A&B)', () => {
+    const g = new Graph();
+    query(
+      g,
+      `INSERT (:A&B&C), (:A&B), (:A&C), (:B&C), (:A), (:B), (:C), ({name: ':A:B:C'}), ({abc: 'abc'}), ()`,
+    );
+    // Nodes having BOTH A and B: (:A&B&C) and (:A&B).
+    expect(query(g, `MATCH (a:A&B) RETURN count(*) AS c`)).toEqual([{ c: 2 }]);
+  });
+});
