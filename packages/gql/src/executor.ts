@@ -198,31 +198,90 @@ const hasAggregate = (expr: Expr): boolean => {
   }
 };
 
-/** Scalar (non-aggregate) functions. */
+// ISO `<numeric value function>` unary forms, keyed by function name. Each takes
+// a single number; null in → null out is handled by the caller.
+const UNARY_NUM: Record<string, (n: number) => number> = {
+  abs: Math.abs,
+  ceil: Math.ceil,
+  ceiling: Math.ceil,
+  floor: Math.floor,
+  sqrt: Math.sqrt,
+  exp: Math.exp,
+  ln: Math.log,
+  log10: Math.log10,
+  sign: Math.sign,
+  sin: Math.sin,
+  cos: Math.cos,
+  tan: Math.tan,
+  cot: (n) => 1 / Math.tan(n),
+  asin: Math.asin,
+  acos: Math.acos,
+  atan: Math.atan,
+  sinh: Math.sinh,
+  cosh: Math.cosh,
+  tanh: Math.tanh,
+  degrees: (n) => (n * 180) / Math.PI,
+  radians: (n) => (n * Math.PI) / 180,
+};
+
+const str = (v: unknown): string => String(v);
+
+/** ISO unary string value functions: one string in, a value out. */
+const UNARY_STR: Record<string, (s: string) => unknown> = {
+  upper: (s) => s.toUpperCase(),
+  lower: (s) => s.toLowerCase(),
+  trim: (s) => s.trim(),
+  btrim: (s) => s.trim(),
+  ltrim: (s) => s.replace(/^\s+/, ''),
+  rtrim: (s) => s.replace(/\s+$/, ''),
+  char_length: (s) => s.length,
+  character_length: (s) => s.length,
+};
+
+/** ISO binary numeric value functions: LOG takes (base, value). */
+const BINARY_NUM: Record<string, (x: number, y: number) => number> = {
+  power: (x, y) => x ** y,
+  mod: (x, y) => x % y,
+  log: (base, value) => Math.log(value) / Math.log(base),
+};
+
+/** Scalar (non-aggregate) functions: the ISO numeric/string value functions. */
 const callScalar = (name: string, args: readonly unknown[]): unknown => {
-  const [a] = args;
+  const [a, b] = args;
+  const unaryNum = UNARY_NUM[name];
+  if (unaryNum) {
+    return isNullish(a) ? null : unaryNum(Number(a));
+  }
+  const unaryStr = UNARY_STR[name];
+  if (unaryStr) {
+    return isNullish(a) ? null : unaryStr(str(a));
+  }
+  const binaryNum = BINARY_NUM[name];
+  if (binaryNum) {
+    return isNullish(a) || isNullish(b) ? null : binaryNum(Number(a), Number(b));
+  }
   switch (name) {
-    case 'upper':
-      return isNullish(a) ? null : String(a).toUpperCase();
-    case 'lower':
-      return isNullish(a) ? null : String(a).toLowerCase();
-    case 'trim':
-      return isNullish(a) ? null : String(a).trim();
-    case 'abs':
-      return isNullish(a) ? null : Math.abs(Number(a));
     case 'size':
     case 'length':
       if (isNullish(a)) {
         return null;
       }
       return Array.isArray(a) || typeof a === 'string' ? a.length : null;
+    case 'left':
+      return isNullish(a) || isNullish(b) ? null : str(a).slice(0, Math.max(0, Number(b)));
+    case 'right': {
+      if (isNullish(a) || isNullish(b)) {
+        return null;
+      }
+      const s = str(a);
+      const n = Number(b);
+      return n <= 0 ? '' : s.slice(Math.max(0, s.length - n));
+    }
     case 'coalesce':
       return args.find((x) => !isNullish(x)) ?? null;
-    case 'nullif': {
+    case 'nullif':
       // ISO `<case abbreviation>`: NULLIF(a, b) = NULL when a = b, else a.
-      const [x, y] = args;
-      return !isNullish(x) && !isNullish(y) && x === y ? null : (x ?? null);
-    }
+      return !isNullish(a) && !isNullish(b) && a === b ? null : (a ?? null);
     default:
       throw new Error(`Unknown function: ${name}()`);
   }
