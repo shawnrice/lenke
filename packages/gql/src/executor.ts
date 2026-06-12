@@ -1,23 +1,23 @@
 import type { Edge, Graph, Vertex } from '@pl-graph/core';
 
 import type {
-  DeleteClause,
+  ArithOp,
+  Clause,
+  CompareOp,
   Expr,
-  InsertClause,
   LabelExpr,
   LinearQuery,
-  MatchClause,
   NodePattern,
   PathPattern,
   Projection,
   PropertyConstraint,
   Query,
   RelPattern,
-  RemoveClause,
-  SetClause,
+  RemoveItem,
+  SetItem,
   SetOp,
 } from './ast.js';
-import { candidateVertices, expand, matchesLabel } from './graph-queries.js';
+import { candidateVertices, expand, labelsMatch, matchesLabel } from './graph-queries.js';
 
 /**
  * The executor turns a parsed `Query` into result rows by *pattern matching*:
@@ -25,6 +25,14 @@ import { candidateVertices, expand, matchesLabel } from './graph-queries.js';
  * partial binding (variable -> graph element) one segment at a time. This is
  * the declarative<->imperative bridge — the language says "find this shape",
  * the executor picks the walk order (here, naive left-to-right).
+ *
+ * Rather than interpret the AST on every run, we *compile* it once: `compile`
+ * lowers a `Query` into a tree of closures (a `Plan`) that captures all the
+ * graph/param-independent decisions — operator dispatch, aggregate detection,
+ * alias resolution, label-seed selection. The returned `Plan` is reusable:
+ * `(graph, params) => Row[]`. Running it again skips the lexer, the parser, and
+ * the per-node `switch` dispatch entirely. Params flow *through* the closures
+ * (no module-global state), so a plan is reentrant.
  */
 
 /** A bound element: a matched vertex or edge for a pattern variable. */
@@ -39,6 +47,36 @@ type Binding = ReadonlyMap<string, unknown>;
 
 /** A projected result row: alias/derived-name -> value. */
 export type Row = Record<string, unknown>;
+
+/** Query parameters (`$name`), supplied at run time and threaded through plans. */
+type Params = Record<string, unknown>;
+
+/**
+ * The environment a compiled expression evaluates against: the current binding,
+ * the query params, the graph (only EXISTS/COUNT subqueries read it), and — for
+ * aggregates — the `group` of bindings being folded. Passing this explicitly
+ * keeps expression evaluation a pure function of its inputs (no run-state global).
+ */
+type EvalEnv = {
+  binding: Binding;
+  params: Params;
+  graph: Graph;
+  group?: readonly Binding[];
+};
+
+/**
+ * A compiled expression. The structural `switch (expr.kind)` happens once, at
+ * compile time; what's left is this closure, evaluated against an `EvalEnv`.
+ */
+type CompiledExpr = (env: EvalEnv) => unknown;
+
+/**
+ * A reusable execution plan: bind a graph and params, get rows. This is the
+ * artifact `compile` produces — analyze once, run many.
+ */
+export type Plan = (graph: Graph, params?: Params) => Row[];
+
+// --- binding helpers ---------------------------------------------------------
 
 const withBinding = (binding: Binding, name: string | undefined, value: Bound): Binding => {
   if (!name) {
@@ -62,146 +100,16 @@ const consistent = (binding: Binding, name: string | undefined, value: Bound): b
   return existing === undefined || existing === value;
 };
 
-/**
- * The ISO element-pattern predicate: every property-map entry must equal the
- * element's stored value, and any inline `WHERE` must hold. Both are evaluated
- * against `binding`, which already includes this element's own variable, so
- * `(n WHERE n.age > 30)` can reference `n`.
- */
-const satisfiesPredicate = (
-  element: Bound,
-  properties: readonly PropertyConstraint[] | undefined,
-  where: Expr | undefined,
-  binding: Binding,
-): boolean => {
-  if (properties) {
-    for (const { key, value } of properties) {
-      if (propOf(element, key) !== evalExpr(value, binding)) {
-        return false;
-      }
-    }
-  }
-  return where === undefined || evalExpr(where, binding) === true;
-};
-
-const matchNode = (binding: Binding, node: NodePattern, vertex: Vertex): Binding | null => {
-  if (!matchesLabel(vertex, node.label)) {
-    return null;
-  }
-  if (!consistent(binding, node.variable, vertex)) {
-    return null;
-  }
-  const bound = withBinding(binding, node.variable, vertex);
-  if (!satisfiesPredicate(vertex, node.properties, node.where, bound)) {
-    return null;
-  }
-  return bound;
-};
-
-/** Yield every binding that extends `binding` by matching `pattern`. */
-const matchPattern = function* (
-  graph: Graph,
-  pattern: PathPattern,
-  binding: Binding,
-): Iterable<Binding> {
-  // Seed the start node: reuse an already-bound vertex if the variable is
-  // known, otherwise scan candidates narrowed by label.
-  const seeds: Iterable<Vertex> =
-    pattern.start.variable && binding.has(pattern.start.variable)
-      ? [binding.get(pattern.start.variable) as Vertex]
-      : candidateVertices(graph, pattern.start.label);
-
-  for (const seed of seeds) {
-    const seeded = matchNode(binding, pattern.start, seed);
-    if (seeded) {
-      yield* walkSegments(graph, pattern, 0, seed, seeded);
-    }
-  }
-};
-
-/** Recursively extend a binding across the remaining segments of a pattern. */
-const walkSegments = function* (
-  graph: Graph,
-  pattern: PathPattern,
-  index: number,
-  from: Vertex,
-  binding: Binding,
-): Iterable<Binding> {
-  if (index >= pattern.segments.length) {
-    yield binding;
-    return;
-  }
-  const { rel, node } = pattern.segments[index]!;
-
-  // Variable-length: reach every vertex within [min, max] hops, then continue
-  // from each. (The edge variable and per-edge predicate aren't bound for
-  // var-length segments — a known simplification.)
-  if (rel.quantifier) {
-    for (const end of reachable(graph, from, rel, rel.quantifier)) {
-      const matched = matchNode(binding, node, end);
-      if (matched) {
-        yield* walkSegments(graph, pattern, index + 1, end, matched);
-      }
-    }
-    return;
-  }
-
-  for (const { edge, node: nextVertex } of expand(graph, from, rel)) {
-    if (!consistent(binding, rel.variable, edge)) {
-      continue;
-    }
-    const withEdge = withBinding(binding, rel.variable, edge);
-    if (!satisfiesPredicate(edge, rel.properties, rel.where, withEdge)) {
-      continue;
-    }
-    const matched = matchNode(withEdge, node, nextVertex);
-    if (matched) {
-      yield* walkSegments(graph, pattern, index + 1, nextVertex, matched);
-    }
-  }
-};
-
-/** Vertices reachable from `from` in [min, max] hops of `rel`. */
-const reachable = (
-  graph: Graph,
-  from: Vertex,
-  rel: RelPattern,
-  q: NonNullable<RelPattern['quantifier']>,
-): Set<Vertex> => {
-  const cap = q.max ?? graph.verticesById.size + 1;
-  const result = new Set<Vertex>();
-  if (q.min === 0) {
-    result.add(from);
-  }
-  let frontier = new Set<Vertex>([from]);
-  for (let depth = 1; depth <= cap && frontier.size > 0; depth += 1) {
-    const next = new Set<Vertex>();
-    for (const v of frontier) {
-      for (const { node } of expand(graph, v, rel)) {
-        next.add(node);
-      }
-    }
-    if (depth >= q.min && (q.max === null || depth <= q.max)) {
-      for (const v of next) {
-        result.add(v);
-      }
-    }
-    frontier = next;
-  }
-  return result;
-};
-
-// --- expression evaluation ---------------------------------------------------
-
-// Query parameters for the current `execute` call. Set on entry; the executor
-// is synchronous, so a plain module variable suffices.
-let activeParams: Record<string, unknown> = {};
-
+// ISO GQL: accessing a property that is absent — or a property of a NULL element
+// (e.g. an unmatched OPTIONAL variable) — yields NULL, not `undefined`. Coalesce
+// here so the whole pipeline (output rows, IS NULL, arithmetic) sees ISO's NULL.
 const propOf = (bound: unknown, key: string): unknown =>
-  (bound as { properties?: Record<string, unknown> } | undefined)?.properties?.[key];
+  (bound as { properties?: Record<string, unknown> } | undefined)?.properties?.[key] ?? null;
+
+// --- three-valued logic & scalar helpers -------------------------------------
 
 // ISO three-valued (Kleene) logic: `null` is UNKNOWN. A row is kept only when a
-// predicate evaluates to exactly `true` (see `truthy`).
+// predicate evaluates to exactly `true` (see callers comparing `=== true`).
 type Truth = boolean | null;
 const isNullish = (v: unknown): boolean => v === null || v === undefined;
 const asTruth = (v: unknown): Truth => (isNullish(v) ? null : Boolean(v));
@@ -219,22 +127,56 @@ const or3 = (a: Truth, b: Truth): Truth => {
   return a === null || b === null ? null : false;
 };
 const xor3 = (a: Truth, b: Truth): Truth => (a === null || b === null ? null : a !== b);
+/** The binary three-valued connectives, keyed by AST node kind. */
+const BOOL3: Record<'and' | 'or' | 'xor', (a: Truth, b: Truth) => Truth> = {
+  and: and3,
+  or: or3,
+  xor: xor3,
+};
 
 const numOf = (v: unknown): number | null => (isNullish(v) ? null : Number(v));
 
+// `v IN list` is a three-valued OR of equalities `v = e` over the elements,
+// whose identity (empty list) is FALSE. So `null IN []` is FALSE — there is
+// nothing to be uncertain about — while `null IN [1]` and `3 IN [1, null]` are
+// UNKNOWN. A TRUE equality short-circuits past any UNKNOWN.
 const inList = (v: unknown, list: unknown): Truth => {
-  if (isNullish(v) || !Array.isArray(list)) {
+  if (!Array.isArray(list)) {
     return null;
   }
-  if (list.some((x) => x === v)) {
-    return true;
+  let sawUnknown = false;
+  for (const e of list) {
+    if (isNullish(v) || isNullish(e)) {
+      sawUnknown = true;
+      continue;
+    }
+    if (e === v) {
+      return true;
+    }
   }
-  return list.some(isNullish) ? null : false;
+  return sawUnknown ? null : false;
+};
+
+/** Binary operators resolved to a function once, at compile time. */
+const ARITH: Record<ArithOp, (a: number, b: number) => number> = {
+  '+': (a, b) => a + b,
+  '-': (a, b) => a - b,
+  '*': (a, b) => a * b,
+  '/': (a, b) => a / b,
+  '%': (a, b) => a % b,
+};
+const COMPARE: Record<CompareOp, (a: number | string, b: number | string) => boolean> = {
+  '=': (a, b) => a === b,
+  '<>': (a, b) => a !== b,
+  '<': (a, b) => a < b,
+  '>': (a, b) => a > b,
+  '<=': (a, b) => a <= b,
+  '>=': (a, b) => a >= b,
 };
 
 type FuncExpr = Extract<Expr, { kind: 'func' }>;
 
-const AGGREGATES = new Set(['count', 'sum', 'avg', 'min', 'max', 'collect']);
+const AGGREGATES = new Set(['count', 'sum', 'avg', 'min', 'max', 'collect_list']);
 
 /** Does an expression contain an aggregate anywhere (→ implicit grouping)? */
 const hasAggregate = (expr: Expr): boolean => {
@@ -244,6 +186,8 @@ const hasAggregate = (expr: Expr): boolean => {
     case 'neg':
     case 'not':
     case 'isNull':
+    case 'isTruth':
+    case 'isLabeled':
       return hasAggregate(expr.expr);
     case 'arith':
     case 'concat':
@@ -256,176 +200,349 @@ const hasAggregate = (expr: Expr): boolean => {
       return hasAggregate(expr.expr) || hasAggregate(expr.list);
     case 'list':
       return expr.items.some(hasAggregate);
+    case 'case':
+      return (
+        (expr.subject ? hasAggregate(expr.subject) : false) ||
+        expr.whens.some((w) => hasAggregate(w.when) || hasAggregate(w.then)) ||
+        (expr.elseExpr ? hasAggregate(expr.elseExpr) : false)
+      );
     default:
       return false;
   }
 };
 
-/** Fold an aggregate over a group of bindings. */
-const foldAggregate = (expr: FuncExpr, group: readonly Binding[]): unknown => {
-  if (expr.name === 'count' && expr.star) {
-    return group.length;
-  }
-  const raw = group.map((b) => evalExpr(expr.args[0]!, b, group));
-  const nonNull = raw.filter((v) => !isNullish(v));
-  const values = expr.distinct ? [...new Set(nonNull)] : nonNull;
-  switch (expr.name) {
-    case 'count':
-      return values.length;
-    case 'sum':
-      return values.reduce<number>((s, v) => s + Number(v), 0);
-    case 'avg':
-      return values.length === 0
-        ? null
-        : values.reduce<number>((s, v) => s + Number(v), 0) / values.length;
-    case 'min':
-      return values.length === 0
-        ? null
-        : values.reduce((m, v) => (compareValues(v, m) < 0 ? v : m));
-    case 'max':
-      return values.length === 0
-        ? null
-        : values.reduce((m, v) => (compareValues(v, m) > 0 ? v : m));
-    case 'collect':
-      return values;
-    default:
-      return null;
-  }
+// ISO `<numeric value function>` unary forms, keyed by function name. Each takes
+// a single number; null in → null out is handled by the caller.
+const UNARY_NUM: Record<string, (n: number) => number> = {
+  abs: Math.abs,
+  ceil: Math.ceil,
+  ceiling: Math.ceil,
+  floor: Math.floor,
+  sqrt: Math.sqrt,
+  exp: Math.exp,
+  ln: Math.log,
+  log10: Math.log10,
+  sin: Math.sin,
+  cos: Math.cos,
+  tan: Math.tan,
+  cot: (n) => 1 / Math.tan(n),
+  asin: Math.asin,
+  acos: Math.acos,
+  atan: Math.atan,
+  sinh: Math.sinh,
+  cosh: Math.cosh,
+  tanh: Math.tanh,
+  degrees: (n) => (n * 180) / Math.PI,
+  radians: (n) => (n * Math.PI) / 180,
 };
 
-/** Scalar (non-aggregate) functions. */
+const str = (v: unknown): string => String(v);
+
+/** ISO unary string value functions: one string in, a value out. */
+const UNARY_STR: Record<string, (s: string) => unknown> = {
+  upper: (s) => s.toUpperCase(),
+  lower: (s) => s.toLowerCase(),
+  trim: (s) => s.trim(),
+  btrim: (s) => s.trim(),
+  ltrim: (s) => s.replace(/^\s+/, ''),
+  rtrim: (s) => s.replace(/\s+$/, ''),
+  char_length: (s) => s.length,
+  character_length: (s) => s.length,
+};
+
+/** ISO binary numeric value functions: LOG takes (base, value). */
+const BINARY_NUM: Record<string, (x: number, y: number) => number> = {
+  power: (x, y) => x ** y,
+  mod: (x, y) => x % y,
+  log: (base, value) => Math.log(value) / Math.log(base),
+};
+
+/** Scalar (non-aggregate) functions: the ISO numeric/string value functions. */
 const callScalar = (name: string, args: readonly unknown[]): unknown => {
-  const a = args[0];
+  const [a, b] = args;
+  const unaryNum = UNARY_NUM[name];
+  if (unaryNum) {
+    return isNullish(a) ? null : unaryNum(Number(a));
+  }
+  const unaryStr = UNARY_STR[name];
+  if (unaryStr) {
+    return isNullish(a) ? null : unaryStr(str(a));
+  }
+  const binaryNum = BINARY_NUM[name];
+  if (binaryNum) {
+    return isNullish(a) || isNullish(b) ? null : binaryNum(Number(a), Number(b));
+  }
   switch (name) {
-    case 'upper':
-      return isNullish(a) ? null : String(a).toUpperCase();
-    case 'lower':
-      return isNullish(a) ? null : String(a).toLowerCase();
-    case 'trim':
-      return isNullish(a) ? null : String(a).trim();
-    case 'abs':
-      return isNullish(a) ? null : Math.abs(Number(a));
     case 'size':
     case 'length':
       if (isNullish(a)) {
         return null;
       }
       return Array.isArray(a) || typeof a === 'string' ? a.length : null;
+    case 'left':
+      return isNullish(a) || isNullish(b) ? null : str(a).slice(0, Math.max(0, Number(b)));
+    case 'right': {
+      if (isNullish(a) || isNullish(b)) {
+        return null;
+      }
+      const s = str(a);
+      const n = Number(b);
+      return n <= 0 ? '' : s.slice(Math.max(0, s.length - n));
+    }
     case 'coalesce':
       return args.find((x) => !isNullish(x)) ?? null;
+    case 'nullif':
+      // ISO `<case abbreviation>`: NULLIF(a, b) = NULL when a = b, else a.
+      return !isNullish(a) && !isNullish(b) && a === b ? null : (a ?? null);
+    case 'element_id':
+      // ISO `<element_id function>`: the identifier of a node or edge.
+      return a && typeof a === 'object' && 'id' in a ? (a as { id: unknown }).id : null;
     default:
       throw new Error(`Unknown function: ${name}()`);
   }
 };
 
+// --- expression compilation --------------------------------------------------
+
 /**
- * Evaluate an expression against a binding. `group`, when present, is the set of
- * bindings an aggregate folds over (implicit grouping); non-aggregate leaves
- * still read from `binding` (the group representative).
+ * Lower an expression to a closure. Every `case` resolves its sub-expressions
+ * to closures *now* and captures them, so the run-time path is plain function
+ * application — no AST re-traversal, no `kind`/`op` dispatch.
  */
-const evalExpr = (expr: Expr, binding: Binding, group?: readonly Binding[]): unknown => {
+const compileExpr = (expr: Expr): CompiledExpr => {
   switch (expr.kind) {
-    case 'lit':
-      return expr.value;
-    case 'var':
-      return binding.get(expr.name);
-    case 'param':
-      return activeParams[expr.name];
-    case 'prop':
-      return propOf(binding.get(expr.variable), expr.key);
-    case 'list':
-      return expr.items.map((e) => evalExpr(e, binding, group));
+    case 'lit': {
+      const { value } = expr;
+      return () => value;
+    }
+    case 'var': {
+      const { name } = expr;
+      return (env) => env.binding.get(name);
+    }
+    case 'param': {
+      const { name } = expr;
+      return (env) => env.params[name];
+    }
+    case 'prop': {
+      const { variable, key } = expr;
+      return (env) => propOf(env.binding.get(variable), key);
+    }
+    case 'list': {
+      const items = expr.items.map(compileExpr);
+      return (env) => items.map((f) => f(env));
+    }
     case 'func':
-      return AGGREGATES.has(expr.name)
-        ? foldAggregate(expr, group ?? [binding])
-        : callScalar(
-            expr.name,
-            expr.args.map((arg) => evalExpr(arg, binding, group)),
-          );
+      return compileFunc(expr);
     case 'neg': {
-      const v = numOf(evalExpr(expr.expr, binding, group));
-      return v === null ? null : -v;
+      const fn = compileExpr(expr.expr);
+      return (env) => {
+        const v = numOf(fn(env));
+        return v === null ? null : -v;
+      };
     }
     case 'arith': {
-      const l = numOf(evalExpr(expr.left, binding, group));
-      const r = numOf(evalExpr(expr.right, binding, group));
-      if (l === null || r === null) {
-        return null;
-      }
-      switch (expr.op) {
-        case '+':
-          return l + r;
-        case '-':
-          return l - r;
-        case '*':
-          return l * r;
-        case '/':
-          return l / r;
-        case '%':
-          return l % r;
-      }
+      const l = compileExpr(expr.left);
+      const r = compileExpr(expr.right);
+      const op = ARITH[expr.op];
+      return (env) => {
+        const lv = numOf(l(env));
+        const rv = numOf(r(env));
+        return lv === null || rv === null ? null : op(lv, rv);
+      };
     }
-    // eslint-disable-next-line no-fallthrough
     case 'concat': {
-      const l = evalExpr(expr.left, binding, group);
-      const r = evalExpr(expr.right, binding, group);
-      return isNullish(l) || isNullish(r) ? null : String(l) + String(r);
+      const l = compileExpr(expr.left);
+      const r = compileExpr(expr.right);
+      return (env) => {
+        const lv = l(env);
+        const rv = r(env);
+        return isNullish(lv) || isNullish(rv) ? null : String(lv) + String(rv);
+      };
     }
-    case 'not':
-      return not3(asTruth(evalExpr(expr.expr, binding, group)));
+    case 'not': {
+      const fn = compileExpr(expr.expr);
+      return (env) => not3(asTruth(fn(env)));
+    }
     case 'and':
-      return and3(
-        asTruth(evalExpr(expr.left, binding, group)),
-        asTruth(evalExpr(expr.right, binding, group)),
-      );
     case 'or':
-      return or3(
-        asTruth(evalExpr(expr.left, binding, group)),
-        asTruth(evalExpr(expr.right, binding, group)),
-      );
-    case 'xor':
-      return xor3(
-        asTruth(evalExpr(expr.left, binding, group)),
-        asTruth(evalExpr(expr.right, binding, group)),
-      );
+    case 'xor': {
+      const l = compileExpr(expr.left);
+      const r = compileExpr(expr.right);
+      const fn = BOOL3[expr.kind];
+      return (env) => fn(asTruth(l(env)), asTruth(r(env)));
+    }
     case 'isNull': {
-      const isnull = isNullish(evalExpr(expr.expr, binding, group));
-      return expr.negated ? !isnull : isnull;
+      const fn = compileExpr(expr.expr);
+      const { negated } = expr;
+      return (env) => {
+        const isnull = isNullish(fn(env));
+        return negated ? !isnull : isnull;
+      };
+    }
+    case 'isTruth': {
+      // `x IS [NOT] TRUE|FALSE|UNKNOWN` collapses three-valued logic to a
+      // definite boolean: it tests whether x's truth value equals the target.
+      const fn = compileExpr(expr.expr);
+      const { truth, negated } = expr;
+      return (env) => {
+        const matches = asTruth(fn(env)) === truth;
+        return negated ? !matches : matches;
+      };
+    }
+    case 'isLabeled': {
+      // `x IS [NOT] LABELED <label expr>` — does x's label set satisfy it?
+      const fn = compileExpr(expr.expr);
+      const { label, negated } = expr;
+      return (env) => {
+        const el = fn(env);
+        const has = isElement(el) ? labelsMatch(el.labels, label) : false;
+        return negated ? !has : has;
+      };
     }
     case 'in': {
-      const result = inList(
-        evalExpr(expr.expr, binding, group),
-        evalExpr(expr.list, binding, group),
-      );
-      return expr.negated ? not3(result) : result;
+      const e = compileExpr(expr.expr);
+      const list = compileExpr(expr.list);
+      const { negated } = expr;
+      return (env) => {
+        const result = inList(e(env), list(env));
+        return negated ? not3(result) : result;
+      };
     }
     case 'compare': {
-      const l = evalExpr(expr.left, binding, group);
-      const r = evalExpr(expr.right, binding, group);
-      if (isNullish(l) || isNullish(r)) {
-        return null; // UNKNOWN
-      }
-      const a = l as number | string;
-      const b = r as number | string;
-      switch (expr.op) {
-        case '=':
-          return a === b;
-        case '<>':
-          return a !== b;
-        case '<':
-          return a < b;
-        case '>':
-          return a > b;
-        case '<=':
-          return a <= b;
-        case '>=':
-          return a >= b;
-      }
+      const l = compileExpr(expr.left);
+      const r = compileExpr(expr.right);
+      const op = COMPARE[expr.op];
+      return (env) => {
+        const lv = l(env);
+        const rv = r(env);
+        if (isNullish(lv) || isNullish(rv)) {
+          return null; // UNKNOWN
+        }
+        return op(lv as number | string, rv as number | string);
+      };
     }
+    case 'case':
+      return compileCase(expr);
+    case 'exists':
+      return compileExists(expr);
+    case 'countSubquery':
+      return compileCountSubquery(expr);
   }
 };
 
-// --- RETURN projection -------------------------------------------------------
+/**
+ * Compile a braced subquery body (`{ pattern, … [WHERE pred] }`) into a MATCH
+ * clause. The sub-pattern is compiled once; at run time it is matched seeded with
+ * the outer binding, so EXISTS/COUNT are correlated.
+ */
+const compileSubMatch = (sub: { patterns: readonly PathPattern[]; where?: Expr }): CMatch => ({
+  kind: 'match',
+  optional: false,
+  patterns: sub.patterns.map(compilePath),
+  where: sub.where ? compileExpr(sub.where) : undefined,
+  nullVars: [],
+});
+
+/** ISO EXISTS: TRUE iff the correlated sub-pattern has at least one match. */
+const compileExists = (expr: Extract<Expr, { kind: 'exists' }>): CompiledExpr => {
+  const sub = compileSubMatch(expr);
+  return (env) => {
+    const matches = matchClauseBindings(env.graph, sub, env.binding, env.params)[Symbol.iterator]();
+    return !matches.next().done;
+  };
+};
+
+/** ISO count subquery: the number of matches of the correlated sub-pattern. */
+const compileCountSubquery = (expr: Extract<Expr, { kind: 'countSubquery' }>): CompiledExpr => {
+  const sub = compileSubMatch(expr);
+  return (env) => [...matchClauseBindings(env.graph, sub, env.binding, env.params)].length;
+};
+
+/**
+ * Compile an ISO CASE expression. A simple CASE (with `subject`) returns the
+ * first branch whose value equals the subject; a searched CASE returns the first
+ * branch whose condition is exactly TRUE. No match falls to ELSE (or NULL).
+ */
+const compileCase = (expr: Extract<Expr, { kind: 'case' }>): CompiledExpr => {
+  const subject = expr.subject ? compileExpr(expr.subject) : undefined;
+  const whens = expr.whens.map((w) => ({ when: compileExpr(w.when), then: compileExpr(w.then) }));
+  const elseFn = expr.elseExpr ? compileExpr(expr.elseExpr) : undefined;
+  return (env) => {
+    if (subject) {
+      const s = subject(env);
+      for (const w of whens) {
+        const wv = w.when(env);
+        // `subject = when` with SQL/ISO null semantics: NULL never matches.
+        if (!isNullish(s) && !isNullish(wv) && s === wv) {
+          return w.then(env);
+        }
+      }
+    } else {
+      for (const w of whens) {
+        if (asTruth(w.when(env)) === true) {
+          return w.then(env);
+        }
+      }
+    }
+    return elseFn ? elseFn(env) : null;
+  };
+};
+
+const compileFunc = (expr: FuncExpr): CompiledExpr => {
+  if (AGGREGATES.has(expr.name)) {
+    return compileAggregate(expr);
+  }
+  const { name } = expr;
+  const args = expr.args.map(compileExpr);
+  return (env) =>
+    callScalar(
+      name,
+      args.map((f) => f(env)),
+    );
+};
+
+/**
+ * Compile an aggregate. The argument expression is lowered once; at run time we
+ * fold it over the `group` of bindings (or `[binding]` when called outside an
+ * aggregating projection).
+ */
+const compileAggregate = (expr: FuncExpr): CompiledExpr => {
+  const { name, star, distinct } = expr;
+  const argFn = expr.args[0] ? compileExpr(expr.args[0]) : undefined;
+  return (env) => {
+    const group = env.group ?? [env.binding];
+    if (name === 'count' && star) {
+      return group.length;
+    }
+    const raw = group.map((b) => argFn!({ ...env, binding: b, group }));
+    const nonNull = raw.filter((v) => !isNullish(v));
+    const values = distinct ? [...new Set(nonNull)] : nonNull;
+    switch (name) {
+      case 'count':
+        return values.length;
+      case 'sum':
+        return values.reduce<number>((s, v) => s + Number(v), 0);
+      case 'avg':
+        return values.length === 0
+          ? null
+          : values.reduce<number>((s, v) => s + Number(v), 0) / values.length;
+      case 'min':
+        return values.length === 0
+          ? null
+          : values.reduce((m, v) => (compareValues(v, m) < 0 ? v : m));
+      case 'max':
+        return values.length === 0
+          ? null
+          : values.reduce((m, v) => (compareValues(v, m) > 0 ? v : m));
+      case 'collect_list':
+        return values;
+      default:
+        return null;
+    }
+  };
+};
+
+// --- value / ordering helpers ------------------------------------------------
 
 /** Derive a column name for a RETURN item that has no explicit `AS` alias. */
 const columnName = (expr: Expr): string => {
@@ -458,6 +575,30 @@ const compareValues = (a: unknown, b: unknown): number => {
   return x > y ? 1 : 0;
 };
 
+/**
+ * Compare two ORDER BY keys, honoring direction and ISO `NULLS FIRST/LAST`. Null
+ * placement is absolute (first or last in the final order), independent of the
+ * direction applied to non-null values. With no explicit null ordering it
+ * defaults to treating null as the largest value (ASC → last, DESC → first).
+ */
+const compareSort = (
+  a: unknown,
+  b: unknown,
+  descending: boolean,
+  nullsFirst: boolean | undefined,
+): number => {
+  const aNull = isNullish(a);
+  const bNull = isNullish(b);
+  if (aNull && bNull) {
+    return 0;
+  }
+  if (aNull || bNull) {
+    const first = nullsFirst ?? descending;
+    return aNull === first ? -1 : 1;
+  }
+  return compareValues(a, b) * (descending ? -1 : 1);
+};
+
 /** Stable distinct key for a projected binding; graph elements key by id. */
 const valueKey = (v: unknown): string => {
   if (v && typeof v === 'object' && 'id' in v) {
@@ -465,58 +606,100 @@ const valueKey = (v: unknown): string => {
   }
   return JSON.stringify(v) ?? 'undefined';
 };
-const rowKey = (b: Binding): string => [...b].map(([k, v]) => `${k}=${valueKey(v)}`).join('');
+const rowKey = (b: Binding): string => [...b].map(([k, v]) => `${k}=${valueKey(v)}`).join('');
+
+// --- projection compilation --------------------------------------------------
+
+/** A projected output column: its name and the closure producing its value. */
+type CReturnItem = { name: string; fn: CompiledExpr; isAgg: boolean };
+type CSortItem = { fn: CompiledExpr; descending: boolean; nullsFirst?: boolean };
+
+/**
+ * A compiled projection body (shared by `RETURN` and `WITH`). All the structural
+ * analysis — alias resolution, aggregate detection, picking the GROUP BY keys —
+ * is done here, once.
+ */
+type CProjection = {
+  star: boolean;
+  distinct: boolean;
+  items: readonly CReturnItem[];
+  /** True when any non-`*` item aggregates → implicit grouping kicks in. */
+  aggregating: boolean;
+  /** The non-aggregate item closures, used to build each group's key. */
+  groupKeys: readonly CompiledExpr[];
+  orderBy: readonly CSortItem[];
+  skip?: number;
+  limit?: number;
+};
+
+const compileProjection = (projection: Projection): CProjection => {
+  const items: CReturnItem[] = projection.items.map((i) => ({
+    name: i.alias ?? columnName(i.expr),
+    fn: compileExpr(i.expr),
+    isAgg: hasAggregate(i.expr),
+  }));
+  const aggregating = !projection.star && items.some((i) => i.isAgg);
+  const groupKeys = items.filter((i) => !i.isAgg).map((i) => i.fn);
+  // ORDER BY keys are evaluated against the projected output overlaid on the
+  // input binding (see `applyProjection`), so output aliases resolve even inside
+  // an expression — `ORDER BY n + 2` uses the column `n`, not the input variable.
+  const orderBy: CSortItem[] = (projection.orderBy ?? []).map((s) => ({
+    fn: compileExpr(s.expr),
+    descending: s.descending,
+    nullsFirst: s.nullsFirst,
+  }));
+  return {
+    star: projection.star,
+    distinct: projection.distinct,
+    items,
+    aggregating,
+    groupKeys,
+    orderBy,
+    skip: projection.skip,
+    limit: projection.limit,
+  };
+};
 
 /** Build the output binding for one input binding (or aggregate group). */
 const projectBinding = (
-  projection: Projection,
+  proj: CProjection,
   binding: Binding,
+  params: Params,
+  graph: Graph,
   group?: readonly Binding[],
 ): Binding => {
-  const out = new Map<string, unknown>();
-  if (projection.star) {
-    for (const [name, value] of binding) {
-      out.set(name, value);
-    }
-    return out;
+  if (proj.star) {
+    return new Map(binding);
   }
-  for (const item of projection.items) {
-    out.set(item.alias ?? columnName(item.expr), evalExpr(item.expr, binding, group));
+  const env: EvalEnv = { binding, params, graph, group };
+  const out = new Map<string, unknown>();
+  for (const item of proj.items) {
+    out.set(item.name, item.fn(env));
   }
   return out;
 };
-
-/** An ORDER BY key, resolving bare aliases to their projected expression. */
-const sortKey = (
-  expr: Expr,
-  binding: Binding,
-  aliases: ReadonlyMap<string, Expr>,
-  group?: readonly Binding[],
-): unknown =>
-  expr.kind === 'var' && aliases.has(expr.name)
-    ? evalExpr(aliases.get(expr.name)!, binding, group)
-    : evalExpr(expr, binding, group);
 
 /**
  * Apply a projection (`RETURN` or `WITH` body) to a set of bindings: implicit
  * grouping/aggregation, then DISTINCT, ORDER BY, SKIP, LIMIT. Returns the
  * projected bindings — `RETURN` turns these into rows, `WITH` feeds them on.
  */
-const applyProjection = (projection: Projection, bindings: readonly Binding[]): Binding[] => {
-  const orderBy = projection.orderBy ?? [];
-  const aliases = new Map<string, Expr>(
-    projection.items.filter((i) => i.alias).map((i) => [i.alias!, i.expr]),
-  );
-  const aggregating = !projection.star && projection.items.some((i) => hasAggregate(i.expr));
-
+const applyProjection = (
+  proj: CProjection,
+  bindings: readonly Binding[],
+  params: Params,
+  graph: Graph,
+): Binding[] => {
+  const { orderBy } = proj;
   type Keyed = { b: Binding; keys: readonly unknown[] };
   let rows: Keyed[];
 
-  if (aggregating) {
-    const groupingItems = projection.items.filter((i) => !hasAggregate(i.expr));
+  if (proj.aggregating) {
     const groups = new Map<string, Binding[]>();
     for (const b of bindings) {
-      const key = JSON.stringify(groupingItems.map((i) => valueKey(evalExpr(i.expr, b))));
+      const key = JSON.stringify(
+        proj.groupKeys.map((fn) => valueKey(fn({ binding: b, params, graph }))),
+      );
       const existing = groups.get(key);
       if (existing) {
         existing.push(b);
@@ -524,24 +707,31 @@ const applyProjection = (projection: Projection, bindings: readonly Binding[]): 
         groups.set(key, [b]);
       }
     }
-    if (groups.size === 0 && groupingItems.length === 0) {
+    if (groups.size === 0 && proj.groupKeys.length === 0) {
       groups.set('[]', []);
     }
     rows = [...groups.values()].map((group) => {
       const rep: Binding = group[0] ?? new Map();
+      const projected = projectBinding(proj, rep, params, graph, group);
+      // ORDER BY sees the output columns overlaid on the input variables.
+      const sortBinding = orderBy.length > 0 ? new Map([...rep, ...projected]) : rep;
       return {
-        b: projectBinding(projection, rep, group),
-        keys: orderBy.map((s) => sortKey(s.expr, rep, aliases, group)),
+        b: projected,
+        keys: orderBy.map((s) => s.fn({ binding: sortBinding, params, graph, group })),
       };
     });
   } else {
-    rows = bindings.map((b) => ({
-      b: projectBinding(projection, b),
-      keys: orderBy.map((s) => sortKey(s.expr, b, aliases)),
-    }));
+    rows = bindings.map((b) => {
+      const projected = projectBinding(proj, b, params, graph);
+      const sortBinding = orderBy.length > 0 ? new Map([...b, ...projected]) : b;
+      return {
+        b: projected,
+        keys: orderBy.map((s) => s.fn({ binding: sortBinding, params, graph })),
+      };
+    });
   }
 
-  if (projection.distinct) {
+  if (proj.distinct) {
     const seen = new Set<string>();
     rows = rows.filter((r) => {
       const k = rowKey(r.b);
@@ -552,7 +742,8 @@ const applyProjection = (projection: Projection, bindings: readonly Binding[]): 
   if (orderBy.length > 0) {
     rows = [...rows].sort((a, b) => {
       for (let i = 0; i < orderBy.length; i += 1) {
-        const cmp = compareValues(a.keys[i], b.keys[i]) * (orderBy[i]!.descending ? -1 : 1);
+        const s = orderBy[i]!;
+        const cmp = compareSort(a.keys[i], b.keys[i], s.descending, s.nullsFirst);
         if (cmp !== 0) {
           return cmp;
         }
@@ -561,12 +752,200 @@ const applyProjection = (projection: Projection, bindings: readonly Binding[]): 
     });
   }
 
-  const start = projection.skip ?? 0;
-  const end = projection.limit === undefined ? undefined : start + projection.limit;
+  const start = proj.skip ?? 0;
+  const end = proj.limit === undefined ? undefined : start + proj.limit;
   return rows.slice(start, end).map((r) => r.b);
 };
 
-// --- clause processing -------------------------------------------------------
+// --- pattern compilation -----------------------------------------------------
+
+/** A compiled property map + inline WHERE (the ISO element-pattern predicate). */
+type CProp = { key: string; value: CompiledExpr };
+type CPredicate = { props: readonly CProp[]; where?: CompiledExpr };
+type CNode = { variable?: string; label?: LabelExpr; pred: CPredicate };
+type CRel = {
+  variable?: string;
+  label?: LabelExpr;
+  direction: RelPattern['direction'];
+  pred: CPredicate;
+  quantifier?: RelPattern['quantifier'];
+};
+type CSegment = { rel: CRel; node: CNode };
+type CPath = { start: CNode; segments: readonly CSegment[] };
+
+const compileProps = (props: readonly PropertyConstraint[] | undefined): CProp[] =>
+  (props ?? []).map(({ key, value }) => ({ key, value: compileExpr(value) }));
+
+const compilePredicate = (
+  properties: readonly PropertyConstraint[] | undefined,
+  where: Expr | undefined,
+): CPredicate => ({
+  props: compileProps(properties),
+  where: where ? compileExpr(where) : undefined,
+});
+
+const compileNode = (node: NodePattern): CNode => ({
+  variable: node.variable,
+  label: node.label,
+  pred: compilePredicate(node.properties, node.where),
+});
+
+const compileRel = (rel: RelPattern): CRel => ({
+  variable: rel.variable,
+  label: rel.label,
+  direction: rel.direction,
+  pred: compilePredicate(rel.properties, rel.where),
+  quantifier: rel.quantifier,
+});
+
+const compilePath = (pattern: PathPattern): CPath => ({
+  start: compileNode(pattern.start),
+  segments: pattern.segments.map(({ rel, node }) => ({
+    rel: compileRel(rel),
+    node: compileNode(node),
+  })),
+});
+
+/**
+ * The ISO element-pattern predicate: every property-map entry must equal the
+ * element's stored value, and any inline `WHERE` must hold. Both are evaluated
+ * against `binding`, which already includes this element's own variable, so
+ * `(n WHERE n.age > 30)` can reference `n`.
+ */
+const satisfies = (
+  element: Bound,
+  pred: CPredicate,
+  binding: Binding,
+  params: Params,
+  graph: Graph,
+): boolean => {
+  const env: EvalEnv = { binding, params, graph };
+  for (const { key, value } of pred.props) {
+    if (propOf(element, key) !== value(env)) {
+      return false;
+    }
+  }
+  return pred.where === undefined || pred.where(env) === true;
+};
+
+// --- matching ----------------------------------------------------------------
+
+const matchNode = (
+  binding: Binding,
+  node: CNode,
+  vertex: Vertex,
+  params: Params,
+  graph: Graph,
+): Binding | null => {
+  if (!matchesLabel(vertex, node.label)) {
+    return null;
+  }
+  if (!consistent(binding, node.variable, vertex)) {
+    return null;
+  }
+  const bound = withBinding(binding, node.variable, vertex);
+  if (!satisfies(vertex, node.pred, bound, params, graph)) {
+    return null;
+  }
+  return bound;
+};
+
+/** Yield every binding that extends `binding` by matching `pattern`. */
+const matchPattern = function* (
+  graph: Graph,
+  pattern: CPath,
+  binding: Binding,
+  params: Params,
+): Iterable<Binding> {
+  // Seed the start node: reuse an already-bound vertex if the variable is
+  // known, otherwise scan candidates narrowed by label.
+  const seeds: Iterable<Vertex> =
+    pattern.start.variable && binding.has(pattern.start.variable)
+      ? [binding.get(pattern.start.variable) as Vertex]
+      : candidateVertices(graph, pattern.start.label);
+
+  for (const seed of seeds) {
+    const seeded = matchNode(binding, pattern.start, seed, params, graph);
+    if (seeded) {
+      yield* walkSegments(graph, pattern, 0, seed, seeded, params);
+    }
+  }
+};
+
+/** Recursively extend a binding across the remaining segments of a pattern. */
+const walkSegments = function* (
+  graph: Graph,
+  pattern: CPath,
+  index: number,
+  from: Vertex,
+  binding: Binding,
+  params: Params,
+): Iterable<Binding> {
+  if (index >= pattern.segments.length) {
+    yield binding;
+    return;
+  }
+  const { rel, node } = pattern.segments[index]!;
+
+  // Variable-length: reach every vertex within [min, max] hops, then continue
+  // from each. (The edge variable and per-edge predicate aren't bound for
+  // var-length segments — a known simplification.)
+  if (rel.quantifier) {
+    for (const end of reachable(graph, from, rel, rel.quantifier)) {
+      const matched = matchNode(binding, node, end, params, graph);
+      if (matched) {
+        yield* walkSegments(graph, pattern, index + 1, end, matched, params);
+      }
+    }
+    return;
+  }
+
+  for (const { edge, node: nextVertex } of expand(graph, from, rel)) {
+    if (!consistent(binding, rel.variable, edge)) {
+      continue;
+    }
+    const withEdge = withBinding(binding, rel.variable, edge);
+    if (!satisfies(edge, rel.pred, withEdge, params, graph)) {
+      continue;
+    }
+    const matched = matchNode(withEdge, node, nextVertex, params, graph);
+    if (matched) {
+      yield* walkSegments(graph, pattern, index + 1, nextVertex, matched, params);
+    }
+  }
+};
+
+/** Vertices reachable from `from` in [min, max] hops of `rel`. */
+const reachable = (
+  graph: Graph,
+  from: Vertex,
+  rel: CRel,
+  q: NonNullable<CRel['quantifier']>,
+): Set<Vertex> => {
+  const cap = q.max ?? graph.verticesById.size + 1;
+  const result = new Set<Vertex>();
+  if (q.min === 0) {
+    result.add(from);
+  }
+  let frontier = new Set<Vertex>([from]);
+  for (let depth = 1; depth <= cap && frontier.size > 0; depth += 1) {
+    const next = new Set<Vertex>();
+    for (const v of frontier) {
+      for (const { node } of expand(graph, v, rel)) {
+        next.add(node);
+      }
+    }
+    if (depth >= q.min && (q.max === null || depth <= q.max)) {
+      for (const v of next) {
+        result.add(v);
+      }
+    }
+    frontier = next;
+  }
+  return result;
+};
+
+// --- clause compilation ------------------------------------------------------
 
 /** Every variable a pattern introduces (for OPTIONAL MATCH null-binding). */
 const patternVars = (patterns: readonly PathPattern[]): string[] => {
@@ -587,100 +966,99 @@ const patternVars = (patterns: readonly PathPattern[]): string[] => {
   return vars;
 };
 
-/** Extend a binding through every pattern of a MATCH clause, then filter WHERE. */
-const matchClauseBindings = function* (
-  graph: Graph,
-  clause: MatchClause,
-  binding: Binding,
-): Iterable<Binding> {
-  let current: Binding[] = [binding];
-  for (const pattern of clause.patterns) {
-    const next: Binding[] = [];
-    for (const b of current) {
-      for (const ext of matchPattern(graph, pattern, b)) {
-        next.push(ext);
-      }
-    }
-    current = next;
-  }
-  for (const b of current) {
-    if (clause.where === undefined || evalExpr(clause.where, b) === true) {
-      yield b;
-    }
+/** A compiled SET assignment: a label add, or a property set with a value closure. */
+type CSetItem =
+  | { variable: string; label: string }
+  | { variable: string; key: string; value: CompiledExpr };
+
+/** A compiled INSERT node/rel: labels are fixed, property values are closures. */
+type CInsertNode = { variable?: string; labels: readonly string[]; props: readonly CProp[] };
+type CInsertRel = {
+  variable?: string;
+  labels: readonly string[];
+  direction: RelPattern['direction'];
+  props: readonly CProp[];
+};
+type CInsertPath = {
+  start: CInsertNode;
+  segments: readonly { rel: CInsertRel; node: CInsertNode }[];
+};
+
+type CMatch = {
+  kind: 'match';
+  optional: boolean;
+  patterns: readonly CPath[];
+  where?: CompiledExpr;
+  nullVars: readonly string[];
+};
+type CWith = { kind: 'with'; projection: CProjection; where?: CompiledExpr };
+type CReturn = { kind: 'return'; projection: CProjection };
+type CInsert = { kind: 'insert'; patterns: readonly CInsertPath[] };
+type CSet = { kind: 'set'; items: readonly CSetItem[] };
+type CRemove = { kind: 'remove'; items: readonly RemoveItem[] };
+type CDelete = { kind: 'delete'; detach: boolean; targets: readonly CompiledExpr[] };
+type CFinish = { kind: 'finish' };
+type CClause = CMatch | CWith | CReturn | CInsert | CSet | CRemove | CDelete | CFinish;
+
+const compileInsertNode = (node: NodePattern): CInsertNode => ({
+  variable: node.variable,
+  labels: labelsOf(node.label),
+  props: compileProps(node.properties),
+});
+
+const compileInsertPath = (pattern: PathPattern): CInsertPath => ({
+  start: compileInsertNode(pattern.start),
+  segments: pattern.segments.map(({ rel, node }) => ({
+    rel: {
+      variable: rel.variable,
+      labels: labelsOf(rel.label),
+      direction: rel.direction,
+      props: compileProps(rel.properties),
+    },
+    node: compileInsertNode(node),
+  })),
+});
+
+const compileSetItem = (item: SetItem): CSetItem =>
+  'label' in item
+    ? { variable: item.variable, label: item.label }
+    : { variable: item.variable, key: item.key, value: compileExpr(item.value) };
+
+const compileClause = (clause: Clause): CClause => {
+  switch (clause.kind) {
+    case 'match':
+      return {
+        kind: 'match',
+        optional: clause.optional,
+        patterns: clause.patterns.map(compilePath),
+        where: clause.where ? compileExpr(clause.where) : undefined,
+        nullVars: clause.optional ? patternVars(clause.patterns) : [],
+      };
+    case 'with':
+      return {
+        kind: 'with',
+        projection: compileProjection(clause.projection),
+        where: clause.where ? compileExpr(clause.where) : undefined,
+      };
+    case 'return':
+      return { kind: 'return', projection: compileProjection(clause.projection) };
+    case 'insert':
+      return { kind: 'insert', patterns: clause.patterns.map(compileInsertPath) };
+    case 'set':
+      return { kind: 'set', items: clause.items.map(compileSetItem) };
+    case 'remove':
+      return { kind: 'remove', items: clause.items };
+    case 'delete':
+      return { kind: 'delete', detach: clause.detach, targets: clause.targets.map(compileExpr) };
+    case 'finish':
+      return { kind: 'finish' };
   }
 };
 
-const runMatch = (graph: Graph, clause: MatchClause, bindings: readonly Binding[]): Binding[] => {
-  const out: Binding[] = [];
-  const nulls = clause.optional ? patternVars(clause.patterns) : [];
-  for (const binding of bindings) {
-    const matched = [...matchClauseBindings(graph, clause, binding)];
-    if (matched.length > 0) {
-      out.push(...matched);
-    } else if (clause.optional) {
-      // No match: keep the row with the pattern's new variables set to null.
-      const filled = new Map(binding);
-      for (const v of nulls) {
-        if (!filled.has(v)) {
-          filled.set(v, null);
-        }
-      }
-      out.push(filled);
-    }
-  }
-  return out;
-};
-
-const mapToRow = (b: Binding): Row => {
-  const row: Row = {};
-  for (const [k, v] of b) {
-    row[k] = v;
-  }
-  return row;
-};
-
-/** Run one linear query (clause sequence) to result rows. */
-const runLinear = (linear: LinearQuery, graph: Graph): Row[] => {
-  let bindings: Binding[] = [new Map()];
-  for (const clause of linear.clauses) {
-    switch (clause.kind) {
-      case 'match':
-        bindings = runMatch(graph, clause, bindings);
-        break;
-      case 'with': {
-        const projected = applyProjection(clause.projection, bindings);
-        bindings =
-          clause.where === undefined
-            ? projected
-            : projected.filter((b) => evalExpr(clause.where!, b) === true);
-        break;
-      }
-      case 'insert':
-        bindings = bindings.map((b) => runInsert(graph, clause, b));
-        break;
-      case 'set':
-        for (const b of bindings) {
-          runSet(graph, clause, b);
-        }
-        break;
-      case 'remove':
-        for (const b of bindings) {
-          runRemove(graph, clause, b);
-        }
-        break;
-      case 'delete':
-        for (const b of bindings) {
-          runDelete(graph, clause, b);
-        }
-        break;
-      case 'finish':
-        return [];
-      case 'return':
-        return applyProjection(clause.projection, bindings).map(mapToRow);
-    }
-  }
-  return []; // a write-only query produces no rows
-};
+type CLinear = { clauses: readonly CClause[] };
+const compileLinear = (linear: LinearQuery): CLinear => ({
+  clauses: linear.clauses.map(compileClause),
+});
 
 // --- write clauses -----------------------------------------------------------
 
@@ -702,25 +1080,33 @@ const isEdge = (v: unknown): v is Edge =>
 const isElement = (v: unknown): v is Vertex | Edge =>
   typeof v === 'object' && v !== null && 'id' in v;
 
-const propsFrom = (
-  props: PropertyConstraint[] | readonly PropertyConstraint[] | undefined,
+const evalProps = (
+  props: readonly CProp[],
   b: Binding,
-) => {
+  params: Params,
+  graph: Graph,
+): Record<string, unknown> => {
+  const env: EvalEnv = { binding: b, params, graph };
   const out: Record<string, unknown> = {};
-  for (const { key, value } of props ?? []) {
-    out[key] = evalExpr(value, b);
+  for (const { key, value } of props) {
+    out[key] = value(env);
   }
   return out;
 };
 
 /** Create a node from a pattern, reusing an already-bound variable. */
-const ensureNode = (graph: Graph, binding: Map<string, unknown>, node: NodePattern): Vertex => {
+const ensureNode = (
+  graph: Graph,
+  binding: Map<string, unknown>,
+  node: CInsertNode,
+  params: Params,
+): Vertex => {
   if (node.variable && binding.has(node.variable)) {
     return binding.get(node.variable) as Vertex;
   }
   const vertex = graph.addVertex({
-    labels: labelsOf(node.label),
-    properties: propsFrom(node.properties, binding),
+    labels: [...node.labels],
+    properties: evalProps(node.props, binding, params, graph),
   });
   if (node.variable) {
     binding.set(node.variable, vertex);
@@ -728,18 +1114,18 @@ const ensureNode = (graph: Graph, binding: Map<string, unknown>, node: NodePatte
   return vertex;
 };
 
-const runInsert = (graph: Graph, clause: InsertClause, binding: Binding): Binding => {
+const runInsert = (graph: Graph, clause: CInsert, binding: Binding, params: Params): Binding => {
   const out = new Map(binding);
   for (const pattern of clause.patterns) {
-    let prev = ensureNode(graph, out, pattern.start);
+    let prev = ensureNode(graph, out, pattern.start, params);
     for (const { rel, node } of pattern.segments) {
-      const next = ensureNode(graph, out, node);
+      const next = ensureNode(graph, out, node, params);
       const [from, to] = rel.direction === 'in' ? [next, prev] : [prev, next];
       const edge = graph.addEdge({
         from,
         to,
-        labels: labelsOf(rel.label),
-        properties: propsFrom(rel.properties, out),
+        labels: [...rel.labels],
+        properties: evalProps(rel.props, out, params, graph),
       });
       if (rel.variable) {
         out.set(rel.variable, edge);
@@ -752,7 +1138,7 @@ const runInsert = (graph: Graph, clause: InsertClause, binding: Binding): Bindin
 
 // Labels go through the graph's index-maintaining methods so MATCH can find
 // them afterwards; properties write directly (no value index).
-const runSet = (graph: Graph, clause: SetClause, binding: Binding): void => {
+const runSet = (graph: Graph, clause: CSet, binding: Binding, params: Params): void => {
   for (const item of clause.items) {
     const el = binding.get(item.variable);
     if (!isElement(el)) {
@@ -765,12 +1151,12 @@ const runSet = (graph: Graph, clause: SetClause, binding: Binding): void => {
         graph.addLabelToVertex(item.label, el);
       }
     } else {
-      el.properties = { ...el.properties, [item.key]: evalExpr(item.value, binding) };
+      el.properties = { ...el.properties, [item.key]: item.value({ binding, params, graph }) };
     }
   }
 };
 
-const runRemove = (graph: Graph, clause: RemoveClause, binding: Binding): void => {
+const runRemove = (graph: Graph, clause: CRemove, binding: Binding): void => {
   for (const item of clause.items) {
     const el = binding.get(item.variable);
     if (!isElement(el)) {
@@ -790,9 +1176,9 @@ const runRemove = (graph: Graph, clause: RemoveClause, binding: Binding): void =
   }
 };
 
-const runDelete = (graph: Graph, clause: DeleteClause, binding: Binding): void => {
+const runDelete = (graph: Graph, clause: CDelete, binding: Binding, params: Params): void => {
   for (const target of clause.targets) {
-    const el = evalExpr(target, binding);
+    const el = target({ binding, params, graph });
     if (isEdge(el)) {
       graph.removeEdge(el);
     } else if (isElement(el)) {
@@ -800,6 +1186,110 @@ const runDelete = (graph: Graph, clause: DeleteClause, binding: Binding): void =
     }
   }
 };
+
+// --- clause processing -------------------------------------------------------
+
+/** Extend a binding through every pattern of a MATCH clause, then filter WHERE. */
+const matchClauseBindings = function* (
+  graph: Graph,
+  clause: CMatch,
+  binding: Binding,
+  params: Params,
+): Iterable<Binding> {
+  let current: Binding[] = [binding];
+  for (const pattern of clause.patterns) {
+    const next: Binding[] = [];
+    for (const b of current) {
+      for (const ext of matchPattern(graph, pattern, b, params)) {
+        next.push(ext);
+      }
+    }
+    current = next;
+  }
+  for (const b of current) {
+    if (clause.where === undefined || clause.where({ binding: b, params, graph }) === true) {
+      yield b;
+    }
+  }
+};
+
+const runMatch = (
+  graph: Graph,
+  clause: CMatch,
+  bindings: readonly Binding[],
+  params: Params,
+): Binding[] => {
+  const out: Binding[] = [];
+  for (const binding of bindings) {
+    const matched = [...matchClauseBindings(graph, clause, binding, params)];
+    if (matched.length > 0) {
+      out.push(...matched);
+    } else if (clause.optional) {
+      // No match: keep the row with the pattern's new variables set to null.
+      const filled = new Map(binding);
+      for (const v of clause.nullVars) {
+        if (!filled.has(v)) {
+          filled.set(v, null);
+        }
+      }
+      out.push(filled);
+    }
+  }
+  return out;
+};
+
+const mapToRow = (b: Binding): Row => {
+  const row: Row = {};
+  for (const [k, v] of b) {
+    row[k] = v;
+  }
+  return row;
+};
+
+/** Run one compiled linear query (clause sequence) to result rows. */
+const runLinear = (linear: CLinear, graph: Graph, params: Params): Row[] => {
+  let bindings: Binding[] = [new Map()];
+  for (const clause of linear.clauses) {
+    switch (clause.kind) {
+      case 'match':
+        bindings = runMatch(graph, clause, bindings, params);
+        break;
+      case 'with': {
+        const projected = applyProjection(clause.projection, bindings, params, graph);
+        bindings =
+          clause.where === undefined
+            ? projected
+            : projected.filter((b) => clause.where!({ binding: b, params, graph }) === true);
+        break;
+      }
+      case 'insert':
+        bindings = bindings.map((b) => runInsert(graph, clause, b, params));
+        break;
+      case 'set':
+        for (const b of bindings) {
+          runSet(graph, clause, b, params);
+        }
+        break;
+      case 'remove':
+        for (const b of bindings) {
+          runRemove(graph, clause, b);
+        }
+        break;
+      case 'delete':
+        for (const b of bindings) {
+          runDelete(graph, clause, b, params);
+        }
+        break;
+      case 'finish':
+        return [];
+      case 'return':
+        return applyProjection(clause.projection, bindings, params, graph).map(mapToRow);
+    }
+  }
+  return []; // a write-only query produces no rows
+};
+
+// --- set operations ----------------------------------------------------------
 
 /** Stable key for a result row; graph-element columns key by id. */
 const rowKeyOf = (row: Row): string =>
@@ -832,21 +1322,31 @@ const combineRows = (op: SetOp, left: readonly Row[], right: readonly Row[]): Ro
   }
 };
 
-/** Execute a parsed query against a graph, returning projected result rows. */
-export const execute = (
-  query: Query,
-  graph: Graph,
-  params: Record<string, unknown> = {},
-): Row[] => {
-  const previousParams = activeParams;
-  activeParams = params;
-  try {
-    let rows = runLinear(query.parts[0]!, graph);
-    query.ops.forEach((op, i) => {
-      rows = combineRows(op, rows, runLinear(query.parts[i + 1]!, graph));
+// --- compile & execute -------------------------------------------------------
+
+/** A whole compiled query: its linear parts and the set operators joining them. */
+type CQuery = { parts: readonly CLinear[]; ops: readonly SetOp[] };
+
+/**
+ * Compile a parsed query into a reusable `Plan`. All graph/param-independent
+ * work — operator dispatch, aggregate detection, alias resolution, label-seed
+ * selection — happens here, once. Run the returned plan against any graph and
+ * params; it never re-parses or re-analyzes.
+ */
+export const compile = (query: Query): Plan => {
+  const compiled: CQuery = {
+    parts: query.parts.map(compileLinear),
+    ops: query.ops,
+  };
+  return (graph, params = {}) => {
+    let rows = runLinear(compiled.parts[0]!, graph, params);
+    compiled.ops.forEach((op, i) => {
+      rows = combineRows(op, rows, runLinear(compiled.parts[i + 1]!, graph, params));
     });
     return rows;
-  } finally {
-    activeParams = previousParams;
-  }
+  };
 };
+
+/** Compile and run a parsed query in one call (no plan reuse). */
+export const execute = (query: Query, graph: Graph, params: Params = {}): Row[] =>
+  compile(query)(graph, params);

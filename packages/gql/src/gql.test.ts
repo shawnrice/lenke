@@ -1,8 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 
 import type { MatchClause, Query } from './ast.js';
+import { createFinancialGraph } from './fixtures/createFinancialGraph.js';
 import { createTestSocialGraph } from './fixtures/createTestSocialGraph.js';
-import { gql, parseQuery, query } from './index.js';
+import { compile, gql, parseQuery, prepare, query } from './index.js';
 
 /** The first clause of a query's first linear part is its MATCH (in these tests). */
 const firstMatch = (q: Query): MatchClause => q.parts[0]!.clauses[0] as MatchClause;
@@ -240,9 +241,10 @@ describe('GQL: aggregation', () => {
     ]);
   });
 
-  test('collect', () => {
-    const rows = query(g, `MATCH (n:Person) RETURN collect(n.name) AS names`);
+  test('collect_list (ISO; Cypher collect is not a function here)', () => {
+    const rows = query(g, `MATCH (n:Person) RETURN collect_list(n.name) AS names`);
     expect((rows[0]!.names as string[]).sort()).toEqual(['josh', 'marko', 'peter', 'vadas']);
+    expect(() => query(g, `MATCH (n:Person) RETURN collect(n.name) AS names`)).toThrow();
   });
 
   test('implicit grouping', () => {
@@ -576,5 +578,493 @@ describe('GQL: ISO (not Cypher) syntax', () => {
     expect(
       firstMatch(parseQuery(`MATCH (a)<->(b) RETURN a`)).patterns[0]!.segments[0]!.rel.direction,
     ).toBe('both');
+  });
+});
+
+describe('GQL: compile / prepare (reusable plans)', () => {
+  test('a prepared plan runs without re-parsing', () => {
+    const plan = prepare(`MATCH (a:Person)-[:KNOWS]->(b) RETURN b.name`);
+    expect(names(plan(g), 'b.name')).toEqual(['josh', 'vadas']);
+  });
+
+  test('one plan, many param bindings (reentrant — no shared state)', () => {
+    const plan = prepare(`MATCH (n:Person) WHERE n.name = $who RETURN n.age`);
+    expect(plan(g, { who: 'marko' })).toEqual([{ 'n.age': 29 }]);
+    expect(plan(g, { who: 'peter' })).toEqual([{ 'n.age': 35 }]);
+    // Re-running an earlier binding still yields its own result (no carryover).
+    expect(plan(g, { who: 'marko' })).toEqual([{ 'n.age': 29 }]);
+  });
+
+  test('one plan runs against independent graphs', () => {
+    const plan = prepare(`MATCH (n:Person) RETURN count(*) AS c`);
+    const g1 = createTestSocialGraph();
+    const g2 = createTestSocialGraph();
+    query(g2, `INSERT (n:Person {name: 'newbie', age: 1})`);
+    expect(plan(g1)).toEqual([{ c: 4 }]);
+    expect(plan(g2)).toEqual([{ c: 5 }]);
+  });
+
+  test('compile accepts a pre-parsed AST', () => {
+    const plan = compile(parseQuery(`MATCH (n:Person) WHERE n.age > $min RETURN n.name`));
+    expect(names(plan(g, { min: 31 }), 'n.name')).toEqual(['josh', 'peter']);
+  });
+});
+
+// The running example from the GQL / SQL/PGQ research literature: a financial
+// network layered over a social one. Every expected result below is computed by
+// hand from `createFinancialGraph`'s fixed instance. See that fixture for the
+// full data and the laundering-trail diagram.
+describe('GQL: financial graph (GQL/SQL-PGQ literature example)', () => {
+  const fg = createFinancialGraph();
+
+  test('label expressions partition the two node kinds', () => {
+    expect(query(fg, `MATCH (p:Person) RETURN count(*) AS n`)).toEqual([{ n: 5 }]);
+    expect(query(fg, `MATCH (a:Account) RETURN count(*) AS n`)).toEqual([{ n: 4 }]);
+  });
+
+  test('implicit grouping: people per city', () => {
+    const rows = query(fg, `MATCH (p:Person) RETURN p.city AS city, count(*) AS n ORDER BY city`);
+    expect(rows).toEqual([
+      { city: 'Berlin', n: 1 },
+      { city: 'London', n: 3 },
+      { city: 'Paris', n: 1 },
+    ]);
+  });
+
+  test('aggregation over a numeric edge property: total money moved', () => {
+    expect(
+      query(
+        fg,
+        `MATCH (:Account)-[t:TRANSFER]->(:Account) RETURN sum(t.amount) AS total, count(*) AS n`,
+      ),
+    ).toEqual([{ total: 2400, n: 3 }]);
+  });
+
+  test('incoming aggregation: amount received per account', () => {
+    const rows = query(
+      fg,
+      `MATCH (a:Account)<-[t:TRANSFER]-(:Account) RETURN a.name AS account, sum(t.amount) AS received ORDER BY account`,
+    );
+    // acc-dave never receives, so it isn't in the result.
+    expect(rows).toEqual([
+      { account: 'acc-alice', received: 500 },
+      { account: 'acc-bob', received: 900 },
+      { account: 'acc-carol', received: 1000 },
+    ]);
+  });
+
+  test('the motivating "money-laundering" query', () => {
+    // Friends in the same city who transfer to each other via a common friend
+    // who lives elsewhere, with a decreasing amount along the trail.
+    const rows = query(
+      fg,
+      `MATCH (x:Person)-[:FRIENDS]-(y:Person),
+             (x)-[:OWNS]->(ax),
+             (y)-[:OWNS]->(ay),
+             (z:Person)-[:OWNS]->(az),
+             (ax)-[t1:TRANSFER]->(az)-[t2:TRANSFER]->(ay)
+       WHERE x.city = y.city AND x.city <> z.city AND t2.amount < t1.amount
+       RETURN x.name AS name1, y.name AS name2`,
+    );
+    // alice & bob (London friends) launder via carol (Paris): 1000 then 900.
+    expect(rows).toEqual([{ name1: 'alice', name2: 'bob' }]);
+  });
+
+  test('variable-length money flow follows the whole trail', () => {
+    const rows = query(
+      fg,
+      `MATCH (s:Account {name: 'acc-dave'})-[:TRANSFER]->+(r:Account) RETURN r.name`,
+    );
+    // acc-dave → acc-alice → acc-carol → acc-bob.
+    expect(names(rows, 'r.name')).toEqual(['acc-alice', 'acc-bob', 'acc-carol']);
+  });
+
+  test('OPTIONAL MATCH keeps the account-less person', () => {
+    const rows = query(
+      fg,
+      `MATCH (p:Person) OPTIONAL MATCH (p)-[:OWNS]->(a) RETURN p.name, a.name`,
+    );
+    expect(rows).toHaveLength(5);
+    const accounts = rows.map((r) => r['a.name']).filter(Boolean) as string[];
+    expect(accounts.sort()).toEqual(['acc-alice', 'acc-bob', 'acc-carol', 'acc-dave']);
+    // erin owns nothing → a property access on her null account column is NULL.
+    expect(rows.find((r) => r['p.name'] === 'erin')!['a.name']).toBeNull();
+  });
+
+  test('WITH aggregation then HAVING-style filter: who sent ≥ 900', () => {
+    const rows = query(
+      fg,
+      `MATCH (p:Person)-[:OWNS]->(:Account)-[t:TRANSFER]->(:Account)
+       WITH p.name AS name, sum(t.amount) AS sent
+       WHERE sent >= 900
+       RETURN name, sent ORDER BY name`,
+    );
+    // alice's account sent 1000, carol's 900; dave's 500 is filtered out.
+    expect(rows).toEqual([
+      { name: 'alice', sent: 1000 },
+      { name: 'carol', sent: 900 },
+    ]);
+  });
+
+  test('undirected friendship matches from either endpoint', () => {
+    // bob is only ever the *target* of a FRIENDS edge (alice→bob), yet an
+    // undirected pattern still finds his friends.
+    const rows = query(fg, `MATCH (:Person {name: 'bob'})-[:FRIENDS]-(f) RETURN f.name`);
+    expect(names(rows, 'f.name')).toEqual(['alice', 'dave']);
+  });
+});
+
+describe('GQL: ORDER BY NULLS FIRST / LAST (ISO <null ordering>)', () => {
+  const g = createTestSocialGraph();
+  // Software nodes (lop, ripple) have no `age`, so `n.age` is null for them.
+  const ages = (q: string) => query(g, q).map((r) => r['age']);
+
+  test('default: nulls sort last on ASC, first on DESC', () => {
+    expect(ages(`MATCH (n) RETURN n.age AS age ORDER BY n.age ASC`)).toEqual([
+      27,
+      29,
+      32,
+      35,
+      null,
+      null,
+    ]);
+    expect(ages(`MATCH (n) RETURN n.age AS age ORDER BY n.age DESC`)).toEqual([
+      null,
+      null,
+      35,
+      32,
+      29,
+      27,
+    ]);
+  });
+
+  test('NULLS FIRST overrides the ascending default', () => {
+    expect(ages(`MATCH (n) RETURN n.age AS age ORDER BY n.age ASC NULLS FIRST`)).toEqual([
+      null,
+      null,
+      27,
+      29,
+      32,
+      35,
+    ]);
+  });
+
+  test('NULLS LAST overrides the descending default', () => {
+    expect(ages(`MATCH (n) RETURN n.age AS age ORDER BY n.age DESC NULLS LAST`)).toEqual([
+      35,
+      32,
+      29,
+      27,
+      null,
+      null,
+    ]);
+  });
+
+  test('NULLS / FIRST / LAST stay usable as ordinary identifiers', () => {
+    // Only `NULLS FIRST|LAST` following a sort key is special (contextual parse).
+    expect(query(g, `MATCH (n:Person {name: 'marko'}) RETURN n.name AS first`)).toEqual([
+      { first: 'marko' },
+    ]);
+  });
+});
+
+describe('GQL: IS TRUE / FALSE / UNKNOWN (ISO <boolean test>)', () => {
+  const g = createTestSocialGraph();
+
+  test('truth-value tests collapse three-valued logic to a definite boolean', () => {
+    const r = query(
+      g,
+      `MATCH (n:Person {name: 'marko'}) RETURN
+         true IS TRUE AS a,
+         (1 = 2) IS FALSE AS b,
+         null IS UNKNOWN AS c,
+         true IS NOT FALSE AS d,
+         null IS NOT TRUE AS e,
+         null IS TRUE AS f`,
+    );
+    expect(r).toEqual([{ a: true, b: true, c: true, d: true, e: true, f: false }]);
+  });
+
+  test('IS TRUE / IS NOT TRUE resolve UNKNOWN predicates in WHERE', () => {
+    // n.foo is missing → `n.foo = 1` is UNKNOWN. IS TRUE makes that definite-false
+    // (excluded); IS NOT TRUE makes it definite-true (kept).
+    expect(query(g, `MATCH (n:Person) WHERE (n.foo = 1) IS TRUE RETURN n.name`)).toEqual([]);
+    expect(query(g, `MATCH (n:Person) WHERE (n.foo = 1) IS NOT TRUE RETURN n.name`)).toHaveLength(
+      4,
+    );
+  });
+});
+
+describe('GQL: CASE expression (ISO <case expression>)', () => {
+  const g = createTestSocialGraph();
+  // Evaluate an expression against a single, fixed row.
+  const one = (e: string): unknown =>
+    query(g, `MATCH (n:Person {name: 'marko'}) RETURN ${e} AS r`)[0]!.r;
+
+  test('searched CASE returns the first TRUE branch', () => {
+    expect(one(`CASE WHEN 1 > 2 THEN 'a' WHEN 2 > 1 THEN 'b' ELSE 'c' END`)).toBe('b');
+  });
+
+  test('searched CASE with no match falls to ELSE', () => {
+    expect(one(`CASE WHEN false THEN 'a' ELSE 'z' END`)).toBe('z');
+  });
+
+  test('searched CASE with no ELSE and no match is NULL', () => {
+    expect(one(`CASE WHEN false THEN 'a' END`)).toBeNull();
+  });
+
+  test('an UNKNOWN condition is not TRUE, so its branch is skipped', () => {
+    // n.foo is missing → `n.foo = 1` is UNKNOWN, which is not a match.
+    expect(one(`CASE WHEN n.foo = 1 THEN 'x' ELSE 'y' END`)).toBe('y');
+  });
+
+  test('simple CASE over integers (TCK Conditional2)', () => {
+    const r = (v: string) =>
+      one(
+        `CASE ${v} WHEN -10 THEN 'minus ten' WHEN 0 THEN 'zero' WHEN 5 THEN 'five' ELSE 'else' END`,
+      );
+    expect(r('0')).toBe('zero');
+    expect(r('5')).toBe('five');
+    expect(r('-10')).toBe('minus ten');
+    expect(r('42')).toBe('else');
+  });
+
+  test('simple CASE: a NULL subject never matches (→ ELSE)', () => {
+    expect(one(`CASE n.foo WHEN 1 THEN 'a' ELSE 'none' END`)).toBe('none');
+  });
+
+  test('CASE drives a computed RETURN column', () => {
+    const rows = query(
+      g,
+      `MATCH (n:Person)
+       RETURN n.name AS name,
+              CASE WHEN n.age >= 30 THEN 'senior' ELSE 'junior' END AS band
+       ORDER BY name`,
+    );
+    expect(rows).toEqual([
+      { name: 'josh', band: 'senior' },
+      { name: 'marko', band: 'junior' },
+      { name: 'peter', band: 'senior' },
+      { name: 'vadas', band: 'junior' },
+    ]);
+  });
+
+  test('CASE inside an aggregate (conditional sum)', () => {
+    const rows = query(
+      g,
+      `MATCH (n:Person) RETURN sum(CASE WHEN n.age >= 30 THEN 1 ELSE 0 END) AS seniors`,
+    );
+    expect(rows).toEqual([{ seniors: 2 }]); // josh (32) and peter (35)
+  });
+
+  test('NULLIF (ISO case abbreviation)', () => {
+    expect(one(`nullif(7, 7)`)).toBeNull();
+    expect(one(`nullif(7, 8)`)).toBe(7);
+  });
+});
+
+describe('GQL: ISO numeric & string value functions', () => {
+  const g = createTestSocialGraph();
+  const v = (e: string): unknown =>
+    query(g, `MATCH (n:Person {name: 'marko'}) RETURN ${e} AS r`)[0]!.r;
+
+  test('numeric value functions', () => {
+    expect(v('abs(-5)')).toBe(5);
+    expect(v('ceil(2.1)')).toBe(3);
+    expect(v('ceiling(2.1)')).toBe(3);
+    expect(v('floor(2.9)')).toBe(2);
+    expect(v('sqrt(9)')).toBe(3);
+    expect(v('power(2, 10)')).toBe(1024);
+    expect(v('mod(7, 3)')).toBe(1);
+    expect(v('log10(1000)')).toBe(3);
+    expect(v('log(2, 8)')).toBe(3); // general log: base 2 of 8
+  });
+
+  test('trigonometric and angle conversion', () => {
+    expect(v('radians(180)')).toBeCloseTo(Math.PI);
+    expect(v('degrees(radians(90))')).toBeCloseTo(90);
+    expect(v('sin(0)')).toBe(0);
+  });
+
+  test('string value functions', () => {
+    expect(v(`char_length('hello')`)).toBe(5);
+    expect(v(`character_length('hello')`)).toBe(5);
+    expect(v(`upper('abc')`)).toBe('ABC');
+    expect(v(`lower('ABC')`)).toBe('abc');
+    expect(v(`left('hello', 2)`)).toBe('he');
+    expect(v(`right('hello', 2)`)).toBe('lo');
+    expect(v(`right('hi', 0)`)).toBe('');
+    expect(v(`ltrim('  hi ')`)).toBe('hi ');
+    expect(v(`rtrim('  hi ')`)).toBe('  hi');
+    expect(v(`btrim('  hi  ')`)).toBe('hi');
+  });
+
+  test('null argument yields null', () => {
+    expect(v('sqrt(null)')).toBeNull();
+    expect(v('power(null, 2)')).toBeNull();
+    expect(v(`left(null, 2)`)).toBeNull();
+  });
+});
+
+describe('GQL: EXISTS subquery (ISO <exists predicate>)', () => {
+  const g = createTestSocialGraph();
+
+  test('EXISTS keeps rows whose correlated sub-pattern matches', () => {
+    const rows = query(g, `MATCH (n:Person) WHERE EXISTS { (n)-[:CREATED]->(s) } RETURN n.name`);
+    expect(names(rows, 'n.name')).toEqual(['josh', 'marko', 'peter']);
+  });
+
+  test('NOT EXISTS negates the predicate', () => {
+    const rows = query(
+      g,
+      `MATCH (n:Person) WHERE NOT EXISTS { (n)-[:CREATED]->(:Software) } RETURN n.name`,
+    );
+    expect(names(rows, 'n.name')).toEqual(['vadas']);
+  });
+
+  test('an inner WHERE in the subquery is correlated to the outer row', () => {
+    const rows = query(
+      g,
+      `MATCH (n:Person) WHERE EXISTS { (n)-[:KNOWS]->(f) WHERE f.age < 30 } RETURN n.name`,
+    );
+    // marko KNOWS vadas (27) and josh (32); vadas < 30 → marko qualifies. No one
+    // else has outgoing KNOWS.
+    expect(names(rows, 'n.name')).toEqual(['marko']);
+  });
+
+  test('EXISTS composes inside arbitrary boolean logic', () => {
+    const rows = query(
+      g,
+      `MATCH (n:Person) WHERE n.age > 34 OR EXISTS { (n)-[:KNOWS]->() } RETURN n.name`,
+    );
+    // peter (35) by age, marko by the EXISTS.
+    expect(names(rows, 'n.name')).toEqual(['marko', 'peter']);
+  });
+
+  test('EXISTS works as a RETURN value', () => {
+    const rows = query(
+      g,
+      `MATCH (n:Person) RETURN n.name AS name, EXISTS { (n)-[:CREATED]->() } AS creates ORDER BY name`,
+    );
+    expect(rows).toEqual([
+      { name: 'josh', creates: true },
+      { name: 'marko', creates: true },
+      { name: 'peter', creates: true },
+      { name: 'vadas', creates: false },
+    ]);
+  });
+
+  test('EXISTS is a reserved word; bare use as a name is rejected', () => {
+    const h = createTestSocialGraph();
+    h.addVertex({ labels: ['Flag'], properties: { exists: true } });
+    // A reserved word can still name a property via a delimited identifier.
+    expect(query(h, 'MATCH (n:Flag) RETURN n.`exists` AS e')).toEqual([{ e: true }]);
+    // Bare `exists` as a variable is a syntax error.
+    expect(() => query(h, `MATCH (exists:Flag) RETURN exists`)).toThrow();
+  });
+});
+
+describe('GQL: COUNT subquery (ISO count subquery)', () => {
+  const g = createTestSocialGraph();
+
+  test('COUNT { … } returns the correlated match count per row', () => {
+    const rows = query(
+      g,
+      `MATCH (n:Person) RETURN n.name AS name, COUNT { (n)-[:CREATED]->() } AS c ORDER BY name`,
+    );
+    expect(rows).toEqual([
+      { name: 'josh', c: 2 }, // ripple + lop
+      { name: 'marko', c: 1 }, // lop
+      { name: 'peter', c: 1 }, // lop
+      { name: 'vadas', c: 0 }, // creates nothing
+    ]);
+  });
+
+  test('COUNT subquery in WHERE', () => {
+    const rows = query(
+      g,
+      `MATCH (n:Person) WHERE COUNT { (n)-[:CREATED]->() } > 1 RETURN n.name AS name`,
+    );
+    expect(names(rows, 'name')).toEqual(['josh']);
+  });
+
+  test('the count(...) aggregate and COUNT { } subquery coexist (paren vs brace)', () => {
+    expect(query(g, `MATCH (n:Person) RETURN count(*) AS c`)).toEqual([{ c: 4 }]);
+    // `count` is reserved; a delimited identifier still names a `count` property.
+    const h = createTestSocialGraph();
+    h.addVertex({ labels: ['Tally'], properties: { count: 9 } });
+    expect(query(h, 'MATCH (n:Tally) RETURN n.`count` AS c')).toEqual([{ c: 9 }]);
+  });
+});
+
+describe('GQL: IS LABELED predicate & ELEMENT_ID (ISO)', () => {
+  const g = createTestSocialGraph();
+
+  test('IS LABELED tests an element against a label expression', () => {
+    expect(names(query(g, `MATCH (x) WHERE x IS LABELED Person RETURN x.name`), 'x.name')).toEqual([
+      'josh',
+      'marko',
+      'peter',
+      'vadas',
+    ]);
+    expect(query(g, `MATCH (x) WHERE x IS LABELED Software RETURN count(*) AS c`)).toEqual([
+      { c: 2 },
+    ]);
+  });
+
+  test('IS NOT LABELED negates the predicate', () => {
+    expect(query(g, `MATCH (x) WHERE x IS NOT LABELED Person RETURN count(*) AS c`)).toEqual([
+      { c: 2 }, // the two Software nodes
+    ]);
+  });
+
+  test('IS LABELED accepts a boolean label expression', () => {
+    const h = createTestSocialGraph();
+    h.addVertex({ labels: ['Person', 'Admin'], properties: { name: 'boss' } });
+    expect(
+      names(query(h, `MATCH (x) WHERE x IS LABELED Person & Admin RETURN x.name`), 'x.name'),
+    ).toEqual(['boss']);
+    // disjunction spans both kinds: 5 Person (incl. boss) + 2 Software.
+    expect(query(h, `MATCH (x) WHERE x IS LABELED Person | Software RETURN count(*) AS c`)).toEqual(
+      [{ c: 7 }],
+    );
+  });
+
+  test('ELEMENT_ID returns the element identifier', () => {
+    expect(query(g, `MATCH (n:Person {name: 'marko'}) RETURN element_id(n) AS id`)).toEqual([
+      { id: '1' },
+    ]);
+  });
+});
+
+describe('GQL: ISO reserved words', () => {
+  test('a reserved word is rejected as a bare identifier', () => {
+    const g = createTestSocialGraph();
+    // variable, property key, alias, and label positions all reject reserved words.
+    expect(() => query(g, `MATCH (select) RETURN select`)).toThrow(/reserved word/);
+    expect(() => query(g, `MATCH (n:Person) RETURN n.value AS v`)).toThrow(/reserved word/);
+    expect(() => query(g, `MATCH (n:Person) RETURN n AS count`)).toThrow();
+    expect(() => query(g, `MATCH (n:Match) RETURN n`)).toThrow();
+  });
+
+  test('a reserved word is allowed as a delimited identifier or a function name', () => {
+    const g = createTestSocialGraph();
+    g.addVertex({ labels: ['Misc'], properties: { value: 7 } });
+    expect(query(g, 'MATCH (n:Misc) RETURN n.`value` AS v')).toEqual([{ v: 7 }]);
+    expect(query(g, `RETURN upper('x') AS u`)).toEqual([{ u: 'X' }]);
+  });
+
+  test('non-reserved words (FIRST, LAST, LABELED, TYPE) work as identifiers', () => {
+    const g = createTestSocialGraph();
+    g.addVertex({ labels: ['First'], properties: { last: 'z', type: 't' } });
+    expect(query(g, `MATCH (first:First) RETURN first.last AS last, first.type AS type`)).toEqual([
+      { last: 'z', type: 't' },
+    ]);
+  });
+
+  test('COLLECT_LIST is the ISO name for the collect aggregate', () => {
+    const g = createTestSocialGraph();
+    const rows = query(g, `MATCH (n:Person) RETURN collect_list(n.name) AS names`);
+    expect((rows[0]!.names as string[]).sort()).toEqual(['josh', 'marko', 'peter', 'vadas']);
   });
 });
