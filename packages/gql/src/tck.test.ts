@@ -705,8 +705,21 @@ describe('TCK ReturnOrderBy3: sort on an aggregate then a property', () => {
   });
 });
 
-// With4 / With7 — variable aliasing and WITH-on-WITH chaining.
-describe('TCK With4 / With7: aliasing and chaining', () => {
+// With4 / With6 / With7 — variable aliasing, grouping, and WITH-on-WITH chaining.
+describe('TCK With4 / With6 / With7: aliasing, grouping, chaining', () => {
+  test('[With6.1] implicit grouping in WITH (group key + aggregate)', () => {
+    const g = new Graph();
+    query(g, `INSERT ({name: 'A'}), ({name: 'A'}), ({name: 'B'})`);
+    const rows = query(
+      g,
+      `MATCH (a) WITH a.name AS name, count(*) AS relCount RETURN name, relCount ORDER BY name`,
+    );
+    expect(rows).toEqual([
+      { name: 'A', relCount: 2 },
+      { name: 'B', relCount: 1 },
+    ]);
+  });
+
   test('[With4.1] aliasing a relationship variable through WITH', () => {
     const g = new Graph();
     query(g, `INSERT ()-[:T1 {n: 't1'}]->(), ()-[:T2 {n: 't2'}]->()`);
