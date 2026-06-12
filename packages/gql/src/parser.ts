@@ -55,7 +55,7 @@ import type {
   SortItem,
   WithClause,
 } from './ast.js';
-import { GqlSyntaxError, type Token, type TokenType, tokenize } from './lexer.js';
+import { GqlSyntaxError, isReserved, type Token, type TokenType, tokenize } from './lexer.js';
 
 /** Map the surrounding-arrow booleans to a relationship direction. */
 const directionOf = (leftArrow: boolean, rightArrow: boolean): RelPattern['direction'] => {
@@ -113,6 +113,20 @@ export const parse = (src: string): Query => {
     return advance();
   };
 
+  // Consume an identifier in a *binding* position (variable, label, property
+  // key, alias). A bare reserved word is rejected per ISO; a delimited
+  // identifier (backtick) may be any word.
+  const bindName = (what: string): string => {
+    const tok = expect('ident', what);
+    if (!tok.delimited && isReserved(tok.value)) {
+      throw new GqlSyntaxError(
+        `'${tok.value}' is a reserved word; quote it as a delimited identifier`,
+        tok.pos,
+      );
+    }
+    return tok.value;
+  };
+
   // --- patterns --------------------------------------------------------------
 
   // Pattern property map `{ k: expr, ... }` and inline `WHERE pred` — the ISO
@@ -122,7 +136,7 @@ export const parse = (src: string): Query => {
     const props: PropertyConstraint[] = [];
     if (!check('rbrace')) {
       do {
-        const key = expect('ident', 'a property name').value;
+        const key = bindName('a property name');
         expect('colon', "':'");
         props.push({ key, value: parseExpr() });
       } while (check('comma') && (advance(), true));
@@ -141,7 +155,7 @@ export const parse = (src: string): Query => {
     expect('lparen', "'('");
     let variable: string | undefined;
     if (check('ident')) {
-      variable = advance().value;
+      variable = bindName('a variable');
     }
     // ISO label expression, introduced by `:` or `IS`.
     let label: LabelExpr | undefined;
@@ -194,7 +208,7 @@ export const parse = (src: string): Query => {
       expect('rparen', "')' to close a label expression");
       return inner;
     }
-    return { kind: 'label', name: expect('ident', 'a label name').value };
+    return { kind: 'label', name: bindName('a label name') };
   };
 
   const parseRelDetail = (): {
@@ -207,7 +221,7 @@ export const parse = (src: string): Query => {
     expect('lbracket', "'['");
     let variable: string | undefined;
     if (check('ident')) {
-      variable = advance().value;
+      variable = bindName('a variable');
     }
     // ISO label expression over edge types, introduced by `:` or `IS`.
     let label: LabelExpr | undefined;
@@ -344,6 +358,11 @@ export const parse = (src: string): Query => {
   // predicates, comparison, `||`, +/-, *///%, unary, primary.
   const parseExpr = (): Expr => parseOrXor();
 
+  // ISO/IEC 39075 `<boolean value expression>`: OR and XOR share one (loosest)
+  // precedence level and are left-associative, so `a OR b XOR c` parses as
+  // `(a OR b) XOR c`. AND (`<boolean term>`) binds tighter, NOT tighter still.
+  // NB: a deliberate divergence from Cypher, which gives XOR higher precedence
+  // than OR — we follow the ISO grammar, not Cypher.
   const parseOrXor = (): Expr => {
     let left = parseAnd();
     while (checkKeyword('or') || checkKeyword('xor')) {
@@ -370,14 +389,40 @@ export const parse = (src: string): Query => {
     return parsePostfixPredicate();
   };
 
-  // Postfix predicates: `x IS [NOT] NULL`, `x [NOT] IN list`.
+  // Postfix predicates: `x IS [NOT] NULL`, `x IS [NOT] TRUE|FALSE|UNKNOWN`,
+  // `x [NOT] IN list`.
   const parsePostfixPredicate = (): Expr => {
     const e = parseComparison();
     if (checkKeyword('is')) {
       advance();
       const negated = checkKeyword('not') ? (advance(), true) : false;
-      expectKeyword('null');
-      return { kind: 'isNull', expr: e, negated };
+      if (checkKeyword('null')) {
+        advance();
+        return { kind: 'isNull', expr: e, negated };
+      }
+      // ISO `<boolean test>`: IS [NOT] TRUE | FALSE | UNKNOWN.
+      if (checkKeyword('true')) {
+        advance();
+        return { kind: 'isTruth', expr: e, truth: true, negated };
+      }
+      if (checkKeyword('false')) {
+        advance();
+        return { kind: 'isTruth', expr: e, truth: false, negated };
+      }
+      if (checkKeyword('unknown')) {
+        advance();
+        return { kind: 'isTruth', expr: e, truth: null, negated };
+      }
+      // ISO `<labeled predicate>`: IS [NOT] LABELED <label expression>. LABELED
+      // is a non-reserved keyword, so it arrives as an identifier.
+      if (check('ident') && peek().value.toLowerCase() === 'labeled') {
+        advance();
+        return { kind: 'isLabeled', expr: e, label: parseLabelExpr(), negated };
+      }
+      throw new GqlSyntaxError(
+        'Expected NULL, TRUE, FALSE, UNKNOWN, or LABELED after IS',
+        peek().pos,
+      );
     }
     if (checkKeyword('in')) {
       advance();
@@ -444,6 +489,84 @@ export const parse = (src: string): Query => {
     return parsePrimary();
   };
 
+  // The body shared by the braced subqueries `EXISTS { … }` and `COUNT { … }`:
+  // `{ pattern, … [WHERE pred] }`, with an optional leading MATCH keyword.
+  const parseBracedSubquery = (): { patterns: PathPattern[]; where?: Expr } => {
+    expect('lbrace', "'{'");
+    if (checkKeyword('match')) {
+      advance();
+    }
+    const patterns: PathPattern[] = [parsePathPattern()];
+    while (check('comma')) {
+      advance();
+      patterns.push(parsePathPattern());
+    }
+    const where = checkKeyword('where') ? (advance(), parseExpr()) : undefined;
+    expect('rbrace', "'}'");
+    return { patterns, where };
+  };
+
+  // `(*)` | `(DISTINCT? expr, …)` — the argument list of a function/aggregate
+  // call, the caller having already consumed the function name.
+  const parseCallArgs = (): { args: Expr[]; distinct: boolean; star: boolean } => {
+    expect('lparen', "'(' to open a function call");
+    let star = false;
+    let distinct = false;
+    const args: Expr[] = [];
+    if (check('star')) {
+      advance();
+      star = true;
+    } else if (!check('rparen')) {
+      if (checkKeyword('distinct')) {
+        advance();
+        distinct = true;
+      }
+      args.push(parseExpr());
+      while (check('comma')) {
+        advance();
+        args.push(parseExpr());
+      }
+    }
+    expect('rparen', "')' to close a function call");
+    return { args, distinct, star };
+  };
+
+  // EXISTS is a reserved word; it only introduces a braced subquery.
+  const parseExists = (): Expr => {
+    expectKeyword('exists');
+    return { kind: 'exists', ...parseBracedSubquery() };
+  };
+
+  // COUNT is reserved and overloaded: `COUNT { … }` is the subquery, `COUNT(…)`
+  // (incl. `COUNT(*)`) is the aggregate.
+  const parseCount = (): Expr => {
+    expectKeyword('count');
+    if (check('lbrace')) {
+      return { kind: 'countSubquery', ...parseBracedSubquery() };
+    }
+    return { kind: 'func', name: 'count', ...parseCallArgs() };
+  };
+
+  // ISO `<case expression>`: `CASE [subject] (WHEN test THEN result)+ [ELSE r] END`.
+  // A subject before the first WHEN makes it a simple CASE; otherwise searched.
+  const parseCase = (): Expr => {
+    expectKeyword('case');
+    const subject = checkKeyword('when') ? undefined : parseExpr();
+    const whens: { when: Expr; then: Expr }[] = [];
+    while (checkKeyword('when')) {
+      advance();
+      const when = parseExpr();
+      expectKeyword('then');
+      whens.push({ when, then: parseExpr() });
+    }
+    if (whens.length === 0) {
+      throw new GqlSyntaxError('CASE requires at least one WHEN ... THEN', peek().pos);
+    }
+    const elseExpr = checkKeyword('else') ? (advance(), parseExpr()) : undefined;
+    expectKeyword('end');
+    return { kind: 'case', subject, whens, elseExpr };
+  };
+
   const parsePrimary = (): Expr => {
     const t = peek();
     if (t.type === 'number') {
@@ -466,6 +589,15 @@ export const parse = (src: string): Query => {
       advance();
       return { kind: 'lit', value: null };
     }
+    if (checkKeyword('case')) {
+      return parseCase();
+    }
+    if (checkKeyword('exists')) {
+      return parseExists();
+    }
+    if (checkKeyword('count')) {
+      return parseCount();
+    }
     if (t.type === 'lparen') {
       advance();
       const inner = parseExpr();
@@ -485,32 +617,20 @@ export const parse = (src: string): Query => {
     }
     if (t.type === 'ident') {
       advance();
-      // Function call: `count(*)`, `count(DISTINCT x)`, `upper(s)`, `f(a, b)`.
+      // Function call: the name may be a reserved word (e.g. UPPER, SUM, ABS).
       if (check('lparen')) {
-        advance();
-        let star = false;
-        let distinct = false;
-        const args: Expr[] = [];
-        if (check('star')) {
-          advance();
-          star = true;
-        } else if (!check('rparen')) {
-          if (checkKeyword('distinct')) {
-            advance();
-            distinct = true;
-          }
-          args.push(parseExpr());
-          while (check('comma')) {
-            advance();
-            args.push(parseExpr());
-          }
-        }
-        expect('rparen', "')' to close a function call");
-        return { kind: 'func', name: t.value.toLowerCase(), args, distinct, star };
+        return { kind: 'func', name: t.value.toLowerCase(), ...parseCallArgs() };
+      }
+      // A bare reserved word is not a valid variable reference.
+      if (!t.delimited && isReserved(t.value)) {
+        throw new GqlSyntaxError(
+          `'${t.value}' is a reserved word; quote it as a delimited identifier`,
+          t.pos,
+        );
       }
       if (check('dot')) {
         advance();
-        const key = expect('ident', 'a property name').value;
+        const key = bindName('a property name');
         return { kind: 'prop', variable: t.value, key };
       }
       return { kind: 'var', name: t.value };
@@ -525,21 +645,37 @@ export const parse = (src: string): Query => {
     let alias: string | undefined;
     if (checkKeyword('as')) {
       advance();
-      alias = expect('ident', 'an alias name').value;
+      alias = bindName('an alias name');
     }
     return { expr, alias };
   };
 
   const parseSortItem = (): SortItem => {
     const expr = parseExpr();
+    let descending = false;
     if (checkKeyword('desc') || checkKeyword('descending')) {
       advance();
-      return { expr, descending: true };
-    }
-    if (checkKeyword('asc') || checkKeyword('ascending')) {
+      descending = true;
+    } else if (checkKeyword('asc') || checkKeyword('ascending')) {
       advance();
     }
-    return { expr, descending: false };
+    // ISO `<null ordering>`: optional NULLS FIRST | NULLS LAST. NULLS is a
+    // reserved word; FIRST/LAST are non-reserved, so they arrive as identifiers.
+    let nullsFirst: boolean | undefined;
+    if (checkKeyword('nulls')) {
+      advance();
+      const where = check('ident') ? peek().value.toLowerCase() : '';
+      if (where === 'first') {
+        nullsFirst = true;
+        advance();
+      } else if (where === 'last') {
+        nullsFirst = false;
+        advance();
+      } else {
+        throw new GqlSyntaxError('Expected FIRST or LAST after NULLS', peek().pos);
+      }
+    }
+    return { expr, descending, nullsFirst };
   };
 
   // The shared projection body of WITH and RETURN.
@@ -610,13 +746,13 @@ export const parse = (src: string): Query => {
   };
 
   const parseSetItem = (): SetItem => {
-    const variable = expect('ident', 'a variable').value;
+    const variable = bindName('a variable');
     if (check('colon') || checkKeyword('is')) {
       advance();
-      return { variable, label: expect('ident', 'a label name').value };
+      return { variable, label: bindName('a label name') };
     }
     expect('dot', "'.' or ':'");
-    const key = expect('ident', 'a property name').value;
+    const key = bindName('a property name');
     expect('eq', "'='");
     return { variable, key, value: parseExpr() };
   };
@@ -632,13 +768,13 @@ export const parse = (src: string): Query => {
   };
 
   const parseRemoveItem = (): RemoveItem => {
-    const variable = expect('ident', 'a variable').value;
+    const variable = bindName('a variable');
     if (check('colon') || checkKeyword('is')) {
       advance();
-      return { variable, label: expect('ident', 'a label name').value };
+      return { variable, label: bindName('a label name') };
     }
     expect('dot', "'.' or ':'");
-    return { variable, key: expect('ident', 'a property name').value };
+    return { variable, key: bindName('a property name') };
   };
 
   const parseRemoveClause = (): RemoveClause => {

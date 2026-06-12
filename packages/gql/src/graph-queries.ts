@@ -1,6 +1,13 @@
 import type { Edge, Graph, Vertex } from '@pl-graph/core';
 
-import type { LabelExpr, RelPattern } from './ast.js';
+import type { LabelExpr } from './ast.js';
+
+/**
+ * The slice of a relationship pattern that adjacency cares about: which way to
+ * walk and which edge types to admit. Both the raw `RelPattern` and the
+ * executor's compiled `CRel` satisfy this, so `expand` works over either.
+ */
+export type Adjacency = { direction: 'out' | 'in' | 'both'; label?: LabelExpr };
 
 /**
  * GQL's view of adjacency. Reads the *same* core indexes the gremlin package
@@ -67,7 +74,7 @@ const inSteps = function* (graph: Graph, v: Vertex, label: LabelExpr | undefined
  * `{ edge, node }`. `both` walks outgoing then incoming, matching the natural
  * read order of an undirected pattern.
  */
-export const expand = function* (graph: Graph, v: Vertex, rel: RelPattern): Iterable<Step> {
+export const expand = function* (graph: Graph, v: Vertex, rel: Adjacency): Iterable<Step> {
   if (rel.direction === 'out' || rel.direction === 'both') {
     yield* outSteps(graph, v, rel.label);
   }
@@ -91,6 +98,10 @@ const evalLabelExpr = (expr: LabelExpr, labels: ReadonlySet<string>): boolean =>
       return evalLabelExpr(expr.left, labels) || evalLabelExpr(expr.right, labels);
   }
 };
+
+/** Does a label set satisfy a label expression? (For the ISO `IS LABELED` test.) */
+export const labelsMatch = (labels: ReadonlySet<string>, expr: LabelExpr): boolean =>
+  evalLabelExpr(expr, labels);
 
 /** A node matches when it has no label constraint or its label set satisfies it. */
 export const matchesLabel = (v: Vertex, expr: LabelExpr | undefined): boolean =>
