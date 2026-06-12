@@ -620,10 +620,6 @@ type CProjection = {
 };
 
 const compileProjection = (projection: Projection): CProjection => {
-  // Alias -> its projected expression, so ORDER BY can refer to a bare alias.
-  const aliases = new Map<string, Expr>(
-    projection.items.filter((i) => i.alias).map((i) => [i.alias!, i.expr]),
-  );
   const items: CReturnItem[] = projection.items.map((i) => ({
     name: i.alias ?? columnName(i.expr),
     fn: compileExpr(i.expr),
@@ -631,15 +627,14 @@ const compileProjection = (projection: Projection): CProjection => {
   }));
   const aggregating = !projection.star && items.some((i) => i.isAgg);
   const groupKeys = items.filter((i) => !i.isAgg).map((i) => i.fn);
-  // Resolve a bare-alias ORDER BY key to the projected expression at compile time.
-  const orderBy: CSortItem[] = (projection.orderBy ?? []).map((s) => {
-    const aliased = s.expr.kind === 'var' ? aliases.get(s.expr.name) : undefined;
-    return {
-      fn: compileExpr(aliased ?? s.expr),
-      descending: s.descending,
-      nullsFirst: s.nullsFirst,
-    };
-  });
+  // ORDER BY keys are evaluated against the projected output overlaid on the
+  // input binding (see `applyProjection`), so output aliases resolve even inside
+  // an expression — `ORDER BY n + 2` uses the column `n`, not the input variable.
+  const orderBy: CSortItem[] = (projection.orderBy ?? []).map((s) => ({
+    fn: compileExpr(s.expr),
+    descending: s.descending,
+    nullsFirst: s.nullsFirst,
+  }));
   return {
     star: projection.star,
     distinct: projection.distinct,
@@ -704,16 +699,23 @@ const applyProjection = (
     }
     rows = [...groups.values()].map((group) => {
       const rep: Binding = group[0] ?? new Map();
+      const projected = projectBinding(proj, rep, params, graph, group);
+      // ORDER BY sees the output columns overlaid on the input variables.
+      const sortBinding = orderBy.length > 0 ? new Map([...rep, ...projected]) : rep;
       return {
-        b: projectBinding(proj, rep, params, graph, group),
-        keys: orderBy.map((s) => s.fn({ binding: rep, params, graph, group })),
+        b: projected,
+        keys: orderBy.map((s) => s.fn({ binding: sortBinding, params, graph, group })),
       };
     });
   } else {
-    rows = bindings.map((b) => ({
-      b: projectBinding(proj, b, params, graph),
-      keys: orderBy.map((s) => s.fn({ binding: b, params, graph })),
-    }));
+    rows = bindings.map((b) => {
+      const projected = projectBinding(proj, b, params, graph);
+      const sortBinding = orderBy.length > 0 ? new Map([...b, ...projected]) : b;
+      return {
+        b: projected,
+        keys: orderBy.map((s) => s.fn({ binding: sortBinding, params, graph })),
+      };
+    });
   }
 
   if (proj.distinct) {

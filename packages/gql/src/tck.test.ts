@@ -581,3 +581,30 @@ describe('TCK Mathematical: arithmetic with null propagation', () => {
     expect(v('5 / null')).toBeNull();
   });
 });
+
+// MatchWhere3 / With1 / ReturnOrderBy5 — joins and projection ordering.
+describe('TCK MatchWhere3 / With1 / ReturnOrderBy5', () => {
+  test('[MatchWhere3.2] equi-join on properties of disconnected nodes', () => {
+    const g = new Graph();
+    query(g, `INSERT (:A {id: 1}), (:A {id: 2}), (:B {id: 2}), (:B {id: 3})`);
+    const rows = query(g, `MATCH (a:A), (b:B) WHERE a.id = b.id RETURN a.id AS aid, b.id AS bid`);
+    expect(rows).toEqual([{ aid: 2, bid: 2 }]);
+  });
+
+  test('[With1.1] WITH forwards a node variable into the next MATCH', () => {
+    // Cypher's anonymous `-->` is `--` + `>` in ISO (a comment); abbreviated `->`.
+    const g = new Graph();
+    query(g, `INSERT (:A {n: 'a'})-[:REL]->(:B {n: 'b'})`);
+    const rows = query(g, `MATCH (a:A) WITH a MATCH (a)->(b) RETURN a.n AS an, b.n AS bn`);
+    expect(rows).toEqual([{ an: 'a', bn: 'b' }]);
+  });
+
+  test('[ReturnOrderBy5.1] ORDER BY an expression over a renamed column', () => {
+    const g = new Graph();
+    query(g, `INSERT ({num: 1}), ({num: 3}), ({num: -5})`);
+    // `n` is the output alias for `n.num`; the sort key `n + 2` uses it, so the
+    // order is by -3, 3, 5.
+    const rows = query(g, `MATCH (n) RETURN n.num AS n ORDER BY n + 2`);
+    expect(rows.map((r) => r['n'])).toEqual([-5, 1, 3]);
+  });
+});
