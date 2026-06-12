@@ -664,4 +664,43 @@ describe('TCK Match2 / Match3: relationships and fixed-length patterns', () => {
     const rows = query(g, `MATCH (a)-[r]->(b) RETURN a.k AS a, r.k AS r, b.k AS b`);
     expect(rows).toEqual([{ a: 'a', r: 'r', b: 'b' }]);
   });
+
+  test('[Match3.3] undirected match yields both orientations', () => {
+    const g = new Graph();
+    query(g, `INSERT (:A {n: 'a'})-[:LOOP]->(:B {n: 'b'})`);
+    const rows = query(g, `MATCH (a)-[r]-(b) RETURN a.n AS a, b.n AS b ORDER BY a`);
+    expect(rows).toEqual([
+      { a: 'a', b: 'b' },
+      { a: 'b', b: 'a' },
+    ]);
+  });
+
+  test('[Match3.4] get the targets of a typed relationship from one source', () => {
+    const g = new Graph();
+    query(g, `INSERT (a:A {num: 1}), (a)-[:KNOWS]->(:B {num: 2}), (a)-[:KNOWS]->(:C {num: 3})`);
+    const rows = query(g, `MATCH ()-[rel:KNOWS]->(x) RETURN x.num AS num ORDER BY num`);
+    expect(rows).toEqual([{ num: 2 }, { num: 3 }]);
+  });
+});
+
+// ReturnOrderBy3 — sorting on multiple keys, including an aggregate.
+describe('TCK ReturnOrderBy3: sort on an aggregate then a property', () => {
+  test('[1] count(*) DESC, then division ASC as a tie-break', () => {
+    const g = new Graph();
+    query(
+      g,
+      `INSERT ({division: 'Sweden'}), ({division: 'Germany'}),
+              ({division: 'England'}), ({division: 'Sweden'})`,
+    );
+    const rows = query(
+      g,
+      `MATCH (n) RETURN n.division AS division, count(*) AS cnt
+       ORDER BY count(*) DESC, division ASC`,
+    );
+    expect(rows).toEqual([
+      { division: 'Sweden', cnt: 2 },
+      { division: 'England', cnt: 1 },
+      { division: 'Germany', cnt: 1 },
+    ]);
+  });
 });
