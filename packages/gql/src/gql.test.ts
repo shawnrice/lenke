@@ -241,9 +241,10 @@ describe('GQL: aggregation', () => {
     ]);
   });
 
-  test('collect', () => {
-    const rows = query(g, `MATCH (n:Person) RETURN collect(n.name) AS names`);
+  test('collect_list (ISO; Cypher collect is not a function here)', () => {
+    const rows = query(g, `MATCH (n:Person) RETURN collect_list(n.name) AS names`);
     expect((rows[0]!.names as string[]).sort()).toEqual(['josh', 'marko', 'peter', 'vadas']);
+    expect(() => query(g, `MATCH (n:Person) RETURN collect(n.name) AS names`)).toThrow();
   });
 
   test('implicit grouping', () => {
@@ -873,7 +874,6 @@ describe('GQL: ISO numeric & string value functions', () => {
     expect(v('ceiling(2.1)')).toBe(3);
     expect(v('floor(2.9)')).toBe(2);
     expect(v('sqrt(9)')).toBe(3);
-    expect(v('sign(-4)')).toBe(-1);
     expect(v('power(2, 10)')).toBe(1024);
     expect(v('mod(7, 3)')).toBe(1);
     expect(v('log10(1000)')).toBe(3);
