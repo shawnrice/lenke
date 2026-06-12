@@ -467,6 +467,30 @@ export const parse = (src: string): Query => {
     return parsePrimary();
   };
 
+  // ISO `<exists predicate>`: `EXISTS { pattern, … [WHERE pred] }`. EXISTS is a
+  // contextual keyword (so `exists` stays usable as an identifier); the brace
+  // disambiguates it. An optional leading MATCH (the match-statement form) is
+  // accepted. The parenthesized form is not supported — `EXISTS ( … )` is
+  // indistinguishable from a function call in this grammar.
+  const isExists = (): boolean =>
+    check('ident') && peek().value.toLowerCase() === 'exists' && tokens[pos + 1]?.type === 'lbrace';
+
+  const parseExists = (): Expr => {
+    advance(); // the `exists` identifier
+    expect('lbrace', "'{'");
+    if (checkKeyword('match')) {
+      advance();
+    }
+    const patterns: PathPattern[] = [parsePathPattern()];
+    while (check('comma')) {
+      advance();
+      patterns.push(parsePathPattern());
+    }
+    const where = checkKeyword('where') ? (advance(), parseExpr()) : undefined;
+    expect('rbrace', "'}'");
+    return { kind: 'exists', patterns, where };
+  };
+
   // ISO `<case expression>`: `CASE [subject] (WHEN test THEN result)+ [ELSE r] END`.
   // A subject before the first WHEN makes it a simple CASE; otherwise searched.
   const parseCase = (): Expr => {
@@ -511,6 +535,9 @@ export const parse = (src: string): Query => {
     }
     if (checkKeyword('case')) {
       return parseCase();
+    }
+    if (isExists()) {
+      return parseExists();
     }
     if (t.type === 'lparen') {
       advance();

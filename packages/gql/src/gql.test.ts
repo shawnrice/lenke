@@ -905,3 +905,60 @@ describe('GQL: ISO numeric & string value functions', () => {
     expect(v(`left(null, 2)`)).toBeNull();
   });
 });
+
+describe('GQL: EXISTS subquery (ISO <exists predicate>)', () => {
+  const g = createTestSocialGraph();
+
+  test('EXISTS keeps rows whose correlated sub-pattern matches', () => {
+    const rows = query(g, `MATCH (n:Person) WHERE EXISTS { (n)-[:CREATED]->(s) } RETURN n.name`);
+    expect(names(rows, 'n.name')).toEqual(['josh', 'marko', 'peter']);
+  });
+
+  test('NOT EXISTS negates the predicate', () => {
+    const rows = query(
+      g,
+      `MATCH (n:Person) WHERE NOT EXISTS { (n)-[:CREATED]->(:Software) } RETURN n.name`,
+    );
+    expect(names(rows, 'n.name')).toEqual(['vadas']);
+  });
+
+  test('an inner WHERE in the subquery is correlated to the outer row', () => {
+    const rows = query(
+      g,
+      `MATCH (n:Person) WHERE EXISTS { (n)-[:KNOWS]->(f) WHERE f.age < 30 } RETURN n.name`,
+    );
+    // marko KNOWS vadas (27) and josh (32); vadas < 30 → marko qualifies. No one
+    // else has outgoing KNOWS.
+    expect(names(rows, 'n.name')).toEqual(['marko']);
+  });
+
+  test('EXISTS composes inside arbitrary boolean logic', () => {
+    const rows = query(
+      g,
+      `MATCH (n:Person) WHERE n.age > 34 OR EXISTS { (n)-[:KNOWS]->() } RETURN n.name`,
+    );
+    // peter (35) by age, marko by the EXISTS.
+    expect(names(rows, 'n.name')).toEqual(['marko', 'peter']);
+  });
+
+  test('EXISTS works as a RETURN value', () => {
+    const rows = query(
+      g,
+      `MATCH (n:Person) RETURN n.name AS name, EXISTS { (n)-[:CREATED]->() } AS creates ORDER BY name`,
+    );
+    expect(rows).toEqual([
+      { name: 'josh', creates: true },
+      { name: 'marko', creates: true },
+      { name: 'peter', creates: true },
+      { name: 'vadas', creates: false },
+    ]);
+  });
+
+  test('EXISTS is contextual: `exists` is still a valid identifier', () => {
+    const h = createTestSocialGraph();
+    h.addVertex({ labels: ['Flag'], properties: { exists: true, name: 'f' } });
+    // `exists` as a property key and in a dotted access, not the predicate.
+    expect(query(h, `MATCH (exists:Flag) RETURN exists.name AS n`)).toEqual([{ n: 'f' }]);
+    expect(query(h, `MATCH (n:Flag {exists: true}) RETURN n.exists AS e`)).toEqual([{ e: true }]);
+  });
+});
