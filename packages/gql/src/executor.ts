@@ -17,7 +17,7 @@ import type {
   SetItem,
   SetOp,
 } from './ast.js';
-import { candidateVertices, expand, matchesLabel } from './graph-queries.js';
+import { candidateVertices, expand, labelsMatch, matchesLabel } from './graph-queries.js';
 
 /**
  * The executor turns a parsed `Query` into result rows by *pattern matching*:
@@ -187,6 +187,7 @@ const hasAggregate = (expr: Expr): boolean => {
     case 'not':
     case 'isNull':
     case 'isTruth':
+    case 'isLabeled':
       return hasAggregate(expr.expr);
     case 'arith':
     case 'concat':
@@ -294,6 +295,9 @@ const callScalar = (name: string, args: readonly unknown[]): unknown => {
     case 'nullif':
       // ISO `<case abbreviation>`: NULLIF(a, b) = NULL when a = b, else a.
       return !isNullish(a) && !isNullish(b) && a === b ? null : (a ?? null);
+    case 'element_id':
+      // ISO `<element_id function>`: the identifier of a node or edge.
+      return a && typeof a === 'object' && 'id' in a ? (a as { id: unknown }).id : null;
     default:
       throw new Error(`Unknown function: ${name}()`);
   }
@@ -384,6 +388,16 @@ const compileExpr = (expr: Expr): CompiledExpr => {
       return (env) => {
         const matches = asTruth(fn(env)) === truth;
         return negated ? !matches : matches;
+      };
+    }
+    case 'isLabeled': {
+      // `x IS [NOT] LABELED <label expr>` — does x's label set satisfy it?
+      const fn = compileExpr(expr.expr);
+      const { label, negated } = expr;
+      return (env) => {
+        const el = fn(env);
+        const has = isElement(el) ? labelsMatch(el.labels, label) : false;
+        return negated ? !has : has;
       };
     }
     case 'in': {
