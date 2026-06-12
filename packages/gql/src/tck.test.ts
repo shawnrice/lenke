@@ -100,15 +100,15 @@ describe('TCK Boolean4: NOT (three-valued)', () => {
 // Null3 — Null evaluation, Scenarios [1]–[3].
 describe('TCK Null3: null evaluation', () => {
   test('the inverse of a null is a null', () => {
-    expect(query(empty, `RETURN NOT null AS value`)).toEqual([{ value: null }]);
+    expect(query(empty, `RETURN NOT null AS val`)).toEqual([{ val: null }]);
   });
 
   test('null = null is unknown (null)', () => {
-    expect(query(empty, `RETURN null = null AS value`)).toEqual([{ value: null }]);
+    expect(query(empty, `RETURN null = null AS val`)).toEqual([{ val: null }]);
   });
 
   test('null <> null is unknown (null)', () => {
-    expect(query(empty, `RETURN null <> null AS value`)).toEqual([{ value: null }]);
+    expect(query(empty, `RETURN null <> null AS val`)).toEqual([{ val: null }]);
   });
 });
 
@@ -157,7 +157,7 @@ describe('TCK Null1: IS NULL validation', () => {
   });
 
   test('a literal null IS NULL', () => {
-    expect(query(empty, `RETURN null IS NULL AS value`)).toEqual([{ value: true }]);
+    expect(query(empty, `RETURN null IS NULL AS val`)).toEqual([{ val: true }]);
   });
 });
 

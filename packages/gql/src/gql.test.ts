@@ -1036,3 +1036,35 @@ describe('GQL: IS LABELED predicate & ELEMENT_ID (ISO)', () => {
     ]);
   });
 });
+
+describe('GQL: ISO reserved words', () => {
+  test('a reserved word is rejected as a bare identifier', () => {
+    const g = createTestSocialGraph();
+    // variable, property key, alias, and label positions all reject reserved words.
+    expect(() => query(g, `MATCH (select) RETURN select`)).toThrow(/reserved word/);
+    expect(() => query(g, `MATCH (n:Person) RETURN n.value AS v`)).toThrow(/reserved word/);
+    expect(() => query(g, `MATCH (n:Person) RETURN n AS count`)).toThrow();
+    expect(() => query(g, `MATCH (n:Match) RETURN n`)).toThrow();
+  });
+
+  test('a reserved word is allowed as a delimited identifier or a function name', () => {
+    const g = createTestSocialGraph();
+    g.addVertex({ labels: ['Misc'], properties: { value: 7 } });
+    expect(query(g, 'MATCH (n:Misc) RETURN n.`value` AS v')).toEqual([{ v: 7 }]);
+    expect(query(g, `RETURN upper('x') AS u`)).toEqual([{ u: 'X' }]);
+  });
+
+  test('non-reserved words (FIRST, LAST, LABELED, TYPE) work as identifiers', () => {
+    const g = createTestSocialGraph();
+    g.addVertex({ labels: ['First'], properties: { last: 'z', type: 't' } });
+    expect(query(g, `MATCH (first:First) RETURN first.last AS last, first.type AS type`)).toEqual([
+      { last: 'z', type: 't' },
+    ]);
+  });
+
+  test('COLLECT_LIST is the ISO name for the collect aggregate', () => {
+    const g = createTestSocialGraph();
+    const rows = query(g, `MATCH (n:Person) RETURN collect_list(n.name) AS names`);
+    expect((rows[0]!.names as string[]).sort()).toEqual(['josh', 'marko', 'peter', 'vadas']);
+  });
+});

@@ -55,7 +55,7 @@ import type {
   SortItem,
   WithClause,
 } from './ast.js';
-import { GqlSyntaxError, type Token, type TokenType, tokenize } from './lexer.js';
+import { GqlSyntaxError, isReserved, type Token, type TokenType, tokenize } from './lexer.js';
 
 /** Map the surrounding-arrow booleans to a relationship direction. */
 const directionOf = (leftArrow: boolean, rightArrow: boolean): RelPattern['direction'] => {
@@ -113,6 +113,20 @@ export const parse = (src: string): Query => {
     return advance();
   };
 
+  // Consume an identifier in a *binding* position (variable, label, property
+  // key, alias). A bare reserved word is rejected per ISO; a delimited
+  // identifier (backtick) may be any word.
+  const bindName = (what: string): string => {
+    const tok = expect('ident', what);
+    if (!tok.delimited && isReserved(tok.value)) {
+      throw new GqlSyntaxError(
+        `'${tok.value}' is a reserved word; quote it as a delimited identifier`,
+        tok.pos,
+      );
+    }
+    return tok.value;
+  };
+
   // --- patterns --------------------------------------------------------------
 
   // Pattern property map `{ k: expr, ... }` and inline `WHERE pred` — the ISO
@@ -122,7 +136,7 @@ export const parse = (src: string): Query => {
     const props: PropertyConstraint[] = [];
     if (!check('rbrace')) {
       do {
-        const key = expect('ident', 'a property name').value;
+        const key = bindName('a property name');
         expect('colon', "':'");
         props.push({ key, value: parseExpr() });
       } while (check('comma') && (advance(), true));
@@ -141,7 +155,7 @@ export const parse = (src: string): Query => {
     expect('lparen', "'('");
     let variable: string | undefined;
     if (check('ident')) {
-      variable = advance().value;
+      variable = bindName('a variable');
     }
     // ISO label expression, introduced by `:` or `IS`.
     let label: LabelExpr | undefined;
@@ -194,7 +208,7 @@ export const parse = (src: string): Query => {
       expect('rparen', "')' to close a label expression");
       return inner;
     }
-    return { kind: 'label', name: expect('ident', 'a label name').value };
+    return { kind: 'label', name: bindName('a label name') };
   };
 
   const parseRelDetail = (): {
@@ -207,7 +221,7 @@ export const parse = (src: string): Query => {
     expect('lbracket', "'['");
     let variable: string | undefined;
     if (check('ident')) {
-      variable = advance().value;
+      variable = bindName('a variable');
     }
     // ISO label expression over edge types, introduced by `:` or `IS`.
     let label: LabelExpr | undefined;
@@ -399,8 +413,9 @@ export const parse = (src: string): Query => {
         advance();
         return { kind: 'isTruth', expr: e, truth: null, negated };
       }
-      // ISO `<labeled predicate>`: IS [NOT] LABELED <label expression>.
-      if (checkKeyword('labeled')) {
+      // ISO `<labeled predicate>`: IS [NOT] LABELED <label expression>. LABELED
+      // is a non-reserved keyword, so it arrives as an identifier.
+      if (check('ident') && peek().value.toLowerCase() === 'labeled') {
         advance();
         return { kind: 'isLabeled', expr: e, label: parseLabelExpr(), negated };
       }
@@ -602,13 +617,20 @@ export const parse = (src: string): Query => {
     }
     if (t.type === 'ident') {
       advance();
-      // Function call: `upper(s)`, `f(a, b)`, `sum(DISTINCT x)`, …
+      // Function call: the name may be a reserved word (e.g. UPPER, SUM, ABS).
       if (check('lparen')) {
         return { kind: 'func', name: t.value.toLowerCase(), ...parseCallArgs() };
       }
+      // A bare reserved word is not a valid variable reference.
+      if (!t.delimited && isReserved(t.value)) {
+        throw new GqlSyntaxError(
+          `'${t.value}' is a reserved word; quote it as a delimited identifier`,
+          t.pos,
+        );
+      }
       if (check('dot')) {
         advance();
-        const key = expect('ident', 'a property name').value;
+        const key = bindName('a property name');
         return { kind: 'prop', variable: t.value, key };
       }
       return { kind: 'var', name: t.value };
@@ -623,7 +645,7 @@ export const parse = (src: string): Query => {
     let alias: string | undefined;
     if (checkKeyword('as')) {
       advance();
-      alias = expect('ident', 'an alias name').value;
+      alias = bindName('an alias name');
     }
     return { expr, alias };
   };
@@ -724,13 +746,13 @@ export const parse = (src: string): Query => {
   };
 
   const parseSetItem = (): SetItem => {
-    const variable = expect('ident', 'a variable').value;
+    const variable = bindName('a variable');
     if (check('colon') || checkKeyword('is')) {
       advance();
-      return { variable, label: expect('ident', 'a label name').value };
+      return { variable, label: bindName('a label name') };
     }
     expect('dot', "'.' or ':'");
-    const key = expect('ident', 'a property name').value;
+    const key = bindName('a property name');
     expect('eq', "'='");
     return { variable, key, value: parseExpr() };
   };
@@ -746,13 +768,13 @@ export const parse = (src: string): Query => {
   };
 
   const parseRemoveItem = (): RemoveItem => {
-    const variable = expect('ident', 'a variable').value;
+    const variable = bindName('a variable');
     if (check('colon') || checkKeyword('is')) {
       advance();
-      return { variable, label: expect('ident', 'a label name').value };
+      return { variable, label: bindName('a label name') };
     }
     expect('dot', "'.' or ':'");
-    return { variable, key: expect('ident', 'a property name').value };
+    return { variable, key: bindName('a property name') };
   };
 
   const parseRemoveClause = (): RemoveClause => {
