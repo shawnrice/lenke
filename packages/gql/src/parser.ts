@@ -396,7 +396,7 @@ export const parse = (src: string): Query => {
         advance();
         return { kind: 'isTruth', expr: e, truth: false, negated };
       }
-      if (check('ident') && peek().value.toLowerCase() === 'unknown') {
+      if (checkKeyword('unknown')) {
         advance();
         return { kind: 'isTruth', expr: e, truth: null, negated };
       }
@@ -484,21 +484,45 @@ export const parse = (src: string): Query => {
     return { patterns, where };
   };
 
-  // EXISTS / COUNT are contextual keywords (so `exists`/`count` stay usable as
-  // identifiers); the following brace disambiguates them from a plain name or a
-  // `count(...)` aggregate. The parenthesized subquery form is not supported — it
-  // is indistinguishable from a function call in this grammar.
-  const subqueryAhead = (name: string): boolean =>
-    check('ident') && peek().value.toLowerCase() === name && tokens[pos + 1]?.type === 'lbrace';
+  // `(*)` | `(DISTINCT? expr, …)` — the argument list of a function/aggregate
+  // call, the caller having already consumed the function name.
+  const parseCallArgs = (): { args: Expr[]; distinct: boolean; star: boolean } => {
+    expect('lparen', "'(' to open a function call");
+    let star = false;
+    let distinct = false;
+    const args: Expr[] = [];
+    if (check('star')) {
+      advance();
+      star = true;
+    } else if (!check('rparen')) {
+      if (checkKeyword('distinct')) {
+        advance();
+        distinct = true;
+      }
+      args.push(parseExpr());
+      while (check('comma')) {
+        advance();
+        args.push(parseExpr());
+      }
+    }
+    expect('rparen', "')' to close a function call");
+    return { args, distinct, star };
+  };
 
+  // EXISTS is a reserved word; it only introduces a braced subquery.
   const parseExists = (): Expr => {
-    advance(); // the `exists` identifier
+    expectKeyword('exists');
     return { kind: 'exists', ...parseBracedSubquery() };
   };
 
-  const parseCountSubquery = (): Expr => {
-    advance(); // the `count` identifier
-    return { kind: 'countSubquery', ...parseBracedSubquery() };
+  // COUNT is reserved and overloaded: `COUNT { … }` is the subquery, `COUNT(…)`
+  // (incl. `COUNT(*)`) is the aggregate.
+  const parseCount = (): Expr => {
+    expectKeyword('count');
+    if (check('lbrace')) {
+      return { kind: 'countSubquery', ...parseBracedSubquery() };
+    }
+    return { kind: 'func', name: 'count', ...parseCallArgs() };
   };
 
   // ISO `<case expression>`: `CASE [subject] (WHEN test THEN result)+ [ELSE r] END`.
@@ -546,11 +570,11 @@ export const parse = (src: string): Query => {
     if (checkKeyword('case')) {
       return parseCase();
     }
-    if (subqueryAhead('exists')) {
+    if (checkKeyword('exists')) {
       return parseExists();
     }
-    if (subqueryAhead('count')) {
-      return parseCountSubquery();
+    if (checkKeyword('count')) {
+      return parseCount();
     }
     if (t.type === 'lparen') {
       advance();
@@ -571,28 +595,9 @@ export const parse = (src: string): Query => {
     }
     if (t.type === 'ident') {
       advance();
-      // Function call: `count(*)`, `count(DISTINCT x)`, `upper(s)`, `f(a, b)`.
+      // Function call: `upper(s)`, `f(a, b)`, `sum(DISTINCT x)`, …
       if (check('lparen')) {
-        advance();
-        let star = false;
-        let distinct = false;
-        const args: Expr[] = [];
-        if (check('star')) {
-          advance();
-          star = true;
-        } else if (!check('rparen')) {
-          if (checkKeyword('distinct')) {
-            advance();
-            distinct = true;
-          }
-          args.push(parseExpr());
-          while (check('comma')) {
-            advance();
-            args.push(parseExpr());
-          }
-        }
-        expect('rparen', "')' to close a function call");
-        return { kind: 'func', name: t.value.toLowerCase(), args, distinct, star };
+        return { kind: 'func', name: t.value.toLowerCase(), ...parseCallArgs() };
       }
       if (check('dot')) {
         advance();
@@ -625,10 +630,10 @@ export const parse = (src: string): Query => {
     } else if (checkKeyword('asc') || checkKeyword('ascending')) {
       advance();
     }
-    // ISO `<null ordering>`: optional NULLS FIRST | NULLS LAST. Parsed as
-    // contextual identifiers so NULLS/FIRST/LAST stay usable as variable names.
+    // ISO `<null ordering>`: optional NULLS FIRST | NULLS LAST. NULLS is a
+    // reserved word; FIRST/LAST are non-reserved, so they arrive as identifiers.
     let nullsFirst: boolean | undefined;
-    if (check('ident') && peek().value.toLowerCase() === 'nulls') {
+    if (checkKeyword('nulls')) {
       advance();
       const where = check('ident') ? peek().value.toLowerCase() : '';
       if (where === 'first') {

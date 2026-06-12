@@ -140,12 +140,14 @@ describe('TCK Null3: IN with null', () => {
 describe('TCK Null1: IS NULL validation', () => {
   test('property null check on a non-null node', () => {
     const g = new Graph();
-    query(g, `INSERT ({exists: 42})`);
+    // The TCK uses a property named `exists`, which is a reserved word in ISO
+    // GQL; renamed to `present` (a bare non-reserved identifier).
+    query(g, `INSERT ({present: 42})`);
     const r = query(
       g,
-      `MATCH (n) RETURN n.missing IS NULL AS missingNull, n.exists IS NULL AS existsNull`,
+      `MATCH (n) RETURN n.missing IS NULL AS missingNull, n.present IS NULL AS presentNull`,
     );
-    expect(r).toEqual([{ missingNull: true, existsNull: false }]);
+    expect(r).toEqual([{ missingNull: true, presentNull: false }]);
   });
 
   test('property null check on a null node (unmatched OPTIONAL)', () => {
