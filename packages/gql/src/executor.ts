@@ -115,6 +115,12 @@ const or3 = (a: Truth, b: Truth): Truth => {
   return a === null || b === null ? null : false;
 };
 const xor3 = (a: Truth, b: Truth): Truth => (a === null || b === null ? null : a !== b);
+/** The binary three-valued connectives, keyed by AST node kind. */
+const BOOL3: Record<'and' | 'or' | 'xor', (a: Truth, b: Truth) => Truth> = {
+  and: and3,
+  or: or3,
+  xor: xor3,
+};
 
 const numOf = (v: unknown): number | null => (isNullish(v) ? null : Number(v));
 
@@ -181,6 +187,12 @@ const hasAggregate = (expr: Expr): boolean => {
       return hasAggregate(expr.expr) || hasAggregate(expr.list);
     case 'list':
       return expr.items.some(hasAggregate);
+    case 'case':
+      return (
+        (expr.subject ? hasAggregate(expr.subject) : false) ||
+        expr.whens.some((w) => hasAggregate(w.when) || hasAggregate(w.then)) ||
+        (expr.elseExpr ? hasAggregate(expr.elseExpr) : false)
+      );
     default:
       return false;
   }
@@ -206,6 +218,11 @@ const callScalar = (name: string, args: readonly unknown[]): unknown => {
       return Array.isArray(a) || typeof a === 'string' ? a.length : null;
     case 'coalesce':
       return args.find((x) => !isNullish(x)) ?? null;
+    case 'nullif': {
+      // ISO `<case abbreviation>`: NULLIF(a, b) = NULL when a = b, else a.
+      const [x, y] = args;
+      return !isNullish(x) && !isNullish(y) && x === y ? null : (x ?? null);
+    }
     default:
       throw new Error(`Unknown function: ${name}()`);
   }
@@ -272,20 +289,13 @@ const compileExpr = (expr: Expr): CompiledExpr => {
       const fn = compileExpr(expr.expr);
       return (b, p, g) => not3(asTruth(fn(b, p, g)));
     }
-    case 'and': {
-      const l = compileExpr(expr.left);
-      const r = compileExpr(expr.right);
-      return (b, p, g) => and3(asTruth(l(b, p, g)), asTruth(r(b, p, g)));
-    }
-    case 'or': {
-      const l = compileExpr(expr.left);
-      const r = compileExpr(expr.right);
-      return (b, p, g) => or3(asTruth(l(b, p, g)), asTruth(r(b, p, g)));
-    }
+    case 'and':
+    case 'or':
     case 'xor': {
       const l = compileExpr(expr.left);
       const r = compileExpr(expr.right);
-      return (b, p, g) => xor3(asTruth(l(b, p, g)), asTruth(r(b, p, g)));
+      const fn = BOOL3[expr.kind];
+      return (b, p, g) => fn(asTruth(l(b, p, g)), asTruth(r(b, p, g)));
     }
     case 'isNull': {
       const fn = compileExpr(expr.expr);
@@ -327,7 +337,39 @@ const compileExpr = (expr: Expr): CompiledExpr => {
         return op(lv as number | string, rv as number | string);
       };
     }
+    case 'case':
+      return compileCase(expr);
   }
+};
+
+/**
+ * Compile an ISO CASE expression. A simple CASE (with `subject`) returns the
+ * first branch whose value equals the subject; a searched CASE returns the first
+ * branch whose condition is exactly TRUE. No match falls to ELSE (or NULL).
+ */
+const compileCase = (expr: Extract<Expr, { kind: 'case' }>): CompiledExpr => {
+  const subject = expr.subject ? compileExpr(expr.subject) : undefined;
+  const whens = expr.whens.map((w) => ({ when: compileExpr(w.when), then: compileExpr(w.then) }));
+  const elseFn = expr.elseExpr ? compileExpr(expr.elseExpr) : undefined;
+  return (b, p, g) => {
+    if (subject) {
+      const s = subject(b, p, g);
+      for (const w of whens) {
+        const wv = w.when(b, p, g);
+        // `subject = when` with SQL/ISO null semantics: NULL never matches.
+        if (!isNullish(s) && !isNullish(wv) && s === wv) {
+          return w.then(b, p, g);
+        }
+      }
+    } else {
+      for (const w of whens) {
+        if (asTruth(w.when(b, p, g)) === true) {
+          return w.then(b, p, g);
+        }
+      }
+    }
+    return elseFn ? elseFn(b, p, g) : null;
+  };
 };
 
 const compileFunc = (expr: FuncExpr): CompiledExpr => {

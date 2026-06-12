@@ -219,4 +219,13 @@ export type Expr =
   // truth value (`null` = UNKNOWN); the predicate is always TRUE or FALSE.
   | { kind: 'isTruth'; expr: Expr; truth: boolean | null; negated: boolean }
   | { kind: 'in'; expr: Expr; list: Expr; negated: boolean }
+  // ISO `<case expression>`. With `subject`: a simple CASE (`subject = when`);
+  // without: a searched CASE (`when` is a boolean condition). `elseExpr` is the
+  // ELSE result, defaulting to NULL.
+  | {
+      kind: 'case';
+      subject?: Expr;
+      whens: readonly { when: Expr; then: Expr }[];
+      elseExpr?: Expr;
+    }
   | { kind: 'func'; name: string; args: readonly Expr[]; distinct: boolean; star: boolean };

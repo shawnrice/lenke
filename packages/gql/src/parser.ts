@@ -467,6 +467,26 @@ export const parse = (src: string): Query => {
     return parsePrimary();
   };
 
+  // ISO `<case expression>`: `CASE [subject] (WHEN test THEN result)+ [ELSE r] END`.
+  // A subject before the first WHEN makes it a simple CASE; otherwise searched.
+  const parseCase = (): Expr => {
+    expectKeyword('case');
+    const subject = checkKeyword('when') ? undefined : parseExpr();
+    const whens: { when: Expr; then: Expr }[] = [];
+    while (checkKeyword('when')) {
+      advance();
+      const when = parseExpr();
+      expectKeyword('then');
+      whens.push({ when, then: parseExpr() });
+    }
+    if (whens.length === 0) {
+      throw new GqlSyntaxError('CASE requires at least one WHEN ... THEN', peek().pos);
+    }
+    const elseExpr = checkKeyword('else') ? (advance(), parseExpr()) : undefined;
+    expectKeyword('end');
+    return { kind: 'case', subject, whens, elseExpr };
+  };
+
   const parsePrimary = (): Expr => {
     const t = peek();
     if (t.type === 'number') {
@@ -488,6 +508,9 @@ export const parse = (src: string): Query => {
     if (t.type === 'keyword' && t.value === 'null') {
       advance();
       return { kind: 'lit', value: null };
+    }
+    if (checkKeyword('case')) {
+      return parseCase();
     }
     if (t.type === 'lparen') {
       advance();
