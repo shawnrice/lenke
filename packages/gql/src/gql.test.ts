@@ -954,12 +954,13 @@ describe('GQL: EXISTS subquery (ISO <exists predicate>)', () => {
     ]);
   });
 
-  test('EXISTS is contextual: `exists` is still a valid identifier', () => {
+  test('EXISTS is a reserved word; bare use as a name is rejected', () => {
     const h = createTestSocialGraph();
-    h.addVertex({ labels: ['Flag'], properties: { exists: true, name: 'f' } });
-    // `exists` as a property key and in a dotted access, not the predicate.
-    expect(query(h, `MATCH (exists:Flag) RETURN exists.name AS n`)).toEqual([{ n: 'f' }]);
-    expect(query(h, `MATCH (n:Flag {exists: true}) RETURN n.exists AS e`)).toEqual([{ e: true }]);
+    h.addVertex({ labels: ['Flag'], properties: { exists: true } });
+    // A reserved word can still name a property via a delimited identifier.
+    expect(query(h, 'MATCH (n:Flag) RETURN n.`exists` AS e')).toEqual([{ e: true }]);
+    // Bare `exists` as a variable is a syntax error.
+    expect(() => query(h, `MATCH (exists:Flag) RETURN exists`)).toThrow();
   });
 });
 
@@ -987,11 +988,11 @@ describe('GQL: COUNT subquery (ISO count subquery)', () => {
     expect(names(rows, 'name')).toEqual(['josh']);
   });
 
-  test('the count(...) aggregate is unaffected (paren vs brace)', () => {
+  test('the count(...) aggregate and COUNT { } subquery coexist (paren vs brace)', () => {
     expect(query(g, `MATCH (n:Person) RETURN count(*) AS c`)).toEqual([{ c: 4 }]);
-    // `count` also still works as a plain identifier.
+    // `count` is reserved; a delimited identifier still names a `count` property.
     const h = createTestSocialGraph();
     h.addVertex({ labels: ['Tally'], properties: { count: 9 } });
-    expect(query(h, `MATCH (count:Tally) RETURN count.count AS c`)).toEqual([{ c: 9 }]);
+    expect(query(h, 'MATCH (n:Tally) RETURN n.`count` AS c')).toEqual([{ c: 9 }]);
   });
 });
