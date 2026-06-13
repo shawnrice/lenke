@@ -36,7 +36,9 @@ export class Vertex {
     const { id = rando(), labels = [], graph, properties = {} } = params;
     this.#id = id;
     this.#graph = graph;
-    this.properties = { ...properties };
+    // The `properties`/`labels` setters already defensively copy into the
+    // graph's element maps, so spreading here too would clone a second time.
+    this.properties = properties;
     this.labels = labels;
   }
 
