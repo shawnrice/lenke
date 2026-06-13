@@ -1,8 +1,7 @@
 import { Emitter, EmitterEvent } from '@pl-graph/emitter';
 import { timer } from '@pl-graph/utils';
 
-import { deserialize } from '../pg-format/deserialize.js';
-import { serialize } from '../pg-format/serialize.js';
+import { decode as decodePgJson, encode as encodePgJson } from '../serialization/pg-json/index.js';
 import { Edge } from './Edge.js';
 import { Vertex } from './Vertex.js';
 
@@ -147,7 +146,7 @@ export class Graph {
    * Creates a graph from a pg-format string
    */
   static from(value: string): Graph {
-    return deserialize(value, new Graph());
+    return decodePgJson(value, new Graph());
   }
 
   get size(): number {
@@ -206,7 +205,7 @@ export class Graph {
    * Serializes the current graph to a pg-json string
    */
   public serialize = (space?: string | number): string => {
-    return serialize(this, space);
+    return encodePgJson(this, space);
   };
 
   public truncate = (): void => {
@@ -272,9 +271,7 @@ export class Graph {
       return this.getVertexById(params.id)!;
     }
 
-    const vertex = Vertex.isVertex(params)
-      ? params
-      : new Vertex({ ...params, graph: this });
+    const vertex = Vertex.isVertex(params) ? params : new Vertex({ ...params, graph: this });
 
     const event = this.emit(new EmitterEvent('@graph/VertexAdded', vertex));
 
@@ -367,9 +364,7 @@ export class Graph {
       return this.getEdgeById(params.id)!;
     }
 
-    const edge = Edge.isEdge(params)
-      ? params
-      : new Edge({ ...params, graph: this });
+    const edge = Edge.isEdge(params) ? params : new Edge({ ...params, graph: this });
 
     if (!edge.from || !edge.to) {
       console.error('Cannot create edge with missing vertices.');
@@ -499,7 +494,7 @@ export class Graph {
    * Deserializes a string from pg-format into this graph
    */
   deserialize(value: string): Graph {
-    return deserialize(value, this);
+    return decodePgJson(value, this);
   }
 
   /* Event Emitter Proxy */

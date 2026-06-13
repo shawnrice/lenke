@@ -38,7 +38,11 @@ const randomValue = (rand: () => number): PropertyValue => {
   const len = Math.floor(rand() * 4);
   const arr: PropertyValue[] = [];
   for (let i = 0; i < len; i += 1) {
-    arr.push(rand() < 0.5 ? Math.floor(rand() * 20) : rand() < 0.5 ? 'a' : 'b');
+    if (rand() < 0.5) {
+      arr.push(Math.floor(rand() * 20));
+    } else {
+      arr.push(rand() < 0.5 ? 'a' : 'b');
+    }
   }
   return arr;
 };
@@ -82,6 +86,9 @@ export const randomLpgGraph = (seed: number): Graph => {
   return g;
 };
 
+const sameMap = (x: Map<string, string>, y: Map<string, string>): boolean =>
+  x.size === y.size && [...x].every(([k, v]) => y.get(k) === v);
+
 const canon = (labels: Iterable<string>, props: Record<string, unknown>): string => {
   const labelPart = JSON.stringify([...labels].sort());
   const propPart = JSON.stringify(
@@ -107,7 +114,5 @@ export const graphContentEqual = (a: Graph, b: Graph): boolean => {
         `${e.from.id}->${e.to.id}|${canon(e.labels, e.properties)}`,
       ]),
     );
-  const same = (x: Map<string, string>, y: Map<string, string>): boolean =>
-    x.size === y.size && [...x].every(([k, v]) => y.get(k) === v);
-  return same(nodeMap(a), nodeMap(b)) && same(edgeMap(a), edgeMap(b));
+  return sameMap(nodeMap(a), nodeMap(b)) && sameMap(edgeMap(a), edgeMap(b));
 };
