@@ -19,7 +19,8 @@ export const genNdjson = (nVertices: number, avgDegree: number, seed = 0x1234_56
       type: 'node',
       id: `n${i}`,
       labels: ['Person'],
-      properties: { name: `p${i}`, age: i % 100, active: i % 2 === 0 },
+      // dept is low-cardinality (10 values) so GROUP BY / DISTINCT are meaningful.
+      properties: { name: `p${i}`, age: i % 100, active: i % 2 === 0, dept: `d${i % 10}` },
     });
   }
   for (let i = 0; i < nEdges; i++) {

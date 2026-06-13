@@ -10,6 +10,7 @@ type Row = {
     build: OpTs & { rustParallel: number; rustSerial: number };
     serialize: { tsString: number | null; rustBytes: number; tsDisk: number | null; rustDisk: number };
     predicateScan: { jsLoop: number; rustScalar: number; rustNeon: number };
+    ffiBatch: { queries: number; perCall: number; batched: number };
     [k: string]: any;
   };
 };
@@ -162,11 +163,20 @@ footer{color:var(--dim);font-size:13px;margin-top:50px;border-top:1px solid var(
 <p>The columnar build is a counting-sort into CSR; <code>rustParallel</code> uses rayon to parse lines across cores. This is the bulk-load path.</p>
 <table><thead><tr><th>vertices</th><th>edges</th><th>input</th><th>TS</th><th>Rust ∥</th><th>Rust serial</th><th>speedup</th><th>rayon gain</th></tr></thead><tbody>${buildRows}</tbody></table>
 
-<h2>Queries (identical GQL strings, both engines)</h2>
-<p>The Rust side runs a GQL-subset parser + executor over the columnar core; the TS side runs the production <code>@pl-graph/gql</code> engine. Results are checked equal (a <code>(count, sum)</code> signature) before timing.</p>
+<h2>Queries — the full surface, not just count</h2>
+<p>The Rust side runs a GQL-subset parser + executor over the columnar core; the TS side runs the production <code>@pl-graph/gql</code> engine. Nine shapes — scans, 1-/2-hop traversals, filters, <code>avg</code>, multi-condition <code>WHERE</code>, <code>GROUP BY</code>, <code>ORDER BY … LIMIT</code>, <code>DISTINCT</code> — each verified equal via a shared <code>(count, sum, FNV&nbsp;checksum)</code> fingerprint before timing. The checksums match to the bit, so these are genuinely the same results, faster.</p>
 ${r.meta.queries.map((q) => queryTable(q.id, q.label, q.text)).join('')}
 
 <div class="note"><b>The TS executor's overflow was a bug — now fixed.</b> The first run showed 1-hop@1M and 2-hop@100k <i>failing outright</i>: the executor materialized bindings between clauses and did <code>push(...spread)</code>, overflowing the call stack. It now streams bindings lazily through the fp iterator helpers, so those queries complete and <code>LIMIT n</code> short-circuits (≈0.6 ms over 1M nodes). What's left is throughput, not capability: aggregation still buffers each group to fold it, so a large <code>count(*)</code> is correct but O(rows) — slower than Rust's columnar count, not a wall.</div>
+
+<h2>FFI boundary — batching many queries into one crossing</h2>
+<p>The fixed per-call FFI tax is ~${(r.ffiOverhead * 1e6).toFixed(0)} ns. <code>plg_query_batch</code> runs all the queries in a single crossing instead of one each. The verdict: for substantial queries this is a <b>wash</b> — the calls are work-bound, not boundary-bound, so the tax is already amortized. Batching only pays when you'd otherwise make <i>many cheap</i> crossings (per-element calls). The lesson is the architecture, not the batch: stay coarse-grained and the 4 ns never matters.</p>
+<table><thead><tr><th>vertices</th><th>queries</th><th>one-each</th><th>batched (1 crossing)</th><th>×</th></tr></thead><tbody>${r.rows
+  .map((row) => {
+    const b = row.ops.ffiBatch;
+    return `<tr><td class="num">${n0(row.n)}</td><td class="num dim">${b.queries}</td><td class="num">${fmt(b.perCall)}</td><td class="num">${fmt(b.batched)}</td><td><span class="b ${b.perCall / b.batched >= 1.5 ? 'win' : 'edge'}">${(b.perCall / b.batched).toFixed(2)}×</span></td></tr>`;
+  })
+  .join('')}</tbody></table>
 
 <h2>SIMD predicate scan (<code>age &gt; 50</code>)</h2>
 <p>This is the kernel the index-build experiment pointed at: compute-bound, scatter-free, so the NEON speedup flows through. A hand-written <code>f64x2</code> compare-and-mask vs the scalar loop, plus the equivalent JS loop for context.</p>
