@@ -38,8 +38,8 @@ fn build() -> Graph {
             labels: vec!["Person".to_string()],
             props: vec![
                 ("age".to_string(), Value::Num(age as f64)),
-                ("name".to_string(), Value::Str(format!("name{i}"))),
-                ("dept".to_string(), Value::Str(format!("d{}", i % 12))),
+                ("name".to_string(), Value::Str(format!("name{i}").into())),
+                ("dept".to_string(), Value::Str(format!("d{}", i % 12).into())),
             ],
         });
     }
@@ -47,7 +47,7 @@ fn build() -> Graph {
         b.nodes.push(NodeRec {
             id: format!("s{j}"),
             labels: vec!["Software".to_string()],
-            props: vec![("name".to_string(), Value::Str(format!("sw{j}")))],
+            props: vec![("name".to_string(), Value::Str(format!("sw{j}").into()))],
         });
     }
     for i in 0..N {

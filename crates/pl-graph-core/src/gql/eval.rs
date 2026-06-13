@@ -10,7 +10,7 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use super::ast::{ArithOp, CompareOp, Direction, Lit, Quantifier, SetOp, SetOpKind};
 use super::lexer::SyntaxError;
@@ -30,7 +30,7 @@ pub enum Val {
     Bool(bool),
     Num(f64),
     /// Interned string: cloning is a refcount bump, not an allocation.
-    Str(Rc<str>),
+    Str(Arc<str>),
     List(Vec<Val>),
     Node(u32),
     Edge(u32),
@@ -204,7 +204,7 @@ fn js_str(graph: &Graph, v: &Val) -> String {
 }
 
 /// Make a `Val::Str` from anything that can produce an owned/borrowed `str`.
-fn vstr(s: impl Into<Rc<str>>) -> Val {
+fn vstr(s: impl Into<Arc<str>>) -> Val {
     Val::Str(s.into())
 }
 
@@ -339,7 +339,7 @@ fn value_to_val(v: &Value) -> Val {
         Value::Null => Val::Null,
         Value::Bool(b) => Val::Bool(*b),
         Value::Num(n) => Val::Num(*n),
-        Value::Str(s) => vstr(s.as_str()),
+        Value::Str(s) => Val::Str(s.clone()), // shared Arc — refcount bump, no alloc
         Value::List(items) => Val::List(items.iter().map(value_to_val).collect()),
     }
 }
@@ -351,10 +351,10 @@ fn val_to_value(graph: &Graph, v: &Val) -> Value {
         Val::Null => Value::Null,
         Val::Bool(b) => Value::Bool(*b),
         Val::Num(n) => Value::Num(*n),
-        Val::Str(s) => Value::Str(s.to_string()),
+        Val::Str(s) => Value::Str(s.clone()), // shared Arc — refcount bump, no alloc
         Val::List(items) => Value::List(items.iter().map(|x| val_to_value(graph, x)).collect()),
-        Val::Node(i) => Value::Str(graph.vid.text(*i).to_string()),
-        Val::Edge(i) => Value::Str(format!("e{i}")),
+        Val::Node(i) => Value::Str(graph.vid.arc(*i)),
+        Val::Edge(i) => Value::Str(Arc::from(format!("e{i}"))),
     }
 }
 
@@ -373,7 +373,7 @@ fn prop_of(graph: &Graph, ctx: &Ctx, bound: &Val, key_ref: usize) -> Val {
     match store.cols.get(kid as usize) {
         Some(Column::Num { data, present }) if present.get(idx) => Val::Num(data[idx]),
         Some(Column::Bool { data, present }) if present.get(idx) => Val::Bool(data[idx]),
-        Some(Column::Str { data, present }) if present.get(idx) => Val::Str(graph.strs.rc(data[idx])),
+        Some(Column::Str { data, present }) if present.get(idx) => Val::Str(graph.strs.arc(data[idx])),
         Some(Column::Mixed { data }) => data[idx].as_ref().map(value_to_val).unwrap_or(Val::Null),
         _ => Val::Null,
     }
@@ -675,7 +675,7 @@ fn call_scalar(graph: &Graph, func: ScalarFn, args: &[Val]) -> Val {
             _ => Val::Null,
         },
         ElementId => match a {
-            Some(Val::Node(i)) => Val::Str(graph.vid.rc(*i)),
+            Some(Val::Node(i)) => Val::Str(graph.vid.arc(*i)),
             Some(Val::Edge(i)) => vstr(format!("e{i}")),
             _ => Val::Null,
         },

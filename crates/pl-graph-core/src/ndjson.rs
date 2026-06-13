@@ -6,6 +6,8 @@
 //! supported (same columnar store as vertex properties). Property objects nested
 //! in values coerce to null (not in the LPG scalar/list value model).
 
+use std::sync::Arc;
+
 use crate::graph::{Builder, Column, Dict, EdgeRec, Graph, NodeRec, Properties, Value};
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
@@ -16,7 +18,7 @@ fn to_value(j: &J) -> Value {
         J::Null => Value::Null,
         J::Bool(b) => Value::Bool(*b),
         J::Number(n) => Value::Num(n.as_f64().unwrap_or(f64::NAN)),
-        J::String(s) => Value::Str(s.clone()),
+        J::String(s) => Value::Str(Arc::from(s.as_str())),
         J::Array(a) => Value::List(a.iter().map(to_value).collect()),
         J::Object(_) => Value::Null,
     }

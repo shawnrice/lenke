@@ -127,7 +127,7 @@ fn value_to_json(v: &Value) -> serde_json::Value {
         Value::Num(x) => serde_json::Number::from_f64(*x)
             .map(serde_json::Value::Number)
             .unwrap_or(serde_json::Value::Null),
-        Value::Str(s) => serde_json::Value::String(s.clone()),
+        Value::Str(s) => serde_json::Value::String(s.to_string()),
         Value::List(items) => serde_json::Value::Array(items.iter().map(value_to_json).collect()),
     }
 }
@@ -515,12 +515,12 @@ fn project_cell(g: &Graph, binding: &[u32], pos: usize, key: &Option<String>, pd
 fn project_value(g: &Graph, binding: &[u32], pos: usize, key: &Option<String>) -> Value {
     let vi = binding[pos];
     match key {
-        None => Value::Str(g.vid.text(vi).to_string()),
+        None => Value::Str(g.vid.arc(vi)),
         Some(k) => match col_of(g, k) {
             Some(Column::Num { data, present }) if present.get(vi as usize) => Value::Num(data[vi as usize]),
             Some(Column::Bool { data, present }) if present.get(vi as usize) => Value::Bool(data[vi as usize]),
             Some(Column::Str { data, present }) if present.get(vi as usize) => {
-                Value::Str(g.strs.text(data[vi as usize]).to_string())
+                Value::Str(g.strs.arc(data[vi as usize]))
             }
             Some(Column::Mixed { data }) => data[vi as usize].clone().unwrap_or(Value::Null),
             _ => Value::Null,

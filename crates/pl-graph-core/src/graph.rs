@@ -14,16 +14,18 @@
 //! bitset. Vertices and edges share the same [`Properties`] store type.
 
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::Arc;
 
-/// String interner backed by `Rc<str>`: `intern` is amortized O(1), `text`
-/// reverses, and `rc` hands out a cheap shared clone (refcount bump, no alloc)
-/// — so a string property read/propagated through a query never re-allocates;
-/// only producing an owned output `Value` does.
+/// String interner backed by `Arc<str>`: `intern` is amortized O(1), `text`
+/// reverses, and `arc` hands out a cheap shared clone (refcount bump, no alloc).
+/// The interned `Arc` flows column → `Val` → output `Value` as refcount bumps,
+/// so a string property is never re-allocated end to end. `Arc` (not `Rc`) keeps
+/// the graph `Send` — needed for the parallel ndjson decode and a shared
+/// read-only graph on the server.
 #[derive(Default, Debug)]
 pub struct Dict {
-    map: HashMap<Rc<str>, u32>,
-    pub strings: Vec<Rc<str>>,
+    map: HashMap<Arc<str>, u32>,
+    pub strings: Vec<Arc<str>>,
 }
 
 impl Dict {
@@ -32,9 +34,9 @@ impl Dict {
             return id;
         }
         let id = self.strings.len() as u32;
-        let rc: Rc<str> = Rc::from(s);
-        self.strings.push(rc.clone());
-        self.map.insert(rc, id);
+        let arc: Arc<str> = Arc::from(s);
+        self.strings.push(arc.clone());
+        self.map.insert(arc, id);
         id
     }
     pub fn get(&self, s: &str) -> Option<u32> {
@@ -44,7 +46,7 @@ impl Dict {
         &self.strings[id as usize]
     }
     /// A shared clone of the interned string (refcount bump, no allocation).
-    pub fn rc(&self, id: u32) -> Rc<str> {
+    pub fn arc(&self, id: u32) -> Arc<str> {
         self.strings[id as usize].clone()
     }
     pub fn len(&self) -> usize {
@@ -93,7 +95,7 @@ pub enum Value {
     Null,
     Bool(bool),
     Num(f64),
-    Str(String),
+    Str(Arc<str>),
     List(Vec<Value>),
 }
 
@@ -165,9 +167,7 @@ impl Properties {
         match self.cols.get(kid as usize) {
             Some(Column::Num { data, present }) if present.get(idx) => Value::Num(data[idx]),
             Some(Column::Bool { data, present }) if present.get(idx) => Value::Bool(data[idx]),
-            Some(Column::Str { data, present }) if present.get(idx) => {
-                Value::Str(strs.text(data[idx]).to_string())
-            }
+            Some(Column::Str { data, present }) if present.get(idx) => Value::Str(strs.arc(data[idx])),
             Some(Column::Mixed { data }) => data[idx].clone().unwrap_or(Value::Null),
             _ => Value::Null,
         }
@@ -520,7 +520,7 @@ fn to_mixed(col: &Column, strs: &Dict) -> Column {
         let v = match col {
             Column::Num { data, present } if present.get(i) => Some(Value::Num(data[i])),
             Column::Bool { data, present } if present.get(i) => Some(Value::Bool(data[i])),
-            Column::Str { data, present } if present.get(i) => Some(Value::Str(strs.text(data[i]).to_string())),
+            Column::Str { data, present } if present.get(i) => Some(Value::Str(strs.arc(data[i]))),
             Column::Mixed { data } => data[i].clone(),
             _ => None,
         };

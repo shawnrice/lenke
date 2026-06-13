@@ -32,7 +32,7 @@ fn n(x: f64) -> Value {
     Value::Num(x)
 }
 fn s(x: &str) -> Value {
-    Value::Str(x.to_string())
+    Value::Str(x.into())
 }
 fn b(x: bool) -> Value {
     Value::Bool(x)
