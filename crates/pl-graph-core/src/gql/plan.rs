@@ -122,13 +122,25 @@ fn scalar_fn(name: &str) -> ScalarFn {
     }
 }
 
+/// A lowered label expression: each label name is a `ref` index resolved once
+/// per execution to a (vertex-label id, edge-type id) pair (a name can be both).
+#[derive(Debug, Clone)]
+pub enum CLabelExpr {
+    Label(usize),
+    Wildcard,
+    Not(Box<CLabelExpr>),
+    And(Box<CLabelExpr>, Box<CLabelExpr>),
+    Or(Box<CLabelExpr>, Box<CLabelExpr>),
+}
+
 /// Lowered expression. Variables and properties carry a binding slot; `$param` a
-/// positional slot; functions a resolved enum tag.
+/// positional slot; property keys and label names a ref resolved per execution;
+/// functions a resolved enum tag.
 #[derive(Debug, Clone)]
 pub enum CExpr {
     Var(usize),
     Param(usize),
-    Prop { var_slot: usize, key: String },
+    Prop { var_slot: usize, key_ref: usize },
     Lit(Lit),
     List(Vec<CExpr>),
     Compare { op: CompareOp, left: Box<CExpr>, right: Box<CExpr> },
@@ -141,7 +153,7 @@ pub enum CExpr {
     Not(Box<CExpr>),
     IsNull { expr: Box<CExpr>, negated: bool },
     IsTruth { expr: Box<CExpr>, truth: Option<bool>, negated: bool },
-    IsLabeled { expr: Box<CExpr>, label: LabelExpr, negated: bool },
+    IsLabeled { expr: Box<CExpr>, label: CLabelExpr, negated: bool },
     In { expr: Box<CExpr>, list: Box<CExpr>, negated: bool },
     /// Correlated sub-pattern existence; `sub_len` is the sub-scope slot count.
     Exists { patterns: Vec<CPath>, where_: Option<Box<CExpr>>, sub_len: usize },
@@ -166,7 +178,10 @@ pub struct CAgg {
 
 #[derive(Debug, Clone)]
 pub struct CPropConstraint {
+    /// Key name (for INSERT, which creates the property) …
     pub key: String,
+    /// … and its resolved ref (for MATCH, which reads the property).
+    pub key_ref: usize,
     pub value: CExpr,
 }
 
@@ -174,7 +189,7 @@ pub struct CPropConstraint {
 pub struct CNode {
     /// Binding slot this node's variable occupies (`None` if anonymous).
     pub var_slot: Option<usize>,
-    pub label: Option<LabelExpr>,
+    pub label: Option<CLabelExpr>,
     pub props: Vec<CPropConstraint>,
     pub where_: Option<CExpr>,
 }
@@ -182,7 +197,7 @@ pub struct CNode {
 #[derive(Debug, Clone)]
 pub struct CRel {
     pub var_slot: Option<usize>,
-    pub label: Option<LabelExpr>,
+    pub label: Option<CLabelExpr>,
     pub direction: Direction,
     pub props: Vec<CPropConstraint>,
     pub where_: Option<CExpr>,
@@ -273,6 +288,10 @@ pub struct CLinear {
 pub struct CQuery {
     pub parts: Vec<CLinear>,
     pub ops: Vec<SetOp>,
+    /// Property-key names, indexed by `key_ref`; resolved to ids per execution.
+    pub key_names: Vec<String>,
+    /// Label/edge-type names, indexed by label ref; resolved to ids per execution.
+    pub label_names: Vec<String>,
 }
 
 /// Does a lowered expression contain an aggregate anywhere?
@@ -353,6 +372,20 @@ struct Lowerer {
     params: Vec<String>,
     /// current scope: variable slot -> name.
     scope: Vec<String>,
+    /// property-key ref -> name (resolved to ids per execution).
+    keys: Vec<String>,
+    /// label/edge-type ref -> name (resolved to ids per execution).
+    labels: Vec<String>,
+}
+
+/// Intern `name` into `table`, returning its ref index.
+fn intern_ref(table: &mut Vec<String>, name: &str) -> usize {
+    if let Some(i) = table.iter().position(|n| n == name) {
+        i
+    } else {
+        table.push(name.to_string());
+        table.len() - 1
+    }
 }
 
 impl Lowerer {
@@ -362,6 +395,17 @@ impl Lowerer {
         } else {
             self.params.push(name.to_string());
             self.params.len() - 1
+        }
+    }
+
+    /// Lower a label expression, assigning a ref to each label name.
+    fn label_expr(&mut self, e: &LabelExpr) -> CLabelExpr {
+        match e {
+            LabelExpr::Label(name) => CLabelExpr::Label(intern_ref(&mut self.labels, name)),
+            LabelExpr::Wildcard => CLabelExpr::Wildcard,
+            LabelExpr::Not(b) => CLabelExpr::Not(Box::new(self.label_expr(b))),
+            LabelExpr::And(l, r) => CLabelExpr::And(Box::new(self.label_expr(l)), Box::new(self.label_expr(r))),
+            LabelExpr::Or(l, r) => CLabelExpr::Or(Box::new(self.label_expr(l)), Box::new(self.label_expr(r))),
         }
     }
 
@@ -402,7 +446,9 @@ impl Lowerer {
         match e {
             Expr::Var(n) => CExpr::Var(self.slot_of(n)),
             Expr::Param(n) => CExpr::Param(self.param_slot(n)),
-            Expr::Prop { variable, key } => CExpr::Prop { var_slot: self.slot_of(variable), key: key.clone() },
+            Expr::Prop { variable, key } => {
+                CExpr::Prop { var_slot: self.slot_of(variable), key_ref: intern_ref(&mut self.keys, key) }
+            }
             Expr::Lit(l) => CExpr::Lit(l.clone()),
             Expr::List(items) => CExpr::List(items.iter().map(|x| self.expr(x)).collect()),
             Expr::Compare { op, left, right } => {
@@ -422,7 +468,7 @@ impl Lowerer {
                 CExpr::IsTruth { expr: self.boxed(expr), truth: *truth, negated: *negated }
             }
             Expr::IsLabeled { expr, label, negated } => {
-                CExpr::IsLabeled { expr: self.boxed(expr), label: label.clone(), negated: *negated }
+                CExpr::IsLabeled { expr: self.boxed(expr), label: self.label_expr(label), negated: *negated }
             }
             Expr::In { expr, list, negated } => {
                 CExpr::In { expr: self.boxed(expr), list: self.boxed(list), negated: *negated }
@@ -478,13 +524,17 @@ impl Lowerer {
     }
 
     fn prop(&mut self, p: &PropertyConstraint) -> CPropConstraint {
-        CPropConstraint { key: p.key.clone(), value: self.expr(&p.value) }
+        CPropConstraint {
+            key: p.key.clone(),
+            key_ref: intern_ref(&mut self.keys, &p.key),
+            value: self.expr(&p.value),
+        }
     }
 
     fn node(&mut self, n: &NodePattern) -> CNode {
         CNode {
             var_slot: n.variable.as_ref().map(|v| self.slot_of(v)),
-            label: n.label.clone(),
+            label: n.label.as_ref().map(|l| self.label_expr(l)),
             props: n.props.iter().map(|p| self.prop(p)).collect(),
             where_: n.where_.as_ref().map(|w| self.expr(w)),
         }
@@ -493,7 +543,7 @@ impl Lowerer {
     fn rel(&mut self, r: &RelPattern) -> CRel {
         CRel {
             var_slot: r.variable.as_ref().map(|v| self.slot_of(v)),
-            label: r.label.clone(),
+            label: r.label.as_ref().map(|l| self.label_expr(l)),
             direction: r.direction,
             props: r.props.iter().map(|p| self.prop(p)).collect(),
             where_: r.where_.as_ref().map(|w| self.expr(w)),
@@ -636,7 +686,8 @@ impl Lowerer {
 
 /// Lower a parsed query into the IR plus the parameter slot order (slot → name).
 pub fn lower(query: &Query) -> (CQuery, Vec<String>) {
-    let mut l = Lowerer { params: Vec::new(), scope: Vec::new() };
+    let mut l = Lowerer { params: Vec::new(), scope: Vec::new(), keys: Vec::new(), labels: Vec::new() };
     let parts = query.parts.iter().map(|p| l.linear(p)).collect();
-    (CQuery { parts, ops: query.ops.clone() }, l.params)
+    let cquery = CQuery { parts, ops: query.ops.clone(), key_names: l.keys, label_names: l.labels };
+    (cquery, l.params)
 }

@@ -141,7 +141,16 @@ impl Properties {
     /// Value at element `idx` for `key` as a core [`Value`] (absent → `Null`).
     /// `strs` is the graph-wide interner backing `Column::Str`.
     pub fn value(&self, idx: usize, key: &str, strs: &Dict) -> Value {
-        match self.col(key) {
+        match self.keys.get(key) {
+            Some(kid) => self.value_id(idx, kid, strs),
+            None => Value::Null,
+        }
+    }
+
+    /// Value at element `idx` for the already-resolved key id `kid` — the hot
+    /// path, skipping the per-access `keys.get(name)` hash lookup.
+    pub fn value_id(&self, idx: usize, kid: u32, strs: &Dict) -> Value {
+        match self.cols.get(&kid) {
             Some(Column::Num { data, present }) if present.get(idx) => Value::Num(data[idx]),
             Some(Column::Bool { data, present }) if present.get(idx) => Value::Bool(data[idx]),
             Some(Column::Str { data, present }) if present.get(idx) => {
