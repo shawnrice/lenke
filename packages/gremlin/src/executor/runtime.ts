@@ -11,7 +11,7 @@
 
 import type { Edge, Graph, Vertex } from '@pl-graph/core';
 
-import type { By, Plan } from '../ast.js';
+import type { By, Plan, Step } from '../ast.js';
 // Cycle: `runtime.ts` ↔ `dispatch.ts`. ESM handles this safely because
 // neither module dereferences the other at init time — `applyPlanToStream`
 // is only called from inside `evalBy`, by which time both modules' exports
@@ -43,16 +43,79 @@ export const emptyTags: ReadonlyMap<string, readonly unknown[]> = new Map();
 
 export const isEmptyPlan = (plan: Plan): boolean => plan.steps.length === 0;
 
-export const startTraverser = <T>(value: T): Traverser<T> => ({
+/**
+ * Shared empty-path sentinel for traversers in a run that never reads the path.
+ * `extend` checks identity against it to propagate "not tracking" down a chain
+ * for free — see {@link planReadsPath}. Frozen so an accidental mutation throws
+ * rather than corrupting every traverser that shares it.
+ */
+const NO_PATH: readonly unknown[] = Object.freeze([]);
+
+/**
+ * Step kinds that read a traverser's accumulated path. The first five touch
+ * `t.path` directly; the closure-bearing kinds hand it to user code via
+ * `closureView`, so we must conservatively assume they read it. This list is
+ * exhaustive against every `.path` read in the executor — keep it in sync if a
+ * new path-consuming step is added (a missed entry would silently drop paths).
+ */
+const PATH_DEPENDENT_KINDS: ReadonlySet<string> = new Set([
+  'path',
+  'tree',
+  'simplePath',
+  'cyclicPath',
+  'otherV',
+  'mapFn',
+  'flatMapFn',
+  'filterFn',
+  'sideEffectFn',
+  'foldFn',
+]);
+
+/** The sub-plans a step embeds, by their known plan-bearing field names. */
+const subPlansOf = (step: Step): Plan[] => {
+  const plans: Plan[] = [];
+  const fields = step as Record<string, unknown>;
+  for (const name of ['body', 'until', 'emit', 'plan', 'test', 'thenPlan', 'elsePlan']) {
+    if (fields[name]) {
+      plans.push(fields[name] as Plan);
+    }
+  }
+  if (Array.isArray(fields.plans)) {
+    plans.push(...(fields.plans as Plan[]));
+  }
+  if (Array.isArray(fields.bys)) {
+    for (const by of fields.bys as By[]) {
+      if (by.kind === 'traversal') {
+        plans.push(by.plan);
+      }
+    }
+  }
+  return plans;
+};
+
+/**
+ * Does any step anywhere in the plan tree read the traverser path? Recurses
+ * only through plan-bearing fields (never `inject` values, predicate operands,
+ * or closures), so it can't loop on or be fooled by user data. When this is
+ * false the run skips path bookkeeping entirely; when in doubt it returns true,
+ * so the optimization only ever removes provably-unobservable work.
+ */
+export const planReadsPath = (plan: Plan): boolean =>
+  plan.steps.some(
+    (step) => PATH_DEPENDENT_KINDS.has(step.kind) || subPlansOf(step).some(planReadsPath),
+  );
+
+export const startTraverser = <T>(value: T, tracksPath = true): Traverser<T> => ({
   value,
-  path: [value],
+  path: tracksPath ? [value] : NO_PATH,
   loopCount: 0,
   tags: emptyTags,
 });
 
 export const extend = <T>(prev: Traverser<unknown>, value: T): Traverser<T> => ({
   value,
-  path: [...prev.path, value],
+  // Propagate the not-tracking sentinel by identity; otherwise grow the path.
+  path: prev.path === NO_PATH ? NO_PATH : [...prev.path, value],
   loopCount: prev.loopCount,
   tags: prev.tags,
 });
@@ -86,9 +149,18 @@ export const firstLabel = (s: ReadonlySet<string>): string | undefined => {
  */
 export type RunContext = {
   readonly sideEffects: Map<string, unknown[]>;
+  /**
+   * Whether this run tracks traverser paths. Computed once from the plan via
+   * {@link planReadsPath}; defaults to `true` so any context built without it
+   * (e.g. sub-plan evaluation) is always correct, just unoptimized.
+   */
+  readonly tracksPath: boolean;
 };
 
-export const newContext = (): RunContext => ({ sideEffects: new Map() });
+export const newContext = (tracksPath = true): RunContext => ({
+  sideEffects: new Map(),
+  tracksPath,
+});
 
 /**
  * Project a runtime `Traverser` plus the run's side-effects into the
@@ -115,9 +187,7 @@ export const closureView = (
 
 // ---------- Stream-of-traversers helpers (used by many steps) ----------
 
-export const unwrap = function* (
-  stream: Iterable<Traverser<unknown>>,
-): Iterable<unknown> {
+export const unwrap = function* (stream: Iterable<Traverser<unknown>>): Iterable<unknown> {
   for (const t of stream) {
     yield t.value;
   }
@@ -236,10 +306,7 @@ export const normalizeBys = (
 };
 
 // `T.id` / `T.label` / `T.key` / `T.value` projection.
-export const projectToken = (
-  token: 'id' | 'label' | 'key' | 'value',
-  value: unknown,
-): unknown => {
+export const projectToken = (token: 'id' | 'label' | 'key' | 'value', value: unknown): unknown => {
   if (token === 'id') {
     return isVertex(value) || isEdge(value) ? value.id : undefined;
   }
@@ -248,12 +315,7 @@ export const projectToken = (
   }
   // `T.key` / `T.value` apply to property objects of shape `{ key, value }`
   // (as produced by `properties()`). For anything else, undefined.
-  if (
-    typeof value === 'object' &&
-    value !== null &&
-    'key' in value &&
-    'value' in value
-  ) {
+  if (typeof value === 'object' && value !== null && 'key' in value && 'value' in value) {
     return (value as { key: unknown; value: unknown })[token];
   }
   return undefined;

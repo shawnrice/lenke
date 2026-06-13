@@ -88,14 +88,14 @@ describe('sub-plan combinators accept both Plan and StepFn', () => {
   });
 
   test('repeat: traversal() body works (the original footgun)', () => {
-    const before = g.vertices.size;
+    const before = g.vertexCount;
     arr(run(traversal(V('1'), repeat(traversal(addV('REP'), property('via', 'rep'))).times(2)), g));
-    expect(g.vertices.size).toBe(before + 2);
+    expect(g.vertexCount).toBe(before + 2);
   });
 
   test('map: traversal() works without forcing a pipe wrapper', () => {
     const localG = createTestTinkerGraph();
-    const before = localG.vertices.size;
+    const before = localG.vertexCount;
     arr(
       run(
         traversal(
@@ -106,7 +106,7 @@ describe('sub-plan combinators accept both Plan and StepFn', () => {
         localG,
       ),
     );
-    expect(localG.vertices.size).toBe(before + 4);
+    expect(localG.vertexCount).toBe(before + 4);
   });
 
   test('repeat.until/.emit: traversal() forms also accepted', () => {

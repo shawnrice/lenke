@@ -9,10 +9,10 @@ const arr = (r: Iterable<unknown>): unknown[] => [...r];
 describe('addE() mutation', () => {
   test('addE(label).to(V("y")) — input is FROM, sub-plan is TO', () => {
     const g = createTestTinkerGraph();
-    const before = g.edges.size;
+    const before = g.edgeCount;
     // marko (1) -[NEMESIS]-> peter (6)
     const r = arr(run(traversal(V('1'), addE('NEMESIS').to(V('6'))), g));
-    expect(g.edges.size).toBe(before + 1);
+    expect(g.edgeCount).toBe(before + 1);
     expect(r).toHaveLength(1);
     const edge = r[0] as { from: { id: string }; to: { id: string }; labels: Set<string> };
     expect(edge.from.id).toBe('1');
@@ -25,7 +25,7 @@ describe('addE() mutation', () => {
     // Tag marko, hop to his out-neighbors, then for each one add an edge
     // FROM the tagged marko TO peter. (Demonstrates tag recall driving the
     // FROM endpoint while the current traverser is something else.)
-    const before = g.edges.size;
+    const before = g.edgeCount;
     const r = arr(
       run(
         traversal(
@@ -39,7 +39,7 @@ describe('addE() mutation', () => {
     );
     // marko knows vadas + josh → 2 new edges
     expect(r).toHaveLength(2);
-    expect(g.edges.size).toBe(before + 2);
+    expect(g.edgeCount).toBe(before + 2);
     for (const e of r as Array<{ from: { id: string }; to: { id: string } }>) {
       expect(e.from.id).toBe('1');
       expect(e.to.id).toBe('6');
