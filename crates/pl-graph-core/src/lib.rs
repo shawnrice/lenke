@@ -10,8 +10,11 @@
 //! This is the binding-agnostic crate; `ffi` exposes a C ABI for bun:ffi (and
 //! later wasm-bindgen) over the same functions.
 
-pub mod scan;
 pub mod ffi;
+pub mod graph;
+pub mod ndjson;
+pub mod query;
+pub mod scan;
 
 /// CSR adjacency: `neighbors[offsets[v] .. offsets[v + 1]]` are v's out-edges.
 #[derive(Debug, Clone, PartialEq, Eq)]
