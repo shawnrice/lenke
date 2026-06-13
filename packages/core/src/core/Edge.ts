@@ -107,7 +107,9 @@ export class Edge {
       return;
     }
 
-    this.properties = { ...this.properties, [key]: value };
+    const previous = this.properties;
+    this.properties = { ...previous, [key]: value };
+    this.#graph?.reindexEdgeProperty(this, key, previous[key], value);
   }
 
   setProperties(props: Record<string, unknown>): void {
@@ -122,7 +124,11 @@ export class Edge {
       return;
     }
 
-    this.properties = { ...this.properties, ...props };
+    const previous = this.properties;
+    this.properties = { ...previous, ...props };
+    for (const key of Object.keys(props)) {
+      this.#graph?.reindexEdgeProperty(this, key, previous[key], props[key]);
+    }
   }
 
   removeProperty(key: string): void {
@@ -138,9 +144,9 @@ export class Edge {
       return;
     }
 
-    this.properties = Object.fromEntries(
-      Object.entries(this.properties).filter(([k]) => key !== k),
-    );
+    const previous = this.properties;
+    this.properties = Object.fromEntries(Object.entries(previous).filter(([k]) => key !== k));
+    this.#graph?.reindexEdgeProperty(this, key, previous[key], undefined);
   }
 
   removeProperties(keys: string[]): void {
@@ -152,9 +158,13 @@ export class Edge {
       return;
     }
 
+    const previous = this.properties;
     this.properties = Object.fromEntries(
-      Object.entries(this.properties).filter(([k]) => !keys.includes(k)),
+      Object.entries(previous).filter(([k]) => !keys.includes(k)),
     );
+    for (const key of keys) {
+      this.#graph?.reindexEdgeProperty(this, key, previous[key], undefined);
+    }
   }
 
   /**

@@ -1,4 +1,4 @@
-export { Edge, Graph, isElement, Vertex } from './core/index.js';
+export { Edge, Graph, isElement, PropertyIndex, Vertex } from './core/index.js';
 
 export type {
   EdgeAddedEvent,
@@ -6,6 +6,8 @@ export type {
   Element,
   GraphElement,
   GraphEvents as GraphEvent,
+  IndexableValue,
+  RangeBound,
   VertexAddedEvent,
   VertexRemovedEvent,
 } from './core/index.js';
