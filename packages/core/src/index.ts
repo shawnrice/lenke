@@ -10,3 +10,14 @@ export type {
   VertexRemovedEvent,
 } from './core/index.js';
 
+export {
+  serialize,
+  deserialize,
+  codecs,
+  pgJsonCodec,
+  graphsonCodec,
+  csvCodec,
+  normalizeValue,
+  normalizeBag,
+} from './serialization/index.js';
+export type { Codec, FormatName, PropertyValue, PropertyBag } from './serialization/index.js';
