@@ -68,10 +68,18 @@ MATCH (p:Person) WHERE p.name IN ['marko', 'josh'] ...
 MATCH (p:Person) WHERE p.age >= 29 AND p.age < 35 ...   -- coalesced to [29, 35)
 ```
 
-When several constraints are indexable they are intersected (smallest first)
-into the tightest seed. The seed is always a *superset* of the true matches, and
-the engine re-applies every filter (label, the residual `has`, the full `WHERE`),
-so results are identical to the unindexed scan.
+When several constraints are indexable, each one's cardinality is estimated
+cheaply (`countEquals` is O(1); `countRange` sums bucket sizes over the sorted
+slice — neither builds a set) and the **most selective** is seeded; the rest stay
+as residual filters the engine re-applies. So the seed is always a *superset* of
+the true matches and results are identical to the unindexed scan.
+
+GQL goes one step further: for a fixed-length path it scores **both ends** from
+those same counts and seeds from whichever is more selective, walking the
+relationship backwards if needed. `MATCH (a)-[:KNOWS]->(b:Person) WHERE b.name =
+'josh'` seeds from `josh` and walks back to `a`, rather than scanning every `a`.
+This is the only cardinality-driven *planning* decision in the engine — there's
+no cost model or join-order search beyond picking the cheaper anchor.
 
 ## The type-strict caveat
 
