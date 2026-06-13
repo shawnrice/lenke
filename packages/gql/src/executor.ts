@@ -1,4 +1,5 @@
 import type { Edge, Graph, Vertex } from '@pl-graph/core';
+import { filter, flatMap, map, skip, take, toArray } from '@pl-graph/fp';
 
 import type {
   ArithOp,
@@ -686,15 +687,17 @@ const projectBinding = (
  */
 const applyProjection = (
   proj: CProjection,
-  bindings: readonly Binding[],
+  bindings: Iterable<Binding>,
   params: Params,
   graph: Graph,
-): Binding[] => {
+): Iterable<Binding> => {
   const { orderBy } = proj;
   type Keyed = { b: Binding; keys: readonly unknown[] };
-  let rows: Keyed[];
+  let keyed: Iterable<Keyed>;
 
   if (proj.aggregating) {
+    // Grouping is a barrier — it must see every binding before it can emit. We
+    // still fold into per-group buckets with single `push`es (never a spread).
     const groups = new Map<string, Binding[]>();
     for (const b of bindings) {
       const key = JSON.stringify(
@@ -710,7 +713,7 @@ const applyProjection = (
     if (groups.size === 0 && proj.groupKeys.length === 0) {
       groups.set('[]', []);
     }
-    rows = [...groups.values()].map((group) => {
+    keyed = map((group: Binding[]) => {
       const rep: Binding = group[0] ?? new Map();
       const projected = projectBinding(proj, rep, params, graph, group);
       // ORDER BY sees the output columns overlaid on the input variables.
@@ -719,28 +722,36 @@ const applyProjection = (
         b: projected,
         keys: orderBy.map((s) => s.fn({ binding: sortBinding, params, graph, group })),
       };
-    });
+    }, groups.values());
   } else {
-    rows = bindings.map((b) => {
+    // Non-aggregating: a lazy map — rows are projected on demand.
+    keyed = map((b: Binding) => {
       const projected = projectBinding(proj, b, params, graph);
       const sortBinding = orderBy.length > 0 ? new Map([...b, ...projected]) : b;
       return {
         b: projected,
         keys: orderBy.map((s) => s.fn({ binding: sortBinding, params, graph })),
       };
-    });
+    }, bindings);
   }
 
   if (proj.distinct) {
     const seen = new Set<string>();
-    rows = rows.filter((r) => {
+    keyed = filter((r: Keyed) => {
       const k = rowKey(r.b);
-      return seen.has(k) ? false : (seen.add(k), true);
-    });
+      if (seen.has(k)) {
+        return false;
+      }
+      seen.add(k);
+      return true;
+    }, keyed);
   }
 
+  // ORDER BY is the other barrier: materialize, then sort the owned array.
+  let ordered: Iterable<Keyed> = keyed;
   if (orderBy.length > 0) {
-    rows = [...rows].sort((a, b) => {
+    const arr = toArray(keyed);
+    arr.sort((a, b) => {
       for (let i = 0; i < orderBy.length; i += 1) {
         const s = orderBy[i]!;
         const cmp = compareSort(a.keys[i], b.keys[i], s.descending, s.nullsFirst);
@@ -750,11 +761,17 @@ const applyProjection = (
       }
       return 0;
     });
+    ordered = arr;
   }
 
+  // SKIP/LIMIT stay lazy — `take` short-circuits, so `LIMIT n` over a huge
+  // unordered stream stops after n rows instead of computing them all.
   const start = proj.skip ?? 0;
-  const end = proj.limit === undefined ? undefined : start + proj.limit;
-  return rows.slice(start, end).map((r) => r.b);
+  let sliced: Iterable<Keyed> = start > 0 ? skip(start, ordered) : ordered;
+  if (proj.limit !== undefined) {
+    sliced = take(proj.limit, sliced);
+  }
+  return map((r: Keyed) => r.b, sliced);
 };
 
 // --- pattern compilation -----------------------------------------------------
@@ -1189,54 +1206,59 @@ const runDelete = (graph: Graph, clause: CDelete, binding: Binding, params: Para
 
 // --- clause processing -------------------------------------------------------
 
-/** Extend a binding through every pattern of a MATCH clause, then filter WHERE. */
-const matchClauseBindings = function* (
+/**
+ * Extend a binding through every pattern of a MATCH clause, then filter WHERE.
+ * Fully lazy: each pattern is a `flatMap` over the prior stream, so a clause
+ * that expands to millions of bindings never materializes them — they flow one
+ * at a time to whatever consumes the result.
+ */
+const matchClauseBindings = (
+  graph: Graph,
+  clause: CMatch,
+  binding: Binding,
+  params: Params,
+): Iterable<Binding> => {
+  let stream: Iterable<Binding> = [binding];
+  for (const pattern of clause.patterns) {
+    stream = flatMap((b: Binding) => matchPattern(graph, pattern, b, params), stream);
+  }
+  return clause.where === undefined
+    ? stream
+    : filter((b: Binding) => clause.where!({ binding: b, params, graph }) === true, stream);
+};
+
+/** Per-incoming-binding: stream its matches, or (for OPTIONAL) one null-filled row. */
+const matchOrOptional = function* (
   graph: Graph,
   clause: CMatch,
   binding: Binding,
   params: Params,
 ): Iterable<Binding> {
-  let current: Binding[] = [binding];
-  for (const pattern of clause.patterns) {
-    const next: Binding[] = [];
-    for (const b of current) {
-      for (const ext of matchPattern(graph, pattern, b, params)) {
-        next.push(ext);
+  let matched = false;
+  for (const m of matchClauseBindings(graph, clause, binding, params)) {
+    matched = true;
+    yield m;
+  }
+  if (!matched && clause.optional) {
+    // No match: keep the row with the pattern's new variables set to null.
+    const filled = new Map(binding);
+    for (const v of clause.nullVars) {
+      if (!filled.has(v)) {
+        filled.set(v, null);
       }
     }
-    current = next;
-  }
-  for (const b of current) {
-    if (clause.where === undefined || clause.where({ binding: b, params, graph }) === true) {
-      yield b;
-    }
+    yield filled;
   }
 };
 
+/** Lazily expand a binding stream through a MATCH — no intermediate array. */
 const runMatch = (
   graph: Graph,
   clause: CMatch,
-  bindings: readonly Binding[],
+  bindings: Iterable<Binding>,
   params: Params,
-): Binding[] => {
-  const out: Binding[] = [];
-  for (const binding of bindings) {
-    const matched = [...matchClauseBindings(graph, clause, binding, params)];
-    if (matched.length > 0) {
-      out.push(...matched);
-    } else if (clause.optional) {
-      // No match: keep the row with the pattern's new variables set to null.
-      const filled = new Map(binding);
-      for (const v of clause.nullVars) {
-        if (!filled.has(v)) {
-          filled.set(v, null);
-        }
-      }
-      out.push(filled);
-    }
-  }
-  return out;
-};
+): Iterable<Binding> =>
+  flatMap((binding: Binding) => matchOrOptional(graph, clause, binding, params), bindings);
 
 const mapToRow = (b: Binding): Row => {
   const row: Row = {};
@@ -1248,7 +1270,10 @@ const mapToRow = (b: Binding): Row => {
 
 /** Run one compiled linear query (clause sequence) to result rows. */
 const runLinear = (linear: CLinear, graph: Graph, params: Params): Row[] => {
-  let bindings: Binding[] = [new Map()];
+  // Bindings flow as a lazy stream; only barriers (mutations, aggregation,
+  // ORDER BY) force materialization — so a streaming read never holds the whole
+  // result set in memory.
+  let bindings: Iterable<Binding> = [new Map()];
   for (const clause of linear.clauses) {
     switch (clause.kind) {
       case 'match':
@@ -1259,31 +1284,41 @@ const runLinear = (linear: CLinear, graph: Graph, params: Params): Row[] => {
         bindings =
           clause.where === undefined
             ? projected
-            : projected.filter((b) => clause.where!({ binding: b, params, graph }) === true);
+            : filter((b: Binding) => clause.where!({ binding: b, params, graph }) === true, projected);
         break;
       }
       case 'insert':
-        bindings = bindings.map((b) => runInsert(graph, clause, b, params));
+        // Mutations must run eagerly and exactly once — force evaluation.
+        bindings = toArray(map((b: Binding) => runInsert(graph, clause, b, params), bindings));
         break;
-      case 'set':
-        for (const b of bindings) {
+      case 'set': {
+        const arr = toArray(bindings);
+        for (const b of arr) {
           runSet(graph, clause, b, params);
         }
+        bindings = arr;
         break;
-      case 'remove':
-        for (const b of bindings) {
+      }
+      case 'remove': {
+        const arr = toArray(bindings);
+        for (const b of arr) {
           runRemove(graph, clause, b);
         }
+        bindings = arr;
         break;
-      case 'delete':
-        for (const b of bindings) {
+      }
+      case 'delete': {
+        const arr = toArray(bindings);
+        for (const b of arr) {
           runDelete(graph, clause, b, params);
         }
+        bindings = arr;
         break;
+      }
       case 'finish':
         return [];
       case 'return':
-        return applyProjection(clause.projection, bindings, params, graph).map(mapToRow);
+        return toArray(map(mapToRow, applyProjection(clause.projection, bindings, params, graph)));
     }
   }
   return []; // a write-only query produces no rows
