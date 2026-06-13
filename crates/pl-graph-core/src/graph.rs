@@ -127,7 +127,10 @@ impl Column {
 #[derive(Debug, Default)]
 pub struct Properties {
     pub keys: Dict,
-    pub cols: HashMap<u32, Column>,
+    /// Columns indexed by **dense key id** (`keys.intern` order), so a resolved
+    /// id is an array index — no per-access hash. Every interned key has a column
+    /// (an all-null key gets an empty `Mixed`).
+    pub cols: Vec<Column>,
     /// Element count the columns are sized to (vertex count, or edge count).
     pub len: usize,
 }
@@ -135,7 +138,7 @@ pub struct Properties {
 impl Properties {
     /// The column for `key`, if any.
     pub fn col(&self, key: &str) -> Option<&Column> {
-        self.keys.get(key).and_then(|kid| self.cols.get(&kid))
+        self.keys.get(key).map(|kid| &self.cols[kid as usize])
     }
 
     /// Value at element `idx` for `key` as a core [`Value`] (absent → `Null`).
@@ -148,9 +151,9 @@ impl Properties {
     }
 
     /// Value at element `idx` for the already-resolved key id `kid` — the hot
-    /// path, skipping the per-access `keys.get(name)` hash lookup.
+    /// path: an array index, no hashing.
     pub fn value_id(&self, idx: usize, kid: u32, strs: &Dict) -> Value {
-        match self.cols.get(&kid) {
+        match self.cols.get(kid as usize) {
             Some(Column::Num { data, present }) if present.get(idx) => Value::Num(data[idx]),
             Some(Column::Bool { data, present }) if present.get(idx) => Value::Bool(data[idx]),
             Some(Column::Str { data, present }) if present.get(idx) => {
@@ -163,7 +166,7 @@ impl Properties {
 
     /// Append one element slot (absent in every existing column).
     fn push_element(&mut self) {
-        for col in self.cols.values_mut() {
+        for col in &mut self.cols {
             col.push_absent();
         }
         self.len += 1;
@@ -177,9 +180,12 @@ impl Properties {
             self.remove_value(idx, key);
             return;
         }
-        let kid = self.keys.intern(key);
-        let len = self.len;
-        let col = self.cols.entry(kid).or_insert_with(|| empty_col_for(&v, len));
+        let kid = self.keys.intern(key) as usize;
+        if kid >= self.cols.len() {
+            // brand-new key: a column of `len` absent slots, then set below.
+            self.cols.push(empty_col_for(&v, self.len));
+        }
+        let col = &mut self.cols[kid];
         if !col_set(col, idx, &v, strs) {
             // type mismatch — promote the column to Mixed, then set.
             *col = to_mixed(col, strs);
@@ -190,7 +196,7 @@ impl Properties {
     /// Remove element `idx`'s `key` (no-op if absent).
     pub fn remove_value(&mut self, idx: usize, key: &str) {
         if let Some(kid) = self.keys.get(key) {
-            if let Some(col) = self.cols.get_mut(&kid) {
+            if let Some(col) = self.cols.get_mut(kid as usize) {
                 match col {
                     Column::Num { present, .. }
                     | Column::Str { present, .. }
@@ -541,9 +547,8 @@ pub struct Builder {
 /// A key's column type is inferred from its first non-null value; values that
 /// disagree land in `Mixed` (lossless). Shared by the vertex and edge builds.
 fn build_props(len: usize, items: &[(usize, &[(String, Value)])], strs: &mut Dict) -> Properties {
-    let mut props = Properties { keys: Dict::default(), cols: HashMap::new(), len };
-    // Pre-create columns from inferred kinds so the first value of each key
-    // lands in a typed column (mutation promotes to Mixed only on conflict).
+    let mut props = Properties { keys: Dict::default(), cols: Vec::new(), len };
+    // Infer a kind per key (by dense key id) from its first non-null value.
     let mut kinds: HashMap<u32, Kind> = HashMap::new();
     for (_, item) in items {
         for (k, v) in *item {
@@ -560,20 +565,20 @@ fn build_props(len: usize, items: &[(usize, &[(String, Value)])], strs: &mut Dic
             }
         }
     }
-    for (&kid, &kind) in &kinds {
-        let col = match kind {
-            Kind::Num => Column::Num { data: vec![f64::NAN; len], present: BitSet::zeros(len) },
-            Kind::Str => Column::Str { data: vec![u32::MAX; len], present: BitSet::zeros(len) },
-            Kind::Bool => Column::Bool { data: vec![false; len], present: BitSet::zeros(len) },
-            Kind::Mixed => Column::Mixed { data: vec![None; len] },
-        };
-        props.cols.insert(kid, col);
-    }
+    // One column per interned key (dense by id); an all-null key gets an empty Mixed.
+    props.cols = (0..props.keys.len() as u32)
+        .map(|kid| match kinds.get(&kid) {
+            Some(Kind::Num) => Column::Num { data: vec![f64::NAN; len], present: BitSet::zeros(len) },
+            Some(Kind::Str) => Column::Str { data: vec![u32::MAX; len], present: BitSet::zeros(len) },
+            Some(Kind::Bool) => Column::Bool { data: vec![false; len], present: BitSet::zeros(len) },
+            _ => Column::Mixed { data: vec![None; len] },
+        })
+        .collect();
     for (idx, item) in items {
         for (k, v) in *item {
             if !matches!(v, Value::Null) {
-                let kid = props.keys.get(k).unwrap();
-                let col = props.cols.get_mut(&kid).unwrap();
+                let kid = props.keys.get(k).unwrap() as usize;
+                let col = &mut props.cols[kid];
                 if !col_set(col, *idx, v, strs) {
                     *col = to_mixed(col, strs);
                     col_set(col, *idx, v, strs);

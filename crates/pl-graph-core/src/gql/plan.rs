@@ -250,6 +250,10 @@ pub struct CProjection {
     /// Input slots appended after the output slots to form the ORDER BY scope —
     /// lets a sort key reference an input variable not in the output.
     pub order_overlay: Vec<usize>,
+    /// True if any ORDER BY key references an output column (slot < `out_len`).
+    /// When false, sort keys come from the input alone, so `ORDER BY … LIMIT n`
+    /// can keep only the top-k *input* bindings and project just those.
+    pub order_needs_output: bool,
     pub skip: Option<usize>,
     pub limit: Option<usize>,
 }
@@ -354,6 +358,36 @@ fn extract_aggs(expr: CExpr, aggs: &mut Vec<CAgg>) -> CExpr {
         }
         // leaves and the (correlated) sub-queries carry no grouping aggregate
         other => other,
+    }
+}
+
+/// Does a lowered expression reference any variable/property slot below `n`?
+/// Used to tell whether an ORDER BY key reads an output column (slot < out_len).
+fn refs_slot_below(expr: &CExpr, n: usize) -> bool {
+    match expr {
+        CExpr::Var(s) => *s < n,
+        CExpr::Prop { var_slot, .. } => *var_slot < n,
+        CExpr::List(items) => items.iter().any(|e| refs_slot_below(e, n)),
+        CExpr::Neg(e) | CExpr::Not(e) => refs_slot_below(e, n),
+        CExpr::IsNull { expr, .. } | CExpr::IsTruth { expr, .. } | CExpr::IsLabeled { expr, .. } => {
+            refs_slot_below(expr, n)
+        }
+        CExpr::Arith { left, right, .. }
+        | CExpr::Concat { left, right }
+        | CExpr::And(left, right)
+        | CExpr::Or(left, right)
+        | CExpr::Xor(left, right)
+        | CExpr::Compare { left, right, .. } => refs_slot_below(left, n) || refs_slot_below(right, n),
+        CExpr::In { expr, list, .. } => refs_slot_below(expr, n) || refs_slot_below(list, n),
+        CExpr::Case { subject, whens, else_ } => {
+            subject.as_deref().is_some_and(|e| refs_slot_below(e, n))
+                || whens.iter().any(|(w, t)| refs_slot_below(w, n) || refs_slot_below(t, n))
+                || else_.as_deref().is_some_and(|e| refs_slot_below(e, n))
+        }
+        CExpr::Scalar { args, .. } => args.iter().any(|e| refs_slot_below(e, n)),
+        CExpr::Aggregate { arg, .. } => arg.as_deref().is_some_and(|e| refs_slot_below(e, n)),
+        // exists/count subqueries correlate via their own bindings; lits/params/aggref don't.
+        _ => false,
     }
 }
 
@@ -599,7 +633,7 @@ impl Lowerer {
             }
         }
         self.scope = sort_scope;
-        let order_by = p
+        let order_by: Vec<CSortItem> = p
             .order_by
             .iter()
             .map(|s| CSortItem {
@@ -610,6 +644,7 @@ impl Lowerer {
             .collect();
 
         self.scope = if terminal { input_scope } else { out_names.clone() };
+        let order_needs_output = order_by.iter().any(|s| refs_slot_below(&s.expr, out_len));
         CProjection {
             star: p.star,
             distinct: p.distinct,
@@ -621,6 +656,7 @@ impl Lowerer {
             star_cols,
             order_by,
             order_overlay,
+            order_needs_output,
             skip: p.skip,
             limit: p.limit,
         }

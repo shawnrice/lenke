@@ -1073,7 +1073,18 @@ struct ProjAccum<'p> {
     /// Whether grouping keys exist (some non-aggregate item). When false but
     /// aggregating, it's a single global group (no map, no key string).
     grouped: bool,
-    /// Non-aggregating: projected rows (+ ORDER BY keys).
+    /// Top-k mode: `ORDER BY … LIMIT n` whose keys don't reference output, so we
+    /// keep only the top-k *input* bindings (sort keys computed without
+    /// projecting) and project just those at finish. `cap` = skip+limit.
+    topk: bool,
+    cap: usize,
+    /// Top-k: the worst (largest) kept sort key once at capacity — a new row not
+    /// better than this can't make the top-k, so it's skipped without cloning.
+    threshold: Option<Vec<Val>>,
+    /// Reused scratch binding for computing a top-k sort key (no per-row alloc).
+    sort_scratch: Binding,
+    /// Non-aggregating: projected rows (+ ORDER BY keys); in top-k mode, instead
+    /// the kept *input* bindings (+ keys) until `finish` projects them.
     rows: Vec<(Binding, Vec<Val>)>,
     /// Global aggregate (no group keys): one running accumulator set.
     global: Option<(Binding, Vec<Agg>)>,
@@ -1087,9 +1098,18 @@ struct ProjAccum<'p> {
 
 impl<'p> ProjAccum<'p> {
     fn new(proj: &'p CProjection) -> Self {
+        let topk = !proj.aggregating
+            && !proj.order_by.is_empty()
+            && proj.limit.is_some()
+            && !proj.distinct
+            && !proj.order_needs_output;
         ProjAccum {
             proj,
             grouped: proj.aggregating && proj.items.iter().any(|i| !i.is_agg),
+            topk,
+            cap: proj.skip.unwrap_or(0) + proj.limit.unwrap_or(0),
+            threshold: None,
+            sort_scratch: Binding::default(),
             rows: Vec::new(),
             global: None,
             group_order: Vec::new(),
@@ -1134,6 +1154,34 @@ impl<'p> ProjAccum<'p> {
     /// LIMIT: non-aggregating, no ORDER BY, enough rows collected).
     fn accept(&mut self, graph: &Graph, ctx: &Ctx, binding: &Binding) -> bool {
         let proj = self.proj;
+        if self.topk {
+            // Sort key from the input alone (output slots absent + input overlay),
+            // built into the reused scratch binding (no per-row alloc).
+            self.sort_scratch.0.clear();
+            self.sort_scratch.0.resize(proj.out_len, None);
+            for &islot in &proj.order_overlay {
+                let v = binding.get(islot).cloned();
+                self.sort_scratch.0.push(v);
+            }
+            let keys: Vec<Val> = {
+                let env = Env { graph, ctx, binding: &self.sort_scratch, group: None, agg_values: None };
+                proj.order_by.iter().map(|s| eval(&env, &s.expr)).collect()
+            };
+            // Once at capacity, skip (no clone) anything not better than the worst kept.
+            if let Some(th) = &self.threshold {
+                if cmp_keys(&keys, th, &proj.order_by) != Ordering::Less {
+                    return true;
+                }
+            }
+            self.rows.push((binding.clone(), keys));
+            if self.cap >= 1 && self.rows.len() >= self.cap * 2 {
+                let cap = self.cap;
+                self.rows.select_nth_unstable_by(cap - 1, |a, b| cmp_keyed(a, b, &proj.order_by));
+                self.rows.truncate(cap);
+                self.threshold = Some(self.rows[cap - 1].1.clone());
+            }
+            return true;
+        }
         if proj.aggregating {
             if !self.grouped {
                 // Global aggregate: one accumulator set, no key/map per row.
@@ -1209,6 +1257,15 @@ impl<'p> ProjAccum<'p> {
                     self.rows.retain(|(b, _)| seen.insert(row_key(b)));
                 }
             }
+        } else if self.topk {
+            // Trim to the top-k input bindings, then project only those.
+            if self.cap >= 1 && self.rows.len() > self.cap {
+                let cap = self.cap;
+                self.rows.select_nth_unstable_by(cap - 1, |a, b| cmp_keyed(a, b, &proj.order_by));
+                self.rows.truncate(cap);
+            }
+            let buf = std::mem::take(&mut self.rows);
+            self.rows = buf.into_iter().map(|(inb, keys)| (self.project_row(graph, ctx, &inb, None), keys)).collect();
         }
         if !proj.order_by.is_empty() {
             let cmp = |a: &(Binding, Vec<Val>), b: &(Binding, Vec<Val>)| cmp_keyed(a, b, &proj.order_by);
@@ -1268,15 +1325,20 @@ fn materialize_matches(graph: &Graph, ctx: &Ctx, incoming: &[Binding], matches: 
 
 // --- projection --------------------------------------------------------------
 
-/// Compare two keyed rows by their ORDER BY keys (lexicographic over the keys).
-fn cmp_keyed(a: &(Binding, Vec<Val>), b: &(Binding, Vec<Val>), order: &[super::plan::CSortItem]) -> Ordering {
+/// Compare two ORDER BY key vectors lexicographically (per-key direction/nulls).
+fn cmp_keys(a: &[Val], b: &[Val], order: &[super::plan::CSortItem]) -> Ordering {
     for (i, s) in order.iter().enumerate() {
-        let o = compare_sort(&a.1[i], &b.1[i], s.descending, s.nulls_first);
+        let o = compare_sort(&a[i], &b[i], s.descending, s.nulls_first);
         if o != Ordering::Equal {
             return o;
         }
     }
     Ordering::Equal
+}
+
+/// Compare two keyed rows by their ORDER BY keys.
+fn cmp_keyed(a: &(Binding, Vec<Val>), b: &(Binding, Vec<Val>), order: &[super::plan::CSortItem]) -> Ordering {
+    cmp_keys(&a.1, &b.1, order)
 }
 
 /// Compare two ORDER BY keys, honoring direction and ISO NULLS FIRST/LAST.

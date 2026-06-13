@@ -170,7 +170,7 @@ fn col_present(col: &Column, idx: usize) -> bool {
 fn push_props(out: &mut String, store: &Properties, strs: &Dict, idx: usize) {
     out.push('{');
     let mut first = true;
-    for (&kid, col) in &store.cols {
+    for (kid, col) in store.cols.iter().enumerate() {
         if !col_present(col, idx) {
             continue;
         }
@@ -178,7 +178,7 @@ fn push_props(out: &mut String, store: &Properties, strs: &Dict, idx: usize) {
             out.push(',');
         }
         first = false;
-        push_json_str(out, store.keys.text(kid));
+        push_json_str(out, store.keys.text(kid as u32));
         out.push(':');
         match col {
             Column::Num { data, .. } => push_num(out, data[idx]),
@@ -247,7 +247,7 @@ mod tests {
         assert_eq!(g2.edge_count(), 1);
         // age column present and correct
         let age_kid = g2.props.keys.get("age").unwrap();
-        match &g2.props.cols[&age_kid] {
+        match &g2.props.cols[age_kid as usize] {
             Column::Num { data, .. } => {
                 let a = g2.vid.get("a").unwrap() as usize;
                 assert_eq!(data[a], 30.0);
