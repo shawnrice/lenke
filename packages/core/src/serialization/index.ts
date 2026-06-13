@@ -3,18 +3,21 @@ import type { Codec } from './codec.js';
 import { csvCodec } from './csv/index.js';
 import { graphsonCodec } from './graphson/index.js';
 import { pgJsonCodec } from './pg-json/index.js';
+import { pgTextCodec } from './pg-text/index.js';
 
 export type { Codec } from './codec.js';
 export type { PropertyValue, PropertyBag } from './value.js';
 export { normalizeValue, normalizeBag } from './value.js';
 
 export { pgJsonCodec } from './pg-json/index.js';
+export { pgTextCodec } from './pg-text/index.js';
 export { graphsonCodec } from './graphson/index.js';
 export { csvCodec } from './csv/index.js';
 
 /** The registered serialization formats, keyed by name. */
 export const codecs: Readonly<Record<string, Codec>> = {
   'pg-json': pgJsonCodec,
+  'pg-text': pgTextCodec,
   graphson: graphsonCodec,
   csv: csvCodec,
 };
