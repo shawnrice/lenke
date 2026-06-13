@@ -2,6 +2,7 @@ import { Emitter, EmitterEvent } from '@pl-graph/emitter';
 import { timer } from '@pl-graph/utils';
 
 import { Edge } from './Edge.js';
+import { PropertyIndex, type RangeBound } from './PropertyIndex.js';
 import { Vertex } from './Vertex.js';
 
 import type { GraphEvent, GraphEvents, GraphEventType } from './GraphEvents.js';
@@ -46,6 +47,10 @@ export class Graph {
   elementLabels: Map<string, Set<string>>;
   elementProperties: Map<string, Record<string, unknown>>;
 
+  /** Opt-in secondary indexes over property values (see {@link PropertyIndex}). */
+  vertexPropertyIndex: PropertyIndex<Vertex>;
+  edgePropertyIndex: PropertyIndex<Edge>;
+
   private readonly listeners: Set<() => unknown>;
 
   public nextSnapshot: Graph | null;
@@ -65,6 +70,9 @@ export class Graph {
 
     this.elementLabels = new Map();
     this.elementProperties = new Map();
+
+    this.vertexPropertyIndex = new PropertyIndex();
+    this.edgePropertyIndex = new PropertyIndex();
 
     this.eagerSnapshot = options.eagerSnapshot ?? true;
 
@@ -195,6 +203,11 @@ export class Graph {
     next.elementLabels = new Map(this.elementLabels);
     next.elementProperties = new Map(this.elementProperties);
 
+    // Structural copies so a mutation on either graph can't corrupt the other's
+    // buckets; the cloned sets still point at the shared element instances.
+    next.vertexPropertyIndex = this.vertexPropertyIndex.clone();
+    next.edgePropertyIndex = this.edgePropertyIndex.clone();
+
     return next;
   };
 
@@ -207,6 +220,11 @@ export class Graph {
     this.edgesByLabel = new Map();
     this.elementLabels = new Map();
     this.elementProperties = new Map();
+
+    // Keep declared indexes but drop their contents — `truncate` empties the
+    // graph, not its schema.
+    this.vertexPropertyIndex.clear();
+    this.edgePropertyIndex.clear();
 
     this.nextSnapshot = null;
   };
@@ -272,6 +290,8 @@ export class Graph {
       this.indexVertexLabel(label, vertex);
     }
 
+    this.vertexPropertyIndex.add(vertex, vertex.properties);
+
     return vertex;
   };
 
@@ -301,6 +321,10 @@ export class Graph {
     for (const label of vertex.labels) {
       this.deIndexVertexLabel(label, vertex);
     }
+
+    // De-index properties while they're still readable (evict() severs the
+    // vertex from the graph, after which `vertex.properties` reads empty).
+    this.vertexPropertyIndex.remove(vertex, vertex.properties);
 
     this.verticesById.delete(vertex.id);
 
@@ -366,6 +390,8 @@ export class Graph {
       this.indexEdgeLabel(label, edge);
     }
 
+    this.edgePropertyIndex.add(edge, edge.properties);
+
     return edge;
   };
 
@@ -379,6 +405,8 @@ export class Graph {
     for (const label of edge.labels) {
       this.deIndexEdgeLabel(label, edge);
     }
+
+    this.edgePropertyIndex.remove(edge, edge.properties);
 
     this.edgesById.delete(edge.id);
 
@@ -443,6 +471,75 @@ export class Graph {
 
   public getEdgesByLabel = (label: string): Set<Edge> => {
     return new Set(this.edgesByLabel.get(label) ?? []);
+  };
+
+  /* Property indexes */
+
+  /**
+   * Declare `key` as an indexed vertex property and backfill it from the
+   * vertices already in the graph. Subsequent mutations keep it current.
+   */
+  public createVertexIndex = (key: string): void => {
+    this.vertexPropertyIndex.createIndex(key);
+    for (const vertex of this.verticesById.values()) {
+      this.vertexPropertyIndex.addForKey(vertex, key, vertex.properties[key]);
+    }
+  };
+
+  public dropVertexIndex = (key: string): void => {
+    this.vertexPropertyIndex.dropIndex(key);
+  };
+
+  public createEdgeIndex = (key: string): void => {
+    this.edgePropertyIndex.createIndex(key);
+    for (const edge of this.edgesById.values()) {
+      this.edgePropertyIndex.addForKey(edge, key, edge.properties[key]);
+    }
+  };
+
+  public dropEdgeIndex = (key: string): void => {
+    this.edgePropertyIndex.dropIndex(key);
+  };
+
+  /** Vertices with `key === value`. Empty set if `key` isn't indexed. */
+  public getVerticesByProperty = (key: string, value: unknown): Set<Vertex> => {
+    return new Set(this.vertexPropertyIndex.equals(key, value) ?? []);
+  };
+
+  /** Vertices whose `key` falls within `bound`. Empty set if `key` isn't indexed. */
+  public getVerticesByPropertyRange = (key: string, bound: RangeBound): Set<Vertex> => {
+    return this.vertexPropertyIndex.range(key, bound) ?? new Set();
+  };
+
+  public getEdgesByProperty = (key: string, value: unknown): Set<Edge> => {
+    return new Set(this.edgePropertyIndex.equals(key, value) ?? []);
+  };
+
+  public getEdgesByPropertyRange = (key: string, bound: RangeBound): Set<Edge> => {
+    return this.edgePropertyIndex.range(key, bound) ?? new Set();
+  };
+
+  /**
+   * Keep the vertex property index current after a property write actually
+   * lands. Called by {@link Vertex} once a mutation clears its event guard, so
+   * a prevented mutation never touches the index. No-ops for unindexed keys.
+   */
+  public reindexVertexProperty = (
+    vertex: Vertex,
+    key: string,
+    oldValue: unknown,
+    newValue: unknown,
+  ): void => {
+    this.vertexPropertyIndex.update(vertex, key, oldValue, newValue);
+  };
+
+  public reindexEdgeProperty = (
+    edge: Edge,
+    key: string,
+    oldValue: unknown,
+    newValue: unknown,
+  ): void => {
+    this.edgePropertyIndex.update(edge, key, oldValue, newValue);
   };
 
   /* Event Emitter Proxy */
