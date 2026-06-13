@@ -1,0 +1,523 @@
+{
+  "meta": {
+    "machine": "Apple M3 Max",
+    "sizes": [
+      1000,
+      10000,
+      100000,
+      1000000
+    ],
+    "avgDegree": 4,
+    "queries": [
+      {
+        "id": "Q1",
+        "label": "label scan count",
+        "text": "MATCH (a:Person) RETURN count(*)"
+      },
+      {
+        "id": "Q2",
+        "label": "filter + project (SIMD-able)",
+        "text": "MATCH (a:Person) WHERE a.age > 50 RETURN a.age"
+      },
+      {
+        "id": "Q3",
+        "label": "1-hop traversal count",
+        "text": "MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN count(*)"
+      },
+      {
+        "id": "Q4",
+        "label": "2-hop traversal count",
+        "text": "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) RETURN count(*)"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "n": 1000,
+      "nEdges": 4000,
+      "bytes": 458176,
+      "ops": {
+        "build": {
+          "ts": 4.575790999999981,
+          "tsErr": null,
+          "rustParallel": 1.5722920000000045,
+          "rustSerial": 3.518749999999983
+        },
+        "Q1": {
+          "label": "label scan count",
+          "ts": 0.37812500000001137,
+          "tsErr": null,
+          "rust": 0.003999999999962256,
+          "sig": {
+            "count": 1000,
+            "sum": 0
+          }
+        },
+        "Q2": {
+          "label": "filter + project (SIMD-able)",
+          "ts": 0.3033750000000168,
+          "tsErr": null,
+          "rust": 0.030167000000005828,
+          "sig": {
+            "count": 490,
+            "sum": 36750
+          }
+        },
+        "Q3": {
+          "label": "1-hop traversal count",
+          "ts": 1.9876669999999876,
+          "tsErr": null,
+          "rust": 0.017583000000001903,
+          "sig": {
+            "count": 4000,
+            "sum": 0
+          }
+        },
+        "Q4": {
+          "label": "2-hop traversal count",
+          "ts": 7.2468750000000455,
+          "tsErr": null,
+          "rust": 0.06562499999995453,
+          "sig": {
+            "count": 15866,
+            "sum": 0
+          }
+        },
+        "predicateScan": {
+          "jsLoop": 0.00958299999990686,
+          "rustScalar": 0.002124999999978172,
+          "rustNeon": 0.001125000000001819
+        },
+        "encode": {
+          "ts": 1.014791999999943,
+          "tsErr": null,
+          "rust": 3.1242920000000822
+        }
+      }
+    },
+    {
+      "n": 10000,
+      "nEdges": 40000,
+      "bytes": 4721864,
+      "ops": {
+        "build": {
+          "ts": 57.652333,
+          "tsErr": null,
+          "rustParallel": 12.696790999999848,
+          "rustSerial": 36.16029200000003
+        },
+        "Q1": {
+          "label": "label scan count",
+          "ts": 2.6330830000001697,
+          "tsErr": null,
+          "rust": 0.02587500000026921,
+          "sig": {
+            "count": 10000,
+            "sum": 0
+          }
+        },
+        "Q2": {
+          "label": "filter + project (SIMD-able)",
+          "ts": 3.857250000000022,
+          "tsErr": null,
+          "rust": 0.29741699999976845,
+          "sig": {
+            "count": 4900,
+            "sum": 367500
+          }
+        },
+        "Q3": {
+          "label": "1-hop traversal count",
+          "ts": 25.570166000000427,
+          "tsErr": null,
+          "rust": 0.18833300000005693,
+          "sig": {
+            "count": 40000,
+            "sum": 0
+          }
+        },
+        "Q4": {
+          "label": "2-hop traversal count",
+          "ts": 89.85333300000002,
+          "tsErr": null,
+          "rust": 1.127875000000131,
+          "sig": {
+            "count": 159931,
+            "sum": 0
+          }
+        },
+        "predicateScan": {
+          "jsLoop": 0.027708000000529864,
+          "rustScalar": 0.01412499999969441,
+          "rustNeon": 0.003665999999611813
+        },
+        "encode": {
+          "ts": 11.21820900000057,
+          "tsErr": null,
+          "rust": 32.90141700000004
+        }
+      }
+    },
+    {
+      "n": 100000,
+      "nEdges": 400000,
+      "bytes": 48617748,
+      "ops": {
+        "build": {
+          "ts": 1413.2275840000002,
+          "tsErr": null,
+          "rustParallel": 131.8267909999995,
+          "rustSerial": 364.08000000000175
+        },
+        "Q1": {
+          "label": "label scan count",
+          "ts": 42.50079199999891,
+          "tsErr": null,
+          "rust": 0.2480840000025637,
+          "sig": {
+            "count": 100000,
+            "sum": 0
+          }
+        },
+        "Q2": {
+          "label": "filter + project (SIMD-able)",
+          "ts": 79.71020800000042,
+          "tsErr": null,
+          "rust": 2.834500000000844,
+          "sig": {
+            "count": 49000,
+            "sum": 3675000
+          }
+        },
+        "Q3": {
+          "label": "1-hop traversal count",
+          "ts": 711.6747909999976,
+          "tsErr": null,
+          "rust": 2.26050000000032,
+          "sig": {
+            "count": 400000,
+            "sum": 0
+          }
+        },
+        "Q4": {
+          "label": "2-hop traversal count",
+          "ts": null,
+          "tsErr": "RangeError: Maximum call stack size exceeded.",
+          "rust": 16.322124999998778,
+          "sig": {
+            "count": 1602035,
+            "sum": 0
+          }
+        },
+        "predicateScan": {
+          "jsLoop": 0.08350000000064028,
+          "rustScalar": 0.13291600000229664,
+          "rustNeon": 0.03204199999890989
+        },
+        "encode": {
+          "ts": 311.7831670000014,
+          "tsErr": null,
+          "rust": 345.79375000000437
+        }
+      }
+    },
+    {
+      "n": 1000000,
+      "nEdges": 4000000,
+      "bytes": 500177947,
+      "ops": {
+        "build": {
+          "ts": 20821.176417000002,
+          "tsErr": null,
+          "rustParallel": 3064.854792000013,
+          "rustSerial": 5590.974416000012
+        },
+        "Q1": {
+          "label": "label scan count",
+          "ts": null,
+          "tsErr": "RangeError: Maximum call stack size exceeded.",
+          "rust": 2.5372499999939464,
+          "sig": {
+            "count": 1000000,
+            "sum": 0
+          }
+        },
+        "Q2": {
+          "label": "filter + project (SIMD-able)",
+          "ts": 1260.1182499999995,
+          "tsErr": null,
+          "rust": 28.88362499998766,
+          "sig": {
+            "count": 490000,
+            "sum": 36750000
+          }
+        },
+        "Q3": {
+          "label": "1-hop traversal count",
+          "ts": null,
+          "tsErr": "RangeError: Maximum call stack size exceeded.",
+          "rust": 29.418333999987226,
+          "sig": {
+            "count": 4000000,
+            "sum": 0
+          }
+        },
+        "predicateScan": {
+          "jsLoop": 0.829874999995809,
+          "rustScalar": 1.3347080000094138,
+          "rustNeon": 0.3161250000121072
+        },
+        "encode": {
+          "ts": 4530.969292000023,
+          "tsErr": null,
+          "rust": 4360.301582999993
+        }
+      }
+    }
+  ],
+  "parity": [
+    {
+      "n": 1000,
+      "what": "vertexCount",
+      "ts": 1000,
+      "rust": 1000,
+      "ok": true
+    },
+    {
+      "n": 1000,
+      "what": "edgeCount",
+      "ts": 4000,
+      "rust": 4000,
+      "ok": true
+    },
+    {
+      "n": 1000,
+      "what": "Q1 signature",
+      "ts": {
+        "count": 1000,
+        "sum": 0
+      },
+      "rust": {
+        "count": 1000,
+        "sum": 0
+      },
+      "ok": true
+    },
+    {
+      "n": 1000,
+      "what": "Q2 signature",
+      "ts": {
+        "count": 490,
+        "sum": 36750
+      },
+      "rust": {
+        "count": 490,
+        "sum": 36750
+      },
+      "ok": true
+    },
+    {
+      "n": 1000,
+      "what": "Q3 signature",
+      "ts": {
+        "count": 4000,
+        "sum": 0
+      },
+      "rust": {
+        "count": 4000,
+        "sum": 0
+      },
+      "ok": true
+    },
+    {
+      "n": 1000,
+      "what": "Q4 signature",
+      "ts": {
+        "count": 15866,
+        "sum": 0
+      },
+      "rust": {
+        "count": 15866,
+        "sum": 0
+      },
+      "ok": true
+    },
+    {
+      "n": 10000,
+      "what": "vertexCount",
+      "ts": 10000,
+      "rust": 10000,
+      "ok": true
+    },
+    {
+      "n": 10000,
+      "what": "edgeCount",
+      "ts": 40000,
+      "rust": 40000,
+      "ok": true
+    },
+    {
+      "n": 10000,
+      "what": "Q1 signature",
+      "ts": {
+        "count": 10000,
+        "sum": 0
+      },
+      "rust": {
+        "count": 10000,
+        "sum": 0
+      },
+      "ok": true
+    },
+    {
+      "n": 10000,
+      "what": "Q2 signature",
+      "ts": {
+        "count": 4900,
+        "sum": 367500
+      },
+      "rust": {
+        "count": 4900,
+        "sum": 367500
+      },
+      "ok": true
+    },
+    {
+      "n": 10000,
+      "what": "Q3 signature",
+      "ts": {
+        "count": 40000,
+        "sum": 0
+      },
+      "rust": {
+        "count": 40000,
+        "sum": 0
+      },
+      "ok": true
+    },
+    {
+      "n": 10000,
+      "what": "Q4 signature",
+      "ts": {
+        "count": 159931,
+        "sum": 0
+      },
+      "rust": {
+        "count": 159931,
+        "sum": 0
+      },
+      "ok": true
+    },
+    {
+      "n": 100000,
+      "what": "vertexCount",
+      "ts": 100000,
+      "rust": 100000,
+      "ok": true
+    },
+    {
+      "n": 100000,
+      "what": "edgeCount",
+      "ts": 400000,
+      "rust": 400000,
+      "ok": true
+    },
+    {
+      "n": 100000,
+      "what": "Q1 signature",
+      "ts": {
+        "count": 100000,
+        "sum": 0
+      },
+      "rust": {
+        "count": 100000,
+        "sum": 0
+      },
+      "ok": true
+    },
+    {
+      "n": 100000,
+      "what": "Q2 signature",
+      "ts": {
+        "count": 49000,
+        "sum": 3675000
+      },
+      "rust": {
+        "count": 49000,
+        "sum": 3675000
+      },
+      "ok": true
+    },
+    {
+      "n": 100000,
+      "what": "Q3 signature",
+      "ts": {
+        "count": 400000,
+        "sum": 0
+      },
+      "rust": {
+        "count": 400000,
+        "sum": 0
+      },
+      "ok": true
+    },
+    {
+      "n": 100000,
+      "what": "Q4 signature",
+      "ts": null,
+      "rust": {
+        "count": 1602035,
+        "sum": 0
+      },
+      "ok": null
+    },
+    {
+      "n": 1000000,
+      "what": "vertexCount",
+      "ts": 1000000,
+      "rust": 1000000,
+      "ok": true
+    },
+    {
+      "n": 1000000,
+      "what": "edgeCount",
+      "ts": 4000000,
+      "rust": 4000000,
+      "ok": true
+    },
+    {
+      "n": 1000000,
+      "what": "Q1 signature",
+      "ts": null,
+      "rust": {
+        "count": 1000000,
+        "sum": 0
+      },
+      "ok": null
+    },
+    {
+      "n": 1000000,
+      "what": "Q2 signature",
+      "ts": {
+        "count": 490000,
+        "sum": 36750000
+      },
+      "rust": {
+        "count": 490000,
+        "sum": 36750000
+      },
+      "ok": true
+    },
+    {
+      "n": 1000000,
+      "what": "Q3 signature",
+      "ts": null,
+      "rust": {
+        "count": 4000000,
+        "sum": 0
+      },
+      "ok": null
+    }
+  ],
+  "ffiOverhead": 0.000004124999977648259
+}
