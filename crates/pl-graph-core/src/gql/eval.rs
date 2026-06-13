@@ -1,15 +1,22 @@
-//! Evaluator + executor — the semantic core, ported from TS `executor.ts` and
-//! `graph-queries.ts`. A tree-walking interpreter (TS compiles to closures; the
-//! same behavior, simpler in Rust). Pattern matching is eager nested loops over
-//! the columnar adjacency; expressions use ISO three-valued (Kleene) logic.
+//! Evaluator + executor over the lowered IR ([`super::plan`]). Pattern matching
+//! is a backtracking visitor over the columnar adjacency; expressions use ISO
+//! three-valued (Kleene) logic. The IR has already resolved `$param` to a
+//! positional slot, functions to enums, and projection metadata — so the
+//! per-row path here is a plain `match`, no string work for params/functions.
 //!
-//! Columnar boundaries: edge properties read as NULL (the core stores none), and
-//! write clauses error (the core is build-once immutable).
+//! A query is run via a [`Prepared`] plan: lower once, execute many times with
+//! different params (positional, slotted at lower time) against any graph.
 
-use std::collections::HashMap;
+use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
-use super::ast::*;
+use super::ast::{ArithOp, CompareOp, Direction, LabelExpr, Lit, Quantifier, RemoveItem, SetOp, SetOpKind};
+use super::lexer::SyntaxError;
+use super::plan::{
+    lower, AggFn, CClause, CExpr, CLinear, CNode, CPath, CProjection, CPropConstraint, CQuery, CRel, CSegment,
+    CSetItem, ScalarFn,
+};
 use crate::graph::{Graph, Value};
 use crate::query::RowSet;
 
@@ -51,13 +58,15 @@ impl Binding {
     }
 }
 
+/// Query parameters supplied by name; bound to positional slots at execute time.
 pub type Params = HashMap<String, Val>;
 
-/// The environment a compiled expression evaluates against.
+/// The environment an expression evaluates against. `params` is positional —
+/// the IR resolved `$name` to an index, so lookup is an array index, not a map.
 struct Env<'a> {
     graph: &'a Graph,
     binding: &'a Binding,
-    params: &'a Params,
+    params: &'a [Val],
     /// Set while folding an aggregate over its group of bindings.
     group: Option<&'a [Binding]>,
 }
@@ -123,6 +132,10 @@ fn num_of(v: &Val) -> Option<f64> {
     }
 }
 
+fn num_of_owned(v: &Val) -> Option<f64> {
+    num_of(v)
+}
+
 fn js_num(n: f64) -> String {
     if n.is_nan() {
         "NaN".to_string()
@@ -162,7 +175,7 @@ fn val_eq(a: &Val, b: &Val) -> bool {
 }
 
 /// Ordering for `< > <= >=`, min/max, and ORDER BY. `None` = incomparable.
-fn val_cmp(a: &Val, b: &Val) -> Option<std::cmp::Ordering> {
+fn val_cmp(a: &Val, b: &Val) -> Option<Ordering> {
     match (a, b) {
         (Val::Num(x), Val::Num(y)) => x.partial_cmp(y),
         (Val::Str(x), Val::Str(y)) => Some(x.cmp(y)),
@@ -261,8 +274,7 @@ fn val_to_value(graph: &Graph, v: &Val) -> Value {
 }
 
 /// ISO: an absent property — or a property of a non-element/NULL — yields NULL.
-/// Vertices and edges read from the same kind of columnar store (`props` vs
-/// `edge_props`), so node and edge property access is one code path.
+/// Vertices and edges read from the same kind of columnar store.
 fn prop_of(graph: &Graph, bound: &Val, key: &str) -> Val {
     let (store, idx) = match bound {
         Val::Node(vi) => (&graph.props, *vi as usize),
@@ -307,32 +319,6 @@ fn matches_label(graph: &Graph, vi: u32, label: Option<&LabelExpr>) -> bool {
 
 // --- expression evaluation ---------------------------------------------------
 
-const AGGREGATES: &[&str] = &["count", "sum", "avg", "min", "max", "collect_list"];
-
-fn has_aggregate(expr: &Expr) -> bool {
-    match expr {
-        Expr::Func { name, args, .. } => AGGREGATES.contains(&name.as_str()) || args.iter().any(has_aggregate),
-        Expr::Neg(e) | Expr::Not(e) => has_aggregate(e),
-        Expr::IsNull { expr, .. } | Expr::IsTruth { expr, .. } | Expr::IsLabeled { expr, .. } => {
-            has_aggregate(expr)
-        }
-        Expr::Arith { left, right, .. }
-        | Expr::Concat { left, right }
-        | Expr::And(left, right)
-        | Expr::Or(left, right)
-        | Expr::Xor(left, right)
-        | Expr::Compare { left, right, .. } => has_aggregate(left) || has_aggregate(right),
-        Expr::In { expr, list, .. } => has_aggregate(expr) || has_aggregate(list),
-        Expr::List(items) => items.iter().any(has_aggregate),
-        Expr::Case { subject, whens, else_ } => {
-            subject.as_deref().is_some_and(has_aggregate)
-                || whens.iter().any(|(w, t)| has_aggregate(w) || has_aggregate(t))
-                || else_.as_deref().is_some_and(has_aggregate)
-        }
-        _ => false,
-    }
-}
-
 fn truth_to_val(t: Truth) -> Val {
     match t {
         Some(b) => Val::Bool(b),
@@ -340,26 +326,26 @@ fn truth_to_val(t: Truth) -> Val {
     }
 }
 
-fn eval(env: &Env, expr: &Expr) -> Val {
+fn eval(env: &Env, expr: &CExpr) -> Val {
     match expr {
-        Expr::Lit(l) => match l {
+        CExpr::Lit(l) => match l {
             Lit::Null => Val::Null,
             Lit::Bool(b) => Val::Bool(*b),
             Lit::Num(n) => Val::Num(*n),
             Lit::Str(s) => Val::Str(s.clone()),
         },
-        Expr::Var(name) => env.binding.get(name).cloned().unwrap_or(Val::Null),
-        Expr::Param(name) => env.params.get(name).cloned().unwrap_or(Val::Null),
-        Expr::Prop { variable, key } => {
-            let bound = env.binding.get(variable).cloned().unwrap_or(Val::Null);
+        CExpr::Var(name) => env.binding.get(name).cloned().unwrap_or(Val::Null),
+        CExpr::Param(slot) => env.params.get(*slot).cloned().unwrap_or(Val::Null),
+        CExpr::Prop { var, key } => {
+            let bound = env.binding.get(var).cloned().unwrap_or(Val::Null);
             prop_of(env.graph, &bound, key)
         }
-        Expr::List(items) => Val::List(items.iter().map(|e| eval(env, e)).collect()),
-        Expr::Neg(e) => match num_of(&eval(env, e)) {
+        CExpr::List(items) => Val::List(items.iter().map(|e| eval(env, e)).collect()),
+        CExpr::Neg(e) => match num_of(&eval(env, e)) {
             Some(n) => Val::Num(-n),
             None => Val::Null,
         },
-        Expr::Arith { op, left, right } => {
+        CExpr::Arith { op, left, right } => {
             let lv = num_of(&eval(env, left));
             let rv = num_of(&eval(env, right));
             match (lv, rv) {
@@ -373,7 +359,7 @@ fn eval(env: &Env, expr: &Expr) -> Val {
                 _ => Val::Null,
             }
         }
-        Expr::Concat { left, right } => {
+        CExpr::Concat { left, right } => {
             let lv = eval(env, left);
             let rv = eval(env, right);
             if is_nullish(&lv) || is_nullish(&rv) {
@@ -382,28 +368,28 @@ fn eval(env: &Env, expr: &Expr) -> Val {
                 Val::Str(js_str(env.graph, &lv) + &js_str(env.graph, &rv))
             }
         }
-        Expr::Not(e) => truth_to_val(not3(as_truth(&eval(env, e)))),
-        Expr::And(l, r) => truth_to_val(and3(as_truth(&eval(env, l)), as_truth(&eval(env, r)))),
-        Expr::Or(l, r) => truth_to_val(or3(as_truth(&eval(env, l)), as_truth(&eval(env, r)))),
-        Expr::Xor(l, r) => truth_to_val(xor3(as_truth(&eval(env, l)), as_truth(&eval(env, r)))),
-        Expr::IsNull { expr, negated } => {
+        CExpr::Not(e) => truth_to_val(not3(as_truth(&eval(env, e)))),
+        CExpr::And(l, r) => truth_to_val(and3(as_truth(&eval(env, l)), as_truth(&eval(env, r)))),
+        CExpr::Or(l, r) => truth_to_val(or3(as_truth(&eval(env, l)), as_truth(&eval(env, r)))),
+        CExpr::Xor(l, r) => truth_to_val(xor3(as_truth(&eval(env, l)), as_truth(&eval(env, r)))),
+        CExpr::IsNull { expr, negated } => {
             let isnull = is_nullish(&eval(env, expr));
             Val::Bool(if *negated { !isnull } else { isnull })
         }
-        Expr::IsTruth { expr, truth, negated } => {
+        CExpr::IsTruth { expr, truth, negated } => {
             let m = as_truth(&eval(env, expr)) == *truth;
             Val::Bool(if *negated { !m } else { m })
         }
-        Expr::IsLabeled { expr, label, negated } => {
+        CExpr::IsLabeled { expr, label, negated } => {
             let el = eval(env, expr);
             let has = labels_match(env.graph, &el, label);
             Val::Bool(if *negated { !has } else { has })
         }
-        Expr::In { expr, list, negated } => {
+        CExpr::In { expr, list, negated } => {
             let r = in_list(&eval(env, expr), &eval(env, list));
             truth_to_val(if *negated { not3(r) } else { r })
         }
-        Expr::Compare { op, left, right } => {
+        CExpr::Compare { op, left, right } => {
             let lv = eval(env, left);
             let rv = eval(env, right);
             if is_nullish(&lv) || is_nullish(&rv) {
@@ -412,20 +398,14 @@ fn eval(env: &Env, expr: &Expr) -> Val {
             let res = match op {
                 CompareOp::Eq => val_eq(&lv, &rv),
                 CompareOp::Ne => !val_eq(&lv, &rv),
-                CompareOp::Lt => val_cmp(&lv, &rv) == Some(std::cmp::Ordering::Less),
-                CompareOp::Gt => val_cmp(&lv, &rv) == Some(std::cmp::Ordering::Greater),
-                CompareOp::Le => matches!(
-                    val_cmp(&lv, &rv),
-                    Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
-                ),
-                CompareOp::Ge => matches!(
-                    val_cmp(&lv, &rv),
-                    Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
-                ),
+                CompareOp::Lt => val_cmp(&lv, &rv) == Some(Ordering::Less),
+                CompareOp::Gt => val_cmp(&lv, &rv) == Some(Ordering::Greater),
+                CompareOp::Le => matches!(val_cmp(&lv, &rv), Some(Ordering::Less | Ordering::Equal)),
+                CompareOp::Ge => matches!(val_cmp(&lv, &rv), Some(Ordering::Greater | Ordering::Equal)),
             };
             Val::Bool(res)
         }
-        Expr::Case { subject, whens, else_ } => {
+        CExpr::Case { subject, whens, else_ } => {
             if let Some(subj) = subject {
                 let s = eval(env, subj);
                 for (w, t) in whens {
@@ -443,24 +423,23 @@ fn eval(env: &Env, expr: &Expr) -> Val {
             }
             else_.as_ref().map(|e| eval(env, e)).unwrap_or(Val::Null)
         }
-        Expr::Exists { patterns, where_ } => {
+        CExpr::Exists { patterns, where_ } => {
             Val::Bool(any_match(env.graph, patterns, where_.as_deref(), env.binding, env.params))
         }
-        Expr::CountSubquery { patterns, where_ } => {
+        CExpr::CountSubquery { patterns, where_ } => {
             Val::Num(count_matches(env.graph, patterns, where_.as_deref(), env.binding, env.params) as f64)
         }
-        Expr::Func { name, args, distinct, star } => {
-            if AGGREGATES.contains(&name.as_str()) {
-                eval_aggregate(env, name, args.first(), *distinct, *star)
-            } else {
-                let vals: Vec<Val> = args.iter().map(|a| eval(env, a)).collect();
-                call_scalar(env.graph, name, &vals)
-            }
+        CExpr::Scalar { func, args } => {
+            let vals: Vec<Val> = args.iter().map(|a| eval(env, a)).collect();
+            call_scalar(env.graph, *func, &vals)
+        }
+        CExpr::Aggregate { func, arg, distinct, star } => {
+            eval_aggregate(env, *func, arg.as_deref(), *distinct, *star)
         }
     }
 }
 
-fn eval_aggregate(env: &Env, name: &str, arg: Option<&Expr>, distinct: bool, star: bool) -> Val {
+fn eval_aggregate(env: &Env, func: AggFn, arg: Option<&CExpr>, distinct: bool, star: bool) -> Val {
     let single;
     let group: &[Binding] = match env.group {
         Some(g) => g,
@@ -469,13 +448,10 @@ fn eval_aggregate(env: &Env, name: &str, arg: Option<&Expr>, distinct: bool, sta
             &single
         }
     };
-    if name == "count" && star {
+    if func == AggFn::Count && star {
         return Val::Num(group.len() as f64);
     }
-    let arg = match arg {
-        Some(a) => a,
-        None => return Val::Null,
-    };
+    let Some(arg) = arg else { return Val::Null };
     // Evaluate the argument over every binding in the group.
     let raw: Vec<Val> = group
         .iter()
@@ -486,17 +462,17 @@ fn eval_aggregate(env: &Env, name: &str, arg: Option<&Expr>, distinct: bool, sta
         .collect();
     let mut values: Vec<Val> = raw.into_iter().filter(|v| !is_nullish(v)).collect();
     if distinct {
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = HashSet::new();
         values.retain(|v| {
             let mut k = String::new();
             val_key(v, &mut k);
             seen.insert(k)
         });
     }
-    match name {
-        "count" => Val::Num(values.len() as f64),
-        "sum" => Val::Num(values.iter().filter_map(num_of_owned).sum()),
-        "avg" => {
+    match func {
+        AggFn::Count => Val::Num(values.len() as f64),
+        AggFn::Sum => Val::Num(values.iter().filter_map(num_of_owned).sum()),
+        AggFn::Avg => {
             if values.is_empty() {
                 Val::Null
             } else {
@@ -504,18 +480,13 @@ fn eval_aggregate(env: &Env, name: &str, arg: Option<&Expr>, distinct: bool, sta
                 Val::Num(s / values.len() as f64)
             }
         }
-        "min" => fold_extreme(values, std::cmp::Ordering::Less),
-        "max" => fold_extreme(values, std::cmp::Ordering::Greater),
-        "collect_list" => Val::List(values),
-        _ => Val::Null,
+        AggFn::Min => fold_extreme(values, Ordering::Less),
+        AggFn::Max => fold_extreme(values, Ordering::Greater),
+        AggFn::CollectList => Val::List(values),
     }
 }
 
-fn num_of_owned(v: &Val) -> Option<f64> {
-    num_of(v)
-}
-
-fn fold_extreme(values: Vec<Val>, want: std::cmp::Ordering) -> Val {
+fn fold_extreme(values: Vec<Val>, want: Ordering) -> Val {
     let mut it = values.into_iter();
     let Some(mut acc) = it.next() else { return Val::Null };
     for v in it {
@@ -526,69 +497,61 @@ fn fold_extreme(values: Vec<Val>, want: std::cmp::Ordering) -> Val {
     acc
 }
 
-// --- scalar functions --------------------------------------------------------
+// --- scalar functions (dispatched on the resolved enum) ----------------------
 
-fn call_scalar(graph: &Graph, name: &str, args: &[Val]) -> Val {
+fn call_scalar(graph: &Graph, func: ScalarFn, args: &[Val]) -> Val {
+    use ScalarFn::*;
     let a = args.first();
     let b = args.get(1);
-    let unary_num = |f: fn(f64) -> f64| match a {
+    let un = |f: fn(f64) -> f64| match a {
         Some(v) if !is_nullish(v) => Val::Num(f(num_of(v).unwrap_or(f64::NAN))),
         _ => Val::Null,
     };
-    match name {
-        "abs" => return unary_num(f64::abs),
-        "ceil" | "ceiling" => return unary_num(f64::ceil),
-        "floor" => return unary_num(f64::floor),
-        "sqrt" => return unary_num(f64::sqrt),
-        "exp" => return unary_num(f64::exp),
-        "ln" => return unary_num(f64::ln),
-        "log10" => return unary_num(f64::log10),
-        "sin" => return unary_num(f64::sin),
-        "cos" => return unary_num(f64::cos),
-        "tan" => return unary_num(f64::tan),
-        "cot" => return unary_num(|n| 1.0 / n.tan()),
-        "asin" => return unary_num(f64::asin),
-        "acos" => return unary_num(f64::acos),
-        "atan" => return unary_num(f64::atan),
-        "sinh" => return unary_num(f64::sinh),
-        "cosh" => return unary_num(f64::cosh),
-        "tanh" => return unary_num(f64::tanh),
-        "degrees" => return unary_num(f64::to_degrees),
-        "radians" => return unary_num(f64::to_radians),
-        _ => {}
-    }
-    let unary_str = |f: fn(&str) -> Val| match a {
+    let us = |f: fn(&str) -> Val| match a {
         Some(v) if !is_nullish(v) => f(&js_str(graph, v)),
         _ => Val::Null,
     };
-    match name {
-        "upper" => return unary_str(|s| Val::Str(s.to_uppercase())),
-        "lower" => return unary_str(|s| Val::Str(s.to_lowercase())),
-        "trim" | "btrim" => return unary_str(|s| Val::Str(s.trim().to_string())),
-        "ltrim" => return unary_str(|s| Val::Str(s.trim_start().to_string())),
-        "rtrim" => return unary_str(|s| Val::Str(s.trim_end().to_string())),
-        "char_length" | "character_length" => return unary_str(|s| Val::Num(s.chars().count() as f64)),
-        _ => {}
-    }
-    let binary_num = |f: fn(f64, f64) -> f64| match (a, b) {
+    let bn = |f: fn(f64, f64) -> f64| match (a, b) {
         (Some(x), Some(y)) if !is_nullish(x) && !is_nullish(y) => {
             Val::Num(f(num_of(x).unwrap_or(f64::NAN), num_of(y).unwrap_or(f64::NAN)))
         }
         _ => Val::Null,
     };
-    match name {
-        "power" => return binary_num(|x, y| x.powf(y)),
-        "mod" => return binary_num(|x, y| x % y),
-        "log" => return binary_num(|base, value| value.ln() / base.ln()),
-        _ => {}
-    }
-    match name {
-        "size" | "length" => match a {
+    match func {
+        Abs => un(f64::abs),
+        Ceil => un(f64::ceil),
+        Floor => un(f64::floor),
+        Sqrt => un(f64::sqrt),
+        Exp => un(f64::exp),
+        Ln => un(f64::ln),
+        Log10 => un(f64::log10),
+        Sin => un(f64::sin),
+        Cos => un(f64::cos),
+        Tan => un(f64::tan),
+        Cot => un(|n| 1.0 / n.tan()),
+        Asin => un(f64::asin),
+        Acos => un(f64::acos),
+        Atan => un(f64::atan),
+        Sinh => un(f64::sinh),
+        Cosh => un(f64::cosh),
+        Tanh => un(f64::tanh),
+        Degrees => un(f64::to_degrees),
+        Radians => un(f64::to_radians),
+        Upper => us(|s| Val::Str(s.to_uppercase())),
+        Lower => us(|s| Val::Str(s.to_lowercase())),
+        Trim => us(|s| Val::Str(s.trim().to_string())),
+        Ltrim => us(|s| Val::Str(s.trim_start().to_string())),
+        Rtrim => us(|s| Val::Str(s.trim_end().to_string())),
+        CharLength => us(|s| Val::Num(s.chars().count() as f64)),
+        Power => bn(|x, y| x.powf(y)),
+        Mod => bn(|x, y| x % y),
+        Log => bn(|base, value| value.ln() / base.ln()),
+        Size => match a {
             Some(Val::List(items)) => Val::Num(items.len() as f64),
             Some(Val::Str(s)) => Val::Num(s.chars().count() as f64),
             _ => Val::Null,
         },
-        "left" => match (a, b) {
+        Left => match (a, b) {
             (Some(x), Some(y)) if !is_nullish(x) && !is_nullish(y) => {
                 let s = js_str(graph, x);
                 let n = num_of(y).unwrap_or(0.0).max(0.0) as usize;
@@ -596,7 +559,7 @@ fn call_scalar(graph: &Graph, name: &str, args: &[Val]) -> Val {
             }
             _ => Val::Null,
         },
-        "right" => match (a, b) {
+        Right => match (a, b) {
             (Some(x), Some(y)) if !is_nullish(x) && !is_nullish(y) => {
                 let s: Vec<char> = js_str(graph, x).chars().collect();
                 let n = num_of(y).unwrap_or(0.0);
@@ -609,18 +572,18 @@ fn call_scalar(graph: &Graph, name: &str, args: &[Val]) -> Val {
             }
             _ => Val::Null,
         },
-        "coalesce" => args.iter().find(|x| !is_nullish(x)).cloned().unwrap_or(Val::Null),
-        "nullif" => match (a, b) {
+        Coalesce => args.iter().find(|x| !is_nullish(x)).cloned().unwrap_or(Val::Null),
+        Nullif => match (a, b) {
             (Some(x), Some(y)) if !is_nullish(x) && !is_nullish(y) && val_eq(x, y) => Val::Null,
             (Some(x), _) => x.clone(),
             _ => Val::Null,
         },
-        "element_id" => match a {
+        ElementId => match a {
             Some(Val::Node(i)) => Val::Str(graph.vid.text(*i).to_string()),
             Some(Val::Edge(i)) => Val::Str(format!("e{i}")),
             _ => Val::Null,
         },
-        _ => Val::Null, // unknown function → null (TS throws; we stay total)
+        Unknown => Val::Null,
     }
 }
 
@@ -638,8 +601,7 @@ fn consistent(binding: &Binding, name: Option<&str>, value: &Val) -> bool {
 
 /// Bind `value` to `name` in place for the duration of a recursion branch,
 /// returning whether a *new* entry was pushed (so the caller can `bind_pop` it
-/// on backtrack). A consistent already-bound variable is left untouched. This is
-/// the backtracking alternative to cloning the binding at every step.
+/// on backtrack). The backtracking alternative to cloning at every step.
 fn bind_push(binding: &mut Binding, name: Option<&str>, value: Val) -> bool {
     match name {
         Some(n) if !binding.has(n) => {
@@ -659,10 +621,10 @@ fn bind_pop(binding: &mut Binding, pushed: bool) {
 fn satisfies(
     graph: &Graph,
     element: &Val,
-    props: &[PropertyConstraint],
-    where_: Option<&Expr>,
+    props: &[CPropConstraint],
+    where_: Option<&CExpr>,
     binding: &Binding,
-    params: &Params,
+    params: &[Val],
 ) -> bool {
     let env = Env { graph, binding, params, group: None };
     for pc in props {
@@ -691,9 +653,8 @@ fn candidate_vertices(graph: &Graph, label: Option<&LabelExpr>) -> Vec<u32> {
     }
 }
 
-/// Expand one segment from `v` as `(edge index, neighbor)` per the direction and
-/// edge-type label expression — a lazy iterator (no intermediate `Vec`), so a
-/// short-circuiting consumer stops walking adjacency as soon as it's satisfied.
+/// Expand one segment from `v` as `(edge index, neighbor)` — a lazy iterator
+/// (no intermediate `Vec`), so a short-circuiting consumer stops walking early.
 fn expand<'a>(
     graph: &'a Graph,
     v: u32,
@@ -709,15 +670,15 @@ fn expand<'a>(
         .map(|a| (a.eidx, a.nbr))
 }
 
-/// Try to match `node` at vertex `vi`, extending `binding` *in place* and
-/// invoking `cont` on success, then restoring the binding. Returns `false` only
-/// if `cont` asked to stop the whole traversal (propagated upward).
+/// Try to match `node` at vertex `vi`, extending `binding` in place and invoking
+/// `cont` on success, then restoring it. Returns `false` only if `cont` asked to
+/// stop the whole traversal.
 fn match_node_then(
     graph: &Graph,
     binding: &mut Binding,
-    node: &NodePattern,
+    node: &CNode,
     vi: u32,
-    params: &Params,
+    params: &[Val],
     cont: &mut dyn FnMut(&mut Binding) -> bool,
 ) -> bool {
     if !matches_label(graph, vi, node.label.as_ref())
@@ -733,9 +694,8 @@ fn match_node_then(
 }
 
 /// Vertices reachable from `from` in [min, max] hops of `rel` (var-length).
-/// Returns just the endpoints — no per-hop path bookkeeping, since the segment
-/// binds neither the edge variable nor a per-edge predicate.
-fn reachable(graph: &Graph, from: u32, rel: &RelPattern, q: Quantifier) -> Vec<u32> {
+/// Returns just the endpoints — no per-hop path bookkeeping.
+fn reachable(graph: &Graph, from: u32, rel: &CRel, q: Quantifier) -> Vec<u32> {
     let cap = q.max.unwrap_or(graph.n as u32 + 1);
     let mut result: Vec<u32> = Vec::new();
     let mut in_result = vec![false; graph.n];
@@ -776,17 +736,17 @@ fn reachable(graph: &Graph, from: u32, rel: &RelPattern, q: Quantifier) -> Vec<u
 /// binding via `emit`. Returns `false` to propagate a consumer's stop request.
 fn walk_segments(
     graph: &Graph,
-    pattern: &PathPattern,
+    pattern: &CPath,
     index: usize,
     from: u32,
     binding: &mut Binding,
-    params: &Params,
+    params: &[Val],
     emit: &mut dyn FnMut(&mut Binding) -> bool,
 ) -> bool {
     if index >= pattern.segments.len() {
         return emit(binding);
     }
-    let Segment { rel, node } = &pattern.segments[index];
+    let CSegment { rel, node } = &pattern.segments[index];
     if let Some(q) = rel.quantifier {
         // Var-length: edge variable / per-edge predicate not bound (known simplification).
         for end in reachable(graph, from, rel, q) {
@@ -823,9 +783,9 @@ fn walk_segments(
 /// Seed and match a single path pattern, emitting each binding via `emit`.
 fn visit_pattern(
     graph: &Graph,
-    pattern: &PathPattern,
+    pattern: &CPath,
     binding: &mut Binding,
-    params: &Params,
+    params: &[Val],
     emit: &mut dyn FnMut(&mut Binding) -> bool,
 ) -> bool {
     let seeds: Vec<u32> = match pattern.start.variable.as_deref() {
@@ -847,15 +807,14 @@ fn visit_pattern(
 }
 
 /// Extend a binding through every pattern (nested), filter by an optional WHERE,
-/// and emit each surviving binding. Returns `false` if `emit` asked to stop —
-/// which is how `EXISTS` short-circuits after the first match.
+/// and emit each surviving binding. Returns `false` if `emit` asked to stop.
 fn visit_patterns(
     graph: &Graph,
-    patterns: &[PathPattern],
+    patterns: &[CPath],
     idx: usize,
-    where_: Option<&Expr>,
+    where_: Option<&CExpr>,
     binding: &mut Binding,
-    params: &Params,
+    params: &[Val],
     emit: &mut dyn FnMut(&mut Binding) -> bool,
 ) -> bool {
     if idx >= patterns.len() {
@@ -873,18 +832,18 @@ fn visit_patterns(
 }
 
 /// Does the (correlated) sub-pattern have at least one match? Short-circuits.
-fn any_match(graph: &Graph, patterns: &[PathPattern], where_: Option<&Expr>, binding: &Binding, params: &Params) -> bool {
+fn any_match(graph: &Graph, patterns: &[CPath], where_: Option<&CExpr>, binding: &Binding, params: &[Val]) -> bool {
     let mut found = false;
     let mut work = binding.clone();
     visit_patterns(graph, patterns, 0, where_, &mut work, params, &mut |_| {
         found = true;
-        false // stop at the first match
+        false
     });
     found
 }
 
 /// Count matches of the (correlated) sub-pattern.
-fn count_matches(graph: &Graph, patterns: &[PathPattern], where_: Option<&Expr>, binding: &Binding, params: &Params) -> u64 {
+fn count_matches(graph: &Graph, patterns: &[CPath], where_: Option<&CExpr>, binding: &Binding, params: &[Val]) -> u64 {
     let mut count = 0u64;
     let mut work = binding.clone();
     visit_patterns(graph, patterns, 0, where_, &mut work, params, &mut |_| {
@@ -895,13 +854,13 @@ fn count_matches(graph: &Graph, patterns: &[PathPattern], where_: Option<&Expr>,
 }
 
 /// Variables a pattern introduces (for OPTIONAL MATCH null-binding).
-fn pattern_vars(patterns: &[PathPattern]) -> Vec<String> {
+fn pattern_vars(patterns: &[CPath]) -> Vec<String> {
     let mut vars = Vec::new();
     for p in patterns {
         if let Some(v) = &p.start.variable {
             vars.push(v.clone());
         }
-        for Segment { rel, node } in &p.segments {
+        for CSegment { rel, node } in &p.segments {
             if let Some(v) = &rel.variable {
                 vars.push(v.clone());
             }
@@ -913,29 +872,28 @@ fn pattern_vars(patterns: &[PathPattern]) -> Vec<String> {
     vars
 }
 
-/// Run a MATCH clause over the incoming bindings. `cap`, when set, stops the
-/// walk once that many output rows exist — a LIMIT short-circuit applied only
-/// when the query is provably streamable (see `terminal_cap`).
+/// Run a MATCH clause over incoming bindings. `cap`, when set, stops the walk
+/// once that many output rows exist (a streamable LIMIT short-circuit).
 fn run_match(
     graph: &Graph,
-    clause: &MatchClause,
+    optional: bool,
+    patterns: &[CPath],
+    where_: Option<&CExpr>,
     bindings: Vec<Binding>,
-    params: &Params,
+    params: &[Val],
     cap: Option<usize>,
 ) -> Vec<Binding> {
     let mut out = Vec::new();
     for b in &bindings {
         let mut work = b.clone();
         let before = out.len();
-        // Clone into `out` only when a full binding is actually emitted; the walk
-        // itself mutates `work` in place and backtracks.
-        visit_patterns(graph, &clause.patterns, 0, clause.where_.as_ref(), &mut work, params, &mut |m| {
+        visit_patterns(graph, patterns, 0, where_, &mut work, params, &mut |m| {
             out.push(m.clone());
             cap.is_none_or(|c| out.len() < c) // false → stop walking
         });
-        if out.len() == before && clause.optional {
+        if out.len() == before && optional {
             let mut filled = b.clone();
-            for v in pattern_vars(&clause.patterns) {
+            for v in pattern_vars(patterns) {
                 if !filled.has(&v) {
                     filled.set(&v, Val::Null);
                 }
@@ -950,18 +908,16 @@ fn run_match(
 }
 
 /// The output row cap a terminal `RETURN ... LIMIT n` allows pushing down into
-/// matching — `Some(skip + limit)` only when the projection is streamable
-/// (no aggregation, DISTINCT, or ORDER BY would reorder/dedup) and every earlier
-/// clause is a plain MATCH (so output cardinality equals the final match's).
-fn terminal_cap(linear: &LinearQuery) -> Option<usize> {
+/// matching — `Some(skip + limit)` only when the projection is streamable and
+/// every earlier clause is a plain MATCH.
+fn terminal_cap(linear: &CLinear) -> Option<usize> {
     let (last, rest) = linear.clauses.split_last()?;
-    let Clause::Return(proj) = last else { return None };
-    let aggregating = !proj.star && proj.items.iter().any(|i| has_aggregate(&i.expr));
-    if aggregating || proj.distinct || !proj.order_by.is_empty() {
+    let CClause::Return(proj) = last else { return None };
+    if proj.aggregating || proj.distinct || !proj.order_by.is_empty() {
         return None;
     }
     let limit = proj.limit?;
-    if !rest.iter().all(|c| matches!(c, Clause::Match(_))) {
+    if !rest.iter().all(|c| matches!(c, CClause::Match { .. })) {
         return None;
     }
     Some(proj.skip.unwrap_or(0) + limit)
@@ -969,21 +925,8 @@ fn terminal_cap(linear: &LinearQuery) -> Option<usize> {
 
 // --- projection --------------------------------------------------------------
 
-fn column_name(expr: &Expr) -> String {
-    match expr {
-        Expr::Var(name) => name.clone(),
-        Expr::Prop { variable, key } => format!("{variable}.{key}"),
-        _ => "expr".to_string(),
-    }
-}
-
-fn item_name(item: &ReturnItem) -> String {
-    item.alias.clone().unwrap_or_else(|| column_name(&item.expr))
-}
-
 /// Compare two ORDER BY keys, honoring direction and ISO NULLS FIRST/LAST.
-fn compare_sort(a: &Val, b: &Val, descending: bool, nulls_first: Option<bool>) -> std::cmp::Ordering {
-    use std::cmp::Ordering;
+fn compare_sort(a: &Val, b: &Val, descending: bool, nulls_first: Option<bool>) -> Ordering {
     let a_null = is_nullish(a);
     let b_null = is_nullish(b);
     if a_null && b_null {
@@ -1001,11 +944,8 @@ fn compare_sort(a: &Val, b: &Val, descending: bool, nulls_first: Option<bool>) -
     }
 }
 
-fn apply_projection(proj: &Projection, bindings: Vec<Binding>, params: &Params, graph: &Graph) -> Vec<Binding> {
+fn apply_projection(proj: &CProjection, bindings: Vec<Binding>, params: &[Val], graph: &Graph) -> Vec<Binding> {
     let order_n = proj.order_by.len();
-    let item_names: Vec<String> = proj.items.iter().map(item_name).collect();
-    let is_agg: Vec<bool> = proj.items.iter().map(|i| has_aggregate(&i.expr)).collect();
-    let aggregating = !proj.star && is_agg.iter().any(|&a| a);
 
     // (projected binding, sort keys)
     let mut keyed: Vec<(Binding, Vec<Val>)> = Vec::new();
@@ -1016,8 +956,8 @@ fn apply_projection(proj: &Projection, bindings: Vec<Binding>, params: &Params, 
         }
         let env = Env { graph, binding: rep, params, group };
         let mut out = Binding::default();
-        for (item, name) in proj.items.iter().zip(&item_names) {
-            out.set(name, eval(&env, &item.expr));
+        for item in &proj.items {
+            out.set(&item.name, eval(&env, &item.expr));
         }
         out
     };
@@ -1034,14 +974,9 @@ fn apply_projection(proj: &Projection, bindings: Vec<Binding>, params: &Params, 
         proj.order_by.iter().map(|s| eval(&env, &s.expr)).collect()
     };
 
-    if aggregating {
-        let group_key_exprs: Vec<&Expr> = proj
-            .items
-            .iter()
-            .zip(&is_agg)
-            .filter(|(_, &agg)| !agg)
-            .map(|(i, _)| &i.expr)
-            .collect();
+    if proj.aggregating {
+        let group_key_exprs: Vec<&CExpr> =
+            proj.items.iter().filter(|i| !i.is_agg).map(|i| &i.expr).collect();
         let mut order_keys: Vec<String> = Vec::new();
         let mut groups: HashMap<String, Vec<Binding>> = HashMap::new();
         for b in bindings {
@@ -1078,7 +1013,7 @@ fn apply_projection(proj: &Projection, bindings: Vec<Binding>, params: &Params, 
     }
 
     if proj.distinct {
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = HashSet::new();
         keyed.retain(|(b, _)| seen.insert(row_key(b)));
     }
 
@@ -1086,11 +1021,11 @@ fn apply_projection(proj: &Projection, bindings: Vec<Binding>, params: &Params, 
         keyed.sort_by(|a, b| {
             for (i, s) in proj.order_by.iter().enumerate() {
                 let o = compare_sort(&a.1[i], &b.1[i], s.descending, s.nulls_first);
-                if o != std::cmp::Ordering::Equal {
+                if o != Ordering::Equal {
                     return o;
                 }
             }
-            std::cmp::Ordering::Equal
+            Ordering::Equal
         });
     }
 
@@ -1104,26 +1039,24 @@ fn apply_projection(proj: &Projection, bindings: Vec<Binding>, params: &Params, 
 
 // --- linear query & set ops --------------------------------------------------
 
-fn run_linear(linear: &LinearQuery, graph: &mut Graph, params: &Params) -> Result<Vec<Binding>, String> {
-    // A streamable terminal LIMIT lets the *last* MATCH stop early (its output
-    // cardinality equals the result's, since nothing reorders/dedups after it).
+fn run_linear(linear: &CLinear, graph: &mut Graph, params: &[Val]) -> Result<Vec<Binding>, String> {
     let cap = terminal_cap(linear);
     let last_match = linear
         .clauses
         .iter()
-        .rposition(|c| matches!(c, Clause::Match(_)))
+        .rposition(|c| matches!(c, CClause::Match { .. }))
         .filter(|_| cap.is_some());
 
     let mut bindings: Vec<Binding> = vec![Binding::default()];
     for (i, clause) in linear.clauses.iter().enumerate() {
         match clause {
-            Clause::Match(m) => {
+            CClause::Match { optional, patterns, where_ } => {
                 let clause_cap = if Some(i) == last_match { cap } else { None };
-                bindings = run_match(graph, m, bindings, params, clause_cap);
+                bindings = run_match(graph, *optional, patterns, where_.as_ref(), bindings, params, clause_cap);
             }
-            Clause::With(w) => {
-                let projected = apply_projection(&w.projection, bindings, params, graph);
-                bindings = match &w.where_ {
+            CClause::With { projection, where_ } => {
+                let projected = apply_projection(projection, bindings, params, graph);
+                bindings = match where_ {
                     None => projected,
                     Some(expr) => projected
                         .into_iter()
@@ -1134,25 +1067,25 @@ fn run_linear(linear: &LinearQuery, graph: &mut Graph, params: &Params) -> Resul
                         .collect(),
                 };
             }
-            Clause::Return(proj) => {
+            CClause::Return(proj) => {
                 return Ok(apply_projection(proj, bindings, params, graph));
             }
-            Clause::Finish => return Ok(Vec::new()),
+            CClause::Finish => return Ok(Vec::new()),
             // Mutations run eagerly, exactly once per binding.
-            Clause::Insert(patterns) => {
+            CClause::Insert(patterns) => {
                 bindings = bindings.iter().map(|b| run_insert(graph, patterns, b, params)).collect();
             }
-            Clause::Set(items) => {
+            CClause::Set(items) => {
                 for b in &bindings {
                     run_set(graph, items, b, params);
                 }
             }
-            Clause::Remove(items) => {
+            CClause::Remove(items) => {
                 for b in &bindings {
                     run_remove(graph, items, b);
                 }
             }
-            Clause::Delete { detach, targets } => {
+            CClause::Delete { detach, targets } => {
                 for b in &bindings {
                     run_delete(graph, *detach, targets, b, params)?;
                 }
@@ -1164,8 +1097,7 @@ fn run_linear(linear: &LinearQuery, graph: &mut Graph, params: &Params) -> Resul
 
 // --- write execution ---------------------------------------------------------
 
-/// Concrete labels a label expression names (for element creation). `|`/`!`/`%`
-/// can't name a creatable label set, so they contribute nothing.
+/// Concrete labels a label expression names (for element creation).
 fn labels_of(expr: Option<&LabelExpr>) -> Vec<String> {
     match expr {
         Some(LabelExpr::Label(name)) => vec![name.clone()],
@@ -1179,18 +1111,13 @@ fn labels_of(expr: Option<&LabelExpr>) -> Vec<String> {
 }
 
 /// Evaluate a pattern property map to concrete core `Value`s (for create/set).
-fn eval_props(
-    graph: &Graph,
-    props: &[PropertyConstraint],
-    binding: &Binding,
-    params: &Params,
-) -> Vec<(String, Value)> {
+fn eval_props(graph: &Graph, props: &[CPropConstraint], binding: &Binding, params: &[Val]) -> Vec<(String, Value)> {
     let env = Env { graph, binding, params, group: None };
     props.iter().map(|pc| (pc.key.clone(), val_to_value(graph, &eval(&env, &pc.value)))).collect()
 }
 
 /// Create a node from a pattern, reusing an already-bound variable.
-fn ensure_node(graph: &mut Graph, binding: &mut Binding, node: &NodePattern, params: &Params) -> u32 {
+fn ensure_node(graph: &mut Graph, binding: &mut Binding, node: &CNode, params: &[Val]) -> u32 {
     if let Some(var) = &node.variable {
         if let Some(Val::Node(vi)) = binding.get(var) {
             return *vi;
@@ -1205,11 +1132,11 @@ fn ensure_node(graph: &mut Graph, binding: &mut Binding, node: &NodePattern, par
     vi
 }
 
-fn run_insert(graph: &mut Graph, patterns: &[PathPattern], binding: &Binding, params: &Params) -> Binding {
+fn run_insert(graph: &mut Graph, patterns: &[CPath], binding: &Binding, params: &[Val]) -> Binding {
     let mut out = binding.clone();
     for pattern in patterns {
         let mut prev = ensure_node(graph, &mut out, &pattern.start, params);
-        for Segment { rel, node } in &pattern.segments {
+        for CSegment { rel, node } in &pattern.segments {
             let next = ensure_node(graph, &mut out, node, params);
             let (from, to) = if rel.direction == Direction::In { (next, prev) } else { (prev, next) };
             let etype = labels_of(rel.label.as_ref()).into_iter().next().unwrap_or_default();
@@ -1224,12 +1151,11 @@ fn run_insert(graph: &mut Graph, patterns: &[PathPattern], binding: &Binding, pa
     out
 }
 
-fn run_set(graph: &mut Graph, items: &[SetItem], binding: &Binding, params: &Params) {
+fn run_set(graph: &mut Graph, items: &[CSetItem], binding: &Binding, params: &[Val]) {
     for item in items {
         match item {
-            SetItem::Prop { variable, key, value } => {
+            CSetItem::Prop { variable, key, value } => {
                 let Some(el) = binding.get(variable).cloned() else { continue };
-                // Evaluate the value first (immutable borrow), then mutate.
                 let v = {
                     let env = Env { graph, binding, params, group: None };
                     val_to_value(graph, &eval(&env, value))
@@ -1240,7 +1166,7 @@ fn run_set(graph: &mut Graph, items: &[SetItem], binding: &Binding, params: &Par
                     _ => {}
                 }
             }
-            SetItem::Label { variable, label } => match binding.get(variable) {
+            CSetItem::Label { variable, label } => match binding.get(variable) {
                 Some(Val::Node(vi)) => graph.add_vertex_label(*vi, label),
                 Some(Val::Edge(ei)) => graph.add_edge_label(*ei, label),
                 _ => {}
@@ -1266,13 +1192,7 @@ fn run_remove(graph: &mut Graph, items: &[RemoveItem], binding: &Binding) {
     }
 }
 
-fn run_delete(
-    graph: &mut Graph,
-    detach: bool,
-    targets: &[Expr],
-    binding: &Binding,
-    params: &Params,
-) -> Result<(), String> {
+fn run_delete(graph: &mut Graph, detach: bool, targets: &[CExpr], binding: &Binding, params: &[Val]) -> Result<(), String> {
     for target in targets {
         let v = {
             let env = Env { graph, binding, params, group: None };
@@ -1288,12 +1208,12 @@ fn run_delete(
 }
 
 fn distinct_rows(rows: Vec<Binding>) -> Vec<Binding> {
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = HashSet::new();
     rows.into_iter().filter(|r| seen.insert(row_key(r))).collect()
 }
 
 fn combine(op: SetOp, left: Vec<Binding>, right: Vec<Binding>) -> Vec<Binding> {
-    let right_keys: std::collections::HashSet<String> = right.iter().map(row_key).collect();
+    let right_keys: HashSet<String> = right.iter().map(row_key).collect();
     match op.op {
         SetOpKind::Union => {
             let mut all = left;
@@ -1323,40 +1243,68 @@ fn combine(op: SetOp, left: Vec<Binding>, right: Vec<Binding>) -> Vec<Binding> {
     }
 }
 
-/// Output column names for a query: the terminal RETURN item names of part 0
+/// Output column names for a plan: the terminal RETURN item names of part 0
 /// (or, for `RETURN *`, the keys of the first result row).
-fn output_columns(query: &Query, rows: &[Binding]) -> Vec<String> {
-    let terminal = query.parts.first().and_then(|p| {
+fn output_columns(plan: &CQuery, rows: &[Binding]) -> Vec<String> {
+    let terminal = plan.parts.first().and_then(|p| {
         p.clauses.iter().rev().find_map(|c| match c {
-            Clause::Return(proj) => Some(proj),
+            CClause::Return(proj) => Some(proj),
             _ => None,
         })
     });
     match terminal {
-        Some(proj) if !proj.star && !proj.items.is_empty() => proj.items.iter().map(item_name).collect(),
+        Some(proj) if !proj.star && !proj.items.is_empty() => proj.items.iter().map(|i| i.name.clone()).collect(),
         _ => rows.first().map(|r| r.iter().map(|(k, _)| k.clone()).collect()).unwrap_or_default(),
     }
 }
 
-impl Query {
-    /// Execute against a columnar graph, returning real result rows. The graph
-    /// is `&mut` because a query may mutate it (`INSERT`/`SET`/`REMOVE`/`DELETE`).
+/// Execute a lowered plan against a graph with positional params.
+fn run_cquery(plan: &CQuery, graph: &mut Graph, params: &[Val]) -> Result<RowSet, String> {
+    let first = plan.parts.first().ok_or("empty query")?;
+    let mut rows = run_linear(first, graph, params)?;
+    for (i, op) in plan.ops.iter().enumerate() {
+        let right = run_linear(&plan.parts[i + 1], graph, params)?;
+        rows = combine(*op, rows, right);
+    }
+    let cols = output_columns(plan, &rows);
+    let out_rows: Vec<Vec<Value>> = rows
+        .iter()
+        .map(|b| cols.iter().map(|c| b.get(c).map(|v| val_to_value(graph, v)).unwrap_or(Value::Null)).collect())
+        .collect();
+    Ok(RowSet { cols, rows: out_rows })
+}
+
+/// Bind named params into the plan's positional slot order.
+fn positional(param_names: &[String], params: &Params) -> Vec<Val> {
+    param_names.iter().map(|n| params.get(n).cloned().unwrap_or(Val::Null)).collect()
+}
+
+/// A prepared (lowered) query: compile once, execute many times with different
+/// params against any graph. Parameters slot in positionally at execute time.
+pub struct Prepared {
+    plan: CQuery,
+    /// param slot → name (the order positional args are bound in).
+    param_names: Vec<String>,
+}
+
+impl Prepared {
     pub fn execute(&self, graph: &mut Graph, params: &Params) -> Result<RowSet, String> {
-        let first = self.parts.first().ok_or("empty query")?;
-        let mut rows = run_linear(first, graph, params)?;
-        for (i, op) in self.ops.iter().enumerate() {
-            let right = run_linear(&self.parts[i + 1], graph, params)?;
-            rows = combine(*op, rows, right);
-        }
-        let cols = output_columns(self, &rows);
-        let out_rows: Vec<Vec<Value>> = rows
-            .iter()
-            .map(|b| {
-                cols.iter()
-                    .map(|c| b.get(c).map(|v| val_to_value(graph, v)).unwrap_or(Value::Null))
-                    .collect()
-            })
-            .collect();
-        Ok(RowSet { cols, rows: out_rows })
+        run_cquery(&self.plan, graph, &positional(&self.param_names, params))
+    }
+}
+
+/// Parse and lower a query into a reusable [`Prepared`] plan.
+pub fn prepare(text: &str) -> Result<Prepared, SyntaxError> {
+    let query = super::parse(text)?;
+    let (plan, param_names) = lower(&query);
+    Ok(Prepared { plan, param_names })
+}
+
+impl super::ast::Query {
+    /// Lower and execute in one call (no plan reuse). Keeps the simple
+    /// `parse(q)?.execute(graph, &params)` path; reuse a [`Prepared`] for speed.
+    pub fn execute(&self, graph: &mut Graph, params: &Params) -> Result<RowSet, String> {
+        let (plan, param_names) = lower(self);
+        run_cquery(&plan, graph, &positional(&param_names, params))
     }
 }

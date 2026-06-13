@@ -321,6 +321,34 @@ fn parameters() {
 }
 
 #[test]
+fn prepared_plan_reused_with_params() {
+    use super::eval::Val;
+    let mut g = modern();
+    // Lower once, execute many with different params slotted in positionally.
+    let plan = super::prepare("MATCH (n:Person) WHERE n.name = $who RETURN n.age AS age").unwrap();
+
+    let mut p1 = Params::new();
+    p1.insert("who".to_string(), Val::Str("marko".to_string()));
+    assert_eq!(plan.execute(&mut g, &p1).unwrap().rows, vec![vec![n(29.0)]]);
+
+    let mut p2 = Params::new();
+    p2.insert("who".to_string(), Val::Str("josh".to_string()));
+    assert_eq!(plan.execute(&mut g, &p2).unwrap().rows, vec![vec![n(32.0)]]);
+}
+
+#[test]
+fn prepared_write_persists() {
+    use super::eval::Val;
+    let mut g = modern();
+    let ins = super::prepare("INSERT (n:Person {name: $nm, age: $age}) RETURN n.name").unwrap();
+    let mut p = Params::new();
+    p.insert("nm".to_string(), Val::Str("zoe".to_string()));
+    p.insert("age".to_string(), Val::Num(40.0));
+    assert_eq!(ins.execute(&mut g, &p).unwrap().rows, vec![vec![s("zoe")]]);
+    assert_eq!(rows(&mut g, "MATCH (n:Person) RETURN count(*) AS c"), vec![vec![n(5.0)]]);
+}
+
+#[test]
 fn scalar_functions() {
     let mut g = modern();
     let r = rows(
