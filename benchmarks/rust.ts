@@ -16,8 +16,12 @@ const { symbols } = dlopen(LIB, {
   plg_graph_vertex_count: { args: [FFIType.ptr], returns: FFIType.u64_fast },
   plg_graph_edge_count: { args: [FFIType.ptr], returns: FFIType.u64_fast },
   plg_query: {
-    args: [FFIType.ptr, FFIType.ptr, FFIType.u64_fast, FFIType.ptr, FFIType.ptr],
+    args: [FFIType.ptr, FFIType.ptr, FFIType.u64_fast, FFIType.ptr, FFIType.ptr, FFIType.ptr],
     returns: FFIType.i32,
+  },
+  plg_query_batch: {
+    args: [FFIType.ptr, FFIType.ptr, FFIType.u64_fast, FFIType.ptr, FFIType.ptr, FFIType.ptr],
+    returns: FFIType.i64,
   },
   plg_predicate_scan: {
     args: [FFIType.ptr, FFIType.ptr, FFIType.u64_fast, FFIType.f64, FFIType.u32, FFIType.ptr, FFIType.ptr],
@@ -48,16 +52,51 @@ export const edgeCount = (handle: bigint): number => Number(symbols.plg_graph_ed
 
 const outCount = new BigUint64Array(1);
 const outSum = new Float64Array(1);
+const outChecksum = new BigUint64Array(1);
 
-export type Sig = { count: number; sum: number };
+export type Sig = { count: number; sum: number; checksum: bigint };
 
 export const runQuery = (handle: bigint, q: string): Sig => {
   const qb = enc.encode(q);
-  const rc = symbols.plg_query(handle, ptr(qb), BigInt(qb.length), ptr(outCount), ptr(outSum));
+  const rc = symbols.plg_query(
+    handle,
+    ptr(qb),
+    BigInt(qb.length),
+    ptr(outCount),
+    ptr(outSum),
+    ptr(outChecksum),
+  );
   if (rc !== 0) {
     throw new Error(`plg_query failed (rc=${rc}) for: ${q}`);
   }
-  return { count: Number(outCount[0]), sum: outSum[0]! };
+  return { count: Number(outCount[0]), sum: outSum[0]!, checksum: outChecksum[0]! };
+};
+
+/** Run many queries in a single FFI crossing (amortizes the per-call tax). */
+export const runQueryBatch = (handle: bigint, queries: readonly string[]): Sig[] => {
+  const joined = enc.encode(queries.join('\n'));
+  const k = queries.length;
+  const counts = new BigUint64Array(k);
+  const sums = new Float64Array(k);
+  const checks = new BigUint64Array(k);
+  const n = Number(
+    symbols.plg_query_batch(
+      handle,
+      ptr(joined),
+      BigInt(joined.length),
+      ptr(counts),
+      ptr(sums),
+      ptr(checks),
+    ),
+  );
+  if (n < 0) {
+    throw new Error('plg_query_batch failed');
+  }
+  return Array.from({ length: k }, (_, i) => ({
+    count: Number(counts[i]),
+    sum: sums[i]!,
+    checksum: checks[i]!,
+  }));
 };
 
 export const predicateScan = (handle: bigint, key: string, thr: number, simd: boolean): Sig => {

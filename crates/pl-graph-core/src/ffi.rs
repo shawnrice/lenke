@@ -102,6 +102,7 @@ pub unsafe extern "C" fn plg_query(
     q_len: usize,
     out_count: *mut u64,
     out_sum: *mut f64,
+    out_checksum: *mut u64,
 ) -> i32 {
     if g.is_null() || q_ptr.is_null() {
         return -1;
@@ -117,7 +118,49 @@ pub unsafe extern "C" fn plg_query(
     let r = parsed.run(&*g);
     *out_count = r.count;
     *out_sum = r.sum;
+    *out_checksum = r.checksum;
     0
+}
+
+/// Run many queries (newline-joined) in ONE crossing — amortizes the per-call
+/// FFI tax. Results are written into the caller's `count`/`sum`/`checksum`
+/// arrays (each sized to the query count). Returns the number run, or -1.
+///
+/// # Safety
+/// `g` valid; `q_ptr`/`q_len` valid UTF-8; out arrays sized to the number of
+/// newline-separated queries.
+#[no_mangle]
+pub unsafe extern "C" fn plg_query_batch(
+    g: *const Graph,
+    q_ptr: *const u8,
+    q_len: usize,
+    out_count: *mut u64,
+    out_sum: *mut f64,
+    out_checksum: *mut u64,
+) -> i64 {
+    if g.is_null() || q_ptr.is_null() {
+        return -1;
+    }
+    let text = match std::str::from_utf8(std::slice::from_raw_parts(q_ptr, q_len)) {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+    let g = &*g;
+    let mut i = 0isize;
+    for line in text.split('\n') {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let r = match query::parse(line) {
+            Ok(p) => p.run(g),
+            Err(_) => return -1,
+        };
+        *out_count.offset(i) = r.count;
+        *out_sum.offset(i) = r.sum;
+        *out_checksum.offset(i) = r.checksum;
+        i += 1;
+    }
+    i as i64
 }
 
 /// SIMD (or scalar) predicate scan `key > threshold` over a numeric column.

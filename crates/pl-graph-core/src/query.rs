@@ -1,12 +1,14 @@
-//! A small GQL subset: `MATCH` a linear pattern, optional single `WHERE`
-//! comparison, `RETURN count(*)` or a projected item. Enough to run the
-//! benchmark queries through a real parser+executor over the columnar core.
+//! A GQL subset large enough to compare past `count`: MATCH a linear pattern,
+//! an AND-chain of WHERE comparisons, and RETURN with aggregates
+//! (count/sum/avg/min/max), implicit GROUP BY, DISTINCT, ORDER BY, and LIMIT.
 //!
-//! Every query reduces to a `(count, sum)` signature: row count, plus the sum
-//! of a numeric projection (0 for count/non-numeric). That's an order-
-//! independent fingerprint the TS and Rust engines can be checked equal on.
+//! Every result reduces to a `(count, sum, checksum)` fingerprint both engines
+//! compute identically: row count, the sum of numeric cells (compared with an
+//! epsilon, since float summation order differs), and an FNV fold over the
+//! *exact* cells — strings and integer-valued numbers only (floats are left to
+//! `sum`). It's order-sensitive iff the query has ORDER BY.
 
-use crate::graph::{Column, Graph};
+use crate::graph::{Column, Dict, Graph};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Op {
@@ -44,24 +46,55 @@ struct Pred {
     lit: Lit,
 }
 
-#[derive(Debug, Clone)]
-enum Ret {
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum AggFunc {
     Count,
-    Item { var: String, key: Option<String> },
+    Sum,
+    Avg,
+    Min,
+    Max,
+}
+
+#[derive(Debug, Clone)]
+enum RetItem {
+    /// `a.key` (or bare `a`, key=None → the vertex id string)
+    Plain { var: String, key: Option<String> },
+    /// `count(*)` / `sum(a.key)` / …
+    Agg { func: AggFunc, var: Option<String>, key: Option<String> },
+}
+
+#[derive(Debug, Clone)]
+struct OrderBy {
+    /// index into the RETURN items
+    col: usize,
+    desc: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct Query {
     nodes: Vec<NodeP>,
-    rels: Vec<RelP>, // rels[i] connects nodes[i] -> nodes[i+1]
-    pred: Option<Pred>,
-    ret: Ret,
+    rels: Vec<RelP>,
+    preds: Vec<Pred>,
+    distinct: bool,
+    items: Vec<RetItem>,
+    order: Option<OrderBy>,
+    limit: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct QueryResult {
     pub count: u64,
     pub sum: f64,
+    pub checksum: u64,
+}
+
+// ---------- a projected cell ----------
+
+#[derive(Clone, Copy)]
+enum Cell {
+    Num(f64),
+    Str(u32), // interned in the projection-local dict
+    Null,
 }
 
 // ---------- tokenizer ----------
@@ -71,7 +104,7 @@ enum Tok {
     Ident(String),
     Num(f64),
     Str(String),
-    Sym(String), // punctuation incl. multi-char ops like -[ ]-> <= >= <>
+    Sym(String),
 }
 
 fn tokenize(s: &str) -> Result<Vec<Tok>, String> {
@@ -83,15 +116,17 @@ fn tokenize(s: &str) -> Result<Vec<Tok>, String> {
         if c.is_whitespace() {
             i += 1;
         } else if c == '\'' || c == '"' {
-            let quote = c;
+            let q = c;
             i += 1;
             let start = i;
-            while i < b.len() && b[i] as char != quote {
+            while i < b.len() && b[i] as char != q {
                 i += 1;
             }
             out.push(Tok::Str(s[start..i].to_string()));
-            i += 1; // closing quote
-        } else if c.is_ascii_digit() || (c == '-' && i + 1 < b.len() && (b[i + 1] as char).is_ascii_digit()) {
+            i += 1;
+        } else if c.is_ascii_digit()
+            || (c == '-' && i + 1 < b.len() && (b[i + 1] as char).is_ascii_digit())
+        {
             let start = i;
             i += 1;
             while i < b.len() && {
@@ -101,7 +136,12 @@ fn tokenize(s: &str) -> Result<Vec<Tok>, String> {
                 i += 1;
             }
             out.push(Tok::Num(s[start..i].parse().map_err(|_| "bad number")?));
-        } else if c.is_alphabetic() || c == '_' {
+        } else if c.is_alphabetic() || c == '_' || c == '*' {
+            if c == '*' {
+                out.push(Tok::Sym("*".into()));
+                i += 1;
+                continue;
+            }
             let start = i;
             while i < b.len() && {
                 let d = b[i] as char;
@@ -111,7 +151,6 @@ fn tokenize(s: &str) -> Result<Vec<Tok>, String> {
             }
             out.push(Tok::Ident(s[start..i].to_string()));
         } else {
-            // multi-char operators
             let two = if i + 1 < b.len() { &s[i..i + 2] } else { "" };
             let three = if i + 2 < b.len() { &s[i..i + 3] } else { "" };
             if three == "]->" {
@@ -120,14 +159,11 @@ fn tokenize(s: &str) -> Result<Vec<Tok>, String> {
             } else if two == "-[" {
                 out.push(Tok::Sym("-[".into()));
                 i += 2;
-            } else if two == "->" {
-                out.push(Tok::Sym("->".into()));
-                i += 2;
             } else if two == "<=" || two == ">=" || two == "<>" {
                 out.push(Tok::Sym(two.into()));
                 i += 2;
             } else {
-                out.push(Tok::Sym((c).to_string()));
+                out.push(Tok::Sym(c.to_string()));
                 i += 1;
             }
         }
@@ -135,7 +171,7 @@ fn tokenize(s: &str) -> Result<Vec<Tok>, String> {
     Ok(out)
 }
 
-// ---------- parser (recursive descent) ----------
+// ---------- parser ----------
 
 struct P {
     toks: Vec<Tok>,
@@ -154,17 +190,26 @@ impl P {
     fn eat_sym(&mut self, s: &str) -> Result<(), String> {
         match self.next() {
             Some(Tok::Sym(x)) if x == s => Ok(()),
-            other => Err(format!("expected '{s}', got {other:?}")),
+            o => Err(format!("expected '{s}', got {o:?}")),
         }
     }
     fn eat_kw(&mut self, kw: &str) -> Result<(), String> {
         match self.next() {
             Some(Tok::Ident(x)) if x.eq_ignore_ascii_case(kw) => Ok(()),
-            other => Err(format!("expected '{kw}', got {other:?}")),
+            o => Err(format!("expected '{kw}', got {o:?}")),
         }
     }
     fn is_kw(&self, kw: &str) -> bool {
         matches!(self.peek(), Some(Tok::Ident(x)) if x.eq_ignore_ascii_case(kw))
+    }
+    fn is_sym(&self, s: &str) -> bool {
+        matches!(self.peek(), Some(Tok::Sym(x)) if x == s)
+    }
+    fn ident(&mut self) -> Result<String, String> {
+        match self.next() {
+            Some(Tok::Ident(x)) => Ok(x),
+            o => Err(format!("expected identifier, got {o:?}")),
+        }
     }
 
     fn node(&mut self) -> Result<NodeP, String> {
@@ -175,12 +220,9 @@ impl P {
             var = Some(v.clone());
             self.next();
         }
-        if matches!(self.peek(), Some(Tok::Sym(s)) if s == ":") {
+        if self.is_sym(":") {
             self.next();
-            match self.next() {
-                Some(Tok::Ident(l)) => label = Some(l),
-                other => return Err(format!("expected label, got {other:?}")),
-            }
+            label = Some(self.ident()?);
         }
         self.eat_sym(")")?;
         Ok(NodeP { var, label })
@@ -189,12 +231,9 @@ impl P {
     fn rel(&mut self) -> Result<RelP, String> {
         self.eat_sym("-[")?;
         let mut etype = None;
-        if matches!(self.peek(), Some(Tok::Sym(s)) if s == ":") {
+        if self.is_sym(":") {
             self.next();
-            match self.next() {
-                Some(Tok::Ident(t)) => etype = Some(t),
-                other => return Err(format!("expected edge type, got {other:?}")),
-            }
+            etype = Some(self.ident()?);
         }
         self.eat_sym("]->")?;
         Ok(RelP { etype })
@@ -211,7 +250,7 @@ impl P {
                 ">=" => Ok(Op::Ge),
                 _ => Err(format!("bad operator {s}")),
             },
-            other => Err(format!("expected operator, got {other:?}")),
+            o => Err(format!("expected operator, got {o:?}")),
         }
     }
 
@@ -221,57 +260,128 @@ impl P {
             Some(Tok::Str(s)) => Ok(Lit::Str(s)),
             Some(Tok::Ident(x)) if x.eq_ignore_ascii_case("true") => Ok(Lit::Bool(true)),
             Some(Tok::Ident(x)) if x.eq_ignore_ascii_case("false") => Ok(Lit::Bool(false)),
-            other => Err(format!("expected literal, got {other:?}")),
+            o => Err(format!("expected literal, got {o:?}")),
         }
+    }
+
+    fn pred(&mut self) -> Result<Pred, String> {
+        let var = self.ident()?;
+        self.eat_sym(".")?;
+        let key = self.ident()?;
+        let op = self.op()?;
+        let lit = self.lit()?;
+        Ok(Pred { var, key, op, lit })
+    }
+
+    fn agg_func(name: &str) -> Option<AggFunc> {
+        match name.to_ascii_lowercase().as_str() {
+            "count" => Some(AggFunc::Count),
+            "sum" => Some(AggFunc::Sum),
+            "avg" => Some(AggFunc::Avg),
+            "min" => Some(AggFunc::Min),
+            "max" => Some(AggFunc::Max),
+            _ => None,
+        }
+    }
+
+    fn ret_item(&mut self) -> Result<RetItem, String> {
+        // aggregate?  name '(' ('*' | var '.' key) ')'
+        if let Some(Tok::Ident(name)) = self.peek().cloned() {
+            if let Some(func) = Self::agg_func(&name) {
+                // lookahead for '('
+                if matches!(self.toks.get(self.i + 1), Some(Tok::Sym(s)) if s == "(") {
+                    self.next(); // name
+                    self.eat_sym("(")?;
+                    if self.is_sym("*") {
+                        self.next();
+                        self.eat_sym(")")?;
+                        return Ok(RetItem::Agg { func, var: None, key: None });
+                    }
+                    let var = self.ident()?;
+                    self.eat_sym(".")?;
+                    let key = self.ident()?;
+                    self.eat_sym(")")?;
+                    return Ok(RetItem::Agg { func, var: Some(var), key: Some(key) });
+                }
+            }
+        }
+        // plain: var ('.' key)?
+        let var = self.ident()?;
+        let mut key = None;
+        if self.is_sym(".") {
+            self.next();
+            key = Some(self.ident()?);
+        }
+        Ok(RetItem::Plain { var, key })
     }
 
     fn parse(&mut self) -> Result<Query, String> {
         self.eat_kw("MATCH")?;
         let mut nodes = vec![self.node()?];
         let mut rels = Vec::new();
-        while matches!(self.peek(), Some(Tok::Sym(s)) if s == "-[") {
+        while self.is_sym("-[") {
             rels.push(self.rel()?);
             nodes.push(self.node()?);
         }
-        let mut pred = None;
+        let mut preds = Vec::new();
         if self.is_kw("WHERE") {
             self.next();
-            let var = match self.next() {
-                Some(Tok::Ident(v)) => v,
-                other => return Err(format!("expected var in WHERE, got {other:?}")),
-            };
-            self.eat_sym(".")?;
-            let key = match self.next() {
-                Some(Tok::Ident(k)) => k,
-                other => return Err(format!("expected key in WHERE, got {other:?}")),
-            };
-            let op = self.op()?;
-            let lit = self.lit()?;
-            pred = Some(Pred { var, key, op, lit });
+            preds.push(self.pred()?);
+            while self.is_kw("AND") {
+                self.next();
+                preds.push(self.pred()?);
+            }
         }
         self.eat_kw("RETURN")?;
-        let ret = if self.is_kw("count") {
+        let distinct = if self.is_kw("DISTINCT") {
             self.next();
-            self.eat_sym("(")?;
-            self.eat_sym("*")?;
-            self.eat_sym(")")?;
-            Ret::Count
+            true
         } else {
-            let var = match self.next() {
-                Some(Tok::Ident(v)) => v,
-                other => return Err(format!("expected RETURN item, got {other:?}")),
-            };
-            let mut key = None;
-            if matches!(self.peek(), Some(Tok::Sym(s)) if s == ".") {
-                self.next();
-                match self.next() {
-                    Some(Tok::Ident(k)) => key = Some(k),
-                    other => return Err(format!("expected key, got {other:?}")),
-                }
-            }
-            Ret::Item { var, key }
+            false
         };
-        Ok(Query { nodes, rels, pred, ret })
+        let mut items = vec![self.ret_item()?];
+        while self.is_sym(",") {
+            self.next();
+            items.push(self.ret_item()?);
+        }
+        let mut order = None;
+        if self.is_kw("ORDER") {
+            self.next();
+            self.eat_kw("BY")?;
+            // ORDER BY var.key — match it to a RETURN item position.
+            let var = self.ident()?;
+            let mut key = None;
+            if self.is_sym(".") {
+                self.next();
+                key = Some(self.ident()?);
+            }
+            let desc = if self.is_kw("DESC") {
+                self.next();
+                true
+            } else {
+                if self.is_kw("ASC") {
+                    self.next();
+                }
+                false
+            };
+            let col = items
+                .iter()
+                .position(|it| match it {
+                    RetItem::Plain { var: v, key: k } => *v == var && *k == key,
+                    _ => false,
+                })
+                .unwrap_or(0);
+            order = Some(OrderBy { col, desc });
+        }
+        let mut limit = None;
+        if self.is_kw("LIMIT") {
+            self.next();
+            match self.next() {
+                Some(Tok::Num(n)) => limit = Some(n as usize),
+                o => return Err(format!("expected LIMIT number, got {o:?}")),
+            }
+        }
+        Ok(Query { nodes, rels, preds, distinct, items, order, limit })
     }
 }
 
@@ -282,57 +392,51 @@ pub fn parse(s: &str) -> Result<Query, String> {
 
 // ---------- executor ----------
 
-fn num_col<'a>(g: &'a Graph, key: &str) -> Option<&'a Column> {
+fn col_of<'a>(g: &'a Graph, key: &str) -> Option<&'a Column> {
     g.keys.get(key).and_then(|kid| g.cols.get(&kid))
 }
 
 fn vertex_num(g: &Graph, vi: u32, key: &str) -> Option<f64> {
-    match num_col(g, key)? {
+    match col_of(g, key)? {
         Column::Num { data, present } if present.get(vi as usize) => Some(data[vi as usize]),
+        Column::Bool { data, present } if present.get(vi as usize) => {
+            Some(if data[vi as usize] { 1.0 } else { 0.0 })
+        }
         _ => None,
     }
 }
 
 fn pred_holds(g: &Graph, vi: u32, p: &Pred) -> bool {
     match &p.lit {
-        Lit::Num(threshold) => match vertex_num(g, vi, &p.key) {
-            Some(x) => match p.op {
-                Op::Eq => x == *threshold,
-                Op::Ne => x != *threshold,
-                Op::Lt => x < *threshold,
-                Op::Gt => x > *threshold,
-                Op::Le => x <= *threshold,
-                Op::Ge => x >= *threshold,
-            },
-            None => false,
-        },
+        Lit::Num(t) => vertex_num(g, vi, &p.key).is_some_and(|x| match p.op {
+            Op::Eq => x == *t,
+            Op::Ne => x != *t,
+            Op::Lt => x < *t,
+            Op::Gt => x > *t,
+            Op::Le => x <= *t,
+            Op::Ge => x >= *t,
+        }),
+        Lit::Bool(b) => {
+            matches!(col_of(g, &p.key), Some(Column::Bool { data, present }) if present.get(vi as usize)
+                && (match p.op { Op::Eq => data[vi as usize] == *b, Op::Ne => data[vi as usize] != *b, _ => false }))
+        }
         Lit::Str(s) => {
             let want = g.strs.get(s);
-            let got = match num_col(g, &p.key) {
-                Some(Column::Str { data, present }) if present.get(vi as usize) => Some(data[vi as usize]),
-                _ => None,
-            };
-            match (p.op, want, got) {
-                (Op::Eq, Some(w), Some(gt)) => w == gt,
-                (Op::Ne, Some(w), Some(gt)) => w != gt,
+            match col_of(g, &p.key) {
+                Some(Column::Str { data, present }) if present.get(vi as usize) => {
+                    let got = Some(data[vi as usize]);
+                    match p.op {
+                        Op::Eq => want == got,
+                        Op::Ne => want != got,
+                        _ => false,
+                    }
+                }
                 _ => false,
             }
         }
-        Lit::Bool(b) => match num_col(g, &p.key) {
-            Some(Column::Bool { data, present }) if present.get(vi as usize) => {
-                let v = data[vi as usize];
-                match p.op {
-                    Op::Eq => v == *b,
-                    Op::Ne => v != *b,
-                    _ => false,
-                }
-            }
-            _ => false,
-        },
     }
 }
 
-/// Seed vertices for node 0: its label bucket, or all vertices.
 fn seeds<'a>(g: &'a Graph, node: &NodeP) -> Box<dyn Iterator<Item = u32> + 'a> {
     match node.label.as_ref().and_then(|l| g.labels.get(l)) {
         Some(lid) => Box::new(g.vertices_with_label(lid).iter().copied()),
@@ -341,10 +445,101 @@ fn seeds<'a>(g: &'a Graph, node: &NodeP) -> Box<dyn Iterator<Item = u32> + 'a> {
     }
 }
 
+/// Project one binding cell for a plain RETURN item, interning strings locally
+/// so the checksum hashes the *text* (matching the TS side).
+fn project_cell(g: &Graph, binding: &[u32], pos: usize, key: &Option<String>, pdict: &mut Dict) -> Cell {
+    let vi = binding[pos];
+    match key {
+        None => Cell::Str(pdict.intern(g.vid.text(vi))),
+        Some(k) => match col_of(g, k) {
+            Some(Column::Num { data, present }) if present.get(vi as usize) => Cell::Num(data[vi as usize]),
+            Some(Column::Bool { data, present }) if present.get(vi as usize) => {
+                Cell::Num(if data[vi as usize] { 1.0 } else { 0.0 })
+            }
+            Some(Column::Str { data, present }) if present.get(vi as usize) => {
+                Cell::Str(pdict.intern(g.strs.text(data[vi as usize])))
+            }
+            _ => Cell::Null,
+        },
+    }
+}
+
+struct Acc {
+    count: u64,
+    sum: f64,
+    min: f64,
+    max: f64,
+}
+impl Acc {
+    fn new() -> Self {
+        Acc { count: 0, sum: 0.0, min: f64::INFINITY, max: f64::NEG_INFINITY }
+    }
+    fn step(&mut self, x: Option<f64>) {
+        self.count += 1;
+        if let Some(x) = x {
+            self.sum += x;
+            self.min = self.min.min(x);
+            self.max = self.max.max(x);
+        }
+    }
+    fn finalize(&self, func: AggFunc) -> f64 {
+        match func {
+            AggFunc::Count => self.count as f64,
+            AggFunc::Sum => self.sum,
+            AggFunc::Avg => {
+                if self.count == 0 {
+                    0.0
+                } else {
+                    self.sum / self.count as f64
+                }
+            }
+            AggFunc::Min => {
+                if self.min.is_finite() {
+                    self.min
+                } else {
+                    0.0
+                }
+            }
+            AggFunc::Max => {
+                if self.max.is_finite() {
+                    self.max
+                } else {
+                    0.0
+                }
+            }
+        }
+    }
+}
+
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+fn fnv_bytes(h: &mut u64, bytes: &[u8]) {
+    for &b in bytes {
+        *h ^= b as u64;
+        *h = h.wrapping_mul(FNV_PRIME);
+    }
+}
+
+/// Hash a row's *exact* cells (strings + integer-valued numbers). Non-integer
+/// floats are skipped — their magnitude is verified via `sum` with an epsilon.
+fn hash_row(row: &[Cell], pdict: &Dict) -> u64 {
+    let mut h = FNV_OFFSET;
+    for cell in row {
+        match cell {
+            Cell::Str(id) => fnv_bytes(&mut h, pdict.text(*id).as_bytes()),
+            Cell::Num(x) if x.fract() == 0.0 && x.is_finite() => {
+                fnv_bytes(&mut h, &(*x as i64).to_le_bytes())
+            }
+            _ => {}
+        }
+    }
+    h
+}
+
 impl Query {
-    /// Index of the variable named `name` among the pattern nodes.
-    fn var_pos(&self, name: &str) -> Option<usize> {
-        self.nodes.iter().position(|n| n.var.as_deref() == Some(name))
+    fn var_pos(&self, name: &str) -> usize {
+        self.nodes.iter().position(|n| n.var.as_deref() == Some(name)).unwrap_or(0)
     }
 
     pub fn run(&self, g: &Graph) -> QueryResult {
@@ -352,32 +547,46 @@ impl Query {
             self.nodes.iter().map(|nd| nd.label.as_ref().and_then(|l| g.labels.get(l))).collect();
         let etype_ids: Vec<Option<u32>> =
             self.rels.iter().map(|r| r.etype.as_ref().and_then(|t| g.etype.get(t))).collect();
-        // A label that doesn't exist in the dict means zero matches.
         for (nd, lid) in self.nodes.iter().zip(&label_ids) {
             if nd.label.is_some() && lid.is_none() {
-                return QueryResult { count: 0, sum: 0.0 };
+                return QueryResult { count: 0, sum: 0.0, checksum: 0 };
             }
         }
-        let pred_pos = self.pred.as_ref().and_then(|p| self.var_pos(&p.var));
-        let proj_pos = match &self.ret {
-            Ret::Item { var, .. } => self.var_pos(var),
-            Ret::Count => None,
-        };
-        let proj_key = match &self.ret {
-            Ret::Item { key, .. } => key.clone(),
-            Ret::Count => None,
-        };
+        let pred_pos: Vec<usize> = self.preds.iter().map(|p| self.var_pos(&p.var)).collect();
+        let aggregating = self.items.iter().any(|i| matches!(i, RetItem::Agg { .. }));
 
-        let mut count: u64 = 0;
-        let mut sum: f64 = 0.0;
+        // A small interner so projected string *text* drives the checksum.
+        let mut pdict = Dict::default();
+        let mut rows: Vec<Vec<Cell>> = Vec::new();
+
+        // group state keyed by the plain (group-key) cells' string form
+        let group_items: Vec<(usize, Option<String>)> = self
+            .items
+            .iter()
+            .filter_map(|it| match it {
+                RetItem::Plain { var, key } => Some((self.var_pos(var), key.clone())),
+                _ => None,
+            })
+            .collect();
+        let agg_items: Vec<(AggFunc, Option<usize>, Option<String>)> = self
+            .items
+            .iter()
+            .filter_map(|it| match it {
+                RetItem::Agg { func, var, key } => {
+                    Some((*func, var.as_deref().map(|v| self.var_pos(v)), key.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        let mut groups: std::collections::HashMap<u64, (Vec<Cell>, Vec<Acc>)> =
+            std::collections::HashMap::new();
+
         let mut binding = vec![0u32; self.nodes.len()];
-
-        // DFS over the linear pattern.
         let mut stack: Vec<(usize, u32)> = Vec::new();
+
         for s in seeds(g, &self.nodes[0]) {
             stack.push((0, s));
             while let Some((depth, v)) = stack.pop() {
-                // label check for this position
                 if let Some(lid) = label_ids[depth] {
                     if !g.has_label(v, lid) {
                         continue;
@@ -385,21 +594,49 @@ impl Query {
                 }
                 binding[depth] = v;
                 if depth + 1 == self.nodes.len() {
-                    // full match — apply WHERE, then project.
-                    if let (Some(pp), Some(p)) = (pred_pos, self.pred.as_ref()) {
+                    // WHERE
+                    let mut ok = true;
+                    for (p, &pp) in self.preds.iter().zip(&pred_pos) {
                         if !pred_holds(g, binding[pp], p) {
-                            continue;
+                            ok = false;
+                            break;
                         }
                     }
-                    count += 1;
-                    if let (Some(pp), Some(k)) = (proj_pos, proj_key.as_ref()) {
-                        if let Some(x) = vertex_num(g, binding[pp], k) {
-                            sum += x;
+                    if !ok {
+                        continue;
+                    }
+                    if aggregating {
+                        // group key cells + hash
+                        let key_cells: Vec<Cell> = group_items
+                            .iter()
+                            .map(|(pos, key)| project_cell(g, &binding, *pos, key, &mut pdict))
+                            .collect();
+                        let gkey = hash_row(&key_cells, &pdict);
+                        let entry = groups
+                            .entry(gkey)
+                            .or_insert_with(|| (key_cells, (0..agg_items.len()).map(|_| Acc::new()).collect()));
+                        for (ai, (_, vpos, key)) in agg_items.iter().enumerate() {
+                            let x = match (vpos, key) {
+                                (Some(pos), Some(k)) => vertex_num(g, binding[*pos], k),
+                                _ => None, // count(*)
+                            };
+                            entry.1[ai].step(x);
                         }
+                    } else {
+                        let cells: Vec<Cell> = self
+                            .items
+                            .iter()
+                            .map(|it| match it {
+                                RetItem::Plain { var, key } => {
+                                    project_cell(g, &binding, self.var_pos(var), key, &mut pdict)
+                                }
+                                RetItem::Agg { .. } => Cell::Null,
+                            })
+                            .collect();
+                        rows.push(cells);
                     }
                 } else {
                     let et = etype_ids[depth];
-                    // If the rel type was named but absent, no neighbors match.
                     if self.rels[depth].etype.is_some() && et.is_none() {
                         continue;
                     }
@@ -409,7 +646,90 @@ impl Query {
                 }
             }
         }
-        QueryResult { count, sum }
+
+        // Materialize aggregating rows in RETURN-item order.
+        if aggregating {
+            for (key_cells, accs) in groups.into_values() {
+                let mut gi = 0;
+                let mut ai = 0;
+                let row: Vec<Cell> = self
+                    .items
+                    .iter()
+                    .map(|it| match it {
+                        RetItem::Plain { .. } => {
+                            let c = key_cells[gi];
+                            gi += 1;
+                            c
+                        }
+                        RetItem::Agg { func, .. } => {
+                            let v = accs[ai].finalize(*func);
+                            ai += 1;
+                            Cell::Num(v)
+                        }
+                    })
+                    .collect();
+                rows.push(row);
+            }
+        }
+
+        // DISTINCT (post-projection)
+        if self.distinct {
+            let mut seen = std::collections::HashSet::new();
+            rows.retain(|r| seen.insert(hash_row(r, &pdict)));
+        }
+
+        // ORDER BY (+ DESC)
+        if let Some(ob) = &self.order {
+            rows.sort_by(|a, b| {
+                let ca = cell_ord_key(&a[ob.col], &pdict);
+                let cb = cell_ord_key(&b[ob.col], &pdict);
+                let o = ca.partial_cmp(&cb).unwrap_or(std::cmp::Ordering::Equal);
+                if ob.desc {
+                    o.reverse()
+                } else {
+                    o
+                }
+            });
+        }
+
+        // LIMIT
+        if let Some(n) = self.limit {
+            rows.truncate(n);
+        }
+
+        // Fingerprint. The checksum is order-insensitive (sum of per-row
+        // hashes): it verifies the result *set*, not tie-order — which can
+        // legitimately differ between engines under ORDER BY with ties.
+        let mut sum = 0.0;
+        let mut checksum: u64 = 0;
+        for row in &rows {
+            for cell in row {
+                if let Cell::Num(x) = cell {
+                    if x.is_finite() {
+                        sum += *x;
+                    }
+                }
+            }
+            checksum = checksum.wrapping_add(hash_row(row, &pdict));
+        }
+        QueryResult { count: rows.len() as u64, sum, checksum }
+    }
+}
+
+/// A sortable f64 key for a cell (numbers by value, strings by interned text
+/// hashed to keep it numeric — fine for a benchmark fingerprint).
+fn cell_ord_key(c: &Cell, pdict: &Dict) -> f64 {
+    match c {
+        Cell::Num(x) => *x,
+        Cell::Str(id) => {
+            // order strings by their bytes via a stable numeric projection
+            let mut k = 0f64;
+            for (i, &b) in pdict.text(*id).as_bytes().iter().take(8).enumerate() {
+                k += (b as f64) * 256f64.powi(7 - i as i32);
+            }
+            k
+        }
+        Cell::Null => f64::NEG_INFINITY,
     }
 }
 
@@ -419,37 +739,56 @@ mod tests {
     use crate::ndjson;
 
     fn fixture() -> Graph {
-        let input = "\
-{\"type\":\"node\",\"id\":\"a\",\"labels\":[\"Person\"],\"properties\":{\"age\":30}}
-{\"type\":\"node\",\"id\":\"b\",\"labels\":[\"Person\"],\"properties\":{\"age\":60}}
-{\"type\":\"node\",\"id\":\"c\",\"labels\":[\"Person\"],\"properties\":{\"age\":70}}
-{\"type\":\"edge\",\"from\":\"a\",\"to\":\"b\",\"labels\":[\"KNOWS\"]}
-{\"type\":\"edge\",\"from\":\"b\",\"to\":\"c\",\"labels\":[\"KNOWS\"]}";
-        ndjson::decode(input)
+        let mut lines = Vec::new();
+        for i in 0..10 {
+            lines.push(format!(
+                "{{\"type\":\"node\",\"id\":\"n{i}\",\"labels\":[\"Person\"],\"properties\":{{\"age\":{},\"dept\":\"d{}\",\"active\":{}}}}}",
+                i * 10,
+                i % 2,
+                i % 2 == 0
+            ));
+        }
+        ndjson::decode(&lines.join("\n"))
+    }
+
+    fn run(g: &Graph, q: &str) -> QueryResult {
+        parse(q).unwrap().run(g)
     }
 
     #[test]
-    fn count_label_scan() {
+    fn aggregates() {
         let g = fixture();
-        assert_eq!(parse("MATCH (a:Person) RETURN count(*)").unwrap().run(&g).count, 3);
+        // Every aggregate yields ONE result row; its value lands in `sum`.
+        let c = run(&g, "MATCH (a:Person) RETURN count(*)");
+        assert_eq!((c.count, c.sum), (1, 10.0));
+        assert_eq!(run(&g, "MATCH (a:Person) RETURN sum(a.age)").sum, 450.0); // 0+10+..+90
+        assert_eq!(run(&g, "MATCH (a:Person) RETURN max(a.age)").sum, 90.0);
+        assert_eq!(run(&g, "MATCH (a:Person) RETURN min(a.age)").sum, 0.0);
+        assert_eq!(run(&g, "MATCH (a:Person) RETURN avg(a.age)").sum, 45.0);
     }
 
     #[test]
-    fn filter_and_project() {
+    fn multi_where() {
         let g = fixture();
-        let r = parse("MATCH (a:Person) WHERE a.age > 50 RETURN a.age").unwrap().run(&g);
-        assert_eq!(r.count, 2); // 60, 70
-        assert_eq!(r.sum, 130.0);
+        // active (even i) AND age > 30 → i in {4,6,8} → ages 40,60,80 → count 3
+        let r = run(&g, "MATCH (a:Person) WHERE a.age > 30 AND a.active = true RETURN count(*)");
+        assert_eq!((r.count, r.sum), (1, 3.0));
     }
 
     #[test]
-    fn one_and_two_hop() {
+    fn group_by_and_distinct() {
         let g = fixture();
-        let r1 = parse("MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN count(*)").unwrap().run(&g);
-        assert_eq!(r1.count, 2); // a->b, b->c
-        let r2 = parse("MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) RETURN count(*)")
-            .unwrap()
-            .run(&g);
-        assert_eq!(r2.count, 1); // a->b->c
+        let gb = run(&g, "MATCH (a:Person) RETURN a.dept, count(*)");
+        assert_eq!(gb.count, 2); // d0, d1
+        let d = run(&g, "MATCH (a:Person) RETURN DISTINCT a.dept");
+        assert_eq!(d.count, 2);
+    }
+
+    #[test]
+    fn order_limit() {
+        let g = fixture();
+        let r = run(&g, "MATCH (a:Person) RETURN a.age ORDER BY a.age DESC LIMIT 3");
+        assert_eq!(r.count, 3);
+        assert_eq!(r.sum, 90.0 + 80.0 + 70.0);
     }
 }

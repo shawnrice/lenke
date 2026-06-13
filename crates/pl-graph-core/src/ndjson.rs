@@ -8,6 +8,7 @@
 //! in the LPG scalar/list value model).
 
 use crate::graph::{Builder, Column, EdgeRec, Graph, NodeRec, Value};
+#[cfg(feature = "parallel")]
 use rayon::prelude::*;
 use serde_json::Value as J;
 
@@ -75,7 +76,10 @@ fn parse_line(line: &str) -> Option<Rec> {
 /// Decode NDJSON into a columnar graph. Lines parse in parallel; the build is
 /// serial (shared dictionaries).
 pub fn decode(text: &str) -> Graph {
+    #[cfg(feature = "parallel")]
     let recs: Vec<Rec> = text.par_lines().filter_map(parse_line).collect();
+    #[cfg(not(feature = "parallel"))]
+    let recs: Vec<Rec> = text.lines().filter_map(parse_line).collect();
     let mut b = Builder::default();
     for r in recs {
         match r {
