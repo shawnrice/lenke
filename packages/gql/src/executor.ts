@@ -1,4 +1,4 @@
-import type { Edge, Graph, Vertex } from '@pl-graph/core';
+import type { Edge, Graph, IndexableValue, RangeBound, Vertex } from '@pl-graph/core';
 import { filter, flatMap, map, skip, take, toArray } from '@pl-graph/fp';
 
 import type {
@@ -779,7 +779,27 @@ const applyProjection = (
 /** A compiled property map + inline WHERE (the ISO element-pattern predicate). */
 type CProp = { key: string; value: CompiledExpr };
 type CPredicate = { props: readonly CProp[]; where?: CompiledExpr };
-type CNode = { variable?: string; label?: LabelExpr; pred: CPredicate };
+
+/** Range bounds whose endpoints are compiled value closures (resolved per seed). */
+type CRangeBound = { gt?: CompiledExpr; gte?: CompiledExpr; lt?: CompiledExpr; lte?: CompiledExpr };
+
+/**
+ * A seedable predicate lifted out of a WHERE / inline-pattern conjunction: a
+ * necessary condition on a node's property that an index can seek. Sound only
+ * because it comes from an AND-chain (every conjunct must hold), so the seed is
+ * always a superset of the node's true matches — `matchNode` re-validates.
+ */
+type CSeedHint =
+  | { kind: 'eq'; key: string; value: CompiledExpr }
+  | { kind: 'within'; key: string; values: CompiledExpr }
+  | { kind: 'range'; key: string; bound: CRangeBound };
+
+type CNode = {
+  variable?: string;
+  label?: LabelExpr;
+  pred: CPredicate;
+  seedHints?: readonly CSeedHint[];
+};
 type CRel = {
   variable?: string;
   label?: LabelExpr;
@@ -801,11 +821,126 @@ const compilePredicate = (
   where: where ? compileExpr(where) : undefined,
 });
 
-const compileNode = (node: NodePattern): CNode => ({
-  variable: node.variable,
-  label: node.label,
-  pred: compilePredicate(node.properties, node.where),
-});
+// --- seed-hint extraction ----------------------------------------------------
+
+/** A value usable as a seek key without binding the node's own variable. */
+const isConstExpr = (e: Expr): boolean => e.kind === 'lit' || e.kind === 'param';
+
+/** Mirror a comparison operator when its operands are swapped (`30 < a.age`). */
+const FLIP: Record<CompareOp, CompareOp> = {
+  '=': '=',
+  '<>': '<>',
+  '<': '>',
+  '>': '<',
+  '<=': '>=',
+  '>=': '<=',
+};
+
+type HintMap = Map<string, CSeedHint[]>;
+
+const pushHint = (into: HintMap, variable: string, hint: CSeedHint): void => {
+  const list = into.get(variable);
+  if (list) {
+    list.push(hint);
+  } else {
+    into.set(variable, [hint]);
+  }
+};
+
+/** A `prop <op> const` comparison, normalized so the property is on the left. */
+const asPropCompare = (
+  expr: Extract<Expr, { kind: 'compare' }>,
+): { variable: string; key: string; op: CompareOp; value: Expr } | null => {
+  if (expr.left.kind === 'prop' && isConstExpr(expr.right)) {
+    return { variable: expr.left.variable, key: expr.left.key, op: expr.op, value: expr.right };
+  }
+  if (expr.right.kind === 'prop' && isConstExpr(expr.left)) {
+    return {
+      variable: expr.right.variable,
+      key: expr.right.key,
+      op: FLIP[expr.op],
+      value: expr.left,
+    };
+  }
+  return null;
+};
+
+const BOUND_OF: Partial<Record<CompareOp, keyof CRangeBound>> = {
+  '>': 'gt',
+  '>=': 'gte',
+  '<': 'lt',
+  '<=': 'lte',
+};
+
+/**
+ * Walk a predicate's AND-chain, collecting per-variable seed hints from the
+ * conjuncts an index can seek: `prop = const`, range comparisons, and `prop IN
+ * [consts]`. Only `and` is descended — an `or`/`not` branch could admit rows a
+ * single-conjunct seed would miss, so those (and every non-seekable shape) are
+ * left entirely to the residual WHERE.
+ */
+const collectHints = (where: Expr, into: HintMap): void => {
+  switch (where.kind) {
+    case 'and':
+      collectHints(where.left, into);
+      collectHints(where.right, into);
+      return;
+    case 'compare': {
+      const pc = asPropCompare(where);
+      if (!pc) {
+        return;
+      }
+      if (pc.op === '=') {
+        pushHint(into, pc.variable, { kind: 'eq', key: pc.key, value: compileExpr(pc.value) });
+        return;
+      }
+      const boundKey = BOUND_OF[pc.op];
+      if (boundKey) {
+        pushHint(into, pc.variable, {
+          kind: 'range',
+          key: pc.key,
+          bound: { [boundKey]: compileExpr(pc.value) },
+        });
+      }
+      return;
+    }
+    case 'in':
+      if (
+        !where.negated &&
+        where.expr.kind === 'prop' &&
+        where.list.kind === 'list' &&
+        where.list.items.every(isConstExpr)
+      ) {
+        pushHint(into, where.expr.variable, {
+          kind: 'within',
+          key: where.expr.key,
+          values: compileExpr(where.list),
+        });
+      }
+      return;
+    default:
+  }
+};
+
+/** Hints a predicate contributes to one variable (used for inline node WHERE). */
+const hintsForVariable = (where: Expr | undefined, variable: string | undefined): CSeedHint[] => {
+  if (!where || !variable) {
+    return [];
+  }
+  const into: HintMap = new Map();
+  collectHints(where, into);
+  return into.get(variable) ?? [];
+};
+
+const compileNode = (node: NodePattern): CNode => {
+  const seedHints = hintsForVariable(node.where, node.variable);
+  return {
+    variable: node.variable,
+    label: node.label,
+    pred: compilePredicate(node.properties, node.where),
+    seedHints: seedHints.length > 0 ? seedHints : undefined,
+  };
+};
 
 const compileRel = (rel: RelPattern): CRel => ({
   variable: rel.variable,
@@ -868,18 +1003,89 @@ const matchNode = (
 };
 
 /** A scalar the property index can seek on (mirrors PropertyIndex's IndexableValue). */
-const isScalar = (v: unknown): boolean =>
+const isScalar = (v: unknown): v is IndexableValue =>
   v === null ||
   typeof v === 'string' ||
   typeof v === 'boolean' ||
   (typeof v === 'number' && !Number.isNaN(v));
 
+const EMPTY: ReadonlySet<Vertex> = new Set<Vertex>();
+
+/** Resolve a compiled range bound to concrete scalar endpoints, or null. */
+const evalBound = (bound: CRangeBound, env: EvalEnv): RangeBound | null => {
+  const out: RangeBound = {};
+  let any = false;
+  for (const key of ['gt', 'gte', 'lt', 'lte'] as const) {
+    const fn = bound[key];
+    if (!fn) {
+      continue;
+    }
+    const v = fn(env);
+    if (!isScalar(v)) {
+      return null; // a non-scalar endpoint makes the seek meaningless
+    }
+    out[key] = v;
+    any = true;
+  }
+  return any ? out : null;
+};
+
 /**
- * Seed candidates for a node pattern. An ISO element-pattern equality —
- * `(n:Person {name: 'marko'})` — on an indexed key seeks the index bucket
- * instead of scanning every vertex; the most selective such constraint wins.
- * `matchNode` still re-validates label + every constraint + WHERE, so the seed
- * only has to be a superset. Falls back to the label-narrowed scan otherwise.
+ * Every index seek a node pattern offers: its ISO equality constraints
+ * (`(n {k: v})`) plus the seed hints lifted from WHERE / inline predicates.
+ * Each yields the candidate set for one seekable predicate.
+ */
+const indexCandidates = function* (
+  graph: Graph,
+  node: CNode,
+  env: EvalEnv,
+): Iterable<ReadonlySet<Vertex>> {
+  const idx = graph.vertexPropertyIndex;
+  for (const { key, value } of node.pred.props) {
+    if (!idx.isIndexed(key)) {
+      continue;
+    }
+    const v = value(env);
+    if (isScalar(v)) {
+      yield idx.equals(key, v) ?? EMPTY;
+    }
+  }
+  for (const hint of node.seedHints ?? []) {
+    if (!idx.isIndexed(hint.key)) {
+      continue;
+    }
+    if (hint.kind === 'eq') {
+      const v = hint.value(env);
+      if (isScalar(v)) {
+        yield idx.equals(hint.key, v) ?? EMPTY;
+      }
+    } else if (hint.kind === 'within') {
+      const list = hint.values(env);
+      if (Array.isArray(list) && list.every(isScalar)) {
+        const out = new Set<Vertex>();
+        for (const item of list) {
+          for (const vertex of idx.equals(hint.key, item) ?? EMPTY) {
+            out.add(vertex);
+          }
+        }
+        yield out;
+      }
+    } else {
+      const bound = evalBound(hint.bound, env);
+      if (bound) {
+        yield idx.range(hint.key, bound) ?? EMPTY;
+      }
+    }
+  }
+};
+
+/**
+ * Seed candidates for a node pattern. An indexed equality / range / `IN` — from
+ * an element-pattern map (`(n:Person {name: 'marko'})`) or a seekable WHERE
+ * conjunct (`WHERE n.age > 30`) — seeks the index instead of scanning every
+ * vertex; the most selective candidate wins. `matchNode` still re-validates
+ * label + constraints + WHERE, so the seed only has to be a superset. Falls
+ * back to the label-narrowed scan when nothing is indexed.
  */
 const seedVertices = function* (
   graph: Graph,
@@ -887,17 +1093,10 @@ const seedVertices = function* (
   binding: Binding,
   params: Params,
 ): Iterable<Vertex> {
-  let best: Set<Vertex> | undefined;
+  const env: EvalEnv = { binding, params, graph };
+  let best: ReadonlySet<Vertex> | undefined;
   let bestSize = Infinity;
-  for (const { key, value } of node.pred.props) {
-    if (!graph.vertexPropertyIndex.isIndexed(key)) {
-      continue;
-    }
-    const v = value({ binding, params, graph });
-    if (!isScalar(v)) {
-      continue;
-    }
-    const set = graph.vertexPropertyIndex.equals(key, v) ?? new Set<Vertex>();
+  for (const set of indexCandidates(graph, node, env)) {
     if (set.size < bestSize) {
       bestSize = set.size;
       best = set;
@@ -1087,14 +1286,32 @@ const compileSetItem = (item: SetItem): CSetItem =>
 
 const compileClause = (clause: Clause): CClause => {
   switch (clause.kind) {
-    case 'match':
+    case 'match': {
+      const patterns = clause.patterns.map(compilePath);
+      // Lift seekable conjuncts of the clause WHERE onto each pattern's start
+      // node, so a `MATCH (a:Person) WHERE a.name = 'marko'` seeds like the
+      // inline `(a:Person {name: 'marko'})` form does.
+      if (clause.where) {
+        const hints: HintMap = new Map();
+        collectHints(clause.where, hints);
+        for (const path of patterns) {
+          const extra = path.start.variable ? hints.get(path.start.variable) : undefined;
+          if (extra) {
+            path.start = {
+              ...path.start,
+              seedHints: [...(path.start.seedHints ?? []), ...extra],
+            };
+          }
+        }
+      }
       return {
         kind: 'match',
         optional: clause.optional,
-        patterns: clause.patterns.map(compilePath),
+        patterns,
         where: clause.where ? compileExpr(clause.where) : undefined,
         nullVars: clause.optional ? patternVars(clause.patterns) : [],
       };
+    }
     case 'with':
       return {
         kind: 'with',
