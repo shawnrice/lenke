@@ -106,6 +106,18 @@ fn main() {
         ("edge prop filter", "MATCH (a:Person)-[r:CREATED]->(s) WHERE r.weight > 0.4 RETURN count(*) AS c", 100),
         ("var-length 1..2", "MATCH (a:Person {name:'name0'})-[:KNOWS]->{1,2}(b) RETURN count(*) AS c", 200),
         ("order by + limit", "MATCH (n:Person) RETURN n.name ORDER BY n.age DESC LIMIT 20", 100),
+        // --- expression-heavy (isolates expression eval; the bytecode-VM target) ---
+        (
+            "expr-heavy filter count",
+            "MATCH (n:Person) WHERE (n.age * 2 + 1) % 3 = 0 AND n.age > 20 AND abs(n.age - 40) < 15 RETURN count(*) AS c",
+            200,
+        ),
+        (
+            "expr-heavy project",
+            "MATCH (n:Person) RETURN n.age * 2 + 10 AS x, abs(n.age - 30) AS y, \
+             CASE WHEN n.age >= 30 THEN 'sr' ELSE 'jr' END AS t, (n.age % 7) + sqrt(n.age) AS z",
+            100,
+        ),
         // --- attribution A/B pairs (subtract to isolate one cost) ---
         ("[a] scan+count", "MATCH (n:Person) RETURN count(*) AS c", 300),
         ("[b] scan+count+pred", "MATCH (n:Person) WHERE n.age >= 0 RETURN count(*) AS c", 300),
