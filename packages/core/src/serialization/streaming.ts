@@ -35,6 +35,22 @@ export async function* linesFromChunks(source: ChunkSource): AsyncGenerator<stri
   }
 }
 
+/**
+ * Yield control to the event loop as a *macrotask*, so pending timers and I/O
+ * actually run. A bare `await` only schedules a microtask, which the runtime
+ * drains before the event loop continues — so it would NOT unblock the loop.
+ * `setImmediate` (Node/Bun) is preferred; `setTimeout(0)` is the fallback.
+ */
+export const yieldToEventLoop = (): Promise<void> =>
+  new Promise<void>((resolve) => {
+    const immediate = (globalThis as { setImmediate?: (cb: () => void) => unknown }).setImmediate;
+    if (immediate) {
+      immediate(resolve);
+    } else {
+      setTimeout(resolve, 0);
+    }
+  });
+
 /** Collect an async string iterable into one string — handy for tests and small inputs. */
 export const collect = async (chunks: AsyncIterable<string>): Promise<string> => {
   const parts: string[] = [];
