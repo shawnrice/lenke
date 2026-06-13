@@ -1026,6 +1026,135 @@ fn drive_matches(
     true
 }
 
+// --- specialized single-path matcher (monomorphized, no per-segment dyn) -----
+//
+// The general matcher above passes `&mut dyn FnMut` down each segment, so a
+// K-segment path does K dynamic calls per match. This generic variant inlines
+// node/edge matching and recurses with the *same* `&mut F`, so it monomorphizes
+// once per concrete sink and the per-edge hot loop has no dynamic dispatch — the
+// dyn boundary collapses to a single call per emitted match. Used for the common
+// shape: one MATCH clause, one path (quantifiers fine).
+
+/// Match `node` at vertex `vi`; on success continue matching `path` from segment
+/// `next_idx`. Restores the binding on backtrack. Generic over the sink `F`.
+fn match_node_continue<F: FnMut(&mut Binding) -> bool>(
+    graph: &Graph,
+    ctx: &Ctx,
+    binding: &mut Binding,
+    node: &CNode,
+    vi: u32,
+    path: &CPath,
+    next_idx: usize,
+    emit: &mut F,
+) -> bool {
+    if !matches_label(graph, ctx, vi, node.label.as_ref()) {
+        return true;
+    }
+    let Some(did) = bind_slot(binding, node.var_slot, &Val::Node(vi)) else {
+        return true;
+    };
+    let go = satisfies(graph, ctx, &Val::Node(vi), &node.props, node.where_.as_ref(), binding);
+    let keep = if go { match_path(graph, ctx, path, next_idx, vi, binding, emit) } else { true };
+    if did {
+        binding.unset(node.var_slot.unwrap());
+    }
+    keep
+}
+
+/// Walk segments `idx..` of `path` from `from`, emitting each complete binding.
+fn match_path<F: FnMut(&mut Binding) -> bool>(
+    graph: &Graph,
+    ctx: &Ctx,
+    path: &CPath,
+    idx: usize,
+    from: u32,
+    binding: &mut Binding,
+    emit: &mut F,
+) -> bool {
+    if idx >= path.segments.len() {
+        return emit(binding);
+    }
+    let CSegment { rel, node } = &path.segments[idx];
+    if let Some(q) = rel.quantifier {
+        for end in reachable(graph, ctx, from, rel, q) {
+            if !match_node_continue(graph, ctx, binding, node, end, path, idx + 1, emit) {
+                return false;
+            }
+        }
+        return true;
+    }
+    for (eidx, nbr) in expand(graph, ctx, from, rel.direction, rel.label.as_ref()) {
+        let Some(eset) = bind_slot(binding, rel.var_slot, &Val::Edge(eidx)) else {
+            continue;
+        };
+        let keep = if satisfies(graph, ctx, &Val::Edge(eidx), &rel.props, rel.where_.as_ref(), binding) {
+            match_node_continue(graph, ctx, binding, node, nbr, path, idx + 1, emit)
+        } else {
+            true
+        };
+        if eset {
+            binding.unset(rel.var_slot.unwrap());
+        }
+        if !keep {
+            return false;
+        }
+    }
+    true
+}
+
+/// Seed and match a single path, emitting each complete binding via `emit`.
+fn match_one_path<F: FnMut(&mut Binding) -> bool>(
+    graph: &Graph,
+    ctx: &Ctx,
+    path: &CPath,
+    binding: &mut Binding,
+    emit: &mut F,
+) -> bool {
+    match path.start.var_slot {
+        Some(sl) if binding.bound(sl) => match binding.get(sl) {
+            Some(Val::Node(i)) => match_node_continue(graph, ctx, binding, &path.start, *i, path, 0, emit),
+            _ => true,
+        },
+        _ => match path.start.label.as_ref().and_then(seed_label) {
+            Some(r) => match ctx.labels[r].0 {
+                Some(lid) => {
+                    let seeds = graph.vertices_with_label(lid);
+                    for &s in seeds {
+                        if !match_node_continue(graph, ctx, binding, &path.start, s, path, 0, emit) {
+                            return false;
+                        }
+                    }
+                    true
+                }
+                None => true,
+            },
+            None => {
+                for s in graph.vertex_indices() {
+                    if !match_node_continue(graph, ctx, binding, &path.start, s, path, 0, emit) {
+                        return false;
+                    }
+                }
+                true
+            }
+        },
+    }
+}
+
+/// Recognize the common shape a single MATCH clause + single path so the
+/// monomorphized matcher can drive it directly (returns path, clause WHERE, and
+/// the binding slot count to size the working binding).
+fn single_simple_clause<'a>(matches: &[&'a CClause]) -> Option<(&'a CPath, Option<&'a CExpr>, usize)> {
+    if matches.len() != 1 {
+        return None;
+    }
+    match matches[0] {
+        CClause::Match { optional: false, patterns, where_, scope_len } if patterns.len() == 1 => {
+            Some((&patterns[0], where_.as_ref(), *scope_len))
+        }
+        _ => None,
+    }
+}
+
 /// An aggregate's running state, folded one value at a time (no stored group).
 struct Agg {
     func: AggFn,
@@ -1346,9 +1475,21 @@ fn project_matches(
     proj: &CProjection,
 ) -> Vec<Binding> {
     let mut acc = ProjAccum::new(proj);
+    let simple = single_simple_clause(matches);
     for inb in incoming {
         let mut work = inb.clone();
-        let cont = drive_matches(graph, ctx, matches, 0, &mut work, &mut |b| acc.accept(graph, ctx, b));
+        let cont = match simple {
+            Some((path, cwhere, scope_len)) => {
+                work.resize(scope_len);
+                match_one_path(graph, ctx, path, &mut work, &mut |b| {
+                    if cwhere.is_some_and(|w| as_truth(&eval(&Env::new(graph, ctx, b), w)) != Some(true)) {
+                        return true;
+                    }
+                    acc.accept(graph, ctx, b)
+                })
+            }
+            None => drive_matches(graph, ctx, matches, 0, &mut work, &mut |b| acc.accept(graph, ctx, b)),
+        };
         if !cont {
             break;
         }
@@ -1381,9 +1522,11 @@ fn project_to_rows(
     // intermediate per-row Vec, no second conversion pass.
     let cap = proj.limit.map(|l| proj.skip.unwrap_or(0) + l);
     let mut seen: HashSet<String> = HashSet::new();
+    let simple = single_simple_clause(matches);
     for inb in incoming {
         let mut work = inb.clone();
-        let cont = drive_matches(graph, ctx, matches, 0, &mut work, &mut |b| {
+        // The row-pushing sink (shared by the monomorphized and dyn drivers).
+        let mut push = |b: &Binding| -> bool {
             if proj.star {
                 rs.push_row(proj.star_cols.iter().map(|&s| b.get(s).map(|v| val_to_value(graph, v)).unwrap_or(Value::Null)));
             } else {
@@ -1395,7 +1538,19 @@ fn project_to_rows(
                 return true;
             }
             cap.is_none_or(|c| rs.nrows < c) // stop once enough collected
-        });
+        };
+        let cont = match simple {
+            Some((path, cwhere, scope_len)) => {
+                work.resize(scope_len);
+                match_one_path(graph, ctx, path, &mut work, &mut |b| {
+                    if cwhere.is_some_and(|w| as_truth(&eval(&Env::new(graph, ctx, b), w)) != Some(true)) {
+                        return true;
+                    }
+                    push(b)
+                })
+            }
+            None => drive_matches(graph, ctx, matches, 0, &mut work, &mut |b| push(b)),
+        };
         if !cont {
             break;
         }
