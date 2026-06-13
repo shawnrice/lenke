@@ -501,6 +501,10 @@ export class Graph {
     this.edgePropertyIndex.dropIndex(key);
   };
 
+  /** The property keys currently indexed for vertices / edges. */
+  public vertexIndexes = (): string[] => this.vertexPropertyIndex.indexedKeys();
+  public edgeIndexes = (): string[] => this.edgePropertyIndex.indexedKeys();
+
   /** Vertices with `key === value`. Empty set if `key` isn't indexed. */
   public getVerticesByProperty = (key: string, value: unknown): Set<Vertex> => {
     return new Set(this.vertexPropertyIndex.equals(key, value) ?? []);

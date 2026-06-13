@@ -147,6 +147,17 @@ describe('PropertyIndex snapshots and edges', () => {
     ).toEqual(['e1', 'e2']);
   });
 
+  test('vertexIndexes / edgeIndexes report declared keys', () => {
+    const graph = personGraph();
+    graph.createVertexIndex('name');
+    graph.createVertexIndex('age');
+    graph.createEdgeIndex('weight');
+    expect(graph.vertexIndexes().sort()).toEqual(['age', 'name']);
+    expect(graph.edgeIndexes()).toEqual(['weight']);
+    graph.dropVertexIndex('age');
+    expect(graph.vertexIndexes()).toEqual(['name']);
+  });
+
   test('truncate empties buckets but keeps declarations', () => {
     const graph = personGraph();
     graph.createVertexIndex('age');
