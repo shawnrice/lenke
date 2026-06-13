@@ -120,6 +120,20 @@ describe('PropertyIndex range', () => {
     graph.getVertexById('b')!.setProperty('age', 50);
     expect(ids(graph.getVerticesByPropertyRange('age', { gt: 30 }))).toEqual(['b', 'c', 'd']);
   });
+
+  test('countEquals / countRange match the set sizes without building them', () => {
+    const graph = personGraph();
+    const index = graph.vertexPropertyIndex;
+    graph.createVertexIndex('age');
+    // countEquals: undefined for unindexed key, a count for an indexed one.
+    expect(index.countEquals('name', 'marko')).toBeUndefined();
+    expect(index.countEquals('age', 29)).toBe(1);
+    expect(index.countEquals('age', 999)).toBe(0);
+    // countRange agrees with range().size and stays type-clamped.
+    expect(index.countRange('age', { gt: 30 })).toBe(2); // josh, peter
+    expect(index.countRange('age', { gte: 27, lte: 32 })).toBe(3);
+    expect(index.countRange('name', { gt: 0 })).toBeUndefined(); // unindexed
+  });
 });
 
 describe('PropertyIndex snapshots and edges', () => {

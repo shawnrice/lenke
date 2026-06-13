@@ -51,7 +51,12 @@ const isScalar = (v: unknown): boolean =>
   typeof v === 'boolean' ||
   (typeof v === 'number' && !Number.isNaN(v));
 
-type Seed<E> = { set: ReadonlySet<E>; removable: boolean };
+/**
+ * A seedable predicate: its estimated cardinality (computed without touching
+ * any set), a thunk that materializes the set only if this candidate is chosen,
+ * and whether dropping its step leaves an equivalent plan.
+ */
+type Candidate<E> = { count: number; build: () => ReadonlySet<E>; removable: boolean };
 
 /** Union the equality buckets for each value of a `within` list. */
 const unionBuckets = <E>(
@@ -67,12 +72,6 @@ const unionBuckets = <E>(
   }
   return out;
 };
-
-/** Map a `RangeBound`-shaped predicate to its (type-strict) seed set. */
-const rangeSeed = <E>(index: PropertyIndex<E>, key: string, bound: RangeBound): Seed<E> => ({
-  set: index.range(key, bound) ?? EMPTY,
-  removable: false,
-});
 
 /**
  * The exclusive upper bound of the strings sharing `prefix`: the prefix with
@@ -90,6 +89,18 @@ const prefixUpperBound = (prefix: string): string | null => {
   return null;
 };
 
+/** A range candidate: cardinality from `countRange`, set built only on demand. */
+const rangeCandidate = <E>(
+  index: PropertyIndex<E>,
+  key: string,
+  bound: RangeBound,
+): Candidate<E> | null => {
+  const count = index.countRange(key, bound);
+  return count === undefined
+    ? null
+    : { count, build: () => index.range(key, bound) ?? EMPTY, removable: false };
+};
+
 /**
  * The index seed for `pred` on `key`, or `null` when the predicate isn't
  * seedable. `removable` is whether dropping the owning step leaves an
@@ -100,28 +111,42 @@ const seedForPred = <E>(
   key: string,
   pred: Predicate,
   plainHas: boolean,
-): Seed<E> | null => {
+): Candidate<E> | null => {
   switch (pred.op) {
-    case 'eq':
-      return isScalar(pred.value)
-        ? { set: index.equals(key, pred.value) ?? EMPTY, removable: plainHas }
-        : null;
-    case 'within':
-      return pred.values.every(isScalar)
-        ? { set: unionBuckets(index, key, pred.values), removable: plainHas }
-        : null;
+    case 'eq': {
+      if (!isScalar(pred.value)) {
+        return null;
+      }
+      const { value } = pred;
+      return {
+        count: index.countEquals(key, value) ?? 0,
+        build: () => index.equals(key, value) ?? EMPTY,
+        removable: plainHas,
+      };
+    }
+    case 'within': {
+      if (!pred.values.every(isScalar)) {
+        return null;
+      }
+      const { values } = pred;
+      let count = 0;
+      for (const value of values) {
+        count += index.countEquals(key, value) ?? 0;
+      }
+      return { count, build: () => unionBuckets(index, key, values), removable: plainHas };
+    }
     case 'gt':
-      return isScalar(pred.value) ? rangeSeed(index, key, { gt: pred.value }) : null;
+      return isScalar(pred.value) ? rangeCandidate(index, key, { gt: pred.value }) : null;
     case 'gte':
-      return isScalar(pred.value) ? rangeSeed(index, key, { gte: pred.value }) : null;
+      return isScalar(pred.value) ? rangeCandidate(index, key, { gte: pred.value }) : null;
     case 'lt':
-      return isScalar(pred.value) ? rangeSeed(index, key, { lt: pred.value }) : null;
+      return isScalar(pred.value) ? rangeCandidate(index, key, { lt: pred.value }) : null;
     case 'lte':
-      return isScalar(pred.value) ? rangeSeed(index, key, { lte: pred.value }) : null;
+      return isScalar(pred.value) ? rangeCandidate(index, key, { lte: pred.value }) : null;
     case 'between':
-      return rangeSeed(index, key, { gte: pred.min, lt: pred.max });
+      return rangeCandidate(index, key, { gte: pred.min, lt: pred.max });
     case 'inside':
-      return rangeSeed(index, key, { gt: pred.min, lt: pred.max });
+      return rangeCandidate(index, key, { gt: pred.min, lt: pred.max });
     case 'startsWith': {
       // A prefix search is the string slice [prefix, succ(prefix)) — a range
       // the sorted index can seek. Kept as a residual filter.
@@ -129,7 +154,7 @@ const seedForPred = <E>(
         return null;
       }
       const upper = prefixUpperBound(pred.value);
-      return rangeSeed(
+      return rangeCandidate(
         index,
         key,
         upper === null ? { gte: pred.value } : { gte: pred.value, lt: upper },
@@ -141,7 +166,7 @@ const seedForPred = <E>(
 };
 
 /** The seed a single leading filter step offers, if any. */
-const seedForStep = <E>(step: Step, index: PropertyIndex<E>): Seed<E> | null => {
+const seedForStep = <E>(step: Step, index: PropertyIndex<E>): Candidate<E> | null => {
   if (step.kind !== 'has' && step.kind !== 'hasLabelAnd') {
     return null;
   }
@@ -160,58 +185,42 @@ export type SeededPlan = {
   steps: readonly Step[];
 };
 
-/** Intersect candidate sets, smallest first, into a fresh set. */
-const intersect = <E>(sets: readonly ReadonlySet<E>[]): Set<E> => {
-  const ordered = [...sets].sort((a, b) => a.size - b.size);
-  const result = new Set<E>(ordered[0]);
-  for (let k = 1; k < ordered.length && result.size > 0; k++) {
-    const other = ordered[k]!;
-    for (const element of result) {
-      if (!other.has(element)) {
-        result.delete(element);
-      }
-    }
-  }
-  return result;
-};
-
 /** Seed the residual `rest` steps from `index`, or `null` to fall back. */
 const seedRest = <E>(
   rest: readonly Step[],
   index: PropertyIndex<E>,
   tracksPath: boolean,
 ): SeededPlan | null => {
-  // Gather every seedable predicate across the leading run of commuting
-  // filters. Each candidate set is a superset of the true matches, so their
-  // intersection is the tightest sound seed.
-  const seeds: { set: ReadonlySet<E>; removable: boolean; at: number }[] = [];
+  // Estimate each seedable leading filter's cardinality (no set built yet) and
+  // pick the most selective. The other filters stay in the plan as residuals,
+  // so they still narrow the seed before any downstream step runs — only the
+  // winner is materialized.
+  let bestAt = -1;
+  let best: Candidate<E> | null = null;
   for (let i = 0; i < rest.length; i++) {
     const step = rest[i]!;
     if (!COMMUTING_FILTERS.has(step.kind)) {
       break;
     }
-    const seed = seedForStep(step, index);
-    if (seed) {
-      seeds.push({ ...seed, at: i });
+    const candidate = seedForStep(step, index);
+    if (candidate && candidate.count < (best?.count ?? Infinity)) {
+      best = candidate;
+      bestAt = i;
     }
   }
 
-  if (seeds.length === 0) {
+  if (!best) {
     return null;
   }
 
-  const set = intersect(seeds.map((s) => s.set));
+  const set = best.build();
   const stream = (function* () {
     for (const element of set) {
       yield startTraverser(element, tracksPath);
     }
   })();
 
-  // Drop every consumed step whose seed is exact (eq/within on a plain `has`):
-  // the intersection is a subset of each such set, so all seeds already satisfy
-  // it. Range/`hasLabelAnd` seeds stay as residual filters.
-  const dropped = new Set(seeds.filter((s) => s.removable).map((s) => s.at));
-  const steps = dropped.size > 0 ? rest.filter((_, i) => !dropped.has(i)) : rest;
+  const steps = best.removable ? rest.filter((_, i) => i !== bestAt) : rest;
   return { stream, steps };
 };
 

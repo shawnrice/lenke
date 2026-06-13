@@ -136,30 +136,29 @@ describe('index-seeded V() source', () => {
     expect(arr(run(traversal(V(), has('name', 'nobody'), values('name')), g))).toEqual([]);
   });
 
-  test('intersects multiple indexed equality filters and drops both', () => {
+  test('picks the most selective filter by count; the rest stay residual', () => {
     const g = createTestTinkerGraph();
     g.createVertexIndex('name');
     g.createVertexIndex('lang');
-    // lang=java → {lop, ripple}; name=lop → {lop}; intersection → {lop}.
+    // lang=java → 2 (lop, ripple); name=lop → 1; name wins on count.
     const plan = traversal(V(), has('lang', eq('java')), has('name', eq('lop')));
     const seeded = seedFromIndex(plan, g, false);
     expect(seeded).not.toBeNull();
-    expect(arr(seeded!.stream).length).toBe(1);
-    // Both exact equality filters are satisfied by the intersection → dropped.
-    expect(seeded!.steps).toEqual([]);
+    expect(arr(seeded!.stream).length).toBe(1); // seeds from name=lop
+    // The chosen exact name filter is dropped; the lang filter stays a residual.
+    expect(seeded!.steps.map((s) => s.kind)).toEqual(['has']);
   });
 
-  test('a range filter alongside an equality intersects but stays a residual', () => {
+  test('a more selective equality is chosen over a wider range', () => {
     const g = createTestTinkerGraph();
     g.createVertexIndex('age');
     g.createVertexIndex('name');
-    // name=josh → {josh(32)}; age>30 → {josh, peter}; intersection → {josh}.
+    // name=josh → 1; age>30 → 2 (josh, peter); name wins, age stays residual.
     const plan = traversal(V(), has('name', eq('josh')), has('age', gt(30)));
     const seeded = seedFromIndex(plan, g, false);
     expect(seeded).not.toBeNull();
     expect(arr(seeded!.stream).length).toBe(1);
-    // The exact name filter is dropped; the range age filter is kept.
-    expect(seeded!.steps.map((s) => s.kind)).toEqual(['has']);
+    expect(seeded!.steps.map((s) => s.kind)).toEqual(['has']); // age range residual
   });
 
   test('multi-filter results match the unindexed scan', () => {

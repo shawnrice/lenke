@@ -254,15 +254,30 @@ export class PropertyIndex<E> {
   }
 
   /**
-   * Elements whose `key` falls within `bound`. The range is clamped to the type
-   * of the supplied bound(s), so `{ gt: 30 }` returns numeric matches only and
-   * never bleeds into strings. Returns `undefined` if `key` isn't indexed.
+   * The number of elements carrying `key = value`, without touching the set —
+   * an O(1) cardinality estimate for query planning. `undefined` if `key` isn't
+   * indexed; `0` if indexed but nothing matches.
    */
-  range(key: string, bound: RangeBound): Set<E> | undefined {
+  countEquals(key: string, value: unknown): number | undefined {
     const idx = this.indexes.get(key);
     if (!idx) {
       return undefined;
     }
+    if (!isIndexable(value)) {
+      return 0;
+    }
+    return idx.buckets.get(encode(value))?.size ?? 0;
+  }
+
+  /**
+   * The `[lo, hi)` slice of `idx.order` selected by `bound`, plus the bound's
+   * type rank (used to skip values of other types). Shared by `range` and
+   * `countRange` so a count never has to build the result set.
+   */
+  private rangeSlice(
+    idx: KeyIndex<E>,
+    bound: RangeBound,
+  ): { lo: number; hi: number; refRank: number } {
     const { order } = idx;
     const ref = bound.gt ?? bound.gte ?? bound.lt ?? bound.lte ?? null;
     const refRank = rank(ref);
@@ -281,10 +296,23 @@ export class PropertyIndex<E> {
     if (bound.lt !== undefined) {
       hi = Math.min(hi, lowerBound(order, bound.lt));
     }
+    return { lo, hi, refRank };
+  }
 
+  /**
+   * Elements whose `key` falls within `bound`. The range is clamped to the type
+   * of the supplied bound(s), so `{ gt: 30 }` returns numeric matches only and
+   * never bleeds into strings. Returns `undefined` if `key` isn't indexed.
+   */
+  range(key: string, bound: RangeBound): Set<E> | undefined {
+    const idx = this.indexes.get(key);
+    if (!idx) {
+      return undefined;
+    }
+    const { lo, hi, refRank } = this.rangeSlice(idx, bound);
     const out = new Set<E>();
     for (let i = lo; i < hi; i++) {
-      const value = order[i]!;
+      const value = idx.order[i]!;
       // An open bound leaves `hi`/`lo` at the array edge; the rank guard keeps
       // the result inside the bound's type block.
       if (rank(value) !== refRank) {
@@ -295,6 +323,30 @@ export class PropertyIndex<E> {
       }
     }
     return out;
+  }
+
+  /**
+   * The cardinality of `range(key, bound)` without building it: sums the bucket
+   * sizes over the matching slice. O(distinct values in range) — cheap for the
+   * small, stable value domains these indexes target, and enough for a planner
+   * to compare candidates before materializing the winner. (A prefix-sum over
+   * `order` would make it O(log d) at the cost of O(d) upkeep on distinct-value
+   * churn — not worth it until large-domain range counting dominates reads.)
+   */
+  countRange(key: string, bound: RangeBound): number | undefined {
+    const idx = this.indexes.get(key);
+    if (!idx) {
+      return undefined;
+    }
+    const { lo, hi, refRank } = this.rangeSlice(idx, bound);
+    let count = 0;
+    for (let i = lo; i < hi; i++) {
+      const value = idx.order[i]!;
+      if (rank(value) === refRank) {
+        count += idx.buckets.get(encode(value))!.size;
+      }
+    }
+    return count;
   }
 
   /**

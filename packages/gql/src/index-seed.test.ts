@@ -115,7 +115,7 @@ describe('GQL WHERE-derived seed hints', () => {
     expect(sorted(indexed, 'b.name')).toEqual(['josh', 'vadas']);
   });
 
-  test('multiple seekable conjuncts intersect to the tightest seed', () => {
+  test('multiple seekable conjuncts seed from the most selective one', () => {
     const { plain, indexed } = both(
       `MATCH (p:Person) WHERE p.age > 28 AND p.name = 'josh' RETURN p.name`,
     );
@@ -123,7 +123,7 @@ describe('GQL WHERE-derived seed hints', () => {
     expect(sorted(indexed, 'p.name')).toEqual(['josh']);
   });
 
-  test('an element-map equality and a WHERE range intersect', () => {
+  test('an element-map equality and a WHERE range together still match the scan', () => {
     const { plain, indexed } = both(
       `MATCH (p:Person {name: 'marko'}) WHERE p.age < 30 RETURN p.age`,
     );
