@@ -25,6 +25,7 @@ const { symbols } = dlopen(LIB, {
   },
   plg_encode_ndjson: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.ptr },
   plg_free_buf: { args: [FFIType.ptr, FFIType.u64_fast], returns: FFIType.void },
+  plg_write_ndjson: { args: [FFIType.ptr, FFIType.ptr, FFIType.u64_fast], returns: FFIType.i64 },
 });
 
 const enc = new TextEncoder();
@@ -86,4 +87,18 @@ export const encodeNdjson = (handle: bigint): string => {
   const str = dec.decode(buf);
   symbols.plg_free_buf(p, BigInt(len));
   return str;
+};
+
+/** Produce write-ready NDJSON bytes (no decode to a JS string). Returns byte length. */
+export const encodeBytes = (handle: bigint): number => {
+  const p = symbols.plg_encode_ndjson(handle, ptr(outLen));
+  const len = Number(outLen[0]);
+  symbols.plg_free_buf(p, BigInt(len));
+  return len;
+};
+
+/** Serialize straight to a file natively — bytes never cross into JS. Returns bytes written. */
+export const writeNdjson = (handle: bigint, path: string): number => {
+  const pb = enc.encode(path);
+  return Number(symbols.plg_write_ndjson(handle, ptr(pb), BigInt(pb.length)));
 };

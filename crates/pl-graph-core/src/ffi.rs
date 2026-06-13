@@ -185,3 +185,25 @@ pub unsafe extern "C" fn plg_free_buf(ptr: *mut u8, len: usize) {
         drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len)));
     }
 }
+
+/// Serialize the graph and write it straight to a file — the realistic
+/// "serialize to disk" path: the bytes never cross back into JS as a string.
+/// Returns the number of bytes written, or -1 on error.
+///
+/// # Safety
+/// `g` valid; `path_ptr`/`path_len` valid UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn plg_write_ndjson(g: *const Graph, path_ptr: *const u8, path_len: usize) -> i64 {
+    if g.is_null() || path_ptr.is_null() {
+        return -1;
+    }
+    let path = match std::str::from_utf8(std::slice::from_raw_parts(path_ptr, path_len)) {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+    let bytes = ndjson::encode(&*g).into_bytes();
+    match std::fs::write(path, &bytes) {
+        Ok(()) => bytes.len() as i64,
+        Err(_) => -1,
+    }
+}

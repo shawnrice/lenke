@@ -99,64 +99,109 @@ pub fn decode_serial(text: &str) -> Graph {
     b.finalize()
 }
 
-fn value_to_json(v: &Value) -> J {
+/// Write a JSON string literal (with escaping) straight into `out`.
+fn push_json_str(out: &mut String, s: &str) {
+    use std::fmt::Write as _;
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+}
+
+fn push_num(out: &mut String, x: f64) {
+    use std::fmt::Write as _;
+    if x.is_finite() {
+        let _ = write!(out, "{x}");
+    } else {
+        out.push_str("null");
+    }
+}
+
+fn push_value(out: &mut String, v: &Value) {
     match v {
-        Value::Null => J::Null,
-        Value::Bool(b) => J::Bool(*b),
-        Value::Num(x) => serde_json::Number::from_f64(*x).map(J::Number).unwrap_or(J::Null),
-        Value::Str(s) => J::String(s.clone()),
-        Value::List(a) => J::Array(a.iter().map(value_to_json).collect()),
+        Value::Null => out.push_str("null"),
+        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+        Value::Num(x) => push_num(out, *x),
+        Value::Str(s) => push_json_str(out, s),
+        Value::List(a) => {
+            out.push('[');
+            for (i, e) in a.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                push_value(out, e);
+            }
+            out.push(']');
+        }
     }
 }
 
-fn vertex_prop(g: &Graph, vi: usize, col: &Column) -> Option<J> {
+/// Is property `col` present at vertex `vi`?
+fn col_present(col: &Column, vi: usize) -> bool {
     match col {
-        Column::Num { data, present } if present.get(vi) => {
-            serde_json::Number::from_f64(data[vi]).map(J::Number)
+        Column::Num { present, .. } | Column::Str { present, .. } | Column::Bool { present, .. } => {
+            present.get(vi)
         }
-        Column::Str { data, present } if present.get(vi) => {
-            Some(J::String(g.strs.text(data[vi]).to_string()))
-        }
-        Column::Bool { data, present } if present.get(vi) => Some(J::Bool(data[vi])),
-        Column::Mixed { data } => data[vi].as_ref().map(value_to_json),
-        _ => None,
+        Column::Mixed { data } => data[vi].is_some(),
     }
 }
 
-/// Encode a columnar graph back to NDJSON (nodes then edges).
+/// Encode a columnar graph back to NDJSON (nodes then edges). Builds the string
+/// directly — no per-record `serde_json::Value` allocation.
 pub fn encode(g: &Graph) -> String {
     let mut out = String::with_capacity(g.n * 64 + g.edge_count() * 48);
     for vi in 0..g.n {
-        let labels: Vec<J> = {
-            let s = g.vlabel_off[vi] as usize;
-            let e = g.vlabel_off[vi + 1] as usize;
-            g.vlabel_flat[s..e].iter().map(|&l| J::String(g.labels.text(l).to_string())).collect()
-        };
-        let mut props = serde_json::Map::new();
+        out.push_str("{\"type\":\"node\",\"id\":");
+        push_json_str(&mut out, g.vid.text(vi as u32));
+        out.push_str(",\"labels\":[");
+        let s = g.vlabel_off[vi] as usize;
+        let e = g.vlabel_off[vi + 1] as usize;
+        for (i, &l) in g.vlabel_flat[s..e].iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            push_json_str(&mut out, g.labels.text(l));
+        }
+        out.push_str("],\"properties\":{");
+        let mut first = true;
         for (&kid, col) in &g.cols {
-            if let Some(jv) = vertex_prop(g, vi, col) {
-                props.insert(g.keys.text(kid).to_string(), jv);
+            if !col_present(col, vi) {
+                continue;
+            }
+            if !first {
+                out.push(',');
+            }
+            first = false;
+            push_json_str(&mut out, g.keys.text(kid));
+            out.push(':');
+            match col {
+                Column::Num { data, .. } => push_num(&mut out, data[vi]),
+                Column::Str { data, .. } => push_json_str(&mut out, g.strs.text(data[vi])),
+                Column::Bool { data, .. } => out.push_str(if data[vi] { "true" } else { "false" }),
+                Column::Mixed { data } => push_value(&mut out, data[vi].as_ref().unwrap()),
             }
         }
-        let rec = serde_json::json!({
-            "type": "node",
-            "id": g.vid.text(vi as u32),
-            "labels": labels,
-            "properties": J::Object(props),
-        });
-        out.push_str(&rec.to_string());
-        out.push('\n');
+        out.push_str("}}\n");
     }
     for i in 0..g.edge_count() {
-        let rec = serde_json::json!({
-            "type": "edge",
-            "from": g.vid.text(g.e_src[i]),
-            "to": g.vid.text(g.e_dst[i]),
-            "labels": [g.etype.text(g.e_type[i])],
-            "properties": {},
-        });
-        out.push_str(&rec.to_string());
-        out.push('\n');
+        out.push_str("{\"type\":\"edge\",\"from\":");
+        push_json_str(&mut out, g.vid.text(g.e_src[i]));
+        out.push_str(",\"to\":");
+        push_json_str(&mut out, g.vid.text(g.e_dst[i]));
+        out.push_str(",\"labels\":[");
+        push_json_str(&mut out, g.etype.text(g.e_type[i]));
+        out.push_str("],\"properties\":{}}\n");
     }
     out
 }
