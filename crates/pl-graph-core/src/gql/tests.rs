@@ -392,6 +392,50 @@ fn edge_property_aggregate() {
 }
 
 #[test]
+fn group_by_expression() {
+    let mut g = modern();
+    // group key is an expression (age parity), not just a property.
+    let r = rows(&mut g, "MATCH (n:Person) RETURN n.age % 2 AS parity, count(*) AS c ORDER BY parity");
+    assert_eq!(r, vec![vec![n(0.0), n(1.0)], vec![n(1.0), n(3.0)]]);
+}
+
+#[test]
+fn count_distinct_aggregate() {
+    let mut g = modern();
+    let r = rows(&mut g, "MATCH (p:Person)-[:CREATED]->(s:Software) RETURN count(DISTINCT s.lang) AS c");
+    assert_eq!(r, vec![vec![n(1.0)]]);
+}
+
+#[test]
+fn nested_function_calls() {
+    let mut g = modern();
+    assert_eq!(rows(&mut g, "RETURN upper(left('hello', 3)) AS x"), vec![vec![s("HEL")]]);
+}
+
+#[test]
+fn case_simple_form() {
+    let mut g = modern();
+    let r = rows(&mut g, "RETURN CASE 2 WHEN 1 THEN 'a' WHEN 2 THEN 'b' ELSE 'c' END AS x");
+    assert_eq!(r, vec![vec![s("b")]]);
+}
+
+#[test]
+fn order_by_expression() {
+    let mut g = modern();
+    // ORDER BY an expression (negated age) → effectively descending by age.
+    let r = rows(&mut g, "MATCH (n:Person) RETURN n.name ORDER BY n.age * -1");
+    assert_eq!(r, vec![vec![s("peter")], vec![s("josh")], vec![s("marko")], vec![s("vadas")]]);
+}
+
+#[test]
+fn concat_coerces_number_and_comparison_projects_bool() {
+    let mut g = modern();
+    assert_eq!(rows(&mut g, "RETURN 'age=' || 29 AS x"), vec![vec![s("age=29")]]);
+    let r = rows(&mut g, "MATCH (n:Person {name:'josh'}) RETURN n.age > 30 AS old");
+    assert_eq!(r, vec![vec![b(true)]]);
+}
+
+#[test]
 fn three_valued_boolean_logic() {
     let mut g = modern();
     // AND/OR/XOR/NOT with UNKNOWN (null), per ISO Kleene logic.
