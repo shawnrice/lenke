@@ -18,7 +18,9 @@ const load = (ndjson: string): Graph => ndjsonCodec.decode(ndjson, new Graph());
 /** Run `fn` for ~`budgetMs`, return mean ms/op and ops/sec. */
 const bench = (fn: () => void, budgetMs = 800): { mean: number; ops: number } => {
   // warm up
-  for (let i = 0; i < 3; i++) fn();
+  for (let i = 0; i < 3; i++) {
+    fn();
+  }
   let iters = 0;
   const start = performance.now();
   let now = start;
@@ -31,10 +33,22 @@ const bench = (fn: () => void, budgetMs = 800): { mean: number; ops: number } =>
   return { mean: elapsed / iters, ops: (iters / elapsed) * 1000 };
 };
 
-const pad = (s: string, n: number): string => s.padEnd(n);
-const fmt = (n: number): string => (n >= 100 ? n.toFixed(0) : n >= 1 ? n.toFixed(2) : n.toFixed(4));
+// A stable multiset key for a row array (order-insensitive comparison).
+const bag = (rs: unknown[]): string =>
+  rs
+    .map((r) => JSON.stringify(r))
+    .sort()
+    .join('\n');
 
-const ndjson = genNdjson(N, DEG).ndjson;
+const pad = (s: string, n: number): string => s.padEnd(n);
+const fmt = (n: number): string => {
+  if (n >= 100) {
+    return n.toFixed(0);
+  }
+  return n >= 1 ? n.toFixed(2) : n.toFixed(4);
+};
+
+const { ndjson } = genNdjson(N, DEG);
 console.log(
   `\nDataset: ${N.toLocaleString()} :Person vertices, ${(N * DEG).toLocaleString()} :KNOWS edges`,
 );
@@ -94,11 +108,6 @@ for (const c of cases) {
   const rows = Array.isArray(indexedRows) ? indexedRows.length : 0;
   // Compare as multisets — index seeding may reorder rows (spec-legal without
   // ORDER BY), but the set of rows must be identical.
-  const bag = (rs: unknown[]): string =>
-    rs
-      .map((r) => JSON.stringify(r))
-      .sort()
-      .join('\n');
   const same = bag(plainRows) === bag(indexedRows);
 
   const a = bench(() => c.run(plain));
