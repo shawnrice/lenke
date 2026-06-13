@@ -88,17 +88,63 @@ pub struct QueryResult {
     pub checksum: u64,
 }
 
-/// A materialized result: one name per RETURN item and the projected rows. This
-/// is the real engine output (vs. `QueryResult`, the benchmark fingerprint).
-/// Cells are the core graph `Value` model so the rowset round-trips losslessly
-/// to JSON for the FFI / wasm boundary.
+/// A materialized result: column names plus a **columnar** cell buffer — a
+/// single flat row-major `Vec<Value>` (cell `(i, j)` at `i*ncols + j`) instead
+/// of a `Vec` per row, so building an N-row result is one amortized allocation,
+/// not N small ones. Cells are the core graph `Value` model so the rowset
+/// round-trips losslessly to JSON for the FFI / wasm boundary.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RowSet {
     pub cols: Vec<String>,
-    pub rows: Vec<Vec<Value>>,
+    /// Flat row-major cells; `nrows * cols.len()` long.
+    pub data: Vec<Value>,
+    pub nrows: usize,
 }
 
 impl RowSet {
+    pub fn new(cols: Vec<String>) -> Self {
+        RowSet { cols, data: Vec::new(), nrows: 0 }
+    }
+    pub fn ncols(&self) -> usize {
+        self.cols.len()
+    }
+    /// Row `i` as a slice of its cells.
+    pub fn row(&self, i: usize) -> &[Value] {
+        let c = self.cols.len();
+        &self.data[i * c..i * c + c]
+    }
+    /// Iterate rows as cell slices.
+    pub fn rows(&self) -> impl Iterator<Item = &[Value]> {
+        let c = self.cols.len().max(1); // chunks(0) panics; empty-col → no rows
+        self.data.chunks(c).take(self.nrows)
+    }
+    /// Append a row (its cells; must be exactly `ncols`).
+    pub fn push_row(&mut self, cells: impl IntoIterator<Item = Value>) {
+        self.data.extend(cells);
+        self.nrows += 1;
+        debug_assert_eq!(self.data.len(), self.nrows * self.cols.len());
+    }
+    /// Drop the most recently pushed row (used to undo a DISTINCT duplicate).
+    pub fn pop_row(&mut self) {
+        self.data.truncate(self.data.len() - self.cols.len());
+        self.nrows -= 1;
+    }
+    /// Apply SKIP/LIMIT in place over the flat buffer.
+    pub fn apply_skip_limit(&mut self, skip: usize, limit: Option<usize>) {
+        let c = self.cols.len();
+        let skip = skip.min(self.nrows);
+        if skip > 0 {
+            self.data.drain(0..skip * c);
+            self.nrows -= skip;
+        }
+        if let Some(n) = limit {
+            if self.nrows > n {
+                self.data.truncate(n * c);
+                self.nrows = n;
+            }
+        }
+    }
+
     /// Serialize to a compact `{"columns":[...],"rows":[[...]]}` JSON document —
     /// the carrier for both bun:ffi and (later) wasm-bindgen, where a single
     /// buffer crossing beats marshalling cell-by-cell.
@@ -107,8 +153,7 @@ impl RowSet {
             self.cols.iter().map(|c| serde_json::Value::String(c.clone())).collect(),
         );
         let rows = serde_json::Value::Array(
-            self.rows
-                .iter()
+            self.rows()
                 .map(|r| serde_json::Value::Array(r.iter().map(value_to_json).collect()))
                 .collect(),
         );
@@ -777,7 +822,7 @@ impl Query {
         let cols: Vec<String> = self.items.iter().map(item_name).collect();
         let plan = match self.plan(g) {
             Some(p) => p,
-            None => return RowSet { cols, rows: Vec::new() },
+            None => return RowSet::new(cols),
         };
         let aggregating = self.items.iter().any(|i| matches!(i, RetItem::Agg { .. }));
 
@@ -882,7 +927,11 @@ impl Query {
             rows.truncate(n);
         }
 
-        RowSet { cols, rows }
+        let mut rs = RowSet::new(cols);
+        for row in rows {
+            rs.push_row(row);
+        }
+        rs
     }
 
     pub fn run(&self, g: &Graph) -> QueryResult {
@@ -1100,15 +1149,20 @@ mod tests {
         parse(q).unwrap().run_rows(g)
     }
 
+    /// Materialize a flat RowSet into per-row Vecs for assertions (test-only).
+    fn rowvecs(r: &RowSet) -> Vec<Vec<Value>> {
+        r.rows().map(|x| x.to_vec()).collect()
+    }
+
     #[test]
     fn rows_project_typed_values() {
         let g = fixture();
         // bare var → external id string; .key → typed property value.
         let r = rows(&g, "MATCH (a:Person) WHERE a.age = 30 RETURN a, a.age, a.dept, a.active");
         assert_eq!(r.cols, vec!["a", "a.age", "a.dept", "a.active"]);
-        assert_eq!(r.rows.len(), 1);
+        assert_eq!(r.nrows, 1);
         assert_eq!(
-            r.rows[0],
+            rowvecs(&r)[0],
             vec![
                 Value::Str("n3".into()),
                 Value::Num(30.0),
@@ -1123,7 +1177,7 @@ mod tests {
         let g = fixture();
         let r = rows(&g, "MATCH (a:Person) RETURN a.age ORDER BY a.age DESC LIMIT 3");
         assert_eq!(
-            r.rows,
+            rowvecs(&r),
             vec![vec![Value::Num(90.0)], vec![Value::Num(80.0)], vec![Value::Num(70.0)]]
         );
     }
@@ -1135,7 +1189,7 @@ mod tests {
         assert_eq!(r.cols, vec!["a.dept", "count(*)", "sum(a.age)"]);
         // d0: i in {0,2,4,6,8} ages 0+20+40+60+80=200; d1: {1,3,5,7,9} 10+30+50+70+90=250
         assert_eq!(
-            r.rows,
+            rowvecs(&r),
             vec![
                 vec![Value::Str("d0".into()), Value::Num(5.0), Value::Num(200.0)],
                 vec![Value::Str("d1".into()), Value::Num(5.0), Value::Num(250.0)],
@@ -1147,7 +1201,8 @@ mod tests {
     fn rows_distinct() {
         let g = fixture();
         let r = rows(&g, "MATCH (a:Person) RETURN DISTINCT a.dept ORDER BY a.dept");
-        assert_eq!(r.rows, vec![vec![Value::Str("d0".into())], vec![Value::Str("d1".into())]]);
+        assert_eq!(
+            rowvecs(&r), vec![vec![Value::Str("d0".into())], vec![Value::Str("d1".into())]]);
     }
 
     #[test]
@@ -1155,7 +1210,7 @@ mod tests {
         let g = fixture();
         let r = rows(&g, "MATCH (a:Ghost) RETURN a.age");
         assert_eq!(r.cols, vec!["a.age"]);
-        assert!(r.rows.is_empty());
+        assert!(r.nrows == 0);
     }
 
     #[test]

@@ -42,11 +42,11 @@ fn b(x: bool) -> Value {
 fn q(g: &mut Graph, query: &str) -> (Vec<String>, Vec<Vec<Value>>) {
     let parsed = parse(query).unwrap_or_else(|e| panic!("parse error for `{query}`: {e}"));
     let rs = parsed.execute(g, &Params::new()).unwrap_or_else(|e| panic!("exec error for `{query}`: {e}"));
-    (rs.cols, rs.rows)
+    (rs.cols.clone(), rs.rows().map(|r| r.to_vec()).collect())
 }
 
 fn qp(g: &mut Graph, query: &str, params: Params) -> Vec<Vec<Value>> {
-    parse(query).unwrap().execute(g, &params).unwrap().rows
+    parse(query).unwrap().execute(g, &params).unwrap().rows().map(|r| r.to_vec()).collect()
 }
 
 fn rows(g: &mut Graph, query: &str) -> Vec<Vec<Value>> {
@@ -329,11 +329,11 @@ fn prepared_plan_reused_with_params() {
 
     let mut p1 = Params::new();
     p1.insert("who".to_string(), Val::Str("marko".into()));
-    assert_eq!(plan.execute(&mut g, &p1).unwrap().rows, vec![vec![n(29.0)]]);
+    assert_eq!(plan.execute(&mut g, &p1).unwrap().rows().map(|r| r.to_vec()).collect::<Vec<_>>(), vec![vec![n(29.0)]]);
 
     let mut p2 = Params::new();
     p2.insert("who".to_string(), Val::Str("josh".into()));
-    assert_eq!(plan.execute(&mut g, &p2).unwrap().rows, vec![vec![n(32.0)]]);
+    assert_eq!(plan.execute(&mut g, &p2).unwrap().rows().map(|r| r.to_vec()).collect::<Vec<_>>(), vec![vec![n(32.0)]]);
 }
 
 #[test]
@@ -344,7 +344,7 @@ fn prepared_write_persists() {
     let mut p = Params::new();
     p.insert("nm".to_string(), Val::Str("zoe".into()));
     p.insert("age".to_string(), Val::Num(40.0));
-    assert_eq!(ins.execute(&mut g, &p).unwrap().rows, vec![vec![s("zoe")]]);
+    assert_eq!(ins.execute(&mut g, &p).unwrap().rows().map(|r| r.to_vec()).collect::<Vec<_>>(), vec![vec![s("zoe")]]);
     assert_eq!(rows(&mut g, "MATCH (n:Person) RETURN count(*) AS c"), vec![vec![n(5.0)]]);
 }
 

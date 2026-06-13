@@ -76,7 +76,7 @@ fn build() -> Graph {
 fn bench(g: &mut Graph, q: &str, iters: u32) -> (f64, usize) {
     let plan = prepare(q).unwrap();
     let params = Params::new();
-    let rows = plan.execute(g, &params).unwrap().rows.len(); // warm up + row count
+    let rows = plan.execute(g, &params).unwrap().nrows; // warm up + row count
     let t = Instant::now();
     for _ in 0..iters {
         let _ = plan.execute(g, &params).unwrap();

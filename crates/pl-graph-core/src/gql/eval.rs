@@ -1367,43 +1367,41 @@ fn project_to_rows(
     incoming: &[Binding],
     matches: &[&CClause],
     proj: &CProjection,
-) -> Vec<Vec<Value>> {
+) -> RowSet {
+    let mut rs = RowSet::new(proj.out_names.clone());
     if proj.aggregating || !proj.order_by.is_empty() {
-        let bindings = project_matches(graph, ctx, incoming, matches, proj);
-        return bindings
-            .iter()
-            .map(|b| (0..proj.out_len).map(|i| b.get(i).map(|v| val_to_value(graph, v)).unwrap_or(Value::Null)).collect())
-            .collect();
+        // Few / already-sorted rows: reuse the binding accumulator, then pour
+        // each projected binding's cells into the flat buffer.
+        for b in project_matches(graph, ctx, incoming, matches, proj) {
+            rs.push_row((0..proj.out_len).map(|i| b.get(i).map(|v| val_to_value(graph, v)).unwrap_or(Value::Null)));
+        }
+        return rs;
     }
-    // Fast path: project each row straight to Values (one alloc per output row).
+    // Fast path: project each row straight into the flat cell buffer — no
+    // intermediate per-row Vec, no second conversion pass.
     let cap = proj.limit.map(|l| proj.skip.unwrap_or(0) + l);
-    let mut rows: Vec<Vec<Value>> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     for inb in incoming {
         let mut work = inb.clone();
         let cont = drive_matches(graph, ctx, matches, 0, &mut work, &mut |b| {
-            let row: Vec<Value> = if proj.star {
-                proj.star_cols.iter().map(|&s| b.get(s).map(|v| val_to_value(graph, v)).unwrap_or(Value::Null)).collect()
+            if proj.star {
+                rs.push_row(proj.star_cols.iter().map(|&s| b.get(s).map(|v| val_to_value(graph, v)).unwrap_or(Value::Null)));
             } else {
                 let env = Env::new(graph, ctx, b);
-                proj.items.iter().map(|item| val_to_value(graph, &eval(&env, &item.expr))).collect()
-            };
-            if proj.distinct && !seen.insert(value_row_key(&row)) {
+                rs.push_row(proj.items.iter().map(|item| val_to_value(graph, &eval(&env, &item.expr))));
+            }
+            if proj.distinct && !seen.insert(value_row_key(rs.row(rs.nrows - 1))) {
+                rs.pop_row();
                 return true;
             }
-            rows.push(row);
-            cap.is_none_or(|c| rows.len() < c) // stop once enough collected
+            cap.is_none_or(|c| rs.nrows < c) // stop once enough collected
         });
         if !cont {
             break;
         }
     }
-    let start = proj.skip.unwrap_or(0);
-    let mut rows: Vec<Vec<Value>> = rows.into_iter().skip(start).collect();
-    if let Some(n) = proj.limit {
-        rows.truncate(n);
-    }
-    rows
+    rs.apply_skip_limit(proj.skip.unwrap_or(0), proj.limit);
+    rs
 }
 
 /// Materialize the binding stream from `incoming × pending matches` (needed
@@ -1459,7 +1457,7 @@ fn compare_sort(a: &Val, b: &Val, descending: bool, nulls_first: Option<bool>) -
 
 // --- linear query & set ops --------------------------------------------------
 
-fn run_linear(linear: &CLinear, graph: &mut Graph, plan: &CQuery, params: &[Val]) -> Result<Vec<Vec<Value>>, String> {
+fn run_linear(linear: &CLinear, graph: &mut Graph, plan: &CQuery, params: &[Val]) -> Result<RowSet, String> {
     // `bindings` is the materialized row set at the last barrier; `pending` are
     // MATCH clauses deferred so a projection (or write) can stream them directly.
     let mut bindings: Vec<Binding> = vec![Binding::default()];
@@ -1485,7 +1483,7 @@ fn run_linear(linear: &CLinear, graph: &mut Graph, plan: &CQuery, params: &[Val]
             CClause::Return(proj) => {
                 return Ok(project_to_rows(graph, &ctx, &bindings, &pending, proj));
             }
-            CClause::Finish => return Ok(Vec::new()),
+            CClause::Finish => return Ok(RowSet::new(Vec::new())),
             // Mutations run eagerly, exactly once per binding. Flush deferred
             // matches first, then re-resolve refs against the mutated graph.
             CClause::Insert(patterns) => {
@@ -1526,7 +1524,7 @@ fn run_linear(linear: &CLinear, graph: &mut Graph, plan: &CQuery, params: &[Val]
             }
         }
     }
-    Ok(Vec::new()) // write-only / no RETURN
+    Ok(RowSet::new(Vec::new())) // write-only / no RETURN
 }
 
 // --- write execution ---------------------------------------------------------
@@ -1642,17 +1640,30 @@ fn run_delete(graph: &mut Graph, ctx: &Ctx, detach: bool, targets: &[CExpr], bin
     Ok(())
 }
 
-fn distinct_rows(rows: Vec<Vec<Value>>) -> Vec<Vec<Value>> {
-    let mut seen = HashSet::new();
-    rows.into_iter().filter(|r| seen.insert(value_row_key(r))).collect()
+/// Keep only rows whose key passes `keep`, into a fresh flat RowSet.
+fn filter_rows(rs: RowSet, mut keep: impl FnMut(&str) -> bool) -> RowSet {
+    let mut out = RowSet::new(rs.cols.clone());
+    for r in rs.rows() {
+        if keep(&value_row_key(r)) {
+            out.push_row(r.iter().cloned());
+        }
+    }
+    out
 }
 
-fn combine(op: SetOp, left: Vec<Vec<Value>>, right: Vec<Vec<Value>>) -> Vec<Vec<Value>> {
-    let right_keys: HashSet<String> = right.iter().map(|r| value_row_key(r)).collect();
+fn distinct_rows(rs: RowSet) -> RowSet {
+    let mut seen = HashSet::new();
+    filter_rows(rs, |k| seen.insert(k.to_string()))
+}
+
+fn combine(op: SetOp, left: RowSet, right: RowSet) -> RowSet {
+    let right_keys: HashSet<String> = right.rows().map(value_row_key).collect();
     match op.op {
         SetOpKind::Union => {
-            let mut all = left;
-            all.extend(right);
+            let mut all = RowSet::new(left.cols.clone());
+            for r in left.rows().chain(right.rows()) {
+                all.push_row(r.iter().cloned());
+            }
             if op.all {
                 all
             } else {
@@ -1660,7 +1671,7 @@ fn combine(op: SetOp, left: Vec<Vec<Value>>, right: Vec<Vec<Value>>) -> Vec<Vec<
             }
         }
         SetOpKind::Except => {
-            let kept: Vec<Vec<Value>> = left.into_iter().filter(|r| !right_keys.contains(&value_row_key(r))).collect();
+            let kept = filter_rows(left, |k| !right_keys.contains(k));
             if op.all {
                 kept
             } else {
@@ -1668,7 +1679,7 @@ fn combine(op: SetOp, left: Vec<Vec<Value>>, right: Vec<Vec<Value>>) -> Vec<Vec<
             }
         }
         SetOpKind::Intersect => {
-            let kept: Vec<Vec<Value>> = left.into_iter().filter(|r| right_keys.contains(&value_row_key(r))).collect();
+            let kept = filter_rows(left, |k| right_keys.contains(k));
             if op.all {
                 kept
             } else {
@@ -1678,30 +1689,16 @@ fn combine(op: SetOp, left: Vec<Vec<Value>>, right: Vec<Vec<Value>>) -> Vec<Vec<
     }
 }
 
-/// Output column names for a plan: the terminal RETURN projection's column names
-/// (computed at lower time, including the `*` expansion).
-fn output_columns(plan: &CQuery) -> Vec<String> {
-    plan.parts
-        .first()
-        .and_then(|p| {
-            p.clauses.iter().rev().find_map(|c| match c {
-                CClause::Return(proj) => Some(proj.out_names.clone()),
-                _ => None,
-            })
-        })
-        .unwrap_or_default()
-}
-
-/// Execute a lowered plan against a graph with positional params. The terminal
-/// RETURN already produced output `Value` rows (no Binding/convert pass here).
+/// Execute a lowered plan against a graph with positional params. `run_linear`
+/// already produced the terminal RETURN's flat `RowSet` (cols + columnar cells).
 fn run_cquery(plan: &CQuery, graph: &mut Graph, params: &[Val]) -> Result<RowSet, String> {
     let first = plan.parts.first().ok_or("empty query")?;
-    let mut rows = run_linear(first, graph, plan, params)?;
+    let mut rs = run_linear(first, graph, plan, params)?;
     for (i, op) in plan.ops.iter().enumerate() {
         let right = run_linear(&plan.parts[i + 1], graph, plan, params)?;
-        rows = combine(*op, rows, right);
+        rs = combine(*op, rs, right);
     }
-    Ok(RowSet { cols: output_columns(plan), rows })
+    Ok(rs)
 }
 
 /// Bind named params into the plan's positional slot order.
