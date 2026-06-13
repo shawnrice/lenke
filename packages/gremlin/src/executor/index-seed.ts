@@ -160,40 +160,58 @@ export type SeededPlan = {
   steps: readonly Step[];
 };
 
+/** Intersect candidate sets, smallest first, into a fresh set. */
+const intersect = <E>(sets: readonly ReadonlySet<E>[]): Set<E> => {
+  const ordered = [...sets].sort((a, b) => a.size - b.size);
+  const result = new Set<E>(ordered[0]);
+  for (let k = 1; k < ordered.length && result.size > 0; k++) {
+    const other = ordered[k]!;
+    for (const element of result) {
+      if (!other.has(element)) {
+        result.delete(element);
+      }
+    }
+  }
+  return result;
+};
+
 /** Seed the residual `rest` steps from `index`, or `null` to fall back. */
 const seedRest = <E>(
   rest: readonly Step[],
   index: PropertyIndex<E>,
   tracksPath: boolean,
 ): SeededPlan | null => {
-  // Across the leading run of commuting filters, pick the most selective seed
-  // (smallest candidate set wins).
-  let bestAt = -1;
-  let best: Seed<E> | null = null;
+  // Gather every seedable predicate across the leading run of commuting
+  // filters. Each candidate set is a superset of the true matches, so their
+  // intersection is the tightest sound seed.
+  const seeds: { set: ReadonlySet<E>; removable: boolean; at: number }[] = [];
   for (let i = 0; i < rest.length; i++) {
     const step = rest[i]!;
     if (!COMMUTING_FILTERS.has(step.kind)) {
       break;
     }
     const seed = seedForStep(step, index);
-    if (seed && seed.set.size < (best?.set.size ?? Infinity)) {
-      best = seed;
-      bestAt = i;
+    if (seed) {
+      seeds.push({ ...seed, at: i });
     }
   }
 
-  if (!best) {
+  if (seeds.length === 0) {
     return null;
   }
 
-  const { set } = best;
+  const set = intersect(seeds.map((s) => s.set));
   const stream = (function* () {
     for (const element of set) {
       yield startTraverser(element, tracksPath);
     }
   })();
 
-  const steps = best.removable ? rest.filter((_, i) => i !== bestAt) : rest;
+  // Drop every consumed step whose seed is exact (eq/within on a plain `has`):
+  // the intersection is a subset of each such set, so all seeds already satisfy
+  // it. Range/`hasLabelAnd` seeds stay as residual filters.
+  const dropped = new Set(seeds.filter((s) => s.removable).map((s) => s.at));
+  const steps = dropped.size > 0 ? rest.filter((_, i) => !dropped.has(i)) : rest;
   return { stream, steps };
 };
 
