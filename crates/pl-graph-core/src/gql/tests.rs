@@ -596,6 +596,15 @@ fn multi_stage_with_aggregate_filter() {
 }
 
 #[test]
+fn return_star_columns_are_bound_vars() {
+    let mut g = modern();
+    // `*` projects every in-scope variable as a column (here just `n`).
+    let (cols, r) = q(&mut g, "MATCH (n:Person {name:'marko'}) RETURN *");
+    assert_eq!(cols, vec!["n"]);
+    assert_eq!(r, vec![vec![s("marko")]]); // a node flattens to its external id
+}
+
+#[test]
 fn with_star_carries_all_vars() {
     let mut g = modern();
     let r = rows(

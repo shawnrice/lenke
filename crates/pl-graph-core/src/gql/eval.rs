@@ -11,11 +11,11 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
-use super::ast::{ArithOp, CompareOp, Direction, LabelExpr, Lit, Quantifier, RemoveItem, SetOp, SetOpKind};
+use super::ast::{ArithOp, CompareOp, Direction, LabelExpr, Lit, Quantifier, SetOp, SetOpKind};
 use super::lexer::SyntaxError;
 use super::plan::{
-    lower, AggFn, CClause, CExpr, CLinear, CNode, CPath, CProjection, CPropConstraint, CQuery, CRel, CSegment,
-    CSetItem, ScalarFn,
+    lower, AggFn, CClause, CExpr, CLinear, CNode, CPath, CProjection, CPropConstraint, CQuery, CRel, CRemoveItem,
+    CSegment, CSetItem, ScalarFn,
 };
 use crate::graph::{Graph, Value};
 use crate::query::RowSet;
@@ -34,27 +34,32 @@ pub enum Val {
     Edge(u32),
 }
 
-/// One candidate solution: variables bound so far, in insertion order (so
-/// `RETURN *` and row keys keep a stable column order, like the TS `Map`).
+/// One candidate solution: variable slot → value. Slots are assigned per scope
+/// by the lowering pass, so access is an array index (not a name scan). `None` is
+/// an unbound slot; `Some(Val::Null)` is an explicit null (e.g. OPTIONAL MATCH).
 #[derive(Clone, Debug, Default)]
-pub struct Binding(Vec<(String, Val)>);
+pub struct Binding(Vec<Option<Val>>);
 
 impl Binding {
-    fn get(&self, k: &str) -> Option<&Val> {
-        self.0.iter().find(|(n, _)| n == k).map(|(_, v)| v)
+    fn get(&self, slot: usize) -> Option<&Val> {
+        self.0.get(slot).and_then(|o| o.as_ref())
     }
-    fn has(&self, k: &str) -> bool {
-        self.0.iter().any(|(n, _)| n == k)
+    fn bound(&self, slot: usize) -> bool {
+        self.0.get(slot).is_some_and(|o| o.is_some())
     }
-    fn set(&mut self, k: &str, v: Val) {
-        if let Some(slot) = self.0.iter_mut().find(|(n, _)| n == k) {
-            slot.1 = v;
-        } else {
-            self.0.push((k.to_string(), v));
+    fn set(&mut self, slot: usize, v: Val) {
+        if slot >= self.0.len() {
+            self.0.resize(slot + 1, None);
+        }
+        self.0[slot] = Some(v);
+    }
+    fn unset(&mut self, slot: usize) {
+        if slot < self.0.len() {
+            self.0[slot] = None;
         }
     }
-    fn iter(&self) -> impl Iterator<Item = &(String, Val)> {
-        self.0.iter()
+    fn resize(&mut self, len: usize) {
+        self.0.resize(len, None);
     }
 }
 
@@ -239,10 +244,12 @@ fn val_key(v: &Val, out: &mut String) {
 
 fn row_key(b: &Binding) -> String {
     let mut s = String::new();
-    for (k, v) in b.iter() {
-        s.push_str(k);
-        s.push('=');
-        val_key(v, &mut s);
+    for cell in &b.0 {
+        match cell {
+            Some(v) => val_key(v, &mut s),
+            None => s.push('\u{2}'), // distinct marker for an unbound slot
+        }
+        s.push('\u{1}');
     }
     s
 }
@@ -334,10 +341,10 @@ fn eval(env: &Env, expr: &CExpr) -> Val {
             Lit::Num(n) => Val::Num(*n),
             Lit::Str(s) => Val::Str(s.clone()),
         },
-        CExpr::Var(name) => env.binding.get(name).cloned().unwrap_or(Val::Null),
+        CExpr::Var(slot) => env.binding.get(*slot).cloned().unwrap_or(Val::Null),
         CExpr::Param(slot) => env.params.get(*slot).cloned().unwrap_or(Val::Null),
-        CExpr::Prop { var, key } => {
-            let bound = env.binding.get(var).cloned().unwrap_or(Val::Null);
+        CExpr::Prop { var_slot, key } => {
+            let bound = env.binding.get(*var_slot).cloned().unwrap_or(Val::Null);
             prop_of(env.graph, &bound, key)
         }
         CExpr::List(items) => Val::List(items.iter().map(|e| eval(env, e)).collect()),
@@ -423,11 +430,11 @@ fn eval(env: &Env, expr: &CExpr) -> Val {
             }
             else_.as_ref().map(|e| eval(env, e)).unwrap_or(Val::Null)
         }
-        CExpr::Exists { patterns, where_ } => {
-            Val::Bool(any_match(env.graph, patterns, where_.as_deref(), env.binding, env.params))
+        CExpr::Exists { patterns, where_, sub_len } => {
+            Val::Bool(any_match(env.graph, patterns, where_.as_deref(), env.binding, env.params, *sub_len))
         }
-        CExpr::CountSubquery { patterns, where_ } => {
-            Val::Num(count_matches(env.graph, patterns, where_.as_deref(), env.binding, env.params) as f64)
+        CExpr::CountSubquery { patterns, where_, sub_len } => {
+            Val::Num(count_matches(env.graph, patterns, where_.as_deref(), env.binding, env.params, *sub_len) as f64)
         }
         CExpr::Scalar { func, args } => {
             let vals: Vec<Val> = args.iter().map(|a| eval(env, a)).collect();
@@ -589,32 +596,24 @@ fn call_scalar(graph: &Graph, func: ScalarFn, args: &[Val]) -> Val {
 
 // --- pattern matching --------------------------------------------------------
 
-fn consistent(binding: &Binding, name: Option<&str>, value: &Val) -> bool {
-    match name {
-        None => true,
-        Some(n) => match binding.get(n) {
-            None => true,
-            Some(existing) => val_eq(existing, value),
-        },
-    }
-}
-
-/// Bind `value` to `name` in place for the duration of a recursion branch,
-/// returning whether a *new* entry was pushed (so the caller can `bind_pop` it
-/// on backtrack). The backtracking alternative to cloning at every step.
-fn bind_push(binding: &mut Binding, name: Option<&str>, value: Val) -> bool {
-    match name {
-        Some(n) if !binding.has(n) => {
-            binding.0.push((n.to_string(), value));
-            true
+/// Bind a slot to `value` for a recursion branch, returning whether it was newly
+/// set (so the caller can restore it on backtrack). A consistent already-bound
+/// slot is left untouched; an inconsistent one is rejected (`None`).
+fn bind_slot(binding: &mut Binding, slot: Option<usize>, value: &Val) -> Option<bool> {
+    match slot {
+        None => Some(false),
+        Some(s) => {
+            if binding.bound(s) {
+                if val_eq(binding.get(s).unwrap(), value) {
+                    Some(false)
+                } else {
+                    None // join conflict — this branch fails
+                }
+            } else {
+                binding.set(s, value.clone());
+                Some(true)
+            }
         }
-        _ => false,
-    }
-}
-
-fn bind_pop(binding: &mut Binding, pushed: bool) {
-    if pushed {
-        binding.0.pop();
     }
 }
 
@@ -681,15 +680,17 @@ fn match_node_then(
     params: &[Val],
     cont: &mut dyn FnMut(&mut Binding) -> bool,
 ) -> bool {
-    if !matches_label(graph, vi, node.label.as_ref())
-        || !consistent(binding, node.variable.as_deref(), &Val::Node(vi))
-    {
+    if !matches_label(graph, vi, node.label.as_ref()) {
         return true; // no match here, but keep going
     }
-    let pushed = bind_push(binding, node.variable.as_deref(), Val::Node(vi));
+    let Some(did_set) = bind_slot(binding, node.var_slot, &Val::Node(vi)) else {
+        return true; // join conflict
+    };
     let go = satisfies(graph, &Val::Node(vi), &node.props, node.where_.as_ref(), binding, params);
     let keep = if go { cont(binding) } else { true };
-    bind_pop(binding, pushed);
+    if did_set {
+        binding.unset(node.var_slot.unwrap());
+    }
     keep
 }
 
@@ -760,10 +761,9 @@ fn walk_segments(
         return true;
     }
     for (eidx, nbr) in expand(graph, from, rel.direction, rel.label.as_ref()) {
-        if !consistent(binding, rel.variable.as_deref(), &Val::Edge(eidx)) {
-            continue;
-        }
-        let pushed = bind_push(binding, rel.variable.as_deref(), Val::Edge(eidx));
+        let Some(did_set) = bind_slot(binding, rel.var_slot, &Val::Edge(eidx)) else {
+            continue; // join conflict on the edge variable
+        };
         let ok = satisfies(graph, &Val::Edge(eidx), &rel.props, rel.where_.as_ref(), binding, params);
         let keep = if ok {
             match_node_then(graph, binding, node, nbr, params, &mut |b| {
@@ -772,7 +772,9 @@ fn walk_segments(
         } else {
             true
         };
-        bind_pop(binding, pushed);
+        if did_set {
+            binding.unset(rel.var_slot.unwrap());
+        }
         if !keep {
             return false;
         }
@@ -788,8 +790,8 @@ fn visit_pattern(
     params: &[Val],
     emit: &mut dyn FnMut(&mut Binding) -> bool,
 ) -> bool {
-    let seeds: Vec<u32> = match pattern.start.variable.as_deref() {
-        Some(v) if binding.has(v) => match binding.get(v) {
+    let seeds: Vec<u32> = match pattern.start.var_slot {
+        Some(s) if binding.bound(s) => match binding.get(s) {
             Some(Val::Node(i)) => vec![*i],
             _ => return true,
         },
@@ -832,9 +834,19 @@ fn visit_patterns(
 }
 
 /// Does the (correlated) sub-pattern have at least one match? Short-circuits.
-fn any_match(graph: &Graph, patterns: &[CPath], where_: Option<&CExpr>, binding: &Binding, params: &[Val]) -> bool {
+/// The work binding is the outer binding grown to the sub-scope (`sub_len`):
+/// outer slots stay set (correlation), the sub's own slots start unbound.
+fn any_match(
+    graph: &Graph,
+    patterns: &[CPath],
+    where_: Option<&CExpr>,
+    binding: &Binding,
+    params: &[Val],
+    sub_len: usize,
+) -> bool {
     let mut found = false;
     let mut work = binding.clone();
+    work.resize(sub_len);
     visit_patterns(graph, patterns, 0, where_, &mut work, params, &mut |_| {
         found = true;
         false
@@ -843,9 +855,17 @@ fn any_match(graph: &Graph, patterns: &[CPath], where_: Option<&CExpr>, binding:
 }
 
 /// Count matches of the (correlated) sub-pattern.
-fn count_matches(graph: &Graph, patterns: &[CPath], where_: Option<&CExpr>, binding: &Binding, params: &[Val]) -> u64 {
+fn count_matches(
+    graph: &Graph,
+    patterns: &[CPath],
+    where_: Option<&CExpr>,
+    binding: &Binding,
+    params: &[Val],
+    sub_len: usize,
+) -> u64 {
     let mut count = 0u64;
     let mut work = binding.clone();
+    work.resize(sub_len);
     visit_patterns(graph, patterns, 0, where_, &mut work, params, &mut |_| {
         count += 1;
         true
@@ -853,23 +873,22 @@ fn count_matches(graph: &Graph, patterns: &[CPath], where_: Option<&CExpr>, bind
     count
 }
 
-/// Variables a pattern introduces (for OPTIONAL MATCH null-binding).
-fn pattern_vars(patterns: &[CPath]) -> Vec<String> {
-    let mut vars = Vec::new();
-    for p in patterns {
-        if let Some(v) = &p.start.variable {
-            vars.push(v.clone());
+/// Slots a pattern set introduces (for OPTIONAL MATCH null-binding).
+fn pattern_slots(patterns: &[CPath]) -> Vec<usize> {
+    let mut slots = Vec::new();
+    let mut push = |s: Option<usize>| {
+        if let Some(s) = s {
+            slots.push(s);
         }
+    };
+    for p in patterns {
+        push(p.start.var_slot);
         for CSegment { rel, node } in &p.segments {
-            if let Some(v) = &rel.variable {
-                vars.push(v.clone());
-            }
-            if let Some(v) = &node.variable {
-                vars.push(v.clone());
-            }
+            push(rel.var_slot);
+            push(node.var_slot);
         }
     }
-    vars
+    slots
 }
 
 /// Run a MATCH clause over incoming bindings. `cap`, when set, stops the walk
@@ -882,10 +901,12 @@ fn run_match(
     bindings: Vec<Binding>,
     params: &[Val],
     cap: Option<usize>,
+    scope_len: usize,
 ) -> Vec<Binding> {
     let mut out = Vec::new();
     for b in &bindings {
         let mut work = b.clone();
+        work.resize(scope_len); // room for this clause's new variable slots
         let before = out.len();
         visit_patterns(graph, patterns, 0, where_, &mut work, params, &mut |m| {
             out.push(m.clone());
@@ -893,9 +914,10 @@ fn run_match(
         });
         if out.len() == before && optional {
             let mut filled = b.clone();
-            for v in pattern_vars(patterns) {
-                if !filled.has(&v) {
-                    filled.set(&v, Val::Null);
+            filled.resize(scope_len);
+            for s in pattern_slots(patterns) {
+                if !filled.bound(s) {
+                    filled.set(s, Val::Null);
                 }
             }
             out.push(filled);
@@ -950,14 +972,19 @@ fn apply_projection(proj: &CProjection, bindings: Vec<Binding>, params: &[Val], 
     // (projected binding, sort keys)
     let mut keyed: Vec<(Binding, Vec<Val>)> = Vec::new();
 
-    let project_one = |rep: &Binding, group: Option<&[Binding]>| -> Binding {
+    let project_one = |input: &Binding, group: Option<&[Binding]>| -> Binding {
+        let mut out = Binding(vec![None; proj.out_len]);
         if proj.star {
-            return rep.clone();
-        }
-        let env = Env { graph, binding: rep, params, group };
-        let mut out = Binding::default();
-        for item in &proj.items {
-            out.set(&item.name, eval(&env, &item.expr));
+            for (i, &islot) in proj.star_cols.iter().enumerate() {
+                if let Some(v) = input.get(islot) {
+                    out.0[i] = Some(v.clone());
+                }
+            }
+        } else {
+            let env = Env { graph, binding: input, params, group };
+            for (i, item) in proj.items.iter().enumerate() {
+                out.0[i] = Some(eval(&env, &item.expr));
+            }
         }
         out
     };
@@ -965,12 +992,14 @@ fn apply_projection(proj: &CProjection, bindings: Vec<Binding>, params: &[Val], 
         if order_n == 0 {
             return Vec::new();
         }
-        // ORDER BY sees output columns overlaid on input variables.
-        let mut overlay = input.clone();
-        for (k, v) in projected.iter() {
-            overlay.set(k, v.clone());
+        // ORDER BY scope = output slots, then the overlaid input slots; the input
+        // values are appended after the output so a sort key can reference an
+        // input variable that isn't an output column.
+        let mut sort_binding = projected.clone();
+        for &islot in &proj.order_overlay {
+            sort_binding.0.push(input.get(islot).cloned());
         }
-        let env = Env { graph, binding: &overlay, params, group };
+        let env = Env { graph, binding: &sort_binding, params, group };
         proj.order_by.iter().map(|s| eval(&env, &s.expr)).collect()
     };
 
@@ -1050,9 +1079,9 @@ fn run_linear(linear: &CLinear, graph: &mut Graph, params: &[Val]) -> Result<Vec
     let mut bindings: Vec<Binding> = vec![Binding::default()];
     for (i, clause) in linear.clauses.iter().enumerate() {
         match clause {
-            CClause::Match { optional, patterns, where_ } => {
+            CClause::Match { optional, patterns, where_, scope_len } => {
                 let clause_cap = if Some(i) == last_match { cap } else { None };
-                bindings = run_match(graph, *optional, patterns, where_.as_ref(), bindings, params, clause_cap);
+                bindings = run_match(graph, *optional, patterns, where_.as_ref(), bindings, params, clause_cap, *scope_len);
             }
             CClause::With { projection, where_ } => {
                 let projected = apply_projection(projection, bindings, params, graph);
@@ -1118,16 +1147,16 @@ fn eval_props(graph: &Graph, props: &[CPropConstraint], binding: &Binding, param
 
 /// Create a node from a pattern, reusing an already-bound variable.
 fn ensure_node(graph: &mut Graph, binding: &mut Binding, node: &CNode, params: &[Val]) -> u32 {
-    if let Some(var) = &node.variable {
-        if let Some(Val::Node(vi)) = binding.get(var) {
+    if let Some(slot) = node.var_slot {
+        if let Some(Val::Node(vi)) = binding.get(slot) {
             return *vi;
         }
     }
     let labels = labels_of(node.label.as_ref());
     let props = eval_props(graph, &node.props, binding, params);
     let vi = graph.add_vertex(&labels, props);
-    if let Some(var) = &node.variable {
-        binding.set(var, Val::Node(vi));
+    if let Some(slot) = node.var_slot {
+        binding.set(slot, Val::Node(vi));
     }
     vi
 }
@@ -1142,8 +1171,8 @@ fn run_insert(graph: &mut Graph, patterns: &[CPath], binding: &Binding, params: 
             let etype = labels_of(rel.label.as_ref()).into_iter().next().unwrap_or_default();
             let eprops = eval_props(graph, &rel.props, &out, params);
             let ei = graph.add_edge(from, to, &etype, eprops);
-            if let Some(var) = &rel.variable {
-                out.set(var, Val::Edge(ei));
+            if let Some(slot) = rel.var_slot {
+                out.set(slot, Val::Edge(ei));
             }
             prev = next;
         }
@@ -1154,8 +1183,8 @@ fn run_insert(graph: &mut Graph, patterns: &[CPath], binding: &Binding, params: 
 fn run_set(graph: &mut Graph, items: &[CSetItem], binding: &Binding, params: &[Val]) {
     for item in items {
         match item {
-            CSetItem::Prop { variable, key, value } => {
-                let Some(el) = binding.get(variable).cloned() else { continue };
+            CSetItem::Prop { var_slot, key, value } => {
+                let Some(el) = binding.get(*var_slot).cloned() else { continue };
                 let v = {
                     let env = Env { graph, binding, params, group: None };
                     val_to_value(graph, &eval(&env, value))
@@ -1166,7 +1195,7 @@ fn run_set(graph: &mut Graph, items: &[CSetItem], binding: &Binding, params: &[V
                     _ => {}
                 }
             }
-            CSetItem::Label { variable, label } => match binding.get(variable) {
+            CSetItem::Label { var_slot, label } => match binding.get(*var_slot) {
                 Some(Val::Node(vi)) => graph.add_vertex_label(*vi, label),
                 Some(Val::Edge(ei)) => graph.add_edge_label(*ei, label),
                 _ => {}
@@ -1175,15 +1204,15 @@ fn run_set(graph: &mut Graph, items: &[CSetItem], binding: &Binding, params: &[V
     }
 }
 
-fn run_remove(graph: &mut Graph, items: &[RemoveItem], binding: &Binding) {
+fn run_remove(graph: &mut Graph, items: &[CRemoveItem], binding: &Binding) {
     for item in items {
         match item {
-            RemoveItem::Prop { variable, key } => match binding.get(variable) {
+            CRemoveItem::Prop { var_slot, key } => match binding.get(*var_slot) {
                 Some(Val::Node(vi)) => graph.remove_vertex_prop(*vi, key),
                 Some(Val::Edge(ei)) => graph.remove_edge_prop(*ei, key),
                 _ => {}
             },
-            RemoveItem::Label { variable, label } => match binding.get(variable) {
+            CRemoveItem::Label { var_slot, label } => match binding.get(*var_slot) {
                 Some(Val::Node(vi)) => graph.remove_vertex_label(*vi, label),
                 Some(Val::Edge(ei)) => graph.remove_edge_label(*ei, label),
                 _ => {}
@@ -1243,22 +1272,22 @@ fn combine(op: SetOp, left: Vec<Binding>, right: Vec<Binding>) -> Vec<Binding> {
     }
 }
 
-/// Output column names for a plan: the terminal RETURN item names of part 0
-/// (or, for `RETURN *`, the keys of the first result row).
-fn output_columns(plan: &CQuery, rows: &[Binding]) -> Vec<String> {
-    let terminal = plan.parts.first().and_then(|p| {
-        p.clauses.iter().rev().find_map(|c| match c {
-            CClause::Return(proj) => Some(proj),
-            _ => None,
+/// Output column names for a plan: the terminal RETURN projection's column names
+/// (computed at lower time, including the `*` expansion).
+fn output_columns(plan: &CQuery) -> Vec<String> {
+    plan.parts
+        .first()
+        .and_then(|p| {
+            p.clauses.iter().rev().find_map(|c| match c {
+                CClause::Return(proj) => Some(proj.out_names.clone()),
+                _ => None,
+            })
         })
-    });
-    match terminal {
-        Some(proj) if !proj.star && !proj.items.is_empty() => proj.items.iter().map(|i| i.name.clone()).collect(),
-        _ => rows.first().map(|r| r.iter().map(|(k, _)| k.clone()).collect()).unwrap_or_default(),
-    }
+        .unwrap_or_default()
 }
 
-/// Execute a lowered plan against a graph with positional params.
+/// Execute a lowered plan against a graph with positional params. Final result
+/// bindings are sized to the terminal projection, so output column `i` is slot `i`.
 fn run_cquery(plan: &CQuery, graph: &mut Graph, params: &[Val]) -> Result<RowSet, String> {
     let first = plan.parts.first().ok_or("empty query")?;
     let mut rows = run_linear(first, graph, params)?;
@@ -1266,10 +1295,10 @@ fn run_cquery(plan: &CQuery, graph: &mut Graph, params: &[Val]) -> Result<RowSet
         let right = run_linear(&plan.parts[i + 1], graph, params)?;
         rows = combine(*op, rows, right);
     }
-    let cols = output_columns(plan, &rows);
+    let cols = output_columns(plan);
     let out_rows: Vec<Vec<Value>> = rows
         .iter()
-        .map(|b| cols.iter().map(|c| b.get(c).map(|v| val_to_value(graph, v)).unwrap_or(Value::Null)).collect())
+        .map(|b| (0..cols.len()).map(|i| b.get(i).map(|v| val_to_value(graph, v)).unwrap_or(Value::Null)).collect())
         .collect();
     Ok(RowSet { cols, rows: out_rows })
 }

@@ -2,17 +2,22 @@
 //!
 //! A parsed [`Query`](super::ast::Query) is *lowered* once into a `CQuery` that
 //! bakes every graph- and param-independent decision: `$param` → a positional
-//! slot, function name → an enum, aggregate detection, projection column names
-//! and group keys. This is the artifact a prepared statement holds, so the
-//! analysis is paid once and reused across executions (the executor walks the IR
-//! with a cheap `match`, no per-row string work for params/functions).
+//! slot, **variable → a binding slot**, function name → an enum, aggregate
+//! detection, projection column names and group keys. This is the artifact a
+//! [`prepared`](super::prepare) statement holds, paid once and reused.
 //!
-//! Resolutions that depend on a specific graph (property key → id) are NOT done
-//! here — the graph is mutable and key ids are graph-specific, so those stay at
-//! execute time. Variable access is still name-keyed (slot allocation is a
-//! follow-up); everything else is resolved.
+//! Variable slots: a `Scope` maps each in-scope variable name to an index into a
+//! `Vec<Option<Val>>` binding, so the per-row hot path indexes an array instead
+//! of scanning a name list. `WITH` starts a fresh scope (its output columns);
+//! correlated sub-queries extend the scope with their own pattern variables.
+//!
+//! Graph-dependent resolution (property key → id) stays at execute time — the
+//! graph is mutable and key ids are graph-specific.
 
 use super::ast::*;
+
+/// A variable reference that resolves to no in-scope slot reads as NULL.
+pub const UNBOUND: usize = usize::MAX;
 
 /// Scalar (non-aggregate) functions, resolved from a name once. `Unknown` keeps
 /// the engine total (an unknown function evaluates to NULL, as before).
@@ -117,14 +122,13 @@ fn scalar_fn(name: &str) -> ScalarFn {
     }
 }
 
-/// Lowered expression. Mirrors [`Expr`] but with `$param` resolved to a slot and
-/// function calls resolved to `Scalar`/`Aggregate` with enum tags. Variable and
-/// property access stay name-keyed (binding-slot allocation is a follow-up).
+/// Lowered expression. Variables and properties carry a binding slot; `$param` a
+/// positional slot; functions a resolved enum tag.
 #[derive(Debug, Clone)]
 pub enum CExpr {
-    Var(String),
+    Var(usize),
     Param(usize),
-    Prop { var: String, key: String },
+    Prop { var_slot: usize, key: String },
     Lit(Lit),
     List(Vec<CExpr>),
     Compare { op: CompareOp, left: Box<CExpr>, right: Box<CExpr> },
@@ -139,8 +143,9 @@ pub enum CExpr {
     IsTruth { expr: Box<CExpr>, truth: Option<bool>, negated: bool },
     IsLabeled { expr: Box<CExpr>, label: LabelExpr, negated: bool },
     In { expr: Box<CExpr>, list: Box<CExpr>, negated: bool },
-    Exists { patterns: Vec<CPath>, where_: Option<Box<CExpr>> },
-    CountSubquery { patterns: Vec<CPath>, where_: Option<Box<CExpr>> },
+    /// Correlated sub-pattern existence; `sub_len` is the sub-scope slot count.
+    Exists { patterns: Vec<CPath>, where_: Option<Box<CExpr>>, sub_len: usize },
+    CountSubquery { patterns: Vec<CPath>, where_: Option<Box<CExpr>>, sub_len: usize },
     Case { subject: Option<Box<CExpr>>, whens: Vec<(CExpr, CExpr)>, else_: Option<Box<CExpr>> },
     Scalar { func: ScalarFn, args: Vec<CExpr> },
     Aggregate { func: AggFn, arg: Option<Box<CExpr>>, distinct: bool, star: bool },
@@ -154,7 +159,8 @@ pub struct CPropConstraint {
 
 #[derive(Debug, Clone)]
 pub struct CNode {
-    pub variable: Option<String>,
+    /// Binding slot this node's variable occupies (`None` if anonymous).
+    pub var_slot: Option<usize>,
     pub label: Option<LabelExpr>,
     pub props: Vec<CPropConstraint>,
     pub where_: Option<CExpr>,
@@ -162,7 +168,7 @@ pub struct CNode {
 
 #[derive(Debug, Clone)]
 pub struct CRel {
-    pub variable: Option<String>,
+    pub var_slot: Option<usize>,
     pub label: Option<LabelExpr>,
     pub direction: Direction,
     pub props: Vec<CPropConstraint>,
@@ -185,9 +191,7 @@ pub struct CPath {
 #[derive(Debug, Clone)]
 pub struct CReturnItem {
     pub expr: CExpr,
-    /// The output column name (alias, or derived from the expression).
     pub name: String,
-    /// Whether this item contains an aggregate (a non-grouping column).
     pub is_agg: bool,
 }
 
@@ -205,25 +209,41 @@ pub struct CProjection {
     pub items: Vec<CReturnItem>,
     /// True when any item aggregates → implicit grouping (precomputed).
     pub aggregating: bool,
+    /// Output slot count (= column count). Output slot `i` holds column `i`.
+    pub out_len: usize,
+    /// Output column names, indexed by output slot.
+    pub out_names: Vec<String>,
+    /// For `*`: the input slots to carry across (aligned with `out_names`).
+    pub star_cols: Vec<usize>,
     pub order_by: Vec<CSortItem>,
+    /// Input slots appended after the output slots to form the ORDER BY scope —
+    /// lets a sort key reference an input variable not in the output.
+    pub order_overlay: Vec<usize>,
     pub skip: Option<usize>,
     pub limit: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
 pub enum CSetItem {
-    Prop { variable: String, key: String, value: CExpr },
-    Label { variable: String, label: String },
+    Prop { var_slot: usize, key: String, value: CExpr },
+    Label { var_slot: usize, label: String },
+}
+
+#[derive(Debug, Clone)]
+pub enum CRemoveItem {
+    Prop { var_slot: usize, key: String },
+    Label { var_slot: usize, label: String },
 }
 
 #[derive(Debug, Clone)]
 pub enum CClause {
-    Match { optional: bool, patterns: Vec<CPath>, where_: Option<CExpr> },
+    /// `scope_len` is the binding slot count after this match (incl. its vars).
+    Match { optional: bool, patterns: Vec<CPath>, where_: Option<CExpr>, scope_len: usize },
     With { projection: CProjection, where_: Option<CExpr> },
     Return(CProjection),
     Insert(Vec<CPath>),
     Set(Vec<CSetItem>),
-    Remove(Vec<RemoveItem>),
+    Remove(Vec<CRemoveItem>),
     Delete { detach: bool, targets: Vec<CExpr> },
     Finish,
 }
@@ -240,7 +260,7 @@ pub struct CQuery {
 }
 
 /// Does a lowered expression contain an aggregate anywhere?
-pub fn has_aggregate(expr: &CExpr) -> bool {
+fn has_aggregate(expr: &CExpr) -> bool {
     match expr {
         CExpr::Aggregate { .. } => true,
         CExpr::Scalar { args, .. } => args.iter().any(has_aggregate),
@@ -265,19 +285,21 @@ pub fn has_aggregate(expr: &CExpr) -> bool {
     }
 }
 
-/// The default output column name for a lowered item with no `AS` alias.
-fn column_name(expr: &CExpr) -> String {
+/// The default output column name (from the source AST, which still has names).
+fn column_name(expr: &Expr) -> String {
     match expr {
-        CExpr::Var(name) => name.clone(),
-        CExpr::Prop { var, key } => format!("{var}.{key}"),
+        Expr::Var(name) => name.clone(),
+        Expr::Prop { variable, key } => format!("{variable}.{key}"),
         _ => "expr".to_string(),
     }
 }
 
-/// Lowers a `Query` to a `CQuery`, allocating `$param` slots in first-use order.
+/// Lowers a `Query`, allocating `$param` slots and per-scope variable slots.
 struct Lowerer {
     /// param slot -> name (the order positional args are bound in at execute).
     params: Vec<String>,
+    /// current scope: variable slot -> name.
+    scope: Vec<String>,
 }
 
 impl Lowerer {
@@ -290,11 +312,44 @@ impl Lowerer {
         }
     }
 
+    /// Slot of an in-scope variable, or `UNBOUND` (reads as NULL).
+    fn slot_of(&self, name: &str) -> usize {
+        self.scope.iter().position(|n| n == name).unwrap_or(UNBOUND)
+    }
+
+    /// Add a variable to the current scope (reusing an existing slot if present).
+    fn add_var(&mut self, name: &str) -> usize {
+        if let Some(i) = self.scope.iter().position(|n| n == name) {
+            i
+        } else {
+            self.scope.push(name.to_string());
+            self.scope.len() - 1
+        }
+    }
+
+    /// Bring every variable a set of patterns introduces into scope (in order),
+    /// before lowering the patterns' predicates (which may reference any of them).
+    fn add_pattern_vars(&mut self, patterns: &[PathPattern]) {
+        for p in patterns {
+            if let Some(v) = &p.start.variable {
+                self.add_var(v);
+            }
+            for seg in &p.segments {
+                if let Some(v) = &seg.rel.variable {
+                    self.add_var(v);
+                }
+                if let Some(v) = &seg.node.variable {
+                    self.add_var(v);
+                }
+            }
+        }
+    }
+
     fn expr(&mut self, e: &Expr) -> CExpr {
         match e {
-            Expr::Var(n) => CExpr::Var(n.clone()),
+            Expr::Var(n) => CExpr::Var(self.slot_of(n)),
             Expr::Param(n) => CExpr::Param(self.param_slot(n)),
-            Expr::Prop { variable, key } => CExpr::Prop { var: variable.clone(), key: key.clone() },
+            Expr::Prop { variable, key } => CExpr::Prop { var_slot: self.slot_of(variable), key: key.clone() },
             Expr::Lit(l) => CExpr::Lit(l.clone()),
             Expr::List(items) => CExpr::List(items.iter().map(|x| self.expr(x)).collect()),
             Expr::Compare { op, left, right } => {
@@ -319,14 +374,14 @@ impl Lowerer {
             Expr::In { expr, list, negated } => {
                 CExpr::In { expr: self.boxed(expr), list: self.boxed(list), negated: *negated }
             }
-            Expr::Exists { patterns, where_ } => CExpr::Exists {
-                patterns: patterns.iter().map(|p| self.path(p)).collect(),
-                where_: where_.as_ref().map(|w| self.boxed(w)),
-            },
-            Expr::CountSubquery { patterns, where_ } => CExpr::CountSubquery {
-                patterns: patterns.iter().map(|p| self.path(p)).collect(),
-                where_: where_.as_ref().map(|w| self.boxed(w)),
-            },
+            Expr::Exists { patterns, where_ } => {
+                let (patterns, where_, sub_len) = self.sub_patterns(patterns, where_.as_deref());
+                CExpr::Exists { patterns, where_, sub_len }
+            }
+            Expr::CountSubquery { patterns, where_ } => {
+                let (patterns, where_, sub_len) = self.sub_patterns(patterns, where_.as_deref());
+                CExpr::CountSubquery { patterns, where_, sub_len }
+            }
             Expr::Case { subject, whens, else_ } => CExpr::Case {
                 subject: subject.as_ref().map(|s| self.boxed(s)),
                 whens: whens.iter().map(|(w, t)| (self.expr(w), self.expr(t))).collect(),
@@ -352,13 +407,30 @@ impl Lowerer {
         Box::new(self.expr(e))
     }
 
+    /// Lower a correlated sub-query's patterns: extend the scope with the sub's
+    /// new variables (outer vars keep their slots — that's the correlation),
+    /// lower, then truncate the scope back so the sub's vars don't leak out.
+    fn sub_patterns(
+        &mut self,
+        patterns: &[PathPattern],
+        where_: Option<&Expr>,
+    ) -> (Vec<CPath>, Option<Box<CExpr>>, usize) {
+        let parent_len = self.scope.len();
+        self.add_pattern_vars(patterns);
+        let cpatterns = patterns.iter().map(|p| self.path(p)).collect();
+        let cwhere = where_.map(|w| self.boxed(w));
+        let sub_len = self.scope.len();
+        self.scope.truncate(parent_len);
+        (cpatterns, cwhere, sub_len)
+    }
+
     fn prop(&mut self, p: &PropertyConstraint) -> CPropConstraint {
         CPropConstraint { key: p.key.clone(), value: self.expr(&p.value) }
     }
 
     fn node(&mut self, n: &NodePattern) -> CNode {
         CNode {
-            variable: n.variable.clone(),
+            var_slot: n.variable.as_ref().map(|v| self.slot_of(v)),
             label: n.label.clone(),
             props: n.props.iter().map(|p| self.prop(p)).collect(),
             where_: n.where_.as_ref().map(|w| self.expr(w)),
@@ -367,7 +439,7 @@ impl Lowerer {
 
     fn rel(&mut self, r: &RelPattern) -> CRel {
         CRel {
-            variable: r.variable.clone(),
+            var_slot: r.variable.as_ref().map(|v| self.slot_of(v)),
             label: r.label.clone(),
             direction: r.direction,
             props: r.props.iter().map(|p| self.prop(p)).collect(),
@@ -387,52 +459,107 @@ impl Lowerer {
         }
     }
 
-    fn projection(&mut self, p: &Projection) -> CProjection {
+    /// Lower a projection body. Sets the scope for what follows: a non-terminal
+    /// (`WITH`) projection's output columns become the next scope; a terminal
+    /// (`RETURN`) leaves the scope as-is (nothing follows).
+    fn projection(&mut self, p: &Projection, terminal: bool) -> CProjection {
+        let input_scope = self.scope.clone();
         let items: Vec<CReturnItem> = p
             .items
             .iter()
             .map(|it| {
                 let expr = self.expr(&it.expr);
                 let is_agg = has_aggregate(&expr);
-                let name = it.alias.clone().unwrap_or_else(|| column_name(&expr));
+                let name = it.alias.clone().unwrap_or_else(|| column_name(&it.expr));
                 CReturnItem { expr, name, is_agg }
             })
             .collect();
+
+        let (out_names, star_cols): (Vec<String>, Vec<usize>) = if p.star {
+            (input_scope.clone(), (0..input_scope.len()).collect())
+        } else {
+            (items.iter().map(|i| i.name.clone()).collect(), Vec::new())
+        };
+        let out_len = out_names.len();
         let aggregating = !p.star && items.iter().any(|i| i.is_agg);
+
+        // ORDER BY scope = output columns, then input vars not shadowed by one.
+        let mut sort_scope = out_names.clone();
+        let mut order_overlay = Vec::new();
+        for (i, name) in input_scope.iter().enumerate() {
+            if !out_names.contains(name) {
+                sort_scope.push(name.clone());
+                order_overlay.push(i);
+            }
+        }
+        self.scope = sort_scope;
         let order_by = p
             .order_by
             .iter()
             .map(|s| CSortItem { expr: self.expr(&s.expr), descending: s.descending, nulls_first: s.nulls_first })
             .collect();
-        CProjection { star: p.star, distinct: p.distinct, items, aggregating, order_by, skip: p.skip, limit: p.limit }
+
+        self.scope = if terminal { input_scope } else { out_names.clone() };
+        CProjection {
+            star: p.star,
+            distinct: p.distinct,
+            items,
+            aggregating,
+            out_len,
+            out_names,
+            star_cols,
+            order_by,
+            order_overlay,
+            skip: p.skip,
+            limit: p.limit,
+        }
     }
 
     fn clause(&mut self, c: &Clause) -> CClause {
         match c {
-            Clause::Match(m) => CClause::Match {
-                optional: m.optional,
-                patterns: m.patterns.iter().map(|p| self.path(p)).collect(),
-                where_: m.where_.as_ref().map(|w| self.expr(w)),
-            },
-            Clause::With(w) => {
-                CClause::With { projection: self.projection(&w.projection), where_: w.where_.as_ref().map(|e| self.expr(e)) }
+            Clause::Match(m) => {
+                self.add_pattern_vars(&m.patterns);
+                let patterns = m.patterns.iter().map(|p| self.path(p)).collect();
+                let where_ = m.where_.as_ref().map(|w| self.expr(w));
+                CClause::Match { optional: m.optional, patterns, where_, scope_len: self.scope.len() }
             }
-            Clause::Return(p) => CClause::Return(self.projection(p)),
-            Clause::Insert(ps) => CClause::Insert(ps.iter().map(|p| self.path(p)).collect()),
+            Clause::With(w) => {
+                let projection = self.projection(&w.projection, false);
+                // WITH's WHERE filters the projected output columns (new scope).
+                let where_ = w.where_.as_ref().map(|e| self.expr(e));
+                CClause::With { projection, where_ }
+            }
+            Clause::Return(p) => CClause::Return(self.projection(p, true)),
+            Clause::Insert(ps) => {
+                self.add_pattern_vars(ps); // INSERT introduces new bindable vars
+                CClause::Insert(ps.iter().map(|p| self.path(p)).collect())
+            }
             Clause::Set(items) => CClause::Set(
                 items
                     .iter()
                     .map(|i| match i {
                         SetItem::Prop { variable, key, value } => {
-                            CSetItem::Prop { variable: variable.clone(), key: key.clone(), value: self.expr(value) }
+                            CSetItem::Prop { var_slot: self.slot_of(variable), key: key.clone(), value: self.expr(value) }
                         }
                         SetItem::Label { variable, label } => {
-                            CSetItem::Label { variable: variable.clone(), label: label.clone() }
+                            CSetItem::Label { var_slot: self.slot_of(variable), label: label.clone() }
                         }
                     })
                     .collect(),
             ),
-            Clause::Remove(items) => CClause::Remove(items.clone()),
+            Clause::Remove(items) => CClause::Remove(
+                items
+                    .iter()
+                    .map(|i| match i {
+                        RemoveItem::Prop { variable, key } => {
+                            CRemoveItem::Prop { var_slot: self.slot_of(variable), key: key.clone() }
+                        }
+                        RemoveItem::Label { variable, label } => {
+                            CRemoveItem::Label { var_slot: self.slot_of(variable), label: label.clone() }
+                        }
+                    })
+                    .collect(),
+            ),
             Clause::Delete { detach, targets } => {
                 CClause::Delete { detach: *detach, targets: targets.iter().map(|t| self.expr(t)).collect() }
             }
@@ -441,13 +568,14 @@ impl Lowerer {
     }
 
     fn linear(&mut self, l: &LinearQuery) -> CLinear {
+        self.scope.clear(); // each linear query starts with a fresh scope
         CLinear { clauses: l.clauses.iter().map(|c| self.clause(c)).collect() }
     }
 }
 
 /// Lower a parsed query into the IR plus the parameter slot order (slot → name).
 pub fn lower(query: &Query) -> (CQuery, Vec<String>) {
-    let mut l = Lowerer { params: Vec::new() };
+    let mut l = Lowerer { params: Vec::new(), scope: Vec::new() };
     let parts = query.parts.iter().map(|p| l.linear(p)).collect();
     (CQuery { parts, ops: query.ops.clone() }, l.params)
 }
