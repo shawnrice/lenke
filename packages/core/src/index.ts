@@ -15,6 +15,7 @@ export {
   deserialize,
   codecs,
   pgJsonCodec,
+  pgTextCodec,
   graphsonCodec,
   csvCodec,
   normalizeValue,

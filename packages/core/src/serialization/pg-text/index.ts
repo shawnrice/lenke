@@ -1,0 +1,241 @@
+import type { Graph } from '../../core/Graph.js';
+import type { Codec } from '../codec.js';
+import { normalizeBag, type PropertyValue } from '../value.js';
+
+/**
+ * The **PG textual format** (`.pg`) — the line-based companion to PG-JSON
+ * (https://pg-format.readthedocs.io). One element per line:
+ *
+ *   <id> :Label* key:value*          ← a node
+ *   <from> <to> :Label* key:value*   ← an edge
+ *
+ * A node line has one leading id; an edge line has two. They're told apart by
+ * the second token: a bare id (no `:`) means an edge, while a `:Label` or
+ * `key:value` means more of a node. `#` starts a comment line.
+ *
+ * ## Value mapping
+ *   - string  → always double-quoted (`name:"Alice"`), so strings never collide
+ *     with numbers / booleans / null / ids. Escapes `"` and `\`.
+ *   - number  → bare (`age:15`, `weight:3.5`).
+ *   - boolean → bare `true` / `false`.
+ *   - null    → bare `null`.
+ *   - list    → **repeated keys** (`tags:1 tags:2`) — the PG format's native
+ *     multi-value mechanism. On decode, a key seen once is a scalar; a key seen
+ *     more than once is a list.
+ *
+ * ## Lossiness (use PG-JSON or GraphSON for exact round-trips)
+ * Because lists ride on repeated keys, two cases can't be represented distinctly
+ * in the textual form:
+ *   - an **empty list** `[]` emits no key, so it decodes as *absent*;
+ *   - a **single-element list** `[x]` is indistinguishable from the scalar `x`.
+ * Scalars and multi-element lists round-trip exactly. **Node** ids are preserved
+ * (a node line leads with its id); **edge** ids are NOT — the textual format has
+ * no edge-id slot, so a decoded edge gets a fresh id (its endpoints, labels, and
+ * properties are preserved). Property keys and node ids must be bare (no
+ * whitespace/colon); quote string values instead.
+ */
+
+const QUOTE_ESCAPE = /[\\"]/g;
+
+/** Encode one scalar `PropertyValue` (never a list) as a PG-text token value. */
+const encodeScalar = (value: Exclude<PropertyValue, readonly PropertyValue[]>): string => {
+  if (value === null) {
+    return 'null';
+  }
+  if (typeof value === 'boolean') {
+    return value ? 'true' : 'false';
+  }
+  if (typeof value === 'number') {
+    return String(value);
+  }
+  return `"${value.replace(QUOTE_ESCAPE, (c) => `\\${c}`)}"`;
+};
+
+/** Append `key:value` tokens for a property; a list expands to one token per element. */
+const pushProperty = (out: string[], key: string, value: PropertyValue): void => {
+  if (Array.isArray(value)) {
+    for (const element of value) {
+      out.push(
+        `${key}:${encodeScalar(element as Exclude<PropertyValue, readonly PropertyValue[]>)}`,
+      );
+    }
+    return;
+  }
+  out.push(`${key}:${encodeScalar(value as Exclude<PropertyValue, readonly PropertyValue[]>)}`);
+};
+
+const elementTokens = (
+  leading: string[],
+  labels: Iterable<string>,
+  properties: Record<string, unknown>,
+): string => {
+  const tokens = [...leading];
+  for (const label of labels) {
+    tokens.push(`:${label}`);
+  }
+  const bag = normalizeBag(properties);
+  for (const key of Object.keys(bag)) {
+    pushProperty(tokens, key, bag[key]!);
+  }
+  return tokens.join(' ');
+};
+
+/** Serialize a graph to the PG textual format: node lines, then edge lines. */
+export const encode = (graph: Graph): string => {
+  const lines: string[] = [];
+  for (const vertex of graph.vertices) {
+    lines.push(elementTokens([vertex.id], vertex.labels, vertex.properties));
+  }
+  for (const edge of graph.edges) {
+    lines.push(elementTokens([edge.from.id, edge.to.id], edge.labels, edge.properties));
+  }
+  return lines.join('\n');
+};
+
+/** Split a line into tokens, keeping double-quoted spans (with `\` escapes) whole. */
+const tokenizeLine = (line: string): string[] => {
+  const tokens: string[] = [];
+  let current = '';
+  let started = false;
+  let inQuote = false;
+  for (let i = 0; i < line.length; i += 1) {
+    const c = line[i]!;
+    if (inQuote) {
+      current += c;
+      if (c === '\\' && i + 1 < line.length) {
+        current += line[i + 1];
+        i += 1;
+      } else if (c === '"') {
+        inQuote = false;
+      }
+      continue;
+    }
+    if (c === '"') {
+      inQuote = true;
+      started = true;
+      current += c;
+      continue;
+    }
+    if (c === ' ' || c === '\t') {
+      if (started) {
+        tokens.push(current);
+        current = '';
+        started = false;
+      }
+      continue;
+    }
+    current += c;
+    started = true;
+  }
+  if (started) {
+    tokens.push(current);
+  }
+  return tokens;
+};
+
+const NUMBER = /^-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
+
+/** Parse the value half of a `key:value` token into a scalar `PropertyValue`. */
+const parseScalar = (raw: string): PropertyValue => {
+  if (raw.startsWith('"')) {
+    const body = raw.endsWith('"') && raw.length >= 2 ? raw.slice(1, -1) : raw.slice(1);
+    return body.replace(/\\(.)/g, '$1');
+  }
+  if (raw === 'true') {
+    return true;
+  }
+  if (raw === 'false') {
+    return false;
+  }
+  if (raw === 'null') {
+    return null;
+  }
+  if (NUMBER.test(raw)) {
+    return Number(raw);
+  }
+  return raw; // bare, unquoted string (lenient: for foreign `.pg` input)
+};
+
+/** Pull labels and properties (collapsing repeated keys into lists) from tokens. */
+const parseLabelsAndProps = (
+  tokens: string[],
+): { labels: string[]; properties: Record<string, PropertyValue> } => {
+  const labels: string[] = [];
+  const collected = new Map<string, PropertyValue[]>();
+  for (const token of tokens) {
+    if (token.startsWith(':')) {
+      labels.push(token.slice(1));
+      continue;
+    }
+    const colon = token.indexOf(':');
+    if (colon < 0) {
+      continue; // not a label or a property; ignore
+    }
+    const key = token.slice(0, colon);
+    const value = parseScalar(token.slice(colon + 1));
+    const list = collected.get(key);
+    if (list) {
+      list.push(value);
+    } else {
+      collected.set(key, [value]);
+    }
+  }
+  const properties: Record<string, PropertyValue> = {};
+  for (const [key, values] of collected) {
+    properties[key] = values.length === 1 ? values[0]! : values;
+  }
+  return { labels, properties };
+};
+
+/**
+ * Deserialize a PG-text string into `graph`. Two passes — nodes first, then
+ * edges — so an edge may reference a node declared anywhere; an endpoint not
+ * declared as its own node line is created as a bare node.
+ */
+export const decode = (input: string, graph: Graph): Graph => {
+  const wasEnabled = graph.eventsEnabled();
+  if (wasEnabled) {
+    graph.disableEvents();
+  }
+
+  const nodeLines: string[][] = [];
+  const edgeLines: string[][] = [];
+  for (const raw of input.split('\n')) {
+    const line = raw.trim();
+    if (line === '' || line.startsWith('#')) {
+      continue;
+    }
+    const tokens = tokenizeLine(line);
+    if (tokens.length === 0) {
+      continue;
+    }
+    // A second token without a colon is the edge's destination id.
+    if (tokens.length >= 2 && !tokens[1]!.includes(':')) {
+      edgeLines.push(tokens);
+    } else {
+      nodeLines.push(tokens);
+    }
+  }
+
+  for (const [id, ...rest] of nodeLines) {
+    const { labels, properties } = parseLabelsAndProps(rest);
+    graph.addVertex({ id: id!, labels, properties });
+  }
+
+  for (const [from, to, ...rest] of edgeLines) {
+    const fromVertex =
+      graph.getVertexById(from!) ?? graph.addVertex({ id: from!, labels: [], properties: {} });
+    const toVertex =
+      graph.getVertexById(to!) ?? graph.addVertex({ id: to!, labels: [], properties: {} });
+    const { labels, properties } = parseLabelsAndProps(rest);
+    graph.addEdge({ from: fromVertex, to: toVertex, labels, properties });
+  }
+
+  if (wasEnabled) {
+    graph.enableEvents();
+    graph.snapshot();
+  }
+  return graph;
+};
+
+export const pgTextCodec: Codec = { name: 'pg-text', encode, decode };
