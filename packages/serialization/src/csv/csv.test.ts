@@ -236,8 +236,8 @@ describe('throughput smoke test', () => {
     const elapsed = performance.now() - start;
 
     expect(graphContentEqual(back, g)).toBe(true);
-    expect(back.vertices.size).toBe(nodeCount);
-    expect(back.edges.size).toBe(5000);
+    expect(back.vertexCount).toBe(nodeCount);
+    expect(back.edgeCount).toBe(5000);
     // eslint-disable-next-line no-console
     console.log(`csv throughput: 10k elements encode+decode in ${elapsed.toFixed(1)}ms`);
     expect(elapsed).toBeLessThan(2000);
@@ -315,8 +315,8 @@ describe('streaming', () => {
     const back = await csvCodec.decodeStream!(encodeStream(g), new Graph());
     const elapsed = performance.now() - start;
 
-    expect(back.vertices.size).toBe(nodeCount);
-    expect(back.edges.size).toBe(25000);
+    expect(back.vertexCount).toBe(nodeCount);
+    expect(back.edgeCount).toBe(25000);
     // eslint-disable-next-line no-console
     console.log(`csv stream throughput: 50k elements encode+decode in ${elapsed.toFixed(0)}ms`);
   });
