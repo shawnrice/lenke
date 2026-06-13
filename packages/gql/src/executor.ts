@@ -929,7 +929,38 @@ const hintsForVariable = (where: Expr | undefined, variable: string | undefined)
   }
   const into: HintMap = new Map();
   collectHints(where, into);
-  return into.get(variable) ?? [];
+  return coalesceRangeHints(into.get(variable) ?? []);
+};
+
+/**
+ * Fold a variable's range hints on the same key into one bound, so
+ * `n.age >= 29 AND n.age < 35` seeks the tight `[29, 35)` slice rather than
+ * just the more selective single side. First-wins on a repeated side (e.g. two
+ * lower bounds) — dropping a redundant tightening only widens the seed, which
+ * stays a sound superset for `matchNode` to re-validate.
+ */
+const coalesceRangeHints = (hints: readonly CSeedHint[]): CSeedHint[] => {
+  const bounds = new Map<string, CRangeBound>();
+  const out: CSeedHint[] = [];
+  for (const hint of hints) {
+    if (hint.kind !== 'range') {
+      out.push(hint);
+      continue;
+    }
+    const existing = bounds.get(hint.key);
+    if (!existing) {
+      const bound: CRangeBound = { ...hint.bound };
+      bounds.set(hint.key, bound);
+      out.push({ kind: 'range', key: hint.key, bound });
+      continue;
+    }
+    for (const side of ['gt', 'gte', 'lt', 'lte'] as const) {
+      if (existing[side] === undefined && hint.bound[side] !== undefined) {
+        existing[side] = hint.bound[side];
+      }
+    }
+  }
+  return out;
 };
 
 const compileNode = (node: NodePattern): CNode => {
@@ -1299,7 +1330,7 @@ const compileClause = (clause: Clause): CClause => {
           if (extra) {
             path.start = {
               ...path.start,
-              seedHints: [...(path.start.seedHints ?? []), ...extra],
+              seedHints: coalesceRangeHints([...(path.start.seedHints ?? []), ...extra]),
             };
           }
         }
