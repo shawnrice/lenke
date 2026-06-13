@@ -13,8 +13,11 @@ export type {
 export {
   serialize,
   deserialize,
+  serializeAsync,
+  deserializeAsync,
   serializeStream,
   deserializeStream,
+  yieldToEventLoop,
   codecs,
   pgJsonCodec,
   pgTextCodec,
