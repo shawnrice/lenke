@@ -1110,13 +1110,28 @@ const indexCandidates = function* (
   }
 };
 
+/** Intersect candidate sets, smallest first, into a fresh set. */
+const intersect = (sets: readonly ReadonlySet<Vertex>[]): Set<Vertex> => {
+  const ordered = [...sets].sort((a, b) => a.size - b.size);
+  const result = new Set<Vertex>(ordered[0]);
+  for (let k = 1; k < ordered.length && result.size > 0; k++) {
+    const other = ordered[k]!;
+    for (const vertex of result) {
+      if (!other.has(vertex)) {
+        result.delete(vertex);
+      }
+    }
+  }
+  return result;
+};
+
 /**
  * Seed candidates for a node pattern. An indexed equality / range / `IN` — from
  * an element-pattern map (`(n:Person {name: 'marko'})`) or a seekable WHERE
  * conjunct (`WHERE n.age > 30`) — seeks the index instead of scanning every
- * vertex; the most selective candidate wins. `matchNode` still re-validates
- * label + constraints + WHERE, so the seed only has to be a superset. Falls
- * back to the label-narrowed scan when nothing is indexed.
+ * vertex. Every such seek is a superset of the node's matches, so we intersect
+ * them for the tightest seed; `matchNode` still re-validates label + constraints
+ * + WHERE. Falls back to the label-narrowed scan when nothing is indexed.
  */
 const seedVertices = function* (
   graph: Graph,
@@ -1125,19 +1140,12 @@ const seedVertices = function* (
   params: Params,
 ): Iterable<Vertex> {
   const env: EvalEnv = { binding, params, graph };
-  let best: ReadonlySet<Vertex> | undefined;
-  let bestSize = Infinity;
-  for (const set of indexCandidates(graph, node, env)) {
-    if (set.size < bestSize) {
-      bestSize = set.size;
-      best = set;
-    }
-  }
-  if (best) {
-    yield* best;
+  const candidates = [...indexCandidates(graph, node, env)];
+  if (candidates.length === 0) {
+    yield* candidateVertices(graph, node.label);
     return;
   }
-  yield* candidateVertices(graph, node.label);
+  yield* intersect(candidates);
 };
 
 /** Yield every binding that extends `binding` by matching `pattern`. */

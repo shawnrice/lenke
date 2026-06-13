@@ -114,4 +114,20 @@ describe('GQL WHERE-derived seed hints', () => {
     expect(sorted(indexed, 'b.name')).toEqual(sorted(plain, 'b.name'));
     expect(sorted(indexed, 'b.name')).toEqual(['josh', 'vadas']);
   });
+
+  test('multiple seekable conjuncts intersect to the tightest seed', () => {
+    const { plain, indexed } = both(
+      `MATCH (p:Person) WHERE p.age > 28 AND p.name = 'josh' RETURN p.name`,
+    );
+    expect(sorted(indexed, 'p.name')).toEqual(sorted(plain, 'p.name'));
+    expect(sorted(indexed, 'p.name')).toEqual(['josh']);
+  });
+
+  test('an element-map equality and a WHERE range intersect', () => {
+    const { plain, indexed } = both(
+      `MATCH (p:Person {name: 'marko'}) WHERE p.age < 30 RETURN p.age`,
+    );
+    expect(sorted(indexed, 'p.age')).toEqual(sorted(plain, 'p.age'));
+    expect(sorted(indexed, 'p.age')).toEqual([29]);
+  });
 });

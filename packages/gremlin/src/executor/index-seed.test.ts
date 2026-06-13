@@ -136,17 +136,42 @@ describe('index-seeded V() source', () => {
     expect(arr(run(traversal(V(), has('name', 'nobody'), values('name')), g))).toEqual([]);
   });
 
-  test('picks the most selective indexed equality filter', () => {
+  test('intersects multiple indexed equality filters and drops both', () => {
     const g = createTestTinkerGraph();
     g.createVertexIndex('name');
     g.createVertexIndex('lang');
-    // lang=java matches 2 vertices, name=lop matches 1 → seed should be name.
+    // lang=java → {lop, ripple}; name=lop → {lop}; intersection → {lop}.
     const plan = traversal(V(), has('lang', eq('java')), has('name', eq('lop')));
     const seeded = seedFromIndex(plan, g, false);
     expect(seeded).not.toBeNull();
     expect(arr(seeded!.stream).length).toBe(1);
-    // The kept residual is the lang filter (the less selective one).
+    // Both exact equality filters are satisfied by the intersection → dropped.
+    expect(seeded!.steps).toEqual([]);
+  });
+
+  test('a range filter alongside an equality intersects but stays a residual', () => {
+    const g = createTestTinkerGraph();
+    g.createVertexIndex('age');
+    g.createVertexIndex('name');
+    // name=josh → {josh(32)}; age>30 → {josh, peter}; intersection → {josh}.
+    const plan = traversal(V(), has('name', eq('josh')), has('age', gt(30)));
+    const seeded = seedFromIndex(plan, g, false);
+    expect(seeded).not.toBeNull();
+    expect(arr(seeded!.stream).length).toBe(1);
+    // The exact name filter is dropped; the range age filter is kept.
     expect(seeded!.steps.map((s) => s.kind)).toEqual(['has']);
+  });
+
+  test('multi-filter results match the unindexed scan', () => {
+    const plain = createTestTinkerGraph();
+    const indexed = createTestTinkerGraph();
+    indexed.createVertexIndex('age');
+    indexed.createVertexIndex('name');
+    const plan = () =>
+      traversal(V(), has('age', gt(28)), has('name', startsWith('j')), values('name'));
+    expect((arr(run(plan(), indexed)) as string[]).sort()).toEqual(
+      (arr(run(plan(), plain)) as string[]).sort(),
+    );
   });
 });
 
