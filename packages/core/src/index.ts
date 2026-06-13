@@ -18,6 +18,7 @@ export {
   codecs,
   pgJsonCodec,
   pgTextCodec,
+  ndjsonCodec,
   graphsonCodec,
   csvCodec,
   normalizeValue,
