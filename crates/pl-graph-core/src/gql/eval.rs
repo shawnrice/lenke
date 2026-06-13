@@ -686,13 +686,20 @@ fn seed_label(expr: &CLabelExpr) -> Option<usize> {
     }
 }
 
-fn candidate_vertices(graph: &Graph, ctx: &Ctx, label: Option<&CLabelExpr>) -> Vec<u32> {
+/// Run `f` over each seed vertex, returning `false` if `f` requested a stop.
+/// Iterates the label bucket / live-vertex range directly — no `Vec` of seeds.
+fn for_each_seed(
+    graph: &Graph,
+    ctx: &Ctx,
+    label: Option<&CLabelExpr>,
+    f: &mut dyn FnMut(u32) -> bool,
+) -> bool {
     match label.and_then(seed_label) {
         Some(r) => match ctx.labels[r].0 {
-            Some(lid) => graph.vertices_with_label(lid).to_vec(),
-            None => Vec::new(),
+            Some(lid) => graph.vertices_with_label(lid).iter().all(|&s| f(s)),
+            None => true, // unknown label → no seeds
         },
-        None => graph.vertex_indices().collect(),
+        None => graph.vertex_indices().all(|s| f(s)),
     }
 }
 
@@ -835,22 +842,20 @@ fn visit_pattern(
     binding: &mut Binding,
     emit: &mut dyn FnMut(&mut Binding) -> bool,
 ) -> bool {
-    let seeds: Vec<u32> = match pattern.start.var_slot {
-        Some(s) if binding.bound(s) => match binding.get(s) {
-            Some(Val::Node(i)) => vec![*i],
-            _ => return true,
-        },
-        _ => candidate_vertices(graph, ctx, pattern.start.label.as_ref()),
-    };
-    for seed in seeds {
-        let keep = match_node_then(graph, ctx, binding, &pattern.start, seed, &mut |b| {
+    let mut at_seed = |seed: u32, binding: &mut Binding| {
+        match_node_then(graph, ctx, binding, &pattern.start, seed, &mut |b| {
             walk_segments(graph, ctx, pattern, 0, seed, b, emit)
-        });
-        if !keep {
-            return false;
-        }
+        })
+    };
+    // An already-bound start variable fixes the single seed; otherwise iterate
+    // the label bucket / live vertices directly (no materialized seed list).
+    match pattern.start.var_slot {
+        Some(s) if binding.bound(s) => match binding.get(s) {
+            Some(Val::Node(i)) => at_seed(*i, binding),
+            _ => true,
+        },
+        _ => for_each_seed(graph, ctx, pattern.start.label.as_ref(), &mut |seed| at_seed(seed, binding)),
     }
-    true
 }
 
 /// Extend a binding through every pattern (nested), filter by an optional WHERE,
@@ -1147,15 +1152,17 @@ impl<'p> ProjAccum<'p> {
                     self.key_buf.push('\u{1}');
                 }
             }
-            // get_mut by &str avoids allocating the key on a group hit (the
-            // common case); only a new group clones the key.
-            if !self.groups.contains_key(self.key_buf.as_str()) {
-                self.group_order.push(self.key_buf.clone());
-                self.groups
-                    .insert(self.key_buf.clone(), (binding.clone(), proj.aggs.iter().map(Agg::new).collect()));
+            // One hash on the group-hit path (the common case): get_mut by &str,
+            // and only a brand-new group clones the key + allocates accumulators.
+            match self.groups.get_mut(self.key_buf.as_str()) {
+                Some(entry) => step_aggs(&mut entry.1, &proj.aggs, graph, ctx, binding),
+                None => {
+                    self.group_order.push(self.key_buf.clone());
+                    let mut aggs: Vec<Agg> = proj.aggs.iter().map(Agg::new).collect();
+                    step_aggs(&mut aggs, &proj.aggs, graph, ctx, binding);
+                    self.groups.insert(self.key_buf.clone(), (binding.clone(), aggs));
+                }
             }
-            let entry = self.groups.get_mut(self.key_buf.as_str()).unwrap();
-            step_aggs(&mut entry.1, &proj.aggs, graph, ctx, binding);
             return true;
         }
         // Non-aggregating: project the row now (no full-binding clone retained).
@@ -1204,15 +1211,17 @@ impl<'p> ProjAccum<'p> {
             }
         }
         if !proj.order_by.is_empty() {
-            self.rows.sort_by(|a, b| {
-                for (i, s) in proj.order_by.iter().enumerate() {
-                    let o = compare_sort(&a.1[i], &b.1[i], s.descending, s.nulls_first);
-                    if o != Ordering::Equal {
-                        return o;
-                    }
+            let cmp = |a: &(Binding, Vec<Val>), b: &(Binding, Vec<Val>)| cmp_keyed(a, b, &proj.order_by);
+            // ORDER BY + LIMIT: partition the smallest `cap` with quickselect
+            // (O(n)), then sort only those — instead of a full O(n log n) sort.
+            let n = self.rows.len();
+            if let Some(cap) = proj.limit.map(|l| proj.skip.unwrap_or(0) + l) {
+                if cap >= 1 && cap < n {
+                    self.rows.select_nth_unstable_by(cap - 1, cmp);
+                    self.rows.truncate(cap);
                 }
-                Ordering::Equal
-            });
+            }
+            self.rows.sort_by(cmp);
         }
         let start = proj.skip.unwrap_or(0);
         let mut rows: Vec<Binding> = self.rows.into_iter().map(|(b, _)| b).skip(start).collect();
@@ -1258,6 +1267,17 @@ fn materialize_matches(graph: &Graph, ctx: &Ctx, incoming: &[Binding], matches: 
 }
 
 // --- projection --------------------------------------------------------------
+
+/// Compare two keyed rows by their ORDER BY keys (lexicographic over the keys).
+fn cmp_keyed(a: &(Binding, Vec<Val>), b: &(Binding, Vec<Val>), order: &[super::plan::CSortItem]) -> Ordering {
+    for (i, s) in order.iter().enumerate() {
+        let o = compare_sort(&a.1[i], &b.1[i], s.descending, s.nulls_first);
+        if o != Ordering::Equal {
+            return o;
+        }
+    }
+    Ordering::Equal
+}
 
 /// Compare two ORDER BY keys, honoring direction and ISO NULLS FIRST/LAST.
 fn compare_sort(a: &Val, b: &Val, descending: bool, nulls_first: Option<bool>) -> Ordering {
