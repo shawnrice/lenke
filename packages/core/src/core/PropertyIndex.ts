@@ -34,10 +34,18 @@ export type RangeBound = {
 };
 
 type KeyIndex<E> = {
-  /** encoded value -> elements carrying it */
-  buckets: Map<string, Set<E>>;
-  /** distinct values in sorted order (skip list), for range scans */
-  order: OrderedSet<IndexableValue>;
+  /**
+   * value -> elements carrying it. Keyed by the raw value: a JS `Map` already
+   * type-separates `1` / `'1'` / `true` (SameValueZero), coalesces `-0`/`0`, and
+   * we never insert `NaN` — so no string encoding is needed on the hot path.
+   */
+  buckets: Map<IndexableValue, Set<E>>;
+  /**
+   * Distinct values in sorted order for range scans — a skip list, built lazily
+   * (`null` until the first range query) so a bulk load that never range-queries
+   * this key pays nothing for it. Once built it's maintained incrementally.
+   */
+  order: OrderedSet<IndexableValue> | null;
 };
 
 const isIndexable = (v: unknown): v is IndexableValue =>
@@ -45,25 +53,6 @@ const isIndexable = (v: unknown): v is IndexableValue =>
   typeof v === 'string' ||
   typeof v === 'boolean' ||
   (typeof v === 'number' && !Number.isNaN(v));
-
-/**
- * A type-tagged canonical key for the equality buckets so `1` (number), `'1'`
- * (string), and `true` (boolean) never collide. `-0` and `0` already stringify
- * identically, matching `-0 === 0`.
- */
-const encode = (v: IndexableValue): string => {
-  if (v === null) {
-    return 'z:';
-  }
-  switch (typeof v) {
-    case 'number':
-      return `n:${v}`;
-    case 'boolean':
-      return `b:${v ? 1 : 0}`;
-    default:
-      return `s:${v}`;
-  }
-};
 
 /** Rank groups values by type so `compare` is a total order across types. */
 const rank = (v: IndexableValue): number => {
@@ -130,6 +119,30 @@ class OrderedSet<T> {
   private count = 0;
 
   constructor(private readonly cmp: (a: T, b: T) => number) {}
+
+  /**
+   * Build from values already in ascending order in O(d): each value is the new
+   * maximum, so it appends to the rightmost tower at each of its levels with no
+   * search. Used to materialize the ordered view from natively-sorted bucket
+   * keys, far cheaper than d individual inserts.
+   */
+  static fromSorted<T>(sorted: readonly T[], cmp: (a: T, b: T) => number): OrderedSet<T> {
+    const set = new OrderedSet<T>(cmp);
+    const last: SkipNode<T>[] = new Array(SKIP_MAX_LEVEL).fill(set.head);
+    for (const value of sorted) {
+      const lvl = set.randomLevel();
+      if (lvl > set.level) {
+        set.level = lvl;
+      }
+      const node: SkipNode<T> = { value, next: new Array(lvl).fill(null) };
+      for (let i = 0; i < lvl; i++) {
+        last[i]!.next[i] = node;
+        last[i] = node;
+      }
+      set.count++;
+    }
+    return set;
+  }
 
   get size(): number {
     return this.count;
@@ -225,7 +238,8 @@ export class PropertyIndex<E> {
   /** Declare `key` as indexed. Idempotent; does not backfill (caller seeds). */
   createIndex(key: string): void {
     if (!this.indexes.has(key)) {
-      this.indexes.set(key, { buckets: new Map(), order: new OrderedSet<IndexableValue>(compare) });
+      // `order` stays null until a range query needs it (see `orderOf`).
+      this.indexes.set(key, { buckets: new Map(), order: null });
     }
   }
 
@@ -245,8 +259,21 @@ export class PropertyIndex<E> {
   clear(): void {
     for (const idx of this.indexes.values()) {
       idx.buckets.clear();
-      idx.order.clear();
+      idx.order = null;
     }
+  }
+
+  /**
+   * The ordered view of `idx`'s distinct values, materialized on first use by
+   * natively sorting the bucket keys (cheaper than incremental inserts) and
+   * maintained incrementally thereafter.
+   */
+  private orderOf(idx: KeyIndex<E>): OrderedSet<IndexableValue> {
+    if (!idx.order) {
+      const sorted = Array.from(idx.buckets.keys()).sort(compare);
+      idx.order = OrderedSet.fromSorted(sorted, compare);
+    }
+    return idx.order;
   }
 
   // --- maintenance -------------------------------------------------------
@@ -255,13 +282,13 @@ export class PropertyIndex<E> {
     if (!isIndexable(value)) {
       return;
     }
-    const enc = encode(value);
-    let set = idx.buckets.get(enc);
+    let set = idx.buckets.get(value);
     if (!set) {
       set = new Set();
-      idx.buckets.set(enc, set);
-      // A value seen for the first time joins the sorted distinct-value set.
-      idx.order.add(value);
+      idx.buckets.set(value, set);
+      // A new distinct value joins the ordered view only if it's already built;
+      // otherwise it'll be picked up when the view is materialized lazily.
+      idx.order?.add(value);
     }
     set.add(element);
   }
@@ -270,15 +297,14 @@ export class PropertyIndex<E> {
     if (!isIndexable(value)) {
       return;
     }
-    const enc = encode(value);
-    const set = idx.buckets.get(enc);
+    const set = idx.buckets.get(value);
     if (!set) {
       return;
     }
     set.delete(element);
     if (set.size === 0) {
-      idx.buckets.delete(enc);
-      idx.order.delete(value);
+      idx.buckets.delete(value);
+      idx.order?.delete(value);
     }
   }
 
@@ -326,7 +352,7 @@ export class PropertyIndex<E> {
     if (!idx || !isIndexable(value)) {
       return undefined;
     }
-    return idx.buckets.get(encode(value));
+    return idx.buckets.get(value);
   }
 
   /**
@@ -342,7 +368,7 @@ export class PropertyIndex<E> {
     if (!isIndexable(value)) {
       return 0;
     }
-    return idx.buckets.get(encode(value))?.size ?? 0;
+    return idx.buckets.get(value)?.size ?? 0;
   }
 
   /**
@@ -356,7 +382,7 @@ export class PropertyIndex<E> {
     const refRank = rank(ref);
     // Start at the lower bound when there is one, else from the smallest value.
     const from = bound.gte ?? bound.gt;
-    for (const value of idx.order.iterateFrom(from, from !== undefined)) {
+    for (const value of this.orderOf(idx).iterateFrom(from, from !== undefined)) {
       const r = rank(value);
       if (r < refRank) {
         continue; // a lower-ranked value precedes the bound's type block
@@ -394,7 +420,7 @@ export class PropertyIndex<E> {
     }
     const out = new Set<E>();
     for (const value of this.rangeValues(idx, bound)) {
-      for (const element of idx.buckets.get(encode(value))!) {
+      for (const element of idx.buckets.get(value)!) {
         out.add(element);
       }
     }
@@ -413,7 +439,7 @@ export class PropertyIndex<E> {
     }
     let count = 0;
     for (const value of this.rangeValues(idx, bound)) {
-      count += idx.buckets.get(encode(value))!.size;
+      count += idx.buckets.get(value)!.size;
     }
     return count;
   }
@@ -425,15 +451,13 @@ export class PropertyIndex<E> {
   clone(): PropertyIndex<E> {
     const copy = new PropertyIndex<E>();
     for (const [key, idx] of this.indexes) {
-      const buckets = new Map<string, Set<E>>();
-      for (const [enc, set] of idx.buckets) {
-        buckets.set(enc, new Set(set));
+      const buckets = new Map<IndexableValue, Set<E>>();
+      for (const [value, set] of idx.buckets) {
+        buckets.set(value, new Set(set));
       }
-      const order = new OrderedSet<IndexableValue>(compare);
-      for (const value of idx.order.iterateFrom(undefined, false)) {
-        order.add(value);
-      }
-      copy.indexes.set(key, { buckets, order });
+      // Leave the ordered view unbuilt; the snapshot rebuilds it on demand from
+      // its own buckets — cheaper than copying, and a snapshot may never range.
+      copy.indexes.set(key, { buckets, order: null });
     }
     return copy;
   }

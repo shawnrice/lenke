@@ -135,6 +135,21 @@ describe('PropertyIndex range', () => {
     expect(index.countRange('name', { gt: 0 })).toBeUndefined(); // unindexed
   });
 
+  test('the ordered view is maintained after it is lazily built', () => {
+    const graph = new Graph({ eagerSnapshot: false });
+    graph.createVertexIndex('age');
+    graph.addVertex({ id: 'a', labels: [], properties: { age: 10 } });
+    graph.addVertex({ id: 'b', labels: [], properties: { age: 30 } });
+    // First range query materializes the ordered view from the buckets.
+    expect(ids(graph.getVerticesByPropertyRange('age', { gte: 20 }))).toEqual(['b']);
+    // A new distinct value inserted *after* the build must show up...
+    graph.addVertex({ id: 'c', labels: [], properties: { age: 40 } });
+    expect(ids(graph.getVerticesByPropertyRange('age', { gte: 20 }))).toEqual(['b', 'c']);
+    // ...and a removal must drop out.
+    graph.removeVertex('b');
+    expect(ids(graph.getVerticesByPropertyRange('age', { gte: 20 }))).toEqual(['c']);
+  });
+
   test('the ordered structure stays correct across heavy insert/delete churn', () => {
     const graph = new Graph({ eagerSnapshot: false });
     graph.createVertexIndex('k');
