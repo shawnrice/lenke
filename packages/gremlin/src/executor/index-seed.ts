@@ -1,12 +1,14 @@
-// Seed a `V()` source from a property index instead of scanning every vertex.
+// Seed a `V()` / `E()` source from a property index instead of scanning every
+// element.
 //
-// When a traversal opens `V()` (no explicit ids) followed by a run of filter
-// steps that only narrow the start set — `has` / `hasLabel` / `hasLabelAnd` /
-// `hasId` / `hasKey` / `hasNot`, which commute freely — and one of them is an
-// indexable property predicate on a graph-indexed key, we seed directly from
-// that key's index bucket(s) rather than sweeping all of `V()`. The most
-// selective seedable predicate (smallest candidate set) wins; every leading
-// filter is re-applied as a residual, so the result still matches the scan.
+// When a traversal opens `V()` or `E()` (no explicit ids) followed by a run of
+// filter steps that only narrow the start set — `has` / `hasLabel` /
+// `hasLabelAnd` / `hasId` / `hasKey` / `hasNot`, which commute freely — and one
+// of them is an indexable property predicate on a graph-indexed key, we seed
+// directly from that key's index bucket(s) rather than sweeping the whole
+// source. The most selective seedable predicate (smallest candidate set) wins;
+// every leading filter is re-applied as a residual, so the result still matches
+// the scan.
 //
 // Seedable predicates, and whether the consumed `has` can be dropped:
 //
@@ -23,12 +25,12 @@
 // label half). Non-seedable predicates (neq, outside, without, the string/
 // regex ops, not) stay as ordinary residual filters.
 
-import type { Graph, RangeBound, Vertex } from '@pl-graph/core';
+import type { Edge, Graph, PropertyIndex, RangeBound, Vertex } from '@pl-graph/core';
 
 import type { Plan, Predicate, Step } from '../ast.js';
 import { startTraverser, type Traverser } from './runtime.js';
 
-/** Filter steps that only narrow the `V()` set, so reordering them is safe. */
+/** Filter steps that only narrow the source set, so reordering them is safe. */
 const COMMUTING_FILTERS = new Set<Step['kind']>([
   'has',
   'hasLabel',
@@ -38,7 +40,7 @@ const COMMUTING_FILTERS = new Set<Step['kind']>([
   'hasNot',
 ]);
 
-const EMPTY: ReadonlySet<Vertex> = new Set<Vertex>();
+const EMPTY: ReadonlySet<never> = new Set<never>();
 
 /** A scalar the property index can seek on (mirrors PropertyIndex's IndexableValue). */
 const isScalar = (v: unknown): boolean =>
@@ -47,22 +49,26 @@ const isScalar = (v: unknown): boolean =>
   typeof v === 'boolean' ||
   (typeof v === 'number' && !Number.isNaN(v));
 
-type Seed = { set: ReadonlySet<Vertex>; removable: boolean };
+type Seed<E> = { set: ReadonlySet<E>; removable: boolean };
 
 /** Union the equality buckets for each value of a `within` list. */
-const unionBuckets = (graph: Graph, key: string, values: readonly unknown[]): Set<Vertex> => {
-  const out = new Set<Vertex>();
+const unionBuckets = <E>(
+  index: PropertyIndex<E>,
+  key: string,
+  values: readonly unknown[],
+): Set<E> => {
+  const out = new Set<E>();
   for (const value of values) {
-    for (const vertex of graph.vertexPropertyIndex.equals(key, value) ?? EMPTY) {
-      out.add(vertex);
+    for (const element of index.equals(key, value) ?? EMPTY) {
+      out.add(element);
     }
   }
   return out;
 };
 
 /** Map a `RangeBound`-shaped predicate to its (type-strict) seed set. */
-const rangeSeed = (graph: Graph, key: string, bound: RangeBound): Seed => ({
-  set: graph.vertexPropertyIndex.range(key, bound) ?? EMPTY,
+const rangeSeed = <E>(index: PropertyIndex<E>, key: string, bound: RangeBound): Seed<E> => ({
+  set: index.range(key, bound) ?? EMPTY,
   removable: false,
 });
 
@@ -71,82 +77,74 @@ const rangeSeed = (graph: Graph, key: string, bound: RangeBound): Seed => ({
  * seedable. `removable` is whether dropping the owning step leaves an
  * equivalent plan — only an exact (eq/within) match on a plain `has`.
  */
-const seedForPred = (
-  graph: Graph,
+const seedForPred = <E>(
+  index: PropertyIndex<E>,
   key: string,
   pred: Predicate,
   plainHas: boolean,
-): Seed | null => {
+): Seed<E> | null => {
   switch (pred.op) {
     case 'eq':
       return isScalar(pred.value)
-        ? { set: graph.vertexPropertyIndex.equals(key, pred.value) ?? EMPTY, removable: plainHas }
+        ? { set: index.equals(key, pred.value) ?? EMPTY, removable: plainHas }
         : null;
     case 'within':
       return pred.values.every(isScalar)
-        ? { set: unionBuckets(graph, key, pred.values), removable: plainHas }
+        ? { set: unionBuckets(index, key, pred.values), removable: plainHas }
         : null;
     case 'gt':
-      return isScalar(pred.value) ? rangeSeed(graph, key, { gt: pred.value }) : null;
+      return isScalar(pred.value) ? rangeSeed(index, key, { gt: pred.value }) : null;
     case 'gte':
-      return isScalar(pred.value) ? rangeSeed(graph, key, { gte: pred.value }) : null;
+      return isScalar(pred.value) ? rangeSeed(index, key, { gte: pred.value }) : null;
     case 'lt':
-      return isScalar(pred.value) ? rangeSeed(graph, key, { lt: pred.value }) : null;
+      return isScalar(pred.value) ? rangeSeed(index, key, { lt: pred.value }) : null;
     case 'lte':
-      return isScalar(pred.value) ? rangeSeed(graph, key, { lte: pred.value }) : null;
+      return isScalar(pred.value) ? rangeSeed(index, key, { lte: pred.value }) : null;
     case 'between':
-      return rangeSeed(graph, key, { gte: pred.min, lt: pred.max });
+      return rangeSeed(index, key, { gte: pred.min, lt: pred.max });
     case 'inside':
-      return rangeSeed(graph, key, { gt: pred.min, lt: pred.max });
+      return rangeSeed(index, key, { gt: pred.min, lt: pred.max });
     default:
       return null;
   }
 };
 
 /** The seed a single leading filter step offers, if any. */
-const seedForStep = (step: Step, graph: Graph): Seed | null => {
+const seedForStep = <E>(step: Step, index: PropertyIndex<E>): Seed<E> | null => {
   if (step.kind !== 'has' && step.kind !== 'hasLabelAnd') {
     return null;
   }
-  if (!graph.vertexPropertyIndex.isIndexed(step.key)) {
+  if (!index.isIndexed(step.key)) {
     return null;
   }
-  const seed = seedForPred(graph, step.key, step.pred, step.kind === 'has');
+  const seed = seedForPred(index, step.key, step.pred, step.kind === 'has');
   // A `hasLabelAnd` carries a label constraint the bucket doesn't capture, so
   // its step can never be dropped.
   return seed && step.kind === 'hasLabelAnd' ? { ...seed, removable: false } : seed;
 };
 
 export type SeededPlan = {
-  stream: Iterable<Traverser<Vertex>>;
+  stream: Iterable<Traverser<unknown>>;
   /** The residual steps to apply (source — and maybe one `has` — removed). */
   steps: readonly Step[];
 };
 
-/**
- * If `plan` can be seeded from a vertex property index, return the seed stream
- * plus the residual steps; otherwise `null` to fall back to a normal scan.
- */
-export const seedVerticesFromIndex = (
-  plan: Plan,
-  graph: Graph,
+/** Seed the residual `rest` steps from `index`, or `null` to fall back. */
+const seedRest = <E>(
+  rest: readonly Step[],
+  index: PropertyIndex<E>,
   tracksPath: boolean,
 ): SeededPlan | null => {
-  const [source, ...rest] = plan.steps;
-  if (!source || source.kind !== 'V' || source.ids) {
-    return null;
-  }
-
   // Across the leading run of commuting filters, pick the most selective seed
   // (smallest candidate set wins).
   let bestAt = -1;
-  let best: Seed | null = null;
+  let best: Seed<E> | null = null;
   for (let i = 0; i < rest.length; i++) {
     const step = rest[i]!;
     if (!COMMUTING_FILTERS.has(step.kind)) {
       break;
     }
-    const seed = seedForStep(step, graph);
+    const seed = seedForStep(step, index);
     if (seed && seed.set.size < (best?.set.size ?? Infinity)) {
       best = seed;
       bestAt = i;
@@ -159,11 +157,30 @@ export const seedVerticesFromIndex = (
 
   const { set } = best;
   const stream = (function* () {
-    for (const vertex of set) {
-      yield startTraverser(vertex, tracksPath);
+    for (const element of set) {
+      yield startTraverser(element, tracksPath);
     }
   })();
 
   const steps = best.removable ? rest.filter((_, i) => i !== bestAt) : rest;
   return { stream, steps };
+};
+
+/**
+ * If `plan` opens `V()` or `E()` and a leading filter is seedable from the
+ * matching property index, return the seed stream plus the residual steps;
+ * otherwise `null` to fall back to a normal scan.
+ */
+export const seedFromIndex = (plan: Plan, graph: Graph, tracksPath: boolean): SeededPlan | null => {
+  const [source, ...rest] = plan.steps;
+  if (!source) {
+    return null;
+  }
+  if (source.kind === 'V' && !source.ids) {
+    return seedRest<Vertex>(rest, graph.vertexPropertyIndex, tracksPath);
+  }
+  if (source.kind === 'E' && !source.ids) {
+    return seedRest<Edge>(rest, graph.edgePropertyIndex, tracksPath);
+  }
+  return null;
 };

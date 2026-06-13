@@ -2,10 +2,10 @@ import { describe, expect, test } from 'bun:test';
 
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
 import { between, eq, gt, inside, within } from '../predicates.js';
-import { has, hasLabel, out, V, values } from '../steps.js';
+import { E, has, hasLabel, out, V, values } from '../steps.js';
 import { traversal } from '../traversal.js';
 import { run } from './index.js';
-import { seedVerticesFromIndex } from './index-seed.js';
+import { seedFromIndex } from './index-seed.js';
 
 const arr = (r: Iterable<unknown>): unknown[] => [...r];
 
@@ -38,11 +38,11 @@ describe('index-seeded V() source', () => {
     expect((result as string[]).sort()).toEqual(['josh', 'lop', 'vadas']);
   });
 
-  test('seedVerticesFromIndex drops a plain has but keeps other filters', () => {
+  test('seedFromIndex drops a plain has but keeps other filters', () => {
     const g = createTestTinkerGraph();
     g.createVertexIndex('name');
     const plan = traversal(V(), hasLabel('PERSON'), has('name', eq('marko')));
-    const seeded = seedVerticesFromIndex(plan, g, false);
+    const seeded = seedFromIndex(plan, g, false);
     expect(seeded).not.toBeNull();
     // The consumed has('name', ...) is gone; hasLabel stays as a residual.
     expect(seeded!.steps.map((s) => s.kind)).toEqual(['hasLabel']);
@@ -52,14 +52,14 @@ describe('index-seeded V() source', () => {
   test('falls back (null) for an unindexed key', () => {
     const g = createTestTinkerGraph();
     const plan = traversal(V(), has('name', eq('marko')));
-    expect(seedVerticesFromIndex(plan, g, false)).toBeNull();
+    expect(seedFromIndex(plan, g, false)).toBeNull();
   });
 
   test('range predicates are seeded but kept as a residual filter', () => {
     const g = createTestTinkerGraph();
     g.createVertexIndex('age');
     // Ages: marko=29, vadas=27, josh=32, peter=35.
-    const seeded = seedVerticesFromIndex(traversal(V(), has('age', gt(30))), g, false);
+    const seeded = seedFromIndex(traversal(V(), has('age', gt(30))), g, false);
     expect(seeded).not.toBeNull();
     expect(arr(seeded!.stream).length).toBe(2); // josh, peter
     expect(seeded!.steps.map((s) => s.kind)).toEqual(['has']); // residual kept
@@ -81,7 +81,7 @@ describe('index-seeded V() source', () => {
   test('within is seeded from a union of buckets and dropped', () => {
     const g = createTestTinkerGraph();
     g.createVertexIndex('name');
-    const seeded = seedVerticesFromIndex(
+    const seeded = seedFromIndex(
       traversal(V(), has('name', within('marko', 'josh', 'nobody'))),
       g,
       false,
@@ -106,7 +106,7 @@ describe('index-seeded V() source', () => {
     g.createVertexIndex('name');
     // `neq` has no bucket to seed from.
     const plan = traversal(V(), has('name', { op: 'neq', value: 'marko' }));
-    expect(seedVerticesFromIndex(plan, g, false)).toBeNull();
+    expect(seedFromIndex(plan, g, false)).toBeNull();
   });
 
   test('an empty bucket short-circuits to no results', () => {
@@ -121,10 +121,49 @@ describe('index-seeded V() source', () => {
     g.createVertexIndex('lang');
     // lang=java matches 2 vertices, name=lop matches 1 → seed should be name.
     const plan = traversal(V(), has('lang', eq('java')), has('name', eq('lop')));
-    const seeded = seedVerticesFromIndex(plan, g, false);
+    const seeded = seedFromIndex(plan, g, false);
     expect(seeded).not.toBeNull();
     expect(arr(seeded!.stream).length).toBe(1);
     // The kept residual is the lang filter (the less selective one).
     expect(seeded!.steps.map((s) => s.kind)).toEqual(['has']);
+  });
+});
+
+describe('index-seeded E() source', () => {
+  // Edge weights: 7=0.5, 8=1.0, 9=0.4, 10=1.0, 11=0.4, 12=0.2.
+  test('equality has() on an indexed edge property seeds and matches the scan', () => {
+    const plain = createTestTinkerGraph();
+    const indexed = createTestTinkerGraph();
+    indexed.createEdgeIndex('weight');
+
+    const plan = () => traversal(E(), has('weight', 1.0));
+    const got = (arr(run(plan(), indexed)) as Array<{ id: string }>).map((e) => e.id).sort();
+    const want = (arr(run(plan(), plain)) as Array<{ id: string }>).map((e) => e.id).sort();
+    expect(got).toEqual(want);
+    expect(got).toEqual(['10', '8']);
+  });
+
+  test('seedFromIndex seeds E() from the edge property index', () => {
+    const g = createTestTinkerGraph();
+    g.createEdgeIndex('weight');
+    const seeded = seedFromIndex(traversal(E(), has('weight', eq(0.4))), g, false);
+    expect(seeded).not.toBeNull();
+    expect(arr(seeded!.stream).length).toBe(2); // edges 9 and 11
+    expect(seeded!.steps).toEqual([]); // exact eq → has dropped
+  });
+
+  test('range on an indexed edge property matches the scan', () => {
+    const plain = createTestTinkerGraph();
+    const indexed = createTestTinkerGraph();
+    indexed.createEdgeIndex('weight');
+    const plan = () => traversal(E(), has('weight', gt(0.5)), values('weight'));
+    expect((arr(run(plan(), indexed)) as number[]).sort()).toEqual(
+      (arr(run(plan(), plain)) as number[]).sort(),
+    );
+  });
+
+  test('falls back (null) when the edge key is not indexed', () => {
+    const g = createTestTinkerGraph();
+    expect(seedFromIndex(traversal(E(), has('weight', eq(0.4))), g, false)).toBeNull();
   });
 });

@@ -13,7 +13,7 @@ import type { Graph } from '@pl-graph/core';
 import type { Plan } from '../ast.js';
 import { newContext, planReadsPath, type Traverser, unwrap } from './runtime.js';
 import { applyStep } from './dispatch.js';
-import { seedVerticesFromIndex } from './index-seed.js';
+import { seedFromIndex } from './index-seed.js';
 import { applySource } from './sources.js';
 
 /**
@@ -27,9 +27,9 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
   // path bookkeeping for the whole run (see planReadsPath / startTraverser).
   const ctx = newContext(planReadsPath(plan));
 
-  // If the plan opens `V()` + an equality `has` on an indexed key, seed from
-  // the index and apply only the residual steps; otherwise scan as usual.
-  const seeded = seedVerticesFromIndex(plan, graph, ctx.tracksPath);
+  // If the plan opens `V()`/`E()` + a seedable `has` on an indexed key, seed
+  // from the index and apply only the residual steps; otherwise scan as usual.
+  const seeded = seedFromIndex(plan, graph, ctx.tracksPath);
   let stream: Iterable<Traverser<unknown>> | null = seeded?.stream ?? null;
   const steps = seeded?.steps ?? plan.steps;
 
