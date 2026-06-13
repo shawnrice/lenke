@@ -1061,24 +1061,32 @@ const evalBound = (bound: CRangeBound, env: EvalEnv): RangeBound | null => {
   return any ? out : null;
 };
 
+/** A seekable predicate: its estimated cardinality and a thunk for the set. */
+type SeedCandidate = { count: number; build: () => ReadonlySet<Vertex> };
+
 /**
  * Every index seek a node pattern offers: its ISO equality constraints
  * (`(n {k: v})`) plus the seed hints lifted from WHERE / inline predicates.
- * Each yields the candidate set for one seekable predicate.
+ * Each candidate carries a cardinality estimate (computed without touching a
+ * set) and a thunk that builds the set only if it's chosen.
  */
 const indexCandidates = function* (
   graph: Graph,
   node: CNode,
   env: EvalEnv,
-): Iterable<ReadonlySet<Vertex>> {
+): Iterable<SeedCandidate> {
   const idx = graph.vertexPropertyIndex;
+  const eqCandidate = (key: string, v: unknown): SeedCandidate => ({
+    count: idx.countEquals(key, v) ?? 0,
+    build: () => idx.equals(key, v) ?? EMPTY,
+  });
+
   for (const { key, value } of node.pred.props) {
-    if (!idx.isIndexed(key)) {
-      continue;
-    }
-    const v = value(env);
-    if (isScalar(v)) {
-      yield idx.equals(key, v) ?? EMPTY;
+    if (idx.isIndexed(key)) {
+      const v = value(env);
+      if (isScalar(v)) {
+        yield eqCandidate(key, v);
+      }
     }
   }
   for (const hint of node.seedHints ?? []) {
@@ -1088,50 +1096,48 @@ const indexCandidates = function* (
     if (hint.kind === 'eq') {
       const v = hint.value(env);
       if (isScalar(v)) {
-        yield idx.equals(hint.key, v) ?? EMPTY;
+        yield eqCandidate(hint.key, v);
       }
     } else if (hint.kind === 'within') {
       const list = hint.values(env);
       if (Array.isArray(list) && list.every(isScalar)) {
-        const out = new Set<Vertex>();
+        let count = 0;
         for (const item of list) {
-          for (const vertex of idx.equals(hint.key, item) ?? EMPTY) {
-            out.add(vertex);
-          }
+          count += idx.countEquals(hint.key, item) ?? 0;
         }
-        yield out;
+        yield {
+          count,
+          build: () => {
+            const out = new Set<Vertex>();
+            for (const item of list) {
+              for (const vertex of idx.equals(hint.key, item) ?? EMPTY) {
+                out.add(vertex);
+              }
+            }
+            return out;
+          },
+        };
       }
     } else {
       const bound = evalBound(hint.bound, env);
       if (bound) {
-        yield idx.range(hint.key, bound) ?? EMPTY;
+        yield {
+          count: idx.countRange(hint.key, bound) ?? 0,
+          build: () => idx.range(hint.key, bound) ?? EMPTY,
+        };
       }
     }
   }
-};
-
-/** Intersect candidate sets, smallest first, into a fresh set. */
-const intersect = (sets: readonly ReadonlySet<Vertex>[]): Set<Vertex> => {
-  const ordered = [...sets].sort((a, b) => a.size - b.size);
-  const result = new Set<Vertex>(ordered[0]);
-  for (let k = 1; k < ordered.length && result.size > 0; k++) {
-    const other = ordered[k]!;
-    for (const vertex of result) {
-      if (!other.has(vertex)) {
-        result.delete(vertex);
-      }
-    }
-  }
-  return result;
 };
 
 /**
  * Seed candidates for a node pattern. An indexed equality / range / `IN` — from
  * an element-pattern map (`(n:Person {name: 'marko'})`) or a seekable WHERE
  * conjunct (`WHERE n.age > 30`) — seeks the index instead of scanning every
- * vertex. Every such seek is a superset of the node's matches, so we intersect
- * them for the tightest seed; `matchNode` still re-validates label + constraints
- * + WHERE. Falls back to the label-narrowed scan when nothing is indexed.
+ * vertex. The most selective seek (smallest estimated cardinality) is chosen
+ * and materialized; `matchNode` and the residual WHERE re-validate the rest, so
+ * the seed only has to be a superset. Falls back to the label-narrowed scan
+ * when nothing is indexed.
  */
 const seedVertices = function* (
   graph: Graph,
@@ -1140,12 +1146,17 @@ const seedVertices = function* (
   params: Params,
 ): Iterable<Vertex> {
   const env: EvalEnv = { binding, params, graph };
-  const candidates = [...indexCandidates(graph, node, env)];
-  if (candidates.length === 0) {
-    yield* candidateVertices(graph, node.label);
+  let best: SeedCandidate | undefined;
+  for (const candidate of indexCandidates(graph, node, env)) {
+    if (!best || candidate.count < best.count) {
+      best = candidate;
+    }
+  }
+  if (best) {
+    yield* best.build();
     return;
   }
-  yield* intersect(candidates);
+  yield* candidateVertices(graph, node.label);
 };
 
 /** Yield every binding that extends `binding` by matching `pattern`. */
