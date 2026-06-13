@@ -134,6 +134,31 @@ describe('PropertyIndex range', () => {
     expect(index.countRange('age', { gte: 27, lte: 32 })).toBe(3);
     expect(index.countRange('name', { gt: 0 })).toBeUndefined(); // unindexed
   });
+
+  test('the ordered structure stays correct across heavy insert/delete churn', () => {
+    const graph = new Graph({ eagerSnapshot: false });
+    graph.createVertexIndex('k');
+    // Insert 500 distinct values in shuffled order.
+    const order = Array.from({ length: 500 }, (_, i) => i);
+    for (let i = order.length - 1; i > 0; i--) {
+      const j = (i * 2654435761) % (i + 1);
+      [order[i], order[j]] = [order[j]!, order[i]!];
+    }
+    for (const v of order) {
+      graph.addVertex({ id: `v${v}`, labels: [], properties: { k: v } });
+    }
+    expect(graph.getVerticesByPropertyRange('k', { gte: 100, lt: 200 }).size).toBe(100);
+    // Delete every even value, then re-check the range.
+    for (const v of order) {
+      if (v % 2 === 0) {
+        graph.removeVertex(`v${v}`);
+      }
+    }
+    expect(graph.getVerticesByPropertyRange('k', { gte: 100, lt: 200 }).size).toBe(50); // odds only
+    expect(graph.getVerticesByProperty('k', 150).size).toBe(0); // deleted
+    expect(graph.getVerticesByProperty('k', 151).size).toBe(1); // kept
+    expect(graph.getVerticesByPropertyRange('k', { gt: -1 }).size).toBe(250); // all odds 1..499
+  });
 });
 
 describe('PropertyIndex snapshots and edges', () => {
