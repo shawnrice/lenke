@@ -12,15 +12,14 @@
  * single structure:
  *
  *   - `buckets`: encoded value -> the set of elements carrying it (equality).
- *   - `order`:   the *distinct* values, kept sorted (range).
+ *   - `order`:   the *distinct* values, kept sorted (range scans).
  *
- * `order` holds distinct values, so adding/removing an element at an
- * already-present value is O(1) into a `Set`; only the first appearance or last
- * removal of a value splices `order`. For the keys people actually range-query
- * (ages, scores, enums) the distinct-value domain is small and stabilizes
- * quickly, so splices are rare after warmup. If a key ever proves both
- * high-cardinality and high-churn, `order` can be swapped for a B+-tree/skip
- * list behind this same interface without touching callers.
+ * `order` holds only distinct values, so adding/removing an element at an
+ * already-present value is O(1) into a `Set`; only a value's first appearance or
+ * last removal touches `order`. That touch is O(log d) — `order` is a skip list
+ * (see {@link OrderedSet}), not a sorted array, so a high-cardinality key (one
+ * unique value per element) stays O(N log d) to bulk-load instead of the O(N²) a
+ * splicing array would cost.
  */
 
 /** The scalar value kinds we index. Objects/arrays fall back to a full scan. */
@@ -37,8 +36,8 @@ export type RangeBound = {
 type KeyIndex<E> = {
   /** encoded value -> elements carrying it */
   buckets: Map<string, Set<E>>;
-  /** distinct values, sorted by `compare` */
-  order: IndexableValue[];
+  /** distinct values in sorted order (skip list), for range scans */
+  order: OrderedSet<IndexableValue>;
 };
 
 const isIndexable = (v: unknown): v is IndexableValue =>
@@ -110,35 +109,115 @@ const compare = (a: IndexableValue, b: IndexableValue): number => {
   }
 };
 
-/** First index `i` with `order[i] >= target`. */
-const lowerBound = (order: IndexableValue[], target: IndexableValue): number => {
-  let lo = 0;
-  let hi = order.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >>> 1;
-    if (compare(order[mid]!, target) < 0) {
-      lo = mid + 1;
-    } else {
-      hi = mid;
-    }
-  }
-  return lo;
-};
+/**
+ * An ordered set of distinct values backed by a skip list: O(log d) insert and
+ * delete, with ascending iteration for range scans. This is what keeps writes
+ * cheap on high-cardinality keys — a sorted array would splice O(d) per new
+ * distinct value, turning a bulk load into O(N²); the skip list makes it
+ * O(N log d). Iteration order follows the bottom level, so it's the sorted
+ * order regardless of the random tower heights (deterministic results).
+ */
+const SKIP_MAX_LEVEL = 24;
 
-/** First index `i` with `order[i] > target`. */
-const upperBound = (order: IndexableValue[], target: IndexableValue): number => {
-  let lo = 0;
-  let hi = order.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >>> 1;
-    if (compare(order[mid]!, target) <= 0) {
-      lo = mid + 1;
-    } else {
-      hi = mid;
+type SkipNode<T> = { value: T; next: (SkipNode<T> | null)[] };
+
+class OrderedSet<T> {
+  private head: SkipNode<T> = {
+    value: undefined as never,
+    next: new Array(SKIP_MAX_LEVEL).fill(null),
+  };
+  private level = 1;
+  private count = 0;
+
+  constructor(private readonly cmp: (a: T, b: T) => number) {}
+
+  get size(): number {
+    return this.count;
+  }
+
+  clear(): void {
+    this.head = { value: undefined as never, next: new Array(SKIP_MAX_LEVEL).fill(null) };
+    this.level = 1;
+    this.count = 0;
+  }
+
+  private randomLevel(): number {
+    let lvl = 1;
+    while (Math.random() < 0.5 && lvl < SKIP_MAX_LEVEL) {
+      lvl++;
+    }
+    return lvl;
+  }
+
+  /** Insert `value` if absent (callers only add distinct values). */
+  add(value: T): void {
+    const update: SkipNode<T>[] = new Array(SKIP_MAX_LEVEL);
+    let x = this.head;
+    for (let i = this.level - 1; i >= 0; i--) {
+      while (x.next[i] && this.cmp(x.next[i]!.value, value) < 0) {
+        x = x.next[i]!;
+      }
+      update[i] = x;
+    }
+    if (x.next[0] && this.cmp(x.next[0]!.value, value) === 0) {
+      return; // already present
+    }
+    const lvl = this.randomLevel();
+    if (lvl > this.level) {
+      for (let i = this.level; i < lvl; i++) {
+        update[i] = this.head;
+      }
+      this.level = lvl;
+    }
+    const node: SkipNode<T> = { value, next: new Array(lvl).fill(null) };
+    for (let i = 0; i < lvl; i++) {
+      node.next[i] = update[i]!.next[i] ?? null;
+      update[i]!.next[i] = node;
+    }
+    this.count++;
+  }
+
+  delete(value: T): void {
+    const update: SkipNode<T>[] = new Array(SKIP_MAX_LEVEL);
+    let x = this.head;
+    for (let i = this.level - 1; i >= 0; i--) {
+      while (x.next[i] && this.cmp(x.next[i]!.value, value) < 0) {
+        x = x.next[i]!;
+      }
+      update[i] = x;
+    }
+    const [target] = x.next;
+    if (!target || this.cmp(target.value, value) !== 0) {
+      return;
+    }
+    for (let i = 0; i < this.level; i++) {
+      if (update[i]!.next[i] === target) {
+        update[i]!.next[i] = target.next[i] ?? null;
+      }
+    }
+    while (this.level > 1 && !this.head.next[this.level - 1]) {
+      this.level--;
+    }
+    this.count--;
+  }
+
+  /** Ascending values, starting at the first one `>= from` (or from the start). */
+  *iterateFrom(from: T | undefined, hasFrom: boolean): Iterable<T> {
+    let x = this.head;
+    if (hasFrom) {
+      for (let i = this.level - 1; i >= 0; i--) {
+        while (x.next[i] && this.cmp(x.next[i]!.value, from as T) < 0) {
+          x = x.next[i]!;
+        }
+      }
+    }
+    let [node] = x.next;
+    while (node) {
+      yield node.value;
+      [node] = node.next;
     }
   }
-  return lo;
-};
+}
 
 export class PropertyIndex<E> {
   private readonly indexes = new Map<string, KeyIndex<E>>();
@@ -146,7 +225,7 @@ export class PropertyIndex<E> {
   /** Declare `key` as indexed. Idempotent; does not backfill (caller seeds). */
   createIndex(key: string): void {
     if (!this.indexes.has(key)) {
-      this.indexes.set(key, { buckets: new Map(), order: [] });
+      this.indexes.set(key, { buckets: new Map(), order: new OrderedSet<IndexableValue>(compare) });
     }
   }
 
@@ -166,7 +245,7 @@ export class PropertyIndex<E> {
   clear(): void {
     for (const idx of this.indexes.values()) {
       idx.buckets.clear();
-      idx.order.length = 0;
+      idx.order.clear();
     }
   }
 
@@ -181,8 +260,8 @@ export class PropertyIndex<E> {
     if (!set) {
       set = new Set();
       idx.buckets.set(enc, set);
-      // A value seen for the first time joins the sorted distinct-value list.
-      idx.order.splice(lowerBound(idx.order, value), 0, value);
+      // A value seen for the first time joins the sorted distinct-value set.
+      idx.order.add(value);
     }
     set.add(element);
   }
@@ -199,10 +278,7 @@ export class PropertyIndex<E> {
     set.delete(element);
     if (set.size === 0) {
       idx.buckets.delete(enc);
-      const at = lowerBound(idx.order, value);
-      if (at < idx.order.length && compare(idx.order[at]!, value) === 0) {
-        idx.order.splice(at, 1);
-      }
+      idx.order.delete(value);
     }
   }
 
@@ -270,33 +346,40 @@ export class PropertyIndex<E> {
   }
 
   /**
-   * The `[lo, hi)` slice of `idx.order` selected by `bound`, plus the bound's
-   * type rank (used to skip values of other types). Shared by `range` and
-   * `countRange` so a count never has to build the result set.
+   * The distinct values in `bound`, ascending. Walks the skip list from the
+   * lower bound (O(log d) to position, then one step per distinct value in
+   * range), clamped to the bound's type rank so `{ gt: 30 }` never bleeds into
+   * strings. Shared by `range` and `countRange` so a count needn't build a set.
    */
-  private rangeSlice(
-    idx: KeyIndex<E>,
-    bound: RangeBound,
-  ): { lo: number; hi: number; refRank: number } {
-    const { order } = idx;
+  private *rangeValues(idx: KeyIndex<E>, bound: RangeBound): Iterable<IndexableValue> {
     const ref = bound.gt ?? bound.gte ?? bound.lt ?? bound.lte ?? null;
     const refRank = rank(ref);
-
-    let lo = 0;
-    let hi = order.length;
-    if (bound.gte !== undefined) {
-      lo = Math.max(lo, lowerBound(order, bound.gte));
+    // Start at the lower bound when there is one, else from the smallest value.
+    const from = bound.gte ?? bound.gt;
+    for (const value of idx.order.iterateFrom(from, from !== undefined)) {
+      const r = rank(value);
+      if (r < refRank) {
+        continue; // a lower-ranked value precedes the bound's type block
+      }
+      if (r > refRank) {
+        break; // past the bound's type block (values are ascending)
+      }
+      // Upper bound: ascending, so the first value past it ends the scan.
+      if (bound.lt !== undefined && compare(value, bound.lt) >= 0) {
+        break;
+      }
+      if (bound.lte !== undefined && compare(value, bound.lte) > 0) {
+        break;
+      }
+      // Lower bound: skip values that don't yet satisfy it.
+      if (bound.gt !== undefined && compare(value, bound.gt) <= 0) {
+        continue;
+      }
+      if (bound.gte !== undefined && compare(value, bound.gte) < 0) {
+        continue;
+      }
+      yield value;
     }
-    if (bound.gt !== undefined) {
-      lo = Math.max(lo, upperBound(order, bound.gt));
-    }
-    if (bound.lte !== undefined) {
-      hi = Math.min(hi, upperBound(order, bound.lte));
-    }
-    if (bound.lt !== undefined) {
-      hi = Math.min(hi, lowerBound(order, bound.lt));
-    }
-    return { lo, hi, refRank };
   }
 
   /**
@@ -309,15 +392,8 @@ export class PropertyIndex<E> {
     if (!idx) {
       return undefined;
     }
-    const { lo, hi, refRank } = this.rangeSlice(idx, bound);
     const out = new Set<E>();
-    for (let i = lo; i < hi; i++) {
-      const value = idx.order[i]!;
-      // An open bound leaves `hi`/`lo` at the array edge; the rank guard keeps
-      // the result inside the bound's type block.
-      if (rank(value) !== refRank) {
-        continue;
-      }
+    for (const value of this.rangeValues(idx, bound)) {
       for (const element of idx.buckets.get(encode(value))!) {
         out.add(element);
       }
@@ -327,24 +403,17 @@ export class PropertyIndex<E> {
 
   /**
    * The cardinality of `range(key, bound)` without building it: sums the bucket
-   * sizes over the matching slice. O(distinct values in range) — cheap for the
-   * small, stable value domains these indexes target, and enough for a planner
-   * to compare candidates before materializing the winner. (A prefix-sum over
-   * `order` would make it O(log d) at the cost of O(d) upkeep on distinct-value
-   * churn — not worth it until large-domain range counting dominates reads.)
+   * sizes over the matching distinct values. O(distinct values in range), so a
+   * planner can compare candidates before materializing the winner.
    */
   countRange(key: string, bound: RangeBound): number | undefined {
     const idx = this.indexes.get(key);
     if (!idx) {
       return undefined;
     }
-    const { lo, hi, refRank } = this.rangeSlice(idx, bound);
     let count = 0;
-    for (let i = lo; i < hi; i++) {
-      const value = idx.order[i]!;
-      if (rank(value) === refRank) {
-        count += idx.buckets.get(encode(value))!.size;
-      }
+    for (const value of this.rangeValues(idx, bound)) {
+      count += idx.buckets.get(encode(value))!.size;
     }
     return count;
   }
@@ -360,7 +429,11 @@ export class PropertyIndex<E> {
       for (const [enc, set] of idx.buckets) {
         buckets.set(enc, new Set(set));
       }
-      copy.indexes.set(key, { buckets, order: idx.order.slice() });
+      const order = new OrderedSet<IndexableValue>(compare);
+      for (const value of idx.order.iterateFrom(undefined, false)) {
+        order.add(value);
+      }
+      copy.indexes.set(key, { buckets, order });
     }
     return copy;
   }
