@@ -392,6 +392,37 @@ fn edge_property_aggregate() {
 }
 
 #[test]
+fn three_valued_boolean_logic() {
+    let mut g = modern();
+    // AND/OR/XOR/NOT with UNKNOWN (null), per ISO Kleene logic.
+    let r = rows(
+        &mut g,
+        "RETURN null AND false AS a, null AND true AS b, null OR true AS c, \
+         null OR false AS d, NOT null AS e, null XOR true AS f",
+    );
+    assert_eq!(r, vec![vec![b(false), Value::Null, b(true), Value::Null, Value::Null, Value::Null]]);
+}
+
+#[test]
+fn null_comparison_and_arithmetic_propagate() {
+    let mut g = modern();
+    let r = rows(&mut g, "RETURN (1 = 1) AS a, (1 = 2) AS b, (null = 1) AS c, (1 + null) AS d");
+    assert_eq!(r, vec![vec![b(true), b(false), Value::Null, Value::Null]]);
+}
+
+#[test]
+fn in_three_valued_logic() {
+    let mut g = modern();
+    let r = rows(
+        &mut g,
+        "RETURN 1 IN [1,2] AS a, 3 IN [1,2] AS b, null IN [] AS c, \
+         1 IN [null] AS d, 3 IN [1,null] AS e, 1 IN [1,null] AS f",
+    );
+    // null IN [] is FALSE (empty disjunction); a TRUE equality beats UNKNOWN.
+    assert_eq!(r, vec![vec![b(true), b(false), b(false), Value::Null, Value::Null, b(true)]]);
+}
+
+#[test]
 fn two_match_clauses() {
     let mut g = modern();
     let r = rows(&mut g, "MATCH (a:Person {name:'marko'}) MATCH (a)-[:KNOWS]->(b) RETURN b.name ORDER BY b.name");
