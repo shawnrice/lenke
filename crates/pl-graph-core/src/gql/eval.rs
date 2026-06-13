@@ -72,8 +72,18 @@ struct Env<'a> {
     graph: &'a Graph,
     binding: &'a Binding,
     params: &'a [Val],
-    /// Set while folding an aggregate over its group of bindings.
+    /// Set while folding an aggregate over its group of bindings (the rare
+    /// `eval`-time aggregate path, e.g. an aggregate in WHERE).
     group: Option<&'a [Binding]>,
+    /// Folded values of a projection's extracted aggregates, resolved by
+    /// [`CExpr::AggRef`] when materializing a group's output row.
+    agg_values: Option<&'a [Val]>,
+}
+
+impl<'a> Env<'a> {
+    fn new(graph: &'a Graph, binding: &'a Binding, params: &'a [Val]) -> Self {
+        Env { graph, binding, params, group: None, agg_values: None }
+    }
 }
 
 // --- value helpers -----------------------------------------------------------
@@ -443,6 +453,7 @@ fn eval(env: &Env, expr: &CExpr) -> Val {
         CExpr::Aggregate { func, arg, distinct, star } => {
             eval_aggregate(env, *func, arg.as_deref(), *distinct, *star)
         }
+        CExpr::AggRef(idx) => env.agg_values.and_then(|a| a.get(*idx)).cloned().unwrap_or(Val::Null),
     }
 }
 
@@ -463,7 +474,7 @@ fn eval_aggregate(env: &Env, func: AggFn, arg: Option<&CExpr>, distinct: bool, s
     let raw: Vec<Val> = group
         .iter()
         .map(|b| {
-            let e = Env { graph: env.graph, binding: b, params: env.params, group: Some(group) };
+            let e = Env { graph: env.graph, binding: b, params: env.params, group: Some(group), agg_values: None };
             eval(&e, arg)
         })
         .collect();
@@ -625,7 +636,7 @@ fn satisfies(
     binding: &Binding,
     params: &[Val],
 ) -> bool {
-    let env = Env { graph, binding, params, group: None };
+    let env = Env::new(graph, binding, params);
     for pc in props {
         if !val_eq(&prop_of(graph, element, &pc.key), &eval(&env, &pc.value)) {
             return false;
@@ -821,7 +832,7 @@ fn visit_patterns(
 ) -> bool {
     if idx >= patterns.len() {
         if let Some(w) = where_ {
-            let env = Env { graph, binding, params, group: None };
+            let env = Env::new(graph, binding, params);
             if as_truth(&eval(&env, w)) != Some(true) {
                 return true; // filtered out, keep going
             }
@@ -891,58 +902,325 @@ fn pattern_slots(patterns: &[CPath]) -> Vec<usize> {
     slots
 }
 
-/// Run a MATCH clause over incoming bindings. `cap`, when set, stops the walk
-/// once that many output rows exist (a streamable LIMIT short-circuit).
-fn run_match(
+/// Stream every binding produced by a chain of MATCH clauses (extending `binding`
+/// in place, backtracking) into `sink`. No intermediate `Vec<Binding>`: matches
+/// nest directly into the consumer. Returns `false` to propagate a stop request.
+fn drive_matches(
     graph: &Graph,
-    optional: bool,
-    patterns: &[CPath],
-    where_: Option<&CExpr>,
-    bindings: Vec<Binding>,
+    matches: &[&CClause],
+    idx: usize,
+    binding: &mut Binding,
     params: &[Val],
-    cap: Option<usize>,
-    scope_len: usize,
-) -> Vec<Binding> {
-    let mut out = Vec::new();
-    for b in &bindings {
-        let mut work = b.clone();
-        work.resize(scope_len); // room for this clause's new variable slots
-        let before = out.len();
-        visit_patterns(graph, patterns, 0, where_, &mut work, params, &mut |m| {
-            out.push(m.clone());
-            cap.is_none_or(|c| out.len() < c) // false → stop walking
-        });
-        if out.len() == before && optional {
-            let mut filled = b.clone();
-            filled.resize(scope_len);
-            for s in pattern_slots(patterns) {
-                if !filled.bound(s) {
-                    filled.set(s, Val::Null);
+    sink: &mut dyn FnMut(&Binding) -> bool,
+) -> bool {
+    let Some(clause) = matches.get(idx) else {
+        return sink(binding);
+    };
+    let CClause::Match { optional, patterns, where_, scope_len } = clause else {
+        return true; // only MATCH clauses are streamed
+    };
+    binding.resize(*scope_len);
+    let mut matched = false;
+    let cont = visit_patterns(graph, patterns, 0, where_.as_ref(), binding, params, &mut |b| {
+        matched = true;
+        drive_matches(graph, matches, idx + 1, b, params, sink)
+    });
+    if !cont {
+        return false;
+    }
+    if !matched && *optional {
+        // OPTIONAL with no match: null-fill this clause's slots and continue.
+        for s in pattern_slots(patterns) {
+            if !binding.bound(s) {
+                binding.set(s, Val::Null);
+            }
+        }
+        return drive_matches(graph, matches, idx + 1, binding, params, sink);
+    }
+    true
+}
+
+/// An aggregate's running state, folded one value at a time (no stored group).
+struct Agg {
+    func: AggFn,
+    star: bool,
+    distinct: bool,
+    n: u64,
+    sum: f64,
+    extreme: Option<Val>,
+    list: Vec<Val>,
+    seen: HashSet<String>,
+}
+
+impl Agg {
+    fn new(spec: &super::plan::CAgg) -> Self {
+        Agg {
+            func: spec.func,
+            star: spec.star,
+            distinct: spec.distinct,
+            n: 0,
+            sum: 0.0,
+            extreme: None,
+            list: Vec::new(),
+            seen: HashSet::new(),
+        }
+    }
+    fn step(&mut self, value: Option<Val>) {
+        if self.func == AggFn::Count && self.star {
+            self.n += 1; // count(*) counts rows
+            return;
+        }
+        let Some(val) = value else { return };
+        if is_nullish(&val) {
+            return;
+        }
+        if self.distinct {
+            let mut k = String::new();
+            val_key(&val, &mut k);
+            if !self.seen.insert(k) {
+                return;
+            }
+        }
+        match self.func {
+            AggFn::Count => self.n += 1,
+            AggFn::Sum => self.sum += num_of(&val).unwrap_or(f64::NAN),
+            AggFn::Avg => {
+                self.sum += num_of(&val).unwrap_or(f64::NAN);
+                self.n += 1;
+            }
+            AggFn::Min => {
+                if self.extreme.as_ref().is_none_or(|m| val_cmp(&val, m) == Some(Ordering::Less)) {
+                    self.extreme = Some(val);
                 }
             }
-            out.push(filled);
+            AggFn::Max => {
+                if self.extreme.as_ref().is_none_or(|m| val_cmp(&val, m) == Some(Ordering::Greater)) {
+                    self.extreme = Some(val);
+                }
+            }
+            AggFn::CollectList => self.list.push(val),
         }
-        if cap.is_some_and(|c| out.len() >= c) {
+    }
+    fn finish(self) -> Val {
+        match self.func {
+            AggFn::Count => Val::Num(self.n as f64),
+            AggFn::Sum => Val::Num(self.sum),
+            AggFn::Avg => {
+                if self.n == 0 {
+                    Val::Null
+                } else {
+                    Val::Num(self.sum / self.n as f64)
+                }
+            }
+            AggFn::Min | AggFn::Max => self.extreme.unwrap_or(Val::Null),
+            AggFn::CollectList => Val::List(self.list),
+        }
+    }
+}
+
+/// Fold one input binding into a group's aggregate states (one per extracted
+/// aggregate), evaluating each aggregate's argument against the binding.
+fn step_aggs(aggs: &mut [Agg], specs: &[super::plan::CAgg], graph: &Graph, binding: &Binding, params: &[Val]) {
+    for (agg, spec) in aggs.iter_mut().zip(specs) {
+        let v = spec.arg.as_ref().map(|a| eval(&Env::new(graph, binding, params), a));
+        agg.step(v);
+    }
+}
+
+/// A streaming projection: accepts bindings one at a time (folding aggregates
+/// incrementally; never storing the full input), then `finish`es to result rows.
+struct ProjAccum<'p> {
+    proj: &'p CProjection,
+    /// Whether grouping keys exist (some non-aggregate item). When false but
+    /// aggregating, it's a single global group (no map, no key string).
+    grouped: bool,
+    /// Non-aggregating: projected rows (+ ORDER BY keys).
+    rows: Vec<(Binding, Vec<Val>)>,
+    /// Global aggregate (no group keys): one running accumulator set.
+    global: Option<(Binding, Vec<Agg>)>,
+    /// Grouped aggregate: group key -> (rep binding, agg states), first-seen order.
+    group_order: Vec<String>,
+    groups: HashMap<String, (Binding, Vec<Agg>)>,
+    distinct_seen: HashSet<String>,
+    /// Reused scratch for building a group key (no per-row String alloc on hits).
+    key_buf: String,
+}
+
+impl<'p> ProjAccum<'p> {
+    fn new(proj: &'p CProjection) -> Self {
+        ProjAccum {
+            proj,
+            grouped: proj.aggregating && proj.items.iter().any(|i| !i.is_agg),
+            rows: Vec::new(),
+            global: None,
+            group_order: Vec::new(),
+            groups: HashMap::new(),
+            distinct_seen: HashSet::new(),
+            key_buf: String::new(),
+        }
+    }
+
+    fn project_row(&self, graph: &Graph, input: &Binding, params: &[Val], agg_values: Option<&[Val]>) -> Binding {
+        let proj = self.proj;
+        let mut out = Binding(vec![None; proj.out_len]);
+        if proj.star {
+            for (i, &islot) in proj.star_cols.iter().enumerate() {
+                if let Some(v) = input.get(islot) {
+                    out.0[i] = Some(v.clone());
+                }
+            }
+        } else {
+            let env = Env { graph, binding: input, params, group: None, agg_values };
+            for (i, item) in proj.items.iter().enumerate() {
+                out.0[i] = Some(eval(&env, &item.expr));
+            }
+        }
+        out
+    }
+
+    fn sort_keys(&self, graph: &Graph, input: &Binding, projected: &Binding, params: &[Val], agg_values: Option<&[Val]>) -> Vec<Val> {
+        let proj = self.proj;
+        if proj.order_by.is_empty() {
+            return Vec::new();
+        }
+        let mut sort_binding = projected.clone();
+        for &islot in &proj.order_overlay {
+            sort_binding.0.push(input.get(islot).cloned());
+        }
+        let env = Env { graph, binding: &sort_binding, params, group: None, agg_values };
+        proj.order_by.iter().map(|s| eval(&env, &s.expr)).collect()
+    }
+
+    /// Accept one input binding. Returns `false` to request a stop (streamable
+    /// LIMIT: non-aggregating, no ORDER BY, enough rows collected).
+    fn accept(&mut self, graph: &Graph, binding: &Binding, params: &[Val]) -> bool {
+        let proj = self.proj;
+        if proj.aggregating {
+            if !self.grouped {
+                // Global aggregate: one accumulator set, no key/map per row.
+                let entry = self
+                    .global
+                    .get_or_insert_with(|| (binding.clone(), proj.aggs.iter().map(Agg::new).collect()));
+                step_aggs(&mut entry.1, &proj.aggs, graph, binding, params);
+                return true;
+            }
+            // Build the group key into the reused buffer.
+            self.key_buf.clear();
+            {
+                let env = Env::new(graph, binding, params);
+                for item in proj.items.iter().filter(|i| !i.is_agg) {
+                    val_key(&eval(&env, &item.expr), &mut self.key_buf);
+                    self.key_buf.push('\u{1}');
+                }
+            }
+            // get_mut by &str avoids allocating the key on a group hit (the
+            // common case); only a new group clones the key.
+            if !self.groups.contains_key(self.key_buf.as_str()) {
+                self.group_order.push(self.key_buf.clone());
+                self.groups
+                    .insert(self.key_buf.clone(), (binding.clone(), proj.aggs.iter().map(Agg::new).collect()));
+            }
+            let entry = self.groups.get_mut(self.key_buf.as_str()).unwrap();
+            step_aggs(&mut entry.1, &proj.aggs, graph, binding, params);
+            return true;
+        }
+        // Non-aggregating: project the row now (no full-binding clone retained).
+        let projected = self.project_row(graph, binding, params, None);
+        if proj.distinct && !self.distinct_seen.insert(row_key(&projected)) {
+            return true;
+        }
+        let keys = self.sort_keys(graph, binding, &projected, params, None);
+        self.rows.push((projected, keys));
+        // Streamable LIMIT: with no ORDER BY, match order is result order.
+        if proj.order_by.is_empty() {
+            if let Some(limit) = proj.limit {
+                if self.rows.len() >= proj.skip.unwrap_or(0) + limit {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    fn finish(mut self, graph: &Graph, params: &[Val]) -> Vec<Binding> {
+        let proj = self.proj;
+        if proj.aggregating {
+            if !self.grouped {
+                // Global aggregate always emits exactly one row (0/null over no input).
+                let (rep, aggs) = self
+                    .global
+                    .take()
+                    .unwrap_or_else(|| (Binding::default(), proj.aggs.iter().map(Agg::new).collect()));
+                let agg_values: Vec<Val> = aggs.into_iter().map(Agg::finish).collect();
+                let projected = self.project_row(graph, &rep, params, Some(&agg_values));
+                let keys = self.sort_keys(graph, &rep, &projected, params, Some(&agg_values));
+                self.rows.push((projected, keys));
+            } else {
+                for key in &self.group_order {
+                    let (rep, aggs) = self.groups.remove(key).unwrap();
+                    let agg_values: Vec<Val> = aggs.into_iter().map(Agg::finish).collect();
+                    let projected = self.project_row(graph, &rep, params, Some(&agg_values));
+                    let keys = self.sort_keys(graph, &rep, &projected, params, Some(&agg_values));
+                    self.rows.push((projected, keys));
+                }
+                if proj.distinct {
+                    let mut seen = HashSet::new();
+                    self.rows.retain(|(b, _)| seen.insert(row_key(b)));
+                }
+            }
+        }
+        if !proj.order_by.is_empty() {
+            self.rows.sort_by(|a, b| {
+                for (i, s) in proj.order_by.iter().enumerate() {
+                    let o = compare_sort(&a.1[i], &b.1[i], s.descending, s.nulls_first);
+                    if o != Ordering::Equal {
+                        return o;
+                    }
+                }
+                Ordering::Equal
+            });
+        }
+        let start = proj.skip.unwrap_or(0);
+        let mut rows: Vec<Binding> = self.rows.into_iter().map(|(b, _)| b).skip(start).collect();
+        if let Some(n) = proj.limit {
+            rows.truncate(n);
+        }
+        rows
+    }
+}
+
+/// Project the binding stream from `incoming × pending matches` (streamed) into
+/// `proj`, returning result rows. The hot path: no intermediate `Vec<Binding>`.
+fn project_matches(
+    graph: &Graph,
+    incoming: &[Binding],
+    matches: &[&CClause],
+    proj: &CProjection,
+    params: &[Val],
+) -> Vec<Binding> {
+    let mut acc = ProjAccum::new(proj);
+    for inb in incoming {
+        let mut work = inb.clone();
+        let cont = drive_matches(graph, matches, 0, &mut work, params, &mut |b| acc.accept(graph, b, params));
+        if !cont {
             break;
         }
     }
-    out
+    acc.finish(graph, params)
 }
 
-/// The output row cap a terminal `RETURN ... LIMIT n` allows pushing down into
-/// matching — `Some(skip + limit)` only when the projection is streamable and
-/// every earlier clause is a plain MATCH.
-fn terminal_cap(linear: &CLinear) -> Option<usize> {
-    let (last, rest) = linear.clauses.split_last()?;
-    let CClause::Return(proj) = last else { return None };
-    if proj.aggregating || proj.distinct || !proj.order_by.is_empty() {
-        return None;
+/// Materialize the binding stream from `incoming × pending matches` (needed
+/// before a write clause, which mutates per row).
+fn materialize_matches(graph: &Graph, incoming: &[Binding], matches: &[&CClause], params: &[Val]) -> Vec<Binding> {
+    let mut out = Vec::new();
+    for inb in incoming {
+        let mut work = inb.clone();
+        drive_matches(graph, matches, 0, &mut work, params, &mut |b| {
+            out.push(b.clone());
+            true
+        });
     }
-    let limit = proj.limit?;
-    if !rest.iter().all(|c| matches!(c, CClause::Match { .. })) {
-        return None;
-    }
-    Some(proj.skip.unwrap_or(0) + limit)
+    out
 }
 
 // --- projection --------------------------------------------------------------
@@ -966,155 +1244,59 @@ fn compare_sort(a: &Val, b: &Val, descending: bool, nulls_first: Option<bool>) -
     }
 }
 
-fn apply_projection(proj: &CProjection, bindings: Vec<Binding>, params: &[Val], graph: &Graph) -> Vec<Binding> {
-    let order_n = proj.order_by.len();
-
-    // (projected binding, sort keys)
-    let mut keyed: Vec<(Binding, Vec<Val>)> = Vec::new();
-
-    let project_one = |input: &Binding, group: Option<&[Binding]>| -> Binding {
-        let mut out = Binding(vec![None; proj.out_len]);
-        if proj.star {
-            for (i, &islot) in proj.star_cols.iter().enumerate() {
-                if let Some(v) = input.get(islot) {
-                    out.0[i] = Some(v.clone());
-                }
-            }
-        } else {
-            let env = Env { graph, binding: input, params, group };
-            for (i, item) in proj.items.iter().enumerate() {
-                out.0[i] = Some(eval(&env, &item.expr));
-            }
-        }
-        out
-    };
-    let sort_keys = |input: &Binding, projected: &Binding, group: Option<&[Binding]>| -> Vec<Val> {
-        if order_n == 0 {
-            return Vec::new();
-        }
-        // ORDER BY scope = output slots, then the overlaid input slots; the input
-        // values are appended after the output so a sort key can reference an
-        // input variable that isn't an output column.
-        let mut sort_binding = projected.clone();
-        for &islot in &proj.order_overlay {
-            sort_binding.0.push(input.get(islot).cloned());
-        }
-        let env = Env { graph, binding: &sort_binding, params, group };
-        proj.order_by.iter().map(|s| eval(&env, &s.expr)).collect()
-    };
-
-    if proj.aggregating {
-        let group_key_exprs: Vec<&CExpr> =
-            proj.items.iter().filter(|i| !i.is_agg).map(|i| &i.expr).collect();
-        let mut order_keys: Vec<String> = Vec::new();
-        let mut groups: HashMap<String, Vec<Binding>> = HashMap::new();
-        for b in bindings {
-            let env = Env { graph, binding: &b, params, group: None };
-            let mut key = String::new();
-            for e in &group_key_exprs {
-                val_key(&eval(&env, e), &mut key);
-                key.push('\u{1}');
-            }
-            if !groups.contains_key(&key) {
-                order_keys.push(key.clone());
-                groups.insert(key.clone(), Vec::new());
-            }
-            groups.get_mut(&key).unwrap().push(b);
-        }
-        // No rows but a global aggregate (no group keys) → one empty group.
-        if groups.is_empty() && group_key_exprs.is_empty() {
-            order_keys.push(String::new());
-            groups.insert(String::new(), Vec::new());
-        }
-        for key in &order_keys {
-            let group = &groups[key];
-            let rep = group.first().cloned().unwrap_or_default();
-            let projected = project_one(&rep, Some(group));
-            let keys = sort_keys(&rep, &projected, Some(group));
-            keyed.push((projected, keys));
-        }
-    } else {
-        for b in bindings {
-            let projected = project_one(&b, None);
-            let keys = sort_keys(&b, &projected, None);
-            keyed.push((projected, keys));
-        }
-    }
-
-    if proj.distinct {
-        let mut seen = HashSet::new();
-        keyed.retain(|(b, _)| seen.insert(row_key(b)));
-    }
-
-    if order_n > 0 {
-        keyed.sort_by(|a, b| {
-            for (i, s) in proj.order_by.iter().enumerate() {
-                let o = compare_sort(&a.1[i], &b.1[i], s.descending, s.nulls_first);
-                if o != Ordering::Equal {
-                    return o;
-                }
-            }
-            Ordering::Equal
-        });
-    }
-
-    let start = proj.skip.unwrap_or(0);
-    let mut rows: Vec<Binding> = keyed.into_iter().map(|(b, _)| b).skip(start).collect();
-    if let Some(n) = proj.limit {
-        rows.truncate(n);
-    }
-    rows
-}
-
 // --- linear query & set ops --------------------------------------------------
 
 fn run_linear(linear: &CLinear, graph: &mut Graph, params: &[Val]) -> Result<Vec<Binding>, String> {
-    let cap = terminal_cap(linear);
-    let last_match = linear
-        .clauses
-        .iter()
-        .rposition(|c| matches!(c, CClause::Match { .. }))
-        .filter(|_| cap.is_some());
-
+    // `bindings` is the materialized row set at the last barrier; `pending` are
+    // MATCH clauses deferred so a projection (or write) can stream them directly.
     let mut bindings: Vec<Binding> = vec![Binding::default()];
-    for (i, clause) in linear.clauses.iter().enumerate() {
+    let mut pending: Vec<&CClause> = Vec::new();
+
+    // Force deferred matches into `bindings` (needed before a write mutates).
+    let flush = |graph: &Graph, bindings: &mut Vec<Binding>, pending: &mut Vec<&CClause>, params: &[Val]| {
+        if !pending.is_empty() {
+            *bindings = materialize_matches(graph, bindings, pending, params);
+            pending.clear();
+        }
+    };
+
+    for clause in &linear.clauses {
         match clause {
-            CClause::Match { optional, patterns, where_, scope_len } => {
-                let clause_cap = if Some(i) == last_match { cap } else { None };
-                bindings = run_match(graph, *optional, patterns, where_.as_ref(), bindings, params, clause_cap, *scope_len);
-            }
+            CClause::Match { .. } => pending.push(clause), // defer; consumed at a barrier
             CClause::With { projection, where_ } => {
-                let projected = apply_projection(projection, bindings, params, graph);
+                let projected = project_matches(graph, &bindings, &pending, projection, params);
+                pending.clear();
                 bindings = match where_ {
                     None => projected,
                     Some(expr) => projected
                         .into_iter()
-                        .filter(|b| {
-                            let env = Env { graph, binding: b, params, group: None };
-                            as_truth(&eval(&env, expr)) == Some(true)
-                        })
+                        .filter(|b| as_truth(&eval(&Env::new(graph, b, params), expr)) == Some(true))
                         .collect(),
                 };
             }
             CClause::Return(proj) => {
-                return Ok(apply_projection(proj, bindings, params, graph));
+                return Ok(project_matches(graph, &bindings, &pending, proj, params));
             }
             CClause::Finish => return Ok(Vec::new()),
             // Mutations run eagerly, exactly once per binding.
             CClause::Insert(patterns) => {
+                flush(graph, &mut bindings, &mut pending, params);
                 bindings = bindings.iter().map(|b| run_insert(graph, patterns, b, params)).collect();
             }
             CClause::Set(items) => {
+                flush(graph, &mut bindings, &mut pending, params);
                 for b in &bindings {
                     run_set(graph, items, b, params);
                 }
             }
             CClause::Remove(items) => {
+                flush(graph, &mut bindings, &mut pending, params);
                 for b in &bindings {
                     run_remove(graph, items, b);
                 }
             }
             CClause::Delete { detach, targets } => {
+                flush(graph, &mut bindings, &mut pending, params);
                 for b in &bindings {
                     run_delete(graph, *detach, targets, b, params)?;
                 }
@@ -1141,7 +1323,7 @@ fn labels_of(expr: Option<&LabelExpr>) -> Vec<String> {
 
 /// Evaluate a pattern property map to concrete core `Value`s (for create/set).
 fn eval_props(graph: &Graph, props: &[CPropConstraint], binding: &Binding, params: &[Val]) -> Vec<(String, Value)> {
-    let env = Env { graph, binding, params, group: None };
+    let env = Env::new(graph, binding, params);
     props.iter().map(|pc| (pc.key.clone(), val_to_value(graph, &eval(&env, &pc.value)))).collect()
 }
 
@@ -1186,7 +1368,7 @@ fn run_set(graph: &mut Graph, items: &[CSetItem], binding: &Binding, params: &[V
             CSetItem::Prop { var_slot, key, value } => {
                 let Some(el) = binding.get(*var_slot).cloned() else { continue };
                 let v = {
-                    let env = Env { graph, binding, params, group: None };
+                    let env = Env::new(graph, binding, params);
                     val_to_value(graph, &eval(&env, value))
                 };
                 match el {
@@ -1224,7 +1406,7 @@ fn run_remove(graph: &mut Graph, items: &[CRemoveItem], binding: &Binding) {
 fn run_delete(graph: &mut Graph, detach: bool, targets: &[CExpr], binding: &Binding, params: &[Val]) -> Result<(), String> {
     for target in targets {
         let v = {
-            let env = Env { graph, binding, params, group: None };
+            let env = Env::new(graph, binding, params);
             eval(&env, target)
         };
         match v {

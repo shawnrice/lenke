@@ -149,6 +149,19 @@ pub enum CExpr {
     Case { subject: Option<Box<CExpr>>, whens: Vec<(CExpr, CExpr)>, else_: Option<Box<CExpr>> },
     Scalar { func: ScalarFn, args: Vec<CExpr> },
     Aggregate { func: AggFn, arg: Option<Box<CExpr>>, distinct: bool, star: bool },
+    /// Reference to a projection's `i`th extracted aggregate (its folded value).
+    /// Projection/ORDER BY expressions have their aggregates lifted out into
+    /// `CProjection::aggs` and replaced by these, so a group folds incrementally.
+    AggRef(usize),
+}
+
+/// An aggregate lifted out of a projection expression (folded once per group).
+#[derive(Debug, Clone)]
+pub struct CAgg {
+    pub func: AggFn,
+    pub arg: Option<CExpr>,
+    pub distinct: bool,
+    pub star: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -209,6 +222,9 @@ pub struct CProjection {
     pub items: Vec<CReturnItem>,
     /// True when any item aggregates → implicit grouping (precomputed).
     pub aggregating: bool,
+    /// Aggregates lifted out of the item/ORDER BY expressions, folded per group;
+    /// the expressions reference them via [`CExpr::AggRef`].
+    pub aggs: Vec<CAgg>,
     /// Output slot count (= column count). Output slot `i` holds column `i`.
     pub out_len: usize,
     /// Output column names, indexed by output slot.
@@ -282,6 +298,43 @@ fn has_aggregate(expr: &CExpr) -> bool {
                 || else_.as_deref().is_some_and(has_aggregate)
         }
         _ => false,
+    }
+}
+
+/// Lift aggregate sub-expressions out of `expr` into `aggs`, replacing each with
+/// an [`CExpr::AggRef`]. An aggregate's own argument is left intact (a nested
+/// aggregate is invalid), so this never recurses into an `Aggregate`.
+fn extract_aggs(expr: CExpr, aggs: &mut Vec<CAgg>) -> CExpr {
+    let b = |e: Box<CExpr>, aggs: &mut Vec<CAgg>| Box::new(extract_aggs(*e, aggs));
+    match expr {
+        CExpr::Aggregate { func, arg, distinct, star } => {
+            let idx = aggs.len();
+            aggs.push(CAgg { func, arg: arg.map(|a| *a), distinct, star });
+            CExpr::AggRef(idx)
+        }
+        CExpr::List(items) => CExpr::List(items.into_iter().map(|e| extract_aggs(e, aggs)).collect()),
+        CExpr::Compare { op, left, right } => CExpr::Compare { op, left: b(left, aggs), right: b(right, aggs) },
+        CExpr::Arith { op, left, right } => CExpr::Arith { op, left: b(left, aggs), right: b(right, aggs) },
+        CExpr::Concat { left, right } => CExpr::Concat { left: b(left, aggs), right: b(right, aggs) },
+        CExpr::Neg(e) => CExpr::Neg(b(e, aggs)),
+        CExpr::And(l, r) => CExpr::And(b(l, aggs), b(r, aggs)),
+        CExpr::Or(l, r) => CExpr::Or(b(l, aggs), b(r, aggs)),
+        CExpr::Xor(l, r) => CExpr::Xor(b(l, aggs), b(r, aggs)),
+        CExpr::Not(e) => CExpr::Not(b(e, aggs)),
+        CExpr::IsNull { expr, negated } => CExpr::IsNull { expr: b(expr, aggs), negated },
+        CExpr::IsTruth { expr, truth, negated } => CExpr::IsTruth { expr: b(expr, aggs), truth, negated },
+        CExpr::IsLabeled { expr, label, negated } => CExpr::IsLabeled { expr: b(expr, aggs), label, negated },
+        CExpr::In { expr, list, negated } => CExpr::In { expr: b(expr, aggs), list: b(list, aggs), negated },
+        CExpr::Case { subject, whens, else_ } => CExpr::Case {
+            subject: subject.map(|s| b(s, aggs)),
+            whens: whens.into_iter().map(|(w, t)| (extract_aggs(w, aggs), extract_aggs(t, aggs))).collect(),
+            else_: else_.map(|e| b(e, aggs)),
+        },
+        CExpr::Scalar { func, args } => {
+            CExpr::Scalar { func, args: args.into_iter().map(|e| extract_aggs(e, aggs)).collect() }
+        }
+        // leaves and the (correlated) sub-queries carry no grouping aggregate
+        other => other,
     }
 }
 
@@ -464,6 +517,7 @@ impl Lowerer {
     /// (`RETURN`) leaves the scope as-is (nothing follows).
     fn projection(&mut self, p: &Projection, terminal: bool) -> CProjection {
         let input_scope = self.scope.clone();
+        let mut aggs: Vec<CAgg> = Vec::new();
         let items: Vec<CReturnItem> = p
             .items
             .iter()
@@ -471,6 +525,8 @@ impl Lowerer {
                 let expr = self.expr(&it.expr);
                 let is_agg = has_aggregate(&expr);
                 let name = it.alias.clone().unwrap_or_else(|| column_name(&it.expr));
+                // Lift aggregates out of aggregating items so groups fold incrementally.
+                let expr = extract_aggs(expr, &mut aggs);
                 CReturnItem { expr, name, is_agg }
             })
             .collect();
@@ -496,7 +552,11 @@ impl Lowerer {
         let order_by = p
             .order_by
             .iter()
-            .map(|s| CSortItem { expr: self.expr(&s.expr), descending: s.descending, nulls_first: s.nulls_first })
+            .map(|s| CSortItem {
+                expr: extract_aggs(self.expr(&s.expr), &mut aggs),
+                descending: s.descending,
+                nulls_first: s.nulls_first,
+            })
             .collect();
 
         self.scope = if terminal { input_scope } else { out_names.clone() };
@@ -505,6 +565,7 @@ impl Lowerer {
             distinct: p.distinct,
             items,
             aggregating,
+            aggs,
             out_len,
             out_names,
             star_cols,
