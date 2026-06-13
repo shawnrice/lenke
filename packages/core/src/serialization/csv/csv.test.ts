@@ -1,6 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '../../core/Graph.js';
+import { chunked, collect } from '../streaming.js';
+
+import type { ChunkSource } from '../streaming.js';
 import { graphContentEqual, randomLpgGraph } from '../testkit.js';
 import {
   csvCodec,
@@ -10,6 +13,7 @@ import {
   encode,
   encodeEdges,
   encodeNodes,
+  encodeStream,
 } from './index.js';
 
 const roundTripNodes = (graph: Graph): Graph => decodeNodes(encodeNodes(graph), new Graph());
@@ -237,5 +241,83 @@ describe('throughput smoke test', () => {
     // eslint-disable-next-line no-console
     console.log(`csv throughput: 10k elements encode+decode in ${elapsed.toFixed(1)}ms`);
     expect(elapsed).toBeLessThan(2000);
+  });
+});
+
+describe('streaming', () => {
+  test('decodeStream(encodeStream(g)) round-trips over 200 seeds', async () => {
+    for (let seed = 0; seed < 200; seed += 1) {
+      const original = randomLpgGraph(seed);
+      // A generator IS a ChunkSource — pipe it straight into decode.
+      const back = await csvCodec.decodeStream!(encodeStream(original), new Graph());
+      if (!graphContentEqual(back, original)) {
+        throw new Error(`stream round-trip failed for seed ${seed}`);
+      }
+    }
+    expect(true).toBe(true);
+  });
+
+  test('decode from adversarial tiny chunks equals non-streaming decode', async () => {
+    const g = randomLpgGraph(42);
+    const text = await collect(encodeStream(g));
+    const streamed = await csvCodec.decodeStream!(chunked(text, 3), new Graph());
+    const batched = decode(encode(g), new Graph());
+    expect(graphContentEqual(streamed, g)).toBe(true);
+    expect(graphContentEqual(streamed, batched)).toBe(true);
+  });
+
+  test('a multi-byte (emoji) value fed byte-by-byte as Uint8Array round-trips', async () => {
+    const g = new Graph();
+    g.addVertex({ id: 'n1', labels: ['Emoji'], properties: { face: '🦊 fox 日本語', tag: '✓' } });
+
+    const text = await collect(encodeStream(g));
+    const bytes = new TextEncoder().encode(text);
+    const byteByByte: ChunkSource = {
+      async *[Symbol.asyncIterator]() {
+        for (const b of bytes) {
+          yield new Uint8Array([b]);
+        }
+      },
+    };
+
+    const back = await csvCodec.decodeStream!(byteByByte, new Graph());
+    expect(graphContentEqual(back, g)).toBe(true);
+    expect(back.getVertexById('n1')!.properties.face).toBe('🦊 fox 日本語');
+    expect(back.getVertexById('n1')!.properties.tag).toBe('✓');
+  });
+
+  test('large-graph pipe (25k nodes + 25k edges) through encodeStream → decodeStream', async () => {
+    const g = new Graph();
+    g.disableEvents();
+    const nodeCount = 25000;
+    const verts = [];
+    for (let i = 0; i < nodeCount; i += 1) {
+      verts.push(
+        g.addVertex({
+          id: `n${i}`,
+          labels: i % 2 === 0 ? ['Even', 'Num'] : ['Odd'],
+          properties: { idx: i, ratio: i / 3, label: `node-${i}`, tags: ['a', 'b'] },
+        }),
+      );
+    }
+    for (let i = 0; i < 25000; i += 1) {
+      g.addEdge({
+        id: `e${i}`,
+        from: verts[i % nodeCount]!,
+        to: verts[(i * 7 + 1) % nodeCount]!,
+        labels: ['LINK'],
+        properties: { w: i * 0.5 },
+      });
+    }
+    g.enableEvents();
+
+    const start = performance.now();
+    const back = await csvCodec.decodeStream!(encodeStream(g), new Graph());
+    const elapsed = performance.now() - start;
+
+    expect(back.vertices.size).toBe(nodeCount);
+    expect(back.edges.size).toBe(25000);
+    // eslint-disable-next-line no-console
+    console.log(`csv stream throughput: 50k elements encode+decode in ${elapsed.toFixed(0)}ms`);
   });
 });

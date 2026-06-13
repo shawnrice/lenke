@@ -2,6 +2,7 @@ import type { Graph } from '../core/Graph.js';
 import type { Codec } from './codec.js';
 import { csvCodec } from './csv/index.js';
 import { graphsonCodec } from './graphson/index.js';
+import { ndjsonCodec } from './ndjson/index.js';
 import { pgJsonCodec } from './pg-json/index.js';
 import { pgTextCodec } from './pg-text/index.js';
 import type { ChunkSource } from './streaming.js';
@@ -14,6 +15,7 @@ export { linesFromChunks, collect, chunked } from './streaming.js';
 
 export { pgJsonCodec } from './pg-json/index.js';
 export { pgTextCodec } from './pg-text/index.js';
+export { ndjsonCodec } from './ndjson/index.js';
 export { graphsonCodec } from './graphson/index.js';
 export { csvCodec } from './csv/index.js';
 
@@ -21,6 +23,7 @@ export { csvCodec } from './csv/index.js';
 export const codecs: Readonly<Record<string, Codec>> = {
   'pg-json': pgJsonCodec,
   'pg-text': pgTextCodec,
+  ndjson: ndjsonCodec,
   graphson: graphsonCodec,
   csv: csvCodec,
 };

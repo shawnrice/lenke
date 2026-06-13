@@ -2,7 +2,10 @@ import { normalizeBag } from '../value.js';
 
 import type { Graph } from '../../core/Graph.js';
 import type { Codec } from '../codec.js';
+import type { ChunkSource } from '../streaming.js';
 import type { PropertyValue } from '../value.js';
+
+import { linesFromChunks } from '../streaming.js';
 
 /**
  * CSV codec for the core LPG model — a Neo4j-`admin-import`-style pair of typed
@@ -491,6 +494,66 @@ const buildRow = (
 };
 
 // ---------------------------------------------------------------------------
+// Header parsing + per-row decoding (shared by batch and streaming decode)
+// ---------------------------------------------------------------------------
+
+type ParsedHeader = { key: string; type: ColumnType };
+
+/** Parse the property columns out of a header row, dropping `fixedCount` leading columns. */
+const propColsFromHeader = (headerRow: Cell[], fixedCount: number): ParsedHeader[] =>
+  headerRow.slice(fixedCount).map((cell) => parseHeader(cell.text));
+
+/** Decode the property columns of one parsed row (after `fixedCount` fixed columns). */
+const propsFromRow = (
+  row: Cell[],
+  propCols: readonly ParsedHeader[],
+  fixedCount: number,
+): Record<string, PropertyValue> => {
+  const properties: Record<string, PropertyValue> = {};
+  for (let c = 0; c < propCols.length; c += 1) {
+    const cell = row[c + fixedCount];
+    if (cell === undefined) {
+      continue;
+    }
+    const { key, type } = propCols[c]!;
+    const decoded = decodeCell(type, cell);
+    if (decoded !== ABSENT) {
+      properties[key] = decoded;
+    }
+  }
+  return properties;
+};
+
+const splitLabels = (text: string): string[] => (text === '' ? [] : text.split(LIST_SEP));
+
+/** Add one vertex from a parsed node row. */
+const applyNodeRow = (graph: Graph, row: Cell[], propCols: readonly ParsedHeader[]): void => {
+  graph.addVertex({
+    id: row[0]!.text,
+    labels: splitLabels(row[1]!.text),
+    properties: propsFromRow(row, propCols, 2),
+  });
+};
+
+/** Add one edge from a parsed edge row, creating endpoints on demand. */
+const applyEdgeRow = (graph: Graph, row: Cell[], propCols: readonly ParsedHeader[]): void => {
+  const fromId = row[1]!.text;
+  const toId = row[2]!.text;
+  // Endpoints are created if missing so the edge stream can be decoded without a
+  // prior node-decode pass having materialized every referenced vertex.
+  const from =
+    graph.getVertexById(fromId) ?? graph.addVertex({ id: fromId, labels: [], properties: {} });
+  const to = graph.getVertexById(toId) ?? graph.addVertex({ id: toId, labels: [], properties: {} });
+  graph.addEdge({
+    id: row[0]!.text,
+    from,
+    to,
+    labels: splitLabels(row[3]!.text),
+    properties: propsFromRow(row, propCols, 4),
+  });
+};
+
+// ---------------------------------------------------------------------------
 // Public natural API: nodes
 // ---------------------------------------------------------------------------
 
@@ -520,9 +583,7 @@ export const decodeNodes = (csv: string, graph: Graph): Graph => {
   if (rows.length === 0) {
     return graph;
   }
-  const headerRow = rows[0]!;
-  // Columns after id + :LABEL are property columns.
-  const propCols = headerRow.slice(2).map((cell) => parseHeader(cell.text));
+  const propCols = propColsFromHeader(rows[0]!, 2);
 
   const eventsEnabled = graph.eventsEnabled();
   if (eventsEnabled) {
@@ -530,23 +591,7 @@ export const decodeNodes = (csv: string, graph: Graph): Graph => {
   }
 
   for (let r = 1; r < rows.length; r += 1) {
-    const row = rows[r]!;
-    const id = row[0]!.text;
-    const labelCell = row[1]!;
-    const labels = labelCell.text === '' ? [] : labelCell.text.split(LIST_SEP);
-    const properties: Record<string, PropertyValue> = {};
-    for (let c = 0; c < propCols.length; c += 1) {
-      const cell = row[c + 2];
-      if (cell === undefined) {
-        continue;
-      }
-      const { key, type } = propCols[c]!;
-      const decoded = decodeCell(type, cell);
-      if (decoded !== ABSENT) {
-        properties[key] = decoded;
-      }
-    }
-    graph.addVertex({ id, labels, properties });
+    applyNodeRow(graph, rows[r]!, propCols);
   }
 
   if (eventsEnabled) {
@@ -595,8 +640,7 @@ export const decodeEdges = (csv: string, graph: Graph): Graph => {
   if (rows.length === 0) {
     return graph;
   }
-  const headerRow = rows[0]!;
-  const propCols = headerRow.slice(4).map((cell) => parseHeader(cell.text));
+  const propCols = propColsFromHeader(rows[0]!, 4);
 
   const eventsEnabled = graph.eventsEnabled();
   if (eventsEnabled) {
@@ -605,33 +649,183 @@ export const decodeEdges = (csv: string, graph: Graph): Graph => {
 
   for (let r = 1; r < rows.length; r += 1) {
     const row = rows[r]!;
-    const id = row[0]!.text;
     const fromId = row[1]!.text;
     const toId = row[2]!.text;
-    const typeCell = row[3]!;
-    const labels = typeCell.text === '' ? [] : typeCell.text.split(LIST_SEP);
-
-    const from = graph.getVertexById(fromId);
-    const to = graph.getVertexById(toId);
-    if (!from || !to) {
+    // Batch decode is strict: endpoints must already exist (nodes were decoded
+    // first). The streaming edge decoder, by contrast, creates them on demand.
+    if (!graph.getVertexById(fromId) || !graph.getVertexById(toId)) {
       throw new Error(`csv: edge references a non-existent vertex (from=${fromId}, to=${toId})`);
     }
-
-    const properties: Record<string, PropertyValue> = {};
-    for (let c = 0; c < propCols.length; c += 1) {
-      const cell = row[c + 4];
-      if (cell === undefined) {
-        continue;
-      }
-      const { key, type } = propCols[c]!;
-      const decoded = decodeCell(type, cell);
-      if (decoded !== ABSENT) {
-        properties[key] = decoded;
-      }
-    }
-    graph.addEdge({ id, from, to, labels, properties });
+    applyEdgeRow(graph, row, propCols);
   }
 
+  if (eventsEnabled) {
+    graph.enableEvents();
+    graph.snapshot();
+  }
+  return graph;
+};
+
+// ---------------------------------------------------------------------------
+// Streaming (slurp/dump a large graph without holding the whole CSV in memory)
+// ---------------------------------------------------------------------------
+
+/** Rows per emitted chunk: a batch is built with array-push + `join('\n')`. */
+const BATCH = 1024;
+
+const nodeHeaderLine = (keys: readonly string[], types: Map<string, ColumnType>): string =>
+  ['id', ':LABEL', ...keys.map((k) => columnHeader(k, types.get(k)!))].join(',');
+
+const edgeHeaderLine = (keys: readonly string[], types: Map<string, ColumnType>): string =>
+  ['id', ':START_ID', ':END_ID', ':TYPE', ...keys.map((k) => columnHeader(k, types.get(k)!))].join(
+    ',',
+  );
+
+/**
+ * Stream the typed nodes CSV. The header is the key-union over *all* vertices,
+ * so one upfront pass normalizes every bag to compute it; rows are then yielded
+ * in batches of `BATCH`, each batch joined with `\n`. A trailing newline ends
+ * every yielded chunk so chunks concatenate into a valid line-oriented document.
+ */
+export async function* encodeNodesStream(graph: Graph): AsyncGenerator<string> {
+  const bags: Record<string, PropertyValue>[] = [];
+  for (const vertex of graph.vertices) {
+    bags.push(normalizeBag(vertex.properties));
+  }
+  const { keys, types } = computeColumns(bags);
+  yield `${nodeHeaderLine(keys, types)}\n`;
+
+  let batch: string[] = [];
+  let i = 0;
+  for (const vertex of graph.vertices) {
+    batch.push(buildRow([vertex.id, [...vertex.labels].join(LIST_SEP)], keys, types, bags[i]!));
+    i += 1;
+    if (batch.length >= BATCH) {
+      yield `${batch.join('\n')}\n`;
+      batch = [];
+    }
+  }
+  if (batch.length > 0) {
+    yield `${batch.join('\n')}\n`;
+  }
+}
+
+/** Stream the typed edges CSV (same batching strategy as {@link encodeNodesStream}). */
+export async function* encodeEdgesStream(graph: Graph): AsyncGenerator<string> {
+  const bags: Record<string, PropertyValue>[] = [];
+  for (const edge of graph.edges) {
+    bags.push(normalizeBag(edge.properties));
+  }
+  const { keys, types } = computeColumns(bags);
+  yield `${edgeHeaderLine(keys, types)}\n`;
+
+  let batch: string[] = [];
+  let i = 0;
+  for (const edge of graph.edges) {
+    batch.push(
+      buildRow(
+        [edge.id, edge.from.id, edge.to.id, [...edge.labels].join(LIST_SEP)],
+        keys,
+        types,
+        bags[i]!,
+      ),
+    );
+    i += 1;
+    if (batch.length >= BATCH) {
+      yield `${batch.join('\n')}\n`;
+      batch = [];
+    }
+  }
+  if (batch.length > 0) {
+    yield `${batch.join('\n')}\n`;
+  }
+}
+
+/**
+ * A CSV record may span several physical lines when a quoted field contains an
+ * embedded newline. `linesFromChunks` splits blindly on `\n`, so we reassemble:
+ * a record is complete once its accumulated text holds an even number of
+ * double-quotes (a `""` escaped quote contributes two and stays even). This is
+ * the only place streaming differs from the batch parser's whole-string scan.
+ */
+const countQuotes = (s: string): number => {
+  let n = 0;
+  for (const ch of s) {
+    if (ch === '"') {
+      n += 1;
+    }
+  }
+  return n;
+};
+
+/** Yield complete CSV records (each a single `parseCsv`-able string) from raw lines. */
+const recordsFromLines = async function* (lines: AsyncGenerator<string>): AsyncGenerator<string> {
+  let pending = '';
+  let quotes = 0;
+  for await (const line of lines) {
+    pending = pending === '' ? line : `${pending}\n${line}`;
+    quotes += countQuotes(line);
+    if (quotes % 2 === 0) {
+      yield pending;
+      pending = '';
+      quotes = 0;
+    }
+  }
+  if (pending !== '') {
+    yield pending;
+  }
+};
+
+const parseRow = (record: string): Cell[] => parseCsv(record)[0] ?? [];
+
+/**
+ * Decode a streamed nodes CSV into `graph`. Reads the first record as the typed
+ * header, then applies each subsequent row via `addVertex` — never buffering
+ * more than one record at a time.
+ */
+export const decodeNodesStream = async (source: ChunkSource, graph: Graph): Promise<Graph> => {
+  const eventsEnabled = graph.eventsEnabled();
+  if (eventsEnabled) {
+    graph.disableEvents();
+  }
+  let propCols: ParsedHeader[] | null = null;
+  for await (const record of recordsFromLines(linesFromChunks(source))) {
+    if (propCols === null) {
+      propCols = propColsFromHeader(parseRow(record), 2);
+      continue;
+    }
+    if (record === '') {
+      continue;
+    }
+    applyNodeRow(graph, parseRow(record), propCols);
+  }
+  if (eventsEnabled) {
+    graph.enableEvents();
+    graph.snapshot();
+  }
+  return graph;
+};
+
+/**
+ * Decode a streamed edges CSV into `graph`. Like {@link decodeNodesStream}, but
+ * applies edge rows; endpoints are created on demand if not already present.
+ */
+export const decodeEdgesStream = async (source: ChunkSource, graph: Graph): Promise<Graph> => {
+  const eventsEnabled = graph.eventsEnabled();
+  if (eventsEnabled) {
+    graph.disableEvents();
+  }
+  let propCols: ParsedHeader[] | null = null;
+  for await (const record of recordsFromLines(linesFromChunks(source))) {
+    if (propCols === null) {
+      propCols = propColsFromHeader(parseRow(record), 4);
+      continue;
+    }
+    if (record === '') {
+      continue;
+    }
+    applyEdgeRow(graph, parseRow(record), propCols);
+  }
   if (eventsEnabled) {
     graph.enableEvents();
     graph.snapshot();
@@ -645,6 +839,8 @@ export const decodeEdges = (csv: string, graph: Graph): Graph => {
 
 /** Sentinel line separating the nodes CSV from the edges CSV in the combined form. */
 const SEPARATOR = '\n=== EDGES ===\n';
+/** The sentinel as a single line (no surrounding newlines), used by the line-oriented stream. */
+const SENTINEL_LINE = '=== EDGES ===';
 
 /** Encode a graph to a single string: nodes CSV, sentinel, edges CSV. */
 export const encode = (graph: Graph): string =>
@@ -660,4 +856,62 @@ export const decode = (input: string, graph: Graph): Graph => {
   return graph;
 };
 
-export const csvCodec: Codec = { name: 'csv', encode, decode };
+/**
+ * Stream the combined single-string form: the nodes stream, then the sentinel
+ * line, then the edges stream. Each piece already ends in `\n`, so the sentinel
+ * lands on its own line between the two sub-documents.
+ */
+export async function* encodeStream(graph: Graph): AsyncGenerator<string> {
+  yield* encodeNodesStream(graph);
+  yield `${SENTINEL_LINE}\n`;
+  yield* encodeEdgesStream(graph);
+}
+
+/**
+ * Decode the combined stream incrementally over a single pass of lines: node
+ * records up to the sentinel, then the edges header and edge records — never
+ * buffering the whole input (only one CSV record at a time).
+ */
+export const decodeStream = async (source: ChunkSource, graph: Graph): Promise<Graph> => {
+  const eventsEnabled = graph.eventsEnabled();
+  if (eventsEnabled) {
+    graph.disableEvents();
+  }
+
+  const records = recordsFromLines(linesFromChunks(source));
+  let nodeCols: ParsedHeader[] | null = null;
+  let edgeCols: ParsedHeader[] | null = null;
+  let inEdges = false;
+
+  for await (const record of records) {
+    if (record === SENTINEL_LINE) {
+      inEdges = true;
+      continue;
+    }
+    if (!inEdges) {
+      if (nodeCols === null) {
+        nodeCols = propColsFromHeader(parseRow(record), 2);
+        continue;
+      }
+      if (record !== '') {
+        applyNodeRow(graph, parseRow(record), nodeCols);
+      }
+      continue;
+    }
+    if (edgeCols === null) {
+      edgeCols = propColsFromHeader(parseRow(record), 4);
+      continue;
+    }
+    if (record !== '') {
+      applyEdgeRow(graph, parseRow(record), edgeCols);
+    }
+  }
+
+  if (eventsEnabled) {
+    graph.enableEvents();
+    graph.snapshot();
+  }
+  return graph;
+};
+
+export const csvCodec: Codec = { name: 'csv', encode, decode, encodeStream, decodeStream };
