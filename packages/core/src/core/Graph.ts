@@ -42,7 +42,6 @@ export class Graph {
   edgesByLabel: Map<string, Set<Edge>>;
   edgesFromByLabel: Map<string, Map<string, Set<Edge>>>;
   edgesToByLabel: Map<string, Map<string, Set<Edge>>>;
-  edgesByVertex: Map<string, Set<Edge>>;
 
   eagerSnapshot: boolean;
 
@@ -66,7 +65,6 @@ export class Graph {
     this.edges = new Set();
     this.edgesFromByLabel = new Map();
     this.edgesToByLabel = new Map();
-    this.edgesByVertex = new Map();
     this.edgesByLabel = new Map();
 
     this.elementLabels = new Map();
@@ -185,7 +183,6 @@ export class Graph {
     next.edges = new Set(this.edges);
     next.edgesFromByLabel = new Map(this.edgesFromByLabel);
     next.edgesToByLabel = new Map(this.edgesToByLabel);
-    next.edgesByVertex = new Map(this.edgesByVertex);
     next.edgesByLabel = new Map(this.edgesByLabel);
     next.elementLabels = new Map(this.elementLabels);
     next.elementProperties = new Map(this.elementProperties);
@@ -201,7 +198,6 @@ export class Graph {
     this.edges = new Set();
     this.edgesFromByLabel = new Map();
     this.edgesToByLabel = new Map();
-    this.edgesByVertex = new Map();
     this.edgesByLabel = new Map();
     this.elementLabels = new Map();
     this.elementProperties = new Map();
@@ -293,9 +289,7 @@ export class Graph {
       return vertex;
     }
 
-    const edges = this.edgesByVertex.get(vertex.id) ?? new Set();
-
-    for (const edge of edges) {
+    for (const edge of this.incidentEdges(vertex.id)) {
       this.removeEdge(edge);
     }
 
@@ -369,17 +363,6 @@ export class Graph {
       this.indexEdgeLabel(label, edge);
     }
 
-    if (!this.edgesByVertex.has(edge.to.id)) {
-      this.edgesByVertex.set(edge.to.id, new Set());
-    }
-
-    if (!this.edgesByVertex.has(edge.from.id)) {
-      this.edgesByVertex.set(edge.from.id, new Set());
-    }
-
-    this.edgesByVertex.get(edge.to.id)?.add(edge);
-    this.edgesByVertex.get(edge.from.id)?.add(edge);
-
     return edge;
   };
 
@@ -393,9 +376,6 @@ export class Graph {
     for (const label of edge.labels) {
       this.deIndexEdgeLabel(label, edge);
     }
-
-    this.edgesByVertex.get(edge.to.id)?.delete(edge);
-    this.edgesByVertex.get(edge.from.id)?.delete(edge);
 
     this.edgesById.delete(edge.id);
     this.edges.delete(edge);
@@ -508,6 +488,29 @@ export class Graph {
   };
 
   /* Internal Methods */
+
+  /**
+   * Every edge incident to `id`, in either direction, reconstructed from the
+   * directional label indexes (the union of every per-label bucket under the
+   * vertex in `edgesFromByLabel` and `edgesToByLabel`). A `Set` dedupes the two
+   * directions for self-loops. This is the cascade source for `removeVertex` —
+   * it relies on the LPG invariant that every edge carries at least one label
+   * (enforced by both the GQL and Gremlin layers), so it appears under some
+   * bucket. We keep no separate per-vertex edge index, since vertex removal is
+   * the only reader and it is far colder than the edge-insert path that index
+   * would tax.
+   */
+  private readonly incidentEdges = (id: string): Set<Edge> => {
+    const incident = new Set<Edge>();
+    for (const byLabel of [this.edgesFromByLabel.get(id), this.edgesToByLabel.get(id)]) {
+      for (const bucket of byLabel?.values() ?? []) {
+        for (const edge of bucket) {
+          incident.add(edge);
+        }
+      }
+    }
+    return incident;
+  };
 
   private readonly indexVertexLabel = (label: string, vertex: Vertex): void => {
     if (!this.verticesByLabel.has(label)) {
