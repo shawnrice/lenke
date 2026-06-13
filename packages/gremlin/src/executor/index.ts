@@ -11,7 +11,7 @@
 import type { Graph } from '@pl-graph/core';
 
 import type { Plan } from '../ast.js';
-import { newContext, type Traverser, unwrap } from './runtime.js';
+import { newContext, planReadsPath, type Traverser, unwrap } from './runtime.js';
 import { applyStep } from './dispatch.js';
 import { applySource } from './sources.js';
 
@@ -22,12 +22,14 @@ import { applySource } from './sources.js';
  * model and keeps `pipe(count(), is(gt(5)))` composable.
  */
 export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
-  const ctx = newContext();
+  // Decide once whether any step observes the path; if not, traversers skip
+  // path bookkeeping for the whole run (see planReadsPath / startTraverser).
+  const ctx = newContext(planReadsPath(plan));
   let stream: Iterable<Traverser<unknown>> | null = null;
 
   for (const step of plan.steps) {
     if (stream === null) {
-      stream = applySource(step, graph);
+      stream = applySource(step, graph, ctx.tracksPath);
       continue;
     }
     stream = applyStep(step, stream, graph, ctx);
