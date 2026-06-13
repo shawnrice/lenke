@@ -11,15 +11,17 @@
  * filters on. Each indexed key supports both equality and range queries from a
  * single structure:
  *
- *   - `buckets`: encoded value -> the set of elements carrying it (equality).
+ *   - `buckets`: raw value -> the set of elements carrying it (equality).
  *   - `order`:   the *distinct* values, kept sorted (range scans).
  *
  * `order` holds only distinct values, so adding/removing an element at an
  * already-present value is O(1) into a `Set`; only a value's first appearance or
- * last removal touches `order`. That touch is O(log d) — `order` is a skip list
- * (see {@link OrderedSet}), not a sorted array, so a high-cardinality key (one
- * unique value per element) stays O(N log d) to bulk-load instead of the O(N²) a
- * splicing array would cost.
+ * last removal touches `order` (a B+-tree — see {@link OrderedSet}), in O(log d).
+ * And `order` is built lazily: until the first range query a key pays nothing
+ * for it, after which it's bulk-built from the bucket keys via native sort and
+ * maintained incrementally. So a high-cardinality key (one unique value per
+ * element) bulk-loads in O(N) — or O(N + d log d) once range-queried — instead
+ * of the O(N²) a splicing sorted array would cost.
  */
 
 /** The scalar value kinds we index. Objects/arrays fall back to a full scan. */
@@ -41,11 +43,17 @@ type KeyIndex<E> = {
    */
   buckets: Map<IndexableValue, Set<E>>;
   /**
-   * Distinct values in sorted order for range scans — a skip list, built lazily
+   * Distinct values in sorted order for range scans — a B+-tree, built lazily
    * (`null` until the first range query) so a bulk load that never range-queries
    * this key pays nothing for it. Once built it's maintained incrementally.
    */
   order: OrderedSet<IndexableValue> | null;
+  /**
+   * The single type rank the built `order` assumes (for its monomorphic
+   * comparator), or -1 when the full comparator is in use. Meaningful only while
+   * `order` is non-null; a new value of a different rank invalidates `order`.
+   */
+  orderRank: number;
 };
 
 const isIndexable = (v: unknown): v is IndexableValue =>
@@ -98,49 +106,115 @@ const compare = (a: IndexableValue, b: IndexableValue): number => {
   }
 };
 
-/**
- * An ordered set of distinct values backed by a skip list: O(log d) insert and
- * delete, with ascending iteration for range scans. This is what keeps writes
- * cheap on high-cardinality keys — a sorted array would splice O(d) per new
- * distinct value, turning a bulk load into O(N²); the skip list makes it
- * O(N log d). Iteration order follows the bottom level, so it's the sorted
- * order regardless of the random tower heights (deterministic results).
- */
-const SKIP_MAX_LEVEL = 24;
+/** Monomorphic comparators for a column known to hold one numeric/string type. */
+const numericCmp = (a: IndexableValue, b: IndexableValue): number => (a as number) - (b as number);
+const stringCmp = (a: IndexableValue, b: IndexableValue): number => {
+  const x = a as string;
+  const y = b as string;
+  if (x < y) {
+    return -1;
+  }
+  return x > y ? 1 : 0;
+};
 
-type SkipNode<T> = { value: T; next: (SkipNode<T> | null)[] };
+/**
+ * Choose the comparator for a key's ordered view from the values it holds. A
+ * homogeneous numeric or string column gets a monomorphic comparator (no
+ * per-call `rank` dispatch — the hot path of sorts and tree walks); anything
+ * else (empty, boolean, null-only, or genuinely mixed) uses the full type-aware
+ * `compare`. The returned `rank` is the shared type rank for a monomorphic
+ * column, or -1 when the full comparator is in use (so the maintainer knows
+ * when an incoming value breaks the column's type assumption).
+ */
+const pickComparator = (
+  values: Iterable<IndexableValue>,
+): { cmp: (a: IndexableValue, b: IndexableValue) => number; rank: number } => {
+  let kind = -2; // -2 = unseen, -1 = mixed, else a single rank
+  for (const v of values) {
+    const r = rank(v);
+    if (kind === -2) {
+      kind = r;
+    } else if (kind !== r) {
+      kind = -1;
+      break;
+    }
+  }
+  if (kind === 2) {
+    return { cmp: numericCmp, rank: 2 };
+  }
+  if (kind === 3) {
+    return { cmp: stringCmp, rank: 3 };
+  }
+  return { cmp: compare, rank: -1 };
+};
+
+/**
+ * An ordered set of distinct values backed by a B+-tree: O(log d) insert/delete
+ * and O(log d + k) range scans, with values packed into contiguous leaf arrays
+ * linked left-to-right. Versus a per-value node structure (e.g. a skip list)
+ * this is far more cache-friendly and allocates ~d/ORDER leaves instead of d
+ * nodes. `fromSorted` bulk-builds the whole tree bottom-up in O(d).
+ *
+ * Deletion is leaf-local — the value is dropped from its leaf, leaving empty
+ * leaves rather than merging. That keeps deletes O(log d) and simple; the
+ * structure is rebuilt from scratch on `clear()`/snapshot anyway, and the
+ * workload is insert-heavy.
+ */
+const BTREE_ORDER = 64;
+
+type Leaf<T> = { leaf: true; values: T[]; next: Leaf<T> | null };
+type Internal<T> = { leaf: false; keys: T[]; children: BNode<T>[] };
+type BNode<T> = Leaf<T> | Internal<T>;
+
+const firstKey = <T>(node: BNode<T>): T => {
+  let n = node;
+  while (!n.leaf) {
+    n = n.children[0]!;
+  }
+  return n.values[0]!;
+};
 
 class OrderedSet<T> {
-  private head: SkipNode<T> = {
-    value: undefined as never,
-    next: new Array(SKIP_MAX_LEVEL).fill(null),
-  };
-  private level = 1;
+  private root: BNode<T>;
+  private firstLeaf: Leaf<T>;
   private count = 0;
 
-  constructor(private readonly cmp: (a: T, b: T) => number) {}
+  constructor(private readonly cmp: (a: T, b: T) => number) {
+    const leaf: Leaf<T> = { leaf: true, values: [], next: null };
+    this.root = leaf;
+    this.firstLeaf = leaf;
+  }
 
-  /**
-   * Build from values already in ascending order in O(d): each value is the new
-   * maximum, so it appends to the rightmost tower at each of its levels with no
-   * search. Used to materialize the ordered view from natively-sorted bucket
-   * keys, far cheaper than d individual inserts.
-   */
+  /** Bulk-build from ascending values in O(d): pack leaves, then internal levels. */
   static fromSorted<T>(sorted: readonly T[], cmp: (a: T, b: T) => number): OrderedSet<T> {
     const set = new OrderedSet<T>(cmp);
-    const last: SkipNode<T>[] = new Array(SKIP_MAX_LEVEL).fill(set.head);
-    for (const value of sorted) {
-      const lvl = set.randomLevel();
-      if (lvl > set.level) {
-        set.level = lvl;
-      }
-      const node: SkipNode<T> = { value, next: new Array(lvl).fill(null) };
-      for (let i = 0; i < lvl; i++) {
-        last[i]!.next[i] = node;
-        last[i] = node;
-      }
-      set.count++;
+    if (sorted.length === 0) {
+      return set;
     }
+    const leaves: Leaf<T>[] = [];
+    for (let i = 0; i < sorted.length; i += BTREE_ORDER) {
+      const leaf: Leaf<T> = { leaf: true, values: sorted.slice(i, i + BTREE_ORDER), next: null };
+      if (leaves.length > 0) {
+        leaves[leaves.length - 1]!.next = leaf;
+      }
+      leaves.push(leaf);
+    }
+    set.firstLeaf = leaves[0]!;
+    set.count = sorted.length;
+    let level: BNode<T>[] = leaves;
+    while (level.length > 1) {
+      const parents: Internal<T>[] = [];
+      for (let i = 0; i < level.length; i += BTREE_ORDER) {
+        const children = level.slice(i, i + BTREE_ORDER);
+        const keys: T[] = [];
+        for (let j = 1; j < children.length; j++) {
+          keys.push(firstKey(children[j]!));
+        }
+        parents.push({ leaf: false, keys, children });
+      }
+      level = parents;
+    }
+    set.root = level[0]!;
     return set;
   }
 
@@ -149,85 +223,118 @@ class OrderedSet<T> {
   }
 
   clear(): void {
-    this.head = { value: undefined as never, next: new Array(SKIP_MAX_LEVEL).fill(null) };
-    this.level = 1;
+    const leaf: Leaf<T> = { leaf: true, values: [], next: null };
+    this.root = leaf;
+    this.firstLeaf = leaf;
     this.count = 0;
   }
 
-  private randomLevel(): number {
-    let lvl = 1;
-    while (Math.random() < 0.5 && lvl < SKIP_MAX_LEVEL) {
-      lvl++;
+  /** The child index to descend for `value`: first key strictly greater than it. */
+  private childIndex(node: Internal<T>, value: T): number {
+    let lo = 0;
+    let hi = node.keys.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (this.cmp(value, node.keys[mid]!) < 0) {
+        hi = mid;
+      } else {
+        lo = mid + 1;
+      }
     }
-    return lvl;
+    return lo;
   }
 
-  /** Insert `value` if absent (callers only add distinct values). */
-  add(value: T): void {
-    const update: SkipNode<T>[] = new Array(SKIP_MAX_LEVEL);
-    let x = this.head;
-    for (let i = this.level - 1; i >= 0; i--) {
-      while (x.next[i] && this.cmp(x.next[i]!.value, value) < 0) {
-        x = x.next[i]!;
+  /** First index in `values` whose entry is `>= value`. */
+  private lowerIdx(values: readonly T[], value: T): number {
+    let lo = 0;
+    let hi = values.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (this.cmp(values[mid]!, value) < 0) {
+        lo = mid + 1;
+      } else {
+        hi = mid;
       }
-      update[i] = x;
     }
-    if (x.next[0] && this.cmp(x.next[0]!.value, value) === 0) {
+    return lo;
+  }
+
+  add(value: T): void {
+    const path: { node: Internal<T>; idx: number }[] = [];
+    let node: BNode<T> = this.root;
+    while (!node.leaf) {
+      const idx = this.childIndex(node, value);
+      path.push({ node, idx });
+      node = node.children[idx]!;
+    }
+    const pos = this.lowerIdx(node.values, value);
+    if (pos < node.values.length && this.cmp(node.values[pos]!, value) === 0) {
       return; // already present
     }
-    const lvl = this.randomLevel();
-    if (lvl > this.level) {
-      for (let i = this.level; i < lvl; i++) {
-        update[i] = this.head;
-      }
-      this.level = lvl;
-    }
-    const node: SkipNode<T> = { value, next: new Array(lvl).fill(null) };
-    for (let i = 0; i < lvl; i++) {
-      node.next[i] = update[i]!.next[i] ?? null;
-      update[i]!.next[i] = node;
-    }
+    node.values.splice(pos, 0, value);
     this.count++;
+    if (node.values.length <= BTREE_ORDER) {
+      return;
+    }
+    // Split the overfull leaf and propagate splits up the recorded path.
+    const mid = node.values.length >> 1;
+    const right: Leaf<T> = { leaf: true, values: node.values.splice(mid), next: node.next };
+    node.next = right;
+    this.insertSplit(right.values[0]!, right, path);
+  }
+
+  private insertSplit(
+    sepKey: T,
+    rightChild: BNode<T>,
+    path: { node: Internal<T>; idx: number }[],
+  ): void {
+    if (path.length === 0) {
+      this.root = { leaf: false, keys: [sepKey], children: [this.root, rightChild] };
+      return;
+    }
+    const { node: parent, idx } = path.pop()!;
+    parent.keys.splice(idx, 0, sepKey);
+    parent.children.splice(idx + 1, 0, rightChild);
+    if (parent.children.length <= BTREE_ORDER) {
+      return;
+    }
+    const mid = parent.keys.length >> 1;
+    const upKey = parent.keys[mid]!;
+    const rightKeys = parent.keys.splice(mid + 1);
+    parent.keys.length = mid; // drop keys[mid] (it moves up, not copied)
+    const rightChildren = parent.children.splice(mid + 1);
+    this.insertSplit(upKey, { leaf: false, keys: rightKeys, children: rightChildren }, path);
   }
 
   delete(value: T): void {
-    const update: SkipNode<T>[] = new Array(SKIP_MAX_LEVEL);
-    let x = this.head;
-    for (let i = this.level - 1; i >= 0; i--) {
-      while (x.next[i] && this.cmp(x.next[i]!.value, value) < 0) {
-        x = x.next[i]!;
-      }
-      update[i] = x;
+    let node: BNode<T> = this.root;
+    while (!node.leaf) {
+      node = node.children[this.childIndex(node, value)]!;
     }
-    const [target] = x.next;
-    if (!target || this.cmp(target.value, value) !== 0) {
-      return;
+    const pos = this.lowerIdx(node.values, value);
+    if (pos < node.values.length && this.cmp(node.values[pos]!, value) === 0) {
+      node.values.splice(pos, 1);
+      this.count--;
     }
-    for (let i = 0; i < this.level; i++) {
-      if (update[i]!.next[i] === target) {
-        update[i]!.next[i] = target.next[i] ?? null;
-      }
-    }
-    while (this.level > 1 && !this.head.next[this.level - 1]) {
-      this.level--;
-    }
-    this.count--;
   }
 
   /** Ascending values, starting at the first one `>= from` (or from the start). */
   *iterateFrom(from: T | undefined, hasFrom: boolean): Iterable<T> {
-    let x = this.head;
+    let leaf = this.firstLeaf;
+    let start = 0;
     if (hasFrom) {
-      for (let i = this.level - 1; i >= 0; i--) {
-        while (x.next[i] && this.cmp(x.next[i]!.value, from as T) < 0) {
-          x = x.next[i]!;
-        }
+      let node: BNode<T> = this.root;
+      while (!node.leaf) {
+        node = node.children[this.childIndex(node, from as T)]!;
       }
+      leaf = node;
+      start = this.lowerIdx(node.values, from as T);
     }
-    let [node] = x.next;
-    while (node) {
-      yield node.value;
-      [node] = node.next;
+    for (let l: Leaf<T> | null = leaf; l; l = l.next) {
+      const { values } = l;
+      for (let i = l === leaf ? start : 0; i < values.length; i++) {
+        yield values[i]!;
+      }
     }
   }
 }
@@ -239,7 +346,7 @@ export class PropertyIndex<E> {
   createIndex(key: string): void {
     if (!this.indexes.has(key)) {
       // `order` stays null until a range query needs it (see `orderOf`).
-      this.indexes.set(key, { buckets: new Map(), order: null });
+      this.indexes.set(key, { buckets: new Map(), order: null, orderRank: -1 });
     }
   }
 
@@ -270,8 +377,11 @@ export class PropertyIndex<E> {
    */
   private orderOf(idx: KeyIndex<E>): OrderedSet<IndexableValue> {
     if (!idx.order) {
-      const sorted = Array.from(idx.buckets.keys()).sort(compare);
-      idx.order = OrderedSet.fromSorted(sorted, compare);
+      const keys = Array.from(idx.buckets.keys());
+      const { cmp, rank: r } = pickComparator(keys);
+      keys.sort(cmp);
+      idx.order = OrderedSet.fromSorted(keys, cmp);
+      idx.orderRank = r;
     }
     return idx.order;
   }
@@ -286,9 +396,16 @@ export class PropertyIndex<E> {
     if (!set) {
       set = new Set();
       idx.buckets.set(value, set);
-      // A new distinct value joins the ordered view only if it's already built;
-      // otherwise it'll be picked up when the view is materialized lazily.
-      idx.order?.add(value);
+      // A new distinct value joins the ordered view only if it's already built.
+      // If it breaks the column's assumed type, drop the view so it rebuilds
+      // lazily with the full comparator; otherwise insert incrementally.
+      if (idx.order) {
+        if (idx.orderRank >= 0 && rank(value) !== idx.orderRank) {
+          idx.order = null;
+        } else {
+          idx.order.add(value);
+        }
+      }
     }
     set.add(element);
   }
@@ -372,7 +489,7 @@ export class PropertyIndex<E> {
   }
 
   /**
-   * The distinct values in `bound`, ascending. Walks the skip list from the
+   * The distinct values in `bound`, ascending. Walks the B+-tree from the
    * lower bound (O(log d) to position, then one step per distinct value in
    * range), clamped to the bound's type rank so `{ gt: 30 }` never bleeds into
    * strings. Shared by `range` and `countRange` so a count needn't build a set.
@@ -457,7 +574,7 @@ export class PropertyIndex<E> {
       }
       // Leave the ordered view unbuilt; the snapshot rebuilds it on demand from
       // its own buckets — cheaper than copying, and a snapshot may never range.
-      copy.indexes.set(key, { buckets, order: null });
+      copy.indexes.set(key, { buckets, order: null, orderRank: -1 });
     }
     return copy;
   }

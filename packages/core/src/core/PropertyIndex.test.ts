@@ -150,6 +150,83 @@ describe('PropertyIndex range', () => {
     expect(ids(graph.getVerticesByPropertyRange('age', { gte: 20 }))).toEqual(['c']);
   });
 
+  test('B+-tree range scans match brute force across a multi-level tree', () => {
+    // > 64^2 distinct values forces internal splits and a 3-level tree.
+    const COUNT = 5000;
+    const graph = new Graph({ eagerSnapshot: false });
+    graph.createVertexIndex('k');
+    const present = new Set<number>();
+    let seed = 12345;
+    const rnd = (n: number): number => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed % n;
+    };
+    // Insert COUNT distinct values in shuffled order (before any range query, so
+    // the ordered view is later bulk-built; some after, exercising incremental).
+    const values = Array.from({ length: COUNT }, (_, i) => i * 3 - COUNT);
+    for (let i = values.length - 1; i > 0; i--) {
+      const j = rnd(i + 1);
+      [values[i], values[j]] = [values[j]!, values[i]!];
+    }
+    const insert = (v: number): void => {
+      graph.addVertex({ id: `v${v}`, labels: [], properties: { k: v } });
+      present.add(v);
+    };
+    const remove = (v: number): void => {
+      graph.removeVertex(`v${v}`);
+      present.delete(v);
+    };
+    const rangeVals = (lo: number, hi: number): number[] =>
+      Array.from(graph.getVerticesByPropertyRange('k', { gte: lo, lt: hi }), (x) =>
+        Number((x.properties as { k: number }).k),
+      ).sort((a, b) => a - b);
+    const brute = (lo: number, hi: number): number[] =>
+      [...present].filter((v) => v >= lo && v < hi).sort((a, b) => a - b);
+
+    values.slice(0, COUNT - 50).forEach(insert); // bulk-built on first query
+    let lo = -200;
+    let hi = 2000;
+    expect(rangeVals(lo, hi)).toEqual(brute(lo, hi)); // materializes the tree
+    values.slice(COUNT - 50).forEach(insert); // incremental adds after build
+
+    for (let q = 0; q < 20; q++) {
+      lo = rnd(COUNT * 3) - COUNT;
+      hi = lo + rnd(COUNT);
+      expect(rangeVals(lo, hi)).toEqual(brute(lo, hi));
+      expect(graph.getVerticesByPropertyRange('k', { gte: lo, lt: hi }).size).toBe(
+        brute(lo, hi).length,
+      );
+    }
+
+    // Delete a third at random, then re-check (snapshot — we mutate `present`).
+    for (const v of Array.from(present)) {
+      if (rnd(3) === 0) {
+        remove(v);
+      }
+    }
+    for (let q = 0; q < 20; q++) {
+      lo = rnd(COUNT * 3) - COUNT;
+      hi = lo + rnd(COUNT);
+      expect(rangeVals(lo, hi)).toEqual(brute(lo, hi));
+    }
+    expect(graph.getVerticesByPropertyRange('k', { gt: -1e9 }).size).toBe(present.size);
+  });
+
+  test('a mixed-type column rebuilds with the full comparator', () => {
+    const graph = new Graph({ eagerSnapshot: false });
+    graph.createVertexIndex('v');
+    graph.addVertex({ id: 'n1', labels: [], properties: { v: 10 } });
+    graph.addVertex({ id: 'n2', labels: [], properties: { v: 20 } });
+    // First range query builds a numeric (monomorphic) ordered view.
+    expect(graph.getVerticesByPropertyRange('v', { gte: 15 }).size).toBe(1);
+    // A string value breaks the numeric assumption → view invalidated + rebuilt.
+    graph.addVertex({ id: 's1', labels: [], properties: { v: 'apple' } });
+    graph.addVertex({ id: 's2', labels: [], properties: { v: 'pear' } });
+    expect(ids(graph.getVerticesByPropertyRange('v', { gte: 15 }))).toEqual(['n2']); // numbers only
+    expect(ids(graph.getVerticesByPropertyRange('v', { gte: 'a', lt: 'q' }))).toEqual(['s1', 's2']); // strings only
+    expect(graph.getVerticesByProperty('v', 10).size).toBe(1); // equality unaffected
+  });
+
   test('the ordered structure stays correct across heavy insert/delete churn', () => {
     const graph = new Graph({ eagerSnapshot: false });
     graph.createVertexIndex('k');
