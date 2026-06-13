@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
-import { between, eq, gt, inside, within } from '../predicates.js';
+import { between, eq, gt, inside, startsWith, within } from '../predicates.js';
 import { E, has, hasLabel, out, V, values } from '../steps.js';
 import { traversal } from '../traversal.js';
 import { run } from './index.js';
@@ -89,6 +89,27 @@ describe('index-seeded V() source', () => {
     expect(seeded).not.toBeNull();
     expect(arr(seeded!.stream).length).toBe(2); // marko, josh (nobody → empty)
     expect(seeded!.steps).toEqual([]); // exact match set → has dropped
+  });
+
+  test('startsWith is seeded from a prefix range and matches the scan', () => {
+    const plain = createTestTinkerGraph();
+    const indexed = createTestTinkerGraph();
+    indexed.createVertexIndex('name');
+    // Names: marko, vadas, josh, peter, lop, ripple.
+    const plan = () => traversal(V(), has('name', startsWith('r')), values('name'));
+    expect((arr(run(plan(), indexed)) as string[]).sort()).toEqual(
+      (arr(run(plan(), plain)) as string[]).sort(),
+    );
+    expect(arr(run(plan(), indexed))).toEqual(['ripple']);
+  });
+
+  test('startsWith seeds the prefix slice as a residual filter', () => {
+    const g = createTestTinkerGraph();
+    g.createVertexIndex('name');
+    const seeded = seedFromIndex(traversal(V(), has('name', startsWith('m'))), g, false);
+    expect(seeded).not.toBeNull();
+    expect(arr(seeded!.stream).length).toBe(1); // marko
+    expect(seeded!.steps.map((s) => s.kind)).toEqual(['has']); // residual kept
   });
 
   test('within results match the unindexed scan', () => {

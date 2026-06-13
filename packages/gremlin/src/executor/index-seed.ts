@@ -20,6 +20,8 @@
 //                  differ from the unindexed scan for mixed-type data — a
 //                  deliberate, documented consequence of declaring an index. The
 //                  range `has` is kept as a residual rather than dropped.
+//   startsWith   — a string prefix is the slice [prefix, succ(prefix)), seeded
+//                  from the same sorted index and kept as a residual.
 //
 // A `hasLabelAnd` seed always keeps its step (the bucket doesn't encode the
 // label half). Non-seedable predicates (neq, outside, without, the string/
@@ -73,6 +75,22 @@ const rangeSeed = <E>(index: PropertyIndex<E>, key: string, bound: RangeBound): 
 });
 
 /**
+ * The exclusive upper bound of the strings sharing `prefix`: the prefix with
+ * its last code unit incremented. `null` when there's no finite successor (an
+ * empty prefix, or one ending in U+FFFF) — the caller then seeds with a lower
+ * bound only.
+ */
+const prefixUpperBound = (prefix: string): string | null => {
+  for (let i = prefix.length - 1; i >= 0; i--) {
+    const c = prefix.charCodeAt(i);
+    if (c < 0xffff) {
+      return prefix.slice(0, i) + String.fromCharCode(c + 1);
+    }
+  }
+  return null;
+};
+
+/**
  * The index seed for `pred` on `key`, or `null` when the predicate isn't
  * seedable. `removable` is whether dropping the owning step leaves an
  * equivalent plan — only an exact (eq/within) match on a plain `has`.
@@ -104,6 +122,19 @@ const seedForPred = <E>(
       return rangeSeed(index, key, { gte: pred.min, lt: pred.max });
     case 'inside':
       return rangeSeed(index, key, { gt: pred.min, lt: pred.max });
+    case 'startsWith': {
+      // A prefix search is the string slice [prefix, succ(prefix)) — a range
+      // the sorted index can seek. Kept as a residual filter.
+      if (typeof pred.value !== 'string') {
+        return null;
+      }
+      const upper = prefixUpperBound(pred.value);
+      return rangeSeed(
+        index,
+        key,
+        upper === null ? { gte: pred.value } : { gte: pred.value, lt: upper },
+      );
+    }
     default:
       return null;
   }
