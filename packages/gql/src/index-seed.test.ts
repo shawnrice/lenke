@@ -48,3 +48,70 @@ describe('GQL property-index seeding', () => {
     expect(query(g, `MATCH (p:Person {name: 'nobody'}) RETURN p.name`)).toEqual([]);
   });
 });
+
+describe('GQL WHERE-derived seed hints', () => {
+  // Ages: marko=29, vadas=27, josh=32, peter=35.
+  const both = (q: string) => {
+    const plain = createTestSocialGraph();
+    const indexed = createTestSocialGraph();
+    indexed.createVertexIndex('name');
+    indexed.createVertexIndex('age');
+    return { plain: query(plain, q), indexed: query(indexed, q) };
+  };
+
+  test('WHERE equality seeds and matches the scan', () => {
+    const { plain, indexed } = both(`MATCH (p:Person) WHERE p.name = 'marko' RETURN p.age`);
+    expect(indexed).toEqual(plain);
+    expect(indexed).toEqual([{ 'p.age': 29 }]);
+  });
+
+  test('WHERE range seeds and matches the scan', () => {
+    const { plain, indexed } = both(`MATCH (p:Person) WHERE p.age > 30 RETURN p.name`);
+    expect(sorted(indexed, 'p.name')).toEqual(sorted(plain, 'p.name'));
+    expect(sorted(indexed, 'p.name')).toEqual(['josh', 'peter']);
+  });
+
+  test('a two-sided WHERE range works (each bound is a sound conjunct)', () => {
+    const { plain, indexed } = both(
+      `MATCH (p:Person) WHERE p.age >= 29 AND p.age < 35 RETURN p.name`,
+    );
+    expect(sorted(indexed, 'p.name')).toEqual(sorted(plain, 'p.name'));
+    expect(sorted(indexed, 'p.name')).toEqual(['josh', 'marko']);
+  });
+
+  test('flipped comparison (const on the left) seeds too', () => {
+    const { plain, indexed } = both(`MATCH (p:Person) WHERE 30 < p.age RETURN p.name`);
+    expect(sorted(indexed, 'p.name')).toEqual(sorted(plain, 'p.name'));
+    expect(sorted(indexed, 'p.name')).toEqual(['josh', 'peter']);
+  });
+
+  test('WHERE IN seeds from a union and matches the scan', () => {
+    const { plain, indexed } = both(
+      `MATCH (p:Person) WHERE p.name IN ['marko', 'josh'] RETURN p.age`,
+    );
+    expect(sorted(indexed, 'p.age')).toEqual(sorted(plain, 'p.age'));
+    expect(sorted(indexed, 'p.age')).toEqual([29, 32]);
+  });
+
+  test('an OR predicate is NOT seeded (would miss a branch)', () => {
+    const { plain, indexed } = both(
+      `MATCH (p:Person) WHERE p.name = 'marko' OR p.age > 30 RETURN p.name`,
+    );
+    expect(sorted(indexed, 'p.name')).toEqual(sorted(plain, 'p.name'));
+    expect(sorted(indexed, 'p.name')).toEqual(['josh', 'marko', 'peter']);
+  });
+
+  test('inline node WHERE seeds the start node', () => {
+    const { plain, indexed } = both(`MATCH (p:Person WHERE p.age > 30) RETURN p.name`);
+    expect(sorted(indexed, 'p.name')).toEqual(sorted(plain, 'p.name'));
+    expect(sorted(indexed, 'p.name')).toEqual(['josh', 'peter']);
+  });
+
+  test('WHERE seeding still honors the rest of the pattern', () => {
+    const { plain, indexed } = both(
+      `MATCH (a:Person)-[:KNOWS]->(b) WHERE a.name = 'marko' RETURN b.name`,
+    );
+    expect(sorted(indexed, 'b.name')).toEqual(sorted(plain, 'b.name'));
+    expect(sorted(indexed, 'b.name')).toEqual(['josh', 'vadas']);
+  });
+});
