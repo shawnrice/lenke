@@ -392,6 +392,25 @@ fn edge_property_aggregate() {
 }
 
 #[test]
+fn limit_pushdown_streams_match_order() {
+    let mut g = modern();
+    // No ORDER BY → streamable; LIMIT short-circuits matching in declaration order.
+    assert_eq!(rows(&mut g, "MATCH (n:Person) RETURN n.name LIMIT 2"), vec![vec![s("marko")], vec![s("vadas")]]);
+    assert_eq!(
+        rows(&mut g, "MATCH (n:Person) RETURN n.name SKIP 1 LIMIT 2"),
+        vec![vec![s("vadas")], vec![s("josh")]]
+    );
+}
+
+#[test]
+fn order_by_limit_is_global_not_pushed_down() {
+    let mut g = modern();
+    // ORDER BY present → cap NOT applied; result is the globally smallest ages.
+    let r = rows(&mut g, "MATCH (n:Person) RETURN n.name ORDER BY n.age LIMIT 2");
+    assert_eq!(r, vec![vec![s("vadas")], vec![s("marko")]]);
+}
+
+#[test]
 fn group_by_expression() {
     let mut g = modern();
     // group key is an expression (age parity), not just a property.

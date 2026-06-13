@@ -913,7 +913,16 @@ fn pattern_vars(patterns: &[PathPattern]) -> Vec<String> {
     vars
 }
 
-fn run_match(graph: &Graph, clause: &MatchClause, bindings: Vec<Binding>, params: &Params) -> Vec<Binding> {
+/// Run a MATCH clause over the incoming bindings. `cap`, when set, stops the
+/// walk once that many output rows exist — a LIMIT short-circuit applied only
+/// when the query is provably streamable (see `terminal_cap`).
+fn run_match(
+    graph: &Graph,
+    clause: &MatchClause,
+    bindings: Vec<Binding>,
+    params: &Params,
+    cap: Option<usize>,
+) -> Vec<Binding> {
     let mut out = Vec::new();
     for b in &bindings {
         let mut work = b.clone();
@@ -922,7 +931,7 @@ fn run_match(graph: &Graph, clause: &MatchClause, bindings: Vec<Binding>, params
         // itself mutates `work` in place and backtracks.
         visit_patterns(graph, &clause.patterns, 0, clause.where_.as_ref(), &mut work, params, &mut |m| {
             out.push(m.clone());
-            true
+            cap.is_none_or(|c| out.len() < c) // false → stop walking
         });
         if out.len() == before && clause.optional {
             let mut filled = b.clone();
@@ -933,8 +942,29 @@ fn run_match(graph: &Graph, clause: &MatchClause, bindings: Vec<Binding>, params
             }
             out.push(filled);
         }
+        if cap.is_some_and(|c| out.len() >= c) {
+            break;
+        }
     }
     out
+}
+
+/// The output row cap a terminal `RETURN ... LIMIT n` allows pushing down into
+/// matching — `Some(skip + limit)` only when the projection is streamable
+/// (no aggregation, DISTINCT, or ORDER BY would reorder/dedup) and every earlier
+/// clause is a plain MATCH (so output cardinality equals the final match's).
+fn terminal_cap(linear: &LinearQuery) -> Option<usize> {
+    let (last, rest) = linear.clauses.split_last()?;
+    let Clause::Return(proj) = last else { return None };
+    let aggregating = !proj.star && proj.items.iter().any(|i| has_aggregate(&i.expr));
+    if aggregating || proj.distinct || !proj.order_by.is_empty() {
+        return None;
+    }
+    let limit = proj.limit?;
+    if !rest.iter().all(|c| matches!(c, Clause::Match(_))) {
+        return None;
+    }
+    Some(proj.skip.unwrap_or(0) + limit)
 }
 
 // --- projection --------------------------------------------------------------
@@ -1075,11 +1105,21 @@ fn apply_projection(proj: &Projection, bindings: Vec<Binding>, params: &Params, 
 // --- linear query & set ops --------------------------------------------------
 
 fn run_linear(linear: &LinearQuery, graph: &mut Graph, params: &Params) -> Result<Vec<Binding>, String> {
+    // A streamable terminal LIMIT lets the *last* MATCH stop early (its output
+    // cardinality equals the result's, since nothing reorders/dedups after it).
+    let cap = terminal_cap(linear);
+    let last_match = linear
+        .clauses
+        .iter()
+        .rposition(|c| matches!(c, Clause::Match(_)))
+        .filter(|_| cap.is_some());
+
     let mut bindings: Vec<Binding> = vec![Binding::default()];
-    for clause in &linear.clauses {
+    for (i, clause) in linear.clauses.iter().enumerate() {
         match clause {
             Clause::Match(m) => {
-                bindings = run_match(graph, m, bindings, params);
+                let clause_cap = if Some(i) == last_match { cap } else { None };
+                bindings = run_match(graph, m, bindings, params, clause_cap);
             }
             Clause::With(w) => {
                 let projected = apply_projection(&w.projection, bindings, params, graph);
