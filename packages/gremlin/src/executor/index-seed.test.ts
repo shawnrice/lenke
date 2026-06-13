@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
-import { eq, gt } from '../predicates.js';
+import { between, eq, gt, inside, within } from '../predicates.js';
 import { has, hasLabel, out, V, values } from '../steps.js';
 import { traversal } from '../traversal.js';
 import { run } from './index.js';
@@ -55,10 +55,57 @@ describe('index-seeded V() source', () => {
     expect(seedVerticesFromIndex(plan, g, false)).toBeNull();
   });
 
-  test('falls back (null) for a non-equality predicate', () => {
+  test('range predicates are seeded but kept as a residual filter', () => {
     const g = createTestTinkerGraph();
     g.createVertexIndex('age');
-    const plan = traversal(V(), has('age', gt(30)));
+    // Ages: marko=29, vadas=27, josh=32, peter=35.
+    const seeded = seedVerticesFromIndex(traversal(V(), has('age', gt(30))), g, false);
+    expect(seeded).not.toBeNull();
+    expect(arr(seeded!.stream).length).toBe(2); // josh, peter
+    expect(seeded!.steps.map((s) => s.kind)).toEqual(['has']); // residual kept
+  });
+
+  test('range results match the unindexed scan', () => {
+    const plain = createTestTinkerGraph();
+    const indexed = createTestTinkerGraph();
+    indexed.createVertexIndex('age');
+    const cases = [gt(30), between(28, 33), inside(28, 33)];
+    for (const pred of cases) {
+      const plan = () => traversal(V(), has('age', pred), values('name'));
+      expect((arr(run(plan(), indexed)) as string[]).sort()).toEqual(
+        (arr(run(plan(), plain)) as string[]).sort(),
+      );
+    }
+  });
+
+  test('within is seeded from a union of buckets and dropped', () => {
+    const g = createTestTinkerGraph();
+    g.createVertexIndex('name');
+    const seeded = seedVerticesFromIndex(
+      traversal(V(), has('name', within('marko', 'josh', 'nobody'))),
+      g,
+      false,
+    );
+    expect(seeded).not.toBeNull();
+    expect(arr(seeded!.stream).length).toBe(2); // marko, josh (nobody → empty)
+    expect(seeded!.steps).toEqual([]); // exact match set → has dropped
+  });
+
+  test('within results match the unindexed scan', () => {
+    const plain = createTestTinkerGraph();
+    const indexed = createTestTinkerGraph();
+    indexed.createVertexIndex('name');
+    const plan = () => traversal(V(), has('name', within('vadas', 'josh')), values('name'));
+    expect((arr(run(plan(), indexed)) as string[]).sort()).toEqual(
+      (arr(run(plan(), plain)) as string[]).sort(),
+    );
+  });
+
+  test('falls back (null) for a non-seedable predicate', () => {
+    const g = createTestTinkerGraph();
+    g.createVertexIndex('name');
+    // `neq` has no bucket to seed from.
+    const plan = traversal(V(), has('name', { op: 'neq', value: 'marko' }));
     expect(seedVerticesFromIndex(plan, g, false)).toBeNull();
   });
 

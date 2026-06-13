@@ -3,24 +3,29 @@
 // When a traversal opens `V()` (no explicit ids) followed by a run of filter
 // steps that only narrow the start set — `has` / `hasLabel` / `hasLabelAnd` /
 // `hasId` / `hasKey` / `hasNot`, which commute freely — and one of them is an
-// equality `has(key, eq(value))` (or the property half of `has(label, key,
-// eq(value))`) on a graph-indexed key, we seed directly from that key's index
-// bucket rather than sweeping all of `V()`.
+// indexable property predicate on a graph-indexed key, we seed directly from
+// that key's index bucket(s) rather than sweeping all of `V()`. The most
+// selective seedable predicate (smallest candidate set) wins; every leading
+// filter is re-applied as a residual, so the result still matches the scan.
 //
-// The seed bucket is exactly the set of vertices carrying `key === value`, so
-// it is a superset of the leading filters' conjunction; every leading filter is
-// re-applied as a residual, which makes the result identical to the
-// unoptimized scan. The one exception: a plain `has(key, eq)` whose bucket *is*
-// its exact match set is dropped from the residuals as a small saving. A
-// `hasLabelAnd` seed is kept, since the bucket doesn't encode its label half.
+// Seedable predicates, and whether the consumed `has` can be dropped:
 //
-// Only `eq` is seeded: equality buckets match `===` exactly. Range / `within`
-// seeding would have to reconcile the index's type-strict order with JS
-// comparison coercion, so those stay as residual filters for now.
+//   eq / within  — bucket (or union of buckets) equals the predicate's match
+//                  set exactly (both use `===`), so a plain `has` is dropped.
+//   gt/gte/lt/lte/between/inside — seeded from the sorted range index. The
+//                  index is *type-strict* (a numeric bound matches only numeric
+//                  values, never JS-coercible strings like "40" > 30), which can
+//                  differ from the unindexed scan for mixed-type data — a
+//                  deliberate, documented consequence of declaring an index. The
+//                  range `has` is kept as a residual rather than dropped.
+//
+// A `hasLabelAnd` seed always keeps its step (the bucket doesn't encode the
+// label half). Non-seedable predicates (neq, outside, without, the string/
+// regex ops, not) stay as ordinary residual filters.
 
-import type { Graph, Vertex } from '@pl-graph/core';
+import type { Graph, RangeBound, Vertex } from '@pl-graph/core';
 
-import type { Plan, Step } from '../ast.js';
+import type { Plan, Predicate, Step } from '../ast.js';
 import { startTraverser, type Traverser } from './runtime.js';
 
 /** Filter steps that only narrow the `V()` set, so reordering them is safe. */
@@ -33,23 +38,83 @@ const COMMUTING_FILTERS = new Set<Step['kind']>([
   'hasNot',
 ]);
 
-type Candidate = { set: Set<Vertex> | undefined; size: number; removable: boolean };
+const EMPTY: ReadonlySet<Vertex> = new Set<Vertex>();
+
+/** A scalar the property index can seek on (mirrors PropertyIndex's IndexableValue). */
+const isScalar = (v: unknown): boolean =>
+  v === null ||
+  typeof v === 'string' ||
+  typeof v === 'boolean' ||
+  (typeof v === 'number' && !Number.isNaN(v));
+
+type Seed = { set: ReadonlySet<Vertex>; removable: boolean };
+
+/** Union the equality buckets for each value of a `within` list. */
+const unionBuckets = (graph: Graph, key: string, values: readonly unknown[]): Set<Vertex> => {
+  const out = new Set<Vertex>();
+  for (const value of values) {
+    for (const vertex of graph.vertexPropertyIndex.equals(key, value) ?? EMPTY) {
+      out.add(vertex);
+    }
+  }
+  return out;
+};
+
+/** Map a `RangeBound`-shaped predicate to its (type-strict) seed set. */
+const rangeSeed = (graph: Graph, key: string, bound: RangeBound): Seed => ({
+  set: graph.vertexPropertyIndex.range(key, bound) ?? EMPTY,
+  removable: false,
+});
 
 /**
- * If `step` is an equality predicate on an indexed key, the bucket to seed
- * from. `removable` is true only when dropping `step` leaves an equivalent
- * plan — i.e. a plain `has` (its bucket is exact), but not `hasLabelAnd` (whose
- * label half the bucket doesn't capture).
+ * The index seed for `pred` on `key`, or `null` when the predicate isn't
+ * seedable. `removable` is whether dropping the owning step leaves an
+ * equivalent plan — only an exact (eq/within) match on a plain `has`.
  */
-const candidateFor = (step: Step, graph: Graph): Candidate | null => {
+const seedForPred = (
+  graph: Graph,
+  key: string,
+  pred: Predicate,
+  plainHas: boolean,
+): Seed | null => {
+  switch (pred.op) {
+    case 'eq':
+      return isScalar(pred.value)
+        ? { set: graph.vertexPropertyIndex.equals(key, pred.value) ?? EMPTY, removable: plainHas }
+        : null;
+    case 'within':
+      return pred.values.every(isScalar)
+        ? { set: unionBuckets(graph, key, pred.values), removable: plainHas }
+        : null;
+    case 'gt':
+      return isScalar(pred.value) ? rangeSeed(graph, key, { gt: pred.value }) : null;
+    case 'gte':
+      return isScalar(pred.value) ? rangeSeed(graph, key, { gte: pred.value }) : null;
+    case 'lt':
+      return isScalar(pred.value) ? rangeSeed(graph, key, { lt: pred.value }) : null;
+    case 'lte':
+      return isScalar(pred.value) ? rangeSeed(graph, key, { lte: pred.value }) : null;
+    case 'between':
+      return rangeSeed(graph, key, { gte: pred.min, lt: pred.max });
+    case 'inside':
+      return rangeSeed(graph, key, { gt: pred.min, lt: pred.max });
+    default:
+      return null;
+  }
+};
+
+/** The seed a single leading filter step offers, if any. */
+const seedForStep = (step: Step, graph: Graph): Seed | null => {
   if (step.kind !== 'has' && step.kind !== 'hasLabelAnd') {
     return null;
   }
-  if (step.pred.op !== 'eq' || !graph.vertexPropertyIndex.isIndexed(step.key)) {
+  if (!graph.vertexPropertyIndex.isIndexed(step.key)) {
     return null;
   }
-  const set = graph.vertexPropertyIndex.equals(step.key, step.pred.value);
-  return { set, size: set?.size ?? 0, removable: step.kind === 'has' };
+  const seed = seedForPred(graph, step.key, step.pred, step.kind === 'has');
+  // A `hasLabelAnd` carries a label constraint the bucket doesn't capture, so
+  // its step can never be dropped.
+  return seed && step.kind === 'hasLabelAnd' ? { ...seed, removable: false } : seed;
 };
 
 export type SeededPlan = {
@@ -72,18 +137,18 @@ export const seedVerticesFromIndex = (
     return null;
   }
 
-  // Across the leading run of commuting filters, pick the most selective
-  // equality seed (smallest bucket wins).
+  // Across the leading run of commuting filters, pick the most selective seed
+  // (smallest candidate set wins).
   let bestAt = -1;
-  let best: Candidate | null = null;
+  let best: Seed | null = null;
   for (let i = 0; i < rest.length; i++) {
     const step = rest[i]!;
     if (!COMMUTING_FILTERS.has(step.kind)) {
       break;
     }
-    const candidate = candidateFor(step, graph);
-    if (candidate && candidate.size < (best?.size ?? Infinity)) {
-      best = candidate;
+    const seed = seedForStep(step, graph);
+    if (seed && seed.set.size < (best?.set.size ?? Infinity)) {
+      best = seed;
       bestAt = i;
     }
   }
@@ -92,11 +157,9 @@ export const seedVerticesFromIndex = (
     return null;
   }
 
-  // `best.set` may be undefined when nothing carries the value — an empty seed
-  // that correctly short-circuits the whole traversal to no results.
-  const seeds = best.set ?? new Set<Vertex>();
+  const { set } = best;
   const stream = (function* () {
-    for (const vertex of seeds) {
+    for (const vertex of set) {
       yield startTraverser(vertex, tracksPath);
     }
   })();
