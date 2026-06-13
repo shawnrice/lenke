@@ -1,5 +1,6 @@
 import type { Graph } from '../../core/Graph.js';
 import type { Codec } from '../codec.js';
+import { type ChunkSource, linesFromChunks } from '../streaming.js';
 import { normalizeBag, type PropertyValue } from '../value.js';
 
 /**
@@ -187,6 +188,35 @@ const parseLabelsAndProps = (
   return { labels, properties };
 };
 
+// A second token without a colon is the edge's destination id.
+const isEdgeLine = (tokens: string[]): boolean => tokens.length >= 2 && !tokens[1]!.includes(':');
+
+const addNodeLine = (graph: Graph, tokens: string[]): void => {
+  const [id, ...rest] = tokens;
+  const { labels, properties } = parseLabelsAndProps(rest);
+  graph.addVertex({ id: id!, labels, properties });
+};
+
+const addEdgeLine = (graph: Graph, tokens: string[]): void => {
+  const [from, to, ...rest] = tokens;
+  const fromVertex =
+    graph.getVertexById(from!) ?? graph.addVertex({ id: from!, labels: [], properties: {} });
+  const toVertex =
+    graph.getVertexById(to!) ?? graph.addVertex({ id: to!, labels: [], properties: {} });
+  const { labels, properties } = parseLabelsAndProps(rest);
+  graph.addEdge({ from: fromVertex, to: toVertex, labels, properties });
+};
+
+/** Tokenize a line, or `null` for a blank or comment (`#`) line. */
+const lineTokens = (raw: string): string[] | null => {
+  const line = raw.trim();
+  if (line === '' || line.startsWith('#')) {
+    return null;
+  }
+  const tokens = tokenizeLine(line);
+  return tokens.length === 0 ? null : tokens;
+};
+
 /**
  * Deserialize a PG-text string into `graph`. Two passes — nodes first, then
  * edges — so an edge may reference a node declared anywhere; an endpoint not
@@ -201,34 +231,16 @@ export const decode = (input: string, graph: Graph): Graph => {
   const nodeLines: string[][] = [];
   const edgeLines: string[][] = [];
   for (const raw of input.split('\n')) {
-    const line = raw.trim();
-    if (line === '' || line.startsWith('#')) {
-      continue;
-    }
-    const tokens = tokenizeLine(line);
-    if (tokens.length === 0) {
-      continue;
-    }
-    // A second token without a colon is the edge's destination id.
-    if (tokens.length >= 2 && !tokens[1]!.includes(':')) {
-      edgeLines.push(tokens);
-    } else {
-      nodeLines.push(tokens);
+    const tokens = lineTokens(raw);
+    if (tokens) {
+      (isEdgeLine(tokens) ? edgeLines : nodeLines).push(tokens);
     }
   }
-
-  for (const [id, ...rest] of nodeLines) {
-    const { labels, properties } = parseLabelsAndProps(rest);
-    graph.addVertex({ id: id!, labels, properties });
+  for (const tokens of nodeLines) {
+    addNodeLine(graph, tokens);
   }
-
-  for (const [from, to, ...rest] of edgeLines) {
-    const fromVertex =
-      graph.getVertexById(from!) ?? graph.addVertex({ id: from!, labels: [], properties: {} });
-    const toVertex =
-      graph.getVertexById(to!) ?? graph.addVertex({ id: to!, labels: [], properties: {} });
-    const { labels, properties } = parseLabelsAndProps(rest);
-    graph.addEdge({ from: fromVertex, to: toVertex, labels, properties });
+  for (const tokens of edgeLines) {
+    addEdgeLine(graph, tokens);
   }
 
   if (wasEnabled) {
@@ -238,4 +250,59 @@ export const decode = (input: string, graph: Graph): Graph => {
   return graph;
 };
 
-export const pgTextCodec: Codec = { name: 'pg-text', encode, decode };
+/**
+ * Stream the document in batched chunks (each a run of complete lines), so a
+ * large graph is written without materializing the whole string.
+ */
+export async function* encodeStream(graph: Graph): AsyncGenerator<string> {
+  const batchSize = 1024;
+  let batch: string[] = [];
+  for (const vertex of graph.vertices) {
+    batch.push(elementTokens([vertex.id], vertex.labels, vertex.properties));
+    if (batch.length >= batchSize) {
+      yield `${batch.join('\n')}\n`;
+      batch = [];
+    }
+  }
+  for (const edge of graph.edges) {
+    batch.push(elementTokens([edge.from.id, edge.to.id], edge.labels, edge.properties));
+    if (batch.length >= batchSize) {
+      yield `${batch.join('\n')}\n`;
+      batch = [];
+    }
+  }
+  if (batch.length > 0) {
+    yield `${batch.join('\n')}\n`;
+  }
+}
+
+/**
+ * Slurp a large graph from a chunk source one line at a time (memory bounded by
+ * the longest line, not the document). Single pass, so — unlike `decode` — node
+ * lines must precede the edges that reference them, which `encodeStream`
+ * guarantees; an as-yet-unseen edge endpoint is created as a bare node.
+ */
+export const decodeStream = async (source: ChunkSource, graph: Graph): Promise<Graph> => {
+  const wasEnabled = graph.eventsEnabled();
+  if (wasEnabled) {
+    graph.disableEvents();
+  }
+  for await (const raw of linesFromChunks(source)) {
+    const tokens = lineTokens(raw);
+    if (!tokens) {
+      continue;
+    }
+    if (isEdgeLine(tokens)) {
+      addEdgeLine(graph, tokens);
+    } else {
+      addNodeLine(graph, tokens);
+    }
+  }
+  if (wasEnabled) {
+    graph.enableEvents();
+    graph.snapshot();
+  }
+  return graph;
+};
+
+export const pgTextCodec: Codec = { name: 'pg-text', encode, decode, encodeStream, decodeStream };

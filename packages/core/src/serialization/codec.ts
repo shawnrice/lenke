@@ -1,4 +1,5 @@
 import type { Graph } from '../core/Graph.js';
+import type { ChunkSource } from './streaming.js';
 
 /**
  * A serialization codec speaks the core `Graph` API directly — it never goes
@@ -18,4 +19,12 @@ export type Codec = {
   encode: (graph: Graph) => string;
   /** Deserialize into `graph` (mutating it) and return it. */
   decode: (input: string, graph: Graph) => Graph;
+  /**
+   * Streaming variants, for graphs whose serialized form is too large to hold
+   * in memory. Line-oriented formats (pg-text, CSV) implement these; single-
+   * document JSON formats do not. `encodeStream` yields the document in pieces;
+   * `decodeStream` consumes a chunk source and grows `graph` incrementally.
+   */
+  encodeStream?: (graph: Graph) => AsyncGenerator<string>;
+  decodeStream?: (source: ChunkSource, graph: Graph) => Promise<Graph>;
 };
