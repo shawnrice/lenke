@@ -9,31 +9,3 @@ export type {
   VertexAddedEvent,
   VertexRemovedEvent,
 } from './core/index.js';
-
-export {
-  serialize,
-  deserialize,
-  serializeAsync,
-  deserializeAsync,
-  serializeStream,
-  deserializeStream,
-  yieldToEventLoop,
-  codecs,
-  pgJsonCodec,
-  pgTextCodec,
-  ndjsonCodec,
-  graphsonCodec,
-  csvCodec,
-  normalizeValue,
-  normalizeBag,
-  linesFromChunks,
-  collect,
-  chunked,
-} from './serialization/index.js';
-export type {
-  Codec,
-  FormatName,
-  PropertyValue,
-  PropertyBag,
-  ChunkSource,
-} from './serialization/index.js';

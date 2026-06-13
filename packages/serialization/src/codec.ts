@@ -1,4 +1,4 @@
-import type { Graph } from '../core/Graph.js';
+import type { Graph } from '@pl-graph/core';
 import type { ChunkSource } from './streaming.js';
 
 /**

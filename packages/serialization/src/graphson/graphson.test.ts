@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { Graph } from '../../core/Graph.js';
+import { Graph } from '@pl-graph/core';
 import { graphContentEqual, randomLpgGraph } from '../testkit.js';
 import { decode, encode, graphsonCodec } from './index.js';
 

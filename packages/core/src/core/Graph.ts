@@ -1,7 +1,6 @@
 import { Emitter, EmitterEvent } from '@pl-graph/emitter';
 import { timer } from '@pl-graph/utils';
 
-import { decode as decodePgJson, encode as encodePgJson } from '../serialization/pg-json/index.js';
 import { Edge } from './Edge.js';
 import { Vertex } from './Vertex.js';
 
@@ -142,13 +141,6 @@ export class Graph {
     }
   }
 
-  /**
-   * Creates a graph from a pg-format string
-   */
-  static from(value: string): Graph {
-    return decodePgJson(value, new Graph());
-  }
-
   get size(): number {
     return this.vertices.size;
   }
@@ -199,13 +191,6 @@ export class Graph {
     next.elementProperties = new Map(this.elementProperties);
 
     return next;
-  };
-
-  /**
-   * Serializes the current graph to a pg-json string
-   */
-  public serialize = (space?: string | number): string => {
-    return encodePgJson(this, space);
   };
 
   public truncate = (): void => {
@@ -489,13 +474,6 @@ export class Graph {
   public getEdgesByLabel = (label: string): Set<Edge> => {
     return new Set(this.edgesByLabel.get(label) ?? []);
   };
-
-  /**
-   * Deserializes a string from pg-format into this graph
-   */
-  deserialize(value: string): Graph {
-    return decodePgJson(value, this);
-  }
 
   /* Event Emitter Proxy */
 
