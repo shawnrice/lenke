@@ -9,9 +9,9 @@ const arr = (r: Iterable<unknown>): unknown[] => [...r];
 describe('addV() mutation', () => {
   test('addV(label) inserts a new vertex and emits it', () => {
     const g = createTestTinkerGraph();
-    const before = g.vertices.size;
+    const before = g.vertexCount;
     const r = arr(run(traversal(addV('PERSON'), property('name', 'kuppitz')), g));
-    expect(g.vertices.size).toBe(before + 1);
+    expect(g.vertexCount).toBe(before + 1);
     expect(r).toHaveLength(1);
     const v = r[0] as { properties: Record<string, unknown>; labels: Set<string> };
     expect(v.labels.has('PERSON')).toBe(true);
@@ -27,10 +27,10 @@ describe('addV() mutation', () => {
 
   test('addV() mid-traversal emits one new vertex per upstream traverser', () => {
     const g = createTestTinkerGraph();
-    const before = g.vertices.size;
+    const before = g.vertexCount;
     // For each PERSON, create a SHADOW vertex.
     arr(run(traversal(V(), hasLabel('PERSON'), addV('SHADOW')), g));
-    expect(g.vertices.size).toBe(before + 4); // 4 persons in fixture
+    expect(g.vertexCount).toBe(before + 4); // 4 persons in fixture
     const shadows = arr(run(traversal(V(), hasLabel('SHADOW')), g));
     expect(shadows).toHaveLength(4);
   });

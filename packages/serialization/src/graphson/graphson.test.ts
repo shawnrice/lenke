@@ -147,8 +147,8 @@ describe('graphson throughput smoke', () => {
     const back = decode(json, new Graph());
     const elapsed = performance.now() - start;
 
-    expect(back.vertices.size).toBe(n);
-    expect(back.edges.size).toBe(n);
+    expect(back.vertexCount).toBe(n);
+    expect(back.edgeCount).toBe(n);
     expect(graphContentEqual(back, g)).toBe(true);
     // eslint-disable-next-line no-console
     console.log(`graphson throughput: ${2 * n} elements in ${elapsed.toFixed(1)}ms`);

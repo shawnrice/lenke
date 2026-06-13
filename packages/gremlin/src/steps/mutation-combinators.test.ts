@@ -27,14 +27,14 @@ const arr = (r: Iterable<unknown>): unknown[] => [...r];
 describe('mutation steps inside combinators', () => {
   test('repeat(addV).times(N) creates N vertices', () => {
     const g = createTestTinkerGraph();
-    const before = g.vertices.size;
+    const before = g.vertexCount;
     arr(run(traversal(V('1'), repeat(addV('PING')).times(3)), g));
-    expect(g.vertices.size).toBe(before + 3);
+    expect(g.vertexCount).toBe(before + 3);
   });
 
   test('repeat(pipe(addV, property)) chains mutations per iteration', () => {
     const g = createTestTinkerGraph();
-    const before = g.vertices.size;
+    const before = g.vertexCount;
     arr(
       run(
         traversal(
@@ -44,7 +44,7 @@ describe('mutation steps inside combinators', () => {
         g,
       ),
     );
-    expect(g.vertices.size).toBe(before + 2);
+    expect(g.vertexCount).toBe(before + 2);
     const chained = [...g.vertices].filter((v) => v.labels.has('CHAIN'));
     expect(chained).toHaveLength(2);
     for (const v of chained) {
@@ -54,7 +54,7 @@ describe('mutation steps inside combinators', () => {
 
   test('map(pipe(addV, property)) creates one vertex per upstream', () => {
     const g = createTestTinkerGraph();
-    const before = g.vertices.size;
+    const before = g.vertexCount;
     const r = arr(
       run(
         traversal(
@@ -65,15 +65,15 @@ describe('mutation steps inside combinators', () => {
         g,
       ),
     );
-    expect(g.vertices.size).toBe(before + 4);
+    expect(g.vertexCount).toBe(before + 4);
     expect(r).toHaveLength(4);
   });
 
   test('union(addV(A), addV(B)) emits two new vertices per upstream', () => {
     const g = createTestTinkerGraph();
-    const before = g.vertices.size;
+    const before = g.vertexCount;
     const r = arr(run(traversal(V('1'), union(addV('A'), addV('B'))), g));
-    expect(g.vertices.size).toBe(before + 2);
+    expect(g.vertexCount).toBe(before + 2);
     expect(r).toHaveLength(2);
     const labels = (r as Array<{ labels: Set<string> }>).map(
       (v) => [...v.labels][0],
@@ -83,7 +83,7 @@ describe('mutation steps inside combinators', () => {
 
   test('choose(test, addV) gates mutation on the test plan', () => {
     const g = createTestTinkerGraph();
-    const before = g.vertices.size;
+    const before = g.vertexCount;
     arr(
       run(
         traversal(V(), hasLabel('PERSON'), choose(identity(), addV('VISITED'))),
@@ -91,7 +91,7 @@ describe('mutation steps inside combinators', () => {
       ),
     );
     // identity test always succeeds → addV runs for every PERSON.
-    expect(g.vertices.size).toBe(before + 4);
+    expect(g.vertexCount).toBe(before + 4);
   });
 
   test('drop() inside choose deletes selectively', () => {
@@ -119,7 +119,7 @@ describe('mutation steps inside combinators', () => {
 
   test('addE inside repeat builds a chain of edges between iterations', () => {
     const g = createTestTinkerGraph();
-    const beforeE = g.edges.size;
+    const beforeE = g.edgeCount;
     // Each iteration: addV('CHAIN'), addE('NEXT') from prior to new.
     // This is a more complex use case — left as a smoke test that the
     // combination doesn't blow up.
@@ -134,19 +134,19 @@ describe('mutation steps inside combinators', () => {
     );
     // Just verify shape: 3 CHAIN vertices added, no errors.
     expect([...g.vertices].filter((v) => v.labels.has('CHAIN'))).toHaveLength(3);
-    expect(g.edges.size).toBe(beforeE);
+    expect(g.edgeCount).toBe(beforeE);
   });
 
   test('addE().to() with a sub-plan that uses out() (rooted at current traverser)', () => {
     const g = createTestTinkerGraph();
-    const before = g.edges.size;
+    const before = g.edgeCount;
     // For marko, add a SHORTCUT edge to each of his out('KNOWS') vertices.
     // The sub-plan in .to() is rooted at the current traverser, not sourced.
     // (This exercises the non-source branch of runEndpointPlan.)
     arr(run(traversal(V('1'), addE('SHORTCUT').to(pipe())), g));
     // pipe() with no args is a no-op → endpoint resolves to the input traverser
     // → self-loop on marko.
-    expect(g.edges.size).toBe(before + 1);
+    expect(g.edgeCount).toBe(before + 1);
     const created = [...g.edges].find((e) => e.labels.has('SHORTCUT'))!;
     expect(created.from.id).toBe('1');
     expect(created.to.id).toBe('1');

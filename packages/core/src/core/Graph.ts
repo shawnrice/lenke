@@ -35,10 +35,8 @@ type GraphOptions = {
 export class Graph {
   verticesById: Map<string, Vertex>;
   verticesByLabel: Map<string, Set<Vertex>>;
-  vertices: Set<Vertex>;
 
   edgesById: Map<string, Edge>;
-  edges: Set<Edge>;
   edgesByLabel: Map<string, Set<Edge>>;
   edgesFromByLabel: Map<string, Map<string, Set<Edge>>>;
   edgesToByLabel: Map<string, Map<string, Set<Edge>>>;
@@ -59,10 +57,8 @@ export class Graph {
 
   constructor(options: Partial<GraphOptions> = {}) {
     this.verticesById = new Map();
-    this.vertices = new Set();
     this.edgesById = new Map();
     this.verticesByLabel = new Map();
-    this.edges = new Set();
     this.edgesFromByLabel = new Map();
     this.edgesToByLabel = new Map();
     this.edgesByLabel = new Map();
@@ -139,12 +135,26 @@ export class Graph {
     }
   }
 
+  /**
+   * The graph's vertices, as a re-iterable view over `verticesById` (insertion
+   * order). Not a stored `Set` — membership/identity lives in `verticesById`,
+   * so iterating here costs nothing extra and inserts pay no second structure.
+   */
+  get vertices(): Iterable<Vertex> {
+    return { [Symbol.iterator]: () => this.verticesById.values() };
+  }
+
+  /** The graph's edges, as a re-iterable view over `edgesById` (insertion order). */
+  get edges(): Iterable<Edge> {
+    return { [Symbol.iterator]: () => this.edgesById.values() };
+  }
+
   get size(): number {
-    return this.vertices.size;
+    return this.verticesById.size;
   }
 
   get vertexCount(): number {
-    return this.vertices.size;
+    return this.verticesById.size;
   }
 
   get stats(): Record<'vertices' | 'edges', Record<string, number>> {
@@ -159,7 +169,7 @@ export class Graph {
   }
 
   get edgeCount(): number {
-    return this.edges.size;
+    return this.edgesById.size;
   }
 
   public subscribe = (callback: () => unknown): (() => void) => {
@@ -177,10 +187,8 @@ export class Graph {
     next.disableEvents();
 
     next.verticesById = new Map(this.verticesById);
-    next.vertices = new Set(this.vertices);
     next.edgesById = new Map(this.edgesById);
     next.verticesByLabel = new Map(this.verticesByLabel);
-    next.edges = new Set(this.edges);
     next.edgesFromByLabel = new Map(this.edgesFromByLabel);
     next.edgesToByLabel = new Map(this.edgesToByLabel);
     next.edgesByLabel = new Map(this.edgesByLabel);
@@ -192,10 +200,8 @@ export class Graph {
 
   public truncate = (): void => {
     this.verticesById = new Map();
-    this.vertices = new Set();
     this.edgesById = new Map();
     this.verticesByLabel = new Map();
-    this.edges = new Set();
     this.edgesFromByLabel = new Map();
     this.edgesToByLabel = new Map();
     this.edgesByLabel = new Map();
@@ -260,7 +266,6 @@ export class Graph {
       return vertex;
     }
 
-    this.vertices.add(vertex);
     this.verticesById.set(vertex.id, vertex);
 
     for (const label of vertex.labels) {
@@ -297,7 +302,6 @@ export class Graph {
       this.deIndexVertexLabel(label, vertex);
     }
 
-    this.vertices.delete(vertex);
     this.verticesById.delete(vertex.id);
 
     vertex.evict();
@@ -356,7 +360,6 @@ export class Graph {
       return edge;
     }
 
-    this.edges.add(edge);
     this.edgesById.set(edge.id, edge);
 
     for (const label of edge.labels) {
@@ -378,7 +381,6 @@ export class Graph {
     }
 
     this.edgesById.delete(edge.id);
-    this.edges.delete(edge);
 
     edge.evict();
 
@@ -426,18 +428,6 @@ export class Graph {
   };
 
   /* Query methods */
-
-  public hasVertex = (vertex: Vertex | string): boolean => {
-    if (typeof vertex === 'string') {
-      return this.verticesById.has(vertex);
-    }
-
-    return this.vertices.has(vertex);
-  };
-
-  public owns = (x: Vertex | Edge): boolean => {
-    return (Vertex.isVertex(x) && this.vertices.has(x)) || (Edge.isEdge(x) && this.edges.has(x));
-  };
 
   public getVertexById = (id: string): Vertex | null => {
     return this.verticesById.get(id) ?? null;
