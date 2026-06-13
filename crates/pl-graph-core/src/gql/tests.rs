@@ -391,7 +391,118 @@ fn edge_property_aggregate() {
     assert_eq!(r, vec![vec![n(0.4 + 1.0 + 0.4 + 0.2), n(4.0)]]);
 }
 
+#[test]
+fn two_match_clauses() {
+    let mut g = modern();
+    let r = rows(&mut g, "MATCH (a:Person {name:'marko'}) MATCH (a)-[:KNOWS]->(b) RETURN b.name ORDER BY b.name");
+    assert_eq!(r, vec![vec![s("josh")], vec![s("vadas")]]);
+}
+
+#[test]
+fn with_carries_element_forward() {
+    let mut g = modern();
+    let r = rows(&mut g, "MATCH (a:Person {name:'josh'}) WITH a MATCH (a)-[:CREATED]->(x) RETURN x.name ORDER BY x.name");
+    assert_eq!(r, vec![vec![s("lop")], vec![s("ripple")]]);
+}
+
+#[test]
+fn not_exists_subquery() {
+    let mut g = modern();
+    // vadas is the only Person who created nothing.
+    let r = rows(&mut g, "MATCH (n:Person) WHERE NOT EXISTS { (n)-[:CREATED]->() } RETURN n.name ORDER BY n.name");
+    assert_eq!(r, vec![vec![s("vadas")]]);
+}
+
+#[test]
+fn exists_with_inner_where() {
+    let mut g = modern();
+    let r = rows(&mut g, "MATCH (n:Person) WHERE EXISTS { (n)-[:CREATED]->(s) WHERE s.name = 'ripple' } RETURN n.name");
+    assert_eq!(r, vec![vec![s("josh")]]);
+}
+
+#[test]
+fn count_over_empty_is_zero() {
+    let mut g = modern();
+    assert_eq!(rows(&mut g, "MATCH (n:Ghost) RETURN count(*) AS c"), vec![vec![n(0.0)]]);
+}
+
+#[test]
+fn min_max_over_empty_is_null() {
+    let mut g = modern();
+    let r = rows(&mut g, "MATCH (n:Ghost) RETURN min(n.age) AS lo, max(n.age) AS hi");
+    assert_eq!(r, vec![vec![Value::Null, Value::Null]]);
+}
+
+#[test]
+fn order_by_multiple_keys() {
+    let mut g = modern();
+    let r = rows(&mut g, "MATCH (p:Person)-[:CREATED]->(s:Software) RETURN p.name, s.name ORDER BY s.name, p.name");
+    assert_eq!(
+        r,
+        vec![
+            vec![s("josh"), s("lop")],
+            vec![s("marko"), s("lop")],
+            vec![s("peter"), s("lop")],
+            vec![s("josh"), s("ripple")],
+        ]
+    );
+}
+
+#[test]
+fn order_by_alias() {
+    let mut g = modern();
+    let r = rows(&mut g, "MATCH (n:Person) RETURN n.name AS who, n.age AS yrs ORDER BY yrs DESC LIMIT 2");
+    assert_eq!(r, vec![vec![s("peter"), n(35.0)], vec![s("josh"), n(32.0)]]);
+}
+
+#[test]
+fn coalesce_and_nullif() {
+    let mut g = modern();
+    let r = rows(&mut g, "RETURN coalesce(null, null, 7) AS a, nullif(3, 3) AS b, nullif(3, 4) AS c");
+    assert_eq!(r, vec![vec![n(7.0), Value::Null, n(3.0)]]);
+}
+
+#[test]
+fn multi_stage_with_aggregate_filter() {
+    let mut g = modern();
+    // group, aggregate, filter on the aggregate, then return.
+    let r = rows(
+        &mut g,
+        "MATCH (p:Person)-[:CREATED]->(s:Software) WITH s.name AS sw, count(*) AS c WHERE c > 1 RETURN sw, c",
+    );
+    assert_eq!(r, vec![vec![s("lop"), n(3.0)]]);
+}
+
+#[test]
+fn with_star_carries_all_vars() {
+    let mut g = modern();
+    let r = rows(
+        &mut g,
+        "MATCH (a:Person {name:'marko'})-[:KNOWS]->(b) WITH * WHERE b.age > 28 RETURN b.name ORDER BY b.name",
+    );
+    assert_eq!(r, vec![vec![s("josh")]]);
+}
+
+#[test]
+fn undirected_var_length() {
+    let mut g = modern();
+    // From vadas, KNOWS is incoming (marko→vadas); undirected reaches marko,
+    // then marko's other KNOWS reaches josh.
+    let r = rows(&mut g, "MATCH (a:Person {name:'vadas'})-[:KNOWS]-*(b) RETURN b.name ORDER BY b.name");
+    assert_eq!(r, vec![vec![s("josh")], vec![s("marko")], vec![s("vadas")]]);
+}
+
 // --- write clauses (the graph is mutable) -----------------------------------
+
+#[test]
+fn insert_multi_label_node() {
+    let mut g = modern();
+    // ISO label conjunction `:A&B` names both labels on creation.
+    let r = rows(&mut g, "INSERT (n:Person&Admin {name:'root'}) RETURN n.name");
+    assert_eq!(r, vec![vec![s("root")]]);
+    assert_eq!(rows(&mut g, "MATCH (n:Admin) RETURN n.name"), vec![vec![s("root")]]);
+    assert_eq!(rows(&mut g, "MATCH (n:Person&Admin) RETURN n.name"), vec![vec![s("root")]]);
+}
 
 #[test]
 fn insert_node_then_return() {

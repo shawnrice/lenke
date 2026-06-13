@@ -46,11 +46,6 @@ impl Binding {
             self.0.push((k.to_string(), v));
         }
     }
-    fn with(&self, k: &str, v: Val) -> Binding {
-        let mut b = self.clone();
-        b.set(k, v);
-        b
-    }
     fn iter(&self) -> impl Iterator<Item = &(String, Val)> {
         self.0.iter()
     }
@@ -449,12 +444,10 @@ fn eval(env: &Env, expr: &Expr) -> Val {
             else_.as_ref().map(|e| eval(env, e)).unwrap_or(Val::Null)
         }
         Expr::Exists { patterns, where_ } => {
-            let ms = match_patterns(env.graph, patterns, where_.as_deref(), env.binding, env.params);
-            Val::Bool(!ms.is_empty())
+            Val::Bool(any_match(env.graph, patterns, where_.as_deref(), env.binding, env.params))
         }
         Expr::CountSubquery { patterns, where_ } => {
-            let ms = match_patterns(env.graph, patterns, where_.as_deref(), env.binding, env.params);
-            Val::Num(ms.len() as f64)
+            Val::Num(count_matches(env.graph, patterns, where_.as_deref(), env.binding, env.params) as f64)
         }
         Expr::Func { name, args, distinct, star } => {
             if AGGREGATES.contains(&name.as_str()) {
@@ -643,10 +636,23 @@ fn consistent(binding: &Binding, name: Option<&str>, value: &Val) -> bool {
     }
 }
 
-fn with_opt(binding: &Binding, name: Option<&str>, value: Val) -> Binding {
+/// Bind `value` to `name` in place for the duration of a recursion branch,
+/// returning whether a *new* entry was pushed (so the caller can `bind_pop` it
+/// on backtrack). A consistent already-bound variable is left untouched. This is
+/// the backtracking alternative to cloning the binding at every step.
+fn bind_push(binding: &mut Binding, name: Option<&str>, value: Val) -> bool {
     match name {
-        None => binding.clone(),
-        Some(n) => binding.with(n, value),
+        Some(n) if !binding.has(n) => {
+            binding.0.push((n.to_string(), value));
+            true
+        }
+        _ => false,
+    }
+}
+
+fn bind_pop(binding: &mut Binding, pushed: bool) {
+    if pushed {
+        binding.0.pop();
     }
 }
 
@@ -685,44 +691,50 @@ fn candidate_vertices(graph: &Graph, label: Option<&LabelExpr>) -> Vec<u32> {
     }
 }
 
-/// Expand one segment from `v`: `(edge index, neighbor)` per the direction and
-/// edge-type label expression.
-fn expand(graph: &Graph, v: u32, direction: Direction, label: Option<&LabelExpr>) -> Vec<(u32, u32)> {
-    let ok = |etype: u32| label.is_none_or(|e| eval_label_edge(graph, etype, e));
-    let mut out = Vec::new();
-    if matches!(direction, Direction::Out | Direction::Both) {
-        for a in graph.out_adj(v) {
-            if ok(a.etype) {
-                out.push((a.eidx, a.nbr));
-            }
-        }
-    }
-    if matches!(direction, Direction::In | Direction::Both) {
-        for a in graph.in_adj(v) {
-            if ok(a.etype) {
-                out.push((a.eidx, a.nbr));
-            }
-        }
-    }
-    out
+/// Expand one segment from `v` as `(edge index, neighbor)` per the direction and
+/// edge-type label expression — a lazy iterator (no intermediate `Vec`), so a
+/// short-circuiting consumer stops walking adjacency as soon as it's satisfied.
+fn expand<'a>(
+    graph: &'a Graph,
+    v: u32,
+    direction: Direction,
+    label: Option<&'a LabelExpr>,
+) -> impl Iterator<Item = (u32, u32)> + 'a {
+    let out = matches!(direction, Direction::Out | Direction::Both).then(|| graph.out_adj(v));
+    let inn = matches!(direction, Direction::In | Direction::Both).then(|| graph.in_adj(v));
+    out.into_iter()
+        .flatten()
+        .chain(inn.into_iter().flatten())
+        .filter(move |a| label.is_none_or(|e| eval_label_edge(graph, a.etype, e)))
+        .map(|a| (a.eidx, a.nbr))
 }
 
-fn match_node(graph: &Graph, binding: &Binding, node: &NodePattern, vi: u32, params: &Params) -> Option<Binding> {
-    if !matches_label(graph, vi, node.label.as_ref()) {
-        return None;
+/// Try to match `node` at vertex `vi`, extending `binding` *in place* and
+/// invoking `cont` on success, then restoring the binding. Returns `false` only
+/// if `cont` asked to stop the whole traversal (propagated upward).
+fn match_node_then(
+    graph: &Graph,
+    binding: &mut Binding,
+    node: &NodePattern,
+    vi: u32,
+    params: &Params,
+    cont: &mut dyn FnMut(&mut Binding) -> bool,
+) -> bool {
+    if !matches_label(graph, vi, node.label.as_ref())
+        || !consistent(binding, node.variable.as_deref(), &Val::Node(vi))
+    {
+        return true; // no match here, but keep going
     }
-    let val = Val::Node(vi);
-    if !consistent(binding, node.variable.as_deref(), &val) {
-        return None;
-    }
-    let bound = with_opt(binding, node.variable.as_deref(), val);
-    if !satisfies(graph, &Val::Node(vi), &node.props, node.where_.as_ref(), &bound, params) {
-        return None;
-    }
-    Some(bound)
+    let pushed = bind_push(binding, node.variable.as_deref(), Val::Node(vi));
+    let go = satisfies(graph, &Val::Node(vi), &node.props, node.where_.as_ref(), binding, params);
+    let keep = if go { cont(binding) } else { true };
+    bind_pop(binding, pushed);
+    keep
 }
 
 /// Vertices reachable from `from` in [min, max] hops of `rel` (var-length).
+/// Returns just the endpoints — no per-hop path bookkeeping, since the segment
+/// binds neither the edge variable nor a per-edge predicate.
 fn reachable(graph: &Graph, from: u32, rel: &RelPattern, q: Quantifier) -> Vec<u32> {
     let cap = q.max.unwrap_or(graph.n as u32 + 1);
     let mut result: Vec<u32> = Vec::new();
@@ -760,87 +772,126 @@ fn reachable(graph: &Graph, from: u32, rel: &RelPattern, q: Quantifier) -> Vec<u
     result
 }
 
+/// Walk the remaining segments of `pattern` from `from`, emitting each complete
+/// binding via `emit`. Returns `false` to propagate a consumer's stop request.
 fn walk_segments(
     graph: &Graph,
     pattern: &PathPattern,
     index: usize,
     from: u32,
-    binding: &Binding,
+    binding: &mut Binding,
     params: &Params,
-    out: &mut Vec<Binding>,
-) {
+    emit: &mut dyn FnMut(&mut Binding) -> bool,
+) -> bool {
     if index >= pattern.segments.len() {
-        out.push(binding.clone());
-        return;
+        return emit(binding);
     }
     let Segment { rel, node } = &pattern.segments[index];
     if let Some(q) = rel.quantifier {
         // Var-length: edge variable / per-edge predicate not bound (known simplification).
         for end in reachable(graph, from, rel, q) {
-            if let Some(m) = match_node(graph, binding, node, end, params) {
-                walk_segments(graph, pattern, index + 1, end, &m, params, out);
+            let stop = !match_node_then(graph, binding, node, end, params, &mut |b| {
+                walk_segments(graph, pattern, index + 1, end, b, params, emit)
+            });
+            if stop {
+                return false;
             }
         }
-        return;
+        return true;
     }
     for (eidx, nbr) in expand(graph, from, rel.direction, rel.label.as_ref()) {
-        let edge = Val::Edge(eidx);
-        if !consistent(binding, rel.variable.as_deref(), &edge) {
+        if !consistent(binding, rel.variable.as_deref(), &Val::Edge(eidx)) {
             continue;
         }
-        let with_edge = with_opt(binding, rel.variable.as_deref(), edge);
-        if !satisfies(graph, &Val::Edge(eidx), &rel.props, rel.where_.as_ref(), &with_edge, params) {
-            continue;
-        }
-        if let Some(m) = match_node(graph, &with_edge, node, nbr, params) {
-            walk_segments(graph, pattern, index + 1, nbr, &m, params, out);
+        let pushed = bind_push(binding, rel.variable.as_deref(), Val::Edge(eidx));
+        let ok = satisfies(graph, &Val::Edge(eidx), &rel.props, rel.where_.as_ref(), binding, params);
+        let keep = if ok {
+            match_node_then(graph, binding, node, nbr, params, &mut |b| {
+                walk_segments(graph, pattern, index + 1, nbr, b, params, emit)
+            })
+        } else {
+            true
+        };
+        bind_pop(binding, pushed);
+        if !keep {
+            return false;
         }
     }
+    true
 }
 
-fn match_pattern(graph: &Graph, pattern: &PathPattern, binding: &Binding, params: &Params) -> Vec<Binding> {
+/// Seed and match a single path pattern, emitting each binding via `emit`.
+fn visit_pattern(
+    graph: &Graph,
+    pattern: &PathPattern,
+    binding: &mut Binding,
+    params: &Params,
+    emit: &mut dyn FnMut(&mut Binding) -> bool,
+) -> bool {
     let seeds: Vec<u32> = match pattern.start.variable.as_deref() {
         Some(v) if binding.has(v) => match binding.get(v) {
             Some(Val::Node(i)) => vec![*i],
-            _ => vec![],
+            _ => return true,
         },
         _ => candidate_vertices(graph, pattern.start.label.as_ref()),
     };
-    let mut out = Vec::new();
     for seed in seeds {
-        if let Some(seeded) = match_node(graph, binding, &pattern.start, seed, params) {
-            walk_segments(graph, pattern, 0, seed, &seeded, params, &mut out);
+        let keep = match_node_then(graph, binding, &pattern.start, seed, params, &mut |b| {
+            walk_segments(graph, pattern, 0, seed, b, params, emit)
+        });
+        if !keep {
+            return false;
         }
     }
-    out
+    true
 }
 
-/// Extend a binding through every pattern, then filter by an optional WHERE.
-fn match_patterns(
+/// Extend a binding through every pattern (nested), filter by an optional WHERE,
+/// and emit each surviving binding. Returns `false` if `emit` asked to stop —
+/// which is how `EXISTS` short-circuits after the first match.
+fn visit_patterns(
     graph: &Graph,
     patterns: &[PathPattern],
+    idx: usize,
     where_: Option<&Expr>,
-    binding: &Binding,
+    binding: &mut Binding,
     params: &Params,
-) -> Vec<Binding> {
-    let mut stream = vec![binding.clone()];
-    for pattern in patterns {
-        let mut next = Vec::new();
-        for b in &stream {
-            next.extend(match_pattern(graph, pattern, b, params));
+    emit: &mut dyn FnMut(&mut Binding) -> bool,
+) -> bool {
+    if idx >= patterns.len() {
+        if let Some(w) = where_ {
+            let env = Env { graph, binding, params, group: None };
+            if as_truth(&eval(&env, w)) != Some(true) {
+                return true; // filtered out, keep going
+            }
         }
-        stream = next;
+        return emit(binding);
     }
-    match where_ {
-        None => stream,
-        Some(w) => stream
-            .into_iter()
-            .filter(|b| {
-                let env = Env { graph, binding: b, params, group: None };
-                as_truth(&eval(&env, w)) == Some(true)
-            })
-            .collect(),
-    }
+    visit_pattern(graph, &patterns[idx], binding, params, &mut |b| {
+        visit_patterns(graph, patterns, idx + 1, where_, b, params, emit)
+    })
+}
+
+/// Does the (correlated) sub-pattern have at least one match? Short-circuits.
+fn any_match(graph: &Graph, patterns: &[PathPattern], where_: Option<&Expr>, binding: &Binding, params: &Params) -> bool {
+    let mut found = false;
+    let mut work = binding.clone();
+    visit_patterns(graph, patterns, 0, where_, &mut work, params, &mut |_| {
+        found = true;
+        false // stop at the first match
+    });
+    found
+}
+
+/// Count matches of the (correlated) sub-pattern.
+fn count_matches(graph: &Graph, patterns: &[PathPattern], where_: Option<&Expr>, binding: &Binding, params: &Params) -> u64 {
+    let mut count = 0u64;
+    let mut work = binding.clone();
+    visit_patterns(graph, patterns, 0, where_, &mut work, params, &mut |_| {
+        count += 1;
+        true
+    });
+    count
 }
 
 /// Variables a pattern introduces (for OPTIONAL MATCH null-binding).
@@ -865,8 +916,15 @@ fn pattern_vars(patterns: &[PathPattern]) -> Vec<String> {
 fn run_match(graph: &Graph, clause: &MatchClause, bindings: Vec<Binding>, params: &Params) -> Vec<Binding> {
     let mut out = Vec::new();
     for b in &bindings {
-        let matched = match_patterns(graph, &clause.patterns, clause.where_.as_ref(), b, params);
-        if matched.is_empty() && clause.optional {
+        let mut work = b.clone();
+        let before = out.len();
+        // Clone into `out` only when a full binding is actually emitted; the walk
+        // itself mutates `work` in place and backtracks.
+        visit_patterns(graph, &clause.patterns, 0, clause.where_.as_ref(), &mut work, params, &mut |m| {
+            out.push(m.clone());
+            true
+        });
+        if out.len() == before && clause.optional {
             let mut filled = b.clone();
             for v in pattern_vars(&clause.patterns) {
                 if !filled.has(&v) {
@@ -874,8 +932,6 @@ fn run_match(graph: &Graph, clause: &MatchClause, bindings: Vec<Binding>, params
                 }
             }
             out.push(filled);
-        } else {
-            out.extend(matched);
         }
     }
     out
