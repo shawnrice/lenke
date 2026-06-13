@@ -31,7 +31,9 @@ export class Edge {
     this.#id = id;
     this.#graph = graph;
     this.labels = labels;
-    this.properties = { ...properties };
+    // The setter already defensively copies into the graph's element map;
+    // spreading here as well would clone the properties a second time.
+    this.properties = properties;
     this.#from = from instanceof Vertex ? from.id : from;
     this.#to = to instanceof Vertex ? to.id : to;
   }

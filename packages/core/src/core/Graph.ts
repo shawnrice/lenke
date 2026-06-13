@@ -1,8 +1,6 @@
 import { Emitter, EmitterEvent } from '@pl-graph/emitter';
 import { timer } from '@pl-graph/utils';
 
-import { deserialize } from '../pg-format/deserialize.js';
-import { serialize } from '../pg-format/serialize.js';
 import { Edge } from './Edge.js';
 import { Vertex } from './Vertex.js';
 
@@ -37,14 +35,11 @@ type GraphOptions = {
 export class Graph {
   verticesById: Map<string, Vertex>;
   verticesByLabel: Map<string, Set<Vertex>>;
-  vertices: Set<Vertex>;
 
   edgesById: Map<string, Edge>;
-  edges: Set<Edge>;
   edgesByLabel: Map<string, Set<Edge>>;
   edgesFromByLabel: Map<string, Map<string, Set<Edge>>>;
   edgesToByLabel: Map<string, Map<string, Set<Edge>>>;
-  edgesByVertex: Map<string, Set<Edge>>;
 
   eagerSnapshot: boolean;
 
@@ -62,13 +57,10 @@ export class Graph {
 
   constructor(options: Partial<GraphOptions> = {}) {
     this.verticesById = new Map();
-    this.vertices = new Set();
     this.edgesById = new Map();
     this.verticesByLabel = new Map();
-    this.edges = new Set();
     this.edgesFromByLabel = new Map();
     this.edgesToByLabel = new Map();
-    this.edgesByVertex = new Map();
     this.edgesByLabel = new Map();
 
     this.elementLabels = new Map();
@@ -144,18 +136,25 @@ export class Graph {
   }
 
   /**
-   * Creates a graph from a pg-format string
+   * The graph's vertices, as a re-iterable view over `verticesById` (insertion
+   * order). Not a stored `Set` — membership/identity lives in `verticesById`,
+   * so iterating here costs nothing extra and inserts pay no second structure.
    */
-  static from(value: string): Graph {
-    return deserialize(value, new Graph());
+  get vertices(): Iterable<Vertex> {
+    return { [Symbol.iterator]: () => this.verticesById.values() };
+  }
+
+  /** The graph's edges, as a re-iterable view over `edgesById` (insertion order). */
+  get edges(): Iterable<Edge> {
+    return { [Symbol.iterator]: () => this.edgesById.values() };
   }
 
   get size(): number {
-    return this.vertices.size;
+    return this.verticesById.size;
   }
 
   get vertexCount(): number {
-    return this.vertices.size;
+    return this.verticesById.size;
   }
 
   get stats(): Record<'vertices' | 'edges', Record<string, number>> {
@@ -170,7 +169,7 @@ export class Graph {
   }
 
   get edgeCount(): number {
-    return this.edges.size;
+    return this.edgesById.size;
   }
 
   public subscribe = (callback: () => unknown): (() => void) => {
@@ -188,13 +187,10 @@ export class Graph {
     next.disableEvents();
 
     next.verticesById = new Map(this.verticesById);
-    next.vertices = new Set(this.vertices);
     next.edgesById = new Map(this.edgesById);
     next.verticesByLabel = new Map(this.verticesByLabel);
-    next.edges = new Set(this.edges);
     next.edgesFromByLabel = new Map(this.edgesFromByLabel);
     next.edgesToByLabel = new Map(this.edgesToByLabel);
-    next.edgesByVertex = new Map(this.edgesByVertex);
     next.edgesByLabel = new Map(this.edgesByLabel);
     next.elementLabels = new Map(this.elementLabels);
     next.elementProperties = new Map(this.elementProperties);
@@ -202,22 +198,12 @@ export class Graph {
     return next;
   };
 
-  /**
-   * Serializes the current graph to a pg-json string
-   */
-  public serialize = (space?: string | number): string => {
-    return serialize(this, space);
-  };
-
   public truncate = (): void => {
     this.verticesById = new Map();
-    this.vertices = new Set();
     this.edgesById = new Map();
     this.verticesByLabel = new Map();
-    this.edges = new Set();
     this.edgesFromByLabel = new Map();
     this.edgesToByLabel = new Map();
-    this.edgesByVertex = new Map();
     this.edgesByLabel = new Map();
     this.elementLabels = new Map();
     this.elementProperties = new Map();
@@ -272,9 +258,7 @@ export class Graph {
       return this.getVertexById(params.id)!;
     }
 
-    const vertex = Vertex.isVertex(params)
-      ? params
-      : new Vertex({ ...params, graph: this });
+    const vertex = Vertex.isVertex(params) ? params : new Vertex({ ...params, graph: this });
 
     const event = this.emit(new EmitterEvent('@graph/VertexAdded', vertex));
 
@@ -282,7 +266,6 @@ export class Graph {
       return vertex;
     }
 
-    this.vertices.add(vertex);
     this.verticesById.set(vertex.id, vertex);
 
     for (const label of vertex.labels) {
@@ -311,9 +294,7 @@ export class Graph {
       return vertex;
     }
 
-    const edges = this.edgesByVertex.get(vertex.id) ?? new Set();
-
-    for (const edge of edges) {
+    for (const edge of this.incidentEdges(vertex.id)) {
       this.removeEdge(edge);
     }
 
@@ -321,7 +302,6 @@ export class Graph {
       this.deIndexVertexLabel(label, vertex);
     }
 
-    this.vertices.delete(vertex);
     this.verticesById.delete(vertex.id);
 
     vertex.evict();
@@ -367,9 +347,7 @@ export class Graph {
       return this.getEdgeById(params.id)!;
     }
 
-    const edge = Edge.isEdge(params)
-      ? params
-      : new Edge({ ...params, graph: this });
+    const edge = Edge.isEdge(params) ? params : new Edge({ ...params, graph: this });
 
     if (!edge.from || !edge.to) {
       console.error('Cannot create edge with missing vertices.');
@@ -382,23 +360,11 @@ export class Graph {
       return edge;
     }
 
-    this.edges.add(edge);
     this.edgesById.set(edge.id, edge);
 
     for (const label of edge.labels) {
       this.indexEdgeLabel(label, edge);
     }
-
-    if (!this.edgesByVertex.has(edge.to.id)) {
-      this.edgesByVertex.set(edge.to.id, new Set());
-    }
-
-    if (!this.edgesByVertex.has(edge.from.id)) {
-      this.edgesByVertex.set(edge.from.id, new Set());
-    }
-
-    this.edgesByVertex.get(edge.to.id)?.add(edge);
-    this.edgesByVertex.get(edge.from.id)?.add(edge);
 
     return edge;
   };
@@ -414,11 +380,7 @@ export class Graph {
       this.deIndexEdgeLabel(label, edge);
     }
 
-    this.edgesByVertex.get(edge.to.id)?.delete(edge);
-    this.edgesByVertex.get(edge.from.id)?.delete(edge);
-
     this.edgesById.delete(edge.id);
-    this.edges.delete(edge);
 
     edge.evict();
 
@@ -467,18 +429,6 @@ export class Graph {
 
   /* Query methods */
 
-  public hasVertex = (vertex: Vertex | string): boolean => {
-    if (typeof vertex === 'string') {
-      return this.verticesById.has(vertex);
-    }
-
-    return this.vertices.has(vertex);
-  };
-
-  public owns = (x: Vertex | Edge): boolean => {
-    return (Vertex.isVertex(x) && this.vertices.has(x)) || (Edge.isEdge(x) && this.edges.has(x));
-  };
-
   public getVertexById = (id: string): Vertex | null => {
     return this.verticesById.get(id) ?? null;
   };
@@ -494,13 +444,6 @@ export class Graph {
   public getEdgesByLabel = (label: string): Set<Edge> => {
     return new Set(this.edgesByLabel.get(label) ?? []);
   };
-
-  /**
-   * Deserializes a string from pg-format into this graph
-   */
-  deserialize(value: string): Graph {
-    return deserialize(value, this);
-  }
 
   /* Event Emitter Proxy */
 
@@ -535,6 +478,29 @@ export class Graph {
   };
 
   /* Internal Methods */
+
+  /**
+   * Every edge incident to `id`, in either direction, reconstructed from the
+   * directional label indexes (the union of every per-label bucket under the
+   * vertex in `edgesFromByLabel` and `edgesToByLabel`). A `Set` dedupes the two
+   * directions for self-loops. This is the cascade source for `removeVertex` —
+   * it relies on the LPG invariant that every edge carries at least one label
+   * (enforced by both the GQL and Gremlin layers), so it appears under some
+   * bucket. We keep no separate per-vertex edge index, since vertex removal is
+   * the only reader and it is far colder than the edge-insert path that index
+   * would tax.
+   */
+  private readonly incidentEdges = (id: string): Set<Edge> => {
+    const incident = new Set<Edge>();
+    for (const byLabel of [this.edgesFromByLabel.get(id), this.edgesToByLabel.get(id)]) {
+      for (const bucket of byLabel?.values() ?? []) {
+        for (const edge of bucket) {
+          incident.add(edge);
+        }
+      }
+    }
+    return incident;
+  };
 
   private readonly indexVertexLabel = (label: string, vertex: Vertex): void => {
     if (!this.verticesByLabel.has(label)) {

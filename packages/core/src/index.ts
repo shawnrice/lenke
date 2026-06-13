@@ -9,4 +9,3 @@ export type {
   VertexAddedEvent,
   VertexRemovedEvent,
 } from './core/index.js';
-
