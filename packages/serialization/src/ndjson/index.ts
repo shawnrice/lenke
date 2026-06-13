@@ -1,4 +1,4 @@
-import type { Graph } from '../../core/Graph.js';
+import type { Graph } from '@pl-graph/core';
 import type { Codec } from '../codec.js';
 import { type ChunkSource, linesFromChunks } from '../streaming.js';
 import { normalizeBag, type PropertyValue } from '../value.js';

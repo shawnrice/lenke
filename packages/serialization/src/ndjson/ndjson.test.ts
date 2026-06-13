@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { Graph } from '../../core/Graph.js';
+import { Graph } from '@pl-graph/core';
 import { chunked, collect } from '../streaming.js';
 import { graphContentEqual, randomLpgGraph } from '../testkit.js';
 import { decode, decodeStream, encode, encodeStream, ndjsonCodec } from './index.js';

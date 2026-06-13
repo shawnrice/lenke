@@ -1,6 +1,6 @@
 import { normalizeBag } from '../value.js';
 
-import type { Graph } from '../../core/Graph.js';
+import type { Graph } from '@pl-graph/core';
 import type { Codec } from '../codec.js';
 import type { ChunkSource } from '../streaming.js';
 import type { PropertyValue } from '../value.js';

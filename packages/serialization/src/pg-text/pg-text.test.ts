@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { Graph } from '../../core/Graph.js';
+import { Graph } from '@pl-graph/core';
 import { chunked, collect } from '../streaming.js';
 import type { PropertyValue } from '../value.js';
 import { decode, decodeStream, encode, encodeStream, pgTextCodec } from './index.js';

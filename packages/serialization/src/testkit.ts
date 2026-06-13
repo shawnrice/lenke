@@ -1,4 +1,4 @@
-import { Graph } from '../core/Graph.js';
+import { Graph } from '@pl-graph/core';
 import type { PropertyValue } from './value.js';
 
 /**
