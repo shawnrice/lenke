@@ -867,6 +867,49 @@ const matchNode = (
   return bound;
 };
 
+/** A scalar the property index can seek on (mirrors PropertyIndex's IndexableValue). */
+const isScalar = (v: unknown): boolean =>
+  v === null ||
+  typeof v === 'string' ||
+  typeof v === 'boolean' ||
+  (typeof v === 'number' && !Number.isNaN(v));
+
+/**
+ * Seed candidates for a node pattern. An ISO element-pattern equality —
+ * `(n:Person {name: 'marko'})` — on an indexed key seeks the index bucket
+ * instead of scanning every vertex; the most selective such constraint wins.
+ * `matchNode` still re-validates label + every constraint + WHERE, so the seed
+ * only has to be a superset. Falls back to the label-narrowed scan otherwise.
+ */
+const seedVertices = function* (
+  graph: Graph,
+  node: CNode,
+  binding: Binding,
+  params: Params,
+): Iterable<Vertex> {
+  let best: Set<Vertex> | undefined;
+  let bestSize = Infinity;
+  for (const { key, value } of node.pred.props) {
+    if (!graph.vertexPropertyIndex.isIndexed(key)) {
+      continue;
+    }
+    const v = value({ binding, params, graph });
+    if (!isScalar(v)) {
+      continue;
+    }
+    const set = graph.vertexPropertyIndex.equals(key, v) ?? new Set<Vertex>();
+    if (set.size < bestSize) {
+      bestSize = set.size;
+      best = set;
+    }
+  }
+  if (best) {
+    yield* best;
+    return;
+  }
+  yield* candidateVertices(graph, node.label);
+};
+
 /** Yield every binding that extends `binding` by matching `pattern`. */
 const matchPattern = function* (
   graph: Graph,
@@ -875,11 +918,12 @@ const matchPattern = function* (
   params: Params,
 ): Iterable<Binding> {
   // Seed the start node: reuse an already-bound vertex if the variable is
-  // known, otherwise scan candidates narrowed by label.
+  // known, otherwise seed from an indexed property constraint or, failing that,
+  // scan candidates narrowed by label.
   const seeds: Iterable<Vertex> =
     pattern.start.variable && binding.has(pattern.start.variable)
       ? [binding.get(pattern.start.variable) as Vertex]
-      : candidateVertices(graph, pattern.start.label);
+      : seedVertices(graph, pattern.start, binding, params);
 
   for (const seed of seeds) {
     const seeded = matchNode(binding, pattern.start, seed, params, graph);
@@ -1284,7 +1328,10 @@ const runLinear = (linear: CLinear, graph: Graph, params: Params): Row[] => {
         bindings =
           clause.where === undefined
             ? projected
-            : filter((b: Binding) => clause.where!({ binding: b, params, graph }) === true, projected);
+            : filter(
+                (b: Binding) => clause.where!({ binding: b, params, graph }) === true,
+                projected,
+              );
         break;
       }
       case 'insert':
