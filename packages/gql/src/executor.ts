@@ -18,7 +18,13 @@ import type {
   SetItem,
   SetOp,
 } from './ast.js';
-import { candidateVertices, expand, labelsMatch, matchesLabel } from './graph-queries.js';
+import {
+  candidateCount,
+  candidateVertices,
+  expand,
+  labelsMatch,
+  matchesLabel,
+} from './graph-queries.js';
 
 /**
  * The executor turns a parsed `Query` into result rows by *pattern matching*:
@@ -1159,6 +1165,60 @@ const seedVertices = function* (
   yield* candidateVertices(graph, node.label);
 };
 
+/** The estimated number of seed vertices for starting a pattern at `node`. */
+const estimateSeed = (graph: Graph, node: CNode, binding: Binding, params: Params): number => {
+  // An already-bound variable seeds from exactly one vertex.
+  if (node.variable && binding.has(node.variable)) {
+    return 1;
+  }
+  const env: EvalEnv = { binding, params, graph };
+  let best = Infinity;
+  for (const candidate of indexCandidates(graph, node, env)) {
+    best = Math.min(best, candidate.count);
+  }
+  return best === Infinity ? candidateCount(graph, node.label) : best;
+};
+
+const FLIP_DIRECTION: Record<RelPattern['direction'], RelPattern['direction']> = {
+  out: 'in',
+  in: 'out',
+  both: 'both',
+};
+
+/**
+ * Walk a fixed-length path from its other end: reverse the segment order and
+ * flip each relationship's direction. The matched bindings are identical (same
+ * edges, same nodes); only the seed side — and thus enumeration order — changes.
+ */
+const reversePath = (path: CPath): CPath => {
+  const nodes = [path.start, ...path.segments.map((s) => s.node)];
+  const segments: CSegment[] = [];
+  for (let i = path.segments.length - 1; i >= 0; i--) {
+    const seg = path.segments[i]!;
+    segments.push({
+      rel: { ...seg.rel, direction: FLIP_DIRECTION[seg.rel.direction] },
+      node: nodes[i]!,
+    });
+  }
+  return { start: nodes[nodes.length - 1]!, segments };
+};
+
+/**
+ * Pick which end of a fixed-length path to seed from: the side with the smaller
+ * estimated seed, so the join starts from the more selective anchor. Patterns
+ * with a variable-length segment keep their written orientation (reversing a
+ * quantified walk is not handled here).
+ */
+const orient = (graph: Graph, pattern: CPath, binding: Binding, params: Params): CPath => {
+  if (pattern.segments.length === 0 || pattern.segments.some((s) => s.rel.quantifier)) {
+    return pattern;
+  }
+  const endNode = pattern.segments[pattern.segments.length - 1]!.node;
+  const startEst = estimateSeed(graph, pattern.start, binding, params);
+  const endEst = estimateSeed(graph, endNode, binding, params);
+  return endEst < startEst ? reversePath(pattern) : pattern;
+};
+
 /** Yield every binding that extends `binding` by matching `pattern`. */
 const matchPattern = function* (
   graph: Graph,
@@ -1166,18 +1226,20 @@ const matchPattern = function* (
   binding: Binding,
   params: Params,
 ): Iterable<Binding> {
-  // Seed the start node: reuse an already-bound vertex if the variable is
-  // known, otherwise seed from an indexed property constraint or, failing that,
-  // scan candidates narrowed by label.
+  // Seed from whichever end is more selective, then walk from there.
+  const path = orient(graph, pattern, binding, params);
+
+  // Reuse an already-bound vertex if the start variable is known, otherwise
+  // seed from an indexed constraint or a label-narrowed scan.
   const seeds: Iterable<Vertex> =
-    pattern.start.variable && binding.has(pattern.start.variable)
-      ? [binding.get(pattern.start.variable) as Vertex]
-      : seedVertices(graph, pattern.start, binding, params);
+    path.start.variable && binding.has(path.start.variable)
+      ? [binding.get(path.start.variable) as Vertex]
+      : seedVertices(graph, path.start, binding, params);
 
   for (const seed of seeds) {
-    const seeded = matchNode(binding, pattern.start, seed, params, graph);
+    const seeded = matchNode(binding, path.start, seed, params, graph);
     if (seeded) {
-      yield* walkSegments(graph, pattern, 0, seed, seeded, params);
+      yield* walkSegments(graph, path, 0, seed, seeded, params);
     }
   }
 };
@@ -1338,20 +1400,25 @@ const compileClause = (clause: Clause): CClause => {
   switch (clause.kind) {
     case 'match': {
       const patterns = clause.patterns.map(compilePath);
-      // Lift seekable conjuncts of the clause WHERE onto each pattern's start
-      // node, so a `MATCH (a:Person) WHERE a.name = 'marko'` seeds like the
-      // inline `(a:Person {name: 'marko'})` form does.
+      // Lift seekable conjuncts of the clause WHERE onto every pattern node by
+      // variable — not just the start — so either end of a pattern can be the
+      // seed side. `MATCH (a:Person) WHERE a.name = 'marko'` then seeds like the
+      // inline `(a:Person {name: 'marko'})` form, and a constraint on the far
+      // end lets `orient` start the walk from there.
       if (clause.where) {
         const hints: HintMap = new Map();
         collectHints(clause.where, hints);
-        for (const path of patterns) {
-          const extra = path.start.variable ? hints.get(path.start.variable) : undefined;
-          if (extra) {
-            path.start = {
-              ...path.start,
-              seedHints: coalesceRangeHints([...(path.start.seedHints ?? []), ...extra]),
-            };
-          }
+        const attach = (node: CNode): CNode => {
+          const extra = node.variable ? hints.get(node.variable) : undefined;
+          return extra
+            ? { ...node, seedHints: coalesceRangeHints([...(node.seedHints ?? []), ...extra]) }
+            : node;
+        };
+        for (let i = 0; i < patterns.length; i++) {
+          patterns[i] = {
+            start: attach(patterns[i]!.start),
+            segments: patterns[i]!.segments.map((s) => ({ rel: s.rel, node: attach(s.node) })),
+          };
         }
       }
       return {

@@ -141,3 +141,16 @@ export const candidateVertices = function* (
     yield* bucket;
   }
 };
+
+/**
+ * How many vertices `candidateVertices` would scan for this label — the label
+ * bucket size, or the whole graph when no single label is guaranteed. A cheap
+ * cardinality estimate for choosing which end of a pattern to seed from.
+ */
+export const candidateCount = (graph: Graph, label: LabelExpr | undefined): number => {
+  const seed = seedLabel(label);
+  if (seed === null) {
+    return graph.verticesById.size;
+  }
+  return graph.verticesByLabel.get(seed)?.size ?? 0;
+};

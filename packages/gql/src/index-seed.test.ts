@@ -131,3 +131,53 @@ describe('GQL WHERE-derived seed hints', () => {
     expect(sorted(indexed, 'p.age')).toEqual([29]);
   });
 });
+
+describe('GQL smaller-side seed selection', () => {
+  // The selective constraint is on the *far* end of the pattern, so the planner
+  // should seed from there and walk the relationship backwards.
+  test('seeds from the selective far end and walks back (results match the scan)', () => {
+    const plain = createTestSocialGraph();
+    const indexed = createTestSocialGraph();
+    indexed.createVertexIndex('name');
+
+    const q = `MATCH (a:Person)-[:KNOWS]->(b:Person) WHERE b.name = 'josh' RETURN a.name`;
+    expect(sorted(query(indexed, q), 'a.name')).toEqual(sorted(query(plain, q), 'a.name'));
+    expect(sorted(query(indexed, q), 'a.name')).toEqual(['marko']); // marko KNOWS josh
+  });
+
+  test('far-end element-map constraint also drives the seed side', () => {
+    const plain = createTestSocialGraph();
+    const indexed = createTestSocialGraph();
+    indexed.createVertexIndex('name');
+    const q = `MATCH (a:Person)-[:KNOWS]->(b:Person {name: 'vadas'}) RETURN a.name`;
+    expect(sorted(query(indexed, q), 'a.name')).toEqual(sorted(query(plain, q), 'a.name'));
+    expect(sorted(query(indexed, q), 'a.name')).toEqual(['marko']); // marko KNOWS vadas
+  });
+
+  test('a variable-length segment keeps its orientation and still matches', () => {
+    const plain = createTestSocialGraph();
+    const indexed = createTestSocialGraph();
+    indexed.createVertexIndex('name');
+    const q = `MATCH (a:Person)-[:KNOWS]->{1,2}(b:Person) WHERE b.name = 'josh' RETURN a.name`;
+    expect(sorted(query(indexed, q), 'a.name')).toEqual(sorted(query(plain, q), 'a.name'));
+  });
+
+  test('an unlabeled start seeds the indexed far end instead of a full scan', () => {
+    const plain = createTestSocialGraph();
+    const indexed = createTestSocialGraph();
+    indexed.createVertexIndex('name');
+    // `a` has no label (a whole-graph scan); seeding from b=josh avoids it.
+    const q = `MATCH (a)-[:KNOWS]->(b:Person) WHERE b.name = 'josh' RETURN a.name`;
+    expect(sorted(query(indexed, q), 'a.name')).toEqual(sorted(query(plain, q), 'a.name'));
+    expect(sorted(query(indexed, q), 'a.name')).toEqual(['marko']);
+  });
+
+  test('multi-hop pattern seeds from the selective end either way', () => {
+    const plain = createTestSocialGraph();
+    const indexed = createTestSocialGraph();
+    indexed.createVertexIndex('name');
+    // marko -KNOWS-> josh -CREATED-> ripple/lop
+    const q = `MATCH (a:Person {name: 'marko'})-[:KNOWS]->(b)-[:CREATED]->(c) RETURN c.name`;
+    expect(sorted(query(indexed, q), 'c.name')).toEqual(sorted(query(plain, q), 'c.name'));
+  });
+});
