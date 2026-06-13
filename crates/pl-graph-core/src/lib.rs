@@ -11,6 +11,7 @@
 //! later wasm-bindgen) over the same functions.
 
 pub mod ffi;
+pub mod gql;
 pub mod graph;
 pub mod ndjson;
 pub mod query;

@@ -24,7 +24,7 @@ const lib = dlopen(
 
 describe('pl-graph-core over bun:ffi', () => {
   test('abi version probe', () => {
-    expect(lib.symbols.plg_abi_version()).toBe(1);
+    expect(lib.symbols.plg_abi_version()).toBe(3);
   });
 
   test('build_csr groups edges by source, identical to the Rust unit test', () => {

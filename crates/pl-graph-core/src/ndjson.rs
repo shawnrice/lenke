@@ -2,12 +2,11 @@
 //! `type:"node"|"edge"`. Decoding parses lines **in parallel** (rayon) — the
 //! axis single-threaded JS can't match — then assembles serially.
 //!
-//! Scope note: this experimental core models edge *type* (first label) but not
-//! edge properties, so benchmark graphs use vertex-only properties to keep the
-//! round-trip faithful. Property objects nested in values coerce to null (not
-//! in the LPG scalar/list value model).
+//! Scope note: an edge's *type* is its first label. Edge **properties** are
+//! supported (same columnar store as vertex properties). Property objects nested
+//! in values coerce to null (not in the LPG scalar/list value model).
 
-use crate::graph::{Builder, Column, EdgeRec, Graph, NodeRec, Value};
+use crate::graph::{Builder, Column, Dict, EdgeRec, Graph, NodeRec, Properties, Value};
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 use serde_json::Value as J;
@@ -67,7 +66,12 @@ fn parse_line(line: &str) -> Option<Rec> {
                 .and_then(J::as_str)
                 .unwrap_or("")
                 .to_string();
-            Some(Rec::Edge(EdgeRec { src, dst, etype }))
+            let props = obj
+                .get("properties")
+                .and_then(J::as_object)
+                .map(|m| m.iter().map(|(k, v)| (k.clone(), to_value(v))).collect())
+                .unwrap_or_default();
+            Some(Rec::Edge(EdgeRec { src, dst, etype, props }))
         }
         _ => None,
     }
@@ -151,61 +155,75 @@ fn push_value(out: &mut String, v: &Value) {
     }
 }
 
-/// Is property `col` present at vertex `vi`?
-fn col_present(col: &Column, vi: usize) -> bool {
+/// Is property `col` present at element `idx`?
+fn col_present(col: &Column, idx: usize) -> bool {
     match col {
         Column::Num { present, .. } | Column::Str { present, .. } | Column::Bool { present, .. } => {
-            present.get(vi)
+            present.get(idx)
         }
-        Column::Mixed { data } => data[vi].is_some(),
+        Column::Mixed { data } => data[idx].is_some(),
     }
+}
+
+/// Emit the `{...}` body of an element's properties from a columnar store —
+/// shared by node and edge encoding. `strs` backs the string columns.
+fn push_props(out: &mut String, store: &Properties, strs: &Dict, idx: usize) {
+    out.push('{');
+    let mut first = true;
+    for (&kid, col) in &store.cols {
+        if !col_present(col, idx) {
+            continue;
+        }
+        if !first {
+            out.push(',');
+        }
+        first = false;
+        push_json_str(out, store.keys.text(kid));
+        out.push(':');
+        match col {
+            Column::Num { data, .. } => push_num(out, data[idx]),
+            Column::Str { data, .. } => push_json_str(out, strs.text(data[idx])),
+            Column::Bool { data, .. } => out.push_str(if data[idx] { "true" } else { "false" }),
+            Column::Mixed { data } => push_value(out, data[idx].as_ref().unwrap()),
+        }
+    }
+    out.push('}');
 }
 
 /// Encode a columnar graph back to NDJSON (nodes then edges). Builds the string
 /// directly — no per-record `serde_json::Value` allocation.
 pub fn encode(g: &Graph) -> String {
-    let mut out = String::with_capacity(g.n * 64 + g.edge_count() * 48);
+    let mut out = String::with_capacity(g.vertex_count() * 64 + g.edge_count() * 48);
     for vi in 0..g.n {
+        if !g.is_vertex_live(vi as u32) {
+            continue; // skip tombstoned vertices
+        }
         out.push_str("{\"type\":\"node\",\"id\":");
         push_json_str(&mut out, g.vid.text(vi as u32));
         out.push_str(",\"labels\":[");
-        let s = g.vlabel_off[vi] as usize;
-        let e = g.vlabel_off[vi + 1] as usize;
-        for (i, &l) in g.vlabel_flat[s..e].iter().enumerate() {
+        for (i, &l) in g.vertex_labels(vi as u32).iter().enumerate() {
             if i > 0 {
                 out.push(',');
             }
             push_json_str(&mut out, g.labels.text(l));
         }
-        out.push_str("],\"properties\":{");
-        let mut first = true;
-        for (&kid, col) in &g.cols {
-            if !col_present(col, vi) {
-                continue;
-            }
-            if !first {
-                out.push(',');
-            }
-            first = false;
-            push_json_str(&mut out, g.keys.text(kid));
-            out.push(':');
-            match col {
-                Column::Num { data, .. } => push_num(&mut out, data[vi]),
-                Column::Str { data, .. } => push_json_str(&mut out, g.strs.text(data[vi])),
-                Column::Bool { data, .. } => out.push_str(if data[vi] { "true" } else { "false" }),
-                Column::Mixed { data } => push_value(&mut out, data[vi].as_ref().unwrap()),
-            }
-        }
-        out.push_str("}}\n");
+        out.push_str("],\"properties\":");
+        push_props(&mut out, &g.props, &g.strs, vi);
+        out.push_str("}\n");
     }
-    for i in 0..g.edge_count() {
+    for i in 0..g.edge_slots() {
+        if !g.is_edge_live(i as u32) {
+            continue; // skip tombstoned edges
+        }
         out.push_str("{\"type\":\"edge\",\"from\":");
         push_json_str(&mut out, g.vid.text(g.e_src[i]));
         out.push_str(",\"to\":");
         push_json_str(&mut out, g.vid.text(g.e_dst[i]));
         out.push_str(",\"labels\":[");
         push_json_str(&mut out, g.etype.text(g.e_type[i]));
-        out.push_str("],\"properties\":{}}\n");
+        out.push_str("],\"properties\":");
+        push_props(&mut out, &g.edge_props, &g.strs, i);
+        out.push_str("}\n");
     }
     out
 }
@@ -228,8 +246,8 @@ mod tests {
         assert_eq!(g2.n, 2);
         assert_eq!(g2.edge_count(), 1);
         // age column present and correct
-        let age_kid = g2.keys.get("age").unwrap();
-        match &g2.cols[&age_kid] {
+        let age_kid = g2.props.keys.get("age").unwrap();
+        match &g2.props.cols[&age_kid] {
             Column::Num { data, .. } => {
                 let a = g2.vid.get("a").unwrap() as usize;
                 assert_eq!(data[a], 30.0);
