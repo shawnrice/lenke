@@ -10,6 +10,7 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
+use std::rc::Rc;
 
 use super::ast::{ArithOp, CompareOp, Direction, Lit, Quantifier, SetOp, SetOpKind};
 use super::lexer::SyntaxError;
@@ -17,7 +18,7 @@ use super::plan::{
     lower, AggFn, CClause, CExpr, CLabelExpr, CLinear, CNode, CPath, CProjection, CPropConstraint, CQuery, CRel,
     CRemoveItem, CSegment, CSetItem, ScalarFn,
 };
-use crate::graph::{Graph, Value};
+use crate::graph::{Column, Graph, Value};
 use crate::query::RowSet;
 
 /// A runtime value. Extends the core [`Value`] with graph-element handles
@@ -28,7 +29,8 @@ pub enum Val {
     Null,
     Bool(bool),
     Num(f64),
-    Str(String),
+    /// Interned string: cloning is a refcount bump, not an allocation.
+    Str(Rc<str>),
     List(Vec<Val>),
     Node(u32),
     Edge(u32),
@@ -194,11 +196,16 @@ fn js_str(graph: &Graph, v: &Val) -> String {
         Val::Null => "null".to_string(),
         Val::Bool(b) => b.to_string(),
         Val::Num(n) => js_num(*n),
-        Val::Str(s) => s.clone(),
+        Val::Str(s) => s.to_string(),
         Val::Node(i) => graph.vid.text(*i).to_string(),
         Val::Edge(i) => format!("e{i}"),
         Val::List(items) => items.iter().map(|x| js_str(graph, x)).collect::<Vec<_>>().join(","),
     }
+}
+
+/// Make a `Val::Str` from anything that can produce an owned/borrowed `str`.
+fn vstr(s: impl Into<Rc<str>>) -> Val {
+    Val::Str(s.into())
 }
 
 /// Structural / identity equality (Null == Null is true). Used by `=` (after a
@@ -298,7 +305,7 @@ fn value_to_val(v: &Value) -> Val {
         Value::Null => Val::Null,
         Value::Bool(b) => Val::Bool(*b),
         Value::Num(n) => Val::Num(*n),
-        Value::Str(s) => Val::Str(s.clone()),
+        Value::Str(s) => vstr(s.as_str()),
         Value::List(items) => Val::List(items.iter().map(value_to_val).collect()),
     }
 }
@@ -310,7 +317,7 @@ fn val_to_value(graph: &Graph, v: &Val) -> Value {
         Val::Null => Value::Null,
         Val::Bool(b) => Value::Bool(*b),
         Val::Num(n) => Value::Num(*n),
-        Val::Str(s) => Value::Str(s.clone()),
+        Val::Str(s) => Value::Str(s.to_string()),
         Val::List(items) => Value::List(items.iter().map(|x| val_to_value(graph, x)).collect()),
         Val::Node(i) => Value::Str(graph.vid.text(*i).to_string()),
         Val::Edge(i) => Value::Str(format!("e{i}")),
@@ -326,9 +333,15 @@ fn prop_of(graph: &Graph, ctx: &Ctx, bound: &Val, key_ref: usize) -> Val {
         Val::Edge(ei) => (&graph.edge_props, ctx.prop_keys[key_ref].1, *ei as usize),
         _ => return Val::Null,
     };
-    match kid {
-        Some(kid) => value_to_val(&store.value_id(idx, kid, &graph.strs)),
-        None => Val::Null,
+    let Some(kid) = kid else { return Val::Null };
+    // Read the column directly: a string property is a refcount bump (Rc clone),
+    // not an allocation; numbers/bools are copied; Mixed converts.
+    match store.cols.get(kid as usize) {
+        Some(Column::Num { data, present }) if present.get(idx) => Val::Num(data[idx]),
+        Some(Column::Bool { data, present }) if present.get(idx) => Val::Bool(data[idx]),
+        Some(Column::Str { data, present }) if present.get(idx) => Val::Str(graph.strs.rc(data[idx])),
+        Some(Column::Mixed { data }) => data[idx].as_ref().map(value_to_val).unwrap_or(Val::Null),
+        _ => Val::Null,
     }
 }
 
@@ -380,7 +393,7 @@ fn eval(env: &Env, expr: &CExpr) -> Val {
             Lit::Null => Val::Null,
             Lit::Bool(b) => Val::Bool(*b),
             Lit::Num(n) => Val::Num(*n),
-            Lit::Str(s) => Val::Str(s.clone()),
+            Lit::Str(s) => vstr(s.as_str()),
         },
         CExpr::Var(slot) => env.binding.get(*slot).cloned().unwrap_or(Val::Null),
         CExpr::Param(slot) => env.ctx.params.get(*slot).cloned().unwrap_or(Val::Null),
@@ -413,7 +426,7 @@ fn eval(env: &Env, expr: &CExpr) -> Val {
             if is_nullish(&lv) || is_nullish(&rv) {
                 Val::Null
             } else {
-                Val::Str(js_str(env.graph, &lv) + &js_str(env.graph, &rv))
+                vstr(js_str(env.graph, &lv) + &js_str(env.graph, &rv))
             }
         }
         CExpr::Not(e) => truth_to_val(not3(as_truth(&eval(env, e)))),
@@ -586,11 +599,11 @@ fn call_scalar(graph: &Graph, func: ScalarFn, args: &[Val]) -> Val {
         Tanh => un(f64::tanh),
         Degrees => un(f64::to_degrees),
         Radians => un(f64::to_radians),
-        Upper => us(|s| Val::Str(s.to_uppercase())),
-        Lower => us(|s| Val::Str(s.to_lowercase())),
-        Trim => us(|s| Val::Str(s.trim().to_string())),
-        Ltrim => us(|s| Val::Str(s.trim_start().to_string())),
-        Rtrim => us(|s| Val::Str(s.trim_end().to_string())),
+        Upper => us(|s| vstr(s.to_uppercase())),
+        Lower => us(|s| vstr(s.to_lowercase())),
+        Trim => us(|s| vstr(s.trim())),
+        Ltrim => us(|s| vstr(s.trim_start())),
+        Rtrim => us(|s| vstr(s.trim_end())),
         CharLength => us(|s| Val::Num(s.chars().count() as f64)),
         Power => bn(|x, y| x.powf(y)),
         Mod => bn(|x, y| x % y),
@@ -604,7 +617,7 @@ fn call_scalar(graph: &Graph, func: ScalarFn, args: &[Val]) -> Val {
             (Some(x), Some(y)) if !is_nullish(x) && !is_nullish(y) => {
                 let s = js_str(graph, x);
                 let n = num_of(y).unwrap_or(0.0).max(0.0) as usize;
-                Val::Str(s.chars().take(n).collect())
+                vstr(s.chars().take(n).collect::<String>())
             }
             _ => Val::Null,
         },
@@ -613,10 +626,10 @@ fn call_scalar(graph: &Graph, func: ScalarFn, args: &[Val]) -> Val {
                 let s: Vec<char> = js_str(graph, x).chars().collect();
                 let n = num_of(y).unwrap_or(0.0);
                 if n <= 0.0 {
-                    Val::Str(String::new())
+                    vstr("")
                 } else {
                     let n = (n as usize).min(s.len());
-                    Val::Str(s[s.len() - n..].iter().collect())
+                    vstr(s[s.len() - n..].iter().collect::<String>())
                 }
             }
             _ => Val::Null,
@@ -628,8 +641,8 @@ fn call_scalar(graph: &Graph, func: ScalarFn, args: &[Val]) -> Val {
             _ => Val::Null,
         },
         ElementId => match a {
-            Some(Val::Node(i)) => Val::Str(graph.vid.text(*i).to_string()),
-            Some(Val::Edge(i)) => Val::Str(format!("e{i}")),
+            Some(Val::Node(i)) => Val::Str(graph.vid.rc(*i)),
+            Some(Val::Edge(i)) => vstr(format!("e{i}")),
             _ => Val::Null,
         },
         Unknown => Val::Null,

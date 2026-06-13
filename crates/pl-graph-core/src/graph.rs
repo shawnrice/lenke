@@ -14,12 +14,16 @@
 //! bitset. Vertices and edges share the same [`Properties`] store type.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
-/// String interner: `intern` is amortized O(1), `text` reverses.
+/// String interner backed by `Rc<str>`: `intern` is amortized O(1), `text`
+/// reverses, and `rc` hands out a cheap shared clone (refcount bump, no alloc)
+/// — so a string property read/propagated through a query never re-allocates;
+/// only producing an owned output `Value` does.
 #[derive(Default, Debug)]
 pub struct Dict {
-    map: HashMap<String, u32>,
-    pub strings: Vec<String>,
+    map: HashMap<Rc<str>, u32>,
+    pub strings: Vec<Rc<str>>,
 }
 
 impl Dict {
@@ -28,8 +32,9 @@ impl Dict {
             return id;
         }
         let id = self.strings.len() as u32;
-        self.strings.push(s.to_string());
-        self.map.insert(s.to_string(), id);
+        let rc: Rc<str> = Rc::from(s);
+        self.strings.push(rc.clone());
+        self.map.insert(rc, id);
         id
     }
     pub fn get(&self, s: &str) -> Option<u32> {
@@ -37,6 +42,10 @@ impl Dict {
     }
     pub fn text(&self, id: u32) -> &str {
         &self.strings[id as usize]
+    }
+    /// A shared clone of the interned string (refcount bump, no allocation).
+    pub fn rc(&self, id: u32) -> Rc<str> {
+        self.strings[id as usize].clone()
     }
     pub fn len(&self) -> usize {
         self.strings.len()

@@ -119,7 +119,7 @@ fn main() {
     // Prepared (lower once) vs per-call (lower every run).
     let q = "MATCH (n:Person) WHERE n.name = $who RETURN n.age AS age";
     let mut p = Params::new();
-    p.insert("who".to_string(), pl_graph_core::gql::eval::Val::Str("name123".to_string()));
+    p.insert("who".to_string(), pl_graph_core::gql::eval::Val::Str("name123".into()));
     let iters = 2000u32;
 
     let plan = prepare(q).unwrap();

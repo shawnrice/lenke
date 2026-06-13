@@ -315,7 +315,7 @@ fn property_map_and_inline_where() {
 fn parameters() {
     let mut g = modern();
     let mut params = Params::new();
-    params.insert("who".to_string(), super::eval::Val::Str("vadas".to_string()));
+    params.insert("who".to_string(), super::eval::Val::Str("vadas".into()));
     let r = qp(&mut g, "MATCH (n:Person) WHERE n.name = $who RETURN n.age", params);
     assert_eq!(r, vec![vec![n(27.0)]]);
 }
@@ -328,11 +328,11 @@ fn prepared_plan_reused_with_params() {
     let plan = super::prepare("MATCH (n:Person) WHERE n.name = $who RETURN n.age AS age").unwrap();
 
     let mut p1 = Params::new();
-    p1.insert("who".to_string(), Val::Str("marko".to_string()));
+    p1.insert("who".to_string(), Val::Str("marko".into()));
     assert_eq!(plan.execute(&mut g, &p1).unwrap().rows, vec![vec![n(29.0)]]);
 
     let mut p2 = Params::new();
-    p2.insert("who".to_string(), Val::Str("josh".to_string()));
+    p2.insert("who".to_string(), Val::Str("josh".into()));
     assert_eq!(plan.execute(&mut g, &p2).unwrap().rows, vec![vec![n(32.0)]]);
 }
 
@@ -342,7 +342,7 @@ fn prepared_write_persists() {
     let mut g = modern();
     let ins = super::prepare("INSERT (n:Person {name: $nm, age: $age}) RETURN n.name").unwrap();
     let mut p = Params::new();
-    p.insert("nm".to_string(), Val::Str("zoe".to_string()));
+    p.insert("nm".to_string(), Val::Str("zoe".into()));
     p.insert("age".to_string(), Val::Num(40.0));
     assert_eq!(ins.execute(&mut g, &p).unwrap().rows, vec![vec![s("zoe")]]);
     assert_eq!(rows(&mut g, "MATCH (n:Person) RETURN count(*) AS c"), vec![vec![n(5.0)]]);
