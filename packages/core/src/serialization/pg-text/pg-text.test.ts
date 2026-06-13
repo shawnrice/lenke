@@ -1,8 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '../../core/Graph.js';
+import { chunked, collect } from '../streaming.js';
 import type { PropertyValue } from '../value.js';
-import { decode, encode, pgTextCodec } from './index.js';
+import { decode, decodeStream, encode, encodeStream, pgTextCodec } from './index.js';
 
 const lines = (g: Graph): string[] => encode(g).split('\n');
 
@@ -226,5 +227,63 @@ describe('pg-text: round-trip (representable subset)', () => {
     console.log(`pg-text throughput: 10000 elements in ${ms.toFixed(1)}ms`);
     expect([...decoded.vertices]).toHaveLength(5000);
     expect([...decoded.edges]).toHaveLength(5000);
+  });
+});
+
+describe('pg-text: streaming', () => {
+  test('encodeStream, collected, decodes back to the same graph', async () => {
+    const g = representableGraph(11);
+    const text = await collect(encodeStream(g));
+    expect(equalUpToEdgeIds(decode(text, new Graph()), g)).toBe(true);
+  });
+
+  test('decodeStream from tiny (line-splitting) chunks equals decode', async () => {
+    const g = representableGraph(12);
+    const back = await decodeStream(chunked(encode(g), 3), new Graph());
+    expect(equalUpToEdgeIds(back, g)).toBe(true);
+  });
+
+  test('encodeStream → 1-byte chunks → decodeStream round-trips, 100 seeds', async () => {
+    for (let seed = 0; seed < 100; seed += 1) {
+      const g = representableGraph(seed);
+      const text = await collect(encodeStream(g));
+      const back = await decodeStream(chunked(text, 1), new Graph());
+      expect(equalUpToEdgeIds(back, g), `seed=${seed}`).toBe(true);
+    }
+  });
+
+  test('reassembles a multi-byte character split across byte chunks', async () => {
+    const g = new Graph();
+    g.addVertex({ id: 'n', labels: [], properties: { emoji: '🚀x—é' } });
+    const bytes = new TextEncoder().encode(encode(g));
+    const byteByByte: AsyncIterable<Uint8Array> = {
+      async *[Symbol.asyncIterator]() {
+        for (const b of bytes) {
+          yield new Uint8Array([b]);
+        }
+      },
+    };
+    const back = await decodeStream(byteByByte, new Graph());
+    expect(back.getVertexById('n')!.properties).toEqual({ emoji: '🚀x—é' });
+  });
+
+  test('pipes a 50k-element graph encodeStream → decodeStream (no full string)', async () => {
+    const g = new Graph();
+    g.disableEvents();
+    const nodes = [];
+    for (let i = 0; i < 25000; i += 1) {
+      nodes.push(g.addVertex({ id: `n${i}`, labels: ['N'], properties: { a: i } }));
+    }
+    for (let i = 0; i < 25000; i += 1) {
+      g.addEdge({ from: nodes[i]!, to: nodes[(i + 1) % 25000]!, labels: ['R'], properties: {} });
+    }
+    g.enableEvents();
+    const start = performance.now();
+    const back = await decodeStream(encodeStream(g), new Graph());
+    console.log(
+      `pg-text stream pipe: 50000 elements in ${(performance.now() - start).toFixed(1)}ms`,
+    );
+    expect([...back.vertices]).toHaveLength(25000);
+    expect([...back.edges]).toHaveLength(25000);
   });
 });

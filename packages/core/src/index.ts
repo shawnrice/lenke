@@ -13,6 +13,8 @@ export type {
 export {
   serialize,
   deserialize,
+  serializeStream,
+  deserializeStream,
   codecs,
   pgJsonCodec,
   pgTextCodec,
@@ -20,5 +22,14 @@ export {
   csvCodec,
   normalizeValue,
   normalizeBag,
+  linesFromChunks,
+  collect,
+  chunked,
 } from './serialization/index.js';
-export type { Codec, FormatName, PropertyValue, PropertyBag } from './serialization/index.js';
+export type {
+  Codec,
+  FormatName,
+  PropertyValue,
+  PropertyBag,
+  ChunkSource,
+} from './serialization/index.js';

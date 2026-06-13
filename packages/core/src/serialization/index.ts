@@ -4,10 +4,13 @@ import { csvCodec } from './csv/index.js';
 import { graphsonCodec } from './graphson/index.js';
 import { pgJsonCodec } from './pg-json/index.js';
 import { pgTextCodec } from './pg-text/index.js';
+import type { ChunkSource } from './streaming.js';
 
 export type { Codec } from './codec.js';
 export type { PropertyValue, PropertyBag } from './value.js';
 export { normalizeValue, normalizeBag } from './value.js';
+export type { ChunkSource } from './streaming.js';
+export { linesFromChunks, collect, chunked } from './streaming.js';
 
 export { pgJsonCodec } from './pg-json/index.js';
 export { pgTextCodec } from './pg-text/index.js';
@@ -41,3 +44,25 @@ export const serialize = (graph: Graph, format: FormatName): string =>
 /** Deserialize a string in the named format into `graph` (mutating it). */
 export const deserialize = (input: string, format: FormatName, graph: Graph): Graph =>
   codecFor(format).decode(input, graph);
+
+/** Stream-serialize a graph in the named format (line-oriented formats only). */
+export const serializeStream = (graph: Graph, format: FormatName): AsyncGenerator<string> => {
+  const codec = codecFor(format);
+  if (!codec.encodeStream) {
+    throw new Error(`Format '${format}' does not support streaming`);
+  }
+  return codec.encodeStream(graph);
+};
+
+/** Stream-deserialize from a chunk source into `graph` (line-oriented formats only). */
+export const deserializeStream = (
+  source: ChunkSource,
+  format: FormatName,
+  graph: Graph,
+): Promise<Graph> => {
+  const codec = codecFor(format);
+  if (!codec.decodeStream) {
+    throw new Error(`Format '${format}' does not support streaming`);
+  }
+  return codec.decodeStream(source, graph);
+};
