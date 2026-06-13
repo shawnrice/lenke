@@ -37,44 +37,44 @@ footer{color:var(--dim);font-size:13px;margin-top:50px;border-top:1px solid var(
 </header>
 
 <div class="tldr">
-<div class="card"><div class="big">315×</div><div class="lab">fastest query speedup (Rust vs TS gql)</div></div>
+<div class="card"><div class="big">359×</div><div class="lab">fastest query speedup (Rust vs TS gql)</div></div>
 <div class="card"><div class="big">7×</div><div class="lab">graph build at 1,000,000 vertices</div></div>
-<div class="card"><div class="big">4.2×</div><div class="lab">NEON predicate scan vs scalar</div></div>
+<div class="card"><div class="big">4.3×</div><div class="lab">NEON predicate scan vs scalar</div></div>
 <div class="card"><div class="big">4 ns</div><div class="lab">per FFI call (the fixed tax)</div></div>
 </div>
 
-<p class="lead">Short version: <b>Rust wins decisively on throughput</b> — graph build, traversal queries, and scans are one to two orders of magnitude faster, and the TS gql executor <b>can't complete large traversals at all</b> (it overflows the stack on big result sets). The catch is a fixed <b>~4 ns FFI tax per call</b> and a marshalling cost on encode — so for tiny graphs or chatty per-element calls the boundary eats the win. The crossover is small graphs / interactive frontend use (stay TS) vs. bulk load + heavy query throughput (go Rust).</p>
+<p class="lead">Short version: <b>Rust wins decisively on throughput</b> — graph build, traversal queries, and scans are one to two orders of magnitude faster. (The first run also surfaced a real <i>bug</i>: the TS executor overflowed the stack on big result sets; that's now fixed by streaming through the fp helpers, so the gap is speed, not capability.) The catch is a fixed <b>~4 ns FFI tax per call</b> — so for tiny graphs or chatty per-element calls the boundary eats the win. The crossover: small graphs / interactive frontend use (stay TS) vs. bulk load + heavy query throughput (go Rust).</p>
 
 <h2>Graph build (NDJSON decode → indexed graph)</h2>
 <p>The columnar build is a counting-sort into CSR; <code>rustParallel</code> uses rayon to parse lines across cores. This is the bulk-load path.</p>
 <table><thead><tr><th>vertices</th><th>edges</th><th>input</th><th>TS</th><th>Rust ∥</th><th>Rust serial</th><th>speedup</th><th>rayon gain</th></tr></thead><tbody><tr>
     <td class="num">1,000</td><td class="num dim">4,000</td><td class="num dim">0.5 MB</td>
-    <td class="num">4.58 ms</td>
-    <td class="num">1.57 ms</td>
+    <td class="num">4.54 ms</td>
+    <td class="num">1.50 ms</td>
     <td class="num dim">3.52 ms</td>
-    <td><span class="b win">2.9×</span></td>
-    <td class="num dim">2.2×</td>
+    <td><span class="b win">3.0×</span></td>
+    <td class="num dim">2.3×</td>
   </tr><tr>
     <td class="num">10,000</td><td class="num dim">40,000</td><td class="num dim">4.7 MB</td>
-    <td class="num">57.65 ms</td>
-    <td class="num">12.70 ms</td>
-    <td class="num dim">36.16 ms</td>
-    <td><span class="b win">4.5×</span></td>
-    <td class="num dim">2.8×</td>
+    <td class="num">49.63 ms</td>
+    <td class="num">12.24 ms</td>
+    <td class="num dim">34.97 ms</td>
+    <td><span class="b win">4.1×</span></td>
+    <td class="num dim">2.9×</td>
   </tr><tr>
     <td class="num">100,000</td><td class="num dim">400,000</td><td class="num dim">48.6 MB</td>
-    <td class="num">1.41 s</td>
-    <td class="num">131.83 ms</td>
-    <td class="num dim">364.08 ms</td>
-    <td><span class="b big">11×</span></td>
-    <td class="num dim">2.8×</td>
+    <td class="num">1.16 s</td>
+    <td class="num">124.28 ms</td>
+    <td class="num dim">360.06 ms</td>
+    <td><span class="b win">9.4×</span></td>
+    <td class="num dim">2.9×</td>
   </tr><tr>
     <td class="num">1,000,000</td><td class="num dim">4,000,000</td><td class="num dim">500.2 MB</td>
-    <td class="num">20.82 s</td>
-    <td class="num">3.06 s</td>
-    <td class="num dim">5.59 s</td>
-    <td><span class="b win">6.8×</span></td>
-    <td class="num dim">1.8×</td>
+    <td class="num">18.16 s</td>
+    <td class="num">2.45 s</td>
+    <td class="num dim">4.94 s</td>
+    <td><span class="b win">7.4×</span></td>
+    <td class="num dim">2.0×</td>
   </tr></tbody></table>
 
 <h2>Queries (identical GQL strings, both engines)</h2>
@@ -82,120 +82,132 @@ footer{color:var(--dim);font-size:13px;margin-top:50px;border-top:1px solid var(
 <h3>Q1 — label scan count</h3><pre class="q">MATCH (a:Person) RETURN count(*)</pre>
   <table><thead><tr><th>vertices</th><th>TS gql</th><th>Rust</th><th>speedup</th><th>rows</th></tr></thead><tbody><tr>
         <td class="num">1,000</td>
-        <td class="num">378 µs</td>
+        <td class="num">427 µs</td>
         <td class="num">4 µs</td>
-        <td><span class="b huge">95×</span></td>
+        <td><span class="b huge">103×</span></td>
         <td class="num dim">1,000</td>
       </tr><tr>
         <td class="num">10,000</td>
-        <td class="num">2.63 ms</td>
+        <td class="num">2.23 ms</td>
         <td class="num">26 µs</td>
-        <td><span class="b huge">102×</span></td>
+        <td><span class="b huge">86×</span></td>
         <td class="num dim">10,000</td>
       </tr><tr>
         <td class="num">100,000</td>
-        <td class="num">42.50 ms</td>
-        <td class="num">248 µs</td>
-        <td><span class="b huge">171×</span></td>
+        <td class="num">47.70 ms</td>
+        <td class="num">301 µs</td>
+        <td><span class="b huge">158×</span></td>
         <td class="num dim">100,000</td>
       </tr><tr>
         <td class="num">1,000,000</td>
-        <td class="num"><span class="err" title="RangeError: Maximum call stack size exceeded.">stack overflow</span></td>
-        <td class="num">2.54 ms</td>
-        <td><span class="b fail">TS&nbsp;failed</span></td>
+        <td class="num">514.84 ms</td>
+        <td class="num">2.47 ms</td>
+        <td><span class="b huge">209×</span></td>
         <td class="num dim">1,000,000</td>
       </tr></tbody></table><h3>Q2 — filter + project (SIMD-able)</h3><pre class="q">MATCH (a:Person) WHERE a.age > 50 RETURN a.age</pre>
   <table><thead><tr><th>vertices</th><th>TS gql</th><th>Rust</th><th>speedup</th><th>rows</th></tr></thead><tbody><tr>
         <td class="num">1,000</td>
-        <td class="num">303 µs</td>
-        <td class="num">30 µs</td>
-        <td><span class="b big">10×</span></td>
+        <td class="num">298 µs</td>
+        <td class="num">31 µs</td>
+        <td><span class="b win">9.7×</span></td>
         <td class="num dim">490</td>
       </tr><tr>
         <td class="num">10,000</td>
-        <td class="num">3.86 ms</td>
-        <td class="num">297 µs</td>
-        <td><span class="b big">13×</span></td>
+        <td class="num">2.95 ms</td>
+        <td class="num">303 µs</td>
+        <td><span class="b win">9.7×</span></td>
         <td class="num dim">4,900</td>
       </tr><tr>
         <td class="num">100,000</td>
-        <td class="num">79.71 ms</td>
-        <td class="num">2.83 ms</td>
-        <td><span class="b big">28×</span></td>
+        <td class="num">49.42 ms</td>
+        <td class="num">3.01 ms</td>
+        <td><span class="b big">16×</span></td>
         <td class="num dim">49,000</td>
       </tr><tr>
         <td class="num">1,000,000</td>
-        <td class="num">1.26 s</td>
-        <td class="num">28.88 ms</td>
-        <td><span class="b big">44×</span></td>
+        <td class="num">859.72 ms</td>
+        <td class="num">29.53 ms</td>
+        <td><span class="b big">29×</span></td>
         <td class="num dim">490,000</td>
       </tr></tbody></table><h3>Q3 — 1-hop traversal count</h3><pre class="q">MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN count(*)</pre>
   <table><thead><tr><th>vertices</th><th>TS gql</th><th>Rust</th><th>speedup</th><th>rows</th></tr></thead><tbody><tr>
         <td class="num">1,000</td>
-        <td class="num">1.99 ms</td>
+        <td class="num">1.72 ms</td>
         <td class="num">18 µs</td>
-        <td><span class="b huge">113×</span></td>
+        <td><span class="b huge">97×</span></td>
         <td class="num dim">4,000</td>
       </tr><tr>
         <td class="num">10,000</td>
-        <td class="num">25.57 ms</td>
-        <td class="num">188 µs</td>
-        <td><span class="b huge">136×</span></td>
+        <td class="num">18.24 ms</td>
+        <td class="num">209 µs</td>
+        <td><span class="b huge">87×</span></td>
         <td class="num dim">40,000</td>
       </tr><tr>
         <td class="num">100,000</td>
-        <td class="num">711.67 ms</td>
-        <td class="num">2.26 ms</td>
-        <td><span class="b huge">315×</span></td>
+        <td class="num">492.27 ms</td>
+        <td class="num">2.24 ms</td>
+        <td><span class="b huge">219×</span></td>
         <td class="num dim">400,000</td>
       </tr><tr>
         <td class="num">1,000,000</td>
-        <td class="num"><span class="err" title="RangeError: Maximum call stack size exceeded.">stack overflow</span></td>
-        <td class="num">29.42 ms</td>
-        <td><span class="b fail">TS&nbsp;failed</span></td>
+        <td class="num">8.94 s</td>
+        <td class="num">24.88 ms</td>
+        <td><span class="b huge">359×</span></td>
         <td class="num dim">4,000,000</td>
       </tr></tbody></table><h3>Q4 — 2-hop traversal count</h3><pre class="q">MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) RETURN count(*)</pre>
   <table><thead><tr><th>vertices</th><th>TS gql</th><th>Rust</th><th>speedup</th><th>rows</th></tr></thead><tbody><tr>
         <td class="num">1,000</td>
-        <td class="num">7.25 ms</td>
-        <td class="num">66 µs</td>
-        <td><span class="b huge">110×</span></td>
+        <td class="num">6.13 ms</td>
+        <td class="num">65 µs</td>
+        <td><span class="b huge">94×</span></td>
         <td class="num dim">15,866</td>
       </tr><tr>
         <td class="num">10,000</td>
-        <td class="num">89.85 ms</td>
-        <td class="num">1.13 ms</td>
-        <td><span class="b huge">80×</span></td>
+        <td class="num">72.55 ms</td>
+        <td class="num">1.18 ms</td>
+        <td><span class="b huge">61×</span></td>
         <td class="num dim">159,931</td>
       </tr><tr>
         <td class="num">100,000</td>
-        <td class="num"><span class="err" title="RangeError: Maximum call stack size exceeded.">stack overflow</span></td>
-        <td class="num">16.32 ms</td>
-        <td><span class="b fail">TS&nbsp;failed</span></td>
+        <td class="num">2.19 s</td>
+        <td class="num">16.19 ms</td>
+        <td><span class="b huge">135×</span></td>
         <td class="num dim">1,602,035</td>
       </tr></tbody></table>
 
-<div class="note"><b>The TS engine has a hard ceiling.</b> The gql executor accumulates bindings with <code>out.push(...matched)</code>; on large traversal result sets that spread overflows the call stack, so 1-hop at ≥1M and 2-hop at ≥100k vertices <b>fail outright</b> in TS. The columnar Rust executor streams the DFS and has no such limit.</div>
+<div class="note"><b>The TS executor's overflow was a bug — now fixed.</b> The first run showed 1-hop@1M and 2-hop@100k <i>failing outright</i>: the executor materialized bindings between clauses and did <code>push(...spread)</code>, overflowing the call stack. It now streams bindings lazily through the fp iterator helpers, so those queries complete and <code>LIMIT n</code> short-circuits (≈0.6 ms over 1M nodes). What's left is throughput, not capability: aggregation still buffers each group to fold it, so a large <code>count(*)</code> is correct but O(rows) — slower than Rust's columnar count, not a wall.</div>
 
 <h2>SIMD predicate scan (<code>age &gt; 50</code>)</h2>
 <p>This is the kernel the index-build experiment pointed at: compute-bound, scatter-free, so the NEON speedup flows through. A hand-written <code>f64x2</code> compare-and-mask vs the scalar loop, plus the equivalent JS loop for context.</p>
-<table><thead><tr><th>vertices</th><th>JS loop</th><th>Rust scalar</th><th>Rust NEON</th><th>NEON vs scalar</th><th>NEON vs JS</th></tr></thead><tbody><tr><td class="num">1,000</td><td class="num">10 µs</td><td class="num">2 µs</td><td class="num">1 µs</td>
-    <td><span class="b win">1.89×</span></td>
-    <td><span class="b win">8.5×</span></td></tr><tr><td class="num">10,000</td><td class="num">28 µs</td><td class="num">14 µs</td><td class="num">4 µs</td>
-    <td><span class="b big">3.85×</span></td>
-    <td><span class="b win">7.6×</span></td></tr><tr><td class="num">100,000</td><td class="num">84 µs</td><td class="num">133 µs</td><td class="num">32 µs</td>
-    <td><span class="b big">4.15×</span></td>
-    <td><span class="b win">2.6×</span></td></tr><tr><td class="num">1,000,000</td><td class="num">830 µs</td><td class="num">1.33 ms</td><td class="num">316 µs</td>
-    <td><span class="b big">4.22×</span></td>
-    <td><span class="b win">2.6×</span></td></tr></tbody></table>
+<table><thead><tr><th>vertices</th><th>JS loop</th><th>Rust scalar</th><th>Rust NEON</th><th>NEON vs scalar</th><th>NEON vs JS</th></tr></thead><tbody><tr><td class="num">1,000</td><td class="num">9 µs</td><td class="num">2 µs</td><td class="num">1 µs</td>
+    <td><span class="b win">1.85×</span></td>
+    <td><span class="b win">8.4×</span></td></tr><tr><td class="num">10,000</td><td class="num">28 µs</td><td class="num">14 µs</td><td class="num">4 µs</td>
+    <td><span class="b big">3.86×</span></td>
+    <td><span class="b win">7.5×</span></td></tr><tr><td class="num">100,000</td><td class="num">84 µs</td><td class="num">133 µs</td><td class="num">32 µs</td>
+    <td><span class="b big">4.20×</span></td>
+    <td><span class="b win">2.7×</span></td></tr><tr><td class="num">1,000,000</td><td class="num">873 µs</td><td class="num">1.39 ms</td><td class="num">326 µs</td>
+    <td><span class="b big">4.26×</span></td>
+    <td><span class="b win">2.7×</span></td></tr></tbody></table>
 
-<h2>Encode (graph → NDJSON)</h2>
-<p>Here the marshalling tax shows: Rust builds the string natively but must copy ~hundreds of MB back across the boundary and re-decode to a JS string.</p>
-<table><thead><tr><th>vertices</th><th>TS</th><th>Rust (+ copy back)</th><th>speedup</th></tr></thead><tbody><tr><td class="num">1,000</td><td class="num">1.01 ms</td><td class="num">3.12 ms</td>
-    <td><span class="b loss">0.3×</span></td></tr><tr><td class="num">10,000</td><td class="num">11.22 ms</td><td class="num">32.90 ms</td>
-    <td><span class="b loss">0.3×</span></td></tr><tr><td class="num">100,000</td><td class="num">311.78 ms</td><td class="num">345.79 ms</td>
-    <td><span class="b loss">0.9×</span></td></tr><tr><td class="num">1,000,000</td><td class="num">4.53 s</td><td class="num">4.36 s</td>
-    <td><span class="b loss">1.0×</span></td></tr></tbody></table>
+<h2>Serialize — the product is bytes for disk / wire</h2>
+<p>Serialization output goes to a file or a socket — i.e. <b>bytes</b>. TS produces a JS <i>string</i> that still must be UTF-8 encoded to bytes for any I/O; Rust produces write-ready bytes directly, and can write the file natively (the bytes never enter JS). <span class="dim">(The first draft unfairly made Rust decode its bytes back into a JS string — corrected here.)</span></p>
+<table><thead><tr><th>vertices</th><th>TS → string</th><th>Rust → bytes</th><th>×</th><th>TS → disk</th><th>Rust → disk</th><th>×</th></tr></thead><tbody><tr><td class="num">1,000</td>
+    <td class="num">933 µs</td><td class="num">219 µs</td>
+    <td><span class="b win">4.3×</span></td>
+    <td class="num">983 µs</td><td class="num">287 µs</td>
+    <td><span class="b win">3.4×</span></td></tr><tr><td class="num">10,000</td>
+    <td class="num">10.09 ms</td><td class="num">3.37 ms</td>
+    <td><span class="b win">3.0×</span></td>
+    <td class="num">10.76 ms</td><td class="num">3.52 ms</td>
+    <td><span class="b win">3.1×</span></td></tr><tr><td class="num">100,000</td>
+    <td class="num">207.20 ms</td><td class="num">39.06 ms</td>
+    <td><span class="b win">5.3×</span></td>
+    <td class="num">224.72 ms</td><td class="num">49.95 ms</td>
+    <td><span class="b win">4.5×</span></td></tr><tr><td class="num">1,000,000</td>
+    <td class="num">4.05 s</td><td class="num">959.91 ms</td>
+    <td><span class="b win">4.2×</span></td>
+    <td class="num">4.39 s</td><td class="num">1.27 s</td>
+    <td><span class="b win">3.5×</span></td></tr></tbody></table>
 
 <h2>Result parity</h2>
 <p>Every timed operation was checked for identical results first — vertex/edge counts and each query's <code>(count, sum)</code> signature. (“TS n/a” = the TS engine failed to produce a result.)</p>
@@ -251,30 +263,30 @@ footer{color:var(--dim);font-size:13px;margin-top:50px;border-top:1px solid var(
     <td class="dim">{"count":400000,"sum":0}</td>
     <td class="dim">{"count":400000,"sum":0}</td>
     <td><span class="ok">✓ match</span></td></tr><tr><td class="num">100,000</td><td>Q4 signature</td>
-    <td class="dim">null</td>
     <td class="dim">{"count":1602035,"sum":0}</td>
-    <td><span class="dim">TS n/a</span></td></tr><tr><td class="num">1,000,000</td><td>vertexCount</td>
+    <td class="dim">{"count":1602035,"sum":0}</td>
+    <td><span class="ok">✓ match</span></td></tr><tr><td class="num">1,000,000</td><td>vertexCount</td>
     <td class="dim">1000000</td>
     <td class="dim">1000000</td>
     <td><span class="ok">✓ match</span></td></tr><tr><td class="num">1,000,000</td><td>edgeCount</td>
     <td class="dim">4000000</td>
     <td class="dim">4000000</td>
     <td><span class="ok">✓ match</span></td></tr><tr><td class="num">1,000,000</td><td>Q1 signature</td>
-    <td class="dim">null</td>
     <td class="dim">{"count":1000000,"sum":0}</td>
-    <td><span class="dim">TS n/a</span></td></tr><tr><td class="num">1,000,000</td><td>Q2 signature</td>
+    <td class="dim">{"count":1000000,"sum":0}</td>
+    <td><span class="ok">✓ match</span></td></tr><tr><td class="num">1,000,000</td><td>Q2 signature</td>
     <td class="dim">{"count":490000,"sum":36750000}</td>
     <td class="dim">{"count":490000,"sum":36750000}</td>
     <td><span class="ok">✓ match</span></td></tr><tr><td class="num">1,000,000</td><td>Q3 signature</td>
-    <td class="dim">null</td>
     <td class="dim">{"count":4000000,"sum":0}</td>
-    <td><span class="dim">TS n/a</span></td></tr></tbody></table>
+    <td class="dim">{"count":4000000,"sum":0}</td>
+    <td><span class="ok">✓ match</span></td></tr></tbody></table>
 
 <h2>Verdict — when is the Rust core worth it?</h2>
 <div class="verdict">
-<p><b>Go Rust when:</b> you're bulk-loading or querying large graphs (≳10k elements), running traversals or scans for throughput, or doing server-side materialization. Build is 7× faster, queries 10–315× faster, and — decisively — Rust <i>completes</i> large traversals the TS engine cannot.</p>
-<p><b>Stay TS when:</b> graphs are small (≲1k), or the workload is interactive/reactive frontend use where the graph lives in the browser, mutates constantly, and feeds React via the snapshot model. There the ~4 ns/call FFI tax and the encode copy-back dominate, and you'd lose the reactivity layer.</p>
-<p><b>The boundary is the cost, not the compute.</b> Rust compute is far faster everywhere; what claws it back is crossing FFI per call and copying bytes back on encode. So the architecture that wins is <i>coarse-grained</i>: hand Rust a whole NDJSON blob, let it build + query + aggregate, and pull back only small results — never chatty per-element calls. That's the Node/materialization persona; the frontend/reactive persona stays in TypeScript.</p>
+<p><b>Go Rust when:</b> you're bulk-loading or querying large graphs (≳10k elements), running traversals or scans for throughput, or doing server-side materialization. Build is 7× faster and queries 10–359× faster — and serializing to disk/wire, Rust emits write-ready bytes while TS emits a string that still needs encoding.</p>
+<p><b>Stay TS when:</b> graphs are small (≲1k), or the workload is interactive/reactive frontend use where the graph lives in the browser, mutates constantly, and feeds React via the snapshot model. There the ~4 ns/call FFI tax dominates, and you'd lose the reactivity layer. (The TS engine now <i>completes</i> large queries too — just slower — so this is a performance choice, not a capability one.)</p>
+<p><b>The boundary is the cost, not the compute.</b> Rust compute is far faster everywhere; what claws it back is crossing FFI per call. So the architecture that wins is <i>coarse-grained</i>: hand Rust a whole NDJSON blob, let it build + query + aggregate, and pull back only small results — never chatty per-element calls. That's the Node/materialization persona; the frontend/reactive persona stays in TypeScript.</p>
 </div>
 
 <footer>Generated from <code>benchmarks/results.json</code> · graph: all <code>:Person</code> nodes (name/age/active), random <code>:KNOWS</code> edges, avg degree 4 · best-of-N wall time · Rust built <code>--release</code> with fat LTO, NEON baseline.</footer>

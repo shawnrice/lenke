@@ -8,7 +8,7 @@ type Row = {
   bytes: number;
   ops: {
     build: OpTs & { rustParallel: number; rustSerial: number };
-    encode: OpTs & { rust: number };
+    serialize: { tsString: number | null; rustBytes: number; tsDisk: number | null; rustDisk: number };
     predicateScan: { jsLoop: number; rustScalar: number; rustNeon: number };
     [k: string]: any;
   };
@@ -82,11 +82,15 @@ const buildRows = r.rows
   )
   .join('');
 
-const encodeRows = r.rows
-  .map(
-    (row) => `<tr><td class="num">${n0(row.n)}</td><td class="num">${fmt(row.ops.encode.ts)}</td><td class="num">${fmt(row.ops.encode.rust)}</td>
-    <td><span class="b ${badge(row.ops.encode.ts, row.ops.encode.rust)}">${ratio(row.ops.encode.ts, row.ops.encode.rust)}</span></td></tr>`,
-  )
+const serializeRows = r.rows
+  .map((row) => {
+    const s = row.ops.serialize;
+    return `<tr><td class="num">${n0(row.n)}</td>
+    <td class="num">${fmt(s.tsString)}</td><td class="num">${fmt(s.rustBytes)}</td>
+    <td><span class="b ${badge(s.tsString, s.rustBytes)}">${ratio(s.tsString, s.rustBytes)}</span></td>
+    <td class="num">${fmt(s.tsDisk)}</td><td class="num">${fmt(s.rustDisk)}</td>
+    <td><span class="b ${badge(s.tsDisk, s.rustDisk)}">${ratio(s.tsDisk, s.rustDisk)}</span></td></tr>`;
+  })
   .join('');
 
 const simdRows = r.rows
@@ -152,7 +156,7 @@ footer{color:var(--dim);font-size:13px;margin-top:50px;border-top:1px solid var(
 <div class="card"><div class="big">${(r.ffiOverhead * 1e6).toFixed(0)} ns</div><div class="lab">per FFI call (the fixed tax)</div></div>
 </div>
 
-<p class="lead">Short version: <b>Rust wins decisively on throughput</b> — graph build, traversal queries, and scans are one to two orders of magnitude faster, and the TS gql executor <b>can't complete large traversals at all</b> (it overflows the stack on big result sets). The catch is a fixed <b>~${(r.ffiOverhead * 1e6).toFixed(0)} ns FFI tax per call</b> and a marshalling cost on encode — so for tiny graphs or chatty per-element calls the boundary eats the win. The crossover is small graphs / interactive frontend use (stay TS) vs. bulk load + heavy query throughput (go Rust).</p>
+<p class="lead">Short version: <b>Rust wins decisively on throughput</b> — graph build, traversal queries, and scans are one to two orders of magnitude faster. (The first run also surfaced a real <i>bug</i>: the TS executor overflowed the stack on big result sets; that's now fixed by streaming through the fp helpers, so the gap is speed, not capability.) The catch is a fixed <b>~${(r.ffiOverhead * 1e6).toFixed(0)} ns FFI tax per call</b> — so for tiny graphs or chatty per-element calls the boundary eats the win. The crossover: small graphs / interactive frontend use (stay TS) vs. bulk load + heavy query throughput (go Rust).</p>
 
 <h2>Graph build (NDJSON decode → indexed graph)</h2>
 <p>The columnar build is a counting-sort into CSR; <code>rustParallel</code> uses rayon to parse lines across cores. This is the bulk-load path.</p>
@@ -162,15 +166,15 @@ footer{color:var(--dim);font-size:13px;margin-top:50px;border-top:1px solid var(
 <p>The Rust side runs a GQL-subset parser + executor over the columnar core; the TS side runs the production <code>@pl-graph/gql</code> engine. Results are checked equal (a <code>(count, sum)</code> signature) before timing.</p>
 ${r.meta.queries.map((q) => queryTable(q.id, q.label, q.text)).join('')}
 
-<div class="note"><b>The TS engine has a hard ceiling.</b> The gql executor accumulates bindings with <code>out.push(...matched)</code>; on large traversal result sets that spread overflows the call stack, so 1-hop at ≥1M and 2-hop at ≥100k vertices <b>fail outright</b> in TS. The columnar Rust executor streams the DFS and has no such limit.</div>
+<div class="note"><b>The TS executor's overflow was a bug — now fixed.</b> The first run showed 1-hop@1M and 2-hop@100k <i>failing outright</i>: the executor materialized bindings between clauses and did <code>push(...spread)</code>, overflowing the call stack. It now streams bindings lazily through the fp iterator helpers, so those queries complete and <code>LIMIT n</code> short-circuits (≈0.6 ms over 1M nodes). What's left is throughput, not capability: aggregation still buffers each group to fold it, so a large <code>count(*)</code> is correct but O(rows) — slower than Rust's columnar count, not a wall.</div>
 
 <h2>SIMD predicate scan (<code>age &gt; 50</code>)</h2>
 <p>This is the kernel the index-build experiment pointed at: compute-bound, scatter-free, so the NEON speedup flows through. A hand-written <code>f64x2</code> compare-and-mask vs the scalar loop, plus the equivalent JS loop for context.</p>
 <table><thead><tr><th>vertices</th><th>JS loop</th><th>Rust scalar</th><th>Rust NEON</th><th>NEON vs scalar</th><th>NEON vs JS</th></tr></thead><tbody>${simdRows}</tbody></table>
 
-<h2>Encode (graph → NDJSON)</h2>
-<p>Here the marshalling tax shows: Rust builds the string natively but must copy ~hundreds of MB back across the boundary and re-decode to a JS string.</p>
-<table><thead><tr><th>vertices</th><th>TS</th><th>Rust (+ copy back)</th><th>speedup</th></tr></thead><tbody>${encodeRows}</tbody></table>
+<h2>Serialize — the product is bytes for disk / wire</h2>
+<p>Serialization output goes to a file or a socket — i.e. <b>bytes</b>. TS produces a JS <i>string</i> that still must be UTF-8 encoded to bytes for any I/O; Rust produces write-ready bytes directly, and can write the file natively (the bytes never enter JS). <span class="dim">(The first draft unfairly made Rust decode its bytes back into a JS string — corrected here.)</span></p>
+<table><thead><tr><th>vertices</th><th>TS → string</th><th>Rust → bytes</th><th>×</th><th>TS → disk</th><th>Rust → disk</th><th>×</th></tr></thead><tbody>${serializeRows}</tbody></table>
 
 <h2>Result parity</h2>
 <p>Every timed operation was checked for identical results first — vertex/edge counts and each query's <code>(count, sum)</code> signature. (“TS n/a” = the TS engine failed to produce a result.)</p>
@@ -178,9 +182,9 @@ ${r.meta.queries.map((q) => queryTable(q.id, q.label, q.text)).join('')}
 
 <h2>Verdict — when is the Rust core worth it?</h2>
 <div class="verdict">
-<p><b>Go Rust when:</b> you're bulk-loading or querying large graphs (≳10k elements), running traversals or scans for throughput, or doing server-side materialization. Build is ${buildBig ? buildBig.toFixed(0) + '×' : 'much'} faster, queries 10–${biggestQuery.toFixed(0)}× faster, and — decisively — Rust <i>completes</i> large traversals the TS engine cannot.</p>
-<p><b>Stay TS when:</b> graphs are small (≲1k), or the workload is interactive/reactive frontend use where the graph lives in the browser, mutates constantly, and feeds React via the snapshot model. There the ~${(r.ffiOverhead * 1e6).toFixed(0)} ns/call FFI tax and the encode copy-back dominate, and you'd lose the reactivity layer.</p>
-<p><b>The boundary is the cost, not the compute.</b> Rust compute is far faster everywhere; what claws it back is crossing FFI per call and copying bytes back on encode. So the architecture that wins is <i>coarse-grained</i>: hand Rust a whole NDJSON blob, let it build + query + aggregate, and pull back only small results — never chatty per-element calls. That's the Node/materialization persona; the frontend/reactive persona stays in TypeScript.</p>
+<p><b>Go Rust when:</b> you're bulk-loading or querying large graphs (≳10k elements), running traversals or scans for throughput, or doing server-side materialization. Build is ${buildBig ? buildBig.toFixed(0) + '×' : 'much'} faster and queries 10–${biggestQuery.toFixed(0)}× faster — and serializing to disk/wire, Rust emits write-ready bytes while TS emits a string that still needs encoding.</p>
+<p><b>Stay TS when:</b> graphs are small (≲1k), or the workload is interactive/reactive frontend use where the graph lives in the browser, mutates constantly, and feeds React via the snapshot model. There the ~${(r.ffiOverhead * 1e6).toFixed(0)} ns/call FFI tax dominates, and you'd lose the reactivity layer. (The TS engine now <i>completes</i> large queries too — just slower — so this is a performance choice, not a capability one.)</p>
+<p><b>The boundary is the cost, not the compute.</b> Rust compute is far faster everywhere; what claws it back is crossing FFI per call. So the architecture that wins is <i>coarse-grained</i>: hand Rust a whole NDJSON blob, let it build + query + aggregate, and pull back only small results — never chatty per-element calls. That's the Node/materialization persona; the frontend/reactive persona stays in TypeScript.</p>
 </div>
 
 <footer>Generated from <code>benchmarks/results.json</code> · graph: all <code>:Person</code> nodes (name/age/active), random <code>:KNOWS</code> edges, avg degree ${r.meta.avgDegree} · best-of-N wall time · Rust built <code>--release</code> with fat LTO, NEON baseline.</footer>

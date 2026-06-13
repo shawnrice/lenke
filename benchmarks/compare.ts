@@ -2,6 +2,7 @@
 // operations on the TS engine (@pl-graph/core + gql + serialization) and the
 // native Rust crate (via bun:ffi), asserts result-parity, then times both.
 // Writes results.json for the report generator.
+import { writeFileSync } from 'node:fs';
 import { Graph } from '@pl-graph/core';
 import { query as gqlQuery } from '../packages/gql/src/index.js';
 import { ndjsonCodec } from '../packages/serialization/src/index.js';
@@ -53,7 +54,7 @@ const safeBench = (reps: number, fn: () => void): { ms: number | null; error: st
   }
 };
 
-const repsFor = (n: number): number => (n >= 1_000_000 ? 3 : n >= 100_000 ? 5 : 20);
+const repsFor = (n: number): number => (n >= 1_000_000 ? 2 : n >= 100_000 ? 5 : 20);
 
 const SIZES = [1_000, 10_000, 100_000, 1_000_000];
 const AVG_DEGREE = 4;
@@ -157,17 +158,35 @@ for (const n of SIZES) {
   row.ops.predicateScan = { jsLoop: jsScan, rustScalar: rScalar, rustNeon: rNeon };
   console.log(`  predicate-scan age>50: js=${jsScan.toFixed(3)} rustScalar=${rScalar.toFixed(3)} rustNeon=${rNeon.toFixed(3)} (neon ${(rScalar / rNeon).toFixed(2)}x scalar)`);
 
-  // ---- encode / serialize ----
-  const tsEnc = safeBench(reps, () => {
+  // ---- serialize: the product is bytes destined for disk or wire ----
+  // TS produces a JS string (which still must be UTF-8 encoded to bytes for any
+  // I/O); Rust produces write-ready bytes directly, and can write the file
+  // natively without the bytes ever entering JS.
+  const tsString = safeBench(reps, () => {
     ndjsonCodec.encode(tg);
   });
-  const rustEnc = bench(reps, () => {
-    rust.encodeNdjson(rh);
+  const rustBytes = bench(reps, () => {
+    rust.encodeBytes(rh);
   });
-  row.ops.encode = { ts: tsEnc.ms, tsErr: tsEnc.error, rust: rustEnc };
+  const tsDisk = safeBench(reps, () => {
+    writeFileSync('/tmp/plg-ts.ndjson', ndjsonCodec.encode(tg));
+  });
+  const rustDisk = bench(reps, () => {
+    rust.writeNdjson(rh, '/tmp/plg-rust.ndjson');
+  });
+  row.ops.serialize = {
+    tsString: tsString.ms,
+    tsStringErr: tsString.error,
+    rustBytes,
+    tsDisk: tsDisk.ms,
+    tsDiskErr: tsDisk.error,
+    rustDisk,
+  };
   const bn = (x: number | null) => (x === null ? 'ERR' : x.toFixed(1));
   console.log(`  build: ts=${bn(tsBuild.ms)}ms rustPar=${rustBuildPar.toFixed(1)}ms rustSer=${rustBuildSer.toFixed(1)}ms`);
-  console.log(`  encode: ts=${bn(tsEnc.ms)}ms rust=${rustEnc.toFixed(1)}ms\n`);
+  console.log(
+    `  serialize→string: ts=${bn(tsString.ms)} rust→bytes=${rustBytes.toFixed(1)} | →disk: ts=${bn(tsDisk.ms)} rust=${rustDisk.toFixed(1)}\n`,
+  );
 
   rust.freeGraph(rh);
   results.rows.push(row);
