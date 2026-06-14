@@ -12,6 +12,9 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::sync::Arc;
 
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
+
 use super::ast::{ArithOp, CompareOp, Direction, Lit, Quantifier, SetOp, SetOpKind};
 use super::lexer::SyntaxError;
 use super::plan::{
@@ -2218,6 +2221,69 @@ fn gather_rows(sc: &ScanCols, idx: &[usize]) -> ScanCols {
     out
 }
 
+/// A contiguous row-range view of a frame as its own (owned) `ScanCols` — used to
+/// split a large frame into chunks for parallel column evaluation.
+#[cfg(feature = "parallel")]
+fn slice_rows(sc: &ScanCols, lo: usize, hi: usize) -> ScanCols {
+    let mut out = ScanCols::new(sc.slots.len());
+    out.n = hi - lo;
+    for s in 0..sc.slots.len() {
+        if let Some((e, ids)) = &sc.slots[s] {
+            out.slots[s] = Some((*e, ids[lo..hi].to_vec()));
+        } else if let Some(v) = &sc.vals[s] {
+            out.vals[s] = Some(v[lo..hi].to_vec());
+        }
+    }
+    out
+}
+
+/// Evaluate each projection item as a `Val` column over the whole frame. For a
+/// large frame (and the `parallel` feature) the rows are split into chunks
+/// evaluated concurrently, then the per-item columns are concatenated in order —
+/// the expression eval is embarrassingly parallel and `Graph`/`Ctx` are `Sync`.
+///
+/// Measured (52k rows, 16 threads): ~1.7x on heavy projections (expr-heavy 4.4ms
+/// → 2.5ms; single num/str col ~1.7x). It does NOT scale to core count — these
+/// loops stream `f64`/`Val` columns and are memory-bandwidth-bound, plus the
+/// concat and the caller's RowSet transpose are serial tails. Two consequences:
+/// (1) the threshold keeps small queries on the serial path (thread hand-off
+/// would dominate); (2) on a server already saturated with concurrent queries,
+/// *inter*-query parallelism uses the cores better — this trades a single query's
+/// latency for throughput, so it's a win mainly when cores would otherwise idle.
+fn par_project(graph: &Graph, ctx: &Ctx, sc: &ScanCols, items: &[CReturnItem]) -> Vec<Vec<Val>> {
+    let serial = || items.iter().map(|it| eval_vec(graph, ctx, sc, &it.expr).into_vals()).collect();
+    #[cfg(feature = "parallel")]
+    {
+        // Threshold: only worth splitting once there's enough per-row work to
+        // amortize chunk slicing + thread hand-off.
+        const MIN_ROWS: usize = 16_384;
+        let threads = rayon::current_num_threads();
+        if sc.n >= MIN_ROWS && threads > 1 {
+            let nchunks = threads.min(sc.n / 4096).max(1);
+            if nchunks > 1 {
+                let chunk = sc.n.div_ceil(nchunks);
+                let ranges: Vec<(usize, usize)> =
+                    (0..nchunks).map(|c| (c * chunk, ((c + 1) * chunk).min(sc.n))).filter(|&(lo, hi)| lo < hi).collect();
+                let parts: Vec<Vec<Vec<Val>>> = ranges
+                    .par_iter()
+                    .map(|&(lo, hi)| {
+                        let sub = slice_rows(sc, lo, hi);
+                        items.iter().map(|it| eval_vec(graph, ctx, &sub, &it.expr).into_vals()).collect()
+                    })
+                    .collect();
+                let mut cols: Vec<Vec<Val>> = (0..items.len()).map(|_| Vec::with_capacity(sc.n)).collect();
+                for mut part in parts {
+                    for (j, c) in part.drain(..).enumerate() {
+                        cols[j].extend(c); // moves Vals (no clone), preserves order
+                    }
+                }
+                return cols;
+            }
+        }
+    }
+    serial()
+}
+
 /// Drop the rows where `keep[i]` is false, compacting every slot column in place.
 fn compact(sc: &mut ScanCols, keep: &[bool]) {
     for slot in sc.slots.iter_mut() {
@@ -2546,8 +2612,9 @@ fn project_frame_cols(graph: &Graph, ctx: &Ctx, sc: &ScanCols, proj: &CProjectio
         }
     }
 
-    // Non-aggregating projection: evaluate each item as a column.
-    let mut cols: Vec<Vec<Val>> = proj.items.iter().map(|item| eval_vec(graph, ctx, sc, &item.expr).into_vals()).collect();
+    // Non-aggregating projection: evaluate each item as a column (parallel over
+    // row-chunks for a large frame).
+    let mut cols: Vec<Vec<Val>> = par_project(graph, ctx, sc, &proj.items);
     if proj.distinct {
         // Generic DISTINCT (expression / non-typed items): keep the first
         // occurrence of each row in scan order, dedup on a composite cell key.
