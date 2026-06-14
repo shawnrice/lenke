@@ -122,15 +122,19 @@ const USE_VM: bool = false;
 ///
 /// Measured (52k/225k graph, same-session, cooled — vec on vs scalar off):
 ///   - expr-heavy numeric filter (RETURN count): 7.09ms → 1.43ms  (5.0x)
+///   - ORDER BY input key, no LIMIT (50k sort):  7.24ms → 1.66ms  (4.4x)
 ///   - grouped aggregate (n.dept, count, avg):   3.02ms → 0.79ms  (3.8x)
+///   - grouped aggregate, 2 keys:                4.08ms → 1.35ms  (3.0x)
 ///   - scan + numeric filter count:              1.49ms → 0.39ms  (3.8x)
 ///   - count(*) / count+pred:                    ~3-4x
 ///   - expr-heavy numeric projection (4 cols):   9.46ms → 4.42ms  (2.1x)
 ///   - numeric single-col projection:            1.16ms → 0.46ms  (2.5x)
 ///   - numeric projection over a 1-hop join:     2.78ms → 1.53ms  (1.8x)
 ///   - count+WHERE over a 1-hop join:            2.09ms → 1.24ms  (1.7x)
-///   - string projection (Gen fallback):         1.17ms → 0.91ms  (1.3x)
-///   - var-length / ORDER BY / subqueries / pure count over a join: not engaged
+///   - ORDER BY input key + small LIMIT:         1.94ms → 1.37ms  (1.4x)
+///   - DISTINCT (dedup-bound, string keys):      2.90ms → 2.40ms  (1.2x)
+///   - var-length / subqueries / pure count over a join: not engaged
+///   - ORDER BY on an output alias / grouped-or-DISTINCT+ORDER BY: not engaged
 /// Same expressions where the scalar *bytecode VM* lost 6-17% (see [`USE_VM`])
 /// win 2-5x here: dispatch amortizes over N rows, the f64 loops vectorize, and
 /// values never get boxed into `Val` per row.
@@ -2158,6 +2162,19 @@ fn build_scan(graph: &Graph, ctx: &Ctx, path: &CPath, scope_len: usize, cap: Opt
     Some(sc)
 }
 
+/// Build a new row set holding only rows `idx`, in that order (for ORDER BY: the
+/// sorted window — gathers the few output rows instead of projecting all of `sc`).
+fn gather_rows(sc: &ScanCols, idx: &[usize]) -> ScanCols {
+    let mut out = ScanCols::new(sc.slots.len());
+    out.n = idx.len();
+    for (s, col) in sc.slots.iter().enumerate() {
+        if let Some((elem, ids)) = col {
+            out.slots[s] = Some((*elem, idx.iter().map(|&i| ids[i]).collect()));
+        }
+    }
+    out
+}
+
 /// Drop the rows where `keep[i]` is false, compacting every slot column in place.
 fn compact(sc: &mut ScanCols, keep: &[bool]) {
     for slot in sc.slots.iter_mut() {
@@ -2180,63 +2197,69 @@ fn compact(sc: &mut ScanCols, keep: &[bool]) {
 /// column (keys hash on raw ids, no string build) and non-distinct `count(*)` /
 /// `count`/`sum`/`avg`/`min`/`max` over a column. Returns `None` (→ scalar) for
 /// anything else (multi-key, expr keys, DISTINCT, collect, non-numeric min/max).
+/// Raw key bits per row for a group-key item that is a direct `Prop` over a
+/// typed column (string-id / f64-bits / bool). `None` per row = absent (its own
+/// NULL group); `None` overall = the key isn't a typed direct property, so the
+/// caller must fall back to the scalar path.
+fn key_raw_col(graph: &Graph, ctx: &Ctx, sc: &ScanCols, item: &CReturnItem) -> Option<Vec<Option<u64>>> {
+    let CExpr::Prop { var_slot, key_ref } = &item.expr else {
+        return None;
+    };
+    let (elem, ids) = sc.slot(*var_slot)?;
+    let (store, kid) = match elem {
+        Elem::Node => (&graph.props, ctx.prop_keys[*key_ref].0),
+        Elem::Edge => (&graph.edge_props, ctx.prop_keys[*key_ref].1),
+    };
+    let col = kid.and_then(|k| store.cols.get(k as usize));
+    let bits = |i: usize, present: &crate::graph::BitSet, raw: u64| present.get(ids[i] as usize).then_some(raw);
+    match col {
+        Some(Column::Str { data, present }) => Some((0..sc.n).map(|i| bits(i, present, data[ids[i] as usize] as u64)).collect()),
+        Some(Column::Num { data, present }) => {
+            Some((0..sc.n).map(|i| bits(i, present, data[ids[i] as usize].to_bits())).collect())
+        }
+        Some(Column::Bool { data, present }) => Some((0..sc.n).map(|i| bits(i, present, data[ids[i] as usize] as u64)).collect()),
+        _ => None, // Mixed / absent column — can't cheaply raw-key it
+    }
+}
+
 fn vectorized_aggregate(graph: &Graph, ctx: &Ctx, sc: &ScanCols, proj: &CProjection) -> Option<RowSet> {
     let key_items: Vec<&CReturnItem> = proj.items.iter().filter(|i| !i.is_agg).collect();
-    if key_items.len() > 1 {
-        return None; // multi-key grouping not vectorized yet
-    }
     let n = sc.n;
 
-    // Assign a dense group id per row (first-seen order, matching the scalar
-    // group order). With no key it's one implicit global group.
-    let mut gid_of_row: Vec<usize> = Vec::with_capacity(n);
-    let mut rep_row: Vec<usize> = Vec::new(); // representative row per group
-    if let Some(&item) = key_items.first() {
-        let CExpr::Prop { var_slot, key_ref } = &item.expr else {
-            return None; // grouping by an expression — scalar path
-        };
-        let (elem, ids) = sc.slot(*var_slot)?;
-        let (store, kid) = match elem {
-            Elem::Node => (&graph.props, ctx.prop_keys[*key_ref].0),
-            Elem::Edge => (&graph.edge_props, ctx.prop_keys[*key_ref].1),
-        };
-        let col = kid.and_then(|k| store.cols.get(k as usize));
-        // Raw key bits per row (None = absent → its own NULL group).
-        let raw = |i: usize| -> Option<u64> {
-            let vi = ids[i] as usize;
-            match col {
-                Some(Column::Str { data, present }) => present.get(vi).then(|| data[vi] as u64),
-                Some(Column::Num { data, present }) => present.get(vi).then(|| data[vi].to_bits()),
-                Some(Column::Bool { data, present }) => present.get(vi).then(|| data[vi] as u64),
-                _ => None,
-            }
-        };
-        if matches!(col, Some(Column::Mixed { .. }) | None) {
-            return None; // can't cheaply key a heterogeneous column
-        }
-        let mut map: HashMap<u64, usize> = HashMap::new();
-        let mut null_gid: Option<usize> = None;
+    // Assign a dense group id per row. Multi-key grouping is done by *refinement*:
+    // start with one group, then for each key column split each current group by
+    // that column's value. Because the final pass numbers groups in row order by
+    // first appearance of (prev-group, last-key) — which uniquely identifies the
+    // full key tuple — this reproduces the scalar engine's first-seen order
+    // exactly. Each key must be a direct `Prop` over a typed column (raw-id
+    // hashing, no string build); anything else falls back to the scalar path.
+    let mut gid_of_row = vec![0usize; n];
+    let mut ngroups = 1; // global group (overwritten once any key column refines)
+    for &item in &key_items {
+        let col = key_raw_col(graph, ctx, sc, item)?;
+        let mut map: HashMap<(usize, Option<u64>), usize> = HashMap::new();
+        let mut next = 0usize;
+        let mut refined = vec![0usize; n];
         for i in 0..n {
-            let gid = match raw(i) {
-                Some(bits) => *map.entry(bits).or_insert_with(|| {
-                    rep_row.push(i);
-                    rep_row.len() - 1
-                }),
-                None => *null_gid.get_or_insert_with(|| {
-                    rep_row.push(i);
-                    rep_row.len() - 1
-                }),
-            };
-            gid_of_row.push(gid);
+            let g = *map.entry((gid_of_row[i], col[i])).or_insert_with(|| {
+                let g = next;
+                next += 1;
+                g
+            });
+            refined[i] = g;
         }
-    } else {
-        gid_of_row = vec![0; n];
-        if n > 0 {
-            rep_row.push(0);
+        gid_of_row = refined;
+        ngroups = next;
+    }
+    // Representative row per group (first occurrence) — for re-evaluating the
+    // group-key item expressions on output.
+    let mut rep_row = vec![usize::MAX; ngroups];
+    for i in 0..n {
+        let g = gid_of_row[i];
+        if rep_row[g] == usize::MAX {
+            rep_row[g] = i;
         }
     }
-    // Grouped: one row per distinct key (none → no rows). Global: always one row.
-    let ngroups = if key_items.is_empty() { 1 } else { rep_row.len() };
 
     // Fold each lifted aggregate into a per-group column.
     let mut agg_cols: Vec<Vec<Val>> = Vec::with_capacity(proj.aggs.len());
@@ -2317,7 +2340,9 @@ fn vectorized_aggregate(graph: &Graph, ctx: &Ctx, sc: &ScanCols, proj: &CProject
     let mut rs = RowSet::new(proj.out_names.clone());
     let mut b = Binding(vec![None; sc.slots.len()]);
     for g in start..end {
-        if let Some(&ri) = rep_row.get(g) {
+        // `usize::MAX` = an empty global group (no input rows) — leave the
+        // binding unbound; only pure aggregates (e.g. count = 0) reference it.
+        if let Some(&ri) = rep_row.get(g).filter(|&&ri| ri != usize::MAX) {
             for (slot, col) in sc.slots.iter().enumerate() {
                 if let Some((elem, ids)) = col {
                     let v = match elem {
@@ -2343,7 +2368,13 @@ fn vectorized_scan(graph: &Graph, ctx: &Ctx, incoming: &[Binding], matches: &[&C
     if incoming.len() != 1 || incoming[0].0.iter().any(|c| c.is_some()) {
         return None; // a prior WITH/INSERT already produced bindings
     }
-    if matches.len() != 1 || !proj.order_by.is_empty() || proj.distinct || proj.star {
+    if matches.len() != 1 || proj.star {
+        return None;
+    }
+    // ORDER BY only when the sort keys read input vars (not output aliases) and
+    // it's a plain projection — grouped/global sort and DISTINCT+ORDER BY stay scalar.
+    let has_order = !proj.order_by.is_empty();
+    if has_order && (proj.aggregating || proj.distinct || proj.order_needs_output) {
         return None;
     }
     let CClause::Match { optional: false, patterns, where_, scope_len, .. } = matches[0] else {
@@ -2362,9 +2393,10 @@ fn vectorized_scan(graph: &Graph, ctx: &Ctx, incoming: &[Binding], matches: &[&C
         return None;
     }
 
-    // With no clause WHERE (and no aggregation), a LIMIT lets us stop the scan
-    // early — preserving the scalar path's streaming advantage for small LIMITs.
-    let cap = (where_.is_none() && !proj.aggregating)
+    // With no clause WHERE (and no aggregation/DISTINCT), a LIMIT lets us stop the
+    // scan early — preserving the scalar path's streaming advantage for small
+    // LIMITs. (DISTINCT/aggregation need every row before producing output.)
+    let cap = (where_.is_none() && !proj.aggregating && !proj.distinct && !has_order)
         .then(|| proj.limit.map(|l| proj.skip.unwrap_or(0) + l))
         .flatten();
     let mut sc = build_scan(graph, ctx, path, *scope_len, cap)?;
@@ -2379,14 +2411,76 @@ fn vectorized_scan(graph: &Graph, ctx: &Ctx, incoming: &[Binding], matches: &[&C
         return vectorized_aggregate(graph, ctx, &sc, proj);
     }
 
-    // Non-aggregating projection: evaluate each item as a column, emit the
-    // SKIP/LIMIT row window (no ORDER BY ⇒ scan order).
-    let start = proj.skip.unwrap_or(0).min(sc.n);
-    let end = proj.limit.map(|l| (start + l).min(sc.n)).unwrap_or(sc.n);
+    // ORDER BY (input-keyed): evaluate the sort keys as columns, sort row indices,
+    // then project only the SKIP/LIMIT window — so a small LIMIT never materializes
+    // the full (e.g. string) output columns, just the keys.
+    if has_order {
+        // A sort-scope view of `sc`: alias each overlay input column at its
+        // sort-scope slot (out_len + j), so the sort exprs resolve directly.
+        let mut sort_sc = ScanCols::new(proj.out_len + proj.order_overlay.len());
+        sort_sc.n = sc.n;
+        for (j, &islot) in proj.order_overlay.iter().enumerate() {
+            if let Some((elem, ids)) = &sc.slots[islot] {
+                sort_sc.slots[proj.out_len + j] = Some((*elem, ids.clone()));
+            }
+        }
+        let keycols: Vec<Vec<Val>> =
+            proj.order_by.iter().map(|s| eval_vec(graph, ctx, &sort_sc, &s.expr).into_vals()).collect();
+        let mut idx: Vec<usize> = (0..sc.n).collect();
+        idx.sort_by(|&i, &j| {
+            for (k, s) in proj.order_by.iter().enumerate() {
+                let o = compare_sort(&keycols[k][i], &keycols[k][j], s.descending, s.nulls_first);
+                if o != Ordering::Equal {
+                    return o;
+                }
+            }
+            Ordering::Equal
+        });
+        let start = proj.skip.unwrap_or(0).min(idx.len());
+        let end = proj.limit.map(|l| (start + l).min(idx.len())).unwrap_or(idx.len());
+        let sub = gather_rows(&sc, &idx[start..end]);
+        let cols: Vec<Vec<Val>> =
+            proj.items.iter().map(|item| eval_vec(graph, ctx, &sub, &item.expr).into_vals()).collect();
+        let mut rs = RowSet::new(proj.out_names.clone());
+        for i in 0..sub.n {
+            rs.push_row(cols.iter().map(|c| val_to_value(graph, &c[i])));
+        }
+        return Some(rs);
+    }
+
+    // Non-aggregating projection: evaluate each item as a column.
     let cols: Vec<Vec<Val>> = proj.items.iter().map(|item| eval_vec(graph, ctx, &sc, &item.expr).into_vals()).collect();
     let mut rs = RowSet::new(proj.out_names.clone());
-    for i in start..end {
-        rs.push_row(cols.iter().map(|c| val_to_value(graph, &c[i])));
+    if proj.distinct {
+        // DISTINCT applies before SKIP/LIMIT: keep the first occurrence of each
+        // distinct row in scan order (dedup on a composite cell key).
+        let mut seen: HashSet<String> = HashSet::new();
+        let skip = proj.skip.unwrap_or(0);
+        let mut kept = 0usize;
+        for i in 0..sc.n {
+            let mut key = String::new();
+            for c in &cols {
+                val_key(&c[i], &mut key);
+                key.push('\u{1}');
+            }
+            if !seen.insert(key) {
+                continue;
+            }
+            if kept >= skip {
+                if proj.limit.is_some_and(|l| rs.nrows >= l) {
+                    break;
+                }
+                rs.push_row(cols.iter().map(|c| val_to_value(graph, &c[i])));
+            }
+            kept += 1;
+        }
+    } else {
+        // Emit the SKIP/LIMIT row window (no ORDER BY ⇒ scan order).
+        let start = proj.skip.unwrap_or(0).min(sc.n);
+        let end = proj.limit.map(|l| (start + l).min(sc.n)).unwrap_or(sc.n);
+        for i in start..end {
+            rs.push_row(cols.iter().map(|c| val_to_value(graph, &c[i])));
+        }
     }
     Some(rs)
 }

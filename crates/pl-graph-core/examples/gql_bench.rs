@@ -102,11 +102,15 @@ fn main() {
         ("project many rows", "MATCH (n:Person) WHERE n.age > 30 RETURN n.name, n.age", 100),
         ("1-hop join count", "MATCH (a:Person)-[:KNOWS]->(b) RETURN count(*) AS c", 100),
         ("group by + aggregate", "MATCH (n:Person) RETURN n.dept, count(*) AS c, avg(n.age) AS a", 100),
+        ("group by 2 keys", "MATCH (n:Person) RETURN n.dept, n.age, count(*) AS c", 100),
         ("exists subquery", "MATCH (n:Person) WHERE EXISTS { (n)-[:KNOWS]->() } RETURN count(*) AS c", 50),
         ("edge prop filter", "MATCH (a:Person)-[r:CREATED]->(s) WHERE r.weight > 0.4 RETURN count(*) AS c", 100),
         ("project over join", "MATCH (a:Person)-[r:CREATED]->(s) RETURN a.age * 2 + 1 AS x, r.weight + 1 AS w", 100),
         ("var-length 1..2", "MATCH (a:Person {name:'name0'})-[:KNOWS]->{1,2}(b) RETURN count(*) AS c", 200),
         ("order by + limit", "MATCH (n:Person) RETURN n.name ORDER BY n.age DESC LIMIT 20", 100),
+        ("order by num, no limit", "MATCH (n:Person) RETURN n.age ORDER BY n.age DESC", 100),
+        ("distinct 1 col", "MATCH (n:Person) RETURN DISTINCT n.dept", 100),
+        ("distinct 2 col", "MATCH (n:Person) RETURN DISTINCT n.dept, n.age", 100),
         // --- expression-heavy (isolates expression eval; the bytecode-VM target) ---
         (
             "expr-heavy filter count",
