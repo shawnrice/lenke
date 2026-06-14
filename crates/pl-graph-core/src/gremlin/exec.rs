@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::{By, Endpoint, GVal, Order, Pop, Scope, Step, Token, Traversal, P};
-use crate::graph::{Graph, Value};
+use crate::graph::{Graph, IdxKey, RangeBound, Value};
 
 /// A unit flowing through the pipeline: its value, the path it took, `as(label)`
 /// tags (label → accumulated values, for `select` pop), and the repeat loop count.
@@ -57,7 +57,82 @@ struct Ctx {
 /// Run a traversal against `graph`, returning the final traversers' values.
 pub fn run(graph: &mut Graph, t: &Traversal) -> Vec<GVal> {
     let mut ctx = Ctx::default();
-    run_steps(graph, &mut ctx, &t.steps, Vec::new()).into_iter().map(|t| t.val).collect()
+    // Index seeding: `V().has(key, pred)` on an indexed key seeds from the
+    // property index (skipping the full label scan + the now-satisfied `has`).
+    let (seed, start) = match index_seed(graph, &t.steps) {
+        Some(s) => (s, 2),
+        None => (Vec::new(), 0),
+    };
+    run_steps(graph, &mut ctx, &t.steps[start..], seed).into_iter().map(|t| t.val).collect()
+}
+
+fn gval_to_idxkey(v: &GVal) -> Option<IdxKey> {
+    match v {
+        GVal::Str(s) => Some(IdxKey::Str(s.clone())),
+        GVal::Num(n) => Some(IdxKey::Num(*n)),
+        GVal::Bool(b) => Some(IdxKey::Bool(*b)),
+        _ => None,
+    }
+}
+
+/// The smallest string strictly greater than every string with prefix `s`
+/// (for `startsWith` → `[s, s⁺)`). `None` ⇒ no upper bound (e.g. empty prefix).
+fn prefix_upper(s: &str) -> Option<String> {
+    let mut bytes = s.as_bytes().to_vec();
+    while let Some(&last) = bytes.last() {
+        if last < 0xff {
+            *bytes.last_mut().unwrap() = last + 1;
+            return String::from_utf8(bytes).ok();
+        }
+        bytes.pop();
+    }
+    None
+}
+
+/// If the plan opens with `V().has(key, pred)` on an indexed key and `pred` is
+/// index-seekable (eq / within / range / startsWith), return the seeded vertices
+/// (the `has` is then fully satisfied by the index). `None` ⇒ fall back to scan.
+fn index_seed(graph: &Graph, steps: &[Step]) -> Option<Vec<Trav>> {
+    let [Step::V(ids), Step::Has(key, pred), ..] = steps else {
+        return None;
+    };
+    if !ids.is_empty() || !graph.vertex_indexed(key) {
+        return None;
+    }
+    let one = |b: RangeBound| graph.vertices_by_prop_range(key, &b);
+    let verts: Vec<u32> = match pred {
+        P::Eq(v) => graph.vertices_by_prop(key, &gval_to_idxkey(v)?)?.to_vec(),
+        P::Within(vs) => {
+            let mut out = Vec::new();
+            for v in vs {
+                if let Some(k) = gval_to_idxkey(v) {
+                    if let Some(s) = graph.vertices_by_prop(key, &k) {
+                        out.extend_from_slice(s);
+                    }
+                }
+            }
+            out
+        }
+        P::Gt(v) => one(RangeBound { gt: gval_to_idxkey(v), ..Default::default() })?,
+        P::Gte(v) => one(RangeBound { gte: gval_to_idxkey(v), ..Default::default() })?,
+        P::Lt(v) => one(RangeBound { lt: gval_to_idxkey(v), ..Default::default() })?,
+        P::Lte(v) => one(RangeBound { lte: gval_to_idxkey(v), ..Default::default() })?,
+        P::Between(lo, hi) => one(RangeBound { gte: gval_to_idxkey(lo), lt: gval_to_idxkey(hi), ..Default::default() })?,
+        P::Inside(lo, hi) => one(RangeBound { gt: gval_to_idxkey(lo), lt: gval_to_idxkey(hi), ..Default::default() })?,
+        P::Outside(lo, hi) => {
+            // value < lo OR value > hi — two disjoint range seeks unioned.
+            let mut out = one(RangeBound { lt: gval_to_idxkey(lo), ..Default::default() })?;
+            out.extend(one(RangeBound { gt: gval_to_idxkey(hi), ..Default::default() })?);
+            out
+        }
+        P::StartsWith(prefix) => {
+            let lo = Some(IdxKey::Str(prefix.as_str().into()));
+            let hi = prefix_upper(prefix).map(|u| IdxKey::Str(u.as_str().into()));
+            one(RangeBound { gte: lo, lt: hi, ..Default::default() })?
+        }
+        _ => return None,
+    };
+    Some(verts.into_iter().map(|v| Trav::root(GVal::Vertex(v))).collect())
 }
 
 /// Serialize traversal results to a JSON array string — the FFI carrier. Graph

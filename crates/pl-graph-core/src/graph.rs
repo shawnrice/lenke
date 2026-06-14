@@ -257,6 +257,70 @@ pub struct Graph {
     in_: Vec<Vec<Adj>>,
     /// counter for synthesized ids of vertices created at runtime
     synth: u64,
+    /// Opt-in secondary indexes over vertex property values: key-id → ordered
+    /// map (value → live vertex ids). A `BTreeMap` answers both equality (`get`)
+    /// and range (`range`) seeks from one structure. Built on demand via
+    /// [`Graph::create_vertex_index`]; an empty map means "no index" (full scan).
+    vidx: HashMap<u32, std::collections::BTreeMap<IdxKey, Vec<u32>>>,
+}
+
+/// A totally-ordered key for the property index: type rank (Bool < Num < Str)
+/// then value, so a numeric range seek never bleeds into string values.
+#[derive(Clone, Debug)]
+pub enum IdxKey {
+    Bool(bool),
+    Num(f64),
+    Str(Arc<str>),
+}
+
+impl IdxKey {
+    fn rank(&self) -> u8 {
+        match self {
+            IdxKey::Bool(_) => 0,
+            IdxKey::Num(_) => 1,
+            IdxKey::Str(_) => 2,
+        }
+    }
+    /// Build from a core [`Value`] (absent / list → not indexable).
+    fn from_value(v: &Value) -> Option<IdxKey> {
+        match v {
+            Value::Bool(b) => Some(IdxKey::Bool(*b)),
+            Value::Num(n) => Some(IdxKey::Num(*n)),
+            Value::Str(s) => Some(IdxKey::Str(s.clone())),
+            _ => None,
+        }
+    }
+}
+
+impl PartialEq for IdxKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Equal
+    }
+}
+impl Eq for IdxKey {}
+impl PartialOrd for IdxKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for IdxKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match (self, other) {
+            (IdxKey::Bool(a), IdxKey::Bool(b)) => a.cmp(b),
+            (IdxKey::Num(a), IdxKey::Num(b)) => a.total_cmp(b),
+            (IdxKey::Str(a), IdxKey::Str(b)) => a.as_ref().cmp(b.as_ref()),
+            _ => self.rank().cmp(&other.rank()),
+        }
+    }
+}
+
+/// Inclusive/exclusive range bounds for a property-index range seek.
+#[derive(Clone, Debug, Default)]
+pub struct RangeBound {
+    pub gt: Option<IdxKey>,
+    pub gte: Option<IdxKey>,
+    pub lt: Option<IdxKey>,
+    pub lte: Option<IdxKey>,
 }
 
 impl Graph {
@@ -281,6 +345,77 @@ impl Graph {
     /// Live vertex indices (skips tombstones) — the full candidate seed set.
     pub fn vertex_indices(&self) -> impl Iterator<Item = u32> + '_ {
         (0..self.n as u32).filter(move |&v| self.v_live[v as usize])
+    }
+
+    // --- property indexes (opt-in secondary indexes over vertex props) -----
+
+    /// Declare (and backfill) a secondary index over vertex property `key`. An
+    /// `EQ`/range filter on this key can then seed from the index instead of a
+    /// full label scan. Idempotent. (Experiment: build-once; not yet maintained
+    /// across post-build mutation.)
+    pub fn create_vertex_index(&mut self, key: &str) {
+        let Some(kid) = self.props.keys.get(key) else { return };
+        let mut map: std::collections::BTreeMap<IdxKey, Vec<u32>> = std::collections::BTreeMap::new();
+        for v in 0..self.n as u32 {
+            if !self.v_live[v as usize] {
+                continue;
+            }
+            if let Some(k) = IdxKey::from_value(&self.props.value_id(v as usize, kid, &self.strs)) {
+                map.entry(k).or_default().push(v);
+            }
+        }
+        self.vidx.insert(kid, map);
+    }
+
+    /// Whether vertex property `key` has a secondary index.
+    pub fn vertex_indexed(&self, key: &str) -> bool {
+        self.props.keys.get(key).is_some_and(|kid| self.vidx.contains_key(&kid))
+    }
+
+    fn vidx_for(&self, key: &str) -> Option<&std::collections::BTreeMap<IdxKey, Vec<u32>>> {
+        self.vidx.get(&self.props.keys.get(key)?)
+    }
+
+    /// Equality seek: the live vertices whose `key` equals `value` (None = no index).
+    pub fn vertices_by_prop(&self, key: &str, value: &IdxKey) -> Option<&[u32]> {
+        Some(self.vidx_for(key)?.get(value).map(Vec::as_slice).unwrap_or(&[]))
+    }
+
+    /// Cardinality of an equality seek (for cardinality-based seed selection).
+    pub fn count_by_prop(&self, key: &str, value: &IdxKey) -> Option<usize> {
+        Some(self.vidx_for(key)?.get(value).map_or(0, Vec::len))
+    }
+
+    /// Range seek: live vertices whose `key` falls in `bound` (union of buckets).
+    /// Bounds carry a type (e.g. `Num(30)`), so the scan stays within that type
+    /// block — `{gt: 30}` never bleeds into string values.
+    pub fn vertices_by_prop_range(&self, key: &str, bound: &RangeBound) -> Option<Vec<u32>> {
+        use std::ops::Bound;
+        let map = self.vidx_for(key)?;
+        // Lower start for the BTree range: the tighter of gt/gte (or unbounded).
+        let lo = match (&bound.gte, &bound.gt) {
+            (Some(k), _) => Bound::Included(k.clone()),
+            (None, Some(k)) => Bound::Excluded(k.clone()),
+            (None, None) => Bound::Unbounded,
+        };
+        // The type rank the bounds operate in (so we don't union other types).
+        let rank = [&bound.gt, &bound.gte, &bound.lt, &bound.lte].into_iter().flatten().next().map(IdxKey::rank);
+        let mut out = Vec::new();
+        for (k, ids) in map.range((lo, Bound::Unbounded)) {
+            if let Some(r) = rank {
+                if k.rank() < r {
+                    continue;
+                }
+                if k.rank() > r {
+                    break; // past the bound's type block (keys ascend)
+                }
+            }
+            if bound.lt.as_ref().is_some_and(|b| k >= b) || bound.lte.as_ref().is_some_and(|b| k > b) {
+                break; // exceeded the upper bound
+            }
+            out.extend_from_slice(ids);
+        }
+        Some(out)
     }
 
     /// Out-edges of `v` as adjacency slots.
@@ -676,6 +811,7 @@ impl Builder {
             out,
             in_,
             synth: 0,
+            vidx: HashMap::new(),
         }
     }
 }

@@ -691,6 +691,49 @@ fn parse_vertex_json_has_id_label() {
     assert_eq!(json, r#"[{"id":"1","label":"PERSON"}]"#);
 }
 
+// ===== property-index seeding (results must equal the scan path) =====
+
+/// Run a query against a fresh Modern graph with the given vertex indexes built.
+fn q_idx(indexes: &[&str], t: super::Traversal) -> Vec<GVal> {
+    let mut g = modern();
+    for k in indexes {
+        g.create_vertex_index(k);
+    }
+    t.run(&mut g)
+}
+
+#[test]
+fn index_eq_matches_scan() {
+    let scan = names(q(g().V().has("name", P::eq("marko")).out(&["KNOWS"]).values(&["name"])));
+    let idx = names(q_idx(&["name"], g().V().has("name", P::eq("marko")).out(&["KNOWS"]).values(&["name"])));
+    assert_eq!(scan, idx);
+    assert_eq!(idx, vec!["josh", "vadas"]);
+}
+
+#[test]
+fn index_range_matches_scan() {
+    let want = vec!["josh", "peter"];
+    assert_eq!(names(q(g().V().has("age", P::gt(30)).values(&["name"]))), want);
+    assert_eq!(names(q_idx(&["age"], g().V().has("age", P::gt(30)).values(&["name"]))), want);
+    // between / inside
+    assert_eq!(names(q_idx(&["age"], g().V().has("age", P::between(28, 33)).values(&["name"]))), vec!["josh", "marko"]);
+    assert_eq!(names(q_idx(&["age"], g().V().has("age", P::inside(27, 32)).values(&["name"]))), vec!["marko"]);
+}
+
+#[test]
+fn index_within_and_startswith() {
+    assert_eq!(names(q_idx(&["name"], g().V().has("name", P::within(["josh", "marko"])).values(&["name"]))), vec!["josh", "marko"]);
+    assert_eq!(names(q_idx(&["name"], g().V().has("name", P::starts_with("ma")).values(&["name"]))), vec!["marko"]);
+    // prefix that matches two: 'lop' / 'ripple' → 'r' only ripple
+    assert_eq!(names(q_idx(&["name"], g().V().has("name", P::starts_with("r")).values(&["name"]))), vec!["ripple"]);
+}
+
+#[test]
+fn index_range_does_not_bleed_types() {
+    // age index, gt(0) must not return software (no age) — type-block bounded.
+    assert_eq!(names(q_idx(&["age"], g().V().has("age", P::gt(0)).values(&["name"]))), vec!["josh", "marko", "peter", "vadas"]);
+}
+
 // helper used above
 fn list_names_ordered(g: &GVal) -> Vec<String> {
     match g {
