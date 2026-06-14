@@ -1,4 +1,4 @@
-import type { Edge, Graph, Vertex } from '@pl-graph/core';
+import type { Edge, Graph, IndexableValue, RangeBound, Vertex } from '@pl-graph/core';
 import { filter, flatMap, map, skip, take, toArray } from '@pl-graph/fp';
 
 import type {
@@ -18,7 +18,13 @@ import type {
   SetItem,
   SetOp,
 } from './ast.js';
-import { candidateVertices, expand, labelsMatch, matchesLabel } from './graph-queries.js';
+import {
+  candidateCount,
+  candidateVertices,
+  expand,
+  labelsMatch,
+  matchesLabel,
+} from './graph-queries.js';
 
 /**
  * The executor turns a parsed `Query` into result rows by *pattern matching*:
@@ -779,7 +785,27 @@ const applyProjection = (
 /** A compiled property map + inline WHERE (the ISO element-pattern predicate). */
 type CProp = { key: string; value: CompiledExpr };
 type CPredicate = { props: readonly CProp[]; where?: CompiledExpr };
-type CNode = { variable?: string; label?: LabelExpr; pred: CPredicate };
+
+/** Range bounds whose endpoints are compiled value closures (resolved per seed). */
+type CRangeBound = { gt?: CompiledExpr; gte?: CompiledExpr; lt?: CompiledExpr; lte?: CompiledExpr };
+
+/**
+ * A seedable predicate lifted out of a WHERE / inline-pattern conjunction: a
+ * necessary condition on a node's property that an index can seek. Sound only
+ * because it comes from an AND-chain (every conjunct must hold), so the seed is
+ * always a superset of the node's true matches — `matchNode` re-validates.
+ */
+type CSeedHint =
+  | { kind: 'eq'; key: string; value: CompiledExpr }
+  | { kind: 'within'; key: string; values: CompiledExpr }
+  | { kind: 'range'; key: string; bound: CRangeBound };
+
+type CNode = {
+  variable?: string;
+  label?: LabelExpr;
+  pred: CPredicate;
+  seedHints?: readonly CSeedHint[];
+};
 type CRel = {
   variable?: string;
   label?: LabelExpr;
@@ -801,11 +827,157 @@ const compilePredicate = (
   where: where ? compileExpr(where) : undefined,
 });
 
-const compileNode = (node: NodePattern): CNode => ({
-  variable: node.variable,
-  label: node.label,
-  pred: compilePredicate(node.properties, node.where),
-});
+// --- seed-hint extraction ----------------------------------------------------
+
+/** A value usable as a seek key without binding the node's own variable. */
+const isConstExpr = (e: Expr): boolean => e.kind === 'lit' || e.kind === 'param';
+
+/** Mirror a comparison operator when its operands are swapped (`30 < a.age`). */
+const FLIP: Record<CompareOp, CompareOp> = {
+  '=': '=',
+  '<>': '<>',
+  '<': '>',
+  '>': '<',
+  '<=': '>=',
+  '>=': '<=',
+};
+
+type HintMap = Map<string, CSeedHint[]>;
+
+const pushHint = (into: HintMap, variable: string, hint: CSeedHint): void => {
+  const list = into.get(variable);
+  if (list) {
+    list.push(hint);
+  } else {
+    into.set(variable, [hint]);
+  }
+};
+
+/** A `prop <op> const` comparison, normalized so the property is on the left. */
+const asPropCompare = (
+  expr: Extract<Expr, { kind: 'compare' }>,
+): { variable: string; key: string; op: CompareOp; value: Expr } | null => {
+  if (expr.left.kind === 'prop' && isConstExpr(expr.right)) {
+    return { variable: expr.left.variable, key: expr.left.key, op: expr.op, value: expr.right };
+  }
+  if (expr.right.kind === 'prop' && isConstExpr(expr.left)) {
+    return {
+      variable: expr.right.variable,
+      key: expr.right.key,
+      op: FLIP[expr.op],
+      value: expr.left,
+    };
+  }
+  return null;
+};
+
+const BOUND_OF: Partial<Record<CompareOp, keyof CRangeBound>> = {
+  '>': 'gt',
+  '>=': 'gte',
+  '<': 'lt',
+  '<=': 'lte',
+};
+
+/**
+ * Walk a predicate's AND-chain, collecting per-variable seed hints from the
+ * conjuncts an index can seek: `prop = const`, range comparisons, and `prop IN
+ * [consts]`. Only `and` is descended — an `or`/`not` branch could admit rows a
+ * single-conjunct seed would miss, so those (and every non-seekable shape) are
+ * left entirely to the residual WHERE.
+ */
+const collectHints = (where: Expr, into: HintMap): void => {
+  switch (where.kind) {
+    case 'and':
+      collectHints(where.left, into);
+      collectHints(where.right, into);
+      return;
+    case 'compare': {
+      const pc = asPropCompare(where);
+      if (!pc) {
+        return;
+      }
+      if (pc.op === '=') {
+        pushHint(into, pc.variable, { kind: 'eq', key: pc.key, value: compileExpr(pc.value) });
+        return;
+      }
+      const boundKey = BOUND_OF[pc.op];
+      if (boundKey) {
+        pushHint(into, pc.variable, {
+          kind: 'range',
+          key: pc.key,
+          bound: { [boundKey]: compileExpr(pc.value) },
+        });
+      }
+      return;
+    }
+    case 'in':
+      if (
+        !where.negated &&
+        where.expr.kind === 'prop' &&
+        where.list.kind === 'list' &&
+        where.list.items.every(isConstExpr)
+      ) {
+        pushHint(into, where.expr.variable, {
+          kind: 'within',
+          key: where.expr.key,
+          values: compileExpr(where.list),
+        });
+      }
+      return;
+    default:
+  }
+};
+
+/** Hints a predicate contributes to one variable (used for inline node WHERE). */
+const hintsForVariable = (where: Expr | undefined, variable: string | undefined): CSeedHint[] => {
+  if (!where || !variable) {
+    return [];
+  }
+  const into: HintMap = new Map();
+  collectHints(where, into);
+  return coalesceRangeHints(into.get(variable) ?? []);
+};
+
+/**
+ * Fold a variable's range hints on the same key into one bound, so
+ * `n.age >= 29 AND n.age < 35` seeks the tight `[29, 35)` slice rather than
+ * just the more selective single side. First-wins on a repeated side (e.g. two
+ * lower bounds) — dropping a redundant tightening only widens the seed, which
+ * stays a sound superset for `matchNode` to re-validate.
+ */
+const coalesceRangeHints = (hints: readonly CSeedHint[]): CSeedHint[] => {
+  const bounds = new Map<string, CRangeBound>();
+  const out: CSeedHint[] = [];
+  for (const hint of hints) {
+    if (hint.kind !== 'range') {
+      out.push(hint);
+      continue;
+    }
+    const existing = bounds.get(hint.key);
+    if (!existing) {
+      const bound: CRangeBound = { ...hint.bound };
+      bounds.set(hint.key, bound);
+      out.push({ kind: 'range', key: hint.key, bound });
+      continue;
+    }
+    for (const side of ['gt', 'gte', 'lt', 'lte'] as const) {
+      if (existing[side] === undefined && hint.bound[side] !== undefined) {
+        existing[side] = hint.bound[side];
+      }
+    }
+  }
+  return out;
+};
+
+const compileNode = (node: NodePattern): CNode => {
+  const seedHints = hintsForVariable(node.where, node.variable);
+  return {
+    variable: node.variable,
+    label: node.label,
+    pred: compilePredicate(node.properties, node.where),
+    seedHints: seedHints.length > 0 ? seedHints : undefined,
+  };
+};
 
 const compileRel = (rel: RelPattern): CRel => ({
   variable: rel.variable,
@@ -867,6 +1039,186 @@ const matchNode = (
   return bound;
 };
 
+/** A scalar the property index can seek on (mirrors PropertyIndex's IndexableValue). */
+const isScalar = (v: unknown): v is IndexableValue =>
+  v === null ||
+  typeof v === 'string' ||
+  typeof v === 'boolean' ||
+  (typeof v === 'number' && !Number.isNaN(v));
+
+const EMPTY: ReadonlySet<Vertex> = new Set<Vertex>();
+
+/** Resolve a compiled range bound to concrete scalar endpoints, or null. */
+const evalBound = (bound: CRangeBound, env: EvalEnv): RangeBound | null => {
+  const out: RangeBound = {};
+  let any = false;
+  for (const key of ['gt', 'gte', 'lt', 'lte'] as const) {
+    const fn = bound[key];
+    if (!fn) {
+      continue;
+    }
+    const v = fn(env);
+    if (!isScalar(v)) {
+      return null; // a non-scalar endpoint makes the seek meaningless
+    }
+    out[key] = v;
+    any = true;
+  }
+  return any ? out : null;
+};
+
+/** A seekable predicate: its estimated cardinality and a thunk for the set. */
+type SeedCandidate = { count: number; build: () => ReadonlySet<Vertex> };
+
+/**
+ * Every index seek a node pattern offers: its ISO equality constraints
+ * (`(n {k: v})`) plus the seed hints lifted from WHERE / inline predicates.
+ * Each candidate carries a cardinality estimate (computed without touching a
+ * set) and a thunk that builds the set only if it's chosen.
+ */
+const indexCandidates = function* (
+  graph: Graph,
+  node: CNode,
+  env: EvalEnv,
+): Iterable<SeedCandidate> {
+  const idx = graph.vertexPropertyIndex;
+  const eqCandidate = (key: string, v: unknown): SeedCandidate => ({
+    count: idx.countEquals(key, v) ?? 0,
+    build: () => idx.equals(key, v) ?? EMPTY,
+  });
+
+  for (const { key, value } of node.pred.props) {
+    if (idx.isIndexed(key)) {
+      const v = value(env);
+      if (isScalar(v)) {
+        yield eqCandidate(key, v);
+      }
+    }
+  }
+  for (const hint of node.seedHints ?? []) {
+    if (!idx.isIndexed(hint.key)) {
+      continue;
+    }
+    if (hint.kind === 'eq') {
+      const v = hint.value(env);
+      if (isScalar(v)) {
+        yield eqCandidate(hint.key, v);
+      }
+    } else if (hint.kind === 'within') {
+      const list = hint.values(env);
+      if (Array.isArray(list) && list.every(isScalar)) {
+        let count = 0;
+        for (const item of list) {
+          count += idx.countEquals(hint.key, item) ?? 0;
+        }
+        yield {
+          count,
+          build: () => {
+            const out = new Set<Vertex>();
+            for (const item of list) {
+              for (const vertex of idx.equals(hint.key, item) ?? EMPTY) {
+                out.add(vertex);
+              }
+            }
+            return out;
+          },
+        };
+      }
+    } else {
+      const bound = evalBound(hint.bound, env);
+      if (bound) {
+        yield {
+          count: idx.countRange(hint.key, bound) ?? 0,
+          build: () => idx.range(hint.key, bound) ?? EMPTY,
+        };
+      }
+    }
+  }
+};
+
+/**
+ * Seed candidates for a node pattern. An indexed equality / range / `IN` — from
+ * an element-pattern map (`(n:Person {name: 'marko'})`) or a seekable WHERE
+ * conjunct (`WHERE n.age > 30`) — seeks the index instead of scanning every
+ * vertex. The most selective seek (smallest estimated cardinality) is chosen
+ * and materialized; `matchNode` and the residual WHERE re-validate the rest, so
+ * the seed only has to be a superset. Falls back to the label-narrowed scan
+ * when nothing is indexed.
+ */
+const seedVertices = function* (
+  graph: Graph,
+  node: CNode,
+  binding: Binding,
+  params: Params,
+): Iterable<Vertex> {
+  const env: EvalEnv = { binding, params, graph };
+  let best: SeedCandidate | undefined;
+  for (const candidate of indexCandidates(graph, node, env)) {
+    if (!best || candidate.count < best.count) {
+      best = candidate;
+    }
+  }
+  if (best) {
+    yield* best.build();
+    return;
+  }
+  yield* candidateVertices(graph, node.label);
+};
+
+/** The estimated number of seed vertices for starting a pattern at `node`. */
+const estimateSeed = (graph: Graph, node: CNode, binding: Binding, params: Params): number => {
+  // An already-bound variable seeds from exactly one vertex.
+  if (node.variable && binding.has(node.variable)) {
+    return 1;
+  }
+  const env: EvalEnv = { binding, params, graph };
+  let best = Infinity;
+  for (const candidate of indexCandidates(graph, node, env)) {
+    best = Math.min(best, candidate.count);
+  }
+  return best === Infinity ? candidateCount(graph, node.label) : best;
+};
+
+const FLIP_DIRECTION: Record<RelPattern['direction'], RelPattern['direction']> = {
+  out: 'in',
+  in: 'out',
+  both: 'both',
+};
+
+/**
+ * Walk a fixed-length path from its other end: reverse the segment order and
+ * flip each relationship's direction. The matched bindings are identical (same
+ * edges, same nodes); only the seed side — and thus enumeration order — changes.
+ */
+const reversePath = (path: CPath): CPath => {
+  const nodes = [path.start, ...path.segments.map((s) => s.node)];
+  const segments: CSegment[] = [];
+  for (let i = path.segments.length - 1; i >= 0; i--) {
+    const seg = path.segments[i]!;
+    segments.push({
+      rel: { ...seg.rel, direction: FLIP_DIRECTION[seg.rel.direction] },
+      node: nodes[i]!,
+    });
+  }
+  return { start: nodes[nodes.length - 1]!, segments };
+};
+
+/**
+ * Pick which end of a fixed-length path to seed from: the side with the smaller
+ * estimated seed, so the join starts from the more selective anchor. Patterns
+ * with a variable-length segment keep their written orientation (reversing a
+ * quantified walk is not handled here).
+ */
+const orient = (graph: Graph, pattern: CPath, binding: Binding, params: Params): CPath => {
+  if (pattern.segments.length === 0 || pattern.segments.some((s) => s.rel.quantifier)) {
+    return pattern;
+  }
+  const endNode = pattern.segments[pattern.segments.length - 1]!.node;
+  const startEst = estimateSeed(graph, pattern.start, binding, params);
+  const endEst = estimateSeed(graph, endNode, binding, params);
+  return endEst < startEst ? reversePath(pattern) : pattern;
+};
+
 /** Yield every binding that extends `binding` by matching `pattern`. */
 const matchPattern = function* (
   graph: Graph,
@@ -874,17 +1226,20 @@ const matchPattern = function* (
   binding: Binding,
   params: Params,
 ): Iterable<Binding> {
-  // Seed the start node: reuse an already-bound vertex if the variable is
-  // known, otherwise scan candidates narrowed by label.
+  // Seed from whichever end is more selective, then walk from there.
+  const path = orient(graph, pattern, binding, params);
+
+  // Reuse an already-bound vertex if the start variable is known, otherwise
+  // seed from an indexed constraint or a label-narrowed scan.
   const seeds: Iterable<Vertex> =
-    pattern.start.variable && binding.has(pattern.start.variable)
-      ? [binding.get(pattern.start.variable) as Vertex]
-      : candidateVertices(graph, pattern.start.label);
+    path.start.variable && binding.has(path.start.variable)
+      ? [binding.get(path.start.variable) as Vertex]
+      : seedVertices(graph, path.start, binding, params);
 
   for (const seed of seeds) {
-    const seeded = matchNode(binding, pattern.start, seed, params, graph);
+    const seeded = matchNode(binding, path.start, seed, params, graph);
     if (seeded) {
-      yield* walkSegments(graph, pattern, 0, seed, seeded, params);
+      yield* walkSegments(graph, path, 0, seed, seeded, params);
     }
   }
 };
@@ -1043,14 +1398,37 @@ const compileSetItem = (item: SetItem): CSetItem =>
 
 const compileClause = (clause: Clause): CClause => {
   switch (clause.kind) {
-    case 'match':
+    case 'match': {
+      const patterns = clause.patterns.map(compilePath);
+      // Lift seekable conjuncts of the clause WHERE onto every pattern node by
+      // variable — not just the start — so either end of a pattern can be the
+      // seed side. `MATCH (a:Person) WHERE a.name = 'marko'` then seeds like the
+      // inline `(a:Person {name: 'marko'})` form, and a constraint on the far
+      // end lets `orient` start the walk from there.
+      if (clause.where) {
+        const hints: HintMap = new Map();
+        collectHints(clause.where, hints);
+        const attach = (node: CNode): CNode => {
+          const extra = node.variable ? hints.get(node.variable) : undefined;
+          return extra
+            ? { ...node, seedHints: coalesceRangeHints([...(node.seedHints ?? []), ...extra]) }
+            : node;
+        };
+        for (let i = 0; i < patterns.length; i++) {
+          patterns[i] = {
+            start: attach(patterns[i]!.start),
+            segments: patterns[i]!.segments.map((s) => ({ rel: s.rel, node: attach(s.node) })),
+          };
+        }
+      }
       return {
         kind: 'match',
         optional: clause.optional,
-        patterns: clause.patterns.map(compilePath),
+        patterns,
         where: clause.where ? compileExpr(clause.where) : undefined,
         nullVars: clause.optional ? patternVars(clause.patterns) : [],
       };
+    }
     case 'with':
       return {
         kind: 'with',
@@ -1284,7 +1662,10 @@ const runLinear = (linear: CLinear, graph: Graph, params: Params): Row[] => {
         bindings =
           clause.where === undefined
             ? projected
-            : filter((b: Binding) => clause.where!({ binding: b, params, graph }) === true, projected);
+            : filter(
+                (b: Binding) => clause.where!({ binding: b, params, graph }) === true,
+                projected,
+              );
         break;
       }
       case 'insert':
