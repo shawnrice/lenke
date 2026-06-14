@@ -13,6 +13,7 @@
 pub mod arrow;
 pub mod ffi;
 pub mod gql;
+pub mod gremlin;
 pub mod graph;
 pub mod ndjson;
 pub mod query;
