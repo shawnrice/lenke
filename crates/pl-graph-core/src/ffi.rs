@@ -38,7 +38,45 @@ pub unsafe extern "C" fn plg_build_csr(
 
 #[no_mangle]
 pub extern "C" fn plg_abi_version() -> u32 {
-    5 // 5: added textual Gremlin (plg_gremlin_json); 4: Arrow columnar surface
+    6 // 6: inbound allocator (plg_alloc/plg_dealloc) for the wasm linear-memory
+      //    binding; 5: textual Gremlin (plg_gremlin_json); 4: Arrow columnar surface
+}
+
+// ---------- inbound allocator (wasm linear memory) ----------
+//
+// Over bun:ffi, JS hands us a pointer to a JS-owned buffer and we read it in
+// place. In a browser there is only wasm linear memory: JS cannot point at its
+// own heap, it must first copy bytes *into* the module's memory. These two
+// exports are that inbound path — JS calls `plg_alloc(len)`, writes the query /
+// NDJSON bytes into the returned offset, then passes (ptr, len) to any `plg_*`
+// symbol exactly as the native binding does. They are the inverse of
+// `plg_free_buf` (which frees buffers we hand *out*); same one-ABI-two-backends
+// design. Harmless on native, so unconditionally exported.
+
+/// Allocate `len` bytes inside the module and return a pointer the caller fills.
+/// Free it with `plg_dealloc(ptr, len)` (or pass ownership to a `plg_*` call
+/// that consumes it). Returns null for `len == 0`.
+#[no_mangle]
+pub extern "C" fn plg_alloc(len: usize) -> *mut u8 {
+    if len == 0 {
+        return std::ptr::null_mut();
+    }
+    let mut buf = Vec::<u8>::with_capacity(len);
+    let ptr = buf.as_mut_ptr();
+    std::mem::forget(buf);
+    ptr
+}
+
+/// Free a buffer obtained from `plg_alloc`. `len` must be the same value passed
+/// to `plg_alloc`.
+///
+/// # Safety
+/// `ptr`/`len` must come from a prior `plg_alloc` call and not be freed twice.
+#[no_mangle]
+pub unsafe extern "C" fn plg_dealloc(ptr: *mut u8, len: usize) {
+    if !ptr.is_null() && len != 0 {
+        drop(Vec::from_raw_parts(ptr, 0, len));
+    }
 }
 
 // ---------- stateful columnar graph ----------
@@ -372,6 +410,11 @@ pub unsafe extern "C" fn plg_free_buf(ptr: *mut u8, len: usize) {
 ///
 /// # Safety
 /// `g` valid; `path_ptr`/`path_len` valid UTF-8.
+///
+/// Native-only: there is no filesystem in the browser, so this symbol is absent
+/// from the wasm build. Browser callers serialize via `plg_encode_ndjson` and
+/// persist through the host (download, IndexedDB, …) instead.
+#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn plg_write_ndjson(g: *const Graph, path_ptr: *const u8, path_len: usize) -> i64 {
     if g.is_null() || path_ptr.is_null() {
