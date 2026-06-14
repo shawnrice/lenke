@@ -16,7 +16,7 @@ use super::ast::{ArithOp, CompareOp, Direction, Lit, Quantifier, SetOp, SetOpKin
 use super::lexer::SyntaxError;
 use super::plan::{
     lower, AggFn, CClause, CExpr, CLabelExpr, CLinear, CNode, CPath, CProjection, CPropConstraint, CQuery, CRel,
-    CRemoveItem, CSegment, CSetItem, ScalarFn,
+    CRemoveItem, CReturnItem, CSegment, CSetItem, Op, Program, ScalarFn,
 };
 use crate::graph::{Column, Graph, Value};
 use crate::query::RowSet;
@@ -95,6 +95,56 @@ fn resolve_ctx<'a>(graph: &Graph, plan: &'a CQuery, params: &'a [Val]) -> Ctx<'a
         label_names: &plan.label_names,
     }
 }
+
+/// A/B toggle for the expression VM at the hot per-row sites. Flip to `true`
+/// to route those sites through the compiled stack-machine [`Program`]; `false`
+/// uses the tree-walking `eval`. Both forms are kept side by side per item
+/// (`CReturnItem` holds `expr` + `prog`, `CClause` holds `where_` + `where_prog`).
+///
+/// Measured (52k/225k graph, same-session, cooled — VM on vs off):
+///   - single small expr/row (project one col, simple predicate): VM ~12-17% SLOWER
+///   - many small exprs/row (4-col projection): VM ~17% SLOWER
+///   - one deep predicate/row (expr-heavy filter): VM ~6% FASTER
+///   - traversal/output-bound (joins, var-length): unaffected
+/// Net: the naive scalar stack VM loses. Per-invocation setup + operand-stack
+/// traffic of fat `Val`s outweighs the dispatch saved, except for a single deep
+/// expression where the flat op-stream beats recursive boxed-tree pointer-chasing.
+/// The win that would actually pay off is *vectorized* eval (one op over a batch
+/// of rows, amortizing dispatch N-fold) — the columnar direction, not this.
+const USE_VM: bool = false;
+
+/// Toggle for the vectorized (batched, column-at-a-time) scan path. When on,
+/// the single isolated-node shape `MATCH (n:L …) [WHERE pred] RETURN …` is
+/// evaluated one *operation across all matched rows* instead of per row, so
+/// numeric property reads gather straight from a typed `Column` and arithmetic /
+/// comparison run tight `f64` loops the compiler can autovectorize. Anything
+/// outside the supported numeric subset falls back to scalar `eval` per column.
+///
+/// Measured (52k/225k graph, same-session, cooled — vec on vs scalar off):
+///   - expr-heavy numeric filter (RETURN count): 7.09ms → 1.43ms  (5.0x)
+///   - grouped aggregate (n.dept, count, avg):   3.02ms → 0.79ms  (3.8x)
+///   - scan + numeric filter count:              1.49ms → 0.39ms  (3.8x)
+///   - count(*) / count+pred:                    ~3-4x
+///   - expr-heavy numeric projection (4 cols):   9.46ms → 4.42ms  (2.1x)
+///   - numeric single-col projection:            1.16ms → 0.46ms  (2.5x)
+///   - numeric projection over a 1-hop join:     2.78ms → 1.53ms  (1.8x)
+///   - count+WHERE over a 1-hop join:            2.09ms → 1.24ms  (1.7x)
+///   - string projection (Gen fallback):         1.17ms → 0.91ms  (1.3x)
+///   - var-length / ORDER BY / subqueries / pure count over a join: not engaged
+/// Same expressions where the scalar *bytecode VM* lost 6-17% (see [`USE_VM`])
+/// win 2-5x here: dispatch amortizes over N rows, the f64 loops vectorize, and
+/// values never get boxed into `Val` per row.
+///
+/// Tradeoffs found & handled (where vectorizing would cost more than it saves):
+///   - small `LIMIT` with no WHERE: vectorizing the whole scan loses the scalar
+///     streaming early-exit — `build_scan` caps the gather at `skip+limit`.
+///   - an isolated-node scan: built by a tight label-bucket loop, not the general
+///     matcher (which is ~3x slower per row and dominates a pure scan).
+///   - a *pure* aggregate over a traversal (no WHERE): stays scalar — the scalar
+///     engine stream-folds the join without materializing it, and there's no
+///     per-row expression to vectorize. (With a WHERE or a projection, the
+///     batched build in `build_scan` pays off.)
+const USE_VEC: bool = true;
 
 /// The environment an expression evaluates against.
 struct Env<'a> {
@@ -533,6 +583,154 @@ fn eval(env: &Env, expr: &CExpr) -> Val {
         }
         CExpr::AggRef(idx) => env.agg_values.and_then(|a| a.get(*idx)).cloned().unwrap_or(Val::Null),
     }
+}
+
+thread_local! {
+    /// Reusable operand stack for the expression VM. The VM is never re-entrant
+    /// on its own stack (the only recursion is `Op::Tree`, which calls the
+    /// tree-walking `eval`, not `run`), so a single per-thread buffer is safe and
+    /// keeps the hot per-row path allocation-free.
+    static VM_STACK: std::cell::RefCell<Vec<Val>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Evaluate a projection item, routing through the VM or tree-walk per [`USE_VM`].
+#[inline]
+fn eval_item(env: &Env, item: &super::plan::CReturnItem) -> Val {
+    if USE_VM {
+        run(env, &item.prog)
+    } else {
+        eval(env, &item.expr)
+    }
+}
+
+/// Execute a compiled expression [`Program`] (stack machine) against `env`.
+/// Mirrors [`eval`] op-for-op; `Op::Tree` delegates the un-compilable
+/// subexpressions (CASE / EXISTS / COUNT{} / aggregate) back to `eval`.
+fn run(env: &Env, prog: &Program) -> Val {
+    VM_STACK.with(|cell| {
+        let mut st = cell.borrow_mut();
+        let base = st.len();
+        for op in &prog.0 {
+            match op {
+                Op::Const(l) => st.push(match l {
+                    Lit::Null => Val::Null,
+                    Lit::Bool(b) => Val::Bool(*b),
+                    Lit::Num(n) => Val::Num(*n),
+                    Lit::Str(s) => vstr(s.as_str()),
+                }),
+                Op::Var(slot) => st.push(env.binding.get(*slot).cloned().unwrap_or(Val::Null)),
+                Op::Param(slot) => st.push(env.ctx.params.get(*slot).cloned().unwrap_or(Val::Null)),
+                Op::Prop { var_slot, key_ref } => {
+                    let bound = env.binding.get(*var_slot).cloned().unwrap_or(Val::Null);
+                    st.push(prop_of(env.graph, env.ctx, &bound, *key_ref));
+                }
+                Op::MakeList(n) => {
+                    let at = st.len() - n;
+                    let items = st.split_off(at);
+                    st.push(Val::List(items));
+                }
+                Op::Arith(op) => {
+                    let b = num_of(&st.pop().unwrap());
+                    let a = num_of(&st.pop().unwrap());
+                    st.push(match (a, b) {
+                        (Some(a), Some(b)) => Val::Num(match op {
+                            ArithOp::Add => a + b,
+                            ArithOp::Sub => a - b,
+                            ArithOp::Mul => a * b,
+                            ArithOp::Div => a / b,
+                            ArithOp::Mod => a % b,
+                        }),
+                        _ => Val::Null,
+                    });
+                }
+                Op::Compare(op) => {
+                    let rv = st.pop().unwrap();
+                    let lv = st.pop().unwrap();
+                    st.push(if is_nullish(&lv) || is_nullish(&rv) {
+                        Val::Null
+                    } else {
+                        Val::Bool(match op {
+                            CompareOp::Eq => val_eq(&lv, &rv),
+                            CompareOp::Ne => !val_eq(&lv, &rv),
+                            CompareOp::Lt => val_cmp(&lv, &rv) == Some(Ordering::Less),
+                            CompareOp::Gt => val_cmp(&lv, &rv) == Some(Ordering::Greater),
+                            CompareOp::Le => matches!(val_cmp(&lv, &rv), Some(Ordering::Less | Ordering::Equal)),
+                            CompareOp::Ge => matches!(val_cmp(&lv, &rv), Some(Ordering::Greater | Ordering::Equal)),
+                        })
+                    });
+                }
+                Op::Concat => {
+                    let rv = st.pop().unwrap();
+                    let lv = st.pop().unwrap();
+                    st.push(if is_nullish(&lv) || is_nullish(&rv) {
+                        Val::Null
+                    } else {
+                        vstr(js_str(env.graph, &lv) + &js_str(env.graph, &rv))
+                    });
+                }
+                Op::Neg => {
+                    let v = st.pop().unwrap();
+                    st.push(match num_of(&v) {
+                        Some(n) => Val::Num(-n),
+                        None => Val::Null,
+                    });
+                }
+                Op::Not => {
+                    let v = st.pop().unwrap();
+                    st.push(truth_to_val(not3(as_truth(&v))));
+                }
+                Op::And => {
+                    let b = as_truth(&st.pop().unwrap());
+                    let a = as_truth(&st.pop().unwrap());
+                    st.push(truth_to_val(and3(a, b)));
+                }
+                Op::Or => {
+                    let b = as_truth(&st.pop().unwrap());
+                    let a = as_truth(&st.pop().unwrap());
+                    st.push(truth_to_val(or3(a, b)));
+                }
+                Op::Xor => {
+                    let b = as_truth(&st.pop().unwrap());
+                    let a = as_truth(&st.pop().unwrap());
+                    st.push(truth_to_val(xor3(a, b)));
+                }
+                Op::IsNull(negated) => {
+                    let isnull = is_nullish(&st.pop().unwrap());
+                    st.push(Val::Bool(if *negated { !isnull } else { isnull }));
+                }
+                Op::IsTruth(truth, negated) => {
+                    let m = as_truth(&st.pop().unwrap()) == *truth;
+                    st.push(Val::Bool(if *negated { !m } else { m }));
+                }
+                Op::IsLabeled(label, negated) => {
+                    let el = st.pop().unwrap();
+                    let has = labels_match(env.graph, env.ctx, &el, label);
+                    st.push(Val::Bool(if *negated { !has } else { has }));
+                }
+                Op::In(negated) => {
+                    let list = st.pop().unwrap();
+                    let expr = st.pop().unwrap();
+                    let r = in_list(&expr, &list);
+                    st.push(truth_to_val(if *negated { not3(r) } else { r }));
+                }
+                Op::Scalar(func, argc) => {
+                    let at = st.len() - argc;
+                    let args = st.split_off(at);
+                    st.push(call_scalar(env.graph, *func, &args));
+                }
+                Op::AggRef(idx) => {
+                    st.push(env.agg_values.and_then(|a| a.get(*idx)).cloned().unwrap_or(Val::Null));
+                }
+                Op::Tree(e) => {
+                    let v = eval(env, e);
+                    st.push(v);
+                }
+            }
+        }
+        // The program leaves exactly one value above `base`.
+        debug_assert_eq!(st.len(), base + 1);
+        st.pop().unwrap_or(Val::Null)
+    })
 }
 
 fn eval_aggregate(env: &Env, func: AggFn, arg: Option<&CExpr>, distinct: bool, star: bool) -> Val {
@@ -1002,7 +1200,7 @@ fn drive_matches(
     let Some(clause) = matches.get(idx) else {
         return sink(binding);
     };
-    let CClause::Match { optional, patterns, where_, scope_len } = clause else {
+    let CClause::Match { optional, patterns, where_, scope_len, .. } = clause else {
         return true; // only MATCH clauses are streamed
     };
     binding.resize(*scope_len);
@@ -1143,15 +1341,26 @@ fn match_one_path<F: FnMut(&mut Binding) -> bool>(
 /// Recognize the common shape a single MATCH clause + single path so the
 /// monomorphized matcher can drive it directly (returns path, clause WHERE, and
 /// the binding slot count to size the working binding).
-fn single_simple_clause<'a>(matches: &[&'a CClause]) -> Option<(&'a CPath, Option<&'a CExpr>, usize)> {
+type SimpleWhere<'a> = (&'a CPath, Option<&'a CExpr>, Option<&'a Program>, usize);
+fn single_simple_clause<'a>(matches: &[&'a CClause]) -> Option<SimpleWhere<'a>> {
     if matches.len() != 1 {
         return None;
     }
     match matches[0] {
-        CClause::Match { optional: false, patterns, where_, scope_len } if patterns.len() == 1 => {
-            Some((&patterns[0], where_.as_ref(), *scope_len))
+        CClause::Match { optional: false, patterns, where_, where_prog, scope_len } if patterns.len() == 1 => {
+            Some((&patterns[0], where_.as_ref(), where_prog.as_ref(), *scope_len))
         }
         _ => None,
+    }
+}
+
+/// Evaluate a fast-path clause WHERE (`true` = keep the row), per [`USE_VM`].
+#[inline]
+fn where_keep(env: &Env, cw: Option<&CExpr>, cwp: Option<&Program>) -> bool {
+    if USE_VM {
+        cwp.is_none_or(|w| as_truth(&run(env, w)) == Some(true))
+    } else {
+        cw.is_none_or(|w| as_truth(&eval(env, w)) == Some(true))
     }
 }
 
@@ -1307,7 +1516,7 @@ impl<'p> ProjAccum<'p> {
         } else {
             let env = Env { graph, ctx, binding: input, group: None, agg_values };
             for (i, item) in proj.items.iter().enumerate() {
-                out.0[i] = Some(eval(&env, &item.expr));
+                out.0[i] = Some(eval_item(&env, item));
             }
         }
         out
@@ -1372,7 +1581,7 @@ impl<'p> ProjAccum<'p> {
             {
                 let env = Env::new(graph, ctx, binding);
                 for item in proj.items.iter().filter(|i| !i.is_agg) {
-                    val_key(&eval(&env, &item.expr), &mut self.key_buf);
+                    val_key(&eval_item(&env, item), &mut self.key_buf);
                     self.key_buf.push('\u{1}');
                 }
             }
@@ -1479,10 +1688,10 @@ fn project_matches(
     for inb in incoming {
         let mut work = inb.clone();
         let cont = match simple {
-            Some((path, cwhere, scope_len)) => {
+            Some((path, cwhere, cwhere_prog, scope_len)) => {
                 work.resize(scope_len);
                 match_one_path(graph, ctx, path, &mut work, &mut |b| {
-                    if cwhere.is_some_and(|w| as_truth(&eval(&Env::new(graph, ctx, b), w)) != Some(true)) {
+                    if !where_keep(&Env::new(graph, ctx, b), cwhere, cwhere_prog) {
                         return true;
                     }
                     acc.accept(graph, ctx, b)
@@ -1497,6 +1706,691 @@ fn project_matches(
     acc.finish(graph, ctx)
 }
 
+// --- vectorized (batched) node scan -----------------------------------------
+//
+// One operation across the whole matched row set instead of per row. A column
+// of evaluated values; numeric data is a flat `Vec<f64>` with a validity mask
+// so arithmetic/comparison loops stay branch-light and autovectorizable. Three
+// representations: numeric, three-valued boolean, and a `Gen` escape hatch for
+// anything outside the numeric subset (strings, CASE, identity, subqueries),
+// evaluated per row by the scalar `eval` for just that column.
+enum VVec {
+    Num { d: Vec<f64>, valid: Vec<bool> },
+    Bool { t: Vec<bool>, valid: Vec<bool> },
+    Gen(Vec<Val>),
+}
+
+impl VVec {
+    /// Coerce to numeric (`num_of` semantics): invalid where the source is null.
+    fn into_num(self) -> (Vec<f64>, Vec<bool>) {
+        match self {
+            VVec::Num { d, valid } => (d, valid),
+            VVec::Bool { t, valid } => (t.iter().map(|&b| if b { 1.0 } else { 0.0 }).collect(), valid),
+            VVec::Gen(vs) => {
+                let mut d = Vec::with_capacity(vs.len());
+                let mut valid = Vec::with_capacity(vs.len());
+                for v in &vs {
+                    match num_of(v) {
+                        Some(x) => {
+                            d.push(x);
+                            valid.push(true);
+                        }
+                        None => {
+                            d.push(f64::NAN);
+                            valid.push(false);
+                        }
+                    }
+                }
+                (d, valid)
+            }
+        }
+    }
+
+    /// Per-row Kleene truth (for WHERE and boolean connectives).
+    fn into_truth(self) -> Vec<Truth> {
+        match self {
+            VVec::Bool { t, valid } => t.iter().zip(&valid).map(|(&b, &v)| v.then_some(b)).collect(),
+            VVec::Num { d, valid } => {
+                d.iter().zip(&valid).map(|(&x, &v)| v.then_some(x != 0.0 && !x.is_nan())).collect()
+            }
+            VVec::Gen(vs) => vs.iter().map(as_truth).collect(),
+        }
+    }
+
+    /// Final per-row output values (for projection cells).
+    fn into_vals(self) -> Vec<Val> {
+        match self {
+            VVec::Num { d, valid } => {
+                d.iter().zip(&valid).map(|(&x, &v)| if v { Val::Num(x) } else { Val::Null }).collect()
+            }
+            VVec::Bool { t, valid } => {
+                t.iter().zip(&valid).map(|(&b, &v)| if v { Val::Bool(b) } else { Val::Null }).collect()
+            }
+            VVec::Gen(vs) => vs,
+        }
+    }
+}
+
+/// A unary math `ScalarFn` over f64, if `func` is one (so it vectorizes).
+fn unary_math(func: ScalarFn) -> Option<fn(f64) -> f64> {
+    use ScalarFn::*;
+    Some(match func {
+        Abs => f64::abs,
+        Ceil => f64::ceil,
+        Floor => f64::floor,
+        Sqrt => f64::sqrt,
+        Exp => f64::exp,
+        Ln => f64::ln,
+        Log10 => f64::log10,
+        Sin => f64::sin,
+        Cos => f64::cos,
+        Tan => f64::tan,
+        Asin => f64::asin,
+        Acos => f64::acos,
+        Atan => f64::atan,
+        Sinh => f64::sinh,
+        Cosh => f64::cosh,
+        Tanh => f64::tanh,
+        Degrees => f64::to_degrees,
+        Radians => f64::to_radians,
+        _ => return None,
+    })
+}
+
+/// Which element kind a scanned binding slot holds (so a `Prop` reads the right
+/// property store — vertex vs edge — at that slot's per-row ids).
+#[derive(Clone, Copy, PartialEq)]
+enum Elem {
+    Node,
+    Edge,
+}
+
+/// The matched row set as parallel columns: for each bound binding slot, the
+/// element kind plus a per-row id (dense vertex/edge index). A "row" is one full
+/// match; `slot(s)` gives that slot's id column. This is what every vectorized
+/// expression reads from, so traversals (`a`, `r`, `b` slots) work the same as a
+/// single-node scan (`n` slot) — just more slots.
+struct ScanCols {
+    n: usize,
+    slots: Vec<Option<(Elem, Vec<u32>)>>,
+}
+
+impl ScanCols {
+    fn new(scope_len: usize) -> Self {
+        ScanCols { n: 0, slots: (0..scope_len.max(1)).map(|_| None).collect() }
+    }
+    fn slot(&self, s: usize) -> Option<(Elem, &[u32])> {
+        self.slots.get(s).and_then(|o| o.as_ref()).map(|(e, v)| (*e, v.as_slice()))
+    }
+}
+
+/// Gather a numeric `Column` at `ids` into a `VVec::Num` (+ validity mask), or
+/// `None` if the column isn't numeric (caller then falls back to per-row `Gen`).
+fn gather_num(col: Option<&Column>, ids: &[u32]) -> Option<VVec> {
+    match col {
+        Some(Column::Num { data, present }) => {
+            let mut d = Vec::with_capacity(ids.len());
+            let mut valid = Vec::with_capacity(ids.len());
+            for &vi in ids {
+                let i = vi as usize;
+                d.push(data[i]);
+                valid.push(present.get(i));
+            }
+            Some(VVec::Num { d, valid })
+        }
+        _ => None,
+    }
+}
+
+/// Scalar fallback: evaluate `e` once per row into a `Vec<Val>` (the slow path
+/// for any subexpression outside the numeric vector subset). Reuses one binding,
+/// setting every scanned slot to its per-row element.
+fn scalar_col(graph: &Graph, ctx: &Ctx, sc: &ScanCols, e: &CExpr) -> Vec<Val> {
+    let mut b = Binding(vec![None; sc.slots.len()]);
+    (0..sc.n)
+        .map(|i| {
+            for (slot, col) in sc.slots.iter().enumerate() {
+                if let Some((elem, ids)) = col {
+                    let v = match elem {
+                        Elem::Node => Val::Node(ids[i]),
+                        Elem::Edge => Val::Edge(ids[i]),
+                    };
+                    b.set(slot, v);
+                }
+            }
+            eval(&Env::new(graph, ctx, &b), e)
+        })
+        .collect()
+}
+
+/// Evaluate `e` over the whole matched row set `sc`. Numeric and boolean
+/// subtrees stay vectorized; everything else degrades to a per-row `Gen` column.
+fn eval_vec(graph: &Graph, ctx: &Ctx, sc: &ScanCols, e: &CExpr) -> VVec {
+    let n = sc.n;
+    let gen = |e: &CExpr| VVec::Gen(scalar_col(graph, ctx, sc, e));
+    match e {
+        CExpr::Lit(Lit::Num(x)) => VVec::Num { d: vec![*x; n], valid: vec![true; n] },
+        CExpr::Lit(Lit::Bool(b)) => VVec::Bool { t: vec![*b; n], valid: vec![true; n] },
+        CExpr::Lit(Lit::Null) => VVec::Num { d: vec![f64::NAN; n], valid: vec![false; n] },
+        CExpr::Prop { var_slot, key_ref } => match sc.slot(*var_slot) {
+            Some((Elem::Node, ids)) => {
+                gather_num(ctx.prop_keys[*key_ref].0.and_then(|k| graph.props.cols.get(k as usize)), ids)
+                    .unwrap_or_else(|| gen(e))
+            }
+            Some((Elem::Edge, ids)) => {
+                gather_num(ctx.prop_keys[*key_ref].1.and_then(|k| graph.edge_props.cols.get(k as usize)), ids)
+                    .unwrap_or_else(|| gen(e))
+            }
+            None => gen(e),
+        },
+        CExpr::Neg(x) => {
+            let (mut d, valid) = eval_vec(graph, ctx, sc, x).into_num();
+            for v in &mut d {
+                *v = -*v;
+            }
+            VVec::Num { d, valid }
+        }
+        CExpr::Arith { op, left, right } => {
+            let (ld, lv) = eval_vec(graph, ctx, sc, left).into_num();
+            let (rd, rv) = eval_vec(graph, ctx, sc, right).into_num();
+            let mut d = Vec::with_capacity(n);
+            for i in 0..n {
+                d.push(match op {
+                    ArithOp::Add => ld[i] + rd[i],
+                    ArithOp::Sub => ld[i] - rd[i],
+                    ArithOp::Mul => ld[i] * rd[i],
+                    ArithOp::Div => ld[i] / rd[i],
+                    ArithOp::Mod => ld[i] % rd[i],
+                });
+            }
+            let valid = (0..n).map(|i| lv[i] && rv[i]).collect();
+            VVec::Num { d, valid }
+        }
+        CExpr::Compare { op, left, right } => {
+            let l = eval_vec(graph, ctx, sc, left);
+            let r = eval_vec(graph, ctx, sc, right);
+            // Numeric fast path when both sides are numeric/boolean; otherwise the
+            // comparison may be over strings/identity → scalar fallback.
+            match (&l, &r) {
+                (VVec::Gen(_), _) | (_, VVec::Gen(_)) => gen(e),
+                _ => {
+                    let (ld, lv) = l.into_num();
+                    let (rd, rv) = r.into_num();
+                    let mut t = Vec::with_capacity(n);
+                    let mut valid = Vec::with_capacity(n);
+                    for i in 0..n {
+                        valid.push(lv[i] && rv[i]);
+                        let a = ld[i];
+                        let b = rd[i];
+                        t.push(match op {
+                            CompareOp::Eq => a == b,
+                            CompareOp::Ne => a != b,
+                            CompareOp::Lt => a < b,
+                            CompareOp::Gt => a > b,
+                            CompareOp::Le => a <= b,
+                            CompareOp::Ge => a >= b,
+                        });
+                    }
+                    VVec::Bool { t, valid }
+                }
+            }
+        }
+        CExpr::Scalar { func, args } if args.len() == 1 && unary_math(*func).is_some() => {
+            let f = unary_math(*func).unwrap();
+            let (mut d, valid) = eval_vec(graph, ctx, sc, &args[0]).into_num();
+            for v in &mut d {
+                *v = f(*v);
+            }
+            VVec::Num { d, valid }
+        }
+        CExpr::Not(x) => {
+            let tr = eval_vec(graph, ctx, sc, x).into_truth();
+            kleene_vec(tr.iter().map(|&t| not3(t)))
+        }
+        CExpr::And(l, r) => {
+            let a = eval_vec(graph, ctx, sc, l).into_truth();
+            let b = eval_vec(graph, ctx, sc, r).into_truth();
+            kleene_vec((0..n).map(|i| and3(a[i], b[i])))
+        }
+        CExpr::Or(l, r) => {
+            let a = eval_vec(graph, ctx, sc, l).into_truth();
+            let b = eval_vec(graph, ctx, sc, r).into_truth();
+            kleene_vec((0..n).map(|i| or3(a[i], b[i])))
+        }
+        CExpr::Xor(l, r) => {
+            let a = eval_vec(graph, ctx, sc, l).into_truth();
+            let b = eval_vec(graph, ctx, sc, r).into_truth();
+            kleene_vec((0..n).map(|i| xor3(a[i], b[i])))
+        }
+        CExpr::IsNull { expr, negated } => {
+            let (_, valid) = eval_vec(graph, ctx, sc, expr).into_num();
+            let t = valid.iter().map(|&v| if *negated { v } else { !v }).collect();
+            VVec::Bool { t, valid: vec![true; n] }
+        }
+        _ => gen(e),
+    }
+}
+
+/// Build a `VVec::Bool` from a Kleene-truth stream (`None` → invalid/UNKNOWN).
+fn kleene_vec(it: impl Iterator<Item = Truth>) -> VVec {
+    let mut t = Vec::new();
+    let mut valid = Vec::new();
+    for tr in it {
+        match tr {
+            Some(b) => {
+                t.push(b);
+                valid.push(true);
+            }
+            None => {
+                t.push(false);
+                valid.push(false);
+            }
+        }
+    }
+    VVec::Bool { t, valid }
+}
+
+/// Materialize the matched rows of a fixed-length path into columns. An isolated
+/// node is a tight label-bucket scan; a traversal is a batched adjacency
+/// expansion — walk each frontier node's edges and push straight into the
+/// columns, multiplying rows by matching neighbors, with no matcher recursion or
+/// per-edge bind/unset. Returns `None` (→ scalar path) for var-length
+/// quantifiers or a slot a path binds twice (a self-join). `cap` stops early.
+fn build_scan(graph: &Graph, ctx: &Ctx, path: &CPath, scope_len: usize, cap: Option<usize>) -> Option<ScanCols> {
+    // Fast path: an isolated node is a tight label-bucket scan — no matcher
+    // dispatch, no per-row bind/unset. (The general matcher below is ~3x slower
+    // per row, which dominates a pure scan.)
+    if path.segments.is_empty() {
+        let node = &path.start;
+        let mut ids = Vec::new();
+        let needs_check = !node.props.is_empty() || node.where_.is_some();
+        let mut b = Binding(vec![None; scope_len.max(1)]);
+        for_each_seed(graph, ctx, node.label.as_ref(), &mut |vi| {
+            if !matches_label(graph, ctx, vi, node.label.as_ref()) {
+                return true;
+            }
+            if needs_check {
+                if let Some(s) = node.var_slot {
+                    b.set(s, Val::Node(vi));
+                }
+                if !satisfies(graph, ctx, &Val::Node(vi), &node.props, node.where_.as_ref(), &b) {
+                    return true;
+                }
+            }
+            ids.push(vi);
+            cap.is_none_or(|c| ids.len() < c)
+        });
+        let mut sc = ScanCols::new(scope_len);
+        sc.n = ids.len();
+        if let Some(s) = node.var_slot {
+            sc.slots[s] = Some((Elem::Node, ids));
+        }
+        return Some(sc);
+    }
+    if path.segments.iter().any(|s| s.rel.quantifier.is_some()) {
+        return None;
+    }
+    // Bound slots and their element kind, in path order.
+    let mut kinds: Vec<(usize, Elem)> = Vec::new();
+    if let Some(s) = path.start.var_slot {
+        kinds.push((s, Elem::Node));
+    }
+    for seg in &path.segments {
+        if let Some(s) = seg.rel.var_slot {
+            kinds.push((s, Elem::Edge));
+        }
+        if let Some(s) = seg.node.var_slot {
+            kinds.push((s, Elem::Node));
+        }
+    }
+    let mut seen = HashSet::new();
+    if kinds.iter().any(|(s, _)| !seen.insert(*s)) {
+        return None; // a slot bound twice (self-join) — not vectorized
+    }
+
+    // Per-bound-slot columns built so far; `endpoint` is the current last-node id
+    // per row (tracked even for anonymous nodes, to expand the next segment).
+    let mut cols: Vec<Option<Vec<u32>>> = (0..scope_len.max(1)).map(|_| None).collect();
+    for &(s, _) in &kinds {
+        cols[s] = Some(Vec::new());
+    }
+    let mut endpoint: Vec<u32> = Vec::new();
+
+    // Seed from the start node (label + inline props/WHERE).
+    let start = &path.start;
+    let start_check = !start.props.is_empty() || start.where_.is_some();
+    let mut sb = Binding(vec![None; scope_len.max(1)]);
+    for_each_seed(graph, ctx, start.label.as_ref(), &mut |vi| {
+        if !matches_label(graph, ctx, vi, start.label.as_ref()) {
+            return true;
+        }
+        if start_check {
+            if let Some(s) = start.var_slot {
+                sb.set(s, Val::Node(vi));
+            }
+            if !satisfies(graph, ctx, &Val::Node(vi), &start.props, start.where_.as_ref(), &sb) {
+                return true;
+            }
+        }
+        endpoint.push(vi);
+        if let Some(s) = start.var_slot {
+            cols[s].as_mut().unwrap().push(vi);
+        }
+        true
+    });
+
+    // Expand each segment: every frontier row fans out to its matching neighbors,
+    // replicating the already-bound columns and appending this segment's ids.
+    let nseg = path.segments.len();
+    let mut nb = Binding(vec![None; scope_len.max(1)]);
+    for (si, seg) in path.segments.iter().enumerate() {
+        let rel = &seg.rel;
+        let node = &seg.node;
+        let rel_check = !rel.props.is_empty() || rel.where_.is_some();
+        let node_check = !node.props.is_empty() || node.where_.is_some();
+        let need_bind = rel_check || node_check;
+        let is_last = si + 1 == nseg;
+        let mut new_cols: Vec<Option<Vec<u32>>> = (0..scope_len.max(1)).map(|_| None).collect();
+        for &(s, _) in &kinds {
+            new_cols[s] = Some(Vec::new());
+        }
+        let mut new_endpoint: Vec<u32> = Vec::new();
+        'rows: for i in 0..endpoint.len() {
+            // Prior slots are constant across this row's neighbors — set them once.
+            if need_bind {
+                for &(s, knd) in &kinds {
+                    if Some(s) == rel.var_slot || Some(s) == node.var_slot {
+                        continue;
+                    }
+                    if let Some(col) = &cols[s] {
+                        let v = match knd {
+                            Elem::Node => Val::Node(col[i]),
+                            Elem::Edge => Val::Edge(col[i]),
+                        };
+                        nb.set(s, v);
+                    }
+                }
+            }
+            for (eidx, nbr) in expand(graph, ctx, endpoint[i], rel.direction, rel.label.as_ref()) {
+                if !matches_label(graph, ctx, nbr, node.label.as_ref()) {
+                    continue;
+                }
+                if need_bind {
+                    if let Some(s) = rel.var_slot {
+                        nb.set(s, Val::Edge(eidx));
+                    }
+                    if let Some(s) = node.var_slot {
+                        nb.set(s, Val::Node(nbr));
+                    }
+                    if rel_check && !satisfies(graph, ctx, &Val::Edge(eidx), &rel.props, rel.where_.as_ref(), &nb) {
+                        continue;
+                    }
+                    if node_check && !satisfies(graph, ctx, &Val::Node(nbr), &node.props, node.where_.as_ref(), &nb) {
+                        continue;
+                    }
+                }
+                for &(s, _) in &kinds {
+                    let v = if Some(s) == rel.var_slot {
+                        eidx
+                    } else if Some(s) == node.var_slot {
+                        nbr
+                    } else {
+                        cols[s].as_ref().unwrap()[i]
+                    };
+                    new_cols[s].as_mut().unwrap().push(v);
+                }
+                new_endpoint.push(nbr);
+                // No WHERE ⇒ every built row survives, so a LIMIT can stop here.
+                if is_last && cap.is_some_and(|c| new_endpoint.len() >= c) {
+                    break 'rows;
+                }
+            }
+        }
+        cols = new_cols;
+        endpoint = new_endpoint;
+    }
+
+    let mut sc = ScanCols::new(scope_len);
+    sc.n = endpoint.len();
+    for &(s, e) in &kinds {
+        sc.slots[s] = Some((e, cols[s].take().unwrap()));
+    }
+    Some(sc)
+}
+
+/// Drop the rows where `keep[i]` is false, compacting every slot column in place.
+fn compact(sc: &mut ScanCols, keep: &[bool]) {
+    for slot in sc.slots.iter_mut() {
+        if let Some((_, v)) = slot {
+            let mut w = 0;
+            for i in 0..v.len() {
+                if keep[i] {
+                    v[w] = v[i];
+                    w += 1;
+                }
+            }
+            v.truncate(w);
+        }
+    }
+    sc.n = keep.iter().filter(|&&k| k).count();
+}
+
+/// Vectorized grouped / global aggregate over an already-matched (and WHERE-
+/// filtered) row set. Supports a single direct-`Prop` group key over a typed
+/// column (keys hash on raw ids, no string build) and non-distinct `count(*)` /
+/// `count`/`sum`/`avg`/`min`/`max` over a column. Returns `None` (→ scalar) for
+/// anything else (multi-key, expr keys, DISTINCT, collect, non-numeric min/max).
+fn vectorized_aggregate(graph: &Graph, ctx: &Ctx, sc: &ScanCols, proj: &CProjection) -> Option<RowSet> {
+    let key_items: Vec<&CReturnItem> = proj.items.iter().filter(|i| !i.is_agg).collect();
+    if key_items.len() > 1 {
+        return None; // multi-key grouping not vectorized yet
+    }
+    let n = sc.n;
+
+    // Assign a dense group id per row (first-seen order, matching the scalar
+    // group order). With no key it's one implicit global group.
+    let mut gid_of_row: Vec<usize> = Vec::with_capacity(n);
+    let mut rep_row: Vec<usize> = Vec::new(); // representative row per group
+    if let Some(&item) = key_items.first() {
+        let CExpr::Prop { var_slot, key_ref } = &item.expr else {
+            return None; // grouping by an expression — scalar path
+        };
+        let (elem, ids) = sc.slot(*var_slot)?;
+        let (store, kid) = match elem {
+            Elem::Node => (&graph.props, ctx.prop_keys[*key_ref].0),
+            Elem::Edge => (&graph.edge_props, ctx.prop_keys[*key_ref].1),
+        };
+        let col = kid.and_then(|k| store.cols.get(k as usize));
+        // Raw key bits per row (None = absent → its own NULL group).
+        let raw = |i: usize| -> Option<u64> {
+            let vi = ids[i] as usize;
+            match col {
+                Some(Column::Str { data, present }) => present.get(vi).then(|| data[vi] as u64),
+                Some(Column::Num { data, present }) => present.get(vi).then(|| data[vi].to_bits()),
+                Some(Column::Bool { data, present }) => present.get(vi).then(|| data[vi] as u64),
+                _ => None,
+            }
+        };
+        if matches!(col, Some(Column::Mixed { .. }) | None) {
+            return None; // can't cheaply key a heterogeneous column
+        }
+        let mut map: HashMap<u64, usize> = HashMap::new();
+        let mut null_gid: Option<usize> = None;
+        for i in 0..n {
+            let gid = match raw(i) {
+                Some(bits) => *map.entry(bits).or_insert_with(|| {
+                    rep_row.push(i);
+                    rep_row.len() - 1
+                }),
+                None => *null_gid.get_or_insert_with(|| {
+                    rep_row.push(i);
+                    rep_row.len() - 1
+                }),
+            };
+            gid_of_row.push(gid);
+        }
+    } else {
+        gid_of_row = vec![0; n];
+        if n > 0 {
+            rep_row.push(0);
+        }
+    }
+    // Grouped: one row per distinct key (none → no rows). Global: always one row.
+    let ngroups = if key_items.is_empty() { 1 } else { rep_row.len() };
+
+    // Fold each lifted aggregate into a per-group column.
+    let mut agg_cols: Vec<Vec<Val>> = Vec::with_capacity(proj.aggs.len());
+    for spec in &proj.aggs {
+        if spec.distinct {
+            return None;
+        }
+        let col: Vec<Val> = if spec.func == AggFn::Count && spec.star {
+            let mut cnt = vec![0u64; ngroups];
+            for &g in &gid_of_row {
+                cnt[g] += 1;
+            }
+            cnt.into_iter().map(|c| Val::Num(c as f64)).collect()
+        } else {
+            let arg = spec.arg.as_ref()?;
+            let av = eval_vec(graph, ctx, sc, arg);
+            // min/max compare by value; only correct here for numeric columns.
+            if matches!(spec.func, AggFn::Min | AggFn::Max) && !matches!(av, VVec::Num { .. }) {
+                return None;
+            }
+            let (d, valid) = av.into_num();
+            match spec.func {
+                AggFn::Count => {
+                    let mut c = vec![0u64; ngroups];
+                    for i in 0..n {
+                        if valid[i] {
+                            c[gid_of_row[i]] += 1;
+                        }
+                    }
+                    c.into_iter().map(|x| Val::Num(x as f64)).collect()
+                }
+                AggFn::Sum => {
+                    let mut s = vec![0f64; ngroups];
+                    for i in 0..n {
+                        if valid[i] {
+                            s[gid_of_row[i]] += d[i];
+                        }
+                    }
+                    s.into_iter().map(Val::Num).collect()
+                }
+                AggFn::Avg => {
+                    let mut s = vec![0f64; ngroups];
+                    let mut c = vec![0u64; ngroups];
+                    for i in 0..n {
+                        if valid[i] {
+                            let g = gid_of_row[i];
+                            s[g] += d[i];
+                            c[g] += 1;
+                        }
+                    }
+                    (0..ngroups).map(|g| if c[g] == 0 { Val::Null } else { Val::Num(s[g] / c[g] as f64) }).collect()
+                }
+                AggFn::Min | AggFn::Max => {
+                    let is_min = spec.func == AggFn::Min;
+                    let mut m: Vec<Option<f64>> = vec![None; ngroups];
+                    for i in 0..n {
+                        if valid[i] {
+                            let g = gid_of_row[i];
+                            m[g] = Some(match m[g] {
+                                Some(x) => if is_min { x.min(d[i]) } else { x.max(d[i]) },
+                                None => d[i],
+                            });
+                        }
+                    }
+                    m.into_iter().map(|o| o.map_or(Val::Null, Val::Num)).collect()
+                }
+                _ => return None, // CollectList etc.
+            }
+        };
+        agg_cols.push(col);
+    }
+
+    // Emit one output row per group: re-evaluate the item expressions scalar
+    // (few groups), resolving group keys against the representative row and
+    // `AggRef`s against this group's folded values.
+    let start = proj.skip.unwrap_or(0).min(ngroups);
+    let end = proj.limit.map(|l| (start + l).min(ngroups)).unwrap_or(ngroups);
+    let mut rs = RowSet::new(proj.out_names.clone());
+    let mut b = Binding(vec![None; sc.slots.len()]);
+    for g in start..end {
+        if let Some(&ri) = rep_row.get(g) {
+            for (slot, col) in sc.slots.iter().enumerate() {
+                if let Some((elem, ids)) = col {
+                    let v = match elem {
+                        Elem::Node => Val::Node(ids[ri]),
+                        Elem::Edge => Val::Edge(ids[ri]),
+                    };
+                    b.set(slot, v);
+                }
+            }
+        }
+        let agg_values: Vec<Val> = agg_cols.iter().map(|c| c[g].clone()).collect();
+        let env = Env { graph, ctx, binding: &b, group: None, agg_values: Some(&agg_values) };
+        rs.push_row(proj.items.iter().map(|item| val_to_value(graph, &eval(&env, &item.expr))));
+    }
+    Some(rs)
+}
+
+/// Try the vectorized path for a single fresh `MATCH` of one fixed-length path.
+/// Returns `None` (→ scalar driver) unless the shape qualifies: no ORDER BY, no
+/// DISTINCT, no `RETURN *`, and a buildable (non-var-length, no self-join) path.
+/// Handles WHERE, projection, and grouped/global aggregates over the row set.
+fn vectorized_scan(graph: &Graph, ctx: &Ctx, incoming: &[Binding], matches: &[&CClause], proj: &CProjection) -> Option<RowSet> {
+    if incoming.len() != 1 || incoming[0].0.iter().any(|c| c.is_some()) {
+        return None; // a prior WITH/INSERT already produced bindings
+    }
+    if matches.len() != 1 || !proj.order_by.is_empty() || proj.distinct || proj.star {
+        return None;
+    }
+    let CClause::Match { optional: false, patterns, where_, scope_len, .. } = matches[0] else {
+        return None;
+    };
+    if patterns.len() != 1 {
+        return None;
+    }
+    let path = &patterns[0];
+
+    // A pure aggregate over a traversal with no WHERE stays scalar: the scalar
+    // engine stream-folds the join without materializing it, and there's no
+    // per-row expression to vectorize. With a WHERE, the batched build + masked
+    // count can pay for itself.
+    if !path.segments.is_empty() && proj.aggregating && where_.is_none() {
+        return None;
+    }
+
+    // With no clause WHERE (and no aggregation), a LIMIT lets us stop the scan
+    // early — preserving the scalar path's streaming advantage for small LIMITs.
+    let cap = (where_.is_none() && !proj.aggregating)
+        .then(|| proj.limit.map(|l| proj.skip.unwrap_or(0) + l))
+        .flatten();
+    let mut sc = build_scan(graph, ctx, path, *scope_len, cap)?;
+
+    // Clause WHERE → keep mask (vectorized), compacting the row set.
+    if let Some(w) = where_ {
+        let keep: Vec<bool> = eval_vec(graph, ctx, &sc, w).into_truth().iter().map(|t| *t == Some(true)).collect();
+        compact(&mut sc, &keep);
+    }
+
+    if proj.aggregating {
+        return vectorized_aggregate(graph, ctx, &sc, proj);
+    }
+
+    // Non-aggregating projection: evaluate each item as a column, emit the
+    // SKIP/LIMIT row window (no ORDER BY ⇒ scan order).
+    let start = proj.skip.unwrap_or(0).min(sc.n);
+    let end = proj.limit.map(|l| (start + l).min(sc.n)).unwrap_or(sc.n);
+    let cols: Vec<Vec<Val>> = proj.items.iter().map(|item| eval_vec(graph, ctx, &sc, &item.expr).into_vals()).collect();
+    let mut rs = RowSet::new(proj.out_names.clone());
+    for i in start..end {
+        rs.push_row(cols.iter().map(|c| val_to_value(graph, &c[i])));
+    }
+    Some(rs)
+}
+
 /// Project a terminal RETURN directly to output `Value` rows. For the common
 /// non-aggregating, non-ordered case this streams straight to one `Vec<Value>`
 /// per row — no intermediate `Binding` and no later Val→Value conversion (the
@@ -1509,6 +2403,11 @@ fn project_to_rows(
     matches: &[&CClause],
     proj: &CProjection,
 ) -> RowSet {
+    if USE_VEC {
+        if let Some(rs) = vectorized_scan(graph, ctx, incoming, matches, proj) {
+            return rs;
+        }
+    }
     let mut rs = RowSet::new(proj.out_names.clone());
     if proj.aggregating || !proj.order_by.is_empty() {
         // Few / already-sorted rows: reuse the binding accumulator, then pour
@@ -1531,7 +2430,7 @@ fn project_to_rows(
                 rs.push_row(proj.star_cols.iter().map(|&s| b.get(s).map(|v| val_to_value(graph, v)).unwrap_or(Value::Null)));
             } else {
                 let env = Env::new(graph, ctx, b);
-                rs.push_row(proj.items.iter().map(|item| val_to_value(graph, &eval(&env, &item.expr))));
+                rs.push_row(proj.items.iter().map(|item| val_to_value(graph, &eval_item(&env, item))));
             }
             if proj.distinct && !seen.insert(value_row_key(rs.row(rs.nrows - 1))) {
                 rs.pop_row();
@@ -1540,10 +2439,10 @@ fn project_to_rows(
             cap.is_none_or(|c| rs.nrows < c) // stop once enough collected
         };
         let cont = match simple {
-            Some((path, cwhere, scope_len)) => {
+            Some((path, cwhere, cwhere_prog, scope_len)) => {
                 work.resize(scope_len);
                 match_one_path(graph, ctx, path, &mut work, &mut |b| {
-                    if cwhere.is_some_and(|w| as_truth(&eval(&Env::new(graph, ctx, b), w)) != Some(true)) {
+                    if !where_keep(&Env::new(graph, ctx, b), cwhere, cwhere_prog) {
                         return true;
                     }
                     push(b)
@@ -1624,15 +2523,16 @@ fn run_linear(linear: &CLinear, graph: &mut Graph, plan: &CQuery, params: &[Val]
     for clause in &linear.clauses {
         match clause {
             CClause::Match { .. } => pending.push(clause), // defer; consumed at a barrier
-            CClause::With { projection, where_ } => {
+            CClause::With { projection, where_, where_prog } => {
                 let projected = project_matches(graph, &ctx, &bindings, &pending, projection);
                 pending.clear();
-                bindings = match where_ {
-                    None => projected,
-                    Some(expr) => projected
+                bindings = if where_.is_none() {
+                    projected
+                } else {
+                    projected
                         .into_iter()
-                        .filter(|b| as_truth(&eval(&Env::new(graph, &ctx, b), expr)) == Some(true))
-                        .collect(),
+                        .filter(|b| where_keep(&Env::new(graph, &ctx, b), where_.as_ref(), where_prog.as_ref()))
+                        .collect()
                 };
             }
             CClause::Return(proj) => {

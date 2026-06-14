@@ -167,6 +167,129 @@ pub enum CExpr {
     AggRef(usize),
 }
 
+/// A bytecode instruction for the expression VM (a stack machine). Compiled from
+/// `CExpr` once at lower time; executed by a flat loop over a `Vec<Op>` against a
+/// small operand stack — contiguous instructions instead of a pointer-chased
+/// boxed tree. `Tree` is the escape hatch: control-flow / subquery / aggregate
+/// nodes fall back to the tree-walking interpreter for that subexpression.
+#[derive(Debug, Clone)]
+pub enum Op {
+    Const(Lit),
+    Var(usize),
+    Param(usize),
+    Prop { var_slot: usize, key_ref: usize },
+    MakeList(usize),
+    Arith(ArithOp),
+    Compare(CompareOp),
+    Concat,
+    Neg,
+    Not,
+    And,
+    Or,
+    Xor,
+    IsNull(bool),
+    IsTruth(Option<bool>, bool),
+    IsLabeled(CLabelExpr, bool),
+    In(bool),
+    Scalar(ScalarFn, usize),
+    AggRef(usize),
+    /// Fall back to the tree-walk for this subexpression (CASE / EXISTS / COUNT{}
+    /// / aggregate) and push its value.
+    Tree(CExpr),
+}
+
+/// A compiled expression: a flat instruction stream for the VM.
+#[derive(Debug, Clone)]
+pub struct Program(pub Vec<Op>);
+
+fn emit(e: &CExpr, out: &mut Vec<Op>) {
+    match e {
+        CExpr::Lit(l) => out.push(Op::Const(l.clone())),
+        CExpr::Var(s) => out.push(Op::Var(*s)),
+        CExpr::Param(s) => out.push(Op::Param(*s)),
+        CExpr::Prop { var_slot, key_ref } => out.push(Op::Prop { var_slot: *var_slot, key_ref: *key_ref }),
+        CExpr::List(items) => {
+            for it in items {
+                emit(it, out);
+            }
+            out.push(Op::MakeList(items.len()));
+        }
+        CExpr::Arith { op, left, right } => {
+            emit(left, out);
+            emit(right, out);
+            out.push(Op::Arith(*op));
+        }
+        CExpr::Compare { op, left, right } => {
+            emit(left, out);
+            emit(right, out);
+            out.push(Op::Compare(*op));
+        }
+        CExpr::Concat { left, right } => {
+            emit(left, out);
+            emit(right, out);
+            out.push(Op::Concat);
+        }
+        CExpr::Neg(x) => {
+            emit(x, out);
+            out.push(Op::Neg);
+        }
+        CExpr::And(l, r) => {
+            emit(l, out);
+            emit(r, out);
+            out.push(Op::And);
+        }
+        CExpr::Or(l, r) => {
+            emit(l, out);
+            emit(r, out);
+            out.push(Op::Or);
+        }
+        CExpr::Xor(l, r) => {
+            emit(l, out);
+            emit(r, out);
+            out.push(Op::Xor);
+        }
+        CExpr::Not(x) => {
+            emit(x, out);
+            out.push(Op::Not);
+        }
+        CExpr::IsNull { expr, negated } => {
+            emit(expr, out);
+            out.push(Op::IsNull(*negated));
+        }
+        CExpr::IsTruth { expr, truth, negated } => {
+            emit(expr, out);
+            out.push(Op::IsTruth(*truth, *negated));
+        }
+        CExpr::IsLabeled { expr, label, negated } => {
+            emit(expr, out);
+            out.push(Op::IsLabeled(label.clone(), *negated));
+        }
+        CExpr::In { expr, list, negated } => {
+            emit(expr, out);
+            emit(list, out);
+            out.push(Op::In(*negated));
+        }
+        CExpr::Scalar { func, args } => {
+            for a in args {
+                emit(a, out);
+            }
+            out.push(Op::Scalar(*func, args.len()));
+        }
+        CExpr::AggRef(i) => out.push(Op::AggRef(*i)),
+        // Control flow / subquery / aggregate: tree-walk this subexpression.
+        CExpr::Case { .. } | CExpr::Exists { .. } | CExpr::CountSubquery { .. } | CExpr::Aggregate { .. } => {
+            out.push(Op::Tree(e.clone()))
+        }
+    }
+}
+
+/// Compile a lowered expression to a VM `Program`.
+pub fn compile_program(e: &CExpr) -> Program {
+    let mut out = Vec::new();
+    emit(e, &mut out);
+    Program(out)
+}
+
 /// An aggregate lifted out of a projection expression (folded once per group).
 #[derive(Debug, Clone)]
 pub struct CAgg {
@@ -219,6 +342,8 @@ pub struct CPath {
 #[derive(Debug, Clone)]
 pub struct CReturnItem {
     pub expr: CExpr,
+    /// Compiled form of `expr` for the stack-machine VM (hot per-row site).
+    pub prog: Program,
     pub name: String,
     pub is_agg: bool,
 }
@@ -273,8 +398,15 @@ pub enum CRemoveItem {
 #[derive(Debug, Clone)]
 pub enum CClause {
     /// `scope_len` is the binding slot count after this match (incl. its vars).
-    Match { optional: bool, patterns: Vec<CPath>, where_: Option<CExpr>, scope_len: usize },
-    With { projection: CProjection, where_: Option<CExpr> },
+    Match {
+        optional: bool,
+        patterns: Vec<CPath>,
+        where_: Option<CExpr>,
+        /// Compiled form of `where_` for the VM (hot per-row site).
+        where_prog: Option<Program>,
+        scope_len: usize,
+    },
+    With { projection: CProjection, where_: Option<CExpr>, where_prog: Option<Program> },
     Return(CProjection),
     Insert(Vec<CPath>),
     Set(Vec<CSetItem>),
@@ -611,7 +743,8 @@ impl Lowerer {
                 let name = it.alias.clone().unwrap_or_else(|| column_name(&it.expr));
                 // Lift aggregates out of aggregating items so groups fold incrementally.
                 let expr = extract_aggs(expr, &mut aggs);
-                CReturnItem { expr, name, is_agg }
+                let prog = compile_program(&expr);
+                CReturnItem { expr, prog, name, is_agg }
             })
             .collect();
 
@@ -668,13 +801,15 @@ impl Lowerer {
                 self.add_pattern_vars(&m.patterns);
                 let patterns = m.patterns.iter().map(|p| self.path(p)).collect();
                 let where_ = m.where_.as_ref().map(|w| self.expr(w));
-                CClause::Match { optional: m.optional, patterns, where_, scope_len: self.scope.len() }
+                let where_prog = where_.as_ref().map(compile_program);
+                CClause::Match { optional: m.optional, patterns, where_, where_prog, scope_len: self.scope.len() }
             }
             Clause::With(w) => {
                 let projection = self.projection(&w.projection, false);
                 // WITH's WHERE filters the projected output columns (new scope).
                 let where_ = w.where_.as_ref().map(|e| self.expr(e));
-                CClause::With { projection, where_ }
+                let where_prog = where_.as_ref().map(compile_program);
+                CClause::With { projection, where_, where_prog }
             }
             Clause::Return(p) => CClause::Return(self.projection(p, true)),
             Clause::Insert(ps) => {
