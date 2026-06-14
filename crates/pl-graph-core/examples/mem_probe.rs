@@ -83,6 +83,7 @@ fn build(n: usize, eper: usize) -> Graph {
                 dst: format!("p{}", rng.below(n)),
                 etype: "KNOWS".to_string(),
                 props: vec![],
+                id: None,
             });
         }
     }

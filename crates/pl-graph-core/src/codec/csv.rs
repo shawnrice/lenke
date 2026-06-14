@@ -17,7 +17,8 @@
 //!   - RFC-4180 quoting; list elements escape `;` and `\`.
 //!
 //! Core divergences (see [`crate::codec`]): edge `:TYPE` is the single edge type
-//! (not a set); edge `id` is synthesized (`e{index}`) and ignored on decode.
+//! (not a set); the edge `id` column round-trips an assigned external id and is
+//! empty for id-less edges.
 
 use crate::codec::{element_props, is_intish};
 use crate::graph::{Builder, EdgeRec, Graph, NodeRec, Value};
@@ -513,7 +514,7 @@ pub fn encode_edges(g: &Graph) -> String {
     };
     let mut rows = vec![header];
     for (i, bag) in &entries {
-        let id = format!("e{i}");
+        let id = g.edge_id(*i as u32).unwrap_or("").to_string();
         let from = g.vid.text(g.e_src[*i]).to_string();
         let to = g.vid.text(g.e_dst[*i]).to_string();
         let etype = g.etype.text(g.e_type[*i]).to_string();
@@ -550,13 +551,14 @@ pub fn decode(input: &str) -> Result<Graph, String> {
     if let Some(header) = edge_rows.first() {
         let prop_cols = prop_cols_from_header(header, 4);
         for row in edge_rows.iter().skip(1) {
+            let id = row.first().map(|c| c.text.clone()).filter(|s| !s.is_empty());
             let src = row.get(1).map(|c| c.text.clone()).unwrap_or_default();
             let dst = row.get(2).map(|c| c.text.clone()).unwrap_or_default();
             let etype = split_labels(row.get(3).map(|c| c.text.as_str()).unwrap_or(""))
                 .into_iter()
                 .next()
                 .unwrap_or_default();
-            b.edges.push(EdgeRec { src, dst, etype, props: props_from_row(row, &prop_cols, 4) });
+            b.edges.push(EdgeRec { src, dst, etype, props: props_from_row(row, &prop_cols, 4), id });
         }
     }
 

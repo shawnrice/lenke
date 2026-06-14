@@ -57,6 +57,7 @@ fn build() -> Graph {
                 dst: format!("p{}", rng.below(N)),
                 etype: "KNOWS".to_string(),
                 props: vec![],
+                id: None,
             });
         }
         // ~half the people create one piece of software
@@ -66,6 +67,7 @@ fn build() -> Graph {
                 dst: format!("s{}", rng.below(SOFTWARE)),
                 etype: "CREATED".to_string(),
                 props: vec![("weight".to_string(), Value::Num(0.5))],
+                id: None,
             });
         }
     }

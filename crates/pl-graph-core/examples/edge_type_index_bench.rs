@@ -51,6 +51,7 @@ fn build() -> Graph {
                 dst: format!("p{}", rng.below(N)),
                 etype: "KNOWS".to_string(),
                 props: vec![],
+                id: None,
             });
         }
     }
@@ -60,6 +61,7 @@ fn build() -> Graph {
             dst: format!("p{}", rng.below(N)),
             etype: "RARE".to_string(),
             props: vec![],
+            id: None,
         });
     }
     b.finalize()

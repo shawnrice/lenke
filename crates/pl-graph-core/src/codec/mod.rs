@@ -12,9 +12,13 @@
 //!     format models edge labels as a list (PG-JSON `labels`, CSV `:TYPE`,
 //!     GraphSON `label`), we emit the one type and, on decode, take the first
 //!     label as the type.
-//!   - **Edges have no external id** — they are identified by index. Formats with
-//!     an edge-id slot emit a synthesized `e{index}` id and ignore any id on
-//!     decode. **Node** ids round-trip exactly.
+//!   - **Edge ids are an optional, lazy overlay.** An edge's canonical identity
+//!     is its dense index; an external string id is opt-in (see
+//!     [`Graph::set_edge_id`](crate::graph::Graph::set_edge_id)). Formats with an
+//!     edge-id slot (PG-JSON, GraphSON, CSV, NDJSON) **round-trip** an assigned
+//!     id and omit it for id-less edges (so the lazy overlay stays empty);
+//!     PG-text has no id slot, so its edges are always id-less. **Node** ids
+//!     round-trip exactly.
 //!
 //! Streaming variants (the TS `encodeStream`/`decodeStream`) are intentionally
 //! omitted: the idiomatic bulk path here is the whole-string `encode`/`decode`
@@ -180,5 +184,51 @@ pub fn deserialize(input: &str, format: &str) -> Result<Graph, String> {
         "csv" => csv::decode(input),
         "ndjson" => Ok(crate::ndjson::decode(input)),
         other => Err(format!("unknown serialization format '{other}'")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A graph with one explicitly-id'd edge, via pg-json.
+    fn with_edge_id() -> Graph {
+        pg_json::decode(
+            r#"{"nodes":[{"id":"a","labels":[],"properties":{}},{"id":"b","labels":[],"properties":{}}],"edges":[{"id":"pay-1","from":"a","to":"b","labels":["PAID"],"properties":{"amt":50}}]}"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn edge_id_round_trips_across_id_formats() {
+        let g = with_edge_id();
+        assert_eq!(g.edge_id(0), Some("pay-1"));
+        for format in ["pg-json", "graphson", "csv", "ndjson"] {
+            let blob = serialize(&g, format).unwrap();
+            let g2 = deserialize(&blob, format).unwrap();
+            assert_eq!(g2.edge_id(0), Some("pay-1"), "edge id lost via {format}");
+            assert_eq!(g2.edge_by_id("pay-1"), Some(0), "reverse lookup lost via {format}");
+        }
+    }
+
+    #[test]
+    fn dispatch_unknown_format_errs() {
+        let g = with_edge_id();
+        assert!(serialize(&g, "nope").is_err());
+        assert!(deserialize("", "nope").is_err());
+    }
+
+    #[test]
+    fn set_and_remove_edge_id() {
+        let mut g = crate::ndjson::decode(
+            "{\"type\":\"node\",\"id\":\"a\",\"labels\":[],\"properties\":{}}\n{\"type\":\"node\",\"id\":\"b\",\"labels\":[],\"properties\":{}}\n{\"type\":\"edge\",\"from\":\"a\",\"to\":\"b\",\"labels\":[\"X\"],\"properties\":{}}",
+        );
+        assert_eq!(g.edge_id(0), None); // id-less by default
+        g.set_edge_id(0, "e-custom");
+        assert_eq!(g.edge_id(0), Some("e-custom"));
+        assert_eq!(g.edge_by_id("e-custom"), Some(0));
+        // removing the edge purges the overlay
+        g.remove_edge(0);
+        assert_eq!(g.edge_by_id("e-custom"), None);
     }
 }

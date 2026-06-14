@@ -241,7 +241,11 @@ fn present_keys(graph: &Graph, v: &GVal) -> Vec<String> {
 fn elem_id(graph: &Graph, v: &GVal) -> GVal {
     match v {
         GVal::Vertex(i) => GVal::Str(graph.vid.arc(*i)),
-        GVal::Edge(e) => GVal::Str(Arc::from(format!("e{e}").as_str())),
+        // External edge id if one was assigned, else the canonical `e{index}`.
+        GVal::Edge(e) => GVal::Str(match graph.edge_id(*e) {
+            Some(id) => Arc::from(id),
+            None => Arc::from(format!("e{e}").as_str()),
+        }),
         other => other.clone(),
     }
 }

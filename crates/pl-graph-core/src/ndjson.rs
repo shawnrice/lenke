@@ -73,7 +73,9 @@ fn parse_line(line: &str) -> Option<Rec> {
                 .and_then(J::as_object)
                 .map(|m| m.iter().map(|(k, v)| (k.clone(), to_value(v))).collect())
                 .unwrap_or_default();
-            Some(Rec::Edge(EdgeRec { src, dst, etype, props }))
+            // Optional external edge id (absent ⇒ id-less, stays lazy).
+            let id = obj.get("id").and_then(J::as_str).map(String::from);
+            Some(Rec::Edge(EdgeRec { src, dst, etype, props, id }))
         }
         _ => None,
     }
@@ -217,7 +219,12 @@ pub fn encode(g: &Graph) -> String {
         if !g.is_edge_live(i as u32) {
             continue; // skip tombstoned edges
         }
-        out.push_str("{\"type\":\"edge\",\"from\":");
+        out.push_str("{\"type\":\"edge\"");
+        if let Some(id) = g.edge_id(i as u32) {
+            out.push_str(",\"id\":");
+            push_json_str(&mut out, id);
+        }
+        out.push_str(",\"from\":");
         push_json_str(&mut out, g.vid.text(g.e_src[i]));
         out.push_str(",\"to\":");
         push_json_str(&mut out, g.vid.text(g.e_dst[i]));

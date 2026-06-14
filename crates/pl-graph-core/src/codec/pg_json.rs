@@ -7,9 +7,9 @@
 //! ```
 //!
 //! Lossiness follows the shared model (see [`crate::codec`]): node ids round-trip
-//! exactly; numeric ids in a *foreign* document are read as strings; edge ids are
-//! synthesized on encode (`e{index}`) and ignored on decode; `undirected` is
-//! always emitted `false` and ignored on decode (the core is strictly directed).
+//! exactly; numeric ids in a *foreign* document are read as strings; an edge's
+//! optional external id round-trips (emitted only when assigned, read on decode);
+//! `undirected` is always emitted `false` and ignored on decode (directed core).
 
 use serde_json::Value as J;
 
@@ -66,9 +66,13 @@ pub fn encode(g: &Graph) -> String {
             out.push(',');
         }
         first = false;
-        out.push_str("{\"id\":");
-        push_json_str(&mut out, &format!("e{i}"));
-        out.push_str(",\"from\":");
+        out.push('{');
+        if let Some(id) = g.edge_id(i as u32) {
+            out.push_str("\"id\":");
+            push_json_str(&mut out, id);
+            out.push(',');
+        }
+        out.push_str("\"from\":");
         push_json_str(&mut out, g.vid.text(g.e_src[i]));
         out.push_str(",\"to\":");
         push_json_str(&mut out, g.vid.text(g.e_dst[i]));
@@ -116,6 +120,7 @@ pub fn decode(input: &str) -> Result<Graph, String> {
                 dst: o.get("to").map(json_id).unwrap_or_default(),
                 etype,
                 props: json_props(o.get("properties")),
+                id: o.get("id").map(json_id),
             });
         }
     }
@@ -160,5 +165,25 @@ mod tests {
     #[test]
     fn bad_json_errs() {
         assert!(decode("{not json").is_err());
+    }
+
+    #[test]
+    fn edge_id_round_trips() {
+        let doc = r#"{"nodes":[{"id":"a","labels":[],"properties":{}},{"id":"b","labels":[],"properties":{}}],"edges":[{"id":"pay-1","from":"a","to":"b","labels":["PAID"],"properties":{}}]}"#;
+        let g = decode(doc).unwrap();
+        assert_eq!(g.edge_id(0), Some("pay-1"));
+        assert_eq!(g.edge_by_id("pay-1"), Some(0));
+        // survives encode → decode
+        let g2 = decode(&encode(&g)).unwrap();
+        assert_eq!(g2.edge_id(0), Some("pay-1"));
+        assert_eq!(g2.edge_by_id("pay-1"), Some(0));
+        // an id-less edge stays id-less (no spurious id, lazy overlay)
+        let idless = decode(r#"{"nodes":[{"id":"a","labels":[],"properties":{}},{"id":"b","labels":[],"properties":{}}],"edges":[{"from":"a","to":"b","labels":["X"],"properties":{}}]}"#).unwrap();
+        assert_eq!(idless.edge_id(0), None);
+        // the emitted edge object carries no id (nodes still do)
+        let enc = encode(&idless);
+        let edges = &enc[enc.find("\"edges\":").unwrap()..];
+        assert!(!edges.contains("\"id\":"));
+        assert_eq!(decode(&enc).unwrap().edge_id(0), None); // stays id-less on round-trip
     }
 }

@@ -116,9 +116,13 @@ pub fn encode(g: &Graph) -> String {
             out.push(',');
         }
         first = false;
-        out.push_str("{\"@type\":\"g:Edge\",\"@value\":{\"id\":");
-        push_json_str(&mut out, &format!("e{i}"));
-        out.push_str(",\"label\":");
+        out.push_str("{\"@type\":\"g:Edge\",\"@value\":{");
+        if let Some(id) = g.edge_id(i as u32) {
+            out.push_str("\"id\":");
+            push_json_str(&mut out, id);
+            out.push(',');
+        }
+        out.push_str("\"label\":");
         push_json_str(&mut out, g.etype.text(g.e_type[i]));
         out.push_str(",\"inV\":");
         push_json_str(&mut out, g.vid.text(g.e_dst[i]));
@@ -195,7 +199,8 @@ pub fn decode(input: &str) -> Result<Graph, String> {
                     }
                 }
             }
-            b.edges.push(EdgeRec { src, dst, etype, props });
+            let id = e.get("id").map(crate::codec::json_id);
+            b.edges.push(EdgeRec { src, dst, etype, props, id });
         }
     }
 

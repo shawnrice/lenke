@@ -12,8 +12,9 @@
 //! (`tags:1 tags:2`). On decode a key seen once is a scalar, more than once a
 //! list — so (as in the TS codec) an empty list emits nothing (decodes as absent)
 //! and a single-element list is indistinguishable from a scalar. Node ids are
-//! preserved; edges have no id slot here (and none in the core anyway). An edge's
-//! single type is its first `:Label`.
+//! preserved; the textual format has no edge-id slot, so edges decode id-less
+//! (use PG-JSON / GraphSON / CSV to round-trip edge ids). An edge's single type
+//! is its first `:Label`.
 
 use crate::codec::{element_props, node_labels};
 use crate::graph::{Builder, EdgeRec, Graph, NodeRec, Value};
@@ -239,6 +240,7 @@ pub fn decode(input: &str) -> Result<Graph, String> {
                 dst: to,
                 etype: labels.into_iter().next().unwrap_or_default(),
                 props,
+                id: None, // the .pg textual format has no edge-id slot
             });
         } else {
             let id = tokens[0].clone();
