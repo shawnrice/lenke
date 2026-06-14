@@ -131,8 +131,8 @@ const USE_VM: bool = false;
 ///   - numeric single-col projection:            1.16ms → 0.46ms  (2.5x)
 ///   - numeric projection over a 1-hop join:     2.78ms → 1.53ms  (1.8x)
 ///   - count+WHERE over a 1-hop join:            2.09ms → 1.24ms  (1.7x)
+///   - DISTINCT over typed Props (raw-id group):  7.78ms → 1.23ms  (6.3x, 2 col)
 ///   - ORDER BY input key + small LIMIT:         1.94ms → 1.37ms  (1.4x)
-///   - DISTINCT (dedup-bound, string keys):      2.90ms → 2.40ms  (1.2x)
 ///   - var-length / subqueries / pure count over a join: not engaged
 ///   - ORDER BY on an output alias / grouped-or-DISTINCT+ORDER BY: not engaged
 /// Same expressions where the scalar *bytecode VM* lost 6-17% (see [`USE_VM`])
@@ -2222,20 +2222,19 @@ fn key_raw_col(graph: &Graph, ctx: &Ctx, sc: &ScanCols, item: &CReturnItem) -> O
     }
 }
 
-fn vectorized_aggregate(graph: &Graph, ctx: &Ctx, sc: &ScanCols, proj: &CProjection) -> Option<RowSet> {
-    let key_items: Vec<&CReturnItem> = proj.items.iter().filter(|i| !i.is_agg).collect();
+/// Assign a dense group id per row by grouping on `key_items`. Multi-key grouping
+/// is done by *refinement*: start with one group, then split each current group
+/// by each key column's value in turn. Because the final pass numbers groups in
+/// row order by first appearance of (prev-group, last-key) — which uniquely
+/// identifies the full key tuple — this reproduces the scalar engine's first-seen
+/// group order exactly. Each key must be a direct `Prop` over a typed column
+/// (raw-id hashing, no string build); otherwise `None` → scalar fallback.
+/// Returns `(gid per row, representative row per group, group count)`.
+fn group_ids(graph: &Graph, ctx: &Ctx, sc: &ScanCols, key_items: &[&CReturnItem]) -> Option<(Vec<usize>, Vec<usize>, usize)> {
     let n = sc.n;
-
-    // Assign a dense group id per row. Multi-key grouping is done by *refinement*:
-    // start with one group, then for each key column split each current group by
-    // that column's value. Because the final pass numbers groups in row order by
-    // first appearance of (prev-group, last-key) — which uniquely identifies the
-    // full key tuple — this reproduces the scalar engine's first-seen order
-    // exactly. Each key must be a direct `Prop` over a typed column (raw-id
-    // hashing, no string build); anything else falls back to the scalar path.
     let mut gid_of_row = vec![0usize; n];
     let mut ngroups = 1; // global group (overwritten once any key column refines)
-    for &item in &key_items {
+    for &item in key_items {
         let col = key_raw_col(graph, ctx, sc, item)?;
         let mut map: HashMap<(usize, Option<u64>), usize> = HashMap::new();
         let mut next = 0usize;
@@ -2251,8 +2250,7 @@ fn vectorized_aggregate(graph: &Graph, ctx: &Ctx, sc: &ScanCols, proj: &CProject
         gid_of_row = refined;
         ngroups = next;
     }
-    // Representative row per group (first occurrence) — for re-evaluating the
-    // group-key item expressions on output.
+    // Representative row per group (first occurrence).
     let mut rep_row = vec![usize::MAX; ngroups];
     for i in 0..n {
         let g = gid_of_row[i];
@@ -2260,6 +2258,13 @@ fn vectorized_aggregate(graph: &Graph, ctx: &Ctx, sc: &ScanCols, proj: &CProject
             rep_row[g] = i;
         }
     }
+    Some((gid_of_row, rep_row, ngroups))
+}
+
+fn vectorized_aggregate(graph: &Graph, ctx: &Ctx, sc: &ScanCols, proj: &CProjection) -> Option<RowSet> {
+    let key_items: Vec<&CReturnItem> = proj.items.iter().filter(|i| !i.is_agg).collect();
+    let n = sc.n;
+    let (gid_of_row, rep_row, ngroups) = group_ids(graph, ctx, sc, &key_items)?;
 
     // Fold each lifted aggregate into a per-group column.
     let mut agg_cols: Vec<Vec<Val>> = Vec::with_capacity(proj.aggs.len());
@@ -2448,12 +2453,37 @@ fn vectorized_scan(graph: &Graph, ctx: &Ctx, incoming: &[Binding], matches: &[&C
         return Some(rs);
     }
 
+    // DISTINCT fast path: when every output item is a direct typed-Prop column,
+    // DISTINCT ≡ group-by-all-columns with no aggregates — reuse the raw-id
+    // grouping and emit one representative row per group (first-seen order, no
+    // per-row string key). Falls through to the generic dedup otherwise.
+    if proj.distinct {
+        let all_items: Vec<&CReturnItem> = proj.items.iter().collect();
+        if let Some((_, rep_row, ngroups)) = group_ids(graph, ctx, &sc, &all_items) {
+            let start = proj.skip.unwrap_or(0).min(ngroups);
+            let end = proj.limit.map(|l| (start + l).min(ngroups)).unwrap_or(ngroups);
+            let mut rs = RowSet::new(proj.out_names.clone());
+            let mut b = Binding(vec![None; sc.slots.len()]);
+            for g in start..end {
+                let ri = rep_row[g];
+                for (slot, col) in sc.slots.iter().enumerate() {
+                    if let Some((elem, ids)) = col {
+                        b.set(slot, match elem { Elem::Node => Val::Node(ids[ri]), Elem::Edge => Val::Edge(ids[ri]) });
+                    }
+                }
+                let env = Env::new(graph, ctx, &b);
+                rs.push_row(proj.items.iter().map(|item| val_to_value(graph, &eval(&env, &item.expr))));
+            }
+            return Some(rs);
+        }
+    }
+
     // Non-aggregating projection: evaluate each item as a column.
     let cols: Vec<Vec<Val>> = proj.items.iter().map(|item| eval_vec(graph, ctx, &sc, &item.expr).into_vals()).collect();
     let mut rs = RowSet::new(proj.out_names.clone());
     if proj.distinct {
-        // DISTINCT applies before SKIP/LIMIT: keep the first occurrence of each
-        // distinct row in scan order (dedup on a composite cell key).
+        // Generic DISTINCT (expression / non-typed items): keep the first
+        // occurrence of each row in scan order, dedup on a composite cell key.
         let mut seen: HashSet<String> = HashSet::new();
         let skip = proj.skip.unwrap_or(0);
         let mut kept = 0usize;
