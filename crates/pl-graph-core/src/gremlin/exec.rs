@@ -1,46 +1,79 @@
 //! The Gremlin executor: runs a [`Traversal`]'s [`Step`] list over a stream of
 //! traversers against the columnar [`Graph`]. Eager (Vec-per-step) — the modest
-//! result scale doesn't need lazy iterators, and it keeps the step semantics
+//! result scale doesn't need lazy iterators, and it keeps step semantics
 //! readable. Movement/projection steps extend each traverser's path; filters
-//! pass traversers through unchanged.
+//! pass traversers through unchanged. `by()` modulators resolve via [`eval_by`].
 
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::{GVal, Order, Step, Traversal, P};
+use super::{By, Endpoint, GVal, Order, Pop, Scope, Step, Token, Traversal, P};
 use crate::graph::{Graph, Value};
 
-/// A unit flowing through the pipeline: its current value, the path it took, and
-/// any `as(label)` tags.
+/// A unit flowing through the pipeline: its value, the path it took, `as(label)`
+/// tags (label → accumulated values, for `select` pop), and the repeat loop count.
 #[derive(Clone)]
 struct Trav {
     val: GVal,
     path: Vec<GVal>,
-    tags: Vec<(String, GVal)>,
+    tags: Vec<(String, Vec<GVal>)>,
+    loops: usize,
 }
 
 impl Trav {
     fn root(val: GVal) -> Trav {
-        Trav { path: vec![val.clone()], val, tags: Vec::new() }
+        Trav { path: vec![val.clone()], val, tags: Vec::new(), loops: 0 }
     }
-    /// A successor traverser that moved to `val` (extends the path, keeps tags).
+    /// A successor that moved to `val` (extends path, keeps tags/loops).
     fn step(&self, val: GVal) -> Trav {
         let mut path = self.path.clone();
         path.push(val.clone());
-        Trav { val, path, tags: self.tags.clone() }
+        Trav { val, path, tags: self.tags.clone(), loops: self.loops }
+    }
+    /// Same traverser with a replaced value, keeping the existing path tail.
+    fn with(&self, val: GVal) -> Trav {
+        let mut path = self.path.clone();
+        path.push(val.clone());
+        Trav { val, path, tags: self.tags.clone(), loops: self.loops }
+    }
+    fn recall(&self, label: &str, pop: Pop) -> Option<GVal> {
+        let list = &self.tags.iter().find(|(l, _)| l == label)?.1;
+        match pop {
+            _ if list.is_empty() => None,
+            Pop::First => Some(list[0].clone()),
+            Pop::Last => Some(list[list.len() - 1].clone()),
+            Pop::All => Some(GVal::List(list.clone())),
+        }
     }
 }
 
-/// Run a traversal, returning the final traversers' values.
-pub fn run(graph: &Graph, t: &Traversal) -> Vec<GVal> {
-    run_steps(graph, &t.steps, Vec::new()).into_iter().map(|t| t.val).collect()
+/// Per-run mutable context: named side-effect bags for `aggregate`/`store`/`cap`.
+#[derive(Default)]
+struct Ctx {
+    side: HashMap<String, Vec<GVal>>,
 }
 
-fn run_steps(graph: &Graph, steps: &[Step], mut stream: Vec<Trav>) -> Vec<Trav> {
+/// Run a traversal against `graph`, returning the final traversers' values.
+pub fn run(graph: &mut Graph, t: &Traversal) -> Vec<GVal> {
+    let mut ctx = Ctx::default();
+    run_steps(graph, &mut ctx, &t.steps, Vec::new()).into_iter().map(|t| t.val).collect()
+}
+
+fn run_steps(graph: &mut Graph, ctx: &mut Ctx, steps: &[Step], mut stream: Vec<Trav>) -> Vec<Trav> {
     for step in steps {
-        stream = apply(graph, step, stream);
+        stream = apply(graph, ctx, step, stream);
     }
     stream
+}
+
+/// Run a sub-plan from a single seed value; collect its output values.
+fn sub_vals(graph: &mut Graph, ctx: &mut Ctx, plan: &Traversal, seed: &Trav) -> Vec<GVal> {
+    run_steps(graph, ctx, &plan.steps, vec![seed.clone()]).into_iter().map(|t| t.val).collect()
+}
+
+fn sub_nonempty(graph: &mut Graph, ctx: &mut Ctx, plan: &Traversal, seed: &Trav) -> bool {
+    !run_steps(graph, ctx, &plan.steps, vec![seed.clone()]).is_empty()
 }
 
 // --- value helpers ----------------------------------------------------------
@@ -55,7 +88,17 @@ fn value_to_gval(v: Value) -> GVal {
     }
 }
 
-/// Read property `key` off an element value (vertex/edge); non-elements → Null.
+fn gval_to_value(v: &GVal) -> Value {
+    match v {
+        GVal::Null => Value::Null,
+        GVal::Bool(b) => Value::Bool(*b),
+        GVal::Num(n) => Value::Num(*n),
+        GVal::Str(s) => Value::Str(s.clone()),
+        GVal::List(items) => Value::List(items.iter().map(gval_to_value).collect()),
+        _ => Value::Null,
+    }
+}
+
 fn prop(graph: &Graph, v: &GVal, key: &str) -> GVal {
     match v {
         GVal::Vertex(i) => value_to_gval(graph.props.value(*i as usize, key, &graph.strs)),
@@ -64,25 +107,18 @@ fn prop(graph: &Graph, v: &GVal, key: &str) -> GVal {
     }
 }
 
-/// All present property keys of an element, in key-id order.
-fn present_keys<'a>(graph: &'a Graph, v: &GVal) -> Vec<&'a str> {
-    let store = match v {
-        GVal::Vertex(_) => &graph.props,
-        GVal::Edge(_) => &graph.edge_props,
-        _ => return Vec::new(),
-    };
-    let idx = match v {
-        GVal::Vertex(i) => *i as usize,
-        GVal::Edge(e) => *e as usize,
+fn present_keys(graph: &Graph, v: &GVal) -> Vec<String> {
+    let (store, idx) = match v {
+        GVal::Vertex(i) => (&graph.props, *i as usize),
+        GVal::Edge(e) => (&graph.edge_props, *e as usize),
         _ => return Vec::new(),
     };
     (0..store.keys.len() as u32)
         .filter(|&kid| !matches!(store.value_id(idx, kid, &graph.strs), Value::Null))
-        .map(|kid| store.keys.text(kid))
+        .map(|kid| store.keys.text(kid).to_string())
         .collect()
 }
 
-/// The external id of an element as a string (vertices: their id; edges: `e<idx>`).
 fn elem_id(graph: &Graph, v: &GVal) -> GVal {
     match v {
         GVal::Vertex(i) => GVal::Str(graph.vid.arc(*i)),
@@ -91,7 +127,6 @@ fn elem_id(graph: &Graph, v: &GVal) -> GVal {
     }
 }
 
-/// The label of an element (vertices: first label; edges: their type).
 fn elem_label(graph: &Graph, v: &GVal) -> GVal {
     match v {
         GVal::Vertex(i) => match graph.vertex_labels(*i).first() {
@@ -112,8 +147,6 @@ fn gnum(v: &GVal) -> Option<f64> {
     }
 }
 
-/// Order two values: numerically when both coerce to numbers, else lexically for
-/// strings; otherwise incomparable (`None`).
 fn gcmp(a: &GVal, b: &GVal) -> Option<Ordering> {
     if let (Some(x), Some(y)) = (gnum(a), gnum(b)) {
         return x.partial_cmp(&y);
@@ -125,9 +158,9 @@ fn gcmp(a: &GVal, b: &GVal) -> Option<Ordering> {
 }
 
 fn p_matches(p: &P, v: &GVal) -> bool {
-    let cmp = |target: &GVal, want: Ordering| gcmp(v, target) == Some(want);
-    let cmp_le = |target: &GVal| matches!(gcmp(v, target), Some(Ordering::Less | Ordering::Equal));
-    let cmp_ge = |target: &GVal| matches!(gcmp(v, target), Some(Ordering::Greater | Ordering::Equal));
+    let cmp = |t: &GVal, want: Ordering| gcmp(v, t) == Some(want);
+    let ge = |t: &GVal| matches!(gcmp(v, t), Some(Ordering::Greater | Ordering::Equal));
+    let le = |t: &GVal| matches!(gcmp(v, t), Some(Ordering::Less | Ordering::Equal));
     let s = |g: &GVal| match g {
         GVal::Str(s) => Some(s.to_string()),
         _ => None,
@@ -137,9 +170,9 @@ fn p_matches(p: &P, v: &GVal) -> bool {
         P::Neq(t) => v != t,
         P::Gt(t) => cmp(t, Ordering::Greater),
         P::Lt(t) => cmp(t, Ordering::Less),
-        P::Gte(t) => cmp_ge(t),
-        P::Lte(t) => cmp_le(t),
-        P::Between(lo, hi) => cmp_ge(lo) && cmp(hi, Ordering::Less),
+        P::Gte(t) => ge(t),
+        P::Lte(t) => le(t),
+        P::Between(lo, hi) => ge(lo) && cmp(hi, Ordering::Less),
         P::Inside(lo, hi) => cmp(lo, Ordering::Greater) && cmp(hi, Ordering::Less),
         P::Outside(lo, hi) => cmp(lo, Ordering::Less) || cmp(hi, Ordering::Greater),
         P::Within(vs) => vs.contains(v),
@@ -152,101 +185,100 @@ fn p_matches(p: &P, v: &GVal) -> bool {
     }
 }
 
-/// Resolve edge-type label names to dense ids. `None` = no filter (all types).
-fn label_filter(graph: &Graph, labels: &[String]) -> Option<Vec<u32>> {
-    if labels.is_empty() {
-        None
-    } else {
-        Some(labels.iter().filter_map(|l| graph.etype.get(l)).collect())
+fn token_project(graph: &Graph, tok: Token, v: &GVal) -> GVal {
+    match tok {
+        Token::Id => elem_id(graph, v),
+        Token::Label => elem_label(graph, v),
+        Token::Key | Token::Value => match v {
+            // Project a {key, value} property map.
+            GVal::Map(entries) => {
+                let want = if tok == Token::Key { "key" } else { "value" };
+                entries.iter().find(|(k, _)| matches!(k, GVal::Str(s) if s.as_ref() == want)).map(|(_, x)| x.clone()).unwrap_or(GVal::Null)
+            }
+            _ => GVal::Null,
+        },
     }
 }
 
-fn etype_ok(filter: &Option<Vec<u32>>, etype: u32) -> bool {
-    filter.as_ref().is_none_or(|ids| ids.contains(&etype))
+/// Resolve a `by()` modulator against `value`.
+fn eval_by(graph: &mut Graph, ctx: &mut Ctx, by: &By, value: &GVal) -> GVal {
+    match by {
+        By::Identity(_) => value.clone(),
+        By::Key(key, _) => match value {
+            GVal::Vertex(_) | GVal::Edge(_) => prop(graph, value, key),
+            _ => value.clone(),
+        },
+        By::Token(tok, _) => token_project(graph, *tok, value),
+        By::Traversal(plan, _) => sub_vals(graph, ctx, plan, &Trav::root(value.clone())).into_iter().next().unwrap_or(GVal::Null),
+    }
+}
+
+/// Elements of a value for `Scope::local` (non-string iterables; else singleton).
+fn local_elems(v: &GVal) -> Vec<GVal> {
+    match v {
+        GVal::List(items) => items.clone(),
+        other => vec![other.clone()],
+    }
 }
 
 // --- per-step application ---------------------------------------------------
 
-fn apply(graph: &Graph, step: &Step, stream: Vec<Trav>) -> Vec<Trav> {
+fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Vec<Trav> {
     match step {
-        // --- sources (ignore the incoming stream) ---
+        // --- sources (root) / re-source (mid-traversal, carrying tags) ---
         Step::V(ids) => {
-            if ids.is_empty() {
-                graph.vertex_indices().map(|v| Trav::root(GVal::Vertex(v))).collect()
+            let verts: Vec<u32> = if ids.is_empty() {
+                graph.vertex_indices().collect()
             } else {
-                ids.iter()
-                    .filter_map(|id| graph.vid.get(id))
-                    .filter(|&v| graph.is_vertex_live(v))
-                    .map(|v| Trav::root(GVal::Vertex(v)))
-                    .collect()
+                ids.iter().filter_map(|id| graph.vid.get(id)).filter(|&v| graph.is_vertex_live(v)).collect()
+            };
+            if stream.is_empty() {
+                verts.into_iter().map(|v| Trav::root(GVal::Vertex(v))).collect()
+            } else {
+                stream.iter().flat_map(|t| verts.iter().map(move |&v| t.step(GVal::Vertex(v)))).collect()
             }
         }
-        Step::E(_) => (0..graph.e_src.len() as u32)
-            .filter(|&e| graph.is_edge_live(e))
-            .map(|e| Trav::root(GVal::Edge(e)))
-            .collect(),
+        Step::E(ids) => {
+            let edges: Vec<u32> = (0..graph.e_src.len() as u32)
+                .filter(|&e| graph.is_edge_live(e))
+                .filter(|&e| ids.is_empty() || ids.iter().any(|i| i == &format!("e{e}")))
+                .collect();
+            if stream.is_empty() {
+                edges.into_iter().map(|e| Trav::root(GVal::Edge(e))).collect()
+            } else {
+                stream.iter().flat_map(|t| edges.iter().map(move |&e| t.step(GVal::Edge(e)))).collect()
+            }
+        }
 
-        // --- movement: vertex → vertex ---
+        // --- vertex → vertex (multi-label emits in label-arg order) ---
         Step::Out(labels) | Step::In(labels) | Step::Both(labels) => {
-            let f = label_filter(graph, labels);
-            let (out, inn) = match step {
-                Step::Out(_) => (true, false),
-                Step::In(_) => (false, true),
-                _ => (true, true),
-            };
+            let (out, inn) = dir_flags(step);
             let mut next = Vec::new();
             for t in &stream {
                 if let GVal::Vertex(v) = t.val {
-                    if out {
-                        for a in graph.out_adj(v) {
-                            if etype_ok(&f, a.etype) {
-                                next.push(t.step(GVal::Vertex(a.nbr)));
-                            }
-                        }
-                    }
-                    if inn {
-                        for a in graph.in_adj(v) {
-                            if etype_ok(&f, a.etype) {
-                                next.push(t.step(GVal::Vertex(a.nbr)));
-                            }
-                        }
+                    for a in adj_in_label_order(graph, v, out, inn, labels) {
+                        next.push(t.step(GVal::Vertex(a.1)));
                     }
                 }
             }
             next
         }
 
-        // --- movement: vertex → edge ---
+        // --- vertex → edge ---
         Step::OutE(labels) | Step::InE(labels) | Step::BothE(labels) => {
-            let f = label_filter(graph, labels);
-            let (out, inn) = match step {
-                Step::OutE(_) => (true, false),
-                Step::InE(_) => (false, true),
-                _ => (true, true),
-            };
+            let (out, inn) = dir_flags(step);
             let mut next = Vec::new();
             for t in &stream {
                 if let GVal::Vertex(v) = t.val {
-                    if out {
-                        for a in graph.out_adj(v) {
-                            if etype_ok(&f, a.etype) {
-                                next.push(t.step(GVal::Edge(a.eidx)));
-                            }
-                        }
-                    }
-                    if inn {
-                        for a in graph.in_adj(v) {
-                            if etype_ok(&f, a.etype) {
-                                next.push(t.step(GVal::Edge(a.eidx)));
-                            }
-                        }
+                    for a in adj_in_label_order(graph, v, out, inn, labels) {
+                        next.push(t.step(GVal::Edge(a.0)));
                     }
                 }
             }
             next
         }
 
-        // --- movement: edge → vertex ---
+        // --- edge → vertex ---
         Step::OutV => map_step(stream, |t| match t.val {
             GVal::Edge(e) => vec![GVal::Vertex(graph.e_src[e as usize])],
             _ => vec![],
@@ -260,7 +292,6 @@ fn apply(graph: &Graph, step: &Step, stream: Vec<Trav>) -> Vec<Trav> {
             _ => vec![],
         }),
         Step::OtherV => {
-            // The endpoint that is not where we came from (path element before the edge).
             let mut next = Vec::new();
             for t in &stream {
                 if let GVal::Edge(e) = t.val {
@@ -269,63 +300,58 @@ fn apply(graph: &Graph, step: &Step, stream: Vec<Trav>) -> Vec<Trav> {
                         GVal::Vertex(v) => Some(*v),
                         _ => None,
                     });
-                    let other = if from == Some(src) { dst } else { src };
-                    next.push(t.step(GVal::Vertex(other)));
+                    next.push(t.step(GVal::Vertex(if from == Some(src) { dst } else { src })));
                 }
             }
             next
         }
 
-        // --- filters (pass traversers through unchanged) ---
+        // --- filters ---
         Step::Has(key, pred) => stream.into_iter().filter(|t| p_matches(pred, &prop(graph, &t.val, key))).collect(),
-        Step::HasLabel(labels) => {
-            stream.into_iter().filter(|t| matches!(elem_label(graph, &t.val), GVal::Str(ref s) if labels.iter().any(|l| l == s.as_ref()))).collect()
-        }
-        Step::HasId(ids) => stream
+        Step::HasLabel(labels) => stream
             .into_iter()
-            .filter(|t| matches!(elem_id(graph, &t.val), GVal::Str(ref s) if ids.iter().any(|i| i == s.as_ref())))
+            .filter(|t| matches!(elem_label(graph, &t.val), GVal::Str(ref s) if labels.iter().any(|l| l == s.as_ref())))
             .collect(),
+        Step::HasId(ids) => stream.into_iter().filter(|t| matches!(elem_id(graph, &t.val), GVal::Str(ref s) if ids.iter().any(|i| i == s.as_ref()))).collect(),
         Step::HasKey(keys) => stream
             .into_iter()
             .filter(|t| {
                 let present = present_keys(graph, &t.val);
-                keys.iter().all(|k| present.iter().any(|p| *p == k))
+                keys.iter().any(|k| present.iter().any(|p| p == k))
             })
             .collect(),
         Step::HasNot(keys) => stream
             .into_iter()
             .filter(|t| {
                 let present = present_keys(graph, &t.val);
-                !keys.iter().any(|k| present.iter().any(|p| *p == k))
+                !keys.iter().any(|k| present.iter().any(|p| p == k))
             })
             .collect(),
+        Step::HasValue(vals) => stream.into_iter().filter(|t| prop_value_field(&t.val).is_some_and(|v| vals.contains(&v))).collect(),
         Step::Is(pred) => stream.into_iter().filter(|t| p_matches(pred, &t.val)).collect(),
         Step::SimplePath => stream.into_iter().filter(|t| !has_dup(&t.path)).collect(),
         Step::CyclicPath => stream.into_iter().filter(|t| has_dup(&t.path)).collect(),
-        Step::Dedup | Step::Dedupe => {
+        Step::Dedupe(bys) => {
             let mut seen: Vec<GVal> = Vec::new();
-            stream
-                .into_iter()
-                .filter(|t| {
-                    if seen.contains(&t.val) {
-                        false
-                    } else {
-                        seen.push(t.val.clone());
-                        true
-                    }
-                })
-                .collect()
+            let mut next = Vec::new();
+            for t in stream {
+                let key = match bys.first() {
+                    Some(by) => eval_by(graph, ctx, by, &t.val),
+                    None => t.val.clone(),
+                };
+                if !seen.contains(&key) {
+                    seen.push(key);
+                    next.push(t);
+                }
+            }
+            next
         }
 
         // --- projection ---
         Step::Values(keys) => {
             let mut next = Vec::new();
             for t in &stream {
-                let ks: Vec<String> = if keys.is_empty() {
-                    present_keys(graph, &t.val).iter().map(|s| s.to_string()).collect()
-                } else {
-                    keys.clone()
-                };
+                let ks = if keys.is_empty() { present_keys(graph, &t.val) } else { keys.clone() };
                 for k in ks {
                     let v = prop(graph, &t.val, &k);
                     if v != GVal::Null {
@@ -336,54 +362,167 @@ fn apply(graph: &Graph, step: &Step, stream: Vec<Trav>) -> Vec<Trav> {
             next
         }
         Step::ValueMap(keys) => map_step(stream, |t| {
-            let ks: Vec<String> = if keys.is_empty() {
-                present_keys(graph, &t.val).iter().map(|s| s.to_string()).collect()
-            } else {
-                keys.clone()
-            };
-            let entries: Vec<(GVal, GVal)> =
+            let ks = if keys.is_empty() { present_keys(graph, &t.val) } else { keys.clone() };
+            let entries =
                 ks.into_iter().map(|k| (GVal::Str(Arc::from(k.as_str())), prop(graph, &t.val, &k))).filter(|(_, v)| *v != GVal::Null).collect();
             vec![GVal::Map(entries)]
         }),
+        Step::PropertyMap(keys) => map_step(stream, |t| {
+            let ks = if keys.is_empty() { present_keys(graph, &t.val) } else { keys.clone() };
+            let entries = ks
+                .into_iter()
+                .filter_map(|k| {
+                    let v = prop(graph, &t.val, &k);
+                    (v != GVal::Null).then(|| (GVal::Str(Arc::from(k.as_str())), GVal::List(vec![v])))
+                })
+                .collect();
+            vec![GVal::Map(entries)]
+        }),
+        Step::ElementMap(keys) => map_step(stream, |t| {
+            if !matches!(t.val, GVal::Vertex(_) | GVal::Edge(_)) {
+                return vec![];
+            }
+            let mut entries = vec![
+                (GVal::Str(Arc::from("id")), elem_id(graph, &t.val)),
+                (GVal::Str(Arc::from("label")), elem_label(graph, &t.val)),
+            ];
+            if let GVal::Edge(e) = t.val {
+                let inv = GVal::Vertex(graph.e_dst[e as usize]);
+                let outv = GVal::Vertex(graph.e_src[e as usize]);
+                entries.push((GVal::Str(Arc::from("IN")), GVal::Map(vec![(GVal::Str(Arc::from("id")), elem_id(graph, &inv)), (GVal::Str(Arc::from("label")), elem_label(graph, &inv))])));
+                entries.push((GVal::Str(Arc::from("OUT")), GVal::Map(vec![(GVal::Str(Arc::from("id")), elem_id(graph, &outv)), (GVal::Str(Arc::from("label")), elem_label(graph, &outv))])));
+            }
+            let ks = if keys.is_empty() { present_keys(graph, &t.val) } else { keys.clone() };
+            for k in ks {
+                let v = prop(graph, &t.val, &k);
+                if v != GVal::Null {
+                    entries.push((GVal::Str(Arc::from(k.as_str())), v));
+                }
+            }
+            vec![GVal::Map(entries)]
+        }),
+        Step::Properties(keys) => {
+            let mut next = Vec::new();
+            for t in &stream {
+                let ks = if keys.is_empty() { present_keys(graph, &t.val) } else { keys.clone() };
+                for k in ks {
+                    let v = prop(graph, &t.val, &k);
+                    if v != GVal::Null {
+                        next.push(t.step(GVal::Map(vec![(GVal::Str(Arc::from("key")), GVal::Str(Arc::from(k.as_str()))), (GVal::Str(Arc::from("value")), v)])));
+                    }
+                }
+            }
+            next
+        }
+        Step::Value => map_step(stream, |t| prop_value_field(&t.val).map(|v| vec![v]).unwrap_or_default()),
         Step::Id => map_step(stream, |t| vec![elem_id(graph, &t.val)]),
-        Step::Label => map_step(stream, |t| vec![elem_label(graph, &t.val)]),
-        Step::Path => stream.iter().map(|t| t.step(GVal::List(t.path.clone()))).collect(),
+        Step::Label => map_step(stream, |t| match &t.val {
+            GVal::Map(_) => prop_key_field(&t.val).map(|v| vec![v]).unwrap_or_default(),
+            other => vec![elem_label(graph, other)],
+        }),
+        Step::Path(bys) => stream
+            .iter()
+            .map(|t| {
+                let projected = if bys.is_empty() {
+                    t.path.clone()
+                } else {
+                    t.path.iter().enumerate().map(|(i, v)| eval_by(graph, ctx, &bys[i % bys.len()], v)).collect()
+                };
+                t.with(GVal::List(projected))
+            })
+            .collect(),
+        Step::Project(keys, bys) => stream
+            .iter()
+            .map(|t| {
+                let entries = keys
+                    .iter()
+                    .enumerate()
+                    .map(|(i, k)| {
+                        let v = match bys.get(i) {
+                            Some(by) => eval_by(graph, ctx, by, &t.val),
+                            None => t.val.clone(),
+                        };
+                        (GVal::Str(Arc::from(k.as_str())), v)
+                    })
+                    .collect();
+                t.with(GVal::Map(entries))
+            })
+            .collect(),
+        Step::Tree(bys) => {
+            // Build a nested map from each traverser's path.
+            let mut root: Vec<(GVal, GVal)> = Vec::new();
+            for t in &stream {
+                let keys: Vec<GVal> = t
+                    .path
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| if bys.is_empty() { v.clone() } else { eval_by(graph, ctx, &bys[i % bys.len()], v) })
+                    .collect();
+                insert_tree(&mut root, &keys);
+            }
+            vec![Trav::root(GVal::Map(root))]
+        }
 
         // --- cardinality ---
-        Step::Limit(n) => stream.into_iter().take(*n).collect(),
-        Step::Skip(n) => stream.into_iter().skip(*n).collect(),
-        Step::Range(s, e) => stream.into_iter().skip(*s).take(e.saturating_sub(*s)).collect(),
-        Step::Tail(n) => {
+        Step::Limit(n, Scope::Global) => stream.into_iter().take(*n).collect(),
+        Step::Limit(n, Scope::Local) => map_step(stream, |t| vec![slice_local(&t.val, 0, *n)]),
+        Step::Skip(n, Scope::Global) => stream.into_iter().skip(*n).collect(),
+        Step::Skip(n, Scope::Local) => map_step(stream, |t| vec![slice_local(&t.val, *n, usize::MAX)]),
+        Step::Range(s, e, Scope::Global) => stream.into_iter().skip(*s).take(e.saturating_sub(*s)).collect(),
+        Step::Range(s, e, Scope::Local) => map_step(stream, |t| vec![slice_local(&t.val, *s, *e)]),
+        Step::Tail(n, Scope::Global) => {
             let len = stream.len();
             stream.into_iter().skip(len.saturating_sub(*n)).collect()
         }
+        Step::Tail(n, Scope::Local) => map_step(stream, |t| {
+            let e = local_elems(&t.val);
+            let start = e.len().saturating_sub(*n);
+            vec![GVal::List(e[start..].to_vec())]
+        }),
+        Step::Sample(n) => stream.into_iter().take(*n).collect(), // deterministic prefix sample
 
-        // --- aggregates / terminals (collapse the stream) ---
-        Step::Count => vec![Trav::root(GVal::Num(stream.len() as f64))],
+        // --- aggregates ---
+        Step::Count(Scope::Global) => vec![Trav::root(GVal::Num(stream.len() as f64))],
+        Step::Count(Scope::Local) => map_step(stream, |t| vec![GVal::Num(local_elems(&t.val).len() as f64)]),
         Step::Fold => vec![Trav::root(GVal::List(stream.into_iter().map(|t| t.val).collect()))],
-        Step::Sum => fold_num(stream, |ns| ns.iter().sum()),
-        Step::Mean => fold_num(stream, |ns| ns.iter().sum::<f64>() / ns.len() as f64),
-        Step::Min => fold_extreme(stream, Ordering::Less),
-        Step::Max => fold_extreme(stream, Ordering::Greater),
-        Step::Order(by, dir) => {
-            let mut v = stream;
-            v.sort_by(|a, b| {
-                let pa = by.as_ref().map(|k| prop(graph, &a.val, k)).unwrap_or_else(|| a.val.clone());
-                let pb = by.as_ref().map(|k| prop(graph, &b.val, k)).unwrap_or_else(|| b.val.clone());
-                let o = gcmp(&pa, &pb).unwrap_or(Ordering::Equal);
-                if *dir == Order::Desc {
-                    o.reverse()
-                } else {
-                    o
+        Step::Sum(Scope::Global) => fold_num(stream, |ns| ns.iter().sum()),
+        Step::Sum(Scope::Local) => map_step(stream, |t| vec![local_num(&t.val, |ns| ns.iter().sum())]),
+        Step::Mean(Scope::Global) => fold_num(stream, |ns| ns.iter().sum::<f64>() / ns.len() as f64),
+        Step::Mean(Scope::Local) => map_step(stream, |t| vec![local_num(&t.val, |ns| ns.iter().sum::<f64>() / ns.len() as f64)]),
+        Step::Min(Scope::Global) => fold_extreme(stream, Ordering::Less),
+        Step::Min(Scope::Local) => map_step(stream, |t| vec![local_extreme(&t.val, Ordering::Less)]),
+        Step::Max(Scope::Global) => fold_extreme(stream, Ordering::Greater),
+        Step::Max(Scope::Local) => map_step(stream, |t| vec![local_extreme(&t.val, Ordering::Greater)]),
+        Step::Order(bys, desc) => {
+            let bys: Vec<By> = if bys.is_empty() { vec![By::Identity(None)] } else { bys.clone() };
+            // Precompute sort keys (eval_by needs &mut; can't run inside the comparator).
+            let mut keyed: Vec<(Vec<GVal>, Trav)> =
+                stream.into_iter().map(|t| (bys.iter().map(|by| eval_by(graph, ctx, by, &t.val)).collect(), t)).collect();
+            keyed.sort_by(|(ka, _), (kb, _)| {
+                for (i, by) in bys.iter().enumerate() {
+                    let dir = by.direction().unwrap_or(if *desc { Order::Desc } else { Order::Asc });
+                    let mut o = gcmp(&ka[i], &kb[i]).unwrap_or(Ordering::Equal);
+                    if dir == Order::Desc {
+                        o = o.reverse();
+                    }
+                    if o != Ordering::Equal {
+                        return o;
+                    }
                 }
+                Ordering::Equal
             });
-            v
+            keyed.into_iter().map(|(_, t)| t).collect()
         }
-        Step::Group(key_by, value_by) => {
+        Step::Group(bys) => {
+            let key_by = bys.first().cloned().unwrap_or(By::Identity(None));
+            let val_by = bys.get(1).cloned();
             let mut entries: Vec<(GVal, Vec<GVal>)> = Vec::new();
             for t in &stream {
-                let key = key_by.as_ref().map(|k| prop(graph, &t.val, k)).unwrap_or_else(|| t.val.clone());
-                let value = value_by.as_ref().map(|k| prop(graph, &t.val, k)).unwrap_or_else(|| t.val.clone());
+                let key = eval_by(graph, ctx, &key_by, &t.val);
+                let value = match &val_by {
+                    Some(by) => eval_by(graph, ctx, by, &t.val),
+                    None => t.val.clone(),
+                };
                 match entries.iter_mut().find(|(k, _)| *k == key) {
                     Some((_, list)) => list.push(value),
                     None => entries.push((key, vec![value])),
@@ -391,10 +530,11 @@ fn apply(graph: &Graph, step: &Step, stream: Vec<Trav>) -> Vec<Trav> {
             }
             vec![Trav::root(GVal::Map(entries.into_iter().map(|(k, vs)| (k, GVal::List(vs))).collect()))]
         }
-        Step::GroupCount(by) => {
+        Step::GroupCount(bys) => {
+            let by = bys.first().cloned().unwrap_or(By::Identity(None));
             let mut entries: Vec<(GVal, f64)> = Vec::new();
             for t in &stream {
-                let key = by.as_ref().map(|k| prop(graph, &t.val, k)).unwrap_or_else(|| t.val.clone());
+                let key = eval_by(graph, ctx, &by, &t.val);
                 match entries.iter_mut().find(|(k, _)| *k == key) {
                     Some((_, n)) => *n += 1.0,
                     None => entries.push((key, 1.0)),
@@ -403,22 +543,37 @@ fn apply(graph: &Graph, step: &Step, stream: Vec<Trav>) -> Vec<Trav> {
             vec![Trav::root(GVal::Map(entries.into_iter().map(|(k, n)| (k, GVal::Num(n))).collect()))]
         }
 
-        // --- combinators / branch ---
-        Step::Where(sub) => stream.into_iter().filter(|t| !run_steps(graph, &sub.steps, vec![t.clone()]).is_empty()).collect(),
-        Step::And(plans) => stream
-            .into_iter()
-            .filter(|t| plans.iter().all(|p| !run_steps(graph, &p.steps, vec![t.clone()]).is_empty()))
-            .collect(),
-        Step::Or(plans) => stream
-            .into_iter()
-            .filter(|t| plans.iter().any(|p| !run_steps(graph, &p.steps, vec![t.clone()]).is_empty()))
-            .collect(),
-        Step::Not(sub) => stream.into_iter().filter(|t| run_steps(graph, &sub.steps, vec![t.clone()]).is_empty()).collect(),
+        // --- combinators ---
+        Step::Where(sub) => stream.into_iter().filter(|t| sub_nonempty(graph, ctx, sub, t)).collect(),
+        Step::WhereKey(start, pred, bys) => {
+            let Some(GVal::Str(end_label)) = pred.rhs() else {
+                return stream; // non-comparison predicate; nothing to compare against
+            };
+            let end_label = end_label.to_string();
+            let start_by = bys.first().cloned().unwrap_or(By::Identity(None));
+            let end_by = bys.get(1).cloned().unwrap_or_else(|| start_by.clone());
+            let mut next = Vec::new();
+            for t in stream {
+                let (Some(sv), Some(ev)) = (t.recall(start, Pop::Last), t.recall(&end_label, Pop::Last)) else {
+                    continue;
+                };
+                let sv = eval_by(graph, ctx, &start_by, &sv);
+                let ev = eval_by(graph, ctx, &end_by, &ev);
+                let resolved = substitute_rhs(pred, ev);
+                if p_matches(&resolved, &sv) {
+                    next.push(t);
+                }
+            }
+            next
+        }
+        Step::And(plans) => stream.into_iter().filter(|t| plans.iter().all(|p| sub_nonempty(graph, ctx, p, t))).collect(),
+        Step::Or(plans) => stream.into_iter().filter(|t| plans.iter().any(|p| sub_nonempty(graph, ctx, p, t))).collect(),
+        Step::Not(sub) => stream.into_iter().filter(|t| !sub_nonempty(graph, ctx, sub, t)).collect(),
         Step::Union(plans) => {
             let mut next = Vec::new();
             for t in &stream {
                 for p in plans {
-                    next.extend(run_steps(graph, &p.steps, vec![t.clone()]));
+                    next.extend(run_steps(graph, ctx, &p.steps, vec![t.clone()]));
                 }
             }
             next
@@ -427,7 +582,7 @@ fn apply(graph: &Graph, step: &Step, stream: Vec<Trav>) -> Vec<Trav> {
             let mut next = Vec::new();
             for t in &stream {
                 for p in plans {
-                    let r = run_steps(graph, &p.steps, vec![t.clone()]);
+                    let r = run_steps(graph, ctx, &p.steps, vec![t.clone()]);
                     if !r.is_empty() {
                         next.extend(r);
                         break;
@@ -439,7 +594,7 @@ fn apply(graph: &Graph, step: &Step, stream: Vec<Trav>) -> Vec<Trav> {
         Step::Optional(sub) => {
             let mut next = Vec::new();
             for t in stream {
-                let r = run_steps(graph, &sub.steps, vec![t.clone()]);
+                let r = run_steps(graph, ctx, &sub.steps, vec![t.clone()]);
                 if r.is_empty() {
                     next.push(t);
                 } else {
@@ -451,42 +606,96 @@ fn apply(graph: &Graph, step: &Step, stream: Vec<Trav>) -> Vec<Trav> {
         Step::Local(sub) => {
             let mut next = Vec::new();
             for t in &stream {
-                next.extend(run_steps(graph, &sub.steps, vec![t.clone()]));
+                next.extend(run_steps(graph, ctx, &sub.steps, vec![t.clone()]));
             }
             next
         }
-        Step::Repeat { body, times, until, emit, emit_before } => run_repeat(graph, &stream, body, *times, until.as_deref(), emit.as_deref(), *emit_before),
+        Step::Choose { test, then_, else_ } => {
+            let mut next = Vec::new();
+            for t in stream {
+                if sub_nonempty(graph, ctx, test, &t) {
+                    next.extend(run_steps(graph, ctx, &then_.steps, vec![t]));
+                } else if let Some(e) = else_ {
+                    next.extend(run_steps(graph, ctx, &e.steps, vec![t]));
+                } else {
+                    next.push(t);
+                }
+            }
+            next
+        }
+        Step::Map(sub) => {
+            let mut next = Vec::new();
+            for t in &stream {
+                if let Some(v) = sub_vals(graph, ctx, sub, t).into_iter().next() {
+                    next.push(t.with(v));
+                }
+            }
+            next
+        }
+        Step::FlatMap(sub) => {
+            let mut next = Vec::new();
+            for t in &stream {
+                for v in sub_vals(graph, ctx, sub, t) {
+                    next.push(t.with(v));
+                }
+            }
+            next
+        }
+        Step::SideEffect(sub) => {
+            for t in &stream {
+                let _ = run_steps(graph, ctx, &sub.steps, vec![t.clone()]);
+            }
+            stream
+        }
+        Step::Aggregate(key) | Step::Store(key) => {
+            for t in &stream {
+                ctx.side.entry(key.clone()).or_default().push(t.val.clone());
+            }
+            stream
+        }
+        Step::Cap(key) => vec![Trav::root(GVal::List(ctx.side.get(key).cloned().unwrap_or_default()))],
+        Step::Barrier => stream,
+        Step::Repeat { body, times, until, emit, emit_before } => run_repeat(graph, ctx, &stream, body, *times, until.as_deref(), emit.as_deref(), *emit_before),
 
-        // --- misc ---
+        // --- tagging / select ---
         Step::As(label) => stream
             .into_iter()
             .map(|mut t| {
                 let val = t.val.clone();
-                t.tags.retain(|(l, _)| l != label);
-                t.tags.push((label.clone(), val));
+                match t.tags.iter_mut().find(|(l, _)| l == label) {
+                    Some((_, list)) => list.push(val),
+                    None => t.tags.push((label.clone(), vec![val])),
+                }
                 t
             })
             .collect(),
-        Step::Select(labels) => {
+        Step::Select { labels, pop, bys } => {
             let mut next = Vec::new();
             for t in &stream {
-                let vals: Vec<Option<&GVal>> = labels.iter().map(|l| t.tags.iter().rev().find(|(tl, _)| tl == l).map(|(_, v)| v)).collect();
+                let vals: Vec<Option<GVal>> = labels.iter().map(|l| t.recall(l, *pop)).collect();
                 if vals.iter().any(Option::is_none) {
-                    continue; // a traverser missing any selected label is dropped
+                    continue;
                 }
                 if labels.len() == 1 {
-                    next.push(t.step(vals[0].unwrap().clone()));
+                    let by = bys.first().cloned().unwrap_or(By::Identity(None));
+                    let v = eval_by(graph, ctx, &by, vals[0].as_ref().unwrap());
+                    next.push(t.with(v));
                 } else {
-                    let map = labels
+                    let entries = labels
                         .iter()
-                        .zip(&vals)
-                        .map(|(l, v)| (GVal::Str(Arc::from(l.as_str())), (*v).unwrap().clone()))
+                        .enumerate()
+                        .map(|(i, l)| {
+                            let by = bys.get(i).cloned().unwrap_or(By::Identity(None));
+                            (GVal::Str(Arc::from(l.as_str())), eval_by(graph, ctx, &by, vals[i].as_ref().unwrap()))
+                        })
                         .collect();
-                    next.push(t.step(GVal::Map(map)));
+                    next.push(t.with(GVal::Map(entries)));
                 }
             }
             next
         }
+
+        // --- misc ---
         Step::Unfold => {
             let mut next = Vec::new();
             for t in &stream {
@@ -501,22 +710,154 @@ fn apply(graph: &Graph, step: &Step, stream: Vec<Trav>) -> Vec<Trav> {
             }
             next
         }
+        Step::Index => stream.iter().enumerate().map(|(i, t)| t.with(GVal::List(vec![t.val.clone(), GVal::Num(i as f64)]))).collect(),
+        Step::Loops => map_step(stream, |t| vec![GVal::Num(t.loops as f64)]),
         Step::Constant(v) => map_step(stream, |_t| vec![v.clone()]),
         Step::Identity => stream,
         Step::Inject(vs) => {
-            let mut next = stream;
-            next.extend(vs.iter().map(|v| Trav::root(v.clone())));
+            let mut next: Vec<Trav> = vs.iter().map(|v| Trav::root(v.clone())).collect();
+            next.extend(stream);
             next
+        }
+        Step::None(None) => Vec::new(),
+        Step::None(Some(pred)) => stream.into_iter().filter(|t| !local_elems(&t.val).iter().any(|e| p_matches(pred, e))).collect(),
+        Step::Fail(msg) => {
+            if !stream.is_empty() {
+                panic!("{}", msg.clone().unwrap_or_else(|| "fail() reached".to_string()));
+            }
+            stream
+        }
+
+        // --- mutation ---
+        Step::AddV(label) => {
+            let labels: Vec<String> = label.iter().cloned().collect();
+            // As a source (`g.addV()`), create one even with no incoming traverser.
+            let base = if stream.is_empty() { vec![Trav::root(GVal::Null)] } else { stream };
+            base.iter().map(|t| t.with(GVal::Vertex(graph.add_vertex(&labels, vec![])))).collect()
+        }
+        Step::AddE { label, from, to } => {
+            let mut next = Vec::new();
+            for t in &stream {
+                let (Some(f), Some(to_v)) = (resolve_endpoint(graph, ctx, from, t), resolve_endpoint(graph, ctx, to, t)) else {
+                    continue;
+                };
+                let e = graph.add_edge(f, to_v, label, vec![]);
+                next.push(t.with(GVal::Edge(e)));
+            }
+            next
+        }
+        Step::Property(key, v) => {
+            for t in &stream {
+                match t.val {
+                    GVal::Vertex(i) => graph.set_vertex_prop(i, key, gval_to_value(v)),
+                    GVal::Edge(e) => graph.set_edge_prop(e, key, gval_to_value(v)),
+                    _ => {}
+                }
+            }
+            stream
+        }
+        Step::Drop => {
+            for t in &stream {
+                match t.val {
+                    GVal::Vertex(i) => {
+                        let _ = graph.remove_vertex(i, true);
+                    }
+                    GVal::Edge(e) => {
+                        graph.remove_edge(e);
+                    }
+                    _ => {}
+                }
+            }
+            Vec::new()
         }
     }
 }
 
-/// flatMap a stream by mapping each traverser's value to zero+ successor values.
+/// Collect a vertex's adjacency as `(eidx, nbr)`. With labels, emit per label in
+/// argument order (Gremlin `out('A','B')` yields all A-edges then all B-edges);
+/// without, adjacency order (out then in for `both`), deduped across both for
+/// `both` with no labels is not required (TinkerPop both yields each edge once
+/// per direction — matches iterating out then in).
+fn adj_in_label_order(graph: &Graph, v: u32, out: bool, inn: bool, labels: &[String]) -> Vec<(u32, u32)> {
+    let outs: Vec<(u32, u32, u32)> = if out { graph.out_adj(v).map(|a| (a.eidx, a.nbr, a.etype)).collect() } else { Vec::new() };
+    let ins: Vec<(u32, u32, u32)> = if inn { graph.in_adj(v).map(|a| (a.eidx, a.nbr, a.etype)).collect() } else { Vec::new() };
+    let collect_dir = |adjs: &[(u32, u32, u32)], dst: &mut Vec<(u32, u32)>| {
+        if labels.is_empty() {
+            dst.extend(adjs.iter().map(|a| (a.0, a.1)));
+        } else {
+            for lbl in labels {
+                if let Some(id) = graph.etype.get(lbl) {
+                    dst.extend(adjs.iter().filter(|a| a.2 == id).map(|a| (a.0, a.1)));
+                }
+            }
+        }
+    };
+    let mut res = Vec::new();
+    collect_dir(&outs, &mut res);
+    collect_dir(&ins, &mut res);
+    res
+}
+
+fn dir_flags(step: &Step) -> (bool, bool) {
+    match step {
+        Step::Out(_) | Step::OutE(_) => (true, false),
+        Step::In(_) | Step::InE(_) => (false, true),
+        _ => (true, true),
+    }
+}
+
+/// Resolve an `addE` endpoint to a vertex id.
+fn resolve_endpoint(graph: &mut Graph, ctx: &mut Ctx, ep: &Endpoint, t: &Trav) -> Option<u32> {
+    let v = match ep {
+        Endpoint::Current => t.val.clone(),
+        Endpoint::Tag(label) => t.recall(label, Pop::Last)?,
+        Endpoint::Plan(plan) => sub_vals(graph, ctx, plan, t).into_iter().next()?,
+    };
+    match v {
+        GVal::Vertex(i) => Some(i),
+        _ => None,
+    }
+}
+
+/// The `value` field of a `{key, value}` property map (for `value`/`hasValue`).
+fn prop_value_field(v: &GVal) -> Option<GVal> {
+    match v {
+        GVal::Map(entries) => entries.iter().find(|(k, _)| matches!(k, GVal::Str(s) if s.as_ref() == "value")).map(|(_, x)| x.clone()),
+        _ => None,
+    }
+}
+fn prop_key_field(v: &GVal) -> Option<GVal> {
+    match v {
+        GVal::Map(entries) => entries.iter().find(|(k, _)| matches!(k, GVal::Str(s) if s.as_ref() == "key")).map(|(_, x)| x.clone()),
+        _ => None,
+    }
+}
+
+/// Substitute a comparison predicate's RHS with a resolved value (`where(key,pred)`).
+fn substitute_rhs(p: &P, v: GVal) -> P {
+    match p {
+        P::Eq(_) => P::Eq(v),
+        P::Neq(_) => P::Neq(v),
+        P::Gt(_) => P::Gt(v),
+        P::Gte(_) => P::Gte(v),
+        P::Lt(_) => P::Lt(v),
+        P::Lte(_) => P::Lte(v),
+        other => other.clone(),
+    }
+}
+
+fn slice_local(v: &GVal, start: usize, end: usize) -> GVal {
+    let e = local_elems(v);
+    let s = start.min(e.len());
+    let en = end.min(e.len());
+    GVal::List(if s < en { e[s..en].to_vec() } else { Vec::new() })
+}
+
 fn map_step(stream: Vec<Trav>, f: impl Fn(&Trav) -> Vec<GVal>) -> Vec<Trav> {
     let mut next = Vec::new();
     for t in &stream {
         for v in f(t) {
-            next.push(t.step(v));
+            next.push(t.with(v));
         }
     }
     next
@@ -533,7 +874,6 @@ fn has_dup(path: &[GVal]) -> bool {
     false
 }
 
-/// Numeric reducer over the stream (`sum`/`mean`). Empty stream → empty result.
 fn fold_num(stream: Vec<Trav>, f: impl Fn(&[f64]) -> f64) -> Vec<Trav> {
     let ns: Vec<f64> = stream.iter().filter_map(|t| gnum(&t.val)).collect();
     if ns.is_empty() {
@@ -543,7 +883,15 @@ fn fold_num(stream: Vec<Trav>, f: impl Fn(&[f64]) -> f64) -> Vec<Trav> {
     }
 }
 
-/// `min`/`max` over the stream by `gcmp`. Empty stream → empty result.
+fn local_num(v: &GVal, f: impl Fn(&[f64]) -> f64) -> GVal {
+    let ns: Vec<f64> = local_elems(v).iter().filter_map(gnum).collect();
+    if ns.is_empty() {
+        GVal::Null
+    } else {
+        GVal::Num(f(&ns))
+    }
+}
+
 fn fold_extreme(stream: Vec<Trav>, want: Ordering) -> Vec<Trav> {
     let mut best: Option<GVal> = None;
     for t in stream {
@@ -561,9 +909,47 @@ fn fold_extreme(stream: Vec<Trav>, want: Ordering) -> Vec<Trav> {
     best.map(|v| vec![Trav::root(v)]).unwrap_or_default()
 }
 
-/// `repeat(body)` with `times` / `until` / `emit` modulators (post-form).
+fn local_extreme(v: &GVal, want: Ordering) -> GVal {
+    let mut best: Option<GVal> = None;
+    for e in local_elems(v) {
+        best = Some(match best {
+            None => e,
+            Some(b) => {
+                if gcmp(&e, &b) == Some(want) {
+                    e
+                } else {
+                    b
+                }
+            }
+        });
+    }
+    best.unwrap_or(GVal::Null)
+}
+
+/// Insert a key chain into a nested tree map (for `tree()`).
+fn insert_tree(node: &mut Vec<(GVal, GVal)>, keys: &[GVal]) {
+    let Some((head, rest)) = keys.split_first() else {
+        return;
+    };
+    let child = match node.iter_mut().find(|(k, _)| k == head) {
+        Some((_, GVal::Map(m))) => m,
+        Some(_) => return,
+        None => {
+            node.push((head.clone(), GVal::Map(Vec::new())));
+            match &mut node.last_mut().unwrap().1 {
+                GVal::Map(m) => m,
+                _ => unreachable!(),
+            }
+        }
+    };
+    insert_tree(child, rest);
+}
+
+/// `repeat(body)` with `times` / `until` / `emit` modulators.
+#[allow(clippy::too_many_arguments)]
 fn run_repeat(
-    graph: &Graph,
+    graph: &mut Graph,
+    ctx: &mut Ctx,
     stream: &[Trav],
     body: &Traversal,
     times: Option<usize>,
@@ -571,10 +957,9 @@ fn run_repeat(
     emit: Option<&Traversal>,
     emit_before: bool,
 ) -> Vec<Trav> {
-    const CAP: usize = 64; // safety bound for until-only loops
-    let yields = |t: &Trav, plan: &Traversal| !run_steps(graph, &plan.steps, vec![t.clone()]).is_empty();
+    const CAP: usize = 64;
+    let emit_matches = |graph: &mut Graph, ctx: &mut Ctx, t: &Trav, e: &Traversal| e.steps.is_empty() || sub_nonempty(graph, ctx, e, t);
 
-    // Plain `repeat(body).times(n)` (no until/emit): apply the body n times.
     if until.is_none() && emit.is_none() {
         let n = times.unwrap_or(CAP);
         let mut current = stream.to_vec();
@@ -582,18 +967,20 @@ fn run_repeat(
             if current.is_empty() {
                 break;
             }
-            current = run_steps(graph, &body.steps, current);
+            current = run_steps(graph, ctx, &body.steps, current.into_iter().map(inc_loops).collect());
         }
         return current;
     }
 
-    // until/emit loop: body runs, then `until` exits satisfiers to output and
-    // `emit` additionally outputs satisfiers; the rest loop again.
     let mut out: Vec<Trav> = Vec::new();
     let mut current = stream.to_vec();
     if emit_before {
         if let Some(e) = emit {
-            out.extend(current.iter().filter(|t| yields(t, e)).cloned());
+            for t in &current {
+                if emit_matches(graph, ctx, t, e) {
+                    out.push(t.clone());
+                }
+            }
         }
     }
     let max = times.unwrap_or(CAP);
@@ -601,22 +988,40 @@ fn run_repeat(
         if current.is_empty() {
             break;
         }
-        let stepped = run_steps(graph, &body.steps, current);
-        let mut looping = Vec::new();
-        for t in stepped {
-            if !emit_before {
-                if let Some(e) = emit {
-                    if yields(&t, e) {
+        // `until` is checked BEFORE the body (do-while): satisfiers exit.
+        let mut advancing = Vec::new();
+        for t in std::mem::take(&mut current) {
+            if let Some(u) = until {
+                if sub_nonempty(graph, ctx, u, &t) {
+                    out.push(t);
+                    continue;
+                }
+            }
+            advancing.push(t);
+        }
+        if advancing.is_empty() {
+            break;
+        }
+        let stepped: Vec<Trav> = run_steps(graph, ctx, &body.steps, advancing.into_iter().map(inc_loops).collect());
+        if !emit_before {
+            if let Some(e) = emit {
+                for t in &stepped {
+                    if emit_matches(graph, ctx, t, e) {
                         out.push(t.clone());
                     }
                 }
             }
-            match until {
-                Some(u) if yields(&t, u) => out.push(t), // satisfied → leaves loop
-                _ => looping.push(t),
-            }
         }
-        current = looping;
+        current = stepped;
+    }
+    // Pre-emit form yields the final frontier too (it never got a pre-emit pass).
+    if emit_before && until.is_none() {
+        out.extend(current);
     }
     out
+}
+
+fn inc_loops(mut t: Trav) -> Trav {
+    t.loops += 1;
+    t
 }
