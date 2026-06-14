@@ -133,6 +133,7 @@ const USE_VM: bool = false;
 ///   - count+WHERE over a 1-hop join:            2.09ms → 1.24ms  (1.7x)
 ///   - DISTINCT over typed Props (raw-id group):  7.78ms → 1.23ms  (6.3x, 2 col)
 ///   - WITH carry + filter + project (pipeline): 4.26ms → 1.02ms  (4.2x)
+///   - WITH … MATCH expand from a carried var:   7.72ms → 1.65ms  (4.7x)
 ///   - WITH aggregate then filter:               2.37ms → 0.92ms  (2.6x)
 ///   - ORDER BY input key + small LIMIT:         1.94ms → 1.37ms  (1.4x)
 ///   - var-length / subqueries / pure count over a join: not engaged
@@ -142,11 +143,13 @@ const USE_VM: bool = false;
 /// `vectorized_linear`: one columnar frame threads stage-to-stage, carrying
 /// element columns forward (so prop reads / filters / ORDER BY past a `WITH` stay
 /// vectorized) and adding computed value columns beside them — no per-stage
-/// round-trip through `Vec<Binding>`. It bails (→ scalar `run_linear`) on a `WITH`
-/// that aggregates / DISTINCT / ORDER BYs mid-pipeline, an extra `MATCH` after a
-/// `WITH` (expanding from a frame isn't supported yet), mutations, or subqueries.
-/// `ScanCols::vals` is what makes this work: a carried node stays a fast `Elem`
-/// column while `n.age * 2 AS x` rides alongside as a value column.
+/// round-trip through `Vec<Binding>`. A `MATCH` after a `WITH` expands the frame
+/// from a carried element column (`expand_frame`), fanning each row out to its
+/// matching neighbors while replicating the other columns. It bails (→ scalar
+/// `run_linear`) on a `WITH` that aggregates / DISTINCT / ORDER BYs mid-pipeline,
+/// an expanding MATCH from an unbound/fresh start (cartesian), mutations, or
+/// subqueries. `ScanCols::vals` is what makes this work: a carried node stays a
+/// fast `Elem` column while `n.age * 2 AS x` rides alongside as a value column.
 /// Same expressions where the scalar *bytecode VM* lost 6-17% (see [`USE_VM`])
 /// win 2-5x here: dispatch amortizes over N rows, the f64 loops vectorize, and
 /// values never get boxed into `Val` per row.
@@ -1903,6 +1906,17 @@ fn eval_vec(graph: &Graph, ctx: &Ctx, sc: &ScanCols, e: &CExpr) -> VVec {
         CExpr::Lit(Lit::Num(x)) => VVec::Num { d: vec![*x; n], valid: vec![true; n] },
         CExpr::Lit(Lit::Bool(b)) => VVec::Bool { t: vec![*b; n], valid: vec![true; n] },
         CExpr::Lit(Lit::Null) => VVec::Num { d: vec![f64::NAN; n], valid: vec![false; n] },
+        // A bare variable: a carried value column is taken directly (no per-row
+        // binding rebuild); an element column becomes a column of element handles.
+        CExpr::Var(slot) => {
+            if let Some(v) = sc.val_slot(*slot) {
+                VVec::Gen(v.to_vec())
+            } else if let Some((elem, ids)) = sc.slot(*slot) {
+                VVec::Gen(ids.iter().map(|&i| match elem { Elem::Node => Val::Node(i), Elem::Edge => Val::Edge(i) }).collect())
+            } else {
+                VVec::Gen(vec![Val::Null; n])
+            }
+        }
         CExpr::Prop { var_slot, key_ref } => match sc.slot(*var_slot) {
             Some((Elem::Node, ids)) => {
                 gather_num(ctx.prop_keys[*key_ref].0.and_then(|k| graph.props.cols.get(k as usize)), ids)
@@ -2599,6 +2613,133 @@ fn with_frame(graph: &Graph, ctx: &Ctx, sc: &ScanCols, proj: &CProjection) -> Op
     Some(out)
 }
 
+/// Expand a frame by a `MATCH` whose start node is an already-bound element column
+/// (e.g. `… WITH a MATCH (a)-[:KNOWS]->(b) …`): for each frame row, walk the
+/// path's segments from that row's start vertex, fanning out to matching
+/// neighbors and replicating the frame's other columns. Returns `None` for a
+/// fresh/unbound start (cartesian), var-length, or a segment slot already bound.
+fn expand_frame(graph: &Graph, ctx: &Ctx, sc: &ScanCols, path: &CPath, scope_len: usize) -> Option<ScanCols> {
+    let start = &path.start;
+    let start_slot = start.var_slot?;
+    let start_ids: Vec<u32> = match sc.slot(start_slot) {
+        Some((Elem::Node, ids)) => ids.to_vec(), // start must be a bound node column
+        _ => return None,
+    };
+    if path.segments.iter().any(|s| s.rel.quantifier.is_some()) {
+        return None;
+    }
+    // Segment-introduced slots must be fresh (not already bound) — no self-join.
+    let mut seen = HashSet::new();
+    for seg in &path.segments {
+        for s in [seg.rel.var_slot, seg.node.var_slot].into_iter().flatten() {
+            if !seen.insert(s) || sc.slot(s).is_some() || sc.val_slot(s).is_some() {
+                return None;
+            }
+        }
+    }
+    let width = scope_len.max(sc.slots.len());
+
+    // cur = the frame widened to `width`; endpoint = each row's start vertex.
+    let mut cur = ScanCols::new(width);
+    cur.n = sc.n;
+    for s in 0..sc.slots.len() {
+        if let Some((e, ids)) = &sc.slots[s] {
+            cur.slots[s] = Some((*e, ids.clone()));
+        } else if let Some(v) = &sc.vals[s] {
+            cur.vals[s] = Some(v.clone());
+        }
+    }
+    let mut endpoint = start_ids;
+
+    // Sets a binding from `cur` at row `i` (for inline WHERE/props referencing
+    // frame variables during constraint checks).
+    let bind_row = |b: &mut Binding, cur: &ScanCols, i: usize| {
+        for s in 0..cur.slots.len() {
+            if let Some((e, ids)) = &cur.slots[s] {
+                b.set(s, match e { Elem::Node => Val::Node(ids[i]), Elem::Edge => Val::Edge(ids[i]) });
+            } else if let Some(v) = &cur.vals[s] {
+                b.set(s, v[i].clone());
+            }
+        }
+    };
+
+    // The restated start node may add label/props/WHERE — filter rows by them.
+    if start.label.is_some() || !start.props.is_empty() || start.where_.is_some() {
+        let mut b = Binding(vec![None; width]);
+        let mut keep = vec![false; cur.n];
+        for i in 0..cur.n {
+            bind_row(&mut b, &cur, i);
+            keep[i] = matches_label(graph, ctx, endpoint[i], start.label.as_ref())
+                && satisfies(graph, ctx, &Val::Node(endpoint[i]), &start.props, start.where_.as_ref(), &b);
+        }
+        endpoint = endpoint.iter().zip(&keep).filter_map(|(&v, &k)| k.then_some(v)).collect();
+        compact(&mut cur, &keep);
+    }
+
+    let mut nb = Binding(vec![None; width]);
+    for seg in &path.segments {
+        let rel = &seg.rel;
+        let node = &seg.node;
+        let rel_check = !rel.props.is_empty() || rel.where_.is_some();
+        let node_check = !node.props.is_empty() || node.where_.is_some();
+        let need_bind = rel_check || node_check;
+        // Pre-init the next frame's columns: new rel/node slots + carried columns.
+        let mut nxt = ScanCols::new(width);
+        for s in 0..width {
+            if Some(s) == rel.var_slot {
+                nxt.slots[s] = Some((Elem::Edge, Vec::new()));
+            } else if Some(s) == node.var_slot {
+                nxt.slots[s] = Some((Elem::Node, Vec::new()));
+            } else if let Some((e, _)) = &cur.slots[s] {
+                nxt.slots[s] = Some((*e, Vec::new()));
+            } else if cur.vals[s].is_some() {
+                nxt.vals[s] = Some(Vec::new());
+            }
+        }
+        let mut nxt_end: Vec<u32> = Vec::new();
+        for i in 0..cur.n {
+            if need_bind {
+                bind_row(&mut nb, &cur, i);
+            }
+            for (eidx, nbr) in expand(graph, ctx, endpoint[i], rel.direction, rel.label.as_ref()) {
+                if !matches_label(graph, ctx, nbr, node.label.as_ref()) {
+                    continue;
+                }
+                if need_bind {
+                    if let Some(s) = rel.var_slot {
+                        nb.set(s, Val::Edge(eidx));
+                    }
+                    if let Some(s) = node.var_slot {
+                        nb.set(s, Val::Node(nbr));
+                    }
+                    if rel_check && !satisfies(graph, ctx, &Val::Edge(eidx), &rel.props, rel.where_.as_ref(), &nb) {
+                        continue;
+                    }
+                    if node_check && !satisfies(graph, ctx, &Val::Node(nbr), &node.props, node.where_.as_ref(), &nb) {
+                        continue;
+                    }
+                }
+                for s in 0..width {
+                    if Some(s) == rel.var_slot {
+                        nxt.slots[s].as_mut().unwrap().1.push(eidx);
+                    } else if Some(s) == node.var_slot {
+                        nxt.slots[s].as_mut().unwrap().1.push(nbr);
+                    } else if let Some((_, ids)) = &cur.slots[s] {
+                        nxt.slots[s].as_mut().unwrap().1.push(ids[i]);
+                    } else if let Some(v) = &cur.vals[s] {
+                        nxt.vals[s].as_mut().unwrap().push(v[i].clone());
+                    }
+                }
+                nxt_end.push(nbr);
+            }
+        }
+        nxt.n = nxt_end.len();
+        cur = nxt;
+        endpoint = nxt_end;
+    }
+    Some(cur)
+}
+
 /// Vectorized executor for a whole linear pipeline: `MATCH <path> (WITH …)+
 /// RETURN …`. Threads a single columnar frame stage-to-stage — carrying element
 /// columns forward so prop reads/filters/ORDER BY past a `WITH` stay vectorized,
@@ -2616,10 +2757,11 @@ fn vectorized_linear(linear: &CLinear, graph: &Graph, plan: &CQuery, params: &[V
     if patterns.len() != 1 {
         return None;
     }
-    let (last, withs) = rest.split_last()?;
-    // Require ≥1 WITH (plain `MATCH … RETURN` keeps the entry path, incl. LIMIT cap),
-    // every middle clause a WITH, and the tail a RETURN.
-    if withs.is_empty() || !withs.iter().all(|c| matches!(c, CClause::With { .. })) || !matches!(last, CClause::Return(_)) {
+    let (last, mid) = rest.split_last()?;
+    // Middle clauses are WITHs or expanding MATCHes; the tail is a RETURN. Require
+    // ≥1 middle clause (plain `MATCH … RETURN` keeps the entry path, incl. LIMIT cap).
+    let mid_ok = mid.iter().all(|c| matches!(c, CClause::With { .. } | CClause::Match { optional: false, .. }));
+    if mid.is_empty() || !mid_ok || !matches!(last, CClause::Return(_)) {
         return None;
     }
 
@@ -2632,13 +2774,24 @@ fn vectorized_linear(linear: &CLinear, graph: &Graph, plan: &CQuery, params: &[V
     if let Some(w) = where_ {
         filter(&mut sc, w);
     }
-    for c in withs {
-        let CClause::With { projection, where_, .. } = c else {
-            return None;
-        };
-        sc = with_frame(graph, &ctx, &sc, projection)?;
-        if let Some(w) = where_ {
-            filter(&mut sc, w);
+    for c in mid {
+        match c {
+            CClause::With { projection, where_, .. } => {
+                sc = with_frame(graph, &ctx, &sc, projection)?;
+                if let Some(w) = where_ {
+                    filter(&mut sc, w);
+                }
+            }
+            CClause::Match { patterns, where_, scope_len, .. } => {
+                if patterns.len() != 1 {
+                    return None;
+                }
+                sc = expand_frame(graph, &ctx, &sc, &patterns[0], *scope_len)?;
+                if let Some(w) = where_ {
+                    filter(&mut sc, w);
+                }
+            }
+            _ => return None,
         }
     }
     let CClause::Return(proj) = last else {

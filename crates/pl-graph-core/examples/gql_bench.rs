@@ -113,6 +113,8 @@ fn main() {
         ("distinct 2 col", "MATCH (n:Person) RETURN DISTINCT n.dept, n.age", 100),
         ("with filter carry", "MATCH (n:Person) WITH n WHERE n.age > 30 RETURN n.name", 100),
         ("with agg then filter", "MATCH (n:Person) WITH n.dept AS d, count(*) AS c WHERE c > 4000 RETURN d, c", 100),
+        ("with then match expand", "MATCH (a:Person) WITH a WHERE a.age > 40 MATCH (a)-[:KNOWS]->(b) RETURN count(*) AS c", 50),
+        ("with carry then match", "MATCH (a:Person) WITH a, a.age AS age MATCH (a)-[:KNOWS]->(b) WHERE b.age > age RETURN count(*) AS c", 50),
         // --- expression-heavy (isolates expression eval; the bytecode-VM target) ---
         (
             "expr-heavy filter count",

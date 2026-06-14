@@ -528,6 +528,32 @@ fn with_carries_element_forward() {
 }
 
 #[test]
+fn with_then_match_expand_count() {
+    let mut g = modern();
+    // All CREATED edges: marko→lop, josh→ripple, josh→lop, peter→lop = 4.
+    let r = rows(&mut g, "MATCH (a:Person) WITH a MATCH (a)-[:CREATED]->(x) RETURN count(*) AS c");
+    assert_eq!(r, vec![vec![n(4.0)]]);
+}
+
+#[test]
+fn with_carry_computed_col_across_expand() {
+    let mut g = modern();
+    // Carry a.age forward, expand KNOWS, keep neighbors older than the carried age.
+    // marko(29)→vadas(27): no; marko(29)→josh(32): yes ⇒ 1.
+    let r = rows(&mut g, "MATCH (a:Person) WITH a, a.age AS aage MATCH (a)-[:KNOWS]->(b) WHERE b.age > aage RETURN count(*) AS c");
+    assert_eq!(r, vec![vec![n(1.0)]]);
+}
+
+#[test]
+fn with_value_col_survives_expand() {
+    let mut g = modern();
+    // The computed column `an` (a value column) must ride through the expand and
+    // appear in output alongside the expanded b's property.
+    let r = rows(&mut g, "MATCH (a:Person {name:'marko'}) WITH a, a.name AS an MATCH (a)-[:KNOWS]->(b {name:'josh'}) RETURN an, b.age");
+    assert_eq!(r, vec![vec![s("marko"), n(32.0)]]);
+}
+
+#[test]
 fn not_exists_subquery() {
     let mut g = modern();
     // vadas is the only Person who created nothing.
