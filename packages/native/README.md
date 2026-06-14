@@ -25,8 +25,15 @@ const g = graphFromNdjson(backend, await Bun.file('graph.ndjson').bytes());
 g.query`MATCH (a:Person) RETURN a.name`;          // GQL → rows
 g.gremlin("g.V().has('name','marko').out()");      // textual Gremlin → values
 g.queryArrow('MATCH (n) RETURN n.age');            // Arrow ("ARW1") blob
-g.toNdjson();                                      // serialize back out
+g.serialize('graphson');                           // → pg-json|pg-text|graphson|csv|ndjson
+g.toNdjson();                                      // serialize back out (ndjson bytes)
 g.free();                                          // release the native graph
+```
+
+```ts
+// Load a graph from any supported format (string or bytes)
+import { graphFromFormat } from '@pl-graph/native';
+const g = graphFromFormat(backend, csvText, 'csv');
 ```
 
 ```ts
@@ -51,6 +58,9 @@ together when the C ABI changes.
 
 ## Status / TODO
 
+- Both backends are tested end-to-end (`backend-ffi.test.ts`,
+  `backend-wasm.test.ts`) — query, Gremlin, all five serialization formats, and
+  a wasm memory-grow path.
 - Arrow results currently surface as the raw `ARW1` blob (`queryArrow`). A typed
   `apache-arrow` `Table` wrapper (see `crates/.../arrow-ffi.test.ts` for the
   decode) is the natural next step.

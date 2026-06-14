@@ -33,4 +33,9 @@ export type Backend = {
 
   /** Serialize the whole graph back to NDJSON bytes. */
   encodeNdjson: (handle: GraphHandle) => Uint8Array;
+
+  /** Serialize the graph in a named format (`pg-json | pg-text | graphson | csv | ndjson`). */
+  serialize: (handle: GraphHandle, format: string) => Uint8Array;
+  /** Deserialize bytes in a named format into a new graph handle. */
+  deserialize: (input: Uint8Array, format: string) => GraphHandle;
 };

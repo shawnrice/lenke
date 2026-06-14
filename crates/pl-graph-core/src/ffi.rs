@@ -8,7 +8,7 @@
 //! `plg_free_buf`. The graph handle must be returned via `plg_graph_free`.
 
 use crate::graph::{Column, Graph};
-use crate::{build_csr, gql, ndjson, query, scan, ScanKind};
+use crate::{build_csr, codec, gql, ndjson, query, scan, ScanKind};
 
 // ---------- raw CSR builder (unchanged) ----------
 
@@ -38,8 +38,8 @@ pub unsafe extern "C" fn plg_build_csr(
 
 #[no_mangle]
 pub extern "C" fn plg_abi_version() -> u32 {
-    6 // 6: inbound allocator (plg_alloc/plg_dealloc) for the wasm linear-memory
-      //    binding; 5: textual Gremlin (plg_gremlin_json); 4: Arrow columnar surface
+    7 // 7: multi-format codecs (plg_serialize/plg_deserialize); 6: inbound
+      //    allocator (plg_alloc/plg_dealloc); 5: textual Gremlin; 4: Arrow
 }
 
 // ---------- inbound allocator (wasm linear memory) ----------
@@ -340,6 +340,67 @@ pub unsafe extern "C" fn plg_gremlin_json(
     let bytes = crate::gremlin::exec::results_to_json(&*g, &vals).into_bytes().into_boxed_slice();
     *out_len = bytes.len();
     Box::into_raw(bytes) as *mut u8
+}
+
+/// Serialize the graph in a named format — `pg-json | pg-text | graphson | csv |
+/// ndjson` (see [`crate::codec`]). Returns a heap buffer (free with
+/// `plg_free_buf`) and writes its byte length to `out_len`. Null on an unknown
+/// format / null / UTF-8 error.
+///
+/// # Safety
+/// `g` valid; `fmt_ptr`/`fmt_len` valid UTF-8; `out_len` writable.
+#[no_mangle]
+pub unsafe extern "C" fn plg_serialize(
+    g: *const Graph,
+    fmt_ptr: *const u8,
+    fmt_len: usize,
+    out_len: *mut usize,
+) -> *mut u8 {
+    if g.is_null() || fmt_ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    let fmt = match std::str::from_utf8(std::slice::from_raw_parts(fmt_ptr, fmt_len)) {
+        Ok(s) => s,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    match codec::serialize(&*g, fmt) {
+        Ok(s) => {
+            let bytes = s.into_bytes().into_boxed_slice();
+            *out_len = bytes.len();
+            Box::into_raw(bytes) as *mut u8
+        }
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// Deserialize bytes in a named format into a fresh graph handle (free with
+/// `plg_graph_free`). The format name is the same set as `plg_serialize`. Null on
+/// an unknown format, a parse error, or bad UTF-8.
+///
+/// # Safety
+/// `ptr`/`len` valid UTF-8; `fmt_ptr`/`fmt_len` valid UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn plg_deserialize(
+    ptr: *const u8,
+    len: usize,
+    fmt_ptr: *const u8,
+    fmt_len: usize,
+) -> *mut Graph {
+    if ptr.is_null() || fmt_ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    let text = match std::str::from_utf8(std::slice::from_raw_parts(ptr, len)) {
+        Ok(s) => s,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    let fmt = match std::str::from_utf8(std::slice::from_raw_parts(fmt_ptr, fmt_len)) {
+        Ok(s) => s,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    match codec::deserialize(text, fmt) {
+        Ok(g) => Box::into_raw(Box::new(g)),
+        Err(_) => std::ptr::null_mut(),
+    }
 }
 
 /// SIMD (or scalar) predicate scan `key > threshold` over a numeric column.

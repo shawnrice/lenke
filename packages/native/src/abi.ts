@@ -5,7 +5,7 @@
  *
  * Bump in lockstep with `plg_abi_version()` in `crates/pl-graph-core/src/ffi.rs`.
  */
-export const ABI_VERSION = 6;
+export const ABI_VERSION = 7;
 
 export const assertAbi = (loaded: number): void => {
   if (loaded !== ABI_VERSION) {
