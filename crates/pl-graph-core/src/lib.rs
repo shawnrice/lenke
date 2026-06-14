@@ -10,7 +10,10 @@
 //! This is the binding-agnostic crate; `ffi` exposes a C ABI for bun:ffi (and
 //! later wasm-bindgen) over the same functions.
 
+pub mod arrow;
 pub mod ffi;
+pub mod gql;
+pub mod gremlin;
 pub mod graph;
 pub mod ndjson;
 pub mod query;

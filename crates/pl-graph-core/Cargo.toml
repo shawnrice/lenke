@@ -27,4 +27,9 @@ serde_json = "1.0.150"
 
 [features]
 default = ["parallel"]
+# `parallel`: rayon for bulk ndjson decode (a load-time win, no tradeoff).
 parallel = ["dep:rayon"]
+# `parallel-query`: intra-query threading (parallel projection eval). Opt-in and
+# off by default — it's a single-query *latency* lever that trades throughput on
+# a busy server, so it's a deliberate deployment choice, not a default.
+parallel-query = ["parallel"]

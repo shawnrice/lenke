@@ -8,7 +8,7 @@
 //! *exact* cells — strings and integer-valued numbers only (floats are left to
 //! `sum`). It's order-sensitive iff the query has ORDER BY.
 
-use crate::graph::{Column, Dict, Graph};
+use crate::graph::{Column, Dict, Graph, Value};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Op {
@@ -86,6 +86,95 @@ pub struct QueryResult {
     pub count: u64,
     pub sum: f64,
     pub checksum: u64,
+}
+
+/// A materialized result: column names plus a **columnar** cell buffer — a
+/// single flat row-major `Vec<Value>` (cell `(i, j)` at `i*ncols + j`) instead
+/// of a `Vec` per row, so building an N-row result is one amortized allocation,
+/// not N small ones. Cells are the core graph `Value` model so the rowset
+/// round-trips losslessly to JSON for the FFI / wasm boundary.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RowSet {
+    pub cols: Vec<String>,
+    /// Flat row-major cells; `nrows * cols.len()` long.
+    pub data: Vec<Value>,
+    pub nrows: usize,
+}
+
+impl RowSet {
+    pub fn new(cols: Vec<String>) -> Self {
+        RowSet { cols, data: Vec::new(), nrows: 0 }
+    }
+    pub fn ncols(&self) -> usize {
+        self.cols.len()
+    }
+    /// Row `i` as a slice of its cells.
+    pub fn row(&self, i: usize) -> &[Value] {
+        let c = self.cols.len();
+        &self.data[i * c..i * c + c]
+    }
+    /// Iterate rows as cell slices.
+    pub fn rows(&self) -> impl Iterator<Item = &[Value]> {
+        let c = self.cols.len().max(1); // chunks(0) panics; empty-col → no rows
+        self.data.chunks(c).take(self.nrows)
+    }
+    /// Append a row (its cells; must be exactly `ncols`).
+    pub fn push_row(&mut self, cells: impl IntoIterator<Item = Value>) {
+        self.data.extend(cells);
+        self.nrows += 1;
+        debug_assert_eq!(self.data.len(), self.nrows * self.cols.len());
+    }
+    /// Drop the most recently pushed row (used to undo a DISTINCT duplicate).
+    pub fn pop_row(&mut self) {
+        self.data.truncate(self.data.len() - self.cols.len());
+        self.nrows -= 1;
+    }
+    /// Apply SKIP/LIMIT in place over the flat buffer.
+    pub fn apply_skip_limit(&mut self, skip: usize, limit: Option<usize>) {
+        let c = self.cols.len();
+        let skip = skip.min(self.nrows);
+        if skip > 0 {
+            self.data.drain(0..skip * c);
+            self.nrows -= skip;
+        }
+        if let Some(n) = limit {
+            if self.nrows > n {
+                self.data.truncate(n * c);
+                self.nrows = n;
+            }
+        }
+    }
+
+    /// Serialize to a compact `{"columns":[...],"rows":[[...]]}` JSON document —
+    /// the carrier for both bun:ffi and (later) wasm-bindgen, where a single
+    /// buffer crossing beats marshalling cell-by-cell.
+    pub fn to_json(&self) -> String {
+        let cols = serde_json::Value::Array(
+            self.cols.iter().map(|c| serde_json::Value::String(c.clone())).collect(),
+        );
+        let rows = serde_json::Value::Array(
+            self.rows()
+                .map(|r| serde_json::Value::Array(r.iter().map(value_to_json).collect()))
+                .collect(),
+        );
+        let doc = serde_json::json!({ "columns": cols, "rows": rows });
+        doc.to_string()
+    }
+}
+
+/// Map the core `Value` model onto `serde_json::Value`. Non-finite numbers
+/// (NaN/±Inf) have no JSON form, so they serialize as null — matching how a
+/// JS engine would surface an absent/undefined numeric cell.
+fn value_to_json(v: &Value) -> serde_json::Value {
+    match v {
+        Value::Null => serde_json::Value::Null,
+        Value::Bool(b) => serde_json::Value::Bool(*b),
+        Value::Num(x) => serde_json::Number::from_f64(*x)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
+        Value::Str(s) => serde_json::Value::String(s.to_string()),
+        Value::List(items) => serde_json::Value::Array(items.iter().map(value_to_json).collect()),
+    }
 }
 
 // ---------- a projected cell ----------
@@ -393,7 +482,7 @@ pub fn parse(s: &str) -> Result<Query, String> {
 // ---------- executor ----------
 
 fn col_of<'a>(g: &'a Graph, key: &str) -> Option<&'a Column> {
-    g.keys.get(key).and_then(|kid| g.cols.get(&kid))
+    g.props.col(key)
 }
 
 fn vertex_num(g: &Graph, vi: u32, key: &str) -> Option<f64> {
@@ -461,6 +550,123 @@ fn project_cell(g: &Graph, binding: &[u32], pos: usize, key: &Option<String>, pd
             }
             _ => Cell::Null,
         },
+    }
+}
+
+/// Project one binding cell as a real `Value` (vs. `project_cell`'s lossy
+/// benchmark `Cell`). A bare var yields the vertex's external id string; a
+/// `var.key` yields the typed property, including `Mixed`/`List` columns the
+/// fingerprint path can't represent. Absent → `Value::Null`.
+fn project_value(g: &Graph, binding: &[u32], pos: usize, key: &Option<String>) -> Value {
+    let vi = binding[pos];
+    match key {
+        None => Value::Str(g.vid.arc(vi)),
+        Some(k) => match col_of(g, k) {
+            Some(Column::Num { data, present }) if present.get(vi as usize) => Value::Num(data[vi as usize]),
+            Some(Column::Bool { data, present }) if present.get(vi as usize) => Value::Bool(data[vi as usize]),
+            Some(Column::Str { data, present }) if present.get(vi as usize) => {
+                Value::Str(g.strs.arc(data[vi as usize]))
+            }
+            Some(Column::Mixed { data }) => data[vi as usize].clone().unwrap_or(Value::Null),
+            _ => Value::Null,
+        },
+    }
+}
+
+fn func_name(f: AggFunc) -> &'static str {
+    match f {
+        AggFunc::Count => "count",
+        AggFunc::Sum => "sum",
+        AggFunc::Avg => "avg",
+        AggFunc::Min => "min",
+        AggFunc::Max => "max",
+    }
+}
+
+/// The default column name for a RETURN item — its source text, since there's
+/// no AS-alias in this subset yet (`a`, `a.age`, `count(*)`, `sum(a.age)`).
+fn item_name(it: &RetItem) -> String {
+    match it {
+        RetItem::Plain { var, key: None } => var.clone(),
+        RetItem::Plain { var, key: Some(k) } => format!("{var}.{k}"),
+        RetItem::Agg { func, var, key } => {
+            let inner = match (var, key) {
+                (Some(v), Some(k)) => format!("{v}.{k}"),
+                _ => "*".to_string(),
+            };
+            format!("{}({})", func_name(*func), inner)
+        }
+    }
+}
+
+/// A canonical, hashable key for a `Value` — used to group/dedup rows. Floats
+/// key by their bit pattern so distinct NaNs and ±0 stay distinguishable, and a
+/// type tag prevents cross-type collisions (e.g. `1` the number vs `"1"`).
+fn value_key(v: &Value, out: &mut String) {
+    use std::fmt::Write;
+    match v {
+        Value::Null => out.push('0'),
+        Value::Bool(b) => {
+            let _ = write!(out, "b{}", *b as u8);
+        }
+        Value::Num(x) => {
+            let _ = write!(out, "n{:016x}", x.to_bits());
+        }
+        Value::Str(s) => {
+            let _ = write!(out, "s{}", s);
+        }
+        Value::List(items) => {
+            out.push('[');
+            for it in items {
+                value_key(it, out);
+                out.push(',');
+            }
+            out.push(']');
+        }
+    }
+}
+
+fn row_key(cells: &[Value]) -> String {
+    let mut s = String::new();
+    for c in cells {
+        value_key(c, &mut s);
+        s.push('\u{1}');
+    }
+    s
+}
+
+/// Total order over `Value` for ORDER BY: Null sorts first, then by type, then
+/// by value (numbers numerically, strings lexicographically). NaN sorts after
+/// finite numbers so it can't poison the comparator.
+fn cmp_value(a: &Value, b: &Value) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    fn rank(v: &Value) -> u8 {
+        match v {
+            Value::Null => 0,
+            Value::Bool(_) => 1,
+            Value::Num(_) => 2,
+            Value::Str(_) => 3,
+            Value::List(_) => 4,
+        }
+    }
+    match (a, b) {
+        (Value::Null, Value::Null) => Ordering::Equal,
+        (Value::Bool(x), Value::Bool(y)) => x.cmp(y),
+        (Value::Num(x), Value::Num(y)) => match x.partial_cmp(y) {
+            Some(o) => o,
+            None => x.is_nan().cmp(&y.is_nan()), // NaN last, NaN==NaN
+        },
+        (Value::Str(x), Value::Str(y)) => x.cmp(y),
+        (Value::List(x), Value::List(y)) => {
+            for (xi, yi) in x.iter().zip(y) {
+                let o = cmp_value(xi, yi);
+                if o != Ordering::Equal {
+                    return o;
+                }
+            }
+            x.len().cmp(&y.len())
+        }
+        _ => rank(a).cmp(&rank(b)),
     }
 }
 
@@ -537,22 +743,202 @@ fn hash_row(row: &[Cell], pdict: &Dict) -> u64 {
     h
 }
 
+/// Resolved dictionary ids for a query against a specific graph — computed once,
+/// then driven by `for_each_binding`. Sharing this between the fingerprint
+/// (`run`) and the row engine (`run_rows`) keeps the thing the benchmark
+/// validates identical to the thing callers get rows from.
+struct Plan {
+    /// label id per node position (`None` = unconstrained)
+    label_ids: Vec<Option<u32>>,
+    /// edge-type id per relationship position (`None` = unconstrained)
+    etype_ids: Vec<Option<u32>>,
+    /// node position each WHERE predicate binds against
+    pred_pos: Vec<usize>,
+}
+
 impl Query {
     fn var_pos(&self, name: &str) -> usize {
         self.nodes.iter().position(|n| n.var.as_deref() == Some(name)).unwrap_or(0)
     }
 
-    pub fn run(&self, g: &Graph) -> QueryResult {
+    /// Resolve labels/edge-types/predicates to ids. Returns `None` when a
+    /// referenced *node label* doesn't exist in the graph — that makes the
+    /// pattern unsatisfiable, so callers short-circuit to an empty result.
+    /// (A missing *edge type* is handled lazily in the walk, not here.)
+    fn plan(&self, g: &Graph) -> Option<Plan> {
         let label_ids: Vec<Option<u32>> =
             self.nodes.iter().map(|nd| nd.label.as_ref().and_then(|l| g.labels.get(l))).collect();
-        let etype_ids: Vec<Option<u32>> =
-            self.rels.iter().map(|r| r.etype.as_ref().and_then(|t| g.etype.get(t))).collect();
         for (nd, lid) in self.nodes.iter().zip(&label_ids) {
             if nd.label.is_some() && lid.is_none() {
-                return QueryResult { count: 0, sum: 0.0, checksum: 0 };
+                return None;
             }
         }
+        let etype_ids: Vec<Option<u32>> =
+            self.rels.iter().map(|r| r.etype.as_ref().and_then(|t| g.etype.get(t))).collect();
         let pred_pos: Vec<usize> = self.preds.iter().map(|p| self.var_pos(&p.var)).collect();
+        Some(Plan { label_ids, etype_ids, pred_pos })
+    }
+
+    /// The shared traversal: DFS over the out-CSR, binding each node position in
+    /// turn, applying per-node label constraints and the final WHERE, and
+    /// invoking `f` once per complete binding (a `&[u32]` of vertex indices, one
+    /// per pattern node). Both projectors build on top of this.
+    fn for_each_binding(&self, g: &Graph, plan: &Plan, f: &mut impl FnMut(&[u32])) {
+        let mut binding = vec![0u32; self.nodes.len()];
+        let mut stack: Vec<(usize, u32)> = Vec::new();
+        for s in seeds(g, &self.nodes[0]) {
+            stack.push((0, s));
+            while let Some((depth, v)) = stack.pop() {
+                if let Some(lid) = plan.label_ids[depth] {
+                    if !g.has_label(v, lid) {
+                        continue;
+                    }
+                }
+                binding[depth] = v;
+                if depth + 1 == self.nodes.len() {
+                    let ok = self
+                        .preds
+                        .iter()
+                        .zip(&plan.pred_pos)
+                        .all(|(p, &pp)| pred_holds(g, binding[pp], p));
+                    if ok {
+                        f(&binding);
+                    }
+                } else {
+                    let et = plan.etype_ids[depth];
+                    if self.rels[depth].etype.is_some() && et.is_none() {
+                        continue;
+                    }
+                    for nbr in g.out_neighbors(v, et) {
+                        stack.push((depth + 1, nbr));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Materialize the query as real rows of `Value` — the usable engine output.
+    pub fn run_rows(&self, g: &Graph) -> RowSet {
+        let cols: Vec<String> = self.items.iter().map(item_name).collect();
+        let plan = match self.plan(g) {
+            Some(p) => p,
+            None => return RowSet::new(cols),
+        };
+        let aggregating = self.items.iter().any(|i| matches!(i, RetItem::Agg { .. }));
+
+        let group_items: Vec<(usize, Option<String>)> = self
+            .items
+            .iter()
+            .filter_map(|it| match it {
+                RetItem::Plain { var, key } => Some((self.var_pos(var), key.clone())),
+                _ => None,
+            })
+            .collect();
+        let agg_items: Vec<(AggFunc, Option<usize>, Option<String>)> = self
+            .items
+            .iter()
+            .filter_map(|it| match it {
+                RetItem::Agg { func, var, key } => {
+                    Some((*func, var.as_deref().map(|v| self.var_pos(v)), key.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+
+        let mut rows: Vec<Vec<Value>> = Vec::new();
+
+        if aggregating {
+            // group key (canonical string) -> (group-key cells, per-agg accumulators)
+            let mut groups: std::collections::HashMap<String, (Vec<Value>, Vec<Acc>)> =
+                std::collections::HashMap::new();
+            // preserve first-seen group order for stable output
+            let mut order: Vec<String> = Vec::new();
+            self.for_each_binding(g, &plan, &mut |binding| {
+                let key_cells: Vec<Value> =
+                    group_items.iter().map(|(pos, key)| project_value(g, binding, *pos, key)).collect();
+                let gkey = row_key(&key_cells);
+                let entry = groups.entry(gkey.clone()).or_insert_with(|| {
+                    order.push(gkey);
+                    (key_cells, (0..agg_items.len()).map(|_| Acc::new()).collect())
+                });
+                for (ai, (_, vpos, key)) in agg_items.iter().enumerate() {
+                    let x = match (vpos, key) {
+                        (Some(pos), Some(k)) => vertex_num(g, binding[*pos], k),
+                        _ => None, // count(*)
+                    };
+                    entry.1[ai].step(x);
+                }
+            });
+            for gkey in &order {
+                let (key_cells, accs) = &groups[gkey];
+                let mut gi = 0;
+                let mut ai = 0;
+                let row: Vec<Value> = self
+                    .items
+                    .iter()
+                    .map(|it| match it {
+                        RetItem::Plain { .. } => {
+                            let c = key_cells[gi].clone();
+                            gi += 1;
+                            c
+                        }
+                        RetItem::Agg { func, .. } => {
+                            let v = accs[ai].finalize(*func);
+                            ai += 1;
+                            Value::Num(v)
+                        }
+                    })
+                    .collect();
+                rows.push(row);
+            }
+        } else {
+            self.for_each_binding(g, &plan, &mut |binding| {
+                let row: Vec<Value> = self
+                    .items
+                    .iter()
+                    .map(|it| match it {
+                        RetItem::Plain { var, key } => {
+                            project_value(g, binding, self.var_pos(var), key)
+                        }
+                        RetItem::Agg { .. } => Value::Null,
+                    })
+                    .collect();
+                rows.push(row);
+            });
+        }
+
+        if self.distinct {
+            let mut seen = std::collections::HashSet::new();
+            rows.retain(|r| seen.insert(row_key(r)));
+        }
+
+        if let Some(ob) = &self.order {
+            rows.sort_by(|a, b| {
+                let o = cmp_value(&a[ob.col], &b[ob.col]);
+                if ob.desc {
+                    o.reverse()
+                } else {
+                    o
+                }
+            });
+        }
+
+        if let Some(n) = self.limit {
+            rows.truncate(n);
+        }
+
+        let mut rs = RowSet::new(cols);
+        for row in rows {
+            rs.push_row(row);
+        }
+        rs
+    }
+
+    pub fn run(&self, g: &Graph) -> QueryResult {
+        let plan = match self.plan(g) {
+            Some(p) => p,
+            None => return QueryResult { count: 0, sum: 0.0, checksum: 0 },
+        };
         let aggregating = self.items.iter().any(|i| matches!(i, RetItem::Agg { .. }));
 
         // A small interner so projected string *text* drives the checksum.
@@ -581,71 +967,38 @@ impl Query {
         let mut groups: std::collections::HashMap<u64, (Vec<Cell>, Vec<Acc>)> =
             std::collections::HashMap::new();
 
-        let mut binding = vec![0u32; self.nodes.len()];
-        let mut stack: Vec<(usize, u32)> = Vec::new();
-
-        for s in seeds(g, &self.nodes[0]) {
-            stack.push((0, s));
-            while let Some((depth, v)) = stack.pop() {
-                if let Some(lid) = label_ids[depth] {
-                    if !g.has_label(v, lid) {
-                        continue;
-                    }
+        self.for_each_binding(g, &plan, &mut |binding| {
+            if aggregating {
+                // group key cells + hash
+                let key_cells: Vec<Cell> = group_items
+                    .iter()
+                    .map(|(pos, key)| project_cell(g, binding, *pos, key, &mut pdict))
+                    .collect();
+                let gkey = hash_row(&key_cells, &pdict);
+                let entry = groups
+                    .entry(gkey)
+                    .or_insert_with(|| (key_cells, (0..agg_items.len()).map(|_| Acc::new()).collect()));
+                for (ai, (_, vpos, key)) in agg_items.iter().enumerate() {
+                    let x = match (vpos, key) {
+                        (Some(pos), Some(k)) => vertex_num(g, binding[*pos], k),
+                        _ => None, // count(*)
+                    };
+                    entry.1[ai].step(x);
                 }
-                binding[depth] = v;
-                if depth + 1 == self.nodes.len() {
-                    // WHERE
-                    let mut ok = true;
-                    for (p, &pp) in self.preds.iter().zip(&pred_pos) {
-                        if !pred_holds(g, binding[pp], p) {
-                            ok = false;
-                            break;
+            } else {
+                let cells: Vec<Cell> = self
+                    .items
+                    .iter()
+                    .map(|it| match it {
+                        RetItem::Plain { var, key } => {
+                            project_cell(g, binding, self.var_pos(var), key, &mut pdict)
                         }
-                    }
-                    if !ok {
-                        continue;
-                    }
-                    if aggregating {
-                        // group key cells + hash
-                        let key_cells: Vec<Cell> = group_items
-                            .iter()
-                            .map(|(pos, key)| project_cell(g, &binding, *pos, key, &mut pdict))
-                            .collect();
-                        let gkey = hash_row(&key_cells, &pdict);
-                        let entry = groups
-                            .entry(gkey)
-                            .or_insert_with(|| (key_cells, (0..agg_items.len()).map(|_| Acc::new()).collect()));
-                        for (ai, (_, vpos, key)) in agg_items.iter().enumerate() {
-                            let x = match (vpos, key) {
-                                (Some(pos), Some(k)) => vertex_num(g, binding[*pos], k),
-                                _ => None, // count(*)
-                            };
-                            entry.1[ai].step(x);
-                        }
-                    } else {
-                        let cells: Vec<Cell> = self
-                            .items
-                            .iter()
-                            .map(|it| match it {
-                                RetItem::Plain { var, key } => {
-                                    project_cell(g, &binding, self.var_pos(var), key, &mut pdict)
-                                }
-                                RetItem::Agg { .. } => Cell::Null,
-                            })
-                            .collect();
-                        rows.push(cells);
-                    }
-                } else {
-                    let et = etype_ids[depth];
-                    if self.rels[depth].etype.is_some() && et.is_none() {
-                        continue;
-                    }
-                    for nbr in g.out_neighbors(v, et) {
-                        stack.push((depth + 1, nbr));
-                    }
-                }
+                        RetItem::Agg { .. } => Cell::Null,
+                    })
+                    .collect();
+                rows.push(cells);
             }
-        }
+        });
 
         // Materialize aggregating rows in RETURN-item order.
         if aggregating {
@@ -790,5 +1143,83 @@ mod tests {
         let r = run(&g, "MATCH (a:Person) RETURN a.age ORDER BY a.age DESC LIMIT 3");
         assert_eq!(r.count, 3);
         assert_eq!(r.sum, 90.0 + 80.0 + 70.0);
+    }
+
+    fn rows(g: &Graph, q: &str) -> RowSet {
+        parse(q).unwrap().run_rows(g)
+    }
+
+    /// Materialize a flat RowSet into per-row Vecs for assertions (test-only).
+    fn rowvecs(r: &RowSet) -> Vec<Vec<Value>> {
+        r.rows().map(|x| x.to_vec()).collect()
+    }
+
+    #[test]
+    fn rows_project_typed_values() {
+        let g = fixture();
+        // bare var → external id string; .key → typed property value.
+        let r = rows(&g, "MATCH (a:Person) WHERE a.age = 30 RETURN a, a.age, a.dept, a.active");
+        assert_eq!(r.cols, vec!["a", "a.age", "a.dept", "a.active"]);
+        assert_eq!(r.nrows, 1);
+        assert_eq!(
+            rowvecs(&r)[0],
+            vec![
+                Value::Str("n3".into()),
+                Value::Num(30.0),
+                Value::Str("d1".into()), // i=3 → dept d(3%2)=d1
+                Value::Bool(false),      // i=3 → active (3%2==0) == false
+            ]
+        );
+    }
+
+    #[test]
+    fn rows_order_desc_limit_keeps_real_value_order() {
+        let g = fixture();
+        let r = rows(&g, "MATCH (a:Person) RETURN a.age ORDER BY a.age DESC LIMIT 3");
+        assert_eq!(
+            rowvecs(&r),
+            vec![vec![Value::Num(90.0)], vec![Value::Num(80.0)], vec![Value::Num(70.0)]]
+        );
+    }
+
+    #[test]
+    fn rows_group_by_aggregate() {
+        let g = fixture();
+        let r = rows(&g, "MATCH (a:Person) RETURN a.dept, count(*), sum(a.age) ORDER BY a.dept");
+        assert_eq!(r.cols, vec!["a.dept", "count(*)", "sum(a.age)"]);
+        // d0: i in {0,2,4,6,8} ages 0+20+40+60+80=200; d1: {1,3,5,7,9} 10+30+50+70+90=250
+        assert_eq!(
+            rowvecs(&r),
+            vec![
+                vec![Value::Str("d0".into()), Value::Num(5.0), Value::Num(200.0)],
+                vec![Value::Str("d1".into()), Value::Num(5.0), Value::Num(250.0)],
+            ]
+        );
+    }
+
+    #[test]
+    fn rows_distinct() {
+        let g = fixture();
+        let r = rows(&g, "MATCH (a:Person) RETURN DISTINCT a.dept ORDER BY a.dept");
+        assert_eq!(
+            rowvecs(&r), vec![vec![Value::Str("d0".into())], vec![Value::Str("d1".into())]]);
+    }
+
+    #[test]
+    fn rows_missing_label_is_empty_with_columns() {
+        let g = fixture();
+        let r = rows(&g, "MATCH (a:Ghost) RETURN a.age");
+        assert_eq!(r.cols, vec!["a.age"]);
+        assert!(r.nrows == 0);
+    }
+
+    #[test]
+    fn rowset_json_shape() {
+        let g = fixture();
+        let r = rows(&g, "MATCH (a:Person) WHERE a.age = 0 RETURN a.dept, a.age, a.active");
+        assert_eq!(
+            r.to_json(),
+            r#"{"columns":["a.dept","a.age","a.active"],"rows":[["d0",0.0,true]]}"#
+        );
     }
 }

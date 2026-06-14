@@ -8,7 +8,7 @@
 //! `plg_free_buf`. The graph handle must be returned via `plg_graph_free`.
 
 use crate::graph::{Column, Graph};
-use crate::{build_csr, ndjson, query, scan, ScanKind};
+use crate::{build_csr, gql, ndjson, query, scan, ScanKind};
 
 // ---------- raw CSR builder (unchanged) ----------
 
@@ -38,7 +38,7 @@ pub unsafe extern "C" fn plg_build_csr(
 
 #[no_mangle]
 pub extern "C" fn plg_abi_version() -> u32 {
-    2
+    5 // 5: added textual Gremlin (plg_gremlin_json); 4: Arrow columnar surface
 }
 
 // ---------- stateful columnar graph ----------
@@ -77,7 +77,7 @@ pub unsafe extern "C" fn plg_graph_vertex_count(g: *const Graph) -> u64 {
     if g.is_null() {
         return 0;
     }
-    (*g).n as u64
+    (*g).vertex_count() as u64
 }
 
 /// # Safety
@@ -163,6 +163,147 @@ pub unsafe extern "C" fn plg_query_batch(
     i as i64
 }
 
+/// Parse + run a query and return the *real* result rows as a JSON document
+/// (`{"columns":[...],"rows":[[...]]}`). The buffer is heap-allocated here;
+/// the caller must return it via `plg_free_buf` with the written length. The
+/// byte length is written to `out_len`. Returns null on a parse/null/UTF-8
+/// error (and leaves `out_len` untouched).
+///
+/// This is the row-returning counterpart to `plg_query` (which only yields the
+/// `(count, sum, checksum)` benchmark fingerprint). JSON is the carrier so the
+/// same symbol serves both bun:ffi and a future wasm-bindgen binding with one
+/// buffer crossing instead of per-cell marshalling. The graph handle is `*mut`
+/// because a query may mutate it (`INSERT`/`SET`/`REMOVE`/`DELETE`).
+///
+/// # Safety
+/// `g` valid and exclusively borrowed for this call; `q_ptr`/`q_len` valid
+/// UTF-8; `out_len` writable.
+#[no_mangle]
+pub unsafe extern "C" fn plg_query_rows(
+    g: *mut Graph,
+    q_ptr: *const u8,
+    q_len: usize,
+    out_len: *mut usize,
+) -> *mut u8 {
+    if g.is_null() || q_ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    let q = match std::str::from_utf8(std::slice::from_raw_parts(q_ptr, q_len)) {
+        Ok(s) => s,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    // Route to the full GQL engine (the complete ISO-subset port). Returns null
+    // on a parse error or an unsupported clause.
+    let parsed = match gql::parse(q) {
+        Ok(p) => p,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    let rowset = match parsed.execute(&mut *g, &gql::eval::Params::new()) {
+        Ok(rs) => rs,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    let bytes = rowset.to_json().into_bytes().into_boxed_slice();
+    *out_len = bytes.len();
+    Box::into_raw(bytes) as *mut u8
+}
+
+/// Parse + run a query and return the result as an **Apache Arrow** columnar
+/// blob (see [`crate::arrow`]) instead of JSON. The buffer is heap-allocated here
+/// **8-byte aligned** (so the caller's `Float64Array`/`Int32Array` views over the
+/// column buffers are valid) and must be returned via `plg_free_arrow` with the
+/// written length. The byte length is written to `out_len`. Returns null on a
+/// parse / null / UTF-8 error (and leaves `out_len` untouched).
+///
+/// The columnar carrier is zero-copy on the caller side: a query result is
+/// single-owner and consume-once, so the caller views the Arrow buffers in place
+/// (browser: `apache-arrow` `makeData`; server: bun:ffi typed-array over the
+/// pointer) — no serialize here, no parse there.
+///
+/// # Safety
+/// `g` valid and exclusively borrowed for this call; `q_ptr`/`q_len` valid
+/// UTF-8; `out_len` writable.
+#[no_mangle]
+pub unsafe extern "C" fn plg_query_arrow(
+    g: *mut Graph,
+    q_ptr: *const u8,
+    q_len: usize,
+    out_len: *mut usize,
+) -> *mut u8 {
+    if g.is_null() || q_ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    let q = match std::str::from_utf8(std::slice::from_raw_parts(q_ptr, q_len)) {
+        Ok(s) => s,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    let parsed = match gql::parse(q) {
+        Ok(p) => p,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    // execute_arrow keeps numeric/bool result columns typed end-to-end (no
+    // Val/Value boxing) for the common single-MATCH … RETURN shape.
+    let blob = match parsed.execute_arrow(&mut *g, &gql::eval::Params::new()) {
+        Ok(b) => b,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    *out_len = blob.len();
+    // 8-byte-aligned copy so the caller can view f64/i32 column buffers directly.
+    let len = blob.len().max(1);
+    let layout = std::alloc::Layout::from_size_align(len, 8).unwrap();
+    let p = std::alloc::alloc(layout);
+    if !p.is_null() {
+        std::ptr::copy_nonoverlapping(blob.as_ptr(), p, blob.len());
+    }
+    p
+}
+
+/// Free a buffer returned by `plg_query_arrow`. Must use the same `len` that was
+/// written to `out_len` (the allocation is 8-byte aligned).
+///
+/// # Safety
+/// `ptr`/`len` must come from `plg_query_arrow`.
+#[no_mangle]
+pub unsafe extern "C" fn plg_free_arrow(ptr: *mut u8, len: usize) {
+    if !ptr.is_null() {
+        let len = len.max(1);
+        std::alloc::dealloc(ptr, std::alloc::Layout::from_size_align(len, 8).unwrap());
+    }
+}
+
+/// Parse + run a **textual Gremlin** query (the Groovy wire form, e.g.
+/// `g.V().has('name','marko').out('knows').values('name')`) and return the
+/// results as a JSON array. Heap-allocated; free with `plg_free_buf`. Byte length
+/// written to `out_len`. Null on a parse/UTF-8 error (and `out_len` untouched).
+///
+/// JSON (not Arrow) because Gremlin results are heterogeneous per row — a stream
+/// of mixed scalars / elements / maps — which doesn't fit a columnar carrier.
+///
+/// # Safety
+/// `g` valid and exclusively borrowed; `q_ptr`/`q_len` valid UTF-8; `out_len` writable.
+#[no_mangle]
+pub unsafe extern "C" fn plg_gremlin_json(
+    g: *mut Graph,
+    q_ptr: *const u8,
+    q_len: usize,
+    out_len: *mut usize,
+) -> *mut u8 {
+    if g.is_null() || q_ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    let q = match std::str::from_utf8(std::slice::from_raw_parts(q_ptr, q_len)) {
+        Ok(s) => s,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    let plan = match crate::gremlin::parse(q) {
+        Ok(p) => p,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    let vals = crate::gremlin::run(&mut *g, &plan);
+    let bytes = crate::gremlin::exec::results_to_json(&*g, &vals).into_bytes().into_boxed_slice();
+    *out_len = bytes.len();
+    Box::into_raw(bytes) as *mut u8
+}
+
 /// SIMD (or scalar) predicate scan `key > threshold` over a numeric column.
 /// Returns -1 if the key isn't a numeric column.
 ///
@@ -186,11 +327,7 @@ pub unsafe extern "C" fn plg_predicate_scan(
         Ok(s) => s,
         Err(_) => return -1,
     };
-    let kid = match g.keys.get(key) {
-        Some(k) => k,
-        None => return -1,
-    };
-    match g.cols.get(&kid) {
+    match g.props.col(key) {
         Some(Column::Num { data, .. }) => {
             let (c, s) = if simd != 0 {
                 scan::predicate_gt_neon(data, threshold)

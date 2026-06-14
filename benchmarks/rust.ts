@@ -23,6 +23,10 @@ const { symbols } = dlopen(LIB, {
     args: [FFIType.ptr, FFIType.ptr, FFIType.u64_fast, FFIType.ptr, FFIType.ptr, FFIType.ptr],
     returns: FFIType.i64,
   },
+  plg_query_rows: {
+    args: [FFIType.ptr, FFIType.ptr, FFIType.u64_fast, FFIType.ptr],
+    returns: FFIType.ptr,
+  },
   plg_predicate_scan: {
     args: [FFIType.ptr, FFIType.ptr, FFIType.u64_fast, FFIType.f64, FFIType.u32, FFIType.ptr, FFIType.ptr],
     returns: FFIType.i32,
@@ -97,6 +101,22 @@ export const runQueryBatch = (handle: bigint, queries: readonly string[]): Sig[]
     sum: sums[i]!,
     checksum: checks[i]!,
   }));
+};
+
+export type RowSet = { columns: string[]; rows: unknown[][] };
+
+/** Run a query and decode its real result rows (the row-returning counterpart
+ * to `runQuery`, which only yields the fingerprint). One JSON buffer crossing. */
+export const queryRows = (handle: bigint, q: string): RowSet => {
+  const qb = enc.encode(q);
+  const p = symbols.plg_query_rows(handle, ptr(qb), BigInt(qb.length), ptr(outLen));
+  if (!p) {
+    throw new Error(`plg_query_rows failed for: ${q}`);
+  }
+  const len = Number(outLen[0]);
+  const json = dec.decode(toArrayBuffer(p, 0, len));
+  symbols.plg_free_buf(p, BigInt(len));
+  return JSON.parse(json) as RowSet;
 };
 
 export const predicateScan = (handle: bigint, key: string, thr: number, simd: boolean): Sig => {
