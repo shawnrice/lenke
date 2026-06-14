@@ -2079,11 +2079,11 @@ fn lit_to_idxkey(lit: &Lit) -> Option<crate::graph::IdxKey> {
     }
 }
 
-/// A `n.key OP <literal>` comparison, as (prop key ref, op, literal).
-fn cmp_bound(e: &CExpr) -> Option<(usize, CompareOp, &Lit)> {
+/// A `var.key OP <literal>` comparison, as (var slot, key ref, op, literal).
+fn cmp_bound(e: &CExpr) -> Option<(usize, usize, CompareOp, &Lit)> {
     if let CExpr::Compare { op, left, right } = e {
-        if let (CExpr::Prop { key_ref, .. }, CExpr::Lit(lit)) = (left.as_ref(), right.as_ref()) {
-            return Some((*key_ref, *op, lit));
+        if let (CExpr::Prop { var_slot, key_ref }, CExpr::Lit(lit)) = (left.as_ref(), right.as_ref()) {
+            return Some((*var_slot, *key_ref, *op, lit));
         }
     }
     None
@@ -2105,50 +2105,83 @@ fn apply_bound(rb: &mut crate::graph::RangeBound, op: CompareOp, lit: &Lit) {
     }
 }
 
-/// An index seek from a WHERE comparison `n.key OP <literal>`, or an `AND` of two
-/// such on the same indexed key coalesced into one tight range seek (e.g.
-/// `age >= 30 AND age < 40` → `[30,40)`), else the first indexed conjunct.
-fn where_index_hint(graph: &Graph, ctx: &Ctx, e: &CExpr) -> Option<Vec<u32>> {
+// --- vertex/edge-agnostic index seeks (dispatched by an `edge` flag) ---------
+fn idx_indexed(graph: &Graph, name: &str, edge: bool) -> bool {
+    if edge {
+        graph.edge_indexed(name)
+    } else {
+        graph.vertex_indexed(name)
+    }
+}
+fn idx_eq(graph: &Graph, name: &str, k: &crate::graph::IdxKey, edge: bool) -> Option<Vec<u32>> {
+    if edge {
+        graph.edges_by_prop(name, k).map(<[u32]>::to_vec)
+    } else {
+        graph.vertices_by_prop(name, k).map(<[u32]>::to_vec)
+    }
+}
+fn idx_range(graph: &Graph, name: &str, rb: &crate::graph::RangeBound, edge: bool) -> Option<Vec<u32>> {
+    if edge {
+        graph.edges_by_prop_range(name, rb)
+    } else {
+        graph.vertices_by_prop_range(name, rb)
+    }
+}
+/// The property name a `Prop` key-ref resolves to (vertex or edge store).
+fn prop_name<'a>(graph: &'a Graph, ctx: &Ctx, key_ref: usize, edge: bool) -> Option<&'a str> {
+    let (vk, ek) = ctx.prop_keys[key_ref];
+    if edge {
+        Some(graph.edge_props.keys.text(ek?))
+    } else {
+        Some(graph.props.keys.text(vk?))
+    }
+}
+
+/// An index seek from a WHERE comparison `var.key OP <literal>` where `var` is at
+/// `want_slot` (`None` = any), against the vertex or edge index. An `AND` of two
+/// same-var/same-key comparisons coalesces into one tight range seek; else the
+/// first usable conjunct. Returns candidate element ids.
+fn prop_index_hint(graph: &Graph, ctx: &Ctx, e: &CExpr, want_slot: Option<usize>, edge: bool) -> Option<Vec<u32>> {
     use crate::graph::RangeBound;
+    let slot_ok = |s: usize| want_slot.is_none_or(|w| w == s);
     match e {
         CExpr::Compare { .. } => {
-            let (key_ref, op, lit) = cmp_bound(e)?;
-            let kid = ctx.prop_keys[key_ref].0?;
-            let name = graph.props.keys.text(kid);
-            if !graph.vertex_indexed(name) {
+            let (vslot, key_ref, op, lit) = cmp_bound(e)?;
+            if !slot_ok(vslot) {
+                return None;
+            }
+            let name = prop_name(graph, ctx, key_ref, edge)?;
+            if !idx_indexed(graph, name, edge) {
                 return None;
             }
             if op == CompareOp::Eq {
-                return graph.vertices_by_prop(name, &lit_to_idxkey(lit)?).map(<[u32]>::to_vec);
+                return idx_eq(graph, name, &lit_to_idxkey(lit)?, edge);
             }
             let mut rb = RangeBound::default();
             apply_bound(&mut rb, op, lit);
-            graph.vertices_by_prop_range(name, &rb)
+            idx_range(graph, name, &rb, edge)
         }
         CExpr::And(a, b) => {
-            // Coalesce two same-key range comparisons into one seek.
-            if let (Some((k1, o1, l1)), Some((k2, o2, l2))) = (cmp_bound(a), cmp_bound(b)) {
-                if k1 == k2 {
-                    if let Some(kid) = ctx.prop_keys[k1].0 {
-                        let name = graph.props.keys.text(kid);
-                        if graph.vertex_indexed(name) {
+            if let (Some((s1, k1, o1, l1)), Some((s2, k2, o2, l2))) = (cmp_bound(a), cmp_bound(b)) {
+                if s1 == s2 && k1 == k2 && slot_ok(s1) {
+                    if let Some(name) = prop_name(graph, ctx, k1, edge) {
+                        if idx_indexed(graph, name, edge) {
                             let mut rb = RangeBound::default();
                             apply_bound(&mut rb, o1, l1);
                             apply_bound(&mut rb, o2, l2);
-                            return graph.vertices_by_prop_range(name, &rb);
+                            return idx_range(graph, name, &rb, edge);
                         }
                     }
                 }
             }
-            where_index_hint(graph, ctx, a).or_else(|| where_index_hint(graph, ctx, b))
+            prop_index_hint(graph, ctx, a, want_slot, edge).or_else(|| prop_index_hint(graph, ctx, b, want_slot, edge))
         }
         _ => None,
     }
 }
 
-/// Candidate vertices for a single-node scan from a property index, if any
-/// indexed equality (inline `{key: lit}`) or WHERE comparison applies. `None`
-/// means no usable index → full scan.
+/// Candidate vertices for a single-node scan: an indexed inline `{key: lit}`
+/// equality, or a WHERE comparison on the node. `None` ⇒ full scan.
 fn node_index_seed(graph: &Graph, ctx: &Ctx, node: &CNode, where_: Option<&CExpr>) -> Option<Vec<u32>> {
     for pc in &node.props {
         if graph.vertex_indexed(&pc.key) {
@@ -2159,16 +2192,44 @@ fn node_index_seed(graph: &Graph, ctx: &Ctx, node: &CNode, where_: Option<&CExpr
             }
         }
     }
-    where_.and_then(|w| where_index_hint(graph, ctx, w))
+    where_.and_then(|w| prop_index_hint(graph, ctx, w, node.var_slot, false))
 }
 
-fn build_scan(graph: &Graph, ctx: &Ctx, path: &CPath, scope_len: usize, cap: Option<usize>, seed: Option<&[u32]>) -> Option<ScanCols> {
-    // Fast path: an isolated node is a tight scan. With an index `seed` (from an
-    // equality/range hint on an indexed key) we iterate just the candidate
-    // vertices; otherwise the label bucket / all-live range. Either way the
-    // node's label + inline constraints are re-checked.
+/// Candidate edges for a single-segment pattern: an indexed inline `[r {key:lit}]`
+/// equality, or a WHERE comparison on the relationship var. `None` ⇒ no edge seed.
+fn edge_index_seed(graph: &Graph, ctx: &Ctx, rel: &CRel, where_: Option<&CExpr>) -> Option<Vec<u32>> {
+    for pc in &rel.props {
+        if graph.edge_indexed(&pc.key) {
+            if let CExpr::Lit(lit) = &pc.value {
+                if let Some(k) = lit_to_idxkey(lit) {
+                    return graph.edges_by_prop(&pc.key, &k).map(<[u32]>::to_vec);
+                }
+            }
+        }
+    }
+    where_.and_then(|w| prop_index_hint(graph, ctx, w, rel.var_slot, true))
+}
+
+/// Whether `build_scan` will turn this scan into an index seek (so a LIMIT cap
+/// can't early-stop it and should be dropped).
+fn scan_is_hinted(graph: &Graph, ctx: &Ctx, path: &CPath, where_: Option<&CExpr>) -> bool {
+    if path.segments.is_empty() {
+        node_index_seed(graph, ctx, &path.start, where_).is_some()
+    } else if path.segments.len() == 1 {
+        edge_index_seed(graph, ctx, &path.segments[0].rel, where_).is_some()
+    } else {
+        false
+    }
+}
+
+fn build_scan(graph: &Graph, ctx: &Ctx, path: &CPath, scope_len: usize, cap: Option<usize>, where_: Option<&CExpr>) -> Option<ScanCols> {
+    // Fast path: an isolated node is a tight scan. An index hint (inline `{k:v}`
+    // eq or a WHERE comparison on the node) seeds just the candidate vertices;
+    // otherwise the label bucket / all-live range. Either way the node's label +
+    // inline constraints are re-checked.
     if path.segments.is_empty() {
         let node = &path.start;
+        let seed = node_index_seed(graph, ctx, node, where_);
         let mut ids = Vec::new();
         let needs_check = !node.props.is_empty() || node.where_.is_some();
         let mut b = Binding(vec![None; scope_len.max(1)]);
@@ -2189,7 +2250,7 @@ fn build_scan(graph: &Graph, ctx: &Ctx, path: &CPath, scope_len: usize, cap: Opt
         };
         match seed {
             Some(cands) => {
-                for &vi in cands {
+                for vi in cands {
                     if graph.is_vertex_live(vi) && !consider(graph, vi, &mut ids, &mut b) {
                         break;
                     }
@@ -2208,6 +2269,14 @@ fn build_scan(graph: &Graph, ctx: &Ctx, path: &CPath, scope_len: usize, cap: Opt
     }
     if path.segments.iter().any(|s| s.rel.quantifier.is_some()) {
         return None;
+    }
+    // Edge-first: a single segment with an indexed edge-property hint → seek the
+    // matching edges and validate the surrounding (a)-[r]->(b) pattern, instead
+    // of expanding every vertex's adjacency.
+    if path.segments.len() == 1 {
+        if let Some(edges) = edge_index_seed(graph, ctx, &path.segments[0].rel, where_) {
+            return edge_first_build(graph, ctx, path, scope_len, &edges);
+        }
     }
     // Bound slots and their element kind, in path order.
     let mut kinds: Vec<(usize, Elem)> = Vec::new();
@@ -2333,6 +2402,83 @@ fn build_scan(graph: &Graph, ctx: &Ctx, path: &CPath, scope_len: usize, cap: Opt
     sc.n = endpoint.len();
     for &(s, e) in &kinds {
         sc.slots[s] = Some((e, cols[s].take().unwrap()));
+    }
+    Some(sc)
+}
+
+/// Edge-first build for a single segment `(a)-[r]->(b)` seeded from the edge
+/// index: for each candidate edge, validate its type + direction + the inline
+/// node/rel constraints, and emit one `(a, r, b)` row. The clause WHERE is still
+/// re-applied by the caller, so the edge seed only has to be a superset.
+fn edge_first_build(graph: &Graph, ctx: &Ctx, path: &CPath, scope_len: usize, edges: &[u32]) -> Option<ScanCols> {
+    let seg = &path.segments[0];
+    let (start, rel, node) = (&path.start, &seg.rel, &seg.node);
+    // A slot bound twice (self-join) — leave to the scalar path.
+    let slots: Vec<usize> = [start.var_slot, rel.var_slot, node.var_slot].into_iter().flatten().collect();
+    let mut seen = HashSet::new();
+    if slots.iter().any(|s| !seen.insert(*s)) {
+        return None;
+    }
+    let (start_check, rel_check, node_check) =
+        (!start.props.is_empty() || start.where_.is_some(), !rel.props.is_empty() || rel.where_.is_some(), !node.props.is_empty() || node.where_.is_some());
+    let mut a_ids = Vec::new();
+    let mut r_ids = Vec::new();
+    let mut b_ids = Vec::new();
+    let mut bind = Binding(vec![None; scope_len.max(1)]);
+    for &e in edges {
+        let ei = e as usize;
+        if !graph.is_edge_live(e) {
+            continue;
+        }
+        if !rel.label.as_ref().is_none_or(|lbl| eval_label_edge(ctx, graph.e_type[ei], lbl)) {
+            continue;
+        }
+        let (src, dst) = (graph.e_src[ei], graph.e_dst[ei]);
+        let orients: &[(u32, u32)] = match rel.direction {
+            Direction::Out => &[(src, dst)],
+            Direction::In => &[(dst, src)],
+            Direction::Both => &[(src, dst), (dst, src)],
+        };
+        for &(a, bn) in orients {
+            if !matches_label(graph, ctx, a, start.label.as_ref()) || !matches_label(graph, ctx, bn, node.label.as_ref()) {
+                continue;
+            }
+            if start_check || rel_check || node_check {
+                if let Some(s) = start.var_slot {
+                    bind.set(s, Val::Node(a));
+                }
+                if let Some(s) = rel.var_slot {
+                    bind.set(s, Val::Edge(e));
+                }
+                if let Some(s) = node.var_slot {
+                    bind.set(s, Val::Node(bn));
+                }
+                if start_check && !satisfies(graph, ctx, &Val::Node(a), &start.props, start.where_.as_ref(), &bind) {
+                    continue;
+                }
+                if rel_check && !satisfies(graph, ctx, &Val::Edge(e), &rel.props, rel.where_.as_ref(), &bind) {
+                    continue;
+                }
+                if node_check && !satisfies(graph, ctx, &Val::Node(bn), &node.props, node.where_.as_ref(), &bind) {
+                    continue;
+                }
+            }
+            a_ids.push(a);
+            r_ids.push(e);
+            b_ids.push(bn);
+        }
+    }
+    let nrows = r_ids.len();
+    let mut sc = ScanCols::new(scope_len);
+    sc.n = nrows;
+    if let Some(s) = start.var_slot {
+        sc.slots[s] = Some((Elem::Node, a_ids));
+    }
+    if let Some(s) = rel.var_slot {
+        sc.slots[s] = Some((Elem::Edge, r_ids));
+    }
+    if let Some(s) = node.var_slot {
+        sc.slots[s] = Some((Elem::Node, b_ids));
     }
     Some(sc)
 }
@@ -2661,8 +2807,10 @@ fn vectorized_cols(graph: &Graph, ctx: &Ctx, incoming: &[Binding], matches: &[&C
         .flatten();
     // Seed an isolated-node scan from a property index when an indexed eq/range
     // hint applies (cap can't early-stop a seeded scan, so drop it then).
-    let seed = path.segments.is_empty().then(|| node_index_seed(graph, ctx, &path.start, where_.as_ref())).flatten();
-    let mut sc = build_scan(graph, ctx, path, *scope_len, if seed.is_some() { None } else { cap }, seed.as_deref())?;
+    // An index hint (vertex or edge) makes the scan a seek, so the LIMIT cap
+    // can't early-stop it — drop the cap when a hint applies.
+    let cap = if scan_is_hinted(graph, ctx, path, where_.as_ref()) { None } else { cap };
+    let mut sc = build_scan(graph, ctx, path, *scope_len, cap, where_.as_ref())?;
 
     // Clause WHERE → keep mask (vectorized), compacting the row set.
     if let Some(w) = where_ {
@@ -2971,8 +3119,7 @@ fn vectorized_linear(linear: &CLinear, graph: &Graph, plan: &CQuery, params: &[V
         let keep: Vec<bool> = eval_vec(graph, &ctx, sc, w).into_truth().iter().map(|t| *t == Some(true)).collect();
         compact(sc, &keep);
     };
-    let seed = patterns[0].segments.is_empty().then(|| node_index_seed(graph, &ctx, &patterns[0].start, where_.as_ref())).flatten();
-    let mut sc = build_scan(graph, &ctx, &patterns[0], *scope_len, None, seed.as_deref())?;
+    let mut sc = build_scan(graph, &ctx, &patterns[0], *scope_len, None, where_.as_ref())?;
     if let Some(w) = where_ {
         filter(&mut sc, w);
     }
@@ -3407,8 +3554,10 @@ fn vectorized_arrow(graph: &Graph, ctx: &Ctx, matches: &[&CClause], proj: &CProj
     }
     let path = &patterns[0];
     let cap = where_.is_none().then(|| proj.limit.map(|l| proj.skip.unwrap_or(0) + l)).flatten();
-    let seed = path.segments.is_empty().then(|| node_index_seed(graph, ctx, &path.start, where_.as_ref())).flatten();
-    let mut sc = build_scan(graph, ctx, path, *scope_len, if seed.is_some() { None } else { cap }, seed.as_deref())?;
+    // An index hint (vertex or edge) makes the scan a seek, so the LIMIT cap
+    // can't early-stop it — drop the cap when a hint applies.
+    let cap = if scan_is_hinted(graph, ctx, path, where_.as_ref()) { None } else { cap };
+    let mut sc = build_scan(graph, ctx, path, *scope_len, cap, where_.as_ref())?;
     if let Some(w) = where_ {
         let keep: Vec<bool> = eval_vec(graph, ctx, &sc, w).into_truth().iter().map(|t| *t == Some(true)).collect();
         compact(&mut sc, &keep);

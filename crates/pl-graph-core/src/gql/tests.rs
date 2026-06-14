@@ -821,3 +821,55 @@ fn index_live_under_gql_set() {
     assert!(rows(&mut g, "MATCH (n) WHERE n.name = 'marko' RETURN n.name").is_empty());
     assert_eq!(rows(&mut g, "MATCH (n) WHERE n.name = 'mark' RETURN n.age"), vec![vec![n(29.0)]]);
 }
+
+// --- edge property index seeding (edge-first single-segment build) ---
+
+#[test]
+fn edge_index_where_eq() {
+    let scan = {
+        let mut g = modern();
+        rows(&mut g, "MATCH (a)-[r:CREATED]->(s) WHERE r.weight = 1.0 RETURN s.name")
+    };
+    let idx = {
+        let mut g = modern();
+        g.create_edge_index("weight");
+        rows(&mut g, "MATCH (a)-[r:CREATED]->(s) WHERE r.weight = 1.0 RETURN s.name")
+    };
+    assert_eq!(scan, idx);
+    assert_eq!(idx, vec![vec![s("ripple")]]); // josh -created(1.0)-> ripple
+}
+
+#[test]
+fn edge_index_inline_prop() {
+    let mut g = modern();
+    g.create_edge_index("weight");
+    // inline edge prop drives the seek; label CREATED narrows the weight-1.0 edges.
+    assert_eq!(rows(&mut g, "MATCH (a)-[r:CREATED {weight:1.0}]->(s) RETURN s.name"), vec![vec![s("ripple")]]);
+}
+
+#[test]
+fn edge_index_range() {
+    let mut g = modern();
+    g.create_edge_index("weight");
+    // CREATED weights {0.4,1.0,0.4,0.2}; >= 0.5 ⇒ only ripple's edge.
+    assert_eq!(rows(&mut g, "MATCH (a)-[r:CREATED]->(s) WHERE r.weight >= 0.5 RETURN s.name ORDER BY s.name"), vec![vec![s("ripple")]]);
+}
+
+#[test]
+fn edge_index_knows_eq() {
+    let mut g = modern();
+    g.create_edge_index("weight");
+    // KNOWS weight 1.0 ⇒ marko -knows-> josh.
+    assert_eq!(rows(&mut g, "MATCH (a)-[r:KNOWS]->(b) WHERE r.weight = 1.0 RETURN b.name"), vec![vec![s("josh")]]);
+}
+
+#[test]
+fn edge_index_live_under_set() {
+    let mut g = modern();
+    g.create_edge_index("weight");
+    // bump every CREATED edge to weight 2.0, then seek 2.0.
+    rows(&mut g, "MATCH ()-[r:CREATED]->() SET r.weight = 2.0");
+    assert_eq!(rows(&mut g, "MATCH (a)-[r:CREATED]->(s) WHERE r.weight = 2.0 RETURN s.name ORDER BY s.name"), vec![vec![s("lop")], vec![s("lop")], vec![s("lop")], vec![s("ripple")]]);
+    // and 1.0 now finds nothing among CREATED (josh->ripple moved to 2.0).
+    assert!(rows(&mut g, "MATCH (a)-[r:CREATED]->(s) WHERE r.weight = 1.0 RETURN s.name").is_empty());
+}
