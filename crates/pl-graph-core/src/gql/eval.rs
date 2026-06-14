@@ -132,9 +132,21 @@ const USE_VM: bool = false;
 ///   - numeric projection over a 1-hop join:     2.78ms → 1.53ms  (1.8x)
 ///   - count+WHERE over a 1-hop join:            2.09ms → 1.24ms  (1.7x)
 ///   - DISTINCT over typed Props (raw-id group):  7.78ms → 1.23ms  (6.3x, 2 col)
+///   - WITH aggregate then filter (1st stage):   2.37ms → 0.72ms  (3.3x)
 ///   - ORDER BY input key + small LIMIT:         1.94ms → 1.37ms  (1.4x)
+///   - WITH carrying an element forward:         4.26ms → 3.59ms  (1.2x, see below)
 ///   - var-length / subqueries / pure count over a join: not engaged
 ///   - ORDER BY on an output alias / grouped-or-DISTINCT+ORDER BY: not engaged
+///
+/// Only the *first* stage of a multi-clause query vectorizes: `vectorized_cols`
+/// produces column-major `Val` output that the terminal RETURN flattens to a
+/// `RowSet` and that a `WITH` carries forward as `Binding`s (element handles
+/// preserved). Anything downstream of a `WITH` sees a non-fresh incoming binding
+/// set and falls back to the scalar driver — so `WITH <agg>` wins big (the
+/// aggregate is the cost; the tail is tiny), but `WITH <carry> … RETURN` is
+/// modest (the carry is cheap; the real WHERE/projection work runs scalar).
+/// Full pipeline vectorization (threading `ScanCols` across stages) is the lever
+/// for the latter — a larger change to the binding-based `run_linear`.
 /// Same expressions where the scalar *bytecode VM* lost 6-17% (see [`USE_VM`])
 /// win 2-5x here: dispatch amortizes over N rows, the f64 loops vectorize, and
 /// values never get boxed into `Val` per row.
@@ -1687,6 +1699,14 @@ fn project_matches(
     matches: &[&CClause],
     proj: &CProjection,
 ) -> Vec<Binding> {
+    if USE_VEC {
+        if let Some(cols) = vectorized_cols(graph, ctx, incoming, matches, proj) {
+            // WITH stage: carry output forward as bindings, *preserving* element
+            // handles (a carried node stays `Val::Node`, not flattened to an id).
+            let nrows = cols.first().map_or(0, |c| c.len());
+            return (0..nrows).map(|i| Binding(cols.iter().map(|c| Some(c[i].clone())).collect())).collect();
+        }
+    }
     let mut acc = ProjAccum::new(proj);
     let simple = single_simple_clause(matches);
     for inb in incoming {
@@ -2261,7 +2281,7 @@ fn group_ids(graph: &Graph, ctx: &Ctx, sc: &ScanCols, key_items: &[&CReturnItem]
     Some((gid_of_row, rep_row, ngroups))
 }
 
-fn vectorized_aggregate(graph: &Graph, ctx: &Ctx, sc: &ScanCols, proj: &CProjection) -> Option<RowSet> {
+fn vectorized_aggregate(graph: &Graph, ctx: &Ctx, sc: &ScanCols, proj: &CProjection) -> Option<Vec<Vec<Val>>> {
     let key_items: Vec<&CReturnItem> = proj.items.iter().filter(|i| !i.is_agg).collect();
     let n = sc.n;
     let (gid_of_row, rep_row, ngroups) = group_ids(graph, ctx, sc, &key_items)?;
@@ -2337,12 +2357,12 @@ fn vectorized_aggregate(graph: &Graph, ctx: &Ctx, sc: &ScanCols, proj: &CProject
         agg_cols.push(col);
     }
 
-    // Emit one output row per group: re-evaluate the item expressions scalar
-    // (few groups), resolving group keys against the representative row and
-    // `AggRef`s against this group's folded values.
+    // Build one output row per group (column-major): re-evaluate the item
+    // expressions scalar (few groups), resolving group keys against the
+    // representative row and `AggRef`s against this group's folded values.
     let start = proj.skip.unwrap_or(0).min(ngroups);
     let end = proj.limit.map(|l| (start + l).min(ngroups)).unwrap_or(ngroups);
-    let mut rs = RowSet::new(proj.out_names.clone());
+    let mut out: Vec<Vec<Val>> = vec![Vec::with_capacity(end - start); proj.items.len()];
     let mut b = Binding(vec![None; sc.slots.len()]);
     for g in start..end {
         // `usize::MAX` = an empty global group (no input rows) — leave the
@@ -2360,16 +2380,21 @@ fn vectorized_aggregate(graph: &Graph, ctx: &Ctx, sc: &ScanCols, proj: &CProject
         }
         let agg_values: Vec<Val> = agg_cols.iter().map(|c| c[g].clone()).collect();
         let env = Env { graph, ctx, binding: &b, group: None, agg_values: Some(&agg_values) };
-        rs.push_row(proj.items.iter().map(|item| val_to_value(graph, &eval(&env, &item.expr))));
+        for (item_idx, item) in proj.items.iter().enumerate() {
+            out[item_idx].push(eval(&env, &item.expr));
+        }
     }
-    Some(rs)
+    Some(out)
 }
 
-/// Try the vectorized path for a single fresh `MATCH` of one fixed-length path.
-/// Returns `None` (→ scalar driver) unless the shape qualifies: no ORDER BY, no
-/// DISTINCT, no `RETURN *`, and a buildable (non-var-length, no self-join) path.
-/// Handles WHERE, projection, and grouped/global aggregates over the row set.
-fn vectorized_scan(graph: &Graph, ctx: &Ctx, incoming: &[Binding], matches: &[&CClause], proj: &CProjection) -> Option<RowSet> {
+/// Try the vectorized path for a single fresh `MATCH` of one fixed-length path,
+/// producing the projection's output **as column-major `Val` columns** (each the
+/// final output rows, in order, after WHERE / aggregate / DISTINCT / ORDER BY /
+/// SKIP+LIMIT). The caller turns these into a terminal `RowSet` (flattening
+/// elements to ids) or into carried `Binding`s for a `WITH` (preserving element
+/// handles). Returns `None` (→ scalar driver) unless the shape qualifies: one
+/// fresh `MATCH` of a buildable (non-var-length, no self-join) path, no `RETURN *`.
+fn vectorized_cols(graph: &Graph, ctx: &Ctx, incoming: &[Binding], matches: &[&CClause], proj: &CProjection) -> Option<Vec<Vec<Val>>> {
     if incoming.len() != 1 || incoming[0].0.iter().any(|c| c.is_some()) {
         return None; // a prior WITH/INSERT already produced bindings
     }
@@ -2444,13 +2469,7 @@ fn vectorized_scan(graph: &Graph, ctx: &Ctx, incoming: &[Binding], matches: &[&C
         let start = proj.skip.unwrap_or(0).min(idx.len());
         let end = proj.limit.map(|l| (start + l).min(idx.len())).unwrap_or(idx.len());
         let sub = gather_rows(&sc, &idx[start..end]);
-        let cols: Vec<Vec<Val>> =
-            proj.items.iter().map(|item| eval_vec(graph, ctx, &sub, &item.expr).into_vals()).collect();
-        let mut rs = RowSet::new(proj.out_names.clone());
-        for i in 0..sub.n {
-            rs.push_row(cols.iter().map(|c| val_to_value(graph, &c[i])));
-        }
-        return Some(rs);
+        return Some(proj.items.iter().map(|item| eval_vec(graph, ctx, &sub, &item.expr).into_vals()).collect());
     }
 
     // DISTINCT fast path: when every output item is a direct typed-Prop column,
@@ -2462,7 +2481,7 @@ fn vectorized_scan(graph: &Graph, ctx: &Ctx, incoming: &[Binding], matches: &[&C
         if let Some((_, rep_row, ngroups)) = group_ids(graph, ctx, &sc, &all_items) {
             let start = proj.skip.unwrap_or(0).min(ngroups);
             let end = proj.limit.map(|l| (start + l).min(ngroups)).unwrap_or(ngroups);
-            let mut rs = RowSet::new(proj.out_names.clone());
+            let mut out: Vec<Vec<Val>> = vec![Vec::with_capacity(end - start); proj.items.len()];
             let mut b = Binding(vec![None; sc.slots.len()]);
             for g in start..end {
                 let ri = rep_row[g];
@@ -2472,21 +2491,23 @@ fn vectorized_scan(graph: &Graph, ctx: &Ctx, incoming: &[Binding], matches: &[&C
                     }
                 }
                 let env = Env::new(graph, ctx, &b);
-                rs.push_row(proj.items.iter().map(|item| val_to_value(graph, &eval(&env, &item.expr))));
+                for (item_idx, item) in proj.items.iter().enumerate() {
+                    out[item_idx].push(eval(&env, &item.expr));
+                }
             }
-            return Some(rs);
+            return Some(out);
         }
     }
 
     // Non-aggregating projection: evaluate each item as a column.
-    let cols: Vec<Vec<Val>> = proj.items.iter().map(|item| eval_vec(graph, ctx, &sc, &item.expr).into_vals()).collect();
-    let mut rs = RowSet::new(proj.out_names.clone());
+    let mut cols: Vec<Vec<Val>> = proj.items.iter().map(|item| eval_vec(graph, ctx, &sc, &item.expr).into_vals()).collect();
     if proj.distinct {
         // Generic DISTINCT (expression / non-typed items): keep the first
         // occurrence of each row in scan order, dedup on a composite cell key.
         let mut seen: HashSet<String> = HashSet::new();
         let skip = proj.skip.unwrap_or(0);
-        let mut kept = 0usize;
+        let mut seen_count = 0usize;
+        let mut kept: Vec<usize> = Vec::new();
         for i in 0..sc.n {
             let mut key = String::new();
             for c in &cols {
@@ -2496,23 +2517,25 @@ fn vectorized_scan(graph: &Graph, ctx: &Ctx, incoming: &[Binding], matches: &[&C
             if !seen.insert(key) {
                 continue;
             }
-            if kept >= skip {
-                if proj.limit.is_some_and(|l| rs.nrows >= l) {
+            if seen_count >= skip {
+                if proj.limit.is_some_and(|l| kept.len() >= l) {
                     break;
                 }
-                rs.push_row(cols.iter().map(|c| val_to_value(graph, &c[i])));
+                kept.push(i);
             }
-            kept += 1;
+            seen_count += 1;
         }
+        Some(cols.iter().map(|c| kept.iter().map(|&i| c[i].clone()).collect()).collect())
     } else {
-        // Emit the SKIP/LIMIT row window (no ORDER BY ⇒ scan order).
+        // Window each column to the SKIP/LIMIT row range (no ORDER BY ⇒ scan order).
         let start = proj.skip.unwrap_or(0).min(sc.n);
         let end = proj.limit.map(|l| (start + l).min(sc.n)).unwrap_or(sc.n);
-        for i in start..end {
-            rs.push_row(cols.iter().map(|c| val_to_value(graph, &c[i])));
+        for c in &mut cols {
+            c.truncate(end);
+            c.drain(0..start);
         }
+        Some(cols)
     }
-    Some(rs)
 }
 
 /// Project a terminal RETURN directly to output `Value` rows. For the common
@@ -2528,7 +2551,13 @@ fn project_to_rows(
     proj: &CProjection,
 ) -> RowSet {
     if USE_VEC {
-        if let Some(rs) = vectorized_scan(graph, ctx, incoming, matches, proj) {
+        if let Some(cols) = vectorized_cols(graph, ctx, incoming, matches, proj) {
+            // Terminal output: flatten element handles to their ids.
+            let nrows = cols.first().map_or(0, |c| c.len());
+            let mut rs = RowSet::new(proj.out_names.clone());
+            for i in 0..nrows {
+                rs.push_row(cols.iter().map(|c| val_to_value(graph, &c[i])));
+            }
             return rs;
         }
     }

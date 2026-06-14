@@ -111,6 +111,8 @@ fn main() {
         ("order by num, no limit", "MATCH (n:Person) RETURN n.age ORDER BY n.age DESC", 100),
         ("distinct 1 col", "MATCH (n:Person) RETURN DISTINCT n.dept", 100),
         ("distinct 2 col", "MATCH (n:Person) RETURN DISTINCT n.dept, n.age", 100),
+        ("with filter carry", "MATCH (n:Person) WITH n WHERE n.age > 30 RETURN n.name", 100),
+        ("with agg then filter", "MATCH (n:Person) WITH n.dept AS d, count(*) AS c WHERE c > 4000 RETURN d, c", 100),
         // --- expression-heavy (isolates expression eval; the bytecode-VM target) ---
         (
             "expr-heavy filter count",
