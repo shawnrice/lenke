@@ -240,11 +240,12 @@ pub unsafe extern "C" fn plg_query_arrow(
         Ok(p) => p,
         Err(_) => return std::ptr::null_mut(),
     };
-    let rowset = match parsed.execute(&mut *g, &gql::eval::Params::new()) {
-        Ok(rs) => rs,
+    // execute_arrow keeps numeric/bool result columns typed end-to-end (no
+    // Val/Value boxing) for the common single-MATCH … RETURN shape.
+    let blob = match parsed.execute_arrow(&mut *g, &gql::eval::Params::new()) {
+        Ok(b) => b,
         Err(_) => return std::ptr::null_mut(),
     };
-    let blob = crate::arrow::to_arrow(&rowset);
     *out_len = blob.len();
     // 8-byte-aligned copy so the caller can view f64/i32 column buffers directly.
     let len = blob.len().max(1);

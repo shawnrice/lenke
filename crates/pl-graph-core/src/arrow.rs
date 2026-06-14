@@ -72,103 +72,147 @@ fn cell_str(c: &Value, out: &mut String) {
 }
 
 /// One column's built Arrow buffers (pre-assembly).
-struct ColBuf {
-    tag: u32,
-    null_count: u32,
-    name: Vec<u8>,
-    validity: Vec<u8>, // empty when null_count == 0
-    buf1: Vec<u8>,
-    buf2: Vec<u8>,
+/// A single result column in typed form (the Arrow physical types we emit).
+/// `valid = None` means no nulls. The vectorized engine builds `Num`/`Bool`
+/// straight from its `f64`/`bool` columns — no `Val`/`Value` boxing — while
+/// `from_values` covers the scalar/RowSet path and string/element columns.
+pub enum ArrowColumn {
+    Num { data: Vec<f64>, valid: Option<Vec<bool>> },
+    Bool { data: Vec<bool>, valid: Option<Vec<bool>> },
+    Utf8 { offsets: Vec<i32>, bytes: Vec<u8>, valid: Option<Vec<bool>> },
 }
 
-/// Encode a [`RowSet`] as an Arrow columnar blob (see module docs for layout).
-pub fn to_arrow(rs: &RowSet) -> Vec<u8> {
-    let nrows = rs.nrows;
-    let ncols = rs.cols.len();
-
-    let mut cols: Vec<ColBuf> = Vec::with_capacity(ncols);
-    for (j, name) in rs.cols.iter().enumerate() {
-        // SAFETY of the lifetime hack avoided: collect cell refs into a Vec.
-        let cell = |i: usize| -> &Value { &rs.data[i * ncols + j] };
-
-        // Type inference (own loop — `infer_type`'s 'static bound is awkward here).
+impl ArrowColumn {
+    /// Build a column from generic `Value` cells (infers the physical type).
+    pub fn from_values<'a>(cells: impl Iterator<Item = &'a Value>) -> ArrowColumn {
+        let cells: Vec<&Value> = cells.collect();
+        let n = cells.len();
         let mut seen_num = false;
         let mut seen_bool = false;
         let mut seen_other = false;
-        for i in 0..nrows {
-            match cell(i) {
-                Value::Null => {}
+        let mut any_null = false;
+        let mut valid = vec![true; n];
+        for (i, c) in cells.iter().enumerate() {
+            match c {
+                Value::Null => {
+                    valid[i] = false;
+                    any_null = true;
+                }
                 Value::Num(_) => seen_num = true,
                 Value::Bool(_) => seen_bool = true,
                 _ => seen_other = true,
             }
         }
-        let tag = if seen_other || (seen_num && seen_bool) {
-            T_UTF8
+        let valid = if any_null { Some(valid) } else { None };
+        if seen_other || (seen_num && seen_bool) {
+            let mut offsets = Vec::with_capacity(n + 1);
+            let mut bytes = Vec::new();
+            let mut s = String::new();
+            offsets.push(0i32);
+            for c in &cells {
+                s.clear();
+                cell_str(c, &mut s);
+                bytes.extend_from_slice(s.as_bytes());
+                offsets.push(bytes.len() as i32);
+            }
+            ArrowColumn::Utf8 { offsets, bytes, valid }
         } else if seen_bool {
-            T_BOOL
+            ArrowColumn::Bool { data: cells.iter().map(|c| matches!(c, Value::Bool(true))).collect(), valid }
         } else {
-            T_FLOAT64
-        };
-
-        // Validity bitmap (LSB-first; bit set = valid/non-null).
-        let mut null_count = 0u32;
-        let mut validity = vec![0u8; nrows.div_ceil(8)];
-        for i in 0..nrows {
-            if matches!(cell(i), Value::Null) {
-                null_count += 1;
-            } else {
-                validity[i / 8] |= 1 << (i % 8);
+            ArrowColumn::Num {
+                data: cells.iter().map(|c| if let Value::Num(x) = c { *x } else { 0.0 }).collect(),
+                valid,
             }
         }
-        if null_count == 0 {
-            validity.clear(); // Arrow omits the bitmap when there are no nulls
-        }
+    }
 
-        let (buf1, buf2) = match tag {
-            T_FLOAT64 => {
-                let mut b = Vec::with_capacity(nrows * 8);
-                for i in 0..nrows {
-                    let v = if let Value::Num(n) = cell(i) { *n } else { 0.0 };
+    /// Build a Utf8 column from already-rendered strings (one per row, `None` =
+    /// null). Lets the engine flatten element/string columns once, in place.
+    pub fn utf8_from(strings: impl Iterator<Item = Option<String>>) -> ArrowColumn {
+        let mut offsets = vec![0i32];
+        let mut bytes = Vec::new();
+        let mut valid = Vec::new();
+        let mut any_null = false;
+        for s in strings {
+            match s {
+                Some(s) => {
+                    bytes.extend_from_slice(s.as_bytes());
+                    valid.push(true);
+                }
+                None => {
+                    any_null = true;
+                    valid.push(false);
+                }
+            }
+            offsets.push(bytes.len() as i32);
+        }
+        ArrowColumn::Utf8 { offsets, bytes, valid: if any_null { Some(valid) } else { None } }
+    }
+
+    fn valid_mask(&self) -> &Option<Vec<bool>> {
+        match self {
+            ArrowColumn::Num { valid, .. } | ArrowColumn::Bool { valid, .. } | ArrowColumn::Utf8 { valid, .. } => valid,
+        }
+    }
+
+    /// (type tag, null_count, validity bitmap, buf1, buf2) for blob assembly.
+    fn encode(&self, nrows: usize) -> (u32, u32, Vec<u8>, Vec<u8>, Vec<u8>) {
+        let (null_count, validity) = match self.valid_mask() {
+            None => (0, Vec::new()),
+            Some(mask) => {
+                let mut bitmap = vec![0u8; nrows.div_ceil(8)];
+                let mut nulls = 0u32;
+                for (i, &v) in mask.iter().enumerate() {
+                    if v {
+                        bitmap[i / 8] |= 1 << (i % 8);
+                    } else {
+                        nulls += 1;
+                    }
+                }
+                (nulls, bitmap)
+            }
+        };
+        let (tag, buf1, buf2) = match self {
+            ArrowColumn::Num { data, .. } => {
+                let mut b = Vec::with_capacity(data.len() * 8);
+                for v in data {
                     b.extend_from_slice(&v.to_le_bytes());
                 }
-                (b, Vec::new())
+                (T_FLOAT64, b, Vec::new())
             }
-            T_BOOL => {
-                let mut b = vec![0u8; nrows.div_ceil(8)];
-                for i in 0..nrows {
-                    if matches!(cell(i), Value::Bool(true)) {
+            ArrowColumn::Bool { data, .. } => {
+                let mut b = vec![0u8; data.len().div_ceil(8)];
+                for (i, &v) in data.iter().enumerate() {
+                    if v {
                         b[i / 8] |= 1 << (i % 8);
                     }
                 }
-                (b, Vec::new())
+                (T_BOOL, b, Vec::new())
             }
-            _ => {
-                // Utf8: i32 offsets[n+1] + concatenated data bytes.
-                let mut offs = Vec::with_capacity((nrows + 1) * 4);
-                let mut data = Vec::new();
-                let mut s = String::new();
-                offs.extend_from_slice(&0i32.to_le_bytes());
-                for i in 0..nrows {
-                    s.clear();
-                    cell_str(cell(i), &mut s);
-                    data.extend_from_slice(s.as_bytes());
-                    offs.extend_from_slice(&(data.len() as i32).to_le_bytes());
+            ArrowColumn::Utf8 { offsets, bytes, .. } => {
+                let mut b = Vec::with_capacity(offsets.len() * 4);
+                for o in offsets {
+                    b.extend_from_slice(&o.to_le_bytes());
                 }
-                (offs, data)
+                (T_UTF8, b, bytes.clone())
             }
         };
-
-        cols.push(ColBuf { tag, null_count, name: name.as_bytes().to_vec(), validity, buf1, buf2 });
+        (tag, null_count, validity, buf1, buf2)
     }
+}
+
+/// Encode a [`RowSet`] as an Arrow columnar blob (see module docs for layout).
+/// Assemble an Arrow columnar blob from typed columns (see module docs for the
+/// layout). `nrows` is the row count (columns must all be that long).
+pub fn to_arrow_cols(names: &[String], cols: &[ArrowColumn], nrows: usize) -> Vec<u8> {
+    let ncols = cols.len();
+    let encoded: Vec<(u32, u32, Vec<u8>, Vec<u8>, Vec<u8>)> = cols.iter().map(|c| c.encode(nrows)).collect();
 
     // Body base: after header + descriptors, aligned to 8.
     let body_base = align8(HEADER_LEN + ncols * COLDESC_LEN);
-
-    // Lay out the body, recording each buffer's blob-relative offset.
     let mut body: Vec<u8> = Vec::new();
     let mut descs: Vec<[u32; 10]> = Vec::with_capacity(ncols);
-    for cb in &cols {
+    for (j, (tag, null_count, validity, buf1, buf2)) in encoded.iter().enumerate() {
         let mut place = |bytes: &[u8]| -> (u32, u32) {
             while body.len() % 8 != 0 {
                 body.push(0);
@@ -177,11 +221,11 @@ pub fn to_arrow(rs: &RowSet) -> Vec<u8> {
             body.extend_from_slice(bytes);
             (off, bytes.len() as u32)
         };
-        let (name_off, name_len) = place(&cb.name);
-        let (val_off, val_len) = place(&cb.validity);
-        let (b1_off, b1_len) = place(&cb.buf1);
-        let (b2_off, b2_len) = place(&cb.buf2);
-        descs.push([cb.tag, cb.null_count, name_off, name_len, val_off, val_len, b1_off, b1_len, b2_off, b2_len]);
+        let (name_off, name_len) = place(names[j].as_bytes());
+        let (val_off, val_len) = place(validity);
+        let (b1_off, b1_len) = place(buf1);
+        let (b2_off, b2_len) = place(buf2);
+        descs.push([*tag, *null_count, name_off, name_len, val_off, val_len, b1_off, b1_len, b2_off, b2_len]);
     }
 
     // Assemble: header, descriptors, pad to body_base, body.
@@ -200,6 +244,15 @@ pub fn to_arrow(rs: &RowSet) -> Vec<u8> {
     }
     blob.extend_from_slice(&body);
     blob
+}
+
+/// Encode a [`RowSet`] as an Arrow columnar blob (the scalar / fallback path,
+/// inferring each column's type from its `Value` cells).
+pub fn to_arrow(rs: &RowSet) -> Vec<u8> {
+    let ncols = rs.cols.len();
+    let cols: Vec<ArrowColumn> =
+        (0..ncols).map(|j| ArrowColumn::from_values((0..rs.nrows).map(move |i| &rs.data[i * ncols + j]))).collect();
+    to_arrow_cols(&rs.cols, &cols, rs.nrows)
 }
 
 #[cfg(test)]
@@ -346,5 +399,33 @@ mod tests {
         assert_eq!(cols[1].0, T_FLOAT64); // age
         assert_eq!(cols[0].1, vec![Some("vadas".into()), Some("marko".into())]); // age-sorted
         assert_eq!(cols[1].1, vec![Some("27".into()), Some("29".into())]);
+    }
+
+    #[test]
+    fn typed_path_matches_rowset_path() {
+        // The boxing-free `execute_arrow` must produce byte-identical Arrow to the
+        // RowSet path (`to_arrow(execute())`) for every shape — typed fast path
+        // (plain projection) and fallback (aggregate / mixed / nulls) alike.
+        let lines = [
+            r#"{"type":"node","id":"a","labels":["P"],"properties":{"name":"marko","age":29,"active":true}}"#,
+            r#"{"type":"node","id":"b","labels":["P"],"properties":{"name":"vadas","age":27}}"#,
+            r#"{"type":"node","id":"c","labels":["P"],"properties":{"name":"josh","age":32,"active":false}}"#,
+        ];
+        let queries = [
+            "MATCH (n:P) RETURN n.name, n.age",          // typed: Utf8 + Float64
+            "MATCH (n:P) RETURN n.active",               // typed: Bool with a null
+            "MATCH (n:P) WHERE n.age > 28 RETURN n.age", // typed + WHERE
+            "MATCH (n:P) RETURN n.age * 2 + 1 AS x",     // typed: computed numeric
+            "MATCH (n:P) RETURN count(*) AS c",          // fallback: aggregate
+            "MATCH (n:P) RETURN n.dept",                 // all-null column
+        ];
+        for q in queries {
+            let mut g1 = crate::ndjson::decode(&lines.join("\n"));
+            let mut g2 = crate::ndjson::decode(&lines.join("\n"));
+            let params = crate::gql::eval::Params::new();
+            let typed = crate::gql::parse(q).unwrap().execute_arrow(&mut g1, &params).unwrap();
+            let rs = crate::gql::parse(q).unwrap().execute(&mut g2, &params).unwrap();
+            assert_eq!(typed, to_arrow(&rs), "blob mismatch for `{q}`");
+        }
     }
 }

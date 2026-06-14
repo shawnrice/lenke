@@ -179,4 +179,28 @@ fn main() {
     println!("\ncount(*) over {} Person — materialization overhead:", N);
     println!("  fingerprint (no per-row alloc) : {fp_us:.1} us");
     println!("  gql (binding per row)          : {gql_us:.1} us   ({:.1}x)", gql_us / fp_us);
+
+    // Arrow result encoding: typed `execute_arrow` (numeric/bool columns kept as
+    // f64/bool, no Val/Value boxing) vs the RowSet path (execute → to_arrow).
+    println!("\nArrow result encoding (typed vs RowSet→arrow):");
+    for (label, q) in [
+        ("3 numeric cols", "MATCH (n:Person) RETURN n.age, n.age * 2 AS x, n.age + 1 AS y"),
+        ("num + str col", "MATCH (n:Person) RETURN n.age, n.name"),
+    ] {
+        let plan = prepare(q).unwrap();
+        let p = Params::new();
+        let iters = 200u32;
+        let t = Instant::now();
+        for _ in 0..iters {
+            let _ = plan.execute_arrow(&mut g, &p).unwrap();
+        }
+        let typed = t.elapsed().as_secs_f64() * 1e6 / iters as f64;
+        let t = Instant::now();
+        for _ in 0..iters {
+            let rs = plan.execute(&mut g, &p).unwrap();
+            let _ = pl_graph_core::arrow::to_arrow(&rs);
+        }
+        let viarow = t.elapsed().as_secs_f64() * 1e6 / iters as f64;
+        println!("  {label:<16} typed {typed:7.1} us   rowset {viarow:7.1} us   ({:.2}x)", viarow / typed);
+    }
 }
