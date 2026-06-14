@@ -250,6 +250,11 @@ pub struct Graph {
     pub e_src: Vec<u32>,
     pub e_dst: Vec<u32>,
     pub e_type: Vec<u32>,
+    /// inverted index: edge type id -> live edges. The edge analogue of
+    /// `by_label`; seeds `()-[:T]->()` patterns from the type directly instead
+    /// of scanning every edge. Always on (same as `by_label`), maintained by the
+    /// edge mutations.
+    by_etype: HashMap<u32, Vec<u32>>,
     e_live: Vec<bool>,
     live_e: usize,
     /// per-vertex out / in adjacency (the mutable replacement for CSR)
@@ -491,6 +496,14 @@ impl Graph {
     pub fn vertices_with_label(&self, l: u32) -> &[u32] {
         self.by_label.get(&l).map_or(&[], |v| v.as_slice())
     }
+    /// Live edges of type id `t` (the seed for `()-[:T]->()` patterns).
+    pub fn edges_with_etype(&self, t: u32) -> &[u32] {
+        self.by_etype.get(&t).map_or(&[], |e| e.as_slice())
+    }
+    /// Live edges of type `name`, or `None` if the type was never interned.
+    pub fn edges_with_etype_name(&self, name: &str) -> Option<&[u32]> {
+        self.etype.get(name).map(|t| self.edges_with_etype(t))
+    }
 
     // --- mutation ----------------------------------------------------------
 
@@ -536,6 +549,7 @@ impl Graph {
         self.e_src.push(from);
         self.e_dst.push(to);
         self.e_type.push(tid);
+        self.by_etype.entry(tid).or_default().push(ei);
         self.e_live.push(true);
         self.live_e += 1;
         self.out[from as usize].push(Adj { eidx: ei, nbr: to, etype: tid });
@@ -607,6 +621,16 @@ impl Graph {
     pub fn add_edge_label(&mut self, ei: u32, name: &str) {
         let tid = self.etype.intern(name);
         let i = ei as usize;
+        // Move the edge between type buckets when its type actually changes.
+        let old = self.e_type[i];
+        if old != tid {
+            if let Some(bucket) = self.by_etype.get_mut(&old) {
+                bucket.retain(|&x| x != ei);
+            }
+            if self.is_edge_live(ei) {
+                self.by_etype.entry(tid).or_default().push(ei);
+            }
+        }
         self.e_type[i] = tid;
         let (src, dst) = (self.e_src[i] as usize, self.e_dst[i] as usize);
         for a in self.out[src].iter_mut().filter(|a| a.eidx == ei) {
@@ -636,6 +660,9 @@ impl Graph {
         }
         self.e_live[i] = false;
         self.live_e -= 1;
+        if let Some(bucket) = self.by_etype.get_mut(&self.e_type[i]) {
+            bucket.retain(|&x| x != ei);
+        }
         let (src, dst) = (self.e_src[i] as usize, self.e_dst[i] as usize);
         self.out[src].retain(|a| a.eidx != ei);
         self.in_[dst].retain(|a| a.eidx != ei);
@@ -864,6 +891,7 @@ impl Builder {
         let mut e_type = vec![0u32; e];
         let mut out: Vec<Vec<Adj>> = vec![Vec::new(); n];
         let mut in_: Vec<Vec<Adj>> = vec![Vec::new(); n];
+        let mut by_etype: HashMap<u32, Vec<u32>> = HashMap::new();
         for (i, ed) in edges.iter().enumerate() {
             let s = vid.get(&ed.src).unwrap();
             let d = vid.get(&ed.dst).unwrap();
@@ -871,6 +899,7 @@ impl Builder {
             e_src[i] = s;
             e_dst[i] = d;
             e_type[i] = t;
+            by_etype.entry(t).or_default().push(i as u32);
             out[s as usize].push(Adj { eidx: i as u32, nbr: d, etype: t });
             in_[d as usize].push(Adj { eidx: i as u32, nbr: s, etype: t });
         }
@@ -895,6 +924,7 @@ impl Builder {
             e_src,
             e_dst,
             e_type,
+            by_etype,
             e_live: vec![true; e],
             live_e: e,
             out,

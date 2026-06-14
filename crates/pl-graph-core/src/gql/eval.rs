@@ -2197,6 +2197,26 @@ fn node_index_seed(graph: &Graph, ctx: &Ctx, node: &CNode, where_: Option<&CExpr
 
 /// Candidate edges for a single-segment pattern: an indexed inline `[r {key:lit}]`
 /// equality, or a WHERE comparison on the relationship var. `None` ⇒ no edge seed.
+/// Seed the candidate edges of a pattern's relationship from the always-on edge
+/// **type** index (`by_etype`) — the analogue of seeding a node scan from its
+/// label bucket. Handles a single type `:T` (one bucket) and a disjunction
+/// `:A|B` (union of buckets; an edge has one type, so the buckets are disjoint).
+/// A missing type name yields an empty seed (no edge matches — itself a win).
+/// `And`/`Not`/wildcard fall through to `None` (no cheap enumeration / no gain).
+fn etype_label_seed(graph: &Graph, ctx: &Ctx, expr: &CLabelExpr) -> Option<Vec<u32>> {
+    match expr {
+        CLabelExpr::Label(r) => {
+            Some(ctx.labels[*r].1.map_or_else(Vec::new, |t| graph.edges_with_etype(t).to_vec()))
+        }
+        CLabelExpr::Or(l, r) => {
+            let mut a = etype_label_seed(graph, ctx, l)?;
+            a.extend(etype_label_seed(graph, ctx, r)?);
+            Some(a)
+        }
+        _ => None,
+    }
+}
+
 fn edge_index_seed(graph: &Graph, ctx: &Ctx, rel: &CRel, where_: Option<&CExpr>) -> Option<Vec<u32>> {
     for pc in &rel.props {
         if graph.edge_indexed(&pc.key) {
@@ -2207,7 +2227,12 @@ fn edge_index_seed(graph: &Graph, ctx: &Ctx, rel: &CRel, where_: Option<&CExpr>)
             }
         }
     }
-    where_.and_then(|w| prop_index_hint(graph, ctx, w, rel.var_slot, true))
+    // Prefer a (usually more selective) property hint; otherwise seed from the
+    // edge type. edge_first_build re-validates label + props, so a type seed is
+    // a correct superset for any extra constraints.
+    where_
+        .and_then(|w| prop_index_hint(graph, ctx, w, rel.var_slot, true))
+        .or_else(|| rel.label.as_ref().and_then(|lbl| etype_label_seed(graph, ctx, lbl)))
 }
 
 /// Whether `build_scan` will turn this scan into an index seek (so a LIMIT cap
