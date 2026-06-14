@@ -4,7 +4,7 @@
 //! side-effect / mutation features. TS closures are expressed as sub-traversals.
 
 use super::{g, GVal, Order, Pop, Token, P, __};
-use crate::graph::Graph;
+use crate::graph::{Graph, Value};
 use crate::ndjson;
 
 fn modern() -> Graph {
@@ -732,6 +732,52 @@ fn index_within_and_startswith() {
 fn index_range_does_not_bleed_types() {
     // age index, gt(0) must not return software (no age) — type-block bounded.
     assert_eq!(names(q_idx(&["age"], g().V().has("age", P::gt(0)).values(&["name"]))), vec!["josh", "marko", "peter", "vadas"]);
+}
+
+#[test]
+fn edge_index_eq_seeds() {
+    let mut gr = modern();
+    gr.create_edge_index("weight");
+    // weight == 1.0 → marko-knows-josh and josh-created-ripple.
+    assert_eq!(one_num(g().E().has("weight", P::eq(1.0)).count().run(&mut gr)), 2.0);
+    // range: weight >= 0.5 → those two plus marko-knows-vadas (0.5) = 3.
+    assert_eq!(one_num(g().E().has("weight", P::gte(0.5)).count().run(&mut gr)), 3.0);
+}
+
+#[test]
+fn index_live_add() {
+    let mut gr = modern();
+    gr.create_vertex_index("name");
+    gr.add_vertex(&["PERSON".to_string()], vec![("name".to_string(), Value::Str("zoe".into())), ("age".to_string(), Value::Num(50.0))]);
+    assert_eq!(names(g().V().has("name", P::eq("zoe")).values(&["name"]).run(&mut gr)), vec!["zoe"]);
+}
+
+#[test]
+fn index_live_update() {
+    let mut gr = modern();
+    gr.create_vertex_index("name");
+    let marko = gr.vid.get("1").unwrap();
+    gr.set_vertex_prop(marko, "name", Value::Str("mark".into()));
+    assert_eq!(g().V().has("name", P::eq("marko")).count().run(&mut gr), vec![GVal::Num(0.0)]); // old gone
+    assert_eq!(names(g().V().has("name", P::eq("mark")).values(&["name"]).run(&mut gr)), vec!["mark"]); // new present
+}
+
+#[test]
+fn index_live_remove() {
+    let mut gr = modern();
+    gr.create_vertex_index("name");
+    let vadas = gr.vid.get("2").unwrap();
+    let _ = gr.remove_vertex(vadas, true);
+    assert_eq!(g().V().has("name", P::eq("vadas")).count().run(&mut gr), vec![GVal::Num(0.0)]);
+}
+
+#[test]
+fn edge_index_live_remove() {
+    let mut gr = modern();
+    gr.create_edge_index("weight");
+    // remove one of the two weight-1.0 edges via Gremlin drop.
+    let _ = g().v_ids(&["1"]).out_e(&["KNOWS"]).has("weight", P::eq(1.0)).drop().run(&mut gr);
+    assert_eq!(one_num(g().E().has("weight", P::eq(1.0)).count().run(&mut gr)), 1.0);
 }
 
 // helper used above

@@ -257,11 +257,76 @@ pub struct Graph {
     in_: Vec<Vec<Adj>>,
     /// counter for synthesized ids of vertices created at runtime
     synth: u64,
-    /// Opt-in secondary indexes over vertex property values: key-id → ordered
-    /// map (value → live vertex ids). A `BTreeMap` answers both equality (`get`)
-    /// and range (`range`) seeks from one structure. Built on demand via
-    /// [`Graph::create_vertex_index`]; an empty map means "no index" (full scan).
-    vidx: HashMap<u32, std::collections::BTreeMap<IdxKey, Vec<u32>>>,
+    /// Opt-in secondary indexes over vertex / edge property values: key name →
+    /// ordered map (value → live element ids). A `BTreeMap` answers both equality
+    /// (`get`) and range (`range`) from one structure. Keyed by name (not key-id)
+    /// so an index can be declared and maintained even before any element carries
+    /// the key. Built via [`Graph::create_vertex_index`]; kept current by the
+    /// mutation methods. Absent key ⇒ no index (full scan).
+    vidx: PropIndex,
+    eidx: PropIndex,
+}
+
+/// A set of property indexes (key name → ordered value buckets).
+type PropIndex = HashMap<String, std::collections::BTreeMap<IdxKey, Vec<u32>>>;
+
+/// Add or remove element `id` from `map`'s bucket for `key`=`value`. No-op if the
+/// key isn't indexed or the value isn't indexable (null/list).
+fn idx_apply(map: &mut PropIndex, key: &str, id: u32, value: &Value, add: bool) {
+    let Some(bt) = map.get_mut(key) else { return };
+    let Some(k) = IdxKey::from_value(value) else { return };
+    if add {
+        bt.entry(k).or_default().push(id);
+    } else if let Some(bucket) = bt.get_mut(&k) {
+        bucket.retain(|&x| x != id);
+        if bucket.is_empty() {
+            bt.remove(&k);
+        }
+    }
+}
+
+/// Backfill an index for `key` over a property store (vertex or edge).
+fn build_prop_index(store: &Properties, live: &[bool], strs: &Dict, key: &str, n: usize) -> std::collections::BTreeMap<IdxKey, Vec<u32>> {
+    let mut map: std::collections::BTreeMap<IdxKey, Vec<u32>> = std::collections::BTreeMap::new();
+    let Some(kid) = store.keys.get(key) else { return map };
+    for id in 0..n as u32 {
+        if !live.get(id as usize).copied().unwrap_or(false) {
+            continue;
+        }
+        if let Some(k) = IdxKey::from_value(&store.value_id(id as usize, kid, strs)) {
+            map.entry(k).or_default().push(id);
+        }
+    }
+    map
+}
+
+/// Union the buckets of one key's ordered index that fall within `bound`. Bounds
+/// carry a type (e.g. `Num(30)`), so the scan stays within that type block —
+/// `{gt: 30}` never bleeds into string values.
+fn range_seek(map: &std::collections::BTreeMap<IdxKey, Vec<u32>>, bound: &RangeBound) -> Option<Vec<u32>> {
+    use std::ops::Bound;
+    let lo = match (&bound.gte, &bound.gt) {
+        (Some(k), _) => Bound::Included(k.clone()),
+        (None, Some(k)) => Bound::Excluded(k.clone()),
+        (None, None) => Bound::Unbounded,
+    };
+    let rank = [&bound.gt, &bound.gte, &bound.lt, &bound.lte].into_iter().flatten().next().map(IdxKey::rank);
+    let mut out = Vec::new();
+    for (k, ids) in map.range((lo, Bound::Unbounded)) {
+        if let Some(r) = rank {
+            if k.rank() < r {
+                continue;
+            }
+            if k.rank() > r {
+                break;
+            }
+        }
+        if bound.lt.as_ref().is_some_and(|b| k >= b) || bound.lte.as_ref().is_some_and(|b| k > b) {
+            break;
+        }
+        out.extend_from_slice(ids);
+    }
+    Some(out)
 }
 
 /// A totally-ordered key for the property index: type rank (Bool < Num < Str)
@@ -347,75 +412,55 @@ impl Graph {
         (0..self.n as u32).filter(move |&v| self.v_live[v as usize])
     }
 
-    // --- property indexes (opt-in secondary indexes over vertex props) -----
+    // --- property indexes (opt-in secondary indexes over property values) --
 
-    /// Declare (and backfill) a secondary index over vertex property `key`. An
-    /// `EQ`/range filter on this key can then seed from the index instead of a
-    /// full label scan. Idempotent. (Experiment: build-once; not yet maintained
-    /// across post-build mutation.)
+    /// Declare (and backfill) a secondary index over a **vertex** property. An
+    /// eq/range filter on this key can then seed from the index instead of a full
+    /// scan. Kept current by the mutation methods. Idempotent.
     pub fn create_vertex_index(&mut self, key: &str) {
-        let Some(kid) = self.props.keys.get(key) else { return };
-        let mut map: std::collections::BTreeMap<IdxKey, Vec<u32>> = std::collections::BTreeMap::new();
-        for v in 0..self.n as u32 {
-            if !self.v_live[v as usize] {
-                continue;
-            }
-            if let Some(k) = IdxKey::from_value(&self.props.value_id(v as usize, kid, &self.strs)) {
-                map.entry(k).or_default().push(v);
-            }
-        }
-        self.vidx.insert(kid, map);
+        let map = build_prop_index(&self.props, &self.v_live, &self.strs, key, self.n);
+        self.vidx.insert(key.to_string(), map);
+    }
+    /// Declare (and backfill) a secondary index over an **edge** property.
+    pub fn create_edge_index(&mut self, key: &str) {
+        let map = build_prop_index(&self.edge_props, &self.e_live, &self.strs, key, self.e_src.len());
+        self.eidx.insert(key.to_string(), map);
+    }
+    /// Drop a vertex index.
+    pub fn drop_vertex_index(&mut self, key: &str) {
+        self.vidx.remove(key);
+    }
+    /// Drop an edge index.
+    pub fn drop_edge_index(&mut self, key: &str) {
+        self.eidx.remove(key);
     }
 
-    /// Whether vertex property `key` has a secondary index.
     pub fn vertex_indexed(&self, key: &str) -> bool {
-        self.props.keys.get(key).is_some_and(|kid| self.vidx.contains_key(&kid))
+        self.vidx.contains_key(key)
+    }
+    pub fn edge_indexed(&self, key: &str) -> bool {
+        self.eidx.contains_key(key)
     }
 
-    fn vidx_for(&self, key: &str) -> Option<&std::collections::BTreeMap<IdxKey, Vec<u32>>> {
-        self.vidx.get(&self.props.keys.get(key)?)
-    }
-
-    /// Equality seek: the live vertices whose `key` equals `value` (None = no index).
+    /// Equality seek over vertices: live vertices whose `key` == `value` (None = no index).
     pub fn vertices_by_prop(&self, key: &str, value: &IdxKey) -> Option<&[u32]> {
-        Some(self.vidx_for(key)?.get(value).map(Vec::as_slice).unwrap_or(&[]))
+        Some(self.vidx.get(key)?.get(value).map(Vec::as_slice).unwrap_or(&[]))
     }
-
-    /// Cardinality of an equality seek (for cardinality-based seed selection).
+    /// Equality seek over edges.
+    pub fn edges_by_prop(&self, key: &str, value: &IdxKey) -> Option<&[u32]> {
+        Some(self.eidx.get(key)?.get(value).map(Vec::as_slice).unwrap_or(&[]))
+    }
+    /// Cardinality of a vertex equality seek (for cardinality-based seed selection).
     pub fn count_by_prop(&self, key: &str, value: &IdxKey) -> Option<usize> {
-        Some(self.vidx_for(key)?.get(value).map_or(0, Vec::len))
+        Some(self.vidx.get(key)?.get(value).map_or(0, Vec::len))
     }
-
-    /// Range seek: live vertices whose `key` falls in `bound` (union of buckets).
-    /// Bounds carry a type (e.g. `Num(30)`), so the scan stays within that type
-    /// block — `{gt: 30}` never bleeds into string values.
+    /// Range seek over vertices (union of buckets in `bound`, type-block bounded).
     pub fn vertices_by_prop_range(&self, key: &str, bound: &RangeBound) -> Option<Vec<u32>> {
-        use std::ops::Bound;
-        let map = self.vidx_for(key)?;
-        // Lower start for the BTree range: the tighter of gt/gte (or unbounded).
-        let lo = match (&bound.gte, &bound.gt) {
-            (Some(k), _) => Bound::Included(k.clone()),
-            (None, Some(k)) => Bound::Excluded(k.clone()),
-            (None, None) => Bound::Unbounded,
-        };
-        // The type rank the bounds operate in (so we don't union other types).
-        let rank = [&bound.gt, &bound.gte, &bound.lt, &bound.lte].into_iter().flatten().next().map(IdxKey::rank);
-        let mut out = Vec::new();
-        for (k, ids) in map.range((lo, Bound::Unbounded)) {
-            if let Some(r) = rank {
-                if k.rank() < r {
-                    continue;
-                }
-                if k.rank() > r {
-                    break; // past the bound's type block (keys ascend)
-                }
-            }
-            if bound.lt.as_ref().is_some_and(|b| k >= b) || bound.lte.as_ref().is_some_and(|b| k > b) {
-                break; // exceeded the upper bound
-            }
-            out.extend_from_slice(ids);
-        }
-        Some(out)
+        range_seek(self.vidx.get(key)?, bound)
+    }
+    /// Range seek over edges.
+    pub fn edges_by_prop_range(&self, key: &str, bound: &RangeBound) -> Option<Vec<u32>> {
+        range_seek(self.eidx.get(key)?, bound)
     }
 
     /// Out-edges of `v` as adjacency slots.
@@ -475,6 +520,9 @@ impl Graph {
         self.in_.push(Vec::new());
         self.props.push_element();
         for (k, v) in props {
+            if self.vidx.contains_key(&k) {
+                idx_apply(&mut self.vidx, &k, vi, &v, true);
+            }
             self.props.set_value(vi as usize, &k, v, &mut self.strs);
         }
         self.n += 1;
@@ -494,21 +542,48 @@ impl Graph {
         self.in_[to as usize].push(Adj { eidx: ei, nbr: from, etype: tid });
         self.edge_props.push_element();
         for (k, v) in props {
+            if self.eidx.contains_key(&k) {
+                idx_apply(&mut self.eidx, &k, ei, &v, true);
+            }
             self.edge_props.set_value(ei as usize, &k, v, &mut self.strs);
         }
         ei
     }
 
     pub fn set_vertex_prop(&mut self, vi: u32, key: &str, v: Value) {
+        if self.vidx.contains_key(key) {
+            let old = self.props.value(vi as usize, key, &self.strs);
+            idx_apply(&mut self.vidx, key, vi, &old, false);
+        }
         self.props.set_value(vi as usize, key, v, &mut self.strs);
+        if self.vidx.contains_key(key) {
+            let new = self.props.value(vi as usize, key, &self.strs);
+            idx_apply(&mut self.vidx, key, vi, &new, true);
+        }
     }
     pub fn remove_vertex_prop(&mut self, vi: u32, key: &str) {
+        if self.vidx.contains_key(key) {
+            let old = self.props.value(vi as usize, key, &self.strs);
+            idx_apply(&mut self.vidx, key, vi, &old, false);
+        }
         self.props.remove_value(vi as usize, key);
     }
     pub fn set_edge_prop(&mut self, ei: u32, key: &str, v: Value) {
+        if self.eidx.contains_key(key) {
+            let old = self.edge_props.value(ei as usize, key, &self.strs);
+            idx_apply(&mut self.eidx, key, ei, &old, false);
+        }
         self.edge_props.set_value(ei as usize, key, v, &mut self.strs);
+        if self.eidx.contains_key(key) {
+            let new = self.edge_props.value(ei as usize, key, &self.strs);
+            idx_apply(&mut self.eidx, key, ei, &new, true);
+        }
     }
     pub fn remove_edge_prop(&mut self, ei: u32, key: &str) {
+        if self.eidx.contains_key(key) {
+            let old = self.edge_props.value(ei as usize, key, &self.strs);
+            idx_apply(&mut self.eidx, key, ei, &old, false);
+        }
         self.edge_props.remove_value(ei as usize, key);
     }
 
@@ -552,6 +627,13 @@ impl Graph {
         if !self.is_edge_live(ei) {
             return;
         }
+        // Drop the edge from every edge property index before tombstoning.
+        if !self.eidx.is_empty() {
+            for key in self.eidx.keys().cloned().collect::<Vec<_>>() {
+                let val = self.edge_props.value(i, &key, &self.strs);
+                idx_apply(&mut self.eidx, &key, ei, &val, false);
+            }
+        }
         self.e_live[i] = false;
         self.live_e -= 1;
         let (src, dst) = (self.e_src[i] as usize, self.e_dst[i] as usize);
@@ -577,6 +659,13 @@ impl Graph {
         for lid in self.vlabels[i].clone() {
             if let Some(bucket) = self.by_label.get_mut(&lid) {
                 bucket.retain(|&x| x != vi);
+            }
+        }
+        // Drop the vertex from every vertex property index.
+        if !self.vidx.is_empty() {
+            for key in self.vidx.keys().cloned().collect::<Vec<_>>() {
+                let val = self.props.value(i, &key, &self.strs);
+                idx_apply(&mut self.vidx, &key, vi, &val, false);
             }
         }
         self.vlabels[i].clear();
@@ -812,6 +901,7 @@ impl Builder {
             in_,
             synth: 0,
             vidx: HashMap::new(),
+            eidx: HashMap::new(),
         }
     }
 }

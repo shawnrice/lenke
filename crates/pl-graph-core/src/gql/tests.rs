@@ -803,3 +803,21 @@ fn index_range_does_not_bleed_into_software() {
     // age > 0 must not surface software (no age) — type-block bounded seed.
     assert_eq!(rows(&mut g, "MATCH (n) WHERE n.age > 0 RETURN n.name ORDER BY n.name").len(), 4);
 }
+
+#[test]
+fn index_live_under_gql_insert() {
+    let mut g = modern();
+    g.create_vertex_index("name");
+    rows(&mut g, "INSERT (z:Person {name:'zoe', age:50})");
+    // The new vertex is found via the (maintained) index seed.
+    assert_eq!(rows(&mut g, "MATCH (n) WHERE n.name = 'zoe' RETURN n.age"), vec![vec![n(50.0)]]);
+}
+
+#[test]
+fn index_live_under_gql_set() {
+    let mut g = modern();
+    g.create_vertex_index("name");
+    rows(&mut g, "MATCH (n:Person) WHERE n.name = 'marko' SET n.name = 'mark'");
+    assert!(rows(&mut g, "MATCH (n) WHERE n.name = 'marko' RETURN n.name").is_empty());
+    assert_eq!(rows(&mut g, "MATCH (n) WHERE n.name = 'mark' RETURN n.age"), vec![vec![n(29.0)]]);
+}

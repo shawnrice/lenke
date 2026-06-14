@@ -89,50 +89,51 @@ fn prefix_upper(s: &str) -> Option<String> {
     None
 }
 
-/// If the plan opens with `V().has(key, pred)` on an indexed key and `pred` is
-/// index-seekable (eq / within / range / startsWith), return the seeded vertices
-/// (the `has` is then fully satisfied by the index). `None` ⇒ fall back to scan.
+/// If the plan opens with `V().has(key, pred)` / `E().has(key, pred)` on an
+/// indexed key and `pred` is index-seekable (eq / within / range / startsWith),
+/// return the seeded elements (the `has` is then fully satisfied by the index).
+/// `None` ⇒ fall back to scan.
 fn index_seed(graph: &Graph, steps: &[Step]) -> Option<Vec<Trav>> {
-    let [Step::V(ids), Step::Has(key, pred), ..] = steps else {
-        return None;
+    let (key, pred, is_edge) = match steps {
+        [Step::V(ids), Step::Has(k, p), ..] if ids.is_empty() && graph.vertex_indexed(k) => (k, p, false),
+        [Step::E(ids), Step::Has(k, p), ..] if ids.is_empty() && graph.edge_indexed(k) => (k, p, true),
+        _ => return None,
     };
-    if !ids.is_empty() || !graph.vertex_indexed(key) {
-        return None;
-    }
-    let one = |b: RangeBound| graph.vertices_by_prop_range(key, &b);
-    let verts: Vec<u32> = match pred {
-        P::Eq(v) => graph.vertices_by_prop(key, &gval_to_idxkey(v)?)?.to_vec(),
+    let eq = |k: &IdxKey| if is_edge { graph.edges_by_prop(key, k) } else { graph.vertices_by_prop(key, k) };
+    let rng = |b: RangeBound| if is_edge { graph.edges_by_prop_range(key, &b) } else { graph.vertices_by_prop_range(key, &b) };
+    let ids: Vec<u32> = match pred {
+        P::Eq(v) => eq(&gval_to_idxkey(v)?)?.to_vec(),
         P::Within(vs) => {
             let mut out = Vec::new();
             for v in vs {
                 if let Some(k) = gval_to_idxkey(v) {
-                    if let Some(s) = graph.vertices_by_prop(key, &k) {
+                    if let Some(s) = eq(&k) {
                         out.extend_from_slice(s);
                     }
                 }
             }
             out
         }
-        P::Gt(v) => one(RangeBound { gt: gval_to_idxkey(v), ..Default::default() })?,
-        P::Gte(v) => one(RangeBound { gte: gval_to_idxkey(v), ..Default::default() })?,
-        P::Lt(v) => one(RangeBound { lt: gval_to_idxkey(v), ..Default::default() })?,
-        P::Lte(v) => one(RangeBound { lte: gval_to_idxkey(v), ..Default::default() })?,
-        P::Between(lo, hi) => one(RangeBound { gte: gval_to_idxkey(lo), lt: gval_to_idxkey(hi), ..Default::default() })?,
-        P::Inside(lo, hi) => one(RangeBound { gt: gval_to_idxkey(lo), lt: gval_to_idxkey(hi), ..Default::default() })?,
+        P::Gt(v) => rng(RangeBound { gt: gval_to_idxkey(v), ..Default::default() })?,
+        P::Gte(v) => rng(RangeBound { gte: gval_to_idxkey(v), ..Default::default() })?,
+        P::Lt(v) => rng(RangeBound { lt: gval_to_idxkey(v), ..Default::default() })?,
+        P::Lte(v) => rng(RangeBound { lte: gval_to_idxkey(v), ..Default::default() })?,
+        P::Between(lo, hi) => rng(RangeBound { gte: gval_to_idxkey(lo), lt: gval_to_idxkey(hi), ..Default::default() })?,
+        P::Inside(lo, hi) => rng(RangeBound { gt: gval_to_idxkey(lo), lt: gval_to_idxkey(hi), ..Default::default() })?,
         P::Outside(lo, hi) => {
-            // value < lo OR value > hi — two disjoint range seeks unioned.
-            let mut out = one(RangeBound { lt: gval_to_idxkey(lo), ..Default::default() })?;
-            out.extend(one(RangeBound { gt: gval_to_idxkey(hi), ..Default::default() })?);
+            let mut out = rng(RangeBound { lt: gval_to_idxkey(lo), ..Default::default() })?;
+            out.extend(rng(RangeBound { gt: gval_to_idxkey(hi), ..Default::default() })?);
             out
         }
         P::StartsWith(prefix) => {
             let lo = Some(IdxKey::Str(prefix.as_str().into()));
             let hi = prefix_upper(prefix).map(|u| IdxKey::Str(u.as_str().into()));
-            one(RangeBound { gte: lo, lt: hi, ..Default::default() })?
+            rng(RangeBound { gte: lo, lt: hi, ..Default::default() })?
         }
         _ => return None,
     };
-    Some(verts.into_iter().map(|v| Trav::root(GVal::Vertex(v))).collect())
+    let mk = |id: u32| if is_edge { GVal::Edge(id) } else { GVal::Vertex(id) };
+    Some(ids.into_iter().map(|id| Trav::root(mk(id))).collect())
 }
 
 /// Serialize traversal results to a JSON array string — the FFI carrier. Graph
