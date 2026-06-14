@@ -203,4 +203,23 @@ fn main() {
         let viarow = t.elapsed().as_secs_f64() * 1e6 / iters as f64;
         println!("  {label:<16} typed {typed:7.1} us   rowset {viarow:7.1} us   ({:.2}x)", viarow / typed);
     }
+
+    // Property-index seeding: a single-node MATCH with an indexed eq/range hint.
+    // Two passes so every query gets a true scan baseline (the index, once built,
+    // is shared by `g` and would otherwise leak into later scan timings).
+    let queries: &[(&str, &str, u32)] = &[
+        ("eq inline {name}", "MATCH (n:Person {name:'name25000'}) RETURN n.age AS a", 200),
+        ("where name =", "MATCH (n:Person) WHERE n.name = 'name25000' RETURN n.age AS a", 200),
+        ("where age > 78", "MATCH (n:Person) WHERE n.age > 78 RETURN count(*) AS c", 200),
+        ("where age 30..40", "MATCH (n:Person) WHERE n.age >= 30 AND n.age < 40 RETURN count(*) AS c", 200),
+    ];
+    let scans: Vec<f64> = queries.iter().map(|(_, q, it)| bench(&mut g, q, *it).0).collect();
+    g.create_vertex_index("name");
+    g.create_vertex_index("age");
+    println!("\nproperty-index seeding (scan vs index seek):");
+    let pretty = |u: f64| if u >= 1000.0 { format!("{:.2} ms", u / 1000.0) } else { format!("{u:.1} us") };
+    for ((label, q, it), &scan_us) in queries.iter().zip(&scans) {
+        let (idx_us, rows) = bench(&mut g, q, it * 10);
+        println!("  {label:<18} scan {:>10}   index {:>10}   ({:.0}x)   rows {rows}", pretty(scan_us), pretty(idx_us), scan_us / idx_us);
+    }
 }

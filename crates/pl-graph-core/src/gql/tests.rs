@@ -756,3 +756,50 @@ fn missing_label_empty_with_columns() {
     assert_eq!(cols, vec!["who"]);
     assert!(r.is_empty());
 }
+
+// --- property-index seeding (indexed result must equal the scan result) ---
+
+#[test]
+fn index_eq_inline_matches_scan() {
+    let scan = {
+        let mut g = modern();
+        rows(&mut g, "MATCH (n:Person {name:'marko'}) RETURN n.age")
+    };
+    let idx = {
+        let mut g = modern();
+        g.create_vertex_index("name");
+        rows(&mut g, "MATCH (n:Person {name:'marko'}) RETURN n.age")
+    };
+    assert_eq!(scan, idx);
+    assert_eq!(idx, vec![vec![n(29.0)]]);
+}
+
+#[test]
+fn index_where_eq_matches_scan() {
+    let mut g = modern();
+    g.create_vertex_index("name");
+    assert_eq!(rows(&mut g, "MATCH (n) WHERE n.name = 'marko' RETURN n.age"), vec![vec![n(29.0)]]);
+}
+
+#[test]
+fn index_where_range_matches_scan() {
+    let mut g = modern();
+    g.create_vertex_index("age");
+    assert_eq!(rows(&mut g, "MATCH (n:Person) WHERE n.age > 30 RETURN n.name ORDER BY n.name"), vec![vec![s("josh")], vec![s("peter")]]);
+}
+
+#[test]
+fn index_where_and_range_matches_scan() {
+    let mut g = modern();
+    g.create_vertex_index("age");
+    // AND of two comparisons on the indexed key — first conjunct seeds, WHERE re-filters.
+    assert_eq!(rows(&mut g, "MATCH (n:Person) WHERE n.age > 28 AND n.age < 33 RETURN n.name ORDER BY n.name"), vec![vec![s("josh")], vec![s("marko")]]);
+}
+
+#[test]
+fn index_range_does_not_bleed_into_software() {
+    let mut g = modern();
+    g.create_vertex_index("age");
+    // age > 0 must not surface software (no age) — type-block bounded seed.
+    assert_eq!(rows(&mut g, "MATCH (n) WHERE n.age > 0 RETURN n.name ORDER BY n.name").len(), 4);
+}

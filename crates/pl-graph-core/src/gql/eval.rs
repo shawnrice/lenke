@@ -2069,16 +2069,110 @@ fn kleene_vec(it: impl Iterator<Item = Truth>) -> VVec {
 /// columns, multiplying rows by matching neighbors, with no matcher recursion or
 /// per-edge bind/unset. Returns `None` (→ scalar path) for var-length
 /// quantifiers or a slot a path binds twice (a self-join). `cap` stops early.
-fn build_scan(graph: &Graph, ctx: &Ctx, path: &CPath, scope_len: usize, cap: Option<usize>) -> Option<ScanCols> {
-    // Fast path: an isolated node is a tight label-bucket scan — no matcher
-    // dispatch, no per-row bind/unset. (The general matcher below is ~3x slower
-    // per row, which dominates a pure scan.)
+fn lit_to_idxkey(lit: &Lit) -> Option<crate::graph::IdxKey> {
+    use crate::graph::IdxKey;
+    match lit {
+        Lit::Str(s) => Some(IdxKey::Str(s.as_str().into())),
+        Lit::Num(n) => Some(IdxKey::Num(*n)),
+        Lit::Bool(b) => Some(IdxKey::Bool(*b)),
+        Lit::Null => None,
+    }
+}
+
+/// A `n.key OP <literal>` comparison, as (prop key ref, op, literal).
+fn cmp_bound(e: &CExpr) -> Option<(usize, CompareOp, &Lit)> {
+    if let CExpr::Compare { op, left, right } = e {
+        if let (CExpr::Prop { key_ref, .. }, CExpr::Lit(lit)) = (left.as_ref(), right.as_ref()) {
+            return Some((*key_ref, *op, lit));
+        }
+    }
+    None
+}
+
+/// Apply one comparison to a range bound (`Eq` clamps both ends).
+fn apply_bound(rb: &mut crate::graph::RangeBound, op: CompareOp, lit: &Lit) {
+    let Some(k) = lit_to_idxkey(lit) else { return };
+    match op {
+        CompareOp::Gt => rb.gt = Some(k),
+        CompareOp::Ge => rb.gte = Some(k),
+        CompareOp::Lt => rb.lt = Some(k),
+        CompareOp::Le => rb.lte = Some(k),
+        CompareOp::Eq => {
+            rb.gte = Some(k.clone());
+            rb.lte = Some(k);
+        }
+        CompareOp::Ne => {}
+    }
+}
+
+/// An index seek from a WHERE comparison `n.key OP <literal>`, or an `AND` of two
+/// such on the same indexed key coalesced into one tight range seek (e.g.
+/// `age >= 30 AND age < 40` → `[30,40)`), else the first indexed conjunct.
+fn where_index_hint(graph: &Graph, ctx: &Ctx, e: &CExpr) -> Option<Vec<u32>> {
+    use crate::graph::RangeBound;
+    match e {
+        CExpr::Compare { .. } => {
+            let (key_ref, op, lit) = cmp_bound(e)?;
+            let kid = ctx.prop_keys[key_ref].0?;
+            let name = graph.props.keys.text(kid);
+            if !graph.vertex_indexed(name) {
+                return None;
+            }
+            if op == CompareOp::Eq {
+                return graph.vertices_by_prop(name, &lit_to_idxkey(lit)?).map(<[u32]>::to_vec);
+            }
+            let mut rb = RangeBound::default();
+            apply_bound(&mut rb, op, lit);
+            graph.vertices_by_prop_range(name, &rb)
+        }
+        CExpr::And(a, b) => {
+            // Coalesce two same-key range comparisons into one seek.
+            if let (Some((k1, o1, l1)), Some((k2, o2, l2))) = (cmp_bound(a), cmp_bound(b)) {
+                if k1 == k2 {
+                    if let Some(kid) = ctx.prop_keys[k1].0 {
+                        let name = graph.props.keys.text(kid);
+                        if graph.vertex_indexed(name) {
+                            let mut rb = RangeBound::default();
+                            apply_bound(&mut rb, o1, l1);
+                            apply_bound(&mut rb, o2, l2);
+                            return graph.vertices_by_prop_range(name, &rb);
+                        }
+                    }
+                }
+            }
+            where_index_hint(graph, ctx, a).or_else(|| where_index_hint(graph, ctx, b))
+        }
+        _ => None,
+    }
+}
+
+/// Candidate vertices for a single-node scan from a property index, if any
+/// indexed equality (inline `{key: lit}`) or WHERE comparison applies. `None`
+/// means no usable index → full scan.
+fn node_index_seed(graph: &Graph, ctx: &Ctx, node: &CNode, where_: Option<&CExpr>) -> Option<Vec<u32>> {
+    for pc in &node.props {
+        if graph.vertex_indexed(&pc.key) {
+            if let CExpr::Lit(lit) = &pc.value {
+                if let Some(k) = lit_to_idxkey(lit) {
+                    return graph.vertices_by_prop(&pc.key, &k).map(<[u32]>::to_vec);
+                }
+            }
+        }
+    }
+    where_.and_then(|w| where_index_hint(graph, ctx, w))
+}
+
+fn build_scan(graph: &Graph, ctx: &Ctx, path: &CPath, scope_len: usize, cap: Option<usize>, seed: Option<&[u32]>) -> Option<ScanCols> {
+    // Fast path: an isolated node is a tight scan. With an index `seed` (from an
+    // equality/range hint on an indexed key) we iterate just the candidate
+    // vertices; otherwise the label bucket / all-live range. Either way the
+    // node's label + inline constraints are re-checked.
     if path.segments.is_empty() {
         let node = &path.start;
         let mut ids = Vec::new();
         let needs_check = !node.props.is_empty() || node.where_.is_some();
         let mut b = Binding(vec![None; scope_len.max(1)]);
-        for_each_seed(graph, ctx, node.label.as_ref(), &mut |vi| {
+        let consider = |graph: &Graph, vi: u32, ids: &mut Vec<u32>, b: &mut Binding| -> bool {
             if !matches_label(graph, ctx, vi, node.label.as_ref()) {
                 return true;
             }
@@ -2086,13 +2180,25 @@ fn build_scan(graph: &Graph, ctx: &Ctx, path: &CPath, scope_len: usize, cap: Opt
                 if let Some(s) = node.var_slot {
                     b.set(s, Val::Node(vi));
                 }
-                if !satisfies(graph, ctx, &Val::Node(vi), &node.props, node.where_.as_ref(), &b) {
+                if !satisfies(graph, ctx, &Val::Node(vi), &node.props, node.where_.as_ref(), b) {
                     return true;
                 }
             }
             ids.push(vi);
             cap.is_none_or(|c| ids.len() < c)
-        });
+        };
+        match seed {
+            Some(cands) => {
+                for &vi in cands {
+                    if graph.is_vertex_live(vi) && !consider(graph, vi, &mut ids, &mut b) {
+                        break;
+                    }
+                }
+            }
+            None => {
+                for_each_seed(graph, ctx, node.label.as_ref(), &mut |vi| consider(graph, vi, &mut ids, &mut b));
+            }
+        }
         let mut sc = ScanCols::new(scope_len);
         sc.n = ids.len();
         if let Some(s) = node.var_slot {
@@ -2553,7 +2659,10 @@ fn vectorized_cols(graph: &Graph, ctx: &Ctx, incoming: &[Binding], matches: &[&C
     let cap = (where_.is_none() && !proj.aggregating && !proj.distinct && !has_order)
         .then(|| proj.limit.map(|l| proj.skip.unwrap_or(0) + l))
         .flatten();
-    let mut sc = build_scan(graph, ctx, path, *scope_len, cap)?;
+    // Seed an isolated-node scan from a property index when an indexed eq/range
+    // hint applies (cap can't early-stop a seeded scan, so drop it then).
+    let seed = path.segments.is_empty().then(|| node_index_seed(graph, ctx, &path.start, where_.as_ref())).flatten();
+    let mut sc = build_scan(graph, ctx, path, *scope_len, if seed.is_some() { None } else { cap }, seed.as_deref())?;
 
     // Clause WHERE → keep mask (vectorized), compacting the row set.
     if let Some(w) = where_ {
@@ -2862,7 +2971,8 @@ fn vectorized_linear(linear: &CLinear, graph: &Graph, plan: &CQuery, params: &[V
         let keep: Vec<bool> = eval_vec(graph, &ctx, sc, w).into_truth().iter().map(|t| *t == Some(true)).collect();
         compact(sc, &keep);
     };
-    let mut sc = build_scan(graph, &ctx, &patterns[0], *scope_len, None)?;
+    let seed = patterns[0].segments.is_empty().then(|| node_index_seed(graph, &ctx, &patterns[0].start, where_.as_ref())).flatten();
+    let mut sc = build_scan(graph, &ctx, &patterns[0], *scope_len, None, seed.as_deref())?;
     if let Some(w) = where_ {
         filter(&mut sc, w);
     }
@@ -3297,7 +3407,8 @@ fn vectorized_arrow(graph: &Graph, ctx: &Ctx, matches: &[&CClause], proj: &CProj
     }
     let path = &patterns[0];
     let cap = where_.is_none().then(|| proj.limit.map(|l| proj.skip.unwrap_or(0) + l)).flatten();
-    let mut sc = build_scan(graph, ctx, path, *scope_len, cap)?;
+    let seed = path.segments.is_empty().then(|| node_index_seed(graph, ctx, &path.start, where_.as_ref())).flatten();
+    let mut sc = build_scan(graph, ctx, path, *scope_len, if seed.is_some() { None } else { cap }, seed.as_deref())?;
     if let Some(w) = where_ {
         let keep: Vec<bool> = eval_vec(graph, ctx, &sc, w).into_truth().iter().map(|t| *t == Some(true)).collect();
         compact(&mut sc, &keep);
