@@ -42,6 +42,7 @@ fn build_graph(nv: usize, deg: usize) -> Graph {
                 dst: format!("v{}", rng.below(nv)),
                 etype: types[k % 3].to_string(),
                 props: vec![],
+                id: None,
             });
         }
     }

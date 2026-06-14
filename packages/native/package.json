@@ -1,0 +1,33 @@
+{
+  "name": "@pl-graph/native",
+  "type": "module",
+  "types": "./dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "default": "./dist/esm/index.mjs"
+    },
+    "./ffi": {
+      "types": "./dist/types/backend-ffi.d.ts",
+      "default": "./dist/esm/backend-ffi.mjs"
+    },
+    "./wasm": {
+      "types": "./dist/types/backend-wasm.d.ts",
+      "default": "./dist/esm/backend-wasm.mjs"
+    }
+  },
+  "scripts": {
+    "build": "bun build.ts",
+    "build:rust": "cargo build --release --manifest-path ../../crates/pl-graph-core/Cargo.toml",
+    "build:wasm": "cargo build --release --target wasm32-unknown-unknown --no-default-features --manifest-path ../../crates/pl-graph-core/Cargo.toml",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@pl-graph/dev": "workspace:*",
+    "@types/bun": "^1.3.13",
+    "bun-types": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^6.0.0"
+  }
+}

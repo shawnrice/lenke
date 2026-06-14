@@ -873,3 +873,65 @@ fn edge_index_live_under_set() {
     // and 1.0 now finds nothing among CREATED (josh->ripple moved to 2.0).
     assert!(rows(&mut g, "MATCH (a)-[r:CREATED]->(s) WHERE r.weight = 1.0 RETURN s.name").is_empty());
 }
+
+// --- edge TYPE index seeding (always-on `by_etype`; `()-[:T]->()` patterns) ---
+
+#[test]
+fn edge_type_seed_single() {
+    // marko -knows-> vadas, marko -knows-> josh. The type bucket seeds these two
+    // edges directly instead of expanding every vertex's adjacency.
+    let mut g = modern();
+    assert_eq!(
+        rows(&mut g, "MATCH (a)-[r:KNOWS]->(b) RETURN b.name ORDER BY b.name"),
+        vec![vec![s("josh")], vec![s("vadas")]],
+    );
+}
+
+#[test]
+fn edge_type_seed_disjunction() {
+    // `:KNOWS|CREATED` unions two type buckets (disjoint — an edge has one type).
+    // KNOWS: 2 edges, CREATED: 4 edges ⇒ 6 rows.
+    let mut g = modern();
+    let r = rows(&mut g, "MATCH (a)-[r:KNOWS|CREATED]->(b) RETURN count(*) AS c");
+    assert_eq!(r, vec![vec![n(6.0)]]);
+}
+
+#[test]
+fn edge_type_seed_absent_is_empty() {
+    // A type that was never interned seeds an empty candidate set (no scan).
+    let mut g = modern();
+    assert!(rows(&mut g, "MATCH (a)-[r:NONEXISTENT]->(b) RETURN b.name").is_empty());
+}
+
+#[test]
+fn edge_type_seed_with_endpoint_filter() {
+    // Type seed is a superset; edge_first_build re-validates the endpoint WHERE.
+    // Of marko's two KNOWS targets, only josh is 32.
+    let mut g = modern();
+    assert_eq!(
+        rows(&mut g, "MATCH (a)-[r:KNOWS]->(b) WHERE b.age = 32 RETURN b.name"),
+        vec![vec![s("josh")]],
+    );
+}
+
+#[test]
+fn edge_type_seed_live_under_insert() {
+    // A KNOWS edge created at runtime must land in the type bucket and be found.
+    let mut g = modern();
+    rows(&mut g, "MATCH (a:Person), (b:Person) WHERE a.name = 'peter' AND b.name = 'vadas' INSERT (a)-[:KNOWS]->(b)");
+    assert_eq!(
+        rows(&mut g, "MATCH (a)-[r:KNOWS]->(b) RETURN a.name ORDER BY a.name"),
+        vec![vec![s("marko")], vec![s("marko")], vec![s("peter")]],
+    );
+}
+
+#[test]
+fn edge_type_seed_live_under_delete() {
+    // Deleting an edge must purge it from the type bucket, so the seed shrinks.
+    let mut g = modern();
+    rows(&mut g, "MATCH (a)-[r:KNOWS]->(b) WHERE b.name = 'vadas' DELETE r");
+    assert_eq!(
+        rows(&mut g, "MATCH (a)-[r:KNOWS]->(b) RETURN b.name ORDER BY b.name"),
+        vec![vec![s("josh")]],
+    );
+}
