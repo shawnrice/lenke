@@ -132,21 +132,21 @@ const USE_VM: bool = false;
 ///   - numeric projection over a 1-hop join:     2.78ms → 1.53ms  (1.8x)
 ///   - count+WHERE over a 1-hop join:            2.09ms → 1.24ms  (1.7x)
 ///   - DISTINCT over typed Props (raw-id group):  7.78ms → 1.23ms  (6.3x, 2 col)
-///   - WITH aggregate then filter (1st stage):   2.37ms → 0.72ms  (3.3x)
+///   - WITH carry + filter + project (pipeline): 4.26ms → 1.02ms  (4.2x)
+///   - WITH aggregate then filter:               2.37ms → 0.92ms  (2.6x)
 ///   - ORDER BY input key + small LIMIT:         1.94ms → 1.37ms  (1.4x)
-///   - WITH carrying an element forward:         4.26ms → 3.59ms  (1.2x, see below)
 ///   - var-length / subqueries / pure count over a join: not engaged
 ///   - ORDER BY on an output alias / grouped-or-DISTINCT+ORDER BY: not engaged
 ///
-/// Only the *first* stage of a multi-clause query vectorizes: `vectorized_cols`
-/// produces column-major `Val` output that the terminal RETURN flattens to a
-/// `RowSet` and that a `WITH` carries forward as `Binding`s (element handles
-/// preserved). Anything downstream of a `WITH` sees a non-fresh incoming binding
-/// set and falls back to the scalar driver — so `WITH <agg>` wins big (the
-/// aggregate is the cost; the tail is tiny), but `WITH <carry> … RETURN` is
-/// modest (the carry is cheap; the real WHERE/projection work runs scalar).
-/// Full pipeline vectorization (threading `ScanCols` across stages) is the lever
-/// for the latter — a larger change to the binding-based `run_linear`.
+/// A read-only `MATCH … WITH … RETURN` chain runs fully vectorized end-to-end via
+/// `vectorized_linear`: one columnar frame threads stage-to-stage, carrying
+/// element columns forward (so prop reads / filters / ORDER BY past a `WITH` stay
+/// vectorized) and adding computed value columns beside them — no per-stage
+/// round-trip through `Vec<Binding>`. It bails (→ scalar `run_linear`) on a `WITH`
+/// that aggregates / DISTINCT / ORDER BYs mid-pipeline, an extra `MATCH` after a
+/// `WITH` (expanding from a frame isn't supported yet), mutations, or subqueries.
+/// `ScanCols::vals` is what makes this work: a carried node stays a fast `Elem`
+/// column while `n.age * 2 AS x` rides alongside as a value column.
 /// Same expressions where the scalar *bytecode VM* lost 6-17% (see [`USE_VM`])
 /// win 2-5x here: dispatch amortizes over N rows, the f64 loops vectorize, and
 /// values never get boxed into `Val` per row.
@@ -1829,22 +1829,31 @@ enum Elem {
     Edge,
 }
 
-/// The matched row set as parallel columns: for each bound binding slot, the
-/// element kind plus a per-row id (dense vertex/edge index). A "row" is one full
-/// match; `slot(s)` gives that slot's id column. This is what every vectorized
-/// expression reads from, so traversals (`a`, `r`, `b` slots) work the same as a
-/// single-node scan (`n` slot) — just more slots.
+/// The matched row set as parallel columns. Each binding slot is either an
+/// *element* column (kind + per-row dense id — fast to gather props from, and the
+/// only thing a traversal can expand) or, once a `WITH` projects computed values,
+/// a *value* column (per-row `Val`). A "row" is one full match. This is what
+/// every vectorized expression reads from, so traversals (`a`, `r`, `b` slots)
+/// and a single-node scan (`n` slot) look the same — just more slots — and a
+/// pipeline `WITH` can carry elements forward as fast columns while adding
+/// computed value columns beside them.
 struct ScanCols {
     n: usize,
     slots: Vec<Option<(Elem, Vec<u32>)>>,
+    /// Computed value columns, parallel to `slots` (set only post-projection).
+    vals: Vec<Option<Vec<Val>>>,
 }
 
 impl ScanCols {
     fn new(scope_len: usize) -> Self {
-        ScanCols { n: 0, slots: (0..scope_len.max(1)).map(|_| None).collect() }
+        let w = scope_len.max(1);
+        ScanCols { n: 0, slots: (0..w).map(|_| None).collect(), vals: (0..w).map(|_| None).collect() }
     }
     fn slot(&self, s: usize) -> Option<(Elem, &[u32])> {
         self.slots.get(s).and_then(|o| o.as_ref()).map(|(e, v)| (*e, v.as_slice()))
+    }
+    fn val_slot(&self, s: usize) -> Option<&[Val]> {
+        self.vals.get(s).and_then(|o| o.as_deref())
     }
 }
 
@@ -1875,11 +1884,9 @@ fn scalar_col(graph: &Graph, ctx: &Ctx, sc: &ScanCols, e: &CExpr) -> Vec<Val> {
         .map(|i| {
             for (slot, col) in sc.slots.iter().enumerate() {
                 if let Some((elem, ids)) = col {
-                    let v = match elem {
-                        Elem::Node => Val::Node(ids[i]),
-                        Elem::Edge => Val::Edge(ids[i]),
-                    };
-                    b.set(slot, v);
+                    b.set(slot, match elem { Elem::Node => Val::Node(ids[i]), Elem::Edge => Val::Edge(ids[i]) });
+                } else if let Some(vals) = &sc.vals[slot] {
+                    b.set(slot, vals[i].clone());
                 }
             }
             eval(&Env::new(graph, ctx, &b), e)
@@ -2190,6 +2197,8 @@ fn gather_rows(sc: &ScanCols, idx: &[usize]) -> ScanCols {
     for (s, col) in sc.slots.iter().enumerate() {
         if let Some((elem, ids)) = col {
             out.slots[s] = Some((*elem, idx.iter().map(|&i| ids[i]).collect()));
+        } else if let Some(vals) = &sc.vals[s] {
+            out.vals[s] = Some(idx.iter().map(|&i| vals[i].clone()).collect());
         }
     }
     out
@@ -2208,6 +2217,16 @@ fn compact(sc: &mut ScanCols, keep: &[bool]) {
             }
             v.truncate(w);
         }
+    }
+    for v in sc.vals.iter_mut().flatten() {
+        let mut w = 0;
+        for i in 0..v.len() {
+            if keep[i] {
+                v.swap(w, i);
+                w += 1;
+            }
+        }
+        v.truncate(w);
     }
     sc.n = keep.iter().filter(|&&k| k).count();
 }
@@ -2437,8 +2456,20 @@ fn vectorized_cols(graph: &Graph, ctx: &Ctx, incoming: &[Binding], matches: &[&C
         compact(&mut sc, &keep);
     }
 
+    project_frame_cols(graph, ctx, &sc, proj)
+}
+
+/// Project an already-built (and WHERE-filtered) frame `sc` to column-major output
+/// — aggregate / ORDER BY / DISTINCT / plain projection + SKIP/LIMIT. Shared by
+/// the single-scan entry ([`vectorized_cols`]) and a pipeline's terminal RETURN
+/// (where `sc` may carry computed value columns from upstream `WITH`s).
+fn project_frame_cols(graph: &Graph, ctx: &Ctx, sc: &ScanCols, proj: &CProjection) -> Option<Vec<Vec<Val>>> {
+    let has_order = !proj.order_by.is_empty();
+    if has_order && (proj.aggregating || proj.distinct || proj.order_needs_output) {
+        return None;
+    }
     if proj.aggregating {
-        return vectorized_aggregate(graph, ctx, &sc, proj);
+        return vectorized_aggregate(graph, ctx, sc, proj);
     }
 
     // ORDER BY (input-keyed): evaluate the sort keys as columns, sort row indices,
@@ -2452,6 +2483,8 @@ fn vectorized_cols(graph: &Graph, ctx: &Ctx, incoming: &[Binding], matches: &[&C
         for (j, &islot) in proj.order_overlay.iter().enumerate() {
             if let Some((elem, ids)) = &sc.slots[islot] {
                 sort_sc.slots[proj.out_len + j] = Some((*elem, ids.clone()));
+            } else if let Some(vals) = &sc.vals[islot] {
+                sort_sc.vals[proj.out_len + j] = Some(vals.clone());
             }
         }
         let keycols: Vec<Vec<Val>> =
@@ -2468,7 +2501,7 @@ fn vectorized_cols(graph: &Graph, ctx: &Ctx, incoming: &[Binding], matches: &[&C
         });
         let start = proj.skip.unwrap_or(0).min(idx.len());
         let end = proj.limit.map(|l| (start + l).min(idx.len())).unwrap_or(idx.len());
-        let sub = gather_rows(&sc, &idx[start..end]);
+        let sub = gather_rows(sc, &idx[start..end]);
         return Some(proj.items.iter().map(|item| eval_vec(graph, ctx, &sub, &item.expr).into_vals()).collect());
     }
 
@@ -2478,7 +2511,7 @@ fn vectorized_cols(graph: &Graph, ctx: &Ctx, incoming: &[Binding], matches: &[&C
     // per-row string key). Falls through to the generic dedup otherwise.
     if proj.distinct {
         let all_items: Vec<&CReturnItem> = proj.items.iter().collect();
-        if let Some((_, rep_row, ngroups)) = group_ids(graph, ctx, &sc, &all_items) {
+        if let Some((_, rep_row, ngroups)) = group_ids(graph, ctx, sc, &all_items) {
             let start = proj.skip.unwrap_or(0).min(ngroups);
             let end = proj.limit.map(|l| (start + l).min(ngroups)).unwrap_or(ngroups);
             let mut out: Vec<Vec<Val>> = vec![Vec::with_capacity(end - start); proj.items.len()];
@@ -2500,7 +2533,7 @@ fn vectorized_cols(graph: &Graph, ctx: &Ctx, incoming: &[Binding], matches: &[&C
     }
 
     // Non-aggregating projection: evaluate each item as a column.
-    let mut cols: Vec<Vec<Val>> = proj.items.iter().map(|item| eval_vec(graph, ctx, &sc, &item.expr).into_vals()).collect();
+    let mut cols: Vec<Vec<Val>> = proj.items.iter().map(|item| eval_vec(graph, ctx, sc, &item.expr).into_vals()).collect();
     if proj.distinct {
         // Generic DISTINCT (expression / non-typed items): keep the first
         // occurrence of each row in scan order, dedup on a composite cell key.
@@ -2536,6 +2569,88 @@ fn vectorized_cols(graph: &Graph, ctx: &Ctx, incoming: &[Binding], matches: &[&C
         }
         Some(cols)
     }
+}
+
+/// Project a frame through a non-aggregating `WITH` into a new frame: bare element
+/// variables are carried forward as fast element columns (so downstream prop reads
+/// and filters stay vectorized), and every other item becomes a computed value
+/// column. Returns `None` for shapes a mid-pipeline `WITH` shouldn't carry
+/// (aggregate / DISTINCT / ORDER BY / SKIP / LIMIT / `*`) — those end the pipeline
+/// or fall back to scalar.
+fn with_frame(graph: &Graph, ctx: &Ctx, sc: &ScanCols, proj: &CProjection) -> Option<ScanCols> {
+    if proj.aggregating || proj.distinct || !proj.order_by.is_empty() || proj.skip.is_some() || proj.limit.is_some() || proj.star {
+        return None;
+    }
+    let mut out = ScanCols::new(proj.out_len);
+    out.n = sc.n;
+    for (i, item) in proj.items.iter().enumerate() {
+        if let CExpr::Var(slot) = &item.expr {
+            if let Some((elem, ids)) = sc.slot(*slot) {
+                out.slots[i] = Some((elem, ids.to_vec())); // carry element column forward
+                continue;
+            }
+            if let Some(vals) = sc.val_slot(*slot) {
+                out.vals[i] = Some(vals.to_vec()); // carry a prior computed column
+                continue;
+            }
+        }
+        out.vals[i] = Some(eval_vec(graph, ctx, sc, &item.expr).into_vals());
+    }
+    Some(out)
+}
+
+/// Vectorized executor for a whole linear pipeline: `MATCH <path> (WITH …)+
+/// RETURN …`. Threads a single columnar frame stage-to-stage — carrying element
+/// columns forward so prop reads/filters/ORDER BY past a `WITH` stay vectorized,
+/// instead of round-tripping each stage through `Vec<Binding>`. Returns `None`
+/// (→ scalar `run_linear`) unless: one leading non-optional single-path MATCH, at
+/// least one intermediate (non-aggregating) WITH, a terminal RETURN, and nothing
+/// else (no extra MATCH / mutation / subquery clause, no var-length, no self-join).
+fn vectorized_linear(linear: &CLinear, graph: &Graph, plan: &CQuery, params: &[Val]) -> Option<RowSet> {
+    // Validate the whole clause shape *before* any scan work, so a non-pipeline
+    // query bails for free (no wasted build_scan) and keeps the entry path.
+    let (first, rest) = linear.clauses.split_first()?;
+    let CClause::Match { optional: false, patterns, where_, scope_len, .. } = first else {
+        return None;
+    };
+    if patterns.len() != 1 {
+        return None;
+    }
+    let (last, withs) = rest.split_last()?;
+    // Require ≥1 WITH (plain `MATCH … RETURN` keeps the entry path, incl. LIMIT cap),
+    // every middle clause a WITH, and the tail a RETURN.
+    if withs.is_empty() || !withs.iter().all(|c| matches!(c, CClause::With { .. })) || !matches!(last, CClause::Return(_)) {
+        return None;
+    }
+
+    let ctx = resolve_ctx(graph, plan, params);
+    let filter = |sc: &mut ScanCols, w: &CExpr| {
+        let keep: Vec<bool> = eval_vec(graph, &ctx, sc, w).into_truth().iter().map(|t| *t == Some(true)).collect();
+        compact(sc, &keep);
+    };
+    let mut sc = build_scan(graph, &ctx, &patterns[0], *scope_len, None)?;
+    if let Some(w) = where_ {
+        filter(&mut sc, w);
+    }
+    for c in withs {
+        let CClause::With { projection, where_, .. } = c else {
+            return None;
+        };
+        sc = with_frame(graph, &ctx, &sc, projection)?;
+        if let Some(w) = where_ {
+            filter(&mut sc, w);
+        }
+    }
+    let CClause::Return(proj) = last else {
+        return None;
+    };
+    let cols = project_frame_cols(graph, &ctx, &sc, proj)?;
+    let nrows = cols.first().map_or(0, |c| c.len());
+    let mut rs = RowSet::new(proj.out_names.clone());
+    for i in 0..nrows {
+        rs.push_row(cols.iter().map(|c| val_to_value(graph, &c[i])));
+    }
+    Some(rs)
 }
 
 /// Project a terminal RETURN directly to output `Value` rows. For the common
@@ -2901,12 +3016,24 @@ fn combine(op: SetOp, left: RowSet, right: RowSet) -> RowSet {
 /// already produced the terminal RETURN's flat `RowSet` (cols + columnar cells).
 fn run_cquery(plan: &CQuery, graph: &mut Graph, params: &[Val]) -> Result<RowSet, String> {
     let first = plan.parts.first().ok_or("empty query")?;
-    let mut rs = run_linear(first, graph, plan, params)?;
+    let mut rs = run_part(first, graph, plan, params)?;
     for (i, op) in plan.ops.iter().enumerate() {
-        let right = run_linear(&plan.parts[i + 1], graph, plan, params)?;
+        let right = run_part(&plan.parts[i + 1], graph, plan, params)?;
         rs = combine(*op, rs, right);
     }
     Ok(rs)
+}
+
+/// Run one linear part: try the fully-vectorized pipeline executor first (it
+/// handles read-only `MATCH … WITH … RETURN` chains end-to-end), else the scalar
+/// binding-based driver.
+fn run_part(linear: &CLinear, graph: &mut Graph, plan: &CQuery, params: &[Val]) -> Result<RowSet, String> {
+    if USE_VEC {
+        if let Some(rs) = vectorized_linear(linear, graph, plan, params) {
+            return Ok(rs);
+        }
+    }
+    run_linear(linear, graph, plan, params)
 }
 
 /// Bind named params into the plan's positional slot order.
