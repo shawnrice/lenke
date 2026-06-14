@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::sync::Arc;
 
-#[cfg(feature = "parallel")]
+#[cfg(feature = "parallel-query")]
 use rayon::prelude::*;
 
 use super::ast::{ArithOp, CompareOp, Direction, Lit, Quantifier, SetOp, SetOpKind};
@@ -2223,7 +2223,7 @@ fn gather_rows(sc: &ScanCols, idx: &[usize]) -> ScanCols {
 
 /// A contiguous row-range view of a frame as its own (owned) `ScanCols` — used to
 /// split a large frame into chunks for parallel column evaluation.
-#[cfg(feature = "parallel")]
+#[cfg(feature = "parallel-query")]
 fn slice_rows(sc: &ScanCols, lo: usize, hi: usize) -> ScanCols {
     let mut out = ScanCols::new(sc.slots.len());
     out.n = hi - lo;
@@ -2238,8 +2238,8 @@ fn slice_rows(sc: &ScanCols, lo: usize, hi: usize) -> ScanCols {
 }
 
 /// Evaluate each projection item as a `Val` column over the whole frame. For a
-/// large frame (and the `parallel` feature) the rows are split into chunks
-/// evaluated concurrently, then the per-item columns are concatenated in order —
+/// large frame (and the opt-in `parallel-query` feature) the rows are split into
+/// chunks evaluated concurrently, then the per-item columns concatenated in order —
 /// the expression eval is embarrassingly parallel and `Graph`/`Ctx` are `Sync`.
 ///
 /// Measured (52k rows, 16 threads): ~1.7x on heavy projections (expr-heavy 4.4ms
@@ -2252,7 +2252,7 @@ fn slice_rows(sc: &ScanCols, lo: usize, hi: usize) -> ScanCols {
 /// latency for throughput, so it's a win mainly when cores would otherwise idle.
 fn par_project(graph: &Graph, ctx: &Ctx, sc: &ScanCols, items: &[CReturnItem]) -> Vec<Vec<Val>> {
     let serial = || items.iter().map(|it| eval_vec(graph, ctx, sc, &it.expr).into_vals()).collect();
-    #[cfg(feature = "parallel")]
+    #[cfg(feature = "parallel-query")]
     {
         // Threshold: only worth splitting once there's enough per-row work to
         // amortize chunk slicing + thread hand-off.
