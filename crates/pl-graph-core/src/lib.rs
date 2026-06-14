@@ -11,6 +11,7 @@
 //! later wasm-bindgen) over the same functions.
 
 pub mod arrow;
+pub mod codec;
 pub mod ffi;
 pub mod gql;
 pub mod gremlin;

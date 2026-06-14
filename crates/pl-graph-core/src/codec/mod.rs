@@ -1,0 +1,184 @@
+//! Serialization codecs mirroring the TypeScript `@pl-graph/serialization`
+//! package: **pg-json**, **pg-text**, **graphson**, and **csv**. (NDJSON has its
+//! own module, [`crate::ndjson`].) Each codec exposes `encode(&Graph) -> String`
+//! and `decode(&str) -> Result<Graph, String>`, and [`serialize`] /
+//! [`deserialize`] dispatch by format name (including `"ndjson"`).
+//!
+//! ## Two faithful divergences from the TS core
+//!
+//! Both are pre-existing properties of this columnar core (see [`crate::ndjson`]),
+//! not codec choices:
+//!   - **An edge carries a single type** (`etype`), not a label *set*. Where a
+//!     format models edge labels as a list (PG-JSON `labels`, CSV `:TYPE`,
+//!     GraphSON `label`), we emit the one type and, on decode, take the first
+//!     label as the type.
+//!   - **Edges have no external id** — they are identified by index. Formats with
+//!     an edge-id slot emit a synthesized `e{index}` id and ignore any id on
+//!     decode. **Node** ids round-trip exactly.
+//!
+//! Streaming variants (the TS `encodeStream`/`decodeStream`) are intentionally
+//! omitted: the idiomatic bulk path here is the whole-string `encode`/`decode`
+//! over the `Builder`, which is the codec-contract surface.
+
+pub mod csv;
+pub mod graphson;
+pub mod pg_json;
+pub mod pg_text;
+
+use std::fmt::Write as _;
+use std::sync::Arc;
+
+use serde_json::Value as J;
+
+use crate::graph::{Dict, Graph, Properties, Value};
+
+// ---------------------------------------------------------------------------
+// Element/property access over the columnar store
+// ---------------------------------------------------------------------------
+
+/// Present properties of element `idx`, in key-id (intern) order. A `Null` from
+/// the store means *absent* — `Null` is never stored (see `set_value`) — so it
+/// is skipped, matching the "key not on the element" semantics every codec uses.
+pub(crate) fn element_props<'a>(store: &'a Properties, strs: &Dict, idx: usize) -> Vec<(&'a str, Value)> {
+    let mut out = Vec::new();
+    for kid in 0..store.cols.len() as u32 {
+        let v = store.value_id(idx, kid, strs);
+        if matches!(v, Value::Null) {
+            continue;
+        }
+        out.push((store.keys.text(kid), v));
+    }
+    out
+}
+
+/// A node's labels as string slices, in stored order.
+pub(crate) fn node_labels(g: &Graph, vi: u32) -> Vec<&str> {
+    g.vertex_labels(vi).iter().map(|&l| g.labels.text(l)).collect()
+}
+
+/// True if a float is an exact integer value — GraphSON `g:Int64` vs `g:Double`,
+/// CSV `integer` vs `float`. Mirrors JS `Number.isInteger`.
+pub(crate) fn is_intish(x: f64) -> bool {
+    x.is_finite() && x.fract() == 0.0
+}
+
+// ---------------------------------------------------------------------------
+// JSON scalar emit (shared by pg-json and graphson; mirrors ndjson)
+// ---------------------------------------------------------------------------
+
+/// Write a JSON string literal (with escaping) into `out`.
+pub(crate) fn push_json_str(out: &mut String, s: &str) {
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+}
+
+/// Write a finite number, or `null` for NaN/±Infinity (not representable in JSON).
+pub(crate) fn push_num(out: &mut String, x: f64) {
+    if x.is_finite() {
+        let _ = write!(out, "{x}");
+    } else {
+        out.push_str("null");
+    }
+}
+
+/// Emit a core [`Value`] as a plain JSON value (used by pg-json).
+pub(crate) fn push_value(out: &mut String, v: &Value) {
+    match v {
+        Value::Null => out.push_str("null"),
+        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+        Value::Num(x) => push_num(out, *x),
+        Value::Str(s) => push_json_str(out, s),
+        Value::List(a) => {
+            out.push('[');
+            for (i, e) in a.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                push_value(out, e);
+            }
+            out.push(']');
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// JSON scalar parse (shared by pg-json; graphson has its own typed decode)
+// ---------------------------------------------------------------------------
+
+/// A `serde_json::Value` as a core [`Value`] (objects coerce to `Null`, matching
+/// ndjson — nested objects are outside the LPG scalar/list model).
+pub(crate) fn json_to_value(j: &J) -> Value {
+    match j {
+        J::Null => Value::Null,
+        J::Bool(b) => Value::Bool(*b),
+        J::Number(n) => Value::Num(n.as_f64().unwrap_or(f64::NAN)),
+        J::String(s) => Value::Str(Arc::from(s.as_str())),
+        J::Array(a) => Value::List(a.iter().map(json_to_value).collect()),
+        J::Object(_) => Value::Null,
+    }
+}
+
+/// A JSON id field as a string (string verbatim; numbers/other stringified).
+pub(crate) fn json_id(j: &J) -> String {
+    match j {
+        J::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// A JSON array field as a `Vec<String>` (non-string elements dropped).
+pub(crate) fn json_str_array(field: Option<&J>) -> Vec<String> {
+    field
+        .and_then(J::as_array)
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .unwrap_or_default()
+}
+
+/// A JSON object field as core property pairs (used by pg-json).
+pub(crate) fn json_props(field: Option<&J>) -> Vec<(String, Value)> {
+    field
+        .and_then(J::as_object)
+        .map(|m| m.iter().map(|(k, v)| (k.clone(), json_to_value(v))).collect())
+        .unwrap_or_default()
+}
+
+// ---------------------------------------------------------------------------
+// Format dispatch (mirrors the TS `serialize` / `deserialize`)
+// ---------------------------------------------------------------------------
+
+/// Serialize `g` in the named format: `pg-json | pg-text | graphson | csv | ndjson`.
+pub fn serialize(g: &Graph, format: &str) -> Result<String, String> {
+    match format {
+        "pg-json" => Ok(pg_json::encode(g)),
+        "pg-text" => Ok(pg_text::encode(g)),
+        "graphson" => Ok(graphson::encode(g)),
+        "csv" => Ok(csv::encode(g)),
+        "ndjson" => Ok(crate::ndjson::encode(g)),
+        other => Err(format!("unknown serialization format '{other}'")),
+    }
+}
+
+/// Deserialize `input` in the named format into a fresh graph.
+pub fn deserialize(input: &str, format: &str) -> Result<Graph, String> {
+    match format {
+        "pg-json" => pg_json::decode(input),
+        "pg-text" => pg_text::decode(input),
+        "graphson" => graphson::decode(input),
+        "csv" => csv::decode(input),
+        "ndjson" => Ok(crate::ndjson::decode(input)),
+        other => Err(format!("unknown serialization format '{other}'")),
+    }
+}
