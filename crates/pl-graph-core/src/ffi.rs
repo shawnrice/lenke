@@ -38,7 +38,7 @@ pub unsafe extern "C" fn plg_build_csr(
 
 #[no_mangle]
 pub extern "C" fn plg_abi_version() -> u32 {
-    3
+    4 // 4: added the Arrow columnar result surface (plg_query_arrow/plg_free_arrow)
 }
 
 // ---------- stateful columnar graph ----------
@@ -205,6 +205,68 @@ pub unsafe extern "C" fn plg_query_rows(
     let bytes = rowset.to_json().into_bytes().into_boxed_slice();
     *out_len = bytes.len();
     Box::into_raw(bytes) as *mut u8
+}
+
+/// Parse + run a query and return the result as an **Apache Arrow** columnar
+/// blob (see [`crate::arrow`]) instead of JSON. The buffer is heap-allocated here
+/// **8-byte aligned** (so the caller's `Float64Array`/`Int32Array` views over the
+/// column buffers are valid) and must be returned via `plg_free_arrow` with the
+/// written length. The byte length is written to `out_len`. Returns null on a
+/// parse / null / UTF-8 error (and leaves `out_len` untouched).
+///
+/// The columnar carrier is zero-copy on the caller side: a query result is
+/// single-owner and consume-once, so the caller views the Arrow buffers in place
+/// (browser: `apache-arrow` `makeData`; server: bun:ffi typed-array over the
+/// pointer) — no serialize here, no parse there.
+///
+/// # Safety
+/// `g` valid and exclusively borrowed for this call; `q_ptr`/`q_len` valid
+/// UTF-8; `out_len` writable.
+#[no_mangle]
+pub unsafe extern "C" fn plg_query_arrow(
+    g: *mut Graph,
+    q_ptr: *const u8,
+    q_len: usize,
+    out_len: *mut usize,
+) -> *mut u8 {
+    if g.is_null() || q_ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    let q = match std::str::from_utf8(std::slice::from_raw_parts(q_ptr, q_len)) {
+        Ok(s) => s,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    let parsed = match gql::parse(q) {
+        Ok(p) => p,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    let rowset = match parsed.execute(&mut *g, &gql::eval::Params::new()) {
+        Ok(rs) => rs,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    let blob = crate::arrow::to_arrow(&rowset);
+    *out_len = blob.len();
+    // 8-byte-aligned copy so the caller can view f64/i32 column buffers directly.
+    let len = blob.len().max(1);
+    let layout = std::alloc::Layout::from_size_align(len, 8).unwrap();
+    let p = std::alloc::alloc(layout);
+    if !p.is_null() {
+        std::ptr::copy_nonoverlapping(blob.as_ptr(), p, blob.len());
+    }
+    p
+}
+
+/// Free a buffer returned by `plg_query_arrow`. Must use the same `len` that was
+/// written to `out_len` (the allocation is 8-byte aligned).
+///
+/// # Safety
+/// `ptr`/`len` must come from `plg_query_arrow`.
+#[no_mangle]
+pub unsafe extern "C" fn plg_free_arrow(ptr: *mut u8, len: usize) {
+    if !ptr.is_null() {
+        let len = len.max(1);
+        std::alloc::dealloc(ptr, std::alloc::Layout::from_size_align(len, 8).unwrap());
+    }
 }
 
 /// SIMD (or scalar) predicate scan `key > threshold` over a numeric column.
