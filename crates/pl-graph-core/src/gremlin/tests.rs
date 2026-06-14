@@ -607,6 +607,90 @@ fn select_pop_first_vs_last() {
     assert_eq!(names(q(last)), vec!["josh", "vadas"]);
 }
 
+// ===== textual Gremlin parser =====
+
+/// Parse a Gremlin string, run it, return result values.
+fn qs(query: &str) -> Vec<GVal> {
+    let mut g = modern();
+    let t = super::parse(query).unwrap_or_else(|e| panic!("parse `{query}`: {e}"));
+    t.run(&mut g)
+}
+
+#[test]
+fn parse_basic_chain() {
+    assert_eq!(names(qs("g.V().has('name', 'marko').out('KNOWS').values('name')")), vec!["josh", "vadas"]);
+}
+
+#[test]
+fn parse_predicate_call() {
+    assert_eq!(names(qs("g.V().has('age', gt(30)).values('name')")), vec!["josh", "peter"]);
+    assert_eq!(names(qs("g.V().has('name', within('josh','marko')).values('name')")), vec!["josh", "marko"]);
+    assert_eq!(names(qs("g.V().has('age', between(28, 33)).values('name')")), vec!["josh", "marko"]);
+}
+
+#[test]
+fn parse_count_and_group() {
+    assert_eq!(one_num(qs("g.V().hasLabel('PERSON').count()")), 4.0);
+    let out = qs("g.V().groupCount().by(T.label)");
+    assert_eq!(map_sorted(&out[0]), vec![("PERSON".into(), GVal::Num(4.0)), ("SOFTWARE".into(), GVal::Num(2.0))]);
+}
+
+#[test]
+fn parse_order_by_desc() {
+    let r = qs("g.V().hasLabel('PERSON').order().by('age', desc).values('name')");
+    assert_eq!(ordered(r), vec!["peter", "josh", "marko", "vadas"]);
+}
+
+#[test]
+fn parse_nested_traversals() {
+    // where with anonymous sub-traversal
+    assert_eq!(names(qs("g.V().where(__.in('CREATED').count().is(gte(2))).values('name')")), vec!["lop"]);
+    // repeat with anonymous body
+    assert_eq!(names(qs("g.V('1').repeat(__.out()).times(2).values('name')")), vec!["lop", "ripple"]);
+    // project with by sub-traversal
+    let r = qs("g.V().has('name','marko').project('out').by(__.outE().count())");
+    let m = match &r[0] {
+        GVal::Map(e) => e,
+        _ => panic!(),
+    };
+    assert_eq!(m[0].1, GVal::Num(3.0));
+}
+
+#[test]
+fn parse_select_and_as() {
+    let r = qs("g.V().has('name','marko').as('a').out('CREATED').as('b').select('a','b').by('name').by('name')");
+    let m = match &r[0] {
+        GVal::Map(e) => e,
+        _ => panic!(),
+    };
+    assert_eq!(s(&m[0].1), "marko");
+    assert_eq!(s(&m[1].1), "lop");
+}
+
+#[test]
+fn parse_union_and_coalesce() {
+    let r = qs("g.V().has('name','marko').union(__.values('name'), __.values('age'))");
+    assert_eq!(r, vec![GVal::Str("marko".into()), GVal::Num(29.0)]);
+}
+
+#[test]
+fn parse_to_json_round_trip() {
+    let mut g = modern();
+    let t = super::parse("g.V().hasLabel('PERSON').order().by('name').values('name')").unwrap();
+    let vals = t.run(&mut g);
+    let json = super::exec::results_to_json(&g, &vals);
+    assert_eq!(json, r#"["josh","marko","peter","vadas"]"#);
+}
+
+#[test]
+fn parse_vertex_json_has_id_label() {
+    let mut g = modern();
+    let t = super::parse("g.V('1')").unwrap();
+    let vals = t.run(&mut g);
+    let json = super::exec::results_to_json(&g, &vals);
+    assert_eq!(json, r#"[{"id":"1","label":"PERSON"}]"#);
+}
+
 // helper used above
 fn list_names_ordered(g: &GVal) -> Vec<String> {
     match g {

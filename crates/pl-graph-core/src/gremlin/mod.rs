@@ -15,10 +15,12 @@
 use std::sync::Arc;
 
 pub mod exec;
+pub mod parse;
 #[cfg(test)]
 mod tests;
 
 pub use exec::run;
+pub use parse::parse;
 
 /// A runtime traversal value. Graph elements are dense ids (like `gql::Val`);
 /// `List`/`Map` carry `fold`/`valueMap`/`group`/`select`/`path` results.

@@ -60,6 +60,49 @@ pub fn run(graph: &mut Graph, t: &Traversal) -> Vec<GVal> {
     run_steps(graph, &mut ctx, &t.steps, Vec::new()).into_iter().map(|t| t.val).collect()
 }
 
+/// Serialize traversal results to a JSON array string — the FFI carrier. Graph
+/// elements become `{"id":…,"label":…}`; lists → arrays; maps → objects.
+pub fn results_to_json(graph: &Graph, vals: &[GVal]) -> String {
+    let arr = serde_json::Value::Array(vals.iter().map(|v| gval_json(graph, v)).collect());
+    arr.to_string()
+}
+
+fn gval_json(graph: &Graph, v: &GVal) -> serde_json::Value {
+    use serde_json::Value as J;
+    match v {
+        GVal::Null => J::Null,
+        GVal::Bool(b) => J::Bool(*b),
+        GVal::Num(n) => serde_json::Number::from_f64(*n).map(J::Number).unwrap_or(J::Null),
+        GVal::Str(s) => J::String(s.to_string()),
+        GVal::Vertex(_) | GVal::Edge(_) => {
+            let id = match elem_id(graph, v) {
+                GVal::Str(s) => s.to_string(),
+                _ => String::new(),
+            };
+            let label = match elem_label(graph, v) {
+                GVal::Str(s) => s.to_string(),
+                _ => String::new(),
+            };
+            J::Object(serde_json::Map::from_iter([("id".to_string(), J::String(id)), ("label".to_string(), J::String(label))]))
+        }
+        GVal::List(items) => J::Array(items.iter().map(|x| gval_json(graph, x)).collect()),
+        GVal::Map(entries) => {
+            let mut m = serde_json::Map::new();
+            for (k, val) in entries {
+                let key = match k {
+                    GVal::Str(s) => s.to_string(),
+                    other => match gval_json(graph, other) {
+                        J::String(s) => s,
+                        j => j.to_string(),
+                    },
+                };
+                m.insert(key, gval_json(graph, val));
+            }
+            J::Object(m)
+        }
+    }
+}
+
 fn run_steps(graph: &mut Graph, ctx: &mut Ctx, steps: &[Step], mut stream: Vec<Trav>) -> Vec<Trav> {
     for step in steps {
         stream = apply(graph, ctx, step, stream);

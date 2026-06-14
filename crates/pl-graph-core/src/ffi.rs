@@ -38,7 +38,7 @@ pub unsafe extern "C" fn plg_build_csr(
 
 #[no_mangle]
 pub extern "C" fn plg_abi_version() -> u32 {
-    4 // 4: added the Arrow columnar result surface (plg_query_arrow/plg_free_arrow)
+    5 // 5: added textual Gremlin (plg_gremlin_json); 4: Arrow columnar surface
 }
 
 // ---------- stateful columnar graph ----------
@@ -268,6 +268,40 @@ pub unsafe extern "C" fn plg_free_arrow(ptr: *mut u8, len: usize) {
         let len = len.max(1);
         std::alloc::dealloc(ptr, std::alloc::Layout::from_size_align(len, 8).unwrap());
     }
+}
+
+/// Parse + run a **textual Gremlin** query (the Groovy wire form, e.g.
+/// `g.V().has('name','marko').out('knows').values('name')`) and return the
+/// results as a JSON array. Heap-allocated; free with `plg_free_buf`. Byte length
+/// written to `out_len`. Null on a parse/UTF-8 error (and `out_len` untouched).
+///
+/// JSON (not Arrow) because Gremlin results are heterogeneous per row — a stream
+/// of mixed scalars / elements / maps — which doesn't fit a columnar carrier.
+///
+/// # Safety
+/// `g` valid and exclusively borrowed; `q_ptr`/`q_len` valid UTF-8; `out_len` writable.
+#[no_mangle]
+pub unsafe extern "C" fn plg_gremlin_json(
+    g: *mut Graph,
+    q_ptr: *const u8,
+    q_len: usize,
+    out_len: *mut usize,
+) -> *mut u8 {
+    if g.is_null() || q_ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    let q = match std::str::from_utf8(std::slice::from_raw_parts(q_ptr, q_len)) {
+        Ok(s) => s,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    let plan = match crate::gremlin::parse(q) {
+        Ok(p) => p,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    let vals = crate::gremlin::run(&mut *g, &plan);
+    let bytes = crate::gremlin::exec::results_to_json(&*g, &vals).into_bytes().into_boxed_slice();
+    *out_len = bytes.len();
+    Box::into_raw(bytes) as *mut u8
 }
 
 /// SIMD (or scalar) predicate scan `key > threshold` over a numeric column.
