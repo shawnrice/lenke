@@ -13,7 +13,8 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@pl-graph/core": "workspace:*"
+    "@pl-graph/core": "workspace:*",
+    "@pl-graph/errors": "workspace:*"
   },
   "devDependencies": {
     "@pl-graph/dev": "workspace:*",
