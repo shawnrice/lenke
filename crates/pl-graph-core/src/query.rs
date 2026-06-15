@@ -1274,4 +1274,71 @@ mod tests {
             r#"{"columns":["a.dept","a.age","a.active"],"rows":[["d0",0,true]]}"#
         );
     }
+
+    /// The hand-rolled emitter is encode-only over a fixed shape, but it still has
+    /// to be exactly right. Use the *trusted* `serde_json` parser as an oracle:
+    /// emit a spread of values with our code, parse the result back with serde,
+    /// and assert it reconstructs each value (NaN/±Inf documented to become null).
+    /// This proves our output is valid JSON and semantically faithful.
+    #[test]
+    fn to_json_round_trips_through_the_serde_oracle() {
+        use crate::graph::Value::{Bool, List, Null, Num, Str};
+        let cases: Vec<Value> = vec![
+            Str("plain".into()),
+            Str("".into()),
+            Str("quote\" back\\slash".into()),
+            Str("ws\n\t\r and ctrl \u{1}\u{1f}".into()),
+            Str("del\u{7f} unicode é ✓ 🎉".into()),
+            // The sneaky ones: a bare null byte and an embedded one (lowest
+            // control char →  ); a zero-width space and BOM (invisible but
+            // ordinary codepoints, emitted raw); U+2028/U+2029 (valid in JSON,
+            // historically broke JS string literals — JSON.parse handles them).
+            Str("\u{0}".into()),
+            Str("embedded\u{0}null".into()),
+            Str("zero\u{200b}width\u{feff}bom".into()),
+            Str("line\u{2028}para\u{2029}sep".into()),
+            Bool(true),
+            Bool(false),
+            Null,
+            Num(0.0),
+            Num(-0.0),
+            Num(42.0),
+            Num(-3.5),
+            Num(1e20),
+            Num(1e-12),
+            Num(123456789.125),
+            Num(f64::NAN),
+            Num(f64::INFINITY),
+            Num(f64::NEG_INFINITY),
+            List(vec![]),
+            List(vec![Num(1.0), Str("a,b\"c".into()), Bool(false), Null]),
+            List(vec![List(vec![Num(2.0)]), Str("nested".into())]),
+        ];
+        let mut rs = RowSet::new(vec!["v".to_string()]);
+        for c in &cases {
+            rs.push_row([c.clone()]);
+        }
+        let doc: serde_json::Value =
+            serde_json::from_str(&rs.to_json()).expect("hand-rolled JSON must parse");
+        let rows = doc.get("rows").and_then(|r| r.as_array()).expect("rows array");
+        assert_eq!(rows.len(), cases.len());
+        for (i, want) in cases.iter().enumerate() {
+            assert!(serde_matches(&rows[i][0], want), "case {i}: {want:?} → {}", rows[i][0]);
+        }
+    }
+
+    /// Compare a serde-parsed value against our core `Value` (numbers by f64, so
+    /// `42` and `42.0` agree; non-finite numbers must have been emitted as null).
+    fn serde_matches(got: &serde_json::Value, want: &Value) -> bool {
+        match want {
+            Value::Null => got.is_null(),
+            Value::Bool(b) => got.as_bool() == Some(*b),
+            Value::Num(x) if x.is_finite() => got.as_f64() == Some(*x),
+            Value::Num(_) => got.is_null(),
+            Value::Str(s) => got.as_str() == Some(s.as_ref()),
+            Value::List(items) => got
+                .as_array()
+                .is_some_and(|a| a.len() == items.len() && a.iter().zip(items).all(|(g, w)| serde_matches(g, w))),
+        }
+    }
 }
