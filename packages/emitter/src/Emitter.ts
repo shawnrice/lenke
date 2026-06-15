@@ -6,6 +6,15 @@ export type Listener<T extends EmitterEvent<string, any>> = (event: T) => any;
 
 export type EmitterOptions = {
   enabled?: boolean;
+  /**
+   * Invoked when a listener throws. This isolates failures — one bad listener
+   * can neither stop the other listeners nor break the caller. That last part
+   * matters here: callers inspect `event.defaultPrevented` *after* `emit`
+   * returns (the graph vetoes mutations this way), so `emit` must never throw.
+   * If omitted, a listener error is re-thrown on a microtask, so it surfaces to
+   * the host's unhandled-error handling without interrupting dispatch.
+   */
+  onError?: (error: unknown, event: EmitterEvent<string, any>) => void;
 };
 
 // Internal storage type. The public API (`Listener<TEvent>`) is precise per
@@ -30,14 +39,25 @@ export class Emitter<
 
   private enabled: boolean;
 
+  private readonly onError: (error: unknown, event: any) => void;
+
   // Default `enabled: false` so a freshly-constructed emitter is silent. The
   // primary use case is hydrating a graph from serialized state — listeners
   // shouldn't see a flood of synthetic events for the historical mutations.
   // Callers explicitly `.enable()` once hydration is complete.
   constructor(params: EmitterOptions = {}) {
-    const { enabled = false } = params;
+    const { enabled = false, onError } = params;
     this.listeners = new Map();
     this.enabled = enabled;
+    // Default: surface a listener error on a microtask — visible to the host's
+    // unhandled-error handling, but it never breaks dispatch or the caller.
+    this.onError =
+      onError ??
+      ((error: unknown) => {
+        queueMicrotask(() => {
+          throw error;
+        });
+      });
   }
 
   enable(): void {
@@ -85,7 +105,15 @@ export class Emitter<
     // emit. `new Set(undefined)` yields an empty Set, so the missing-key case
     // needs no fallback.
     for (const listener of new Set(this.listeners.get(event.type))) {
-      listener(event);
+      try {
+        listener(event);
+      } catch (error) {
+        // Isolate: a throwing listener must not stop the remaining listeners,
+        // nor break the caller (which reads `event.defaultPrevented` after this
+        // returns). Other listeners — including ones that call preventDefault —
+        // still run, so a partial failure can't silently drop a veto.
+        this.onError(error, event);
+      }
     }
 
     return event;
