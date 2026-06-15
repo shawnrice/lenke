@@ -8,7 +8,7 @@
 //! `plg_free_buf`. The graph handle must be returned via `plg_graph_free`.
 
 use crate::graph::{Column, Graph};
-use crate::{build_csr, gql, ndjson, query, scan, ScanKind};
+use crate::{build_csr, query, scan, ScanKind};
 
 // ---------- raw CSR builder (unchanged) ----------
 
@@ -38,8 +38,8 @@ pub unsafe extern "C" fn plg_build_csr(
 
 #[no_mangle]
 pub extern "C" fn plg_abi_version() -> u32 {
-    6 // 6: inbound allocator (plg_alloc/plg_dealloc) for the wasm linear-memory
-      //    binding; 5: textual Gremlin (plg_gremlin_json); 4: Arrow columnar surface
+    7 // 7: multi-format codecs (plg_serialize/plg_deserialize); 6: inbound
+      //    allocator (plg_alloc/plg_dealloc); 5: textual Gremlin; 4: Arrow
 }
 
 // ---------- inbound allocator (wasm linear memory) ----------
@@ -85,6 +85,7 @@ pub unsafe extern "C" fn plg_dealloc(ptr: *mut u8, len: usize) {
 ///
 /// # Safety
 /// `ptr`/`len` must describe valid UTF-8 NDJSON. Returns null on bad UTF-8.
+#[cfg(feature = "ndjson")]
 #[no_mangle]
 pub unsafe extern "C" fn plg_graph_from_ndjson(ptr: *const u8, len: usize, parallel: u32) -> *mut Graph {
     if ptr.is_null() {
@@ -95,7 +96,7 @@ pub unsafe extern "C" fn plg_graph_from_ndjson(ptr: *const u8, len: usize, paral
         Ok(t) => t,
         Err(_) => return std::ptr::null_mut(),
     };
-    let g = if parallel != 0 { ndjson::decode(text) } else { ndjson::decode_serial(text) };
+    let g = if parallel != 0 { crate::ndjson::decode(text) } else { crate::ndjson::decode_serial(text) };
     Box::into_raw(Box::new(g))
 }
 
@@ -216,6 +217,7 @@ pub unsafe extern "C" fn plg_query_batch(
 /// # Safety
 /// `g` valid and exclusively borrowed for this call; `q_ptr`/`q_len` valid
 /// UTF-8; `out_len` writable.
+#[cfg(feature = "gql")]
 #[no_mangle]
 pub unsafe extern "C" fn plg_query_rows(
     g: *mut Graph,
@@ -232,11 +234,11 @@ pub unsafe extern "C" fn plg_query_rows(
     };
     // Route to the full GQL engine (the complete ISO-subset port). Returns null
     // on a parse error or an unsupported clause.
-    let parsed = match gql::parse(q) {
+    let parsed = match crate::gql::parse(q) {
         Ok(p) => p,
         Err(_) => return std::ptr::null_mut(),
     };
-    let rowset = match parsed.execute(&mut *g, &gql::eval::Params::new()) {
+    let rowset = match parsed.execute(&mut *g, &crate::gql::eval::Params::new()) {
         Ok(rs) => rs,
         Err(_) => return std::ptr::null_mut(),
     };
@@ -260,6 +262,7 @@ pub unsafe extern "C" fn plg_query_rows(
 /// # Safety
 /// `g` valid and exclusively borrowed for this call; `q_ptr`/`q_len` valid
 /// UTF-8; `out_len` writable.
+#[cfg(feature = "arrow")]
 #[no_mangle]
 pub unsafe extern "C" fn plg_query_arrow(
     g: *mut Graph,
@@ -274,13 +277,13 @@ pub unsafe extern "C" fn plg_query_arrow(
         Ok(s) => s,
         Err(_) => return std::ptr::null_mut(),
     };
-    let parsed = match gql::parse(q) {
+    let parsed = match crate::gql::parse(q) {
         Ok(p) => p,
         Err(_) => return std::ptr::null_mut(),
     };
     // execute_arrow keeps numeric/bool result columns typed end-to-end (no
     // Val/Value boxing) for the common single-MATCH … RETURN shape.
-    let blob = match parsed.execute_arrow(&mut *g, &gql::eval::Params::new()) {
+    let blob = match parsed.execute_arrow(&mut *g, &crate::gql::eval::Params::new()) {
         Ok(b) => b,
         Err(_) => return std::ptr::null_mut(),
     };
@@ -300,6 +303,7 @@ pub unsafe extern "C" fn plg_query_arrow(
 ///
 /// # Safety
 /// `ptr`/`len` must come from `plg_query_arrow`.
+#[cfg(feature = "arrow")]
 #[no_mangle]
 pub unsafe extern "C" fn plg_free_arrow(ptr: *mut u8, len: usize) {
     if !ptr.is_null() {
@@ -318,6 +322,7 @@ pub unsafe extern "C" fn plg_free_arrow(ptr: *mut u8, len: usize) {
 ///
 /// # Safety
 /// `g` valid and exclusively borrowed; `q_ptr`/`q_len` valid UTF-8; `out_len` writable.
+#[cfg(feature = "gremlin")]
 #[no_mangle]
 pub unsafe extern "C" fn plg_gremlin_json(
     g: *mut Graph,
@@ -340,6 +345,69 @@ pub unsafe extern "C" fn plg_gremlin_json(
     let bytes = crate::gremlin::exec::results_to_json(&*g, &vals).into_bytes().into_boxed_slice();
     *out_len = bytes.len();
     Box::into_raw(bytes) as *mut u8
+}
+
+/// Serialize the graph in a named format — `pg-json | pg-text | graphson | csv |
+/// ndjson` (see [`crate::codec`]). Returns a heap buffer (free with
+/// `plg_free_buf`) and writes its byte length to `out_len`. Null on an unknown
+/// format / null / UTF-8 error.
+///
+/// # Safety
+/// `g` valid; `fmt_ptr`/`fmt_len` valid UTF-8; `out_len` writable.
+#[cfg(feature = "codecs")]
+#[no_mangle]
+pub unsafe extern "C" fn plg_serialize(
+    g: *const Graph,
+    fmt_ptr: *const u8,
+    fmt_len: usize,
+    out_len: *mut usize,
+) -> *mut u8 {
+    if g.is_null() || fmt_ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    let fmt = match std::str::from_utf8(std::slice::from_raw_parts(fmt_ptr, fmt_len)) {
+        Ok(s) => s,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    match crate::codec::serialize(&*g, fmt) {
+        Ok(s) => {
+            let bytes = s.into_bytes().into_boxed_slice();
+            *out_len = bytes.len();
+            Box::into_raw(bytes) as *mut u8
+        }
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// Deserialize bytes in a named format into a fresh graph handle (free with
+/// `plg_graph_free`). The format name is the same set as `plg_serialize`. Null on
+/// an unknown format, a parse error, or bad UTF-8.
+///
+/// # Safety
+/// `ptr`/`len` valid UTF-8; `fmt_ptr`/`fmt_len` valid UTF-8.
+#[cfg(feature = "codecs")]
+#[no_mangle]
+pub unsafe extern "C" fn plg_deserialize(
+    ptr: *const u8,
+    len: usize,
+    fmt_ptr: *const u8,
+    fmt_len: usize,
+) -> *mut Graph {
+    if ptr.is_null() || fmt_ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    let text = match std::str::from_utf8(std::slice::from_raw_parts(ptr, len)) {
+        Ok(s) => s,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    let fmt = match std::str::from_utf8(std::slice::from_raw_parts(fmt_ptr, fmt_len)) {
+        Ok(s) => s,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    match crate::codec::deserialize(text, fmt) {
+        Ok(g) => Box::into_raw(Box::new(g)),
+        Err(_) => std::ptr::null_mut(),
+    }
 }
 
 /// SIMD (or scalar) predicate scan `key > threshold` over a numeric column.
@@ -385,12 +453,13 @@ pub unsafe extern "C" fn plg_predicate_scan(
 ///
 /// # Safety
 /// `g` valid; `out_len` writable.
+#[cfg(feature = "ndjson")]
 #[no_mangle]
 pub unsafe extern "C" fn plg_encode_ndjson(g: *const Graph, out_len: *mut usize) -> *mut u8 {
     if g.is_null() {
         return std::ptr::null_mut();
     }
-    let bytes = ndjson::encode(&*g).into_bytes().into_boxed_slice();
+    let bytes = crate::ndjson::encode(&*g).into_bytes().into_boxed_slice();
     *out_len = bytes.len();
     Box::into_raw(bytes) as *mut u8
 }
@@ -414,7 +483,7 @@ pub unsafe extern "C" fn plg_free_buf(ptr: *mut u8, len: usize) {
 /// Native-only: there is no filesystem in the browser, so this symbol is absent
 /// from the wasm build. Browser callers serialize via `plg_encode_ndjson` and
 /// persist through the host (download, IndexedDB, …) instead.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "ndjson", not(target_arch = "wasm32")))]
 #[no_mangle]
 pub unsafe extern "C" fn plg_write_ndjson(g: *const Graph, path_ptr: *const u8, path_len: usize) -> i64 {
     if g.is_null() || path_ptr.is_null() {
@@ -424,7 +493,7 @@ pub unsafe extern "C" fn plg_write_ndjson(g: *const Graph, path_ptr: *const u8, 
         Ok(s) => s,
         Err(_) => return -1,
     };
-    let bytes = ndjson::encode(&*g).into_bytes();
+    let bytes = crate::ndjson::encode(&*g).into_bytes();
     match std::fs::write(path, &bytes) {
         Ok(()) => bytes.len() as i64,
         Err(_) => -1,

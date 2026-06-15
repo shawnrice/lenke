@@ -19,7 +19,8 @@
   "scripts": {
     "build": "bun build.ts",
     "build:rust": "cargo build --release --manifest-path ../../crates/pl-graph-core/Cargo.toml",
-    "build:wasm": "cargo build --release --target wasm32-unknown-unknown --no-default-features --manifest-path ../../crates/pl-graph-core/Cargo.toml",
+    "build:wasm": "cargo build --release --target wasm32-unknown-unknown --no-default-features --features gql,gremlin,ndjson,codecs,arrow --manifest-path ../../crates/pl-graph-core/Cargo.toml",
+    "build:wasm:min": "cargo build --release --target wasm32-unknown-unknown --no-default-features --features gql --manifest-path ../../crates/pl-graph-core/Cargo.toml",
     "test": "bun test"
   },
   "devDependencies": {

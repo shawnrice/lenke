@@ -25,8 +25,15 @@ const g = graphFromNdjson(backend, await Bun.file('graph.ndjson').bytes());
 g.query`MATCH (a:Person) RETURN a.name`;          // GQL → rows
 g.gremlin("g.V().has('name','marko').out()");      // textual Gremlin → values
 g.queryArrow('MATCH (n) RETURN n.age');            // Arrow ("ARW1") blob
-g.toNdjson();                                      // serialize back out
+g.serialize('graphson');                           // → pg-json|pg-text|graphson|csv|ndjson
+g.toNdjson();                                      // serialize back out (ndjson bytes)
 g.free();                                          // release the native graph
+```
+
+```ts
+// Load a graph from any supported format (string or bytes)
+import { graphFromFormat } from '@pl-graph/native';
+const g = graphFromFormat(backend, csvText, 'csv');
 ```
 
 ```ts
@@ -41,16 +48,37 @@ const g = graphFromNdjson(backend, ndjsonBytes);
 ## Building the artifacts
 
 ```sh
-bun run build:rust    # native dylib/so  → crates/.../target/release/
-bun run build:wasm    # pl_graph_core.wasm → target/wasm32-unknown-unknown/release/
-bun run build         # the TS package (dist/)
+bun run build:rust       # native dylib/so (all features) → target/release/
+bun run build:wasm       # full-browser wasm (gql+gremlin+ndjson+codecs+arrow)
+bun run build:wasm:min   # minimal frontend wasm (gql only) — ~40% smaller
+bun run build            # the TS package (dist/)
 ```
+
+### Composable features (smaller wasm)
+
+The Rust crate is feature-gated so a frontend can ship only what it uses. The
+big lever is `serde_json`: only the JSON-carrying surfaces pull it in, so a
+GQL-only build drops it entirely. Measured `wasm32-unknown-unknown --release`:
+
+| feature set | size | notes |
+| --- | --- | --- |
+| `gql,gremlin,ndjson,codecs,arrow` | ~1020 KB | everything (server/full) |
+| `gql,ndjson` | ~700 KB | query + snapshot load |
+| `gql` | ~615 KB | **minimal frontend** — no serde_json |
+| (core only) | ~165 KB | graph + fingerprint query, no engines |
+
+Features: `gql` (ISO-GQL engine, serde-free), `gremlin`, `ndjson` (load/
+snapshot), `codecs` (pg-json/pg-text/graphson/csv; implies `ndjson`), `arrow`
+(implies `gql`), `parallel` (rayon, native only). `default = full`.
 
 The package asserts `plg_abi_version()` matches `ABI_VERSION` on load; bump both
 together when the C ABI changes.
 
 ## Status / TODO
 
+- Both backends are tested end-to-end (`backend-ffi.test.ts`,
+  `backend-wasm.test.ts`) — query, Gremlin, all five serialization formats, and
+  a wasm memory-grow path.
 - Arrow results currently surface as the raw `ARW1` blob (`queryArrow`). A typed
   `apache-arrow` `Table` wrapper (see `crates/.../arrow-ffi.test.ts` for the
   decode) is the natural next step.

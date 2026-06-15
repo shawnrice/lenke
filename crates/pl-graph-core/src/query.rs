@@ -146,34 +146,84 @@ impl RowSet {
     }
 
     /// Serialize to a compact `{"columns":[...],"rows":[[...]]}` JSON document —
-    /// the carrier for both bun:ffi and (later) wasm-bindgen, where a single
-    /// buffer crossing beats marshalling cell-by-cell.
+    /// the carrier for both bun:ffi and the wasm binding, where a single buffer
+    /// crossing beats marshalling cell-by-cell. Hand-rolled (no `serde_json`) so
+    /// the core query path carries no JSON dependency — that's what lets a
+    /// minimal frontend wasm build (GQL only) drop `serde_json` entirely.
     pub fn to_json(&self) -> String {
-        let cols = serde_json::Value::Array(
-            self.cols.iter().map(|c| serde_json::Value::String(c.clone())).collect(),
-        );
-        let rows = serde_json::Value::Array(
-            self.rows()
-                .map(|r| serde_json::Value::Array(r.iter().map(value_to_json).collect()))
-                .collect(),
-        );
-        let doc = serde_json::json!({ "columns": cols, "rows": rows });
-        doc.to_string()
+        let mut out = String::with_capacity(self.cols.len() * 16 + self.nrows * 32);
+        out.push_str("{\"columns\":[");
+        for (i, c) in self.cols.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            push_json_str(&mut out, c);
+        }
+        out.push_str("],\"rows\":[");
+        for (ri, r) in self.rows().enumerate() {
+            if ri > 0 {
+                out.push(',');
+            }
+            out.push('[');
+            for (ci, cell) in r.iter().enumerate() {
+                if ci > 0 {
+                    out.push(',');
+                }
+                push_json_value(&mut out, cell);
+            }
+            out.push(']');
+        }
+        out.push_str("]}");
+        out
     }
 }
 
-/// Map the core `Value` model onto `serde_json::Value`. Non-finite numbers
-/// (NaN/±Inf) have no JSON form, so they serialize as null — matching how a
-/// JS engine would surface an absent/undefined numeric cell.
-fn value_to_json(v: &Value) -> serde_json::Value {
+/// Write a JSON string literal (with escaping) into `out`.
+fn push_json_str(out: &mut String, s: &str) {
+    use std::fmt::Write as _;
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+}
+
+/// Emit a core [`Value`] as JSON. Non-finite numbers (NaN/±Inf) have no JSON
+/// form, so they serialize as null — matching how a JS engine would surface an
+/// absent/undefined numeric cell.
+fn push_json_value(out: &mut String, v: &Value) {
+    use std::fmt::Write as _;
     match v {
-        Value::Null => serde_json::Value::Null,
-        Value::Bool(b) => serde_json::Value::Bool(*b),
-        Value::Num(x) => serde_json::Number::from_f64(*x)
-            .map(serde_json::Value::Number)
-            .unwrap_or(serde_json::Value::Null),
-        Value::Str(s) => serde_json::Value::String(s.to_string()),
-        Value::List(items) => serde_json::Value::Array(items.iter().map(value_to_json).collect()),
+        Value::Null => out.push_str("null"),
+        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+        Value::Num(x) => {
+            if x.is_finite() {
+                let _ = write!(out, "{x}");
+            } else {
+                out.push_str("null");
+            }
+        }
+        Value::Str(s) => push_json_str(out, s),
+        Value::List(items) => {
+            out.push('[');
+            for (i, e) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                push_json_value(out, e);
+            }
+            out.push(']');
+        }
     }
 }
 
@@ -1217,9 +1267,78 @@ mod tests {
     fn rowset_json_shape() {
         let g = fixture();
         let r = rows(&g, "MATCH (a:Person) WHERE a.age = 0 RETURN a.dept, a.age, a.active");
+        // Integer-valued floats render without a trailing `.0` (matching the
+        // ndjson codec's `push_num`); `0` and `0.0` parse to the same JS number.
         assert_eq!(
             r.to_json(),
-            r#"{"columns":["a.dept","a.age","a.active"],"rows":[["d0",0.0,true]]}"#
+            r#"{"columns":["a.dept","a.age","a.active"],"rows":[["d0",0,true]]}"#
         );
+    }
+
+    /// The hand-rolled emitter is encode-only over a fixed shape, but it still has
+    /// to be exactly right. Use the *trusted* `serde_json` parser as an oracle:
+    /// emit a spread of values with our code, parse the result back with serde,
+    /// and assert it reconstructs each value (NaN/±Inf documented to become null).
+    /// This proves our output is valid JSON and semantically faithful.
+    #[test]
+    fn to_json_round_trips_through_the_serde_oracle() {
+        use crate::graph::Value::{Bool, List, Null, Num, Str};
+        let cases: Vec<Value> = vec![
+            Str("plain".into()),
+            Str("".into()),
+            Str("quote\" back\\slash".into()),
+            Str("ws\n\t\r and ctrl \u{1}\u{1f}".into()),
+            Str("del\u{7f} unicode é ✓ 🎉".into()),
+            // The sneaky ones: a bare null byte and an embedded one (lowest
+            // control char →  ); a zero-width space and BOM (invisible but
+            // ordinary codepoints, emitted raw); U+2028/U+2029 (valid in JSON,
+            // historically broke JS string literals — JSON.parse handles them).
+            Str("\u{0}".into()),
+            Str("embedded\u{0}null".into()),
+            Str("zero\u{200b}width\u{feff}bom".into()),
+            Str("line\u{2028}para\u{2029}sep".into()),
+            Bool(true),
+            Bool(false),
+            Null,
+            Num(0.0),
+            Num(-0.0),
+            Num(42.0),
+            Num(-3.5),
+            Num(1e20),
+            Num(1e-12),
+            Num(123456789.125),
+            Num(f64::NAN),
+            Num(f64::INFINITY),
+            Num(f64::NEG_INFINITY),
+            List(vec![]),
+            List(vec![Num(1.0), Str("a,b\"c".into()), Bool(false), Null]),
+            List(vec![List(vec![Num(2.0)]), Str("nested".into())]),
+        ];
+        let mut rs = RowSet::new(vec!["v".to_string()]);
+        for c in &cases {
+            rs.push_row([c.clone()]);
+        }
+        let doc: serde_json::Value =
+            serde_json::from_str(&rs.to_json()).expect("hand-rolled JSON must parse");
+        let rows = doc.get("rows").and_then(|r| r.as_array()).expect("rows array");
+        assert_eq!(rows.len(), cases.len());
+        for (i, want) in cases.iter().enumerate() {
+            assert!(serde_matches(&rows[i][0], want), "case {i}: {want:?} → {}", rows[i][0]);
+        }
+    }
+
+    /// Compare a serde-parsed value against our core `Value` (numbers by f64, so
+    /// `42` and `42.0` agree; non-finite numbers must have been emitted as null).
+    fn serde_matches(got: &serde_json::Value, want: &Value) -> bool {
+        match want {
+            Value::Null => got.is_null(),
+            Value::Bool(b) => got.as_bool() == Some(*b),
+            Value::Num(x) if x.is_finite() => got.as_f64() == Some(*x),
+            Value::Num(_) => got.is_null(),
+            Value::Str(s) => got.as_str() == Some(s.as_ref()),
+            Value::List(items) => got
+                .as_array()
+                .is_some_and(|a| a.len() == items.len() && a.iter().zip(items).all(|(g, w)| serde_matches(g, w))),
+        }
     }
 }

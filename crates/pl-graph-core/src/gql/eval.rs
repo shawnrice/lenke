@@ -21,6 +21,7 @@ use super::plan::{
     lower, AggFn, CClause, CExpr, CLabelExpr, CLinear, CNode, CPath, CProjection, CPropConstraint, CQuery, CRel,
     CRemoveItem, CReturnItem, CSegment, CSetItem, Op, Program, ScalarFn,
 };
+#[cfg(feature = "arrow")]
 use crate::arrow::ArrowColumn;
 use crate::graph::{Column, Graph, Value};
 use crate::query::RowSet;
@@ -1791,6 +1792,7 @@ impl VVec {
     /// Convert directly to a typed Arrow column — `Num`/`Bool` move their `f64`/
     /// `bool` buffers in with no `Val` boxing; `Gen` flattens its `Val`s (elements
     /// → ids) and infers the physical type. This is the boxing-free result path.
+    #[cfg(feature = "arrow")]
     fn into_arrow(self, graph: &Graph) -> ArrowColumn {
         let opt = |v: Vec<bool>| if v.iter().all(|&b| b) { None } else { Some(v) };
         match self {
@@ -1803,7 +1805,9 @@ impl VVec {
         }
     }
 
-    /// Keep only rows `[start, end)` (for SKIP/LIMIT on a typed column).
+    /// Keep only rows `[start, end)` (for SKIP/LIMIT on a typed column). Only the
+    /// Arrow fast path slices typed columns; the RowSet path slices `ScanCols`.
+    #[cfg(feature = "arrow")]
     fn slice(self, start: usize, end: usize) -> VVec {
         match self {
             VVec::Num { d, valid } => VVec::Num { d: d[start..end].to_vec(), valid: valid[start..end].to_vec() },
@@ -3567,6 +3571,7 @@ fn run_part(linear: &CLinear, graph: &mut Graph, plan: &CQuery, params: &[Val]) 
 /// aggregate / DISTINCT / ORDER BY / `*`). Produces Arrow columns straight from
 /// the vectorized `VVec`s, so numeric/bool columns skip the `Val`→`Value` boxing
 /// the RowSet path would do. Returns `(columns, nrows)` or `None` to fall back.
+#[cfg(feature = "arrow")]
 fn vectorized_arrow(graph: &Graph, ctx: &Ctx, matches: &[&CClause], proj: &CProjection) -> Option<(Vec<ArrowColumn>, usize)> {
     if matches.len() != 1 || proj.star || proj.aggregating || proj.distinct || !proj.order_by.is_empty() {
         return None;
@@ -3598,6 +3603,7 @@ fn vectorized_arrow(graph: &Graph, ctx: &Ctx, matches: &[&CClause], proj: &CProj
 /// fast path for a single-part `MATCH … RETURN`; otherwise runs the normal
 /// executor and converts its `RowSet` (correct for aggregate / WITH / UNION /
 /// scalar — just not boxing-free).
+#[cfg(feature = "arrow")]
 fn run_cquery_arrow(plan: &CQuery, graph: &mut Graph, params: &[Val]) -> Result<Vec<u8>, String> {
     if USE_VEC && plan.ops.is_empty() && plan.parts.len() == 1 {
         let linear = &plan.parts[0];
@@ -3634,6 +3640,7 @@ impl Prepared {
     }
     /// Execute and return the result as an Apache Arrow columnar blob (see
     /// [`crate::arrow`]) — the zero-copy carrier for the FFI / wasm boundary.
+    #[cfg(feature = "arrow")]
     pub fn execute_arrow(&self, graph: &mut Graph, params: &Params) -> Result<Vec<u8>, String> {
         run_cquery_arrow(&self.plan, graph, &positional(&self.param_names, params))
     }
@@ -3654,6 +3661,7 @@ impl super::ast::Query {
         run_cquery(&plan, graph, &positional(&param_names, params))
     }
     /// Lower and execute, returning an Apache Arrow columnar blob.
+    #[cfg(feature = "arrow")]
     pub fn execute_arrow(&self, graph: &mut Graph, params: &Params) -> Result<Vec<u8>, String> {
         let (plan, param_names) = lower(self);
         run_cquery_arrow(&plan, graph, &positional(&param_names, params))

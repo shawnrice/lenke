@@ -47,6 +47,8 @@ export type RustGraph = {
   gremlin: (q: string | TemplateStringsArray, ...subs: unknown[]) => unknown[];
   /** Serialize the graph back to NDJSON bytes. */
   toNdjson: () => Uint8Array;
+  /** Serialize the graph in a named format (`pg-json | pg-text | graphson | csv | ndjson`). */
+  serialize: (format: string) => string;
   /** Release the underlying graph. The handle is invalid afterwards. */
   free: () => void;
 };
@@ -64,6 +66,7 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
   gremlin: (q, ...subs) =>
     JSON.parse(decoder.decode(backend.gremlinJson(handle, toText(q, subs)))) as unknown[],
   toNdjson: () => backend.encodeNdjson(handle),
+  serialize: (format) => decoder.decode(backend.serialize(handle, format)),
   free: () => backend.graphFree(handle),
 });
 
@@ -73,3 +76,16 @@ export const graphFromNdjson = (
   bytes: Uint8Array,
   opts: { parallel?: boolean } = {},
 ): RustGraph => attachGraph(backend, backend.graphFromNdjson(bytes, opts.parallel ?? true));
+
+/**
+ * Deserialize a document in a named format (`pg-json | pg-text | graphson | csv |
+ * ndjson`) into a {@link RustGraph}. Accepts a string or raw bytes.
+ */
+export const graphFromFormat = (
+  backend: Backend,
+  input: string | Uint8Array,
+  format: string,
+): RustGraph => {
+  const bytes = typeof input === 'string' ? new TextEncoder().encode(input) : input;
+  return attachGraph(backend, backend.deserialize(bytes, format));
+};

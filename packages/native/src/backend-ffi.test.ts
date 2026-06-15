@@ -6,7 +6,7 @@ import { describe, expect, test } from 'bun:test';
 
 import { ABI_VERSION } from './abi.js';
 import { createFfiBackend } from './backend-ffi.js';
-import { graphFromNdjson } from './graph.js';
+import { graphFromFormat, graphFromNdjson } from './graph.js';
 
 const LIB = new URL(
   '../../../crates/pl-graph-core/target/release/libpl_graph_core.dylib',
@@ -69,5 +69,33 @@ describe('@pl-graph/native FFI backend', () => {
     expect(g2.edgeCount).toBe(1);
     g.free();
     g2.free();
+  });
+
+  test('serializes + round-trips through every format', () => {
+    const backend = createFfiBackend(LIB);
+    const g = graphFromNdjson(backend, bytes);
+    for (const fmt of ['pg-json', 'pg-text', 'graphson', 'csv', 'ndjson']) {
+      const doc = g.serialize(fmt);
+      expect(doc.length).toBeGreaterThan(0);
+      const g2 = graphFromFormat(backend, doc, fmt);
+      expect(g2.vertexCount).toBe(2);
+      expect(g2.edgeCount).toBe(1);
+      // the GQL query gives the same answer regardless of the carrier format
+      expect(g2.query('MATCH (n:P) RETURN n.name ORDER BY n.name')).toEqual([
+        { 'n.name': 'marko' },
+        { 'n.name': 'vadas' },
+      ]);
+      g2.free();
+    }
+    g.free();
+  });
+
+  test('graphson preserves the edge id; unknown format throws', () => {
+    const backend = createFfiBackend(LIB);
+    const g = graphFromNdjson(backend, bytes);
+    const gson = g.serialize('graphson');
+    expect(gson).toContain('"e1"'); // the edge id survives
+    expect(() => g.serialize('nope')).toThrow();
+    g.free();
   });
 });

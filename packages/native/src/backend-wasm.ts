@@ -18,6 +18,8 @@ type WasmExports = {
   plg_query_arrow: (h: number, q: number, qlen: number, outLen: number) => number;
   plg_gremlin_json: (h: number, q: number, qlen: number, outLen: number) => number;
   plg_encode_ndjson: (h: number, outLen: number) => number;
+  plg_serialize: (h: number, fmt: number, fmtLen: number, outLen: number) => number;
+  plg_deserialize: (ptr: number, len: number, fmt: number, fmtLen: number) => number;
   plg_free_buf: (ptr: number, len: number) => void;
   plg_free_arrow: (ptr: number, len: number) => void;
 };
@@ -135,5 +137,26 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
         ex.plg_free_buf,
         'encodeNdjson',
       ),
+
+    // serialize has the same (handle, string, outLen) shape as a query: the
+    // format name rides the "query" slot.
+    serialize: (handle, format) =>
+      takeBuf(handle, format, ex.plg_serialize, ex.plg_free_buf, `serialize(${format})`),
+
+    deserialize: (input, format) => {
+      const f = encoder.encode(format);
+      const inPtr = writeBytes(input);
+      const fPtr = writeBytes(f);
+      try {
+        const h = ex.plg_deserialize(inPtr, input.byteLength, fPtr, f.byteLength);
+        if (!h) {
+          throw new Error(`pl-graph: deserialize(${format}) failed (unknown format or parse error)`);
+        }
+        return h;
+      } finally {
+        ex.plg_dealloc(inPtr, input.byteLength);
+        ex.plg_dealloc(fPtr, f.byteLength);
+      }
+    },
   };
 };

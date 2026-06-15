@@ -17,6 +17,8 @@ const SYMBOLS = {
   plg_query_arrow: { args: [FFIType.ptr, FFIType.ptr, U, FFIType.ptr], returns: FFIType.ptr },
   plg_gremlin_json: { args: [FFIType.ptr, FFIType.ptr, U, FFIType.ptr], returns: FFIType.ptr },
   plg_encode_ndjson: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.ptr },
+  plg_serialize: { args: [FFIType.ptr, FFIType.ptr, U, FFIType.ptr], returns: FFIType.ptr },
+  plg_deserialize: { args: [FFIType.ptr, U, FFIType.ptr, U], returns: FFIType.ptr },
   plg_free_buf: { args: [FFIType.ptr, U], returns: FFIType.void },
   plg_free_arrow: { args: [FFIType.ptr, U], returns: FFIType.void },
 } as const;
@@ -105,5 +107,23 @@ export const createFfiBackend = (libPath: string): Backend => {
         symbols.plg_free_buf,
         'encodeNdjson',
       ),
+
+    serialize: (handle, format) => {
+      const f = encoder.encode(format);
+      return takeBuf(
+        (outLen) => symbols.plg_serialize(asPtr(handle), ptr(f), f.byteLength, outLen),
+        symbols.plg_free_buf,
+        `serialize(${format})`,
+      );
+    },
+
+    deserialize: (input, format) => {
+      const f = encoder.encode(format);
+      const h = symbols.plg_deserialize(ptr(input), input.byteLength, ptr(f), f.byteLength);
+      if (!h) {
+        throw new Error(`pl-graph: deserialize(${format}) failed (unknown format or parse error)`);
+      }
+      return asHandle(h);
+    },
   };
 };
