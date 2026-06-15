@@ -58,6 +58,16 @@ export class Graph {
   private nextSnapshotIsStale: boolean;
   private createNextSnapshot: number | undefined;
 
+  // Reactive change tracking (mirrors the Rust core, for useSyncExternalStore):
+  // `mutationVersion` is an O(1) "did anything change?" signal; `tokenEpochs`
+  // are per-token (label / edge-type / property-key) counters for *selective*
+  // invalidation — a selector that depends only on `name` recomputes only when
+  // `epoch('name')` moved, not on every mutation. Both advance on the same
+  // deferred, veto-checked step as snapshot-staleness, so a vetoed mutation
+  // bumps nothing.
+  private mutationVersion: number;
+  private readonly tokenEpochs: Map<string, number>;
+
   emitter: Emitter<keyof GraphEvents, GraphEvents>;
 
   constructor(options: Partial<GraphOptions> = {}) {
@@ -78,6 +88,8 @@ export class Graph {
 
     this.nextSnapshot = null;
     this.nextSnapshotIsStale = true;
+    this.mutationVersion = 0;
+    this.tokenEpochs = new Map();
     this.emitter = new Emitter({ enabled: true });
 
     this.listeners = new Set();
@@ -89,9 +101,20 @@ export class Graph {
     };
 
     const markIsStale = (event: GraphEvent) => {
+      // Capture the touched tokens NOW, synchronously, while the element is
+      // still attached — a removal nulls the element's graph ref before the
+      // deferred step below runs, so reading labels/keys there would throw.
+      const tokens = this.tokensOf(event);
       const doTheWork = () => {
         if (event.defaultPrevented) {
           return;
+        }
+
+        // Advance the reactive counters — deferred so `defaultPrevented` is
+        // final and a vetoed mutation bumps nothing.
+        this.mutationVersion += 1;
+        for (const token of tokens) {
+          this.tokenEpochs.set(token, (this.tokenEpochs.get(token) ?? 0) + 1);
         }
 
         this.nextSnapshotIsStale = true;
@@ -186,6 +209,64 @@ export class Graph {
       this.listeners.delete(callback);
     };
   };
+
+  /**
+   * Monotonic mutation counter — an O(1) "did anything change?" signal for
+   * `useSyncExternalStore`-style snapshots. Advances on the same deferred,
+   * veto-checked step as snapshot-staleness (so it reflects committed changes
+   * by the time subscribers are notified).
+   */
+  get version(): number {
+    return this.mutationVersion;
+  }
+
+  /**
+   * The change epoch for a single token — a label, edge-type, or property-key
+   * name (0 if never touched). A selector that depends only on specific tokens
+   * can fingerprint `deps.map(epoch)` and recompute *only* when one of them
+   * moved, instead of on every mutation.
+   */
+  public epoch = (name: string): number => this.tokenEpochs.get(name) ?? 0;
+
+  /**
+   * The tokens (label / edge-type / property-key names) a mutation event
+   * touched — used to bump the right epochs. A topology change (add/remove an
+   * element) touches that element's labels *and* property keys; a property
+   * write touches just the key; a label change touches just the label. This
+   * mirrors the Rust core's epoch rule, so `epoch('Person')` moves iff Person
+   * membership changed and `epoch('age')` iff some age value changed.
+   */
+  private tokensOf(event: GraphEvent): string[] {
+    const value = event.value as Record<string, any>;
+    switch (event.type) {
+      case '@graph/VertexAdded':
+      case '@graph/VertexRemoved':
+      case '@graph/EdgeAdded':
+      case '@graph/EdgeRemoved': {
+        const labels: string[] = value?.labels ? [...value.labels] : [];
+        const keys: string[] = value?.properties ? Object.keys(value.properties) : [];
+        return [...labels, ...keys];
+      }
+      case '@graph/LabelAddedToVertex':
+      case '@graph/LabelRemovedFromVertex':
+      case '@graph/LabelAddedToEdge':
+      case '@graph/LabelRemovedFromEdge':
+        return value?.label ? [value.label as string] : [];
+      case '@graph/VertexPropertyChanged':
+      case '@graph/EdgePropertyChanged':
+      case '@graph/VertexPropertyRemoved':
+      case '@graph/EdgePropertyRemoved':
+        return value?.key ? [value.key as string] : [];
+      case '@graph/VertexPropertiesChanged':
+      case '@graph/EdgePropertiesChanged':
+        return value?.next ? Object.keys(value.next) : [];
+      case '@graph/VertexPropertiesRemoved':
+      case '@graph/EdgePropertiesRemoved':
+        return (value?.keys as string[]) ?? [];
+      default:
+        return [];
+    }
+  }
 
   /**
    * Clones the graph as well as all the vertices and edges
