@@ -14,6 +14,8 @@ type WasmExports = {
   plg_graph_free: (h: number) => void;
   plg_graph_vertex_count: (h: number) => bigint;
   plg_graph_edge_count: (h: number) => bigint;
+  plg_graph_version: (h: number) => bigint;
+  plg_graph_epoch: (h: number, name: number, nameLen: number) => bigint;
   plg_query_rows: (h: number, q: number, qlen: number, outLen: number) => number;
   plg_query_arrow: (h: number, q: number, qlen: number, outLen: number) => number;
   plg_gremlin_json: (h: number, q: number, qlen: number, outLen: number) => number;
@@ -120,6 +122,16 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
     graphFree: (handle) => ex.plg_graph_free(handle),
     vertexCount: (handle) => Number(ex.plg_graph_vertex_count(handle)),
     edgeCount: (handle) => Number(ex.plg_graph_edge_count(handle)),
+    version: (handle) => Number(ex.plg_graph_version(handle)),
+    epoch: (handle, name) => {
+      const n = encoder.encode(name);
+      const p = writeBytes(n);
+      try {
+        return Number(ex.plg_graph_epoch(handle, p, n.byteLength));
+      } finally {
+        ex.plg_dealloc(p, n.byteLength);
+      }
+    },
 
     queryRows: (handle, query) =>
       takeBuf(handle, query, ex.plg_query_rows, ex.plg_free_buf, 'query'),

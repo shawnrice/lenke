@@ -24,6 +24,11 @@ export type Backend = {
   vertexCount: (handle: GraphHandle) => number;
   edgeCount: (handle: GraphHandle) => number;
 
+  /** Monotonic mutation counter — O(1) change signal for reactive snapshots. */
+  version: (handle: GraphHandle) => number;
+  /** Per-token change epoch (label / edge-type / property-key) for finer invalidation. */
+  epoch: (handle: GraphHandle, name: string) => number;
+
   /** Run a GQL query; returns the `{columns, rows}` JSON document as bytes. */
   queryRows: (handle: GraphHandle, query: string) => Uint8Array;
   /** Run a GQL query; returns the Arrow ("ARW1") columnar blob bytes. */

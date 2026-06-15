@@ -45,6 +45,31 @@ const backend = await createWasmBackend(fetch('/pl_graph_core.wasm'));
 const g = graphFromNdjson(backend, ndjsonBytes);
 ```
 
+### React (`useSyncExternalStore`)
+
+`createStore` bridges the mutable native graph to React's immutable-snapshot
+contract. `getSnapshot` is referentially stable (version-gated), so it won't
+re-render-loop; declaring `deps` makes a query recompute only when one of its
+tokens (label / edge-type / property-key) actually changed.
+
+```ts
+import { createStore } from '@pl-graph/native';
+const store = createStore(g);
+
+// in a component
+const people = store.liveQuery('MATCH (p:Person) RETURN p.name', { deps: ['Person', 'name'] });
+const rows = useSyncExternalStore(people.subscribe, people.getSnapshot);
+
+// mutate — notifies subscribers only if the graph actually changed
+store.mutate((g) => g.query("INSERT (:Person {name: 'zoe'})"));
+```
+
+Omit `deps` for coarse mode (recompute on any mutation — always correct; use it
+for whole-element returns like `RETURN n`). `inferDeps(text)` is a best-effort
+extractor (over-grabs safely; prefer explicit `deps` when correctness matters).
+Backed by the engine's O(1) `version` counter and per-token `epoch`s — available
+even in the minimal `gql`-only wasm build.
+
 ## Building the artifacts
 
 ```sh

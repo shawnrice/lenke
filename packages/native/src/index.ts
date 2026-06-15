@@ -34,6 +34,7 @@
 export { ABI_VERSION } from './abi.js';
 export type { Backend, GraphHandle } from './backend.js';
 export { attachGraph, graphFromFormat, graphFromNdjson, type RustGraph, type Row } from './graph.js';
+export { createStore, inferDeps, type Store, type LiveQuery } from './store.js';
 
 /** True when running under Bun, where the native FFI backend is available. */
 export const isBun = typeof (globalThis as { Bun?: unknown }).Bun !== 'undefined';

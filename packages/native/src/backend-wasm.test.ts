@@ -8,6 +8,7 @@ import { describe, expect, test } from 'bun:test';
 import { ABI_VERSION } from './abi.js';
 import { createWasmBackend } from './backend-wasm.js';
 import { graphFromFormat, graphFromNdjson } from './graph.js';
+import { createStore } from './store.js';
 
 const WASM = new URL(
   '../../../crates/pl-graph-core/target/wasm32-unknown-unknown/release/pl_graph_core.wasm',
@@ -85,6 +86,27 @@ describe('@pl-graph/native wasm backend', () => {
       expect(g2.edgeCount).toBe(1);
       g2.free();
     }
+    g.free();
+  });
+
+  test('reactive store works over linear memory (version + finer invalidation)', async () => {
+    const backend = await createWasmBackend(wasmBytes);
+    const g = graphFromNdjson(backend, bytes);
+    const store = createStore(g);
+
+    const names = store.liveQuery('MATCH (n:P) RETURN n.name ORDER BY n.name', {
+      deps: ['P', 'name'],
+    });
+    const ages = store.liveQuery('MATCH (n:P) RETURN n.age ORDER BY n.age', { deps: ['P', 'age'] });
+    const namesBefore = names.getSnapshot();
+    const agesBefore = ages.getSnapshot();
+    const v0 = store.version;
+
+    store.mutate((gr) => gr.query("MATCH (n:P) WHERE n.name = 'marko' SET n.age = 99"));
+
+    expect(store.version).toBeGreaterThan(v0); // u64 version crossed linear memory
+    expect(ages.getSnapshot()).not.toBe(agesBefore); // `age` dep moved
+    expect(names.getSnapshot()).toBe(namesBefore); // `name`/`P` deps did not → stable ref
     g.free();
   });
 
