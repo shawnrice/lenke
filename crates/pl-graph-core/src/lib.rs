@@ -10,15 +10,25 @@
 //! This is the binding-agnostic crate; `ffi` exposes a C ABI for bun:ffi (and
 //! later wasm-bindgen) over the same functions.
 
-pub mod arrow;
-pub mod codec;
+// Core (always compiled): the columnar graph, the fingerprint query subset, the
+// SIMD scan kernels, and the C-ABI surface.
 pub mod ffi;
-pub mod gql;
-pub mod gremlin;
 pub mod graph;
-pub mod ndjson;
 pub mod query;
 pub mod scan;
+
+// Composable capabilities — gated so a minimal (e.g. frontend wasm) build ships
+// only what it uses. See the `[features]` table in Cargo.toml.
+#[cfg(feature = "arrow")]
+pub mod arrow;
+#[cfg(feature = "codecs")]
+pub mod codec;
+#[cfg(feature = "gql")]
+pub mod gql;
+#[cfg(feature = "gremlin")]
+pub mod gremlin;
+#[cfg(feature = "ndjson")]
+pub mod ndjson;
 
 /// CSR adjacency: `neighbors[offsets[v] .. offsets[v + 1]]` are v's out-edges.
 #[derive(Debug, Clone, PartialEq, Eq)]

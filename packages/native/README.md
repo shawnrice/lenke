@@ -48,10 +48,28 @@ const g = graphFromNdjson(backend, ndjsonBytes);
 ## Building the artifacts
 
 ```sh
-bun run build:rust    # native dylib/so  → crates/.../target/release/
-bun run build:wasm    # pl_graph_core.wasm → target/wasm32-unknown-unknown/release/
-bun run build         # the TS package (dist/)
+bun run build:rust       # native dylib/so (all features) → target/release/
+bun run build:wasm       # full-browser wasm (gql+gremlin+ndjson+codecs+arrow)
+bun run build:wasm:min   # minimal frontend wasm (gql only) — ~40% smaller
+bun run build            # the TS package (dist/)
 ```
+
+### Composable features (smaller wasm)
+
+The Rust crate is feature-gated so a frontend can ship only what it uses. The
+big lever is `serde_json`: only the JSON-carrying surfaces pull it in, so a
+GQL-only build drops it entirely. Measured `wasm32-unknown-unknown --release`:
+
+| feature set | size | notes |
+| --- | --- | --- |
+| `gql,gremlin,ndjson,codecs,arrow` | ~1020 KB | everything (server/full) |
+| `gql,ndjson` | ~700 KB | query + snapshot load |
+| `gql` | ~615 KB | **minimal frontend** — no serde_json |
+| (core only) | ~165 KB | graph + fingerprint query, no engines |
+
+Features: `gql` (ISO-GQL engine, serde-free), `gremlin`, `ndjson` (load/
+snapshot), `codecs` (pg-json/pg-text/graphson/csv; implies `ndjson`), `arrow`
+(implies `gql`), `parallel` (rayon, native only). `default = full`.
 
 The package asserts `plg_abi_version()` matches `ABI_VERSION` on load; bump both
 together when the C ABI changes.
