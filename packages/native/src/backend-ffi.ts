@@ -13,6 +13,8 @@ const SYMBOLS = {
   plg_graph_free: { args: [FFIType.ptr], returns: FFIType.void },
   plg_graph_vertex_count: { args: [FFIType.ptr], returns: U },
   plg_graph_edge_count: { args: [FFIType.ptr], returns: U },
+  plg_graph_version: { args: [FFIType.ptr], returns: U },
+  plg_graph_epoch: { args: [FFIType.ptr, FFIType.ptr, U], returns: U },
   plg_query_rows: { args: [FFIType.ptr, FFIType.ptr, U, FFIType.ptr], returns: FFIType.ptr },
   plg_query_arrow: { args: [FFIType.ptr, FFIType.ptr, U, FFIType.ptr], returns: FFIType.ptr },
   plg_gremlin_json: { args: [FFIType.ptr, FFIType.ptr, U, FFIType.ptr], returns: FFIType.ptr },
@@ -73,6 +75,11 @@ export const createFfiBackend = (libPath: string): Backend => {
     graphFree: (handle) => symbols.plg_graph_free(asPtr(handle)),
     vertexCount: (handle) => Number(symbols.plg_graph_vertex_count(asPtr(handle))),
     edgeCount: (handle) => Number(symbols.plg_graph_edge_count(asPtr(handle))),
+    version: (handle) => Number(symbols.plg_graph_version(asPtr(handle))),
+    epoch: (handle, name) => {
+      const n = encoder.encode(name);
+      return Number(symbols.plg_graph_epoch(asPtr(handle), ptr(n), n.byteLength));
+    },
 
     queryRows: (handle, query) => {
       const q = encoder.encode(query);

@@ -38,8 +38,8 @@ pub unsafe extern "C" fn plg_build_csr(
 
 #[no_mangle]
 pub extern "C" fn plg_abi_version() -> u32 {
-    7 // 7: multi-format codecs (plg_serialize/plg_deserialize); 6: inbound
-      //    allocator (plg_alloc/plg_dealloc); 5: textual Gremlin; 4: Arrow
+    8 // 8: reactive change tracking (plg_graph_version/plg_graph_epoch); 7: codecs
+      //    (plg_serialize/plg_deserialize); 6: inbound allocator; 5: Gremlin; 4: Arrow
 }
 
 // ---------- inbound allocator (wasm linear memory) ----------
@@ -127,6 +127,36 @@ pub unsafe extern "C" fn plg_graph_edge_count(g: *const Graph) -> u64 {
         return 0;
     }
     (*g).edge_count() as u64
+}
+
+/// The graph's monotonic mutation version — an O(1) "did anything change?" read
+/// for `useSyncExternalStore`-style snapshots. Always available (mutation is
+/// core), so a minimal frontend build still gets reactive snapshots.
+///
+/// # Safety
+/// `g` must be a valid graph handle.
+#[no_mangle]
+pub unsafe extern "C" fn plg_graph_version(g: *const Graph) -> u64 {
+    if g.is_null() {
+        return 0;
+    }
+    (*g).version()
+}
+
+/// The per-token change epoch for a label / edge-type / property-key `name`
+/// (0 if never touched) — used for finer invalidation than the global version.
+///
+/// # Safety
+/// `g` valid; `name_ptr`/`name_len` valid UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn plg_graph_epoch(g: *const Graph, name_ptr: *const u8, name_len: usize) -> u64 {
+    if g.is_null() || name_ptr.is_null() {
+        return 0;
+    }
+    match std::str::from_utf8(std::slice::from_raw_parts(name_ptr, name_len)) {
+        Ok(name) => (*g).epoch(name),
+        Err(_) => 0,
+    }
 }
 
 /// Parse + run a GQL-subset query, writing the `(count, sum)` signature.

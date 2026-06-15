@@ -262,6 +262,15 @@ pub struct Graph {
     /// encode); `eid_rev`: id -> edge index (for lookup / addressability).
     eid_fwd: HashMap<u32, Arc<str>>,
     eid_rev: HashMap<Arc<str>, u32>,
+    /// Reactive change tracking (for `useSyncExternalStore`-style snapshots):
+    /// `version` is a monotonic counter bumped on every mutation — an O(1)
+    /// "did anything change?" signal. `epochs` is per-token (label / edge-type /
+    /// property-key name) for *finer* invalidation: topology changes bump the
+    /// element's labels/types and keys; a property write bumps only that key. So
+    /// `epoch("Person")` moves iff Person membership changed, `epoch("age")` iff
+    /// some age value changed. Keyed by name, so it's bounded by schema size.
+    version: u64,
+    epochs: HashMap<String, u64>,
     e_live: Vec<bool>,
     live_e: usize,
     /// per-vertex out / in adjacency (the mutable replacement for CSR)
@@ -521,11 +530,35 @@ impl Graph {
     pub fn edge_by_id(&self, id: &str) -> Option<u32> {
         self.eid_rev.get(id).copied()
     }
+    // --- reactive change tracking ----------------------------------------
+
+    /// Monotonic mutation counter. An unchanged value means nothing has mutated
+    /// since it was last read — the O(1) check a `getSnapshot` uses to return a
+    /// referentially-stable snapshot.
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+    /// Per-token change epoch for a label / edge-type / property-key `name`
+    /// (0 if never touched). Lets a live query recompute only when one of its
+    /// declared dependencies actually changed.
+    pub fn epoch(&self, name: &str) -> u64 {
+        self.epochs.get(name).copied().unwrap_or(0)
+    }
+    /// Bump the global version (called by every mutation).
+    fn bump(&mut self) {
+        self.version = self.version.wrapping_add(1);
+    }
+    /// Bump one token's epoch.
+    fn touch(&mut self, name: &str) {
+        *self.epochs.entry(name.to_string()).or_insert(0) += 1;
+    }
+
     /// Assign (or replace) edge `eidx`'s external id. No-op for a dead edge.
     pub fn set_edge_id(&mut self, eidx: u32, id: &str) {
         if !self.is_edge_live(eidx) {
             return;
         }
+        self.bump();
         // Drop any prior id for this edge (and its reverse entry) before re-binding.
         if let Some(old) = self.eid_fwd.remove(&eidx) {
             self.eid_rev.remove(&old);
@@ -566,9 +599,15 @@ impl Graph {
             if self.vidx.contains_key(&k) {
                 idx_apply(&mut self.vidx, &k, vi, &v, true);
             }
+            self.touch(&k);
             self.props.set_value(vi as usize, &k, v, &mut self.strs);
         }
         self.n += 1;
+        // Topology change: bump the global version and the new vertex's labels.
+        self.bump();
+        for l in labels {
+            self.touch(l);
+        }
         vi
     }
 
@@ -589,8 +628,12 @@ impl Graph {
             if self.eidx.contains_key(&k) {
                 idx_apply(&mut self.eidx, &k, ei, &v, true);
             }
+            self.touch(&k);
             self.edge_props.set_value(ei as usize, &k, v, &mut self.strs);
         }
+        // Topology change: bump the global version and the new edge's type.
+        self.bump();
+        self.touch(etype);
         ei
     }
 
@@ -604,6 +647,10 @@ impl Graph {
             let new = self.props.value(vi as usize, key, &self.strs);
             idx_apply(&mut self.vidx, key, vi, &new, true);
         }
+        // Value change: bump only this key (not the element's labels), so a
+        // label-only/topology query isn't invalidated by an unrelated edit.
+        self.bump();
+        self.touch(key);
     }
     pub fn remove_vertex_prop(&mut self, vi: u32, key: &str) {
         if self.vidx.contains_key(key) {
@@ -611,6 +658,8 @@ impl Graph {
             idx_apply(&mut self.vidx, key, vi, &old, false);
         }
         self.props.remove_value(vi as usize, key);
+        self.bump();
+        self.touch(key);
     }
     pub fn set_edge_prop(&mut self, ei: u32, key: &str, v: Value) {
         if self.eidx.contains_key(key) {
@@ -622,6 +671,8 @@ impl Graph {
             let new = self.edge_props.value(ei as usize, key, &self.strs);
             idx_apply(&mut self.eidx, key, ei, &new, true);
         }
+        self.bump();
+        self.touch(key);
     }
     pub fn remove_edge_prop(&mut self, ei: u32, key: &str) {
         if self.eidx.contains_key(key) {
@@ -629,6 +680,8 @@ impl Graph {
             idx_apply(&mut self.eidx, key, ei, &old, false);
         }
         self.edge_props.remove_value(ei as usize, key);
+        self.bump();
+        self.touch(key);
     }
 
     pub fn add_vertex_label(&mut self, vi: u32, name: &str) {
@@ -636,6 +689,8 @@ impl Graph {
         if !self.vlabels[vi as usize].contains(&lid) {
             self.vlabels[vi as usize].push(lid);
             self.by_label.entry(lid).or_default().push(vi);
+            self.bump();
+            self.touch(name);
         }
     }
     pub fn remove_vertex_label(&mut self, vi: u32, name: &str) {
@@ -644,6 +699,8 @@ impl Graph {
             if let Some(bucket) = self.by_label.get_mut(&lid) {
                 bucket.retain(|&x| x != vi);
             }
+            self.bump();
+            self.touch(name);
         }
     }
 
@@ -669,6 +726,13 @@ impl Graph {
         for a in self.in_[dst].iter_mut().filter(|a| a.eidx == ei) {
             a.etype = tid;
         }
+        if old != tid {
+            // Both the old and new type's membership changed.
+            let old_name = self.etype.text(old).to_string();
+            self.bump();
+            self.touch(&old_name);
+            self.touch(name);
+        }
     }
     pub fn remove_edge_label(&mut self, ei: u32, _name: &str) {
         // Single-type edges: removing the label clears the type to empty.
@@ -688,6 +752,13 @@ impl Graph {
                 idx_apply(&mut self.eidx, &key, ei, &val, false);
             }
         }
+        // Invalidate the edge's type and every property key it carried.
+        let mut touched: Vec<String> = vec![self.etype.text(self.e_type[i]).to_string()];
+        for kid in 0..self.edge_props.cols.len() as u32 {
+            if !matches!(self.edge_props.value_id(i, kid, &self.strs), Value::Null) {
+                touched.push(self.edge_props.keys.text(kid).to_string());
+            }
+        }
         self.e_live[i] = false;
         self.live_e -= 1;
         if let Some(bucket) = self.by_etype.get_mut(&self.e_type[i]) {
@@ -700,6 +771,10 @@ impl Graph {
         let (src, dst) = (self.e_src[i] as usize, self.e_dst[i] as usize);
         self.out[src].retain(|a| a.eidx != ei);
         self.in_[dst].retain(|a| a.eidx != ei);
+        self.bump();
+        for name in touched {
+            self.touch(&name);
+        }
     }
 
     /// Delete a vertex. Without `detach`, a vertex that still has edges is an
@@ -716,6 +791,15 @@ impl Graph {
         }
         for ei in incident {
             self.remove_edge(ei);
+        }
+        // Invalidate the vertex's labels and every property key it carried
+        // (gathered before the columns/labels are cleared below).
+        let mut touched: Vec<String> =
+            self.vlabels[i].iter().map(|&l| self.labels.text(l).to_string()).collect();
+        for kid in 0..self.props.cols.len() as u32 {
+            if !matches!(self.props.value_id(i, kid, &self.strs), Value::Null) {
+                touched.push(self.props.keys.text(kid).to_string());
+            }
         }
         for lid in self.vlabels[i].clone() {
             if let Some(bucket) = self.by_label.get_mut(&lid) {
@@ -734,6 +818,10 @@ impl Graph {
         self.in_[i].clear();
         self.v_live[i] = false;
         self.live_n -= 1;
+        self.bump();
+        for name in touched {
+            self.touch(&name);
+        }
         Ok(())
     }
 }
@@ -973,6 +1061,8 @@ impl Builder {
             by_etype,
             eid_fwd,
             eid_rev,
+            version: 0,
+            epochs: HashMap::new(),
             e_live: vec![true; e],
             live_e: e,
             out,

@@ -39,6 +39,10 @@ const toText = (q: string | TemplateStringsArray, subs: unknown[]): string => {
 export type RustGraph = {
   readonly vertexCount: number;
   readonly edgeCount: number;
+  /** Monotonic mutation counter — O(1) "did anything change?" for snapshots. */
+  readonly version: number;
+  /** Per-token change epoch (label / edge-type / property-key) for finer invalidation. */
+  epoch: (name: string) => number;
   /** Run a GQL query (tagged-template or string) → decoded rows. */
   query: (q: string | TemplateStringsArray, ...subs: unknown[]) => Row[];
   /** Run a GQL query → raw Arrow ("ARW1") columnar blob (decode with apache-arrow). */
@@ -61,6 +65,10 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
   get edgeCount() {
     return backend.edgeCount(handle);
   },
+  get version() {
+    return backend.version(handle);
+  },
+  epoch: (name) => backend.epoch(handle, name),
   query: (q, ...subs) => decodeRows(backend.queryRows(handle, toText(q, subs))),
   queryArrow: (q, ...subs) => backend.queryArrow(handle, toText(q, subs)),
   gremlin: (q, ...subs) =>

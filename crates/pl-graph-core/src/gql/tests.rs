@@ -935,3 +935,38 @@ fn edge_type_seed_live_under_delete() {
         vec![vec![s("josh")]],
     );
 }
+
+// --- reactive change tracking (version + per-token epochs) ---
+
+#[test]
+fn reactive_version_and_epoch() {
+    let mut g = modern();
+    let v0 = g.version();
+    let person0 = g.epoch("Person");
+    let age0 = g.epoch("age");
+    let name0 = g.epoch("name");
+
+    // A read does not bump anything.
+    rows(&mut g, "MATCH (n:Person) RETURN n.name");
+    assert_eq!(g.version(), v0);
+    assert_eq!(g.epoch("Person"), person0);
+
+    // Inserting a Person bumps the global version and the touched tokens.
+    rows(&mut g, "INSERT (:Person {name: 'zoe', age: 99})");
+    assert!(g.version() > v0);
+    assert!(g.epoch("Person") > person0);
+    assert!(g.epoch("age") > age0);
+    assert!(g.epoch("name") > name0);
+
+    // A property write bumps that key's epoch but NOT the label's (finer
+    // invalidation: a label-only/topology query is not disturbed).
+    let v1 = g.version();
+    let person1 = g.epoch("Person");
+    let age1 = g.epoch("age");
+    let name1 = g.epoch("name");
+    rows(&mut g, "MATCH (n:Person) WHERE n.name = 'marko' SET n.age = 30");
+    assert!(g.version() > v1);
+    assert!(g.epoch("age") > age1);
+    assert_eq!(g.epoch("Person"), person1); // label untouched by a value write
+    assert_eq!(g.epoch("name"), name1); // unrelated key untouched
+}
