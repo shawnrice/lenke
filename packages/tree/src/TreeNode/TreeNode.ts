@@ -438,6 +438,63 @@ export class TreeNode<T> {
   }
 
   /**
+   * Post-order depth-first traversal: every child (recursively) is yielded
+   * before its parent. This is the natural order for bottom-up evaluation —
+   * `depthFirst` is pre-order (parent first), this is its mirror.
+   */
+  *postOrder(): Generator<TreeNode<T>> {
+    for (const child of this.#children.values()) {
+      yield* child.postOrder();
+    }
+    yield this;
+  }
+
+  /**
+   * Casts the tree post-order into an array of `TreeNode<T>`.
+   */
+  castPostOrder(): TreeNode<T>[] {
+    return Array.from(this.postOrder());
+  }
+
+  /**
+   * Casts the tree post-order into an array of `T` (children before parents).
+   */
+  castPostOrderValue(): T[] {
+    return this.castPostOrder().map((x) => x.#value);
+  }
+
+  /**
+   * Structure-preserving map: a new tree of the **same shape and ids** with
+   * every value transformed by `fn`. This is what `fp.map` over the iterator
+   * cannot give you — `fp.map` yields a flat sequence of mapped values, losing
+   * the tree; this rebuilds it.
+   */
+  map<R>(fn: UnaryFn<T, R>): TreeNode<R> {
+    const next = TreeNode.from<R>(fn(this.#value), this.#id);
+    for (const child of this.#children.values()) {
+      next.addChild(child.map(fn));
+    }
+    return next;
+  }
+
+  /**
+   * Bottom-up catamorphism: fold each node from its already-folded children.
+   * `fn(value, childResults)` sees a node's value and the fold results of its
+   * children (left-to-right). This is the genuine tree fold — a flat
+   * `reduce` over a traversal can't express "combine a node with its subtrees".
+   *
+   * @example sum a number tree:  node.fold((v, kids) => v + kids.reduce((a, b) => a + b, 0))
+   * @example height:             node.fold((_v, kids) => 1 + Math.max(0, ...kids))
+   */
+  fold<R>(fn: (value: T, childResults: R[]) => R): R {
+    const childResults: R[] = [];
+    for (const child of this.#children.values()) {
+      childResults.push(child.fold(fn));
+    }
+    return fn(this.#value, childResults);
+  }
+
+  /**
    * Clones a SubTree starting at this node. Ids are preserved so the clone
    * is structurally identical to the source.
    */
