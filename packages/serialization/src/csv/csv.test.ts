@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@pl-graph/core';
+import { ErrorCode, hasErrorCode } from '@pl-graph/errors';
 import { chunked, collect } from '../streaming.js';
 
 import type { ChunkSource } from '../streaming.js';
@@ -173,11 +174,16 @@ describe('edges', () => {
     expect(graphContentEqual(target, g)).toBe(true);
   });
 
-  test('decodeEdges throws on a dangling endpoint', () => {
+  test('decodeEdges throws MissingVertex on a dangling endpoint', () => {
     const g = new Graph();
-    expect(() => decodeEdges('id,:START_ID,:END_ID,:TYPE\ne1,x,y,KNOWS', g)).toThrow(
-      /non-existent vertex/,
-    );
+    let caught: unknown;
+    try {
+      decodeEdges('id,:START_ID,:END_ID,:TYPE\ne1,x,y,KNOWS', g);
+    } catch (e) {
+      caught = e;
+    }
+    // The code is the contract; the message is just a human hint.
+    expect(hasErrorCode(caught, ErrorCode.MissingVertex)).toBe(true);
   });
 });
 

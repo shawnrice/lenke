@@ -1,3 +1,5 @@
+import { ErrorCode, PlGraphError } from '@pl-graph/errors';
+
 import type { Graph } from '@pl-graph/core';
 import type { Codec } from '../codec.js';
 import { type ChunkSource, linesFromChunks } from '../streaming.js';
@@ -76,15 +78,19 @@ const parseLine = (line: string): NodeRecord | EdgeRecord | null => {
   let record: unknown;
   try {
     record = JSON.parse(trimmed);
-  } catch {
-    throw new Error(`ndjson: invalid JSON: ${trimmed.slice(0, 80)}`);
+  } catch (cause) {
+    throw new PlGraphError(`ndjson: invalid JSON: ${trimmed.slice(0, 80)}`, { code: ErrorCode.InvalidJson, cause });
   }
   if (typeof record !== 'object' || record === null) {
-    throw new Error(`ndjson: each line must be a node or edge object: ${trimmed.slice(0, 80)}`);
+    throw new PlGraphError(`ndjson: each line must be a node or edge object: ${trimmed.slice(0, 80)}`, {
+      code: ErrorCode.InvalidShape,
+    });
   }
   const { type } = record as { type?: unknown };
   if (type !== 'node' && type !== 'edge') {
-    throw new Error(`ndjson: line is not a 'node' or 'edge' record: ${trimmed.slice(0, 80)}`);
+    throw new PlGraphError(`ndjson: line is not a 'node' or 'edge' record: ${trimmed.slice(0, 80)}`, {
+      code: ErrorCode.InvalidShape,
+    });
   }
   return record as NodeRecord | EdgeRecord;
 };
