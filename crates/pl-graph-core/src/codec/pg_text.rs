@@ -17,6 +17,7 @@
 //! is its first `:Label`.
 
 use crate::codec::{element_props, node_labels};
+use crate::error::CodeResult;
 use crate::graph::{Builder, EdgeRec, Graph, NodeRec, Value};
 
 // ---------------------------------------------------------------------------
@@ -220,7 +221,7 @@ fn is_edge_line(tokens: &[String]) -> bool {
 
 /// Deserialize a PG-text string into a fresh graph. Endpoints referenced by an
 /// edge but never declared as a node line are created (bare) by `finalize`.
-pub fn decode(input: &str) -> Result<Graph, String> {
+pub fn decode(input: &str) -> CodeResult<Graph> {
     let mut b = Builder::default();
     for raw in input.split('\n') {
         let line = raw.trim();

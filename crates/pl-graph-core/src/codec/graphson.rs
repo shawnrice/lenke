@@ -16,6 +16,8 @@
 use serde_json::Value as J;
 
 use crate::codec::{element_props, is_intish, node_labels, push_json_str, push_num};
+use crate::error::{CodeError, CodeResult};
+use crate::error_codes::ErrorCode;
 use crate::graph::{Builder, EdgeRec, Graph, NodeRec, Value};
 
 const LABEL_SEP: &str = "::";
@@ -151,9 +153,12 @@ fn inner_value(prop_value: &J) -> Option<&J> {
     prop_value.get("@value").and_then(|v| v.get("value"))
 }
 
-pub fn decode(input: &str) -> Result<Graph, String> {
-    let j: J = serde_json::from_str(input).map_err(|e| format!("graphson: invalid JSON: {e}"))?;
-    let obj = j.as_object().ok_or_else(|| "graphson: expected a top-level object".to_string())?;
+pub fn decode(input: &str) -> CodeResult<Graph> {
+    let j: J = serde_json::from_str(input)
+        .map_err(|e| CodeError::new(ErrorCode::InvalidJson, format!("graphson: invalid JSON: {e}")))?;
+    let obj = j
+        .as_object()
+        .ok_or_else(|| CodeError::new(ErrorCode::InvalidShape, "graphson: expected a top-level object"))?;
 
     let mut b = Builder::default();
 

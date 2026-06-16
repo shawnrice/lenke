@@ -34,6 +34,8 @@ use std::sync::Arc;
 
 use serde_json::Value as J;
 
+use crate::error::{CodeError, CodeResult};
+use crate::error_codes::ErrorCode;
 use crate::graph::{Dict, Graph, Properties, Value};
 
 // ---------------------------------------------------------------------------
@@ -163,37 +165,36 @@ pub(crate) fn json_props(field: Option<&J>) -> Vec<(String, Value)> {
 // Format dispatch (mirrors the TS `serialize` / `deserialize`)
 // ---------------------------------------------------------------------------
 
-/// The recognized format names, shared by `serialize`/`deserialize` and
-/// [`is_known_format`] so the set has a single source.
-pub const FORMATS: &[&str] = &["pg-json", "pg-text", "graphson", "csv", "ndjson"];
-
-/// Whether `format` names a recognized codec. Lets a caller tell an
-/// unknown-format failure apart from a parse failure of a *known* format.
-pub fn is_known_format(format: &str) -> bool {
-    FORMATS.contains(&format)
+/// An unrecognized format name. The codes are now structural: an unknown name is
+/// distinct from a parse failure of a *known* format (which the decoders code
+/// precisely), so the FFI layer can surface `e.code` directly.
+fn unknown_format(format: &str) -> CodeError {
+    CodeError::new(ErrorCode::UnknownFormat, format!("unknown serialization format '{format}'"))
 }
 
 /// Serialize `g` in the named format: `pg-json | pg-text | graphson | csv | ndjson`.
-pub fn serialize(g: &Graph, format: &str) -> Result<String, String> {
+pub fn serialize(g: &Graph, format: &str) -> CodeResult<String> {
     match format {
         "pg-json" => Ok(pg_json::encode(g)),
         "pg-text" => Ok(pg_text::encode(g)),
         "graphson" => Ok(graphson::encode(g)),
         "csv" => Ok(csv::encode(g)),
         "ndjson" => Ok(crate::ndjson::encode(g)),
-        other => Err(format!("unknown serialization format '{other}'")),
+        other => Err(unknown_format(other)),
     }
 }
 
-/// Deserialize `input` in the named format into a fresh graph.
-pub fn deserialize(input: &str, format: &str) -> Result<Graph, String> {
+/// Deserialize `input` in the named format into a fresh graph. A bad format name
+/// yields `UnknownFormat`; a malformed payload of a known format yields the
+/// decoder's own code (`InvalidJson` / `InvalidShape` / …).
+pub fn deserialize(input: &str, format: &str) -> CodeResult<Graph> {
     match format {
         "pg-json" => pg_json::decode(input),
         "pg-text" => pg_text::decode(input),
         "graphson" => graphson::decode(input),
         "csv" => csv::decode(input),
         "ndjson" => Ok(crate::ndjson::decode(input)),
-        other => Err(format!("unknown serialization format '{other}'")),
+        other => Err(unknown_format(other)),
     }
 }
 

@@ -107,17 +107,24 @@ describe('FFI error channel', () => {
     expect(lastError()?.code).toBe('E_UNKNOWN_FORMAT');
   });
 
-  test('deserialize splits unknown-format from a known-format parse failure', () => {
-    // Unknown format name → UnknownFormat.
-    const bad = enc.encode('whatever');
-    const fmtBad = enc.encode('no-such-format');
-    expect(lib.symbols.plg_deserialize(ptr(bad), bad.byteLength, ptr(fmtBad), fmtBad.byteLength)).toBeNull();
-    expect(lastError()?.code).toBe('E_UNKNOWN_FORMAT');
+  const deserialize = (input: string, format: string): number => {
+    const i = enc.encode(input);
+    const f = enc.encode(format);
+    return lib.symbols.plg_deserialize(ptr(i), i.byteLength, ptr(f), f.byteLength) as number;
+  };
 
-    // Known format (pg-json) but the payload isn't valid for it → InvalidShape.
-    const garbage = enc.encode('this is not pg-json');
-    const fmtOk = enc.encode('pg-json');
-    expect(lib.symbols.plg_deserialize(ptr(garbage), garbage.byteLength, ptr(fmtOk), fmtOk.byteLength)).toBeNull();
+  test('deserialize: an unknown format name carries E_UNKNOWN_FORMAT', () => {
+    expect(deserialize('whatever', 'no-such-format')).toBeNull();
+    expect(lastError()?.code).toBe('E_UNKNOWN_FORMAT');
+  });
+
+  test('deserialize: a known format with the precise codec code (not a coarse default)', () => {
+    // Invalid JSON for a JSON format → InvalidJson (the structured codec error).
+    expect(deserialize('this is not json', 'pg-json')).toBeNull();
+    expect(lastError()?.code).toBe('E_INVALID_JSON');
+
+    // Valid JSON but the wrong shape (an array, not the expected object) → InvalidShape.
+    expect(deserialize('[1,2,3]', 'pg-json')).toBeNull();
     expect(lastError()?.code).toBe('E_INVALID_SHAPE');
   });
 });

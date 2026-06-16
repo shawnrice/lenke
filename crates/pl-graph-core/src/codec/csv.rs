@@ -21,6 +21,7 @@
 //! empty for id-less edges.
 
 use crate::codec::{element_props, is_intish};
+use crate::error::CodeResult;
 use crate::graph::{Builder, EdgeRec, Graph, NodeRec, Value};
 
 const NULL_TOKEN: &str = "\\N";
@@ -529,7 +530,7 @@ pub fn encode(g: &Graph) -> String {
 }
 
 /// Decode the combined single-string form into a fresh graph (nodes, then edges).
-pub fn decode(input: &str) -> Result<Graph, String> {
+pub fn decode(input: &str) -> CodeResult<Graph> {
     let (nodes_csv, edges_csv) = match input.find(SEPARATOR) {
         Some(idx) => (&input[..idx], &input[idx + SEPARATOR.len()..]),
         None => (input, ""),

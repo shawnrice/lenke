@@ -450,10 +450,8 @@ pub unsafe extern "C" fn plg_serialize(
             *out_len = bytes.len();
             Box::into_raw(bytes) as *mut u8
         }
-        // serialize fails only on an unrecognized format name (the encoders are
-        // infallible), so this is precisely UnknownFormat.
         Err(e) => {
-            crate::ffi_error::set_code(ErrorCode::UnknownFormat, &e);
+            crate::ffi_error::set_code(e.code, &e.message);
             std::ptr::null_mut()
         }
     }
@@ -494,16 +492,10 @@ pub unsafe extern "C" fn plg_deserialize(
     };
     match crate::codec::deserialize(text, fmt) {
         Ok(g) => Box::into_raw(Box::new(g)),
-        // An unrecognized format name vs a parse failure of a *known* format are
-        // different codes; finer parse codes (InvalidJson/MissingVertex) await
-        // structured codec errors (the deferred per-format adoption).
+        // The codec now carries a precise code (UnknownFormat / InvalidJson /
+        // InvalidShape / …); surface it directly — no message-matching heuristic.
         Err(e) => {
-            let code = if crate::codec::is_known_format(fmt) {
-                ErrorCode::InvalidShape
-            } else {
-                ErrorCode::UnknownFormat
-            };
-            crate::ffi_error::set_code(code, &e);
+            crate::ffi_error::set_code(e.code, &e.message);
             std::ptr::null_mut()
         }
     }
