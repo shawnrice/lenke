@@ -150,6 +150,13 @@ export const firstLabel = (s: ReadonlySet<string>): string | undefined => {
 export type RunContext = {
   readonly sideEffects: Map<string, unknown[]>;
   /**
+   * Subgraph side-effects keyed by name: `subgraph(key)` accumulates matching
+   * edges (and their endpoints) into a fresh `Graph` here, which `cap(key)`
+   * returns. Kept separate from {@link sideEffects} because the value is a graph,
+   * not an appended list.
+   */
+  readonly subgraphs: Map<string, Graph>;
+  /**
    * Whether this run tracks traverser paths. Computed once from the plan via
    * {@link planReadsPath}; defaults to `true` so any context built without it
    * (e.g. sub-plan evaluation) is always correct, just unoptimized.
@@ -159,6 +166,7 @@ export type RunContext = {
 
 export const newContext = (tracksPath = true): RunContext => ({
   sideEffects: new Map(),
+  subgraphs: new Map(),
   tracksPath,
 });
 

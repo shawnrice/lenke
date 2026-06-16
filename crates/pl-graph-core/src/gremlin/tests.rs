@@ -882,3 +882,47 @@ fn match_nested_not() {
         .by("name"));
     assert_eq!(match_rows(r), vec![pairs(&[("a", "marko"), ("b", "josh"), ("c", "ripple")])]);
 }
+
+// --- subgraph() — accumulate matching edges (ports steps/subgraph.test.ts) ---
+//
+// The Rust GVal has no graph type, so cap() of a subgraph key yields a
+// {vertices, edges} id-list map rather than the TS engine's Graph object; the
+// collected membership (and thus counts) match.
+
+fn subgraph_counts(r: Vec<GVal>) -> (usize, usize) {
+    match r.as_slice() {
+        [GVal::Map(entries)] => {
+            let get = |k: &str| {
+                entries.iter().find(|(key, _)| matches!(key, GVal::Str(s) if s.as_ref() == k)).map(|(_, v)| v)
+            };
+            let len = |v: Option<&GVal>| match v {
+                Some(GVal::List(l)) => l.len(),
+                _ => 0,
+            };
+            (len(get("vertices")), len(get("edges")))
+        }
+        _ => panic!("expected a subgraph map, got {r:?}"),
+    }
+}
+
+#[test]
+fn subgraph_collects_knows_edges() {
+    // 2 KNOWS edges (marko→vadas, marko→josh) over 3 vertices.
+    let r = q(g().E().has_label(&["KNOWS"]).subgraph("sg").cap("sg"));
+    assert_eq!(subgraph_counts(r), (3, 2));
+}
+
+#[test]
+fn subgraph_chained_accumulation() {
+    // marko knows {vadas, josh}; josh created {lop, ripple} → 2 edges, 3 vertices.
+    let r = q(g()
+        .V()
+        .out_e(&["KNOWS"])
+        .subgraph("knowsG")
+        .in_v()
+        .out_e(&["CREATED"])
+        .subgraph("createdG")
+        .in_v()
+        .cap("createdG"));
+    assert_eq!(subgraph_counts(r), (3, 2));
+}

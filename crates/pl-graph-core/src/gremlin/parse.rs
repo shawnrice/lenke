@@ -467,6 +467,7 @@ impl Parser {
             "aggregate" => t.aggregate(args[0].as_str()?),
             "store" => t.store(args[0].as_str()?),
             "cap" => t.cap(args[0].as_str()?),
+            "subgraph" => t.subgraph(args[0].as_str()?),
             "barrier" => t.barrier(),
             // iteration
             "repeat" => t.repeat(self.one_trav(args)?),

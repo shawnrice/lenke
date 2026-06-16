@@ -48,10 +48,12 @@ impl Trav {
     }
 }
 
-/// Per-run mutable context: named side-effect bags for `aggregate`/`store`/`cap`.
+/// Per-run mutable context: named side-effect bags for `aggregate`/`store`/`cap`,
+/// plus `subgraph(key)` accumulators (deduped (vertex ids, edge ids)).
 #[derive(Default)]
 struct Ctx {
     side: HashMap<String, Vec<GVal>>,
+    subgraphs: HashMap<String, (Vec<u32>, Vec<u32>)>,
 }
 
 /// Run a traversal against `graph`, returning the final traversers' values.
@@ -941,7 +943,39 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
             }
             stream
         }
-        Step::Cap(key) => vec![Trav::root(GVal::List(ctx.side.get(key).cloned().unwrap_or_default()))],
+        Step::Subgraph(key) => {
+            // Accumulate each edge (+ its endpoints) into the named subgraph,
+            // deduped by id; traversers pass through so it composes mid-stream.
+            let entry = ctx.subgraphs.entry(key.clone()).or_default();
+            for t in &stream {
+                if let GVal::Edge(e) = t.val {
+                    let (s, d) = (graph.e_src[e as usize], graph.e_dst[e as usize]);
+                    if !entry.1.contains(&e) {
+                        entry.1.push(e);
+                    }
+                    for v in [s, d] {
+                        if !entry.0.contains(&v) {
+                            entry.0.push(v);
+                        }
+                    }
+                }
+            }
+            stream
+        }
+        Step::Cap(key) => {
+            // A subgraph key caps to a {vertices, edges} id-list map (GVal has no
+            // graph type — the TS engine returns a Graph object); else the bag.
+            if let Some((verts, edges)) = ctx.subgraphs.get(key) {
+                let vlist = GVal::List(verts.iter().map(|v| GVal::Str(graph.vid.arc(*v))).collect());
+                let elist = GVal::List(edges.iter().map(|e| elem_id(graph, &GVal::Edge(*e))).collect());
+                vec![Trav::root(GVal::Map(vec![
+                    (GVal::Str(Arc::from("vertices")), vlist),
+                    (GVal::Str(Arc::from("edges")), elist),
+                ]))]
+            } else {
+                vec![Trav::root(GVal::List(ctx.side.get(key).cloned().unwrap_or_default()))]
+            }
+        }
         Step::Barrier => stream,
         Step::Repeat { body, times, until, emit, emit_before } => run_repeat(graph, ctx, &stream, body, *times, until.as_deref(), emit.as_deref(), *emit_before),
 

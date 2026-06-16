@@ -88,4 +88,13 @@ describe('textual Gremlin over bun:ffi', () => {
     );
     expect(r).toEqual([{ a: 'marko', b: 'josh', c: 'ripple' }]);
   });
+
+  test('subgraph() accumulates edges and caps to a {vertices, edges} map', () => {
+    const r = gremlin(g, "g.E().hasLabel('KNOWS').subgraph('sg').cap('sg')") as Array<{
+      vertices: string[];
+      edges: string[];
+    }>;
+    expect(r[0]!.vertices).toHaveLength(3); // marko, vadas, josh
+    expect(r[0]!.edges).toHaveLength(2); // 2 KNOWS edges
+  });
 });

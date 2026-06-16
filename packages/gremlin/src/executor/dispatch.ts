@@ -81,7 +81,7 @@ import {
   selectStep,
   treeStep,
 } from './projection.js';
-import { aggregateStep, barrierStep, capStep } from './side-effects.js';
+import { aggregateStep, barrierStep, capStep, subgraphStep } from './side-effects.js';
 import {
   flatMapFnStep,
   flatMapStep,
@@ -344,9 +344,7 @@ export const applyStep = (
       return matchStep(stream, step.patterns, graph, ctx);
 
     case 'subgraph':
-      throw new PlGraphError('subgraph() is not yet implemented', {
-        code: ErrorCode.NotImplemented,
-      });
+      return subgraphStep(stream, step.key, ctx);
 
     case 'hasLabelAnd':
       return filterStream(stream, (v) => {

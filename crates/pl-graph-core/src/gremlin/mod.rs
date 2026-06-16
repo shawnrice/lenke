@@ -270,6 +270,8 @@ pub enum Step {
     Aggregate(String),
     Store(String),
     Cap(String),
+    /// Side-effect: accumulate matching edges (+ endpoints) into a named subgraph.
+    Subgraph(String),
     Barrier,
     Repeat { body: Box<Traversal>, times: Option<usize>, until: Option<Box<Traversal>>, emit: Option<Box<Traversal>>, emit_before: bool },
     As(String),
@@ -602,6 +604,9 @@ impl Traversal {
     }
     pub fn cap(self, key: &str) -> Self {
         self.push(Step::Cap(key.to_string()))
+    }
+    pub fn subgraph(self, key: &str) -> Self {
+        self.push(Step::Subgraph(key.to_string()))
     }
     pub fn barrier(self) -> Self {
         self.push(Step::Barrier)
