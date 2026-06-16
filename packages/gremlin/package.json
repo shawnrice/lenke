@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@pl-graph/core": "workspace:*",
+    "@pl-graph/errors": "workspace:*",
     "@pl-graph/fp": "workspace:*"
   },
   "devDependencies": {

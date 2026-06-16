@@ -1,3 +1,5 @@
+import { ErrorCode, PlGraphError } from '@pl-graph/errors';
+
 import type { Plan, Step } from './ast.js';
 
 /**
@@ -74,9 +76,10 @@ export const isSerializable = (plan: Plan): boolean => findClosures(plan).length
 export const serialize = (plan: Plan): string => {
   const closures = findClosures(plan);
   if (closures.length > 0) {
-    throw new Error(
+    throw new PlGraphError(
       `Plan contains closure-bearing steps and cannot be serialized:\n  ${closures.join('\n  ')}\n` +
         `Rewrite these as sub-plans (e.g. map(pipe(...))) to make the plan serializable.`,
+      { code: ErrorCode.Unsupported },
     );
   }
   return JSON.stringify(plan);

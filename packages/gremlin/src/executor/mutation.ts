@@ -7,6 +7,7 @@
 // should clone the graph first (`graph.clone()`).
 
 import type { Graph, Vertex } from '@pl-graph/core';
+import { ErrorCode, PlGraphError } from '@pl-graph/errors';
 
 import type { AddEEndpoint, Plan } from '../ast.js';
 import {
@@ -89,9 +90,9 @@ export const addEStep = function* (
 ): Iterable<Traverser<unknown>> {
   for (const t of stream) {
     if (step.from === undefined && step.to === undefined) {
-      throw new Error(
-        `addE('${step.label}'): at least one of .from() or .to() must be specified`,
-      );
+      throw new PlGraphError(`addE('${step.label}'): at least one of .from() or .to() must be specified`, {
+        code: ErrorCode.Syntax,
+      });
     }
     const from = resolveAddEEndpoint(step.from, t, graph, ctx);
     const to = resolveAddEEndpoint(step.to, t, graph, ctx);

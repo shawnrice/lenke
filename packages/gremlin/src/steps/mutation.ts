@@ -1,3 +1,5 @@
+import { ErrorCode, PlGraphError } from '@pl-graph/errors';
+
 import {
   appendStep,
   buildPlan,
@@ -92,7 +94,9 @@ export function property(
   if (typeof args[0] === 'symbol') {
     const cardinality = CARDINALITY_TO_KIND.get(args[0]);
     if (cardinality === undefined) {
-      throw new Error(`property(): unrecognized cardinality symbol ${String(args[0])}`);
+      throw new PlGraphError(`property(): unrecognized cardinality symbol ${String(args[0])}`, {
+        code: ErrorCode.Unsupported,
+      });
     }
     return appendStep({ kind: 'property', key: args[1] as string, value: args[2], cardinality });
   }

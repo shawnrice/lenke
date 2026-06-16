@@ -5,6 +5,8 @@
 // (`StepFn`/`SubPlan`/`ByableStep`), or a helper (`makeByable`/`buildPlan`
 // /`isPredicate`/etc.).
 
+import { ErrorCode, PlGraphError } from '@pl-graph/errors';
+
 import {
   appendStep,
   type By,
@@ -175,7 +177,7 @@ export const toBy = (modulator: ByModulator | undefined, comparator?: OrderSym):
     if (tokenKind) {
       return { kind: 'token', token: tokenKind, direction };
     }
-    throw new Error(`Unrecognized symbol: ${String(modulator)}`);
+    throw new PlGraphError(`Unrecognized symbol: ${String(modulator)}`, { code: ErrorCode.Unsupported });
   }
   if (isPlan(modulator)) {
     return { kind: 'traversal', plan: modulator, direction };
@@ -212,7 +214,7 @@ export const scopeTokenOf = (s: symbol): 'global' | 'local' => {
   if (s === Scope.global) {
     return 'global';
   }
-  throw new Error('Expected Scope.local or Scope.global');
+  throw new PlGraphError('Expected Scope.local or Scope.global', { code: ErrorCode.Unsupported });
 };
 
 // ---------- Re-exports the step files need from ast ----------
