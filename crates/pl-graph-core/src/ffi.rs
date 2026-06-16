@@ -287,7 +287,7 @@ pub unsafe extern "C" fn plg_query_rows(
     let rowset = match parsed.execute(&mut *g, &crate::gql::eval::Params::new()) {
         Ok(rs) => rs,
         Err(e) => {
-            crate::ffi_error::set_code(ErrorCode::Unsupported, &e);
+            crate::ffi_error::set_code(e.code, &e.message);
             return std::ptr::null_mut();
         }
     };
@@ -345,7 +345,7 @@ pub unsafe extern "C" fn plg_query_arrow(
     let blob = match parsed.execute_arrow(&mut *g, &crate::gql::eval::Params::new()) {
         Ok(b) => b,
         Err(e) => {
-            crate::ffi_error::set_code(ErrorCode::Unsupported, &e);
+            crate::ffi_error::set_code(e.code, &e.message);
             return std::ptr::null_mut();
         }
     };

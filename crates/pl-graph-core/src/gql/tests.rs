@@ -746,7 +746,9 @@ fn delete_vertex_with_edges_errors_without_detach() {
         .unwrap()
         .execute(&mut g, &Params::new())
         .unwrap_err();
-    assert!(err.contains("DETACH"), "got: {err}");
+    // The code is the contract; the message is just the human hint.
+    assert_eq!(err.code, crate::error_codes::ErrorCode::InvalidGraphOp);
+    assert!(err.message.contains("DETACH"), "got: {err}");
 }
 
 #[test]

@@ -57,6 +57,22 @@ describe('FFI error channel', () => {
   const ndBuf = enc.encode(nd);
   const g = lib.symbols.plg_graph_from_ndjson(ptr(ndBuf), ndBuf.byteLength, 0) as number;
 
+  test('a DELETE of a connected vertex without DETACH carries E_INVALID_GRAPH_OP', () => {
+    // A two-node, one-edge graph: deleting a connected vertex without DETACH is
+    // an invalid graph mutation — a runtime (execute-time) error, not a parse one.
+    const nd2 = [
+      '{"type":"node","id":"x","labels":["P"],"properties":{"name":"x"}}',
+      '{"type":"node","id":"y","labels":["P"],"properties":{"name":"y"}}',
+      '{"type":"edge","from":"x","to":"y","labels":["R"],"properties":{}}',
+    ].join('\n');
+    const b = enc.encode(nd2);
+    const g2 = lib.symbols.plg_graph_from_ndjson(ptr(b), b.byteLength, 0) as number;
+
+    const res = queryRows(g2, "MATCH (n:P {name:'x'}) DELETE n");
+    expect(res).toBeNull();
+    expect(lastError()?.code).toBe('E_INVALID_GRAPH_OP');
+  });
+
   test('a syntax error returns null and carries the shared E_SYNTAX code + pos', () => {
     const res = queryRows(g, '@@@ not gql');
     expect(res).toBeNull(); // null sentinel
