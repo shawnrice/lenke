@@ -237,7 +237,8 @@ export const selectStep = function* (
   // bys modulate the projection per label. Gremlin cycles the modulators: with
   // fewer `by()`s than labels they repeat round-robin, so a single `by('name')`
   // applies to every selected label. No `by()` at all ⇒ identity.
-  const byFor = (i: number): By => (bys && bys.length > 0 ? bys[i % bys.length]! : { kind: 'identity' });
+  const byFor = (i: number): By =>
+    bys && bys.length > 0 ? bys[i % bys.length]! : { kind: 'identity' };
   for (const t of stream) {
     if (labels.length === 1) {
       const lbl = labels[0]!;

@@ -57,13 +57,19 @@ const parsePattern = (plan: Plan): Pattern => {
 
   // `not(inner)` / `where(inner)` filter wrappers: parse the inner pattern and
   // flip negation (where keeps it positive). These don't bind new labels.
-  if (steps.length === 1 && first && (first.kind === 'not' || (first.kind === 'where' && 'plan' in first))) {
+  if (
+    steps.length === 1 &&
+    first &&
+    (first.kind === 'not' || (first.kind === 'where' && 'plan' in first))
+  ) {
     const inner = parsePattern((first as Extract<Step, { kind: 'not' }>).plan);
     return { ...inner, negated: first.kind === 'not' ? !inner.negated : inner.negated };
   }
 
   if (!first || first.kind !== 'as') {
-    throw new PlGraphError('a match() pattern must begin with as(label)', { code: ErrorCode.Syntax });
+    throw new PlGraphError('a match() pattern must begin with as(label)', {
+      code: ErrorCode.Syntax,
+    });
   }
   const startKey = first.label;
   const last = steps[steps.length - 1]!;

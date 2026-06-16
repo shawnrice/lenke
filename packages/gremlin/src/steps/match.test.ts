@@ -76,10 +76,7 @@ describe('match() — declarative pattern matching', () => {
       run(
         traversal(
           V(),
-          match(
-            pipe(as_('a'), out('CREATED'), as_('b')),
-            pipe(as_('b'), in_('CREATED'), as_('c')),
-          ),
+          match(pipe(as_('a'), out('CREATED'), as_('b')), pipe(as_('b'), in_('CREATED'), as_('c'))),
           where('a', neq('c')),
           select('a', 'c').by('name'),
         ),
