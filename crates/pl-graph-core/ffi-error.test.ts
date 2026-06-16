@@ -14,6 +14,9 @@ const lib = dlopen(new URL('./target/release/libpl_graph_core.dylib', import.met
   plg_graph_free: { args: [FFIType.ptr], returns: FFIType.void },
   plg_query_rows: { args: [FFIType.ptr, FFIType.ptr, FFIType.u64_fast, FFIType.ptr], returns: FFIType.ptr },
   plg_query_arrow: { args: [FFIType.ptr, FFIType.ptr, FFIType.u64_fast, FFIType.ptr], returns: FFIType.ptr },
+  plg_gremlin_json: { args: [FFIType.ptr, FFIType.ptr, FFIType.u64_fast, FFIType.ptr], returns: FFIType.ptr },
+  plg_serialize: { args: [FFIType.ptr, FFIType.ptr, FFIType.u64_fast, FFIType.ptr], returns: FFIType.ptr },
+  plg_deserialize: { args: [FFIType.ptr, FFIType.u64_fast, FFIType.ptr, FFIType.u64_fast], returns: FFIType.ptr },
   plg_free_buf: { args: [FFIType.ptr, FFIType.u64_fast], returns: FFIType.void },
   plg_free_arrow: { args: [FFIType.ptr, FFIType.u64_fast], returns: FFIType.void },
   plg_last_error_json: { args: [FFIType.ptr], returns: FFIType.ptr },
@@ -86,5 +89,35 @@ describe('FFI error channel', () => {
     const res = queryArrow(g, '@@@ not gql');
     expect(res).toBeNull(); // null — error never rides the Arrow data pointer
     expect(lastError()?.code).toBe('E_SYNTAX');
+  });
+
+  test('a Gremlin parse error carries E_SYNTAX', () => {
+    const q = enc.encode('g.V(.broken(');
+    const outLen = new BigUint64Array(1);
+    const res = lib.symbols.plg_gremlin_json(g, ptr(q), q.byteLength, ptr(outLen));
+    expect(res).toBeNull();
+    expect(lastError()?.code).toBe('E_SYNTAX');
+  });
+
+  test('serialize with an unknown format name carries E_UNKNOWN_FORMAT', () => {
+    const fmt = enc.encode('no-such-format');
+    const outLen = new BigUint64Array(1);
+    const res = lib.symbols.plg_serialize(g, ptr(fmt), fmt.byteLength, ptr(outLen));
+    expect(res).toBeNull();
+    expect(lastError()?.code).toBe('E_UNKNOWN_FORMAT');
+  });
+
+  test('deserialize splits unknown-format from a known-format parse failure', () => {
+    // Unknown format name → UnknownFormat.
+    const bad = enc.encode('whatever');
+    const fmtBad = enc.encode('no-such-format');
+    expect(lib.symbols.plg_deserialize(ptr(bad), bad.byteLength, ptr(fmtBad), fmtBad.byteLength)).toBeNull();
+    expect(lastError()?.code).toBe('E_UNKNOWN_FORMAT');
+
+    // Known format (pg-json) but the payload isn't valid for it → InvalidShape.
+    const garbage = enc.encode('this is not pg-json');
+    const fmtOk = enc.encode('pg-json');
+    expect(lib.symbols.plg_deserialize(ptr(garbage), garbage.byteLength, ptr(fmtOk), fmtOk.byteLength)).toBeNull();
+    expect(lastError()?.code).toBe('E_INVALID_SHAPE');
   });
 });

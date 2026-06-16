@@ -35,12 +35,18 @@ serde_json = { version = "1.0.150", optional = true }
 default = ["full"]
 full = ["gql", "gremlin", "ndjson", "codecs", "arrow", "parallel"]
 
+# Internal marker (leading `_` = not a public knob): enabled by every surface
+# whose `plg_*` FFI fns record a last-error report, so `ffi_error`'s setters gate
+# on one `cfg(feature = "_fallible-ffi")` instead of repeating the surface union.
+# arrow→gql and codecs→ndjson pull it in transitively.
+_fallible-ffi = []
+
 # `gql`: the ISO-GQL engine (hand-rolled parser; carries NO serde_json).
-gql = []
+gql = ["_fallible-ffi"]
 # `gremlin`: the Gremlin traversal engine (heterogeneous JSON results).
-gremlin = ["dep:serde_json"]
+gremlin = ["dep:serde_json", "_fallible-ffi"]
 # `ndjson`: the NDJSON load/snapshot codec.
-ndjson = ["dep:serde_json"]
+ndjson = ["dep:serde_json", "_fallible-ffi"]
 # `codecs`: the extra serialization formats (pg-json/pg-text/graphson/csv); the
 # combined dispatch also covers ndjson, so it implies it.
 codecs = ["ndjson", "dep:serde_json"]

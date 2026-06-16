@@ -163,6 +163,16 @@ pub(crate) fn json_props(field: Option<&J>) -> Vec<(String, Value)> {
 // Format dispatch (mirrors the TS `serialize` / `deserialize`)
 // ---------------------------------------------------------------------------
 
+/// The recognized format names, shared by `serialize`/`deserialize` and
+/// [`is_known_format`] so the set has a single source.
+pub const FORMATS: &[&str] = &["pg-json", "pg-text", "graphson", "csv", "ndjson"];
+
+/// Whether `format` names a recognized codec. Lets a caller tell an
+/// unknown-format failure apart from a parse failure of a *known* format.
+pub fn is_known_format(format: &str) -> bool {
+    FORMATS.contains(&format)
+}
+
 /// Serialize `g` in the named format: `pg-json | pg-text | graphson | csv | ndjson`.
 pub fn serialize(g: &Graph, format: &str) -> Result<String, String> {
     match format {

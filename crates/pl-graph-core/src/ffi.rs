@@ -7,7 +7,7 @@
 //! (`plg_encode_ndjson`) are heap-allocated here and must be returned via
 //! `plg_free_buf`. The graph handle must be returned via `plg_graph_free`.
 
-#[cfg(any(feature = "gql", feature = "arrow"))]
+#[cfg(feature = "_fallible-ffi")]
 use crate::error_codes::ErrorCode;
 use crate::graph::{Column, Graph};
 use crate::{build_csr, query, scan, ScanKind};
@@ -90,13 +90,18 @@ pub unsafe extern "C" fn plg_dealloc(ptr: *mut u8, len: usize) {
 #[cfg(feature = "ndjson")]
 #[no_mangle]
 pub unsafe extern "C" fn plg_graph_from_ndjson(ptr: *const u8, len: usize, parallel: u32) -> *mut Graph {
+    crate::ffi_error::begin();
     if ptr.is_null() {
+        crate::ffi_error::set_code(ErrorCode::Ffi, "null NDJSON pointer");
         return std::ptr::null_mut();
     }
     let bytes = std::slice::from_raw_parts(ptr, len);
     let text = match std::str::from_utf8(bytes) {
         Ok(t) => t,
-        Err(_) => return std::ptr::null_mut(),
+        Err(_) => {
+            crate::ffi_error::set_code(ErrorCode::Ffi, "NDJSON bytes are not valid UTF-8");
+            return std::ptr::null_mut();
+        }
     };
     let g = if parallel != 0 { crate::ndjson::decode(text) } else { crate::ndjson::decode_serial(text) };
     Box::into_raw(Box::new(g))
@@ -387,16 +392,24 @@ pub unsafe extern "C" fn plg_gremlin_json(
     q_len: usize,
     out_len: *mut usize,
 ) -> *mut u8 {
+    crate::ffi_error::begin();
     if g.is_null() || q_ptr.is_null() {
+        crate::ffi_error::set_code(ErrorCode::Ffi, "null graph or query pointer");
         return std::ptr::null_mut();
     }
     let q = match std::str::from_utf8(std::slice::from_raw_parts(q_ptr, q_len)) {
         Ok(s) => s,
-        Err(_) => return std::ptr::null_mut(),
+        Err(_) => {
+            crate::ffi_error::set_code(ErrorCode::Ffi, "query bytes are not valid UTF-8");
+            return std::ptr::null_mut();
+        }
     };
     let plan = match crate::gremlin::parse(q) {
         Ok(p) => p,
-        Err(_) => return std::ptr::null_mut(),
+        Err(e) => {
+            crate::ffi_error::set_code(ErrorCode::Syntax, &e);
+            return std::ptr::null_mut();
+        }
     };
     let vals = crate::gremlin::run(&mut *g, &plan);
     let bytes = crate::gremlin::exec::results_to_json(&*g, &vals).into_bytes().into_boxed_slice();
@@ -419,12 +432,17 @@ pub unsafe extern "C" fn plg_serialize(
     fmt_len: usize,
     out_len: *mut usize,
 ) -> *mut u8 {
+    crate::ffi_error::begin();
     if g.is_null() || fmt_ptr.is_null() {
+        crate::ffi_error::set_code(ErrorCode::Ffi, "null graph or format pointer");
         return std::ptr::null_mut();
     }
     let fmt = match std::str::from_utf8(std::slice::from_raw_parts(fmt_ptr, fmt_len)) {
         Ok(s) => s,
-        Err(_) => return std::ptr::null_mut(),
+        Err(_) => {
+            crate::ffi_error::set_code(ErrorCode::Ffi, "format bytes are not valid UTF-8");
+            return std::ptr::null_mut();
+        }
     };
     match crate::codec::serialize(&*g, fmt) {
         Ok(s) => {
@@ -432,7 +450,12 @@ pub unsafe extern "C" fn plg_serialize(
             *out_len = bytes.len();
             Box::into_raw(bytes) as *mut u8
         }
-        Err(_) => std::ptr::null_mut(),
+        // serialize fails only on an unrecognized format name (the encoders are
+        // infallible), so this is precisely UnknownFormat.
+        Err(e) => {
+            crate::ffi_error::set_code(ErrorCode::UnknownFormat, &e);
+            std::ptr::null_mut()
+        }
     }
 }
 
@@ -450,20 +473,39 @@ pub unsafe extern "C" fn plg_deserialize(
     fmt_ptr: *const u8,
     fmt_len: usize,
 ) -> *mut Graph {
+    crate::ffi_error::begin();
     if ptr.is_null() || fmt_ptr.is_null() {
+        crate::ffi_error::set_code(ErrorCode::Ffi, "null input or format pointer");
         return std::ptr::null_mut();
     }
     let text = match std::str::from_utf8(std::slice::from_raw_parts(ptr, len)) {
         Ok(s) => s,
-        Err(_) => return std::ptr::null_mut(),
+        Err(_) => {
+            crate::ffi_error::set_code(ErrorCode::Ffi, "input bytes are not valid UTF-8");
+            return std::ptr::null_mut();
+        }
     };
     let fmt = match std::str::from_utf8(std::slice::from_raw_parts(fmt_ptr, fmt_len)) {
         Ok(s) => s,
-        Err(_) => return std::ptr::null_mut(),
+        Err(_) => {
+            crate::ffi_error::set_code(ErrorCode::Ffi, "format bytes are not valid UTF-8");
+            return std::ptr::null_mut();
+        }
     };
     match crate::codec::deserialize(text, fmt) {
         Ok(g) => Box::into_raw(Box::new(g)),
-        Err(_) => std::ptr::null_mut(),
+        // An unrecognized format name vs a parse failure of a *known* format are
+        // different codes; finer parse codes (InvalidJson/MissingVertex) await
+        // structured codec errors (the deferred per-format adoption).
+        Err(e) => {
+            let code = if crate::codec::is_known_format(fmt) {
+                ErrorCode::InvalidShape
+            } else {
+                ErrorCode::UnknownFormat
+            };
+            crate::ffi_error::set_code(code, &e);
+            std::ptr::null_mut()
+        }
     }
 }
 

@@ -18,10 +18,10 @@
 //! to keep the binary small), so the JSON report is hand-rolled.
 
 use std::cell::RefCell;
-#[cfg(any(feature = "gql", feature = "arrow"))]
+#[cfg(feature = "_fallible-ffi")]
 use std::fmt::Write as _;
 
-#[cfg(any(feature = "gql", feature = "arrow"))]
+#[cfg(feature = "_fallible-ffi")]
 use crate::error_codes::ErrorCode;
 
 thread_local! {
@@ -36,7 +36,7 @@ thread_local! {
 /// Gated to the features whose `plg_*` surfaces actually record errors; a
 /// minimal build still exports [`plg_last_error_json`] (it just always reports
 /// "no error"), keeping the ABI stable across feature combos.
-#[cfg(any(feature = "gql", feature = "arrow"))]
+#[cfg(feature = "_fallible-ffi")]
 pub(crate) fn begin() {
     LAST_ERROR.with(|slot| *slot.borrow_mut() = None);
 }
@@ -44,7 +44,7 @@ pub(crate) fn begin() {
 /// Record a failure with structured `details` (a pre-rendered JSON object such
 /// as `{"pos":12}`, or `"null"`). Call on every error path that returns a
 /// failure sentinel.
-#[cfg(any(feature = "gql", feature = "arrow"))]
+#[cfg(feature = "_fallible-ffi")]
 pub(crate) fn set(code: ErrorCode, message: &str, details_json: &str) {
     let mut report = String::with_capacity(message.len() + 48);
     report.push_str("{\"code\":\"");
@@ -58,7 +58,7 @@ pub(crate) fn set(code: ErrorCode, message: &str, details_json: &str) {
 }
 
 /// Record a failure with no structured details (`details` = `null`).
-#[cfg(any(feature = "gql", feature = "arrow"))]
+#[cfg(feature = "_fallible-ffi")]
 pub(crate) fn set_code(code: ErrorCode, message: &str) {
     set(code, message, "null");
 }
@@ -91,7 +91,7 @@ pub unsafe extern "C" fn plg_last_error_json(out_len: *mut usize) -> *mut u8 {
 
 /// Write a JSON string literal (escaped) into `out`. Local copy of the codec
 /// helper so the error path stays dependency-free across every feature combo.
-#[cfg(any(feature = "gql", feature = "arrow"))]
+#[cfg(feature = "_fallible-ffi")]
 fn push_json_str(out: &mut String, s: &str) {
     out.push('"');
     for c in s.chars() {
