@@ -10,6 +10,7 @@
   },
   "scripts": {
     "build": "bun build.ts",
+    "gen:rust": "bun gen-rust.ts",
     "test": "bun test"
   },
   "dependencies": {},
