@@ -63,6 +63,7 @@ import {
   repeatStep,
   unionStep,
 } from './iteration.js';
+import { matchStep } from './match.js';
 import { evalMath, mathStep } from './misc.js';
 import { edgeToVertex, traverseToEdge, traverseToVertex } from './movement.js';
 import { addEStep, addVStep, dropStep, propertyStep } from './mutation.js';
@@ -340,7 +341,7 @@ export const applyStep = (
       });
 
     case 'match':
-      throw new PlGraphError('match() is not yet implemented', { code: ErrorCode.NotImplemented });
+      return matchStep(stream, step.patterns, graph, ctx);
 
     case 'subgraph':
       throw new PlGraphError('subgraph() is not yet implemented', {
