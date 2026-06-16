@@ -53,13 +53,13 @@ fn push_typed(out: &mut String, v: &Value) {
 }
 
 /// Decode a GraphSON v3 typed value (or bare JSON scalar) back to a core value.
-fn decode_typed(node: &J) -> Value {
-    match node {
+fn decode_typed(node: &J) -> CodeResult<Value> {
+    Ok(match node {
         J::Null => Value::Null,
         J::Bool(b) => Value::Bool(*b),
         J::String(s) => Value::Str(s.as_str().into()),
         J::Number(n) => Value::Num(n.as_f64().unwrap_or(f64::NAN)),
-        J::Array(a) => Value::List(a.iter().map(decode_typed).collect()),
+        J::Array(a) => Value::List(a.iter().map(decode_typed).collect::<CodeResult<Vec<_>>>()?),
         J::Object(o) => {
             let value = o.get("@value");
             match o.get("@type").and_then(J::as_str) {
@@ -67,13 +67,21 @@ fn decode_typed(node: &J) -> Value {
                     Value::Num(value.and_then(J::as_f64).unwrap_or(f64::NAN))
                 }
                 Some("g:List") => Value::List(
-                    value.and_then(J::as_array).map(|a| a.iter().map(decode_typed).collect()).unwrap_or_default(),
+                    value
+                        .and_then(J::as_array)
+                        .map(|a| a.iter().map(decode_typed).collect::<CodeResult<Vec<_>>>())
+                        .transpose()?
+                        .unwrap_or_default(),
                 ),
-                // Unknown wrapper: fall back to the raw @value loosely.
-                _ => value.map(crate::codec::json_to_value).unwrap_or(Value::Null),
+                // Unknown wrapper: fall back to the raw @value (a nested object
+                // here is out-of-model → InvalidValue, via json_to_value).
+                _ => match value {
+                    Some(v) => crate::codec::json_to_value(v)?,
+                    None => Value::Null,
+                },
             }
         }
-    }
+    })
 }
 
 pub fn encode(g: &Graph) -> String {
@@ -176,7 +184,7 @@ pub fn decode(input: &str) -> CodeResult<Graph> {
                     // single-value LPG: read the first element of the array
                     if let Some(first) = entries.as_array().and_then(|a| a.first()) {
                         if let Some(val) = inner_value(first) {
-                            props.push((k.clone(), decode_typed(val)));
+                            props.push((k.clone(), decode_typed(val)?));
                         }
                     }
                 }
@@ -200,7 +208,7 @@ pub fn decode(input: &str) -> CodeResult<Graph> {
             if let Some(pmap) = e.get("properties").and_then(J::as_object) {
                 for (k, entry) in pmap {
                     if let Some(val) = inner_value(entry) {
-                        props.push((k.clone(), decode_typed(val)));
+                        props.push((k.clone(), decode_typed(val)?));
                     }
                 }
             }
@@ -209,7 +217,7 @@ pub fn decode(input: &str) -> CodeResult<Graph> {
         }
     }
 
-    Ok(b.finalize())
+    b.finalize_strict()
 }
 
 #[cfg(test)]

@@ -104,7 +104,7 @@ pub fn decode(input: &str) -> CodeResult<Graph> {
             b.nodes.push(NodeRec {
                 id: o.get("id").map(json_id).unwrap_or_default(),
                 labels: json_str_array(o.get("labels")),
-                props: json_props(o.get("properties")),
+                props: json_props(o.get("properties"))?,
             });
         }
     }
@@ -124,13 +124,13 @@ pub fn decode(input: &str) -> CodeResult<Graph> {
                 src: o.get("from").map(json_id).unwrap_or_default(),
                 dst: o.get("to").map(json_id).unwrap_or_default(),
                 etype,
-                props: json_props(o.get("properties")),
+                props: json_props(o.get("properties"))?,
                 id: o.get("id").map(json_id),
             });
         }
     }
 
-    Ok(b.finalize())
+    b.finalize_strict()
 }
 
 #[cfg(test)]
@@ -170,6 +170,27 @@ mod tests {
     #[test]
     fn bad_json_errs() {
         assert!(decode("{not json").is_err());
+    }
+
+    fn decode_err_code(doc: &str) -> ErrorCode {
+        match decode(doc) {
+            Err(e) => e.code,
+            Ok(_) => panic!("expected an error, got Ok"),
+        }
+    }
+
+    #[test]
+    fn edge_to_undeclared_vertex_is_missing_vertex() {
+        // 'b' is never declared as a node — strict decode rejects the dangling edge.
+        let doc = r#"{"nodes":[{"id":"a","labels":[],"properties":{}}],"edges":[{"from":"a","to":"b","labels":["R"],"properties":{}}]}"#;
+        assert_eq!(decode_err_code(doc), ErrorCode::MissingVertex);
+    }
+
+    #[test]
+    fn nested_object_property_is_invalid_value() {
+        // A nested object is outside the LPG scalar/list model.
+        let doc = r#"{"nodes":[{"id":"a","labels":[],"properties":{"bad":{"x":1}}}],"edges":[]}"#;
+        assert_eq!(decode_err_code(doc), ErrorCode::InvalidValue);
     }
 
     #[test]

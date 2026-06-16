@@ -143,4 +143,16 @@ describe('FFI error channel', () => {
     expect(deserialize('[1,2,3]', 'pg-json')).toBeNull();
     expect(lastError()?.code).toBe('E_INVALID_SHAPE');
   });
+
+  test('deserialize: an edge to an undeclared vertex carries E_MISSING_VERTEX', () => {
+    const doc = '{"nodes":[{"id":"a","labels":[],"properties":{}}],"edges":[{"from":"a","to":"b","labels":["R"],"properties":{}}]}';
+    expect(deserialize(doc, 'pg-json')).toBeNull();
+    expect(lastError()?.code).toBe('E_MISSING_VERTEX');
+  });
+
+  test('deserialize: a nested-object property value carries E_INVALID_VALUE', () => {
+    const doc = '{"nodes":[{"id":"a","labels":[],"properties":{"bad":{"x":1}}}],"edges":[]}';
+    expect(deserialize(doc, 'pg-json')).toBeNull();
+    expect(lastError()?.code).toBe('E_INVALID_VALUE');
+  });
 });

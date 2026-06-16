@@ -124,17 +124,23 @@ pub(crate) fn push_value(out: &mut String, v: &Value) {
 // JSON scalar parse (shared by pg-json; graphson has its own typed decode)
 // ---------------------------------------------------------------------------
 
-/// A `serde_json::Value` as a core [`Value`] (objects coerce to `Null`, matching
-/// ndjson — nested objects are outside the LPG scalar/list model).
-pub(crate) fn json_to_value(j: &J) -> Value {
-    match j {
+/// A `serde_json::Value` as a core [`Value`]. A nested object is outside the LPG
+/// scalar/list property model, so it's an `InvalidValue` error (mirrors the TS
+/// `normalizeValue` contract) rather than a silent coercion.
+pub(crate) fn json_to_value(j: &J) -> CodeResult<Value> {
+    Ok(match j {
         J::Null => Value::Null,
         J::Bool(b) => Value::Bool(*b),
         J::Number(n) => Value::Num(n.as_f64().unwrap_or(f64::NAN)),
         J::String(s) => Value::Str(Arc::from(s.as_str())),
-        J::Array(a) => Value::List(a.iter().map(json_to_value).collect()),
-        J::Object(_) => Value::Null,
-    }
+        J::Array(a) => Value::List(a.iter().map(json_to_value).collect::<CodeResult<Vec<_>>>()?),
+        J::Object(_) => {
+            return Err(CodeError::new(
+                ErrorCode::InvalidValue,
+                "property value is a nested object, which is outside the LPG scalar/list model",
+            ))
+        }
+    })
 }
 
 /// A JSON id field as a string (string verbatim; numbers/other stringified).
@@ -153,12 +159,13 @@ pub(crate) fn json_str_array(field: Option<&J>) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// A JSON object field as core property pairs (used by pg-json).
-pub(crate) fn json_props(field: Option<&J>) -> Vec<(String, Value)> {
-    field
-        .and_then(J::as_object)
-        .map(|m| m.iter().map(|(k, v)| (k.clone(), json_to_value(v))).collect())
-        .unwrap_or_default()
+/// A JSON object field as core property pairs (used by pg-json). A nested-object
+/// value anywhere is an `InvalidValue` error (see [`json_to_value`]).
+pub(crate) fn json_props(field: Option<&J>) -> CodeResult<Vec<(String, Value)>> {
+    match field.and_then(J::as_object) {
+        Some(m) => m.iter().map(|(k, v)| Ok((k.clone(), json_to_value(v)?))).collect(),
+        None => Ok(Vec::new()),
+    }
 }
 
 // ---------------------------------------------------------------------------
