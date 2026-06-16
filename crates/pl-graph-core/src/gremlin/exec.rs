@@ -195,6 +195,171 @@ fn sub_nonempty(graph: &mut Graph, ctx: &mut Ctx, plan: &Traversal, seed: &Trav)
     !run_steps(graph, ctx, &plan.steps, vec![seed.clone()]).is_empty()
 }
 
+// --- match() solver ---------------------------------------------------------
+//
+// Port of the TS `executor/match.ts`. Each pattern is `as(start) … [as(end)]`:
+// from the value bound to `start`, run the inner traversal, then bind `end` to
+// the output (if unbound) or filter against it (if bound). No trailing `as` ⇒ a
+// pure filter on `start`; a `not(...)`/`where(...)` wrapper ⇒ a (negated) filter.
+// `GVal` already compares graph elements by their dense id, so `==` is identity.
+
+struct MatchPattern {
+    start_key: String,
+    end_key: Option<String>,
+    inner: Traversal,
+    negated: bool,
+}
+
+/// Lower one pattern plan into a {@link MatchPattern}.
+fn parse_pattern(plan: &Traversal) -> MatchPattern {
+    let steps = &plan.steps;
+    // `not(inner)` / `where(inner)` filter wrappers (single step): parse the inner
+    // pattern and flip negation (`where` keeps it positive).
+    if steps.len() == 1 {
+        if let Step::Not(inner) = &steps[0] {
+            let mut p = parse_pattern(inner);
+            p.negated = !p.negated;
+            return p;
+        }
+        if let Step::Where(inner) = &steps[0] {
+            return parse_pattern(inner);
+        }
+    }
+    let start_key = match steps.first() {
+        Some(Step::As(l)) => l.clone(),
+        // Malformed (no leading as): an unbindable start ⇒ the pattern never runs.
+        _ => String::new(),
+    };
+    if steps.len() >= 2 {
+        if let Some(Step::As(end)) = steps.last() {
+            let inner = Traversal { steps: steps[1..steps.len() - 1].to_vec() };
+            return MatchPattern { start_key, end_key: Some(end.clone()), inner, negated: false };
+        }
+    }
+    let inner = Traversal { steps: steps.get(1..).unwrap_or(&[]).to_vec() };
+    MatchPattern { start_key, end_key: None, inner, negated: false }
+}
+
+/// The seed label: a pattern *start* that is never a binding *end* (a source).
+fn match_start_label(patterns: &[MatchPattern]) -> String {
+    let ends: Vec<&String> =
+        patterns.iter().filter(|p| !p.negated).filter_map(|p| p.end_key.as_ref()).collect();
+    for p in patterns {
+        if !ends.iter().any(|e| **e == p.start_key) {
+            return p.start_key.clone();
+        }
+    }
+    patterns.first().map(|p| p.start_key.clone()).unwrap_or_default()
+}
+
+/// `t` with `key` bound to a single `val` (match binds each label once).
+fn match_bind(t: &Trav, key: &str, val: GVal) -> Trav {
+    let mut nt = t.clone();
+    match nt.tags.iter_mut().find(|(l, _)| l == key) {
+        Some((_, list)) => *list = vec![val],
+        None => nt.tags.push((key.to_string(), vec![val])),
+    }
+    nt
+}
+
+/// Apply one pattern to a traverser, returning the consistent continuations.
+fn apply_pattern(graph: &mut Graph, ctx: &mut Ctx, p: &MatchPattern, t: &Trav) -> Vec<Trav> {
+    let Some(start_val) = t.recall(&p.start_key, Pop::Last) else {
+        return vec![];
+    };
+    let seed = Trav { val: start_val, path: t.path.clone(), tags: t.tags.clone(), loops: t.loops };
+    let outs = sub_vals(graph, ctx, &p.inner, &seed);
+    let bound_end = p.end_key.as_ref().and_then(|k| t.recall(k, Pop::Last));
+
+    if p.negated {
+        let satisfiable = outs.iter().any(|o| bound_end.as_ref().is_none_or(|b| o == b));
+        return if satisfiable { vec![] } else { vec![t.clone()] };
+    }
+    let Some(end_key) = &p.end_key else {
+        return if outs.is_empty() { vec![] } else { vec![t.clone()] }; // pure filter
+    };
+    if let Some(b) = bound_end {
+        return if outs.iter().any(|o| *o == b) { vec![t.clone()] } else { vec![] };
+    }
+    // Bind the end label, one branch per distinct candidate value.
+    let mut seen: Vec<GVal> = Vec::new();
+    let mut branches = Vec::new();
+    for o in outs {
+        if seen.iter().any(|s| *s == o) {
+            continue;
+        }
+        seen.push(o.clone());
+        branches.push(match_bind(t, end_key, o));
+    }
+    branches
+}
+
+/// Pick a not-yet-applied pattern whose start is bound, preferring binders.
+fn pick_runnable(patterns: &[MatchPattern], done: &[bool], t: &Trav) -> Option<usize> {
+    let mut negated = None;
+    for (i, p) in patterns.iter().enumerate() {
+        if done[i] || t.recall(&p.start_key, Pop::Last).is_none() {
+            continue;
+        }
+        if !p.negated {
+            return Some(i);
+        }
+        if negated.is_none() {
+            negated = Some(i);
+        }
+    }
+    negated
+}
+
+/// Depth-first join: apply runnable patterns until all are satisfied, emitting
+/// one traverser (carrying the binding tags) per consistent assignment.
+fn match_solve(
+    graph: &mut Graph,
+    ctx: &mut Ctx,
+    patterns: &[MatchPattern],
+    t: Trav,
+    done: &mut Vec<bool>,
+    out: &mut Vec<Trav>,
+) {
+    if done.iter().all(|&d| d) {
+        // Emit the binding map as the value (TinkerPop-faithful); tags carry the
+        // bindings for any following select(...).
+        let bindings: Vec<(GVal, GVal)> = t
+            .tags
+            .iter()
+            .filter_map(|(l, vs)| vs.last().map(|v| (GVal::Str(Arc::from(l.as_str())), v.clone())))
+            .collect();
+        out.push(t.with(GVal::Map(bindings)));
+        return;
+    }
+    let Some(idx) = pick_runnable(patterns, done, &t) else {
+        return; // stuck: this branch contributes nothing
+    };
+    done[idx] = true;
+    for t2 in apply_pattern(graph, ctx, &patterns[idx], &t) {
+        match_solve(graph, ctx, patterns, t2, done, out);
+    }
+    done[idx] = false; // backtrack
+}
+
+fn match_step(graph: &mut Graph, ctx: &mut Ctx, plans: &[Traversal], stream: Vec<Trav>) -> Vec<Trav> {
+    let patterns: Vec<MatchPattern> = plans.iter().map(parse_pattern).collect();
+    let start_label = match_start_label(&patterns);
+    let mut out = Vec::new();
+    for t in stream {
+        // Seed the source label from the incoming value unless already bound.
+        let seed = if t.recall(&start_label, Pop::Last).is_some() {
+            t
+        } else {
+            let v = t.val.clone();
+            match_bind(&t, &start_label, v)
+        };
+        let mut done = vec![false; patterns.len()];
+        match_solve(graph, ctx, &patterns, seed, &mut done, &mut out);
+    }
+    out
+}
+
 // --- value helpers ----------------------------------------------------------
 
 fn value_to_gval(v: Value) -> GVal {
@@ -799,17 +964,24 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
                 if vals.iter().any(Option::is_none) {
                     continue;
                 }
+                // A single `by()` cycles across all labels (Gremlin semantics); no
+                // `by()` ⇒ identity. Matches the TS selectStep.
+                let by_at = |i: usize| -> By {
+                    if bys.is_empty() {
+                        By::Identity(None)
+                    } else {
+                        bys[i % bys.len()].clone()
+                    }
+                };
                 if labels.len() == 1 {
-                    let by = bys.first().cloned().unwrap_or(By::Identity(None));
-                    let v = eval_by(graph, ctx, &by, vals[0].as_ref().unwrap());
+                    let v = eval_by(graph, ctx, &by_at(0), vals[0].as_ref().unwrap());
                     next.push(t.with(v));
                 } else {
                     let entries = labels
                         .iter()
                         .enumerate()
                         .map(|(i, l)| {
-                            let by = bys.get(i).cloned().unwrap_or(By::Identity(None));
-                            (GVal::Str(Arc::from(l.as_str())), eval_by(graph, ctx, &by, vals[i].as_ref().unwrap()))
+                            (GVal::Str(Arc::from(l.as_str())), eval_by(graph, ctx, &by_at(i), vals[i].as_ref().unwrap()))
                         })
                         .collect();
                     next.push(t.with(GVal::Map(entries)));
@@ -817,6 +989,7 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
             }
             next
         }
+        Step::Match(plans) => match_step(graph, ctx, plans, stream),
 
         // --- misc ---
         Step::Unfold => {

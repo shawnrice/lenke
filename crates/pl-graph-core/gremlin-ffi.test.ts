@@ -72,4 +72,20 @@ describe('textual Gremlin over bun:ffi', () => {
     const r = gremlin(g, "g.V().hasLabel('PERSON').order().by('age', desc).values('name')");
     expect(r).toEqual(['peter', 'josh', 'marko', 'vadas']);
   });
+
+  test('match() declarative pattern matching (TS↔Rust parity)', () => {
+    const r = gremlin(
+      g,
+      "g.V().match(__.as('a').out('CREATED').as('b'), __.as('b').has('name','lop'), __.as('b').in('CREATED').as('c'), __.as('c').has('age',29)).select('a','c').by('name')",
+    ) as Array<{ a: string; c: string }>;
+    expect(r.map((x) => `${x.a}->${x.c}`).sort()).toEqual(['josh->marko', 'marko->marko', 'peter->marko']);
+  });
+
+  test('match() with nested not()', () => {
+    const r = gremlin(
+      g,
+      "g.V().as('a').out('KNOWS').as('b').match(__.as('b').out('CREATED').as('c'), __.not(__.as('c').in('CREATED').as('a'))).select('a','b','c').by('name')",
+    );
+    expect(r).toEqual([{ a: 'marko', b: 'josh', c: 'ripple' }]);
+  });
 });

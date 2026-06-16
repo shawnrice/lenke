@@ -274,6 +274,9 @@ pub enum Step {
     Repeat { body: Box<Traversal>, times: Option<usize>, until: Option<Box<Traversal>>, emit: Option<Box<Traversal>>, emit_before: bool },
     As(String),
     Select { labels: Vec<String>, pop: Pop, bys: Vec<By> },
+    /// Declarative pattern matching: each sub-traversal is an `as(start) … [as(end)]`
+    /// constraint; emits one traverser per consistent label assignment.
+    Match(Vec<Traversal>),
     Unfold,
     Index,
     Loops,
@@ -648,6 +651,9 @@ impl Traversal {
     }
     pub fn select_pop(self, pop: Pop, labels: &[&str]) -> Self {
         self.push(Step::Select { labels: strs(labels), pop, bys: vec![] })
+    }
+    pub fn match_(self, patterns: Vec<Traversal>) -> Self {
+        self.push(Step::Match(patterns))
     }
 
     // --- misc ---

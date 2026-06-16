@@ -448,6 +448,7 @@ impl Parser {
             "or" => t.or(self.travs(args)?),
             "not" => t.not(self.one_trav(args)?),
             "union" => t.union(self.travs(args)?),
+            "match" => t.match_(self.travs(args)?),
             "coalesce" => t.coalesce(self.travs(args)?),
             "optional" => t.optional(self.one_trav(args)?),
             "local" => t.local(self.one_trav(args)?),

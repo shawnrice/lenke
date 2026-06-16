@@ -787,3 +787,98 @@ fn list_names_ordered(g: &GVal) -> Vec<String> {
         _ => panic!("expected list, got {g:?}"),
     }
 }
+
+// --- match() — declarative pattern matching (ports steps/match.test.ts) ------
+
+/// Normalize select(...)-of-match results into a sorted set of sorted
+/// `(label, name)` rows so assertions are order-independent.
+fn match_rows(r: Vec<GVal>) -> Vec<Vec<(String, String)>> {
+    let mut rows: Vec<Vec<(String, String)>> = r
+        .iter()
+        .map(|m| {
+            let mut entries: Vec<(String, String)> =
+                map_sorted(m).into_iter().map(|(k, v)| (k, s(&v))).collect();
+            entries.sort();
+            entries
+        })
+        .collect();
+    rows.sort();
+    rows
+}
+
+fn pairs(spec: &[(&str, &str)]) -> Vec<(String, String)> {
+    spec.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+}
+
+#[test]
+fn match_declarative_and_of_fragments() {
+    let r = q(g().V().match_(vec![
+        __().as_("a").out(&["CREATED"]).as_("b"),
+        __().as_("b").has("name", P::eq("lop")),
+        __().as_("b").in_(&["CREATED"]).as_("c"),
+        __().as_("c").has("age", P::eq(29)),
+    ])
+    .select(&["a", "c"])
+    .by("name"));
+    let mut want = vec![
+        pairs(&[("a", "marko"), ("c", "marko")]),
+        pairs(&[("a", "josh"), ("c", "marko")]),
+        pairs(&[("a", "peter"), ("c", "marko")]),
+    ];
+    want.sort();
+    assert_eq!(match_rows(r), want);
+}
+
+#[test]
+fn match_chained_pattern_with_embedded_has() {
+    let r = q(g().V().match_(vec![
+        __().as_("a").out(&["CREATED"]).has("name", P::eq("lop")).as_("b"),
+        __().as_("b").in_(&["CREATED"]).has("age", P::eq(29)).as_("c"),
+    ])
+    .select(&["a", "c"])
+    .by("name"));
+    let mut want = vec![
+        pairs(&[("a", "marko"), ("c", "marko")]),
+        pairs(&[("a", "josh"), ("c", "marko")]),
+        pairs(&[("a", "peter"), ("c", "marko")]),
+    ];
+    want.sort();
+    assert_eq!(match_rows(r), want);
+}
+
+#[test]
+fn match_combined_with_where_neq() {
+    let r = q(g().V().match_(vec![
+        __().as_("a").out(&["CREATED"]).as_("b"),
+        __().as_("b").in_(&["CREATED"]).as_("c"),
+    ])
+    .where_key("a", P::neq(GVal::Str("c".into())))
+    .select(&["a", "c"])
+    .by("name"));
+    let mut want = vec![
+        pairs(&[("a", "marko"), ("c", "josh")]),
+        pairs(&[("a", "marko"), ("c", "peter")]),
+        pairs(&[("a", "josh"), ("c", "marko")]),
+        pairs(&[("a", "josh"), ("c", "peter")]),
+        pairs(&[("a", "peter"), ("c", "marko")]),
+        pairs(&[("a", "peter"), ("c", "josh")]),
+    ];
+    want.sort();
+    assert_eq!(match_rows(r), want);
+}
+
+#[test]
+fn match_nested_not() {
+    let r = q(g()
+        .V()
+        .as_("a")
+        .out(&["KNOWS"])
+        .as_("b")
+        .match_(vec![
+            __().as_("b").out(&["CREATED"]).as_("c"),
+            __().not(__().as_("c").in_(&["CREATED"]).as_("a")),
+        ])
+        .select(&["a", "b", "c"])
+        .by("name"));
+    assert_eq!(match_rows(r), vec![pairs(&[("a", "marko"), ("b", "josh"), ("c", "ripple")])]);
+}
