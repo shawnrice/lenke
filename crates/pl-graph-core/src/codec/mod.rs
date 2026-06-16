@@ -197,10 +197,10 @@ pub fn serialize(g: &Graph, format: &str) -> CodeResult<String> {
 pub fn deserialize(input: &str, format: &str) -> CodeResult<Graph> {
     match format {
         "pg-json" => pg_json::decode(input),
-        "pg-text" => pg_text::decode(input),
+        "pg-text" => Ok(pg_text::decode(input)),
         "graphson" => graphson::decode(input),
         "csv" => csv::decode(input),
-        "ndjson" => Ok(crate::ndjson::decode(input)),
+        "ndjson" => crate::ndjson::decode(input),
         other => Err(unknown_format(other)),
     }
 }
@@ -240,7 +240,8 @@ mod tests {
     fn set_and_remove_edge_id() {
         let mut g = crate::ndjson::decode(
             "{\"type\":\"node\",\"id\":\"a\",\"labels\":[],\"properties\":{}}\n{\"type\":\"node\",\"id\":\"b\",\"labels\":[],\"properties\":{}}\n{\"type\":\"edge\",\"from\":\"a\",\"to\":\"b\",\"labels\":[\"X\"],\"properties\":{}}",
-        );
+        )
+        .unwrap();
         assert_eq!(g.edge_id(0), None); // id-less by default
         g.set_edge_id(0, "e-custom");
         assert_eq!(g.edge_id(0), Some("e-custom"));

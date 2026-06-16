@@ -25,7 +25,7 @@ fn modern() -> Graph {
         r#"{"type":"edge","from":"josh","to":"lop","labels":["CREATED"],"properties":{"weight":0.4}}"#,
         r#"{"type":"edge","from":"peter","to":"lop","labels":["CREATED"],"properties":{"weight":0.2}}"#,
     ];
-    ndjson::decode(&lines.join("\n"))
+    ndjson::decode(&lines.join("\n")).unwrap()
 }
 
 fn n(x: f64) -> Value {

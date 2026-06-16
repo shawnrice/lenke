@@ -103,8 +103,14 @@ pub unsafe extern "C" fn plg_graph_from_ndjson(ptr: *const u8, len: usize, paral
             return std::ptr::null_mut();
         }
     };
-    let g = if parallel != 0 { crate::ndjson::decode(text) } else { crate::ndjson::decode_serial(text) };
-    Box::into_raw(Box::new(g))
+    let decoded = if parallel != 0 { crate::ndjson::decode(text) } else { crate::ndjson::decode_serial(text) };
+    match decoded {
+        Ok(g) => Box::into_raw(Box::new(g)),
+        Err(e) => {
+            crate::ffi_error::set_code(e.code, &e.message);
+            std::ptr::null_mut()
+        }
+    }
 }
 
 /// # Safety

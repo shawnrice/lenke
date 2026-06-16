@@ -3,24 +3,41 @@
 //! axis single-threaded JS can't match — then assembles serially.
 //!
 //! Scope note: an edge's *type* is its first label. Edge **properties** are
-//! supported (same columnar store as vertex properties). Property objects nested
-//! in values coerce to null (not in the LPG scalar/list value model).
+//! supported (same columnar store as vertex properties). A property value that
+//! is a nested object is outside the LPG scalar/list model → `InvalidValue`
+//! (matching the TS codec), rather than a silent null coercion.
 
 use std::sync::Arc;
 
+use crate::error::{CodeError, CodeResult};
+use crate::error_codes::ErrorCode;
 use crate::graph::{Builder, Column, Dict, EdgeRec, Graph, NodeRec, Properties, Value};
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 use serde_json::Value as J;
 
-fn to_value(j: &J) -> Value {
-    match j {
+fn to_value(j: &J) -> CodeResult<Value> {
+    Ok(match j {
         J::Null => Value::Null,
         J::Bool(b) => Value::Bool(*b),
         J::Number(n) => Value::Num(n.as_f64().unwrap_or(f64::NAN)),
         J::String(s) => Value::Str(Arc::from(s.as_str())),
-        J::Array(a) => Value::List(a.iter().map(to_value).collect()),
-        J::Object(_) => Value::Null,
+        J::Array(a) => Value::List(a.iter().map(to_value).collect::<CodeResult<Vec<_>>>()?),
+        J::Object(_) => {
+            return Err(CodeError::new(
+                ErrorCode::InvalidValue,
+                "ndjson: property value is a nested object, which is outside the LPG scalar/list model",
+            ))
+        }
+    })
+}
+
+/// Decode a JSON object's `properties` field into core property pairs, or an
+/// empty vec when absent. A nested-object value propagates as `InvalidValue`.
+fn props_of(obj: &serde_json::Map<String, J>) -> CodeResult<Vec<(String, Value)>> {
+    match obj.get("properties").and_then(J::as_object) {
+        Some(m) => m.iter().map(|(k, v)| Ok((k.clone(), to_value(v)?))).collect(),
+        None => Ok(Vec::new()),
     }
 }
 
@@ -36,29 +53,30 @@ enum Rec {
     Edge(EdgeRec),
 }
 
-fn parse_line(line: &str) -> Option<Rec> {
+/// Parse one line. `Ok(None)` skips a blank/unparseable/untyped line (lenient,
+/// unchanged behavior); `Err` is a nested-object property value (`InvalidValue`).
+fn parse_line(line: &str) -> CodeResult<Option<Rec>> {
     let line = line.trim();
     if line.is_empty() {
-        return None;
+        return Ok(None);
     }
-    let j: J = serde_json::from_str(line).ok()?;
-    let obj = j.as_object()?;
-    match obj.get("type").and_then(J::as_str)? {
-        "node" => {
+    let Ok(j) = serde_json::from_str::<J>(line) else {
+        return Ok(None);
+    };
+    let Some(obj) = j.as_object() else {
+        return Ok(None);
+    };
+    let rec = match obj.get("type").and_then(J::as_str) {
+        Some("node") => {
             let id = obj.get("id").map(as_id).unwrap_or_default();
             let labels = obj
                 .get("labels")
                 .and_then(J::as_array)
                 .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
                 .unwrap_or_default();
-            let props = obj
-                .get("properties")
-                .and_then(J::as_object)
-                .map(|m| m.iter().map(|(k, v)| (k.clone(), to_value(v))).collect())
-                .unwrap_or_default();
-            Some(Rec::Node(NodeRec { id, labels, props }))
+            Rec::Node(NodeRec { id, labels, props: props_of(obj)? })
         }
-        "edge" => {
+        Some("edge") => {
             let src = obj.get("from").map(as_id).unwrap_or_default();
             let dst = obj.get("to").map(as_id).unwrap_or_default();
             let etype = obj
@@ -68,47 +86,45 @@ fn parse_line(line: &str) -> Option<Rec> {
                 .and_then(J::as_str)
                 .unwrap_or("")
                 .to_string();
-            let props = obj
-                .get("properties")
-                .and_then(J::as_object)
-                .map(|m| m.iter().map(|(k, v)| (k.clone(), to_value(v))).collect())
-                .unwrap_or_default();
             // Optional external edge id (absent ⇒ id-less, stays lazy).
             let id = obj.get("id").and_then(J::as_str).map(String::from);
-            Some(Rec::Edge(EdgeRec { src, dst, etype, props, id }))
+            Rec::Edge(EdgeRec { src, dst, etype, props: props_of(obj)?, id })
         }
-        _ => None,
-    }
+        _ => return Ok(None),
+    };
+    Ok(Some(rec))
 }
 
 /// Decode NDJSON into a columnar graph. Lines parse in parallel; the build is
 /// serial (shared dictionaries).
-pub fn decode(text: &str) -> Graph {
+pub fn decode(text: &str) -> CodeResult<Graph> {
+    // `collect` into a Result short-circuits on the first InvalidValue (rayon's
+    // parallel collect supports this), so one bad line fails the whole decode.
     #[cfg(feature = "parallel")]
-    let recs: Vec<Rec> = text.par_lines().filter_map(parse_line).collect();
+    let recs: Vec<Option<Rec>> = text.par_lines().map(parse_line).collect::<CodeResult<_>>()?;
     #[cfg(not(feature = "parallel"))]
-    let recs: Vec<Rec> = text.lines().filter_map(parse_line).collect();
+    let recs: Vec<Option<Rec>> = text.lines().map(parse_line).collect::<CodeResult<_>>()?;
     let mut b = Builder::default();
-    for r in recs {
+    for r in recs.into_iter().flatten() {
         match r {
             Rec::Node(n) => b.nodes.push(n),
             Rec::Edge(e) => b.edges.push(e),
         }
     }
-    b.finalize()
+    Ok(b.finalize())
 }
 
 /// Decode without parallelism — for isolating rayon's contribution in the bench.
-pub fn decode_serial(text: &str) -> Graph {
+pub fn decode_serial(text: &str) -> CodeResult<Graph> {
     let mut b = Builder::default();
     for line in text.lines() {
-        match parse_line(line) {
+        match parse_line(line)? {
             Some(Rec::Node(n)) => b.nodes.push(n),
             Some(Rec::Edge(e)) => b.edges.push(e),
             None => {}
         }
     }
-    b.finalize()
+    Ok(b.finalize())
 }
 
 /// Write a JSON string literal (with escaping) straight into `out`.
@@ -242,16 +258,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn nested_object_property_is_invalid_value() {
+        // A nested object is outside the LPG scalar/list model (matching TS ndjson).
+        let line = r#"{"type":"node","id":"a","labels":[],"properties":{"bad":{"x":1}}}"#;
+        match decode(line) {
+            Err(e) => assert_eq!(e.code, ErrorCode::InvalidValue),
+            Ok(_) => panic!("expected InvalidValue"),
+        }
+        // The serial path agrees with the parallel one.
+        match decode_serial(line) {
+            Err(e) => assert_eq!(e.code, ErrorCode::InvalidValue),
+            Ok(_) => panic!("expected InvalidValue"),
+        }
+    }
+
+    #[test]
     fn round_trip_preserves_content() {
         let input = "\
 {\"type\":\"node\",\"id\":\"a\",\"labels\":[\"Person\"],\"properties\":{\"name\":\"ann\",\"age\":30,\"active\":true}}
 {\"type\":\"node\",\"id\":\"b\",\"labels\":[\"Person\"],\"properties\":{\"name\":\"bo\",\"age\":25,\"active\":false}}
 {\"type\":\"edge\",\"from\":\"a\",\"to\":\"b\",\"labels\":[\"KNOWS\"],\"properties\":{}}";
-        let g = decode(input);
+        let g = decode(input).unwrap();
         assert_eq!(g.n, 2);
         assert_eq!(g.edge_count(), 1);
         // re-decoding the encoding yields the same shape
-        let g2 = decode(&encode(&g));
+        let g2 = decode(&encode(&g)).unwrap();
         assert_eq!(g2.n, 2);
         assert_eq!(g2.edge_count(), 1);
         // age column present and correct

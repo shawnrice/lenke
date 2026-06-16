@@ -563,7 +563,10 @@ pub fn decode(input: &str) -> CodeResult<Graph> {
         }
     }
 
-    Ok(b.finalize())
+    // Batch CSV is strict: an edge endpoint must be a declared node (the
+    // streaming decoder creates them on demand, but the combined form lists nodes
+    // first). A dangling endpoint is MissingVertex, matching the TS codec.
+    b.finalize_strict()
 }
 
 #[cfg(test)]
@@ -580,6 +583,17 @@ mod tests {
             ],"edges":[{"from":"a","to":"b","labels":["KNOWS"],"properties":{"since":2020,"strength":0.9}}]}"#,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn edge_to_undeclared_vertex_is_missing_vertex() {
+        // Batch CSV declares nodes first; an edge endpoint that was never declared
+        // is MissingVertex (strict), matching the TS codec.
+        let doc = "id,:LABEL\n=== EDGES ===\nid,:START_ID,:END_ID,:TYPE\ne1,x,y,KNOWS";
+        match decode(doc) {
+            Err(e) => assert_eq!(e.code, crate::error_codes::ErrorCode::MissingVertex),
+            Ok(_) => panic!("expected MissingVertex"),
+        }
     }
 
     #[test]

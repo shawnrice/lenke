@@ -155,4 +155,18 @@ describe('FFI error channel', () => {
     expect(deserialize(doc, 'pg-json')).toBeNull();
     expect(lastError()?.code).toBe('E_INVALID_VALUE');
   });
+
+  test('deserialize: a csv edge to an undeclared vertex carries E_MISSING_VERTEX', () => {
+    const csv = 'id,:LABEL\n=== EDGES ===\nid,:START_ID,:END_ID,:TYPE\ne1,x,y,KNOWS';
+    expect(deserialize(csv, 'csv')).toBeNull();
+    expect(lastError()?.code).toBe('E_MISSING_VERTEX');
+  });
+
+  test('graphFromNdjson: a nested-object property value carries E_INVALID_VALUE', () => {
+    const line = '{"type":"node","id":"a","labels":[],"properties":{"bad":{"x":1}}}';
+    const b = enc.encode(line);
+    const h = lib.symbols.plg_graph_from_ndjson(ptr(b), b.byteLength, 0);
+    expect(h).toBeNull();
+    expect(lastError()?.code).toBe('E_INVALID_VALUE');
+  });
 });
