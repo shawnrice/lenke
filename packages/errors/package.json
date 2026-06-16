@@ -1,5 +1,5 @@
 {
-  "name": "@pl-graph/gql",
+  "name": "@pl-graph/errors",
   "type": "module",
   "types": "./dist/types/index.d.ts",
   "exports": {
@@ -10,13 +10,10 @@
   },
   "scripts": {
     "build": "bun build.ts",
+    "gen:rust": "bun gen-rust.ts",
     "test": "bun test"
   },
-  "dependencies": {
-    "@pl-graph/core": "workspace:*",
-    "@pl-graph/errors": "workspace:*",
-    "@pl-graph/fp": "workspace:*"
-  },
+  "dependencies": {},
   "devDependencies": {
     "@pl-graph/dev": "workspace:*",
     "@types/bun": "^1.3.13",

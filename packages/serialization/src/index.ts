@@ -1,4 +1,6 @@
 import type { Graph } from '@pl-graph/core';
+import { ErrorCode, PlGraphError } from '@pl-graph/errors';
+
 import type { Codec } from './codec.js';
 import { csvCodec } from './csv/index.js';
 import { graphsonCodec } from './graphson/index.js';
@@ -33,8 +35,9 @@ export type FormatName = keyof typeof codecs;
 const codecFor = (format: string): Codec => {
   const codec = codecs[format];
   if (!codec) {
-    throw new Error(
+    throw new PlGraphError(
       `Unknown serialization format '${format}' (have: ${Object.keys(codecs).join(', ')})`,
+      { code: ErrorCode.UnknownFormat, details: { format } },
     );
   }
   return codec;
@@ -52,7 +55,10 @@ export const deserialize = (input: string, format: FormatName, graph: Graph): Gr
 export const serializeStream = (graph: Graph, format: FormatName): AsyncGenerator<string> => {
   const codec = codecFor(format);
   if (!codec.encodeStream) {
-    throw new Error(`Format '${format}' does not support streaming`);
+    throw new PlGraphError(`Format '${format}' does not support streaming`, {
+      code: ErrorCode.Unsupported,
+      details: { format },
+    });
   }
   return codec.encodeStream(graph);
 };
@@ -65,7 +71,10 @@ export const deserializeStream = (
 ): Promise<Graph> => {
   const codec = codecFor(format);
   if (!codec.decodeStream) {
-    throw new Error(`Format '${format}' does not support streaming`);
+    throw new PlGraphError(`Format '${format}' does not support streaming`, {
+      code: ErrorCode.Unsupported,
+      details: { format },
+    });
   }
   return codec.decodeStream(source, graph);
 };

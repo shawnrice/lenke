@@ -1,6 +1,7 @@
 /* eslint-disable consistent-this, no-param-reassign, no-restricted-syntax */
 /* eslint-disable @typescript-eslint/no-this-alias */
 
+import { ErrorCode, PlGraphError } from '@pl-graph/errors';
 import { equals } from '@pl-graph/fp/equals';
 import { identity, rando } from '@pl-graph/utils';
 import { deserialize } from './deserialize.js';
@@ -122,15 +123,15 @@ export class TreeNode<T> {
     if (node.isRoot() && node.childCount > 1) {
       // Otherwise, it we still try to remove the root which would result in multiple trees, then
       // we'll throw an error
-      throw new Error(
-        'Cannot remove the root node from a tree when the root has multiple children',
-      );
+      throw new PlGraphError('Cannot remove the root node from a tree when the root has multiple children', {
+        code: ErrorCode.InvalidTree,
+      });
     }
 
     const nextParent = node.parent;
     if (!nextParent) {
       // We should actually not get here with any well-formed tree
-      throw new Error('Cannot remove a node that has no parent');
+      throw new PlGraphError('Cannot remove a node that has no parent', { code: ErrorCode.InvalidTree });
     }
 
     // Here, we have a more normal use case of removing a leaf node or a branch
@@ -197,17 +198,19 @@ export class TreeNode<T> {
    */
   addChild(node: TreeNode<T>): TreeNode<T> {
     if (node === this) {
-      throw new Error('Cannot add a node as a child of itself');
+      throw new PlGraphError('Cannot add a node as a child of itself', { code: ErrorCode.InvalidTree });
     }
 
     if (node.parent !== null) {
-      throw new Error(
-        'Cannot add a node that already has a parent. Call detach() first to move it.',
-      );
+      throw new PlGraphError('Cannot add a node that already has a parent. Call detach() first to move it.', {
+        code: ErrorCode.InvalidTree,
+      });
     }
 
     if (node.contains(this)) {
-      throw new Error('Cannot add a node whose subtree contains this node (would create a cycle)');
+      throw new PlGraphError('Cannot add a node whose subtree contains this node (would create a cycle)', {
+        code: ErrorCode.InvalidTree,
+      });
     }
 
     this.#children.set(node.id, node);
@@ -435,6 +438,63 @@ export class TreeNode<T> {
     this.#value = callback(this.#value);
 
     return this;
+  }
+
+  /**
+   * Post-order depth-first traversal: every child (recursively) is yielded
+   * before its parent. This is the natural order for bottom-up evaluation —
+   * `depthFirst` is pre-order (parent first), this is its mirror.
+   */
+  *postOrder(): Generator<TreeNode<T>> {
+    for (const child of this.#children.values()) {
+      yield* child.postOrder();
+    }
+    yield this;
+  }
+
+  /**
+   * Casts the tree post-order into an array of `TreeNode<T>`.
+   */
+  castPostOrder(): TreeNode<T>[] {
+    return Array.from(this.postOrder());
+  }
+
+  /**
+   * Casts the tree post-order into an array of `T` (children before parents).
+   */
+  castPostOrderValue(): T[] {
+    return this.castPostOrder().map((x) => x.#value);
+  }
+
+  /**
+   * Structure-preserving map: a new tree of the **same shape and ids** with
+   * every value transformed by `fn`. This is what `fp.map` over the iterator
+   * cannot give you — `fp.map` yields a flat sequence of mapped values, losing
+   * the tree; this rebuilds it.
+   */
+  map<R>(fn: UnaryFn<T, R>): TreeNode<R> {
+    const next = TreeNode.from<R>(fn(this.#value), this.#id);
+    for (const child of this.#children.values()) {
+      next.addChild(child.map(fn));
+    }
+    return next;
+  }
+
+  /**
+   * Bottom-up catamorphism: fold each node from its already-folded children.
+   * `fn(value, childResults)` sees a node's value and the fold results of its
+   * children (left-to-right). This is the genuine tree fold — a flat
+   * `reduce` over a traversal can't express "combine a node with its subtrees".
+   *
+   * @example sum a number tree:  node.fold((v, kids) => v + kids.reduce((a, b) => a + b, 0))
+   * @example height:             node.fold((_v, kids) => 1 + Math.max(0, ...kids))
+   */
+  fold<R>(fn: (value: T, childResults: R[]) => R): R {
+    const childResults: R[] = [];
+    for (const child of this.#children.values()) {
+      childResults.push(child.fold(fn));
+    }
+    return fn(this.#value, childResults);
   }
 
   /**

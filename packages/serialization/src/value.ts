@@ -5,6 +5,8 @@
  * single source of truth for "what a property value may be" — and where richer
  * JS values lose information — lives here, not in each format.
  */
+import { ErrorCode, PlGraphError } from '@pl-graph/errors';
+
 export type PropertyValue = string | boolean | number | null | readonly PropertyValue[];
 
 /** A property bag on a vertex or edge in the LPG model. */
@@ -38,8 +40,9 @@ export const normalizeValue = (value: unknown): PropertyValue => {
   if (Array.isArray(value)) {
     return value.map(normalizeValue);
   }
-  throw new TypeError(
+  throw new PlGraphError(
     `Property value is outside the LPG model: ${Object.prototype.toString.call(value)}`,
+    { code: ErrorCode.InvalidValue },
   );
 };
 

@@ -1,5 +1,7 @@
 import { dlopen, FFIType, type Pointer, ptr, toArrayBuffer } from 'bun:ffi';
 
+import { ErrorCode, PlGraphError } from '@pl-graph/errors';
+
 import { assertAbi } from './abi.js';
 import type { Backend, GraphHandle } from './backend.js';
 
@@ -23,9 +25,18 @@ const SYMBOLS = {
   plg_deserialize: { args: [FFIType.ptr, U, FFIType.ptr, U], returns: FFIType.ptr },
   plg_free_buf: { args: [FFIType.ptr, U], returns: FFIType.void },
   plg_free_arrow: { args: [FFIType.ptr, U], returns: FFIType.void },
+  plg_last_error_json: { args: [FFIType.ptr], returns: FFIType.ptr },
 } as const;
 
 const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+
+/** The shape Rust writes into the last-error slot (mirrors `PlGraphError`). */
+type ErrorReport = {
+  readonly code: ErrorCode;
+  readonly message: string;
+  readonly details?: Readonly<Record<string, unknown>> | null;
+};
 
 // A graph handle is an opaque token in the public contract (a JS `number` so the
 // wasm offset and the native pointer share one type). At the bun boundary it is
@@ -43,6 +54,41 @@ export const createFfiBackend = (libPath: string): Backend => {
   const abiVersion = symbols.plg_abi_version();
   assertAbi(abiVersion);
 
+  // Read (and clear) the crate's out-of-band last-error after a null/-1 return.
+  // The error rides this side channel, never the data return — so the binary
+  // Arrow carrier stays a pure column blob. Returns null if nothing is pending.
+  const readLastError = (): ErrorReport | null => {
+    const outLen = new BigUint64Array(1);
+    const errPtr = symbols.plg_last_error_json(ptr(outLen));
+    if (!errPtr) {
+      return null;
+    }
+    const len = Number(outLen[0]);
+    const json = decoder.decode(new Uint8Array(toArrayBuffer(errPtr, 0, len)).slice());
+    symbols.plg_free_buf(errPtr, len);
+    try {
+      return JSON.parse(json) as ErrorReport;
+    } catch {
+      // A malformed report is itself an FFI fault; fall back to a generic code.
+      return null;
+    }
+  };
+
+  // Turn a failure sentinel into a `PlGraphError` carrying the shared code, so a
+  // consumer matches `hasErrorCode(e, ErrorCode.Syntax)` identically whether the
+  // error came from the TS engine or this native one. `fallback` is used only if
+  // the crate left no report (e.g. an older lib, or a non-instrumented path).
+  const fail = (op: string, fallback: ErrorCode): never => {
+    const report = readLastError();
+    if (report) {
+      throw new PlGraphError(`pl-graph: ${op}: ${report.message}`, {
+        code: report.code,
+        details: report.details ?? undefined,
+      });
+    }
+    throw new PlGraphError(`pl-graph: ${op} failed`, { code: fallback });
+  };
+
   // A query/encode call returns a crate-owned buffer (pointer + out_len). Read
   // it into a JS-owned copy and hand the crate buffer straight back to its
   // matching free, so nothing leaks and the copy outlives the native memory.
@@ -54,7 +100,7 @@ export const createFfiBackend = (libPath: string): Backend => {
     const outLen = new BigUint64Array(1);
     const resPtr = call(ptr(outLen));
     if (!resPtr) {
-      throw new Error(`pl-graph: ${op} failed (parse error or unsupported clause)`);
+      return fail(op, ErrorCode.Ffi);
     }
     const len = Number(outLen[0]);
     const copy = new Uint8Array(toArrayBuffer(resPtr, 0, len)).slice();
@@ -68,7 +114,7 @@ export const createFfiBackend = (libPath: string): Backend => {
     graphFromNdjson: (bytes, parallel) => {
       const h = symbols.plg_graph_from_ndjson(ptr(bytes), bytes.byteLength, parallel ? 1 : 0);
       if (!h) {
-        throw new Error('pl-graph: graphFromNdjson failed (invalid UTF-8 NDJSON)');
+        return fail('graphFromNdjson', ErrorCode.InvalidJson);
       }
       return asHandle(h);
     },
@@ -128,7 +174,7 @@ export const createFfiBackend = (libPath: string): Backend => {
       const f = encoder.encode(format);
       const h = symbols.plg_deserialize(ptr(input), input.byteLength, ptr(f), f.byteLength);
       if (!h) {
-        throw new Error(`pl-graph: deserialize(${format}) failed (unknown format or parse error)`);
+        return fail(`deserialize(${format})`, ErrorCode.UnknownFormat);
       }
       return asHandle(h);
     },

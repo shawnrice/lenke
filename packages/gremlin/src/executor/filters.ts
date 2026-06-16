@@ -1,4 +1,5 @@
 import type { Graph } from '@pl-graph/core';
+import { ErrorCode, PlGraphError } from '@pl-graph/errors';
 
 import type { By, Plan, Predicate, Step } from '../ast.js';
 import { matches } from '../predicates.js';
@@ -52,8 +53,9 @@ export const whereCompareStep = function* (
   // only makes sense for single-value comparison predicates.
   const valueBearing = pred as Predicate & { value: unknown };
   if (!('value' in valueBearing)) {
-    throw new Error(
+    throw new PlGraphError(
       `where('${startKey}', ...): only single-value predicates are supported (eq, neq, gt, gte, lt, lte, within, without). Got op '${pred.op}'.`,
+      { code: ErrorCode.Unsupported },
     );
   }
   const endKey = valueBearing.value as string;

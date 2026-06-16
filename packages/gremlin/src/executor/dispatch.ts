@@ -10,6 +10,7 @@
 // `applyPlanToStream` are only called inside generator bodies.
 
 import type { Graph } from '@pl-graph/core';
+import { ErrorCode, PlGraphError } from '@pl-graph/errors';
 
 import type { Plan, Step } from '../ast.js';
 import { matches } from '../predicates.js';
@@ -116,7 +117,7 @@ export const applyStep = (
   switch (step.kind) {
     case 'V':
     case 'E':
-      throw new Error(`${step.kind} can only appear as the first step`);
+      throw new PlGraphError(`${step.kind} can only appear as the first step`, { code: ErrorCode.Syntax });
 
     case 'out':
     case 'in':
@@ -341,10 +342,10 @@ export const applyStep = (
       });
 
     case 'match':
-      throw new Error('match() is not yet implemented');
+      throw new PlGraphError('match() is not yet implemented', { code: ErrorCode.NotImplemented });
 
     case 'subgraph':
-      throw new Error('subgraph() is not yet implemented');
+      throw new PlGraphError('subgraph() is not yet implemented', { code: ErrorCode.NotImplemented });
 
     case 'hasLabelAnd':
       return filterStream(stream, (v) => {

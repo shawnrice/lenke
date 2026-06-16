@@ -23,6 +23,8 @@ use super::plan::{
 };
 #[cfg(feature = "arrow")]
 use crate::arrow::ArrowColumn;
+use crate::error::{CodeError, CodeResult};
+use crate::error_codes::ErrorCode;
 use crate::graph::{Column, Graph, Value};
 use crate::query::RowSet;
 
@@ -3310,7 +3312,7 @@ fn compare_sort(a: &Val, b: &Val, descending: bool, nulls_first: Option<bool>) -
 
 // --- linear query & set ops --------------------------------------------------
 
-fn run_linear(linear: &CLinear, graph: &mut Graph, plan: &CQuery, params: &[Val]) -> Result<RowSet, String> {
+fn run_linear(linear: &CLinear, graph: &mut Graph, plan: &CQuery, params: &[Val]) -> CodeResult<RowSet> {
     // `bindings` is the materialized row set at the last barrier; `pending` are
     // MATCH clauses deferred so a projection (or write) can stream them directly.
     let mut bindings: Vec<Binding> = vec![Binding::default()];
@@ -3479,7 +3481,7 @@ fn run_remove(graph: &mut Graph, items: &[CRemoveItem], binding: &Binding) {
     }
 }
 
-fn run_delete(graph: &mut Graph, ctx: &Ctx, detach: bool, targets: &[CExpr], binding: &Binding) -> Result<(), String> {
+fn run_delete(graph: &mut Graph, ctx: &Ctx, detach: bool, targets: &[CExpr], binding: &Binding) -> CodeResult<()> {
     for target in targets {
         let v = {
             let env = Env::new(graph, ctx, binding);
@@ -3545,8 +3547,8 @@ fn combine(op: SetOp, left: RowSet, right: RowSet) -> RowSet {
 
 /// Execute a lowered plan against a graph with positional params. `run_linear`
 /// already produced the terminal RETURN's flat `RowSet` (cols + columnar cells).
-fn run_cquery(plan: &CQuery, graph: &mut Graph, params: &[Val]) -> Result<RowSet, String> {
-    let first = plan.parts.first().ok_or("empty query")?;
+fn run_cquery(plan: &CQuery, graph: &mut Graph, params: &[Val]) -> CodeResult<RowSet> {
+    let first = plan.parts.first().ok_or_else(|| CodeError::new(ErrorCode::Syntax, "empty query"))?;
     let mut rs = run_part(first, graph, plan, params)?;
     for (i, op) in plan.ops.iter().enumerate() {
         let right = run_part(&plan.parts[i + 1], graph, plan, params)?;
@@ -3558,7 +3560,7 @@ fn run_cquery(plan: &CQuery, graph: &mut Graph, params: &[Val]) -> Result<RowSet
 /// Run one linear part: try the fully-vectorized pipeline executor first (it
 /// handles read-only `MATCH … WITH … RETURN` chains end-to-end), else the scalar
 /// binding-based driver.
-fn run_part(linear: &CLinear, graph: &mut Graph, plan: &CQuery, params: &[Val]) -> Result<RowSet, String> {
+fn run_part(linear: &CLinear, graph: &mut Graph, plan: &CQuery, params: &[Val]) -> CodeResult<RowSet> {
     if USE_VEC {
         if let Some(rs) = vectorized_linear(linear, graph, plan, params) {
             return Ok(rs);
@@ -3604,7 +3606,7 @@ fn vectorized_arrow(graph: &Graph, ctx: &Ctx, matches: &[&CClause], proj: &CProj
 /// executor and converts its `RowSet` (correct for aggregate / WITH / UNION /
 /// scalar — just not boxing-free).
 #[cfg(feature = "arrow")]
-fn run_cquery_arrow(plan: &CQuery, graph: &mut Graph, params: &[Val]) -> Result<Vec<u8>, String> {
+fn run_cquery_arrow(plan: &CQuery, graph: &mut Graph, params: &[Val]) -> CodeResult<Vec<u8>> {
     if USE_VEC && plan.ops.is_empty() && plan.parts.len() == 1 {
         let linear = &plan.parts[0];
         if let Some((CClause::Return(proj), rest)) = linear.clauses.split_last().map(|(l, r)| (l, r)) {
@@ -3635,13 +3637,13 @@ pub struct Prepared {
 }
 
 impl Prepared {
-    pub fn execute(&self, graph: &mut Graph, params: &Params) -> Result<RowSet, String> {
+    pub fn execute(&self, graph: &mut Graph, params: &Params) -> CodeResult<RowSet> {
         run_cquery(&self.plan, graph, &positional(&self.param_names, params))
     }
     /// Execute and return the result as an Apache Arrow columnar blob (see
     /// [`crate::arrow`]) — the zero-copy carrier for the FFI / wasm boundary.
     #[cfg(feature = "arrow")]
-    pub fn execute_arrow(&self, graph: &mut Graph, params: &Params) -> Result<Vec<u8>, String> {
+    pub fn execute_arrow(&self, graph: &mut Graph, params: &Params) -> CodeResult<Vec<u8>> {
         run_cquery_arrow(&self.plan, graph, &positional(&self.param_names, params))
     }
 }
@@ -3656,13 +3658,13 @@ pub fn prepare(text: &str) -> Result<Prepared, SyntaxError> {
 impl super::ast::Query {
     /// Lower and execute in one call (no plan reuse). Keeps the simple
     /// `parse(q)?.execute(graph, &params)` path; reuse a [`Prepared`] for speed.
-    pub fn execute(&self, graph: &mut Graph, params: &Params) -> Result<RowSet, String> {
+    pub fn execute(&self, graph: &mut Graph, params: &Params) -> CodeResult<RowSet> {
         let (plan, param_names) = lower(self);
         run_cquery(&plan, graph, &positional(&param_names, params))
     }
     /// Lower and execute, returning an Apache Arrow columnar blob.
     #[cfg(feature = "arrow")]
-    pub fn execute_arrow(&self, graph: &mut Graph, params: &Params) -> Result<Vec<u8>, String> {
+    pub fn execute_arrow(&self, graph: &mut Graph, params: &Params) -> CodeResult<Vec<u8>> {
         let (plan, param_names) = lower(self);
         run_cquery_arrow(&plan, graph, &positional(&param_names, params))
     }

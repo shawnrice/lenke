@@ -1,6 +1,18 @@
 /* eslint-disable max-lines-per-function */
+import { ErrorCode, hasErrorCode } from '@pl-graph/errors';
+
 import { TreeNode } from './TreeNode.js';
 import { describe, expect, test } from 'bun:test';
+
+// Capture whatever a thunk throws (or undefined if it doesn't).
+const caughtFrom = (fn: () => void): unknown => {
+  try {
+    fn();
+    return undefined;
+  } catch (e) {
+    return e;
+  }
+};
 
 describe('TreeNode.addChild contract: argument must be parentless', () => {
   test('addChild accepts a freshly created (parentless) node', () => {
@@ -46,6 +58,15 @@ describe('TreeNode.addChild contract: argument must be parentless', () => {
     const child = root.createChild('child');
 
     expect(() => child.addChild(root)).toThrow();
+  });
+
+  test('an invalid tree operation carries ErrorCode.InvalidTree (the code is the contract)', () => {
+    const root = TreeNode.from('root');
+    // self-as-child
+    expect(hasErrorCode(caughtFrom(() => root.addChild(root)), ErrorCode.InvalidTree)).toBe(true);
+    // cycle: adding the (parentless) root under one of its own descendants
+    const child = root.createChild('child');
+    expect(hasErrorCode(caughtFrom(() => child.addChild(root)), ErrorCode.InvalidTree)).toBe(true);
   });
 
   test('the move pattern (detach + addChild) works', () => {

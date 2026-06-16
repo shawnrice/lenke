@@ -21,6 +21,7 @@
 //! empty for id-less edges.
 
 use crate::codec::{element_props, is_intish};
+use crate::error::CodeResult;
 use crate::graph::{Builder, EdgeRec, Graph, NodeRec, Value};
 
 const NULL_TOKEN: &str = "\\N";
@@ -529,7 +530,7 @@ pub fn encode(g: &Graph) -> String {
 }
 
 /// Decode the combined single-string form into a fresh graph (nodes, then edges).
-pub fn decode(input: &str) -> Result<Graph, String> {
+pub fn decode(input: &str) -> CodeResult<Graph> {
     let (nodes_csv, edges_csv) = match input.find(SEPARATOR) {
         Some(idx) => (&input[..idx], &input[idx + SEPARATOR.len()..]),
         None => (input, ""),
@@ -562,7 +563,10 @@ pub fn decode(input: &str) -> Result<Graph, String> {
         }
     }
 
-    Ok(b.finalize())
+    // Batch CSV is strict: an edge endpoint must be a declared node (the
+    // streaming decoder creates them on demand, but the combined form lists nodes
+    // first). A dangling endpoint is MissingVertex, matching the TS codec.
+    b.finalize_strict()
 }
 
 #[cfg(test)]
@@ -579,6 +583,17 @@ mod tests {
             ],"edges":[{"from":"a","to":"b","labels":["KNOWS"],"properties":{"since":2020,"strength":0.9}}]}"#,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn edge_to_undeclared_vertex_is_missing_vertex() {
+        // Batch CSV declares nodes first; an edge endpoint that was never declared
+        // is MissingVertex (strict), matching the TS codec.
+        let doc = "id,:LABEL\n=== EDGES ===\nid,:START_ID,:END_ID,:TYPE\ne1,x,y,KNOWS";
+        match decode(doc) {
+            Err(e) => assert_eq!(e.code, crate::error_codes::ErrorCode::MissingVertex),
+            Ok(_) => panic!("expected MissingVertex"),
+        }
     }
 
     #[test]

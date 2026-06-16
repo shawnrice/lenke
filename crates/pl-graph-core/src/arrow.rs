@@ -388,7 +388,7 @@ mod tests {
             r#"{"type":"node","id":"a","labels":["P"],"properties":{"name":"marko","age":29}}"#,
             r#"{"type":"node","id":"b","labels":["P"],"properties":{"name":"vadas","age":27}}"#,
         ];
-        let mut g = crate::ndjson::decode(&lines.join("\n"));
+        let mut g = crate::ndjson::decode(&lines.join("\n")).unwrap();
         let rs = crate::gql::parse("MATCH (n:P) RETURN n.name, n.age ORDER BY n.age")
             .unwrap()
             .execute(&mut g, &crate::gql::eval::Params::new())
@@ -420,8 +420,8 @@ mod tests {
             "MATCH (n:P) RETURN n.dept",                 // all-null column
         ];
         for q in queries {
-            let mut g1 = crate::ndjson::decode(&lines.join("\n"));
-            let mut g2 = crate::ndjson::decode(&lines.join("\n"));
+            let mut g1 = crate::ndjson::decode(&lines.join("\n")).unwrap();
+            let mut g2 = crate::ndjson::decode(&lines.join("\n")).unwrap();
             let params = crate::gql::eval::Params::new();
             let typed = crate::gql::parse(q).unwrap().execute_arrow(&mut g1, &params).unwrap();
             let rs = crate::gql::parse(q).unwrap().execute(&mut g2, &params).unwrap();

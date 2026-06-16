@@ -13,8 +13,11 @@
 //! to a `Mixed` fallback so nothing is ever lost. Absent slots use a presence
 //! bitset. Vertices and edges share the same [`Properties`] store type.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+
+use crate::error::{CodeError, CodeResult};
+use crate::error_codes::ErrorCode;
 
 /// String interner backed by `Arc<str>`: `intern` is amortized O(1), `text`
 /// reverses, and `arc` hands out a cheap shared clone (refcount bump, no alloc).
@@ -779,7 +782,7 @@ impl Graph {
 
     /// Delete a vertex. Without `detach`, a vertex that still has edges is an
     /// error (ISO/Cypher semantics); with `detach`, incident edges go first.
-    pub fn remove_vertex(&mut self, vi: u32, detach: bool) -> Result<(), String> {
+    pub fn remove_vertex(&mut self, vi: u32, detach: bool) -> CodeResult<()> {
         let i = vi as usize;
         if !self.is_vertex_live(vi) {
             return Ok(());
@@ -787,7 +790,10 @@ impl Graph {
         let incident: Vec<u32> =
             self.out[i].iter().chain(self.in_[i].iter()).map(|a| a.eidx).collect();
         if !detach && !incident.is_empty() {
-            return Err("cannot delete a vertex that still has relationships; use DETACH DELETE".to_string());
+            return Err(CodeError::new(
+                ErrorCode::InvalidGraphOp,
+                "cannot delete a vertex that still has relationships; use DETACH DELETE",
+            ));
         }
         for ei in incident {
             self.remove_edge(ei);
@@ -976,6 +982,32 @@ fn build_props(len: usize, items: &[(usize, &[(String, Value)])], strs: &mut Dic
 }
 
 impl Builder {
+    /// Like [`finalize`](Self::finalize), but enforces a **declared-nodes**
+    /// contract: every edge endpoint must be a declared node. Returns
+    /// `MissingVertex` instead of silently fabricating a phantom vertex (the
+    /// lenient `finalize` behavior, kept for streaming NDJSON where endpoints are
+    /// legitimately created on demand). The JSON document codecs (pg-json,
+    /// graphson) use this so a dangling edge is an error, mirroring the TS codecs.
+    pub fn finalize_strict(self) -> CodeResult<Graph> {
+        let declared: HashSet<&str> = self.nodes.iter().map(|n| n.id.as_str()).collect();
+        for e in &self.edges {
+            let missing = if !declared.contains(e.src.as_str()) {
+                Some(&e.src)
+            } else if !declared.contains(e.dst.as_str()) {
+                Some(&e.dst)
+            } else {
+                None
+            };
+            if let Some(id) = missing {
+                return Err(CodeError::new(
+                    ErrorCode::MissingVertex,
+                    format!("edge references a non-existent vertex '{id}' (from='{}', to='{}')", e.src, e.dst),
+                ));
+            }
+        }
+        Ok(self.finalize())
+    }
+
     pub fn finalize(self) -> Graph {
         let Builder { nodes, edges } = self;
         let mut vid = Dict::default();

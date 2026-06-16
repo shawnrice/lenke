@@ -1151,7 +1151,7 @@ mod tests {
                 i % 2 == 0
             ));
         }
-        ndjson::decode(&lines.join("\n"))
+        ndjson::decode(&lines.join("\n")).unwrap()
     }
 
     fn run(g: &Graph, q: &str) -> QueryResult {

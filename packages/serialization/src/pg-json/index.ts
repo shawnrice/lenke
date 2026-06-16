@@ -1,3 +1,5 @@
+import { ErrorCode, PlGraphError } from '@pl-graph/errors';
+
 import { normalizeBag } from '../value.js';
 
 import type { Graph } from '@pl-graph/core';
@@ -135,13 +137,14 @@ export const decode = (input: string, graph: Graph): Graph => {
   try {
     parsed = JSON.parse(input);
   } catch (cause) {
-    throw new Error('pg-json: input is not valid JSON', { cause });
+    throw new PlGraphError('pg-json: input is not valid JSON', { code: ErrorCode.InvalidJson, cause });
   }
 
   if (!isPGFormat(parsed)) {
-    throw new Error(
+    throw new PlGraphError(
       'pg-json: input does not match the PG-JSON shape ' +
         '({ nodes: [{ id, labels, properties }], edges?: [...] })',
+      { code: ErrorCode.InvalidShape },
     );
   }
 
@@ -167,8 +170,9 @@ export const decode = (input: string, graph: Graph): Graph => {
     const to = graph.getVertexById(toId);
 
     if (!from || !to) {
-      throw new Error(
+      throw new PlGraphError(
         `pg-json: edge references a non-existent vertex (from=${fromId}, to=${toId})`,
+        { code: ErrorCode.MissingVertex, details: { from: fromId, to: toId } },
       );
     }
 

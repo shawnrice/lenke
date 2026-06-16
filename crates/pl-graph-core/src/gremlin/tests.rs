@@ -22,7 +22,7 @@ fn modern() -> Graph {
         r#"{"type":"edge","from":"4","to":"3","labels":["CREATED"],"properties":{"weight":0.4}}"#,
         r#"{"type":"edge","from":"6","to":"3","labels":["CREATED"],"properties":{"weight":0.2}}"#,
     ];
-    ndjson::decode(&lines.join("\n"))
+    ndjson::decode(&lines.join("\n")).unwrap()
 }
 
 /// Run a read-only traversal against a fresh Modern graph.

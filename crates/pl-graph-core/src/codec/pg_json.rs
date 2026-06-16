@@ -14,6 +14,8 @@
 use serde_json::Value as J;
 
 use crate::codec::{element_props, json_id, json_props, json_str_array, node_labels, push_json_str, push_value};
+use crate::error::{CodeError, CodeResult};
+use crate::error_codes::ErrorCode;
 use crate::graph::{Builder, EdgeRec, Graph, NodeRec};
 
 /// Emit an element's present properties as a JSON object.
@@ -87,9 +89,12 @@ pub fn encode(g: &Graph) -> String {
 }
 
 /// Deserialize a PG-JSON string into a fresh graph.
-pub fn decode(input: &str) -> Result<Graph, String> {
-    let j: J = serde_json::from_str(input).map_err(|e| format!("pg-json: invalid JSON: {e}"))?;
-    let obj = j.as_object().ok_or_else(|| "pg-json: expected a top-level object".to_string())?;
+pub fn decode(input: &str) -> CodeResult<Graph> {
+    let j: J = serde_json::from_str(input)
+        .map_err(|e| CodeError::new(ErrorCode::InvalidJson, format!("pg-json: invalid JSON: {e}")))?;
+    let obj = j
+        .as_object()
+        .ok_or_else(|| CodeError::new(ErrorCode::InvalidShape, "pg-json: expected a top-level object"))?;
 
     let mut b = Builder::default();
 
@@ -99,7 +104,7 @@ pub fn decode(input: &str) -> Result<Graph, String> {
             b.nodes.push(NodeRec {
                 id: o.get("id").map(json_id).unwrap_or_default(),
                 labels: json_str_array(o.get("labels")),
-                props: json_props(o.get("properties")),
+                props: json_props(o.get("properties"))?,
             });
         }
     }
@@ -119,13 +124,13 @@ pub fn decode(input: &str) -> Result<Graph, String> {
                 src: o.get("from").map(json_id).unwrap_or_default(),
                 dst: o.get("to").map(json_id).unwrap_or_default(),
                 etype,
-                props: json_props(o.get("properties")),
+                props: json_props(o.get("properties"))?,
                 id: o.get("id").map(json_id),
             });
         }
     }
 
-    Ok(b.finalize())
+    b.finalize_strict()
 }
 
 #[cfg(test)]
@@ -165,6 +170,27 @@ mod tests {
     #[test]
     fn bad_json_errs() {
         assert!(decode("{not json").is_err());
+    }
+
+    fn decode_err_code(doc: &str) -> ErrorCode {
+        match decode(doc) {
+            Err(e) => e.code,
+            Ok(_) => panic!("expected an error, got Ok"),
+        }
+    }
+
+    #[test]
+    fn edge_to_undeclared_vertex_is_missing_vertex() {
+        // 'b' is never declared as a node — strict decode rejects the dangling edge.
+        let doc = r#"{"nodes":[{"id":"a","labels":[],"properties":{}}],"edges":[{"from":"a","to":"b","labels":["R"],"properties":{}}]}"#;
+        assert_eq!(decode_err_code(doc), ErrorCode::MissingVertex);
+    }
+
+    #[test]
+    fn nested_object_property_is_invalid_value() {
+        // A nested object is outside the LPG scalar/list model.
+        let doc = r#"{"nodes":[{"id":"a","labels":[],"properties":{"bad":{"x":1}}}],"edges":[]}"#;
+        assert_eq!(decode_err_code(doc), ErrorCode::InvalidValue);
     }
 
     #[test]

@@ -34,6 +34,8 @@ use std::sync::Arc;
 
 use serde_json::Value as J;
 
+use crate::error::{CodeError, CodeResult};
+use crate::error_codes::ErrorCode;
 use crate::graph::{Dict, Graph, Properties, Value};
 
 // ---------------------------------------------------------------------------
@@ -122,17 +124,23 @@ pub(crate) fn push_value(out: &mut String, v: &Value) {
 // JSON scalar parse (shared by pg-json; graphson has its own typed decode)
 // ---------------------------------------------------------------------------
 
-/// A `serde_json::Value` as a core [`Value`] (objects coerce to `Null`, matching
-/// ndjson — nested objects are outside the LPG scalar/list model).
-pub(crate) fn json_to_value(j: &J) -> Value {
-    match j {
+/// A `serde_json::Value` as a core [`Value`]. A nested object is outside the LPG
+/// scalar/list property model, so it's an `InvalidValue` error (mirrors the TS
+/// `normalizeValue` contract) rather than a silent coercion.
+pub(crate) fn json_to_value(j: &J) -> CodeResult<Value> {
+    Ok(match j {
         J::Null => Value::Null,
         J::Bool(b) => Value::Bool(*b),
         J::Number(n) => Value::Num(n.as_f64().unwrap_or(f64::NAN)),
         J::String(s) => Value::Str(Arc::from(s.as_str())),
-        J::Array(a) => Value::List(a.iter().map(json_to_value).collect()),
-        J::Object(_) => Value::Null,
-    }
+        J::Array(a) => Value::List(a.iter().map(json_to_value).collect::<CodeResult<Vec<_>>>()?),
+        J::Object(_) => {
+            return Err(CodeError::new(
+                ErrorCode::InvalidValue,
+                "property value is a nested object, which is outside the LPG scalar/list model",
+            ))
+        }
+    })
 }
 
 /// A JSON id field as a string (string verbatim; numbers/other stringified).
@@ -151,39 +159,49 @@ pub(crate) fn json_str_array(field: Option<&J>) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// A JSON object field as core property pairs (used by pg-json).
-pub(crate) fn json_props(field: Option<&J>) -> Vec<(String, Value)> {
-    field
-        .and_then(J::as_object)
-        .map(|m| m.iter().map(|(k, v)| (k.clone(), json_to_value(v))).collect())
-        .unwrap_or_default()
+/// A JSON object field as core property pairs (used by pg-json). A nested-object
+/// value anywhere is an `InvalidValue` error (see [`json_to_value`]).
+pub(crate) fn json_props(field: Option<&J>) -> CodeResult<Vec<(String, Value)>> {
+    match field.and_then(J::as_object) {
+        Some(m) => m.iter().map(|(k, v)| Ok((k.clone(), json_to_value(v)?))).collect(),
+        None => Ok(Vec::new()),
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Format dispatch (mirrors the TS `serialize` / `deserialize`)
 // ---------------------------------------------------------------------------
 
+/// An unrecognized format name. The codes are now structural: an unknown name is
+/// distinct from a parse failure of a *known* format (which the decoders code
+/// precisely), so the FFI layer can surface `e.code` directly.
+fn unknown_format(format: &str) -> CodeError {
+    CodeError::new(ErrorCode::UnknownFormat, format!("unknown serialization format '{format}'"))
+}
+
 /// Serialize `g` in the named format: `pg-json | pg-text | graphson | csv | ndjson`.
-pub fn serialize(g: &Graph, format: &str) -> Result<String, String> {
+pub fn serialize(g: &Graph, format: &str) -> CodeResult<String> {
     match format {
         "pg-json" => Ok(pg_json::encode(g)),
         "pg-text" => Ok(pg_text::encode(g)),
         "graphson" => Ok(graphson::encode(g)),
         "csv" => Ok(csv::encode(g)),
         "ndjson" => Ok(crate::ndjson::encode(g)),
-        other => Err(format!("unknown serialization format '{other}'")),
+        other => Err(unknown_format(other)),
     }
 }
 
-/// Deserialize `input` in the named format into a fresh graph.
-pub fn deserialize(input: &str, format: &str) -> Result<Graph, String> {
+/// Deserialize `input` in the named format into a fresh graph. A bad format name
+/// yields `UnknownFormat`; a malformed payload of a known format yields the
+/// decoder's own code (`InvalidJson` / `InvalidShape` / …).
+pub fn deserialize(input: &str, format: &str) -> CodeResult<Graph> {
     match format {
         "pg-json" => pg_json::decode(input),
-        "pg-text" => pg_text::decode(input),
+        "pg-text" => Ok(pg_text::decode(input)),
         "graphson" => graphson::decode(input),
         "csv" => csv::decode(input),
-        "ndjson" => Ok(crate::ndjson::decode(input)),
-        other => Err(format!("unknown serialization format '{other}'")),
+        "ndjson" => crate::ndjson::decode(input),
+        other => Err(unknown_format(other)),
     }
 }
 
@@ -222,7 +240,8 @@ mod tests {
     fn set_and_remove_edge_id() {
         let mut g = crate::ndjson::decode(
             "{\"type\":\"node\",\"id\":\"a\",\"labels\":[],\"properties\":{}}\n{\"type\":\"node\",\"id\":\"b\",\"labels\":[],\"properties\":{}}\n{\"type\":\"edge\",\"from\":\"a\",\"to\":\"b\",\"labels\":[\"X\"],\"properties\":{}}",
-        );
+        )
+        .unwrap();
         assert_eq!(g.edge_id(0), None); // id-less by default
         g.set_edge_id(0, "e-custom");
         assert_eq!(g.edge_id(0), Some("e-custom"));

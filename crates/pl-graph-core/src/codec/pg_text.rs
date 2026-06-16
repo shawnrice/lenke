@@ -219,8 +219,10 @@ fn is_edge_line(tokens: &[String]) -> bool {
 }
 
 /// Deserialize a PG-text string into a fresh graph. Endpoints referenced by an
-/// edge but never declared as a node line are created (bare) by `finalize`.
-pub fn decode(input: &str) -> Result<Graph, String> {
+/// edge but never declared as a node line are created (bare) by `finalize` —
+/// this leniency is intentional format semantics (matching the TS codec), so
+/// decode is infallible and returns `Graph` directly (no coded error to carry).
+pub fn decode(input: &str) -> Graph {
     let mut b = Builder::default();
     for raw in input.split('\n') {
         let line = raw.trim();
@@ -248,7 +250,7 @@ pub fn decode(input: &str) -> Result<Graph, String> {
             b.nodes.push(NodeRec { id, labels, props });
         }
     }
-    Ok(b.finalize())
+    b.finalize()
 }
 
 #[cfg(test)]
@@ -261,7 +263,7 @@ mod tests {
 a :Person name:\"Ann\" age:30 active:true tags:x tags:y
 b :Person :Admin name:\"Bo\"
 a b :KNOWS since:2020";
-        let g = decode(src).unwrap();
+        let g = decode(src);
         assert_eq!(g.vertex_count(), 2);
         assert_eq!(g.edge_count(), 1);
         let a = g.vid.get("a").unwrap() as usize;
@@ -275,7 +277,7 @@ a b :KNOWS since:2020";
         assert_eq!(node_labels(&g, g.vid.get("b").unwrap()).len(), 2);
 
         // encode → decode is stable for scalars + multi-element lists
-        let g2 = decode(&encode(&g)).unwrap();
+        let g2 = decode(&encode(&g));
         let a2 = g2.vid.get("a").unwrap() as usize;
         assert_eq!(
             g2.props.value(a2, "tags", &g2.strs),
@@ -287,14 +289,14 @@ a b :KNOWS since:2020";
     #[test]
     fn quoted_strings_and_comments() {
         let src = "# a comment\nx name:\"a b\\\"c\"";
-        let g = decode(src).unwrap();
+        let g = decode(src);
         let x = g.vid.get("x").unwrap() as usize;
         assert_eq!(g.props.value(x, "name", &g.strs), Value::Str("a b\"c".into()));
     }
 
     #[test]
     fn edge_endpoint_autocreated() {
-        let g = decode("a b :KNOWS").unwrap();
+        let g = decode("a b :KNOWS");
         assert_eq!(g.vertex_count(), 2); // a and b created as bare nodes
         assert_eq!(g.edge_count(), 1);
     }
