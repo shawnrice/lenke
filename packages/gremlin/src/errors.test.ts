@@ -33,7 +33,14 @@ describe('gremlin error codes', () => {
   });
 
   test('serializing a closure-bearing plan carries ErrorCode.Unsupported', () => {
-    const caught = caughtFrom(() => serialize(traversal(V(), map((x) => x))));
+    const caught = caughtFrom(() =>
+      serialize(
+        traversal(
+          V(),
+          map((x) => x),
+        ),
+      ),
+    );
     expect(hasErrorCode(caught, ErrorCode.Unsupported)).toBe(true);
   });
 });

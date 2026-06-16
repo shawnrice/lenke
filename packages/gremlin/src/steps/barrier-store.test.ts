@@ -24,8 +24,12 @@ describe('barrier and store', () => {
   });
 
   test('store and aggregate are interchangeable in v2', () => {
-    const a = arr(run(traversal(V(), hasLabel('SOFTWARE'), aggregate('x'), cap('x')), g)) as unknown[][];
-    const b = arr(run(traversal(V(), hasLabel('SOFTWARE'), store('x'), cap('x')), g)) as unknown[][];
+    const a = arr(
+      run(traversal(V(), hasLabel('SOFTWARE'), aggregate('x'), cap('x')), g),
+    ) as unknown[][];
+    const b = arr(
+      run(traversal(V(), hasLabel('SOFTWARE'), store('x'), cap('x')), g),
+    ) as unknown[][];
     expect(a[0]).toHaveLength(2);
     expect(b[0]).toHaveLength(2);
   });

@@ -10,7 +10,9 @@ import { useGraphSelector } from './useGraphSelector.js';
 
 const wrapperFor =
   (graph: Graph) =>
-  ({ children }: { children: React.ReactNode }) => <GraphProvider graph={graph}>{children}</GraphProvider>;
+  ({ children }: { children: React.ReactNode }) => (
+    <GraphProvider graph={graph}>{children}</GraphProvider>
+  );
 
 const settle = () => act(async () => vi.runAllTimersAsync());
 

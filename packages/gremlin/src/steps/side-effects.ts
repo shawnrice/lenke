@@ -26,8 +26,10 @@ export const subgraph = (key: string): StepFn => appendStep({ kind: 'subgraph', 
  * Sugar over the closure-with-sideEffects pattern. Use as
  * `filter(withinBag('seen'))`. Mirrors the spec form `where(within('seen'))`.
  */
-export const withinBag = (key: string): FilterClosure =>
-  (v, t) => (t.sideEffects.get(key) ?? []).includes(v);
+export const withinBag =
+  (key: string): FilterClosure =>
+  (v, t) =>
+    (t.sideEffects.get(key) ?? []).includes(v);
 
 /**
  * Filter closure: keep traversers whose value is *absent* from the named
@@ -35,5 +37,7 @@ export const withinBag = (key: string): FilterClosure =>
  * patterns: `aggregate('seen')` upstream, then `filter(withoutBag('seen'))`
  * downstream. Mirrors the spec form `where(without('seen'))`.
  */
-export const withoutBag = (key: string): FilterClosure =>
-  (v, t) => !(t.sideEffects.get(key) ?? []).includes(v);
+export const withoutBag =
+  (key: string): FilterClosure =>
+  (v, t) =>
+    !(t.sideEffects.get(key) ?? []).includes(v);

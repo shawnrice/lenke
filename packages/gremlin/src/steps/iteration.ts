@@ -1,11 +1,5 @@
 /* eslint-disable no-shadow -- parameter names match the gremlin builder API (e.g. `match` on branch.option) */
-import {
-  appendStep,
-  buildPlan,
-  type Plan,
-  type StepFn,
-  type SubPlan,
-} from './framework.js';
+import { appendStep, buildPlan, type Plan, type StepFn, type SubPlan } from './framework.js';
 
 // Run each sub-plan from the current traverser; merge outputs in order.
 export const union = (...plans: SubPlan[]): StepFn =>

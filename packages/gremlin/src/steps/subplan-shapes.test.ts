@@ -31,39 +31,26 @@ describe('sub-plan combinators accept both Plan and StepFn', () => {
   const g = createTestTinkerGraph();
 
   test('filter: traversal() and pipe() are interchangeable', () => {
-    const a = arr(
-      run(traversal(V(), filter(traversal(label(), is(eq('PERSON'))))), g),
-    ) as Array<{ id: string }>;
-    const b = arr(
-      run(traversal(V(), filter(pipe(label(), is(eq('PERSON'))))), g),
-    ) as Array<{ id: string }>;
+    const a = arr(run(traversal(V(), filter(traversal(label(), is(eq('PERSON'))))), g)) as Array<{
+      id: string;
+    }>;
+    const b = arr(run(traversal(V(), filter(pipe(label(), is(eq('PERSON'))))), g)) as Array<{
+      id: string;
+    }>;
     expect(a.map((v) => v.id).sort()).toEqual(b.map((v) => v.id).sort());
     expect(a).toHaveLength(4);
   });
 
   test('where: traversal() form works (was StepFn-only)', () => {
     const r = arr(
-      run(
-        traversal(
-          V(),
-          where(traversal(label(), is(eq('PERSON')))),
-          values('name'),
-        ),
-        g,
-      ),
+      run(traversal(V(), where(traversal(label(), is(eq('PERSON')))), values('name')), g),
     );
     expect((r as string[]).sort()).toEqual(['josh', 'marko', 'peter', 'vadas']);
   });
 
   test('union: traversal() variants merge correctly', () => {
     const r = arr(
-      run(
-        traversal(
-          V('1'),
-          union(traversal(values('name')), traversal(values('age'))),
-        ),
-        g,
-      ),
+      run(traversal(V('1'), union(traversal(values('name')), traversal(values('age')))), g),
     );
     expect((r as unknown[]).sort()).toEqual([29, 'marko']);
   });
@@ -98,11 +85,7 @@ describe('sub-plan combinators accept both Plan and StepFn', () => {
     const before = localG.vertexCount;
     arr(
       run(
-        traversal(
-          V(),
-          hasLabel('PERSON'),
-          map(traversal(addV('SHADOW'), property('via', 'map'))),
-        ),
+        traversal(V(), hasLabel('PERSON'), map(traversal(addV('SHADOW'), property('via', 'map')))),
         localG,
       ),
     );

@@ -16,7 +16,7 @@ a flat `Record<string, unknown>`, one value per key, no property
 identity.
 
 Several apparent "drifts" from TinkerPop docs are direct consequences
-of this model choice and are *not* tracked as gaps:
+of this model choice and are _not_ tracked as gaps:
 
 - `valueMap()` returns `{key: value}` instead of `{key: [value]}`.
   TinkerPop wraps everything in lists to be cardinality-polymorphic; we
@@ -43,4 +43,3 @@ where applicable.
 
 `math('a + b').by('age')` references named positions tagged with `as_`.
 We don't resolve those — `math` only sees the current value.
-

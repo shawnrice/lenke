@@ -3,18 +3,7 @@ import { describe, expect, test } from 'bun:test';
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
 import { eq, gt } from '../predicates.js';
-import {
-  V,
-  has,
-  hasLabel,
-  is,
-  loops,
-  or,
-  out,
-  pipe,
-  repeat,
-  values,
-} from '../steps.js';
+import { V, has, hasLabel, is, loops, or, out, pipe, repeat, values } from '../steps.js';
 import { traversal } from '../traversal.js';
 
 const arr = (r: Iterable<unknown>): unknown[] => [...r];
@@ -31,7 +20,9 @@ describe('loops tests', () => {
       run(
         traversal(
           V(),
-          repeat(out()).times(2).emit(or(has('name', eq('marko')), loopsIs2)),
+          repeat(out())
+            .times(2)
+            .emit(or(has('name', eq('marko')), loopsIs2)),
           values('name'),
         ),
         tinkerGraph,
@@ -65,14 +56,7 @@ describe('loops tests', () => {
   test('emit(loops().is(gt(1))) emits only later iterations', () => {
     const loopsGt1 = (p: Plan) => is(gt(1))(loops()(p));
     const r = arr(
-      run(
-        traversal(
-          V('1'),
-          repeat(out()).times(3).emit(loopsGt1),
-          values('name'),
-        ),
-        tinkerGraph,
-      ),
+      run(traversal(V('1'), repeat(out()).times(3).emit(loopsGt1), values('name')), tinkerGraph),
     );
     // iter1 (loopCount=1) skipped; iter2 (loopCount=2) emits frontier
     // {vadas, josh, lop}; iter3 (loopCount=3) emits {ripple, lop}.
@@ -90,7 +74,9 @@ describe('loops tests', () => {
       run(
         traversal(
           V('1'),
-          repeat(pipe(out(), hasLabel('PERSON'))).times(3).emit(),
+          repeat(pipe(out(), hasLabel('PERSON')))
+            .times(3)
+            .emit(),
           values('name'),
         ),
         tinkerGraph,

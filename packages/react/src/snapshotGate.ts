@@ -44,7 +44,9 @@ export const nextSnapshot = <T, G extends GraphLike>(
       return cache; // no dependency moved — skip the selector entirely
     }
     const value = selector(graph);
-    return cache && isEqual(cache.value, value) ? { value: cache.value, fingerprint } : { value, fingerprint };
+    return cache && isEqual(cache.value, value)
+      ? { value: cache.value, fingerprint }
+      : { value, fingerprint };
   }
   // Coarse mode: run the selector and stabilize on value equality.
   const value = selector(graph);

@@ -1,16 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
-import {
-  V,
-  aggregate,
-  filter,
-  hasLabel,
-  out,
-  values,
-  withinBag,
-  withoutBag,
-} from '../steps.js';
+import { V, aggregate, filter, hasLabel, out, values, withinBag, withoutBag } from '../steps.js';
 import { traversal } from '../traversal.js';
 
 const arr = (r: Iterable<unknown>): unknown[] => [...r];

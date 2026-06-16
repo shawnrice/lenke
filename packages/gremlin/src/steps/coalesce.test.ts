@@ -15,11 +15,7 @@ describe('coalesce tests', () => {
   test('coalesce falls back to second sub-traversal when first is empty', () => {
     const r = arr(
       run(
-        traversal(
-          V(),
-          hasLabel('PERSON'),
-          coalesce(values('nickname'), values('name')),
-        ),
+        traversal(V(), hasLabel('PERSON'), coalesce(values('nickname'), values('name'))),
         tinkerGraph,
       ),
     );

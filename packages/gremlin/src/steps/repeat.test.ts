@@ -89,10 +89,7 @@ describe('repeat tests', () => {
   // exact element ordering depends on traverser interleaving.
   test('repeat().times(2).emit().path().by("name") yields all visited paths', () => {
     const r = arr(
-      run(
-        traversal(V('1'), repeat(out()).times(2).emit(), path().by('name')),
-        tinkerGraph,
-      ),
+      run(traversal(V('1'), repeat(out()).times(2).emit(), path().by('name')), tinkerGraph),
     );
     // 5 emitted traversers (marko's three out-children + 2 from josh's out).
     // Iter 0 emits marko itself? No — repeat.emit() fires after the body.
@@ -107,10 +104,7 @@ describe('repeat tests', () => {
   // doc: g.V(1).repeat(out()).times(2).path().by('name') — [marko,josh,ripple]; [marko,josh,lop]
   test('repeat().times(2).path().by("name") yields full paths', () => {
     const r = arr(
-      run(
-        traversal(V('1'), repeat(out()).times(2), path().by('name')),
-        tinkerGraph,
-      ),
+      run(traversal(V('1'), repeat(out()).times(2), path().by('name')), tinkerGraph),
     ) as Array<unknown[]>;
     const sorted = r.map((p) => p.join(',')).sort();
     expect(sorted).toEqual(['marko,josh,lop', 'marko,josh,ripple']);
@@ -119,11 +113,7 @@ describe('repeat tests', () => {
   test('repeat(out()).until(outE().count().is(0)) reaches all sinks from marko', () => {
     const r = arr(
       run(
-        traversal(
-          V('1'),
-          repeat(out()).until(pipe(outE(), count(), is(eq(0)))),
-          values('name'),
-        ),
+        traversal(V('1'), repeat(out()).until(pipe(outE(), count(), is(eq(0)))), values('name')),
         tinkerGraph,
       ),
     );
@@ -138,9 +128,7 @@ describe('repeat tests', () => {
   // From marko: 1 hop -> {vadas, josh, lop}; 2 hops -> {ripple, lop} (from josh,
   // others are sinks). 3 hops from those = empty (all sinks).
   test('repeat(out()).times(3) yields nothing past sinks (3-hop empty)', () => {
-    const r = arr(
-      run(traversal(V('1'), repeat(out()).times(3), values('name')), tinkerGraph),
-    );
+    const r = arr(run(traversal(V('1'), repeat(out()).times(3), values('name')), tinkerGraph));
     expect(r).toEqual([]);
   });
 
@@ -198,7 +186,9 @@ describe('repeat tests', () => {
       run(
         traversal(
           V('1'),
-          repeat(pipe(out(), where(pipe(loops(), is(lt(2)))))).times(5).emit(),
+          repeat(pipe(out(), where(pipe(loops(), is(lt(2))))))
+            .times(5)
+            .emit(),
           values('name'),
         ),
         tinkerGraph,
@@ -211,18 +201,14 @@ describe('repeat tests', () => {
 
   test('empty input stream yields empty output', () => {
     // V('999') doesn't exist -> empty input.
-    const r = arr(
-      run(traversal(V('999'), repeat(out()).times(3), values('name')), tinkerGraph),
-    );
+    const r = arr(run(traversal(V('999'), repeat(out()).times(3), values('name')), tinkerGraph));
     expect(r).toEqual([]);
   });
 
   test('times(0) passes input through unchanged', () => {
     // With 0 iterations the body never runs. The input traverser should pass
     // through. Note: the executor still increments `loops` once at the start.
-    const r = arr(
-      run(traversal(V('1'), repeat(out()).times(0), values('name')), tinkerGraph),
-    );
+    const r = arr(run(traversal(V('1'), repeat(out()).times(0), values('name')), tinkerGraph));
     expect(r).toEqual(['marko']);
   });
 
@@ -243,9 +229,7 @@ describe('repeat tests', () => {
     // stopper. Use a high times bound; the body naturally drains to empty
     // (sinks) before the cap. The test asserts the run terminates and yields
     // only sink-reachable names.
-    const r = arr(
-      run(traversal(V('1'), repeat(out()).times(50), values('name')), tinkerGraph),
-    );
+    const r = arr(run(traversal(V('1'), repeat(out()).times(50), values('name')), tinkerGraph));
     // After many hops, frontier is empty (all paths reach sinks within 2 hops),
     // so without emit() nothing remains to yield.
     expect(r).toEqual([]);

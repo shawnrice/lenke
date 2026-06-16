@@ -27,15 +27,7 @@ describe('addE() mutation', () => {
     // FROM endpoint while the current traverser is something else.)
     const before = g.edgeCount;
     const r = arr(
-      run(
-        traversal(
-          V('1'),
-          as_('start'),
-          out('KNOWS'),
-          addE('META').from('start').to(V('6')),
-        ),
-        g,
-      ),
+      run(traversal(V('1'), as_('start'), out('KNOWS'), addE('META').from('start').to(V('6'))), g),
     );
     // marko knows vadas + josh → 2 new edges
     expect(r).toHaveLength(2);
@@ -48,12 +40,7 @@ describe('addE() mutation', () => {
 
   test('addE() with property() chains property writes onto the new edge', () => {
     const g = createTestTinkerGraph();
-    arr(
-      run(
-        traversal(V('1'), addE('KNOWS').to(V('6')), property('weight', 0.42)),
-        g,
-      ),
-    );
+    arr(run(traversal(V('1'), addE('KNOWS').to(V('6')), property('weight', 0.42)), g));
     const created = [...g.edges].find(
       (e) => e.from.id === '1' && e.to.id === '6' && e.labels.has('KNOWS'),
     )!;

@@ -36,10 +36,7 @@ describe('and tests', () => {
   // legacy: g.V().hasLabel('SOFTWARE').and(outE('KNOWS')).values('name') — []
   test('and: filters everything when no traverser matches', () => {
     const r = arr(
-      run(
-        traversal(V(), hasLabel('SOFTWARE'), and(outE('KNOWS')), values('name')),
-        tinkerGraph,
-      ),
+      run(traversal(V(), hasLabel('SOFTWARE'), and(outE('KNOWS')), values('name')), tinkerGraph),
     );
     expect(r).toEqual([]);
   });

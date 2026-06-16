@@ -49,17 +49,13 @@ describe('Gremlin tests', () => {
 
   // doc: g.V().values('name').order().by(Order.desc) — sorted descending.
   test('order().by(Order.desc) reverses natural order', () => {
-    const r = arr(
-      run(traversal(V(), values('name'), order().by(Order.desc)), tinkerGraph),
-    );
+    const r = arr(run(traversal(V(), values('name'), order().by(Order.desc)), tinkerGraph));
     expect(r).toEqual(['vadas', 'ripple', 'peter', 'marko', 'lop', 'josh']);
   });
 
   // doc: g.V().values('name').order().by(Order.asc) — explicit asc same as default.
   test('order().by(Order.asc) matches default natural order', () => {
-    const r = arr(
-      run(traversal(V(), values('name'), order().by(Order.asc)), tinkerGraph),
-    );
+    const r = arr(run(traversal(V(), values('name'), order().by(Order.asc)), tinkerGraph));
     expect(r).toEqual(['josh', 'lop', 'marko', 'peter', 'ripple', 'vadas']);
   });
 

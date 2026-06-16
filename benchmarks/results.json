@@ -1,12 +1,7 @@
 {
   "meta": {
     "machine": "Apple M3 Max (target-cpu=native)",
-    "sizes": [
-      1000,
-      10000,
-      100000,
-      1000000
-    ],
+    "sizes": [1000, 10000, 100000, 1000000],
     "avgDegree": 4,
     "queries": [
       {

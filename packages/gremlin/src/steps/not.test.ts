@@ -36,9 +36,7 @@ describe('not tests', () => {
   // doc: g.V().not(hasLabel('person')).elementMap()
   // — [id:3,label:software,name:lop,lang:java]; [id:5,...,name:ripple,lang:java]
   test('not(hasLabel) -> elementMap yields software vertices', () => {
-    const r = arr(
-      run(traversal(V(), not(hasLabel('PERSON')), elementMap()), tinkerGraph),
-    );
+    const r = arr(run(traversal(V(), not(hasLabel('PERSON')), elementMap()), tinkerGraph));
     expect(r).toEqual([
       { id: '3', label: 'SOFTWARE', name: 'lop', lang: 'java' },
       { id: '5', label: 'SOFTWARE', name: 'ripple', lang: 'java' },
@@ -49,10 +47,7 @@ describe('not tests', () => {
   // — josh, peter, lop, ripple (everyone except vadas/marko)
   test('not(predicate) negates a predicate inside has()', () => {
     const r = arr(
-      run(
-        traversal(V(), has('name', not(within('vadas', 'marko'))), values('name')),
-        tinkerGraph,
-      ),
+      run(traversal(V(), has('name', not(within('vadas', 'marko'))), values('name')), tinkerGraph),
     );
     expect(r).toEqual(['josh', 'peter', 'lop', 'ripple']);
   });

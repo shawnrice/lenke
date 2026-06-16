@@ -656,10 +656,13 @@ export const decodeEdges = (csv: string, graph: Graph): Graph => {
     // Batch decode is strict: endpoints must already exist (nodes were decoded
     // first). The streaming edge decoder, by contrast, creates them on demand.
     if (!graph.getVertexById(fromId) || !graph.getVertexById(toId)) {
-      throw new PlGraphError(`csv: edge references a non-existent vertex (from=${fromId}, to=${toId})`, {
-        code: ErrorCode.MissingVertex,
-        details: { from: fromId, to: toId },
-      });
+      throw new PlGraphError(
+        `csv: edge references a non-existent vertex (from=${fromId}, to=${toId})`,
+        {
+          code: ErrorCode.MissingVertex,
+          details: { from: fromId, to: toId },
+        },
+      );
     }
     applyEdgeRow(graph, row, propCols);
   }

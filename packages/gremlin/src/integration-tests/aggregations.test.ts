@@ -126,10 +126,7 @@ describe('Aggregations', () => {
   // group software vertices by lang
   test('group software names by language', () => {
     const r = arr(
-      run(
-        traversal(V(), hasLabel('SOFTWARE'), group({ keyBy: 'lang', valueBy: 'name' })),
-        g,
-      ),
+      run(traversal(V(), hasLabel('SOFTWARE'), group({ keyBy: 'lang', valueBy: 'name' })), g),
     );
     const map = r[0] as Map<unknown, string[]>;
     expect((map.get('java') as string[]).slice().sort()).toEqual(['lop', 'ripple']);

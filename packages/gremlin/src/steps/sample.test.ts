@@ -19,7 +19,9 @@ describe('sample tests', () => {
   });
 
   test('sample(n) caps at stream size', () => {
-    const r = arr(run(traversal(V(), hasLabel('SOFTWARE'), sample(99), values('name')), tinkerGraph));
+    const r = arr(
+      run(traversal(V(), hasLabel('SOFTWARE'), sample(99), values('name')), tinkerGraph),
+    );
     // Only two software vertices in the fixture.
     expect(r.length).toBe(2);
     expect([...r].sort()).toEqual(['lop', 'ripple']);

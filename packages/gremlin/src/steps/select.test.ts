@@ -45,10 +45,7 @@ describe('Gremlin tests', () => {
 
     test('selecting one label yields the value (no object wrapper)', () => {
       const result = arr(
-        run(
-          traversal(V(), as_('a'), out(), as_('b'), out(), as_('c'), select('a')),
-          tinkerGraph,
-        ),
+        run(traversal(V(), as_('a'), out(), as_('b'), out(), as_('c'), select('a')), tinkerGraph),
       );
       expect(result).toHaveLength(2);
       expect((result as Vertex[]).map((v) => v.id)).toEqual(['1', '1']);
@@ -69,10 +66,9 @@ describe('Gremlin tests', () => {
     test('select the current position (pointless but works)', () => {
       const result = arr(run(traversal(V(), out(), out(), as_('x'), select('x')), tinkerGraph));
       expect(result).toHaveLength(2);
-      expect((result as Array<{ properties: { name: string } }>).map((v) => v.properties.name)).toEqual([
-        'ripple',
-        'lop',
-      ]);
+      expect(
+        (result as Array<{ properties: { name: string } }>).map((v) => v.properties.name),
+      ).toEqual(['ripple', 'lop']);
     });
 
     // doc: g.V(1).as('a').both().as('b').select('a','b') — pairs of v[1] with each neighbor
@@ -106,7 +102,9 @@ describe('Gremlin tests', () => {
             as_('a'),
             out('CREATED'),
             as_('b'),
-            select('a', 'b').by(traversal(in_('CREATED'), count())).by('name'),
+            select('a', 'b')
+              .by(traversal(in_('CREATED'), count()))
+              .by('name'),
           ),
           tinkerGraph,
         ),

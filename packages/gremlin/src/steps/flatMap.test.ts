@@ -25,9 +25,7 @@ describe('flatMap tests', () => {
 
   // flatMap with values('name') over persons mirrors values directly.
   test('flatMap(values) is equivalent to values for single-value props', () => {
-    const r = arr(
-      run(traversal(V(), hasLabel('PERSON'), flatMap(values('name'))), tinkerGraph),
-    );
+    const r = arr(run(traversal(V(), hasLabel('PERSON'), flatMap(values('name'))), tinkerGraph));
     expect((r as string[]).sort()).toEqual(['josh', 'marko', 'peter', 'vadas']);
   });
 

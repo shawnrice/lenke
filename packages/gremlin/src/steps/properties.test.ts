@@ -45,9 +45,7 @@ describe('Gremlin tests', () => {
 
     // doc: g.V(v).properties('name').count() — count of name properties for one vertex.
     test('properties + count returns the number of property objects', () => {
-      const result = arr(
-        run(traversal(V(), hasId('1'), properties('name'), count()), tinkerGraph),
-      );
+      const result = arr(run(traversal(V(), hasId('1'), properties('name'), count()), tinkerGraph));
       expect(result).toEqual([1]);
     });
   });

@@ -119,10 +119,7 @@ export class Emitter<
     return event;
   }
 
-  eventFrom<TType extends Key>(
-    type: TType,
-    payload: PayloadOf<TypeMap[TType]>,
-  ): TypeMap[TType] {
+  eventFrom<TType extends Key>(type: TType, payload: PayloadOf<TypeMap[TType]>): TypeMap[TType] {
     // The constructed event is structurally a `TypeMap[TType]` for the
     // expected case (TypeMap entries are `EmitterEvent<K, V>` aliases). TS
     // can't verify because `TypeMap[TType]` could in theory be any subtype of

@@ -63,10 +63,20 @@ describe('TreeNode.addChild contract: argument must be parentless', () => {
   test('an invalid tree operation carries ErrorCode.InvalidTree (the code is the contract)', () => {
     const root = TreeNode.from('root');
     // self-as-child
-    expect(hasErrorCode(caughtFrom(() => root.addChild(root)), ErrorCode.InvalidTree)).toBe(true);
+    expect(
+      hasErrorCode(
+        caughtFrom(() => root.addChild(root)),
+        ErrorCode.InvalidTree,
+      ),
+    ).toBe(true);
     // cycle: adding the (parentless) root under one of its own descendants
     const child = root.createChild('child');
-    expect(hasErrorCode(caughtFrom(() => child.addChild(root)), ErrorCode.InvalidTree)).toBe(true);
+    expect(
+      hasErrorCode(
+        caughtFrom(() => child.addChild(root)),
+        ErrorCode.InvalidTree,
+      ),
+    ).toBe(true);
   });
 
   test('the move pattern (detach + addChild) works', () => {

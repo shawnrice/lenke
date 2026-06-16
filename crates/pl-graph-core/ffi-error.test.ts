@@ -10,13 +10,31 @@ import { dlopen, FFIType, ptr, toArrayBuffer } from 'bun:ffi';
 import { describe, expect, test } from 'bun:test';
 
 const lib = dlopen(new URL('./target/release/libpl_graph_core.dylib', import.meta.url).pathname, {
-  plg_graph_from_ndjson: { args: [FFIType.ptr, FFIType.u64_fast, FFIType.u32], returns: FFIType.ptr },
+  plg_graph_from_ndjson: {
+    args: [FFIType.ptr, FFIType.u64_fast, FFIType.u32],
+    returns: FFIType.ptr,
+  },
   plg_graph_free: { args: [FFIType.ptr], returns: FFIType.void },
-  plg_query_rows: { args: [FFIType.ptr, FFIType.ptr, FFIType.u64_fast, FFIType.ptr], returns: FFIType.ptr },
-  plg_query_arrow: { args: [FFIType.ptr, FFIType.ptr, FFIType.u64_fast, FFIType.ptr], returns: FFIType.ptr },
-  plg_gremlin_json: { args: [FFIType.ptr, FFIType.ptr, FFIType.u64_fast, FFIType.ptr], returns: FFIType.ptr },
-  plg_serialize: { args: [FFIType.ptr, FFIType.ptr, FFIType.u64_fast, FFIType.ptr], returns: FFIType.ptr },
-  plg_deserialize: { args: [FFIType.ptr, FFIType.u64_fast, FFIType.ptr, FFIType.u64_fast], returns: FFIType.ptr },
+  plg_query_rows: {
+    args: [FFIType.ptr, FFIType.ptr, FFIType.u64_fast, FFIType.ptr],
+    returns: FFIType.ptr,
+  },
+  plg_query_arrow: {
+    args: [FFIType.ptr, FFIType.ptr, FFIType.u64_fast, FFIType.ptr],
+    returns: FFIType.ptr,
+  },
+  plg_gremlin_json: {
+    args: [FFIType.ptr, FFIType.ptr, FFIType.u64_fast, FFIType.ptr],
+    returns: FFIType.ptr,
+  },
+  plg_serialize: {
+    args: [FFIType.ptr, FFIType.ptr, FFIType.u64_fast, FFIType.ptr],
+    returns: FFIType.ptr,
+  },
+  plg_deserialize: {
+    args: [FFIType.ptr, FFIType.u64_fast, FFIType.ptr, FFIType.u64_fast],
+    returns: FFIType.ptr,
+  },
   plg_free_buf: { args: [FFIType.ptr, FFIType.u64_fast], returns: FFIType.void },
   plg_free_arrow: { args: [FFIType.ptr, FFIType.u64_fast], returns: FFIType.void },
   plg_last_error_json: { args: [FFIType.ptr], returns: FFIType.ptr },
@@ -145,7 +163,8 @@ describe('FFI error channel', () => {
   });
 
   test('deserialize: an edge to an undeclared vertex carries E_MISSING_VERTEX', () => {
-    const doc = '{"nodes":[{"id":"a","labels":[],"properties":{}}],"edges":[{"from":"a","to":"b","labels":["R"],"properties":{}}]}';
+    const doc =
+      '{"nodes":[{"id":"a","labels":[],"properties":{}}],"edges":[{"from":"a","to":"b","labels":["R"],"properties":{}}]}';
     expect(deserialize(doc, 'pg-json')).toBeNull();
     expect(lastError()?.code).toBe('E_MISSING_VERTEX');
   });

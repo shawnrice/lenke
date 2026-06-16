@@ -7,14 +7,7 @@
 
 import { ErrorCode, PlGraphError } from '@pl-graph/errors';
 
-import {
-  appendStep,
-  type By,
-  isStepFn,
-  type Plan,
-  type Predicate,
-  type Step,
-} from '../ast.js';
+import { appendStep, type By, isStepFn, type Plan, type Predicate, type Step } from '../ast.js';
 
 // ---------- Core types ----------
 
@@ -147,8 +140,7 @@ export const isSubPlan = (x: unknown): x is SubPlan => isPlan(x) || isStepFn(x);
  * Coerce either form to a `Plan`. The runtime accepts both; this is the one
  * conversion point so call sites stay shape-agnostic.
  */
-export const buildPlan = (sub: SubPlan): Plan =>
-  isPlan(sub) ? sub : sub({ steps: [] });
+export const buildPlan = (sub: SubPlan): Plan => (isPlan(sub) ? sub : sub({ steps: [] }));
 
 /**
  * Predicate-vs-value detection. Predicates are objects with an `op`
@@ -177,7 +169,9 @@ export const toBy = (modulator: ByModulator | undefined, comparator?: OrderSym):
     if (tokenKind) {
       return { kind: 'token', token: tokenKind, direction };
     }
-    throw new PlGraphError(`Unrecognized symbol: ${String(modulator)}`, { code: ErrorCode.Unsupported });
+    throw new PlGraphError(`Unrecognized symbol: ${String(modulator)}`, {
+      code: ErrorCode.Unsupported,
+    });
   }
   if (isPlan(modulator)) {
     return { kind: 'traversal', plan: modulator, direction };

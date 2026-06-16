@@ -12,10 +12,7 @@ describe('Gremlin tests', () => {
   describe('STEP unfold tests', () => {
     test('fold sets up correctly', () => {
       const r = arr(
-        run(
-          traversal(V('1'), out(), fold(), inject('gremlin', [1.23, 2.34])),
-          tinkerGraph,
-        ),
+        run(traversal(V('1'), out(), fold(), inject('gremlin', [1.23, 2.34])), tinkerGraph),
       );
       // v2 fixture's V(1).out() yields [vadas(2), josh(4), lop(3)] (KNOWS first).
       const v2 = tinkerGraph.getVertexById('2');

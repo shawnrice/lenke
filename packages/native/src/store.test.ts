@@ -97,8 +97,8 @@ describe('@pl-graph/native reactive store', () => {
   });
 
   test('inferDeps extracts labels and property keys', () => {
-    expect(inferDeps('MATCH (a:Person)-[:KNOWS]->(b) WHERE a.age > 30 RETURN a.name').sort()).toEqual(
-      ['KNOWS', 'Person', 'age', 'name'],
-    );
+    expect(
+      inferDeps('MATCH (a:Person)-[:KNOWS]->(b) WHERE a.age > 30 RETURN a.name').sort(),
+    ).toEqual(['KNOWS', 'Person', 'age', 'name']);
   });
 });

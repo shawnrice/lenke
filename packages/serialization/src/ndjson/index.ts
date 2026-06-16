@@ -79,18 +79,27 @@ const parseLine = (line: string): NodeRecord | EdgeRecord | null => {
   try {
     record = JSON.parse(trimmed);
   } catch (cause) {
-    throw new PlGraphError(`ndjson: invalid JSON: ${trimmed.slice(0, 80)}`, { code: ErrorCode.InvalidJson, cause });
+    throw new PlGraphError(`ndjson: invalid JSON: ${trimmed.slice(0, 80)}`, {
+      code: ErrorCode.InvalidJson,
+      cause,
+    });
   }
   if (typeof record !== 'object' || record === null) {
-    throw new PlGraphError(`ndjson: each line must be a node or edge object: ${trimmed.slice(0, 80)}`, {
-      code: ErrorCode.InvalidShape,
-    });
+    throw new PlGraphError(
+      `ndjson: each line must be a node or edge object: ${trimmed.slice(0, 80)}`,
+      {
+        code: ErrorCode.InvalidShape,
+      },
+    );
   }
   const { type } = record as { type?: unknown };
   if (type !== 'node' && type !== 'edge') {
-    throw new PlGraphError(`ndjson: line is not a 'node' or 'edge' record: ${trimmed.slice(0, 80)}`, {
-      code: ErrorCode.InvalidShape,
-    });
+    throw new PlGraphError(
+      `ndjson: line is not a 'node' or 'edge' record: ${trimmed.slice(0, 80)}`,
+      {
+        code: ErrorCode.InvalidShape,
+      },
+    );
   }
   return record as NodeRecord | EdgeRecord;
 };

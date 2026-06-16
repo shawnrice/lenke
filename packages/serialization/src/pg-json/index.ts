@@ -137,7 +137,10 @@ export const decode = (input: string, graph: Graph): Graph => {
   try {
     parsed = JSON.parse(input);
   } catch (cause) {
-    throw new PlGraphError('pg-json: input is not valid JSON', { code: ErrorCode.InvalidJson, cause });
+    throw new PlGraphError('pg-json: input is not valid JSON', {
+      code: ErrorCode.InvalidJson,
+      cause,
+    });
   }
 
   if (!isPGFormat(parsed)) {

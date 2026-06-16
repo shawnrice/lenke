@@ -42,9 +42,7 @@ describe('math tests', () => {
 
   // doc: math chained with another math.
   test('math: chained transformations compose', () => {
-    const r = arr(
-      run(traversal(inject(2), math('_ * 3'), math('_ + 1')), g),
-    );
+    const r = arr(run(traversal(inject(2), math('_ * 3'), math('_ + 1')), g));
     expect(r).toEqual([7]);
   });
 });

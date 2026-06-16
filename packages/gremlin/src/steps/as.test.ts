@@ -20,10 +20,9 @@ describe('Gremlin tests', () => {
       const result = arr(
         run(traversal(V(), as_('a'), out(), as_('b'), out(), as_('c')), tinkerGraph),
       );
-      expect((result as Array<{ properties: { name: string } }>).map((x) => x.properties.name)).toEqual([
-        'ripple',
-        'lop',
-      ]);
+      expect(
+        (result as Array<{ properties: { name: string } }>).map((x) => x.properties.name),
+      ).toEqual(['ripple', 'lop']);
     });
 
     // doc: g.V().as('a').out().as('b').select('a','b')

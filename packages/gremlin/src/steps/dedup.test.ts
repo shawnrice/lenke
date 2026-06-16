@@ -106,9 +106,7 @@ describe('Gremlin tests', () => {
     // doc: g.V().dedup().by(label).values('name') — marko; lop
     // Keep one vertex per distinct label.
     test('dedupe().by(T.label) keeps one vertex per label', () => {
-      const r = arr(
-        run(traversal(V(), dedupe().by(T.label), values('name')), tinkerGraph),
-      );
+      const r = arr(run(traversal(V(), dedupe().by(T.label), values('name')), tinkerGraph));
       // First PERSON (marko), first SOFTWARE (lop in fixture order).
       expect(r).toEqual(['marko', 'lop']);
     });
@@ -124,10 +122,7 @@ describe('Gremlin tests', () => {
     // doc: g.V().hasLabel("person").outE("created").inV().dedup() — v[3]; v[5]
     test('dedup vertices via outE.inV', () => {
       const r = arr(
-        run(
-          traversal(V(), hasLabel('PERSON'), outE('CREATED'), inV(), dedupe()),
-          tinkerGraph,
-        ),
+        run(traversal(V(), hasLabel('PERSON'), outE('CREATED'), inV(), dedupe()), tinkerGraph),
       ) as Array<{ id: string }>;
       expect(r.map((v) => v.id)).toEqual(['3', '5']);
     });

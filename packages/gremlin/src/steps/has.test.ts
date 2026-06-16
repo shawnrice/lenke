@@ -96,10 +96,7 @@ describe('Gremlin tests', () => {
     // doc: g.V().has('name',within('josh','marko')).elementMap()
     test('has(name, within) projected via elementMap', () => {
       const result = arr(
-        run(
-          traversal(V(), has('name', within('josh', 'marko')), elementMap()),
-          tinkerGraph,
-        ),
+        run(traversal(V(), has('name', within('josh', 'marko')), elementMap()), tinkerGraph),
       );
       expect(result).toEqual([
         { id: '1', label: 'PERSON', name: 'marko', age: 29 },
@@ -110,10 +107,7 @@ describe('Gremlin tests', () => {
     // doc: g.V().has('name',without('josh','marko')).elementMap()
     test('has(name, without) projected via elementMap', () => {
       const result = arr(
-        run(
-          traversal(V(), has('name', without('josh', 'marko')), elementMap()),
-          tinkerGraph,
-        ),
+        run(traversal(V(), has('name', without('josh', 'marko')), elementMap()), tinkerGraph),
       );
       expect(result).toEqual([
         { id: '2', label: 'PERSON', name: 'vadas', age: 27 },
@@ -128,10 +122,7 @@ describe('Gremlin tests', () => {
     // express the equivalent via not(has(...)) wrapping.
     test('not(has(name, within)) is equivalent to has(name, without)', () => {
       const result = arr(
-        run(
-          traversal(V(), not(has('name', within('josh', 'marko'))), elementMap()),
-          tinkerGraph,
-        ),
+        run(traversal(V(), not(has('name', within('josh', 'marko'))), elementMap()), tinkerGraph),
       );
       expect(result).toEqual([
         { id: '2', label: 'PERSON', name: 'vadas', age: 27 },

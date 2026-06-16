@@ -26,8 +26,8 @@ type AddEEndpointArg = string | SubPlan;
 
 const toAddEEndpoint = (arg: AddEEndpointArg) =>
   typeof arg === 'string'
-    ? ({ kind: 'tag' as const, label: arg })
-    : ({ kind: 'plan' as const, plan: buildPlan(arg) });
+    ? { kind: 'tag' as const, label: arg }
+    : { kind: 'plan' as const, plan: buildPlan(arg) };
 
 /**
  * Builder returned by `addE(label)`. Both `.from()` and `.to()` are optional;
@@ -81,16 +81,8 @@ export const addE = (label: string): AddEBuilder => {
  * @see https://tinkerpop.apache.org/docs/current/reference/#addproperty-step
  */
 export function property(key: string, value: unknown): StepFn;
-export function property(
-  cardinality: CardinalitySym,
-  key: string,
-  value: unknown,
-): StepFn;
-export function property(
-  ...args:
-    | [string, unknown]
-    | [CardinalitySym, string, unknown]
-): StepFn {
+export function property(cardinality: CardinalitySym, key: string, value: unknown): StepFn;
+export function property(...args: [string, unknown] | [CardinalitySym, string, unknown]): StepFn {
   if (typeof args[0] === 'symbol') {
     const cardinality = CARDINALITY_TO_KIND.get(args[0]);
     if (cardinality === undefined) {

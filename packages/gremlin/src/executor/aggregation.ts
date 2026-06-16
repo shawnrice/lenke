@@ -1,13 +1,7 @@
 import type { Graph } from '@pl-graph/core';
 
 import type { By } from '../ast.js';
-import {
-  evalBy,
-  isSliceable,
-  type RunContext,
-  startTraverser,
-  type Traverser,
-} from './runtime.js';
+import { evalBy, isSliceable, type RunContext, startTraverser, type Traverser } from './runtime.js';
 
 export const aggregateNumber = function* (
   stream: Iterable<Traverser<unknown>>,
@@ -98,11 +92,9 @@ export const meanLocal = (v: unknown): number | null => {
   return items.reduce<number>((s, x) => s + Number(x), 0) / items.length;
 };
 
-export const minLocal = (v: unknown): unknown =>
-  reduceComparable(elementsOf(v), 'min');
+export const minLocal = (v: unknown): unknown => reduceComparable(elementsOf(v), 'min');
 
-export const maxLocal = (v: unknown): unknown =>
-  reduceComparable(elementsOf(v), 'max');
+export const maxLocal = (v: unknown): unknown => reduceComparable(elementsOf(v), 'max');
 
 const reduceComparable = (items: readonly unknown[], kind: 'min' | 'max'): unknown => {
   let best: unknown;
@@ -144,7 +136,7 @@ export const orderStep = function* (
   }));
   // Per-by direction: prefer the By's `direction` field; fall back to the
   // step-level `desc` (legacy / `order({ desc: true })` form).
-  const dirs = bys.map((by) => (by.direction ?? (desc ? 'desc' : 'asc')));
+  const dirs = bys.map((by) => by.direction ?? (desc ? 'desc' : 'asc'));
   projected.sort((a, b) => {
     for (let i = 0; i < bys.length; i++) {
       const sa = a.sortKeys[i] as number | string;

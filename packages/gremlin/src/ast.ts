@@ -378,9 +378,7 @@ export type Step =
  *  - `'tag'`  — recall a previously `as(label)`-tagged vertex by name
  *  - `'plan'` — run a sub-plan and use its first emitted vertex
  */
-export type AddEEndpoint =
-  | { kind: 'tag'; label: string }
-  | { kind: 'plan'; plan: Plan };
+export type AddEEndpoint = { kind: 'tag'; label: string } | { kind: 'plan'; plan: Plan };
 
 // --- Future-work notes (not yet modeled) --------------------------------
 // - `index()` step (enumerate)
@@ -410,8 +408,7 @@ export const appendStep = (step: Step): StepFn => {
 };
 
 export const isStepFn = (x: unknown): x is StepFn =>
-  typeof x === 'function' &&
-  (x as { [STEP_FN]?: boolean })[STEP_FN] === true;
+  typeof x === 'function' && (x as { [STEP_FN]?: boolean })[STEP_FN] === true;
 
 /**
  * Type-only view of a runtime traverser, exposed to user closures. Closures

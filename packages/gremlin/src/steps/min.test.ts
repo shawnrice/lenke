@@ -22,10 +22,7 @@ describe('Gremlin tests', () => {
 
     // doc: g.V().repeat(both()).times(3).values('age').min() — 27
     test('min after repeat(both()).times(3)', () => {
-      const r = run(
-        traversal(V(), repeat(both()).times(3), values('age'), min()),
-        tinkerGraph,
-      );
+      const r = run(traversal(V(), repeat(both()).times(3), values('age'), min()), tinkerGraph);
       expect(arr(r)).toEqual([27]);
     });
 

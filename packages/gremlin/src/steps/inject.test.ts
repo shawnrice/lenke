@@ -43,7 +43,10 @@ describe('Gremlin tests', () => {
     // doc: g.inject([1,2,3],[4,5]) flattens? — TinkerPop yields lists as-is.
     test('inject preserves arrays as single values (no auto-unfold)', () => {
       const result = arr(run(traversal(inject([1, 2, 3], [4, 5])), tinkerGraph));
-      expect(result).toEqual([[1, 2, 3], [4, 5]]);
+      expect(result).toEqual([
+        [1, 2, 3],
+        [4, 5],
+      ]);
     });
 
     test('injected objects work like others with path', () => {

@@ -32,9 +32,7 @@ describe('branch tests', () => {
         traversal(
           V(),
           hasLabel('PERSON'),
-          branch(values('age'))
-            .option(29, constant('marko'))
-            .none(constant('other')),
+          branch(values('age')).option(29, constant('marko')).none(constant('other')),
         ),
         tinkerGraph,
       ),
@@ -48,12 +46,7 @@ describe('branch tests', () => {
   test('branch by values("name") with .none default', () => {
     const r = arr(
       run(
-        traversal(
-          V(),
-          branch(values('name'))
-            .option('marko', values('age'))
-            .none(values('name')),
-        ),
+        traversal(V(), branch(values('name')).option('marko', values('age')).none(values('name'))),
         tinkerGraph,
       ),
     );
@@ -65,11 +58,7 @@ describe('branch tests', () => {
   test('branch drops traverser with no match and no default', () => {
     const r = arr(
       run(
-        traversal(
-          V(),
-          hasLabel('PERSON'),
-          branch(values('age')).option(29, constant('marko')),
-        ),
+        traversal(V(), hasLabel('PERSON'), branch(values('age')).option(29, constant('marko'))),
         tinkerGraph,
       ),
     );

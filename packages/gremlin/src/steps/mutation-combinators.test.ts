@@ -35,15 +35,7 @@ describe('mutation steps inside combinators', () => {
   test('repeat(pipe(addV, property)) chains mutations per iteration', () => {
     const g = createTestTinkerGraph();
     const before = g.vertexCount;
-    arr(
-      run(
-        traversal(
-          V('1'),
-          repeat(pipe(addV('CHAIN'), property('seq', 1))).times(2),
-        ),
-        g,
-      ),
-    );
+    arr(run(traversal(V('1'), repeat(pipe(addV('CHAIN'), property('seq', 1))).times(2)), g));
     expect(g.vertexCount).toBe(before + 2);
     const chained = [...g.vertices].filter((v) => v.labels.has('CHAIN'));
     expect(chained).toHaveLength(2);
@@ -56,14 +48,7 @@ describe('mutation steps inside combinators', () => {
     const g = createTestTinkerGraph();
     const before = g.vertexCount;
     const r = arr(
-      run(
-        traversal(
-          V(),
-          hasLabel('PERSON'),
-          map(pipe(addV('SHADOW'), property('via', 'map'))),
-        ),
-        g,
-      ),
+      run(traversal(V(), hasLabel('PERSON'), map(pipe(addV('SHADOW'), property('via', 'map')))), g),
     );
     expect(g.vertexCount).toBe(before + 4);
     expect(r).toHaveLength(4);
@@ -75,21 +60,14 @@ describe('mutation steps inside combinators', () => {
     const r = arr(run(traversal(V('1'), union(addV('A'), addV('B'))), g));
     expect(g.vertexCount).toBe(before + 2);
     expect(r).toHaveLength(2);
-    const labels = (r as Array<{ labels: Set<string> }>).map(
-      (v) => [...v.labels][0],
-    );
+    const labels = (r as Array<{ labels: Set<string> }>).map((v) => [...v.labels][0]);
     expect(labels.sort()).toEqual(['A', 'B']);
   });
 
   test('choose(test, addV) gates mutation on the test plan', () => {
     const g = createTestTinkerGraph();
     const before = g.vertexCount;
-    arr(
-      run(
-        traversal(V(), hasLabel('PERSON'), choose(identity(), addV('VISITED'))),
-        g,
-      ),
-    );
+    arr(run(traversal(V(), hasLabel('PERSON'), choose(identity(), addV('VISITED'))), g));
     // identity test always succeeds → addV runs for every PERSON.
     expect(g.vertexCount).toBe(before + 4);
   });
@@ -123,15 +101,7 @@ describe('mutation steps inside combinators', () => {
     // Each iteration: addV('CHAIN'), addE('NEXT') from prior to new.
     // This is a more complex use case — left as a smoke test that the
     // combination doesn't blow up.
-    arr(
-      run(
-        traversal(
-          V('1'),
-          repeat(pipe(addV('CHAIN'), property('via', 'repeat'))).times(3),
-        ),
-        g,
-      ),
-    );
+    arr(run(traversal(V('1'), repeat(pipe(addV('CHAIN'), property('via', 'repeat'))).times(3)), g));
     // Just verify shape: 3 CHAIN vertices added, no errors.
     expect([...g.vertices].filter((v) => v.labels.has('CHAIN'))).toHaveLength(3);
     expect(g.edgeCount).toBe(beforeE);

@@ -40,12 +40,7 @@ describe('union tests', () => {
   // legacy: g.V('4').union(in_(), out()).values('age', 'lang') — 29, java, java
   // josh's in: marko (age 29). josh's out: ripple, lop (lang java).
   test('union of in_() and out() emits both', () => {
-    const r = arr(
-      run(
-        traversal(V('4'), union(in_(), out()), values('age', 'lang')),
-        tinkerGraph,
-      ),
-    );
+    const r = arr(run(traversal(V('4'), union(in_(), out()), values('age', 'lang')), tinkerGraph));
     expect(r).toEqual([29, 'java', 'java']);
   });
 
@@ -54,32 +49,19 @@ describe('union tests', () => {
   test('union of out and in flattens both branches', () => {
     const r = arr(
       run(
-        traversal(
-          V('1', '4'),
-          union(pipe(out(), values('name')), pipe(in_(), values('name'))),
-        ),
+        traversal(V('1', '4'), union(pipe(out(), values('name')), pipe(in_(), values('name')))),
         tinkerGraph,
       ),
     );
     // marko(1): out -> {vadas, josh, lop}; in -> {} (no incoming).
     // josh(4): out -> {ripple, lop}; in -> {marko}.
-    expect((r as string[]).sort()).toEqual([
-      'josh',
-      'lop',
-      'lop',
-      'marko',
-      'ripple',
-      'vadas',
-    ]);
+    expect((r as string[]).sort()).toEqual(['josh', 'lop', 'lop', 'marko', 'ripple', 'vadas']);
   });
 
   // doc: g.V(1,4).union(out().count(), in_().count()) — per-vertex counts.
   test('union with terminal counts emits one count per branch per traverser', () => {
     const r = arr(
-      run(
-        traversal(V('1', '4'), union(pipe(out(), count()), pipe(in_(), count()))),
-        tinkerGraph,
-      ),
+      run(traversal(V('1', '4'), union(pipe(out(), count()), pipe(in_(), count()))), tinkerGraph),
     );
     // marko: out=3, in=0; josh: out=2, in=1.
     expect(r).toEqual([3, 0, 2, 1]);

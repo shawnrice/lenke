@@ -12,18 +12,14 @@ import {
 
 // `map(plan)` or `map(fn)`. Sub-plan: replace value with the plan's first
 // output; drop traverser if empty. Closure: `(value, traverser) => unknown`.
-export const map = (
-  arg: SubPlan | MapClosure,
-): StepFn =>
+export const map = (arg: SubPlan | MapClosure): StepFn =>
   isSubPlan(arg)
     ? appendStep({ kind: 'map', plan: buildPlan(arg) })
     : appendStep({ kind: 'mapFn', fn: arg as MapClosure });
 
 // `flatMap(plan)` or `flatMap(fn)`. Sub-plan form yields each output of the
 // plan. Closure form: `(value, traverser) => Iterable<unknown>`.
-export const flatMap = (
-  arg: SubPlan | FlatMapClosure,
-): StepFn =>
+export const flatMap = (arg: SubPlan | FlatMapClosure): StepFn =>
   isSubPlan(arg)
     ? appendStep({ kind: 'flatMap', plan: buildPlan(arg) })
     : appendStep({ kind: 'flatMapFn', fn: arg as FlatMapClosure });
@@ -48,9 +44,7 @@ export const constant = (value: unknown): StepFn => appendStep({ kind: 'constant
 // Run a plan or closure for its effect, then yield the original traverser
 // unchanged. Sub-plans accept a `StepFn` or `Plan`; closure form is
 // `(value, traverser) => void`.
-export const sideEffect = (
-  arg: SubPlan | SideEffectClosure,
-): StepFn =>
+export const sideEffect = (arg: SubPlan | SideEffectClosure): StepFn =>
   isSubPlan(arg)
     ? appendStep({ kind: 'sideEffect', plan: buildPlan(arg) })
     : appendStep({ kind: 'sideEffectFn', fn: arg as SideEffectClosure });

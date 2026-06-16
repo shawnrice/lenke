@@ -7,9 +7,15 @@ import { dlopen, FFIType, ptr, toArrayBuffer } from 'bun:ffi';
 import { describe, expect, test } from 'bun:test';
 
 const lib = dlopen(new URL('./target/release/libpl_graph_core.dylib', import.meta.url).pathname, {
-  plg_graph_from_ndjson: { args: [FFIType.ptr, FFIType.u64_fast, FFIType.u32], returns: FFIType.ptr },
+  plg_graph_from_ndjson: {
+    args: [FFIType.ptr, FFIType.u64_fast, FFIType.u32],
+    returns: FFIType.ptr,
+  },
   plg_graph_free: { args: [FFIType.ptr], returns: FFIType.void },
-  plg_gremlin_json: { args: [FFIType.ptr, FFIType.ptr, FFIType.u64_fast, FFIType.ptr], returns: FFIType.ptr },
+  plg_gremlin_json: {
+    args: [FFIType.ptr, FFIType.ptr, FFIType.u64_fast, FFIType.ptr],
+    returns: FFIType.ptr,
+  },
   plg_free_buf: { args: [FFIType.ptr, FFIType.u64_fast], returns: FFIType.void },
 });
 

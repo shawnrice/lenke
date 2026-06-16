@@ -23,9 +23,7 @@ describe('hasValue tests', () => {
   });
 
   test('hasValue accepts multiple values (any-of)', () => {
-    const r = arr(
-      run(traversal(V(), properties('name'), hasValue('marko', 'lop'), value()), g),
-    );
+    const r = arr(run(traversal(V(), properties('name'), hasValue('marko', 'lop'), value()), g));
     expect(r.sort()).toEqual(['lop', 'marko']);
   });
 });

@@ -117,7 +117,9 @@ export const applyStep = (
   switch (step.kind) {
     case 'V':
     case 'E':
-      throw new PlGraphError(`${step.kind} can only appear as the first step`, { code: ErrorCode.Syntax });
+      throw new PlGraphError(`${step.kind} can only appear as the first step`, {
+        code: ErrorCode.Syntax,
+      });
 
     case 'out':
     case 'in':
@@ -331,11 +333,7 @@ export const applyStep = (
 
     case 'hasValue':
       return filterStream(stream, (v) => {
-        if (
-          v !== null &&
-          typeof v === 'object' &&
-          'value' in (v as object)
-        ) {
+        if (v !== null && typeof v === 'object' && 'value' in (v as object)) {
           return step.values.includes((v as { value: unknown }).value);
         }
         return step.values.includes(v);
@@ -345,7 +343,9 @@ export const applyStep = (
       throw new PlGraphError('match() is not yet implemented', { code: ErrorCode.NotImplemented });
 
     case 'subgraph':
-      throw new PlGraphError('subgraph() is not yet implemented', { code: ErrorCode.NotImplemented });
+      throw new PlGraphError('subgraph() is not yet implemented', {
+        code: ErrorCode.NotImplemented,
+      });
 
     case 'hasLabelAnd':
       return filterStream(stream, (v) => {
@@ -435,9 +435,7 @@ export const applyStep = (
       return pathStep(stream, step.bys, graph, ctx);
 
     case 'count':
-      return step.scope === 'local'
-        ? mapTraverser(stream, countLocal)
-        : countStep(stream);
+      return step.scope === 'local' ? mapTraverser(stream, countLocal) : countStep(stream);
 
     case 'fold':
     case 'toList':

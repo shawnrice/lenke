@@ -37,7 +37,7 @@ graph.getEdgesByProperty('weight', 1.0);
 ```
 
 Internally an equality query hits a type-tagged bucket; a range query binary-
-searches a sorted list of the key's *distinct* values and unions their buckets.
+searches a sorted list of the key's _distinct_ values and unions their buckets.
 Because the sorted list holds distinct values, adding or removing an element at
 an already-present value is O(1) — only a value's first appearance or last
 removal moves the sorted list.
@@ -51,11 +51,11 @@ inert unless an index exists, so existing queries are unaffected.
 **Gremlin** — a `V()` / `E()` source followed by a `has(...)` on an indexed key:
 
 ```ts
-traversal(V(), has('name', 'marko'));            // eq      → bucket
-traversal(V(), has('name', within('a', 'b')));   // within  → union of buckets
-traversal(V(), has('age', gt(30)));              // range   → sorted-index slice
-traversal(V(), has('name', startsWith('m')));    // prefix  → [m, n) slice
-traversal(E(), has('weight', 1.0));              // edges, same machinery
+traversal(V(), has('name', 'marko')); // eq      → bucket
+traversal(V(), has('name', within('a', 'b'))); // within  → union of buckets
+traversal(V(), has('age', gt(30))); // range   → sorted-index slice
+traversal(V(), has('name', startsWith('m'))); // prefix  → [m, n) slice
+traversal(E(), has('weight', 1.0)); // edges, same machinery
 ```
 
 **GQL** — an element-pattern equality, or a seekable conjunct of a clause /
@@ -71,14 +71,14 @@ MATCH (p:Person) WHERE p.age >= 29 AND p.age < 35 ...   -- coalesced to [29, 35)
 When several constraints are indexable, each one's cardinality is estimated
 cheaply (`countEquals` is O(1); `countRange` sums bucket sizes over the sorted
 slice — neither builds a set) and the **most selective** is seeded; the rest stay
-as residual filters the engine re-applies. So the seed is always a *superset* of
+as residual filters the engine re-applies. So the seed is always a _superset_ of
 the true matches and results are identical to the unindexed scan.
 
 GQL goes one step further: for a fixed-length path it scores **both ends** from
 those same counts and seeds from whichever is more selective, walking the
 relationship backwards if needed. `MATCH (a)-[:KNOWS]->(b:Person) WHERE b.name =
 'josh'` seeds from `josh` and walks back to `a`, rather than scanning every `a`.
-This is the only cardinality-driven *planning* decision in the engine — there's
+This is the only cardinality-driven _planning_ decision in the engine — there's
 no cost model or join-order search beyond picking the cheaper anchor.
 
 ## The type-strict caveat
