@@ -7,6 +7,8 @@
 //! (`plg_encode_ndjson`) are heap-allocated here and must be returned via
 //! `plg_free_buf`. The graph handle must be returned via `plg_graph_free`.
 
+#[cfg(any(feature = "gql", feature = "arrow"))]
+use crate::error_codes::ErrorCode;
 use crate::graph::{Column, Graph};
 use crate::{build_csr, query, scan, ScanKind};
 
@@ -255,22 +257,34 @@ pub unsafe extern "C" fn plg_query_rows(
     q_len: usize,
     out_len: *mut usize,
 ) -> *mut u8 {
+    crate::ffi_error::begin();
     if g.is_null() || q_ptr.is_null() {
+        crate::ffi_error::set_code(ErrorCode::Ffi, "null graph or query pointer");
         return std::ptr::null_mut();
     }
     let q = match std::str::from_utf8(std::slice::from_raw_parts(q_ptr, q_len)) {
         Ok(s) => s,
-        Err(_) => return std::ptr::null_mut(),
+        Err(_) => {
+            crate::ffi_error::set_code(ErrorCode::Ffi, "query bytes are not valid UTF-8");
+            return std::ptr::null_mut();
+        }
     };
-    // Route to the full GQL engine (the complete ISO-subset port). Returns null
-    // on a parse error or an unsupported clause.
+    // Route to the full GQL engine (the complete ISO-subset port). A parse
+    // failure carries its source offset; an execution failure (an unsupported
+    // clause in this partial engine) carries the engine's message.
     let parsed = match crate::gql::parse(q) {
         Ok(p) => p,
-        Err(_) => return std::ptr::null_mut(),
+        Err(e) => {
+            crate::ffi_error::set(ErrorCode::Syntax, &e.message, &format!("{{\"pos\":{}}}", e.pos));
+            return std::ptr::null_mut();
+        }
     };
     let rowset = match parsed.execute(&mut *g, &crate::gql::eval::Params::new()) {
         Ok(rs) => rs,
-        Err(_) => return std::ptr::null_mut(),
+        Err(e) => {
+            crate::ffi_error::set_code(ErrorCode::Unsupported, &e);
+            return std::ptr::null_mut();
+        }
     };
     let bytes = rowset.to_json().into_bytes().into_boxed_slice();
     *out_len = bytes.len();
@@ -300,22 +314,35 @@ pub unsafe extern "C" fn plg_query_arrow(
     q_len: usize,
     out_len: *mut usize,
 ) -> *mut u8 {
+    crate::ffi_error::begin();
     if g.is_null() || q_ptr.is_null() {
+        crate::ffi_error::set_code(ErrorCode::Ffi, "null graph or query pointer");
         return std::ptr::null_mut();
     }
     let q = match std::str::from_utf8(std::slice::from_raw_parts(q_ptr, q_len)) {
         Ok(s) => s,
-        Err(_) => return std::ptr::null_mut(),
+        Err(_) => {
+            crate::ffi_error::set_code(ErrorCode::Ffi, "query bytes are not valid UTF-8");
+            return std::ptr::null_mut();
+        }
     };
+    // The error rides the last-error channel, never this return pointer — so the
+    // binary Arrow carrier below stays a pure column blob with no error union.
     let parsed = match crate::gql::parse(q) {
         Ok(p) => p,
-        Err(_) => return std::ptr::null_mut(),
+        Err(e) => {
+            crate::ffi_error::set(ErrorCode::Syntax, &e.message, &format!("{{\"pos\":{}}}", e.pos));
+            return std::ptr::null_mut();
+        }
     };
     // execute_arrow keeps numeric/bool result columns typed end-to-end (no
     // Val/Value boxing) for the common single-MATCH … RETURN shape.
     let blob = match parsed.execute_arrow(&mut *g, &crate::gql::eval::Params::new()) {
         Ok(b) => b,
-        Err(_) => return std::ptr::null_mut(),
+        Err(e) => {
+            crate::ffi_error::set_code(ErrorCode::Unsupported, &e);
+            return std::ptr::null_mut();
+        }
     };
     *out_len = blob.len();
     // 8-byte-aligned copy so the caller can view f64/i32 column buffers directly.

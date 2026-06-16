@@ -23,6 +23,9 @@
     "build:wasm:min": "cargo build --release --target wasm32-unknown-unknown --no-default-features --features gql --manifest-path ../../crates/pl-graph-core/Cargo.toml",
     "test": "bun test"
   },
+  "dependencies": {
+    "@pl-graph/errors": "workspace:*"
+  },
   "devDependencies": {
     "@pl-graph/dev": "workspace:*",
     "@types/bun": "^1.3.13",

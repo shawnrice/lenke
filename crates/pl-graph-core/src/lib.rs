@@ -14,6 +14,7 @@
 // SIMD scan kernels, and the C-ABI surface.
 pub mod error_codes;
 pub mod ffi;
+pub mod ffi_error;
 pub mod graph;
 pub mod query;
 pub mod scan;
