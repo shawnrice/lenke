@@ -1,3 +1,4 @@
+import { ErrorCode, PlGraphError } from '@pl-graph/errors';
 import { identity } from '@pl-graph/utils';
 import { TreeNode } from './TreeNode.js';
 import type { SerializedTreeNode } from './types.js';
@@ -17,7 +18,7 @@ export const deserialize = <T>(
       nodeMap.set(child.id, child);
     } else {
       if (root) {
-        throw new Error('More than one root');
+        throw new PlGraphError('More than one root', { code: ErrorCode.InvalidTree });
       }
 
       root = TreeNode.from(deserializeValue(x.value), x.id);
@@ -26,7 +27,7 @@ export const deserialize = <T>(
   }
 
   if (!root) {
-    throw new Error('Failed to find a root node');
+    throw new PlGraphError('Failed to find a root node', { code: ErrorCode.InvalidTree });
   }
 
   return root;

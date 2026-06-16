@@ -16,6 +16,7 @@
     "test": "bun test"
   },
   "dependencies": {
+    "@pl-graph/errors": "workspace:*",
     "@pl-graph/fp": "workspace:*",
     "@pl-graph/utils": "workspace:*"
   },
