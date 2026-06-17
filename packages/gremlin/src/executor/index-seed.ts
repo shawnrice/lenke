@@ -65,11 +65,13 @@ const unionBuckets = <E>(
   values: readonly unknown[],
 ): Set<E> => {
   const out = new Set<E>();
+
   for (const value of values) {
     for (const element of index.equals(key, value) ?? EMPTY) {
       out.add(element);
     }
   }
+
   return out;
 };
 
@@ -82,10 +84,12 @@ const unionBuckets = <E>(
 const prefixUpperBound = (prefix: string): string | null => {
   for (let i = prefix.length - 1; i >= 0; i--) {
     const c = prefix.charCodeAt(i);
+
     if (c < 0xffff) {
       return prefix.slice(0, i) + String.fromCharCode(c + 1);
     }
   }
+
   return null;
 };
 
@@ -96,6 +100,7 @@ const rangeCandidate = <E>(
   bound: RangeBound,
 ): Candidate<E> | null => {
   const count = index.countRange(key, bound);
+
   return count === undefined
     ? null
     : { count, build: () => index.range(key, bound) ?? EMPTY, removable: false };
@@ -117,7 +122,9 @@ const seedForPred = <E>(
       if (!isScalar(pred.value)) {
         return null;
       }
+
       const { value } = pred;
+
       return {
         count: index.countEquals(key, value) ?? 0,
         build: () => index.equals(key, value) ?? EMPTY,
@@ -128,11 +135,14 @@ const seedForPred = <E>(
       if (!pred.values.every(isScalar)) {
         return null;
       }
+
       const { values } = pred;
       let count = 0;
+
       for (const value of values) {
         count += index.countEquals(key, value) ?? 0;
       }
+
       return { count, build: () => unionBuckets(index, key, values), removable: plainHas };
     }
     case 'gt':
@@ -153,7 +163,9 @@ const seedForPred = <E>(
       if (typeof pred.value !== 'string') {
         return null;
       }
+
       const upper = prefixUpperBound(pred.value);
+
       return rangeCandidate(
         index,
         key,
@@ -170,10 +182,13 @@ const seedForStep = <E>(step: Step, index: PropertyIndex<E>): Candidate<E> | nul
   if (step.kind !== 'has' && step.kind !== 'hasLabelAnd') {
     return null;
   }
+
   if (!index.isIndexed(step.key)) {
     return null;
   }
+
   const seed = seedForPred(index, step.key, step.pred, step.kind === 'has');
+
   // A `hasLabelAnd` carries a label constraint the bucket doesn't capture, so
   // its step can never be dropped.
   return seed && step.kind === 'hasLabelAnd' ? { ...seed, removable: false } : seed;
@@ -197,12 +212,16 @@ const seedRest = <E>(
   // winner is materialized.
   let bestAt = -1;
   let best: Candidate<E> | null = null;
+
   for (let i = 0; i < rest.length; i++) {
     const step = rest[i];
+
     if (!COMMUTING_FILTERS.has(step.kind)) {
       break;
     }
+
     const candidate = seedForStep(step, index);
+
     if (candidate && candidate.count < (best?.count ?? Infinity)) {
       best = candidate;
       bestAt = i;
@@ -221,6 +240,7 @@ const seedRest = <E>(
   })();
 
   const steps = best.removable ? rest.filter((_, i) => i !== bestAt) : rest;
+
   return { stream, steps };
 };
 
@@ -231,14 +251,18 @@ const seedRest = <E>(
  */
 export const seedFromIndex = (plan: Plan, graph: Graph, tracksPath: boolean): SeededPlan | null => {
   const [source, ...rest] = plan.steps;
+
   if (!source) {
     return null;
   }
+
   if (source.kind === 'V' && !source.ids) {
     return seedRest<Vertex>(rest, graph.vertexPropertyIndex, tracksPath);
   }
+
   if (source.kind === 'E' && !source.ids) {
     return seedRest<Edge>(rest, graph.edgePropertyIndex, tracksPath);
   }
+
   return null;
 };

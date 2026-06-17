@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "files": [
     "dist",
+    "lint-rules",
     "oxlintrc.base.json",
     "oxfmtrc.base.json"
   ],

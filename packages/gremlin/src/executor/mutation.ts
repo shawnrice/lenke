@@ -10,8 +10,8 @@ import type { Graph, Vertex } from '@pl-graph/core';
 import { ErrorCode, PlGraphError } from '@pl-graph/errors';
 
 import type { AddEEndpoint, Plan } from '../ast.js';
-import { extend, isEdge, isVertex, type RunContext, type Traverser } from './runtime.js';
 import { applyPlanToStream, applyStep } from './dispatch.js';
+import { extend, isEdge, isVertex, type RunContext, type Traverser } from './runtime.js';
 import { applySource } from './sources.js';
 
 export const addVStep = function* (
@@ -24,6 +24,7 @@ export const addVStep = function* (
       labels: label ? [label] : [],
       properties: {},
     });
+
     yield extend(t, v);
   }
 };
@@ -41,14 +42,19 @@ export const runEndpointPlan = (
   if (plan.steps.length === 0) {
     return [rooted];
   }
-  const first = plan.steps[0];
+
+  const [first] = plan.steps;
+
   if (first.kind === 'V' || first.kind === 'E' || first.kind === 'inject') {
     let stream: Iterable<Traverser<unknown>> = applySource(first, graph);
+
     for (let i = 1; i < plan.steps.length; i++) {
       stream = applyStep(plan.steps[i], stream, graph, ctx);
     }
+
     return stream;
   }
+
   return applyPlanToStream(plan, [rooted], graph, ctx);
 };
 
@@ -61,18 +67,24 @@ export const resolveAddEEndpoint = (
   if (endpoint === undefined) {
     return isVertex(t.value) ? t.value : null;
   }
+
   if (endpoint.kind === 'tag') {
     // Pop.last semantics — most recent tagged value wins.
     const list = t.tags.get(endpoint.label);
+
     if (!list || list.length === 0) {
       return null;
     }
+
     const v = list[list.length - 1];
+
     return isVertex(v) ? v : null;
   }
+
   for (const result of runEndpointPlan(endpoint.plan, graph, ctx, t)) {
     return isVertex(result.value) ? result.value : null;
   }
+
   return null;
 };
 
@@ -91,19 +103,23 @@ export const addEStep = function* (
         },
       );
     }
+
     const from = resolveAddEEndpoint(step.from, t, graph, ctx);
     const to = resolveAddEEndpoint(step.to, t, graph, ctx);
+
     if (!from || !to) {
       throw new Error(
         `addE('${step.label}'): could not resolve endpoint vertices (from=${!!from}, to=${!!to})`,
       );
     }
+
     const e = graph.addEdge({
       from,
       to,
       labels: [step.label],
       properties: {},
     });
+
     yield extend(t, e);
   }
 };
@@ -115,8 +131,10 @@ export const propertyStep = function* (
 ): Iterable<Traverser<unknown>> {
   for (const t of stream) {
     const v = t.value;
+
     if (isVertex(v) || isEdge(v)) {
       v.setProperty(key, value);
+
       yield t;
     }
     // Non-element traversers are silently dropped — `property` only makes
@@ -131,6 +149,7 @@ export const dropStep = function* (
 ): Iterable<Traverser<unknown>> {
   for (const t of stream) {
     const v = t.value;
+
     if (isVertex(v)) {
       graph.removeVertex(v);
     } else if (isEdge(v)) {

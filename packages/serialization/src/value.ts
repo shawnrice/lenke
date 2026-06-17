@@ -28,18 +28,23 @@ export const normalizeValue = (value: unknown): PropertyValue => {
   if (value === null || typeof value === 'string' || typeof value === 'boolean') {
     return value;
   }
+
   if (typeof value === 'number') {
     return Number.isFinite(value) ? value : null;
   }
+
   if (typeof value === 'undefined') {
     return null;
   }
+
   if (typeof value === 'bigint') {
     return Number(value);
   }
+
   if (Array.isArray(value)) {
     return value.map(normalizeValue);
   }
+
   throw new PlGraphError(
     `Property value is outside the LPG model: ${Object.prototype.toString.call(value)}`,
     { code: ErrorCode.InvalidValue },
@@ -49,8 +54,10 @@ export const normalizeValue = (value: unknown): PropertyValue => {
 /** Normalize every value in a property bag. */
 export const normalizeBag = (bag: Record<string, unknown>): Record<string, PropertyValue> => {
   const out: Record<string, PropertyValue> = {};
+
   for (const key of Object.keys(bag)) {
     out[key] = normalizeValue(bag[key]);
   }
+
   return out;
 };

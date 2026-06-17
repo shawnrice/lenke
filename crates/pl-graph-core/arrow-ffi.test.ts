@@ -28,17 +28,20 @@ const T_UTF8 = 3;
 // Decode the ARW1 blob into { nrows, columns: [{ tag, name, values }] } by
 // viewing the buffers in place — exactly what an apache-arrow `makeData` wrapper
 // would do, minus the Vector object.
-function decodeArrow(buf: ArrayBuffer) {
+const decodeArrow = (buf: ArrayBuffer) => {
   const dv = new DataView(buf);
   const magic = new TextDecoder().decode(new Uint8Array(buf, 0, 4));
+
   if (magic !== 'ARW1') {
     throw new Error(`bad magic ${magic}`);
   }
+
   const nrows = Number(dv.getBigUint64(8, true));
   const ncols = Number(dv.getBigUint64(16, true));
   const u8 = new Uint8Array(buf);
   const validBit = (off: number, i: number) => (u8[off + (i >> 3)] & (1 << (i & 7))) !== 0;
   const columns = [];
+
   for (let j = 0; j < ncols; j++) {
     const d = 24 + j * 40;
     const tag = dv.getUint32(d, true);
@@ -51,8 +54,10 @@ function decodeArrow(buf: ArrayBuffer) {
     const name = new TextDecoder().decode(new Uint8Array(buf, nameOff, nameLen));
     const valid = (i: number) => valLen === 0 || validBit(valOff, i);
     const values: (number | string | boolean | null)[] = [];
+
     if (tag === T_FLOAT64) {
       const view = new Float64Array(buf, b1Off, nrows); // zero-copy view over the column
+
       for (let i = 0; i < nrows; i++) {
         values.push(valid(i) ? view[i] : null);
       }
@@ -63,16 +68,19 @@ function decodeArrow(buf: ArrayBuffer) {
     } else {
       const offs = new Int32Array(buf, b1Off, nrows + 1);
       const dec = new TextDecoder();
+
       for (let i = 0; i < nrows; i++) {
         values.push(
           valid(i) ? dec.decode(new Uint8Array(buf, b2Off + offs[i], offs[i + 1] - offs[i])) : null,
         );
       }
     }
+
     columns.push({ tag, name, values });
   }
+
   return { nrows, columns };
-}
+};
 
 describe('Arrow columnar result over bun:ffi', () => {
   test('query → arrow blob → zero-copy read', () => {

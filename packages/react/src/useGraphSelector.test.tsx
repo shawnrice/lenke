@@ -1,9 +1,8 @@
+import { Graph } from '@pl-graph/core';
+import { act, renderHook } from '@testing-library/react';
 // @vitest-environment jsdom
 import * as React from 'react';
 import { describe, expect, test, vi } from 'vitest';
-
-import { act, renderHook } from '@testing-library/react';
-import { Graph } from '@pl-graph/core';
 
 import { GraphProvider } from './GraphProvider.js';
 import { useGraphSelector } from './useGraphSelector.js';
@@ -41,6 +40,7 @@ describe('useGraphSelector', () => {
         useGraphSelector(
           (g) => {
             runs += 1;
+
             return g.vertexCount;
           },
           Object.is,

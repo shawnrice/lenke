@@ -1,5 +1,9 @@
 /* eslint-disable @typescript-eslint/no-magic-numbers */
 /* eslint-disable sort-keys */
+// `Vertex`/`Edge` from @pl-graph/core resolve to `any` here until core's types
+// are visible to this package (see tsconfig project refs), which makes the union
+// aliases below look redundant. Suppress until that resolution is fixed.
+/* eslint-disable typescript/no-redundant-type-constituents */
 import type { Edge, Vertex } from '@pl-graph/core';
 import { Graph } from '@pl-graph/core';
 

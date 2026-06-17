@@ -1,5 +1,7 @@
 import { test } from 'bun:test';
+
 import { Graph } from '@pl-graph/core';
+
 import { query } from '../packages/gql/src/index.js';
 import { ndjsonCodec } from '../packages/serialization/src/index.js';
 

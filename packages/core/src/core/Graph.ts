@@ -2,10 +2,9 @@ import { Emitter, EmitterEvent } from '@pl-graph/emitter';
 import { timer } from '@pl-graph/utils';
 
 import { Edge } from './Edge.js';
+import type { GraphEvent, GraphEvents, GraphEventType } from './GraphEvents.js';
 import { PropertyIndex, type RangeBound } from './PropertyIndex.js';
 import { Vertex } from './Vertex.js';
-
-import type { GraphEvent, GraphEvents, GraphEventType } from './GraphEvents.js';
 
 type AddVertexParams = {
   id?: string;
@@ -113,6 +112,7 @@ export class Graph {
         // Advance the reactive counters — deferred so `defaultPrevented` is
         // final and a vetoed mutation bumps nothing.
         this.mutationVersion += 1;
+
         for (const token of tokens) {
           this.tokenEpochs.set(token, (this.tokenEpochs.get(token) ?? 0) + 1);
         }
@@ -205,6 +205,7 @@ export class Graph {
 
   public subscribe = (callback: () => unknown): (() => void) => {
     this.listeners.add(callback);
+
     return () => {
       this.listeners.delete(callback);
     };
@@ -238,6 +239,7 @@ export class Graph {
    */
   private tokensOf(event: GraphEvent): string[] {
     const value = event.value as Record<string, any>;
+
     switch (event.type) {
       case '@graph/VertexAdded':
       case '@graph/VertexRemoved':
@@ -245,6 +247,7 @@ export class Graph {
       case '@graph/EdgeRemoved': {
         const labels: string[] = value?.labels ? [...value.labels] : [];
         const keys: string[] = value?.properties ? Object.keys(value.properties) : [];
+
         return [...labels, ...keys];
       }
       case '@graph/LabelAddedToVertex':
@@ -383,9 +386,11 @@ export class Graph {
   public removeVertex = (vertex: Vertex | string): Vertex | null => {
     if (typeof vertex === 'string') {
       const found = this.verticesById.get(vertex);
+
       if (!found) {
         return null;
       }
+
       return this.removeVertex(found);
     }
 
@@ -440,6 +445,7 @@ export class Graph {
     const next = new Set(this.elementLabels.get(vertex.id) ?? []);
     next.delete(label);
     this.elementLabels.set(vertex.id, next);
+
     return vertex;
   };
 
@@ -456,6 +462,7 @@ export class Graph {
 
     if (!edge.from || !edge.to) {
       console.error('Cannot create edge with missing vertices.');
+
       return edge;
     }
 
@@ -562,6 +569,7 @@ export class Graph {
    */
   public createVertexIndex = (key: string): void => {
     this.vertexPropertyIndex.createIndex(key);
+
     for (const vertex of this.verticesById.values()) {
       this.vertexPropertyIndex.addForKey(vertex, key, vertex.properties[key]);
     }
@@ -573,6 +581,7 @@ export class Graph {
 
   public createEdgeIndex = (key: string): void => {
     this.edgePropertyIndex.createIndex(key);
+
     for (const edge of this.edgesById.values()) {
       this.edgePropertyIndex.addForKey(edge, key, edge.properties[key]);
     }
@@ -674,6 +683,7 @@ export class Graph {
    */
   private readonly incidentEdges = (id: string): Set<Edge> => {
     const incident = new Set<Edge>();
+
     for (const byLabel of [this.edgesFromByLabel.get(id), this.edgesToByLabel.get(id)]) {
       for (const bucket of byLabel?.values() ?? []) {
         for (const edge of bucket) {
@@ -681,6 +691,7 @@ export class Graph {
         }
       }
     }
+
     return incident;
   };
 
@@ -737,6 +748,7 @@ export class Graph {
     this.edgesByLabel.get(label)?.delete(edge);
 
     const fromId = edge.from.id;
+
     if (
       this.edgesFromByLabel.get(fromId)?.get(label)?.delete(edge) &&
       this.edgesFromByLabel.get(fromId)?.get(label)?.size === 0
@@ -745,6 +757,7 @@ export class Graph {
     }
 
     const toId = edge.to.id;
+
     if (
       this.edgesToByLabel.get(toId)?.get(label)?.delete(edge) &&
       this.edgesToByLabel.get(toId)?.get(label)?.size === 0

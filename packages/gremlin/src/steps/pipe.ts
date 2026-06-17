@@ -15,5 +15,6 @@ import { STEP_FN, type StepFn } from './framework.js';
 export const pipe = (...steps: StepFn[]): StepFn => {
   const fn = (plan: Plan): Plan => steps.reduce((p, s) => s(p), plan);
   Object.defineProperty(fn, STEP_FN, { value: true, enumerable: false });
+
   return fn as StepFn;
 };

@@ -36,6 +36,7 @@ export function* range(start = 0, end = Infinity, step = 1): Iterable<number> {
     for (let i = start; i > end; i -= step) {
       yield i;
     }
+
     return;
   }
 

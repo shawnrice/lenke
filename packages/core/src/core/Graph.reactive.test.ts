@@ -17,7 +17,7 @@ describe('Graph reactive change tracking', () => {
     expect(afterAdd).toBeGreaterThan(0);
 
     // a read is not a mutation
-    [...graph.vertices];
+    void [...graph.vertices];
     await flush();
     expect(graph.version).toBe(afterAdd);
   });

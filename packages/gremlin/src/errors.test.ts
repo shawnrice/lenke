@@ -13,6 +13,7 @@ import { traversal } from './traversal.js';
 const caughtFrom = (fn: () => void): unknown => {
   try {
     fn();
+
     return undefined;
   } catch (e) {
     return e;

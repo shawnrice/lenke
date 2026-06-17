@@ -33,7 +33,7 @@ export class Vertex {
   }
 
   constructor(params: VertexParams) {
-    const { id = rando(), labels = [], graph, properties = {} } = params;
+    const { id = rando(), labels, graph, properties } = params;
     this.#id = id;
     this.#graph = graph;
     // The `properties`/`labels` setters already defensively copy into the
@@ -106,6 +106,7 @@ export class Vertex {
 
     const previous = this.properties;
     this.properties = { ...previous, ...props };
+
     for (const key of Object.keys(props)) {
       this.#graph.reindexVertexProperty(this, key, previous[key], props[key]);
     }
@@ -142,6 +143,7 @@ export class Vertex {
     this.properties = Object.fromEntries(
       Object.entries(previous).filter(([k]) => !keys.includes(k)),
     );
+
     for (const key of keys) {
       this.#graph?.reindexVertexProperty(this, key, previous[key], undefined);
     }
@@ -157,11 +159,13 @@ export class Vertex {
 
   addLabel(label: string): Vertex {
     this.#graph?.addLabelToVertex(label, this);
+
     return this;
   }
 
   removeLabel(label: string): Vertex {
     this.#graph?.removeLabelFromVertex(label, this);
+
     return this;
   }
 

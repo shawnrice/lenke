@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
 import { V, both, cyclicPath, path } from '../steps.js';
@@ -23,6 +24,7 @@ describe('cyclicPath tests', () => {
       run(traversal(V('1'), both(), both(), cyclicPath(), path()), tinkerGraph),
     ) as Array<Array<{ id: string }>>;
     expect(r.length).toBe(3);
+
     for (const p of r) {
       const ids = p.map((e) => e.id);
       expect(ids[0]).toBe('1');

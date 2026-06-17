@@ -39,7 +39,10 @@ fn build() -> Graph {
             props: vec![
                 ("age".to_string(), Value::Num(age as f64)),
                 ("name".to_string(), Value::Str(format!("name{i}").into())),
-                ("dept".to_string(), Value::Str(format!("d{}", i % 12).into())),
+                (
+                    "dept".to_string(),
+                    Value::Str(format!("d{}", i % 12).into()),
+                ),
             ],
         });
     }
@@ -141,14 +144,21 @@ fn main() {
     println!("{}", "-".repeat(52));
     for (label, q, iters) in queries {
         let (us, rows) = bench(&mut g, q, *iters);
-        let pretty = if us >= 1000.0 { format!("{:.2} ms", us / 1000.0) } else { format!("{us:.1} us") };
+        let pretty = if us >= 1000.0 {
+            format!("{:.2} ms", us / 1000.0)
+        } else {
+            format!("{us:.1} us")
+        };
         println!("{label:<26} {pretty:>12} {rows:>12}");
     }
 
     // Prepared (lower once) vs per-call (lower every run).
     let q = "MATCH (n:Person) WHERE n.name = $who RETURN n.age AS age";
     let mut p = Params::new();
-    p.insert("who".to_string(), pl_graph_core::gql::eval::Val::Str("name123".into()));
+    p.insert(
+        "who".to_string(),
+        pl_graph_core::gql::eval::Val::Str("name123".into()),
+    );
     let iters = 2000u32;
 
     let plan = prepare(q).unwrap();
@@ -166,7 +176,10 @@ fn main() {
 
     println!("\nprepared vs per-call (point lookup, {iters} iters):");
     println!("  prepared.execute : {prepared_us:.1} us");
-    println!("  parse+execute    : {percall_us:.1} us   (+{:.1}us parse/lower)", percall_us - prepared_us);
+    println!(
+        "  parse+execute    : {percall_us:.1} us   (+{:.1}us parse/lower)",
+        percall_us - prepared_us
+    );
 
     // Materialization overhead: the GQL engine builds a binding per matched row;
     // the fingerprint engine folds during the walk (no per-row alloc). Same count.
@@ -180,13 +193,19 @@ fn main() {
     let (gql_us, _) = bench(&mut g, "MATCH (a:Person) RETURN count(*) AS c", 200);
     println!("\ncount(*) over {} Person — materialization overhead:", N);
     println!("  fingerprint (no per-row alloc) : {fp_us:.1} us");
-    println!("  gql (binding per row)          : {gql_us:.1} us   ({:.1}x)", gql_us / fp_us);
+    println!(
+        "  gql (binding per row)          : {gql_us:.1} us   ({:.1}x)",
+        gql_us / fp_us
+    );
 
     // Arrow result encoding: typed `execute_arrow` (numeric/bool columns kept as
     // f64/bool, no Val/Value boxing) vs the RowSet path (execute → to_arrow).
     println!("\nArrow result encoding (typed vs RowSet→arrow):");
     for (label, q) in [
-        ("3 numeric cols", "MATCH (n:Person) RETURN n.age, n.age * 2 AS x, n.age + 1 AS y"),
+        (
+            "3 numeric cols",
+            "MATCH (n:Person) RETURN n.age, n.age * 2 AS x, n.age + 1 AS y",
+        ),
         ("num + str col", "MATCH (n:Person) RETURN n.age, n.name"),
     ] {
         let plan = prepare(q).unwrap();
@@ -203,25 +222,58 @@ fn main() {
             let _ = pl_graph_core::arrow::to_arrow(&rs);
         }
         let viarow = t.elapsed().as_secs_f64() * 1e6 / iters as f64;
-        println!("  {label:<16} typed {typed:7.1} us   rowset {viarow:7.1} us   ({:.2}x)", viarow / typed);
+        println!(
+            "  {label:<16} typed {typed:7.1} us   rowset {viarow:7.1} us   ({:.2}x)",
+            viarow / typed
+        );
     }
 
     // Property-index seeding: a single-node MATCH with an indexed eq/range hint.
     // Two passes so every query gets a true scan baseline (the index, once built,
     // is shared by `g` and would otherwise leak into later scan timings).
     let queries: &[(&str, &str, u32)] = &[
-        ("eq inline {name}", "MATCH (n:Person {name:'name25000'}) RETURN n.age AS a", 200),
-        ("where name =", "MATCH (n:Person) WHERE n.name = 'name25000' RETURN n.age AS a", 200),
-        ("where age > 78", "MATCH (n:Person) WHERE n.age > 78 RETURN count(*) AS c", 200),
-        ("where age 30..40", "MATCH (n:Person) WHERE n.age >= 30 AND n.age < 40 RETURN count(*) AS c", 200),
+        (
+            "eq inline {name}",
+            "MATCH (n:Person {name:'name25000'}) RETURN n.age AS a",
+            200,
+        ),
+        (
+            "where name =",
+            "MATCH (n:Person) WHERE n.name = 'name25000' RETURN n.age AS a",
+            200,
+        ),
+        (
+            "where age > 78",
+            "MATCH (n:Person) WHERE n.age > 78 RETURN count(*) AS c",
+            200,
+        ),
+        (
+            "where age 30..40",
+            "MATCH (n:Person) WHERE n.age >= 30 AND n.age < 40 RETURN count(*) AS c",
+            200,
+        ),
     ];
-    let scans: Vec<f64> = queries.iter().map(|(_, q, it)| bench(&mut g, q, *it).0).collect();
+    let scans: Vec<f64> = queries
+        .iter()
+        .map(|(_, q, it)| bench(&mut g, q, *it).0)
+        .collect();
     g.create_vertex_index("name");
     g.create_vertex_index("age");
     println!("\nproperty-index seeding (scan vs index seek):");
-    let pretty = |u: f64| if u >= 1000.0 { format!("{:.2} ms", u / 1000.0) } else { format!("{u:.1} us") };
+    let pretty = |u: f64| {
+        if u >= 1000.0 {
+            format!("{:.2} ms", u / 1000.0)
+        } else {
+            format!("{u:.1} us")
+        }
+    };
     for ((label, q, it), &scan_us) in queries.iter().zip(&scans) {
         let (idx_us, rows) = bench(&mut g, q, it * 10);
-        println!("  {label:<18} scan {:>10}   index {:>10}   ({:.0}x)   rows {rows}", pretty(scan_us), pretty(idx_us), scan_us / idx_us);
+        println!(
+            "  {label:<18} scan {:>10}   index {:>10}   ({:.0}x)   rows {rows}",
+            pretty(scan_us),
+            pretty(idx_us),
+            scan_us / idx_us
+        );
     }
 }

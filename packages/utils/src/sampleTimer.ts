@@ -22,6 +22,7 @@ export const sampleTimer = (name: string): SampleTimer => {
 
   const getTimer = () => {
     const start = performance.now();
+
     return () => {
       const diff = performance.now() - start;
       samples.push(diff);
@@ -31,29 +32,37 @@ export const sampleTimer = (name: string): SampleTimer => {
 
   const stats = () => {
     const n = samples.length;
+
     if (n === 0) {
       console.info(`[TIMER] ${name}: 0 samples`);
+
       return;
     }
 
     let sum = 0;
     let min = Infinity;
     let max = -Infinity;
+
     for (const x of samples) {
       sum += x;
+
       if (x < min) {
         min = x;
       }
+
       if (x > max) {
         max = x;
       }
     }
+
     const mean = sum / n;
 
     let sqSum = 0;
+
     for (const x of samples) {
       sqSum += (x - mean) ** 2;
     }
+
     const stdDev = Math.sqrt(sqSum / n);
 
     const sorted = [...samples].sort((a, b) => a - b);

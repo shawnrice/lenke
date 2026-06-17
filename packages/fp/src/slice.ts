@@ -6,10 +6,12 @@ const internalSlice = function* <T>(
   iterable: Iterable<T>,
 ): Iterable<T> {
   let index = 0;
+
   for (const iteration of iterable) {
     if (start <= index && index < end) {
       yield iteration;
     }
+
     if (++index === end) {
       break;
     }

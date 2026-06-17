@@ -74,6 +74,7 @@ describe('@pl-graph/native FFI backend', () => {
   test('serializes + round-trips through every format', () => {
     const backend = createFfiBackend(LIB);
     const g = graphFromNdjson(backend, bytes);
+
     for (const fmt of ['pg-json', 'pg-text', 'graphson', 'csv', 'ndjson']) {
       const doc = g.serialize(fmt);
       expect(doc.length).toBeGreaterThan(0);
@@ -87,6 +88,7 @@ describe('@pl-graph/native FFI backend', () => {
       ]);
       g2.free();
     }
+
     g.free();
   });
 

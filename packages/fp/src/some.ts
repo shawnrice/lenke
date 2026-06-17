@@ -7,6 +7,7 @@ const internalSome = <T>(predicate: Predicate<T>, iterable: Iterable<T>): boolea
       return true;
     }
   }
+
   return false;
 };
 

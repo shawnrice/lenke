@@ -55,5 +55,6 @@ export const createTestSocialGraph = (): Graph => {
   void peter;
 
   g.enableEvents();
+
   return g;
 };

@@ -14,25 +14,6 @@ import { ErrorCode, PlGraphError } from '@pl-graph/errors';
 
 import type { Plan, Step } from '../ast.js';
 import { matches } from '../predicates.js';
-
-import {
-  closureView,
-  filterStream,
-  filterTraverser,
-  firstLabel,
-  hasAny,
-  isEdge,
-  isVertex,
-  keyToBy,
-  mapTraverser,
-  newContext,
-  normalizeBys,
-  type RunContext,
-  type Traverser,
-  tupleKey,
-  evalBy,
-} from './runtime.js';
-
 // Per-category step impls.
 import {
   aggregateComparable,
@@ -65,7 +46,6 @@ import {
 } from './iteration.js';
 import { matchStep } from './match.js';
 import { evalMath, mathStep } from './misc.js';
-import { shortestPathStep } from './shortest-path.js';
 import { edgeToVertex, traverseToEdge, traverseToVertex } from './movement.js';
 import { addEStep, addVStep, dropStep, propertyStep } from './mutation.js';
 import {
@@ -82,6 +62,24 @@ import {
   selectStep,
   treeStep,
 } from './projection.js';
+import {
+  closureView,
+  filterStream,
+  filterTraverser,
+  firstLabel,
+  hasAny,
+  isEdge,
+  isVertex,
+  keyToBy,
+  mapTraverser,
+  newContext,
+  normalizeBys,
+  type RunContext,
+  type Traverser,
+  tupleKey,
+  evalBy,
+} from './runtime.js';
+import { shortestPathStep } from './shortest-path.js';
 import { aggregateStep, barrierStep, capStep, subgraphStep } from './side-effects.js';
 import {
   flatMapFnStep,
@@ -103,9 +101,11 @@ export const applyPlanToStream = (
   ctx: RunContext = newContext(),
 ): Iterable<Traverser<unknown>> => {
   let s = stream;
+
   for (const step of plan.steps) {
     s = applyStep(step, s, graph, ctx);
   }
+
   return s;
 };
 
@@ -144,6 +144,7 @@ export const applyStep = (
         if (!isVertex(v) && !isEdge(v)) {
           return false;
         }
+
         return matches(step.pred, v.properties[step.key]);
       });
 
@@ -152,6 +153,7 @@ export const applyStep = (
         if (!isVertex(v) && !isEdge(v)) {
           return false;
         }
+
         return step.labels.some((l) => v.labels.has(l));
       });
 
@@ -160,6 +162,7 @@ export const applyStep = (
         if (!isVertex(v) && !isEdge(v)) {
           return false;
         }
+
         return step.ids.includes(v.id);
       });
 
@@ -169,12 +172,14 @@ export const applyStep = (
         if (isVertex(v) || isEdge(v)) {
           return step.keys.some((k) => k in v.properties);
         }
+
         // Property-object form: filter the stream produced by `properties()`,
         // which yields `{key, value}` per property. Match if the object's
         // `key` field equals one of the given keys.
         if (v !== null && typeof v === 'object' && 'key' in v) {
           return step.keys.includes((v as { key: unknown }).key as string);
         }
+
         return false;
       });
 
@@ -188,6 +193,7 @@ export const applyStep = (
       const seen = new Set<unknown>();
       const { labels } = step;
       const by = step.bys?.[0];
+
       return filterTraverser(stream, (t) => {
         // Multi-label form: dedupe by the tuple of tagged values at the given
         // labels. Joining with a NUL separator gives a stable string key for
@@ -195,10 +201,13 @@ export const applyStep = (
         const fallback = by !== undefined ? evalBy(by, t.value, graph, ctx) : t.value;
         const k =
           labels && labels.length > 0 ? tupleKey(labels.map((l) => t.tags.get(l))) : fallback;
+
         if (seen.has(k)) {
           return false;
         }
+
         seen.add(k);
+
         return true;
       });
     }
@@ -216,11 +225,14 @@ export const applyStep = (
     case 'range':
       if (step.scope === 'local') {
         const end = step.end < 0 ? Infinity : step.end;
+
         return mapTraverser(stream, (v) => sliceLocal(v, step.start, end));
       }
+
       if (step.end < 0) {
         return skipTraversers(stream, step.start);
       }
+
       return takeTraversers(skipTraversers(stream, step.start), Math.max(0, step.end - step.start));
 
     case 'tail':
@@ -311,6 +323,7 @@ export const applyStep = (
         if (!isVertex(v) && !isEdge(v)) {
           return false;
         }
+
         return step.keys.every((k) => !(k in v.properties));
       });
 
@@ -319,6 +332,7 @@ export const applyStep = (
         if (v !== null && typeof v === 'object' && 'key' in v && 'value' in v) {
           return (v as { value: unknown }).value;
         }
+
         return v;
       });
 
@@ -333,6 +347,7 @@ export const applyStep = (
         if (v !== null && typeof v === 'object' && 'value' in v) {
           return step.values.includes((v as { value: unknown }).value);
         }
+
         return step.values.includes(v);
       });
 
@@ -350,6 +365,7 @@ export const applyStep = (
         if (!isVertex(v) && !isEdge(v)) {
           return false;
         }
+
         return v.labels.has(step.label) && matches(step.pred, v.properties[step.key]);
       });
 
@@ -381,10 +397,12 @@ export const applyStep = (
           }
         })();
       }
+
       // TinkerPop 3.8: keep traversers whose iterable value has NO element
       // satisfying the predicate. Non-iterable values are filtered out.
       return filterTraverser(stream, (t) => {
         const v = t.value;
+
         if (
           v === null ||
           v === undefined ||
@@ -392,11 +410,13 @@ export const applyStep = (
         ) {
           return false;
         }
+
         for (const x of v as Iterable<unknown>) {
           if (matches(step.pred!, x)) {
             return false;
           }
         }
+
         return true;
       });
 
@@ -420,12 +440,14 @@ export const applyStep = (
         if (isVertex(v) || isEdge(v)) {
           return firstLabel(v.labels) ?? null;
         }
+
         // For `{key, value}` property objects produced by `properties()`,
         // `label()` returns the key — matching TinkerPop's behavior of
         // treating the property's key field as its "label".
         if (v !== null && typeof v === 'object' && 'key' in v) {
           return (v as { key: unknown }).key;
         }
+
         return undefined;
       });
 
@@ -451,11 +473,13 @@ export const applyStep = (
     case 'group': {
       const keyBy = step.bys?.[0] ?? keyToBy(step.keyBy);
       const valueBy = step.bys?.[1] ?? keyToBy(step.valueBy);
+
       return groupStep(stream, keyBy, valueBy, graph, ctx);
     }
 
     case 'groupCount': {
       const by = step.bys?.[0] ?? keyToBy(step.by);
+
       return groupCountStep(stream, by, graph, ctx);
     }
 

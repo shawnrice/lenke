@@ -45,6 +45,7 @@ export const project = (
   bys?: readonly (string | StepFn | undefined)[],
 ): ByableStep<Extract<Step, { kind: 'project' }>> => {
   const initial = bys?.map((b) => toBy(b));
+
   return makeByable<Extract<Step, { kind: 'project' }>>(
     (later) => ({ kind: 'project', keys, bys: later }),
     initial,

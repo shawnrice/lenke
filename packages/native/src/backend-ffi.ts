@@ -60,12 +60,15 @@ export const createFfiBackend = (libPath: string): Backend => {
   const readLastError = (): ErrorReport | null => {
     const outLen = new BigUint64Array(1);
     const errPtr = symbols.plg_last_error_json(ptr(outLen));
+
     if (!errPtr) {
       return null;
     }
+
     const len = Number(outLen[0]);
     const json = decoder.decode(new Uint8Array(toArrayBuffer(errPtr, 0, len)).slice());
     symbols.plg_free_buf(errPtr, len);
+
     try {
       return JSON.parse(json) as ErrorReport;
     } catch {
@@ -80,12 +83,14 @@ export const createFfiBackend = (libPath: string): Backend => {
   // the crate left no report (e.g. an older lib, or a non-instrumented path).
   const fail = (op: string, fallback: ErrorCode): never => {
     const report = readLastError();
+
     if (report) {
       throw new PlGraphError(`pl-graph: ${op}: ${report.message}`, {
         code: report.code,
         details: report.details ?? undefined,
       });
     }
+
     throw new PlGraphError(`pl-graph: ${op} failed`, { code: fallback });
   };
 
@@ -99,12 +104,15 @@ export const createFfiBackend = (libPath: string): Backend => {
   ): Uint8Array => {
     const outLen = new BigUint64Array(1);
     const resPtr = call(ptr(outLen));
+
     if (!resPtr) {
       return fail(op, ErrorCode.Ffi);
     }
+
     const len = Number(outLen[0]);
     const copy = new Uint8Array(toArrayBuffer(resPtr, 0, len)).slice();
     free(resPtr, len);
+
     return copy;
   };
 
@@ -113,9 +121,11 @@ export const createFfiBackend = (libPath: string): Backend => {
 
     graphFromNdjson: (bytes, parallel) => {
       const h = symbols.plg_graph_from_ndjson(ptr(bytes), bytes.byteLength, parallel ? 1 : 0);
+
       if (!h) {
         return fail('graphFromNdjson', ErrorCode.InvalidJson);
       }
+
       return asHandle(h);
     },
     graphFree: (handle) => symbols.plg_graph_free(asPtr(handle)),
@@ -124,11 +134,13 @@ export const createFfiBackend = (libPath: string): Backend => {
     version: (handle) => Number(symbols.plg_graph_version(asPtr(handle))),
     epoch: (handle, name) => {
       const n = encoder.encode(name);
+
       return Number(symbols.plg_graph_epoch(asPtr(handle), ptr(n), n.byteLength));
     },
 
     queryRows: (handle, query) => {
       const q = encoder.encode(query);
+
       return takeBuf(
         (outLen) => symbols.plg_query_rows(asPtr(handle), ptr(q), q.byteLength, outLen),
         symbols.plg_free_buf,
@@ -138,6 +150,7 @@ export const createFfiBackend = (libPath: string): Backend => {
 
     queryArrow: (handle, query) => {
       const q = encoder.encode(query);
+
       return takeBuf(
         (outLen) => symbols.plg_query_arrow(asPtr(handle), ptr(q), q.byteLength, outLen),
         symbols.plg_free_arrow,
@@ -147,6 +160,7 @@ export const createFfiBackend = (libPath: string): Backend => {
 
     gremlinJson: (handle, query) => {
       const q = encoder.encode(query);
+
       return takeBuf(
         (outLen) => symbols.plg_gremlin_json(asPtr(handle), ptr(q), q.byteLength, outLen),
         symbols.plg_free_buf,
@@ -163,6 +177,7 @@ export const createFfiBackend = (libPath: string): Backend => {
 
     serialize: (handle, format) => {
       const f = encoder.encode(format);
+
       return takeBuf(
         (outLen) => symbols.plg_serialize(asPtr(handle), ptr(f), f.byteLength, outLen),
         symbols.plg_free_buf,
@@ -173,9 +188,11 @@ export const createFfiBackend = (libPath: string): Backend => {
     deserialize: (input, format) => {
       const f = encoder.encode(format);
       const h = symbols.plg_deserialize(ptr(input), input.byteLength, ptr(f), f.byteLength);
+
       if (!h) {
         return fail(`deserialize(${format})`, ErrorCode.UnknownFormat);
       }
+
       return asHandle(h);
     },
   };

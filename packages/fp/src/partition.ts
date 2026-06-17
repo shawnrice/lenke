@@ -4,9 +4,11 @@ import type { Predicate, UnaryFn } from './types.js';
 const internalPartition = <T>(predicate: Predicate<T>, iterable: Iterable<T>): [T[], T[]] => {
   const pass: T[] = [];
   const fail: T[] = [];
+
   for (const item of iterable) {
     (predicate(item) ? pass : fail).push(item);
   }
+
   return [pass, fail];
 };
 

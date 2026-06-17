@@ -32,7 +32,11 @@ fn build_graph(nv: usize, deg: usize) -> Graph {
     let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
     let mut b = Builder::default();
     for i in 0..nv {
-        b.nodes.push(NodeRec { id: format!("v{i}"), labels: vec!["N".to_string()], props: vec![] });
+        b.nodes.push(NodeRec {
+            id: format!("v{i}"),
+            labels: vec!["N".to_string()],
+            props: vec![],
+        });
     }
     let types = ["A", "B", "C"];
     for i in 0..nv {
@@ -80,7 +84,10 @@ fn main() {
         let n = g.n;
         let (off, nbr) = build_csr(&g);
         let iters = 50u32;
-        println!("\n=== {nv} vertices, avg degree {deg} ({} edges) ===", g.edge_count());
+        println!(
+            "\n=== {nv} vertices, avg degree {deg} ({} edges) ===",
+            g.edge_count()
+        );
 
         // --- (1) READ CEILING: 1-hop neighbor sum ---
         let t = Instant::now();
@@ -135,21 +142,32 @@ fn main() {
         let csr_2 = ms(t, iters);
         assert_eq!(acc, acc2);
 
-        println!("  1-hop walk : Vec<Vec> {veclist_1:6.2} ms   CSR {csr_1:6.2} ms   ({:.2}x)", veclist_1 / csr_1);
-        println!("  2-hop walk : Vec<Vec> {veclist_2:6.2} ms   CSR {csr_2:6.2} ms   ({:.2}x)", veclist_2 / csr_2);
+        println!(
+            "  1-hop walk : Vec<Vec> {veclist_1:6.2} ms   CSR {csr_1:6.2} ms   ({:.2}x)",
+            veclist_1 / csr_1
+        );
+        println!(
+            "  2-hop walk : Vec<Vec> {veclist_2:6.2} ms   CSR {csr_2:6.2} ms   ({:.2}x)",
+            veclist_2 / csr_2
+        );
 
         // --- (2) WRITE BASELINE vs (3) SORTED-INSERT PENALTY ---
         // Replicate add_edge's adjacency maintenance in isolation: plain push
         // (current) vs sorted-by-etype insert (the sorted-neighbor layout).
         let medges = nv * deg;
         let mut rng = Rng(0xDEAD_BEEF);
-        let edges: Vec<(usize, u32, u32)> =
-            (0..medges).map(|_| (rng.below(nv), rng.below(nv) as u32, (rng.next() % 3) as u32)).collect();
+        let edges: Vec<(usize, u32, u32)> = (0..medges)
+            .map(|_| (rng.below(nv), rng.below(nv) as u32, (rng.next() % 3) as u32))
+            .collect();
 
         let mut plain: Vec<Vec<Adj>> = vec![Vec::new(); nv];
         let t = Instant::now();
         for (i, &(s, d, ty)) in edges.iter().enumerate() {
-            plain[s].push(Adj { eidx: i as u32, nbr: d, etype: ty });
+            plain[s].push(Adj {
+                eidx: i as u32,
+                nbr: d,
+                etype: ty,
+            });
         }
         let push_ms = t.elapsed().as_secs_f64() * 1e3;
 
@@ -158,7 +176,14 @@ fn main() {
         for (i, &(s, d, ty)) in edges.iter().enumerate() {
             let lst = &mut sorted[s];
             let pos = lst.partition_point(|a| a.etype < ty);
-            lst.insert(pos, Adj { eidx: i as u32, nbr: d, etype: ty });
+            lst.insert(
+                pos,
+                Adj {
+                    eidx: i as u32,
+                    nbr: d,
+                    etype: ty,
+                },
+            );
         }
         let sorted_ms = t.elapsed().as_secs_f64() * 1e3;
 

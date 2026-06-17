@@ -21,6 +21,7 @@ import {
   takeWhile,
   type UnaryFn,
 } from '@pl-graph/fp';
+
 import { empty, from, isList, of } from './functions/index.js';
 
 /**
@@ -133,6 +134,7 @@ export class List<T> {
 
   head(): T | undefined {
     const [val] = Array.from(this.take(1));
+
     return val;
   }
 

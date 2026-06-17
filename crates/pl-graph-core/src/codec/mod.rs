@@ -45,7 +45,11 @@ use crate::graph::{Dict, Graph, Properties, Value};
 /// Present properties of element `idx`, in key-id (intern) order. A `Null` from
 /// the store means *absent* — `Null` is never stored (see `set_value`) — so it
 /// is skipped, matching the "key not on the element" semantics every codec uses.
-pub(crate) fn element_props<'a>(store: &'a Properties, strs: &Dict, idx: usize) -> Vec<(&'a str, Value)> {
+pub(crate) fn element_props<'a>(
+    store: &'a Properties,
+    strs: &Dict,
+    idx: usize,
+) -> Vec<(&'a str, Value)> {
     let mut out = Vec::new();
     for kid in 0..store.cols.len() as u32 {
         let v = store.value_id(idx, kid, strs);
@@ -59,7 +63,10 @@ pub(crate) fn element_props<'a>(store: &'a Properties, strs: &Dict, idx: usize) 
 
 /// A node's labels as string slices, in stored order.
 pub(crate) fn node_labels(g: &Graph, vi: u32) -> Vec<&str> {
-    g.vertex_labels(vi).iter().map(|&l| g.labels.text(l)).collect()
+    g.vertex_labels(vi)
+        .iter()
+        .map(|&l| g.labels.text(l))
+        .collect()
 }
 
 /// True if a float is an exact integer value — GraphSON `g:Int64` vs `g:Double`,
@@ -133,7 +140,11 @@ pub(crate) fn json_to_value(j: &J) -> CodeResult<Value> {
         J::Bool(b) => Value::Bool(*b),
         J::Number(n) => Value::Num(n.as_f64().unwrap_or(f64::NAN)),
         J::String(s) => Value::Str(Arc::from(s.as_str())),
-        J::Array(a) => Value::List(a.iter().map(json_to_value).collect::<CodeResult<Vec<_>>>()?),
+        J::Array(a) => Value::List(
+            a.iter()
+                .map(json_to_value)
+                .collect::<CodeResult<Vec<_>>>()?,
+        ),
         J::Object(_) => {
             return Err(CodeError::new(
                 ErrorCode::InvalidValue,
@@ -155,7 +166,11 @@ pub(crate) fn json_id(j: &J) -> String {
 pub(crate) fn json_str_array(field: Option<&J>) -> Vec<String> {
     field
         .and_then(J::as_array)
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -163,7 +178,10 @@ pub(crate) fn json_str_array(field: Option<&J>) -> Vec<String> {
 /// value anywhere is an `InvalidValue` error (see [`json_to_value`]).
 pub(crate) fn json_props(field: Option<&J>) -> CodeResult<Vec<(String, Value)>> {
     match field.and_then(J::as_object) {
-        Some(m) => m.iter().map(|(k, v)| Ok((k.clone(), json_to_value(v)?))).collect(),
+        Some(m) => m
+            .iter()
+            .map(|(k, v)| Ok((k.clone(), json_to_value(v)?)))
+            .collect(),
         None => Ok(Vec::new()),
     }
 }
@@ -176,7 +194,10 @@ pub(crate) fn json_props(field: Option<&J>) -> CodeResult<Vec<(String, Value)>> 
 /// distinct from a parse failure of a *known* format (which the decoders code
 /// precisely), so the FFI layer can surface `e.code` directly.
 fn unknown_format(format: &str) -> CodeError {
-    CodeError::new(ErrorCode::UnknownFormat, format!("unknown serialization format '{format}'"))
+    CodeError::new(
+        ErrorCode::UnknownFormat,
+        format!("unknown serialization format '{format}'"),
+    )
 }
 
 /// Serialize `g` in the named format: `pg-json | pg-text | graphson | csv | ndjson`.
@@ -225,7 +246,11 @@ mod tests {
             let blob = serialize(&g, format).unwrap();
             let g2 = deserialize(&blob, format).unwrap();
             assert_eq!(g2.edge_id(0), Some("pay-1"), "edge id lost via {format}");
-            assert_eq!(g2.edge_by_id("pay-1"), Some(0), "reverse lookup lost via {format}");
+            assert_eq!(
+                g2.edge_by_id("pay-1"),
+                Some(0),
+                "reverse lookup lost via {format}"
+            );
         }
     }
 

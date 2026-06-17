@@ -61,9 +61,11 @@ export const createStore = (graph: RustGraph): Store => {
     mutate: (fn) => {
       const before = graph.version;
       const result = fn(graph);
+
       if (graph.version !== before) {
         notify();
       }
+
       return result;
     },
     liveQuery: (text, opts) => {
@@ -72,27 +74,34 @@ export const createStore = (graph: RustGraph): Store => {
       let seenVersion = -1;
       let seenFingerprint = -1;
       let cached: Row[] = [];
+
       return {
         subscribe: (onChange) => {
           listeners.add(onChange);
+
           return () => {
             listeners.delete(onChange);
           };
         },
         getSnapshot: () => {
           const v = graph.version;
+
           if (v === seenVersion) {
             return cached; // nothing mutated since last read → stable reference
           }
+
           seenVersion = v;
           // A mutation happened. With deps, recompute only if one of them moved;
           // without deps, fall back to the (always-correct) global version.
           const fingerprint = deps?.length ? deps.reduce((acc, d) => acc + graph.epoch(d), 0) : v;
+
           if (fingerprint === seenFingerprint) {
             return cached; // the mutation didn't touch our dependencies
           }
+
           seenFingerprint = fingerprint;
           cached = graph.query(text);
+
           return cached;
         },
       };
@@ -109,13 +118,16 @@ export const createStore = (graph: RustGraph): Store => {
  */
 export const inferDeps = (text: string): string[] => {
   const tokens = new Set<string>();
+
   // :Label or :TYPE   and   [:TYPE]
   for (const m of text.matchAll(/:([A-Za-z_]\w*)/g)) {
     tokens.add(m[1]);
   }
+
   // .key property access
   for (const m of text.matchAll(/\.([A-Za-z_]\w*)/g)) {
     tokens.add(m[1]);
   }
+
   return [...tokens];
 };

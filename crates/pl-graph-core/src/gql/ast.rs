@@ -45,7 +45,10 @@ pub enum Clause {
     /// `REMOVE n.key` / `REMOVE n:Label`
     Remove(Vec<RemoveItem>),
     /// `[DETACH] DELETE n, …`
-    Delete { detach: bool, targets: Vec<Expr> },
+    Delete {
+        detach: bool,
+        targets: Vec<Expr>,
+    },
     /// `FINISH` — run for side effects, return nothing.
     Finish,
 }
@@ -67,8 +70,15 @@ pub struct WithClause {
 
 #[derive(Debug, Clone)]
 pub enum SetItem {
-    Prop { variable: String, key: String, value: Expr },
-    Label { variable: String, label: String },
+    Prop {
+        variable: String,
+        key: String,
+        value: Expr,
+    },
+    Label {
+        variable: String,
+        label: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -202,28 +212,72 @@ pub enum Lit {
 pub enum Expr {
     Var(String),
     Param(String),
-    Prop { variable: String, key: String },
+    Prop {
+        variable: String,
+        key: String,
+    },
     Lit(Lit),
     List(Vec<Expr>),
-    Compare { op: CompareOp, left: Box<Expr>, right: Box<Expr> },
-    Arith { op: ArithOp, left: Box<Expr>, right: Box<Expr> },
-    Concat { left: Box<Expr>, right: Box<Expr> },
+    Compare {
+        op: CompareOp,
+        left: Box<Expr>,
+        right: Box<Expr>,
+    },
+    Arith {
+        op: ArithOp,
+        left: Box<Expr>,
+        right: Box<Expr>,
+    },
+    Concat {
+        left: Box<Expr>,
+        right: Box<Expr>,
+    },
     Neg(Box<Expr>),
     And(Box<Expr>, Box<Expr>),
     Or(Box<Expr>, Box<Expr>),
     Xor(Box<Expr>, Box<Expr>),
     Not(Box<Expr>),
-    IsNull { expr: Box<Expr>, negated: bool },
+    IsNull {
+        expr: Box<Expr>,
+        negated: bool,
+    },
     /// `x IS [NOT] TRUE|FALSE|UNKNOWN` — `truth` is the target (`None` = UNKNOWN).
-    IsTruth { expr: Box<Expr>, truth: Option<bool>, negated: bool },
+    IsTruth {
+        expr: Box<Expr>,
+        truth: Option<bool>,
+        negated: bool,
+    },
     /// `x IS [NOT] LABELED <label expression>`.
-    IsLabeled { expr: Box<Expr>, label: LabelExpr, negated: bool },
-    In { expr: Box<Expr>, list: Box<Expr>, negated: bool },
+    IsLabeled {
+        expr: Box<Expr>,
+        label: LabelExpr,
+        negated: bool,
+    },
+    In {
+        expr: Box<Expr>,
+        list: Box<Expr>,
+        negated: bool,
+    },
     /// `EXISTS { p1, … [WHERE pred] }` — correlated sub-pattern existence.
-    Exists { patterns: Vec<PathPattern>, where_: Option<Box<Expr>> },
+    Exists {
+        patterns: Vec<PathPattern>,
+        where_: Option<Box<Expr>>,
+    },
     /// `COUNT { p1, … [WHERE pred] }` — correlated sub-pattern match count.
-    CountSubquery { patterns: Vec<PathPattern>, where_: Option<Box<Expr>> },
+    CountSubquery {
+        patterns: Vec<PathPattern>,
+        where_: Option<Box<Expr>>,
+    },
     /// ISO CASE: `subject` present → simple CASE, else searched.
-    Case { subject: Option<Box<Expr>>, whens: Vec<(Expr, Expr)>, else_: Option<Box<Expr>> },
-    Func { name: String, args: Vec<Expr>, distinct: bool, star: bool },
+    Case {
+        subject: Option<Box<Expr>>,
+        whens: Vec<(Expr, Expr)>,
+        else_: Option<Box<Expr>>,
+    },
+    Func {
+        name: String,
+        args: Vec<Expr>,
+        distinct: bool,
+        star: bool,
+    },
 }

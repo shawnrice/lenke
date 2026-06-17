@@ -1,5 +1,6 @@
-import type { Plan } from '../ast.js';
 import { describe, expect, test } from 'bun:test';
+
+import type { Plan } from '../ast.js';
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
 import { eq, gt } from '../predicates.js';

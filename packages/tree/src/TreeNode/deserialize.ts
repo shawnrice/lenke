@@ -1,5 +1,6 @@
 import { ErrorCode, PlGraphError } from '@pl-graph/errors';
 import { identity } from '@pl-graph/utils';
+
 import { TreeNode } from './TreeNode.js';
 import type { SerializedTreeNode } from './types.js';
 

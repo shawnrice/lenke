@@ -56,6 +56,7 @@ describe('GQL WHERE-derived seed hints', () => {
     const indexed = createTestSocialGraph();
     indexed.createVertexIndex('name');
     indexed.createVertexIndex('age');
+
     return { plain: query(plain, q), indexed: query(indexed, q) };
   };
 

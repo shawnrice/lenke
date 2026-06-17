@@ -35,6 +35,7 @@ export function has(a: string, b?: unknown, c?: unknown): StepFn {
 
   if (c === undefined) {
     const pred = isPredicate(b) ? b : { op: 'eq' as const, value: b };
+
     return appendStep({ kind: 'has', key: a, pred });
   }
 
@@ -106,6 +107,7 @@ export function where(
       bys,
     }));
   }
+
   return appendStep({ kind: 'where', plan: buildPlan(arg as SubPlan) });
 }
 

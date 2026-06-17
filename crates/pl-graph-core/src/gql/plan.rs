@@ -140,27 +140,76 @@ pub enum CLabelExpr {
 pub enum CExpr {
     Var(usize),
     Param(usize),
-    Prop { var_slot: usize, key_ref: usize },
+    Prop {
+        var_slot: usize,
+        key_ref: usize,
+    },
     Lit(Lit),
     List(Vec<CExpr>),
-    Compare { op: CompareOp, left: Box<CExpr>, right: Box<CExpr> },
-    Arith { op: ArithOp, left: Box<CExpr>, right: Box<CExpr> },
-    Concat { left: Box<CExpr>, right: Box<CExpr> },
+    Compare {
+        op: CompareOp,
+        left: Box<CExpr>,
+        right: Box<CExpr>,
+    },
+    Arith {
+        op: ArithOp,
+        left: Box<CExpr>,
+        right: Box<CExpr>,
+    },
+    Concat {
+        left: Box<CExpr>,
+        right: Box<CExpr>,
+    },
     Neg(Box<CExpr>),
     And(Box<CExpr>, Box<CExpr>),
     Or(Box<CExpr>, Box<CExpr>),
     Xor(Box<CExpr>, Box<CExpr>),
     Not(Box<CExpr>),
-    IsNull { expr: Box<CExpr>, negated: bool },
-    IsTruth { expr: Box<CExpr>, truth: Option<bool>, negated: bool },
-    IsLabeled { expr: Box<CExpr>, label: CLabelExpr, negated: bool },
-    In { expr: Box<CExpr>, list: Box<CExpr>, negated: bool },
+    IsNull {
+        expr: Box<CExpr>,
+        negated: bool,
+    },
+    IsTruth {
+        expr: Box<CExpr>,
+        truth: Option<bool>,
+        negated: bool,
+    },
+    IsLabeled {
+        expr: Box<CExpr>,
+        label: CLabelExpr,
+        negated: bool,
+    },
+    In {
+        expr: Box<CExpr>,
+        list: Box<CExpr>,
+        negated: bool,
+    },
     /// Correlated sub-pattern existence; `sub_len` is the sub-scope slot count.
-    Exists { patterns: Vec<CPath>, where_: Option<Box<CExpr>>, sub_len: usize },
-    CountSubquery { patterns: Vec<CPath>, where_: Option<Box<CExpr>>, sub_len: usize },
-    Case { subject: Option<Box<CExpr>>, whens: Vec<(CExpr, CExpr)>, else_: Option<Box<CExpr>> },
-    Scalar { func: ScalarFn, args: Vec<CExpr> },
-    Aggregate { func: AggFn, arg: Option<Box<CExpr>>, distinct: bool, star: bool },
+    Exists {
+        patterns: Vec<CPath>,
+        where_: Option<Box<CExpr>>,
+        sub_len: usize,
+    },
+    CountSubquery {
+        patterns: Vec<CPath>,
+        where_: Option<Box<CExpr>>,
+        sub_len: usize,
+    },
+    Case {
+        subject: Option<Box<CExpr>>,
+        whens: Vec<(CExpr, CExpr)>,
+        else_: Option<Box<CExpr>>,
+    },
+    Scalar {
+        func: ScalarFn,
+        args: Vec<CExpr>,
+    },
+    Aggregate {
+        func: AggFn,
+        arg: Option<Box<CExpr>>,
+        distinct: bool,
+        star: bool,
+    },
     /// Reference to a projection's `i`th extracted aggregate (its folded value).
     /// Projection/ORDER BY expressions have their aggregates lifted out into
     /// `CProjection::aggs` and replaced by these, so a group folds incrementally.
@@ -177,7 +226,10 @@ pub enum Op {
     Const(Lit),
     Var(usize),
     Param(usize),
-    Prop { var_slot: usize, key_ref: usize },
+    Prop {
+        var_slot: usize,
+        key_ref: usize,
+    },
     MakeList(usize),
     Arith(ArithOp),
     Compare(CompareOp),
@@ -207,7 +259,10 @@ fn emit(e: &CExpr, out: &mut Vec<Op>) {
         CExpr::Lit(l) => out.push(Op::Const(l.clone())),
         CExpr::Var(s) => out.push(Op::Var(*s)),
         CExpr::Param(s) => out.push(Op::Param(*s)),
-        CExpr::Prop { var_slot, key_ref } => out.push(Op::Prop { var_slot: *var_slot, key_ref: *key_ref }),
+        CExpr::Prop { var_slot, key_ref } => out.push(Op::Prop {
+            var_slot: *var_slot,
+            key_ref: *key_ref,
+        }),
         CExpr::List(items) => {
             for it in items {
                 emit(it, out);
@@ -256,15 +311,27 @@ fn emit(e: &CExpr, out: &mut Vec<Op>) {
             emit(expr, out);
             out.push(Op::IsNull(*negated));
         }
-        CExpr::IsTruth { expr, truth, negated } => {
+        CExpr::IsTruth {
+            expr,
+            truth,
+            negated,
+        } => {
             emit(expr, out);
             out.push(Op::IsTruth(*truth, *negated));
         }
-        CExpr::IsLabeled { expr, label, negated } => {
+        CExpr::IsLabeled {
+            expr,
+            label,
+            negated,
+        } => {
             emit(expr, out);
             out.push(Op::IsLabeled(label.clone(), *negated));
         }
-        CExpr::In { expr, list, negated } => {
+        CExpr::In {
+            expr,
+            list,
+            negated,
+        } => {
             emit(expr, out);
             emit(list, out);
             out.push(Op::In(*negated));
@@ -277,9 +344,10 @@ fn emit(e: &CExpr, out: &mut Vec<Op>) {
         }
         CExpr::AggRef(i) => out.push(Op::AggRef(*i)),
         // Control flow / subquery / aggregate: tree-walk this subexpression.
-        CExpr::Case { .. } | CExpr::Exists { .. } | CExpr::CountSubquery { .. } | CExpr::Aggregate { .. } => {
-            out.push(Op::Tree(e.clone()))
-        }
+        CExpr::Case { .. }
+        | CExpr::Exists { .. }
+        | CExpr::CountSubquery { .. }
+        | CExpr::Aggregate { .. } => out.push(Op::Tree(e.clone())),
     }
 }
 
@@ -385,8 +453,15 @@ pub struct CProjection {
 
 #[derive(Debug, Clone)]
 pub enum CSetItem {
-    Prop { var_slot: usize, key: String, value: CExpr },
-    Label { var_slot: usize, label: String },
+    Prop {
+        var_slot: usize,
+        key: String,
+        value: CExpr,
+    },
+    Label {
+        var_slot: usize,
+        label: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -406,12 +481,19 @@ pub enum CClause {
         where_prog: Option<Program>,
         scope_len: usize,
     },
-    With { projection: CProjection, where_: Option<CExpr>, where_prog: Option<Program> },
+    With {
+        projection: CProjection,
+        where_: Option<CExpr>,
+        where_prog: Option<Program>,
+    },
     Return(CProjection),
     Insert(Vec<CPath>),
     Set(Vec<CSetItem>),
     Remove(Vec<CRemoveItem>),
-    Delete { detach: bool, targets: Vec<CExpr> },
+    Delete {
+        detach: bool,
+        targets: Vec<CExpr>,
+    },
     Finish,
 }
 
@@ -436,9 +518,9 @@ fn has_aggregate(expr: &CExpr) -> bool {
         CExpr::Aggregate { .. } => true,
         CExpr::Scalar { args, .. } => args.iter().any(has_aggregate),
         CExpr::Neg(e) | CExpr::Not(e) => has_aggregate(e),
-        CExpr::IsNull { expr, .. } | CExpr::IsTruth { expr, .. } | CExpr::IsLabeled { expr, .. } => {
-            has_aggregate(expr)
-        }
+        CExpr::IsNull { expr, .. }
+        | CExpr::IsTruth { expr, .. }
+        | CExpr::IsLabeled { expr, .. } => has_aggregate(expr),
         CExpr::Arith { left, right, .. }
         | CExpr::Concat { left, right }
         | CExpr::And(left, right)
@@ -447,9 +529,15 @@ fn has_aggregate(expr: &CExpr) -> bool {
         | CExpr::Compare { left, right, .. } => has_aggregate(left) || has_aggregate(right),
         CExpr::In { expr, list, .. } => has_aggregate(expr) || has_aggregate(list),
         CExpr::List(items) => items.iter().any(has_aggregate),
-        CExpr::Case { subject, whens, else_ } => {
+        CExpr::Case {
+            subject,
+            whens,
+            else_,
+        } => {
             subject.as_deref().is_some_and(has_aggregate)
-                || whens.iter().any(|(w, t)| has_aggregate(w) || has_aggregate(t))
+                || whens
+                    .iter()
+                    .any(|(w, t)| has_aggregate(w) || has_aggregate(t))
                 || else_.as_deref().is_some_and(has_aggregate)
         }
         _ => false,
@@ -462,32 +550,90 @@ fn has_aggregate(expr: &CExpr) -> bool {
 fn extract_aggs(expr: CExpr, aggs: &mut Vec<CAgg>) -> CExpr {
     let b = |e: Box<CExpr>, aggs: &mut Vec<CAgg>| Box::new(extract_aggs(*e, aggs));
     match expr {
-        CExpr::Aggregate { func, arg, distinct, star } => {
+        CExpr::Aggregate {
+            func,
+            arg,
+            distinct,
+            star,
+        } => {
             let idx = aggs.len();
-            aggs.push(CAgg { func, arg: arg.map(|a| *a), distinct, star });
+            aggs.push(CAgg {
+                func,
+                arg: arg.map(|a| *a),
+                distinct,
+                star,
+            });
             CExpr::AggRef(idx)
         }
-        CExpr::List(items) => CExpr::List(items.into_iter().map(|e| extract_aggs(e, aggs)).collect()),
-        CExpr::Compare { op, left, right } => CExpr::Compare { op, left: b(left, aggs), right: b(right, aggs) },
-        CExpr::Arith { op, left, right } => CExpr::Arith { op, left: b(left, aggs), right: b(right, aggs) },
-        CExpr::Concat { left, right } => CExpr::Concat { left: b(left, aggs), right: b(right, aggs) },
+        CExpr::List(items) => {
+            CExpr::List(items.into_iter().map(|e| extract_aggs(e, aggs)).collect())
+        }
+        CExpr::Compare { op, left, right } => CExpr::Compare {
+            op,
+            left: b(left, aggs),
+            right: b(right, aggs),
+        },
+        CExpr::Arith { op, left, right } => CExpr::Arith {
+            op,
+            left: b(left, aggs),
+            right: b(right, aggs),
+        },
+        CExpr::Concat { left, right } => CExpr::Concat {
+            left: b(left, aggs),
+            right: b(right, aggs),
+        },
         CExpr::Neg(e) => CExpr::Neg(b(e, aggs)),
         CExpr::And(l, r) => CExpr::And(b(l, aggs), b(r, aggs)),
         CExpr::Or(l, r) => CExpr::Or(b(l, aggs), b(r, aggs)),
         CExpr::Xor(l, r) => CExpr::Xor(b(l, aggs), b(r, aggs)),
         CExpr::Not(e) => CExpr::Not(b(e, aggs)),
-        CExpr::IsNull { expr, negated } => CExpr::IsNull { expr: b(expr, aggs), negated },
-        CExpr::IsTruth { expr, truth, negated } => CExpr::IsTruth { expr: b(expr, aggs), truth, negated },
-        CExpr::IsLabeled { expr, label, negated } => CExpr::IsLabeled { expr: b(expr, aggs), label, negated },
-        CExpr::In { expr, list, negated } => CExpr::In { expr: b(expr, aggs), list: b(list, aggs), negated },
-        CExpr::Case { subject, whens, else_ } => CExpr::Case {
+        CExpr::IsNull { expr, negated } => CExpr::IsNull {
+            expr: b(expr, aggs),
+            negated,
+        },
+        CExpr::IsTruth {
+            expr,
+            truth,
+            negated,
+        } => CExpr::IsTruth {
+            expr: b(expr, aggs),
+            truth,
+            negated,
+        },
+        CExpr::IsLabeled {
+            expr,
+            label,
+            negated,
+        } => CExpr::IsLabeled {
+            expr: b(expr, aggs),
+            label,
+            negated,
+        },
+        CExpr::In {
+            expr,
+            list,
+            negated,
+        } => CExpr::In {
+            expr: b(expr, aggs),
+            list: b(list, aggs),
+            negated,
+        },
+        CExpr::Case {
+            subject,
+            whens,
+            else_,
+        } => CExpr::Case {
             subject: subject.map(|s| b(s, aggs)),
-            whens: whens.into_iter().map(|(w, t)| (extract_aggs(w, aggs), extract_aggs(t, aggs))).collect(),
+            whens: whens
+                .into_iter()
+                .map(|(w, t)| (extract_aggs(w, aggs), extract_aggs(t, aggs)))
+                .collect(),
             else_: else_.map(|e| b(e, aggs)),
         },
-        CExpr::Scalar { func, args } => {
-            CExpr::Scalar { func, args: args.into_iter().map(|e| extract_aggs(e, aggs)).collect() }
-        }
+        CExpr::Scalar { func, args } => CExpr::Scalar {
+            func,
+            args: args.into_iter().map(|e| extract_aggs(e, aggs)).collect(),
+        },
         // leaves and the (correlated) sub-queries carry no grouping aggregate
         other => other,
     }
@@ -501,19 +647,27 @@ fn refs_slot_below(expr: &CExpr, n: usize) -> bool {
         CExpr::Prop { var_slot, .. } => *var_slot < n,
         CExpr::List(items) => items.iter().any(|e| refs_slot_below(e, n)),
         CExpr::Neg(e) | CExpr::Not(e) => refs_slot_below(e, n),
-        CExpr::IsNull { expr, .. } | CExpr::IsTruth { expr, .. } | CExpr::IsLabeled { expr, .. } => {
-            refs_slot_below(expr, n)
-        }
+        CExpr::IsNull { expr, .. }
+        | CExpr::IsTruth { expr, .. }
+        | CExpr::IsLabeled { expr, .. } => refs_slot_below(expr, n),
         CExpr::Arith { left, right, .. }
         | CExpr::Concat { left, right }
         | CExpr::And(left, right)
         | CExpr::Or(left, right)
         | CExpr::Xor(left, right)
-        | CExpr::Compare { left, right, .. } => refs_slot_below(left, n) || refs_slot_below(right, n),
+        | CExpr::Compare { left, right, .. } => {
+            refs_slot_below(left, n) || refs_slot_below(right, n)
+        }
         CExpr::In { expr, list, .. } => refs_slot_below(expr, n) || refs_slot_below(list, n),
-        CExpr::Case { subject, whens, else_ } => {
+        CExpr::Case {
+            subject,
+            whens,
+            else_,
+        } => {
             subject.as_deref().is_some_and(|e| refs_slot_below(e, n))
-                || whens.iter().any(|(w, t)| refs_slot_below(w, n) || refs_slot_below(t, n))
+                || whens
+                    .iter()
+                    .any(|(w, t)| refs_slot_below(w, n) || refs_slot_below(t, n))
                 || else_.as_deref().is_some_and(|e| refs_slot_below(e, n))
         }
         CExpr::Scalar { args, .. } => args.iter().any(|e| refs_slot_below(e, n)),
@@ -570,8 +724,12 @@ impl Lowerer {
             LabelExpr::Label(name) => CLabelExpr::Label(intern_ref(&mut self.labels, name)),
             LabelExpr::Wildcard => CLabelExpr::Wildcard,
             LabelExpr::Not(b) => CLabelExpr::Not(Box::new(self.label_expr(b))),
-            LabelExpr::And(l, r) => CLabelExpr::And(Box::new(self.label_expr(l)), Box::new(self.label_expr(r))),
-            LabelExpr::Or(l, r) => CLabelExpr::Or(Box::new(self.label_expr(l)), Box::new(self.label_expr(r))),
+            LabelExpr::And(l, r) => {
+                CLabelExpr::And(Box::new(self.label_expr(l)), Box::new(self.label_expr(r)))
+            }
+            LabelExpr::Or(l, r) => {
+                CLabelExpr::Or(Box::new(self.label_expr(l)), Box::new(self.label_expr(r)))
+            }
         }
     }
 
@@ -612,47 +770,96 @@ impl Lowerer {
         match e {
             Expr::Var(n) => CExpr::Var(self.slot_of(n)),
             Expr::Param(n) => CExpr::Param(self.param_slot(n)),
-            Expr::Prop { variable, key } => {
-                CExpr::Prop { var_slot: self.slot_of(variable), key_ref: intern_ref(&mut self.keys, key) }
-            }
+            Expr::Prop { variable, key } => CExpr::Prop {
+                var_slot: self.slot_of(variable),
+                key_ref: intern_ref(&mut self.keys, key),
+            },
             Expr::Lit(l) => CExpr::Lit(l.clone()),
             Expr::List(items) => CExpr::List(items.iter().map(|x| self.expr(x)).collect()),
-            Expr::Compare { op, left, right } => {
-                CExpr::Compare { op: *op, left: self.boxed(left), right: self.boxed(right) }
-            }
-            Expr::Arith { op, left, right } => {
-                CExpr::Arith { op: *op, left: self.boxed(left), right: self.boxed(right) }
-            }
-            Expr::Concat { left, right } => CExpr::Concat { left: self.boxed(left), right: self.boxed(right) },
+            Expr::Compare { op, left, right } => CExpr::Compare {
+                op: *op,
+                left: self.boxed(left),
+                right: self.boxed(right),
+            },
+            Expr::Arith { op, left, right } => CExpr::Arith {
+                op: *op,
+                left: self.boxed(left),
+                right: self.boxed(right),
+            },
+            Expr::Concat { left, right } => CExpr::Concat {
+                left: self.boxed(left),
+                right: self.boxed(right),
+            },
             Expr::Neg(x) => CExpr::Neg(self.boxed(x)),
             Expr::And(l, r) => CExpr::And(self.boxed(l), self.boxed(r)),
             Expr::Or(l, r) => CExpr::Or(self.boxed(l), self.boxed(r)),
             Expr::Xor(l, r) => CExpr::Xor(self.boxed(l), self.boxed(r)),
             Expr::Not(x) => CExpr::Not(self.boxed(x)),
-            Expr::IsNull { expr, negated } => CExpr::IsNull { expr: self.boxed(expr), negated: *negated },
-            Expr::IsTruth { expr, truth, negated } => {
-                CExpr::IsTruth { expr: self.boxed(expr), truth: *truth, negated: *negated }
-            }
-            Expr::IsLabeled { expr, label, negated } => {
-                CExpr::IsLabeled { expr: self.boxed(expr), label: self.label_expr(label), negated: *negated }
-            }
-            Expr::In { expr, list, negated } => {
-                CExpr::In { expr: self.boxed(expr), list: self.boxed(list), negated: *negated }
-            }
+            Expr::IsNull { expr, negated } => CExpr::IsNull {
+                expr: self.boxed(expr),
+                negated: *negated,
+            },
+            Expr::IsTruth {
+                expr,
+                truth,
+                negated,
+            } => CExpr::IsTruth {
+                expr: self.boxed(expr),
+                truth: *truth,
+                negated: *negated,
+            },
+            Expr::IsLabeled {
+                expr,
+                label,
+                negated,
+            } => CExpr::IsLabeled {
+                expr: self.boxed(expr),
+                label: self.label_expr(label),
+                negated: *negated,
+            },
+            Expr::In {
+                expr,
+                list,
+                negated,
+            } => CExpr::In {
+                expr: self.boxed(expr),
+                list: self.boxed(list),
+                negated: *negated,
+            },
             Expr::Exists { patterns, where_ } => {
                 let (patterns, where_, sub_len) = self.sub_patterns(patterns, where_.as_deref());
-                CExpr::Exists { patterns, where_, sub_len }
+                CExpr::Exists {
+                    patterns,
+                    where_,
+                    sub_len,
+                }
             }
             Expr::CountSubquery { patterns, where_ } => {
                 let (patterns, where_, sub_len) = self.sub_patterns(patterns, where_.as_deref());
-                CExpr::CountSubquery { patterns, where_, sub_len }
+                CExpr::CountSubquery {
+                    patterns,
+                    where_,
+                    sub_len,
+                }
             }
-            Expr::Case { subject, whens, else_ } => CExpr::Case {
+            Expr::Case {
+                subject,
+                whens,
+                else_,
+            } => CExpr::Case {
                 subject: subject.as_ref().map(|s| self.boxed(s)),
-                whens: whens.iter().map(|(w, t)| (self.expr(w), self.expr(t))).collect(),
+                whens: whens
+                    .iter()
+                    .map(|(w, t)| (self.expr(w), self.expr(t)))
+                    .collect(),
                 else_: else_.as_ref().map(|e| self.boxed(e)),
             },
-            Expr::Func { name, args, distinct, star } => {
+            Expr::Func {
+                name,
+                args,
+                distinct,
+                star,
+            } => {
                 let cargs: Vec<CExpr> = args.iter().map(|a| self.expr(a)).collect();
                 if let Some(func) = agg_fn(name) {
                     CExpr::Aggregate {
@@ -662,7 +869,10 @@ impl Lowerer {
                         star: *star,
                     }
                 } else {
-                    CExpr::Scalar { func: scalar_fn(name), args: cargs }
+                    CExpr::Scalar {
+                        func: scalar_fn(name),
+                        args: cargs,
+                    }
                 }
             }
         }
@@ -723,7 +933,10 @@ impl Lowerer {
             segments: p
                 .segments
                 .iter()
-                .map(|s| CSegment { rel: self.rel(&s.rel), node: self.node(&s.node) })
+                .map(|s| CSegment {
+                    rel: self.rel(&s.rel),
+                    node: self.node(&s.node),
+                })
                 .collect(),
         }
     }
@@ -744,7 +957,12 @@ impl Lowerer {
                 // Lift aggregates out of aggregating items so groups fold incrementally.
                 let expr = extract_aggs(expr, &mut aggs);
                 let prog = compile_program(&expr);
-                CReturnItem { expr, prog, name, is_agg }
+                CReturnItem {
+                    expr,
+                    prog,
+                    name,
+                    is_agg,
+                }
             })
             .collect();
 
@@ -776,7 +994,11 @@ impl Lowerer {
             })
             .collect();
 
-        self.scope = if terminal { input_scope } else { out_names.clone() };
+        self.scope = if terminal {
+            input_scope
+        } else {
+            out_names.clone()
+        };
         let order_needs_output = order_by.iter().any(|s| refs_slot_below(&s.expr, out_len));
         CProjection {
             star: p.star,
@@ -802,14 +1024,24 @@ impl Lowerer {
                 let patterns = m.patterns.iter().map(|p| self.path(p)).collect();
                 let where_ = m.where_.as_ref().map(|w| self.expr(w));
                 let where_prog = where_.as_ref().map(compile_program);
-                CClause::Match { optional: m.optional, patterns, where_, where_prog, scope_len: self.scope.len() }
+                CClause::Match {
+                    optional: m.optional,
+                    patterns,
+                    where_,
+                    where_prog,
+                    scope_len: self.scope.len(),
+                }
             }
             Clause::With(w) => {
                 let projection = self.projection(&w.projection, false);
                 // WITH's WHERE filters the projected output columns (new scope).
                 let where_ = w.where_.as_ref().map(|e| self.expr(e));
                 let where_prog = where_.as_ref().map(compile_program);
-                CClause::With { projection, where_, where_prog }
+                CClause::With {
+                    projection,
+                    where_,
+                    where_prog,
+                }
             }
             Clause::Return(p) => CClause::Return(self.projection(p, true)),
             Clause::Insert(ps) => {
@@ -820,12 +1052,19 @@ impl Lowerer {
                 items
                     .iter()
                     .map(|i| match i {
-                        SetItem::Prop { variable, key, value } => {
-                            CSetItem::Prop { var_slot: self.slot_of(variable), key: key.clone(), value: self.expr(value) }
-                        }
-                        SetItem::Label { variable, label } => {
-                            CSetItem::Label { var_slot: self.slot_of(variable), label: label.clone() }
-                        }
+                        SetItem::Prop {
+                            variable,
+                            key,
+                            value,
+                        } => CSetItem::Prop {
+                            var_slot: self.slot_of(variable),
+                            key: key.clone(),
+                            value: self.expr(value),
+                        },
+                        SetItem::Label { variable, label } => CSetItem::Label {
+                            var_slot: self.slot_of(variable),
+                            label: label.clone(),
+                        },
                     })
                     .collect(),
             ),
@@ -833,32 +1072,47 @@ impl Lowerer {
                 items
                     .iter()
                     .map(|i| match i {
-                        RemoveItem::Prop { variable, key } => {
-                            CRemoveItem::Prop { var_slot: self.slot_of(variable), key: key.clone() }
-                        }
-                        RemoveItem::Label { variable, label } => {
-                            CRemoveItem::Label { var_slot: self.slot_of(variable), label: label.clone() }
-                        }
+                        RemoveItem::Prop { variable, key } => CRemoveItem::Prop {
+                            var_slot: self.slot_of(variable),
+                            key: key.clone(),
+                        },
+                        RemoveItem::Label { variable, label } => CRemoveItem::Label {
+                            var_slot: self.slot_of(variable),
+                            label: label.clone(),
+                        },
                     })
                     .collect(),
             ),
-            Clause::Delete { detach, targets } => {
-                CClause::Delete { detach: *detach, targets: targets.iter().map(|t| self.expr(t)).collect() }
-            }
+            Clause::Delete { detach, targets } => CClause::Delete {
+                detach: *detach,
+                targets: targets.iter().map(|t| self.expr(t)).collect(),
+            },
             Clause::Finish => CClause::Finish,
         }
     }
 
     fn linear(&mut self, l: &LinearQuery) -> CLinear {
         self.scope.clear(); // each linear query starts with a fresh scope
-        CLinear { clauses: l.clauses.iter().map(|c| self.clause(c)).collect() }
+        CLinear {
+            clauses: l.clauses.iter().map(|c| self.clause(c)).collect(),
+        }
     }
 }
 
 /// Lower a parsed query into the IR plus the parameter slot order (slot → name).
 pub fn lower(query: &Query) -> (CQuery, Vec<String>) {
-    let mut l = Lowerer { params: Vec::new(), scope: Vec::new(), keys: Vec::new(), labels: Vec::new() };
+    let mut l = Lowerer {
+        params: Vec::new(),
+        scope: Vec::new(),
+        keys: Vec::new(),
+        labels: Vec::new(),
+    };
     let parts = query.parts.iter().map(|p| l.linear(p)).collect();
-    let cquery = CQuery { parts, ops: query.ops.clone(), key_names: l.keys, label_names: l.labels };
+    let cquery = CQuery {
+        parts,
+        ops: query.ops.clone(),
+        key_names: l.keys,
+        label_names: l.labels,
+    };
     (cquery, l.params)
 }

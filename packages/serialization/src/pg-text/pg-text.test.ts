@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@pl-graph/core';
+
 import { chunked, collect } from '../streaming.js';
 import type { PropertyValue } from '../value.js';
 import { decode, decodeStream, encode, encodeStream, pgTextCodec } from './index.js';
@@ -63,7 +64,7 @@ describe('pg-text: decoding', () => {
     const back = decode(`solo :Lonely\nfrom to :REL`, new Graph());
     expect([...back.vertices].map((v) => v.id).sort()).toEqual(['from', 'solo', 'to']);
     expect([...back.edges]).toHaveLength(1);
-    const e = [...back.edges][0];
+    const [e] = [...back.edges];
     expect([e.from.id, e.to.id, [...e.labels][0]]).toEqual(['from', 'to', 'REL']);
   });
 
@@ -103,28 +104,35 @@ describe('pg-text: documented lossiness', () => {
 // slot). Node ids, labels, and properties must match.
 const rng = (seed: number): (() => number) => {
   let s = seed >>> 0;
+
   return () => {
     s = (s + 0x6d2b79f5) >>> 0;
     let t = Math.imul(s ^ (s >>> 15), 1 | s);
     t ^= t + Math.imul(t ^ (t >>> 7), 61 | t);
+
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 };
 
 const scalar = (r: () => number): PropertyValue => {
   const k = r();
+
   if (k < 0.3) {
     return Math.floor(r() * 400) - 200;
   }
+
   if (k < 0.45) {
     return Math.round((r() * 400 - 200) * 100) / 100;
   }
+
   if (k < 0.62) {
     return r() < 0.5 ? 'plain text' : `s:${Math.floor(r() * 1000)}`;
   }
+
   if (k < 0.74) {
     return r() < 0.5;
   }
+
   return null;
 };
 
@@ -134,36 +142,47 @@ const representableGraph = (seed: number): Graph => {
   g.disableEvents();
   const nodes = [];
   const nodeCount = 3 + Math.floor(r() * 10);
+
   for (let i = 0; i < nodeCount; i += 1) {
     const labels = ['A', 'B', 'C'].filter(() => r() < 0.4);
     const properties: Record<string, PropertyValue> = {};
+
     for (const key of ['a', 'b', 'name', 'tags']) {
       if (r() < 0.5) {
         if (key === 'tags' && r() < 0.6) {
           const len = 2 + Math.floor(r() * 3); // multi-element only
           const arr: PropertyValue[] = [];
+
           for (let j = 0; j < len; j += 1) {
             arr.push(r() < 0.5 ? Math.floor(r() * 20) : 'x');
           }
+
           properties[key] = arr;
         } else {
           properties[key] = scalar(r);
         }
       }
     }
+
     nodes.push(g.addVertex({ id: `n${i}`, labels, properties }));
   }
+
   const edgeCount = Math.floor(r() * nodeCount * 2);
+
   for (let i = 0; i < edgeCount; i += 1) {
     const from = nodes[Math.floor(r() * nodes.length)];
     const to = nodes[Math.floor(r() * nodes.length)];
     const properties: Record<string, PropertyValue> = {};
+
     if (r() < 0.5) {
       properties.w = scalar(r);
     }
+
     g.addEdge({ from, to, labels: ['REL'], properties });
   }
+
   g.enableEvents();
+
   return g;
 };
 
@@ -180,13 +199,16 @@ const equalUpToEdgeIds = (a: Graph, b: Graph): boolean => {
     new Map([...g.vertices].map((v) => [String(v.id), canon(v.labels, v.properties)]));
   const na = nodes(a);
   const nb = nodes(b);
+
   if (na.size !== nb.size || ![...na].every(([k, v]) => nb.get(k) === v)) {
     return false;
   }
+
   const edges = (g: Graph): string[] =>
     [...g.edges].map((e) => `${e.from.id}->${e.to.id}|${canon(e.labels, e.properties)}`).sort();
   const ea = edges(a);
   const eb = edges(b);
+
   return ea.length === eb.length && ea.every((x, i) => x === eb[i]);
 };
 
@@ -209,9 +231,11 @@ describe('pg-text: round-trip (representable subset)', () => {
     const g = new Graph();
     g.disableEvents();
     const nodes = [];
+
     for (let i = 0; i < 5000; i += 1) {
       nodes.push(g.addVertex({ id: `n${i}`, labels: ['N'], properties: { a: i, b: `s${i}` } }));
     }
+
     for (let i = 0; i < 5000; i += 1) {
       g.addEdge({
         from: nodes[i % 5000],
@@ -220,6 +244,7 @@ describe('pg-text: round-trip (representable subset)', () => {
         properties: { w: i },
       });
     }
+
     g.enableEvents();
     const start = performance.now();
     const decoded = decode(encode(g), new Graph());
@@ -271,12 +296,15 @@ describe('pg-text: streaming', () => {
     const g = new Graph();
     g.disableEvents();
     const nodes = [];
+
     for (let i = 0; i < 25000; i += 1) {
       nodes.push(g.addVertex({ id: `n${i}`, labels: ['N'], properties: { a: i } }));
     }
+
     for (let i = 0; i < 25000; i += 1) {
       g.addEdge({ from: nodes[i], to: nodes[(i + 1) % 25000], labels: ['R'], properties: {} });
     }
+
     g.enableEvents();
     const start = performance.now();
     const back = await decodeStream(encodeStream(g), new Graph());

@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
 import { V, aggregate, filter, hasLabel, out, values, withinBag, withoutBag } from '../steps.js';
@@ -76,6 +77,7 @@ describe('sideEffects in closure traversers', () => {
           aggregate('a'),
           filter((_v, t) => {
             captured = t.sideEffects;
+
             return true;
           }),
         ),

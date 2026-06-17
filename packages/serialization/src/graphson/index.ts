@@ -1,6 +1,6 @@
+import type { Graph } from '@pl-graph/core';
 import { ErrorCode, PlGraphError } from '@pl-graph/errors';
 
-import type { Graph } from '@pl-graph/core';
 import type { Codec } from '../codec.js';
 import { normalizeBag } from '../value.js';
 import type { PropertyValue } from '../value.js';
@@ -45,11 +45,13 @@ const encodeValue = (value: PropertyValue): unknown => {
   if (value === null || typeof value === 'string' || typeof value === 'boolean') {
     return value;
   }
+
   if (typeof value === 'number') {
     return Number.isInteger(value)
       ? { '@type': 'g:Int64', '@value': value }
       : { '@type': 'g:Double', '@value': value };
   }
+
   // Array → g:List of typed values.
   return { '@type': 'g:List', '@value': value.map(encodeValue) };
 };
@@ -59,11 +61,14 @@ const decodeValue = (node: unknown): PropertyValue => {
   if (node === null || typeof node === 'string' || typeof node === 'boolean') {
     return node;
   }
+
   if (typeof node === 'number') {
     // A bare JSON number (untyped) — accept it as-is.
     return node;
   }
+
   const typed = node as Typed;
+
   switch (typed['@type']) {
     case 'g:Int64':
     case 'g:Int32':
@@ -88,9 +93,11 @@ const splitLabels = (label: string): string[] => (label === '' ? [] : label.spli
 
 export const encode = (graph: Graph): string => {
   const vertices: unknown[] = [];
+
   for (const vertex of graph.vertices) {
     const bag = normalizeBag(vertex.properties);
     const properties: Record<string, unknown[]> = {};
+
     for (const key of Object.keys(bag)) {
       properties[key] = [
         {
@@ -103,6 +110,7 @@ export const encode = (graph: Graph): string => {
         },
       ];
     }
+
     vertices.push({
       '@type': 'g:Vertex',
       '@value': {
@@ -114,15 +122,18 @@ export const encode = (graph: Graph): string => {
   }
 
   const edges: unknown[] = [];
+
   for (const edge of graph.edges) {
     const bag = normalizeBag(edge.properties);
     const properties: Record<string, unknown> = {};
+
     for (const key of Object.keys(bag)) {
       properties[key] = {
         '@type': 'g:Property',
         '@value': { key, value: encodeValue(bag[key]) },
       };
     }
+
     edges.push({
       '@type': 'g:Edge',
       '@value': {
@@ -163,14 +174,17 @@ export const decode = (input: string, graph: Graph): Graph => {
   for (const wrapper of doc.vertices ?? []) {
     const v = wrapper['@value'];
     const properties: Record<string, PropertyValue> = {};
+
     for (const key of Object.keys(v.properties ?? {})) {
       const entries = v.properties![key];
       // LPG is single-value: read only the first element of the array.
       const [first] = entries;
+
       if (first !== undefined) {
         properties[key] = decodeValue(first['@value'].value);
       }
     }
+
     graph.addVertex({ id: v.id, labels: splitLabels(v.label), properties });
   }
 
@@ -178,6 +192,7 @@ export const decode = (input: string, graph: Graph): Graph => {
     const e = wrapper['@value'];
     const from = graph.getVertexById(e.outV);
     const to = graph.getVertexById(e.inV);
+
     if (from === null || to === null) {
       throw new PlGraphError(
         `GraphSON edge ${e.id} references missing vertex (outV=${e.outV}, inV=${e.inV})`,
@@ -187,14 +202,18 @@ export const decode = (input: string, graph: Graph): Graph => {
         },
       );
     }
+
     const properties: Record<string, PropertyValue> = {};
+
     for (const key of Object.keys(e.properties ?? {})) {
       properties[key] = decodeValue(e.properties![key]['@value'].value);
     }
+
     graph.addEdge({ id: e.id, from, to, labels: splitLabels(e.label), properties });
   }
 
   graph.enableEvents();
+
   return graph;
 };
 

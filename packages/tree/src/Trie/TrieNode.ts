@@ -99,6 +99,7 @@ export class TrieNode<T> {
       if (child.isEndOfWord) {
         yield child;
       }
+
       yield* child.descendants();
     }
   }

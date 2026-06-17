@@ -1,6 +1,5 @@
 // Renders benchmarks/results.json into a self-contained styled HTML report.
 // Run after compare.ts: bun benchmarks/report.ts
-type Sig = { count: number; sum: number };
 type OpTs = { ts: number | null; tsErr?: string | null };
 type Row = {
   n: number;
@@ -33,14 +32,21 @@ type Results = {
 
 const r: Results = JSON.parse(await Bun.file('benchmarks/results.json').text());
 
-const fmt = (ms: number | null | undefined): string =>
-  ms == null
-    ? '—'
-    : ms < 1
-      ? `${(ms * 1000).toFixed(0)} µs`
-      : ms < 1000
-        ? `${ms.toFixed(2)} ms`
-        : `${(ms / 1000).toFixed(2)} s`;
+const fmt = (ms: number | null | undefined): string => {
+  if (ms == null) {
+    return '—';
+  }
+
+  if (ms < 1) {
+    return `${(ms * 1000).toFixed(0)} µs`;
+  }
+
+  if (ms < 1000) {
+    return `${ms.toFixed(2)} ms`;
+  }
+
+  return `${(ms / 1000).toFixed(2)} s`;
+};
 const n0 = (x: number): string => x.toLocaleString('en-US');
 const ratio = (ts: number | null | undefined, rust: number): string =>
   ts == null ? 'TS&nbsp;failed' : `${(ts / rust).toFixed(ts / rust >= 10 ? 0 : 1)}×`;
@@ -50,19 +56,25 @@ const badge = (ts: number | null | undefined, rust: number): string => {
   if (ts == null) {
     return 'fail';
   }
+
   const x = ts / rust;
+
   if (x >= 50) {
     return 'huge';
   }
+
   if (x >= 10) {
     return 'big';
   }
+
   if (x >= 2) {
     return 'win';
   }
+
   if (x >= 1.1) {
     return 'edge';
   }
+
   return 'loss';
 };
 
@@ -73,12 +85,12 @@ const biggestQuery = Math.max(
     ),
   ),
 );
-const tsFailures = r.parity.filter((p) => p.ok === false || p.ts == null).length;
 const simdBest = Math.max(
   ...r.rows.map((row) => row.ops.predicateScan.rustScalar / row.ops.predicateScan.rustNeon),
 );
 const buildBig = (() => {
   const big = r.rows[r.rows.length - 1];
+
   return big.ops.build.ts != null ? big.ops.build.ts / big.ops.build.rustParallel : null;
 })();
 
@@ -87,6 +99,7 @@ const queryTable = (qid: string, qlabel: string, qtext: string): string => {
     .filter((row) => row.ops[qid])
     .map((row) => {
       const o = row.ops[qid];
+
       return `<tr>
         <td class="num">${n0(row.n)}</td>
         <td class="num">${o.ts == null ? `<span class="err" title="${o.tsErr ?? ''}">stack overflow</span>` : fmt(o.ts)}</td>
@@ -96,6 +109,7 @@ const queryTable = (qid: string, qlabel: string, qtext: string): string => {
       </tr>`;
     })
     .join('');
+
   return `<h3>${qid} — ${qlabel}</h3><pre class="q">${qtext}</pre>
   <table><thead><tr><th>vertices</th><th>TS gql</th><th>Rust</th><th>speedup</th><th>rows</th></tr></thead><tbody>${rows}</tbody></table>`;
 };
@@ -116,6 +130,7 @@ const buildRows = r.rows
 const serializeRows = r.rows
   .map((row) => {
     const s = row.ops.serialize;
+
     return `<tr><td class="num">${n0(row.n)}</td>
     <td class="num">${fmt(s.tsString)}</td><td class="num">${fmt(s.rustBytes)}</td>
     <td><span class="b ${badge(s.tsString, s.rustBytes)}">${ratio(s.tsString, s.rustBytes)}</span></td>
@@ -127,18 +142,35 @@ const serializeRows = r.rows
 const simdRows = r.rows
   .map((row) => {
     const p = row.ops.predicateScan;
+
     return `<tr><td class="num">${n0(row.n)}</td><td class="num">${fmt(p.jsLoop)}</td><td class="num">${fmt(p.rustScalar)}</td><td class="num">${fmt(p.rustNeon)}</td>
     <td><span class="b ${p.rustScalar / p.rustNeon >= 2 ? 'big' : 'win'}">${(p.rustScalar / p.rustNeon).toFixed(2)}×</span></td>
     <td><span class="b ${badge(p.jsLoop, p.rustNeon)}">${(p.jsLoop / p.rustNeon).toFixed(1)}×</span></td></tr>`;
   })
   .join('');
 
+// Render a parity value (which may be any JSON shape) as a table cell string.
+const cell = (v: unknown): string =>
+  typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v);
+
+const parityBadge = (ok: boolean | null): string => {
+  if (ok === true) {
+    return '<span class="ok">✓ match</span>';
+  }
+
+  if (ok === false) {
+    return '<span class="err">✗ differ</span>';
+  }
+
+  return '<span class="dim">TS n/a</span>';
+};
+
 const parityRows = r.parity
   .map(
     (p) => `<tr><td class="num">${n0(p.n)}</td><td>${p.what}</td>
-    <td class="dim">${typeof p.ts === 'object' ? JSON.stringify(p.ts) : p.ts}</td>
-    <td class="dim">${typeof p.rust === 'object' ? JSON.stringify(p.rust) : p.rust}</td>
-    <td>${p.ok === true ? '<span class="ok">✓ match</span>' : p.ok === false ? '<span class="err">✗ differ</span>' : '<span class="dim">TS n/a</span>'}</td></tr>`,
+    <td class="dim">${cell(p.ts)}</td>
+    <td class="dim">${cell(p.rust)}</td>
+    <td>${parityBadge(p.ok)}</td></tr>`,
   )
   .join('');
 
@@ -204,6 +236,7 @@ ${r.meta.queries.map((q) => queryTable(q.id, q.label, q.text)).join('')}
 <table><thead><tr><th>vertices</th><th>queries</th><th>one-each</th><th>batched (1 crossing)</th><th>×</th></tr></thead><tbody>${r.rows
   .map((row) => {
     const b = row.ops.ffiBatch;
+
     return `<tr><td class="num">${n0(row.n)}</td><td class="num dim">${b.queries}</td><td class="num">${fmt(b.perCall)}</td><td class="num">${fmt(b.batched)}</td><td><span class="b ${b.perCall / b.batched >= 1.5 ? 'win' : 'edge'}">${(b.perCall / b.batched).toFixed(2)}×</span></td></tr>`;
   })
   .join('')}</tbody></table>

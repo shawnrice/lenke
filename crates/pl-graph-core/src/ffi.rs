@@ -31,7 +31,11 @@ pub unsafe extern "C" fn plg_build_csr(
     }
     let src = std::slice::from_raw_parts(src, e);
     let dst = std::slice::from_raw_parts(dst, e);
-    let kind = if simd != 0 { ScanKind::Neon } else { ScanKind::Scalar };
+    let kind = if simd != 0 {
+        ScanKind::Neon
+    } else {
+        ScanKind::Scalar
+    };
     let csr = build_csr(src, dst, n, kind);
     std::ptr::copy_nonoverlapping(csr.offsets.as_ptr(), out_offsets, n + 1);
     std::ptr::copy_nonoverlapping(csr.neighbors.as_ptr(), out_neighbors, e);
@@ -89,7 +93,11 @@ pub unsafe extern "C" fn plg_dealloc(ptr: *mut u8, len: usize) {
 /// `ptr`/`len` must describe valid UTF-8 NDJSON. Returns null on bad UTF-8.
 #[cfg(feature = "ndjson")]
 #[no_mangle]
-pub unsafe extern "C" fn plg_graph_from_ndjson(ptr: *const u8, len: usize, parallel: u32) -> *mut Graph {
+pub unsafe extern "C" fn plg_graph_from_ndjson(
+    ptr: *const u8,
+    len: usize,
+    parallel: u32,
+) -> *mut Graph {
     crate::ffi_error::begin();
     if ptr.is_null() {
         crate::ffi_error::set_code(ErrorCode::Ffi, "null NDJSON pointer");
@@ -103,7 +111,11 @@ pub unsafe extern "C" fn plg_graph_from_ndjson(ptr: *const u8, len: usize, paral
             return std::ptr::null_mut();
         }
     };
-    let decoded = if parallel != 0 { crate::ndjson::decode(text) } else { crate::ndjson::decode_serial(text) };
+    let decoded = if parallel != 0 {
+        crate::ndjson::decode(text)
+    } else {
+        crate::ndjson::decode_serial(text)
+    };
     match decoded {
         Ok(g) => Box::into_raw(Box::new(g)),
         Err(e) => {
@@ -162,7 +174,11 @@ pub unsafe extern "C" fn plg_graph_version(g: *const Graph) -> u64 {
 /// # Safety
 /// `g` valid; `name_ptr`/`name_len` valid UTF-8.
 #[no_mangle]
-pub unsafe extern "C" fn plg_graph_epoch(g: *const Graph, name_ptr: *const u8, name_len: usize) -> u64 {
+pub unsafe extern "C" fn plg_graph_epoch(
+    g: *const Graph,
+    name_ptr: *const u8,
+    name_len: usize,
+) -> u64 {
     if g.is_null() || name_ptr.is_null() {
         return 0;
     }
@@ -286,7 +302,11 @@ pub unsafe extern "C" fn plg_query_rows(
     let parsed = match crate::gql::parse(q) {
         Ok(p) => p,
         Err(e) => {
-            crate::ffi_error::set(ErrorCode::Syntax, &e.message, &format!("{{\"pos\":{}}}", e.pos));
+            crate::ffi_error::set(
+                ErrorCode::Syntax,
+                &e.message,
+                &format!("{{\"pos\":{}}}", e.pos),
+            );
             return std::ptr::null_mut();
         }
     };
@@ -342,7 +362,11 @@ pub unsafe extern "C" fn plg_query_arrow(
     let parsed = match crate::gql::parse(q) {
         Ok(p) => p,
         Err(e) => {
-            crate::ffi_error::set(ErrorCode::Syntax, &e.message, &format!("{{\"pos\":{}}}", e.pos));
+            crate::ffi_error::set(
+                ErrorCode::Syntax,
+                &e.message,
+                &format!("{{\"pos\":{}}}", e.pos),
+            );
             return std::ptr::null_mut();
         }
     };
@@ -418,7 +442,9 @@ pub unsafe extern "C" fn plg_gremlin_json(
         }
     };
     let vals = crate::gremlin::run(&mut *g, &plan);
-    let bytes = crate::gremlin::exec::results_to_json(&*g, &vals).into_bytes().into_boxed_slice();
+    let bytes = crate::gremlin::exec::results_to_json(&*g, &vals)
+        .into_bytes()
+        .into_boxed_slice();
     *out_len = bytes.len();
     Box::into_raw(bytes) as *mut u8
 }
@@ -582,7 +608,11 @@ pub unsafe extern "C" fn plg_free_buf(ptr: *mut u8, len: usize) {
 /// persist through the host (download, IndexedDB, …) instead.
 #[cfg(all(feature = "ndjson", not(target_arch = "wasm32")))]
 #[no_mangle]
-pub unsafe extern "C" fn plg_write_ndjson(g: *const Graph, path_ptr: *const u8, path_len: usize) -> i64 {
+pub unsafe extern "C" fn plg_write_ndjson(
+    g: *const Graph,
+    path_ptr: *const u8,
+    path_len: usize,
+) -> i64 {
     if g.is_null() || path_ptr.is_null() {
         return -1;
     }

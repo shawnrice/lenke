@@ -154,28 +154,36 @@ export const isPredicate = (x: unknown): x is Predicate =>
 
 export const toBy = (modulator: ByModulator | undefined, comparator?: OrderSym): By => {
   const direction = comparator !== undefined ? ORDER_TO_DIR.get(comparator) : undefined;
+
   // `by(Order.asc/desc)` alone — identity projection, comparator-only.
   if (typeof modulator === 'symbol' && ORDER_TO_DIR.has(modulator)) {
     return { kind: 'identity', direction: ORDER_TO_DIR.get(modulator) };
   }
+
   if (modulator === undefined) {
     return { kind: 'identity', direction };
   }
+
   if (typeof modulator === 'string') {
     return { kind: 'key', key: modulator, direction };
   }
+
   if (typeof modulator === 'symbol') {
     const tokenKind = TOKEN_TO_KIND.get(modulator);
+
     if (tokenKind) {
       return { kind: 'token', token: tokenKind, direction };
     }
+
     throw new PlGraphError(`Unrecognized symbol: ${String(modulator)}`, {
       code: ErrorCode.Unsupported,
     });
   }
+
   if (isPlan(modulator)) {
     return { kind: 'traversal', plan: modulator, direction };
   }
+
   return { kind: 'traversal', plan: buildPlan(modulator), direction };
 };
 
@@ -184,9 +192,10 @@ export const toBy = (modulator: ByModulator | undefined, comparator?: OrderSym):
 // call is pure.
 export const makeByable = <S extends Step & { bys?: readonly By[] }>(
   make: (bys: readonly By[] | undefined) => S,
-  bys?: readonly By[] | undefined,
+  bys?: readonly By[],
 ): ByableStep<S> => {
   const fn: StepFn = appendStep(make(bys));
+
   return Object.assign(fn, {
     by: (modulator?: ByModulator, comparator?: OrderSym) =>
       makeByable(make, [...(bys ?? []), toBy(modulator, comparator)]),
@@ -205,9 +214,11 @@ export const scopeTokenOf = (s: symbol): 'global' | 'local' => {
   if (s === Scope.local) {
     return 'local';
   }
+
   if (s === Scope.global) {
     return 'global';
   }
+
   throw new PlGraphError('Expected Scope.local or Scope.global', { code: ErrorCode.Unsupported });
 };
 

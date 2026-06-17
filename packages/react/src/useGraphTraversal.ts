@@ -9,6 +9,7 @@ const defaultIsEqual = <T>(a: T, b: T): boolean => {
   if (Array.isArray(a) && Array.isArray(b)) {
     return arraysAreEqual(a, b);
   }
+
   return Object.is(a, b);
 };
 

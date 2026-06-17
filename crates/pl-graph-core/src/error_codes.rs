@@ -41,7 +41,20 @@ pub enum ErrorCode {
 
 impl ErrorCode {
     /// Every code, for exhaustiveness checks and the cross-language conformance test.
-    pub const ALL: &'static [ErrorCode] = &[ErrorCode::Syntax, ErrorCode::InvalidJson, ErrorCode::InvalidShape, ErrorCode::UnknownFormat, ErrorCode::InvalidValue, ErrorCode::MissingVertex, ErrorCode::InvalidGraphOp, ErrorCode::InvalidTree, ErrorCode::NotImplemented, ErrorCode::Unsupported, ErrorCode::UnknownFunction, ErrorCode::Ffi];
+    pub const ALL: &'static [ErrorCode] = &[
+        ErrorCode::Syntax,
+        ErrorCode::InvalidJson,
+        ErrorCode::InvalidShape,
+        ErrorCode::UnknownFormat,
+        ErrorCode::InvalidValue,
+        ErrorCode::MissingVertex,
+        ErrorCode::InvalidGraphOp,
+        ErrorCode::InvalidTree,
+        ErrorCode::NotImplemented,
+        ErrorCode::Unsupported,
+        ErrorCode::UnknownFunction,
+        ErrorCode::Ffi,
+    ];
 
     /// The stable `E_*` wire string. This is what crosses the FFI boundary.
     pub const fn as_str(&self) -> &'static str {

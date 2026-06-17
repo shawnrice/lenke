@@ -2,8 +2,8 @@ import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@pl-graph/core';
 import { ErrorCode, hasErrorCode } from '@pl-graph/errors';
-import { chunked, collect } from '../streaming.js';
 
+import { chunked, collect } from '../streaming.js';
 import type { ChunkSource } from '../streaming.js';
 import { graphContentEqual, randomLpgGraph } from '../testkit.js';
 import {
@@ -47,14 +47,14 @@ describe('typed headers', () => {
     const g = new Graph();
     g.addVertex({ id: 'n1', labels: ['A'], properties: { age: 30, active: true } });
     g.addVertex({ id: 'n2', labels: ['B'], properties: { ratio: 1.5, name: 'x' } });
-    const header = encodeNodes(g).split('\n')[0];
+    const [header] = encodeNodes(g).split('\n');
     expect(header).toBe('id,:LABEL,age:integer,active:boolean,ratio:float,name:string');
   });
 
   test('list columns carry an element type and []', () => {
     const g = new Graph();
     g.addVertex({ id: 'n1', labels: [], properties: { nums: [1, 2, 3], words: ['a'] } });
-    const header = encodeNodes(g).split('\n')[0];
+    const [header] = encodeNodes(g).split('\n');
     expect(header).toBe('id,:LABEL,nums:integer[],words:string[]');
     const back = roundTripNodes(g);
     expect(graphContentEqual(back, g)).toBe(true);
@@ -177,11 +177,13 @@ describe('edges', () => {
   test('decodeEdges throws MissingVertex on a dangling endpoint', () => {
     const g = new Graph();
     let caught: unknown;
+
     try {
       decodeEdges('id,:START_ID,:END_ID,:TYPE\ne1,x,y,KNOWS', g);
     } catch (e) {
       caught = e;
     }
+
     // The code is the contract; the message is just a human hint.
     expect(hasErrorCode(caught, ErrorCode.MissingVertex)).toBe(true);
   });
@@ -202,10 +204,12 @@ describe('round-trip property test', () => {
     for (let seed = 0; seed < 500; seed += 1) {
       const original = randomLpgGraph(seed);
       const back = csvCodec.decode(csvCodec.encode(original), new Graph());
+
       if (!graphContentEqual(back, original)) {
         throw new Error(`round-trip failed for seed ${seed}`);
       }
     }
+
     expect(true).toBe(true);
   });
 });
@@ -216,6 +220,7 @@ describe('throughput smoke test', () => {
     g.disableEvents();
     const nodeCount = 5000;
     const verts = [];
+
     for (let i = 0; i < nodeCount; i += 1) {
       verts.push(
         g.addVertex({
@@ -225,6 +230,7 @@ describe('throughput smoke test', () => {
         }),
       );
     }
+
     for (let i = 0; i < 5000; i += 1) {
       g.addEdge({
         id: `e${i}`,
@@ -234,6 +240,7 @@ describe('throughput smoke test', () => {
         properties: { w: i * 0.5 },
       });
     }
+
     g.enableEvents();
 
     const start = performance.now();
@@ -256,10 +263,12 @@ describe('streaming', () => {
       const original = randomLpgGraph(seed);
       // A generator IS a ChunkSource — pipe it straight into decode.
       const back = await csvCodec.decodeStream!(encodeStream(original), new Graph());
+
       if (!graphContentEqual(back, original)) {
         throw new Error(`stream round-trip failed for seed ${seed}`);
       }
     }
+
     expect(true).toBe(true);
   });
 
@@ -297,6 +306,7 @@ describe('streaming', () => {
     g.disableEvents();
     const nodeCount = 25000;
     const verts = [];
+
     for (let i = 0; i < nodeCount; i += 1) {
       verts.push(
         g.addVertex({
@@ -306,6 +316,7 @@ describe('streaming', () => {
         }),
       );
     }
+
     for (let i = 0; i < 25000; i += 1) {
       g.addEdge({
         id: `e${i}`,
@@ -315,6 +326,7 @@ describe('streaming', () => {
         properties: { w: i * 0.5 },
       });
     }
+
     g.enableEvents();
 
     const start = performance.now();

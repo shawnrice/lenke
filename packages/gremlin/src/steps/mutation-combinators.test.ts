@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
 import {
@@ -39,6 +40,7 @@ describe('mutation steps inside combinators', () => {
     expect(g.vertexCount).toBe(before + 2);
     const chained = [...g.vertices].filter((v) => v.labels.has('CHAIN'));
     expect(chained).toHaveLength(2);
+
     for (const v of chained) {
       expect(v.properties.seq).toBe(1);
     }

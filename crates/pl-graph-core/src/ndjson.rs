@@ -23,12 +23,10 @@ fn to_value(j: &J) -> CodeResult<Value> {
         J::Number(n) => Value::Num(n.as_f64().unwrap_or(f64::NAN)),
         J::String(s) => Value::Str(Arc::from(s.as_str())),
         J::Array(a) => Value::List(a.iter().map(to_value).collect::<CodeResult<Vec<_>>>()?),
-        J::Object(_) => {
-            return Err(CodeError::new(
-                ErrorCode::InvalidValue,
-                "ndjson: property value is a nested object, which is outside the LPG scalar/list model",
-            ))
-        }
+        J::Object(_) => return Err(CodeError::new(
+            ErrorCode::InvalidValue,
+            "ndjson: property value is a nested object, which is outside the LPG scalar/list model",
+        )),
     })
 }
 
@@ -36,7 +34,10 @@ fn to_value(j: &J) -> CodeResult<Value> {
 /// empty vec when absent. A nested-object value propagates as `InvalidValue`.
 fn props_of(obj: &serde_json::Map<String, J>) -> CodeResult<Vec<(String, Value)>> {
     match obj.get("properties").and_then(J::as_object) {
-        Some(m) => m.iter().map(|(k, v)| Ok((k.clone(), to_value(v)?))).collect(),
+        Some(m) => m
+            .iter()
+            .map(|(k, v)| Ok((k.clone(), to_value(v)?)))
+            .collect(),
         None => Ok(Vec::new()),
     }
 }
@@ -72,9 +73,17 @@ fn parse_line(line: &str) -> CodeResult<Option<Rec>> {
             let labels = obj
                 .get("labels")
                 .and_then(J::as_array)
-                .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default();
-            Rec::Node(NodeRec { id, labels, props: props_of(obj)? })
+            Rec::Node(NodeRec {
+                id,
+                labels,
+                props: props_of(obj)?,
+            })
         }
         Some("edge") => {
             let src = obj.get("from").map(as_id).unwrap_or_default();
@@ -88,7 +97,13 @@ fn parse_line(line: &str) -> CodeResult<Option<Rec>> {
                 .to_string();
             // Optional external edge id (absent ⇒ id-less, stays lazy).
             let id = obj.get("id").and_then(J::as_str).map(String::from);
-            Rec::Edge(EdgeRec { src, dst, etype, props: props_of(obj)?, id })
+            Rec::Edge(EdgeRec {
+                src,
+                dst,
+                etype,
+                props: props_of(obj)?,
+                id,
+            })
         }
         _ => return Ok(None),
     };
@@ -101,7 +116,10 @@ pub fn decode(text: &str) -> CodeResult<Graph> {
     // `collect` into a Result short-circuits on the first InvalidValue (rayon's
     // parallel collect supports this), so one bad line fails the whole decode.
     #[cfg(feature = "parallel")]
-    let recs: Vec<Option<Rec>> = text.par_lines().map(parse_line).collect::<CodeResult<_>>()?;
+    let recs: Vec<Option<Rec>> = text
+        .par_lines()
+        .map(parse_line)
+        .collect::<CodeResult<_>>()?;
     #[cfg(not(feature = "parallel"))]
     let recs: Vec<Option<Rec>> = text.lines().map(parse_line).collect::<CodeResult<_>>()?;
     let mut b = Builder::default();
@@ -178,9 +196,9 @@ fn push_value(out: &mut String, v: &Value) {
 /// Is property `col` present at element `idx`?
 fn col_present(col: &Column, idx: usize) -> bool {
     match col {
-        Column::Num { present, .. } | Column::Str { present, .. } | Column::Bool { present, .. } => {
-            present.get(idx)
-        }
+        Column::Num { present, .. }
+        | Column::Str { present, .. }
+        | Column::Bool { present, .. } => present.get(idx),
         Column::Mixed { data } => data[idx].is_some(),
     }
 }

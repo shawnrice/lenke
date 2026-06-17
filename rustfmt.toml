@@ -1,0 +1,12 @@
+# rustfmt configuration. These values match rustfmt's stable defaults today —
+# they exist to document intent and give a home for future tweaks, and to keep
+# the Rust line width aligned with oxfmt's printWidth (100) for the TS side.
+edition = "2021"
+max_width = 100
+
+# Nice-to-haves below require nightly rustfmt and are ignored on stable. Enable
+# them if/when the toolchain is pinned to nightly:
+# group_imports = "StdExternalCrate"
+# imports_granularity = "Crate"
+# wrap_comments = true
+# format_code_in_doc_comments = true

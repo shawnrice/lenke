@@ -60,7 +60,11 @@ enum RetItem {
     /// `a.key` (or bare `a`, key=None → the vertex id string)
     Plain { var: String, key: Option<String> },
     /// `count(*)` / `sum(a.key)` / …
-    Agg { func: AggFunc, var: Option<String>, key: Option<String> },
+    Agg {
+        func: AggFunc,
+        var: Option<String>,
+        key: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -103,7 +107,11 @@ pub struct RowSet {
 
 impl RowSet {
     pub fn new(cols: Vec<String>) -> Self {
-        RowSet { cols, data: Vec::new(), nrows: 0 }
+        RowSet {
+            cols,
+            data: Vec::new(),
+            nrows: 0,
+        }
     }
     pub fn ncols(&self) -> usize {
         self.cols.len()
@@ -434,13 +442,21 @@ impl P {
                     if self.is_sym("*") {
                         self.next();
                         self.eat_sym(")")?;
-                        return Ok(RetItem::Agg { func, var: None, key: None });
+                        return Ok(RetItem::Agg {
+                            func,
+                            var: None,
+                            key: None,
+                        });
                     }
                     let var = self.ident()?;
                     self.eat_sym(".")?;
                     let key = self.ident()?;
                     self.eat_sym(")")?;
-                    return Ok(RetItem::Agg { func, var: Some(var), key: Some(key) });
+                    return Ok(RetItem::Agg {
+                        func,
+                        var: Some(var),
+                        key: Some(key),
+                    });
                 }
             }
         }
@@ -520,12 +536,23 @@ impl P {
                 o => return Err(format!("expected LIMIT number, got {o:?}")),
             }
         }
-        Ok(Query { nodes, rels, preds, distinct, items, order, limit })
+        Ok(Query {
+            nodes,
+            rels,
+            preds,
+            distinct,
+            items,
+            order,
+            limit,
+        })
     }
 }
 
 pub fn parse(s: &str) -> Result<Query, String> {
-    let mut p = P { toks: tokenize(s)?, i: 0 };
+    let mut p = P {
+        toks: tokenize(s)?,
+        i: 0,
+    };
     p.parse()
 }
 
@@ -586,12 +613,20 @@ fn seeds<'a>(g: &'a Graph, node: &NodeP) -> Box<dyn Iterator<Item = u32> + 'a> {
 
 /// Project one binding cell for a plain RETURN item, interning strings locally
 /// so the checksum hashes the *text* (matching the TS side).
-fn project_cell(g: &Graph, binding: &[u32], pos: usize, key: &Option<String>, pdict: &mut Dict) -> Cell {
+fn project_cell(
+    g: &Graph,
+    binding: &[u32],
+    pos: usize,
+    key: &Option<String>,
+    pdict: &mut Dict,
+) -> Cell {
     let vi = binding[pos];
     match key {
         None => Cell::Str(pdict.intern(g.vid.text(vi))),
         Some(k) => match col_of(g, k) {
-            Some(Column::Num { data, present }) if present.get(vi as usize) => Cell::Num(data[vi as usize]),
+            Some(Column::Num { data, present }) if present.get(vi as usize) => {
+                Cell::Num(data[vi as usize])
+            }
             Some(Column::Bool { data, present }) if present.get(vi as usize) => {
                 Cell::Num(if data[vi as usize] { 1.0 } else { 0.0 })
             }
@@ -612,8 +647,12 @@ fn project_value(g: &Graph, binding: &[u32], pos: usize, key: &Option<String>) -
     match key {
         None => Value::Str(g.vid.arc(vi)),
         Some(k) => match col_of(g, k) {
-            Some(Column::Num { data, present }) if present.get(vi as usize) => Value::Num(data[vi as usize]),
-            Some(Column::Bool { data, present }) if present.get(vi as usize) => Value::Bool(data[vi as usize]),
+            Some(Column::Num { data, present }) if present.get(vi as usize) => {
+                Value::Num(data[vi as usize])
+            }
+            Some(Column::Bool { data, present }) if present.get(vi as usize) => {
+                Value::Bool(data[vi as usize])
+            }
             Some(Column::Str { data, present }) if present.get(vi as usize) => {
                 Value::Str(g.strs.arc(data[vi as usize]))
             }
@@ -728,7 +767,12 @@ struct Acc {
 }
 impl Acc {
     fn new() -> Self {
-        Acc { count: 0, sum: 0.0, min: f64::INFINITY, max: f64::NEG_INFINITY }
+        Acc {
+            count: 0,
+            sum: 0.0,
+            min: f64::INFINITY,
+            max: f64::NEG_INFINITY,
+        }
     }
     fn step(&mut self, x: Option<f64>) {
         self.count += 1;
@@ -808,7 +852,10 @@ struct Plan {
 
 impl Query {
     fn var_pos(&self, name: &str) -> usize {
-        self.nodes.iter().position(|n| n.var.as_deref() == Some(name)).unwrap_or(0)
+        self.nodes
+            .iter()
+            .position(|n| n.var.as_deref() == Some(name))
+            .unwrap_or(0)
     }
 
     /// Resolve labels/edge-types/predicates to ids. Returns `None` when a
@@ -816,17 +863,27 @@ impl Query {
     /// pattern unsatisfiable, so callers short-circuit to an empty result.
     /// (A missing *edge type* is handled lazily in the walk, not here.)
     fn plan(&self, g: &Graph) -> Option<Plan> {
-        let label_ids: Vec<Option<u32>> =
-            self.nodes.iter().map(|nd| nd.label.as_ref().and_then(|l| g.labels.get(l))).collect();
+        let label_ids: Vec<Option<u32>> = self
+            .nodes
+            .iter()
+            .map(|nd| nd.label.as_ref().and_then(|l| g.labels.get(l)))
+            .collect();
         for (nd, lid) in self.nodes.iter().zip(&label_ids) {
             if nd.label.is_some() && lid.is_none() {
                 return None;
             }
         }
-        let etype_ids: Vec<Option<u32>> =
-            self.rels.iter().map(|r| r.etype.as_ref().and_then(|t| g.etype.get(t))).collect();
+        let etype_ids: Vec<Option<u32>> = self
+            .rels
+            .iter()
+            .map(|r| r.etype.as_ref().and_then(|t| g.etype.get(t)))
+            .collect();
         let pred_pos: Vec<usize> = self.preds.iter().map(|p| self.var_pos(&p.var)).collect();
-        Some(Plan { label_ids, etype_ids, pred_pos })
+        Some(Plan {
+            label_ids,
+            etype_ids,
+            pred_pos,
+        })
     }
 
     /// The shared traversal: DFS over the out-CSR, binding each node position in
@@ -904,12 +961,17 @@ impl Query {
             // preserve first-seen group order for stable output
             let mut order: Vec<String> = Vec::new();
             self.for_each_binding(g, &plan, &mut |binding| {
-                let key_cells: Vec<Value> =
-                    group_items.iter().map(|(pos, key)| project_value(g, binding, *pos, key)).collect();
+                let key_cells: Vec<Value> = group_items
+                    .iter()
+                    .map(|(pos, key)| project_value(g, binding, *pos, key))
+                    .collect();
                 let gkey = row_key(&key_cells);
                 let entry = groups.entry(gkey.clone()).or_insert_with(|| {
                     order.push(gkey);
-                    (key_cells, (0..agg_items.len()).map(|_| Acc::new()).collect())
+                    (
+                        key_cells,
+                        (0..agg_items.len()).map(|_| Acc::new()).collect(),
+                    )
                 });
                 for (ai, (_, vpos, key)) in agg_items.iter().enumerate() {
                     let x = match (vpos, key) {
@@ -987,7 +1049,13 @@ impl Query {
     pub fn run(&self, g: &Graph) -> QueryResult {
         let plan = match self.plan(g) {
             Some(p) => p,
-            None => return QueryResult { count: 0, sum: 0.0, checksum: 0 },
+            None => {
+                return QueryResult {
+                    count: 0,
+                    sum: 0.0,
+                    checksum: 0,
+                }
+            }
         };
         let aggregating = self.items.iter().any(|i| matches!(i, RetItem::Agg { .. }));
 
@@ -1025,9 +1093,12 @@ impl Query {
                     .map(|(pos, key)| project_cell(g, binding, *pos, key, &mut pdict))
                     .collect();
                 let gkey = hash_row(&key_cells, &pdict);
-                let entry = groups
-                    .entry(gkey)
-                    .or_insert_with(|| (key_cells, (0..agg_items.len()).map(|_| Acc::new()).collect()));
+                let entry = groups.entry(gkey).or_insert_with(|| {
+                    (
+                        key_cells,
+                        (0..agg_items.len()).map(|_| Acc::new()).collect(),
+                    )
+                });
                 for (ai, (_, vpos, key)) in agg_items.iter().enumerate() {
                     let x = match (vpos, key) {
                         (Some(pos), Some(k)) => vertex_num(g, binding[*pos], k),
@@ -1115,7 +1186,11 @@ impl Query {
             }
             checksum = checksum.wrapping_add(hash_row(row, &pdict));
         }
-        QueryResult { count: rows.len() as u64, sum, checksum }
+        QueryResult {
+            count: rows.len() as u64,
+            sum,
+            checksum,
+        }
     }
 }
 
@@ -1174,7 +1249,10 @@ mod tests {
     fn multi_where() {
         let g = fixture();
         // active (even i) AND age > 30 → i in {4,6,8} → ages 40,60,80 → count 3
-        let r = run(&g, "MATCH (a:Person) WHERE a.age > 30 AND a.active = true RETURN count(*)");
+        let r = run(
+            &g,
+            "MATCH (a:Person) WHERE a.age > 30 AND a.active = true RETURN count(*)",
+        );
         assert_eq!((r.count, r.sum), (1, 3.0));
     }
 
@@ -1190,7 +1268,10 @@ mod tests {
     #[test]
     fn order_limit() {
         let g = fixture();
-        let r = run(&g, "MATCH (a:Person) RETURN a.age ORDER BY a.age DESC LIMIT 3");
+        let r = run(
+            &g,
+            "MATCH (a:Person) RETURN a.age ORDER BY a.age DESC LIMIT 3",
+        );
         assert_eq!(r.count, 3);
         assert_eq!(r.sum, 90.0 + 80.0 + 70.0);
     }
@@ -1208,7 +1289,10 @@ mod tests {
     fn rows_project_typed_values() {
         let g = fixture();
         // bare var → external id string; .key → typed property value.
-        let r = rows(&g, "MATCH (a:Person) WHERE a.age = 30 RETURN a, a.age, a.dept, a.active");
+        let r = rows(
+            &g,
+            "MATCH (a:Person) WHERE a.age = 30 RETURN a, a.age, a.dept, a.active",
+        );
         assert_eq!(r.cols, vec!["a", "a.age", "a.dept", "a.active"]);
         assert_eq!(r.nrows, 1);
         assert_eq!(
@@ -1225,17 +1309,27 @@ mod tests {
     #[test]
     fn rows_order_desc_limit_keeps_real_value_order() {
         let g = fixture();
-        let r = rows(&g, "MATCH (a:Person) RETURN a.age ORDER BY a.age DESC LIMIT 3");
+        let r = rows(
+            &g,
+            "MATCH (a:Person) RETURN a.age ORDER BY a.age DESC LIMIT 3",
+        );
         assert_eq!(
             rowvecs(&r),
-            vec![vec![Value::Num(90.0)], vec![Value::Num(80.0)], vec![Value::Num(70.0)]]
+            vec![
+                vec![Value::Num(90.0)],
+                vec![Value::Num(80.0)],
+                vec![Value::Num(70.0)]
+            ]
         );
     }
 
     #[test]
     fn rows_group_by_aggregate() {
         let g = fixture();
-        let r = rows(&g, "MATCH (a:Person) RETURN a.dept, count(*), sum(a.age) ORDER BY a.dept");
+        let r = rows(
+            &g,
+            "MATCH (a:Person) RETURN a.dept, count(*), sum(a.age) ORDER BY a.dept",
+        );
         assert_eq!(r.cols, vec!["a.dept", "count(*)", "sum(a.age)"]);
         // d0: i in {0,2,4,6,8} ages 0+20+40+60+80=200; d1: {1,3,5,7,9} 10+30+50+70+90=250
         assert_eq!(
@@ -1250,9 +1344,14 @@ mod tests {
     #[test]
     fn rows_distinct() {
         let g = fixture();
-        let r = rows(&g, "MATCH (a:Person) RETURN DISTINCT a.dept ORDER BY a.dept");
+        let r = rows(
+            &g,
+            "MATCH (a:Person) RETURN DISTINCT a.dept ORDER BY a.dept",
+        );
         assert_eq!(
-            rowvecs(&r), vec![vec![Value::Str("d0".into())], vec![Value::Str("d1".into())]]);
+            rowvecs(&r),
+            vec![vec![Value::Str("d0".into())], vec![Value::Str("d1".into())]]
+        );
     }
 
     #[test]
@@ -1266,7 +1365,10 @@ mod tests {
     #[test]
     fn rowset_json_shape() {
         let g = fixture();
-        let r = rows(&g, "MATCH (a:Person) WHERE a.age = 0 RETURN a.dept, a.age, a.active");
+        let r = rows(
+            &g,
+            "MATCH (a:Person) WHERE a.age = 0 RETURN a.dept, a.age, a.active",
+        );
         // Integer-valued floats render without a trailing `.0` (matching the
         // ndjson codec's `push_num`); `0` and `0.0` parse to the same JS number.
         assert_eq!(
@@ -1320,10 +1422,17 @@ mod tests {
         }
         let doc: serde_json::Value =
             serde_json::from_str(&rs.to_json()).expect("hand-rolled JSON must parse");
-        let rows = doc.get("rows").and_then(|r| r.as_array()).expect("rows array");
+        let rows = doc
+            .get("rows")
+            .and_then(|r| r.as_array())
+            .expect("rows array");
         assert_eq!(rows.len(), cases.len());
         for (i, want) in cases.iter().enumerate() {
-            assert!(serde_matches(&rows[i][0], want), "case {i}: {want:?} → {}", rows[i][0]);
+            assert!(
+                serde_matches(&rows[i][0], want),
+                "case {i}: {want:?} → {}",
+                rows[i][0]
+            );
         }
     }
 
@@ -1336,9 +1445,9 @@ mod tests {
             Value::Num(x) if x.is_finite() => got.as_f64() == Some(*x),
             Value::Num(_) => got.is_null(),
             Value::Str(s) => got.as_str() == Some(s.as_ref()),
-            Value::List(items) => got
-                .as_array()
-                .is_some_and(|a| a.len() == items.len() && a.iter().zip(items).all(|(g, w)| serde_matches(g, w))),
+            Value::List(items) => got.as_array().is_some_and(|a| {
+                a.len() == items.len() && a.iter().zip(items).all(|(g, w)| serde_matches(g, w))
+            }),
         }
     }
 }

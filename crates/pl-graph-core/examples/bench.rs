@@ -56,8 +56,14 @@ fn main() {
     });
     let elems_per_ms = n as f64;
     println!("exclusive-scan over {n} u32:");
-    println!("  scalar: {scalar:.3} ms  ({:.0} M elem/s)", elems_per_ms / scalar / 1e3);
-    println!("  neon:   {neon:.3} ms  ({:.0} M elem/s)", elems_per_ms / neon / 1e3);
+    println!(
+        "  scalar: {scalar:.3} ms  ({:.0} M elem/s)",
+        elems_per_ms / scalar / 1e3
+    );
+    println!(
+        "  neon:   {neon:.3} ms  ({:.0} M elem/s)",
+        elems_per_ms / neon / 1e3
+    );
     println!("  speedup: {:.2}x\n", scalar / neon);
 
     // ---- 2. Full CSR build (histogram + scan + scatter) ----
@@ -68,8 +74,14 @@ fn main() {
         let _ = build_csr(&src, &dst, n, ScanKind::Neon);
     });
     println!("full CSR build ({e} edges):");
-    println!("  scalar scan: {build_scalar:.3} ms  ({:.0} M edge/s)", e as f64 / build_scalar / 1e3);
-    println!("  neon scan:   {build_neon:.3} ms  ({:.0} M edge/s)", e as f64 / build_neon / 1e3);
+    println!(
+        "  scalar scan: {build_scalar:.3} ms  ({:.0} M edge/s)",
+        e as f64 / build_scalar / 1e3
+    );
+    println!(
+        "  neon scan:   {build_neon:.3} ms  ({:.0} M edge/s)",
+        e as f64 / build_neon / 1e3
+    );
     println!("  whole-build speedup: {:.2}x", build_scalar / build_neon);
     println!("  (scan is one of 3 phases; histogram + scatter are scatter-bound and stay scalar)");
 }

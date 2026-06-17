@@ -1,8 +1,8 @@
 import type { Graph } from '@pl-graph/core';
 
 import type { FlatMapClosure, Plan, ReducerClosure, SideEffectClosure } from '../ast.js';
-import { closureView, extend, type RunContext, startTraverser, type Traverser } from './runtime.js';
 import { applyPlanToStream } from './dispatch.js';
+import { closureView, extend, type RunContext, startTraverser, type Traverser } from './runtime.js';
 
 // `map(plan)` — first output of the sub-plan replaces the traverser value.
 // Drops traversers where the sub-plan is empty.
@@ -46,9 +46,11 @@ export const foldStep = function* (
   stream: Iterable<Traverser<unknown>>,
 ): Iterable<Traverser<unknown>> {
   const list: unknown[] = [];
+
   for (const t of stream) {
     list.push(t.value);
   }
+
   yield startTraverser(list);
 };
 
@@ -61,9 +63,11 @@ export const foldFnStep = function* (
   ctx: RunContext,
 ): Iterable<Traverser<unknown>> {
   let acc = seed;
+
   for (const t of stream) {
     acc = fn(acc, t.value, closureView(t, ctx));
   }
+
   yield startTraverser(acc);
 };
 
@@ -72,6 +76,7 @@ export const unfoldStream = function* (
 ): Iterable<Traverser<unknown>> {
   for (const t of stream) {
     const v = t.value;
+
     if (v !== null && typeof v !== 'string' && typeof v === 'object' && Symbol.iterator in v) {
       for (const item of v as Iterable<unknown>) {
         yield extend(t, item);
@@ -89,6 +94,7 @@ export const injectMidStream = function* (
   for (const v of values) {
     yield startTraverser(v);
   }
+
   yield* stream;
 };
 
@@ -103,6 +109,7 @@ export const sideEffectStep = function* (
     for (const _ of applyPlanToStream(plan, [t], graph, ctx)) {
       // intentionally consume
     }
+
     yield t;
   }
 };
@@ -114,6 +121,7 @@ export const sideEffectFnStep = function* (
 ): Iterable<Traverser<unknown>> {
   for (const t of stream) {
     fn(t.value, closureView(t, ctx));
+
     yield t;
   }
 };
@@ -123,6 +131,7 @@ export const indexStep = function* (
   stream: Iterable<Traverser<unknown>>,
 ): Iterable<Traverser<unknown>> {
   let i = 0;
+
   for (const t of stream) {
     yield extend(t, [t.value, i]);
     i++;

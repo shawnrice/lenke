@@ -67,6 +67,7 @@ describe('path-tracking correctness (elision must not change results)', () => {
     g.addEdge({ from: a, to: b, labels: ['E'], properties: {} });
     g.addEdge({ from: b, to: c, labels: ['E'], properties: {} });
     g.enableEvents();
+
     return g;
   };
 

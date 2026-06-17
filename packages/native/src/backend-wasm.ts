@@ -39,14 +39,17 @@ export type WasmSource =
 const instantiate = async (source: WasmSource): Promise<WebAssembly.Instance> => {
   if (source instanceof Response || source instanceof Promise) {
     const { instance } = await WebAssembly.instantiateStreaming(source, {});
+
     return instance;
   }
+
   // `instantiate` returns an `Instance` for a Module and `{ instance, module }`
   // for raw bytes; lib typings disagree on the overloads, so normalize both
   // shapes at runtime instead of leaning on a single declared return type.
   const result = (await WebAssembly.instantiate(source as ArrayBuffer, {})) as unknown as
     | WebAssembly.Instance
     | { instance: WebAssembly.Instance };
+
   return 'instance' in result ? result.instance : result;
 };
 
@@ -70,6 +73,7 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
   const writeBytes = (bytes: Uint8Array): number => {
     const p = ex.plg_alloc(bytes.byteLength);
     u8().set(bytes, p);
+
     return p;
   };
 
@@ -85,21 +89,26 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
     const q = query === null ? null : encoder.encode(query);
     const qPtr = q ? writeBytes(q) : 0;
     const outLenPtr = ex.plg_alloc(4);
+
     try {
       const resPtr = q
         ? call(handle, qPtr, q.byteLength, outLenPtr)
         : call(handle, 0, 0, outLenPtr);
+
       if (!resPtr) {
         throw new Error(`pl-graph: ${op} failed (parse error or unsupported clause)`);
       }
+
       const len = dv().getUint32(outLenPtr, true);
       const copy = u8().slice(resPtr, resPtr + len);
       free(resPtr, len);
+
       return copy;
     } finally {
       if (qPtr) {
         ex.plg_dealloc(qPtr, q!.byteLength);
       }
+
       ex.plg_dealloc(outLenPtr, 4);
     }
   };
@@ -109,11 +118,14 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
 
     graphFromNdjson: (bytes, parallel) => {
       const p = writeBytes(bytes);
+
       try {
         const h = ex.plg_graph_from_ndjson(p, bytes.byteLength, parallel ? 1 : 0);
+
         if (!h) {
           throw new Error('pl-graph: graphFromNdjson failed (invalid UTF-8 NDJSON)');
         }
+
         return h;
       } finally {
         ex.plg_dealloc(p, bytes.byteLength);
@@ -126,6 +138,7 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
     epoch: (handle, name) => {
       const n = encoder.encode(name);
       const p = writeBytes(n);
+
       try {
         return Number(ex.plg_graph_epoch(handle, p, n.byteLength));
       } finally {
@@ -159,13 +172,16 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
       const f = encoder.encode(format);
       const inPtr = writeBytes(input);
       const fPtr = writeBytes(f);
+
       try {
         const h = ex.plg_deserialize(inPtr, input.byteLength, fPtr, f.byteLength);
+
         if (!h) {
           throw new Error(
             `pl-graph: deserialize(${format}) failed (unknown format or parse error)`,
           );
         }
+
         return h;
       } finally {
         ex.plg_dealloc(inPtr, input.byteLength);

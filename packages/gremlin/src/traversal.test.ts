@@ -45,6 +45,7 @@ describe('traversal AST', () => {
 
     const [, repeatStep] = plan.steps;
     expect(repeatStep.kind).toBe('repeat');
+
     if (repeatStep.kind !== 'repeat') {
       return;
     }

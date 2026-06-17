@@ -6,6 +6,7 @@ const internalSideEffect = function* <T>(
 ): Iterable<T> {
   for (const iteration of iterable) {
     effect(iteration);
+
     yield iteration;
   }
 };

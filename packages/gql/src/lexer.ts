@@ -178,20 +178,28 @@ const SIMPLE_ESCAPES: Record<string, string> = {
 const readEscape = (src: string, i: number): { text: string; next: number } => {
   const esc = src[i + 1];
   const simple = SIMPLE_ESCAPES[esc];
+
   if (simple !== undefined) {
     return { text: simple, next: i + 2 };
   }
+
   if (esc === 'u' || esc === 'U') {
     const width = esc === 'u' ? 4 : 6;
     const hex = src.slice(i + 2, i + 2 + width);
+
     if (hex.length !== width || !/^[0-9a-fA-F]+$/.test(hex)) {
       throw new GqlSyntaxError(`Invalid \\${esc} escape (expected ${width} hex digits)`, i);
     }
+
     return { text: String.fromCodePoint(parseInt(hex, 16)), next: i + 2 + width };
   }
+
   return { text: esc, next: i + 2 };
 };
 
+// A hand-written scanner: one long switch over source characters. Splitting it
+// would scatter the token rules and hurt readability more than the length costs.
+// eslint-disable-next-line complexity, max-statements
 export const tokenize = (src: string): Token[] => {
   const tokens: Token[] = [];
   let i = 0;
@@ -219,16 +227,21 @@ export const tokenize = (src: string): Token[] => {
       while (i < src.length && src[i] !== '\n') {
         i += 1;
       }
+
       continue;
     }
+
     if (two === '/*') {
       i += 2;
+
       while (i < src.length && src.slice(i, i + 2) !== '*/') {
         i += 1;
       }
+
       if (i >= src.length) {
         throw new GqlSyntaxError('Unterminated block comment', i);
       }
+
       i += 2; // closing */
       continue;
     }
@@ -252,6 +265,7 @@ export const tokenize = (src: string): Token[] => {
       '||': 'concat',
     };
     const twoType = twoChar[two];
+
     if (twoType) {
       push(twoType, two, i);
       i += 2;
@@ -286,6 +300,7 @@ export const tokenize = (src: string): Token[] => {
     // the property-access dot — let it fall through to the number scanner below.
     const dotNumber = c === '.' && isDigit(src[i + 1] ?? '');
     const singleType = dotNumber ? undefined : single[c];
+
     if (singleType) {
       push(singleType, c, i);
       i += 1;
@@ -298,6 +313,7 @@ export const tokenize = (src: string): Token[] => {
       const quote = c;
       i += 1;
       let str = '';
+
       while (i < src.length && src[i] !== quote) {
         if (src[i] === '\\' && i + 1 < src.length) {
           const { text, next } = readEscape(src, i);
@@ -305,12 +321,15 @@ export const tokenize = (src: string): Token[] => {
           i = next;
           continue;
         }
+
         str += src[i];
         i += 1;
       }
+
       if (i >= src.length) {
         throw new GqlSyntaxError('Unterminated string literal', start);
       }
+
       i += 1; // closing quote
       push('string', str, start);
       continue;
@@ -322,13 +341,16 @@ export const tokenize = (src: string): Token[] => {
       const start = i;
       i += 1;
       let name = '';
+
       while (i < src.length && src[i] !== '`') {
         name += src[i];
         i += 1;
       }
+
       if (i >= src.length) {
         throw new GqlSyntaxError('Unterminated delimited identifier', start);
       }
+
       i += 1; // closing backtick
       tokens.push({ type: 'ident', value: name, pos: start, delimited: true });
       continue;
@@ -339,12 +361,15 @@ export const tokenize = (src: string): Token[] => {
       const start = i;
       i += 1;
       const nameStart = i;
+
       while (i < src.length && isIdentPart(src[i])) {
         i += 1;
       }
+
       if (i === nameStart) {
         throw new GqlSyntaxError('Expected a parameter name after `$`', start);
       }
+
       push('param', src.slice(nameStart, i), start);
       continue;
     }
@@ -354,8 +379,10 @@ export const tokenize = (src: string): Token[] => {
     if (isDigit(c) || (c === '.' && isDigit(src[i + 1] ?? ''))) {
       const start = i;
       const isBasePrefix = c === '0' && 'xXoObB'.includes(src[i + 1] ?? '');
+
       if (isBasePrefix) {
         i += 2;
+
         while (i < src.length && /[0-9a-fA-F_]/.test(src[i])) {
           i += 1;
         }
@@ -366,18 +393,23 @@ export const tokenize = (src: string): Token[] => {
           }
         };
         digits();
+
         if (src[i] === '.') {
           i += 1;
           digits();
         }
+
         if (src[i] === 'e' || src[i] === 'E') {
           i += 1;
+
           if (src[i] === '+' || src[i] === '-') {
             i += 1;
           }
+
           digits();
         }
       }
+
       const text = src.slice(start, i);
       push('number', text, start, Number(text.replace(/_/g, '')));
       continue;
@@ -386,16 +418,20 @@ export const tokenize = (src: string): Token[] => {
     // Identifiers and keywords.
     if (isIdentStart(c)) {
       const start = i;
+
       while (i < src.length && isIdentPart(src[i])) {
         i += 1;
       }
+
       const text = src.slice(start, i);
       const lower = text.toLowerCase();
+
       if (KEYWORDS.has(lower)) {
         push('keyword', lower, start);
       } else {
         push('ident', text, start);
       }
+
       continue;
     }
 
@@ -403,6 +439,7 @@ export const tokenize = (src: string): Token[] => {
   }
 
   push('eof', '', src.length);
+
   return tokens;
 };
 

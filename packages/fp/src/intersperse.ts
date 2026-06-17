@@ -11,11 +11,14 @@ import type { UnaryFn } from './types.js';
  */
 const internalIntersperse = function* <T>(separator: T, iterable: Iterable<T>): Iterable<T> {
   let first = true;
+
   for (const item of iterable) {
     if (!first) {
       yield separator;
     }
+
     first = false;
+
     yield item;
   }
 };

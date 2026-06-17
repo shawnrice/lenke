@@ -5,6 +5,7 @@ import { slice } from './slice.js';
 
 const range = function* (start: number, stop: number) {
   let x = start;
+
   while (x <= stop) {
     // eslint-disable-next-line no-plusplus
     yield x++;

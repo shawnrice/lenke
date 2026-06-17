@@ -458,6 +458,7 @@ describe('TCK ReturnSkipLimit: SKIP / LIMIT', () => {
   const seed = () => {
     const g = new Graph();
     query(g, `INSERT ({name:'A'}), ({name:'B'}), ({name:'C'}), ({name:'D'}), ({name:'E'})`);
+
     return g;
   };
 

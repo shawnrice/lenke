@@ -17,7 +17,6 @@ import type { Graph } from '@pl-graph/core';
 import { ErrorCode, PlGraphError } from '@pl-graph/errors';
 
 import type { Plan, Step } from '../ast.js';
-
 import { applyPlanToStream } from './dispatch.js';
 import {
   extend,
@@ -47,13 +46,14 @@ const sameValue = (a: unknown, b: unknown): boolean => {
   if ((isVertex(a) || isEdge(a)) && (isVertex(b) || isEdge(b))) {
     return a.id === b.id;
   }
+
   return a === b;
 };
 
 /** Lower one pattern plan into a {@link Pattern}. */
 const parsePattern = (plan: Plan): Pattern => {
   const { steps } = plan;
-  const first = steps[0];
+  const [first] = steps;
 
   // `not(inner)` / `where(inner)` filter wrappers: parse the inner pattern and
   // flip negation (where keeps it positive). These don't bind new labels.
@@ -63,6 +63,7 @@ const parsePattern = (plan: Plan): Pattern => {
     (first.kind === 'not' || (first.kind === 'where' && 'plan' in first))
   ) {
     const inner = parsePattern((first as Extract<Step, { kind: 'not' }>).plan);
+
     return { ...inner, negated: first.kind === 'not' ? !inner.negated : inner.negated };
   }
 
@@ -71,11 +72,14 @@ const parsePattern = (plan: Plan): Pattern => {
       code: ErrorCode.Syntax,
     });
   }
+
   const startKey = first.label;
   const last = steps[steps.length - 1];
+
   if (steps.length >= 2 && last.kind === 'as') {
     return { startKey, endKey: last.label, inner: { steps: steps.slice(1, -1) }, negated: false };
   }
+
   return { startKey, inner: { steps: steps.slice(1) }, negated: false };
 };
 
@@ -86,16 +90,19 @@ const parsePattern = (plan: Plan): Pattern => {
  */
 const computeStartLabel = (patterns: readonly Pattern[]): string => {
   const ends = new Set<string>();
+
   for (const p of patterns) {
     if (!p.negated && p.endKey !== undefined) {
       ends.add(p.endKey);
     }
   }
+
   for (const p of patterns) {
     if (!ends.has(p.startKey)) {
       return p.startKey;
     }
   }
+
   return patterns[0].startKey;
 };
 
@@ -111,6 +118,7 @@ const fromBinding = (t: Traverser<unknown>, value: unknown): Traverser<unknown> 
 const bind = (t: Traverser<unknown>, key: string, value: unknown): Traverser<unknown> => {
   const tags = new Map<string, readonly unknown[]>(t.tags);
   tags.set(key, [value]);
+
   return { ...t, tags };
 };
 
@@ -127,9 +135,11 @@ const applyPattern = (
   ctx: RunContext,
 ): Traverser<unknown>[] => {
   const start = recallTag(t.tags, p.startKey, 'last');
+
   if (!start.ok) {
     return [];
   }
+
   const out = applyPlanToStream(p.inner, [fromBinding(t, start.value)], graph, ctx);
 
   const boundEnd = p.endKey !== undefined ? recallTag(t.tags, p.endKey, 'last') : undefined;
@@ -138,37 +148,46 @@ const applyPattern = (
     // The inner constraint is satisfiable when some output matches the bound
     // end (or, if the end is unbound/absent, when any output exists at all).
     let satisfiable = false;
+
     for (const o of out) {
       if (boundEnd?.ok ? sameValue(o.value, boundEnd.value) : true) {
         satisfiable = true;
         break;
       }
     }
+
     return satisfiable ? [] : [t];
   }
 
   if (p.endKey === undefined) {
     return hasAny(out) ? [t] : []; // pure filter on start
   }
+
   if (boundEnd?.ok) {
     for (const o of out) {
       if (sameValue(o.value, boundEnd.value)) {
         return [t]; // end already bound and consistent
       }
     }
+
     return [];
   }
+
   // Bind the end label, one branch per distinct candidate value.
   const seen = new Set<string>();
   const branches: Traverser<unknown>[] = [];
+
   for (const o of out) {
     const k = tupleKey([o.value]);
+
     if (seen.has(k)) {
       continue;
     }
+
     seen.add(k);
     branches.push(bind(t, p.endKey, o.value));
   }
+
   return branches;
 };
 
@@ -179,17 +198,21 @@ const pickRunnable = (
   t: Traverser<unknown>,
 ): number => {
   let negatedIdx = -1;
+
   for (let i = 0; i < patterns.length; i++) {
     if (done.has(i) || !t.tags.has(patterns[i].startKey)) {
       continue;
     }
+
     if (!patterns[i].negated) {
       return i; // run binders/filters before negated constraints
     }
+
     if (negatedIdx === -1) {
       negatedIdx = i;
     }
   }
+
   return negatedIdx;
 };
 
@@ -210,17 +233,24 @@ export const matchStep = function* (
       // Emit the binding map as the value (TinkerPop-faithful); tags carry the
       // bindings for any following select(...).
       const bindings = new Map<string, unknown>();
+
       for (const [label, values] of t.tags) {
         bindings.set(label, values[values.length - 1]);
       }
+
       yield extend(t, bindings);
+
       return;
     }
+
     const idx = pickRunnable(patterns, done, t);
+
     if (idx === -1) {
       return; // no runnable pattern: this branch is stuck, drop it
     }
+
     const next = new Set(done).add(idx);
+
     for (const t2 of applyPattern(patterns[idx], t, graph, ctx)) {
       yield* solve(t2, next);
     }
@@ -229,6 +259,7 @@ export const matchStep = function* (
   for (const t of stream) {
     // Seed the source label from the incoming value (unless already bound).
     const seed = t.tags.has(startLabel) ? t : bind(t, startLabel, t.value);
+
     yield* solve(seed, new Set());
   }
 };

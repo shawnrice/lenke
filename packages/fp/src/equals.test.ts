@@ -4,6 +4,7 @@ import { equals } from './equals.js';
 
 const range = function* (start: number, stop: number) {
   let x = start;
+
   while (x <= stop) {
     yield x++;
   }

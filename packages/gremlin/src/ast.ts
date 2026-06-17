@@ -402,6 +402,7 @@ export type StepFn = ((plan: Plan) => Plan) & { readonly [STEP_FN]: true };
 export const appendStep = (step: Step): StepFn => {
   const fn = (plan: Plan): Plan => ({ steps: [...plan.steps, step] });
   Object.defineProperty(fn, STEP_FN, { value: true, enumerable: false });
+
   return fn as StepFn;
 };
 

@@ -3,15 +3,18 @@ import type { UnaryFn } from './types.js';
 
 const groupByInternal = <T, K>(keySelector: UnaryFn<T, K>, iterable: Iterable<T>): Map<K, T[]> => {
   const map = new Map<K, T[]>();
+
   for (const item of iterable) {
     const key = keySelector(item);
     const bucket = map.get(key);
+
     if (bucket) {
       bucket.push(item);
     } else {
       map.set(key, [item]);
     }
   }
+
   return map;
 };
 

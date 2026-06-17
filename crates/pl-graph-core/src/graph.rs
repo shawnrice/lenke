@@ -70,7 +70,9 @@ pub struct BitSet {
 
 impl BitSet {
     pub fn zeros(n: usize) -> Self {
-        BitSet { words: vec![0u64; n.div_ceil(64)] }
+        BitSet {
+            words: vec![0u64; n.div_ceil(64)],
+        }
     }
     #[inline]
     pub fn set(&mut self, i: usize) {
@@ -88,7 +90,9 @@ impl BitSet {
     }
     #[inline]
     pub fn get(&self, i: usize) -> bool {
-        self.words.get(i >> 6).is_some_and(|w| (w >> (i & 63)) & 1 == 1)
+        self.words
+            .get(i >> 6)
+            .is_some_and(|w| (w >> (i & 63)) & 1 == 1)
     }
 }
 
@@ -106,12 +110,23 @@ pub enum Value {
 #[derive(Debug)]
 pub enum Column {
     /// Numbers as f64 (absent = NaN, also flagged in `present`).
-    Num { data: Vec<f64>, present: BitSet },
+    Num {
+        data: Vec<f64>,
+        present: BitSet,
+    },
     /// Interned string ids (absent = u32::MAX).
-    Str { data: Vec<u32>, present: BitSet },
-    Bool { data: Vec<bool>, present: BitSet },
+    Str {
+        data: Vec<u32>,
+        present: BitSet,
+    },
+    Bool {
+        data: Vec<bool>,
+        present: BitSet,
+    },
     /// Heterogeneous / list / mixed-type keys: keep the raw values.
-    Mixed { data: Vec<Option<Value>> },
+    Mixed {
+        data: Vec<Option<Value>>,
+    },
 }
 
 impl Column {
@@ -170,7 +185,9 @@ impl Properties {
         match self.cols.get(kid as usize) {
             Some(Column::Num { data, present }) if present.get(idx) => Value::Num(data[idx]),
             Some(Column::Bool { data, present }) if present.get(idx) => Value::Bool(data[idx]),
-            Some(Column::Str { data, present }) if present.get(idx) => Value::Str(strs.arc(data[idx])),
+            Some(Column::Str { data, present }) if present.get(idx) => {
+                Value::Str(strs.arc(data[idx]))
+            }
             Some(Column::Mixed { data }) => data[idx].clone().unwrap_or(Value::Null),
             _ => Value::Null,
         }
@@ -298,7 +315,9 @@ type PropIndex = HashMap<String, std::collections::BTreeMap<IdxKey, Vec<u32>>>;
 /// key isn't indexed or the value isn't indexable (null/list).
 fn idx_apply(map: &mut PropIndex, key: &str, id: u32, value: &Value, add: bool) {
     let Some(bt) = map.get_mut(key) else { return };
-    let Some(k) = IdxKey::from_value(value) else { return };
+    let Some(k) = IdxKey::from_value(value) else {
+        return;
+    };
     if add {
         bt.entry(k).or_default().push(id);
     } else if let Some(bucket) = bt.get_mut(&k) {
@@ -310,9 +329,17 @@ fn idx_apply(map: &mut PropIndex, key: &str, id: u32, value: &Value, add: bool) 
 }
 
 /// Backfill an index for `key` over a property store (vertex or edge).
-fn build_prop_index(store: &Properties, live: &[bool], strs: &Dict, key: &str, n: usize) -> std::collections::BTreeMap<IdxKey, Vec<u32>> {
+fn build_prop_index(
+    store: &Properties,
+    live: &[bool],
+    strs: &Dict,
+    key: &str,
+    n: usize,
+) -> std::collections::BTreeMap<IdxKey, Vec<u32>> {
     let mut map: std::collections::BTreeMap<IdxKey, Vec<u32>> = std::collections::BTreeMap::new();
-    let Some(kid) = store.keys.get(key) else { return map };
+    let Some(kid) = store.keys.get(key) else {
+        return map;
+    };
     for id in 0..n as u32 {
         if !live.get(id as usize).copied().unwrap_or(false) {
             continue;
@@ -327,14 +354,21 @@ fn build_prop_index(store: &Properties, live: &[bool], strs: &Dict, key: &str, n
 /// Union the buckets of one key's ordered index that fall within `bound`. Bounds
 /// carry a type (e.g. `Num(30)`), so the scan stays within that type block —
 /// `{gt: 30}` never bleeds into string values.
-fn range_seek(map: &std::collections::BTreeMap<IdxKey, Vec<u32>>, bound: &RangeBound) -> Option<Vec<u32>> {
+fn range_seek(
+    map: &std::collections::BTreeMap<IdxKey, Vec<u32>>,
+    bound: &RangeBound,
+) -> Option<Vec<u32>> {
     use std::ops::Bound;
     let lo = match (&bound.gte, &bound.gt) {
         (Some(k), _) => Bound::Included(k.clone()),
         (None, Some(k)) => Bound::Excluded(k.clone()),
         (None, None) => Bound::Unbounded,
     };
-    let rank = [&bound.gt, &bound.gte, &bound.lt, &bound.lte].into_iter().flatten().next().map(IdxKey::rank);
+    let rank = [&bound.gt, &bound.gte, &bound.lt, &bound.lte]
+        .into_iter()
+        .flatten()
+        .next()
+        .map(IdxKey::rank);
     let mut out = Vec::new();
     for (k, ids) in map.range((lo, Bound::Unbounded)) {
         if let Some(r) = rank {
@@ -447,7 +481,13 @@ impl Graph {
     }
     /// Declare (and backfill) a secondary index over an **edge** property.
     pub fn create_edge_index(&mut self, key: &str) {
-        let map = build_prop_index(&self.edge_props, &self.e_live, &self.strs, key, self.e_src.len());
+        let map = build_prop_index(
+            &self.edge_props,
+            &self.e_live,
+            &self.strs,
+            key,
+            self.e_src.len(),
+        );
         self.eidx.insert(key.to_string(), map);
     }
     /// Drop a vertex index.
@@ -468,11 +508,23 @@ impl Graph {
 
     /// Equality seek over vertices: live vertices whose `key` == `value` (None = no index).
     pub fn vertices_by_prop(&self, key: &str, value: &IdxKey) -> Option<&[u32]> {
-        Some(self.vidx.get(key)?.get(value).map(Vec::as_slice).unwrap_or(&[]))
+        Some(
+            self.vidx
+                .get(key)?
+                .get(value)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]),
+        )
     }
     /// Equality seek over edges.
     pub fn edges_by_prop(&self, key: &str, value: &IdxKey) -> Option<&[u32]> {
-        Some(self.eidx.get(key)?.get(value).map(Vec::as_slice).unwrap_or(&[]))
+        Some(
+            self.eidx
+                .get(key)?
+                .get(value)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]),
+        )
     }
     /// Cardinality of a vertex equality seek (for cardinality-based seed selection).
     pub fn count_by_prop(&self, key: &str, value: &IdxKey) -> Option<usize> {
@@ -497,10 +549,12 @@ impl Graph {
     }
     /// Out-neighbors of `v` whose edge type is `etype` (or all if `None`).
     pub fn out_neighbors(&self, v: u32, etype: Option<u32>) -> impl Iterator<Item = u32> + '_ {
-        self.out[v as usize].iter().filter_map(move |a| match etype {
-            Some(t) if a.etype != t => None,
-            _ => Some(a.nbr),
-        })
+        self.out[v as usize]
+            .iter()
+            .filter_map(move |a| match etype {
+                Some(t) if a.etype != t => None,
+                _ => Some(a.nbr),
+            })
     }
 
     /// Labels carried by vertex `v`, as label ids.
@@ -615,7 +669,13 @@ impl Graph {
     }
 
     /// Add an edge `from -> to` of `etype` with properties; returns its index.
-    pub fn add_edge(&mut self, from: u32, to: u32, etype: &str, props: Vec<(String, Value)>) -> u32 {
+    pub fn add_edge(
+        &mut self,
+        from: u32,
+        to: u32,
+        etype: &str,
+        props: Vec<(String, Value)>,
+    ) -> u32 {
         let ei = self.e_src.len() as u32;
         let tid = self.etype.intern(etype);
         self.e_src.push(from);
@@ -624,15 +684,24 @@ impl Graph {
         self.by_etype.entry(tid).or_default().push(ei);
         self.e_live.push(true);
         self.live_e += 1;
-        self.out[from as usize].push(Adj { eidx: ei, nbr: to, etype: tid });
-        self.in_[to as usize].push(Adj { eidx: ei, nbr: from, etype: tid });
+        self.out[from as usize].push(Adj {
+            eidx: ei,
+            nbr: to,
+            etype: tid,
+        });
+        self.in_[to as usize].push(Adj {
+            eidx: ei,
+            nbr: from,
+            etype: tid,
+        });
         self.edge_props.push_element();
         for (k, v) in props {
             if self.eidx.contains_key(&k) {
                 idx_apply(&mut self.eidx, &k, ei, &v, true);
             }
             self.touch(&k);
-            self.edge_props.set_value(ei as usize, &k, v, &mut self.strs);
+            self.edge_props
+                .set_value(ei as usize, &k, v, &mut self.strs);
         }
         // Topology change: bump the global version and the new edge's type.
         self.bump();
@@ -669,7 +738,8 @@ impl Graph {
             let old = self.edge_props.value(ei as usize, key, &self.strs);
             idx_apply(&mut self.eidx, key, ei, &old, false);
         }
-        self.edge_props.set_value(ei as usize, key, v, &mut self.strs);
+        self.edge_props
+            .set_value(ei as usize, key, v, &mut self.strs);
         if self.eidx.contains_key(key) {
             let new = self.edge_props.value(ei as usize, key, &self.strs);
             idx_apply(&mut self.eidx, key, ei, &new, true);
@@ -787,8 +857,11 @@ impl Graph {
         if !self.is_vertex_live(vi) {
             return Ok(());
         }
-        let incident: Vec<u32> =
-            self.out[i].iter().chain(self.in_[i].iter()).map(|a| a.eidx).collect();
+        let incident: Vec<u32> = self.out[i]
+            .iter()
+            .chain(self.in_[i].iter())
+            .map(|a| a.eidx)
+            .collect();
         if !detach && !incident.is_empty() {
             return Err(CodeError::new(
                 ErrorCode::InvalidGraphOp,
@@ -800,8 +873,10 @@ impl Graph {
         }
         // Invalidate the vertex's labels and every property key it carried
         // (gathered before the columns/labels are cleared below).
-        let mut touched: Vec<String> =
-            self.vlabels[i].iter().map(|&l| self.labels.text(l).to_string()).collect();
+        let mut touched: Vec<String> = self.vlabels[i]
+            .iter()
+            .map(|&l| self.labels.text(l).to_string())
+            .collect();
         for kid in 0..self.props.cols.len() as u32 {
             if !matches!(self.props.value_id(i, kid, &self.strs), Value::Null) {
                 touched.push(self.props.keys.text(kid).to_string());
@@ -857,10 +932,21 @@ fn value_kind(v: &Value) -> Option<Kind> {
 /// A fresh, all-absent column sized to `len`, typed for a (non-null) value.
 fn empty_col_for(v: &Value, len: usize) -> Column {
     match value_kind(v) {
-        Some(Kind::Num) => Column::Num { data: vec![f64::NAN; len], present: BitSet::zeros(len) },
-        Some(Kind::Str) => Column::Str { data: vec![u32::MAX; len], present: BitSet::zeros(len) },
-        Some(Kind::Bool) => Column::Bool { data: vec![false; len], present: BitSet::zeros(len) },
-        _ => Column::Mixed { data: vec![None; len] },
+        Some(Kind::Num) => Column::Num {
+            data: vec![f64::NAN; len],
+            present: BitSet::zeros(len),
+        },
+        Some(Kind::Str) => Column::Str {
+            data: vec![u32::MAX; len],
+            present: BitSet::zeros(len),
+        },
+        Some(Kind::Bool) => Column::Bool {
+            data: vec![false; len],
+            present: BitSet::zeros(len),
+        },
+        _ => Column::Mixed {
+            data: vec![None; len],
+        },
     }
 }
 
@@ -939,7 +1025,11 @@ pub struct Builder {
 /// A key's column type is inferred from its first non-null value; values that
 /// disagree land in `Mixed` (lossless). Shared by the vertex and edge builds.
 fn build_props(len: usize, items: &[(usize, &[(String, Value)])], strs: &mut Dict) -> Properties {
-    let mut props = Properties { keys: Dict::default(), cols: Vec::new(), len };
+    let mut props = Properties {
+        keys: Dict::default(),
+        cols: Vec::new(),
+        len,
+    };
     // Infer a kind per key (by dense key id) from its first non-null value.
     let mut kinds: HashMap<u32, Kind> = HashMap::new();
     for (_, item) in items {
@@ -960,10 +1050,21 @@ fn build_props(len: usize, items: &[(usize, &[(String, Value)])], strs: &mut Dic
     // One column per interned key (dense by id); an all-null key gets an empty Mixed.
     props.cols = (0..props.keys.len() as u32)
         .map(|kid| match kinds.get(&kid) {
-            Some(Kind::Num) => Column::Num { data: vec![f64::NAN; len], present: BitSet::zeros(len) },
-            Some(Kind::Str) => Column::Str { data: vec![u32::MAX; len], present: BitSet::zeros(len) },
-            Some(Kind::Bool) => Column::Bool { data: vec![false; len], present: BitSet::zeros(len) },
-            _ => Column::Mixed { data: vec![None; len] },
+            Some(Kind::Num) => Column::Num {
+                data: vec![f64::NAN; len],
+                present: BitSet::zeros(len),
+            },
+            Some(Kind::Str) => Column::Str {
+                data: vec![u32::MAX; len],
+                present: BitSet::zeros(len),
+            },
+            Some(Kind::Bool) => Column::Bool {
+                data: vec![false; len],
+                present: BitSet::zeros(len),
+            },
+            _ => Column::Mixed {
+                data: vec![None; len],
+            },
         })
         .collect();
     for (idx, item) in items {
@@ -1001,7 +1102,10 @@ impl Builder {
             if let Some(id) = missing {
                 return Err(CodeError::new(
                     ErrorCode::MissingVertex,
-                    format!("edge references a non-existent vertex '{id}' (from='{}', to='{}')", e.src, e.dst),
+                    format!(
+                        "edge references a non-existent vertex '{id}' (from='{}', to='{}')",
+                        e.src, e.dst
+                    ),
                 ));
             }
         }
@@ -1037,8 +1141,10 @@ impl Builder {
 
         // (3) Vertex property columns. `strs` is graph-wide, shared with edges.
         let mut strs = Dict::default();
-        let node_items: Vec<(usize, &[(String, Value)])> =
-            nodes.iter().map(|nd| (vid.get(&nd.id).unwrap() as usize, nd.props.as_slice())).collect();
+        let node_items: Vec<(usize, &[(String, Value)])> = nodes
+            .iter()
+            .map(|nd| (vid.get(&nd.id).unwrap() as usize, nd.props.as_slice()))
+            .collect();
         let props = build_props(n, &node_items, &mut strs);
 
         // (4) Edges: parallel arrays + per-vertex out/in adjacency.
@@ -1061,8 +1167,16 @@ impl Builder {
             e_dst[i] = d;
             e_type[i] = t;
             by_etype.entry(t).or_default().push(i as u32);
-            out[s as usize].push(Adj { eidx: i as u32, nbr: d, etype: t });
-            in_[d as usize].push(Adj { eidx: i as u32, nbr: s, etype: t });
+            out[s as usize].push(Adj {
+                eidx: i as u32,
+                nbr: d,
+                etype: t,
+            });
+            in_[d as usize].push(Adj {
+                eidx: i as u32,
+                nbr: s,
+                etype: t,
+            });
             if let Some(id) = &ed.id {
                 let arc: Arc<str> = Arc::from(id.as_str());
                 eid_fwd.insert(i as u32, arc.clone());
@@ -1071,8 +1185,11 @@ impl Builder {
         }
 
         // (5) Edge property columns — same machinery, indexed by edge index.
-        let edge_items: Vec<(usize, &[(String, Value)])> =
-            edges.iter().enumerate().map(|(i, ed)| (i, ed.props.as_slice())).collect();
+        let edge_items: Vec<(usize, &[(String, Value)])> = edges
+            .iter()
+            .enumerate()
+            .map(|(i, ed)| (i, ed.props.as_slice()))
+            .collect();
         let edge_props = build_props(e, &edge_items, &mut strs);
 
         Graph {

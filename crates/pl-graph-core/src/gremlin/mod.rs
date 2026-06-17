@@ -263,7 +263,11 @@ pub enum Step {
     Coalesce(Vec<Traversal>),
     Optional(Box<Traversal>),
     Local(Box<Traversal>),
-    Choose { test: Box<Traversal>, then_: Box<Traversal>, else_: Option<Box<Traversal>> },
+    Choose {
+        test: Box<Traversal>,
+        then_: Box<Traversal>,
+        else_: Option<Box<Traversal>>,
+    },
     Map(Box<Traversal>),
     FlatMap(Box<Traversal>),
     SideEffect(Box<Traversal>),
@@ -274,11 +278,23 @@ pub enum Step {
     Subgraph(String),
     /// Emit the shortest vertex path(s) from each source vertex; `target`
     /// (set via `.with(ShortestPath.target, …)`) filters destinations.
-    ShortestPath { target: Option<Box<Traversal>> },
+    ShortestPath {
+        target: Option<Box<Traversal>>,
+    },
     Barrier,
-    Repeat { body: Box<Traversal>, times: Option<usize>, until: Option<Box<Traversal>>, emit: Option<Box<Traversal>>, emit_before: bool },
+    Repeat {
+        body: Box<Traversal>,
+        times: Option<usize>,
+        until: Option<Box<Traversal>>,
+        emit: Option<Box<Traversal>>,
+        emit_before: bool,
+    },
     As(String),
-    Select { labels: Vec<String>, pop: Pop, bys: Vec<By> },
+    Select {
+        labels: Vec<String>,
+        pop: Pop,
+        bys: Vec<By>,
+    },
     /// Declarative pattern matching: each sub-traversal is an `as(start) … [as(end)]`
     /// constraint; emits one traverser per consistent label assignment.
     Match(Vec<Traversal>),
@@ -291,7 +307,11 @@ pub enum Step {
     None(Option<P>),
     Fail(Option<String>),
     AddV(Option<String>),
-    AddE { label: String, from: Endpoint, to: Endpoint },
+    AddE {
+        label: String,
+        from: Endpoint,
+        to: Endpoint,
+    },
     Property(String, GVal),
     Drop,
 }
@@ -427,7 +447,8 @@ impl Traversal {
     }
     /// `has(label, key, pred)` — `hasLabel(label).has(key, pred)`.
     pub fn has_label_key(self, label: &str, key: &str, pred: P) -> Self {
-        self.push(Step::HasLabel(vec![label.to_string()])).push(Step::Has(key.to_string(), pred))
+        self.push(Step::HasLabel(vec![label.to_string()]))
+            .push(Step::Has(key.to_string(), pred))
     }
     pub fn has_label(self, labels: &[&str]) -> Self {
         self.push(Step::HasLabel(strs(labels)))
@@ -544,7 +565,10 @@ impl Traversal {
         self.push(Step::Order(vec![], false))
     }
     pub fn order_by(self, key: &str, dir: Order) -> Self {
-        self.push(Step::Order(vec![By::Key(key.to_string(), Some(dir))], false))
+        self.push(Step::Order(
+            vec![By::Key(key.to_string(), Some(dir))],
+            false,
+        ))
     }
     pub fn group(self) -> Self {
         self.push(Step::Group(vec![]))
@@ -582,10 +606,18 @@ impl Traversal {
         self.push(Step::Local(Box::new(sub)))
     }
     pub fn choose(self, test: Traversal, then_: Traversal) -> Self {
-        self.push(Step::Choose { test: Box::new(test), then_: Box::new(then_), else_: None })
+        self.push(Step::Choose {
+            test: Box::new(test),
+            then_: Box::new(then_),
+            else_: None,
+        })
     }
     pub fn choose_else(self, test: Traversal, then_: Traversal, else_: Traversal) -> Self {
-        self.push(Step::Choose { test: Box::new(test), then_: Box::new(then_), else_: Some(Box::new(else_)) })
+        self.push(Step::Choose {
+            test: Box::new(test),
+            then_: Box::new(then_),
+            else_: Some(Box::new(else_)),
+        })
     }
     pub fn map(self, sub: Traversal) -> Self {
         self.push(Step::Map(Box::new(sub)))
@@ -616,7 +648,9 @@ impl Traversal {
     }
     /// `shortestPath().with(ShortestPath.target, target)` — restrict destinations.
     pub fn shortest_path_to(self, target: Traversal) -> Self {
-        self.push(Step::ShortestPath { target: Some(Box::new(target)) })
+        self.push(Step::ShortestPath {
+            target: Some(Box::new(target)),
+        })
     }
     /// Set the target sub-traversal on the most recent `shortestPath` step (the
     /// textual `.with(ShortestPath.target, …)` modulator).
@@ -630,7 +664,13 @@ impl Traversal {
         self.push(Step::Barrier)
     }
     pub fn repeat(self, body: Traversal) -> Self {
-        self.push(Step::Repeat { body: Box::new(body), times: None, until: None, emit: None, emit_before: false })
+        self.push(Step::Repeat {
+            body: Box::new(body),
+            times: None,
+            until: None,
+            emit: None,
+            emit_before: false,
+        })
     }
     pub fn times(mut self, n: usize) -> Self {
         if let Some(Step::Repeat { times, .. }) = self.steps.last_mut() {
@@ -658,7 +698,10 @@ impl Traversal {
         self
     }
     pub fn emit_before(mut self, cond: Traversal) -> Self {
-        if let Some(Step::Repeat { emit, emit_before, .. }) = self.steps.last_mut() {
+        if let Some(Step::Repeat {
+            emit, emit_before, ..
+        }) = self.steps.last_mut()
+        {
             *emit = Some(Box::new(cond));
             *emit_before = true;
         }
@@ -670,10 +713,18 @@ impl Traversal {
         self.push(Step::As(label.to_string()))
     }
     pub fn select(self, labels: &[&str]) -> Self {
-        self.push(Step::Select { labels: strs(labels), pop: Pop::Last, bys: vec![] })
+        self.push(Step::Select {
+            labels: strs(labels),
+            pop: Pop::Last,
+            bys: vec![],
+        })
     }
     pub fn select_pop(self, pop: Pop, labels: &[&str]) -> Self {
-        self.push(Step::Select { labels: strs(labels), pop, bys: vec![] })
+        self.push(Step::Select {
+            labels: strs(labels),
+            pop,
+            bys: vec![],
+        })
     }
     pub fn match_(self, patterns: Vec<Traversal>) -> Self {
         self.push(Step::Match(patterns))
@@ -713,7 +764,11 @@ impl Traversal {
         self.push(Step::AddV(label.map(str::to_string)))
     }
     pub fn add_e(self, label: &str) -> Self {
-        self.push(Step::AddE { label: label.to_string(), from: Endpoint::Current, to: Endpoint::Current })
+        self.push(Step::AddE {
+            label: label.to_string(),
+            from: Endpoint::Current,
+            to: Endpoint::Current,
+        })
     }
     pub fn from_tag(mut self, label: &str) -> Self {
         if let Some(Step::AddE { from, .. }) = self.steps.last_mut() {

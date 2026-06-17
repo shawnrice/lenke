@@ -1,6 +1,7 @@
+import { describe, expect, test } from 'bun:test';
+
 /* eslint-disable max-lines-per-function */
 import { Trie } from './Trie.js';
-import { describe, expect, test } from 'bun:test';
 
 describe('Trie tests', () => {
   test('we can add two words', () => {

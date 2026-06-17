@@ -33,23 +33,30 @@ const edgesMatching = function* (
   if (!byLabel) {
     return;
   }
+
   // Fast path: a single edge type hits its index bucket directly.
   if (label?.kind === 'label') {
     const set = byLabel.get(label.name);
+
     if (set) {
       yield* set;
     }
+
     return;
   }
+
   // Otherwise evaluate the label expression against each edge, deduping across
   // the per-type buckets.
   const seen = new Set<Edge>();
+
   for (const set of byLabel.values()) {
     for (const e of set) {
       if (seen.has(e)) {
         continue;
       }
+
       seen.add(e);
+
       if (label === undefined || evalLabelExpr(label, e.labels)) {
         yield e;
       }
@@ -78,6 +85,7 @@ export const expand = function* (graph: Graph, v: Vertex, rel: Adjacency): Itera
   if (rel.direction === 'out' || rel.direction === 'both') {
     yield* outSteps(graph, v, rel.label);
   }
+
   if (rel.direction === 'in' || rel.direction === 'both') {
     yield* inSteps(graph, v, rel.label);
   }
@@ -116,6 +124,7 @@ const seedLabel = (expr: LabelExpr | undefined): string | null => {
   if (!expr) {
     return null;
   }
+
   switch (expr.kind) {
     case 'label':
       return expr.name;
@@ -132,11 +141,15 @@ export const candidateVertices = function* (
   label: LabelExpr | undefined,
 ): Iterable<Vertex> {
   const seed = seedLabel(label);
+
   if (seed === null) {
     yield* graph.verticesById.values();
+
     return;
   }
+
   const bucket = graph.verticesByLabel.get(seed);
+
   if (bucket) {
     yield* bucket;
   }
@@ -149,8 +162,10 @@ export const candidateVertices = function* (
  */
 export const candidateCount = (graph: Graph, label: LabelExpr | undefined): number => {
   const seed = seedLabel(label);
+
   if (seed === null) {
     return graph.verticesById.size;
   }
+
   return graph.verticesByLabel.get(seed)?.size ?? 0;
 };

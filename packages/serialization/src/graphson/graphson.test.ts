@@ -1,5 +1,7 @@
 import { describe, expect, test } from 'bun:test';
+
 import { Graph } from '@pl-graph/core';
+
 import { graphContentEqual, randomLpgGraph } from '../testkit.js';
 import { decode, encode, graphsonCodec } from './index.js';
 
@@ -49,7 +51,7 @@ describe('graphson typed-value shapes', () => {
   test('vertex wrapper has g:Vertex + single-element g:VertexProperty arrays', () => {
     const g = new Graph();
     g.addVertex({ id: 'n0', labels: ['Person'], properties: { name: 'x' } });
-    const wrapper = parse(g).vertices[0];
+    const [wrapper] = parse(g).vertices;
     expect(wrapper['@type']).toBe('g:Vertex');
     expect(wrapper['@value'].id).toBe('n0');
     expect(wrapper['@value'].label).toBe('Person');
@@ -65,7 +67,7 @@ describe('graphson typed-value shapes', () => {
     const a = g.addVertex({ id: 'a', labels: ['T'], properties: {} });
     const b = g.addVertex({ id: 'b', labels: ['T'], properties: {} });
     g.addEdge({ id: 'e0', from: a, to: b, labels: ['KNOWS'], properties: { w: 3 } });
-    const wrapper = parse(g).edges[0];
+    const [wrapper] = parse(g).edges;
     expect(wrapper['@type']).toBe('g:Edge');
     expect(wrapper['@value'].id).toBe('e0');
     expect(wrapper['@value'].label).toBe('KNOWS');
@@ -101,6 +103,7 @@ describe('graphson round-trip property test', () => {
     for (let seed = 0; seed < 320; seed += 1) {
       const original = randomLpgGraph(seed);
       const roundTripped = decode(encode(original), new Graph());
+
       if (!graphContentEqual(roundTripped, randomLpgGraph(seed))) {
         throw new Error(`round-trip mismatch at seed ${seed}`);
       }
@@ -122,6 +125,7 @@ describe('graphson throughput smoke', () => {
     g.disableEvents();
     const n = 5000;
     const verts = [];
+
     for (let i = 0; i < n; i += 1) {
       verts.push(
         g.addVertex({
@@ -131,6 +135,7 @@ describe('graphson throughput smoke', () => {
         }),
       );
     }
+
     for (let i = 0; i < n; i += 1) {
       g.addEdge({
         id: `e${i}`,
@@ -140,6 +145,7 @@ describe('graphson throughput smoke', () => {
         properties: { w: i * 0.25 },
       });
     }
+
     g.enableEvents();
 
     const start = performance.now();

@@ -44,7 +44,9 @@ export const traverseToVertex = function* (
     if (!isVertex(t.value)) {
       continue;
     }
+
     const v = t.value;
+
     for (const e of adjacentEdges(step.kind, graph, v, step.labels)) {
       yield extend(t, otherEndpoint(step.kind, e, v));
     }
@@ -60,7 +62,9 @@ export const traverseToEdge = function* (
     if (!isVertex(t.value)) {
       continue;
     }
+
     const v = t.value;
+
     for (const e of adjacentEdges(step.kind, graph, v, step.labels)) {
       yield extend(t, e);
     }
@@ -75,18 +79,22 @@ export const edgeToVertex = function* (
     if (!isEdge(t.value)) {
       continue;
     }
+
     const e = t.value;
+
     if (step.kind === 'outV') {
       yield extend(t, e.from);
     } else if (step.kind === 'inV') {
       yield extend(t, e.to);
     } else if (step.kind === 'bothV') {
       yield extend(t, e.from);
+
       yield extend(t, e.to);
     } else {
       // otherV — find the previous vertex in the path and emit the other endpoint.
       const prev = [...t.path].reverse().find((p): p is Vertex => isVertex(p));
       const other = prev?.id === e.from.id ? e.to : e.from;
+
       yield extend(t, other);
     }
   }

@@ -162,17 +162,26 @@ fn inner_value(prop_value: &J) -> Option<&J> {
 }
 
 pub fn decode(input: &str) -> CodeResult<Graph> {
-    let j: J = serde_json::from_str(input)
-        .map_err(|e| CodeError::new(ErrorCode::InvalidJson, format!("graphson: invalid JSON: {e}")))?;
-    let obj = j
-        .as_object()
-        .ok_or_else(|| CodeError::new(ErrorCode::InvalidShape, "graphson: expected a top-level object"))?;
+    let j: J = serde_json::from_str(input).map_err(|e| {
+        CodeError::new(
+            ErrorCode::InvalidJson,
+            format!("graphson: invalid JSON: {e}"),
+        )
+    })?;
+    let obj = j.as_object().ok_or_else(|| {
+        CodeError::new(
+            ErrorCode::InvalidShape,
+            "graphson: expected a top-level object",
+        )
+    })?;
 
     let mut b = Builder::default();
 
     if let Some(vertices) = obj.get("vertices").and_then(J::as_array) {
         for wrapper in vertices {
-            let Some(v) = wrapper.get("@value").and_then(J::as_object) else { continue };
+            let Some(v) = wrapper.get("@value").and_then(J::as_object) else {
+                continue;
+            };
             let id = v.get("id").map(crate::codec::json_id).unwrap_or_default();
             let labels = match v.get("label").and_then(J::as_str) {
                 Some("") | None => Vec::new(),
@@ -195,7 +204,9 @@ pub fn decode(input: &str) -> CodeResult<Graph> {
 
     if let Some(edges) = obj.get("edges").and_then(J::as_array) {
         for wrapper in edges {
-            let Some(e) = wrapper.get("@value").and_then(J::as_object) else { continue };
+            let Some(e) = wrapper.get("@value").and_then(J::as_object) else {
+                continue;
+            };
             let src = e.get("outV").map(crate::codec::json_id).unwrap_or_default();
             let dst = e.get("inV").map(crate::codec::json_id).unwrap_or_default();
             // single type — split the `::` convention and take the first.
@@ -213,7 +224,13 @@ pub fn decode(input: &str) -> CodeResult<Graph> {
                 }
             }
             let id = e.get("id").map(crate::codec::json_id);
-            b.edges.push(EdgeRec { src, dst, etype, props, id });
+            b.edges.push(EdgeRec {
+                src,
+                dst,
+                etype,
+                props,
+                id,
+            });
         }
     }
 

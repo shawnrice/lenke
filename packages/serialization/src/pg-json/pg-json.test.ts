@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@pl-graph/core';
+
 import { graphContentEqual, randomLpgGraph } from '../testkit.js';
 import { decode, encode, isPGFormat, pgJsonCodec } from './index.js';
 
@@ -130,15 +131,18 @@ describe('serialization/pg-json: parallel-edge import', () => {
 describe('serialization/pg-json: round-trip property test', () => {
   test('graphContentEqual over 300 seeds', () => {
     let passed = 0;
+
     for (let seed = 0; seed < 300; seed += 1) {
       const original = randomLpgGraph(seed);
       const restored = decode(encode(randomLpgGraph(seed)), new Graph());
+
       if (graphContentEqual(restored, original)) {
         passed += 1;
       } else {
         throw new Error(`round-trip mismatch at seed ${seed}`);
       }
     }
+
     expect(passed).toBe(300);
   });
 
@@ -155,12 +159,15 @@ describe('serialization/pg-json: throughput smoke', () => {
     g.disableEvents();
     const nodeCount = 4000;
     const verts = [];
+
     for (let i = 0; i < nodeCount; i += 1) {
       verts.push(
         g.addVertex({ id: `n${i}`, labels: ['Node'], properties: { i, name: `v${i}`, ok: true } }),
       );
     }
+
     const edgeCount = 6000;
+
     for (let i = 0; i < edgeCount; i += 1) {
       g.addEdge({
         id: `e${i}`,

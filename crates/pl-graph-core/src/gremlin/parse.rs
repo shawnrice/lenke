@@ -97,8 +97,22 @@ fn lex(src: &str) -> Result<Vec<Tok>, String> {
 // --- parser -----------------------------------------------------------------
 
 const PREDS: &[&str] = &[
-    "eq", "neq", "gt", "gte", "lt", "lte", "between", "inside", "outside", "within", "without", "startingWith", "startsWith",
-    "endingWith", "containing", "notContaining",
+    "eq",
+    "neq",
+    "gt",
+    "gte",
+    "lt",
+    "lte",
+    "between",
+    "inside",
+    "outside",
+    "within",
+    "without",
+    "startingWith",
+    "startsWith",
+    "endingWith",
+    "containing",
+    "notContaining",
 ];
 
 /// A parsed argument before it's bound to a specific step.
@@ -234,7 +248,18 @@ impl Parser {
                     }
                 }
                 // Token namespaces: T.id, Order.desc, Pop.first, Scope.local.
-                if matches!(id.as_str(), "T" | "Order" | "Pop" | "Scope" | "Column" | "TextP" | "P" | "ShortestPath" | "__") && self.peek_at(1) == Some(&Tok::Dot) {
+                if matches!(
+                    id.as_str(),
+                    "T" | "Order"
+                        | "Pop"
+                        | "Scope"
+                        | "Column"
+                        | "TextP"
+                        | "P"
+                        | "ShortestPath"
+                        | "__"
+                ) && self.peek_at(1) == Some(&Tok::Dot)
+                {
                     if id == "TextP" || id == "P" {
                         // TextP.containing(...) / P.gt(...) — skip the namespace, parse the call.
                         self.pos += 2; // ident + dot
@@ -304,7 +329,11 @@ impl Parser {
     /// Parse a predicate call `name(args)` (the leading ident already consumed).
     fn predicate(&mut self, name: &str) -> Result<P, String> {
         let args = self.args()?;
-        let g = |i: usize| args.get(i).ok_or_else(|| format!("{name}: missing arg")).and_then(Arg::as_gval);
+        let g = |i: usize| {
+            args.get(i)
+                .ok_or_else(|| format!("{name}: missing arg"))
+                .and_then(Arg::as_gval)
+        };
         Ok(match name {
             "eq" => P::Eq(g(0)?),
             "neq" => P::Neq(g(0)?),
@@ -317,10 +346,30 @@ impl Parser {
             "outside" => P::Outside(g(0)?, g(1)?),
             "within" => P::Within(args.iter().map(Arg::as_gval).collect::<Result<_, _>>()?),
             "without" => P::Without(args.iter().map(Arg::as_gval).collect::<Result<_, _>>()?),
-            "startingWith" | "startsWith" => P::StartsWith(args.first().ok_or("startsWith: missing")?.as_str()?.to_string()),
-            "endingWith" => P::EndingWith(args.first().ok_or("endingWith: missing")?.as_str()?.to_string()),
-            "containing" => P::Containing(args.first().ok_or("containing: missing")?.as_str()?.to_string()),
-            "notContaining" => P::NotContaining(args.first().ok_or("notContaining: missing")?.as_str()?.to_string()),
+            "startingWith" | "startsWith" => P::StartsWith(
+                args.first()
+                    .ok_or("startsWith: missing")?
+                    .as_str()?
+                    .to_string(),
+            ),
+            "endingWith" => P::EndingWith(
+                args.first()
+                    .ok_or("endingWith: missing")?
+                    .as_str()?
+                    .to_string(),
+            ),
+            "containing" => P::Containing(
+                args.first()
+                    .ok_or("containing: missing")?
+                    .as_str()?
+                    .to_string(),
+            ),
+            "notContaining" => P::NotContaining(
+                args.first()
+                    .ok_or("notContaining: missing")?
+                    .as_str()?
+                    .to_string(),
+            ),
             _ => return Err(format!("unknown predicate `{name}`")),
         })
     }
@@ -339,7 +388,16 @@ impl Parser {
                 .collect()
         };
 
-        let str_labels: Vec<&str> = args.iter().filter_map(|a| if let Arg::Str(s) = a { Some(s.as_str()) } else { None }).collect();
+        let str_labels: Vec<&str> = args
+            .iter()
+            .filter_map(|a| {
+                if let Arg::Str(s) = a {
+                    Some(s.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
 
         Ok(match name {
             // sources
@@ -375,7 +433,11 @@ impl Parser {
             "hasId" => t.has_id(&str_labels),
             "hasKey" => t.has_key(&str_labels),
             "hasNot" => t.has_not(&str_labels),
-            "hasValue" => t.has_value(args.iter().map(Arg::as_gval).collect::<Result<Vec<_>, _>>()?),
+            "hasValue" => t.has_value(
+                args.iter()
+                    .map(Arg::as_gval)
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
             "is" => match &args[..] {
                 [Arg::Pred(p)] => t.is(p.clone()),
                 [other] => t.is(P::eq(other.as_gval()?)),
@@ -415,7 +477,12 @@ impl Parser {
                     t.range(ns[0] as usize, ns[1] as usize)
                 }
             }
-            "tail" => t.tail(nums_after_scope(&args).first().map(|n| *n as usize).unwrap_or(1)),
+            "tail" => t.tail(
+                nums_after_scope(&args)
+                    .first()
+                    .map(|n| *n as usize)
+                    .unwrap_or(1),
+            ),
             "sample" => t.sample(nums_after_scope(&args)[0] as usize),
             // aggregates
             "count" => {
@@ -500,12 +567,20 @@ impl Parser {
             "loops" => t.loops(),
             "constant" => t.constant(args[0].as_gval()?),
             "identity" => t.identity(),
-            "inject" => t.inject(args.iter().map(Arg::as_gval).collect::<Result<Vec<_>, _>>()?),
+            "inject" => t.inject(
+                args.iter()
+                    .map(Arg::as_gval)
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
             "none" => match &args[..] {
                 [Arg::Pred(p)] => t.none_pred(p.clone()),
                 _ => t.none(),
             },
-            "fail" => t.fail(args.first().and_then(|a| a.as_str().ok()).unwrap_or("fail() reached")),
+            "fail" => t.fail(
+                args.first()
+                    .and_then(|a| a.as_str().ok())
+                    .unwrap_or("fail() reached"),
+            ),
             // mutation
             "addV" => t.add_v(args.first().and_then(|a| a.as_str().ok())),
             "addE" => t.add_e(args[0].as_str()?),
@@ -527,7 +602,13 @@ impl Parser {
 
     /// `by(...)` — attach an identity/key/token/traversal modulator (+ direction).
     fn bind_by(&self, t: Traversal, args: Vec<Arg>) -> Result<Traversal, String> {
-        let dir = args.iter().find_map(|a| if let Arg::Order(o) = a { Some(*o) } else { None });
+        let dir = args.iter().find_map(|a| {
+            if let Arg::Order(o) = a {
+                Some(*o)
+            } else {
+                None
+            }
+        });
         let primary = args.iter().find(|a| !matches!(a, Arg::Order(_)));
         Ok(match (primary, dir) {
             (None, None) => t.by_identity(),
@@ -550,7 +631,10 @@ impl Parser {
             .collect()
     }
     fn one_trav(&self, args: Vec<Arg>) -> Result<Traversal, String> {
-        self.travs(args)?.into_iter().next().ok_or_else(|| "expected a traversal argument".into())
+        self.travs(args)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| "expected a traversal argument".into())
     }
 }
 

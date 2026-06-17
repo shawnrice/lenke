@@ -115,5 +115,6 @@ export const createFinancialGraph = (): Graph => {
   });
 
   g.enableEvents();
+
   return g;
 };

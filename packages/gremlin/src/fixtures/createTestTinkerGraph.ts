@@ -65,5 +65,6 @@ export const createTestTinkerGraph = (): Graph => {
   void peter;
 
   g.enableEvents();
+
   return g;
 };

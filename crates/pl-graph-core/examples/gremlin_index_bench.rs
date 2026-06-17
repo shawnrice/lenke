@@ -18,7 +18,10 @@ fn build() -> Graph {
             props: vec![
                 ("name".to_string(), Value::Str(format!("name{i}").into())),
                 ("age".to_string(), Value::Num((18 + (i % 62)) as f64)),
-                ("dept".to_string(), Value::Str(format!("d{}", i % 50).into())),
+                (
+                    "dept".to_string(),
+                    Value::Str(format!("d{}", i % 50).into()),
+                ),
             ],
         });
     }
@@ -32,7 +35,11 @@ fn bench(g: &mut Graph, label: &str, t: &Traversal, iters: u32) -> usize {
         let _ = t.run(g);
     }
     let us = start.elapsed().as_secs_f64() * 1e6 / iters as f64;
-    let pretty = if us >= 1000.0 { format!("{:.2} ms", us / 1000.0) } else { format!("{us:.1} us") };
+    let pretty = if us >= 1000.0 {
+        format!("{:.2} ms", us / 1000.0)
+    } else {
+        format!("{us:.1} us")
+    };
     println!("  {label:<34} {pretty:>11}   rows {rows}");
     rows
 }
@@ -40,11 +47,18 @@ fn bench(g: &mut Graph, label: &str, t: &Traversal, iters: u32) -> usize {
 fn main() {
     let t0 = Instant::now();
     let mut graph = build();
-    eprintln!("built {} vertices in {:.0} ms\n", graph.vertex_count(), t0.elapsed().as_secs_f64() * 1e3);
+    eprintln!(
+        "built {} vertices in {:.0} ms\n",
+        graph.vertex_count(),
+        t0.elapsed().as_secs_f64() * 1e3
+    );
 
     // The queries (built once; the seeding optimization fires at run time).
     let eq = g().V().has("name", P::eq("name54321")).values(&["name"]);
-    let within = g().V().has("name", P::within(["name1", "name50000", "name99999"])).values(&["name"]);
+    let within = g()
+        .V()
+        .has("name", P::within(["name1", "name50000", "name99999"]))
+        .values(&["name"]);
     let range = g().V().has("age", P::gt(75)).count(); // age in [18,79]; >75 ≈ 4/62 of rows
     let between = g().V().has("age", P::between(30, 40)).count();
     let prefix = g().V().has("name", P::starts_with("name999")).count();
@@ -59,7 +73,10 @@ fn main() {
     let ti = Instant::now();
     graph.create_vertex_index("name");
     graph.create_vertex_index("age");
-    eprintln!("\nbuilt name+age indexes in {:.1} ms\n", ti.elapsed().as_secs_f64() * 1e3);
+    eprintln!(
+        "\nbuilt name+age indexes in {:.1} ms\n",
+        ti.elapsed().as_secs_f64() * 1e3
+    );
 
     println!("=== index seek ===");
     bench(&mut graph, "eq point lookup", &eq, 2000);

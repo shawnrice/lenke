@@ -75,14 +75,17 @@ const PATH_DEPENDENT_KINDS: ReadonlySet<string> = new Set([
 const subPlansOf = (step: Step): Plan[] => {
   const plans: Plan[] = [];
   const fields = step as Record<string, unknown>;
+
   for (const name of ['body', 'until', 'emit', 'plan', 'test', 'thenPlan', 'elsePlan']) {
     if (fields[name]) {
       plans.push(fields[name] as Plan);
     }
   }
+
   if (Array.isArray(fields.plans)) {
     plans.push(...(fields.plans as Plan[]));
   }
+
   if (Array.isArray(fields.bys)) {
     for (const by of fields.bys as By[]) {
       if (by.kind === 'traversal') {
@@ -90,6 +93,7 @@ const subPlansOf = (step: Step): Plan[] => {
       }
     }
   }
+
   return plans;
 };
 
@@ -137,6 +141,7 @@ export const firstLabel = (s: ReadonlySet<string>): string | undefined => {
   for (const l of s) {
     return l;
   }
+
   return undefined;
 };
 
@@ -205,6 +210,7 @@ export const hasAny = (stream: Iterable<Traverser<unknown>>): boolean => {
   for (const _ of stream) {
     return true;
   }
+
   return false;
 };
 
@@ -252,6 +258,7 @@ export const isSliceable = (v: unknown): v is Iterable<unknown> => {
   if (v === null || v === undefined || typeof v === 'string') {
     return false;
   }
+
   return typeof (v as { [Symbol.iterator]?: unknown })[Symbol.iterator] === 'function';
 };
 
@@ -265,15 +272,19 @@ export const recallTag = (
   pop: Pop,
 ): { ok: true; value: unknown } | { ok: false } => {
   const list = tags.get(label);
+
   if (!list || list.length === 0) {
     return { ok: false };
   }
+
   if (pop === 'first') {
     return { ok: true, value: list[0] };
   }
+
   if (pop === 'last') {
     return { ok: true, value: list[list.length - 1] };
   }
+
   return { ok: true, value: [...list] };
 };
 
@@ -288,6 +299,7 @@ export const tupleKey = (parts: readonly unknown[]): string =>
       if (isVertex(p) || isEdge(p)) {
         return `@${p.id}`;
       }
+
       return JSON.stringify(p) ?? 'undefined';
     })
     .join('\x00');
@@ -307,9 +319,11 @@ export const normalizeBys = (
   if (bys && bys.length > 0) {
     return bys;
   }
+
   if (legacyKey !== undefined) {
     return [{ kind: 'key', key: legacyKey }];
   }
+
   return [{ kind: 'identity' }];
 };
 
@@ -318,14 +332,17 @@ export const projectToken = (token: 'id' | 'label' | 'key' | 'value', value: unk
   if (token === 'id') {
     return isVertex(value) || isEdge(value) ? value.id : undefined;
   }
+
   if (token === 'label') {
     return isVertex(value) || isEdge(value) ? (firstLabel(value.labels) ?? null) : undefined;
   }
+
   // `T.key` / `T.value` apply to property objects of shape `{ key, value }`
   // (as produced by `properties()`). For anything else, undefined.
   if (typeof value === 'object' && value !== null && 'key' in value && 'value' in value) {
     return (value as { key: unknown; value: unknown })[token];
   }
+
   return undefined;
 };
 
@@ -340,12 +357,15 @@ export const evalBy = (by: By, value: unknown, graph: Graph, ctx: RunContext): u
       if (isVertex(value) || isEdge(value)) {
         return value.properties[by.key];
       }
+
       return value;
     case 'traversal': {
       const out = applyPlanToStream(by.plan, [startTraverser(value)], graph, ctx);
+
       for (const t of out) {
         return t.value;
       }
+
       return undefined;
     }
     case 'token':

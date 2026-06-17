@@ -23,19 +23,34 @@ struct Trav {
 
 impl Trav {
     fn root(val: GVal) -> Trav {
-        Trav { path: vec![val.clone()], val, tags: Vec::new(), loops: 0 }
+        Trav {
+            path: vec![val.clone()],
+            val,
+            tags: Vec::new(),
+            loops: 0,
+        }
     }
     /// A successor that moved to `val` (extends path, keeps tags/loops).
     fn step(&self, val: GVal) -> Trav {
         let mut path = self.path.clone();
         path.push(val.clone());
-        Trav { val, path, tags: self.tags.clone(), loops: self.loops }
+        Trav {
+            val,
+            path,
+            tags: self.tags.clone(),
+            loops: self.loops,
+        }
     }
     /// Same traverser with a replaced value, keeping the existing path tail.
     fn with(&self, val: GVal) -> Trav {
         let mut path = self.path.clone();
         path.push(val.clone());
-        Trav { val, path, tags: self.tags.clone(), loops: self.loops }
+        Trav {
+            val,
+            path,
+            tags: self.tags.clone(),
+            loops: self.loops,
+        }
     }
     fn recall(&self, label: &str, pop: Pop) -> Option<GVal> {
         let list = &self.tags.iter().find(|(l, _)| l == label)?.1;
@@ -65,7 +80,10 @@ pub fn run(graph: &mut Graph, t: &Traversal) -> Vec<GVal> {
         Some(s) => (s, 2),
         None => (Vec::new(), 0),
     };
-    run_steps(graph, &mut ctx, &t.steps[start..], seed).into_iter().map(|t| t.val).collect()
+    run_steps(graph, &mut ctx, &t.steps[start..], seed)
+        .into_iter()
+        .map(|t| t.val)
+        .collect()
 }
 
 fn gval_to_idxkey(v: &GVal) -> Option<IdxKey> {
@@ -97,12 +115,28 @@ fn prefix_upper(s: &str) -> Option<String> {
 /// `None` ⇒ fall back to scan.
 fn index_seed(graph: &Graph, steps: &[Step]) -> Option<Vec<Trav>> {
     let (key, pred, is_edge) = match steps {
-        [Step::V(ids), Step::Has(k, p), ..] if ids.is_empty() && graph.vertex_indexed(k) => (k, p, false),
-        [Step::E(ids), Step::Has(k, p), ..] if ids.is_empty() && graph.edge_indexed(k) => (k, p, true),
+        [Step::V(ids), Step::Has(k, p), ..] if ids.is_empty() && graph.vertex_indexed(k) => {
+            (k, p, false)
+        }
+        [Step::E(ids), Step::Has(k, p), ..] if ids.is_empty() && graph.edge_indexed(k) => {
+            (k, p, true)
+        }
         _ => return None,
     };
-    let eq = |k: &IdxKey| if is_edge { graph.edges_by_prop(key, k) } else { graph.vertices_by_prop(key, k) };
-    let rng = |b: RangeBound| if is_edge { graph.edges_by_prop_range(key, &b) } else { graph.vertices_by_prop_range(key, &b) };
+    let eq = |k: &IdxKey| {
+        if is_edge {
+            graph.edges_by_prop(key, k)
+        } else {
+            graph.vertices_by_prop(key, k)
+        }
+    };
+    let rng = |b: RangeBound| {
+        if is_edge {
+            graph.edges_by_prop_range(key, &b)
+        } else {
+            graph.vertices_by_prop_range(key, &b)
+        }
+    };
     let ids: Vec<u32> = match pred {
         P::Eq(v) => eq(&gval_to_idxkey(v)?)?.to_vec(),
         P::Within(vs) => {
@@ -116,25 +150,61 @@ fn index_seed(graph: &Graph, steps: &[Step]) -> Option<Vec<Trav>> {
             }
             out
         }
-        P::Gt(v) => rng(RangeBound { gt: gval_to_idxkey(v), ..Default::default() })?,
-        P::Gte(v) => rng(RangeBound { gte: gval_to_idxkey(v), ..Default::default() })?,
-        P::Lt(v) => rng(RangeBound { lt: gval_to_idxkey(v), ..Default::default() })?,
-        P::Lte(v) => rng(RangeBound { lte: gval_to_idxkey(v), ..Default::default() })?,
-        P::Between(lo, hi) => rng(RangeBound { gte: gval_to_idxkey(lo), lt: gval_to_idxkey(hi), ..Default::default() })?,
-        P::Inside(lo, hi) => rng(RangeBound { gt: gval_to_idxkey(lo), lt: gval_to_idxkey(hi), ..Default::default() })?,
+        P::Gt(v) => rng(RangeBound {
+            gt: gval_to_idxkey(v),
+            ..Default::default()
+        })?,
+        P::Gte(v) => rng(RangeBound {
+            gte: gval_to_idxkey(v),
+            ..Default::default()
+        })?,
+        P::Lt(v) => rng(RangeBound {
+            lt: gval_to_idxkey(v),
+            ..Default::default()
+        })?,
+        P::Lte(v) => rng(RangeBound {
+            lte: gval_to_idxkey(v),
+            ..Default::default()
+        })?,
+        P::Between(lo, hi) => rng(RangeBound {
+            gte: gval_to_idxkey(lo),
+            lt: gval_to_idxkey(hi),
+            ..Default::default()
+        })?,
+        P::Inside(lo, hi) => rng(RangeBound {
+            gt: gval_to_idxkey(lo),
+            lt: gval_to_idxkey(hi),
+            ..Default::default()
+        })?,
         P::Outside(lo, hi) => {
-            let mut out = rng(RangeBound { lt: gval_to_idxkey(lo), ..Default::default() })?;
-            out.extend(rng(RangeBound { gt: gval_to_idxkey(hi), ..Default::default() })?);
+            let mut out = rng(RangeBound {
+                lt: gval_to_idxkey(lo),
+                ..Default::default()
+            })?;
+            out.extend(rng(RangeBound {
+                gt: gval_to_idxkey(hi),
+                ..Default::default()
+            })?);
             out
         }
         P::StartsWith(prefix) => {
             let lo = Some(IdxKey::Str(prefix.as_str().into()));
             let hi = prefix_upper(prefix).map(|u| IdxKey::Str(u.as_str().into()));
-            rng(RangeBound { gte: lo, lt: hi, ..Default::default() })?
+            rng(RangeBound {
+                gte: lo,
+                lt: hi,
+                ..Default::default()
+            })?
         }
         _ => return None,
     };
-    let mk = |id: u32| if is_edge { GVal::Edge(id) } else { GVal::Vertex(id) };
+    let mk = |id: u32| {
+        if is_edge {
+            GVal::Edge(id)
+        } else {
+            GVal::Vertex(id)
+        }
+    };
     Some(ids.into_iter().map(|id| Trav::root(mk(id))).collect())
 }
 
@@ -150,7 +220,9 @@ fn gval_json(graph: &Graph, v: &GVal) -> serde_json::Value {
     match v {
         GVal::Null => J::Null,
         GVal::Bool(b) => J::Bool(*b),
-        GVal::Num(n) => serde_json::Number::from_f64(*n).map(J::Number).unwrap_or(J::Null),
+        GVal::Num(n) => serde_json::Number::from_f64(*n)
+            .map(J::Number)
+            .unwrap_or(J::Null),
         GVal::Str(s) => J::String(s.to_string()),
         GVal::Vertex(_) | GVal::Edge(_) => {
             let id = match elem_id(graph, v) {
@@ -161,7 +233,10 @@ fn gval_json(graph: &Graph, v: &GVal) -> serde_json::Value {
                 GVal::Str(s) => s.to_string(),
                 _ => String::new(),
             };
-            J::Object(serde_json::Map::from_iter([("id".to_string(), J::String(id)), ("label".to_string(), J::String(label))]))
+            J::Object(serde_json::Map::from_iter([
+                ("id".to_string(), J::String(id)),
+                ("label".to_string(), J::String(label)),
+            ]))
         }
         GVal::List(items) => J::Array(items.iter().map(|x| gval_json(graph, x)).collect()),
         GVal::Map(entries) => {
@@ -190,7 +265,10 @@ fn run_steps(graph: &mut Graph, ctx: &mut Ctx, steps: &[Step], mut stream: Vec<T
 
 /// Run a sub-plan from a single seed value; collect its output values.
 fn sub_vals(graph: &mut Graph, ctx: &mut Ctx, plan: &Traversal, seed: &Trav) -> Vec<GVal> {
-    run_steps(graph, ctx, &plan.steps, vec![seed.clone()]).into_iter().map(|t| t.val).collect()
+    run_steps(graph, ctx, &plan.steps, vec![seed.clone()])
+        .into_iter()
+        .map(|t| t.val)
+        .collect()
 }
 
 fn sub_nonempty(graph: &mut Graph, ctx: &mut Ctx, plan: &Traversal, seed: &Trav) -> bool {
@@ -234,24 +312,44 @@ fn parse_pattern(plan: &Traversal) -> MatchPattern {
     };
     if steps.len() >= 2 {
         if let Some(Step::As(end)) = steps.last() {
-            let inner = Traversal { steps: steps[1..steps.len() - 1].to_vec() };
-            return MatchPattern { start_key, end_key: Some(end.clone()), inner, negated: false };
+            let inner = Traversal {
+                steps: steps[1..steps.len() - 1].to_vec(),
+            };
+            return MatchPattern {
+                start_key,
+                end_key: Some(end.clone()),
+                inner,
+                negated: false,
+            };
         }
     }
-    let inner = Traversal { steps: steps.get(1..).unwrap_or(&[]).to_vec() };
-    MatchPattern { start_key, end_key: None, inner, negated: false }
+    let inner = Traversal {
+        steps: steps.get(1..).unwrap_or(&[]).to_vec(),
+    };
+    MatchPattern {
+        start_key,
+        end_key: None,
+        inner,
+        negated: false,
+    }
 }
 
 /// The seed label: a pattern *start* that is never a binding *end* (a source).
 fn match_start_label(patterns: &[MatchPattern]) -> String {
-    let ends: Vec<&String> =
-        patterns.iter().filter(|p| !p.negated).filter_map(|p| p.end_key.as_ref()).collect();
+    let ends: Vec<&String> = patterns
+        .iter()
+        .filter(|p| !p.negated)
+        .filter_map(|p| p.end_key.as_ref())
+        .collect();
     for p in patterns {
         if !ends.iter().any(|e| **e == p.start_key) {
             return p.start_key.clone();
         }
     }
-    patterns.first().map(|p| p.start_key.clone()).unwrap_or_default()
+    patterns
+        .first()
+        .map(|p| p.start_key.clone())
+        .unwrap_or_default()
 }
 
 /// `t` with `key` bound to a single `val` (match binds each label once).
@@ -269,19 +367,34 @@ fn apply_pattern(graph: &mut Graph, ctx: &mut Ctx, p: &MatchPattern, t: &Trav) -
     let Some(start_val) = t.recall(&p.start_key, Pop::Last) else {
         return vec![];
     };
-    let seed = Trav { val: start_val, path: t.path.clone(), tags: t.tags.clone(), loops: t.loops };
+    let seed = Trav {
+        val: start_val,
+        path: t.path.clone(),
+        tags: t.tags.clone(),
+        loops: t.loops,
+    };
     let outs = sub_vals(graph, ctx, &p.inner, &seed);
     let bound_end = p.end_key.as_ref().and_then(|k| t.recall(k, Pop::Last));
 
     if p.negated {
-        let satisfiable = outs.iter().any(|o| bound_end.as_ref().is_none_or(|b| o == b));
+        let satisfiable = outs
+            .iter()
+            .any(|o| bound_end.as_ref().is_none_or(|b| o == b));
         return if satisfiable { vec![] } else { vec![t.clone()] };
     }
     let Some(end_key) = &p.end_key else {
-        return if outs.is_empty() { vec![] } else { vec![t.clone()] }; // pure filter
+        return if outs.is_empty() {
+            vec![]
+        } else {
+            vec![t.clone()]
+        }; // pure filter
     };
     if let Some(b) = bound_end {
-        return if outs.iter().any(|o| *o == b) { vec![t.clone()] } else { vec![] };
+        return if outs.iter().any(|o| *o == b) {
+            vec![t.clone()]
+        } else {
+            vec![]
+        };
     }
     // Bind the end label, one branch per distinct candidate value.
     let mut seen: Vec<GVal> = Vec::new();
@@ -329,7 +442,10 @@ fn match_solve(
         let bindings: Vec<(GVal, GVal)> = t
             .tags
             .iter()
-            .filter_map(|(l, vs)| vs.last().map(|v| (GVal::Str(Arc::from(l.as_str())), v.clone())))
+            .filter_map(|(l, vs)| {
+                vs.last()
+                    .map(|v| (GVal::Str(Arc::from(l.as_str())), v.clone()))
+            })
             .collect();
         out.push(t.with(GVal::Map(bindings)));
         return;
@@ -384,7 +500,13 @@ fn shortest_paths_from(graph: &Graph, src: u32, targets: Option<&HashSet<u32>>) 
 }
 
 /// Reconstruct every shortest path to `id` by walking predecessors back to `src`.
-fn build_paths(src: u32, id: u32, tail: &[u32], preds: &HashMap<u32, Vec<u32>>, out: &mut Vec<Vec<u32>>) {
+fn build_paths(
+    src: u32,
+    id: u32,
+    tail: &[u32],
+    preds: &HashMap<u32, Vec<u32>>,
+    out: &mut Vec<Vec<u32>>,
+) {
     let mut path = vec![id];
     path.extend_from_slice(tail);
     if id == src {
@@ -396,7 +518,12 @@ fn build_paths(src: u32, id: u32, tail: &[u32], preds: &HashMap<u32, Vec<u32>>, 
     }
 }
 
-fn shortest_path_step(graph: &mut Graph, ctx: &mut Ctx, target: Option<&Traversal>, stream: Vec<Trav>) -> Vec<Trav> {
+fn shortest_path_step(
+    graph: &mut Graph,
+    ctx: &mut Ctx,
+    target: Option<&Traversal>,
+    stream: Vec<Trav>,
+) -> Vec<Trav> {
     // Resolve the destination set once: run the target sub-plan over every vertex.
     // Collect the indices first so the immutable borrow is released before the
     // mutable `run_steps` call inside the filter.
@@ -404,7 +531,9 @@ fn shortest_path_step(graph: &mut Graph, ctx: &mut Ctx, target: Option<&Traversa
         let verts: Vec<u32> = graph.vertex_indices().collect();
         verts
             .into_iter()
-            .filter(|&v| !run_steps(graph, ctx, &plan.steps, vec![Trav::root(GVal::Vertex(v))]).is_empty())
+            .filter(|&v| {
+                !run_steps(graph, ctx, &plan.steps, vec![Trav::root(GVal::Vertex(v))]).is_empty()
+            })
             .collect()
     });
     let mut next = Vec::new();
@@ -418,7 +547,12 @@ fn shortest_path_step(graph: &mut Graph, ctx: &mut Ctx, target: Option<&Traversa
     next
 }
 
-fn match_step(graph: &mut Graph, ctx: &mut Ctx, plans: &[Traversal], stream: Vec<Trav>) -> Vec<Trav> {
+fn match_step(
+    graph: &mut Graph,
+    ctx: &mut Ctx,
+    plans: &[Traversal],
+    stream: Vec<Trav>,
+) -> Vec<Trav> {
     let patterns: Vec<MatchPattern> = plans.iter().map(parse_pattern).collect();
     let start_label = match_start_label(&patterns);
     let mut out = Vec::new();
@@ -482,12 +616,18 @@ fn element_props_map(graph: &Graph, v: &GVal) -> GVal {
 /// A self-describing vertex record for a subgraph cap: `{ id, labels, properties }`.
 fn subgraph_vertex(graph: &Graph, v: u32) -> GVal {
     let gv = GVal::Vertex(v);
-    let labels: Vec<GVal> =
-        graph.vertex_labels(v).iter().map(|&l| GVal::Str(graph.labels.arc(l))).collect();
+    let labels: Vec<GVal> = graph
+        .vertex_labels(v)
+        .iter()
+        .map(|&l| GVal::Str(graph.labels.arc(l)))
+        .collect();
     GVal::Map(vec![
         (GVal::Str(Arc::from("id")), GVal::Str(graph.vid.arc(v))),
         (GVal::Str(Arc::from("labels")), GVal::List(labels)),
-        (GVal::Str(Arc::from("properties")), element_props_map(graph, &gv)),
+        (
+            GVal::Str(Arc::from("properties")),
+            element_props_map(graph, &gv),
+        ),
     ])
 }
 
@@ -498,10 +638,16 @@ fn subgraph_edge(graph: &Graph, e: u32) -> GVal {
     let inv = GVal::Vertex(graph.e_dst[e as usize]);
     GVal::Map(vec![
         (GVal::Str(Arc::from("id")), elem_id(graph, &ge)),
-        (GVal::Str(Arc::from("label")), GVal::Str(graph.etype.arc(graph.e_type[e as usize]))),
+        (
+            GVal::Str(Arc::from("label")),
+            GVal::Str(graph.etype.arc(graph.e_type[e as usize])),
+        ),
         (GVal::Str(Arc::from("outV")), elem_id(graph, &outv)),
         (GVal::Str(Arc::from("inV")), elem_id(graph, &inv)),
-        (GVal::Str(Arc::from("properties")), element_props_map(graph, &ge)),
+        (
+            GVal::Str(Arc::from("properties")),
+            element_props_map(graph, &ge),
+        ),
     ])
 }
 
@@ -595,7 +741,11 @@ fn token_project(graph: &Graph, tok: Token, v: &GVal) -> GVal {
             // Project a {key, value} property map.
             GVal::Map(entries) => {
                 let want = if tok == Token::Key { "key" } else { "value" };
-                entries.iter().find(|(k, _)| matches!(k, GVal::Str(s) if s.as_ref() == want)).map(|(_, x)| x.clone()).unwrap_or(GVal::Null)
+                entries
+                    .iter()
+                    .find(|(k, _)| matches!(k, GVal::Str(s) if s.as_ref() == want))
+                    .map(|(_, x)| x.clone())
+                    .unwrap_or(GVal::Null)
             }
             _ => GVal::Null,
         },
@@ -611,7 +761,10 @@ fn eval_by(graph: &mut Graph, ctx: &mut Ctx, by: &By, value: &GVal) -> GVal {
             _ => value.clone(),
         },
         By::Token(tok, _) => token_project(graph, *tok, value),
-        By::Traversal(plan, _) => sub_vals(graph, ctx, plan, &Trav::root(value.clone())).into_iter().next().unwrap_or(GVal::Null),
+        By::Traversal(plan, _) => sub_vals(graph, ctx, plan, &Trav::root(value.clone()))
+            .into_iter()
+            .next()
+            .unwrap_or(GVal::Null),
     }
 }
 
@@ -1225,9 +1378,23 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
 /// without, adjacency order (out then in for `both`), deduped across both for
 /// `both` with no labels is not required (TinkerPop both yields each edge once
 /// per direction — matches iterating out then in).
-fn adj_in_label_order(graph: &Graph, v: u32, out: bool, inn: bool, labels: &[String]) -> Vec<(u32, u32)> {
-    let outs: Vec<(u32, u32, u32)> = if out { graph.out_adj(v).map(|a| (a.eidx, a.nbr, a.etype)).collect() } else { Vec::new() };
-    let ins: Vec<(u32, u32, u32)> = if inn { graph.in_adj(v).map(|a| (a.eidx, a.nbr, a.etype)).collect() } else { Vec::new() };
+fn adj_in_label_order(
+    graph: &Graph,
+    v: u32,
+    out: bool,
+    inn: bool,
+    labels: &[String],
+) -> Vec<(u32, u32)> {
+    let outs: Vec<(u32, u32, u32)> = if out {
+        graph.out_adj(v).map(|a| (a.eidx, a.nbr, a.etype)).collect()
+    } else {
+        Vec::new()
+    };
+    let ins: Vec<(u32, u32, u32)> = if inn {
+        graph.in_adj(v).map(|a| (a.eidx, a.nbr, a.etype)).collect()
+    } else {
+        Vec::new()
+    };
     let collect_dir = |adjs: &[(u32, u32, u32)], dst: &mut Vec<(u32, u32)>| {
         if labels.is_empty() {
             dst.extend(adjs.iter().map(|a| (a.0, a.1)));
@@ -1269,13 +1436,19 @@ fn resolve_endpoint(graph: &mut Graph, ctx: &mut Ctx, ep: &Endpoint, t: &Trav) -
 /// The `value` field of a `{key, value}` property map (for `value`/`hasValue`).
 fn prop_value_field(v: &GVal) -> Option<GVal> {
     match v {
-        GVal::Map(entries) => entries.iter().find(|(k, _)| matches!(k, GVal::Str(s) if s.as_ref() == "value")).map(|(_, x)| x.clone()),
+        GVal::Map(entries) => entries
+            .iter()
+            .find(|(k, _)| matches!(k, GVal::Str(s) if s.as_ref() == "value"))
+            .map(|(_, x)| x.clone()),
         _ => None,
     }
 }
 fn prop_key_field(v: &GVal) -> Option<GVal> {
     match v {
-        GVal::Map(entries) => entries.iter().find(|(k, _)| matches!(k, GVal::Str(s) if s.as_ref() == "key")).map(|(_, x)| x.clone()),
+        GVal::Map(entries) => entries
+            .iter()
+            .find(|(k, _)| matches!(k, GVal::Str(s) if s.as_ref() == "key"))
+            .map(|(_, x)| x.clone()),
         _ => None,
     }
 }
@@ -1297,7 +1470,11 @@ fn slice_local(v: &GVal, start: usize, end: usize) -> GVal {
     let e = local_elems(v);
     let s = start.min(e.len());
     let en = end.min(e.len());
-    GVal::List(if s < en { e[s..en].to_vec() } else { Vec::new() })
+    GVal::List(if s < en {
+        e[s..en].to_vec()
+    } else {
+        Vec::new()
+    })
 }
 
 fn map_step(stream: Vec<Trav>, f: impl Fn(&Trav) -> Vec<GVal>) -> Vec<Trav> {
@@ -1405,7 +1582,9 @@ fn run_repeat(
     emit_before: bool,
 ) -> Vec<Trav> {
     const CAP: usize = 64;
-    let emit_matches = |graph: &mut Graph, ctx: &mut Ctx, t: &Trav, e: &Traversal| e.steps.is_empty() || sub_nonempty(graph, ctx, e, t);
+    let emit_matches = |graph: &mut Graph, ctx: &mut Ctx, t: &Trav, e: &Traversal| {
+        e.steps.is_empty() || sub_nonempty(graph, ctx, e, t)
+    };
 
     if until.is_none() && emit.is_none() {
         let n = times.unwrap_or(CAP);
@@ -1414,7 +1593,12 @@ fn run_repeat(
             if current.is_empty() {
                 break;
             }
-            current = run_steps(graph, ctx, &body.steps, current.into_iter().map(inc_loops).collect());
+            current = run_steps(
+                graph,
+                ctx,
+                &body.steps,
+                current.into_iter().map(inc_loops).collect(),
+            );
         }
         return current;
     }
@@ -1449,7 +1633,12 @@ fn run_repeat(
         if advancing.is_empty() {
             break;
         }
-        let stepped: Vec<Trav> = run_steps(graph, ctx, &body.steps, advancing.into_iter().map(inc_loops).collect());
+        let stepped: Vec<Trav> = run_steps(
+            graph,
+            ctx,
+            &body.steps,
+            advancing.into_iter().map(inc_loops).collect(),
+        );
         if !emit_before {
             if let Some(e) = emit {
                 for t in &stepped {

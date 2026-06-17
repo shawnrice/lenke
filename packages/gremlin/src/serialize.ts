@@ -20,13 +20,16 @@ const findClosuresInArrayItem = (v: unknown, path: string): string[] => {
   if (isPlan(v)) {
     return findClosures(v, path);
   }
+
   // `branch.options` is `[{ match, plan }, ...]` — recurse via `.plan`.
   if (v && typeof v === 'object' && 'plan' in v) {
     const inner = (v as { plan: unknown }).plan;
+
     if (isPlan(inner)) {
       return findClosures(inner, `${path}.plan`);
     }
   }
+
   return [];
 };
 
@@ -37,17 +40,21 @@ const findClosuresInArrayItem = (v: unknown, path: string): string[] => {
  */
 export const findClosures = (plan: Plan, prefix = ''): string[] => {
   const found: string[] = [];
+
   for (let i = 0; i < plan.steps.length; i++) {
     const step = plan.steps[i];
     const path = prefix ? `${prefix}.${i}.${step.kind}` : `${i}.${step.kind}`;
+
     if (CLOSURE_KINDS.has(step.kind)) {
       found.push(path);
     }
+
     // Recurse into sub-plans.
     for (const [field, value] of Object.entries(step)) {
       if (isPlan(value)) {
         found.push(...findClosures(value, `${path}.${field}`));
       }
+
       if (Array.isArray(value)) {
         for (let j = 0; j < value.length; j++) {
           found.push(...findClosuresInArrayItem(value[j], `${path}.${field}[${j}]`));
@@ -55,6 +62,7 @@ export const findClosures = (plan: Plan, prefix = ''): string[] => {
       }
     }
   }
+
   return found;
 };
 
@@ -75,6 +83,7 @@ export const isSerializable = (plan: Plan): boolean => findClosures(plan).length
  */
 export const serialize = (plan: Plan): string => {
   const closures = findClosures(plan);
+
   if (closures.length > 0) {
     throw new PlGraphError(
       `Plan contains closure-bearing steps and cannot be serialized:\n  ${closures.join('\n  ')}\n` +
@@ -82,6 +91,7 @@ export const serialize = (plan: Plan): string => {
       { code: ErrorCode.Unsupported },
     );
   }
+
   return JSON.stringify(plan);
 };
 

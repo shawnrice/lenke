@@ -5,4 +5,4 @@ import { buildPackage } from '@pl-graph/dev';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-buildPackage({ packageRoot: __dirname, skipCjs: true, skipMin: true });
+await buildPackage({ packageRoot: __dirname, skipCjs: true, skipMin: true });

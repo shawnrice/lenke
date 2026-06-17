@@ -21,6 +21,7 @@ const NDJSON = [
 const newStore = () => {
   const backend = createFfiBackend(LIB);
   const g = graphFromNdjson(backend, new TextEncoder().encode(NDJSON));
+
   return createStore(g);
 };
 

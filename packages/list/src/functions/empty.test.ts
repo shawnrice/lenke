@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+
 import { List } from '../List.js';
 import { empty } from './empty.js';
 

@@ -1,5 +1,7 @@
 import { describe, expect, test } from 'bun:test';
+
 import type { Vertex } from '@pl-graph/core';
+
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
 import { eq } from '../predicates.js';

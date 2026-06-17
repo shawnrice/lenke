@@ -14,6 +14,7 @@ describe('functional iterator tests', () => {
   test('count works with an iterable', () => {
     const generator = function* () {
       let x = 0;
+
       while (x++ < 500) {
         yield x;
       }

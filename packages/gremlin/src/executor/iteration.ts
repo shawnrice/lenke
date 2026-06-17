@@ -1,8 +1,8 @@
 import type { Graph } from '@pl-graph/core';
 
 import type { Plan, Step } from '../ast.js';
-import { hasAny, incLoops, isEmptyPlan, type RunContext, type Traverser } from './runtime.js';
 import { applyPlanToStream } from './dispatch.js';
+import { hasAny, incLoops, isEmptyPlan, type RunContext, type Traverser } from './runtime.js';
 
 export const unionStep = function* (
   stream: Iterable<Traverser<unknown>>,
@@ -24,6 +24,7 @@ export const coalesceStep = function* (
   for (const t of stream) {
     for (const plan of plans) {
       const out = [...applyPlanToStream(plan, [t], graph)];
+
       if (out.length > 0) {
         yield* out;
         break;
@@ -39,6 +40,7 @@ export const optionalStep = function* (
 ): Iterable<Traverser<unknown>> {
   for (const t of stream) {
     const out = [...applyPlanToStream(plan, [t], graph)];
+
     if (out.length > 0) {
       yield* out;
     } else {
@@ -56,6 +58,7 @@ export const chooseStep = function* (
 ): Iterable<Traverser<unknown>> {
   for (const t of stream) {
     const branch = hasAny(applyPlanToStream(test, [t], graph)) ? thenPlan : elsePlan;
+
     if (branch) {
       yield* applyPlanToStream(branch, [t], graph);
     } else {
@@ -86,6 +89,7 @@ export const repeatStep = function* (
     if (emitAll) {
       return true;
     }
+
     return hasAny(applyPlanToStream(step.emit!, [t], graph));
   };
 
@@ -105,6 +109,7 @@ export const repeatStep = function* (
     // Apply the body to advance the frontier.
     const next: Traverser<unknown>[] = [];
     const survivors: Traverser<unknown>[] = [];
+
     for (const t of frontier) {
       // until(plan) is checked BEFORE applying the body each iteration.
       if (hasUntil && hasAny(applyPlanToStream(step.until!, [t], graph))) {
@@ -112,6 +117,7 @@ export const repeatStep = function* (
         yield t;
         continue;
       }
+
       survivors.push(t);
     }
 
@@ -119,6 +125,7 @@ export const repeatStep = function* (
     for (const t of applyPlanToStream(step.body, survivors, graph)) {
       next.push(incLoops(t));
     }
+
     frontier = next;
 
     // Post-form emit (TinkerPop's default `repeat(body).emit(...)`): emit
@@ -172,12 +179,15 @@ export const branchStep = function* (
   for (const t of stream) {
     let testResult: unknown = undefined;
     let sawResult = false;
+
     for (const r of applyPlanToStream(test, [t], graph)) {
       testResult = r.value;
       sawResult = true;
       break;
     }
+
     let matched: Plan | undefined;
+
     if (sawResult) {
       for (const opt of options) {
         if (Object.is(opt.match, testResult) || opt.match === testResult) {
@@ -186,7 +196,9 @@ export const branchStep = function* (
         }
       }
     }
+
     const target = matched ?? defaultPlan;
+
     if (target) {
       yield* applyPlanToStream(target, [t], graph);
     }

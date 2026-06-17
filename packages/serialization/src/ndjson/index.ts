@@ -1,6 +1,6 @@
+import type { Graph } from '@pl-graph/core';
 import { ErrorCode, PlGraphError } from '@pl-graph/errors';
 
-import type { Graph } from '@pl-graph/core';
 import type { Codec } from '../codec.js';
 import { type ChunkSource, linesFromChunks } from '../streaming.js';
 import { normalizeBag, type PropertyValue } from '../value.js';
@@ -60,22 +60,28 @@ const edgeLine = (edge: EdgeLike): string =>
 /** Serialize a graph to NDJSON: a node line per vertex, then an edge line per edge. */
 export const encode = (graph: Graph): string => {
   const lines: string[] = [];
+
   for (const vertex of graph.vertices) {
     lines.push(nodeLine(vertex));
   }
+
   for (const edge of graph.edges) {
     lines.push(edgeLine(edge));
   }
+
   return lines.join('\n');
 };
 
 /** Parse one NDJSON line into a record, or `null` for a blank line. */
 const parseLine = (line: string): NodeRecord | EdgeRecord | null => {
   const trimmed = line.trim();
+
   if (trimmed === '') {
     return null;
   }
+
   let record: unknown;
+
   try {
     record = JSON.parse(trimmed);
   } catch (cause) {
@@ -84,6 +90,7 @@ const parseLine = (line: string): NodeRecord | EdgeRecord | null => {
       cause,
     });
   }
+
   if (typeof record !== 'object' || record === null) {
     throw new PlGraphError(
       `ndjson: each line must be a node or edge object: ${trimmed.slice(0, 80)}`,
@@ -92,7 +99,9 @@ const parseLine = (line: string): NodeRecord | EdgeRecord | null => {
       },
     );
   }
+
   const { type } = record as { type?: unknown };
+
   if (type !== 'node' && type !== 'edge') {
     throw new PlGraphError(
       `ndjson: line is not a 'node' or 'edge' record: ${trimmed.slice(0, 80)}`,
@@ -101,6 +110,7 @@ const parseLine = (line: string): NodeRecord | EdgeRecord | null => {
       },
     );
   }
+
   return record as NodeRecord | EdgeRecord;
 };
 
@@ -142,29 +152,37 @@ const apply = (graph: Graph, record: NodeRecord | EdgeRecord): void => {
  */
 export const decode = (input: string, graph: Graph): Graph => {
   const wasEnabled = graph.eventsEnabled();
+
   if (wasEnabled) {
     graph.disableEvents();
   }
+
   const nodes: NodeRecord[] = [];
   const edges: EdgeRecord[] = [];
+
   for (const line of input.split('\n')) {
     const record = parseLine(line);
+
     if (record?.type === 'node') {
       nodes.push(record);
     } else if (record?.type === 'edge') {
       edges.push(record);
     }
   }
+
   for (const record of nodes) {
     addNode(graph, record);
   }
+
   for (const record of edges) {
     addEdge(graph, record);
   }
+
   if (wasEnabled) {
     graph.enableEvents();
     graph.snapshot();
   }
+
   return graph;
 };
 
@@ -172,20 +190,25 @@ export const decode = (input: string, graph: Graph): Graph => {
 export async function* encodeStream(graph: Graph): AsyncGenerator<string> {
   const batchSize = 1024;
   let batch: string[] = [];
+
   for (const vertex of graph.vertices) {
     batch.push(nodeLine(vertex));
+
     if (batch.length >= batchSize) {
       yield `${batch.join('\n')}\n`;
       batch = [];
     }
   }
+
   for (const edge of graph.edges) {
     batch.push(edgeLine(edge));
+
     if (batch.length >= batchSize) {
       yield `${batch.join('\n')}\n`;
       batch = [];
     }
   }
+
   if (batch.length > 0) {
     yield `${batch.join('\n')}\n`;
   }
@@ -199,19 +222,24 @@ export async function* encodeStream(graph: Graph): AsyncGenerator<string> {
  */
 export const decodeStream = async (source: ChunkSource, graph: Graph): Promise<Graph> => {
   const wasEnabled = graph.eventsEnabled();
+
   if (wasEnabled) {
     graph.disableEvents();
   }
+
   for await (const line of linesFromChunks(source)) {
     const record = parseLine(line);
+
     if (record) {
       apply(graph, record);
     }
   }
+
   if (wasEnabled) {
     graph.enableEvents();
     graph.snapshot();
   }
+
   return graph;
 };
 

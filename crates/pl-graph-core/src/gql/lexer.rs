@@ -73,15 +73,58 @@ impl std::fmt::Display for SyntaxError {
 }
 
 pub fn err<T>(message: impl Into<String>, pos: usize) -> Result<T, SyntaxError> {
-    Err(SyntaxError { message: message.into(), pos })
+    Err(SyntaxError {
+        message: message.into(),
+        pos,
+    })
 }
 
 const KEYWORDS: &[&str] = &[
-    "match", "optional", "with", "where", "insert", "set", "remove", "delete", "detach", "nodetach",
-    "finish", "return", "as", "is", "in", "and", "or", "xor", "not", "distinct", "all", "case",
-    "when", "then", "else", "end", "exists", "count", "nulls", "unknown", "limit", "union",
-    "except", "intersect", "order", "by", "asc", "ascending", "desc", "descending", "skip",
-    "offset", "true", "false", "null",
+    "match",
+    "optional",
+    "with",
+    "where",
+    "insert",
+    "set",
+    "remove",
+    "delete",
+    "detach",
+    "nodetach",
+    "finish",
+    "return",
+    "as",
+    "is",
+    "in",
+    "and",
+    "or",
+    "xor",
+    "not",
+    "distinct",
+    "all",
+    "case",
+    "when",
+    "then",
+    "else",
+    "end",
+    "exists",
+    "count",
+    "nulls",
+    "unknown",
+    "limit",
+    "union",
+    "except",
+    "intersect",
+    "order",
+    "by",
+    "asc",
+    "ascending",
+    "desc",
+    "descending",
+    "skip",
+    "offset",
+    "true",
+    "false",
+    "null",
 ];
 
 fn keywords() -> &'static HashSet<&'static str> {
@@ -90,7 +133,8 @@ fn keywords() -> &'static HashSet<&'static str> {
 }
 
 // The complete ISO/IEC 39075 reserved-word list (verbatim from the TS port).
-const RESERVED_WORDS: &str = "abs acos all all_different and any array as asc ascending asin at atan avg big bigint \
+const RESERVED_WORDS: &str =
+    "abs acos all all_different and any array as asc ascending asin at atan avg big bigint \
 binary bool boolean both btrim by byte_length bytes call cardinality case cast ceil ceiling \
 char char_length character_length characteristics close coalesce collect_list commit copy cos \
 cosh cot count create current_date current_graph current_property_graph current_schema \
@@ -153,12 +197,18 @@ fn read_escape(b: &[u8], src: &str, i: usize) -> Result<(String, usize), SyntaxE
         let width = if esc == 'u' { 4 } else { 6 };
         let end = i + 2 + width;
         if end > src.len() {
-            return err(format!("Invalid \\{esc} escape (expected {width} hex digits)"), i);
+            return err(
+                format!("Invalid \\{esc} escape (expected {width} hex digits)"),
+                i,
+            );
         }
         let hex = &src[i + 2..end];
         match u32::from_str_radix(hex, 16).ok().and_then(char::from_u32) {
             Some(ch) => Ok((ch.to_string(), end)),
-            None => err(format!("Invalid \\{esc} escape (expected {width} hex digits)"), i),
+            None => err(
+                format!("Invalid \\{esc} escape (expected {width} hex digits)"),
+                i,
+            ),
         }
     } else {
         Ok((esc.to_string(), i + 2))
@@ -170,7 +220,13 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, SyntaxError> {
     let mut tokens = Vec::new();
     let mut i = 0;
     let push = |tokens: &mut Vec<Token>, tt: Tt, value: &str, pos: usize| {
-        tokens.push(Token { tt, value: value.to_string(), num: None, delimited: false, pos });
+        tokens.push(Token {
+            tt,
+            value: value.to_string(),
+            num: None,
+            delimited: false,
+            pos,
+        });
     };
 
     while i < b.len() {
@@ -284,7 +340,13 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, SyntaxError> {
                 return err("Unterminated string literal", start);
             }
             i += 1; // closing quote
-            tokens.push(Token { tt: Tt::Str, value: s, num: None, delimited: false, pos: start });
+            tokens.push(Token {
+                tt: Tt::Str,
+                value: s,
+                num: None,
+                delimited: false,
+                pos: start,
+            });
             continue;
         }
 
@@ -302,7 +364,13 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, SyntaxError> {
                 return err("Unterminated delimited identifier", start);
             }
             i += 1;
-            tokens.push(Token { tt: Tt::Ident, value: name, num: None, delimited: true, pos: start });
+            tokens.push(Token {
+                tt: Tt::Ident,
+                value: name,
+                num: None,
+                delimited: true,
+                pos: start,
+            });
             continue;
         }
 
@@ -335,7 +403,9 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, SyntaxError> {
                 && matches!(b[i + 1], b'x' | b'X' | b'o' | b'O' | b'b' | b'B');
             if is_base {
                 i += 2;
-                while i < b.len() && (b[i] as char).is_ascii_hexdigit() || (i < b.len() && b[i] == b'_') {
+                while i < b.len() && (b[i] as char).is_ascii_hexdigit()
+                    || (i < b.len() && b[i] == b'_')
+                {
                     i += 1;
                 }
             } else {
@@ -396,13 +466,19 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, SyntaxError> {
 /// Parse a numeric literal, honoring the `0x`/`0o`/`0b` bases JS `Number()` accepts.
 fn parse_number(s: &str) -> f64 {
     if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
-        return u64::from_str_radix(hex, 16).map(|n| n as f64).unwrap_or(f64::NAN);
+        return u64::from_str_radix(hex, 16)
+            .map(|n| n as f64)
+            .unwrap_or(f64::NAN);
     }
     if let Some(oct) = s.strip_prefix("0o").or_else(|| s.strip_prefix("0O")) {
-        return u64::from_str_radix(oct, 8).map(|n| n as f64).unwrap_or(f64::NAN);
+        return u64::from_str_radix(oct, 8)
+            .map(|n| n as f64)
+            .unwrap_or(f64::NAN);
     }
     if let Some(bin) = s.strip_prefix("0b").or_else(|| s.strip_prefix("0B")) {
-        return u64::from_str_radix(bin, 2).map(|n| n as f64).unwrap_or(f64::NAN);
+        return u64::from_str_radix(bin, 2)
+            .map(|n| n as f64)
+            .unwrap_or(f64::NAN);
     }
     s.parse().unwrap_or(f64::NAN)
 }

@@ -10,18 +10,23 @@ export const aggregateNumber = function* (
   let sum = 0;
   let count = 0;
   let sawNonNull = false;
+
   for (const t of stream) {
     if (t.value == null) {
       continue;
     }
+
     sawNonNull = true;
     sum += Number(t.value);
     count++;
   }
+
   if (!sawNonNull) {
     yield startTraverser(null);
+
     return;
   }
+
   yield startTraverser(kind === 'sum' ? sum : sum / count);
 };
 
@@ -31,10 +36,12 @@ export const aggregateComparable = function* (
 ): Iterable<Traverser<unknown>> {
   let best: unknown;
   let sawNonNull = false;
+
   for (const t of stream) {
     if (t.value == null) {
       continue;
     }
+
     if (!sawNonNull) {
       best = t.value;
       sawNonNull = true;
@@ -46,10 +53,13 @@ export const aggregateComparable = function* (
       best = t.value;
     }
   }
+
   if (!sawNonNull) {
     yield startTraverser(null);
+
     return;
   }
+
   yield startTraverser(best);
 };
 
@@ -57,9 +67,11 @@ export const countStep = function* (
   stream: Iterable<Traverser<unknown>>,
 ): Iterable<Traverser<unknown>> {
   let n = 0;
+
   for (const _ of stream) {
     n++;
   }
+
   yield startTraverser(n);
 };
 
@@ -78,17 +90,21 @@ export const countLocal = (v: unknown): number => elementsOf(v).length;
 
 export const sumLocal = (v: unknown): number | null => {
   const items = elementsOf(v).filter((x) => x != null);
+
   if (items.length === 0) {
     return null;
   }
+
   return items.reduce<number>((s, x) => s + Number(x), 0);
 };
 
 export const meanLocal = (v: unknown): number | null => {
   const items = elementsOf(v).filter((x) => x != null);
+
   if (items.length === 0) {
     return null;
   }
+
   return items.reduce<number>((s, x) => s + Number(x), 0) / items.length;
 };
 
@@ -99,21 +115,26 @@ export const maxLocal = (v: unknown): unknown => reduceComparable(elementsOf(v),
 const reduceComparable = (items: readonly unknown[], kind: 'min' | 'max'): unknown => {
   let best: unknown;
   let saw = false;
+
   for (const x of items) {
     if (x == null) {
       continue;
     }
+
     if (!saw) {
       best = x;
       saw = true;
       continue;
     }
+
     const lhs = x as number | string;
     const rhs = best as number | string;
+
     if (kind === 'min' ? lhs < rhs : lhs > rhs) {
       best = x;
     }
   }
+
   return saw ? best : null;
 };
 
@@ -142,15 +163,19 @@ export const orderStep = function* (
       const sa = a.sortKeys[i] as number | string;
       const sb = b.sortKeys[i] as number | string;
       const flip = dirs[i] === 'desc' ? -1 : 1;
+
       if (sa < sb) {
         return -1 * flip;
       }
+
       if (sa > sb) {
         return 1 * flip;
       }
     }
+
     return 0;
   });
+
   for (const { traverser } of projected) {
     yield traverser;
   }

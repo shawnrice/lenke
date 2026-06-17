@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
 import { eq, lt } from '../predicates.js';
@@ -95,6 +96,7 @@ describe('repeat tests', () => {
     // Iter 0 emits marko itself? No — repeat.emit() fires after the body.
     // Per the existing test above we get 6 names; same shape here. Just check >0.
     expect(r.length).toBeGreaterThan(0);
+
     // Each path begins with marko.
     for (const p of r as Array<unknown[]>) {
       expect(p[0]).toBe('marko');

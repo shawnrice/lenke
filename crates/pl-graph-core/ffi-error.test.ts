@@ -49,24 +49,29 @@ type Report = { code: string; message: string; details: { pos?: number } | null 
 const lastError = (): Report | null => {
   const outLen = new BigUint64Array(1);
   const p = lib.symbols.plg_last_error_json(ptr(outLen));
+
   if (!p) {
     return null;
   }
+
   const len = Number(outLen[0]);
   const json = dec.decode(new Uint8Array(toArrayBuffer(p, 0, len)).slice());
   lib.symbols.plg_free_buf(p, len);
+
   return JSON.parse(json) as Report;
 };
 
 const queryRows = (g: number, q: string): number => {
   const qb = enc.encode(q);
   const outLen = new BigUint64Array(1);
+
   return lib.symbols.plg_query_rows(g, ptr(qb), qb.byteLength, ptr(outLen)) as number;
 };
 
 const queryArrow = (g: number, q: string): number => {
   const qb = enc.encode(q);
   const outLen = new BigUint64Array(1);
+
   return lib.symbols.plg_query_arrow(g, ptr(qb), qb.byteLength, ptr(outLen)) as number;
 };
 
@@ -144,6 +149,7 @@ describe('FFI error channel', () => {
   const deserialize = (input: string, format: string): number => {
     const i = enc.encode(input);
     const f = enc.encode(format);
+
     return lib.symbols.plg_deserialize(ptr(i), i.byteLength, ptr(f), f.byteLength) as number;
   };
 

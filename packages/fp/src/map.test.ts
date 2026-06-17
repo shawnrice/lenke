@@ -2,9 +2,9 @@ import { describe, expect, mock, test } from 'bun:test';
 
 import { map } from './map.js';
 import { pipe } from './pipe.js';
-import { take } from './take.js';
 import { range } from './range.js';
 import { skip } from './skip.js';
+import { take } from './take.js';
 
 describe('functional iterator tests', () => {
   test('map works', () => {

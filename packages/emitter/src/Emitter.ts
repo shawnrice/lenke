@@ -78,6 +78,7 @@ export class Emitter<
   ): NullaryFn {
     const listeners = this.listenersFor(type);
     listeners.add(listener);
+
     return () => listeners.delete(listener);
   }
 
@@ -91,6 +92,7 @@ export class Emitter<
       listener(event);
     };
     listeners.add(wrapped);
+
     return () => listeners.delete(wrapped);
   }
 
@@ -130,10 +132,12 @@ export class Emitter<
 
   private listenersFor(type: Key): Set<StoredListener> {
     let set = this.listeners.get(type);
+
     if (!set) {
       set = new Set();
       this.listeners.set(type, set);
     }
+
     return set;
   }
 }

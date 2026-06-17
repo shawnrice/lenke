@@ -17,10 +17,12 @@ import { compile, parse, query } from './index.js';
 
 const makeRng = (seed: number): (() => number) => {
   let s = seed >>> 0;
+
   return () => {
     s = (s + 0x6d2b79f5) >>> 0;
     let t = Math.imul(s ^ (s >>> 15), 1 | s);
     t ^= t + Math.imul(t ^ (t >>> 7), 61 | t);
+
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 };
@@ -33,28 +35,37 @@ const makeGraph = (rand: () => number): Graph => {
   g.disableEvents();
   const count = 4 + Math.floor(rand() * 8);
   const nodes = [];
+
   for (let i = 0; i < count; i += 1) {
     const properties: Record<string, unknown> = {};
+
     for (const p of PROPS) {
       const r = rand();
+
       if (r < 0.3) {
         continue; // absent → NULL on access (the interesting case)
       }
+
       if (r < 0.75) {
         properties[p] = Math.floor(rand() * 5);
       } else {
         properties[p] = rand() < 0.5 ? 'x' : 'y';
       }
     }
+
     nodes.push(g.addVertex({ id: String(i), labels: ['Node'], properties }));
   }
+
   const edges = Math.floor(rand() * count);
+
   for (let i = 0; i < edges; i += 1) {
     const from = nodes[Math.floor(rand() * nodes.length)];
     const to = nodes[Math.floor(rand() * nodes.length)];
     g.addEdge({ from, to, labels: ['R'], properties: {} });
   }
+
   g.enableEvents();
+
   return g;
 };
 
@@ -64,20 +75,26 @@ const COMP = ['>', '<', '>=', '<=', '=', '<>'];
 const leaf = (rand: () => number): string => {
   const p = `n.${PROPS[Math.floor(rand() * PROPS.length)]}`;
   const k = rand();
+
   if (k < 0.55) {
     const op = COMP[Math.floor(rand() * COMP.length)];
     let val: string;
+
     if (rand() < 0.7) {
       val = String(Math.floor(rand() * 5));
     } else {
       val = rand() < 0.5 ? "'x'" : "'y'";
     }
+
     return `${p} ${op} ${val}`;
   }
+
   if (k < 0.78) {
     return `${p} IS ${rand() < 0.5 ? '' : 'NOT '}NULL`;
   }
+
   const items = [0, 1, 2, 3].filter(() => rand() < 0.5).map(() => String(Math.floor(rand() * 5)));
+
   return `${p} ${rand() < 0.5 ? '' : 'NOT '}IN [${items.join(', ')}]`;
 };
 
@@ -86,16 +103,21 @@ const pred = (rand: () => number, depth: number): string => {
   if (depth <= 0 || rand() < 0.4) {
     return `(${leaf(rand)})`;
   }
+
   const k = rand();
+
   if (k < 0.25) {
     return `(NOT ${pred(rand, depth - 1)})`;
   }
+
   let op = 'XOR';
+
   if (k < 0.5) {
     op = 'AND';
   } else if (k < 0.75) {
     op = 'OR';
   }
+
   return `(${pred(rand, depth - 1)} ${op} ${pred(rand, depth - 1)})`;
 };
 
@@ -267,30 +289,37 @@ describe('GQL fuzz: arithmetic precedence matches a reference evaluator', () => 
     const terms: string[] = [];
     const vals: number[] = [];
     const nTerms = 1 + Math.floor(rand() * 3);
+
     for (let t = 0; t < nTerms; t += 1) {
       const factors: string[] = [];
       let v = 1;
       const nF = 1 + Math.floor(rand() * 3);
+
       for (let f = 0; f < nF; f += 1) {
         const x = 1 + Math.floor(rand() * 5);
         factors.push(String(x));
         v *= x;
       }
+
       terms.push(factors.join(' * '));
       vals.push(v);
     }
-    let str = terms[0];
-    let val = vals[0];
+
+    let [str] = terms;
+    let [val] = vals;
+
     for (let t = 1; t < nTerms; t += 1) {
       const plus = rand() < 0.5;
       str += (plus ? ' + ' : ' - ') + terms[t];
       val = plus ? val + vals[t] : val - vals[t];
     }
+
     return { str, val };
   };
 
   test('random +,-,* expressions evaluate to the precedence-correct value', () => {
     const g = new Graph();
+
     for (let i = 0; i < ITERATIONS; i += 1) {
       const seed = 0xa817_0000 + i;
       const rand = makeRng(seed);

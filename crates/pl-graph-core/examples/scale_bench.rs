@@ -68,7 +68,10 @@ fn bench(g: &mut Graph, q: &str) -> (f64, i64) {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let n: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(10_000_000);
+    let n: usize = args
+        .get(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10_000_000);
     let eper: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(4);
 
     let t = Instant::now();
@@ -84,9 +87,18 @@ fn main() {
     for (label, q) in [
         ("label scan count", "MATCH (n:Person) RETURN count(*) AS c"),
         ("aggregate avg", "MATCH (n:Person) RETURN avg(n.age) AS a"),
-        ("group by age", "MATCH (n:Person) RETURN n.age AS age, count(*) AS c"),
-        ("type traversal count", "MATCH (a:Person)-[:KNOWS]->(b) RETURN count(*) AS c"),
-        ("prop scan (no index)", "MATCH (n:Person) WHERE n.age = 42 RETURN count(*) AS c"),
+        (
+            "group by age",
+            "MATCH (n:Person) RETURN n.age AS age, count(*) AS c",
+        ),
+        (
+            "type traversal count",
+            "MATCH (a:Person)-[:KNOWS]->(b) RETURN count(*) AS c",
+        ),
+        (
+            "prop scan (no index)",
+            "MATCH (n:Person) WHERE n.age = 42 RETURN count(*) AS c",
+        ),
     ] {
         let (ms, rows) = bench(&mut g, q);
         println!("  {label:<22} {ms:>9.3} ms   rows {rows}");
@@ -94,7 +106,10 @@ fn main() {
 
     // Then the indexed point lookup (build once, A/B against the scan above).
     g.create_vertex_index("age");
-    let (ms, rows) = bench(&mut g, "MATCH (n:Person) WHERE n.age = 42 RETURN count(*) AS c");
+    let (ms, rows) = bench(
+        &mut g,
+        "MATCH (n:Person) WHERE n.age = 42 RETURN count(*) AS c",
+    );
     println!("  {:<22} {ms:>9.3} ms   rows {rows}", "prop seek (indexed)");
 
     std::hint::black_box(&g);

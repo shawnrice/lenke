@@ -3,9 +3,11 @@ import type { UnaryFn } from './types.js';
 
 const keyByInternal = <T, K>(keySelector: UnaryFn<T, K>, iterable: Iterable<T>): Map<K, T> => {
   const map = new Map<K, T>();
+
   for (const item of iterable) {
     map.set(keySelector(item), item);
   }
+
   return map;
 };
 

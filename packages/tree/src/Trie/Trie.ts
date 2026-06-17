@@ -63,6 +63,7 @@ export class Trie<T> {
       for (const n of path) {
         n.count++;
       }
+
       this.words++;
     }
 
@@ -128,6 +129,7 @@ export class Trie<T> {
     }
 
     this.words--;
+
     return this;
   }
 

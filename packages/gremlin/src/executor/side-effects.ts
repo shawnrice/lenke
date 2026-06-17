@@ -11,7 +11,9 @@ export const aggregateStep = function* (
     if (!ctx.sideEffects.has(key)) {
       ctx.sideEffects.set(key, []);
     }
+
     ctx.sideEffects.get(key)!.push(t.value);
+
     yield t;
   }
 };
@@ -24,6 +26,7 @@ export const barrierStep = function* (
   stream: Iterable<Traverser<unknown>>,
 ): Iterable<Traverser<unknown>> {
   const buffered = [...stream];
+
   yield* buffered;
 };
 
@@ -38,20 +41,25 @@ export const subgraphStep = function* (
   ctx: RunContext,
 ): Iterable<Traverser<unknown>> {
   let sg = ctx.subgraphs.get(key);
+
   if (!sg) {
     sg = new Graph();
     ctx.subgraphs.set(key, sg);
   }
+
   const endpoint = (v: Vertex): Vertex =>
     sg.getVertexById(v.id) ??
     sg.addVertex({ id: v.id, labels: [...v.labels], properties: { ...v.properties } });
+
   for (const t of stream) {
     const e = t.value;
+
     if (isEdge(e)) {
       const from = endpoint(e.from);
       const to = endpoint(e.to);
       sg.addEdge({ id: e.id, from, to, labels: [...e.labels], properties: { ...e.properties } });
     }
+
     yield t;
   }
 };
@@ -67,9 +75,12 @@ export const capStep = function* (
   for (const _ of stream) {
     // intentionally drain
   }
+
   if (ctx.subgraphs.has(key)) {
     yield startTraverser(ctx.subgraphs.get(key)!);
+
     return;
   }
+
   yield startTraverser(ctx.sideEffects.get(key) ?? []);
 };

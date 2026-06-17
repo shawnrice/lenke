@@ -10,10 +10,12 @@ export const genNdjson = (nVertices: number, avgDegree: number, seed = 0x1234_56
     s ^= s << 13;
     s ^= s >>> 17;
     s ^= s << 5;
+
     return s >>> 0;
   };
   const nEdges = nVertices * avgDegree;
   const lines: string[] = new Array(nVertices + nEdges);
+
   for (let i = 0; i < nVertices; i++) {
     lines[i] = JSON.stringify({
       type: 'node',
@@ -23,6 +25,7 @@ export const genNdjson = (nVertices: number, avgDegree: number, seed = 0x1234_56
       properties: { name: `p${i}`, age: i % 100, active: i % 2 === 0, dept: `d${i % 10}` },
     });
   }
+
   for (let i = 0; i < nEdges; i++) {
     const a = rnd() % nVertices;
     const b = rnd() % nVertices;
@@ -35,5 +38,6 @@ export const genNdjson = (nVertices: number, avgDegree: number, seed = 0x1234_56
       properties: {},
     });
   }
+
   return { ndjson: lines.join('\n'), nVertices, nEdges };
 };

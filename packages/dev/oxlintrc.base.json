@@ -1,6 +1,8 @@
 {
   "$schema": "https://raw.githubusercontent.com/oxc-project/oxc/main/npm/oxlint/configuration_schema.json",
+  "jsPlugins": ["./lint-rules/padding-lines.js"],
   "rules": {
+    "padding-lines/before-exit": "error",
     "eqeqeq": ["error", "always", { "null": "ignore" }],
     "no-var": "error",
     "prefer-const": "error",
@@ -80,7 +82,10 @@
     "typescript/no-unnecessary-type-constraint": "error",
     "typescript/no-unnecessary-boolean-literal-compare": "error",
     "typescript/no-unnecessary-template-expression": "error",
-    "typescript/switch-exhaustiveness-check": "error",
+    "typescript/switch-exhaustiveness-check": [
+      "error",
+      { "considerDefaultExhaustiveForUnions": true }
+    ],
     "typescript/no-deprecated": "error",
     "typescript/prefer-for-of": "error",
 
@@ -107,7 +112,8 @@
         "unicorn/consistent-function-scoping": "off",
         "max-statements": "off",
         "max-nested-callbacks": "off",
-        "no-shadow": "off"
+        "no-shadow": "off",
+        "typescript/require-array-sort-compare": "off"
       }
     }
   ],

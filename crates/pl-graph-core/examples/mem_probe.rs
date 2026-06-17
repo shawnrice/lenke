@@ -37,7 +37,14 @@ fn rss_bytes() -> u64 {
         suspend_count: 0,
     };
     let mut count = (std::mem::size_of::<MachTaskBasicInfo>() / 4) as u32;
-    let rc = unsafe { task_info(mach_task_self(), 20, &mut info as *mut _ as *mut i32, &mut count) };
+    let rc = unsafe {
+        task_info(
+            mach_task_self(),
+            20,
+            &mut info as *mut _ as *mut i32,
+            &mut count,
+        )
+    };
     if rc == 0 {
         info.resident_size
     } else {
@@ -92,7 +99,10 @@ fn build(n: usize, eper: usize) -> Graph {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let n: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(1_000_000);
+    let n: usize = args
+        .get(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1_000_000);
     let eper: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
 
     let base = rss_bytes();
@@ -109,12 +119,18 @@ fn main() {
     }
     if e > 0 {
         let v_part = v as f64 * 160.0; // rough vertex share, refined by the 0-edge run
-        println!("  ~{:.0} bytes/edge (after subtracting ~160 B/vertex)", (used as f64 - v_part) / e as f64);
+        println!(
+            "  ~{:.0} bytes/edge (after subtracting ~160 B/vertex)",
+            (used as f64 - v_part) / e as f64
+        );
     }
     // Extrapolate the vertex cost to 1e9.
     if eper == 0 && v > 0 {
         let per = used as f64 / v as f64;
-        println!("  → 1e9 vertices ≈ {:.0} GB at this rate", per * 1e9 / 1024.0 / 1024.0 / 1024.0);
+        println!(
+            "  → 1e9 vertices ≈ {:.0} GB at this rate",
+            per * 1e9 / 1024.0 / 1024.0 / 1024.0
+        );
     }
     std::hint::black_box(&g);
 }

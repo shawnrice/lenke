@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test';
-import { eq } from '../predicates.js';
+
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
+import { eq } from '../predicates.js';
 import { V, fail, fold, has, hasLabel } from '../steps.js';
 import { traversal } from '../traversal.js';
 

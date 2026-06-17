@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+
 import { run, toArray, toSet } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
 import { gt, lt } from '../predicates.js';

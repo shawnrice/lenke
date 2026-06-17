@@ -61,7 +61,8 @@ fn one_num(r: Vec<GVal>) -> f64 {
 fn map_sorted(g: &GVal) -> Vec<(String, GVal)> {
     match g {
         GVal::Map(entries) => {
-            let mut v: Vec<(String, GVal)> = entries.iter().map(|(k, val)| (s(k), val.clone())).collect();
+            let mut v: Vec<(String, GVal)> =
+                entries.iter().map(|(k, val)| (s(k), val.clone())).collect();
             v.sort_by(|a, b| a.0.cmp(&b.0));
             v
         }
@@ -90,30 +91,53 @@ fn v_by_id() {
 
 #[test]
 fn out_multi_label_order_matters() {
-    assert_eq!(ordered(q(g().v_ids(&["1"]).out(&["CREATED", "KNOWS"]).values(&["name"]))), vec!["lop", "vadas", "josh"]);
+    assert_eq!(
+        ordered(q(g()
+            .v_ids(&["1"])
+            .out(&["CREATED", "KNOWS"])
+            .values(&["name"]))),
+        vec!["lop", "vadas", "josh"]
+    );
 }
 
 #[test]
 fn out_all_neighbors_of_marko() {
-    assert_eq!(names(q(g().v_ids(&["1"]).out(&[]).values(&["name"]))), vec!["josh", "lop", "vadas"]);
+    assert_eq!(
+        names(q(g().v_ids(&["1"]).out(&[]).values(&["name"]))),
+        vec!["josh", "lop", "vadas"]
+    );
 }
 
 #[test]
 fn oute_inv_equals_out() {
     let a = names(q(g().v_ids(&["1"]).out(&["KNOWS"]).values(&["name"])));
-    let b = names(q(g().v_ids(&["1"]).out_e(&["KNOWS"]).in_v().values(&["name"])));
+    let b = names(q(g()
+        .v_ids(&["1"])
+        .out_e(&["KNOWS"])
+        .in_v()
+        .values(&["name"])));
     assert_eq!(a, b);
     assert_eq!(a, vec!["josh", "vadas"]);
 }
 
 #[test]
 fn in_created_creators_of_lop() {
-    assert_eq!(names(q(g().V().has("name", P::eq("lop")).in_(&["CREATED"]).values(&["name"]))), vec!["josh", "marko", "peter"]);
+    assert_eq!(
+        names(q(g()
+            .V()
+            .has("name", P::eq("lop"))
+            .in_(&["CREATED"])
+            .values(&["name"]))),
+        vec!["josh", "marko", "peter"]
+    );
 }
 
 #[test]
 fn both_neighborhood() {
-    assert_eq!(names(q(g().v_ids(&["1"]).both(&[]).dedup().values(&["name"]))), vec!["josh", "lop", "vadas"]);
+    assert_eq!(
+        names(q(g().v_ids(&["1"]).both(&[]).dedup().values(&["name"]))),
+        vec!["josh", "lop", "vadas"]
+    );
 }
 
 #[test]
@@ -124,117 +148,207 @@ fn edge_source_and_count() {
 #[test]
 fn other_v_from_marko_edges() {
     // marko's incident edges, otherV back from marko ⇒ the far endpoints.
-    assert_eq!(names(q(g().v_ids(&["1"]).both_e(&[]).other_v().values(&["name"]))), vec!["josh", "lop", "vadas"]);
+    assert_eq!(
+        names(q(g().v_ids(&["1"]).both_e(&[]).other_v().values(&["name"]))),
+        vec!["josh", "lop", "vadas"]
+    );
 }
 
 // ===== filters / predicates =====
 
 #[test]
 fn has_age_gt_30() {
-    assert_eq!(names(q(g().V().has("age", P::gt(30)).values(&["name"]))), vec!["josh", "peter"]);
+    assert_eq!(
+        names(q(g().V().has("age", P::gt(30)).values(&["name"]))),
+        vec!["josh", "peter"]
+    );
 }
 
 #[test]
 fn between_inside_outside() {
-    assert_eq!(names(q(g().V().has("age", P::between(28, 33)).values(&["name"]))), vec!["josh", "marko"]);
-    assert_eq!(names(q(g().V().has("age", P::inside(27, 32)).values(&["name"]))), vec!["marko"]);
-    assert_eq!(names(q(g().V().has("age", P::outside(28, 33)).values(&["name"]))), vec!["peter", "vadas"]);
+    assert_eq!(
+        names(q(g().V().has("age", P::between(28, 33)).values(&["name"]))),
+        vec!["josh", "marko"]
+    );
+    assert_eq!(
+        names(q(g().V().has("age", P::inside(27, 32)).values(&["name"]))),
+        vec!["marko"]
+    );
+    assert_eq!(
+        names(q(g().V().has("age", P::outside(28, 33)).values(&["name"]))),
+        vec!["peter", "vadas"]
+    );
 }
 
 #[test]
 fn within_without() {
-    assert_eq!(names(q(g().V().has("name", P::within(["josh", "marko"])).values(&["name"]))), vec!["josh", "marko"]);
-    assert_eq!(names(q(g().V().has_label(&["PERSON"]).has("name", P::without(["josh", "marko"])).values(&["name"]))), vec!["peter", "vadas"]);
+    assert_eq!(
+        names(q(g()
+            .V()
+            .has("name", P::within(["josh", "marko"]))
+            .values(&["name"]))),
+        vec!["josh", "marko"]
+    );
+    assert_eq!(
+        names(q(g()
+            .V()
+            .has_label(&["PERSON"])
+            .has("name", P::without(["josh", "marko"]))
+            .values(&["name"]))),
+        vec!["peter", "vadas"]
+    );
 }
 
 #[test]
 fn text_predicates() {
-    assert_eq!(names(q(g().V().has("name", P::starts_with("ma")).values(&["name"]))), vec!["marko"]);
-    assert_eq!(names(q(g().V().has("name", P::containing("o")).values(&["name"]))), vec!["josh", "lop", "marko"]);
+    assert_eq!(
+        names(q(g()
+            .V()
+            .has("name", P::starts_with("ma"))
+            .values(&["name"]))),
+        vec!["marko"]
+    );
+    assert_eq!(
+        names(q(g().V().has("name", P::containing("o")).values(&["name"]))),
+        vec!["josh", "lop", "marko"]
+    );
 }
 
 #[test]
 fn has_id_and_has_not() {
-    assert_eq!(names(q(g().V().has_id(&["1"]).values(&["name"]))), vec!["marko"]);
+    assert_eq!(
+        names(q(g().V().has_id(&["1"]).values(&["name"]))),
+        vec!["marko"]
+    );
     // hasNot('age') keeps software (no age property).
-    assert_eq!(names(q(g().V().has_not(&["age"]).values(&["name"]))), vec!["lop", "ripple"]);
+    assert_eq!(
+        names(q(g().V().has_not(&["age"]).values(&["name"]))),
+        vec!["lop", "ripple"]
+    );
 }
 
 #[test]
 fn has_key_keeps_elements_with_property() {
-    assert_eq!(names(q(g().V().has_key(&["lang"]).values(&["name"]))), vec!["lop", "ripple"]);
+    assert_eq!(
+        names(q(g().V().has_key(&["lang"]).values(&["name"]))),
+        vec!["lop", "ripple"]
+    );
 }
 
 #[test]
 fn software_has_no_age() {
-    assert_eq!(q(g().V().has_label(&["SOFTWARE"]).values(&["age"])).len(), 0);
+    assert_eq!(
+        q(g().V().has_label(&["SOFTWARE"]).values(&["age"])).len(),
+        0
+    );
 }
 
 // ===== combinators (closures → sub-traversals) =====
 
 #[test]
 fn and_knows_out_and_young() {
-    let r = g().V().and(vec![__().out_e(&["KNOWS"]), __().values(&["age"]).is(P::lt(30))]).values(&["name"]);
+    let r = g()
+        .V()
+        .and(vec![
+            __().out_e(&["KNOWS"]),
+            __().values(&["age"]).is(P::lt(30)),
+        ])
+        .values(&["name"]);
     assert_eq!(names(q(r)), vec!["marko"]);
 }
 
 #[test]
 fn or_created_out_or_many_creators() {
-    let r = g().V().or(vec![__().out_e(&["CREATED"]), __().in_(&["CREATED"]).count().is(P::gt(1))]).values(&["name"]);
+    let r = g()
+        .V()
+        .or(vec![
+            __().out_e(&["CREATED"]),
+            __().in_(&["CREATED"]).count().is(P::gt(1)),
+        ])
+        .values(&["name"]);
     assert_eq!(names(q(r)), vec!["josh", "lop", "marko", "peter"]);
 }
 
 #[test]
 fn not_created_more_than_one() {
-    let r = g().V().has_label(&["PERSON"]).not(__().out(&["CREATED"]).count().is(P::gt(1))).values(&["name"]);
+    let r = g()
+        .V()
+        .has_label(&["PERSON"])
+        .not(__().out(&["CREATED"]).count().is(P::gt(1)))
+        .values(&["name"]);
     assert_eq!(names(q(r)), vec!["marko", "peter", "vadas"]);
 }
 
 #[test]
 fn chained_where_no_created_has_knows_in() {
-    let r = g().V().where_(__().not(__().out(&["CREATED"]))).where_(__().in_(&["KNOWS"])).values(&["name"]);
+    let r = g()
+        .V()
+        .where_(__().not(__().out(&["CREATED"])))
+        .where_(__().in_(&["KNOWS"]))
+        .values(&["name"]);
     assert_eq!(names(q(r)), vec!["vadas"]);
 }
 
 #[test]
 fn where_count_is_gte_2() {
-    let r = g().V().where_(__().in_(&["CREATED"]).count().is(P::gte(2))).values(&["name"]);
+    let r = g()
+        .V()
+        .where_(__().in_(&["CREATED"]).count().is(P::gte(2)))
+        .values(&["name"]);
     assert_eq!(names(q(r)), vec!["lop"]);
 }
 
 #[test]
 fn marko_friends_who_created() {
-    let r = g().V().has("name", P::eq("marko")).out(&["KNOWS"]).where_(__().out(&["CREATED"])).values(&["name"]);
+    let r = g()
+        .V()
+        .has("name", P::eq("marko"))
+        .out(&["KNOWS"])
+        .where_(__().out(&["CREATED"]))
+        .values(&["name"]);
     assert_eq!(names(q(r)), vec!["josh"]);
 }
 
 #[test]
 fn coalesce_first_nonempty() {
     // coalesce(out CREATED names, constant 'none') per person.
-    let r = g()
-        .V()
-        .has_label(&["PERSON"])
-        .coalesce(vec![__().out(&["CREATED"]).values(&["name"]), __().constant("none")]);
+    let r = g().V().has_label(&["PERSON"]).coalesce(vec![
+        __().out(&["CREATED"]).values(&["name"]),
+        __().constant("none"),
+    ]);
     // marko→lop, josh→{lop,ripple}, peter→lop, vadas→none
     assert_eq!(names(q(r)), vec!["lop", "lop", "lop", "none", "ripple"]);
 }
 
 #[test]
 fn optional_falls_back_to_input() {
-    let r = g().V().has("name", P::eq("vadas")).optional(__().out(&["CREATED"]));
+    let r = g()
+        .V()
+        .has("name", P::eq("vadas"))
+        .optional(__().out(&["CREATED"]));
     // vadas creates nothing ⇒ optional yields vadas itself.
     assert_eq!(names(q(r.values(&["name"]))), vec!["vadas"]);
 }
 
 #[test]
 fn choose_branches_on_label() {
-    let r = g().V().choose_else(__().has_label(&["PERSON"]), __().values(&["name"]), __().constant("sw"));
-    assert_eq!(names(q(r)), vec!["josh", "marko", "peter", "sw", "sw", "vadas"]);
+    let r = g().V().choose_else(
+        __().has_label(&["PERSON"]),
+        __().values(&["name"]),
+        __().constant("sw"),
+    );
+    assert_eq!(
+        names(q(r)),
+        vec!["josh", "marko", "peter", "sw", "sw", "vadas"]
+    );
 }
 
 #[test]
 fn union_name_and_age() {
-    let r = g().V().has("name", P::eq("marko")).union(vec![__().values(&["name"]), __().values(&["age"])]);
+    let r = g()
+        .V()
+        .has("name", P::eq("marko"))
+        .union(vec![__().values(&["name"]), __().values(&["age"])]);
     let out = q(r);
     assert_eq!(out, vec![GVal::Str("marko".into()), GVal::Num(29.0)]);
 }
@@ -242,7 +356,10 @@ fn union_name_and_age() {
 #[test]
 fn local_out_count_per_person() {
     // local(out().count()) counts each person's out-degree per traverser.
-    let r = g().V().has("name", P::eq("marko")).local(__().out(&[]).count());
+    let r = g()
+        .V()
+        .has("name", P::eq("marko"))
+        .local(__().out(&[]).count());
     assert_eq!(one_num(q(r)), 3.0);
 }
 
@@ -252,7 +369,13 @@ fn local_out_count_per_person() {
 fn group_count_by_label() {
     let out = q(g().V().group_count().by_label());
     let m = map_sorted(&out[0]);
-    assert_eq!(m, vec![("PERSON".into(), GVal::Num(4.0)), ("SOFTWARE".into(), GVal::Num(2.0))]);
+    assert_eq!(
+        m,
+        vec![
+            ("PERSON".into(), GVal::Num(4.0)),
+            ("SOFTWARE".into(), GVal::Num(2.0))
+        ]
+    );
 }
 
 #[test]
@@ -267,7 +390,11 @@ fn group_names_by_label() {
 
 #[test]
 fn group_count_by_age_value() {
-    let out = q(g().V().has_label(&["PERSON"]).values(&["age"]).group_count());
+    let out = q(g()
+        .V()
+        .has_label(&["PERSON"])
+        .values(&["age"])
+        .group_count());
     let m = map_sorted(&out[0]);
     assert_eq!(m.len(), 4);
     assert!(m.iter().all(|(_, n)| *n == GVal::Num(1.0)));
@@ -275,7 +402,12 @@ fn group_count_by_age_value() {
 
 #[test]
 fn group_software_by_lang() {
-    let out = q(g().V().has_label(&["SOFTWARE"]).group().by("lang").by("name"));
+    let out = q(g()
+        .V()
+        .has_label(&["SOFTWARE"])
+        .group()
+        .by("lang")
+        .by("name"));
     let m = map_sorted(&out[0]);
     assert_eq!(m.len(), 1);
     assert_eq!(m[0].0, "java");
@@ -286,33 +418,65 @@ fn group_software_by_lang() {
 fn group_count_edges_by_label() {
     let out = q(g().V().out_e(&[]).group_count().by_label());
     let m = map_sorted(&out[0]);
-    assert_eq!(m, vec![("CREATED".into(), GVal::Num(4.0)), ("KNOWS".into(), GVal::Num(2.0))]);
+    assert_eq!(
+        m,
+        vec![
+            ("CREATED".into(), GVal::Num(4.0)),
+            ("KNOWS".into(), GVal::Num(2.0))
+        ]
+    );
 }
 
 #[test]
 fn order_by_age_desc() {
-    let r = g().V().has_label(&["PERSON"]).order_by("age", Order::Desc).values(&["name"]);
+    let r = g()
+        .V()
+        .has_label(&["PERSON"])
+        .order_by("age", Order::Desc)
+        .values(&["name"]);
     assert_eq!(ordered(q(r)), vec!["peter", "josh", "marko", "vadas"]);
 }
 
 #[test]
 fn order_by_name_asc() {
-    let r = g().V().has_label(&["PERSON"]).order().by("name").values(&["name"]);
+    let r = g()
+        .V()
+        .has_label(&["PERSON"])
+        .order()
+        .by("name")
+        .values(&["name"]);
     assert_eq!(ordered(q(r)), vec!["josh", "marko", "peter", "vadas"]);
 }
 
 #[test]
 fn sum_mean_max_min_of_age() {
-    assert_eq!(one_num(q(g().V().has_label(&["PERSON"]).values(&["age"]).sum())), 123.0);
-    assert_eq!(one_num(q(g().V().has_label(&["PERSON"]).values(&["age"]).mean())), 30.75);
-    assert_eq!(one_num(q(g().V().has_label(&["PERSON"]).values(&["age"]).max())), 35.0);
-    assert_eq!(one_num(q(g().V().has_label(&["PERSON"]).values(&["age"]).min())), 27.0);
+    assert_eq!(
+        one_num(q(g().V().has_label(&["PERSON"]).values(&["age"]).sum())),
+        123.0
+    );
+    assert_eq!(
+        one_num(q(g().V().has_label(&["PERSON"]).values(&["age"]).mean())),
+        30.75
+    );
+    assert_eq!(
+        one_num(q(g().V().has_label(&["PERSON"]).values(&["age"]).max())),
+        35.0
+    );
+    assert_eq!(
+        one_num(q(g().V().has_label(&["PERSON"]).values(&["age"]).min())),
+        27.0
+    );
 }
 
 #[test]
 fn fold_then_local_count() {
     // fold to one list, then local count of its length.
-    let r = g().V().has_label(&["PERSON"]).values(&["name"]).fold().count_local();
+    let r = g()
+        .V()
+        .has_label(&["PERSON"])
+        .values(&["name"])
+        .fold()
+        .count_local();
     assert_eq!(one_num(q(r)), 4.0);
 }
 
@@ -320,7 +484,12 @@ fn fold_then_local_count() {
 
 #[test]
 fn project_name_and_created_count() {
-    let r = g().V().has_label(&["PERSON"]).project(&["name", "created"]).by("name").by_t(__().out_e(&["CREATED"]).count());
+    let r = g()
+        .V()
+        .has_label(&["PERSON"])
+        .project(&["name", "created"])
+        .by("name")
+        .by_t(__().out_e(&["CREATED"]).count());
     let out = q(r);
     // Per person, a map {name, created}.
     let mut got: Vec<(String, f64)> = out
@@ -339,12 +508,26 @@ fn project_name_and_created_count() {
         })
         .collect();
     got.sort_by(|a, b| a.0.cmp(&b.0));
-    assert_eq!(got, vec![("josh".into(), 2.0), ("marko".into(), 1.0), ("peter".into(), 1.0), ("vadas".into(), 0.0)]);
+    assert_eq!(
+        got,
+        vec![
+            ("josh".into(), 2.0),
+            ("marko".into(), 1.0),
+            ("peter".into(), 1.0),
+            ("vadas".into(), 0.0)
+        ]
+    );
 }
 
 #[test]
 fn project_marko_degrees() {
-    let r = g().V().has("name", P::eq("marko")).project(&["id", "out", "in"]).by_id().by_t(__().out_e(&[]).count()).by_t(__().in_e(&[]).count());
+    let r = g()
+        .V()
+        .has("name", P::eq("marko"))
+        .project(&["id", "out", "in"])
+        .by_id()
+        .by_t(__().out_e(&[]).count())
+        .by_t(__().in_e(&[]).count());
     let out = q(r);
     let m = match &out[0] {
         GVal::Map(e) => e,
@@ -359,7 +542,17 @@ fn project_marko_degrees() {
 
 #[test]
 fn select_three_labels() {
-    let r = g().V().as_("a").out(&[]).as_("b").out(&[]).as_("c").select(&["a", "b", "c"]).by_id().by_id().by_id();
+    let r = g()
+        .V()
+        .as_("a")
+        .out(&[])
+        .as_("b")
+        .out(&[])
+        .as_("c")
+        .select(&["a", "b", "c"])
+        .by_id()
+        .by_id()
+        .by_id();
     let out = q(r);
     // marko→josh→{ripple,lop}; map of ids.
     let maps: Vec<Vec<(String, String)>> = out
@@ -370,19 +563,36 @@ fn select_three_labels() {
         })
         .collect();
     assert_eq!(maps.len(), 2);
-    assert!(maps.iter().all(|m| m[0] == ("a".to_string(), "1".to_string()) && m[1] == ("b".to_string(), "4".to_string())));
+    assert!(maps
+        .iter()
+        .all(|m| m[0] == ("a".to_string(), "1".to_string())
+            && m[1] == ("b".to_string(), "4".to_string())));
 }
 
 #[test]
 fn select_single_label_unwraps() {
-    let r = g().V().has("name", P::eq("marko")).as_("a").out(&["KNOWS"]).select(&["a"]).values(&["name"]);
+    let r = g()
+        .V()
+        .has("name", P::eq("marko"))
+        .as_("a")
+        .out(&["KNOWS"])
+        .select(&["a"])
+        .values(&["name"]);
     // 'a' recalls marko for each of the two friends ⇒ ['marko','marko'].
     assert_eq!(names(q(r)), vec!["marko", "marko"]);
 }
 
 #[test]
 fn select_by_name() {
-    let r = g().V().has("name", P::eq("marko")).as_("a").out(&["CREATED"]).as_("b").select(&["a", "b"]).by("name").by("name");
+    let r = g()
+        .V()
+        .has("name", P::eq("marko"))
+        .as_("a")
+        .out(&["CREATED"])
+        .as_("b")
+        .select(&["a", "b"])
+        .by("name")
+        .by("name");
     let out = q(r);
     let m = match &out[0] {
         GVal::Map(e) => e,
@@ -418,18 +628,36 @@ fn path_by_name_two_hops() {
     let out = q(r);
     let mut paths: Vec<Vec<String>> = out.iter().map(list_names_ordered).collect();
     paths.sort();
-    assert_eq!(paths, vec![vec!["marko", "josh", "lop"], vec!["marko", "josh", "ripple"]]);
+    assert_eq!(
+        paths,
+        vec![
+            vec!["marko", "josh", "lop"],
+            vec!["marko", "josh", "ripple"]
+        ]
+    );
 }
 
 #[test]
 fn simple_path_excludes_cycle() {
-    let r = g().V().has("name", P::eq("marko")).out(&["CREATED"]).in_(&["CREATED"]).simple_path().values(&["name"]);
+    let r = g()
+        .V()
+        .has("name", P::eq("marko"))
+        .out(&["CREATED"])
+        .in_(&["CREATED"])
+        .simple_path()
+        .values(&["name"]);
     assert_eq!(names(q(r)), vec!["josh", "peter"]);
 }
 
 #[test]
 fn cyclic_path_retains_cycle() {
-    let r = g().V().has("name", P::eq("marko")).out(&["CREATED"]).in_(&["CREATED"]).cyclic_path().values(&["name"]);
+    let r = g()
+        .V()
+        .has("name", P::eq("marko"))
+        .out(&["CREATED"])
+        .in_(&["CREATED"])
+        .cyclic_path()
+        .values(&["name"]);
     assert_eq!(names(q(r)), vec!["marko"]);
 }
 
@@ -447,31 +675,53 @@ fn tree_from_marko() {
 
 #[test]
 fn repeat_times_two() {
-    let r = g().v_ids(&["1"]).repeat(__().out(&[])).times(2).values(&["name"]);
+    let r = g()
+        .v_ids(&["1"])
+        .repeat(__().out(&[]))
+        .times(2)
+        .values(&["name"]);
     assert_eq!(names(q(r)), vec!["lop", "ripple"]);
 }
 
 #[test]
 fn repeat_until_software() {
-    let r = g().v_ids(&["1"]).repeat(__().out(&[])).until(__().has_label(&["SOFTWARE"])).values(&["name"]);
+    let r = g()
+        .v_ids(&["1"])
+        .repeat(__().out(&[]))
+        .until(__().has_label(&["SOFTWARE"]))
+        .values(&["name"]);
     assert_eq!(names(q(r)), vec!["lop", "lop", "ripple"]);
 }
 
 #[test]
 fn repeat_times_emit() {
-    let r = g().v_ids(&["1"]).repeat(__().out(&[])).times(2).emit_all().values(&["name"]);
+    let r = g()
+        .v_ids(&["1"])
+        .repeat(__().out(&[]))
+        .times(2)
+        .emit_all()
+        .values(&["name"]);
     assert_eq!(names(q(r)), vec!["josh", "lop", "lop", "ripple", "vadas"]);
 }
 
 #[test]
 fn repeat_emit_filtered() {
-    let r = g().v_ids(&["1"]).repeat(__().out(&[])).times(2).emit(__().has("lang", P::eq("java"))).values(&["name"]);
+    let r = g()
+        .v_ids(&["1"])
+        .repeat(__().out(&[]))
+        .times(2)
+        .emit(__().has("lang", P::eq("java")))
+        .values(&["name"]);
     assert_eq!(names(q(r)), vec!["lop", "lop", "ripple"]);
 }
 
 #[test]
 fn repeat_times_one_equals_out() {
-    let r = g().v_ids(&["1"]).repeat(__().out(&[])).times(1).values(&["name"]);
+    let r = g()
+        .v_ids(&["1"])
+        .repeat(__().out(&[]))
+        .times(1)
+        .values(&["name"]);
     assert_eq!(names(q(r)), vec!["josh", "lop", "vadas"]);
 }
 
@@ -487,7 +737,14 @@ fn limit_and_range() {
 #[test]
 fn local_range_on_fold() {
     // fold all names then take first 2 locally.
-    let r = g().V().has_label(&["PERSON"]).order().by("name").values(&["name"]).fold().range_local(0, 2);
+    let r = g()
+        .V()
+        .has_label(&["PERSON"])
+        .order()
+        .by("name")
+        .values(&["name"])
+        .fold()
+        .range_local(0, 2);
     let out = q(r);
     assert_eq!(list_names_ordered(&out[0]), vec!["josh", "marko"]);
 }
@@ -496,7 +753,10 @@ fn local_range_on_fold() {
 
 #[test]
 fn value_map_of_marko() {
-    let out = q(g().V().has("name", P::eq("marko")).value_map(&["name", "age"]));
+    let out = q(g()
+        .V()
+        .has("name", P::eq("marko"))
+        .value_map(&["name", "age"]));
     let m = match &out[0] {
         GVal::Map(e) => e,
         _ => panic!(),
@@ -522,13 +782,21 @@ fn id_and_label_steps() {
 
 #[test]
 fn unfold_a_folded_list() {
-    let r = g().V().has_label(&["SOFTWARE"]).values(&["name"]).fold().unfold();
+    let r = g()
+        .V()
+        .has_label(&["SOFTWARE"])
+        .values(&["name"])
+        .fold()
+        .unfold();
     assert_eq!(names(q(r)), vec!["lop", "ripple"]);
 }
 
 #[test]
 fn constant_and_inject() {
-    assert_eq!(names(q(g().V().has("name", P::eq("marko")).constant("hi"))), vec!["hi"]);
+    assert_eq!(
+        names(q(g().V().has("name", P::eq("marko")).constant("hi"))),
+        vec!["hi"]
+    );
     let r = g().inject([1, 2, 3]);
     assert_eq!(q(r), vec![GVal::Num(1.0), GVal::Num(2.0), GVal::Num(3.0)]);
 }
@@ -537,7 +805,12 @@ fn constant_and_inject() {
 
 #[test]
 fn aggregate_then_cap() {
-    let r = g().V().has_label(&["PERSON"]).values(&["name"]).aggregate("names").cap("names");
+    let r = g()
+        .V()
+        .has_label(&["PERSON"])
+        .values(&["name"])
+        .aggregate("names")
+        .cap("names");
     let out = q(r);
     assert_eq!(list_names(&out[0]), vec!["josh", "marko", "peter", "vadas"]);
 }
@@ -546,13 +819,21 @@ fn aggregate_then_cap() {
 
 #[test]
 fn strong_knows_edges() {
-    let r = g().V().out_e(&["KNOWS"]).has("weight", P::gt(0.75)).in_v().values(&["name"]);
+    let r = g()
+        .V()
+        .out_e(&["KNOWS"])
+        .has("weight", P::gt(0.75))
+        .in_v()
+        .values(&["name"]);
     assert_eq!(names(q(r)), vec!["josh"]);
 }
 
 #[test]
 fn marko_created_edge_weight() {
-    assert_eq!(q(g().v_ids(&["1"]).out_e(&["CREATED"]).values(&["weight"])), vec![GVal::Num(0.4)]);
+    assert_eq!(
+        q(g().v_ids(&["1"]).out_e(&["CREATED"]).values(&["weight"])),
+        vec![GVal::Num(0.4)]
+    );
 }
 
 // ===== mutation =====
@@ -560,10 +841,18 @@ fn marko_created_edge_weight() {
 #[test]
 fn add_vertex_and_property() {
     let mut g0 = modern();
-    let r = g().add_v(Some("PERSON")).property("name", "newbie").property("age", 40).values(&["name"]).run(&mut g0);
+    let r = g()
+        .add_v(Some("PERSON"))
+        .property("name", "newbie")
+        .property("age", 40)
+        .values(&["name"])
+        .run(&mut g0);
     assert_eq!(names(r), vec!["newbie"]);
     // The new vertex is queryable.
-    assert_eq!(one_num(g().V().has("name", P::eq("newbie")).count().run(&mut g0)), 1.0);
+    assert_eq!(
+        one_num(g().V().has("name", P::eq("newbie")).count().run(&mut g0)),
+        1.0
+    );
 }
 
 #[test]
@@ -579,7 +868,12 @@ fn add_edge_between_tagged() {
         .add_e("LIKES")
         .from_tag("a")
         .run(&mut g0);
-    let r = g().V().has("name", P::eq("marko")).out(&["LIKES"]).values(&["name"]).run(&mut g0);
+    let r = g()
+        .V()
+        .has("name", P::eq("marko"))
+        .out(&["LIKES"])
+        .values(&["name"])
+        .run(&mut g0);
     assert_eq!(names(r), vec!["ripple"]);
 }
 
@@ -595,15 +889,33 @@ fn group_count_by_token_label() {
     // by_token(Token::Label) is equivalent to by_label().
     let out = q(g().V().group_count().by_token(Token::Label));
     let m = map_sorted(&out[0]);
-    assert_eq!(m, vec![("PERSON".into(), GVal::Num(4.0)), ("SOFTWARE".into(), GVal::Num(2.0))]);
+    assert_eq!(
+        m,
+        vec![
+            ("PERSON".into(), GVal::Num(4.0)),
+            ("SOFTWARE".into(), GVal::Num(2.0))
+        ]
+    );
 }
 
 #[test]
 fn select_pop_first_vs_last() {
     // Tag 'a' twice (marko, then the friend); first/last pick different ends.
-    let first = g().v_ids(&["1"]).as_("a").out(&["KNOWS"]).as_("a").select_pop(Pop::First, &["a"]).values(&["name"]);
+    let first = g()
+        .v_ids(&["1"])
+        .as_("a")
+        .out(&["KNOWS"])
+        .as_("a")
+        .select_pop(Pop::First, &["a"])
+        .values(&["name"]);
     assert_eq!(names(q(first)), vec!["marko", "marko"]);
-    let last = g().v_ids(&["1"]).as_("a").out(&["KNOWS"]).as_("a").select_pop(Pop::Last, &["a"]).values(&["name"]);
+    let last = g()
+        .v_ids(&["1"])
+        .as_("a")
+        .out(&["KNOWS"])
+        .as_("a")
+        .select_pop(Pop::Last, &["a"])
+        .values(&["name"]);
     assert_eq!(names(q(last)), vec!["josh", "vadas"]);
 }
 
@@ -618,21 +930,41 @@ fn qs(query: &str) -> Vec<GVal> {
 
 #[test]
 fn parse_basic_chain() {
-    assert_eq!(names(qs("g.V().has('name', 'marko').out('KNOWS').values('name')")), vec!["josh", "vadas"]);
+    assert_eq!(
+        names(qs("g.V().has('name', 'marko').out('KNOWS').values('name')")),
+        vec!["josh", "vadas"]
+    );
 }
 
 #[test]
 fn parse_predicate_call() {
-    assert_eq!(names(qs("g.V().has('age', gt(30)).values('name')")), vec!["josh", "peter"]);
-    assert_eq!(names(qs("g.V().has('name', within('josh','marko')).values('name')")), vec!["josh", "marko"]);
-    assert_eq!(names(qs("g.V().has('age', between(28, 33)).values('name')")), vec!["josh", "marko"]);
+    assert_eq!(
+        names(qs("g.V().has('age', gt(30)).values('name')")),
+        vec!["josh", "peter"]
+    );
+    assert_eq!(
+        names(qs(
+            "g.V().has('name', within('josh','marko')).values('name')"
+        )),
+        vec!["josh", "marko"]
+    );
+    assert_eq!(
+        names(qs("g.V().has('age', between(28, 33)).values('name')")),
+        vec!["josh", "marko"]
+    );
 }
 
 #[test]
 fn parse_count_and_group() {
     assert_eq!(one_num(qs("g.V().hasLabel('PERSON').count()")), 4.0);
     let out = qs("g.V().groupCount().by(T.label)");
-    assert_eq!(map_sorted(&out[0]), vec![("PERSON".into(), GVal::Num(4.0)), ("SOFTWARE".into(), GVal::Num(2.0))]);
+    assert_eq!(
+        map_sorted(&out[0]),
+        vec![
+            ("PERSON".into(), GVal::Num(4.0)),
+            ("SOFTWARE".into(), GVal::Num(2.0))
+        ]
+    );
 }
 
 #[test]
@@ -644,9 +976,17 @@ fn parse_order_by_desc() {
 #[test]
 fn parse_nested_traversals() {
     // where with anonymous sub-traversal
-    assert_eq!(names(qs("g.V().where(__.in('CREATED').count().is(gte(2))).values('name')")), vec!["lop"]);
+    assert_eq!(
+        names(qs(
+            "g.V().where(__.in('CREATED').count().is(gte(2))).values('name')"
+        )),
+        vec!["lop"]
+    );
     // repeat with anonymous body
-    assert_eq!(names(qs("g.V('1').repeat(__.out()).times(2).values('name')")), vec!["lop", "ripple"]);
+    assert_eq!(
+        names(qs("g.V('1').repeat(__.out()).times(2).values('name')")),
+        vec!["lop", "ripple"]
+    );
     // project with by sub-traversal
     let r = qs("g.V().has('name','marko').project('out').by(__.outE().count())");
     let m = match &r[0] {
@@ -704,8 +1044,18 @@ fn q_idx(indexes: &[&str], t: super::Traversal) -> Vec<GVal> {
 
 #[test]
 fn index_eq_matches_scan() {
-    let scan = names(q(g().V().has("name", P::eq("marko")).out(&["KNOWS"]).values(&["name"])));
-    let idx = names(q_idx(&["name"], g().V().has("name", P::eq("marko")).out(&["KNOWS"]).values(&["name"])));
+    let scan = names(q(g()
+        .V()
+        .has("name", P::eq("marko"))
+        .out(&["KNOWS"])
+        .values(&["name"])));
+    let idx = names(q_idx(
+        &["name"],
+        g().V()
+            .has("name", P::eq("marko"))
+            .out(&["KNOWS"])
+            .values(&["name"]),
+    ));
     assert_eq!(scan, idx);
     assert_eq!(idx, vec!["josh", "vadas"]);
 }
@@ -713,25 +1063,72 @@ fn index_eq_matches_scan() {
 #[test]
 fn index_range_matches_scan() {
     let want = vec!["josh", "peter"];
-    assert_eq!(names(q(g().V().has("age", P::gt(30)).values(&["name"]))), want);
-    assert_eq!(names(q_idx(&["age"], g().V().has("age", P::gt(30)).values(&["name"]))), want);
+    assert_eq!(
+        names(q(g().V().has("age", P::gt(30)).values(&["name"]))),
+        want
+    );
+    assert_eq!(
+        names(q_idx(
+            &["age"],
+            g().V().has("age", P::gt(30)).values(&["name"])
+        )),
+        want
+    );
     // between / inside
-    assert_eq!(names(q_idx(&["age"], g().V().has("age", P::between(28, 33)).values(&["name"]))), vec!["josh", "marko"]);
-    assert_eq!(names(q_idx(&["age"], g().V().has("age", P::inside(27, 32)).values(&["name"]))), vec!["marko"]);
+    assert_eq!(
+        names(q_idx(
+            &["age"],
+            g().V().has("age", P::between(28, 33)).values(&["name"])
+        )),
+        vec!["josh", "marko"]
+    );
+    assert_eq!(
+        names(q_idx(
+            &["age"],
+            g().V().has("age", P::inside(27, 32)).values(&["name"])
+        )),
+        vec!["marko"]
+    );
 }
 
 #[test]
 fn index_within_and_startswith() {
-    assert_eq!(names(q_idx(&["name"], g().V().has("name", P::within(["josh", "marko"])).values(&["name"]))), vec!["josh", "marko"]);
-    assert_eq!(names(q_idx(&["name"], g().V().has("name", P::starts_with("ma")).values(&["name"]))), vec!["marko"]);
+    assert_eq!(
+        names(q_idx(
+            &["name"],
+            g().V()
+                .has("name", P::within(["josh", "marko"]))
+                .values(&["name"])
+        )),
+        vec!["josh", "marko"]
+    );
+    assert_eq!(
+        names(q_idx(
+            &["name"],
+            g().V().has("name", P::starts_with("ma")).values(&["name"])
+        )),
+        vec!["marko"]
+    );
     // prefix that matches two: 'lop' / 'ripple' → 'r' only ripple
-    assert_eq!(names(q_idx(&["name"], g().V().has("name", P::starts_with("r")).values(&["name"]))), vec!["ripple"]);
+    assert_eq!(
+        names(q_idx(
+            &["name"],
+            g().V().has("name", P::starts_with("r")).values(&["name"])
+        )),
+        vec!["ripple"]
+    );
 }
 
 #[test]
 fn index_range_does_not_bleed_types() {
     // age index, gt(0) must not return software (no age) — type-block bounded.
-    assert_eq!(names(q_idx(&["age"], g().V().has("age", P::gt(0)).values(&["name"]))), vec!["josh", "marko", "peter", "vadas"]);
+    assert_eq!(
+        names(q_idx(
+            &["age"],
+            g().V().has("age", P::gt(0)).values(&["name"])
+        )),
+        vec!["josh", "marko", "peter", "vadas"]
+    );
 }
 
 #[test]
@@ -739,17 +1136,37 @@ fn edge_index_eq_seeds() {
     let mut gr = modern();
     gr.create_edge_index("weight");
     // weight == 1.0 → marko-knows-josh and josh-created-ripple.
-    assert_eq!(one_num(g().E().has("weight", P::eq(1.0)).count().run(&mut gr)), 2.0);
+    assert_eq!(
+        one_num(g().E().has("weight", P::eq(1.0)).count().run(&mut gr)),
+        2.0
+    );
     // range: weight >= 0.5 → those two plus marko-knows-vadas (0.5) = 3.
-    assert_eq!(one_num(g().E().has("weight", P::gte(0.5)).count().run(&mut gr)), 3.0);
+    assert_eq!(
+        one_num(g().E().has("weight", P::gte(0.5)).count().run(&mut gr)),
+        3.0
+    );
 }
 
 #[test]
 fn index_live_add() {
     let mut gr = modern();
     gr.create_vertex_index("name");
-    gr.add_vertex(&["PERSON".to_string()], vec![("name".to_string(), Value::Str("zoe".into())), ("age".to_string(), Value::Num(50.0))]);
-    assert_eq!(names(g().V().has("name", P::eq("zoe")).values(&["name"]).run(&mut gr)), vec!["zoe"]);
+    gr.add_vertex(
+        &["PERSON".to_string()],
+        vec![
+            ("name".to_string(), Value::Str("zoe".into())),
+            ("age".to_string(), Value::Num(50.0)),
+        ],
+    );
+    assert_eq!(
+        names(
+            g().V()
+                .has("name", P::eq("zoe"))
+                .values(&["name"])
+                .run(&mut gr)
+        ),
+        vec!["zoe"]
+    );
 }
 
 #[test]
@@ -758,8 +1175,19 @@ fn index_live_update() {
     gr.create_vertex_index("name");
     let marko = gr.vid.get("1").unwrap();
     gr.set_vertex_prop(marko, "name", Value::Str("mark".into()));
-    assert_eq!(g().V().has("name", P::eq("marko")).count().run(&mut gr), vec![GVal::Num(0.0)]); // old gone
-    assert_eq!(names(g().V().has("name", P::eq("mark")).values(&["name"]).run(&mut gr)), vec!["mark"]); // new present
+    assert_eq!(
+        g().V().has("name", P::eq("marko")).count().run(&mut gr),
+        vec![GVal::Num(0.0)]
+    ); // old gone
+    assert_eq!(
+        names(
+            g().V()
+                .has("name", P::eq("mark"))
+                .values(&["name"])
+                .run(&mut gr)
+        ),
+        vec!["mark"]
+    ); // new present
 }
 
 #[test]
@@ -768,7 +1196,10 @@ fn index_live_remove() {
     gr.create_vertex_index("name");
     let vadas = gr.vid.get("2").unwrap();
     let _ = gr.remove_vertex(vadas, true);
-    assert_eq!(g().V().has("name", P::eq("vadas")).count().run(&mut gr), vec![GVal::Num(0.0)]);
+    assert_eq!(
+        g().V().has("name", P::eq("vadas")).count().run(&mut gr),
+        vec![GVal::Num(0.0)]
+    );
 }
 
 #[test]
@@ -776,8 +1207,16 @@ fn edge_index_live_remove() {
     let mut gr = modern();
     gr.create_edge_index("weight");
     // remove one of the two weight-1.0 edges via Gremlin drop.
-    let _ = g().v_ids(&["1"]).out_e(&["KNOWS"]).has("weight", P::eq(1.0)).drop().run(&mut gr);
-    assert_eq!(one_num(g().E().has("weight", P::eq(1.0)).count().run(&mut gr)), 1.0);
+    let _ = g()
+        .v_ids(&["1"])
+        .out_e(&["KNOWS"])
+        .has("weight", P::eq(1.0))
+        .drop()
+        .run(&mut gr);
+    assert_eq!(
+        one_num(g().E().has("weight", P::eq(1.0)).count().run(&mut gr)),
+        1.0
+    );
 }
 
 // helper used above
@@ -807,19 +1246,23 @@ fn match_rows(r: Vec<GVal>) -> Vec<Vec<(String, String)>> {
 }
 
 fn pairs(spec: &[(&str, &str)]) -> Vec<(String, String)> {
-    spec.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    spec.iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
 }
 
 #[test]
 fn match_declarative_and_of_fragments() {
-    let r = q(g().V().match_(vec![
-        __().as_("a").out(&["CREATED"]).as_("b"),
-        __().as_("b").has("name", P::eq("lop")),
-        __().as_("b").in_(&["CREATED"]).as_("c"),
-        __().as_("c").has("age", P::eq(29)),
-    ])
-    .select(&["a", "c"])
-    .by("name"));
+    let r = q(g()
+        .V()
+        .match_(vec![
+            __().as_("a").out(&["CREATED"]).as_("b"),
+            __().as_("b").has("name", P::eq("lop")),
+            __().as_("b").in_(&["CREATED"]).as_("c"),
+            __().as_("c").has("age", P::eq(29)),
+        ])
+        .select(&["a", "c"])
+        .by("name"));
     let mut want = vec![
         pairs(&[("a", "marko"), ("c", "marko")]),
         pairs(&[("a", "josh"), ("c", "marko")]),
@@ -831,12 +1274,20 @@ fn match_declarative_and_of_fragments() {
 
 #[test]
 fn match_chained_pattern_with_embedded_has() {
-    let r = q(g().V().match_(vec![
-        __().as_("a").out(&["CREATED"]).has("name", P::eq("lop")).as_("b"),
-        __().as_("b").in_(&["CREATED"]).has("age", P::eq(29)).as_("c"),
-    ])
-    .select(&["a", "c"])
-    .by("name"));
+    let r = q(g()
+        .V()
+        .match_(vec![
+            __().as_("a")
+                .out(&["CREATED"])
+                .has("name", P::eq("lop"))
+                .as_("b"),
+            __().as_("b")
+                .in_(&["CREATED"])
+                .has("age", P::eq(29))
+                .as_("c"),
+        ])
+        .select(&["a", "c"])
+        .by("name"));
     let mut want = vec![
         pairs(&[("a", "marko"), ("c", "marko")]),
         pairs(&[("a", "josh"), ("c", "marko")]),
@@ -848,13 +1299,15 @@ fn match_chained_pattern_with_embedded_has() {
 
 #[test]
 fn match_combined_with_where_neq() {
-    let r = q(g().V().match_(vec![
-        __().as_("a").out(&["CREATED"]).as_("b"),
-        __().as_("b").in_(&["CREATED"]).as_("c"),
-    ])
-    .where_key("a", P::neq(GVal::Str("c".into())))
-    .select(&["a", "c"])
-    .by("name"));
+    let r = q(g()
+        .V()
+        .match_(vec![
+            __().as_("a").out(&["CREATED"]).as_("b"),
+            __().as_("b").in_(&["CREATED"]).as_("c"),
+        ])
+        .where_key("a", P::neq(GVal::Str("c".into())))
+        .select(&["a", "c"])
+        .by("name"));
     let mut want = vec![
         pairs(&[("a", "marko"), ("c", "josh")]),
         pairs(&[("a", "marko"), ("c", "peter")]),
@@ -880,7 +1333,10 @@ fn match_nested_not() {
         ])
         .select(&["a", "b", "c"])
         .by("name"));
-    assert_eq!(match_rows(r), vec![pairs(&[("a", "marko"), ("b", "josh"), ("c", "ripple")])]);
+    assert_eq!(
+        match_rows(r),
+        vec![pairs(&[("a", "marko"), ("b", "josh"), ("c", "ripple")])]
+    );
 }
 
 // --- subgraph() — accumulate matching edges (ports steps/subgraph.test.ts) ---
@@ -893,7 +1349,10 @@ fn subgraph_counts(r: Vec<GVal>) -> (usize, usize) {
     match r.as_slice() {
         [GVal::Map(entries)] => {
             let get = |k: &str| {
-                entries.iter().find(|(key, _)| matches!(key, GVal::Str(s) if s.as_ref() == k)).map(|(_, v)| v)
+                entries
+                    .iter()
+                    .find(|(key, _)| matches!(key, GVal::Str(s) if s.as_ref() == k))
+                    .map(|(_, v)| v)
             };
             let len = |v: Option<&GVal>| match v {
                 Some(GVal::List(l)) => l.len(),
@@ -950,15 +1409,26 @@ fn sp_paths(t: super::Traversal) -> Vec<Vec<String>> {
 #[test]
 fn shortest_path_target_via_with() {
     // marko —knows→ josh, one hop.
-    let paths = sp_paths(g().V().has("name", P::eq("marko")).shortest_path_to(__().has("name", P::eq("josh"))));
+    let paths = sp_paths(
+        g().V()
+            .has("name", P::eq("marko"))
+            .shortest_path_to(__().has("name", P::eq("josh"))),
+    );
     assert_eq!(paths, vec![vec!["1".to_string(), "4".to_string()]]);
 }
 
 #[test]
 fn shortest_path_multi_hop() {
     // marko —knows→ josh —created→ ripple, two hops (the shortest route).
-    let paths = sp_paths(g().V().has("name", P::eq("marko")).shortest_path_to(__().has("name", P::eq("ripple"))));
-    assert_eq!(paths, vec![vec!["1".to_string(), "4".to_string(), "5".to_string()]]);
+    let paths = sp_paths(
+        g().V()
+            .has("name", P::eq("marko"))
+            .shortest_path_to(__().has("name", P::eq("ripple"))),
+    );
+    assert_eq!(
+        paths,
+        vec![vec!["1".to_string(), "4".to_string(), "5".to_string()]]
+    );
 }
 
 #[test]
@@ -966,5 +1436,11 @@ fn shortest_path_no_target_reaches_all() {
     let paths = sp_paths(g().V().has("name", P::eq("marko")).shortest_path());
     let reached: std::collections::HashSet<String> =
         paths.iter().map(|p| p.last().unwrap().clone()).collect();
-    assert_eq!(reached, ["1", "2", "3", "4", "5", "6"].iter().map(|s| s.to_string()).collect());
+    assert_eq!(
+        reached,
+        ["1", "2", "3", "4", "5", "6"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    );
 }

@@ -11,11 +11,15 @@ import type { UnaryFn } from './types.js';
 const internalDropLast = function* <T>(count: number, iterable: Iterable<T>): Iterable<T> {
   if (count <= 0) {
     yield* iterable;
+
     return;
   }
+
   const buf: T[] = [];
+
   for (const item of iterable) {
     buf.push(item);
+
     if (buf.length > count) {
       yield buf.shift() as T;
     }

@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
 import { Pop, V, as_, out, pipe, repeat, select, values } from '../steps.js';
@@ -77,6 +78,7 @@ describe('select with Pop modes', () => {
     ) as unknown[][];
     // Two surviving traversers, each with hop = [josh, ripple|lop].
     expect(r).toHaveLength(2);
+
     for (const list of r) {
       expect(list).toHaveLength(2);
     }

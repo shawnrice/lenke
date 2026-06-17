@@ -28,9 +28,11 @@ const docComments = (): Map<string, string> => {
   const docs = new Map<string, string>();
   // Matches `  /** A doc. */` immediately above `  Name: 'E_VALUE',`.
   const member = /\/\*\* (.+?) \*\/\s*\n\s*([A-Za-z][A-Za-z0-9]*):/g;
+
   for (const [, doc, name] of text.matchAll(member)) {
     docs.set(name, doc);
   }
+
   return docs;
 };
 
@@ -42,6 +44,7 @@ export const renderRustModule = (): string => {
   const variants = entries
     .map(([name]) => {
       const doc = docs.get(name);
+
       return `${doc ? `    /// ${doc}\n` : ''}    ${name},`;
     })
     .join('\n');

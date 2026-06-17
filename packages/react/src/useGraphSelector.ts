@@ -1,6 +1,5 @@
-import { useRef, useSyncExternalStore } from 'react';
-
 import type { Graph } from '@pl-graph/core';
+import { useRef, useSyncExternalStore } from 'react';
 
 import { useGraphContext } from './GraphContext.js';
 import { type CacheCell, nextSnapshot } from './snapshotGate.js';
@@ -37,6 +36,7 @@ export const useGraphSelector = <T>(
 
   const getSnapshot = (): T => {
     cache.current = nextSnapshot(cache.current, graph, selector, isEqual, deps);
+
     return cache.current.value;
   };
 

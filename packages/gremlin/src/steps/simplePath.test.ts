@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
 import { V, both, path, simplePath } from '../steps.js';
@@ -32,6 +33,7 @@ describe('simplePath tests', () => {
       run(traversal(V('1'), both(), both(), simplePath(), path()), tinkerGraph),
     ) as Array<Array<{ id: string }>>;
     expect(r.length).toBe(4);
+
     // Each path begins at v[1] and has 3 distinct vertices.
     for (const p of r) {
       const ids = p.map((e) => e.id);

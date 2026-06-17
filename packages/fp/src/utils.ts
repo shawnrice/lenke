@@ -21,6 +21,7 @@ export const wrapIndexedIterable = <T>(
   [Symbol.iterator](): Iterator<T> {
     const { length } = x;
     let count = -1;
+
     return {
       next(): IteratorResult<T> {
         return ++count < length ? { value: x[count], done: false } : { value: void 0, done: true };

@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
 import { V, has, out, tree, values } from '../steps.js';
@@ -35,11 +36,13 @@ describe('tree tests', () => {
     expect(joshChildren.size).toBe(2);
     // Each software vertex maps to a child with one entry (its name).
     const softwareNames: string[] = [];
+
     for (const [_v, sub] of joshChildren) {
       const child = sub as Map<unknown, unknown>;
       expect(child.size).toBe(1);
       softwareNames.push([...child.keys()][0] as string);
     }
+
     softwareNames.sort();
     expect(softwareNames).toEqual(['lop', 'ripple']);
   });

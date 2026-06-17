@@ -1,9 +1,8 @@
+import { traversal, V, values } from '@pl-graph/gremlin';
+import { act, renderHook } from '@testing-library/react';
 // @vitest-environment jsdom
 import * as React from 'react';
 import { describe, expect, test, vi } from 'vitest';
-
-import { act, renderHook } from '@testing-library/react';
-import { traversal, V, values } from '@pl-graph/gremlin';
 
 import { createTestTinkerGraph } from './fixtures/createTestTinkerGraph.js';
 import { GraphProvider } from './GraphProvider.js';

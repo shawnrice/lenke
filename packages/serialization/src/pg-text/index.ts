@@ -1,4 +1,5 @@
 import type { Graph } from '@pl-graph/core';
+
 import type { Codec } from '../codec.js';
 import { type ChunkSource, linesFromChunks } from '../streaming.js';
 import { normalizeBag, type PropertyValue } from '../value.js';
@@ -43,12 +44,15 @@ const encodeScalar = (value: Exclude<PropertyValue, readonly PropertyValue[]>): 
   if (value === null) {
     return 'null';
   }
+
   if (typeof value === 'boolean') {
     return value ? 'true' : 'false';
   }
+
   if (typeof value === 'number') {
     return String(value);
   }
+
   return `"${value.replace(QUOTE_ESCAPE, (c) => `\\${c}`)}"`;
 };
 
@@ -60,8 +64,10 @@ const pushProperty = (out: string[], key: string, value: PropertyValue): void =>
         `${key}:${encodeScalar(element as Exclude<PropertyValue, readonly PropertyValue[]>)}`,
       );
     }
+
     return;
   }
+
   out.push(`${key}:${encodeScalar(value as Exclude<PropertyValue, readonly PropertyValue[]>)}`);
 };
 
@@ -71,25 +77,32 @@ const elementTokens = (
   properties: Record<string, unknown>,
 ): string => {
   const tokens = [...leading];
+
   for (const label of labels) {
     tokens.push(`:${label}`);
   }
+
   const bag = normalizeBag(properties);
+
   for (const key of Object.keys(bag)) {
     pushProperty(tokens, key, bag[key]);
   }
+
   return tokens.join(' ');
 };
 
 /** Serialize a graph to the PG textual format: node lines, then edge lines. */
 export const encode = (graph: Graph): string => {
   const lines: string[] = [];
+
   for (const vertex of graph.vertices) {
     lines.push(elementTokens([vertex.id], vertex.labels, vertex.properties));
   }
+
   for (const edge of graph.edges) {
     lines.push(elementTokens([edge.from.id, edge.to.id], edge.labels, edge.properties));
   }
+
   return lines.join('\n');
 };
 
@@ -99,38 +112,48 @@ const tokenizeLine = (line: string): string[] => {
   let current = '';
   let started = false;
   let inQuote = false;
+
   for (let i = 0; i < line.length; i += 1) {
     const c = line[i];
+
     if (inQuote) {
       current += c;
+
       if (c === '\\' && i + 1 < line.length) {
         current += line[i + 1];
         i += 1;
       } else if (c === '"') {
         inQuote = false;
       }
+
       continue;
     }
+
     if (c === '"') {
       inQuote = true;
       started = true;
       current += c;
       continue;
     }
+
     if (c === ' ' || c === '\t') {
       if (started) {
         tokens.push(current);
         current = '';
         started = false;
       }
+
       continue;
     }
+
     current += c;
     started = true;
   }
+
   if (started) {
     tokens.push(current);
   }
+
   return tokens;
 };
 
@@ -140,20 +163,26 @@ const NUMBER = /^-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
 const parseScalar = (raw: string): PropertyValue => {
   if (raw.startsWith('"')) {
     const body = raw.endsWith('"') && raw.length >= 2 ? raw.slice(1, -1) : raw.slice(1);
+
     return body.replace(/\\(.)/g, '$1');
   }
+
   if (raw === 'true') {
     return true;
   }
+
   if (raw === 'false') {
     return false;
   }
+
   if (raw === 'null') {
     return null;
   }
+
   if (NUMBER.test(raw)) {
     return Number(raw);
   }
+
   return raw; // bare, unquoted string (lenient: for foreign `.pg` input)
 };
 
@@ -163,28 +192,36 @@ const parseLabelsAndProps = (
 ): { labels: string[]; properties: Record<string, PropertyValue> } => {
   const labels: string[] = [];
   const collected = new Map<string, PropertyValue[]>();
+
   for (const token of tokens) {
     if (token.startsWith(':')) {
       labels.push(token.slice(1));
       continue;
     }
+
     const colon = token.indexOf(':');
+
     if (colon < 0) {
       continue; // not a label or a property; ignore
     }
+
     const key = token.slice(0, colon);
     const value = parseScalar(token.slice(colon + 1));
     const list = collected.get(key);
+
     if (list) {
       list.push(value);
     } else {
       collected.set(key, [value]);
     }
   }
+
   const properties: Record<string, PropertyValue> = {};
+
   for (const [key, values] of collected) {
     properties[key] = values.length === 1 ? values[0]! : values;
   }
+
   return { labels, properties };
 };
 
@@ -210,10 +247,13 @@ const addEdgeLine = (graph: Graph, tokens: string[]): void => {
 /** Tokenize a line, or `null` for a blank or comment (`#`) line. */
 const lineTokens = (raw: string): string[] | null => {
   const line = raw.trim();
+
   if (line === '' || line.startsWith('#')) {
     return null;
   }
+
   const tokens = tokenizeLine(line);
+
   return tokens.length === 0 ? null : tokens;
 };
 
@@ -224,21 +264,26 @@ const lineTokens = (raw: string): string[] | null => {
  */
 export const decode = (input: string, graph: Graph): Graph => {
   const wasEnabled = graph.eventsEnabled();
+
   if (wasEnabled) {
     graph.disableEvents();
   }
 
   const nodeLines: string[][] = [];
   const edgeLines: string[][] = [];
+
   for (const raw of input.split('\n')) {
     const tokens = lineTokens(raw);
+
     if (tokens) {
       (isEdgeLine(tokens) ? edgeLines : nodeLines).push(tokens);
     }
   }
+
   for (const tokens of nodeLines) {
     addNodeLine(graph, tokens);
   }
+
   for (const tokens of edgeLines) {
     addEdgeLine(graph, tokens);
   }
@@ -247,6 +292,7 @@ export const decode = (input: string, graph: Graph): Graph => {
     graph.enableEvents();
     graph.snapshot();
   }
+
   return graph;
 };
 
@@ -257,20 +303,25 @@ export const decode = (input: string, graph: Graph): Graph => {
 export async function* encodeStream(graph: Graph): AsyncGenerator<string> {
   const batchSize = 1024;
   let batch: string[] = [];
+
   for (const vertex of graph.vertices) {
     batch.push(elementTokens([vertex.id], vertex.labels, vertex.properties));
+
     if (batch.length >= batchSize) {
       yield `${batch.join('\n')}\n`;
       batch = [];
     }
   }
+
   for (const edge of graph.edges) {
     batch.push(elementTokens([edge.from.id, edge.to.id], edge.labels, edge.properties));
+
     if (batch.length >= batchSize) {
       yield `${batch.join('\n')}\n`;
       batch = [];
     }
   }
+
   if (batch.length > 0) {
     yield `${batch.join('\n')}\n`;
   }
@@ -284,24 +335,30 @@ export async function* encodeStream(graph: Graph): AsyncGenerator<string> {
  */
 export const decodeStream = async (source: ChunkSource, graph: Graph): Promise<Graph> => {
   const wasEnabled = graph.eventsEnabled();
+
   if (wasEnabled) {
     graph.disableEvents();
   }
+
   for await (const raw of linesFromChunks(source)) {
     const tokens = lineTokens(raw);
+
     if (!tokens) {
       continue;
     }
+
     if (isEdgeLine(tokens)) {
       addEdgeLine(graph, tokens);
     } else {
       addNodeLine(graph, tokens);
     }
   }
+
   if (wasEnabled) {
     graph.enableEvents();
     graph.snapshot();
   }
+
   return graph;
 };
 

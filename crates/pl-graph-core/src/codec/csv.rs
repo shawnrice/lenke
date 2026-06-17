@@ -113,23 +113,40 @@ fn infer_column(v: &Value) -> ColType {
             };
             ColType { scalar, list: true }
         }
-        other => ColType { scalar: scalar_of(other), list: false },
+        other => ColType {
+            scalar: scalar_of(other),
+            list: false,
+        },
     }
 }
 
 fn column_header(key: &str, t: ColType) -> String {
-    format!("{key}:{}{}", t.scalar.as_str(), if t.list { "[]" } else { "" })
+    format!(
+        "{key}:{}{}",
+        t.scalar.as_str(),
+        if t.list { "[]" } else { "" }
+    )
 }
 
 fn parse_header(header: &str) -> (String, ColType) {
     let colon = header.rfind(':').unwrap_or(header.len());
     let key = header[..colon].to_string();
-    let mut type_part = if colon < header.len() { &header[colon + 1..] } else { "" };
+    let mut type_part = if colon < header.len() {
+        &header[colon + 1..]
+    } else {
+        ""
+    };
     let list = type_part.ends_with("[]");
     if list {
         type_part = &type_part[..type_part.len() - 2];
     }
-    (key, ColType { scalar: Scalar::from_str(type_part), list })
+    (
+        key,
+        ColType {
+            scalar: Scalar::from_str(type_part),
+            list,
+        },
+    )
 }
 
 fn type_code(t: ColType) -> String {
@@ -219,7 +236,11 @@ fn raw_to_element(elem_scalar: Scalar, part: &str) -> Value {
 fn value_to_raw(t: ColType, v: &Value) -> String {
     if t.list {
         if let Value::List(elems) = v {
-            return elems.iter().map(|el| element_to_raw(t.scalar, el)).collect::<Vec<_>>().join(";");
+            return elems
+                .iter()
+                .map(|el| element_to_raw(t.scalar, el))
+                .collect::<Vec<_>>()
+                .join(";");
         }
         return String::new();
     }
@@ -231,7 +252,12 @@ fn raw_to_value(t: ColType, raw: &str) -> Value {
         if raw.is_empty() {
             return Value::List(Vec::new());
         }
-        return Value::List(split_list(raw).iter().map(|p| raw_to_element(t.scalar, p)).collect());
+        return Value::List(
+            split_list(raw)
+                .iter()
+                .map(|p| raw_to_element(t.scalar, p))
+                .collect(),
+        );
     }
     raw_to_scalar(t.scalar, raw)
 }
@@ -247,7 +273,10 @@ struct Encoded {
 
 fn encode_cell(column: ColType, v: &Value) -> Encoded {
     if matches!(v, Value::Null) {
-        return Encoded { raw: NULL_TOKEN.to_string(), force_quote: false };
+        return Encoded {
+            raw: NULL_TOKEN.to_string(),
+            force_quote: false,
+        };
     }
     let actual = infer_column(v);
     if actual == column {
@@ -259,16 +288,33 @@ fn encode_cell(column: ColType, v: &Value) -> Encoded {
                 Value::Str(s) => s.to_string(),
                 _ => String::new(),
             };
-            let raw = if s.starts_with('\\') { format!("\\{s}") } else { s };
-            return Encoded { raw, force_quote: true };
+            let raw = if s.starts_with('\\') {
+                format!("\\{s}")
+            } else {
+                s
+            };
+            return Encoded {
+                raw,
+                force_quote: true,
+            };
         }
         let raw = value_to_raw(column, v);
         let force = raw.is_empty(); // present-but-empty (e.g. empty list) must quote
-        return Encoded { raw, force_quote: force };
+        return Encoded {
+            raw,
+            force_quote: force,
+        };
     }
     // heterogeneous cell: tag with its concrete type
-    let raw = format!("{OVERRIDE_PREFIX}{}:{}", type_code(actual), value_to_raw(actual, v));
-    Encoded { raw, force_quote: false }
+    let raw = format!(
+        "{OVERRIDE_PREFIX}{}:{}",
+        type_code(actual),
+        value_to_raw(actual, v)
+    );
+    Encoded {
+        raw,
+        force_quote: false,
+    }
 }
 
 /// `None` = absent (key not on this element).
@@ -289,7 +335,10 @@ fn decode_cell(column: ColType, cell: &Cell) -> Option<Value> {
                 if list {
                     code = &code[..code.len() - 2];
                 }
-                let ot = ColType { scalar: Scalar::from_code(code), list };
+                let ot = ColType {
+                    scalar: Scalar::from_code(code),
+                    list,
+                };
                 return Some(raw_to_value(ot, &rest[colon + 1..]));
             }
         }
@@ -311,7 +360,12 @@ struct Cell {
 }
 
 fn quote_field(raw: &str) -> String {
-    if raw.contains(',') || raw.contains('"') || raw.contains('\n') || raw.contains('\r') || raw.contains(LIST_SEP) {
+    if raw.contains(',')
+        || raw.contains('"')
+        || raw.contains('\n')
+        || raw.contains('\r')
+        || raw.contains(LIST_SEP)
+    {
         format!("\"{}\"", raw.replace('"', "\"\""))
     } else {
         raw.to_string()
@@ -332,7 +386,10 @@ fn parse_csv(input: &str) -> Vec<Vec<Cell>> {
     // Push the current field, then start a fresh one (resetting the quoted flag).
     macro_rules! end_field {
         () => {{
-            row.push(Cell { text: std::mem::take(&mut field), quoted });
+            row.push(Cell {
+                text: std::mem::take(&mut field),
+                quoted,
+            });
             quoted = false;
         }};
     }
@@ -371,7 +428,10 @@ fn parse_csv(input: &str) -> Vec<Vec<Cell>> {
     }
     // Flush the trailing field/row (no reset needed at end of input).
     if !field.is_empty() || quoted || !row.is_empty() {
-        row.push(Cell { text: field, quoted });
+        row.push(Cell {
+            text: field,
+            quoted,
+        });
         rows.push(row);
     }
     rows
@@ -402,12 +462,20 @@ fn compute_columns(bags: &[Bag]) -> (Vec<String>, std::collections::HashMap<Stri
         }
     }
     for key in &keys {
-        types.entry(key.clone()).or_insert(ColType { scalar: Scalar::Str, list: false });
+        types.entry(key.clone()).or_insert(ColType {
+            scalar: Scalar::Str,
+            list: false,
+        });
     }
     (keys, types)
 }
 
-fn build_row(fixed: &[&str], keys: &[String], types: &std::collections::HashMap<String, ColType>, bag: &Bag) -> String {
+fn build_row(
+    fixed: &[&str],
+    keys: &[String],
+    types: &std::collections::HashMap<String, ColType>,
+    bag: &Bag,
+) -> String {
     let mut cells: Vec<String> = fixed.iter().map(|s| quote_field(s)).collect();
     for key in keys {
         match bag_get(bag, key) {
@@ -434,13 +502,19 @@ fn split_labels(text: &str) -> Vec<String> {
 }
 
 fn prop_cols_from_header(header: &[Cell], fixed: usize) -> Vec<(String, ColType)> {
-    header.iter().skip(fixed).map(|c| parse_header(&c.text)).collect()
+    header
+        .iter()
+        .skip(fixed)
+        .map(|c| parse_header(&c.text))
+        .collect()
 }
 
 fn props_from_row(row: &[Cell], prop_cols: &[(String, ColType)], fixed: usize) -> Bag {
     let mut props = Bag::new();
     for (c, (key, t)) in prop_cols.iter().enumerate() {
-        let Some(cell) = row.get(c + fixed) else { continue };
+        let Some(cell) = row.get(c + fixed) else {
+            continue;
+        };
         match decode_cell(*t, cell) {
             // present null collapses to absent (the core never stores null)
             Some(Value::Null) | None => {}
@@ -509,7 +583,12 @@ pub fn encode_edges(g: &Graph) -> String {
     let (keys, types) = compute_columns(&bags);
 
     let header = {
-        let mut h = vec!["id".to_string(), ":START_ID".to_string(), ":END_ID".to_string(), ":TYPE".to_string()];
+        let mut h = vec![
+            "id".to_string(),
+            ":START_ID".to_string(),
+            ":END_ID".to_string(),
+            ":TYPE".to_string(),
+        ];
         h.extend(keys.iter().map(|k| column_header(k, types[k])));
         h.join(",")
     };
@@ -544,7 +623,11 @@ pub fn decode(input: &str) -> CodeResult<Graph> {
         for row in node_rows.iter().skip(1) {
             let id = row.first().map(|c| c.text.clone()).unwrap_or_default();
             let labels = split_labels(row.get(1).map(|c| c.text.as_str()).unwrap_or(""));
-            b.nodes.push(NodeRec { id, labels, props: props_from_row(row, &prop_cols, 2) });
+            b.nodes.push(NodeRec {
+                id,
+                labels,
+                props: props_from_row(row, &prop_cols, 2),
+            });
         }
     }
 
@@ -552,14 +635,23 @@ pub fn decode(input: &str) -> CodeResult<Graph> {
     if let Some(header) = edge_rows.first() {
         let prop_cols = prop_cols_from_header(header, 4);
         for row in edge_rows.iter().skip(1) {
-            let id = row.first().map(|c| c.text.clone()).filter(|s| !s.is_empty());
+            let id = row
+                .first()
+                .map(|c| c.text.clone())
+                .filter(|s| !s.is_empty());
             let src = row.get(1).map(|c| c.text.clone()).unwrap_or_default();
             let dst = row.get(2).map(|c| c.text.clone()).unwrap_or_default();
             let etype = split_labels(row.get(3).map(|c| c.text.as_str()).unwrap_or(""))
                 .into_iter()
                 .next()
                 .unwrap_or_default();
-            b.edges.push(EdgeRec { src, dst, etype, props: props_from_row(row, &prop_cols, 4), id });
+            b.edges.push(EdgeRec {
+                src,
+                dst,
+                etype,
+                props: props_from_row(row, &prop_cols, 4),
+                id,
+            });
         }
     }
 
@@ -608,7 +700,10 @@ mod tests {
         assert_eq!(g2.props.value(a, "n", &g2.strs), Value::Num(42.0));
         assert_eq!(g2.props.value(a, "w", &g2.strs), Value::Num(3.5));
         assert_eq!(g2.props.value(a, "ok", &g2.strs), Value::Bool(true));
-        assert_eq!(g2.props.value(a, "name", &g2.strs), Value::Str("ann".into()));
+        assert_eq!(
+            g2.props.value(a, "name", &g2.strs),
+            Value::Str("ann".into())
+        );
         assert_eq!(
             g2.props.value(a, "tags", &g2.strs),
             Value::List(vec![Value::Str("x".into()), Value::Str("y".into())]),
@@ -634,6 +729,9 @@ mod tests {
         .unwrap();
         let g2 = decode(&encode(&g)).unwrap();
         let a = g2.vid.get("a").unwrap() as usize;
-        assert_eq!(g2.props.value(a, "s", &g2.strs), Value::Str("has,comma \"quote\" and ;semi".into()));
+        assert_eq!(
+            g2.props.value(a, "s", &g2.strs),
+            Value::Str("has,comma \"quote\" and ;semi".into())
+        );
     }
 }

@@ -17,19 +17,25 @@ export type ChunkSource = AsyncIterable<string | Uint8Array>;
 export async function* linesFromChunks(source: ChunkSource): AsyncGenerator<string> {
   const decoder = new TextDecoder();
   let buffer = '';
+
   for await (const chunk of source) {
     buffer += typeof chunk === 'string' ? chunk : decoder.decode(chunk, { stream: true });
     const lastNewline = buffer.lastIndexOf('\n');
+
     if (lastNewline === -1) {
       continue; // no complete line yet
     }
+
     const complete = buffer.slice(0, lastNewline);
     buffer = buffer.slice(lastNewline + 1);
+
     for (const line of complete.split('\n')) {
       yield line;
     }
   }
+
   buffer += decoder.decode(); // flush any trailing bytes
+
   if (buffer.length > 0) {
     yield buffer;
   }
@@ -44,6 +50,7 @@ export async function* linesFromChunks(source: ChunkSource): AsyncGenerator<stri
 export const yieldToEventLoop = (): Promise<void> =>
   new Promise<void>((resolve) => {
     const immediate = (globalThis as { setImmediate?: (cb: () => void) => unknown }).setImmediate;
+
     if (immediate) {
       immediate(resolve);
     } else {
@@ -54,9 +61,11 @@ export const yieldToEventLoop = (): Promise<void> =>
 /** Collect an async string iterable into one string — handy for tests and small inputs. */
 export const collect = async (chunks: AsyncIterable<string>): Promise<string> => {
   const parts: string[] = [];
+
   for await (const chunk of chunks) {
     parts.push(chunk);
   }
+
   return parts.join('');
 };
 

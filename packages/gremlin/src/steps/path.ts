@@ -1,5 +1,4 @@
 import type { Plan } from '../ast.js';
-
 import {
   appendStep,
   buildPlan,
@@ -34,12 +33,14 @@ export function select(
 ): ByableStep<Extract<Step, { kind: 'select' }>> {
   let pop: 'first' | 'last' | 'all' = 'last';
   let labels: readonly string[];
+
   if (typeof args[0] === 'symbol') {
     pop = POP_TO_STR.get(args[0]) ?? 'last';
     labels = args.slice(1) as string[];
   } else {
     labels = args as string[];
   }
+
   return makeByable<Extract<Step, { kind: 'select' }>>((bys) => ({
     kind: 'select',
     labels,

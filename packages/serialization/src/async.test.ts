@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@pl-graph/core';
+
 import { deserializeAsync, serializeAsync } from './index.js';
 import { graphContentEqual, randomLpgGraph } from './testkit.js';
 
@@ -9,9 +10,11 @@ const bigGraph = (): Graph => {
   const g = new Graph();
   g.disableEvents();
   const nodes = [];
+
   for (let i = 0; i < 30000; i += 1) {
     nodes.push(g.addVertex({ id: `n${i}`, labels: ['N'], properties: { a: i, s: `s${i}` } }));
   }
+
   for (let i = 0; i < 30000; i += 1) {
     g.addEdge({
       id: `e${i}`,
@@ -21,7 +24,9 @@ const bigGraph = (): Graph => {
       properties: { w: i },
     });
   }
+
   g.enableEvents();
+
   return g;
 };
 
@@ -31,11 +36,13 @@ const ticksDuring = async (op: () => Promise<unknown>): Promise<number> => {
   const timer = setInterval(() => {
     ticks += 1;
   }, 1);
+
   try {
     await op();
   } finally {
     clearInterval(timer);
   }
+
   return ticks;
 };
 
@@ -60,11 +67,13 @@ describe('serializeAsync / deserializeAsync', () => {
 
   test('works across the streaming formats and JSON fallback', async () => {
     const g = randomLpgGraph(8);
+
     // line-oriented formats run non-blocking; just verify they round-trip nodes.
     for (const format of ['pg-text', 'ndjson', 'csv'] as const) {
       const back = await deserializeAsync(await serializeAsync(g, format), format, new Graph());
       expect([...back.vertices].length).toBe([...g.vertices].length);
     }
+
     // single-document JSON falls back (yields once); still correct.
     const json = await serializeAsync(g, 'pg-json');
     expect(graphContentEqual(await deserializeAsync(json, 'pg-json', new Graph()), g)).toBe(true);

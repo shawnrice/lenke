@@ -18,8 +18,8 @@ use rayon::prelude::*;
 use super::ast::{ArithOp, CompareOp, Direction, Lit, Quantifier, SetOp, SetOpKind};
 use super::lexer::SyntaxError;
 use super::plan::{
-    lower, AggFn, CClause, CExpr, CLabelExpr, CLinear, CNode, CPath, CProjection, CPropConstraint, CQuery, CRel,
-    CRemoveItem, CReturnItem, CSegment, CSetItem, Op, Program, ScalarFn,
+    lower, AggFn, CClause, CExpr, CLabelExpr, CLinear, CNode, CPath, CProjection, CPropConstraint,
+    CQuery, CRel, CRemoveItem, CReturnItem, CSegment, CSetItem, Op, Program, ScalarFn,
 };
 #[cfg(feature = "arrow")]
 use crate::arrow::ArrowColumn;
@@ -98,7 +98,11 @@ fn resolve_ctx<'a>(graph: &Graph, plan: &'a CQuery, params: &'a [Val]) -> Ctx<'a
             .iter()
             .map(|n| (graph.props.keys.get(n), graph.edge_props.keys.get(n)))
             .collect(),
-        labels: plan.label_names.iter().map(|n| (graph.labels.get(n), graph.etype.get(n))).collect(),
+        labels: plan
+            .label_names
+            .iter()
+            .map(|n| (graph.labels.get(n), graph.etype.get(n)))
+            .collect(),
         label_names: &plan.label_names,
     }
 }
@@ -187,7 +191,13 @@ struct Env<'a> {
 
 impl<'a> Env<'a> {
     fn new(graph: &'a Graph, ctx: &'a Ctx<'a>, binding: &'a Binding) -> Self {
-        Env { graph, ctx, binding, group: None, agg_values: None }
+        Env {
+            graph,
+            ctx,
+            binding,
+            group: None,
+            agg_values: None,
+        }
     }
 }
 
@@ -246,7 +256,11 @@ fn num_of(v: &Val) -> Option<f64> {
         Val::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
         Val::Str(s) => {
             let t = s.trim();
-            Some(if t.is_empty() { 0.0 } else { t.parse().unwrap_or(f64::NAN) })
+            Some(if t.is_empty() {
+                0.0
+            } else {
+                t.parse().unwrap_or(f64::NAN)
+            })
         }
         _ => Some(f64::NAN),
     }
@@ -260,7 +274,11 @@ fn js_num(n: f64) -> String {
     if n.is_nan() {
         "NaN".to_string()
     } else if n.is_infinite() {
-        if n > 0.0 { "Infinity".to_string() } else { "-Infinity".to_string() }
+        if n > 0.0 {
+            "Infinity".to_string()
+        } else {
+            "-Infinity".to_string()
+        }
     } else {
         format!("{n}")
     }
@@ -275,7 +293,11 @@ fn js_str(graph: &Graph, v: &Val) -> String {
         Val::Str(s) => s.to_string(),
         Val::Node(i) => graph.vid.text(*i).to_string(),
         Val::Edge(i) => format!("e{i}"),
-        Val::List(items) => items.iter().map(|x| js_str(graph, x)).collect::<Vec<_>>().join(","),
+        Val::List(items) => items
+            .iter()
+            .map(|x| js_str(graph, x))
+            .collect::<Vec<_>>()
+            .join(","),
     }
 }
 
@@ -294,7 +316,9 @@ fn val_eq(a: &Val, b: &Val) -> bool {
         (Val::Str(x), Val::Str(y)) => x == y,
         (Val::Node(x), Val::Node(y)) => x == y,
         (Val::Edge(x), Val::Edge(y)) => x == y,
-        (Val::List(x), Val::List(y)) => x.len() == y.len() && x.iter().zip(y).all(|(p, q)| val_eq(p, q)),
+        (Val::List(x), Val::List(y)) => {
+            x.len() == y.len() && x.iter().zip(y).all(|(p, q)| val_eq(p, q))
+        }
         _ => false,
     }
 }
@@ -449,7 +473,9 @@ fn prop_of(graph: &Graph, ctx: &Ctx, bound: &Val, key_ref: usize) -> Val {
     match store.cols.get(kid as usize) {
         Some(Column::Num { data, present }) if present.get(idx) => Val::Num(data[idx]),
         Some(Column::Bool { data, present }) if present.get(idx) => Val::Bool(data[idx]),
-        Some(Column::Str { data, present }) if present.get(idx) => Val::Str(graph.strs.arc(data[idx])),
+        Some(Column::Str { data, present }) if present.get(idx) => {
+            Val::Str(graph.strs.arc(data[idx]))
+        }
         Some(Column::Mixed { data }) => data[idx].as_ref().map(value_to_val).unwrap_or(Val::Null),
         _ => Val::Null,
     }
@@ -460,8 +486,12 @@ fn eval_label_node(graph: &Graph, ctx: &Ctx, vi: u32, expr: &CLabelExpr) -> bool
         CLabelExpr::Label(r) => ctx.labels[*r].0.is_some_and(|lid| graph.has_label(vi, lid)),
         CLabelExpr::Wildcard => !graph.vertex_labels(vi).is_empty(),
         CLabelExpr::Not(e) => !eval_label_node(graph, ctx, vi, e),
-        CLabelExpr::And(l, r) => eval_label_node(graph, ctx, vi, l) && eval_label_node(graph, ctx, vi, r),
-        CLabelExpr::Or(l, r) => eval_label_node(graph, ctx, vi, l) || eval_label_node(graph, ctx, vi, r),
+        CLabelExpr::And(l, r) => {
+            eval_label_node(graph, ctx, vi, l) && eval_label_node(graph, ctx, vi, r)
+        }
+        CLabelExpr::Or(l, r) => {
+            eval_label_node(graph, ctx, vi, l) || eval_label_node(graph, ctx, vi, r)
+        }
     }
 }
 
@@ -547,16 +577,28 @@ fn eval(env: &Env, expr: &CExpr) -> Val {
             let isnull = is_nullish(&eval(env, expr));
             Val::Bool(if *negated { !isnull } else { isnull })
         }
-        CExpr::IsTruth { expr, truth, negated } => {
+        CExpr::IsTruth {
+            expr,
+            truth,
+            negated,
+        } => {
             let m = as_truth(&eval(env, expr)) == *truth;
             Val::Bool(if *negated { !m } else { m })
         }
-        CExpr::IsLabeled { expr, label, negated } => {
+        CExpr::IsLabeled {
+            expr,
+            label,
+            negated,
+        } => {
             let el = eval(env, expr);
             let has = labels_match(env.graph, env.ctx, &el, label);
             Val::Bool(if *negated { !has } else { has })
         }
-        CExpr::In { expr, list, negated } => {
+        CExpr::In {
+            expr,
+            list,
+            negated,
+        } => {
             let r = in_list(&eval(env, expr), &eval(env, list));
             truth_to_val(if *negated { not3(r) } else { r })
         }
@@ -571,12 +613,20 @@ fn eval(env: &Env, expr: &CExpr) -> Val {
                 CompareOp::Ne => !val_eq(&lv, &rv),
                 CompareOp::Lt => val_cmp(&lv, &rv) == Some(Ordering::Less),
                 CompareOp::Gt => val_cmp(&lv, &rv) == Some(Ordering::Greater),
-                CompareOp::Le => matches!(val_cmp(&lv, &rv), Some(Ordering::Less | Ordering::Equal)),
-                CompareOp::Ge => matches!(val_cmp(&lv, &rv), Some(Ordering::Greater | Ordering::Equal)),
+                CompareOp::Le => {
+                    matches!(val_cmp(&lv, &rv), Some(Ordering::Less | Ordering::Equal))
+                }
+                CompareOp::Ge => {
+                    matches!(val_cmp(&lv, &rv), Some(Ordering::Greater | Ordering::Equal))
+                }
             };
             Val::Bool(res)
         }
-        CExpr::Case { subject, whens, else_ } => {
+        CExpr::Case {
+            subject,
+            whens,
+            else_,
+        } => {
             if let Some(subj) = subject {
                 let s = eval(env, subj);
                 for (w, t) in whens {
@@ -594,20 +644,45 @@ fn eval(env: &Env, expr: &CExpr) -> Val {
             }
             else_.as_ref().map(|e| eval(env, e)).unwrap_or(Val::Null)
         }
-        CExpr::Exists { patterns, where_, sub_len } => {
-            Val::Bool(any_match(env.graph, env.ctx, patterns, where_.as_deref(), env.binding, *sub_len))
-        }
-        CExpr::CountSubquery { patterns, where_, sub_len } => {
-            Val::Num(count_matches(env.graph, env.ctx, patterns, where_.as_deref(), env.binding, *sub_len) as f64)
-        }
+        CExpr::Exists {
+            patterns,
+            where_,
+            sub_len,
+        } => Val::Bool(any_match(
+            env.graph,
+            env.ctx,
+            patterns,
+            where_.as_deref(),
+            env.binding,
+            *sub_len,
+        )),
+        CExpr::CountSubquery {
+            patterns,
+            where_,
+            sub_len,
+        } => Val::Num(count_matches(
+            env.graph,
+            env.ctx,
+            patterns,
+            where_.as_deref(),
+            env.binding,
+            *sub_len,
+        ) as f64),
         CExpr::Scalar { func, args } => {
             let vals: Vec<Val> = args.iter().map(|a| eval(env, a)).collect();
             call_scalar(env.graph, *func, &vals)
         }
-        CExpr::Aggregate { func, arg, distinct, star } => {
-            eval_aggregate(env, *func, arg.as_deref(), *distinct, *star)
-        }
-        CExpr::AggRef(idx) => env.agg_values.and_then(|a| a.get(*idx)).cloned().unwrap_or(Val::Null),
+        CExpr::Aggregate {
+            func,
+            arg,
+            distinct,
+            star,
+        } => eval_aggregate(env, *func, arg.as_deref(), *distinct, *star),
+        CExpr::AggRef(idx) => env
+            .agg_values
+            .and_then(|a| a.get(*idx))
+            .cloned()
+            .unwrap_or(Val::Null),
     }
 }
 
@@ -680,8 +755,13 @@ fn run(env: &Env, prog: &Program) -> Val {
                             CompareOp::Ne => !val_eq(&lv, &rv),
                             CompareOp::Lt => val_cmp(&lv, &rv) == Some(Ordering::Less),
                             CompareOp::Gt => val_cmp(&lv, &rv) == Some(Ordering::Greater),
-                            CompareOp::Le => matches!(val_cmp(&lv, &rv), Some(Ordering::Less | Ordering::Equal)),
-                            CompareOp::Ge => matches!(val_cmp(&lv, &rv), Some(Ordering::Greater | Ordering::Equal)),
+                            CompareOp::Le => {
+                                matches!(val_cmp(&lv, &rv), Some(Ordering::Less | Ordering::Equal))
+                            }
+                            CompareOp::Ge => matches!(
+                                val_cmp(&lv, &rv),
+                                Some(Ordering::Greater | Ordering::Equal)
+                            ),
                         })
                     });
                 }
@@ -745,7 +825,12 @@ fn run(env: &Env, prog: &Program) -> Val {
                     st.push(call_scalar(env.graph, *func, &args));
                 }
                 Op::AggRef(idx) => {
-                    st.push(env.agg_values.and_then(|a| a.get(*idx)).cloned().unwrap_or(Val::Null));
+                    st.push(
+                        env.agg_values
+                            .and_then(|a| a.get(*idx))
+                            .cloned()
+                            .unwrap_or(Val::Null),
+                    );
                 }
                 Op::Tree(e) => {
                     let v = eval(env, e);
@@ -776,7 +861,13 @@ fn eval_aggregate(env: &Env, func: AggFn, arg: Option<&CExpr>, distinct: bool, s
     let raw: Vec<Val> = group
         .iter()
         .map(|b| {
-            let e = Env { graph: env.graph, ctx: env.ctx, binding: b, group: Some(group), agg_values: None };
+            let e = Env {
+                graph: env.graph,
+                ctx: env.ctx,
+                binding: b,
+                group: Some(group),
+                agg_values: None,
+            };
             eval(&e, arg)
         })
         .collect();
@@ -808,7 +899,9 @@ fn eval_aggregate(env: &Env, func: AggFn, arg: Option<&CExpr>, distinct: bool, s
 
 fn fold_extreme(values: Vec<Val>, want: Ordering) -> Val {
     let mut it = values.into_iter();
-    let Some(mut acc) = it.next() else { return Val::Null };
+    let Some(mut acc) = it.next() else {
+        return Val::Null;
+    };
     for v in it {
         if val_cmp(&v, &acc) == Some(want) {
             acc = v;
@@ -832,9 +925,10 @@ fn call_scalar(graph: &Graph, func: ScalarFn, args: &[Val]) -> Val {
         _ => Val::Null,
     };
     let bn = |f: fn(f64, f64) -> f64| match (a, b) {
-        (Some(x), Some(y)) if !is_nullish(x) && !is_nullish(y) => {
-            Val::Num(f(num_of(x).unwrap_or(f64::NAN), num_of(y).unwrap_or(f64::NAN)))
-        }
+        (Some(x), Some(y)) if !is_nullish(x) && !is_nullish(y) => Val::Num(f(
+            num_of(x).unwrap_or(f64::NAN),
+            num_of(y).unwrap_or(f64::NAN),
+        )),
         _ => Val::Null,
     };
     match func {
@@ -892,7 +986,11 @@ fn call_scalar(graph: &Graph, func: ScalarFn, args: &[Val]) -> Val {
             }
             _ => Val::Null,
         },
-        Coalesce => args.iter().find(|x| !is_nullish(x)).cloned().unwrap_or(Val::Null),
+        Coalesce => args
+            .iter()
+            .find(|x| !is_nullish(x))
+            .cloned()
+            .unwrap_or(Val::Null),
         Nullif => match (a, b) {
             (Some(x), Some(y)) if !is_nullish(x) && !is_nullish(y) && val_eq(x, y) => Val::Null,
             (Some(x), _) => x.clone(),
@@ -940,7 +1038,10 @@ fn satisfies(
 ) -> bool {
     let env = Env::new(graph, ctx, binding);
     for pc in props {
-        if !val_eq(&prop_of(graph, ctx, element, pc.key_ref), &eval(&env, &pc.value)) {
+        if !val_eq(
+            &prop_of(graph, ctx, element, pc.key_ref),
+            &eval(&env, &pc.value),
+        ) {
             return false;
         }
     }
@@ -1009,7 +1110,14 @@ fn match_node_then(
     let Some(did_set) = bind_slot(binding, node.var_slot, &Val::Node(vi)) else {
         return true; // join conflict
     };
-    let go = satisfies(graph, ctx, &Val::Node(vi), &node.props, node.where_.as_ref(), binding);
+    let go = satisfies(
+        graph,
+        ctx,
+        &Val::Node(vi),
+        &node.props,
+        node.where_.as_ref(),
+        binding,
+    );
     let keep = if go { cont(binding) } else { true };
     if did_set {
         binding.unset(node.var_slot.unwrap());
@@ -1087,7 +1195,14 @@ fn walk_segments(
         let Some(did_set) = bind_slot(binding, rel.var_slot, &Val::Edge(eidx)) else {
             continue; // join conflict on the edge variable
         };
-        let ok = satisfies(graph, ctx, &Val::Edge(eidx), &rel.props, rel.where_.as_ref(), binding);
+        let ok = satisfies(
+            graph,
+            ctx,
+            &Val::Edge(eidx),
+            &rel.props,
+            rel.where_.as_ref(),
+            binding,
+        );
         let keep = if ok {
             match_node_then(graph, ctx, binding, node, nbr, &mut |b| {
                 walk_segments(graph, ctx, pattern, index + 1, nbr, b, emit)
@@ -1125,7 +1240,9 @@ fn visit_pattern(
             Some(Val::Node(i)) => at_seed(*i, binding),
             _ => true,
         },
-        _ => for_each_seed(graph, ctx, pattern.start.label.as_ref(), &mut |seed| at_seed(seed, binding)),
+        _ => for_each_seed(graph, ctx, pattern.start.label.as_ref(), &mut |seed| {
+            at_seed(seed, binding)
+        }),
     }
 }
 
@@ -1226,15 +1343,30 @@ fn drive_matches(
     let Some(clause) = matches.get(idx) else {
         return sink(binding);
     };
-    let CClause::Match { optional, patterns, where_, scope_len, .. } = clause else {
+    let CClause::Match {
+        optional,
+        patterns,
+        where_,
+        scope_len,
+        ..
+    } = clause
+    else {
         return true; // only MATCH clauses are streamed
     };
     binding.resize(*scope_len);
     let mut matched = false;
-    let cont = visit_patterns(graph, ctx, patterns, 0, where_.as_ref(), binding, &mut |b| {
-        matched = true;
-        drive_matches(graph, ctx, matches, idx + 1, b, sink)
-    });
+    let cont = visit_patterns(
+        graph,
+        ctx,
+        patterns,
+        0,
+        where_.as_ref(),
+        binding,
+        &mut |b| {
+            matched = true;
+            drive_matches(graph, ctx, matches, idx + 1, b, sink)
+        },
+    );
     if !cont {
         return false;
     }
@@ -1277,8 +1409,19 @@ fn match_node_continue<F: FnMut(&mut Binding) -> bool>(
     let Some(did) = bind_slot(binding, node.var_slot, &Val::Node(vi)) else {
         return true;
     };
-    let go = satisfies(graph, ctx, &Val::Node(vi), &node.props, node.where_.as_ref(), binding);
-    let keep = if go { match_path(graph, ctx, path, next_idx, vi, binding, emit) } else { true };
+    let go = satisfies(
+        graph,
+        ctx,
+        &Val::Node(vi),
+        &node.props,
+        node.where_.as_ref(),
+        binding,
+    );
+    let keep = if go {
+        match_path(graph, ctx, path, next_idx, vi, binding, emit)
+    } else {
+        true
+    };
     if did {
         binding.unset(node.var_slot.unwrap());
     }
@@ -1311,7 +1454,14 @@ fn match_path<F: FnMut(&mut Binding) -> bool>(
         let Some(eset) = bind_slot(binding, rel.var_slot, &Val::Edge(eidx)) else {
             continue;
         };
-        let keep = if satisfies(graph, ctx, &Val::Edge(eidx), &rel.props, rel.where_.as_ref(), binding) {
+        let keep = if satisfies(
+            graph,
+            ctx,
+            &Val::Edge(eidx),
+            &rel.props,
+            rel.where_.as_ref(),
+            binding,
+        ) {
             match_node_continue(graph, ctx, binding, node, nbr, path, idx + 1, emit)
         } else {
             true
@@ -1336,7 +1486,9 @@ fn match_one_path<F: FnMut(&mut Binding) -> bool>(
 ) -> bool {
     match path.start.var_slot {
         Some(sl) if binding.bound(sl) => match binding.get(sl) {
-            Some(Val::Node(i)) => match_node_continue(graph, ctx, binding, &path.start, *i, path, 0, emit),
+            Some(Val::Node(i)) => {
+                match_node_continue(graph, ctx, binding, &path.start, *i, path, 0, emit)
+            }
             _ => true,
         },
         _ => match path.start.label.as_ref().and_then(seed_label) {
@@ -1344,7 +1496,8 @@ fn match_one_path<F: FnMut(&mut Binding) -> bool>(
                 Some(lid) => {
                     let seeds = graph.vertices_with_label(lid);
                     for &s in seeds {
-                        if !match_node_continue(graph, ctx, binding, &path.start, s, path, 0, emit) {
+                        if !match_node_continue(graph, ctx, binding, &path.start, s, path, 0, emit)
+                        {
                             return false;
                         }
                     }
@@ -1373,9 +1526,18 @@ fn single_simple_clause<'a>(matches: &[&'a CClause]) -> Option<SimpleWhere<'a>> 
         return None;
     }
     match matches[0] {
-        CClause::Match { optional: false, patterns, where_, where_prog, scope_len } if patterns.len() == 1 => {
-            Some((&patterns[0], where_.as_ref(), where_prog.as_ref(), *scope_len))
-        }
+        CClause::Match {
+            optional: false,
+            patterns,
+            where_,
+            where_prog,
+            scope_len,
+        } if patterns.len() == 1 => Some((
+            &patterns[0],
+            where_.as_ref(),
+            where_prog.as_ref(),
+            *scope_len,
+        )),
         _ => None,
     }
 }
@@ -1439,12 +1601,20 @@ impl Agg {
                 self.n += 1;
             }
             AggFn::Min => {
-                if self.extreme.as_ref().is_none_or(|m| val_cmp(&val, m) == Some(Ordering::Less)) {
+                if self
+                    .extreme
+                    .as_ref()
+                    .is_none_or(|m| val_cmp(&val, m) == Some(Ordering::Less))
+                {
                     self.extreme = Some(val);
                 }
             }
             AggFn::Max => {
-                if self.extreme.as_ref().is_none_or(|m| val_cmp(&val, m) == Some(Ordering::Greater)) {
+                if self
+                    .extreme
+                    .as_ref()
+                    .is_none_or(|m| val_cmp(&val, m) == Some(Ordering::Greater))
+                {
                     self.extreme = Some(val);
                 }
             }
@@ -1470,9 +1640,18 @@ impl Agg {
 
 /// Fold one input binding into a group's aggregate states (one per extracted
 /// aggregate), evaluating each aggregate's argument against the binding.
-fn step_aggs(aggs: &mut [Agg], specs: &[super::plan::CAgg], graph: &Graph, ctx: &Ctx, binding: &Binding) {
+fn step_aggs(
+    aggs: &mut [Agg],
+    specs: &[super::plan::CAgg],
+    graph: &Graph,
+    ctx: &Ctx,
+    binding: &Binding,
+) {
     for (agg, spec) in aggs.iter_mut().zip(specs) {
-        let v = spec.arg.as_ref().map(|a| eval(&Env::new(graph, ctx, binding), a));
+        let v = spec
+            .arg
+            .as_ref()
+            .map(|a| eval(&Env::new(graph, ctx, binding), a));
         agg.step(v);
     }
 }
@@ -1530,7 +1709,13 @@ impl<'p> ProjAccum<'p> {
         }
     }
 
-    fn project_row(&self, graph: &Graph, ctx: &Ctx, input: &Binding, agg_values: Option<&[Val]>) -> Binding {
+    fn project_row(
+        &self,
+        graph: &Graph,
+        ctx: &Ctx,
+        input: &Binding,
+        agg_values: Option<&[Val]>,
+    ) -> Binding {
         let proj = self.proj;
         let mut out = Binding(vec![None; proj.out_len]);
         if proj.star {
@@ -1540,7 +1725,13 @@ impl<'p> ProjAccum<'p> {
                 }
             }
         } else {
-            let env = Env { graph, ctx, binding: input, group: None, agg_values };
+            let env = Env {
+                graph,
+                ctx,
+                binding: input,
+                group: None,
+                agg_values,
+            };
             for (i, item) in proj.items.iter().enumerate() {
                 out.0[i] = Some(eval_item(&env, item));
             }
@@ -1548,7 +1739,14 @@ impl<'p> ProjAccum<'p> {
         out
     }
 
-    fn sort_keys(&self, graph: &Graph, ctx: &Ctx, input: &Binding, projected: &Binding, agg_values: Option<&[Val]>) -> Vec<Val> {
+    fn sort_keys(
+        &self,
+        graph: &Graph,
+        ctx: &Ctx,
+        input: &Binding,
+        projected: &Binding,
+        agg_values: Option<&[Val]>,
+    ) -> Vec<Val> {
         let proj = self.proj;
         if proj.order_by.is_empty() {
             return Vec::new();
@@ -1557,7 +1755,13 @@ impl<'p> ProjAccum<'p> {
         for &islot in &proj.order_overlay {
             sort_binding.0.push(input.get(islot).cloned());
         }
-        let env = Env { graph, ctx, binding: &sort_binding, group: None, agg_values };
+        let env = Env {
+            graph,
+            ctx,
+            binding: &sort_binding,
+            group: None,
+            agg_values,
+        };
         proj.order_by.iter().map(|s| eval(&env, &s.expr)).collect()
     }
 
@@ -1575,7 +1779,13 @@ impl<'p> ProjAccum<'p> {
                 self.sort_scratch.0.push(v);
             }
             let keys: Vec<Val> = {
-                let env = Env { graph, ctx, binding: &self.sort_scratch, group: None, agg_values: None };
+                let env = Env {
+                    graph,
+                    ctx,
+                    binding: &self.sort_scratch,
+                    group: None,
+                    agg_values: None,
+                };
                 proj.order_by.iter().map(|s| eval(&env, &s.expr)).collect()
             };
             // Once at capacity, skip (no clone) anything not better than the worst kept.
@@ -1587,7 +1797,8 @@ impl<'p> ProjAccum<'p> {
             self.rows.push((binding.clone(), keys));
             if self.cap >= 1 && self.rows.len() >= self.cap * 2 {
                 let cap = self.cap;
-                self.rows.select_nth_unstable_by(cap - 1, |a, b| cmp_keyed(a, b, &proj.order_by));
+                self.rows
+                    .select_nth_unstable_by(cap - 1, |a, b| cmp_keyed(a, b, &proj.order_by));
                 self.rows.truncate(cap);
                 self.threshold = Some(self.rows[cap - 1].1.clone());
             }
@@ -1596,9 +1807,9 @@ impl<'p> ProjAccum<'p> {
         if proj.aggregating {
             if !self.grouped {
                 // Global aggregate: one accumulator set, no key/map per row.
-                let entry = self
-                    .global
-                    .get_or_insert_with(|| (binding.clone(), proj.aggs.iter().map(Agg::new).collect()));
+                let entry = self.global.get_or_insert_with(|| {
+                    (binding.clone(), proj.aggs.iter().map(Agg::new).collect())
+                });
                 step_aggs(&mut entry.1, &proj.aggs, graph, ctx, binding);
                 return true;
             }
@@ -1619,7 +1830,8 @@ impl<'p> ProjAccum<'p> {
                     self.group_order.push(self.key_buf.clone());
                     let mut aggs: Vec<Agg> = proj.aggs.iter().map(Agg::new).collect();
                     step_aggs(&mut aggs, &proj.aggs, graph, ctx, binding);
-                    self.groups.insert(self.key_buf.clone(), (binding.clone(), aggs));
+                    self.groups
+                        .insert(self.key_buf.clone(), (binding.clone(), aggs));
                 }
             }
             return true;
@@ -1647,10 +1859,9 @@ impl<'p> ProjAccum<'p> {
         if proj.aggregating {
             if !self.grouped {
                 // Global aggregate always emits exactly one row (0/null over no input).
-                let (rep, aggs) = self
-                    .global
-                    .take()
-                    .unwrap_or_else(|| (Binding::default(), proj.aggs.iter().map(Agg::new).collect()));
+                let (rep, aggs) = self.global.take().unwrap_or_else(|| {
+                    (Binding::default(), proj.aggs.iter().map(Agg::new).collect())
+                });
                 let agg_values: Vec<Val> = aggs.into_iter().map(Agg::finish).collect();
                 let projected = self.project_row(graph, ctx, &rep, Some(&agg_values));
                 let keys = self.sort_keys(graph, ctx, &rep, &projected, Some(&agg_values));
@@ -1672,14 +1883,19 @@ impl<'p> ProjAccum<'p> {
             // Trim to the top-k input bindings, then project only those.
             if self.cap >= 1 && self.rows.len() > self.cap {
                 let cap = self.cap;
-                self.rows.select_nth_unstable_by(cap - 1, |a, b| cmp_keyed(a, b, &proj.order_by));
+                self.rows
+                    .select_nth_unstable_by(cap - 1, |a, b| cmp_keyed(a, b, &proj.order_by));
                 self.rows.truncate(cap);
             }
             let buf = std::mem::take(&mut self.rows);
-            self.rows = buf.into_iter().map(|(inb, keys)| (self.project_row(graph, ctx, &inb, None), keys)).collect();
+            self.rows = buf
+                .into_iter()
+                .map(|(inb, keys)| (self.project_row(graph, ctx, &inb, None), keys))
+                .collect();
         }
         if !proj.order_by.is_empty() {
-            let cmp = |a: &(Binding, Vec<Val>), b: &(Binding, Vec<Val>)| cmp_keyed(a, b, &proj.order_by);
+            let cmp =
+                |a: &(Binding, Vec<Val>), b: &(Binding, Vec<Val>)| cmp_keyed(a, b, &proj.order_by);
             // ORDER BY + LIMIT: partition the smallest `cap` with quickselect
             // (O(n)), then sort only those — instead of a full O(n log n) sort.
             let n = self.rows.len();
@@ -1714,7 +1930,9 @@ fn project_matches(
             // WITH stage: carry output forward as bindings, *preserving* element
             // handles (a carried node stays `Val::Node`, not flattened to an id).
             let nrows = cols.first().map_or(0, |c| c.len());
-            return (0..nrows).map(|i| Binding(cols.iter().map(|c| Some(c[i].clone())).collect())).collect();
+            return (0..nrows)
+                .map(|i| Binding(cols.iter().map(|c| Some(c[i].clone())).collect()))
+                .collect();
         }
     }
     let mut acc = ProjAccum::new(proj);
@@ -1731,7 +1949,9 @@ fn project_matches(
                     acc.accept(graph, ctx, b)
                 })
             }
-            None => drive_matches(graph, ctx, matches, 0, &mut work, &mut |b| acc.accept(graph, ctx, b)),
+            None => drive_matches(graph, ctx, matches, 0, &mut work, &mut |b| {
+                acc.accept(graph, ctx, b)
+            }),
         };
         if !cont {
             break;
@@ -1759,7 +1979,10 @@ impl VVec {
     fn into_num(self) -> (Vec<f64>, Vec<bool>) {
         match self {
             VVec::Num { d, valid } => (d, valid),
-            VVec::Bool { t, valid } => (t.iter().map(|&b| if b { 1.0 } else { 0.0 }).collect(), valid),
+            VVec::Bool { t, valid } => (
+                t.iter().map(|&b| if b { 1.0 } else { 0.0 }).collect(),
+                valid,
+            ),
             VVec::Gen(vs) => {
                 let mut d = Vec::with_capacity(vs.len());
                 let mut valid = Vec::with_capacity(vs.len());
@@ -1783,10 +2006,16 @@ impl VVec {
     /// Per-row Kleene truth (for WHERE and boolean connectives).
     fn into_truth(self) -> Vec<Truth> {
         match self {
-            VVec::Bool { t, valid } => t.iter().zip(&valid).map(|(&b, &v)| v.then_some(b)).collect(),
-            VVec::Num { d, valid } => {
-                d.iter().zip(&valid).map(|(&x, &v)| v.then_some(x != 0.0 && !x.is_nan())).collect()
-            }
+            VVec::Bool { t, valid } => t
+                .iter()
+                .zip(&valid)
+                .map(|(&b, &v)| v.then_some(b))
+                .collect(),
+            VVec::Num { d, valid } => d
+                .iter()
+                .zip(&valid)
+                .map(|(&x, &v)| v.then_some(x != 0.0 && !x.is_nan()))
+                .collect(),
             VVec::Gen(vs) => vs.iter().map(as_truth).collect(),
         }
     }
@@ -1798,8 +2027,14 @@ impl VVec {
     fn into_arrow(self, graph: &Graph) -> ArrowColumn {
         let opt = |v: Vec<bool>| if v.iter().all(|&b| b) { None } else { Some(v) };
         match self {
-            VVec::Num { d, valid } => ArrowColumn::Num { data: d, valid: opt(valid) },
-            VVec::Bool { t, valid } => ArrowColumn::Bool { data: t, valid: opt(valid) },
+            VVec::Num { d, valid } => ArrowColumn::Num {
+                data: d,
+                valid: opt(valid),
+            },
+            VVec::Bool { t, valid } => ArrowColumn::Bool {
+                data: t,
+                valid: opt(valid),
+            },
             VVec::Gen(vals) => {
                 let values: Vec<Value> = vals.iter().map(|v| val_to_value(graph, v)).collect();
                 ArrowColumn::from_values(values.iter())
@@ -1812,8 +2047,14 @@ impl VVec {
     #[cfg(feature = "arrow")]
     fn slice(self, start: usize, end: usize) -> VVec {
         match self {
-            VVec::Num { d, valid } => VVec::Num { d: d[start..end].to_vec(), valid: valid[start..end].to_vec() },
-            VVec::Bool { t, valid } => VVec::Bool { t: t[start..end].to_vec(), valid: valid[start..end].to_vec() },
+            VVec::Num { d, valid } => VVec::Num {
+                d: d[start..end].to_vec(),
+                valid: valid[start..end].to_vec(),
+            },
+            VVec::Bool { t, valid } => VVec::Bool {
+                t: t[start..end].to_vec(),
+                valid: valid[start..end].to_vec(),
+            },
             VVec::Gen(v) => VVec::Gen(v[start..end].to_vec()),
         }
     }
@@ -1821,12 +2062,16 @@ impl VVec {
     /// Final per-row output values (for projection cells).
     fn into_vals(self) -> Vec<Val> {
         match self {
-            VVec::Num { d, valid } => {
-                d.iter().zip(&valid).map(|(&x, &v)| if v { Val::Num(x) } else { Val::Null }).collect()
-            }
-            VVec::Bool { t, valid } => {
-                t.iter().zip(&valid).map(|(&b, &v)| if v { Val::Bool(b) } else { Val::Null }).collect()
-            }
+            VVec::Num { d, valid } => d
+                .iter()
+                .zip(&valid)
+                .map(|(&x, &v)| if v { Val::Num(x) } else { Val::Null })
+                .collect(),
+            VVec::Bool { t, valid } => t
+                .iter()
+                .zip(&valid)
+                .map(|(&b, &v)| if v { Val::Bool(b) } else { Val::Null })
+                .collect(),
             VVec::Gen(vs) => vs,
         }
     }
@@ -1884,10 +2129,17 @@ struct ScanCols {
 impl ScanCols {
     fn new(scope_len: usize) -> Self {
         let w = scope_len.max(1);
-        ScanCols { n: 0, slots: (0..w).map(|_| None).collect(), vals: (0..w).map(|_| None).collect() }
+        ScanCols {
+            n: 0,
+            slots: (0..w).map(|_| None).collect(),
+            vals: (0..w).map(|_| None).collect(),
+        }
     }
     fn slot(&self, s: usize) -> Option<(Elem, &[u32])> {
-        self.slots.get(s).and_then(|o| o.as_ref()).map(|(e, v)| (*e, v.as_slice()))
+        self.slots
+            .get(s)
+            .and_then(|o| o.as_ref())
+            .map(|(e, v)| (*e, v.as_slice()))
     }
     fn val_slot(&self, s: usize) -> Option<&[Val]> {
         self.vals.get(s).and_then(|o| o.as_deref())
@@ -1921,7 +2173,13 @@ fn scalar_col(graph: &Graph, ctx: &Ctx, sc: &ScanCols, e: &CExpr) -> Vec<Val> {
         .map(|i| {
             for (slot, col) in sc.slots.iter().enumerate() {
                 if let Some((elem, ids)) = col {
-                    b.set(slot, match elem { Elem::Node => Val::Node(ids[i]), Elem::Edge => Val::Edge(ids[i]) });
+                    b.set(
+                        slot,
+                        match elem {
+                            Elem::Node => Val::Node(ids[i]),
+                            Elem::Edge => Val::Edge(ids[i]),
+                        },
+                    );
                 } else if let Some(vals) = &sc.vals[slot] {
                     b.set(slot, vals[i].clone());
                 }
@@ -1937,29 +2195,51 @@ fn eval_vec(graph: &Graph, ctx: &Ctx, sc: &ScanCols, e: &CExpr) -> VVec {
     let n = sc.n;
     let gen = |e: &CExpr| VVec::Gen(scalar_col(graph, ctx, sc, e));
     match e {
-        CExpr::Lit(Lit::Num(x)) => VVec::Num { d: vec![*x; n], valid: vec![true; n] },
-        CExpr::Lit(Lit::Bool(b)) => VVec::Bool { t: vec![*b; n], valid: vec![true; n] },
-        CExpr::Lit(Lit::Null) => VVec::Num { d: vec![f64::NAN; n], valid: vec![false; n] },
+        CExpr::Lit(Lit::Num(x)) => VVec::Num {
+            d: vec![*x; n],
+            valid: vec![true; n],
+        },
+        CExpr::Lit(Lit::Bool(b)) => VVec::Bool {
+            t: vec![*b; n],
+            valid: vec![true; n],
+        },
+        CExpr::Lit(Lit::Null) => VVec::Num {
+            d: vec![f64::NAN; n],
+            valid: vec![false; n],
+        },
         // A bare variable: a carried value column is taken directly (no per-row
         // binding rebuild); an element column becomes a column of element handles.
         CExpr::Var(slot) => {
             if let Some(v) = sc.val_slot(*slot) {
                 VVec::Gen(v.to_vec())
             } else if let Some((elem, ids)) = sc.slot(*slot) {
-                VVec::Gen(ids.iter().map(|&i| match elem { Elem::Node => Val::Node(i), Elem::Edge => Val::Edge(i) }).collect())
+                VVec::Gen(
+                    ids.iter()
+                        .map(|&i| match elem {
+                            Elem::Node => Val::Node(i),
+                            Elem::Edge => Val::Edge(i),
+                        })
+                        .collect(),
+                )
             } else {
                 VVec::Gen(vec![Val::Null; n])
             }
         }
         CExpr::Prop { var_slot, key_ref } => match sc.slot(*var_slot) {
-            Some((Elem::Node, ids)) => {
-                gather_num(ctx.prop_keys[*key_ref].0.and_then(|k| graph.props.cols.get(k as usize)), ids)
-                    .unwrap_or_else(|| gen(e))
-            }
-            Some((Elem::Edge, ids)) => {
-                gather_num(ctx.prop_keys[*key_ref].1.and_then(|k| graph.edge_props.cols.get(k as usize)), ids)
-                    .unwrap_or_else(|| gen(e))
-            }
+            Some((Elem::Node, ids)) => gather_num(
+                ctx.prop_keys[*key_ref]
+                    .0
+                    .and_then(|k| graph.props.cols.get(k as usize)),
+                ids,
+            )
+            .unwrap_or_else(|| gen(e)),
+            Some((Elem::Edge, ids)) => gather_num(
+                ctx.prop_keys[*key_ref]
+                    .1
+                    .and_then(|k| graph.edge_props.cols.get(k as usize)),
+                ids,
+            )
+            .unwrap_or_else(|| gen(e)),
             None => gen(e),
         },
         CExpr::Neg(x) => {
@@ -2043,8 +2323,14 @@ fn eval_vec(graph: &Graph, ctx: &Ctx, sc: &ScanCols, e: &CExpr) -> VVec {
         }
         CExpr::IsNull { expr, negated } => {
             let (_, valid) = eval_vec(graph, ctx, sc, expr).into_num();
-            let t = valid.iter().map(|&v| if *negated { v } else { !v }).collect();
-            VVec::Bool { t, valid: vec![true; n] }
+            let t = valid
+                .iter()
+                .map(|&v| if *negated { v } else { !v })
+                .collect();
+            VVec::Bool {
+                t,
+                valid: vec![true; n],
+            }
         }
         _ => gen(e),
     }
@@ -2088,7 +2374,9 @@ fn lit_to_idxkey(lit: &Lit) -> Option<crate::graph::IdxKey> {
 /// A `var.key OP <literal>` comparison, as (var slot, key ref, op, literal).
 fn cmp_bound(e: &CExpr) -> Option<(usize, usize, CompareOp, &Lit)> {
     if let CExpr::Compare { op, left, right } = e {
-        if let (CExpr::Prop { var_slot, key_ref }, CExpr::Lit(lit)) = (left.as_ref(), right.as_ref()) {
+        if let (CExpr::Prop { var_slot, key_ref }, CExpr::Lit(lit)) =
+            (left.as_ref(), right.as_ref())
+        {
             return Some((*var_slot, *key_ref, *op, lit));
         }
     }
@@ -2126,7 +2414,12 @@ fn idx_eq(graph: &Graph, name: &str, k: &crate::graph::IdxKey, edge: bool) -> Op
         graph.vertices_by_prop(name, k).map(<[u32]>::to_vec)
     }
 }
-fn idx_range(graph: &Graph, name: &str, rb: &crate::graph::RangeBound, edge: bool) -> Option<Vec<u32>> {
+fn idx_range(
+    graph: &Graph,
+    name: &str,
+    rb: &crate::graph::RangeBound,
+    edge: bool,
+) -> Option<Vec<u32>> {
     if edge {
         graph.edges_by_prop_range(name, rb)
     } else {
@@ -2147,7 +2440,13 @@ fn prop_name<'a>(graph: &'a Graph, ctx: &Ctx, key_ref: usize, edge: bool) -> Opt
 /// `want_slot` (`None` = any), against the vertex or edge index. An `AND` of two
 /// same-var/same-key comparisons coalesces into one tight range seek; else the
 /// first usable conjunct. Returns candidate element ids.
-fn prop_index_hint(graph: &Graph, ctx: &Ctx, e: &CExpr, want_slot: Option<usize>, edge: bool) -> Option<Vec<u32>> {
+fn prop_index_hint(
+    graph: &Graph,
+    ctx: &Ctx,
+    e: &CExpr,
+    want_slot: Option<usize>,
+    edge: bool,
+) -> Option<Vec<u32>> {
     use crate::graph::RangeBound;
     let slot_ok = |s: usize| want_slot.is_none_or(|w| w == s);
     match e {
@@ -2180,7 +2479,8 @@ fn prop_index_hint(graph: &Graph, ctx: &Ctx, e: &CExpr, want_slot: Option<usize>
                     }
                 }
             }
-            prop_index_hint(graph, ctx, a, want_slot, edge).or_else(|| prop_index_hint(graph, ctx, b, want_slot, edge))
+            prop_index_hint(graph, ctx, a, want_slot, edge)
+                .or_else(|| prop_index_hint(graph, ctx, b, want_slot, edge))
         }
         _ => None,
     }
@@ -2188,7 +2488,12 @@ fn prop_index_hint(graph: &Graph, ctx: &Ctx, e: &CExpr, want_slot: Option<usize>
 
 /// Candidate vertices for a single-node scan: an indexed inline `{key: lit}`
 /// equality, or a WHERE comparison on the node. `None` ⇒ full scan.
-fn node_index_seed(graph: &Graph, ctx: &Ctx, node: &CNode, where_: Option<&CExpr>) -> Option<Vec<u32>> {
+fn node_index_seed(
+    graph: &Graph,
+    ctx: &Ctx,
+    node: &CNode,
+    where_: Option<&CExpr>,
+) -> Option<Vec<u32>> {
     for pc in &node.props {
         if graph.vertex_indexed(&pc.key) {
             if let CExpr::Lit(lit) = &pc.value {
@@ -2211,9 +2516,11 @@ fn node_index_seed(graph: &Graph, ctx: &Ctx, node: &CNode, where_: Option<&CExpr
 /// `And`/`Not`/wildcard fall through to `None` (no cheap enumeration / no gain).
 fn etype_label_seed(graph: &Graph, ctx: &Ctx, expr: &CLabelExpr) -> Option<Vec<u32>> {
     match expr {
-        CLabelExpr::Label(r) => {
-            Some(ctx.labels[*r].1.map_or_else(Vec::new, |t| graph.edges_with_etype(t).to_vec()))
-        }
+        CLabelExpr::Label(r) => Some(
+            ctx.labels[*r]
+                .1
+                .map_or_else(Vec::new, |t| graph.edges_with_etype(t).to_vec()),
+        ),
         CLabelExpr::Or(l, r) => {
             let mut a = etype_label_seed(graph, ctx, l)?;
             a.extend(etype_label_seed(graph, ctx, r)?);
@@ -2223,7 +2530,12 @@ fn etype_label_seed(graph: &Graph, ctx: &Ctx, expr: &CLabelExpr) -> Option<Vec<u
     }
 }
 
-fn edge_index_seed(graph: &Graph, ctx: &Ctx, rel: &CRel, where_: Option<&CExpr>) -> Option<Vec<u32>> {
+fn edge_index_seed(
+    graph: &Graph,
+    ctx: &Ctx,
+    rel: &CRel,
+    where_: Option<&CExpr>,
+) -> Option<Vec<u32>> {
     for pc in &rel.props {
         if graph.edge_indexed(&pc.key) {
             if let CExpr::Lit(lit) = &pc.value {
@@ -2238,7 +2550,11 @@ fn edge_index_seed(graph: &Graph, ctx: &Ctx, rel: &CRel, where_: Option<&CExpr>)
     // a correct superset for any extra constraints.
     where_
         .and_then(|w| prop_index_hint(graph, ctx, w, rel.var_slot, true))
-        .or_else(|| rel.label.as_ref().and_then(|lbl| etype_label_seed(graph, ctx, lbl)))
+        .or_else(|| {
+            rel.label
+                .as_ref()
+                .and_then(|lbl| etype_label_seed(graph, ctx, lbl))
+        })
 }
 
 /// Whether `build_scan` will turn this scan into an index seek (so a LIMIT cap
@@ -2253,7 +2569,14 @@ fn scan_is_hinted(graph: &Graph, ctx: &Ctx, path: &CPath, where_: Option<&CExpr>
     }
 }
 
-fn build_scan(graph: &Graph, ctx: &Ctx, path: &CPath, scope_len: usize, cap: Option<usize>, where_: Option<&CExpr>) -> Option<ScanCols> {
+fn build_scan(
+    graph: &Graph,
+    ctx: &Ctx,
+    path: &CPath,
+    scope_len: usize,
+    cap: Option<usize>,
+    where_: Option<&CExpr>,
+) -> Option<ScanCols> {
     // Fast path: an isolated node is a tight scan. An index hint (inline `{k:v}`
     // eq or a WHERE comparison on the node) seeds just the candidate vertices;
     // otherwise the label bucket / all-live range. Either way the node's label +
@@ -2272,7 +2595,14 @@ fn build_scan(graph: &Graph, ctx: &Ctx, path: &CPath, scope_len: usize, cap: Opt
                 if let Some(s) = node.var_slot {
                     b.set(s, Val::Node(vi));
                 }
-                if !satisfies(graph, ctx, &Val::Node(vi), &node.props, node.where_.as_ref(), b) {
+                if !satisfies(
+                    graph,
+                    ctx,
+                    &Val::Node(vi),
+                    &node.props,
+                    node.where_.as_ref(),
+                    b,
+                ) {
                     return true;
                 }
             }
@@ -2288,7 +2618,9 @@ fn build_scan(graph: &Graph, ctx: &Ctx, path: &CPath, scope_len: usize, cap: Opt
                 }
             }
             None => {
-                for_each_seed(graph, ctx, node.label.as_ref(), &mut |vi| consider(graph, vi, &mut ids, &mut b));
+                for_each_seed(graph, ctx, node.label.as_ref(), &mut |vi| {
+                    consider(graph, vi, &mut ids, &mut b)
+                });
             }
         }
         let mut sc = ScanCols::new(scope_len);
@@ -2347,7 +2679,14 @@ fn build_scan(graph: &Graph, ctx: &Ctx, path: &CPath, scope_len: usize, cap: Opt
             if let Some(s) = start.var_slot {
                 sb.set(s, Val::Node(vi));
             }
-            if !satisfies(graph, ctx, &Val::Node(vi), &start.props, start.where_.as_ref(), &sb) {
+            if !satisfies(
+                graph,
+                ctx,
+                &Val::Node(vi),
+                &start.props,
+                start.where_.as_ref(),
+                &sb,
+            ) {
                 return true;
             }
         }
@@ -2401,10 +2740,28 @@ fn build_scan(graph: &Graph, ctx: &Ctx, path: &CPath, scope_len: usize, cap: Opt
                     if let Some(s) = node.var_slot {
                         nb.set(s, Val::Node(nbr));
                     }
-                    if rel_check && !satisfies(graph, ctx, &Val::Edge(eidx), &rel.props, rel.where_.as_ref(), &nb) {
+                    if rel_check
+                        && !satisfies(
+                            graph,
+                            ctx,
+                            &Val::Edge(eidx),
+                            &rel.props,
+                            rel.where_.as_ref(),
+                            &nb,
+                        )
+                    {
                         continue;
                     }
-                    if node_check && !satisfies(graph, ctx, &Val::Node(nbr), &node.props, node.where_.as_ref(), &nb) {
+                    if node_check
+                        && !satisfies(
+                            graph,
+                            ctx,
+                            &Val::Node(nbr),
+                            &node.props,
+                            node.where_.as_ref(),
+                            &nb,
+                        )
+                    {
                         continue;
                     }
                 }
@@ -2441,17 +2798,29 @@ fn build_scan(graph: &Graph, ctx: &Ctx, path: &CPath, scope_len: usize, cap: Opt
 /// index: for each candidate edge, validate its type + direction + the inline
 /// node/rel constraints, and emit one `(a, r, b)` row. The clause WHERE is still
 /// re-applied by the caller, so the edge seed only has to be a superset.
-fn edge_first_build(graph: &Graph, ctx: &Ctx, path: &CPath, scope_len: usize, edges: &[u32]) -> Option<ScanCols> {
+fn edge_first_build(
+    graph: &Graph,
+    ctx: &Ctx,
+    path: &CPath,
+    scope_len: usize,
+    edges: &[u32],
+) -> Option<ScanCols> {
     let seg = &path.segments[0];
     let (start, rel, node) = (&path.start, &seg.rel, &seg.node);
     // A slot bound twice (self-join) — leave to the scalar path.
-    let slots: Vec<usize> = [start.var_slot, rel.var_slot, node.var_slot].into_iter().flatten().collect();
+    let slots: Vec<usize> = [start.var_slot, rel.var_slot, node.var_slot]
+        .into_iter()
+        .flatten()
+        .collect();
     let mut seen = HashSet::new();
     if slots.iter().any(|s| !seen.insert(*s)) {
         return None;
     }
-    let (start_check, rel_check, node_check) =
-        (!start.props.is_empty() || start.where_.is_some(), !rel.props.is_empty() || rel.where_.is_some(), !node.props.is_empty() || node.where_.is_some());
+    let (start_check, rel_check, node_check) = (
+        !start.props.is_empty() || start.where_.is_some(),
+        !rel.props.is_empty() || rel.where_.is_some(),
+        !node.props.is_empty() || node.where_.is_some(),
+    );
     let mut a_ids = Vec::new();
     let mut r_ids = Vec::new();
     let mut b_ids = Vec::new();
@@ -2461,7 +2830,11 @@ fn edge_first_build(graph: &Graph, ctx: &Ctx, path: &CPath, scope_len: usize, ed
         if !graph.is_edge_live(e) {
             continue;
         }
-        if !rel.label.as_ref().is_none_or(|lbl| eval_label_edge(ctx, graph.e_type[ei], lbl)) {
+        if !rel
+            .label
+            .as_ref()
+            .is_none_or(|lbl| eval_label_edge(ctx, graph.e_type[ei], lbl))
+        {
             continue;
         }
         let (src, dst) = (graph.e_src[ei], graph.e_dst[ei]);
@@ -2471,7 +2844,9 @@ fn edge_first_build(graph: &Graph, ctx: &Ctx, path: &CPath, scope_len: usize, ed
             Direction::Both => &[(src, dst), (dst, src)],
         };
         for &(a, bn) in orients {
-            if !matches_label(graph, ctx, a, start.label.as_ref()) || !matches_label(graph, ctx, bn, node.label.as_ref()) {
+            if !matches_label(graph, ctx, a, start.label.as_ref())
+                || !matches_label(graph, ctx, bn, node.label.as_ref())
+            {
                 continue;
             }
             if start_check || rel_check || node_check {
@@ -2484,13 +2859,40 @@ fn edge_first_build(graph: &Graph, ctx: &Ctx, path: &CPath, scope_len: usize, ed
                 if let Some(s) = node.var_slot {
                     bind.set(s, Val::Node(bn));
                 }
-                if start_check && !satisfies(graph, ctx, &Val::Node(a), &start.props, start.where_.as_ref(), &bind) {
+                if start_check
+                    && !satisfies(
+                        graph,
+                        ctx,
+                        &Val::Node(a),
+                        &start.props,
+                        start.where_.as_ref(),
+                        &bind,
+                    )
+                {
                     continue;
                 }
-                if rel_check && !satisfies(graph, ctx, &Val::Edge(e), &rel.props, rel.where_.as_ref(), &bind) {
+                if rel_check
+                    && !satisfies(
+                        graph,
+                        ctx,
+                        &Val::Edge(e),
+                        &rel.props,
+                        rel.where_.as_ref(),
+                        &bind,
+                    )
+                {
                     continue;
                 }
-                if node_check && !satisfies(graph, ctx, &Val::Node(bn), &node.props, node.where_.as_ref(), &bind) {
+                if node_check
+                    && !satisfies(
+                        graph,
+                        ctx,
+                        &Val::Node(bn),
+                        &node.props,
+                        node.where_.as_ref(),
+                        &bind,
+                    )
+                {
                     continue;
                 }
             }
@@ -2559,7 +2961,12 @@ fn slice_rows(sc: &ScanCols, lo: usize, hi: usize) -> ScanCols {
 /// *inter*-query parallelism uses the cores better — this trades a single query's
 /// latency for throughput, so it's a win mainly when cores would otherwise idle.
 fn par_project(graph: &Graph, ctx: &Ctx, sc: &ScanCols, items: &[CReturnItem]) -> Vec<Vec<Val>> {
-    let serial = || items.iter().map(|it| eval_vec(graph, ctx, sc, &it.expr).into_vals()).collect();
+    let serial = || {
+        items
+            .iter()
+            .map(|it| eval_vec(graph, ctx, sc, &it.expr).into_vals())
+            .collect()
+    };
     #[cfg(feature = "parallel-query")]
     {
         // Threshold: only worth splitting once there's enough per-row work to
@@ -2570,16 +2977,22 @@ fn par_project(graph: &Graph, ctx: &Ctx, sc: &ScanCols, items: &[CReturnItem]) -
             let nchunks = threads.min(sc.n / 4096).max(1);
             if nchunks > 1 {
                 let chunk = sc.n.div_ceil(nchunks);
-                let ranges: Vec<(usize, usize)> =
-                    (0..nchunks).map(|c| (c * chunk, ((c + 1) * chunk).min(sc.n))).filter(|&(lo, hi)| lo < hi).collect();
+                let ranges: Vec<(usize, usize)> = (0..nchunks)
+                    .map(|c| (c * chunk, ((c + 1) * chunk).min(sc.n)))
+                    .filter(|&(lo, hi)| lo < hi)
+                    .collect();
                 let parts: Vec<Vec<Vec<Val>>> = ranges
                     .par_iter()
                     .map(|&(lo, hi)| {
                         let sub = slice_rows(sc, lo, hi);
-                        items.iter().map(|it| eval_vec(graph, ctx, &sub, &it.expr).into_vals()).collect()
+                        items
+                            .iter()
+                            .map(|it| eval_vec(graph, ctx, &sub, &it.expr).into_vals())
+                            .collect()
                     })
                     .collect();
-                let mut cols: Vec<Vec<Val>> = (0..items.len()).map(|_| Vec::with_capacity(sc.n)).collect();
+                let mut cols: Vec<Vec<Val>> =
+                    (0..items.len()).map(|_| Vec::with_capacity(sc.n)).collect();
                 for mut part in parts {
                     for (j, c) in part.drain(..).enumerate() {
                         cols[j].extend(c); // moves Vals (no clone), preserves order
@@ -2628,7 +3041,12 @@ fn compact(sc: &mut ScanCols, keep: &[bool]) {
 /// typed column (string-id / f64-bits / bool). `None` per row = absent (its own
 /// NULL group); `None` overall = the key isn't a typed direct property, so the
 /// caller must fall back to the scalar path.
-fn key_raw_col(graph: &Graph, ctx: &Ctx, sc: &ScanCols, item: &CReturnItem) -> Option<Vec<Option<u64>>> {
+fn key_raw_col(
+    graph: &Graph,
+    ctx: &Ctx,
+    sc: &ScanCols,
+    item: &CReturnItem,
+) -> Option<Vec<Option<u64>>> {
     let CExpr::Prop { var_slot, key_ref } = &item.expr else {
         return None;
     };
@@ -2638,13 +3056,25 @@ fn key_raw_col(graph: &Graph, ctx: &Ctx, sc: &ScanCols, item: &CReturnItem) -> O
         Elem::Edge => (&graph.edge_props, ctx.prop_keys[*key_ref].1),
     };
     let col = kid.and_then(|k| store.cols.get(k as usize));
-    let bits = |i: usize, present: &crate::graph::BitSet, raw: u64| present.get(ids[i] as usize).then_some(raw);
+    let bits = |i: usize, present: &crate::graph::BitSet, raw: u64| {
+        present.get(ids[i] as usize).then_some(raw)
+    };
     match col {
-        Some(Column::Str { data, present }) => Some((0..sc.n).map(|i| bits(i, present, data[ids[i] as usize] as u64)).collect()),
-        Some(Column::Num { data, present }) => {
-            Some((0..sc.n).map(|i| bits(i, present, data[ids[i] as usize].to_bits())).collect())
-        }
-        Some(Column::Bool { data, present }) => Some((0..sc.n).map(|i| bits(i, present, data[ids[i] as usize] as u64)).collect()),
+        Some(Column::Str { data, present }) => Some(
+            (0..sc.n)
+                .map(|i| bits(i, present, data[ids[i] as usize] as u64))
+                .collect(),
+        ),
+        Some(Column::Num { data, present }) => Some(
+            (0..sc.n)
+                .map(|i| bits(i, present, data[ids[i] as usize].to_bits()))
+                .collect(),
+        ),
+        Some(Column::Bool { data, present }) => Some(
+            (0..sc.n)
+                .map(|i| bits(i, present, data[ids[i] as usize] as u64))
+                .collect(),
+        ),
         _ => None, // Mixed / absent column — can't cheaply raw-key it
     }
 }
@@ -2657,7 +3087,12 @@ fn key_raw_col(graph: &Graph, ctx: &Ctx, sc: &ScanCols, item: &CReturnItem) -> O
 /// group order exactly. Each key must be a direct `Prop` over a typed column
 /// (raw-id hashing, no string build); otherwise `None` → scalar fallback.
 /// Returns `(gid per row, representative row per group, group count)`.
-fn group_ids(graph: &Graph, ctx: &Ctx, sc: &ScanCols, key_items: &[&CReturnItem]) -> Option<(Vec<usize>, Vec<usize>, usize)> {
+fn group_ids(
+    graph: &Graph,
+    ctx: &Ctx,
+    sc: &ScanCols,
+    key_items: &[&CReturnItem],
+) -> Option<(Vec<usize>, Vec<usize>, usize)> {
     let n = sc.n;
     let mut gid_of_row = vec![0usize; n];
     let mut ngroups = 1; // global group (overwritten once any key column refines)
@@ -2688,7 +3123,12 @@ fn group_ids(graph: &Graph, ctx: &Ctx, sc: &ScanCols, key_items: &[&CReturnItem]
     Some((gid_of_row, rep_row, ngroups))
 }
 
-fn vectorized_aggregate(graph: &Graph, ctx: &Ctx, sc: &ScanCols, proj: &CProjection) -> Option<Vec<Vec<Val>>> {
+fn vectorized_aggregate(
+    graph: &Graph,
+    ctx: &Ctx,
+    sc: &ScanCols,
+    proj: &CProjection,
+) -> Option<Vec<Vec<Val>>> {
     let key_items: Vec<&CReturnItem> = proj.items.iter().filter(|i| !i.is_agg).collect();
     let n = sc.n;
     let (gid_of_row, rep_row, ngroups) = group_ids(graph, ctx, sc, &key_items)?;
@@ -2742,7 +3182,15 @@ fn vectorized_aggregate(graph: &Graph, ctx: &Ctx, sc: &ScanCols, proj: &CProject
                             c[g] += 1;
                         }
                     }
-                    (0..ngroups).map(|g| if c[g] == 0 { Val::Null } else { Val::Num(s[g] / c[g] as f64) }).collect()
+                    (0..ngroups)
+                        .map(|g| {
+                            if c[g] == 0 {
+                                Val::Null
+                            } else {
+                                Val::Num(s[g] / c[g] as f64)
+                            }
+                        })
+                        .collect()
                 }
                 AggFn::Min | AggFn::Max => {
                     let is_min = spec.func == AggFn::Min;
@@ -2751,12 +3199,20 @@ fn vectorized_aggregate(graph: &Graph, ctx: &Ctx, sc: &ScanCols, proj: &CProject
                         if valid[i] {
                             let g = gid_of_row[i];
                             m[g] = Some(match m[g] {
-                                Some(x) => if is_min { x.min(d[i]) } else { x.max(d[i]) },
+                                Some(x) => {
+                                    if is_min {
+                                        x.min(d[i])
+                                    } else {
+                                        x.max(d[i])
+                                    }
+                                }
                                 None => d[i],
                             });
                         }
                     }
-                    m.into_iter().map(|o| o.map_or(Val::Null, Val::Num)).collect()
+                    m.into_iter()
+                        .map(|o| o.map_or(Val::Null, Val::Num))
+                        .collect()
                 }
                 _ => return None, // CollectList etc.
             }
@@ -2768,7 +3224,10 @@ fn vectorized_aggregate(graph: &Graph, ctx: &Ctx, sc: &ScanCols, proj: &CProject
     // expressions scalar (few groups), resolving group keys against the
     // representative row and `AggRef`s against this group's folded values.
     let start = proj.skip.unwrap_or(0).min(ngroups);
-    let end = proj.limit.map(|l| (start + l).min(ngroups)).unwrap_or(ngroups);
+    let end = proj
+        .limit
+        .map(|l| (start + l).min(ngroups))
+        .unwrap_or(ngroups);
     let mut out: Vec<Vec<Val>> = vec![Vec::with_capacity(end - start); proj.items.len()];
     let mut b = Binding(vec![None; sc.slots.len()]);
     for g in start..end {
@@ -2786,7 +3245,13 @@ fn vectorized_aggregate(graph: &Graph, ctx: &Ctx, sc: &ScanCols, proj: &CProject
             }
         }
         let agg_values: Vec<Val> = agg_cols.iter().map(|c| c[g].clone()).collect();
-        let env = Env { graph, ctx, binding: &b, group: None, agg_values: Some(&agg_values) };
+        let env = Env {
+            graph,
+            ctx,
+            binding: &b,
+            group: None,
+            agg_values: Some(&agg_values),
+        };
         for (item_idx, item) in proj.items.iter().enumerate() {
             out[item_idx].push(eval(&env, &item.expr));
         }
@@ -2801,7 +3266,13 @@ fn vectorized_aggregate(graph: &Graph, ctx: &Ctx, sc: &ScanCols, proj: &CProject
 /// elements to ids) or into carried `Binding`s for a `WITH` (preserving element
 /// handles). Returns `None` (→ scalar driver) unless the shape qualifies: one
 /// fresh `MATCH` of a buildable (non-var-length, no self-join) path, no `RETURN *`.
-fn vectorized_cols(graph: &Graph, ctx: &Ctx, incoming: &[Binding], matches: &[&CClause], proj: &CProjection) -> Option<Vec<Vec<Val>>> {
+fn vectorized_cols(
+    graph: &Graph,
+    ctx: &Ctx,
+    incoming: &[Binding],
+    matches: &[&CClause],
+    proj: &CProjection,
+) -> Option<Vec<Vec<Val>>> {
     if incoming.len() != 1 || incoming[0].0.iter().any(|c| c.is_some()) {
         return None; // a prior WITH/INSERT already produced bindings
     }
@@ -2814,7 +3285,14 @@ fn vectorized_cols(graph: &Graph, ctx: &Ctx, incoming: &[Binding], matches: &[&C
     if has_order && (proj.aggregating || proj.distinct || proj.order_needs_output) {
         return None;
     }
-    let CClause::Match { optional: false, patterns, where_, scope_len, .. } = matches[0] else {
+    let CClause::Match {
+        optional: false,
+        patterns,
+        where_,
+        scope_len,
+        ..
+    } = matches[0]
+    else {
         return None;
     };
     if patterns.len() != 1 {
@@ -2840,12 +3318,20 @@ fn vectorized_cols(graph: &Graph, ctx: &Ctx, incoming: &[Binding], matches: &[&C
     // hint applies (cap can't early-stop a seeded scan, so drop it then).
     // An index hint (vertex or edge) makes the scan a seek, so the LIMIT cap
     // can't early-stop it — drop the cap when a hint applies.
-    let cap = if scan_is_hinted(graph, ctx, path, where_.as_ref()) { None } else { cap };
+    let cap = if scan_is_hinted(graph, ctx, path, where_.as_ref()) {
+        None
+    } else {
+        cap
+    };
     let mut sc = build_scan(graph, ctx, path, *scope_len, cap, where_.as_ref())?;
 
     // Clause WHERE → keep mask (vectorized), compacting the row set.
     if let Some(w) = where_ {
-        let keep: Vec<bool> = eval_vec(graph, ctx, &sc, w).into_truth().iter().map(|t| *t == Some(true)).collect();
+        let keep: Vec<bool> = eval_vec(graph, ctx, &sc, w)
+            .into_truth()
+            .iter()
+            .map(|t| *t == Some(true))
+            .collect();
         compact(&mut sc, &keep);
     }
 
@@ -2856,7 +3342,12 @@ fn vectorized_cols(graph: &Graph, ctx: &Ctx, incoming: &[Binding], matches: &[&C
 /// — aggregate / ORDER BY / DISTINCT / plain projection + SKIP/LIMIT. Shared by
 /// the single-scan entry ([`vectorized_cols`]) and a pipeline's terminal RETURN
 /// (where `sc` may carry computed value columns from upstream `WITH`s).
-fn project_frame_cols(graph: &Graph, ctx: &Ctx, sc: &ScanCols, proj: &CProjection) -> Option<Vec<Vec<Val>>> {
+fn project_frame_cols(
+    graph: &Graph,
+    ctx: &Ctx,
+    sc: &ScanCols,
+    proj: &CProjection,
+) -> Option<Vec<Vec<Val>>> {
     let has_order = !proj.order_by.is_empty();
     if has_order && (proj.aggregating || proj.distinct || proj.order_needs_output) {
         return None;
@@ -2880,8 +3371,11 @@ fn project_frame_cols(graph: &Graph, ctx: &Ctx, sc: &ScanCols, proj: &CProjectio
                 sort_sc.vals[proj.out_len + j] = Some(vals.clone());
             }
         }
-        let keycols: Vec<Vec<Val>> =
-            proj.order_by.iter().map(|s| eval_vec(graph, ctx, &sort_sc, &s.expr).into_vals()).collect();
+        let keycols: Vec<Vec<Val>> = proj
+            .order_by
+            .iter()
+            .map(|s| eval_vec(graph, ctx, &sort_sc, &s.expr).into_vals())
+            .collect();
         let mut idx: Vec<usize> = (0..sc.n).collect();
         idx.sort_by(|&i, &j| {
             for (k, s) in proj.order_by.iter().enumerate() {
@@ -2893,9 +3387,17 @@ fn project_frame_cols(graph: &Graph, ctx: &Ctx, sc: &ScanCols, proj: &CProjectio
             Ordering::Equal
         });
         let start = proj.skip.unwrap_or(0).min(idx.len());
-        let end = proj.limit.map(|l| (start + l).min(idx.len())).unwrap_or(idx.len());
+        let end = proj
+            .limit
+            .map(|l| (start + l).min(idx.len()))
+            .unwrap_or(idx.len());
         let sub = gather_rows(sc, &idx[start..end]);
-        return Some(proj.items.iter().map(|item| eval_vec(graph, ctx, &sub, &item.expr).into_vals()).collect());
+        return Some(
+            proj.items
+                .iter()
+                .map(|item| eval_vec(graph, ctx, &sub, &item.expr).into_vals())
+                .collect(),
+        );
     }
 
     // DISTINCT fast path: when every output item is a direct typed-Prop column,
@@ -2906,14 +3408,23 @@ fn project_frame_cols(graph: &Graph, ctx: &Ctx, sc: &ScanCols, proj: &CProjectio
         let all_items: Vec<&CReturnItem> = proj.items.iter().collect();
         if let Some((_, rep_row, ngroups)) = group_ids(graph, ctx, sc, &all_items) {
             let start = proj.skip.unwrap_or(0).min(ngroups);
-            let end = proj.limit.map(|l| (start + l).min(ngroups)).unwrap_or(ngroups);
+            let end = proj
+                .limit
+                .map(|l| (start + l).min(ngroups))
+                .unwrap_or(ngroups);
             let mut out: Vec<Vec<Val>> = vec![Vec::with_capacity(end - start); proj.items.len()];
             let mut b = Binding(vec![None; sc.slots.len()]);
             for g in start..end {
                 let ri = rep_row[g];
                 for (slot, col) in sc.slots.iter().enumerate() {
                     if let Some((elem, ids)) = col {
-                        b.set(slot, match elem { Elem::Node => Val::Node(ids[ri]), Elem::Edge => Val::Edge(ids[ri]) });
+                        b.set(
+                            slot,
+                            match elem {
+                                Elem::Node => Val::Node(ids[ri]),
+                                Elem::Edge => Val::Edge(ids[ri]),
+                            },
+                        );
                     }
                 }
                 let env = Env::new(graph, ctx, &b);
@@ -2952,7 +3463,11 @@ fn project_frame_cols(graph: &Graph, ctx: &Ctx, sc: &ScanCols, proj: &CProjectio
             }
             seen_count += 1;
         }
-        Some(cols.iter().map(|c| kept.iter().map(|&i| c[i].clone()).collect()).collect())
+        Some(
+            cols.iter()
+                .map(|c| kept.iter().map(|&i| c[i].clone()).collect())
+                .collect(),
+        )
     } else {
         // Window each column to the SKIP/LIMIT row range (no ORDER BY ⇒ scan order).
         let start = proj.skip.unwrap_or(0).min(sc.n);
@@ -2972,7 +3487,13 @@ fn project_frame_cols(graph: &Graph, ctx: &Ctx, sc: &ScanCols, proj: &CProjectio
 /// (aggregate / DISTINCT / ORDER BY / SKIP / LIMIT / `*`) — those end the pipeline
 /// or fall back to scalar.
 fn with_frame(graph: &Graph, ctx: &Ctx, sc: &ScanCols, proj: &CProjection) -> Option<ScanCols> {
-    if proj.aggregating || proj.distinct || !proj.order_by.is_empty() || proj.skip.is_some() || proj.limit.is_some() || proj.star {
+    if proj.aggregating
+        || proj.distinct
+        || !proj.order_by.is_empty()
+        || proj.skip.is_some()
+        || proj.limit.is_some()
+        || proj.star
+    {
         return None;
     }
     let mut out = ScanCols::new(proj.out_len);
@@ -2998,7 +3519,13 @@ fn with_frame(graph: &Graph, ctx: &Ctx, sc: &ScanCols, proj: &CProjection) -> Op
 /// path's segments from that row's start vertex, fanning out to matching
 /// neighbors and replicating the frame's other columns. Returns `None` for a
 /// fresh/unbound start (cartesian), var-length, or a segment slot already bound.
-fn expand_frame(graph: &Graph, ctx: &Ctx, sc: &ScanCols, path: &CPath, scope_len: usize) -> Option<ScanCols> {
+fn expand_frame(
+    graph: &Graph,
+    ctx: &Ctx,
+    sc: &ScanCols,
+    path: &CPath,
+    scope_len: usize,
+) -> Option<ScanCols> {
     let start = &path.start;
     let start_slot = start.var_slot?;
     let start_ids: Vec<u32> = match sc.slot(start_slot) {
@@ -3036,7 +3563,13 @@ fn expand_frame(graph: &Graph, ctx: &Ctx, sc: &ScanCols, path: &CPath, scope_len
     let bind_row = |b: &mut Binding, cur: &ScanCols, i: usize| {
         for s in 0..cur.slots.len() {
             if let Some((e, ids)) = &cur.slots[s] {
-                b.set(s, match e { Elem::Node => Val::Node(ids[i]), Elem::Edge => Val::Edge(ids[i]) });
+                b.set(
+                    s,
+                    match e {
+                        Elem::Node => Val::Node(ids[i]),
+                        Elem::Edge => Val::Edge(ids[i]),
+                    },
+                );
             } else if let Some(v) = &cur.vals[s] {
                 b.set(s, v[i].clone());
             }
@@ -3050,9 +3583,20 @@ fn expand_frame(graph: &Graph, ctx: &Ctx, sc: &ScanCols, path: &CPath, scope_len
         for i in 0..cur.n {
             bind_row(&mut b, &cur, i);
             keep[i] = matches_label(graph, ctx, endpoint[i], start.label.as_ref())
-                && satisfies(graph, ctx, &Val::Node(endpoint[i]), &start.props, start.where_.as_ref(), &b);
+                && satisfies(
+                    graph,
+                    ctx,
+                    &Val::Node(endpoint[i]),
+                    &start.props,
+                    start.where_.as_ref(),
+                    &b,
+                );
         }
-        endpoint = endpoint.iter().zip(&keep).filter_map(|(&v, &k)| k.then_some(v)).collect();
+        endpoint = endpoint
+            .iter()
+            .zip(&keep)
+            .filter_map(|(&v, &k)| k.then_some(v))
+            .collect();
         compact(&mut cur, &keep);
     }
 
@@ -3092,10 +3636,28 @@ fn expand_frame(graph: &Graph, ctx: &Ctx, sc: &ScanCols, path: &CPath, scope_len
                     if let Some(s) = node.var_slot {
                         nb.set(s, Val::Node(nbr));
                     }
-                    if rel_check && !satisfies(graph, ctx, &Val::Edge(eidx), &rel.props, rel.where_.as_ref(), &nb) {
+                    if rel_check
+                        && !satisfies(
+                            graph,
+                            ctx,
+                            &Val::Edge(eidx),
+                            &rel.props,
+                            rel.where_.as_ref(),
+                            &nb,
+                        )
+                    {
                         continue;
                     }
-                    if node_check && !satisfies(graph, ctx, &Val::Node(nbr), &node.props, node.where_.as_ref(), &nb) {
+                    if node_check
+                        && !satisfies(
+                            graph,
+                            ctx,
+                            &Val::Node(nbr),
+                            &node.props,
+                            node.where_.as_ref(),
+                            &nb,
+                        )
+                    {
                         continue;
                     }
                 }
@@ -3127,11 +3689,23 @@ fn expand_frame(graph: &Graph, ctx: &Ctx, sc: &ScanCols, path: &CPath, scope_len
 /// (→ scalar `run_linear`) unless: one leading non-optional single-path MATCH, at
 /// least one intermediate (non-aggregating) WITH, a terminal RETURN, and nothing
 /// else (no extra MATCH / mutation / subquery clause, no var-length, no self-join).
-fn vectorized_linear(linear: &CLinear, graph: &Graph, plan: &CQuery, params: &[Val]) -> Option<RowSet> {
+fn vectorized_linear(
+    linear: &CLinear,
+    graph: &Graph,
+    plan: &CQuery,
+    params: &[Val],
+) -> Option<RowSet> {
     // Validate the whole clause shape *before* any scan work, so a non-pipeline
     // query bails for free (no wasted build_scan) and keeps the entry path.
     let (first, rest) = linear.clauses.split_first()?;
-    let CClause::Match { optional: false, patterns, where_, scope_len, .. } = first else {
+    let CClause::Match {
+        optional: false,
+        patterns,
+        where_,
+        scope_len,
+        ..
+    } = first
+    else {
         return None;
     };
     if patterns.len() != 1 {
@@ -3140,14 +3714,27 @@ fn vectorized_linear(linear: &CLinear, graph: &Graph, plan: &CQuery, params: &[V
     let (last, mid) = rest.split_last()?;
     // Middle clauses are WITHs or expanding MATCHes; the tail is a RETURN. Require
     // ≥1 middle clause (plain `MATCH … RETURN` keeps the entry path, incl. LIMIT cap).
-    let mid_ok = mid.iter().all(|c| matches!(c, CClause::With { .. } | CClause::Match { optional: false, .. }));
+    let mid_ok = mid.iter().all(|c| {
+        matches!(
+            c,
+            CClause::With { .. }
+                | CClause::Match {
+                    optional: false,
+                    ..
+                }
+        )
+    });
     if mid.is_empty() || !mid_ok || !matches!(last, CClause::Return(_)) {
         return None;
     }
 
     let ctx = resolve_ctx(graph, plan, params);
     let filter = |sc: &mut ScanCols, w: &CExpr| {
-        let keep: Vec<bool> = eval_vec(graph, &ctx, sc, w).into_truth().iter().map(|t| *t == Some(true)).collect();
+        let keep: Vec<bool> = eval_vec(graph, &ctx, sc, w)
+            .into_truth()
+            .iter()
+            .map(|t| *t == Some(true))
+            .collect();
         compact(sc, &keep);
     };
     let mut sc = build_scan(graph, &ctx, &patterns[0], *scope_len, None, where_.as_ref())?;
@@ -3156,13 +3743,20 @@ fn vectorized_linear(linear: &CLinear, graph: &Graph, plan: &CQuery, params: &[V
     }
     for c in mid {
         match c {
-            CClause::With { projection, where_, .. } => {
+            CClause::With {
+                projection, where_, ..
+            } => {
                 sc = with_frame(graph, &ctx, &sc, projection)?;
                 if let Some(w) = where_ {
                     filter(&mut sc, w);
                 }
             }
-            CClause::Match { patterns, where_, scope_len, .. } => {
+            CClause::Match {
+                patterns,
+                where_,
+                scope_len,
+                ..
+            } => {
                 if patterns.len() != 1 {
                     return None;
                 }
@@ -3214,7 +3808,11 @@ fn project_to_rows(
         // Few / already-sorted rows: reuse the binding accumulator, then pour
         // each projected binding's cells into the flat buffer.
         for b in project_matches(graph, ctx, incoming, matches, proj) {
-            rs.push_row((0..proj.out_len).map(|i| b.get(i).map(|v| val_to_value(graph, v)).unwrap_or(Value::Null)));
+            rs.push_row((0..proj.out_len).map(|i| {
+                b.get(i)
+                    .map(|v| val_to_value(graph, v))
+                    .unwrap_or(Value::Null)
+            }));
         }
         return rs;
     }
@@ -3228,10 +3826,18 @@ fn project_to_rows(
         // The row-pushing sink (shared by the monomorphized and dyn drivers).
         let mut push = |b: &Binding| -> bool {
             if proj.star {
-                rs.push_row(proj.star_cols.iter().map(|&s| b.get(s).map(|v| val_to_value(graph, v)).unwrap_or(Value::Null)));
+                rs.push_row(proj.star_cols.iter().map(|&s| {
+                    b.get(s)
+                        .map(|v| val_to_value(graph, v))
+                        .unwrap_or(Value::Null)
+                }));
             } else {
                 let env = Env::new(graph, ctx, b);
-                rs.push_row(proj.items.iter().map(|item| val_to_value(graph, &eval_item(&env, item))));
+                rs.push_row(
+                    proj.items
+                        .iter()
+                        .map(|item| val_to_value(graph, &eval_item(&env, item))),
+                );
             }
             if proj.distinct && !seen.insert(value_row_key(rs.row(rs.nrows - 1))) {
                 rs.pop_row();
@@ -3261,7 +3867,12 @@ fn project_to_rows(
 
 /// Materialize the binding stream from `incoming × pending matches` (needed
 /// before a write clause, which mutates per row).
-fn materialize_matches(graph: &Graph, ctx: &Ctx, incoming: &[Binding], matches: &[&CClause]) -> Vec<Binding> {
+fn materialize_matches(
+    graph: &Graph,
+    ctx: &Ctx,
+    incoming: &[Binding],
+    matches: &[&CClause],
+) -> Vec<Binding> {
     let mut out = Vec::new();
     for inb in incoming {
         let mut work = inb.clone();
@@ -3287,7 +3898,11 @@ fn cmp_keys(a: &[Val], b: &[Val], order: &[super::plan::CSortItem]) -> Ordering 
 }
 
 /// Compare two keyed rows by their ORDER BY keys.
-fn cmp_keyed(a: &(Binding, Vec<Val>), b: &(Binding, Vec<Val>), order: &[super::plan::CSortItem]) -> Ordering {
+fn cmp_keyed(
+    a: &(Binding, Vec<Val>),
+    b: &(Binding, Vec<Val>),
+    order: &[super::plan::CSortItem],
+) -> Ordering {
     cmp_keys(&a.1, &b.1, order)
 }
 
@@ -3300,7 +3915,11 @@ fn compare_sort(a: &Val, b: &Val, descending: bool, nulls_first: Option<bool>) -
     }
     if a_null || b_null {
         let first = nulls_first.unwrap_or(descending);
-        return if a_null == first { Ordering::Less } else { Ordering::Greater };
+        return if a_null == first {
+            Ordering::Less
+        } else {
+            Ordering::Greater
+        };
     }
     let base = val_cmp(a, b).unwrap_or(Ordering::Equal);
     if descending {
@@ -3312,7 +3931,12 @@ fn compare_sort(a: &Val, b: &Val, descending: bool, nulls_first: Option<bool>) -
 
 // --- linear query & set ops --------------------------------------------------
 
-fn run_linear(linear: &CLinear, graph: &mut Graph, plan: &CQuery, params: &[Val]) -> CodeResult<RowSet> {
+fn run_linear(
+    linear: &CLinear,
+    graph: &mut Graph,
+    plan: &CQuery,
+    params: &[Val],
+) -> CodeResult<RowSet> {
     // `bindings` is the materialized row set at the last barrier; `pending` are
     // MATCH clauses deferred so a projection (or write) can stream them directly.
     let mut bindings: Vec<Binding> = vec![Binding::default()];
@@ -3324,7 +3948,11 @@ fn run_linear(linear: &CLinear, graph: &mut Graph, plan: &CQuery, params: &[Val]
     for clause in &linear.clauses {
         match clause {
             CClause::Match { .. } => pending.push(clause), // defer; consumed at a barrier
-            CClause::With { projection, where_, where_prog } => {
+            CClause::With {
+                projection,
+                where_,
+                where_prog,
+            } => {
                 let projected = project_matches(graph, &ctx, &bindings, &pending, projection);
                 pending.clear();
                 bindings = if where_.is_none() {
@@ -3332,7 +3960,13 @@ fn run_linear(linear: &CLinear, graph: &mut Graph, plan: &CQuery, params: &[Val]
                 } else {
                     projected
                         .into_iter()
-                        .filter(|b| where_keep(&Env::new(graph, &ctx, b), where_.as_ref(), where_prog.as_ref()))
+                        .filter(|b| {
+                            where_keep(
+                                &Env::new(graph, &ctx, b),
+                                where_.as_ref(),
+                                where_prog.as_ref(),
+                            )
+                        })
                         .collect()
                 };
             }
@@ -3347,7 +3981,10 @@ fn run_linear(linear: &CLinear, graph: &mut Graph, plan: &CQuery, params: &[Val]
                     bindings = materialize_matches(graph, &ctx, &bindings, &pending);
                     pending.clear();
                 }
-                bindings = bindings.iter().map(|b| run_insert(graph, &ctx, patterns, b)).collect();
+                bindings = bindings
+                    .iter()
+                    .map(|b| run_insert(graph, &ctx, patterns, b))
+                    .collect();
                 ctx = resolve_ctx(graph, plan, params);
             }
             CClause::Set(items) => {
@@ -3400,9 +4037,17 @@ fn labels_of(expr: Option<&CLabelExpr>, names: &[String]) -> Vec<String> {
 }
 
 /// Evaluate a pattern property map to concrete core `Value`s (for create/set).
-fn eval_props(graph: &Graph, ctx: &Ctx, props: &[CPropConstraint], binding: &Binding) -> Vec<(String, Value)> {
+fn eval_props(
+    graph: &Graph,
+    ctx: &Ctx,
+    props: &[CPropConstraint],
+    binding: &Binding,
+) -> Vec<(String, Value)> {
     let env = Env::new(graph, ctx, binding);
-    props.iter().map(|pc| (pc.key.clone(), val_to_value(graph, &eval(&env, &pc.value)))).collect()
+    props
+        .iter()
+        .map(|pc| (pc.key.clone(), val_to_value(graph, &eval(&env, &pc.value))))
+        .collect()
 }
 
 /// Create a node from a pattern, reusing an already-bound variable.
@@ -3427,8 +4072,15 @@ fn run_insert(graph: &mut Graph, ctx: &Ctx, patterns: &[CPath], binding: &Bindin
         let mut prev = ensure_node(graph, ctx, &mut out, &pattern.start);
         for CSegment { rel, node } in &pattern.segments {
             let next = ensure_node(graph, ctx, &mut out, node);
-            let (from, to) = if rel.direction == Direction::In { (next, prev) } else { (prev, next) };
-            let etype = labels_of(rel.label.as_ref(), ctx.label_names).into_iter().next().unwrap_or_default();
+            let (from, to) = if rel.direction == Direction::In {
+                (next, prev)
+            } else {
+                (prev, next)
+            };
+            let etype = labels_of(rel.label.as_ref(), ctx.label_names)
+                .into_iter()
+                .next()
+                .unwrap_or_default();
             let eprops = eval_props(graph, ctx, &rel.props, &out);
             let ei = graph.add_edge(from, to, &etype, eprops);
             if let Some(slot) = rel.var_slot {
@@ -3443,8 +4095,14 @@ fn run_insert(graph: &mut Graph, ctx: &Ctx, patterns: &[CPath], binding: &Bindin
 fn run_set(graph: &mut Graph, ctx: &Ctx, items: &[CSetItem], binding: &Binding) {
     for item in items {
         match item {
-            CSetItem::Prop { var_slot, key, value } => {
-                let Some(el) = binding.get(*var_slot).cloned() else { continue };
+            CSetItem::Prop {
+                var_slot,
+                key,
+                value,
+            } => {
+                let Some(el) = binding.get(*var_slot).cloned() else {
+                    continue;
+                };
                 let v = {
                     let env = Env::new(graph, ctx, binding);
                     val_to_value(graph, &eval(&env, value))
@@ -3481,7 +4139,13 @@ fn run_remove(graph: &mut Graph, items: &[CRemoveItem], binding: &Binding) {
     }
 }
 
-fn run_delete(graph: &mut Graph, ctx: &Ctx, detach: bool, targets: &[CExpr], binding: &Binding) -> CodeResult<()> {
+fn run_delete(
+    graph: &mut Graph,
+    ctx: &Ctx,
+    detach: bool,
+    targets: &[CExpr],
+    binding: &Binding,
+) -> CodeResult<()> {
     for target in targets {
         let v = {
             let env = Env::new(graph, ctx, binding);
@@ -3548,7 +4212,10 @@ fn combine(op: SetOp, left: RowSet, right: RowSet) -> RowSet {
 /// Execute a lowered plan against a graph with positional params. `run_linear`
 /// already produced the terminal RETURN's flat `RowSet` (cols + columnar cells).
 fn run_cquery(plan: &CQuery, graph: &mut Graph, params: &[Val]) -> CodeResult<RowSet> {
-    let first = plan.parts.first().ok_or_else(|| CodeError::new(ErrorCode::Syntax, "empty query"))?;
+    let first = plan
+        .parts
+        .first()
+        .ok_or_else(|| CodeError::new(ErrorCode::Syntax, "empty query"))?;
     let mut rs = run_part(first, graph, plan, params)?;
     for (i, op) in plan.ops.iter().enumerate() {
         let right = run_part(&plan.parts[i + 1], graph, plan, params)?;
@@ -3560,7 +4227,12 @@ fn run_cquery(plan: &CQuery, graph: &mut Graph, params: &[Val]) -> CodeResult<Ro
 /// Run one linear part: try the fully-vectorized pipeline executor first (it
 /// handles read-only `MATCH … WITH … RETURN` chains end-to-end), else the scalar
 /// binding-based driver.
-fn run_part(linear: &CLinear, graph: &mut Graph, plan: &CQuery, params: &[Val]) -> CodeResult<RowSet> {
+fn run_part(
+    linear: &CLinear,
+    graph: &mut Graph,
+    plan: &CQuery,
+    params: &[Val],
+) -> CodeResult<RowSet> {
     if USE_VEC {
         if let Some(rs) = vectorized_linear(linear, graph, plan, params) {
             return Ok(rs);
@@ -3574,30 +4246,65 @@ fn run_part(linear: &CLinear, graph: &mut Graph, plan: &CQuery, params: &[Val]) 
 /// the vectorized `VVec`s, so numeric/bool columns skip the `Val`→`Value` boxing
 /// the RowSet path would do. Returns `(columns, nrows)` or `None` to fall back.
 #[cfg(feature = "arrow")]
-fn vectorized_arrow(graph: &Graph, ctx: &Ctx, matches: &[&CClause], proj: &CProjection) -> Option<(Vec<ArrowColumn>, usize)> {
-    if matches.len() != 1 || proj.star || proj.aggregating || proj.distinct || !proj.order_by.is_empty() {
+fn vectorized_arrow(
+    graph: &Graph,
+    ctx: &Ctx,
+    matches: &[&CClause],
+    proj: &CProjection,
+) -> Option<(Vec<ArrowColumn>, usize)> {
+    if matches.len() != 1
+        || proj.star
+        || proj.aggregating
+        || proj.distinct
+        || !proj.order_by.is_empty()
+    {
         return None;
     }
-    let CClause::Match { optional: false, patterns, where_, scope_len, .. } = matches[0] else {
+    let CClause::Match {
+        optional: false,
+        patterns,
+        where_,
+        scope_len,
+        ..
+    } = matches[0]
+    else {
         return None;
     };
     if patterns.len() != 1 {
         return None;
     }
     let path = &patterns[0];
-    let cap = where_.is_none().then(|| proj.limit.map(|l| proj.skip.unwrap_or(0) + l)).flatten();
+    let cap = where_
+        .is_none()
+        .then(|| proj.limit.map(|l| proj.skip.unwrap_or(0) + l))
+        .flatten();
     // An index hint (vertex or edge) makes the scan a seek, so the LIMIT cap
     // can't early-stop it — drop the cap when a hint applies.
-    let cap = if scan_is_hinted(graph, ctx, path, where_.as_ref()) { None } else { cap };
+    let cap = if scan_is_hinted(graph, ctx, path, where_.as_ref()) {
+        None
+    } else {
+        cap
+    };
     let mut sc = build_scan(graph, ctx, path, *scope_len, cap, where_.as_ref())?;
     if let Some(w) = where_ {
-        let keep: Vec<bool> = eval_vec(graph, ctx, &sc, w).into_truth().iter().map(|t| *t == Some(true)).collect();
+        let keep: Vec<bool> = eval_vec(graph, ctx, &sc, w)
+            .into_truth()
+            .iter()
+            .map(|t| *t == Some(true))
+            .collect();
         compact(&mut sc, &keep);
     }
     let start = proj.skip.unwrap_or(0).min(sc.n);
     let end = proj.limit.map(|l| (start + l).min(sc.n)).unwrap_or(sc.n);
-    let cols =
-        proj.items.iter().map(|it| eval_vec(graph, ctx, &sc, &it.expr).slice(start, end).into_arrow(graph)).collect();
+    let cols = proj
+        .items
+        .iter()
+        .map(|it| {
+            eval_vec(graph, ctx, &sc, &it.expr)
+                .slice(start, end)
+                .into_arrow(graph)
+        })
+        .collect();
     Some((cols, end - start))
 }
 
@@ -3609,8 +4316,18 @@ fn vectorized_arrow(graph: &Graph, ctx: &Ctx, matches: &[&CClause], proj: &CProj
 fn run_cquery_arrow(plan: &CQuery, graph: &mut Graph, params: &[Val]) -> CodeResult<Vec<u8>> {
     if USE_VEC && plan.ops.is_empty() && plan.parts.len() == 1 {
         let linear = &plan.parts[0];
-        if let Some((CClause::Return(proj), rest)) = linear.clauses.split_last().map(|(l, r)| (l, r)) {
-            if rest.iter().all(|c| matches!(c, CClause::Match { optional: false, .. })) {
+        if let Some((CClause::Return(proj), rest)) =
+            linear.clauses.split_last().map(|(l, r)| (l, r))
+        {
+            if rest.iter().all(|c| {
+                matches!(
+                    c,
+                    CClause::Match {
+                        optional: false,
+                        ..
+                    }
+                )
+            }) {
                 let ctx = resolve_ctx(graph, plan, params);
                 let matches: Vec<&CClause> = rest.iter().collect();
                 if let Some((cols, nrows)) = vectorized_arrow(graph, &ctx, &matches, proj) {
@@ -3625,7 +4342,10 @@ fn run_cquery_arrow(plan: &CQuery, graph: &mut Graph, params: &[Val]) -> CodeRes
 
 /// Bind named params into the plan's positional slot order.
 fn positional(param_names: &[String], params: &Params) -> Vec<Val> {
-    param_names.iter().map(|n| params.get(n).cloned().unwrap_or(Val::Null)).collect()
+    param_names
+        .iter()
+        .map(|n| params.get(n).cloned().unwrap_or(Val::Null))
+        .collect()
 }
 
 /// A prepared (lowered) query: compile once, execute many times with different

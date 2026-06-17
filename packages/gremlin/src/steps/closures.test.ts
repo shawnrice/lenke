@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
 import { findClosures, isSerializable, serialize } from '../serialize.js';
@@ -51,7 +52,8 @@ describe('closure-bearing step variants', () => {
           V('1'),
           flatMap((v) => {
             const props = (v as { properties: Record<string, unknown> }).properties;
-            return Object.entries(props).map(([k, val]) => `${k}=${val}`);
+
+            return Object.entries(props).map(([k, val]) => `${k}=${String(val)}`);
           }),
         ),
         tinkerGraph,

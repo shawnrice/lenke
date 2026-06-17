@@ -11,9 +11,9 @@
 import type { Graph } from '@pl-graph/core';
 
 import type { Plan } from '../ast.js';
-import { newContext, planReadsPath, type Traverser, unwrap } from './runtime.js';
 import { applyStep } from './dispatch.js';
 import { seedFromIndex } from './index-seed.js';
+import { newContext, planReadsPath, type Traverser, unwrap } from './runtime.js';
 import { applySource } from './sources.js';
 
 /**
@@ -38,6 +38,7 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
       stream = applySource(step, graph, ctx.tracksPath);
       continue;
     }
+
     stream = applyStep(step, stream, graph, ctx);
   }
 

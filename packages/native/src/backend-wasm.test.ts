@@ -1,11 +1,10 @@
+import { describe, expect, test } from 'bun:test';
 // End-to-end proof of the wasm backend: instantiate the pl_graph_core.wasm
 // artifact, build a graph from NDJSON, and drive GQL + Gremlin through the same
 // `RustGraph` facade the FFI backend uses. This is the test that proves the
 // linear-memory marshalling (plg_alloc in, copy out) actually works in a JS
 // runtime. Run: bun test packages/native/src/backend-wasm.test.ts
 import { existsSync } from 'node:fs';
-
-import { describe, expect, test } from 'bun:test';
 
 import { ABI_VERSION } from './abi.js';
 import { createWasmBackend } from './backend-wasm.js';
@@ -20,11 +19,13 @@ const WASM = new URL(
 // The artifact is built by `bun run build:wasm` (not by the test). Skip cleanly
 // with a hint when it's absent, rather than hard-erroring at module load.
 const hasWasm = existsSync(WASM);
+
 if (!hasWasm) {
   console.warn(
     `[backend-wasm.test] skipping: ${WASM} not found — run \`bun run build:wasm\` first.`,
   );
 }
+
 const suite = hasWasm ? describe : describe.skip;
 
 const NDJSON = [
@@ -115,6 +116,7 @@ suite('@pl-graph/native wasm backend', () => {
   test('serializes + round-trips through every format (over linear memory)', async () => {
     const backend = await createWasmBackend(wasmBytes);
     const g = graphFromNdjson(backend, bytes);
+
     for (const fmt of ['pg-json', 'pg-text', 'graphson', 'csv', 'ndjson']) {
       const doc = g.serialize(fmt);
       expect(doc.length).toBeGreaterThan(0);
@@ -123,6 +125,7 @@ suite('@pl-graph/native wasm backend', () => {
       expect(g2.edgeCount).toBe(1);
       g2.free();
     }
+
     g.free();
   });
 
@@ -151,9 +154,11 @@ suite('@pl-graph/native wasm backend', () => {
     const backend = await createWasmBackend(wasmBytes);
     // ~5k nodes of NDJSON forces the wasm heap to grow past its initial pages.
     const lines: string[] = [];
+
     for (let i = 0; i < 5000; i += 1) {
       lines.push(`{"type":"node","id":"n${i}","labels":["P"],"properties":{"age":${i % 80}}}`);
     }
+
     const big = new TextEncoder().encode(lines.join('\n'));
     const g = graphFromNdjson(backend, big);
     expect(g.vertexCount).toBe(5000);

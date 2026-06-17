@@ -4,13 +4,17 @@ const internalTakeLast = function* <T>(count: number, iterable: Iterable<T>): It
   if (count <= 0) {
     return;
   }
+
   const buf: T[] = [];
+
   for (const item of iterable) {
     buf.push(item);
+
     if (buf.length > count) {
       buf.shift();
     }
   }
+
   yield* buf;
 };
 

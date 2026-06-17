@@ -97,10 +97,20 @@ fn main() {
         RARE_TOTAL,
     );
     println!("edge-type seed (vertex-first scan vs by_etype seek):");
-    for (ty, bucket, iters) in [("RARE", RARE_TOTAL, 1000u32), ("KNOWS", N * KNOWS_PER, 100u32)] {
-        let (scan_us, _) =
-            bench(&mut g, &format!("MATCH (a)-[r]->(b) WHERE r IS LABELED {ty} RETURN count(*) AS c"), iters);
-        let (seek_us, _) = bench(&mut g, &format!("MATCH (a)-[r:{ty}]->(b) RETURN count(*) AS c"), iters);
+    for (ty, bucket, iters) in [
+        ("RARE", RARE_TOTAL, 1000u32),
+        ("KNOWS", N * KNOWS_PER, 100u32),
+    ] {
+        let (scan_us, _) = bench(
+            &mut g,
+            &format!("MATCH (a)-[r]->(b) WHERE r IS LABELED {ty} RETURN count(*) AS c"),
+            iters,
+        );
+        let (seek_us, _) = bench(
+            &mut g,
+            &format!("MATCH (a)-[r:{ty}]->(b) RETURN count(*) AS c"),
+            iters,
+        );
         println!(
             "  :{ty:<6} scan {:>10}   seek {:>10}   ({:.1}x)   bucket {bucket}/{}",
             pretty(scan_us),

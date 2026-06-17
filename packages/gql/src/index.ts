@@ -29,14 +29,17 @@ export const query = (graph: Graph, text: string, params?: Record<string, unknow
  */
 export const gql = (graph: Graph) => {
   const run = (text: string): Row[] => execute(parse(text), graph);
+
   return (strings: TemplateStringsArray | string, ...values: unknown[]): Row[] => {
     if (typeof strings === 'string') {
       return run(strings);
     }
+
     const text = strings.reduce(
       (acc, part, i) => acc + part + (i < values.length ? String(values[i]) : ''),
       '',
     );
+
     return run(text);
   };
 };

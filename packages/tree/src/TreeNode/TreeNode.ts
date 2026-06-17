@@ -4,6 +4,7 @@
 import { ErrorCode, PlGraphError } from '@pl-graph/errors';
 import { equals } from '@pl-graph/fp/equals';
 import { identity, rando } from '@pl-graph/utils';
+
 import { deserialize } from './deserialize.js';
 import { serialize } from './serialize.js';
 
@@ -132,6 +133,7 @@ export class TreeNode<T> {
     }
 
     const nextParent = node.parent;
+
     if (!nextParent) {
       // We should actually not get here with any well-formed tree
       throw new PlGraphError('Cannot remove a node that has no parent', {
@@ -184,10 +186,12 @@ export class TreeNode<T> {
   get depth(): number {
     let count = 0;
     let node = this.#parent;
+
     while (node) {
       count++;
       node = node.#parent;
     }
+
     return count;
   }
 
@@ -256,6 +260,7 @@ export class TreeNode<T> {
   createChild(value: T, id: string | null = null): TreeNode<T> {
     const node = new TreeNode(this, value, id);
     this.#children.set(node.id, node);
+
     return node;
   }
 
@@ -462,6 +467,7 @@ export class TreeNode<T> {
     for (const child of this.#children.values()) {
       yield* child.postOrder();
     }
+
     yield this;
   }
 
@@ -487,9 +493,11 @@ export class TreeNode<T> {
    */
   map<R>(fn: UnaryFn<T, R>): TreeNode<R> {
     const next = TreeNode.from<R>(fn(this.#value), this.#id);
+
     for (const child of this.#children.values()) {
       next.addChild(child.map(fn));
     }
+
     return next;
   }
 
@@ -504,9 +512,11 @@ export class TreeNode<T> {
    */
   fold<R>(fn: (value: T, childResults: R[]) => R): R {
     const childResults: R[] = [];
+
     for (const child of this.#children.values()) {
       childResults.push(child.fold(fn));
     }
+
     return fn(this.#value, childResults);
   }
 
@@ -516,9 +526,11 @@ export class TreeNode<T> {
    */
   clone(): TreeNode<T> {
     const next = TreeNode.from(this.#value, this.#id);
+
     for (const child of this.#children.values()) {
       next.addChild(child.clone());
     }
+
     return next;
   }
 
@@ -536,10 +548,12 @@ export class TreeNode<T> {
   getAncestors(): TreeNode<T>[] {
     const ancestors: TreeNode<T>[] = [];
     let node = this.#parent;
+
     while (node) {
       ancestors.push(node);
       node = node.#parent;
     }
+
     return ancestors.reverse();
   }
 

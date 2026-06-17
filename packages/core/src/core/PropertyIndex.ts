@@ -67,6 +67,7 @@ const rank = (v: IndexableValue): number => {
   if (v === null) {
     return 0;
   }
+
   switch (typeof v) {
     case 'boolean':
       return 1;
@@ -86,9 +87,11 @@ const rank = (v: IndexableValue): number => {
 const compare = (a: IndexableValue, b: IndexableValue): number => {
   const ra = rank(a);
   const rb = rank(b);
+
   if (ra !== rb) {
     return ra - rb;
   }
+
   switch (typeof a) {
     case 'number':
       return a - (b as number);
@@ -96,9 +99,11 @@ const compare = (a: IndexableValue, b: IndexableValue): number => {
       return (a ? 1 : 0) - (b ? 1 : 0);
     case 'string': {
       const s = b as string;
+
       if (a < s) {
         return -1;
       }
+
       return a > s ? 1 : 0;
     }
     default:
@@ -111,9 +116,11 @@ const numericCmp = (a: IndexableValue, b: IndexableValue): number => (a as numbe
 const stringCmp = (a: IndexableValue, b: IndexableValue): number => {
   const x = a as string;
   const y = b as string;
+
   if (x < y) {
     return -1;
   }
+
   return x > y ? 1 : 0;
 };
 
@@ -130,8 +137,10 @@ const pickComparator = (
   values: Iterable<IndexableValue>,
 ): { cmp: (a: IndexableValue, b: IndexableValue) => number; rank: number } => {
   let kind = -2; // -2 = unseen, -1 = mixed, else a single rank
+
   for (const v of values) {
     const r = rank(v);
+
     if (kind === -2) {
       kind = r;
     } else if (kind !== r) {
@@ -139,12 +148,15 @@ const pickComparator = (
       break;
     }
   }
+
   if (kind === 2) {
     return { cmp: numericCmp, rank: 2 };
   }
+
   if (kind === 3) {
     return { cmp: stringCmp, rank: 3 };
   }
+
   return { cmp: compare, rank: -1 };
 };
 
@@ -168,9 +180,11 @@ type BNode<T> = Leaf<T> | Internal<T>;
 
 const firstKey = <T>(node: BNode<T>): T => {
   let n = node;
+
   while (!n.leaf) {
     n = n.children[0]!;
   }
+
   return n.values[0];
 };
 
@@ -188,33 +202,46 @@ class OrderedSet<T> {
   /** Bulk-build from ascending values in O(d): pack leaves, then internal levels. */
   static fromSorted<T>(sorted: readonly T[], cmp: (a: T, b: T) => number): OrderedSet<T> {
     const set = new OrderedSet<T>(cmp);
+
     if (sorted.length === 0) {
       return set;
     }
+
     const leaves: Leaf<T>[] = [];
+
     for (let i = 0; i < sorted.length; i += BTREE_ORDER) {
       const leaf: Leaf<T> = { leaf: true, values: sorted.slice(i, i + BTREE_ORDER), next: null };
+
       if (leaves.length > 0) {
         leaves[leaves.length - 1].next = leaf;
       }
+
       leaves.push(leaf);
     }
+
     set.firstLeaf = leaves[0]!;
     set.count = sorted.length;
     let level: BNode<T>[] = leaves;
+
     while (level.length > 1) {
       const parents: Internal<T>[] = [];
+
       for (let i = 0; i < level.length; i += BTREE_ORDER) {
         const children = level.slice(i, i + BTREE_ORDER);
         const keys: T[] = [];
+
         for (let j = 1; j < children.length; j++) {
           keys.push(firstKey(children[j]));
         }
+
         parents.push({ leaf: false, keys, children });
       }
+
       level = parents;
     }
+
     set.root = level[0]!;
+
     return set;
   }
 
@@ -233,14 +260,17 @@ class OrderedSet<T> {
   private childIndex(node: Internal<T>, value: T): number {
     let lo = 0;
     let hi = node.keys.length;
+
     while (lo < hi) {
       const mid = (lo + hi) >>> 1;
+
       if (this.cmp(value, node.keys[mid]) < 0) {
         hi = mid;
       } else {
         lo = mid + 1;
       }
     }
+
     return lo;
   }
 
@@ -248,34 +278,43 @@ class OrderedSet<T> {
   private lowerIdx(values: readonly T[], value: T): number {
     let lo = 0;
     let hi = values.length;
+
     while (lo < hi) {
       const mid = (lo + hi) >>> 1;
+
       if (this.cmp(values[mid], value) < 0) {
         lo = mid + 1;
       } else {
         hi = mid;
       }
     }
+
     return lo;
   }
 
   add(value: T): void {
     const path: { node: Internal<T>; idx: number }[] = [];
     let node: BNode<T> = this.root;
+
     while (!node.leaf) {
       const idx = this.childIndex(node, value);
       path.push({ node, idx });
       node = node.children[idx]!;
     }
+
     const pos = this.lowerIdx(node.values, value);
+
     if (pos < node.values.length && this.cmp(node.values[pos], value) === 0) {
       return; // already present
     }
+
     node.values.splice(pos, 0, value);
     this.count++;
+
     if (node.values.length <= BTREE_ORDER) {
       return;
     }
+
     // Split the overfull leaf and propagate splits up the recorded path.
     const mid = node.values.length >> 1;
     const right: Leaf<T> = { leaf: true, values: node.values.splice(mid), next: node.next };
@@ -290,14 +329,18 @@ class OrderedSet<T> {
   ): void {
     if (path.length === 0) {
       this.root = { leaf: false, keys: [sepKey], children: [this.root, rightChild] };
+
       return;
     }
+
     const { node: parent, idx } = path.pop()!;
     parent.keys.splice(idx, 0, sepKey);
     parent.children.splice(idx + 1, 0, rightChild);
+
     if (parent.children.length <= BTREE_ORDER) {
       return;
     }
+
     const mid = parent.keys.length >> 1;
     const upKey = parent.keys[mid];
     const rightKeys = parent.keys.splice(mid + 1);
@@ -308,10 +351,13 @@ class OrderedSet<T> {
 
   delete(value: T): void {
     let node: BNode<T> = this.root;
+
     while (!node.leaf) {
       node = node.children[this.childIndex(node, value)]!;
     }
+
     const pos = this.lowerIdx(node.values, value);
+
     if (pos < node.values.length && this.cmp(node.values[pos], value) === 0) {
       node.values.splice(pos, 1);
       this.count--;
@@ -322,16 +368,21 @@ class OrderedSet<T> {
   *iterateFrom(from: T | undefined, hasFrom: boolean): Iterable<T> {
     let leaf = this.firstLeaf;
     let start = 0;
+
     if (hasFrom) {
       let node: BNode<T> = this.root;
+
       while (!node.leaf) {
         node = node.children[this.childIndex(node, from as T)]!;
       }
+
       leaf = node;
       start = this.lowerIdx(node.values, from as T);
     }
+
     for (let l: Leaf<T> | null = leaf; l; l = l.next) {
       const { values } = l;
+
       for (let i = l === leaf ? start : 0; i < values.length; i++) {
         yield values[i];
       }
@@ -383,6 +434,7 @@ export class PropertyIndex<E> {
       idx.order = OrderedSet.fromSorted(keys, cmp);
       idx.orderRank = r;
     }
+
     return idx.order;
   }
 
@@ -392,10 +444,13 @@ export class PropertyIndex<E> {
     if (!isIndexable(value)) {
       return;
     }
+
     let set = idx.buckets.get(value);
+
     if (!set) {
       set = new Set();
       idx.buckets.set(value, set);
+
       // A new distinct value joins the ordered view only if it's already built.
       // If it breaks the column's assumed type, drop the view so it rebuilds
       // lazily with the full comparator; otherwise insert incrementally.
@@ -407,6 +462,7 @@ export class PropertyIndex<E> {
         }
       }
     }
+
     set.add(element);
   }
 
@@ -414,11 +470,15 @@ export class PropertyIndex<E> {
     if (!isIndexable(value)) {
       return;
     }
+
     const set = idx.buckets.get(value);
+
     if (!set) {
       return;
     }
+
     set.delete(element);
+
     if (set.size === 0) {
       idx.buckets.delete(value);
       idx.order?.delete(value);
@@ -442,6 +502,7 @@ export class PropertyIndex<E> {
   /** Index a single `(element, key, value)` — used to backfill a new index. */
   addForKey(element: E, key: string, value: unknown): void {
     const idx = this.indexes.get(key);
+
     if (idx) {
       this.addEntry(idx, value, element);
     }
@@ -450,9 +511,11 @@ export class PropertyIndex<E> {
   /** Move `element` from `oldValue`'s bucket to `newValue`'s for `key`. */
   update(element: E, key: string, oldValue: unknown, newValue: unknown): void {
     const idx = this.indexes.get(key);
+
     if (!idx) {
       return;
     }
+
     this.removeEntry(idx, oldValue, element);
     this.addEntry(idx, newValue, element);
   }
@@ -466,9 +529,11 @@ export class PropertyIndex<E> {
    */
   equals(key: string, value: unknown): Set<E> | undefined {
     const idx = this.indexes.get(key);
+
     if (!idx || !isIndexable(value)) {
       return undefined;
     }
+
     return idx.buckets.get(value);
   }
 
@@ -479,12 +544,15 @@ export class PropertyIndex<E> {
    */
   countEquals(key: string, value: unknown): number | undefined {
     const idx = this.indexes.get(key);
+
     if (!idx) {
       return undefined;
     }
+
     if (!isIndexable(value)) {
       return 0;
     }
+
     return idx.buckets.get(value)?.size ?? 0;
   }
 
@@ -499,28 +567,36 @@ export class PropertyIndex<E> {
     const refRank = rank(ref);
     // Start at the lower bound when there is one, else from the smallest value.
     const from = bound.gte ?? bound.gt;
+
     for (const value of this.orderOf(idx).iterateFrom(from, from !== undefined)) {
       const r = rank(value);
+
       if (r < refRank) {
         continue; // a lower-ranked value precedes the bound's type block
       }
+
       if (r > refRank) {
         break; // past the bound's type block (values are ascending)
       }
+
       // Upper bound: ascending, so the first value past it ends the scan.
       if (bound.lt !== undefined && compare(value, bound.lt) >= 0) {
         break;
       }
+
       if (bound.lte !== undefined && compare(value, bound.lte) > 0) {
         break;
       }
+
       // Lower bound: skip values that don't yet satisfy it.
       if (bound.gt !== undefined && compare(value, bound.gt) <= 0) {
         continue;
       }
+
       if (bound.gte !== undefined && compare(value, bound.gte) < 0) {
         continue;
       }
+
       yield value;
     }
   }
@@ -532,15 +608,19 @@ export class PropertyIndex<E> {
    */
   range(key: string, bound: RangeBound): Set<E> | undefined {
     const idx = this.indexes.get(key);
+
     if (!idx) {
       return undefined;
     }
+
     const out = new Set<E>();
+
     for (const value of this.rangeValues(idx, bound)) {
       for (const element of idx.buckets.get(value)!) {
         out.add(element);
       }
     }
+
     return out;
   }
 
@@ -551,13 +631,17 @@ export class PropertyIndex<E> {
    */
   countRange(key: string, bound: RangeBound): number | undefined {
     const idx = this.indexes.get(key);
+
     if (!idx) {
       return undefined;
     }
+
     let count = 0;
+
     for (const value of this.rangeValues(idx, bound)) {
       count += idx.buckets.get(value)!.size;
     }
+
     return count;
   }
 
@@ -567,15 +651,19 @@ export class PropertyIndex<E> {
    */
   clone(): PropertyIndex<E> {
     const copy = new PropertyIndex<E>();
+
     for (const [key, idx] of this.indexes) {
       const buckets = new Map<IndexableValue, Set<E>>();
+
       for (const [value, set] of idx.buckets) {
         buckets.set(value, new Set(set));
       }
+
       // Leave the ordered view unbuilt; the snapshot rebuilds it on demand from
       // its own buckets — cheaper than copying, and a snapshot may never range.
       copy.indexes.set(key, { buckets, order: null, orderRank: -1 });
     }
+
     return copy;
   }
 }

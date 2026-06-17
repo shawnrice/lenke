@@ -3,12 +3,15 @@ import type { Predicate, UnaryFn } from './types.js';
 
 const internalFindIndex = <T>(predicate: Predicate<T>, iterable: Iterable<T>): number => {
   let index = 0;
+
   for (const item of iterable) {
     if (predicate(item)) {
       return index;
     }
+
     index++;
   }
+
   return -1;
 };
 

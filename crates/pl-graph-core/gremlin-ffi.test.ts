@@ -38,18 +38,21 @@ const modern = [
   '{"type":"edge","from":"6","to":"3","labels":["CREATED"],"properties":{"weight":0.2}}',
 ].join('\n');
 
-function gremlin(g: number, query: string): unknown {
+const gremlin = (g: number, query: string): unknown => {
   const q = new TextEncoder().encode(query);
   const outLen = new BigUint64Array(1);
   const p = lib.symbols.plg_gremlin_json(g, ptr(q), q.byteLength, ptr(outLen));
+
   if (!p) {
     throw new Error(`gremlin query failed: ${query}`);
   }
+
   const len = Number(outLen[0]);
   const json = new TextDecoder().decode(toArrayBuffer(p as number, 0, len));
   lib.symbols.plg_free_buf(p, len);
+
   return JSON.parse(json);
-}
+};
 
 describe('textual Gremlin over bun:ffi', () => {
   const ndBuf = new TextEncoder().encode(modern);

@@ -87,7 +87,11 @@ pub fn encode(g: &Graph) -> String {
             continue;
         }
         let id = g.vid.text(vi as u32);
-        lines.push(element_line(&[id], &node_labels(g, vi as u32), &element_props(&g.props, &g.strs, vi)));
+        lines.push(element_line(
+            &[id],
+            &node_labels(g, vi as u32),
+            &element_props(&g.props, &g.strs, vi),
+        ));
     }
     for i in 0..g.edge_slots() {
         if !g.is_edge_live(i as u32) {
@@ -96,7 +100,11 @@ pub fn encode(g: &Graph) -> String {
         let from = g.vid.text(g.e_src[i]);
         let to = g.vid.text(g.e_dst[i]);
         let etype = g.etype.text(g.e_type[i]);
-        lines.push(element_line(&[from, to], &[etype], &element_props(&g.edge_props, &g.strs, i)));
+        lines.push(element_line(
+            &[from, to],
+            &[etype],
+            &element_props(&g.edge_props, &g.strs, i),
+        ));
     }
     lines.join("\n")
 }
@@ -186,13 +194,16 @@ fn parse_labels_props(tokens: &[String]) -> (Vec<String>, Vec<(String, Value)>) 
     let mut labels = Vec::new();
     // preserve first-seen key order, collecting repeats
     let mut order: Vec<String> = Vec::new();
-    let mut collected: std::collections::HashMap<String, Vec<Value>> = std::collections::HashMap::new();
+    let mut collected: std::collections::HashMap<String, Vec<Value>> =
+        std::collections::HashMap::new();
     for token in tokens {
         if let Some(label) = token.strip_prefix(':') {
             labels.push(label.to_string());
             continue;
         }
-        let Some(colon) = token.find(':') else { continue };
+        let Some(colon) = token.find(':') else {
+            continue;
+        };
         let key = token[..colon].to_string();
         let value = parse_scalar(&token[colon + 1..]);
         if let Some(list) = collected.get_mut(&key) {
@@ -206,7 +217,11 @@ fn parse_labels_props(tokens: &[String]) -> (Vec<String>, Vec<(String, Value)>) 
         .into_iter()
         .map(|k| {
             let mut vals = collected.remove(&k).unwrap();
-            let v = if vals.len() == 1 { vals.pop().unwrap() } else { Value::List(vals) };
+            let v = if vals.len() == 1 {
+                vals.pop().unwrap()
+            } else {
+                Value::List(vals)
+            };
             (k, v)
         })
         .collect();
@@ -291,7 +306,10 @@ a b :KNOWS since:2020";
         let src = "# a comment\nx name:\"a b\\\"c\"";
         let g = decode(src);
         let x = g.vid.get("x").unwrap() as usize;
-        assert_eq!(g.props.value(x, "name", &g.strs), Value::Str("a b\"c".into()));
+        assert_eq!(
+            g.props.value(x, "name", &g.strs),
+            Value::Str("a b\"c".into())
+        );
     }
 
     #[test]

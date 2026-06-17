@@ -1,7 +1,9 @@
 import { describe, expect, test } from 'bun:test';
+
+import type { Vertex } from '@pl-graph/core';
+
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
-import type { Vertex } from '@pl-graph/core';
 import { T, V, as_, dedupe, hasLabel, in_, inV, out, outE, select, values } from '../steps.js';
 import { traversal } from '../traversal.js';
 

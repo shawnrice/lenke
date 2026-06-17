@@ -3,7 +3,9 @@
 // bun:ffi), asserts result-parity via a shared (count, sum, checksum)
 // fingerprint, then times both. Writes results.json for the report.
 import { writeFileSync } from 'node:fs';
+
 import { Graph } from '@pl-graph/core';
+
 import { query as gqlQuery } from '../packages/gql/src/index.js';
 import { ndjsonCodec } from '../packages/serialization/src/index.js';
 import { genNdjson } from './datagen.ts';
@@ -56,14 +58,18 @@ const te = new TextEncoder();
 const i64 = new DataView(new ArrayBuffer(8));
 
 const fnvBytes = (h: bigint, bytes: Uint8Array): bigint => {
+  let acc = h;
+
   for (const b of bytes) {
-    h = (h ^ BigInt(b)) & MASK64;
-    h = (h * FNV_PRIME) & MASK64;
+    acc = (acc ^ BigInt(b)) & MASK64;
+    acc = (acc * FNV_PRIME) & MASK64;
   }
-  return h;
+
+  return acc;
 };
 const hashRow = (values: unknown[]): bigint => {
   let h = FNV_OFFSET;
+
   for (const v of values) {
     if (typeof v === 'string') {
       h = fnvBytes(h, te.encode(v));
@@ -72,20 +78,25 @@ const hashRow = (values: unknown[]): bigint => {
       h = fnvBytes(h, new Uint8Array(i64.buffer.slice(0)));
     }
   }
+
   return h;
 };
 const tsFingerprint = (rows: Record<string, unknown>[]): Sig => {
   let sum = 0;
   let checksum = 0n;
+
   for (const row of rows) {
     const values = Object.values(row);
+
     for (const v of values) {
       if (typeof v === 'number' && Number.isFinite(v)) {
         sum += v;
       }
     }
+
     checksum = (checksum + hashRow(values)) & MASK64;
   }
+
   return { count: rows.length, sum, checksum };
 };
 const sigEq = (a: Sig, b: Sig): boolean =>
@@ -95,11 +106,13 @@ const sigStore = (s: Sig | null) => (s ? { count: s.count, sum: s.sum } : null);
 const bench = (reps: number, fn: () => void): number => {
   fn();
   let best = Infinity;
+
   for (let i = 0; i < reps; i++) {
     const t = performance.now();
     fn();
     best = Math.min(best, performance.now() - t);
   }
+
   return best;
 };
 const safeBench = (reps: number, fn: () => void): { ms: number | null; error: string | null } => {
@@ -110,7 +123,21 @@ const safeBench = (reps: number, fn: () => void): { ms: number | null; error: st
   }
 };
 
-const repsFor = (n: number): number => (n >= 1_000_000 ? 2 : n >= 100_000 ? 5 : 20);
+const repsFor = (n: number): number => {
+  if (n >= 1_000_000) {
+    return 2;
+  }
+
+  if (n >= 100_000) {
+    return 5;
+  }
+
+  return 20;
+};
+
+// Format a benchmark milliseconds value, or `ERR` when the measurement failed.
+const bn = (x: number | null) => (x === null ? 'ERR' : x.toFixed(1));
+
 const SIZES = [1_000, 10_000, 100_000, 1_000_000];
 const AVG_DEGREE = 4;
 
@@ -179,13 +206,16 @@ for (const n of SIZES) {
     if (n > q.maxN) {
       continue;
     }
+
     const rSig = rust.runQuery(rh, q.text);
     let tSig: Sig | null = null;
+
     try {
       tSig = tsFingerprint(gqlQuery(tg, q.text) as Record<string, unknown>[]);
     } catch {
       // TS engine couldn't produce the result — recorded below.
     }
+
     const ok = tSig ? sigEq(tSig, rSig) : null;
     results.parity.push({
       n,
@@ -194,11 +224,13 @@ for (const n of SIZES) {
       rust: sigStore(rSig),
       ok,
     });
+
     if (ok === false) {
       console.log(
         `  !! PARITY MISMATCH ${q.id}: ts=${JSON.stringify(sigStore(tSig))}/${tSig?.checksum} rust=${JSON.stringify(sigStore(rSig))}/${rSig.checksum}`,
       );
     }
+
     const tsT = safeBench(reps, () => {
       tsFingerprint(gqlQuery(tg, q.text) as Record<string, unknown>[]);
     });
@@ -235,23 +267,28 @@ for (const n of SIZES) {
 
   // ---- SIMD predicate scan (age > 50): scalar vs NEON, + JS loop ----
   const ages: number[] = [];
+
   for (const v of tg.vertices) {
     const a = (v.properties as { age?: number }).age;
+
     if (typeof a === 'number') {
       ages.push(a);
     }
   }
+
   const jsScan = bench(reps, () => {
     let c = 0;
     let s = 0;
+
     for (const a of ages) {
       if (a > 50) {
         c++;
         s += a;
       }
     }
+
     if (c < 0) {
-      throw 0;
+      throw new Error('unreachable');
     }
   });
   const rScalar = bench(reps, () => rust.predicateScan(rh, 'age', 50, false));
@@ -282,7 +319,6 @@ for (const n of SIZES) {
     tsDiskErr: tsDisk.error,
     rustDisk,
   };
-  const bn = (x: number | null) => (x === null ? 'ERR' : x.toFixed(1));
   console.log(
     `  build: ts=${bn(tsBuild.ms)}ms rustPar=${rustBuildPar.toFixed(1)}ms rustSer=${rustBuildSer.toFixed(1)}ms`,
   );

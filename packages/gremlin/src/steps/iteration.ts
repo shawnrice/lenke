@@ -50,27 +50,26 @@ type RepeatBuilder = StepFn & {
   emitBefore: (pred?: SubPlan) => RepeatBuilder;
 };
 
-export const repeat = (body: SubPlan): RepeatBuilder => {
-  const make = (config: {
-    body: Plan;
-    until?: Plan;
-    emit?: Plan;
-    emitBefore?: boolean;
-    times?: number;
-  }): RepeatBuilder => {
-    const fn: StepFn = appendStep({ kind: 'repeat', ...config });
-    return Object.assign(fn, {
-      times: (n: number) => make({ ...config, times: n }),
-      until: (pred: SubPlan) => make({ ...config, until: buildPlan(pred) }),
-      emit: (pred?: SubPlan) =>
-        make({ ...config, emit: pred ? buildPlan(pred) : { steps: [] }, emitBefore: false }),
-      emitBefore: (pred?: SubPlan) =>
-        make({ ...config, emit: pred ? buildPlan(pred) : { steps: [] }, emitBefore: true }),
-    });
-  };
+const makeRepeat = (config: {
+  body: Plan;
+  until?: Plan;
+  emit?: Plan;
+  emitBefore?: boolean;
+  times?: number;
+}): RepeatBuilder => {
+  const fn: StepFn = appendStep({ kind: 'repeat', ...config });
 
-  return make({ body: buildPlan(body) });
+  return Object.assign(fn, {
+    times: (n: number) => makeRepeat({ ...config, times: n }),
+    until: (pred: SubPlan) => makeRepeat({ ...config, until: buildPlan(pred) }),
+    emit: (pred?: SubPlan) =>
+      makeRepeat({ ...config, emit: pred ? buildPlan(pred) : { steps: [] }, emitBefore: false }),
+    emitBefore: (pred?: SubPlan) =>
+      makeRepeat({ ...config, emit: pred ? buildPlan(pred) : { steps: [] }, emitBefore: true }),
+  });
 };
+
+export const repeat = (body: SubPlan): RepeatBuilder => makeRepeat({ body: buildPlan(body) });
 
 // --- branch (with builder) ---
 
@@ -80,18 +79,19 @@ type BranchBuilder = StepFn & {
   none: (plan: SubPlan) => BranchBuilder;
 };
 
-export const branch = (test: SubPlan): BranchBuilder => {
-  const make = (config: {
-    test: Plan;
-    options: readonly { match: unknown; plan: Plan }[];
-    default?: Plan;
-  }): BranchBuilder => {
-    const fn: StepFn = appendStep({ kind: 'branch', ...config });
-    return Object.assign(fn, {
-      option: (match: unknown, plan: SubPlan) =>
-        make({ ...config, options: [...config.options, { match, plan: buildPlan(plan) }] }),
-      none: (plan: SubPlan) => make({ ...config, default: buildPlan(plan) }),
-    });
-  };
-  return make({ test: buildPlan(test), options: [] });
+const makeBranch = (config: {
+  test: Plan;
+  options: readonly { match: unknown; plan: Plan }[];
+  default?: Plan;
+}): BranchBuilder => {
+  const fn: StepFn = appendStep({ kind: 'branch', ...config });
+
+  return Object.assign(fn, {
+    option: (match: unknown, plan: SubPlan) =>
+      makeBranch({ ...config, options: [...config.options, { match, plan: buildPlan(plan) }] }),
+    none: (plan: SubPlan) => makeBranch({ ...config, default: buildPlan(plan) }),
+  });
 };
+
+export const branch = (test: SubPlan): BranchBuilder =>
+  makeBranch({ test: buildPlan(test), options: [] });

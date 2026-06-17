@@ -70,23 +70,28 @@ export class VertexProperty implements GraphElement {
     if (args.length === 1) {
       const [key] = args as [string];
       const set = this.#store.get(key) ?? [];
+
       for (const v of set) {
         yield { key, value: v };
       }
     } else if (args.length === 2) {
       const [key, value] = args as [string, unknown];
+
       if (!this.#store.has(key)) {
         this.#store.set(key, []);
       }
+
       this.#store.get(key)!.push(value);
     } else if (args.length === 3) {
       const [cardinality, key, value] = args as [symbol, string, unknown];
+
       if (!this.#store.has(key)) {
         this.#store.set(key, []);
       }
 
       if (cardinality === Symbol.for('set')) {
         const store = this.#store.get(key)!;
+
         if (!store.includes(value)) {
           store.push(value);
         }

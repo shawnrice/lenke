@@ -5,7 +5,7 @@ import { buildPackage } from '@pl-graph/dev';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-buildPackage({
+await buildPackage({
   packageRoot: __dirname,
   // The backends are subpath exports (`@pl-graph/native/ffi`, `/wasm`) so a
   // browser bundle never pulls in the Bun-only `bun:ffi` import.

@@ -4,8 +4,8 @@ import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
 import { between, eq, gt, inside, startsWith, within } from '../predicates.js';
 import { E, has, hasLabel, out, V, values } from '../steps.js';
 import { traversal } from '../traversal.js';
-import { run } from './index.js';
 import { seedFromIndex } from './index-seed.js';
+import { run } from './index.js';
 
 const arr = (r: Iterable<unknown>): unknown[] => [...r];
 
@@ -70,6 +70,7 @@ describe('index-seeded V() source', () => {
     const indexed = createTestTinkerGraph();
     indexed.createVertexIndex('age');
     const cases = [gt(30), between(28, 33), inside(28, 33)];
+
     for (const pred of cases) {
       const plan = () => traversal(V(), has('age', pred), values('name'));
       expect((arr(run(plan(), indexed)) as string[]).sort()).toEqual(

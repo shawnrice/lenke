@@ -3,8 +3,8 @@ import { ErrorCode, PlGraphError } from '@pl-graph/errors';
 
 import type { By, Plan, Predicate, Step } from '../ast.js';
 import { matches } from '../predicates.js';
-import { evalBy, hasAny, recallTag, type RunContext, type Traverser } from './runtime.js';
 import { applyPlanToStream } from './dispatch.js';
+import { evalBy, hasAny, recallTag, type RunContext, type Traverser } from './runtime.js';
 
 // `fail` throws as soon as the first traverser arrives. Useful as an
 // assertion: `traversal(V(), hasLabel('Person'), out('knows'), fail('expected no neighbors'))`.
@@ -46,26 +46,32 @@ export const whereCompareStep = function* (
   // single `value`, so they can't reference an end tag. The cross-tag form
   // only makes sense for single-value comparison predicates.
   const valueBearing = pred as Predicate & { value: unknown };
+
   if (!('value' in valueBearing)) {
     throw new PlGraphError(
       `where('${startKey}', ...): only single-value predicates are supported (eq, neq, gt, gte, lt, lte, within, without). Got op '${pred.op}'.`,
       { code: ErrorCode.Unsupported },
     );
   }
+
   const endKey = valueBearing.value as string;
   const startBy: By = bys?.[0] ?? { kind: 'identity' };
   const endBy: By = bys?.[1] ?? startBy;
+
   for (const t of stream) {
     const start = recallTag(t.tags, startKey, 'last');
     const end = recallTag(t.tags, endKey, 'last');
+
     if (!start.ok || !end.ok) {
       continue;
     }
+
     const startValue = evalBy(startBy, start.value, graph, ctx);
     const endValue = evalBy(endBy, end.value, graph, ctx);
     // Substitute the resolved end-tag value in for the predicate's raw
     // label name. e.g. `gt('b')` becomes `gt(endValue)` at evaluation.
     const resolved = { ...pred, value: endValue } as Predicate;
+
     if (matches(resolved, startValue)) {
       yield t;
     }
@@ -74,11 +80,14 @@ export const whereCompareStep = function* (
 
 export const hasRevisit = (path: readonly unknown[]): boolean => {
   const seen = new Set<unknown>();
+
   for (const x of path) {
     if (seen.has(x)) {
       return true;
     }
+
     seen.add(x);
   }
+
   return false;
 };

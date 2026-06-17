@@ -22,16 +22,19 @@ export const groupStep = function* (
   ctx: RunContext,
 ): Iterable<Traverser<unknown>> {
   const result = new Map<unknown, unknown[]>();
+
   for (const t of stream) {
     const k = evalBy(keyBy, t.value, graph, ctx);
     const v = evalBy(valueBy, t.value, graph, ctx);
     const list = result.get(k);
+
     if (list) {
       list.push(v);
     } else {
       result.set(k, [v]);
     }
   }
+
   yield startTraverser(result);
 };
 
@@ -42,10 +45,12 @@ export const groupCountStep = function* (
   ctx: RunContext,
 ): Iterable<Traverser<unknown>> {
   const result = new Map<unknown, number>();
+
   for (const t of stream) {
     const k = evalBy(by, t.value, graph, ctx);
     result.set(k, (result.get(k) ?? 0) + 1);
   }
+
   yield startTraverser(result);
 };
 
@@ -58,10 +63,12 @@ export const projectStep = function* (
 ): Iterable<Traverser<unknown>> {
   for (const t of stream) {
     const out: Record<string, unknown> = {};
+
     for (let i = 0; i < keys.length; i++) {
       const by = bys?.[i] ?? { kind: 'identity' as const };
       out[keys[i]] = evalBy(by, t.value, graph, ctx);
     }
+
     yield extend(t, out);
   }
 };
@@ -74,7 +81,9 @@ export const projectValues = function* (
     if (!isVertex(t.value) && !isEdge(t.value)) {
       continue;
     }
+
     const props = t.value.properties;
+
     if (keys.length === 0) {
       for (const v of Object.values(props)) {
         yield extend(t, v);
@@ -97,16 +106,20 @@ export const projectValueMap = function* (
     if (!isVertex(t.value) && !isEdge(t.value)) {
       continue;
     }
+
     const props = t.value.properties;
+
     if (!keys || keys.length === 0) {
       yield extend(t, { ...props });
     } else {
       const out: Record<string, unknown> = {};
+
       for (const k of keys) {
         if (k in props) {
           out[k] = props[k];
         }
       }
+
       yield extend(t, out);
     }
   }
@@ -126,7 +139,9 @@ export const pathStep = function* (
       yield extend(t, [...t.path]);
       continue;
     }
+
     const out = t.path.map((v, i) => evalBy(bys[i % bys.length], v, graph, ctx));
+
     yield extend(t, out);
   }
 };
@@ -145,11 +160,13 @@ export const projectElementMap = function* (
     if (!isVertex(t.value) && !isEdge(t.value)) {
       continue;
     }
+
     const props = t.value.properties;
     const out: Record<string, unknown> = {
       id: t.value.id,
       label: firstLabel(t.value.labels) ?? null,
     };
+
     if (isEdge(t.value)) {
       out.IN = {
         id: t.value.to.id,
@@ -160,12 +177,15 @@ export const projectElementMap = function* (
         label: firstLabel(t.value.from.labels) ?? null,
       };
     }
+
     const targetKeys = keys && keys.length > 0 ? keys : Object.keys(props);
+
     for (const k of targetKeys) {
       if (k in props) {
         out[k] = props[k];
       }
     }
+
     yield extend(t, out);
   }
 };
@@ -181,14 +201,17 @@ export const projectPropertyMap = function* (
     if (!isVertex(t.value) && !isEdge(t.value)) {
       continue;
     }
+
     const props = t.value.properties;
     const out: Record<string, unknown[]> = {};
     const targetKeys = keys && keys.length > 0 ? keys : Object.keys(props);
+
     for (const k of targetKeys) {
       if (k in props) {
         out[k] = [props[k]];
       }
     }
+
     yield extend(t, out);
   }
 };
@@ -204,8 +227,10 @@ export const projectProperties = function* (
     if (!isVertex(t.value) && !isEdge(t.value)) {
       continue;
     }
+
     const props = t.value.properties;
     const targetKeys = keys.length === 0 ? Object.keys(props) : keys;
+
     for (const key of targetKeys) {
       if (key in props) {
         yield extend(t, { key, value: props[key] });
@@ -222,6 +247,7 @@ export const asStep = function* (
     const tags = new Map<string, readonly unknown[]>(t.tags);
     const existing = tags.get(label) ?? [];
     tags.set(label, [...existing, t.value]);
+
     yield { ...t, tags };
   }
 };
@@ -239,30 +265,39 @@ export const selectStep = function* (
   // applies to every selected label. No `by()` at all ⇒ identity.
   const byFor = (i: number): By =>
     bys && bys.length > 0 ? bys[i % bys.length] : { kind: 'identity' };
+
   for (const t of stream) {
     if (labels.length === 1) {
-      const lbl = labels[0];
+      const [lbl] = labels;
       const r = recallTag(t.tags, lbl, pop);
+
       if (!r.ok) {
         continue;
       }
+
       yield extend(t, evalBy(byFor(0), r.value, graph, ctx));
       continue;
     }
+
     const out: Record<string, unknown> = {};
     let missing = false;
+
     for (let i = 0; i < labels.length; i++) {
       const lbl = labels[i];
       const r = recallTag(t.tags, lbl, pop);
+
       if (!r.ok) {
         missing = true;
         break;
       }
+
       out[lbl] = evalBy(byFor(i), r.value, graph, ctx);
     }
+
     if (missing) {
       continue;
     }
+
     yield extend(t, out);
   }
 };
@@ -276,6 +311,7 @@ export const treeStep = function* (
   ctx: RunContext,
 ): Iterable<Traverser<unknown>> {
   const root = new Map<unknown, unknown>();
+
   for (const t of stream) {
     let cursor = root;
     t.path.forEach((node, i) => {
@@ -283,12 +319,15 @@ export const treeStep = function* (
       // positions, matching `path()`'s by-rotation semantics.
       const key = bys && bys.length > 0 ? evalBy(bys[i % bys.length], node, graph, ctx) : node;
       let next = cursor.get(key) as Map<unknown, unknown> | undefined;
+
       if (!next) {
         next = new Map<unknown, unknown>();
         cursor.set(key, next);
       }
+
       cursor = next;
     });
   }
+
   yield startTraverser(root);
 };

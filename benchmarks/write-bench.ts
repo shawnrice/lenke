@@ -13,6 +13,7 @@ const fmt = (n: number): string => {
   if (n >= 100) {
     return n.toFixed(0);
   }
+
   return n >= 1 ? n.toFixed(2) : n.toFixed(3);
 };
 const pad = (s: string, n: number): string => s.padEnd(n);
@@ -21,10 +22,13 @@ const pad = (s: string, n: number): string => s.padEnd(n);
 const buildTime = (n: number, index: 'none' | 'age' | 'name'): number => {
   const g = new Graph({ eagerSnapshot: false });
   g.disableEvents();
+
   if (index !== 'none') {
     g.createVertexIndex(index);
   }
+
   const start = performance.now();
+
   for (let i = 0; i < n; i++) {
     g.addVertex({
       id: `n${i}`,
@@ -32,6 +36,7 @@ const buildTime = (n: number, index: 'none' | 'age' | 'name'): number => {
       properties: { name: `p${i}`, age: i % 100, active: i % 2 === 0, dept: `d${i % 10}` },
     });
   }
+
   return performance.now() - start;
 };
 
@@ -50,4 +55,5 @@ for (const n of SIZES) {
     `${pad(n.toLocaleString(), 10)} ${pad(perNode(none), 18)} ${pad(perNode(age), 22)} ${pad(perNode(name), 22)}`,
   );
 }
+
 console.log();

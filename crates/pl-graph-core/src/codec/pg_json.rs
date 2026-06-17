@@ -13,7 +13,9 @@
 
 use serde_json::Value as J;
 
-use crate::codec::{element_props, json_id, json_props, json_str_array, node_labels, push_json_str, push_value};
+use crate::codec::{
+    element_props, json_id, json_props, json_str_array, node_labels, push_json_str, push_value,
+};
 use crate::error::{CodeError, CodeResult};
 use crate::error_codes::ErrorCode;
 use crate::graph::{Builder, EdgeRec, Graph, NodeRec};
@@ -90,11 +92,18 @@ pub fn encode(g: &Graph) -> String {
 
 /// Deserialize a PG-JSON string into a fresh graph.
 pub fn decode(input: &str) -> CodeResult<Graph> {
-    let j: J = serde_json::from_str(input)
-        .map_err(|e| CodeError::new(ErrorCode::InvalidJson, format!("pg-json: invalid JSON: {e}")))?;
-    let obj = j
-        .as_object()
-        .ok_or_else(|| CodeError::new(ErrorCode::InvalidShape, "pg-json: expected a top-level object"))?;
+    let j: J = serde_json::from_str(input).map_err(|e| {
+        CodeError::new(
+            ErrorCode::InvalidJson,
+            format!("pg-json: invalid JSON: {e}"),
+        )
+    })?;
+    let obj = j.as_object().ok_or_else(|| {
+        CodeError::new(
+            ErrorCode::InvalidShape,
+            "pg-json: expected a top-level object",
+        )
+    })?;
 
     let mut b = Builder::default();
 

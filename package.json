@@ -10,8 +10,8 @@
     "test": "nx run-many -t test",
     "lint": "oxlint --type-aware .",
     "lint:fix": "oxlint --type-aware --fix .",
-    "fmt": "oxfmt .",
-    "fmt:check": "oxfmt --check .",
+    "fmt": "oxfmt . && cargo fmt --manifest-path crates/pl-graph-core/Cargo.toml",
+    "fmt:check": "oxfmt --check . && cargo fmt --manifest-path crates/pl-graph-core/Cargo.toml --check",
     "typecheck": "bunx tsc --noEmit",
     "check": "bun run typecheck && bun run lint && bun run fmt:check"
   },

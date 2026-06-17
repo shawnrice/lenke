@@ -27,7 +27,7 @@ export class Edge {
   }
 
   constructor(params: AddEdgeParams) {
-    const { id = rando(), from, graph, to, labels = [], properties = {} } = params;
+    const { id = rando(), from, graph, to, labels, properties } = params;
     this.#id = id;
     this.#graph = graph;
     this.labels = labels;
@@ -126,6 +126,7 @@ export class Edge {
 
     const previous = this.properties;
     this.properties = { ...previous, ...props };
+
     for (const key of Object.keys(props)) {
       this.#graph?.reindexEdgeProperty(this, key, previous[key], props[key]);
     }
@@ -162,6 +163,7 @@ export class Edge {
     this.properties = Object.fromEntries(
       Object.entries(previous).filter(([k]) => !keys.includes(k)),
     );
+
     for (const key of keys) {
       this.#graph?.reindexEdgeProperty(this, key, previous[key], undefined);
     }

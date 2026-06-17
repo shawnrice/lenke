@@ -7,6 +7,7 @@ const internalFind = <T>(predicate: Predicate<T>, iterable: Iterable<T>): T | un
       return item;
     }
   }
+
   return undefined;
 };
 

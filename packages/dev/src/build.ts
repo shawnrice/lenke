@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
+
 import ts from 'typescript';
 
 export type BuildOptions = {
@@ -24,6 +25,7 @@ export type PackageConfig = {
 
 const collectSourceEntrypoints = (packageRoot: string): string[] => {
   const srcDir = join(packageRoot, 'src');
+
   return readdirSync(srcDir, { recursive: true, withFileTypes: true })
     .filter(
       (entry) =>
@@ -39,10 +41,11 @@ const collectSourceEntrypoints = (packageRoot: string): string[] => {
 
 const getExternals = (packageRoot: string) => {
   const pkg = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'));
+
   return [
-    ...Object.keys(pkg.dependencies || {}),
-    ...Object.keys(pkg.peerDependencies || {}),
-    ...Object.keys(pkg.optionalDependencies || {}),
+    ...Object.keys(pkg.dependencies ?? {}),
+    ...Object.keys(pkg.peerDependencies ?? {}),
+    ...Object.keys(pkg.optionalDependencies ?? {}),
   ];
 };
 
@@ -50,6 +53,7 @@ const buildEsm = async (options: BuildOptions) => {
   const { packageRoot, entrypoints, minify = false, sourcemap = 'linked', clean = true } = options;
 
   const outPath = join(packageRoot, 'dist', `esm${minify ? '.min' : ''}`);
+
   if (clean) {
     await rm(outPath, { recursive: true, force: true });
   }
@@ -76,6 +80,7 @@ const buildCjs = async (options: BuildOptions) => {
   const { packageRoot, entrypoints, minify = false, sourcemap = 'linked', clean = true } = options;
 
   const outPath = join(packageRoot, 'dist', `cjs${minify ? '.min' : ''}`);
+
   if (clean) {
     await rm(outPath, { recursive: true, force: true });
   }
@@ -99,16 +104,29 @@ type TypescriptBuildOptions = {
 
 const runTsc = ({ packageRoot, configFile }: TypescriptBuildOptions): Promise<void> => {
   return new Promise((resolve, reject) => {
-    const config = ts.readConfigFile(join(packageRoot, configFile), ts.sys.readFile);
+    const config = ts.readConfigFile(join(packageRoot, configFile), (fileName) =>
+      ts.sys.readFile(fileName),
+    );
+
     if (config.error) {
-      reject(new Error(`Error reading tsconfig: ${config.error.messageText}`));
+      reject(
+        new Error(
+          `Error reading tsconfig: ${ts.flattenDiagnosticMessageText(config.error.messageText, '\n')}`,
+        ),
+      );
+
       return;
     }
 
     const parsedConfig = ts.parseJsonConfigFileContent(config.config, ts.sys, packageRoot);
 
     if (parsedConfig.errors.length) {
-      reject(new Error(`Error parsing tsconfig: ${parsedConfig.errors[0].messageText}`));
+      reject(
+        new Error(
+          `Error parsing tsconfig: ${ts.flattenDiagnosticMessageText(parsedConfig.errors[0].messageText, '\n')}`,
+        ),
+      );
+
       return;
     }
 
@@ -124,15 +142,18 @@ const runTsc = ({ packageRoot, configFile }: TypescriptBuildOptions): Promise<vo
     if (allDiagnostics.length > 0) {
       const formatHost: ts.FormatDiagnosticsHost = {
         getCanonicalFileName: (path) => path,
-        getCurrentDirectory: ts.sys.getCurrentDirectory,
+        getCurrentDirectory: () => ts.sys.getCurrentDirectory(),
         getNewLine: () => ts.sys.newLine,
       };
 
       const diagnosticsText = ts.formatDiagnostics(allDiagnostics, formatHost);
+
       if (emitResult.emitSkipped) {
         reject(new Error(`TypeScript compilation failed:\n${diagnosticsText}`));
+
         return;
       }
+
       console.warn(diagnosticsText);
     }
 
@@ -153,12 +174,13 @@ export const buildPackage = async (config: PackageConfig = {}) => {
   } = config;
 
   const entrypoints = perFile
-    ? await collectSourceEntrypoints(packageRoot)
+    ? collectSourceEntrypoints(packageRoot)
     : ['src/index.ts', ...additionalEntrypoints];
   const tasks: Promise<void>[] = [];
 
   if (!skipEsm) {
     tasks.push(buildEsm({ packageRoot, entrypoints }));
+
     if (!skipMin) {
       tasks.push(buildEsm({ packageRoot, entrypoints, minify: true }));
     }
@@ -170,6 +192,7 @@ export const buildPackage = async (config: PackageConfig = {}) => {
 
   if (!skipCjs) {
     tasks.push(buildCjs({ packageRoot, entrypoints }));
+
     if (!skipMin) {
       tasks.push(buildCjs({ packageRoot, entrypoints, minify: true }));
     }

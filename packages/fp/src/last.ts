@@ -3,9 +3,11 @@ import type { UnaryFn } from './types.js';
 
 const internalLast = boundary(<T>(iterable: Iterable<T>): T | undefined => {
   let seen: T | undefined;
+
   for (const item of iterable) {
     seen = item;
   }
+
   return seen;
 });
 

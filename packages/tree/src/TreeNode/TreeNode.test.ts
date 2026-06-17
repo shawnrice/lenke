@@ -1,13 +1,15 @@
+import { describe, expect, test } from 'bun:test';
+
 /* eslint-disable max-lines-per-function */
 import { ErrorCode, hasErrorCode } from '@pl-graph/errors';
 
 import { TreeNode } from './TreeNode.js';
-import { describe, expect, test } from 'bun:test';
 
 // Capture whatever a thunk throws (or undefined if it doesn't).
 const caughtFrom = (fn: () => void): unknown => {
   try {
     fn();
+
     return undefined;
   } catch (e) {
     return e;

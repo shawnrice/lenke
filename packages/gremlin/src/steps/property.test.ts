@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
 import { Cardinality, V, hasLabel, property, valueMap, values } from '../steps.js';
@@ -40,11 +41,12 @@ describe('property() mutation', () => {
 
   test('property() works on edges', () => {
     const g = createTestTinkerGraph();
-    const edge = [...g.edges][0];
+    const [edge] = [...g.edges];
     const r = arr(run(traversal(V(), hasLabel('PERSON'), property('seen', true)), g));
     expect(r.length).toBeGreaterThan(0);
     // The edge wasn't visited so unchanged.
     expect(edge.properties.seen).toBeUndefined();
+
     // But every PERSON vertex got the new property.
     for (const v of g.vertices) {
       if (v.labels.has('PERSON')) {

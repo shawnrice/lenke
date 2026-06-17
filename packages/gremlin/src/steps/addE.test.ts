@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
 import { V, addE, as_, out, property } from '../steps.js';
@@ -32,6 +33,7 @@ describe('addE() mutation', () => {
     // marko knows vadas + josh → 2 new edges
     expect(r).toHaveLength(2);
     expect(g.edgeCount).toBe(before + 2);
+
     for (const e of r as Array<{ from: { id: string }; to: { id: string } }>) {
       expect(e.from.id).toBe('1');
       expect(e.to.id).toBe('6');

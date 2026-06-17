@@ -6,6 +6,7 @@ import { type CacheCell, nextSnapshot } from './snapshotGate.js';
 const fakeGraph = (init: { version?: number; epochs?: Record<string, number> } = {}) => {
   let version = init.version ?? 0;
   const epochs = new Map(Object.entries(init.epochs ?? {}));
+
   return {
     get version() {
       return version;
@@ -13,6 +14,7 @@ const fakeGraph = (init: { version?: number; epochs?: Record<string, number> } =
     epoch: (name: string) => epochs.get(name) ?? 0,
     bump(tokens: string[] = []) {
       version += 1;
+
       for (const t of tokens) {
         epochs.set(t, (epochs.get(t) ?? 0) + 1);
       }
@@ -28,8 +30,10 @@ const gate = <T>(
   deps?: readonly string[],
 ) => {
   let cell: CacheCell<T> | null = null;
+
   return () => {
     cell = nextSnapshot(cell, graph, selector, isEqual, deps);
+
     return cell.value;
   };
 };
@@ -59,6 +63,7 @@ describe('snapshotGate.nextSnapshot', () => {
       graph,
       (g) => {
         runs += 1;
+
         return g.epoch('age');
       },
       Object.is,

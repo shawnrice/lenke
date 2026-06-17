@@ -13,6 +13,7 @@ const build = (): TreeNode<string> => {
   a.createChild('c', 'c');
   b.createChild('d', 'd');
   b.createChild('e', 'e');
+
   return a;
 };
 

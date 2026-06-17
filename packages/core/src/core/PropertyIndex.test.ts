@@ -8,6 +8,7 @@ const personGraph = (): Graph => {
   graph.addVertex({ id: 'b', labels: ['Person'], properties: { name: 'vadas', age: 27 } });
   graph.addVertex({ id: 'c', labels: ['Person'], properties: { name: 'josh', age: 32 } });
   graph.addVertex({ id: 'd', labels: ['Person'], properties: { name: 'peter', age: 35 } });
+
   return graph;
 };
 
@@ -159,15 +160,18 @@ describe('PropertyIndex range', () => {
     let seed = 12345;
     const rnd = (n: number): number => {
       seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+
       return seed % n;
     };
     // Insert COUNT distinct values in shuffled order (before any range query, so
     // the ordered view is later bulk-built; some after, exercising incremental).
     const values = Array.from({ length: COUNT }, (_, i) => i * 3 - COUNT);
+
     for (let i = values.length - 1; i > 0; i--) {
       const j = rnd(i + 1);
       [values[i], values[j]] = [values[j], values[i]];
     }
+
     const insert = (v: number): void => {
       graph.addVertex({ id: `v${v}`, labels: [], properties: { k: v } });
       present.add(v);
@@ -204,11 +208,13 @@ describe('PropertyIndex range', () => {
         remove(v);
       }
     }
+
     for (let q = 0; q < 20; q++) {
       lo = rnd(COUNT * 3) - COUNT;
       hi = lo + rnd(COUNT);
       expect(rangeVals(lo, hi)).toEqual(brute(lo, hi));
     }
+
     expect(graph.getVerticesByPropertyRange('k', { gt: -1e9 }).size).toBe(present.size);
   });
 
@@ -232,20 +238,25 @@ describe('PropertyIndex range', () => {
     graph.createVertexIndex('k');
     // Insert 500 distinct values in shuffled order.
     const order = Array.from({ length: 500 }, (_, i) => i);
+
     for (let i = order.length - 1; i > 0; i--) {
       const j = (i * 2654435761) % (i + 1);
       [order[i], order[j]] = [order[j], order[i]];
     }
+
     for (const v of order) {
       graph.addVertex({ id: `v${v}`, labels: [], properties: { k: v } });
     }
+
     expect(graph.getVerticesByPropertyRange('k', { gte: 100, lt: 200 }).size).toBe(100);
+
     // Delete every even value, then re-check the range.
     for (const v of order) {
       if (v % 2 === 0) {
         graph.removeVertex(`v${v}`);
       }
     }
+
     expect(graph.getVerticesByPropertyRange('k', { gte: 100, lt: 200 }).size).toBe(50); // odds only
     expect(graph.getVerticesByProperty('k', 150).size).toBe(0); // deleted
     expect(graph.getVerticesByProperty('k', 151).size).toBe(1); // kept

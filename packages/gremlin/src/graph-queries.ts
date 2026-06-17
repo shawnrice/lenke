@@ -39,10 +39,13 @@ const iterByLabel = function* (
   if (!byLabel) {
     return;
   }
+
   if (labels.length > 0) {
     yield* iterLabeled(byLabel, labels);
+
     return;
   }
+
   yield* iterAllDeduped(byLabel);
 };
 
@@ -52,6 +55,7 @@ const iterLabeled = function* (
 ): Iterable<Edge> {
   for (const label of labels) {
     const set = byLabel.get(label);
+
     if (set) {
       yield* set;
     }
@@ -60,12 +64,15 @@ const iterLabeled = function* (
 
 const iterAllDeduped = function* (byLabel: Map<string, Set<Edge>>): Iterable<Edge> {
   const seen = new Set<Edge>();
+
   for (const set of byLabel.values()) {
     for (const e of set) {
       if (seen.has(e)) {
         continue;
       }
+
       seen.add(e);
+
       yield e;
     }
   }
@@ -80,5 +87,6 @@ const iterBoth = function* (
   labels: readonly string[],
 ): Iterable<Edge> {
   yield* iterByLabel(fromByLabel, labels);
+
   yield* iterByLabel(toByLabel, labels);
 };

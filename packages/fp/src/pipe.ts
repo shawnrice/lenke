@@ -274,6 +274,7 @@ export function pipe(...fns: ReadonlyArray<(value: any) => any>): any {
   if (fns.length === 0) {
     return (...curried: ReadonlyArray<(value: any) => any>) => compose(curried);
   }
+
   return compose(fns);
 }
 

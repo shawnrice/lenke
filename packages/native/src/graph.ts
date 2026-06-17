@@ -9,11 +9,13 @@ const decoder = new TextDecoder();
 
 const decodeRows = (bytes: Uint8Array): Row[] => {
   const { columns, rows } = JSON.parse(decoder.decode(bytes)) as RowSetJson;
+
   return rows.map((row) => {
     const out: Row = {};
     columns.forEach((col, i) => {
       out[col] = row[i];
     });
+
     return out;
   });
 };
@@ -27,6 +29,7 @@ const toText = (q: string | TemplateStringsArray, subs: unknown[]): string => {
   if (isTemplate(q)) {
     return q.reduce((acc, part, i) => acc + part + (i < subs.length ? String(subs[i]) : ''), '');
   }
+
   return q;
 };
 
@@ -95,5 +98,6 @@ export const graphFromFormat = (
   format: string,
 ): RustGraph => {
   const bytes = typeof input === 'string' ? new TextEncoder().encode(input) : input;
+
   return attachGraph(backend, backend.deserialize(bytes, format));
 };

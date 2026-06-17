@@ -1,5 +1,6 @@
-import { Graph } from '@pl-graph/core';
 import { describe, expect, test } from 'bun:test';
+
+import { Graph } from '@pl-graph/core';
 
 import { run } from './executor.js';
 import {
@@ -40,6 +41,7 @@ const buildSocialGraph = () => {
   g.addEdge({ id: 'e3', from: charlie, to: alice, labels: ['knows'], properties: {} });
   g.addEdge({ id: 'e4', from: alice, to: diane, labels: ['knows'], properties: {} });
   g.enableEvents();
+
   return g;
 };
 

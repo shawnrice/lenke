@@ -32,6 +32,7 @@ export function fold(seed?: unknown, reducer?: ReducerClosure): StepFn {
   if (reducer === undefined) {
     return appendStep({ kind: 'fold' });
   }
+
   return appendStep({ kind: 'foldFn', seed, fn: reducer });
 }
 

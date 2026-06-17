@@ -59,11 +59,13 @@ export const addE = (label: string): AddEBuilder => {
     to?: { kind: 'tag'; label: string } | { kind: 'plan'; plan: Plan };
   }): AddEBuilder => {
     const fn: StepFn = appendStep({ kind: 'addE', ...config });
+
     return Object.assign(fn, {
       from: (arg: AddEEndpointArg) => make({ ...config, from: toAddEEndpoint(arg) }),
       to: (arg: AddEEndpointArg) => make({ ...config, to: toAddEEndpoint(arg) }),
     });
   };
+
   return make({ label });
 };
 
@@ -85,13 +87,16 @@ export function property(cardinality: CardinalitySym, key: string, value: unknow
 export function property(...args: [string, unknown] | [CardinalitySym, string, unknown]): StepFn {
   if (typeof args[0] === 'symbol') {
     const cardinality = CARDINALITY_TO_KIND.get(args[0]);
+
     if (cardinality === undefined) {
       throw new PlGraphError(`property(): unrecognized cardinality symbol ${String(args[0])}`, {
         code: ErrorCode.Unsupported,
       });
     }
+
     return appendStep({ kind: 'property', key: args[1] as string, value: args[2], cardinality });
   }
+
   return appendStep({ kind: 'property', key: args[0], value: args[1] });
 }
 

@@ -1,13 +1,11 @@
+import type { Graph } from '@pl-graph/core';
 import { ErrorCode, PlGraphError } from '@pl-graph/errors';
 
-import { normalizeBag } from '../value.js';
-
-import type { Graph } from '@pl-graph/core';
 import type { Codec } from '../codec.js';
 import type { ChunkSource } from '../streaming.js';
-import type { PropertyValue } from '../value.js';
-
 import { linesFromChunks } from '../streaming.js';
+import { normalizeBag } from '../value.js';
+import type { PropertyValue } from '../value.js';
 
 /**
  * CSV codec for the core LPG model — a Neo4j-`admin-import`-style pair of typed
@@ -124,6 +122,7 @@ const quoteField = (raw: string): string => {
   ) {
     return `"${raw.replaceAll('"', '""')}"`;
   }
+
   return raw;
 };
 
@@ -155,6 +154,7 @@ const parseCsv = (input: string): Cell[][] => {
 
   while (i < n) {
     const c = input[i];
+
     if (inQuotes) {
       if (c === '"') {
         if (input[i + 1] === '"') {
@@ -162,43 +162,52 @@ const parseCsv = (input: string): Cell[][] => {
           i += 2;
           continue;
         }
+
         inQuotes = false;
         i += 1;
         continue;
       }
+
       field += c;
       i += 1;
       continue;
     }
+
     if (c === '"') {
       quoted = true;
       inQuotes = true;
       i += 1;
       continue;
     }
+
     if (c === ',') {
       pushField();
       i += 1;
       continue;
     }
+
     if (c === '\r') {
       // swallow CR; CRLF handled by the LF branch
       i += 1;
       continue;
     }
+
     if (c === '\n') {
       pushRow();
       i += 1;
       continue;
     }
+
     field += c;
     i += 1;
   }
+
   // Flush trailing field/row unless input ended exactly on a newline boundary
   // with nothing buffered.
   if (field.length > 0 || quoted || row.length > 0) {
     pushRow();
   }
+
   return rows;
 };
 
@@ -210,9 +219,11 @@ const scalarOf = (value: Exclude<PropertyValue, readonly PropertyValue[]>): Scal
   if (typeof value === 'boolean') {
     return 'boolean';
   }
+
   if (typeof value === 'number') {
     return Number.isInteger(value) ? 'integer' : 'float';
   }
+
   return 'string';
 };
 
@@ -222,8 +233,10 @@ const inferColumn = (value: PropertyValue): ColumnType => {
     const [first] = value;
     const scalar =
       first === undefined || first === null || Array.isArray(first) ? 'string' : scalarOf(first);
+
     return { scalar, list: true };
   }
+
   return {
     scalar: scalarOf(value as Exclude<PropertyValue, readonly PropertyValue[]>),
     list: false,
@@ -239,9 +252,11 @@ const parseHeader = (header: string): { key: string; type: ColumnType } => {
   const key = header.slice(0, colon);
   let typePart = header.slice(colon + 1);
   const list = typePart.endsWith('[]');
+
   if (list) {
     typePart = typePart.slice(0, -2);
   }
+
   return { key, type: { scalar: typePart as ScalarType, list } };
 };
 
@@ -250,6 +265,7 @@ const scalarToRaw = (scalar: ScalarType, value: PropertyValue): string => {
   if (scalar === 'boolean') {
     return value ? 'true' : 'false';
   }
+
   return String(value);
 };
 
@@ -295,23 +311,29 @@ const splitList = (raw: string): string[] => {
   const out: string[] = [];
   let cur = '';
   let i = 0;
+
   while (i < raw.length) {
     const c = raw[i];
+
     if (c === '\\' && i + 1 < raw.length) {
       cur += raw[i + 1];
       i += 2;
       continue;
     }
+
     if (c === LIST_SEP) {
       out.push(cur);
       cur = '';
       i += 1;
       continue;
     }
+
     cur += c;
     i += 1;
   }
+
   out.push(cur);
+
   return out;
 };
 
@@ -324,9 +346,11 @@ const scalarOfElement = (el: PropertyValue): ScalarType =>
 const elementToRaw = (elemScalar: ScalarType, el: PropertyValue): string => {
   const actual = scalarOfElement(el);
   const raw = scalarToRaw(actual, el);
+
   if (actual === elemScalar) {
     return escapeElement(raw);
   }
+
   return escapeElement(`${OVERRIDE_PREFIX}${SCALAR_CODE[actual]}:${raw}`);
 };
 
@@ -335,8 +359,10 @@ const rawToElement = (elemScalar: ScalarType, part: string): PropertyValue => {
   if (part.startsWith(OVERRIDE_PREFIX)) {
     const colon = part.indexOf(':');
     const code = part.slice(OVERRIDE_PREFIX.length, colon);
+
     return rawToScalar(CODE_SCALAR[code], part.slice(colon + 1));
   }
+
   return rawToScalar(elemScalar, part);
 };
 
@@ -347,6 +373,7 @@ const valueToRaw = (type: ColumnType, value: PropertyValue): string => {
       .map((el) => elementToRaw(type.scalar, el))
       .join(LIST_SEP);
   }
+
   return scalarToRaw(type.scalar, value);
 };
 
@@ -355,6 +382,7 @@ const rawToValue = (type: ColumnType, raw: string): PropertyValue => {
   if (type.list) {
     return raw === '' ? [] : splitList(raw).map((part) => rawToElement(type.scalar, part));
   }
+
   return rawToScalar(type.scalar, raw);
 };
 
@@ -372,7 +400,9 @@ const encodeCell = (
   if (value === null) {
     return { raw: NULL_TOKEN, forceQuote: false };
   }
+
   const actual = inferColumn(value);
+
   if (sameType(actual, column)) {
     if (column.scalar === 'string' && !column.list) {
       // Scalar strings are always force-quoted: this distinguishes a present
@@ -381,15 +411,20 @@ const encodeCell = (
       // sentinel. Decode strips exactly one leading backslash.
       const s = value as string;
       const raw = s.startsWith('\\') ? `\\${s}` : s;
+
       return { raw, forceQuote: true };
     }
+
     const raw = valueToRaw(column, value);
+
     // A present value that renders empty (e.g. an empty list) must be quoted so
     // it is not read back as absent.
     return { raw, forceQuote: raw === '' };
   }
+
   // Heterogeneous cell: tag with its concrete type so decode can recover it.
   const raw = `${OVERRIDE_PREFIX}${typeCode(actual)}:${valueToRaw(actual, value)}`;
+
   return { raw, forceQuote: false };
 };
 
@@ -405,10 +440,12 @@ const decodeCell = (column: ColumnType, cell: Cell): PropertyValue | typeof ABSE
   // present empty string (quoted empty), and protecting a genuine scalar-string
   // value that happens to look like a sentinel (always force-quoted on encode).
   const { text } = cell;
+
   // Absent is the only state that requires an *unquoted* empty cell.
   if (!cell.quoted && text === '') {
     return ABSENT;
   }
+
   // Sentinels (null, type-override) start with a *single* leading backslash and
   // are recognized regardless of quoting (an override is quoted when its inner
   // value carries a delimiter). Genuine scalar strings that begin with a
@@ -416,23 +453,30 @@ const decodeCell = (column: ColumnType, cell: Cell): PropertyValue | typeof ABSE
   // can never collide with a sentinel. A doubled `\\…` therefore is not a
   // sentinel; it is a literal string handled in the string branch below.
   const sentinel = text.startsWith('\\') && !text.startsWith('\\\\');
+
   if (sentinel && text === NULL_TOKEN) {
     return null;
   }
+
   if (sentinel && text.startsWith(OVERRIDE_PREFIX)) {
     const colon = text.indexOf(':');
     let code = text.slice(OVERRIDE_PREFIX.length, colon);
     const list = code.endsWith('[]');
+
     if (list) {
       code = code.slice(0, -2);
     }
+
     const overrideType: ColumnType = { scalar: CODE_SCALAR[code], list };
+
     return rawToValue(overrideType, text.slice(colon + 1));
   }
+
   // A scalar-string cell is a literal string: undo the leading-backslash escape.
   if (column.scalar === 'string' && !column.list) {
     return text.startsWith('\\') ? text.slice(1) : text;
   }
+
   return rawToValue(column, text);
 };
 
@@ -447,13 +491,16 @@ const computeColumns = (
   const keys: string[] = [];
   const types = new Map<string, ColumnType>();
   const seen = new Set<string>();
+
   for (const bag of bags) {
     for (const key of Object.keys(bag)) {
       const value = bag[key]!;
+
       if (!seen.has(key)) {
         seen.add(key);
         keys.push(key);
       }
+
       // The column type is fixed by the first non-null value seen for the key,
       // in iteration order. A null sighting is not informative, so we keep
       // looking until a typed value appears (or the key stays untyped → string).
@@ -462,12 +509,14 @@ const computeColumns = (
       }
     }
   }
+
   // Any key only ever seen as null defaults to a string column.
   for (const key of keys) {
     if (!types.has(key)) {
       types.set(key, { scalar: 'string', list: false });
     }
   }
+
   return { keys, types };
 };
 
@@ -482,16 +531,19 @@ const buildRow = (
   bag: Record<string, PropertyValue>,
 ): string => {
   const cells: string[] = fixed.map(quoteField);
+
   for (const key of keys) {
     if (!(key in bag)) {
       cells.push(''); // absent
       continue;
     }
+
     const encoded = encodeCell(types.get(key)!, bag[key]);
     cells.push(
       encoded.forceQuote ? `"${encoded.raw.replaceAll('"', '""')}"` : quoteField(encoded.raw),
     );
   }
+
   return cells.join(',');
 };
 
@@ -512,17 +564,22 @@ const propsFromRow = (
   fixedCount: number,
 ): Record<string, PropertyValue> => {
   const properties: Record<string, PropertyValue> = {};
+
   for (let c = 0; c < propCols.length; c += 1) {
     const cell = row[c + fixedCount];
+
     if (cell === undefined) {
       continue;
     }
+
     const { key, type } = propCols[c];
     const decoded = decodeCell(type, cell);
+
     if (decoded !== ABSENT) {
       properties[key] = decoded;
     }
   }
+
   return properties;
 };
 
@@ -562,32 +619,39 @@ const applyEdgeRow = (graph: Graph, row: Cell[], propCols: readonly ParsedHeader
 /** Encode the graph's vertices to a typed nodes CSV. */
 export const encodeNodes = (graph: Graph): string => {
   const bags: Record<string, PropertyValue>[] = [];
+
   for (const vertex of graph.vertices) {
     bags.push(normalizeBag(vertex.properties));
   }
+
   const { keys, types } = computeColumns(bags);
 
   const header = ['id', ':LABEL', ...keys.map((k) => columnHeader(k, types.get(k)!))].join(',');
 
   const rows: string[] = [header];
   let i = 0;
+
   for (const vertex of graph.vertices) {
     const labelStr = [...vertex.labels].join(LIST_SEP);
     rows.push(buildRow([vertex.id, labelStr], keys, types, bags[i]));
     i += 1;
   }
+
   return rows.join('\n');
 };
 
 /** Decode a typed nodes CSV into `graph` (mutating it) and return it. */
 export const decodeNodes = (csv: string, graph: Graph): Graph => {
   const rows = parseCsv(csv);
+
   if (rows.length === 0) {
     return graph;
   }
+
   const propCols = propColsFromHeader(rows[0], 2);
 
   const eventsEnabled = graph.eventsEnabled();
+
   if (eventsEnabled) {
     graph.disableEvents();
   }
@@ -600,6 +664,7 @@ export const decodeNodes = (csv: string, graph: Graph): Graph => {
     graph.enableEvents();
     graph.snapshot();
   }
+
   return graph;
 };
 
@@ -610,9 +675,11 @@ export const decodeNodes = (csv: string, graph: Graph): Graph => {
 /** Encode the graph's edges to a typed edges CSV. */
 export const encodeEdges = (graph: Graph): string => {
   const bags: Record<string, PropertyValue>[] = [];
+
   for (const edge of graph.edges) {
     bags.push(normalizeBag(edge.properties));
   }
+
   const { keys, types } = computeColumns(bags);
 
   const header = [
@@ -625,11 +692,13 @@ export const encodeEdges = (graph: Graph): string => {
 
   const rows: string[] = [header];
   let i = 0;
+
   for (const edge of graph.edges) {
     const typeStr = [...edge.labels].join(LIST_SEP);
     rows.push(buildRow([edge.id, edge.from.id, edge.to.id, typeStr], keys, types, bags[i]));
     i += 1;
   }
+
   return rows.join('\n');
 };
 
@@ -639,12 +708,15 @@ export const encodeEdges = (graph: Graph): string => {
  */
 export const decodeEdges = (csv: string, graph: Graph): Graph => {
   const rows = parseCsv(csv);
+
   if (rows.length === 0) {
     return graph;
   }
+
   const propCols = propColsFromHeader(rows[0], 4);
 
   const eventsEnabled = graph.eventsEnabled();
+
   if (eventsEnabled) {
     graph.disableEvents();
   }
@@ -653,6 +725,7 @@ export const decodeEdges = (csv: string, graph: Graph): Graph => {
     const row = rows[r];
     const fromId = row[1].text;
     const toId = row[2].text;
+
     // Batch decode is strict: endpoints must already exist (nodes were decoded
     // first). The streaming edge decoder, by contrast, creates them on demand.
     if (!graph.getVertexById(fromId) || !graph.getVertexById(toId)) {
@@ -664,6 +737,7 @@ export const decodeEdges = (csv: string, graph: Graph): Graph => {
         },
       );
     }
+
     applyEdgeRow(graph, row, propCols);
   }
 
@@ -671,6 +745,7 @@ export const decodeEdges = (csv: string, graph: Graph): Graph => {
     graph.enableEvents();
     graph.snapshot();
   }
+
   return graph;
 };
 
@@ -697,22 +772,28 @@ const edgeHeaderLine = (keys: readonly string[], types: Map<string, ColumnType>)
  */
 export async function* encodeNodesStream(graph: Graph): AsyncGenerator<string> {
   const bags: Record<string, PropertyValue>[] = [];
+
   for (const vertex of graph.vertices) {
     bags.push(normalizeBag(vertex.properties));
   }
+
   const { keys, types } = computeColumns(bags);
+
   yield `${nodeHeaderLine(keys, types)}\n`;
 
   let batch: string[] = [];
   let i = 0;
+
   for (const vertex of graph.vertices) {
     batch.push(buildRow([vertex.id, [...vertex.labels].join(LIST_SEP)], keys, types, bags[i]));
     i += 1;
+
     if (batch.length >= BATCH) {
       yield `${batch.join('\n')}\n`;
       batch = [];
     }
   }
+
   if (batch.length > 0) {
     yield `${batch.join('\n')}\n`;
   }
@@ -721,14 +802,18 @@ export async function* encodeNodesStream(graph: Graph): AsyncGenerator<string> {
 /** Stream the typed edges CSV (same batching strategy as {@link encodeNodesStream}). */
 export async function* encodeEdgesStream(graph: Graph): AsyncGenerator<string> {
   const bags: Record<string, PropertyValue>[] = [];
+
   for (const edge of graph.edges) {
     bags.push(normalizeBag(edge.properties));
   }
+
   const { keys, types } = computeColumns(bags);
+
   yield `${edgeHeaderLine(keys, types)}\n`;
 
   let batch: string[] = [];
   let i = 0;
+
   for (const edge of graph.edges) {
     batch.push(
       buildRow(
@@ -739,11 +824,13 @@ export async function* encodeEdgesStream(graph: Graph): AsyncGenerator<string> {
       ),
     );
     i += 1;
+
     if (batch.length >= BATCH) {
       yield `${batch.join('\n')}\n`;
       batch = [];
     }
   }
+
   if (batch.length > 0) {
     yield `${batch.join('\n')}\n`;
   }
@@ -758,11 +845,13 @@ export async function* encodeEdgesStream(graph: Graph): AsyncGenerator<string> {
  */
 const countQuotes = (s: string): number => {
   let n = 0;
+
   for (const ch of s) {
     if (ch === '"') {
       n += 1;
     }
   }
+
   return n;
 };
 
@@ -770,15 +859,18 @@ const countQuotes = (s: string): number => {
 const recordsFromLines = async function* (lines: AsyncGenerator<string>): AsyncGenerator<string> {
   let pending = '';
   let quotes = 0;
+
   for await (const line of lines) {
     pending = pending === '' ? line : `${pending}\n${line}`;
     quotes += countQuotes(line);
+
     if (quotes % 2 === 0) {
       yield pending;
       pending = '';
       quotes = 0;
     }
   }
+
   if (pending !== '') {
     yield pending;
   }
@@ -793,24 +885,31 @@ const parseRow = (record: string): Cell[] => parseCsv(record)[0] ?? [];
  */
 export const decodeNodesStream = async (source: ChunkSource, graph: Graph): Promise<Graph> => {
   const eventsEnabled = graph.eventsEnabled();
+
   if (eventsEnabled) {
     graph.disableEvents();
   }
+
   let propCols: ParsedHeader[] | null = null;
+
   for await (const record of recordsFromLines(linesFromChunks(source))) {
     if (propCols === null) {
       propCols = propColsFromHeader(parseRow(record), 2);
       continue;
     }
+
     if (record === '') {
       continue;
     }
+
     applyNodeRow(graph, parseRow(record), propCols);
   }
+
   if (eventsEnabled) {
     graph.enableEvents();
     graph.snapshot();
   }
+
   return graph;
 };
 
@@ -820,24 +919,31 @@ export const decodeNodesStream = async (source: ChunkSource, graph: Graph): Prom
  */
 export const decodeEdgesStream = async (source: ChunkSource, graph: Graph): Promise<Graph> => {
   const eventsEnabled = graph.eventsEnabled();
+
   if (eventsEnabled) {
     graph.disableEvents();
   }
+
   let propCols: ParsedHeader[] | null = null;
+
   for await (const record of recordsFromLines(linesFromChunks(source))) {
     if (propCols === null) {
       propCols = propColsFromHeader(parseRow(record), 4);
       continue;
     }
+
     if (record === '') {
       continue;
     }
+
     applyEdgeRow(graph, parseRow(record), propCols);
   }
+
   if (eventsEnabled) {
     graph.enableEvents();
     graph.snapshot();
   }
+
   return graph;
 };
 
@@ -861,6 +967,7 @@ export const decode = (input: string, graph: Graph): Graph => {
   const edgesCsv = idx === -1 ? '' : input.slice(idx + SEPARATOR.length);
   decodeNodes(nodesCsv, graph);
   decodeEdges(edgesCsv, graph);
+
   return graph;
 };
 
@@ -871,7 +978,9 @@ export const decode = (input: string, graph: Graph): Graph => {
  */
 export async function* encodeStream(graph: Graph): AsyncGenerator<string> {
   yield* encodeNodesStream(graph);
+
   yield `${SENTINEL_LINE}\n`;
+
   yield* encodeEdgesStream(graph);
 }
 
@@ -882,6 +991,7 @@ export async function* encodeStream(graph: Graph): AsyncGenerator<string> {
  */
 export const decodeStream = async (source: ChunkSource, graph: Graph): Promise<Graph> => {
   const eventsEnabled = graph.eventsEnabled();
+
   if (eventsEnabled) {
     graph.disableEvents();
   }
@@ -896,20 +1006,25 @@ export const decodeStream = async (source: ChunkSource, graph: Graph): Promise<G
       inEdges = true;
       continue;
     }
+
     if (!inEdges) {
       if (nodeCols === null) {
         nodeCols = propColsFromHeader(parseRow(record), 2);
         continue;
       }
+
       if (record !== '') {
         applyNodeRow(graph, parseRow(record), nodeCols);
       }
+
       continue;
     }
+
     if (edgeCols === null) {
       edgeCols = propColsFromHeader(parseRow(record), 4);
       continue;
     }
+
     if (record !== '') {
       applyEdgeRow(graph, parseRow(record), edgeCols);
     }
@@ -919,6 +1034,7 @@ export const decodeStream = async (source: ChunkSource, graph: Graph): Promise<G
     graph.enableEvents();
     graph.snapshot();
   }
+
   return graph;
 };
 

@@ -1,9 +1,8 @@
+import type { Graph } from '@pl-graph/core';
 import { ErrorCode, PlGraphError } from '@pl-graph/errors';
 
-import { normalizeBag } from '../value.js';
-
-import type { Graph } from '@pl-graph/core';
 import type { Codec } from '../codec.js';
+import { normalizeBag } from '../value.js';
 import type { PropertyValue } from '../value.js';
 
 /**
@@ -65,7 +64,9 @@ type PGEdge = {
 /** A parsed PG-JSON document. */
 export type PGFormat = {
   readonly nodes: readonly PGNode[];
-  readonly edges: readonly PGEdge[];
+  // Optional: `isPGFormat` accepts documents that omit `edges` (decode defaults
+  // it to `[]`), so the type must allow its absence too.
+  readonly edges?: readonly PGEdge[];
 };
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
@@ -104,6 +105,7 @@ export const isPGFormat = (value: unknown): value is PGFormat =>
  */
 export const encode = (graph: Graph, space?: string | number): string => {
   const nodes: PGNode[] = [];
+
   for (const vertex of graph.vertices) {
     nodes.push({
       id: vertex.id,
@@ -113,6 +115,7 @@ export const encode = (graph: Graph, space?: string | number): string => {
   }
 
   const edges: PGEdge[] = [];
+
   for (const edge of graph.edges) {
     edges.push({
       id: edge.id,
@@ -134,6 +137,7 @@ export const encode = (graph: Graph, space?: string | number): string => {
  */
 export const decode = (input: string, graph: Graph): Graph => {
   let parsed: unknown;
+
   try {
     parsed = JSON.parse(input);
   } catch (cause) {
@@ -154,6 +158,7 @@ export const decode = (input: string, graph: Graph): Graph => {
   const { nodes, edges = [] } = parsed;
 
   const eventsEnabled = graph.eventsEnabled();
+
   if (eventsEnabled) {
     graph.disableEvents();
   }

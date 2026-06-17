@@ -77,9 +77,19 @@ fn cell_str(c: &Value, out: &mut String) {
 /// straight from its `f64`/`bool` columns — no `Val`/`Value` boxing — while
 /// `from_values` covers the scalar/RowSet path and string/element columns.
 pub enum ArrowColumn {
-    Num { data: Vec<f64>, valid: Option<Vec<bool>> },
-    Bool { data: Vec<bool>, valid: Option<Vec<bool>> },
-    Utf8 { offsets: Vec<i32>, bytes: Vec<u8>, valid: Option<Vec<bool>> },
+    Num {
+        data: Vec<f64>,
+        valid: Option<Vec<bool>>,
+    },
+    Bool {
+        data: Vec<bool>,
+        valid: Option<Vec<bool>>,
+    },
+    Utf8 {
+        offsets: Vec<i32>,
+        bytes: Vec<u8>,
+        valid: Option<Vec<bool>>,
+    },
 }
 
 impl ArrowColumn {
@@ -115,12 +125,25 @@ impl ArrowColumn {
                 bytes.extend_from_slice(s.as_bytes());
                 offsets.push(bytes.len() as i32);
             }
-            ArrowColumn::Utf8 { offsets, bytes, valid }
+            ArrowColumn::Utf8 {
+                offsets,
+                bytes,
+                valid,
+            }
         } else if seen_bool {
-            ArrowColumn::Bool { data: cells.iter().map(|c| matches!(c, Value::Bool(true))).collect(), valid }
+            ArrowColumn::Bool {
+                data: cells
+                    .iter()
+                    .map(|c| matches!(c, Value::Bool(true)))
+                    .collect(),
+                valid,
+            }
         } else {
             ArrowColumn::Num {
-                data: cells.iter().map(|c| if let Value::Num(x) = c { *x } else { 0.0 }).collect(),
+                data: cells
+                    .iter()
+                    .map(|c| if let Value::Num(x) = c { *x } else { 0.0 })
+                    .collect(),
                 valid,
             }
         }
@@ -146,12 +169,18 @@ impl ArrowColumn {
             }
             offsets.push(bytes.len() as i32);
         }
-        ArrowColumn::Utf8 { offsets, bytes, valid: if any_null { Some(valid) } else { None } }
+        ArrowColumn::Utf8 {
+            offsets,
+            bytes,
+            valid: if any_null { Some(valid) } else { None },
+        }
     }
 
     fn valid_mask(&self) -> &Option<Vec<bool>> {
         match self {
-            ArrowColumn::Num { valid, .. } | ArrowColumn::Bool { valid, .. } | ArrowColumn::Utf8 { valid, .. } => valid,
+            ArrowColumn::Num { valid, .. }
+            | ArrowColumn::Bool { valid, .. }
+            | ArrowColumn::Utf8 { valid, .. } => valid,
         }
     }
 
@@ -206,7 +235,8 @@ impl ArrowColumn {
 /// layout). `nrows` is the row count (columns must all be that long).
 pub fn to_arrow_cols(names: &[String], cols: &[ArrowColumn], nrows: usize) -> Vec<u8> {
     let ncols = cols.len();
-    let encoded: Vec<(u32, u32, Vec<u8>, Vec<u8>, Vec<u8>)> = cols.iter().map(|c| c.encode(nrows)).collect();
+    let encoded: Vec<(u32, u32, Vec<u8>, Vec<u8>, Vec<u8>)> =
+        cols.iter().map(|c| c.encode(nrows)).collect();
 
     // Body base: after header + descriptors, aligned to 8.
     let body_base = align8(HEADER_LEN + ncols * COLDESC_LEN);
@@ -225,7 +255,18 @@ pub fn to_arrow_cols(names: &[String], cols: &[ArrowColumn], nrows: usize) -> Ve
         let (val_off, val_len) = place(validity);
         let (b1_off, b1_len) = place(buf1);
         let (b2_off, b2_len) = place(buf2);
-        descs.push([*tag, *null_count, name_off, name_len, val_off, val_len, b1_off, b1_len, b2_off, b2_len]);
+        descs.push([
+            *tag,
+            *null_count,
+            name_off,
+            name_len,
+            val_off,
+            val_len,
+            b1_off,
+            b1_len,
+            b2_off,
+            b2_len,
+        ]);
     }
 
     // Assemble: header, descriptors, pad to body_base, body.
@@ -250,8 +291,9 @@ pub fn to_arrow_cols(names: &[String], cols: &[ArrowColumn], nrows: usize) -> Ve
 /// inferring each column's type from its `Value` cells).
 pub fn to_arrow(rs: &RowSet) -> Vec<u8> {
     let ncols = rs.cols.len();
-    let cols: Vec<ArrowColumn> =
-        (0..ncols).map(|j| ArrowColumn::from_values((0..rs.nrows).map(move |i| &rs.data[i * ncols + j]))).collect();
+    let cols: Vec<ArrowColumn> = (0..ncols)
+        .map(|j| ArrowColumn::from_values((0..rs.nrows).map(move |i| &rs.data[i * ncols + j])))
+        .collect();
     to_arrow_cols(&rs.cols, &cols, rs.nrows)
 }
 
@@ -352,7 +394,13 @@ mod tests {
     #[test]
     fn nulls_set_validity_bitmap() {
         let s = |x: &str| Value::Str(Arc::from(x));
-        let rs = rowset(&["n", "name"], vec![vec![Value::Num(1.0), s("a")], vec![Value::Null, Value::Null]]);
+        let rs = rowset(
+            &["n", "name"],
+            vec![
+                vec![Value::Num(1.0), s("a")],
+                vec![Value::Null, Value::Null],
+            ],
+        );
         let blob = to_arrow(&rs);
         let (nrows, cols) = decode(&blob);
         assert_eq!(nrows, 2);
@@ -412,19 +460,25 @@ mod tests {
             r#"{"type":"node","id":"c","labels":["P"],"properties":{"name":"josh","age":32,"active":false}}"#,
         ];
         let queries = [
-            "MATCH (n:P) RETURN n.name, n.age",          // typed: Utf8 + Float64
-            "MATCH (n:P) RETURN n.active",               // typed: Bool with a null
+            "MATCH (n:P) RETURN n.name, n.age", // typed: Utf8 + Float64
+            "MATCH (n:P) RETURN n.active",      // typed: Bool with a null
             "MATCH (n:P) WHERE n.age > 28 RETURN n.age", // typed + WHERE
-            "MATCH (n:P) RETURN n.age * 2 + 1 AS x",     // typed: computed numeric
-            "MATCH (n:P) RETURN count(*) AS c",          // fallback: aggregate
-            "MATCH (n:P) RETURN n.dept",                 // all-null column
+            "MATCH (n:P) RETURN n.age * 2 + 1 AS x", // typed: computed numeric
+            "MATCH (n:P) RETURN count(*) AS c", // fallback: aggregate
+            "MATCH (n:P) RETURN n.dept",        // all-null column
         ];
         for q in queries {
             let mut g1 = crate::ndjson::decode(&lines.join("\n")).unwrap();
             let mut g2 = crate::ndjson::decode(&lines.join("\n")).unwrap();
             let params = crate::gql::eval::Params::new();
-            let typed = crate::gql::parse(q).unwrap().execute_arrow(&mut g1, &params).unwrap();
-            let rs = crate::gql::parse(q).unwrap().execute(&mut g2, &params).unwrap();
+            let typed = crate::gql::parse(q)
+                .unwrap()
+                .execute_arrow(&mut g1, &params)
+                .unwrap();
+            let rs = crate::gql::parse(q)
+                .unwrap()
+                .execute(&mut g2, &params)
+                .unwrap();
             assert_eq!(typed, to_arrow(&rs), "blob mismatch for `{q}`");
         }
     }

@@ -1,8 +1,8 @@
 import type { Graph } from '@pl-graph/core';
 
 import type { ID, Step } from '../ast.js';
-import { newContext, startTraverser, type Traverser } from './runtime.js';
 import { addEStep, addVStep } from './mutation.js';
+import { newContext, startTraverser, type Traverser } from './runtime.js';
 
 export const applySource = (
   step: Step,
@@ -59,10 +59,13 @@ export const sourceFromIds = function* <T extends { readonly id: string }>(
     for (const x of all) {
       yield startTraverser(x, tracksPath);
     }
+
     return;
   }
+
   for (const id of ids) {
     const x = byId(id);
+
     if (x) {
       yield startTraverser(x, tracksPath);
     }

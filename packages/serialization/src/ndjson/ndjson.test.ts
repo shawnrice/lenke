@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@pl-graph/core';
+
 import { chunked, collect } from '../streaming.js';
 import { graphContentEqual, randomLpgGraph } from '../testkit.js';
 import { decode, decodeStream, encode, encodeStream, ndjsonCodec } from './index.js';
@@ -108,9 +109,11 @@ describe('ndjson: streaming', () => {
     const g = new Graph();
     g.disableEvents();
     const nodes = [];
+
     for (let i = 0; i < 25000; i += 1) {
       nodes.push(g.addVertex({ id: `n${i}`, labels: ['N'], properties: { a: i, t: i % 2 === 0 } }));
     }
+
     for (let i = 0; i < 25000; i += 1) {
       g.addEdge({
         id: `e${i}`,
@@ -120,6 +123,7 @@ describe('ndjson: streaming', () => {
         properties: { w: i },
       });
     }
+
     g.enableEvents();
     const start = performance.now();
     const back = await decodeStream(encodeStream(g), new Graph());

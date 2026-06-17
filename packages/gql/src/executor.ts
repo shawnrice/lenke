@@ -89,8 +89,10 @@ const withBinding = (binding: Binding, name: string | undefined, value: Bound): 
   if (!name) {
     return binding;
   }
+
   const next = new Map(binding);
   next.set(name, value);
+
   return next;
 };
 
@@ -103,7 +105,9 @@ const consistent = (binding: Binding, name: string | undefined, value: Bound): b
   if (!name) {
     return true;
   }
+
   const existing = binding.get(name);
+
   return existing === undefined || existing === value;
 };
 
@@ -132,6 +136,7 @@ const or3 = (a: Truth, b: Truth): Truth => {
   if (a === true || b === true) {
     return true;
   }
+
   return a === null || b === null ? null : false;
 };
 const xor3 = (a: Truth, b: Truth): Truth => (a === null || b === null ? null : a !== b);
@@ -152,16 +157,20 @@ const inList = (v: unknown, list: unknown): Truth => {
   if (!Array.isArray(list)) {
     return null;
   }
+
   let sawUnknown = false;
+
   for (const e of list) {
     if (isNullish(v) || isNullish(e)) {
       sawUnknown = true;
       continue;
     }
+
     if (e === v) {
       return true;
     }
   }
+
   return sawUnknown ? null : false;
 };
 
@@ -269,23 +278,30 @@ const BINARY_NUM: Record<string, (x: number, y: number) => number> = {
 const callScalar = (name: string, args: readonly unknown[]): unknown => {
   const [a, b] = args;
   const unaryNum = UNARY_NUM[name];
+
   if (unaryNum) {
     return isNullish(a) ? null : unaryNum(Number(a));
   }
+
   const unaryStr = UNARY_STR[name];
+
   if (unaryStr) {
     return isNullish(a) ? null : unaryStr(str(a));
   }
+
   const binaryNum = BINARY_NUM[name];
+
   if (binaryNum) {
     return isNullish(a) || isNullish(b) ? null : binaryNum(Number(a), Number(b));
   }
+
   switch (name) {
     case 'size':
     case 'length':
       if (isNullish(a)) {
         return null;
       }
+
       return Array.isArray(a) || typeof a === 'string' ? a.length : null;
     case 'left':
       return isNullish(a) || isNullish(b) ? null : str(a).slice(0, Math.max(0, Number(b)));
@@ -293,8 +309,10 @@ const callScalar = (name: string, args: readonly unknown[]): unknown => {
       if (isNullish(a) || isNullish(b)) {
         return null;
       }
+
       const s = str(a);
       const n = Number(b);
+
       return n <= 0 ? '' : s.slice(Math.max(0, s.length - n));
     }
     case 'coalesce':
@@ -321,30 +339,37 @@ const compileExpr = (expr: Expr): CompiledExpr => {
   switch (expr.kind) {
     case 'lit': {
       const { value } = expr;
+
       return () => value;
     }
     case 'var': {
       const { name } = expr;
+
       return (env) => env.binding.get(name);
     }
     case 'param': {
       const { name } = expr;
+
       return (env) => env.params[name];
     }
     case 'prop': {
       const { variable, key } = expr;
+
       return (env) => propOf(env.binding.get(variable), key);
     }
     case 'list': {
       const items = expr.items.map(compileExpr);
+
       return (env) => items.map((f) => f(env));
     }
     case 'func':
       return compileFunc(expr);
     case 'neg': {
       const fn = compileExpr(expr.expr);
+
       return (env) => {
         const v = numOf(fn(env));
+
         return v === null ? null : -v;
       };
     }
@@ -352,23 +377,28 @@ const compileExpr = (expr: Expr): CompiledExpr => {
       const l = compileExpr(expr.left);
       const r = compileExpr(expr.right);
       const op = ARITH[expr.op];
+
       return (env) => {
         const lv = numOf(l(env));
         const rv = numOf(r(env));
+
         return lv === null || rv === null ? null : op(lv, rv);
       };
     }
     case 'concat': {
       const l = compileExpr(expr.left);
       const r = compileExpr(expr.right);
+
       return (env) => {
         const lv = l(env);
         const rv = r(env);
+
         return isNullish(lv) || isNullish(rv) ? null : String(lv) + String(rv);
       };
     }
     case 'not': {
       const fn = compileExpr(expr.expr);
+
       return (env) => not3(asTruth(fn(env)));
     }
     case 'and':
@@ -377,13 +407,16 @@ const compileExpr = (expr: Expr): CompiledExpr => {
       const l = compileExpr(expr.left);
       const r = compileExpr(expr.right);
       const fn = BOOL3[expr.kind];
+
       return (env) => fn(asTruth(l(env)), asTruth(r(env)));
     }
     case 'isNull': {
       const fn = compileExpr(expr.expr);
       const { negated } = expr;
+
       return (env) => {
         const isnull = isNullish(fn(env));
+
         return negated ? !isnull : isnull;
       };
     }
@@ -392,8 +425,10 @@ const compileExpr = (expr: Expr): CompiledExpr => {
       // definite boolean: it tests whether x's truth value equals the target.
       const fn = compileExpr(expr.expr);
       const { truth, negated } = expr;
+
       return (env) => {
         const matches = asTruth(fn(env)) === truth;
+
         return negated ? !matches : matches;
       };
     }
@@ -401,9 +436,11 @@ const compileExpr = (expr: Expr): CompiledExpr => {
       // `x IS [NOT] LABELED <label expr>` — does x's label set satisfy it?
       const fn = compileExpr(expr.expr);
       const { label, negated } = expr;
+
       return (env) => {
         const el = fn(env);
         const has = isElement(el) ? labelsMatch(el.labels, label) : false;
+
         return negated ? !has : has;
       };
     }
@@ -411,8 +448,10 @@ const compileExpr = (expr: Expr): CompiledExpr => {
       const e = compileExpr(expr.expr);
       const list = compileExpr(expr.list);
       const { negated } = expr;
+
       return (env) => {
         const result = inList(e(env), list(env));
+
         return negated ? not3(result) : result;
       };
     }
@@ -420,12 +459,15 @@ const compileExpr = (expr: Expr): CompiledExpr => {
       const l = compileExpr(expr.left);
       const r = compileExpr(expr.right);
       const op = COMPARE[expr.op];
+
       return (env) => {
         const lv = l(env);
         const rv = r(env);
+
         if (isNullish(lv) || isNullish(rv)) {
           return null; // UNKNOWN
         }
+
         return op(lv as number | string, rv as number | string);
       };
     }
@@ -454,8 +496,10 @@ const compileSubMatch = (sub: { patterns: readonly PathPattern[]; where?: Expr }
 /** ISO EXISTS: TRUE iff the correlated sub-pattern has at least one match. */
 const compileExists = (expr: Extract<Expr, { kind: 'exists' }>): CompiledExpr => {
   const sub = compileSubMatch(expr);
+
   return (env) => {
     const matches = matchClauseBindings(env.graph, sub, env.binding, env.params)[Symbol.iterator]();
+
     return !matches.next().done;
   };
 };
@@ -463,6 +507,7 @@ const compileExists = (expr: Extract<Expr, { kind: 'exists' }>): CompiledExpr =>
 /** ISO count subquery: the number of matches of the correlated sub-pattern. */
 const compileCountSubquery = (expr: Extract<Expr, { kind: 'countSubquery' }>): CompiledExpr => {
   const sub = compileSubMatch(expr);
+
   return (env) => [...matchClauseBindings(env.graph, sub, env.binding, env.params)].length;
 };
 
@@ -473,13 +518,18 @@ const compileCountSubquery = (expr: Extract<Expr, { kind: 'countSubquery' }>): C
  */
 const compileCase = (expr: Extract<Expr, { kind: 'case' }>): CompiledExpr => {
   const subject = expr.subject ? compileExpr(expr.subject) : undefined;
+  // `then` is the ISO GQL CASE…WHEN…THEN branch, not a thenable; never awaited.
+  // eslint-disable-next-line unicorn/no-thenable
   const whens = expr.whens.map((w) => ({ when: compileExpr(w.when), then: compileExpr(w.then) }));
   const elseFn = expr.elseExpr ? compileExpr(expr.elseExpr) : undefined;
+
   return (env) => {
     if (subject) {
       const s = subject(env);
+
       for (const w of whens) {
         const wv = w.when(env);
+
         // `subject = when` with SQL/ISO null semantics: NULL never matches.
         if (!isNullish(s) && !isNullish(wv) && s === wv) {
           return w.then(env);
@@ -492,6 +542,7 @@ const compileCase = (expr: Extract<Expr, { kind: 'case' }>): CompiledExpr => {
         }
       }
     }
+
     return elseFn ? elseFn(env) : null;
   };
 };
@@ -500,8 +551,10 @@ const compileFunc = (expr: FuncExpr): CompiledExpr => {
   if (AGGREGATES.has(expr.name)) {
     return compileAggregate(expr);
   }
+
   const { name } = expr;
   const args = expr.args.map(compileExpr);
+
   return (env) =>
     callScalar(
       name,
@@ -517,14 +570,18 @@ const compileFunc = (expr: FuncExpr): CompiledExpr => {
 const compileAggregate = (expr: FuncExpr): CompiledExpr => {
   const { name, star, distinct } = expr;
   const argFn = expr.args[0] ? compileExpr(expr.args[0]) : undefined;
+
   return (env) => {
     const group = env.group ?? [env.binding];
+
     if (name === 'count' && star) {
       return group.length;
     }
+
     const raw = group.map((b) => argFn!({ ...env, binding: b, group }));
     const nonNull = raw.filter((v) => !isNullish(v));
     const values = distinct ? [...new Set(nonNull)] : nonNull;
+
     switch (name) {
       case 'count':
         return values.length;
@@ -569,17 +626,22 @@ const compareValues = (a: unknown, b: unknown): number => {
   if (isNullish(a) && isNullish(b)) {
     return 0;
   }
+
   if (isNullish(a)) {
     return 1;
   }
+
   if (isNullish(b)) {
     return -1;
   }
+
   const x = a as number | string;
   const y = b as number | string;
+
   if (x < y) {
     return -1;
   }
+
   return x > y ? 1 : 0;
 };
 
@@ -597,21 +659,26 @@ const compareSort = (
 ): number => {
   const aNull = isNullish(a);
   const bNull = isNullish(b);
+
   if (aNull && bNull) {
     return 0;
   }
+
   if (aNull || bNull) {
     const first = nullsFirst ?? descending;
+
     return aNull === first ? -1 : 1;
   }
+
   return compareValues(a, b) * (descending ? -1 : 1);
 };
 
 /** Stable distinct key for a projected binding; graph elements key by id. */
 const valueKey = (v: unknown): string => {
   if (v && typeof v === 'object' && 'id' in v) {
-    return `@${(v as { id: unknown }).id}`;
+    return `@${String((v as { id: unknown }).id)}`;
   }
+
   return JSON.stringify(v) ?? 'undefined';
 };
 const rowKey = (b: Binding): string => [...b].map(([k, v]) => `${k}=${valueKey(v)}`).join('');
@@ -656,6 +723,7 @@ const compileProjection = (projection: Projection): CProjection => {
     descending: s.descending,
     nullsFirst: s.nullsFirst,
   }));
+
   return {
     star: projection.star,
     distinct: projection.distinct,
@@ -679,11 +747,14 @@ const projectBinding = (
   if (proj.star) {
     return new Map(binding);
   }
+
   const env: EvalEnv = { binding, params, graph, group };
   const out = new Map<string, unknown>();
+
   for (const item of proj.items) {
     out.set(item.name, item.fn(env));
   }
+
   return out;
 };
 
@@ -706,25 +777,30 @@ const applyProjection = (
     // Grouping is a barrier — it must see every binding before it can emit. We
     // still fold into per-group buckets with single `push`es (never a spread).
     const groups = new Map<string, Binding[]>();
+
     for (const b of bindings) {
       const key = JSON.stringify(
         proj.groupKeys.map((fn) => valueKey(fn({ binding: b, params, graph }))),
       );
       const existing = groups.get(key);
+
       if (existing) {
         existing.push(b);
       } else {
         groups.set(key, [b]);
       }
     }
+
     if (groups.size === 0 && proj.groupKeys.length === 0) {
       groups.set('[]', []);
     }
+
     keyed = map((group: Binding[]) => {
       const rep: Binding = group[0] ?? new Map();
       const projected = projectBinding(proj, rep, params, graph, group);
       // ORDER BY sees the output columns overlaid on the input variables.
       const sortBinding = orderBy.length > 0 ? new Map([...rep, ...projected]) : rep;
+
       return {
         b: projected,
         keys: orderBy.map((s) => s.fn({ binding: sortBinding, params, graph, group })),
@@ -735,6 +811,7 @@ const applyProjection = (
     keyed = map((b: Binding) => {
       const projected = projectBinding(proj, b, params, graph);
       const sortBinding = orderBy.length > 0 ? new Map([...b, ...projected]) : b;
+
       return {
         b: projected,
         keys: orderBy.map((s) => s.fn({ binding: sortBinding, params, graph })),
@@ -746,26 +823,32 @@ const applyProjection = (
     const seen = new Set<string>();
     keyed = filter((r: Keyed) => {
       const k = rowKey(r.b);
+
       if (seen.has(k)) {
         return false;
       }
+
       seen.add(k);
+
       return true;
     }, keyed);
   }
 
   // ORDER BY is the other barrier: materialize, then sort the owned array.
   let ordered: Iterable<Keyed> = keyed;
+
   if (orderBy.length > 0) {
     const arr = toArray(keyed);
     arr.sort((a, b) => {
       for (let i = 0; i < orderBy.length; i += 1) {
         const s = orderBy[i];
         const cmp = compareSort(a.keys[i], b.keys[i], s.descending, s.nullsFirst);
+
         if (cmp !== 0) {
           return cmp;
         }
       }
+
       return 0;
     });
     ordered = arr;
@@ -775,9 +858,11 @@ const applyProjection = (
   // unordered stream stops after n rows instead of computing them all.
   const start = proj.skip ?? 0;
   let sliced: Iterable<Keyed> = start > 0 ? skip(start, ordered) : ordered;
+
   if (proj.limit !== undefined) {
     sliced = take(proj.limit, sliced);
   }
+
   return map((r: Keyed) => r.b, sliced);
 };
 
@@ -847,6 +932,7 @@ type HintMap = Map<string, CSeedHint[]>;
 
 const pushHint = (into: HintMap, variable: string, hint: CSeedHint): void => {
   const list = into.get(variable);
+
   if (list) {
     list.push(hint);
   } else {
@@ -861,6 +947,7 @@ const asPropCompare = (
   if (expr.left.kind === 'prop' && isConstExpr(expr.right)) {
     return { variable: expr.left.variable, key: expr.left.key, op: expr.op, value: expr.right };
   }
+
   if (expr.right.kind === 'prop' && isConstExpr(expr.left)) {
     return {
       variable: expr.right.variable,
@@ -869,6 +956,7 @@ const asPropCompare = (
       value: expr.left,
     };
   }
+
   return null;
 };
 
@@ -891,17 +979,23 @@ const collectHints = (where: Expr, into: HintMap): void => {
     case 'and':
       collectHints(where.left, into);
       collectHints(where.right, into);
+
       return;
     case 'compare': {
       const pc = asPropCompare(where);
+
       if (!pc) {
         return;
       }
+
       if (pc.op === '=') {
         pushHint(into, pc.variable, { kind: 'eq', key: pc.key, value: compileExpr(pc.value) });
+
         return;
       }
+
       const boundKey = BOUND_OF[pc.op];
+
       if (boundKey) {
         pushHint(into, pc.variable, {
           kind: 'range',
@@ -909,6 +1003,7 @@ const collectHints = (where: Expr, into: HintMap): void => {
           bound: { [boundKey]: compileExpr(pc.value) },
         });
       }
+
       return;
     }
     case 'in':
@@ -924,6 +1019,7 @@ const collectHints = (where: Expr, into: HintMap): void => {
           values: compileExpr(where.list),
         });
       }
+
       return;
     default:
   }
@@ -934,8 +1030,10 @@ const hintsForVariable = (where: Expr | undefined, variable: string | undefined)
   if (!where || !variable) {
     return [];
   }
+
   const into: HintMap = new Map();
   collectHints(where, into);
+
   return coalesceRangeHints(into.get(variable) ?? []);
 };
 
@@ -949,29 +1047,35 @@ const hintsForVariable = (where: Expr | undefined, variable: string | undefined)
 const coalesceRangeHints = (hints: readonly CSeedHint[]): CSeedHint[] => {
   const bounds = new Map<string, CRangeBound>();
   const out: CSeedHint[] = [];
+
   for (const hint of hints) {
     if (hint.kind !== 'range') {
       out.push(hint);
       continue;
     }
+
     const existing = bounds.get(hint.key);
+
     if (!existing) {
       const bound: CRangeBound = { ...hint.bound };
       bounds.set(hint.key, bound);
       out.push({ kind: 'range', key: hint.key, bound });
       continue;
     }
+
     for (const side of ['gt', 'gte', 'lt', 'lte'] as const) {
       if (existing[side] === undefined && hint.bound[side] !== undefined) {
         existing[side] = hint.bound[side];
       }
     }
   }
+
   return out;
 };
 
 const compileNode = (node: NodePattern): CNode => {
   const seedHints = hintsForVariable(node.where, node.variable);
+
   return {
     variable: node.variable,
     label: node.label,
@@ -1010,11 +1114,13 @@ const satisfies = (
   graph: Graph,
 ): boolean => {
   const env: EvalEnv = { binding, params, graph };
+
   for (const { key, value } of pred.props) {
     if (propOf(element, key) !== value(env)) {
       return false;
     }
   }
+
   return pred.where === undefined || pred.where(env) === true;
 };
 
@@ -1030,13 +1136,17 @@ const matchNode = (
   if (!matchesLabel(vertex, node.label)) {
     return null;
   }
+
   if (!consistent(binding, node.variable, vertex)) {
     return null;
   }
+
   const bound = withBinding(binding, node.variable, vertex);
+
   if (!satisfies(vertex, node.pred, bound, params, graph)) {
     return null;
   }
+
   return bound;
 };
 
@@ -1053,18 +1163,24 @@ const EMPTY: ReadonlySet<Vertex> = new Set<Vertex>();
 const evalBound = (bound: CRangeBound, env: EvalEnv): RangeBound | null => {
   const out: RangeBound = {};
   let any = false;
+
   for (const key of ['gt', 'gte', 'lt', 'lte'] as const) {
     const fn = bound[key];
+
     if (!fn) {
       continue;
     }
+
     const v = fn(env);
+
     if (!isScalar(v)) {
       return null; // a non-scalar endpoint makes the seek meaningless
     }
+
     out[key] = v;
     any = true;
   }
+
   return any ? out : null;
 };
 
@@ -1091,42 +1207,52 @@ const indexCandidates = function* (
   for (const { key, value } of node.pred.props) {
     if (idx.isIndexed(key)) {
       const v = value(env);
+
       if (isScalar(v)) {
         yield eqCandidate(key, v);
       }
     }
   }
+
   for (const hint of node.seedHints ?? []) {
     if (!idx.isIndexed(hint.key)) {
       continue;
     }
+
     if (hint.kind === 'eq') {
       const v = hint.value(env);
+
       if (isScalar(v)) {
         yield eqCandidate(hint.key, v);
       }
     } else if (hint.kind === 'within') {
       const list = hint.values(env);
+
       if (Array.isArray(list) && list.every(isScalar)) {
         let count = 0;
+
         for (const item of list) {
           count += idx.countEquals(hint.key, item) ?? 0;
         }
+
         yield {
           count,
           build: () => {
             const out = new Set<Vertex>();
+
             for (const item of list) {
               for (const vertex of idx.equals(hint.key, item) ?? EMPTY) {
                 out.add(vertex);
               }
             }
+
             return out;
           },
         };
       }
     } else {
       const bound = evalBound(hint.bound, env);
+
       if (bound) {
         yield {
           count: idx.countRange(hint.key, bound) ?? 0,
@@ -1154,15 +1280,19 @@ const seedVertices = function* (
 ): Iterable<Vertex> {
   const env: EvalEnv = { binding, params, graph };
   let best: SeedCandidate | undefined;
+
   for (const candidate of indexCandidates(graph, node, env)) {
     if (!best || candidate.count < best.count) {
       best = candidate;
     }
   }
+
   if (best) {
     yield* best.build();
+
     return;
   }
+
   yield* candidateVertices(graph, node.label);
 };
 
@@ -1172,11 +1302,14 @@ const estimateSeed = (graph: Graph, node: CNode, binding: Binding, params: Param
   if (node.variable && binding.has(node.variable)) {
     return 1;
   }
+
   const env: EvalEnv = { binding, params, graph };
   let best = Infinity;
+
   for (const candidate of indexCandidates(graph, node, env)) {
     best = Math.min(best, candidate.count);
   }
+
   return best === Infinity ? candidateCount(graph, node.label) : best;
 };
 
@@ -1194,6 +1327,7 @@ const FLIP_DIRECTION: Record<RelPattern['direction'], RelPattern['direction']> =
 const reversePath = (path: CPath): CPath => {
   const nodes = [path.start, ...path.segments.map((s) => s.node)];
   const segments: CSegment[] = [];
+
   for (let i = path.segments.length - 1; i >= 0; i--) {
     const seg = path.segments[i];
     segments.push({
@@ -1201,6 +1335,7 @@ const reversePath = (path: CPath): CPath => {
       node: nodes[i],
     });
   }
+
   return { start: nodes[nodes.length - 1], segments };
 };
 
@@ -1214,9 +1349,11 @@ const orient = (graph: Graph, pattern: CPath, binding: Binding, params: Params):
   if (pattern.segments.length === 0 || pattern.segments.some((s) => s.rel.quantifier)) {
     return pattern;
   }
+
   const endNode = pattern.segments[pattern.segments.length - 1].node;
   const startEst = estimateSeed(graph, pattern.start, binding, params);
   const endEst = estimateSeed(graph, endNode, binding, params);
+
   return endEst < startEst ? reversePath(pattern) : pattern;
 };
 
@@ -1239,6 +1376,7 @@ const matchPattern = function* (
 
   for (const seed of seeds) {
     const seeded = matchNode(binding, path.start, seed, params, graph);
+
     if (seeded) {
       yield* walkSegments(graph, path, 0, seed, seeded, params);
     }
@@ -1256,8 +1394,10 @@ const walkSegments = function* (
 ): Iterable<Binding> {
   if (index >= pattern.segments.length) {
     yield binding;
+
     return;
   }
+
   const { rel, node } = pattern.segments[index];
 
   // Variable-length: reach every vertex within [min, max] hops, then continue
@@ -1266,10 +1406,12 @@ const walkSegments = function* (
   if (rel.quantifier) {
     for (const end of reachable(graph, from, rel, rel.quantifier)) {
       const matched = matchNode(binding, node, end, params, graph);
+
       if (matched) {
         yield* walkSegments(graph, pattern, index + 1, end, matched, params);
       }
     }
+
     return;
   }
 
@@ -1277,11 +1419,15 @@ const walkSegments = function* (
     if (!consistent(binding, rel.variable, edge)) {
       continue;
     }
+
     const withEdge = withBinding(binding, rel.variable, edge);
+
     if (!satisfies(edge, rel.pred, withEdge, params, graph)) {
       continue;
     }
+
     const matched = matchNode(withEdge, node, nextVertex, params, graph);
+
     if (matched) {
       yield* walkSegments(graph, pattern, index + 1, nextVertex, matched, params);
     }
@@ -1297,24 +1443,31 @@ const reachable = (
 ): Set<Vertex> => {
   const cap = q.max ?? graph.verticesById.size + 1;
   const result = new Set<Vertex>();
+
   if (q.min === 0) {
     result.add(from);
   }
+
   let frontier = new Set<Vertex>([from]);
+
   for (let depth = 1; depth <= cap && frontier.size > 0; depth += 1) {
     const next = new Set<Vertex>();
+
     for (const v of frontier) {
       for (const { node } of expand(graph, v, rel)) {
         next.add(node);
       }
     }
+
     if (depth >= q.min && (q.max === null || depth <= q.max)) {
       for (const v of next) {
         result.add(v);
       }
     }
+
     frontier = next;
   }
+
   return result;
 };
 
@@ -1323,19 +1476,23 @@ const reachable = (
 /** Every variable a pattern introduces (for OPTIONAL MATCH null-binding). */
 const patternVars = (patterns: readonly PathPattern[]): string[] => {
   const vars: string[] = [];
+
   for (const p of patterns) {
     if (p.start.variable) {
       vars.push(p.start.variable);
     }
+
     for (const { rel, node } of p.segments) {
       if (rel.variable) {
         vars.push(rel.variable);
       }
+
       if (node.variable) {
         vars.push(node.variable);
       }
     }
   }
+
   return vars;
 };
 
@@ -1401,6 +1558,7 @@ const compileClause = (clause: Clause): CClause => {
   switch (clause.kind) {
     case 'match': {
       const patterns = clause.patterns.map(compilePath);
+
       // Lift seekable conjuncts of the clause WHERE onto every pattern node by
       // variable — not just the start — so either end of a pattern can be the
       // seed side. `MATCH (a:Person) WHERE a.name = 'marko'` then seeds like the
@@ -1411,10 +1569,12 @@ const compileClause = (clause: Clause): CClause => {
         collectHints(clause.where, hints);
         const attach = (node: CNode): CNode => {
           const extra = node.variable ? hints.get(node.variable) : undefined;
+
           return extra
             ? { ...node, seedHints: coalesceRangeHints([...(node.seedHints ?? []), ...extra]) }
             : node;
         };
+
         for (let i = 0; i < patterns.length; i++) {
           patterns[i] = {
             start: attach(patterns[i].start),
@@ -1422,6 +1582,7 @@ const compileClause = (clause: Clause): CClause => {
           };
         }
       }
+
       return {
         kind: 'match',
         optional: clause.optional,
@@ -1462,12 +1623,15 @@ const labelsOf = (expr: LabelExpr | undefined): string[] => {
   if (!expr) {
     return [];
   }
+
   if (expr.kind === 'label') {
     return [expr.name];
   }
+
   if (expr.kind === 'and') {
     return [...labelsOf(expr.left), ...labelsOf(expr.right)];
   }
+
   return []; // `|`, `!`, `%` aren't creatable label sets
 };
 
@@ -1484,9 +1648,11 @@ const evalProps = (
 ): Record<string, unknown> => {
   const env: EvalEnv = { binding: b, params, graph };
   const out: Record<string, unknown> = {};
+
   for (const { key, value } of props) {
     out[key] = value(env);
   }
+
   return out;
 };
 
@@ -1500,20 +1666,25 @@ const ensureNode = (
   if (node.variable && binding.has(node.variable)) {
     return binding.get(node.variable) as Vertex;
   }
+
   const vertex = graph.addVertex({
     labels: [...node.labels],
     properties: evalProps(node.props, binding, params, graph),
   });
+
   if (node.variable) {
     binding.set(node.variable, vertex);
   }
+
   return vertex;
 };
 
 const runInsert = (graph: Graph, clause: CInsert, binding: Binding, params: Params): Binding => {
   const out = new Map(binding);
+
   for (const pattern of clause.patterns) {
     let prev = ensureNode(graph, out, pattern.start, params);
+
     for (const { rel, node } of pattern.segments) {
       const next = ensureNode(graph, out, node, params);
       const [from, to] = rel.direction === 'in' ? [next, prev] : [prev, next];
@@ -1523,12 +1694,15 @@ const runInsert = (graph: Graph, clause: CInsert, binding: Binding, params: Para
         labels: [...rel.labels],
         properties: evalProps(rel.props, out, params, graph),
       });
+
       if (rel.variable) {
         out.set(rel.variable, edge);
       }
+
       prev = next;
     }
   }
+
   return out;
 };
 
@@ -1537,9 +1711,11 @@ const runInsert = (graph: Graph, clause: CInsert, binding: Binding, params: Para
 const runSet = (graph: Graph, clause: CSet, binding: Binding, params: Params): void => {
   for (const item of clause.items) {
     const el = binding.get(item.variable);
+
     if (!isElement(el)) {
       continue;
     }
+
     if ('label' in item) {
       if (isEdge(el)) {
         graph.addLabelToEdge(item.label, el);
@@ -1555,9 +1731,11 @@ const runSet = (graph: Graph, clause: CSet, binding: Binding, params: Params): v
 const runRemove = (graph: Graph, clause: CRemove, binding: Binding): void => {
   for (const item of clause.items) {
     const el = binding.get(item.variable);
+
     if (!isElement(el)) {
       continue;
     }
+
     if ('label' in item) {
       if (isEdge(el)) {
         graph.removeLabelFromEdge(item.label, el);
@@ -1575,6 +1753,7 @@ const runRemove = (graph: Graph, clause: CRemove, binding: Binding): void => {
 const runDelete = (graph: Graph, clause: CDelete, binding: Binding, params: Params): void => {
   for (const target of clause.targets) {
     const el = target({ binding, params, graph });
+
     if (isEdge(el)) {
       graph.removeEdge(el);
     } else if (isElement(el)) {
@@ -1598,9 +1777,11 @@ const matchClauseBindings = (
   params: Params,
 ): Iterable<Binding> => {
   let stream: Iterable<Binding> = [binding];
+
   for (const pattern of clause.patterns) {
     stream = flatMap((b: Binding) => matchPattern(graph, pattern, b, params), stream);
   }
+
   return clause.where === undefined
     ? stream
     : filter((b: Binding) => clause.where!({ binding: b, params, graph }) === true, stream);
@@ -1614,18 +1795,23 @@ const matchOrOptional = function* (
   params: Params,
 ): Iterable<Binding> {
   let matched = false;
+
   for (const m of matchClauseBindings(graph, clause, binding, params)) {
     matched = true;
+
     yield m;
   }
+
   if (!matched && clause.optional) {
     // No match: keep the row with the pattern's new variables set to null.
     const filled = new Map(binding);
+
     for (const v of clause.nullVars) {
       if (!filled.has(v)) {
         filled.set(v, null);
       }
     }
+
     yield filled;
   }
 };
@@ -1641,9 +1827,11 @@ const runMatch = (
 
 const mapToRow = (b: Binding): Row => {
   const row: Row = {};
+
   for (const [k, v] of b) {
     row[k] = v;
   }
+
   return row;
 };
 
@@ -1653,6 +1841,7 @@ const runLinear = (linear: CLinear, graph: Graph, params: Params): Row[] => {
   // ORDER BY) force materialization — so a streaming read never holds the whole
   // result set in memory.
   let bindings: Iterable<Binding> = [new Map()];
+
   for (const clause of linear.clauses) {
     switch (clause.kind) {
       case 'match':
@@ -1675,25 +1864,31 @@ const runLinear = (linear: CLinear, graph: Graph, params: Params): Row[] => {
         break;
       case 'set': {
         const arr = toArray(bindings);
+
         for (const b of arr) {
           runSet(graph, clause, b, params);
         }
+
         bindings = arr;
         break;
       }
       case 'remove': {
         const arr = toArray(bindings);
+
         for (const b of arr) {
           runRemove(graph, clause, b);
         }
+
         bindings = arr;
         break;
       }
       case 'delete': {
         const arr = toArray(bindings);
+
         for (const b of arr) {
           runDelete(graph, clause, b, params);
         }
+
         bindings = arr;
         break;
       }
@@ -1703,6 +1898,7 @@ const runLinear = (linear: CLinear, graph: Graph, params: Params): Row[] => {
         return toArray(map(mapToRow, applyProjection(clause.projection, bindings, params, graph)));
     }
   }
+
   return []; // a write-only query produces no rows
 };
 
@@ -1716,8 +1912,10 @@ const rowKeyOf = (row: Row): string =>
 
 const distinctRows = (rows: readonly Row[]): Row[] => {
   const seen = new Set<string>();
+
   return rows.filter((r) => {
     const k = rowKeyOf(r);
+
     return seen.has(k) ? false : (seen.add(k), true);
   });
 };
@@ -1725,15 +1923,18 @@ const distinctRows = (rows: readonly Row[]): Row[] => {
 /** Combine two row sets per a set operator. */
 const combineRows = (op: SetOp, left: readonly Row[], right: readonly Row[]): Row[] => {
   const rightKeys = new Set(right.map(rowKeyOf));
+
   switch (op.op) {
     case 'union':
       return op.all ? [...left, ...right] : distinctRows([...left, ...right]);
     case 'except': {
       const kept = left.filter((r) => !rightKeys.has(rowKeyOf(r)));
+
       return op.all ? kept : distinctRows(kept);
     }
     case 'intersect': {
       const kept = left.filter((r) => rightKeys.has(rowKeyOf(r)));
+
       return op.all ? kept : distinctRows(kept);
     }
   }
@@ -1755,11 +1956,13 @@ export const compile = (query: Query): Plan => {
     parts: query.parts.map(compileLinear),
     ops: query.ops,
   };
+
   return (graph, params = {}) => {
     let rows = runLinear(compiled.parts[0], graph, params);
     compiled.ops.forEach((op, i) => {
       rows = combineRows(op, rows, runLinear(compiled.parts[i + 1], graph, params));
     });
+
     return rows;
   };
 };

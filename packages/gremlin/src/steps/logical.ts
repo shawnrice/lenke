@@ -27,6 +27,7 @@ export function not(arg: SubPlan | Predicate): StepFn | Predicate {
   if (isPredicate(arg)) {
     return { op: 'not', predicate: arg };
   }
+
   return appendStep({ kind: 'not', plan: buildPlan(arg) });
 }
 

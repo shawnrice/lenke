@@ -34,12 +34,14 @@ export type FormatName = keyof typeof codecs;
 
 const codecFor = (format: string): Codec => {
   const codec = codecs[format];
+
   if (!codec) {
     throw new PlGraphError(
       `Unknown serialization format '${format}' (have: ${Object.keys(codecs).join(', ')})`,
       { code: ErrorCode.UnknownFormat, details: { format } },
     );
   }
+
   return codec;
 };
 
@@ -54,12 +56,14 @@ export const deserialize = (input: string, format: FormatName, graph: Graph): Gr
 /** Stream-serialize a graph in the named format (line-oriented formats only). */
 export const serializeStream = (graph: Graph, format: FormatName): AsyncGenerator<string> => {
   const codec = codecFor(format);
+
   if (!codec.encodeStream) {
     throw new PlGraphError(`Format '${format}' does not support streaming`, {
       code: ErrorCode.Unsupported,
       details: { format },
     });
   }
+
   return codec.encodeStream(graph);
 };
 
@@ -70,12 +74,14 @@ export const deserializeStream = (
   graph: Graph,
 ): Promise<Graph> => {
   const codec = codecFor(format);
+
   if (!codec.decodeStream) {
     throw new PlGraphError(`Format '${format}' does not support streaming`, {
       code: ErrorCode.Unsupported,
       details: { format },
     });
   }
+
   return codec.decodeStream(source, graph);
 };
 
@@ -97,15 +103,20 @@ const DECODE_CHUNK = 1 << 16; // 64 KiB between event-loop yields
  */
 export const serializeAsync = async (graph: Graph, format: FormatName): Promise<string> => {
   const codec = codecFor(format);
+
   if (codec.encodeStream) {
     const parts: string[] = [];
+
     for await (const chunk of codec.encodeStream(graph)) {
       parts.push(chunk);
       await yieldToEventLoop();
     }
+
     return parts.join('');
   }
+
   await yieldToEventLoop();
+
   return codec.encode(graph);
 };
 
@@ -120,9 +131,12 @@ export const deserializeAsync = async (
   graph: Graph,
 ): Promise<Graph> => {
   const codec = codecFor(format);
+
   if (codec.decodeStream) {
     return codec.decodeStream(yieldingChunks(input, DECODE_CHUNK), graph);
   }
+
   await yieldToEventLoop();
+
   return codec.decode(input, graph);
 };

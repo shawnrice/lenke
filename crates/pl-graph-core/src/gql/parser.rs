@@ -45,7 +45,11 @@ impl Parser {
     fn expect(&mut self, tt: Tt, what: &str) -> R<Token> {
         if !self.check(tt) {
             let t = self.peek();
-            let got = if t.value.is_empty() { format!("{:?}", t.tt) } else { t.value.clone() };
+            let got = if t.value.is_empty() {
+                format!("{:?}", t.tt)
+            } else {
+                t.value.clone()
+            };
             return err(format!("Expected {what}, got '{got}'"), t.pos);
         }
         Ok(self.advance())
@@ -53,8 +57,15 @@ impl Parser {
     fn expect_kw(&mut self, kw: &str) -> R<Token> {
         if !self.check_kw(kw) {
             let t = self.peek();
-            let got = if t.value.is_empty() { format!("{:?}", t.tt) } else { t.value.clone() };
-            return err(format!("Expected '{}', got '{got}'", kw.to_uppercase()), t.pos);
+            let got = if t.value.is_empty() {
+                format!("{:?}", t.tt)
+            } else {
+                t.value.clone()
+            };
+            return err(
+                format!("Expected '{}', got '{got}'", kw.to_uppercase()),
+                t.pos,
+            );
         }
         Ok(self.advance())
     }
@@ -65,7 +76,10 @@ impl Parser {
         let tok = self.expect(Tt::Ident, what)?;
         if !tok.delimited && is_reserved(&tok.value) {
             return err(
-                format!("'{}' is a reserved word; quote it as a delimited identifier", tok.value),
+                format!(
+                    "'{}' is a reserved word; quote it as a delimited identifier",
+                    tok.value
+                ),
                 tok.pos,
             );
         }
@@ -81,7 +95,10 @@ impl Parser {
             loop {
                 let key = self.bind_name("a property name")?;
                 self.expect(Tt::Colon, "':'")?;
-                props.push(PropertyConstraint { key, value: self.parse_expr()? });
+                props.push(PropertyConstraint {
+                    key,
+                    value: self.parse_expr()?,
+                });
                 if self.check(Tt::Comma) {
                     self.advance();
                 } else {
@@ -94,7 +111,11 @@ impl Parser {
     }
 
     fn parse_predicate(&mut self) -> R<(Vec<PropertyConstraint>, Option<Expr>)> {
-        let props = if self.check(Tt::LBrace) { self.parse_property_map()? } else { Vec::new() };
+        let props = if self.check(Tt::LBrace) {
+            self.parse_property_map()?
+        } else {
+            Vec::new()
+        };
         let where_ = if self.check_kw("where") {
             self.advance();
             Some(self.parse_expr()?)
@@ -106,7 +127,11 @@ impl Parser {
 
     fn parse_node(&mut self) -> R<NodePattern> {
         self.expect(Tt::LParen, "'('")?;
-        let variable = if self.check(Tt::Ident) { Some(self.bind_name("a variable")?) } else { None };
+        let variable = if self.check(Tt::Ident) {
+            Some(self.bind_name("a variable")?)
+        } else {
+            None
+        };
         let label = if self.check(Tt::Colon) || self.check_kw("is") {
             self.advance();
             Some(self.parse_label_expr()?)
@@ -115,7 +140,12 @@ impl Parser {
         };
         let (props, where_) = self.parse_predicate()?;
         self.expect(Tt::RParen, "')'")?;
-        Ok(NodePattern { variable, label, props, where_ })
+        Ok(NodePattern {
+            variable,
+            label,
+            props,
+            where_,
+        })
     }
 
     fn parse_label_expr(&mut self) -> R<LabelExpr> {
@@ -160,9 +190,18 @@ impl Parser {
 
     fn parse_rel_detail(
         &mut self,
-    ) -> R<(Option<String>, Option<LabelExpr>, Vec<PropertyConstraint>, Option<Expr>)> {
+    ) -> R<(
+        Option<String>,
+        Option<LabelExpr>,
+        Vec<PropertyConstraint>,
+        Option<Expr>,
+    )> {
         self.expect(Tt::LBracket, "'['")?;
-        let variable = if self.check(Tt::Ident) { Some(self.bind_name("a variable")?) } else { None };
+        let variable = if self.check(Tt::Ident) {
+            Some(self.bind_name("a variable")?)
+        } else {
+            None
+        };
         let label = if self.check(Tt::Colon) || self.check_kw("is") {
             self.advance();
             Some(self.parse_label_expr()?)
@@ -203,7 +242,11 @@ impl Parser {
             self.advance();
         } else {
             let t = self.peek();
-            let got = if t.value.is_empty() { format!("{:?}", t.tt) } else { t.value.clone() };
+            let got = if t.value.is_empty() {
+                format!("{:?}", t.tt)
+            } else {
+                t.value.clone()
+            };
             return err(
                 format!("Expected a relationship (e.g. -[:T]->, <-[:T]-, ~[:T]~, ->), got '{got}'"),
                 t.pos,
@@ -215,7 +258,11 @@ impl Parser {
             return Ok(RelPattern {
                 variable: None,
                 label: None,
-                direction: if left_arrow { Direction::In } else { Direction::Both },
+                direction: if left_arrow {
+                    Direction::In
+                } else {
+                    Direction::Both
+                },
                 props: Vec::new(),
                 where_: None,
                 quantifier: None,
@@ -233,8 +280,15 @@ impl Parser {
             self.advance();
         } else {
             let t = self.peek();
-            let got = if t.value.is_empty() { format!("{:?}", t.tt) } else { t.value.clone() };
-            return err(format!("Expected ']->', ']-' or ']~' to close a relationship, got '{got}'"), t.pos);
+            let got = if t.value.is_empty() {
+                format!("{:?}", t.tt)
+            } else {
+                t.value.clone()
+            };
+            return err(
+                format!("Expected ']->', ']-' or ']~' to close a relationship, got '{got}'"),
+                t.pos,
+            );
         }
 
         let direction = if right_arrow && !left_arrow {
@@ -244,7 +298,14 @@ impl Parser {
         } else {
             Direction::Both
         };
-        Ok(RelPattern { variable, label, direction, props, where_, quantifier: None })
+        Ok(RelPattern {
+            variable,
+            label,
+            direction,
+            props,
+            where_,
+            quantifier: None,
+        })
     }
 
     fn starts_relationship(&self) -> bool {
@@ -265,11 +326,19 @@ impl Parser {
         }
         if self.check(Tt::LBrace) {
             self.advance();
-            let min = if self.check(Tt::Number) { self.advance().num.unwrap() as u32 } else { 0 };
+            let min = if self.check(Tt::Number) {
+                self.advance().num.unwrap() as u32
+            } else {
+                0
+            };
             let mut max = Some(min);
             if self.check(Tt::Comma) {
                 self.advance();
-                max = if self.check(Tt::Number) { Some(self.advance().num.unwrap() as u32) } else { None };
+                max = if self.check(Tt::Number) {
+                    Some(self.advance().num.unwrap() as u32)
+                } else {
+                    None
+                };
             }
             self.expect(Tt::RBrace, "'}' to close a quantifier")?;
             return Ok(Some(Quantifier { min, max }));
@@ -308,7 +377,11 @@ impl Parser {
         } else {
             None
         };
-        Ok(MatchClause { optional, patterns, where_ })
+        Ok(MatchClause {
+            optional,
+            patterns,
+            where_,
+        })
     }
 
     // --- expressions -------------------------------------------------------
@@ -360,34 +433,64 @@ impl Parser {
             };
             if self.check_kw("null") {
                 self.advance();
-                return Ok(Expr::IsNull { expr: Box::new(e), negated });
+                return Ok(Expr::IsNull {
+                    expr: Box::new(e),
+                    negated,
+                });
             }
             if self.check_kw("true") {
                 self.advance();
-                return Ok(Expr::IsTruth { expr: Box::new(e), truth: Some(true), negated });
+                return Ok(Expr::IsTruth {
+                    expr: Box::new(e),
+                    truth: Some(true),
+                    negated,
+                });
             }
             if self.check_kw("false") {
                 self.advance();
-                return Ok(Expr::IsTruth { expr: Box::new(e), truth: Some(false), negated });
+                return Ok(Expr::IsTruth {
+                    expr: Box::new(e),
+                    truth: Some(false),
+                    negated,
+                });
             }
             if self.check_kw("unknown") {
                 self.advance();
-                return Ok(Expr::IsTruth { expr: Box::new(e), truth: None, negated });
+                return Ok(Expr::IsTruth {
+                    expr: Box::new(e),
+                    truth: None,
+                    negated,
+                });
             }
             if self.check_soft("labeled") {
                 self.advance();
-                return Ok(Expr::IsLabeled { expr: Box::new(e), label: self.parse_label_expr()?, negated });
+                return Ok(Expr::IsLabeled {
+                    expr: Box::new(e),
+                    label: self.parse_label_expr()?,
+                    negated,
+                });
             }
-            return err("Expected NULL, TRUE, FALSE, UNKNOWN, or LABELED after IS", self.peek().pos);
+            return err(
+                "Expected NULL, TRUE, FALSE, UNKNOWN, or LABELED after IS",
+                self.peek().pos,
+            );
         }
         if self.check_kw("in") {
             self.advance();
-            return Ok(Expr::In { expr: Box::new(e), list: Box::new(self.parse_unary()?), negated: false });
+            return Ok(Expr::In {
+                expr: Box::new(e),
+                list: Box::new(self.parse_unary()?),
+                negated: false,
+            });
         }
         if self.check_kw("not") {
             self.advance();
             self.expect_kw("in")?;
-            return Ok(Expr::In { expr: Box::new(e), list: Box::new(self.parse_unary()?), negated: true });
+            return Ok(Expr::In {
+                expr: Box::new(e),
+                list: Box::new(self.parse_unary()?),
+                negated: true,
+            });
         }
         Ok(e)
     }
@@ -405,7 +508,11 @@ impl Parser {
         };
         if let Some(op) = op {
             self.advance();
-            return Ok(Expr::Compare { op, left: Box::new(left), right: Box::new(self.parse_concat()?) });
+            return Ok(Expr::Compare {
+                op,
+                left: Box::new(left),
+                right: Box::new(self.parse_concat()?),
+            });
         }
         Ok(left)
     }
@@ -414,7 +521,10 @@ impl Parser {
         let mut left = self.parse_additive()?;
         while self.check(Tt::Concat) {
             self.advance();
-            left = Expr::Concat { left: Box::new(left), right: Box::new(self.parse_additive()?) };
+            left = Expr::Concat {
+                left: Box::new(left),
+                right: Box::new(self.parse_additive()?),
+            };
         }
         Ok(left)
     }
@@ -430,7 +540,11 @@ impl Parser {
             match op {
                 Some(op) => {
                     self.advance();
-                    left = Expr::Arith { op, left: Box::new(left), right: Box::new(self.parse_multiplicative()?) };
+                    left = Expr::Arith {
+                        op,
+                        left: Box::new(left),
+                        right: Box::new(self.parse_multiplicative()?),
+                    };
                 }
                 None => break,
             }
@@ -450,7 +564,11 @@ impl Parser {
             match op {
                 Some(op) => {
                     self.advance();
-                    left = Expr::Arith { op, left: Box::new(left), right: Box::new(self.parse_unary()?) };
+                    left = Expr::Arith {
+                        op,
+                        left: Box::new(left),
+                        right: Box::new(self.parse_unary()?),
+                    };
                 }
                 None => break,
             }
@@ -515,7 +633,11 @@ impl Parser {
 
     fn parse_case(&mut self) -> R<Expr> {
         self.expect_kw("case")?;
-        let subject = if self.check_kw("when") { None } else { Some(Box::new(self.parse_expr()?)) };
+        let subject = if self.check_kw("when") {
+            None
+        } else {
+            Some(Box::new(self.parse_expr()?))
+        };
         let mut whens = Vec::new();
         while self.check_kw("when") {
             self.advance();
@@ -533,7 +655,11 @@ impl Parser {
             None
         };
         self.expect_kw("end")?;
-        Ok(Expr::Case { subject, whens, else_ })
+        Ok(Expr::Case {
+            subject,
+            whens,
+            else_,
+        })
     }
 
     fn parse_primary(&mut self) -> R<Expr> {
@@ -563,16 +689,27 @@ impl Parser {
             Tt::Keyword if t.value == "exists" => {
                 self.advance();
                 let (patterns, where_) = self.parse_braced_subquery()?;
-                Ok(Expr::Exists { patterns, where_: where_.map(Box::new) })
+                Ok(Expr::Exists {
+                    patterns,
+                    where_: where_.map(Box::new),
+                })
             }
             Tt::Keyword if t.value == "count" => {
                 self.advance();
                 if self.check(Tt::LBrace) {
                     let (patterns, where_) = self.parse_braced_subquery()?;
-                    Ok(Expr::CountSubquery { patterns, where_: where_.map(Box::new) })
+                    Ok(Expr::CountSubquery {
+                        patterns,
+                        where_: where_.map(Box::new),
+                    })
                 } else {
                     let (args, distinct, star) = self.parse_call_args()?;
-                    Ok(Expr::Func { name: "count".into(), args, distinct, star })
+                    Ok(Expr::Func {
+                        name: "count".into(),
+                        args,
+                        distinct,
+                        star,
+                    })
                 }
             }
             Tt::LParen => {
@@ -602,23 +739,38 @@ impl Parser {
                 // Function call: the name may be a reserved word (UPPER, SUM, ABS).
                 if self.check(Tt::LParen) {
                     let (args, distinct, star) = self.parse_call_args()?;
-                    return Ok(Expr::Func { name: t.value.to_ascii_lowercase(), args, distinct, star });
+                    return Ok(Expr::Func {
+                        name: t.value.to_ascii_lowercase(),
+                        args,
+                        distinct,
+                        star,
+                    });
                 }
                 if !t.delimited && is_reserved(&t.value) {
                     return err(
-                        format!("'{}' is a reserved word; quote it as a delimited identifier", t.value),
+                        format!(
+                            "'{}' is a reserved word; quote it as a delimited identifier",
+                            t.value
+                        ),
                         t.pos,
                     );
                 }
                 if self.check(Tt::Dot) {
                     self.advance();
                     let key = self.bind_name("a property name")?;
-                    return Ok(Expr::Prop { variable: t.value, key });
+                    return Ok(Expr::Prop {
+                        variable: t.value,
+                        key,
+                    });
                 }
                 Ok(Expr::Var(t.value))
             }
             _ => {
-                let got = if t.value.is_empty() { format!("{:?}", t.tt) } else { t.value };
+                let got = if t.value.is_empty() {
+                    format!("{:?}", t.tt)
+                } else {
+                    t.value
+                };
                 err(format!("Unexpected '{got}' in expression"), t.pos)
             }
         }
@@ -659,7 +811,11 @@ impl Parser {
                 return err("Expected FIRST or LAST after NULLS", self.peek().pos);
             }
         }
-        Ok(SortItem { expr, descending, nulls_first })
+        Ok(SortItem {
+            expr,
+            descending,
+            nulls_first,
+        })
     }
 
     fn parse_projection(&mut self) -> R<Projection> {
@@ -694,14 +850,29 @@ impl Parser {
         let mut skip = None;
         if self.check_kw("skip") || self.check_kw("offset") {
             self.advance();
-            skip = Some(self.expect(Tt::Number, "a number after SKIP/OFFSET")?.num.unwrap() as usize);
+            skip = Some(
+                self.expect(Tt::Number, "a number after SKIP/OFFSET")?
+                    .num
+                    .unwrap() as usize,
+            );
         }
         let mut limit = None;
         if self.check_kw("limit") {
             self.advance();
-            limit = Some(self.expect(Tt::Number, "a number after LIMIT")?.num.unwrap() as usize);
+            limit = Some(
+                self.expect(Tt::Number, "a number after LIMIT")?
+                    .num
+                    .unwrap() as usize,
+            );
         }
-        Ok(Projection { star, items, distinct, order_by, skip, limit })
+        Ok(Projection {
+            star,
+            items,
+            distinct,
+            order_by,
+            skip,
+            limit,
+        })
     }
 
     fn parse_with_clause(&mut self) -> R<WithClause> {
@@ -732,12 +903,19 @@ impl Parser {
         let variable = self.bind_name("a variable")?;
         if self.check(Tt::Colon) || self.check_kw("is") {
             self.advance();
-            return Ok(SetItem::Label { variable, label: self.bind_name("a label name")? });
+            return Ok(SetItem::Label {
+                variable,
+                label: self.bind_name("a label name")?,
+            });
         }
         self.expect(Tt::Dot, "'.' or ':'")?;
         let key = self.bind_name("a property name")?;
         self.expect(Tt::Eq, "'='")?;
-        Ok(SetItem::Prop { variable, key, value: self.parse_expr()? })
+        Ok(SetItem::Prop {
+            variable,
+            key,
+            value: self.parse_expr()?,
+        })
     }
 
     fn parse_set_clause(&mut self) -> R<Vec<SetItem>> {
@@ -754,10 +932,16 @@ impl Parser {
         let variable = self.bind_name("a variable")?;
         if self.check(Tt::Colon) || self.check_kw("is") {
             self.advance();
-            return Ok(RemoveItem::Label { variable, label: self.bind_name("a label name")? });
+            return Ok(RemoveItem::Label {
+                variable,
+                label: self.bind_name("a label name")?,
+            });
         }
         self.expect(Tt::Dot, "'.' or ':'")?;
-        Ok(RemoveItem::Prop { variable, key: self.bind_name("a property name")? })
+        Ok(RemoveItem::Prop {
+            variable,
+            key: self.bind_name("a property name")?,
+        })
     }
 
     fn parse_remove_clause(&mut self) -> R<Vec<RemoveItem>> {
@@ -811,7 +995,10 @@ impl Parser {
                 clauses.push(Clause::Set(self.parse_set_clause()?));
             } else if self.check_kw("remove") {
                 clauses.push(Clause::Remove(self.parse_remove_clause()?));
-            } else if self.check_kw("delete") || self.check_kw("detach") || self.check_kw("nodetach") {
+            } else if self.check_kw("delete")
+                || self.check_kw("detach")
+                || self.check_kw("nodetach")
+            {
                 clauses.push(self.parse_delete_clause()?);
             } else {
                 break;
@@ -819,8 +1006,15 @@ impl Parser {
         }
         if clauses.is_empty() {
             let t = self.peek();
-            let got = if t.value.is_empty() { format!("{:?}", t.tt) } else { t.value.clone() };
-            return err(format!("Expected a clause (MATCH, INSERT, RETURN, …), got '{got}'"), t.pos);
+            let got = if t.value.is_empty() {
+                format!("{:?}", t.tt)
+            } else {
+                t.value.clone()
+            };
+            return err(
+                format!("Expected a clause (MATCH, INSERT, RETURN, …), got '{got}'"),
+                t.pos,
+            );
         }
         Ok(LinearQuery { clauses })
     }
@@ -855,7 +1049,11 @@ impl Parser {
         }
         if !self.at_end() {
             let t = self.peek();
-            let got = if t.value.is_empty() { format!("{:?}", t.tt) } else { t.value.clone() };
+            let got = if t.value.is_empty() {
+                format!("{:?}", t.tt)
+            } else {
+                t.value.clone()
+            };
             return err(format!("Unexpected trailing input '{got}'"), t.pos);
         }
         Ok(Query { parts, ops })

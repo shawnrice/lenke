@@ -91,8 +91,9 @@ mod tests {
     fn neon_matches_scalar_across_lengths() {
         // Cover every tail remainder (0..3) and multi-block inputs.
         for len in [0usize, 1, 2, 3, 4, 5, 7, 8, 15, 16, 17, 1000, 4096, 100_003] {
-            let input: Vec<u32> =
-                (0..len as u32).map(|i| i.wrapping_mul(2654435761).wrapping_rem(97) + 1).collect();
+            let input: Vec<u32> = (0..len as u32)
+                .map(|i| i.wrapping_mul(2654435761).wrapping_rem(97) + 1)
+                .collect();
             let mut neon = vec![0u32; len];
             exclusive_scan_neon(&input, &mut neon);
             assert_eq!(neon, reference(&input), "mismatch at len={len}");
@@ -133,7 +134,7 @@ pub fn predicate_gt_neon(data: &[f64], thr: f64) -> (u64, f64) {
         for c in 0..chunks {
             let v = vld1q_f64(data.as_ptr().add(c * 2));
             let mask = vcgtq_f64(v, thrv); // all-ones lane where v > thr
-            // masked value (0.0 where predicate false) added to running sum
+                                           // masked value (0.0 where predicate false) added to running sum
             let masked = vreinterpretq_f64_u64(vandq_u64(vreinterpretq_u64_f64(v), mask));
             sumv = vaddq_f64(sumv, masked);
             // mask lane is 0xFFFF.. (== u64 max); >>63 gives 1 per true lane

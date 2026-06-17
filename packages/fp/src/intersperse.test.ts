@@ -21,7 +21,9 @@ describe('functional iterator tests', () => {
   test('intersperse works with generators', () => {
     const gen = function* () {
       yield 1;
+
       yield 2;
+
       yield 3;
     };
     const result = Array.from(intersperse(0, gen()));

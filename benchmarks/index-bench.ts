@@ -5,6 +5,7 @@
 //   bun run benchmarks/index-bench.ts [nVertices] [avgDegree]
 
 import { Graph } from '@pl-graph/core';
+
 import { query } from '../packages/gql/src/index.js';
 import { gt, has, traversal, toArray, V } from '../packages/gremlin/src/index.js';
 import { ndjsonCodec } from '../packages/serialization/src/index.js';
@@ -21,15 +22,19 @@ const bench = (fn: () => void, budgetMs = 800): { mean: number; ops: number } =>
   for (let i = 0; i < 3; i++) {
     fn();
   }
+
   let iters = 0;
   const start = performance.now();
   let now = start;
+
   while (now - start < budgetMs) {
     fn();
     iters++;
     now = performance.now();
   }
+
   const elapsed = now - start;
+
   return { mean: elapsed / iters, ops: (iters / elapsed) * 1000 };
 };
 
@@ -45,6 +50,7 @@ const fmt = (n: number): string => {
   if (n >= 100) {
     return n.toFixed(0);
   }
+
   return n >= 1 ? n.toFixed(2) : n.toFixed(4);
 };
 
@@ -118,4 +124,5 @@ for (const c of cases) {
     `${pad(c.label, 56)} ${pad(fmt(a.mean), 10)} ${pad(fmt(b.mean), 10)} ${pad(`${fmt(speedup)}x`, 9)} ${rows}${same ? '' : '  ⚠ MISMATCH'}`,
   );
 }
+
 console.log();
