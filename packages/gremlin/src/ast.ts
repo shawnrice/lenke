@@ -332,10 +332,14 @@ export type Step =
   | { kind: 'math'; expr: string }
   // Filter property objects (`{key, value}`) by their `value` field.
   | { kind: 'hasValue'; values: readonly unknown[] }
-  // Declarative pattern match across labeled positions. STUBBED.
+  // Declarative pattern match across labeled positions.
   | { kind: 'match'; patterns: readonly Plan[] }
-  // Side-effect: accumulate matching edges into a named subgraph. STUBBED.
+  // Side-effect: accumulate matching edges into a named subgraph.
   | { kind: 'subgraph'; key: string }
+  // Emit the shortest vertex path(s) from each source vertex. `target` (set via
+  // `.with(ShortestPath.target, …)`) filters which vertices are destinations;
+  // absent ⇒ every reachable vertex. Unweighted BFS over incident edges.
+  | { kind: 'shortestPath'; target?: Plan }
   // --- Mutation (graph-write) -------------------------------------------
   //
   // `addV(label?)` inserts a fresh vertex into the graph. The output stream
@@ -378,9 +382,7 @@ export type Step =
  *  - `'tag'`  — recall a previously `as(label)`-tagged vertex by name
  *  - `'plan'` — run a sub-plan and use its first emitted vertex
  */
-export type AddEEndpoint =
-  | { kind: 'tag'; label: string }
-  | { kind: 'plan'; plan: Plan };
+export type AddEEndpoint = { kind: 'tag'; label: string } | { kind: 'plan'; plan: Plan };
 
 // --- Future-work notes (not yet modeled) --------------------------------
 // - `index()` step (enumerate)
@@ -410,8 +412,7 @@ export const appendStep = (step: Step): StepFn => {
 };
 
 export const isStepFn = (x: unknown): x is StepFn =>
-  typeof x === 'function' &&
-  (x as { [STEP_FN]?: boolean })[STEP_FN] === true;
+  typeof x === 'function' && (x as { [STEP_FN]?: boolean })[STEP_FN] === true;
 
 /**
  * Type-only view of a runtime traverser, exposed to user closures. Closures

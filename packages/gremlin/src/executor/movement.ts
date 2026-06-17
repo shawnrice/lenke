@@ -24,11 +24,7 @@ export const adjacentEdges = (
   }
 };
 
-export const otherEndpoint = (
-  kind: 'out' | 'in' | 'both',
-  edge: Edge,
-  v: Vertex,
-): Vertex => {
+export const otherEndpoint = (kind: 'out' | 'in' | 'both', edge: Edge, v: Vertex): Vertex => {
   switch (kind) {
     case 'out':
       return edge.to as Vertex;

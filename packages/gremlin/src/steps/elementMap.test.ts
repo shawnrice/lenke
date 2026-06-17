@@ -2,15 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
 import { eq, within, without } from '../predicates.js';
-import {
-  E,
-  V,
-  elementMap,
-  has,
-  hasLabel,
-  not,
-  outE,
-} from '../steps.js';
+import { E, V, elementMap, has, hasLabel, not, outE } from '../steps.js';
 import { traversal } from '../traversal.js';
 
 const arr = (r: Iterable<unknown>): unknown[] => [...r];
@@ -75,10 +67,7 @@ describe('elementMap tests', () => {
   // doc: g.V().has('name',within('josh','marko')).elementMap()
   test('elementMap after has(within)', () => {
     const r = arr(
-      run(
-        traversal(V(), has('name', within('josh', 'marko')), elementMap()),
-        tinkerGraph,
-      ),
+      run(traversal(V(), has('name', within('josh', 'marko')), elementMap()), tinkerGraph),
     );
     expect(r).toEqual([
       { id: '1', label: 'PERSON', name: 'marko', age: 29 },
@@ -89,10 +78,7 @@ describe('elementMap tests', () => {
   // doc: g.V().has('name',without('josh','marko')).elementMap()
   test('elementMap after has(without)', () => {
     const r = arr(
-      run(
-        traversal(V(), has('name', without('josh', 'marko')), elementMap()),
-        tinkerGraph,
-      ),
+      run(traversal(V(), has('name', without('josh', 'marko')), elementMap()), tinkerGraph),
     );
     expect(r).toEqual([
       { id: '2', label: 'PERSON', name: 'vadas', age: 27 },
@@ -104,9 +90,7 @@ describe('elementMap tests', () => {
 
   // doc: g.V().not(hasLabel('person')).elementMap() — software vertices only
   test('elementMap after not(hasLabel)', () => {
-    const r = arr(
-      run(traversal(V(), not(hasLabel('PERSON')), elementMap()), tinkerGraph),
-    );
+    const r = arr(run(traversal(V(), not(hasLabel('PERSON')), elementMap()), tinkerGraph));
     expect(r).toEqual([
       { id: '3', label: 'SOFTWARE', name: 'lop', lang: 'java' },
       { id: '5', label: 'SOFTWARE', name: 'ripple', lang: 'java' },
@@ -116,21 +100,14 @@ describe('elementMap tests', () => {
   // doc: g.V().has('name','marko').out('created').elementMap()
   // — [id:3,label:software,name:lop,lang:java]
   test('elementMap on out-created from marko', () => {
-    const r = arr(
-      run(
-        traversal(V(), has('name', eq('marko')), elementMap()),
-        tinkerGraph,
-      ),
-    );
+    const r = arr(run(traversal(V(), has('name', eq('marko')), elementMap()), tinkerGraph));
     expect(r).toEqual([{ id: '1', label: 'PERSON', name: 'marko', age: 29 }]);
   });
 
   // doc: g.E(...).elementMap() — edges include IN/OUT submaps with each
   // endpoint's id+label.
   test('elementMap on edges emits IN/OUT submaps', () => {
-    const r = arr(
-      run(traversal(V('1'), outE('CREATED'), elementMap()), tinkerGraph),
-    );
+    const r = arr(run(traversal(V('1'), outE('CREATED'), elementMap()), tinkerGraph));
     // marko (1) -[CREATED]-> lop (3), weight 0.4
     expect(r).toEqual([
       {

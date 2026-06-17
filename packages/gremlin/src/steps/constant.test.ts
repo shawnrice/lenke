@@ -27,10 +27,7 @@ describe('constant tests', () => {
       run(
         traversal(
           V(),
-          coalesce(
-            (p) => values('name')(hasLabel('PERSON')(p)),
-            constant('inhuman'),
-          ),
+          coalesce((p) => values('name')(hasLabel('PERSON')(p)), constant('inhuman')),
         ),
         tinkerGraph,
       ),

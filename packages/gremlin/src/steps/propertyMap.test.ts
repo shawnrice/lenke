@@ -26,27 +26,13 @@ describe('propertyMap tests', () => {
   // Drift: TinkerPop wraps each property in a `vp[]` object; our impl wraps the raw value in [].
   test('propertyMap with single key skips vertices without it', () => {
     const r = arr(run(traversal(V(), propertyMap('age')), tinkerGraph));
-    expect(r).toEqual([
-      { age: [29] },
-      { age: [27] },
-      { age: [32] },
-      { age: [35] },
-      {},
-      {},
-    ]);
+    expect(r).toEqual([{ age: [29] }, { age: [27] }, { age: [32] }, { age: [35] }, {}, {}]);
   });
 
   // doc: g.V().propertyMap('age','blah') — 'blah' missing on every vertex; same shape as above.
   test('propertyMap silently skips unknown keys', () => {
     const r = arr(run(traversal(V(), propertyMap('age', 'blah')), tinkerGraph));
-    expect(r).toEqual([
-      { age: [29] },
-      { age: [27] },
-      { age: [32] },
-      { age: [35] },
-      {},
-      {},
-    ]);
+    expect(r).toEqual([{ age: [29] }, { age: [27] }, { age: [32] }, { age: [35] }, {}, {}]);
   });
 
   // doc: g.E().propertyMap()

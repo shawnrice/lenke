@@ -27,10 +27,7 @@ describe('Gremlin tests', () => {
     // matches this independently-derived ground truth, so we assert it here
     // rather than the doc value.
     test('mean works with repeat', () => {
-      const r = run(
-        traversal(V(), repeat(both()).times(3), values('age'), mean()),
-        tinkerGraph,
-      );
+      const r = run(traversal(V(), repeat(both()).times(3), values('age'), mean()), tinkerGraph);
       expect(arr(r)).toEqual([1471 / 48]);
     });
 

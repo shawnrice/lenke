@@ -57,9 +57,7 @@ describe('Gremlin tests', () => {
     // Per-traverser: count elements of each iterable value (here, the folded
     // list of ages). Each PERSON has an age; SOFTWARE doesn't.
     test('count(Scope.local) counts elements of each traverser value', () => {
-      const r = arr(
-        run(traversal(V(), values('age'), fold(), count(Scope.local)), tinkerGraph),
-      );
+      const r = arr(run(traversal(V(), values('age'), fold(), count(Scope.local)), tinkerGraph));
       // 4 persons → 4 ages folded into one list → count = 4.
       expect(r).toEqual([4]);
     });

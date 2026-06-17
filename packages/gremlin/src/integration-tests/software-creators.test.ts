@@ -26,9 +26,7 @@ describe('Software creators', () => {
 
   // doc: g.V().has('name','marko').out('created').values('name') — lop
   test('what marko created', () => {
-    const r = arr(
-      run(traversal(V(), has('name', eq('marko')), out('CREATED'), values('name')), g),
-    );
+    const r = arr(run(traversal(V(), has('name', eq('marko')), out('CREATED'), values('name')), g));
     expect(r).toEqual(['lop']);
   });
 
@@ -46,9 +44,7 @@ describe('Software creators', () => {
 
   // doc: g.V().hasLabel("software").inE("created").outV().count() — 4
   test('total creators (with multiplicity) of software', () => {
-    const r = arr(
-      run(traversal(V(), hasLabel('SOFTWARE'), inE('CREATED'), outV(), count()), g),
-    );
+    const r = arr(run(traversal(V(), hasLabel('SOFTWARE'), inE('CREATED'), outV(), count()), g));
     expect(r).toEqual([4]);
   });
 
@@ -73,25 +69,14 @@ describe('Software creators', () => {
 
   // doc: g.V(1).outE("created") — marko's CREATED edges
   test("marko's outgoing CREATED edges have weight 0.4", () => {
-    const r = arr(
-      run(traversal(V('1'), outE('CREATED'), values('weight')), g),
-    );
+    const r = arr(run(traversal(V('1'), outE('CREATED'), values('weight')), g));
     expect(r).toEqual([0.4]);
   });
 
   // doc: g.E().hasLabel('knows').has('weight', gt(0.75)) — e[8]
   test('strong KNOWS edges (weight > 0.75)', () => {
     const r = arr(
-      run(
-        traversal(
-          V(),
-          outE('KNOWS'),
-          has('weight', gt(0.75)),
-          inV(),
-          values('name'),
-        ),
-        g,
-      ),
+      run(traversal(V(), outE('KNOWS'), has('weight', gt(0.75)), inV(), values('name')), g),
     );
     expect(r).toEqual(['josh']);
   });
@@ -116,15 +101,7 @@ describe('Software creators', () => {
   // Persons who created at least one piece of software.
   test('persons who created at least one software', () => {
     const r = arr(
-      run(
-        traversal(
-          V(),
-          hasLabel('PERSON'),
-          where(out('CREATED')),
-          values('name'),
-        ),
-        g,
-      ),
+      run(traversal(V(), hasLabel('PERSON'), where(out('CREATED')), values('name')), g),
     );
     expect((r as string[]).sort()).toEqual(['josh', 'marko', 'peter']);
   });

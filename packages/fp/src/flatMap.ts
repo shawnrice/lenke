@@ -9,9 +9,7 @@ const internalFlatMap = function* <T, R>(
   }
 };
 
-export function flatMap<T, R>(
-  mapper: UnaryFn<T, Iterable<R>>,
-): UnaryFn<Iterable<T>, Iterable<R>>;
+export function flatMap<T, R>(mapper: UnaryFn<T, Iterable<R>>): UnaryFn<Iterable<T>, Iterable<R>>;
 export function flatMap<T, R>(mapper: UnaryFn<T, Iterable<R>>, iterable: Iterable<T>): Iterable<R>;
 export function flatMap<T, R>(mapper: UnaryFn<T, Iterable<R>>, iterable?: Iterable<T>) {
   return iterable

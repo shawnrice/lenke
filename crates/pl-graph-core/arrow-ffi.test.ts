@@ -9,9 +9,15 @@ import { dlopen, FFIType, ptr, toArrayBuffer } from 'bun:ffi';
 import { describe, expect, test } from 'bun:test';
 
 const lib = dlopen(new URL('./target/release/libpl_graph_core.dylib', import.meta.url).pathname, {
-  plg_graph_from_ndjson: { args: [FFIType.ptr, FFIType.u64_fast, FFIType.u32], returns: FFIType.ptr },
+  plg_graph_from_ndjson: {
+    args: [FFIType.ptr, FFIType.u64_fast, FFIType.u32],
+    returns: FFIType.ptr,
+  },
   plg_graph_free: { args: [FFIType.ptr], returns: FFIType.void },
-  plg_query_arrow: { args: [FFIType.ptr, FFIType.ptr, FFIType.u64_fast, FFIType.ptr], returns: FFIType.ptr },
+  plg_query_arrow: {
+    args: [FFIType.ptr, FFIType.ptr, FFIType.u64_fast, FFIType.ptr],
+    returns: FFIType.ptr,
+  },
   plg_free_arrow: { args: [FFIType.ptr, FFIType.u64_fast], returns: FFIType.void },
 });
 
@@ -52,7 +58,9 @@ function decodeArrow(buf: ArrayBuffer) {
       const offs = new Int32Array(buf, b1Off, nrows + 1);
       const dec = new TextDecoder();
       for (let i = 0; i < nrows; i++) {
-        values.push(valid(i) ? dec.decode(new Uint8Array(buf, b2Off + offs[i], offs[i + 1] - offs[i])) : null);
+        values.push(
+          valid(i) ? dec.decode(new Uint8Array(buf, b2Off + offs[i], offs[i + 1] - offs[i])) : null,
+        );
       }
     }
     columns.push({ tag, name, values });

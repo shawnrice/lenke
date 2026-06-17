@@ -13,13 +13,38 @@ type Sig = rust.Sig; // { count, sum, checksum: bigint }
 
 const QUERIES = [
   { id: 'Q1', label: 'label scan count', text: 'MATCH (a:Person) RETURN count(*)', maxN: Infinity },
-  { id: 'Q2', label: 'filter + project', text: 'MATCH (a:Person) WHERE a.age > 50 RETURN a.age', maxN: Infinity },
-  { id: 'Q3', label: '1-hop traversal count', text: 'MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN count(*)', maxN: Infinity },
-  { id: 'Q4', label: '2-hop traversal count', text: 'MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) RETURN count(*)', maxN: 100_000 },
+  {
+    id: 'Q2',
+    label: 'filter + project',
+    text: 'MATCH (a:Person) WHERE a.age > 50 RETURN a.age',
+    maxN: Infinity,
+  },
+  {
+    id: 'Q3',
+    label: '1-hop traversal count',
+    text: 'MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN count(*)',
+    maxN: Infinity,
+  },
+  {
+    id: 'Q4',
+    label: '2-hop traversal count',
+    text: 'MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) RETURN count(*)',
+    maxN: 100_000,
+  },
   { id: 'Q5', label: 'avg aggregate', text: 'MATCH (a:Person) RETURN avg(a.age)', maxN: Infinity },
-  { id: 'Q6', label: 'multi-condition WHERE', text: 'MATCH (a:Person) WHERE a.age > 30 AND a.active = true RETURN count(*)', maxN: Infinity },
+  {
+    id: 'Q6',
+    label: 'multi-condition WHERE',
+    text: 'MATCH (a:Person) WHERE a.age > 30 AND a.active = true RETURN count(*)',
+    maxN: Infinity,
+  },
   { id: 'Q7', label: 'GROUP BY', text: 'MATCH (a:Person) RETURN a.dept, count(*)', maxN: Infinity },
-  { id: 'Q8', label: 'ORDER BY + LIMIT', text: 'MATCH (a:Person) RETURN a.age ORDER BY a.age DESC LIMIT 100', maxN: Infinity },
+  {
+    id: 'Q8',
+    label: 'ORDER BY + LIMIT',
+    text: 'MATCH (a:Person) RETURN a.age ORDER BY a.age DESC LIMIT 100',
+    maxN: Infinity,
+  },
   { id: 'Q9', label: 'DISTINCT', text: 'MATCH (a:Person) RETURN DISTINCT a.dept', maxN: Infinity },
 ] as const;
 
@@ -104,7 +129,9 @@ console.log(`ABI v${rust.abiVersion()} loaded\n`);
 
 for (const n of SIZES) {
   const reps = repsFor(n);
-  console.log(`=== ${n.toLocaleString()} vertices, ${(n * AVG_DEGREE).toLocaleString()} edges (reps=${reps}) ===`);
+  console.log(
+    `=== ${n.toLocaleString()} vertices, ${(n * AVG_DEGREE).toLocaleString()} edges (reps=${reps}) ===`,
+  );
   const ds = genNdjson(n, AVG_DEGREE);
   const bytes = new TextEncoder().encode(ds.ndjson);
 
@@ -125,11 +152,28 @@ for (const n of SIZES) {
 
   const tsV = [...tg.vertices].length;
   const tsE = [...tg.edges].length;
-  results.parity.push({ n, what: 'vertexCount', ts: tsV, rust: rust.vertexCount(rh), ok: tsV === rust.vertexCount(rh) });
-  results.parity.push({ n, what: 'edgeCount', ts: tsE, rust: rust.edgeCount(rh), ok: tsE === rust.edgeCount(rh) });
+  results.parity.push({
+    n,
+    what: 'vertexCount',
+    ts: tsV,
+    rust: rust.vertexCount(rh),
+    ok: tsV === rust.vertexCount(rh),
+  });
+  results.parity.push({
+    n,
+    what: 'edgeCount',
+    ts: tsE,
+    rust: rust.edgeCount(rh),
+    ok: tsE === rust.edgeCount(rh),
+  });
 
   const row: any = { n, nEdges: ds.nEdges, bytes: bytes.length, ops: {} };
-  row.ops.build = { ts: tsBuild.ms, tsErr: tsBuild.error, rustParallel: rustBuildPar, rustSerial: rustBuildSer };
+  row.ops.build = {
+    ts: tsBuild.ms,
+    tsErr: tsBuild.error,
+    rustParallel: rustBuildPar,
+    rustSerial: rustBuildSer,
+  };
 
   for (const q of QUERIES) {
     if (n > q.maxN) {
@@ -143,9 +187,17 @@ for (const n of SIZES) {
       // TS engine couldn't produce the result — recorded below.
     }
     const ok = tSig ? sigEq(tSig, rSig) : null;
-    results.parity.push({ n, what: `${q.id} fingerprint`, ts: sigStore(tSig), rust: sigStore(rSig), ok });
+    results.parity.push({
+      n,
+      what: `${q.id} fingerprint`,
+      ts: sigStore(tSig),
+      rust: sigStore(rSig),
+      ok,
+    });
     if (ok === false) {
-      console.log(`  !! PARITY MISMATCH ${q.id}: ts=${JSON.stringify(sigStore(tSig))}/${tSig?.checksum} rust=${JSON.stringify(sigStore(rSig))}/${rSig.checksum}`);
+      console.log(
+        `  !! PARITY MISMATCH ${q.id}: ts=${JSON.stringify(sigStore(tSig))}/${tSig?.checksum} rust=${JSON.stringify(sigStore(rSig))}/${rSig.checksum}`,
+      );
     }
     const tsT = safeBench(reps, () => {
       tsFingerprint(gqlQuery(tg, q.text) as Record<string, unknown>[]);
@@ -153,9 +205,17 @@ for (const n of SIZES) {
     const rustT = bench(reps, () => {
       rust.runQuery(rh, q.text);
     });
-    row.ops[q.id] = { label: q.label, ts: tsT.ms, tsErr: tsT.error, rust: rustT, sig: sigStore(rSig) };
+    row.ops[q.id] = {
+      label: q.label,
+      ts: tsT.ms,
+      tsErr: tsT.error,
+      rust: rustT,
+      sig: sigStore(rSig),
+    };
     const ratio = tsT.ms === null ? 'TS-FAILED' : `${(tsT.ms / rustT).toFixed(1)}x`;
-    console.log(`  ${q.id} ${q.label}: ts=${tsT.ms === null ? `ERR` : `${tsT.ms.toFixed(3)}ms`} rust=${rustT.toFixed(3)}ms (${ratio})`);
+    console.log(
+      `  ${q.id} ${q.label}: ts=${tsT.ms === null ? `ERR` : `${tsT.ms.toFixed(3)}ms`} rust=${rustT.toFixed(3)}ms (${ratio})`,
+    );
   }
 
   // ---- FFI boundary: all queries in ONE crossing vs N crossings ----
@@ -169,7 +229,9 @@ for (const n of SIZES) {
     rust.runQueryBatch(rh, allQ);
   });
   row.ops.ffiBatch = { queries: allQ.length, perCall, batched };
-  console.log(`  FFI batch: ${allQ.length} queries — perCall=${perCall.toFixed(3)}ms batched=${batched.toFixed(3)}ms (${(perCall / batched).toFixed(2)}x)`);
+  console.log(
+    `  FFI batch: ${allQ.length} queries — perCall=${perCall.toFixed(3)}ms batched=${batched.toFixed(3)}ms (${(perCall / batched).toFixed(2)}x)`,
+  );
 
   // ---- SIMD predicate scan (age > 50): scalar vs NEON, + JS loop ----
   const ages: number[] = [];
@@ -193,7 +255,9 @@ for (const n of SIZES) {
   const rScalar = bench(reps, () => rust.predicateScan(rh, 'age', 50, false));
   const rNeon = bench(reps, () => rust.predicateScan(rh, 'age', 50, true));
   row.ops.predicateScan = { jsLoop: jsScan, rustScalar: rScalar, rustNeon: rNeon };
-  console.log(`  predicate-scan age>50: js=${jsScan.toFixed(3)} rustScalar=${rScalar.toFixed(3)} rustNeon=${rNeon.toFixed(3)} (neon ${(rScalar / rNeon).toFixed(2)}x)`);
+  console.log(
+    `  predicate-scan age>50: js=${jsScan.toFixed(3)} rustScalar=${rScalar.toFixed(3)} rustNeon=${rNeon.toFixed(3)} (neon ${(rScalar / rNeon).toFixed(2)}x)`,
+  );
 
   // ---- serialize: product is bytes for disk/wire ----
   const tsString = safeBench(reps, () => {
@@ -208,20 +272,32 @@ for (const n of SIZES) {
   const rustDisk = bench(reps, () => {
     rust.writeNdjson(rh, '/tmp/plg-rust.ndjson');
   });
-  row.ops.serialize = { tsString: tsString.ms, tsStringErr: tsString.error, rustBytes, tsDisk: tsDisk.ms, tsDiskErr: tsDisk.error, rustDisk };
+  row.ops.serialize = {
+    tsString: tsString.ms,
+    tsStringErr: tsString.error,
+    rustBytes,
+    tsDisk: tsDisk.ms,
+    tsDiskErr: tsDisk.error,
+    rustDisk,
+  };
   const bn = (x: number | null) => (x === null ? 'ERR' : x.toFixed(1));
-  console.log(`  build: ts=${bn(tsBuild.ms)}ms rustPar=${rustBuildPar.toFixed(1)}ms rustSer=${rustBuildSer.toFixed(1)}ms`);
-  console.log(`  serialize→string: ts=${bn(tsString.ms)} rust→bytes=${rustBytes.toFixed(1)} | →disk: ts=${bn(tsDisk.ms)} rust=${rustDisk.toFixed(1)}\n`);
+  console.log(
+    `  build: ts=${bn(tsBuild.ms)}ms rustPar=${rustBuildPar.toFixed(1)}ms rustSer=${rustBuildSer.toFixed(1)}ms`,
+  );
+  console.log(
+    `  serialize→string: ts=${bn(tsString.ms)} rust→bytes=${rustBytes.toFixed(1)} | →disk: ts=${bn(tsDisk.ms)} rust=${rustDisk.toFixed(1)}\n`,
+  );
 
   rust.freeGraph(rh);
   results.rows.push(row);
 }
 
-results.ffiOverhead = bench(100, () => {
-  for (let i = 0; i < 1000; i++) {
-    rust.abiVersion();
-  }
-}) / 1000;
+results.ffiOverhead =
+  bench(100, () => {
+    for (let i = 0; i < 1000; i++) {
+      rust.abiVersion();
+    }
+  }) / 1000;
 console.log(`per-FFI-call overhead: ${(results.ffiOverhead * 1e6).toFixed(1)} ns`);
 
 await Bun.write('benchmarks/results.json', JSON.stringify(results, null, 2));

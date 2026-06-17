@@ -40,9 +40,5 @@ export const useGraphSelector = <T>(
     return cache.current.value;
   };
 
-  return useSyncExternalStore(
-    (onChange) => graph.subscribe(onChange),
-    getSnapshot,
-    getSnapshot,
-  );
+  return useSyncExternalStore((onChange) => graph.subscribe(onChange), getSnapshot, getSnapshot);
 };

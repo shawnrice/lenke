@@ -2,19 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
 import { eq, gt, lte } from '../predicates.js';
-import {
-  V,
-  choose,
-  count,
-  has,
-  hasLabel,
-  identity,
-  in_,
-  is,
-  out,
-  outE,
-  values,
-} from '../steps.js';
+import { V, choose, count, has, hasLabel, identity, in_, is, out, outE, values } from '../steps.js';
 import { traversal } from '../traversal.js';
 
 const arr = (r: Iterable<unknown>): unknown[] => [...r];
@@ -41,11 +29,7 @@ describe('choose tests', () => {
   test('choose with hasLabel test branches per traverser', () => {
     const r = arr(
       run(
-        traversal(
-          V(),
-          choose(hasLabel('PERSON'), out('CREATED'), identity()),
-          values('name'),
-        ),
+        traversal(V(), choose(hasLabel('PERSON'), out('CREATED'), identity()), values('name')),
         tinkerGraph,
       ),
     );
@@ -68,11 +52,7 @@ describe('choose tests', () => {
         traversal(
           V(),
           hasLabel('PERSON'),
-          choose(
-            (p) => is(lte(30))(values('age')(p)),
-            in_(),
-            out(),
-          ),
+          choose((p) => is(lte(30))(values('age')(p)), in_(), out()),
           values('name'),
         ),
         tinkerGraph,
@@ -92,11 +72,7 @@ describe('choose tests', () => {
         traversal(
           V(),
           hasLabel('PERSON'),
-          choose(
-            (p) => is(gt(0))(count()(outE('KNOWS')(p))),
-            out('KNOWS'),
-            identity(),
-          ),
+          choose((p) => is(gt(0))(count()(outE('KNOWS')(p))), out('KNOWS'), identity()),
           values('name'),
         ),
         tinkerGraph,
@@ -118,14 +94,7 @@ describe('choose tests', () => {
   //   ripple(software) -> identity = ripple
   test('choose without elsePlan: missing else acts as identity (TinkerPop spec)', () => {
     const r = arr(
-      run(
-        traversal(
-          V(),
-          choose(hasLabel('PERSON'), out('CREATED')),
-          values('name'),
-        ),
-        tinkerGraph,
-      ),
+      run(traversal(V(), choose(hasLabel('PERSON'), out('CREATED')), values('name')), tinkerGraph),
     );
     expect(r).toEqual(['lop', 'ripple', 'lop', 'lop', 'lop', 'ripple']);
   });

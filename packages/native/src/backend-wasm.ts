@@ -162,7 +162,9 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
       try {
         const h = ex.plg_deserialize(inPtr, input.byteLength, fPtr, f.byteLength);
         if (!h) {
-          throw new Error(`pl-graph: deserialize(${format}) failed (unknown format or parse error)`);
+          throw new Error(
+            `pl-graph: deserialize(${format}) failed (unknown format or parse error)`,
+          );
         }
         return h;
       } finally {

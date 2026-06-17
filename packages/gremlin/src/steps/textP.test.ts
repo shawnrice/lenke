@@ -12,9 +12,7 @@ describe('TextP predicate tests', () => {
 
   // doc: g.V().has('name', containing('o')) — marko, josh, lop  (vadas, ripple, peter excluded)
   test('containing("o") matches marko, josh, lop', () => {
-    const r = arr(
-      run(traversal(V(), has('name', containing('o')), values('name')), tinkerGraph),
-    );
+    const r = arr(run(traversal(V(), has('name', containing('o')), values('name')), tinkerGraph));
     expect((r as string[]).sort()).toEqual(['josh', 'lop', 'marko']);
   });
 
@@ -39,10 +37,7 @@ describe('TextP predicate tests', () => {
   // doc: g.V().has('person','name', regex('r')).values('name') — marko; peter
   test('regex("r") matches marko and peter', () => {
     const r = arr(
-      run(
-        traversal(V(), hasLabel('PERSON'), has('name', regex('r')), values('name')),
-        tinkerGraph,
-      ),
+      run(traversal(V(), hasLabel('PERSON'), has('name', regex('r')), values('name')), tinkerGraph),
     );
     expect((r as string[]).sort()).toEqual(['marko', 'peter']);
   });

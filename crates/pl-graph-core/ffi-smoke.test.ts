@@ -3,24 +3,21 @@
 import { dlopen, FFIType, ptr } from 'bun:ffi';
 import { describe, expect, test } from 'bun:test';
 
-const lib = dlopen(
-  new URL('./target/release/libpl_graph_core.dylib', import.meta.url).pathname,
-  {
-    plg_abi_version: { args: [], returns: FFIType.u32 },
-    plg_build_csr: {
-      args: [
-        FFIType.ptr, // src
-        FFIType.ptr, // dst
-        FFIType.u64_fast, // e
-        FFIType.u64_fast, // n
-        FFIType.ptr, // out_offsets
-        FFIType.ptr, // out_neighbors
-        FFIType.u32, // simd
-      ],
-      returns: FFIType.i32,
-    },
+const lib = dlopen(new URL('./target/release/libpl_graph_core.dylib', import.meta.url).pathname, {
+  plg_abi_version: { args: [], returns: FFIType.u32 },
+  plg_build_csr: {
+    args: [
+      FFIType.ptr, // src
+      FFIType.ptr, // dst
+      FFIType.u64_fast, // e
+      FFIType.u64_fast, // n
+      FFIType.ptr, // out_offsets
+      FFIType.ptr, // out_neighbors
+      FFIType.u32, // simd
+    ],
+    returns: FFIType.i32,
   },
-);
+});
 
 describe('pl-graph-core over bun:ffi', () => {
   test('abi version probe', () => {

@@ -19,9 +19,9 @@ describe('simplePath tests', () => {
 
   // doc: g.V(1).both().both().simplePath() — v[4]; v[6]; v[5]; v[3]
   test('simplePath drops cyclic traversers', () => {
-    const r = arr(
-      run(traversal(V('1'), both(), both(), simplePath()), tinkerGraph),
-    ) as Array<{ id: string }>;
+    const r = arr(run(traversal(V('1'), both(), both(), simplePath()), tinkerGraph)) as Array<{
+      id: string;
+    }>;
     expect(new Set(r.map((v) => v.id))).toEqual(new Set(['3', '4', '5', '6']));
     expect(r.length).toBe(4);
   });

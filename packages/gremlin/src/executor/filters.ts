@@ -3,13 +3,7 @@ import { ErrorCode, PlGraphError } from '@pl-graph/errors';
 
 import type { By, Plan, Predicate, Step } from '../ast.js';
 import { matches } from '../predicates.js';
-import {
-  evalBy,
-  hasAny,
-  recallTag,
-  type RunContext,
-  type Traverser,
-} from './runtime.js';
+import { evalBy, hasAny, recallTag, type RunContext, type Traverser } from './runtime.js';
 import { applyPlanToStream } from './dispatch.js';
 
 // `fail` throws as soon as the first traverser arrives. Useful as an

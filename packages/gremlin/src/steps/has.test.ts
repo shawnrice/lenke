@@ -70,12 +70,16 @@ describe('Gremlin tests', () => {
       expect(result.map((x) => x.id)).toEqual(['1']);
     });
 
-    // v2 has() requires a predicate — single-arg "has key exists" form is not
-    // implemented.
-    test.skip('we can filter just by key (key-only has not in v2)', () => {});
+    // Key-only `has(key)`: keep elements that have the property key (any value).
+    test('we can filter just by key (key existence)', () => {
+      // PERSON vertices carry `age`; SOFTWARE carry `lang` — so has('age') keeps
+      // the four people.
+      const result = arr(run(traversal(V(), has('age'), values('name')), tinkerGraph));
+      expect((result as string[]).sort()).toEqual(['josh', 'marko', 'peter', 'vadas']);
+    });
 
-    // v1's has(null, 'vadas') edge case — n/a in v2 since key is required.
-    test.skip('calling with a first arg of null is empty (n/a in v2)', () => {});
+    // (v1's has(null, …) edge case is gone: v2's has() requires a string key, so
+    // the degenerate null-key form isn't representable — nothing to test.)
 
     // doc: g.V().has('age',inside(20,30)).values('age') — 29; 27
     test('has(age, inside) on all vertices', () => {
@@ -96,10 +100,7 @@ describe('Gremlin tests', () => {
     // doc: g.V().has('name',within('josh','marko')).elementMap()
     test('has(name, within) projected via elementMap', () => {
       const result = arr(
-        run(
-          traversal(V(), has('name', within('josh', 'marko')), elementMap()),
-          tinkerGraph,
-        ),
+        run(traversal(V(), has('name', within('josh', 'marko')), elementMap()), tinkerGraph),
       );
       expect(result).toEqual([
         { id: '1', label: 'PERSON', name: 'marko', age: 29 },
@@ -110,10 +111,7 @@ describe('Gremlin tests', () => {
     // doc: g.V().has('name',without('josh','marko')).elementMap()
     test('has(name, without) projected via elementMap', () => {
       const result = arr(
-        run(
-          traversal(V(), has('name', without('josh', 'marko')), elementMap()),
-          tinkerGraph,
-        ),
+        run(traversal(V(), has('name', without('josh', 'marko')), elementMap()), tinkerGraph),
       );
       expect(result).toEqual([
         { id: '2', label: 'PERSON', name: 'vadas', age: 27 },
@@ -128,10 +126,7 @@ describe('Gremlin tests', () => {
     // express the equivalent via not(has(...)) wrapping.
     test('not(has(name, within)) is equivalent to has(name, without)', () => {
       const result = arr(
-        run(
-          traversal(V(), not(has('name', within('josh', 'marko'))), elementMap()),
-          tinkerGraph,
-        ),
+        run(traversal(V(), not(has('name', within('josh', 'marko'))), elementMap()), tinkerGraph),
       );
       expect(result).toEqual([
         { id: '2', label: 'PERSON', name: 'vadas', age: 27 },

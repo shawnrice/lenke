@@ -27,9 +27,7 @@ describe('aggregate / cap tests', () => {
 
   // doc: g.V().out('knows').aggregate('x').cap('x') — [v[2],v[4]]
   test('cap reads back the bag at the end', () => {
-    const r = arr(
-      run(traversal(V(), out('KNOWS'), aggregate('x'), cap('x')), tinkerGraph),
-    );
+    const r = arr(run(traversal(V(), out('KNOWS'), aggregate('x'), cap('x')), tinkerGraph));
     // cap emits a single traverser whose value is the array bag.
     expect(r).toHaveLength(1);
     const bag = r[0] as Array<{ id: string }>;
@@ -84,10 +82,7 @@ describe('aggregate / cap tests', () => {
   // Two independent bags accumulate side-by-side; cap reads either.
   test('multiple aggregates with independent keys', () => {
     const r = arr(
-      run(
-        traversal(V(), aggregate('persons'), aggregate('all'), cap('persons')),
-        tinkerGraph,
-      ),
+      run(traversal(V(), aggregate('persons'), aggregate('all'), cap('persons')), tinkerGraph),
     );
     const bag = (r[0] as Array<{ id: string }>).map((v) => v.id).sort();
     expect(bag).toEqual(['1', '2', '3', '4', '5', '6']);

@@ -1,13 +1,7 @@
 import type { Graph } from '@pl-graph/core';
 
 import type { FlatMapClosure, Plan, ReducerClosure, SideEffectClosure } from '../ast.js';
-import {
-  closureView,
-  extend,
-  type RunContext,
-  startTraverser,
-  type Traverser,
-} from './runtime.js';
+import { closureView, extend, type RunContext, startTraverser, type Traverser } from './runtime.js';
 import { applyPlanToStream } from './dispatch.js';
 
 // `map(plan)` — first output of the sub-plan replaces the traverser value.

@@ -45,10 +45,7 @@ describe('Filter combinations', () => {
       run(
         traversal(
           V(),
-          or(
-            outE('CREATED'),
-            (p) => is(gt(1))(count()(in_('CREATED')(p))),
-          ),
+          or(outE('CREATED'), (p) => is(gt(1))(count()(in_('CREATED')(p)))),
           values('name'),
         ),
         g,
@@ -76,15 +73,7 @@ describe('Filter combinations', () => {
   // doc: g.V().where(__.not(out('created'))).where(__.in('knows')).values('name') — vadas
   test('chained where: no out CREATED AND has in KNOWS', () => {
     const r = arr(
-      run(
-        traversal(
-          V(),
-          where(not(out('CREATED'))),
-          where(in_('KNOWS')),
-          values('name'),
-        ),
-        g,
-      ),
+      run(traversal(V(), where(not(out('CREATED'))), where(in_('KNOWS')), values('name')), g),
     );
     expect(r).toEqual(['vadas']);
   });
@@ -140,13 +129,7 @@ describe('Filter combinations', () => {
   test('has with label+key+pred narrows to typed match', () => {
     const r = arr(
       run(
-        traversal(
-          V(),
-          hasLabel('PERSON'),
-          has('name', eq('marko')),
-          out('KNOWS'),
-          values('name'),
-        ),
+        traversal(V(), hasLabel('PERSON'), has('name', eq('marko')), out('KNOWS'), values('name')),
         g,
       ),
     );
@@ -155,17 +138,13 @@ describe('Filter combinations', () => {
 
   // hasNot of a property: software vertices lack 'age'.
   test('software vertices lack the age property', () => {
-    const r = arr(
-      run(traversal(V(), hasLabel('SOFTWARE'), values('age')), g),
-    );
+    const r = arr(run(traversal(V(), hasLabel('SOFTWARE'), values('age')), g));
     expect(r).toEqual([]);
   });
 
   // doc: g.V().has('name', within('josh','marko')).values('name')
   test('has within retrieves multiple matches', () => {
-    const r = arr(
-      run(traversal(V(), has('name', within('josh', 'marko')), values('name')), g),
-    );
+    const r = arr(run(traversal(V(), has('name', within('josh', 'marko')), values('name')), g));
     expect((r as string[]).sort()).toEqual(['josh', 'marko']);
   });
 });

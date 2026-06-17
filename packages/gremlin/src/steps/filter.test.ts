@@ -13,14 +13,7 @@ describe('filter tests', () => {
   // doc: g.V().filter(label().is('person')) — v[1]; v[2]; v[4]; v[6]
   test('filter keeps traversers whose sub-traversal yields a value', () => {
     const r = arr(
-      run(
-        traversal(
-          V(),
-          filter(pipe(label(), is(eq('PERSON')))),
-          values('name'),
-        ),
-        tinkerGraph,
-      ),
+      run(traversal(V(), filter(pipe(label(), is(eq('PERSON')))), values('name')), tinkerGraph),
     );
     expect(r).toEqual(['marko', 'vadas', 'josh', 'peter']);
   });
@@ -28,9 +21,7 @@ describe('filter tests', () => {
   // doc-style: g.V().filter(out('CREATED')).values('name') — marko; josh; peter
   // (filter keeps traversers whose sub-plan emits at least one result)
   test('filter with sub-plan keeps vertices that have an outgoing CREATED edge', () => {
-    const r = arr(
-      run(traversal(V(), filter(out('CREATED')), values('name')), tinkerGraph),
-    );
+    const r = arr(run(traversal(V(), filter(out('CREATED')), values('name')), tinkerGraph));
     expect(r).toEqual(['marko', 'josh', 'peter']);
   });
 
@@ -42,8 +33,7 @@ describe('filter tests', () => {
         traversal(
           V(),
           filter(
-            (v: unknown) =>
-              ((v as { properties: { name: string } }).properties.name).length < 5,
+            (v: unknown) => (v as { properties: { name: string } }).properties.name.length < 5,
           ),
           values('name'),
         ),

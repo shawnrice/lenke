@@ -234,7 +234,7 @@ impl Parser {
                     }
                 }
                 // Token namespaces: T.id, Order.desc, Pop.first, Scope.local.
-                if matches!(id.as_str(), "T" | "Order" | "Pop" | "Scope" | "Column" | "TextP" | "P" | "__") && self.peek_at(1) == Some(&Tok::Dot) {
+                if matches!(id.as_str(), "T" | "Order" | "Pop" | "Scope" | "Column" | "TextP" | "P" | "ShortestPath" | "__") && self.peek_at(1) == Some(&Tok::Dot) {
                     if id == "TextP" || id == "P" {
                         // TextP.containing(...) / P.gt(...) — skip the namespace, parse the call.
                         self.pos += 2; // ident + dot
@@ -296,6 +296,7 @@ impl Parser {
             ("Pop", "last") => Arg::Pop(Pop::Last),
             ("Pop", "all") => Arg::Pop(Pop::All),
             ("Scope", _) => Arg::Str(format!("Scope.{member}")), // consumed by scope-aware steps
+            ("ShortestPath", _) => Arg::Str(format!("ShortestPath.{member}")), // consumed by with()
             _ => return Err(format!("unknown token {ns}.{member}")),
         })
     }
@@ -448,6 +449,7 @@ impl Parser {
             "or" => t.or(self.travs(args)?),
             "not" => t.not(self.one_trav(args)?),
             "union" => t.union(self.travs(args)?),
+            "match" => t.match_(self.travs(args)?),
             "coalesce" => t.coalesce(self.travs(args)?),
             "optional" => t.optional(self.one_trav(args)?),
             "local" => t.local(self.one_trav(args)?),
@@ -466,6 +468,14 @@ impl Parser {
             "aggregate" => t.aggregate(args[0].as_str()?),
             "store" => t.store(args[0].as_str()?),
             "cap" => t.cap(args[0].as_str()?),
+            "subgraph" => t.subgraph(args[0].as_str()?),
+            "shortestPath" => t.shortest_path(),
+            "with" => match args.as_slice() {
+                [Arg::Str(opt), Arg::Trav(target)] if opt == "ShortestPath.target" => {
+                    t.with_shortest_path_target(target.clone())
+                }
+                _ => return Err("with(): only ShortestPath.target is supported".into()),
+            },
             "barrier" => t.barrier(),
             // iteration
             "repeat" => t.repeat(self.one_trav(args)?),

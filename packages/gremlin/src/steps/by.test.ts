@@ -29,9 +29,7 @@ describe('by() modulator', () => {
 
   // doc-style: order by a property name via the modulator.
   test('order().by(key) sorts by property', () => {
-    const r = arr(
-      run(traversal(V(), hasLabel('PERSON'), order().by('age'), values('name')), g),
-    );
+    const r = arr(run(traversal(V(), hasLabel('PERSON'), order().by('age'), values('name')), g));
     expect(r).toEqual(['vadas', 'marko', 'josh', 'peter']);
   });
 
@@ -83,9 +81,7 @@ describe('by() modulator', () => {
 
   // doc: g.V().out().out().path().by('name') — project each path element by name.
   test('path().by("name") projects each path element', () => {
-    const r = arr(
-      run(traversal(V('1'), outE('KNOWS'), path().by('name')), g),
-    );
+    const r = arr(run(traversal(V('1'), outE('KNOWS'), path().by('name')), g));
     // Two outgoing 'knows' edges from marko (id=1).
     expect(r).toHaveLength(2);
     // Each path: [marko-vertex projected by name, edge projected by name].
@@ -96,9 +92,7 @@ describe('by() modulator', () => {
 
   // doc: g.V().values('name').order().by(desc) — comparator-only form.
   test('order().by(Order.desc) sorts values descending', () => {
-    const r = arr(
-      run(traversal(V(), values('name'), order().by(Order.desc)), g),
-    );
+    const r = arr(run(traversal(V(), values('name'), order().by(Order.desc)), g));
     expect(r).toEqual(['vadas', 'ripple', 'peter', 'marko', 'lop', 'josh']);
   });
 
@@ -109,7 +103,9 @@ describe('by() modulator', () => {
         traversal(
           V(),
           hasLabel('PERSON'),
-          order().by(traversal(outE('CREATED'), count()), Order.desc).by('age', Order.asc),
+          order()
+            .by(traversal(outE('CREATED'), count()), Order.desc)
+            .by('age', Order.asc),
           values('name'),
         ),
         g,

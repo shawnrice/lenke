@@ -15,8 +15,7 @@ export const valueMap = (...keys: string[]): StepFn =>
   appendStep({ kind: 'valueMap', keys: keys.length ? keys : undefined });
 
 // Project property objects (`{key, value}`) for the named keys.
-export const properties = (...keys: string[]): StepFn =>
-  appendStep({ kind: 'properties', keys });
+export const properties = (...keys: string[]): StepFn => appendStep({ kind: 'properties', keys });
 
 // Project all (or selected) properties as a single map of arrays.
 export const propertyMap = (...keys: string[]): StepFn =>

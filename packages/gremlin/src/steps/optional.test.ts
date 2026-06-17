@@ -38,13 +38,6 @@ describe('optional tests', () => {
     const idPaths = r.map((p) => p.map((v) => v.id));
     // Marko expands two levels: marko->vadas (no created), marko->josh->ripple, marko->josh->lop.
     // Vadas/josh/peter: out(KNOWS) is empty, so optional falls back to identity = self.
-    expect(idPaths).toEqual([
-      ['1', '2'],
-      ['1', '4', '5'],
-      ['1', '4', '3'],
-      ['2'],
-      ['4'],
-      ['6'],
-    ]);
+    expect(idPaths).toEqual([['1', '2'], ['1', '4', '5'], ['1', '4', '3'], ['2'], ['4'], ['6']]);
   });
 });

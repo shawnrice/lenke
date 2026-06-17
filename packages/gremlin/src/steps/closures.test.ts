@@ -2,17 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
 import { findClosures, isSerializable, serialize } from '../serialize.js';
-import {
-  V,
-  filter,
-  flatMap,
-  fold,
-  hasLabel,
-  map,
-  pipe,
-  sideEffect,
-  values,
-} from '../steps.js';
+import { V, filter, flatMap, fold, hasLabel, map, pipe, sideEffect, values } from '../steps.js';
 import { traversal } from '../traversal.js';
 
 const arr = (r: Iterable<unknown>): unknown[] => [...r];
@@ -35,10 +25,7 @@ describe('closure-bearing step variants', () => {
   });
 
   test('map with sub-plan still works (dispatch)', () => {
-    const r = arr(
-      run(traversal(V(), hasLabel('PERSON'), map(pipe(values('name')))),
-       tinkerGraph),
-    );
+    const r = arr(run(traversal(V(), hasLabel('PERSON'), map(pipe(values('name')))), tinkerGraph));
     expect(r.sort()).toEqual(['josh', 'marko', 'peter', 'vadas']);
   });
 
@@ -106,9 +93,7 @@ describe('closure-bearing step variants', () => {
   });
 
   test('fold() without args still produces an array', () => {
-    const r = arr(
-      run(traversal(V(), hasLabel('PERSON'), values('name'), fold()), tinkerGraph),
-    );
+    const r = arr(run(traversal(V(), hasLabel('PERSON'), values('name'), fold()), tinkerGraph));
     expect(r).toHaveLength(1);
     expect((r[0] as string[]).sort()).toEqual(['josh', 'marko', 'peter', 'vadas']);
   });
@@ -124,7 +109,10 @@ describe('serialize', () => {
   });
 
   test('plans with closure-bearing steps are NOT serializable', () => {
-    const plan = traversal(V(), map((v) => v));
+    const plan = traversal(
+      V(),
+      map((v) => v),
+    );
     expect(isSerializable(plan)).toBe(false);
     expect(findClosures(plan)).toEqual(['0.V', '1.mapFn'].filter((s) => s.endsWith('mapFn')));
     expect(() => serialize(plan)).toThrow(/closure-bearing/);

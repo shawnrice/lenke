@@ -51,9 +51,7 @@ describe('none() / toArray / toSet / Scope / Cardinality', () => {
   // none() across an empty fold trivially passes — there's no element to
   // satisfy the predicate.
   test('none(predicate) on an empty fold passes (vacuous truth)', () => {
-    const r = arr(
-      run(traversal(V(), hasLabel('NOSUCH'), values('age'), fold(), none(lt(0))), g),
-    );
+    const r = arr(run(traversal(V(), hasLabel('NOSUCH'), values('age'), fold(), none(lt(0))), g));
     expect(r).toEqual([[]]);
   });
 

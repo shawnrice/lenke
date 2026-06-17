@@ -4,14 +4,7 @@
 // which file each step lives in.
 
 // Token tables and types from the shared scaffolding.
-export {
-  T,
-  Order,
-  Scope,
-  Cardinality,
-  Pop,
-  type SubPlan,
-} from './framework.js';
+export { T, Order, Scope, Cardinality, Pop, type SubPlan } from './framework.js';
 
 // Step constructors, one file per category.
 export * from './pipe.js';

@@ -40,9 +40,9 @@ describe('Gremlin tests', () => {
 
     // doc: g.V().hasLabel('person').range(0,2) — v[1]; v[2]
     test('hasLabel + range slices the vertex stream', () => {
-      const r = arr(
-        run(traversal(V(), hasLabel('PERSON'), range(0, 2)), tinkerGraph),
-      ) as Array<{ id: string }>;
+      const r = arr(run(traversal(V(), hasLabel('PERSON'), range(0, 2)), tinkerGraph)) as Array<{
+        id: string;
+      }>;
       expect(r.map((v) => v.id)).toEqual(['1', '2']);
     });
 

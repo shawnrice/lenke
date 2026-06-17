@@ -6,10 +6,20 @@
 import { dlopen, FFIType, ptr, toArrayBuffer } from 'bun:ffi';
 import { describe, expect, test } from 'bun:test';
 
+// Import from source (not the built dist) so the test doesn't depend on a
+// gremlin package build step.
+import { type NativeSubgraph, subgraphToGraph } from '../../packages/gremlin/src/subgraph.js';
+
 const lib = dlopen(new URL('./target/release/libpl_graph_core.dylib', import.meta.url).pathname, {
-  plg_graph_from_ndjson: { args: [FFIType.ptr, FFIType.u64_fast, FFIType.u32], returns: FFIType.ptr },
+  plg_graph_from_ndjson: {
+    args: [FFIType.ptr, FFIType.u64_fast, FFIType.u32],
+    returns: FFIType.ptr,
+  },
   plg_graph_free: { args: [FFIType.ptr], returns: FFIType.void },
-  plg_gremlin_json: { args: [FFIType.ptr, FFIType.ptr, FFIType.u64_fast, FFIType.ptr], returns: FFIType.ptr },
+  plg_gremlin_json: {
+    args: [FFIType.ptr, FFIType.ptr, FFIType.u64_fast, FFIType.ptr],
+    returns: FFIType.ptr,
+  },
   plg_free_buf: { args: [FFIType.ptr, FFIType.u64_fast], returns: FFIType.void },
 });
 
@@ -65,5 +75,47 @@ describe('textual Gremlin over bun:ffi', () => {
   test('predicate + order', () => {
     const r = gremlin(g, "g.V().hasLabel('PERSON').order().by('age', desc).values('name')");
     expect(r).toEqual(['peter', 'josh', 'marko', 'vadas']);
+  });
+
+  test('match() declarative pattern matching (TS↔Rust parity)', () => {
+    const r = gremlin(
+      g,
+      "g.V().match(__.as('a').out('CREATED').as('b'), __.as('b').has('name','lop'), __.as('b').in('CREATED').as('c'), __.as('c').has('age',29)).select('a','c').by('name')",
+    ) as Array<{ a: string; c: string }>;
+    expect(r.map((x) => `${x.a}->${x.c}`).sort()).toEqual(['josh->marko', 'marko->marko', 'peter->marko']);
+  });
+
+  test('match() with nested not()', () => {
+    const r = gremlin(
+      g,
+      "g.V().as('a').out('KNOWS').as('b').match(__.as('b').out('CREATED').as('c'), __.not(__.as('c').in('CREATED').as('a'))).select('a','b','c').by('name')",
+    );
+    expect(r).toEqual([{ a: 'marko', b: 'josh', c: 'ripple' }]);
+  });
+
+  test('shortestPath() with target via with() crosses the FFI (parity)', () => {
+    const r = gremlin(
+      g,
+      "g.V().has('name','marko').shortestPath().with(ShortestPath.target, __.has('name','ripple'))",
+    ) as Array<Array<{ id: string }>>;
+    // marko(1) → josh(4) → ripple(5) — the shortest two-hop route.
+    expect(r.map((path) => path.map((v) => v.id))).toEqual([['1', '4', '5']]);
+  });
+
+  test('subgraph() result rebuilds into a JS Graph via subgraphToGraph (parity)', () => {
+    const r = gremlin(g, "g.E().hasLabel('KNOWS').subgraph('sg').cap('sg')") as [NativeSubgraph];
+    // Self-describing native record: full vertex/edge data, not just ids.
+    expect(r[0].vertices).toHaveLength(3); // marko, vadas, josh
+    expect(r[0].edges).toHaveLength(2); // 2 KNOWS edges
+
+    // The helper turns the native return into a real @pl-graph/core Graph —
+    // closing the parity gap with the TS engine (which returns a Graph directly).
+    const sg = subgraphToGraph(r[0]);
+    expect(sg.vertexCount).toBe(3);
+    expect(sg.edgeCount).toBe(2);
+    expect(sg.getVertexById('1')!.properties.name).toBe('marko');
+    // both collected edges are KNOWS (fidelity of labels/props by id is covered
+    // in subgraph-helper.test.ts; this proves the native record → Graph path).
+    expect(r[0].edges.map((e) => e.label)).toEqual(['KNOWS', 'KNOWS']);
   });
 });

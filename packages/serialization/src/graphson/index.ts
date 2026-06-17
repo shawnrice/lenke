@@ -179,10 +179,13 @@ export const decode = (input: string, graph: Graph): Graph => {
     const from = graph.getVertexById(e.outV);
     const to = graph.getVertexById(e.inV);
     if (from === null || to === null) {
-      throw new PlGraphError(`GraphSON edge ${e.id} references missing vertex (outV=${e.outV}, inV=${e.inV})`, {
-        code: ErrorCode.MissingVertex,
-        details: { id: e.id, outV: e.outV, inV: e.inV },
-      });
+      throw new PlGraphError(
+        `GraphSON edge ${e.id} references missing vertex (outV=${e.outV}, inV=${e.inV})`,
+        {
+          code: ErrorCode.MissingVertex,
+          details: { id: e.id, outV: e.outV, inV: e.inV },
+        },
+      );
     }
     const properties: Record<string, PropertyValue> = {};
     for (const key of Object.keys(e.properties ?? {})) {

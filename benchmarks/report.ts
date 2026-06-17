@@ -8,14 +8,24 @@ type Row = {
   bytes: number;
   ops: {
     build: OpTs & { rustParallel: number; rustSerial: number };
-    serialize: { tsString: number | null; rustBytes: number; tsDisk: number | null; rustDisk: number };
+    serialize: {
+      tsString: number | null;
+      rustBytes: number;
+      tsDisk: number | null;
+      rustDisk: number;
+    };
     predicateScan: { jsLoop: number; rustScalar: number; rustNeon: number };
     ffiBatch: { queries: number; perCall: number; batched: number };
     [k: string]: any;
   };
 };
 type Results = {
-  meta: { machine: string; sizes: number[]; avgDegree: number; queries: { id: string; label: string; text: string }[] };
+  meta: {
+    machine: string;
+    sizes: number[];
+    avgDegree: number;
+    queries: { id: string; label: string; text: string }[];
+  };
   rows: Row[];
   parity: { n: number; what: string; ts: unknown; rust: unknown; ok: boolean | null }[];
   ffiOverhead: number; // ms per call
@@ -24,7 +34,13 @@ type Results = {
 const r: Results = JSON.parse(await Bun.file('benchmarks/results.json').text());
 
 const fmt = (ms: number | null | undefined): string =>
-  ms == null ? '—' : ms < 1 ? `${(ms * 1000).toFixed(0)} µs` : ms < 1000 ? `${ms.toFixed(2)} ms` : `${(ms / 1000).toFixed(2)} s`;
+  ms == null
+    ? '—'
+    : ms < 1
+      ? `${(ms * 1000).toFixed(0)} µs`
+      : ms < 1000
+        ? `${ms.toFixed(2)} ms`
+        : `${(ms / 1000).toFixed(2)} s`;
 const n0 = (x: number): string => x.toLocaleString('en-US');
 const ratio = (ts: number | null | undefined, rust: number): string =>
   ts == null ? 'TS&nbsp;failed' : `${(ts / rust).toFixed(ts / rust >= 10 ? 0 : 1)}×`;
@@ -42,11 +58,15 @@ const badge = (ts: number | null | undefined, rust: number): string => {
 
 const biggestQuery = Math.max(
   ...r.rows.flatMap((row) =>
-    r.meta.queries.map((q) => (row.ops[q.id]?.ts != null ? row.ops[q.id].ts / row.ops[q.id].rust : 0)),
+    r.meta.queries.map((q) =>
+      row.ops[q.id]?.ts != null ? row.ops[q.id].ts / row.ops[q.id].rust : 0,
+    ),
   ),
 );
 const tsFailures = r.parity.filter((p) => p.ok === false || p.ts == null).length;
-const simdBest = Math.max(...r.rows.map((row) => row.ops.predicateScan.rustScalar / row.ops.predicateScan.rustNeon));
+const simdBest = Math.max(
+  ...r.rows.map((row) => row.ops.predicateScan.rustScalar / row.ops.predicateScan.rustNeon),
+);
 const buildBig = (() => {
   const big = r.rows[r.rows.length - 1];
   return big.ops.build.ts != null ? big.ops.build.ts / big.ops.build.rustParallel : null;

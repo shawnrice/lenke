@@ -1,16 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
-import {
-  Pop,
-  V,
-  as_,
-  out,
-  pipe,
-  repeat,
-  select,
-  values,
-} from '../steps.js';
+import { Pop, V, as_, out, pipe, repeat, select, values } from '../steps.js';
 import { traversal } from '../traversal.js';
 
 const arr = (r: Iterable<unknown>): unknown[] => [...r];
@@ -80,11 +71,7 @@ describe('select with Pop modes', () => {
   test('Pop.all inside repeat collects all per-iteration tags', () => {
     const r = arr(
       run(
-        traversal(
-          V('1'),
-          repeat(pipe(out(), as_('hop'))).times(2),
-          select(Pop.all, 'hop'),
-        ),
+        traversal(V('1'), repeat(pipe(out(), as_('hop'))).times(2), select(Pop.all, 'hop')),
         tinkerGraph,
       ),
     ) as unknown[][];

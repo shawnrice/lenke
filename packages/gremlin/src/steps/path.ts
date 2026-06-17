@@ -1,11 +1,15 @@
+import type { Plan } from '../ast.js';
+
 import {
   appendStep,
+  buildPlan,
   type ByableStep,
   makeByable,
   type Pop,
   POP_TO_STR,
   type Step,
   type StepFn,
+  type SubPlan,
 } from './framework.js';
 
 // Yield the path of values seen by each traverser. With `.by(...)` modulators,
@@ -48,3 +52,25 @@ export function select(
 // each path element is keyed by its projection (round-robin).
 export const tree = (): ByableStep<Extract<Step, { kind: 'tree' }>> =>
   makeByable<Extract<Step, { kind: 'tree' }>>((bys) => ({ kind: 'tree', bys }));
+
+// `shortestPath()` configuration tokens, used with `.with(option, value)`.
+export const ShortestPath = {
+  /** A sub-traversal selecting the destination vertices. */
+  target: Symbol('ShortestPath.target'),
+} as const;
+
+/** A `shortestPath()` step builder, configurable via `.with(...)`. */
+export type ShortestPathStep = StepFn & {
+  readonly with: (option: symbol, value: SubPlan) => ShortestPathStep;
+};
+
+const makeShortestPath = (target?: Plan): ShortestPathStep =>
+  Object.assign(appendStep({ kind: 'shortestPath', ...(target ? { target } : {}) }) as StepFn, {
+    with: (option: symbol, value: SubPlan): ShortestPathStep =>
+      option === ShortestPath.target ? makeShortestPath(buildPlan(value)) : makeShortestPath(target),
+  });
+
+// Emit the shortest vertex path(s) from each source vertex to the destinations
+// (all reachable vertices by default; restrict with
+// `.with(ShortestPath.target, __.has(...))`). Unweighted BFS over incident edges.
+export const shortestPath = (): ShortestPathStep => makeShortestPath();

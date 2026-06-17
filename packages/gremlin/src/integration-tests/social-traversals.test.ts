@@ -3,18 +3,7 @@ import type { Vertex } from '@pl-graph/core';
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
 import { eq, gt } from '../predicates.js';
-import {
-  V,
-  both,
-  count,
-  dedupe,
-  has,
-  hasLabel,
-  in_,
-  out,
-  values,
-  where,
-} from '../steps.js';
+import { V, both, count, dedupe, has, hasLabel, in_, out, values, where } from '../steps.js';
 import { traversal } from '../traversal.js';
 
 const arr = (r: Iterable<unknown>): unknown[] => [...r];
@@ -24,9 +13,7 @@ describe('Social traversals', () => {
 
   // doc: g.V().has('name','marko').out('knows').values('name') — vadas; josh
   test("marko's direct friends (out knows)", () => {
-    const r = arr(
-      run(traversal(V(), has('name', eq('marko')), out('KNOWS'), values('name')), g),
-    );
+    const r = arr(run(traversal(V(), has('name', eq('marko')), out('KNOWS'), values('name')), g));
     expect((r as string[]).sort()).toEqual(['josh', 'vadas']);
   });
 
@@ -34,13 +21,7 @@ describe('Social traversals', () => {
   test("marko's friends older than 29", () => {
     const r = arr(
       run(
-        traversal(
-          V(),
-          has('name', eq('marko')),
-          out('KNOWS'),
-          has('age', gt(29)),
-          values('name'),
-        ),
+        traversal(V(), has('name', eq('marko')), out('KNOWS'), has('age', gt(29)), values('name')),
         g,
       ),
     );
@@ -48,7 +29,7 @@ describe('Social traversals', () => {
   });
 
   // marko's friends-of-friends (deduped, excluding marko himself).
-  test("friends-of-friends of marko (deduped)", () => {
+  test('friends-of-friends of marko (deduped)', () => {
     const r = arr(
       run(
         traversal(
@@ -109,8 +90,8 @@ describe('Social traversals', () => {
         traversal(
           V(),
           hasLabel('PERSON'),
-          where((p) =>
-            out('KNOWS')(p), // simply has any KNOWS out edge
+          where(
+            (p) => out('KNOWS')(p), // simply has any KNOWS out edge
           ),
           out('KNOWS'),
           where((p) => out('CREATED')(p)), // friend has CREATED edge
@@ -143,26 +124,14 @@ describe('Social traversals', () => {
 
   // Mutual collaborators on lop: people who created lop.
   test('all creators of lop (via in CREATED)', () => {
-    const r = arr(
-      run(
-        traversal(
-          V(),
-          has('name', eq('lop')),
-          in_('CREATED'),
-          values('name'),
-        ),
-        g,
-      ),
-    );
+    const r = arr(run(traversal(V(), has('name', eq('lop')), in_('CREATED'), values('name')), g));
     expect((r as string[]).sort()).toEqual(['josh', 'marko', 'peter']);
   });
 
   // doc: g.V(1).bothE().where(otherV().hasId(2)) - we use hasId on otherV.
   // Vertices reachable from marko in 1 step (both directions, both labels).
   test('1-hop neighborhood of marko (both)', () => {
-    const r = arr(
-      run(traversal(V('1'), both(), dedupe(), values('name')), g),
-    );
+    const r = arr(run(traversal(V('1'), both(), dedupe(), values('name')), g));
     expect((r as string[]).sort()).toEqual(['josh', 'lop', 'vadas']);
   });
 

@@ -14,10 +14,7 @@ describe('Labeled-position queries (as/select)', () => {
   // doc: g.V().as('a').out().as('b').out().as('c').select('a','b','c')
   test('three-step labeled walk yields {a,b,c} per traverser', () => {
     const r = arr(
-      run(
-        traversal(V(), as_('a'), out(), as_('b'), out(), as_('c'), select('a', 'b', 'c')),
-        g,
-      ),
+      run(traversal(V(), as_('a'), out(), as_('b'), out(), as_('c'), select('a', 'b', 'c')), g),
     );
     const ids = (r as Array<Record<string, Vertex>>).map((row) =>
       Object.fromEntries(Object.entries(row).map(([k, v]) => [k, v.id])),
@@ -31,10 +28,7 @@ describe('Labeled-position queries (as/select)', () => {
   // Selecting only some of the labeled positions.
   test('select subset of labeled positions', () => {
     const r = arr(
-      run(
-        traversal(V(), as_('a'), out(), as_('b'), out(), as_('c'), select('a', 'c')),
-        g,
-      ),
+      run(traversal(V(), as_('a'), out(), as_('b'), out(), as_('c'), select('a', 'c')), g),
     );
     const ids = (r as Array<Record<string, Vertex>>).map((row) =>
       Object.fromEntries(Object.entries(row).map(([k, v]) => [k, v.id])),
@@ -47,9 +41,7 @@ describe('Labeled-position queries (as/select)', () => {
 
   // Single-label select returns the value itself (no wrapper).
   test('single-label select unwraps to the value', () => {
-    const r = arr(
-      run(traversal(V(), as_('a'), out(), as_('b'), select('b')), g),
-    );
+    const r = arr(run(traversal(V(), as_('a'), out(), as_('b'), select('b')), g));
     const ids = (r as Vertex[]).map((v) => v.id);
     expect(ids.slice().sort()).toEqual(['2', '3', '3', '3', '4', '5']);
   });

@@ -11,9 +11,9 @@ describe('cyclicPath tests', () => {
 
   // doc: g.V(1).both().both().cyclicPath() — v[1]; v[1]; v[1]
   test('cyclicPath keeps only traversers whose path repeats', () => {
-    const r = arr(
-      run(traversal(V('1'), both(), both(), cyclicPath()), tinkerGraph),
-    ) as Array<{ id: string }>;
+    const r = arr(run(traversal(V('1'), both(), both(), cyclicPath()), tinkerGraph)) as Array<{
+      id: string;
+    }>;
     expect(r.map((v) => v.id)).toEqual(['1', '1', '1']);
   });
 

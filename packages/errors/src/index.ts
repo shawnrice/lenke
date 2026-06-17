@@ -67,7 +67,8 @@ export class PlGraphError extends Error {
 }
 
 /** Type guard for {@link PlGraphError}. */
-export const isPlGraphError = (error: unknown): error is PlGraphError => error instanceof PlGraphError;
+export const isPlGraphError = (error: unknown): error is PlGraphError =>
+  error instanceof PlGraphError;
 
 /**
  * True if `error` carries the given stable `code`. Works for any error with a

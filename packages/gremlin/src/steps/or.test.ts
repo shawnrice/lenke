@@ -32,10 +32,7 @@ describe('or tests', () => {
   // legacy: g.V().hasLabel('SOFTWARE').or(outE('KNOWS')).values('name') — []
   test('or: filters everything when no sub-plan matches', () => {
     const r = arr(
-      run(
-        traversal(V(), hasLabel('SOFTWARE'), or(outE('KNOWS')), values('name')),
-        tinkerGraph,
-      ),
+      run(traversal(V(), hasLabel('SOFTWARE'), or(outE('KNOWS')), values('name')), tinkerGraph),
     );
     expect(r).toEqual([]);
   });

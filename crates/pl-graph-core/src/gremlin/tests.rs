@@ -787,3 +787,184 @@ fn list_names_ordered(g: &GVal) -> Vec<String> {
         _ => panic!("expected list, got {g:?}"),
     }
 }
+
+// --- match() — declarative pattern matching (ports steps/match.test.ts) ------
+
+/// Normalize select(...)-of-match results into a sorted set of sorted
+/// `(label, name)` rows so assertions are order-independent.
+fn match_rows(r: Vec<GVal>) -> Vec<Vec<(String, String)>> {
+    let mut rows: Vec<Vec<(String, String)>> = r
+        .iter()
+        .map(|m| {
+            let mut entries: Vec<(String, String)> =
+                map_sorted(m).into_iter().map(|(k, v)| (k, s(&v))).collect();
+            entries.sort();
+            entries
+        })
+        .collect();
+    rows.sort();
+    rows
+}
+
+fn pairs(spec: &[(&str, &str)]) -> Vec<(String, String)> {
+    spec.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+}
+
+#[test]
+fn match_declarative_and_of_fragments() {
+    let r = q(g().V().match_(vec![
+        __().as_("a").out(&["CREATED"]).as_("b"),
+        __().as_("b").has("name", P::eq("lop")),
+        __().as_("b").in_(&["CREATED"]).as_("c"),
+        __().as_("c").has("age", P::eq(29)),
+    ])
+    .select(&["a", "c"])
+    .by("name"));
+    let mut want = vec![
+        pairs(&[("a", "marko"), ("c", "marko")]),
+        pairs(&[("a", "josh"), ("c", "marko")]),
+        pairs(&[("a", "peter"), ("c", "marko")]),
+    ];
+    want.sort();
+    assert_eq!(match_rows(r), want);
+}
+
+#[test]
+fn match_chained_pattern_with_embedded_has() {
+    let r = q(g().V().match_(vec![
+        __().as_("a").out(&["CREATED"]).has("name", P::eq("lop")).as_("b"),
+        __().as_("b").in_(&["CREATED"]).has("age", P::eq(29)).as_("c"),
+    ])
+    .select(&["a", "c"])
+    .by("name"));
+    let mut want = vec![
+        pairs(&[("a", "marko"), ("c", "marko")]),
+        pairs(&[("a", "josh"), ("c", "marko")]),
+        pairs(&[("a", "peter"), ("c", "marko")]),
+    ];
+    want.sort();
+    assert_eq!(match_rows(r), want);
+}
+
+#[test]
+fn match_combined_with_where_neq() {
+    let r = q(g().V().match_(vec![
+        __().as_("a").out(&["CREATED"]).as_("b"),
+        __().as_("b").in_(&["CREATED"]).as_("c"),
+    ])
+    .where_key("a", P::neq(GVal::Str("c".into())))
+    .select(&["a", "c"])
+    .by("name"));
+    let mut want = vec![
+        pairs(&[("a", "marko"), ("c", "josh")]),
+        pairs(&[("a", "marko"), ("c", "peter")]),
+        pairs(&[("a", "josh"), ("c", "marko")]),
+        pairs(&[("a", "josh"), ("c", "peter")]),
+        pairs(&[("a", "peter"), ("c", "marko")]),
+        pairs(&[("a", "peter"), ("c", "josh")]),
+    ];
+    want.sort();
+    assert_eq!(match_rows(r), want);
+}
+
+#[test]
+fn match_nested_not() {
+    let r = q(g()
+        .V()
+        .as_("a")
+        .out(&["KNOWS"])
+        .as_("b")
+        .match_(vec![
+            __().as_("b").out(&["CREATED"]).as_("c"),
+            __().not(__().as_("c").in_(&["CREATED"]).as_("a")),
+        ])
+        .select(&["a", "b", "c"])
+        .by("name"));
+    assert_eq!(match_rows(r), vec![pairs(&[("a", "marko"), ("b", "josh"), ("c", "ripple")])]);
+}
+
+// --- subgraph() — accumulate matching edges (ports steps/subgraph.test.ts) ---
+//
+// The Rust GVal has no graph type, so cap() of a subgraph key yields a
+// {vertices, edges} id-list map rather than the TS engine's Graph object; the
+// collected membership (and thus counts) match.
+
+fn subgraph_counts(r: Vec<GVal>) -> (usize, usize) {
+    match r.as_slice() {
+        [GVal::Map(entries)] => {
+            let get = |k: &str| {
+                entries.iter().find(|(key, _)| matches!(key, GVal::Str(s) if s.as_ref() == k)).map(|(_, v)| v)
+            };
+            let len = |v: Option<&GVal>| match v {
+                Some(GVal::List(l)) => l.len(),
+                _ => 0,
+            };
+            (len(get("vertices")), len(get("edges")))
+        }
+        _ => panic!("expected a subgraph map, got {r:?}"),
+    }
+}
+
+#[test]
+fn subgraph_collects_knows_edges() {
+    // 2 KNOWS edges (marko→vadas, marko→josh) over 3 vertices.
+    let r = q(g().E().has_label(&["KNOWS"]).subgraph("sg").cap("sg"));
+    assert_eq!(subgraph_counts(r), (3, 2));
+}
+
+#[test]
+fn subgraph_chained_accumulation() {
+    // marko knows {vadas, josh}; josh created {lop, ripple} → 2 edges, 3 vertices.
+    let r = q(g()
+        .V()
+        .out_e(&["KNOWS"])
+        .subgraph("knowsG")
+        .in_v()
+        .out_e(&["CREATED"])
+        .subgraph("createdG")
+        .in_v()
+        .cap("createdG"));
+    assert_eq!(subgraph_counts(r), (3, 2));
+}
+
+// --- shortestPath() (ports steps/shortestPath.test.ts) -----------------------
+
+/// Run a shortestPath traversal and resolve each emitted path's vertices to ids.
+fn sp_paths(t: super::Traversal) -> Vec<Vec<String>> {
+    let mut g = modern();
+    t.run(&mut g)
+        .iter()
+        .map(|p| match p {
+            GVal::List(vs) => vs
+                .iter()
+                .map(|v| match v {
+                    GVal::Vertex(i) => g.vid.text(*i).to_string(),
+                    other => format!("{other:?}"),
+                })
+                .collect(),
+            other => panic!("expected a path list, got {other:?}"),
+        })
+        .collect()
+}
+
+#[test]
+fn shortest_path_target_via_with() {
+    // marko —knows→ josh, one hop.
+    let paths = sp_paths(g().V().has("name", P::eq("marko")).shortest_path_to(__().has("name", P::eq("josh"))));
+    assert_eq!(paths, vec![vec!["1".to_string(), "4".to_string()]]);
+}
+
+#[test]
+fn shortest_path_multi_hop() {
+    // marko —knows→ josh —created→ ripple, two hops (the shortest route).
+    let paths = sp_paths(g().V().has("name", P::eq("marko")).shortest_path_to(__().has("name", P::eq("ripple"))));
+    assert_eq!(paths, vec![vec!["1".to_string(), "4".to_string(), "5".to_string()]]);
+}
+
+#[test]
+fn shortest_path_no_target_reaches_all() {
+    let paths = sp_paths(g().V().has("name", P::eq("marko")).shortest_path());
+    let reached: std::collections::HashSet<String> =
+        paths.iter().map(|p| p.last().unwrap().clone()).collect();
+    assert_eq!(reached, ["1", "2", "3", "4", "5", "6"].iter().map(|s| s.to_string()).collect());
+}

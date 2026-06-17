@@ -3,10 +3,10 @@
 The Rust columnar core (`crates/pl-graph-core`), callable from JS/TS. One C ABI,
 two backends behind a single `Backend` contract:
 
-| Backend | Import | Environment | How memory crosses |
-| --- | --- | --- | --- |
-| FFI | `@pl-graph/native/ffi` | Bun / server / CLI | `bun:ffi` points at JS-owned buffers, reads results in place |
-| WASM | `@pl-graph/native/wasm` | Browser | copies in/out of linear memory via `plg_alloc` |
+| Backend | Import                  | Environment        | How memory crosses                                           |
+| ------- | ----------------------- | ------------------ | ------------------------------------------------------------ |
+| FFI     | `@pl-graph/native/ffi`  | Bun / server / CLI | `bun:ffi` points at JS-owned buffers, reads results in place |
+| WASM    | `@pl-graph/native/wasm` | Browser            | copies in/out of linear memory via `plg_alloc`               |
 
 The root entry (`@pl-graph/native`) is environment-neutral — shared types plus
 the `RustGraph` facade — so importing it in a browser never pulls in the
@@ -22,12 +22,12 @@ import { graphFromNdjson } from '@pl-graph/native';
 const backend = createFfiBackend('/path/to/libpl_graph_core.dylib');
 const g = graphFromNdjson(backend, await Bun.file('graph.ndjson').bytes());
 
-g.query`MATCH (a:Person) RETURN a.name`;          // GQL → rows
-g.gremlin("g.V().has('name','marko').out()");      // textual Gremlin → values
-g.queryArrow('MATCH (n) RETURN n.age');            // Arrow ("ARW1") blob
-g.serialize('graphson');                           // → pg-json|pg-text|graphson|csv|ndjson
-g.toNdjson();                                      // serialize back out (ndjson bytes)
-g.free();                                          // release the native graph
+g.query`MATCH (a:Person) RETURN a.name`; // GQL → rows
+g.gremlin("g.V().has('name','marko').out()"); // textual Gremlin → values
+g.queryArrow('MATCH (n) RETURN n.age'); // Arrow ("ARW1") blob
+g.serialize('graphson'); // → pg-json|pg-text|graphson|csv|ndjson
+g.toNdjson(); // serialize back out (ndjson bytes)
+g.free(); // release the native graph
 ```
 
 ```ts
@@ -85,12 +85,12 @@ The Rust crate is feature-gated so a frontend can ship only what it uses. The
 big lever is `serde_json`: only the JSON-carrying surfaces pull it in, so a
 GQL-only build drops it entirely. Measured `wasm32-unknown-unknown --release`:
 
-| feature set | size | notes |
-| --- | --- | --- |
-| `gql,gremlin,ndjson,codecs,arrow` | ~1020 KB | everything (server/full) |
-| `gql,ndjson` | ~700 KB | query + snapshot load |
-| `gql` | ~615 KB | **minimal frontend** — no serde_json |
-| (core only) | ~165 KB | graph + fingerprint query, no engines |
+| feature set                       | size     | notes                                 |
+| --------------------------------- | -------- | ------------------------------------- |
+| `gql,gremlin,ndjson,codecs,arrow` | ~1020 KB | everything (server/full)              |
+| `gql,ndjson`                      | ~700 KB  | query + snapshot load                 |
+| `gql`                             | ~615 KB  | **minimal frontend** — no serde_json  |
+| (core only)                       | ~165 KB  | graph + fingerprint query, no engines |
 
 Features: `gql` (ISO-GQL engine, serde-free), `gremlin`, `ndjson` (load/
 snapshot), `codecs` (pg-json/pg-text/graphson/csv; implies `ndjson`), `arrow`

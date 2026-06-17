@@ -11,7 +11,10 @@ const LIB = new URL(
 
 const { symbols } = dlopen(LIB, {
   plg_abi_version: { args: [], returns: FFIType.u32 },
-  plg_graph_from_ndjson: { args: [FFIType.ptr, FFIType.u64_fast, FFIType.u32], returns: FFIType.ptr },
+  plg_graph_from_ndjson: {
+    args: [FFIType.ptr, FFIType.u64_fast, FFIType.u32],
+    returns: FFIType.ptr,
+  },
   plg_graph_free: { args: [FFIType.ptr], returns: FFIType.void },
   plg_graph_vertex_count: { args: [FFIType.ptr], returns: FFIType.u64_fast },
   plg_graph_edge_count: { args: [FFIType.ptr], returns: FFIType.u64_fast },
@@ -28,7 +31,15 @@ const { symbols } = dlopen(LIB, {
     returns: FFIType.ptr,
   },
   plg_predicate_scan: {
-    args: [FFIType.ptr, FFIType.ptr, FFIType.u64_fast, FFIType.f64, FFIType.u32, FFIType.ptr, FFIType.ptr],
+    args: [
+      FFIType.ptr,
+      FFIType.ptr,
+      FFIType.u64_fast,
+      FFIType.f64,
+      FFIType.u32,
+      FFIType.ptr,
+      FFIType.ptr,
+    ],
     returns: FFIType.i32,
   },
   plg_encode_ndjson: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.ptr },
@@ -43,7 +54,11 @@ export const abiVersion = (): number => symbols.plg_abi_version();
 
 /** Marshal NDJSON bytes into Rust and build the columnar graph. Returns a handle. */
 export const loadGraph = (ndjson: Uint8Array, parallel: boolean): bigint => {
-  const handle = symbols.plg_graph_from_ndjson(ptr(ndjson), BigInt(ndjson.length), parallel ? 1 : 0);
+  const handle = symbols.plg_graph_from_ndjson(
+    ptr(ndjson),
+    BigInt(ndjson.length),
+    parallel ? 1 : 0,
+  );
   if (!handle) {
     throw new Error('plg_graph_from_ndjson returned null');
   }
@@ -51,7 +66,8 @@ export const loadGraph = (ndjson: Uint8Array, parallel: boolean): bigint => {
 };
 
 export const freeGraph = (handle: bigint): void => symbols.plg_graph_free(handle);
-export const vertexCount = (handle: bigint): number => Number(symbols.plg_graph_vertex_count(handle));
+export const vertexCount = (handle: bigint): number =>
+  Number(symbols.plg_graph_vertex_count(handle));
 export const edgeCount = (handle: bigint): number => Number(symbols.plg_graph_edge_count(handle));
 
 const outCount = new BigUint64Array(1);

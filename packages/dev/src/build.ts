@@ -32,7 +32,9 @@ const collectSourceEntrypoints = (packageRoot: string): string[] => {
         !entry.name.endsWith('.test.ts') &&
         !entry.name.endsWith('.d.ts'),
     )
-    .map((entry) => join('src', entry.parentPath.slice(srcDir.length).replace(/^\//, ''), entry.name));
+    .map((entry) =>
+      join('src', entry.parentPath.slice(srcDir.length).replace(/^\//, ''), entry.name),
+    );
 };
 
 const getExternals = (packageRoot: string) => {

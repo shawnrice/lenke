@@ -14,7 +14,13 @@ describe('tree tests', () => {
   test('tree builds a nested map of paths from josh to software names', () => {
     const r = arr(
       run(
-        traversal(V(), has('name', { op: 'eq', value: 'josh' }), out('CREATED'), values('name'), tree()),
+        traversal(
+          V(),
+          has('name', { op: 'eq', value: 'josh' }),
+          out('CREATED'),
+          values('name'),
+          tree(),
+        ),
         tinkerGraph,
       ),
     );

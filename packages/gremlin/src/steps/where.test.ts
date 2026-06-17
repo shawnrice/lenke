@@ -2,7 +2,24 @@ import { describe, expect, test } from 'bun:test';
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
 import { eq, gte, gt, neq } from '../predicates.js';
-import { V, and, as_, bothE, count, hasId, hasLabel, in_, is, not, or, otherV, out, outE, values, where } from '../steps.js';
+import {
+  V,
+  and,
+  as_,
+  bothE,
+  count,
+  hasId,
+  hasLabel,
+  in_,
+  is,
+  not,
+  or,
+  otherV,
+  out,
+  outE,
+  values,
+  where,
+} from '../steps.js';
 import { traversal } from '../traversal.js';
 
 const arr = (r: Iterable<unknown>): unknown[] => [...r];
@@ -49,10 +66,7 @@ describe('where tests', () => {
   // doc: g.V().out('knows').where(out('created')).values('name') — josh
   test('where after out preserves filtering on result', () => {
     const r = arr(
-      run(
-        traversal(V(), out('KNOWS'), where(out('CREATED')), values('name')),
-        tinkerGraph,
-      ),
+      run(traversal(V(), out('KNOWS'), where(out('CREATED')), values('name')), tinkerGraph),
     );
     expect(r).toEqual(['josh']);
   });
@@ -61,12 +75,7 @@ describe('where tests', () => {
   test('chained where with not + in', () => {
     const r = arr(
       run(
-        traversal(
-          V(),
-          where(not(out('CREATED'))),
-          where(in_('KNOWS')),
-          values('name'),
-        ),
+        traversal(V(), where(not(out('CREATED'))), where(in_('KNOWS')), values('name')),
         tinkerGraph,
       ),
     );
@@ -77,7 +86,11 @@ describe('where tests', () => {
   test('where(otherV().hasId(2)) — bothE on v[1]', () => {
     const r = arr(
       run(
-        traversal(V('1'), bothE(), where((p) => hasId('2')(otherV()(p)))),
+        traversal(
+          V('1'),
+          bothE(),
+          where((p) => hasId('2')(otherV()(p))),
+        ),
         tinkerGraph,
       ),
     ) as Array<{ id: string }>;
@@ -102,10 +115,7 @@ describe('where tests', () => {
   // doc: g.V().where(outE('created').and().outE('knows')).values('name') — marko
   test('where with and(outE created, outE knows)', () => {
     const r = arr(
-      run(
-        traversal(V(), where(and(outE('CREATED'), outE('KNOWS'))), values('name')),
-        tinkerGraph,
-      ),
+      run(traversal(V(), where(and(outE('CREATED'), outE('KNOWS'))), values('name')), tinkerGraph),
     );
     expect(r).toEqual(['marko']);
   });
@@ -113,10 +123,7 @@ describe('where tests', () => {
   // doc: g.V().where(outE('created').or().outE('knows')).values('name') — marko; josh; peter
   test('where with or(outE created, outE knows)', () => {
     const r = arr(
-      run(
-        traversal(V(), where(or(outE('CREATED'), outE('KNOWS'))), values('name')),
-        tinkerGraph,
-      ),
+      run(traversal(V(), where(or(outE('CREATED'), outE('KNOWS'))), values('name')), tinkerGraph),
     );
     expect((r as string[]).sort()).toEqual(['josh', 'marko', 'peter']);
   });

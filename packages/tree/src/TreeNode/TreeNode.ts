@@ -123,15 +123,20 @@ export class TreeNode<T> {
     if (node.isRoot() && node.childCount > 1) {
       // Otherwise, it we still try to remove the root which would result in multiple trees, then
       // we'll throw an error
-      throw new PlGraphError('Cannot remove the root node from a tree when the root has multiple children', {
-        code: ErrorCode.InvalidTree,
-      });
+      throw new PlGraphError(
+        'Cannot remove the root node from a tree when the root has multiple children',
+        {
+          code: ErrorCode.InvalidTree,
+        },
+      );
     }
 
     const nextParent = node.parent;
     if (!nextParent) {
       // We should actually not get here with any well-formed tree
-      throw new PlGraphError('Cannot remove a node that has no parent', { code: ErrorCode.InvalidTree });
+      throw new PlGraphError('Cannot remove a node that has no parent', {
+        code: ErrorCode.InvalidTree,
+      });
     }
 
     // Here, we have a more normal use case of removing a leaf node or a branch
@@ -198,19 +203,27 @@ export class TreeNode<T> {
    */
   addChild(node: TreeNode<T>): TreeNode<T> {
     if (node === this) {
-      throw new PlGraphError('Cannot add a node as a child of itself', { code: ErrorCode.InvalidTree });
+      throw new PlGraphError('Cannot add a node as a child of itself', {
+        code: ErrorCode.InvalidTree,
+      });
     }
 
     if (node.parent !== null) {
-      throw new PlGraphError('Cannot add a node that already has a parent. Call detach() first to move it.', {
-        code: ErrorCode.InvalidTree,
-      });
+      throw new PlGraphError(
+        'Cannot add a node that already has a parent. Call detach() first to move it.',
+        {
+          code: ErrorCode.InvalidTree,
+        },
+      );
     }
 
     if (node.contains(this)) {
-      throw new PlGraphError('Cannot add a node whose subtree contains this node (would create a cycle)', {
-        code: ErrorCode.InvalidTree,
-      });
+      throw new PlGraphError(
+        'Cannot add a node whose subtree contains this node (would create a cycle)',
+        {
+          code: ErrorCode.InvalidTree,
+        },
+      );
     }
 
     this.#children.set(node.id, node);

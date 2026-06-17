@@ -22,10 +22,7 @@ describe('Gremlin tests', () => {
 
     // doc: g.V().repeat(both()).times(3).values('age').max() — 35
     test('max after repeat(both()).times(3)', () => {
-      const r = run(
-        traversal(V(), repeat(both()).times(3), values('age'), max()),
-        tinkerGraph,
-      );
+      const r = run(traversal(V(), repeat(both()).times(3), values('age'), max()), tinkerGraph);
       expect(arr(r)).toEqual([35]);
     });
 

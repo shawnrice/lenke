@@ -32,9 +32,7 @@ describe('Gremlin tests', () => {
     // doc: g.V().properties().hasKey('age').value() — filter the property
     // stream by key, then unwrap to the value.
     test('we can filter properties stream by key', () => {
-      const result = arr(
-        run(traversal(V(), properties(), hasKey('age'), value()), tinkerGraph),
-      );
+      const result = arr(run(traversal(V(), properties(), hasKey('age'), value()), tinkerGraph));
       // Persons' ages: marko=29, vadas=27, josh=32, peter=35.
       expect((result as number[]).sort((a, b) => a - b)).toEqual([27, 29, 32, 35]);
     });

@@ -9,5 +9,4 @@ export const V = (...ids: ID[]): StepFn =>
 export const E = (...ids: ID[]): StepFn =>
   appendStep({ kind: 'E', ids: ids.length ? ids : undefined });
 
-export const inject = (...values: unknown[]): StepFn =>
-  appendStep({ kind: 'inject', values });
+export const inject = (...values: unknown[]): StepFn => appendStep({ kind: 'inject', values });

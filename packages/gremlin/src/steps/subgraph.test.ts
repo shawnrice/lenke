@@ -1,14 +1,49 @@
-import { describe, test } from 'bun:test';
+import { describe, expect, test } from 'bun:test';
 
-// Stubbed tests for subgraph() — accumulate matching edges into a named
-// side-effect subgraph builder. AST + DSL exist; executor throws
-// "subgraph() is not yet implemented".
-describe('subgraph tests (stubs)', () => {
-  // doc: subGraph = g.E().hasLabel('knows').subgraph('subGraph').cap('subGraph').next()
-  // expected: tinkergraph[vertices:3 edges:2]
-  test.skip('TODO subgraph: collect knows edges via cap', () => {});
+import { Graph } from '@pl-graph/core';
 
-  // doc: g.V().outE('knows').subgraph('knowsG').inV().outE('created').subgraph('createdG').
-  //         inV().inE('created').subgraph('createdG').iterate()
-  test.skip('TODO subgraph: chained accumulation across multiple keys', () => {});
+import { run } from '../executor.js';
+import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
+import { cap, E, hasLabel, inV, outE, subgraph, V } from '../steps.js';
+import { traversal } from '../traversal.js';
+
+const arr = (r: Iterable<unknown>): unknown[] => [...r];
+
+describe('subgraph() — accumulate matching edges into a named subgraph', () => {
+  // doc: g.E().hasLabel('KNOWS').subgraph('sg').cap('sg').next()
+  //      → tinkergraph[vertices:3 edges:2]
+  test('collect KNOWS edges via cap', () => {
+    const g = createTestTinkerGraph();
+    const r = arr(run(traversal(E(), hasLabel('KNOWS'), subgraph('sg'), cap('sg')), g));
+    expect(r).toHaveLength(1);
+    const sg = r[0] as Graph;
+    expect(sg.vertexCount).toBe(3); // marko, vadas, josh
+    expect(sg.edgeCount).toBe(2); // marko-knows->vadas, marko-knows->josh
+  });
+
+  // subgraph() passes traversers through, so it composes mid-stream and
+  // accumulates across multiple keys.
+  test('chained accumulation across multiple keys', () => {
+    const g = createTestTinkerGraph();
+    const r = arr(
+      run(
+        traversal(
+          V(),
+          outE('KNOWS'),
+          subgraph('knowsG'),
+          inV(),
+          outE('CREATED'),
+          subgraph('createdG'),
+          inV(),
+          cap('createdG'),
+        ),
+        g,
+      ),
+    );
+    const created = r[0] as Graph;
+    // marko knows {vadas, josh}; of those, josh created {lop, ripple} → 2 edges,
+    // 3 vertices (josh, lop, ripple). vadas created nothing.
+    expect(created.edgeCount).toBe(2);
+    expect(created.vertexCount).toBe(3);
+  });
 });

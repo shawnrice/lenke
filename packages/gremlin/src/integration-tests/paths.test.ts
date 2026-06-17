@@ -23,14 +23,10 @@ describe('Paths', () => {
   const g = createTestTinkerGraph();
 
   // doc: g.V(marko).out('knows').values('name').path()
-  test("path of marko -> knows -> name", () => {
-    const r = arr(
-      run(traversal(V('1'), out('KNOWS'), values('name'), path()), g),
-    );
+  test('path of marko -> knows -> name', () => {
+    const r = arr(run(traversal(V('1'), out('KNOWS'), values('name'), path()), g));
     expect(r).toHaveLength(2);
-    const names = (r as Array<Array<unknown>>).map(
-      (p) => p[p.length - 1] as string,
-    );
+    const names = (r as Array<Array<unknown>>).map((p) => p[p.length - 1] as string);
     expect(names.slice().sort()).toEqual(['josh', 'vadas']);
   });
 
@@ -46,9 +42,7 @@ describe('Paths', () => {
 
   // doc: g.V().out().out().path().by('name')
   test('path().by("name") on two-hop traversal', () => {
-    const r = arr(
-      run(traversal(V(), out(), out(), path().by('name')), g),
-    );
+    const r = arr(run(traversal(V(), out(), out(), path().by('name')), g));
     expect(r).toEqual([
       ['marko', 'josh', 'ripple'],
       ['marko', 'josh', 'lop'],
@@ -57,9 +51,7 @@ describe('Paths', () => {
 
   // doc: g.V().outE().inV().outE().inV().path()
   test('outE.inV.outE.inV path threads edges', () => {
-    const r = arr(
-      run(traversal(V(), outE(), inV(), outE(), inV(), path()), g),
-    );
+    const r = arr(run(traversal(V(), outE(), inV(), outE(), inV(), path()), g));
     const ids = (r as Array<Array<{ id: string }>>).map((p) => p.map((v) => v.id));
     expect(ids).toEqual([
       ['1', '8', '4', '10', '5'],
@@ -70,10 +62,7 @@ describe('Paths', () => {
   // simplePath drops paths that revisit a vertex.
   test('simplePath excludes cycles in both().both()', () => {
     const r = arr(
-      run(
-        traversal(V('1'), out('KNOWS'), in_('KNOWS'), simplePath(), values('name')),
-        g,
-      ),
+      run(traversal(V('1'), out('KNOWS'), in_('KNOWS'), simplePath(), values('name')), g),
     );
     // marko -> josh -> ?in_KNOWS = marko (cycle, excluded);
     // marko -> vadas -> ?in_KNOWS = marko (cycle, excluded).

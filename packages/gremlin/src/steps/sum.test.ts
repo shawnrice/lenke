@@ -16,10 +16,7 @@ describe('Gremlin tests', () => {
     });
 
     test('sum works with repeat', () => {
-      const r = run(
-        traversal(V(), repeat(both()).times(3), values('age'), sum()),
-        tinkerGraph,
-      );
+      const r = run(traversal(V(), repeat(both()).times(3), values('age'), sum()), tinkerGraph);
       expect(arr(r)).toEqual([1471]);
     });
 

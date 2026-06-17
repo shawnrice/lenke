@@ -125,6 +125,7 @@ const and3 = (a: Truth, b: Truth): Truth => {
   if (a === false || b === false) {
     return false;
   }
+
   return a === null || b === null ? null : true;
 };
 const or3 = (a: Truth, b: Truth): Truth => {

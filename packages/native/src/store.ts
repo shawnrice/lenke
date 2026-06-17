@@ -87,9 +87,7 @@ export const createStore = (graph: RustGraph): Store => {
           seenVersion = v;
           // A mutation happened. With deps, recompute only if one of them moved;
           // without deps, fall back to the (always-correct) global version.
-          const fingerprint = deps?.length
-            ? deps.reduce((acc, d) => acc + graph.epoch(d), 0)
-            : v;
+          const fingerprint = deps?.length ? deps.reduce((acc, d) => acc + graph.epoch(d), 0) : v;
           if (fingerprint === seenFingerprint) {
             return cached; // the mutation didn't touch our dependencies
           }

@@ -53,8 +53,7 @@ export const sampleTimer = (name: string): SampleTimer => {
     const stdDev = Math.sqrt(sqSum / n);
 
     const sorted = [...samples].sort((a, b) => a - b);
-    const median =
-      n % 2 === 0 ? (sorted[n / 2 - 1] + sorted[n / 2]) / 2 : sorted[(n - 1) / 2];
+    const median = n % 2 === 0 ? (sorted[n / 2 - 1] + sorted[n / 2]) / 2 : sorted[(n - 1) / 2];
 
     console.info(
       `[TIMER] ${name} ${n} samples. Mean: ${mean}, Median: ${median}, StdDev: ${stdDev}, Min: ${min}, Max: ${max}`,
