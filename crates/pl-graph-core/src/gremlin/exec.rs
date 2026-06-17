@@ -393,6 +393,44 @@ fn prop(graph: &Graph, v: &GVal, key: &str) -> GVal {
     }
 }
 
+/// A `{ key: value }` map of an element's present (non-null) properties.
+fn element_props_map(graph: &Graph, v: &GVal) -> GVal {
+    let entries: Vec<(GVal, GVal)> = present_keys(graph, v)
+        .into_iter()
+        .filter_map(|k| {
+            let pv = prop(graph, v, &k);
+            (pv != GVal::Null).then(|| (GVal::Str(Arc::from(k.as_str())), pv))
+        })
+        .collect();
+    GVal::Map(entries)
+}
+
+/// A self-describing vertex record for a subgraph cap: `{ id, labels, properties }`.
+fn subgraph_vertex(graph: &Graph, v: u32) -> GVal {
+    let gv = GVal::Vertex(v);
+    let labels: Vec<GVal> =
+        graph.vertex_labels(v).iter().map(|&l| GVal::Str(graph.labels.arc(l))).collect();
+    GVal::Map(vec![
+        (GVal::Str(Arc::from("id")), GVal::Str(graph.vid.arc(v))),
+        (GVal::Str(Arc::from("labels")), GVal::List(labels)),
+        (GVal::Str(Arc::from("properties")), element_props_map(graph, &gv)),
+    ])
+}
+
+/// A self-describing edge record: `{ id, label, outV, inV, properties }`.
+fn subgraph_edge(graph: &Graph, e: u32) -> GVal {
+    let ge = GVal::Edge(e);
+    let outv = GVal::Vertex(graph.e_src[e as usize]);
+    let inv = GVal::Vertex(graph.e_dst[e as usize]);
+    GVal::Map(vec![
+        (GVal::Str(Arc::from("id")), elem_id(graph, &ge)),
+        (GVal::Str(Arc::from("label")), GVal::Str(graph.etype.arc(graph.e_type[e as usize]))),
+        (GVal::Str(Arc::from("outV")), elem_id(graph, &outv)),
+        (GVal::Str(Arc::from("inV")), elem_id(graph, &inv)),
+        (GVal::Str(Arc::from("properties")), element_props_map(graph, &ge)),
+    ])
+}
+
 fn present_keys(graph: &Graph, v: &GVal) -> Vec<String> {
     let (store, idx) = match v {
         GVal::Vertex(i) => (&graph.props, *i as usize),
@@ -963,11 +1001,15 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
             stream
         }
         Step::Cap(key) => {
-            // A subgraph key caps to a {vertices, edges} id-list map (GVal has no
-            // graph type — the TS engine returns a Graph object); else the bag.
+            // A subgraph key caps to a self-describing {vertices, edges} map of
+            // full element records (GVal has no graph type — the TS engine returns
+            // a Graph object). The JS `subgraphToGraph` helper rebuilds a real
+            // @pl-graph/core Graph from this, giving cross-engine parity. Else the
+            // capped value is the plain side-effect bag.
             if let Some((verts, edges)) = ctx.subgraphs.get(key) {
-                let vlist = GVal::List(verts.iter().map(|v| GVal::Str(graph.vid.arc(*v))).collect());
-                let elist = GVal::List(edges.iter().map(|e| elem_id(graph, &GVal::Edge(*e))).collect());
+                let (verts, edges) = (verts.clone(), edges.clone());
+                let vlist = GVal::List(verts.iter().map(|v| subgraph_vertex(graph, *v)).collect());
+                let elist = GVal::List(edges.iter().map(|e| subgraph_edge(graph, *e)).collect());
                 vec![Trav::root(GVal::Map(vec![
                     (GVal::Str(Arc::from("vertices")), vlist),
                     (GVal::Str(Arc::from("edges")), elist),

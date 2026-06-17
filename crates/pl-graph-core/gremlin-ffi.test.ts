@@ -6,6 +6,10 @@
 import { dlopen, FFIType, ptr, toArrayBuffer } from 'bun:ffi';
 import { describe, expect, test } from 'bun:test';
 
+// Import from source (not the built dist) so the test doesn't depend on a
+// gremlin package build step.
+import { type NativeSubgraph, subgraphToGraph } from '../../packages/gremlin/src/subgraph.js';
+
 const lib = dlopen(new URL('./target/release/libpl_graph_core.dylib', import.meta.url).pathname, {
   plg_graph_from_ndjson: {
     args: [FFIType.ptr, FFIType.u64_fast, FFIType.u32],
@@ -89,12 +93,20 @@ describe('textual Gremlin over bun:ffi', () => {
     expect(r).toEqual([{ a: 'marko', b: 'josh', c: 'ripple' }]);
   });
 
-  test('subgraph() accumulates edges and caps to a {vertices, edges} map', () => {
-    const r = gremlin(g, "g.E().hasLabel('KNOWS').subgraph('sg').cap('sg')") as Array<{
-      vertices: string[];
-      edges: string[];
-    }>;
-    expect(r[0]!.vertices).toHaveLength(3); // marko, vadas, josh
-    expect(r[0]!.edges).toHaveLength(2); // 2 KNOWS edges
+  test('subgraph() result rebuilds into a JS Graph via subgraphToGraph (parity)', () => {
+    const r = gremlin(g, "g.E().hasLabel('KNOWS').subgraph('sg').cap('sg')") as [NativeSubgraph];
+    // Self-describing native record: full vertex/edge data, not just ids.
+    expect(r[0].vertices).toHaveLength(3); // marko, vadas, josh
+    expect(r[0].edges).toHaveLength(2); // 2 KNOWS edges
+
+    // The helper turns the native return into a real @pl-graph/core Graph —
+    // closing the parity gap with the TS engine (which returns a Graph directly).
+    const sg = subgraphToGraph(r[0]);
+    expect(sg.vertexCount).toBe(3);
+    expect(sg.edgeCount).toBe(2);
+    expect(sg.getVertexById('1')!.properties.name).toBe('marko');
+    // both collected edges are KNOWS (fidelity of labels/props by id is covered
+    // in subgraph-helper.test.ts; this proves the native record → Graph path).
+    expect(r[0].edges.map((e) => e.label)).toEqual(['KNOWS', 'KNOWS']);
   });
 });
