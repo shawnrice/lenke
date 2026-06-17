@@ -93,6 +93,15 @@ describe('textual Gremlin over bun:ffi', () => {
     expect(r).toEqual([{ a: 'marko', b: 'josh', c: 'ripple' }]);
   });
 
+  test('shortestPath() with target via with() crosses the FFI (parity)', () => {
+    const r = gremlin(
+      g,
+      "g.V().has('name','marko').shortestPath().with(ShortestPath.target, __.has('name','ripple'))",
+    ) as Array<Array<{ id: string }>>;
+    // marko(1) → josh(4) → ripple(5) — the shortest two-hop route.
+    expect(r.map((path) => path.map((v) => v.id))).toEqual([['1', '4', '5']]);
+  });
+
   test('subgraph() result rebuilds into a JS Graph via subgraphToGraph (parity)', () => {
     const r = gremlin(g, "g.E().hasLabel('KNOWS').subgraph('sg').cap('sg')") as [NativeSubgraph];
     // Self-describing native record: full vertex/edge data, not just ids.

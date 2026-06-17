@@ -272,6 +272,9 @@ pub enum Step {
     Cap(String),
     /// Side-effect: accumulate matching edges (+ endpoints) into a named subgraph.
     Subgraph(String),
+    /// Emit the shortest vertex path(s) from each source vertex; `target`
+    /// (set via `.with(ShortestPath.target, …)`) filters destinations.
+    ShortestPath { target: Option<Box<Traversal>> },
     Barrier,
     Repeat { body: Box<Traversal>, times: Option<usize>, until: Option<Box<Traversal>>, emit: Option<Box<Traversal>>, emit_before: bool },
     As(String),
@@ -607,6 +610,21 @@ impl Traversal {
     }
     pub fn subgraph(self, key: &str) -> Self {
         self.push(Step::Subgraph(key.to_string()))
+    }
+    pub fn shortest_path(self) -> Self {
+        self.push(Step::ShortestPath { target: None })
+    }
+    /// `shortestPath().with(ShortestPath.target, target)` — restrict destinations.
+    pub fn shortest_path_to(self, target: Traversal) -> Self {
+        self.push(Step::ShortestPath { target: Some(Box::new(target)) })
+    }
+    /// Set the target sub-traversal on the most recent `shortestPath` step (the
+    /// textual `.with(ShortestPath.target, …)` modulator).
+    pub fn with_shortest_path_target(mut self, target: Traversal) -> Self {
+        if let Some(Step::ShortestPath { target: tgt }) = self.steps.last_mut() {
+            *tgt = Some(Box::new(target));
+        }
+        self
     }
     pub fn barrier(self) -> Self {
         self.push(Step::Barrier)

@@ -926,3 +926,45 @@ fn subgraph_chained_accumulation() {
         .cap("createdG"));
     assert_eq!(subgraph_counts(r), (3, 2));
 }
+
+// --- shortestPath() (ports steps/shortestPath.test.ts) -----------------------
+
+/// Run a shortestPath traversal and resolve each emitted path's vertices to ids.
+fn sp_paths(t: super::Traversal) -> Vec<Vec<String>> {
+    let mut g = modern();
+    t.run(&mut g)
+        .iter()
+        .map(|p| match p {
+            GVal::List(vs) => vs
+                .iter()
+                .map(|v| match v {
+                    GVal::Vertex(i) => g.vid.text(*i).to_string(),
+                    other => format!("{other:?}"),
+                })
+                .collect(),
+            other => panic!("expected a path list, got {other:?}"),
+        })
+        .collect()
+}
+
+#[test]
+fn shortest_path_target_via_with() {
+    // marko —knows→ josh, one hop.
+    let paths = sp_paths(g().V().has("name", P::eq("marko")).shortest_path_to(__().has("name", P::eq("josh"))));
+    assert_eq!(paths, vec![vec!["1".to_string(), "4".to_string()]]);
+}
+
+#[test]
+fn shortest_path_multi_hop() {
+    // marko —knows→ josh —created→ ripple, two hops (the shortest route).
+    let paths = sp_paths(g().V().has("name", P::eq("marko")).shortest_path_to(__().has("name", P::eq("ripple"))));
+    assert_eq!(paths, vec![vec!["1".to_string(), "4".to_string(), "5".to_string()]]);
+}
+
+#[test]
+fn shortest_path_no_target_reaches_all() {
+    let paths = sp_paths(g().V().has("name", P::eq("marko")).shortest_path());
+    let reached: std::collections::HashSet<String> =
+        paths.iter().map(|p| p.last().unwrap().clone()).collect();
+    assert_eq!(reached, ["1", "2", "3", "4", "5", "6"].iter().map(|s| s.to_string()).collect());
+}

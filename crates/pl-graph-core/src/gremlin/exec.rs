@@ -5,7 +5,7 @@
 //! pass traversers through unchanged. `by()` modulators resolve via [`eval_by`].
 
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use super::{By, Endpoint, GVal, Order, Pop, Scope, Step, Token, Traversal, P};
@@ -342,6 +342,80 @@ fn match_solve(
         match_solve(graph, ctx, patterns, t2, done, out);
     }
     done[idx] = false; // backtrack
+}
+
+// --- shortestPath() solver --------------------------------------------------
+//
+// Port of the TS executor/shortest-path.ts: unweighted BFS over incident edges
+// (both directions), emitting all shortest vertex paths from each source.
+
+/// All shortest (fewest-hop) vertex paths from `src` to each destination, as
+/// vertex-index arrays `[src, …, dest]`. `targets` (None ⇒ every reached vertex)
+/// filters destinations; equal-length alternatives are all returned.
+fn shortest_paths_from(graph: &Graph, src: u32, targets: Option<&HashSet<u32>>) -> Vec<Vec<u32>> {
+    let mut dist: HashMap<u32, usize> = HashMap::from([(src, 0)]);
+    let mut preds: HashMap<u32, Vec<u32>> = HashMap::new();
+    let mut frontier = vec![src];
+    while !frontier.is_empty() {
+        let mut next = Vec::new();
+        for &v in &frontier {
+            let d = dist[&v];
+            for (_, n) in adj_in_label_order(graph, v, true, true, &[]) {
+                match dist.get(&n).copied() {
+                    None => {
+                        dist.insert(n, d + 1);
+                        preds.insert(n, vec![v]);
+                        next.push(n);
+                    }
+                    Some(nd) if nd == d + 1 => preds.entry(n).or_default().push(v),
+                    _ => {}
+                }
+            }
+        }
+        frontier = next;
+    }
+    let mut paths = Vec::new();
+    for &id in dist.keys() {
+        if targets.is_none_or(|t| t.contains(&id)) {
+            build_paths(src, id, &[], &preds, &mut paths);
+        }
+    }
+    paths
+}
+
+/// Reconstruct every shortest path to `id` by walking predecessors back to `src`.
+fn build_paths(src: u32, id: u32, tail: &[u32], preds: &HashMap<u32, Vec<u32>>, out: &mut Vec<Vec<u32>>) {
+    let mut path = vec![id];
+    path.extend_from_slice(tail);
+    if id == src {
+        out.push(path);
+        return;
+    }
+    for &p in preds.get(&id).map(Vec::as_slice).unwrap_or_default() {
+        build_paths(src, p, &path, preds, out);
+    }
+}
+
+fn shortest_path_step(graph: &mut Graph, ctx: &mut Ctx, target: Option<&Traversal>, stream: Vec<Trav>) -> Vec<Trav> {
+    // Resolve the destination set once: run the target sub-plan over every vertex.
+    // Collect the indices first so the immutable borrow is released before the
+    // mutable `run_steps` call inside the filter.
+    let targets: Option<HashSet<u32>> = target.map(|plan| {
+        let verts: Vec<u32> = graph.vertex_indices().collect();
+        verts
+            .into_iter()
+            .filter(|&v| !run_steps(graph, ctx, &plan.steps, vec![Trav::root(GVal::Vertex(v))]).is_empty())
+            .collect()
+    });
+    let mut next = Vec::new();
+    for t in &stream {
+        if let GVal::Vertex(src) = t.val {
+            for path in shortest_paths_from(graph, src, targets.as_ref()) {
+                next.push(t.with(GVal::List(path.into_iter().map(GVal::Vertex).collect())));
+            }
+        }
+    }
+    next
 }
 
 fn match_step(graph: &mut Graph, ctx: &mut Ctx, plans: &[Traversal], stream: Vec<Trav>) -> Vec<Trav> {
@@ -1000,6 +1074,7 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
             }
             stream
         }
+        Step::ShortestPath { target } => shortest_path_step(graph, ctx, target.as_deref(), stream),
         Step::Cap(key) => {
             // A subgraph key caps to a self-describing {vertices, edges} map of
             // full element records (GVal has no graph type — the TS engine returns
