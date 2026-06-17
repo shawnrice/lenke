@@ -8,8 +8,8 @@
   "scripts": {
     "build": "nx run-many -t build",
     "test": "nx run-many -t test",
-    "lint": "oxlint .",
-    "lint:fix": "oxlint --fix .",
+    "lint": "oxlint --type-aware .",
+    "lint:fix": "oxlint --type-aware --fix .",
     "fmt": "oxfmt .",
     "fmt:check": "oxfmt --check .",
     "typecheck": "bunx tsc --noEmit",
