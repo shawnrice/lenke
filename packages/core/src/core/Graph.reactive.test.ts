@@ -37,7 +37,7 @@ describe('Graph reactive change tracking', () => {
     const v = graph.addVertex({ labels: ['Person'], properties: { name: 'ann', age: 30 } });
     await flush();
 
-    const version = graph.version;
+    const { version } = graph;
     const person = graph.epoch('Person');
     const age = graph.epoch('age');
     const name = graph.epoch('name');

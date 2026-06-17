@@ -36,7 +36,7 @@ export const mathStep = function* (
   const bys = step.bys ?? [];
   const vars = mathVars(step.expr);
   const byFor = (name: string): By =>
-    bys.length > 0 ? bys[vars.indexOf(name) % bys.length]! : { kind: 'identity' };
+    bys.length > 0 ? bys[vars.indexOf(name) % bys.length] : { kind: 'identity' };
   for (const t of stream) {
     const resolve = (name: string): number => {
       // `_` is the current value; any other name is an as_-bound tag.
@@ -64,7 +64,7 @@ export const evalMath = (expr: string, resolve: (name: string) => number): numbe
   let pos = 0;
   const peek = (): string => expr[pos] ?? '';
   const skip = () => {
-    while (pos < expr.length && /\s/.test(expr[pos]!)) {
+    while (pos < expr.length && /\s/.test(expr[pos])) {
       pos++;
     }
   };
@@ -84,7 +84,7 @@ export const evalMath = (expr: string, resolve: (name: string) => number): numbe
     // Identifier (`_` or an as_-bound name) — resolved by the caller.
     if (/[A-Za-z_]/.test(ch)) {
       const idStart = pos;
-      while (pos < expr.length && /[A-Za-z0-9_]/.test(expr[pos]!)) {
+      while (pos < expr.length && /[A-Za-z0-9_]/.test(expr[pos])) {
         pos++;
       }
       return resolve(expr.slice(idStart, pos));
@@ -94,7 +94,7 @@ export const evalMath = (expr: string, resolve: (name: string) => number): numbe
     if (ch === '-' || ch === '+') {
       pos++;
     }
-    while (pos < expr.length && /[0-9.]/.test(expr[pos]!)) {
+    while (pos < expr.length && /[0-9.]/.test(expr[pos])) {
       pos++;
     }
     if (start === pos) {

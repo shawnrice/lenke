@@ -72,9 +72,9 @@ export const randomLpgGraph = (seed: number): Graph => {
 
   const edgeCount = Math.floor(rand() * nodeCount * 2);
   for (let i = 0; i < edgeCount; i += 1) {
-    const from = nodes[Math.floor(rand() * nodes.length)]!;
-    const to = nodes[Math.floor(rand() * nodes.length)]!;
-    const labels = [EDGE_LABELS[Math.floor(rand() * EDGE_LABELS.length)]!];
+    const from = nodes[Math.floor(rand() * nodes.length)];
+    const to = nodes[Math.floor(rand() * nodes.length)];
+    const labels = [EDGE_LABELS[Math.floor(rand() * EDGE_LABELS.length)]];
     const properties: Record<string, PropertyValue> = {};
     if (rand() < 0.6) {
       properties.w = randomValue(rand);

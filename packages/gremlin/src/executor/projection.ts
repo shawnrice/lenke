@@ -60,7 +60,7 @@ export const projectStep = function* (
     const out: Record<string, unknown> = {};
     for (let i = 0; i < keys.length; i++) {
       const by = bys?.[i] ?? { kind: 'identity' as const };
-      out[keys[i]!] = evalBy(by, t.value, graph, ctx);
+      out[keys[i]] = evalBy(by, t.value, graph, ctx);
     }
     yield extend(t, out);
   }
@@ -126,7 +126,7 @@ export const pathStep = function* (
       yield extend(t, [...t.path]);
       continue;
     }
-    const out = t.path.map((v, i) => evalBy(bys[i % bys.length]!, v, graph, ctx));
+    const out = t.path.map((v, i) => evalBy(bys[i % bys.length], v, graph, ctx));
     yield extend(t, out);
   }
 };
@@ -238,10 +238,10 @@ export const selectStep = function* (
   // fewer `by()`s than labels they repeat round-robin, so a single `by('name')`
   // applies to every selected label. No `by()` at all ⇒ identity.
   const byFor = (i: number): By =>
-    bys && bys.length > 0 ? bys[i % bys.length]! : { kind: 'identity' };
+    bys && bys.length > 0 ? bys[i % bys.length] : { kind: 'identity' };
   for (const t of stream) {
     if (labels.length === 1) {
-      const lbl = labels[0]!;
+      const lbl = labels[0];
       const r = recallTag(t.tags, lbl, pop);
       if (!r.ok) {
         continue;
@@ -252,7 +252,7 @@ export const selectStep = function* (
     const out: Record<string, unknown> = {};
     let missing = false;
     for (let i = 0; i < labels.length; i++) {
-      const lbl = labels[i]!;
+      const lbl = labels[i];
       const r = recallTag(t.tags, lbl, pop);
       if (!r.ok) {
         missing = true;
@@ -281,7 +281,7 @@ export const treeStep = function* (
     t.path.forEach((node, i) => {
       // by(...) modulators are applied round-robin to successive path
       // positions, matching `path()`'s by-rotation semantics.
-      const key = bys && bys.length > 0 ? evalBy(bys[i % bys.length]!, node, graph, ctx) : node;
+      const key = bys && bys.length > 0 ? evalBy(bys[i % bys.length], node, graph, ctx) : node;
       let next = cursor.get(key) as Map<unknown, unknown> | undefined;
       if (!next) {
         next = new Map<unknown, unknown>();

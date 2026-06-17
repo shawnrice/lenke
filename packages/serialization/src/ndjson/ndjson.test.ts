@@ -12,7 +12,7 @@ describe('ndjson: shape', () => {
     const b = g.addVertex({ id: 'n1', labels: ['Software'], properties: {} });
     g.addEdge({ id: 'e0', from: a, to: b, labels: ['CREATED'], properties: { weight: 0.4 } });
     const lines = encode(g).split('\n');
-    expect(JSON.parse(lines[0]!)).toEqual({
+    expect(JSON.parse(lines[0])).toEqual({
       type: 'node',
       id: 'n0',
       labels: ['Person'],
@@ -114,8 +114,8 @@ describe('ndjson: streaming', () => {
     for (let i = 0; i < 25000; i += 1) {
       g.addEdge({
         id: `e${i}`,
-        from: nodes[i]!,
-        to: nodes[(i + 1) % 25000]!,
+        from: nodes[i],
+        to: nodes[(i + 1) % 25000],
         labels: ['R'],
         properties: { w: i },
       });

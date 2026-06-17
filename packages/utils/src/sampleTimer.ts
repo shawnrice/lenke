@@ -41,8 +41,12 @@ export const sampleTimer = (name: string): SampleTimer => {
     let max = -Infinity;
     for (const x of samples) {
       sum += x;
-      if (x < min) min = x;
-      if (x > max) max = x;
+      if (x < min) {
+        min = x;
+      }
+      if (x > max) {
+        max = x;
+      }
     }
     const mean = sum / n;
 

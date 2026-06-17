@@ -50,8 +50,8 @@ const makeGraph = (rand: () => number): Graph => {
   }
   const edges = Math.floor(rand() * count);
   for (let i = 0; i < edges; i += 1) {
-    const from = nodes[Math.floor(rand() * nodes.length)]!;
-    const to = nodes[Math.floor(rand() * nodes.length)]!;
+    const from = nodes[Math.floor(rand() * nodes.length)];
+    const to = nodes[Math.floor(rand() * nodes.length)];
     g.addEdge({ from, to, labels: ['R'], properties: {} });
   }
   g.enableEvents();
@@ -279,12 +279,12 @@ describe('GQL fuzz: arithmetic precedence matches a reference evaluator', () => 
       terms.push(factors.join(' * '));
       vals.push(v);
     }
-    let str = terms[0]!;
-    let val = vals[0]!;
+    let str = terms[0];
+    let val = vals[0];
     for (let t = 1; t < nTerms; t += 1) {
       const plus = rand() < 0.5;
-      str += (plus ? ' + ' : ' - ') + terms[t]!;
-      val = plus ? val + vals[t]! : val - vals[t]!;
+      str += (plus ? ' + ' : ' - ') + terms[t];
+      val = plus ? val + vals[t] : val - vals[t];
     }
     return { str, val };
   };
@@ -295,7 +295,7 @@ describe('GQL fuzz: arithmetic precedence matches a reference evaluator', () => 
       const seed = 0xa817_0000 + i;
       const rand = makeRng(seed);
       const { str, val } = genFlat(rand);
-      const got = query(g, `RETURN ${str} AS r`)[0]!.r;
+      const got = query(g, `RETURN ${str} AS r`)[0].r;
       expect(got, `arith seed=${seed}  ${str}`).toEqual(val);
     }
   });

@@ -8,6 +8,4 @@ declare global {
  * dev/test entry point) to enable timer/sampleTimer logging.
  */
 export const isTimingEnabled = (): boolean =>
-  globalThis.__DEV__ === true &&
-  typeof performance !== 'undefined' &&
-  typeof performance.now !== 'undefined';
+  globalThis.__DEV__ === true && typeof performance?.now !== 'undefined';

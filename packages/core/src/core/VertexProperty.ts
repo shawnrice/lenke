@@ -51,7 +51,7 @@ export class VertexProperty implements GraphElement {
   }
 
   get label(): string {
-    return Array.from(this.#labels)[0]!;
+    return Array.from(this.#labels)[0];
   }
 
   get graph(): Graph {

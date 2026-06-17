@@ -47,14 +47,14 @@ describe('typed headers', () => {
     const g = new Graph();
     g.addVertex({ id: 'n1', labels: ['A'], properties: { age: 30, active: true } });
     g.addVertex({ id: 'n2', labels: ['B'], properties: { ratio: 1.5, name: 'x' } });
-    const header = encodeNodes(g).split('\n')[0]!;
+    const header = encodeNodes(g).split('\n')[0];
     expect(header).toBe('id,:LABEL,age:integer,active:boolean,ratio:float,name:string');
   });
 
   test('list columns carry an element type and []', () => {
     const g = new Graph();
     g.addVertex({ id: 'n1', labels: [], properties: { nums: [1, 2, 3], words: ['a'] } });
-    const header = encodeNodes(g).split('\n')[0]!;
+    const header = encodeNodes(g).split('\n')[0];
     expect(header).toBe('id,:LABEL,nums:integer[],words:string[]');
     const back = roundTripNodes(g);
     expect(graphContentEqual(back, g)).toBe(true);
@@ -228,8 +228,8 @@ describe('throughput smoke test', () => {
     for (let i = 0; i < 5000; i += 1) {
       g.addEdge({
         id: `e${i}`,
-        from: verts[i % nodeCount]!,
-        to: verts[(i * 7 + 1) % nodeCount]!,
+        from: verts[i % nodeCount],
+        to: verts[(i * 7 + 1) % nodeCount],
         labels: ['LINK'],
         properties: { w: i * 0.5 },
       });
@@ -309,8 +309,8 @@ describe('streaming', () => {
     for (let i = 0; i < 25000; i += 1) {
       g.addEdge({
         id: `e${i}`,
-        from: verts[i % nodeCount]!,
-        to: verts[(i * 7 + 1) % nodeCount]!,
+        from: verts[i % nodeCount],
+        to: verts[(i * 7 + 1) % nodeCount],
         labels: ['LINK'],
         properties: { w: i * 0.5 },
       });

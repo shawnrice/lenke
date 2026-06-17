@@ -66,13 +66,13 @@ const parsePattern = (plan: Plan): Pattern => {
     return { ...inner, negated: first.kind === 'not' ? !inner.negated : inner.negated };
   }
 
-  if (!first || first.kind !== 'as') {
+  if (first?.kind !== 'as') {
     throw new PlGraphError('a match() pattern must begin with as(label)', {
       code: ErrorCode.Syntax,
     });
   }
   const startKey = first.label;
-  const last = steps[steps.length - 1]!;
+  const last = steps[steps.length - 1];
   if (steps.length >= 2 && last.kind === 'as') {
     return { startKey, endKey: last.label, inner: { steps: steps.slice(1, -1) }, negated: false };
   }
@@ -96,7 +96,7 @@ const computeStartLabel = (patterns: readonly Pattern[]): string => {
       return p.startKey;
     }
   }
-  return patterns[0]!.startKey;
+  return patterns[0].startKey;
 };
 
 /** A traverser identical to `t` but with `value` reset to a label's bound value. */
@@ -180,10 +180,10 @@ const pickRunnable = (
 ): number => {
   let negatedIdx = -1;
   for (let i = 0; i < patterns.length; i++) {
-    if (done.has(i) || !t.tags.has(patterns[i]!.startKey)) {
+    if (done.has(i) || !t.tags.has(patterns[i].startKey)) {
       continue;
     }
-    if (!patterns[i]!.negated) {
+    if (!patterns[i].negated) {
       return i; // run binders/filters before negated constraints
     }
     if (negatedIdx === -1) {
@@ -221,7 +221,7 @@ export const matchStep = function* (
       return; // no runnable pattern: this branch is stuck, drop it
     }
     const next = new Set(done).add(idx);
-    for (const t2 of applyPattern(patterns[idx]!, t, graph, ctx)) {
+    for (const t2 of applyPattern(patterns[idx], t, graph, ctx)) {
       yield* solve(t2, next);
     }
   };

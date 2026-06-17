@@ -63,7 +63,7 @@ describe('pg-text: decoding', () => {
     const back = decode(`solo :Lonely\nfrom to :REL`, new Graph());
     expect([...back.vertices].map((v) => v.id).sort()).toEqual(['from', 'solo', 'to']);
     expect([...back.edges]).toHaveLength(1);
-    const e = [...back.edges][0]!;
+    const e = [...back.edges][0];
     expect([e.from.id, e.to.id, [...e.labels][0]]).toEqual(['from', 'to', 'REL']);
   });
 
@@ -155,8 +155,8 @@ const representableGraph = (seed: number): Graph => {
   }
   const edgeCount = Math.floor(r() * nodeCount * 2);
   for (let i = 0; i < edgeCount; i += 1) {
-    const from = nodes[Math.floor(r() * nodes.length)]!;
-    const to = nodes[Math.floor(r() * nodes.length)]!;
+    const from = nodes[Math.floor(r() * nodes.length)];
+    const to = nodes[Math.floor(r() * nodes.length)];
     const properties: Record<string, PropertyValue> = {};
     if (r() < 0.5) {
       properties.w = scalar(r);
@@ -214,8 +214,8 @@ describe('pg-text: round-trip (representable subset)', () => {
     }
     for (let i = 0; i < 5000; i += 1) {
       g.addEdge({
-        from: nodes[i % 5000]!,
-        to: nodes[(i + 1) % 5000]!,
+        from: nodes[i % 5000],
+        to: nodes[(i + 1) % 5000],
         labels: ['R'],
         properties: { w: i },
       });
@@ -275,7 +275,7 @@ describe('pg-text: streaming', () => {
       nodes.push(g.addVertex({ id: `n${i}`, labels: ['N'], properties: { a: i } }));
     }
     for (let i = 0; i < 25000; i += 1) {
-      g.addEdge({ from: nodes[i]!, to: nodes[(i + 1) % 25000]!, labels: ['R'], properties: {} });
+      g.addEdge({ from: nodes[i], to: nodes[(i + 1) % 25000], labels: ['R'], properties: {} });
     }
     g.enableEvents();
     const start = performance.now();

@@ -89,7 +89,7 @@ export const runQuery = (handle: bigint, q: string): Sig => {
   if (rc !== 0) {
     throw new Error(`plg_query failed (rc=${rc}) for: ${q}`);
   }
-  return { count: Number(outCount[0]), sum: outSum[0]!, checksum: outChecksum[0]! };
+  return { count: Number(outCount[0]), sum: outSum[0], checksum: outChecksum[0] };
 };
 
 /** Run many queries in a single FFI crossing (amortizes the per-call tax). */
@@ -114,8 +114,8 @@ export const runQueryBatch = (handle: bigint, queries: readonly string[]): Sig[]
   }
   return Array.from({ length: k }, (_, i) => ({
     count: Number(counts[i]),
-    sum: sums[i]!,
-    checksum: checks[i]!,
+    sum: sums[i],
+    checksum: checks[i],
   }));
 };
 
@@ -149,7 +149,7 @@ export const predicateScan = (handle: bigint, key: string, thr: number, simd: bo
   if (rc !== 0) {
     throw new Error(`plg_predicate_scan failed (rc=${rc}) for key=${key}`);
   }
-  return { count: Number(outCount[0]), sum: outSum[0]! };
+  return { count: Number(outCount[0]), sum: outSum[0] };
 };
 
 const outLen = new BigUint64Array(1);

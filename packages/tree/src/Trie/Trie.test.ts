@@ -167,7 +167,7 @@ describe('Trie tests', () => {
     trie.add('happenstance', 3);
     trie.add('happiest', 4);
 
-    const nodes = trie.descendantsOf('happi')!;
+    const nodes = trie.descendantsOf('happi');
 
     expect(Array.from(nodes, (t) => t.word)).toEqual(['happier', 'happiest']);
   });

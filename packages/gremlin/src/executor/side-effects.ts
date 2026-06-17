@@ -43,8 +43,8 @@ export const subgraphStep = function* (
     ctx.subgraphs.set(key, sg);
   }
   const endpoint = (v: Vertex): Vertex =>
-    sg!.getVertexById(v.id) ??
-    sg!.addVertex({ id: v.id, labels: [...v.labels], properties: { ...v.properties } });
+    sg.getVertexById(v.id) ??
+    sg.addVertex({ id: v.id, labels: [...v.labels], properties: { ...v.properties } });
   for (const t of stream) {
     const e = t.value;
     if (isEdge(e)) {

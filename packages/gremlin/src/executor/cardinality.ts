@@ -71,11 +71,11 @@ export const sampleStep = function* (
   const k = Math.min(n, buf.length);
   for (let i = 0; i < k; i++) {
     const j = i + Math.floor(Math.random() * (buf.length - i));
-    const tmp = buf[i]!;
+    const tmp = buf[i];
     buf[i] = buf[j]!;
     buf[j] = tmp;
   }
   for (let i = 0; i < k; i++) {
-    yield buf[i]!;
+    yield buf[i];
   }
 };

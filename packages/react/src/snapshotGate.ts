@@ -38,9 +38,9 @@ export const nextSnapshot = <T, G extends GraphLike>(
   isEqual: (a: T, b: T) => boolean,
   deps?: readonly string[],
 ): CacheCell<T> => {
-  if (deps && deps.length) {
+  if (deps?.length) {
     const fingerprint = deps.reduce((acc, token) => acc + graph.epoch(token), 0);
-    if (cache && cache.fingerprint === fingerprint) {
+    if (cache?.fingerprint === fingerprint) {
       return cache; // no dependency moved — skip the selector entirely
     }
     const value = selector(graph);

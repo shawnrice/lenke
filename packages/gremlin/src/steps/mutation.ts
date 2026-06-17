@@ -92,7 +92,7 @@ export function property(...args: [string, unknown] | [CardinalitySym, string, u
     }
     return appendStep({ kind: 'property', key: args[1] as string, value: args[2], cardinality });
   }
-  return appendStep({ kind: 'property', key: args[0] as string, value: args[1] });
+  return appendStep({ kind: 'property', key: args[0], value: args[1] });
 }
 
 /**

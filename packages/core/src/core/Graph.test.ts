@@ -43,7 +43,7 @@ describe('Graph Tests', () => {
 
   test('We can manually walk from a node', () => {
     const unforgiven = graph.getVertexById(vertexId('97'))!;
-    const [{ from }] = unforgiven.edgesToByLabel('DIRECTED')!;
+    const [{ from }] = unforgiven.edgesToByLabel('DIRECTED');
     expect(from.properties.name).toBe('Clint Eastwood');
   });
 

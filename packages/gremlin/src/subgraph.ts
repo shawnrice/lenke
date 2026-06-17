@@ -38,7 +38,7 @@ export const subgraphToGraph = (sub: NativeSubgraph): Graph => {
     g.addVertex({
       id: v.id,
       labels: [...(v.labels ?? [])],
-      properties: { ...(v.properties ?? {}) },
+      properties: { ...v.properties },
     });
   }
   for (const e of sub.edges) {
@@ -47,7 +47,7 @@ export const subgraphToGraph = (sub: NativeSubgraph): Graph => {
     if (!from || !to) {
       continue;
     }
-    g.addEdge({ id: e.id, from, to, labels: [e.label], properties: { ...(e.properties ?? {}) } });
+    g.addEdge({ id: e.id, from, to, labels: [e.label], properties: { ...e.properties } });
   }
   return g;
 };

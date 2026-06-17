@@ -47,12 +47,22 @@ const ratio = (ts: number | null | undefined, rust: number): string =>
 
 // badge color by speedup magnitude
 const badge = (ts: number | null | undefined, rust: number): string => {
-  if (ts == null) return 'fail';
+  if (ts == null) {
+    return 'fail';
+  }
   const x = ts / rust;
-  if (x >= 50) return 'huge';
-  if (x >= 10) return 'big';
-  if (x >= 2) return 'win';
-  if (x >= 1.1) return 'edge';
+  if (x >= 50) {
+    return 'huge';
+  }
+  if (x >= 10) {
+    return 'big';
+  }
+  if (x >= 2) {
+    return 'win';
+  }
+  if (x >= 1.1) {
+    return 'edge';
+  }
   return 'loss';
 };
 
@@ -172,7 +182,7 @@ footer{color:var(--dim);font-size:13px;margin-top:50px;border-top:1px solid var(
 
 <div class="tldr">
 <div class="card"><div class="big">${biggestQuery.toFixed(0)}×</div><div class="lab">fastest query speedup (Rust vs TS gql)</div></div>
-<div class="card"><div class="big">${buildBig ? buildBig.toFixed(0) + '×' : '—'}</div><div class="lab">graph build at ${n0(r.rows[r.rows.length - 1].n)} vertices</div></div>
+<div class="card"><div class="big">${buildBig ? `${buildBig.toFixed(0)}×` : '—'}</div><div class="lab">graph build at ${n0(r.rows[r.rows.length - 1].n)} vertices</div></div>
 <div class="card"><div class="big">${simdBest.toFixed(1)}×</div><div class="lab">NEON predicate scan vs scalar</div></div>
 <div class="card"><div class="big">${(r.ffiOverhead * 1e6).toFixed(0)} ns</div><div class="lab">per FFI call (the fixed tax)</div></div>
 </div>
@@ -212,7 +222,7 @@ ${r.meta.queries.map((q) => queryTable(q.id, q.label, q.text)).join('')}
 
 <h2>Verdict — when is the Rust core worth it?</h2>
 <div class="verdict">
-<p><b>Go Rust when:</b> you're bulk-loading or querying large graphs (≳10k elements), running traversals or scans for throughput, or doing server-side materialization. Build is ${buildBig ? buildBig.toFixed(0) + '×' : 'much'} faster and queries 10–${biggestQuery.toFixed(0)}× faster — and serializing to disk/wire, Rust emits write-ready bytes while TS emits a string that still needs encoding.</p>
+<p><b>Go Rust when:</b> you're bulk-loading or querying large graphs (≳10k elements), running traversals or scans for throughput, or doing server-side materialization. Build is ${buildBig ? `${buildBig.toFixed(0)}×` : 'much'} faster and queries 10–${biggestQuery.toFixed(0)}× faster — and serializing to disk/wire, Rust emits write-ready bytes while TS emits a string that still needs encoding.</p>
 <p><b>Stay TS when:</b> graphs are small (≲1k), or the workload is interactive/reactive frontend use where the graph lives in the browser, mutates constantly, and feeds React via the snapshot model. There the ~${(r.ffiOverhead * 1e6).toFixed(0)} ns/call FFI tax dominates, and you'd lose the reactivity layer. (The TS engine now <i>completes</i> large queries too — just slower — so this is a performance choice, not a capability one.)</p>
 <p><b>The boundary is the cost, not the compute.</b> Rust compute is far faster everywhere; what claws it back is crossing FFI per call. So the architecture that wins is <i>coarse-grained</i>: hand Rust a whole NDJSON blob, let it build + query + aggregate, and pull back only small results — never chatty per-element calls. That's the Node/materialization persona; the frontend/reactive persona stays in TypeScript.</p>
 </div>

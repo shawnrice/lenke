@@ -118,7 +118,7 @@ export const POP_TO_STR: ReadonlyMap<symbol, 'first' | 'last' | 'all'> = new Map
 //   - Order.asc/desc → identity projection with comparator direction (order only)
 //   - StepFn     → run a single-step sub-traversal (e.g. `count()`)
 //   - Plan       → run a multi-step sub-traversal built via `traversal(...)`
-export type ByModulator = string | Token | OrderSym | StepFn | Plan;
+export type ByModulator = string | Token | StepFn | Plan;
 
 export type ByableStep<S extends Step> = StepFn & {
   readonly by: (modulator?: ByModulator, comparator?: OrderSym) => ByableStep<S>;
@@ -127,7 +127,7 @@ export type ByableStep<S extends Step> = StepFn & {
 // ---------- Predicate / sub-plan introspection ----------
 
 export const isPlan = (x: unknown): x is Plan =>
-  typeof x === 'object' && x !== null && 'steps' in (x as object);
+  typeof x === 'object' && x !== null && 'steps' in x;
 
 /**
  * True if `x` is a sub-plan in either accepted shape (a `traversal(...)` or a
@@ -184,7 +184,7 @@ export const toBy = (modulator: ByModulator | undefined, comparator?: OrderSym):
 // call is pure.
 export const makeByable = <S extends Step & { bys?: readonly By[] }>(
   make: (bys: readonly By[] | undefined) => S,
-  bys: readonly By[] | undefined = undefined,
+  bys?: readonly By[] | undefined,
 ): ByableStep<S> => {
   const fn: StepFn = appendStep(make(bys));
   return Object.assign(fn, {

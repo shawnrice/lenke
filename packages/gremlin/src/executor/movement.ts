@@ -27,11 +27,11 @@ export const adjacentEdges = (
 export const otherEndpoint = (kind: 'out' | 'in' | 'both', edge: Edge, v: Vertex): Vertex => {
   switch (kind) {
     case 'out':
-      return edge.to as Vertex;
+      return edge.to;
     case 'in':
-      return edge.from as Vertex;
+      return edge.from;
     case 'both':
-      return (edge.from.id === v.id ? edge.to : edge.from) as Vertex;
+      return edge.from.id === v.id ? edge.to : edge.from;
   }
 };
 
@@ -44,7 +44,7 @@ export const traverseToVertex = function* (
     if (!isVertex(t.value)) {
       continue;
     }
-    const v = t.value as Vertex;
+    const v = t.value;
     for (const e of adjacentEdges(step.kind, graph, v, step.labels)) {
       yield extend(t, otherEndpoint(step.kind, e, v));
     }
@@ -60,7 +60,7 @@ export const traverseToEdge = function* (
     if (!isVertex(t.value)) {
       continue;
     }
-    const v = t.value as Vertex;
+    const v = t.value;
     for (const e of adjacentEdges(step.kind, graph, v, step.labels)) {
       yield extend(t, e);
     }

@@ -116,4 +116,4 @@ export function where(
 export const filter = (arg: SubPlan | FilterClosure): StepFn =>
   isSubPlan(arg)
     ? appendStep({ kind: 'filter', plan: buildPlan(arg) })
-    : appendStep({ kind: 'filterFn', fn: arg as FilterClosure });
+    : appendStep({ kind: 'filterFn', fn: arg });

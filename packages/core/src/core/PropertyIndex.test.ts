@@ -166,7 +166,7 @@ describe('PropertyIndex range', () => {
     const values = Array.from({ length: COUNT }, (_, i) => i * 3 - COUNT);
     for (let i = values.length - 1; i > 0; i--) {
       const j = rnd(i + 1);
-      [values[i], values[j]] = [values[j]!, values[i]!];
+      [values[i], values[j]] = [values[j], values[i]];
     }
     const insert = (v: number): void => {
       graph.addVertex({ id: `v${v}`, labels: [], properties: { k: v } });
@@ -234,7 +234,7 @@ describe('PropertyIndex range', () => {
     const order = Array.from({ length: 500 }, (_, i) => i);
     for (let i = order.length - 1; i > 0; i--) {
       const j = (i * 2654435761) % (i + 1);
-      [order[i], order[j]] = [order[j]!, order[i]!];
+      [order[i], order[j]] = [order[j], order[i]];
     }
     for (const v of order) {
       graph.addVertex({ id: `v${v}`, labels: [], properties: { k: v } });

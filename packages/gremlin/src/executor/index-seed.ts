@@ -198,7 +198,7 @@ const seedRest = <E>(
   let bestAt = -1;
   let best: Candidate<E> | null = null;
   for (let i = 0; i < rest.length; i++) {
-    const step = rest[i]!;
+    const step = rest[i];
     if (!COMMUTING_FILTERS.has(step.kind)) {
       break;
     }

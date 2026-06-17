@@ -47,7 +47,7 @@ describe('shortestPath() — shortest vertex paths from each source', () => {
 
   test('no target ⇒ a path to every reachable vertex (incl. the trivial self path)', () => {
     const r = arr(run(traversal(V(), has('name', 'marko'), shortestPath()), g));
-    const reached = new Set((r as Vertex[][]).map((p) => p[p.length - 1]!.id));
+    const reached = new Set((r as Vertex[][]).map((p) => p[p.length - 1].id));
     // marko reaches everyone in the connected modern graph, including itself.
     expect(reached).toEqual(new Set(['1', '2', '3', '4', '5', '6']));
   });

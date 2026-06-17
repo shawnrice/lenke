@@ -31,7 +31,9 @@ const T_UTF8 = 3;
 function decodeArrow(buf: ArrayBuffer) {
   const dv = new DataView(buf);
   const magic = new TextDecoder().decode(new Uint8Array(buf, 0, 4));
-  if (magic !== 'ARW1') throw new Error(`bad magic ${magic}`);
+  if (magic !== 'ARW1') {
+    throw new Error(`bad magic ${magic}`);
+  }
   const nrows = Number(dv.getBigUint64(8, true));
   const ncols = Number(dv.getBigUint64(16, true));
   const u8 = new Uint8Array(buf);
@@ -51,9 +53,13 @@ function decodeArrow(buf: ArrayBuffer) {
     const values: (number | string | boolean | null)[] = [];
     if (tag === T_FLOAT64) {
       const view = new Float64Array(buf, b1Off, nrows); // zero-copy view over the column
-      for (let i = 0; i < nrows; i++) values.push(valid(i) ? view[i] : null);
+      for (let i = 0; i < nrows; i++) {
+        values.push(valid(i) ? view[i] : null);
+      }
     } else if (tag === T_BOOL) {
-      for (let i = 0; i < nrows; i++) values.push(valid(i) ? validBit(b1Off, i) : null);
+      for (let i = 0; i < nrows; i++) {
+        values.push(valid(i) ? validBit(b1Off, i) : null);
+      }
     } else {
       const offs = new Int32Array(buf, b1Off, nrows + 1);
       const dec = new TextDecoder();

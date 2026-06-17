@@ -15,8 +15,8 @@ const bigGraph = (): Graph => {
   for (let i = 0; i < 30000; i += 1) {
     g.addEdge({
       id: `e${i}`,
-      from: nodes[i]!,
-      to: nodes[(i + 1) % 30000]!,
+      from: nodes[i],
+      to: nodes[(i + 1) % 30000],
       labels: ['R'],
       properties: { w: i },
     });

@@ -382,7 +382,7 @@ describe('TCK Delete1: delete nodes', () => {
 // Literals1–6 — Literal lexing/evaluation. (int64-overflow scenarios like
 // 9223372036854775807 are omitted: this engine uses IEEE-754 doubles.)
 describe('TCK Literals1/2/3/4/5/6: literals', () => {
-  const lit = (src: string) => query(empty, `RETURN ${src} AS literal`)[0]!.literal;
+  const lit = (src: string) => query(empty, `RETURN ${src} AS literal`)[0].literal;
 
   test('booleans and null, case-insensitive keywords', () => {
     expect(lit('true')).toBe(true);
@@ -427,7 +427,7 @@ describe('TCK Literals1/2/3/4/5/6: literals', () => {
 // escaped character. (String.raw keeps the backslash from JS so our lexer, not
 // the test file, does the decoding.)
 describe('TCK Literals6: string escape sequences (ISO)', () => {
-  const lit = (raw: string) => query(empty, raw)[0]!.literal;
+  const lit = (raw: string) => query(empty, raw)[0].literal;
 
   test('control-character escapes decode', () => {
     expect(lit(String.raw`RETURN '\n' AS literal`)).toBe('\n');
@@ -569,7 +569,7 @@ describe('TCK MatchWhere2 / With2: multi-variable joins', () => {
 
 // Mathematical3/4/5 — arithmetic and NULL propagation.
 describe('TCK Mathematical: arithmetic with null propagation', () => {
-  const v = (e: string): unknown => query(empty, `RETURN ${e} AS r`)[0]!.r;
+  const v = (e: string): unknown => query(empty, `RETURN ${e} AS r`)[0].r;
 
   test('subtraction, multiplication, division', () => {
     expect(v('7 - 2')).toBe(5);

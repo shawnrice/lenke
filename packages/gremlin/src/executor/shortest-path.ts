@@ -78,7 +78,7 @@ export const shortestPathStep = function* (
   if (step.target) {
     targets = new Set();
     for (const v of graph.vertices) {
-      if (hasAny(applyPlanToStream(step.target!, [startTraverser(v)], graph))) {
+      if (hasAny(applyPlanToStream(step.target, [startTraverser(v)], graph))) {
         targets.add(v.id);
       }
     }

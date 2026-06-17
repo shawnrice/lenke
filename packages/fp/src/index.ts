@@ -36,7 +36,7 @@ export * from './sortBy.js';
 export * from './take.js';
 export * from './toArray.js';
 export * from './takeWhile.js';
-export * from './types.js';
+export type * from './types.js';
 export * from './uniq.js';
 export * from './window.js';
 export * from './zip.js';

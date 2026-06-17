@@ -91,7 +91,7 @@ const compare = (a: IndexableValue, b: IndexableValue): number => {
   }
   switch (typeof a) {
     case 'number':
-      return (a as number) - (b as number);
+      return a - (b as number);
     case 'boolean':
       return (a ? 1 : 0) - (b ? 1 : 0);
     case 'string': {
@@ -171,7 +171,7 @@ const firstKey = <T>(node: BNode<T>): T => {
   while (!n.leaf) {
     n = n.children[0]!;
   }
-  return n.values[0]!;
+  return n.values[0];
 };
 
 class OrderedSet<T> {
@@ -195,7 +195,7 @@ class OrderedSet<T> {
     for (let i = 0; i < sorted.length; i += BTREE_ORDER) {
       const leaf: Leaf<T> = { leaf: true, values: sorted.slice(i, i + BTREE_ORDER), next: null };
       if (leaves.length > 0) {
-        leaves[leaves.length - 1]!.next = leaf;
+        leaves[leaves.length - 1].next = leaf;
       }
       leaves.push(leaf);
     }
@@ -208,7 +208,7 @@ class OrderedSet<T> {
         const children = level.slice(i, i + BTREE_ORDER);
         const keys: T[] = [];
         for (let j = 1; j < children.length; j++) {
-          keys.push(firstKey(children[j]!));
+          keys.push(firstKey(children[j]));
         }
         parents.push({ leaf: false, keys, children });
       }
@@ -235,7 +235,7 @@ class OrderedSet<T> {
     let hi = node.keys.length;
     while (lo < hi) {
       const mid = (lo + hi) >>> 1;
-      if (this.cmp(value, node.keys[mid]!) < 0) {
+      if (this.cmp(value, node.keys[mid]) < 0) {
         hi = mid;
       } else {
         lo = mid + 1;
@@ -250,7 +250,7 @@ class OrderedSet<T> {
     let hi = values.length;
     while (lo < hi) {
       const mid = (lo + hi) >>> 1;
-      if (this.cmp(values[mid]!, value) < 0) {
+      if (this.cmp(values[mid], value) < 0) {
         lo = mid + 1;
       } else {
         hi = mid;
@@ -268,7 +268,7 @@ class OrderedSet<T> {
       node = node.children[idx]!;
     }
     const pos = this.lowerIdx(node.values, value);
-    if (pos < node.values.length && this.cmp(node.values[pos]!, value) === 0) {
+    if (pos < node.values.length && this.cmp(node.values[pos], value) === 0) {
       return; // already present
     }
     node.values.splice(pos, 0, value);
@@ -280,7 +280,7 @@ class OrderedSet<T> {
     const mid = node.values.length >> 1;
     const right: Leaf<T> = { leaf: true, values: node.values.splice(mid), next: node.next };
     node.next = right;
-    this.insertSplit(right.values[0]!, right, path);
+    this.insertSplit(right.values[0], right, path);
   }
 
   private insertSplit(
@@ -299,7 +299,7 @@ class OrderedSet<T> {
       return;
     }
     const mid = parent.keys.length >> 1;
-    const upKey = parent.keys[mid]!;
+    const upKey = parent.keys[mid];
     const rightKeys = parent.keys.splice(mid + 1);
     parent.keys.length = mid; // drop keys[mid] (it moves up, not copied)
     const rightChildren = parent.children.splice(mid + 1);
@@ -312,7 +312,7 @@ class OrderedSet<T> {
       node = node.children[this.childIndex(node, value)]!;
     }
     const pos = this.lowerIdx(node.values, value);
-    if (pos < node.values.length && this.cmp(node.values[pos]!, value) === 0) {
+    if (pos < node.values.length && this.cmp(node.values[pos], value) === 0) {
       node.values.splice(pos, 1);
       this.count--;
     }
@@ -333,7 +333,7 @@ class OrderedSet<T> {
     for (let l: Leaf<T> | null = leaf; l; l = l.next) {
       const { values } = l;
       for (let i = l === leaf ? start : 0; i < values.length; i++) {
-        yield values[i]!;
+        yield values[i];
       }
     }
   }

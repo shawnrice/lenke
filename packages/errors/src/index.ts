@@ -76,4 +76,4 @@ export const isPlGraphError = (error: unknown): error is PlGraphError =>
  * convention) — match on this rather than on message text.
  */
 export const hasErrorCode = (error: unknown, code: ErrorCode): boolean =>
-  typeof error === 'object' && error !== null && (error as { code?: unknown }).code === code;
+  typeof error === 'object' && (error as { code?: unknown })?.code === code;

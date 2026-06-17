@@ -97,7 +97,7 @@ export const encode = (graph: Graph): string => {
           '@type': 'g:VertexProperty',
           '@value': {
             id: `${vertex.id}/${key}`,
-            value: encodeValue(bag[key]!),
+            value: encodeValue(bag[key]),
             label: key,
           },
         },
@@ -120,7 +120,7 @@ export const encode = (graph: Graph): string => {
     for (const key of Object.keys(bag)) {
       properties[key] = {
         '@type': 'g:Property',
-        '@value': { key, value: encodeValue(bag[key]!) },
+        '@value': { key, value: encodeValue(bag[key]) },
       };
     }
     edges.push({
@@ -164,7 +164,7 @@ export const decode = (input: string, graph: Graph): Graph => {
     const v = wrapper['@value'];
     const properties: Record<string, PropertyValue> = {};
     for (const key of Object.keys(v.properties ?? {})) {
-      const entries = v.properties![key]!;
+      const entries = v.properties![key];
       // LPG is single-value: read only the first element of the array.
       const [first] = entries;
       if (first !== undefined) {
@@ -189,7 +189,7 @@ export const decode = (input: string, graph: Graph): Graph => {
     }
     const properties: Record<string, PropertyValue> = {};
     for (const key of Object.keys(e.properties ?? {})) {
-      properties[key] = decodeValue(e.properties![key]!['@value'].value);
+      properties[key] = decodeValue(e.properties![key]['@value'].value);
     }
     graph.addEdge({ id: e.id, from, to, labels: splitLabels(e.label), properties });
   }

@@ -41,11 +41,11 @@ export const runEndpointPlan = (
   if (plan.steps.length === 0) {
     return [rooted];
   }
-  const first = plan.steps[0]!;
+  const first = plan.steps[0];
   if (first.kind === 'V' || first.kind === 'E' || first.kind === 'inject') {
     let stream: Iterable<Traverser<unknown>> = applySource(first, graph);
     for (let i = 1; i < plan.steps.length; i++) {
-      stream = applyStep(plan.steps[i]!, stream, graph, ctx);
+      stream = applyStep(plan.steps[i], stream, graph, ctx);
     }
     return stream;
   }

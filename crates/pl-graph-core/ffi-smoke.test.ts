@@ -45,8 +45,8 @@ describe('pl-graph-core over bun:ffi', () => {
 
     expect(rc).toBe(0);
     expect([...offsets]).toEqual([0, 2, 3, 4]);
-    expect([...neighbors.slice(0, 2)]).toEqual([1, 2]); // v0 -> {1,2}
-    expect([...neighbors.slice(2, 3)]).toEqual([2]); // v1 -> {2}
-    expect([...neighbors.slice(3, 4)]).toEqual([0]); // v2 -> {0}
+    expect(neighbors.slice(0, 2)).toEqual([1, 2]); // v0 -> {1,2}
+    expect(neighbors.slice(2, 3)).toEqual([2]); // v1 -> {2}
+    expect(neighbors.slice(3, 4)).toEqual([0]); // v2 -> {0}
   });
 });

@@ -164,8 +164,8 @@ describe('serialization/pg-json: throughput smoke', () => {
     for (let i = 0; i < edgeCount; i += 1) {
       g.addEdge({
         id: `e${i}`,
-        from: verts[i % nodeCount]!,
-        to: verts[(i * 7 + 1) % nodeCount]!,
+        from: verts[i % nodeCount],
+        to: verts[(i * 7 + 1) % nodeCount],
         labels: ['LINKS'],
         properties: { w: i % 13 },
       });

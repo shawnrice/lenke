@@ -111,11 +111,11 @@ export const inferDeps = (text: string): string[] => {
   const tokens = new Set<string>();
   // :Label or :TYPE   and   [:TYPE]
   for (const m of text.matchAll(/:([A-Za-z_]\w*)/g)) {
-    tokens.add(m[1]!);
+    tokens.add(m[1]);
   }
   // .key property access
   for (const m of text.matchAll(/\.([A-Za-z_]\w*)/g)) {
-    tokens.add(m[1]!);
+    tokens.add(m[1]);
   }
   return [...tokens];
 };

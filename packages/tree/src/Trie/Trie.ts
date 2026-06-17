@@ -118,7 +118,7 @@ export class Trie<T> {
       if (current.count === 0) {
         // The node is no longer needed, so we can get the next node, which will be its parent, and
         // we can remove it
-        const parent = queue[i + 1]!;
+        const parent = queue[i + 1];
 
         if (parent) {
           parent.children.delete(current.char);

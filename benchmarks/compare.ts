@@ -250,7 +250,9 @@ for (const n of SIZES) {
         s += a;
       }
     }
-    if (c < 0) throw 0;
+    if (c < 0) {
+      throw 0;
+    }
   });
   const rScalar = bench(reps, () => rust.predicateScan(rh, 'age', 50, false));
   const rNeon = bench(reps, () => rust.predicateScan(rh, 'age', 50, true));

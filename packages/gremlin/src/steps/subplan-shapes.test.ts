@@ -52,7 +52,7 @@ describe('sub-plan combinators accept both Plan and StepFn', () => {
     const r = arr(
       run(traversal(V('1'), union(traversal(values('name')), traversal(values('age')))), g),
     );
-    expect((r as unknown[]).sort()).toEqual([29, 'marko']);
+    expect(r.sort()).toEqual([29, 'marko']);
   });
 
   test('choose: traversal() in test/then/else slots', () => {
@@ -71,7 +71,7 @@ describe('sub-plan combinators accept both Plan and StepFn', () => {
       ),
     );
     // marko (29): then-branch yields 'marko'. Others: else-branch yields ages.
-    expect((r as unknown[]).sort()).toEqual([27, 32, 35, 'marko']);
+    expect(r.sort()).toEqual([27, 32, 35, 'marko']);
   });
 
   test('repeat: traversal() body works (the original footgun)', () => {

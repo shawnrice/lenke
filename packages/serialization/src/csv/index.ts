@@ -154,7 +154,7 @@ const parseCsv = (input: string): Cell[][] => {
   };
 
   while (i < n) {
-    const c = input[i]!;
+    const c = input[i];
     if (inQuotes) {
       if (c === '"') {
         if (input[i + 1] === '"') {
@@ -296,7 +296,7 @@ const splitList = (raw: string): string[] => {
   let cur = '';
   let i = 0;
   while (i < raw.length) {
-    const c = raw[i]!;
+    const c = raw[i];
     if (c === '\\' && i + 1 < raw.length) {
       cur += raw[i + 1];
       i += 2;
@@ -335,7 +335,7 @@ const rawToElement = (elemScalar: ScalarType, part: string): PropertyValue => {
   if (part.startsWith(OVERRIDE_PREFIX)) {
     const colon = part.indexOf(':');
     const code = part.slice(OVERRIDE_PREFIX.length, colon);
-    return rawToScalar(CODE_SCALAR[code]!, part.slice(colon + 1));
+    return rawToScalar(CODE_SCALAR[code], part.slice(colon + 1));
   }
   return rawToScalar(elemScalar, part);
 };
@@ -426,7 +426,7 @@ const decodeCell = (column: ColumnType, cell: Cell): PropertyValue | typeof ABSE
     if (list) {
       code = code.slice(0, -2);
     }
-    const overrideType: ColumnType = { scalar: CODE_SCALAR[code]!, list };
+    const overrideType: ColumnType = { scalar: CODE_SCALAR[code], list };
     return rawToValue(overrideType, text.slice(colon + 1));
   }
   // A scalar-string cell is a literal string: undo the leading-backslash escape.
@@ -487,7 +487,7 @@ const buildRow = (
       cells.push(''); // absent
       continue;
     }
-    const encoded = encodeCell(types.get(key)!, bag[key]!);
+    const encoded = encodeCell(types.get(key)!, bag[key]);
     cells.push(
       encoded.forceQuote ? `"${encoded.raw.replaceAll('"', '""')}"` : quoteField(encoded.raw),
     );
@@ -517,7 +517,7 @@ const propsFromRow = (
     if (cell === undefined) {
       continue;
     }
-    const { key, type } = propCols[c]!;
+    const { key, type } = propCols[c];
     const decoded = decodeCell(type, cell);
     if (decoded !== ABSENT) {
       properties[key] = decoded;
@@ -531,26 +531,26 @@ const splitLabels = (text: string): string[] => (text === '' ? [] : text.split(L
 /** Add one vertex from a parsed node row. */
 const applyNodeRow = (graph: Graph, row: Cell[], propCols: readonly ParsedHeader[]): void => {
   graph.addVertex({
-    id: row[0]!.text,
-    labels: splitLabels(row[1]!.text),
+    id: row[0].text,
+    labels: splitLabels(row[1].text),
     properties: propsFromRow(row, propCols, 2),
   });
 };
 
 /** Add one edge from a parsed edge row, creating endpoints on demand. */
 const applyEdgeRow = (graph: Graph, row: Cell[], propCols: readonly ParsedHeader[]): void => {
-  const fromId = row[1]!.text;
-  const toId = row[2]!.text;
+  const fromId = row[1].text;
+  const toId = row[2].text;
   // Endpoints are created if missing so the edge stream can be decoded without a
   // prior node-decode pass having materialized every referenced vertex.
   const from =
     graph.getVertexById(fromId) ?? graph.addVertex({ id: fromId, labels: [], properties: {} });
   const to = graph.getVertexById(toId) ?? graph.addVertex({ id: toId, labels: [], properties: {} });
   graph.addEdge({
-    id: row[0]!.text,
+    id: row[0].text,
     from,
     to,
-    labels: splitLabels(row[3]!.text),
+    labels: splitLabels(row[3].text),
     properties: propsFromRow(row, propCols, 4),
   });
 };
@@ -573,7 +573,7 @@ export const encodeNodes = (graph: Graph): string => {
   let i = 0;
   for (const vertex of graph.vertices) {
     const labelStr = [...vertex.labels].join(LIST_SEP);
-    rows.push(buildRow([vertex.id, labelStr], keys, types, bags[i]!));
+    rows.push(buildRow([vertex.id, labelStr], keys, types, bags[i]));
     i += 1;
   }
   return rows.join('\n');
@@ -585,7 +585,7 @@ export const decodeNodes = (csv: string, graph: Graph): Graph => {
   if (rows.length === 0) {
     return graph;
   }
-  const propCols = propColsFromHeader(rows[0]!, 2);
+  const propCols = propColsFromHeader(rows[0], 2);
 
   const eventsEnabled = graph.eventsEnabled();
   if (eventsEnabled) {
@@ -593,7 +593,7 @@ export const decodeNodes = (csv: string, graph: Graph): Graph => {
   }
 
   for (let r = 1; r < rows.length; r += 1) {
-    applyNodeRow(graph, rows[r]!, propCols);
+    applyNodeRow(graph, rows[r], propCols);
   }
 
   if (eventsEnabled) {
@@ -627,7 +627,7 @@ export const encodeEdges = (graph: Graph): string => {
   let i = 0;
   for (const edge of graph.edges) {
     const typeStr = [...edge.labels].join(LIST_SEP);
-    rows.push(buildRow([edge.id, edge.from.id, edge.to.id, typeStr], keys, types, bags[i]!));
+    rows.push(buildRow([edge.id, edge.from.id, edge.to.id, typeStr], keys, types, bags[i]));
     i += 1;
   }
   return rows.join('\n');
@@ -642,7 +642,7 @@ export const decodeEdges = (csv: string, graph: Graph): Graph => {
   if (rows.length === 0) {
     return graph;
   }
-  const propCols = propColsFromHeader(rows[0]!, 4);
+  const propCols = propColsFromHeader(rows[0], 4);
 
   const eventsEnabled = graph.eventsEnabled();
   if (eventsEnabled) {
@@ -650,9 +650,9 @@ export const decodeEdges = (csv: string, graph: Graph): Graph => {
   }
 
   for (let r = 1; r < rows.length; r += 1) {
-    const row = rows[r]!;
-    const fromId = row[1]!.text;
-    const toId = row[2]!.text;
+    const row = rows[r];
+    const fromId = row[1].text;
+    const toId = row[2].text;
     // Batch decode is strict: endpoints must already exist (nodes were decoded
     // first). The streaming edge decoder, by contrast, creates them on demand.
     if (!graph.getVertexById(fromId) || !graph.getVertexById(toId)) {
@@ -706,7 +706,7 @@ export async function* encodeNodesStream(graph: Graph): AsyncGenerator<string> {
   let batch: string[] = [];
   let i = 0;
   for (const vertex of graph.vertices) {
-    batch.push(buildRow([vertex.id, [...vertex.labels].join(LIST_SEP)], keys, types, bags[i]!));
+    batch.push(buildRow([vertex.id, [...vertex.labels].join(LIST_SEP)], keys, types, bags[i]));
     i += 1;
     if (batch.length >= BATCH) {
       yield `${batch.join('\n')}\n`;
@@ -735,7 +735,7 @@ export async function* encodeEdgesStream(graph: Graph): AsyncGenerator<string> {
         [edge.id, edge.from.id, edge.to.id, [...edge.labels].join(LIST_SEP)],
         keys,
         types,
-        bags[i]!,
+        bags[i],
       ),
     );
     i += 1;

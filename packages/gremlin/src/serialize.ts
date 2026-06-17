@@ -38,7 +38,7 @@ const findClosuresInArrayItem = (v: unknown, path: string): string[] => {
 export const findClosures = (plan: Plan, prefix = ''): string[] => {
   const found: string[] = [];
   for (let i = 0; i < plan.steps.length; i++) {
-    const step = plan.steps[i]!;
+    const step = plan.steps[i];
     const path = prefix ? `${prefix}.${i}.${step.kind}` : `${i}.${step.kind}`;
     if (CLOSURE_KINDS.has(step.kind)) {
       found.push(path);

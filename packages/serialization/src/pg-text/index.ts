@@ -76,7 +76,7 @@ const elementTokens = (
   }
   const bag = normalizeBag(properties);
   for (const key of Object.keys(bag)) {
-    pushProperty(tokens, key, bag[key]!);
+    pushProperty(tokens, key, bag[key]);
   }
   return tokens.join(' ');
 };
@@ -100,7 +100,7 @@ const tokenizeLine = (line: string): string[] => {
   let started = false;
   let inQuote = false;
   for (let i = 0; i < line.length; i += 1) {
-    const c = line[i]!;
+    const c = line[i];
     if (inQuote) {
       current += c;
       if (c === '\\' && i + 1 < line.length) {
@@ -189,20 +189,20 @@ const parseLabelsAndProps = (
 };
 
 // A second token without a colon is the edge's destination id.
-const isEdgeLine = (tokens: string[]): boolean => tokens.length >= 2 && !tokens[1]!.includes(':');
+const isEdgeLine = (tokens: string[]): boolean => tokens.length >= 2 && !tokens[1].includes(':');
 
 const addNodeLine = (graph: Graph, tokens: string[]): void => {
   const [id, ...rest] = tokens;
   const { labels, properties } = parseLabelsAndProps(rest);
-  graph.addVertex({ id: id!, labels, properties });
+  graph.addVertex({ id: id, labels, properties });
 };
 
 const addEdgeLine = (graph: Graph, tokens: string[]): void => {
   const [from, to, ...rest] = tokens;
   const fromVertex =
-    graph.getVertexById(from!) ?? graph.addVertex({ id: from!, labels: [], properties: {} });
+    graph.getVertexById(from) ?? graph.addVertex({ id: from, labels: [], properties: {} });
   const toVertex =
-    graph.getVertexById(to!) ?? graph.addVertex({ id: to!, labels: [], properties: {} });
+    graph.getVertexById(to) ?? graph.addVertex({ id: to, labels: [], properties: {} });
   const { labels, properties } = parseLabelsAndProps(rest);
   graph.addEdge({ from: fromVertex, to: toVertex, labels, properties });
 };

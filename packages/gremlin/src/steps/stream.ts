@@ -15,14 +15,14 @@ import {
 export const map = (arg: SubPlan | MapClosure): StepFn =>
   isSubPlan(arg)
     ? appendStep({ kind: 'map', plan: buildPlan(arg) })
-    : appendStep({ kind: 'mapFn', fn: arg as MapClosure });
+    : appendStep({ kind: 'mapFn', fn: arg });
 
 // `flatMap(plan)` or `flatMap(fn)`. Sub-plan form yields each output of the
 // plan. Closure form: `(value, traverser) => Iterable<unknown>`.
 export const flatMap = (arg: SubPlan | FlatMapClosure): StepFn =>
   isSubPlan(arg)
     ? appendStep({ kind: 'flatMap', plan: buildPlan(arg) })
-    : appendStep({ kind: 'flatMapFn', fn: arg as FlatMapClosure });
+    : appendStep({ kind: 'flatMapFn', fn: arg });
 
 // `fold()` collects the stream into an array.
 // `fold(seed, reducer)` reduces the stream with a closure.
@@ -47,7 +47,7 @@ export const constant = (value: unknown): StepFn => appendStep({ kind: 'constant
 export const sideEffect = (arg: SubPlan | SideEffectClosure): StepFn =>
   isSubPlan(arg)
     ? appendStep({ kind: 'sideEffect', plan: buildPlan(arg) })
-    : appendStep({ kind: 'sideEffectFn', fn: arg as SideEffectClosure });
+    : appendStep({ kind: 'sideEffectFn', fn: arg });
 
 // Annotate stream with positional indexes: yields `[value, index]` per traverser.
 export const index = (): StepFn => appendStep({ kind: 'index' });

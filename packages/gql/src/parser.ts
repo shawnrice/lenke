@@ -84,10 +84,10 @@ export const parse = (src: string): Query => {
   const tokens = tokenize(src);
   let pos = 0;
 
-  const peek = (): Token => tokens[pos]!;
+  const peek = (): Token => tokens[pos];
   const atEnd = (): boolean => peek().type === 'eof';
 
-  const advance = (): Token => tokens[pos++]!;
+  const advance = (): Token => tokens[pos++];
 
   const check = (type: TokenType): boolean => peek().type === type;
 

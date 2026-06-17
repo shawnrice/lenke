@@ -72,12 +72,7 @@ export const unfoldStream = function* (
 ): Iterable<Traverser<unknown>> {
   for (const t of stream) {
     const v = t.value;
-    if (
-      v !== null &&
-      typeof v !== 'string' &&
-      typeof v === 'object' &&
-      Symbol.iterator in (v as object)
-    ) {
+    if (v !== null && typeof v !== 'string' && typeof v === 'object' && Symbol.iterator in v) {
       for (const item of v as Iterable<unknown>) {
         yield extend(t, item);
       }

@@ -6,7 +6,7 @@ import { createTestSocialGraph } from './fixtures/createTestSocialGraph.js';
 import { compile, gql, parseQuery, prepare, query } from './index.js';
 
 /** The first clause of a query's first linear part is its MATCH (in these tests). */
-const firstMatch = (q: Query): MatchClause => q.parts[0]!.clauses[0] as MatchClause;
+const firstMatch = (q: Query): MatchClause => q.parts[0].clauses[0] as MatchClause;
 
 const g = createTestSocialGraph();
 const names = (rows: { [k: string]: unknown }[], col: string): unknown[] =>
@@ -193,7 +193,7 @@ describe('GQL: RETURN *, ORDER BY, SKIP/OFFSET', () => {
   test('RETURN * returns all bound variables', () => {
     const rows = query(g, `MATCH (n:Person {name: 'marko'}) RETURN *`);
     expect(rows).toHaveLength(1);
-    expect(Object.keys(rows[0]!)).toEqual(['n']);
+    expect(Object.keys(rows[0])).toEqual(['n']);
   });
 
   test('ORDER BY ascending (default)', () => {
@@ -243,7 +243,7 @@ describe('GQL: aggregation', () => {
 
   test('collect_list (ISO; Cypher collect is not a function here)', () => {
     const rows = query(g, `MATCH (n:Person) RETURN collect_list(n.name) AS names`);
-    expect((rows[0]!.names as string[]).sort()).toEqual(['josh', 'marko', 'peter', 'vadas']);
+    expect((rows[0].names as string[]).sort()).toEqual(['josh', 'marko', 'peter', 'vadas']);
     expect(() => query(g, `MATCH (n:Person) RETURN collect(n.name) AS names`)).toThrow();
   });
 
@@ -326,7 +326,7 @@ describe('GQL: parameters & numeric literals', () => {
 
   test('hex, scientific, and underscored numbers', () => {
     const one = (lit: string) =>
-      query(g, `MATCH (n:Person {name: 'marko'}) RETURN ${lit} AS x`)[0]!.x;
+      query(g, `MATCH (n:Person {name: 'marko'}) RETURN ${lit} AS x`)[0].x;
     expect(one('0xFF')).toBe(255);
     expect(one('0o17')).toBe(15);
     expect(one('0b1010')).toBe(10);
@@ -478,12 +478,12 @@ describe('GQL: write statements', () => {
 describe('GQL: parser', () => {
   test('parses direction into the AST', () => {
     const q = parseQuery(`MATCH (a)<-[:R]-(b) RETURN a`);
-    expect(firstMatch(q).patterns[0]!.segments[0]!.rel.direction).toBe('in');
+    expect(firstMatch(q).patterns[0].segments[0].rel.direction).toBe('in');
   });
 
   test('parses an edge label expression', () => {
     const q = parseQuery(`MATCH (a)-[:KNOWS|CREATED]->(b) RETURN a`);
-    expect(firstMatch(q).patterns[0]!.segments[0]!.rel.label?.kind).toBe('or');
+    expect(firstMatch(q).patterns[0].segments[0].rel.label?.kind).toBe('or');
   });
 });
 
@@ -507,7 +507,7 @@ describe('GQL: ISO (not Cypher) syntax', () => {
 
   test('~ is an undirected edge', () => {
     const q = parseQuery(`MATCH (a)~[:KNOWS]~(b) RETURN a`);
-    expect(firstMatch(q).patterns[0]!.segments[0]!.rel.direction).toBe('both');
+    expect(firstMatch(q).patterns[0].segments[0].rel.direction).toBe('both');
   });
 
   test('undirected edge matches either traversal direction', () => {
@@ -528,7 +528,7 @@ describe('GQL: ISO (not Cypher) syntax', () => {
     expect(rows).toEqual([]);
     // …but it parses as a conjunction.
     const q = parseQuery(`MATCH (n:Person&Software) RETURN n`);
-    expect(firstMatch(q).patterns[0]!.start.label?.kind).toBe('and');
+    expect(firstMatch(q).patterns[0].start.label?.kind).toBe('and');
   });
 
   test('label negation :!A', () => {
@@ -548,7 +548,7 @@ describe('GQL: ISO (not Cypher) syntax', () => {
 
   test('grouped label expression :(A|B)&!C', () => {
     const q = parseQuery(`MATCH (n:(Person|Robot)&!Software) RETURN n`);
-    expect(firstMatch(q).patterns[0]!.start.label?.kind).toBe('and');
+    expect(firstMatch(q).patterns[0].start.label?.kind).toBe('and');
   });
 
   test('edge label disjunction [:A|B]', () => {
@@ -570,13 +570,13 @@ describe('GQL: ISO (not Cypher) syntax', () => {
 
   test('abbreviated arrows ->, <-, <->', () => {
     expect(
-      firstMatch(parseQuery(`MATCH (a)->(b) RETURN a`)).patterns[0]!.segments[0]!.rel.direction,
+      firstMatch(parseQuery(`MATCH (a)->(b) RETURN a`)).patterns[0].segments[0].rel.direction,
     ).toBe('out');
     expect(
-      firstMatch(parseQuery(`MATCH (a)<-(b) RETURN a`)).patterns[0]!.segments[0]!.rel.direction,
+      firstMatch(parseQuery(`MATCH (a)<-(b) RETURN a`)).patterns[0].segments[0].rel.direction,
     ).toBe('in');
     expect(
-      firstMatch(parseQuery(`MATCH (a)<->(b) RETURN a`)).patterns[0]!.segments[0]!.rel.direction,
+      firstMatch(parseQuery(`MATCH (a)<->(b) RETURN a`)).patterns[0].segments[0].rel.direction,
     ).toBe('both');
   });
 });
@@ -799,7 +799,7 @@ describe('GQL: CASE expression (ISO <case expression>)', () => {
   const g = createTestSocialGraph();
   // Evaluate an expression against a single, fixed row.
   const one = (e: string): unknown =>
-    query(g, `MATCH (n:Person {name: 'marko'}) RETURN ${e} AS r`)[0]!.r;
+    query(g, `MATCH (n:Person {name: 'marko'}) RETURN ${e} AS r`)[0].r;
 
   test('searched CASE returns the first TRUE branch', () => {
     expect(one(`CASE WHEN 1 > 2 THEN 'a' WHEN 2 > 1 THEN 'b' ELSE 'c' END`)).toBe('b');
@@ -866,7 +866,7 @@ describe('GQL: CASE expression (ISO <case expression>)', () => {
 describe('GQL: ISO numeric & string value functions', () => {
   const g = createTestSocialGraph();
   const v = (e: string): unknown =>
-    query(g, `MATCH (n:Person {name: 'marko'}) RETURN ${e} AS r`)[0]!.r;
+    query(g, `MATCH (n:Person {name: 'marko'}) RETURN ${e} AS r`)[0].r;
 
   test('numeric value functions', () => {
     expect(v('abs(-5)')).toBe(5);
@@ -1065,6 +1065,6 @@ describe('GQL: ISO reserved words', () => {
   test('COLLECT_LIST is the ISO name for the collect aggregate', () => {
     const g = createTestSocialGraph();
     const rows = query(g, `MATCH (n:Person) RETURN collect_list(n.name) AS names`);
-    expect((rows[0]!.names as string[]).sort()).toEqual(['josh', 'marko', 'peter', 'vadas']);
+    expect((rows[0].names as string[]).sort()).toEqual(['josh', 'marko', 'peter', 'vadas']);
   });
 });

@@ -158,7 +158,7 @@ suite('@pl-graph/native wasm backend', () => {
     const g = graphFromNdjson(backend, big);
     expect(g.vertexCount).toBe(5000);
     const rows = g.query('MATCH (n:P) WHERE n.age = 42 RETURN count(*) AS c');
-    expect(rows[0]!.c).toBe(62); // i%80==42 for i in 0..4999 → 42,122,…,4922 = 62
+    expect(rows[0].c).toBe(62); // i%80==42 for i in 0..4999 → 42,122,…,4922 = 62
     g.free();
   });
 });

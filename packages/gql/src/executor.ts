@@ -760,7 +760,7 @@ const applyProjection = (
     const arr = toArray(keyed);
     arr.sort((a, b) => {
       for (let i = 0; i < orderBy.length; i += 1) {
-        const s = orderBy[i]!;
+        const s = orderBy[i];
         const cmp = compareSort(a.keys[i], b.keys[i], s.descending, s.nullsFirst);
         if (cmp !== 0) {
           return cmp;
@@ -1195,13 +1195,13 @@ const reversePath = (path: CPath): CPath => {
   const nodes = [path.start, ...path.segments.map((s) => s.node)];
   const segments: CSegment[] = [];
   for (let i = path.segments.length - 1; i >= 0; i--) {
-    const seg = path.segments[i]!;
+    const seg = path.segments[i];
     segments.push({
       rel: { ...seg.rel, direction: FLIP_DIRECTION[seg.rel.direction] },
-      node: nodes[i]!,
+      node: nodes[i],
     });
   }
-  return { start: nodes[nodes.length - 1]!, segments };
+  return { start: nodes[nodes.length - 1], segments };
 };
 
 /**
@@ -1214,7 +1214,7 @@ const orient = (graph: Graph, pattern: CPath, binding: Binding, params: Params):
   if (pattern.segments.length === 0 || pattern.segments.some((s) => s.rel.quantifier)) {
     return pattern;
   }
-  const endNode = pattern.segments[pattern.segments.length - 1]!.node;
+  const endNode = pattern.segments[pattern.segments.length - 1].node;
   const startEst = estimateSeed(graph, pattern.start, binding, params);
   const endEst = estimateSeed(graph, endNode, binding, params);
   return endEst < startEst ? reversePath(pattern) : pattern;
@@ -1258,7 +1258,7 @@ const walkSegments = function* (
     yield binding;
     return;
   }
-  const { rel, node } = pattern.segments[index]!;
+  const { rel, node } = pattern.segments[index];
 
   // Variable-length: reach every vertex within [min, max] hops, then continue
   // from each. (The edge variable and per-edge predicate aren't bound for
@@ -1417,8 +1417,8 @@ const compileClause = (clause: Clause): CClause => {
         };
         for (let i = 0; i < patterns.length; i++) {
           patterns[i] = {
-            start: attach(patterns[i]!.start),
-            segments: patterns[i]!.segments.map((s) => ({ rel: s.rel, node: attach(s.node) })),
+            start: attach(patterns[i].start),
+            segments: patterns[i].segments.map((s) => ({ rel: s.rel, node: attach(s.node) })),
           };
         }
       }
@@ -1756,9 +1756,9 @@ export const compile = (query: Query): Plan => {
     ops: query.ops,
   };
   return (graph, params = {}) => {
-    let rows = runLinear(compiled.parts[0]!, graph, params);
+    let rows = runLinear(compiled.parts[0], graph, params);
     compiled.ops.forEach((op, i) => {
-      rows = combineRows(op, rows, runLinear(compiled.parts[i + 1]!, graph, params));
+      rows = combineRows(op, rows, runLinear(compiled.parts[i + 1], graph, params));
     });
     return rows;
   };

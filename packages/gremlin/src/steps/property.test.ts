@@ -40,7 +40,7 @@ describe('property() mutation', () => {
 
   test('property() works on edges', () => {
     const g = createTestTinkerGraph();
-    const edge = [...g.edges][0]!;
+    const edge = [...g.edges][0];
     const r = arr(run(traversal(V(), hasLabel('PERSON'), property('seen', true)), g));
     expect(r.length).toBeGreaterThan(0);
     // The edge wasn't visited so unchanged.

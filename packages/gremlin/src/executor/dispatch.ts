@@ -316,12 +316,7 @@ export const applyStep = (
 
     case 'value':
       return mapTraverser(stream, (v) => {
-        if (
-          v !== null &&
-          typeof v === 'object' &&
-          'key' in (v as object) &&
-          'value' in (v as object)
-        ) {
+        if (v !== null && typeof v === 'object' && 'key' in v && 'value' in v) {
           return (v as { value: unknown }).value;
         }
         return v;
@@ -335,7 +330,7 @@ export const applyStep = (
 
     case 'hasValue':
       return filterStream(stream, (v) => {
-        if (v !== null && typeof v === 'object' && 'value' in (v as object)) {
+        if (v !== null && typeof v === 'object' && 'value' in v) {
           return step.values.includes((v as { value: unknown }).value);
         }
         return step.values.includes(v);

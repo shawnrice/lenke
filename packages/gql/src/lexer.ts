@@ -176,7 +176,7 @@ const SIMPLE_ESCAPES: Record<string, string> = {
  * index just past the escape.
  */
 const readEscape = (src: string, i: number): { text: string; next: number } => {
-  const esc = src[i + 1]!;
+  const esc = src[i + 1];
   const simple = SIMPLE_ESCAPES[esc];
   if (simple !== undefined) {
     return { text: simple, next: i + 2 };
@@ -201,7 +201,7 @@ export const tokenize = (src: string): Token[] => {
   };
 
   while (i < src.length) {
-    const c = src[i]!;
+    const c = src[i];
 
     // Whitespace.
     if (c === ' ' || c === '\t' || c === '\n' || c === '\r') {
@@ -339,7 +339,7 @@ export const tokenize = (src: string): Token[] => {
       const start = i;
       i += 1;
       const nameStart = i;
-      while (i < src.length && isIdentPart(src[i]!)) {
+      while (i < src.length && isIdentPart(src[i])) {
         i += 1;
       }
       if (i === nameStart) {
@@ -356,12 +356,12 @@ export const tokenize = (src: string): Token[] => {
       const isBasePrefix = c === '0' && 'xXoObB'.includes(src[i + 1] ?? '');
       if (isBasePrefix) {
         i += 2;
-        while (i < src.length && /[0-9a-fA-F_]/.test(src[i]!)) {
+        while (i < src.length && /[0-9a-fA-F_]/.test(src[i])) {
           i += 1;
         }
       } else {
         const digits = (): void => {
-          while (i < src.length && /[0-9_]/.test(src[i]!)) {
+          while (i < src.length && /[0-9_]/.test(src[i])) {
             i += 1;
           }
         };
@@ -386,7 +386,7 @@ export const tokenize = (src: string): Token[] => {
     // Identifiers and keywords.
     if (isIdentStart(c)) {
       const start = i;
-      while (i < src.length && isIdentPart(src[i]!)) {
+      while (i < src.length && isIdentPart(src[i])) {
         i += 1;
       }
       const text = src.slice(start, i);
