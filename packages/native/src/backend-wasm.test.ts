@@ -3,6 +3,8 @@
 // `RustGraph` facade the FFI backend uses. This is the test that proves the
 // linear-memory marshalling (plg_alloc in, copy out) actually works in a JS
 // runtime. Run: bun test packages/native/src/backend-wasm.test.ts
+import { existsSync } from 'node:fs';
+
 import { describe, expect, test } from 'bun:test';
 
 import { ABI_VERSION } from './abi.js';
@@ -15,6 +17,14 @@ const WASM = new URL(
   import.meta.url,
 ).pathname;
 
+// The artifact is built by `bun run build:wasm` (not by the test). Skip cleanly
+// with a hint when it's absent, rather than hard-erroring at module load.
+const hasWasm = existsSync(WASM);
+if (!hasWasm) {
+  console.warn(`[backend-wasm.test] skipping: ${WASM} not found — run \`bun run build:wasm\` first.`);
+}
+const suite = hasWasm ? describe : describe.skip;
+
 const NDJSON = [
   '{"type":"node","id":"a","labels":["P"],"properties":{"name":"marko","age":29}}',
   '{"type":"node","id":"b","labels":["P"],"properties":{"name":"vadas","age":27}}',
@@ -22,9 +32,9 @@ const NDJSON = [
 ].join('\n');
 
 const bytes = new TextEncoder().encode(NDJSON);
-const wasmBytes = await Bun.file(WASM).arrayBuffer();
+const wasmBytes = hasWasm ? await Bun.file(WASM).arrayBuffer() : new ArrayBuffer(0);
 
-describe('@pl-graph/native wasm backend', () => {
+suite('@pl-graph/native wasm backend', () => {
   test('instantiates at the expected ABI version', async () => {
     const backend = await createWasmBackend(wasmBytes);
     expect(backend.abiVersion).toBe(ABI_VERSION);
@@ -60,6 +70,31 @@ describe('@pl-graph/native wasm backend', () => {
     const g = graphFromNdjson(backend, bytes);
     const names = g.gremlin("g.V().has('name','marko').out('knows').values('name')");
     expect(names).toEqual(['vadas']);
+    g.free();
+  });
+
+  test('match / subgraph / shortestPath work over wasm linear memory', async () => {
+    const backend = await createWasmBackend(wasmBytes);
+    const g = graphFromNdjson(backend, bytes);
+
+    // match(): marko —knows→ vadas, bound to (a, b).
+    expect(g.gremlin("g.V().match(__.as('a').out('knows').as('b')).select('a','b').by('name')")).toEqual([
+      { a: 'marko', b: 'vadas' },
+    ]);
+
+    // shortestPath(): marko → vadas, one hop (vertex ids a, b).
+    const sp = g.gremlin(
+      "g.V().has('name','marko').shortestPath().with(ShortestPath.target, __.has('name','vadas'))",
+    ) as Array<Array<{ id: string }>>;
+    expect(sp.map((p) => p.map((v) => v.id))).toEqual([['a', 'b']]);
+
+    // subgraph(): the one knows edge → 2 vertices, 1 edge.
+    const sg = g.gremlin("g.E().hasLabel('knows').subgraph('sg').cap('sg')") as [
+      { vertices: unknown[]; edges: unknown[] },
+    ];
+    expect(sg[0].vertices).toHaveLength(2);
+    expect(sg[0].edges).toHaveLength(1);
+
     g.free();
   });
 
