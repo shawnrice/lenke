@@ -21,7 +21,9 @@ const WASM = new URL(
 // with a hint when it's absent, rather than hard-erroring at module load.
 const hasWasm = existsSync(WASM);
 if (!hasWasm) {
-  console.warn(`[backend-wasm.test] skipping: ${WASM} not found — run \`bun run build:wasm\` first.`);
+  console.warn(
+    `[backend-wasm.test] skipping: ${WASM} not found — run \`bun run build:wasm\` first.`,
+  );
 }
 const suite = hasWasm ? describe : describe.skip;
 
@@ -78,9 +80,9 @@ suite('@pl-graph/native wasm backend', () => {
     const g = graphFromNdjson(backend, bytes);
 
     // match(): marko —knows→ vadas, bound to (a, b).
-    expect(g.gremlin("g.V().match(__.as('a').out('knows').as('b')).select('a','b').by('name')")).toEqual([
-      { a: 'marko', b: 'vadas' },
-    ]);
+    expect(
+      g.gremlin("g.V().match(__.as('a').out('knows').as('b')).select('a','b').by('name')"),
+    ).toEqual([{ a: 'marko', b: 'vadas' }]);
 
     // shortestPath(): marko → vadas, one hop (vertex ids a, b).
     const sp = g.gremlin(

@@ -82,7 +82,11 @@ describe('textual Gremlin over bun:ffi', () => {
       g,
       "g.V().match(__.as('a').out('CREATED').as('b'), __.as('b').has('name','lop'), __.as('b').in('CREATED').as('c'), __.as('c').has('age',29)).select('a','c').by('name')",
     ) as Array<{ a: string; c: string }>;
-    expect(r.map((x) => `${x.a}->${x.c}`).sort()).toEqual(['josh->marko', 'marko->marko', 'peter->marko']);
+    expect(r.map((x) => `${x.a}->${x.c}`).sort()).toEqual([
+      'josh->marko',
+      'marko->marko',
+      'peter->marko',
+    ]);
   });
 
   test('match() with nested not()', () => {

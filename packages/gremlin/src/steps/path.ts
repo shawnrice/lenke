@@ -67,7 +67,9 @@ export type ShortestPathStep = StepFn & {
 const makeShortestPath = (target?: Plan): ShortestPathStep =>
   Object.assign(appendStep({ kind: 'shortestPath', ...(target ? { target } : {}) }) as StepFn, {
     with: (option: symbol, value: SubPlan): ShortestPathStep =>
-      option === ShortestPath.target ? makeShortestPath(buildPlan(value)) : makeShortestPath(target),
+      option === ShortestPath.target
+        ? makeShortestPath(buildPlan(value))
+        : makeShortestPath(target),
   });
 
 // Emit the shortest vertex path(s) from each source vertex to the destinations

@@ -35,7 +35,11 @@ export type NativeSubgraph = {
 export const subgraphToGraph = (sub: NativeSubgraph): Graph => {
   const g = new Graph();
   for (const v of sub.vertices) {
-    g.addVertex({ id: v.id, labels: [...(v.labels ?? [])], properties: { ...(v.properties ?? {}) } });
+    g.addVertex({
+      id: v.id,
+      labels: [...(v.labels ?? [])],
+      properties: { ...(v.properties ?? {}) },
+    });
   }
   for (const e of sub.edges) {
     const from: Vertex | null = g.getVertexById(e.outV);

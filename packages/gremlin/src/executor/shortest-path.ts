@@ -5,7 +5,14 @@ import { bothEdgesOf } from '../graph-queries.js';
 
 import { applyPlanToStream } from './dispatch.js';
 import { otherEndpoint } from './movement.js';
-import { extend, hasAny, isVertex, type RunContext, startTraverser, type Traverser } from './runtime.js';
+import {
+  extend,
+  hasAny,
+  isVertex,
+  type RunContext,
+  startTraverser,
+  type Traverser,
+} from './runtime.js';
 
 /**
  * All shortest (fewest-hop) vertex paths from `src` to each destination, as
