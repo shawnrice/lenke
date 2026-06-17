@@ -13,32 +13,22 @@ import {
 // aggregate is computed over each traverser's iterable VALUE rather than
 // across the stream — typical use: `g.V().valueMap('age').fold().count(Scope.local)`.
 // With `Scope.global` (default), the aggregate runs across the stream.
-export function count(): StepFn;
-export function count(scope: symbol): StepFn;
 export function count(scope?: symbol): StepFn {
   return appendStep({ kind: 'count', scope: scope ? scopeTokenOf(scope) : undefined });
 }
 
-export function sum(): StepFn;
-export function sum(scope: symbol): StepFn;
 export function sum(scope?: symbol): StepFn {
   return appendStep({ kind: 'sum', scope: scope ? scopeTokenOf(scope) : undefined });
 }
 
-export function min(): StepFn;
-export function min(scope: symbol): StepFn;
 export function min(scope?: symbol): StepFn {
   return appendStep({ kind: 'min', scope: scope ? scopeTokenOf(scope) : undefined });
 }
 
-export function max(): StepFn;
-export function max(scope: symbol): StepFn;
 export function max(scope?: symbol): StepFn {
   return appendStep({ kind: 'max', scope: scope ? scopeTokenOf(scope) : undefined });
 }
 
-export function mean(): StepFn;
-export function mean(scope: symbol): StepFn;
 export function mean(scope?: symbol): StepFn {
   return appendStep({ kind: 'mean', scope: scope ? scopeTokenOf(scope) : undefined });
 }
