@@ -99,7 +99,8 @@ describe('Arrow columnar result over bun:ffi', () => {
     const len = Number(outLen[0]);
 
     // View the native result buffer in place (zero-copy) and decode.
-    const buf = toArrayBuffer(resPtr, 0, len);
+    // resPtr is non-null here (asserted above); toArrayBuffer needs a Pointer.
+    const buf = toArrayBuffer(resPtr!, 0, len);
     const { nrows, columns } = decodeArrow(buf);
 
     expect(nrows).toBe(2);

@@ -15,7 +15,7 @@ describe('Graph Tests', () => {
     const edge = graph.getEdgeById(edgeId('130'))!;
     expect(edge.from.properties.name).toBe('Gene Hackman');
     expect(edge.hasLabel('ACTED_IN')).toBeTruthy();
-    expect(edge.getProperty('roles')[0]).toBe('Little Bill Daggett');
+    expect((edge.getProperty('roles') as string[])[0]).toBe('Little Bill Daggett');
     expect(edge.to.properties.title).toBe('Unforgiven');
     expect(edge.to.properties.released).toBe(1992);
   });
@@ -24,11 +24,13 @@ describe('Graph Tests', () => {
     // Note, this is us using the indices manually, which isn't the best practice
     const moviesFromTheEarlyMidNineties = Array.from(graph.getVerticesByLabel('Movie'))
       .filter((x) => {
-        if (!x.properties.released) {
+        const released = x.properties.released as number;
+
+        if (!released) {
           return false;
         }
 
-        return 1992 <= x.properties.released && x.properties.released < 1995;
+        return 1992 <= released && released < 1995;
       })
       .map((x) => x.properties.title);
 
@@ -77,11 +79,13 @@ describe('Graph Tests', () => {
   });
 
   test('the emitter works', () => {
-    let type: string | null = null;
-    let id: string | null = null;
+    // Capture into an object: reads of `captured.type`/`.id` use the declared
+    // property type, sidestepping the control-flow narrowing-to-`null` that a
+    // `let` assigned only inside this listener closure would suffer.
+    const captured: { type: string | null; id: string | null } = { type: null, id: null };
     const listener = mock((event) => {
-      ({ type } = event);
-      ({ id } = event.value);
+      captured.type = event.type;
+      captured.id = event.value.id;
     });
     graph.emitter.once('@graph/VertexAdded', listener);
 
@@ -94,8 +98,8 @@ describe('Graph Tests', () => {
     });
 
     expect(listener).toHaveBeenCalledTimes(1);
-    expect(type).toBe('@graph/VertexAdded');
-    expect(id).toBe('99999');
+    expect(captured.type).toBe('@graph/VertexAdded');
+    expect(captured.id).toBe('99999');
   });
 
   test('we can double-up on the once emitters', () => {
@@ -130,7 +134,7 @@ describe('Graph Tests', () => {
       properties: { a: 1 },
     });
 
-    tinkerGraph.addEdge({ from: v, to: v2, labels: ['Not Real'] });
+    tinkerGraph.addEdge({ from: v, to: v2, labels: ['Not Real'], properties: {} });
     tinkerGraph.removeVertex(v);
     tinkerGraph.removeVertex(v2);
 

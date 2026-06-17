@@ -48,7 +48,7 @@ const gremlin = (g: number, query: string): unknown => {
   }
 
   const len = Number(outLen[0]);
-  const json = new TextDecoder().decode(toArrayBuffer(p as number, 0, len));
+  const json = new TextDecoder().decode(toArrayBuffer(p, 0, len));
   lib.symbols.plg_free_buf(p, len);
 
   return JSON.parse(json);

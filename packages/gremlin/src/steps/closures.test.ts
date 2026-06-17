@@ -17,7 +17,9 @@ describe('closure-bearing step variants', () => {
         traversal(
           V(),
           hasLabel('PERSON'),
-          map((v) => (v as { properties: { name: string } }).properties.name.toUpperCase()),
+          map((v: unknown) =>
+            (v as { properties: { name: string } }).properties.name.toUpperCase(),
+          ),
         ),
         tinkerGraph,
       ),
@@ -36,7 +38,7 @@ describe('closure-bearing step variants', () => {
         traversal(
           V(),
           hasLabel('PERSON'),
-          filter((v) => (v as { properties: { age: number } }).properties.age > 30),
+          filter((v: unknown) => (v as { properties: { age: number } }).properties.age > 30),
           values('name'),
         ),
         tinkerGraph,
@@ -50,7 +52,7 @@ describe('closure-bearing step variants', () => {
       run(
         traversal(
           V('1'),
-          flatMap((v) => {
+          flatMap((v: unknown) => {
             const props = (v as { properties: Record<string, unknown> }).properties;
 
             return Object.entries(props).map(([k, val]) => `${k}=${String(val)}`);
@@ -69,7 +71,9 @@ describe('closure-bearing step variants', () => {
         traversal(
           V(),
           hasLabel('PERSON'),
-          sideEffect((v) => seen.push((v as { properties: { name: string } }).properties.name)),
+          sideEffect((v: unknown) =>
+            seen.push((v as { properties: { name: string } }).properties.name),
+          ),
           values('name'),
         ),
         tinkerGraph,
@@ -113,7 +117,7 @@ describe('serialize', () => {
   test('plans with closure-bearing steps are NOT serializable', () => {
     const plan = traversal(
       V(),
-      map((v) => v),
+      map((v: unknown) => v),
     );
     expect(isSerializable(plan)).toBe(false);
     expect(findClosures(plan)).toEqual(['0.V', '1.mapFn'].filter((s) => s.endsWith('mapFn')));
@@ -121,7 +125,7 @@ describe('serialize', () => {
   });
 
   test('findClosures finds closures in nested sub-plans', () => {
-    const plan = traversal(V(), filter(pipe(map((v) => v))));
+    const plan = traversal(V(), filter(pipe(map((v: unknown) => v))));
     const closures = findClosures(plan);
     expect(closures.length).toBeGreaterThan(0);
   });

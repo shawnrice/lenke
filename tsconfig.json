@@ -1,12 +1,16 @@
 {
   "compilerOptions": {
     // Enable latest features
-    "lib": ["ESNext"],
+    "lib": ["ESNext", "DOM"],
     "target": "ES2023",
     "module": "ESNext",
     "moduleDetection": "force",
     "jsx": "react-jsx",
     "allowJs": true,
+
+    // Bun's test runner / FFI provide `bun:test`, `bun:ffi`, and the `Bun`
+    // global; matches tsconfig.base.json so the whole-repo typecheck sees them.
+    "types": ["bun"],
 
     // Bundler mode
     "moduleResolution": "bundler",

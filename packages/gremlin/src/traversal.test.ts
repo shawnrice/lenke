@@ -31,7 +31,7 @@ describe('traversal AST', () => {
         body: { steps: [{ kind: 'out', labels: ['knows'] }] },
         times: 3,
       },
-      { kind: 'dedupe', by: undefined },
+      { kind: 'dedupe', labels: undefined, bys: undefined },
     ]);
   });
 

@@ -2,7 +2,7 @@
 // Exposes the same operations the TS engine offers so the harness can time
 // them side by side: load (decode NDJSON -> graph handle), query, predicate
 // scan (SIMD), and encode.
-import { dlopen, FFIType, ptr, toArrayBuffer } from 'bun:ffi';
+import { dlopen, FFIType, type Pointer, ptr, toArrayBuffer } from 'bun:ffi';
 
 const LIB = new URL(
   '../crates/pl-graph-core/target/release/libpl_graph_core.dylib',
@@ -53,7 +53,7 @@ const dec = new TextDecoder();
 export const abiVersion = (): number => symbols.plg_abi_version();
 
 /** Marshal NDJSON bytes into Rust and build the columnar graph. Returns a handle. */
-export const loadGraph = (ndjson: Uint8Array, parallel: boolean): bigint => {
+export const loadGraph = (ndjson: Uint8Array, parallel: boolean): Pointer => {
   const handle = symbols.plg_graph_from_ndjson(
     ptr(ndjson),
     BigInt(ndjson.length),
@@ -64,13 +64,13 @@ export const loadGraph = (ndjson: Uint8Array, parallel: boolean): bigint => {
     throw new Error('plg_graph_from_ndjson returned null');
   }
 
-  return handle as bigint;
+  return handle;
 };
 
-export const freeGraph = (handle: bigint): void => symbols.plg_graph_free(handle);
-export const vertexCount = (handle: bigint): number =>
+export const freeGraph = (handle: Pointer): void => symbols.plg_graph_free(handle);
+export const vertexCount = (handle: Pointer): number =>
   Number(symbols.plg_graph_vertex_count(handle));
-export const edgeCount = (handle: bigint): number => Number(symbols.plg_graph_edge_count(handle));
+export const edgeCount = (handle: Pointer): number => Number(symbols.plg_graph_edge_count(handle));
 
 const outCount = new BigUint64Array(1);
 const outSum = new Float64Array(1);
@@ -78,7 +78,7 @@ const outChecksum = new BigUint64Array(1);
 
 export type Sig = { count: number; sum: number; checksum: bigint };
 
-export const runQuery = (handle: bigint, q: string): Sig => {
+export const runQuery = (handle: Pointer, q: string): Sig => {
   const qb = enc.encode(q);
   const rc = symbols.plg_query(
     handle,
@@ -97,7 +97,7 @@ export const runQuery = (handle: bigint, q: string): Sig => {
 };
 
 /** Run many queries in a single FFI crossing (amortizes the per-call tax). */
-export const runQueryBatch = (handle: bigint, queries: readonly string[]): Sig[] => {
+export const runQueryBatch = (handle: Pointer, queries: readonly string[]): Sig[] => {
   const joined = enc.encode(queries.join('\n'));
   const k = queries.length;
   const counts = new BigUint64Array(k);
@@ -129,7 +129,7 @@ export type RowSet = { columns: string[]; rows: unknown[][] };
 
 /** Run a query and decode its real result rows (the row-returning counterpart
  * to `runQuery`, which only yields the fingerprint). One JSON buffer crossing. */
-export const queryRows = (handle: bigint, q: string): RowSet => {
+export const queryRows = (handle: Pointer, q: string): RowSet => {
   const qb = enc.encode(q);
   const p = symbols.plg_query_rows(handle, ptr(qb), BigInt(qb.length), ptr(outLen));
 
@@ -144,7 +144,13 @@ export const queryRows = (handle: bigint, q: string): RowSet => {
   return JSON.parse(json) as RowSet;
 };
 
-export const predicateScan = (handle: bigint, key: string, thr: number, simd: boolean): Sig => {
+// No checksum: the predicate scan only aggregates a count and sum.
+export const predicateScan = (
+  handle: Pointer,
+  key: string,
+  thr: number,
+  simd: boolean,
+): { count: number; sum: number } => {
   const kb = enc.encode(key);
   const rc = symbols.plg_predicate_scan(
     handle,
@@ -166,8 +172,13 @@ export const predicateScan = (handle: bigint, key: string, thr: number, simd: bo
 const outLen = new BigUint64Array(1);
 
 /** Encode the graph to an NDJSON string (copies the native buffer back, then frees it). */
-export const encodeNdjson = (handle: bigint): string => {
+export const encodeNdjson = (handle: Pointer): string => {
   const p = symbols.plg_encode_ndjson(handle, ptr(outLen));
+
+  if (!p) {
+    throw new Error('plg_encode_ndjson returned null');
+  }
+
   const len = Number(outLen[0]);
   const buf = toArrayBuffer(p, 0, len);
   const str = dec.decode(buf);
@@ -177,7 +188,7 @@ export const encodeNdjson = (handle: bigint): string => {
 };
 
 /** Produce write-ready NDJSON bytes (no decode to a JS string). Returns byte length. */
-export const encodeBytes = (handle: bigint): number => {
+export const encodeBytes = (handle: Pointer): number => {
   const p = symbols.plg_encode_ndjson(handle, ptr(outLen));
   const len = Number(outLen[0]);
   symbols.plg_free_buf(p, BigInt(len));
@@ -186,7 +197,7 @@ export const encodeBytes = (handle: bigint): number => {
 };
 
 /** Serialize straight to a file natively — bytes never cross into JS. Returns bytes written. */
-export const writeNdjson = (handle: bigint, path: string): number => {
+export const writeNdjson = (handle: Pointer, path: string): number => {
   const pb = enc.encode(path);
 
   return Number(symbols.plg_write_ndjson(handle, ptr(pb), BigInt(pb.length)));

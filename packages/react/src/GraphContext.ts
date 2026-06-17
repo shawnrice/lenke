@@ -1,15 +1,11 @@
-import type { Edge, Vertex } from '@pl-graph/core';
 import { Graph } from '@pl-graph/core';
 import * as React from 'react';
 
-export type GraphState<V extends Vertex = Vertex, E extends Edge = Edge> = { graph: Graph<V, E> };
+export type GraphState = { graph: Graph };
 
 const defaultGraph = new Graph();
 
-export const GraphContext = React.createContext<GraphState<any, any>>({ graph: defaultGraph });
+export const GraphContext = React.createContext<GraphState>({ graph: defaultGraph });
 GraphContext.displayName = 'GraphContext';
 
-export const useGraphContext = <V extends Vertex = Vertex, E extends Edge = Edge>(): GraphState<
-  V,
-  E
-> => React.useContext(GraphContext);
+export const useGraphContext = (): GraphState => React.useContext(GraphContext);

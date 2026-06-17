@@ -1,23 +1,6 @@
 /* eslint-disable @typescript-eslint/no-magic-numbers */
 /* eslint-disable sort-keys */
-// `Vertex`/`Edge` from @pl-graph/core resolve to `any` here until core's types
-// are visible to this package (see tsconfig project refs), which makes the union
-// aliases below look redundant. Suppress until that resolution is fixed.
-/* eslint-disable typescript/no-redundant-type-constituents */
-import type { Edge, Vertex } from '@pl-graph/core';
 import { Graph } from '@pl-graph/core';
-
-type Person = Vertex<{ name: string; age: number }>;
-type Software = Vertex<{ name: string; lang: string }>;
-
-type TinkerGraphVertex = Person | Software;
-
-type PersonKnows = Edge<Person, Person, { weight: number }>;
-type PersonCreated = Edge<Person, Software, { weight: number }>;
-
-type TinkerGraphEdge = PersonKnows | PersonCreated;
-
-type TinkerGraph = Graph<TinkerGraphVertex, TinkerGraphEdge>;
 
 /**
  * Creates an instance of the exmaple graph from the gremlin documentation
@@ -25,8 +8,8 @@ type TinkerGraph = Graph<TinkerGraphVertex, TinkerGraphEdge>;
  * @see https://tinkerpop.apache.org/docs/current/reference/#graph-computing
  * @see https://tinkerpop.apache.org/docs/current/images/tinkerpop-modern.png
  */
-export const createTestTinkerGraph = (): TinkerGraph => {
-  const graph = new Graph<TinkerGraphVertex, TinkerGraphEdge>();
+export const createTestTinkerGraph = (): Graph => {
+  const graph = new Graph();
   graph.disableEvents();
 
   const people = [
