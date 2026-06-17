@@ -27,8 +27,8 @@ describe('local tests', () => {
     expect(r).toEqual([3, 0, 2, 1]);
   });
 
-  // doc: g.V().valueMap().limit(local, 1) — limit-with-Scope.local form not in v2.
-  test.skip('TODO local: as a Scope on limit/range (Scope.local arg not in v2)', () => {});
+  // `Scope.local` on limit/range/take IS supported in v2 — covered by the
+  // limit(Scope.local) / range(Scope.local) tests in steps/limit.test.ts.
 
   // local(fold) bundles each per-traverser sub-plan output into its own list.
   test('local(out().fold()) yields a per-vertex list of out-neighbors', () => {

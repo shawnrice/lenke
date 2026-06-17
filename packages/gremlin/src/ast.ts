@@ -332,10 +332,14 @@ export type Step =
   | { kind: 'math'; expr: string }
   // Filter property objects (`{key, value}`) by their `value` field.
   | { kind: 'hasValue'; values: readonly unknown[] }
-  // Declarative pattern match across labeled positions. STUBBED.
+  // Declarative pattern match across labeled positions.
   | { kind: 'match'; patterns: readonly Plan[] }
-  // Side-effect: accumulate matching edges into a named subgraph. STUBBED.
+  // Side-effect: accumulate matching edges into a named subgraph.
   | { kind: 'subgraph'; key: string }
+  // Emit the shortest vertex path(s) from each source vertex. `target` (set via
+  // `.with(ShortestPath.target, …)`) filters which vertices are destinations;
+  // absent ⇒ every reachable vertex. Unweighted BFS over incident edges.
+  | { kind: 'shortestPath'; target?: Plan }
   // --- Mutation (graph-write) -------------------------------------------
   //
   // `addV(label?)` inserts a fresh vertex into the graph. The output stream

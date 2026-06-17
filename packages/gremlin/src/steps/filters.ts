@@ -24,9 +24,15 @@ import {
 // because TypeScript's `Predicate` union is structural and any plain object
 // could in principle be a predicate; we'd rather have the dispatch live in
 // one place than scattered through caller-side casts.
+export function has(key: string): StepFn;
 export function has(key: string, valueOrPred: unknown): StepFn;
 export function has(label: string, key: string, valueOrPred: unknown): StepFn;
-export function has(a: string, b: unknown, c?: unknown): StepFn {
+export function has(a: string, b?: unknown, c?: unknown): StepFn {
+  // Key-only `has(key)`: keep elements that have the property key (any value) —
+  // equivalent to `hasKey(key)`.
+  if (b === undefined && c === undefined) {
+    return appendStep({ kind: 'hasKey', keys: [a] });
+  }
   if (c === undefined) {
     const pred = isPredicate(b) ? b : { op: 'eq' as const, value: b };
     return appendStep({ kind: 'has', key: a, pred });

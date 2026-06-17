@@ -65,6 +65,7 @@ import {
 } from './iteration.js';
 import { matchStep } from './match.js';
 import { evalMath, mathStep } from './misc.js';
+import { shortestPathStep } from './shortest-path.js';
 import { edgeToVertex, traverseToEdge, traverseToVertex } from './movement.js';
 import { addEStep, addVStep, dropStep, propertyStep } from './mutation.js';
 import {
@@ -345,6 +346,9 @@ export const applyStep = (
 
     case 'subgraph':
       return subgraphStep(stream, step.key, ctx);
+
+    case 'shortestPath':
+      return shortestPathStep(stream, step, graph);
 
     case 'hasLabelAnd':
       return filterStream(stream, (v) => {
