@@ -331,7 +331,7 @@ export const applyStep = (
       return indexStep(stream);
 
     case 'math':
-      return mathStep(stream, step.expr);
+      return mathStep(stream, step, graph, ctx);
 
     case 'hasValue':
       return filterStream(stream, (v) => {

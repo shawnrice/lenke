@@ -34,12 +34,14 @@ gaps. Until then, they're documented in `// doc:` comments inline.
 These are missing capabilities, not behavioral drift. Tests note them
 where applicable.
 
-### `subgraph()` not implemented
+(The TS engine is currently gap-free here: `match()`, `subgraph()`, and
+`shortestPath()` are implemented, `math()` resolves `as_`-bound names projected
+by `by()`, and `by()` supports comparator/token forms. The gremlin test package
+has no skipped tests.)
 
-`executor.ts` throws "not yet implemented" for the `subgraph` step;
-`subgraph.test.ts` is a `test.skip` stub.
+### Cross-engine parity: `math()` is TS-only
 
-### `math()` doesn't resolve `as_`-bound names
-
-`math('a + b').by('age')` references named positions tagged with `as_`.
-We don't resolve those — `math` only sees the current value.
+The Rust gremlin engine (`crates/pl-graph-core/src/gremlin`) mirrors the TS
+package but has no `math()` step, so a textual `g.V()…math(…)` query fails on the
+native/wasm engine with an unknown-step error. Everything else (`match` /
+`subgraph` / `shortestPath` / `select`-by-cycling) is at parity.

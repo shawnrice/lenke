@@ -1,10 +1,19 @@
-import { appendStep, type Predicate, type StepFn } from './framework.js';
+import {
+  appendStep,
+  type ByableStep,
+  makeByable,
+  type Predicate,
+  type Step,
+  type StepFn,
+} from './framework.js';
 
 // Identity step — pass-through (useful as a placeholder in branch defaults).
 export const identity = (): StepFn => appendStep({ kind: 'identity' });
 
-// Evaluate an arithmetic expression. `_` references the current value.
-export const math = (expr: string): StepFn => appendStep({ kind: 'math', expr });
+// Evaluate an arithmetic expression. `_` is the current value; other identifiers
+// are `as_`-bound labels, projected by the `.by(...)` modulator(s) (cycling).
+export const math = (expr: string): ByableStep<Extract<Step, { kind: 'math' }>> =>
+  makeByable<Extract<Step, { kind: 'math' }>>((bys) => ({ kind: 'math', expr, bys }));
 
 /**
  * Stop the stream with an error. Useful for asserting traversal invariants.

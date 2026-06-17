@@ -24,8 +24,7 @@ import {
 // because TypeScript's `Predicate` union is structural and any plain object
 // could in principle be a predicate; we'd rather have the dispatch live in
 // one place than scattered through caller-side casts.
-export function has(key: string): StepFn;
-export function has(key: string, valueOrPred: unknown): StepFn;
+export function has(key: string, valueOrPred?: unknown): StepFn;
 export function has(label: string, key: string, valueOrPred: unknown): StepFn;
 export function has(a: string, b?: unknown, c?: unknown): StepFn {
   // Key-only `has(key)`: keep elements that have the property key (any value) —
@@ -33,11 +32,14 @@ export function has(a: string, b?: unknown, c?: unknown): StepFn {
   if (b === undefined && c === undefined) {
     return appendStep({ kind: 'hasKey', keys: [a] });
   }
+
   if (c === undefined) {
     const pred = isPredicate(b) ? b : { op: 'eq' as const, value: b };
     return appendStep({ kind: 'has', key: a, pred });
   }
+
   const pred = isPredicate(c) ? c : { op: 'eq' as const, value: c };
+
   return appendStep({ kind: 'hasLabelAnd', label: a, key: b as string, pred });
 }
 
@@ -63,8 +65,8 @@ export const hasLabelAnd = (label: string, key: string, pred: Predicate): StepFn
 export const simplePath = (): StepFn => appendStep({ kind: 'simplePath' });
 export const cyclicPath = (): StepFn => appendStep({ kind: 'cyclicPath' });
 
-// `dedupe(...labels)` accepts the legacy label-list form (an `as`/`select`
-// modifier; not yet implemented). The projection modulator uses `.by(...)`.
+// `dedupe(...labels)` dedupes on the tuple of values tagged at those `as_`
+// labels; the `.by(...)` projection modulator dedupes on a projected value.
 export const dedupe = (...labels: string[]): ByableStep<Extract<Step, { kind: 'dedupe' }>> =>
   makeByable<Extract<Step, { kind: 'dedupe' }>>((bys) => ({
     kind: 'dedupe',

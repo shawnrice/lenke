@@ -51,9 +51,8 @@ export type Predicate =
  *   - `traversal`: `by(outE().count())` — run a sub-plan with the value as
  *                  the starting traverser; project to the first result
  *
- * TODO: comparator forms (`by(asc)`, `by(key, comp)`) and token forms
- * (`by(T.id)`, `by(T.label)`) are not yet modeled — they require either
- * embedded comparator data or a token enum. Tracked separately.
+ * Comparator forms (`by(Order.asc)`, `by('age', Order.desc)`) carry an optional
+ * `direction`; token forms (`by(T.id)`, `by(T.label)`) use the `token` kind.
  */
 // A single `by()` call produces one of these. `direction` is meaningful only
 // for `order()` (Gremlin's `by(asc)` / `by(key, desc)` / etc.); other steps
@@ -118,9 +117,9 @@ export type Step =
   | { kind: 'hasKey'; keys: readonly string[] }
   | { kind: 'simplePath' }
   | { kind: 'cyclicPath' }
-  // `labels` is the legacy `as`/`select`-style label list (currently a no-op
-  // in the executor; tracked as TODO). `bys` is the projection modulator
-  // (e.g. `dedupe().by('name')` dedupes on the `name` property).
+  // `labels` dedupes on the tuple of values tagged at those `as_` labels;
+  // `bys` is the projection modulator (e.g. `dedupe().by('name')` dedupes on the
+  // `name` property). With neither, dedupes on the value itself.
   | { kind: 'dedupe'; labels?: readonly string[]; bys?: readonly By[] }
   // Cardinality. With `scope: 'local'`, the operation slices each
   // traverser's iterable value in place (typical use: after `fold()` or on
@@ -299,8 +298,8 @@ export type Step =
   // over side-effects populated upstream).
   | { kind: 'barrier' }
   // Terminal: collect all traversers' paths into a nested map. Each path
-  // becomes a chain of map keys (path[0] -> path[1] -> ... -> {}).
-  // TODO: support `by()` modulators to project path elements before nesting.
+  // becomes a chain of map keys (path[0] -> path[1] -> ... -> {}). `bys` project
+  // each path element before it becomes a key (cycling, as in `path().by(...)`).
   | { kind: 'tree'; bys?: readonly By[] }
   // Switch over a sub-plan's first result. Per traverser, run `test`; route
   // to the first option whose `match` equals that result, else `default`.
@@ -326,10 +325,10 @@ export type Step =
   // `[value, index]`.
   | { kind: 'index' }
   // Evaluate an arithmetic expression on traverser values. `_` references the
-  // current traverser value as a number.
-  // TODO: full Gremlin math() supports `as`-bound names (e.g. `a + b`); only
-  // `_` and bare numerics/parens/`+ - * /` are implemented.
-  | { kind: 'math'; expr: string }
+  // current traverser value; other identifiers reference `as_`-bound labels.
+  // `bys` project each operand (by first-appearance order, cycling) — e.g.
+  // `math('a + b').by('age')` sums the `age` of the values tagged `a` and `b`.
+  | { kind: 'math'; expr: string; bys?: readonly By[] }
   // Filter property objects (`{key, value}`) by their `value` field.
   | { kind: 'hasValue'; values: readonly unknown[] }
   // Declarative pattern match across labeled positions.
@@ -383,11 +382,6 @@ export type Step =
  *  - `'plan'` — run a sub-plan and use its first emitted vertex
  */
 export type AddEEndpoint = { kind: 'tag'; label: string } | { kind: 'plan'; plan: Plan };
-
-// --- Future-work notes (not yet modeled) --------------------------------
-// - `index()` step (enumerate)
-// - `pop` semantics for select (first/last/all/mixed)
-// - `branch` / `local` legacy comments dropped — both implemented above.
 
 export type Plan = {
   readonly steps: readonly Step[];
