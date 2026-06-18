@@ -1,6 +1,5 @@
 import { Graph } from '@pl-graph/core';
 import { act, renderHook } from '@testing-library/react';
-// @vitest-environment jsdom
 import * as React from 'react';
 import { describe, expect, test, vi } from 'vitest';
 
