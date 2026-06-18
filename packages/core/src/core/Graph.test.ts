@@ -3,6 +3,7 @@ import { describe, expect, mock, test } from 'bun:test';
 
 import { createTestGraph, edgeId, vertexId } from '../fixtures/createTestGraph.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
+import { Vertex } from './Vertex.js';
 
 describe('Graph Tests', () => {
   const graph = createTestGraph();
@@ -144,5 +145,77 @@ describe('Graph Tests', () => {
     expect(vertexRemoved).toHaveBeenCalledTimes(1);
     expect(edgeAdded).toHaveBeenCalledTimes(1);
     expect(edgeRemoved).toHaveBeenCalledTimes(1);
+  });
+
+  test('addEdge rejects a label-less edge (removal-cascade invariant)', () => {
+    const g = createTestTinkerGraph();
+    const a = g.getVertexById('1')!;
+    const b = g.getVertexById('2')!;
+
+    // A label-less edge would never land in a label bucket, so removeVertex
+    // could not cascade it — reject it up front instead.
+    expect(() => g.addEdge({ from: a, to: b, labels: [], properties: {} })).toThrow();
+  });
+
+  test('addEdge throws on a missing endpoint and leaves no orphaned state', () => {
+    const g = createTestTinkerGraph();
+    const a = g.getVertexById('1')!;
+    const stranger = new Vertex({ id: 'not-in-graph', labels: ['X'], properties: {}, graph: g });
+
+    const edgesBefore = g.edgeCount;
+    const propBagsBefore = g.elementProperties.size;
+
+    expect(() =>
+      g.addEdge({ from: a, to: stranger, labels: ['KNOWS'], properties: { w: 1 } }),
+    ).toThrow();
+
+    // Validation happens before construction, so the rejected edge wrote no
+    // labels/properties into the graph's element maps.
+    expect(g.edgeCount).toBe(edgesBefore);
+    expect(g.elementProperties.size).toBe(propBagsBefore);
+  });
+
+  describe('clone is a fully independent deep copy', () => {
+    test('mutating a clone does not corrupt the source (and vice versa)', () => {
+      const g = createTestTinkerGraph();
+      const clone = g.clone();
+
+      clone.getVertexById('1')!.setProperty('name', 'CHANGED');
+      expect(g.getVertexById('1')!.properties.name).toBe('marko'); // source untouched
+
+      g.getVertexById('2')!.setProperty('name', 'ALSO-CHANGED');
+      expect(clone.getVertexById('2')!.properties.name).toBe('vadas'); // clone untouched
+    });
+
+    test('clone holds distinct element instances with equal content', () => {
+      const g = createTestTinkerGraph();
+      const clone = g.clone();
+
+      expect(clone.getVertexById('1')).not.toBe(g.getVertexById('1')); // not aliased
+      expect(clone.vertexCount).toBe(g.vertexCount);
+      expect(clone.edgeCount).toBe(g.edgeCount);
+      expect(clone.getVertexById('1')!.properties).toEqual(g.getVertexById('1')!.properties);
+
+      // Removing from the clone leaves the source intact.
+      clone.removeVertex('1');
+      expect(clone.getVertexById('1')).toBeNull();
+      expect(g.getVertexById('1')).not.toBeNull();
+    });
+  });
+
+  describe('the property bag is frozen against external mutation', () => {
+    test('a stray top-level write throws instead of silently corrupting', () => {
+      const g = createTestTinkerGraph();
+      const v = g.getVertexById('1')!;
+
+      // Strict mode (ES module): assigning to a frozen object throws.
+      expect(() => {
+        (v.properties as { name: string }).name = 'CHANGED';
+      }).toThrow();
+
+      // The legitimate path still works and keeps the index/value consistent.
+      v.setProperty('name', 'CHANGED');
+      expect(v.properties.name).toBe('CHANGED');
+    });
   });
 });

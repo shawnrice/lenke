@@ -62,12 +62,33 @@ export class Vertex {
     this.#graph!.elementLabels.set(this.id, new Set(labels));
   }
 
+  /**
+   * The vertex's property bag — the graph's live internal object, frozen.
+   * **Read-only**: a top-level write (`v.properties.age = 40`) throws, because
+   * it would bypass the event/veto system and leave any `PropertyIndex` stale.
+   * Always write via {@link setProperty}/{@link setProperties}/{@link removeProperty}.
+   * (Freeze is shallow — nested array/object *values* are not protected.)
+   */
   get properties(): Record<string, unknown> {
     return this.#graph?.elementProperties.get(this.#id) ?? {};
   }
 
   set properties(properties: Record<string, unknown>) {
-    this.#graph!.elementProperties.set(this.#id, { ...properties });
+    // Public setter: the caller may keep a reference to `properties`, so copy
+    // defensively before committing.
+    this.#commitProperties({ ...properties });
+  }
+
+  /**
+   * Store an already-fresh bag as this vertex's properties, frozen. The bag
+   * becomes the graph's owned state — callers pass ownership and must not mutate
+   * it afterward. Freezing turns a stray external `v.properties.x = …` into a
+   * loud throw instead of silent index corruption; the internal write paths
+   * always build a new bag, so freezing never breaks them. Used directly by the
+   * mutators (which already build a fresh object) to avoid a redundant copy.
+   */
+  #commitProperties(bag: Record<string, unknown>): void {
+    this.#graph!.elementProperties.set(this.#id, Object.freeze(bag));
   }
 
   getProperty(key: string): unknown {
@@ -84,7 +105,7 @@ export class Vertex {
     }
 
     const previous = this.properties;
-    this.properties = { ...previous, [key]: value };
+    this.#commitProperties({ ...previous, [key]: value });
     this.#graph?.reindexVertexProperty(this, key, previous[key], value);
   }
 
@@ -105,7 +126,7 @@ export class Vertex {
     }
 
     const previous = this.properties;
-    this.properties = { ...previous, ...props };
+    this.#commitProperties({ ...previous, ...props });
 
     for (const key of Object.keys(props)) {
       this.#graph.reindexVertexProperty(this, key, previous[key], props[key]);
@@ -126,7 +147,7 @@ export class Vertex {
     }
 
     const previous = this.properties;
-    this.properties = Object.fromEntries(Object.entries(previous).filter(([k]) => key !== k));
+    this.#commitProperties(Object.fromEntries(Object.entries(previous).filter(([k]) => key !== k)));
     this.#graph?.reindexVertexProperty(this, key, previous[key], undefined);
   }
 
@@ -140,8 +161,8 @@ export class Vertex {
     }
 
     const previous = this.properties;
-    this.properties = Object.fromEntries(
-      Object.entries(previous).filter(([k]) => !keys.includes(k)),
+    this.#commitProperties(
+      Object.fromEntries(Object.entries(previous).filter(([k]) => !keys.includes(k))),
     );
 
     for (const key of keys) {

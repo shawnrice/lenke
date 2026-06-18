@@ -1,5 +1,4 @@
 import { Emitter, EmitterEvent } from '@pl-graph/emitter';
-import { timer } from '@pl-graph/utils';
 
 import { Edge } from './Edge.js';
 import type { GraphEvent, GraphEvents, GraphEventType } from './GraphEvents.js';
@@ -20,10 +19,6 @@ type AddEdgeArgs = {
   properties: Record<string, unknown>;
 };
 
-type GraphOptions = {
-  eagerSnapshot: boolean;
-};
-
 /**
  * A Property-Label graph.
  *
@@ -41,8 +36,6 @@ export class Graph {
   edgesFromByLabel: Map<string, Map<string, Set<Edge>>>;
   edgesToByLabel: Map<string, Map<string, Set<Edge>>>;
 
-  eagerSnapshot: boolean;
-
   elementLabels: Map<string, Set<string>>;
   elementProperties: Map<string, Record<string, unknown>>;
 
@@ -52,24 +45,22 @@ export class Graph {
 
   private readonly listeners: Set<() => unknown>;
 
-  public nextSnapshot: Graph | null;
-
-  private nextSnapshotIsStale: boolean;
-  private createNextSnapshot: number | undefined;
+  // A `requestIdleCallback` handle (number) in the browser, or a `setTimeout`
+  // handle in Node — the pending debounced subscriber notification, if any.
+  private notifyHandle: ReturnType<typeof setTimeout> | number | undefined;
 
   // Reactive change tracking (mirrors the Rust core, for useSyncExternalStore):
   // `mutationVersion` is an O(1) "did anything change?" signal; `tokenEpochs`
   // are per-token (label / edge-type / property-key) counters for *selective*
   // invalidation — a selector that depends only on `name` recomputes only when
   // `epoch('name')` moved, not on every mutation. Both advance on the same
-  // deferred, veto-checked step as snapshot-staleness, so a vetoed mutation
-  // bumps nothing.
+  // deferred, veto-checked step, so a vetoed mutation bumps nothing.
   private mutationVersion: number;
   private readonly tokenEpochs: Map<string, number>;
 
   emitter: Emitter<keyof GraphEvents, GraphEvents>;
 
-  constructor(options: Partial<GraphOptions> = {}) {
+  constructor() {
     this.verticesById = new Map();
     this.edgesById = new Map();
     this.verticesByLabel = new Map();
@@ -83,23 +74,30 @@ export class Graph {
     this.vertexPropertyIndex = new PropertyIndex();
     this.edgePropertyIndex = new PropertyIndex();
 
-    this.eagerSnapshot = options.eagerSnapshot ?? true;
-
-    this.nextSnapshot = null;
-    this.nextSnapshotIsStale = true;
     this.mutationVersion = 0;
     this.tokenEpochs = new Map();
     this.emitter = new Emitter({ enabled: true });
 
     this.listeners = new Set();
 
-    this.createNextSnapshot = undefined;
+    this.notifyHandle = undefined;
 
-    const callback = () => {
-      this.prepareNextSnapshotLazy();
+    // Coalesce subscriber notifications: many mutations in a tick collapse into
+    // one deferred `notify()`. Idle-scheduled in the browser, a 1ms timer in Node.
+    const scheduleNotify = () => {
+      if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+        window.cancelIdleCallback(this.notifyHandle as number);
+        this.notifyHandle = window.requestIdleCallback(this.notify);
+      } else {
+        globalThis.clearTimeout(this.notifyHandle);
+        // Store the handle so the next mutation's clearTimeout above actually
+        // cancels this one — otherwise every mutation leaks a fresh timer and
+        // the debounce never coalesces.
+        this.notifyHandle = globalThis.setTimeout(this.notify, 1);
+      }
     };
 
-    const markIsStale = (event: GraphEvent) => {
+    const markMutated = (event: GraphEvent) => {
       // Capture the touched tokens NOW, synchronously, while the element is
       // still attached — a removal nulls the element's graph ref before the
       // deferred step below runs, so reading labels/keys there would throw.
@@ -117,15 +115,7 @@ export class Graph {
           this.tokenEpochs.set(token, (this.tokenEpochs.get(token) ?? 0) + 1);
         }
 
-        this.nextSnapshotIsStale = true;
-
-        if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
-          window.cancelIdleCallback(this.createNextSnapshot!);
-          this.createNextSnapshot = window.requestIdleCallback(callback);
-        } else {
-          globalThis.clearTimeout(this.createNextSnapshot);
-          globalThis.setTimeout(callback, 1);
-        }
+        scheduleNotify();
       };
 
       queueMicrotask(doTheWork);
@@ -157,13 +147,9 @@ export class Graph {
     graphMutationEvents.forEach((type) => {
       // The same listener is registered against many event types; we erase
       // the per-event listener type here.
-      this.on(type, markIsStale as never);
+      this.on(type, markMutated as never);
       this.on(type, onMutate as never);
     });
-
-    if (this.eagerSnapshot) {
-      this.prepareNextSnapshotLazy();
-    }
   }
 
   /**
@@ -274,23 +260,51 @@ export class Graph {
   /**
    * Clones the graph as well as all the vertices and edges
    */
-  public clone = (options: Partial<GraphOptions> = {}): Graph => {
-    const next = new Graph(options);
+  public clone = (): Graph => {
+    const next = new Graph();
     next.disableEvents();
 
-    next.verticesById = new Map(this.verticesById);
-    next.edgesById = new Map(this.edgesById);
-    next.verticesByLabel = new Map(this.verticesByLabel);
-    next.edgesFromByLabel = new Map(this.edgesFromByLabel);
-    next.edgesToByLabel = new Map(this.edgesToByLabel);
-    next.edgesByLabel = new Map(this.edgesByLabel);
-    next.elementLabels = new Map(this.elementLabels);
-    next.elementProperties = new Map(this.elementProperties);
+    // Recreate the declared (but empty) indexes so the backfill below populates
+    // the clone's own buckets rather than aliasing the source's.
+    for (const key of this.vertexPropertyIndex.indexedKeys()) {
+      next.vertexPropertyIndex.createIndex(key);
+    }
 
-    // Structural copies so a mutation on either graph can't corrupt the other's
-    // buckets; the cloned sets still point at the shared element instances.
-    next.vertexPropertyIndex = this.vertexPropertyIndex.clone();
-    next.edgePropertyIndex = this.edgePropertyIndex.clone();
+    for (const key of this.edgePropertyIndex.indexedKeys()) {
+      next.edgePropertyIndex.createIndex(key);
+    }
+
+    // Deep copy: each vertex/edge is a *fresh* instance bound to `next`, with
+    // its own labels and property bag. Nothing is shared with the source, so a
+    // mutation on either graph can't reach into the other. Endpoints resolve to
+    // the clone's own vertices by id.
+    for (const vertex of this.verticesById.values()) {
+      next.addVertex(
+        new Vertex({
+          id: vertex.id,
+          labels: [...vertex.labels],
+          properties: { ...vertex.properties },
+          graph: next,
+        }),
+      );
+    }
+
+    for (const edge of this.edgesById.values()) {
+      next.addEdge(
+        new Edge({
+          id: edge.id,
+          from: next.getVertexById(edge.from.id)!,
+          to: next.getVertexById(edge.to.id)!,
+          labels: [...edge.labels],
+          properties: { ...edge.properties },
+          graph: next,
+        }),
+      );
+    }
+
+    if (this.eventsEnabled()) {
+      next.enableEvents();
+    }
 
     return next;
   };
@@ -309,8 +323,6 @@ export class Graph {
     // graph, not its schema.
     this.vertexPropertyIndex.clear();
     this.edgePropertyIndex.clear();
-
-    this.nextSnapshot = null;
   };
 
   private readonly notify = (): void => {
@@ -319,35 +331,14 @@ export class Graph {
     }
   };
 
-  private readonly prepareNextSnapshot = (): Graph => {
-    if (this.nextSnapshot && !this.nextSnapshotIsStale) {
-      return this.nextSnapshot;
-    }
-
-    const timeSnapshotCreation = timer(
-      `Cloning the graph with ${this.vertexCount} vertices and ${this.edgeCount} edges`,
-    );
-
-    this.nextSnapshot = this.clone({ eagerSnapshot: false });
-    timeSnapshotCreation();
-    this.nextSnapshotIsStale = false;
-
-    this.notify();
-
-    return this.nextSnapshot;
-  };
-
-  private readonly prepareNextSnapshotLazy = (): void => {
-    const rIC: (cb: () => unknown, opts?: IdleRequestOptions) => unknown =
-      typeof window !== 'undefined' && 'requestIdleCallback' in window
-        ? window.requestIdleCallback
-        : (cb) => setTimeout(cb, 1);
-    rIC(() => this.prepareNextSnapshot(), { timeout: undefined });
-  };
-
-  public snapshot = (): Graph => {
-    return this.prepareNextSnapshot();
-  };
+  /**
+   * The graph to read for a `useSyncExternalStore` snapshot. Reads are served
+   * from the live graph itself — no copy is made. Referential stability across
+   * renders is provided by the consumer's epoch/version fingerprinting (see the
+   * React `useGraphSelector` gate), not by isolating a frozen copy here. For an
+   * independent, mutable copy of the graph use {@link clone} instead.
+   */
+  public snapshot = (): Graph => this;
 
   /* Mutation methods */
 
@@ -458,14 +449,44 @@ export class Graph {
       return this.getEdgeById(params.id)!;
     }
 
-    const edge = Edge.isEdge(params) ? params : new Edge({ ...params, graph: this });
+    if (Edge.isEdge(params)) {
+      this.assertValidEdge(params.from, params.to, params.labels.size);
 
-    if (!edge.from || !edge.to) {
-      console.error('Cannot create edge with missing vertices.');
-
-      return edge;
+      return this.insertEdge(params);
     }
 
+    // Validate the *params* before constructing: the `Edge` constructor eagerly
+    // writes labels/properties into the graph's element maps via its setters, so
+    // rejecting after construction would leave orphaned map entries behind.
+    // `params.from`/`params.to` are vertices that must already live in this
+    // graph — resolve them by id the same way the edge's getters will.
+    this.assertValidEdge(
+      this.getVertexById(params.from.id),
+      this.getVertexById(params.to.id),
+      params.labels.length,
+    );
+
+    return this.insertEdge(new Edge({ ...params, graph: this }));
+  };
+
+  /**
+   * Reject an edge that can't be a valid LPG member: both endpoints must resolve
+   * to vertices in this graph, and it must carry ≥1 label — the invariant the
+   * removal cascade depends on (a label-less edge never lands in a label bucket,
+   * so `incidentEdges`/`removeVertex` can't find it, leaving a dangling edge).
+   */
+  private assertValidEdge(from: Vertex | null, to: Vertex | null, labelCount: number): void {
+    if (!from || !to) {
+      throw new Error('Cannot add an edge with missing endpoint vertices.');
+    }
+
+    if (labelCount === 0) {
+      throw new Error('Cannot add an edge with no labels: every edge must carry ≥1 label.');
+    }
+  }
+
+  /** Shared insertion tail: emit, then register the edge in the id and label indexes. */
+  private readonly insertEdge = (edge: Edge): Edge => {
     const event = this.emit(new EmitterEvent('@graph/EdgeAdded', edge));
 
     if (event.defaultPrevented) {

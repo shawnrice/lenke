@@ -3,7 +3,7 @@ import { describe, expect, test } from 'bun:test';
 import { Graph } from './Graph.js';
 
 const personGraph = (): Graph => {
-  const graph = new Graph({ eagerSnapshot: false });
+  const graph = new Graph();
   graph.addVertex({ id: 'a', labels: ['Person'], properties: { name: 'marko', age: 29 } });
   graph.addVertex({ id: 'b', labels: ['Person'], properties: { name: 'vadas', age: 27 } });
   graph.addVertex({ id: 'c', labels: ['Person'], properties: { name: 'josh', age: 32 } });
@@ -36,7 +36,7 @@ describe('PropertyIndex equality', () => {
   });
 
   test('type-tagged values do not collide', () => {
-    const graph = new Graph({ eagerSnapshot: false });
+    const graph = new Graph();
     graph.createVertexIndex('v');
     graph.addVertex({ id: 'num', labels: [], properties: { v: 1 } });
     graph.addVertex({ id: 'str', labels: [], properties: { v: '1' } });
@@ -108,7 +108,7 @@ describe('PropertyIndex range', () => {
   });
 
   test('a numeric bound never bleeds into string values', () => {
-    const graph = new Graph({ eagerSnapshot: false });
+    const graph = new Graph();
     graph.createVertexIndex('v');
     graph.addVertex({ id: 'n', labels: [], properties: { v: 5 } });
     graph.addVertex({ id: 's', labels: [], properties: { v: 'zzz' } });
@@ -137,7 +137,7 @@ describe('PropertyIndex range', () => {
   });
 
   test('the ordered view is maintained after it is lazily built', () => {
-    const graph = new Graph({ eagerSnapshot: false });
+    const graph = new Graph();
     graph.createVertexIndex('age');
     graph.addVertex({ id: 'a', labels: [], properties: { age: 10 } });
     graph.addVertex({ id: 'b', labels: [], properties: { age: 30 } });
@@ -154,7 +154,7 @@ describe('PropertyIndex range', () => {
   test('B+-tree range scans match brute force across a multi-level tree', () => {
     // > 64^2 distinct values forces internal splits and a 3-level tree.
     const COUNT = 5000;
-    const graph = new Graph({ eagerSnapshot: false });
+    const graph = new Graph();
     graph.createVertexIndex('k');
     const present = new Set<number>();
     let seed = 12345;
@@ -219,7 +219,7 @@ describe('PropertyIndex range', () => {
   });
 
   test('a mixed-type column rebuilds with the full comparator', () => {
-    const graph = new Graph({ eagerSnapshot: false });
+    const graph = new Graph();
     graph.createVertexIndex('v');
     graph.addVertex({ id: 'n1', labels: [], properties: { v: 10 } });
     graph.addVertex({ id: 'n2', labels: [], properties: { v: 20 } });
@@ -234,7 +234,7 @@ describe('PropertyIndex range', () => {
   });
 
   test('the ordered structure stays correct across heavy insert/delete churn', () => {
-    const graph = new Graph({ eagerSnapshot: false });
+    const graph = new Graph();
     graph.createVertexIndex('k');
     // Insert 500 distinct values in shuffled order.
     const order = Array.from({ length: 500 }, (_, i) => i);
@@ -268,7 +268,7 @@ describe('PropertyIndex snapshots and edges', () => {
   test('clone does not alias the source buckets', () => {
     const graph = personGraph();
     graph.createVertexIndex('age');
-    const snapshot = graph.clone({ eagerSnapshot: false });
+    const snapshot = graph.clone();
 
     // Mutating the original must not change the snapshot's view.
     graph.getVertexById('a')!.setProperty('age', 100);
@@ -277,7 +277,7 @@ describe('PropertyIndex snapshots and edges', () => {
   });
 
   test('edge property indexes work the same way', () => {
-    const graph = new Graph({ eagerSnapshot: false });
+    const graph = new Graph();
     const a = graph.addVertex({ id: 'a', labels: ['P'], properties: {} });
     const b = graph.addVertex({ id: 'b', labels: ['P'], properties: {} });
     graph.createEdgeIndex('weight');
