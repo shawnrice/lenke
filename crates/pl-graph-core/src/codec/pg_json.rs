@@ -107,39 +107,87 @@ pub fn decode(input: &str) -> CodeResult<Graph> {
 
     let mut b = Builder::default();
 
-    if let Some(nodes) = obj.get("nodes").and_then(J::as_array) {
-        for node in nodes {
-            let Some(o) = node.as_object() else { continue };
-            b.nodes.push(NodeRec {
-                id: o.get("id").map(json_id).unwrap_or_default(),
-                labels: json_str_array(o.get("labels")),
-                props: json_props(o.get("properties"))?,
-            });
+    // Strict shape validation, matching the TS `isPGFormat`/`isNodeShape`/
+    // `isEdgeShape`: a malformed document is `InvalidShape` rather than being
+    // silently accepted with defaulted/dropped fields.
+    let shape = |msg: &str| CodeError::new(ErrorCode::InvalidShape, format!("pg-json: {msg}"));
+
+    let nodes = obj
+        .get("nodes")
+        .and_then(J::as_array)
+        .ok_or_else(|| shape("'nodes' must be an array"))?;
+    for node in nodes {
+        let o = node
+            .as_object()
+            .ok_or_else(|| shape("each node must be an object"))?;
+        if !is_id_value(o.get("id")) {
+            return Err(shape("node 'id' must be a string or number"));
         }
+        if !is_string_array(o.get("labels")) {
+            return Err(shape("node 'labels' must be an array of strings"));
+        }
+        if !is_object_field(o.get("properties")) {
+            return Err(shape("node 'properties' must be an object"));
+        }
+        b.nodes.push(NodeRec {
+            id: o.get("id").map(json_id).unwrap_or_default(),
+            labels: json_str_array(o.get("labels")),
+            props: json_props(o.get("properties"))?,
+        });
     }
 
-    if let Some(edges) = obj.get("edges").and_then(J::as_array) {
-        for edge in edges {
-            let Some(o) = edge.as_object() else { continue };
-            // The core edge carries one type — take the first label.
-            let etype = o
-                .get("labels")
-                .and_then(J::as_array)
-                .and_then(|a| a.first())
-                .and_then(J::as_str)
-                .unwrap_or("")
-                .to_string();
-            b.edges.push(EdgeRec {
-                src: o.get("from").map(json_id).unwrap_or_default(),
-                dst: o.get("to").map(json_id).unwrap_or_default(),
-                etype,
-                props: json_props(o.get("properties"))?,
-                id: o.get("id").map(json_id),
-            });
+    match obj.get("edges") {
+        None => {}
+        Some(J::Array(edges)) => {
+            for edge in edges {
+                let o = edge
+                    .as_object()
+                    .ok_or_else(|| shape("each edge must be an object"))?;
+                if !is_string_array(o.get("labels")) {
+                    return Err(shape("edge 'labels' must be an array of strings"));
+                }
+                if !is_object_field(o.get("properties")) {
+                    return Err(shape("edge 'properties' must be an object"));
+                }
+                if !matches!(o.get("id"), None | Some(J::String(_)) | Some(J::Number(_))) {
+                    return Err(shape("edge 'id' must be a string or number"));
+                }
+                // The core edge carries one type — take the first label.
+                let etype = o
+                    .get("labels")
+                    .and_then(J::as_array)
+                    .and_then(|a| a.first())
+                    .and_then(J::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                b.edges.push(EdgeRec {
+                    src: o.get("from").map(json_id).unwrap_or_default(),
+                    dst: o.get("to").map(json_id).unwrap_or_default(),
+                    etype,
+                    props: json_props(o.get("properties"))?,
+                    id: o.get("id").map(json_id),
+                });
+            }
         }
+        Some(_) => return Err(shape("'edges' must be an array")),
     }
 
     b.finalize_strict()
+}
+
+/// A JSON id field present and string-or-number (TS `typeof === 'string' | 'number'`).
+fn is_id_value(j: Option<&J>) -> bool {
+    matches!(j, Some(J::String(_)) | Some(J::Number(_)))
+}
+
+/// A present array whose every element is a string (TS `isStringArray`).
+fn is_string_array(j: Option<&J>) -> bool {
+    matches!(j, Some(J::Array(a)) if a.iter().all(J::is_string))
+}
+
+/// A present JSON object (TS `isObject`: object, non-null, non-array).
+fn is_object_field(j: Option<&J>) -> bool {
+    matches!(j, Some(J::Object(_)))
 }
 
 #[cfg(test)]
@@ -220,5 +268,30 @@ mod tests {
         let edges = &enc[enc.find("\"edges\":").unwrap()..];
         assert!(!edges.contains("\"id\":"));
         assert_eq!(decode(&enc).unwrap().edge_id(0), None); // stays id-less on round-trip
+    }
+
+    #[test]
+    fn strict_shape_rejects_malformed_documents() {
+        // Matches the TS isPGFormat/isNodeShape/isEdgeShape contract: each is
+        // InvalidShape, not silently accepted with defaulted/dropped fields.
+        for doc in [
+            r#"{}"#,                                                              // no nodes array
+            r#"{"nodes":{}}"#,                                                    // nodes not an array
+            r#"{"nodes":[{"labels":[],"properties":{}}]}"#,                       // node missing id
+            r#"{"nodes":[{"id":true,"labels":[],"properties":{}}]}"#,             // id not string/number
+            r#"{"nodes":[{"id":"a","labels":["x",1],"properties":{}}]}"#,         // non-string label
+            r#"{"nodes":[{"id":"a","labels":[],"properties":null}]}"#,            // properties not object
+            r#"{"nodes":[42]}"#,                                                  // node not an object
+            r#"{"nodes":[],"edges":[{"from":"a","to":"b","properties":{}}]}"#,    // edge missing labels
+            r#"{"nodes":[],"edges":{}}"#,                                         // edges not an array
+        ] {
+            assert_eq!(
+                decode_err_code(doc),
+                ErrorCode::InvalidShape,
+                "expected InvalidShape for: {doc}"
+            );
+        }
+        // A well-formed document still decodes.
+        assert!(decode(r#"{"nodes":[{"id":"a","labels":[],"properties":{}}]}"#).is_ok());
     }
 }
