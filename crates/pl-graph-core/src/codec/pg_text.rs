@@ -75,8 +75,35 @@ fn push_property(tokens: &mut Vec<String>, key: &str, v: &Value) {
     }
 }
 
+/// Render an id as a token, quoting + escaping it when it contains a `:`
+/// (which would otherwise read as a `:label` / `key:value`), whitespace (which
+/// would split the token), a quote/backslash, or a control char — so ids with
+/// colons or spaces round-trip instead of corrupting the line shape.
+fn id_token(s: &str) -> String {
+    let needs_quote = s.is_empty()
+        || s.chars()
+            .any(|c| matches!(c, ':' | ' ' | '\t' | '\n' | '\r' | '"' | '\\'));
+    if !needs_quote {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
 fn element_line(leading: &[&str], labels: &[&str], props: &[(&str, Value)]) -> String {
-    let mut tokens: Vec<String> = leading.iter().map(|s| s.to_string()).collect();
+    let mut tokens: Vec<String> = leading.iter().map(|s| id_token(s)).collect();
     for l in labels {
         tokens.push(format!(":{l}"));
     }
@@ -241,9 +268,39 @@ fn parse_labels_props(tokens: &[String]) -> (Vec<String>, Vec<(String, Value)>) 
     (labels, props)
 }
 
-/// A second token without a colon is the edge's destination id.
+/// A leading id token: either quoted (so an embedded `:` is part of the id), or
+/// a bare token with no `:` (a `:label` or `key:value` is not an id).
+fn is_id_token(t: &str) -> bool {
+    t.starts_with('"') || !t.contains(':')
+}
+
+/// A second token that is an id (not a `:label` / `key:value`) marks an edge line.
 fn is_edge_line(tokens: &[String]) -> bool {
-    tokens.len() >= 2 && !tokens[1].contains(':')
+    tokens.len() >= 2 && is_id_token(&tokens[1])
+}
+
+/// Read an id token, unquoting + unescaping it if it was quoted.
+fn parse_id(raw: &str) -> String {
+    let Some(rest) = raw.strip_prefix('"') else {
+        return raw.to_string();
+    };
+    let body = rest.strip_suffix('"').unwrap_or(rest);
+    let mut out = String::with_capacity(body.len());
+    let mut chars = body.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('r') => out.push('\r'),
+                Some('t') => out.push('\t'),
+                Some(other) => out.push(other),
+                None => {}
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// Deserialize a PG-text string into a fresh graph. Endpoints referenced by an
@@ -262,8 +319,8 @@ pub fn decode(input: &str) -> Graph {
             continue;
         }
         if is_edge_line(&tokens) {
-            let from = tokens[0].clone();
-            let to = tokens[1].clone();
+            let from = parse_id(&tokens[0]);
+            let to = parse_id(&tokens[1]);
             let (labels, props) = parse_labels_props(&tokens[2..]);
             b.edges.push(EdgeRec {
                 src: from,
@@ -273,7 +330,7 @@ pub fn decode(input: &str) -> Graph {
                 id: None, // the .pg textual format has no edge-id slot
             });
         } else {
-            let id = tokens[0].clone();
+            let id = parse_id(&tokens[0]);
             let (labels, props) = parse_labels_props(&tokens[1..]);
             b.nodes.push(NodeRec { id, labels, props });
         }
@@ -330,6 +387,25 @@ a b :KNOWS since:2020";
         let g = decode("a b :KNOWS");
         assert_eq!(g.vertex_count(), 2); // a and b created as bare nodes
         assert_eq!(g.edge_count(), 1);
+    }
+
+    #[test]
+    fn ids_with_colons_and_spaces_round_trip() {
+        // An endpoint id containing `:` (or a space) must be quoted so it is not
+        // mis-read as a node line / split into tokens.
+        let g = crate::ndjson::decode(
+            "{\"type\":\"node\",\"id\":\"a:b\",\"labels\":[\"N\"],\"properties\":{}}\n\
+             {\"type\":\"node\",\"id\":\"c d\",\"labels\":[\"N\"],\"properties\":{}}\n\
+             {\"type\":\"edge\",\"from\":\"a:b\",\"to\":\"c d\",\"labels\":[\"R\"],\"properties\":{}}",
+        )
+        .unwrap();
+        let g2 = decode(&encode(&g));
+        assert_eq!(g2.vertex_count(), 2, "an id was mis-parsed into an extra node");
+        assert_eq!(g2.edge_count(), 1, "the edge was mis-classified as a node");
+        let from = g2.vid.get("a:b").expect("node a:b");
+        let to = g2.vid.get("c d").expect("node 'c d'");
+        assert_eq!(g2.e_src[0], from);
+        assert_eq!(g2.e_dst[0], to);
     }
 
     #[test]

@@ -39,6 +39,20 @@ describe('pg-text: encoding shape', () => {
     expect(lines(g)[0]).toBe(`x v:"a\\"b\\\\c"`);
   });
 
+  test('ids containing a colon or space are quoted and round-trip', () => {
+    const g = new Graph();
+    const a = g.addVertex({ id: 'a:b', labels: ['N'], properties: {} });
+    const b = g.addVertex({ id: 'c d', labels: ['N'], properties: {} });
+    g.addEdge({ id: 'e', from: a, to: b, labels: ['R'], properties: {} });
+    const back = decode(encode(g), new Graph());
+    expect(back.vertexCount).toBe(2); // not mis-parsed into extra nodes
+    expect(back.edgeCount).toBe(1); // not mis-classified as a node
+    expect(back.getVertexById('a:b')).not.toBeNull();
+    expect(back.getVertexById('c d')).not.toBeNull();
+    const edge = [...back.edges][0];
+    expect([edge.from.id, edge.to.id]).toEqual(['a:b', 'c d']);
+  });
+
   test('newline/CR/tab in a string are escaped and round-trip (no line split)', () => {
     const g = new Graph();
     g.addVertex({ id: 'x', labels: ['N'], properties: { note: 'l1\nl2\tx"q\\b\r' } });
