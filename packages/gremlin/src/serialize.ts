@@ -92,7 +92,17 @@ export const serialize = (plan: Plan): string => {
     );
   }
 
-  return JSON.stringify(plan);
+  // A plan can embed literal predicate values (`is(eq(10n))`); `JSON.stringify`
+  // throws on a BigInt and on a cyclic value, and silently drops `undefined` /
+  // turns `NaN`/`Infinity` into `null`. Surface the throwing cases cleanly.
+  try {
+    return JSON.stringify(plan);
+  } catch (cause) {
+    throw new PlGraphError(
+      'Plan contains a non-serializable value (e.g. a BigInt or a cyclic structure).',
+      { code: ErrorCode.InvalidValue, cause },
+    );
+  }
 };
 
 /**

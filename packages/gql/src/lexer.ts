@@ -153,6 +153,15 @@ const RESERVED = new Set<string>(
 export const isReserved = (word: string): boolean => RESERVED.has(word.toLowerCase());
 
 const isDigit = (c: string): boolean => c >= '0' && c <= '9';
+
+// Valid digits per integer base: hex `0x`, octal `0o`, binary `0b`. Sharing one
+// class let invalid literals like `0b1019AF` / `0o789` lex as a single token
+// that then collapsed to NaN.
+const BASE_DIGIT_CLASS: Record<string, RegExp> = {
+  x: /[0-9a-fA-F_]/,
+  o: /[0-7_]/,
+  b: /[01_]/,
+};
 const isIdentStart = (c: string): boolean =>
   (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c === '_';
 const isIdentPart = (c: string): boolean => isIdentStart(c) || isDigit(c);
@@ -378,13 +387,26 @@ export const tokenize = (src: string): Token[] => {
     // 0x/0o/0b integer bases.
     if (isDigit(c) || (c === '.' && isDigit(src[i + 1] ?? ''))) {
       const start = i;
-      const isBasePrefix = c === '0' && 'xXoObB'.includes(src[i + 1] ?? '');
+      const afterZero = src[i + 1];
+      // Guard against the `''.includes('') === true` quirk: a bare `0` at EOF
+      // must not be mistaken for a base prefix.
+      const isBasePrefix = c === '0' && afterZero !== undefined && 'xXoObB'.includes(afterZero);
+      // Track whether the literal is an *integer* form (no fraction/exponent).
+      // Only integers are held to the safe-integer range; floats may exceed it
+      // because they are inherently approximate.
+      let isInteger = true;
 
       if (isBasePrefix) {
+        const digitClass = BASE_DIGIT_CLASS[afterZero.toLowerCase()] ?? BASE_DIGIT_CLASS.b;
         i += 2;
+        const digitsStart = i;
 
-        while (i < src.length && /[0-9a-fA-F_]/.test(src[i])) {
+        while (i < src.length && digitClass.test(src[i])) {
           i += 1;
+        }
+
+        if (i === digitsStart) {
+          throw new GqlSyntaxError(`Malformed numeric literal '${src.slice(start, i)}'`, start);
         }
       } else {
         const digits = (): void => {
@@ -395,11 +417,13 @@ export const tokenize = (src: string): Token[] => {
         digits();
 
         if (src[i] === '.') {
+          isInteger = false;
           i += 1;
           digits();
         }
 
         if (src[i] === 'e' || src[i] === 'E') {
+          isInteger = false;
           i += 1;
 
           if (src[i] === '+' || src[i] === '-') {
@@ -411,7 +435,22 @@ export const tokenize = (src: string): Token[] => {
       }
 
       const text = src.slice(start, i);
-      push('number', text, start, Number(text.replace(/_/g, '')));
+      const num = Number(text.replace(/_/g, ''));
+
+      // A malformed mantissa/exponent (`1e`, `0x`, `.e5`) coerces to NaN; an
+      // overflowing magnitude (`1e999`) to Infinity. Reject both — otherwise a
+      // garbage `lit` node flows into the AST and downstream arithmetic.
+      if (!Number.isFinite(num)) {
+        throw new GqlSyntaxError(`Malformed numeric literal '${text}'`, start);
+      }
+
+      // An integer literal past 2^53 silently loses precision as a JS double.
+      // Reject rather than return a value that differs from what was written.
+      if (isInteger && !Number.isSafeInteger(num)) {
+        throw new GqlSyntaxError(`Integer literal '${text}' exceeds the safe integer range`, start);
+      }
+
+      push('number', text, start, num);
       continue;
     }
 

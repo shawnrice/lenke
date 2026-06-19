@@ -583,7 +583,12 @@ const propsFromRow = (
   return properties;
 };
 
-const splitLabels = (text: string): string[] => (text === '' ? [] : text.split(LIST_SEP));
+// Join a label set, escaping `;`/`\` inside each label (same scheme as list
+// elements) so a label containing the `;` separator round-trips.
+const joinLabels = (labels: Iterable<string>): string =>
+  [...labels].map(escapeElement).join(LIST_SEP);
+
+const splitLabels = (text: string): string[] => (text === '' ? [] : splitList(text));
 
 /** Add one vertex from a parsed node row. */
 const applyNodeRow = (graph: Graph, row: Cell[], propCols: readonly ParsedHeader[]): void => {
@@ -632,7 +637,7 @@ export const encodeNodes = (graph: Graph): string => {
   let i = 0;
 
   for (const vertex of graph.vertices) {
-    const labelStr = [...vertex.labels].join(LIST_SEP);
+    const labelStr = joinLabels(vertex.labels);
     rows.push(buildRow([vertex.id, labelStr], keys, types, bags[i]));
     i += 1;
   }
@@ -641,9 +646,7 @@ export const encodeNodes = (graph: Graph): string => {
 };
 
 /** Decode a typed nodes CSV into `graph` (mutating it) and return it. */
-export const decodeNodes = (csv: string, graph: Graph): Graph => {
-  const rows = parseCsv(csv);
-
+const decodeNodeRows = (rows: Cell[][], graph: Graph): Graph => {
   if (rows.length === 0) {
     return graph;
   }
@@ -667,6 +670,9 @@ export const decodeNodes = (csv: string, graph: Graph): Graph => {
 
   return graph;
 };
+
+export const decodeNodes = (csv: string, graph: Graph): Graph =>
+  decodeNodeRows(parseCsv(csv), graph);
 
 // ---------------------------------------------------------------------------
 // Public natural API: edges
@@ -694,7 +700,7 @@ export const encodeEdges = (graph: Graph): string => {
   let i = 0;
 
   for (const edge of graph.edges) {
-    const typeStr = [...edge.labels].join(LIST_SEP);
+    const typeStr = joinLabels(edge.labels);
     rows.push(buildRow([edge.id, edge.from.id, edge.to.id, typeStr], keys, types, bags[i]));
     i += 1;
   }
@@ -706,9 +712,7 @@ export const encodeEdges = (graph: Graph): string => {
  * Decode a typed edges CSV into `graph` (mutating it) and return it. Nodes must
  * already be present; throws if an edge references an absent vertex id.
  */
-export const decodeEdges = (csv: string, graph: Graph): Graph => {
-  const rows = parseCsv(csv);
-
+const decodeEdgeRows = (rows: Cell[][], graph: Graph): Graph => {
   if (rows.length === 0) {
     return graph;
   }
@@ -749,6 +753,9 @@ export const decodeEdges = (csv: string, graph: Graph): Graph => {
   return graph;
 };
 
+export const decodeEdges = (csv: string, graph: Graph): Graph =>
+  decodeEdgeRows(parseCsv(csv), graph);
+
 // ---------------------------------------------------------------------------
 // Streaming (slurp/dump a large graph without holding the whole CSV in memory)
 // ---------------------------------------------------------------------------
@@ -785,7 +792,7 @@ export async function* encodeNodesStream(graph: Graph): AsyncGenerator<string> {
   let i = 0;
 
   for (const vertex of graph.vertices) {
-    batch.push(buildRow([vertex.id, [...vertex.labels].join(LIST_SEP)], keys, types, bags[i]));
+    batch.push(buildRow([vertex.id, joinLabels(vertex.labels)], keys, types, bags[i]));
     i += 1;
 
     if (batch.length >= BATCH) {
@@ -816,12 +823,7 @@ export async function* encodeEdgesStream(graph: Graph): AsyncGenerator<string> {
 
   for (const edge of graph.edges) {
     batch.push(
-      buildRow(
-        [edge.id, edge.from.id, edge.to.id, [...edge.labels].join(LIST_SEP)],
-        keys,
-        types,
-        bags[i],
-      ),
+      buildRow([edge.id, edge.from.id, edge.to.id, joinLabels(edge.labels)], keys, types, bags[i]),
     );
     i += 1;
 
@@ -962,11 +964,19 @@ export const encode = (graph: Graph): string =>
 
 /** Decode the combined single-string form into `graph` (nodes first, then edges). */
 export const decode = (input: string, graph: Graph): Graph => {
-  const idx = input.indexOf(SEPARATOR);
-  const nodesCsv = idx === -1 ? input : input.slice(0, idx);
-  const edgesCsv = idx === -1 ? '' : input.slice(idx + SEPARATOR.length);
-  decodeNodes(nodesCsv, graph);
-  decodeEdges(edgesCsv, graph);
+  // Parse the whole document first (quote-aware), THEN split at the sentinel
+  // *row* — a lone unquoted `=== EDGES ===` cell. Slicing the raw string on the
+  // literal sentinel would fire inside a quoted property value containing
+  // `\n=== EDGES ===\n`, truncating the nodes section mid-field; a row-level
+  // split cannot be fooled this way.
+  const rows = parseCsv(input);
+  const split = rows.findIndex(
+    (r) => r.length === 1 && !r[0].quoted && r[0].text === SENTINEL_LINE,
+  );
+  const nodeRows = split === -1 ? rows : rows.slice(0, split);
+  const edgeRows = split === -1 ? [] : rows.slice(split + 1);
+  decodeNodeRows(nodeRows, graph);
+  decodeEdgeRows(edgeRows, graph);
 
   return graph;
 };

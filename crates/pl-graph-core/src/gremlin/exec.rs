@@ -731,11 +731,8 @@ fn present_keys(graph: &Graph, v: &GVal) -> Vec<String> {
 fn elem_id(graph: &Graph, v: &GVal) -> GVal {
     match v {
         GVal::Vertex(i) => GVal::Str(graph.vid.arc(*i)),
-        // External edge id if one was assigned, else the canonical `e{index}`.
-        GVal::Edge(e) => GVal::Str(match graph.edge_id(*e) {
-            Some(id) => Arc::from(id),
-            None => Arc::from(format!("e{e}").as_str()),
-        }),
+        // Every edge has an id (assigned external id, else canonical `e{index}`).
+        GVal::Edge(e) => GVal::Str(Arc::from(graph.edge_id(*e).as_ref())),
         other => other.clone(),
     }
 }
@@ -888,10 +885,9 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
             let edges: Vec<u32> = (0..graph.e_src.len() as u32)
                 .filter(|&e| graph.is_edge_live(e))
                 .filter(|&e| {
-                    ids.is_empty()
-                        || ids
-                            .iter()
-                            .any(|i| graph.edge_by_id(i) == Some(e) || i.as_str() == format!("e{e}"))
+                    // `edge_by_id` resolves both an assigned id and the canonical
+                    // `e{index}` form, so no separate synthetic fallback is needed.
+                    ids.is_empty() || ids.iter().any(|i| graph.edge_by_id(i) == Some(e))
                 })
                 .collect();
             if stream.is_empty() {

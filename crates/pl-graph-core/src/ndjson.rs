@@ -54,18 +54,31 @@ enum Rec {
     Edge(EdgeRec),
 }
 
-/// Parse one line. `Ok(None)` skips a blank/unparseable/untyped line (lenient,
-/// unchanged behavior); `Err` is a nested-object property value (`InvalidValue`).
+/// Parse one line. A blank line is skipped (`Ok(None)`); everything else is
+/// strict and matches the TS codec: invalid JSON → `InvalidJson`, a non-object
+/// or an unknown/missing `type` → `InvalidShape`, a nested-object property value
+/// → `InvalidValue`. (Previously these all silently skipped the line, which
+/// could mask corrupt fixtures since `decode` is the crate's test-fixture loader.)
 fn parse_line(line: &str) -> CodeResult<Option<Rec>> {
     let line = line.trim();
     if line.is_empty() {
         return Ok(None);
     }
+    let snippet = || line.chars().take(80).collect::<String>();
     let Ok(j) = serde_json::from_str::<J>(line) else {
-        return Ok(None);
+        return Err(CodeError::new(
+            ErrorCode::InvalidJson,
+            format!("ndjson: invalid JSON: {}", snippet()),
+        ));
     };
     let Some(obj) = j.as_object() else {
-        return Ok(None);
+        return Err(CodeError::new(
+            ErrorCode::InvalidShape,
+            format!(
+                "ndjson: each line must be a node or edge object: {}",
+                snippet()
+            ),
+        ));
     };
     let rec = match obj.get("type").and_then(J::as_str) {
         Some("node") => {
@@ -105,7 +118,15 @@ fn parse_line(line: &str) -> CodeResult<Option<Rec>> {
                 id,
             })
         }
-        _ => return Ok(None),
+        _ => {
+            return Err(CodeError::new(
+                ErrorCode::InvalidShape,
+                format!(
+                    "ndjson: line is not a 'node' or 'edge' record: {}",
+                    snippet()
+                ),
+            ))
+        }
     };
     Ok(Some(rec))
 }
@@ -166,9 +187,8 @@ fn push_json_str(out: &mut String, s: &str) {
 }
 
 fn push_num(out: &mut String, x: f64) {
-    use std::fmt::Write as _;
     if x.is_finite() {
-        let _ = write!(out, "{x}");
+        out.push_str(&crate::codec::js_number(x));
     } else {
         out.push_str("null");
     }
@@ -254,10 +274,9 @@ pub fn encode(g: &Graph) -> String {
             continue; // skip tombstoned edges
         }
         out.push_str("{\"type\":\"edge\"");
-        if let Some(id) = g.edge_id(i as u32) {
-            out.push_str(",\"id\":");
-            push_json_str(&mut out, id);
-        }
+        // Every edge has an id (assigned, or canonical `e{index}`) — always emit.
+        out.push_str(",\"id\":");
+        push_json_str(&mut out, &g.edge_id(i as u32));
         out.push_str(",\"from\":");
         push_json_str(&mut out, g.vid.text(g.e_src[i]));
         out.push_str(",\"to\":");
@@ -312,5 +331,59 @@ mod tests {
             }
             _ => panic!("age should be a Num column"),
         }
+    }
+
+    #[test]
+    fn strict_decode_rejects_malformed_lines() {
+        use crate::error_codes::ErrorCode;
+        // `.err().unwrap()` rather than `unwrap_err()` (Graph has no Debug impl).
+        let code = |s: &str| decode(s).err().unwrap().code;
+        // Invalid JSON → InvalidJson (matches TS, instead of a silent skip).
+        assert_eq!(code("{not json"), ErrorCode::InvalidJson);
+        // Valid JSON but not an object → InvalidShape.
+        assert_eq!(code("42"), ErrorCode::InvalidShape);
+        assert_eq!(code("[1,2]"), ErrorCode::InvalidShape);
+        // Object with unknown/missing `type` → InvalidShape.
+        assert_eq!(code(r#"{"type":"banana"}"#), ErrorCode::InvalidShape);
+        assert_eq!(code(r#"{"id":"a"}"#), ErrorCode::InvalidShape);
+        // Blank lines are still skipped (not an error).
+        let g = decode("\n  \n{\"type\":\"node\",\"id\":\"a\",\"labels\":[],\"properties\":{}}\n")
+            .unwrap();
+        assert_eq!(g.n, 1);
+    }
+
+    #[test]
+    fn deeply_nested_array_is_rejected_not_overflow() {
+        use crate::error_codes::ErrorCode;
+        // serde caps nesting at 128 levels during parse → a clean InvalidJson,
+        // never a stack overflow or a silent accept (matches the TS depth guard).
+        let deep = format!("{}1{}", "[".repeat(2000), "]".repeat(2000));
+        let line = format!(r#"{{"type":"node","id":"a","labels":[],"properties":{{"x":{deep}}}}}"#);
+        assert_eq!(decode(&line).err().unwrap().code, ErrorCode::InvalidJson);
+    }
+
+    #[test]
+    fn duplicate_ids_first_wins_node_drop_second_edge() {
+        // Matches the TS core: a duplicate node id is first-wins (later labels/
+        // props ignored), and an edge with an already-seen id is dropped.
+        let g = decode(
+            "{\"type\":\"node\",\"id\":\"a\",\"labels\":[\"L1\"],\"properties\":{\"x\":1}}\n\
+             {\"type\":\"node\",\"id\":\"a\",\"labels\":[\"L2\"],\"properties\":{\"x\":2}}\n\
+             {\"type\":\"node\",\"id\":\"b\",\"labels\":[],\"properties\":{}}\n\
+             {\"type\":\"edge\",\"id\":\"x\",\"from\":\"a\",\"to\":\"b\",\"labels\":[\"R\"],\"properties\":{}}\n\
+             {\"type\":\"edge\",\"id\":\"x\",\"from\":\"b\",\"to\":\"a\",\"labels\":[\"S\"],\"properties\":{}}",
+        )
+        .unwrap();
+        assert_eq!(g.n, 2); // a (first-wins) + b
+        let a = g.vid.get("a").unwrap();
+        let labels: Vec<&str> = g
+            .vertex_labels(a)
+            .iter()
+            .map(|&l| g.labels.text(l))
+            .collect();
+        assert_eq!(labels, vec!["L1"]); // first-wins: L2 ignored
+        assert_eq!(g.props.value(a as usize, "x", &g.strs), Value::Num(1.0)); // first-wins
+        assert_eq!(g.edge_count(), 1); // drop-second: only the first edge id 'x'
+        assert_eq!(g.etype.text(g.e_type[0]), "R");
     }
 }

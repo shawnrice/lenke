@@ -74,10 +74,7 @@ fn ids_of(t: super::Traversal) -> Vec<String> {
 fn gval_text(g: &Graph, v: &GVal) -> String {
     match v {
         GVal::Vertex(i) => g.vid.text(*i).to_string(),
-        GVal::Edge(e) => match g.edge_id(*e) {
-            Some(id) => id.to_string(),
-            None => format!("e{e}"),
-        },
+        GVal::Edge(e) => g.edge_id(*e).into_owned(),
         GVal::Str(s) => s.to_string(),
         GVal::Num(n) => format!("{n}"),
         other => format!("{other:?}"),

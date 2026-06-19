@@ -1,8 +1,18 @@
 import type { Graph } from '@pl-graph/core';
+import { ErrorCode, PlGraphError } from '@pl-graph/errors';
 
 import type { Plan, Step } from '../ast.js';
 import { applyPlanToStream } from './dispatch.js';
 import { hasAny, incLoops, isEmptyPlan, type RunContext, type Traverser } from './runtime.js';
+
+/**
+ * Per-`repeat()` cap on the total traversers its body produces. A
+ * `repeat(both())` with no `until`/`times` on a cyclic or dense graph grows the
+ * frontier multiplicatively each level (bounded only by the 100-iteration cap,
+ * which bounds depth, not work), so it can exhaust memory long before it stops.
+ * Past this budget we raise `ResourceExhausted` rather than hang/OOM.
+ */
+const REPEAT_BUDGET = 1_000_000;
 
 export const unionStep = function* (
   stream: Iterable<Traverser<unknown>>,
@@ -94,6 +104,7 @@ export const repeatStep = function* (
   };
 
   let frontier: Traverser<unknown>[] = [...stream].map(incLoops);
+  let work = 0;
 
   for (let i = 0; i < maxIterations && frontier.length > 0; i++) {
     // Pre-form emit (TinkerPop's `emit(...).repeat(body)`): emit before each
@@ -123,6 +134,15 @@ export const repeatStep = function* (
 
     // Advance survivors through the body.
     for (const t of applyPlanToStream(step.body, survivors, graph)) {
+      work += 1;
+
+      if (work > REPEAT_BUDGET) {
+        throw new PlGraphError(
+          'repeat() exceeded the traversal budget; add a tighter until()/times()',
+          { code: ErrorCode.ResourceExhausted },
+        );
+      }
+
       next.push(incLoops(t));
     }
 

@@ -1,9 +1,20 @@
 import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@pl-graph/core';
+import { ErrorCode, hasErrorCode } from '@pl-graph/errors';
 
 import { graphContentEqual, randomLpgGraph } from '../testkit.js';
 import { decode, encode, graphsonCodec } from './index.js';
+
+const errOf = (input: string): unknown => {
+  try {
+    decode(input, new Graph());
+  } catch (e) {
+    return e;
+  }
+
+  return undefined;
+};
 
 type Typed = { '@type': string; '@value': unknown };
 
@@ -95,6 +106,49 @@ describe('graphson multi-label :: convention', () => {
     expect(parse(g).vertices[0]['@value'].label).toBe('');
     const back = decode(encode(g), new Graph());
     expect([...back.getVertexById('n0')!.labels]).toEqual([]);
+  });
+});
+
+describe('graphson: malformed input is a clean error, not a crash', () => {
+  test('invalid JSON → InvalidJson (not a raw SyntaxError)', () => {
+    expect(hasErrorCode(errOf('{bad'), ErrorCode.InvalidJson)).toBe(true);
+  });
+
+  test('non-object top level → InvalidShape', () => {
+    expect(hasErrorCode(errOf('[]'), ErrorCode.InvalidShape)).toBe(true);
+  });
+
+  test('vertex missing @value / id / label → InvalidShape (was a TypeError)', () => {
+    expect(hasErrorCode(errOf('{"vertices":[{"@type":"g:Vertex"}]}'), ErrorCode.InvalidShape)).toBe(
+      true,
+    );
+    expect(
+      hasErrorCode(errOf('{"vertices":[{"@value":{"label":""}}]}'), ErrorCode.InvalidShape),
+    ).toBe(true);
+    expect(
+      hasErrorCode(errOf('{"vertices":[{"@value":{"id":"a"}}]}'), ErrorCode.InvalidShape),
+    ).toBe(true);
+  });
+
+  test('non-string vertex label → InvalidShape (was a TypeError)', () => {
+    expect(
+      hasErrorCode(
+        errOf('{"vertices":[{"@value":{"id":"a","label":42}}]}'),
+        ErrorCode.InvalidShape,
+      ),
+    ).toBe(true);
+  });
+
+  test('g:List with a non-array @value → InvalidShape (was a TypeError)', () => {
+    const doc =
+      '{"vertices":[{"@value":{"id":"a","label":"","properties":' +
+      '{"k":[{"@value":{"value":{"@type":"g:List","@value":5}}}]}}}]}';
+    expect(hasErrorCode(errOf(doc), ErrorCode.InvalidShape)).toBe(true);
+  });
+
+  test('a well-formed minimal document still decodes', () => {
+    const g = decode('{"vertices":[{"@value":{"id":"a","label":""}}]}', new Graph());
+    expect(g.vertexCount).toBe(1);
   });
 });
 
