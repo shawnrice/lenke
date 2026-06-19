@@ -359,10 +359,12 @@ describe('GQL: variable-length paths', () => {
     expect(rows).toEqual([]);
   });
 
-  test('undirected var-length reaches back to the start', () => {
+  test('undirected var-length uses trail semantics (no repeated relationship)', () => {
     const rows = query(g, `MATCH (a:Person {name: 'josh'})~[:KNOWS]~{1,2}(b) RETURN b.name`);
-    // josh←marko (1), then marko→{vadas,josh} (2).
-    expect(names(rows, 'b.name')).toEqual(['josh', 'marko', 'vadas']);
+    // josh~marko (1 hop, via the marko–josh edge), then marko~vadas (2). The walk
+    // back to josh would reuse that same edge, which a trail forbids — so unlike
+    // Gremlin's walk semantics, josh is not reached.
+    expect(names(rows, 'b.name')).toEqual(['marko', 'vadas']);
   });
 });
 

@@ -1,10 +1,18 @@
 import type { Graph, Vertex } from '@pl-graph/core';
+import { ErrorCode, PlGraphError } from '@pl-graph/errors';
 
 import type { Step } from '../ast.js';
 import { bothEdgesOf } from '../graph-queries.js';
 import { applyPlanToStream } from './dispatch.js';
 import { otherEndpoint } from './movement.js';
 import { extend, hasAny, isVertex, startTraverser, type Traverser } from './runtime.js';
+
+/**
+ * Cap on the number of equal-length shortest paths reconstructed per source.
+ * The count is exponential on lattice-like graphs (an N-diamond chain has 2^N
+ * shortest paths), so past this we raise rather than exhaust memory.
+ */
+const SHORTEST_PATH_BUDGET = 1_000_000;
 
 /**
  * All shortest (fewest-hop) vertex paths from `src` to each destination, as
@@ -53,6 +61,13 @@ const shortestPathsFrom = (
 
     if (id === src.id) {
       paths.push(path);
+
+      if (paths.length > SHORTEST_PATH_BUDGET) {
+        throw new PlGraphError(
+          'shortestPath() produced too many equal-length paths; restrict the target set',
+          { code: ErrorCode.ResourceExhausted },
+        );
+      }
 
       return;
     }

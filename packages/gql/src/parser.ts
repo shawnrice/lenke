@@ -117,6 +117,53 @@ export const parse = (src: string): Query => {
     return advance();
   };
 
+  // Recursion-depth guard. Recursive descent over deeply nested input
+  // (`((((…))))`, `NOT NOT NOT …`, `!!!…`, nested lists / subqueries) would
+  // otherwise overflow the JS stack with an uncaught `RangeError`. Wrapping the
+  // recursive entry points in `descend` converts that into a clean
+  // `GqlSyntaxError` past a fixed bound, well below any real stack limit.
+  const MAX_DEPTH = 500;
+  let depth = 0;
+
+  const descend = <T>(body: () => T): T => {
+    depth += 1;
+
+    if (depth > MAX_DEPTH) {
+      throw new GqlSyntaxError('Query nested too deeply', peek().pos);
+    }
+
+    try {
+      return body();
+    } finally {
+      depth -= 1;
+    }
+  };
+
+  // Consume a number token already known to be present and require it to be a
+  // non-negative integer — for SKIP/LIMIT/OFFSET and quantifier bounds, where a
+  // float, hex, NaN, or out-of-range value is never valid.
+  const readCount = (what: string): number => {
+    const t = advance();
+    const n = t.num ?? Number.NaN;
+
+    if (!Number.isInteger(n) || n < 0) {
+      throw new GqlSyntaxError(`${what} must be a non-negative integer, got '${t.value}'`, t.pos);
+    }
+
+    return n;
+  };
+
+  const expectCount = (what: string): number => {
+    if (!check('number')) {
+      throw new GqlSyntaxError(
+        `Expected ${what}, got '${peek().value || peek().type}'`,
+        peek().pos,
+      );
+    }
+
+    return readCount(what);
+  };
+
   // Consume an identifier in a *binding* position (variable, label, property
   // key, alias). A bare reserved word is rejected per ISO; a delimited
   // identifier (backtick) may be any word.
@@ -184,7 +231,7 @@ export const parse = (src: string): Query => {
   };
 
   // Label expressions, lowest-to-highest precedence: `|` < `&` < `!` < primary.
-  const parseLabelExpr = (): LabelExpr => parseLabelOr();
+  const parseLabelExpr = (): LabelExpr => descend(parseLabelOr);
 
   const parseLabelOr = (): LabelExpr => {
     let left = parseLabelAnd();
@@ -208,15 +255,16 @@ export const parse = (src: string): Query => {
     return left;
   };
 
-  const parseLabelNot = (): LabelExpr => {
-    if (check('bang')) {
-      advance();
+  const parseLabelNot = (): LabelExpr =>
+    descend((): LabelExpr => {
+      if (check('bang')) {
+        advance();
 
-      return { kind: 'not', expr: parseLabelNot() };
-    }
+        return { kind: 'not', expr: parseLabelNot() };
+      }
 
-    return parseLabelPrimary();
-  };
+      return parseLabelPrimary();
+    });
 
   const parseLabelPrimary = (): LabelExpr => {
     if (check('percent')) {
@@ -353,16 +401,23 @@ export const parse = (src: string): Query => {
     }
 
     if (check('lbrace')) {
-      advance();
-      const min = check('number') ? advance().num! : 0;
+      const open = advance();
+      const min = check('number') ? readCount('a quantifier bound') : 0;
       let max: number | null = min;
 
       if (check('comma')) {
         advance();
-        max = check('number') ? advance().num! : null;
+        max = check('number') ? readCount('a quantifier bound') : null;
       }
 
       expect('rbrace', "'}' to close a quantifier");
+
+      if (max !== null && max < min) {
+        throw new GqlSyntaxError(
+          `Quantifier upper bound ${max} is less than lower bound ${min}`,
+          open.pos,
+        );
+      }
 
       return { min, max };
     }
@@ -370,19 +425,20 @@ export const parse = (src: string): Query => {
     return undefined;
   };
 
-  const parsePathPattern = (): PathPattern => {
-    const start = parseNode();
-    const segments: Segment[] = [];
+  const parsePathPattern = (): PathPattern =>
+    descend((): PathPattern => {
+      const start = parseNode();
+      const segments: Segment[] = [];
 
-    while (startsRelationship()) {
-      const rel = parseRel();
-      const quantifier = parseQuantifier();
-      const node = parseNode();
-      segments.push({ rel: quantifier ? { ...rel, quantifier } : rel, node });
-    }
+      while (startsRelationship()) {
+        const rel = parseRel();
+        const quantifier = parseQuantifier();
+        const node = parseNode();
+        segments.push({ rel: quantifier ? { ...rel, quantifier } : rel, node });
+      }
 
-    return { start, segments };
-  };
+      return { start, segments };
+    });
 
   const parseMatchClause = (): MatchClause => {
     const optional = checkKeyword('optional') ? (advance(), true) : false;
@@ -403,7 +459,7 @@ export const parse = (src: string): Query => {
 
   // Precedence, loosest to tightest (ISO §24): OR/XOR, AND, NOT, IS/IN
   // predicates, comparison, `||`, +/-, *///%, unary, primary.
-  const parseExpr = (): Expr => parseOrXor();
+  const parseExpr = (): Expr => descend(parseOrXor);
 
   // ISO/IEC 39075 `<boolean value expression>`: OR and XOR share one (loosest)
   // precedence level and are left-associative, so `a OR b XOR c` parses as
@@ -432,15 +488,16 @@ export const parse = (src: string): Query => {
     return left;
   };
 
-  const parseNot = (): Expr => {
-    if (checkKeyword('not')) {
-      advance();
+  const parseNot = (): Expr =>
+    descend((): Expr => {
+      if (checkKeyword('not')) {
+        advance();
 
-      return { kind: 'not', expr: parseNot() };
-    }
+        return { kind: 'not', expr: parseNot() };
+      }
 
-    return parsePostfixPredicate();
-  };
+      return parsePostfixPredicate();
+    });
 
   // Postfix predicates: `x IS [NOT] NULL`, `x IS [NOT] TRUE|FALSE|UNKNOWN`,
   // `x [NOT] IN list`.
@@ -556,21 +613,22 @@ export const parse = (src: string): Query => {
     return left;
   };
 
-  const parseUnary = (): Expr => {
-    if (check('dash')) {
-      advance();
+  const parseUnary = (): Expr =>
+    descend((): Expr => {
+      if (check('dash')) {
+        advance();
 
-      return { kind: 'neg', expr: parseUnary() };
-    }
+        return { kind: 'neg', expr: parseUnary() };
+      }
 
-    if (check('plus')) {
-      advance();
+      if (check('plus')) {
+        advance();
 
-      return parseUnary();
-    }
+        return parseUnary();
+      }
 
-    return parsePrimary();
-  };
+      return parsePrimary();
+    });
 
   // The body shared by the braced subqueries `EXISTS { … }` and `COUNT { … }`:
   // `{ pattern, … [WHERE pred] }`, with an optional leading MATCH keyword.
@@ -849,14 +907,14 @@ export const parse = (src: string): Query => {
 
     if (checkKeyword('skip') || checkKeyword('offset')) {
       advance();
-      skip = expect('number', 'a number after SKIP/OFFSET').num;
+      skip = expectCount('a non-negative integer after SKIP/OFFSET');
     }
 
     let limit: number | undefined;
 
     if (checkKeyword('limit')) {
       advance();
-      limit = expect('number', 'a number after LIMIT').num;
+      limit = expectCount('a non-negative integer after LIMIT');
     }
 
     return { star, items, distinct, orderBy, skip, limit };
