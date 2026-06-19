@@ -441,7 +441,13 @@ pub unsafe extern "C" fn plg_gremlin_json(
             return std::ptr::null_mut();
         }
     };
-    let vals = crate::gremlin::run(&mut *g, &plan);
+    let vals = match crate::gremlin::try_run(&mut *g, &plan) {
+        Ok(v) => v,
+        Err(e) => {
+            crate::ffi_error::set_code(e.code, &e.message);
+            return std::ptr::null_mut();
+        }
+    };
     let bytes = crate::gremlin::exec::results_to_json(&*g, &vals)
         .into_bytes()
         .into_boxed_slice();

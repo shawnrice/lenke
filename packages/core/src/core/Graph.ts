@@ -385,6 +385,14 @@ export class Graph {
       return this.removeVertex(found);
     }
 
+    // Idempotent: dropping an already-removed vertex is a no-op. Without this,
+    // a second removal re-emits `VertexRemoved` for an evicted vertex whose
+    // `labels` getter dereferences a now-null graph → TypeError. (The string
+    // overload above already short-circuits; this guards the object overload.)
+    if (!this.verticesById.has(vertex.id)) {
+      return null;
+    }
+
     const event = this.emit(new EmitterEvent('@graph/VertexRemoved', vertex));
 
     if (event.defaultPrevented) {

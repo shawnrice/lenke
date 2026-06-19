@@ -4,6 +4,7 @@
 //! readable. Movement/projection steps extend each traverser's path; filters
 //! pass traversers through unchanged. `by()` modulators resolve via [`eval_by`].
 
+use std::cell::Cell;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -65,22 +66,81 @@ impl Trav {
 
 /// Per-run mutable context: named side-effect bags for `aggregate`/`store`/`cap`,
 /// plus `subgraph(key)` accumulators (deduped (vertex ids, edge ids)).
+/// Per-`repeat()` cap on the traversers its body produces — a `repeat(both())`
+/// with no `until`/`times` on a cyclic/dense graph grows the frontier
+/// multiplicatively each level and can exhaust memory. Past this the repeat
+/// stops and records `over_budget` so a caller can surface `ResourceExhausted`.
+const REPEAT_BUDGET: u64 = 1_000_000;
+
+thread_local! {
+    /// Set when evaluation hits a type error — ordering genuinely incomparable
+    /// types (a number vs a string, an element vs a scalar) or feeding a
+    /// non-number into a numeric aggregate (`sum`/`mean`). TinkerPop raises a
+    /// `ClassCastException`; the executor is single-threaded and eager, so a
+    /// thread-local flag avoids threading a sink through every leaf helper. It is
+    /// reset per `run` and surfaced as `InvalidValue` by `try_run`.
+    static TYPE_FAULT: Cell<bool> = const { Cell::new(false) };
+}
+
+fn set_type_fault() {
+    TYPE_FAULT.with(|f| f.set(true));
+}
+
+fn take_type_fault() -> bool {
+    TYPE_FAULT.with(|f| f.replace(false))
+}
+
 #[derive(Default)]
 struct Ctx {
     side: HashMap<String, Vec<GVal>>,
     subgraphs: HashMap<String, (Vec<u32>, Vec<u32>)>,
+    /// Set when a `repeat()` hit `REPEAT_BUDGET` and stopped early.
+    over_budget: bool,
+    /// First mutation/data fault recorded during the run (e.g. `addE()` with an
+    /// unresolvable endpoint). Surfaced by [`try_run`]; ignored by [`run`].
+    fault: Option<(crate::error_codes::ErrorCode, &'static str)>,
 }
 
 /// Run a traversal against `graph`, returning the final traversers' values.
+/// Infallible: a runaway `repeat()` stops at the budget and returns its partial
+/// frontier. Use [`try_run`] to surface that as a `ResourceExhausted` error.
 pub fn run(graph: &mut Graph, t: &Traversal) -> Vec<GVal> {
     let mut ctx = Ctx::default();
-    // Index seeding: `V().has(key, pred)` on an indexed key seeds from the
-    // property index (skipping the full label scan + the now-satisfied `has`).
+    run_collect(graph, &mut ctx, t)
+}
+
+/// Like [`run`], but reports a `repeat()` budget overrun as `ResourceExhausted`
+/// instead of silently returning a partial result.
+pub fn try_run(graph: &mut Graph, t: &Traversal) -> crate::error::CodeResult<Vec<GVal>> {
+    let mut ctx = Ctx::default();
+    let vals = run_collect(graph, &mut ctx, t);
+    if ctx.over_budget {
+        return Err(crate::error::CodeError::new(
+            crate::error_codes::ErrorCode::ResourceExhausted,
+            "repeat() exceeded the traversal budget; add a tighter until()/times()",
+        ));
+    }
+    if take_type_fault() {
+        return Err(crate::error::CodeError::new(
+            crate::error_codes::ErrorCode::InvalidValue,
+            "comparison or numeric aggregation over incomparable/non-numeric values",
+        ));
+    }
+    if let Some((code, msg)) = ctx.fault {
+        return Err(crate::error::CodeError::new(code, msg));
+    }
+    Ok(vals)
+}
+
+fn run_collect(graph: &mut Graph, ctx: &mut Ctx, t: &Traversal) -> Vec<GVal> {
+    take_type_fault(); // reset any leftover flag from a prior run on this thread
+                       // Index seeding: `V().has(key, pred)` on an indexed key seeds from the
+                       // property index (skipping the full label scan + the now-satisfied `has`).
     let (seed, start) = match index_seed(graph, &t.steps) {
         Some(s) => (s, 2),
         None => (Vec::new(), 0),
     };
-    run_steps(graph, &mut ctx, &t.steps[start..], seed)
+    run_steps(graph, ctx, &t.steps[start..], seed)
         .into_iter()
         .map(|t| t.val)
         .collect()
@@ -390,7 +450,7 @@ fn apply_pattern(graph: &mut Graph, ctx: &mut Ctx, p: &MatchPattern, t: &Trav) -
         }; // pure filter
     };
     if let Some(b) = bound_end {
-        return if outs.iter().any(|o| *o == b) {
+        return if outs.contains(&b) {
             vec![t.clone()]
         } else {
             vec![]
@@ -400,7 +460,7 @@ fn apply_pattern(graph: &mut Graph, ctx: &mut Ctx, p: &MatchPattern, t: &Trav) -
     let mut seen: Vec<GVal> = Vec::new();
     let mut branches = Vec::new();
     for o in outs {
-        if seen.iter().any(|s| *s == o) {
+        if seen.contains(&o) {
             continue;
         }
         seen.push(o.clone());
@@ -652,6 +712,11 @@ fn subgraph_edge(graph: &Graph, e: u32) -> GVal {
 }
 
 fn present_keys(graph: &Graph, v: &GVal) -> Vec<String> {
+    // A property element (from `properties()`) exposes its own single key, so
+    // `hasKey`/`hasNot` filter a property stream by the property's key field.
+    if let Some(GVal::Str(k)) = prop_key_field(v) {
+        return vec![k.to_string()];
+    }
     let (store, idx) = match v {
         GVal::Vertex(i) => (&graph.props, *i as usize),
         GVal::Edge(e) => (&graph.edge_props, *e as usize),
@@ -686,29 +751,53 @@ fn elem_label(graph: &Graph, v: &GVal) -> GVal {
     }
 }
 
-fn gnum(v: &GVal) -> Option<f64> {
+/// A number for a numeric aggregate (`sum`/`mean`). `null` is skipped by the
+/// caller; any other non-number is a type error (flagged), matching TinkerPop —
+/// rather than silently coercing strings/bools to numbers.
+fn strict_num(v: &GVal) -> Option<f64> {
     match v {
         GVal::Num(n) => Some(*n),
-        GVal::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
-        GVal::Str(s) => s.trim().parse().ok(),
+        GVal::Null => None,
+        _ => {
+            set_type_fault();
+            None
+        }
+    }
+}
+
+/// Order two values the way TinkerPop's `Comparable` does: numbers with numbers,
+/// strings with strings, booleans with booleans. No string/bool→number coercion.
+/// `None` ⇒ not comparable (different types, an element, or a null operand).
+fn gcmp(a: &GVal, b: &GVal) -> Option<Ordering> {
+    match (a, b) {
+        (GVal::Num(x), GVal::Num(y)) => x.partial_cmp(y),
+        (GVal::Str(x), GVal::Str(y)) => Some(x.as_ref().cmp(y.as_ref())),
+        (GVal::Bool(x), GVal::Bool(y)) => Some(x.cmp(y)),
         _ => None,
     }
 }
 
-fn gcmp(a: &GVal, b: &GVal) -> Option<Ordering> {
-    if let (Some(x), Some(y)) = (gnum(a), gnum(b)) {
-        return x.partial_cmp(&y);
+/// `gcmp`, but flag a type fault when two genuinely incomparable *non-null*
+/// values are ordered (TinkerPop's `ClassCastException`). A null/missing operand
+/// is simply not comparable and filtered out — no fault — so `has(k, gt(n))` on
+/// a missing key still just drops the traverser.
+fn cmp_or_fault(a: &GVal, b: &GVal) -> Option<Ordering> {
+    let c = gcmp(a, b);
+    if c.is_none() && !matches!(a, GVal::Null) && !matches!(b, GVal::Null) {
+        set_type_fault();
     }
-    match (a, b) {
-        (GVal::Str(x), GVal::Str(y)) => Some(x.as_ref().cmp(y.as_ref())),
-        _ => None,
-    }
+    c
 }
 
 fn p_matches(p: &P, v: &GVal) -> bool {
-    let cmp = |t: &GVal, want: Ordering| gcmp(v, t) == Some(want);
-    let ge = |t: &GVal| matches!(gcmp(v, t), Some(Ordering::Greater | Ordering::Equal));
-    let le = |t: &GVal| matches!(gcmp(v, t), Some(Ordering::Less | Ordering::Equal));
+    let cmp = |t: &GVal, want: Ordering| cmp_or_fault(v, t) == Some(want);
+    let ge = |t: &GVal| {
+        matches!(
+            cmp_or_fault(v, t),
+            Some(Ordering::Greater | Ordering::Equal)
+        )
+    };
+    let le = |t: &GVal| matches!(cmp_or_fault(v, t), Some(Ordering::Less | Ordering::Equal));
     let s = |g: &GVal| match g {
         GVal::Str(s) => Some(s.to_string()),
         _ => None,
@@ -794,9 +883,16 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
             }
         }
         Step::E(ids) => {
+            // Match an external edge id (e.g. `E('7')`, like `V('1')`), falling
+            // back to the synthetic `e{index}` form when no external id was set.
             let edges: Vec<u32> = (0..graph.e_src.len() as u32)
                 .filter(|&e| graph.is_edge_live(e))
-                .filter(|&e| ids.is_empty() || ids.iter().any(|i| i == &format!("e{e}")))
+                .filter(|&e| {
+                    ids.is_empty()
+                        || ids
+                            .iter()
+                            .any(|i| graph.edge_by_id(i) == Some(e) || i.as_str() == format!("e{e}"))
+                })
                 .collect();
             if stream.is_empty() {
                 edges.into_iter().map(|e| Trav::root(GVal::Edge(e))).collect()
@@ -887,12 +983,15 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
         Step::SimplePath => stream.into_iter().filter(|t| !has_dup(&t.path)).collect(),
         Step::CyclicPath => stream.into_iter().filter(|t| has_dup(&t.path)).collect(),
         Step::Dedupe(bys) => {
-            let mut seen: Vec<GVal> = Vec::new();
+            // Key on the full tuple of `by` modulators (TinkerPop `dedup(a,b)`
+            // dedups by the combination), not just the first.
+            let mut seen: Vec<Vec<GVal>> = Vec::new();
             let mut next = Vec::new();
             for t in stream {
-                let key = match bys.first() {
-                    Some(by) => eval_by(graph, ctx, by, &t.val),
-                    None => t.val.clone(),
+                let key: Vec<GVal> = if bys.is_empty() {
+                    vec![t.val.clone()]
+                } else {
+                    bys.iter().map(|by| eval_by(graph, ctx, by, &t.val)).collect()
                 };
                 if !seen.contains(&key) {
                     seen.push(key);
@@ -969,7 +1068,9 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
             }
             next
         }
-        Step::Value => map_step(stream, |t| prop_value_field(&t.val).map(|v| vec![v]).unwrap_or_default()),
+        // A property element yields its value; any other value passes through
+        // unchanged (identity), matching the TS engine.
+        Step::Value => map_step(stream, |t| vec![prop_value_field(&t.val).unwrap_or_else(|| t.val.clone())]),
         Step::Id => map_step(stream, |t| vec![elem_id(graph, &t.val)]),
         Step::Label => map_step(stream, |t| match &t.val {
             GVal::Map(_) => prop_key_field(&t.val).map(|v| vec![v]).unwrap_or_default(),
@@ -1056,7 +1157,7 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
             keyed.sort_by(|(ka, _), (kb, _)| {
                 for (i, by) in bys.iter().enumerate() {
                     let dir = by.direction().unwrap_or(if *desc { Order::Desc } else { Order::Asc });
-                    let mut o = gcmp(&ka[i], &kb[i]).unwrap_or(Ordering::Equal);
+                    let mut o = cmp_or_fault(&ka[i], &kb[i]).unwrap_or(Ordering::Equal);
                     if dir == Order::Desc {
                         o = o.reverse();
                     }
@@ -1339,6 +1440,12 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
             let mut next = Vec::new();
             for t in &stream {
                 let (Some(f), Some(to_v)) = (resolve_endpoint(graph, ctx, from, t), resolve_endpoint(graph, ctx, to, t)) else {
+                    // An unresolvable endpoint is a data fault (TS throws
+                    // MissingVertex), not a silent drop.
+                    ctx.fault.get_or_insert((
+                        crate::error_codes::ErrorCode::MissingVertex,
+                        "addE(): could not resolve endpoint vertices",
+                    ));
                     continue;
                 };
                 let e = graph.add_edge(f, to_v, label, vec![]);
@@ -1346,16 +1453,22 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
             }
             next
         }
-        Step::Property(key, v) => {
-            for t in &stream {
-                match t.val {
-                    GVal::Vertex(i) => graph.set_vertex_prop(i, key, gval_to_value(v)),
-                    GVal::Edge(e) => graph.set_edge_prop(e, key, gval_to_value(v)),
-                    _ => {}
+        Step::Property(key, v) => stream
+            .into_iter()
+            .filter(|t| match t.val {
+                GVal::Vertex(i) => {
+                    graph.set_vertex_prop(i, key, gval_to_value(v));
+                    true
                 }
-            }
-            stream
-        }
+                GVal::Edge(e) => {
+                    graph.set_edge_prop(e, key, gval_to_value(v));
+                    true
+                }
+                // property() on a non-element drops the traverser (matches TS),
+                // rather than passing it through unchanged.
+                _ => false,
+            })
+            .collect(),
         Step::Drop => {
             for t in &stream {
                 match t.val {
@@ -1499,16 +1612,18 @@ fn has_dup(path: &[GVal]) -> bool {
 }
 
 fn fold_num(stream: Vec<Trav>, f: impl Fn(&[f64]) -> f64) -> Vec<Trav> {
-    let ns: Vec<f64> = stream.iter().filter_map(|t| gnum(&t.val)).collect();
+    let ns: Vec<f64> = stream.iter().filter_map(|t| strict_num(&t.val)).collect();
     if ns.is_empty() {
-        Vec::new()
+        // No numeric values (empty stream or all null) → a single null result,
+        // matching the TS engine's `sum`/`mean`.
+        vec![Trav::root(GVal::Null)]
     } else {
         vec![Trav::root(GVal::Num(f(&ns)))]
     }
 }
 
 fn local_num(v: &GVal, f: impl Fn(&[f64]) -> f64) -> GVal {
-    let ns: Vec<f64> = local_elems(v).iter().filter_map(gnum).collect();
+    let ns: Vec<f64> = local_elems(v).iter().filter_map(strict_num).collect();
     if ns.is_empty() {
         GVal::Null
     } else {
@@ -1519,10 +1634,13 @@ fn local_num(v: &GVal, f: impl Fn(&[f64]) -> f64) -> GVal {
 fn fold_extreme(stream: Vec<Trav>, want: Ordering) -> Vec<Trav> {
     let mut best: Option<GVal> = None;
     for t in stream {
+        if matches!(t.val, GVal::Null) {
+            continue; // TinkerPop min/max ignore nulls
+        }
         best = Some(match best {
             None => t.val,
             Some(b) => {
-                if gcmp(&t.val, &b) == Some(want) {
+                if cmp_or_fault(&t.val, &b) == Some(want) {
                     t.val
                 } else {
                     b
@@ -1530,16 +1648,20 @@ fn fold_extreme(stream: Vec<Trav>, want: Ordering) -> Vec<Trav> {
             }
         });
     }
-    best.map(|v| vec![Trav::root(v)]).unwrap_or_default()
+    // No non-null value (empty or all-null) → a single null, matching TS.
+    vec![Trav::root(best.unwrap_or(GVal::Null))]
 }
 
 fn local_extreme(v: &GVal, want: Ordering) -> GVal {
     let mut best: Option<GVal> = None;
     for e in local_elems(v) {
+        if matches!(e, GVal::Null) {
+            continue; // ignore nulls, like min/max
+        }
         best = Some(match best {
             None => e,
             Some(b) => {
-                if gcmp(&e, &b) == Some(want) {
+                if cmp_or_fault(&e, &b) == Some(want) {
                     e
                 } else {
                     b
@@ -1586,38 +1708,49 @@ fn run_repeat(
         e.steps.is_empty() || sub_nonempty(graph, ctx, e, t)
     };
 
+    // loops() counts from 1 inside the first body pass: increment on entry
+    // (the input frontier) and again on each body output, matching TS so that
+    // `until`/`emit` predicates over loops() agree across engines.
     if until.is_none() && emit.is_none() {
         let n = times.unwrap_or(CAP);
-        let mut current = stream.to_vec();
+        let mut current: Vec<Trav> = stream.iter().cloned().map(inc_loops).collect();
+        let mut work: u64 = 0;
         for _ in 0..n {
             if current.is_empty() {
                 break;
             }
-            current = run_steps(
-                graph,
-                ctx,
-                &body.steps,
-                current.into_iter().map(inc_loops).collect(),
-            );
+            current = run_steps(graph, ctx, &body.steps, current)
+                .into_iter()
+                .map(inc_loops)
+                .collect();
+            work += current.len() as u64;
+            if work > REPEAT_BUDGET {
+                ctx.over_budget = true;
+                break;
+            }
         }
         return current;
     }
 
     let mut out: Vec<Trav> = Vec::new();
-    let mut current = stream.to_vec();
-    if emit_before {
-        if let Some(e) = emit {
-            for t in &current {
-                if emit_matches(graph, ctx, t, e) {
-                    out.push(t.clone());
-                }
-            }
-        }
-    }
+    let mut current: Vec<Trav> = stream.iter().cloned().map(inc_loops).collect();
     let max = times.unwrap_or(CAP);
+    let mut work: u64 = 0;
     for _ in 0..max {
         if current.is_empty() {
             break;
+        }
+        // Pre-form emit (TinkerPop's `emit(...).repeat(body)`): emit the current
+        // frontier before applying the body, so every level start is emitted
+        // (level 0 = the input traverser), not just the initial frontier.
+        if emit_before {
+            if let Some(e) = emit {
+                for t in &current {
+                    if emit_matches(graph, ctx, t, e) {
+                        out.push(t.clone());
+                    }
+                }
+            }
         }
         // `until` is checked BEFORE the body (do-while): satisfiers exit.
         let mut advancing = Vec::new();
@@ -1633,12 +1766,10 @@ fn run_repeat(
         if advancing.is_empty() {
             break;
         }
-        let stepped: Vec<Trav> = run_steps(
-            graph,
-            ctx,
-            &body.steps,
-            advancing.into_iter().map(inc_loops).collect(),
-        );
+        let stepped: Vec<Trav> = run_steps(graph, ctx, &body.steps, advancing)
+            .into_iter()
+            .map(inc_loops)
+            .collect();
         if !emit_before {
             if let Some(e) = emit {
                 for t in &stepped {
@@ -1648,7 +1779,12 @@ fn run_repeat(
                 }
             }
         }
+        work += stepped.len() as u64;
         current = stepped;
+        if work > REPEAT_BUDGET {
+            ctx.over_budget = true;
+            break;
+        }
     }
     // Pre-emit form yields the final frontier too (it never got a pre-emit pass).
     if emit_before && until.is_none() {

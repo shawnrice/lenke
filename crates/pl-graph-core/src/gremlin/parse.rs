@@ -50,23 +50,41 @@ fn lex(src: &str) -> Result<Vec<Tok>, String> {
                 i += 1;
             }
             b'\'' | b'"' => {
-                let quote = c;
-                i += 1;
+                let quote = c as char;
                 let start = i;
+                i += 1;
                 let mut s = String::new();
-                while i < b.len() && b[i] != quote {
-                    if b[i] == b'\\' && i + 1 < b.len() {
-                        i += 1;
-                        s.push(b[i] as char);
-                    } else {
-                        s.push(b[i] as char);
+                let mut terminated = false;
+                // Iterate by `char`, not byte, so multi-byte UTF-8 literals
+                // survive intact; decode the common escapes (`\n` etc.) rather
+                // than dropping the backslash and keeping the bare letter.
+                while i < b.len() {
+                    let ch = src[i..].chars().next().unwrap();
+                    if ch == quote {
+                        i += ch.len_utf8();
+                        terminated = true;
+                        break;
                     }
-                    i += 1;
+                    if ch == '\\' {
+                        i += 1; // past the backslash (ASCII, 1 byte)
+                        let Some(esc) = src[i..].chars().next() else {
+                            break;
+                        };
+                        s.push(match esc {
+                            'n' => '\n',
+                            't' => '\t',
+                            'r' => '\r',
+                            other => other,
+                        });
+                        i += esc.len_utf8();
+                        continue;
+                    }
+                    s.push(ch);
+                    i += ch.len_utf8();
                 }
-                if i >= b.len() {
+                if !terminated {
                     return Err(format!("unterminated string at {start}"));
                 }
-                i += 1; // closing quote
                 out.push(Tok::Str(s));
             }
             b'-' | b'0'..=b'9' => {
@@ -147,6 +165,33 @@ impl Arg {
 struct Parser {
     toks: Vec<Tok>,
     pos: usize,
+    /// Recursive-descent nesting depth (every nested sub-traversal / predicate
+    /// passes through `arg`, so guarding it there bounds the whole recursion).
+    depth: usize,
+}
+
+/// Nesting ceiling. Unbounded recursion on deeply nested input
+/// (`repeat(repeat(repeat(…)))`, `union(union(…))`, `not(not(…))`) would
+/// otherwise overflow the native stack and *abort the process* (uncatchable).
+const MAX_DEPTH: usize = 256;
+
+/// Validate a numeric step argument as a non-negative integer count. Rust's
+/// `f64 as usize` cast saturates silently (`-5 → 0`, `1e30 → usize::MAX`), so a
+/// raw cast would accept negatives/floats/huge values; this rejects them.
+fn as_count(n: f64, step: &str) -> Result<usize, String> {
+    if !n.is_finite() || n < 0.0 || n.fract() != 0.0 {
+        return Err(format!("{step}: expected a non-negative integer, got {n}"));
+    }
+    Ok(n as usize)
+}
+
+/// The `i`-th numeric argument as a validated count, or a clean error if absent
+/// (a missing positional arg used to panic via `nums[i]` indexing).
+fn count_at(nums: &[f64], i: usize, step: &str) -> Result<usize, String> {
+    match nums.get(i) {
+        Some(n) => as_count(*n, step),
+        None => Err(format!("{step}: missing numeric argument")),
+    }
 }
 
 impl Parser {
@@ -220,6 +265,17 @@ impl Parser {
     }
 
     fn arg(&mut self) -> Result<Arg, String> {
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            self.depth -= 1;
+            return Err("query nested too deeply".to_string());
+        }
+        let r = self.arg_inner();
+        self.depth -= 1;
+        r
+    }
+
+    fn arg_inner(&mut self) -> Result<Arg, String> {
         match self.peek() {
             Some(Tok::Str(_)) => match self.next() {
                 Some(Tok::Str(s)) => Ok(Arg::Str(s)),
@@ -462,28 +518,28 @@ impl Parser {
             "by" => self.bind_by(t, args)?,
             // cardinality
             "limit" => {
+                let n = count_at(&nums_after_scope(&args), 0, "limit")?;
                 if scope_local(&args) {
-                    t.limit_local(nums_after_scope(&args)[0] as usize)
+                    t.limit_local(n)
                 } else {
-                    t.limit(nums_after_scope(&args)[0] as usize)
+                    t.limit(n)
                 }
             }
-            "skip" => t.skip(nums_after_scope(&args)[0] as usize),
+            "skip" => t.skip(count_at(&nums_after_scope(&args), 0, "skip")?),
             "range" => {
                 let ns = nums_after_scope(&args);
+                let (lo, hi) = (count_at(&ns, 0, "range")?, count_at(&ns, 1, "range")?);
                 if scope_local(&args) {
-                    t.range_local(ns[0] as usize, ns[1] as usize)
+                    t.range_local(lo, hi)
                 } else {
-                    t.range(ns[0] as usize, ns[1] as usize)
+                    t.range(lo, hi)
                 }
             }
-            "tail" => t.tail(
-                nums_after_scope(&args)
-                    .first()
-                    .map(|n| *n as usize)
-                    .unwrap_or(1),
-            ),
-            "sample" => t.sample(nums_after_scope(&args)[0] as usize),
+            "tail" => t.tail(match nums_after_scope(&args).first() {
+                Some(n) => as_count(*n, "tail")?,
+                None => 1,
+            }),
+            "sample" => t.sample(count_at(&nums_after_scope(&args), 0, "sample")?),
             // aggregates
             "count" => {
                 if scope_local(&args) {
@@ -532,10 +588,10 @@ impl Parser {
                     _ => return Err("choose: expected 2 or 3 traversals".into()),
                 }
             }
-            "aggregate" => t.aggregate(args[0].as_str()?),
-            "store" => t.store(args[0].as_str()?),
-            "cap" => t.cap(args[0].as_str()?),
-            "subgraph" => t.subgraph(args[0].as_str()?),
+            "aggregate" => t.aggregate(args.first().ok_or("aggregate: expected a key")?.as_str()?),
+            "store" => t.store(args.first().ok_or("store: expected a key")?.as_str()?),
+            "cap" => t.cap(args.first().ok_or("cap: expected a key")?.as_str()?),
+            "subgraph" => t.subgraph(args.first().ok_or("subgraph: expected a name")?.as_str()?),
             "shortestPath" => t.shortest_path(),
             "with" => match args.as_slice() {
                 [Arg::Str(opt), Arg::Trav(target)] if opt == "ShortestPath.target" => {
@@ -546,7 +602,7 @@ impl Parser {
             "barrier" => t.barrier(),
             // iteration
             "repeat" => t.repeat(self.one_trav(args)?),
-            "times" => t.times(nums_after_scope(&args)[0] as usize),
+            "times" => t.times(count_at(&nums_after_scope(&args), 0, "times")?),
             "until" => t.until(self.one_trav(args)?),
             "emit" => {
                 if args.is_empty() {
@@ -556,7 +612,7 @@ impl Parser {
                 }
             }
             // tagging / select
-            "as" => t.as_(args[0].as_str()?),
+            "as" => t.as_(args.first().ok_or("as: expected a tag name")?.as_str()?),
             "select" => match args.first() {
                 Some(Arg::Pop(p)) => t.select_pop(*p, &str_labels),
                 _ => t.select(&str_labels),
@@ -565,7 +621,11 @@ impl Parser {
             "unfold" => t.unfold(),
             "index" => t.index(),
             "loops" => t.loops(),
-            "constant" => t.constant(args[0].as_gval()?),
+            "constant" => t.constant(
+                args.first()
+                    .ok_or("constant: expected a value")?
+                    .as_gval()?,
+            ),
             "identity" => t.identity(),
             "inject" => t.inject(
                 args.iter()
@@ -583,7 +643,11 @@ impl Parser {
             ),
             // mutation
             "addV" => t.add_v(args.first().and_then(|a| a.as_str().ok())),
-            "addE" => t.add_e(args[0].as_str()?),
+            "addE" => t.add_e(
+                args.first()
+                    .ok_or("addE: expected an edge label")?
+                    .as_str()?,
+            ),
             "from" => match &args[..] {
                 [Arg::Str(tag)] => t.from_tag(tag),
                 [Arg::Trav(p)] => t.from_plan(p.clone()),
@@ -594,7 +658,11 @@ impl Parser {
                 [Arg::Trav(p)] => t.to_plan(p.clone()),
                 _ => return Err("to: expected a tag or traversal".into()),
             },
-            "property" => t.property(args[0].as_str()?, args[1].as_gval()?),
+            "property" => {
+                let k = args.first().ok_or("property: expected a key")?.as_str()?;
+                let v = args.get(1).ok_or("property: expected a value")?.as_gval()?;
+                t.property(k, v)
+            }
             "drop" => t.drop(),
             _ => return Err(format!("unknown step `{name}`")),
         })
@@ -656,7 +724,11 @@ fn bare_token(id: &str) -> Option<Arg> {
 /// Parse a textual Gremlin query into a [`Traversal`].
 pub fn parse(src: &str) -> Result<Traversal, String> {
     let toks = lex(src)?;
-    let mut p = Parser { toks, pos: 0 };
+    let mut p = Parser {
+        toks,
+        pos: 0,
+        depth: 0,
+    };
     let t = p.traversal()?;
     if p.pos != p.toks.len() {
         return Err(format!("trailing tokens from position {}", p.pos));
