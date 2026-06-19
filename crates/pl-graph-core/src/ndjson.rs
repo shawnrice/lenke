@@ -361,4 +361,29 @@ mod tests {
         let line = format!(r#"{{"type":"node","id":"a","labels":[],"properties":{{"x":{deep}}}}}"#);
         assert_eq!(decode(&line).err().unwrap().code, ErrorCode::InvalidJson);
     }
+
+    #[test]
+    fn duplicate_ids_first_wins_node_drop_second_edge() {
+        // Matches the TS core: a duplicate node id is first-wins (later labels/
+        // props ignored), and an edge with an already-seen id is dropped.
+        let g = decode(
+            "{\"type\":\"node\",\"id\":\"a\",\"labels\":[\"L1\"],\"properties\":{\"x\":1}}\n\
+             {\"type\":\"node\",\"id\":\"a\",\"labels\":[\"L2\"],\"properties\":{\"x\":2}}\n\
+             {\"type\":\"node\",\"id\":\"b\",\"labels\":[],\"properties\":{}}\n\
+             {\"type\":\"edge\",\"id\":\"x\",\"from\":\"a\",\"to\":\"b\",\"labels\":[\"R\"],\"properties\":{}}\n\
+             {\"type\":\"edge\",\"id\":\"x\",\"from\":\"b\",\"to\":\"a\",\"labels\":[\"S\"],\"properties\":{}}",
+        )
+        .unwrap();
+        assert_eq!(g.n, 2); // a (first-wins) + b
+        let a = g.vid.get("a").unwrap();
+        let labels: Vec<&str> = g
+            .vertex_labels(a)
+            .iter()
+            .map(|&l| g.labels.text(l))
+            .collect();
+        assert_eq!(labels, vec!["L1"]); // first-wins: L2 ignored
+        assert_eq!(g.props.value(a as usize, "x", &g.strs), Value::Num(1.0)); // first-wins
+        assert_eq!(g.edge_count(), 1); // drop-second: only the first edge id 'x'
+        assert_eq!(g.etype.text(g.e_type[0]), "R");
+    }
 }

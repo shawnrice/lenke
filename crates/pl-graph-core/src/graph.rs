@@ -1138,11 +1138,34 @@ impl Builder {
         }
         let n = vid.len();
 
+        // Duplicate-id semantics, matching the TS core's idempotent add: a node
+        // id is **first-wins** (later records with the same id are ignored), and
+        // an edge with an already-seen *assigned* id is **dropped** (its endpoints
+        // are still interned above, as TS ensures them before the dedup check).
+        // Borrowed-`&str` sets keep this allocation-free on the common path.
+        let keep_node: Vec<bool> = {
+            let mut seen: HashSet<&str> = HashSet::with_capacity(nodes.len());
+            nodes.iter().map(|nd| seen.insert(nd.id.as_str())).collect()
+        };
+        let kept_edges: Vec<&EdgeRec> = {
+            let mut seen: HashSet<&str> = HashSet::with_capacity(edges.len());
+            edges
+                .iter()
+                .filter(|e| match &e.id {
+                    Some(id) => seen.insert(id.as_str()),
+                    None => true, // id-less edges get a unique e{index}; never dup
+                })
+                .collect()
+        };
+
         // (2) Labels: per-vertex list + inverted (label -> live vertices).
         let mut vlabels: Vec<Vec<u32>> = vec![Vec::new(); n];
         let mut labels = Dict::default();
         let mut by_label: HashMap<u32, Vec<u32>> = HashMap::new();
-        for node in &nodes {
+        for (idx, node) in nodes.iter().enumerate() {
+            if !keep_node[idx] {
+                continue; // first-wins: ignore a duplicate node id's labels
+            }
             let vi = vid.get(&node.id).unwrap();
             for l in &node.labels {
                 let lid = labels.intern(l);
@@ -1155,13 +1178,15 @@ impl Builder {
         let mut strs = Dict::default();
         let node_items: Vec<(usize, &[(String, Value)])> = nodes
             .iter()
-            .map(|nd| (vid.get(&nd.id).unwrap() as usize, nd.props.as_slice()))
+            .enumerate()
+            .filter(|(idx, _)| keep_node[*idx])
+            .map(|(_, nd)| (vid.get(&nd.id).unwrap() as usize, nd.props.as_slice()))
             .collect();
         let props = build_props(n, &node_items, &mut strs);
 
         // (4) Edges: parallel arrays + per-vertex out/in adjacency.
         let mut etype = Dict::default();
-        let e = edges.len();
+        let e = kept_edges.len();
         let mut e_src = vec![0u32; e];
         let mut e_dst = vec![0u32; e];
         let mut e_type = vec![0u32; e];
@@ -1171,7 +1196,7 @@ impl Builder {
         // Lazy external-id overlay: only edges that carry an id land here.
         let mut eid_fwd: HashMap<u32, Arc<str>> = HashMap::new();
         let mut eid_rev: HashMap<Arc<str>, u32> = HashMap::new();
-        for (i, ed) in edges.iter().enumerate() {
+        for (i, ed) in kept_edges.iter().enumerate() {
             let s = vid.get(&ed.src).unwrap();
             let d = vid.get(&ed.dst).unwrap();
             let t = etype.intern(&ed.etype);
@@ -1197,7 +1222,7 @@ impl Builder {
         }
 
         // (5) Edge property columns — same machinery, indexed by edge index.
-        let edge_items: Vec<(usize, &[(String, Value)])> = edges
+        let edge_items: Vec<(usize, &[(String, Value)])> = kept_edges
             .iter()
             .enumerate()
             .map(|(i, ed)| (i, ed.props.as_slice()))
