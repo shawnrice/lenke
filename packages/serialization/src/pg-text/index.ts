@@ -37,7 +37,18 @@ import { normalizeBag, type PropertyValue } from '../value.js';
  * whitespace/colon); quote string values instead.
  */
 
-const QUOTE_ESCAPE = /[\\"]/g;
+// Escape the quote/backslash AND the line/whitespace control chars: pg-text is
+// line-oriented, so an unescaped newline in a value would split the token across
+// physical lines and corrupt the round-trip. Must match the Rust codec exactly.
+const STR_ESCAPE = /[\\"\n\r\t]/g;
+const STR_ESCAPE_MAP: Record<string, string> = {
+  '\\': '\\\\',
+  '"': '\\"',
+  '\n': '\\n',
+  '\r': '\\r',
+  '\t': '\\t',
+};
+const STR_UNESCAPE_MAP: Record<string, string> = { n: '\n', r: '\r', t: '\t' };
 
 /** Encode one scalar `PropertyValue` (never a list) as a PG-text token value. */
 const encodeScalar = (value: Exclude<PropertyValue, readonly PropertyValue[]>): string => {
@@ -53,7 +64,7 @@ const encodeScalar = (value: Exclude<PropertyValue, readonly PropertyValue[]>): 
     return String(value);
   }
 
-  return `"${value.replace(QUOTE_ESCAPE, (c) => `\\${c}`)}"`;
+  return `"${value.replace(STR_ESCAPE, (c) => STR_ESCAPE_MAP[c])}"`;
 };
 
 /** Append `key:value` tokens for a property; a list expands to one token per element. */
@@ -164,7 +175,7 @@ const parseScalar = (raw: string): PropertyValue => {
   if (raw.startsWith('"')) {
     const body = raw.endsWith('"') && raw.length >= 2 ? raw.slice(1, -1) : raw.slice(1);
 
-    return body.replace(/\\(.)/g, '$1');
+    return body.replace(/\\(.)/g, (_, c: string) => STR_UNESCAPE_MAP[c] ?? c);
   }
 
   if (raw === 'true') {

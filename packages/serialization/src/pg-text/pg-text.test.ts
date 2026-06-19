@@ -38,6 +38,15 @@ describe('pg-text: encoding shape', () => {
     g.addVertex({ id: 'x', labels: [], properties: { v: 'a"b\\c' } });
     expect(lines(g)[0]).toBe(`x v:"a\\"b\\\\c"`);
   });
+
+  test('newline/CR/tab in a string are escaped and round-trip (no line split)', () => {
+    const g = new Graph();
+    g.addVertex({ id: 'x', labels: ['N'], properties: { note: 'l1\nl2\tx"q\\b\r' } });
+    // Encoded form stays a single physical line (no raw newline leaks out).
+    expect(encode(g).replace(/\n+$/, '').split('\n')).toHaveLength(1);
+    const back = decode(encode(g), new Graph());
+    expect(back.getVertexById('x')!.properties.note).toBe('l1\nl2\tx"q\\b\r');
+  });
 });
 
 describe('pg-text: decoding', () => {

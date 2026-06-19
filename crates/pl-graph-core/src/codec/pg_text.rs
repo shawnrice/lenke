@@ -39,10 +39,18 @@ fn scalar_token(out: &mut String, v: &Value) {
         Value::Str(s) => {
             out.push('"');
             for c in s.chars() {
-                if c == '"' || c == '\\' {
-                    out.push('\\');
+                // Escape the quote/backslash AND the line/whitespace control chars
+                // — pg-text is line-oriented, so an unescaped newline in a value
+                // would split the token across physical lines and corrupt the
+                // round-trip. Must match the TS codec's escape scheme exactly.
+                match c {
+                    '"' => out.push_str("\\\""),
+                    '\\' => out.push_str("\\\\"),
+                    '\n' => out.push_str("\\n"),
+                    '\r' => out.push_str("\\r"),
+                    '\t' => out.push_str("\\t"),
+                    c => out.push(c),
                 }
-                out.push(c);
             }
             out.push('"');
         }
@@ -166,13 +174,19 @@ fn is_number(raw: &str) -> bool {
 fn parse_scalar(raw: &str) -> Value {
     if let Some(rest) = raw.strip_prefix('"') {
         let body = rest.strip_suffix('"').unwrap_or(rest);
-        // undo `\x` → `x` escapes
+        // Undo the encode escapes: `\n`/`\r`/`\t` decode to the control chars,
+        // `\\`/`\"` to themselves, and any other `\x` to a literal `x` (lenient
+        // for foreign `.pg`). Must match the TS codec exactly.
         let mut out = String::with_capacity(body.len());
         let mut chars = body.chars();
         while let Some(c) = chars.next() {
             if c == '\\' {
-                if let Some(n) = chars.next() {
-                    out.push(n);
+                match chars.next() {
+                    Some('n') => out.push('\n'),
+                    Some('r') => out.push('\r'),
+                    Some('t') => out.push('\t'),
+                    Some(other) => out.push(other),
+                    None => {}
                 }
             } else {
                 out.push(c);
@@ -317,5 +331,28 @@ a b :KNOWS since:2020";
         let g = decode("a b :KNOWS");
         assert_eq!(g.vertex_count(), 2); // a and b created as bare nodes
         assert_eq!(g.edge_count(), 1);
+    }
+
+    #[test]
+    fn escapes_control_chars_in_strings() {
+        // A value with newline/CR/tab/quote/backslash must survive a round trip;
+        // an unescaped newline would split the line and corrupt the graph.
+        let g = crate::ndjson::decode(
+            r#"{"type":"node","id":"a","labels":["N"],"properties":{"note":"l1\nl2\tx\"q\\b\r"}}"#,
+        )
+        .unwrap();
+        let text = encode(&g);
+        // The value must not leak a raw newline into the output (single line).
+        assert_eq!(
+            text.trim_end_matches('\n').lines().count(),
+            1,
+            "value control char leaked into output: {text:?}"
+        );
+        let g2 = decode(&text);
+        let a = g2.vid.get("a").unwrap() as usize;
+        assert_eq!(
+            g2.props.value(a, "note", &g2.strs),
+            Value::Str("l1\nl2\tx\"q\\b\r".into())
+        );
     }
 }
