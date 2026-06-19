@@ -143,6 +143,17 @@ describe('sentinel-collision safety', () => {
     expect(back.getVertexById('n1')!.properties.xs).toEqual([]);
     expect('xs' in back.getVertexById('n2')!.properties).toBe(false);
   });
+
+  test('a value containing the `=== EDGES ===` marker does not split the document', () => {
+    const g = new Graph();
+    const a = g.addVertex({ id: 'a', labels: ['N'], properties: { note: 'x\n=== EDGES ===\ny' } });
+    const b = g.addVertex({ id: 'b', labels: ['N'], properties: {} });
+    g.addEdge({ id: 'e', from: a, to: b, labels: ['R'], properties: {} });
+    const back = decode(encode(g), new Graph());
+    expect(back.vertexCount).toBe(2);
+    expect(back.edgeCount).toBe(1);
+    expect(back.getVertexById('a')!.properties.note).toBe('x\n=== EDGES ===\ny');
+  });
 });
 
 describe('labels', () => {
