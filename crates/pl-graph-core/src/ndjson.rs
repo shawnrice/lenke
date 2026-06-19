@@ -74,7 +74,10 @@ fn parse_line(line: &str) -> CodeResult<Option<Rec>> {
     let Some(obj) = j.as_object() else {
         return Err(CodeError::new(
             ErrorCode::InvalidShape,
-            format!("ndjson: each line must be a node or edge object: {}", snippet()),
+            format!(
+                "ndjson: each line must be a node or edge object: {}",
+                snippet()
+            ),
         ));
     };
     let rec = match obj.get("type").and_then(J::as_str) {
@@ -118,7 +121,10 @@ fn parse_line(line: &str) -> CodeResult<Option<Rec>> {
         _ => {
             return Err(CodeError::new(
                 ErrorCode::InvalidShape,
-                format!("ndjson: line is not a 'node' or 'edge' record: {}", snippet()),
+                format!(
+                    "ndjson: line is not a 'node' or 'edge' record: {}",
+                    snippet()
+                ),
             ))
         }
     };
@@ -345,5 +351,16 @@ mod tests {
         let g = decode("\n  \n{\"type\":\"node\",\"id\":\"a\",\"labels\":[],\"properties\":{}}\n")
             .unwrap();
         assert_eq!(g.n, 1);
+    }
+
+    #[test]
+    fn deeply_nested_array_is_rejected_not_overflow() {
+        use crate::error_codes::ErrorCode;
+        // serde caps nesting at 128 levels during parse → a clean InvalidJson,
+        // never a stack overflow or a silent accept (matches the TS depth guard).
+        let deep = format!("{}1{}", "[".repeat(2000), "]".repeat(2000));
+        let line =
+            format!(r#"{{"type":"node","id":"a","labels":[],"properties":{{"x":{deep}}}}}"#);
+        assert_eq!(decode(&line).err().unwrap().code, ErrorCode::InvalidJson);
     }
 }

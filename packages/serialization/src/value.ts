@@ -24,7 +24,14 @@ export type PropertyBag = Readonly<Record<string, PropertyValue>>;
  * Codecs call this at the boundary so out-of-model values fail loudly rather
  * than silently producing a non-round-trippable document.
  */
-export const normalizeValue = (value: unknown): PropertyValue => {
+/**
+ * Maximum list-nesting depth. Bounds recursion so an adversarial deeply-nested
+ * array cannot exhaust the stack; mirrors the Rust JSON decoders, which serde
+ * caps at 128 levels during parsing.
+ */
+const MAX_NESTING = 128;
+
+const normalizeAt = (value: unknown, depth: number): PropertyValue => {
   if (value === null || typeof value === 'string' || typeof value === 'boolean') {
     return value;
   }
@@ -42,7 +49,13 @@ export const normalizeValue = (value: unknown): PropertyValue => {
   }
 
   if (Array.isArray(value)) {
-    return value.map(normalizeValue);
+    if (depth >= MAX_NESTING) {
+      throw new PlGraphError('Property value nesting exceeds the maximum depth', {
+        code: ErrorCode.InvalidShape,
+      });
+    }
+
+    return value.map((v) => normalizeAt(v, depth + 1));
   }
 
   throw new PlGraphError(
@@ -50,6 +63,8 @@ export const normalizeValue = (value: unknown): PropertyValue => {
     { code: ErrorCode.InvalidValue },
   );
 };
+
+export const normalizeValue = (value: unknown): PropertyValue => normalizeAt(value, 0);
 
 /** Normalize every value in a property bag. */
 export const normalizeBag = (bag: Record<string, unknown>): Record<string, PropertyValue> => {

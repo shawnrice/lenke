@@ -60,8 +60,12 @@ const shapeError = (msg: string): never => {
   throw new PlGraphError(`graphson: ${msg}`, { code: ErrorCode.InvalidShape });
 };
 
+// Bounds g:List recursion against an adversarial deeply-nested value; mirrors
+// the Rust decoder, which serde caps at 128 levels during parsing.
+const MAX_NESTING = 128;
+
 /** Decode a GraphSON v3 typed value (or plain JSON scalar) back to an LPG value. */
-const decodeValue = (node: unknown): PropertyValue => {
+const decodeValue = (node: unknown, depth = 0): PropertyValue => {
   if (
     node === null ||
     typeof node === 'string' ||
@@ -97,7 +101,11 @@ const decodeValue = (node: unknown): PropertyValue => {
         return shapeError('g:List value must be an array');
       }
 
-      return v.map(decodeValue);
+      if (depth >= MAX_NESTING) {
+        return shapeError('g:List nesting exceeds the maximum depth');
+      }
+
+      return v.map((el) => decodeValue(el, depth + 1));
     }
     default:
       // An unknown/missing wrapper is outside the LPG model (Rust rejects it too,

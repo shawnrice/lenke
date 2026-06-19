@@ -81,4 +81,15 @@ describe('serialization error codes', () => {
     const caught = caughtFrom(() => deserialize(JSON.stringify(doc), 'graphson', new Graph()));
     expect(hasErrorCode(caught, ErrorCode.MissingVertex)).toBe(true);
   });
+
+  test('a deeply-nested array value is a clean error, not a stack overflow', () => {
+    let deep: unknown = 1;
+
+    for (let i = 0; i < 2000; i += 1) {
+      deep = [deep];
+    }
+
+    const caught = caughtFrom(() => normalizeValue(deep));
+    expect(hasErrorCode(caught, ErrorCode.InvalidShape)).toBe(true);
+  });
 });
