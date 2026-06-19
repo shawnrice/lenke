@@ -144,6 +144,16 @@ describe('sentinel-collision safety', () => {
     expect('xs' in back.getVertexById('n2')!.properties).toBe(false);
   });
 
+  test('a label containing the `;` separator round-trips (escaped, not split)', () => {
+    const g = new Graph();
+    const a = g.addVertex({ id: 'a', labels: ['has;semi', 'Plain'], properties: {} });
+    const b = g.addVertex({ id: 'b', labels: [], properties: {} });
+    g.addEdge({ id: 'e', from: a, to: b, labels: ['REL;X'], properties: {} });
+    const back = decode(encode(g), new Graph());
+    expect([...back.getVertexById('a')!.labels].sort()).toEqual(['Plain', 'has;semi']);
+    expect([...[...back.edges][0].labels]).toEqual(['REL;X']);
+  });
+
   test('a value containing the `=== EDGES ===` marker does not split the document', () => {
     const g = new Graph();
     const a = g.addVertex({ id: 'a', labels: ['N'], properties: { note: 'x\n=== EDGES ===\ny' } });

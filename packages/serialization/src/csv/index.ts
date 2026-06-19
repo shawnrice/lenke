@@ -583,7 +583,12 @@ const propsFromRow = (
   return properties;
 };
 
-const splitLabels = (text: string): string[] => (text === '' ? [] : text.split(LIST_SEP));
+// Join a label set, escaping `;`/`\` inside each label (same scheme as list
+// elements) so a label containing the `;` separator round-trips.
+const joinLabels = (labels: Iterable<string>): string =>
+  [...labels].map(escapeElement).join(LIST_SEP);
+
+const splitLabels = (text: string): string[] => (text === '' ? [] : splitList(text));
 
 /** Add one vertex from a parsed node row. */
 const applyNodeRow = (graph: Graph, row: Cell[], propCols: readonly ParsedHeader[]): void => {
@@ -632,7 +637,7 @@ export const encodeNodes = (graph: Graph): string => {
   let i = 0;
 
   for (const vertex of graph.vertices) {
-    const labelStr = [...vertex.labels].join(LIST_SEP);
+    const labelStr = joinLabels(vertex.labels);
     rows.push(buildRow([vertex.id, labelStr], keys, types, bags[i]));
     i += 1;
   }
@@ -695,7 +700,7 @@ export const encodeEdges = (graph: Graph): string => {
   let i = 0;
 
   for (const edge of graph.edges) {
-    const typeStr = [...edge.labels].join(LIST_SEP);
+    const typeStr = joinLabels(edge.labels);
     rows.push(buildRow([edge.id, edge.from.id, edge.to.id, typeStr], keys, types, bags[i]));
     i += 1;
   }
@@ -787,7 +792,7 @@ export async function* encodeNodesStream(graph: Graph): AsyncGenerator<string> {
   let i = 0;
 
   for (const vertex of graph.vertices) {
-    batch.push(buildRow([vertex.id, [...vertex.labels].join(LIST_SEP)], keys, types, bags[i]));
+    batch.push(buildRow([vertex.id, joinLabels(vertex.labels)], keys, types, bags[i]));
     i += 1;
 
     if (batch.length >= BATCH) {
@@ -819,7 +824,7 @@ export async function* encodeEdgesStream(graph: Graph): AsyncGenerator<string> {
   for (const edge of graph.edges) {
     batch.push(
       buildRow(
-        [edge.id, edge.from.id, edge.to.id, [...edge.labels].join(LIST_SEP)],
+        [edge.id, edge.from.id, edge.to.id, joinLabels(edge.labels)],
         keys,
         types,
         bags[i],

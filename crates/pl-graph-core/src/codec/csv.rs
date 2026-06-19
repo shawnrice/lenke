@@ -496,11 +496,23 @@ fn build_row(
     cells.join(",")
 }
 
+/// Join a label set into a `;`-separated cell, escaping `;`/`\` inside each label
+/// (same scheme as list elements) so a label containing `;` round-trips.
+fn join_labels<'a>(labels: impl IntoIterator<Item = &'a str>) -> String {
+    labels
+        .into_iter()
+        .map(escape_element)
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
 fn split_labels(text: &str) -> Vec<String> {
     if text.is_empty() {
         Vec::new()
     } else {
-        text.split(LIST_SEP).map(String::from).collect()
+        // Escape-aware split, so a label that contains the `;` separator (encoded
+        // as `\;`) is not torn into two labels.
+        split_list(text)
     }
 }
 
@@ -573,7 +585,7 @@ pub fn encode_nodes(g: &Graph) -> String {
     };
     let mut rows = vec![header];
     for (vi, bag) in &entries {
-        let labels = crate::codec::node_labels(g, *vi).join(";");
+        let labels = join_labels(crate::codec::node_labels(g, *vi));
         let id = g.vid.text(*vi).to_string();
         rows.push(build_row(&[&id, &labels], &keys, &types, bag));
     }
@@ -600,7 +612,7 @@ pub fn encode_edges(g: &Graph) -> String {
         let id = g.edge_id(*i as u32).unwrap_or("").to_string();
         let from = g.vid.text(g.e_src[*i]).to_string();
         let to = g.vid.text(g.e_dst[*i]).to_string();
-        let etype = g.etype.text(g.e_type[*i]).to_string();
+        let etype = escape_element(g.etype.text(g.e_type[*i]));
         rows.push(build_row(&[&id, &from, &to, &etype], &keys, &types, bag));
     }
     rows.join("\n")
@@ -743,6 +755,25 @@ mod tests {
             g2.props.value(a, "s", &g2.strs),
             Value::Str("has,comma \"quote\" and ;semi".into())
         );
+    }
+
+    #[test]
+    fn label_containing_separator_round_trips() {
+        // A label (or edge type) containing the `;` list-separator must be
+        // escaped, not torn into multiple labels.
+        let g = crate::codec::pg_json::decode(
+            r#"{"nodes":[
+              {"id":"a","labels":["has;semi","Plain"],"properties":{}},
+              {"id":"b","labels":[],"properties":{}}
+            ],"edges":[{"from":"a","to":"b","labels":["REL;X"],"properties":{}}]}"#,
+        )
+        .unwrap();
+        let g2 = decode(&encode(&g)).unwrap();
+        let a = g2.vid.get("a").unwrap();
+        let mut labels = crate::codec::node_labels(&g2, a);
+        labels.sort();
+        assert_eq!(labels, vec!["Plain", "has;semi"]);
+        assert_eq!(g2.etype.text(g2.e_type[0]), "REL;X");
     }
 
     #[test]
