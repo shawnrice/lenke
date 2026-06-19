@@ -20,6 +20,16 @@ pub mod parser;
 pub mod plan;
 
 #[cfg(test)]
+mod ported_gql_hardening;
+#[cfg(test)]
+mod ported_gql_index_seed;
+#[cfg(test)]
+mod ported_gql_main;
+#[cfg(test)]
+mod ported_gql_misc;
+#[cfg(test)]
+mod ported_gql_tck;
+#[cfg(test)]
 mod tests;
 
 pub use eval::{prepare, Prepared};

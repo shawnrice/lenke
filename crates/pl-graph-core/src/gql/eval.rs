@@ -19,9 +19,9 @@ use rayon::prelude::*;
 use super::ast::{ArithOp, CompareOp, Direction, Lit, Quantifier, SetOp, SetOpKind};
 use super::lexer::SyntaxError;
 use super::plan::{
-    has_nested_aggregate, lower, AggFn, CClause, CExpr, CLabelExpr, CLinear, CNode, CPath,
-    CProjection, CPropConstraint, CQuery, CRel, CRemoveItem, CReturnItem, CSegment, CSetItem, Op,
-    Program, ScalarFn,
+    has_argless_aggregate, has_nested_aggregate, lower, AggFn, CClause, CExpr, CLabelExpr, CLinear,
+    CNode, CPath, CProjection, CPropConstraint, CQuery, CRel, CRemoveItem, CReturnItem, CSegment,
+    CSetItem, Op, Program, ScalarFn,
 };
 #[cfg(feature = "arrow")]
 use crate::arrow::ArrowColumn;
@@ -107,6 +107,23 @@ const FAULT_BUDGET: u8 = 3;
 const TRAIL_BUDGET: u64 = 1_000_000;
 
 impl Ctx<'_> {
+    /// Re-resolve property-key and label ids against the current graph (keeping
+    /// params/fault). Needed mid-INSERT: freshly created nodes introduce columns
+    /// a snapshot taken before the clause doesn't know about, so a forward
+    /// reference (`INSERT (a {..}), (:B {x: a.id})`) would otherwise read NULL.
+    fn refresh_ids(&mut self, graph: &Graph, plan: &CQuery) {
+        self.prop_keys = plan
+            .key_names
+            .iter()
+            .map(|n| (graph.props.keys.get(n), graph.edge_props.keys.get(n)))
+            .collect();
+        self.labels = plan
+            .label_names
+            .iter()
+            .map(|n| (graph.labels.get(n), graph.etype.get(n)))
+            .collect();
+    }
+
     /// Record a data-exception fault (first one wins; later faults are ignored).
     #[inline]
     fn set_fault(&self, kind: u8) {
@@ -2837,6 +2854,14 @@ fn build_scan(
     }
     let mut endpoint: Vec<u32> = Vec::new();
 
+    // Which slots are populated so far. A later segment's rel/node slots are in
+    // `kinds` (and pre-allocated in `cols`) but their columns stay empty until
+    // that segment runs, so the per-row copy loops below must skip them.
+    let mut bound = vec![false; scope_len.max(1)];
+    if let Some(s) = path.start.var_slot {
+        bound[s] = true;
+    }
+
     // Seed from the start node (label + inline props/WHERE).
     let start = &path.start;
     let start_check = !start.props.is_empty() || start.where_.is_some();
@@ -2887,7 +2912,7 @@ fn build_scan(
             // Prior slots are constant across this row's neighbors — set them once.
             if need_bind {
                 for &(s, knd) in &kinds {
-                    if Some(s) == rel.var_slot || Some(s) == node.var_slot {
+                    if !bound[s] || Some(s) == rel.var_slot || Some(s) == node.var_slot {
                         continue;
                     }
                     if let Some(col) = &cols[s] {
@@ -2940,8 +2965,11 @@ fn build_scan(
                         eidx
                     } else if Some(s) == node.var_slot {
                         nbr
-                    } else {
+                    } else if bound[s] {
                         cols[s].as_ref().unwrap()[i]
+                    } else {
+                        // Slot bound by a later segment — not present in this row yet.
+                        continue;
                     };
                     new_cols[s].as_mut().unwrap().push(v);
                 }
@@ -2951,6 +2979,13 @@ fn build_scan(
                     break 'rows;
                 }
             }
+        }
+        // This segment's rel/node columns are now populated for every row.
+        if let Some(s) = rel.var_slot {
+            bound[s] = true;
+        }
+        if let Some(s) = node.var_slot {
+            bound[s] = true;
         }
         cols = new_cols;
         endpoint = new_endpoint;
@@ -4159,10 +4194,11 @@ fn run_linear(
                     bindings = materialize_matches(graph, &ctx, &bindings, &pending);
                     pending.clear();
                 }
-                bindings = bindings
-                    .iter()
-                    .map(|b| run_insert(graph, &ctx, patterns, b))
-                    .collect();
+                let mut inserted = Vec::with_capacity(bindings.len());
+                for b in &bindings {
+                    inserted.push(run_insert(graph, &mut ctx, plan, patterns, b));
+                }
+                bindings = inserted;
                 ctx.check_fault()?;
                 ctx = resolve_ctx(graph, plan, params);
             }
@@ -4247,11 +4283,21 @@ fn ensure_node(graph: &mut Graph, ctx: &Ctx, binding: &mut Binding, node: &CNode
     vi
 }
 
-fn run_insert(graph: &mut Graph, ctx: &Ctx, patterns: &[CPath], binding: &Binding) -> Binding {
+fn run_insert(
+    graph: &mut Graph,
+    ctx: &mut Ctx,
+    plan: &CQuery,
+    patterns: &[CPath],
+    binding: &Binding,
+) -> Binding {
     let mut out = binding.clone();
     for pattern in patterns {
+        // Refresh id resolution so this element's property expressions can read
+        // a sibling created earlier in the same INSERT (forward reference).
+        ctx.refresh_ids(graph, plan);
         let mut prev = ensure_node(graph, ctx, &mut out, &pattern.start);
         for CSegment { rel, node } in &pattern.segments {
+            ctx.refresh_ids(graph, plan);
             let next = ensure_node(graph, ctx, &mut out, node);
             let (from, to) = if rel.direction == Direction::In {
                 (next, prev)
@@ -4262,6 +4308,7 @@ fn run_insert(graph: &mut Graph, ctx: &Ctx, patterns: &[CPath], binding: &Bindin
                 .into_iter()
                 .next()
                 .unwrap_or_default();
+            ctx.refresh_ids(graph, plan);
             let eprops = eval_props(graph, ctx, &rel.props, &out);
             let ei = graph.add_edge(from, to, &etype, eprops);
             if let Some(slot) = rel.var_slot {
@@ -4399,6 +4446,12 @@ fn run_cquery(plan: &CQuery, graph: &mut Graph, params: &[Val]) -> CodeResult<Ro
             "aggregate functions cannot be nested",
         ));
     }
+    if has_argless_aggregate(plan) {
+        return Err(CodeError::new(
+            ErrorCode::Unsupported,
+            "aggregate function requires an argument (only count(*) is argless)",
+        ));
+    }
     let first = plan
         .parts
         .first()
@@ -4505,6 +4558,12 @@ fn run_cquery_arrow(plan: &CQuery, graph: &mut Graph, params: &[Val]) -> CodeRes
         return Err(CodeError::new(
             ErrorCode::Unsupported,
             "aggregate functions cannot be nested",
+        ));
+    }
+    if has_argless_aggregate(plan) {
+        return Err(CodeError::new(
+            ErrorCode::Unsupported,
+            "aggregate function requires an argument (only count(*) is argless)",
         ));
     }
     if USE_VEC && plan.ops.is_empty() && plan.parts.len() == 1 {
