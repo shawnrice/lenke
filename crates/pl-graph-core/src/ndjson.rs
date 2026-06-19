@@ -166,9 +166,8 @@ fn push_json_str(out: &mut String, s: &str) {
 }
 
 fn push_num(out: &mut String, x: f64) {
-    use std::fmt::Write as _;
     if x.is_finite() {
-        let _ = write!(out, "{x}");
+        out.push_str(&crate::codec::js_number(x));
     } else {
         out.push_str("null");
     }

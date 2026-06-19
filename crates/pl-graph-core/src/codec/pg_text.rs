@@ -30,8 +30,7 @@ fn scalar_token(out: &mut String, v: &Value) {
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         Value::Num(x) => {
             if x.is_finite() {
-                use std::fmt::Write as _;
-                let _ = write!(out, "{x}");
+                out.push_str(&crate::codec::js_number(*x));
             } else {
                 out.push_str("null");
             }
