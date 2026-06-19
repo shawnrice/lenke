@@ -122,17 +122,20 @@ describe('graphson: malformed input is a clean error, not a crash', () => {
     expect(hasErrorCode(errOf('{"vertices":[{"@type":"g:Vertex"}]}'), ErrorCode.InvalidShape)).toBe(
       true,
     );
-    expect(hasErrorCode(errOf('{"vertices":[{"@value":{"label":""}}]}'), ErrorCode.InvalidShape)).toBe(
-      true,
-    );
-    expect(hasErrorCode(errOf('{"vertices":[{"@value":{"id":"a"}}]}'), ErrorCode.InvalidShape)).toBe(
-      true,
-    );
+    expect(
+      hasErrorCode(errOf('{"vertices":[{"@value":{"label":""}}]}'), ErrorCode.InvalidShape),
+    ).toBe(true);
+    expect(
+      hasErrorCode(errOf('{"vertices":[{"@value":{"id":"a"}}]}'), ErrorCode.InvalidShape),
+    ).toBe(true);
   });
 
   test('non-string vertex label → InvalidShape (was a TypeError)', () => {
     expect(
-      hasErrorCode(errOf('{"vertices":[{"@value":{"id":"a","label":42}}]}'), ErrorCode.InvalidShape),
+      hasErrorCode(
+        errOf('{"vertices":[{"@value":{"id":"a","label":42}}]}'),
+        ErrorCode.InvalidShape,
+      ),
     ).toBe(true);
   });
 

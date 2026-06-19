@@ -823,12 +823,7 @@ export async function* encodeEdgesStream(graph: Graph): AsyncGenerator<string> {
 
   for (const edge of graph.edges) {
     batch.push(
-      buildRow(
-        [edge.id, edge.from.id, edge.to.id, joinLabels(edge.labels)],
-        keys,
-        types,
-        bags[i],
-      ),
+      buildRow([edge.id, edge.from.id, edge.to.id, joinLabels(edge.labels)], keys, types, bags[i]),
     );
     i += 1;
 
