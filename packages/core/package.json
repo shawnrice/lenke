@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@pl-graph/emitter": "workspace:*",
+    "@pl-graph/errors": "workspace:*",
     "@pl-graph/fp": "workspace:*",
     "@pl-graph/list": "workspace:*",
     "@pl-graph/utils": "workspace:*"
