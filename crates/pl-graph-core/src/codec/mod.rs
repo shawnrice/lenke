@@ -323,7 +323,7 @@ mod tests {
             (1e-10, "1e-10"),
             (1e100, "1e+100"),
             (-1e-7, "-1e-7"),
-            (3.14159, "3.14159"),
+            (1.25, "1.25"),
         ];
         for &(x, want) in cases {
             assert_eq!(js_number(x), want, "js_number({x})");
