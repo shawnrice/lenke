@@ -561,6 +561,22 @@ pub fn has_nested_aggregate(plan: &CQuery) -> bool {
         .any(|agg| agg.arg.as_ref().is_some_and(has_aggregate))
 }
 
+/// True if any aggregate is argless and is not `count(*)`. Only `count(*)` is a
+/// valid argless aggregate; `sum()`, `avg()`, `count()` with no argument, etc.
+/// are meaningless and must be rejected (ISO; matches the TS engine).
+pub fn has_argless_aggregate(plan: &CQuery) -> bool {
+    plan.parts
+        .iter()
+        .flat_map(|part| &part.clauses)
+        .filter_map(|clause| match clause {
+            CClause::With { projection, .. } => Some(projection),
+            CClause::Return(projection) => Some(projection),
+            _ => None,
+        })
+        .flat_map(|projection| &projection.aggs)
+        .any(|agg| agg.arg.is_none() && !agg.star)
+}
+
 /// Lift aggregate sub-expressions out of `expr` into `aggs`, replacing each with
 /// an [`CExpr::AggRef`]. An aggregate's own argument is left intact (a nested
 /// aggregate is invalid), so this never recurses into an `Aggregate`.

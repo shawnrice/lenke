@@ -89,6 +89,42 @@ fn projection_column_names_and_order() {
 }
 
 #[test]
+fn two_hop_linear_pattern() {
+    // Regression: a linear two-segment pattern `(a)-[r1]->(b)-[r2]->(c)` used to
+    // panic in build_scan because the per-row column copy referenced `c`'s slot
+    // (bound only by the second segment) while building the first segment.
+    let mut g = modern();
+    let r = rows(
+        &mut g,
+        "MATCH (a:Person {name: 'marko'})-[:KNOWS]->(b)-[:CREATED]->(c) RETURN c.name ORDER BY c.name",
+    );
+    // marko KNOWS josh; josh CREATED lop + ripple.
+    assert_eq!(r, vec![vec![s("lop")], vec![s("ripple")]]);
+}
+
+#[test]
+fn three_hop_linear_pattern() {
+    // A three-segment chain exercises copying multiple already-bound columns
+    // across several future-bound slots.
+    let mut g = modern();
+    let r = rows(
+        &mut g,
+        "MATCH (a:Person {name: 'marko'})-[:KNOWS]->(b)-[:CREATED]->(c)<-[:CREATED]-(d) RETURN d.name ORDER BY d.name",
+    );
+    // marko->josh; josh created lop+ripple; lop also created-by marko,josh,peter;
+    // ripple created-by josh. Distinct d over both c's, ordered.
+    assert_eq!(
+        r,
+        vec![
+            vec![s("josh")],
+            vec![s("josh")],
+            vec![s("marko")],
+            vec![s("peter")],
+        ]
+    );
+}
+
+#[test]
 fn incoming_edge() {
     let mut g = modern();
     let r = rows(
