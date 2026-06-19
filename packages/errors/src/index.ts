@@ -17,6 +17,9 @@ export const ErrorCode = {
   UnknownFormat: 'E_UNKNOWN_FORMAT',
   /** A value outside the LPG property-value model. */
   InvalidValue: 'E_INVALID_VALUE',
+  /** An ISO data exception at evaluation time (division by zero, a type
+   * mismatch in an operation, a numeric value out of range). */
+  DataException: 'E_DATA_EXCEPTION',
   /** An edge (or operation) referenced a vertex id that doesn't exist. */
   MissingVertex: 'E_MISSING_VERTEX',
   /** An invalid graph mutation (e.g. a cycle, a self-reference). */
@@ -27,6 +30,10 @@ export const ErrorCode = {
   NotImplemented: 'E_NOT_IMPLEMENTED',
   /** A feature/clause/predicate that isn't supported. */
   Unsupported: 'E_UNSUPPORTED',
+  /** Evaluation hit a resource limit (e.g. a variable-length pattern whose path
+   * enumeration exceeded the trail budget). Tighten the pattern (add a bound) or
+   * raise the limit. */
+  ResourceExhausted: 'E_RESOURCE_EXHAUSTED',
   /** An unknown function/step/symbol referenced in a query. */
   UnknownFunction: 'E_UNKNOWN_FUNCTION',
   /** A failure crossing the native/wasm FFI boundary. */

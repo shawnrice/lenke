@@ -7,14 +7,31 @@ use super::lexer::{err, is_reserved, tokenize, SyntaxError, Token, Tt};
 
 pub fn parse(src: &str) -> Result<Query, SyntaxError> {
     let tokens = tokenize(src)?;
-    let mut p = Parser { tokens, pos: 0 };
+    let mut p = Parser {
+        tokens,
+        pos: 0,
+        depth: 0,
+    };
     p.parse_query()
 }
 
 struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    /// Current recursive-descent nesting depth (see [`Parser::descend`]).
+    depth: u32,
 }
+
+/// Recursion-depth ceiling. Recursive descent over deeply nested input
+/// (`((((…))))`, `NOT NOT NOT …`, `!!!…`, nested lists / subqueries) would
+/// otherwise overflow the native stack and *abort the process* — uncatchable.
+/// Past this bound the recursive entry points return a `SyntaxError` instead.
+///
+/// Set well below the TS limit (500): a debug-build stack frame for the parser
+/// chain is large, and Rust threads default to a 2 MiB stack, so the guard must
+/// fire with margin to spare. 128 levels of nesting is far beyond any real
+/// query yet leaves the descent comfortably within a 2 MiB stack.
+const MAX_DEPTH: u32 = 128;
 
 type R<T> = Result<T, SyntaxError>;
 
@@ -68,6 +85,48 @@ impl Parser {
             );
         }
         Ok(self.advance())
+    }
+
+    /// Run `body` one level deeper, guarding against unbounded recursion. Used to
+    /// wrap the recursive entry points so deep nesting yields a `SyntaxError`
+    /// rather than a stack-overflow abort.
+    fn descend<T>(&mut self, body: impl FnOnce(&mut Self) -> R<T>) -> R<T> {
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            self.depth -= 1;
+            return err("Query nested too deeply", self.peek().pos);
+        }
+        let r = body(self);
+        self.depth -= 1;
+        r
+    }
+
+    /// Consume a `Number` token already known to be present and require it to be a
+    /// non-negative integer — for SKIP/LIMIT/OFFSET and quantifier bounds, where
+    /// a float, NaN, or out-of-range value is never valid.
+    fn read_count(&mut self, what: &str) -> R<u32> {
+        let t = self.advance();
+        let n = t.num.unwrap_or(f64::NAN);
+        if !n.is_finite() || n.fract() != 0.0 || n < 0.0 || n > u32::MAX as f64 {
+            return err(
+                format!("{what} must be a non-negative integer, got '{}'", t.value),
+                t.pos,
+            );
+        }
+        Ok(n as u32)
+    }
+
+    fn expect_count(&mut self, what: &str) -> R<usize> {
+        if !self.check(Tt::Number) {
+            let t = self.peek();
+            let got = if t.value.is_empty() {
+                format!("{:?}", t.tt)
+            } else {
+                t.value.clone()
+            };
+            return err(format!("Expected {what}, got '{got}'"), t.pos);
+        }
+        Ok(self.read_count(what)? as usize)
     }
 
     /// Consume an identifier in a binding position (variable, label, key, alias).
@@ -149,7 +208,7 @@ impl Parser {
     }
 
     fn parse_label_expr(&mut self) -> R<LabelExpr> {
-        self.parse_label_or()
+        self.descend(|p| p.parse_label_or())
     }
     fn parse_label_or(&mut self) -> R<LabelExpr> {
         let mut left = self.parse_label_and()?;
@@ -168,11 +227,13 @@ impl Parser {
         Ok(left)
     }
     fn parse_label_not(&mut self) -> R<LabelExpr> {
-        if self.check(Tt::Bang) {
-            self.advance();
-            return Ok(LabelExpr::Not(Box::new(self.parse_label_not()?)));
-        }
-        self.parse_label_primary()
+        self.descend(|p| {
+            if p.check(Tt::Bang) {
+                p.advance();
+                return Ok(LabelExpr::Not(Box::new(p.parse_label_not()?)));
+            }
+            p.parse_label_primary()
+        })
     }
     fn parse_label_primary(&mut self) -> R<LabelExpr> {
         if self.check(Tt::Percent) {
@@ -325,9 +386,9 @@ impl Parser {
             return Ok(Some(Quantifier { min: 1, max: None }));
         }
         if self.check(Tt::LBrace) {
-            self.advance();
+            let open = self.advance();
             let min = if self.check(Tt::Number) {
-                self.advance().num.unwrap() as u32
+                self.read_count("a quantifier bound")?
             } else {
                 0
             };
@@ -335,27 +396,49 @@ impl Parser {
             if self.check(Tt::Comma) {
                 self.advance();
                 max = if self.check(Tt::Number) {
-                    Some(self.advance().num.unwrap() as u32)
+                    Some(self.read_count("a quantifier bound")?)
                 } else {
                     None
                 };
             }
             self.expect(Tt::RBrace, "'}' to close a quantifier")?;
+            if let Some(m) = max {
+                if m < min {
+                    return err(
+                        format!("Quantifier upper bound {m} is less than lower bound {min}"),
+                        open.pos,
+                    );
+                }
+            }
             return Ok(Some(Quantifier { min, max }));
         }
         Ok(None)
     }
 
     fn parse_path_pattern(&mut self) -> R<PathPattern> {
-        let start = self.parse_node()?;
-        let mut segments = Vec::new();
-        while self.starts_relationship() {
-            let mut rel = self.parse_rel()?;
-            rel.quantifier = self.parse_quantifier()?;
-            let node = self.parse_node()?;
-            segments.push(Segment { rel, node });
-        }
-        Ok(PathPattern { start, segments })
+        self.descend(|p| {
+            let start = p.parse_node()?;
+            let mut segments = Vec::new();
+            while p.starts_relationship() {
+                let seg_pos = p.peek().pos;
+                let mut rel = p.parse_rel()?;
+                rel.quantifier = p.parse_quantifier()?;
+                // A variable-length segment reaches a *set* of far vertices; it
+                // binds no single edge, so an edge variable or per-edge predicate
+                // can't be honored. Reject rather than silently ignore them.
+                if rel.quantifier.is_some()
+                    && (rel.variable.is_some() || !rel.props.is_empty() || rel.where_.is_some())
+                {
+                    return err(
+                        "A variable-length relationship cannot bind an edge variable or carry a per-edge predicate (not yet supported)",
+                        seg_pos,
+                    );
+                }
+                let node = p.parse_node()?;
+                segments.push(Segment { rel, node });
+            }
+            Ok(PathPattern { start, segments })
+        })
     }
 
     fn parse_match_clause(&mut self) -> R<MatchClause> {
@@ -387,7 +470,7 @@ impl Parser {
     // --- expressions -------------------------------------------------------
 
     fn parse_expr(&mut self) -> R<Expr> {
-        self.parse_or_xor()
+        self.descend(|p| p.parse_or_xor())
     }
 
     fn parse_or_xor(&mut self) -> R<Expr> {
@@ -414,11 +497,13 @@ impl Parser {
     }
 
     fn parse_not(&mut self) -> R<Expr> {
-        if self.check_kw("not") {
-            self.advance();
-            return Ok(Expr::Not(Box::new(self.parse_not()?)));
-        }
-        self.parse_postfix_predicate()
+        self.descend(|p| {
+            if p.check_kw("not") {
+                p.advance();
+                return Ok(Expr::Not(Box::new(p.parse_not()?)));
+            }
+            p.parse_postfix_predicate()
+        })
     }
 
     fn parse_postfix_predicate(&mut self) -> R<Expr> {
@@ -577,15 +662,17 @@ impl Parser {
     }
 
     fn parse_unary(&mut self) -> R<Expr> {
-        if self.check(Tt::Dash) {
-            self.advance();
-            return Ok(Expr::Neg(Box::new(self.parse_unary()?)));
-        }
-        if self.check(Tt::Plus) {
-            self.advance();
-            return self.parse_unary();
-        }
-        self.parse_primary()
+        self.descend(|p| {
+            if p.check(Tt::Dash) {
+                p.advance();
+                return Ok(Expr::Neg(Box::new(p.parse_unary()?)));
+            }
+            if p.check(Tt::Plus) {
+                p.advance();
+                return p.parse_unary();
+            }
+            p.parse_primary()
+        })
     }
 
     fn parse_braced_subquery(&mut self) -> R<(Vec<PathPattern>, Option<Expr>)> {
@@ -850,20 +937,12 @@ impl Parser {
         let mut skip = None;
         if self.check_kw("skip") || self.check_kw("offset") {
             self.advance();
-            skip = Some(
-                self.expect(Tt::Number, "a number after SKIP/OFFSET")?
-                    .num
-                    .unwrap() as usize,
-            );
+            skip = Some(self.expect_count("a non-negative integer after SKIP/OFFSET")?);
         }
         let mut limit = None;
         if self.check_kw("limit") {
             self.advance();
-            limit = Some(
-                self.expect(Tt::Number, "a number after LIMIT")?
-                    .num
-                    .unwrap() as usize,
-            );
+            limit = Some(self.expect_count("a non-negative integer after LIMIT")?);
         }
         Ok(Projection {
             star,

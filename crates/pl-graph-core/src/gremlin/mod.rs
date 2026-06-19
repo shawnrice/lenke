@@ -17,9 +17,23 @@ use std::sync::Arc;
 pub mod exec;
 pub mod parse;
 #[cfg(test)]
+mod ported_1;
+#[cfg(test)]
+mod ported_2;
+#[cfg(test)]
+mod ported_3;
+#[cfg(test)]
+mod ported_4;
+#[cfg(test)]
+mod ported_5;
+#[cfg(test)]
+mod ported_6;
+#[cfg(test)]
+mod ported_divergences;
+#[cfg(test)]
 mod tests;
 
-pub use exec::run;
+pub use exec::{run, try_run};
 pub use parse::parse;
 
 /// A runtime traversal value. Graph elements are dense ids (like `gql::Val`);
