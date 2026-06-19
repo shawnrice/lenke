@@ -29,6 +29,9 @@ pub mod graphson;
 pub mod pg_json;
 pub mod pg_text;
 
+#[cfg(test)]
+mod conformance;
+
 use std::fmt::Write as _;
 use std::sync::Arc;
 
