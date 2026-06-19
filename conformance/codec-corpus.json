@@ -8,11 +8,19 @@
     { "format": "ndjson", "input": "42", "code": "E_INVALID_SHAPE" },
     { "format": "ndjson", "input": "{\"type\":\"banana\"}", "code": "E_INVALID_SHAPE" },
     { "format": "pg-json", "input": "{}", "code": "E_INVALID_SHAPE" },
-    { "format": "pg-json", "input": "{\"nodes\":[{\"labels\":[],\"properties\":{}}]}", "code": "E_INVALID_SHAPE" },
+    {
+      "format": "pg-json",
+      "input": "{\"nodes\":[{\"labels\":[],\"properties\":{}}]}",
+      "code": "E_INVALID_SHAPE"
+    },
     { "format": "pg-json", "input": "not json at all", "code": "E_INVALID_JSON" },
     { "format": "graphson", "input": "{bad", "code": "E_INVALID_JSON" },
     { "format": "graphson", "input": "[]", "code": "E_INVALID_SHAPE" },
-    { "format": "graphson", "input": "{\"vertices\":[{\"@value\":{\"id\":\"a\"}}]}", "code": "E_INVALID_SHAPE" },
+    {
+      "format": "graphson",
+      "input": "{\"vertices\":[{\"@value\":{\"id\":\"a\"}}]}",
+      "code": "E_INVALID_SHAPE"
+    },
     { "format": "nonsense-format", "input": "", "code": "E_UNKNOWN_FORMAT" }
   ]
 }

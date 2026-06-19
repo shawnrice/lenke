@@ -1,6 +1,5 @@
-import { readFileSync } from 'node:fs';
-
 import { describe, expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
 
 import { Graph } from '@pl-graph/core';
 import { ErrorCode, hasErrorCode } from '@pl-graph/errors';
