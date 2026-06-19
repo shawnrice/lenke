@@ -12,13 +12,13 @@
 //!     format models edge labels as a list (PG-JSON `labels`, CSV `:TYPE`,
 //!     GraphSON `label`), we emit the one type and, on decode, take the first
 //!     label as the type.
-//!   - **Edge ids are an optional, lazy overlay.** An edge's canonical identity
-//!     is its dense index; an external string id is opt-in (see
-//!     [`Graph::set_edge_id`](crate::graph::Graph::set_edge_id)). Formats with an
-//!     edge-id slot (PG-JSON, GraphSON, CSV, NDJSON) **round-trip** an assigned
-//!     id and omit it for id-less edges (so the lazy overlay stays empty);
-//!     PG-text has no id slot, so its edges are always id-less. **Node** ids
-//!     round-trip exactly.
+//!   - **Every edge has an id.** It is the assigned external id, or — computed on
+//!     demand — the canonical `e{index}` derived from the dense index (see
+//!     [`Graph::edge_id`](crate::graph::Graph::edge_id)); the explicit-id overlay
+//!     stays lazy, so the load path is unaffected. Formats with an edge-id slot
+//!     (PG-JSON, GraphSON, CSV, NDJSON) **always emit** it and round-trip it.
+//!     PG-text has no id slot, so its edges re-derive `e{index}` on decode rather
+//!     than round-tripping an assigned id. **Node** ids round-trip exactly.
 //!
 //! Streaming variants (the TS `encodeStream`/`decodeStream`) are intentionally
 //! omitted: the idiomatic bulk path here is the whole-string `encode`/`decode`
