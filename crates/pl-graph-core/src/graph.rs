@@ -578,14 +578,26 @@ impl Graph {
         self.etype.get(name).map(|t| self.edges_with_etype(t))
     }
 
-    /// The external string id of edge `eidx`, if one was assigned (`None` ⇒ the
-    /// edge is identified only by its index). Used by codecs to round-trip ids.
-    pub fn edge_id(&self, eidx: u32) -> Option<&str> {
-        self.eid_fwd.get(&eidx).map(|s| s.as_ref())
+    /// The id of edge `eidx`: its assigned external id, or — since every edge has
+    /// an id — the canonical `e{index}` derived from its dense index. The
+    /// synthetic id is computed on demand, so the id overlay stays lazy and the
+    /// load path pays nothing. Used by codecs (which always emit it) and the
+    /// engines' `id()` step.
+    pub fn edge_id(&self, eidx: u32) -> std::borrow::Cow<'_, str> {
+        match self.eid_fwd.get(&eidx) {
+            Some(s) => std::borrow::Cow::Borrowed(s.as_ref()),
+            None => std::borrow::Cow::Owned(format!("e{eidx}")),
+        }
     }
-    /// The edge carrying external id `id`, if any — the reverse of [`Graph::edge_id`].
+    /// The edge carrying id `id` — the reverse of [`Graph::edge_id`]. Resolves an
+    /// assigned external id first, then the canonical `e{index}` form of a live,
+    /// id-less edge (an explicit id shadows a colliding `e{n}`).
     pub fn edge_by_id(&self, id: &str) -> Option<u32> {
-        self.eid_rev.get(id).copied()
+        if let Some(&e) = self.eid_rev.get(id) {
+            return Some(e);
+        }
+        let n: u32 = id.strip_prefix('e')?.parse().ok()?;
+        self.is_edge_live(n).then_some(n)
     }
     // --- reactive change tracking ----------------------------------------
 

@@ -79,7 +79,11 @@ fn decode_typed(node: &J) -> CodeResult<Value> {
                             "graphson: g:List value must be an array",
                         )
                     })?;
-                    Value::List(arr.iter().map(decode_typed).collect::<CodeResult<Vec<_>>>()?)
+                    Value::List(
+                        arr.iter()
+                            .map(decode_typed)
+                            .collect::<CodeResult<Vec<_>>>()?,
+                    )
                 }
                 // An unknown/missing wrapper is outside the LPG model — reject it
                 // (matches the TS codec) rather than storing a raw out-of-model value.
@@ -137,11 +141,10 @@ pub fn encode(g: &Graph) -> String {
         }
         first = false;
         out.push_str("{\"@type\":\"g:Edge\",\"@value\":{");
-        if let Some(id) = g.edge_id(i as u32) {
-            out.push_str("\"id\":");
-            push_json_str(&mut out, id);
-            out.push(',');
-        }
+        // Every edge has an id (assigned, or canonical `e{index}`) — always emit.
+        out.push_str("\"id\":");
+        push_json_str(&mut out, &g.edge_id(i as u32));
+        out.push(',');
         out.push_str("\"label\":");
         push_json_str(&mut out, g.etype.text(g.e_type[i]));
         out.push_str(",\"inV\":");
@@ -316,7 +319,9 @@ mod tests {
         );
         // Malformed g:List value and unknown wrapper in a property.
         assert_eq!(
-            code(r#"{"vertices":[{"@value":{"id":"a","label":"","properties":{"k":[{"@value":{"value":{"@type":"g:List","@value":5}}}]}}}]}"#),
+            code(
+                r#"{"vertices":[{"@value":{"id":"a","label":"","properties":{"k":[{"@value":{"value":{"@type":"g:List","@value":5}}}]}}}]}"#
+            ),
             ErrorCode::InvalidShape
         );
         // A well-formed minimal document still decodes.

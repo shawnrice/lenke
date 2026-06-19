@@ -609,7 +609,7 @@ pub fn encode_edges(g: &Graph) -> String {
     };
     let mut rows = vec![header];
     for (i, bag) in &entries {
-        let id = g.edge_id(*i as u32).unwrap_or("").to_string();
+        let id = g.edge_id(*i as u32).into_owned();
         let from = g.vid.text(g.e_src[*i]).to_string();
         let to = g.vid.text(g.e_dst[*i]).to_string();
         let etype = escape_element(g.etype.text(g.e_type[*i]));

@@ -400,7 +400,11 @@ a b :KNOWS since:2020";
         )
         .unwrap();
         let g2 = decode(&encode(&g));
-        assert_eq!(g2.vertex_count(), 2, "an id was mis-parsed into an extra node");
+        assert_eq!(
+            g2.vertex_count(),
+            2,
+            "an id was mis-parsed into an extra node"
+        );
         assert_eq!(g2.edge_count(), 1, "the edge was mis-classified as a node");
         let from = g2.vid.get("a:b").expect("node a:b");
         let to = g2.vid.get("c d").expect("node 'c d'");

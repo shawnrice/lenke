@@ -288,11 +288,11 @@ mod tests {
     #[test]
     fn edge_id_round_trips_across_id_formats() {
         let g = with_edge_id();
-        assert_eq!(g.edge_id(0), Some("pay-1"));
+        assert_eq!(g.edge_id(0).as_ref(), "pay-1");
         for format in ["pg-json", "graphson", "csv", "ndjson"] {
             let blob = serialize(&g, format).unwrap();
             let g2 = deserialize(&blob, format).unwrap();
-            assert_eq!(g2.edge_id(0), Some("pay-1"), "edge id lost via {format}");
+            assert_eq!(g2.edge_id(0).as_ref(), "pay-1", "edge id lost via {format}");
             assert_eq!(
                 g2.edge_by_id("pay-1"),
                 Some(0),
@@ -343,12 +343,44 @@ mod tests {
             "{\"type\":\"node\",\"id\":\"a\",\"labels\":[],\"properties\":{}}\n{\"type\":\"node\",\"id\":\"b\",\"labels\":[],\"properties\":{}}\n{\"type\":\"edge\",\"from\":\"a\",\"to\":\"b\",\"labels\":[\"X\"],\"properties\":{}}",
         )
         .unwrap();
-        assert_eq!(g.edge_id(0), None); // id-less by default
+        assert_eq!(g.edge_id(0).as_ref(), "e0"); // canonical `e{index}` by default
         g.set_edge_id(0, "e-custom");
-        assert_eq!(g.edge_id(0), Some("e-custom"));
+        assert_eq!(g.edge_id(0).as_ref(), "e-custom");
         assert_eq!(g.edge_by_id("e-custom"), Some(0));
         // removing the edge purges the overlay
         g.remove_edge(0);
         assert_eq!(g.edge_by_id("e-custom"), None);
+    }
+
+    #[test]
+    fn every_edge_has_a_canonical_id() {
+        // No edge is id-less: an unassigned edge has the canonical `e{index}`,
+        // resolvable in both directions, and that id is emitted by every codec.
+        let g = crate::ndjson::decode(
+            "{\"type\":\"node\",\"id\":\"a\",\"labels\":[],\"properties\":{}}\n\
+             {\"type\":\"node\",\"id\":\"b\",\"labels\":[],\"properties\":{}}\n\
+             {\"type\":\"edge\",\"from\":\"a\",\"to\":\"b\",\"labels\":[\"X\"],\"properties\":{}}\n\
+             {\"type\":\"edge\",\"from\":\"b\",\"to\":\"a\",\"labels\":[\"Y\"],\"properties\":{}}",
+        )
+        .unwrap();
+        assert_eq!(g.edge_id(0).as_ref(), "e0");
+        assert_eq!(g.edge_id(1).as_ref(), "e1");
+        assert_eq!(g.edge_by_id("e1"), Some(1));
+        assert_eq!(g.edge_by_id("e9"), None); // out of range
+                                              // The canonical id is emitted and round-trips through every id format.
+        for format in ["pg-json", "graphson", "csv", "ndjson"] {
+            let blob = serialize(&g, format).unwrap();
+            let g2 = deserialize(&blob, format).unwrap();
+            assert_eq!(
+                g2.edge_id(0).as_ref(),
+                "e0",
+                "canonical id lost via {format}"
+            );
+            assert_eq!(
+                g2.edge_by_id("e1"),
+                Some(1),
+                "reverse lookup lost via {format}"
+            );
+        }
     }
 }

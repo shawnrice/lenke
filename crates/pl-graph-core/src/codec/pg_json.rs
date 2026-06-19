@@ -71,11 +71,10 @@ pub fn encode(g: &Graph) -> String {
         }
         first = false;
         out.push('{');
-        if let Some(id) = g.edge_id(i as u32) {
-            out.push_str("\"id\":");
-            push_json_str(&mut out, id);
-            out.push(',');
-        }
+        // Every edge has an id (assigned, or canonical `e{index}`) — always emit.
+        out.push_str("\"id\":");
+        push_json_str(&mut out, &g.edge_id(i as u32));
+        out.push(',');
         out.push_str("\"from\":");
         push_json_str(&mut out, g.vid.text(g.e_src[i]));
         out.push_str(",\"to\":");
@@ -254,20 +253,20 @@ mod tests {
     fn edge_id_round_trips() {
         let doc = r#"{"nodes":[{"id":"a","labels":[],"properties":{}},{"id":"b","labels":[],"properties":{}}],"edges":[{"id":"pay-1","from":"a","to":"b","labels":["PAID"],"properties":{}}]}"#;
         let g = decode(doc).unwrap();
-        assert_eq!(g.edge_id(0), Some("pay-1"));
+        assert_eq!(g.edge_id(0).as_ref(), "pay-1");
         assert_eq!(g.edge_by_id("pay-1"), Some(0));
         // survives encode → decode
         let g2 = decode(&encode(&g)).unwrap();
-        assert_eq!(g2.edge_id(0), Some("pay-1"));
+        assert_eq!(g2.edge_id(0).as_ref(), "pay-1");
         assert_eq!(g2.edge_by_id("pay-1"), Some(0));
-        // an id-less edge stays id-less (no spurious id, lazy overlay)
+        // an edge with no assigned id has the canonical `e{index}` id, which is
+        // emitted and round-trips (every edge has an id).
         let idless = decode(r#"{"nodes":[{"id":"a","labels":[],"properties":{}},{"id":"b","labels":[],"properties":{}}],"edges":[{"from":"a","to":"b","labels":["X"],"properties":{}}]}"#).unwrap();
-        assert_eq!(idless.edge_id(0), None);
-        // the emitted edge object carries no id (nodes still do)
+        assert_eq!(idless.edge_id(0).as_ref(), "e0");
         let enc = encode(&idless);
         let edges = &enc[enc.find("\"edges\":").unwrap()..];
-        assert!(!edges.contains("\"id\":"));
-        assert_eq!(decode(&enc).unwrap().edge_id(0), None); // stays id-less on round-trip
+        assert!(edges.contains("\"id\":\"e0\""));
+        assert_eq!(decode(&enc).unwrap().edge_id(0).as_ref(), "e0");
     }
 
     #[test]
@@ -275,15 +274,15 @@ mod tests {
         // Matches the TS isPGFormat/isNodeShape/isEdgeShape contract: each is
         // InvalidShape, not silently accepted with defaulted/dropped fields.
         for doc in [
-            r#"{}"#,                                                              // no nodes array
-            r#"{"nodes":{}}"#,                                                    // nodes not an array
-            r#"{"nodes":[{"labels":[],"properties":{}}]}"#,                       // node missing id
-            r#"{"nodes":[{"id":true,"labels":[],"properties":{}}]}"#,             // id not string/number
-            r#"{"nodes":[{"id":"a","labels":["x",1],"properties":{}}]}"#,         // non-string label
-            r#"{"nodes":[{"id":"a","labels":[],"properties":null}]}"#,            // properties not object
-            r#"{"nodes":[42]}"#,                                                  // node not an object
-            r#"{"nodes":[],"edges":[{"from":"a","to":"b","properties":{}}]}"#,    // edge missing labels
-            r#"{"nodes":[],"edges":{}}"#,                                         // edges not an array
+            r#"{}"#,                                                           // no nodes array
+            r#"{"nodes":{}}"#,                                                 // nodes not an array
+            r#"{"nodes":[{"labels":[],"properties":{}}]}"#,                    // node missing id
+            r#"{"nodes":[{"id":true,"labels":[],"properties":{}}]}"#, // id not string/number
+            r#"{"nodes":[{"id":"a","labels":["x",1],"properties":{}}]}"#, // non-string label
+            r#"{"nodes":[{"id":"a","labels":[],"properties":null}]}"#, // properties not object
+            r#"{"nodes":[42]}"#,                                      // node not an object
+            r#"{"nodes":[],"edges":[{"from":"a","to":"b","properties":{}}]}"#, // edge missing labels
+            r#"{"nodes":[],"edges":{}}"#,                                      // edges not an array
         ] {
             assert_eq!(
                 decode_err_code(doc),

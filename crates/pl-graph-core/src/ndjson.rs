@@ -274,10 +274,9 @@ pub fn encode(g: &Graph) -> String {
             continue; // skip tombstoned edges
         }
         out.push_str("{\"type\":\"edge\"");
-        if let Some(id) = g.edge_id(i as u32) {
-            out.push_str(",\"id\":");
-            push_json_str(&mut out, id);
-        }
+        // Every edge has an id (assigned, or canonical `e{index}`) — always emit.
+        out.push_str(",\"id\":");
+        push_json_str(&mut out, &g.edge_id(i as u32));
         out.push_str(",\"from\":");
         push_json_str(&mut out, g.vid.text(g.e_src[i]));
         out.push_str(",\"to\":");
@@ -359,8 +358,7 @@ mod tests {
         // serde caps nesting at 128 levels during parse → a clean InvalidJson,
         // never a stack overflow or a silent accept (matches the TS depth guard).
         let deep = format!("{}1{}", "[".repeat(2000), "]".repeat(2000));
-        let line =
-            format!(r#"{{"type":"node","id":"a","labels":[],"properties":{{"x":{deep}}}}}"#);
+        let line = format!(r#"{{"type":"node","id":"a","labels":[],"properties":{{"x":{deep}}}}}"#);
         assert_eq!(decode(&line).err().unwrap().code, ErrorCode::InvalidJson);
     }
 }

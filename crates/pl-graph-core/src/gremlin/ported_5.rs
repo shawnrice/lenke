@@ -77,10 +77,7 @@ fn ids(t: Traversal) -> Vec<String> {
         .iter()
         .map(|v| match v {
             GVal::Vertex(i) => g.vid.text(*i).to_string(),
-            GVal::Edge(e) => g
-                .edge_id(*e)
-                .map(str::to_string)
-                .unwrap_or_else(|| format!("e{e}")),
+            GVal::Edge(e) => g.edge_id(*e).into_owned(),
             other => format!("{other:?}"),
         })
         .collect()
@@ -791,10 +788,7 @@ fn vid(v: &GVal) -> String {
     let g = modern();
     match v {
         GVal::Vertex(i) => g.vid.text(*i).to_string(),
-        GVal::Edge(e) => g
-            .edge_id(*e)
-            .map(str::to_string)
-            .unwrap_or_else(|| format!("e{e}")),
+        GVal::Edge(e) => g.edge_id(*e).into_owned(),
         other => format!("{other:?}"),
     }
 }
