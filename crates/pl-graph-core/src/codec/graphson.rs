@@ -64,21 +64,31 @@ fn decode_typed(node: &J) -> CodeResult<Value> {
             let value = o.get("@value");
             match o.get("@type").and_then(J::as_str) {
                 Some("g:Int64" | "g:Int32" | "g:Double" | "g:Float") => {
-                    Value::Num(value.and_then(J::as_f64).unwrap_or(f64::NAN))
+                    let n = value.and_then(J::as_f64).ok_or_else(|| {
+                        CodeError::new(
+                            ErrorCode::InvalidShape,
+                            "graphson: numeric typed value must be a number",
+                        )
+                    })?;
+                    Value::Num(n)
                 }
-                Some("g:List") => Value::List(
-                    value
-                        .and_then(J::as_array)
-                        .map(|a| a.iter().map(decode_typed).collect::<CodeResult<Vec<_>>>())
-                        .transpose()?
-                        .unwrap_or_default(),
-                ),
-                // Unknown wrapper: fall back to the raw @value (a nested object
-                // here is out-of-model → InvalidValue, via json_to_value).
-                _ => match value {
-                    Some(v) => crate::codec::json_to_value(v)?,
-                    None => Value::Null,
-                },
+                Some("g:List") => {
+                    let arr = value.and_then(J::as_array).ok_or_else(|| {
+                        CodeError::new(
+                            ErrorCode::InvalidShape,
+                            "graphson: g:List value must be an array",
+                        )
+                    })?;
+                    Value::List(arr.iter().map(decode_typed).collect::<CodeResult<Vec<_>>>()?)
+                }
+                // An unknown/missing wrapper is outside the LPG model — reject it
+                // (matches the TS codec) rather than storing a raw out-of-model value.
+                _ => {
+                    return Err(CodeError::new(
+                        ErrorCode::InvalidShape,
+                        "graphson: unknown or missing typed-value wrapper",
+                    ))
+                }
             }
         }
     })
@@ -177,15 +187,22 @@ pub fn decode(input: &str) -> CodeResult<Graph> {
 
     let mut b = Builder::default();
 
+    let shape = |msg: &str| CodeError::new(ErrorCode::InvalidShape, format!("graphson: {msg}"));
+
     if let Some(vertices) = obj.get("vertices").and_then(J::as_array) {
         for wrapper in vertices {
-            let Some(v) = wrapper.get("@value").and_then(J::as_object) else {
-                continue;
-            };
+            let v = wrapper
+                .get("@value")
+                .and_then(J::as_object)
+                .ok_or_else(|| shape("each vertex must have an @value object"))?;
+            if !matches!(v.get("id"), Some(J::String(_)) | Some(J::Number(_))) {
+                return Err(shape("vertex @value.id must be a string or number"));
+            }
             let id = v.get("id").map(crate::codec::json_id).unwrap_or_default();
-            let labels = match v.get("label").and_then(J::as_str) {
-                Some("") | None => Vec::new(),
-                Some(s) => s.split(LABEL_SEP).map(String::from).collect(),
+            let labels = match v.get("label") {
+                Some(J::String(s)) if s.is_empty() => Vec::new(),
+                Some(J::String(s)) => s.split(LABEL_SEP).map(String::from).collect(),
+                _ => return Err(shape("vertex @value.label must be a string")),
             };
             let mut props = Vec::new();
             if let Some(pmap) = v.get("properties").and_then(J::as_object) {
@@ -204,17 +221,17 @@ pub fn decode(input: &str) -> CodeResult<Graph> {
 
     if let Some(edges) = obj.get("edges").and_then(J::as_array) {
         for wrapper in edges {
-            let Some(e) = wrapper.get("@value").and_then(J::as_object) else {
-                continue;
-            };
+            let e = wrapper
+                .get("@value")
+                .and_then(J::as_object)
+                .ok_or_else(|| shape("each edge must have an @value object"))?;
             let src = e.get("outV").map(crate::codec::json_id).unwrap_or_default();
             let dst = e.get("inV").map(crate::codec::json_id).unwrap_or_default();
             // single type — split the `::` convention and take the first.
-            let etype = e
-                .get("label")
-                .and_then(J::as_str)
-                .map(|s| s.split(LABEL_SEP).next().unwrap_or("").to_string())
-                .unwrap_or_default();
+            let Some(J::String(label)) = e.get("label") else {
+                return Err(shape("edge @value.label must be a string"));
+            };
+            let etype = label.split(LABEL_SEP).next().unwrap_or("").to_string();
             let mut props = Vec::new();
             if let Some(pmap) = e.get("properties").and_then(J::as_object) {
                 for (k, entry) in pmap {
@@ -275,5 +292,34 @@ mod tests {
         let s = encode(&g);
         assert!(s.contains("g:Int64"));
         assert!(s.contains("g:Double"));
+    }
+
+    #[test]
+    fn strict_decode_rejects_malformed() {
+        use crate::error_codes::ErrorCode;
+        let code = |s: &str| decode(s).err().unwrap().code;
+        // Invalid JSON and non-object top level.
+        assert_eq!(code("{bad"), ErrorCode::InvalidJson);
+        assert_eq!(code("[]"), ErrorCode::InvalidShape);
+        // Vertex without @value / id / label.
+        assert_eq!(
+            code(r#"{"vertices":[{"@type":"g:Vertex"}]}"#),
+            ErrorCode::InvalidShape
+        );
+        assert_eq!(
+            code(r#"{"vertices":[{"@value":{"label":""}}]}"#),
+            ErrorCode::InvalidShape // missing id
+        );
+        assert_eq!(
+            code(r#"{"vertices":[{"@value":{"id":"a"}}]}"#),
+            ErrorCode::InvalidShape // missing label
+        );
+        // Malformed g:List value and unknown wrapper in a property.
+        assert_eq!(
+            code(r#"{"vertices":[{"@value":{"id":"a","label":"","properties":{"k":[{"@value":{"value":{"@type":"g:List","@value":5}}}]}}}]}"#),
+            ErrorCode::InvalidShape
+        );
+        // A well-formed minimal document still decodes.
+        assert!(decode(r#"{"vertices":[{"@value":{"id":"a","label":""}}]}"#).is_ok());
     }
 }
