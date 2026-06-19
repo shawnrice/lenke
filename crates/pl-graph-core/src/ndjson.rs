@@ -54,18 +54,28 @@ enum Rec {
     Edge(EdgeRec),
 }
 
-/// Parse one line. `Ok(None)` skips a blank/unparseable/untyped line (lenient,
-/// unchanged behavior); `Err` is a nested-object property value (`InvalidValue`).
+/// Parse one line. A blank line is skipped (`Ok(None)`); everything else is
+/// strict and matches the TS codec: invalid JSON → `InvalidJson`, a non-object
+/// or an unknown/missing `type` → `InvalidShape`, a nested-object property value
+/// → `InvalidValue`. (Previously these all silently skipped the line, which
+/// could mask corrupt fixtures since `decode` is the crate's test-fixture loader.)
 fn parse_line(line: &str) -> CodeResult<Option<Rec>> {
     let line = line.trim();
     if line.is_empty() {
         return Ok(None);
     }
+    let snippet = || line.chars().take(80).collect::<String>();
     let Ok(j) = serde_json::from_str::<J>(line) else {
-        return Ok(None);
+        return Err(CodeError::new(
+            ErrorCode::InvalidJson,
+            format!("ndjson: invalid JSON: {}", snippet()),
+        ));
     };
     let Some(obj) = j.as_object() else {
-        return Ok(None);
+        return Err(CodeError::new(
+            ErrorCode::InvalidShape,
+            format!("ndjson: each line must be a node or edge object: {}", snippet()),
+        ));
     };
     let rec = match obj.get("type").and_then(J::as_str) {
         Some("node") => {
@@ -105,7 +115,12 @@ fn parse_line(line: &str) -> CodeResult<Option<Rec>> {
                 id,
             })
         }
-        _ => return Ok(None),
+        _ => {
+            return Err(CodeError::new(
+                ErrorCode::InvalidShape,
+                format!("ndjson: line is not a 'node' or 'edge' record: {}", snippet()),
+            ))
+        }
     };
     Ok(Some(rec))
 }
@@ -311,5 +326,24 @@ mod tests {
             }
             _ => panic!("age should be a Num column"),
         }
+    }
+
+    #[test]
+    fn strict_decode_rejects_malformed_lines() {
+        use crate::error_codes::ErrorCode;
+        // `.err().unwrap()` rather than `unwrap_err()` (Graph has no Debug impl).
+        let code = |s: &str| decode(s).err().unwrap().code;
+        // Invalid JSON → InvalidJson (matches TS, instead of a silent skip).
+        assert_eq!(code("{not json"), ErrorCode::InvalidJson);
+        // Valid JSON but not an object → InvalidShape.
+        assert_eq!(code("42"), ErrorCode::InvalidShape);
+        assert_eq!(code("[1,2]"), ErrorCode::InvalidShape);
+        // Object with unknown/missing `type` → InvalidShape.
+        assert_eq!(code(r#"{"type":"banana"}"#), ErrorCode::InvalidShape);
+        assert_eq!(code(r#"{"id":"a"}"#), ErrorCode::InvalidShape);
+        // Blank lines are still skipped (not an error).
+        let g = decode("\n  \n{\"type\":\"node\",\"id\":\"a\",\"labels\":[],\"properties\":{}}\n")
+            .unwrap();
+        assert_eq!(g.n, 1);
     }
 }
