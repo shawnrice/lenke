@@ -20,7 +20,7 @@ const pad = (s: string, n: number): string => s.padEnd(n);
 
 /** Time building `n` vertices; `index` declares an index up front, or not. */
 const buildTime = (n: number, index: 'none' | 'age' | 'name'): number => {
-  const g = new Graph({ eagerSnapshot: false });
+  const g = new Graph();
   g.disableEvents();
 
   if (index !== 'none') {
