@@ -3,7 +3,7 @@
 
 import { ErrorCode, PlGraphError } from '@pl-graph/errors';
 import { equals } from '@pl-graph/fp/equals';
-import { identity, rando } from '@pl-graph/utils';
+import { rando } from '@pl-graph/utils';
 
 import { deserialize } from './deserialize.js';
 import { serialize } from './serialize.js';
@@ -56,19 +56,25 @@ export class TreeNode<T> {
   #children: Map<string, TreeNode<T>>;
 
   /**
-   * Deserializes a serialized TreeNode<T>
+   * Deserializes a serialized tree. `deserializeValue` may transform each stored
+   * value `S → T` (the inverse of a `serialize` transform); omit it to keep the
+   * stored type as-is.
    */
-  static deserialize<T>(
-    serialized: SerializedTreeNode<T>[],
-    deserializeValue: (x: any) => T = identity,
+  static deserialize<S, T = S>(
+    serialized: SerializedTreeNode<S>[],
+    deserializeValue?: (value: S) => T,
   ): TreeNode<T> {
     return deserialize(serialized, deserializeValue);
   }
 
   /**
-   * Serializes the Tree from the `TreeNode` down using the serializeValue function
+   * Serializes the Tree from the `TreeNode` down. `serializeValue` may transform
+   * each node value `T → R`; omit it to serialize the values unchanged.
    */
-  static serialize<T>(node: TreeNode<T>, serializeValue = identity): SerializedTreeNode<T>[] {
+  static serialize<T, R = T>(
+    node: TreeNode<T>,
+    serializeValue?: (value: T) => R,
+  ): SerializedTreeNode<R>[] {
     return serialize(node, serializeValue);
   }
 
@@ -168,7 +174,13 @@ export class TreeNode<T> {
   }
 
   get root(): TreeNode<T> {
-    return this.#parent?.root ?? this;
+    let node: TreeNode<T> = this;
+
+    while (node.#parent !== null) {
+      node = node.#parent;
+    }
+
+    return node;
   }
 
   get children(): TreeNode<T>[] {
@@ -221,13 +233,21 @@ export class TreeNode<T> {
       );
     }
 
-    if (node.contains(this)) {
-      throw new PlGraphError(
-        'Cannot add a node whose subtree contains this node (would create a cycle)',
-        {
-          code: ErrorCode.InvalidTree,
-        },
-      );
+    // A cycle would form iff `node` is already an ancestor of `this` — then
+    // hanging `node`'s subtree under `this` closes a loop. Walk *up* `this`'s
+    // parent chain looking for `node`: that's O(depth). The equivalent downward
+    // search (`node.contains(this)`) is O(`node`'s subtree), which is the
+    // expensive direction. `node` has no parent here (guarded just above), so an
+    // ancestor match can only be a genuine cycle, never a stale link.
+    for (let ancestor = this.#parent; ancestor !== null; ancestor = ancestor.#parent) {
+      if (ancestor === node) {
+        throw new PlGraphError(
+          'Cannot add a node that is an ancestor of this node (would create a cycle)',
+          {
+            code: ErrorCode.InvalidTree,
+          },
+        );
+      }
     }
 
     this.#children.set(node.id, node);
@@ -322,13 +342,23 @@ export class TreeNode<T> {
   }
 
   /**
-   * Depth first iterator for TreeNodes
+   * Depth-first (pre-order) iterator for TreeNodes. Iterative: an explicit stack
+   * stands in for recursion, so a deeply nested tree can't overflow the call
+   * stack. Children are pushed in reverse so siblings still emit left-to-right.
    */
   *depthFirst(): Generator<TreeNode<T>> {
-    yield this;
+    const stack: TreeNode<T>[] = [this];
 
-    for (const child of this.#children.values()) {
-      yield* child.depthFirst();
+    while (stack.length > 0) {
+      const node = stack.pop() as TreeNode<T>;
+
+      yield node;
+
+      const children = Array.from(node.#children.values());
+
+      for (let i = children.length - 1; i >= 0; i--) {
+        stack.push(children[i]);
+      }
     }
   }
 
@@ -367,15 +397,15 @@ export class TreeNode<T> {
   }
 
   /**
-   * Filter Depth First, returns a generator of TreeNodes that match the predicate
+   * Filter Depth First, returns a generator of TreeNodes that match the
+   * predicate (pre-order). Delegates to the iterative `depthFirst`, so it
+   * inherits its stack-safety on deep trees.
    */
   *filterDepthFirst(predicate: UnaryFn<TreeNode<T>, boolean>): Generator<TreeNode<T>> {
-    if (predicate(this)) {
-      yield this;
-    }
-
-    for (const child of this.#children.values()) {
-      yield* child.filterDepthFirst(predicate);
+    for (const node of this.depthFirst()) {
+      if (predicate(node)) {
+        yield node;
+      }
     }
   }
 
@@ -427,20 +457,26 @@ export class TreeNode<T> {
   }
 
   /**
-   * Searches depth-first for a TreeNode via an ID
+   * Searches depth-first for a descendant TreeNode by its ID. Iterative (an
+   * explicit stack), so the reachable depth is bounded by the heap, not the call
+   * stack.
    *
    * If no node is found, we return `null`
    */
   getDescendantById(id: string): TreeNode<T> | null {
-    if (this.#children.has(id)) {
-      return this.#children.get(id) as TreeNode<T>;
-    }
+    const stack = Array.from(this.#children.values()).reverse();
 
-    for (const child of this.#children.values()) {
-      const node = child.getDescendantById(id);
+    while (stack.length > 0) {
+      const node = stack.pop() as TreeNode<T>;
 
-      if (node) {
+      if (node.#id === id) {
         return node;
+      }
+
+      const children = Array.from(node.#children.values());
+
+      for (let i = children.length - 1; i >= 0; i--) {
+        stack.push(children[i]);
       }
     }
 
@@ -461,14 +497,30 @@ export class TreeNode<T> {
   /**
    * Post-order depth-first traversal: every child (recursively) is yielded
    * before its parent. This is the natural order for bottom-up evaluation —
-   * `depthFirst` is pre-order (parent first), this is its mirror.
+   * `depthFirst` is pre-order (parent first), this is its mirror. Iterative: each
+   * node is stacked twice and only *yields* on the second visit (after its whole
+   * subtree), so depth is bounded by the heap rather than the call stack.
    */
   *postOrder(): Generator<TreeNode<T>> {
-    for (const child of this.#children.values()) {
-      yield* child.postOrder();
-    }
+    const stack: [node: TreeNode<T>, expanded: boolean][] = [[this, false]];
 
-    yield this;
+    while (stack.length > 0) {
+      const [node, expanded] = stack.pop() as [TreeNode<T>, boolean];
+
+      if (expanded) {
+        yield node;
+
+        continue;
+      }
+
+      stack.push([node, true]);
+
+      const children = Array.from(node.#children.values());
+
+      for (let i = children.length - 1; i >= 0; i--) {
+        stack.push([children[i], false]);
+      }
+    }
   }
 
   /**
@@ -492,13 +544,23 @@ export class TreeNode<T> {
    * the tree; this rebuilds it.
    */
   map<R>(fn: UnaryFn<T, R>): TreeNode<R> {
-    const next = TreeNode.from<R>(fn(this.#value), this.#id);
+    const root = TreeNode.from<R>(fn(this.#value), this.#id);
+    // Pair each source node with its freshly-built copy and rebuild children with
+    // `createChild` — no cycle check needed, the copy is known-acyclic. Iterative
+    // so a deep tree maps without recursing.
+    const stack: [TreeNode<T>, TreeNode<R>][] = [[this, root]];
 
-    for (const child of this.#children.values()) {
-      next.addChild(child.map(fn));
+    while (stack.length > 0) {
+      const [src, dst] = stack.pop() as [TreeNode<T>, TreeNode<R>];
+
+      for (const child of src.#children.values()) {
+        const mapped = dst.createChild(fn(child.#value), child.#id);
+
+        stack.push([child, mapped]);
+      }
     }
 
-    return next;
+    return root;
   }
 
   /**
@@ -511,13 +573,37 @@ export class TreeNode<T> {
    * @example height:             node.fold((_v, kids) => 1 + Math.max(0, ...kids))
    */
   fold<R>(fn: (value: T, childResults: R[]) => R): R {
-    const childResults: R[] = [];
+    // Bottom-up over a post-order walk: a node folds only once all its children
+    // have folded. `pending` parks each child's result until its parent consumes
+    // it (then drops it, so memory tracks the frontier, not the whole tree).
+    // Iterative so deep trees don't recurse.
+    const pending = new Map<TreeNode<T>, R>();
+    const stack: [node: TreeNode<T>, expanded: boolean][] = [[this, false]];
 
-    for (const child of this.#children.values()) {
-      childResults.push(child.fold(fn));
+    while (stack.length > 0) {
+      const [node, expanded] = stack.pop() as [TreeNode<T>, boolean];
+
+      if (expanded) {
+        const childResults: R[] = [];
+
+        for (const child of node.#children.values()) {
+          childResults.push(pending.get(child) as R);
+          pending.delete(child);
+        }
+
+        pending.set(node, fn(node.#value, childResults));
+
+        continue;
+      }
+
+      stack.push([node, true]);
+
+      for (const child of node.#children.values()) {
+        stack.push([child, false]);
+      }
     }
 
-    return fn(this.#value, childResults);
+    return pending.get(this) as R;
   }
 
   /**
@@ -525,13 +611,21 @@ export class TreeNode<T> {
    * is structurally identical to the source.
    */
   clone(): TreeNode<T> {
-    const next = TreeNode.from(this.#value, this.#id);
+    const root = TreeNode.from(this.#value, this.#id);
+    // Same iterative rebuild as `map`, with an identity value transform.
+    const stack: [TreeNode<T>, TreeNode<T>][] = [[this, root]];
 
-    for (const child of this.#children.values()) {
-      next.addChild(child.clone());
+    while (stack.length > 0) {
+      const [src, dst] = stack.pop() as [TreeNode<T>, TreeNode<T>];
+
+      for (const child of src.#children.values()) {
+        const copy = dst.createChild(child.#value, child.#id);
+
+        stack.push([child, copy]);
+      }
     }
 
-    return next;
+    return root;
   }
 
   /**
@@ -569,18 +663,42 @@ export class TreeNode<T> {
   }
 
   toJSON(): TreeNodeJSON {
-    return {
-      children: this.children.map((child) => child.toJSON()),
+    // Build one JSON node per tree node and link children into place as we go —
+    // iterative so a deep tree serializes without recursing. (`JSON.stringify`
+    // would still recurse over the *result*, but that's the caller's choice.)
+    const root: TreeNodeJSON = {
+      children: [],
       id: this.#id,
       parentId: this.#parent?.id ?? null,
       value: this.#value,
     };
+    const stack: [TreeNode<T>, TreeNodeJSON][] = [[this, root]];
+
+    while (stack.length > 0) {
+      const [src, json] = stack.pop() as [TreeNode<T>, TreeNodeJSON];
+
+      for (const child of src.#children.values()) {
+        const childJson: TreeNodeJSON = {
+          children: [],
+          id: child.#id,
+          parentId: child.#parent?.id ?? null,
+          value: child.#value,
+        };
+
+        json.children.push(childJson);
+        stack.push([child, childJson]);
+      }
+    }
+
+    return root;
   }
 
   /**
-   * Serializes a Tree into an array for easier storage / transport
+   * Serializes a Tree into an array for easier storage / transport.
+   * `serializeValue` may transform each node value `T → R`; omit it to serialize
+   * the values unchanged.
    */
-  serialize(serializeValue = identity): SerializedTreeNode<T>[] {
+  serialize<R = T>(serializeValue?: (value: T) => R): SerializedTreeNode<R>[] {
     return serialize(this, serializeValue);
   }
 

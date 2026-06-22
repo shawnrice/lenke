@@ -4,9 +4,14 @@ import { identity } from '@pl-graph/utils';
 import { TreeNode } from './TreeNode.js';
 import type { SerializedTreeNode } from './types.js';
 
-export const deserialize = <T>(
-  serialized: SerializedTreeNode<T>[],
-  deserializeValue: (x: any) => T = identity,
+/**
+ * Rebuild a tree from a flat record array. `deserializeValue` may transform each
+ * stored value `S → T` (the inverse of a `serialize` transform); it defaults to
+ * identity, in which case `T` is simply `S`.
+ */
+export const deserialize = <S, T = S>(
+  serialized: SerializedTreeNode<S>[],
+  deserializeValue: (value: S) => T = identity as unknown as (value: S) => T,
 ): TreeNode<T> => {
   const nodeMap = new Map<string, TreeNode<T>>();
 

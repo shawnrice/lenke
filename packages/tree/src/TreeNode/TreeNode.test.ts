@@ -62,6 +62,40 @@ describe('TreeNode.addChild contract: argument must be parentless', () => {
     expect(() => child.addChild(root)).toThrow();
   });
 
+  test('addChild rejects a cycle several levels up (walks the whole ancestor chain)', () => {
+    // root → a → b → c. Detaching `root` is impossible (it has no parent), so
+    // adopt the chain's top from deep inside it: c.addChild(root) must be caught
+    // by walking c → b → a → root, not just c's immediate parent.
+    const root = TreeNode.from('root');
+    const a = root.createChild('a');
+    const b = a.createChild('b');
+    const c = b.createChild('c');
+
+    expect(
+      hasErrorCode(
+        caughtFrom(() => c.addChild(root)),
+        ErrorCode.InvalidTree,
+      ),
+    ).toBe(true);
+    // ...and a is still rejected too (mid-chain ancestor)
+    expect(() => c.addChild(a)).toThrow(/parent/i); // a still has a parent → parent guard
+  });
+
+  test('addChild allows attaching a detached subtree under a deep node (no false cycle)', () => {
+    // The up-walk must not flag a node that merely shares the tree but is NOT an
+    // ancestor: detach a sibling branch and re-attach it deeper.
+    const root = TreeNode.from('root');
+    const a = root.createChild('a');
+    const deep = a.createChild('deep');
+    const branch = root.createChild('branch');
+    branch.createChild('leaf');
+
+    branch.detach();
+
+    expect(() => deep.addChild(branch)).not.toThrow();
+    expect(branch.parent).toBe(deep);
+  });
+
   test('an invalid tree operation carries ErrorCode.InvalidTree (the code is the contract)', () => {
     const root = TreeNode.from('root');
     // self-as-child
