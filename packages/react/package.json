@@ -10,6 +10,10 @@
     ".": {
       "types": "./dist/types/index.d.ts",
       "default": "./dist/esm/index.mjs"
+    },
+    "./store": {
+      "types": "./dist/types/store.d.ts",
+      "default": "./dist/esm/store.mjs"
     }
   },
   "scripts": {
