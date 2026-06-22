@@ -8,6 +8,7 @@
     "oxfmtrc.base.json"
   ],
   "type": "module",
+  "sideEffects": false,
   "types": "./dist/types/index.d.ts",
   "exports": {
     ".": {
