@@ -19,6 +19,18 @@ type AddEdgeArgs = {
   properties: Record<string, unknown>;
 };
 
+export type GraphOptions = {
+  /**
+   * Invoked when a graph-event listener or a `subscribe()` callback throws.
+   * Isolation: one failing listener can neither stop the others nor break a
+   * deferred `notify()` (which runs from an idle/timeout callback, where an
+   * escaping throw would be an unhandled error with no context). Defaults to
+   * re-throwing on a microtask — visible to the host's unhandled-error handling
+   * without interrupting dispatch. Mirrors the Emitter's `onError`.
+   */
+  onError?: (error: unknown) => void;
+};
+
 /**
  * A Property-Label graph.
  *
@@ -45,6 +57,10 @@ export class Graph {
 
   private readonly listeners: Set<() => unknown>;
 
+  // Single error sink for graph-event listeners and `subscribe()` callbacks —
+  // see {@link GraphOptions.onError}.
+  private readonly onError: (error: unknown) => void;
+
   // A `requestIdleCallback` handle (number) in the browser, or a `setTimeout`
   // handle in Node — the pending debounced subscriber notification, if any.
   private notifyHandle: ReturnType<typeof setTimeout> | number | undefined;
@@ -60,7 +76,7 @@ export class Graph {
 
   emitter: Emitter<keyof GraphEvents, GraphEvents>;
 
-  constructor() {
+  constructor(options: GraphOptions = {}) {
     this.verticesById = new Map();
     this.edgesById = new Map();
     this.verticesByLabel = new Map();
@@ -76,7 +92,16 @@ export class Graph {
 
     this.mutationVersion = 0;
     this.tokenEpochs = new Map();
-    this.emitter = new Emitter({ enabled: true });
+    // Default: surface a listener error on a microtask — visible to the host's
+    // unhandled-error handling, but it never breaks dispatch or a deferred notify.
+    this.onError =
+      options.onError ??
+      ((error: unknown) => {
+        queueMicrotask(() => {
+          throw error;
+        });
+      });
+    this.emitter = new Emitter({ enabled: true, onError: (error) => this.onError(error) });
 
     this.listeners = new Set();
 
@@ -326,8 +351,18 @@ export class Graph {
   };
 
   private readonly notify = (): void => {
-    for (const listener of this.listeners) {
-      listener();
+    // Snapshot first: a subscriber that (un)subscribes from within its own
+    // callback must not perturb the in-flight pass, and mutating the Set
+    // mid-iteration is itself a hazard. Then isolate each subscriber — `notify`
+    // runs from a deferred idle/timeout callback, so an escaping throw would skip
+    // every later subscriber and surface as an unhandled error with no context.
+    // Mirrors the Emitter's listener isolation.
+    for (const listener of new Set(this.listeners)) {
+      try {
+        listener();
+      } catch (error) {
+        this.onError(error);
+      }
     }
   };
 

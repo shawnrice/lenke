@@ -6,6 +6,7 @@ export type {
   Element,
   GraphElement,
   GraphEvents as GraphEvent,
+  GraphOptions,
   IndexableValue,
   RangeBound,
   VertexAddedEvent,
