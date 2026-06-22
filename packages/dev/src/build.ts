@@ -63,8 +63,18 @@ const toInput = (packageRoot: string, entrypoints: string[]): Record<string, str
   return input;
 };
 
-const toRolldownSourcemap = (sourcemap: BuildOptions['sourcemap']): boolean | 'inline' =>
-  sourcemap === false ? false : sourcemap === 'inline' ? 'inline' : true;
+const toRolldownSourcemap = (sourcemap: BuildOptions['sourcemap']): boolean | 'inline' => {
+  if (sourcemap === false) {
+    return false;
+  }
+
+  if (sourcemap === 'inline') {
+    return 'inline';
+  }
+
+  // 'linked' / 'external' → an external `.map` with a sourceMappingURL comment.
+  return true;
+};
 
 // We bundle with rolldown (Rollup semantics) rather than `Bun.build`: a library
 // entry's exported implementations must survive, and rolldown preserves them.
@@ -78,7 +88,11 @@ const bundleWith = async (
   ext: 'mjs' | 'cjs',
 ): Promise<void> => {
   const { packageRoot, entrypoints, minify = false, sourcemap = 'linked', clean = true } = options;
-  const outPath = join(packageRoot, 'dist', `${format === 'es' ? 'esm' : 'cjs'}${minify ? '.min' : ''}`);
+  const outPath = join(
+    packageRoot,
+    'dist',
+    `${format === 'es' ? 'esm' : 'cjs'}${minify ? '.min' : ''}`,
+  );
 
   if (clean) {
     await rm(outPath, { recursive: true, force: true });
