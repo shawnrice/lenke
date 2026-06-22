@@ -57,6 +57,7 @@ const completeGraph = (n: number): Graph => {
     g.addVertex({ id: `${i}`, labels: ['N'], properties: {} }),
   );
   let e = 0;
+
   for (const from of vs) {
     for (const to of vs) {
       if (from !== to) {
@@ -64,6 +65,7 @@ const completeGraph = (n: number): Graph => {
       }
     }
   }
+
   g.enableEvents();
 
   return g;
@@ -197,6 +199,7 @@ describe('hardening low: shortestPath() path-count budget', () => {
         labels: ['R'],
         properties: {},
       });
+
     for (let i = 0; i < n; i++) {
       g.addVertex({ id: `m${i + 1}`, labels: ['N'], properties: {} });
       g.addVertex({ id: `a${i}`, labels: ['N'], properties: {} });
@@ -206,6 +209,7 @@ describe('hardening low: shortestPath() path-count budget', () => {
       edge(`m${i}`, `b${i}`);
       edge(`b${i}`, `m${i + 1}`);
     }
+
     g.enableEvents();
 
     return g;

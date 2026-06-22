@@ -49,7 +49,7 @@ describe('pg-text: encoding shape', () => {
     expect(back.edgeCount).toBe(1); // not mis-classified as a node
     expect(back.getVertexById('a:b')).not.toBeNull();
     expect(back.getVertexById('c d')).not.toBeNull();
-    const edge = [...back.edges][0];
+    const [edge] = [...back.edges];
     expect([edge.from.id, edge.to.id]).toEqual(['a:b', 'c d']);
   });
 

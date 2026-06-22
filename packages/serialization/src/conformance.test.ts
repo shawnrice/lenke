@@ -2,7 +2,8 @@ import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 
 import { Graph } from '@pl-graph/core';
-import { ErrorCode, hasErrorCode } from '@pl-graph/errors';
+import type { ErrorCode } from '@pl-graph/errors';
+import { hasErrorCode } from '@pl-graph/errors';
 
 import { deserialize, serialize } from './index.js';
 import type { FormatName } from './index.js';
@@ -67,7 +68,7 @@ describe('codec conformance (shared cross-impl corpus)', () => {
       let caught: unknown;
 
       try {
-        deserialize(input, format as FormatName, new Graph());
+        deserialize(input, format, new Graph());
       } catch (e) {
         caught = e;
       }
