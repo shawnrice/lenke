@@ -578,14 +578,26 @@ impl Graph {
         self.etype.get(name).map(|t| self.edges_with_etype(t))
     }
 
-    /// The external string id of edge `eidx`, if one was assigned (`None` ⇒ the
-    /// edge is identified only by its index). Used by codecs to round-trip ids.
-    pub fn edge_id(&self, eidx: u32) -> Option<&str> {
-        self.eid_fwd.get(&eidx).map(|s| s.as_ref())
+    /// The id of edge `eidx`: its assigned external id, or — since every edge has
+    /// an id — the canonical `e{index}` derived from its dense index. The
+    /// synthetic id is computed on demand, so the id overlay stays lazy and the
+    /// load path pays nothing. Used by codecs (which always emit it) and the
+    /// engines' `id()` step.
+    pub fn edge_id(&self, eidx: u32) -> std::borrow::Cow<'_, str> {
+        match self.eid_fwd.get(&eidx) {
+            Some(s) => std::borrow::Cow::Borrowed(s.as_ref()),
+            None => std::borrow::Cow::Owned(format!("e{eidx}")),
+        }
     }
-    /// The edge carrying external id `id`, if any — the reverse of [`Graph::edge_id`].
+    /// The edge carrying id `id` — the reverse of [`Graph::edge_id`]. Resolves an
+    /// assigned external id first, then the canonical `e{index}` form of a live,
+    /// id-less edge (an explicit id shadows a colliding `e{n}`).
     pub fn edge_by_id(&self, id: &str) -> Option<u32> {
-        self.eid_rev.get(id).copied()
+        if let Some(&e) = self.eid_rev.get(id) {
+            return Some(e);
+        }
+        let n: u32 = id.strip_prefix('e')?.parse().ok()?;
+        self.is_edge_live(n).then_some(n)
     }
     // --- reactive change tracking ----------------------------------------
 
@@ -1126,11 +1138,34 @@ impl Builder {
         }
         let n = vid.len();
 
+        // Duplicate-id semantics, matching the TS core's idempotent add: a node
+        // id is **first-wins** (later records with the same id are ignored), and
+        // an edge with an already-seen *assigned* id is **dropped** (its endpoints
+        // are still interned above, as TS ensures them before the dedup check).
+        // Borrowed-`&str` sets keep this allocation-free on the common path.
+        let keep_node: Vec<bool> = {
+            let mut seen: HashSet<&str> = HashSet::with_capacity(nodes.len());
+            nodes.iter().map(|nd| seen.insert(nd.id.as_str())).collect()
+        };
+        let kept_edges: Vec<&EdgeRec> = {
+            let mut seen: HashSet<&str> = HashSet::with_capacity(edges.len());
+            edges
+                .iter()
+                .filter(|e| match &e.id {
+                    Some(id) => seen.insert(id.as_str()),
+                    None => true, // id-less edges get a unique e{index}; never dup
+                })
+                .collect()
+        };
+
         // (2) Labels: per-vertex list + inverted (label -> live vertices).
         let mut vlabels: Vec<Vec<u32>> = vec![Vec::new(); n];
         let mut labels = Dict::default();
         let mut by_label: HashMap<u32, Vec<u32>> = HashMap::new();
-        for node in &nodes {
+        for (idx, node) in nodes.iter().enumerate() {
+            if !keep_node[idx] {
+                continue; // first-wins: ignore a duplicate node id's labels
+            }
             let vi = vid.get(&node.id).unwrap();
             for l in &node.labels {
                 let lid = labels.intern(l);
@@ -1143,13 +1178,15 @@ impl Builder {
         let mut strs = Dict::default();
         let node_items: Vec<(usize, &[(String, Value)])> = nodes
             .iter()
-            .map(|nd| (vid.get(&nd.id).unwrap() as usize, nd.props.as_slice()))
+            .enumerate()
+            .filter(|(idx, _)| keep_node[*idx])
+            .map(|(_, nd)| (vid.get(&nd.id).unwrap() as usize, nd.props.as_slice()))
             .collect();
         let props = build_props(n, &node_items, &mut strs);
 
         // (4) Edges: parallel arrays + per-vertex out/in adjacency.
         let mut etype = Dict::default();
-        let e = edges.len();
+        let e = kept_edges.len();
         let mut e_src = vec![0u32; e];
         let mut e_dst = vec![0u32; e];
         let mut e_type = vec![0u32; e];
@@ -1159,7 +1196,7 @@ impl Builder {
         // Lazy external-id overlay: only edges that carry an id land here.
         let mut eid_fwd: HashMap<u32, Arc<str>> = HashMap::new();
         let mut eid_rev: HashMap<Arc<str>, u32> = HashMap::new();
-        for (i, ed) in edges.iter().enumerate() {
+        for (i, ed) in kept_edges.iter().enumerate() {
             let s = vid.get(&ed.src).unwrap();
             let d = vid.get(&ed.dst).unwrap();
             let t = etype.intern(&ed.etype);
@@ -1185,7 +1222,7 @@ impl Builder {
         }
 
         // (5) Edge property columns — same machinery, indexed by edge index.
-        let edge_items: Vec<(usize, &[(String, Value)])> = edges
+        let edge_items: Vec<(usize, &[(String, Value)])> = kept_edges
             .iter()
             .enumerate()
             .map(|(i, ed)| (i, ed.props.as_slice()))

@@ -19,7 +19,11 @@ export const addVStep = function* (
   graph: Graph,
   label: string | undefined,
 ): Iterable<Traverser<unknown>> {
-  for (const t of stream) {
+  // Snapshot the input before mutating: `g.V()` yields from a *live* view over
+  // the vertex map, so adding vertices mid-iteration would feed the new
+  // vertices back in and loop forever. Buffering matches TinkerPop's semantics
+  // (one addition per pre-existing input).
+  for (const t of [...stream]) {
     const v = graph.addVertex({
       labels: label ? [label] : [],
       properties: {},
@@ -94,7 +98,8 @@ export const addEStep = function* (
   step: { label: string; from?: AddEEndpoint; to?: AddEEndpoint },
   ctx: RunContext,
 ): Iterable<Traverser<unknown>> {
-  for (const t of stream) {
+  // Snapshot before mutating — an `E()` source iterates a live edge view.
+  for (const t of [...stream]) {
     if (step.from === undefined && step.to === undefined) {
       throw new PlGraphError(
         `addE('${step.label}'): at least one of .from() or .to() must be specified`,
@@ -108,8 +113,9 @@ export const addEStep = function* (
     const to = resolveAddEEndpoint(step.to, t, graph, ctx);
 
     if (!from || !to) {
-      throw new Error(
+      throw new PlGraphError(
         `addE('${step.label}'): could not resolve endpoint vertices (from=${!!from}, to=${!!to})`,
+        { code: ErrorCode.MissingVertex },
       );
     }
 
@@ -147,7 +153,10 @@ export const dropStep = function* (
   stream: Iterable<Traverser<unknown>>,
   graph: Graph,
 ): Iterable<Traverser<unknown>> {
-  for (const t of stream) {
+  // Snapshot before mutating — `V()`/`E()` sources iterate live views, and a
+  // drop mid-iteration both invalidates the iterator and (via edge cascade)
+  // can hide elements the traversal still needs to reach.
+  for (const t of [...stream]) {
     const v = t.value;
 
     if (isVertex(v)) {

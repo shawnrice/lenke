@@ -27,6 +27,9 @@ use crate::graph::{Builder, EdgeRec, Graph, NodeRec, Value};
 const NULL_TOKEN: &str = "\\N";
 const LIST_SEP: char = ';';
 const OVERRIDE_PREFIX: &str = "\\T";
+/// The lone marker row that separates the nodes section from the edges section.
+const EDGES_MARKER: &str = "=== EDGES ===";
+/// The marker as written between the two sections (its own line).
 const SEPARATOR: &str = "\n=== EDGES ===\n";
 
 // ---------------------------------------------------------------------------
@@ -159,7 +162,7 @@ fn type_code(t: ColType) -> String {
 
 fn num_str(x: f64) -> String {
     if x.is_finite() {
-        format!("{x}")
+        crate::codec::js_number(x)
     } else {
         "null".to_string()
     }
@@ -493,11 +496,23 @@ fn build_row(
     cells.join(",")
 }
 
+/// Join a label set into a `;`-separated cell, escaping `;`/`\` inside each label
+/// (same scheme as list elements) so a label containing `;` round-trips.
+fn join_labels<'a>(labels: impl IntoIterator<Item = &'a str>) -> String {
+    labels
+        .into_iter()
+        .map(escape_element)
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
 fn split_labels(text: &str) -> Vec<String> {
     if text.is_empty() {
         Vec::new()
     } else {
-        text.split(LIST_SEP).map(String::from).collect()
+        // Escape-aware split, so a label that contains the `;` separator (encoded
+        // as `\;`) is not torn into two labels.
+        split_list(text)
     }
 }
 
@@ -570,7 +585,7 @@ pub fn encode_nodes(g: &Graph) -> String {
     };
     let mut rows = vec![header];
     for (vi, bag) in &entries {
-        let labels = crate::codec::node_labels(g, *vi).join(";");
+        let labels = join_labels(crate::codec::node_labels(g, *vi));
         let id = g.vid.text(*vi).to_string();
         rows.push(build_row(&[&id, &labels], &keys, &types, bag));
     }
@@ -594,10 +609,10 @@ pub fn encode_edges(g: &Graph) -> String {
     };
     let mut rows = vec![header];
     for (i, bag) in &entries {
-        let id = g.edge_id(*i as u32).unwrap_or("").to_string();
+        let id = g.edge_id(*i as u32).into_owned();
         let from = g.vid.text(g.e_src[*i]).to_string();
         let to = g.vid.text(g.e_dst[*i]).to_string();
-        let etype = g.etype.text(g.e_type[*i]).to_string();
+        let etype = escape_element(g.etype.text(g.e_type[*i]));
         rows.push(build_row(&[&id, &from, &to, &etype], &keys, &types, bag));
     }
     rows.join("\n")
@@ -610,14 +625,22 @@ pub fn encode(g: &Graph) -> String {
 
 /// Decode the combined single-string form into a fresh graph (nodes, then edges).
 pub fn decode(input: &str) -> CodeResult<Graph> {
-    let (nodes_csv, edges_csv) = match input.find(SEPARATOR) {
-        Some(idx) => (&input[..idx], &input[idx + SEPARATOR.len()..]),
-        None => (input, ""),
+    // Parse the whole document first (quote-aware), THEN split at the sentinel
+    // *row* — a lone unquoted `=== EDGES ===` cell. Splitting the raw string on
+    // the literal sentinel (as a plain substring) would fire inside a quoted
+    // property value that happens to contain `\n=== EDGES ===\n`, truncating the
+    // nodes section mid-field; a row-level split cannot be fooled this way.
+    let all_rows = parse_csv(input);
+    let split = all_rows
+        .iter()
+        .position(|r| r.len() == 1 && !r[0].quoted && r[0].text == EDGES_MARKER);
+    let (node_rows, edge_rows): (&[Vec<Cell>], &[Vec<Cell>]) = match split {
+        Some(i) => (&all_rows[..i], &all_rows[i + 1..]),
+        None => (&all_rows, &[]),
     };
 
     let mut b = Builder::default();
 
-    let node_rows = parse_csv(nodes_csv);
     if let Some(header) = node_rows.first() {
         let prop_cols = prop_cols_from_header(header, 2);
         for row in node_rows.iter().skip(1) {
@@ -631,7 +654,6 @@ pub fn decode(input: &str) -> CodeResult<Graph> {
         }
     }
 
-    let edge_rows = parse_csv(edges_csv);
     if let Some(header) = edge_rows.first() {
         let prop_cols = prop_cols_from_header(header, 4);
         for row in edge_rows.iter().skip(1) {
@@ -732,6 +754,46 @@ mod tests {
         assert_eq!(
             g2.props.value(a, "s", &g2.strs),
             Value::Str("has,comma \"quote\" and ;semi".into())
+        );
+    }
+
+    #[test]
+    fn label_containing_separator_round_trips() {
+        // A label (or edge type) containing the `;` list-separator must be
+        // escaped, not torn into multiple labels.
+        let g = crate::codec::pg_json::decode(
+            r#"{"nodes":[
+              {"id":"a","labels":["has;semi","Plain"],"properties":{}},
+              {"id":"b","labels":[],"properties":{}}
+            ],"edges":[{"from":"a","to":"b","labels":["REL;X"],"properties":{}}]}"#,
+        )
+        .unwrap();
+        let g2 = decode(&encode(&g)).unwrap();
+        let a = g2.vid.get("a").unwrap();
+        let mut labels = crate::codec::node_labels(&g2, a);
+        labels.sort();
+        assert_eq!(labels, vec!["Plain", "has;semi"]);
+        assert_eq!(g2.etype.text(g2.e_type[0]), "REL;X");
+    }
+
+    #[test]
+    fn section_marker_inside_a_value_does_not_split() {
+        // A property value containing the literal `\n=== EDGES ===\n` marker must
+        // not be mistaken for the nodes/edges section boundary.
+        let g = crate::codec::pg_json::decode(
+            r#"{"nodes":[
+              {"id":"a","labels":["N"],"properties":{"note":"x\n=== EDGES ===\ny"}},
+              {"id":"b","labels":["N"],"properties":{}}
+            ],"edges":[{"from":"a","to":"b","labels":["R"],"properties":{}}]}"#,
+        )
+        .unwrap();
+        let g2 = decode(&encode(&g)).unwrap();
+        assert_eq!(g2.vertex_count(), 2, "premature split dropped a node");
+        assert_eq!(g2.edge_count(), 1, "premature split dropped the edge");
+        let a = g2.vid.get("a").unwrap() as usize;
+        assert_eq!(
+            g2.props.value(a, "note", &g2.strs),
+            Value::Str("x\n=== EDGES ===\ny".into())
         );
     }
 }

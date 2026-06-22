@@ -56,15 +56,27 @@ const encodeValue = (value: PropertyValue): unknown => {
   return { '@type': 'g:List', '@value': value.map(encodeValue) };
 };
 
+const shapeError = (msg: string): never => {
+  throw new PlGraphError(`graphson: ${msg}`, { code: ErrorCode.InvalidShape });
+};
+
+// Bounds g:List recursion against an adversarial deeply-nested value; mirrors
+// the Rust decoder, which serde caps at 128 levels during parsing.
+const MAX_NESTING = 128;
+
 /** Decode a GraphSON v3 typed value (or plain JSON scalar) back to an LPG value. */
-const decodeValue = (node: unknown): PropertyValue => {
-  if (node === null || typeof node === 'string' || typeof node === 'boolean') {
+const decodeValue = (node: unknown, depth = 0): PropertyValue => {
+  if (
+    node === null ||
+    typeof node === 'string' ||
+    typeof node === 'boolean' ||
+    typeof node === 'number' // a bare JSON number (untyped) — accept as-is
+  ) {
     return node;
   }
 
-  if (typeof node === 'number') {
-    // A bare JSON number (untyped) — accept it as-is.
-    return node;
+  if (typeof node !== 'object') {
+    return shapeError(`unsupported property value of type ${typeof node}`);
   }
 
   const typed = node as Typed;
@@ -73,13 +85,32 @@ const decodeValue = (node: unknown): PropertyValue => {
     case 'g:Int64':
     case 'g:Int32':
     case 'g:Double':
-    case 'g:Float':
-      return typed['@value'] as number;
-    case 'g:List':
-      return (typed['@value'] as unknown[]).map(decodeValue);
+    case 'g:Float': {
+      const v = typed['@value'];
+
+      if (typeof v !== 'number') {
+        return shapeError(`${typed['@type']} value must be a number`);
+      }
+
+      return v;
+    }
+    case 'g:List': {
+      const v = typed['@value'];
+
+      if (!Array.isArray(v)) {
+        return shapeError('g:List value must be an array');
+      }
+
+      if (depth >= MAX_NESTING) {
+        return shapeError('g:List nesting exceeds the maximum depth');
+      }
+
+      return v.map((el) => decodeValue(el, depth + 1));
+    }
     default:
-      // Unknown wrapper: fall back to the raw @value, normalized loosely.
-      return typed['@value'] as PropertyValue;
+      // An unknown/missing wrapper is outside the LPG model (Rust rejects it too,
+      // rather than silently storing a raw out-of-model object).
+      return shapeError(`unknown typed value '${String(typed['@type'])}'`);
   }
 };
 
@@ -164,32 +195,78 @@ type EdgeValue = {
 };
 
 export const decode = (input: string, graph: Graph): Graph => {
-  const doc = JSON.parse(input) as {
-    vertices?: Array<{ '@value': VertexValue }>;
-    edges?: Array<{ '@value': EdgeValue }>;
-  };
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(input);
+  } catch (cause) {
+    throw new PlGraphError(`graphson: invalid JSON: ${input.slice(0, 80)}`, {
+      code: ErrorCode.InvalidJson,
+      cause,
+    });
+  }
+
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    shapeError('expected a top-level object');
+  }
+
+  const { vertices, edges } = parsed as { vertices?: unknown; edges?: unknown };
+
+  if (vertices !== undefined && !Array.isArray(vertices)) {
+    shapeError("'vertices' must be an array");
+  }
+
+  if (edges !== undefined && !Array.isArray(edges)) {
+    shapeError("'edges' must be an array");
+  }
 
   graph.disableEvents();
 
-  for (const wrapper of doc.vertices ?? []) {
-    const v = wrapper['@value'];
+  for (const wrapper of (vertices as Array<{ '@value'?: unknown }> | undefined) ?? []) {
+    const value = wrapper['@value'];
+
+    if (typeof value !== 'object' || value === null) {
+      shapeError('each vertex must have an @value object');
+    }
+
+    const v = value as VertexValue;
+
+    if (typeof v.id !== 'string' && typeof v.id !== 'number') {
+      shapeError('vertex @value.id must be a string or number');
+    }
+
+    if (typeof v.label !== 'string') {
+      shapeError('vertex @value.label must be a string');
+    }
+
     const properties: Record<string, PropertyValue> = {};
 
     for (const key of Object.keys(v.properties ?? {})) {
       const entries = v.properties![key];
       // LPG is single-value: read only the first element of the array.
-      const [first] = entries;
+      const [first] = entries ?? [];
 
       if (first !== undefined) {
-        properties[key] = decodeValue(first['@value'].value);
+        properties[key] = decodeValue(first['@value']?.value);
       }
     }
 
     graph.addVertex({ id: v.id, labels: splitLabels(v.label), properties });
   }
 
-  for (const wrapper of doc.edges ?? []) {
-    const e = wrapper['@value'];
+  for (const wrapper of (edges as Array<{ '@value'?: unknown }> | undefined) ?? []) {
+    const value = wrapper['@value'];
+
+    if (typeof value !== 'object' || value === null) {
+      shapeError('each edge must have an @value object');
+    }
+
+    const e = value as EdgeValue;
+
+    if (typeof e.label !== 'string') {
+      shapeError('edge @value.label must be a string');
+    }
+
     const from = graph.getVertexById(e.outV);
     const to = graph.getVertexById(e.inV);
 
@@ -206,7 +283,7 @@ export const decode = (input: string, graph: Graph): Graph => {
     const properties: Record<string, PropertyValue> = {};
 
     for (const key of Object.keys(e.properties ?? {})) {
-      properties[key] = decodeValue(e.properties![key]['@value'].value);
+      properties[key] = decodeValue(e.properties![key]?.['@value']?.value);
     }
 
     graph.addEdge({ id: e.id, from, to, labels: splitLabels(e.label), properties });

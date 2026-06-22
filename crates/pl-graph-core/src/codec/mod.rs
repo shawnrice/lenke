@@ -12,13 +12,13 @@
 //!     format models edge labels as a list (PG-JSON `labels`, CSV `:TYPE`,
 //!     GraphSON `label`), we emit the one type and, on decode, take the first
 //!     label as the type.
-//!   - **Edge ids are an optional, lazy overlay.** An edge's canonical identity
-//!     is its dense index; an external string id is opt-in (see
-//!     [`Graph::set_edge_id`](crate::graph::Graph::set_edge_id)). Formats with an
-//!     edge-id slot (PG-JSON, GraphSON, CSV, NDJSON) **round-trip** an assigned
-//!     id and omit it for id-less edges (so the lazy overlay stays empty);
-//!     PG-text has no id slot, so its edges are always id-less. **Node** ids
-//!     round-trip exactly.
+//!   - **Every edge has an id.** It is the assigned external id, or — computed on
+//!     demand — the canonical `e{index}` derived from the dense index (see
+//!     [`Graph::edge_id`](crate::graph::Graph::edge_id)); the explicit-id overlay
+//!     stays lazy, so the load path is unaffected. Formats with an edge-id slot
+//!     (PG-JSON, GraphSON, CSV, NDJSON) **always emit** it and round-trip it.
+//!     PG-text has no id slot, so its edges re-derive `e{index}` on decode rather
+//!     than round-tripping an assigned id. **Node** ids round-trip exactly.
 //!
 //! Streaming variants (the TS `encodeStream`/`decodeStream`) are intentionally
 //! omitted: the idiomatic bulk path here is the whole-string `encode`/`decode`
@@ -28,6 +28,9 @@ pub mod csv;
 pub mod graphson;
 pub mod pg_json;
 pub mod pg_text;
+
+#[cfg(test)]
+mod conformance;
 
 use std::fmt::Write as _;
 use std::sync::Arc;
@@ -98,10 +101,57 @@ pub(crate) fn push_json_str(out: &mut String, s: &str) {
     out.push('"');
 }
 
+/// Format a finite `f64` exactly as JavaScript's `Number.prototype.toString`
+/// (ECMA-262 Number::toString) would — fixed notation for `-6 < n ≤ 21`,
+/// exponential (`1e+21`, `1e-7`) outside that, and `-0` normalized to `0`. This
+/// keeps codec number output byte-identical to the TS side. Rust's `{:e}` gives
+/// the shortest round-tripping mantissa; we just place the decimal point / pick
+/// fixed-vs-exponential per the spec. Non-finite input is the caller's concern.
+pub(crate) fn js_number(x: f64) -> String {
+    if x == 0.0 {
+        return "0".to_string(); // also normalizes -0.0 → "0" (JS drops the sign)
+    }
+    let neg = x < 0.0;
+    let sci = format!("{:e}", x.abs()); // e.g. "1.5e21", "1e-7"
+    let (mant, exp_str) = sci.split_once('e').expect("{:e} always has an 'e'");
+    let exp: i32 = exp_str.parse().expect("valid base-10 exponent");
+    let digits: String = mant.chars().filter(|c| *c != '.').collect();
+    let k = digits.len() as i32; // significant digits
+    let n = exp + 1; // ECMA `n`: position of the decimal point
+
+    let mut out = String::new();
+    if neg {
+        out.push('-');
+    }
+    if k <= n && n <= 21 {
+        out.push_str(&digits);
+        out.extend(std::iter::repeat_n('0', (n - k) as usize));
+    } else if 0 < n && n <= 21 {
+        out.push_str(&digits[..n as usize]);
+        out.push('.');
+        out.push_str(&digits[n as usize..]);
+    } else if -6 < n && n <= 0 {
+        out.push_str("0.");
+        out.extend(std::iter::repeat_n('0', (-n) as usize));
+        out.push_str(&digits);
+    } else {
+        out.push_str(&digits[..1]);
+        if k > 1 {
+            out.push('.');
+            out.push_str(&digits[1..]);
+        }
+        out.push('e');
+        let e = n - 1;
+        out.push(if e >= 0 { '+' } else { '-' });
+        out.push_str(&e.abs().to_string());
+    }
+    out
+}
+
 /// Write a finite number, or `null` for NaN/±Infinity (not representable in JSON).
 pub(crate) fn push_num(out: &mut String, x: f64) {
     if x.is_finite() {
-        let _ = write!(out, "{x}");
+        out.push_str(&js_number(x));
     } else {
         out.push_str("null");
     }
@@ -241,16 +291,45 @@ mod tests {
     #[test]
     fn edge_id_round_trips_across_id_formats() {
         let g = with_edge_id();
-        assert_eq!(g.edge_id(0), Some("pay-1"));
+        assert_eq!(g.edge_id(0).as_ref(), "pay-1");
         for format in ["pg-json", "graphson", "csv", "ndjson"] {
             let blob = serialize(&g, format).unwrap();
             let g2 = deserialize(&blob, format).unwrap();
-            assert_eq!(g2.edge_id(0), Some("pay-1"), "edge id lost via {format}");
+            assert_eq!(g2.edge_id(0).as_ref(), "pay-1", "edge id lost via {format}");
             assert_eq!(
                 g2.edge_by_id("pay-1"),
                 Some(0),
                 "reverse lookup lost via {format}"
             );
+        }
+    }
+
+    #[test]
+    fn js_number_matches_js_tostring() {
+        // Must match JavaScript Number.prototype.toString byte-for-byte, incl.
+        // the fixed/exponential threshold (n>21 or n≤-6) and -0 → "0".
+        let cases: &[(f64, &str)] = &[
+            (0.0, "0"),
+            (-0.0, "0"),
+            (1.0, "1"),
+            (-1.5, "-1.5"),
+            (100.0, "100"),
+            (0.5, "0.5"),
+            (1234.5, "1234.5"),
+            (12300.0, "12300"),
+            (0.1, "0.1"),
+            (1e-6, "0.000001"),
+            (1e-7, "1e-7"),
+            (1e20, "100000000000000000000"),
+            (1e21, "1e+21"),
+            (1.5e21, "1.5e+21"),
+            (1e-10, "1e-10"),
+            (1e100, "1e+100"),
+            (-1e-7, "-1e-7"),
+            (1.25, "1.25"),
+        ];
+        for &(x, want) in cases {
+            assert_eq!(js_number(x), want, "js_number({x})");
         }
     }
 
@@ -267,12 +346,44 @@ mod tests {
             "{\"type\":\"node\",\"id\":\"a\",\"labels\":[],\"properties\":{}}\n{\"type\":\"node\",\"id\":\"b\",\"labels\":[],\"properties\":{}}\n{\"type\":\"edge\",\"from\":\"a\",\"to\":\"b\",\"labels\":[\"X\"],\"properties\":{}}",
         )
         .unwrap();
-        assert_eq!(g.edge_id(0), None); // id-less by default
+        assert_eq!(g.edge_id(0).as_ref(), "e0"); // canonical `e{index}` by default
         g.set_edge_id(0, "e-custom");
-        assert_eq!(g.edge_id(0), Some("e-custom"));
+        assert_eq!(g.edge_id(0).as_ref(), "e-custom");
         assert_eq!(g.edge_by_id("e-custom"), Some(0));
         // removing the edge purges the overlay
         g.remove_edge(0);
         assert_eq!(g.edge_by_id("e-custom"), None);
+    }
+
+    #[test]
+    fn every_edge_has_a_canonical_id() {
+        // No edge is id-less: an unassigned edge has the canonical `e{index}`,
+        // resolvable in both directions, and that id is emitted by every codec.
+        let g = crate::ndjson::decode(
+            "{\"type\":\"node\",\"id\":\"a\",\"labels\":[],\"properties\":{}}\n\
+             {\"type\":\"node\",\"id\":\"b\",\"labels\":[],\"properties\":{}}\n\
+             {\"type\":\"edge\",\"from\":\"a\",\"to\":\"b\",\"labels\":[\"X\"],\"properties\":{}}\n\
+             {\"type\":\"edge\",\"from\":\"b\",\"to\":\"a\",\"labels\":[\"Y\"],\"properties\":{}}",
+        )
+        .unwrap();
+        assert_eq!(g.edge_id(0).as_ref(), "e0");
+        assert_eq!(g.edge_id(1).as_ref(), "e1");
+        assert_eq!(g.edge_by_id("e1"), Some(1));
+        assert_eq!(g.edge_by_id("e9"), None); // out of range
+                                              // The canonical id is emitted and round-trips through every id format.
+        for format in ["pg-json", "graphson", "csv", "ndjson"] {
+            let blob = serialize(&g, format).unwrap();
+            let g2 = deserialize(&blob, format).unwrap();
+            assert_eq!(
+                g2.edge_id(0).as_ref(),
+                "e0",
+                "canonical id lost via {format}"
+            );
+            assert_eq!(
+                g2.edge_by_id("e1"),
+                Some(1),
+                "reverse lookup lost via {format}"
+            );
+        }
     }
 }

@@ -401,12 +401,23 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, SyntaxError> {
             let is_base = c == '0'
                 && i + 1 < b.len()
                 && matches!(b[i + 1], b'x' | b'X' | b'o' | b'O' | b'b' | b'B');
+            // Only integer forms (no fraction/exponent) are held to the
+            // safe-integer range; floats may exceed it (they're approximate).
+            let mut is_integer = true;
             if is_base {
+                // Each base admits only its own digits. Sharing one hex class let
+                // `0b1019AF` / `0o789` lex as a token that then collapsed to NaN.
+                let base = (b[i + 1] as char).to_ascii_lowercase();
                 i += 2;
-                while i < b.len() && (b[i] as char).is_ascii_hexdigit()
-                    || (i < b.len() && b[i] == b'_')
-                {
+                let digits_start = i;
+                while i < b.len() && is_base_digit(b[i], base) {
                     i += 1;
+                }
+                if i == digits_start {
+                    return err(
+                        format!("Malformed numeric literal '{}'", &src[start..i]),
+                        start,
+                    );
                 }
             } else {
                 let digits = |i: &mut usize| {
@@ -416,10 +427,12 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, SyntaxError> {
                 };
                 digits(&mut i);
                 if i < b.len() && b[i] == b'.' {
+                    is_integer = false;
                     i += 1;
                     digits(&mut i);
                 }
                 if i < b.len() && (b[i] == b'e' || b[i] == b'E') {
+                    is_integer = false;
                     i += 1;
                     if i < b.len() && (b[i] == b'+' || b[i] == b'-') {
                         i += 1;
@@ -429,7 +442,20 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, SyntaxError> {
             }
             let text = &src[start..i];
             let cleaned: String = text.chars().filter(|&ch| ch != '_').collect();
-            let num = parse_number(&cleaned);
+            // Reject a malformed mantissa/base (→ NaN) and overflow (→ Infinity);
+            // otherwise a garbage literal would flow into the AST silently.
+            let num = match parse_number(&cleaned) {
+                Some(n) if n.is_finite() => n,
+                _ => return err(format!("Malformed numeric literal '{text}'"), start),
+            };
+            // An integer literal past 2^53 loses precision as an f64 — reject it
+            // rather than carry a value that differs from what was written.
+            if is_integer && num.abs() > MAX_SAFE_INTEGER {
+                return err(
+                    format!("Integer literal '{text}' exceeds the safe integer range"),
+                    start,
+                );
+            }
             tokens.push(Token {
                 tt: Tt::Number,
                 value: text.to_string(),
@@ -463,22 +489,33 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, SyntaxError> {
     Ok(tokens)
 }
 
-/// Parse a numeric literal, honoring the `0x`/`0o`/`0b` bases JS `Number()` accepts.
-fn parse_number(s: &str) -> f64 {
+/// 2^53 — the largest integer an `f64` represents exactly.
+const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+
+/// Is `byte` a valid digit (or `_` separator) for integer `base` (`x`/`o`/`b`)?
+fn is_base_digit(byte: u8, base: char) -> bool {
+    if byte == b'_' {
+        return true;
+    }
+    match base {
+        'x' => byte.is_ascii_hexdigit(),
+        'o' => (b'0'..=b'7').contains(&byte),
+        _ => byte == b'0' || byte == b'1',
+    }
+}
+
+/// Parse a numeric literal, honoring the `0x`/`0o`/`0b` bases JS `Number()`
+/// accepts. Returns `None` on a malformed/overflowing literal so the caller can
+/// raise a lex error instead of silently producing `NaN`.
+fn parse_number(s: &str) -> Option<f64> {
     if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
-        return u64::from_str_radix(hex, 16)
-            .map(|n| n as f64)
-            .unwrap_or(f64::NAN);
+        return u64::from_str_radix(hex, 16).ok().map(|n| n as f64);
     }
     if let Some(oct) = s.strip_prefix("0o").or_else(|| s.strip_prefix("0O")) {
-        return u64::from_str_radix(oct, 8)
-            .map(|n| n as f64)
-            .unwrap_or(f64::NAN);
+        return u64::from_str_radix(oct, 8).ok().map(|n| n as f64);
     }
     if let Some(bin) = s.strip_prefix("0b").or_else(|| s.strip_prefix("0B")) {
-        return u64::from_str_radix(bin, 2)
-            .map(|n| n as f64)
-            .unwrap_or(f64::NAN);
+        return u64::from_str_radix(bin, 2).ok().map(|n| n as f64);
     }
-    s.parse().unwrap_or(f64::NAN)
+    s.parse::<f64>().ok()
 }

@@ -1,7 +1,22 @@
 import type { Graph } from '@pl-graph/core';
+import { ErrorCode, PlGraphError } from '@pl-graph/errors';
 
 import type { By } from '../ast.js';
+import { compareValues } from '../predicates.js';
 import { evalBy, isSliceable, type RunContext, startTraverser, type Traverser } from './runtime.js';
+
+/** Coerce a numeric-aggregate element, throwing on a non-number (TinkerPop's
+ * `sum`/`mean` require `Number`s and raise on anything else, rather than
+ * silently coercing to `NaN`). `null` is filtered by the caller. */
+const asNumber = (v: unknown): number => {
+  if (typeof v === 'number') {
+    return v;
+  }
+
+  throw new PlGraphError(`numeric aggregation requires a number, got ${typeof v}`, {
+    code: ErrorCode.InvalidValue,
+  });
+};
 
 export const aggregateNumber = function* (
   stream: Iterable<Traverser<unknown>>,
@@ -17,7 +32,7 @@ export const aggregateNumber = function* (
     }
 
     sawNonNull = true;
-    sum += Number(t.value);
+    sum += asNumber(t.value);
     count++;
   }
 
@@ -45,12 +60,12 @@ export const aggregateComparable = function* (
     if (!sawNonNull) {
       best = t.value;
       sawNonNull = true;
-    } else if (
-      kind === 'min'
-        ? (t.value as number | string) < (best as number | string)
-        : (t.value as number | string) > (best as number | string)
-    ) {
-      best = t.value;
+    } else {
+      const c = compareValues(t.value, best);
+
+      if (kind === 'min' ? c < 0 : c > 0) {
+        best = t.value;
+      }
     }
   }
 
@@ -95,7 +110,7 @@ export const sumLocal = (v: unknown): number | null => {
     return null;
   }
 
-  return items.reduce<number>((s, x) => s + Number(x), 0);
+  return items.reduce<number>((s, x) => s + asNumber(x), 0);
 };
 
 export const meanLocal = (v: unknown): number | null => {
@@ -105,7 +120,7 @@ export const meanLocal = (v: unknown): number | null => {
     return null;
   }
 
-  return items.reduce<number>((s, x) => s + Number(x), 0) / items.length;
+  return items.reduce<number>((s, x) => s + asNumber(x), 0) / items.length;
 };
 
 export const minLocal = (v: unknown): unknown => reduceComparable(elementsOf(v), 'min');
@@ -127,10 +142,9 @@ const reduceComparable = (items: readonly unknown[], kind: 'min' | 'max'): unkno
       continue;
     }
 
-    const lhs = x as number | string;
-    const rhs = best as number | string;
+    const c = compareValues(x, best);
 
-    if (kind === 'min' ? lhs < rhs : lhs > rhs) {
+    if (kind === 'min' ? c < 0 : c > 0) {
       best = x;
     }
   }
@@ -160,16 +174,11 @@ export const orderStep = function* (
   const dirs = bys.map((by) => by.direction ?? (desc ? 'desc' : 'asc'));
   projected.sort((a, b) => {
     for (let i = 0; i < bys.length; i++) {
-      const sa = a.sortKeys[i] as number | string;
-      const sb = b.sortKeys[i] as number | string;
       const flip = dirs[i] === 'desc' ? -1 : 1;
+      const c = compareValues(a.sortKeys[i], b.sortKeys[i]);
 
-      if (sa < sb) {
-        return -1 * flip;
-      }
-
-      if (sa > sb) {
-        return 1 * flip;
+      if (c !== 0) {
+        return c * flip;
       }
     }
 

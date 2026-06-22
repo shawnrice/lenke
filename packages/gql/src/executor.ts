@@ -1,4 +1,5 @@
 import type { Edge, Graph, IndexableValue, RangeBound, Vertex } from '@pl-graph/core';
+import { ErrorCode, PlGraphError } from '@pl-graph/errors';
 import { filter, flatMap, map, skip, take, toArray } from '@pl-graph/fp';
 
 import type {
@@ -22,6 +23,7 @@ import {
   candidateCount,
   candidateVertices,
   expand,
+  hasIncidentEdges,
   labelsMatch,
   matchesLabel,
 } from './graph-queries.js';
@@ -147,7 +149,37 @@ const BOOL3: Record<'and' | 'or' | 'xor', (a: Truth, b: Truth) => Truth> = {
   xor: xor3,
 };
 
-const numOf = (v: unknown): number | null => (isNullish(v) ? null : Number(v));
+/** Raise an ISO data exception (SQLSTATE class 22): a runtime value/type fault. */
+const dataException = (message: string): never => {
+  throw new PlGraphError(message, { code: ErrorCode.DataException });
+};
+
+const typeName = (v: unknown): string => {
+  if (Array.isArray(v)) {
+    return 'a list';
+  }
+
+  if (v !== null && typeof v === 'object') {
+    return 'a graph element';
+  }
+
+  return typeof v;
+};
+
+// ISO arithmetic operands must be numbers (or NULL, which propagates). A
+// non-numeric value is a data exception, not a silent `Number()` coercion to
+// NaN — `'abc' + 1` and `true * 2` raise rather than producing garbage.
+const numOf = (v: unknown): number | null => {
+  if (isNullish(v)) {
+    return null;
+  }
+
+  if (typeof v === 'number') {
+    return v;
+  }
+
+  return dataException(`arithmetic requires a number, got ${typeName(v)}`);
+};
 
 // `v IN list` is a three-valued OR of equalities `v = e` over the elements,
 // whose identity (empty list) is FALSE. So `null IN []` is FALSE — there is
@@ -376,13 +408,23 @@ const compileExpr = (expr: Expr): CompiledExpr => {
     case 'arith': {
       const l = compileExpr(expr.left);
       const r = compileExpr(expr.right);
-      const op = ARITH[expr.op];
+      const { op } = expr;
+      const fn = ARITH[op];
 
       return (env) => {
         const lv = numOf(l(env));
         const rv = numOf(r(env));
 
-        return lv === null || rv === null ? null : op(lv, rv);
+        if (lv === null || rv === null) {
+          return null;
+        }
+
+        // ISO: division/modulo by zero is a data exception, not Infinity/NaN.
+        if ((op === '/' || op === '%') && rv === 0) {
+          return dataException('division by zero');
+        }
+
+        return fn(lv, rv);
       };
     }
     case 'concat': {
@@ -458,7 +500,8 @@ const compileExpr = (expr: Expr): CompiledExpr => {
     case 'compare': {
       const l = compileExpr(expr.left);
       const r = compileExpr(expr.right);
-      const op = COMPARE[expr.op];
+      const { op } = expr;
+      const fn = COMPARE[op];
 
       return (env) => {
         const lv = l(env);
@@ -468,7 +511,21 @@ const compileExpr = (expr: Expr): CompiledExpr => {
           return null; // UNKNOWN
         }
 
-        return op(lv as number | string, rv as number | string);
+        // Equality holds across any types (mismatched types are simply unequal).
+        // Ordering is only defined *within* one orderable primitive type
+        // (number, string, or boolean) — comparing a number to a string, or two
+        // graph elements, is UNKNOWN per ISO, not a JS coercion to garbage.
+        if (op !== '=' && op !== '<>') {
+          const t = typeof lv;
+          const orderable =
+            t === typeof rv && (t === 'number' || t === 'string' || t === 'boolean');
+
+          if (!orderable) {
+            return null; // UNKNOWN
+          }
+        }
+
+        return fn(lv as number | string, rv as number | string);
       };
     }
     case 'case':
@@ -569,6 +626,23 @@ const compileFunc = (expr: FuncExpr): CompiledExpr => {
  */
 const compileAggregate = (expr: FuncExpr): CompiledExpr => {
   const { name, star, distinct } = expr;
+
+  // ISO forbids an aggregate whose argument contains another aggregate.
+  if (expr.args[0] && hasAggregate(expr.args[0])) {
+    throw new PlGraphError(`aggregate function ${name}() cannot contain another aggregate`, {
+      code: ErrorCode.Unsupported,
+    });
+  }
+
+  // `count(*)` is the only aggregate with no argument expression; anything else
+  // argless (`sum()`, bare `count()`) is malformed — reject it cleanly rather
+  // than dereferencing an absent argument at fold time.
+  if (!expr.args[0] && !(name === 'count' && star)) {
+    throw new PlGraphError(`aggregate function ${name}() requires an argument`, {
+      code: ErrorCode.Unsupported,
+    });
+  }
+
   const argFn = expr.args[0] ? compileExpr(expr.args[0]) : undefined;
 
   return (env) => {
@@ -621,7 +695,26 @@ const columnName = (expr: Expr): string => {
   }
 };
 
-/** Compare two values for ORDER BY; nulls sort last. */
+/** A coarse type ordering so ORDER BY/min/max have a *total* order across types. */
+const typeRank = (v: unknown): number => {
+  switch (typeof v) {
+    case 'number':
+      return 0;
+    case 'string':
+      return 1;
+    case 'boolean':
+      return 2;
+    default:
+      return 3; // graph elements, lists, other objects
+  }
+};
+
+/**
+ * Compare two values for ORDER BY; nulls sort last. Values of different types
+ * are ordered by a fixed type rank first (number < string < boolean < other),
+ * so a column mixing types has a deterministic total order rather than the
+ * unstable result of raw JS `<` across types.
+ */
 const compareValues = (a: unknown, b: unknown): number => {
   if (isNullish(a) && isNullish(b)) {
     return 0;
@@ -633,6 +726,13 @@ const compareValues = (a: unknown, b: unknown): number => {
 
   if (isNullish(b)) {
     return -1;
+  }
+
+  const ra = typeRank(a);
+  const rb = typeRank(b);
+
+  if (ra !== rb) {
+    return ra < rb ? -1 : 1;
   }
 
   const x = a as number | string;
@@ -677,6 +777,12 @@ const compareSort = (
 const valueKey = (v: unknown): string => {
   if (v && typeof v === 'object' && 'id' in v) {
     return `@${String((v as { id: unknown }).id)}`;
+  }
+
+  // `JSON.stringify` maps NaN and ±Infinity all to `"null"`, collapsing them
+  // into the real-null group (and each other). Tag non-finite numbers distinctly.
+  if (typeof v === 'number' && !Number.isFinite(v)) {
+    return `#${String(v)}`;
   }
 
   return JSON.stringify(v) ?? 'undefined';
@@ -1084,13 +1190,27 @@ const compileNode = (node: NodePattern): CNode => {
   };
 };
 
-const compileRel = (rel: RelPattern): CRel => ({
-  variable: rel.variable,
-  label: rel.label,
-  direction: rel.direction,
-  pred: compilePredicate(rel.properties, rel.where),
-  quantifier: rel.quantifier,
-});
+const compileRel = (rel: RelPattern): CRel => {
+  // A variable-length segment reaches a *set* of far vertices; it does not bind
+  // a single edge, so a bound edge variable or a per-edge predicate cannot be
+  // honored. Rather than silently ignore them (returning unbound/unfiltered
+  // results), reject at compile time. ISO would bind a group variable / list of
+  // edges here — not yet implemented.
+  if (rel.quantifier && (rel.variable !== undefined || rel.properties?.length || rel.where)) {
+    throw new PlGraphError(
+      'A variable-length relationship cannot bind an edge variable or carry a per-edge predicate (not yet supported)',
+      { code: ErrorCode.Unsupported },
+    );
+  }
+
+  return {
+    variable: rel.variable,
+    label: rel.label,
+    direction: rel.direction,
+    pred: compilePredicate(rel.properties, rel.where),
+    quantifier: rel.quantifier,
+  };
+};
 
 const compilePath = (pattern: PathPattern): CPath => ({
   start: compileNode(pattern.start),
@@ -1400,11 +1520,12 @@ const walkSegments = function* (
 
   const { rel, node } = pattern.segments[index];
 
-  // Variable-length: reach every vertex within [min, max] hops, then continue
-  // from each. (The edge variable and per-edge predicate aren't bound for
-  // var-length segments — a known simplification.)
+  // Variable-length: enumerate the endpoint of every trail within [min, max]
+  // hops (one per trail → ISO per-path multiplicity), then continue from each.
+  // (The edge variable and per-edge predicate aren't bound for var-length
+  // segments — rejected at compile time.)
   if (rel.quantifier) {
-    for (const end of reachable(graph, from, rel, rel.quantifier)) {
+    for (const end of trailEnds(graph, from, rel, rel.quantifier)) {
       const matched = matchNode(binding, node, end, params, graph);
 
       if (matched) {
@@ -1434,41 +1555,93 @@ const walkSegments = function* (
   }
 };
 
-/** Vertices reachable from `from` in [min, max] hops of `rel`. */
-const reachable = (
+/** Per-expansion cap on trail-traversal steps; a guard against exponential blowup. */
+const TRAIL_BUDGET = 1_000_000;
+
+/**
+ * Endpoints of every *trail* — a path that traverses each relationship at most
+ * once (ISO/IEC 39075 default for a quantified path) — from `from` within
+ * [min, max] hops of `rel`. Yielded one per trail, so an endpoint reachable by
+ * `k` distinct trails is yielded `k` times (ISO per-path multiplicity); a `min`
+ * of 0 includes the zero-length trail (the start node itself).
+ *
+ * Edge-uniqueness bounds a trail's length to the edge count, so this always
+ * terminates even on cycles — but the *number* of trails can be exponential, so
+ * a per-expansion step budget throws rather than letting a pathological `*`
+ * exhaust memory/time.
+ */
+const trailEnds = function* (
   graph: Graph,
   from: Vertex,
   rel: CRel,
   q: NonNullable<CRel['quantifier']>,
-): Set<Vertex> => {
-  const cap = q.max ?? graph.verticesById.size + 1;
-  const result = new Set<Vertex>();
-
+): Iterable<Vertex> {
   if (q.min === 0) {
-    result.add(from);
+    yield from;
   }
 
-  let frontier = new Set<Vertex>([from]);
+  const used = new Set<Edge>();
+  let steps = 0;
 
-  for (let depth = 1; depth <= cap && frontier.size > 0; depth += 1) {
-    const next = new Set<Vertex>();
+  // Explicit DFS stack — a trail can be as long as the edge count, so recursion
+  // would overflow on a long chain. Each frame walks one vertex's outgoing
+  // steps; `entry` is the edge taken to reach it, unmarked when the frame pops.
+  const stack: {
+    iter: Iterator<{ edge: Edge; node: Vertex }>;
+    entry: Edge | null;
+    depth: number;
+  }[] = [{ iter: expand(graph, from, rel)[Symbol.iterator](), entry: null, depth: 0 }];
 
-    for (const v of frontier) {
-      for (const { node } of expand(graph, v, rel)) {
-        next.add(node);
+  while (stack.length > 0) {
+    const top = stack[stack.length - 1];
+
+    // Past the max hop → this trail can't extend; backtrack.
+    if (q.max !== null && top.depth >= q.max) {
+      if (top.entry) {
+        used.delete(top.entry);
       }
+
+      stack.pop();
+      continue;
     }
 
-    if (depth >= q.min && (q.max === null || depth <= q.max)) {
-      for (const v of next) {
-        result.add(v);
+    // Each visit advances this frame's iterator by one step (the recursion-free
+    // equivalent of the for-loop); when exhausted, backtrack.
+    const res = top.iter.next();
+
+    if (res.done) {
+      if (top.entry) {
+        used.delete(top.entry);
       }
+
+      stack.pop();
+      continue;
     }
 
-    frontier = next;
+    const { edge, node } = res.value;
+
+    if (used.has(edge)) {
+      continue; // trail: each relationship traversed at most once
+    }
+
+    steps += 1;
+
+    if (steps > TRAIL_BUDGET) {
+      throw new PlGraphError(
+        'Variable-length pattern exceeded the trail budget; add a tighter bound',
+        { code: ErrorCode.ResourceExhausted },
+      );
+    }
+
+    used.add(edge);
+    const d = top.depth + 1;
+
+    if (d >= q.min) {
+      yield node;
+    }
+
+    stack.push({ iter: expand(graph, node, rel)[Symbol.iterator](), entry: edge, depth: d });
   }
-
-  return result;
 };
 
 // --- clause compilation ------------------------------------------------------
@@ -1706,8 +1879,11 @@ const runInsert = (graph: Graph, clause: CInsert, binding: Binding, params: Para
   return out;
 };
 
-// Labels go through the graph's index-maintaining methods so MATCH can find
-// them afterwards; properties write directly (no value index).
+// Both labels and properties go through the element's index-maintaining
+// mutators (`addLabelTo*` / `setProperty`) so the graph's label and property
+// value indexes stay consistent — a later MATCH seeds from `vertexPropertyIndex`,
+// so a direct `el.properties =` write would leave that index stale (and skip
+// mutation events).
 const runSet = (graph: Graph, clause: CSet, binding: Binding, params: Params): void => {
   for (const item of clause.items) {
     const el = binding.get(item.variable);
@@ -1723,7 +1899,7 @@ const runSet = (graph: Graph, clause: CSet, binding: Binding, params: Params): v
         graph.addLabelToVertex(item.label, el);
       }
     } else {
-      el.properties = { ...el.properties, [item.key]: item.value({ binding, params, graph }) };
+      el.setProperty(item.key, item.value({ binding, params, graph }));
     }
   }
 };
@@ -1743,9 +1919,7 @@ const runRemove = (graph: Graph, clause: CRemove, binding: Binding): void => {
         graph.removeLabelFromVertex(item.label, el);
       }
     } else {
-      const props = { ...el.properties };
-      delete props[item.key];
-      el.properties = props;
+      el.removeProperty(item.key);
     }
   }
 };
@@ -1757,7 +1931,19 @@ const runDelete = (graph: Graph, clause: CDelete, binding: Binding, params: Para
     if (isEdge(el)) {
       graph.removeEdge(el);
     } else if (isElement(el)) {
-      graph.removeVertex(el as Vertex);
+      const vertex = el as Vertex;
+
+      // Plain DELETE must not orphan relationships: deleting a still-connected
+      // node is a graph violation unless the user opted into DETACH (which
+      // cascades the incident edges).
+      if (!clause.detach && hasIncidentEdges(graph, vertex)) {
+        throw new PlGraphError(
+          'Cannot delete a node that still has relationships; use DETACH DELETE',
+          { code: ErrorCode.InvalidGraphOp },
+        );
+      }
+
+      graph.removeVertex(vertex);
     }
   }
 };

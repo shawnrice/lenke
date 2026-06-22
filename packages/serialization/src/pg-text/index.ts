@@ -37,7 +37,40 @@ import { normalizeBag, type PropertyValue } from '../value.js';
  * whitespace/colon); quote string values instead.
  */
 
-const QUOTE_ESCAPE = /[\\"]/g;
+// Escape the quote/backslash AND the line/whitespace control chars: pg-text is
+// line-oriented, so an unescaped newline in a value would split the token across
+// physical lines and corrupt the round-trip. Must match the Rust codec exactly.
+const STR_ESCAPE = /[\\"\n\r\t]/g;
+const STR_ESCAPE_MAP: Record<string, string> = {
+  '\\': '\\\\',
+  '"': '\\"',
+  '\n': '\\n',
+  '\r': '\\r',
+  '\t': '\\t',
+};
+const STR_UNESCAPE_MAP: Record<string, string> = { n: '\n', r: '\r', t: '\t' };
+
+// An id must be quoted when it contains a `:` (else it reads as a `:label` /
+// `key:value`), whitespace (which would split the token), or a quote/backslash.
+const ID_NEEDS_QUOTE = /[\s:"\\]/;
+
+/** Render an id token, quoting + escaping it when it contains a delimiter. */
+const idToken = (s: string): string =>
+  s === '' || ID_NEEDS_QUOTE.test(s) ? `"${s.replace(STR_ESCAPE, (c) => STR_ESCAPE_MAP[c])}"` : s;
+
+/** Read an id token, unquoting + unescaping it if it was quoted. */
+const parseId = (raw: string): string => {
+  if (!raw.startsWith('"')) {
+    return raw;
+  }
+
+  const body = raw.endsWith('"') && raw.length >= 2 ? raw.slice(1, -1) : raw.slice(1);
+
+  return body.replace(/\\(.)/g, (_, c: string) => STR_UNESCAPE_MAP[c] ?? c);
+};
+
+/** A leading id token: quoted (so an embedded `:` is part of it), or `:`-free. */
+const isIdToken = (t: string): boolean => t.startsWith('"') || !t.includes(':');
 
 /** Encode one scalar `PropertyValue` (never a list) as a PG-text token value. */
 const encodeScalar = (value: Exclude<PropertyValue, readonly PropertyValue[]>): string => {
@@ -53,7 +86,7 @@ const encodeScalar = (value: Exclude<PropertyValue, readonly PropertyValue[]>): 
     return String(value);
   }
 
-  return `"${value.replace(QUOTE_ESCAPE, (c) => `\\${c}`)}"`;
+  return `"${value.replace(STR_ESCAPE, (c) => STR_ESCAPE_MAP[c])}"`;
 };
 
 /** Append `key:value` tokens for a property; a list expands to one token per element. */
@@ -76,7 +109,7 @@ const elementTokens = (
   labels: Iterable<string>,
   properties: Record<string, unknown>,
 ): string => {
-  const tokens = [...leading];
+  const tokens = leading.map(idToken);
 
   for (const label of labels) {
     tokens.push(`:${label}`);
@@ -164,7 +197,7 @@ const parseScalar = (raw: string): PropertyValue => {
   if (raw.startsWith('"')) {
     const body = raw.endsWith('"') && raw.length >= 2 ? raw.slice(1, -1) : raw.slice(1);
 
-    return body.replace(/\\(.)/g, '$1');
+    return body.replace(/\\(.)/g, (_, c: string) => STR_UNESCAPE_MAP[c] ?? c);
   }
 
   if (raw === 'true') {
@@ -225,17 +258,20 @@ const parseLabelsAndProps = (
   return { labels, properties };
 };
 
-// A second token without a colon is the edge's destination id.
-const isEdgeLine = (tokens: string[]): boolean => tokens.length >= 2 && !tokens[1].includes(':');
+// A second token that is an id (quoted, or `:`-free — not a `:label`/`key:value`)
+// marks an edge line.
+const isEdgeLine = (tokens: string[]): boolean => tokens.length >= 2 && isIdToken(tokens[1]);
 
 const addNodeLine = (graph: Graph, tokens: string[]): void => {
-  const [id, ...rest] = tokens;
+  const [rawId, ...rest] = tokens;
   const { labels, properties } = parseLabelsAndProps(rest);
-  graph.addVertex({ id: id, labels, properties });
+  graph.addVertex({ id: parseId(rawId), labels, properties });
 };
 
 const addEdgeLine = (graph: Graph, tokens: string[]): void => {
-  const [from, to, ...rest] = tokens;
+  const [rawFrom, rawTo, ...rest] = tokens;
+  const from = parseId(rawFrom);
+  const to = parseId(rawTo);
   const fromVertex =
     graph.getVertexById(from) ?? graph.addVertex({ id: from, labels: [], properties: {} });
   const toVertex =

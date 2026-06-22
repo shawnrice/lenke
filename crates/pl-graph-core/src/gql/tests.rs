@@ -89,6 +89,42 @@ fn projection_column_names_and_order() {
 }
 
 #[test]
+fn two_hop_linear_pattern() {
+    // Regression: a linear two-segment pattern `(a)-[r1]->(b)-[r2]->(c)` used to
+    // panic in build_scan because the per-row column copy referenced `c`'s slot
+    // (bound only by the second segment) while building the first segment.
+    let mut g = modern();
+    let r = rows(
+        &mut g,
+        "MATCH (a:Person {name: 'marko'})-[:KNOWS]->(b)-[:CREATED]->(c) RETURN c.name ORDER BY c.name",
+    );
+    // marko KNOWS josh; josh CREATED lop + ripple.
+    assert_eq!(r, vec![vec![s("lop")], vec![s("ripple")]]);
+}
+
+#[test]
+fn three_hop_linear_pattern() {
+    // A three-segment chain exercises copying multiple already-bound columns
+    // across several future-bound slots.
+    let mut g = modern();
+    let r = rows(
+        &mut g,
+        "MATCH (a:Person {name: 'marko'})-[:KNOWS]->(b)-[:CREATED]->(c)<-[:CREATED]-(d) RETURN d.name ORDER BY d.name",
+    );
+    // marko->josh; josh created lop+ripple; lop also created-by marko,josh,peter;
+    // ripple created-by josh. Distinct d over both c's, ordered.
+    assert_eq!(
+        r,
+        vec![
+            vec![s("josh")],
+            vec![s("josh")],
+            vec![s("marko")],
+            vec![s("peter")],
+        ]
+    );
+}
+
+#[test]
 fn incoming_edge() {
     let mut g = modern();
     let r = rows(
@@ -1340,4 +1376,326 @@ fn reactive_version_and_epoch() {
     assert!(g.epoch("age") > age1);
     assert_eq!(g.epoch("Person"), person1); // label untouched by a value write
     assert_eq!(g.epoch("name"), name1); // unrelated key untouched
+}
+
+// --- hardening: parser/lexer robustness (ports of the TS hardening.test.ts) ---
+
+#[test]
+fn deep_nesting_errors_instead_of_stack_overflow() {
+    // Each of these would overflow the native stack (an uncatchable abort)
+    // without the recursion-depth guard; they must return a parse error.
+    let parens = format!("RETURN {}1{} AS r", "(".repeat(5000), ")".repeat(5000));
+    assert!(parse(&parens).is_err());
+
+    let nots = format!("MATCH (n) WHERE {}n.x RETURN n", "NOT ".repeat(5000));
+    assert!(parse(&nots).is_err());
+
+    let bangs = format!("MATCH (n:{}A) RETURN n", "!".repeat(5000));
+    assert!(parse(&bangs).is_err());
+
+    let lists = format!("RETURN {}1{} AS r", "[".repeat(5000), "]".repeat(5000));
+    assert!(parse(&lists).is_err());
+}
+
+#[test]
+fn normally_nested_query_still_parses() {
+    assert!(parse("RETURN (((1 + 2)) * 3) AS r").is_ok());
+}
+
+#[test]
+fn malformed_numeric_literals_rejected() {
+    for bad in [
+        "0x", "0b", "0o", "0b2", "0o8", "0o9", "1e", "1e+", "0xG", "1e999",
+    ] {
+        assert!(
+            parse(&format!("RETURN {bad} AS r")).is_err(),
+            "expected a lex error for `{bad}`"
+        );
+    }
+}
+
+#[test]
+fn oversized_integer_literal_rejected() {
+    // Beyond 2^53 an integer literal loses precision as an f64.
+    assert!(parse("RETURN 99999999999999999999 AS r").is_err());
+}
+
+#[test]
+fn valid_numeric_literals_still_parse_and_eval() {
+    let mut g = modern();
+    assert_eq!(rows(&mut g, "RETURN 0xFF AS r"), vec![vec![n(255.0)]]);
+    assert_eq!(rows(&mut g, "RETURN 0o17 AS r"), vec![vec![n(15.0)]]);
+    assert_eq!(rows(&mut g, "RETURN 0b101 AS r"), vec![vec![n(5.0)]]);
+    assert_eq!(rows(&mut g, "RETURN 1_000 AS r"), vec![vec![n(1000.0)]]);
+    assert_eq!(rows(&mut g, "RETURN 1.5e2 AS r"), vec![vec![n(150.0)]]);
+}
+
+#[test]
+fn skip_limit_reject_non_integers() {
+    assert!(parse("MATCH (n) RETURN n LIMIT 2.5").is_err());
+    assert!(parse("MATCH (n) RETURN n SKIP 1.5").is_err());
+    assert!(parse("MATCH (n) RETURN n LIMIT 0.5").is_err());
+}
+
+#[test]
+fn quantifier_rejects_fractional_and_reversed_bounds() {
+    assert!(parse("MATCH (a)-[:R]->{1.5}(b) RETURN b").is_err());
+    assert!(parse("MATCH (a)-[:R]->{3,2}(b) RETURN b").is_err());
+}
+
+#[test]
+fn skip_limit_quantifier_valid_forms_still_parse() {
+    assert!(parse("MATCH (n) RETURN n SKIP 1 LIMIT 2").is_ok());
+    assert!(parse("MATCH (a)-[:R]->{1,3}(b) RETURN b").is_ok());
+    assert!(parse("MATCH (a)-[:R]->{2}(b) RETURN b").is_ok());
+}
+
+#[test]
+fn var_length_rejects_edge_variable_and_predicate() {
+    // A quantified segment binds no single edge, so these can't be honored.
+    assert!(parse("MATCH (a)-[r:KNOWS]->*(b) RETURN b").is_err());
+    assert!(parse("MATCH (a)-[:KNOWS {weight:1}]->+(b) RETURN b").is_err());
+    assert!(parse("MATCH (a)-[:KNOWS WHERE true]->+(b) RETURN b").is_err());
+}
+
+#[test]
+fn var_length_label_only_still_parses() {
+    assert!(parse("MATCH (a:Person {name:'marko'})-[:KNOWS]->+(b) RETURN b.name").is_ok());
+}
+
+#[test]
+fn undirected_self_loop_counted_once() {
+    let lines = [
+        r#"{"type":"node","id":"n","labels":["N"],"properties":{"name":"n"}}"#,
+        r#"{"type":"edge","from":"n","to":"n","labels":["LOOP"],"properties":{}}"#,
+    ];
+    let mut g = ndjson::decode(&lines.join("\n")).unwrap();
+    // Before the fix an undirected walk yielded the self-loop twice (once from
+    // the out-index, once from the in-index).
+    assert_eq!(
+        rows(&mut g, "MATCH (a)~[r]~(b) RETURN count(*) AS c"),
+        vec![vec![n(1.0)]]
+    );
+    // Directed walks each see it exactly once.
+    assert_eq!(
+        rows(&mut g, "MATCH (a)-[r]->(b) RETURN count(*) AS c"),
+        vec![vec![n(1.0)]]
+    );
+    assert_eq!(
+        rows(&mut g, "MATCH (a)<-[r]-(b) RETURN count(*) AS c"),
+        vec![vec![n(1.0)]]
+    );
+}
+
+// --- ISO medium-conformance batch (mirrors TS hardening.test.ts) ------------
+
+#[test]
+fn ordering_across_incomparable_types_is_unknown() {
+    let mut g = modern();
+    // number vs string has no defined order → UNKNOWN (null), not a coerced bool.
+    assert_eq!(
+        rows(&mut g, "RETURN (1 < 'a') AS r"),
+        vec![vec![Value::Null]]
+    );
+    assert_eq!(
+        rows(&mut g, "RETURN ('a' >= 1) AS r"),
+        vec![vec![Value::Null]]
+    );
+}
+
+#[test]
+fn equality_across_types_is_false_not_null() {
+    let mut g = modern();
+    assert_eq!(rows(&mut g, "RETURN (5 = '5') AS r"), vec![vec![b(false)]]);
+    assert_eq!(rows(&mut g, "RETURN (5 <> '5') AS r"), vec![vec![b(true)]]);
+}
+
+#[test]
+fn same_type_ordering_including_booleans_still_works() {
+    let mut g = modern();
+    assert_eq!(rows(&mut g, "RETURN (1 < 2) AS r"), vec![vec![b(true)]]);
+    assert_eq!(rows(&mut g, "RETURN ('a' < 'b') AS r"), vec![vec![b(true)]]);
+    assert_eq!(
+        rows(&mut g, "RETURN (false >= false) AS r"),
+        vec![vec![b(true)]]
+    );
+}
+
+#[test]
+fn nested_aggregates_rejected() {
+    let mut g = modern();
+    let err = parse("MATCH (n:Person) RETURN sum(avg(n.age))")
+        .unwrap()
+        .execute(&mut g, &Params::new())
+        .unwrap_err();
+    assert_eq!(err.code, crate::error_codes::ErrorCode::Unsupported);
+}
+
+#[test]
+fn plain_aggregate_still_works() {
+    let mut g = modern();
+    assert_eq!(
+        rows(&mut g, "MATCH (n:Person) RETURN sum(n.age) AS s"),
+        vec![vec![n(123.0)]]
+    );
+}
+
+#[test]
+fn division_by_zero_raises_data_exception() {
+    let mut g = modern();
+    for q in ["RETURN 1 / 0 AS r", "RETURN 5 % 0 AS r"] {
+        let err = parse(q)
+            .unwrap()
+            .execute(&mut g, &Params::new())
+            .unwrap_err();
+        assert_eq!(
+            err.code,
+            crate::error_codes::ErrorCode::DataException,
+            "{q}"
+        );
+    }
+}
+
+#[test]
+fn division_by_zero_raises_over_rows_vectorized() {
+    let mut g = modern();
+    // MATCH … RETURN n.age / 0 takes the vectorized path; the divisor scan must
+    // surface the data exception (via scalar fallback).
+    let err = parse("MATCH (n:Person) RETURN n.age / 0 AS r")
+        .unwrap()
+        .execute(&mut g, &Params::new())
+        .unwrap_err();
+    assert_eq!(err.code, crate::error_codes::ErrorCode::DataException);
+}
+
+#[test]
+fn non_numeric_arithmetic_raises_data_exception() {
+    let mut g = modern();
+    for q in ["RETURN 'abc' + 1 AS r", "RETURN true * 2 AS r"] {
+        let err = parse(q)
+            .unwrap()
+            .execute(&mut g, &Params::new())
+            .unwrap_err();
+        assert_eq!(
+            err.code,
+            crate::error_codes::ErrorCode::DataException,
+            "{q}"
+        );
+    }
+}
+
+#[test]
+fn non_numeric_arithmetic_raises_in_vectorized_path() {
+    let mut g = modern();
+    // n.name is a string column → arithmetic over it falls back to scalar eval,
+    // which raises the type error.
+    let err = parse("MATCH (n:Person) RETURN n.name + 1 AS r")
+        .unwrap()
+        .execute(&mut g, &Params::new())
+        .unwrap_err();
+    assert_eq!(err.code, crate::error_codes::ErrorCode::DataException);
+}
+
+#[test]
+fn null_arithmetic_still_propagates_to_null() {
+    let mut g = modern();
+    assert_eq!(
+        rows(&mut g, "RETURN null + 1 AS r"),
+        vec![vec![Value::Null]]
+    );
+    assert_eq!(
+        rows(&mut g, "RETURN 1 / null AS r"),
+        vec![vec![Value::Null]]
+    );
+}
+
+// --- variable-length trail semantics ----------------------------------------
+
+/// Build a graph from (id-label) nodes and (from,to) R-edges.
+fn ring_graph() -> Graph {
+    // a → b → c → a
+    let lines = [
+        r#"{"type":"node","id":"a","labels":["N"],"properties":{"name":"a"}}"#,
+        r#"{"type":"node","id":"b","labels":["N"],"properties":{"name":"b"}}"#,
+        r#"{"type":"node","id":"c","labels":["N"],"properties":{"name":"c"}}"#,
+        r#"{"type":"edge","from":"a","to":"b","labels":["R"],"properties":{}}"#,
+        r#"{"type":"edge","from":"b","to":"c","labels":["R"],"properties":{}}"#,
+        r#"{"type":"edge","from":"c","to":"a","labels":["R"],"properties":{}}"#,
+    ];
+    ndjson::decode(&lines.join("\n")).unwrap()
+}
+
+#[test]
+fn trail_excludes_repeated_relationship() {
+    let mut g = modern();
+    // From josh, undirected KNOWS reaches marko (1). The 2-hop step back to josh
+    // would reuse the marko–josh edge, which a trail forbids — so josh is not
+    // reached (Gremlin's walk semantics would include it).
+    let r = rows(
+        &mut g,
+        "MATCH (a:Person {name:'josh'})-[:KNOWS]-{1,2}(b) RETURN b.name ORDER BY b.name",
+    );
+    assert_eq!(r, vec![vec![s("marko")], vec![s("vadas")]]);
+}
+
+#[test]
+fn trail_cycle_terminates_one_row_per_trail() {
+    let mut g = ring_graph();
+    // From a the trails of ≥1 hop are a→b, a→b→c, a→b→c→a; the next step reuses
+    // a→b, so it stops. Three trails.
+    assert_eq!(
+        rows(
+            &mut g,
+            "MATCH (a:N {name:'a'})-[:R]->+(x) RETURN count(*) AS c"
+        ),
+        vec![vec![n(3.0)]]
+    );
+}
+
+#[test]
+fn trail_endpoint_appears_once_per_trail() {
+    let lines = [
+        r#"{"type":"node","id":"a","labels":["N"],"properties":{"name":"a"}}"#,
+        r#"{"type":"node","id":"b","labels":["N"],"properties":{"name":"b"}}"#,
+        r#"{"type":"node","id":"c","labels":["N"],"properties":{"name":"c"}}"#,
+        r#"{"type":"node","id":"d","labels":["N"],"properties":{"name":"d"}}"#,
+        r#"{"type":"edge","from":"a","to":"b","labels":["R"],"properties":{}}"#,
+        r#"{"type":"edge","from":"a","to":"c","labels":["R"],"properties":{}}"#,
+        r#"{"type":"edge","from":"b","to":"d","labels":["R"],"properties":{}}"#,
+        r#"{"type":"edge","from":"c","to":"d","labels":["R"],"properties":{}}"#,
+    ];
+    let mut g = ndjson::decode(&lines.join("\n")).unwrap();
+    // d is reached by two distinct 2-hop trails: a→b→d and a→c→d.
+    assert_eq!(
+        rows(
+            &mut g,
+            "MATCH (a:N {name:'a'})-[:R]->{2,2}(d) RETURN count(*) AS c"
+        ),
+        vec![vec![n(2.0)]]
+    );
+}
+
+#[test]
+fn trail_budget_guards_dense_unbounded_star() {
+    let mut lines: Vec<String> = Vec::new();
+    for i in 0..8 {
+        lines.push(format!(
+            r#"{{"type":"node","id":"{i}","labels":["N"],"properties":{{}}}}"#
+        ));
+    }
+    for i in 0..8 {
+        for j in 0..8 {
+            if i != j {
+                lines.push(format!(
+                    r#"{{"type":"edge","from":"{i}","to":"{j}","labels":["R"],"properties":{{}}}}"#
+                ));
+            }
+        }
+    }
+    let mut g = ndjson::decode(&lines.join("\n")).unwrap();
+    let err = parse("MATCH (a)-[:R]->*(b) RETURN count(*) AS c")
+        .unwrap()
+        .execute(&mut g, &Params::new())
+        .unwrap_err();
+    assert_eq!(err.code, crate::error_codes::ErrorCode::ResourceExhausted);
 }

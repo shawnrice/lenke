@@ -87,8 +87,39 @@ export const expand = function* (graph: Graph, v: Vertex, rel: Adjacency): Itera
   }
 
   if (rel.direction === 'in' || rel.direction === 'both') {
-    yield* inSteps(graph, v, rel.label);
+    for (const step of inSteps(graph, v, rel.label)) {
+      // A self-loop is indexed under both `edgesFromByLabel` and
+      // `edgesToByLabel` for `v`, so an undirected (`both`) walk would yield it
+      // twice — once as an out-step, once as an in-step. The out-step already
+      // emitted it; skip the duplicate. (Directed `in` keeps it.)
+      if (rel.direction === 'both' && step.edge.from === step.edge.to) {
+        continue;
+      }
+
+      yield step;
+    }
   }
+};
+
+/**
+ * Whether any edge — incoming or outgoing — is incident to `v`. Reads the same
+ * adjacency indexes as `expand`. Used to enforce that a plain `DELETE` (without
+ * `DETACH`) refuses to orphan relationships.
+ */
+export const hasIncidentEdges = (graph: Graph, v: Vertex): boolean => {
+  for (const byLabel of [graph.edgesFromByLabel.get(v.id), graph.edgesToByLabel.get(v.id)]) {
+    if (!byLabel) {
+      continue;
+    }
+
+    for (const set of byLabel.values()) {
+      if (set.size > 0) {
+        return true;
+      }
+    }
+  }
+
+  return false;
 };
 
 /** Evaluate an ISO label expression against a vertex's label set. */

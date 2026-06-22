@@ -23,6 +23,7 @@ pub enum ErrorCode {
     UnknownFormat,
     /// A value outside the LPG property-value model.
     InvalidValue,
+    DataException,
     /// An edge (or operation) referenced a vertex id that doesn't exist.
     MissingVertex,
     /// An invalid graph mutation (e.g. a cycle, a self-reference).
@@ -33,6 +34,7 @@ pub enum ErrorCode {
     NotImplemented,
     /// A feature/clause/predicate that isn't supported.
     Unsupported,
+    ResourceExhausted,
     /// An unknown function/step/symbol referenced in a query.
     UnknownFunction,
     /// A failure crossing the native/wasm FFI boundary.
@@ -47,11 +49,13 @@ impl ErrorCode {
         ErrorCode::InvalidShape,
         ErrorCode::UnknownFormat,
         ErrorCode::InvalidValue,
+        ErrorCode::DataException,
         ErrorCode::MissingVertex,
         ErrorCode::InvalidGraphOp,
         ErrorCode::InvalidTree,
         ErrorCode::NotImplemented,
         ErrorCode::Unsupported,
+        ErrorCode::ResourceExhausted,
         ErrorCode::UnknownFunction,
         ErrorCode::Ffi,
     ];
@@ -64,11 +68,13 @@ impl ErrorCode {
             ErrorCode::InvalidShape => "E_INVALID_SHAPE",
             ErrorCode::UnknownFormat => "E_UNKNOWN_FORMAT",
             ErrorCode::InvalidValue => "E_INVALID_VALUE",
+            ErrorCode::DataException => "E_DATA_EXCEPTION",
             ErrorCode::MissingVertex => "E_MISSING_VERTEX",
             ErrorCode::InvalidGraphOp => "E_INVALID_GRAPH_OP",
             ErrorCode::InvalidTree => "E_INVALID_TREE",
             ErrorCode::NotImplemented => "E_NOT_IMPLEMENTED",
             ErrorCode::Unsupported => "E_UNSUPPORTED",
+            ErrorCode::ResourceExhausted => "E_RESOURCE_EXHAUSTED",
             ErrorCode::UnknownFunction => "E_UNKNOWN_FUNCTION",
             ErrorCode::Ffi => "E_FFI",
         }

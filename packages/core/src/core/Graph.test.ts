@@ -1,9 +1,21 @@
 /* eslint-disable yoda */
 import { describe, expect, mock, test } from 'bun:test';
 
+import { ErrorCode, hasErrorCode } from '@pl-graph/errors';
+
 import { createTestGraph, edgeId, vertexId } from '../fixtures/createTestGraph.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
 import { Vertex } from './Vertex.js';
+
+const thrownBy = (fn: () => unknown): unknown => {
+  try {
+    fn();
+  } catch (e) {
+    return e;
+  }
+
+  return undefined;
+};
 
 describe('Graph Tests', () => {
   const graph = createTestGraph();
@@ -153,8 +165,9 @@ describe('Graph Tests', () => {
     const b = g.getVertexById('2')!;
 
     // A label-less edge would never land in a label bucket, so removeVertex
-    // could not cascade it — reject it up front instead.
-    expect(() => g.addEdge({ from: a, to: b, labels: [], properties: {} })).toThrow();
+    // could not cascade it — reject it up front with a coded error.
+    const err = thrownBy(() => g.addEdge({ from: a, to: b, labels: [], properties: {} }));
+    expect(hasErrorCode(err, ErrorCode.InvalidGraphOp)).toBe(true);
   });
 
   test('addEdge throws on a missing endpoint and leaves no orphaned state', () => {
@@ -165,9 +178,10 @@ describe('Graph Tests', () => {
     const edgesBefore = g.edgeCount;
     const propBagsBefore = g.elementProperties.size;
 
-    expect(() =>
+    const err = thrownBy(() =>
       g.addEdge({ from: a, to: stranger, labels: ['KNOWS'], properties: { w: 1 } }),
-    ).toThrow();
+    );
+    expect(hasErrorCode(err, ErrorCode.MissingVertex)).toBe(true);
 
     // Validation happens before construction, so the rejected edge wrote no
     // labels/properties into the graph's element maps.

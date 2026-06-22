@@ -10,6 +10,7 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
+use std::sync::atomic::{AtomicU8, Ordering as AtomOrdering};
 use std::sync::Arc;
 
 #[cfg(feature = "parallel-query")]
@@ -18,8 +19,9 @@ use rayon::prelude::*;
 use super::ast::{ArithOp, CompareOp, Direction, Lit, Quantifier, SetOp, SetOpKind};
 use super::lexer::SyntaxError;
 use super::plan::{
-    lower, AggFn, CClause, CExpr, CLabelExpr, CLinear, CNode, CPath, CProjection, CPropConstraint,
-    CQuery, CRel, CRemoveItem, CReturnItem, CSegment, CSetItem, Op, Program, ScalarFn,
+    has_argless_aggregate, has_nested_aggregate, lower, AggFn, CClause, CExpr, CLabelExpr, CLinear,
+    CNode, CPath, CProjection, CPropConstraint, CQuery, CRel, CRemoveItem, CReturnItem, CSegment,
+    CSetItem, Op, Program, ScalarFn,
 };
 #[cfg(feature = "arrow")]
 use crate::arrow::ArrowColumn;
@@ -88,6 +90,81 @@ struct Ctx<'a> {
     labels: Vec<(Option<u32>, Option<u32>)>,
     /// label ref -> name (for write clauses, which create labels/types by name).
     label_names: &'a [String],
+    /// First ISO data exception raised during evaluation (see `FAULT_*`). The
+    /// infallible `eval`/VM/vectorized engines can't return `Err`, so they record
+    /// the fault here and return a placeholder; the driver checks it at the row
+    /// boundary and converts it to a `CodeError`. Atomic so the parallel (rayon)
+    /// vectorized path can record faults safely.
+    fault: AtomicU8,
+}
+
+const FAULT_NONE: u8 = 0;
+const FAULT_DIV_ZERO: u8 = 1;
+const FAULT_TYPE: u8 = 2;
+const FAULT_BUDGET: u8 = 3;
+
+/// Per-expansion cap on trail-traversal steps; a guard against exponential blowup.
+const TRAIL_BUDGET: u64 = 1_000_000;
+
+impl Ctx<'_> {
+    /// Re-resolve property-key and label ids against the current graph (keeping
+    /// params/fault). Needed mid-INSERT: freshly created nodes introduce columns
+    /// a snapshot taken before the clause doesn't know about, so a forward
+    /// reference (`INSERT (a {..}), (:B {x: a.id})`) would otherwise read NULL.
+    fn refresh_ids(&mut self, graph: &Graph, plan: &CQuery) {
+        self.prop_keys = plan
+            .key_names
+            .iter()
+            .map(|n| (graph.props.keys.get(n), graph.edge_props.keys.get(n)))
+            .collect();
+        self.labels = plan
+            .label_names
+            .iter()
+            .map(|n| (graph.labels.get(n), graph.etype.get(n)))
+            .collect();
+    }
+
+    /// Record a data-exception fault (first one wins; later faults are ignored).
+    #[inline]
+    fn set_fault(&self, kind: u8) {
+        if self.fault.load(AtomOrdering::Relaxed) == FAULT_NONE {
+            self.fault.store(kind, AtomOrdering::Relaxed);
+        }
+    }
+
+    /// Convert any recorded fault into an `Err`, to be called at a row boundary.
+    fn check_fault(&self) -> CodeResult<()> {
+        match self.fault.load(AtomOrdering::Relaxed) {
+            FAULT_DIV_ZERO => Err(CodeError::new(ErrorCode::DataException, "division by zero")),
+            FAULT_TYPE => Err(CodeError::new(
+                ErrorCode::DataException,
+                "arithmetic requires a number",
+            )),
+            FAULT_BUDGET => Err(CodeError::new(
+                ErrorCode::ResourceExhausted,
+                "variable-length pattern exceeded the trail budget; add a tighter bound",
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    fn faulted(&self) -> bool {
+        self.fault.load(AtomOrdering::Relaxed) != FAULT_NONE
+    }
+}
+
+/// Coerce an arithmetic operand: a number passes, NULL propagates (`None`), and
+/// anything else is an ISO type error recorded in `ctx` (returns `None` so eval
+/// can continue to the row boundary, where the fault surfaces).
+fn arith_num(v: &Val, ctx: &Ctx) -> Option<f64> {
+    match v {
+        Val::Null => None,
+        Val::Num(n) => Some(*n),
+        _ => {
+            ctx.set_fault(FAULT_TYPE);
+            None
+        }
+    }
 }
 
 fn resolve_ctx<'a>(graph: &Graph, plan: &'a CQuery, params: &'a [Val]) -> Ctx<'a> {
@@ -104,6 +181,7 @@ fn resolve_ctx<'a>(graph: &Graph, plan: &'a CQuery, params: &'a [Val]) -> Ctx<'a
             .map(|n| (graph.labels.get(n), graph.etype.get(n)))
             .collect(),
         label_names: &plan.label_names,
+        fault: AtomicU8::new(FAULT_NONE),
     }
 }
 
@@ -323,6 +401,17 @@ fn val_eq(a: &Val, b: &Val) -> bool {
     }
 }
 
+/// Whether `a` and `b` are the same orderable primitive type (number, string,
+/// or boolean). ISO ordering (`< > <= >=`) is only defined within such a type;
+/// across types — or for graph elements — the comparison is UNKNOWN, not a
+/// coerced bool. (Mirrors the TS executor's `orderable` guard.)
+fn orderable_pair(a: &Val, b: &Val) -> bool {
+    matches!(
+        (a, b),
+        (Val::Num(_), Val::Num(_)) | (Val::Str(_), Val::Str(_)) | (Val::Bool(_), Val::Bool(_))
+    )
+}
+
 /// Ordering for `< > <= >=`, min/max, and ORDER BY. `None` = incomparable.
 fn val_cmp(a: &Val, b: &Val) -> Option<Ordering> {
     match (a, b) {
@@ -332,6 +421,27 @@ fn val_cmp(a: &Val, b: &Val) -> Option<Ordering> {
         (Val::Node(x), Val::Node(y)) => Some(x.cmp(y)),
         (Val::Edge(x), Val::Edge(y)) => Some(x.cmp(y)),
         _ => None,
+    }
+}
+
+/// Compare two non-null operands to a three-valued result. Equality holds across
+/// any types (mismatched types are simply unequal); ordering across incomparable
+/// types is UNKNOWN (`Val::Null`), not a coerced bool.
+fn compare_vals(op: CompareOp, lv: &Val, rv: &Val) -> Val {
+    match op {
+        CompareOp::Eq => Val::Bool(val_eq(lv, rv)),
+        CompareOp::Ne => Val::Bool(!val_eq(lv, rv)),
+        _ if !orderable_pair(lv, rv) => Val::Null,
+        _ => {
+            let c = val_cmp(lv, rv);
+            Val::Bool(match op {
+                CompareOp::Lt => c == Some(Ordering::Less),
+                CompareOp::Gt => c == Some(Ordering::Greater),
+                CompareOp::Le => matches!(c, Some(Ordering::Less | Ordering::Equal)),
+                CompareOp::Ge => matches!(c, Some(Ordering::Greater | Ordering::Equal)),
+                CompareOp::Eq | CompareOp::Ne => unreachable!(),
+            })
+        }
     }
 }
 
@@ -542,21 +652,28 @@ fn eval(env: &Env, expr: &CExpr) -> Val {
             prop_of(env.graph, env.ctx, &bound, *key_ref)
         }
         CExpr::List(items) => Val::List(items.iter().map(|e| eval(env, e)).collect()),
-        CExpr::Neg(e) => match num_of(&eval(env, e)) {
+        CExpr::Neg(e) => match arith_num(&eval(env, e), env.ctx) {
             Some(n) => Val::Num(-n),
             None => Val::Null,
         },
         CExpr::Arith { op, left, right } => {
-            let lv = num_of(&eval(env, left));
-            let rv = num_of(&eval(env, right));
+            let lv = arith_num(&eval(env, left), env.ctx);
+            let rv = arith_num(&eval(env, right), env.ctx);
             match (lv, rv) {
-                (Some(a), Some(b)) => Val::Num(match op {
-                    ArithOp::Add => a + b,
-                    ArithOp::Sub => a - b,
-                    ArithOp::Mul => a * b,
-                    ArithOp::Div => a / b,
-                    ArithOp::Mod => a % b,
-                }),
+                (Some(a), Some(b)) => {
+                    if matches!(op, ArithOp::Div | ArithOp::Mod) && b == 0.0 {
+                        env.ctx.set_fault(FAULT_DIV_ZERO);
+                        Val::Null
+                    } else {
+                        Val::Num(match op {
+                            ArithOp::Add => a + b,
+                            ArithOp::Sub => a - b,
+                            ArithOp::Mul => a * b,
+                            ArithOp::Div => a / b,
+                            ArithOp::Mod => a % b,
+                        })
+                    }
+                }
                 _ => Val::Null,
             }
         }
@@ -608,19 +725,7 @@ fn eval(env: &Env, expr: &CExpr) -> Val {
             if is_nullish(&lv) || is_nullish(&rv) {
                 return Val::Null; // UNKNOWN
             }
-            let res = match op {
-                CompareOp::Eq => val_eq(&lv, &rv),
-                CompareOp::Ne => !val_eq(&lv, &rv),
-                CompareOp::Lt => val_cmp(&lv, &rv) == Some(Ordering::Less),
-                CompareOp::Gt => val_cmp(&lv, &rv) == Some(Ordering::Greater),
-                CompareOp::Le => {
-                    matches!(val_cmp(&lv, &rv), Some(Ordering::Less | Ordering::Equal))
-                }
-                CompareOp::Ge => {
-                    matches!(val_cmp(&lv, &rv), Some(Ordering::Greater | Ordering::Equal))
-                }
-            };
-            Val::Bool(res)
+            compare_vals(*op, &lv, &rv)
         }
         CExpr::Case {
             subject,
@@ -731,16 +836,23 @@ fn run(env: &Env, prog: &Program) -> Val {
                     st.push(Val::List(items));
                 }
                 Op::Arith(op) => {
-                    let b = num_of(&st.pop().unwrap());
-                    let a = num_of(&st.pop().unwrap());
+                    let b = arith_num(&st.pop().unwrap(), env.ctx);
+                    let a = arith_num(&st.pop().unwrap(), env.ctx);
                     st.push(match (a, b) {
-                        (Some(a), Some(b)) => Val::Num(match op {
-                            ArithOp::Add => a + b,
-                            ArithOp::Sub => a - b,
-                            ArithOp::Mul => a * b,
-                            ArithOp::Div => a / b,
-                            ArithOp::Mod => a % b,
-                        }),
+                        (Some(a), Some(b)) => {
+                            if matches!(op, ArithOp::Div | ArithOp::Mod) && b == 0.0 {
+                                env.ctx.set_fault(FAULT_DIV_ZERO);
+                                Val::Null
+                            } else {
+                                Val::Num(match op {
+                                    ArithOp::Add => a + b,
+                                    ArithOp::Sub => a - b,
+                                    ArithOp::Mul => a * b,
+                                    ArithOp::Div => a / b,
+                                    ArithOp::Mod => a % b,
+                                })
+                            }
+                        }
                         _ => Val::Null,
                     });
                 }
@@ -750,19 +862,7 @@ fn run(env: &Env, prog: &Program) -> Val {
                     st.push(if is_nullish(&lv) || is_nullish(&rv) {
                         Val::Null
                     } else {
-                        Val::Bool(match op {
-                            CompareOp::Eq => val_eq(&lv, &rv),
-                            CompareOp::Ne => !val_eq(&lv, &rv),
-                            CompareOp::Lt => val_cmp(&lv, &rv) == Some(Ordering::Less),
-                            CompareOp::Gt => val_cmp(&lv, &rv) == Some(Ordering::Greater),
-                            CompareOp::Le => {
-                                matches!(val_cmp(&lv, &rv), Some(Ordering::Less | Ordering::Equal))
-                            }
-                            CompareOp::Ge => matches!(
-                                val_cmp(&lv, &rv),
-                                Some(Ordering::Greater | Ordering::Equal)
-                            ),
-                        })
+                        compare_vals(*op, &lv, &rv)
                     });
                 }
                 Op::Concat => {
@@ -776,7 +876,7 @@ fn run(env: &Env, prog: &Program) -> Val {
                 }
                 Op::Neg => {
                     let v = st.pop().unwrap();
-                    st.push(match num_of(&v) {
+                    st.push(match arith_num(&v, env.ctx) {
                         Some(n) => Val::Num(-n),
                         None => Val::Null,
                     });
@@ -1071,7 +1171,7 @@ fn for_each_seed(
             Some(lid) => graph.vertices_with_label(lid).iter().all(|&s| f(s)),
             None => true, // unknown label → no seeds
         },
-        None => graph.vertex_indices().all(|s| f(s)),
+        None => graph.vertex_indices().all(f),
     }
 }
 
@@ -1086,9 +1186,19 @@ fn expand<'a>(
 ) -> impl Iterator<Item = (u32, u32)> + 'a {
     let out = matches!(direction, Direction::Out | Direction::Both).then(|| graph.out_adj(v));
     let inn = matches!(direction, Direction::In | Direction::Both).then(|| graph.in_adj(v));
+    // A self-loop sits in both the out- and in-index of `v`, so an undirected
+    // (`Both`) walk would yield it twice — once per side. The out-side already
+    // emits it; drop it from the in-side (`a.nbr == v` ⇔ the far end is also `v`,
+    // i.e. a self-loop). Directed In/Out keep it. The `!both` guard short-circuits
+    // so directed traversal pays nothing.
+    let both = matches!(direction, Direction::Both);
     out.into_iter()
         .flatten()
-        .chain(inn.into_iter().flatten())
+        .chain(
+            inn.into_iter()
+                .flatten()
+                .filter(move |a| !both || a.nbr != v),
+        )
         .filter(move |a| label.is_none_or(|e| eval_label_edge(ctx, a.etype, e)))
         .map(|a| (a.eidx, a.nbr))
 }
@@ -1125,43 +1235,95 @@ fn match_node_then(
     keep
 }
 
-/// Vertices reachable from `from` in [min, max] hops of `rel` (var-length).
-/// Returns just the endpoints — no per-hop path bookkeeping.
+/// Endpoints of every *trail* — a path traversing each relationship at most once
+/// (ISO/IEC 39075 default for a quantified path) — from `from` within [min, max]
+/// hops of `rel`. One entry per trail, so an endpoint reached by `k` distinct
+/// trails appears `k` times (ISO per-path multiplicity); `min == 0` includes the
+/// zero-length trail (the start node).
+///
+/// Iterative (explicit stack) so a long chain can't overflow the native stack;
+/// edge-uniqueness bounds trail length to the edge count, so it always
+/// terminates on cycles. The *number* of trails can be exponential, so a
+/// per-expansion step budget records a `FAULT_BUDGET` (→ `ResourceExhausted`)
+/// and stops rather than exhausting memory/time.
 fn reachable(graph: &Graph, ctx: &Ctx, from: u32, rel: &CRel, q: Quantifier) -> Vec<u32> {
-    let cap = q.max.unwrap_or(graph.n as u32 + 1);
-    let mut result: Vec<u32> = Vec::new();
-    let mut in_result = vec![false; graph.n];
-    let add = |v: u32, result: &mut Vec<u32>, in_result: &mut [bool]| {
-        if !in_result[v as usize] {
-            in_result[v as usize] = true;
-            result.push(v);
-        }
+    let collect = |v: u32| -> Vec<(u32, u32)> {
+        expand(graph, ctx, v, rel.direction, rel.label.as_ref()).collect()
     };
+
+    // Once the budget is blown, every later expansion short-circuits (the row
+    // boundary will surface the fault) — otherwise each seed vertex would burn a
+    // full budget before the query gives up.
+    if ctx.faulted() {
+        return Vec::new();
+    }
+
+    let mut ends: Vec<u32> = Vec::new();
     if q.min == 0 {
-        add(from, &mut result, &mut in_result);
+        ends.push(from);
     }
-    let mut frontier = vec![from];
-    let mut depth = 1u32;
-    while depth <= cap && !frontier.is_empty() {
-        let mut next = Vec::new();
-        let mut seen_next = vec![false; graph.n];
-        for &v in &frontier {
-            for (_, nbr) in expand(graph, ctx, v, rel.direction, rel.label.as_ref()) {
-                if !seen_next[nbr as usize] {
-                    seen_next[nbr as usize] = true;
-                    next.push(nbr);
-                }
-            }
-        }
-        if depth >= q.min && q.max.is_none_or(|m| depth <= m) {
-            for &v in &next {
-                add(v, &mut result, &mut in_result);
-            }
-        }
-        frontier = next;
-        depth += 1;
+
+    // Edges on the *current* trail (size bounded by trail length, not graph
+    // size — a dense `vec![false; edge_count]` would cost an O(E) alloc per seed
+    // vertex, which dominates for short bounded quantifiers over many seeds).
+    let mut used: HashSet<u32> = HashSet::new();
+    let mut steps: u64 = 0;
+
+    // Each frame walks one vertex's outgoing steps; `entry` is the edge taken to
+    // reach it, unmarked when the frame pops (backtrack).
+    struct Frame {
+        edges: Vec<(u32, u32)>,
+        idx: usize,
+        depth: u32,
+        entry: Option<u32>,
     }
-    result
+    let mut stack: Vec<Frame> = vec![Frame {
+        edges: collect(from),
+        idx: 0,
+        depth: 0,
+        entry: None,
+    }];
+
+    loop {
+        let Some(top) = stack.last_mut() else { break };
+
+        if q.max.is_some_and(|m| top.depth >= m) || top.idx >= top.edges.len() {
+            if let Some(e) = top.entry {
+                used.remove(&e);
+            }
+            stack.pop();
+            continue;
+        }
+
+        let (eidx, nbr) = top.edges[top.idx];
+        let depth = top.depth;
+        top.idx += 1; // borrow of `stack` ends here (NLL)
+
+        if used.contains(&eidx) {
+            continue; // trail: each relationship traversed at most once
+        }
+
+        steps += 1;
+        if steps > TRAIL_BUDGET {
+            ctx.set_fault(FAULT_BUDGET);
+            break;
+        }
+
+        used.insert(eidx);
+        let d = depth + 1;
+        if d >= q.min {
+            ends.push(nbr);
+        }
+
+        stack.push(Frame {
+            edges: collect(nbr),
+            idx: 0,
+            depth: d,
+            entry: Some(eidx),
+        });
+    }
+
+    ends
 }
 
 /// Walk the remaining segments of `pattern` from `from`, emitting each complete
@@ -2243,27 +2405,52 @@ fn eval_vec(graph: &Graph, ctx: &Ctx, sc: &ScanCols, e: &CExpr) -> VVec {
             None => gen(e),
         },
         CExpr::Neg(x) => {
-            let (mut d, valid) = eval_vec(graph, ctx, sc, x).into_num();
-            for v in &mut d {
-                *v = -*v;
+            let v = eval_vec(graph, ctx, sc, x);
+            // A non-numeric operand → scalar fallback, which raises the type error.
+            if matches!(v, VVec::Gen(_)) {
+                gen(e)
+            } else {
+                let (mut d, valid) = v.into_num();
+                for v in &mut d {
+                    *v = -*v;
+                }
+                VVec::Num { d, valid }
             }
-            VVec::Num { d, valid }
         }
         CExpr::Arith { op, left, right } => {
-            let (ld, lv) = eval_vec(graph, ctx, sc, left).into_num();
-            let (rd, rv) = eval_vec(graph, ctx, sc, right).into_num();
-            let mut d = Vec::with_capacity(n);
-            for i in 0..n {
-                d.push(match op {
-                    ArithOp::Add => ld[i] + rd[i],
-                    ArithOp::Sub => ld[i] - rd[i],
-                    ArithOp::Mul => ld[i] * rd[i],
-                    ArithOp::Div => ld[i] / rd[i],
-                    ArithOp::Mod => ld[i] % rd[i],
-                });
+            let l = eval_vec(graph, ctx, sc, left);
+            let r = eval_vec(graph, ctx, sc, right);
+            // A non-numeric operand (general column) → scalar fallback, which
+            // raises the ISO type error per-row rather than coercing to NaN.
+            if matches!(l, VVec::Gen(_)) || matches!(r, VVec::Gen(_)) {
+                gen(e)
+            } else {
+                let (ld, lv) = l.into_num();
+                let (rd, rv) = r.into_num();
+                // ISO: division/modulo by a zero divisor is a data exception. Scan
+                // (a separate, vectorizable pass) so the arithmetic loop below
+                // stays autovectorizable.
+                if matches!(op, ArithOp::Div | ArithOp::Mod) {
+                    for i in 0..n {
+                        if rv[i] && rd[i] == 0.0 {
+                            ctx.set_fault(FAULT_DIV_ZERO);
+                            break;
+                        }
+                    }
+                }
+                let mut d = Vec::with_capacity(n);
+                for i in 0..n {
+                    d.push(match op {
+                        ArithOp::Add => ld[i] + rd[i],
+                        ArithOp::Sub => ld[i] - rd[i],
+                        ArithOp::Mul => ld[i] * rd[i],
+                        ArithOp::Div => ld[i] / rd[i],
+                        ArithOp::Mod => ld[i] % rd[i],
+                    });
+                }
+                let valid = (0..n).map(|i| lv[i] && rv[i]).collect();
+                VVec::Num { d, valid }
             }
-            let valid = (0..n).map(|i| lv[i] && rv[i]).collect();
-            VVec::Num { d, valid }
         }
         CExpr::Compare { op, left, right } => {
             let l = eval_vec(graph, ctx, sc, left);
@@ -2667,6 +2854,14 @@ fn build_scan(
     }
     let mut endpoint: Vec<u32> = Vec::new();
 
+    // Which slots are populated so far. A later segment's rel/node slots are in
+    // `kinds` (and pre-allocated in `cols`) but their columns stay empty until
+    // that segment runs, so the per-row copy loops below must skip them.
+    let mut bound = vec![false; scope_len.max(1)];
+    if let Some(s) = path.start.var_slot {
+        bound[s] = true;
+    }
+
     // Seed from the start node (label + inline props/WHERE).
     let start = &path.start;
     let start_check = !start.props.is_empty() || start.where_.is_some();
@@ -2717,7 +2912,7 @@ fn build_scan(
             // Prior slots are constant across this row's neighbors — set them once.
             if need_bind {
                 for &(s, knd) in &kinds {
-                    if Some(s) == rel.var_slot || Some(s) == node.var_slot {
+                    if !bound[s] || Some(s) == rel.var_slot || Some(s) == node.var_slot {
                         continue;
                     }
                     if let Some(col) = &cols[s] {
@@ -2770,8 +2965,11 @@ fn build_scan(
                         eidx
                     } else if Some(s) == node.var_slot {
                         nbr
-                    } else {
+                    } else if bound[s] {
                         cols[s].as_ref().unwrap()[i]
+                    } else {
+                        // Slot bound by a later segment — not present in this row yet.
+                        continue;
                     };
                     new_cols[s].as_mut().unwrap().push(v);
                 }
@@ -2781,6 +2979,13 @@ fn build_scan(
                     break 'rows;
                 }
             }
+        }
+        // This segment's rel/node columns are now populated for every row.
+        if let Some(s) = rel.var_slot {
+            bound[s] = true;
+        }
+        if let Some(s) = node.var_slot {
+            bound[s] = true;
         }
         cols = new_cols;
         endpoint = new_endpoint;
@@ -2841,6 +3046,8 @@ fn edge_first_build(
         let orients: &[(u32, u32)] = match rel.direction {
             Direction::Out => &[(src, dst)],
             Direction::In => &[(dst, src)],
+            // A self-loop's two orientations are identical, so emit it once.
+            Direction::Both if src == dst => &[(src, dst)],
             Direction::Both => &[(src, dst), (dst, src)],
         };
         for &(a, bn) in orients {
@@ -3007,17 +3214,15 @@ fn par_project(graph: &Graph, ctx: &Ctx, sc: &ScanCols, items: &[CReturnItem]) -
 
 /// Drop the rows where `keep[i]` is false, compacting every slot column in place.
 fn compact(sc: &mut ScanCols, keep: &[bool]) {
-    for slot in sc.slots.iter_mut() {
-        if let Some((_, v)) = slot {
-            let mut w = 0;
-            for i in 0..v.len() {
-                if keep[i] {
-                    v[w] = v[i];
-                    w += 1;
-                }
+    for (_, v) in sc.slots.iter_mut().flatten() {
+        let mut w = 0;
+        for i in 0..v.len() {
+            if keep[i] {
+                v[w] = v[i];
+                w += 1;
             }
-            v.truncate(w);
         }
+        v.truncate(w);
     }
     for v in sc.vals.iter_mut().flatten() {
         let mut w = 0;
@@ -3777,6 +3982,12 @@ fn vectorized_linear(
     for i in 0..nrows {
         rs.push_row(cols.iter().map(|c| val_to_value(graph, &c[i])));
     }
+    // A data exception during vectorized eval can't return `Err` from here; fall
+    // back to the scalar path (this query shape is read-only, so re-running is
+    // safe), which re-evaluates and surfaces the `CodeError`.
+    if ctx.faulted() {
+        return None;
+    }
     Some(rs)
 }
 
@@ -3971,7 +4182,9 @@ fn run_linear(
                 };
             }
             CClause::Return(proj) => {
-                return Ok(project_to_rows(graph, &ctx, &bindings, &pending, proj));
+                let rows = project_to_rows(graph, &ctx, &bindings, &pending, proj);
+                ctx.check_fault()?;
+                return Ok(rows);
             }
             CClause::Finish => return Ok(RowSet::new(Vec::new())),
             // Mutations run eagerly, exactly once per binding. Flush deferred
@@ -3981,10 +4194,12 @@ fn run_linear(
                     bindings = materialize_matches(graph, &ctx, &bindings, &pending);
                     pending.clear();
                 }
-                bindings = bindings
-                    .iter()
-                    .map(|b| run_insert(graph, &ctx, patterns, b))
-                    .collect();
+                let mut inserted = Vec::with_capacity(bindings.len());
+                for b in &bindings {
+                    inserted.push(run_insert(graph, &mut ctx, plan, patterns, b));
+                }
+                bindings = inserted;
+                ctx.check_fault()?;
                 ctx = resolve_ctx(graph, plan, params);
             }
             CClause::Set(items) => {
@@ -3995,6 +4210,7 @@ fn run_linear(
                 for b in &bindings {
                     run_set(graph, &ctx, items, b);
                 }
+                ctx.check_fault()?;
                 ctx = resolve_ctx(graph, plan, params);
             }
             CClause::Remove(items) => {
@@ -4017,6 +4233,7 @@ fn run_linear(
             }
         }
     }
+    ctx.check_fault()?;
     Ok(RowSet::new(Vec::new())) // write-only / no RETURN
 }
 
@@ -4066,11 +4283,21 @@ fn ensure_node(graph: &mut Graph, ctx: &Ctx, binding: &mut Binding, node: &CNode
     vi
 }
 
-fn run_insert(graph: &mut Graph, ctx: &Ctx, patterns: &[CPath], binding: &Binding) -> Binding {
+fn run_insert(
+    graph: &mut Graph,
+    ctx: &mut Ctx,
+    plan: &CQuery,
+    patterns: &[CPath],
+    binding: &Binding,
+) -> Binding {
     let mut out = binding.clone();
     for pattern in patterns {
+        // Refresh id resolution so this element's property expressions can read
+        // a sibling created earlier in the same INSERT (forward reference).
+        ctx.refresh_ids(graph, plan);
         let mut prev = ensure_node(graph, ctx, &mut out, &pattern.start);
         for CSegment { rel, node } in &pattern.segments {
+            ctx.refresh_ids(graph, plan);
             let next = ensure_node(graph, ctx, &mut out, node);
             let (from, to) = if rel.direction == Direction::In {
                 (next, prev)
@@ -4081,6 +4308,7 @@ fn run_insert(graph: &mut Graph, ctx: &Ctx, patterns: &[CPath], binding: &Bindin
                 .into_iter()
                 .next()
                 .unwrap_or_default();
+            ctx.refresh_ids(graph, plan);
             let eprops = eval_props(graph, ctx, &rel.props, &out);
             let ei = graph.add_edge(from, to, &etype, eprops);
             if let Some(slot) = rel.var_slot {
@@ -4212,6 +4440,18 @@ fn combine(op: SetOp, left: RowSet, right: RowSet) -> RowSet {
 /// Execute a lowered plan against a graph with positional params. `run_linear`
 /// already produced the terminal RETURN's flat `RowSet` (cols + columnar cells).
 fn run_cquery(plan: &CQuery, graph: &mut Graph, params: &[Val]) -> CodeResult<RowSet> {
+    if has_nested_aggregate(plan) {
+        return Err(CodeError::new(
+            ErrorCode::Unsupported,
+            "aggregate functions cannot be nested",
+        ));
+    }
+    if has_argless_aggregate(plan) {
+        return Err(CodeError::new(
+            ErrorCode::Unsupported,
+            "aggregate function requires an argument (only count(*) is argless)",
+        ));
+    }
     let first = plan
         .parts
         .first()
@@ -4314,6 +4554,18 @@ fn vectorized_arrow(
 /// scalar — just not boxing-free).
 #[cfg(feature = "arrow")]
 fn run_cquery_arrow(plan: &CQuery, graph: &mut Graph, params: &[Val]) -> CodeResult<Vec<u8>> {
+    if has_nested_aggregate(plan) {
+        return Err(CodeError::new(
+            ErrorCode::Unsupported,
+            "aggregate functions cannot be nested",
+        ));
+    }
+    if has_argless_aggregate(plan) {
+        return Err(CodeError::new(
+            ErrorCode::Unsupported,
+            "aggregate function requires an argument (only count(*) is argless)",
+        ));
+    }
     if USE_VEC && plan.ops.is_empty() && plan.parts.len() == 1 {
         let linear = &plan.parts[0];
         if let Some((CClause::Return(proj), rest)) =
@@ -4331,7 +4583,12 @@ fn run_cquery_arrow(plan: &CQuery, graph: &mut Graph, params: &[Val]) -> CodeRes
                 let ctx = resolve_ctx(graph, plan, params);
                 let matches: Vec<&CClause> = rest.iter().collect();
                 if let Some((cols, nrows)) = vectorized_arrow(graph, &ctx, &matches, proj) {
-                    return Ok(crate::arrow::to_arrow_cols(&proj.out_names, &cols, nrows));
+                    // A recorded data exception can't return Err from the typed
+                    // fast path; fall through to the scalar path (read-only shape,
+                    // safe to re-run), which surfaces the CodeError.
+                    if !ctx.faulted() {
+                        return Ok(crate::arrow::to_arrow_cols(&proj.out_names, &cols, nrows));
+                    }
                 }
             }
         }

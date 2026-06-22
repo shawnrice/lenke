@@ -1444,3 +1444,129 @@ fn shortest_path_no_target_reaches_all() {
             .collect()
     );
 }
+
+// --- hardening: parser robustness + repeat budget (G2/G5/G6) ----------------
+
+#[test]
+fn parser_deep_nesting_is_an_error_not_a_crash() {
+    // Without a depth guard this overflows the native stack and aborts the
+    // process (uncatchable); it must instead be a clean parse error.
+    let deep = format!("g.V(){}{}", ".repeat(".repeat(2000), "out()");
+    let q = format!("{deep}{}", ")".repeat(2000));
+    assert!(super::parse(&q).is_err());
+}
+
+#[test]
+fn parser_missing_step_args_error_not_panic() {
+    for q in [
+        "g.V().limit()",
+        "g.V().skip()",
+        "g.V().range(1)",
+        "g.V().sample()",
+        "g.V().constant()",
+        "g.V().as()",
+        "g.V().aggregate()",
+        "g.V().property('k')",
+    ] {
+        assert!(super::parse(q).is_err(), "expected a parse error for `{q}`");
+    }
+}
+
+#[test]
+fn parser_rejects_non_integer_counts() {
+    for q in ["g.V().limit(-5)", "g.V().limit(2.5)", "g.V().range(0, -1)"] {
+        assert!(super::parse(q).is_err(), "expected a parse error for `{q}`");
+    }
+}
+
+#[test]
+fn parser_valid_counts_still_parse() {
+    for q in [
+        "g.V().limit(3)",
+        "g.V().range(1, 4)",
+        "g.V().repeat(out()).times(2)",
+    ] {
+        assert!(super::parse(q).is_ok(), "expected `{q}` to parse");
+    }
+}
+
+#[test]
+fn repeat_budget_guards_runaway_on_dense_graph() {
+    // A complete directed graph on 8 vertices: repeat(both()) with no
+    // termination grows the frontier explosively → must hit the budget.
+    let mut lines: Vec<String> = Vec::new();
+    for i in 0..8 {
+        lines.push(format!(
+            r#"{{"type":"node","id":"{i}","labels":["N"],"properties":{{}}}}"#
+        ));
+    }
+    for i in 0..8 {
+        for j in 0..8 {
+            if i != j {
+                lines.push(format!(
+                    r#"{{"type":"edge","from":"{i}","to":"{j}","labels":["R"],"properties":{{}}}}"#
+                ));
+            }
+        }
+    }
+    let mut g = crate::ndjson::decode(&lines.join("\n")).unwrap();
+    let t = super::parse("g.V().repeat(both())").unwrap();
+    let err = super::try_run(&mut g, &t).unwrap_err();
+    assert_eq!(err.code, crate::error_codes::ErrorCode::ResourceExhausted);
+}
+
+#[test]
+fn lexer_preserves_utf8_string_literals() {
+    let lines = [r#"{"type":"node","id":"1","labels":["P"],"properties":{"name":"café"}}"#];
+    let mut g = crate::ndjson::decode(&lines.join("\n")).unwrap();
+    let t = super::parse("g.V().has('name','café').values('name')").unwrap();
+    assert_eq!(t.run(&mut g), vec![GVal::Str("café".into())]);
+}
+
+#[test]
+fn lexer_decodes_string_escapes() {
+    let mut g = modern();
+    let t = super::parse(r"g.inject('a\nb')").unwrap();
+    assert_eq!(t.run(&mut g), vec![GVal::Str("a\nb".into())]);
+}
+
+// --- G7-G9 (Rust): TinkerPop Comparable semantics — throw on incomparable ----
+
+#[test]
+fn comparison_of_incomparable_types_faults() {
+    let mut g = modern();
+    // names are strings; gt(5) compares them to a number → incomparable.
+    let t = super::parse("g.V().values('name').is(gt(5))").unwrap();
+    assert_eq!(
+        super::try_run(&mut g, &t).unwrap_err().code,
+        crate::error_codes::ErrorCode::InvalidValue
+    );
+}
+
+#[test]
+fn order_over_mixed_types_faults() {
+    let mut g = modern();
+    let t = super::parse("g.inject(3, 'a', 1).order()").unwrap();
+    assert_eq!(
+        super::try_run(&mut g, &t).unwrap_err().code,
+        crate::error_codes::ErrorCode::InvalidValue
+    );
+}
+
+#[test]
+fn sum_of_non_numeric_faults() {
+    let mut g = modern();
+    let t = super::parse("g.V().values('name').sum()").unwrap();
+    assert_eq!(
+        super::try_run(&mut g, &t).unwrap_err().code,
+        crate::error_codes::ErrorCode::InvalidValue
+    );
+}
+
+#[test]
+fn comparable_predicate_and_aggregation_still_work() {
+    let mut g = modern();
+    // age > 30 → josh(32), peter(35) → count 2; no coercion, no fault.
+    let t = super::parse("g.V().values('age').is(gt(30)).count()").unwrap();
+    assert_eq!(super::try_run(&mut g, &t).unwrap(), vec![GVal::Num(2.0)]);
+}

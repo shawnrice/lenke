@@ -1,4 +1,5 @@
 import { Emitter, EmitterEvent } from '@pl-graph/emitter';
+import { ErrorCode, PlGraphError } from '@pl-graph/errors';
 
 import { Edge } from './Edge.js';
 import type { GraphEvent, GraphEvents, GraphEventType } from './GraphEvents.js';
@@ -420,6 +421,14 @@ export class Graph {
       return this.removeVertex(found);
     }
 
+    // Idempotent: dropping an already-removed vertex is a no-op. Without this,
+    // a second removal re-emits `VertexRemoved` for an evicted vertex whose
+    // `labels` getter dereferences a now-null graph → TypeError. (The string
+    // overload above already short-circuits; this guards the object overload.)
+    if (!this.verticesById.has(vertex.id)) {
+      return null;
+    }
+
     const event = this.emit(new EmitterEvent('@graph/VertexRemoved', vertex));
 
     if (event.defaultPrevented) {
@@ -512,11 +521,15 @@ export class Graph {
    */
   private assertValidEdge(from: Vertex | null, to: Vertex | null, labelCount: number): void {
     if (!from || !to) {
-      throw new Error('Cannot add an edge with missing endpoint vertices.');
+      throw new PlGraphError('Cannot add an edge with missing endpoint vertices.', {
+        code: ErrorCode.MissingVertex,
+      });
     }
 
     if (labelCount === 0) {
-      throw new Error('Cannot add an edge with no labels: every edge must carry ≥1 label.');
+      throw new PlGraphError('Cannot add an edge with no labels: every edge must carry ≥1 label.', {
+        code: ErrorCode.InvalidGraphOp,
+      });
     }
   }
 

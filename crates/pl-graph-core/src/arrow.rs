@@ -244,7 +244,7 @@ pub fn to_arrow_cols(names: &[String], cols: &[ArrowColumn], nrows: usize) -> Ve
     let mut descs: Vec<[u32; 10]> = Vec::with_capacity(ncols);
     for (j, (tag, null_count, validity, buf1, buf2)) in encoded.iter().enumerate() {
         let mut place = |bytes: &[u8]| -> (u32, u32) {
-            while body.len() % 8 != 0 {
+            while !body.len().is_multiple_of(8) {
                 body.push(0);
             }
             let off = (body_base + body.len()) as u32;
