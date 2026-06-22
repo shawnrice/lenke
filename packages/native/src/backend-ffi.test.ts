@@ -3,15 +3,32 @@
 // The wasm backend exercises the identical `Backend` contract; its own test runs
 // in a browser/wasm host. Run: bun test packages/native/src/backend-ffi.test.ts
 import { describe, expect, test } from 'bun:test';
+import { existsSync } from 'node:fs';
+
+import { ErrorCode, hasErrorCode, isPlGraphError } from '@pl-graph/errors';
 
 import { ABI_VERSION } from './abi.js';
 import { createFfiBackend } from './backend-ffi.js';
 import { graphFromFormat, graphFromNdjson } from './graph.js';
 
+// The shared-library extension is platform-specific: macOS `.dylib`, Linux
+// `.so`, Windows `.dll`. `build:rust` emits the one for the host.
+const LIB_EXTENSIONS: Partial<Record<NodeJS.Platform, string>> = { darwin: 'dylib', win32: 'dll' };
+const LIB_EXT = LIB_EXTENSIONS[process.platform] ?? 'so';
 const LIB = new URL(
-  '../../../crates/pl-graph-core/target/release/libpl_graph_core.dylib',
+  `../../../crates/pl-graph-core/target/release/libpl_graph_core.${LIB_EXT}`,
   import.meta.url,
 ).pathname;
+
+// The artifact is built by `bun run build:rust` (not by the test). Skip cleanly
+// with a hint when it's absent, rather than hard-erroring at dlopen.
+const hasLib = existsSync(LIB);
+
+if (!hasLib) {
+  console.warn(`[backend-ffi.test] skipping: ${LIB} not found — run \`bun run build:rust\` first.`);
+}
+
+const suite = hasLib ? describe : describe.skip;
 
 const NDJSON = [
   '{"type":"node","id":"a","labels":["P"],"properties":{"name":"marko","age":29}}',
@@ -21,7 +38,7 @@ const NDJSON = [
 
 const bytes = new TextEncoder().encode(NDJSON);
 
-describe('@pl-graph/native FFI backend', () => {
+suite('@pl-graph/native FFI backend', () => {
   test('loads at the expected ABI version', () => {
     const backend = createFfiBackend(LIB);
     expect(backend.abiVersion).toBe(ABI_VERSION);
@@ -92,12 +109,43 @@ describe('@pl-graph/native FFI backend', () => {
     g.free();
   });
 
-  test('graphson preserves the edge id; unknown format throws', () => {
+  test('graphson preserves the edge id; unknown format throws a coded error', () => {
     const backend = createFfiBackend(LIB);
     const g = graphFromNdjson(backend, bytes);
     const gson = g.serialize('graphson');
     expect(gson).toContain('"e1"'); // the edge id survives
-    expect(() => g.serialize('nope')).toThrow();
+
+    let caught: unknown;
+
+    try {
+      g.serialize('nope');
+    } catch (e) {
+      caught = e;
+    }
+
+    expect(hasErrorCode(caught, ErrorCode.UnknownFormat)).toBe(true);
+    g.free();
+  });
+
+  // The failure crossing: a real crate error rides the last-error side channel,
+  // gets read back, and arrives as a `PlGraphError` carrying the *same*
+  // `ErrorCode` a pure-TS engine would raise — identical to the wasm backend.
+  test('a GQL syntax error surfaces as a coded PlGraphError with crate details', () => {
+    const backend = createFfiBackend(LIB);
+    const g = graphFromNdjson(backend, bytes);
+
+    let caught: unknown;
+
+    try {
+      g.query('THIS IS NOT GQL');
+    } catch (e) {
+      caught = e;
+    }
+
+    expect(isPlGraphError(caught)).toBe(true);
+    expect(hasErrorCode(caught, ErrorCode.Syntax)).toBe(true);
+    // the parse offset carried over from the crate's structured report
+    expect((caught as { details?: { pos?: number } }).details?.pos).toBeTypeOf('number');
     g.free();
   });
 });

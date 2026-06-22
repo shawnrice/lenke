@@ -1,3 +1,5 @@
+import { ErrorCode, PlGraphError } from '@pl-graph/errors';
+
 import type { Backend, GraphHandle } from './backend.js';
 
 /** A decoded result row: column name → cell value. */
@@ -7,12 +9,38 @@ type RowSetJson = { columns: string[]; rows: unknown[][] };
 
 const decoder = new TextDecoder();
 
-const decodeRows = (bytes: Uint8Array): Row[] => {
-  const { columns, rows } = JSON.parse(decoder.decode(bytes)) as RowSetJson;
+// Decode a JSON carrier the crate handed back. The bytes are ours, but a decode
+// failure here means the FFI result contract drifted — surface it as a coded
+// `Ffi` fault rather than a bare `SyntaxError` with no provenance.
+const parseJson = (bytes: Uint8Array, op: string): unknown => {
+  try {
+    return JSON.parse(decoder.decode(bytes));
+  } catch (cause) {
+    throw new PlGraphError(`pl-graph: ${op} returned a non-JSON carrier`, {
+      code: ErrorCode.Ffi,
+      cause,
+    });
+  }
+};
 
-  return rows.map((row) => {
+const isRowSet = (doc: unknown): doc is RowSetJson =>
+  typeof doc === 'object' &&
+  doc !== null &&
+  Array.isArray((doc as RowSetJson).columns) &&
+  Array.isArray((doc as RowSetJson).rows);
+
+const decodeRows = (bytes: Uint8Array): Row[] => {
+  const doc = parseJson(bytes, 'query');
+
+  if (!isRowSet(doc)) {
+    throw new PlGraphError('pl-graph: query result was not a {columns, rows} document', {
+      code: ErrorCode.Ffi,
+    });
+  }
+
+  return doc.rows.map((row) => {
     const out: Row = {};
-    columns.forEach((col, i) => {
+    doc.columns.forEach((col, i) => {
       out[col] = row[i];
     });
 
@@ -75,7 +103,7 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
   query: (q, ...subs) => decodeRows(backend.queryRows(handle, toText(q, subs))),
   queryArrow: (q, ...subs) => backend.queryArrow(handle, toText(q, subs)),
   gremlin: (q, ...subs) =>
-    JSON.parse(decoder.decode(backend.gremlinJson(handle, toText(q, subs)))) as unknown[],
+    parseJson(backend.gremlinJson(handle, toText(q, subs)), 'gremlin') as unknown[],
   toNdjson: () => backend.encodeNdjson(handle),
   serialize: (format) => decoder.decode(backend.serialize(handle, format)),
   free: () => backend.graphFree(handle),

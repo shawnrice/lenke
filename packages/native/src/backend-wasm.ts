@@ -1,5 +1,8 @@
+import { ErrorCode, PlGraphError } from '@pl-graph/errors';
+
 import { assertAbi } from './abi.js';
 import type { Backend, GraphHandle } from './backend.js';
+import { type ErrorReport, parseErrorReport } from './marshal.js';
 
 // The wasm module exports the same `plg_*` C ABI as the native library, but
 // everything is 32-bit linear-memory offsets (usize → i32) and u64 returns
@@ -24,9 +27,14 @@ type WasmExports = {
   plg_deserialize: (ptr: number, len: number, fmt: number, fmtLen: number) => number;
   plg_free_buf: (ptr: number, len: number) => void;
   plg_free_arrow: (ptr: number, len: number) => void;
+  // Exported unconditionally by the crate (the reader isn't feature-gated), so
+  // the wasm backend can read the same structured last-error the FFI backend
+  // does — error-code parity across both backends.
+  plg_last_error_json: (outLen: number) => number;
 };
 
 const encoder = new TextEncoder();
+const decoder = new TextDecoder();
 
 /** A compiled module, raw bytes, or a streaming response — whatever the host has. */
 export type WasmSource =
@@ -77,6 +85,65 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
     return p;
   };
 
+  // Copy `len` bytes out of linear memory at `ptr`, checking the range sits
+  // inside the current buffer. `out_len` is ours, but a range past the heap end
+  // is a broken result contract — fail loudly rather than let `slice` silently
+  // clamp to a short buffer. Re-reads `u8()` because the call that produced the
+  // result may have grown (and replaced) the memory.
+  const readBytes = (ptr: number, len: number, op: string): Uint8Array => {
+    const mem = u8();
+
+    if (ptr < 0 || len < 0 || ptr + len > mem.length) {
+      throw new PlGraphError(
+        `pl-graph: ${op}: native result [${ptr}, ${ptr + len}) escapes wasm memory (${mem.length} bytes)`,
+        { code: ErrorCode.Ffi, details: { ptr, len, memBytes: mem.length } },
+      );
+    }
+
+    return mem.slice(ptr, ptr + len);
+  };
+
+  // Read (and clear) the crate's out-of-band last-error after a null return — the
+  // wasm twin of the FFI backend's `readLastError`. The crate writes the report
+  // into a fresh linear-memory buffer (which can grow the heap), so views are
+  // taken fresh after the call. Returns null when nothing is pending.
+  const readLastError = (): ErrorReport | null => {
+    const outLenPtr = ex.plg_alloc(4);
+
+    try {
+      const errPtr = ex.plg_last_error_json(outLenPtr);
+
+      if (!errPtr) {
+        return null;
+      }
+
+      const len = dv().getUint32(outLenPtr, true);
+      const json = decoder.decode(readBytes(errPtr, len, 'last-error'));
+      ex.plg_free_buf(errPtr, len);
+
+      return parseErrorReport(json);
+    } finally {
+      ex.plg_dealloc(outLenPtr, 4);
+    }
+  };
+
+  // Turn a null return into a `PlGraphError` carrying the shared code, identical
+  // to the FFI backend — so `hasErrorCode(e, ErrorCode.Syntax)` matches the same
+  // way whether the graph is server-side native or browser-side wasm. `fallback`
+  // is used only if the crate left no report.
+  const fail = (op: string, fallback: ErrorCode): never => {
+    const report = readLastError();
+
+    if (report) {
+      throw new PlGraphError(`pl-graph: ${op}: ${report.message}`, {
+        code: report.code,
+        details: report.details ?? undefined,
+      });
+    }
+
+    throw new PlGraphError(`pl-graph: ${op} failed`, { code: fallback });
+  };
+
   // Run a buffer-returning call: stage the query string, give the crate a 4-byte
   // slot for out_len, copy the result back out, then free both crate + input.
   const takeBuf = (
@@ -96,11 +163,11 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
         : call(handle, 0, 0, outLenPtr);
 
       if (!resPtr) {
-        throw new Error(`pl-graph: ${op} failed (parse error or unsupported clause)`);
+        return fail(op, ErrorCode.Ffi);
       }
 
       const len = dv().getUint32(outLenPtr, true);
-      const copy = u8().slice(resPtr, resPtr + len);
+      const copy = readBytes(resPtr, len, op);
       free(resPtr, len);
 
       return copy;
@@ -123,7 +190,7 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
         const h = ex.plg_graph_from_ndjson(p, bytes.byteLength, parallel ? 1 : 0);
 
         if (!h) {
-          throw new Error('pl-graph: graphFromNdjson failed (invalid UTF-8 NDJSON)');
+          return fail('graphFromNdjson', ErrorCode.InvalidJson);
         }
 
         return h;
@@ -177,9 +244,7 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
         const h = ex.plg_deserialize(inPtr, input.byteLength, fPtr, f.byteLength);
 
         if (!h) {
-          throw new Error(
-            `pl-graph: deserialize(${format}) failed (unknown format or parse error)`,
-          );
+          return fail(`deserialize(${format})`, ErrorCode.UnknownFormat);
         }
 
         return h;

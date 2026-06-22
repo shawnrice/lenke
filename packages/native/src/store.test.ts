@@ -3,15 +3,29 @@
 // caching works, finer (per-token) invalidation skips unaffected queries, and
 // subscribers fire on mutate. Run: bun test packages/native/src/store.test.ts
 import { describe, expect, test } from 'bun:test';
+import { existsSync } from 'node:fs';
 
 import { createFfiBackend } from './backend-ffi.js';
 import { graphFromNdjson } from './graph.js';
 import { createStore, inferDeps } from './store.js';
 
+// Host-specific shared-library extension (macOS `.dylib`, Linux `.so`, Windows
+// `.dll`); `build:rust` emits the one for this platform.
+const LIB_EXTENSIONS: Partial<Record<NodeJS.Platform, string>> = { darwin: 'dylib', win32: 'dll' };
+const LIB_EXT = LIB_EXTENSIONS[process.platform] ?? 'so';
 const LIB = new URL(
-  '../../../crates/pl-graph-core/target/release/libpl_graph_core.dylib',
+  `../../../crates/pl-graph-core/target/release/libpl_graph_core.${LIB_EXT}`,
   import.meta.url,
 ).pathname;
+
+// Built by `bun run build:rust`, not the test — skip cleanly when it's absent.
+const hasLib = existsSync(LIB);
+
+if (!hasLib) {
+  console.warn(`[store.test] skipping: ${LIB} not found — run \`bun run build:rust\` first.`);
+}
+
+const suite = hasLib ? describe : describe.skip;
 
 const NDJSON = [
   '{"type":"node","id":"a","labels":["P"],"properties":{"name":"marko","age":29}}',
@@ -25,7 +39,7 @@ const newStore = () => {
   return createStore(g);
 };
 
-describe('@pl-graph/native reactive store', () => {
+suite('@pl-graph/native reactive store', () => {
   test('getSnapshot is referentially stable with no mutation', () => {
     const store = newStore();
     const names = store.liveQuery('MATCH (n:P) RETURN n.name ORDER BY n.name');

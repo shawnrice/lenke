@@ -6,6 +6,8 @@ import { describe, expect, test } from 'bun:test';
 // runtime. Run: bun test packages/native/src/backend-wasm.test.ts
 import { existsSync } from 'node:fs';
 
+import { ErrorCode, hasErrorCode, isPlGraphError } from '@pl-graph/errors';
+
 import { ABI_VERSION } from './abi.js';
 import { createWasmBackend } from './backend-wasm.js';
 import { graphFromFormat, graphFromNdjson } from './graph.js';
@@ -165,5 +167,60 @@ suite('@pl-graph/native wasm backend', () => {
     const rows = g.query('MATCH (n:P) WHERE n.age = 42 RETURN count(*) AS c');
     expect(rows[0].c).toBe(62); // i%80==42 for i in 0..4999 → 42,122,…,4922 = 62
     g.free();
+  });
+
+  // The crate's structured last-error is read back *out of linear memory* and
+  // rethrown with the shared `ErrorCode` — so a browser-side wasm graph reports
+  // failures identically to the server-side FFI backend (no second-class errors).
+  test('a GQL syntax error surfaces as a coded PlGraphError with crate details', async () => {
+    const backend = await createWasmBackend(wasmBytes);
+    const g = graphFromNdjson(backend, bytes);
+
+    let caught: unknown;
+
+    try {
+      g.query('THIS IS NOT GQL');
+    } catch (e) {
+      caught = e;
+    }
+
+    expect(isPlGraphError(caught)).toBe(true);
+    expect(hasErrorCode(caught, ErrorCode.Syntax)).toBe(true);
+    expect((caught as { details?: { pos?: number } }).details?.pos).toBeTypeOf('number');
+    g.free();
+  });
+
+  test('an unknown serialize format throws a coded UnknownFormat', async () => {
+    const backend = await createWasmBackend(wasmBytes);
+    const g = graphFromNdjson(backend, bytes);
+
+    let caught: unknown;
+
+    try {
+      g.serialize('nope');
+    } catch (e) {
+      caught = e;
+    }
+
+    expect(hasErrorCode(caught, ErrorCode.UnknownFormat)).toBe(true);
+    g.free();
+  });
+
+  test('invalid-UTF-8 NDJSON fails as a coded PlGraphError, not a raw Error', async () => {
+    const backend = await createWasmBackend(wasmBytes);
+
+    let caught: unknown;
+
+    try {
+      graphFromNdjson(backend, new Uint8Array([0xff, 0xfe, 0xfd]));
+    } catch (e) {
+      caught = e;
+    }
+
+    // The crate reports bad UTF-8 on the FFI channel; the point is it's a coded
+    // PlGraphError, never a bare `Error` (which is what the wasm backend used to
+    // throw before it read the last-error).
+    expect(isPlGraphError(caught)).toBe(true);
+    expect(hasErrorCode(caught, ErrorCode.Ffi)).toBe(true);
   });
 });

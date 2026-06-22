@@ -4,6 +4,7 @@ import { ErrorCode, PlGraphError } from '@pl-graph/errors';
 
 import { assertAbi } from './abi.js';
 import type { Backend, GraphHandle } from './backend.js';
+import { asByteLength, type ErrorReport, parseErrorReport } from './marshal.js';
 
 // usize / pointer are 64-bit on the native targets we load (arm64 / x86_64);
 // the wasm backend uses 32-bit equivalents and lives in its own module.
@@ -30,13 +31,6 @@ const SYMBOLS = {
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-
-/** The shape Rust writes into the last-error slot (mirrors `PlGraphError`). */
-type ErrorReport = {
-  readonly code: ErrorCode;
-  readonly message: string;
-  readonly details?: Readonly<Record<string, unknown>> | null;
-};
 
 // A graph handle is an opaque token in the public contract (a JS `number` so the
 // wasm offset and the native pointer share one type). At the bun boundary it is
@@ -65,16 +59,13 @@ export const createFfiBackend = (libPath: string): Backend => {
       return null;
     }
 
-    const len = Number(outLen[0]);
+    const len = asByteLength(outLen[0], 'last-error');
     const json = decoder.decode(new Uint8Array(toArrayBuffer(errPtr, 0, len)).slice());
     symbols.plg_free_buf(errPtr, len);
 
-    try {
-      return JSON.parse(json) as ErrorReport;
-    } catch {
-      // A malformed report is itself an FFI fault; fall back to a generic code.
-      return null;
-    }
+    // A malformed report is itself an FFI fault; `parseErrorReport` returns null
+    // and `fail` falls back to a generic code.
+    return parseErrorReport(json);
   };
 
   // Turn a failure sentinel into a `PlGraphError` carrying the shared code, so a
@@ -109,7 +100,7 @@ export const createFfiBackend = (libPath: string): Backend => {
       return fail(op, ErrorCode.Ffi);
     }
 
-    const len = Number(outLen[0]);
+    const len = asByteLength(outLen[0], op);
     const copy = new Uint8Array(toArrayBuffer(resPtr, 0, len)).slice();
     free(resPtr, len);
 
