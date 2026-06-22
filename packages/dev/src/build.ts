@@ -1,7 +1,8 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdirSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 
+import { rolldown } from 'rolldown';
 import ts from 'typescript';
 
 export type BuildOptions = {
@@ -39,63 +40,73 @@ const collectSourceEntrypoints = (packageRoot: string): string[] => {
     );
 };
 
-const getExternals = (packageRoot: string) => {
-  const pkg = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'));
+// A bare specifier (not relative, not absolute) is a dependency or a runtime
+// builtin (`node:*`, `bun:*`, `react`, `@pl-graph/*`, …) — external it so a
+// library build bundles only the package's own source. (`getExternals` is the
+// declared subset of these; matching every bare specifier also covers builtins,
+// which is exactly what a library wants externalized.)
+const isBareSpecifier = (id: string): boolean =>
+  !id.startsWith('.') && !id.startsWith('/') && !id.startsWith('\0');
 
-  return [
-    ...Object.keys(pkg.dependencies ?? {}),
-    ...Object.keys(pkg.peerDependencies ?? {}),
-    ...Object.keys(pkg.optionalDependencies ?? {}),
-  ];
+// Map each entrypoint to an output name relative to `src/` (sans extension), so
+// `src/TreeNode/index.ts` → `dist/<fmt>/TreeNode/index.<ext>` — preserving the
+// source layout the way the previous Bun `[dir]/[name]` naming did.
+const toInput = (packageRoot: string, entrypoints: string[]): Record<string, string> => {
+  const srcDir = join(packageRoot, 'src');
+  const input: Record<string, string> = {};
+
+  for (const entry of entrypoints) {
+    const abs = join(packageRoot, entry);
+    input[relative(srcDir, abs).replace(/\.tsx?$/, '')] = abs;
+  }
+
+  return input;
 };
 
-const buildEsm = async (options: BuildOptions) => {
-  const { packageRoot, entrypoints, minify = false, sourcemap = 'linked', clean = true } = options;
+const toRolldownSourcemap = (sourcemap: BuildOptions['sourcemap']): boolean | 'inline' =>
+  sourcemap === false ? false : sourcemap === 'inline' ? 'inline' : true;
 
-  const outPath = join(packageRoot, 'dist', `esm${minify ? '.min' : ''}`);
+// We bundle with rolldown (Rollup semantics) rather than `Bun.build`: a library
+// entry's exported implementations must survive, and rolldown preserves them.
+// `Bun.build` instead tree-shakes the re-exported bodies out of the library's
+// *own* output when the package is `sideEffects: false`, shipping a bodyless
+// `export { … }` — which is why every barrel package needs this bundler to ship
+// `sideEffects: false` (the flag consumers rely on to tree-shake).
+const bundleWith = async (
+  options: BuildOptions,
+  format: 'es' | 'cjs',
+  ext: 'mjs' | 'cjs',
+): Promise<void> => {
+  const { packageRoot, entrypoints, minify = false, sourcemap = 'linked', clean = true } = options;
+  const outPath = join(packageRoot, 'dist', `${format === 'es' ? 'esm' : 'cjs'}${minify ? '.min' : ''}`);
 
   if (clean) {
     await rm(outPath, { recursive: true, force: true });
   }
 
-  await Bun.build({
-    entrypoints: entrypoints.map((entry) => join(packageRoot, entry)),
-    root: join(packageRoot, 'src'),
-    external: getExternals(packageRoot),
-    sourcemap,
-    minify,
-    splitting: entrypoints.length > 1,
-    target: 'node',
-    outdir: outPath,
-    format: 'esm',
-    naming: {
-      entry: '[dir]/[name].mjs',
-      chunk: '[name]-[hash].[ext]',
-      asset: '[name]-[hash].[ext]',
-    },
+  const bundle = await rolldown({
+    input: toInput(packageRoot, entrypoints),
+    platform: 'node',
+    external: isBareSpecifier,
+    // Source uses NodeNext `.js` specifiers that point at `.ts`/`.tsx` files.
+    resolve: { extensionAlias: { '.js': ['.ts', '.tsx', '.js'] } },
   });
+
+  await bundle.write({
+    dir: outPath,
+    format,
+    sourcemap: toRolldownSourcemap(sourcemap),
+    minify,
+    entryFileNames: `[name].${ext}`,
+    chunkFileNames: `[name]-[hash].${ext === 'mjs' ? 'js' : 'cjs'}`,
+  });
+
+  await bundle.close();
 };
 
-const buildCjs = async (options: BuildOptions) => {
-  const { packageRoot, entrypoints, minify = false, sourcemap = 'linked', clean = true } = options;
+const buildEsm = (options: BuildOptions): Promise<void> => bundleWith(options, 'es', 'mjs');
 
-  const outPath = join(packageRoot, 'dist', `cjs${minify ? '.min' : ''}`);
-
-  if (clean) {
-    await rm(outPath, { recursive: true, force: true });
-  }
-
-  await Bun.build({
-    entrypoints: entrypoints.map((entry) => join(packageRoot, entry)),
-    root: join(packageRoot, 'src'),
-    external: getExternals(packageRoot),
-    sourcemap,
-    minify,
-    target: 'node',
-    format: 'cjs',
-    outdir: outPath,
-  });
-};
+const buildCjs = (options: BuildOptions): Promise<void> => bundleWith(options, 'cjs', 'cjs');
 
 type TypescriptBuildOptions = {
   packageRoot: string;

@@ -21,6 +21,7 @@
     "build": "bun build.ts"
   },
   "dependencies": {
+    "rolldown": "^1.1.2",
     "debug": "^4.4.3",
     "oxfmt": "^0.55.0",
     "oxlint": "^1.70.0",
