@@ -498,15 +498,20 @@ fn apply_pattern(graph: &mut Graph, ctx: &mut Ctx, p: &MatchPattern, t: &Trav) -
             vec![]
         };
     }
-    // Bind the end label, one branch per distinct candidate value.
-    let mut seen: Vec<GVal> = Vec::new();
+    // Bind the end label, one branch per distinct candidate value. Dedup via the
+    // same hashable key as `Step::Dedupe` (O(n), not the old O(n²) linear scan);
+    // a NaN candidate has no key, so it's never a duplicate and always branches.
+    let mut seen: HashSet<DedupKey> = HashSet::new();
     let mut branches = Vec::new();
     for o in outs {
-        if seen.contains(&o) {
-            continue;
+        match dedup_key(&o) {
+            None => branches.push(match_bind(t, end_key, o)),
+            Some(k) => {
+                if seen.insert(k) {
+                    branches.push(match_bind(t, end_key, o));
+                }
+            }
         }
-        seen.push(o.clone());
-        branches.push(match_bind(t, end_key, o));
     }
     branches
 }
