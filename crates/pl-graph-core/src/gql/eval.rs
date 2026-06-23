@@ -3917,8 +3917,10 @@ fn vectorized_linear(
         return None;
     }
     let (last, mid) = rest.split_last()?;
-    // Middle clauses are WITHs or expanding MATCHes; the tail is a RETURN. Require
-    // ≥1 middle clause (plain `MATCH … RETURN` keeps the entry path, incl. LIMIT cap).
+    let CClause::Return(last_proj) = last else {
+        return None;
+    };
+    // Middle clauses are WITHs or expanding MATCHes.
     let mid_ok = mid.iter().all(|c| {
         matches!(
             c,
@@ -3929,7 +3931,17 @@ fn vectorized_linear(
                 }
         )
     });
-    if mid.is_empty() || !mid_ok || !matches!(last, CClause::Return(_)) {
+    if !mid_ok {
+        return None;
+    }
+    // A plain `MATCH … RETURN` (no intermediate WITH) normally stays on the scalar
+    // entry path so a `RETURN … LIMIT n` keeps its row-by-row early-out. But an
+    // aggregate (`count`/`sum`/`avg`/group-by) scans the whole match regardless —
+    // there's no early-out to lose — so route it through the vectorized frame for
+    // the de-boxed columnar win on filtered counts/sums. (The Arrow fast path
+    // already covers non-aggregate plain `MATCH … RETURN`, but bars aggregates;
+    // this fills exactly that gap.)
+    if mid.is_empty() && !last_proj.aggregating {
         return None;
     }
 
@@ -3973,9 +3985,7 @@ fn vectorized_linear(
             _ => return None,
         }
     }
-    let CClause::Return(proj) = last else {
-        return None;
-    };
+    let proj = last_proj;
     let cols = project_frame_cols(graph, &ctx, &sc, proj)?;
     let nrows = cols.first().map_or(0, |c| c.len());
     let mut rs = RowSet::new(proj.out_names.clone());
