@@ -58,7 +58,11 @@ fn main() {
     let iters = 500;
 
     let a = time_query(&mut g, "MATCH (n:Person) RETURN count(*) AS c", iters);
-    let b = time_query(&mut g, "MATCH (n:Person) WHERE n.age >= 0 RETURN count(*) AS c", iters);
+    let b = time_query(
+        &mut g,
+        "MATCH (n:Person) WHERE n.age >= 0 RETURN count(*) AS c",
+        iters,
+    );
     let boxed_pred = b - a;
 
     let (scalar_us, simd_us) = match g.props.col("age") {
@@ -73,7 +77,10 @@ fn main() {
     println!("  [a] scan + count                {a:>8.1} us");
     println!("  [b] scan + count + WHERE        {b:>8.1} us");
     println!("  boxed-Val predicate  (b − a)    {boxed_pred:>8.1} us");
-    println!("  columnar scalar floor           {scalar_us:>8.2} us   ({:.0}x cheaper)", boxed_pred / scalar_us);
+    println!(
+        "  columnar scalar floor           {scalar_us:>8.2} us   ({:.0}x cheaper)",
+        boxed_pred / scalar_us
+    );
     println!(
         "  columnar 'simd' floor           {simd_us:>8.2} us   ({:.0}x cheaper)   [scalar on x86 — no AVX path yet]",
         boxed_pred / simd_us

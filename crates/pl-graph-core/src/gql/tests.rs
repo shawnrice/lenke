@@ -91,23 +91,82 @@ fn mixed_presence() -> Graph {
 fn vectorized_aggregates_over_absent_and_nan() {
     let mut g = mixed_presence();
     // count(*) — every matched row
-    assert_eq!(rows(&mut g, "MATCH (n:T) RETURN count(*) AS c"), vec![vec![n(6.0)]]);
+    assert_eq!(
+        rows(&mut g, "MATCH (n:T) RETURN count(*) AS c"),
+        vec![vec![n(6.0)]]
+    );
     // numeric predicate where absent score is NaN in the column: NaN > x is false,
     // so absent nodes are excluded (b, f have no score).
-    assert_eq!(rows(&mut g, "MATCH (n:T) WHERE n.score > 5 RETURN count(*) AS c"), vec![vec![n(1.0)]]);
-    assert_eq!(rows(&mut g, "MATCH (n:T) WHERE n.score >= 5 RETURN count(*) AS c"), vec![vec![n(2.0)]]);
-    assert_eq!(rows(&mut g, "MATCH (n:T) WHERE n.age > 15 RETURN count(*) AS c"), vec![vec![n(4.0)]]);
-    // aggregates skip absent values (4 nodes have score: 1,9,5,4)
-    assert_eq!(rows(&mut g, "MATCH (n:T) RETURN sum(n.score) AS s"), vec![vec![n(19.0)]]);
-    assert_eq!(rows(&mut g, "MATCH (n:T) RETURN avg(n.score) AS a"), vec![vec![n(4.75)]]);
     assert_eq!(
-        rows(&mut g, "MATCH (n:T) RETURN min(n.score) AS lo, max(n.score) AS hi"),
+        rows(&mut g, "MATCH (n:T) WHERE n.score > 5 RETURN count(*) AS c"),
+        vec![vec![n(1.0)]]
+    );
+    assert_eq!(
+        rows(
+            &mut g,
+            "MATCH (n:T) WHERE n.score >= 5 RETURN count(*) AS c"
+        ),
+        vec![vec![n(2.0)]]
+    );
+    assert_eq!(
+        rows(&mut g, "MATCH (n:T) WHERE n.age > 15 RETURN count(*) AS c"),
+        vec![vec![n(4.0)]]
+    );
+    // aggregates skip absent values (4 nodes have score: 1,9,5,4)
+    assert_eq!(
+        rows(&mut g, "MATCH (n:T) RETURN sum(n.score) AS s"),
+        vec![vec![n(19.0)]]
+    );
+    assert_eq!(
+        rows(&mut g, "MATCH (n:T) RETURN avg(n.score) AS a"),
+        vec![vec![n(4.75)]]
+    );
+    assert_eq!(
+        rows(
+            &mut g,
+            "MATCH (n:T) RETURN min(n.score) AS lo, max(n.score) AS hi"
+        ),
         vec![vec![n(1.0), n(9.0)]],
     );
-    assert_eq!(rows(&mut g, "MATCH (n:T) RETURN count(n.score) AS c"), vec![vec![n(4.0)]]);
+    assert_eq!(
+        rows(&mut g, "MATCH (n:T) RETURN count(n.score) AS c"),
+        vec![vec![n(4.0)]]
+    );
     // filter on one property, aggregate another: age>=20 → {b,c,e,f}; present
     // scores among them are c=9, e=4 (b, f skipped).
-    assert_eq!(rows(&mut g, "MATCH (n:T) WHERE n.age >= 20 RETURN sum(n.score) AS s"), vec![vec![n(13.0)]]);
+    assert_eq!(
+        rows(
+            &mut g,
+            "MATCH (n:T) WHERE n.age >= 20 RETURN sum(n.score) AS s"
+        ),
+        vec![vec![n(13.0)]]
+    );
+}
+
+#[test]
+fn count_star_shortcut_edges() {
+    let mut g = mixed_presence();
+    // bare count(*) over a label takes the O(1) `vertices_with_label(l).len()`
+    // shortcut — must equal the general count.
+    assert_eq!(
+        rows(&mut g, "MATCH (n:T) RETURN count(*) AS c"),
+        vec![vec![n(6.0)]]
+    );
+    // a label with no vertices → count 0 (still one row, like the general path).
+    assert_eq!(
+        rows(&mut g, "MATCH (n:Ghost) RETURN count(*) AS c"),
+        vec![vec![n(0.0)]]
+    );
+    // count(*)+1 is NOT the bare shortcut (output is an expression over the agg).
+    assert_eq!(
+        rows(&mut g, "MATCH (n:T) RETURN count(*) + 1 AS c"),
+        vec![vec![n(7.0)]]
+    );
+    // a second aggregate / a grouping key / a WHERE all keep the general path.
+    assert_eq!(
+        rows(&mut g, "MATCH (n:T) WHERE n.age > 15 RETURN count(*) AS c"),
+        vec![vec![n(4.0)]]
+    );
 }
 
 #[test]

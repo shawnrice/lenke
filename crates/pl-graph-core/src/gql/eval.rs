@@ -3887,6 +3887,64 @@ fn expand_frame(
     Some(cur)
 }
 
+/// O(1) shortcut for `MATCH (n:Label) RETURN count(*)`: no WHERE, no path, no
+/// grouping / extra aggregate / DISTINCT / ORDER BY / SKIP / LIMIT. The result is
+/// exactly the label bucket's size, so read `vertices_with_label(l).len()` instead
+/// of materializing and counting the whole id column — turning an O(n) scan into
+/// an O(1) read. Provably identical to the general path, which counts that same
+/// bucket; the difference is `bucket.len()` vs `bucket.iter().count()`.
+fn try_count_star(
+    linear: &CLinear,
+    graph: &Graph,
+    plan: &CQuery,
+    params: &[Val],
+) -> Option<RowSet> {
+    let [CClause::Match {
+        optional: false,
+        patterns,
+        where_: None,
+        ..
+    }, CClause::Return(proj)] = linear.clauses.as_slice()
+    else {
+        return None;
+    };
+    // a single bare node `(n:Label)` — one pattern, no path segments, no inline
+    // props / WHERE on the node.
+    let [path] = patterns.as_slice() else {
+        return None;
+    };
+    if !path.segments.is_empty() || !path.start.props.is_empty() || path.start.where_.is_some() {
+        return None;
+    }
+    // exactly one label (no `|`, `!`, wildcard) — else the bucket isn't the count.
+    let Some(CLabelExpr::Label(label_ref)) = &path.start.label else {
+        return None;
+    };
+    // the projection is exactly `count(*)` and nothing else.
+    if proj.distinct
+        || !proj.order_by.is_empty()
+        || proj.skip.is_some()
+        || proj.limit.is_some()
+        || proj.out_len != 1
+        || proj.aggs.len() != 1
+        || proj.items.len() != 1
+        || !matches!(proj.items[0].expr, CExpr::AggRef(0))
+    {
+        return None;
+    }
+    let agg = &proj.aggs[0];
+    if !agg.star || agg.distinct || !matches!(agg.func, AggFn::Count) {
+        return None;
+    }
+    let ctx = resolve_ctx(graph, plan, params);
+    let n = ctx.labels[*label_ref]
+        .0
+        .map_or(0, |lid| graph.vertices_with_label(lid).len());
+    let mut rs = RowSet::new(proj.out_names.clone());
+    rs.push_row(std::iter::once(Value::Num(n as f64)));
+    Some(rs)
+}
+
 /// Vectorized executor for a whole linear pipeline: `MATCH <path> (WITH …)+
 /// RETURN …`. Threads a single columnar frame stage-to-stage — carrying element
 /// columns forward so prop reads/filters/ORDER BY past a `WITH` stay vectorized,
@@ -3900,6 +3958,10 @@ fn vectorized_linear(
     plan: &CQuery,
     params: &[Val],
 ) -> Option<RowSet> {
+    // O(1) shortcut for a bare `MATCH (n:Label) RETURN count(*)`.
+    if let Some(rs) = try_count_star(linear, graph, plan, params) {
+        return Some(rs);
+    }
     // Validate the whole clause shape *before* any scan work, so a non-pipeline
     // query bails for free (no wasted build_scan) and keeps the entry path.
     let (first, rest) = linear.clauses.split_first()?;
