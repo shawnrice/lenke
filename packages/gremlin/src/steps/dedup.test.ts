@@ -4,7 +4,20 @@ import type { Vertex } from '@pl-graph/core';
 
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
-import { T, V, as_, dedupe, hasLabel, in_, inV, out, outE, select, values } from '../steps.js';
+import {
+  T,
+  V,
+  as_,
+  dedupe,
+  hasLabel,
+  in_,
+  inV,
+  inject,
+  out,
+  outE,
+  select,
+  values,
+} from '../steps.js';
 import { traversal } from '../traversal.js';
 
 const arr = (r: Iterable<unknown>): unknown[] => [...r];
@@ -127,6 +140,33 @@ describe('Gremlin tests', () => {
         run(traversal(V(), hasLabel('PERSON'), outE('CREATED'), inV(), dedupe()), tinkerGraph),
       ) as Array<{ id: string }>;
       expect(r.map((v) => v.id)).toEqual(['3', '5']);
+    });
+
+    // Composite (list) values dedupe structurally, not by reference: two equal
+    // lists are distinct JS array refs, but must still collapse — matching the
+    // Rust engine and TinkerPop's value-based list equality.
+    test('dedupe collapses structurally-equal list values', () => {
+      const r = arr(run(traversal(inject([1, 2], [1, 2], [3]), dedupe()), tinkerGraph));
+      expect(r).toEqual([[1, 2], [3]]);
+    });
+
+    // A recurring *reference* is keyed once then short-circuits via the WeakSet
+    // ("slow first, fast after"); a distinct-but-equal reference is caught by
+    // the structural key. Both are dropped.
+    test('dedupe drops repeated list references and equal-by-value lists', () => {
+      const a = [1, 2];
+      const r = arr(run(traversal(inject(a, a, [1, 2]), dedupe()), tinkerGraph));
+      expect(r).toEqual([[1, 2]]);
+    });
+
+    // Lists of graph elements key by element id (via toJSON), so the same vertex
+    // in two different lists collapses while different vertices stay distinct.
+    test('dedupe keys lists of elements by id', () => {
+      const v3 = tinkerGraph.getVertexById('3') as Vertex;
+      const v5 = tinkerGraph.getVertexById('5') as Vertex;
+
+      expect(arr(run(traversal(inject([v3], [v3]), dedupe()), tinkerGraph))).toEqual([[v3]]);
+      expect(arr(run(traversal(inject([v3], [v5]), dedupe()), tinkerGraph))).toEqual([[v3], [v5]]);
     });
   });
 });

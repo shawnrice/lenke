@@ -190,23 +190,70 @@ export const applyStep = (
       return filterTraverser(stream, (t) => hasRevisit(t.path));
 
     case 'dedupe': {
+      // Primitives and stable graph-element references dedupe directly in this
+      // Set — value/identity equality, no allocation (the hot path). Composite
+      // values (lists / plain-object maps) are distinct references even when
+      // structurally equal, so they upgrade to a structural string key in a
+      // second, lazily-created Set. A recurring *reference* short-circuits via
+      // the WeakSet, so each composite is keyed at most once: slow the first
+      // time, an O(1) pointer hit on every repeat.
       const seen = new Set<unknown>();
+      let seenComposite: Set<string> | null = null;
+      let seenRefs: WeakSet<object> | null = null;
       const { labels } = step;
       const by = step.bys?.[0];
 
       return filterTraverser(stream, (t) => {
         // Multi-label form: dedupe by the tuple of tagged values at the given
-        // labels. Joining with a NUL separator gives a stable string key for
-        // the Set without colliding across reasonable inputs.
-        const fallback = by !== undefined ? evalBy(by, t.value, graph, ctx) : t.value;
-        const k =
-          labels && labels.length > 0 ? tupleKey(labels.map((l) => t.tags.get(l))) : fallback;
+        // labels — a stable NUL-joined string key.
+        if (labels && labels.length > 0) {
+          const k = tupleKey(labels.map((l) => t.tags.get(l)));
 
-        if (seen.has(k)) {
+          if (seen.has(k)) {
+            return false;
+          }
+
+          seen.add(k);
+
+          return true;
+        }
+
+        const v = by !== undefined ? evalBy(by, t.value, graph, ctx) : t.value;
+
+        // Only plain lists/maps need structural keying; elements (stable refs),
+        // JS `Map`s, and other class instances keep cheap reference identity.
+        const proto =
+          v !== null && typeof v === 'object' ? (Object.getPrototypeOf(v) as unknown) : false;
+        const isComposite = Array.isArray(v) || proto === Object.prototype || proto === null;
+
+        if (isComposite) {
+          const ref = v as object;
+
+          seenRefs ??= new WeakSet();
+
+          if (seenRefs.has(ref)) {
+            return false; // same reference already processed → duplicate, no re-key
+          }
+
+          seenRefs.add(ref);
+
+          const k = tupleKey([v]);
+          seenComposite ??= new Set();
+
+          if (seenComposite.has(k)) {
+            return false;
+          }
+
+          seenComposite.add(k);
+
+          return true;
+        }
+
+        if (seen.has(v)) {
           return false;
         }
 
-        seen.add(k);
+        seen.add(v);
 
         return true;
       });
