@@ -215,7 +215,7 @@ footer{color:var(--dim);font-size:13px;margin-top:50px;border-top:1px solid var(
 <div class="tldr">
 <div class="card"><div class="big">${biggestQuery.toFixed(0)}×</div><div class="lab">fastest query speedup (Rust vs TS gql)</div></div>
 <div class="card"><div class="big">${buildBig ? `${buildBig.toFixed(0)}×` : '—'}</div><div class="lab">graph build at ${n0(r.rows[r.rows.length - 1].n)} vertices</div></div>
-<div class="card"><div class="big">${simdBest.toFixed(1)}×</div><div class="lab">NEON predicate scan vs scalar</div></div>
+<div class="card"><div class="big">${simdBest.toFixed(1)}×</div><div class="lab">NEON vs scalar — raw kernel microbench (not the query path)</div></div>
 <div class="card"><div class="big">${(r.ffiOverhead * 1e6).toFixed(0)} ns</div><div class="lab">per FFI call (the fixed tax)</div></div>
 </div>
 
@@ -241,8 +241,8 @@ ${r.meta.queries.map((q) => queryTable(q.id, q.label, q.text)).join('')}
   })
   .join('')}</tbody></table>
 
-<h2>SIMD predicate scan (<code>age &gt; 50</code>)</h2>
-<p>This is the kernel the index-build experiment pointed at: compute-bound, scatter-free, so the NEON speedup flows through. A hand-written <code>f64x2</code> compare-and-mask vs the scalar loop, plus the equivalent JS loop for context.</p>
+<h2>SIMD predicate scan (<code>age &gt; 50</code>) — raw kernel microbenchmark</h2>
+<p><strong>Not the production query path.</strong> The GQL engine's <code>WHERE</code> filter vectorizes through its expression interpreter (see the <code>eval_vs_columnar</code> example) and never calls this kernel. These numbers measure a hand-written <code>f64x2</code> compare-and-mask (NEON) vs the scalar loop vs the equivalent JS loop, in isolation — kept because a clean SIMD-vs-scalar throughput figure is worth having on its own.</p>
 <table><thead><tr><th>vertices</th><th>JS loop</th><th>Rust scalar</th><th>Rust NEON</th><th>NEON vs scalar</th><th>NEON vs JS</th></tr></thead><tbody>${simdRows}</tbody></table>
 
 <h2>Serialize — the product is bytes for disk / wire</h2>

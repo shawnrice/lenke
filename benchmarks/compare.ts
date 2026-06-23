@@ -266,6 +266,9 @@ for (const n of SIZES) {
   );
 
   // ---- SIMD predicate scan (age > 50): scalar vs NEON, + JS loop ----
+  // Microbenchmark of the standalone `scan` kernel via plg_predicate_scan. NOT
+  // the product query path: GQL `WHERE` vectorizes through the expression
+  // interpreter (see the eval_vs_columnar example), never this kernel.
   const ages: number[] = [];
 
   for (const v of tg.vertices) {

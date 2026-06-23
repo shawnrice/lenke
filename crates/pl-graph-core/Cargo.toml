@@ -2,16 +2,17 @@
 name = "pl-graph-core"
 version = "0.1.0"
 edition = "2021"
-description = "Columnar LPG core with SIMD-accelerated bulk index build (experiment)"
+description = "Columnar labeled-property-graph core: in-memory columnar graph with ISO-GQL and Gremlin engines, serialization codecs, and an Arrow result surface, behind a C ABI (bun:ffi / wasm)."
 
 # `lib` for unit tests / examples / the future WASM build; `cdylib` for the
 # native dynamic library that bun:ffi loads. Same crate, both bindings.
 [lib]
 crate-type = ["lib", "cdylib"]
 
-# No external dependencies on purpose: NEON is mandatory baseline on aarch64
-# (no runtime feature detection needed), so the SIMD kernels use std::arch
-# directly and the crate builds fully offline.
+# Dependencies are kept minimal (and optional) so the crate builds fully offline
+# and a wasm frontend can drop everything it doesn't use. The one bit of SIMD
+# left — the `scan` predicate-scan microbenchmark — uses std::arch directly
+# (NEON is baseline on aarch64, no runtime detection), so it needs no crate.
 
 [profile.release]
 opt-level = 3

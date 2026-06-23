@@ -1,7 +1,6 @@
-//! C ABI for bun:ffi (and later wasm-bindgen). Two surfaces:
-//!   * the raw CSR builder (`plg_build_csr`) from the index-build experiment, and
-//!   * a stateful graph handle (`plg_graph_*`) that owns a decoded columnar
-//!     graph so queries / encode run without re-marshalling the whole graph.
+//! C ABI for bun:ffi (and later wasm-bindgen). Exposes a stateful graph handle
+//! (`plg_graph_*`) that owns a decoded columnar graph, so queries / encode run
+//! without re-marshalling the whole graph on each call.
 //!
 //! Buffers passed in are caller-owned and read-only. Buffers handed back
 //! (`plg_encode_ndjson`) are heap-allocated here and must be returned via
@@ -10,37 +9,7 @@
 #[cfg(feature = "_fallible-ffi")]
 use crate::error_codes::ErrorCode;
 use crate::graph::{Column, Graph};
-use crate::{build_csr, query, scan, ScanKind};
-
-// ---------- raw CSR builder (unchanged) ----------
-
-/// # Safety
-/// Pointers must be valid for their lengths and `u32`-aligned.
-#[no_mangle]
-pub unsafe extern "C" fn plg_build_csr(
-    src: *const u32,
-    dst: *const u32,
-    e: usize,
-    n: usize,
-    out_offsets: *mut u32,
-    out_neighbors: *mut u32,
-    simd: u32,
-) -> i32 {
-    if src.is_null() || dst.is_null() || out_offsets.is_null() || out_neighbors.is_null() {
-        return -1;
-    }
-    let src = std::slice::from_raw_parts(src, e);
-    let dst = std::slice::from_raw_parts(dst, e);
-    let kind = if simd != 0 {
-        ScanKind::Neon
-    } else {
-        ScanKind::Scalar
-    };
-    let csr = build_csr(src, dst, n, kind);
-    std::ptr::copy_nonoverlapping(csr.offsets.as_ptr(), out_offsets, n + 1);
-    std::ptr::copy_nonoverlapping(csr.neighbors.as_ptr(), out_neighbors, e);
-    0
-}
+use crate::{query, scan};
 
 #[no_mangle]
 pub extern "C" fn plg_abi_version() -> u32 {
@@ -541,6 +510,10 @@ pub unsafe extern "C" fn plg_deserialize(
 
 /// SIMD (or scalar) predicate scan `key > threshold` over a numeric column.
 /// Returns -1 if the key isn't a numeric column.
+///
+/// BENCHMARK SURFACE: this exposes the `scan` microbenchmark kernel for
+/// `benchmarks/compare.ts` (SIMD-vs-scalar over a real column). The product
+/// query path does NOT use it — GQL `WHERE` vectorizes via `gql::eval`.
 ///
 /// # Safety
 /// `g` valid; `key_ptr`/`key_len` valid UTF-8; out pointers writable.

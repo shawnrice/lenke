@@ -1,12 +1,12 @@
 //! Mutable columnar LPG: dense u32 vertex indices, dictionary-encoded
-//! labels/keys/edge-types, typed property columns (contiguous — SIMD-scannable),
-//! and per-vertex adjacency lists.
+//! labels/keys/edge-types, typed contiguous property columns, and per-vertex
+//! adjacency lists.
 //!
 //! This is a **working** in-memory graph, not a build-once artifact: vertices
 //! and edges can be added, relabelled, re-propertied, and deleted at runtime
-//! (deletes leave tombstones; live counts are tracked). Bulk decode still builds
-//! it in one pass; the SIMD CSR builder (`crate::build_csr`) and the contiguous
-//! property columns the SIMD predicate scan reads are unchanged.
+//! (deletes leave tombstones; live counts are tracked). Bulk decode builds it in
+//! one pass. The property columns are contiguous so the GQL engine's vectorized
+//! filter path (`gql::eval`) reads them without per-row `Val` boxing.
 //!
 //! Property model: a key's column is typed by its first non-null value
 //! (Num=f64, Str=interned, Bool); a value that doesn't fit promotes the column
