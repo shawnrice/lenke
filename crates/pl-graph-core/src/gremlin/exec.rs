@@ -12,6 +12,48 @@ use std::sync::Arc;
 use super::{By, Endpoint, GVal, Order, Pop, Scope, Step, Token, Traversal, P};
 use crate::graph::{Graph, IdxKey, RangeBound, Value};
 
+/// A hashable projection of a [`GVal`] for O(1) dedup. Mirrors `GVal`'s derived
+/// structural equality, with the two `f64` details handled so it matches
+/// `PartialEq` exactly: `-0.0`/`+0.0` canonicalize together (they're `==`), and a
+/// `NaN` makes the whole key un-hashable — [`dedup_key`] returns `None` and the
+/// caller passes the traverser straight through (a `NaN` is never equal to
+/// anything, so it can never be a duplicate).
+#[derive(Debug, PartialEq, Eq, Hash)]
+enum DedupKey {
+    Null,
+    Bool(bool),
+    Num(u64),
+    Str(Arc<str>),
+    Vertex(u32),
+    Edge(u32),
+    List(Vec<DedupKey>),
+    Map(Vec<(DedupKey, DedupKey)>),
+}
+
+/// Build a hashable dedup key from a `GVal`, or `None` if it contains a `NaN`.
+fn dedup_key(v: &GVal) -> Option<DedupKey> {
+    Some(match v {
+        GVal::Null => DedupKey::Null,
+        GVal::Bool(b) => DedupKey::Bool(*b),
+        GVal::Num(n) => {
+            if n.is_nan() {
+                return None;
+            }
+            // `-0.0 == 0.0`, so collapse both to one bit pattern.
+            DedupKey::Num(if *n == 0.0 { 0 } else { n.to_bits() })
+        }
+        GVal::Str(s) => DedupKey::Str(s.clone()),
+        GVal::Vertex(id) => DedupKey::Vertex(*id),
+        GVal::Edge(id) => DedupKey::Edge(*id),
+        GVal::List(xs) => DedupKey::List(xs.iter().map(dedup_key).collect::<Option<_>>()?),
+        GVal::Map(kvs) => DedupKey::Map(
+            kvs.iter()
+                .map(|(k, val)| Some((dedup_key(k)?, dedup_key(val)?)))
+                .collect::<Option<_>>()?,
+        ),
+    })
+}
+
 /// A unit flowing through the pipeline: its value, the path it took, `as(label)`
 /// tags (label → accumulated values, for `select` pop), and the repeat loop count.
 #[derive(Clone)]
@@ -980,8 +1022,10 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
         Step::CyclicPath => stream.into_iter().filter(|t| has_dup(&t.path)).collect(),
         Step::Dedupe(bys) => {
             // Key on the full tuple of `by` modulators (TinkerPop `dedup(a,b)`
-            // dedups by the combination), not just the first.
-            let mut seen: Vec<Vec<GVal>> = Vec::new();
+            // dedups by the combination), not just the first. A hash set keyed on
+            // the hashable projection of that tuple makes this O(n); the previous
+            // `Vec::contains` scan was O(n²) (`V().out().dedup()` over 200k ≈ 8.7s).
+            let mut seen: HashSet<Vec<DedupKey>> = HashSet::new();
             let mut next = Vec::new();
             for t in stream {
                 let key: Vec<GVal> = if bys.is_empty() {
@@ -989,9 +1033,16 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
                 } else {
                     bys.iter().map(|by| eval_by(graph, ctx, by, &t.val)).collect()
                 };
-                if !seen.contains(&key) {
-                    seen.push(key);
-                    next.push(t);
+                match key.iter().map(dedup_key).collect::<Option<Vec<DedupKey>>>() {
+                    // A NaN anywhere in the key is never equal to anything (NaN !=
+                    // NaN), so it can't be a duplicate — pass it straight through,
+                    // exactly as the old structural `Vec::contains` scan did.
+                    None => next.push(t),
+                    Some(dk) => {
+                        if seen.insert(dk) {
+                            next.push(t);
+                        }
+                    }
                 }
             }
             next
@@ -1792,4 +1843,54 @@ fn run_repeat(
 fn inc_loops(mut t: Trav) -> Trav {
     t.loops += 1;
     t
+}
+
+#[cfg(test)]
+mod dedup_key_tests {
+    use std::sync::Arc;
+
+    use super::{dedup_key, GVal};
+
+    // The hashed dedup key must mirror `GVal`'s structural `PartialEq` exactly,
+    // with the f64 edge cases the hash set can't express structurally.
+    #[test]
+    fn float_and_nan_semantics() {
+        // -0.0 and +0.0 are `==`, so they share a key (dedup together).
+        assert_eq!(dedup_key(&GVal::Num(0.0)), dedup_key(&GVal::Num(-0.0)));
+        // distinct numbers get distinct keys.
+        assert_ne!(dedup_key(&GVal::Num(1.0)), dedup_key(&GVal::Num(2.0)));
+        // NaN != NaN, so a NaN is never a duplicate → no key (pass-through).
+        assert!(dedup_key(&GVal::Num(f64::NAN)).is_none());
+        // a NaN nested in a list/map makes the whole key un-hashable too.
+        assert!(dedup_key(&GVal::List(vec![GVal::Num(1.0), GVal::Num(f64::NAN)])).is_none());
+        assert!(dedup_key(&GVal::Map(vec![(
+            GVal::Str(Arc::from("k")),
+            GVal::Num(f64::NAN)
+        )]))
+        .is_none());
+    }
+
+    #[test]
+    fn element_and_value_keys() {
+        assert_eq!(dedup_key(&GVal::Vertex(7)), dedup_key(&GVal::Vertex(7)));
+        assert_ne!(dedup_key(&GVal::Vertex(7)), dedup_key(&GVal::Vertex(8)));
+        // same id, different element kind → different key (a vertex isn't an edge).
+        assert_ne!(dedup_key(&GVal::Vertex(7)), dedup_key(&GVal::Edge(7)));
+        assert_eq!(
+            dedup_key(&GVal::Str(Arc::from("x"))),
+            dedup_key(&GVal::Str(Arc::from("x")))
+        );
+        assert_ne!(
+            dedup_key(&GVal::Str(Arc::from("x"))),
+            dedup_key(&GVal::Str(Arc::from("y")))
+        );
+        // distinct variants never collide.
+        assert_ne!(dedup_key(&GVal::Bool(true)), dedup_key(&GVal::Num(1.0)));
+        assert_ne!(dedup_key(&GVal::Null), dedup_key(&GVal::Bool(false)));
+        // nested structure keys element-wise (incl. the -0.0/+0.0 collapse).
+        assert_eq!(
+            dedup_key(&GVal::List(vec![GVal::Num(-0.0), GVal::Vertex(1)])),
+            dedup_key(&GVal::List(vec![GVal::Num(0.0), GVal::Vertex(1)])),
+        );
+    }
 }
