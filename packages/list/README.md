@@ -39,7 +39,9 @@ function* naturals() {
   while (true) yield i++;
 }
 
-const firstFive = List.from(naturals).map((n) => n * n).take(5);
+const firstFive = List.from(naturals)
+  .map((n) => n * n)
+  .take(5);
 console.log(firstFive.toArray()); // [0, 1, 4, 9, 16]
 
 // Element access.

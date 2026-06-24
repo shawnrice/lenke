@@ -45,7 +45,7 @@ function* naturals() {
   for (let i = 1; ; i++) yield i;
 }
 
-bounded(count)(naturals());   // caps consumption (default 1_000_000)
+bounded(count)(naturals()); // caps consumption (default 1_000_000)
 count(take(100, naturals())); // or cap explicitly with `take`
 ```
 

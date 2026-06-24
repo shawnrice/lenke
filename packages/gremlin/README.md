@@ -20,19 +20,18 @@ import { run, toArray, traversal, V, has, out, values, gt } from '@pl-graph/grem
 const g = new Graph();
 const marko = g.addVertex({ id: '1', labels: ['PERSON'], properties: { name: 'marko', age: 29 } });
 const josh = g.addVertex({ id: '4', labels: ['PERSON'], properties: { name: 'josh', age: 32 } });
-const lop = g.addVertex({ id: '3', labels: ['SOFTWARE'], properties: { name: 'lop', lang: 'java' } });
+const lop = g.addVertex({
+  id: '3',
+  labels: ['SOFTWARE'],
+  properties: { name: 'lop', lang: 'java' },
+});
 
 g.addEdge({ id: '7', from: marko, to: josh, labels: ['KNOWS'], properties: { weight: 1.0 } });
 g.addEdge({ id: '9', from: marko, to: lop, labels: ['CREATED'], properties: { weight: 0.4 } });
 g.addEdge({ id: '11', from: josh, to: lop, labels: ['CREATED'], properties: { weight: 0.4 } });
 
 // Build a traversal plan: software created by people over 30.
-const plan = traversal(
-  V(),
-  has('age', gt(30)),
-  out('CREATED'),
-  values('name'),
-);
+const plan = traversal(V(), has('age', gt(30)), out('CREATED'), values('name'));
 
 // Run it. `run` returns a lazy Iterable; `toArray` is an eager terminal.
 console.log(toArray(plan, g)); // ['lop']

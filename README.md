@@ -20,37 +20,37 @@ React bindings expose either engine as a reactive data store.
 
 **Graph & queries**
 
-| Package | Description |
-| --- | --- |
-| [`@pl-graph/core`](packages/core) | In-memory labeled-property graph with label and opt-in property indexes. |
-| [`@pl-graph/gql`](packages/gql) | ISO-GQL (ISO/IEC 39075) query engine over a core graph. |
-| [`@pl-graph/gremlin`](packages/gremlin) | Apache TinkerPop-style Gremlin traversal engine over a core graph. |
-| [`@pl-graph/serialization`](packages/serialization) | Graph codecs: pg-json, pg-text, ndjson, GraphSON, CSV. |
+| Package                                             | Description                                                              |
+| --------------------------------------------------- | ------------------------------------------------------------------------ |
+| [`@pl-graph/core`](packages/core)                   | In-memory labeled-property graph with label and opt-in property indexes. |
+| [`@pl-graph/gql`](packages/gql)                     | ISO-GQL (ISO/IEC 39075) query engine over a core graph.                  |
+| [`@pl-graph/gremlin`](packages/gremlin)             | Apache TinkerPop-style Gremlin traversal engine over a core graph.       |
+| [`@pl-graph/serialization`](packages/serialization) | Graph codecs: pg-json, pg-text, ndjson, GraphSON, CSV.                   |
 
 **Native engine (Rust)**
 
-| Package | Description |
-| --- | --- |
+| Package                                 | Description                                                                      |
+| --------------------------------------- | -------------------------------------------------------------------------------- |
 | [`pl-graph-core`](crates/pl-graph-core) | Rust columnar graph + GQL/Gremlin engines + Apache Arrow output, behind a C ABI. |
-| [`@pl-graph/native`](packages/native) | JS/TS bindings to the Rust core via `bun:ffi` or WebAssembly. |
+| [`@pl-graph/native`](packages/native)   | JS/TS bindings to the Rust core via `bun:ffi` or WebAssembly.                    |
 
 **React**
 
-| Package | Description |
-| --- | --- |
+| Package                             | Description                                                              |
+| ----------------------------------- | ------------------------------------------------------------------------ |
 | [`@pl-graph/react`](packages/react) | Hooks and providers exposing a graph (TS or native) as a reactive store. |
 
 **Building blocks**
 
-| Package | Description |
-| --- | --- |
-| [`@pl-graph/emitter`](packages/emitter) | Typed, cancelable, error-isolated event emitter. |
-| [`@pl-graph/errors`](packages/errors) | Stable `E_*` error codes and a shared `PlGraphError` type. |
-| [`@pl-graph/fp`](packages/fp) | Lazy, curried iterable combinators composed with `pipe`. |
-| [`@pl-graph/list`](packages/list) | Lazy, iterator-backed `List<T>`. |
-| [`@pl-graph/tree`](packages/tree) | `TreeNode` and `Trie` data structures. |
-| [`@pl-graph/utils`](packages/utils) | Small shared helpers. |
-| [`@pl-graph/dev`](packages/dev) | Internal build & lint tooling (bundler, lint rules, shared config). |
+| Package                                 | Description                                                         |
+| --------------------------------------- | ------------------------------------------------------------------- |
+| [`@pl-graph/emitter`](packages/emitter) | Typed, cancelable, error-isolated event emitter.                    |
+| [`@pl-graph/errors`](packages/errors)   | Stable `E_*` error codes and a shared `PlGraphError` type.          |
+| [`@pl-graph/fp`](packages/fp)           | Lazy, curried iterable combinators composed with `pipe`.            |
+| [`@pl-graph/list`](packages/list)       | Lazy, iterator-backed `List<T>`.                                    |
+| [`@pl-graph/tree`](packages/tree)       | `TreeNode` and `Trie` data structures.                              |
+| [`@pl-graph/utils`](packages/utils)     | Small shared helpers.                                               |
+| [`@pl-graph/dev`](packages/dev)         | Internal build & lint tooling (bundler, lint rules, shared config). |
 
 Each package has its own README with a full API walkthrough.
 

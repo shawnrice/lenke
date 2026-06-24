@@ -39,14 +39,16 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      # Build first: each package exports its types from dist/, and the root
+      # typecheck has no source-path mapping, so `check`'s tsc only resolves
+      # @pl-graph/* once dist/ exists. nx caches any unchanged build work.
+      - name: Build
+        run: bun run build
+
       # typecheck + lint (oxlint + cargo clippy -D warnings) + format check
       # (oxfmt + cargo fmt --check), across both stacks.
       - name: Check
         run: bun run check
-
-      # nx run-many across all projects — TS packages + the Rust crate.
-      - name: Build
-        run: bun run build
 
       - name: Test
         run: bun run test

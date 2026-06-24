@@ -21,8 +21,8 @@ const a = root.createChild(2);
 const b = root.createChild(3);
 a.createChild(4);
 
-root.castDepthFirst();          // [root, a, 4, b] as TreeNode<number>[]
-root.castBreadthFirstValue();   // [1, 2, 3, 4]
+root.castDepthFirst(); // [root, a, 4, b] as TreeNode<number>[]
+root.castBreadthFirstValue(); // [1, 2, 3, 4]
 
 // Structure-preserving map: same shape and ids, new values
 const doubled = root.map((n) => n * 2); // TreeNode<number>
@@ -41,9 +41,9 @@ const trie = Trie.from([
   ['work', 3],
 ]);
 
-trie.has('word');           // true  (full word)
-trie.hasPartial('wor');     // true  (prefix only)
-trie.get('wor')?.char;      // 'r'   (TrieNode at the prefix)
+trie.has('word'); // true  (full word)
+trie.hasPartial('wor'); // true  (prefix only)
+trie.get('wor')?.char; // 'r'   (TrieNode at the prefix)
 
 // Autocomplete: every full word under a prefix
 Array.from(trie.descendantsOf('wor'), (node) => [node.word, node.value]);

@@ -13,13 +13,7 @@ bun add @pl-graph/utils
 ## Usage
 
 ```ts
-import {
-  arraysAreEqual,
-  identity,
-  rando,
-  timer,
-  sampleTimer,
-} from '@pl-graph/utils';
+import { arraysAreEqual, identity, rando, timer, sampleTimer } from '@pl-graph/utils';
 
 // Strict (===) element-wise array comparison
 arraysAreEqual([1, 2, 3], [1, 2, 3]); // true

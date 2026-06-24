@@ -20,14 +20,14 @@
 
 `default = ["full"]`, and `full = ["gql", "gremlin", "ndjson", "codecs", "arrow", "parallel"]`. The crate is feature-composable: a minimal build (for example a WebAssembly frontend bundle) can drop everything it does not use and ship only the columnar graph plus the engines it needs, shrinking the binary with each capability removed.
 
-| Feature | Adds |
-| --- | --- |
-| `gql` | The ISO-GQL engine (hand-rolled parser; carries no `serde_json`). |
-| `gremlin` | The Gremlin traversal engine; pulls in `serde_json` for heterogeneous JSON results. |
-| `ndjson` | The NDJSON load/snapshot codec; pulls in `serde_json`. |
-| `codecs` | The extra formats (pg-json, pg-text, graphson, csv); implies `ndjson`. |
-| `arrow` | The Apache Arrow columnar result surface (binary; no `serde_json`); implies `gql`. |
-| `parallel` | `rayon` for bulk NDJSON decode (load-time win, no tradeoff). |
+| Feature          | Adds                                                                                  |
+| ---------------- | ------------------------------------------------------------------------------------- |
+| `gql`            | The ISO-GQL engine (hand-rolled parser; carries no `serde_json`).                     |
+| `gremlin`        | The Gremlin traversal engine; pulls in `serde_json` for heterogeneous JSON results.   |
+| `ndjson`         | The NDJSON load/snapshot codec; pulls in `serde_json`.                                |
+| `codecs`         | The extra formats (pg-json, pg-text, graphson, csv); implies `ndjson`.                |
+| `arrow`          | The Apache Arrow columnar result surface (binary; no `serde_json`); implies `gql`.    |
+| `parallel`       | `rayon` for bulk NDJSON decode (load-time win, no tradeoff).                          |
 | `parallel-query` | Intra-query threading (parallel projection eval); off by default, implies `parallel`. |
 
 `_fallible-ffi` is an internal marker feature pulled in transitively by the fallible FFI surfaces; it is not a public knob.

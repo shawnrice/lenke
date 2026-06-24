@@ -46,13 +46,13 @@ await deserializeStream(chunkSource, 'ndjson', new Graph());
 
 The registered codecs are exposed as the `codecs` record (`FormatName` is its key type) and individually as `Codec` values. A codec implements `encode(graph) => string` and `decode(input, graph) => Graph`; line-oriented formats additionally implement `encodeStream` / `decodeStream`.
 
-| Name | Codec export | Streaming |
-| --- | --- | --- |
-| `pg-json` | `pgJsonCodec` | no |
-| `pg-text` | `pgTextCodec` | yes |
-| `ndjson` | `ndjsonCodec` | yes |
-| `graphson` | `graphsonCodec` | yes |
-| `csv` | `csvCodec` | yes |
+| Name       | Codec export    | Streaming |
+| ---------- | --------------- | --------- |
+| `pg-json`  | `pgJsonCodec`   | no        |
+| `pg-text`  | `pgTextCodec`   | yes       |
+| `ndjson`   | `ndjsonCodec`   | yes       |
+| `graphson` | `graphsonCodec` | yes       |
+| `csv`      | `csvCodec`      | yes       |
 
 Top-level entry points (`serialize`, `deserialize`, `serializeStream`, `deserializeStream`, `serializeAsync`, `deserializeAsync`) take a `FormatName` and dispatch to the matching codec; an unknown format or an unsupported streaming request throws a `PlGraphError`. The CSV codec also exposes its node/edge halves directly (`encodeNodes`, `decodeNodes`, `encodeEdges`, `decodeEdges`, and their `*Stream` variants) for Neo4j-`admin-import`-style paired files.
 

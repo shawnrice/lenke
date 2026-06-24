@@ -32,9 +32,7 @@ function PersonCount() {
 
 function Name({ id }: { id: string }) {
   // A Gremlin traversal against the current snapshot, re-run on each change.
-  const names = useGraphTraversal(
-    (g) => g.toArray(traversal(V(id), values('name'))) as string[],
-  );
+  const names = useGraphTraversal((g) => g.toArray(traversal(V(id), values('name'))) as string[]);
 
   return <p>{names[0]}</p>;
 }
