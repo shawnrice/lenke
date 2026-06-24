@@ -2,7 +2,7 @@
 //! parity port. Each previously diverged from `@pl-graph/gremlin` and is now
 //! aligned; these lock the TS-faithful behavior in place.
 
-use super::{g, GVal, P, __};
+use super::{g, GVal, __, P};
 use crate::graph::Graph;
 use crate::ndjson;
 

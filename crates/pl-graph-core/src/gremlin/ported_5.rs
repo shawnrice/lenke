@@ -11,7 +11,7 @@
 //!   - global sum/min/max over an all-null stream returns [] (not [null]).
 //!   - math(), branch(), and closure map() steps don't exist in the Rust engine.
 
-use super::{g, GVal, Scope, Step, Token, Traversal, P, __};
+use super::{g, GVal, Scope, Step, Token, Traversal, __, P};
 use crate::ndjson;
 
 /// Append a raw step (for local min/max/mean — no fluent builder helpers).

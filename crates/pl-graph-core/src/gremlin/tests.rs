@@ -3,7 +3,7 @@
 //! repeat / select-as / software-creators) plus the modulator / projection /
 //! side-effect / mutation features. TS closures are expressed as sub-traversals.
 
-use super::{g, GVal, Order, Pop, Token, P, __};
+use super::{g, GVal, Order, Pop, Token, __, P};
 use crate::graph::{Graph, Value};
 use crate::ndjson;
 

@@ -9,7 +9,7 @@
 //! predicate (`gt(30)`, `within('a','b')`), a token (`T.label`, `Order.desc`,
 //! `Pop.first`, `Scope.local`), or a nested traversal (`__.out().count()`).
 
-use super::{GVal, Order, Pop, Token, Traversal, P, __};
+use super::{GVal, Order, Pop, Token, Traversal, __, P};
 
 // --- lexer ------------------------------------------------------------------
 
