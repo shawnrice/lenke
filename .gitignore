@@ -187,3 +187,4 @@ packages/*/src/**/*.js.map
 .claude/worktrees
 .nx/polygraph
 .nx/self-healing
+.nx/migrate-runs
