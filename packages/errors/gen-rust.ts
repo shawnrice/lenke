@@ -74,6 +74,7 @@ pub enum ErrorCode {
 ${variants}
 }
 
+#[allow(clippy::use_self)] // generated; the paths below spell out the explicit type name.
 impl ErrorCode {
     /// Every code, for exhaustiveness checks and the cross-language conformance test.
     pub const ALL: &'static [ErrorCode] = &[
