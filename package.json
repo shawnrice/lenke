@@ -8,10 +8,10 @@
   "scripts": {
     "build": "nx run-many -t build",
     "test": "nx run-many -t test",
-    "lint": "oxlint --type-aware .",
+    "lint": "oxlint --type-aware . && nx run-many -t lint",
     "lint:fix": "oxlint --type-aware --fix .",
-    "fmt": "oxfmt . && cargo fmt --manifest-path crates/pl-graph-core/Cargo.toml",
-    "fmt:check": "oxfmt --check . && cargo fmt --manifest-path crates/pl-graph-core/Cargo.toml --check",
+    "fmt": "oxfmt . && nx run-many -t fmt",
+    "fmt:check": "oxfmt --check . && nx run-many -t fmt-check",
     "typecheck": "bunx tsc --noEmit",
     "check": "bun run typecheck && bun run lint && bun run fmt:check"
   },
