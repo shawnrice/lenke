@@ -235,6 +235,10 @@ impl ArrowColumn {
 /// layout). `nrows` is the row count (columns must all be that long).
 pub fn to_arrow_cols(names: &[String], cols: &[ArrowColumn], nrows: usize) -> Vec<u8> {
     let ncols = cols.len();
+    #[allow(
+        clippy::type_complexity,
+        reason = "ad-hoc per-column (tag, null_count, validity, buf1, buf2) tuple local to encoding"
+    )]
     let encoded: Vec<(u32, u32, Vec<u8>, Vec<u8>, Vec<u8>)> =
         cols.iter().map(|c| c.encode(nrows)).collect();
 
@@ -311,6 +315,10 @@ mod tests {
 
     /// Decode the blob back into (type, nulls, values) per column to verify the
     /// layout round-trips — the same reading a JS consumer does.
+    #[allow(
+        clippy::type_complexity,
+        reason = "ad-hoc decoded-column tuple in a round-trip test helper"
+    )]
     fn decode(blob: &[u8]) -> (usize, Vec<(u32, Vec<Option<String>>)>) {
         assert_eq!(&blob[0..4], b"ARW1");
         let nrows = u64_at(blob, 8) as usize;

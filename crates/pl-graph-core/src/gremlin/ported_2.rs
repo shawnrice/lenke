@@ -428,7 +428,7 @@ fn p2_cap_reads_bag() {
         GVal::List(items) => items,
         _ => panic!("expected list bag"),
     };
-    let mut g = modern();
+    let g = modern();
     let mut got = ids(&g, bag);
     got.sort();
     assert_eq!(got, vec!["2", "4"]);
@@ -447,7 +447,7 @@ fn p2_aggregate_full_stream_before_cap() {
         GVal::List(items) => items,
         _ => panic!(),
     };
-    let mut g = modern();
+    let g = modern();
     let mut got = ids(&g, bag);
     got.sort();
     assert_eq!(got, vec!["1", "2", "3", "4", "5", "6"]);
@@ -466,7 +466,7 @@ fn p2_multiple_aggregates_independent_keys() {
         GVal::List(items) => items,
         _ => panic!(),
     };
-    let mut g = modern();
+    let g = modern();
     let mut got = ids(&g, bag);
     got.sort();
     assert_eq!(got, vec!["1", "2", "3", "4", "5", "6"]);
@@ -918,7 +918,7 @@ fn p2_cyclic_path_keeps_repeats() {
 fn p2_cyclic_path_then_path() {
     let r = qs("g.V('1').both().both().cyclicPath().path()");
     assert_eq!(r.len(), 3);
-    let mut g = modern();
+    let g = modern();
     for p in &r {
         match p {
             GVal::List(items) => {

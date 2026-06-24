@@ -195,6 +195,7 @@ fn resolve_ctx<'a>(graph: &Graph, plan: &'a CQuery, params: &'a [Val]) -> Ctx<'a
 ///   - many small exprs/row (4-col projection): VM ~17% SLOWER
 ///   - one deep predicate/row (expr-heavy filter): VM ~6% FASTER
 ///   - traversal/output-bound (joins, var-length): unaffected
+///
 /// Net: the naive scalar stack VM loses. Per-invocation setup + operand-stack
 /// traffic of fat `Val`s outweighs the dispatch saved, except for a single deep
 /// expression where the flat op-stream beats recursive boxed-tree pointer-chasing.
@@ -1284,9 +1285,7 @@ fn reachable(graph: &Graph, ctx: &Ctx, from: u32, rel: &CRel, q: Quantifier) -> 
         entry: None,
     }];
 
-    loop {
-        let Some(top) = stack.last_mut() else { break };
-
+    while let Some(top) = stack.last_mut() {
         if q.max.is_some_and(|m| top.depth >= m) || top.idx >= top.edges.len() {
             if let Some(e) = top.entry {
                 used.remove(&e);
@@ -1555,6 +1554,10 @@ fn drive_matches(
 
 /// Match `node` at vertex `vi`; on success continue matching `path` from segment
 /// `next_idx`. Restores the binding on backtrack. Generic over the sink `F`.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "recursive backtracking matcher; bundling its args into a struct would obscure the hot recursion"
+)]
 fn match_node_continue<F: FnMut(&mut Binding) -> bool>(
     graph: &Graph,
     ctx: &Ctx,
@@ -3226,6 +3229,10 @@ fn compact(sc: &mut ScanCols, keep: &[bool]) {
     }
     for v in sc.vals.iter_mut().flatten() {
         let mut w = 0;
+        #[allow(
+            clippy::needless_range_loop,
+            reason = "bound by the column length; `i` indexes the keep mask and is the swap target"
+        )]
         for i in 0..v.len() {
             if keep[i] {
                 v.swap(w, i);
@@ -3319,6 +3326,10 @@ fn group_ids(
     }
     // Representative row per group (first occurrence).
     let mut rep_row = vec![usize::MAX; ngroups];
+    #[allow(
+        clippy::needless_range_loop,
+        reason = "bound by row count `n`; `i` indexes gid_of_row and is stored as the representative row"
+    )]
     for i in 0..n {
         let g = gid_of_row[i];
         if rep_row[g] == usize::MAX {
@@ -3619,8 +3630,7 @@ fn project_frame_cols(
                 .unwrap_or(ngroups);
             let mut out: Vec<Vec<Val>> = vec![Vec::with_capacity(end - start); proj.items.len()];
             let mut b = Binding(vec![None; sc.slots.len()]);
-            for g in start..end {
-                let ri = rep_row[g];
+            for &ri in &rep_row[start..end] {
                 for (slot, col) in sc.slots.iter().enumerate() {
                     if let Some((elem, ids)) = col {
                         b.set(
@@ -4640,9 +4650,7 @@ fn run_cquery_arrow(plan: &CQuery, graph: &mut Graph, params: &[Val]) -> CodeRes
     }
     if USE_VEC && plan.ops.is_empty() && plan.parts.len() == 1 {
         let linear = &plan.parts[0];
-        if let Some((CClause::Return(proj), rest)) =
-            linear.clauses.split_last().map(|(l, r)| (l, r))
-        {
+        if let Some((CClause::Return(proj), rest)) = linear.clauses.split_last() {
             if rest.iter().all(|c| {
                 matches!(
                     c,

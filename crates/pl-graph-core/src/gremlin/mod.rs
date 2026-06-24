@@ -148,6 +148,10 @@ impl P {
     pub fn not_containing(s: &str) -> P {
         P::NotContaining(s.to_string())
     }
+    #[allow(
+        clippy::should_implement_trait,
+        reason = "P::not is the Gremlin predicate-negation constructor, not std::ops::Not"
+    )]
     pub fn not(p: P) -> P {
         P::Not(Box::new(p))
     }
@@ -358,19 +362,19 @@ impl Traversal {
 
     /// Attach a `by()` modulator to the most recent modulator-bearing step.
     fn attach_by(mut self, by: By) -> Self {
-        if let Some(last) = self.steps.last_mut() {
-            match last {
-                Step::Order(bys, _)
-                | Step::Group(bys)
-                | Step::GroupCount(bys)
-                | Step::Path(bys)
-                | Step::Dedupe(bys)
-                | Step::Tree(bys)
-                | Step::Project(_, bys)
-                | Step::WhereKey(_, _, bys)
-                | Step::Select { bys, .. } => bys.push(by),
-                _ => {}
-            }
+        if let Some(
+            Step::Order(bys, _)
+            | Step::Group(bys)
+            | Step::GroupCount(bys)
+            | Step::Path(bys)
+            | Step::Dedupe(bys)
+            | Step::Tree(bys)
+            | Step::Project(_, bys)
+            | Step::WhereKey(_, _, bys)
+            | Step::Select { bys, .. },
+        ) = self.steps.last_mut()
+        {
+            bys.push(by);
         }
         self
     }

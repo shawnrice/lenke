@@ -249,6 +249,10 @@ impl Parser {
         Ok(LabelExpr::Label(self.bind_name("a label name")?))
     }
 
+    #[allow(
+        clippy::type_complexity,
+        reason = "ad-hoc rel-detail tuple (variable, label, property constraints, WHERE) consumed once by the caller"
+    )]
     fn parse_rel_detail(
         &mut self,
     ) -> R<(

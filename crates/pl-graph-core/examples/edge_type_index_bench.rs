@@ -6,6 +6,7 @@
 //!   * scan: `MATCH (a)-[r]->(b) WHERE r IS LABELED T` — the label moves to the
 //!     WHERE, which does not seed, so the engine expands every vertex's
 //!     adjacency and filters inline (the pre-change cost).
+//!
 //! Run: cargo run --release --example edge_type_index_bench
 //!
 //! The gain is selectivity-bound: a rare type seeks a tiny bucket while the scan
