@@ -40,7 +40,7 @@ pub enum Val {
     Num(f64),
     /// Interned string: cloning is a refcount bump, not an allocation.
     Str(Arc<str>),
-    List(Vec<Val>),
+    List(Vec<Self>),
     Node(u32),
     Edge(u32),
 }
@@ -1731,7 +1731,7 @@ struct Agg {
 
 impl Agg {
     fn new(spec: &super::plan::CAgg) -> Self {
-        Agg {
+        Self {
             func: spec.func,
             star: spec.star,
             distinct: spec.distinct,
@@ -2143,12 +2143,12 @@ impl VVec {
     /// Coerce to numeric (`num_of` semantics): invalid where the source is null.
     fn into_num(self) -> (Vec<f64>, Vec<bool>) {
         match self {
-            VVec::Num { d, valid } => (d, valid),
-            VVec::Bool { t, valid } => (
+            Self::Num { d, valid } => (d, valid),
+            Self::Bool { t, valid } => (
                 t.iter().map(|&b| if b { 1.0 } else { 0.0 }).collect(),
                 valid,
             ),
-            VVec::Gen(vs) => {
+            Self::Gen(vs) => {
                 let mut d = Vec::with_capacity(vs.len());
                 let mut valid = Vec::with_capacity(vs.len());
                 for v in &vs {
@@ -2171,17 +2171,17 @@ impl VVec {
     /// Per-row Kleene truth (for WHERE and boolean connectives).
     fn into_truth(self) -> Vec<Truth> {
         match self {
-            VVec::Bool { t, valid } => t
+            Self::Bool { t, valid } => t
                 .iter()
                 .zip(&valid)
                 .map(|(&b, &v)| v.then_some(b))
                 .collect(),
-            VVec::Num { d, valid } => d
+            Self::Num { d, valid } => d
                 .iter()
                 .zip(&valid)
                 .map(|(&x, &v)| v.then_some(x != 0.0 && !x.is_nan()))
                 .collect(),
-            VVec::Gen(vs) => vs.iter().map(as_truth).collect(),
+            Self::Gen(vs) => vs.iter().map(as_truth).collect(),
         }
     }
 
@@ -2192,15 +2192,15 @@ impl VVec {
     fn into_arrow(self, graph: &Graph) -> ArrowColumn {
         let opt = |v: Vec<bool>| if v.iter().all(|&b| b) { None } else { Some(v) };
         match self {
-            VVec::Num { d, valid } => ArrowColumn::Num {
+            Self::Num { d, valid } => ArrowColumn::Num {
                 data: d,
                 valid: opt(valid),
             },
-            VVec::Bool { t, valid } => ArrowColumn::Bool {
+            Self::Bool { t, valid } => ArrowColumn::Bool {
                 data: t,
                 valid: opt(valid),
             },
-            VVec::Gen(vals) => {
+            Self::Gen(vals) => {
                 let values: Vec<Value> = vals.iter().map(|v| val_to_value(graph, v)).collect();
                 ArrowColumn::from_values(values.iter())
             }
@@ -2210,34 +2210,34 @@ impl VVec {
     /// Keep only rows `[start, end)` (for SKIP/LIMIT on a typed column). Only the
     /// Arrow fast path slices typed columns; the RowSet path slices `ScanCols`.
     #[cfg(feature = "arrow")]
-    fn slice(self, start: usize, end: usize) -> VVec {
+    fn slice(self, start: usize, end: usize) -> Self {
         match self {
-            VVec::Num { d, valid } => VVec::Num {
+            Self::Num { d, valid } => Self::Num {
                 d: d[start..end].to_vec(),
                 valid: valid[start..end].to_vec(),
             },
-            VVec::Bool { t, valid } => VVec::Bool {
+            Self::Bool { t, valid } => Self::Bool {
                 t: t[start..end].to_vec(),
                 valid: valid[start..end].to_vec(),
             },
-            VVec::Gen(v) => VVec::Gen(v[start..end].to_vec()),
+            Self::Gen(v) => Self::Gen(v[start..end].to_vec()),
         }
     }
 
     /// Final per-row output values (for projection cells).
     fn into_vals(self) -> Vec<Val> {
         match self {
-            VVec::Num { d, valid } => d
+            Self::Num { d, valid } => d
                 .iter()
                 .zip(&valid)
                 .map(|(&x, &v)| if v { Val::Num(x) } else { Val::Null })
                 .collect(),
-            VVec::Bool { t, valid } => t
+            Self::Bool { t, valid } => t
                 .iter()
                 .zip(&valid)
                 .map(|(&b, &v)| if v { Val::Bool(b) } else { Val::Null })
                 .collect(),
-            VVec::Gen(vs) => vs,
+            Self::Gen(vs) => vs,
         }
     }
 }
@@ -2294,7 +2294,7 @@ struct ScanCols {
 impl ScanCols {
     fn new(scope_len: usize) -> Self {
         let w = scope_len.max(1);
-        ScanCols {
+        Self {
             n: 0,
             slots: (0..w).map(|_| None).collect(),
             vals: (0..w).map(|_| None).collect(),

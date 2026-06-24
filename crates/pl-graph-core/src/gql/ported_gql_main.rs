@@ -625,7 +625,7 @@ fn m_param_as_list_for_in() {
 fn m_hex_scientific_underscored_numbers() {
     let mut g = modern();
     let mut one = |lit: &str| -> Value {
-        let query_str = format!("MATCH (n:Person {{name: 'marko'}}) RETURN {} AS x", lit);
+        let query_str = format!("MATCH (n:Person {{name: 'marko'}}) RETURN {lit} AS x");
         rows(&mut g, &query_str)[0][0].clone()
     };
     assert_eq!(one("0xFF"), n(255.0));
@@ -1306,8 +1306,7 @@ fn m_simple_case_over_integers() {
     let mut g = modern();
     let mut one = |val: &str| -> Value {
         let query_str = format!(
-            "MATCH (n:Person {{name: 'marko'}}) RETURN CASE {} WHEN -10 THEN 'minus ten' WHEN 0 THEN 'zero' WHEN 5 THEN 'five' ELSE 'else' END AS r",
-            val
+            "MATCH (n:Person {{name: 'marko'}}) RETURN CASE {val} WHEN -10 THEN 'minus ten' WHEN 0 THEN 'zero' WHEN 5 THEN 'five' ELSE 'else' END AS r"
         );
         rows(&mut g, &query_str)[0][0].clone()
     };
@@ -1371,7 +1370,7 @@ fn m_nullif() {
 fn m_numeric_value_functions() {
     let mut g = modern();
     let mut v = |expr: &str| -> Value {
-        let query_str = format!("MATCH (n:Person {{name: 'marko'}}) RETURN {} AS r", expr);
+        let query_str = format!("MATCH (n:Person {{name: 'marko'}}) RETURN {expr} AS r");
         rows(&mut g, &query_str)[0][0].clone()
     };
     assert_eq!(v("abs(-5)"), n(5.0));
@@ -1389,7 +1388,7 @@ fn m_numeric_value_functions() {
 fn m_trigonometric_and_angle_conversion() {
     let mut g = modern();
     let mut v = |expr: &str| -> f64 {
-        let query_str = format!("MATCH (n:Person {{name: 'marko'}}) RETURN {} AS r", expr);
+        let query_str = format!("MATCH (n:Person {{name: 'marko'}}) RETURN {expr} AS r");
         match rows(&mut g, &query_str)[0][0] {
             Value::Num(f) => f,
             ref other => panic!("expected Num, got {other:?}"),
@@ -1404,7 +1403,7 @@ fn m_trigonometric_and_angle_conversion() {
 fn m_string_value_functions() {
     let mut g = modern();
     let mut v = |expr: &str| -> Value {
-        let query_str = format!("MATCH (n:Person {{name: 'marko'}}) RETURN {} AS r", expr);
+        let query_str = format!("MATCH (n:Person {{name: 'marko'}}) RETURN {expr} AS r");
         rows(&mut g, &query_str)[0][0].clone()
     };
     assert_eq!(v("char_length('hello')"), n(5.0));
@@ -1423,7 +1422,7 @@ fn m_string_value_functions() {
 fn m_null_argument_yields_null() {
     let mut g = modern();
     let mut v = |expr: &str| -> Value {
-        let query_str = format!("MATCH (n:Person {{name: 'marko'}}) RETURN {} AS r", expr);
+        let query_str = format!("MATCH (n:Person {{name: 'marko'}}) RETURN {expr} AS r");
         rows(&mut g, &query_str)[0][0].clone()
     };
     assert_eq!(v("sqrt(null)"), Value::Null);

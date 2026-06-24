@@ -148,15 +148,15 @@ enum Arg {
 impl Arg {
     fn as_gval(&self) -> Result<GVal, String> {
         match self {
-            Arg::Str(s) => Ok(GVal::Str(s.as_str().into())),
-            Arg::Num(n) => Ok(GVal::Num(*n)),
-            Arg::Bool(b) => Ok(GVal::Bool(*b)),
+            Self::Str(s) => Ok(GVal::Str(s.as_str().into())),
+            Self::Num(n) => Ok(GVal::Num(*n)),
+            Self::Bool(b) => Ok(GVal::Bool(*b)),
             _ => Err("expected a literal value".into()),
         }
     }
     fn as_str(&self) -> Result<&str, String> {
         match self {
-            Arg::Str(s) => Ok(s),
+            Self::Str(s) => Ok(s),
             _ => Err("expected a string".into()),
         }
     }

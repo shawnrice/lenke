@@ -94,7 +94,7 @@ pub enum ArrowColumn {
 
 impl ArrowColumn {
     /// Build a column from generic `Value` cells (infers the physical type).
-    pub fn from_values<'a>(cells: impl Iterator<Item = &'a Value>) -> ArrowColumn {
+    pub fn from_values<'a>(cells: impl Iterator<Item = &'a Value>) -> Self {
         let cells: Vec<&Value> = cells.collect();
         let n = cells.len();
         let mut seen_num = false;
@@ -125,13 +125,13 @@ impl ArrowColumn {
                 bytes.extend_from_slice(s.as_bytes());
                 offsets.push(bytes.len() as i32);
             }
-            ArrowColumn::Utf8 {
+            Self::Utf8 {
                 offsets,
                 bytes,
                 valid,
             }
         } else if seen_bool {
-            ArrowColumn::Bool {
+            Self::Bool {
                 data: cells
                     .iter()
                     .map(|c| matches!(c, Value::Bool(true)))
@@ -139,7 +139,7 @@ impl ArrowColumn {
                 valid,
             }
         } else {
-            ArrowColumn::Num {
+            Self::Num {
                 data: cells
                     .iter()
                     .map(|c| if let Value::Num(x) = c { *x } else { 0.0 })
@@ -151,7 +151,7 @@ impl ArrowColumn {
 
     /// Build a Utf8 column from already-rendered strings (one per row, `None` =
     /// null). Lets the engine flatten element/string columns once, in place.
-    pub fn utf8_from(strings: impl Iterator<Item = Option<String>>) -> ArrowColumn {
+    pub fn utf8_from(strings: impl Iterator<Item = Option<String>>) -> Self {
         let mut offsets = vec![0i32];
         let mut bytes = Vec::new();
         let mut valid = Vec::new();
@@ -169,7 +169,7 @@ impl ArrowColumn {
             }
             offsets.push(bytes.len() as i32);
         }
-        ArrowColumn::Utf8 {
+        Self::Utf8 {
             offsets,
             bytes,
             valid: if any_null { Some(valid) } else { None },
@@ -178,9 +178,7 @@ impl ArrowColumn {
 
     fn valid_mask(&self) -> &Option<Vec<bool>> {
         match self {
-            ArrowColumn::Num { valid, .. }
-            | ArrowColumn::Bool { valid, .. }
-            | ArrowColumn::Utf8 { valid, .. } => valid,
+            Self::Num { valid, .. } | Self::Bool { valid, .. } | Self::Utf8 { valid, .. } => valid,
         }
     }
 
@@ -202,14 +200,14 @@ impl ArrowColumn {
             }
         };
         let (tag, buf1, buf2) = match self {
-            ArrowColumn::Num { data, .. } => {
+            Self::Num { data, .. } => {
                 let mut b = Vec::with_capacity(data.len() * 8);
                 for v in data {
                     b.extend_from_slice(&v.to_le_bytes());
                 }
                 (T_FLOAT64, b, Vec::new())
             }
-            ArrowColumn::Bool { data, .. } => {
+            Self::Bool { data, .. } => {
                 let mut b = vec![0u8; data.len().div_ceil(8)];
                 for (i, &v) in data.iter().enumerate() {
                     if v {
@@ -218,7 +216,7 @@ impl ArrowColumn {
                 }
                 (T_BOOL, b, Vec::new())
             }
-            ArrowColumn::Utf8 { offsets, bytes, .. } => {
+            Self::Utf8 { offsets, bytes, .. } => {
                 let mut b = Vec::with_capacity(offsets.len() * 4);
                 for o in offsets {
                     b.extend_from_slice(&o.to_le_bytes());

@@ -87,7 +87,7 @@ fn sorted_col(mut rows: Vec<Vec<Value>>, col_idx: usize) -> Vec<Value> {
 fn sorted(g: &mut Graph, query: &str, col: &str) -> Vec<Value> {
     let (cols, r) = q(g, query);
     let idx = cols.iter().position(|c| c == col).unwrap_or_else(|| {
-        panic!("column `{col}` not found in {:?}", cols);
+        panic!("column `{col}` not found in {cols:?}");
     });
     sorted_col(r, idx)
 }

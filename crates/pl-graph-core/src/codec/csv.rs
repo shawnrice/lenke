@@ -47,34 +47,34 @@ enum Scalar {
 impl Scalar {
     fn as_str(self) -> &'static str {
         match self {
-            Scalar::Str => "string",
-            Scalar::Int => "integer",
-            Scalar::Float => "float",
-            Scalar::Bool => "boolean",
+            Self::Str => "string",
+            Self::Int => "integer",
+            Self::Float => "float",
+            Self::Bool => "boolean",
         }
     }
-    fn from_str(s: &str) -> Scalar {
+    fn from_str(s: &str) -> Self {
         match s {
-            "integer" => Scalar::Int,
-            "float" => Scalar::Float,
-            "boolean" => Scalar::Bool,
-            _ => Scalar::Str,
+            "integer" => Self::Int,
+            "float" => Self::Float,
+            "boolean" => Self::Bool,
+            _ => Self::Str,
         }
     }
     fn code(self) -> char {
         match self {
-            Scalar::Str => 's',
-            Scalar::Int => 'i',
-            Scalar::Float => 'f',
-            Scalar::Bool => 'b',
+            Self::Str => 's',
+            Self::Int => 'i',
+            Self::Float => 'f',
+            Self::Bool => 'b',
         }
     }
-    fn from_code(c: &str) -> Scalar {
+    fn from_code(c: &str) -> Self {
         match c {
-            "i" => Scalar::Int,
-            "f" => Scalar::Float,
-            "b" => Scalar::Bool,
-            _ => Scalar::Str,
+            "i" => Self::Int,
+            "f" => Self::Float,
+            "b" => Self::Bool,
+            _ => Self::Str,
         }
     }
 }

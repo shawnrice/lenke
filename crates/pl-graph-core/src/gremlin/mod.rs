@@ -46,34 +46,34 @@ pub enum GVal {
     Str(Arc<str>),
     Vertex(u32),
     Edge(u32),
-    List(Vec<GVal>),
+    List(Vec<Self>),
     /// Insertion-ordered key→value pairs (valueMap / group / select / project).
-    Map(Vec<(GVal, GVal)>),
+    Map(Vec<(Self, Self)>),
 }
 
 impl From<f64> for GVal {
     fn from(n: f64) -> Self {
-        GVal::Num(n)
+        Self::Num(n)
     }
 }
 impl From<i32> for GVal {
     fn from(n: i32) -> Self {
-        GVal::Num(n as f64)
+        Self::Num(n as f64)
     }
 }
 impl From<bool> for GVal {
     fn from(b: bool) -> Self {
-        GVal::Bool(b)
+        Self::Bool(b)
     }
 }
 impl From<&str> for GVal {
     fn from(s: &str) -> Self {
-        GVal::Str(Arc::from(s))
+        Self::Str(Arc::from(s))
     }
 }
 impl From<String> for GVal {
     fn from(s: String) -> Self {
-        GVal::Str(Arc::from(s.as_str()))
+        Self::Str(Arc::from(s.as_str()))
     }
 }
 
@@ -99,67 +99,72 @@ pub enum P {
     EndingWith(String),
     Containing(String),
     NotContaining(String),
-    Not(Box<P>),
+    Not(Box<Self>),
 }
 
 impl P {
-    pub fn eq(v: impl Into<GVal>) -> P {
-        P::Eq(v.into())
+    pub fn eq(v: impl Into<GVal>) -> Self {
+        Self::Eq(v.into())
     }
-    pub fn neq(v: impl Into<GVal>) -> P {
-        P::Neq(v.into())
+    pub fn neq(v: impl Into<GVal>) -> Self {
+        Self::Neq(v.into())
     }
-    pub fn gt(v: impl Into<GVal>) -> P {
-        P::Gt(v.into())
+    pub fn gt(v: impl Into<GVal>) -> Self {
+        Self::Gt(v.into())
     }
-    pub fn gte(v: impl Into<GVal>) -> P {
-        P::Gte(v.into())
+    pub fn gte(v: impl Into<GVal>) -> Self {
+        Self::Gte(v.into())
     }
-    pub fn lt(v: impl Into<GVal>) -> P {
-        P::Lt(v.into())
+    pub fn lt(v: impl Into<GVal>) -> Self {
+        Self::Lt(v.into())
     }
-    pub fn lte(v: impl Into<GVal>) -> P {
-        P::Lte(v.into())
+    pub fn lte(v: impl Into<GVal>) -> Self {
+        Self::Lte(v.into())
     }
-    pub fn between(min: impl Into<GVal>, max: impl Into<GVal>) -> P {
-        P::Between(min.into(), max.into())
+    pub fn between(min: impl Into<GVal>, max: impl Into<GVal>) -> Self {
+        Self::Between(min.into(), max.into())
     }
-    pub fn inside(min: impl Into<GVal>, max: impl Into<GVal>) -> P {
-        P::Inside(min.into(), max.into())
+    pub fn inside(min: impl Into<GVal>, max: impl Into<GVal>) -> Self {
+        Self::Inside(min.into(), max.into())
     }
-    pub fn outside(min: impl Into<GVal>, max: impl Into<GVal>) -> P {
-        P::Outside(min.into(), max.into())
+    pub fn outside(min: impl Into<GVal>, max: impl Into<GVal>) -> Self {
+        Self::Outside(min.into(), max.into())
     }
-    pub fn within<V: Into<GVal>>(vs: impl IntoIterator<Item = V>) -> P {
-        P::Within(vs.into_iter().map(Into::into).collect())
+    pub fn within<V: Into<GVal>>(vs: impl IntoIterator<Item = V>) -> Self {
+        Self::Within(vs.into_iter().map(Into::into).collect())
     }
-    pub fn without<V: Into<GVal>>(vs: impl IntoIterator<Item = V>) -> P {
-        P::Without(vs.into_iter().map(Into::into).collect())
+    pub fn without<V: Into<GVal>>(vs: impl IntoIterator<Item = V>) -> Self {
+        Self::Without(vs.into_iter().map(Into::into).collect())
     }
-    pub fn starts_with(s: &str) -> P {
-        P::StartsWith(s.to_string())
+    pub fn starts_with(s: &str) -> Self {
+        Self::StartsWith(s.to_string())
     }
-    pub fn containing(s: &str) -> P {
-        P::Containing(s.to_string())
+    pub fn containing(s: &str) -> Self {
+        Self::Containing(s.to_string())
     }
-    pub fn ending_with(s: &str) -> P {
-        P::EndingWith(s.to_string())
+    pub fn ending_with(s: &str) -> Self {
+        Self::EndingWith(s.to_string())
     }
-    pub fn not_containing(s: &str) -> P {
-        P::NotContaining(s.to_string())
+    pub fn not_containing(s: &str) -> Self {
+        Self::NotContaining(s.to_string())
     }
     #[allow(
         clippy::should_implement_trait,
         reason = "P::not is the Gremlin predicate-negation constructor, not std::ops::Not"
     )]
-    pub fn not(p: P) -> P {
-        P::Not(Box::new(p))
+    pub fn not(p: Self) -> Self {
+        Self::Not(Box::new(p))
     }
     /// The single RHS value of a comparison predicate — for `where(start, pred)`,
     /// this names the end-tag label; `None` for range/set/text predicates.
     pub(crate) fn rhs(&self) -> Option<&GVal> {
         match self {
-            P::Eq(v) | P::Neq(v) | P::Gt(v) | P::Gte(v) | P::Lt(v) | P::Lte(v) => Some(v),
+            Self::Eq(v)
+            | Self::Neq(v)
+            | Self::Gt(v)
+            | Self::Gte(v)
+            | Self::Lt(v)
+            | Self::Lte(v) => Some(v),
             _ => None,
         }
     }
@@ -209,7 +214,7 @@ pub enum By {
 impl By {
     fn direction(&self) -> Option<Order> {
         match self {
-            By::Identity(d) | By::Key(_, d) | By::Token(_, d) | By::Traversal(_, d) => *d,
+            Self::Identity(d) | Self::Key(_, d) | Self::Token(_, d) | Self::Traversal(_, d) => *d,
         }
     }
 }
@@ -395,7 +400,7 @@ impl Traversal {
     pub fn by_label(self) -> Self {
         self.attach_by(By::Token(Token::Label, None))
     }
-    pub fn by_t(self, t: Traversal) -> Self {
+    pub fn by_t(self, t: Self) -> Self {
         self.attach_by(By::Traversal(Box::new(t), None))
     }
     pub fn by_dir(self, key: &str, dir: Order) -> Self {
@@ -404,7 +409,7 @@ impl Traversal {
     pub fn by_identity_dir(self, dir: Order) -> Self {
         self.attach_by(By::Identity(Some(dir)))
     }
-    pub fn by_t_dir(self, t: Traversal, dir: Order) -> Self {
+    pub fn by_t_dir(self, t: Self, dir: Order) -> Self {
         self.attach_by(By::Traversal(Box::new(t), Some(dir)))
     }
 
@@ -596,57 +601,57 @@ impl Traversal {
     }
 
     // --- branch / combinators ---
-    pub fn where_(self, sub: Traversal) -> Self {
+    pub fn where_(self, sub: Self) -> Self {
         self.push(Step::Where(Box::new(sub)))
     }
     pub fn where_key(self, start: &str, pred: P) -> Self {
         self.push(Step::WhereKey(start.to_string(), pred, vec![]))
     }
-    pub fn and(self, plans: Vec<Traversal>) -> Self {
+    pub fn and(self, plans: Vec<Self>) -> Self {
         self.push(Step::And(plans))
     }
-    pub fn or(self, plans: Vec<Traversal>) -> Self {
+    pub fn or(self, plans: Vec<Self>) -> Self {
         self.push(Step::Or(plans))
     }
-    pub fn not(self, sub: Traversal) -> Self {
+    pub fn not(self, sub: Self) -> Self {
         self.push(Step::Not(Box::new(sub)))
     }
-    pub fn union(self, plans: Vec<Traversal>) -> Self {
+    pub fn union(self, plans: Vec<Self>) -> Self {
         self.push(Step::Union(plans))
     }
-    pub fn coalesce(self, plans: Vec<Traversal>) -> Self {
+    pub fn coalesce(self, plans: Vec<Self>) -> Self {
         self.push(Step::Coalesce(plans))
     }
-    pub fn optional(self, sub: Traversal) -> Self {
+    pub fn optional(self, sub: Self) -> Self {
         self.push(Step::Optional(Box::new(sub)))
     }
-    pub fn local(self, sub: Traversal) -> Self {
+    pub fn local(self, sub: Self) -> Self {
         self.push(Step::Local(Box::new(sub)))
     }
-    pub fn choose(self, test: Traversal, then_: Traversal) -> Self {
+    pub fn choose(self, test: Self, then_: Self) -> Self {
         self.push(Step::Choose {
             test: Box::new(test),
             then_: Box::new(then_),
             else_: None,
         })
     }
-    pub fn choose_else(self, test: Traversal, then_: Traversal, else_: Traversal) -> Self {
+    pub fn choose_else(self, test: Self, then_: Self, else_: Self) -> Self {
         self.push(Step::Choose {
             test: Box::new(test),
             then_: Box::new(then_),
             else_: Some(Box::new(else_)),
         })
     }
-    pub fn map(self, sub: Traversal) -> Self {
+    pub fn map(self, sub: Self) -> Self {
         self.push(Step::Map(Box::new(sub)))
     }
-    pub fn flat_map(self, sub: Traversal) -> Self {
+    pub fn flat_map(self, sub: Self) -> Self {
         self.push(Step::FlatMap(Box::new(sub)))
     }
-    pub fn filter(self, sub: Traversal) -> Self {
+    pub fn filter(self, sub: Self) -> Self {
         self.push(Step::Where(Box::new(sub)))
     }
-    pub fn side_effect(self, sub: Traversal) -> Self {
+    pub fn side_effect(self, sub: Self) -> Self {
         self.push(Step::SideEffect(Box::new(sub)))
     }
     pub fn aggregate(self, key: &str) -> Self {
@@ -665,14 +670,14 @@ impl Traversal {
         self.push(Step::ShortestPath { target: None })
     }
     /// `shortestPath().with(ShortestPath.target, target)` — restrict destinations.
-    pub fn shortest_path_to(self, target: Traversal) -> Self {
+    pub fn shortest_path_to(self, target: Self) -> Self {
         self.push(Step::ShortestPath {
             target: Some(Box::new(target)),
         })
     }
     /// Set the target sub-traversal on the most recent `shortestPath` step (the
     /// textual `.with(ShortestPath.target, …)` modulator).
-    pub fn with_shortest_path_target(mut self, target: Traversal) -> Self {
+    pub fn with_shortest_path_target(mut self, target: Self) -> Self {
         if let Some(Step::ShortestPath { target: tgt }) = self.steps.last_mut() {
             *tgt = Some(Box::new(target));
         }
@@ -681,7 +686,7 @@ impl Traversal {
     pub fn barrier(self) -> Self {
         self.push(Step::Barrier)
     }
-    pub fn repeat(self, body: Traversal) -> Self {
+    pub fn repeat(self, body: Self) -> Self {
         self.push(Step::Repeat {
             body: Box::new(body),
             times: None,
@@ -696,13 +701,13 @@ impl Traversal {
         }
         self
     }
-    pub fn until(mut self, cond: Traversal) -> Self {
+    pub fn until(mut self, cond: Self) -> Self {
         if let Some(Step::Repeat { until, .. }) = self.steps.last_mut() {
             *until = Some(Box::new(cond));
         }
         self
     }
-    pub fn emit(mut self, cond: Traversal) -> Self {
+    pub fn emit(mut self, cond: Self) -> Self {
         if let Some(Step::Repeat { emit, .. }) = self.steps.last_mut() {
             *emit = Some(Box::new(cond));
         }
@@ -711,11 +716,11 @@ impl Traversal {
     /// Empty-condition emit (`emit()` with no filter — emit every body output).
     pub fn emit_all(mut self) -> Self {
         if let Some(Step::Repeat { emit, .. }) = self.steps.last_mut() {
-            *emit = Some(Box::new(Traversal::default()));
+            *emit = Some(Box::new(Self::default()));
         }
         self
     }
-    pub fn emit_before(mut self, cond: Traversal) -> Self {
+    pub fn emit_before(mut self, cond: Self) -> Self {
         if let Some(Step::Repeat {
             emit, emit_before, ..
         }) = self.steps.last_mut()
@@ -744,7 +749,7 @@ impl Traversal {
             bys: vec![],
         })
     }
-    pub fn match_(self, patterns: Vec<Traversal>) -> Self {
+    pub fn match_(self, patterns: Vec<Self>) -> Self {
         self.push(Step::Match(patterns))
     }
 
@@ -800,13 +805,13 @@ impl Traversal {
         }
         self
     }
-    pub fn from_plan(mut self, plan: Traversal) -> Self {
+    pub fn from_plan(mut self, plan: Self) -> Self {
         if let Some(Step::AddE { from, .. }) = self.steps.last_mut() {
             *from = Endpoint::Plan(Box::new(plan));
         }
         self
     }
-    pub fn to_plan(mut self, plan: Traversal) -> Self {
+    pub fn to_plan(mut self, plan: Self) -> Self {
         if let Some(Step::AddE { to, .. }) = self.steps.last_mut() {
             *to = Endpoint::Plan(Box::new(plan));
         }

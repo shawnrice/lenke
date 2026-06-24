@@ -43,40 +43,40 @@ pub enum ErrorCode {
 
 impl ErrorCode {
     /// Every code, for exhaustiveness checks and the cross-language conformance test.
-    pub const ALL: &'static [ErrorCode] = &[
-        ErrorCode::Syntax,
-        ErrorCode::InvalidJson,
-        ErrorCode::InvalidShape,
-        ErrorCode::UnknownFormat,
-        ErrorCode::InvalidValue,
-        ErrorCode::DataException,
-        ErrorCode::MissingVertex,
-        ErrorCode::InvalidGraphOp,
-        ErrorCode::InvalidTree,
-        ErrorCode::NotImplemented,
-        ErrorCode::Unsupported,
-        ErrorCode::ResourceExhausted,
-        ErrorCode::UnknownFunction,
-        ErrorCode::Ffi,
+    pub const ALL: &'static [Self] = &[
+        Self::Syntax,
+        Self::InvalidJson,
+        Self::InvalidShape,
+        Self::UnknownFormat,
+        Self::InvalidValue,
+        Self::DataException,
+        Self::MissingVertex,
+        Self::InvalidGraphOp,
+        Self::InvalidTree,
+        Self::NotImplemented,
+        Self::Unsupported,
+        Self::ResourceExhausted,
+        Self::UnknownFunction,
+        Self::Ffi,
     ];
 
     /// The stable `E_*` wire string. This is what crosses the FFI boundary.
     pub const fn as_str(&self) -> &'static str {
         match self {
-            ErrorCode::Syntax => "E_SYNTAX",
-            ErrorCode::InvalidJson => "E_INVALID_JSON",
-            ErrorCode::InvalidShape => "E_INVALID_SHAPE",
-            ErrorCode::UnknownFormat => "E_UNKNOWN_FORMAT",
-            ErrorCode::InvalidValue => "E_INVALID_VALUE",
-            ErrorCode::DataException => "E_DATA_EXCEPTION",
-            ErrorCode::MissingVertex => "E_MISSING_VERTEX",
-            ErrorCode::InvalidGraphOp => "E_INVALID_GRAPH_OP",
-            ErrorCode::InvalidTree => "E_INVALID_TREE",
-            ErrorCode::NotImplemented => "E_NOT_IMPLEMENTED",
-            ErrorCode::Unsupported => "E_UNSUPPORTED",
-            ErrorCode::ResourceExhausted => "E_RESOURCE_EXHAUSTED",
-            ErrorCode::UnknownFunction => "E_UNKNOWN_FUNCTION",
-            ErrorCode::Ffi => "E_FFI",
+            Self::Syntax => "E_SYNTAX",
+            Self::InvalidJson => "E_INVALID_JSON",
+            Self::InvalidShape => "E_INVALID_SHAPE",
+            Self::UnknownFormat => "E_UNKNOWN_FORMAT",
+            Self::InvalidValue => "E_INVALID_VALUE",
+            Self::DataException => "E_DATA_EXCEPTION",
+            Self::MissingVertex => "E_MISSING_VERTEX",
+            Self::InvalidGraphOp => "E_INVALID_GRAPH_OP",
+            Self::InvalidTree => "E_INVALID_TREE",
+            Self::NotImplemented => "E_NOT_IMPLEMENTED",
+            Self::Unsupported => "E_UNSUPPORTED",
+            Self::ResourceExhausted => "E_RESOURCE_EXHAUSTED",
+            Self::UnknownFunction => "E_UNKNOWN_FUNCTION",
+            Self::Ffi => "E_FFI",
         }
     }
 }

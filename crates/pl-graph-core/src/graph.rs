@@ -70,7 +70,7 @@ pub struct BitSet {
 
 impl BitSet {
     pub fn zeros(n: usize) -> Self {
-        BitSet {
+        Self {
             words: vec![0u64; n.div_ceil(64)],
         }
     }
@@ -103,7 +103,7 @@ pub enum Value {
     Bool(bool),
     Num(f64),
     Str(Arc<str>),
-    List(Vec<Value>),
+    List(Vec<Self>),
 }
 
 /// A typed property column. Length == its store's element count.
@@ -133,18 +133,18 @@ impl Column {
     /// Append one absent slot (grows the column by one element).
     fn push_absent(&mut self) {
         match self {
-            Column::Num { data, .. } => data.push(f64::NAN),
-            Column::Str { data, .. } => data.push(u32::MAX),
-            Column::Bool { data, .. } => data.push(false),
-            Column::Mixed { data } => data.push(None),
+            Self::Num { data, .. } => data.push(f64::NAN),
+            Self::Str { data, .. } => data.push(u32::MAX),
+            Self::Bool { data, .. } => data.push(false),
+            Self::Mixed { data } => data.push(None),
         }
     }
     fn element_len(&self) -> usize {
         match self {
-            Column::Num { data, .. } => data.len(),
-            Column::Str { data, .. } => data.len(),
-            Column::Bool { data, .. } => data.len(),
-            Column::Mixed { data } => data.len(),
+            Self::Num { data, .. } => data.len(),
+            Self::Str { data, .. } => data.len(),
+            Self::Bool { data, .. } => data.len(),
+            Self::Mixed { data } => data.len(),
         }
     }
 }
@@ -399,17 +399,17 @@ pub enum IdxKey {
 impl IdxKey {
     fn rank(&self) -> u8 {
         match self {
-            IdxKey::Bool(_) => 0,
-            IdxKey::Num(_) => 1,
-            IdxKey::Str(_) => 2,
+            Self::Bool(_) => 0,
+            Self::Num(_) => 1,
+            Self::Str(_) => 2,
         }
     }
     /// Build from a core [`Value`] (absent / list → not indexable).
-    fn from_value(v: &Value) -> Option<IdxKey> {
+    fn from_value(v: &Value) -> Option<Self> {
         match v {
-            Value::Bool(b) => Some(IdxKey::Bool(*b)),
-            Value::Num(n) => Some(IdxKey::Num(*n)),
-            Value::Str(s) => Some(IdxKey::Str(s.clone())),
+            Value::Bool(b) => Some(Self::Bool(*b)),
+            Value::Num(n) => Some(Self::Num(*n)),
+            Value::Str(s) => Some(Self::Str(s.clone())),
             _ => None,
         }
     }
@@ -429,9 +429,9 @@ impl PartialOrd for IdxKey {
 impl Ord for IdxKey {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         match (self, other) {
-            (IdxKey::Bool(a), IdxKey::Bool(b)) => a.cmp(b),
-            (IdxKey::Num(a), IdxKey::Num(b)) => a.total_cmp(b),
-            (IdxKey::Str(a), IdxKey::Str(b)) => a.as_ref().cmp(b.as_ref()),
+            (Self::Bool(a), Self::Bool(b)) => a.cmp(b),
+            (Self::Num(a), Self::Num(b)) => a.total_cmp(b),
+            (Self::Str(a), Self::Str(b)) => a.as_ref().cmp(b.as_ref()),
             _ => self.rank().cmp(&other.rank()),
         }
     }
@@ -1125,7 +1125,7 @@ impl Builder {
     }
 
     pub fn finalize(self) -> Graph {
-        let Builder { nodes, edges } = self;
+        let Self { nodes, edges } = self;
         let mut vid = Dict::default();
 
         // (1) Dense indices: declared nodes first (in order), then edge endpoints.

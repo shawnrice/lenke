@@ -122,9 +122,9 @@ pub struct PropertyConstraint {
 pub enum LabelExpr {
     Label(String),
     Wildcard,
-    Not(Box<LabelExpr>),
-    And(Box<LabelExpr>, Box<LabelExpr>),
-    Or(Box<LabelExpr>, Box<LabelExpr>),
+    Not(Box<Self>),
+    And(Box<Self>, Box<Self>),
+    Or(Box<Self>, Box<Self>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -217,66 +217,66 @@ pub enum Expr {
         key: String,
     },
     Lit(Lit),
-    List(Vec<Expr>),
+    List(Vec<Self>),
     Compare {
         op: CompareOp,
-        left: Box<Expr>,
-        right: Box<Expr>,
+        left: Box<Self>,
+        right: Box<Self>,
     },
     Arith {
         op: ArithOp,
-        left: Box<Expr>,
-        right: Box<Expr>,
+        left: Box<Self>,
+        right: Box<Self>,
     },
     Concat {
-        left: Box<Expr>,
-        right: Box<Expr>,
+        left: Box<Self>,
+        right: Box<Self>,
     },
-    Neg(Box<Expr>),
-    And(Box<Expr>, Box<Expr>),
-    Or(Box<Expr>, Box<Expr>),
-    Xor(Box<Expr>, Box<Expr>),
-    Not(Box<Expr>),
+    Neg(Box<Self>),
+    And(Box<Self>, Box<Self>),
+    Or(Box<Self>, Box<Self>),
+    Xor(Box<Self>, Box<Self>),
+    Not(Box<Self>),
     IsNull {
-        expr: Box<Expr>,
+        expr: Box<Self>,
         negated: bool,
     },
     /// `x IS [NOT] TRUE|FALSE|UNKNOWN` — `truth` is the target (`None` = UNKNOWN).
     IsTruth {
-        expr: Box<Expr>,
+        expr: Box<Self>,
         truth: Option<bool>,
         negated: bool,
     },
     /// `x IS [NOT] LABELED <label expression>`.
     IsLabeled {
-        expr: Box<Expr>,
+        expr: Box<Self>,
         label: LabelExpr,
         negated: bool,
     },
     In {
-        expr: Box<Expr>,
-        list: Box<Expr>,
+        expr: Box<Self>,
+        list: Box<Self>,
         negated: bool,
     },
     /// `EXISTS { p1, … [WHERE pred] }` — correlated sub-pattern existence.
     Exists {
         patterns: Vec<PathPattern>,
-        where_: Option<Box<Expr>>,
+        where_: Option<Box<Self>>,
     },
     /// `COUNT { p1, … [WHERE pred] }` — correlated sub-pattern match count.
     CountSubquery {
         patterns: Vec<PathPattern>,
-        where_: Option<Box<Expr>>,
+        where_: Option<Box<Self>>,
     },
     /// ISO CASE: `subject` present → simple CASE, else searched.
     Case {
-        subject: Option<Box<Expr>>,
-        whens: Vec<(Expr, Expr)>,
-        else_: Option<Box<Expr>>,
+        subject: Option<Box<Self>>,
+        whens: Vec<(Self, Self)>,
+        else_: Option<Box<Self>>,
     },
     Func {
         name: String,
-        args: Vec<Expr>,
+        args: Vec<Self>,
         distinct: bool,
         star: bool,
     },

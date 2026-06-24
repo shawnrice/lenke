@@ -191,7 +191,7 @@ fn main() {
     }
     let fp_us = t.elapsed().as_secs_f64() * 1e6 / 200.0;
     let (gql_us, _) = bench(&mut g, "MATCH (a:Person) RETURN count(*) AS c", 200);
-    println!("\ncount(*) over {} Person — materialization overhead:", N);
+    println!("\ncount(*) over {N} Person — materialization overhead:");
     println!("  fingerprint (no per-row alloc) : {fp_us:.1} us");
     println!(
         "  gql (binding per row)          : {gql_us:.1} us   ({:.1}x)",

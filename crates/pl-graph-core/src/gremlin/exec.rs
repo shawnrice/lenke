@@ -26,8 +26,8 @@ enum DedupKey {
     Str(Arc<str>),
     Vertex(u32),
     Edge(u32),
-    List(Vec<DedupKey>),
-    Map(Vec<(DedupKey, DedupKey)>),
+    List(Vec<Self>),
+    Map(Vec<(Self, Self)>),
 }
 
 /// Build a hashable dedup key from a `GVal`, or `None` if it contains a `NaN`.
@@ -65,8 +65,8 @@ struct Trav {
 }
 
 impl Trav {
-    fn root(val: GVal) -> Trav {
-        Trav {
+    fn root(val: GVal) -> Self {
+        Self {
             path: vec![val.clone()],
             val,
             tags: Vec::new(),
@@ -74,10 +74,10 @@ impl Trav {
         }
     }
     /// A successor that moved to `val` (extends path, keeps tags/loops).
-    fn step(&self, val: GVal) -> Trav {
+    fn step(&self, val: GVal) -> Self {
         let mut path = self.path.clone();
         path.push(val.clone());
-        Trav {
+        Self {
             val,
             path,
             tags: self.tags.clone(),
@@ -85,10 +85,10 @@ impl Trav {
         }
     }
     /// Same traverser with a replaced value, keeping the existing path tail.
-    fn with(&self, val: GVal) -> Trav {
+    fn with(&self, val: GVal) -> Self {
         let mut path = self.path.clone();
         path.push(val.clone());
-        Trav {
+        Self {
             val,
             path,
             tags: self.tags.clone(),

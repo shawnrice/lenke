@@ -107,7 +107,7 @@ pub struct RowSet {
 
 impl RowSet {
     pub fn new(cols: Vec<String>) -> Self {
-        RowSet {
+        Self {
             cols,
             data: Vec::new(),
             nrows: 0,
@@ -702,7 +702,7 @@ fn value_key(v: &Value, out: &mut String) {
             let _ = write!(out, "n{:016x}", x.to_bits());
         }
         Value::Str(s) => {
-            let _ = write!(out, "s{}", s);
+            let _ = write!(out, "s{s}");
         }
         Value::List(items) => {
             out.push('[');
@@ -767,7 +767,7 @@ struct Acc {
 }
 impl Acc {
     fn new() -> Self {
-        Acc {
+        Self {
             count: 0,
             sum: 0.0,
             min: f64::INFINITY,
