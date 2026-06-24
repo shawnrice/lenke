@@ -1,5 +1,7 @@
 {
   "name": "@pl-graph/gremlin",
+  "description": "An Apache TinkerPop-style Gremlin traversal engine in TypeScript: build declarative graph traversals and run them against a @pl-graph/core graph.",
+  "license": "Apache-2.0",
   "type": "module",
   "sideEffects": false,
   "types": "./dist/types/index.d.ts",

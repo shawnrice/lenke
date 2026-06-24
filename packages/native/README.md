@@ -1,43 +1,46 @@
 # @pl-graph/native
 
-The Rust columnar core (`crates/pl-graph-core`), callable from JS/TS. One C ABI,
-two backends behind a single `Backend` contract:
+> JavaScript/TypeScript bindings to the Rust `pl-graph-core` columnar graph engine, with a single facade over native (FFI) and WebAssembly backends.
 
-| Backend | Import                  | Environment        | How memory crosses                                           |
-| ------- | ----------------------- | ------------------ | ------------------------------------------------------------ |
-| FFI     | `@pl-graph/native/ffi`  | Bun / server / CLI | `bun:ffi` points at JS-owned buffers, reads results in place |
-| WASM    | `@pl-graph/native/wasm` | Browser            | copies in/out of linear memory via `plg_alloc`               |
+Loads a labeled-property graph into the native columnar core and runs GQL or Gremlin queries against it from JS/TS. One C ABI is exposed through two interchangeable backends behind a shared `Backend` contract: a native dynamic library loaded over `bun:ffi` (server/CLI, requires Bun) and a WebAssembly module instantiated from bytes or a `fetch` response (browser). Reach for this when you want the Rust engine's query performance from JS without reimplementing it. The backend modules are split behind subpath exports so importing the package in a browser never pulls in the Bun-only `bun:ffi` builtin.
 
-The root entry (`@pl-graph/native`) is environment-neutral — shared types plus
-the `RustGraph` facade — so importing it in a browser never pulls in the
-Bun-only `bun:ffi` builtin.
+## Install
+
+```bash
+bun add @pl-graph/native
+```
 
 ## Usage
 
 ```ts
-// Bun / server
 import { createFfiBackend } from '@pl-graph/native/ffi';
 import { graphFromNdjson } from '@pl-graph/native';
 
+// Load the native library built from `crates/pl-graph-core`
+// (libpl_graph_core.{dylib,so,dll}).
 const backend = createFfiBackend('/path/to/libpl_graph_core.dylib');
+
+// Decode an NDJSON document into a graph.
 const g = graphFromNdjson(backend, await Bun.file('graph.ndjson').bytes());
 
-g.query`MATCH (a:Person) RETURN a.name`; // GQL → rows
-g.gremlin("g.V().has('name','marko').out()"); // textual Gremlin → values
-g.queryArrow('MATCH (n) RETURN n.age'); // Arrow ("ARW1") blob
-g.serialize('graphson'); // → pg-json|pg-text|graphson|csv|ndjson
-g.toNdjson(); // serialize back out (ndjson bytes)
-g.free(); // release the native graph
+console.log(g.vertexCount, g.edgeCount);
+
+// GQL via tagged template (or a plain string) → decoded rows.
+const rows = g.query`MATCH (p:Person) RETURN p.name AS name`;
+for (const row of rows) {
+  console.log(row.name);
+}
+
+// Gremlin against the same graph.
+const result = g.gremlin`g.V().hasLabel('Person').count()`;
+
+// The graph is heap-owned by the native module; release it when done.
+g.free();
 ```
 
-```ts
-// Load a graph from any supported format (string or bytes)
-import { graphFromFormat } from '@pl-graph/native';
-const g = graphFromFormat(backend, csvText, 'csv');
-```
+In the browser, swap the backend for the wasm one; the rest of the API is identical:
 
 ```ts
-// Browser
 import { createWasmBackend } from '@pl-graph/native/wasm';
 import { graphFromNdjson } from '@pl-graph/native';
 
@@ -45,69 +48,33 @@ const backend = await createWasmBackend(fetch('/pl_graph_core.wasm'));
 const g = graphFromNdjson(backend, ndjsonBytes);
 ```
 
-### React (`useSyncExternalStore`)
+## Loading a backend
 
-`createStore` bridges the mutable native graph to React's immutable-snapshot
-contract. `getSnapshot` is referentially stable (version-gated), so it won't
-re-render-loop; declaring `deps` makes a query recompute only when one of its
-tokens (label / edge-type / property-key) actually changed.
+The entry point (`@pl-graph/native`) is environment-neutral: it exports the `RustGraph` facade, the graph constructors, and the reactive store. The backend itself comes from a subpath:
 
-```ts
-import { createStore } from '@pl-graph/native';
-const store = createStore(g);
+- `@pl-graph/native/ffi` — `createFfiBackend(libPath: string): Backend`. Requires **Bun** (uses `bun:ffi`). Pass the absolute path to the built `libpl_graph_core.{dylib,so,dll}`.
+- `@pl-graph/native/wasm` — `createWasmBackend(source): Promise<Backend>`. `source` is a `WebAssembly.Module`, `ArrayBuffer`, `ArrayBufferView`, or a (promise of a) `fetch` `Response`.
 
-// in a component
-const people = store.liveQuery('MATCH (p:Person) RETURN p.name', { deps: ['Person', 'name'] });
-const rows = useSyncExternalStore(people.subscribe, people.getSnapshot);
+Both assert that the loaded artifact's ABI version matches the exported `ABI_VERSION`, throwing on mismatch. `isBun` is exported as a convenience flag (`true` when running under Bun, where the FFI backend is available).
 
-// mutate — notifies subscribers only if the graph actually changed
-store.mutate((g) => g.query("INSERT (:Person {name: 'zoe'})"));
-```
+## Graph API
 
-Omit `deps` for coarse mode (recompute on any mutation — always correct; use it
-for whole-element returns like `RETURN n`). `inferDeps(text)` is a best-effort
-extractor (over-grabs safely; prefer explicit `deps` when correctness matters).
-Backed by the engine's O(1) `version` counter and per-token `epoch`s — available
-even in the minimal `gql`-only wasm build.
+`graphFromNdjson(backend, bytes, { parallel? })` and `graphFromFormat(backend, input, format)` deserialize a document into a `RustGraph`. `attachGraph(backend, handle)` wraps an existing backend + handle. A `RustGraph` exposes:
 
-## Building the artifacts
+- `vertexCount` / `edgeCount` — counts (numbers).
+- `version` — monotonic mutation counter for O(1) change detection.
+- `epoch(name)` — per-token change epoch (by label / edge-type / property-key).
+- `query(q, ...subs)` — run GQL (tagged template or string) → `Row[]`, where `Row` is `Record<string, unknown>`.
+- `queryArrow(q, ...subs)` — run GQL → raw Arrow (`ARW1`) columnar blob as `Uint8Array` (decode with `apache-arrow`).
+- `gremlin(q, ...subs)` — run textual Gremlin → JSON-decoded `unknown[]`.
+- `toNdjson()` — serialize back to NDJSON bytes.
+- `serialize(format)` — serialize to a named format (`pg-json | pg-text | graphson | csv | ndjson`).
+- `free()` — release the underlying graph; the handle is invalid afterward and is **not** garbage-collected, so call it explicitly.
 
-```sh
-bun run build:rust       # native dylib/so (all features) → target/release/
-bun run build:wasm       # full-browser wasm (gql+gremlin+ndjson+codecs+arrow)
-bun run build:wasm:min   # minimal frontend wasm (gql only) — ~40% smaller
-bun run build            # the TS package (dist/)
-```
+## Reactive store
 
-### Composable features (smaller wasm)
+`createStore(graph)` builds a framework-agnostic store designed for React's `useSyncExternalStore` (the package has no React dependency). `store.liveQuery(text, { deps? })` returns a `{ subscribe, getSnapshot }` pair whose snapshot reference is stable until a relevant mutation occurs; `store.mutate(fn)` runs a mutating callback and notifies subscribers only if the graph's `version` actually changed. With `deps` (label / edge-type / property-key tokens) a live query recomputes only when one of its dependency epochs moves; `inferDeps(text)` best-effort extracts those tokens from a query string.
 
-The Rust crate is feature-gated so a frontend can ship only what it uses. The
-big lever is `serde_json`: only the JSON-carrying surfaces pull it in, so a
-GQL-only build drops it entirely. Measured `wasm32-unknown-unknown --release`:
+## License
 
-| feature set                       | size     | notes                                 |
-| --------------------------------- | -------- | ------------------------------------- |
-| `gql,gremlin,ndjson,codecs,arrow` | ~1020 KB | everything (server/full)              |
-| `gql,ndjson`                      | ~700 KB  | query + snapshot load                 |
-| `gql`                             | ~615 KB  | **minimal frontend** — no serde_json  |
-| (core only)                       | ~165 KB  | graph + fingerprint query, no engines |
-
-Features: `gql` (ISO-GQL engine, serde-free), `gremlin`, `ndjson` (load/
-snapshot), `codecs` (pg-json/pg-text/graphson/csv; implies `ndjson`), `arrow`
-(implies `gql`), `parallel` (rayon, native only). `default = full`.
-
-The package asserts `plg_abi_version()` matches `ABI_VERSION` on load; bump both
-together when the C ABI changes.
-
-## Status / TODO
-
-- Both backends are tested end-to-end (`backend-ffi.test.ts`,
-  `backend-wasm.test.ts`) — query, Gremlin, all five serialization formats, and
-  a wasm memory-grow path.
-- Arrow results currently surface as the raw `ARW1` blob (`queryArrow`). A typed
-  `apache-arrow` `Table` wrapper (see `crates/.../arrow-ffi.test.ts` for the
-  decode) is the natural next step.
-- Mutation helpers (`addVertex`/`addEdge`/index management) are reachable today
-  through GQL/Gremlin strings; a typed builder API could come later.
-- `wasm-opt -O3` on the artifact (build is ~1 MB unoptimized).
-- A Node (non-Bun) FFI backend via `koffi` if Node support is needed.
+Apache-2.0

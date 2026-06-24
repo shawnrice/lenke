@@ -1,5 +1,7 @@
 {
   "name": "@pl-graph/gql",
+  "description": "An ISO-GQL (ISO/IEC 39075) query engine that parses and executes graph queries against a @pl-graph/core graph in TypeScript.",
+  "license": "Apache-2.0",
   "type": "module",
   "sideEffects": false,
   "types": "./dist/types/index.d.ts",

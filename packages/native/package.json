@@ -1,5 +1,7 @@
 {
   "name": "@pl-graph/native",
+  "description": "JavaScript/TypeScript bindings to the Rust `pl-graph-core` columnar graph engine, with a single facade over native (FFI) and WebAssembly backends.",
+  "license": "Apache-2.0",
   "type": "module",
   "sideEffects": false,
   "types": "./dist/types/index.d.ts",

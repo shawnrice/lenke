@@ -1,5 +1,7 @@
 {
   "name": "@pl-graph/core",
+  "description": "A mutable, in-memory labeled-property graph for JavaScript and TypeScript.",
+  "license": "Apache-2.0",
   "type": "module",
   "sideEffects": false,
   "types": "./dist/types/index.d.ts",

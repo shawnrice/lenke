@@ -1,0 +1,61 @@
+# @pl-graph/serialization
+
+> (De)serialization codecs that convert `@pl-graph/core` graphs to and from text in several interchange formats.
+
+Use this package to persist a labeled-property graph to disk, send it over the wire, or import one from an external tool. It speaks the core `Graph` API directly, preserves element identity and the full LPG property-value model across a round trip, and exposes both whole-string and streaming entry points so large graphs need not be held in memory at once.
+
+## Install
+
+```bash
+bun add @pl-graph/serialization
+```
+
+## Usage
+
+```ts
+import { Graph } from '@pl-graph/core';
+import { serialize, deserialize } from '@pl-graph/serialization';
+
+const graph = new Graph();
+const alice = graph.addVertex({ id: 'a', labels: ['Person'], properties: { name: 'Alice' } });
+const bob = graph.addVertex({ id: 'b', labels: ['Person'], properties: { name: 'Bob' } });
+graph.addEdge({ id: 'e1', from: alice, to: bob, labels: ['KNOWS'], properties: { since: 2020 } });
+
+// Encode to a single string in any registered format.
+const text = serialize(graph, 'pg-json');
+
+// Decode back into a graph (mutates and returns the target graph).
+const restored = deserialize(text, 'pg-json', new Graph());
+```
+
+For genuinely large graphs, line-oriented formats can be driven incrementally:
+
+```ts
+import { serializeStream, deserializeStream } from '@pl-graph/serialization';
+
+for await (const chunk of serializeStream(graph, 'ndjson')) {
+  // write chunk to a file, socket, etc.
+}
+
+await deserializeStream(chunkSource, 'ndjson', new Graph());
+```
+
+`serializeAsync` / `deserializeAsync` offer the same whole-string result while yielding the event loop between batches.
+
+## Formats
+
+The registered codecs are exposed as the `codecs` record (`FormatName` is its key type) and individually as `Codec` values. A codec implements `encode(graph) => string` and `decode(input, graph) => Graph`; line-oriented formats additionally implement `encodeStream` / `decodeStream`.
+
+| Name | Codec export | Streaming |
+| --- | --- | --- |
+| `pg-json` | `pgJsonCodec` | no |
+| `pg-text` | `pgTextCodec` | yes |
+| `ndjson` | `ndjsonCodec` | yes |
+| `graphson` | `graphsonCodec` | yes |
+| `csv` | `csvCodec` | yes |
+
+Top-level entry points (`serialize`, `deserialize`, `serializeStream`, `deserializeStream`, `serializeAsync`, `deserializeAsync`) take a `FormatName` and dispatch to the matching codec; an unknown format or an unsupported streaming request throws a `PlGraphError`. The CSV codec also exposes its node/edge halves directly (`encodeNodes`, `decodeNodes`, `encodeEdges`, `decodeEdges`, and their `*Stream` variants) for Neo4j-`admin-import`-style paired files.
+
+## License
+
+Apache-2.0

@@ -1,5 +1,7 @@
 {
   "name": "@pl-graph/tree",
+  "description": "Generic tree data structures for JavaScript/TypeScript: a mutable `TreeNode` and a value-carrying `Trie`.",
+  "license": "Apache-2.0",
   "files": [
     "dist"
   ],

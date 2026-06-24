@@ -1,8 +1,8 @@
 {
   "name": "@pl-graph/react",
   "version": "1.0.0",
-  "description": "react bindings to use the property label graph as a data store in react",
-  "license": "MIT",
+  "description": "React bindings that turn a @pl-graph labeled-property graph into a reactive data store for React components.",
+  "license": "Apache-2.0",
   "author": "",
   "type": "module",
   "sideEffects": false,

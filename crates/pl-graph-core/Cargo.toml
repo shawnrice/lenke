@@ -3,6 +3,7 @@ name = "pl-graph-core"
 version = "0.1.0"
 edition = "2021"
 description = "Columnar labeled-property-graph core: in-memory columnar graph with ISO-GQL and Gremlin engines, serialization codecs, and an Arrow result surface, behind a C ABI (bun:ffi / wasm)."
+license = "Apache-2.0"
 
 # `lib` for unit tests / examples / the future WASM build; `cdylib` for the
 # native dynamic library that bun:ffi loads. Same crate, both bindings.

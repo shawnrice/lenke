@@ -1,5 +1,7 @@
 {
   "name": "@pl-graph/list",
+  "description": "A lazy, iterator-backed list with array-like methods and a known (or infinite) length.",
+  "license": "Apache-2.0",
   "type": "module",
   "sideEffects": false,
   "types": "./dist/types/index.d.ts",

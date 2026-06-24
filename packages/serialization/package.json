@@ -1,5 +1,7 @@
 {
   "name": "@pl-graph/serialization",
+  "description": "(De)serialization codecs that convert @pl-graph/core graphs to and from text in several interchange formats.",
+  "license": "Apache-2.0",
   "type": "module",
   "sideEffects": false,
   "types": "./dist/types/index.d.ts",

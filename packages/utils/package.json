@@ -1,5 +1,7 @@
 {
   "name": "@pl-graph/utils",
+  "description": "Small, dependency-free helper functions shared across the @pl-graph toolkit.",
+  "license": "Apache-2.0",
   "type": "module",
   "sideEffects": false,
   "types": "./dist/types/index.d.ts",

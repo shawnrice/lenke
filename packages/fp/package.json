@@ -1,5 +1,7 @@
 {
   "name": "@pl-graph/fp",
+  "description": "Lazy, curried iterable combinators for composing data transformations over any `Iterable`.",
+  "license": "Apache-2.0",
   "type": "module",
   "sideEffects": false,
   "types": "./dist/types/index.d.ts",

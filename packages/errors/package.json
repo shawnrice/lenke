@@ -1,5 +1,7 @@
 {
   "name": "@pl-graph/errors",
+  "description": "Canonical, stable error codes and a shared error type for the pl-graph packages.",
+  "license": "Apache-2.0",
   "type": "module",
   "sideEffects": false,
   "types": "./dist/types/index.d.ts",
