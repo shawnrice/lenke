@@ -143,7 +143,7 @@ const AVG_DEGREE = 4;
 
 const results: any = {
   meta: {
-    machine: 'Apple M3 Max (target-cpu=native)',
+    machine: 'aarch64, target-cpu=native',
     sizes: SIZES,
     avgDegree: AVG_DEGREE,
     queries: QUERIES.map((q) => ({ id: q.id, label: q.label, text: q.text })),
@@ -263,42 +263,6 @@ for (const n of SIZES) {
   row.ops.ffiBatch = { queries: allQ.length, perCall, batched };
   console.log(
     `  FFI batch: ${allQ.length} queries — perCall=${perCall.toFixed(3)}ms batched=${batched.toFixed(3)}ms (${(perCall / batched).toFixed(2)}x)`,
-  );
-
-  // ---- SIMD predicate scan (age > 50): scalar vs NEON, + JS loop ----
-  // Microbenchmark of the standalone `scan` kernel via plg_predicate_scan. NOT
-  // the product query path: GQL `WHERE` vectorizes through the expression
-  // interpreter (see the eval_vs_columnar example), never this kernel.
-  const ages: number[] = [];
-
-  for (const v of tg.vertices) {
-    const a = (v.properties as { age?: number }).age;
-
-    if (typeof a === 'number') {
-      ages.push(a);
-    }
-  }
-
-  const jsScan = bench(reps, () => {
-    let c = 0;
-    let s = 0;
-
-    for (const a of ages) {
-      if (a > 50) {
-        c++;
-        s += a;
-      }
-    }
-
-    if (c < 0) {
-      throw new Error('unreachable');
-    }
-  });
-  const rScalar = bench(reps, () => rust.predicateScan(rh, 'age', 50, false));
-  const rNeon = bench(reps, () => rust.predicateScan(rh, 'age', 50, true));
-  row.ops.predicateScan = { jsLoop: jsScan, rustScalar: rScalar, rustNeon: rNeon };
-  console.log(
-    `  predicate-scan age>50: js=${jsScan.toFixed(3)} rustScalar=${rScalar.toFixed(3)} rustNeon=${rNeon.toFixed(3)} (neon ${(rScalar / rNeon).toFixed(2)}x)`,
   );
 
   // ---- serialize: product is bytes for disk/wire ----

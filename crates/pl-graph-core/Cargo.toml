@@ -24,15 +24,13 @@ use_self = "warn"
 #   match_same_arms                    — false-positives on Val/GVal dispatch arms
 #                                        that share a trivial body but can't merge
 
-# `lib` for unit tests / examples / the future WASM build; `cdylib` for the
-# native dynamic library that bun:ffi loads. Same crate, both bindings.
+# `lib` for unit tests, examples, and the wasm build; `cdylib` for the native
+# dynamic library loaded over FFI. Same crate, both bindings.
 [lib]
 crate-type = ["lib", "cdylib"]
 
 # Dependencies are kept minimal (and optional) so the crate builds fully offline
-# and a wasm frontend can drop everything it doesn't use. The one bit of SIMD
-# left — the `scan` predicate-scan microbenchmark — uses std::arch directly
-# (NEON is baseline on aarch64, no runtime detection), so it needs no crate.
+# and a minimal (e.g. wasm) build can drop everything it doesn't use.
 
 [profile.release]
 opt-level = 3
@@ -50,9 +48,9 @@ rayon = { version = "1.12.0", optional = true }
 serde_json = { version = "1.0.150", optional = true }
 
 [features]
-# Composable feature set so a frontend wasm build can ship only what it uses
-# (the binary shrinks with each capability dropped — `serde_json` especially).
-# `default = full` keeps the server/CLI build all-inclusive.
+# Composable feature set so a minimal build ships only what it uses (the binary
+# shrinks with each capability dropped — `serde_json` especially). `default =
+# full` is all-inclusive.
 default = ["full"]
 full = ["gql", "gremlin", "ndjson", "codecs", "arrow", "parallel"]
 
@@ -78,6 +76,6 @@ arrow = ["gql"]
 # `parallel`: rayon for bulk ndjson decode (a load-time win, no tradeoff).
 parallel = ["dep:rayon"]
 # `parallel-query`: intra-query threading (parallel projection eval). Opt-in and
-# off by default — it's a single-query *latency* lever that trades throughput on
-# a busy server, so it's a deliberate deployment choice, not a default.
+# off by default — it trades throughput for single-query latency, so it's a
+# deliberate choice, not a default.
 parallel-query = ["parallel"]

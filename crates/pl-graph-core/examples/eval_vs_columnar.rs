@@ -3,11 +3,11 @@
 //! frame (`eval_vec`, no per-row `Val`), gated by `USE_VEC` — flip it off and
 //! this query is ~4.6x slower. So `[scan+count+pred] − [scan+count]` is NOT a
 //! boxed-vs-not gap; it's the *vectorized expression interpreter* (arbitrary
-//! predicate trees, 3-valued nulls, presence bitsets) versus a bespoke
-//! `scan::predicate_gt` kernel over one typed column. The remaining ratio is the
-//! interpreter→kernel headroom (would need per-predicate specialization or SIMD,
-//! not de-boxing). Also: the property index sidesteps the scan entirely for
-//! selective predicates, so this only bites on full-scan filters.
+//! predicate trees, 3-valued nulls, presence bitsets) versus a bespoke scalar
+//! kernel over one typed column. The remaining ratio is the interpreter→kernel
+//! headroom (would need per-predicate specialization, not de-boxing). Also: the
+//! property index sidesteps the scan entirely for selective predicates, so this
+//! only bites on full-scan filters.
 //! Run: cargo run --release --example eval_vs_columnar
 
 use std::hint::black_box;
@@ -16,9 +16,20 @@ use std::time::Instant;
 use pl_graph_core::gql::eval::Params;
 use pl_graph_core::gql::prepare;
 use pl_graph_core::graph::{Builder, Column, Graph, NodeRec, Value};
-use pl_graph_core::scan::{predicate_gt_neon, predicate_gt_scalar};
 
 const N: usize = 200_000;
+
+fn scalar_floor(data: &[f64], thr: f64) -> (u64, f64) {
+    let mut count = 0u64;
+    let mut sum = 0.0f64;
+    for &x in data {
+        if x > thr {
+            count += 1;
+            sum += x;
+        }
+    }
+    (count, sum)
+}
 
 fn build() -> Graph {
     let mut b = Builder::default();
@@ -43,15 +54,11 @@ fn time_query(g: &mut Graph, q: &str, iters: u32) -> f64 {
     t.elapsed().as_secs_f64() * 1e6 / iters as f64
 }
 
-fn time_col(data: &[f64], thr: f64, iters: u32, simd: bool) -> f64 {
+fn time_col(data: &[f64], thr: f64, iters: u32) -> f64 {
     let t = Instant::now();
     let mut acc = 0u64;
     for _ in 0..iters {
-        let (c, _) = if simd {
-            predicate_gt_neon(data, thr)
-        } else {
-            predicate_gt_scalar(data, thr)
-        };
+        let (c, _) = scalar_floor(data, thr);
         acc = acc.wrapping_add(c);
     }
     black_box(acc);
@@ -70,11 +77,8 @@ fn main() {
     );
     let vec_pred = b - a; // live (vectorized) filter cost; NOT a boxed path — see header
 
-    let (scalar_us, simd_us) = match g.props.col("age") {
-        Some(Column::Num { data, .. }) => (
-            time_col(data, 0.0, iters * 20, false),
-            time_col(data, 0.0, iters * 20, true),
-        ),
+    let scalar_us = match g.props.col("age") {
+        Some(Column::Num { data, .. }) => time_col(data, 0.0, iters * 20),
         _ => panic!("no age column"),
     };
 
@@ -83,11 +87,7 @@ fn main() {
     println!("  [b] scan + count + WHERE        {b:>8.1} us");
     println!("  vectorized filter    (b − a)    {vec_pred:>8.1} us   [de-boxed; USE_VEC]");
     println!(
-        "  columnar scalar floor           {scalar_us:>8.2} us   ({:.0}x cheaper)",
+        "  bespoke scalar floor            {scalar_us:>8.2} us   ({:.0}x cheaper)",
         vec_pred / scalar_us
-    );
-    println!(
-        "  columnar 'simd' floor           {simd_us:>8.2} us   ({:.0}x cheaper)   [scalar on x86 — no AVX path yet]",
-        vec_pred / simd_us
     );
 }

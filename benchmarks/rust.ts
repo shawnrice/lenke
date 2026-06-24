@@ -1,7 +1,6 @@
 // Thin JS wrapper over the native pl-graph-core crate via bun:ffi.
 // Exposes the same operations the TS engine offers so the harness can time
-// them side by side: load (decode NDJSON -> graph handle), query, predicate
-// scan (SIMD), and encode.
+// them side by side: load (decode NDJSON -> graph handle), query, and encode.
 import { dlopen, FFIType, type Pointer, ptr, toArrayBuffer } from 'bun:ffi';
 
 const LIB = new URL(
@@ -29,18 +28,6 @@ const { symbols } = dlopen(LIB, {
   plg_query_rows: {
     args: [FFIType.ptr, FFIType.ptr, FFIType.u64_fast, FFIType.ptr],
     returns: FFIType.ptr,
-  },
-  plg_predicate_scan: {
-    args: [
-      FFIType.ptr,
-      FFIType.ptr,
-      FFIType.u64_fast,
-      FFIType.f64,
-      FFIType.u32,
-      FFIType.ptr,
-      FFIType.ptr,
-    ],
-    returns: FFIType.i32,
   },
   plg_encode_ndjson: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.ptr },
   plg_free_buf: { args: [FFIType.ptr, FFIType.u64_fast], returns: FFIType.void },
@@ -142,31 +129,6 @@ export const queryRows = (handle: Pointer, q: string): RowSet => {
   symbols.plg_free_buf(p, BigInt(len));
 
   return JSON.parse(json) as RowSet;
-};
-
-// No checksum: the predicate scan only aggregates a count and sum.
-export const predicateScan = (
-  handle: Pointer,
-  key: string,
-  thr: number,
-  simd: boolean,
-): { count: number; sum: number } => {
-  const kb = enc.encode(key);
-  const rc = symbols.plg_predicate_scan(
-    handle,
-    ptr(kb),
-    BigInt(kb.length),
-    thr,
-    simd ? 1 : 0,
-    ptr(outCount),
-    ptr(outSum),
-  );
-
-  if (rc !== 0) {
-    throw new Error(`plg_predicate_scan failed (rc=${rc}) for key=${key}`);
-  }
-
-  return { count: Number(outCount[0]), sum: outSum[0] };
 };
 
 const outLen = new BigUint64Array(1);

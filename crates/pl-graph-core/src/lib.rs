@@ -12,15 +12,14 @@
 //! Binding-agnostic: `ffi` exposes a C ABI for bun:ffi (and later wasm-bindgen)
 //! over a stateful graph handle.
 
-// Core (always compiled): the columnar graph, the fingerprint query subset, the
-// C-ABI surface, and a SIMD predicate-scan microbenchmark kernel (`scan`).
+// Core (always compiled): the columnar graph, the fingerprint query subset, and
+// the C-ABI surface.
 pub mod error;
 pub mod error_codes;
 pub mod ffi;
 pub mod ffi_error;
 pub mod graph;
 pub mod query;
-pub mod scan;
 
 // Composable capabilities — gated so a minimal (e.g. frontend wasm) build ships
 // only what it uses. See the `[features]` table in Cargo.toml.

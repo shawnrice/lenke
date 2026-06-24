@@ -8,8 +8,8 @@
 
 #[cfg(feature = "_fallible-ffi")]
 use crate::error_codes::ErrorCode;
-use crate::graph::{Column, Graph};
-use crate::{query, scan};
+use crate::graph::Graph;
+use crate::query;
 
 #[no_mangle]
 pub extern "C" fn plg_abi_version() -> u32 {
@@ -505,48 +505,6 @@ pub unsafe extern "C" fn plg_deserialize(
             crate::ffi_error::set_code(e.code, &e.message);
             std::ptr::null_mut()
         }
-    }
-}
-
-/// SIMD (or scalar) predicate scan `key > threshold` over a numeric column.
-/// Returns -1 if the key isn't a numeric column.
-///
-/// BENCHMARK SURFACE: this exposes the `scan` microbenchmark kernel for
-/// `benchmarks/compare.ts` (SIMD-vs-scalar over a real column). The product
-/// query path does NOT use it — GQL `WHERE` vectorizes via `gql::eval`.
-///
-/// # Safety
-/// `g` valid; `key_ptr`/`key_len` valid UTF-8; out pointers writable.
-#[no_mangle]
-pub unsafe extern "C" fn plg_predicate_scan(
-    g: *const Graph,
-    key_ptr: *const u8,
-    key_len: usize,
-    threshold: f64,
-    simd: u32,
-    out_count: *mut u64,
-    out_sum: *mut f64,
-) -> i32 {
-    if g.is_null() || key_ptr.is_null() {
-        return -1;
-    }
-    let g = &*g;
-    let key = match std::str::from_utf8(std::slice::from_raw_parts(key_ptr, key_len)) {
-        Ok(s) => s,
-        Err(_) => return -1,
-    };
-    match g.props.col(key) {
-        Some(Column::Num { data, .. }) => {
-            let (c, s) = if simd != 0 {
-                scan::predicate_gt_neon(data, threshold)
-            } else {
-                scan::predicate_gt_scalar(data, threshold)
-            };
-            *out_count = c;
-            *out_sum = s;
-            0
-        }
-        _ => -1,
     }
 }
 

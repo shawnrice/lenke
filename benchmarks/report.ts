@@ -13,7 +13,6 @@ type Row = {
       tsDisk: number | null;
       rustDisk: number;
     };
-    predicateScan: { jsLoop: number; rustScalar: number; rustNeon: number };
     ffiBatch: { queries: number; perCall: number; batched: number };
     [k: string]: any;
   };
@@ -85,9 +84,6 @@ const biggestQuery = Math.max(
     ),
   ),
 );
-const simdBest = Math.max(
-  ...r.rows.map((row) => row.ops.predicateScan.rustScalar / row.ops.predicateScan.rustNeon),
-);
 const buildBig = (() => {
   const big = r.rows[r.rows.length - 1];
 
@@ -136,16 +132,6 @@ const serializeRows = r.rows
     <td><span class="b ${badge(s.tsString, s.rustBytes)}">${ratio(s.tsString, s.rustBytes)}</span></td>
     <td class="num">${fmt(s.tsDisk)}</td><td class="num">${fmt(s.rustDisk)}</td>
     <td><span class="b ${badge(s.tsDisk, s.rustDisk)}">${ratio(s.tsDisk, s.rustDisk)}</span></td></tr>`;
-  })
-  .join('');
-
-const simdRows = r.rows
-  .map((row) => {
-    const p = row.ops.predicateScan;
-
-    return `<tr><td class="num">${n0(row.n)}</td><td class="num">${fmt(p.jsLoop)}</td><td class="num">${fmt(p.rustScalar)}</td><td class="num">${fmt(p.rustNeon)}</td>
-    <td><span class="b ${p.rustScalar / p.rustNeon >= 2 ? 'big' : 'win'}">${(p.rustScalar / p.rustNeon).toFixed(2)}×</span></td>
-    <td><span class="b ${badge(p.jsLoop, p.rustNeon)}">${(p.jsLoop / p.rustNeon).toFixed(1)}×</span></td></tr>`;
   })
   .join('');
 
@@ -209,13 +195,12 @@ footer{color:var(--dim);font-size:13px;margin-top:50px;border-top:1px solid var(
 </style></head><body><div class="wrap">
 <header>
 <h1>pl-graph — does a Rust core earn its keep?</h1>
-<p class="sub">Same operations, two engines: the TypeScript core / gql / NDJSON codec vs a columnar Rust crate over bun:ffi. ${r.meta.machine}. NEON SIMD where it applies.</p>
+<p class="sub">Same operations, two engines: the TypeScript core / gql / NDJSON codec vs a columnar Rust crate over bun:ffi. ${r.meta.machine}.</p>
 </header>
 
 <div class="tldr">
 <div class="card"><div class="big">${biggestQuery.toFixed(0)}×</div><div class="lab">fastest query speedup (Rust vs TS gql)</div></div>
 <div class="card"><div class="big">${buildBig ? `${buildBig.toFixed(0)}×` : '—'}</div><div class="lab">graph build at ${n0(r.rows[r.rows.length - 1].n)} vertices</div></div>
-<div class="card"><div class="big">${simdBest.toFixed(1)}×</div><div class="lab">NEON vs scalar — raw kernel microbench (not the query path)</div></div>
 <div class="card"><div class="big">${(r.ffiOverhead * 1e6).toFixed(0)} ns</div><div class="lab">per FFI call (the fixed tax)</div></div>
 </div>
 
@@ -241,10 +226,6 @@ ${r.meta.queries.map((q) => queryTable(q.id, q.label, q.text)).join('')}
   })
   .join('')}</tbody></table>
 
-<h2>SIMD predicate scan (<code>age &gt; 50</code>) — raw kernel microbenchmark</h2>
-<p><strong>Not the production query path.</strong> The GQL engine's <code>WHERE</code> filter vectorizes through its expression interpreter (see the <code>eval_vs_columnar</code> example) and never calls this kernel. These numbers measure a hand-written <code>f64x2</code> compare-and-mask (NEON) vs the scalar loop vs the equivalent JS loop, in isolation — kept because a clean SIMD-vs-scalar throughput figure is worth having on its own.</p>
-<table><thead><tr><th>vertices</th><th>JS loop</th><th>Rust scalar</th><th>Rust NEON</th><th>NEON vs scalar</th><th>NEON vs JS</th></tr></thead><tbody>${simdRows}</tbody></table>
-
 <h2>Serialize — the product is bytes for disk / wire</h2>
 <p>Serialization output goes to a file or a socket — i.e. <b>bytes</b>. TS produces a JS <i>string</i> that still must be UTF-8 encoded to bytes for any I/O; Rust produces write-ready bytes directly, and can write the file natively (the bytes never enter JS). <span class="dim">(The first draft unfairly made Rust decode its bytes back into a JS string — corrected here.)</span></p>
 <table><thead><tr><th>vertices</th><th>TS → string</th><th>Rust → bytes</th><th>×</th><th>TS → disk</th><th>Rust → disk</th><th>×</th></tr></thead><tbody>${serializeRows}</tbody></table>
@@ -260,7 +241,7 @@ ${r.meta.queries.map((q) => queryTable(q.id, q.label, q.text)).join('')}
 <p><b>The boundary is the cost, not the compute.</b> Rust compute is far faster everywhere; what claws it back is crossing FFI per call. So the architecture that wins is <i>coarse-grained</i>: hand Rust a whole NDJSON blob, let it build + query + aggregate, and pull back only small results — never chatty per-element calls. That's the Node/materialization persona; the frontend/reactive persona stays in TypeScript.</p>
 </div>
 
-<footer>Generated from <code>benchmarks/results.json</code> · graph: all <code>:Person</code> nodes (name/age/active), random <code>:KNOWS</code> edges, avg degree ${r.meta.avgDegree} · best-of-N wall time · Rust built <code>--release</code> with fat LTO, NEON baseline.</footer>
+<footer>Generated from <code>benchmarks/results.json</code> · graph: all <code>:Person</code> nodes (name/age/active), random <code>:KNOWS</code> edges, avg degree ${r.meta.avgDegree} · best-of-N wall time · Rust built <code>--release</code> with fat LTO.</footer>
 </div></body></html>`;
 
 await Bun.write('benchmarks/report.html', html);
