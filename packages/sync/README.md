@@ -74,10 +74,55 @@ const rows = await client.query('MATCH (p:Person) RETURN p.name'); // one-shot
 
 Snapshots are referentially stable between pushes. A handle whose refcount hits zero tears down its wire subscription but stays canonical — re-subscribing revives it with a fresh wire sub (React StrictMode's mount dance is safe). Mutation effects arrive through subscription pushes, exactly as if another client had written.
 
+## The sync loop
+
+`createSyncEngine` is the worker-side machinery between the local store and the network — one producer and one mechanism per arrow:
+
+```
+frontend declares interest      →  host onSubscribe fires ensure(deps)
+worker fills what that implies  →  collection loaders write into the graph
+server pushes what changed      →  engine.ingest(writes); epochs route
+local writes go back up         →  engine.mutate: optimistic + FIFO queue w/ backoff
+```
+
+```ts
+const engine = createSyncEngine({
+  store,
+  collections: {
+    // A collection = an app scope + the labels it covers + how to load it.
+    // Demand-fill needs no protocol addition: a subscription's deps already
+    // name the labels it reads, so intersecting collections load on demand.
+    people: {
+      labels: ['Person', 'REPORTS_TO'],
+      load: async () => {
+        const res = await fetch('/api/people').then((r) => r.json());
+        return res.map((p) => ({
+          gql: 'INSERT (:Person {name: $n, age: $a})',
+          params: { n: p.name, a: p.age },
+        }));
+      },
+    },
+  },
+  initiallyComplete: ['people'], // when the boot snapshot already covers it
+  upstream: { push: (w) => api.mutate(w) }, // write-back target
+  retry: { attempts: 5, baseMs: 250 },
+  onWriteError: (w, e) => report(w, e),
+});
+
+// One wired host per client connection:
+const host = engine.createHost({ send: (m) => ws.send(JSON.stringify(m)) });
+```
+
+Semantics worth knowing:
+
+- **Answer now, fill after** — a subscription over an unloaded collection gets its local (possibly stale) rows immediately with `complete: false`; the loader's writes land in one `store.mutate`, epochs route the push, and `complete` flips. An **empty scope still flips** `complete` (same rows, new truth).
+- **Loaders return writes** (`{ gql, params }[]`), not graphs — values stay on the params path, and the engine stays ignorant of your fetch/decode shape.
+- **Write-back is optimistic** — local readers see a mutation before upstream answers; the queue is FIFO, one in flight, exponential backoff; a write that exhausted its retries is dropped and reported (`onWriteError`) — rollback-and-correct arrives with server cursors, not v1. A mutation that changed nothing replicates nothing (version-gated).
+- **`ingest` never echoes** — server-pushed writes apply locally and route by epoch, with no path back into the queue.
+
 ## v1 boundaries (deliberate)
 
 - **`window` is carried but not interpreted** — re-subscribe with the same `sub` to replace a standing query (that is also how a windowed grid will scroll).
-- **`complete` is always `true`** — it becomes meaningful when the demand-fill sync loop lands (partially-synced collections must distinguish "no results" from "not loaded").
 - **Rows are JSON** — Arrow-buffer negotiation is an extension.
 - **No auth/scoping** — a host serves its store; "the server syncs only what this user may see" is a store-construction concern for the sync loop, not a protocol concern.
 - **No reconnect/resume** — a client is bound to one connection; resumable subscriptions are a protocol extension. On reconnect, build a new client (standing queries are cheap to re-declare).

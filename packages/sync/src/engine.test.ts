@@ -1,0 +1,296 @@
+// Proves the sync loop end to end: demand-fill fires off subscription deps
+// and flips completeness honestly (including for empty scopes), local writes
+// apply optimistically and replicate upstream with retry/backoff, server
+// pushes ingest without re-replicating, and the whole thing drives real
+// clients through engine.createHost. Run: bun test packages/sync/src/engine.test.ts
+import { describe, expect, test } from 'bun:test';
+import { existsSync } from 'node:fs';
+
+import { createStore, graphFromNdjson, type Store } from '@lenke/native';
+import { createFfiBackend } from '@lenke/native/ffi';
+
+import { createSyncClient, type SyncClient } from './client.js';
+import { createSyncEngine, type GqlWrite, type SyncEngineOptions } from './engine.js';
+
+const LIB_EXTENSIONS: Partial<Record<NodeJS.Platform, string>> = { darwin: 'dylib', win32: 'dll' };
+const LIB_EXT = LIB_EXTENSIONS[process.platform] ?? 'so';
+const LIB = new URL(
+  `../../../crates/lenke-core/target/release/liblenke_core.${LIB_EXT}`,
+  import.meta.url,
+).pathname;
+const hasLib = existsSync(LIB);
+
+if (!hasLib) {
+  console.warn(`[engine.test] skipping: ${LIB} not found — run \`bun run build:rust\` first.`);
+}
+
+const suite = hasLib ? describe : describe.skip;
+
+// Local seed: one Person already present (the "warm snapshot" starting point).
+const NDJSON =
+  '{"type":"node","id":"a","labels":["Person"],"properties":{"name":"local","age":50}}';
+
+const newStore = (): Store =>
+  createStore(graphFromNdjson(createFfiBackend(LIB), new TextEncoder().encode(NDJSON)));
+
+/** A promise settled from the outside — deterministic async control. */
+const deferred = <T>() => {
+  let resolve!: (v: T) => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+
+  return { promise, resolve, reject };
+};
+
+/** Await until `check` passes (the pump/loaders hop the microtask queue). */
+const until = async (check: () => boolean): Promise<void> => {
+  for (let i = 0; i < 500; i += 1) {
+    if (check()) {
+      return;
+    }
+
+    await new Promise((r) => {
+      setTimeout(r, 2);
+    });
+  }
+
+  throw new Error('until(): condition never became true');
+};
+
+/** Engine + one client wired through engine.createHost — the full local loop. */
+const connect = (opts: Omit<SyncEngineOptions, 'store'>) => {
+  const store = newStore();
+  const engine = createSyncEngine({ store, ...opts });
+  let deliver: (m: unknown) => void = () => {};
+  const host = engine.createHost({ send: (m) => deliver(m) });
+  const client: SyncClient = createSyncClient({ send: (m) => host.receive(m) });
+  deliver = (m) => client.receive(m);
+  host.sendStatus(); // replay the handshake the buffered wiring missed
+
+  return { store, engine, host, client };
+};
+
+suite('@lenke/sync engine · demand-fill', () => {
+  test('a subscription over an unloaded collection answers incomplete, then fills', async () => {
+    const gate = deferred<GqlWrite[]>();
+    const { engine, client } = connect({
+      collections: { people: { labels: ['Person'], load: () => gate.promise } },
+    });
+
+    const live = client.liveQuery('MATCH (p:Person) RETURN p.name ORDER BY p.name', {
+      deps: ['Person', 'name'],
+    });
+    const stop = live.subscribe(() => {});
+
+    // Immediate answer: the local (stale) row, honestly marked incomplete.
+    expect(live.getSnapshot().complete).toBe(false);
+    expect(live.getSnapshot().rows).toHaveLength(1);
+    expect(engine.collectionState('people')).toBe('loading');
+
+    // The loader lands → writes apply → epochs route → push flips complete.
+    gate.resolve([
+      { gql: 'INSERT (:Person {name: $n, age: $a})', params: { n: 'remote-1', a: 30 } },
+      { gql: 'INSERT (:Person {name: $n, age: $a})', params: { n: 'remote-2', a: 31 } },
+    ]);
+    await until(() => live.getSnapshot().complete);
+
+    expect(live.getSnapshot().rows).toHaveLength(3);
+    expect(engine.collectionState('people')).toBe('complete');
+    stop();
+  });
+
+  test('deps no collection covers are complete by definition (local-only data)', () => {
+    const { client } = connect({
+      collections: { people: { labels: ['Person'], load: () => Promise.resolve([]) } },
+    });
+
+    const live = client.liveQuery('MATCH (t:Team) RETURN t.name', { deps: ['Team', 'name'] });
+    expect(live.getSnapshot().complete).toBe(true);
+  });
+
+  test('an EMPTY scope still flips complete (same rows, new truth)', async () => {
+    const { client } = connect({
+      collections: { teams: { labels: ['Team'], load: () => Promise.resolve([]) } },
+    });
+
+    const live = client.liveQuery('MATCH (t:Team) RETURN t.name', { deps: ['Team', 'name'] });
+    const stop = live.subscribe(() => {});
+    expect(live.getSnapshot()).toMatchObject({ complete: false, rows: [] });
+
+    // No rows will ever change here — the completeness flip alone must push.
+    await until(() => live.getSnapshot().complete);
+    expect(live.getSnapshot().rows).toEqual([]);
+    stop();
+  });
+
+  test('a failed load reports, stays incomplete, and the next demand retries', async () => {
+    let calls = 0;
+    const errors: string[] = [];
+    const { engine, client } = connect({
+      collections: {
+        people: {
+          labels: ['Person'],
+          load: () => {
+            calls += 1;
+
+            return calls === 1
+              ? Promise.reject(new Error('backend down'))
+              : Promise.resolve([{ gql: 'INSERT (:Person {name: $n})', params: { n: 'late' } }]);
+          },
+        },
+      },
+      onLoadError: (name) => {
+        errors.push(name);
+      },
+    });
+
+    const live = client.liveQuery('MATCH (p:Person) RETURN p.name', { deps: ['Person', 'name'] });
+    const stop = live.subscribe(() => {});
+
+    await until(() => engine.collectionState('people') === 'error');
+    expect(errors).toEqual(['people']);
+    expect(live.getSnapshot().complete).toBe(false);
+
+    // A new demand (fresh subscription) re-triggers the load.
+    engine.ensure(['Person']);
+    await until(() => live.getSnapshot().complete);
+    expect(calls).toBe(2);
+    stop();
+  });
+});
+
+suite('@lenke/sync engine · write-back', () => {
+  test('mutate applies optimistically and replicates upstream', async () => {
+    const pushed: GqlWrite[] = [];
+    const { engine, client } = connect({
+      upstream: {
+        push: (w) => {
+          pushed.push(w);
+
+          return Promise.resolve();
+        },
+      },
+    });
+
+    const live = client.liveQuery('MATCH (p:Person) RETURN p.name', { deps: ['Person', 'name'] });
+    const stop = live.subscribe(() => {});
+
+    engine.mutate('INSERT (:Person {name: $n})', { n: 'zoe' });
+
+    // Optimistic: local readers see it before upstream ever answers.
+    expect(live.getSnapshot().rows).toHaveLength(2);
+
+    await until(() => engine.pendingWrites() === 0);
+    expect(pushed).toEqual([{ gql: 'INSERT (:Person {name: $n})', params: { n: 'zoe' } }]);
+    stop();
+  });
+
+  test('a write that changed nothing replicates nothing (version gate)', async () => {
+    const pushed: GqlWrite[] = [];
+    const { engine } = connect({
+      upstream: {
+        push: (w) => {
+          pushed.push(w);
+
+          return Promise.resolve();
+        },
+      },
+    });
+
+    engine.mutate('MATCH (p:Person) RETURN p.name'); // a read smuggled into mutate
+    await new Promise((r) => {
+      setTimeout(r, 10);
+    });
+    expect(pushed).toEqual([]);
+    expect(engine.pendingWrites()).toBe(0);
+  });
+
+  test('retry with backoff: transient failures deliver eventually', async () => {
+    let attempts = 0;
+    const { engine } = connect({
+      retry: { attempts: 5, baseMs: 1 },
+      upstream: {
+        push: () => {
+          attempts += 1;
+
+          return attempts < 3 ? Promise.reject(new Error('flaky')) : Promise.resolve();
+        },
+      },
+    });
+
+    engine.mutate('INSERT (:Person {name: $n})', { n: 'retry-me' });
+    await until(() => engine.pendingWrites() === 0);
+    expect(attempts).toBe(3);
+  });
+
+  test('terminal failure drops the write and reports it', async () => {
+    const failed: GqlWrite[] = [];
+    const { engine } = connect({
+      retry: { attempts: 2, baseMs: 1 },
+      upstream: { push: () => Promise.reject(new Error('dead upstream')) },
+      onWriteError: (w) => {
+        failed.push(w);
+      },
+    });
+
+    engine.mutate('INSERT (:Person {name: $n})', { n: 'doomed' });
+    await until(() => engine.pendingWrites() === 0);
+    expect(failed).toEqual([{ gql: 'INSERT (:Person {name: $n})', params: { n: 'doomed' } }]);
+  });
+
+  test('client mutations flow through the queue; status reports the backlog', async () => {
+    const gate = deferred<void>();
+    const pushed: GqlWrite[] = [];
+    const { client, engine } = connect({
+      upstream: {
+        push: (w) => {
+          pushed.push(w);
+
+          return gate.promise; // hold the write in flight
+        },
+      },
+    });
+
+    await client.mutate('INSERT (:Person {name: $n})', { n: 'via-wire' }); // ack is local+optimistic
+    expect(engine.pendingWrites()).toBe(1);
+    await until(() => client.getStatus()?.pendingWrites === 1); // status rode the queue change
+
+    gate.resolve();
+    await until(() => engine.pendingWrites() === 0);
+    expect(pushed).toHaveLength(1);
+    await until(() => client.getStatus()?.pendingWrites === 0);
+  });
+});
+
+suite('@lenke/sync engine · ingest', () => {
+  test('server pushes apply locally, route by epoch, and never re-replicate', async () => {
+    const pushed: GqlWrite[] = [];
+    const { engine, client } = connect({
+      upstream: {
+        push: (w) => {
+          pushed.push(w);
+
+          return Promise.resolve();
+        },
+      },
+    });
+
+    const live = client.liveQuery('MATCH (p:Person) RETURN p.name', { deps: ['Person', 'name'] });
+    const stop = live.subscribe(() => {});
+
+    engine.ingest([
+      { gql: 'INSERT (:Person {name: $n})', params: { n: 'from-server-1' } },
+      { gql: 'INSERT (:Person {name: $n})', params: { n: 'from-server-2' } },
+    ]);
+
+    expect(live.getSnapshot().rows).toHaveLength(3); // the standing query heard it
+    await new Promise((r) => {
+      setTimeout(r, 10);
+    });
+    expect(pushed).toEqual([]); // and nothing echoed back upstream
+    stop();
+  });
+});

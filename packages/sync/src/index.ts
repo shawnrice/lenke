@@ -1,12 +1,16 @@
 /**
- * `@lenke/sync` — the lenke sync engine's wire protocol and live-query host.
+ * `@lenke/sync` — the lenke sync engine: wire protocol, hosts, client, loop.
  *
- * v1 covers the doc's build-order steps 1–2 for the server side: the ~6-message
- * protocol as a structural contract ({@link ClientMessage} / {@link HostMessage})
- * and {@link createSyncHost}, the transport-agnostic host that serves standing
- * queries over any port-shaped channel (Worker `postMessage`, WebSocket, an
- * in-memory pair in tests). The sync *loop* (hydrate, demand-fill loaders,
- * write-back, OPFS persistence) layers on next.
+ * - {@link createSyncHost} — serves standing queries over any port-shaped
+ *   channel (Worker `postMessage`, WebSocket; one host per connection).
+ * - {@link createSyncClient} — the client registry the UI consumes
+ *   (dedupe, refcounts, stable `useSyncExternalStore`-ready snapshots).
+ * - {@link createSyncEngine} — the sync loop between store and network:
+ *   per-collection completeness, demand-fill loaders, push ingestion, and the
+ *   optimistic write-back queue. `engine.createHost()` wires a host into it.
+ *
+ * Persistence (OPFS snapshot + encryption) is the next layer; the engine is
+ * deliberately persistence-agnostic (hydrate the store before building it).
  */
 
 export {
@@ -16,6 +20,14 @@ export {
   type SyncClient,
   type SyncClientOptions,
 } from './client.js';
+export {
+  createSyncEngine,
+  type CollectionDefinition,
+  type CollectionState,
+  type GqlWrite,
+  type SyncEngine,
+  type SyncEngineOptions,
+} from './engine.js';
 export { createSyncHost, type SyncHost, type SyncHostOptions } from './host.js';
 export {
   isClientMessage,
