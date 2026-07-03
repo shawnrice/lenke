@@ -56,6 +56,12 @@ export type SyncEngineOptions = {
   collections?: Record<string, CollectionDefinition>;
   /** Collections the boot snapshot already covers (skip their first load). */
   initiallyComplete?: readonly string[];
+  /**
+   * Pending writes restored from a snapshot. Their effects are already IN the
+   * snapshot's graph (they were applied optimistically before it was saved),
+   * so they re-enqueue for upstream without re-applying locally.
+   */
+  initialWrites?: readonly GqlWrite[];
   /** Where local writes replicate to. Omit for a local-only engine. */
   upstream?: {
     push: (write: GqlWrite) => Promise<void>;
@@ -82,6 +88,8 @@ export type SyncEngine = {
   ingest: (writes: readonly GqlWrite[]) => void;
   /** Queued-or-in-flight write count (feeds the status message). */
   pendingWrites: () => number;
+  /** The queue's current contents — persist these in the snapshot. */
+  queuedWrites: () => readonly GqlWrite[];
   /** Loads and queue-length changes re-notify here (hosts refresh on it). */
   onChange: (cb: () => void) => () => void;
   /** A host for one client connection, wired into this loop. */
@@ -160,7 +168,9 @@ export const createSyncEngine = (options: SyncEngineOptions): SyncEngine => {
 
   // ---- write-back ------------------------------------------------------
 
-  const queue: GqlWrite[] = [];
+  // Restored writes re-enqueue as-is: their effects are already in the
+  // snapshot's graph, they just never reached upstream.
+  const queue: GqlWrite[] = [...(options.initialWrites ?? [])];
   let pumping = false;
 
   const pump = async (): Promise<void> => {
@@ -220,6 +230,12 @@ export const createSyncEngine = (options: SyncEngineOptions): SyncEngine => {
 
   // ---- assembly --------------------------------------------------------
 
+  // Flush aggressively: restored writes start replicating immediately, not on
+  // the next local mutation.
+  if (upstream && queue.length > 0) {
+    void pump();
+  }
+
   return {
     store,
     collectionState: (name) => states.get(name),
@@ -228,6 +244,7 @@ export const createSyncEngine = (options: SyncEngineOptions): SyncEngine => {
     mutate,
     ingest,
     pendingWrites: () => queue.length,
+    queuedWrites: () => [...queue],
     onChange: (cb) => {
       changeListeners.add(cb);
 

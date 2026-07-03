@@ -120,6 +120,48 @@ Semantics worth knowing:
 - **Write-back is optimistic** — local readers see a mutation before upstream answers; the queue is FIFO, one in flight, exponential backoff; a write that exhausted its retries is dropped and reported (`onWriteError`) — rollback-and-correct arrives with server cursors, not v1. A mutation that changed nothing replicates nothing (version-gated).
 - **`ingest` never echoes** — server-pushed writes apply locally and route by epoch, with no path back into the queue.
 
+## Snapshots (warm boot)
+
+The load-bearing rule: the local snapshot is **warmth, never truth** — every failure mode (eviction, tamper, wrong key, version/user mismatch, corruption) reads as _absent_ and the app cold-boots. The one exception is the **pending-write queue** (truth-on-client until acked), which rides inside the snapshot.
+
+```ts
+// Save (on an interval, on visibilitychange — the app decides):
+const key = await importSnapshotKey(rawKeyFromAuth); // worker memory only, never persisted
+const storage = opfsStorage('lenke.snapshot'); // memorySnapshotStorage() off-browser
+await storage.write(
+  await encodeSnapshot(
+    engine.store,
+    {
+      schemaVersion: 'v3',
+      userId: session.userId,
+      serverCursor: stream.cursor, // resume point for the app's sync stream
+      collections: ['people'], // scopes this snapshot covers
+      pendingWrites: engine.queuedWrites(), // unsynced changes survive the reload
+    },
+    { key },
+  ),
+);
+
+// Boot:
+const snap = await readSnapshot(storage, { schemaVersion: 'v3', userId: session.userId }, { key });
+const store = createStore(
+  snap
+    ? graphFromNdjson(backend, snap.ndjson) // warm: answer subscriptions now, reconcile after
+    : emptyGraph(backend),
+); // cold: demand-fill does the rest
+const engine = createSyncEngine({
+  store,
+  collections,
+  initiallyComplete: snap?.header.collections ?? [],
+  initialWrites: snap?.pendingWrites ?? [], // stranded writes resume replication immediately
+  upstream,
+});
+// resume the push stream from snap?.header.serverCursor ?? '' — a cursor-too-old
+// answer means: storage.delete(), cold boot.
+```
+
+Format: a **plaintext header** `{ formatVersion, schemaVersion, userId, serverCursor, collections }` — the invalidation tier, checked before any decryption (`peekHeader` reads it without the key) — then a gzip payload, optionally AES-GCM-sealed (compress-then-encrypt; authenticated, so tamper reads as absent; fresh IV per save; revocation = drop the key — crypto-shredding). `readSnapshot` deletes an invalid-forever snapshot on the way out. Logout should still answer with `Clear-Site-Data: "storage"` — the browser wipes the origin without trusting app code to clean up.
+
 ## v1 boundaries (deliberate)
 
 - **`window` is carried but not interpreted** — re-subscribe with the same `sub` to replace a standing query (that is also how a windowed grid will scroll).

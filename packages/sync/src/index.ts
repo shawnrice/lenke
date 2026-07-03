@@ -30,6 +30,19 @@ export {
 } from './engine.js';
 export { createSyncHost, type SyncHost, type SyncHostOptions } from './host.js';
 export {
+  decodeSnapshot,
+  encodeSnapshot,
+  importSnapshotKey,
+  memorySnapshotStorage,
+  opfsStorage,
+  peekHeader,
+  readSnapshot,
+  type Snapshot,
+  type SnapshotExpectation,
+  type SnapshotHeader,
+  type SnapshotStorage,
+} from './snapshot.js';
+export {
   isClientMessage,
   isHostMessage,
   type AckMessage,
