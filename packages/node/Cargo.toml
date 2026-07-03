@@ -1,0 +1,34 @@
+[package]
+name = "lenke-node"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "N-API (napi-rs) native Node.js addon for the lenke-core graph engine."
+
+# napi addons are Node-loadable dynamic libraries. Unlike the C-ABI cdylib in
+# `lenke-core` (loaded over bun:ffi / dlopen), this speaks N-API directly, so the
+# JS boundary hands Rust real JS values (strings, Buffers) with no manual pointer
+# marshalling — the fast, idiomatic Node path.
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# default-features off keeps async/tokio out; napi8 is the N-API version floor
+# (Node 12.22+/14.17+ — universally satisfied on any supported runtime).
+napi = { version = "2", default-features = false, features = ["napi8"] }
+napi-derive = "2"
+# The engine itself, with its full default feature set (gql, gremlin, ndjson,
+# codecs, arrow, parallel). Path dep — same source tree, no version skew.
+lenke-core = { path = "../../crates/lenke-core" }
+
+[build-dependencies]
+napi-build = "2"
+
+# The root package's profile governs the whole dependency graph, so mirror
+# lenke-core's release tuning here to get the optimized core into the addon.
+# (panic left as unwind — napi catches Rust panics and rethrows them as JS
+# exceptions; abort would take the whole process down.)
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1

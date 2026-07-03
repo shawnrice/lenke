@@ -1,0 +1,47 @@
+# @lenke/node
+
+> Fast native Node.js addon (N-API via [napi-rs](https://napi.rs)) for the `lenke-core` graph engine.
+
+The idiomatic **Node** path to the engine. Where `@lenke/native/ffi` (Bun) and `@lenke/native/wasm` (browser) cross a hand-marshalled **C ABI**, this addon speaks **N-API directly**: JS strings and `Buffer`s arrive as real Rust values, results come back as `Buffer`s — no per-call pointer marshalling, and no dynamic library to locate at runtime (the engine is compiled straight in).
+
+Node is the intended **production** consumer; the Bun FFI backend is a dev-speed convenience.
+
+## Two ways to use it
+
+### 1. The `Graph` class (direct, fastest)
+
+```js
+import addon from '@lenke/node';
+const { Graph } = addon;
+
+const g = Graph.fromNdjson(await readFile('graph.ndjson'));
+const doc = JSON.parse(new TextDecoder().decode(g.query('MATCH (p:Person) RETURN p.name')));
+const arrow = g.queryArrow('MATCH (p:Person) RETURN p.age'); // ARW1 columnar Buffer
+```
+
+`query` / `queryArrow` / `gremlin` / `serialize` / `encodeNdjson` return `Buffer`; `version()` / `epoch(name)` / `vertexCount` / `edgeCount` are plain numbers.
+
+### 2. The `Backend` adapter (drop-in for the `@lenke/native` facade)
+
+`createNodeBackend()` satisfies the shared `Backend` contract, so the whole `@lenke/native` facade — `graphFromNdjson`, the `RustGraph` tagged-template `query`/`gremlin`, `createStore` + `liveQuery` — runs on Node against this engine unchanged:
+
+```js
+import { createNodeBackend } from '@lenke/node/backend';
+import { graphFromNdjson, createStore } from '@lenke/native';
+
+const g = graphFromNdjson(createNodeBackend(), await readFile('graph.ndjson'));
+const people = createStore(g).liveQuery('MATCH (p:Person) RETURN p.name', { deps: ['Person', 'name'] });
+// people.getSnapshot() → referentially stable until a mutation bumps the epoch
+```
+
+## Build
+
+```
+napi build --platform --release      # → index.js, index.d.ts, lenke-node.<triple>.node
+```
+
+The build outputs are generated artifacts (git-ignored). `napi build` cross-compiles for the platforms listed under `napi.targets` in `package.json`; CI produces the per-platform prebuilt binaries.
+
+## Note: CommonJS loader
+
+napi's generated `index.js` is CommonJS, so this package is **not** `"type": "module"`. Import the default (`import addon from '@lenke/node'`) rather than named exports from the addon entry; the `/backend` subpath is ESM with a normal named export.
