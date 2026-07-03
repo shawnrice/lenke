@@ -3,7 +3,6 @@
   "version": "0.1.0",
   "description": "Fast native Node.js addon (N-API via napi-rs) for the lenke-core graph engine. The idiomatic Node path — no C-ABI marshalling, no dynamic library to locate.",
   "license": "Apache-2.0",
-  "type": "module",
   "files": [
     "index.js",
     "index.d.ts",
@@ -11,6 +10,7 @@
     "backend.d.ts",
     "*.node"
   ],
+  "type": "module",
   "main": "index.js",
   "types": "index.d.ts",
   "exports": {

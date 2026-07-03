@@ -11,9 +11,26 @@ import { Graph, abiVersion } from './index.js';
 
 const NDJSON = Buffer.from(
   [
-    JSON.stringify({ type: 'node', id: 'n0', labels: ['Person'], properties: { name: 'marko', age: 29 } }),
-    JSON.stringify({ type: 'node', id: 'n1', labels: ['Person'], properties: { name: 'vadas', age: 27 } }),
-    JSON.stringify({ type: 'edge', id: 'e0', from: 'n0', to: 'n1', labels: ['KNOWS'], properties: {} }),
+    JSON.stringify({
+      type: 'node',
+      id: 'n0',
+      labels: ['Person'],
+      properties: { name: 'marko', age: 29 },
+    }),
+    JSON.stringify({
+      type: 'node',
+      id: 'n1',
+      labels: ['Person'],
+      properties: { name: 'vadas', age: 27 },
+    }),
+    JSON.stringify({
+      type: 'edge',
+      id: 'e0',
+      from: 'n0',
+      to: 'n1',
+      labels: ['KNOWS'],
+      properties: {},
+    }),
   ].join('\n'),
 );
 const dec = new TextDecoder();

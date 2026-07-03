@@ -1,0 +1,30 @@
+{
+  "name": "@lenke/sync",
+  "description": "The lenke sync engine: the v1 live-query wire protocol and the transport-agnostic host that serves it — the same code over a Worker postMessage port or a server WebSocket.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "sideEffects": false,
+  "types": "./dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "default": "./dist/esm/index.mjs"
+    }
+  },
+  "scripts": {
+    "build": "bun build.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@lenke/errors": "workspace:*",
+    "@lenke/native": "workspace:*"
+  },
+  "devDependencies": {
+    "@lenke/dev": "workspace:*",
+    "@types/bun": "^1.3.13",
+    "bun-types": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^6.0.0"
+  }
+}
