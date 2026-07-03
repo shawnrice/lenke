@@ -1,10 +1,39 @@
 {
   "name": "@lenke/node",
-  "description": "Fast native Node.js addon (N-API via napi-rs) for the lenke-core graph engine. The idiomatic Node path — no C-ABI marshalling, no dynamic library to locate.",
   "version": "0.1.0",
+  "description": "Fast native Node.js addon (N-API via napi-rs) for the lenke-core graph engine. The idiomatic Node path — no C-ABI marshalling, no dynamic library to locate.",
   "license": "Apache-2.0",
+  "type": "module",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "backend.js",
+    "backend.d.ts",
+    "*.node"
+  ],
   "main": "index.js",
   "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
+    "./backend": {
+      "types": "./backend.d.ts",
+      "default": "./backend.js"
+    }
+  },
+  "scripts": {
+    "build": "napi build --platform --release --esm",
+    "build:debug": "napi build --platform --esm",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@lenke/native": "workspace:*"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^3.7.2"
+  },
   "napi": {
     "binaryName": "lenke-node",
     "targets": [
@@ -14,33 +43,5 @@
       "x86_64-apple-darwin",
       "x86_64-pc-windows-msvc"
     ]
-  },
-  "exports": {
-    ".": {
-      "types": "./index.d.ts",
-      "default": "./index.js"
-    },
-    "./backend": {
-      "types": "./backend.d.ts",
-      "default": "./backend.mjs"
-    }
-  },
-  "files": [
-    "index.js",
-    "index.d.ts",
-    "backend.mjs",
-    "backend.d.ts",
-    "*.node"
-  ],
-  "scripts": {
-    "build": "napi build --platform --release",
-    "build:debug": "napi build --platform",
-    "test": "node --test"
-  },
-  "dependencies": {
-    "@lenke/native": "workspace:*"
-  },
-  "devDependencies": {
-    "@napi-rs/cli": "^2.18.0"
   }
 }

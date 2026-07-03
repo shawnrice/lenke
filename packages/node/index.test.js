@@ -6,10 +6,8 @@ import { test } from 'node:test';
 
 import { graphFromNdjson, createStore } from '@lenke/native';
 
-import { createNodeBackend } from './backend.mjs';
-import addon from './index.js';
-
-const { Graph, abiVersion } = addon;
+import { createNodeBackend } from './backend.js';
+import { Graph, abiVersion } from './index.js';
 
 const NDJSON = Buffer.from(
   [

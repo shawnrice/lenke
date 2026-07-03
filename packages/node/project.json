@@ -6,7 +6,7 @@
     "build": {
       "executor": "nx:run-commands",
       "options": {
-        "command": "napi build --platform --release",
+        "command": "napi build --platform --release --esm",
         "cwd": "packages/node"
       },
       "outputs": [

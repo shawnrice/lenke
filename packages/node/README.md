@@ -11,8 +11,7 @@ Node is the intended **production** consumer; the Bun FFI backend is a dev-speed
 ### 1. The `Graph` class (direct, fastest)
 
 ```js
-import addon from '@lenke/node';
-const { Graph } = addon;
+import { Graph } from '@lenke/node';
 
 const g = Graph.fromNdjson(await readFile('graph.ndjson'));
 const doc = JSON.parse(new TextDecoder().decode(g.query('MATCH (p:Person) RETURN p.name')));
@@ -30,18 +29,21 @@ import { createNodeBackend } from '@lenke/node/backend';
 import { graphFromNdjson, createStore } from '@lenke/native';
 
 const g = graphFromNdjson(createNodeBackend(), await readFile('graph.ndjson'));
-const people = createStore(g).liveQuery('MATCH (p:Person) RETURN p.name', { deps: ['Person', 'name'] });
+const people = createStore(g).liveQuery('MATCH (p:Person) RETURN p.name', {
+  deps: ['Person', 'name'],
+});
 // people.getSnapshot() → referentially stable until a mutation bumps the epoch
 ```
 
 ## Build
 
 ```
-napi build --platform --release      # → index.js, index.d.ts, lenke-node.<triple>.node
+npm run build      # napi build --platform --release --esm
+                   # → index.js (ESM), index.d.ts, lenke-node.<triple>.node
 ```
 
-The build outputs are generated artifacts (git-ignored). `napi build` cross-compiles for the platforms listed under `napi.targets` in `package.json`; CI produces the per-platform prebuilt binaries.
+The generated `index.js` / `index.d.ts` / `*.node` are git-ignored artifacts. `napi build` cross-compiles for the platforms listed under `napi.targets` in `package.json`; CI produces the per-platform prebuilt binaries.
 
-## Note: CommonJS loader
+## ESM
 
-napi's generated `index.js` is CommonJS, so this package is **not** `"type": "module"`. Import the default (`import addon from '@lenke/node'`) rather than named exports from the addon entry; the `/backend` subpath is ESM with a normal named export.
+The package is `"type": "module"`, like the rest of the monorepo. napi-rs v3's `--esm` emits a native-ESM binding (`import`/`export`, with `createRequire` used internally only to load the `.node` — which is the one thing ESM can't import directly). So consumers just `import { Graph } from '@lenke/node'` with no CJS interop.

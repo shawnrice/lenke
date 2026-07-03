@@ -4,12 +4,7 @@
 // registry and let napi's GC reclaim a graph once its handle is dropped. The
 // per-call Map lookup is nanoseconds against query compute; the doc's own
 // measurements put the compute-to-transfer ratio around 2000:1.
-// napi's generated loader is CommonJS; its `module.exports.X = X` pattern isn't
-// statically analyzable by Node's cjs lexer, so a named ESM import fails. Import
-// the default (the whole module.exports) and destructure at runtime.
-import addon from './index.js';
-
-const { Graph, abiVersion } = addon;
+import { Graph, abiVersion } from './index.js';
 
 // The facade passes Uint8Array; the addon wants a Node Buffer. Wrap (no copy)
 // rather than reallocate when we already hold a Uint8Array view.

@@ -15,8 +15,8 @@ crate-type = ["cdylib"]
 [dependencies]
 # default-features off keeps async/tokio out; napi8 is the N-API version floor
 # (Node 12.22+/14.17+ — universally satisfied on any supported runtime).
-napi = { version = "2", default-features = false, features = ["napi8"] }
-napi-derive = "2"
+napi = { version = "3", default-features = false, features = ["napi8"] }
+napi-derive = "3"
 # The engine itself, with its full default feature set (gql, gremlin, ndjson,
 # codecs, arrow, parallel). Path dep — same source tree, no version skew.
 lenke-core = { path = "../../crates/lenke-core" }
