@@ -1,7 +1,7 @@
 {
-  "name": "@pl-graph/dev",
+  "name": "@lenke/dev",
   "version": "1.0.0",
-  "description": "Internal build, lint, and format tooling shared across the @pl-graph monorepo.",
+  "description": "Internal build, lint, and format tooling shared across the @lenke monorepo.",
   "license": "Apache-2.0",
   "files": [
     "dist",

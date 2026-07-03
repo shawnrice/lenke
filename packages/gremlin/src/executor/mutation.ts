@@ -6,8 +6,8 @@
 // traversal. Callers who need a transactional "all or nothing" semantic
 // should clone the graph first (`graph.clone()`).
 
-import type { Graph, Vertex } from '@pl-graph/core';
-import { ErrorCode, PlGraphError } from '@pl-graph/errors';
+import type { Graph, Vertex } from '@lenke/core';
+import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { AddEEndpoint, Plan } from '../ast.js';
 import { applyPlanToStream, applyStep } from './dispatch.js';
@@ -101,7 +101,7 @@ export const addEStep = function* (
   // Snapshot before mutating — an `E()` source iterates a live edge view.
   for (const t of [...stream]) {
     if (step.from === undefined && step.to === undefined) {
-      throw new PlGraphError(
+      throw new LenkeError(
         `addE('${step.label}'): at least one of .from() or .to() must be specified`,
         {
           code: ErrorCode.Syntax,
@@ -113,7 +113,7 @@ export const addEStep = function* (
     const to = resolveAddEEndpoint(step.to, t, graph, ctx);
 
     if (!from || !to) {
-      throw new PlGraphError(
+      throw new LenkeError(
         `addE('${step.label}'): could not resolve endpoint vertices (from=${!!from}, to=${!!to})`,
         { code: ErrorCode.MissingVertex },
       );

@@ -1,4 +1,4 @@
-import { rando } from '@pl-graph/utils';
+import { rando } from '@lenke/utils';
 
 import type { Graph } from './Graph.js';
 import type { Vertex } from './Vertex.js';

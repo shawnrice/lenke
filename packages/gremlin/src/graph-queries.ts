@@ -1,4 +1,4 @@
-import type { Edge, Graph, Vertex } from '@pl-graph/core';
+import type { Edge, Graph, Vertex } from '@lenke/core';
 
 /**
  * Vertex-centric adjacency queries used by the gremlin executor. These belong

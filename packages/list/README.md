@@ -1,4 +1,4 @@
-# @pl-graph/list
+# @lenke/list
 
 > A lazy, iterator-backed list with array-like methods and a known (or infinite) length.
 
@@ -7,13 +7,13 @@
 ## Install
 
 ```bash
-bun add @pl-graph/list
+bun add @lenke/list
 ```
 
 ## Usage
 
 ```ts
-import { List } from '@pl-graph/list';
+import { List } from '@lenke/list';
 
 // Build a list from values, an array, a Set, or any iterable.
 const numbers = List.of(1, 2, 3, 4, 5, 6);

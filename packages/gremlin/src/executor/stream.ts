@@ -1,4 +1,4 @@
-import type { Graph } from '@pl-graph/core';
+import type { Graph } from '@lenke/core';
 
 import type { FlatMapClosure, Plan, ReducerClosure, SideEffectClosure } from '../ast.js';
 import { applyPlanToStream } from './dispatch.js';

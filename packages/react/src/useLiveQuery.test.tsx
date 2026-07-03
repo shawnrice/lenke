@@ -6,7 +6,7 @@ import { type ReactiveStore, type Row, useStore } from './StoreContext.js';
 import { StoreProvider } from './StoreProvider.js';
 import { useLiveQuery } from './useLiveQuery.js';
 
-// A fake store shaped like `@pl-graph/native`'s `createStore(graph)` result:
+// A fake store shaped like `@lenke/native`'s `createStore(graph)` result:
 // each liveQuery caches its rows and only re-materializes when the test-driven
 // version moves; `mutate` advances the version and notifies subscribers. This
 // lets the connector be tested without a built wasm artifact — the real native

@@ -1,5 +1,5 @@
 {
-  "name": "@pl-graph/tree",
+  "name": "@lenke/tree",
   "description": "Generic tree data structures for JavaScript/TypeScript: a mutable `TreeNode` and a value-carrying `Trie`.",
   "license": "Apache-2.0",
   "files": [
@@ -19,12 +19,12 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@pl-graph/errors": "workspace:*",
-    "@pl-graph/fp": "workspace:*",
-    "@pl-graph/utils": "workspace:*"
+    "@lenke/errors": "workspace:*",
+    "@lenke/fp": "workspace:*",
+    "@lenke/utils": "workspace:*"
   },
   "devDependencies": {
-    "@pl-graph/dev": "workspace:*",
+    "@lenke/dev": "workspace:*",
     "@types/bun": "latest",
     "@types/debug": "^4.1.12",
     "bun-types": "latest",

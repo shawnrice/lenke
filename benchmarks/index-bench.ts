@@ -4,7 +4,7 @@
 //
 //   bun run benchmarks/index-bench.ts [nVertices] [avgDegree]
 
-import { Graph } from '@pl-graph/core';
+import { Graph } from '@lenke/core';
 
 import { query } from '../packages/gql/src/index.js';
 import { gt, has, traversal, toArray, V } from '../packages/gremlin/src/index.js';

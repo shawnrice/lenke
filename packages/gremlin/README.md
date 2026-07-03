@@ -1,22 +1,22 @@
-# @pl-graph/gremlin
+# @lenke/gremlin
 
-> An Apache TinkerPop-style Gremlin traversal engine in TypeScript: build declarative graph traversals and run them against a `@pl-graph/core` graph.
+> An Apache TinkerPop-style Gremlin traversal engine in TypeScript: build declarative graph traversals and run them against a `@lenke/core` graph.
 
 Graph queries are expressed as a `Plan` — a plain-data AST assembled from composable step constructors (`V`, `out`, `has`, `order`, `count`, ...). A `Plan` is built once and run against any `Graph`, yielding a lazy stream of results. Reach for this package when you need expressive, Gremlin-familiar traversals (multi-hop movement, filtering by predicates, projection, grouping, path/loop logic) over an in-memory labeled-property graph.
 
 ## Install
 
 ```bash
-bun add @pl-graph/gremlin
+bun add @lenke/gremlin
 ```
 
 ## Usage
 
 ```ts
-import { Graph } from '@pl-graph/core';
-import { run, toArray, traversal, V, has, out, values, gt } from '@pl-graph/gremlin';
+import { Graph } from '@lenke/core';
+import { run, toArray, traversal, V, has, out, values, gt } from '@lenke/gremlin';
 
-// Build a graph (vertices + edges) with @pl-graph/core.
+// Build a graph (vertices + edges) with @lenke/core.
 const g = new Graph();
 const marko = g.addVertex({ id: '1', labels: ['PERSON'], properties: { name: 'marko', age: 29 } });
 const josh = g.addVertex({ id: '4', labels: ['PERSON'], properties: { name: 'josh', age: 32 } });
@@ -65,7 +65,7 @@ Steps span the usual Gremlin categories, all importable from the package root:
 Filter steps such as `has` and `is` take predicate values, built by predicate constructors: `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `between` (half-open `[min, max)`), `inside`, `outside`, `within`, `without`, `startsWith`, `endingWith`, `containing`, `notContaining`, `regex`, and `not(predicate)`. `has(key, value)` is shorthand for `has(key, eq(value))`.
 
 ```ts
-import { traversal, V, has, between } from '@pl-graph/gremlin';
+import { traversal, V, has, between } from '@lenke/gremlin';
 
 // PERSON vertices whose age is in [28, 33).
 traversal(V(), has('PERSON', 'age', between(28, 33)));

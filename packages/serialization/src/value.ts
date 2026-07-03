@@ -5,7 +5,7 @@
  * single source of truth for "what a property value may be" — and where richer
  * JS values lose information — lives here, not in each format.
  */
-import { ErrorCode, PlGraphError } from '@pl-graph/errors';
+import { ErrorCode, LenkeError } from '@lenke/errors';
 
 export type PropertyValue = string | boolean | number | null | readonly PropertyValue[];
 
@@ -50,7 +50,7 @@ const normalizeAt = (value: unknown, depth: number): PropertyValue => {
 
   if (Array.isArray(value)) {
     if (depth >= MAX_NESTING) {
-      throw new PlGraphError('Property value nesting exceeds the maximum depth', {
+      throw new LenkeError('Property value nesting exceeds the maximum depth', {
         code: ErrorCode.InvalidShape,
       });
     }
@@ -58,7 +58,7 @@ const normalizeAt = (value: unknown, depth: number): PropertyValue => {
     return value.map((v) => normalizeAt(v, depth + 1));
   }
 
-  throw new PlGraphError(
+  throw new LenkeError(
     `Property value is outside the LPG model: ${Object.prototype.toString.call(value)}`,
     { code: ErrorCode.InvalidValue },
   );

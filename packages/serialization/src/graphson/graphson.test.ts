@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 
-import { Graph } from '@pl-graph/core';
-import { ErrorCode, hasErrorCode } from '@pl-graph/errors';
+import { Graph } from '@lenke/core';
+import { ErrorCode, hasErrorCode } from '@lenke/errors';
 
 import { graphContentEqual, randomLpgGraph } from '../testkit.js';
 import { decode, encode, graphsonCodec } from './index.js';

@@ -1,4 +1,4 @@
-import { ErrorCode, PlGraphError } from '@pl-graph/errors';
+import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { Predicate } from './ast.js';
 
@@ -46,7 +46,7 @@ export const compareValues = (a: unknown, b: unknown): number => {
     return a ? 1 : -1;
   }
 
-  throw new PlGraphError(`cannot order ${typeName(a)} with ${typeName(b)}`, {
+  throw new LenkeError(`cannot order ${typeName(a)} with ${typeName(b)}`, {
     code: ErrorCode.InvalidValue,
   });
 };
@@ -112,7 +112,7 @@ export const regex = (value: string): Predicate => {
   try {
     void new RegExp(value);
   } catch (cause) {
-    throw new PlGraphError(`regex(): invalid pattern ${JSON.stringify(value)}`, {
+    throw new LenkeError(`regex(): invalid pattern ${JSON.stringify(value)}`, {
       code: ErrorCode.Syntax,
       cause,
     });

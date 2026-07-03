@@ -1,5 +1,5 @@
-import type { Graph } from '@pl-graph/core';
-import { ErrorCode, PlGraphError } from '@pl-graph/errors';
+import type { Graph } from '@lenke/core';
+import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { Codec } from '../codec.js';
 import { normalizeBag } from '../value.js';
@@ -141,14 +141,14 @@ export const decode = (input: string, graph: Graph): Graph => {
   try {
     parsed = JSON.parse(input);
   } catch (cause) {
-    throw new PlGraphError('pg-json: input is not valid JSON', {
+    throw new LenkeError('pg-json: input is not valid JSON', {
       code: ErrorCode.InvalidJson,
       cause,
     });
   }
 
   if (!isPGFormat(parsed)) {
-    throw new PlGraphError(
+    throw new LenkeError(
       'pg-json: input does not match the PG-JSON shape ' +
         '({ nodes: [{ id, labels, properties }], edges?: [...] })',
       { code: ErrorCode.InvalidShape },
@@ -178,7 +178,7 @@ export const decode = (input: string, graph: Graph): Graph => {
     const to = graph.getVertexById(toId);
 
     if (!from || !to) {
-      throw new PlGraphError(
+      throw new LenkeError(
         `pg-json: edge references a non-existent vertex (from=${fromId}, to=${toId})`,
         { code: ErrorCode.MissingVertex, details: { from: fromId, to: toId } },
       );

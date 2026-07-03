@@ -1,5 +1,5 @@
 {
-  "name": "@pl-graph/fp",
+  "name": "@lenke/fp",
   "description": "Lazy, curried iterable combinators for composing data transformations over any `Iterable`.",
   "license": "Apache-2.0",
   "type": "module",
@@ -22,7 +22,7 @@
   },
   "dependencies": {},
   "devDependencies": {
-    "@pl-graph/dev": "workspace:*",
+    "@lenke/dev": "workspace:*",
     "@types/bun": "latest",
     "@types/debug": "^4.1.12",
     "bun-types": "latest",

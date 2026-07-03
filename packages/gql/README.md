@@ -1,26 +1,26 @@
-# @pl-graph/gql
+# @lenke/gql
 
-> An ISO-GQL (ISO/IEC 39075) query engine that parses and executes graph queries against a `@pl-graph/core` graph in TypeScript.
+> An ISO-GQL (ISO/IEC 39075) query engine that parses and executes graph queries against a `@lenke/core` graph in TypeScript.
 
-Write declarative graph queries — `MATCH (a:Person)-[:KNOWS]->(b) RETURN b.name` — and run them against an in-memory labeled property graph. Reach for it when you want a query language over a `@pl-graph/core` `Graph` instead of writing imperative traversals by hand: pattern matching, `WHERE` filters, aggregation, `ORDER BY`/`SKIP`/`LIMIT`, set operators, and write clauses (`INSERT`/`SET`/`REMOVE`/`DELETE`).
+Write declarative graph queries — `MATCH (a:Person)-[:KNOWS]->(b) RETURN b.name` — and run them against an in-memory labeled property graph. Reach for it when you want a query language over a `@lenke/core` `Graph` instead of writing imperative traversals by hand: pattern matching, `WHERE` filters, aggregation, `ORDER BY`/`SKIP`/`LIMIT`, set operators, and write clauses (`INSERT`/`SET`/`REMOVE`/`DELETE`).
 
 ## Install
 
 ```bash
-bun add @pl-graph/gql
+bun add @lenke/gql
 ```
 
-This package executes queries against a `@pl-graph/core` `Graph`, so install that too:
+This package executes queries against a `@lenke/core` `Graph`, so install that too:
 
 ```bash
-bun add @pl-graph/core
+bun add @lenke/core
 ```
 
 ## Usage
 
 ```ts
-import { Graph } from '@pl-graph/core';
-import { query } from '@pl-graph/gql';
+import { Graph } from '@lenke/core';
+import { query } from '@lenke/gql';
 
 const g = new Graph();
 
@@ -44,10 +44,10 @@ A row is a `Record<string, unknown>` keyed by each `RETURN` item's alias (or a d
 
 ## Entry points
 
-The package exposes four ways to run a query, all importing from `@pl-graph/gql`:
+The package exposes four ways to run a query, all importing from `@lenke/gql`:
 
 ```ts
-import { query, gql, prepare, parseQuery } from '@pl-graph/gql';
+import { query, gql, prepare, parseQuery } from '@lenke/gql';
 
 // One-shot: parse + execute, with optional $params.
 query(graph, 'MATCH (n:Person) RETURN n.name', params);

@@ -1,12 +1,12 @@
 import { describe, expect, test } from 'bun:test';
-// End-to-end proof of the wasm backend: instantiate the pl_graph_core.wasm
+// End-to-end proof of the wasm backend: instantiate the lenke_core.wasm
 // artifact, build a graph from NDJSON, and drive GQL + Gremlin through the same
 // `RustGraph` facade the FFI backend uses. This is the test that proves the
 // linear-memory marshalling (plg_alloc in, copy out) actually works in a JS
 // runtime. Run: bun test packages/native/src/backend-wasm.test.ts
 import { existsSync } from 'node:fs';
 
-import { ErrorCode, hasErrorCode, isPlGraphError } from '@pl-graph/errors';
+import { ErrorCode, hasErrorCode, isLenkeError } from '@lenke/errors';
 
 import { ABI_VERSION } from './abi.js';
 import { createWasmBackend } from './backend-wasm.js';
@@ -14,7 +14,7 @@ import { graphFromFormat, graphFromNdjson } from './graph.js';
 import { createStore } from './store.js';
 
 const WASM = new URL(
-  '../../../crates/pl-graph-core/target/wasm32-unknown-unknown/release/pl_graph_core.wasm',
+  '../../../crates/lenke-core/target/wasm32-unknown-unknown/release/lenke_core.wasm',
   import.meta.url,
 ).pathname;
 
@@ -39,7 +39,7 @@ const NDJSON = [
 const bytes = new TextEncoder().encode(NDJSON);
 const wasmBytes = hasWasm ? await Bun.file(WASM).arrayBuffer() : new ArrayBuffer(0);
 
-suite('@pl-graph/native wasm backend', () => {
+suite('@lenke/native wasm backend', () => {
   test('instantiates at the expected ABI version', async () => {
     const backend = await createWasmBackend(wasmBytes);
     expect(backend.abiVersion).toBe(ABI_VERSION);
@@ -172,7 +172,7 @@ suite('@pl-graph/native wasm backend', () => {
   // The crate's structured last-error is read back *out of linear memory* and
   // rethrown with the shared `ErrorCode` — so a browser-side wasm graph reports
   // failures identically to the server-side FFI backend (no second-class errors).
-  test('a GQL syntax error surfaces as a coded PlGraphError with crate details', async () => {
+  test('a GQL syntax error surfaces as a coded LenkeError with crate details', async () => {
     const backend = await createWasmBackend(wasmBytes);
     const g = graphFromNdjson(backend, bytes);
 
@@ -184,7 +184,7 @@ suite('@pl-graph/native wasm backend', () => {
       caught = e;
     }
 
-    expect(isPlGraphError(caught)).toBe(true);
+    expect(isLenkeError(caught)).toBe(true);
     expect(hasErrorCode(caught, ErrorCode.Syntax)).toBe(true);
     expect((caught as { details?: { pos?: number } }).details?.pos).toBeTypeOf('number');
     g.free();
@@ -206,7 +206,7 @@ suite('@pl-graph/native wasm backend', () => {
     g.free();
   });
 
-  test('invalid-UTF-8 NDJSON fails as a coded PlGraphError, not a raw Error', async () => {
+  test('invalid-UTF-8 NDJSON fails as a coded LenkeError, not a raw Error', async () => {
     const backend = await createWasmBackend(wasmBytes);
 
     let caught: unknown;
@@ -218,9 +218,9 @@ suite('@pl-graph/native wasm backend', () => {
     }
 
     // The crate reports bad UTF-8 on the FFI channel; the point is it's a coded
-    // PlGraphError, never a bare `Error` (which is what the wasm backend used to
+    // LenkeError, never a bare `Error` (which is what the wasm backend used to
     // throw before it read the last-error).
-    expect(isPlGraphError(caught)).toBe(true);
+    expect(isLenkeError(caught)).toBe(true);
     expect(hasErrorCode(caught, ErrorCode.Ffi)).toBe(true);
   });
 });

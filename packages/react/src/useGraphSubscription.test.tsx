@@ -1,4 +1,4 @@
-import { Graph } from '@pl-graph/core';
+import { Graph } from '@lenke/core';
 import { act, renderHook } from '@testing-library/react';
 import * as React from 'react';
 import { describe, expect, test, vi } from 'vitest';
@@ -57,7 +57,7 @@ describe('useGraphSubscription', () => {
 
   // NOTE: a *throwing* subscriber being isolated (one bad listener can't break
   // the others) is a guarantee of `Graph.notify` itself, verified in
-  // `@pl-graph/core`'s `Graph.reactive.test.ts`. It isn't re-tested here because
+  // `@lenke/core`'s `Graph.reactive.test.ts`. It isn't re-tested here because
   // these hooks forward listeners verbatim, and the worktree resolves
-  // `@pl-graph/core` to its built (cross-checkout) copy rather than this source.
+  // `@lenke/core` to its built (cross-checkout) copy rather than this source.
 });

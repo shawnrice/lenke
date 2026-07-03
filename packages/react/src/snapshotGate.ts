@@ -11,7 +11,7 @@
  * that's the performance win over re-running + `isEqual` on every mutation.
  */
 
-/** The minimal slice of the graph the gate reads — satisfied by `@pl-graph/core` `Graph`. */
+/** The minimal slice of the graph the gate reads — satisfied by `@lenke/core` `Graph`. */
 export type GraphLike = {
   epoch: (name: string) => number;
 };

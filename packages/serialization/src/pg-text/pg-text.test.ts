@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { Graph } from '@pl-graph/core';
+import { Graph } from '@lenke/core';
 
 import { chunked, collect } from '../streaming.js';
 import type { PropertyValue } from '../value.js';

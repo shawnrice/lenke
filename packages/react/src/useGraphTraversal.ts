@@ -1,5 +1,5 @@
-import { bind, type GremlinBound } from '@pl-graph/gremlin';
-import { arraysAreEqual } from '@pl-graph/utils';
+import { bind, type GremlinBound } from '@lenke/gremlin';
+import { arraysAreEqual } from '@lenke/utils';
 
 import { useGraphSelector } from './useGraphSelector.js';
 

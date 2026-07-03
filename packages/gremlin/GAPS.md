@@ -41,7 +41,7 @@ has no skipped tests.)
 
 ### Cross-engine parity: `math()` is TS-only
 
-The Rust gremlin engine (`crates/pl-graph-core/src/gremlin`) mirrors the TS
+The Rust gremlin engine (`crates/lenke-core/src/gremlin`) mirrors the TS
 package but has no `math()` step, so a textual `g.V()…math(…)` query fails on the
 native/wasm engine with an unknown-step error. Everything else (`match` /
 `subgraph` / `shortestPath` / `select`-by-cycling) is at parity.

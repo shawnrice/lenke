@@ -1,4 +1,4 @@
-import { ErrorCode, PlGraphError } from '@pl-graph/errors';
+import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import { assertAbi } from './abi.js';
 import type { Backend, GraphHandle } from './backend.js';
@@ -62,7 +62,7 @@ const instantiate = async (source: WasmSource): Promise<WebAssembly.Instance> =>
 };
 
 /**
- * Instantiate the wasm backend. `source` is the `pl_graph_core.wasm` artifact
+ * Instantiate the wasm backend. `source` is the `lenke_core.wasm` artifact
  * (see `build:wasm`) as a module, bytes, or fetch `Response` for streaming
  * compilation in the browser.
  */
@@ -94,8 +94,8 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
     const mem = u8();
 
     if (ptr < 0 || len < 0 || ptr + len > mem.length) {
-      throw new PlGraphError(
-        `pl-graph: ${op}: native result [${ptr}, ${ptr + len}) escapes wasm memory (${mem.length} bytes)`,
+      throw new LenkeError(
+        `lenke: ${op}: native result [${ptr}, ${ptr + len}) escapes wasm memory (${mem.length} bytes)`,
         { code: ErrorCode.Ffi, details: { ptr, len, memBytes: mem.length } },
       );
     }
@@ -127,7 +127,7 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
     }
   };
 
-  // Turn a null return into a `PlGraphError` carrying the shared code, identical
+  // Turn a null return into a `LenkeError` carrying the shared code, identical
   // to the FFI backend — so `hasErrorCode(e, ErrorCode.Syntax)` matches the same
   // way whether the graph is server-side native or browser-side wasm. `fallback`
   // is used only if the crate left no report.
@@ -135,13 +135,13 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
     const report = readLastError();
 
     if (report) {
-      throw new PlGraphError(`pl-graph: ${op}: ${report.message}`, {
+      throw new LenkeError(`lenke: ${op}: ${report.message}`, {
         code: report.code,
         details: report.details ?? undefined,
       });
     }
 
-    throw new PlGraphError(`pl-graph: ${op} failed`, { code: fallback });
+    throw new LenkeError(`lenke: ${op} failed`, { code: fallback });
   };
 
   // Run a buffer-returning call: stage the query string, give the crate a 4-byte

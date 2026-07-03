@@ -41,7 +41,7 @@ const collectSourceEntrypoints = (packageRoot: string): string[] => {
 };
 
 // A bare specifier (not relative, not absolute) is a dependency or a runtime
-// builtin (`node:*`, `bun:*`, `react`, `@pl-graph/*`, …) — external it so a
+// builtin (`node:*`, `bun:*`, `react`, `@lenke/*`, …) — external it so a
 // library build bundles only the package's own source. (`getExternals` is the
 // declared subset of these; matching every bare specifier also covers builtins,
 // which is exactly what a library wants externalized.)

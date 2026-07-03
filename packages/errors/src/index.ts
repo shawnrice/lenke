@@ -1,5 +1,5 @@
 /**
- * Canonical, stable error codes for the pl-graph packages.
+ * Canonical, stable error codes for the lenke packages.
  *
  * The **code is the contract**, not the message. Consumers should branch on
  * `error.code` (or {@link hasErrorCode}) rather than matching message text, so a
@@ -48,7 +48,7 @@ export const ErrorCode = {
  */
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
 
-export type PlGraphErrorOptions = {
+export type LenkeErrorOptions = {
   readonly code: ErrorCode;
   /** The underlying error, attached as the standard `Error.cause`. */
   readonly cause?: unknown;
@@ -61,25 +61,24 @@ export type PlGraphErrorOptions = {
  * `code` field) when a package wants a more specific error type while staying
  * matchable via {@link hasErrorCode}.
  */
-export class PlGraphError extends Error {
+export class LenkeError extends Error {
   readonly code: ErrorCode;
   readonly details?: Readonly<Record<string, unknown>>;
 
-  constructor(message: string, options: PlGraphErrorOptions) {
+  constructor(message: string, options: LenkeErrorOptions) {
     super(message, options.cause !== undefined ? { cause: options.cause } : undefined);
-    this.name = 'PlGraphError';
+    this.name = 'LenkeError';
     this.code = options.code;
     this.details = options.details;
   }
 }
 
-/** Type guard for {@link PlGraphError}. */
-export const isPlGraphError = (error: unknown): error is PlGraphError =>
-  error instanceof PlGraphError;
+/** Type guard for {@link LenkeError}. */
+export const isLenkeError = (error: unknown): error is LenkeError => error instanceof LenkeError;
 
 /**
  * True if `error` carries the given stable `code`. Works for any error with a
- * `code` field (a {@link PlGraphError}, a subclass, or any object that adopts the
+ * `code` field (a {@link LenkeError}, a subclass, or any object that adopts the
  * convention) — match on this rather than on message text.
  */
 export const hasErrorCode = (error: unknown, code: ErrorCode): boolean =>

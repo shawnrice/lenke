@@ -27,7 +27,7 @@
 // label half). Non-seedable predicates (neq, outside, without, the string/
 // regex ops, not) stay as ordinary residual filters.
 
-import type { Edge, Graph, PropertyIndex, RangeBound, Vertex } from '@pl-graph/core';
+import type { Edge, Graph, PropertyIndex, RangeBound, Vertex } from '@lenke/core';
 
 import type { Plan, Predicate, Step } from '../ast.js';
 import { startTraverser, type Traverser } from './runtime.js';

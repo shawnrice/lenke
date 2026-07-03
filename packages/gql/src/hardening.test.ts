@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 
-import { Graph } from '@pl-graph/core';
-import { ErrorCode, hasErrorCode } from '@pl-graph/errors';
+import { Graph } from '@lenke/core';
+import { ErrorCode, hasErrorCode } from '@lenke/errors';
 
 import type { ReturnClause } from './ast.js';
 import { createTestSocialGraph } from './fixtures/createTestSocialGraph.js';

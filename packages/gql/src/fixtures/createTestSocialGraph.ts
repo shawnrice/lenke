@@ -1,4 +1,4 @@
-import { Graph } from '@pl-graph/core';
+import { Graph } from '@lenke/core';
 
 /**
  * The TinkerPop "Modern" graph, relabeled in GQL conventions:

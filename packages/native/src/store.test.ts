@@ -14,7 +14,7 @@ import { createStore, inferDeps } from './store.js';
 const LIB_EXTENSIONS: Partial<Record<NodeJS.Platform, string>> = { darwin: 'dylib', win32: 'dll' };
 const LIB_EXT = LIB_EXTENSIONS[process.platform] ?? 'so';
 const LIB = new URL(
-  `../../../crates/pl-graph-core/target/release/libpl_graph_core.${LIB_EXT}`,
+  `../../../crates/lenke-core/target/release/liblenke_core.${LIB_EXT}`,
   import.meta.url,
 ).pathname;
 
@@ -39,7 +39,7 @@ const newStore = () => {
   return createStore(g);
 };
 
-suite('@pl-graph/native reactive store', () => {
+suite('@lenke/native reactive store', () => {
   test('getSnapshot is referentially stable with no mutation', () => {
     const store = newStore();
     const names = store.liveQuery('MATCH (n:P) RETURN n.name ORDER BY n.name');

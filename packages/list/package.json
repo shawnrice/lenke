@@ -1,5 +1,5 @@
 {
-  "name": "@pl-graph/list",
+  "name": "@lenke/list",
   "description": "A lazy, iterator-backed list with array-like methods and a known (or infinite) length.",
   "license": "Apache-2.0",
   "type": "module",
@@ -16,7 +16,7 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@pl-graph/fp": "workspace:*",
+    "@lenke/fp": "workspace:*",
     "debug": "^4.3.7"
   },
   "devDependencies": {

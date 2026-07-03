@@ -1,4 +1,4 @@
-import { identity } from '@pl-graph/utils';
+import { identity } from '@lenke/utils';
 
 import type { TreeNode } from './TreeNode.js';
 import type { SerializedTreeNode } from './types.js';

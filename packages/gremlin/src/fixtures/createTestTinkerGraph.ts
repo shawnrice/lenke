@@ -1,4 +1,4 @@
-import { Graph } from '@pl-graph/core';
+import { Graph } from '@lenke/core';
 
 /**
  * The canonical Apache TinkerPop "Modern" graph used throughout the Gremlin

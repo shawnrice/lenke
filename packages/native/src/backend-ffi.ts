@@ -1,6 +1,6 @@
 import { dlopen, FFIType, type Pointer, ptr, toArrayBuffer } from 'bun:ffi';
 
-import { ErrorCode, PlGraphError } from '@pl-graph/errors';
+import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import { assertAbi } from './abi.js';
 import type { Backend, GraphHandle } from './backend.js';
@@ -40,7 +40,7 @@ const asHandle = (p: Pointer | null): GraphHandle => p as unknown as GraphHandle
 
 /**
  * Load the native dynamic library over `bun:ffi`. Pass the absolute path to the
- * built `libpl_graph_core.{dylib,so,dll}` (see `build:rust`).
+ * built `liblenke_core.{dylib,so,dll}` (see `build:rust`).
  */
 export const createFfiBackend = (libPath: string): Backend => {
   const { symbols } = dlopen(libPath, SYMBOLS);
@@ -68,7 +68,7 @@ export const createFfiBackend = (libPath: string): Backend => {
     return parseErrorReport(json);
   };
 
-  // Turn a failure sentinel into a `PlGraphError` carrying the shared code, so a
+  // Turn a failure sentinel into a `LenkeError` carrying the shared code, so a
   // consumer matches `hasErrorCode(e, ErrorCode.Syntax)` identically whether the
   // error came from the TS engine or this native one. `fallback` is used only if
   // the crate left no report (e.g. an older lib, or a non-instrumented path).
@@ -76,13 +76,13 @@ export const createFfiBackend = (libPath: string): Backend => {
     const report = readLastError();
 
     if (report) {
-      throw new PlGraphError(`pl-graph: ${op}: ${report.message}`, {
+      throw new LenkeError(`lenke: ${op}: ${report.message}`, {
         code: report.code,
         details: report.details ?? undefined,
       });
     }
 
-    throw new PlGraphError(`pl-graph: ${op} failed`, { code: fallback });
+    throw new LenkeError(`lenke: ${op} failed`, { code: fallback });
   };
 
   // A query/encode call returns a crate-owned buffer (pointer + out_len). Read

@@ -12,7 +12,7 @@
  *    literals keep their original case.
  */
 
-import { ErrorCode, PlGraphError } from '@pl-graph/errors';
+import { ErrorCode, LenkeError } from '@lenke/errors';
 
 export type TokenType =
   | 'lparen'
@@ -484,10 +484,10 @@ export const tokenize = (src: string): Token[] => {
 
 /**
  * Thrown for both lex and parse errors, carrying the source offset. Extends
- * `PlGraphError` with the stable `ErrorCode.Syntax` code, so consumers can match
+ * `LenkeError` with the stable `ErrorCode.Syntax` code, so consumers can match
  * `error.code === ErrorCode.Syntax` (or `hasErrorCode`) instead of the message.
  */
-export class GqlSyntaxError extends PlGraphError {
+export class GqlSyntaxError extends LenkeError {
   readonly pos: number;
   constructor(message: string, pos: number) {
     super(`${message} (at position ${pos})`, { code: ErrorCode.Syntax, details: { pos } });

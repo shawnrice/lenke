@@ -1,6 +1,6 @@
 {
-  "name": "@pl-graph/utils",
-  "description": "Small, dependency-free helper functions shared across the @pl-graph toolkit.",
+  "name": "@lenke/utils",
+  "description": "Small, dependency-free helper functions shared across the @lenke toolkit.",
   "license": "Apache-2.0",
   "type": "module",
   "sideEffects": false,
@@ -17,7 +17,7 @@
   },
   "dependencies": {},
   "devDependencies": {
-    "@pl-graph/dev": "workspace:*",
+    "@lenke/dev": "workspace:*",
     "@types/bun": "latest",
     "@types/debug": "^4.1.12",
     "bun-types": "latest",

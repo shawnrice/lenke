@@ -1,4 +1,4 @@
-import type { Edge, Graph, Vertex } from '@pl-graph/core';
+import type { Edge, Graph, Vertex } from '@lenke/core';
 
 import type { LabelExpr } from './ast.js';
 

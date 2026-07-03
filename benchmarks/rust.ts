@@ -1,12 +1,10 @@
-// Thin JS wrapper over the native pl-graph-core crate via bun:ffi.
+// Thin JS wrapper over the native lenke-core crate via bun:ffi.
 // Exposes the same operations the TS engine offers so the harness can time
 // them side by side: load (decode NDJSON -> graph handle), query, and encode.
 import { dlopen, FFIType, type Pointer, ptr, toArrayBuffer } from 'bun:ffi';
 
-const LIB = new URL(
-  '../crates/pl-graph-core/target/release/libpl_graph_core.dylib',
-  import.meta.url,
-).pathname;
+const LIB = new URL('../crates/lenke-core/target/release/liblenke_core.dylib', import.meta.url)
+  .pathname;
 
 const { symbols } = dlopen(LIB, {
   plg_abi_version: { args: [], returns: FFIType.u32 },

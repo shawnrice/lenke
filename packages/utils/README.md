@@ -1,19 +1,19 @@
-# @pl-graph/utils
+# @lenke/utils
 
-> Small, dependency-free helper functions shared across the @pl-graph toolkit.
+> Small, dependency-free helper functions shared across the @lenke toolkit.
 
 A handful of low-level utilities: strict array equality, an identity function, random ID generation, and opt-in timing instrumentation. Reach for it when you need these primitives without pulling in a larger utility library.
 
 ## Install
 
 ```bash
-bun add @pl-graph/utils
+bun add @lenke/utils
 ```
 
 ## Usage
 
 ```ts
-import { arraysAreEqual, identity, rando, timer, sampleTimer } from '@pl-graph/utils';
+import { arraysAreEqual, identity, rando, timer, sampleTimer } from '@lenke/utils';
 
 // Strict (===) element-wise array comparison
 arraysAreEqual([1, 2, 3], [1, 2, 3]); // true

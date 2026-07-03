@@ -5,7 +5,7 @@
 //
 //   bun run benchmarks/write-bench.ts
 
-import { Graph } from '@pl-graph/core';
+import { Graph } from '@lenke/core';
 
 const SIZES = [25_000, 50_000, 100_000];
 

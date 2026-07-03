@@ -1,4 +1,4 @@
-import { ErrorCode, PlGraphError } from '@pl-graph/errors';
+import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import {
   appendStep,
@@ -89,7 +89,7 @@ export function property(...args: [string, unknown] | [CardinalitySym, string, u
     const cardinality = CARDINALITY_TO_KIND.get(args[0]);
 
     if (cardinality === undefined) {
-      throw new PlGraphError(`property(): unrecognized cardinality symbol ${String(args[0])}`, {
+      throw new LenkeError(`property(): unrecognized cardinality symbol ${String(args[0])}`, {
         code: ErrorCode.Unsupported,
       });
     }

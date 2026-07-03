@@ -1,4 +1,4 @@
-import type { Graph } from '@pl-graph/core';
+import type { Graph } from '@lenke/core';
 import * as React from 'react';
 
 import { GraphContext } from './GraphContext.js';

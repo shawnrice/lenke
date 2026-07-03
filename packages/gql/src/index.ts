@@ -1,4 +1,4 @@
-import type { Graph } from '@pl-graph/core';
+import type { Graph } from '@lenke/core';
 
 import type { Query } from './ast.js';
 import { compile, execute, type Plan, type Row } from './executor.js';

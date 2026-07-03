@@ -1,20 +1,20 @@
-# @pl-graph/serialization
+# @lenke/serialization
 
-> (De)serialization codecs that convert `@pl-graph/core` graphs to and from text in several interchange formats.
+> (De)serialization codecs that convert `@lenke/core` graphs to and from text in several interchange formats.
 
 Use this package to persist a labeled-property graph to disk, send it over the wire, or import one from an external tool. It speaks the core `Graph` API directly, preserves element identity and the full LPG property-value model across a round trip, and exposes both whole-string and streaming entry points so large graphs need not be held in memory at once.
 
 ## Install
 
 ```bash
-bun add @pl-graph/serialization
+bun add @lenke/serialization
 ```
 
 ## Usage
 
 ```ts
-import { Graph } from '@pl-graph/core';
-import { serialize, deserialize } from '@pl-graph/serialization';
+import { Graph } from '@lenke/core';
+import { serialize, deserialize } from '@lenke/serialization';
 
 const graph = new Graph();
 const alice = graph.addVertex({ id: 'a', labels: ['Person'], properties: { name: 'Alice' } });
@@ -31,7 +31,7 @@ const restored = deserialize(text, 'pg-json', new Graph());
 For genuinely large graphs, line-oriented formats can be driven incrementally:
 
 ```ts
-import { serializeStream, deserializeStream } from '@pl-graph/serialization';
+import { serializeStream, deserializeStream } from '@lenke/serialization';
 
 for await (const chunk of serializeStream(graph, 'ndjson')) {
   // write chunk to a file, socket, etc.
@@ -54,7 +54,7 @@ The registered codecs are exposed as the `codecs` record (`FormatName` is its ke
 | `graphson` | `graphsonCodec` | yes       |
 | `csv`      | `csvCodec`      | yes       |
 
-Top-level entry points (`serialize`, `deserialize`, `serializeStream`, `deserializeStream`, `serializeAsync`, `deserializeAsync`) take a `FormatName` and dispatch to the matching codec; an unknown format or an unsupported streaming request throws a `PlGraphError`. The CSV codec also exposes its node/edge halves directly (`encodeNodes`, `decodeNodes`, `encodeEdges`, `decodeEdges`, and their `*Stream` variants) for Neo4j-`admin-import`-style paired files.
+Top-level entry points (`serialize`, `deserialize`, `serializeStream`, `deserializeStream`, `serializeAsync`, `deserializeAsync`) take a `FormatName` and dispatch to the matching codec; an unknown format or an unsupported streaming request throws a `LenkeError`. The CSV codec also exposes its node/edge halves directly (`encodeNodes`, `decodeNodes`, `encodeEdges`, `decodeEdges`, and their `*Stream` variants) for Neo4j-`admin-import`-style paired files.
 
 ## License
 

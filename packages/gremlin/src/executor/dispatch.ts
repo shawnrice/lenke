@@ -9,8 +9,8 @@
 // neither side dereferences the other at module-init — `applyStep` and
 // `applyPlanToStream` are only called inside generator bodies.
 
-import type { Graph } from '@pl-graph/core';
-import { ErrorCode, PlGraphError } from '@pl-graph/errors';
+import type { Graph } from '@lenke/core';
+import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { Plan, Step } from '../ast.js';
 import { matches } from '../predicates.js';
@@ -119,7 +119,7 @@ export const applyStep = (
   switch (step.kind) {
     case 'V':
     case 'E':
-      throw new PlGraphError(`${step.kind} can only appear as the first step`, {
+      throw new LenkeError(`${step.kind} can only appear as the first step`, {
         code: ErrorCode.Syntax,
       });
 

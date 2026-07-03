@@ -1,4 +1,4 @@
-import { ErrorCode, PlGraphError } from '@pl-graph/errors';
+import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { Plan, Step } from './ast.js';
 
@@ -85,7 +85,7 @@ export const serialize = (plan: Plan): string => {
   const closures = findClosures(plan);
 
   if (closures.length > 0) {
-    throw new PlGraphError(
+    throw new LenkeError(
       `Plan contains closure-bearing steps and cannot be serialized:\n  ${closures.join('\n  ')}\n` +
         `Rewrite these as sub-plans (e.g. map(pipe(...))) to make the plan serializable.`,
       { code: ErrorCode.Unsupported },
@@ -98,7 +98,7 @@ export const serialize = (plan: Plan): string => {
   try {
     return JSON.stringify(plan);
   } catch (cause) {
-    throw new PlGraphError(
+    throw new LenkeError(
       'Plan contains a non-serializable value (e.g. a BigInt or a cyclic structure).',
       { code: ErrorCode.InvalidValue, cause },
     );

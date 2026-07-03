@@ -1,4 +1,4 @@
-import type { Graph } from '@pl-graph/core';
+import type { Graph } from '@lenke/core';
 
 import type { Codec } from '../codec.js';
 import { type ChunkSource, linesFromChunks } from '../streaming.js';

@@ -1,7 +1,7 @@
 /* eslint-disable yoda */
 import { describe, expect, mock, test } from 'bun:test';
 
-import { ErrorCode, hasErrorCode } from '@pl-graph/errors';
+import { ErrorCode, hasErrorCode } from '@lenke/errors';
 
 import { createTestGraph, edgeId, vertexId } from '../fixtures/createTestGraph.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';

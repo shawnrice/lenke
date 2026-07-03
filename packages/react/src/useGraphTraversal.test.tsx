@@ -1,4 +1,4 @@
-import { traversal, V, values } from '@pl-graph/gremlin';
+import { traversal, V, values } from '@lenke/gremlin';
 import { act, renderHook } from '@testing-library/react';
 import * as React from 'react';
 import { describe, expect, test, vi } from 'vitest';

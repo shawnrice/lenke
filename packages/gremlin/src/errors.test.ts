@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { ErrorCode, hasErrorCode } from '@pl-graph/errors';
+import { ErrorCode, hasErrorCode } from '@lenke/errors';
 
 import { run } from './executor.js';
 import { createTestTinkerGraph } from './fixtures/createTestTinkerGraph.js';

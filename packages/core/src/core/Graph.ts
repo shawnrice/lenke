@@ -1,5 +1,5 @@
-import { Emitter, EmitterEvent } from '@pl-graph/emitter';
-import { ErrorCode, PlGraphError } from '@pl-graph/errors';
+import { Emitter, EmitterEvent } from '@lenke/emitter';
+import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import { Edge } from './Edge.js';
 import type { GraphEvent, GraphEvents, GraphEventType } from './GraphEvents.js';
@@ -521,13 +521,13 @@ export class Graph {
    */
   private assertValidEdge(from: Vertex | null, to: Vertex | null, labelCount: number): void {
     if (!from || !to) {
-      throw new PlGraphError('Cannot add an edge with missing endpoint vertices.', {
+      throw new LenkeError('Cannot add an edge with missing endpoint vertices.', {
         code: ErrorCode.MissingVertex,
       });
     }
 
     if (labelCount === 0) {
-      throw new PlGraphError('Cannot add an edge with no labels: every edge must carry ≥1 label.', {
+      throw new LenkeError('Cannot add an edge with no labels: every edge must carry ≥1 label.', {
         code: ErrorCode.InvalidGraphOp,
       });
     }

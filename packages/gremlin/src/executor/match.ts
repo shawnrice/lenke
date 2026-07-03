@@ -13,8 +13,8 @@
 // bound (preferring binding patterns over filters), branching the stream per
 // candidate, until every pattern has been applied.
 
-import type { Graph } from '@pl-graph/core';
-import { ErrorCode, PlGraphError } from '@pl-graph/errors';
+import type { Graph } from '@lenke/core';
+import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { Plan, Step } from '../ast.js';
 import { applyPlanToStream } from './dispatch.js';
@@ -68,7 +68,7 @@ const parsePattern = (plan: Plan): Pattern => {
   }
 
   if (first?.kind !== 'as') {
-    throw new PlGraphError('a match() pattern must begin with as(label)', {
+    throw new LenkeError('a match() pattern must begin with as(label)', {
       code: ErrorCode.Syntax,
     });
   }

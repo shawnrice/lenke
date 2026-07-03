@@ -1,4 +1,4 @@
-import type { EmitterEvent } from '@pl-graph/emitter';
+import type { EmitterEvent } from '@lenke/emitter';
 
 import type { Edge } from './Edge.js';
 import type { Vertex } from './Vertex.js';

@@ -1,6 +1,6 @@
 import * as React from 'react';
 
-/** A live-query result row — a column-name → value record (mirrors `@pl-graph/native`'s `Row`). */
+/** A live-query result row — a column-name → value record (mirrors `@lenke/native`'s `Row`). */
 export type Row = Record<string, unknown>;
 
 /**
@@ -15,9 +15,9 @@ export type LiveQueryHandle = {
 
 /**
  * The minimal reactive-store shape the native connector drives. Satisfied by
- * `@pl-graph/native`'s `Store` (from `createStore(graph)`) — declared
+ * `@lenke/native`'s `Store` (from `createStore(graph)`) — declared
  * *structurally* rather than imported so this connector doesn't hard-depend on
- * `@pl-graph/native`: any value exposing `liveQuery` works, and the real native
+ * `@lenke/native`: any value exposing `liveQuery` works, and the real native
  * `Store` matches by shape. (It also keeps the browser bundle free of the native
  * package's surface.)
  */
@@ -27,7 +27,7 @@ export type ReactiveStore = {
 
 /**
  * React context for the **wasm/native** connector — it holds a
- * {@link ReactiveStore} (e.g. `@pl-graph/native`'s `createStore(graph)`), the
+ * {@link ReactiveStore} (e.g. `@lenke/native`'s `createStore(graph)`), the
  * reactive wrapper over a Rust-backed graph behind the FFI boundary.
  *
  * This is the parallel of {@link GraphContext}, which holds the in-process
@@ -54,7 +54,7 @@ export const useStore = (): ReactiveStore => {
   if (!store) {
     throw new Error(
       'useStore (and useLiveQuery) must be used within a <StoreProvider>. ' +
-        'Create a store with `createStore(graph)` from @pl-graph/native and pass it as <StoreProvider store={store}>.',
+        'Create a store with `createStore(graph)` from @lenke/native and pass it as <StoreProvider store={store}>.',
     );
   }
 

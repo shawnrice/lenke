@@ -5,7 +5,7 @@ import { type ReactiveStore, StoreContext } from './StoreContext.js';
 type StoreProviderProps = { store: ReactiveStore; children: React.ReactNode };
 
 /**
- * Provides a {@link ReactiveStore} (e.g. `@pl-graph/native`'s `createStore`) to
+ * Provides a {@link ReactiveStore} (e.g. `@lenke/native`'s `createStore`) to
  * the wasm/native hooks below it — the parallel of {@link GraphProvider} for the
  * TypeScript `Graph`.
  */

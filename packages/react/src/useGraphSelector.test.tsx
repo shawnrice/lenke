@@ -1,4 +1,4 @@
-import { Graph } from '@pl-graph/core';
+import { Graph } from '@lenke/core';
 import { act, renderHook } from '@testing-library/react';
 import * as React from 'react';
 import { describe, expect, test, vi } from 'vitest';

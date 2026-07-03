@@ -1,4 +1,4 @@
-import { Graph, type Vertex } from '@pl-graph/core';
+import { Graph, type Vertex } from '@lenke/core';
 
 /**
  * The self-describing subgraph shape the native (Rust) gremlin engine emits for
@@ -25,7 +25,7 @@ export type NativeSubgraph = {
 };
 
 /**
- * Rebuild a `@pl-graph/core` `Graph` from a {@link NativeSubgraph} record.
+ * Rebuild a `@lenke/core` `Graph` from a {@link NativeSubgraph} record.
  *
  * Vertices are added first so every edge's endpoints resolve; `addVertex` /
  * `addEdge` dedupe by id, so a record with repeats is harmless. An edge whose

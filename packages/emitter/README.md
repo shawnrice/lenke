@@ -1,4 +1,4 @@
-# @pl-graph/emitter
+# @lenke/emitter
 
 > A typed, synchronous event emitter with cancelable events and error-isolated dispatch.
 
@@ -7,13 +7,13 @@ Subscribe to named event types and dispatch typed events to their listeners. Eve
 ## Install
 
 ```bash
-bun add @pl-graph/emitter
+bun add @lenke/emitter
 ```
 
 ## Usage
 
 ```ts
-import { Emitter, EmitterEvent } from '@pl-graph/emitter';
+import { Emitter, EmitterEvent } from '@lenke/emitter';
 
 // Map each event type to its event variant.
 type NodeAdded = EmitterEvent<'node:added', { id: string }>;

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 
 /* eslint-disable max-lines-per-function */
-import { ErrorCode, hasErrorCode } from '@pl-graph/errors';
+import { ErrorCode, hasErrorCode } from '@lenke/errors';
 
 import { TreeNode } from './TreeNode.js';
 

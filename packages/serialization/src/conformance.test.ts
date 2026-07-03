@@ -1,9 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 
-import { Graph } from '@pl-graph/core';
-import type { ErrorCode } from '@pl-graph/errors';
-import { hasErrorCode } from '@pl-graph/errors';
+import { Graph } from '@lenke/core';
+import type { ErrorCode } from '@lenke/errors';
+import { hasErrorCode } from '@lenke/errors';
 
 import { deserialize, serialize } from './index.js';
 import type { FormatName } from './index.js';

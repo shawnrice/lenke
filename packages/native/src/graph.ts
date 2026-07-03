@@ -1,4 +1,4 @@
-import { ErrorCode, PlGraphError } from '@pl-graph/errors';
+import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { Backend, GraphHandle } from './backend.js';
 
@@ -16,7 +16,7 @@ const parseJson = (bytes: Uint8Array, op: string): unknown => {
   try {
     return JSON.parse(decoder.decode(bytes));
   } catch (cause) {
-    throw new PlGraphError(`pl-graph: ${op} returned a non-JSON carrier`, {
+    throw new LenkeError(`lenke: ${op} returned a non-JSON carrier`, {
       code: ErrorCode.Ffi,
       cause,
     });
@@ -33,7 +33,7 @@ const decodeRows = (bytes: Uint8Array): Row[] => {
   const doc = parseJson(bytes, 'query');
 
   if (!isRowSet(doc)) {
-    throw new PlGraphError('pl-graph: query result was not a {columns, rows} document', {
+    throw new LenkeError('lenke: query result was not a {columns, rows} document', {
       code: ErrorCode.Ffi,
     });
   }
@@ -52,7 +52,7 @@ const isTemplate = (x: unknown): x is TemplateStringsArray =>
   Array.isArray((x as TemplateStringsArray)?.raw);
 
 // Accept both the tagged-template form g\`MATCH ...\` and a plain string, mirroring
-// the @pl-graph/gql `gql(g)` runner so consumers feel no seam between engines.
+// the @lenke/gql `gql(g)` runner so consumers feel no seam between engines.
 const toText = (q: string | TemplateStringsArray, subs: unknown[]): string => {
   if (isTemplate(q)) {
     return q.reduce((acc, part, i) => acc + part + (i < subs.length ? String(subs[i]) : ''), '');

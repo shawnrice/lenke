@@ -1,6 +1,6 @@
-import type { Edge, Graph, IndexableValue, RangeBound, Vertex } from '@pl-graph/core';
-import { ErrorCode, PlGraphError } from '@pl-graph/errors';
-import { filter, flatMap, map, skip, take, toArray } from '@pl-graph/fp';
+import type { Edge, Graph, IndexableValue, RangeBound, Vertex } from '@lenke/core';
+import { ErrorCode, LenkeError } from '@lenke/errors';
+import { filter, flatMap, map, skip, take, toArray } from '@lenke/fp';
 
 import type {
   ArithOp,
@@ -151,7 +151,7 @@ const BOOL3: Record<'and' | 'or' | 'xor', (a: Truth, b: Truth) => Truth> = {
 
 /** Raise an ISO data exception (SQLSTATE class 22): a runtime value/type fault. */
 const dataException = (message: string): never => {
-  throw new PlGraphError(message, { code: ErrorCode.DataException });
+  throw new LenkeError(message, { code: ErrorCode.DataException });
 };
 
 const typeName = (v: unknown): string => {
@@ -629,7 +629,7 @@ const compileAggregate = (expr: FuncExpr): CompiledExpr => {
 
   // ISO forbids an aggregate whose argument contains another aggregate.
   if (expr.args[0] && hasAggregate(expr.args[0])) {
-    throw new PlGraphError(`aggregate function ${name}() cannot contain another aggregate`, {
+    throw new LenkeError(`aggregate function ${name}() cannot contain another aggregate`, {
       code: ErrorCode.Unsupported,
     });
   }
@@ -638,7 +638,7 @@ const compileAggregate = (expr: FuncExpr): CompiledExpr => {
   // argless (`sum()`, bare `count()`) is malformed — reject it cleanly rather
   // than dereferencing an absent argument at fold time.
   if (!expr.args[0] && !(name === 'count' && star)) {
-    throw new PlGraphError(`aggregate function ${name}() requires an argument`, {
+    throw new LenkeError(`aggregate function ${name}() requires an argument`, {
       code: ErrorCode.Unsupported,
     });
   }
@@ -1197,7 +1197,7 @@ const compileRel = (rel: RelPattern): CRel => {
   // results), reject at compile time. ISO would bind a group variable / list of
   // edges here — not yet implemented.
   if (rel.quantifier && (rel.variable !== undefined || rel.properties?.length || rel.where)) {
-    throw new PlGraphError(
+    throw new LenkeError(
       'A variable-length relationship cannot bind an edge variable or carry a per-edge predicate (not yet supported)',
       { code: ErrorCode.Unsupported },
     );
@@ -1627,7 +1627,7 @@ const trailEnds = function* (
     steps += 1;
 
     if (steps > TRAIL_BUDGET) {
-      throw new PlGraphError(
+      throw new LenkeError(
         'Variable-length pattern exceeded the trail budget; add a tighter bound',
         { code: ErrorCode.ResourceExhausted },
       );
@@ -1937,7 +1937,7 @@ const runDelete = (graph: Graph, clause: CDelete, binding: Binding, params: Para
       // node is a graph violation unless the user opted into DETACH (which
       // cascades the incident edges).
       if (!clause.detach && hasIncidentEdges(graph, vertex)) {
-        throw new PlGraphError(
+        throw new LenkeError(
           'Cannot delete a node that still has relationships; use DETACH DELETE',
           { code: ErrorCode.InvalidGraphOp },
         );

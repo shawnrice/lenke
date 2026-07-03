@@ -1,4 +1,4 @@
-import { Graph } from '@pl-graph/core';
+import { Graph } from '@lenke/core';
 
 /**
  * The running example from the GQL / SQL/PGQ research literature (Francis,

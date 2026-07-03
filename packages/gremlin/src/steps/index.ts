@@ -1,6 +1,6 @@
 // Public surface of the step constructors. Grouped by category in sibling
 // files; this barrel re-exports everything so consumers can write
-// `import { has, where, V, ... } from '@pl-graph/gremlin'` without caring
+// `import { has, where, V, ... } from '@lenke/gremlin'` without caring
 // which file each step lives in.
 
 // Token tables and types from the shared scaffolding.

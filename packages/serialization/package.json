@@ -1,6 +1,6 @@
 {
-  "name": "@pl-graph/serialization",
-  "description": "(De)serialization codecs that convert @pl-graph/core graphs to and from text in several interchange formats.",
+  "name": "@lenke/serialization",
+  "description": "(De)serialization codecs that convert @lenke/core graphs to and from text in several interchange formats.",
   "license": "Apache-2.0",
   "type": "module",
   "sideEffects": false,
@@ -16,11 +16,11 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@pl-graph/core": "workspace:*",
-    "@pl-graph/errors": "workspace:*"
+    "@lenke/core": "workspace:*",
+    "@lenke/errors": "workspace:*"
   },
   "devDependencies": {
-    "@pl-graph/dev": "workspace:*",
+    "@lenke/dev": "workspace:*",
     "@types/bun": "^1.3.13",
     "bun-types": "latest"
   },

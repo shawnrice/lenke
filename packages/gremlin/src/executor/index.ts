@@ -8,7 +8,7 @@
 // `applyPlanToStream`, and per-category files (`movement.ts`, `filters.ts`,
 // `aggregation.ts`, etc.) for the step-impl generators.
 
-import type { Graph } from '@pl-graph/core';
+import type { Graph } from '@lenke/core';
 
 import type { Plan } from '../ast.js';
 import { applyStep } from './dispatch.js';

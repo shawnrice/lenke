@@ -3,7 +3,7 @@
 // "verify, then fail loudly with a coded error" behavior both backends rely on.
 import { describe, expect, test } from 'bun:test';
 
-import { ErrorCode, hasErrorCode, isPlGraphError } from '@pl-graph/errors';
+import { ErrorCode, hasErrorCode, isLenkeError } from '@lenke/errors';
 
 import { asByteLength, parseErrorReport } from './marshal.js';
 
@@ -23,7 +23,7 @@ describe('asByteLength', () => {
     try {
       asByteLength(huge, 'query');
     } catch (e) {
-      expect(isPlGraphError(e)).toBe(true);
+      expect(isLenkeError(e)).toBe(true);
       expect(hasErrorCode(e, ErrorCode.Ffi)).toBe(true);
     }
   });

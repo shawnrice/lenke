@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 
 import { type NativeSubgraph, subgraphToGraph } from './subgraph.js';
 
-describe('subgraphToGraph — native subgraph record → @pl-graph/core Graph', () => {
+describe('subgraphToGraph — native subgraph record → @lenke/core Graph', () => {
   const native: NativeSubgraph = {
     vertices: [
       { id: '1', labels: ['PERSON'], properties: { name: 'marko', age: 29 } },

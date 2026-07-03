@@ -1,4 +1,4 @@
-# @pl-graph/core
+# @lenke/core
 
 > A mutable, in-memory labeled-property graph for JavaScript and TypeScript.
 
@@ -7,13 +7,13 @@
 ## Install
 
 ```bash
-bun add @pl-graph/core
+bun add @lenke/core
 ```
 
 ## Usage
 
 ```ts
-import { Graph } from '@pl-graph/core';
+import { Graph } from '@lenke/core';
 
 const graph = new Graph();
 

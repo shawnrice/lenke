@@ -4,8 +4,8 @@
 // by the `.by(...)` modulator(s) in first-appearance order, cycling — so
 // `math('a + b').by('age')` sums the `age` of the values tagged `a` and `b`.
 
-import type { Graph } from '@pl-graph/core';
-import { ErrorCode, PlGraphError } from '@pl-graph/errors';
+import type { Graph } from '@lenke/core';
+import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { By, Step } from '../ast.js';
 import { evalBy, extend, recallTag, type RunContext, type Traverser } from './runtime.js';
@@ -50,7 +50,7 @@ export const mathStep = function* (
         const r = recallTag(t.tags, name, 'last');
 
         if (!r.ok) {
-          throw new PlGraphError(`math: unbound variable '${name}' in '${step.expr}'`, {
+          throw new LenkeError(`math: unbound variable '${name}' in '${step.expr}'`, {
             code: ErrorCode.Unsupported,
           });
         }

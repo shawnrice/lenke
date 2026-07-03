@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { ErrorCode, hasErrorCode } from '@pl-graph/errors';
+import { ErrorCode, hasErrorCode } from '@lenke/errors';
 
 import { GqlSyntaxError } from './lexer.js';
 import { parse } from './parser.js';

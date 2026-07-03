@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { Graph } from '@pl-graph/core';
+import { Graph } from '@lenke/core';
 
 import { deserializeAsync, serializeAsync } from './index.js';
 import { graphContentEqual, randomLpgGraph } from './testkit.js';

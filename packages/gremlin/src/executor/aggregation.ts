@@ -1,5 +1,5 @@
-import type { Graph } from '@pl-graph/core';
-import { ErrorCode, PlGraphError } from '@pl-graph/errors';
+import type { Graph } from '@lenke/core';
+import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { By } from '../ast.js';
 import { compareValues } from '../predicates.js';
@@ -13,7 +13,7 @@ const asNumber = (v: unknown): number => {
     return v;
   }
 
-  throw new PlGraphError(`numeric aggregation requires a number, got ${typeof v}`, {
+  throw new LenkeError(`numeric aggregation requires a number, got ${typeof v}`, {
     code: ErrorCode.InvalidValue,
   });
 };

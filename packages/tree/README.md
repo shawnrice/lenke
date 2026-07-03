@@ -1,4 +1,4 @@
-# @pl-graph/tree
+# @lenke/tree
 
 > Generic tree data structures for JavaScript/TypeScript: a mutable `TreeNode` and a value-carrying `Trie`.
 
@@ -7,13 +7,13 @@ This package provides two tree structures. `TreeNode<T>` is a general n-ary tree
 ## Install
 
 ```bash
-bun add @pl-graph/tree
+bun add @lenke/tree
 ```
 
 ## Usage
 
 ```ts
-import { TreeNode, Trie } from '@pl-graph/tree';
+import { TreeNode, Trie } from '@lenke/tree';
 
 // --- TreeNode ---
 const root = TreeNode.from(1);

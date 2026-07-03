@@ -1,5 +1,5 @@
 {
-  "name": "@pl-graph/core",
+  "name": "@lenke/core",
   "description": "A mutable, in-memory labeled-property graph for JavaScript and TypeScript.",
   "license": "Apache-2.0",
   "type": "module",
@@ -16,14 +16,14 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@pl-graph/emitter": "workspace:*",
-    "@pl-graph/errors": "workspace:*",
-    "@pl-graph/fp": "workspace:*",
-    "@pl-graph/list": "workspace:*",
-    "@pl-graph/utils": "workspace:*"
+    "@lenke/emitter": "workspace:*",
+    "@lenke/errors": "workspace:*",
+    "@lenke/fp": "workspace:*",
+    "@lenke/list": "workspace:*",
+    "@lenke/utils": "workspace:*"
   },
   "devDependencies": {
-    "@pl-graph/dev": "workspace:*",
+    "@lenke/dev": "workspace:*",
     "@types/bun": "^1.3.13",
     "@types/debug": "^4.1.12",
     "bun-types": "latest",

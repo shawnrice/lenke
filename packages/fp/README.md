@@ -1,4 +1,4 @@
-# @pl-graph/fp
+# @lenke/fp
 
 > Lazy, curried iterable combinators for composing data transformations over any `Iterable`.
 
@@ -7,7 +7,7 @@ A small functional toolkit for working with synchronous iterables. Transformatio
 ## Install
 
 ```bash
-bun add @pl-graph/fp
+bun add @lenke/fp
 ```
 
 ## Usage
@@ -15,7 +15,7 @@ bun add @pl-graph/fp
 Every combinator has two forms: a data-last curried form `fn(args)` that returns a unary function for `pipe`, and a data-first form `fn(args, iterable)` that runs immediately.
 
 ```ts
-import { pipe, map, filter, take, toArray, reduce, groupBy } from '@pl-graph/fp';
+import { pipe, map, filter, take, toArray, reduce, groupBy } from '@lenke/fp';
 
 const numbers = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 
@@ -39,7 +39,7 @@ const byParity = groupBy((n: number) => (n % 2 === 0 ? 'even' : 'odd'), numbers)
 Because sources are lazy, you can guard materializing terminals against infinite iterables with `bounded`:
 
 ```ts
-import { bounded, count, take } from '@pl-graph/fp';
+import { bounded, count, take } from '@lenke/fp';
 
 function* naturals() {
   for (let i = 1; ; i++) yield i;

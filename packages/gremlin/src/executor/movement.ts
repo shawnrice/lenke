@@ -1,4 +1,4 @@
-import type { Edge, Graph, Vertex } from '@pl-graph/core';
+import type { Edge, Graph, Vertex } from '@lenke/core';
 
 import { bothEdgesOf, inEdgesOf, outEdgesOf } from '../graph-queries.js';
 import { extend, isEdge, isVertex, type Traverser } from './runtime.js';

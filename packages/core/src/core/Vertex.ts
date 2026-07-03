@@ -1,5 +1,5 @@
-import { EmitterEvent } from '@pl-graph/emitter';
-import { rando } from '@pl-graph/utils';
+import { EmitterEvent } from '@lenke/emitter';
+import { rando } from '@lenke/utils';
 
 import type { Edge } from './Edge.js';
 import type { Graph } from './Graph.js';

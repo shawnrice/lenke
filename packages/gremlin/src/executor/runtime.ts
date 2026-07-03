@@ -9,7 +9,7 @@
 // `./dispatch.ts`). Those depend on each other recursively, so they stay
 // adjacent.
 
-import type { Edge, Graph, Vertex } from '@pl-graph/core';
+import type { Edge, Graph, Vertex } from '@lenke/core';
 
 import type { By, Plan, Step } from '../ast.js';
 // Cycle: `runtime.ts` ↔ `dispatch.ts`. ESM handles this safely because

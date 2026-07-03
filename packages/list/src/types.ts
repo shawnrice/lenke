@@ -1,4 +1,4 @@
-import type { UnaryFn } from '@pl-graph/fp';
+import type { UnaryFn } from '@lenke/fp';
 
 import type { List } from './List.js';
 

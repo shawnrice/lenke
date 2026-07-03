@@ -1,10 +1,10 @@
 // TS-vs-Rust comparison harness. Runs identical operations on the TS engine
-// (@pl-graph/core + gql + serialization) and the native Rust crate (via
+// (@lenke/core + gql + serialization) and the native Rust crate (via
 // bun:ffi), asserts result-parity via a shared (count, sum, checksum)
 // fingerprint, then times both. Writes results.json for the report.
 import { writeFileSync } from 'node:fs';
 
-import { Graph } from '@pl-graph/core';
+import { Graph } from '@lenke/core';
 
 import { query as gqlQuery } from '../packages/gql/src/index.js';
 import { ndjsonCodec } from '../packages/serialization/src/index.js';

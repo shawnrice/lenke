@@ -1,4 +1,4 @@
-import type { Graph } from '@pl-graph/core';
+import type { Graph } from '@lenke/core';
 import { useRef, useSyncExternalStore } from 'react';
 
 import { useGraphContext } from './GraphContext.js';

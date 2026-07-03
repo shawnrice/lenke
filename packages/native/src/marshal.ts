@@ -1,16 +1,16 @@
-import { ErrorCode, PlGraphError } from '@pl-graph/errors';
+import { ErrorCode, LenkeError } from '@lenke/errors';
 
 /**
  * Shared marshalling guards for the two backends. The FFI boundary is *our* seam
- * — both sides are pl-graph code — so these are not defenses against a hostile
+ * — both sides are lenke code — so these are not defenses against a hostile
  * peer; they are contract checks at a border crossing. A length that can't be
  * trusted or an error report that doesn't match the agreed `{code, message}`
  * shape means our own ABI drifted, and we'd rather surface that as a coded
  * {@link ErrorCode.Ffi} fault than let it silently truncate a buffer or hand back
- * a `PlGraphError` whose `code` is `undefined`.
+ * a `LenkeError` whose `code` is `undefined`.
  */
 
-/** The shape Rust writes into the last-error slot (mirrors `PlGraphError`). */
+/** The shape Rust writes into the last-error slot (mirrors `LenkeError`). */
 export type ErrorReport = {
   readonly code: ErrorCode;
   readonly message: string;
@@ -28,8 +28,8 @@ export const asByteLength = (raw: number | bigint, op: string): number => {
   const len = typeof raw === 'bigint' ? Number(raw) : raw;
 
   if (!Number.isSafeInteger(len) || len < 0) {
-    throw new PlGraphError(
-      `pl-graph: ${op}: native returned an implausible buffer length (${String(raw)})`,
+    throw new LenkeError(
+      `lenke: ${op}: native returned an implausible buffer length (${String(raw)})`,
       { code: ErrorCode.Ffi, details: { len: String(raw) } },
     );
   }
@@ -41,7 +41,7 @@ export const asByteLength = (raw: number | bigint, op: string): number => {
  * Parse and shape-check the JSON last-error report the crate hands back. A report
  * that isn't valid JSON, or that lacks the agreed `{code, message}` strings, is
  * itself an FFI fault: return null so the caller falls back to a generic code
- * instead of surfacing a `PlGraphError` whose `code` field is `undefined`.
+ * instead of surfacing a `LenkeError` whose `code` field is `undefined`.
  */
 export const parseErrorReport = (json: string): ErrorReport | null => {
   let parsed: unknown;

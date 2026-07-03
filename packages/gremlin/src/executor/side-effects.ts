@@ -1,4 +1,4 @@
-import { Graph, type Vertex } from '@pl-graph/core';
+import { Graph, type Vertex } from '@lenke/core';
 
 import { isEdge, type RunContext, startTraverser, type Traverser } from './runtime.js';
 

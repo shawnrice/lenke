@@ -1,4 +1,4 @@
-import { Graph } from '@pl-graph/core';
+import { Graph } from '@lenke/core';
 import * as React from 'react';
 
 export type GraphState = { graph: Graph };

@@ -20,7 +20,7 @@ import {
   take,
   takeWhile,
   type UnaryFn,
-} from '@pl-graph/fp';
+} from '@lenke/fp';
 
 import { empty, from, isList, of } from './functions/index.js';
 

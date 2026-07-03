@@ -1,5 +1,5 @@
-import type { Graph } from '@pl-graph/core';
-import { ErrorCode, PlGraphError } from '@pl-graph/errors';
+import type { Graph } from '@lenke/core';
+import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { Codec } from '../codec.js';
 import type { ChunkSource } from '../streaming.js';
@@ -733,7 +733,7 @@ const decodeEdgeRows = (rows: Cell[][], graph: Graph): Graph => {
     // Batch decode is strict: endpoints must already exist (nodes were decoded
     // first). The streaming edge decoder, by contrast, creates them on demand.
     if (!graph.getVertexById(fromId) || !graph.getVertexById(toId)) {
-      throw new PlGraphError(
+      throw new LenkeError(
         `csv: edge references a non-existent vertex (from=${fromId}, to=${toId})`,
         {
           code: ErrorCode.MissingVertex,

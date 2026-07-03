@@ -5,7 +5,7 @@
 // serialize/deserialize (and its error paths), and the static helpers.
 import { describe, expect, test } from 'bun:test';
 
-import { ErrorCode, hasErrorCode } from '@pl-graph/errors';
+import { ErrorCode, hasErrorCode } from '@lenke/errors';
 
 import { TreeNode } from './TreeNode.js';
 import type { SerializedTreeNode } from './types.js';

@@ -1,4 +1,4 @@
-import type { Graph } from '@pl-graph/core';
+import type { Graph } from '@lenke/core';
 
 import type { Plan } from './ast.js';
 import { run, toArray, toSet } from './executor.js';

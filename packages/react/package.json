@@ -1,7 +1,7 @@
 {
-  "name": "@pl-graph/react",
+  "name": "@lenke/react",
   "version": "1.0.0",
-  "description": "React bindings that turn a @pl-graph labeled-property graph into a reactive data store for React components.",
+  "description": "React bindings that turn a @lenke labeled-property graph into a reactive data store for React components.",
   "license": "Apache-2.0",
   "author": "",
   "type": "module",
@@ -19,11 +19,11 @@
     "coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@pl-graph/core": "workspace:*",
-    "@pl-graph/gremlin": "workspace:*"
+    "@lenke/core": "workspace:*",
+    "@lenke/gremlin": "workspace:*"
   },
   "devDependencies": {
-    "@pl-graph/dev": "workspace:*",
+    "@lenke/dev": "workspace:*",
     "@testing-library/react": "^16.3.0",
     "@types/react": "^18.2.15",
     "@types/react-dom": "^18.2.7",

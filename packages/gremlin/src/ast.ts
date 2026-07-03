@@ -395,7 +395,7 @@ export const emptyPlan: Plan = { steps: [] };
  * arity. See the dispatch in `steps.ts`'s overloaded constructors (`map`,
  * `filter`, etc.).
  */
-export const STEP_FN: unique symbol = Symbol.for('@pl-graph/gremlin/StepFn');
+export const STEP_FN: unique symbol = Symbol.for('@lenke/gremlin/StepFn');
 
 export type StepFn = ((plan: Plan) => Plan) & { readonly [STEP_FN]: true };
 

@@ -1,9 +1,9 @@
 /* eslint-disable consistent-this, no-param-reassign, no-restricted-syntax */
 /* eslint-disable @typescript-eslint/no-this-alias */
 
-import { ErrorCode, PlGraphError } from '@pl-graph/errors';
-import { equals } from '@pl-graph/fp/equals';
-import { rando } from '@pl-graph/utils';
+import { ErrorCode, LenkeError } from '@lenke/errors';
+import { equals } from '@lenke/fp/equals';
+import { rando } from '@lenke/utils';
 
 import { deserialize } from './deserialize.js';
 import { serialize } from './serialize.js';
@@ -130,7 +130,7 @@ export class TreeNode<T> {
     if (node.isRoot() && node.childCount > 1) {
       // Otherwise, it we still try to remove the root which would result in multiple trees, then
       // we'll throw an error
-      throw new PlGraphError(
+      throw new LenkeError(
         'Cannot remove the root node from a tree when the root has multiple children',
         {
           code: ErrorCode.InvalidTree,
@@ -142,7 +142,7 @@ export class TreeNode<T> {
 
     if (!nextParent) {
       // We should actually not get here with any well-formed tree
-      throw new PlGraphError('Cannot remove a node that has no parent', {
+      throw new LenkeError('Cannot remove a node that has no parent', {
         code: ErrorCode.InvalidTree,
       });
     }
@@ -219,13 +219,13 @@ export class TreeNode<T> {
    */
   addChild(node: TreeNode<T>): TreeNode<T> {
     if (node === this) {
-      throw new PlGraphError('Cannot add a node as a child of itself', {
+      throw new LenkeError('Cannot add a node as a child of itself', {
         code: ErrorCode.InvalidTree,
       });
     }
 
     if (node.parent !== null) {
-      throw new PlGraphError(
+      throw new LenkeError(
         'Cannot add a node that already has a parent. Call detach() first to move it.',
         {
           code: ErrorCode.InvalidTree,
@@ -241,7 +241,7 @@ export class TreeNode<T> {
     // ancestor match can only be a genuine cycle, never a stale link.
     for (let ancestor = this.#parent; ancestor !== null; ancestor = ancestor.#parent) {
       if (ancestor === node) {
-        throw new PlGraphError(
+        throw new LenkeError(
           'Cannot add a node that is an ancestor of this node (would create a cycle)',
           {
             code: ErrorCode.InvalidTree,

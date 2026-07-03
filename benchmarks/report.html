@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>pl-graph: TypeScript vs Rust</title>
+    <title>lenke: TypeScript vs Rust</title>
     <style>
       :root {
         --bg: #0d1117;
@@ -201,7 +201,7 @@
   <body>
     <div class="wrap">
       <header>
-        <h1>pl-graph — does a Rust core earn its keep?</h1>
+        <h1>lenke — does a Rust core earn its keep?</h1>
         <p class="sub">
           Same operations, two engines: the TypeScript core / gql / NDJSON codec vs a columnar Rust
           crate over bun:ffi. Apple M3 Max (target-cpu=native). NEON SIMD where it applies.
@@ -302,7 +302,7 @@
       <h2>Queries — the full surface, not just count</h2>
       <p>
         The Rust side runs a GQL-subset parser + executor over the columnar core; the TS side runs
-        the production <code>@pl-graph/gql</code> engine. Nine shapes — scans, 1-/2-hop traversals,
+        the production <code>@lenke/gql</code> engine. Nine shapes — scans, 1-/2-hop traversals,
         filters, <code>avg</code>, multi-condition <code>WHERE</code>, <code>GROUP BY</code>,
         <code>ORDER BY … LIMIT</code>, <code>DISTINCT</code> — each verified equal via a shared
         <code>(count, sum, FNV&nbsp;checksum)</code> fingerprint before timing. The checksums match

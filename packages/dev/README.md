@@ -1,14 +1,14 @@
-# @pl-graph/dev
+# @lenke/dev
 
-> Internal build, lint, and format tooling shared across the `@pl-graph` monorepo.
+> Internal build, lint, and format tooling shared across the `@lenke` monorepo.
 
 This package bundles the helpers and configuration that other packages in the monorepo depend on at build and lint time: a library bundler built on rolldown plus the TypeScript compiler, a custom oxlint plugin, and shared base configs for oxlint and oxfmt. It is consumed as a `devDependency` inside the monorepo and is not a published runtime library.
 
 ## What's here
 
 - **`buildPackage` (default export)** — a library build orchestrator. Bundles a package's `src/` entrypoints into ESM (and optionally CJS), with optional minified variants, while emitting `.d.ts` declarations via the TypeScript compiler API. Uses rolldown (Rollup semantics) so re-exported implementations survive in `sideEffects: false` packages, externals every bare specifier, and resolves NodeNext `.js` specifiers back to `.ts`/`.tsx` sources.
-- **`oxlintrc.base.json`** — the shared oxlint base config: core/import/TypeScript/unicorn rule set, test-file overrides, and registration of the custom lint plugin. Exposed at the `@pl-graph/dev/oxlintrc.base.json` subpath.
-- **`oxfmtrc.base.json`** — the shared oxfmt base config (print width 100, single quotes, semicolons, trailing commas, always-parenthesized arrow params). Exposed at the `@pl-graph/dev/oxfmtrc.base.json` subpath.
+- **`oxlintrc.base.json`** — the shared oxlint base config: core/import/TypeScript/unicorn rule set, test-file overrides, and registration of the custom lint plugin. Exposed at the `@lenke/dev/oxlintrc.base.json` subpath.
+- **`oxfmtrc.base.json`** — the shared oxfmt base config (print width 100, single quotes, semicolons, trailing commas, always-parenthesized arrow params). Exposed at the `@lenke/dev/oxfmtrc.base.json` subpath.
 - **`lint-rules/padding-lines.js`** — a custom oxlint JS plugin (`padding-lines/before-exit`) that enforces blank lines around block statements (`if`/`for`/`while`/`switch`/`try`) and before exit statements (`return`, `throw`, standalone `yield*`). Auto-fixable.
 
 ## Usage
@@ -19,7 +19,7 @@ A package's `build.ts` calls `buildPackage`, pointing it at the package root:
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { buildPackage } from '@pl-graph/dev';
+import { buildPackage } from '@lenke/dev';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -48,7 +48,7 @@ The base configs are consumed by `extends` and re-export. A root `.oxlintrc.json
 }
 ```
 
-and the oxfmt base is mirrored (or pointed at) from the root oxfmt config. Both are resolvable via their package subpaths, e.g. `@pl-graph/dev/oxlintrc.base.json`.
+and the oxfmt base is mirrored (or pointed at) from the root oxfmt config. Both are resolvable via their package subpaths, e.g. `@lenke/dev/oxlintrc.base.json`.
 
 ## License
 

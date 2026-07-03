@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-magic-numbers */
 /* eslint-disable sort-keys */
-import { Graph } from '@pl-graph/core';
+import { Graph } from '@lenke/core';
 
 /**
  * Creates an instance of the exmaple graph from the gremlin documentation

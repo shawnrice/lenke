@@ -1,5 +1,5 @@
-import type { Graph } from '@pl-graph/core';
-import { ErrorCode, PlGraphError } from '@pl-graph/errors';
+import type { Graph } from '@lenke/core';
+import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { Codec } from '../codec.js';
 import { type ChunkSource, linesFromChunks } from '../streaming.js';
@@ -85,14 +85,14 @@ const parseLine = (line: string): NodeRecord | EdgeRecord | null => {
   try {
     record = JSON.parse(trimmed);
   } catch (cause) {
-    throw new PlGraphError(`ndjson: invalid JSON: ${trimmed.slice(0, 80)}`, {
+    throw new LenkeError(`ndjson: invalid JSON: ${trimmed.slice(0, 80)}`, {
       code: ErrorCode.InvalidJson,
       cause,
     });
   }
 
   if (typeof record !== 'object' || record === null) {
-    throw new PlGraphError(
+    throw new LenkeError(
       `ndjson: each line must be a node or edge object: ${trimmed.slice(0, 80)}`,
       {
         code: ErrorCode.InvalidShape,
@@ -103,12 +103,9 @@ const parseLine = (line: string): NodeRecord | EdgeRecord | null => {
   const { type } = record as { type?: unknown };
 
   if (type !== 'node' && type !== 'edge') {
-    throw new PlGraphError(
-      `ndjson: line is not a 'node' or 'edge' record: ${trimmed.slice(0, 80)}`,
-      {
-        code: ErrorCode.InvalidShape,
-      },
-    );
+    throw new LenkeError(`ndjson: line is not a 'node' or 'edge' record: ${trimmed.slice(0, 80)}`, {
+      code: ErrorCode.InvalidShape,
+    });
   }
 
   return record as NodeRecord | EdgeRecord;

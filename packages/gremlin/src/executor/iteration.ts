@@ -1,5 +1,5 @@
-import type { Graph } from '@pl-graph/core';
-import { ErrorCode, PlGraphError } from '@pl-graph/errors';
+import type { Graph } from '@lenke/core';
+import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { Plan, Step } from '../ast.js';
 import { applyPlanToStream } from './dispatch.js';
@@ -137,7 +137,7 @@ export const repeatStep = function* (
       work += 1;
 
       if (work > REPEAT_BUDGET) {
-        throw new PlGraphError(
+        throw new LenkeError(
           'repeat() exceeded the traversal budget; add a tighter until()/times()',
           { code: ErrorCode.ResourceExhausted },
         );

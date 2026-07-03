@@ -1,5 +1,5 @@
-import type { Graph, Vertex } from '@pl-graph/core';
-import { ErrorCode, PlGraphError } from '@pl-graph/errors';
+import type { Graph, Vertex } from '@lenke/core';
+import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { Step } from '../ast.js';
 import { bothEdgesOf } from '../graph-queries.js';
@@ -63,7 +63,7 @@ const shortestPathsFrom = (
       paths.push(path);
 
       if (paths.length > SHORTEST_PATH_BUDGET) {
-        throw new PlGraphError(
+        throw new LenkeError(
           'shortestPath() produced too many equal-length paths; restrict the target set',
           { code: ErrorCode.ResourceExhausted },
         );

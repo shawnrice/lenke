@@ -1,4 +1,4 @@
-import type { Graph } from '@pl-graph/core';
+import type { Graph } from '@lenke/core';
 
 import type { ID, Step } from '../ast.js';
 import { addEStep, addVStep } from './mutation.js';

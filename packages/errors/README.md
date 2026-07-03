@@ -1,22 +1,22 @@
-# @pl-graph/errors
+# @lenke/errors
 
-> Canonical, stable error codes and a shared error type for the pl-graph packages.
+> Canonical, stable error codes and a shared error type for the lenke packages.
 
-The toolkit's parsers, evaluators, and FFI layers all fail in similar ways (syntax errors, invalid input, resource limits, FFI failures), and message text is not a reliable thing to branch on. This package defines a fixed set of opaque `E_*` codes plus a `PlGraphError` carrying one, so consumers can match on `error.code` rather than parsing message strings. Reach for it when you need to detect or classify a failure programmatically across packages.
+The toolkit's parsers, evaluators, and FFI layers all fail in similar ways (syntax errors, invalid input, resource limits, FFI failures), and message text is not a reliable thing to branch on. This package defines a fixed set of opaque `E_*` codes plus a `LenkeError` carrying one, so consumers can match on `error.code` rather than parsing message strings. Reach for it when you need to detect or classify a failure programmatically across packages.
 
 ## Install
 
 ```bash
-bun add @pl-graph/errors
+bun add @lenke/errors
 ```
 
 ## Usage
 
 ```ts
-import { ErrorCode, PlGraphError, hasErrorCode, isPlGraphError } from '@pl-graph/errors';
+import { ErrorCode, LenkeError, hasErrorCode, isLenkeError } from '@lenke/errors';
 
 function parse(text: string) {
-  throw new PlGraphError('unexpected token at line 3', {
+  throw new LenkeError('unexpected token at line 3', {
     code: ErrorCode.Syntax,
     details: { line: 3, column: 12 },
   });
@@ -27,8 +27,8 @@ try {
 } catch (error) {
   // Branch on the stable code, not the message text.
   if (hasErrorCode(error, ErrorCode.Syntax)) {
-    console.error('parse failed:', (error as PlGraphError).details);
-  } else if (isPlGraphError(error)) {
+    console.error('parse failed:', (error as LenkeError).details);
+  } else if (isLenkeError(error)) {
     console.error(error.code, error.message);
   } else {
     throw error;
@@ -41,7 +41,7 @@ try {
 `ErrorCode` is a const object (and a type of the same name) of `E_*` string values. The code is the contract: it is stable across releases, while a message may be reworded freely.
 
 ```ts
-class PlGraphError extends Error {
+class LenkeError extends Error {
   readonly code: ErrorCode;
   readonly details?: Readonly<Record<string, unknown>>;
   constructor(message: string, options: {
@@ -51,11 +51,11 @@ class PlGraphError extends Error {
   });
 }
 
-isPlGraphError(error: unknown): error is PlGraphError;
+isLenkeError(error: unknown): error is LenkeError;
 hasErrorCode(error: unknown, code: ErrorCode): boolean;
 ```
 
-`hasErrorCode` matches any object that adopts the `code` convention, not only `PlGraphError` instances or subclasses, so it works across package and FFI boundaries.
+`hasErrorCode` matches any object that adopts the `code` convention, not only `LenkeError` instances or subclasses, so it works across package and FFI boundaries.
 
 ## Error codes
 

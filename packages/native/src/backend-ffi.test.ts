@@ -5,7 +5,7 @@
 import { describe, expect, test } from 'bun:test';
 import { existsSync } from 'node:fs';
 
-import { ErrorCode, hasErrorCode, isPlGraphError } from '@pl-graph/errors';
+import { ErrorCode, hasErrorCode, isLenkeError } from '@lenke/errors';
 
 import { ABI_VERSION } from './abi.js';
 import { createFfiBackend } from './backend-ffi.js';
@@ -16,7 +16,7 @@ import { graphFromFormat, graphFromNdjson } from './graph.js';
 const LIB_EXTENSIONS: Partial<Record<NodeJS.Platform, string>> = { darwin: 'dylib', win32: 'dll' };
 const LIB_EXT = LIB_EXTENSIONS[process.platform] ?? 'so';
 const LIB = new URL(
-  `../../../crates/pl-graph-core/target/release/libpl_graph_core.${LIB_EXT}`,
+  `../../../crates/lenke-core/target/release/liblenke_core.${LIB_EXT}`,
   import.meta.url,
 ).pathname;
 
@@ -38,7 +38,7 @@ const NDJSON = [
 
 const bytes = new TextEncoder().encode(NDJSON);
 
-suite('@pl-graph/native FFI backend', () => {
+suite('@lenke/native FFI backend', () => {
   test('loads at the expected ABI version', () => {
     const backend = createFfiBackend(LIB);
     expect(backend.abiVersion).toBe(ABI_VERSION);
@@ -128,9 +128,9 @@ suite('@pl-graph/native FFI backend', () => {
   });
 
   // The failure crossing: a real crate error rides the last-error side channel,
-  // gets read back, and arrives as a `PlGraphError` carrying the *same*
+  // gets read back, and arrives as a `LenkeError` carrying the *same*
   // `ErrorCode` a pure-TS engine would raise — identical to the wasm backend.
-  test('a GQL syntax error surfaces as a coded PlGraphError with crate details', () => {
+  test('a GQL syntax error surfaces as a coded LenkeError with crate details', () => {
     const backend = createFfiBackend(LIB);
     const g = graphFromNdjson(backend, bytes);
 
@@ -142,7 +142,7 @@ suite('@pl-graph/native FFI backend', () => {
       caught = e;
     }
 
-    expect(isPlGraphError(caught)).toBe(true);
+    expect(isLenkeError(caught)).toBe(true);
     expect(hasErrorCode(caught, ErrorCode.Syntax)).toBe(true);
     // the parse offset carried over from the crate's structured report
     expect((caught as { details?: { pos?: number } }).details?.pos).toBeTypeOf('number');

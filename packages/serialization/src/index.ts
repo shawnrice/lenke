@@ -1,5 +1,5 @@
-import type { Graph } from '@pl-graph/core';
-import { ErrorCode, PlGraphError } from '@pl-graph/errors';
+import type { Graph } from '@lenke/core';
+import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { Codec } from './codec.js';
 import { csvCodec } from './csv/index.js';
@@ -36,7 +36,7 @@ const codecFor = (format: string): Codec => {
   const codec = codecs[format];
 
   if (!codec) {
-    throw new PlGraphError(
+    throw new LenkeError(
       `Unknown serialization format '${format}' (have: ${Object.keys(codecs).join(', ')})`,
       { code: ErrorCode.UnknownFormat, details: { format } },
     );
@@ -58,7 +58,7 @@ export const serializeStream = (graph: Graph, format: FormatName): AsyncGenerato
   const codec = codecFor(format);
 
   if (!codec.encodeStream) {
-    throw new PlGraphError(`Format '${format}' does not support streaming`, {
+    throw new LenkeError(`Format '${format}' does not support streaming`, {
       code: ErrorCode.Unsupported,
       details: { format },
     });
@@ -76,7 +76,7 @@ export const deserializeStream = (
   const codec = codecFor(format);
 
   if (!codec.decodeStream) {
-    throw new PlGraphError(`Format '${format}' does not support streaming`, {
+    throw new LenkeError(`Format '${format}' does not support streaming`, {
       code: ErrorCode.Unsupported,
       details: { format },
     });

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import type { Graph } from '@pl-graph/core';
+import type { Graph } from '@lenke/core';
 
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';

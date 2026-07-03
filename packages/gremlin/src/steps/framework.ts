@@ -5,7 +5,7 @@
 // (`StepFn`/`SubPlan`/`ByableStep`), or a helper (`makeByable`/`buildPlan`
 // /`isPredicate`/etc.).
 
-import { ErrorCode, PlGraphError } from '@pl-graph/errors';
+import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import { appendStep, type By, isStepFn, type Plan, type Predicate, type Step } from '../ast.js';
 
@@ -33,10 +33,10 @@ export type SubPlan = StepFn | Plan;
 // (rather than string literals) so they don't collide with user-supplied
 // property names.
 export const T = {
-  id: Symbol.for('@pl-graph/gremlin/T.id'),
-  label: Symbol.for('@pl-graph/gremlin/T.label'),
-  key: Symbol.for('@pl-graph/gremlin/T.key'),
-  value: Symbol.for('@pl-graph/gremlin/T.value'),
+  id: Symbol.for('@lenke/gremlin/T.id'),
+  label: Symbol.for('@lenke/gremlin/T.label'),
+  key: Symbol.for('@lenke/gremlin/T.key'),
+  value: Symbol.for('@lenke/gremlin/T.value'),
 } as const;
 
 export type Token = (typeof T)[keyof typeof T];
@@ -52,8 +52,8 @@ const TOKEN_TO_KIND: ReadonlyMap<symbol, 'id' | 'label' | 'key' | 'value'> = new
 // natural-order direction, or as the second arg (`by('age', Order.desc)`) to
 // pair with a projection.
 export const Order = {
-  asc: Symbol.for('@pl-graph/gremlin/Order.asc'),
-  desc: Symbol.for('@pl-graph/gremlin/Order.desc'),
+  asc: Symbol.for('@lenke/gremlin/Order.asc'),
+  desc: Symbol.for('@lenke/gremlin/Order.desc'),
 } as const;
 
 export type OrderSym = (typeof Order)[keyof typeof Order];
@@ -71,8 +71,8 @@ const ORDER_TO_DIR: ReadonlyMap<symbol, 'asc' | 'desc'> = new Map([
 // (`count`/`sum`/`min`/`max`/`mean`/etc.) accept the symbol at the type
 // level but don't yet branch on it — those are tracked in `GAPS.md`.
 export const Scope = {
-  global: Symbol.for('@pl-graph/gremlin/Scope.global'),
-  local: Symbol.for('@pl-graph/gremlin/Scope.local'),
+  global: Symbol.for('@lenke/gremlin/Scope.global'),
+  local: Symbol.for('@lenke/gremlin/Scope.local'),
 } as const;
 
 // Property cardinality, used with `property(Cardinality.X, key, value)`.
@@ -80,9 +80,9 @@ export const Scope = {
 // Our storage is single-valued today; the cardinality is still threaded
 // through the AST so a future multi-cardinality executor can pick it up.
 export const Cardinality = {
-  single: Symbol.for('@pl-graph/gremlin/Cardinality.single'),
-  list: Symbol.for('@pl-graph/gremlin/Cardinality.list'),
-  set: Symbol.for('@pl-graph/gremlin/Cardinality.set'),
+  single: Symbol.for('@lenke/gremlin/Cardinality.single'),
+  list: Symbol.for('@lenke/gremlin/Cardinality.list'),
+  set: Symbol.for('@lenke/gremlin/Cardinality.set'),
 } as const;
 
 export type CardinalitySym = (typeof Cardinality)[keyof typeof Cardinality];
@@ -98,9 +98,9 @@ export const CARDINALITY_TO_KIND: ReadonlyMap<symbol, 'single' | 'list' | 'set'>
 //   `select(Pop.first, 'a')`    // first value
 //   `select(Pop.all, 'a')`      // all values as a list
 export const Pop = {
-  first: Symbol.for('@pl-graph/gremlin/Pop.first'),
-  last: Symbol.for('@pl-graph/gremlin/Pop.last'),
-  all: Symbol.for('@pl-graph/gremlin/Pop.all'),
+  first: Symbol.for('@lenke/gremlin/Pop.first'),
+  last: Symbol.for('@lenke/gremlin/Pop.last'),
+  all: Symbol.for('@lenke/gremlin/Pop.all'),
 } as const;
 
 export const POP_TO_STR: ReadonlyMap<symbol, 'first' | 'last' | 'all'> = new Map([
@@ -175,7 +175,7 @@ export const toBy = (modulator: ByModulator | undefined, comparator?: OrderSym):
       return { kind: 'token', token: tokenKind, direction };
     }
 
-    throw new PlGraphError(`Unrecognized symbol: ${String(modulator)}`, {
+    throw new LenkeError(`Unrecognized symbol: ${String(modulator)}`, {
       code: ErrorCode.Unsupported,
     });
   }
@@ -219,7 +219,7 @@ export const scopeTokenOf = (s: symbol): 'global' | 'local' => {
     return 'global';
   }
 
-  throw new PlGraphError('Expected Scope.local or Scope.global', { code: ErrorCode.Unsupported });
+  throw new LenkeError('Expected Scope.local or Scope.global', { code: ErrorCode.Unsupported });
 };
 
 // ---------- Re-exports the step files need from ast ----------

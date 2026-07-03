@@ -1,11 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 
-import { ErrorCode, hasErrorCode, isPlGraphError, PlGraphError } from './index.js';
+import { ErrorCode, hasErrorCode, isLenkeError, LenkeError } from './index.js';
 
-describe('PlGraphError', () => {
+describe('LenkeError', () => {
   test('carries a stable code, message, cause, and details', () => {
     const cause = new Error('underlying');
-    const err = new PlGraphError('bad input', {
+    const err = new LenkeError('bad input', {
       code: ErrorCode.InvalidJson,
       cause,
       details: { format: 'pg-json' },
@@ -17,14 +17,14 @@ describe('PlGraphError', () => {
     expect(err).toBeInstanceOf(Error);
   });
 
-  test('isPlGraphError narrows correctly', () => {
-    expect(isPlGraphError(new PlGraphError('x', { code: ErrorCode.Syntax }))).toBe(true);
-    expect(isPlGraphError(new Error('x'))).toBe(false);
-    expect(isPlGraphError(null)).toBe(false);
+  test('isLenkeError narrows correctly', () => {
+    expect(isLenkeError(new LenkeError('x', { code: ErrorCode.Syntax }))).toBe(true);
+    expect(isLenkeError(new Error('x'))).toBe(false);
+    expect(isLenkeError(null)).toBe(false);
   });
 
   test('hasErrorCode matches on the code, not the message', () => {
-    const err = new PlGraphError('reworded message', { code: ErrorCode.Unsupported });
+    const err = new LenkeError('reworded message', { code: ErrorCode.Unsupported });
     expect(hasErrorCode(err, ErrorCode.Unsupported)).toBe(true);
     expect(hasErrorCode(err, ErrorCode.Syntax)).toBe(false);
     // works for any object adopting the `code` convention (e.g. a subclass)

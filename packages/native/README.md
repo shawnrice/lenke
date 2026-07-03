@@ -1,24 +1,24 @@
-# @pl-graph/native
+# @lenke/native
 
-> JavaScript/TypeScript bindings to the Rust `pl-graph-core` columnar graph engine, with a single facade over native (FFI) and WebAssembly backends.
+> JavaScript/TypeScript bindings to the Rust `lenke-core` columnar graph engine, with a single facade over native (FFI) and WebAssembly backends.
 
 Loads a labeled-property graph into the native columnar core and runs GQL or Gremlin queries against it from JS/TS. One C ABI is exposed through two interchangeable backends behind a shared `Backend` contract: a native dynamic library loaded over `bun:ffi` (server/CLI, requires Bun) and a WebAssembly module instantiated from bytes or a `fetch` response (browser). Reach for this when you want the Rust engine's query performance from JS without reimplementing it. The backend modules are split behind subpath exports so importing the package in a browser never pulls in the Bun-only `bun:ffi` builtin.
 
 ## Install
 
 ```bash
-bun add @pl-graph/native
+bun add @lenke/native
 ```
 
 ## Usage
 
 ```ts
-import { createFfiBackend } from '@pl-graph/native/ffi';
-import { graphFromNdjson } from '@pl-graph/native';
+import { createFfiBackend } from '@lenke/native/ffi';
+import { graphFromNdjson } from '@lenke/native';
 
-// Load the native library built from `crates/pl-graph-core`
-// (libpl_graph_core.{dylib,so,dll}).
-const backend = createFfiBackend('/path/to/libpl_graph_core.dylib');
+// Load the native library built from `crates/lenke-core`
+// (liblenke_core.{dylib,so,dll}).
+const backend = createFfiBackend('/path/to/liblenke_core.dylib');
 
 // Decode an NDJSON document into a graph.
 const g = graphFromNdjson(backend, await Bun.file('graph.ndjson').bytes());
@@ -41,19 +41,19 @@ g.free();
 In the browser, swap the backend for the wasm one; the rest of the API is identical:
 
 ```ts
-import { createWasmBackend } from '@pl-graph/native/wasm';
-import { graphFromNdjson } from '@pl-graph/native';
+import { createWasmBackend } from '@lenke/native/wasm';
+import { graphFromNdjson } from '@lenke/native';
 
-const backend = await createWasmBackend(fetch('/pl_graph_core.wasm'));
+const backend = await createWasmBackend(fetch('/lenke_core.wasm'));
 const g = graphFromNdjson(backend, ndjsonBytes);
 ```
 
 ## Loading a backend
 
-The entry point (`@pl-graph/native`) is environment-neutral: it exports the `RustGraph` facade, the graph constructors, and the reactive store. The backend itself comes from a subpath:
+The entry point (`@lenke/native`) is environment-neutral: it exports the `RustGraph` facade, the graph constructors, and the reactive store. The backend itself comes from a subpath:
 
-- `@pl-graph/native/ffi` — `createFfiBackend(libPath: string): Backend`. Requires **Bun** (uses `bun:ffi`). Pass the absolute path to the built `libpl_graph_core.{dylib,so,dll}`.
-- `@pl-graph/native/wasm` — `createWasmBackend(source): Promise<Backend>`. `source` is a `WebAssembly.Module`, `ArrayBuffer`, `ArrayBufferView`, or a (promise of a) `fetch` `Response`.
+- `@lenke/native/ffi` — `createFfiBackend(libPath: string): Backend`. Requires **Bun** (uses `bun:ffi`). Pass the absolute path to the built `liblenke_core.{dylib,so,dll}`.
+- `@lenke/native/wasm` — `createWasmBackend(source): Promise<Backend>`. `source` is a `WebAssembly.Module`, `ArrayBuffer`, `ArrayBufferView`, or a (promise of a) `fetch` `Response`.
 
 Both assert that the loaded artifact's ABI version matches the exported `ABI_VERSION`, throwing on mismatch. `isBun` is exported as a convenience flag (`true` when running under Bun, where the FFI backend is available).
 

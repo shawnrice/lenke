@@ -1,12 +1,12 @@
-import type { Graph } from '@pl-graph/core';
-import { ErrorCode, PlGraphError } from '@pl-graph/errors';
+import type { Graph } from '@lenke/core';
+import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { Codec } from '../codec.js';
 import { normalizeBag } from '../value.js';
 import type { PropertyValue } from '../value.js';
 
 /**
- * GraphSON v3.0 (Apache TinkerPop) codec for the `@pl-graph/core` LPG model.
+ * GraphSON v3.0 (Apache TinkerPop) codec for the `@lenke/core` LPG model.
  *
  * The whole graph is serialized as a single JSON document
  * `{ "vertices": [ <g:Vertex> ... ], "edges": [ <g:Edge> ... ] }`. This is a
@@ -57,7 +57,7 @@ const encodeValue = (value: PropertyValue): unknown => {
 };
 
 const shapeError = (msg: string): never => {
-  throw new PlGraphError(`graphson: ${msg}`, { code: ErrorCode.InvalidShape });
+  throw new LenkeError(`graphson: ${msg}`, { code: ErrorCode.InvalidShape });
 };
 
 // Bounds g:List recursion against an adversarial deeply-nested value; mirrors
@@ -200,7 +200,7 @@ export const decode = (input: string, graph: Graph): Graph => {
   try {
     parsed = JSON.parse(input);
   } catch (cause) {
-    throw new PlGraphError(`graphson: invalid JSON: ${input.slice(0, 80)}`, {
+    throw new LenkeError(`graphson: invalid JSON: ${input.slice(0, 80)}`, {
       code: ErrorCode.InvalidJson,
       cause,
     });
@@ -271,7 +271,7 @@ export const decode = (input: string, graph: Graph): Graph => {
     const to = graph.getVertexById(e.inV);
 
     if (from === null || to === null) {
-      throw new PlGraphError(
+      throw new LenkeError(
         `GraphSON edge ${e.id} references missing vertex (outV=${e.outV}, inV=${e.inV})`,
         {
           code: ErrorCode.MissingVertex,

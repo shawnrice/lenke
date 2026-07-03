@@ -162,7 +162,7 @@ const parityRows = r.parity
 
 const html = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>pl-graph: TypeScript vs Rust</title>
+<title>lenke: TypeScript vs Rust</title>
 <style>
 :root{--bg:#0d1117;--panel:#161b22;--line:#272e3a;--fg:#e6edf3;--dim:#8b949e;--accent:#58a6ff;--green:#3fb950;--red:#f85149;--amber:#d29922}
 *{box-sizing:border-box}
@@ -194,7 +194,7 @@ code{background:#0b0f14;padding:1px 6px;border-radius:5px;font-size:13px;color:#
 footer{color:var(--dim);font-size:13px;margin-top:50px;border-top:1px solid var(--line);padding-top:16px}
 </style></head><body><div class="wrap">
 <header>
-<h1>pl-graph — does a Rust core earn its keep?</h1>
+<h1>lenke — does a Rust core earn its keep?</h1>
 <p class="sub">Same operations, two engines: the TypeScript core / gql / NDJSON codec vs a columnar Rust crate over bun:ffi. ${r.meta.machine}.</p>
 </header>
 
@@ -211,7 +211,7 @@ footer{color:var(--dim);font-size:13px;margin-top:50px;border-top:1px solid var(
 <table><thead><tr><th>vertices</th><th>edges</th><th>input</th><th>TS</th><th>Rust ∥</th><th>Rust serial</th><th>speedup</th><th>rayon gain</th></tr></thead><tbody>${buildRows}</tbody></table>
 
 <h2>Queries — the full surface, not just count</h2>
-<p>The Rust side runs a GQL-subset parser + executor over the columnar core; the TS side runs the production <code>@pl-graph/gql</code> engine. Nine shapes — scans, 1-/2-hop traversals, filters, <code>avg</code>, multi-condition <code>WHERE</code>, <code>GROUP BY</code>, <code>ORDER BY … LIMIT</code>, <code>DISTINCT</code> — each verified equal via a shared <code>(count, sum, FNV&nbsp;checksum)</code> fingerprint before timing. The checksums match to the bit, so these are genuinely the same results, faster.</p>
+<p>The Rust side runs a GQL-subset parser + executor over the columnar core; the TS side runs the production <code>@lenke/gql</code> engine. Nine shapes — scans, 1-/2-hop traversals, filters, <code>avg</code>, multi-condition <code>WHERE</code>, <code>GROUP BY</code>, <code>ORDER BY … LIMIT</code>, <code>DISTINCT</code> — each verified equal via a shared <code>(count, sum, FNV&nbsp;checksum)</code> fingerprint before timing. The checksums match to the bit, so these are genuinely the same results, faster.</p>
 ${r.meta.queries.map((q) => queryTable(q.id, q.label, q.text)).join('')}
 
 <div class="note"><b>The TS executor's overflow was a bug — now fixed.</b> The first run showed 1-hop@1M and 2-hop@100k <i>failing outright</i>: the executor materialized bindings between clauses and did <code>push(...spread)</code>, overflowing the call stack. It now streams bindings lazily through the fp iterator helpers, so those queries complete and <code>LIMIT n</code> short-circuits (≈0.6 ms over 1M nodes). What's left is throughput, not capability: aggregation still buffers each group to fold it, so a large <code>count(*)</code> is correct but O(rows) — slower than Rust's columnar count, not a wall.</div>
