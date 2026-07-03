@@ -178,12 +178,24 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
   free: () => backend.graphFree(handle),
 });
 
-/** Decode NDJSON bytes into a graph and return a {@link RustGraph} facade. */
+/**
+ * Decode NDJSON bytes into a graph and return a {@link RustGraph} facade.
+ * Empty input yields an empty graph (a cold boot), not an FFI fault — the
+ * boundary can't take a zero-length buffer, so it crosses as one newline,
+ * which the decoder treats as zero elements.
+ */
 export const graphFromNdjson = (
   backend: Backend,
   bytes: Uint8Array,
   opts: { parallel?: boolean } = {},
-): RustGraph => attachGraph(backend, backend.graphFromNdjson(bytes, opts.parallel ?? true));
+): RustGraph =>
+  attachGraph(
+    backend,
+    backend.graphFromNdjson(
+      bytes.byteLength === 0 ? new TextEncoder().encode('\n') : bytes,
+      opts.parallel ?? true,
+    ),
+  );
 
 /**
  * Deserialize a document in a named format (`pg-json | pg-text | graphson | csv |

@@ -1,0 +1,27 @@
+{
+  "name": "@lenke/example-service-map",
+  "private": true,
+  "description": "The vertical slice: a live service-dependency map — SharedWorker-resident lenke store, OPFS warm boot, demand-fill per cluster, optimistic offline edits replicating to a Node WebSocket server.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "bundle": "vite build",
+    "server": "node server.ts",
+    "smoke": "bun test"
+  },
+  "dependencies": {
+    "@lenke/native": "workspace:*",
+    "@lenke/node": "workspace:*",
+    "@lenke/sync": "workspace:*",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "@types/ws": "^8.5.10",
+    "vite": "8.1.0"
+  }
+}

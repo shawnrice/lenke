@@ -66,8 +66,12 @@ export type SyncEngineOptions = {
   upstream?: {
     push: (write: GqlWrite) => Promise<void>;
   };
-  /** Write-back retry policy: `attempts` tries, `baseMs * 2^n` between them. */
-  retry?: { attempts?: number; baseMs?: number };
+  /**
+   * Write-back retry policy: `attempts` tries, `baseMs * 2^n` between them,
+   * capped at `maxMs` (default 30s) so long outages back off politely instead
+   * of exploding the wait.
+   */
+  retry?: { attempts?: number; baseMs?: number; maxMs?: number };
   /** A write exhausted its retries and was dropped from the queue. */
   onWriteError?: (write: GqlWrite, error: unknown) => void;
   /** A collection load failed (state → 'error'; the next demand re-triggers). */
@@ -106,6 +110,7 @@ export const createSyncEngine = (options: SyncEngineOptions): SyncEngine => {
   const collections = options.collections ?? {};
   const attempts = options.retry?.attempts ?? 5;
   const baseMs = options.retry?.baseMs ?? 250;
+  const maxMs = options.retry?.maxMs ?? 30_000;
 
   const states = new Map<string, CollectionState>();
 
@@ -196,7 +201,7 @@ export const createSyncEngine = (options: SyncEngineOptions): SyncEngine => {
             // hide a dead upstream.
             options.onWriteError?.(write, e);
           } else {
-            await sleep(baseMs * 2 ** attempt);
+            await sleep(Math.min(maxMs, baseMs * 2 ** attempt));
           }
         }
       }
