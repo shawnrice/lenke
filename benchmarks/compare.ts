@@ -273,10 +273,10 @@ for (const n of SIZES) {
     rust.encodeBytes(rh);
   });
   const tsDisk = safeBench(reps, () => {
-    writeFileSync('/tmp/plg-ts.ndjson', ndjsonCodec.encode(tg));
+    writeFileSync('/tmp/lnk-ts.ndjson', ndjsonCodec.encode(tg));
   });
   const rustDisk = bench(reps, () => {
-    rust.writeNdjson(rh, '/tmp/plg-rust.ndjson');
+    rust.writeNdjson(rh, '/tmp/lnk-rust.ndjson');
   });
   row.ops.serialize = {
     tsString: tsString.ms,

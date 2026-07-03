@@ -1,10 +1,10 @@
 //! C ABI for bun:ffi (and later wasm-bindgen). Exposes a stateful graph handle
-//! (`plg_graph_*`) that owns a decoded columnar graph, so queries / encode run
+//! (`lnk_graph_*`) that owns a decoded columnar graph, so queries / encode run
 //! without re-marshalling the whole graph on each call.
 //!
 //! Buffers passed in are caller-owned and read-only. Buffers handed back
-//! (`plg_encode_ndjson`) are heap-allocated here and must be returned via
-//! `plg_free_buf`. The graph handle must be returned via `plg_graph_free`.
+//! (`lnk_encode_ndjson`) are heap-allocated here and must be returned via
+//! `lnk_free_buf`. The graph handle must be returned via `lnk_graph_free`.
 
 #[cfg(feature = "_fallible-ffi")]
 use crate::error_codes::ErrorCode;
@@ -12,9 +12,9 @@ use crate::graph::Graph;
 use crate::query;
 
 #[no_mangle]
-pub extern "C" fn plg_abi_version() -> u32 {
-    8 // 8: reactive change tracking (plg_graph_version/plg_graph_epoch); 7: codecs
-      //    (plg_serialize/plg_deserialize); 6: inbound allocator; 5: Gremlin; 4: Arrow
+pub extern "C" fn lnk_abi_version() -> u32 {
+    8 // 8: reactive change tracking (lnk_graph_version/lnk_graph_epoch); 7: codecs
+      //    (lnk_serialize/lnk_deserialize); 6: inbound allocator; 5: Gremlin; 4: Arrow
 }
 
 // ---------- inbound allocator (wasm linear memory) ----------
@@ -22,17 +22,17 @@ pub extern "C" fn plg_abi_version() -> u32 {
 // Over bun:ffi, JS hands us a pointer to a JS-owned buffer and we read it in
 // place. In a browser there is only wasm linear memory: JS cannot point at its
 // own heap, it must first copy bytes *into* the module's memory. These two
-// exports are that inbound path — JS calls `plg_alloc(len)`, writes the query /
-// NDJSON bytes into the returned offset, then passes (ptr, len) to any `plg_*`
+// exports are that inbound path — JS calls `lnk_alloc(len)`, writes the query /
+// NDJSON bytes into the returned offset, then passes (ptr, len) to any `lnk_*`
 // symbol exactly as the native binding does. They are the inverse of
-// `plg_free_buf` (which frees buffers we hand *out*); same one-ABI-two-backends
+// `lnk_free_buf` (which frees buffers we hand *out*); same one-ABI-two-backends
 // design. Harmless on native, so unconditionally exported.
 
 /// Allocate `len` bytes inside the module and return a pointer the caller fills.
-/// Free it with `plg_dealloc(ptr, len)` (or pass ownership to a `plg_*` call
+/// Free it with `lnk_dealloc(ptr, len)` (or pass ownership to a `lnk_*` call
 /// that consumes it). Returns null for `len == 0`.
 #[no_mangle]
-pub extern "C" fn plg_alloc(len: usize) -> *mut u8 {
+pub extern "C" fn lnk_alloc(len: usize) -> *mut u8 {
     if len == 0 {
         return std::ptr::null_mut();
     }
@@ -42,13 +42,13 @@ pub extern "C" fn plg_alloc(len: usize) -> *mut u8 {
     ptr
 }
 
-/// Free a buffer obtained from `plg_alloc`. `len` must be the same value passed
-/// to `plg_alloc`.
+/// Free a buffer obtained from `lnk_alloc`. `len` must be the same value passed
+/// to `lnk_alloc`.
 ///
 /// # Safety
-/// `ptr`/`len` must come from a prior `plg_alloc` call and not be freed twice.
+/// `ptr`/`len` must come from a prior `lnk_alloc` call and not be freed twice.
 #[no_mangle]
-pub unsafe extern "C" fn plg_dealloc(ptr: *mut u8, len: usize) {
+pub unsafe extern "C" fn lnk_dealloc(ptr: *mut u8, len: usize) {
     if !ptr.is_null() && len != 0 {
         drop(Vec::from_raw_parts(ptr, 0, len));
     }
@@ -62,7 +62,7 @@ pub unsafe extern "C" fn plg_dealloc(ptr: *mut u8, len: usize) {
 /// `ptr`/`len` must describe valid UTF-8 NDJSON. Returns null on bad UTF-8.
 #[cfg(feature = "ndjson")]
 #[no_mangle]
-pub unsafe extern "C" fn plg_graph_from_ndjson(
+pub unsafe extern "C" fn lnk_graph_from_ndjson(
     ptr: *const u8,
     len: usize,
     parallel: u32,
@@ -95,9 +95,9 @@ pub unsafe extern "C" fn plg_graph_from_ndjson(
 }
 
 /// # Safety
-/// `g` must be a handle from `plg_graph_from_ndjson` (or null).
+/// `g` must be a handle from `lnk_graph_from_ndjson` (or null).
 #[no_mangle]
-pub unsafe extern "C" fn plg_graph_free(g: *mut Graph) {
+pub unsafe extern "C" fn lnk_graph_free(g: *mut Graph) {
     if !g.is_null() {
         drop(Box::from_raw(g));
     }
@@ -106,7 +106,7 @@ pub unsafe extern "C" fn plg_graph_free(g: *mut Graph) {
 /// # Safety
 /// `g` must be a valid graph handle.
 #[no_mangle]
-pub unsafe extern "C" fn plg_graph_vertex_count(g: *const Graph) -> u64 {
+pub unsafe extern "C" fn lnk_graph_vertex_count(g: *const Graph) -> u64 {
     if g.is_null() {
         return 0;
     }
@@ -116,7 +116,7 @@ pub unsafe extern "C" fn plg_graph_vertex_count(g: *const Graph) -> u64 {
 /// # Safety
 /// `g` must be a valid graph handle.
 #[no_mangle]
-pub unsafe extern "C" fn plg_graph_edge_count(g: *const Graph) -> u64 {
+pub unsafe extern "C" fn lnk_graph_edge_count(g: *const Graph) -> u64 {
     if g.is_null() {
         return 0;
     }
@@ -130,7 +130,7 @@ pub unsafe extern "C" fn plg_graph_edge_count(g: *const Graph) -> u64 {
 /// # Safety
 /// `g` must be a valid graph handle.
 #[no_mangle]
-pub unsafe extern "C" fn plg_graph_version(g: *const Graph) -> u64 {
+pub unsafe extern "C" fn lnk_graph_version(g: *const Graph) -> u64 {
     if g.is_null() {
         return 0;
     }
@@ -143,7 +143,7 @@ pub unsafe extern "C" fn plg_graph_version(g: *const Graph) -> u64 {
 /// # Safety
 /// `g` valid; `name_ptr`/`name_len` valid UTF-8.
 #[no_mangle]
-pub unsafe extern "C" fn plg_graph_epoch(
+pub unsafe extern "C" fn lnk_graph_epoch(
     g: *const Graph,
     name_ptr: *const u8,
     name_len: usize,
@@ -163,7 +163,7 @@ pub unsafe extern "C" fn plg_graph_epoch(
 /// # Safety
 /// `g` valid; `q_ptr`/`q_len` valid UTF-8; out pointers writable.
 #[no_mangle]
-pub unsafe extern "C" fn plg_query(
+pub unsafe extern "C" fn lnk_query(
     g: *const Graph,
     q_ptr: *const u8,
     q_len: usize,
@@ -197,7 +197,7 @@ pub unsafe extern "C" fn plg_query(
 /// `g` valid; `q_ptr`/`q_len` valid UTF-8; out arrays sized to the number of
 /// newline-separated queries.
 #[no_mangle]
-pub unsafe extern "C" fn plg_query_batch(
+pub unsafe extern "C" fn lnk_query_batch(
     g: *const Graph,
     q_ptr: *const u8,
     q_len: usize,
@@ -232,11 +232,11 @@ pub unsafe extern "C" fn plg_query_batch(
 
 /// Parse + run a query and return the *real* result rows as a JSON document
 /// (`{"columns":[...],"rows":[[...]]}`). The buffer is heap-allocated here;
-/// the caller must return it via `plg_free_buf` with the written length. The
+/// the caller must return it via `lnk_free_buf` with the written length. The
 /// byte length is written to `out_len`. Returns null on a parse/null/UTF-8
 /// error (and leaves `out_len` untouched).
 ///
-/// This is the row-returning counterpart to `plg_query` (which only yields the
+/// This is the row-returning counterpart to `lnk_query` (which only yields the
 /// `(count, sum, checksum)` benchmark fingerprint). JSON is the carrier so the
 /// same symbol serves both bun:ffi and a future wasm-bindgen binding with one
 /// buffer crossing instead of per-cell marshalling. The graph handle is `*mut`
@@ -247,7 +247,7 @@ pub unsafe extern "C" fn plg_query_batch(
 /// UTF-8; `out_len` writable.
 #[cfg(feature = "gql")]
 #[no_mangle]
-pub unsafe extern "C" fn plg_query_rows(
+pub unsafe extern "C" fn lnk_query_rows(
     g: *mut Graph,
     q_ptr: *const u8,
     q_len: usize,
@@ -294,7 +294,7 @@ pub unsafe extern "C" fn plg_query_rows(
 /// Parse + run a query and return the result as an **Apache Arrow** columnar
 /// blob (see [`crate::arrow`]) instead of JSON. The buffer is heap-allocated here
 /// **8-byte aligned** (so the caller's `Float64Array`/`Int32Array` views over the
-/// column buffers are valid) and must be returned via `plg_free_arrow` with the
+/// column buffers are valid) and must be returned via `lnk_free_arrow` with the
 /// written length. The byte length is written to `out_len`. Returns null on a
 /// parse / null / UTF-8 error (and leaves `out_len` untouched).
 ///
@@ -308,7 +308,7 @@ pub unsafe extern "C" fn plg_query_rows(
 /// UTF-8; `out_len` writable.
 #[cfg(feature = "arrow")]
 #[no_mangle]
-pub unsafe extern "C" fn plg_query_arrow(
+pub unsafe extern "C" fn lnk_query_arrow(
     g: *mut Graph,
     q_ptr: *const u8,
     q_len: usize,
@@ -359,14 +359,14 @@ pub unsafe extern "C" fn plg_query_arrow(
     p
 }
 
-/// Free a buffer returned by `plg_query_arrow`. Must use the same `len` that was
+/// Free a buffer returned by `lnk_query_arrow`. Must use the same `len` that was
 /// written to `out_len` (the allocation is 8-byte aligned).
 ///
 /// # Safety
-/// `ptr`/`len` must come from `plg_query_arrow`.
+/// `ptr`/`len` must come from `lnk_query_arrow`.
 #[cfg(feature = "arrow")]
 #[no_mangle]
-pub unsafe extern "C" fn plg_free_arrow(ptr: *mut u8, len: usize) {
+pub unsafe extern "C" fn lnk_free_arrow(ptr: *mut u8, len: usize) {
     if !ptr.is_null() {
         let len = len.max(1);
         std::alloc::dealloc(ptr, std::alloc::Layout::from_size_align(len, 8).unwrap());
@@ -375,7 +375,7 @@ pub unsafe extern "C" fn plg_free_arrow(ptr: *mut u8, len: usize) {
 
 /// Parse + run a **textual Gremlin** query (the Groovy wire form, e.g.
 /// `g.V().has('name','marko').out('knows').values('name')`) and return the
-/// results as a JSON array. Heap-allocated; free with `plg_free_buf`. Byte length
+/// results as a JSON array. Heap-allocated; free with `lnk_free_buf`. Byte length
 /// written to `out_len`. Null on a parse/UTF-8 error (and `out_len` untouched).
 ///
 /// JSON (not Arrow) because Gremlin results are heterogeneous per row — a stream
@@ -385,7 +385,7 @@ pub unsafe extern "C" fn plg_free_arrow(ptr: *mut u8, len: usize) {
 /// `g` valid and exclusively borrowed; `q_ptr`/`q_len` valid UTF-8; `out_len` writable.
 #[cfg(feature = "gremlin")]
 #[no_mangle]
-pub unsafe extern "C" fn plg_gremlin_json(
+pub unsafe extern "C" fn lnk_gremlin_json(
     g: *mut Graph,
     q_ptr: *const u8,
     q_len: usize,
@@ -426,14 +426,14 @@ pub unsafe extern "C" fn plg_gremlin_json(
 
 /// Serialize the graph in a named format — `pg-json | pg-text | graphson | csv |
 /// ndjson` (see [`crate::codec`]). Returns a heap buffer (free with
-/// `plg_free_buf`) and writes its byte length to `out_len`. Null on an unknown
+/// `lnk_free_buf`) and writes its byte length to `out_len`. Null on an unknown
 /// format / null / UTF-8 error.
 ///
 /// # Safety
 /// `g` valid; `fmt_ptr`/`fmt_len` valid UTF-8; `out_len` writable.
 #[cfg(feature = "codecs")]
 #[no_mangle]
-pub unsafe extern "C" fn plg_serialize(
+pub unsafe extern "C" fn lnk_serialize(
     g: *const Graph,
     fmt_ptr: *const u8,
     fmt_len: usize,
@@ -465,14 +465,14 @@ pub unsafe extern "C" fn plg_serialize(
 }
 
 /// Deserialize bytes in a named format into a fresh graph handle (free with
-/// `plg_graph_free`). The format name is the same set as `plg_serialize`. Null on
+/// `lnk_graph_free`). The format name is the same set as `lnk_serialize`. Null on
 /// an unknown format, a parse error, or bad UTF-8.
 ///
 /// # Safety
 /// `ptr`/`len` valid UTF-8; `fmt_ptr`/`fmt_len` valid UTF-8.
 #[cfg(feature = "codecs")]
 #[no_mangle]
-pub unsafe extern "C" fn plg_deserialize(
+pub unsafe extern "C" fn lnk_deserialize(
     ptr: *const u8,
     len: usize,
     fmt_ptr: *const u8,
@@ -508,14 +508,14 @@ pub unsafe extern "C" fn plg_deserialize(
     }
 }
 
-/// Encode the graph to NDJSON. Returns a heap pointer (free with `plg_free_buf`)
+/// Encode the graph to NDJSON. Returns a heap pointer (free with `lnk_free_buf`)
 /// and writes the byte length to `out_len`.
 ///
 /// # Safety
 /// `g` valid; `out_len` writable.
 #[cfg(feature = "ndjson")]
 #[no_mangle]
-pub unsafe extern "C" fn plg_encode_ndjson(g: *const Graph, out_len: *mut usize) -> *mut u8 {
+pub unsafe extern "C" fn lnk_encode_ndjson(g: *const Graph, out_len: *mut usize) -> *mut u8 {
     if g.is_null() {
         return std::ptr::null_mut();
     }
@@ -525,9 +525,9 @@ pub unsafe extern "C" fn plg_encode_ndjson(g: *const Graph, out_len: *mut usize)
 }
 
 /// # Safety
-/// `ptr`/`len` must come from `plg_encode_ndjson`.
+/// `ptr`/`len` must come from `lnk_encode_ndjson`.
 #[no_mangle]
-pub unsafe extern "C" fn plg_free_buf(ptr: *mut u8, len: usize) {
+pub unsafe extern "C" fn lnk_free_buf(ptr: *mut u8, len: usize) {
     if !ptr.is_null() {
         drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len)));
     }
@@ -541,11 +541,11 @@ pub unsafe extern "C" fn plg_free_buf(ptr: *mut u8, len: usize) {
 /// `g` valid; `path_ptr`/`path_len` valid UTF-8.
 ///
 /// Native-only: there is no filesystem in the browser, so this symbol is absent
-/// from the wasm build. Browser callers serialize via `plg_encode_ndjson` and
+/// from the wasm build. Browser callers serialize via `lnk_encode_ndjson` and
 /// persist through the host (download, IndexedDB, …) instead.
 #[cfg(all(feature = "ndjson", not(target_arch = "wasm32")))]
 #[no_mangle]
-pub unsafe extern "C" fn plg_write_ndjson(
+pub unsafe extern "C" fn lnk_write_ndjson(
     g: *const Graph,
     path_ptr: *const u8,
     path_len: usize,

@@ -9,7 +9,7 @@
 - `graph` — the columnar LPG: `Builder`/`NodeRec`/`EdgeRec`/`Value` ingest, typed property `Column`s, dense vertex ids, and optional property indexes. Always compiled.
 - `query` — the fingerprint query subset and the shared `RowSet` result type. Always compiled.
 - `scan` — a SIMD predicate-scan microbenchmark kernel (scalar and NEON `predicate_gt`). Always compiled.
-- `ffi` / `ffi_error` / `error` / `error_codes` — the C-ABI surface (`plg_*` functions over a stateful graph handle) and its error reporting. Always compiled.
+- `ffi` / `ffi_error` / `error` / `error_codes` — the C-ABI surface (`lnk_*` functions over a stateful graph handle) and its error reporting. Always compiled.
 - `gql` — the ISO-GQL engine: `parse`, `prepare`, `Prepared::execute`/`execute_arrow`, and the `eval` types (`Params`, `Val`). Feature-gated (`gql`).
 - `gremlin` — the Gremlin traversal engine (`parse`, `run`/`try_run`, heterogeneous JSON results). Feature-gated (`gremlin`).
 - `ndjson` — the NDJSON load/snapshot codec (`decode`/`decode_serial`/`encode`). Feature-gated (`ndjson`).

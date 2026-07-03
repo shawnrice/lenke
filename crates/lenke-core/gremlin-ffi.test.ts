@@ -1,6 +1,6 @@
 // Proves the textual Gremlin query language crosses the FFI boundary: ship a
 // Gremlin string, parse + execute in Rust, get a JSON result array back. This is
-// the Gremlin analogue of plg_query_rows / plg_query_arrow for GQL.
+// the Gremlin analogue of lnk_query_rows / lnk_query_arrow for GQL.
 //
 // Run: bun test ./crates/lenke-core/gremlin-ffi.test.ts
 import { dlopen, FFIType, ptr, toArrayBuffer } from 'bun:ffi';
@@ -11,16 +11,16 @@ import { describe, expect, test } from 'bun:test';
 import { type NativeSubgraph, subgraphToGraph } from '../../packages/gremlin/src/subgraph.js';
 
 const lib = dlopen(new URL('./target/release/liblenke_core.dylib', import.meta.url).pathname, {
-  plg_graph_from_ndjson: {
+  lnk_graph_from_ndjson: {
     args: [FFIType.ptr, FFIType.u64_fast, FFIType.u32],
     returns: FFIType.ptr,
   },
-  plg_graph_free: { args: [FFIType.ptr], returns: FFIType.void },
-  plg_gremlin_json: {
+  lnk_graph_free: { args: [FFIType.ptr], returns: FFIType.void },
+  lnk_gremlin_json: {
     args: [FFIType.ptr, FFIType.ptr, FFIType.u64_fast, FFIType.ptr],
     returns: FFIType.ptr,
   },
-  plg_free_buf: { args: [FFIType.ptr, FFIType.u64_fast], returns: FFIType.void },
+  lnk_free_buf: { args: [FFIType.ptr, FFIType.u64_fast], returns: FFIType.void },
 });
 
 const modern = [
@@ -41,7 +41,7 @@ const modern = [
 const gremlin = (g: number, query: string): unknown => {
   const q = new TextEncoder().encode(query);
   const outLen = new BigUint64Array(1);
-  const p = lib.symbols.plg_gremlin_json(g, ptr(q), q.byteLength, ptr(outLen));
+  const p = lib.symbols.lnk_gremlin_json(g, ptr(q), q.byteLength, ptr(outLen));
 
   if (!p) {
     throw new Error(`gremlin query failed: ${query}`);
@@ -49,14 +49,14 @@ const gremlin = (g: number, query: string): unknown => {
 
   const len = Number(outLen[0]);
   const json = new TextDecoder().decode(toArrayBuffer(p, 0, len));
-  lib.symbols.plg_free_buf(p, len);
+  lib.symbols.lnk_free_buf(p, len);
 
   return JSON.parse(json);
 };
 
 describe('textual Gremlin over bun:ffi', () => {
   const ndBuf = new TextEncoder().encode(modern);
-  const g = lib.symbols.plg_graph_from_ndjson(ptr(ndBuf), ndBuf.byteLength, 0) as number;
+  const g = lib.symbols.lnk_graph_from_ndjson(ptr(ndBuf), ndBuf.byteLength, 0) as number;
 
   test("marko's friends' names", () => {
     const r = gremlin(g, "g.V().has('name','marko').out('KNOWS').values('name')") as string[];

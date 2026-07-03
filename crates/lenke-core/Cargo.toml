@@ -55,7 +55,7 @@ default = ["full"]
 full = ["gql", "gremlin", "ndjson", "codecs", "arrow", "parallel"]
 
 # Internal marker (leading `_` = not a public knob): enabled by every surface
-# whose `plg_*` FFI fns record a last-error report, so `ffi_error`'s setters gate
+# whose `lnk_*` FFI fns record a last-error report, so `ffi_error`'s setters gate
 # on one `cfg(feature = "_fallible-ffi")` instead of repeating the surface union.
 # arrow→gql and codecs→ndjson pull it in transitively.
 _fallible-ffi = []

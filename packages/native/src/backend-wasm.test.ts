@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 // End-to-end proof of the wasm backend: instantiate the lenke_core.wasm
 // artifact, build a graph from NDJSON, and drive GQL + Gremlin through the same
 // `RustGraph` facade the FFI backend uses. This is the test that proves the
-// linear-memory marshalling (plg_alloc in, copy out) actually works in a JS
+// linear-memory marshalling (lnk_alloc in, copy out) actually works in a JS
 // runtime. Run: bun test packages/native/src/backend-wasm.test.ts
 import { existsSync } from 'node:fs';
 

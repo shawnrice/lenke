@@ -4,33 +4,33 @@ import { assertAbi } from './abi.js';
 import type { Backend, GraphHandle } from './backend.js';
 import { type ErrorReport, parseErrorReport } from './marshal.js';
 
-// The wasm module exports the same `plg_*` C ABI as the native library, but
+// The wasm module exports the same `lnk_*` C ABI as the native library, but
 // everything is 32-bit linear-memory offsets (usize → i32) and u64 returns
 // arrive as BigInt. JS cannot point at its own heap, so inputs are copied into
-// the module's memory via `plg_alloc` first.
+// the module's memory via `lnk_alloc` first.
 type WasmExports = {
   memory: WebAssembly.Memory;
-  plg_abi_version: () => number;
-  plg_alloc: (len: number) => number;
-  plg_dealloc: (ptr: number, len: number) => void;
-  plg_graph_from_ndjson: (ptr: number, len: number, parallel: number) => number;
-  plg_graph_free: (h: number) => void;
-  plg_graph_vertex_count: (h: number) => bigint;
-  plg_graph_edge_count: (h: number) => bigint;
-  plg_graph_version: (h: number) => bigint;
-  plg_graph_epoch: (h: number, name: number, nameLen: number) => bigint;
-  plg_query_rows: (h: number, q: number, qlen: number, outLen: number) => number;
-  plg_query_arrow: (h: number, q: number, qlen: number, outLen: number) => number;
-  plg_gremlin_json: (h: number, q: number, qlen: number, outLen: number) => number;
-  plg_encode_ndjson: (h: number, outLen: number) => number;
-  plg_serialize: (h: number, fmt: number, fmtLen: number, outLen: number) => number;
-  plg_deserialize: (ptr: number, len: number, fmt: number, fmtLen: number) => number;
-  plg_free_buf: (ptr: number, len: number) => void;
-  plg_free_arrow: (ptr: number, len: number) => void;
+  lnk_abi_version: () => number;
+  lnk_alloc: (len: number) => number;
+  lnk_dealloc: (ptr: number, len: number) => void;
+  lnk_graph_from_ndjson: (ptr: number, len: number, parallel: number) => number;
+  lnk_graph_free: (h: number) => void;
+  lnk_graph_vertex_count: (h: number) => bigint;
+  lnk_graph_edge_count: (h: number) => bigint;
+  lnk_graph_version: (h: number) => bigint;
+  lnk_graph_epoch: (h: number, name: number, nameLen: number) => bigint;
+  lnk_query_rows: (h: number, q: number, qlen: number, outLen: number) => number;
+  lnk_query_arrow: (h: number, q: number, qlen: number, outLen: number) => number;
+  lnk_gremlin_json: (h: number, q: number, qlen: number, outLen: number) => number;
+  lnk_encode_ndjson: (h: number, outLen: number) => number;
+  lnk_serialize: (h: number, fmt: number, fmtLen: number, outLen: number) => number;
+  lnk_deserialize: (ptr: number, len: number, fmt: number, fmtLen: number) => number;
+  lnk_free_buf: (ptr: number, len: number) => void;
+  lnk_free_arrow: (ptr: number, len: number) => void;
   // Exported unconditionally by the crate (the reader isn't feature-gated), so
   // the wasm backend can read the same structured last-error the FFI backend
   // does — error-code parity across both backends.
-  plg_last_error_json: (outLen: number) => number;
+  lnk_last_error_json: (outLen: number) => number;
 };
 
 const encoder = new TextEncoder();
@@ -70,7 +70,7 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
   const instance = await instantiate(source);
   const ex = instance.exports as unknown as WasmExports;
 
-  const abiVersion = ex.plg_abi_version();
+  const abiVersion = ex.lnk_abi_version();
   assertAbi(abiVersion);
 
   // memory.buffer is replaced whenever the heap grows, so views must be fresh
@@ -79,7 +79,7 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
   const dv = (): DataView => new DataView(ex.memory.buffer);
 
   const writeBytes = (bytes: Uint8Array): number => {
-    const p = ex.plg_alloc(bytes.byteLength);
+    const p = ex.lnk_alloc(bytes.byteLength);
     u8().set(bytes, p);
 
     return p;
@@ -108,10 +108,10 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
   // into a fresh linear-memory buffer (which can grow the heap), so views are
   // taken fresh after the call. Returns null when nothing is pending.
   const readLastError = (): ErrorReport | null => {
-    const outLenPtr = ex.plg_alloc(4);
+    const outLenPtr = ex.lnk_alloc(4);
 
     try {
-      const errPtr = ex.plg_last_error_json(outLenPtr);
+      const errPtr = ex.lnk_last_error_json(outLenPtr);
 
       if (!errPtr) {
         return null;
@@ -119,11 +119,11 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
 
       const len = dv().getUint32(outLenPtr, true);
       const json = decoder.decode(readBytes(errPtr, len, 'last-error'));
-      ex.plg_free_buf(errPtr, len);
+      ex.lnk_free_buf(errPtr, len);
 
       return parseErrorReport(json);
     } finally {
-      ex.plg_dealloc(outLenPtr, 4);
+      ex.lnk_dealloc(outLenPtr, 4);
     }
   };
 
@@ -155,7 +155,7 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
   ): Uint8Array => {
     const q = query === null ? null : encoder.encode(query);
     const qPtr = q ? writeBytes(q) : 0;
-    const outLenPtr = ex.plg_alloc(4);
+    const outLenPtr = ex.lnk_alloc(4);
 
     try {
       const resPtr = q
@@ -173,10 +173,10 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
       return copy;
     } finally {
       if (qPtr) {
-        ex.plg_dealloc(qPtr, q!.byteLength);
+        ex.lnk_dealloc(qPtr, q!.byteLength);
       }
 
-      ex.plg_dealloc(outLenPtr, 4);
+      ex.lnk_dealloc(outLenPtr, 4);
     }
   };
 
@@ -187,7 +187,7 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
       const p = writeBytes(bytes);
 
       try {
-        const h = ex.plg_graph_from_ndjson(p, bytes.byteLength, parallel ? 1 : 0);
+        const h = ex.lnk_graph_from_ndjson(p, bytes.byteLength, parallel ? 1 : 0);
 
         if (!h) {
           return fail('graphFromNdjson', ErrorCode.InvalidJson);
@@ -195,45 +195,45 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
 
         return h;
       } finally {
-        ex.plg_dealloc(p, bytes.byteLength);
+        ex.lnk_dealloc(p, bytes.byteLength);
       }
     },
-    graphFree: (handle) => ex.plg_graph_free(handle),
-    vertexCount: (handle) => Number(ex.plg_graph_vertex_count(handle)),
-    edgeCount: (handle) => Number(ex.plg_graph_edge_count(handle)),
-    version: (handle) => Number(ex.plg_graph_version(handle)),
+    graphFree: (handle) => ex.lnk_graph_free(handle),
+    vertexCount: (handle) => Number(ex.lnk_graph_vertex_count(handle)),
+    edgeCount: (handle) => Number(ex.lnk_graph_edge_count(handle)),
+    version: (handle) => Number(ex.lnk_graph_version(handle)),
     epoch: (handle, name) => {
       const n = encoder.encode(name);
       const p = writeBytes(n);
 
       try {
-        return Number(ex.plg_graph_epoch(handle, p, n.byteLength));
+        return Number(ex.lnk_graph_epoch(handle, p, n.byteLength));
       } finally {
-        ex.plg_dealloc(p, n.byteLength);
+        ex.lnk_dealloc(p, n.byteLength);
       }
     },
 
     queryRows: (handle, query) =>
-      takeBuf(handle, query, ex.plg_query_rows, ex.plg_free_buf, 'query'),
+      takeBuf(handle, query, ex.lnk_query_rows, ex.lnk_free_buf, 'query'),
     queryArrow: (handle, query) =>
-      takeBuf(handle, query, ex.plg_query_arrow, ex.plg_free_arrow, 'queryArrow'),
+      takeBuf(handle, query, ex.lnk_query_arrow, ex.lnk_free_arrow, 'queryArrow'),
     gremlinJson: (handle, query) =>
-      takeBuf(handle, query, ex.plg_gremlin_json, ex.plg_free_buf, 'gremlin'),
+      takeBuf(handle, query, ex.lnk_gremlin_json, ex.lnk_free_buf, 'gremlin'),
 
     // encode takes no query string: pass null and call with (handle, outLen).
     encodeNdjson: (handle) =>
       takeBuf(
         handle,
         null,
-        (h, _q, _qlen, outLen) => ex.plg_encode_ndjson(h, outLen),
-        ex.plg_free_buf,
+        (h, _q, _qlen, outLen) => ex.lnk_encode_ndjson(h, outLen),
+        ex.lnk_free_buf,
         'encodeNdjson',
       ),
 
     // serialize has the same (handle, string, outLen) shape as a query: the
     // format name rides the "query" slot.
     serialize: (handle, format) =>
-      takeBuf(handle, format, ex.plg_serialize, ex.plg_free_buf, `serialize(${format})`),
+      takeBuf(handle, format, ex.lnk_serialize, ex.lnk_free_buf, `serialize(${format})`),
 
     deserialize: (input, format) => {
       const f = encoder.encode(format);
@@ -241,7 +241,7 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
       const fPtr = writeBytes(f);
 
       try {
-        const h = ex.plg_deserialize(inPtr, input.byteLength, fPtr, f.byteLength);
+        const h = ex.lnk_deserialize(inPtr, input.byteLength, fPtr, f.byteLength);
 
         if (!h) {
           return fail(`deserialize(${format})`, ErrorCode.UnknownFormat);
@@ -249,8 +249,8 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
 
         return h;
       } finally {
-        ex.plg_dealloc(inPtr, input.byteLength);
-        ex.plg_dealloc(fPtr, f.byteLength);
+        ex.lnk_dealloc(inPtr, input.byteLength);
+        ex.lnk_dealloc(fPtr, f.byteLength);
       }
     },
   };

@@ -1,9 +1,9 @@
 /**
  * The C-ABI version this package is built against. Both backends call
- * `plg_abi_version()` on load and assert the loaded artifact matches — cheap
+ * `lnk_abi_version()` on load and assert the loaded artifact matches — cheap
  * insurance against a stale `.dylib`/`.wasm` whose symbol shapes have drifted.
  *
- * Bump in lockstep with `plg_abi_version()` in `crates/lenke-core/src/ffi.rs`.
+ * Bump in lockstep with `lnk_abi_version()` in `crates/lenke-core/src/ffi.rs`.
  */
 export const ABI_VERSION = 8;
 

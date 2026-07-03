@@ -4,7 +4,7 @@
  * its own memory marshalling:
  *   - the FFI backend hands the crate a pointer to a JS-owned buffer and reads
  *     results in place (then frees the crate-owned result buffer);
- *   - the wasm backend copies bytes into linear memory via `plg_alloc`, calls,
+ *   - the wasm backend copies bytes into linear memory via `lnk_alloc`, calls,
  *     then copies results back out.
  *
  * A graph handle is opaque: a native pointer or a wasm linear-memory offset,
@@ -13,7 +13,7 @@
 export type GraphHandle = number;
 
 export type Backend = {
-  /** Value of `plg_abi_version()` for the loaded artifact. */
+  /** Value of `lnk_abi_version()` for the loaded artifact. */
   readonly abiVersion: number;
 
   /** Decode NDJSON bytes into a graph; returns an owning handle. */

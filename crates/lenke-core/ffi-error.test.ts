@@ -1,5 +1,5 @@
-// Proves the out-of-band error channel: a failing plg_* call returns its null
-// sentinel, and plg_last_error_json hands back a {code,message,details} report
+// Proves the out-of-band error channel: a failing lnk_* call returns its null
+// sentinel, and lnk_last_error_json hands back a {code,message,details} report
 // carrying the *shared* ErrorCode (E_SYNTAX et al.) — the same vocabulary the TS
 // packages throw. Also pins the two safety properties: take-on-read (a failure
 // is reported once) and clear-on-entry (a success wipes any stale error), and
@@ -10,34 +10,34 @@ import { dlopen, FFIType, ptr, toArrayBuffer } from 'bun:ffi';
 import { describe, expect, test } from 'bun:test';
 
 const lib = dlopen(new URL('./target/release/liblenke_core.dylib', import.meta.url).pathname, {
-  plg_graph_from_ndjson: {
+  lnk_graph_from_ndjson: {
     args: [FFIType.ptr, FFIType.u64_fast, FFIType.u32],
     returns: FFIType.ptr,
   },
-  plg_graph_free: { args: [FFIType.ptr], returns: FFIType.void },
-  plg_query_rows: {
+  lnk_graph_free: { args: [FFIType.ptr], returns: FFIType.void },
+  lnk_query_rows: {
     args: [FFIType.ptr, FFIType.ptr, FFIType.u64_fast, FFIType.ptr],
     returns: FFIType.ptr,
   },
-  plg_query_arrow: {
+  lnk_query_arrow: {
     args: [FFIType.ptr, FFIType.ptr, FFIType.u64_fast, FFIType.ptr],
     returns: FFIType.ptr,
   },
-  plg_gremlin_json: {
+  lnk_gremlin_json: {
     args: [FFIType.ptr, FFIType.ptr, FFIType.u64_fast, FFIType.ptr],
     returns: FFIType.ptr,
   },
-  plg_serialize: {
+  lnk_serialize: {
     args: [FFIType.ptr, FFIType.ptr, FFIType.u64_fast, FFIType.ptr],
     returns: FFIType.ptr,
   },
-  plg_deserialize: {
+  lnk_deserialize: {
     args: [FFIType.ptr, FFIType.u64_fast, FFIType.ptr, FFIType.u64_fast],
     returns: FFIType.ptr,
   },
-  plg_free_buf: { args: [FFIType.ptr, FFIType.u64_fast], returns: FFIType.void },
-  plg_free_arrow: { args: [FFIType.ptr, FFIType.u64_fast], returns: FFIType.void },
-  plg_last_error_json: { args: [FFIType.ptr], returns: FFIType.ptr },
+  lnk_free_buf: { args: [FFIType.ptr, FFIType.u64_fast], returns: FFIType.void },
+  lnk_free_arrow: { args: [FFIType.ptr, FFIType.u64_fast], returns: FFIType.void },
+  lnk_last_error_json: { args: [FFIType.ptr], returns: FFIType.ptr },
 });
 
 const enc = new TextEncoder();
@@ -48,7 +48,7 @@ type Report = { code: string; message: string; details: { pos?: number } | null 
 // Retrieve + clear the crate's last error (null when none is pending).
 const lastError = (): Report | null => {
   const outLen = new BigUint64Array(1);
-  const p = lib.symbols.plg_last_error_json(ptr(outLen));
+  const p = lib.symbols.lnk_last_error_json(ptr(outLen));
 
   if (!p) {
     return null;
@@ -56,7 +56,7 @@ const lastError = (): Report | null => {
 
   const len = Number(outLen[0]);
   const json = dec.decode(new Uint8Array(toArrayBuffer(p, 0, len)).slice());
-  lib.symbols.plg_free_buf(p, len);
+  lib.symbols.lnk_free_buf(p, len);
 
   return JSON.parse(json) as Report;
 };
@@ -65,20 +65,20 @@ const queryRows = (g: number, q: string): number => {
   const qb = enc.encode(q);
   const outLen = new BigUint64Array(1);
 
-  return lib.symbols.plg_query_rows(g, ptr(qb), qb.byteLength, ptr(outLen)) as number;
+  return lib.symbols.lnk_query_rows(g, ptr(qb), qb.byteLength, ptr(outLen)) as number;
 };
 
 const queryArrow = (g: number, q: string): number => {
   const qb = enc.encode(q);
   const outLen = new BigUint64Array(1);
 
-  return lib.symbols.plg_query_arrow(g, ptr(qb), qb.byteLength, ptr(outLen)) as number;
+  return lib.symbols.lnk_query_arrow(g, ptr(qb), qb.byteLength, ptr(outLen)) as number;
 };
 
 describe('FFI error channel', () => {
   const nd = '{"type":"node","id":"a","labels":["P"],"properties":{"name":"marko","age":29}}';
   const ndBuf = enc.encode(nd);
-  const g = lib.symbols.plg_graph_from_ndjson(ptr(ndBuf), ndBuf.byteLength, 0) as number;
+  const g = lib.symbols.lnk_graph_from_ndjson(ptr(ndBuf), ndBuf.byteLength, 0) as number;
 
   test('a DELETE of a connected vertex without DETACH carries E_INVALID_GRAPH_OP', () => {
     // A two-node, one-edge graph: deleting a connected vertex without DETACH is
@@ -89,7 +89,7 @@ describe('FFI error channel', () => {
       '{"type":"edge","from":"x","to":"y","labels":["R"],"properties":{}}',
     ].join('\n');
     const b = enc.encode(nd2);
-    const g2 = lib.symbols.plg_graph_from_ndjson(ptr(b), b.byteLength, 0) as number;
+    const g2 = lib.symbols.lnk_graph_from_ndjson(ptr(b), b.byteLength, 0) as number;
 
     const res = queryRows(g2, "MATCH (n:P {name:'x'}) DELETE n");
     expect(res).toBeNull();
@@ -117,9 +117,9 @@ describe('FFI error channel', () => {
 
     const qb = enc.encode('MATCH (n:P) RETURN n.name');
     const outLen = new BigUint64Array(1);
-    const ok = lib.symbols.plg_query_rows(g, ptr(qb), qb.byteLength, ptr(outLen)) as number;
+    const ok = lib.symbols.lnk_query_rows(g, ptr(qb), qb.byteLength, ptr(outLen)) as number;
     expect(ok).not.toBeNull(); // success
-    lib.symbols.plg_free_buf(ok, Number(outLen[0])); // free with the real length
+    lib.symbols.lnk_free_buf(ok, Number(outLen[0])); // free with the real length
 
     expect(lastError()).toBeNull(); // the success's begin() cleared the stale error
   });
@@ -133,7 +133,7 @@ describe('FFI error channel', () => {
   test('a Gremlin parse error carries E_SYNTAX', () => {
     const q = enc.encode('g.V(.broken(');
     const outLen = new BigUint64Array(1);
-    const res = lib.symbols.plg_gremlin_json(g, ptr(q), q.byteLength, ptr(outLen));
+    const res = lib.symbols.lnk_gremlin_json(g, ptr(q), q.byteLength, ptr(outLen));
     expect(res).toBeNull();
     expect(lastError()?.code).toBe('E_SYNTAX');
   });
@@ -141,7 +141,7 @@ describe('FFI error channel', () => {
   test('serialize with an unknown format name carries E_UNKNOWN_FORMAT', () => {
     const fmt = enc.encode('no-such-format');
     const outLen = new BigUint64Array(1);
-    const res = lib.symbols.plg_serialize(g, ptr(fmt), fmt.byteLength, ptr(outLen));
+    const res = lib.symbols.lnk_serialize(g, ptr(fmt), fmt.byteLength, ptr(outLen));
     expect(res).toBeNull();
     expect(lastError()?.code).toBe('E_UNKNOWN_FORMAT');
   });
@@ -150,7 +150,7 @@ describe('FFI error channel', () => {
     const i = enc.encode(input);
     const f = enc.encode(format);
 
-    return lib.symbols.plg_deserialize(ptr(i), i.byteLength, ptr(f), f.byteLength) as number;
+    return lib.symbols.lnk_deserialize(ptr(i), i.byteLength, ptr(f), f.byteLength) as number;
   };
 
   test('deserialize: an unknown format name carries E_UNKNOWN_FORMAT', () => {
@@ -190,7 +190,7 @@ describe('FFI error channel', () => {
   test('graphFromNdjson: a nested-object property value carries E_INVALID_VALUE', () => {
     const line = '{"type":"node","id":"a","labels":[],"properties":{"bad":{"x":1}}}';
     const b = enc.encode(line);
-    const h = lib.symbols.plg_graph_from_ndjson(ptr(b), b.byteLength, 0);
+    const h = lib.symbols.lnk_graph_from_ndjson(ptr(b), b.byteLength, 0);
     expect(h).toBeNull();
     expect(lastError()?.code).toBe('E_INVALID_VALUE');
   });

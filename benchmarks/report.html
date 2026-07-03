@@ -704,7 +704,7 @@ MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) RETURN count(*)</pre
 
       <h2>FFI boundary — batching many queries into one crossing</h2>
       <p>
-        The fixed per-call FFI tax is ~4 ns. <code>plg_query_batch</code> runs all the queries in a
+        The fixed per-call FFI tax is ~4 ns. <code>lnk_query_batch</code> runs all the queries in a
         single crossing instead of one each. The verdict: for substantial queries this is a
         <b>wash</b> — the calls are work-bound, not boundary-bound, so the tax is already amortized.
         Batching only pays when you'd otherwise make <i>many cheap</i> crossings (per-element

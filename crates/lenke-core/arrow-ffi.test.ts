@@ -9,16 +9,16 @@ import { dlopen, FFIType, ptr, toArrayBuffer } from 'bun:ffi';
 import { describe, expect, test } from 'bun:test';
 
 const lib = dlopen(new URL('./target/release/liblenke_core.dylib', import.meta.url).pathname, {
-  plg_graph_from_ndjson: {
+  lnk_graph_from_ndjson: {
     args: [FFIType.ptr, FFIType.u64_fast, FFIType.u32],
     returns: FFIType.ptr,
   },
-  plg_graph_free: { args: [FFIType.ptr], returns: FFIType.void },
-  plg_query_arrow: {
+  lnk_graph_free: { args: [FFIType.ptr], returns: FFIType.void },
+  lnk_query_arrow: {
     args: [FFIType.ptr, FFIType.ptr, FFIType.u64_fast, FFIType.ptr],
     returns: FFIType.ptr,
   },
-  plg_free_arrow: { args: [FFIType.ptr, FFIType.u64_fast], returns: FFIType.void },
+  lnk_free_arrow: { args: [FFIType.ptr, FFIType.u64_fast], returns: FFIType.void },
 });
 
 const T_FLOAT64 = 1;
@@ -89,12 +89,12 @@ describe('Arrow columnar result over bun:ffi', () => {
       '{"type":"node","id":"b","labels":["P"],"properties":{"name":"vadas","age":27}}',
     ].join('\n');
     const ndBuf = new TextEncoder().encode(nd);
-    const g = lib.symbols.plg_graph_from_ndjson(ptr(ndBuf), ndBuf.byteLength, 0);
+    const g = lib.symbols.lnk_graph_from_ndjson(ptr(ndBuf), ndBuf.byteLength, 0);
     expect(g).not.toBe(0);
 
     const q = new TextEncoder().encode('MATCH (n:P) RETURN n.name, n.age ORDER BY n.age');
     const outLen = new BigUint64Array(1);
-    const resPtr = lib.symbols.plg_query_arrow(g, ptr(q), q.byteLength, ptr(outLen));
+    const resPtr = lib.symbols.lnk_query_arrow(g, ptr(q), q.byteLength, ptr(outLen));
     expect(resPtr).not.toBe(0);
     const len = Number(outLen[0]);
 
@@ -110,7 +110,7 @@ describe('Arrow columnar result over bun:ffi', () => {
     expect(columns[0].values).toEqual(['vadas', 'marko']); // age-sorted
     expect(columns[1].values).toEqual([27, 29]);
 
-    lib.symbols.plg_free_arrow(resPtr, len);
-    lib.symbols.plg_graph_free(g);
+    lib.symbols.lnk_free_arrow(resPtr, len);
+    lib.symbols.lnk_graph_free(g);
   });
 });
