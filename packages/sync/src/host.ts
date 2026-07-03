@@ -63,12 +63,6 @@ const toWireError = (e: unknown): WireError => {
   return { code: 'Unknown', message: e instanceof Error ? e.message : String(e) };
 };
 
-/** v1 hosts do not evaluate params (no binding exposes GQL params yet). */
-const rejectsParams = (msg: SubscribeMessage | QueryMessage): WireError | null =>
-  msg.params && Object.keys(msg.params).length > 0
-    ? { code: 'Unsupported', message: 'query params are reserved in protocol v1' }
-    : null;
-
 export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost => {
   const { send } = options;
 
@@ -108,18 +102,13 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
   };
 
   const subscribe = (msg: SubscribeMessage): void => {
-    const rejected = rejectsParams(msg);
-
-    if (rejected) {
-      send({ type: 'rows', sub: msg.sub, error: rejected });
-
-      return;
-    }
-
     // Re-subscribing an existing id replaces it (how a windowed grid scrolls).
     drop(msg.sub);
 
-    const live = store.liveQuery(msg.query, { deps: msg.deps ?? inferDeps(msg.query) });
+    const live = store.liveQuery(msg.query, {
+      deps: msg.deps ?? inferDeps(msg.query),
+      params: msg.params,
+    });
     const s: Subscription = { live, last: null, stop: () => {} };
     s.stop = live.subscribe(() => push(msg.sub, s));
     subs.set(msg.sub, s);
@@ -130,16 +119,12 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
   // it is handed, so a write smuggled in a `query` message must still notify
   // this store's subscribers (mutate() is version-gated — pure reads stay silent).
   const query = (msg: QueryMessage): void => {
-    const rejected = rejectsParams(msg);
-
-    if (rejected) {
-      send({ type: 'result', req: msg.req, error: rejected });
-
-      return;
-    }
-
     try {
-      send({ type: 'result', req: msg.req, rows: store.mutate((g) => g.query(msg.query)) });
+      send({
+        type: 'result',
+        req: msg.req,
+        rows: store.mutate((g) => g.query(msg.query, msg.params)),
+      });
     } catch (e) {
       send({ type: 'result', req: msg.req, error: toWireError(e) });
     }
@@ -147,7 +132,7 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
 
   const mutate = (msg: MutateMessage): void => {
     try {
-      store.mutate((g) => g.query(msg.gql));
+      store.mutate((g) => g.query(msg.gql, msg.params));
       send({ type: 'ack', req: msg.req, ok: true });
     } catch (e) {
       send({ type: 'ack', req: msg.req, ok: false, error: toWireError(e) });

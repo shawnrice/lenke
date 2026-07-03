@@ -29,10 +29,15 @@ export type Backend = {
   /** Per-token change epoch (label / edge-type / property-key) for finer invalidation. */
   epoch: (handle: GraphHandle, name: string) => number;
 
-  /** Run a GQL query; returns the `{columns, rows}` JSON document as bytes. */
-  queryRows: (handle: GraphHandle, query: string) => Uint8Array;
-  /** Run a GQL query; returns the Arrow ("ARW1") columnar blob bytes. */
-  queryArrow: (handle: GraphHandle, query: string) => Uint8Array;
+  /**
+   * Run a GQL query; returns the `{columns, rows}` JSON document as bytes.
+   * `params` is an optional pre-serialized flat JSON object of `$name`
+   * bindings — values bind to already-parsed param slots at execute time and
+   * never touch the GQL parser (the injection-safety contract).
+   */
+  queryRows: (handle: GraphHandle, query: string, params?: string) => Uint8Array;
+  /** Run a GQL query; returns the Arrow ("ARW1") columnar blob bytes. Same optional `params`. */
+  queryArrow: (handle: GraphHandle, query: string, params?: string) => Uint8Array;
   /** Run a textual Gremlin query; returns the JSON-array result bytes. */
   gremlinJson: (handle: GraphHandle, query: string) => Uint8Array;
 

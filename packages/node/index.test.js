@@ -36,8 +36,8 @@ const NDJSON = Buffer.from(
 const dec = new TextDecoder();
 const json = (buf) => JSON.parse(dec.decode(buf));
 
-test('abiVersion matches the C ABI (8)', () => {
-  assert.equal(abiVersion(), 8);
+test('abiVersion matches the C ABI (9)', () => {
+  assert.equal(abiVersion(), 9);
 });
 
 test('fromNdjson decodes counts', () => {
@@ -83,9 +83,34 @@ test('encodeNdjson round-trips the data', () => {
 
 // The payoff: the napi addon drives the shared Backend contract, so the whole
 // @lenke/native facade (graphFromNdjson + createStore + liveQuery) runs on Node.
+test('params bind as data, never spliced (injection stays inert)', () => {
+  const g = Graph.fromNdjson(NDJSON);
+  const rows = json(
+    g.query(
+      'MATCH (p:Person) WHERE p.name = $name RETURN p.age',
+      JSON.stringify({ name: 'marko' }),
+    ),
+  );
+  assert.equal(rows.rows.length, 1);
+  assert.equal(rows.rows[0][0], 29);
+
+  const before = g.vertexCount;
+  const hostile = json(
+    g.query(
+      'MATCH (p:Person) WHERE p.name = $name RETURN p.name',
+      JSON.stringify({ name: "' DELETE p RETURN 1 //" }),
+    ),
+  );
+  assert.equal(hostile.rows.length, 0);
+  assert.equal(g.vertexCount, before);
+
+  // Malformed params reject with the coded error, not silent misbehavior.
+  assert.throws(() => g.query('MATCH (p:Person) RETURN p', '{"bad":{"nested":1}}'), /InvalidJson/);
+});
+
 test('createNodeBackend powers the @lenke/native facade + liveQuery', () => {
   const backend = createNodeBackend();
-  assert.equal(backend.abiVersion, 8);
+  assert.equal(backend.abiVersion, 9);
 
   const g = graphFromNdjson(backend, NDJSON);
   const store = createStore(g);

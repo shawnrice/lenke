@@ -199,22 +199,56 @@ suite('@lenke/sync host · protocol v1', () => {
     expect((ack as { error?: { code: string } }).error?.code).toBeDefined();
   });
 
-  test('params are rejected as reserved in v1', () => {
+  test('params bind on subscribe, mutate, and one-shot query', () => {
     const { host, take } = attach(newStore());
     take();
 
+    // A parameterized standing query: bindings are part of its identity.
     host.receive({
       type: 'subscribe',
-      sub: 's',
-      query: 'MATCH (p:Person) RETURN p',
-      params: { x: 1 },
+      sub: 'adults',
+      query: 'MATCH (p:Person) WHERE p.age >= $min RETURN p.name',
+      deps: ['Person', 'age', 'name'],
+      params: { min: 28 },
     });
-    host.receive({ type: 'query', req: 'q', query: 'MATCH (p:Person) RETURN p', params: { x: 1 } });
+    expect(rowsOf(take()[0]).rows).toHaveLength(1); // only marko (29)
 
+    // A parameterized mutation: the value rides params, not spliced GQL.
+    host.receive({
+      type: 'mutate',
+      req: 'm',
+      gql: 'INSERT (:Person {name: $n, age: $a})',
+      params: { n: 'zoe', a: 31 },
+    });
     const msgs = take();
-    expect(rowsOf(msgs[0]).error?.code).toBe('Unsupported');
-    expect(msgs[1]).toMatchObject({ type: 'result', req: 'q', error: { code: 'Unsupported' } });
-    expect(host.subscriptionCount()).toBe(0);
+    expect(msgs.find((m) => m.type === 'ack')).toMatchObject({ ok: true });
+    expect(rowsOf(msgs.find((m) => m.type === 'rows')!).rows).toHaveLength(2);
+
+    // One-shot with bindings.
+    host.receive({
+      type: 'query',
+      req: 'q',
+      query: 'MATCH (p:Person) WHERE p.name = $n RETURN p.age',
+      params: { n: 'zoe' },
+    });
+    expect(take()[0]).toMatchObject({ type: 'result', req: 'q', rows: [{ 'p.age': 31 }] });
+  });
+
+  test('injection-shaped param values are inert over the wire', () => {
+    const store = newStore();
+    const { host, take } = attach(store);
+    take();
+    const before = store.graph.vertexCount;
+
+    host.receive({
+      type: 'query',
+      req: 'q',
+      query: 'MATCH (p:Person) WHERE p.name = $n RETURN p.name',
+      params: { n: "' DETACH DELETE p RETURN 1 //" },
+    });
+
+    expect(take()[0]).toMatchObject({ type: 'result', req: 'q', rows: [] });
+    expect(store.graph.vertexCount).toBe(before);
   });
 
   test('unknown message tags are ignored (forward-compat)', () => {

@@ -23,24 +23,36 @@ export const query = (graph: Graph, text: string, params?: Record<string, unknow
 
 /**
  * Bind a graph and return a runner. Supports both a tagged-template form
- *   gql(g)`MATCH (a:Person) RETURN a.name`
- * and a plain-string form
- *   gql(g)('MATCH (a:Person) RETURN a.name')
+ *   gql(g)`MATCH (a:Person) WHERE a.name = ${name} RETURN a`
+ * and a plain-string form (with optional `$name` bindings)
+ *   gql(g)('MATCH (a:Person) WHERE a.name = $name RETURN a', { name })
+ *
+ * Template `${}` substitutions compile to `$p0…$pn` **bindings** — values bind
+ * to already-parsed param slots at execute time and never touch the parser, so
+ * quotes/operators/keywords in a value stay inert data. (They are NOT spliced
+ * into the query text.) Templates own the `$p<n>` namespace — don't hand-write
+ * `$p0` inside a template that also has `${}` substitutions. This is the same
+ * convention as `@lenke/native`'s `RustGraph.query`, so consumers feel no seam
+ * between engines.
  */
 export const gql = (graph: Graph) => {
-  const run = (text: string): Row[] => execute(parse(text), graph);
-
   return (strings: TemplateStringsArray | string, ...values: unknown[]): Row[] => {
     if (typeof strings === 'string') {
-      return run(strings);
+      return execute(parse(strings), graph, values[0] as Record<string, unknown> | undefined);
     }
 
-    const text = strings.reduce(
-      (acc, part, i) => acc + part + (i < values.length ? String(values[i]) : ''),
-      '',
-    );
+    const params: Record<string, unknown> = {};
+    const text = strings.reduce((acc, part, i) => {
+      if (i >= values.length) {
+        return acc + part;
+      }
 
-    return run(text);
+      params[`p${i}`] = values[i];
+
+      return `${acc + part}$p${i}`;
+    }, '');
+
+    return execute(parse(text), graph, params);
   };
 };
 

@@ -10,12 +10,14 @@ The frontend asks **declaratively** — the primitive is a standing query, not a
 client → host:  subscribe   { sub, query, params?, deps?, window? }
 host → client:  rows        { sub, rows, version, complete }   // now, then on change
 client → host:  unsubscribe { sub }
-client → host:  query       { req, query }                     // one-shot
+client → host:  query       { req, query, params? }            // one-shot
 host → client:  result      { req, rows | error }
-client → host:  mutate      { req, gql }
+client → host:  mutate      { req, gql, params? }
 host → client:  ack         { req, ok, error? }                // UI effect arrives via rows pushes
 host → client:  status      { connected, pendingWrites, protocol }
 ```
+
+`params` is a flat object of `$name` bindings, on every query-carrying message. Values bind engine-side to already-parsed param slots and **never touch the GQL parser** — send values as params; never build query text from user input.
 
 Conformance is **structural**: consumers may write these shapes down independently, with no dependency in either direction. Arrow-buffer frames, row diffs, and resumable subscriptions are extensions — not v1.
 
@@ -50,7 +52,6 @@ Change routing is epoch-driven: any write through `store.mutate` — this connec
 
 ## v1 boundaries (deliberate)
 
-- **`params` is reserved** — no engine binding exposes GQL params yet; hosts answer `Unsupported`. Interpolating params into query text client-side is an injection footgun; wait for the engine surface.
 - **`window` is carried but not interpreted** — re-subscribe with the same `sub` to replace a standing query (that is also how a windowed grid will scroll).
 - **`complete` is always `true`** — it becomes meaningful when the demand-fill sync loop lands (partially-synced collections must distinguish "no results" from "not loaded").
 - **Rows are JSON** — Arrow-buffer negotiation is an extension.

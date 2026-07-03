@@ -20,13 +20,16 @@ export function createNodeBackend() {
   const put = (graph) => {
     const handle = nextHandle++;
     registry.set(handle, graph);
+
     return handle;
   };
   const get = (handle) => {
     const graph = registry.get(handle);
+
     if (graph === undefined) {
       throw new Error(`lenke: invalid graph handle ${handle}`);
     }
+
     return graph;
   };
 
@@ -45,8 +48,10 @@ export function createNodeBackend() {
     version: (handle) => get(handle).version(),
     epoch: (handle, name) => get(handle).epoch(name),
 
-    queryRows: (handle, query) => get(handle).query(query),
-    queryArrow: (handle, query) => get(handle).queryArrow(query),
+    // `params` arrives pre-serialized (a flat JSON object of $name bindings)
+    // per the Backend contract; the addon decodes it crate-side.
+    queryRows: (handle, query, params) => get(handle).query(query, params),
+    queryArrow: (handle, query, params) => get(handle).queryArrow(query, params),
     gremlinJson: (handle, query) => get(handle).gremlin(query),
 
     encodeNdjson: (handle) => get(handle).encodeNdjson(),

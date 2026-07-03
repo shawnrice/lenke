@@ -13,7 +13,8 @@ use crate::query;
 
 #[no_mangle]
 pub extern "C" fn lnk_abi_version() -> u32 {
-    8 // 8: reactive change tracking (lnk_graph_version/lnk_graph_epoch); 7: codecs
+    9 // 9: query params (lnk_query_rows/lnk_query_arrow take a params-JSON doc);
+      // 8: reactive change tracking (lnk_graph_version/lnk_graph_epoch); 7: codecs
       //    (lnk_serialize/lnk_deserialize); 6: inbound allocator; 5: Gremlin; 4: Arrow
 }
 
@@ -230,11 +231,43 @@ pub unsafe extern "C" fn lnk_query_batch(
     i as i64
 }
 
+/// Decode the optional params-JSON argument shared by the query entry points.
+/// A null/empty pointer means "no params". On a decode failure the last-error
+/// report is set and `Err(())` is returned.
+///
+/// # Safety
+/// `p_ptr` is either null or valid for `p_len` bytes of UTF-8.
+#[cfg(feature = "gql")]
+unsafe fn decode_params(p_ptr: *const u8, p_len: usize) -> Result<crate::gql::eval::Params, ()> {
+    if p_ptr.is_null() || p_len == 0 {
+        return Ok(crate::gql::eval::Params::new());
+    }
+    let text = match std::str::from_utf8(std::slice::from_raw_parts(p_ptr, p_len)) {
+        Ok(s) => s,
+        Err(_) => {
+            crate::ffi_error::set_code(ErrorCode::Ffi, "params bytes are not valid UTF-8");
+            return Err(());
+        }
+    };
+    match crate::gql::params_from_json(text) {
+        Ok(p) => Ok(p),
+        Err(e) => {
+            crate::ffi_error::set_code(e.code, &e.message);
+            Err(())
+        }
+    }
+}
+
 /// Parse + run a query and return the *real* result rows as a JSON document
 /// (`{"columns":[...],"rows":[[...]]}`). The buffer is heap-allocated here;
 /// the caller must return it via `lnk_free_buf` with the written length. The
 /// byte length is written to `out_len`. Returns null on a parse/null/UTF-8
 /// error (and leaves `out_len` untouched).
+///
+/// `p_ptr`/`p_len` optionally carry a flat JSON object of `$name` bindings
+/// (see [`crate::gql::params`]); pass null for none. Param values bind to
+/// already-parsed `$name` slots at execute time — they never touch the parser,
+/// which is the injection-safety contract of the whole params surface.
 ///
 /// This is the row-returning counterpart to `lnk_query` (which only yields the
 /// `(count, sum, checksum)` benchmark fingerprint). JSON is the carrier so the
@@ -244,13 +277,15 @@ pub unsafe extern "C" fn lnk_query_batch(
 ///
 /// # Safety
 /// `g` valid and exclusively borrowed for this call; `q_ptr`/`q_len` valid
-/// UTF-8; `out_len` writable.
+/// UTF-8; `p_ptr` null or valid for `p_len` bytes; `out_len` writable.
 #[cfg(feature = "gql")]
 #[no_mangle]
 pub unsafe extern "C" fn lnk_query_rows(
     g: *mut Graph,
     q_ptr: *const u8,
     q_len: usize,
+    p_ptr: *const u8,
+    p_len: usize,
     out_len: *mut usize,
 ) -> *mut u8 {
     crate::ffi_error::begin();
@@ -264,6 +299,9 @@ pub unsafe extern "C" fn lnk_query_rows(
             crate::ffi_error::set_code(ErrorCode::Ffi, "query bytes are not valid UTF-8");
             return std::ptr::null_mut();
         }
+    };
+    let Ok(params) = decode_params(p_ptr, p_len) else {
+        return std::ptr::null_mut();
     };
     // Route to the full GQL engine (the complete ISO-subset port). A parse
     // failure carries its source offset; an execution failure (an unsupported
@@ -279,7 +317,7 @@ pub unsafe extern "C" fn lnk_query_rows(
             return std::ptr::null_mut();
         }
     };
-    let rowset = match parsed.execute(&mut *g, &crate::gql::eval::Params::new()) {
+    let rowset = match parsed.execute(&mut *g, &params) {
         Ok(rs) => rs,
         Err(e) => {
             crate::ffi_error::set_code(e.code, &e.message);
@@ -303,15 +341,20 @@ pub unsafe extern "C" fn lnk_query_rows(
 /// (browser: `apache-arrow` `makeData`; server: bun:ffi typed-array over the
 /// pointer) — no serialize here, no parse there.
 ///
+/// `p_ptr`/`p_len` optionally carry a flat JSON object of `$name` bindings,
+/// exactly as on [`lnk_query_rows`]; pass null for none.
+///
 /// # Safety
 /// `g` valid and exclusively borrowed for this call; `q_ptr`/`q_len` valid
-/// UTF-8; `out_len` writable.
+/// UTF-8; `p_ptr` null or valid for `p_len` bytes; `out_len` writable.
 #[cfg(feature = "arrow")]
 #[no_mangle]
 pub unsafe extern "C" fn lnk_query_arrow(
     g: *mut Graph,
     q_ptr: *const u8,
     q_len: usize,
+    p_ptr: *const u8,
+    p_len: usize,
     out_len: *mut usize,
 ) -> *mut u8 {
     crate::ffi_error::begin();
@@ -325,6 +368,9 @@ pub unsafe extern "C" fn lnk_query_arrow(
             crate::ffi_error::set_code(ErrorCode::Ffi, "query bytes are not valid UTF-8");
             return std::ptr::null_mut();
         }
+    };
+    let Ok(params) = decode_params(p_ptr, p_len) else {
+        return std::ptr::null_mut();
     };
     // The error rides the last-error channel, never this return pointer — so the
     // binary Arrow carrier below stays a pure column blob with no error union.
@@ -341,7 +387,7 @@ pub unsafe extern "C" fn lnk_query_arrow(
     };
     // execute_arrow keeps numeric/bool result columns typed end-to-end (no
     // Val/Value boxing) for the common single-MATCH … RETURN shape.
-    let blob = match parsed.execute_arrow(&mut *g, &crate::gql::eval::Params::new()) {
+    let blob = match parsed.execute_arrow(&mut *g, &params) {
         Ok(b) => b,
         Err(e) => {
             crate::ffi_error::set_code(e.code, &e.message);

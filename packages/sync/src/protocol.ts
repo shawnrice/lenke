@@ -17,13 +17,18 @@
  * client → host:  unsubscribe { sub }
  * client → host:  query       { req, query, params? }            // one-shot
  * host → client:  result      { req, rows | error }
- * client → host:  mutate      { req, gql }
+ * client → host:  mutate      { req, gql, params? }
  * host → client:  ack         { req, ok, error? }                // UI effect arrives via rows pushes
  * host → client:  status      { connected, pendingWrites, protocol }
  * ```
+ *
+ * `params` everywhere is a flat object of `$name` bindings. Values bind to
+ * already-parsed param slots engine-side and never touch the GQL parser — the
+ * wire's injection-safety contract. Send values as params; never build query
+ * text from user input.
  */
 
-import type { Row } from '@lenke/native';
+import type { QueryParams, Row } from '@lenke/native';
 
 /** A failure crossing the wire: the stable code is the contract, the message is free to change. */
 export type WireError = {
@@ -45,10 +50,10 @@ export type SubscribeMessage = {
   type: 'subscribe';
   /** Client-chosen subscription id, unique per connection. */
   sub: string;
-  /** GQL text. */
+  /** GQL text (values belong in `params`, not in the text). */
   query: string;
-  /** Query parameters. Reserved in v1 — hosts reject subscriptions that carry params (see README). */
-  params?: Record<string, unknown>;
+  /** `$name` bindings — part of the standing query's identity. */
+  params?: QueryParams;
   /**
    * Dependency tokens (labels / edge-types / property-keys) for epoch-gated
    * invalidation. Omitted → the host infers them from the query text
@@ -71,8 +76,8 @@ export type QueryMessage = {
   /** Client-chosen request id. */
   req: string;
   query: string;
-  /** Reserved in v1, as on subscribe. */
-  params?: Record<string, unknown>;
+  /** `$name` bindings. */
+  params?: QueryParams;
 };
 
 /**
@@ -83,8 +88,10 @@ export type QueryMessage = {
 export type MutateMessage = {
   type: 'mutate';
   req: string;
-  /** Mutating GQL (`INSERT` / `SET` / `REMOVE` / `DELETE`). */
+  /** Mutating GQL (`INSERT` / `SET` / `REMOVE` / `DELETE`); values ride `params`. */
   gql: string;
+  /** `$name` bindings. */
+  params?: QueryParams;
 };
 
 export type ClientMessage = SubscribeMessage | UnsubscribeMessage | QueryMessage | MutateMessage;

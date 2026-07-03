@@ -84,6 +84,21 @@ describe('GQL: MATCH / WHERE / RETURN', () => {
     const rows = gql(g)`MATCH (p:Person) WHERE p.name = 'vadas' RETURN p.age`;
     expect(rows).toEqual([{ 'p.age': 27 }]);
   });
+
+  test('template substitutions bind as params, never spliced text', () => {
+    const name = 'vadas';
+    const rows = gql(g)`MATCH (p:Person) WHERE p.name = ${name} RETURN p.age`;
+    expect(rows).toEqual([{ 'p.age': 27 }]);
+
+    // Injection-shaped values are inert data: no parse, no clause smuggling.
+    const hostile = "' RETURN p.age //";
+    expect(gql(g)`MATCH (p:Person) WHERE p.name = ${hostile} RETURN p.age`).toEqual([]);
+  });
+
+  test('string form takes an explicit bindings object', () => {
+    const rows = gql(g)('MATCH (p:Person) WHERE p.name = $name RETURN p.age', { name: 'vadas' });
+    expect(rows).toEqual([{ 'p.age': 27 }]);
+  });
 });
 
 describe('GQL: property maps & inline WHERE', () => {

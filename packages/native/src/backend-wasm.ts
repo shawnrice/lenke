@@ -19,8 +19,22 @@ type WasmExports = {
   lnk_graph_edge_count: (h: number) => bigint;
   lnk_graph_version: (h: number) => bigint;
   lnk_graph_epoch: (h: number, name: number, nameLen: number) => bigint;
-  lnk_query_rows: (h: number, q: number, qlen: number, outLen: number) => number;
-  lnk_query_arrow: (h: number, q: number, qlen: number, outLen: number) => number;
+  lnk_query_rows: (
+    h: number,
+    q: number,
+    qlen: number,
+    p: number,
+    plen: number,
+    outLen: number,
+  ) => number;
+  lnk_query_arrow: (
+    h: number,
+    q: number,
+    qlen: number,
+    p: number,
+    plen: number,
+    outLen: number,
+  ) => number;
   lnk_gremlin_json: (h: number, q: number, qlen: number, outLen: number) => number;
   lnk_encode_ndjson: (h: number, outLen: number) => number;
   lnk_serialize: (h: number, fmt: number, fmtLen: number, outLen: number) => number;
@@ -144,23 +158,25 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
     throw new LenkeError(`lenke: ${op} failed`, { code: fallback });
   };
 
-  // Run a buffer-returning call: stage the query string, give the crate a 4-byte
-  // slot for out_len, copy the result back out, then free both crate + input.
+  // Run a buffer-returning call: stage the query string (and optional params
+  // JSON — a zero pointer means "no params" on the crate side), give the crate
+  // a 4-byte slot for out_len, copy the result back out, then free everything.
   const takeBuf = (
     handle: GraphHandle,
     query: string | null,
-    call: (h: number, q: number, qlen: number, outLen: number) => number,
+    params: string | null,
+    call: (h: number, q: number, qlen: number, p: number, plen: number, outLen: number) => number,
     free: (ptr: number, len: number) => void,
     op: string,
   ): Uint8Array => {
     const q = query === null ? null : encoder.encode(query);
+    const pr = params === null ? null : encoder.encode(params);
     const qPtr = q ? writeBytes(q) : 0;
+    const pPtr = pr ? writeBytes(pr) : 0;
     const outLenPtr = ex.lnk_alloc(4);
 
     try {
-      const resPtr = q
-        ? call(handle, qPtr, q.byteLength, outLenPtr)
-        : call(handle, 0, 0, outLenPtr);
+      const resPtr = call(handle, qPtr, q?.byteLength ?? 0, pPtr, pr?.byteLength ?? 0, outLenPtr);
 
       if (!resPtr) {
         return fail(op, ErrorCode.Ffi);
@@ -174,6 +190,10 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
     } finally {
       if (qPtr) {
         ex.lnk_dealloc(qPtr, q!.byteLength);
+      }
+
+      if (pPtr) {
+        ex.lnk_dealloc(pPtr, pr!.byteLength);
       }
 
       ex.lnk_dealloc(outLenPtr, 4);
@@ -213,19 +233,29 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
       }
     },
 
-    queryRows: (handle, query) =>
-      takeBuf(handle, query, ex.lnk_query_rows, ex.lnk_free_buf, 'query'),
-    queryArrow: (handle, query) =>
-      takeBuf(handle, query, ex.lnk_query_arrow, ex.lnk_free_arrow, 'queryArrow'),
+    queryRows: (handle, query, params) =>
+      takeBuf(handle, query, params ?? null, ex.lnk_query_rows, ex.lnk_free_buf, 'query'),
+    queryArrow: (handle, query, params) =>
+      takeBuf(handle, query, params ?? null, ex.lnk_query_arrow, ex.lnk_free_arrow, 'queryArrow'),
+
+    // gremlin takes no params doc: adapt away the unused (p, plen) slots.
     gremlinJson: (handle, query) =>
-      takeBuf(handle, query, ex.lnk_gremlin_json, ex.lnk_free_buf, 'gremlin'),
+      takeBuf(
+        handle,
+        query,
+        null,
+        (h, q, qlen, _p, _plen, outLen) => ex.lnk_gremlin_json(h, q, qlen, outLen),
+        ex.lnk_free_buf,
+        'gremlin',
+      ),
 
     // encode takes no query string: pass null and call with (handle, outLen).
     encodeNdjson: (handle) =>
       takeBuf(
         handle,
         null,
-        (h, _q, _qlen, outLen) => ex.lnk_encode_ndjson(h, outLen),
+        null,
+        (h, _q, _qlen, _p, _plen, outLen) => ex.lnk_encode_ndjson(h, outLen),
         ex.lnk_free_buf,
         'encodeNdjson',
       ),
@@ -233,7 +263,14 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
     // serialize has the same (handle, string, outLen) shape as a query: the
     // format name rides the "query" slot.
     serialize: (handle, format) =>
-      takeBuf(handle, format, ex.lnk_serialize, ex.lnk_free_buf, `serialize(${format})`),
+      takeBuf(
+        handle,
+        format,
+        null,
+        (h, q, qlen, _p, _plen, outLen) => ex.lnk_serialize(h, q, qlen, outLen),
+        ex.lnk_free_buf,
+        `serialize(${format})`,
+      ),
 
     deserialize: (input, format) => {
       const f = encoder.encode(format);

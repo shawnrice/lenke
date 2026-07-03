@@ -37,6 +37,7 @@ export {
   attachGraph,
   graphFromFormat,
   graphFromNdjson,
+  type QueryParams,
   type RustGraph,
   type Row,
 } from './graph.js';

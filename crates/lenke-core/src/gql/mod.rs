@@ -16,6 +16,7 @@
 pub mod ast;
 pub mod eval;
 pub mod lexer;
+pub mod params;
 pub mod parser;
 pub mod plan;
 
@@ -34,4 +35,5 @@ mod tests;
 
 pub use eval::{prepare, Prepared};
 pub use lexer::SyntaxError;
+pub use params::params_from_json;
 pub use parser::parse;

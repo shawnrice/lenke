@@ -18,8 +18,14 @@ const SYMBOLS = {
   lnk_graph_edge_count: { args: [FFIType.ptr], returns: U },
   lnk_graph_version: { args: [FFIType.ptr], returns: U },
   lnk_graph_epoch: { args: [FFIType.ptr, FFIType.ptr, U], returns: U },
-  lnk_query_rows: { args: [FFIType.ptr, FFIType.ptr, U, FFIType.ptr], returns: FFIType.ptr },
-  lnk_query_arrow: { args: [FFIType.ptr, FFIType.ptr, U, FFIType.ptr], returns: FFIType.ptr },
+  lnk_query_rows: {
+    args: [FFIType.ptr, FFIType.ptr, U, FFIType.ptr, U, FFIType.ptr],
+    returns: FFIType.ptr,
+  },
+  lnk_query_arrow: {
+    args: [FFIType.ptr, FFIType.ptr, U, FFIType.ptr, U, FFIType.ptr],
+    returns: FFIType.ptr,
+  },
   lnk_gremlin_json: { args: [FFIType.ptr, FFIType.ptr, U, FFIType.ptr], returns: FFIType.ptr },
   lnk_encode_ndjson: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.ptr },
   lnk_serialize: { args: [FFIType.ptr, FFIType.ptr, U, FFIType.ptr], returns: FFIType.ptr },
@@ -129,21 +135,40 @@ export const createFfiBackend = (libPath: string): Backend => {
       return Number(symbols.lnk_graph_epoch(asPtr(handle), ptr(n), n.byteLength));
     },
 
-    queryRows: (handle, query) => {
+    queryRows: (handle, query, params) => {
       const q = encoder.encode(query);
+      // Params ride their own buffer; null pointer = "no params" on the C side.
+      const p = params === undefined ? null : encoder.encode(params);
 
       return takeBuf(
-        (outLen) => symbols.lnk_query_rows(asPtr(handle), ptr(q), q.byteLength, outLen),
+        (outLen) =>
+          symbols.lnk_query_rows(
+            asPtr(handle),
+            ptr(q),
+            q.byteLength,
+            p ? ptr(p) : null,
+            p?.byteLength ?? 0,
+            outLen,
+          ),
         symbols.lnk_free_buf,
         'query',
       );
     },
 
-    queryArrow: (handle, query) => {
+    queryArrow: (handle, query, params) => {
       const q = encoder.encode(query);
+      const p = params === undefined ? null : encoder.encode(params);
 
       return takeBuf(
-        (outLen) => symbols.lnk_query_arrow(asPtr(handle), ptr(q), q.byteLength, outLen),
+        (outLen) =>
+          symbols.lnk_query_arrow(
+            asPtr(handle),
+            ptr(q),
+            q.byteLength,
+            p ? ptr(p) : null,
+            p?.byteLength ?? 0,
+            outLen,
+          ),
         symbols.lnk_free_arrow,
         'queryArrow',
       );

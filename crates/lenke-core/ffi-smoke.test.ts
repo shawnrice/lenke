@@ -20,7 +20,7 @@ const lib = dlopen(libPath, {
 
 describe('lenke-core over bun:ffi', () => {
   test('abi version probe', () => {
-    expect(lib.symbols.lnk_abi_version()).toBe(8);
+    expect(lib.symbols.lnk_abi_version()).toBe(9);
   });
 
   test('graph round-trips through the C ABI: load ndjson, read counts back', () => {

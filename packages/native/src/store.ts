@@ -1,4 +1,4 @@
-import type { RustGraph, Row } from './graph.js';
+import type { QueryParams, RustGraph, Row } from './graph.js';
 
 /**
  * A framework-agnostic reactive store over a {@link RustGraph}, built for React's
@@ -41,8 +41,12 @@ export type Store = {
    * the graph (decided by the version counter, so a read-only call is silent).
    */
   mutate: <T>(fn: (graph: RustGraph) => T) => T;
-  /** A `useSyncExternalStore`-ready live query, optionally scoped to `deps`. */
-  liveQuery: (text: string, opts?: { deps?: readonly string[] }) => LiveQuery;
+  /**
+   * A `useSyncExternalStore`-ready live query, optionally scoped to `deps`.
+   * `params` are `$name` bindings for the query text — part of the standing
+   * query's identity, bound safely at execute time (never spliced).
+   */
+  liveQuery: (text: string, opts?: { deps?: readonly string[]; params?: QueryParams }) => LiveQuery;
 };
 
 export const createStore = (graph: RustGraph): Store => {
@@ -70,6 +74,7 @@ export const createStore = (graph: RustGraph): Store => {
     },
     liveQuery: (text, opts) => {
       const deps = opts?.deps;
+      const params = opts?.params;
       // -1 is unreachable for a u64 version/epoch, so the first call always primes.
       let seenVersion = -1;
       let seenFingerprint = -1;
@@ -100,7 +105,7 @@ export const createStore = (graph: RustGraph): Store => {
           }
 
           seenFingerprint = fingerprint;
-          cached = graph.query(text);
+          cached = graph.query(text, params);
 
           return cached;
         },

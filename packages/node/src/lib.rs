@@ -30,6 +30,17 @@ fn coded(op: &str, e: CodeError) -> Error {
     )
 }
 
+/// Decode the optional params-JSON argument (a flat `{"name": value}` object of
+/// `$name` bindings) via the crate's strict hand-rolled decoder. Values bind to
+/// already-parsed param slots at execute time — they never touch the GQL
+/// parser, which is the injection-safety contract of the params surface.
+fn decode_params(op: &str, params_json: Option<&str>) -> Result<Params> {
+    match params_json {
+        None => Ok(Params::new()),
+        Some(text) => lenke_core::gql::params_from_json(text).map_err(|e| coded(op, e)),
+    }
+}
+
 /// A decoded, in-memory columnar graph. Owns its `lenke-core` graph; napi frees
 /// it when the JS object is garbage-collected, so there is no explicit free.
 #[napi]
@@ -97,9 +108,11 @@ impl Graph {
     }
 
     /// Run a GQL query; returns the `{columns, rows}` JSON document as bytes.
+    /// `params_json` optionally carries a flat JSON object of `$name` bindings.
     /// `&mut` because a query may mutate (`INSERT`/`SET`/`REMOVE`/`DELETE`).
     #[napi]
-    pub fn query(&mut self, text: String) -> Result<Buffer> {
+    pub fn query(&mut self, text: String, params_json: Option<String>) -> Result<Buffer> {
+        let params = decode_params("query", params_json.as_deref())?;
         let parsed = lenke_core::gql::parse(&text).map_err(|e| {
             Error::new(
                 Status::GenericFailure,
@@ -107,15 +120,17 @@ impl Graph {
             )
         })?;
         let rows = parsed
-            .execute(&mut self.inner, &Params::new())
+            .execute(&mut self.inner, &params)
             .map_err(|e| coded("query", e))?;
 
         Ok(rows.to_json().into_bytes().into())
     }
 
     /// Run a GQL query; returns the Apache Arrow ("ARW1") columnar blob.
+    /// Takes the same optional `params_json` bindings as [`Graph::query`].
     #[napi]
-    pub fn query_arrow(&mut self, text: String) -> Result<Buffer> {
+    pub fn query_arrow(&mut self, text: String, params_json: Option<String>) -> Result<Buffer> {
+        let params = decode_params("queryArrow", params_json.as_deref())?;
         let parsed = lenke_core::gql::parse(&text).map_err(|e| {
             Error::new(
                 Status::GenericFailure,
@@ -123,7 +138,7 @@ impl Graph {
             )
         })?;
         let blob = parsed
-            .execute_arrow(&mut self.inner, &Params::new())
+            .execute_arrow(&mut self.inner, &params)
             .map_err(|e| coded("queryArrow", e))?;
 
         Ok(blob.into())

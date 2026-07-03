@@ -152,6 +152,19 @@ suite('@lenke/native wasm backend', () => {
     g.free();
   });
 
+  test('params bind through linear memory (never spliced into the text)', async () => {
+    const backend = await createWasmBackend(wasmBytes);
+    const g = graphFromNdjson(backend, bytes);
+
+    const rows = g.query`MATCH (n:P) WHERE n.name = ${'marko'} RETURN n.age`;
+    expect(rows).toHaveLength(1);
+
+    // An injection-shaped value stays inert data on the wasm path too.
+    const hostile = g.query`MATCH (n:P) WHERE n.name = ${"' RETURN n //"} RETURN n.name`;
+    expect(hostile).toEqual([]);
+    g.free();
+  });
+
   test('a large insert exercises a memory grow', async () => {
     const backend = await createWasmBackend(wasmBytes);
     // ~5k nodes of NDJSON forces the wasm heap to grow past its initial pages.
