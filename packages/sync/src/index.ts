@@ -9,6 +9,13 @@
  * write-back, OPFS persistence) layers on next.
  */
 
+export {
+  createSyncClient,
+  type ClientLiveQuery,
+  type ClientSnapshot,
+  type SyncClient,
+  type SyncClientOptions,
+} from './client.js';
 export { createSyncHost, type SyncHost, type SyncHostOptions } from './host.js';
 export {
   isClientMessage,

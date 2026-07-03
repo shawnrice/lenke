@@ -50,9 +50,34 @@ self.onmessage = (e) => host.receive(e.data);
 
 Change routing is epoch-driven: any write through `store.mutate` — this connection's, another connection's on the same store, or a future CDC ingest — bumps the graph version; each subscription's epoch-gated snapshot recomputes only if its dependency tokens moved; a push goes out only when the snapshot reference actually changed. The write path never knows subscriptions exist.
 
+## The client
+
+`createSyncClient({ send })` is `liveQuery`'s port-crossing shadow — the registry the UI consumes. Same transport seam as the host:
+
+```ts
+const client = createSyncClient({ send: (m) => ws.send(JSON.stringify(m)) });
+ws.onmessage = (e) => client.receive(JSON.parse(String(e.data)));
+
+// A standing query. N consumers of the same (query, params, deps) share ONE
+// wire subscription; the wire teardown is refcounted.
+const live = client.liveQuery('MATCH (p:Person) WHERE p.age >= $min RETURN p.name', {
+  params: { min: 18 },
+});
+
+// useSyncExternalStore-ready (no React dependency here):
+const { rows, complete, error } = useSyncExternalStore(live.subscribe, live.getSnapshot);
+// `complete` is false until the host answers — render skeletons, not lies.
+
+await client.mutate('INSERT (:Person {name: $n})', { n: 'zoe' }); // resolves on ack
+const rows = await client.query('MATCH (p:Person) RETURN p.name'); // one-shot
+```
+
+Snapshots are referentially stable between pushes. A handle whose refcount hits zero tears down its wire subscription but stays canonical — re-subscribing revives it with a fresh wire sub (React StrictMode's mount dance is safe). Mutation effects arrive through subscription pushes, exactly as if another client had written.
+
 ## v1 boundaries (deliberate)
 
 - **`window` is carried but not interpreted** — re-subscribe with the same `sub` to replace a standing query (that is also how a windowed grid will scroll).
 - **`complete` is always `true`** — it becomes meaningful when the demand-fill sync loop lands (partially-synced collections must distinguish "no results" from "not loaded").
 - **Rows are JSON** — Arrow-buffer negotiation is an extension.
 - **No auth/scoping** — a host serves its store; "the server syncs only what this user may see" is a store-construction concern for the sync loop, not a protocol concern.
+- **No reconnect/resume** — a client is bound to one connection; resumable subscriptions are a protocol extension. On reconnect, build a new client (standing queries are cheap to re-declare).

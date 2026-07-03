@@ -9,6 +9,7 @@ import { existsSync } from 'node:fs';
 import { createStore, graphFromNdjson } from '@lenke/native';
 import { createFfiBackend } from '@lenke/native/ffi';
 
+import { createSyncClient, type ClientSnapshot } from './client.js';
 import { createSyncHost, type SyncHost } from './host.js';
 import type { HostMessage, RowsMessage } from './protocol.js';
 
@@ -132,5 +133,59 @@ suite('@lenke/sync over a real WebSocket', () => {
     expect((result as { rows?: unknown[] }).rows?.length).toBeGreaterThanOrEqual(2);
 
     client.ws.close();
+  });
+
+  // The full stack: createSyncClient (the registry the UI consumes) over a
+  // genuine socket against the same host — subscribe, push-on-remote-write,
+  // params binding, promise-shaped mutate. This is the browser story minus
+  // the browser.
+  test('createSyncClient speaks to the host over a real WebSocket', async () => {
+    const openSocket = (): Promise<WebSocket> =>
+      new Promise((resolve, reject) => {
+        const ws = new WebSocket(`ws://localhost:${server.port}`);
+        ws.onopen = () => resolve(ws);
+        ws.onerror = () => reject(new Error('websocket failed to connect'));
+      });
+
+    const attach = (ws: WebSocket) => {
+      const client = createSyncClient({ send: (m) => ws.send(JSON.stringify(m)) });
+      ws.onmessage = (e) => client.receive(JSON.parse(String(e.data)));
+
+      return client;
+    };
+
+    const alice = attach(await openSocket());
+    const bobWs = await openSocket();
+    const bob = attach(bobWs);
+
+    // Alice stands up a parameterized live query with ONE persistent
+    // subscriber (dropping to zero refs would tear down the wire sub); each
+    // push resolves the waiters queued at that moment.
+    const live = alice.liveQuery('MATCH (p:Person) WHERE p.name = $n RETURN p.name', {
+      params: { n: 'nils' },
+    });
+    const waiters: Array<(s: ClientSnapshot) => void> = [];
+    const stopLive = live.subscribe(() => {
+      for (const w of waiters.splice(0)) {
+        w(live.getSnapshot());
+      }
+    });
+    const nextChange = (): Promise<ClientSnapshot> =>
+      new Promise((resolve) => {
+        waiters.push(resolve);
+      });
+
+    const first = await nextChange();
+    expect(first.complete).toBe(true);
+    expect(first.rows).toEqual([]); // nils doesn't exist yet
+
+    // Bob writes over his socket; Alice's standing query hears it.
+    const changed = nextChange();
+    await bob.mutate('INSERT (:Person {name: $n})', { n: 'nils' });
+    const after = await changed;
+    expect(after.rows).toEqual([{ 'p.name': 'nils' }]);
+
+    stopLive();
+    bobWs.close();
   });
 });
