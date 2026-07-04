@@ -331,6 +331,18 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
         return;
       }
 
+      if (msg.format === 'arrow') {
+        // Columnar blob instead of JSON rows (the client decodes it). Binary
+        // transports only — the transport must carry the Uint8Array.
+        send({
+          type: 'result',
+          req: msg.req,
+          arrow: store.mutate((g) => g.queryArrow(msg.query, msg.params)),
+        });
+
+        return;
+      }
+
       send({
         type: 'result',
         req: msg.req,

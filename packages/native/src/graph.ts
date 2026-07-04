@@ -150,6 +150,71 @@ export const gremlin = (q: string | TemplateStringsArray, ...subs: unknown[]): s
   );
 };
 
+// ARW1 column type tags (mirrors crates/lenke-core/src/arrow.rs).
+const ARW_FLOAT64 = 1;
+const ARW_BOOL = 2;
+const ARW_UTF8 = 3;
+
+/**
+ * Decode an ARW1 columnar blob (from {@link RustGraph.queryArrow} /
+ * `plg_query_arrow`) back into {@link Row}s. The blob is a 24-byte header
+ * (`"ARW1" | version | nrows | ncols`) + `ncols` × 40-byte descriptors + the
+ * referenced Apache-Arrow little-endian buffers; this reads them in place (no
+ * Arrow dependency). Its purpose on the wire: ship/transfer the columnar bytes
+ * instead of JSON rows, and materialize here only when a consumer wants objects.
+ */
+export const decodeArrow = (blob: Uint8Array): Row[] => {
+  const dv = new DataView(blob.buffer, blob.byteOffset, blob.byteLength);
+  const td = new TextDecoder();
+
+  if (blob.length < 24 || td.decode(blob.subarray(0, 4)) !== 'ARW1') {
+    throw new LenkeError('lenke: not an ARW1 arrow blob', { code: ErrorCode.Ffi });
+  }
+
+  const nrows = Number(dv.getBigUint64(8, true));
+  const ncols = Number(dv.getBigUint64(16, true));
+  const rows: Row[] = Array.from({ length: nrows }, () => ({}));
+
+  for (let c = 0; c < ncols; c += 1) {
+    const d = 24 + c * 40;
+    const type = dv.getUint32(d, true);
+    const nameOff = dv.getUint32(d + 8, true);
+    const nameLen = dv.getUint32(d + 12, true);
+    const validityOff = dv.getUint32(d + 16, true);
+    const validityLen = dv.getUint32(d + 20, true);
+    const buf1Off = dv.getUint32(d + 24, true);
+    const buf2Off = dv.getUint32(d + 32, true);
+    const name = td.decode(blob.subarray(nameOff, nameOff + nameLen));
+
+    // LSB-first validity bitmap; length 0 ⇒ every row valid (no nulls).
+    const valid = (i: number): boolean =>
+      validityLen === 0 || (blob[validityOff + (i >> 3)] & (1 << (i & 7))) !== 0;
+
+    for (let i = 0; i < nrows; i += 1) {
+      if (!valid(i)) {
+        rows[i][name] = null;
+        continue;
+      }
+
+      if (type === ARW_FLOAT64) {
+        rows[i][name] = dv.getFloat64(buf1Off + i * 8, true);
+      } else if (type === ARW_BOOL) {
+        rows[i][name] = (blob[buf1Off + (i >> 3)] & (1 << (i & 7))) !== 0;
+      } else if (type === ARW_UTF8) {
+        const start = dv.getInt32(buf1Off + i * 4, true);
+        const end = dv.getInt32(buf1Off + (i + 1) * 4, true);
+        rows[i][name] = td.decode(blob.subarray(buf2Off + start, buf2Off + end));
+      } else {
+        throw new LenkeError(`lenke: arrow column '${name}' has unknown type ${type}`, {
+          code: ErrorCode.Ffi,
+        });
+      }
+    }
+  }
+
+  return rows;
+};
+
 /**
  * An ergonomic handle over a Rust-backed graph. Wraps a {@link Backend} and an
  * opaque graph handle; decodes the JSON/Arrow carriers the crate returns. Call

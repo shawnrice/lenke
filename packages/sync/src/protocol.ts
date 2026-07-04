@@ -113,6 +113,15 @@ export type QueryMessage = {
    * you.)
    */
   lang?: 'gql' | 'gremlin';
+  /**
+   * Result encoding, default `'json'`. `'arrow'` answers with an `arrow`
+   * columnar blob instead of `rows` — smaller on the wire and decodable without
+   * a JSON parse, worth it for large one-shot loads. Requires a **binary-capable
+   * transport** (a Worker `MessagePort`, where the `Uint8Array` also transfers
+   * zero-copy, or a binary WebSocket); a JSON-stringifying transport must keep
+   * `'json'`. GQL only — Gremlin (`lang: 'gremlin'`) answers with `values`.
+   */
+  format?: 'json' | 'arrow';
 };
 
 /**
@@ -185,6 +194,8 @@ export type ResultMessage = {
   req: string;
   /** Rows for a GQL query. */
   rows?: Row[];
+  /** ARW1 columnar blob for a `format: 'arrow'` query — the client decodes it to rows. */
+  arrow?: Uint8Array;
   /** Result values for a `lang: 'gremlin'` query (arbitrary JSON). */
   values?: unknown[];
   error?: WireError;

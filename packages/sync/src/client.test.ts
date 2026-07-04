@@ -317,6 +317,17 @@ suite('@lenke/sync client · registry semantics', () => {
     expect([...(names as string[])].sort()).toEqual(['marko', 'vadas']);
   });
 
+  test('query with format arrow crosses columnar and decodes to identical rows', async () => {
+    const { client, wire } = connect();
+    const q = 'MATCH (p:Person) RETURN p.name, p.age ORDER BY p.name';
+
+    const arrowRows = await client.query(q, undefined, { format: 'arrow' });
+    expect(arrowRows).toEqual(await client.query(q)); // byte-for-byte the JSON result
+
+    const sent = wire.find((m) => m.type === 'query' && m.format === 'arrow');
+    expect(sent).toBeDefined(); // the request really asked for arrow
+  });
+
   test('client.gremlin as a tagged template escapes interpolations — injection stays inert', async () => {
     const { client, store } = connect();
     const before = store.graph.vertexCount;

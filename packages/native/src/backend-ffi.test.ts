@@ -9,7 +9,7 @@ import { ErrorCode, hasErrorCode, isLenkeError } from '@lenke/errors';
 
 import { ABI_VERSION } from './abi.js';
 import { createFfiBackend } from './backend-ffi.js';
-import { escapeGremlin, graphFromFormat, graphFromNdjson, gremlin } from './graph.js';
+import { decodeArrow, escapeGremlin, graphFromFormat, graphFromNdjson, gremlin } from './graph.js';
 
 // The shared-library extension is platform-specific: macOS `.dylib`, Linux
 // `.so`, Windows `.dll`. `build:rust` emits the one for the host.
@@ -105,6 +105,19 @@ suite('@lenke/native FFI backend', () => {
     expect(g.vertexCount).toBe(before); // the graph was NOT dropped
     // A legit value with a quote still round-trips and matches:
     expect(g.gremlin`g.V().has('name', ${'marko'}).count()`).toEqual([1]);
+    g.free();
+  });
+
+  test('decodeArrow round-trips queryArrow back to the same rows, nulls included', () => {
+    const backend = createFfiBackend(LIB);
+    const g = graphFromNdjson(backend, bytes);
+
+    // n.missing is absent on every node → a fully-null column (validity bitmap).
+    const q = 'MATCH (n:P) RETURN n.name, n.age, n.missing ORDER BY n.name';
+    const blob = g.queryArrow(q);
+
+    expect(new TextDecoder().decode(blob.subarray(0, 4))).toBe('ARW1');
+    expect(decodeArrow(blob)).toEqual(g.query(q)); // exact parity with the JSON path
     g.free();
   });
 

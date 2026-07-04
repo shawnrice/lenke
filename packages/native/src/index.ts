@@ -35,6 +35,7 @@ export { ABI_VERSION } from './abi.js';
 export type { Backend, GraphHandle } from './backend.js';
 export {
   attachGraph,
+  decodeArrow,
   escapeGremlin,
   graphFromFormat,
   graphFromNdjson,

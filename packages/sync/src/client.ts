@@ -42,7 +42,7 @@
  */
 
 import { ErrorCode, LenkeError } from '@lenke/errors';
-import { gremlin as buildGremlin, type QueryParams, type Row } from '@lenke/native';
+import { decodeArrow, gremlin as buildGremlin, type QueryParams, type Row } from '@lenke/native';
 
 import { isHostMessage, type ClientMessage, type RowsMessage, type WireError } from './protocol.js';
 
@@ -95,8 +95,12 @@ export type SyncClient = {
       lang?: 'gql' | 'gremlin';
     },
   ) => ClientLiveQuery;
-  /** One-shot GQL query → rows. */
-  query: (query: string, params?: QueryParams) => Promise<Row[]>;
+  /**
+   * One-shot GQL query → rows. Pass `{ format: 'arrow' }` to fetch the result
+   * as a columnar blob and decode it here (smaller wire, no JSON parse) — needs
+   * a binary-capable transport; the returned rows are identical either way.
+   */
+  query: (query: string, params?: QueryParams, opts?: { format?: 'arrow' }) => Promise<Row[]>;
   /**
    * One-shot Gremlin traversal → its JSON result values. Use it as a tagged
    * template to interpolate values safely — each `${v}` is escaped into a
@@ -293,10 +297,10 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
     return entry.handle;
   };
 
-  const query = (text: string, params?: QueryParams): Promise<Row[]> =>
+  const query = (text: string, params?: QueryParams, opts?: { format?: 'arrow' }): Promise<Row[]> =>
     new Promise<Row[]>((resolve, reject) => {
       const req = `q${++nextId}`;
-      const msg: ClientMessage = { type: 'query', req, query: text, params };
+      const msg: ClientMessage = { type: 'query', req, query: text, params, format: opts?.format };
       pending.set(req, { resolve: resolve as (v: never) => void, reject, kind: 'query', msg });
       send(msg);
     });
@@ -426,6 +430,9 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
             p.reject(wireToError(msg.error));
           } else if (p.kind === 'gremlin') {
             (p.resolve as (values: unknown[]) => void)(msg.values ?? []);
+          } else if (msg.arrow) {
+            // format: 'arrow' → decode the columnar blob to rows transparently.
+            (p.resolve as (rows: Row[]) => void)(decodeArrow(msg.arrow));
           } else {
             (p.resolve as (rows: Row[]) => void)(msg.rows ?? []);
           }
