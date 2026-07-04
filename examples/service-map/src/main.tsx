@@ -54,16 +54,15 @@ const BlastRadius = ({ sid }: { sid: string }) => {
   const [affected, setAffected] = useState<string[] | null>(null);
 
   const compute = useCallback(async () => {
-    // The wire is GQL-only and the GQL engine has no variable-length paths
-    // (the worker-side gremlin `repeat(__.in('CALLS'))` can't ride protocol
-    // v1) — so: fixed-depth upstream chains, merged client-side. Finding.
-    const hops = [
-      'MATCH (a:Service)-[:CALLS]->(x:Service) WHERE x.sid = $sid RETURN a.name',
-      'MATCH (a:Service)-[:CALLS]->()-[:CALLS]->(x:Service) WHERE x.sid = $sid RETURN a.name',
-      'MATCH (a:Service)-[:CALLS]->()-[:CALLS]->()-[:CALLS]->(x:Service) WHERE x.sid = $sid RETURN a.name',
-    ];
-    const results = await Promise.all(hops.map((q) => client.query(q, { sid })));
-    setAffected([...new Set(results.flat().map((r) => String(r['a.name'])))].sort());
+    // Everything transitively upstream of the victim, in ONE query: lenke's
+    // GQL has variable-length quantified paths (`->{1,}` = one-or-more CALLS
+    // hops), so the whole blast radius is native — `DISTINCT` collapses the
+    // multiple paths that reach a caller; no client-side hop-merging.
+    const rows = await client.query(
+      'MATCH (a:Service)-[:CALLS]->{1,}(x:Service) WHERE x.sid = $sid RETURN DISTINCT a.name ORDER BY a.name',
+      { sid },
+    );
+    setAffected(rows.map((r) => String(r['a.name'])));
   }, [sid]);
 
   return (

@@ -106,11 +106,12 @@ suite('service-map · Node server over a real socket', () => {
     stop();
   });
 
-  test('the blast-radius chain queries run server-side', async () => {
+  test('the blast-radius traversal runs server-side', async () => {
     // Pick a data-tier service — things call INTO it.
     const [victim] = await client.query("MATCH (s:Service) WHERE s.tier = 'data' RETURN s.sid");
+    // The whole upstream cone in one variable-length GQL query (`->{1,}`).
     const upstream = await client.query(
-      'MATCH (a:Service)-[:CALLS]->(x:Service) WHERE x.sid = $sid RETURN a.sid',
+      'MATCH (a:Service)-[:CALLS]->{1,}(x:Service) WHERE x.sid = $sid RETURN DISTINCT a.sid',
       { sid: victim['s.sid'] },
     );
     expect(upstream.length).toBeGreaterThan(0);
