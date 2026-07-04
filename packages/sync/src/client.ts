@@ -168,6 +168,17 @@ const INITIAL: ClientSnapshot = { rows: EMPTY_ROWS, complete: false };
 /** Canonical, collision-free string for a key column's value (matches the host). */
 const keyOf = (value: unknown): string => JSON.stringify(value) ?? 'null';
 
+/** Same columns, same values — used to keep a row's identity when a re-push doesn't change it. */
+const shallowEqualRow = (a: Row, b: Row): boolean => {
+  const keys = Object.keys(a);
+
+  if (keys.length !== Object.keys(b).length) {
+    return false;
+  }
+
+  return keys.every((k) => Object.is(a[k], b[k]));
+};
+
 type Entry = {
   /** Wire sub id — reassigned when a torn-down handle is revived. */
   sub: string;
@@ -276,10 +287,11 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
     const activate = (): void => {
       entry.sub = `s${++nextId}`;
       bySub.set(entry.sub, entry);
-      // A fresh wire sub means the host diffs from empty — reset our diff base so
-      // the initial (full) diff rebuilds cleanly, while the last snapshot stays
-      // on screen as the stale-but-honest starting point.
-      entry.rowsByKey = undefined;
+      // The retained rows (rowsByKey) are KEPT across a re-subscribe: the fresh
+      // host re-pushes every row as a full patch, and applyDiff keeps unchanged
+      // rows' identity by diffing against this base — so a reconnect (or a
+      // StrictMode remount) doesn't churn the whole list. The last snapshot
+      // stays on screen as the stale-but-honest starting point meanwhile.
       send({
         type: 'subscribe',
         sub: entry.sub,
@@ -328,8 +340,10 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
     });
 
   // Apply a keyed diff (patch / remove / order) onto the entry's retained rows.
-  // Unchanged rows keep their object identity (pulled from the map untouched),
-  // so React list reconciliation skips them; only patched rows are new objects.
+  // Unchanged rows keep their object identity, so React list reconciliation
+  // skips them — including across a reconnect, where the fresh host re-pushes
+  // every row as a full patch: a patch that doesn't actually change a row keeps
+  // the old object (see the shallow-equal check below).
   const applyDiff = (entry: Entry, msg: RowsMessage): void => {
     const key = entry.key as string;
     const structural =
@@ -357,16 +371,27 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
     for (const p of msg.patch ?? []) {
       const ck = keyOf(p.key);
       const prev = map.get(ck);
-      map.set(ck, prev ? { ...prev, ...p.set } : { ...p.set });
+      const merged = prev ? { ...prev, ...p.set } : { ...p.set };
+      // Reuse the prior object when the patch changed nothing (a reconnect
+      // re-push of an untouched row) so its identity survives the reconnect.
+      map.set(ck, prev && shallowEqualRow(prev, merged) ? prev : merged);
     }
 
-    // With `order`, rebuild in the given key order; without it (a pure cell
-    // change), keep the prior order and swap in the updated row objects.
-    const rows =
-      msg.order !== undefined
-        ? msg.order.map((kv) => map.get(keyOf(kv))).filter((r): r is Row => r !== undefined)
-        : entry.snapshot.rows.map((r) => map.get(keyOf(r[key])) ?? r);
+    if (msg.order !== undefined) {
+      // Rebuild in the given key order, then re-key the base to exactly those
+      // rows — a fresh host after a reconnect sends the current `order` but no
+      // `remove`s, so rows that vanished during the outage are pruned here.
+      const rows = msg.order
+        .map((kv) => map.get(keyOf(kv)))
+        .filter((r): r is Row => r !== undefined);
+      entry.rowsByKey = new Map(rows.map((r) => [keyOf(r[key]), r]));
+      settle(entry, { rows, complete: msg.complete ?? true, version: msg.version });
 
+      return;
+    }
+
+    // No `order` (a pure cell change): keep the prior order, swap in updated rows.
+    const rows = entry.snapshot.rows.map((r) => map.get(keyOf(r[key])) ?? r);
     settle(entry, { rows, complete: msg.complete ?? true, version: msg.version });
   };
 
@@ -490,11 +515,11 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
     subscriptionCount: () => bySub.size,
     replay: () => {
       // Re-subscribe every active standing query (inactive entries — no local
-      // subscribers — stay silent), then re-send every unanswered one-shot. A
-      // fresh transport means the host diffs from empty, so reset each keyed
-      // diff base; the last snapshot stays on screen until the initial push.
+      // subscribers — stay silent), then re-send every unanswered one-shot. The
+      // retained rows (rowsByKey) are KEPT: the fresh host re-pushes full rows
+      // and applyDiff preserves unchanged-row identity against this base, so a
+      // reconnect after a long sleep catches up without re-rendering the world.
       for (const entry of bySub.values()) {
-        entry.rowsByKey = undefined;
         send({
           type: 'subscribe',
           sub: entry.sub,

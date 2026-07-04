@@ -284,6 +284,57 @@ suite('@lenke/sync client · registry semantics', () => {
     expect(live.getSnapshot().complete).toBe(false);
   });
 
+  test('reconnect resume: a re-push keeps unchanged-row identity, and updates/adds/drops', () => {
+    const wire: ClientMessage[] = [];
+    const client = createSyncClient({ send: (m) => wire.push(m) });
+    const live = client.liveQuery('MATCH (p:Person) RETURN p.name, p.age', {
+      deps: null,
+      key: 'p.name',
+    });
+    live.subscribe(() => {});
+    const sub1 = (wire.find((m) => m.type === 'subscribe') as { sub: string }).sub;
+
+    client.receive({
+      type: 'rows',
+      sub: sub1,
+      complete: true,
+      version: 1,
+      patch: [
+        { key: 'marko', set: { 'p.name': 'marko', 'p.age': 29 } },
+        { key: 'vadas', set: { 'p.name': 'vadas', 'p.age': 27 } },
+        { key: 'zoe', set: { 'p.name': 'zoe', 'p.age': 31 } },
+      ],
+      order: ['marko', 'vadas', 'zoe'],
+    });
+    const [marko, vadas] = live.getSnapshot().rows;
+
+    // Reconnect: the client re-subscribes (same sub id) and KEEPS its base.
+    client.replay();
+    const sub2 = wire.filter((m) => m.type === 'subscribe').at(-1)?.sub;
+    expect(sub2).toBe(sub1);
+
+    // The fresh host re-pushes the current world as full patches + order (no
+    // removes): marko unchanged, vadas now 28, zoe gone, carol new.
+    client.receive({
+      type: 'rows',
+      sub: sub1,
+      complete: true,
+      version: 2,
+      patch: [
+        { key: 'marko', set: { 'p.name': 'marko', 'p.age': 29 } },
+        { key: 'vadas', set: { 'p.name': 'vadas', 'p.age': 28 } },
+        { key: 'carol', set: { 'p.name': 'carol', 'p.age': 40 } },
+      ],
+      order: ['carol', 'marko', 'vadas'],
+    });
+
+    const rows = live.getSnapshot().rows;
+    expect(rows.map((r) => r['p.name'])).toEqual(['carol', 'marko', 'vadas']); // zoe dropped
+    expect(rows.find((r) => r['p.name'] === 'marko')).toBe(marko); // identity survived reconnect
+    expect(rows.find((r) => r['p.name'] === 'vadas')).not.toBe(vadas); // changed → new object
+    expect(rows.find((r) => r['p.name'] === 'vadas')).toEqual({ 'p.name': 'vadas', 'p.age': 28 });
+  });
+
   test('keyed round-trip over a real host: a cell edit updates rows in place', () => {
     const { client, store } = connect();
     const live = client.liveQuery('MATCH (p:Person) RETURN p.name, p.age ORDER BY p.name', {
