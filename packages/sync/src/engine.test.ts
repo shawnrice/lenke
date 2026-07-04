@@ -160,6 +160,89 @@ suite('@lenke/sync engine · demand-fill', () => {
     expect(calls).toBe(2);
     stop();
   });
+
+  test('a keyed collection demand-fills and completes PER scope value', async () => {
+    const loaded: string[] = [];
+    const { engine, client } = connect({
+      collections: {
+        // One collection, sliced by the `city` param — no synthetic label.
+        people: {
+          labels: ['Person'],
+          key: 'city',
+          load: async ({ city }) => {
+            loaded.push(city as string);
+
+            return [{ gql: 'INSERT (:Person {name: $n, city: $c})', params: { n: city, c: city } }];
+          },
+        },
+      },
+    });
+
+    const oslo = client.liveQuery('MATCH (p:Person) WHERE p.city = $city RETURN p.name', {
+      params: { city: 'oslo' },
+      deps: ['Person', 'city'],
+    });
+    const stopOslo = oslo.subscribe(() => {});
+
+    // Oslo fills; Bergen is a different, still-empty slice of the SAME collection.
+    await until(() => oslo.getSnapshot().complete);
+    expect(loaded).toEqual(['oslo']);
+    expect(engine.collectionState('people', { city: 'oslo' })).toBe('complete');
+    expect(engine.collectionState('people', { city: 'bergen' })).toBe('empty');
+
+    const bergen = client.liveQuery('MATCH (p:Person) WHERE p.city = $city RETURN p.name', {
+      params: { city: 'bergen' },
+      deps: ['Person', 'city'],
+    });
+    const stopBergen = bergen.subscribe(() => {});
+
+    await until(() => bergen.getSnapshot().complete);
+    expect(loaded).toEqual(['oslo', 'bergen']); // each value loads exactly once
+    expect(engine.collectionState('people', { city: 'bergen' })).toBe('complete');
+
+    stopOslo();
+    stopBergen();
+  });
+
+  test('initiallyComplete seeds one keyed slice; the others still fill', async () => {
+    const loaded: string[] = [];
+    const { client } = connect({
+      collections: {
+        people: {
+          labels: ['Person'],
+          key: 'city',
+          load: async ({ city }) => {
+            loaded.push(city as string);
+
+            return [];
+          },
+        },
+      },
+      // The boot snapshot already covered Oslo.
+      initiallyComplete: [{ name: 'people', scope: { city: 'oslo' } }],
+    });
+
+    const oslo = client.liveQuery('MATCH (p:Person) WHERE p.city = $city RETURN p.name', {
+      params: { city: 'oslo' },
+      deps: ['Person', 'city'],
+    });
+    const stopOslo = oslo.subscribe(() => {});
+
+    // Oslo answers complete immediately without a load.
+    await until(() => oslo.getSnapshot().complete);
+    expect(loaded).toEqual([]);
+
+    const bergen = client.liveQuery('MATCH (p:Person) WHERE p.city = $city RETURN p.name', {
+      params: { city: 'bergen' },
+      deps: ['Person', 'city'],
+    });
+    const stopBergen = bergen.subscribe(() => {});
+
+    await until(() => bergen.getSnapshot().complete);
+    expect(loaded).toEqual(['bergen']); // only the unseeded slice loaded
+    stopOslo();
+    stopBergen();
+  });
 });
 
 suite('@lenke/sync engine · write-back', () => {

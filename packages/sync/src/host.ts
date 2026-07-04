@@ -76,12 +76,16 @@ export type SyncHostOptions = {
    */
   applyMutation?: (gql: string, params?: QueryParams) => void;
   /**
-   * Is the data a query with these dependency tokens needs fully loaded?
-   * Defaults to `true` (a bare host is a complete local store).
+   * Is the data a query with these dependency tokens (and params, which scope
+   * value-keyed collections) needs fully loaded? Defaults to `true` (a bare
+   * host is a complete local store).
    */
-  isComplete?: (deps: readonly string[]) => boolean;
-  /** Called on every subscribe with its resolved deps — the demand-fill trigger. */
-  onSubscribe?: (deps: readonly string[]) => void;
+  isComplete?: (deps: readonly string[], params?: QueryParams) => boolean;
+  /**
+   * Called on every subscribe with its resolved deps and params — the
+   * demand-fill trigger (params carry the scope of value-keyed collections).
+   */
+  onSubscribe?: (deps: readonly string[], params?: QueryParams) => void;
   /** Pending write-back count for the status message. Defaults to 0. */
   pendingWrites?: () => number;
 };
@@ -106,6 +110,7 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
   type Subscription = {
     live: LiveQuery;
     deps: readonly string[];
+    params?: QueryParams;
     last: unknown;
     lastComplete: boolean | null;
     stop: () => void;
@@ -138,7 +143,7 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
       return;
     }
 
-    const complete = isComplete(s.deps);
+    const complete = isComplete(s.deps, s.params);
 
     if (rows === s.last && complete === s.lastComplete) {
       return;
@@ -154,10 +159,17 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
     drop(msg.sub);
 
     const deps = msg.deps ?? inferDeps(msg.query);
-    options.onSubscribe?.(deps);
+    options.onSubscribe?.(deps, msg.params);
 
     const live = store.liveQuery(msg.query, { deps, params: msg.params });
-    const s: Subscription = { live, deps, last: null, lastComplete: null, stop: () => {} };
+    const s: Subscription = {
+      live,
+      deps,
+      params: msg.params,
+      last: null,
+      lastComplete: null,
+      stop: () => {},
+    };
     s.stop = live.subscribe(() => push(msg.sub, s));
     subs.set(msg.sub, s);
     push(msg.sub, s); // initial rows, now (possibly stale/incomplete — that's the contract)

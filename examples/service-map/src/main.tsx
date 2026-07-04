@@ -22,10 +22,11 @@ worker.port.start();
 
 const STATUSES = ['healthy', 'degraded', 'down'] as const;
 
-// The scope token ('cluster:<name>') rides the deps channel: it names the
-// demand-fill collection AND is inert as an epoch token. The real tokens
-// (Service/status/…) do the invalidation work.
-const depsFor = (cluster: string) => ['Service', 'name', 'tier', 'status', `cluster:${cluster}`];
+// Epoch dependency tokens: the labels/props whose changes must re-run this
+// query. The demand-fill *scope* (which cluster) is not here — it rides the
+// query's own `$cluster` param, which the worker's keyed `services` collection
+// reads directly.
+const deps = ['Service', 'name', 'tier', 'status'];
 
 const useLive = (live: ClientLiveQuery) => useSyncExternalStore(live.subscribe, live.getSnapshot);
 
@@ -79,8 +80,8 @@ const ServiceTable = ({ cluster }: { cluster: string }) => {
   const live = useMemo(
     () =>
       client.liveQuery(
-        'MATCH (s:Service) WHERE s.cluster = $c RETURN s.sid, s.name, s.tier, s.status ORDER BY s.tier, s.name',
-        { params: { c: cluster }, deps: depsFor(cluster) },
+        'MATCH (s:Service) WHERE s.cluster = $cluster RETURN s.sid, s.name, s.tier, s.status ORDER BY s.tier, s.name',
+        { params: { cluster }, deps },
       ),
     [cluster],
   );

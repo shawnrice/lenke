@@ -20,6 +20,7 @@ import {
   encodeSnapshot,
   opfsStorage,
   readSnapshot,
+  type CollectionDefinition,
   type GqlWrite,
 } from '@lenke/sync';
 
@@ -62,53 +63,57 @@ const boot = async () => {
     retry: { baseMs: 500, maxMs: 5000 },
   });
 
-  // One demand-fill collection per cluster, matched by a synthetic SCOPE TOKEN
-  // ('cluster:prod-east') that tabs include in their subscription deps. Labels
-  // alone can't distinguish value-scoped collections — every cluster shares
-  // :Service/:CALLS — so scopes ride the deps channel as opaque strings.
-  // (Another deliberate finding: the library should bless this pattern.)
-  const collections = Object.fromEntries(
-    CLUSTERS.map((cluster) => [
-      cluster,
-      {
-        labels: [`cluster:${cluster}`],
-        load: async (): Promise<GqlWrite[]> => {
-          const services = await server.query(
-            'MATCH (s:Service) WHERE s.cluster = $c RETURN s.sid, s.name, s.cluster, s.tier, s.status',
-            { c: cluster },
-          );
-          const calls = await server.query(
-            'MATCH (a:Service)-[t:CALLS]->(b:Service) WHERE a.cluster = $c RETURN t.cid, a.sid, b.sid, t.protocol, t.p95',
-            { c: cluster },
-          );
+  // ONE demand-fill collection, sliced by the `cluster` param. Every cluster
+  // shares the :Service/:CALLS labels, so labels alone can't tell prod-east
+  // from prod-west — but the subscription already carries the value as a param
+  // (`WHERE s.cluster = $cluster`), so the collection just declares `cluster`
+  // its scope key and the engine tracks completeness / demand-fill per value.
+  // No synthetic token, no magic string on the deps channel.
+  const collections: Record<string, CollectionDefinition> = {
+    services: {
+      labels: ['Service'],
+      key: 'cluster',
+      load: async ({ cluster }): Promise<GqlWrite[]> => {
+        const services = await server.query(
+          'MATCH (s:Service) WHERE s.cluster = $cluster RETURN s.sid, s.name, s.cluster, s.tier, s.status',
+          { cluster },
+        );
+        const calls = await server.query(
+          'MATCH (a:Service)-[t:CALLS]->(b:Service) WHERE a.cluster = $cluster RETURN t.cid, a.sid, b.sid, t.protocol, t.p95',
+          { cluster },
+        );
 
-          return [
-            ...services.map((r) => ({
-              gql: 'INSERT (:Service {sid: $sid, name: $name, cluster: $cluster, tier: $tier, status: $status})',
-              params: r as Record<string, unknown>,
-            })),
-            ...calls.map((r) => ({
-              gql:
-                'MATCH (a:Service), (b:Service) WHERE a.sid = $from AND b.sid = $to ' +
-                'INSERT (a)-[:CALLS {cid: $cid, protocol: $protocol, p95: $p95}]->(b)',
-              params: {
-                cid: r['t.cid'],
-                from: r['a.sid'],
-                to: r['b.sid'],
-                protocol: r['t.protocol'],
-                p95: r['t.p95'],
-              },
-            })),
-          ];
-        },
+        return [
+          ...services.map((r) => ({
+            gql: 'INSERT (:Service {sid: $sid, name: $name, cluster: $cluster, tier: $tier, status: $status})',
+            params: r as Record<string, unknown>,
+          })),
+          ...calls.map((r) => ({
+            gql:
+              'MATCH (a:Service), (b:Service) WHERE a.sid = $from AND b.sid = $to ' +
+              'INSERT (a)-[:CALLS {cid: $cid, protocol: $protocol, p95: $p95}]->(b)',
+            params: {
+              cid: r['t.cid'],
+              from: r['a.sid'],
+              to: r['b.sid'],
+              protocol: r['t.protocol'],
+              p95: r['t.p95'],
+            },
+          })),
+        ];
       },
-    ]),
-  );
+    },
+  };
 
   const engine = createSyncEngine({
     store,
     collections,
-    initiallyComplete: snap?.header.collections ?? [],
+    // Snapshot header stores the cluster names it covered; restore each as a
+    // scoped slice of the one `services` collection.
+    initiallyComplete: (snap?.header.collections ?? []).map((cluster) => ({
+      name: 'services',
+      scope: { cluster },
+    })),
     initialWrites: snap?.pendingWrites ?? [],
     upstream: { push: (w) => server.mutate(w.gql, w.params) },
     retry: { attempts: Number.MAX_SAFE_INTEGER, baseMs: 500, maxMs: 5000 }, // outage ≠ poison: park, don't drop
@@ -117,7 +122,9 @@ const boot = async () => {
   // Snapshot on a debounce whenever anything moved (version, queue, loads).
   let lastSaved = -1;
   const save = async (): Promise<void> => {
-    const loaded = CLUSTERS.filter((c) => engine.collectionState(c) === 'complete');
+    const loaded = CLUSTERS.filter(
+      (c) => engine.collectionState('services', { cluster: c }) === 'complete',
+    );
     await storage.write(
       await encodeSnapshot(store, {
         schemaVersion: SCHEMA_VERSION,

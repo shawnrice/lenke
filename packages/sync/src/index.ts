@@ -26,6 +26,7 @@ export {
 export {
   createSyncEngine,
   type CollectionDefinition,
+  type CollectionScope,
   type CollectionState,
   type GqlWrite,
   type SyncEngine,

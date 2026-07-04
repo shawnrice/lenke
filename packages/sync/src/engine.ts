@@ -46,16 +46,36 @@ export type CollectionState = 'empty' | 'loading' | 'complete' | 'error';
 export type CollectionDefinition = {
   /** Labels / edge-types this scope covers — matched against subscription deps. */
   labels: readonly string[];
-  /** Fetch the scope and return the writes that materialize it locally. */
-  load: () => Promise<GqlWrite[]>;
+  /**
+   * Param name(s) that scope this collection to one slice by VALUE. A keyed
+   * collection tracks completeness and demand-fills per distinct bound value
+   * (`cluster = 'prod-east'` vs `'prod-west'`), reading that value straight off
+   * the subscription's `params` — no synthetic label, no side channel. A
+   * subscription that omits a key param neither demand-fills nor counts against
+   * this collection's completeness: value-scoped collections serve scoped
+   * subscriptions. Omit `key` for a single whole-collection scope.
+   */
+  key?: string | readonly string[];
+  /** Fetch the scope (its bound key values, if keyed) → writes that materialize it. */
+  load: (scope: QueryParams) => Promise<GqlWrite[]>;
 };
+
+/**
+ * A collection at one scope: a bare `name` for a whole collection, or
+ * `{ name, scope }` (the key params' bound values) for one slice of a keyed one.
+ */
+export type CollectionScope = { name: string; scope?: QueryParams };
 
 export type SyncEngineOptions = {
   store: Store;
   /** The app's demand-fill scopes, keyed by collection name. */
   collections?: Record<string, CollectionDefinition>;
-  /** Collections the boot snapshot already covers (skip their first load). */
-  initiallyComplete?: readonly string[];
+  /**
+   * Collections (or keyed-collection slices) the boot snapshot already covers —
+   * their first load is skipped. A bare string names a whole collection;
+   * `{ name, scope }` names one slice of a keyed one.
+   */
+  initiallyComplete?: readonly (string | CollectionScope)[];
   /**
    * Pending writes restored from a snapshot. Their effects are already IN the
    * snapshot's graph (they were applied optimistically before it was saved),
@@ -80,12 +100,16 @@ export type SyncEngineOptions = {
 
 export type SyncEngine = {
   readonly store: Store;
-  /** Per-collection completeness (for status surfaces and tests). */
-  collectionState: (name: string) => CollectionState | undefined;
-  /** Are the collections these deps imply all complete? */
-  isComplete: (deps: readonly string[]) => boolean;
-  /** Fire loaders for every intersecting, unloaded collection. */
-  ensure: (deps: readonly string[]) => void;
+  /**
+   * Completeness of one collection (for status surfaces and tests). Pass
+   * `scope` (the key params' values) for a keyed collection; `undefined` for an
+   * unknown collection or a keyed one addressed without its scope.
+   */
+  collectionState: (name: string, scope?: QueryParams) => CollectionState | undefined;
+  /** Are the collections these deps + params imply all complete? */
+  isComplete: (deps: readonly string[], params?: QueryParams) => boolean;
+  /** Fire loaders for every intersecting, unloaded (collection, scope). */
+  ensure: (deps: readonly string[], params?: QueryParams) => void;
   /** Apply a local write optimistically and queue it for upstream. */
   mutate: (gql: string, params?: QueryParams) => void;
   /** Apply server-pushed writes locally (never re-replicated upstream). */
@@ -105,6 +129,15 @@ const sleep = (ms: number): Promise<void> =>
     setTimeout(resolve, ms);
   });
 
+/** The param name(s) that scope a collection — normalized from `key`. */
+const keyNamesOf = (def: CollectionDefinition): readonly string[] => {
+  if (def.key === undefined) {
+    return [];
+  }
+
+  return typeof def.key === 'string' ? [def.key] : def.key;
+};
+
 export const createSyncEngine = (options: SyncEngineOptions): SyncEngine => {
   const { store, upstream } = options;
   const collections = options.collections ?? {};
@@ -112,10 +145,51 @@ export const createSyncEngine = (options: SyncEngineOptions): SyncEngine => {
   const baseMs = options.retry?.baseMs ?? 250;
   const maxMs = options.retry?.maxMs ?? 30_000;
 
+  // State is keyed per (collection, scope value): an unkeyed collection uses its
+  // bare name; a keyed one appends its bound key values. Absent → 'empty', so
+  // only 'complete' slices need seeding from the snapshot.
   const states = new Map<string, CollectionState>();
 
-  for (const name of Object.keys(collections)) {
-    states.set(name, options.initiallyComplete?.includes(name) ? 'complete' : 'empty');
+  // Resolve a collection + a subscription's params to its state key and scope.
+  // null = a keyed collection whose key params the subscription didn't supply:
+  // it neither demand-fills nor gates completeness for that subscription.
+  const scopeOf = (
+    name: string,
+    def: CollectionDefinition,
+    params?: QueryParams,
+  ): { stateKey: string; scope: QueryParams } | null => {
+    const keys = keyNamesOf(def);
+
+    if (keys.length === 0) {
+      return { stateKey: name, scope: {} };
+    }
+
+    const scope: Record<string, unknown> = {};
+
+    for (const k of keys) {
+      if (params == null || !(k in params)) {
+        return null;
+      }
+
+      scope[k] = (params as Record<string, unknown>)[k];
+    }
+
+    // Keys are in the definition's fixed order, so this tag is deterministic.
+    const tag = keys.map((k) => JSON.stringify(scope[k])).join('\x01');
+
+    return { stateKey: `${name}\u0000${tag}`, scope: scope as QueryParams };
+  };
+
+  const stateOf = (stateKey: string): CollectionState => states.get(stateKey) ?? 'empty';
+
+  for (const entry of options.initiallyComplete ?? []) {
+    const { name, scope } = typeof entry === 'string' ? { name: entry, scope: undefined } : entry;
+    const def = collections[name];
+    const resolved = def && scopeOf(name, def, scope);
+
+    if (resolved) {
+      states.set(resolved.stateKey, 'complete');
+    }
   }
 
   const changeListeners = new Set<() => void>();
@@ -127,19 +201,36 @@ export const createSyncEngine = (options: SyncEngineOptions): SyncEngine => {
 
   // ---- demand-fill -----------------------------------------------------
 
-  const collectionsFor = (deps: readonly string[]): string[] =>
-    Object.entries(collections)
-      .filter(([, def]) => def.labels.some((l) => deps.includes(l)))
-      .map(([name]) => name);
+  type Match = { name: string; stateKey: string; scope: QueryParams };
 
-  const isComplete = (deps: readonly string[]): boolean =>
-    collectionsFor(deps).every((name) => states.get(name) === 'complete');
+  // Collections whose labels a subscription reads, each resolved to the scope
+  // its params select. A keyed collection missing its key params drops out.
+  const matchesFor = (deps: readonly string[], params?: QueryParams): Match[] => {
+    const out: Match[] = [];
 
-  const load = async (name: string): Promise<void> => {
-    states.set(name, 'loading');
+    for (const [name, def] of Object.entries(collections)) {
+      if (!def.labels.some((l) => deps.includes(l))) {
+        continue;
+      }
+
+      const resolved = scopeOf(name, def, params);
+
+      if (resolved) {
+        out.push({ name, ...resolved });
+      }
+    }
+
+    return out;
+  };
+
+  const isComplete = (deps: readonly string[], params?: QueryParams): boolean =>
+    matchesFor(deps, params).every((m) => stateOf(m.stateKey) === 'complete');
+
+  const load = async (match: Match): Promise<void> => {
+    states.set(match.stateKey, 'loading');
 
     try {
-      const writes = await collections[name].load();
+      const writes = await collections[match.name].load(match.scope);
 
       // One mutate for the whole scope: subscribers hear a single version
       // bump, and epochs route it to exactly the affected live queries.
@@ -148,11 +239,11 @@ export const createSyncEngine = (options: SyncEngineOptions): SyncEngine => {
           g.query(w.gql, w.params);
         }
       });
-      states.set(name, 'complete');
+      states.set(match.stateKey, 'complete');
     } catch (e) {
       // The next demand re-triggers the load; completeness stays honest.
-      states.set(name, 'error');
-      options.onLoadError?.(name, e);
+      states.set(match.stateKey, 'error');
+      options.onLoadError?.(match.name, e);
     }
 
     // Even an empty or failed load changes what `complete` means for standing
@@ -161,12 +252,12 @@ export const createSyncEngine = (options: SyncEngineOptions): SyncEngine => {
     notifyChange();
   };
 
-  const ensure = (deps: readonly string[]): void => {
-    for (const name of collectionsFor(deps)) {
-      const state = states.get(name);
+  const ensure = (deps: readonly string[], params?: QueryParams): void => {
+    for (const match of matchesFor(deps, params)) {
+      const state = stateOf(match.stateKey);
 
       if (state === 'empty' || state === 'error') {
-        void load(name);
+        void load(match);
       }
     }
   };
@@ -243,7 +334,12 @@ export const createSyncEngine = (options: SyncEngineOptions): SyncEngine => {
 
   return {
     store,
-    collectionState: (name) => states.get(name),
+    collectionState: (name, scope) => {
+      const def = collections[name];
+      const resolved = def && scopeOf(name, def, scope);
+
+      return resolved ? stateOf(resolved.stateKey) : undefined;
+    },
     isComplete,
     ensure,
     mutate,
