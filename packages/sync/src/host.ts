@@ -291,13 +291,27 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
     push(msg.sub, s); // initial rows, now (possibly stale/incomplete — that's the contract)
   };
 
-  // One-shot reads run through `mutate` too: the engine executes whatever GQL
-  // it is handed, so a write smuggled in a `query` message must still notify
-  // this store's subscribers (mutate() is version-gated — pure reads stay
-  // silent). Smuggled writes do NOT replicate upstream: replicated writes must
-  // arrive as `mutate` messages.
+  // One-shot reads run through `mutate` too: the engine executes whatever it
+  // is handed, so a write smuggled in a `query` message (GQL or a Gremlin
+  // `addV`/`drop`) must still notify this store's subscribers (mutate() is
+  // version-gated — pure reads stay silent). Smuggled writes do NOT replicate
+  // upstream: replicated writes must arrive as `mutate` messages.
+  //
+  // `lang: 'gremlin'` runs the text through the Gremlin engine and answers with
+  // `values`; GQL (the default) answers with `rows`. Gremlin has no param
+  // binding — the text is executed as-is (`params` are a GQL-only safety path).
   const query = (msg: QueryMessage): void => {
     try {
+      if (msg.lang === 'gremlin') {
+        send({
+          type: 'result',
+          req: msg.req,
+          values: store.mutate((g) => g.gremlin(msg.query)),
+        });
+
+        return;
+      }
+
       send({
         type: 'result',
         req: msg.req,

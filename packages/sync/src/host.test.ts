@@ -336,4 +336,50 @@ suite('@lenke/sync host · protocol v1', () => {
     expect(del.order).toEqual(['aaron', 'marko']);
     expect(del.patch).toBeUndefined();
   });
+
+  test('a one-shot Gremlin query answers with values, not rows', () => {
+    const { host, take } = attach(newStore());
+    take(); // drain status
+
+    host.receive({ type: 'query', req: 'g1', query: 'g.V().count()', lang: 'gremlin' });
+    expect(take()[0]).toEqual({ type: 'result', req: 'g1', values: [2] });
+
+    host.receive({
+      type: 'query',
+      req: 'g2',
+      query: "g.V().has('name','marko').out('KNOWS').values('name')",
+      lang: 'gremlin',
+    });
+    expect(take()[0]).toEqual({ type: 'result', req: 'g2', values: ['vadas'] });
+  });
+
+  test('a mutating Gremlin fans out to a subscriber (runs through store.mutate)', () => {
+    const store = newStore();
+    const { host, take } = attach(store);
+    take();
+
+    host.receive({ type: 'subscribe', sub: 's1', query: 'MATCH (p:Person) RETURN p.name' });
+    expect(rowsOf(take()[0]).rows).toHaveLength(2);
+
+    // A Gremlin write over the query path must still notify standing queries.
+    host.receive({
+      type: 'query',
+      req: 'g1',
+      query: "g.addV('Person').property('name', 'carol')",
+      lang: 'gremlin',
+    });
+    const msgs = take();
+    expect(msgs.find((m) => m.type === 'result')).toBeDefined(); // the gremlin answer
+    expect(rowsOf(msgs.find((m) => m.type === 'rows') as HostMessage).rows).toHaveLength(3);
+  });
+
+  test('a Gremlin parse error rides the coded wire error shape', () => {
+    const { host, take } = attach(newStore());
+    take();
+
+    host.receive({ type: 'query', req: 'g1', query: 'g.V().totallyNotAStep()', lang: 'gremlin' });
+    const [res] = take();
+    expect(res.type).toBe('result');
+    expect((res as { error?: { code: string } }).error?.code).toBeTruthy();
+  });
 });

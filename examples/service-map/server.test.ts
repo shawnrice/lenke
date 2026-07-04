@@ -67,6 +67,14 @@ suite('service-map · Node server over a real socket', () => {
     expect(rows).toHaveLength(fleet.services.length);
   });
 
+  test('a Gremlin one-shot round-trips the socket (Node addon path)', async () => {
+    // The whole fleet is vertices, so g.V().count() equals the Service count —
+    // proving Gremlin rides the wire and executes on the Node engine.
+    const values = await client.gremlin('g.V().count()');
+    const rows = await client.query('MATCH (s:Service) RETURN s.sid');
+    expect(values).toEqual([rows.length]);
+  });
+
   test('the loader queries answer per cluster', async () => {
     const services = await client.query(
       'MATCH (s:Service) WHERE s.cluster = $c RETURN s.sid, s.name, s.tier, s.status',

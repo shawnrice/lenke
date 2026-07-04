@@ -80,7 +80,14 @@ export type ReconnectingClientOptions = {
  */
 export type ReconnectingClient = Pick<
   SyncClient,
-  'liveQuery' | 'query' | 'mutate' | 'getStatus' | 'onStatus' | 'subscriptionCount' | 'close'
+  | 'liveQuery'
+  | 'query'
+  | 'gremlin'
+  | 'mutate'
+  | 'getStatus'
+  | 'onStatus'
+  | 'subscriptionCount'
+  | 'close'
 > & {
   /** Is a transport currently open? */
   connected: () => boolean;
@@ -162,6 +169,7 @@ export const createReconnectingClient = (
   return {
     liveQuery: inner.liveQuery,
     query: inner.query,
+    gremlin: inner.gremlin,
     mutate: inner.mutate,
     getStatus: inner.getStatus,
     onStatus: inner.onStatus,

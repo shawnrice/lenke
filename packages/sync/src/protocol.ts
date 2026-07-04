@@ -17,8 +17,8 @@
  * client → host:  subscribe   { sub, query, params?, deps?, key?, window? }
  * host → client:  rows        { sub, rows | (patch, remove, order), version, complete }  // now, then on change
  * client → host:  unsubscribe { sub }
- * client → host:  query       { req, query, params? }            // one-shot
- * host → client:  result      { req, rows | error }
+ * client → host:  query       { req, query, params?, lang? }      // one-shot (gql | gremlin)
+ * host → client:  result      { req, rows | values | error }
  * client → host:  mutate      { req, gql, params? }
  * host → client:  ack         { req, ok, error? }                // UI effect arrives via rows pushes
  * host → client:  status      { connected, pendingWrites, protocol }
@@ -86,8 +86,17 @@ export type QueryMessage = {
   /** Client-chosen request id. */
   req: string;
   query: string;
-  /** `$name` bindings. */
+  /** `$name` bindings. Ignored for `lang: 'gremlin'` (Gremlin has no param binding). */
   params?: QueryParams;
+  /**
+   * Query language, default `'gql'`. `'gremlin'` runs the text through the
+   * Gremlin engine and answers with `values` (arbitrary JSON) instead of
+   * `rows`. Gremlin has **no parameter binding** — it is spliced as text — so
+   * never build a Gremlin traversal from untrusted input; use `'gql'` with
+   * `params` when values come from the user. One-shot only for now; live
+   * Gremlin subscriptions (epoch-gated) are a later step.
+   */
+  lang?: 'gql' | 'gremlin';
 };
 
 /**
@@ -156,7 +165,10 @@ export type RowsMessage = {
 export type ResultMessage = {
   type: 'result';
   req: string;
+  /** Rows for a GQL query. */
   rows?: Row[];
+  /** Result values for a `lang: 'gremlin'` query (arbitrary JSON). */
+  values?: unknown[];
   error?: WireError;
 };
 

@@ -83,8 +83,15 @@ export type SyncClient = {
       key?: string;
     },
   ) => ClientLiveQuery;
-  /** One-shot query → rows. */
+  /** One-shot GQL query → rows. */
   query: (query: string, params?: QueryParams) => Promise<Row[]>;
+  /**
+   * One-shot Gremlin traversal → its JSON result values. Gremlin has no
+   * parameter binding (the text runs as-is), so never build a traversal from
+   * untrusted input — reach for {@link query} with `params` when values come
+   * from the user.
+   */
+  gremlin: (traversal: string) => Promise<unknown[]>;
   /** Apply a mutation; resolves on `ack ok`, rejects with the coded error. */
   mutate: (gql: string, params?: QueryParams) => Promise<void>;
   /** The host's last `status` message, if any. */
@@ -163,7 +170,7 @@ type Entry = {
 type Pending = {
   resolve: (value: never) => void;
   reject: (reason: LenkeError) => void;
-  kind: 'query' | 'mutate';
+  kind: 'query' | 'gremlin' | 'mutate';
   /** The exact message sent, retained for replay across a reconnect. */
   msg: ClientMessage;
 };
@@ -271,6 +278,14 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
       send(msg);
     });
 
+  const gremlin = (traversal: string): Promise<unknown[]> =>
+    new Promise<unknown[]>((resolve, reject) => {
+      const req = `g${++nextId}`;
+      const msg: ClientMessage = { type: 'query', req, query: traversal, lang: 'gremlin' };
+      pending.set(req, { resolve: resolve as (v: never) => void, reject, kind: 'gremlin', msg });
+      send(msg);
+    });
+
   const mutate = (gql: string, params?: QueryParams): Promise<void> =>
     new Promise<void>((resolve, reject) => {
       const req = `m${++nextId}`;
@@ -368,6 +383,8 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
 
           if (msg.error) {
             p.reject(wireToError(msg.error));
+          } else if (p.kind === 'gremlin') {
+            (p.resolve as (values: unknown[]) => void)(msg.values ?? []);
           } else {
             (p.resolve as (rows: Row[]) => void)(msg.rows ?? []);
           }
@@ -414,6 +431,7 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
     receive,
     liveQuery,
     query,
+    gremlin,
     mutate,
     getStatus: () => status,
     onStatus: (cb) => {

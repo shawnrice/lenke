@@ -301,6 +301,15 @@ suite('@lenke/sync client · registry semantics', () => {
     expect(live.getSnapshot().rows[0]).toBe(marko); // unchanged-row identity survives the round-trip
   });
 
+  test('gremlin() round-trips a traversal over a real host and resolves its values', async () => {
+    const { client } = connect();
+
+    expect(await client.gremlin('g.V().count()')).toEqual([2]);
+
+    const names = await client.gremlin("g.V().values('name')");
+    expect([...(names as string[])].sort()).toEqual(['marko', 'vadas']);
+  });
+
   test('close unsubscribes everything and rejects pending requests', async () => {
     const wire: ClientMessage[] = [];
     // A black-hole transport: nothing ever answers, so requests stay pending.
