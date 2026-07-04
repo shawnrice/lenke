@@ -32,9 +32,13 @@
  *   effect of a mutation arrives via subscription pushes, exactly as if
  *   another client had written.
  *
- * Reconnect/resume is deliberately NOT here (a v1 boundary): resumable
- * subscriptions are a protocol extension. On a new connection, create a new
- * client.
+ * Reconnect *policy* is deliberately NOT here: back-off, re-dial, and request
+ * parking live in {@link createReconnectingClient}, which composes this client
+ * and drives its one seam — {@link SyncClient.replay} re-emits every active
+ * subscription and unanswered one-shot over a fresh transport. Resumable
+ * subscriptions (server-side cursor catch-up) remain a later protocol
+ * extension; replay re-runs standing queries from scratch, which the snapshot
+ * model makes correct (the host just re-answers current rows).
  */
 
 import { ErrorCode, LenkeError } from '@lenke/errors';
@@ -82,6 +86,15 @@ export type SyncClient = {
   getStatus: () => { connected: boolean; pendingWrites: number } | null;
   /** Live wire-subscription count — for tests and debugging. */
   subscriptionCount: () => number;
+  /**
+   * Re-emit every active subscription and every unanswered one-shot over the
+   * current transport. A reconnect manager calls this once a fresh connection
+   * is open: subscribes are idempotent (the host replaces by `sub` id), reads
+   * re-run harmlessly, and writes replay at-least-once (host/engine dedupe is
+   * the deferred protocol concern). Pending promises are untouched — they
+   * settle when the replayed request is answered.
+   */
+  replay: () => void;
   /** Tear down every subscription and reject every pending request. */
   close: () => void;
 };
@@ -119,6 +132,10 @@ const INITIAL: ClientSnapshot = { rows: EMPTY_ROWS, complete: false };
 type Entry = {
   /** Wire sub id — reassigned when a torn-down handle is revived. */
   sub: string;
+  /** The subscribe payload, retained so {@link SyncClient.replay} can re-emit it. */
+  query: string;
+  params?: QueryParams;
+  deps?: readonly string[];
   snapshot: ClientSnapshot;
   listeners: Set<() => void>;
   handle: ClientLiveQuery;
@@ -128,6 +145,8 @@ type Pending = {
   resolve: (value: never) => void;
   reject: (reason: LenkeError) => void;
   kind: 'query' | 'mutate';
+  /** The exact message sent, retained for replay across a reconnect. */
+  msg: ClientMessage;
 };
 
 /** Replace an entry's snapshot and wake its subscribers. */
@@ -166,6 +185,9 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
     // stale-but-honest starting point — with no duplicate-entry races.
     const entry: Entry = {
       sub: '',
+      query,
+      params: opts?.params,
+      deps: opts?.deps,
       snapshot: INITIAL,
       listeners: new Set(),
       handle: {
@@ -207,15 +229,17 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
   const query = (text: string, params?: QueryParams): Promise<Row[]> =>
     new Promise<Row[]>((resolve, reject) => {
       const req = `q${++nextId}`;
-      pending.set(req, { resolve: resolve as (v: never) => void, reject, kind: 'query' });
-      send({ type: 'query', req, query: text, params });
+      const msg: ClientMessage = { type: 'query', req, query: text, params };
+      pending.set(req, { resolve: resolve as (v: never) => void, reject, kind: 'query', msg });
+      send(msg);
     });
 
   const mutate = (gql: string, params?: QueryParams): Promise<void> =>
     new Promise<void>((resolve, reject) => {
       const req = `m${++nextId}`;
-      pending.set(req, { resolve: resolve as (v: never) => void, reject, kind: 'mutate' });
-      send({ type: 'mutate', req, gql, params });
+      const msg: ClientMessage = { type: 'mutate', req, gql, params };
+      pending.set(req, { resolve: resolve as (v: never) => void, reject, kind: 'mutate', msg });
+      send(msg);
     });
 
   const receive = (msg: unknown): void => {
@@ -300,6 +324,23 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
     mutate,
     getStatus: () => status,
     subscriptionCount: () => bySub.size,
+    replay: () => {
+      // Re-subscribe every active standing query (inactive entries — no local
+      // subscribers — stay silent), then re-send every unanswered one-shot.
+      for (const entry of bySub.values()) {
+        send({
+          type: 'subscribe',
+          sub: entry.sub,
+          query: entry.query,
+          params: entry.params,
+          deps: entry.deps,
+        });
+      }
+
+      for (const p of pending.values()) {
+        send(p.msg);
+      }
+    },
     close: () => {
       for (const entry of bySub.values()) {
         send({ type: 'unsubscribe', sub: entry.sub });

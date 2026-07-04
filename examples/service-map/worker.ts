@@ -15,13 +15,12 @@
 import { createStore, graphFromNdjson } from '@lenke/native';
 import { createWasmBackend } from '@lenke/native/wasm';
 import {
-  createSyncClient,
+  createReconnectingClient,
   createSyncEngine,
   encodeSnapshot,
   opfsStorage,
   readSnapshot,
   type GqlWrite,
-  type SyncClient,
 } from '@lenke/sync';
 
 import wasmUrl from '../../crates/lenke-core/target/wasm32-unknown-unknown/release/lenke_core.wasm?url';
@@ -32,68 +31,15 @@ const SCHEMA_VERSION = 'service-map-v1';
 const USER_ID = 'demo'; // a real app: the authenticated user, + a key for AES-GCM
 
 // ---------------------------------------------------------------------------
-// server link: a reconnecting protocol client
-// ---------------------------------------------------------------------------
-// The v1 client is bound to one connection (no resume) — so the link owns a
-// "current client" and re-creates it per socket. Requests made while offline
-// PARK (the returned promise settles after reconnect) rather than reject:
-// that is what lets the engine's in-flight write survive an outage. This
-// wrapper is exactly the reconnect helper the library doesn't ship yet — a
-// deliberate tire-kick finding of this example.
-
-type ServerLink = {
-  query: SyncClient['query'];
-  mutate: SyncClient['mutate'];
-  connected: () => boolean;
-  onConnectivity: (cb: (up: boolean) => void) => void;
-};
-
-const connectServer = (url: string): ServerLink => {
-  let client: SyncClient | null = null;
-  const waiters: ((c: SyncClient) => void)[] = [];
-  const connectivityListeners = new Set<(up: boolean) => void>();
-
-  const current = (): Promise<SyncClient> =>
-    client
-      ? Promise.resolve(client)
-      : new Promise((resolve) => {
-          waiters.push(resolve);
-        });
-
-  const dial = (): void => {
-    const ws = new WebSocket(url);
-
-    ws.onopen = () => {
-      const fresh = createSyncClient({ send: (m) => ws.send(JSON.stringify(m)) });
-      ws.onmessage = (e) => fresh.receive(JSON.parse(String(e.data)));
-      client = fresh;
-      waiters.splice(0).forEach((w) => w(fresh));
-      connectivityListeners.forEach((cb) => cb(true));
-    };
-    ws.onclose = () => {
-      client?.close();
-      client = null;
-      connectivityListeners.forEach((cb) => cb(false));
-      setTimeout(dial, 1000); // keep dialing; parked requests settle on success
-    };
-    ws.onerror = () => ws.close();
-  };
-
-  dial();
-
-  return {
-    query: async (text, params) => (await current()).query(text, params),
-    mutate: async (gql, params) => (await current()).mutate(gql, params),
-    connected: () => client !== null,
-    onConnectivity: (cb) => {
-      connectivityListeners.add(cb);
-    },
-  };
-};
-
-// ---------------------------------------------------------------------------
 // boot
 // ---------------------------------------------------------------------------
+//
+// The server link used to be a ~40-line hand-rolled reconnecting client right
+// here (the tire-kick finding that motivated it). It now IS the library's
+// `createReconnectingClient`: loaders are its `query`, write-back its `mutate`,
+// both parking while offline and replaying on reconnect; `onConnectivity`
+// nudges every tab's status line. The whole transport is the `connect`
+// callback below — open a socket, wire its lifecycle, hand back send/close.
 
 const boot = async () => {
   const storage = opfsStorage('service-map.lnks');
@@ -103,7 +49,18 @@ const boot = async () => {
   const store = createStore(
     graphFromNdjson(backend, snap ? snap.ndjson : new TextEncoder().encode('')),
   );
-  const server = connectServer(SERVER_URL);
+  const server = createReconnectingClient({
+    connect: ({ opened, received, closed }) => {
+      const ws = new WebSocket(SERVER_URL);
+      ws.onopen = opened;
+      ws.onmessage = (e) => received(JSON.parse(String(e.data)));
+      ws.onclose = closed;
+      ws.onerror = () => ws.close();
+
+      return { send: (m) => ws.send(JSON.stringify(m)), close: () => ws.close() };
+    },
+    retry: { baseMs: 500, maxMs: 5000 },
+  });
 
   // One demand-fill collection per cluster, matched by a synthetic SCOPE TOKEN
   // ('cluster:prod-east') that tabs include in their subscription deps. Labels

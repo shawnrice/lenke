@@ -5,6 +5,9 @@
  *   channel (Worker `postMessage`, WebSocket; one host per connection).
  * - {@link createSyncClient} — the client registry the UI consumes
  *   (dedupe, refcounts, stable `useSyncExternalStore`-ready snapshots).
+ * - {@link createReconnectingClient} — the same client with connection
+ *   lifecycle: re-dial with back-off, re-subscribe on reconnect, park writes
+ *   while offline (durability still belongs to the engine's write-back queue).
  * - {@link createSyncEngine} — the sync loop between store and network:
  *   per-collection completeness, demand-fill loaders, push ingestion, and the
  *   optimistic write-back queue. `engine.createHost()` wires a host into it.
@@ -29,6 +32,13 @@ export {
   type SyncEngineOptions,
 } from './engine.js';
 export { createSyncHost, type SyncHost, type SyncHostOptions } from './host.js';
+export {
+  createReconnectingClient,
+  type ReconnectingClient,
+  type ReconnectingClientOptions,
+  type ReconnectingConnect,
+  type ReconnectingConnection,
+} from './reconnect.js';
 export {
   decodeSnapshot,
   encodeSnapshot,
