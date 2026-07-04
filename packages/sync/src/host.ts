@@ -184,11 +184,13 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
   const pendingWrites = options.pendingWrites ?? (() => 0);
 
   type Subscription = {
-    live: LiveQuery;
+    live: LiveQuery<unknown>;
     deps: readonly string[] | null;
     params?: QueryParams;
     /** Row-identity column → this subscription sends keyed diffs, not full rows. */
     key?: string;
+    /** A Gremlin standing query → pushes carry `values`, not `rows`/diffs. */
+    lang?: 'gremlin';
     /** Prior keyed result, for diffing the next push (keyed subscriptions only). */
     prevByKey: Map<string, Row>;
     prevOrder: string[];
@@ -213,7 +215,7 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
   // scope's load flip `complete` without any rows change. A snapshot failure
   // (e.g. a query that parses lazily) closes the subscription.
   const push = (sub: string, s: Subscription): void => {
-    let rows: Row[];
+    let rows: unknown[];
 
     try {
       rows = s.live.getSnapshot();
@@ -235,19 +237,26 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
     s.last = rows;
     s.lastComplete = complete;
 
-    // Keyless: the full result every push (v1's shape, unchanged).
-    if (s.key === undefined) {
-      send({ type: 'rows', sub, rows, version: store.version, complete });
+    // Gremlin: full result values every push (no `rows`, no keyed diffs).
+    if (s.lang === 'gremlin') {
+      send({ type: 'rows', sub, values: rows, version: store.version, complete });
 
       return;
     }
 
-    // Keyed: send only what moved. When just `complete` flipped (rows ref
+    // Keyless GQL: the full result every push (v1's shape, unchanged).
+    if (s.key === undefined) {
+      send({ type: 'rows', sub, rows: rows as Row[], version: store.version, complete });
+
+      return;
+    }
+
+    // Keyed GQL: send only what moved. When just `complete` flipped (rows ref
     // unchanged), an empty diff carries the new flag without re-shipping rows.
     const msg: RowsMessage = { type: 'rows', sub, version: store.version, complete };
 
     if (rowsChanged) {
-      const d = diffRows(s.key, s.prevByKey, s.prevOrder, rows);
+      const d = diffRows(s.key, s.prevByKey, s.prevOrder, rows as Row[]);
       s.prevByKey = d.byKey;
       s.prevOrder = d.orderKeys;
 
@@ -278,12 +287,18 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
     const deps = msg.deps ?? null;
     options.onSubscribe?.(deps, msg.params);
 
-    const live = store.liveQuery(msg.query, { deps, params: msg.params });
+    // Gremlin standing queries push full `values`; the `key` (keyed diffs) is a
+    // GQL-rows notion and is ignored for them.
+    const gremlin = msg.lang === 'gremlin';
+    const live: LiveQuery<unknown> = gremlin
+      ? store.liveGremlin(msg.query, { deps })
+      : store.liveQuery(msg.query, { deps, params: msg.params });
     const s: Subscription = {
       live,
       deps,
       params: msg.params,
-      key: msg.key,
+      key: gremlin ? undefined : msg.key,
+      lang: gremlin ? 'gremlin' : undefined,
       prevByKey: new Map(),
       prevOrder: [],
       last: null,

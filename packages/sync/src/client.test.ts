@@ -317,6 +317,19 @@ suite('@lenke/sync client · registry semantics', () => {
     expect([...(names as string[])].sort()).toEqual(['marko', 'vadas']);
   });
 
+  test('a Gremlin live query exposes values on its snapshot and updates on change', () => {
+    const { client, store } = connect();
+    const live = client.liveQuery('g.V().count()', { deps: ['Person'], lang: 'gremlin' });
+    live.subscribe(() => {});
+
+    expect(live.getSnapshot().values).toEqual([2]);
+    expect(live.getSnapshot().rows).toEqual([]); // rows stays empty for a Gremlin query
+
+    // A relevant write re-runs the standing traversal; values reflect it.
+    store.mutate((g) => g.query("INSERT (:Person {name: 'carol'})"));
+    expect(live.getSnapshot().values).toEqual([3]);
+  });
+
   test('close unsubscribes everything and rejects pending requests', async () => {
     const wire: ClientMessage[] = [];
     // A black-hole transport: nothing ever answers, so requests stay pending.

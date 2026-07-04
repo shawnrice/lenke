@@ -24,11 +24,11 @@ import type { QueryParams, RustGraph, Row } from './graph.js';
  * store.mutate((g) => g.query("INSERT (:Person {name: 'zoe'})"));
  * ```
  */
-export type LiveQuery = {
+export type LiveQuery<T = Row> = {
   /** Register a change callback; returns an unsubscribe function. */
   subscribe: (onChange: () => void) => () => void;
-  /** Current rows — a stable reference until a relevant mutation occurs. */
-  getSnapshot: () => Row[];
+  /** Current result — a stable reference until a relevant mutation occurs. */
+  getSnapshot: () => T[];
 };
 
 export type Store = {
@@ -58,7 +58,15 @@ export type Store = {
   liveQuery: (
     text: string,
     opts: { deps: readonly string[] | null; params?: QueryParams },
-  ) => LiveQuery;
+  ) => LiveQuery<Row>;
+  /**
+   * The Gremlin twin of {@link liveQuery}: a standing traversal whose result
+   * values (arbitrary JSON, not rows) are recomputed under the same `deps`
+   * gating. Gremlin has no param binding, so the text runs as-is — never build
+   * a traversal from untrusted input. The traversal must be a **read**; a
+   * mutating step in a live query would rewrite the graph on every recompute.
+   */
+  liveGremlin: (text: string, opts: { deps: readonly string[] | null }) => LiveQuery<unknown>;
 };
 
 export const createStore = (graph: RustGraph): Store => {
@@ -67,6 +75,57 @@ export const createStore = (graph: RustGraph): Store => {
     for (const l of listeners) {
       l();
     }
+  };
+
+  // Shared epoch-gated caching for both liveQuery (rows) and liveGremlin
+  // (values): `run` is the only difference. The gating is language-agnostic —
+  // it keys off the graph version and the declared `deps` epochs, not the query.
+  const makeLive = <T>(deps: readonly string[] | null, run: () => T[]): LiveQuery<T> => {
+    // -1 is unreachable for a u64 version/epoch, so the first call always primes.
+    let seenVersion = -1;
+    let seenFingerprint = -1;
+    let cached: T[] = [];
+
+    return {
+      subscribe: (onChange) => {
+        listeners.add(onChange);
+
+        return () => {
+          listeners.delete(onChange);
+        };
+      },
+      getSnapshot: () => {
+        const v = graph.version;
+
+        if (v === seenVersion) {
+          return cached; // nothing mutated since last read → stable reference
+        }
+
+        seenVersion = v;
+        // A mutation happened. `null` deps → gate on the global version
+        // (recompute every change). `[]` → a constant fingerprint, so it never
+        // recomputes after the first prime. Otherwise sum the declared epochs
+        // and recompute only when one of them moved.
+        let fingerprint: number;
+
+        if (deps === null) {
+          fingerprint = v;
+        } else if (deps.length === 0) {
+          fingerprint = 0;
+        } else {
+          fingerprint = deps.reduce((acc, d) => acc + graph.epoch(d), 0);
+        }
+
+        if (fingerprint === seenFingerprint) {
+          return cached; // the mutation didn't touch our dependencies
+        }
+
+        seenFingerprint = fingerprint;
+        cached = run();
+
+        return cached;
+      },
+    };
   };
 
   return {
@@ -84,54 +143,8 @@ export const createStore = (graph: RustGraph): Store => {
 
       return result;
     },
-    liveQuery: (text, opts) => {
-      const { deps, params } = opts;
-      // -1 is unreachable for a u64 version/epoch, so the first call always primes.
-      let seenVersion = -1;
-      let seenFingerprint = -1;
-      let cached: Row[] = [];
-
-      return {
-        subscribe: (onChange) => {
-          listeners.add(onChange);
-
-          return () => {
-            listeners.delete(onChange);
-          };
-        },
-        getSnapshot: () => {
-          const v = graph.version;
-
-          if (v === seenVersion) {
-            return cached; // nothing mutated since last read → stable reference
-          }
-
-          seenVersion = v;
-          // A mutation happened. `null` deps → gate on the global version
-          // (recompute every change). `[]` → a constant fingerprint, so it
-          // never recomputes after the first prime. Otherwise sum the declared
-          // epochs and recompute only when one of them moved.
-          let fingerprint: number;
-
-          if (deps === null) {
-            fingerprint = v;
-          } else if (deps.length === 0) {
-            fingerprint = 0;
-          } else {
-            fingerprint = deps.reduce((acc, d) => acc + graph.epoch(d), 0);
-          }
-
-          if (fingerprint === seenFingerprint) {
-            return cached; // the mutation didn't touch our dependencies
-          }
-
-          seenFingerprint = fingerprint;
-          cached = graph.query(text, params);
-
-          return cached;
-        },
-      };
-    },
+    liveQuery: (text, opts) => makeLive(opts.deps, () => graph.query(text, opts.params)),
+    liveGremlin: (text, opts) => makeLive(opts.deps, () => graph.gremlin(text)),
   };
 };
 
@@ -140,7 +153,7 @@ export const createStore = (graph: RustGraph): Store => {
  * names and `.key` property keys it references. **Over-grabbing is safe**
  * (causes an unnecessary recompute); under-grabbing risks a stale snapshot, so
  * prefer passing `deps` explicitly for correctness-critical live queries, and
- * use coarse mode (no deps) for whole-element returns like `RETURN n`.
+ * use `null` deps (recompute-always) for whole-element returns like `RETURN n`.
  */
 export const inferDeps = (text: string): string[] => {
   const tokens = new Set<string>();

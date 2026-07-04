@@ -48,8 +48,10 @@ import { isHostMessage, type ClientMessage, type RowsMessage, type WireError } f
 
 /** What a standing query currently knows. Stable reference between pushes. */
 export type ClientSnapshot = {
-  /** Last pushed rows (a stable `[]` before the first push). */
+  /** Last pushed rows (a stable `[]` before the first push). Empty for a Gremlin query. */
   rows: Row[];
+  /** A `lang: 'gremlin'` subscription's result values; `undefined` for a GQL query. */
+  values?: unknown[];
   /** False until the host has answered (and on error) — render skeletons, not lies. */
   complete: boolean;
   /** Graph version at snapshot time, when known. */
@@ -85,6 +87,11 @@ export type SyncClient = {
       params?: QueryParams;
       /** Row-identity column → keyed diff pushes (patch/remove) instead of full rows. */
       key?: string;
+      /**
+       * `'gremlin'` makes this a standing Gremlin traversal — the snapshot's
+       * `values` (not `rows`) carry the result. No param binding; `key` ignored.
+       */
+      lang?: 'gql' | 'gremlin';
     },
   ) => ClientLiveQuery;
   /** One-shot GQL query → rows. */
@@ -164,6 +171,8 @@ type Entry = {
   deps: readonly string[] | null;
   /** Row-identity column, if this subscription requested keyed diffs. */
   key?: string;
+  /** `'gremlin'` → snapshots carry `values`, applied whole (no keyed diffs). */
+  lang?: 'gql' | 'gremlin';
   /** Current rows by canonical key — the base each keyed diff is applied onto. */
   rowsByKey?: Map<string, Row>;
   snapshot: ClientSnapshot;
@@ -200,9 +209,20 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
 
   const liveQuery = (
     query: string,
-    opts: { deps: readonly string[] | null; params?: QueryParams; key?: string },
+    opts: {
+      deps: readonly string[] | null;
+      params?: QueryParams;
+      key?: string;
+      lang?: 'gql' | 'gremlin';
+    },
   ): ClientLiveQuery => {
-    const signature = canonical([query, opts.params ?? null, opts.deps, opts.key ?? null]);
+    const signature = canonical([
+      query,
+      opts.params ?? null,
+      opts.deps,
+      opts.key ?? null,
+      opts.lang ?? null,
+    ]);
     const existing = entries.get(signature);
 
     if (existing) {
@@ -220,6 +240,7 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
       params: opts.params,
       deps: opts.deps,
       key: opts.key,
+      lang: opts.lang,
       snapshot: INITIAL,
       listeners: new Set(),
       handle: {
@@ -260,6 +281,7 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
         deps: opts.deps,
         params: opts.params,
         key: opts.key,
+        lang: opts.lang,
       });
     };
 
@@ -360,6 +382,18 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
           return;
         }
 
+        if (entry.lang === 'gremlin') {
+          // Gremlin pushes carry full `values` (no rows, no diffs) each time.
+          settle(entry, {
+            rows: EMPTY_ROWS,
+            values: msg.values ?? [],
+            complete: msg.complete ?? true,
+            version: msg.version,
+          });
+
+          return;
+        }
+
         if (entry.key !== undefined) {
           applyDiff(entry, msg); // keyed subscription → diff push
 
@@ -453,6 +487,7 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
           params: entry.params,
           deps: entry.deps,
           key: entry.key,
+          lang: entry.lang,
         });
       }
 

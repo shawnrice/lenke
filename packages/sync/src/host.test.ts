@@ -382,4 +382,29 @@ suite('@lenke/sync host · protocol v1', () => {
     expect(res.type).toBe('result');
     expect((res as { error?: { code: string } }).error?.code).toBeTruthy();
   });
+
+  test('a Gremlin standing subscription pushes values, and again on a relevant change', () => {
+    const store = newStore();
+    const { host, take } = attach(store);
+    take(); // drain status
+
+    host.receive({
+      type: 'subscribe',
+      sub: 's1',
+      query: 'g.V().count()',
+      deps: ['Person'],
+      lang: 'gremlin',
+    });
+
+    // Initial push carries `values` (arbitrary JSON), never rows/diffs.
+    const first = rowsOf(take()[0]);
+    expect(first.values).toEqual([2]);
+    expect(first.rows).toBeUndefined();
+    expect(first.patch).toBeUndefined();
+
+    // Adding a Person moves the Person epoch → the standing traversal re-pushes.
+    host.receive({ type: 'mutate', req: 'w1', gql: "INSERT (:Person {name: 'carol'})" });
+    const push = rowsOf(take().find((m) => m.type === 'rows') as HostMessage);
+    expect(push.values).toEqual([3]);
+  });
 });

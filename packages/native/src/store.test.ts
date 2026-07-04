@@ -110,6 +110,19 @@ suite('@lenke/native reactive store', () => {
     store.graph.free();
   });
 
+  test('liveGremlin recomputes values under the same deps gating', () => {
+    const store = newStore();
+    const count = store.liveGremlin('g.V().count()', { deps: ['P'] });
+    expect(count.getSnapshot()).toEqual([2]); // marko, vadas
+    const stable = count.getSnapshot();
+    expect(count.getSnapshot()).toBe(stable); // referentially stable between reads
+
+    // A `P` epoch move recomputes; the values (not rows) reflect it.
+    store.mutate((g) => g.query("INSERT (:P {name: 'zoe'})"));
+    expect(count.getSnapshot()).toEqual([3]);
+    store.graph.free();
+  });
+
   test('a read-only mutate() call does not notify', () => {
     const store = newStore();
     const q = store.liveQuery('MATCH (n:P) RETURN n.name', { deps: null });

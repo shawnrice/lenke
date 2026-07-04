@@ -75,8 +75,16 @@ export type SubscribeMessage = {
    * (`patch` / `remove` / `order`) instead of the whole result each time. When
    * absent, every push carries the full `rows` — the shape a keyless query
    * (aggregates) needs, and the only one a minimal v1 consumer must understand.
+   * Ignored for `lang: 'gremlin'` (Gremlin results aren't keyed rows).
    */
   key?: string;
+  /**
+   * Query language, default `'gql'`. `'gremlin'` makes this a standing Gremlin
+   * traversal: pushes carry `values` (arbitrary JSON) instead of `rows`, full
+   * each time (no keyed diffs). `deps` gating works identically. Gremlin has no
+   * param binding — never build the traversal from untrusted input.
+   */
+  lang?: 'gql' | 'gremlin';
   /** Windowed read for grids. Reserved in v1 — carried but not yet interpreted. */
   window?: { offset: number; limit: number };
 };
@@ -156,6 +164,8 @@ export type RowsMessage = {
   remove?: unknown[];
   /** Keyed diff: the full key order after applying — sent only when it changed. */
   order?: unknown[];
+  /** A `lang: 'gremlin'` subscription's result values (arbitrary JSON), full each push. */
+  values?: unknown[];
   /** The graph's mutation version at snapshot time. */
   version?: number;
   /**
