@@ -106,10 +106,10 @@ export type SyncEngine = {
    * unknown collection or a keyed one addressed without its scope.
    */
   collectionState: (name: string, scope?: QueryParams) => CollectionState | undefined;
-  /** Are the collections these deps + params imply all complete? */
-  isComplete: (deps: readonly string[], params?: QueryParams) => boolean;
+  /** Are the collections these deps + params imply all complete? (`null` deps → yes.) */
+  isComplete: (deps: readonly string[] | null, params?: QueryParams) => boolean;
   /** Fire loaders for every intersecting, unloaded (collection, scope). */
-  ensure: (deps: readonly string[], params?: QueryParams) => void;
+  ensure: (deps: readonly string[] | null, params?: QueryParams) => void;
   /** Apply a local write optimistically and queue it for upstream. */
   mutate: (gql: string, params?: QueryParams) => void;
   /** Apply server-pushed writes locally (never re-replicated upstream). */
@@ -205,8 +205,13 @@ export const createSyncEngine = (options: SyncEngineOptions): SyncEngine => {
 
   // Collections whose labels a subscription reads, each resolved to the scope
   // its params select. A keyed collection missing its key params drops out.
-  const matchesFor = (deps: readonly string[], params?: QueryParams): Match[] => {
+  // `null`/empty deps declare no label to route on → no collection to fill.
+  const matchesFor = (deps: readonly string[] | null, params?: QueryParams): Match[] => {
     const out: Match[] = [];
+
+    if (!deps || deps.length === 0) {
+      return out;
+    }
 
     for (const [name, def] of Object.entries(collections)) {
       if (!def.labels.some((l) => deps.includes(l))) {
@@ -223,7 +228,7 @@ export const createSyncEngine = (options: SyncEngineOptions): SyncEngine => {
     return out;
   };
 
-  const isComplete = (deps: readonly string[], params?: QueryParams): boolean =>
+  const isComplete = (deps: readonly string[] | null, params?: QueryParams): boolean =>
     matchesFor(deps, params).every((m) => stateOf(m.stateKey) === 'complete');
 
   const load = async (match: Match): Promise<void> => {
@@ -252,7 +257,7 @@ export const createSyncEngine = (options: SyncEngineOptions): SyncEngine => {
     notifyChange();
   };
 
-  const ensure = (deps: readonly string[], params?: QueryParams): void => {
+  const ensure = (deps: readonly string[] | null, params?: QueryParams): void => {
     for (const match of matchesFor(deps, params)) {
       const state = stateOf(match.stateKey);
 

@@ -14,7 +14,7 @@
  * pushes; without it, the full-`rows` v1 shape is unchanged).
  *
  * ```
- * client → host:  subscribe   { sub, query, params?, deps?, key?, window? }
+ * client → host:  subscribe   { sub, query, deps, params?, key?, window? }
  * host → client:  rows        { sub, rows | (patch, remove, order), version, complete }  // now, then on change
  * client → host:  unsubscribe { sub }
  * client → host:  query       { req, query, params?, lang? }      // one-shot (gql | gremlin)
@@ -57,11 +57,18 @@ export type SubscribeMessage = {
   /** `$name` bindings — part of the standing query's identity. */
   params?: QueryParams;
   /**
-   * Dependency tokens (labels / edge-types / property-keys) for epoch-gated
-   * invalidation. Omitted → the host infers them from the query text
-   * (over-grabbing is safe; it only costs a recompute).
+   * Dependency posture for epoch-gated invalidation — **required**, declared
+   * explicitly (no silent omission, no host-side inference):
+   * - `[...]` — recompute only when one of these label / edge-type /
+   *   property-key epochs moves.
+   * - `[]` — depends on nothing → never recomputes (a constant query).
+   * - `null` — depends on everything → recompute on every change.
+   *
+   * A client that wants inference derives the array itself with
+   * `inferDeps(query)` before subscribing. Demand-fill routes off the declared
+   * tokens, so `[]`/`null` also mean "no collection to demand-fill".
    */
-  deps?: readonly string[];
+  deps: readonly string[] | null;
   /**
    * Row-identity column for **keyed diffs**. When present, the value of this
    * column identifies a row across pushes, so the host sends only what changed

@@ -120,7 +120,7 @@ suite('createReconnectingClient', () => {
     const t = makeTransport(store);
     const client = createReconnectingClient({ connect: t.connect, retry: { baseMs: 1, maxMs: 5 } });
 
-    const live = client.liveQuery('MATCH (p:Person) RETURN p.name');
+    const live = client.liveQuery('MATCH (p:Person) RETURN p.name', { deps: null });
     live.subscribe(() => {}); // one persistent subscriber keeps the wire sub alive
     await until(() => live.getSnapshot().rows.length === 2, 'initial rows');
 
@@ -144,7 +144,7 @@ suite('createReconnectingClient', () => {
     const t = makeTransport(store);
     const client = createReconnectingClient({ connect: t.connect, retry: { baseMs: 1, maxMs: 5 } });
 
-    const live = client.liveQuery('MATCH (p:Person) RETURN p.name');
+    const live = client.liveQuery('MATCH (p:Person) RETURN p.name', { deps: null });
     live.subscribe(() => {});
     await until(() => live.getSnapshot().rows.length === 2, 'initial rows');
 

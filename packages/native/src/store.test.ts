@@ -42,7 +42,7 @@ const newStore = () => {
 suite('@lenke/native reactive store', () => {
   test('getSnapshot is referentially stable with no mutation', () => {
     const store = newStore();
-    const names = store.liveQuery('MATCH (n:P) RETURN n.name ORDER BY n.name');
+    const names = store.liveQuery('MATCH (n:P) RETURN n.name ORDER BY n.name', { deps: null });
     const s1 = names.getSnapshot();
     const s2 = names.getSnapshot();
     expect(s1).toBe(s2); // same reference → React won't loop
@@ -86,20 +86,33 @@ suite('@lenke/native reactive store', () => {
     store.graph.free();
   });
 
-  test('coarse mode (no deps) recomputes on any mutation', () => {
+  test('null deps recompute on any mutation (coarse, always-correct)', () => {
     const store = newStore();
-    const all = store.liveQuery('MATCH (n:P) RETURN n.name ORDER BY n.name'); // no deps
+    const all = store.liveQuery('MATCH (n:P) RETURN n.name ORDER BY n.name', { deps: null });
     const before = all.getSnapshot();
     store.mutate((g) => g.query("MATCH (n:P) WHERE n.name = 'marko' SET n.age = 99"));
     const after = all.getSnapshot();
-    expect(after).not.toBe(before); // coarse: any mutation invalidates
+    expect(after).not.toBe(before); // null: any mutation invalidates
     expect(after).toEqual(before); // ...but the names are unchanged
+    store.graph.free();
+  });
+
+  test('[] deps depend on nothing → computed once, never recomputed', () => {
+    const store = newStore();
+    const constants = store.liveQuery('MATCH (n:P) RETURN n.name ORDER BY n.name', { deps: [] });
+    const before = constants.getSnapshot();
+
+    // Even a mutation this query WOULD reflect leaves the snapshot untouched:
+    // `[]` is a promise that it depends on nothing, so it never re-runs.
+    store.mutate((g) => g.query("INSERT (:P {name: 'zoe'})"));
+
+    expect(constants.getSnapshot()).toBe(before); // same reference — never recomputed
     store.graph.free();
   });
 
   test('a read-only mutate() call does not notify', () => {
     const store = newStore();
-    const q = store.liveQuery('MATCH (n:P) RETURN n.name');
+    const q = store.liveQuery('MATCH (n:P) RETURN n.name', { deps: null });
     let fired = 0;
     q.subscribe(() => {
       fired += 1;

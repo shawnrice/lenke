@@ -42,11 +42,23 @@ export type Store = {
    */
   mutate: <T>(fn: (graph: RustGraph) => T) => T;
   /**
-   * A `useSyncExternalStore`-ready live query, optionally scoped to `deps`.
+   * A `useSyncExternalStore`-ready live query. `deps` is **required** — declare
+   * the dependency posture explicitly (React's array semantics, no silent
+   * omission):
+   * - `[...]` — recompute only when one of these label/property/edge-type
+   *   epochs moves (`graph.epoch(token)`).
+   * - `[]` — depends on nothing → computed once, never recomputed.
+   * - `null` — depends on everything → recompute on every graph change.
+   *
    * `params` are `$name` bindings for the query text — part of the standing
-   * query's identity, bound safely at execute time (never spliced).
+   * query's identity, bound safely at execute time (never spliced). Use
+   * {@link inferDeps} if you want to derive `deps` from the query text rather
+   * than hand-declare it.
    */
-  liveQuery: (text: string, opts?: { deps?: readonly string[]; params?: QueryParams }) => LiveQuery;
+  liveQuery: (
+    text: string,
+    opts: { deps: readonly string[] | null; params?: QueryParams },
+  ) => LiveQuery;
 };
 
 export const createStore = (graph: RustGraph): Store => {
@@ -73,8 +85,7 @@ export const createStore = (graph: RustGraph): Store => {
       return result;
     },
     liveQuery: (text, opts) => {
-      const deps = opts?.deps;
-      const params = opts?.params;
+      const { deps, params } = opts;
       // -1 is unreachable for a u64 version/epoch, so the first call always primes.
       let seenVersion = -1;
       let seenFingerprint = -1;
@@ -96,9 +107,19 @@ export const createStore = (graph: RustGraph): Store => {
           }
 
           seenVersion = v;
-          // A mutation happened. With deps, recompute only if one of them moved;
-          // without deps, fall back to the (always-correct) global version.
-          const fingerprint = deps?.length ? deps.reduce((acc, d) => acc + graph.epoch(d), 0) : v;
+          // A mutation happened. `null` deps → gate on the global version
+          // (recompute every change). `[]` → a constant fingerprint, so it
+          // never recomputes after the first prime. Otherwise sum the declared
+          // epochs and recompute only when one of them moved.
+          let fingerprint: number;
+
+          if (deps === null) {
+            fingerprint = v;
+          } else if (deps.length === 0) {
+            fingerprint = 0;
+          } else {
+            fingerprint = deps.reduce((acc, d) => acc + graph.epoch(d), 0);
+          }
 
           if (fingerprint === seenFingerprint) {
             return cached; // the mutation didn't touch our dependencies

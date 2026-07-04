@@ -162,6 +162,7 @@ suite('@lenke/sync over a real WebSocket', () => {
     // subscriber (dropping to zero refs would tear down the wire sub); each
     // push resolves the waiters queued at that moment.
     const live = alice.liveQuery('MATCH (p:Person) WHERE p.name = $n RETURN p.name', {
+      deps: null,
       params: { n: 'nils' },
     });
     const waiters: Array<(s: ClientSnapshot) => void> = [];

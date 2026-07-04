@@ -36,7 +36,7 @@
  */
 
 import { isLenkeError } from '@lenke/errors';
-import { inferDeps, type LiveQuery, type QueryParams, type Row, type Store } from '@lenke/native';
+import type { LiveQuery, QueryParams, Row, Store } from '@lenke/native';
 
 import {
   isClientMessage,
@@ -80,14 +80,14 @@ export type SyncHostOptions = {
   /**
    * Is the data a query with these dependency tokens (and params, which scope
    * value-keyed collections) needs fully loaded? Defaults to `true` (a bare
-   * host is a complete local store).
+   * host is a complete local store). `null` deps declare no collection to fill.
    */
-  isComplete?: (deps: readonly string[], params?: QueryParams) => boolean;
+  isComplete?: (deps: readonly string[] | null, params?: QueryParams) => boolean;
   /**
-   * Called on every subscribe with its resolved deps and params — the
+   * Called on every subscribe with its declared deps and params — the
    * demand-fill trigger (params carry the scope of value-keyed collections).
    */
-  onSubscribe?: (deps: readonly string[], params?: QueryParams) => void;
+  onSubscribe?: (deps: readonly string[] | null, params?: QueryParams) => void;
   /** Pending write-back count for the status message. Defaults to 0. */
   pendingWrites?: () => number;
 };
@@ -185,7 +185,7 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
 
   type Subscription = {
     live: LiveQuery;
-    deps: readonly string[];
+    deps: readonly string[] | null;
     params?: QueryParams;
     /** Row-identity column → this subscription sends keyed diffs, not full rows. */
     key?: string;
@@ -271,7 +271,11 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
     // Re-subscribing an existing id replaces it (how a windowed grid scrolls).
     drop(msg.sub);
 
-    const deps = msg.deps ?? inferDeps(msg.query);
+    // Deps are declared on the wire, never inferred here (null = recompute on
+    // every change; [] = never; [...] = epoch-gated). The type requires the
+    // field; a malformed message that omits it degrades to the safe coarse
+    // default (recompute-always), never a crash.
+    const deps = msg.deps ?? null;
     options.onSubscribe?.(deps, msg.params);
 
     const live = store.liveQuery(msg.query, { deps, params: msg.params });

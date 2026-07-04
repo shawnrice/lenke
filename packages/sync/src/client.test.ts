@@ -59,7 +59,7 @@ const connect = () => {
 suite('@lenke/sync client · registry semantics', () => {
   test('liveQuery answers with an honest lifecycle: skeleton → complete rows', () => {
     const { client } = connect();
-    const live = client.liveQuery('MATCH (p:Person) RETURN p.name');
+    const live = client.liveQuery('MATCH (p:Person) RETURN p.name', { deps: null });
 
     // Synchronous loop means rows already arrived; but the INITIAL contract
     // is observable through a fresh signature before any push: complete=false.
@@ -90,12 +90,15 @@ suite('@lenke/sync client · registry semantics', () => {
     const { client, wire } = connect();
 
     const h1 = client.liveQuery('MATCH (p:Person) WHERE p.age >= $min RETURN p.name', {
+      deps: null,
       params: { min: 28 },
     });
     const h2 = client.liveQuery('MATCH (p:Person) WHERE p.age >= $min RETURN p.name', {
+      deps: null,
       params: { min: 28 },
     });
     const h3 = client.liveQuery('MATCH (p:Person) WHERE p.age >= $min RETURN p.name', {
+      deps: null,
       params: { min: 20 },
     });
 
@@ -109,7 +112,7 @@ suite('@lenke/sync client · registry semantics', () => {
 
   test('refcounted teardown: wire unsubscribe only when the LAST local subscriber leaves', () => {
     const { client, wire } = connect();
-    const live = client.liveQuery('MATCH (p:Person) RETURN p.name');
+    const live = client.liveQuery('MATCH (p:Person) RETURN p.name', { deps: null });
 
     const stopA = live.subscribe(() => {});
     const stopB = live.subscribe(() => {});
@@ -155,7 +158,7 @@ suite('@lenke/sync client · registry semantics', () => {
 
   test('a bad standing query surfaces error on the snapshot and detaches', () => {
     const { client } = connect();
-    const live = client.liveQuery('THIS IS NOT GQL');
+    const live = client.liveQuery('THIS IS NOT GQL', { deps: null });
 
     const snap = live.getSnapshot();
     expect(snap.error?.code).toBeDefined();
@@ -165,7 +168,7 @@ suite('@lenke/sync client · registry semantics', () => {
 
   test('a torn-down handle revives on re-subscribe (StrictMode mount dance)', () => {
     const { client, wire } = connect();
-    const live = client.liveQuery('MATCH (p:Person) RETURN p.name');
+    const live = client.liveQuery('MATCH (p:Person) RETURN p.name', { deps: null });
 
     const stop = live.subscribe(() => {});
     stop(); // refcount → 0 → wire unsubscribe
@@ -212,7 +215,10 @@ suite('@lenke/sync client · registry semantics', () => {
   test('keyed diffs apply as patch/remove/order and keep unchanged-row identity', () => {
     const wire: ClientMessage[] = [];
     const client = createSyncClient({ send: (m) => wire.push(m) });
-    const live = client.liveQuery('MATCH (p:Person) RETURN p.name, p.age', { key: 'p.name' });
+    const live = client.liveQuery('MATCH (p:Person) RETURN p.name, p.age', {
+      deps: null,
+      key: 'p.name',
+    });
     live.subscribe(() => {});
     const { sub } = wire.find((m) => m.type === 'subscribe') as { sub: string };
 
@@ -281,6 +287,7 @@ suite('@lenke/sync client · registry semantics', () => {
   test('keyed round-trip over a real host: a cell edit updates rows in place', () => {
     const { client, store } = connect();
     const live = client.liveQuery('MATCH (p:Person) RETURN p.name, p.age ORDER BY p.name', {
+      deps: null,
       key: 'p.name',
     });
     live.subscribe(() => {});
@@ -315,7 +322,7 @@ suite('@lenke/sync client · registry semantics', () => {
     // A black-hole transport: nothing ever answers, so requests stay pending.
     const client = createSyncClient({ send: (m) => wire.push(m) });
 
-    const live = client.liveQuery('MATCH (p:Person) RETURN p.name');
+    const live = client.liveQuery('MATCH (p:Person) RETURN p.name', { deps: null });
     live.subscribe(() => {});
     expect(live.getSnapshot().complete).toBe(false); // INITIAL — nothing answered
 

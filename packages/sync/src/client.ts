@@ -76,9 +76,13 @@ export type SyncClient = {
    */
   liveQuery: (
     query: string,
-    opts?: {
+    opts: {
+      /**
+       * Dependency posture — **required**: token array (epoch-gated), `[]`
+       * (never recomputes), or `null` (recompute on every change). No inference.
+       */
+      deps: readonly string[] | null;
       params?: QueryParams;
-      deps?: readonly string[];
       /** Row-identity column → keyed diff pushes (patch/remove) instead of full rows. */
       key?: string;
     },
@@ -157,7 +161,7 @@ type Entry = {
   /** The subscribe payload, retained so {@link SyncClient.replay} can re-emit it. */
   query: string;
   params?: QueryParams;
-  deps?: readonly string[];
+  deps: readonly string[] | null;
   /** Row-identity column, if this subscription requested keyed diffs. */
   key?: string;
   /** Current rows by canonical key — the base each keyed diff is applied onto. */
@@ -196,14 +200,9 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
 
   const liveQuery = (
     query: string,
-    opts?: { params?: QueryParams; deps?: readonly string[]; key?: string },
+    opts: { deps: readonly string[] | null; params?: QueryParams; key?: string },
   ): ClientLiveQuery => {
-    const signature = canonical([
-      query,
-      opts?.params ?? null,
-      opts?.deps ?? null,
-      opts?.key ?? null,
-    ]);
+    const signature = canonical([query, opts.params ?? null, opts.deps, opts.key ?? null]);
     const existing = entries.get(signature);
 
     if (existing) {
@@ -218,9 +217,9 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
     const entry: Entry = {
       sub: '',
       query,
-      params: opts?.params,
-      deps: opts?.deps,
-      key: opts?.key,
+      params: opts.params,
+      deps: opts.deps,
+      key: opts.key,
       snapshot: INITIAL,
       listeners: new Set(),
       handle: {
@@ -258,9 +257,9 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
         type: 'subscribe',
         sub: entry.sub,
         query,
-        params: opts?.params,
-        deps: opts?.deps,
-        key: opts?.key,
+        deps: opts.deps,
+        params: opts.params,
+        key: opts.key,
       });
     };
 
