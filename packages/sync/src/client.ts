@@ -84,6 +84,13 @@ export type SyncClient = {
   mutate: (gql: string, params?: QueryParams) => Promise<void>;
   /** The host's last `status` message, if any. */
   getStatus: () => { connected: boolean; pendingWrites: number } | null;
+  /**
+   * Subscribe to host `status` pushes (connectivity, pending-write count);
+   * returns an unsubscribe fn. Pairs with {@link getStatus} for a poll-free
+   * `useSyncExternalStore(onStatus, getStatus)` — the snapshot reference is
+   * stable between pushes.
+   */
+  onStatus: (cb: () => void) => () => void;
   /** Live wire-subscription count — for tests and debugging. */
   subscriptionCount: () => number;
   /**
@@ -166,6 +173,7 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
   const pending = new Map<string, Pending>(); // req id → resolver
   let nextId = 0;
   let status: { connected: boolean; pendingWrites: number } | null = null;
+  const statusListeners = new Set<() => void>();
 
   const liveQuery = (
     query: string,
@@ -309,7 +317,13 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
         return;
       }
       case 'status': {
+        // A fresh object only on an actual push, so getStatus() stays a stable
+        // reference between messages (useSyncExternalStore-safe).
         status = { connected: msg.connected, pendingWrites: msg.pendingWrites };
+
+        for (const l of statusListeners) {
+          l();
+        }
 
         return;
       }
@@ -323,6 +337,11 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
     query,
     mutate,
     getStatus: () => status,
+    onStatus: (cb) => {
+      statusListeners.add(cb);
+
+      return () => statusListeners.delete(cb);
+    },
     subscriptionCount: () => bySub.size,
     replay: () => {
       // Re-subscribe every active standing query (inactive entries — no local
@@ -358,6 +377,7 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
       }
 
       pending.clear();
+      statusListeners.clear();
     },
   };
 };

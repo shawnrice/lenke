@@ -35,14 +35,10 @@ const useLive = (live: ClientLiveQuery) => useSyncExternalStore(live.subscribe, 
 // ---------------------------------------------------------------------------
 
 const StatusBar = () => {
-  // Poll the client's status line (it updates on every queue/connectivity
-  // change the worker relays; a status *subscription* is a later protocol
-  // nicety — finding for the list).
-  const [, force] = useState(0);
-  useMemo(() => {
-    setInterval(() => force((n) => n + 1), 1000);
-  }, []);
-  const status = client.getStatus();
+  // Reactive, poll-free: the host pushes `status` on every queue/connectivity
+  // change and the client wakes onStatus subscribers — straight into
+  // useSyncExternalStore, no interval.
+  const status = useSyncExternalStore(client.onStatus, client.getStatus);
 
   return (
     <p style={{ fontFamily: 'monospace' }}>

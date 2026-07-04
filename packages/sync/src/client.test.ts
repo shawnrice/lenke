@@ -187,6 +187,28 @@ suite('@lenke/sync client · registry semantics', () => {
     expect(client.getStatus()).toEqual({ connected: true, pendingWrites: 0 });
   });
 
+  test('onStatus wakes subscribers on each push; getStatus is a stable ref between', () => {
+    const client = createSyncClient({ send: () => {} });
+    let calls = 0;
+    const stop = client.onStatus(() => {
+      calls += 1;
+    });
+
+    client.receive({ type: 'status', connected: true, pendingWrites: 0, protocol: 1 });
+    const first = client.getStatus();
+    expect(calls).toBe(1);
+    expect(first).toEqual({ connected: true, pendingWrites: 0 });
+    expect(client.getStatus()).toBe(first); // no new object between pushes (useSyncExternalStore-safe)
+
+    client.receive({ type: 'status', connected: true, pendingWrites: 2, protocol: 1 });
+    expect(calls).toBe(2);
+    expect(client.getStatus()).toEqual({ connected: true, pendingWrites: 2 });
+
+    stop();
+    client.receive({ type: 'status', connected: false, pendingWrites: 5, protocol: 1 });
+    expect(calls).toBe(2); // unsubscribed — no further wakes
+  });
+
   test('close unsubscribes everything and rejects pending requests', async () => {
     const wire: ClientMessage[] = [];
     // A black-hole transport: nothing ever answers, so requests stay pending.
