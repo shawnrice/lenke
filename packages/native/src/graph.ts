@@ -96,15 +96,58 @@ const compileGql = (
   return { text, params: JSON.stringify(bindings) };
 };
 
-// Gremlin has no engine-side params surface, so its tagged template still
-// splices text. CAUTION: never build Gremlin from untrusted values — prefer
-// GQL (parameterized) for anything carrying user input.
-const spliceText = (q: string | TemplateStringsArray, subs: unknown[]): string => {
-  if (isTemplate(q)) {
-    return q.reduce((acc, part, i) => acc + part + (i < subs.length ? String(subs[i]) : ''), '');
+/**
+ * Serialize a JS scalar to a **safe** Gremlin literal — the injection-proof way
+ * to put a value into traversal text, since Gremlin has no engine-side param
+ * binding (unlike GQL's `$name`). Strings are single-quoted with `\` and `'`
+ * escaped exactly as the lexer decodes them, so a value can never break out of
+ * the literal; finite non-exponential numbers and `bigint`s pass through;
+ * booleans map to `true`/`false`. `null`/`undefined` and non-scalars throw —
+ * the engine has no literal for them.
+ */
+export const escapeGremlin = (value: unknown): string => {
+  switch (typeof value) {
+    case 'string':
+      return `'${value.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+    case 'boolean':
+      return value ? 'true' : 'false';
+    case 'bigint':
+      return value.toString();
+    case 'number': {
+      const text = String(value);
+
+      // The lexer's number grammar is `-?[0-9.]+` — no exponent form, no NaN.
+      if (!/^-?\d+(\.\d+)?$/.test(text)) {
+        throw new LenkeError(`lenke: gremlin cannot embed the number ${text} as a literal`, {
+          code: ErrorCode.InvalidGraphOp,
+        });
+      }
+
+      return text;
+    }
+    default:
+      throw new LenkeError(
+        `lenke: gremlin cannot embed a ${value === null ? 'null' : typeof value} value as a literal`,
+        { code: ErrorCode.InvalidGraphOp },
+      );
+  }
+};
+
+/**
+ * Build Gremlin traversal text with each `${value}` escaped via
+ * {@link escapeGremlin} — the safe way to construct a traversal string for the
+ * wire (e.g. to hand to a sync client). As a plain string it is a pass-through
+ * (nothing to escape). This is Gremlin's answer to GQL parameter binding.
+ */
+export const gremlin = (q: string | TemplateStringsArray, ...subs: unknown[]): string => {
+  if (!isTemplate(q)) {
+    return q;
   }
 
-  return q;
+  return q.reduce(
+    (acc, part, i) => acc + part + (i < subs.length ? escapeGremlin(subs[i]) : ''),
+    '',
+  );
 };
 
 /**
@@ -137,8 +180,10 @@ export type RustGraph = {
   };
   /**
    * Run a textual Gremlin query → JSON-decoded result stream. Gremlin has no
-   * params surface: template `${}` values are SPLICED into the text — never
-   * feed it untrusted input (use parameterized GQL for that).
+   * engine param surface, so template `${}` values are escaped into safe
+   * literals via {@link escapeGremlin} (not raw-spliced) — so
+   * ``g.gremlin`g.V().has('name', ${userInput})` `` is injection-safe. Build a
+   * traversal string for elsewhere with the {@link gremlin} tag.
    */
   gremlin: (q: string | TemplateStringsArray, ...subs: unknown[]) => unknown[];
   /** Serialize the graph back to NDJSON bytes. */
@@ -171,8 +216,10 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
 
     return backend.queryArrow(handle, text, params);
   },
+  // `gremlin(...)` here is the module-level composer (safe escaping), not this
+  // property — object keys don't bind in scope.
   gremlin: (q, ...subs) =>
-    parseJson(backend.gremlinJson(handle, spliceText(q, subs)), 'gremlin') as unknown[],
+    parseJson(backend.gremlinJson(handle, gremlin(q, ...subs)), 'gremlin') as unknown[],
   toNdjson: () => backend.encodeNdjson(handle),
   serialize: (format) => decoder.decode(backend.serialize(handle, format)),
   free: () => backend.graphFree(handle),

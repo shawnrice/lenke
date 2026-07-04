@@ -42,7 +42,7 @@
  */
 
 import { ErrorCode, LenkeError } from '@lenke/errors';
-import type { QueryParams, Row } from '@lenke/native';
+import { gremlin as buildGremlin, type QueryParams, type Row } from '@lenke/native';
 
 import { isHostMessage, type ClientMessage, type RowsMessage, type WireError } from './protocol.js';
 
@@ -89,7 +89,8 @@ export type SyncClient = {
       key?: string;
       /**
        * `'gremlin'` makes this a standing Gremlin traversal — the snapshot's
-       * `values` (not `rows`) carry the result. No param binding; `key` ignored.
+       * `values` (not `rows`) carry the result. `key` ignored. No engine param
+       * binding — build `query` with the `gremlin` tag / `escapeGremlin`.
        */
       lang?: 'gql' | 'gremlin';
     },
@@ -97,12 +98,13 @@ export type SyncClient = {
   /** One-shot GQL query → rows. */
   query: (query: string, params?: QueryParams) => Promise<Row[]>;
   /**
-   * One-shot Gremlin traversal → its JSON result values. Gremlin has no
-   * parameter binding (the text runs as-is), so never build a traversal from
-   * untrusted input — reach for {@link query} with `params` when values come
-   * from the user.
+   * One-shot Gremlin traversal → its JSON result values. Use it as a tagged
+   * template to interpolate values safely — each `${v}` is escaped into a
+   * Gremlin literal (Gremlin has no param binding), so
+   * ``client.gremlin`g.V().has('name', ${userInput}).values('age')` `` is
+   * injection-safe. A plain string is sent as-is (you own its safety).
    */
-  gremlin: (traversal: string) => Promise<unknown[]>;
+  gremlin: (traversal: string | TemplateStringsArray, ...subs: unknown[]) => Promise<unknown[]>;
   /** Apply a mutation; resolves on `ack ok`, rejects with the coded error. */
   mutate: (gql: string, params?: QueryParams) => Promise<void>;
   /** The host's last `status` message, if any. */
@@ -299,10 +301,16 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
       send(msg);
     });
 
-  const gremlin = (traversal: string): Promise<unknown[]> =>
+  const gremlin = (
+    traversal: string | TemplateStringsArray,
+    ...subs: unknown[]
+  ): Promise<unknown[]> =>
     new Promise<unknown[]>((resolve, reject) => {
       const req = `g${++nextId}`;
-      const msg: ClientMessage = { type: 'query', req, query: traversal, lang: 'gremlin' };
+      // Tagged-template subs are escaped into safe literals; a plain string
+      // passes through (buildGremlin is @lenke/native's `gremlin` composer).
+      const text = buildGremlin(traversal, ...subs);
+      const msg: ClientMessage = { type: 'query', req, query: text, lang: 'gremlin' };
       pending.set(req, { resolve: resolve as (v: never) => void, reject, kind: 'gremlin', msg });
       send(msg);
     });

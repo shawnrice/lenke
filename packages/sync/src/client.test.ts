@@ -317,6 +317,18 @@ suite('@lenke/sync client · registry semantics', () => {
     expect([...(names as string[])].sort()).toEqual(['marko', 'vadas']);
   });
 
+  test('client.gremlin as a tagged template escapes interpolations — injection stays inert', async () => {
+    const { client, store } = connect();
+    const before = store.graph.vertexCount;
+
+    const evil = "marko'); g.V().drop(); //";
+    const rows = await client.gremlin`g.V().has('name', ${evil}).values('name')`;
+
+    expect(rows).toEqual([]); // one literal string — matches nothing
+    expect(store.graph.vertexCount).toBe(before); // the graph was NOT dropped
+    expect(await client.gremlin`g.V().has('name', ${'marko'}).count()`).toEqual([1]);
+  });
+
   test('a Gremlin live query exposes values on its snapshot and updates on change', () => {
     const { client, store } = connect();
     const live = client.liveQuery('g.V().count()', { deps: ['Person'], lang: 'gremlin' });

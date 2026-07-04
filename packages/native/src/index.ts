@@ -35,8 +35,10 @@ export { ABI_VERSION } from './abi.js';
 export type { Backend, GraphHandle } from './backend.js';
 export {
   attachGraph,
+  escapeGremlin,
   graphFromFormat,
   graphFromNdjson,
+  gremlin,
   type QueryParams,
   type RustGraph,
   type Row,

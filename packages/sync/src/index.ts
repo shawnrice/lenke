@@ -33,6 +33,9 @@ export {
   type SyncEngineOptions,
 } from './engine.js';
 export { createSyncHost, type SyncHost, type SyncHostOptions } from './host.js';
+// Re-exported so wire consumers can build safe Gremlin traversal strings (for
+// `client.gremlin` / a `lang: 'gremlin'` live query) without importing native.
+export { escapeGremlin, gremlin } from '@lenke/native';
 export {
   createReconnectingClient,
   type ReconnectingClient,

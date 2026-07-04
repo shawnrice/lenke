@@ -82,7 +82,8 @@ export type SubscribeMessage = {
    * Query language, default `'gql'`. `'gremlin'` makes this a standing Gremlin
    * traversal: pushes carry `values` (arbitrary JSON) instead of `rows`, full
    * each time (no keyed diffs). `deps` gating works identically. Gremlin has no
-   * param binding — never build the traversal from untrusted input.
+   * engine param binding — build the text with the `gremlin` tag / `escapeGremlin`
+   * to interpolate values safely.
    */
   lang?: 'gql' | 'gremlin';
   /** Windowed read for grids. Reserved in v1 — carried but not yet interpreted. */
@@ -106,10 +107,10 @@ export type QueryMessage = {
   /**
    * Query language, default `'gql'`. `'gremlin'` runs the text through the
    * Gremlin engine and answers with `values` (arbitrary JSON) instead of
-   * `rows`. Gremlin has **no parameter binding** — it is spliced as text — so
-   * never build a Gremlin traversal from untrusted input; use `'gql'` with
-   * `params` when values come from the user. One-shot only for now; live
-   * Gremlin subscriptions (epoch-gated) are a later step.
+   * `rows`. Gremlin has no engine param binding, so interpolate values with the
+   * `gremlin` tag / `escapeGremlin` (they escape into safe literals) rather than
+   * string concatenation. (`client.gremlin` as a tagged template does this for
+   * you.)
    */
   lang?: 'gql' | 'gremlin';
 };

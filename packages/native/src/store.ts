@@ -62,9 +62,10 @@ export type Store = {
   /**
    * The Gremlin twin of {@link liveQuery}: a standing traversal whose result
    * values (arbitrary JSON, not rows) are recomputed under the same `deps`
-   * gating. Gremlin has no param binding, so the text runs as-is — never build
-   * a traversal from untrusted input. The traversal must be a **read**; a
-   * mutating step in a live query would rewrite the graph on every recompute.
+   * gating. Gremlin has no engine param binding, so interpolate values with the
+   * {@link gremlin} tag / {@link escapeGremlin} (safe literals). The traversal
+   * must be a **read**; a mutating step in a live query would rewrite the graph
+   * on every recompute.
    */
   liveGremlin: (text: string, opts: { deps: readonly string[] | null }) => LiveQuery<unknown>;
 };

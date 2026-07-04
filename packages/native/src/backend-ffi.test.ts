@@ -9,7 +9,7 @@ import { ErrorCode, hasErrorCode, isLenkeError } from '@lenke/errors';
 
 import { ABI_VERSION } from './abi.js';
 import { createFfiBackend } from './backend-ffi.js';
-import { graphFromFormat, graphFromNdjson } from './graph.js';
+import { escapeGremlin, graphFromFormat, graphFromNdjson, gremlin } from './graph.js';
 
 // The shared-library extension is platform-specific: macOS `.dylib`, Linux
 // `.so`, Windows `.dll`. `build:rust` emits the one for the host.
@@ -74,6 +74,37 @@ suite('@lenke/native FFI backend', () => {
     const g = graphFromNdjson(backend, bytes);
     const names = g.gremlin("g.V().has('name','marko').out('knows').values('name')");
     expect(names).toEqual(['vadas']);
+    g.free();
+  });
+
+  test('escapeGremlin serializes scalars to safe literals and rejects the rest', () => {
+    expect(escapeGremlin("o'brien")).toBe("'o\\'brien'");
+    expect(escapeGremlin(29)).toBe('29');
+    expect(escapeGremlin(-3.5)).toBe('-3.5');
+    expect(escapeGremlin(true)).toBe('true');
+    expect(escapeGremlin(false)).toBe('false');
+    expect(() => escapeGremlin(null)).toThrow(); // no gremlin null literal
+    expect(() => escapeGremlin(1e21)).toThrow(); // exponent form isn't lexable
+    expect(() => escapeGremlin({ a: 1 })).toThrow();
+
+    expect(gremlin`g.V().has('name', ${'marko'}).count()`).toBe(
+      "g.V().has('name', 'marko').count()",
+    );
+  });
+
+  test('the Gremlin tagged template escapes interpolations — injection stays inert', () => {
+    const backend = createFfiBackend(LIB);
+    const g = graphFromNdjson(backend, bytes);
+    const before = g.vertexCount;
+
+    // A value engineered to close the string and inject a drop must not run.
+    const evil = "marko'); g.V().drop(); //";
+    const rows = g.gremlin`g.V().has('name', ${evil}).values('name')`;
+
+    expect(rows).toEqual([]); // matched nothing — it's one literal string
+    expect(g.vertexCount).toBe(before); // the graph was NOT dropped
+    // A legit value with a quote still round-trips and matches:
+    expect(g.gremlin`g.V().has('name', ${'marko'}).count()`).toEqual([1]);
     g.free();
   });
 
