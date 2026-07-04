@@ -8,12 +8,14 @@
  * **structural**: a host conforms by emitting these tags; consumers may write
  * the same shapes down independently with no dependency in either direction.
  *
- * v1 is deliberately brutal-minimal (~6 messages). Arrow-buffer negotiation,
- * row diffs, and resumable subscriptions are extensions, not v1.
+ * v1 is deliberately brutal-minimal (~6 messages). Arrow-buffer negotiation and
+ * resumable subscriptions remain extensions; **keyed row diffs** have landed as
+ * a backward-compatible one (declare `key` on subscribe → patch/remove/order
+ * pushes; without it, the full-`rows` v1 shape is unchanged).
  *
  * ```
- * client → host:  subscribe   { sub, query, params?, deps?, window? }
- * host → client:  rows        { sub, rows, version, complete }   // now, then on change
+ * client → host:  subscribe   { sub, query, params?, deps?, key?, window? }
+ * host → client:  rows        { sub, rows | (patch, remove, order), version, complete }  // now, then on change
  * client → host:  unsubscribe { sub }
  * client → host:  query       { req, query, params? }            // one-shot
  * host → client:  result      { req, rows | error }
@@ -60,6 +62,14 @@ export type SubscribeMessage = {
    * (over-grabbing is safe; it only costs a recompute).
    */
   deps?: readonly string[];
+  /**
+   * Row-identity column for **keyed diffs**. When present, the value of this
+   * column identifies a row across pushes, so the host sends only what changed
+   * (`patch` / `remove` / `order`) instead of the whole result each time. When
+   * absent, every push carries the full `rows` — the shape a keyless query
+   * (aggregates) needs, and the only one a minimal v1 consumer must understand.
+   */
+  key?: string;
   /** Windowed read for grids. Reserved in v1 — carried but not yet interpreted. */
   window?: { offset: number; limit: number };
 };
@@ -100,16 +110,36 @@ export type ClientMessage = SubscribeMessage | UnsubscribeMessage | QueryMessage
 // host → client
 // ---------------------------------------------------------------------------
 
+/** One upsert in a keyed diff: the row's key value + the columns that changed
+ *  (all columns when the row is new). The client merges `set` into the prior row. */
+export type RowPatch = {
+  key: unknown;
+  set: Row;
+};
+
 /**
  * A subscription push: the current result of a standing query. Sent once on
  * subscribe and again on every relevant change. On a subscription failure
- * (bad query, rejected params) this carries `error` instead of `rows`, and the
+ * (bad query, rejected params) this carries `error` instead of rows, and the
  * subscription is closed.
+ *
+ * Two shapes, chosen by whether the subscription declared a `key`:
+ * - **Keyless** — `rows` carries the full result every push (v1's only shape).
+ * - **Keyed diff** — `patch` (upserts, changed cells only), `remove` (gone key
+ *   values), and `order` (the full key order, present only when it changed);
+ *   the client applies them onto its retained rows. `rows` is absent.
  */
 export type RowsMessage = {
   type: 'rows';
   sub: string;
+  /** Full result (keyless subscriptions). Absent on keyed-diff pushes. */
   rows?: Row[];
+  /** Keyed diff: rows to upsert (changed cells only; all cells when new). */
+  patch?: RowPatch[];
+  /** Keyed diff: key values whose rows were removed. */
+  remove?: unknown[];
+  /** Keyed diff: the full key order after applying — sent only when it changed. */
+  order?: unknown[];
   /** The graph's mutation version at snapshot time. */
   version?: number;
   /**

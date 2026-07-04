@@ -36,7 +36,7 @@
  */
 
 import { isLenkeError } from '@lenke/errors';
-import { inferDeps, type LiveQuery, type QueryParams, type Store } from '@lenke/native';
+import { inferDeps, type LiveQuery, type QueryParams, type Row, type Store } from '@lenke/native';
 
 import {
   isClientMessage,
@@ -44,6 +44,8 @@ import {
   type HostMessage,
   type MutateMessage,
   type QueryMessage,
+  type RowPatch,
+  type RowsMessage,
   type SubscribeMessage,
   type WireError,
 } from './protocol.js';
@@ -99,6 +101,80 @@ const toWireError = (e: unknown): WireError => {
   return { code: 'Unknown', message: e instanceof Error ? e.message : String(e) };
 };
 
+/** Canonical, collision-free string for a key column's value. */
+const keyOf = (value: unknown): string => JSON.stringify(value) ?? 'null';
+
+type RowDiff = {
+  patch: RowPatch[];
+  remove: unknown[];
+  /** New key order — set only when the key sequence changed. */
+  order?: unknown[];
+  /** The next `prev` state: rows by canonical key, and the canonical key order. */
+  byKey: Map<string, Row>;
+  orderKeys: string[];
+};
+
+/**
+ * Diff the previous keyed result against the current rows: new/changed rows
+ * become `patch` (only the changed columns; all columns when the row is new),
+ * vanished keys become `remove`, and `order` rides along only when the key
+ * sequence actually moved (a pure cell change leaves it untouched → nothing
+ * extra crosses).
+ */
+const diffRows = (
+  keyCol: string,
+  prevByKey: Map<string, Row>,
+  prevOrder: readonly string[],
+  rows: readonly Row[],
+): RowDiff => {
+  const byKey = new Map<string, Row>();
+  const orderKeys: string[] = [];
+  const orderValues: unknown[] = [];
+  const patch: RowPatch[] = [];
+
+  for (const row of rows) {
+    const keyValue = row[keyCol];
+    const ck = keyOf(keyValue);
+    byKey.set(ck, row);
+    orderKeys.push(ck);
+    orderValues.push(keyValue);
+
+    const prev = prevByKey.get(ck);
+
+    if (prev === undefined) {
+      patch.push({ key: keyValue, set: { ...row } }); // first sighting → every column
+      continue;
+    }
+
+    const set: Row = {};
+    let changed = false;
+
+    for (const col of Object.keys(row)) {
+      if (!Object.is(row[col], prev[col])) {
+        set[col] = row[col];
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      patch.push({ key: keyValue, set });
+    }
+  }
+
+  const remove: unknown[] = [];
+
+  for (const [ck, prevRow] of prevByKey) {
+    if (!byKey.has(ck)) {
+      remove.push(prevRow[keyCol]);
+    }
+  }
+
+  const orderChanged =
+    orderKeys.length !== prevOrder.length || orderKeys.some((k, i) => k !== prevOrder[i]);
+
+  return { patch, remove, order: orderChanged ? orderValues : undefined, byKey, orderKeys };
+};
+
 export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost => {
   const { send } = options;
   const applyMutation =
@@ -111,6 +187,11 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
     live: LiveQuery;
     deps: readonly string[];
     params?: QueryParams;
+    /** Row-identity column → this subscription sends keyed diffs, not full rows. */
+    key?: string;
+    /** Prior keyed result, for diffing the next push (keyed subscriptions only). */
+    prevByKey: Map<string, Row>;
+    prevOrder: string[];
     last: unknown;
     lastComplete: boolean | null;
     stop: () => void;
@@ -132,7 +213,7 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
   // scope's load flip `complete` without any rows change. A snapshot failure
   // (e.g. a query that parses lazily) closes the subscription.
   const push = (sub: string, s: Subscription): void => {
-    let rows;
+    let rows: Row[];
 
     try {
       rows = s.live.getSnapshot();
@@ -149,9 +230,41 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
       return;
     }
 
+    const rowsChanged = rows !== s.last;
+
     s.last = rows;
     s.lastComplete = complete;
-    send({ type: 'rows', sub, rows, version: store.version, complete });
+
+    // Keyless: the full result every push (v1's shape, unchanged).
+    if (s.key === undefined) {
+      send({ type: 'rows', sub, rows, version: store.version, complete });
+
+      return;
+    }
+
+    // Keyed: send only what moved. When just `complete` flipped (rows ref
+    // unchanged), an empty diff carries the new flag without re-shipping rows.
+    const msg: RowsMessage = { type: 'rows', sub, version: store.version, complete };
+
+    if (rowsChanged) {
+      const d = diffRows(s.key, s.prevByKey, s.prevOrder, rows);
+      s.prevByKey = d.byKey;
+      s.prevOrder = d.orderKeys;
+
+      if (d.patch.length > 0) {
+        msg.patch = d.patch;
+      }
+
+      if (d.remove.length > 0) {
+        msg.remove = d.remove;
+      }
+
+      if (d.order !== undefined) {
+        msg.order = d.order;
+      }
+    }
+
+    send(msg);
   };
 
   const subscribe = (msg: SubscribeMessage): void => {
@@ -166,6 +279,9 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
       live,
       deps,
       params: msg.params,
+      key: msg.key,
+      prevByKey: new Map(),
+      prevOrder: [],
       last: null,
       lastComplete: null,
       stop: () => {},

@@ -209,6 +209,98 @@ suite('@lenke/sync client · registry semantics', () => {
     expect(calls).toBe(2); // unsubscribed — no further wakes
   });
 
+  test('keyed diffs apply as patch/remove/order and keep unchanged-row identity', () => {
+    const wire: ClientMessage[] = [];
+    const client = createSyncClient({ send: (m) => wire.push(m) });
+    const live = client.liveQuery('MATCH (p:Person) RETURN p.name, p.age', { key: 'p.name' });
+    live.subscribe(() => {});
+    const { sub } = wire.find((m) => m.type === 'subscribe') as { sub: string };
+
+    // Initial full diff: every row a patch, in order.
+    client.receive({
+      type: 'rows',
+      sub,
+      complete: true,
+      version: 1,
+      patch: [
+        { key: 'marko', set: { 'p.name': 'marko', 'p.age': 29 } },
+        { key: 'vadas', set: { 'p.name': 'vadas', 'p.age': 27 } },
+      ],
+      order: ['marko', 'vadas'],
+    });
+    expect(live.getSnapshot().rows).toEqual([
+      { 'p.name': 'marko', 'p.age': 29 },
+      { 'p.name': 'vadas', 'p.age': 27 },
+    ]);
+    const [marko] = live.getSnapshot().rows;
+
+    // A lone cell change to vadas (no order): marko keeps its object identity.
+    client.receive({
+      type: 'rows',
+      sub,
+      complete: true,
+      version: 2,
+      patch: [{ key: 'vadas', set: { 'p.age': 28 } }],
+    });
+    expect(live.getSnapshot().rows).toEqual([
+      { 'p.name': 'marko', 'p.age': 29 },
+      { 'p.name': 'vadas', 'p.age': 28 },
+    ]);
+    expect(live.getSnapshot().rows[0]).toBe(marko);
+
+    // Insert with a new order: marko is still the same object across the reorder.
+    client.receive({
+      type: 'rows',
+      sub,
+      complete: true,
+      version: 3,
+      patch: [{ key: 'aaron', set: { 'p.name': 'aaron', 'p.age': 40 } }],
+      order: ['aaron', 'marko', 'vadas'],
+    });
+    expect(live.getSnapshot().rows.map((r) => r['p.name'])).toEqual(['aaron', 'marko', 'vadas']);
+    expect(live.getSnapshot().rows[1]).toBe(marko);
+
+    // Remove vadas.
+    client.receive({
+      type: 'rows',
+      sub,
+      complete: true,
+      version: 4,
+      remove: ['vadas'],
+      order: ['aaron', 'marko'],
+    });
+    expect(live.getSnapshot().rows.map((r) => r['p.name'])).toEqual(['aaron', 'marko']);
+
+    // A completeness-only push (no ops) keeps the same rows array reference.
+    const rowsRef = live.getSnapshot().rows;
+    client.receive({ type: 'rows', sub, complete: false, version: 5 });
+    expect(live.getSnapshot().rows).toBe(rowsRef);
+    expect(live.getSnapshot().complete).toBe(false);
+  });
+
+  test('keyed round-trip over a real host: a cell edit updates rows in place', () => {
+    const { client, store } = connect();
+    const live = client.liveQuery('MATCH (p:Person) RETURN p.name, p.age ORDER BY p.name', {
+      key: 'p.name',
+    });
+    live.subscribe(() => {});
+    expect(live.getSnapshot().rows).toEqual([
+      { 'p.name': 'marko', 'p.age': 29 },
+      { 'p.name': 'vadas', 'p.age': 27 },
+    ]);
+    const [marko] = live.getSnapshot().rows;
+
+    // A write to the store fans out as a keyed diff; the client applies it.
+    store.mutate((g) =>
+      g.query('MATCH (p:Person) WHERE p.name = $n SET p.age = $a', { n: 'vadas', a: 28 }),
+    );
+    expect(live.getSnapshot().rows).toEqual([
+      { 'p.name': 'marko', 'p.age': 29 },
+      { 'p.name': 'vadas', 'p.age': 28 },
+    ]);
+    expect(live.getSnapshot().rows[0]).toBe(marko); // unchanged-row identity survives the round-trip
+  });
+
   test('close unsubscribes everything and rejects pending requests', async () => {
     const wire: ClientMessage[] = [];
     // A black-hole transport: nothing ever answers, so requests stay pending.

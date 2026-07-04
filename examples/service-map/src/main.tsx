@@ -77,7 +77,9 @@ const ServiceTable = ({ cluster }: { cluster: string }) => {
     () =>
       client.liveQuery(
         'MATCH (s:Service) WHERE s.cluster = $cluster RETURN s.sid, s.name, s.tier, s.status ORDER BY s.tier, s.name',
-        { params: { cluster }, deps },
+        // key: s.sid → the host sends keyed diffs, so flipping one service's
+        // status re-ships one cell, not the whole cluster's rows.
+        { params: { cluster }, deps, key: 's.sid' },
       ),
     [cluster],
   );

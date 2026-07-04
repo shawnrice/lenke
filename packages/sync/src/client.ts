@@ -44,7 +44,7 @@
 import { ErrorCode, LenkeError } from '@lenke/errors';
 import type { QueryParams, Row } from '@lenke/native';
 
-import { isHostMessage, type ClientMessage, type WireError } from './protocol.js';
+import { isHostMessage, type ClientMessage, type RowsMessage, type WireError } from './protocol.js';
 
 /** What a standing query currently knows. Stable reference between pushes. */
 export type ClientSnapshot = {
@@ -76,7 +76,12 @@ export type SyncClient = {
    */
   liveQuery: (
     query: string,
-    opts?: { params?: QueryParams; deps?: readonly string[] },
+    opts?: {
+      params?: QueryParams;
+      deps?: readonly string[];
+      /** Row-identity column → keyed diff pushes (patch/remove) instead of full rows. */
+      key?: string;
+    },
   ) => ClientLiveQuery;
   /** One-shot query → rows. */
   query: (query: string, params?: QueryParams) => Promise<Row[]>;
@@ -136,6 +141,9 @@ const canonical = (value: unknown): string => {
 const EMPTY_ROWS: Row[] = [];
 const INITIAL: ClientSnapshot = { rows: EMPTY_ROWS, complete: false };
 
+/** Canonical, collision-free string for a key column's value (matches the host). */
+const keyOf = (value: unknown): string => JSON.stringify(value) ?? 'null';
+
 type Entry = {
   /** Wire sub id — reassigned when a torn-down handle is revived. */
   sub: string;
@@ -143,6 +151,10 @@ type Entry = {
   query: string;
   params?: QueryParams;
   deps?: readonly string[];
+  /** Row-identity column, if this subscription requested keyed diffs. */
+  key?: string;
+  /** Current rows by canonical key — the base each keyed diff is applied onto. */
+  rowsByKey?: Map<string, Row>;
   snapshot: ClientSnapshot;
   listeners: Set<() => void>;
   handle: ClientLiveQuery;
@@ -177,9 +189,14 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
 
   const liveQuery = (
     query: string,
-    opts?: { params?: QueryParams; deps?: readonly string[] },
+    opts?: { params?: QueryParams; deps?: readonly string[]; key?: string },
   ): ClientLiveQuery => {
-    const signature = canonical([query, opts?.params ?? null, opts?.deps ?? null]);
+    const signature = canonical([
+      query,
+      opts?.params ?? null,
+      opts?.deps ?? null,
+      opts?.key ?? null,
+    ]);
     const existing = entries.get(signature);
 
     if (existing) {
@@ -196,6 +213,7 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
       query,
       params: opts?.params,
       deps: opts?.deps,
+      key: opts?.key,
       snapshot: INITIAL,
       listeners: new Set(),
       handle: {
@@ -225,7 +243,18 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
     const activate = (): void => {
       entry.sub = `s${++nextId}`;
       bySub.set(entry.sub, entry);
-      send({ type: 'subscribe', sub: entry.sub, query, params: opts?.params, deps: opts?.deps });
+      // A fresh wire sub means the host diffs from empty — reset our diff base so
+      // the initial (full) diff rebuilds cleanly, while the last snapshot stays
+      // on screen as the stale-but-honest starting point.
+      entry.rowsByKey = undefined;
+      send({
+        type: 'subscribe',
+        sub: entry.sub,
+        query,
+        params: opts?.params,
+        deps: opts?.deps,
+        key: opts?.key,
+      });
     };
 
     entries.set(signature, entry);
@@ -250,6 +279,49 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
       send(msg);
     });
 
+  // Apply a keyed diff (patch / remove / order) onto the entry's retained rows.
+  // Unchanged rows keep their object identity (pulled from the map untouched),
+  // so React list reconciliation skips them; only patched rows are new objects.
+  const applyDiff = (entry: Entry, msg: RowsMessage): void => {
+    const key = entry.key as string;
+    const structural =
+      (msg.patch?.length ?? 0) > 0 || (msg.remove?.length ?? 0) > 0 || msg.order !== undefined;
+
+    // A complete/version-only push carries no ops: keep the same rows array so
+    // the reference stays stable, and just refresh the flags.
+    if (!structural) {
+      settle(entry, {
+        rows: entry.snapshot.rows,
+        complete: msg.complete ?? true,
+        version: msg.version,
+      });
+
+      return;
+    }
+
+    const map = entry.rowsByKey ?? new Map<string, Row>();
+    entry.rowsByKey = map;
+
+    for (const kv of msg.remove ?? []) {
+      map.delete(keyOf(kv));
+    }
+
+    for (const p of msg.patch ?? []) {
+      const ck = keyOf(p.key);
+      const prev = map.get(ck);
+      map.set(ck, prev ? { ...prev, ...p.set } : { ...p.set });
+    }
+
+    // With `order`, rebuild in the given key order; without it (a pure cell
+    // change), keep the prior order and swap in the updated row objects.
+    const rows =
+      msg.order !== undefined
+        ? msg.order.map((kv) => map.get(keyOf(kv))).filter((r): r is Row => r !== undefined)
+        : entry.snapshot.rows.map((r) => map.get(keyOf(r[key])) ?? r);
+
+    settle(entry, { rows, complete: msg.complete ?? true, version: msg.version });
+  };
+
   const receive = (msg: unknown): void => {
     if (!isHostMessage(msg)) {
       return; // forward-compat: unknown tags fall through silently
@@ -268,7 +340,14 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
           // inactive. The handle stays canonical — a later subscribe retries.
           bySub.delete(msg.sub);
           entry.sub = '';
+          entry.rowsByKey = undefined;
           settle(entry, { rows: EMPTY_ROWS, complete: false, error: msg.error });
+
+          return;
+        }
+
+        if (entry.key !== undefined) {
+          applyDiff(entry, msg); // keyed subscription → diff push
 
           return;
         }
@@ -345,14 +424,18 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
     subscriptionCount: () => bySub.size,
     replay: () => {
       // Re-subscribe every active standing query (inactive entries — no local
-      // subscribers — stay silent), then re-send every unanswered one-shot.
+      // subscribers — stay silent), then re-send every unanswered one-shot. A
+      // fresh transport means the host diffs from empty, so reset each keyed
+      // diff base; the last snapshot stays on screen until the initial push.
       for (const entry of bySub.values()) {
+        entry.rowsByKey = undefined;
         send({
           type: 'subscribe',
           sub: entry.sub,
           query: entry.query,
           params: entry.params,
           deps: entry.deps,
+          key: entry.key,
         });
       }
 

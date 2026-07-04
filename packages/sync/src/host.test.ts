@@ -261,4 +261,79 @@ suite('@lenke/sync host · protocol v1', () => {
 
     expect(take()).toEqual([]);
   });
+
+  test('a keyed subscription pushes patch+order, then a lone patch on a cell change', () => {
+    const store = newStore();
+    const { host, take } = attach(store);
+    take(); // drain the attach status
+
+    host.receive({
+      type: 'subscribe',
+      sub: 's1',
+      query: 'MATCH (p:Person) RETURN p.name, p.age ORDER BY p.name',
+      key: 'p.name',
+    });
+
+    // Initial keyed push: every row as a full patch, the key order, no `rows`.
+    const first = rowsOf(take()[0]);
+    expect(first.rows).toBeUndefined();
+    expect(first.order).toEqual(['marko', 'vadas']);
+    expect(first.patch).toEqual([
+      { key: 'marko', set: { 'p.name': 'marko', 'p.age': 29 } },
+      { key: 'vadas', set: { 'p.name': 'vadas', 'p.age': 27 } },
+    ]);
+    expect(first.remove).toBeUndefined();
+
+    // One cell moves: exactly one patch of the changed column — no order, no full rows.
+    host.receive({
+      type: 'mutate',
+      req: 'w1',
+      gql: 'MATCH (p:Person) WHERE p.name = $n SET p.age = $a',
+      params: { n: 'marko', a: 30 },
+    });
+    const push = rowsOf(take().find((m) => m.type === 'rows') as HostMessage);
+    expect(push.patch).toEqual([{ key: 'marko', set: { 'p.age': 30 } }]);
+    expect(push.order).toBeUndefined();
+    expect(push.remove).toBeUndefined();
+    expect(push.rows).toBeUndefined();
+  });
+
+  test('keyed diffs carry remove when a row leaves the result, and order when membership moves', () => {
+    const store = newStore();
+    const { host, take } = attach(store);
+    take();
+
+    host.receive({
+      type: 'subscribe',
+      sub: 's1',
+      query: 'MATCH (p:Person) WHERE p.age >= $min RETURN p.name, p.age ORDER BY p.name',
+      params: { min: 27 },
+      key: 'p.name',
+    });
+    expect(rowsOf(take()[0]).order).toEqual(['marko', 'vadas']);
+
+    // A qualifying insert that sorts first → its full patch + the new order.
+    host.receive({
+      type: 'mutate',
+      req: 'w1',
+      gql: 'INSERT (:Person {name: $n, age: $a})',
+      params: { n: 'aaron', a: 40 },
+    });
+    const ins = rowsOf(take().find((m) => m.type === 'rows') as HostMessage);
+    expect(ins.patch).toEqual([{ key: 'aaron', set: { 'p.name': 'aaron', 'p.age': 40 } }]);
+    expect(ins.order).toEqual(['aaron', 'marko', 'vadas']);
+    expect(ins.remove).toBeUndefined();
+
+    // Push vadas below the threshold → it leaves the result → remove + order, no patch.
+    host.receive({
+      type: 'mutate',
+      req: 'w2',
+      gql: 'MATCH (p:Person) WHERE p.name = $n SET p.age = $a',
+      params: { n: 'vadas', a: 10 },
+    });
+    const del = rowsOf(take().find((m) => m.type === 'rows') as HostMessage);
+    expect(del.remove).toEqual(['vadas']);
+    expect(del.order).toEqual(['aaron', 'marko']);
+    expect(del.patch).toBeUndefined();
+  });
 });

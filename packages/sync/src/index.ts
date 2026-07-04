@@ -62,6 +62,7 @@ export {
   type MutateMessage,
   type QueryMessage,
   type ResultMessage,
+  type RowPatch,
   type RowsMessage,
   type StatusMessage,
   type SubscribeMessage,
