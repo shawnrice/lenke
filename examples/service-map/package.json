@@ -8,7 +8,8 @@
     "dev": "vite",
     "bundle": "vite build",
     "server": "node server.ts",
-    "smoke": "bun test"
+    "smoke": "bun test",
+    "e2e": "playwright test"
   },
   "dependencies": {
     "@lenke/native": "workspace:*",

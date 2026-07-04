@@ -84,9 +84,18 @@ const boot = async () => {
         );
 
         return [
+          // The server RETURNs columns named `s.sid`, `s.cluster`, … so remap
+          // them to the INSERT's `$sid` / `$cluster` param names (a raw `params:
+          // r` would bind nothing — every property would land null).
           ...services.map((r) => ({
             gql: 'INSERT (:Service {sid: $sid, name: $name, cluster: $cluster, tier: $tier, status: $status})',
-            params: r as Record<string, unknown>,
+            params: {
+              sid: r['s.sid'],
+              name: r['s.name'],
+              cluster: r['s.cluster'],
+              tier: r['s.tier'],
+              status: r['s.status'],
+            },
           })),
           ...calls.map((r) => ({
             gql:

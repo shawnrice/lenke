@@ -27,6 +27,8 @@ bun run dev       # terminal 2 → vite; open the printed URL (Chrome first: Sha
 
 Headless check without a browser: `bun run smoke` (spawns the real Node server, drives it with a protocol client over a real socket).
 
+**Real-browser check:** `bunx playwright install chromium` (once), then `bun run e2e`. Playwright boots the ws server + vite and drives the slice in Chromium — the paths the bun/node suites can't reach: the SharedWorker, the wasm engine, OPFS, and the cross-tab MessagePort push (open two tabs, flip a status in one, watch it land in the other). This harness caught a real loader bug the headless tests couldn't: the demand-fill mapped server rows (columns `s.sid`, `s.cluster`, …) straight onto INSERT params (`$sid`, `$cluster`, …), so every service loaded with null properties and the per-cluster `WHERE` matched nothing.
+
 ## The three demos
 
 1. **Live everywhere** — open two tabs, pick a cluster, flip a service to `down` in one tab; the other updates instantly (one SharedWorker store, one host per tab, epoch-routed pushes). Click `?` → **blast radius** lists everything transitively upstream of the victim.
