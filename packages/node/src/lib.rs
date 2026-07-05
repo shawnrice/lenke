@@ -14,20 +14,28 @@
 //! `RustGraph` / `createStore` / `liveQuery` facade on Node unchanged.
 
 use lenke_core::error::CodeError;
+use lenke_core::error_codes::ErrorCode;
 use lenke_core::gql::eval::Params;
 use lenke_core::graph::Graph as CoreGraph;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
-/// Turn a coded engine error into a JS exception. The stable `ErrorCode` is
-/// folded into the message tail (`[Code]`) so the JS side can still recover it;
-/// the human message leads, matching the `lenke: <op>: <message>` shape the
-/// other backends throw.
+/// Turn a coded engine error into a JS exception: a human `lenke: <op>: <message>`
+/// with the stable wire code in a machine-parseable tail (`[E_SYNTAX]`). The TS
+/// adapter (`backend.mjs`) reads the tail and rebuilds a `LenkeError` carrying the
+/// code, giving the napi addon full error-code parity with the bun:ffi and wasm
+/// backends — while a direct `Graph` user still reads a plain message.
 fn coded(op: &str, e: CodeError) -> Error {
     Error::new(
         Status::GenericFailure,
-        format!("lenke: {op}: {} [{:?}]", e.message, e.code),
+        format!("lenke: {op}: {} [{}]", e.message, e.code.as_str()),
     )
+}
+
+/// Coded error for a fixed message + code (parse failures, UTF-8 faults) — the
+/// same channel as [`coded`], so these carry a stable code too.
+fn coded_msg(op: &str, code: ErrorCode, message: impl Into<String>) -> Error {
+    coded(op, CodeError::new(code, message))
 }
 
 /// Decode the optional params-JSON argument (a flat `{"name": value}` object of
@@ -55,9 +63,10 @@ impl Graph {
     #[napi(factory)]
     pub fn from_ndjson(bytes: Buffer, parallel: Option<bool>) -> Result<Self> {
         let text = std::str::from_utf8(&bytes).map_err(|_| {
-            Error::new(
-                Status::InvalidArg,
-                "lenke: NDJSON bytes are not valid UTF-8",
+            coded_msg(
+                "fromNdjson",
+                ErrorCode::Ffi,
+                "NDJSON bytes are not valid UTF-8",
             )
         })?;
         let inner = if parallel.unwrap_or(true) {
@@ -75,7 +84,11 @@ impl Graph {
     #[napi(factory)]
     pub fn deserialize(bytes: Buffer, format: String) -> Result<Self> {
         let text = std::str::from_utf8(&bytes).map_err(|_| {
-            Error::new(Status::InvalidArg, "lenke: input bytes are not valid UTF-8")
+            coded_msg(
+                "deserialize",
+                ErrorCode::Ffi,
+                "input bytes are not valid UTF-8",
+            )
         })?;
         let inner =
             lenke_core::codec::deserialize(text, &format).map_err(|e| coded("deserialize", e))?;
@@ -114,9 +127,10 @@ impl Graph {
     pub fn query(&mut self, text: String, params_json: Option<String>) -> Result<Buffer> {
         let params = decode_params("query", params_json.as_deref())?;
         let parsed = lenke_core::gql::parse(&text).map_err(|e| {
-            Error::new(
-                Status::GenericFailure,
-                format!("lenke: query: {} (pos {})", e.message, e.pos),
+            coded_msg(
+                "query",
+                ErrorCode::Syntax,
+                format!("{} (pos {})", e.message, e.pos),
             )
         })?;
         let rows = parsed
@@ -132,9 +146,10 @@ impl Graph {
     pub fn query_arrow(&mut self, text: String, params_json: Option<String>) -> Result<Buffer> {
         let params = decode_params("queryArrow", params_json.as_deref())?;
         let parsed = lenke_core::gql::parse(&text).map_err(|e| {
-            Error::new(
-                Status::GenericFailure,
-                format!("lenke: queryArrow: {} (pos {})", e.message, e.pos),
+            coded_msg(
+                "queryArrow",
+                ErrorCode::Syntax,
+                format!("{} (pos {})", e.message, e.pos),
             )
         })?;
         let blob = parsed
@@ -148,7 +163,7 @@ impl Graph {
     #[napi]
     pub fn gremlin(&mut self, text: String) -> Result<Buffer> {
         let plan = lenke_core::gremlin::parse(&text)
-            .map_err(|e| Error::new(Status::GenericFailure, format!("lenke: gremlin: {e}")))?;
+            .map_err(|e| coded_msg("gremlin", ErrorCode::Syntax, e))?;
         let vals = lenke_core::gremlin::try_run(&mut self.inner, &plan)
             .map_err(|e| coded("gremlin", e))?;
 

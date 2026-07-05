@@ -4,6 +4,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { ErrorCode, hasErrorCode, isLenkeError } from '@lenke/errors';
 import { graphFromNdjson, createStore } from '@lenke/native';
 
 import { createNodeBackend } from './backend.js';
@@ -104,8 +105,53 @@ test('params bind as data, never spliced (injection stays inert)', () => {
   assert.equal(hostile.rows.length, 0);
   assert.equal(g.vertexCount, before);
 
-  // Malformed params reject with the coded error, not silent misbehavior.
-  assert.throws(() => g.query('MATCH (p:Person) RETURN p', '{"bad":{"nested":1}}'), /InvalidJson/);
+  // Malformed params reject with the coded error, not silent misbehavior. The
+  // raw Graph message carries the stable WIRE code in its tail (`[E_INVALID_JSON]`),
+  // the same string the ffi/wasm backends surface — not the Rust Debug name.
+  assert.throws(
+    () => g.query('MATCH (p:Person) RETURN p', '{"bad":{"nested":1}}'),
+    /E_INVALID_JSON/,
+  );
+});
+
+test('createNodeBackend errors are coded LenkeErrors (parity with ffi/wasm)', () => {
+  const g = graphFromNdjson(createNodeBackend(), NDJSON);
+
+  // A GQL syntax error surfaces as a coded LenkeError, exactly as the bun:ffi
+  // and wasm backends do — so `hasErrorCode` works uniformly across all three.
+  let syntax;
+
+  try {
+    g.query('THIS IS NOT GQL');
+  } catch (e) {
+    syntax = e;
+  }
+
+  assert.ok(isLenkeError(syntax), 'a bad query should throw a LenkeError');
+  assert.ok(hasErrorCode(syntax, ErrorCode.Syntax), 'code should be E_SYNTAX');
+  assert.doesNotMatch(syntax.message, /\[E_/, 'the wire-code tag is stripped from the message');
+
+  // A Gremlin parse error is coded too.
+  let gremlin;
+
+  try {
+    g.gremlin('g.V().nope()');
+  } catch (e) {
+    gremlin = e;
+  }
+
+  assert.ok(hasErrorCode(gremlin, ErrorCode.Syntax), 'gremlin parse error → E_SYNTAX');
+
+  // Bad NDJSON reports its own code (E_INVALID_JSON), not a coarse fallback.
+  let bad;
+
+  try {
+    graphFromNdjson(createNodeBackend(), Buffer.from('not json'));
+  } catch (e) {
+    bad = e;
+  }
+
+  assert.ok(hasErrorCode(bad, ErrorCode.InvalidJson), 'bad NDJSON → E_INVALID_JSON');
 });
 
 test('createNodeBackend powers the @lenke/native facade + liveQuery', () => {

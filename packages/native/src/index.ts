@@ -45,6 +45,9 @@ export {
   type Row,
 } from './graph.js';
 export { createStore, inferDeps, type Store, type LiveQuery } from './store.js';
+// The napi adapter rebuilds coded LenkeErrors from the wire-code tag its N-API
+// exceptions carry, matching the errors the bun:ffi / wasm backends throw.
+export { errorFromNapi } from './marshal.js';
 
 /** True when running under Bun, where the native FFI backend is available. */
 export const isBun = typeof (globalThis as { Bun?: unknown }).Bun !== 'undefined';

@@ -63,3 +63,25 @@ export const parseErrorReport = (json: string): ErrorReport | null => {
 
   return parsed as ErrorReport;
 };
+
+/**
+ * Rebuild a {@link LenkeError} from the message an N-API exception carries. The
+ * napi addon (`@lenke/node`) throws `lenke: <op>: <message> [E_CODE]`, with the
+ * stable wire code in a trailing `[…]`; its adapter runs the message through here
+ * to recover the SAME coded error the bun:ffi and wasm backends surface via the
+ * last-error channel. A message with no code tail (an adapter-level fault, e.g. a
+ * bad handle) passes through as a generic {@link ErrorCode.Ffi} error.
+ */
+export const errorFromNapi = (message: string | undefined): LenkeError => {
+  if (message === undefined) {
+    return new LenkeError('lenke: native call failed', { code: ErrorCode.Ffi });
+  }
+
+  // The tail is always `[E_UPPER_SNAKE]` from ErrorCode::as_str(); the greedy
+  // `.*` (dotall for multi-line messages) binds it to the LAST such tail.
+  const tagged = /^(.*) \[(E_[A-Z_]+)\]$/s.exec(message);
+
+  return tagged
+    ? new LenkeError(tagged[1], { code: tagged[2] as ErrorCode })
+    : new LenkeError(message, { code: ErrorCode.Ffi });
+};
