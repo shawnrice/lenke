@@ -211,13 +211,19 @@ suite('createReconnectingClient', () => {
 
     const live = client.liveQuery('MATCH (p:Person) RETURN p.name', { deps: null });
     live.subscribe(() => {});
-    await until(() => live.getSnapshot().rows.length === 2, 'initial rows over a sync-open transport');
+    await until(
+      () => live.getSnapshot().rows.length === 2,
+      'initial rows over a sync-open transport',
+    );
 
     // Reconnect: the re-subscribe must reach the fresh host (a null-conn replay
     // would drop it and the new row would never appear).
     t.cut();
     store.mutate((g) => g.query("INSERT (:Person {name: 'carol'})"));
-    await until(() => live.getSnapshot().rows.length === 3, 're-subscribed after a sync-open reconnect');
+    await until(
+      () => live.getSnapshot().rows.length === 3,
+      're-subscribed after a sync-open reconnect',
+    );
 
     client.close();
   });
