@@ -40,6 +40,7 @@ import type { LiveQuery, QueryParams, Row, Store } from '@lenke/native';
 
 import {
   isClientMessage,
+  keyOf,
   type ClientMessage,
   type HostMessage,
   type MutateMessage,
@@ -101,9 +102,6 @@ const toWireError = (e: unknown): WireError => {
   return { code: 'Unknown', message: e instanceof Error ? e.message : String(e) };
 };
 
-/** Canonical, collision-free string for a key column's value. */
-const keyOf = (value: unknown): string => JSON.stringify(value) ?? 'null';
-
 type RowDiff = {
   patch: RowPatch[];
   remove: unknown[];
@@ -114,18 +112,35 @@ type RowDiff = {
   orderKeys: string[];
 };
 
+// Did a cell's value change? Identity for primitives; structural (JSON) for
+// object/array-valued columns — `graph.query` returns those as fresh references
+// each recompute, so `Object.is` alone would re-ship them on every push.
+const cellChanged = (a: unknown, b: unknown): boolean => {
+  if (Object.is(a, b)) {
+    return false;
+  }
+
+  if (a !== null && b !== null && typeof a === 'object' && typeof b === 'object') {
+    return JSON.stringify(a) !== JSON.stringify(b);
+  }
+
+  return true;
+};
+
 /**
  * Diff the previous keyed result against the current rows: new/changed rows
  * become `patch` (only the changed columns; all columns when the row is new),
- * vanished keys become `remove`, and `order` rides along only when the key
- * sequence actually moved (a pure cell change leaves it untouched → nothing
- * extra crosses).
+ * vanished keys become `remove`, and `order` rides along when the key sequence
+ * moved (a pure cell change leaves it untouched → nothing extra crosses) — or
+ * when `forceOrder` is set, which the host does on a subscription's first push
+ * so the client always receives an authoritative key set, even an empty one.
  */
 const diffRows = (
   keyCol: string,
   prevByKey: Map<string, Row>,
   prevOrder: readonly string[],
   rows: readonly Row[],
+  forceOrder: boolean,
 ): RowDiff => {
   const byKey = new Map<string, Row>();
   const orderKeys: string[] = [];
@@ -150,7 +165,7 @@ const diffRows = (
     let changed = false;
 
     for (const col of Object.keys(row)) {
-      if (!Object.is(row[col], prev[col])) {
+      if (cellChanged(row[col], prev[col])) {
         set[col] = row[col];
         changed = true;
       }
@@ -172,7 +187,13 @@ const diffRows = (
   const orderChanged =
     orderKeys.length !== prevOrder.length || orderKeys.some((k, i) => k !== prevOrder[i]);
 
-  return { patch, remove, order: orderChanged ? orderValues : undefined, byKey, orderKeys };
+  return {
+    patch,
+    remove,
+    order: orderChanged || forceOrder ? orderValues : undefined,
+    byKey,
+    orderKeys,
+  };
 };
 
 export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost => {
@@ -233,6 +254,11 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
     }
 
     const rowsChanged = rows !== s.last;
+    // The first push of a (re)subscribe must be authoritative — the client may
+    // hold stale rows from before a reconnect, and an empty result would
+    // otherwise carry no ops and leave them on screen. `s.last` is null only
+    // before the first push.
+    const firstPush = s.last === null;
 
     s.last = rows;
     s.lastComplete = complete;
@@ -256,7 +282,7 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
     const msg: RowsMessage = { type: 'rows', sub, version: store.version, complete };
 
     if (rowsChanged) {
-      const d = diffRows(s.key, s.prevByKey, s.prevOrder, rows as Row[]);
+      const d = diffRows(s.key, s.prevByKey, s.prevOrder, rows as Row[], firstPush);
       s.prevByKey = d.byKey;
       s.prevOrder = d.orderKeys;
 

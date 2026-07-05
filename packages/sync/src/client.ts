@@ -44,7 +44,13 @@
 import { ErrorCode, LenkeError } from '@lenke/errors';
 import { decodeArrow, gremlin as buildGremlin, type QueryParams, type Row } from '@lenke/native';
 
-import { isHostMessage, type ClientMessage, type RowsMessage, type WireError } from './protocol.js';
+import {
+  isHostMessage,
+  keyOf,
+  type ClientMessage,
+  type RowsMessage,
+  type WireError,
+} from './protocol.js';
 
 /** What a standing query currently knows. Stable reference between pushes. */
 export type ClientSnapshot = {
@@ -164,9 +170,6 @@ const canonical = (value: unknown): string => {
 
 const EMPTY_ROWS: Row[] = [];
 const INITIAL: ClientSnapshot = { rows: EMPTY_ROWS, complete: false };
-
-/** Canonical, collision-free string for a key column's value (matches the host). */
-const keyOf = (value: unknown): string => JSON.stringify(value) ?? 'null';
 
 /** Same columns, same values — used to keep a row's identity when a re-push doesn't change it. */
 const shallowEqualRow = (a: Row, b: Row): boolean => {
@@ -456,8 +459,19 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
           } else if (p.kind === 'gremlin') {
             (p.resolve as (values: unknown[]) => void)(msg.values ?? []);
           } else if (msg.arrow) {
-            // format: 'arrow' → decode the columnar blob to rows transparently.
-            (p.resolve as (rows: Row[]) => void)(decodeArrow(msg.arrow));
+            // format: 'arrow' → decode the columnar blob to rows. A decode
+            // failure (e.g. a JSON transport mangled the Uint8Array into an
+            // object) must REJECT the promise, not throw out of receive() and
+            // leave it hanging forever.
+            try {
+              (p.resolve as (rows: Row[]) => void)(decodeArrow(msg.arrow));
+            } catch {
+              p.reject(
+                new LenkeError('lenke: could not decode arrow result — needs a binary transport', {
+                  code: ErrorCode.Ffi,
+                }),
+              );
+            }
           } else {
             (p.resolve as (rows: Row[]) => void)(msg.rows ?? []);
           }

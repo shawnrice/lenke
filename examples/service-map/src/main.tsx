@@ -23,10 +23,12 @@ worker.port.start();
 const STATUSES = ['healthy', 'degraded', 'down'] as const;
 
 // Epoch dependency tokens: the labels/props whose changes must re-run this
-// query. The demand-fill *scope* (which cluster) is not here — it rides the
-// query's own `$cluster` param, which the worker's keyed `services` collection
-// reads directly.
-const deps = ['Service', 'name', 'tier', 'status'];
+// query. `cluster` is included because the query filters on it (`WHERE s.cluster
+// = $cluster`) — a reassignment must re-run the standing query, even though
+// `cluster` is an immutable partition key in this demo. The demand-fill *scope*
+// (which cluster) rides the query's own `$cluster` param, which the worker's
+// keyed `services` collection reads directly.
+const deps = ['Service', 'name', 'tier', 'status', 'cluster'];
 
 const useLive = (live: ClientLiveQuery) => useSyncExternalStore(live.subscribe, live.getSnapshot);
 

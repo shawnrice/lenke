@@ -136,19 +136,22 @@ export const createReconnectingClient = (
       return;
     }
 
-    // The `opened`/`closed` handlers close over this attempt's connection.
-    // Every real transport fires them asynchronously (never during `connect`
-    // itself), so `c` is always assigned by the time a handler reads it.
-    const c: ReconnectingConnection = options.connect({
+    // A holder so the `opened`/`closed` handlers can reference this attempt's
+    // connection without a temporal-dead-zone crash if a transport fires a
+    // handler synchronously *during* connect() (real sockets fire async, but a
+    // MessagePort/test double can be synchronous). `held.c` is filled in by the
+    // assignment right after connect() returns.
+    const held: { c: ReconnectingConnection | null } = { c: null };
+    held.c = options.connect({
       opened: () => {
-        conn = c;
+        conn = held.c;
         attempt = 0;
         setUp(true);
         inner.replay(); // re-subscribe + re-send parked one-shots
       },
       received: (m) => inner.receive(m),
       closed: () => {
-        if (conn === c) {
+        if (conn === held.c) {
           conn = null;
         }
 
@@ -161,7 +164,7 @@ export const createReconnectingClient = (
         redial = setTimeout(dial, Math.min(maxMs, baseMs * 2 ** attempt++));
       },
     });
-    conn = c;
+    conn = held.c;
   };
 
   dial();

@@ -65,8 +65,14 @@ export type SubscribeMessage = {
    * - `null` — depends on everything → recompute on every change.
    *
    * A client that wants inference derives the array itself with
-   * `inferDeps(query)` before subscribing. Demand-fill routes off the declared
-   * tokens, so `[]`/`null` also mean "no collection to demand-fill".
+   * `inferDeps(query)` before subscribing.
+   *
+   * **Demand-fill routes off these tokens.** A query over a demand-fill
+   * collection MUST list that collection's labels here, or it will neither
+   * load nor gate on it: `[]`/`null` match no collection, so the host reports
+   * `complete: true` immediately over whatever is already local (no skeleton,
+   * no load). Recompute-always (`null`) and demand-fill are therefore mutually
+   * exclusive — declare the labels to get demand-fill.
    */
   deps: readonly string[] | null;
   /**
@@ -250,4 +256,22 @@ export const isHostMessage = (msg: unknown): msg is HostMessage => {
   const t = tagOf(msg);
 
   return t !== null && HOST_TYPES.has(t);
+};
+
+/**
+ * Canonical, collision-free string for a keyed row's key value. The host (diff
+ * computation) and client (diff application) MUST agree byte-for-byte, so this
+ * lives in the shared protocol module rather than being copied into each. An
+ * absent key column (`undefined`) is kept distinct from a literal `null`.
+ *
+ * The key column must be **present and unique per row**; multiple rows sharing
+ * one key value (e.g. several `null`s) collapse to a single row in the diff.
+ */
+export const keyOf = (value: unknown): string => {
+  // JSON.stringify returns the value `undefined` for an undefined input, and a
+  // JSON text (quoted string / number / null / …) otherwise. The bare sentinel
+  // `undefined` can never be a JSON text, so it can't collide with a real key.
+  const s = JSON.stringify(value);
+
+  return s ?? 'undefined';
 };

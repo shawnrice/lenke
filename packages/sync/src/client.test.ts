@@ -328,11 +328,54 @@ suite('@lenke/sync client · registry semantics', () => {
       order: ['carol', 'marko', 'vadas'],
     });
 
-    const rows = live.getSnapshot().rows;
+    const { rows } = live.getSnapshot();
     expect(rows.map((r) => r['p.name'])).toEqual(['carol', 'marko', 'vadas']); // zoe dropped
     expect(rows.find((r) => r['p.name'] === 'marko')).toBe(marko); // identity survived reconnect
     expect(rows.find((r) => r['p.name'] === 'vadas')).not.toBe(vadas); // changed → new object
     expect(rows.find((r) => r['p.name'] === 'vadas')).toEqual({ 'p.name': 'vadas', 'p.age': 28 });
+  });
+
+  test('reconnect to an empty result: an authoritative empty order clears stale rows', () => {
+    const wire: ClientMessage[] = [];
+    const client = createSyncClient({ send: (m) => wire.push(m) });
+    const live = client.liveQuery('MATCH (p:Person) RETURN p.name', { deps: null, key: 'p.name' });
+    live.subscribe(() => {});
+    const { sub } = wire.find((m) => m.type === 'subscribe') as { sub: string };
+
+    client.receive({
+      type: 'rows',
+      sub,
+      complete: true,
+      version: 1,
+      patch: [
+        { key: 'a', set: { 'p.name': 'a' } },
+        { key: 'b', set: { 'p.name': 'b' } },
+      ],
+      order: ['a', 'b'],
+    });
+    expect(live.getSnapshot().rows).toHaveLength(2);
+
+    // Reconnect; the fresh host finds an empty result and (forceOrder) sends
+    // order: [] with no patch/remove. The client must drop the stale rows.
+    client.replay();
+    client.receive({ type: 'rows', sub, complete: true, version: 2, order: [] });
+    expect(live.getSnapshot().rows).toEqual([]);
+  });
+
+  test('an arrow result that fails to decode rejects the query promise (no hang)', async () => {
+    const wire: ClientMessage[] = [];
+    const client = createSyncClient({ send: (m) => wire.push(m) });
+    const pending = client.query('MATCH (p:Person) RETURN p.name', undefined, { format: 'arrow' });
+    const { req } = wire.find((m) => m.type === 'query') as { req: string };
+
+    // A JSON transport would deliver the Uint8Array as a plain object — decode
+    // must reject the promise, not throw out of receive() and hang it.
+    client.receive({ type: 'result', req, arrow: { 0: 65, 1: 66 } as unknown as Uint8Array });
+    let error: unknown;
+    await pending.catch((e: unknown) => {
+      error = e;
+    });
+    expect(String(error)).toMatch(/arrow/i);
   });
 
   test('keyed round-trip over a real host: a cell edit updates rows in place', () => {

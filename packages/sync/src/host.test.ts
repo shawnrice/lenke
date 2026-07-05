@@ -353,6 +353,27 @@ suite('@lenke/sync host · protocol v1', () => {
     expect(take()[0]).toEqual({ type: 'result', req: 'g2', values: ['vadas'] });
   });
 
+  test('a keyed subscription over an empty result sends an authoritative empty order', () => {
+    const { host, take } = attach(newStore());
+    take(); // drain status
+
+    // A query that matches nothing — the fresh subscription's first push must
+    // still tell the client "the current set is empty" (order: []), so a client
+    // holding stale rows from before a reconnect prunes them.
+    host.receive({
+      type: 'subscribe',
+      sub: 's1',
+      query: "MATCH (p:Person) WHERE p.name = 'nobody' RETURN p.name",
+      key: 'p.name',
+      deps: ['Person', 'name'],
+    });
+
+    const first = rowsOf(take()[0]);
+    expect(first.order).toEqual([]); // authoritative empty set (forced on first push)
+    expect(first.patch).toBeUndefined();
+    expect(first.rows).toBeUndefined();
+  });
+
   test('a mutating Gremlin fans out to a subscriber (runs through store.mutate)', () => {
     const store = newStore();
     const { host, take } = attach(store);

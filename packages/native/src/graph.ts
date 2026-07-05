@@ -157,7 +157,7 @@ const ARW_UTF8 = 3;
 
 /**
  * Decode an ARW1 columnar blob (from {@link RustGraph.queryArrow} /
- * `plg_query_arrow`) back into {@link Row}s. The blob is a 24-byte header
+ * `lnk_query_arrow`) back into {@link Row}s. The blob is a 24-byte header
  * (`"ARW1" | version | nrows | ncols`) + `ncols` × 40-byte descriptors + the
  * referenced Apache-Arrow little-endian buffers; this reads them in place (no
  * Arrow dependency). Its purpose on the wire: ship/transfer the columnar bytes
@@ -186,29 +186,35 @@ export const decodeArrow = (blob: Uint8Array): Row[] => {
     const buf2Off = dv.getUint32(d + 32, true);
     const name = td.decode(blob.subarray(nameOff, nameOff + nameLen));
 
-    // LSB-first validity bitmap; length 0 ⇒ every row valid (no nulls).
-    const valid = (i: number): boolean =>
-      validityLen === 0 || (blob[validityOff + (i >> 3)] & (1 << (i & 7))) !== 0;
+    // LSB-first validity bitmap; length 0 ⇒ every row valid (no nulls). The
+    // column type is invariant, so decide it ONCE and run a tight per-row loop
+    // (rather than re-testing the type on every one of the nrows cells).
+    const isNull = (i: number): boolean =>
+      validityLen !== 0 && (blob[validityOff + (i >> 3)] & (1 << (i & 7))) === 0;
 
-    for (let i = 0; i < nrows; i += 1) {
-      if (!valid(i)) {
-        rows[i][name] = null;
-        continue;
+    if (type === ARW_FLOAT64) {
+      for (let i = 0; i < nrows; i += 1) {
+        rows[i][name] = isNull(i) ? null : dv.getFloat64(buf1Off + i * 8, true);
       }
+    } else if (type === ARW_BOOL) {
+      for (let i = 0; i < nrows; i += 1) {
+        rows[i][name] = isNull(i) ? null : (blob[buf1Off + (i >> 3)] & (1 << (i & 7))) !== 0;
+      }
+    } else if (type === ARW_UTF8) {
+      for (let i = 0; i < nrows; i += 1) {
+        if (isNull(i)) {
+          rows[i][name] = null;
+          continue;
+        }
 
-      if (type === ARW_FLOAT64) {
-        rows[i][name] = dv.getFloat64(buf1Off + i * 8, true);
-      } else if (type === ARW_BOOL) {
-        rows[i][name] = (blob[buf1Off + (i >> 3)] & (1 << (i & 7))) !== 0;
-      } else if (type === ARW_UTF8) {
         const start = dv.getInt32(buf1Off + i * 4, true);
         const end = dv.getInt32(buf1Off + (i + 1) * 4, true);
         rows[i][name] = td.decode(blob.subarray(buf2Off + start, buf2Off + end));
-      } else {
-        throw new LenkeError(`lenke: arrow column '${name}' has unknown type ${type}`, {
-          code: ErrorCode.Ffi,
-        });
       }
+    } else {
+      throw new LenkeError(`lenke: arrow column '${name}' has unknown type ${type}`, {
+        code: ErrorCode.Ffi,
+      });
     }
   }
 
