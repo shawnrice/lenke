@@ -52,7 +52,7 @@ suite('createReconnectingClient', () => {
   // A controllable transport: each connection gets a fresh host over the shared
   // store (exactly the per-socket-host topology a server runs). `cut()` drops
   // the live connection, which triggers the manager's re-dial.
-  const makeTransport = (store: ReturnType<typeof createStore>) => {
+  const makeTransport = (store: ReturnType<typeof createStore>, opts?: { syncOpen?: boolean }) => {
     let liveClosed: (() => void) | null = null;
     let liveHost: ReturnType<typeof createSyncHost> | null = null;
     let allow = true; // when false, every dial fails to open (a held outage)
@@ -75,7 +75,14 @@ suite('createReconnectingClient', () => {
       });
       liveHost = host;
       liveClosed = closed;
-      queueMicrotask(opened);
+
+      // A real socket opens asynchronously; a MessagePort/test double may fire
+      // opened() synchronously during connect() — exercise both.
+      if (opts?.syncOpen) {
+        opened();
+      } else {
+        queueMicrotask(opened);
+      }
 
       return {
         send: (m) => {
@@ -191,5 +198,27 @@ suite('createReconnectingClient', () => {
     t.cut();
     await new Promise((r) => setTimeout(r, 10));
     expect(t.connects()).toBe(before);
+  });
+
+  test('a synchronously-opening transport still re-subscribes on reconnect', async () => {
+    // opened() fires DURING connect() (a MessagePort / test double). The manager
+    // must still replay over the live connection, not a null one.
+    const store = createStore(
+      graphFromNdjson(createFfiBackend(LIB), new TextEncoder().encode(NDJSON)),
+    );
+    const t = makeTransport(store, { syncOpen: true });
+    const client = createReconnectingClient({ connect: t.connect, retry: { baseMs: 1, maxMs: 5 } });
+
+    const live = client.liveQuery('MATCH (p:Person) RETURN p.name', { deps: null });
+    live.subscribe(() => {});
+    await until(() => live.getSnapshot().rows.length === 2, 'initial rows over a sync-open transport');
+
+    // Reconnect: the re-subscribe must reach the fresh host (a null-conn replay
+    // would drop it and the new row would never appear).
+    t.cut();
+    store.mutate((g) => g.query("INSERT (:Person {name: 'carol'})"));
+    await until(() => live.getSnapshot().rows.length === 3, 're-subscribed after a sync-open reconnect');
+
+    client.close();
   });
 });

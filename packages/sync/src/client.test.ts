@@ -357,9 +357,37 @@ suite('@lenke/sync client · registry semantics', () => {
 
     // Reconnect; the fresh host finds an empty result and (forceOrder) sends
     // order: [] with no patch/remove. The client must drop the stale rows.
+    // (The host-side production of that order is covered in host.test.ts; here
+    // we verify only that the client applies an empty order by pruning.)
     client.replay();
     client.receive({ type: 'rows', sub, complete: true, version: 2, order: [] });
     expect(live.getSnapshot().rows).toEqual([]);
+  });
+
+  test('reconnect while still loading keeps warm rows (incomplete first push, no order)', () => {
+    const wire: ClientMessage[] = [];
+    const client = createSyncClient({ send: (m) => wire.push(m) });
+    const live = client.liveQuery('MATCH (p:Person) RETURN p.name', { deps: null, key: 'p.name' });
+    live.subscribe(() => {});
+    const { sub } = wire.find((m) => m.type === 'subscribe') as { sub: string };
+
+    client.receive({
+      type: 'rows',
+      sub,
+      complete: true,
+      version: 1,
+      patch: [{ key: 'a', set: { 'p.name': 'a' } }],
+      order: ['a'],
+    });
+    const warm = live.getSnapshot().rows;
+    expect(warm).toHaveLength(1);
+
+    // Reconnect to a host still loading: empty-for-now + incomplete + NO order
+    // (the host does not force one while incomplete). The warm row must stay.
+    client.replay();
+    client.receive({ type: 'rows', sub, complete: false, version: 2 });
+    expect(live.getSnapshot().rows).toBe(warm); // same reference — not blanked
+    expect(live.getSnapshot().complete).toBe(false);
   });
 
   test('an arrow result that fails to decode rejects the query promise (no hang)', async () => {

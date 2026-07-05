@@ -374,6 +374,28 @@ suite('@lenke/sync host · protocol v1', () => {
     expect(first.rows).toBeUndefined();
   });
 
+  test('an INCOMPLETE empty keyed first push does not force order (warm rows preserved)', () => {
+    const sent: HostMessage[] = [];
+    // isComplete: false → the reconnected host is still loading its scope; an
+    // empty-for-now first push must NOT force order, or it would blank the
+    // client's warm rows.
+    const host = createSyncHost(newStore(), { send: (m) => sent.push(m), isComplete: () => false });
+    sent.length = 0; // drain the attach status
+
+    host.receive({
+      type: 'subscribe',
+      sub: 's1',
+      query: "MATCH (p:Person) WHERE p.name = 'nobody' RETURN p.name",
+      key: 'p.name',
+      deps: ['Person', 'name'],
+    });
+
+    const first = rowsOf(sent.find((m) => m.type === 'rows') as HostMessage);
+    expect(first.complete).toBe(false);
+    expect(first.order).toBeUndefined(); // NOT forced while incomplete
+    expect(first.patch).toBeUndefined();
+  });
+
   test('a mutating Gremlin fans out to a subscriber (runs through store.mutate)', () => {
     const store = newStore();
     const { host, take } = attach(store);

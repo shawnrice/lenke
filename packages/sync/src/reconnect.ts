@@ -136,21 +136,45 @@ export const createReconnectingClient = (
       return;
     }
 
-    // A holder so the `opened`/`closed` handlers can reference this attempt's
-    // connection without a temporal-dead-zone crash if a transport fires a
-    // handler synchronously *during* connect() (real sockets fire async, but a
-    // MessagePort/test double can be synchronous). `held.c` is filled in by the
-    // assignment right after connect() returns.
-    const held: { c: ReconnectingConnection | null } = { c: null };
+    // `opened`/`closed` may fire either synchronously during connect() (a
+    // MessagePort or test double) or asynchronously (real sockets). Per-dial
+    // state lets us handle both without a temporal-dead-zone crash and without
+    // acting on a half-built connection:
+    // - `goLive()` runs the open work only once BOTH the connection is assigned
+    //   AND `opened` has fired, so a synchronous open still replays over a live
+    //   `conn` (not `null`) rather than dropping every re-subscribe.
+    // - `settled` makes `closed` idempotent — a transport that signals close
+    //   more than once won't fork a second dial chain.
+    const held: { c: ReconnectingConnection | null; opened: boolean; settled: boolean } = {
+      c: null,
+      opened: false,
+      settled: false,
+    };
+
+    const goLive = (): void => {
+      if (!held.opened || held.c === null) {
+        return;
+      }
+
+      conn = held.c;
+      attempt = 0;
+      setUp(true);
+      inner.replay(); // re-subscribe + re-send parked one-shots, over the live conn
+    };
+
     held.c = options.connect({
       opened: () => {
-        conn = held.c;
-        attempt = 0;
-        setUp(true);
-        inner.replay(); // re-subscribe + re-send parked one-shots
+        held.opened = true;
+        goLive();
       },
       received: (m) => inner.receive(m),
       closed: () => {
+        if (held.settled) {
+          return;
+        }
+
+        held.settled = true;
+
         if (conn === held.c) {
           conn = null;
         }
@@ -164,7 +188,8 @@ export const createReconnectingClient = (
         redial = setTimeout(dial, Math.min(maxMs, baseMs * 2 ** attempt++));
       },
     });
-    conn = held.c;
+
+    goLive(); // if opened fired synchronously during connect(), run it now
   };
 
   dial();

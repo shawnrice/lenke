@@ -132,8 +132,9 @@ const cellChanged = (a: unknown, b: unknown): boolean => {
  * become `patch` (only the changed columns; all columns when the row is new),
  * vanished keys become `remove`, and `order` rides along when the key sequence
  * moved (a pure cell change leaves it untouched → nothing extra crosses) — or
- * when `forceOrder` is set, which the host does on a subscription's first push
- * so the client always receives an authoritative key set, even an empty one.
+ * when `forceOrder` is set, which the host does on a subscription's first
+ * *complete* push so the client always receives an authoritative key set, even
+ * an empty one (an incomplete first push is skipped, to preserve warm rows).
  */
 const diffRows = (
   keyCol: string,
@@ -254,11 +255,14 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
     }
 
     const rowsChanged = rows !== s.last;
-    // The first push of a (re)subscribe must be authoritative — the client may
-    // hold stale rows from before a reconnect, and an empty result would
-    // otherwise carry no ops and leave them on screen. `s.last` is null only
-    // before the first push.
-    const firstPush = s.last === null;
+    // The first *complete* push of a (re)subscribe must be authoritative — the
+    // client may hold stale rows from before a reconnect, and an empty result
+    // would otherwise carry no ops and leave them on screen. It must be gated on
+    // `complete`: an incomplete first push (a reconnected host still loading its
+    // scope) is legitimately empty-for-now, and forcing an empty order there
+    // would blank the warm rows the client is meant to keep. `s.last` is null
+    // only before the first push.
+    const firstAuthoritativePush = s.last === null && complete;
 
     s.last = rows;
     s.lastComplete = complete;
@@ -282,7 +286,7 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
     const msg: RowsMessage = { type: 'rows', sub, version: store.version, complete };
 
     if (rowsChanged) {
-      const d = diffRows(s.key, s.prevByKey, s.prevOrder, rows as Row[], firstPush);
+      const d = diffRows(s.key, s.prevByKey, s.prevOrder, rows as Row[], firstAuthoritativePush);
       s.prevByKey = d.byKey;
       s.prevOrder = d.orderKeys;
 
