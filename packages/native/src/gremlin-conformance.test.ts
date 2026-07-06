@@ -44,6 +44,7 @@ import {
   out,
   type Plan,
   type Predicate,
+  regex,
   type Step,
   sum,
   toArray,
@@ -145,10 +146,12 @@ const emitPredicate = (p: Predicate): string => {
     case 'inside':
     case 'outside':
       return `${p.op}(${emitLiteral(p.min)}, ${emitLiteral(p.max)})`;
+    case 'regex':
+      return `regex(${emitLiteral(p.value)})`;
     case 'not':
       return `not(${emitPredicate(p.predicate)})`;
     default:
-      // startsWith/containing/regex/... — extend as the corpus grows.
+      // startsWith/containing/... — extend as the corpus grows.
       throw new EmitUnsupported('unsupported', `predicate ${p.op}`);
   }
 };
@@ -381,6 +384,17 @@ const CORPUS: Case[] = [
       branch(values('age')).option(29, constant('young')).none(constant('older')),
     ),
     verdict: { kind: 'agree', expected: ['young', 'older', 'older', 'older'] },
+  },
+  // regex() predicate — a TS-superset predicate now at native parity (Tier-2 fix).
+  {
+    name: "V().has('name', regex('^ma')).values('name')  [anchored]",
+    plan: traversal(V(), has('name', regex('^ma')), values('name')),
+    verdict: { kind: 'agree', expected: ['marko'] },
+  },
+  {
+    name: "V().has('name', regex('o')).values('name')  [unanchored search]",
+    plan: traversal(V(), has('name', regex('o')), values('name')),
+    verdict: { kind: 'agree', expected: ['marko', 'josh', 'lop'] },
   },
   // Type-fault: incomparable order — both engines throw (shared fault).
   {

@@ -46,6 +46,16 @@ rayon = { version = "1.12.0", optional = true }
 # ndjson + extra codecs) pull it in. A minimal frontend build (GQL only) drops
 # it entirely — the core query path hand-rolls its JSON (see `query::to_json`).
 serde_json = { version = "1.0.150", optional = true }
+# The gremlin `regex()` predicate (pulled in by the `gremlin` feature). Linear-
+# time (no catastrophic backtracking); no backreferences/lookaround — a narrow,
+# documented divergence from JS `RegExp`/Java `Pattern` (see
+# packages/gremlin/GAPS.md). `default-features = false` drops the SIMD `perf`
+# extras to keep the wasm/frontend build lean while retaining Unicode-aware
+# classes for JS parity.
+regex = { version = "1", default-features = false, features = [
+  "std",
+  "unicode",
+], optional = true }
 
 [features]
 # Composable feature set so a minimal build ships only what it uses (the binary
@@ -63,7 +73,7 @@ _fallible-ffi = []
 # `gql`: the ISO-GQL engine (hand-rolled parser; carries NO serde_json).
 gql = ["_fallible-ffi"]
 # `gremlin`: the Gremlin traversal engine (heterogeneous JSON results).
-gremlin = ["dep:serde_json", "_fallible-ffi"]
+gremlin = ["dep:serde_json", "dep:regex", "_fallible-ffi"]
 # `ndjson`: the NDJSON load/snapshot codec.
 ndjson = ["dep:serde_json", "_fallible-ffi"]
 # `codecs`: the extra serialization formats (pg-json/pg-text/graphson/csv); the

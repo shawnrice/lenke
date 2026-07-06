@@ -1690,3 +1690,32 @@ fn branch_no_default_drops_unmatched() {
         .option(29, __().constant("young")));
     assert_eq!(ordered(r), vec!["young"]);
 }
+
+// --- regex() predicate — parity with @lenke/gremlin ---------------------------
+
+#[test]
+fn regex_anchored_and_unanchored() {
+    // `^ma` anchors to the start → marko only.
+    assert_eq!(
+        names(q(g().V().has("name", P::regex("^ma")).values(&["name"]))),
+        vec!["marko"]
+    );
+    // Unanchored `o` searches anywhere → marko, josh, lop (like JS RegExp.test).
+    assert_eq!(
+        names(q(g().V().has("name", P::regex("o")).values(&["name"]))),
+        vec!["josh", "lop", "marko"]
+    );
+}
+
+#[test]
+fn regex_parses_textp_namespace() {
+    let mut g = modern();
+    let t = super::parse("g.V().has('name', TextP.regex('^r')).values('name')").unwrap();
+    assert_eq!(ordered(t.run(&mut g)), vec!["ripple"]);
+}
+
+#[test]
+fn regex_invalid_pattern_is_a_parse_error() {
+    // Validated at parse time (like the TS `regex()` constructor), not per value.
+    assert!(super::parse("g.V().has('name', regex('['))").is_err());
+}

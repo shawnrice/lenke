@@ -99,6 +99,8 @@ pub enum P {
     EndingWith(String),
     Containing(String),
     NotContaining(String),
+    /// Match a value against a regular expression (Gremlin `TextP.regex`).
+    Regex(String),
     Not(Box<Self>),
 }
 
@@ -147,6 +149,9 @@ impl P {
     }
     pub fn not_containing(s: &str) -> Self {
         Self::NotContaining(s.to_string())
+    }
+    pub fn regex(s: &str) -> Self {
+        Self::Regex(s.to_string())
     }
     #[allow(
         clippy::should_implement_trait,

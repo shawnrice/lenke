@@ -47,15 +47,13 @@ step-for-step. Parity is verified by a differential runner
 through the TS engine in-process and the Rust core over `bun:ffi`, and the
 canonical JSON results are compared.
 
-The only remaining divergences are the **TS-superset features** — steps that
-exist in the TS DSL but not (yet) in the text-driven Rust engine:
+The only remaining divergence is **closures** — the TS-superset steps that
+cannot exist in a text-driven engine:
 
 - **Closures** (`map(fn)`/`filter(fn)`/`sideEffect(fn)`/`fold(seed, fn)`): a JS
   closure can't cross the Groovy-text boundary at all. This is permanent; use
-  the sub-traversal forms for cross-engine plans.
-- **`regex`** predicate: not yet in the Rust engine (needs a regex dependency;
-  the `regex` crate is linear-time and does not support backreferences or
-  lookaround — a narrow, documented divergence from JS `RegExp`). _(In progress.)_
+  the sub-traversal forms for cross-engine plans. `planToGremlin` classifies
+  these as `tsOnly` (asserted, not silently skipped).
 
 Now at parity (previously TS-only):
 
@@ -64,3 +62,9 @@ Now at parity (previously TS-only):
   operands fault on both engines.
 - **`branch()`** — `branch(test).option(match, …)…option(none, …)`; the `none`
   default is TinkerPop's `Pick.none`. Routes each traverser by its test result.
+- **`regex`** predicate — same unanchored match semantics as JS `RegExp.test`
+  (backed by the `regex` crate). **One narrow divergence:** the `regex` crate is
+  linear-time and does not support backreferences or lookaround, so a pattern
+  using those (which JS `RegExp`/Java `Pattern` accept) is rejected at parse
+  time on the native engine. Standard patterns (anchors, classes, quantifiers,
+  alternation, Unicode classes) behave identically on both.

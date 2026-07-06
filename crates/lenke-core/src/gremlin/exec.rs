@@ -4,7 +4,7 @@
 //! readable. Movement/projection steps extend each traverser's path; filters
 //! pass traversers through unchanged. `by()` modulators resolve via [`eval_by`].
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -960,6 +960,34 @@ fn cmp_or_fault(a: &GVal, b: &GVal) -> Option<Ordering> {
     c
 }
 
+thread_local! {
+    /// Compile each `regex()` pattern once and reuse it per value — the pattern
+    /// is re-applied across the whole stream. Mirrors the TS `regexCache`.
+    static REGEX_CACHE: RefCell<HashMap<String, regex::Regex>> = RefCell::new(HashMap::new());
+}
+
+/// Whether `hay` matches the (already-parse-validated) pattern `pat`. Like JS
+/// `RegExp.test` / TinkerPop `TextP.regex`, the match is unanchored (searches
+/// anywhere). Compilation is cached; a bad pattern (shouldn't occur post-parse)
+/// simply doesn't match.
+fn regex_is_match(pat: &str, hay: &str) -> bool {
+    REGEX_CACHE.with(|cell| {
+        let mut cache = cell.borrow_mut();
+        if !cache.contains_key(pat) {
+            if cache.len() >= 1000 {
+                cache.clear(); // bound memory; patterns are typically few
+            }
+            match regex::Regex::new(pat) {
+                Ok(re) => {
+                    cache.insert(pat.to_string(), re);
+                }
+                Err(_) => return false,
+            }
+        }
+        cache.get(pat).is_some_and(|re| re.is_match(hay))
+    })
+}
+
 fn p_matches(p: &P, v: &GVal) -> bool {
     let cmp = |t: &GVal, want: Ordering| cmp_or_fault(v, t) == Some(want);
     let ge = |t: &GVal| {
@@ -989,6 +1017,7 @@ fn p_matches(p: &P, v: &GVal) -> bool {
         P::EndingWith(p) => s(v).is_some_and(|x| x.ends_with(p)),
         P::Containing(p) => s(v).is_some_and(|x| x.contains(p)),
         P::NotContaining(p) => s(v).is_some_and(|x| !x.contains(p)),
+        P::Regex(pat) => s(v).is_some_and(|x| regex_is_match(pat, &x)),
         P::Not(inner) => !p_matches(inner, v),
     }
 }

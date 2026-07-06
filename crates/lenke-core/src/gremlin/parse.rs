@@ -131,6 +131,7 @@ const PREDS: &[&str] = &[
     "endingWith",
     "containing",
     "notContaining",
+    "regex",
 ];
 
 /// A parsed argument before it's bound to a specific step.
@@ -426,6 +427,13 @@ impl Parser {
                     .as_str()?
                     .to_string(),
             ),
+            "regex" => {
+                let pat = args.first().ok_or("regex: missing")?.as_str()?;
+                // Validate up front (like the TS `regex()` constructor) so an
+                // invalid pattern is a clean parse error, not a per-value fault.
+                regex::Regex::new(pat).map_err(|e| format!("regex: invalid pattern: {e}"))?;
+                P::Regex(pat.to_string())
+            }
             _ => return Err(format!("unknown predicate `{name}`")),
         })
     }
