@@ -31,6 +31,15 @@ const cmpOrd = (x: number | string, y: number | string): number => {
  */
 export const compareValues = (a: unknown, b: unknown): number => {
   if (typeof a === 'number' && typeof b === 'number') {
+    // NaN is unordered: in JS every comparison with NaN is false, so a NaN
+    // operand must satisfy no ordering predicate (`> 0`, `>= 0`, `< 0`, `<= 0`
+    // all become false). Returning NaN propagates that — matching Rust's
+    // `partial_cmp → None → filtered`. `cmpOrd` would wrongly return 0 here,
+    // leaking NaN through `gte`/`lte`.
+    if (Number.isNaN(a) || Number.isNaN(b)) {
+      return Number.NaN;
+    }
+
     return cmpOrd(a, b);
   }
 
