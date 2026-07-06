@@ -162,7 +162,7 @@ fn type_code(t: ColType) -> String {
 
 fn num_str(x: f64) -> String {
     if x.is_finite() {
-        crate::codec::js_number(x)
+        crate::ndjson::js_number(x)
     } else {
         "null".to_string()
     }
