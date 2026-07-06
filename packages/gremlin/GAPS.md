@@ -63,8 +63,12 @@ Now at parity (previously TS-only):
 - **`branch()`** — `branch(test).option(match, …)…option(none, …)`; the `none`
   default is TinkerPop's `Pick.none`. Routes each traverser by its test result.
 - **`regex`** predicate — same unanchored match semantics as JS `RegExp.test`
-  (backed by the `regex` crate). **One narrow divergence:** the `regex` crate is
-  linear-time and does not support backreferences or lookaround, so a pattern
-  using those (which JS `RegExp`/Java `Pattern` accept) is rejected at parse
-  time on the native engine. Standard patterns (anchors, classes, quantifiers,
-  alternation, Unicode classes) behave identically on both.
+  (backed by the `regex` crate). **Two narrow divergences on the native engine:**
+  (1) the `regex` crate is linear-time and does not support backreferences or
+  lookaround, so a pattern using those (which JS `RegExp`/Java `Pattern` accept)
+  is rejected at parse time; (2) to keep the binary lean, only the `unicode-perl`
+  and `unicode-case` tables are compiled in — so Unicode-aware `\d \w \s \b` and
+  case-insensitive folding work, but exotic property classes (`\p{Script=…}`,
+  `\p{Age=…}`, general-category `\p{L}`, grapheme `\X`) are unavailable natively.
+  Anchors, character classes, quantifiers, and alternation behave identically on
+  both engines.

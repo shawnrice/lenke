@@ -37,6 +37,9 @@ opt-level = 3
 lto = "fat"
 codegen-units = 1
 panic = "abort"
+# Strip the symbol table (keeps the exported dynsym FFI surface) — the shipped
+# cdylib doesn't need it. ~268KB off the .so.
+strip = true
 
 [dependencies]
 # rayon is optional so the crate builds for wasm32 (browser, no threads):
@@ -45,10 +48,15 @@ rayon = { version = "1.12.0", optional = true }
 # The gremlin `regex()` predicate (pulled in by the `gremlin` feature). Linear-
 # time (no catastrophic backtracking); no backreferences/lookaround — a narrow,
 # documented divergence from JS `RegExp`/Java `Pattern` (see
-# packages/gremlin/GAPS.md). `default-features = false` drops the SIMD `perf`
-# extras to keep the wasm/frontend build lean while retaining Unicode-aware
-# classes for JS parity.
-regex = { version = "1", default-features = false, features = ["std", "unicode"], optional = true }
+# packages/gremlin/GAPS.md). `default-features = false` + a trimmed unicode set
+# keeps it lean: `unicode-perl` (\d \w \s \b) and `unicode-case` (case-insensitive
+# folding) cover realistic query patterns; the heavier property tables
+# (`\p{Script}`, `\p{Age}`, general-category, grapheme `\X`) are dropped (~262KB).
+regex = { version = "1", default-features = false, features = [
+  "std",
+  "unicode-perl",
+  "unicode-case",
+], optional = true }
 
 [features]
 # Composable feature set so a minimal build ships only what it uses (the binary
