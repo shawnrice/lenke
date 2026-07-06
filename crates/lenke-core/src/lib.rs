@@ -31,5 +31,9 @@ pub mod codec;
 pub mod gql;
 #[cfg(feature = "gremlin")]
 pub mod gremlin;
+// Shared JSON writer primitives (js_number + string escaper), used by every
+// serde-free JSON surface. gql hand-rolls its own tabular output and omits it.
+#[cfg(any(feature = "gremlin", feature = "ndjson"))]
+mod jsonfmt;
 #[cfg(feature = "ndjson")]
 pub mod ndjson;

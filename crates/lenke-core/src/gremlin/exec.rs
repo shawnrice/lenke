@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use super::{By, Endpoint, GVal, Order, Pop, Scope, Step, Token, Traversal, P};
 use crate::graph::{Graph, IdxKey, RangeBound, Value};
+use crate::jsonfmt::{push_json_str, push_num};
 
 /// A hashable projection of a [`GVal`] for O(1) dedup. Mirrors `GVal`'s derived
 /// structural equality, with the two `f64` details handled so it matches
@@ -312,20 +313,26 @@ fn index_seed(graph: &Graph, steps: &[Step]) -> Option<Vec<Trav>> {
 
 /// Serialize traversal results to a JSON array string — the FFI carrier. Graph
 /// elements become `{"id":…,"label":…}`; lists → arrays; maps → objects.
+/// Hand-rolled (no `serde_json`) via the shared [`crate::jsonfmt`] primitives.
 pub fn results_to_json(graph: &Graph, vals: &[GVal]) -> String {
-    let arr = serde_json::Value::Array(vals.iter().map(|v| gval_json(graph, v)).collect());
-    arr.to_string()
+    let mut out = String::new();
+    out.push('[');
+    for (i, v) in vals.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        write_gval(&mut out, graph, v);
+    }
+    out.push(']');
+    out
 }
 
-fn gval_json(graph: &Graph, v: &GVal) -> serde_json::Value {
-    use serde_json::Value as J;
+fn write_gval(out: &mut String, graph: &Graph, v: &GVal) {
     match v {
-        GVal::Null => J::Null,
-        GVal::Bool(b) => J::Bool(*b),
-        GVal::Num(n) => serde_json::Number::from_f64(*n)
-            .map(J::Number)
-            .unwrap_or(J::Null),
-        GVal::Str(s) => J::String(s.to_string()),
+        GVal::Null => out.push_str("null"),
+        GVal::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+        GVal::Num(n) => push_num(out, *n),
+        GVal::Str(s) => push_json_str(out, s),
         GVal::Vertex(_) | GVal::Edge(_) => {
             let id = match elem_id(graph, v) {
                 GVal::Str(s) => s.to_string(),
@@ -335,25 +342,54 @@ fn gval_json(graph: &Graph, v: &GVal) -> serde_json::Value {
                 GVal::Str(s) => s.to_string(),
                 _ => String::new(),
             };
-            J::Object(serde_json::Map::from_iter([
-                ("id".to_string(), J::String(id)),
-                ("label".to_string(), J::String(label)),
-            ]))
+            out.push_str("{\"id\":");
+            push_json_str(out, &id);
+            out.push_str(",\"label\":");
+            push_json_str(out, &label);
+            out.push('}');
         }
-        GVal::List(items) => J::Array(items.iter().map(|x| gval_json(graph, x)).collect()),
-        GVal::Map(entries) => {
-            let mut m = serde_json::Map::new();
-            for (k, val) in entries {
-                let key = match k {
-                    GVal::Str(s) => s.to_string(),
-                    other => match gval_json(graph, other) {
-                        J::String(s) => s,
-                        j => j.to_string(),
-                    },
-                };
-                m.insert(key, gval_json(graph, val));
+        GVal::List(items) => {
+            out.push('[');
+            for (i, x) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                write_gval(out, graph, x);
             }
-            J::Object(m)
+            out.push(']');
+        }
+        GVal::Map(entries) => {
+            // Match serde_json::Map (a BTreeMap): keys sorted lexicographically.
+            // The sync live-query layer diffs cells by `JSON.stringify`
+            // byte-equality, so this canonical order is load-bearing.
+            let mut pairs: Vec<(String, &GVal)> = entries
+                .iter()
+                .map(|(k, val)| (map_key(graph, k), val))
+                .collect();
+            pairs.sort_by(|a, b| a.0.cmp(&b.0));
+            out.push('{');
+            for (i, (k, val)) in pairs.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                push_json_str(out, k);
+                out.push(':');
+                write_gval(out, graph, val);
+            }
+            out.push('}');
+        }
+    }
+}
+
+/// A map key's string form: a `Str` verbatim, anything else via its JSON text
+/// (a number through `js_number`, etc.) — matching serde's key stringification.
+fn map_key(graph: &Graph, k: &GVal) -> String {
+    match k {
+        GVal::Str(s) => s.to_string(),
+        other => {
+            let mut tmp = String::new();
+            write_gval(&mut tmp, graph, other);
+            tmp
         }
     }
 }

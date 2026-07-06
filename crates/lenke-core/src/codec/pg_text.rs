@@ -31,7 +31,7 @@ fn scalar_token(out: &mut String, v: &Value) {
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         Value::Num(x) => {
             if x.is_finite() {
-                out.push_str(&crate::ndjson::js_number(*x));
+                out.push_str(&crate::jsonfmt::js_number(*x));
             } else {
                 out.push_str("null");
             }

@@ -69,8 +69,9 @@ _fallible-ffi = []
 
 # `gql`: the ISO-GQL engine (hand-rolled parser; carries NO serde_json).
 gql = ["_fallible-ffi"]
-# `gremlin`: the Gremlin traversal engine (heterogeneous JSON results).
-gremlin = ["dep:serde_json", "dep:regex", "_fallible-ffi"]
+# `gremlin`: the Gremlin traversal engine (heterogeneous JSON results). Its JSON
+# carrier is hand-rolled via `jsonfmt`, so it carries NO serde_json.
+gremlin = ["dep:regex", "_fallible-ffi"]
 # `ndjson`: the NDJSON load/snapshot codec.
 ndjson = ["dep:serde_json", "_fallible-ffi"]
 # `codecs`: the extra serialization formats (pg-json/pg-text/graphson/csv); the

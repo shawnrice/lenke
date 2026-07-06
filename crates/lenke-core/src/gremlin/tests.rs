@@ -1804,21 +1804,21 @@ fn results_json_escaping_and_structure() {
 
 #[test]
 fn results_json_numbers() {
-    // CURRENT (serde/ryu) output. When the hand-rolled writer lands, these flip
-    // to `js_number`: 29.0→29, -0.0→0, and the numeric map key 5.0→5. The
-    // exponential forms already match js_number. Update this test then — and
-    // ONLY this test.
-    assert_eq!(results_json(vec![GVal::Num(29.0)]), "[29.0]");
+    // Numbers now go through the shared `js_number` (was serde/ryu): 29.0→29,
+    // -0.0→0, the numeric map key 5.0→5. Exponential forms are unchanged. This
+    // matches the TS engine + ndjson/codec; all consumers parse the carrier back
+    // to numbers, so the change is invisible downstream.
+    assert_eq!(results_json(vec![GVal::Num(29.0)]), "[29]");
     assert_eq!(results_json(vec![GVal::Num(1.5)]), "[1.5]");
-    assert_eq!(results_json(vec![GVal::Num(-0.0)]), "[-0.0]");
+    assert_eq!(results_json(vec![GVal::Num(-0.0)]), "[0]");
     assert_eq!(results_json(vec![GVal::Num(1e21)]), "[1e+21]");
     assert_eq!(results_json(vec![GVal::Num(1e-7)]), "[1e-7]");
-    // Non-finite → null (not representable in JSON) — INVARIANT across the refactor.
+    // Non-finite → null (not representable in JSON).
     assert_eq!(results_json(vec![GVal::Num(f64::NAN)]), "[null]");
     assert_eq!(results_json(vec![GVal::Num(f64::INFINITY)]), "[null]");
     // Non-string map key is stringified via the same number formatting.
     assert_eq!(
         results_json(vec![GVal::Map(vec![(GVal::Num(5.0), GVal::from("v"))])]),
-        r#"[{"5.0":"v"}]"#
+        r#"[{"5":"v"}]"#
     );
 }

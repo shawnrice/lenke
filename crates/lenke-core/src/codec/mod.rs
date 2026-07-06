@@ -32,7 +32,6 @@ pub mod pg_text;
 #[cfg(test)]
 mod conformance;
 
-use std::fmt::Write as _;
 use std::sync::Arc;
 
 use serde_json::Value as J;
@@ -82,34 +81,9 @@ pub(crate) fn is_intish(x: f64) -> bool {
 // JSON scalar emit (shared by pg-json and graphson; mirrors ndjson)
 // ---------------------------------------------------------------------------
 
-/// Write a JSON string literal (with escaping) into `out`.
-pub(crate) fn push_json_str(out: &mut String, s: &str) {
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => {
-                let _ = write!(out, "\\u{:04x}", c as u32);
-            }
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-}
-
-/// Write a finite number, or `null` for NaN/±Infinity (not representable in JSON).
-/// `js_number` lives in the base `ndjson` module (which `codecs` implies).
-pub(crate) fn push_num(out: &mut String, x: f64) {
-    if x.is_finite() {
-        out.push_str(&crate::ndjson::js_number(x));
-    } else {
-        out.push_str("null");
-    }
-}
+// JSON scalar emit is shared via [`crate::jsonfmt`], so every serde-free writer
+// (gremlin, ndjson, codecs) escapes strings and formats numbers identically.
+pub(crate) use crate::jsonfmt::{push_json_str, push_num};
 
 /// Emit a core [`Value`] as a plain JSON value (used by pg-json).
 pub(crate) fn push_value(out: &mut String, v: &Value) {
