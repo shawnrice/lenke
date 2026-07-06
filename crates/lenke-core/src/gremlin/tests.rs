@@ -1570,3 +1570,62 @@ fn comparable_predicate_and_aggregation_still_work() {
     let t = super::parse("g.V().values('age').is(gt(30)).count()").unwrap();
     assert_eq!(super::try_run(&mut g, &t).unwrap(), vec![GVal::Num(2.0)]);
 }
+
+// --- math(): infix arithmetic — cross-engine parity with @lenke/gremlin --------
+
+#[test]
+fn math_arithmetic_over_values() {
+    // ages *2, insertion order marko/vadas/josh/peter: 29,27,32,35 → 58,54,64,70.
+    let r = q(g()
+        .V()
+        .has_label(&["PERSON"])
+        .values(&["age"])
+        .math("_ * 2"));
+    assert_eq!(
+        r,
+        vec![
+            GVal::Num(58.0),
+            GVal::Num(54.0),
+            GVal::Num(64.0),
+            GVal::Num(70.0)
+        ]
+    );
+}
+
+#[test]
+fn math_parens_and_precedence() {
+    // (10 - 2) / 2 + 1 = 5 — parens override, then * / before + -.
+    let r = q(g().inject([GVal::Num(10.0)]).math("(_ - 2) / 2 + 1"));
+    assert_eq!(one_num(r), 5.0);
+}
+
+#[test]
+fn math_by_projects_the_operand() {
+    // math('_ + 1').by('age') projects each vertex through `age` before adding.
+    let r = q(g().V().has_label(&["PERSON"]).math("_ + 1").by("age"));
+    assert_eq!(
+        r,
+        vec![
+            GVal::Num(30.0),
+            GVal::Num(28.0),
+            GVal::Num(33.0),
+            GVal::Num(36.0)
+        ]
+    );
+}
+
+#[test]
+fn math_over_nonnumeric_is_a_type_fault() {
+    // A non-numeric operand faults (TinkerPop requires numbers), matching the TS
+    // engine's `math`. Surfaced by try_run as InvalidValue.
+    let mut g = modern();
+    let t = super::parse("g.V().values('name').math('_ + 1')").unwrap();
+    assert!(super::try_run(&mut g, &t).is_err());
+}
+
+#[test]
+fn math_malformed_expression_faults() {
+    let mut g = modern();
+    let t = super::parse("g.inject(1).math('_ +')").unwrap();
+    assert!(super::try_run(&mut g, &t).is_err());
+}

@@ -809,6 +809,133 @@ fn strict_num(v: &GVal) -> Option<f64> {
     }
 }
 
+/// The distinct identifiers in a `math()` expression, in first-appearance
+/// order. Used to map `by()` modulators to operands (TinkerPop cycles them in
+/// this order). Mirrors the TS `mathVars`.
+fn math_vars(expr: &str) -> Vec<String> {
+    let chars: Vec<char> = expr.chars().collect();
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i].is_ascii_alphabetic() || chars[i] == '_' {
+            let start = i;
+            while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '_') {
+                i += 1;
+            }
+            let name: String = chars[start..i].iter().collect();
+            if seen.insert(name.clone()) {
+                out.push(name);
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Recursive-descent evaluator for the tiny `math()` grammar: `+ - * /`, parens,
+/// numeric literals, and identifiers resolved via `vals`. Returns `None` on any
+/// malformed expression or unknown identifier (surfaced as a fault). A faithful
+/// port of the TS `evalMath`.
+struct MathP<'a> {
+    c: Vec<char>,
+    pos: usize,
+    vals: &'a HashMap<String, f64>,
+}
+
+impl MathP<'_> {
+    fn peek(&self) -> char {
+        self.c.get(self.pos).copied().unwrap_or('\0')
+    }
+    fn skip(&mut self) {
+        while self.peek().is_whitespace() {
+            self.pos += 1;
+        }
+    }
+    fn primary(&mut self) -> Option<f64> {
+        self.skip();
+        let ch = self.peek();
+        if ch == '(' {
+            self.pos += 1;
+            let v = self.add()?;
+            self.skip();
+            if self.peek() != ')' {
+                return None;
+            }
+            self.pos += 1;
+            return Some(v);
+        }
+        if ch.is_ascii_alphabetic() || ch == '_' {
+            let start = self.pos;
+            while self.peek().is_ascii_alphanumeric() || self.peek() == '_' {
+                self.pos += 1;
+            }
+            let name: String = self.c[start..self.pos].iter().collect();
+            return self.vals.get(&name).copied();
+        }
+        // Numeric literal, with an optional leading sign.
+        let start = self.pos;
+        if ch == '-' || ch == '+' {
+            self.pos += 1;
+        }
+        while self.peek().is_ascii_digit() || self.peek() == '.' {
+            self.pos += 1;
+        }
+        if start == self.pos {
+            return None;
+        }
+        let lit: String = self.c[start..self.pos].iter().collect();
+        lit.parse::<f64>().ok()
+    }
+    fn mul(&mut self) -> Option<f64> {
+        let mut left = self.primary()?;
+        self.skip();
+        while self.peek() == '*' || self.peek() == '/' {
+            let op = self.peek();
+            self.pos += 1;
+            let right = self.primary()?;
+            left = if op == '*' {
+                left * right
+            } else {
+                left / right
+            };
+            self.skip();
+        }
+        Some(left)
+    }
+    fn add(&mut self) -> Option<f64> {
+        let mut left = self.mul()?;
+        self.skip();
+        while self.peek() == '+' || self.peek() == '-' {
+            let op = self.peek();
+            self.pos += 1;
+            let right = self.mul()?;
+            left = if op == '+' {
+                left + right
+            } else {
+                left - right
+            };
+            self.skip();
+        }
+        Some(left)
+    }
+}
+
+fn eval_math_expr(expr: &str, vals: &HashMap<String, f64>) -> Option<f64> {
+    let mut p = MathP {
+        c: expr.chars().collect(),
+        pos: 0,
+        vals,
+    };
+    let r = p.add()?;
+    p.skip();
+    if p.pos < p.c.len() {
+        return None; // trailing input
+    }
+    Some(r)
+}
+
 /// Order two values the way TinkerPop's `Comparable` does: numbers with numbers,
 /// strings with strings, booleans with booleans. No string/bool→number coercion.
 /// `None` ⇒ not comparable (different types, an element, or a null operand).
@@ -1466,6 +1593,52 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
         Step::Index => stream.iter().enumerate().map(|(i, t)| t.with(GVal::List(vec![t.val.clone(), GVal::Num(i as f64)]))).collect(),
         Step::Loops => map_step(stream, |t| vec![GVal::Num(t.loops as f64)]),
         Step::Constant(v) => map_step(stream, |_t| vec![v.clone()]),
+        Step::Math { expr, bys } => {
+            let vars = math_vars(expr);
+            let mut next = Vec::with_capacity(stream.len());
+            for t in &stream {
+                // Resolve each operand to a number: `_` is the current value, any
+                // other name is an `as_`-bound tag; project via the cycling by()s.
+                let mut vals: HashMap<String, f64> = HashMap::new();
+                let mut ok = true;
+                for (i, name) in vars.iter().enumerate() {
+                    let base = if name == "_" {
+                        Some(t.val.clone())
+                    } else {
+                        t.recall(name, Pop::Last)
+                    };
+                    let Some(base) = base else {
+                        set_type_fault(); // unbound variable
+                        ok = false;
+                        break;
+                    };
+                    let by = if bys.is_empty() {
+                        By::Identity(None)
+                    } else {
+                        bys[i % bys.len()].clone()
+                    };
+                    let projected = eval_by(graph, ctx, &by, &base);
+                    match strict_num(&projected) {
+                        Some(n) => {
+                            vals.insert(name.clone(), n);
+                        }
+                        None => {
+                            set_type_fault(); // null / non-numeric operand
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                if !ok {
+                    continue;
+                }
+                match eval_math_expr(expr, &vals) {
+                    Some(r) => next.push(t.with(GVal::Num(r))),
+                    None => set_type_fault(), // malformed expression
+                }
+            }
+            next
+        }
         Step::Identity => stream,
         Step::Inject(vs) => {
             let mut next: Vec<Trav> = vs.iter().map(|v| Trav::root(v.clone())).collect();

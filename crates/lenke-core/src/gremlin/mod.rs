@@ -325,6 +325,13 @@ pub enum Step {
     Index,
     Loops,
     Constant(GVal),
+    /// Evaluate a tiny infix arithmetic expression (`+ - * /`, parens, literals,
+    /// `_` = current value, other idents = `as_`-bound labels). Operands are
+    /// projected by the cycling `by()` modulators in first-appearance order.
+    Math {
+        expr: String,
+        bys: Vec<By>,
+    },
     Identity,
     Inject(Vec<GVal>),
     None(Option<P>),
@@ -376,6 +383,7 @@ impl Traversal {
             | Step::Tree(bys)
             | Step::Project(_, bys)
             | Step::WhereKey(_, _, bys)
+            | Step::Math { bys, .. }
             | Step::Select { bys, .. },
         ) = self.steps.last_mut()
         {
@@ -765,6 +773,12 @@ impl Traversal {
     }
     pub fn constant(self, v: impl Into<GVal>) -> Self {
         self.push(Step::Constant(v.into()))
+    }
+    pub fn math(self, expr: &str) -> Self {
+        self.push(Step::Math {
+            expr: expr.to_string(),
+            bys: vec![],
+        })
     }
     pub fn identity(self) -> Self {
         self.push(Step::Identity)

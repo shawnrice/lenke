@@ -28,6 +28,7 @@ import { existsSync } from 'node:fs';
 import { isElement } from '@lenke/core';
 import {
   V,
+  type By,
   count,
   createTestTinkerGraph,
   eq,
@@ -35,6 +36,7 @@ import {
   has,
   hasLabel,
   inject,
+  math,
   order,
   out,
   type Plan,
@@ -148,6 +150,20 @@ const emitPredicate = (p: Predicate): string => {
   }
 };
 
+const emitBy = (by: By): string => {
+  switch (by.kind) {
+    case 'identity':
+      return by.direction ? `.by(${by.direction})` : '.by()';
+    case 'key':
+      return by.direction
+        ? `.by(${emitLiteral(by.key)}, ${by.direction})`
+        : `.by(${emitLiteral(by.key)})`;
+    default:
+      // traversal / token by()s — extend as the corpus grows.
+      throw new EmitUnsupported('unsupported', `by(${by.kind})`);
+  }
+};
+
 const emitStep = (step: Step): string => {
   switch (step.kind) {
     case 'V':
@@ -186,8 +202,11 @@ const emitStep = (step: Step): string => {
     case 'sideEffectFn':
     case 'foldFn':
       throw new EmitUnsupported('closure', step.kind);
-    case 'math':
-      throw new EmitUnsupported('math', step.expr);
+    case 'math': {
+      const bys = (step.bys ?? []).map(emitBy).join('');
+
+      return `math(${emitLiteral(step.expr)})${bys}`;
+    }
     case 'branch':
       throw new EmitUnsupported('branch', 'branch');
     default:
@@ -313,6 +332,17 @@ const CORPUS: Case[] = [
     name: 'inject(3, 1, 2).order()',
     plan: traversal(inject(3, 1, 2), order()),
     verdict: { kind: 'agree', expected: [1, 2, 3] },
+  },
+  // math() — a TS-superset step now at native parity (Tier-2 fix).
+  {
+    name: "V().hasLabel('PERSON').values('age').math('_ * 2')",
+    plan: traversal(V(), hasLabel('PERSON'), values('age'), math('_ * 2')),
+    verdict: { kind: 'agree', expected: [58, 54, 64, 70] },
+  },
+  {
+    name: "V().hasLabel('PERSON').math('_ + 1').by('age')  [by-projected operand]",
+    plan: traversal(V(), hasLabel('PERSON'), math('_ + 1').by('age')),
+    verdict: { kind: 'agree', expected: [30, 28, 33, 36] },
   },
   // Type-fault: incomparable order — both engines throw (shared fault).
   {

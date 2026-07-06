@@ -626,6 +626,11 @@ impl Parser {
                     .ok_or("constant: expected a value")?
                     .as_gval()?,
             ),
+            "math" => t.math(
+                args.first()
+                    .ok_or("math: expected an expression")?
+                    .as_str()?,
+            ),
             "identity" => t.identity(),
             "inject" => t.inject(
                 args.iter()

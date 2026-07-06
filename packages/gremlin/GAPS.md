@@ -39,9 +39,25 @@ where applicable.
 by `by()`, and `by()` supports comparator/token forms. The gremlin test package
 has no skipped tests.)
 
-### Cross-engine parity: `math()` is TS-only
+### Cross-engine parity (TS engine ⟷ Rust core)
 
-The Rust gremlin engine (`crates/lenke-core/src/gremlin`) mirrors the TS
-package but has no `math()` step, so a textual `g.V()…math(…)` query fails on the
-native/wasm engine with an unknown-step error. Everything else (`match` /
-`subgraph` / `shortestPath` / `select`-by-cycling) is at parity.
+The Rust gremlin engine (`crates/lenke-core/src/gremlin`) mirrors the TS package
+step-for-step. Parity is verified by a differential runner
+(`packages/native/src/gremlin-conformance.test.ts`): a single TS `Plan` is run
+through the TS engine in-process and the Rust core over `bun:ffi`, and the
+canonical JSON results are compared.
+
+The only remaining divergences are the **TS-superset features** — steps that
+exist in the TS DSL but not (yet) in the text-driven Rust engine:
+
+- **Closures** (`map(fn)`/`filter(fn)`/`sideEffect(fn)`/`fold(seed, fn)`): a JS
+  closure can't cross the Groovy-text boundary at all. This is permanent; use
+  the sub-traversal forms for cross-engine plans.
+- **`branch`**: not yet in the Rust parser/executor. _(In progress.)_
+- **`regex`** predicate: not yet in the Rust engine (needs a regex dependency;
+  the `regex` crate is linear-time and does not support backreferences or
+  lookaround — a narrow, documented divergence from JS `RegExp`). _(In progress.)_
+
+Now at parity (previously TS-only): **`math()`** — the Rust engine ships the
+same infix evaluator (`+ - * /`, parens, `_`/`as_`-bound operands, cycling
+`by()` projection); non-numeric operands fault on both engines.
