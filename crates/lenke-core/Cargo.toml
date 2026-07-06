@@ -52,10 +52,7 @@ serde_json = { version = "1.0.150", optional = true }
 # packages/gremlin/GAPS.md). `default-features = false` drops the SIMD `perf`
 # extras to keep the wasm/frontend build lean while retaining Unicode-aware
 # classes for JS parity.
-regex = { version = "1", default-features = false, features = [
-  "std",
-  "unicode",
-], optional = true }
+regex = { version = "1", default-features = false, features = ["std", "unicode"], optional = true }
 
 [features]
 # Composable feature set so a minimal build ships only what it uses (the binary
