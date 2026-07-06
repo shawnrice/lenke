@@ -466,4 +466,98 @@ mod tests {
         assert_eq!(g.edge_count(), 1); // drop-second: only the first edge id 'x'
         assert_eq!(g.etype.text(g.e_type[0]), "R");
     }
+
+    // ===== decode characterization =====
+    //
+    // Assert the exact `Value` that `decode` parses each JSON property into, so
+    // the hand-rolled parser (which will replace `serde_json::from_str`) can be
+    // proven equivalent. Covers escape decoding (incl. `\uXXXX` + surrogate
+    // pairs), number forms, list/bool/null, and whitespace. Malformed-input
+    // rejection is locked by `strict_decode_rejects_malformed_lines`,
+    // `deeply_nested_array_is_rejected_not_overflow`, and the lone-surrogate
+    // test below.
+
+    fn decoded(props: &str, key: &str) -> Value {
+        let line = format!(r#"{{"type":"node","id":"a","labels":["N"],"properties":{props}}}"#);
+        let g = decode(&line).unwrap();
+        let a = g.vid.get("a").unwrap() as usize;
+        g.props.value(a, key, &g.strs)
+    }
+    fn str_val(s: &str) -> Value {
+        Value::Str(s.into())
+    }
+
+    #[test]
+    fn decode_string_escapes() {
+        assert_eq!(decoded(r#"{"s":"a\"b"}"#, "s"), str_val("a\"b"));
+        assert_eq!(decoded(r#"{"s":"a\\b"}"#, "s"), str_val("a\\b"));
+        assert_eq!(decoded(r#"{"s":"a\/b"}"#, "s"), str_val("a/b")); // \/ → /
+        assert_eq!(decoded(r#"{"s":"a\tb\nc\rd"}"#, "s"), str_val("a\tb\nc\rd"));
+        assert_eq!(
+            decoded(r#"{"s":"a\bb\fc"}"#, "s"),
+            str_val("a\u{08}b\u{0c}c")
+        );
+        // \uXXXX (BMP) and surrogate pairs (astral) decode to real chars.
+        assert_eq!(decoded(r#"{"s":"\u0041\u00e9"}"#, "s"), str_val("A\u{e9}"));
+        assert_eq!(
+            decoded(r#"{"s":"\ud83e\udd80"}"#, "s"),
+            str_val("\u{1F980}")
+        );
+    }
+
+    #[test]
+    fn decode_number_forms() {
+        assert_eq!(decoded(r#"{"n":42}"#, "n"), Value::Num(42.0));
+        assert_eq!(decoded(r#"{"n":-7}"#, "n"), Value::Num(-7.0));
+        assert_eq!(decoded(r#"{"n":1.5}"#, "n"), Value::Num(1.5));
+        assert_eq!(decoded(r#"{"n":1.5e3}"#, "n"), Value::Num(1500.0)); // exponent
+        assert_eq!(decoded(r#"{"n":2.5e-3}"#, "n"), Value::Num(0.0025));
+    }
+
+    #[test]
+    fn decode_bool_null_and_lists() {
+        assert_eq!(decoded(r#"{"b":true}"#, "b"), Value::Bool(true));
+        assert_eq!(decoded(r#"{"c":false}"#, "c"), Value::Bool(false));
+        // A top-level null property is absent (null = absent in this LPG model)…
+        assert_eq!(decoded(r#"{"d":null}"#, "d"), Value::Null);
+        // …but null INSIDE a list value is preserved.
+        assert_eq!(
+            decoded(r#"{"xs":[1,2,3]}"#, "xs"),
+            Value::List(vec![Value::Num(1.0), Value::Num(2.0), Value::Num(3.0)])
+        );
+        assert_eq!(
+            decoded(r#"{"xs":["a",2,true,null]}"#, "xs"),
+            Value::List(vec![
+                str_val("a"),
+                Value::Num(2.0),
+                Value::Bool(true),
+                Value::Null
+            ])
+        );
+        assert_eq!(
+            decoded(r#"{"xs":[[1],[2,3]]}"#, "xs"),
+            Value::List(vec![
+                Value::List(vec![Value::Num(1.0)]),
+                Value::List(vec![Value::Num(2.0), Value::Num(3.0)]),
+            ])
+        );
+    }
+
+    #[test]
+    fn decode_tolerates_whitespace() {
+        assert_eq!(
+            decoded("{ \"n\" : 1 , \"s\" : \"x\" }", "n"),
+            Value::Num(1.0)
+        );
+        assert_eq!(decoded("{ \"n\" : 1 , \"s\" : \"x\" }", "s"), str_val("x"));
+    }
+
+    #[test]
+    fn decode_rejects_lone_surrogate() {
+        use crate::error_codes::ErrorCode;
+        // A lone high surrogate is not valid JSON — must be rejected, not decoded
+        // to a replacement char (serde behavior; the hand-rolled parser must match).
+        let line = r#"{"type":"node","id":"a","labels":["N"],"properties":{"s":"\ud83e"}}"#;
+        assert_eq!(decode(line).err().unwrap().code, ErrorCode::InvalidJson);
+    }
 }

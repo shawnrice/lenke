@@ -1719,3 +1719,106 @@ fn regex_invalid_pattern_is_a_parse_error() {
     // Validated at parse time (like the TS `regex()` constructor), not per value.
     assert!(super::parse("g.V().has('name', regex('['))").is_err());
 }
+
+// ===== JSON output characterization =====
+//
+// These pin `results_to_json`'s exact bytes so the upcoming hand-rolled writer
+// (which drops `serde_json`) can be proven equivalent. `serde_json::Map` is a
+// `BTreeMap`, so object keys come out lexicographically sorted — the sync
+// live-query layer diffs cells by `JSON.stringify` byte-equality, so that
+// canonical order is load-bearing and the writer must preserve it.
+//
+// Split deliberately: `..._escaping_and_structure` is INVARIANT (any diff there
+// is a regression), while `..._numbers` is the one part expected to change when
+// serde goes — its ryu output (`29.0`, `-0.0`) becomes the shared `js_number`
+// (`29`, `0`), matching the TS engine and the ndjson/codec paths. All consumers
+// parse the carrier back to numbers, so that change is invisible downstream.
+
+fn results_json(vals: Vec<GVal>) -> String {
+    super::exec::results_to_json(&modern(), &vals)
+}
+
+#[test]
+fn results_json_escaping_and_structure() {
+    // String escaping: `"` and `\` escaped, `/` NOT escaped, control chars via
+    // `\b \t \n \f \r` shortcuts else `\u00XX`, non-ASCII left as raw UTF-8.
+    assert_eq!(results_json(vec![GVal::from("a\"b")]), r#"["a\"b"]"#);
+    assert_eq!(results_json(vec![GVal::from("a\\b")]), r#"["a\\b"]"#);
+    assert_eq!(results_json(vec![GVal::from("a/b")]), r#"["a/b"]"#);
+    assert_eq!(
+        results_json(vec![GVal::from("x\t\n\ry")]),
+        r#"["x\t\n\ry"]"#
+    );
+    assert_eq!(
+        results_json(vec![GVal::from("x\u{08}\u{0c}y")]),
+        r#"["x\b\fy"]"#
+    );
+    assert_eq!(
+        results_json(vec![GVal::from("x\u{01}y")]),
+        r#"["x\u0001y"]"#
+    );
+    assert_eq!(
+        results_json(vec![GVal::from("café\u{1F980}")]),
+        "[\"café\u{1F980}\"]"
+    );
+    assert_eq!(results_json(vec![GVal::from("")]), r#"[""]"#);
+
+    // Structure: empty containers, nesting, bool, null. (String-valued to keep
+    // this test free of the number formatting that the refactor will change.)
+    assert_eq!(results_json(vec![GVal::List(vec![])]), "[[]]");
+    assert_eq!(results_json(vec![GVal::Map(vec![])]), "[{}]");
+    assert_eq!(
+        results_json(vec![GVal::List(vec![
+            GVal::from("a"),
+            GVal::List(vec![GVal::from("z")]),
+        ])]),
+        r#"[["a",["z"]]]"#
+    );
+    assert_eq!(
+        results_json(vec![GVal::Bool(true), GVal::Bool(false)]),
+        "[true,false]"
+    );
+    assert_eq!(results_json(vec![GVal::Null]), "[null]");
+
+    // Map keys sorted lexicographically (serde BTreeMap); string values so the
+    // ordering is the only thing under test here.
+    assert_eq!(
+        results_json(vec![GVal::Map(vec![
+            (GVal::from("zzz"), GVal::from("z")),
+            (GVal::from("age"), GVal::from("a")),
+            (GVal::from("name"), GVal::from("m")),
+        ])]),
+        r#"[{"age":"a","name":"m","zzz":"z"}]"#
+    );
+
+    // Graph elements project to `{id, label}`.
+    assert_eq!(
+        results_json(vec![GVal::Vertex(0)]),
+        r#"[{"id":"1","label":"PERSON"}]"#
+    );
+    assert_eq!(
+        results_json(vec![GVal::Edge(0)]),
+        r#"[{"id":"e0","label":"KNOWS"}]"#
+    );
+}
+
+#[test]
+fn results_json_numbers() {
+    // CURRENT (serde/ryu) output. When the hand-rolled writer lands, these flip
+    // to `js_number`: 29.0→29, -0.0→0, and the numeric map key 5.0→5. The
+    // exponential forms already match js_number. Update this test then — and
+    // ONLY this test.
+    assert_eq!(results_json(vec![GVal::Num(29.0)]), "[29.0]");
+    assert_eq!(results_json(vec![GVal::Num(1.5)]), "[1.5]");
+    assert_eq!(results_json(vec![GVal::Num(-0.0)]), "[-0.0]");
+    assert_eq!(results_json(vec![GVal::Num(1e21)]), "[1e+21]");
+    assert_eq!(results_json(vec![GVal::Num(1e-7)]), "[1e-7]");
+    // Non-finite → null (not representable in JSON) — INVARIANT across the refactor.
+    assert_eq!(results_json(vec![GVal::Num(f64::NAN)]), "[null]");
+    assert_eq!(results_json(vec![GVal::Num(f64::INFINITY)]), "[null]");
+    // Non-string map key is stringified via the same number formatting.
+    assert_eq!(
+        results_json(vec![GVal::Map(vec![(GVal::Num(5.0), GVal::from("v"))])]),
+        r#"[{"5.0":"v"}]"#
+    );
+}

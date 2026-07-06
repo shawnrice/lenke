@@ -396,6 +396,15 @@ const CORPUS: Case[] = [
     plan: traversal(V(), has('name', regex('o')), values('name')),
     verdict: { kind: 'agree', expected: ['marko', 'josh', 'lop'] },
   },
+  // Adversarial string: quotes, backslash, slash, non-ASCII, astral char. Both
+  // engines must round-trip it to parse-equal JSON. (canonJson JSON.parses both
+  // sides, so this guards against *malformed* output; exact-byte escaping is
+  // pinned by the Rust golden test results_json_escaping_and_structure.)
+  {
+    name: 'inject(adversarial string) — escaping round-trips to valid JSON',
+    plan: traversal(inject('a"b\\c/dé\u{1F980}')),
+    verdict: { kind: 'agree', expected: ['a"b\\c/dé\u{1F980}'] },
+  },
   // Type-fault: incomparable order — both engines throw (shared fault).
   {
     name: "inject(1, 'a').order()  [type fault]",
