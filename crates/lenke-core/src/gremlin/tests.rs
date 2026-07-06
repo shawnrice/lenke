@@ -1629,3 +1629,64 @@ fn math_malformed_expression_faults() {
     let t = super::parse("g.inject(1).math('_ +')").unwrap();
     assert!(super::try_run(&mut g, &t).is_err());
 }
+
+// --- branch(): switch on a sub-plan's result — parity with @lenke/gremlin ------
+
+#[test]
+fn branch_routes_by_label() {
+    // PERSON → name; SOFTWARE → 'a software'. Per-traverser, insertion order.
+    let r = q(g()
+        .V()
+        .branch(__().label())
+        .option("PERSON", __().values(&["name"]))
+        .option("SOFTWARE", __().constant("a software")));
+    assert_eq!(
+        ordered(r),
+        vec![
+            "marko",
+            "vadas",
+            "josh",
+            "peter",
+            "a software",
+            "a software"
+        ]
+    );
+}
+
+#[test]
+fn branch_default_via_option_none() {
+    // age 29 → 'young', everyone else falls to the default 'older'.
+    let r = q(g()
+        .V()
+        .has_label(&["PERSON"])
+        .branch(__().values(&["age"]))
+        .option(29, __().constant("young"))
+        .option_none(__().constant("older")));
+    assert_eq!(ordered(r), vec!["young", "older", "older", "older"]);
+}
+
+#[test]
+fn branch_parses_none_default_from_text() {
+    // `option(none, …)` is TinkerPop's Pick.none default; parse it from text.
+    let mut g = modern();
+    let t = super::parse(
+        "g.V().hasLabel('PERSON').branch(values('age'))\
+         .option(29, constant('young')).option(none, constant('older'))",
+    )
+    .unwrap();
+    assert_eq!(
+        ordered(t.run(&mut g)),
+        vec!["young", "older", "older", "older"]
+    );
+}
+
+#[test]
+fn branch_no_default_drops_unmatched() {
+    // Without a default, traversers whose test result matches no option vanish.
+    let r = q(g()
+        .V()
+        .has_label(&["PERSON"])
+        .branch(__().values(&["age"]))
+        .option(29, __().constant("young")));
+    assert_eq!(ordered(r), vec!["young"]);
+}

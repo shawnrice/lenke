@@ -1458,6 +1458,31 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
             }
             next
         }
+        Step::Branch {
+            test,
+            options,
+            default,
+        } => {
+            let mut next = Vec::new();
+            for t in stream {
+                // Route by the test plan's first result: the first option whose
+                // `match` equals it, else the default (if any).
+                let tv = sub_vals(graph, ctx, test, &t).into_iter().next();
+                let mut target: Option<&Traversal> = None;
+                if let Some(ref v) = tv {
+                    for (m, plan) in options {
+                        if m == v {
+                            target = Some(plan);
+                            break;
+                        }
+                    }
+                }
+                if let Some(plan) = target.or(default.as_deref()) {
+                    next.extend(run_steps(graph, ctx, &plan.steps, vec![t]));
+                }
+            }
+            next
+        }
         Step::Map(sub) => {
             let mut next = Vec::new();
             for t in &stream {

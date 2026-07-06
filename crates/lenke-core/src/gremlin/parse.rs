@@ -9,7 +9,7 @@
 //! predicate (`gt(30)`, `within('a','b')`), a token (`T.label`, `Order.desc`,
 //! `Pop.first`, `Scope.local`), or a nested traversal (`__.out().count()`).
 
-use super::{GVal, Order, Pop, Token, Traversal, __, P};
+use super::{GVal, Order, Pop, Step, Token, Traversal, __, P};
 
 // --- lexer ------------------------------------------------------------------
 
@@ -588,6 +588,8 @@ impl Parser {
                     _ => return Err("choose: expected 2 or 3 traversals".into()),
                 }
             }
+            "branch" => t.branch(self.one_trav(args)?),
+            "option" => self.bind_option(t, args)?,
             "aggregate" => t.aggregate(args.first().ok_or("aggregate: expected a key")?.as_str()?),
             "store" => t.store(args.first().ok_or("store: expected a key")?.as_str()?),
             "cap" => t.cap(args.first().ok_or("cap: expected a key")?.as_str()?),
@@ -695,6 +697,37 @@ impl Parser {
         })
     }
 
+    /// Attach an `option(match, traversal)` modulator to the most recent
+    /// `branch()`. `option(none, traversal)` (TinkerPop's `Pick.none`) sets the
+    /// default branch — `none` parses as a bare `none()` traversal, detected here.
+    fn bind_option(&self, mut t: Traversal, args: Vec<Arg>) -> Result<Traversal, String> {
+        if args.len() != 2 {
+            return Err("option: expected (match, traversal)".into());
+        }
+        let sub = match &args[1] {
+            Arg::Trav(tr) => tr.clone(),
+            _ => return Err("option: 2nd arg must be a traversal".into()),
+        };
+        let is_default = matches!(
+            &args[0],
+            Arg::Trav(tr) if tr.steps.len() == 1 && matches!(tr.steps[0], Step::None(None))
+        );
+        match t.steps.last_mut() {
+            Some(Step::Branch {
+                options, default, ..
+            }) => {
+                if is_default {
+                    *default = Some(Box::new(sub));
+                } else {
+                    let m = args[0].as_gval()?;
+                    options.push((m, sub));
+                }
+            }
+            _ => return Err("option: no preceding branch()".into()),
+        }
+        Ok(t)
+    }
+
     fn travs(&self, args: Vec<Arg>) -> Result<Vec<Traversal>, String> {
         args.into_iter()
             .map(|a| match a {
@@ -722,6 +755,11 @@ fn bare_token(id: &str) -> Option<Arg> {
         "first" => Arg::Pop(Pop::First),
         "last" => Arg::Pop(Pop::Last),
         "all" => Arg::Pop(Pop::All),
+        // TinkerPop's `Pick.none` — the default branch in `branch().option(none, …)`.
+        // Represented as a bare `none()` traversal, which `bind_option` detects.
+        "none" => Arg::Trav(Traversal {
+            steps: vec![Step::None(None)],
+        }),
         _ => return None,
     })
 }

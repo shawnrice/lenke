@@ -8,10 +8,10 @@
 //   assert:        the two canonical results are equal
 //
 // `planToGremlin` is the Plan→Groovy emitter — the mirror of serialize.ts's
-// `findClosures`: the kinds that can't cross the text boundary (closures,
-// math/branch, non-finite literals) THROW, so a case is classified `tsOnly`
-// rather than silently skipped. Any emitter bug surfaces as a red diff here,
-// and it transitively exercises the real `parse.rs`.
+// `findClosures`: the kinds that can't cross the text boundary (JS closures and
+// non-finite literals) THROW, so a case is classified `tsOnly` rather than
+// silently skipped. Any emitter bug surfaces as a red diff here, and it
+// transitively exercises the real `parse.rs`.
 //
 // Scope note (verified 2026-07): the Tier-3 value-semantic drifts (NaN in
 // ordering/dedup) are NOT reachable through this boundary — `NaN`/`Infinity`
@@ -29,6 +29,8 @@ import { isElement } from '@lenke/core';
 import {
   V,
   type By,
+  branch,
+  constant,
   count,
   createTestTinkerGraph,
   eq,
@@ -36,6 +38,7 @@ import {
   has,
   hasLabel,
   inject,
+  label,
   math,
   order,
   out,
@@ -89,7 +92,7 @@ const MODERN_NDJSON = [
 // string mechanically from the same Plan the TS engine runs. Unsupported kinds
 // throw with a tag so the runner can classify (tsOnly) vs surface (emitter gap).
 
-type UnsupportedKind = 'closure' | 'math' | 'branch' | 'nonfinite' | 'unsupported';
+type UnsupportedKind = 'closure' | 'nonfinite' | 'unsupported';
 
 class EmitUnsupported extends Error {
   constructor(
@@ -184,8 +187,13 @@ const emitStep = (step: Step): string => {
       return `values(${step.keys.map(emitLiteral).join(', ')})`;
     case 'dedupe':
       return `dedup(${(step.labels ?? []).map(emitLiteral).join(', ')})`;
+    case 'constant':
+      return `constant(${emitLiteral(step.value)})`;
     case 'count':
       return 'count()';
+    case 'id':
+    case 'label':
+    case 'value':
     case 'sum':
     case 'min':
     case 'max':
@@ -207,12 +215,21 @@ const emitStep = (step: Step): string => {
 
       return `math(${emitLiteral(step.expr)})${bys}`;
     }
-    case 'branch':
-      throw new EmitUnsupported('branch', 'branch');
+    case 'branch': {
+      const opts = step.options
+        .map((o) => `.option(${emitLiteral(o.match)}, ${emitSubPlan(o.plan)})`)
+        .join('');
+      const def = step.default ? `.option(none, ${emitSubPlan(step.default)})` : '';
+
+      return `branch(${emitSubPlan(step.test)})${opts}${def}`;
+    }
     default:
       throw new EmitUnsupported('unsupported', `step ${step.kind}`);
   }
 };
+
+// An anonymous sub-traversal (no `g.` prefix): `out('KNOWS').values('name')`.
+const emitSubPlan = (p: Plan): string => p.steps.map(emitStep).join('.');
 
 export const planToGremlin = (plan: Plan): string => `g.${plan.steps.map(emitStep).join('.')}`;
 
@@ -343,6 +360,27 @@ const CORPUS: Case[] = [
     name: "V().hasLabel('PERSON').math('_ + 1').by('age')  [by-projected operand]",
     plan: traversal(V(), hasLabel('PERSON'), math('_ + 1').by('age')),
     verdict: { kind: 'agree', expected: [30, 28, 33, 36] },
+  },
+  // branch() — a TS-superset control step now at native parity (Tier-2 fix).
+  {
+    name: "V().branch(label()).option('PERSON', values('name')).option('SOFTWARE', constant(...))",
+    plan: traversal(
+      V(),
+      branch(label()).option('PERSON', values('name')).option('SOFTWARE', constant('a software')),
+    ),
+    verdict: {
+      kind: 'agree',
+      expected: ['marko', 'vadas', 'josh', 'peter', 'a software', 'a software'],
+    },
+  },
+  {
+    name: "V().hasLabel('PERSON').branch(values('age')).option(29, ...).none(...)  [default branch]",
+    plan: traversal(
+      V(),
+      hasLabel('PERSON'),
+      branch(values('age')).option(29, constant('young')).none(constant('older')),
+    ),
+    verdict: { kind: 'agree', expected: ['young', 'older', 'older', 'older'] },
   },
   // Type-fault: incomparable order — both engines throw (shared fault).
   {

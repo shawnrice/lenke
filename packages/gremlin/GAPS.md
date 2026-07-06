@@ -53,11 +53,14 @@ exist in the TS DSL but not (yet) in the text-driven Rust engine:
 - **Closures** (`map(fn)`/`filter(fn)`/`sideEffect(fn)`/`fold(seed, fn)`): a JS
   closure can't cross the Groovy-text boundary at all. This is permanent; use
   the sub-traversal forms for cross-engine plans.
-- **`branch`**: not yet in the Rust parser/executor. _(In progress.)_
 - **`regex`** predicate: not yet in the Rust engine (needs a regex dependency;
   the `regex` crate is linear-time and does not support backreferences or
   lookaround — a narrow, documented divergence from JS `RegExp`). _(In progress.)_
 
-Now at parity (previously TS-only): **`math()`** — the Rust engine ships the
-same infix evaluator (`+ - * /`, parens, `_`/`as_`-bound operands, cycling
-`by()` projection); non-numeric operands fault on both engines.
+Now at parity (previously TS-only):
+
+- **`math()`** — the Rust engine ships the same infix evaluator (`+ - * /`,
+  parens, `_`/`as_`-bound operands, cycling `by()` projection); non-numeric
+  operands fault on both engines.
+- **`branch()`** — `branch(test).option(match, …)…option(none, …)`; the `none`
+  default is TinkerPop's `Pick.none`. Routes each traverser by its test result.

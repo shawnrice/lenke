@@ -291,6 +291,13 @@ pub enum Step {
         then_: Box<Traversal>,
         else_: Option<Box<Traversal>>,
     },
+    /// Switch over a sub-plan's first result: route each traverser to the first
+    /// option whose `match` value equals that result, else `default`.
+    Branch {
+        test: Box<Traversal>,
+        options: Vec<(GVal, Traversal)>,
+        default: Option<Box<Traversal>>,
+    },
     Map(Box<Traversal>),
     FlatMap(Box<Traversal>),
     SideEffect(Box<Traversal>),
@@ -649,6 +656,27 @@ impl Traversal {
             then_: Box::new(then_),
             else_: Some(Box::new(else_)),
         })
+    }
+    pub fn branch(self, test: Self) -> Self {
+        self.push(Step::Branch {
+            test: Box::new(test),
+            options: vec![],
+            default: None,
+        })
+    }
+    /// Attach an `option(match, traversal)` to the most recent `branch()`.
+    pub fn option(mut self, m: impl Into<GVal>, plan: Self) -> Self {
+        if let Some(Step::Branch { options, .. }) = self.steps.last_mut() {
+            options.push((m.into(), plan));
+        }
+        self
+    }
+    /// Attach the default branch (`option(none, traversal)`) to `branch()`.
+    pub fn option_none(mut self, plan: Self) -> Self {
+        if let Some(Step::Branch { default, .. }) = self.steps.last_mut() {
+            *default = Some(Box::new(plan));
+        }
+        self
     }
     pub fn map(self, sub: Self) -> Self {
         self.push(Step::Map(Box::new(sub)))
