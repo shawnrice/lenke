@@ -13,7 +13,7 @@
 //!   - **int/float inference.** `Number.isInteger`-style: a whole float → `g:Int64`,
 //!     else `g:Double`. Both decode back to the core's single float type.
 
-use serde_json::Value as J;
+use crate::json::{self, Json};
 
 use crate::codec::{element_props, is_intish, node_labels, push_json_str, push_num};
 use crate::error::{CodeError, CodeResult};
@@ -53,18 +53,18 @@ fn push_typed(out: &mut String, v: &Value) {
 }
 
 /// Decode a GraphSON v3 typed value (or bare JSON scalar) back to a core value.
-fn decode_typed(node: &J) -> CodeResult<Value> {
+fn decode_typed(node: &Json) -> CodeResult<Value> {
     Ok(match node {
-        J::Null => Value::Null,
-        J::Bool(b) => Value::Bool(*b),
-        J::String(s) => Value::Str(s.as_str().into()),
-        J::Number(n) => Value::Num(n.as_f64().unwrap_or(f64::NAN)),
-        J::Array(a) => Value::List(a.iter().map(decode_typed).collect::<CodeResult<Vec<_>>>()?),
-        J::Object(o) => {
-            let value = o.get("@value");
-            match o.get("@type").and_then(J::as_str) {
+        Json::Null => Value::Null,
+        Json::Bool(b) => Value::Bool(*b),
+        Json::Str(s) => Value::Str(s.as_str().into()),
+        Json::Num(n) => Value::Num(*n),
+        Json::Arr(a) => Value::List(a.iter().map(decode_typed).collect::<CodeResult<Vec<_>>>()?),
+        Json::Obj(_) => {
+            let value = node.get("@value");
+            match node.get("@type").and_then(Json::as_str) {
                 Some("g:Int64" | "g:Int32" | "g:Double" | "g:Float") => {
-                    let n = value.and_then(J::as_f64).ok_or_else(|| {
+                    let n = value.and_then(Json::as_f64).ok_or_else(|| {
                         CodeError::new(
                             ErrorCode::InvalidShape,
                             "graphson: numeric typed value must be a number",
@@ -73,7 +73,7 @@ fn decode_typed(node: &J) -> CodeResult<Value> {
                     Value::Num(n)
                 }
                 Some("g:List") => {
-                    let arr = value.and_then(J::as_array).ok_or_else(|| {
+                    let arr = value.and_then(Json::as_array).ok_or_else(|| {
                         CodeError::new(
                             ErrorCode::InvalidShape,
                             "graphson: g:List value must be an array",
@@ -170,48 +170,45 @@ pub fn encode(g: &Graph) -> String {
 }
 
 /// The `value` slot inside a `g:VertexProperty` / `g:Property` `@value` object.
-fn inner_value(prop_value: &J) -> Option<&J> {
+fn inner_value(prop_value: &Json) -> Option<&Json> {
     prop_value.get("@value").and_then(|v| v.get("value"))
 }
 
 pub fn decode(input: &str) -> CodeResult<Graph> {
-    let j: J = serde_json::from_str(input).map_err(|e| {
-        CodeError::new(
-            ErrorCode::InvalidJson,
-            format!("graphson: invalid JSON: {e}"),
-        )
-    })?;
-    let obj = j.as_object().ok_or_else(|| {
-        CodeError::new(
+    let j = json::parse(input)
+        .map_err(|()| CodeError::new(ErrorCode::InvalidJson, "graphson: invalid JSON"))?;
+    if j.as_object().is_none() {
+        return Err(CodeError::new(
             ErrorCode::InvalidShape,
             "graphson: expected a top-level object",
-        )
-    })?;
+        ));
+    }
+    let obj = &j;
 
     let mut b = Builder::default();
 
     let shape = |msg: &str| CodeError::new(ErrorCode::InvalidShape, format!("graphson: {msg}"));
 
-    if let Some(vertices) = obj.get("vertices").and_then(J::as_array) {
+    if let Some(vertices) = obj.get("vertices").and_then(Json::as_array) {
         for wrapper in vertices {
             let v = wrapper
                 .get("@value")
-                .and_then(J::as_object)
+                .filter(|x| x.as_object().is_some())
                 .ok_or_else(|| shape("each vertex must have an @value object"))?;
-            if !matches!(v.get("id"), Some(J::String(_)) | Some(J::Number(_))) {
+            if !matches!(v.get("id"), Some(Json::Str(_)) | Some(Json::Num(_))) {
                 return Err(shape("vertex @value.id must be a string or number"));
             }
             let id = v.get("id").map(crate::codec::json_id).unwrap_or_default();
             let labels = match v.get("label") {
-                Some(J::String(s)) if s.is_empty() => Vec::new(),
-                Some(J::String(s)) => s.split(LABEL_SEP).map(String::from).collect(),
+                Some(Json::Str(s)) if s.is_empty() => Vec::new(),
+                Some(Json::Str(s)) => s.split(LABEL_SEP).map(String::from).collect(),
                 _ => return Err(shape("vertex @value.label must be a string")),
             };
             let mut props = Vec::new();
-            if let Some(pmap) = v.get("properties").and_then(J::as_object) {
+            if let Some(pmap) = v.get("properties").and_then(Json::as_object) {
                 for (k, entries) in pmap {
                     // single-value LPG: read the first element of the array
-                    if let Some(first) = entries.as_array().and_then(|a| a.first()) {
+                    if let Some(first) = entries.as_array().and_then(<[Json]>::first) {
                         if let Some(val) = inner_value(first) {
                             props.push((k.clone(), decode_typed(val)?));
                         }
@@ -222,21 +219,21 @@ pub fn decode(input: &str) -> CodeResult<Graph> {
         }
     }
 
-    if let Some(edges) = obj.get("edges").and_then(J::as_array) {
+    if let Some(edges) = obj.get("edges").and_then(Json::as_array) {
         for wrapper in edges {
             let e = wrapper
                 .get("@value")
-                .and_then(J::as_object)
+                .filter(|x| x.as_object().is_some())
                 .ok_or_else(|| shape("each edge must have an @value object"))?;
             let src = e.get("outV").map(crate::codec::json_id).unwrap_or_default();
             let dst = e.get("inV").map(crate::codec::json_id).unwrap_or_default();
             // single type — split the `::` convention and take the first.
-            let Some(J::String(label)) = e.get("label") else {
+            let Some(Json::Str(label)) = e.get("label") else {
                 return Err(shape("edge @value.label must be a string"));
             };
             let etype = label.split(LABEL_SEP).next().unwrap_or("").to_string();
             let mut props = Vec::new();
-            if let Some(pmap) = e.get("properties").and_then(J::as_object) {
+            if let Some(pmap) = e.get("properties").and_then(Json::as_object) {
                 for (k, entry) in pmap {
                     if let Some(val) = inner_value(entry) {
                         props.push((k.clone(), decode_typed(val)?));

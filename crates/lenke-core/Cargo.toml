@@ -42,10 +42,6 @@ panic = "abort"
 # rayon is optional so the crate builds for wasm32 (browser, no threads):
 # `--no-default-features` drops it and decode falls back to a serial parse.
 rayon = { version = "1.12.0", optional = true }
-# serde_json is optional: only the JSON-carrying surfaces (gremlin results, the
-# ndjson + extra codecs) pull it in. A minimal frontend build (GQL only) drops
-# it entirely — the core query path hand-rolls its JSON (see `query::to_json`).
-serde_json = { version = "1.0.150", optional = true }
 # The gremlin `regex()` predicate (pulled in by the `gremlin` feature). Linear-
 # time (no catastrophic backtracking); no backreferences/lookaround — a narrow,
 # documented divergence from JS `RegExp`/Java `Pattern` (see
@@ -72,11 +68,11 @@ gql = ["_fallible-ffi"]
 # `gremlin`: the Gremlin traversal engine (heterogeneous JSON results). Its JSON
 # carrier is hand-rolled via `jsonfmt`, so it carries NO serde_json.
 gremlin = ["dep:regex", "_fallible-ffi"]
-# `ndjson`: the NDJSON load/snapshot codec.
-ndjson = ["dep:serde_json", "_fallible-ffi"]
+# `ndjson`: the NDJSON load/snapshot codec (hand-rolled JSON, no serde_json).
+ndjson = ["_fallible-ffi"]
 # `codecs`: the extra serialization formats (pg-json/pg-text/graphson/csv); the
-# combined dispatch also covers ndjson, so it implies it.
-codecs = ["ndjson", "dep:serde_json"]
+# combined dispatch also covers ndjson, so it implies it. Hand-rolled JSON — no serde.
+codecs = ["ndjson"]
 # `arrow`: the Apache Arrow columnar result surface (binary; no serde_json). The
 # Arrow output is a query-result format, so it needs the GQL engine.
 arrow = ["gql"]

@@ -35,5 +35,9 @@ pub mod gremlin;
 // serde-free JSON surface. gql hand-rolls its own tabular output and omits it.
 #[cfg(any(feature = "gremlin", feature = "ndjson"))]
 mod jsonfmt;
+// The shared hand-rolled JSON *parser* — the read side of ndjson + the codecs
+// (which imply ndjson). gql/gremlin never parse JSON, so they omit it.
+#[cfg(feature = "ndjson")]
+mod json;
 #[cfg(feature = "ndjson")]
 pub mod ndjson;

@@ -15,16 +15,17 @@ use crate::graph::{Builder, Column, Dict, EdgeRec, Graph, NodeRec, Properties, V
 use crate::jsonfmt::{push_json_str, push_num};
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
-use serde_json::Value as J;
 
-fn to_value(j: &J) -> CodeResult<Value> {
+use crate::json::{self, Json};
+
+fn to_value(j: &Json) -> CodeResult<Value> {
     Ok(match j {
-        J::Null => Value::Null,
-        J::Bool(b) => Value::Bool(*b),
-        J::Number(n) => Value::Num(n.as_f64().unwrap_or(f64::NAN)),
-        J::String(s) => Value::Str(Arc::from(s.as_str())),
-        J::Array(a) => Value::List(a.iter().map(to_value).collect::<CodeResult<Vec<_>>>()?),
-        J::Object(_) => return Err(CodeError::new(
+        Json::Null => Value::Null,
+        Json::Bool(b) => Value::Bool(*b),
+        Json::Num(n) => Value::Num(*n),
+        Json::Str(s) => Value::Str(Arc::from(s.as_str())),
+        Json::Arr(a) => Value::List(a.iter().map(to_value).collect::<CodeResult<Vec<_>>>()?),
+        Json::Obj(_) => return Err(CodeError::new(
             ErrorCode::InvalidValue,
             "ndjson: property value is a nested object, which is outside the LPG scalar/list model",
         )),
@@ -33,8 +34,8 @@ fn to_value(j: &J) -> CodeResult<Value> {
 
 /// Decode a JSON object's `properties` field into core property pairs, or an
 /// empty vec when absent. A nested-object value propagates as `InvalidValue`.
-fn props_of(obj: &serde_json::Map<String, J>) -> CodeResult<Vec<(String, Value)>> {
-    match obj.get("properties").and_then(J::as_object) {
+fn props_of(obj: &Json) -> CodeResult<Vec<(String, Value)>> {
+    match obj.get("properties").and_then(Json::as_object) {
         Some(m) => m
             .iter()
             .map(|(k, v)| Ok((k.clone(), to_value(v)?)))
@@ -43,10 +44,14 @@ fn props_of(obj: &serde_json::Map<String, J>) -> CodeResult<Vec<(String, Value)>
     }
 }
 
-fn as_id(j: &J) -> String {
+/// A JSON id field as a string (a string verbatim; a number/bool/null via its
+/// JSON text — matching serde_json's `Display`).
+fn as_id(j: &Json) -> String {
     match j {
-        J::String(s) => s.clone(),
-        other => other.to_string(),
+        Json::Str(s) => s.clone(),
+        Json::Num(n) => crate::jsonfmt::js_number(*n),
+        Json::Bool(b) => b.to_string(),
+        _ => "null".to_string(),
     }
 }
 
@@ -66,13 +71,13 @@ fn parse_line(line: &str) -> CodeResult<Option<Rec>> {
         return Ok(None);
     }
     let snippet = || line.chars().take(80).collect::<String>();
-    let Ok(j) = serde_json::from_str::<J>(line) else {
+    let Ok(j) = json::parse(line) else {
         return Err(CodeError::new(
             ErrorCode::InvalidJson,
             format!("ndjson: invalid JSON: {}", snippet()),
         ));
     };
-    let Some(obj) = j.as_object() else {
+    if j.as_object().is_none() {
         return Err(CodeError::new(
             ErrorCode::InvalidShape,
             format!(
@@ -80,13 +85,13 @@ fn parse_line(line: &str) -> CodeResult<Option<Rec>> {
                 snippet()
             ),
         ));
-    };
-    let rec = match obj.get("type").and_then(J::as_str) {
+    }
+    let rec = match j.get("type").and_then(Json::as_str) {
         Some("node") => {
-            let id = obj.get("id").map(as_id).unwrap_or_default();
-            let labels = obj
+            let id = j.get("id").map(as_id).unwrap_or_default();
+            let labels = j
                 .get("labels")
-                .and_then(J::as_array)
+                .and_then(Json::as_array)
                 .map(|a| {
                     a.iter()
                         .filter_map(|x| x.as_str().map(String::from))
@@ -96,26 +101,26 @@ fn parse_line(line: &str) -> CodeResult<Option<Rec>> {
             Rec::Node(NodeRec {
                 id,
                 labels,
-                props: props_of(obj)?,
+                props: props_of(&j)?,
             })
         }
         Some("edge") => {
-            let src = obj.get("from").map(as_id).unwrap_or_default();
-            let dst = obj.get("to").map(as_id).unwrap_or_default();
-            let etype = obj
+            let src = j.get("from").map(as_id).unwrap_or_default();
+            let dst = j.get("to").map(as_id).unwrap_or_default();
+            let etype = j
                 .get("labels")
-                .and_then(J::as_array)
-                .and_then(|a| a.first())
-                .and_then(J::as_str)
+                .and_then(Json::as_array)
+                .and_then(<[Json]>::first)
+                .and_then(Json::as_str)
                 .unwrap_or("")
                 .to_string();
             // Optional external edge id (absent ⇒ id-less, stays lazy).
-            let id = obj.get("id").and_then(J::as_str).map(String::from);
+            let id = j.get("id").and_then(Json::as_str).map(String::from);
             Rec::Edge(EdgeRec {
                 src,
                 dst,
                 etype,
-                props: props_of(obj)?,
+                props: props_of(&j)?,
                 id,
             })
         }

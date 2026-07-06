@@ -11,14 +11,13 @@
 //! optional external id round-trips (emitted only when assigned, read on decode);
 //! `undirected` is always emitted `false` and ignored on decode (directed core).
 
-use serde_json::Value as J;
-
 use crate::codec::{
     element_props, json_id, json_props, json_str_array, node_labels, push_json_str, push_value,
 };
 use crate::error::{CodeError, CodeResult};
 use crate::error_codes::ErrorCode;
 use crate::graph::{Builder, EdgeRec, Graph, NodeRec};
+use crate::json::{self, Json};
 
 /// Emit an element's present properties as a JSON object.
 fn push_props(out: &mut String, props: &[(&str, crate::graph::Value)]) {
@@ -91,18 +90,15 @@ pub fn encode(g: &Graph) -> String {
 
 /// Deserialize a PG-JSON string into a fresh graph.
 pub fn decode(input: &str) -> CodeResult<Graph> {
-    let j: J = serde_json::from_str(input).map_err(|e| {
-        CodeError::new(
-            ErrorCode::InvalidJson,
-            format!("pg-json: invalid JSON: {e}"),
-        )
-    })?;
-    let obj = j.as_object().ok_or_else(|| {
-        CodeError::new(
+    let j = json::parse(input)
+        .map_err(|()| CodeError::new(ErrorCode::InvalidJson, "pg-json: invalid JSON"))?;
+    if j.as_object().is_none() {
+        return Err(CodeError::new(
             ErrorCode::InvalidShape,
             "pg-json: expected a top-level object",
-        )
-    })?;
+        ));
+    }
+    let obj = &j;
 
     let mut b = Builder::default();
 
@@ -113,12 +109,12 @@ pub fn decode(input: &str) -> CodeResult<Graph> {
 
     let nodes = obj
         .get("nodes")
-        .and_then(J::as_array)
+        .and_then(Json::as_array)
         .ok_or_else(|| shape("'nodes' must be an array"))?;
-    for node in nodes {
-        let o = node
-            .as_object()
-            .ok_or_else(|| shape("each node must be an object"))?;
+    for o in nodes {
+        if o.as_object().is_none() {
+            return Err(shape("each node must be an object"));
+        }
         if !is_id_value(o.get("id")) {
             return Err(shape("node 'id' must be a string or number"));
         }
@@ -137,26 +133,26 @@ pub fn decode(input: &str) -> CodeResult<Graph> {
 
     match obj.get("edges") {
         None => {}
-        Some(J::Array(edges)) => {
-            for edge in edges {
-                let o = edge
-                    .as_object()
-                    .ok_or_else(|| shape("each edge must be an object"))?;
+        Some(Json::Arr(edges)) => {
+            for o in edges {
+                if o.as_object().is_none() {
+                    return Err(shape("each edge must be an object"));
+                }
                 if !is_string_array(o.get("labels")) {
                     return Err(shape("edge 'labels' must be an array of strings"));
                 }
                 if !is_object_field(o.get("properties")) {
                     return Err(shape("edge 'properties' must be an object"));
                 }
-                if !matches!(o.get("id"), None | Some(J::String(_)) | Some(J::Number(_))) {
+                if !matches!(o.get("id"), None | Some(Json::Str(_)) | Some(Json::Num(_))) {
                     return Err(shape("edge 'id' must be a string or number"));
                 }
                 // The core edge carries one type — take the first label.
                 let etype = o
                     .get("labels")
-                    .and_then(J::as_array)
-                    .and_then(|a| a.first())
-                    .and_then(J::as_str)
+                    .and_then(Json::as_array)
+                    .and_then(<[Json]>::first)
+                    .and_then(Json::as_str)
                     .unwrap_or("")
                     .to_string();
                 b.edges.push(EdgeRec {
@@ -175,18 +171,18 @@ pub fn decode(input: &str) -> CodeResult<Graph> {
 }
 
 /// A JSON id field present and string-or-number (TS `typeof === 'string' | 'number'`).
-fn is_id_value(j: Option<&J>) -> bool {
-    matches!(j, Some(J::String(_)) | Some(J::Number(_)))
+fn is_id_value(j: Option<&Json>) -> bool {
+    matches!(j, Some(Json::Str(_)) | Some(Json::Num(_)))
 }
 
 /// A present array whose every element is a string (TS `isStringArray`).
-fn is_string_array(j: Option<&J>) -> bool {
-    matches!(j, Some(J::Array(a)) if a.iter().all(J::is_string))
+fn is_string_array(j: Option<&Json>) -> bool {
+    matches!(j, Some(Json::Arr(a)) if a.iter().all(|x| matches!(x, Json::Str(_))))
 }
 
 /// A present JSON object (TS `isObject`: object, non-null, non-array).
-fn is_object_field(j: Option<&J>) -> bool {
-    matches!(j, Some(J::Object(_)))
+fn is_object_field(j: Option<&Json>) -> bool {
+    matches!(j, Some(Json::Obj(_)))
 }
 
 #[cfg(test)]

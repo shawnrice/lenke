@@ -1382,8 +1382,12 @@ mod tests {
     /// emit a spread of values with our code, parse the result back with serde,
     /// and assert it reconstructs each value (NaN/±Inf documented to become null).
     /// This proves our output is valid JSON and semantically faithful.
+    // Uses the crate's own hand-rolled JSON parser (crate::json) as the oracle —
+    // gql writer ↔ json parser dogfood each other. Gated on `ndjson` (where that
+    // parser lives); gql-only test runs skip it, full runs cover it.
+    #[cfg(feature = "ndjson")]
     #[test]
-    fn to_json_round_trips_through_the_serde_oracle() {
+    fn to_json_round_trips_through_the_json_parser() {
         use crate::graph::Value::{Bool, List, Null, Num, Str};
         let cases: Vec<Value> = vec![
             Str("plain".into()),
@@ -1420,33 +1424,31 @@ mod tests {
         for c in &cases {
             rs.push_row([c.clone()]);
         }
-        let doc: serde_json::Value =
-            serde_json::from_str(&rs.to_json()).expect("hand-rolled JSON must parse");
+        let doc = crate::json::parse(&rs.to_json()).expect("hand-rolled JSON must parse");
         let rows = doc
             .get("rows")
-            .and_then(|r| r.as_array())
+            .and_then(crate::json::Json::as_array)
             .expect("rows array");
         assert_eq!(rows.len(), cases.len());
         for (i, want) in cases.iter().enumerate() {
-            assert!(
-                serde_matches(&rows[i][0], want),
-                "case {i}: {want:?} → {}",
-                rows[i][0]
-            );
+            let cell = &rows[i].as_array().expect("each row is an array")[0];
+            assert!(json_matches(cell, want), "case {i}: {want:?} → {cell:?}");
         }
     }
 
-    /// Compare a serde-parsed value against our core `Value` (numbers by f64, so
-    /// `42` and `42.0` agree; non-finite numbers must have been emitted as null).
-    fn serde_matches(got: &serde_json::Value, want: &Value) -> bool {
+    /// Compare a parsed [`crate::json::Json`] against our core `Value` (numbers by
+    /// f64, so `42` and `42.0` agree; non-finite numbers must have become null).
+    #[cfg(feature = "ndjson")]
+    fn json_matches(got: &crate::json::Json, want: &Value) -> bool {
+        use crate::json::Json;
         match want {
-            Value::Null => got.is_null(),
-            Value::Bool(b) => got.as_bool() == Some(*b),
+            Value::Null => matches!(got, Json::Null),
+            Value::Bool(b) => matches!(got, Json::Bool(g) if g == b),
             Value::Num(x) if x.is_finite() => got.as_f64() == Some(*x),
-            Value::Num(_) => got.is_null(),
+            Value::Num(_) => matches!(got, Json::Null),
             Value::Str(s) => got.as_str() == Some(s.as_ref()),
             Value::List(items) => got.as_array().is_some_and(|a| {
-                a.len() == items.len() && a.iter().zip(items).all(|(g, w)| serde_matches(g, w))
+                a.len() == items.len() && a.iter().zip(items).all(|(g, w)| json_matches(g, w))
             }),
         }
     }

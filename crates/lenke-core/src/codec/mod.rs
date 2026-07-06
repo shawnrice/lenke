@@ -34,11 +34,10 @@ mod conformance;
 
 use std::sync::Arc;
 
-use serde_json::Value as J;
-
 use crate::error::{CodeError, CodeResult};
 use crate::error_codes::ErrorCode;
 use crate::graph::{Dict, Graph, Properties, Value};
+use crate::json::Json;
 
 // ---------------------------------------------------------------------------
 // Element/property access over the columnar store
@@ -112,18 +111,18 @@ pub(crate) fn push_value(out: &mut String, v: &Value) {
 /// A `serde_json::Value` as a core [`Value`]. A nested object is outside the LPG
 /// scalar/list property model, so it's an `InvalidValue` error (mirrors the TS
 /// `normalizeValue` contract) rather than a silent coercion.
-pub(crate) fn json_to_value(j: &J) -> CodeResult<Value> {
+pub(crate) fn json_to_value(j: &Json) -> CodeResult<Value> {
     Ok(match j {
-        J::Null => Value::Null,
-        J::Bool(b) => Value::Bool(*b),
-        J::Number(n) => Value::Num(n.as_f64().unwrap_or(f64::NAN)),
-        J::String(s) => Value::Str(Arc::from(s.as_str())),
-        J::Array(a) => Value::List(
+        Json::Null => Value::Null,
+        Json::Bool(b) => Value::Bool(*b),
+        Json::Num(n) => Value::Num(*n),
+        Json::Str(s) => Value::Str(Arc::from(s.as_str())),
+        Json::Arr(a) => Value::List(
             a.iter()
                 .map(json_to_value)
                 .collect::<CodeResult<Vec<_>>>()?,
         ),
-        J::Object(_) => {
+        Json::Obj(_) => {
             return Err(CodeError::new(
                 ErrorCode::InvalidValue,
                 "property value is a nested object, which is outside the LPG scalar/list model",
@@ -132,18 +131,21 @@ pub(crate) fn json_to_value(j: &J) -> CodeResult<Value> {
     })
 }
 
-/// A JSON id field as a string (string verbatim; numbers/other stringified).
-pub(crate) fn json_id(j: &J) -> String {
+/// A JSON id field as a string (a string verbatim; a number/bool/null via its
+/// JSON text — matching serde_json's `Display`).
+pub(crate) fn json_id(j: &Json) -> String {
     match j {
-        J::String(s) => s.clone(),
-        other => other.to_string(),
+        Json::Str(s) => s.clone(),
+        Json::Num(n) => crate::jsonfmt::js_number(*n),
+        Json::Bool(b) => b.to_string(),
+        _ => "null".to_string(),
     }
 }
 
 /// A JSON array field as a `Vec<String>` (non-string elements dropped).
-pub(crate) fn json_str_array(field: Option<&J>) -> Vec<String> {
+pub(crate) fn json_str_array(field: Option<&Json>) -> Vec<String> {
     field
-        .and_then(J::as_array)
+        .and_then(Json::as_array)
         .map(|a| {
             a.iter()
                 .filter_map(|x| x.as_str().map(String::from))
@@ -154,8 +156,8 @@ pub(crate) fn json_str_array(field: Option<&J>) -> Vec<String> {
 
 /// A JSON object field as core property pairs (used by pg-json). A nested-object
 /// value anywhere is an `InvalidValue` error (see [`json_to_value`]).
-pub(crate) fn json_props(field: Option<&J>) -> CodeResult<Vec<(String, Value)>> {
-    match field.and_then(J::as_object) {
+pub(crate) fn json_props(field: Option<&Json>) -> CodeResult<Vec<(String, Value)>> {
+    match field.and_then(Json::as_object) {
         Some(m) => m
             .iter()
             .map(|(k, v)| Ok((k.clone(), json_to_value(v)?)))
