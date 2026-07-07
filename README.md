@@ -54,6 +54,15 @@ React bindings expose either engine as a reactive data store.
 
 Each package has its own README with a full API walkthrough.
 
+## Guides
+
+The package READMEs are the API reference; the **[deployment guides](docs/guides/)** are task-oriented — how to wire lenke up for each way you can run it. Every deployment is a point in three orthogonal choices (engine, query frontend, reach-path); [choosing-your-build](docs/guides/choosing-your-build.md) is the matrix.
+
+- [pure-ts](docs/guides/pure-ts.md) — the TypeScript graph, anywhere, no native artifacts
+- [native](docs/guides/native.md) / [wasm](docs/guides/wasm.md) — the Rust engine via N-API / bun:ffi / WebAssembly
+- [frontend-main-thread](docs/guides/frontend-main-thread.md) / [frontend-worker](docs/guides/frontend-worker.md) — React on the main thread, or a worker-resident sync engine
+- [backend-embedded](docs/guides/backend-embedded.md) — an embedded cache / view machine, and multi-tenancy
+
 ## Quick start
 
 ### Query a graph with GQL (pure TypeScript)
@@ -110,12 +119,13 @@ import { createWasmBackend } from '@lenke/native/wasm';
 import { graphFromNdjson } from '@lenke/native';
 
 const backend = await createWasmBackend(await readFile('lenke_core.wasm'));
-const g = graphFromNdjson(backend, await readFile('graph.ndjson'));
+
+// The graph is heap-owned by the wasm module; `using` frees it at scope exit
+// (or call `g.free()` explicitly). Same rule on the ffi and N-API backends.
+using g = graphFromNdjson(backend, await readFile('graph.ndjson'));
 
 const rows = g.query`MATCH (p:Person) RETURN p.name AS name`;
 console.log(rows); // [{ name: 'marko' }, ...]
-
-g.free(); // the graph is heap-owned by the wasm module; release it explicitly
 ```
 
 Under Bun, swap `@lenke/native/wasm` for `@lenke/native/ffi` (`createFfiBackend(libPath)`) to load the native dynamic library directly — the rest of the API is identical.
