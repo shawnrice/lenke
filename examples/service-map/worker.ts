@@ -21,6 +21,7 @@ import {
   opfsStorage,
   readSnapshot,
   type CollectionDefinition,
+  type SyncHost,
   type SyncWrite,
 } from '@lenke/sync';
 
@@ -162,17 +163,52 @@ const boot = async () => {
 };
 
 const engineReady = boot();
-const tabHosts = new Set<ReturnType<Awaited<ReturnType<typeof boot>>['createHost']>>();
+const tabHosts = new Set<SyncHost>();
 
 // Each tab connecting to the SharedWorker gets its own protocol host over its
 // own MessagePort — one host per connection, identical to the WS server side.
+//
+// And one TEARDOWN per connection, or hosts leak: a closed host stays in
+// `tabHosts` and its refresh listener stays registered in the engine forever,
+// so every change re-runs the standing queries of dead tabs. A MessagePort
+// can't reliably signal its tab's death (only recent Chromium fires 'close'),
+// so teardown triggers two ways — the tab's pagehide `bye` message (see
+// main.tsx) and the port 'close' event where supported — and a bye'd port that
+// speaks again (bfcache revival) just gets a fresh host.
 (globalThis as unknown as { onconnect: (e: MessageEvent) => void }).onconnect = (e) => {
   const [port] = e.ports;
 
   void engineReady.then((engine) => {
-    const host = engine.createHost({ send: (m) => port.postMessage(m) });
-    tabHosts.add(host);
-    port.onmessage = (msg) => host.receive(msg.data);
+    let host: SyncHost | null = null;
+    const open = (): void => {
+      host = engine.createHost({ send: (m) => port.postMessage(m) });
+      tabHosts.add(host);
+    };
+    const shut = (): void => {
+      if (host) {
+        tabHosts.delete(host);
+        host.close();
+        host = null;
+      }
+    };
+
+    port.onmessage = (msg) => {
+      if ((msg.data as { type?: unknown } | null)?.type === 'bye') {
+        shut();
+
+        return;
+      }
+
+      if (host === null) {
+        open(); // bfcache revival: the tab came back after its bye
+      }
+
+      host?.receive(msg.data);
+    };
+    (
+      port as unknown as { addEventListener?: (t: 'close', f: () => void) => void }
+    ).addEventListener?.('close', shut);
+    open();
     port.start?.();
   });
 };

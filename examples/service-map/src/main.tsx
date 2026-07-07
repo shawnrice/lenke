@@ -20,6 +20,18 @@ const client: SyncClient = createSyncClient({ send: (m) => worker.port.postMessa
 worker.port.onmessage = (e) => client.receive(e.data);
 worker.port.start();
 
+// A MessagePort can't signal its tab's death, so say goodbye explicitly —
+// without it the worker retains this tab's host (and re-runs its standing
+// queries on every change) forever. `pagehide` fires on close, navigation,
+// AND bfcache entry; on bfcache revival (`pageshow` persisted) replay every
+// standing query — the worker mints a fresh host, which re-answers each one.
+window.addEventListener('pagehide', () => worker.port.postMessage({ type: 'bye' }));
+window.addEventListener('pageshow', (e) => {
+  if (e.persisted) {
+    client.replay();
+  }
+});
+
 const STATUSES = ['healthy', 'degraded', 'down'] as const;
 
 // Epoch dependency tokens: the labels/props whose changes must re-run this
