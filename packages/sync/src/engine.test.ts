@@ -273,6 +273,39 @@ suite('@lenke/sync engine · write-back', () => {
     stop();
   });
 
+  test('a full write-back queue refuses new writes before the optimistic apply', async () => {
+    const gate = deferred<void>();
+    const { store, engine } = connect({
+      maxPendingWrites: 2,
+      upstream: { push: () => gate.promise }, // upstream never drains
+    });
+
+    const before = store.graph.vertexCount;
+    engine.mutate('INSERT (:Person {name: $n})', { n: 'one' });
+    engine.mutate('INSERT (:Person {name: $n})', { n: 'two' });
+
+    // Queue is at the cap: the third write is REFUSED — coded throw, and the
+    // local graph is untouched (no optimistic apply that would never replicate).
+    expect(() => {
+      engine.mutate('INSERT (:Person {name: $n})', { n: 'three' });
+    }).toThrow('queue is full');
+    expect(store.graph.vertexCount).toBe(before + 2);
+    expect(engine.pendingWrites()).toBe(2);
+
+    gate.resolve(); // upstream drains → capacity returns
+    await until(() => engine.pendingWrites() === 0);
+    engine.mutate('INSERT (:Person {name: $n})', { n: 'three' });
+    expect(store.graph.vertexCount).toBe(before + 3);
+  });
+
+  test('a gremlin write with params is refused, not silently unbound', () => {
+    const { engine } = connect({});
+
+    expect(() => {
+      engine.mutate("g.addV('Person').property('name', $n)", { n: 'zoe' }, 'gremlin');
+    }).toThrow('no param binding');
+  });
+
   test('a write that changed nothing replicates nothing (version gate)', async () => {
     const pushed: SyncWrite[] = [];
     const { engine } = connect({

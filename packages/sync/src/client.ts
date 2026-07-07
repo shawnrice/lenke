@@ -350,13 +350,25 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
       send(msg);
     });
 
-  const mutate = (text: string, params?: QueryParams, lang?: 'gql' | 'gremlin'): Promise<void> =>
-    new Promise<void>((resolve, reject) => {
+  const mutate = (text: string, params?: QueryParams, lang?: 'gql' | 'gremlin'): Promise<void> => {
+    if (lang === 'gremlin' && params !== undefined) {
+      // Gremlin has no param binding — silently dropping the bindings would
+      // run the traversal with unbound `$name` literals. Fail at the call site.
+      return Promise.reject(
+        new LenkeError(
+          'lenke: a gremlin write has no param binding — interpolate values with the gremlin tag',
+          { code: ErrorCode.InvalidGraphOp },
+        ),
+      );
+    }
+
+    return new Promise<void>((resolve, reject) => {
       const req = `m${++nextId}`;
       const msg: ClientMessage = { type: 'mutate', req, text, params, lang };
       pending.set(req, { resolve: resolve as (v: never) => void, reject, kind: 'mutate', msg });
       send(msg);
     });
+  };
 
   const mutateGremlin = (
     traversal: string | TemplateStringsArray,

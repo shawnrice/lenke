@@ -109,6 +109,30 @@ suite('@lenke/sync host · protocol v1', () => {
     expect(rows.rows).toHaveLength(3);
   });
 
+  test('a legacy pre-`lang` mutate ({gql}) still applies (wire-skew shim)', () => {
+    // A stale tab against an upgraded SharedWorker (or an old app build against
+    // a new server) still sends the write text under `gql` — honor it.
+    const store = newStore();
+    const { host, take } = attach(store);
+    take();
+
+    host.receive({ type: 'mutate', req: 'old', gql: "INSERT (:Person {name: 'legacy'})" });
+
+    expect(take()).toEqual([{ type: 'ack', req: 'old', ok: true }]);
+    expect(store.graph.vertexCount).toBe(3);
+  });
+
+  test('a mutate with no query text at all acks a coded error, not a crash', () => {
+    const { host, take } = attach(newStore());
+    take();
+
+    host.receive({ type: 'mutate', req: 'bad' });
+
+    const [ack] = take();
+    expect(ack).toMatchObject({ type: 'ack', req: 'bad', ok: false });
+    expect((ack as { error?: { code: string } }).error?.code).toBe('E_INVALID_SHAPE');
+  });
+
   test('one connection’s write fans out to another host on the same store', () => {
     const store = newStore();
     const alice = attach(store);

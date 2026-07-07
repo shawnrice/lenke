@@ -32,33 +32,13 @@
  * the collections that snapshot already covers.
  */
 
-import type { QueryParams, RustGraph, Store } from '@lenke/native';
+import { ErrorCode, LenkeError } from '@lenke/errors';
+import type { QueryParams, Store } from '@lenke/native';
 
 import { createSyncHost, type SyncHost, type SyncHostOptions } from './host.js';
+import { runWrite, type SyncWrite } from './protocol.js';
 
-/** One replicable write: query text, its language, and (GQL only) `$name` bindings. */
-export type SyncWrite = {
-  /** Query text — GQL DML, or a Gremlin mutation traversal when `lang: 'gremlin'`. */
-  text: string;
-  /**
-   * Language, default `'gql'`. `'gremlin'` executes `text` through the Gremlin
-   * engine (mutation steps: `addV` / `addE` / `property` / `drop`). Gremlin has
-   * no param binding — pre-escape values with the `gremlin` tag and leave
-   * `params` unset.
-   */
-  lang?: 'gql' | 'gremlin';
-  /** `$name` bindings (GQL only). */
-  params?: QueryParams;
-};
-
-/** Apply one write to a graph: GQL via `query`, Gremlin via `gremlin`. */
-const runWrite = (g: RustGraph, w: SyncWrite): void => {
-  if (w.lang === 'gremlin') {
-    g.gremlin(w.text);
-  } else {
-    g.query(w.text, w.params);
-  }
-};
+export type { SyncWrite } from './protocol.js';
 
 export type CollectionState = 'empty' | 'loading' | 'complete' | 'error';
 
@@ -111,6 +91,17 @@ export type SyncEngineOptions = {
    * of exploding the wait.
    */
   retry?: { attempts?: number; baseMs?: number; maxMs?: number };
+  /**
+   * Backpressure cap on the write-back queue (default 1000). When the queue is
+   * full, `mutate` REFUSES the write (a coded `E_RESOURCE_EXHAUSTED` throw,
+   * before the optimistic local apply) rather than growing without bound — a
+   * runaway write loop hits a wall instead of an infinite queue, and every
+   * queued write stops bloating each snapshot. Sized for human-scale offline
+   * editing; raise it if your app legitimately batches more. Restored
+   * `initialWrites` are exempt (they are truth already applied to the
+   * snapshot's graph); the cap gates NEW writes only.
+   */
+  maxPendingWrites?: number;
   /** A write exhausted its retries and was dropped from the queue. */
   onWriteError?: (write: SyncWrite, error: unknown) => void;
   /** A collection load failed (state → 'error'; the next demand re-triggers). */
@@ -167,6 +158,7 @@ export const createSyncEngine = (options: SyncEngineOptions): SyncEngine => {
   const attempts = options.retry?.attempts ?? 5;
   const baseMs = options.retry?.baseMs ?? 250;
   const maxMs = options.retry?.maxMs ?? 30_000;
+  const maxPending = options.maxPendingWrites ?? 1000;
 
   // State is keyed per (collection, scope value): an unkeyed collection uses its
   // bare name; a keyed one appends its bound key values. Absent → 'empty', so
@@ -333,6 +325,24 @@ export const createSyncEngine = (options: SyncEngineOptions): SyncEngine => {
   };
 
   const mutate = (text: string, params?: QueryParams, lang?: 'gql' | 'gremlin'): void => {
+    if (lang === 'gremlin' && params !== undefined) {
+      // Refuse loudly: Gremlin has no param binding, so silently dropping the
+      // bindings would run the traversal with unbound `$name` literals.
+      throw new LenkeError(
+        'lenke: a gremlin write has no param binding — interpolate values with the gremlin tag',
+        { code: ErrorCode.InvalidGraphOp },
+      );
+    }
+
+    if (upstream && queue.length >= maxPending) {
+      // Backpressure BEFORE the optimistic apply: a refused write must not
+      // diverge the local graph from what will ever reach upstream.
+      throw new LenkeError(
+        `lenke: write-back queue is full (${maxPending} pending) — upstream is not draining`,
+        { code: ErrorCode.ResourceExhausted },
+      );
+    }
+
     const before = store.version;
     let write: SyncWrite;
 

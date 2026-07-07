@@ -35,12 +35,13 @@
  * a complete, local-only store.
  */
 
-import { isLenkeError } from '@lenke/errors';
+import { ErrorCode, isLenkeError, LenkeError } from '@lenke/errors';
 import type { LiveQuery, QueryParams, Row, Store } from '@lenke/native';
 
 import {
   isClientMessage,
   keyOf,
+  runWrite,
   type ClientMessage,
   type HostMessage,
   type MutateMessage,
@@ -203,7 +204,7 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
   const applyMutation =
     options.applyMutation ??
     ((text: string, params: QueryParams | undefined, lang?: 'gql' | 'gremlin') =>
-      store.mutate((g) => (lang === 'gremlin' ? g.gremlin(text) : g.query(text, params))));
+      store.mutate((g) => runWrite(g, { text, params, lang })));
   const isComplete = options.isComplete ?? (() => true);
   const pendingWrites = options.pendingWrites ?? (() => 0);
 
@@ -386,8 +387,20 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
   };
 
   const mutate = (msg: MutateMessage): void => {
+    // Wire-skew shim, mirroring the snapshot layer's: a pre-`lang` client (a
+    // stale tab against an upgraded SharedWorker, an old app build against a
+    // new server) still sends the write text under `gql`. Honor it rather than
+    // rejecting a perfectly valid write with a baffling parse error.
+    const text = msg.text ?? (msg as { gql?: unknown }).gql;
+
     try {
-      applyMutation(msg.text, msg.params, msg.lang);
+      if (typeof text !== 'string') {
+        throw new LenkeError('lenke: mutate carried no query text', {
+          code: ErrorCode.InvalidShape,
+        });
+      }
+
+      applyMutation(text, msg.params, msg.lang);
       send({ type: 'ack', req: msg.req, ok: true });
     } catch (e) {
       send({ type: 'ack', req: msg.req, ok: false, error: toWireError(e) });

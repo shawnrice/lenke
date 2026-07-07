@@ -186,6 +186,15 @@ suite('@lenke/sync · gremlin write path', () => {
     expect(rows).toHaveLength(1);
   });
 
+  test('client.mutate rejects a gremlin write carrying params', async () => {
+    const { client } = connect();
+
+    // Gremlin has no param binding — this would run with an unbound $n literal.
+    expect(
+      client.mutate("g.addV('Person').property('name', $n)", { n: 'x' }, 'gremlin'),
+    ).rejects.toThrow('no param binding');
+  });
+
   test('a collection loader can materialize its scope with a gremlin write', async () => {
     const { client } = connect({
       collections: {

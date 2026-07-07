@@ -30,12 +30,42 @@
  * text from user input.
  */
 
-import type { QueryParams, Row } from '@lenke/native';
+import type { QueryParams, Row, RustGraph } from '@lenke/native';
 
 /** A failure crossing the wire: the stable code is the contract, the message is free to change. */
 export type WireError = {
   code: string;
   message: string;
+};
+
+/** One replicable write: query text, its language, and (GQL only) `$name` bindings. */
+export type SyncWrite = {
+  /** Query text — GQL DML, or a Gremlin mutation traversal when `lang: 'gremlin'`. */
+  text: string;
+  /**
+   * Language, default `'gql'`. `'gremlin'` executes `text` through the Gremlin
+   * engine (mutation steps: `addV` / `addE` / `property` / `drop`). Gremlin has
+   * no param binding — pre-escape values with the `gremlin` tag and leave
+   * `params` unset.
+   */
+  lang?: 'gql' | 'gremlin';
+  /** `$name` bindings (GQL only). */
+  params?: QueryParams;
+};
+
+/**
+ * Apply one write to a graph: GQL via `query`, Gremlin via `gremlin`. The ONE
+ * write-language dispatch — the engine's loop and the host's default
+ * `applyMutation` both route through it, so a new language (or a per-language
+ * step) lands in exactly one place. Lives here because both import protocol
+ * and host can't import engine (cycle).
+ */
+export const runWrite = (g: RustGraph, w: SyncWrite): void => {
+  if (w.lang === 'gremlin') {
+    g.gremlin(w.text);
+  } else {
+    g.query(w.text, w.params);
+  }
 };
 
 // ---------------------------------------------------------------------------
