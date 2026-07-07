@@ -1,6 +1,7 @@
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { Backend, GraphHandle } from './backend.js';
+import { ensureDisposeSymbol } from './dispose.js';
 
 /** A decoded result row: column name → cell value. */
 export type Row = Record<string, unknown>;
@@ -223,9 +224,16 @@ export const decodeArrow = (blob: Uint8Array): Row[] => {
 
 /**
  * An ergonomic handle over a Rust-backed graph. Wraps a {@link Backend} and an
- * opaque graph handle; decodes the JSON/Arrow carriers the crate returns. Call
- * {@link RustGraph.free} when done — the underlying graph is heap-owned by the
- * native/wasm module and is not garbage-collected.
+ * opaque graph handle; decodes the JSON/Arrow carriers the crate returns.
+ *
+ * The underlying graph is heap-owned by the native/wasm module (and pinned by
+ * the napi backend's id→object registry), so it must be released. Three ways,
+ * uniform across the ffi / napi / wasm backends:
+ *   - `using g = graphFromNdjson(...)` — released at scope exit (preferred);
+ *   - `g.free()` — release explicitly (idempotent; the handle is dead after);
+ *   - forget both — a {@link FinalizationRegistry} backstop reclaims the handle
+ *     when the wrapper is collected. Best-effort (the GC may never run it before
+ *     exit), so it is a leak-net, not a substitute for `using`/`free()`.
  */
 export type RustGraph = {
   readonly vertexCount: number;
@@ -261,40 +269,89 @@ export type RustGraph = {
   toNdjson: () => Uint8Array;
   /** Serialize the graph in a named format (`pg-json | pg-text | graphson | csv | ndjson`). */
   serialize: (format: string) => string;
-  /** Release the underlying graph. The handle is invalid afterwards. */
+  /** Release the underlying graph. Idempotent; the handle is invalid afterwards. */
   free: () => void;
+  /** `using`-compatible alias of {@link RustGraph.free} (Explicit Resource Management). */
+  [Symbol.dispose]: () => void;
 };
 
+// GC backstop for a leaked RustGraph. The crate owns the graph's heap and the
+// napi backend's registry pins it, so a wrapper collected without free() would
+// leak. This reclaims the handle when the wrapper becomes unreachable — a
+// leak-net only (the GC is not guaranteed to run it). Skipped on runtimes with
+// no FinalizationRegistry; free()/`using` still work there.
+const reclaim: FinalizationRegistry<() => void> | undefined =
+  typeof FinalizationRegistry === 'function'
+    ? new FinalizationRegistry<() => void>((release) => {
+        release();
+      })
+    : undefined;
+
+// Built at module scope so the registered thunk closes over `backend` / `handle`
+// / `state` only — never the wrapper — or it would pin the very object it exists
+// to reclaim.
+const reclaimThunk =
+  (backend: Backend, handle: GraphHandle, state: { freed: boolean }) => (): void => {
+    if (!state.freed) {
+      backend.graphFree(handle);
+    }
+  };
+
 /** Wrap an existing backend + handle as a {@link RustGraph}. */
-export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph => ({
-  get vertexCount() {
-    return backend.vertexCount(handle);
-  },
-  get edgeCount() {
-    return backend.edgeCount(handle);
-  },
-  get version() {
-    return backend.version(handle);
-  },
-  epoch: (name) => backend.epoch(handle, name),
-  query: (q: string | TemplateStringsArray, ...subs: unknown[]) => {
-    const { text, params } = compileGql(q, subs);
+export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph => {
+  ensureDisposeSymbol(); // so the [Symbol.dispose] key below resolves on any runtime
 
-    return decodeRows(backend.queryRows(handle, text, params));
-  },
-  queryArrow: (q: string | TemplateStringsArray, ...subs: unknown[]) => {
-    const { text, params } = compileGql(q, subs);
+  // Freed-once guard shared by free(), [Symbol.dispose], and the GC backstop, so
+  // the handle reaches the backend exactly once — a double graphFree on the ffi
+  // backend is a use-after-free.
+  const state = { freed: false };
+  const token = {};
 
-    return backend.queryArrow(handle, text, params);
-  },
-  // `gremlin(...)` here is the module-level composer (safe escaping), not this
-  // property — object keys don't bind in scope.
-  gremlin: (q, ...subs) =>
-    parseJson(backend.gremlinJson(handle, gremlin(q, ...subs)), 'gremlin') as unknown[],
-  toNdjson: () => backend.encodeNdjson(handle),
-  serialize: (format) => decoder.decode(backend.serialize(handle, format)),
-  free: () => backend.graphFree(handle),
-});
+  const free = (): void => {
+    if (state.freed) {
+      return;
+    }
+
+    state.freed = true;
+    reclaim?.unregister(token);
+    backend.graphFree(handle);
+  };
+
+  const graph: RustGraph = {
+    get vertexCount() {
+      return backend.vertexCount(handle);
+    },
+    get edgeCount() {
+      return backend.edgeCount(handle);
+    },
+    get version() {
+      return backend.version(handle);
+    },
+    epoch: (name) => backend.epoch(handle, name),
+    query: (q: string | TemplateStringsArray, ...subs: unknown[]) => {
+      const { text, params } = compileGql(q, subs);
+
+      return decodeRows(backend.queryRows(handle, text, params));
+    },
+    queryArrow: (q: string | TemplateStringsArray, ...subs: unknown[]) => {
+      const { text, params } = compileGql(q, subs);
+
+      return backend.queryArrow(handle, text, params);
+    },
+    // `gremlin(...)` here is the module-level composer (safe escaping), not this
+    // property — object keys don't bind in scope.
+    gremlin: (q, ...subs) =>
+      parseJson(backend.gremlinJson(handle, gremlin(q, ...subs)), 'gremlin') as unknown[],
+    toNdjson: () => backend.encodeNdjson(handle),
+    serialize: (format) => decoder.decode(backend.serialize(handle, format)),
+    free,
+    [Symbol.dispose]: free,
+  };
+
+  reclaim?.register(graph, reclaimThunk(backend, handle, state), token);
+
+  return graph;
+};
 
 /**
  * Decode NDJSON bytes into a graph and return a {@link RustGraph} facade.

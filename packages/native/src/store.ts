@@ -1,3 +1,4 @@
+import { ensureDisposeSymbol } from './dispose.js';
 import type { QueryParams, RustGraph, Row } from './graph.js';
 
 /**
@@ -68,9 +69,17 @@ export type Store = {
    * on every recompute.
    */
   liveGremlin: (text: string, opts: { deps: readonly string[] | null }) => LiveQuery<unknown>;
+  /**
+   * Dispose the store and {@link RustGraph.free | free} its underlying graph, so
+   * `using store = createStore(graph)` releases the native/wasm handle at scope
+   * exit. Idempotent (delegates to the graph's own freed-once guard).
+   */
+  [Symbol.dispose]: () => void;
 };
 
 export const createStore = (graph: RustGraph): Store => {
+  ensureDisposeSymbol(); // so the [Symbol.dispose] key below resolves on any runtime
+
   const listeners = new Set<() => void>();
   const notify = (): void => {
     for (const l of listeners) {
@@ -146,6 +155,7 @@ export const createStore = (graph: RustGraph): Store => {
     },
     liveQuery: (text, opts) => makeLive(opts.deps, () => graph.query(text, opts.params)),
     liveGremlin: (text, opts) => makeLive(opts.deps, () => graph.gremlin(text)),
+    [Symbol.dispose]: () => graph.free(),
   };
 };
 
