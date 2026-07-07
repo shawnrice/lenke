@@ -34,7 +34,7 @@ const NDJSON = [
 ].join('\n');
 
 /** Client ↔ host wired directly — the minimal port. `wire` records traffic. */
-const connect = () => {
+const connect = (clientOpts: { maxInactiveQueries?: number } = {}) => {
   const store = createStore(
     graphFromNdjson(createFfiBackend(LIB), new TextEncoder().encode(NDJSON)),
   );
@@ -49,6 +49,7 @@ const connect = () => {
       wire.push(m);
       host.receive(m);
     },
+    ...clientOpts,
   });
   deliver = (m) => client.receive(m);
   buffered.forEach((m) => client.receive(m));
@@ -183,6 +184,69 @@ suite('@lenke/sync client · registry semantics', () => {
     void client.mutate('INSERT (:Person {name: $n})', { n: 'revive-check' });
     expect(live.getSnapshot().rows).toHaveLength(3);
     stop2();
+  });
+
+  test('inactive entries retire into a bounded LRU; past the cap they evict', () => {
+    const { client } = connect({ maxInactiveQueries: 2 });
+    const q = (min: number) =>
+      client.liveQuery('MATCH (p:Person) WHERE p.age >= $min RETURN p.name', {
+        deps: null,
+        params: { min },
+      });
+
+    // Three distinct signatures, each subscribed then fully unsubscribed.
+    const h1 = q(1);
+    h1.subscribe(() => {})();
+    const h2 = q(2);
+    h2.subscribe(() => {})();
+    const h3 = q(3);
+    h3.subscribe(() => {})();
+
+    // Cap 2 → the oldest inactive entry (h1's) was dropped, so its retained
+    // rows are collectable and a fresh liveQuery mints a NEW canonical handle.
+    expect(q(1)).not.toBe(h1);
+    // h2/h3 stayed within the cap: still the same warm handles.
+    expect(q(2)).toBe(h2);
+    expect(q(3)).toBe(h3);
+  });
+
+  test('active subscriptions are never evicted, whatever the cap', () => {
+    const { client } = connect({ maxInactiveQueries: 1 });
+    const active = client.liveQuery('MATCH (p:Person) RETURN p.name', { deps: null });
+    const stop = active.subscribe(() => {}); // stays subscribed throughout
+
+    // Churn several inactive signatures well past the cap.
+    for (const min of [1, 2, 3]) {
+      client
+        .liveQuery('MATCH (p:Person) WHERE p.age >= $min RETURN p.name', {
+          deps: null,
+          params: { min },
+        })
+        .subscribe(() => {})();
+    }
+
+    expect(client.liveQuery('MATCH (p:Person) RETURN p.name', { deps: null })).toBe(active);
+    expect(client.subscriptionCount()).toBe(1);
+    stop();
+  });
+
+  test('an evicted stale handle still revives and re-registers', () => {
+    const { client } = connect({ maxInactiveQueries: 1 });
+    const q = (min: number) =>
+      client.liveQuery('MATCH (p:Person) WHERE p.age >= $min RETURN p.name', {
+        deps: null,
+        params: { min },
+      });
+    const h1 = q(1);
+    h1.subscribe(() => {})(); // retire
+    q(2).subscribe(() => {})(); // retires too; cap 1 evicts h1's entry
+
+    // The app kept h1 around: re-subscribing still works (fresh wire sub, live
+    // rows) and re-registers it, so dedupe finds it again.
+    const stop = h1.subscribe(() => {});
+    expect(h1.getSnapshot().rows).toHaveLength(2);
+    expect(q(1)).toBe(h1);
+    stop();
   });
 
   test('status handshake is captured', () => {

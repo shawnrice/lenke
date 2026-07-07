@@ -19,7 +19,9 @@
  * - **Dedupe by query signature** — N local consumers of the same
  *   `(query, params, deps)` share ONE wire subscription.
  * - **Refcounted unsubscribe** — the wire subscription is torn down when the
- *   last local subscriber leaves.
+ *   last local subscriber leaves; the entry retires into a bounded LRU
+ *   (`maxInactiveQueries`) so a quick revival is warm, while a session's worth
+ *   of distinct signatures can't grow retained-result memory without bound.
  * - **Referentially-stable snapshots** — `getSnapshot()` returns the same
  *   object until a push replaces it, so `useSyncExternalStore(h.subscribe,
  *   h.getSnapshot)` plugs in directly (no React dependency here, same as
@@ -160,6 +162,18 @@ export type SyncClient = {
 export type SyncClientOptions = {
   /** Deliver one message to the host. */
   send: (msg: ClientMessage) => void;
+  /**
+   * How many **wire-inactive** standing queries to retain (default 64), as an
+   * LRU. An entry with subscribers is never evicted. A retained inactive entry
+   * revives warm — same handle, last rows kept for identity-preserving diffs
+   * (StrictMode remounts and back-navigation stay cheap); one evicted past the
+   * cap just re-subscribes cold on next use: the host re-answers from its
+   * (local) store — a re-query, not a refetch — at the cost of one wholesale
+   * re-render. This bounds the registry: without it, a session issuing
+   * many distinct `(query, params)` signatures (per-id detail queries,
+   * search-as-you-type) grows the retained-result memory without limit.
+   */
+  maxInactiveQueries?: number;
 };
 
 const wireToError = (e: WireError): LenkeError =>
@@ -199,6 +213,8 @@ const shallowEqualRow = (a: Row, b: Row): boolean => {
 };
 
 type Entry = {
+  /** The dedupe signature this entry is registered under. */
+  signature: string;
   /** Wire sub id — reassigned when a torn-down handle is revived. */
   sub: string;
   /** The subscribe payload, retained so {@link SyncClient.replay} can re-emit it. */
@@ -235,8 +251,31 @@ const settle = (entry: Entry, snapshot: ClientSnapshot): void => {
 
 export const createSyncClient = (options: SyncClientOptions): SyncClient => {
   const { send } = options;
+  const maxInactive = options.maxInactiveQueries ?? 64;
 
   const entries = new Map<string, Entry>(); // signature → entry
+  // Wire-inactive entries, insertion-ordered = LRU (oldest first). Bounds the
+  // registry: entries with subscribers are never here; an entry past the cap is
+  // dropped from `entries` so its retained rows can be collected. The data
+  // itself lives in the host's store — eviction costs a re-query on revival,
+  // never a refetch.
+  const inactive = new Set<Entry>();
+
+  const retire = (entry: Entry): void => {
+    inactive.delete(entry); // refresh recency if already retired
+    inactive.add(entry);
+
+    while (inactive.size > maxInactive) {
+      const oldest = inactive.values().next().value as Entry;
+      inactive.delete(oldest);
+
+      // Only drop the registration if it's still ours — a stale-handle revival
+      // may have re-registered a different entry under this signature.
+      if (entries.get(oldest.signature) === oldest) {
+        entries.delete(oldest.signature);
+      }
+    }
+  };
   const bySub = new Map<string, Entry>(); // wire sub id → entry
   const pending = new Map<string, Pending>(); // req id → resolver
   let nextId = 0;
@@ -265,12 +304,15 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
       return existing.handle;
     }
 
-    // The entry is the canonical, permanent handle for its signature; only its
-    // WIRE subscription activates/deactivates ('' = inactive). This makes a
+    // The entry is the canonical handle for its signature; only its WIRE
+    // subscription activates/deactivates ('' = inactive). This makes a
     // subscribe/unsubscribe/subscribe cycle (React StrictMode's mount dance)
     // revive cleanly — fresh wire sub, last snapshot kept as the
     // stale-but-honest starting point — with no duplicate-entry races.
+    // Inactive entries are retained in a bounded LRU (`maxInactiveQueries`);
+    // one evicted past the cap re-registers itself on its next subscribe.
     const entry: Entry = {
+      signature,
       sub: '',
       query,
       params: opts.params,
@@ -281,6 +323,16 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
       listeners: new Set(),
       handle: {
         subscribe: (onChange) => {
+          inactive.delete(entry); // live again — off the eviction path
+
+          // A stale handle can outlive its registration (evicted past the LRU
+          // cap): re-register so future liveQuery calls dedupe onto it again.
+          // If another entry claimed the signature meanwhile, leave it — two
+          // wire subs for one signature is wasteful but correct.
+          if (!entries.has(entry.signature)) {
+            entries.set(entry.signature, entry);
+          }
+
           if (entry.sub === '') {
             activate();
           }
@@ -290,12 +342,16 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
           return () => {
             entry.listeners.delete(onChange);
 
-            // Last local subscriber gone → tear down the wire subscription.
-            // (Keep-alive grace is a later optimization, not v1.)
-            if (entry.listeners.size === 0 && entry.sub !== '') {
-              bySub.delete(entry.sub);
-              send({ type: 'unsubscribe', sub: entry.sub });
-              entry.sub = '';
+            // Last local subscriber gone → tear down the wire subscription and
+            // retire the entry into the inactive LRU (bounded keep-warm).
+            if (entry.listeners.size === 0) {
+              if (entry.sub !== '') {
+                bySub.delete(entry.sub);
+                send({ type: 'unsubscribe', sub: entry.sub });
+                entry.sub = '';
+              }
+
+              retire(entry);
             }
           };
         },
@@ -600,6 +656,7 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
 
       entries.clear();
       bySub.clear();
+      inactive.clear();
 
       // The transport seam is gone from under these requests — a boundary fault.
       const closing = new LenkeError('lenke: client closed', { code: ErrorCode.Ffi });

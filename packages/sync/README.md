@@ -74,7 +74,7 @@ const rows = await client.query('MATCH (p:Person) RETURN p.name'); // one-shot
 const vals = await client.gremlin`g.V().has('name', ${name}).values('age')`; // one-shot Gremlin
 ```
 
-Snapshots are referentially stable between pushes. A handle whose refcount hits zero tears down its wire subscription but stays canonical — re-subscribing revives it with a fresh wire sub (React StrictMode's mount dance is safe). Mutation effects arrive through subscription pushes, exactly as if another client had written.
+Snapshots are referentially stable between pushes. A handle whose refcount hits zero tears down its wire subscription and retires into a bounded LRU (`maxInactiveQueries`, default 64) — a quick re-subscribe revives it warm with a fresh wire sub (React StrictMode's mount dance is safe), while an entry evicted past the cap simply re-subscribes cold on next use (a re-query against the host's store, not a refetch). Mutation effects arrive through subscription pushes, exactly as if another client had written.
 
 ## The sync loop
 

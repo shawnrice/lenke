@@ -72,6 +72,12 @@ export type ReconnectingClientOptions = {
    * attempt 0 on every successful open. Defaults: `baseMs` 500, `maxMs` 5000.
    */
   retry?: { baseMs?: number; maxMs?: number };
+  /**
+   * Passed through to the inner client (which lives for this manager's whole
+   * life, so the bound matters most here): how many wire-inactive standing
+   * queries to keep warm. Default 64.
+   */
+  maxInactiveQueries?: number;
 };
 
 /**
@@ -118,6 +124,7 @@ export const createReconnectingClient = (
         conn.send(m);
       }
     },
+    maxInactiveQueries: options.maxInactiveQueries,
   });
 
   const setUp = (next: boolean): void => {
