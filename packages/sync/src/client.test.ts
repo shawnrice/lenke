@@ -249,6 +249,26 @@ suite('@lenke/sync client · registry semantics', () => {
     stop();
   });
 
+  test('deps order does not defeat dedupe (deps are a set)', () => {
+    const { client, wire } = connect();
+
+    const a = client.liveQuery('MATCH (p:Person) RETURN p.name', {
+      deps: ['Person', 'name'],
+    });
+    const b = client.liveQuery('MATCH (p:Person) RETURN p.name', {
+      deps: ['name', 'Person'], // same tokens, different declaration order
+    });
+
+    expect(b).toBe(a); // one entry, one wire subscription
+    expect(wire.filter((m) => m.type === 'subscribe')).toHaveLength(1);
+
+    // But null (recompute-always) and [] (never) stay distinct signatures.
+    const always = client.liveQuery('MATCH (p:Person) RETURN p.name', { deps: null });
+    const never = client.liveQuery('MATCH (p:Person) RETURN p.name', { deps: [] });
+    expect(always).not.toBe(never);
+    expect(always).not.toBe(a);
+  });
+
   test('status handshake is captured', () => {
     const { client } = connect();
     expect(client.getStatus()).toEqual({ connected: true, pendingWrites: 0 });

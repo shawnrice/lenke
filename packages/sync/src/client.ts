@@ -291,10 +291,16 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
       lang?: 'gql' | 'gremlin';
     },
   ): ClientLiveQuery => {
+    // Deps are semantically a SET (epoch gating sums them; collection matching
+    // is membership), so sort them for the signature: two consumers declaring
+    // the same tokens in different orders share one entry. Sorted HERE only —
+    // `canonical` must keep arrays ordered in general, because array-valued
+    // params are order-significant values. `null` (recompute-always) stays
+    // distinct from `[]` (never).
     const signature = canonical([
       query,
       opts.params ?? null,
-      opts.deps,
+      opts.deps === null ? null : [...opts.deps].sort(),
       opts.key ?? null,
       opts.lang ?? null,
     ]);
