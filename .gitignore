@@ -188,3 +188,6 @@ packages/*/src/**/*.js.map
 .nx/polygraph
 .nx/self-healing
 .nx/migrate-runs
+# local design notes (not ready to publish)
+docs/sync-engine.md
+.claude/projects
