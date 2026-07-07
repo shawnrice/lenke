@@ -59,7 +59,9 @@ const client = createSyncClient({ send: (m) => ws.send(JSON.stringify(m)) });
 ws.onmessage = (e) => client.receive(JSON.parse(String(e.data)));
 
 // A standing query. N consumers of the same (query, params, deps) share ONE
-// wire subscription; the wire teardown is refcounted.
+// wire subscription; the wire teardown is refcounted. The dedupe signature
+// normalizes formatting (whitespace/comments; values untouched) and treats
+// deps as a set — but never folds case (labels/properties are case-sensitive).
 const live = client.liveQuery('MATCH (p:Person) WHERE p.age >= $min RETURN p.name', {
   params: { min: 18 },
 });

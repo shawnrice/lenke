@@ -17,7 +17,10 @@
  *
  * What it manages (the design doc's client registry):
  * - **Dedupe by query signature** — N local consumers of the same
- *   `(query, params, deps)` share ONE wire subscription.
+ *   `(query, params, deps)` share ONE wire subscription. The signature is
+ *   forgiving where semantics allow: query text is whitespace/comment-
+ *   normalized (values untouched) and deps compare as a set — but case is
+ *   never folded (labels/properties are case-sensitive).
  * - **Refcounted unsubscribe** — the wire subscription is torn down when the
  *   last local subscriber leaves; the entry retires into a bounded LRU
  *   (`maxInactiveQueries`) so a quick revival is warm, while a session's worth
@@ -198,6 +201,102 @@ const canonical = (value: unknown): string => {
   return JSON.stringify(value) ?? 'null';
 };
 
+const QUOTES = new Set(["'", '"', '`']);
+
+/**
+ * Whitespace/comment-normalize query text for the dedupe signature ONLY (the
+ * wire carries the author's text). Outside quoted regions, whitespace runs —
+ * and, for GQL, comments (`//` / `--` line, `/* *​/` block; they are token
+ * separators, exactly as the lexer treats them) — collapse to one space, so
+ * formatting differences don't mint duplicate entries. Quoted regions
+ * (`'…' "…" `…``) copy verbatim, backslash-aware: values and delimited
+ * identifiers never change. Gremlin has no comments, so only whitespace
+ * normalizes there.
+ *
+ * Case is deliberately left alone: GQL keywords are case-insensitive, but
+ * labels / property names / strings are NOT — folding case could merge two
+ * genuinely different queries and serve one of them the other's cached rows.
+ * `MATCH` vs `match` not deduping is the safe miss. The same invariant governs
+ * the whole function: every edge case degrades to LESS normalization (a missed
+ * dedupe), never to a false merge.
+ */
+const normalizeForSignature = (text: string, lang?: 'gql' | 'gremlin'): string => {
+  const gql = lang !== 'gremlin';
+  let out = '';
+  let i = 0;
+
+  const space = (): void => {
+    if (out !== '' && !out.endsWith(' ')) {
+      out += ' ';
+    }
+  };
+
+  while (i < text.length) {
+    const c = text[i];
+
+    if (QUOTES.has(c)) {
+      // Copy the quoted region verbatim; a backslash escapes the next char.
+      out += c;
+      i += 1;
+
+      while (i < text.length) {
+        const ch = text[i];
+        out += ch;
+        i += 1;
+
+        if (ch === '\\' && i < text.length) {
+          out += text[i];
+          i += 1;
+        } else if (ch === c) {
+          break;
+        }
+      }
+
+      continue;
+    }
+
+    const two = text.slice(i, i + 2);
+
+    if (gql && (two === '//' || two === '--')) {
+      while (i < text.length && text[i] !== '\n') {
+        i += 1;
+      }
+
+      space(); // a comment separates tokens, same as whitespace
+
+      continue;
+    }
+
+    if (gql && two === '/*') {
+      i += 2;
+
+      while (i < text.length && text.slice(i, i + 2) !== '*/') {
+        i += 1;
+      }
+
+      i = Math.min(i + 2, text.length);
+      space();
+
+      continue;
+    }
+
+    if (/\s/.test(c)) {
+      while (i < text.length && /\s/.test(text[i])) {
+        i += 1;
+      }
+
+      space();
+
+      continue;
+    }
+
+    out += c;
+    i += 1;
+  }
+
+  return out.trimEnd();
+};
+
 const EMPTY_ROWS: Row[] = [];
 const INITIAL: ClientSnapshot = { rows: EMPTY_ROWS, complete: false };
 
@@ -296,9 +395,10 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
     // the same tokens in different orders share one entry. Sorted HERE only —
     // `canonical` must keep arrays ordered in general, because array-valued
     // params are order-significant values. `null` (recompute-always) stays
-    // distinct from `[]` (never).
+    // distinct from `[]` (never). The query text is whitespace/comment-
+    // normalized the same way (signature only — the wire carries the original).
     const signature = canonical([
-      query,
+      normalizeForSignature(query, opts.lang),
       opts.params ?? null,
       opts.deps === null ? null : [...opts.deps].sort(),
       opts.key ?? null,

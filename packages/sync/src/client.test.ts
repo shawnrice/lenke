@@ -269,6 +269,67 @@ suite('@lenke/sync client · registry semantics', () => {
     expect(always).not.toBe(a);
   });
 
+  test('formatting differences do not defeat dedupe; values and case do', () => {
+    const { client, wire } = connect();
+
+    const canonicalForm = client.liveQuery('MATCH (p:Person) RETURN p.name', { deps: null });
+    // Same query, reformatted: extra spaces, newlines, a trailing comment.
+    const reformatted = client.liveQuery('MATCH  (p:Person)\n\tRETURN p.name  // rows', {
+      deps: null,
+    });
+    const blockComment = client.liveQuery('MATCH /* all people */ (p:Person) RETURN p.name', {
+      deps: null,
+    });
+
+    expect(reformatted).toBe(canonicalForm);
+    expect(blockComment).toBe(canonicalForm);
+    expect(wire.filter((m) => m.type === 'subscribe')).toHaveLength(1);
+
+    // Whitespace INSIDE a string literal is the value — never normalized.
+    const spaced = client.liveQuery("MATCH (p:Person) WHERE p.name = 'a b' RETURN p", {
+      deps: null,
+    });
+    const doubleSpaced = client.liveQuery("MATCH (p:Person) WHERE p.name = 'a  b' RETURN p", {
+      deps: null,
+    });
+    expect(doubleSpaced).not.toBe(spaced);
+
+    // Case is NOT folded: keywords are case-insensitive but labels are not,
+    // so folding could merge different queries — the miss is the safe side.
+    const lower = client.liveQuery('match (p:Person) RETURN p.name', { deps: null });
+    expect(lower).not.toBe(canonicalForm);
+  });
+
+  test('gremlin text normalizes whitespace but never treats // as a comment', () => {
+    const { client, wire } = connect();
+    const before = wire.filter((m) => m.type === 'subscribe').length;
+
+    // Runs collapse to ONE space (never zero — deleting whitespace could fuse
+    // tokens), so single-space and multi-space/newline forms share an entry.
+    const a = client.liveQuery("g.V() .hasLabel('Person') .values('name')", {
+      deps: null,
+      lang: 'gremlin',
+    });
+    const b = client.liveQuery("g.V()  .hasLabel('Person')\n   .values('name')", {
+      deps: null,
+      lang: 'gremlin',
+    });
+    expect(b).toBe(a);
+    expect(wire.filter((m) => m.type === 'subscribe')).toHaveLength(before + 1);
+
+    // '//' inside gremlin (e.g. in a path-ish string or future syntax) must
+    // not be stripped as a GQL comment — these are different traversals.
+    const withSlashes = client.liveQuery("g.V().has('url', 'https://x')", {
+      deps: null,
+      lang: 'gremlin',
+    });
+    const without = client.liveQuery("g.V().has('url', 'https:')", {
+      deps: null,
+      lang: 'gremlin',
+    });
+    expect(withSlashes).not.toBe(without);
+  });
+
   test('status handshake is captured', () => {
     const { client } = connect();
     expect(client.getStatus()).toEqual({ connected: true, pendingWrites: 0 });
