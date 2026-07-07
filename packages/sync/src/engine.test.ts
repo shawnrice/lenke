@@ -10,7 +10,7 @@ import { createStore, graphFromNdjson, type Store } from '@lenke/native';
 import { createFfiBackend } from '@lenke/native/ffi';
 
 import { createSyncClient, type SyncClient } from './client.js';
-import { createSyncEngine, type GqlWrite, type SyncEngineOptions } from './engine.js';
+import { createSyncEngine, type SyncWrite, type SyncEngineOptions } from './engine.js';
 
 const LIB_EXTENSIONS: Partial<Record<NodeJS.Platform, string>> = { darwin: 'dylib', win32: 'dll' };
 const LIB_EXT = LIB_EXTENSIONS[process.platform] ?? 'so';
@@ -75,7 +75,7 @@ const connect = (opts: Omit<SyncEngineOptions, 'store'>) => {
 
 suite('@lenke/sync engine · demand-fill', () => {
   test('a subscription over an unloaded collection answers incomplete, then fills', async () => {
-    const gate = deferred<GqlWrite[]>();
+    const gate = deferred<SyncWrite[]>();
     const { engine, client } = connect({
       collections: { people: { labels: ['Person'], load: () => gate.promise } },
     });
@@ -92,8 +92,8 @@ suite('@lenke/sync engine · demand-fill', () => {
 
     // The loader lands → writes apply → epochs route → push flips complete.
     gate.resolve([
-      { gql: 'INSERT (:Person {name: $n, age: $a})', params: { n: 'remote-1', a: 30 } },
-      { gql: 'INSERT (:Person {name: $n, age: $a})', params: { n: 'remote-2', a: 31 } },
+      { text: 'INSERT (:Person {name: $n, age: $a})', params: { n: 'remote-1', a: 30 } },
+      { text: 'INSERT (:Person {name: $n, age: $a})', params: { n: 'remote-2', a: 31 } },
     ]);
     await until(() => live.getSnapshot().complete);
 
@@ -138,7 +138,7 @@ suite('@lenke/sync engine · demand-fill', () => {
 
             return calls === 1
               ? Promise.reject(new Error('backend down'))
-              : Promise.resolve([{ gql: 'INSERT (:Person {name: $n})', params: { n: 'late' } }]);
+              : Promise.resolve([{ text: 'INSERT (:Person {name: $n})', params: { n: 'late' } }]);
           },
         },
       },
@@ -172,7 +172,9 @@ suite('@lenke/sync engine · demand-fill', () => {
           load: async ({ city }) => {
             loaded.push(city as string);
 
-            return [{ gql: 'INSERT (:Person {name: $n, city: $c})', params: { n: city, c: city } }];
+            return [
+              { text: 'INSERT (:Person {name: $n, city: $c})', params: { n: city, c: city } },
+            ];
           },
         },
       },
@@ -247,7 +249,7 @@ suite('@lenke/sync engine · demand-fill', () => {
 
 suite('@lenke/sync engine · write-back', () => {
   test('mutate applies optimistically and replicates upstream', async () => {
-    const pushed: GqlWrite[] = [];
+    const pushed: SyncWrite[] = [];
     const { engine, client } = connect({
       upstream: {
         push: (w) => {
@@ -267,12 +269,12 @@ suite('@lenke/sync engine · write-back', () => {
     expect(live.getSnapshot().rows).toHaveLength(2);
 
     await until(() => engine.pendingWrites() === 0);
-    expect(pushed).toEqual([{ gql: 'INSERT (:Person {name: $n})', params: { n: 'zoe' } }]);
+    expect(pushed).toEqual([{ text: 'INSERT (:Person {name: $n})', params: { n: 'zoe' } }]);
     stop();
   });
 
   test('a write that changed nothing replicates nothing (version gate)', async () => {
-    const pushed: GqlWrite[] = [];
+    const pushed: SyncWrite[] = [];
     const { engine } = connect({
       upstream: {
         push: (w) => {
@@ -310,7 +312,7 @@ suite('@lenke/sync engine · write-back', () => {
   });
 
   test('terminal failure drops the write and reports it', async () => {
-    const failed: GqlWrite[] = [];
+    const failed: SyncWrite[] = [];
     const { engine } = connect({
       retry: { attempts: 2, baseMs: 1 },
       upstream: { push: () => Promise.reject(new Error('dead upstream')) },
@@ -321,12 +323,12 @@ suite('@lenke/sync engine · write-back', () => {
 
     engine.mutate('INSERT (:Person {name: $n})', { n: 'doomed' });
     await until(() => engine.pendingWrites() === 0);
-    expect(failed).toEqual([{ gql: 'INSERT (:Person {name: $n})', params: { n: 'doomed' } }]);
+    expect(failed).toEqual([{ text: 'INSERT (:Person {name: $n})', params: { n: 'doomed' } }]);
   });
 
   test('client mutations flow through the queue; status reports the backlog', async () => {
     const gate = deferred<void>();
-    const pushed: GqlWrite[] = [];
+    const pushed: SyncWrite[] = [];
     const { client, engine } = connect({
       upstream: {
         push: (w) => {
@@ -350,7 +352,7 @@ suite('@lenke/sync engine · write-back', () => {
 
 suite('@lenke/sync engine · ingest', () => {
   test('server pushes apply locally, route by epoch, and never re-replicate', async () => {
-    const pushed: GqlWrite[] = [];
+    const pushed: SyncWrite[] = [];
     const { engine, client } = connect({
       upstream: {
         push: (w) => {
@@ -365,8 +367,8 @@ suite('@lenke/sync engine · ingest', () => {
     const stop = live.subscribe(() => {});
 
     engine.ingest([
-      { gql: 'INSERT (:Person {name: $n})', params: { n: 'from-server-1' } },
-      { gql: 'INSERT (:Person {name: $n})', params: { n: 'from-server-2' } },
+      { text: 'INSERT (:Person {name: $n})', params: { n: 'from-server-1' } },
+      { text: 'INSERT (:Person {name: $n})', params: { n: 'from-server-2' } },
     ]);
 
     expect(live.getSnapshot().rows).toHaveLength(3); // the standing query heard it

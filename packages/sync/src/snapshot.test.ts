@@ -9,7 +9,7 @@ import { existsSync } from 'node:fs';
 import { createStore, graphFromNdjson, type Store } from '@lenke/native';
 import { createFfiBackend } from '@lenke/native/ffi';
 
-import { createSyncEngine, type GqlWrite } from './engine.js';
+import { createSyncEngine, type SyncWrite } from './engine.js';
 import {
   decodeSnapshot,
   encodeSnapshot,
@@ -47,7 +47,7 @@ const KEY_BYTES = new Uint8Array(32).map((_, i) => i * 7 + 1);
 suite('@lenke/sync snapshot · codec', () => {
   test('plaintext round-trip: graph, header, and queue survive', async () => {
     const store = newStore();
-    const writes: GqlWrite[] = [{ gql: 'INSERT (:Person {name: $n})', params: { n: 'queued' } }];
+    const writes: SyncWrite[] = [{ text: 'INSERT (:Person {name: $n})', params: { n: 'queued' } }];
     const bytes = await encodeSnapshot(store, {
       ...EXPECT,
       serverCursor: 'cursor-42',
@@ -134,7 +134,7 @@ suite('@lenke/sync snapshot · codec', () => {
 suite('@lenke/sync snapshot · warm boot', () => {
   test('save → boot: graph, completeness, cursor, and queue all resume', async () => {
     // Session 1: a loaded engine with one write stuck in the queue.
-    const held: GqlWrite[] = [];
+    const held: SyncWrite[] = [];
     const session1 = createSyncEngine({
       store: newStore(),
       collections: { people: { labels: ['Person'], load: () => Promise.resolve([]) } },
@@ -182,7 +182,7 @@ suite('@lenke/sync snapshot · warm boot', () => {
     await new Promise((r) => {
       setTimeout(r, 10);
     });
-    expect(held).toEqual([{ gql: 'INSERT (:Person {name: $n})', params: { n: 'offline-edit' } }]);
+    expect(held).toEqual([{ text: 'INSERT (:Person {name: $n})', params: { n: 'offline-edit' } }]);
     expect(session2.pendingWrites()).toBe(0);
   });
 });

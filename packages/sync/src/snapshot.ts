@@ -44,7 +44,7 @@
 
 import type { QueryParams, Store } from '@lenke/native';
 
-import type { GqlWrite } from './engine.js';
+import type { SyncWrite } from './engine.js';
 
 const MAGIC = [0x4c, 0x4e, 0x4b, 0x53] as const; // "LNKS"
 const FORMAT_VERSION = 1;
@@ -74,7 +74,7 @@ export type Snapshot = {
   /** Graph NDJSON — feed to `graphFromNdjson`. */
   ndjson: Uint8Array;
   /** The persisted pending-write queue → the engine's `initialWrites`. */
-  pendingWrites: GqlWrite[];
+  pendingWrites: SyncWrite[];
 };
 
 /** Where snapshot bytes live. All-or-nothing semantics per call. */
@@ -203,7 +203,7 @@ export const encodeSnapshot = async (
     userId: string;
     serverCursor?: string;
     collections?: readonly string[];
-    pendingWrites?: readonly GqlWrite[];
+    pendingWrites?: readonly SyncWrite[];
   },
   opts: { key?: CryptoKey } = {},
 ): Promise<Uint8Array> => {
@@ -312,14 +312,25 @@ export const decodeSnapshot = async (
     const ndjsonLen = new DataView(inner.buffer, inner.byteOffset).getUint32(0, true);
     const ndjson = inner.subarray(4, 4 + ndjsonLen);
     const writesJson = new TextDecoder().decode(inner.subarray(4 + ndjsonLen));
-    const pendingWrites = JSON.parse(writesJson) as {
-      gql: string;
+    const raw = JSON.parse(writesJson) as {
+      text?: string;
+      gql?: string;
+      lang?: 'gql' | 'gremlin';
       params?: QueryParams;
     }[];
 
-    if (!Array.isArray(pendingWrites)) {
+    if (!Array.isArray(raw)) {
       return null;
     }
+
+    // Normalize to SyncWrite, tolerating pre-`lang` snapshots that stored the
+    // write text under `gql` — so offline edits queued before an upgrade aren't
+    // dropped on warm boot.
+    const pendingWrites: SyncWrite[] = raw.map((w) => ({
+      text: w.text ?? (w.gql as string),
+      ...(w.lang === 'gremlin' ? { lang: 'gremlin' as const } : {}),
+      ...(w.params !== undefined ? { params: w.params } : {}),
+    }));
 
     return { header, ndjson: ndjson.slice(), pendingWrites };
   } catch {

@@ -115,8 +115,17 @@ export type SyncClient = {
    * injection-safe. A plain string is sent as-is (you own its safety).
    */
   gremlin: (traversal: string | TemplateStringsArray, ...subs: unknown[]) => Promise<unknown[]>;
-  /** Apply a mutation; resolves on `ack ok`, rejects with the coded error. */
+  /** Apply a GQL mutation (values ride `params`); resolves on `ack ok`, rejects with the coded error. */
   mutate: (gql: string, params?: QueryParams) => Promise<void>;
+  /**
+   * Apply a Gremlin mutation traversal (`addV` / `addE` / `property` / `drop`).
+   * Use it as a tagged template to interpolate values safely — each `${v}` is
+   * escaped into a Gremlin literal (Gremlin has no param binding), so
+   * ``client.mutateGremlin`g.addV('Person').property('name', ${name})` `` is
+   * injection-safe. A plain string is sent as-is (you own its safety). Resolves
+   * on `ack ok`, rejects with the coded error.
+   */
+  mutateGremlin: (traversal: string | TemplateStringsArray, ...subs: unknown[]) => Promise<void>;
   /** The host's last `status` message, if any. */
   getStatus: () => { connected: boolean; pendingWrites: number } | null;
   /**
@@ -337,7 +346,21 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
   const mutate = (gql: string, params?: QueryParams): Promise<void> =>
     new Promise<void>((resolve, reject) => {
       const req = `m${++nextId}`;
-      const msg: ClientMessage = { type: 'mutate', req, gql, params };
+      const msg: ClientMessage = { type: 'mutate', req, text: gql, params };
+      pending.set(req, { resolve: resolve as (v: never) => void, reject, kind: 'mutate', msg });
+      send(msg);
+    });
+
+  const mutateGremlin = (
+    traversal: string | TemplateStringsArray,
+    ...subs: unknown[]
+  ): Promise<void> =>
+    new Promise<void>((resolve, reject) => {
+      const req = `m${++nextId}`;
+      // Tagged-template subs are escaped into safe literals; a plain string
+      // passes through (buildGremlin is @lenke/native's `gremlin` composer).
+      const text = buildGremlin(traversal, ...subs);
+      const msg: ClientMessage = { type: 'mutate', req, text, lang: 'gremlin' };
       pending.set(req, { resolve: resolve as (v: never) => void, reject, kind: 'mutate', msg });
       send(msg);
     });
@@ -520,6 +543,7 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
     query,
     gremlin,
     mutate,
+    mutateGremlin,
     getStatus: () => status,
     onStatus: (cb) => {
       statusListeners.add(cb);

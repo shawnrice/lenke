@@ -28,7 +28,7 @@ export {
   type CollectionDefinition,
   type CollectionScope,
   type CollectionState,
-  type GqlWrite,
+  type SyncWrite,
   type SyncEngine,
   type SyncEngineOptions,
 } from './engine.js';

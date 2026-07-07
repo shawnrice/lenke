@@ -14,8 +14,9 @@
  * the loaders for every intersecting collection that isn't loaded. Deps no
  * collection covers are local-only data, complete by definition.
  *
- * **Loaders return writes, not graphs**: `GqlWrite[]` (GQL text + `$name`
- * bindings), applied in one `store.mutate`. That keeps the loader an ordinary
+ * **Loaders return writes, not graphs**: `SyncWrite[]` (GQL text + `$name`
+ * bindings, or a Gremlin mutation traversal), applied in one `store.mutate`.
+ * That keeps the loader an ordinary
  * async function next to the data (fetch, decode, map), keeps values on the
  * params path (never spliced), and lets epochs route the resulting pushes
  * with no knowledge of subscriptions.
@@ -31,14 +32,32 @@
  * the collections that snapshot already covers.
  */
 
-import type { QueryParams, Store } from '@lenke/native';
+import type { QueryParams, RustGraph, Store } from '@lenke/native';
 
 import { createSyncHost, type SyncHost, type SyncHostOptions } from './host.js';
 
-/** One replicable write: GQL text plus its `$name` bindings. */
-export type GqlWrite = {
-  gql: string;
+/** One replicable write: query text, its language, and (GQL only) `$name` bindings. */
+export type SyncWrite = {
+  /** Query text — GQL DML, or a Gremlin mutation traversal when `lang: 'gremlin'`. */
+  text: string;
+  /**
+   * Language, default `'gql'`. `'gremlin'` executes `text` through the Gremlin
+   * engine (mutation steps: `addV` / `addE` / `property` / `drop`). Gremlin has
+   * no param binding — pre-escape values with the `gremlin` tag and leave
+   * `params` unset.
+   */
+  lang?: 'gql' | 'gremlin';
+  /** `$name` bindings (GQL only). */
   params?: QueryParams;
+};
+
+/** Apply one write to a graph: GQL via `query`, Gremlin via `gremlin`. */
+const runWrite = (g: RustGraph, w: SyncWrite): void => {
+  if (w.lang === 'gremlin') {
+    g.gremlin(w.text);
+  } else {
+    g.query(w.text, w.params);
+  }
 };
 
 export type CollectionState = 'empty' | 'loading' | 'complete' | 'error';
@@ -57,7 +76,7 @@ export type CollectionDefinition = {
    */
   key?: string | readonly string[];
   /** Fetch the scope (its bound key values, if keyed) → writes that materialize it. */
-  load: (scope: QueryParams) => Promise<GqlWrite[]>;
+  load: (scope: QueryParams) => Promise<SyncWrite[]>;
 };
 
 /**
@@ -81,10 +100,10 @@ export type SyncEngineOptions = {
    * snapshot's graph (they were applied optimistically before it was saved),
    * so they re-enqueue for upstream without re-applying locally.
    */
-  initialWrites?: readonly GqlWrite[];
+  initialWrites?: readonly SyncWrite[];
   /** Where local writes replicate to. Omit for a local-only engine. */
   upstream?: {
-    push: (write: GqlWrite) => Promise<void>;
+    push: (write: SyncWrite) => Promise<void>;
   };
   /**
    * Write-back retry policy: `attempts` tries, `baseMs * 2^n` between them,
@@ -93,7 +112,7 @@ export type SyncEngineOptions = {
    */
   retry?: { attempts?: number; baseMs?: number; maxMs?: number };
   /** A write exhausted its retries and was dropped from the queue. */
-  onWriteError?: (write: GqlWrite, error: unknown) => void;
+  onWriteError?: (write: SyncWrite, error: unknown) => void;
   /** A collection load failed (state → 'error'; the next demand re-triggers). */
   onLoadError?: (collection: string, error: unknown) => void;
 };
@@ -110,14 +129,18 @@ export type SyncEngine = {
   isComplete: (deps: readonly string[] | null, params?: QueryParams) => boolean;
   /** Fire loaders for every intersecting, unloaded (collection, scope). */
   ensure: (deps: readonly string[] | null, params?: QueryParams) => void;
-  /** Apply a local write optimistically and queue it for upstream. */
-  mutate: (gql: string, params?: QueryParams) => void;
+  /**
+   * Apply a local write optimistically and queue it for upstream. GQL by default
+   * (values ride `params`); pass `lang: 'gremlin'` to run `text` as a Gremlin
+   * mutation traversal (no params — pre-escape values with the `gremlin` tag).
+   */
+  mutate: (text: string, params?: QueryParams, lang?: 'gql' | 'gremlin') => void;
   /** Apply server-pushed writes locally (never re-replicated upstream). */
-  ingest: (writes: readonly GqlWrite[]) => void;
+  ingest: (writes: readonly SyncWrite[]) => void;
   /** Queued-or-in-flight write count (feeds the status message). */
   pendingWrites: () => number;
   /** The queue's current contents — persist these in the snapshot. */
-  queuedWrites: () => readonly GqlWrite[];
+  queuedWrites: () => readonly SyncWrite[];
   /** Loads and queue-length changes re-notify here (hosts refresh on it). */
   onChange: (cb: () => void) => () => void;
   /** A host for one client connection, wired into this loop. */
@@ -241,7 +264,7 @@ export const createSyncEngine = (options: SyncEngineOptions): SyncEngine => {
       // bump, and epochs route it to exactly the affected live queries.
       store.mutate((g) => {
         for (const w of writes) {
-          g.query(w.gql, w.params);
+          runWrite(g, w);
         }
       });
       states.set(match.stateKey, 'complete');
@@ -271,7 +294,7 @@ export const createSyncEngine = (options: SyncEngineOptions): SyncEngine => {
 
   // Restored writes re-enqueue as-is: their effects are already in the
   // snapshot's graph, they just never reached upstream.
-  const queue: GqlWrite[] = [...(options.initialWrites ?? [])];
+  const queue: SyncWrite[] = [...(options.initialWrites ?? [])];
   let pumping = false;
 
   const pump = async (): Promise<void> => {
@@ -309,22 +332,32 @@ export const createSyncEngine = (options: SyncEngineOptions): SyncEngine => {
     pumping = false;
   };
 
-  const mutate = (gql: string, params?: QueryParams): void => {
+  const mutate = (text: string, params?: QueryParams, lang?: 'gql' | 'gremlin'): void => {
     const before = store.version;
-    store.mutate((g) => g.query(gql, params)); // optimistic: local readers see it now
+    let write: SyncWrite;
+
+    if (lang === 'gremlin') {
+      write = { text, lang };
+    } else if (params) {
+      write = { text, params };
+    } else {
+      write = { text };
+    }
+
+    store.mutate((g) => runWrite(g, write)); // optimistic: local readers see it now
 
     // Version-gated enqueue: a write that changed nothing replicates nothing.
     if (upstream && store.version !== before) {
-      queue.push(params ? { gql, params } : { gql });
+      queue.push(write);
       notifyChange();
       void pump();
     }
   };
 
-  const ingest = (writes: readonly GqlWrite[]): void => {
+  const ingest = (writes: readonly SyncWrite[]): void => {
     store.mutate((g) => {
       for (const w of writes) {
-        g.query(w.gql, w.params);
+        runWrite(g, w);
       }
     });
   };

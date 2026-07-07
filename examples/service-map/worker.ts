@@ -21,7 +21,7 @@ import {
   opfsStorage,
   readSnapshot,
   type CollectionDefinition,
-  type GqlWrite,
+  type SyncWrite,
 } from '@lenke/sync';
 
 import wasmUrl from '../../crates/lenke-core/target/wasm32-unknown-unknown/release/lenke_core.wasm?url';
@@ -73,7 +73,7 @@ const boot = async () => {
     services: {
       labels: ['Service'],
       key: 'cluster',
-      load: async ({ cluster }): Promise<GqlWrite[]> => {
+      load: async ({ cluster }): Promise<SyncWrite[]> => {
         const services = await server.query(
           'MATCH (s:Service) WHERE s.cluster = $cluster RETURN s.sid, s.name, s.cluster, s.tier, s.status',
           { cluster },
@@ -88,7 +88,7 @@ const boot = async () => {
           // them to the INSERT's `$sid` / `$cluster` param names (a raw `params:
           // r` would bind nothing — every property would land null).
           ...services.map((r) => ({
-            gql: 'INSERT (:Service {sid: $sid, name: $name, cluster: $cluster, tier: $tier, status: $status})',
+            text: 'INSERT (:Service {sid: $sid, name: $name, cluster: $cluster, tier: $tier, status: $status})',
             params: {
               sid: r['s.sid'],
               name: r['s.name'],
@@ -98,7 +98,7 @@ const boot = async () => {
             },
           })),
           ...calls.map((r) => ({
-            gql:
+            text:
               'MATCH (a:Service), (b:Service) WHERE a.sid = $from AND b.sid = $to ' +
               'INSERT (a)-[:CALLS {cid: $cid, protocol: $protocol, p95: $p95}]->(b)',
             params: {
@@ -124,7 +124,7 @@ const boot = async () => {
       scope: { cluster },
     })),
     initialWrites: snap?.pendingWrites ?? [],
-    upstream: { push: (w) => server.mutate(w.gql, w.params) },
+    upstream: { push: (w) => server.mutate(w.text, w.params) },
     retry: { attempts: Number.MAX_SAFE_INTEGER, baseMs: 500, maxMs: 5000 }, // outage ≠ poison: park, don't drop
   });
 

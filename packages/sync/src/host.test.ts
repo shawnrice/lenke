@@ -96,13 +96,13 @@ suite('@lenke/sync host · protocol v1', () => {
     host.receive({
       type: 'mutate',
       req: 'm1',
-      gql: "MATCH (p:Person) WHERE p.name = 'marko' SET p.age = 30",
+      text: "MATCH (p:Person) WHERE p.name = 'marko' SET p.age = 30",
     });
     let msgs = take();
     expect(msgs).toEqual([{ type: 'ack', req: 'm1', ok: true }]);
 
     // Relevant: a new Person name — the subscription hears it.
-    host.receive({ type: 'mutate', req: 'm2', gql: "INSERT (:Person {name: 'zoe'})" });
+    host.receive({ type: 'mutate', req: 'm2', text: "INSERT (:Person {name: 'zoe'})" });
     msgs = take();
     expect(msgs.map((m) => m.type).sort()).toEqual(['ack', 'rows']);
     const rows = rowsOf(msgs.find((m) => m.type === 'rows')!);
@@ -118,7 +118,7 @@ suite('@lenke/sync host · protocol v1', () => {
     alice.take();
     bob.take();
 
-    bob.host.receive({ type: 'mutate', req: 'w', gql: "INSERT (:Person {name: 'carol'})" });
+    bob.host.receive({ type: 'mutate', req: 'w', text: "INSERT (:Person {name: 'carol'})" });
 
     expect(bob.take()).toEqual([{ type: 'ack', req: 'w', ok: true }]);
     const pushed = rowsOf(alice.take()[0]);
@@ -154,7 +154,7 @@ suite('@lenke/sync host · protocol v1', () => {
     host.receive({
       type: 'mutate',
       req: 'm',
-      gql: "MATCH (p:Person) WHERE p.name = 'marko' SET p.age = 31",
+      text: "MATCH (p:Person) WHERE p.name = 'marko' SET p.age = 31",
     });
     const rows = rowsOf(take().find((m) => m.type === 'rows')!);
     expect(JSON.stringify(rows.rows)).toContain('31');
@@ -192,7 +192,7 @@ suite('@lenke/sync host · protocol v1', () => {
     const { host, take } = attach(newStore());
     take();
 
-    host.receive({ type: 'mutate', req: 'm', gql: 'ALSO NOT GQL' });
+    host.receive({ type: 'mutate', req: 'm', text: 'ALSO NOT GQL' });
 
     const [ack] = take();
     expect(ack).toMatchObject({ type: 'ack', req: 'm', ok: false });
@@ -217,7 +217,7 @@ suite('@lenke/sync host · protocol v1', () => {
     host.receive({
       type: 'mutate',
       req: 'm',
-      gql: 'INSERT (:Person {name: $n, age: $a})',
+      text: 'INSERT (:Person {name: $n, age: $a})',
       params: { n: 'zoe', a: 31 },
     });
     const msgs = take();
@@ -288,7 +288,7 @@ suite('@lenke/sync host · protocol v1', () => {
     host.receive({
       type: 'mutate',
       req: 'w1',
-      gql: 'MATCH (p:Person) WHERE p.name = $n SET p.age = $a',
+      text: 'MATCH (p:Person) WHERE p.name = $n SET p.age = $a',
       params: { n: 'marko', a: 30 },
     });
     const push = rowsOf(take().find((m) => m.type === 'rows') as HostMessage);
@@ -316,7 +316,7 @@ suite('@lenke/sync host · protocol v1', () => {
     host.receive({
       type: 'mutate',
       req: 'w1',
-      gql: 'INSERT (:Person {name: $n, age: $a})',
+      text: 'INSERT (:Person {name: $n, age: $a})',
       params: { n: 'aaron', a: 40 },
     });
     const ins = rowsOf(take().find((m) => m.type === 'rows') as HostMessage);
@@ -328,7 +328,7 @@ suite('@lenke/sync host · protocol v1', () => {
     host.receive({
       type: 'mutate',
       req: 'w2',
-      gql: 'MATCH (p:Person) WHERE p.name = $n SET p.age = $a',
+      text: 'MATCH (p:Person) WHERE p.name = $n SET p.age = $a',
       params: { n: 'vadas', a: 10 },
     });
     const del = rowsOf(take().find((m) => m.type === 'rows') as HostMessage);
@@ -446,7 +446,7 @@ suite('@lenke/sync host · protocol v1', () => {
     expect(first.patch).toBeUndefined();
 
     // Adding a Person moves the Person epoch → the standing traversal re-pushes.
-    host.receive({ type: 'mutate', req: 'w1', gql: "INSERT (:Person {name: 'carol'})" });
+    host.receive({ type: 'mutate', req: 'w1', text: "INSERT (:Person {name: 'carol'})" });
     const push = rowsOf(take().find((m) => m.type === 'rows') as HostMessage);
     expect(push.values).toEqual([3]);
   });

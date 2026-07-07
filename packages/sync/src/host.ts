@@ -73,11 +73,12 @@ export type SyncHostOptions = {
   /** Deliver one message to this host's client. */
   send: (msg: HostMessage) => void;
   /**
-   * Apply one client mutation. Defaults to `store.mutate(g => g.query(gql,
-   * params))` — the sync loop overrides this to also enqueue the write for
-   * upstream (`engine.mutate`).
+   * Apply one client mutation. Defaults to running `text` on the store —
+   * `g.query(text, params)` for GQL, `g.gremlin(text)` for `lang: 'gremlin'`.
+   * The sync loop overrides this to also enqueue the write for upstream
+   * (`engine.mutate`).
    */
-  applyMutation?: (gql: string, params?: QueryParams) => void;
+  applyMutation?: (text: string, params: QueryParams | undefined, lang?: 'gql' | 'gremlin') => void;
   /**
    * Is the data a query with these dependency tokens (and params, which scope
    * value-keyed collections) needs fully loaded? Defaults to `true` (a bare
@@ -201,7 +202,8 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
   const { send } = options;
   const applyMutation =
     options.applyMutation ??
-    ((gql: string, params?: QueryParams) => store.mutate((g) => g.query(gql, params)));
+    ((text: string, params: QueryParams | undefined, lang?: 'gql' | 'gremlin') =>
+      store.mutate((g) => (lang === 'gremlin' ? g.gremlin(text) : g.query(text, params))));
   const isComplete = options.isComplete ?? (() => true);
   const pendingWrites = options.pendingWrites ?? (() => 0);
 
@@ -385,7 +387,7 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
 
   const mutate = (msg: MutateMessage): void => {
     try {
-      applyMutation(msg.gql, msg.params);
+      applyMutation(msg.text, msg.params, msg.lang);
       send({ type: 'ack', req: msg.req, ok: true });
     } catch (e) {
       send({ type: 'ack', req: msg.req, ok: false, error: toWireError(e) });

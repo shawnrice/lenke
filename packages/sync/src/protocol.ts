@@ -19,7 +19,7 @@
  * client → host:  unsubscribe { sub }
  * client → host:  query       { req, query, params?, lang? }      // one-shot (gql | gremlin)
  * host → client:  result      { req, rows | values | error }
- * client → host:  mutate      { req, gql, params? }
+ * client → host:  mutate      { req, text, lang?, params? }   // gql | gremlin
  * host → client:  ack         { req, ok, error? }                // UI effect arrives via rows pushes
  * host → client:  status      { connected, pendingWrites, protocol }
  * ```
@@ -138,9 +138,20 @@ export type QueryMessage = {
 export type MutateMessage = {
   type: 'mutate';
   req: string;
-  /** Mutating GQL (`INSERT` / `SET` / `REMOVE` / `DELETE`); values ride `params`. */
-  gql: string;
-  /** `$name` bindings. */
+  /**
+   * Mutating query text. GQL (`INSERT` / `SET` / `REMOVE` / `DELETE`) with values
+   * in `params`, or — with `lang: 'gremlin'` — a Gremlin mutation traversal
+   * (`addV` / `addE` / `property` / `drop`) with values pre-escaped via the
+   * `gremlin` tag.
+   */
+  text: string;
+  /**
+   * Query language, default `'gql'`. `'gremlin'` executes `text` through the
+   * Gremlin engine; Gremlin has no engine param binding, so `params` is ignored —
+   * interpolate values with the `gremlin` tag / `escapeGremlin`.
+   */
+  lang?: 'gql' | 'gremlin';
+  /** `$name` bindings (GQL only). */
   params?: QueryParams;
 };
 

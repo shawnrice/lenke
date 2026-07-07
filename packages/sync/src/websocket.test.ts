@@ -112,7 +112,7 @@ suite('@lenke/sync over a real WebSocket', () => {
     expect(first.rows).toHaveLength(2);
 
     // Bob writes over *his* socket; the ack is his, the push is Alice's.
-    bob.send({ type: 'mutate', req: 'w1', gql: "INSERT (:Person {name: 'carol'})" });
+    bob.send({ type: 'mutate', req: 'w1', text: "INSERT (:Person {name: 'carol'})" });
     expect(await bob.next()).toEqual({ type: 'ack', req: 'w1', ok: true });
 
     const pushed = (await alice.next()) as RowsMessage;
