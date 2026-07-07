@@ -115,8 +115,15 @@ export type SyncClient = {
    * injection-safe. A plain string is sent as-is (you own its safety).
    */
   gremlin: (traversal: string | TemplateStringsArray, ...subs: unknown[]) => Promise<unknown[]>;
-  /** Apply a GQL mutation (values ride `params`); resolves on `ack ok`, rejects with the coded error. */
-  mutate: (gql: string, params?: QueryParams) => Promise<void>;
+  /**
+   * Apply a mutation; resolves on `ack ok`, rejects with the coded error. GQL
+   * by default (values ride `params`). `lang: 'gremlin'` sends the text as a
+   * Gremlin mutation — this is the replication bridge's seam (`upstream.push`
+   * forwards a queued `SyncWrite`'s language here so a Gremlin write doesn't
+   * degrade to GQL on the wire); for hand-written Gremlin prefer
+   * {@link SyncClient.mutateGremlin}, which escapes interpolated values.
+   */
+  mutate: (text: string, params?: QueryParams, lang?: 'gql' | 'gremlin') => Promise<void>;
   /**
    * Apply a Gremlin mutation traversal (`addV` / `addE` / `property` / `drop`).
    * Use it as a tagged template to interpolate values safely — each `${v}` is
@@ -343,10 +350,10 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
       send(msg);
     });
 
-  const mutate = (gql: string, params?: QueryParams): Promise<void> =>
+  const mutate = (text: string, params?: QueryParams, lang?: 'gql' | 'gremlin'): Promise<void> =>
     new Promise<void>((resolve, reject) => {
       const req = `m${++nextId}`;
-      const msg: ClientMessage = { type: 'mutate', req, text: gql, params };
+      const msg: ClientMessage = { type: 'mutate', req, text, params, lang };
       pending.set(req, { resolve: resolve as (v: never) => void, reject, kind: 'mutate', msg });
       send(msg);
     });

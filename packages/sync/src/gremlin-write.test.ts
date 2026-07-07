@@ -154,6 +154,38 @@ suite('@lenke/sync · gremlin write path', () => {
     expect(pushed[0]).toEqual({ text: "g.addV('Person').property('name', 'x')", lang: 'gremlin' });
   });
 
+  test('a gremlin write replicates upstream AS gremlin (worker → wire → server)', async () => {
+    // The full replication chain: a worker-side engine queues a Gremlin write,
+    // upstream.push forwards it through a wire client (with its lang), and the
+    // server-side host runs it through the Gremlin engine — not as GQL.
+    const serverStore = newStore();
+    let deliver: (m: unknown) => void = () => {};
+    const serverHost = createSyncHost(serverStore, { send: (m) => deliver(m) });
+    const wire: SyncClient = createSyncClient({ send: (m) => serverHost.receive(m) });
+    deliver = (m) => wire.receive(m);
+
+    const workerStore = newStore();
+    const pushed: SyncWrite[] = [];
+    const engine = createSyncEngine({
+      store: workerStore,
+      upstream: {
+        push: async (w) => {
+          pushed.push(w);
+          await wire.mutate(w.text, w.params, w.lang); // the bridge forwards lang
+        },
+      },
+    });
+
+    engine.mutate("g.addV('Person').property('name', 'replicated')", undefined, 'gremlin');
+
+    await until(() => serverStore.graph.vertexCount === 2); // seed + the replicated vertex
+    expect(pushed[0]?.lang).toBe('gremlin');
+    const rows = serverStore.graph.query('MATCH (p:Person) WHERE p.name = $n RETURN p.name', {
+      n: 'replicated',
+    });
+    expect(rows).toHaveLength(1);
+  });
+
   test('a collection loader can materialize its scope with a gremlin write', async () => {
     const { client } = connect({
       collections: {

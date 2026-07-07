@@ -84,6 +84,7 @@ export type ReconnectingClient = Pick<
   | 'query'
   | 'gremlin'
   | 'mutate'
+  | 'mutateGremlin'
   | 'getStatus'
   | 'onStatus'
   | 'subscriptionCount'
@@ -199,6 +200,7 @@ export const createReconnectingClient = (
     query: inner.query,
     gremlin: inner.gremlin,
     mutate: inner.mutate,
+    mutateGremlin: inner.mutateGremlin,
     getStatus: inner.getStatus,
     onStatus: inner.onStatus,
     subscriptionCount: inner.subscriptionCount,
