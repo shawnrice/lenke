@@ -287,63 +287,107 @@ const reclaim: FinalizationRegistry<() => void> | undefined =
       })
     : undefined;
 
-// Built at module scope so the registered thunk closes over `backend` / `handle`
-// / `state` only — never the wrapper — or it would pin the very object it exists
-// to reclaim.
-const reclaimThunk =
-  (backend: Backend, handle: GraphHandle, state: { freed: boolean }) => (): void => {
-    if (!state.freed) {
-      backend.graphFree(handle);
-    }
-  };
+type DisposalState = { freed: boolean };
+
+// Disposal state shared per (backend, handle) — NOT per wrapper — so two
+// wrappers attached to the same handle share one freed-once guard: a.free()
+// then b.free() (or b's GC backstop) reaches backend.graphFree exactly once,
+// never a double-free. Entries are removed on free, so a backend that recycles
+// a handle value hands the next attachment a fresh state; the per-backend Map
+// lives inside a WeakMap and dies with its backend.
+const disposal = new WeakMap<Backend, Map<GraphHandle, DisposalState>>();
+
+const stateFor = (backend: Backend, handle: GraphHandle): DisposalState => {
+  let states = disposal.get(backend);
+
+  if (!states) {
+    states = new Map();
+    disposal.set(backend, states);
+  }
+
+  let state = states.get(handle);
+
+  if (!state) {
+    state = { freed: false };
+    states.set(handle, state);
+  }
+
+  return state;
+};
+
+// Built at module scope so the registered thunk closes over `backend` /
+// `handle` / `state` only — never the wrapper — or it would pin the very
+// object it exists to reclaim.
+const reclaimThunk = (backend: Backend, handle: GraphHandle, state: DisposalState) => (): void => {
+  if (!state.freed) {
+    state.freed = true;
+    disposal.get(backend)?.delete(handle);
+    backend.graphFree(handle);
+  }
+};
 
 /** Wrap an existing backend + handle as a {@link RustGraph}. */
 export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph => {
   ensureDisposeSymbol(); // so the [Symbol.dispose] key below resolves on any runtime
 
-  // Freed-once guard shared by free(), [Symbol.dispose], and the GC backstop, so
-  // the handle reaches the backend exactly once — a double graphFree on the ffi
-  // backend is a use-after-free.
-  const state = { freed: false };
+  // Shared with every other wrapper on this (backend, handle). Note free()
+  // deletes the map entry, so attaching AFTER a free gets fresh state — that is
+  // deliberate: a backend may recycle handle values (ffi handles are pointers),
+  // and a recycled handle is a brand-new graph, not a freed one.
+  const state = stateFor(backend, handle);
   const token = {};
+
+  // Every member passes the handle through this gate: a freed graph answers
+  // with a coded error instead of handing the backend a dangling handle (on
+  // the ffi backend that read would be a native use-after-free, not a throw).
+  const live = (): GraphHandle => {
+    if (state.freed) {
+      throw new LenkeError('lenke: graph used after free()', { code: ErrorCode.InvalidGraphOp });
+    }
+
+    return handle;
+  };
 
   const free = (): void => {
     if (state.freed) {
       return;
     }
 
-    state.freed = true;
-    reclaim?.unregister(token);
+    // Release FIRST, mark after: if graphFree throws, the state stays live so
+    // a retry (or the GC backstop) can still reclaim the graph.
     backend.graphFree(handle);
+    state.freed = true;
+    disposal.get(backend)?.delete(handle);
+    reclaim?.unregister(token);
   };
 
   const graph: RustGraph = {
     get vertexCount() {
-      return backend.vertexCount(handle);
+      return backend.vertexCount(live());
     },
     get edgeCount() {
-      return backend.edgeCount(handle);
+      return backend.edgeCount(live());
     },
     get version() {
-      return backend.version(handle);
+      return backend.version(live());
     },
-    epoch: (name) => backend.epoch(handle, name),
+    epoch: (name) => backend.epoch(live(), name),
     query: (q: string | TemplateStringsArray, ...subs: unknown[]) => {
       const { text, params } = compileGql(q, subs);
 
-      return decodeRows(backend.queryRows(handle, text, params));
+      return decodeRows(backend.queryRows(live(), text, params));
     },
     queryArrow: (q: string | TemplateStringsArray, ...subs: unknown[]) => {
       const { text, params } = compileGql(q, subs);
 
-      return backend.queryArrow(handle, text, params);
+      return backend.queryArrow(live(), text, params);
     },
     // `gremlin(...)` here is the module-level composer (safe escaping), not this
     // property — object keys don't bind in scope.
     gremlin: (q, ...subs) =>
-      parseJson(backend.gremlinJson(handle, gremlin(q, ...subs)), 'gremlin') as unknown[],
-    toNdjson: () => backend.encodeNdjson(handle),
-    serialize: (format) => decoder.decode(backend.serialize(handle, format)),
+      parseJson(backend.gremlinJson(live(), gremlin(q, ...subs)), 'gremlin') as unknown[],
+    toNdjson: () => backend.encodeNdjson(live()),
+    serialize: (format) => decoder.decode(backend.serialize(live(), format)),
     free,
     [Symbol.dispose]: free,
   };

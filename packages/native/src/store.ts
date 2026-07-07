@@ -1,3 +1,5 @@
+import { ErrorCode, LenkeError } from '@lenke/errors';
+
 import { ensureDisposeSymbol } from './dispose.js';
 import type { QueryParams, RustGraph, Row } from './graph.js';
 
@@ -81,6 +83,12 @@ export const createStore = (graph: RustGraph): Store => {
   ensureDisposeSymbol(); // so the [Symbol.dispose] key below resolves on any runtime
 
   const listeners = new Set<() => void>();
+  // Disposal must sever the subscription graph, not just free the handle: a
+  // still-mounted live query would otherwise call query/gremlin on the freed
+  // graph on its next getSnapshot. After dispose, snapshots stay on their last
+  // cached value (stable reference — safe for useSyncExternalStore), new
+  // subscriptions are no-ops, and mutate throws a coded error.
+  let disposed = false;
   const notify = (): void => {
     for (const l of listeners) {
       l();
@@ -98,6 +106,10 @@ export const createStore = (graph: RustGraph): Store => {
 
     return {
       subscribe: (onChange) => {
+        if (disposed) {
+          return () => {};
+        }
+
         listeners.add(onChange);
 
         return () => {
@@ -105,6 +117,10 @@ export const createStore = (graph: RustGraph): Store => {
         };
       },
       getSnapshot: () => {
+        if (disposed) {
+          return cached; // the graph is freed — hold the last snapshot, don't touch it
+        }
+
         const v = graph.version;
 
         if (v === seenVersion) {
@@ -144,6 +160,12 @@ export const createStore = (graph: RustGraph): Store => {
       return graph.version;
     },
     mutate: (fn) => {
+      if (disposed) {
+        throw new LenkeError('lenke: store used after dispose', {
+          code: ErrorCode.InvalidGraphOp,
+        });
+      }
+
       const before = graph.version;
       const result = fn(graph);
 
@@ -155,7 +177,15 @@ export const createStore = (graph: RustGraph): Store => {
     },
     liveQuery: (text, opts) => makeLive(opts.deps, () => graph.query(text, opts.params)),
     liveGremlin: (text, opts) => makeLive(opts.deps, () => graph.gremlin(text)),
-    [Symbol.dispose]: () => graph.free(),
+    [Symbol.dispose]: () => {
+      if (disposed) {
+        return;
+      }
+
+      disposed = true;
+      listeners.clear();
+      graph.free();
+    },
   };
 };
 
