@@ -13,8 +13,8 @@ pub(crate) enum Json {
     Bool(bool),
     Num(f64),
     Str(String),
-    Arr(Vec<Json>),
-    Obj(Vec<(String, Json)>),
+    Arr(Vec<Self>),
+    Obj(Vec<(String, Self)>),
 }
 
 impl Json {
@@ -30,13 +30,13 @@ impl Json {
             _ => None,
         }
     }
-    pub(crate) fn as_array(&self) -> Option<&[Json]> {
+    pub(crate) fn as_array(&self) -> Option<&[Self]> {
         match self {
             Self::Arr(a) => Some(a),
             _ => None,
         }
     }
-    pub(crate) fn as_object(&self) -> Option<&[(String, Json)]> {
+    pub(crate) fn as_object(&self) -> Option<&[(String, Self)]> {
         match self {
             Self::Obj(o) => Some(o),
             _ => None,
@@ -45,7 +45,7 @@ impl Json {
     /// The value bound to `key` in an object (last-wins on duplicate keys —
     /// but the parser already de-duplicated, so at most one match); `None`
     /// for non-objects or a missing key.
-    pub(crate) fn get(&self, key: &str) -> Option<&Json> {
+    pub(crate) fn get(&self, key: &str) -> Option<&Self> {
         match self {
             Self::Obj(o) => o.iter().find(|(k, _)| k == key).map(|(_, v)| v),
             _ => None,
