@@ -135,6 +135,31 @@ suite('@lenke/sync snapshot · codec', () => {
     expect(peekHeader(new Uint8Array(0))).toBeNull();
   });
 
+  test('an edited (but still valid) header on an encrypted snapshot reads as absent', async () => {
+    const key = await importSnapshotKey(KEY_BYTES);
+    // A distinctive cursor we can swap for an equal-length one — same headerLen,
+    // same JSON structure, so peekHeader still parses and expectations pass.
+    const bytes = await encodeSnapshot(
+      newStore(),
+      { ...EXPECT, serverCursor: 'AAAAAAAA' },
+      { key },
+    );
+    expect(await decodeSnapshot(bytes, EXPECT, { key })).not.toBeNull(); // untouched: fine
+
+    const tampered = bytes.slice();
+    const view = new DataView(tampered.buffer, tampered.byteOffset, tampered.byteLength);
+    const headerLen = view.getUint32(5, true);
+    const headerText = new TextDecoder().decode(tampered.subarray(9, 9 + headerLen));
+    const at = headerText.indexOf('AAAAAAAA');
+    new TextEncoder().encodeInto('BBBBBBBB', tampered.subarray(9 + at)); // edit in place
+
+    // The header edit took (it's plaintext) — but it's bound to the ciphertext
+    // as AEAD additionalData, so the decrypt fails the tag and we cold-boot,
+    // instead of trusting a forged `collections`/`serverCursor`.
+    expect(peekHeader(tampered)).toMatchObject({ serverCursor: 'BBBBBBBB' });
+    expect(await decodeSnapshot(tampered, EXPECT, { key })).toBeNull();
+  });
+
   test('readSnapshot deletes an invalid-forever snapshot on the way out', async () => {
     const storage = memorySnapshotStorage();
     await storage.write(await encodeSnapshot(newStore(), EXPECT));

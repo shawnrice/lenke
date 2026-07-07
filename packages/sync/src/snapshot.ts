@@ -24,14 +24,19 @@
  * scopes the snapshot covers — feed it to the engine's `initiallyComplete`.
  * `serverCursor` is the opaque resume point for the app's sync stream; a
  * cursor-too-old answer from the server means: delete the snapshot, cold boot.
+ * Plaintext, but not unauthenticated: when encrypted, the header is bound to
+ * the ciphertext as AEAD `additionalData` (below), so an edit to it fails the
+ * tag and the snapshot reads as absent.
  *
  * ## Encryption
  *
- * Compress-then-encrypt with AES-GCM (authenticated: any tamper fails the
- * decrypt and reads as absent). The key is delivered at authentication and
- * lives in worker memory only — never persisted; revocation = drop the key
- * and the ciphertext is garbage (crypto-shredding). A fresh random 96-bit IV
- * per save.
+ * Compress-then-encrypt with AES-GCM (authenticated: any tamper — payload OR
+ * the plaintext header, which is passed as `additionalData` — fails the decrypt
+ * and reads as absent). The key is delivered at authentication and lives in
+ * worker memory only — never persisted; revocation = drop the key and the
+ * ciphertext is garbage (crypto-shredding). A fresh random 96-bit IV per save.
+ * (Unencrypted snapshots carry no authentication at all — the header binding is
+ * an encrypted-mode property.)
  *
  * ## Storage
  *
@@ -227,7 +232,12 @@ export const encodeSnapshot = async (
   if (opts.key) {
     const iv = crypto.getRandomValues(new Uint8Array(IV_BYTES));
     const ciphertext = await crypto.subtle.encrypt(
-      { name: 'AES-GCM', iv: iv as BufferSource },
+      // Bind the plaintext header to the ciphertext: it rides in the clear (the
+      // invalidation tier, read without the key), but as AEAD `additionalData`
+      // any edit to it — e.g. flipping `collections` to mark unloaded scopes
+      // complete — fails the auth tag on decrypt, so the snapshot reads as
+      // absent rather than as tampered-but-valid.
+      { name: 'AES-GCM', iv: iv as BufferSource, additionalData: headerBytes as BufferSource },
       opts.key,
       payload as BufferSource,
     );
@@ -299,9 +309,13 @@ export const decodeSnapshot = async (
     let payload = bytes.subarray(9 + headerLen);
 
     if (opts.key) {
+      // The exact header bytes that were sealed (offset 9, length `headerLen`) —
+      // authenticated as AES-GCM `additionalData`, so a header edit fails the
+      // tag here and we cold-boot. Byte-identical to encode's `headerBytes`.
+      const headerBytes = bytes.subarray(9, 9 + headerLen);
       const iv = payload.subarray(0, IV_BYTES);
       const plaintext = await crypto.subtle.decrypt(
-        { name: 'AES-GCM', iv: iv as BufferSource },
+        { name: 'AES-GCM', iv: iv as BufferSource, additionalData: headerBytes as BufferSource },
         opts.key,
         payload.subarray(IV_BYTES) as BufferSource,
       );
