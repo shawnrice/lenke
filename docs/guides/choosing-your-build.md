@@ -48,7 +48,7 @@ Guides: [native](./native.md) covers bun:ffi + N-API (server/CLI); [wasm](./wasm
 The Rust engine's graph is heap-owned and must be released. lenke makes this **one rule across all three reach-paths**:
 
 ```ts
-// Preferred — released at scope exit on ffi, N-API, and wasm alike:
+// Preferred — the same rule on every reach-path (see the N-API note below):
 using g = graphFromNdjson(backend, bytes);
 // ... use g ...
 // (freed automatically here)
@@ -65,7 +65,8 @@ try {
 - `using` needs a modern build target (TS ≥ 5.2 / esbuild down-levels it to `try/finally` and shims `Symbol.dispose`); `free()` is the universal fallback. lenke polyfills `Symbol.dispose` for runtimes that predate it, so `using` is safe to ship to browsers.
 - A `Store` is disposable too: `using store = createStore(g)` frees the underlying graph.
 - If you forget both, a `FinalizationRegistry` backstop reclaims the handle when the wrapper is garbage-collected. It's a leak-net (the GC may never run it before exit), **not** a substitute for `using`/`free()`.
-- The pure-TS `@lenke/core` graph and the raw `@lenke/node` `Graph` class are ordinary GC-managed objects — nothing to free. The `RustGraph`/`Store` facades give even the N-API path a uniform `free()`/`using` (a no-op-ish release that also drops the facade's handle registry), so you can write one lifecycle for all builds.
+- **N-API timing caveat:** on ffi and wasm, `free()` releases native memory _at that moment_. On N-API, `free()` drops the facade's reference and invalidates the handle, but the native memory itself is reclaimed when V8 garbage-collects the addon object — deterministic _invalidation_, GC-timed _reclamation_. A server cycling many graphs under memory pressure will see promptly-falling RSS on ffi, not necessarily on N-API.
+- The pure-TS `@lenke/core` graph and the raw `@lenke/node` `Graph` class are ordinary GC-managed objects — nothing to free. The `RustGraph`/`Store` facades give even the N-API path a uniform `free()`/`using`, so you can write one lifecycle for all builds.
 
 ## Putting it together
 

@@ -38,6 +38,10 @@ wss.on('connection', (ws) => {
     host.close();
     hosts.delete(ws);
   });
+  // An 'error' with no listener throws (EventEmitter semantics) and takes the
+  // whole server down on any one socket's reset. 'close' follows 'error', so
+  // the teardown above still runs.
+  ws.on('error', () => ws.close());
 });
 
 console.log(`listening on ws://localhost:${PORT} (${hosts.size} connections)`);

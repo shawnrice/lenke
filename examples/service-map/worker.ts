@@ -132,11 +132,19 @@ const boot = async () => {
   });
 
   // Snapshot on a debounce whenever anything moved (version, queue, loads).
+  // "Moved" = the version OR the queue length changed since the last save —
+  // every enqueue bumps the version (writes are version-gated) and every drain
+  // drops the count, so the pair captures all queue movement. Comparing against
+  // the last SAVE (not `> 0`) matters: a stuck offline queue would otherwise
+  // re-encode the entire graph every tick for the whole outage.
   let lastSaved = -1;
+  let lastSavedPending = -1;
   const save = async (): Promise<void> => {
     const loaded = CLUSTERS.filter(
       (c) => engine.collectionState('services', { cluster: c }) === 'complete',
     );
+    lastSaved = store.version;
+    lastSavedPending = engine.pendingWrites();
     await storage.write(
       await encodeSnapshot(store, {
         schemaVersion: SCHEMA_VERSION,
@@ -145,11 +153,10 @@ const boot = async () => {
         pendingWrites: engine.queuedWrites(),
       }),
     );
-    lastSaved = store.version;
   };
 
   setInterval(() => {
-    if (store.version !== lastSaved || engine.pendingWrites() > 0) {
+    if (store.version !== lastSaved || engine.pendingWrites() !== lastSavedPending) {
       void save();
     }
   }, 3000);

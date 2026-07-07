@@ -70,10 +70,10 @@ function storeFor(tenantId: string): Store {
 }
 ```
 
-Each `Graph`/`Store` is fully self-contained — a mutation on one can't reach another (`clone()` makes the same guarantee explicit). lenke ships no registry, pool, or "tenant" concept; the `Map<tenantId, Store>` above is the whole pattern. Evict a tenant by dropping it from the map and freeing its store (`store[Symbol.dispose]()` on ffi/wasm; N-API GC's it once unreferenced).
+Each `Graph`/`Store` is fully self-contained — a mutation on one can't reach another (`clone()` makes the same guarantee explicit). lenke ships no registry, pool, or "tenant" concept; the `Map<tenantId, Store>` above is the whole pattern.
 
 Note the distinction from _per-connection_ isolation: the service-map server keeps one shared graph and a protocol **host per socket** — every connection sees the same data. That's connection fan-out, not tenant isolation. For tenant isolation you want one graph per tenant, as above.
 
 ## Memory
 
-On bun:ffi/wasm the graph is heap-owned — free it (`using` / `.free()`), and evicting a tenant means freeing its store. On N-API it's GC-managed. The `Store`/`RustGraph` facades give a uniform `free()`/`using` across all three so tenant eviction is one code path. See the [memory model](./choosing-your-build.md#memory-model).
+Evicting a tenant means dropping it from the map **and** disposing its store — `store[Symbol.dispose]()` (or `.free()` on the graph). The facades make that one code path across ffi/N-API/wasm; what differs per reach-path (and the N-API reclamation-timing caveat) is covered in the [memory model](./choosing-your-build.md#memory-model).

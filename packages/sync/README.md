@@ -7,19 +7,19 @@ The frontend asks **declaratively** — the primitive is a standing query, not a
 ## Protocol v1 (~6 messages)
 
 ```
-client → host:  subscribe   { sub, query, params?, deps?, window? }
-host → client:  rows        { sub, rows, version, complete }   // now, then on change
+client → host:  subscribe   { sub, query, deps, params?, key?, lang?, window? }
+host → client:  rows        { sub, rows | (patch, remove, order) | values, version, complete }
 client → host:  unsubscribe { sub }
-client → host:  query       { req, query, params? }            // one-shot
-host → client:  result      { req, rows | error }
-client → host:  mutate      { req, gql, params? }
+client → host:  query       { req, query, params?, lang?, format? }   // one-shot (gql | gremlin)
+host → client:  result      { req, rows | values | arrow | error }
+client → host:  mutate      { req, text, lang?, params? }             // gql | gremlin
 host → client:  ack         { req, ok, error? }                // UI effect arrives via rows pushes
 host → client:  status      { connected, pendingWrites, protocol }
 ```
 
-`params` is a flat object of `$name` bindings, on every query-carrying message. Values bind engine-side to already-parsed param slots and **never touch the GQL parser** — send values as params; never build query text from user input.
+`params` is a flat object of `$name` bindings, on every GQL-carrying message. Values bind engine-side to already-parsed param slots and **never touch the GQL parser** — send values as params; never build query text from user input. `lang: 'gremlin'` runs the text through the Gremlin engine instead (results ride `values`); Gremlin has no param binding, so interpolate values with the `gremlin` tag / `escapeGremlin`.
 
-Conformance is **structural**: consumers may write these shapes down independently, with no dependency in either direction. Arrow-buffer frames, row diffs, and resumable subscriptions are extensions — not v1.
+Conformance is **structural**: consumers may write these shapes down independently, with no dependency in either direction. **Keyed row diffs** (declare `key` on subscribe → `patch`/`remove`/`order` pushes) and **Arrow one-shots** (`format: 'arrow'`, binary transports) have landed as backward-compatible extensions; resumable subscriptions and Arrow on the push path remain future ones.
 
 ## The host
 
@@ -69,7 +69,9 @@ const { rows, complete, error } = useSyncExternalStore(live.subscribe, live.getS
 // `complete` is false until the host answers — render skeletons, not lies.
 
 await client.mutate('INSERT (:Person {name: $n})', { n: 'zoe' }); // resolves on ack
+await client.mutateGremlin`g.addV('Person').property('name', ${name})`; // Gremlin write, values escaped
 const rows = await client.query('MATCH (p:Person) RETURN p.name'); // one-shot
+const vals = await client.gremlin`g.V().has('name', ${name}).values('age')`; // one-shot Gremlin
 ```
 
 Snapshots are referentially stable between pushes. A handle whose refcount hits zero tears down its wire subscription but stays canonical — re-subscribing revives it with a fresh wire sub (React StrictMode's mount dance is safe). Mutation effects arrive through subscription pushes, exactly as if another client had written.
@@ -97,14 +99,14 @@ const engine = createSyncEngine({
       load: async () => {
         const res = await fetch('/api/people').then((r) => r.json());
         return res.map((p) => ({
-          gql: 'INSERT (:Person {name: $n, age: $a})',
+          text: 'INSERT (:Person {name: $n, age: $a})',
           params: { n: p.name, a: p.age },
         }));
       },
     },
   },
   initiallyComplete: ['people'], // when the boot snapshot already covers it
-  upstream: { push: (w) => api.mutate(w) }, // write-back target
+  upstream: { push: (w) => api.mutate(w.text, w.params, w.lang) }, // write-back target — forward the lang!
   retry: { attempts: 5, baseMs: 250 },
   onWriteError: (w, e) => report(w, e),
 });
@@ -116,7 +118,7 @@ const host = engine.createHost({ send: (m) => ws.send(JSON.stringify(m)) });
 Semantics worth knowing:
 
 - **Answer now, fill after** — a subscription over an unloaded collection gets its local (possibly stale) rows immediately with `complete: false`; the loader's writes land in one `store.mutate`, epochs route the push, and `complete` flips. An **empty scope still flips** `complete` (same rows, new truth).
-- **Loaders return writes** (`{ gql, params }[]`), not graphs — values stay on the params path, and the engine stays ignorant of your fetch/decode shape.
+- **Loaders return writes** (`SyncWrite[]` — `{ text, params? }` for GQL, `{ text, lang: 'gremlin' }` for a Gremlin traversal), not graphs — values stay on the params path, and the engine stays ignorant of your fetch/decode shape.
 - **Write-back is optimistic** — local readers see a mutation before upstream answers; the queue is FIFO, one in flight, exponential backoff; a write that exhausted its retries is dropped and reported (`onWriteError`) — rollback-and-correct arrives with server cursors, not v1. A mutation that changed nothing replicates nothing (version-gated).
 - **`ingest` never echoes** — server-pushed writes apply locally and route by epoch, with no path back into the queue.
 
@@ -167,4 +169,4 @@ Format: a **plaintext header** `{ formatVersion, schemaVersion, userId, serverCu
 - **`window` is carried but not interpreted** — re-subscribe with the same `sub` to replace a standing query (that is also how a windowed grid will scroll).
 - **Rows are JSON** — Arrow-buffer negotiation is an extension.
 - **No auth/scoping** — a host serves its store; "the server syncs only what this user may see" is a store-construction concern for the sync loop, not a protocol concern.
-- **No reconnect/resume** — a client is bound to one connection; resumable subscriptions are a protocol extension. On reconnect, build a new client (standing queries are cheap to re-declare).
+- **No resume** — resumable subscriptions (server-side cursor catch-up) are a protocol extension. Reconnect itself is handled: `createReconnectingClient` wraps the client with re-dial/backoff and replays every standing query and parked one-shot over the fresh transport (at-least-once — exactly-once needs server-side request-id dedupe).

@@ -71,6 +71,24 @@ suite('@lenke/sync snapshot · codec', () => {
     expect(restored.graph.vertexCount).toBe(2);
   });
 
+  test('legacy and malformed persisted writes normalize safely', async () => {
+    const store = newStore();
+    // Simulate a pre-`lang` snapshot ({gql}) and a corrupted write (neither
+    // key) riding in the persisted queue — the cast models old/damaged bytes.
+    const persisted = [
+      { gql: 'INSERT (:Person {name: $n})', params: { n: 'legacy' } },
+      { params: { n: 'garbage' } }, // no text, no gql → must be dropped
+      { text: "g.addV('Person')", lang: 'gremlin' },
+    ] as unknown as SyncWrite[];
+    const bytes = await encodeSnapshot(store, { ...EXPECT, pendingWrites: persisted });
+
+    const snap = await decodeSnapshot(bytes, EXPECT);
+    expect(snap!.pendingWrites).toEqual([
+      { text: 'INSERT (:Person {name: $n})', params: { n: 'legacy' } }, // gql → text
+      { text: "g.addV('Person')", lang: 'gremlin' }, // lang survives
+    ]); // the text-less write is gone, not { text: undefined } poisoning the queue
+  });
+
   test('encrypted round-trip; wrong key and missing key read as absent', async () => {
     const store = newStore();
     const key = await importSnapshotKey(KEY_BYTES);

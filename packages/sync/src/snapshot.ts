@@ -325,12 +325,17 @@ export const decodeSnapshot = async (
 
     // Normalize to SyncWrite, tolerating pre-`lang` snapshots that stored the
     // write text under `gql` — so offline edits queued before an upgrade aren't
-    // dropped on warm boot.
-    const pendingWrites: SyncWrite[] = raw.map((w) => ({
-      text: w.text ?? (w.gql as string),
-      ...(w.lang === 'gremlin' ? { lang: 'gremlin' as const } : {}),
-      ...(w.params !== undefined ? { params: w.params } : {}),
-    }));
+    // dropped on warm boot. A write with NEITHER key (a truncated or hand-edited
+    // snapshot) is dropped here: letting `text: undefined` through would poison
+    // the write-back queue on warm boot (the push fails forever under a
+    // park-don't-drop retry policy) instead of failing at decode time.
+    const pendingWrites: SyncWrite[] = raw
+      .filter((w) => typeof (w.text ?? w.gql) === 'string')
+      .map((w) => ({
+        text: w.text ?? (w.gql as string),
+        ...(w.lang === 'gremlin' ? { lang: 'gremlin' as const } : {}),
+        ...(w.params !== undefined ? { params: w.params } : {}),
+      }));
 
     return { header, ndjson: ndjson.slice(), pendingWrites };
   } catch {
