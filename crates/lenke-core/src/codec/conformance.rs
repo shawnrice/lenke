@@ -104,6 +104,50 @@ fn canonical_round_trips_every_format_structurally() {
 }
 
 #[test]
+fn a_present_null_property_round_trips_every_format() {
+    // Null is a first-class stored value: a present-null property must survive
+    // encode→decode on every codec, and stay DISTINCT from an absent key.
+    let canonical = concat!(
+        r#"{"type":"node","id":"a","labels":["N"],"properties":{"k":null,"m":1}}"#,
+        "\n",
+        r#"{"type":"node","id":"b","labels":["N"],"properties":{"m":2}}"#,
+        "\n",
+        r#"{"type":"edge","id":"e1","from":"a","to":"b","labels":["R"],"properties":{"w":null}}"#,
+    );
+    let g = crate::ndjson::decode(canonical).unwrap();
+    let a = g.vid.get("a").unwrap() as usize;
+    let b = g.vid.get("b").unwrap() as usize;
+    assert!(g.props.is_present(a, "k"), "node a has a present null `k`");
+    assert!(!g.props.is_present(b, "k"), "node b does not have `k`");
+    let want = normalize(&g);
+    assert!(
+        want.contains("k=null"),
+        "normal form should carry the present null"
+    );
+
+    for format in ["pg-json", "pg-text", "graphson", "csv", "ndjson"] {
+        let blob = serialize(&g, format).unwrap();
+        let g2 = deserialize(&blob, format)
+            .unwrap_or_else(|e| panic!("re-decode failed for {format}: {e:?}"));
+        assert_eq!(
+            normalize(&g2),
+            want,
+            "null property lost round-tripping {format}"
+        );
+        let a2 = g2.vid.get("a").unwrap() as usize;
+        let b2 = g2.vid.get("b").unwrap() as usize;
+        assert!(
+            g2.props.is_present(a2, "k"),
+            "{format}: a present null vanished"
+        );
+        assert!(
+            !g2.props.is_present(b2, "k"),
+            "{format}: an absent key became present"
+        );
+    }
+}
+
+#[test]
 fn malformed_inputs_rejected_with_expected_code() {
     let c = corpus();
     for case in c.get("reject").and_then(Json::as_array).unwrap() {

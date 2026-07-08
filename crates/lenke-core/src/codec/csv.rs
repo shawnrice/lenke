@@ -591,8 +591,9 @@ fn props_from_row(row: &[Cell], prop_cols: &[(String, ColType)], fixed: usize) -
             continue;
         };
         match decode_cell(*t, cell) {
-            // present null collapses to absent (the core never stores null)
-            Some(Value::Null) | None => {}
+            // A `\N` cell is a PRESENT null (kept); only a genuinely empty cell
+            // (`None`) is absent. Null is a first-class stored value.
+            None => {}
             Some(v) => props.push((key.clone(), v)),
         }
     }

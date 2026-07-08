@@ -43,9 +43,11 @@ use crate::json::Json;
 // Element/property access over the columnar store
 // ---------------------------------------------------------------------------
 
-/// Present properties of element `idx`, in key-id (intern) order. A `Null` from
-/// the store means *absent* — `Null` is never stored (see `set_value`) — so it
-/// is skipped, matching the "key not on the element" semantics every codec uses.
+/// Present properties of element `idx`, in key-id (intern) order. Gated on
+/// PRESENCE (`is_present_id`), not on the value: a stored `Null` is a present
+/// property (a first-class value — see `set_value`) and IS emitted as `null`;
+/// only a genuinely absent key is skipped. Each codec's scalar writer renders
+/// `Value::Null` in its own null form.
 pub(crate) fn element_props<'a>(
     store: &'a Properties,
     strs: &Dict,
@@ -53,11 +55,9 @@ pub(crate) fn element_props<'a>(
 ) -> Vec<(&'a str, Value)> {
     let mut out = Vec::new();
     for kid in 0..store.cols.len() as u32 {
-        let v = store.value_id(idx, kid, strs);
-        if matches!(v, Value::Null) {
-            continue;
+        if store.is_present_id(idx, kid) {
+            out.push((store.keys.text(kid), store.value_id(idx, kid, strs)));
         }
-        out.push((store.keys.text(kid), v));
     }
     out
 }

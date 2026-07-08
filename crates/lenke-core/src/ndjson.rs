@@ -416,8 +416,20 @@ mod tests {
     fn decode_bool_null_and_lists() {
         assert_eq!(decoded(r#"{"b":true}"#, "b"), Value::Bool(true));
         assert_eq!(decoded(r#"{"c":false}"#, "c"), Value::Bool(false));
-        // A top-level null property is absent (null = absent in this LPG model)…
-        assert_eq!(decoded(r#"{"d":null}"#, "d"), Value::Null);
+        // A top-level null property is a PRESENT, first-class value (distinct
+        // from absent) — it reads back as Null AND is present; a key never set
+        // is not present. (Divergence from the old "null = absent" model.)
+        {
+            let line = r#"{"type":"node","id":"a","labels":["N"],"properties":{"d":null}}"#;
+            let g = decode(line).unwrap();
+            let a = g.vid.get("a").unwrap() as usize;
+            assert_eq!(g.props.value(a, "d", &g.strs), Value::Null);
+            assert!(g.props.is_present(a, "d"), "a stored null is present");
+            assert!(
+                !g.props.is_present(a, "never_set"),
+                "an unset key is absent"
+            );
+        }
         // …but null INSIDE a list value is preserved.
         assert_eq!(
             decoded(r#"{"xs":[1,2,3]}"#, "xs"),
