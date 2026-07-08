@@ -35,8 +35,13 @@
  * and reads as absent). The key is delivered at authentication and lives in
  * worker memory only — never persisted; revocation = drop the key and the
  * ciphertext is garbage (crypto-shredding). A fresh random 96-bit IV per save.
- * (Unencrypted snapshots carry no authentication at all — the header binding is
- * an encrypted-mode property.)
+ *
+ * Encryption is **secure-by-default**: every encode/decode/read takes an
+ * explicit {@link SnapshotCrypto} — `{ key }` to seal, or `{ unencrypted: true }`
+ * to persist plaintext *on purpose*. There is no silent keyless path, because
+ * an unencrypted snapshot carries no authentication at all (the header binding
+ * is an encrypted-mode property), so writing one must be a deliberate,
+ * greppable choice rather than a forgotten argument.
  *
  * ## Storage
  *
@@ -47,6 +52,7 @@
  * not a guarantee.
  */
 
+import { ErrorCode, LenkeError } from '@lenke/errors';
 import type { QueryParams, Store } from '@lenke/native';
 
 import type { SyncWrite } from './engine.js';
@@ -72,6 +78,45 @@ export type SnapshotHeader = {
 export type SnapshotExpectation = {
   schemaVersion: string;
   userId: string;
+};
+
+/**
+ * How a snapshot is protected at rest — a *required, explicit* choice so
+ * plaintext is never an accidental omission:
+ *
+ * - `{ key }` seals the payload with AES-GCM (authenticated: tamper reads as
+ *   absent, and the plaintext header is bound in as `additionalData`).
+ * - `{ unencrypted: true }` persists a plaintext, **unauthenticated** payload —
+ *   legitimate for non-sensitive or local-demo data, but you have to ask for it
+ *   by name.
+ *
+ * There is deliberately no "pass nothing" form: an unencrypted snapshot has no
+ * integrity protection at all, so writing one is a decision, not a default.
+ */
+export type SnapshotCrypto =
+  | { key: CryptoKey; unencrypted?: false }
+  | { key?: undefined; unencrypted: true };
+
+// Narrow the crypto choice to an optional key, refusing the ambiguous middle
+// (neither a key nor an explicit plaintext opt-out) at runtime — the union bars
+// it for TS callers, this bars it for JS ones. `undefined` means "write
+// plaintext, on purpose."
+const resolveKey = (crypto: SnapshotCrypto): CryptoKey | undefined => {
+  // Optional chaining so a JS caller passing nothing/undefined lands on the
+  // coded error below, not a raw "cannot read 'key' of undefined" TypeError.
+  if (crypto?.key) {
+    return crypto.key;
+  }
+
+  if (crypto?.unencrypted) {
+    return undefined;
+  }
+
+  throw new LenkeError(
+    'lenke: snapshot crypto must be { key } to encrypt or { unencrypted: true } to persist ' +
+      'plaintext — refusing to silently write an unauthenticated snapshot',
+    { code: ErrorCode.InvalidGraphOp },
+  );
 };
 
 export type Snapshot = {
@@ -198,8 +243,9 @@ const concat = (...parts: Uint8Array[]): Uint8Array => {
 };
 
 /**
- * Serialize a store (graph + pending writes) into snapshot bytes. Pass the
- * `key` to encrypt at rest (compress-then-encrypt); omit it for plaintext.
+ * Serialize a store (graph + pending writes) into snapshot bytes. `crypto`
+ * chooses the at-rest posture: `{ key }` to encrypt (compress-then-encrypt) or
+ * `{ unencrypted: true }` to persist plaintext deliberately.
  */
 export const encodeSnapshot = async (
   store: Store,
@@ -210,8 +256,9 @@ export const encodeSnapshot = async (
     collections?: readonly string[];
     pendingWrites?: readonly SyncWrite[];
   },
-  opts: { key?: CryptoKey } = {},
+  crypto: SnapshotCrypto,
 ): Promise<Uint8Array> => {
+  const key = resolveKey(crypto);
   const header: SnapshotHeader = {
     formatVersion: FORMAT_VERSION,
     schemaVersion: meta.schemaVersion,
@@ -229,16 +276,16 @@ export const encodeSnapshot = async (
     new CompressionStream('gzip'),
   );
 
-  if (opts.key) {
-    const iv = crypto.getRandomValues(new Uint8Array(IV_BYTES));
-    const ciphertext = await crypto.subtle.encrypt(
+  if (key) {
+    const iv = globalThis.crypto.getRandomValues(new Uint8Array(IV_BYTES));
+    const ciphertext = await globalThis.crypto.subtle.encrypt(
       // Bind the plaintext header to the ciphertext: it rides in the clear (the
       // invalidation tier, read without the key), but as AEAD `additionalData`
       // any edit to it — e.g. flipping `collections` to mark unloaded scopes
       // complete — fails the auth tag on decrypt, so the snapshot reads as
       // absent rather than as tampered-but-valid.
       { name: 'AES-GCM', iv: iv as BufferSource, additionalData: headerBytes as BufferSource },
-      opts.key,
+      key,
       payload as BufferSource,
     );
     payload = concat(iv, new Uint8Array(ciphertext));
@@ -290,8 +337,11 @@ export const peekHeader = (bytes: Uint8Array): SnapshotHeader | null => {
 export const decodeSnapshot = async (
   bytes: Uint8Array,
   expect: SnapshotExpectation,
-  opts: { key?: CryptoKey } = {},
+  crypto: SnapshotCrypto,
 ): Promise<Snapshot | null> => {
+  // Resolve BEFORE the try/catch: a misused crypto arg is a programmer error to
+  // surface loudly, not a corrupt-snapshot signal to swallow as a cold boot.
+  const key = resolveKey(crypto);
   const header = peekHeader(bytes);
 
   if (
@@ -308,15 +358,15 @@ export const decodeSnapshot = async (
     const headerLen = view.getUint32(5, true);
     let payload = bytes.subarray(9 + headerLen);
 
-    if (opts.key) {
+    if (key) {
       // The exact header bytes that were sealed (offset 9, length `headerLen`) —
       // authenticated as AES-GCM `additionalData`, so a header edit fails the
       // tag here and we cold-boot. Byte-identical to encode's `headerBytes`.
       const headerBytes = bytes.subarray(9, 9 + headerLen);
       const iv = payload.subarray(0, IV_BYTES);
-      const plaintext = await crypto.subtle.decrypt(
+      const plaintext = await globalThis.crypto.subtle.decrypt(
         { name: 'AES-GCM', iv: iv as BufferSource, additionalData: headerBytes as BufferSource },
-        opts.key,
+        key,
         payload.subarray(IV_BYTES) as BufferSource,
       );
       payload = new Uint8Array(plaintext);
@@ -366,7 +416,7 @@ export const decodeSnapshot = async (
 export const readSnapshot = async (
   storage: SnapshotStorage,
   expect: SnapshotExpectation,
-  opts: { key?: CryptoKey } = {},
+  crypto: SnapshotCrypto,
 ): Promise<Snapshot | null> => {
   const bytes = await storage.read();
 
@@ -374,7 +424,7 @@ export const readSnapshot = async (
     return null;
   }
 
-  const snapshot = await decodeSnapshot(bytes, expect, opts);
+  const snapshot = await decodeSnapshot(bytes, expect, crypto);
 
   if (snapshot === null) {
     await storage.delete(); // invalid forever — reclaim the space now

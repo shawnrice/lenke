@@ -164,7 +164,9 @@ const engine = createSyncEngine({
 // answer means: storage.delete(), cold boot.
 ```
 
-Format: a **plaintext header** `{ formatVersion, schemaVersion, userId, serverCursor, collections }` — the invalidation tier, checked before any decryption (`peekHeader` reads it without the key) — then a gzip payload, optionally AES-GCM-sealed (compress-then-encrypt; authenticated, so tamper reads as absent; fresh IV per save; revocation = drop the key — crypto-shredding). `readSnapshot` deletes an invalid-forever snapshot on the way out. Logout should still answer with `Clear-Site-Data: "storage"` — the browser wipes the origin without trusting app code to clean up.
+Encryption is **secure-by-default**: `encodeSnapshot`/`decodeSnapshot`/`readSnapshot` each take a required, explicit crypto choice — `{ key }` to seal or `{ unencrypted: true }` to persist plaintext on purpose. There's no "pass nothing" path, because an unencrypted snapshot carries no authentication at all, so writing one is a decision rather than a forgotten argument.
+
+Format: a **plaintext header** `{ formatVersion, schemaVersion, userId, serverCursor, collections }` — the invalidation tier, checked before any decryption (`peekHeader` reads it without the key) — then a gzip payload, optionally AES-GCM-sealed (compress-then-encrypt; authenticated, so tamper — payload _or_ the header, bound in as AEAD `additionalData` — reads as absent; fresh IV per save; revocation = drop the key — crypto-shredding). `readSnapshot` deletes an invalid-forever snapshot on the way out. Logout should still answer with `Clear-Site-Data: "storage"` — the browser wipes the origin without trusting app code to clean up.
 
 ## v1 boundaries (deliberate)
 

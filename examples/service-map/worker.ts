@@ -45,7 +45,13 @@ const USER_ID = 'demo'; // a real app: the authenticated user, + a key for AES-G
 
 const boot = async () => {
   const storage = opfsStorage('service-map.lnks');
-  const snap = await readSnapshot(storage, { schemaVersion: SCHEMA_VERSION, userId: USER_ID });
+  // Demo data, no login → persist plaintext on purpose. A real app hands a
+  // per-user CryptoKey here ({ key }) so the snapshot is authenticated at rest.
+  const snap = await readSnapshot(
+    storage,
+    { schemaVersion: SCHEMA_VERSION, userId: USER_ID },
+    { unencrypted: true },
+  );
 
   const backend = await createWasmBackend(fetch(wasmUrl));
   const store = createStore(
@@ -146,12 +152,16 @@ const boot = async () => {
     lastSaved = store.version;
     lastSavedPending = engine.pendingWrites();
     await storage.write(
-      await encodeSnapshot(store, {
-        schemaVersion: SCHEMA_VERSION,
-        userId: USER_ID,
-        collections: loaded,
-        pendingWrites: engine.queuedWrites(),
-      }),
+      await encodeSnapshot(
+        store,
+        {
+          schemaVersion: SCHEMA_VERSION,
+          userId: USER_ID,
+          collections: loaded,
+          pendingWrites: engine.queuedWrites(),
+        },
+        { unencrypted: true }, // demo: no key — see boot() for the rationale
+      ),
     );
   };
 

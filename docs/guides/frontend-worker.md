@@ -83,11 +83,15 @@ Not the graph — **query results**. A subscription pushes either the full row s
 
 `@lenke/sync` can snapshot the worker's graph to OPFS (gzip, optional AES-GCM at rest) and warm-boot from it, re-enqueueing any un-acked offline writes:
 
+Encryption is secure-by-default: every `encodeSnapshot`/`readSnapshot` takes an explicit crypto choice — `{ key }` (a per-user WebCrypto `CryptoKey`, authenticated at rest) or `{ unencrypted: true }` to persist plaintext on purpose. There is no silent keyless path.
+
 ```ts
 import { encodeSnapshot, readSnapshot, opfsStorage } from '@lenke/sync';
 
 const storage = opfsStorage('graph.snap');
-const snap = await readSnapshot(storage, { schemaVersion: '1', userId });
+// Real apps: pass the per-user key → { key }. Non-sensitive/local data may opt
+// into plaintext with { unencrypted: true } — but it has to be spelled out.
+const snap = await readSnapshot(storage, { schemaVersion: '1', userId }, { key });
 const store = createStore(graphFromNdjson(backend, snap ? snap.ndjson : seedBytes));
 // … build the engine with initialWrites: snap?.pendingWrites ?? [] …
 ```
@@ -98,8 +102,8 @@ This tooling is browser-oriented (OPFS, `CompressionStream`, WebCrypto). A serve
 
 The protocol, host, client, sync loop, and snapshotting are shipped. A few pieces are plumbed but not yet fully realized — don't build UI that assumes them:
 
-- **`complete` (honest partial-sync)** — the flag threads through the whole stack but is effectively always `true` until the demand-fill completeness path is fully wired; skeleton states aren't exercised end-to-end yet.
-- **Windowed reads for grids** — the `window` field is carried but not yet interpreted.
+- **`complete` (honest partial-sync)** — under a `createSyncEngine` host the flag reflects real per-collection completeness (a bare host is trivially `complete: true`); skeleton-UI states just aren't exercised end-to-end yet.
+- **Windowed reads for grids** — a keyless subscription may carry `{ offset, limit }` and the host pages the result; keyed-diff windowing is still reserved. `complete` reflects the whole scope, so scrolling is a re-subscribe with a new window.
 - **Resumable subscriptions / server-cursor catch-up** — reconnect replays standing queries from scratch (correct under the snapshot model, but not a cursor resume).
 - **Write reconciliation (rollback-and-correct)** — a write that exhausts its retries is dropped and reported (`onWriteError`); true reconciliation needs server cursors.
 

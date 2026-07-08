@@ -43,19 +43,25 @@ const newStore = (seed: string = NDJSON): Store =>
 
 const EXPECT = { schemaVersion: 'v1', userId: 'shawn' };
 const KEY_BYTES = new Uint8Array(32).map((_, i) => i * 7 + 1);
+// Persisting plaintext is an explicit, greppable choice (secure-by-default).
+const PLAIN = { unencrypted: true } as const;
 
 suite('@lenke/sync snapshot · codec', () => {
   test('plaintext round-trip: graph, header, and queue survive', async () => {
     const store = newStore();
     const writes: SyncWrite[] = [{ text: 'INSERT (:Person {name: $n})', params: { n: 'queued' } }];
-    const bytes = await encodeSnapshot(store, {
-      ...EXPECT,
-      serverCursor: 'cursor-42',
-      collections: ['people'],
-      pendingWrites: writes,
-    });
+    const bytes = await encodeSnapshot(
+      store,
+      {
+        ...EXPECT,
+        serverCursor: 'cursor-42',
+        collections: ['people'],
+        pendingWrites: writes,
+      },
+      PLAIN,
+    );
 
-    const snap = await decodeSnapshot(bytes, EXPECT);
+    const snap = await decodeSnapshot(bytes, EXPECT, PLAIN);
     expect(snap).not.toBeNull();
     expect(snap!.header).toMatchObject({
       formatVersion: 1,
@@ -71,6 +77,23 @@ suite('@lenke/sync snapshot · codec', () => {
     expect(restored.graph.vertexCount).toBe(2);
   });
 
+  test('crypto choice is required — no silent keyless plaintext', async () => {
+    const store = newStore();
+    // @ts-expect-error the union forbids omitting the crypto choice…
+    expect(encodeSnapshot(store, EXPECT)).rejects.toThrow(/refusing to silently write/);
+    // …and passing an empty object (the old accidental default) is refused too.
+    expect(encodeSnapshot(store, EXPECT, {} as { unencrypted: true })).rejects.toThrow(
+      /refusing to silently write/,
+    );
+
+    const bytes = await encodeSnapshot(store, EXPECT, PLAIN);
+    // A misused crypto arg on decode throws loudly (programmer error), rather
+    // than being swallowed as a corrupt-snapshot cold boot.
+    expect(decodeSnapshot(bytes, EXPECT, {} as { unencrypted: true })).rejects.toThrow(
+      /refusing to silently write/,
+    );
+  });
+
   test('legacy and malformed persisted writes normalize safely', async () => {
     const store = newStore();
     // Simulate a pre-`lang` snapshot ({gql}) and a corrupted write (neither
@@ -80,9 +103,9 @@ suite('@lenke/sync snapshot · codec', () => {
       { params: { n: 'garbage' } }, // no text, no gql → must be dropped
       { text: "g.addV('Person')", lang: 'gremlin' },
     ] as unknown as SyncWrite[];
-    const bytes = await encodeSnapshot(store, { ...EXPECT, pendingWrites: persisted });
+    const bytes = await encodeSnapshot(store, { ...EXPECT, pendingWrites: persisted }, PLAIN);
 
-    const snap = await decodeSnapshot(bytes, EXPECT);
+    const snap = await decodeSnapshot(bytes, EXPECT, PLAIN);
     expect(snap!.pendingWrites).toEqual([
       { text: 'INSERT (:Person {name: $n})', params: { n: 'legacy' } }, // gql → text
       { text: "g.addV('Person')", lang: 'gremlin' }, // lang survives
@@ -100,7 +123,8 @@ suite('@lenke/sync snapshot · codec', () => {
 
     const wrongKey = await importSnapshotKey(new Uint8Array(32).map((_, i) => i + 99));
     expect(await decodeSnapshot(bytes, EXPECT, { key: wrongKey })).toBeNull();
-    expect(await decodeSnapshot(bytes, EXPECT)).toBeNull(); // key required, none given
+    // Decoding a sealed snapshot as plaintext (no key) gzip-fails → absent.
+    expect(await decodeSnapshot(bytes, EXPECT, PLAIN)).toBeNull();
   });
 
   test('the header stays readable without the key (the invalidation tier)', async () => {
@@ -111,15 +135,17 @@ suite('@lenke/sync snapshot · codec', () => {
   });
 
   test('any expectation mismatch reads as absent (dump → cold boot)', async () => {
-    const bytes = await encodeSnapshot(newStore(), EXPECT);
+    const bytes = await encodeSnapshot(newStore(), EXPECT, PLAIN);
 
-    expect(await decodeSnapshot(bytes, { schemaVersion: 'v2', userId: 'shawn' })).toBeNull();
-    expect(await decodeSnapshot(bytes, { schemaVersion: 'v1', userId: 'intruder' })).toBeNull();
+    expect(await decodeSnapshot(bytes, { schemaVersion: 'v2', userId: 'shawn' }, PLAIN)).toBeNull();
+    expect(
+      await decodeSnapshot(bytes, { schemaVersion: 'v1', userId: 'intruder' }, PLAIN),
+    ).toBeNull();
   });
 
   test('tamper, truncation, and garbage all read as absent', async () => {
     const key = await importSnapshotKey(KEY_BYTES);
-    const plain = await encodeSnapshot(newStore(), EXPECT);
+    const plain = await encodeSnapshot(newStore(), EXPECT, PLAIN);
     const sealed = await encodeSnapshot(newStore(), EXPECT, { key });
 
     const flipped = sealed.slice();
@@ -128,10 +154,12 @@ suite('@lenke/sync snapshot · codec', () => {
 
     const corrupt = plain.slice();
     corrupt[corrupt.byteLength - 5] ^= 0xff; // corrupt the gzip payload
-    expect(await decodeSnapshot(corrupt, EXPECT)).toBeNull();
+    expect(await decodeSnapshot(corrupt, EXPECT, PLAIN)).toBeNull();
 
-    expect(await decodeSnapshot(plain.subarray(0, 40), EXPECT)).toBeNull(); // truncated
-    expect(await decodeSnapshot(new TextEncoder().encode('not a snapshot'), EXPECT)).toBeNull();
+    expect(await decodeSnapshot(plain.subarray(0, 40), EXPECT, PLAIN)).toBeNull(); // truncated
+    expect(
+      await decodeSnapshot(new TextEncoder().encode('not a snapshot'), EXPECT, PLAIN),
+    ).toBeNull();
     expect(peekHeader(new Uint8Array(0))).toBeNull();
   });
 
@@ -162,15 +190,15 @@ suite('@lenke/sync snapshot · codec', () => {
 
   test('readSnapshot deletes an invalid-forever snapshot on the way out', async () => {
     const storage = memorySnapshotStorage();
-    await storage.write(await encodeSnapshot(newStore(), EXPECT));
+    await storage.write(await encodeSnapshot(newStore(), EXPECT, PLAIN));
 
     // Schema bumped: the stored snapshot can never become valid again.
-    const miss = await readSnapshot(storage, { schemaVersion: 'v2', userId: 'shawn' });
+    const miss = await readSnapshot(storage, { schemaVersion: 'v2', userId: 'shawn' }, PLAIN);
     expect(miss).toBeNull();
     expect(await storage.read()).toBeNull(); // reclaimed
 
     // Absent storage is a quiet cold boot.
-    expect(await readSnapshot(storage, EXPECT)).toBeNull();
+    expect(await readSnapshot(storage, EXPECT, PLAIN)).toBeNull();
   });
 });
 
@@ -189,16 +217,20 @@ suite('@lenke/sync snapshot · warm boot', () => {
 
     const storage = memorySnapshotStorage();
     await storage.write(
-      await encodeSnapshot(session1.store, {
-        ...EXPECT,
-        serverCursor: 'resume-here',
-        collections: ['people'],
-        pendingWrites: session1.queuedWrites(),
-      }),
+      await encodeSnapshot(
+        session1.store,
+        {
+          ...EXPECT,
+          serverCursor: 'resume-here',
+          collections: ['people'],
+          pendingWrites: session1.queuedWrites(),
+        },
+        PLAIN,
+      ),
     );
 
     // Session 2 (the "reload"): boot from the snapshot.
-    const snap = await readSnapshot(storage, EXPECT);
+    const snap = await readSnapshot(storage, EXPECT, PLAIN);
     expect(snap).not.toBeNull();
     expect(snap!.header.serverCursor).toBe('resume-here'); // the app resumes its stream here
 

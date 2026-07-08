@@ -52,6 +52,7 @@ export {
   peekHeader,
   readSnapshot,
   type Snapshot,
+  type SnapshotCrypto,
   type SnapshotExpectation,
   type SnapshotHeader,
   type SnapshotStorage,
