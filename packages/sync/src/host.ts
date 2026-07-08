@@ -216,6 +216,8 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
     key?: string;
     /** A Gremlin standing query → pushes carry `values`, not `rows`/diffs. */
     lang?: 'gremlin';
+    /** Windowed read (keyless GQL only): push `rows.slice(offset, offset+limit)`. */
+    window?: { offset: number; limit: number };
     /** Prior keyed result, for diffing the next push (keyed subscriptions only). */
     prevByKey: Map<string, Row>;
     prevOrder: string[];
@@ -277,9 +279,13 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
       return;
     }
 
-    // Keyless GQL: the full result every push (v1's shape, unchanged).
+    // Keyless GQL: the full result every push, or a window slice for a grid.
+    // Change detection above still keys off the FULL rows ref (`s.last`), so a
+    // windowed slice never breaks it; `complete` reflects the whole scope.
     if (s.key === undefined) {
-      send({ type: 'rows', sub, rows: rows as Row[], version: store.version, complete });
+      const full = rows as Row[];
+      const out = s.window ? full.slice(s.window.offset, s.window.offset + s.window.limit) : full;
+      send({ type: 'rows', sub, rows: out, version: store.version, complete });
 
       return;
     }
@@ -326,12 +332,20 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
     const live: LiveQuery<unknown> = gremlin
       ? store.liveGremlin(msg.query, { deps })
       : store.liveQuery(msg.query, { deps, params: msg.params });
+    // Window applies to keyless GQL only (a keyed diff or a Gremlin value stream
+    // has no stable slice); clamp to non-negative so a bad offset/limit can't
+    // reach `slice`'s from-the-end semantics.
+    const window =
+      msg.window && !gremlin && msg.key === undefined
+        ? { offset: Math.max(0, msg.window.offset | 0), limit: Math.max(0, msg.window.limit | 0) }
+        : undefined;
     const s: Subscription = {
       live,
       deps,
       params: msg.params,
       key: gremlin ? undefined : msg.key,
       lang: gremlin ? 'gremlin' : undefined,
+      window,
       prevByKey: new Map(),
       prevOrder: [],
       last: null,

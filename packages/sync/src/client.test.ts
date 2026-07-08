@@ -330,6 +330,28 @@ suite('@lenke/sync client · registry semantics', () => {
     expect(withSlashes).not.toBe(without);
   });
 
+  test('a windowed liveQuery gets just the page; a different window is a distinct query', () => {
+    const { client, wire } = connect();
+    const q = 'MATCH (p:Person) RETURN p.name ORDER BY p.name';
+
+    const page0 = client.liveQuery(q, { deps: ['Person'], window: { offset: 0, limit: 1 } });
+    page0.subscribe(() => {});
+    expect(page0.getSnapshot().rows).toHaveLength(1); // the page, not all 2 rows
+
+    const page1 = client.liveQuery(q, { deps: ['Person'], window: { offset: 1, limit: 1 } });
+    page1.subscribe(() => {});
+    expect(page1).not.toBe(page0); // a different window → a distinct standing query
+    expect(page1.getSnapshot().rows).toHaveLength(1);
+    expect(page1.getSnapshot().rows[0]).not.toEqual(page0.getSnapshot().rows[0]); // scrolled
+
+    // Two separate wire subscriptions (one per window).
+    expect(wire.filter((m) => m.type === 'subscribe')).toHaveLength(2);
+
+    // Same window de-dupes to the same handle (one wire sub).
+    const again = client.liveQuery(q, { deps: ['Person'], window: { offset: 0, limit: 1 } });
+    expect(again).toBe(page0);
+  });
+
   test('status handshake is captured', () => {
     const { client } = connect();
     expect(client.getStatus()).toEqual({ connected: true, pendingWrites: 0 });

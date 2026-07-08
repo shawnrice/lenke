@@ -104,6 +104,13 @@ export type SyncClient = {
        * binding — build `query` with the `gremlin` tag / `escapeGremlin`.
        */
       lang?: 'gql' | 'gremlin';
+      /**
+       * Windowed read for grids (keyless GQL only): the snapshot carries just
+       * `rows.slice(offset, offset + limit)`. Scroll by calling `liveQuery`
+       * again with a new window (it's a distinct standing query). Pair with
+       * `ORDER BY` so the page is stable.
+       */
+      window?: { offset: number; limit: number };
     },
   ) => ClientLiveQuery;
   /**
@@ -324,6 +331,8 @@ type Entry = {
   key?: string;
   /** `'gremlin'` → snapshots carry `values`, applied whole (no keyed diffs). */
   lang?: 'gql' | 'gremlin';
+  /** Windowed read (keyless GQL only), retained for replay. */
+  window?: { offset: number; limit: number };
   /** Current rows by canonical key — the base each keyed diff is applied onto. */
   rowsByKey?: Map<string, Row>;
   snapshot: ClientSnapshot;
@@ -388,6 +397,8 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
       params?: QueryParams;
       key?: string;
       lang?: 'gql' | 'gremlin';
+      /** Keyless GQL only: fetch a `slice(offset, offset+limit)` page; scroll by re-subscribing with a new window. */
+      window?: { offset: number; limit: number };
     },
   ): ClientLiveQuery => {
     // Deps are semantically a SET (epoch gating sums them; collection matching
@@ -403,6 +414,7 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
       opts.deps === null ? null : [...opts.deps].sort(),
       opts.key ?? null,
       opts.lang ?? null,
+      opts.window ?? null, // a different window is a different standing query
     ]);
     const existing = entries.get(signature);
 
@@ -425,6 +437,7 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
       deps: opts.deps,
       key: opts.key,
       lang: opts.lang,
+      window: opts.window,
       snapshot: INITIAL,
       listeners: new Set(),
       handle: {
@@ -481,6 +494,7 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
         params: opts.params,
         key: opts.key,
         lang: opts.lang,
+        window: opts.window,
       });
     };
 
@@ -747,6 +761,7 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
           deps: entry.deps,
           key: entry.key,
           lang: entry.lang,
+          window: entry.window,
         });
       }
 

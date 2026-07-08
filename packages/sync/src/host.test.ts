@@ -474,4 +474,45 @@ suite('@lenke/sync host · protocol v1', () => {
     const push = rowsOf(take().find((m) => m.type === 'rows') as HostMessage);
     expect(push.values).toEqual([3]);
   });
+
+  test('a windowed keyless subscription pushes just the page; re-subscribe scrolls', () => {
+    const store = newStore();
+    const { host, take } = attach(store);
+    take();
+
+    const q = 'MATCH (p:Person) RETURN p.name ORDER BY p.name';
+    host.receive({
+      type: 'subscribe',
+      sub: 'g',
+      query: q,
+      deps: ['Person'],
+      window: { offset: 0, limit: 1 },
+    });
+    const page0 = rowsOf(take().find((m) => m.type === 'rows') as HostMessage);
+    expect(page0.rows).toHaveLength(1); // page of 1, not the full 2 rows
+
+    // Re-subscribe the SAME sub with the next window — that's how a grid scrolls.
+    host.receive({
+      type: 'subscribe',
+      sub: 'g',
+      query: q,
+      deps: ['Person'],
+      window: { offset: 1, limit: 1 },
+    });
+    const page1 = rowsOf(take().find((m) => m.type === 'rows') as HostMessage);
+    expect(page1.rows).toHaveLength(1);
+    expect(page1.rows![0]).not.toEqual(page0.rows![0]); // a different row — scrolled
+
+    // A window past the end is an empty page, and `complete` still reflects the scope.
+    host.receive({
+      type: 'subscribe',
+      sub: 'g',
+      query: q,
+      deps: ['Person'],
+      window: { offset: 9, limit: 5 },
+    });
+    const past = rowsOf(take().find((m) => m.type === 'rows') as HostMessage);
+    expect(past.rows).toEqual([]);
+    expect(past.complete).toBe(true);
+  });
 });

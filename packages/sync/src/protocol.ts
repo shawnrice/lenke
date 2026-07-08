@@ -122,7 +122,13 @@ export type SubscribeMessage = {
    * to interpolate values safely.
    */
   lang?: 'gql' | 'gremlin';
-  /** Windowed read for grids. Reserved in v1 — carried but not yet interpreted. */
+  /**
+   * Windowed read for grids: the host sends only `rows.slice(offset, offset +
+   * limit)` of the result on each push (a keyless subscription — `key`/keyed
+   * diffs and `lang: 'gremlin'` ignore it). Scroll by re-subscribing the same
+   * `sub` with a new window; pair with `ORDER BY` so the slice is stable.
+   * `complete` still reflects the whole scope, not the page.
+   */
   window?: { offset: number; limit: number };
 };
 
@@ -226,10 +232,12 @@ export type RowsMessage = {
   /** The graph's mutation version at snapshot time. */
   version?: number;
   /**
-   * Whether the underlying scope is fully loaded. A query over a
-   * partially-synced collection must distinguish "no results" from "not loaded
-   * yet" or the UI cannot render skeletons honestly. Always `true` until the
-   * demand-fill sync loop lands.
+   * Whether the underlying scope is fully loaded — so a query over a
+   * partially-synced collection can distinguish "no results" from "not loaded
+   * yet" and the UI can render skeletons honestly. When the host is driven by a
+   * {@link createSyncEngine}, this reflects real per-collection completeness
+   * (`empty`/`loading`/`complete`) and flips as demand-fill lands. A **bare**
+   * host (no engine, a local-only store) is trivially `complete: true`.
    */
   complete?: boolean;
   error?: WireError;
