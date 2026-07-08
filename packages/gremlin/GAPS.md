@@ -52,6 +52,22 @@ GQL (which has a first-class `null` type and a separate `REMOVE` statement)
 rather than Cypher's "`SET = null` removes" convention. Sibling policy: the
 NaN-ordering decision.
 
+### Labels and property keys are validated (well-formedness)
+
+Gremlin takes arbitrary strings as labels/keys, but a name that can't round-trip
+through every codec is rejected at the graph's mutation boundary (a coded
+`InvalidValue` — via the fault channel, surfaced by `try_run`):
+
+- A **label / edge type** must be non-empty and free of `::` (GraphSON joins a
+  node's labels with `::`, so a `::` inside one label is ambiguous there; an
+  empty label collapses to "no labels" in GraphSON/CSV). A single `:` is fine.
+- A **property key** must be non-empty (an empty key has no CSV column header /
+  `key:value` pg-text form). Keys may contain `::` — they're never `::`-joined.
+
+Enforced identically in the Rust core (`validate_label` / `validate_prop_key`,
+at codec ingestion + `addV`/`addE`/`property`) and the TS core (`validateLabel` /
+`validatePropertyKey`, at `addVertex`/`addEdge`/`addLabelTo*`/`setProperty`).
+
 ## Feature gaps surfaced by docs
 
 These are missing capabilities, not behavioral drift. Tests note them

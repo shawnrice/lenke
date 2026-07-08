@@ -83,6 +83,12 @@ import type { PropertyValue } from '../value.js';
  * a present empty string is a quoted empty cell and an empty list is likewise
  * quoted (so it is not read back as absent).
  *
+ * Known limitation: an empty list `[]` and a single-empty-string-element list
+ * `['']` both encode to a quoted-empty cell and both decode to `[]` — the quote
+ * bit is already spent distinguishing absent from present-`[]`, leaving no third
+ * empty-content state without a wire-format change. `['']` is a degenerate
+ * input; the collapse is accepted rather than break every list encoding for it.
+ *
  * ## RFC 4180 escaping
  *
  * A field is wrapped in double quotes iff it contains `,`, `"`, CR, LF, or

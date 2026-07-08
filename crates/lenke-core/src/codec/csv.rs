@@ -9,12 +9,19 @@
 //! The hard parts, ported faithfully from the TS codec:
 //!   - **null / empty-string / absent** are three distinct on-wire states:
 //!     absent = empty *unquoted* cell; null = the `\N` token; present `""` =
-//!     quoted empty. (The core never stores null, so encode emits `\N` for none
-//!     of its own data; a foreign `\N` decodes to absent.)
+//!     quoted empty. Null is a first-class stored value, so `\N` round-trips as
+//!     a present null (distinct from absent).
 //!   - **heterogeneous keys**: a cell whose concrete type differs from its
 //!     column's type carries an inline `\T<code>:` override sigil (`s|i|f|b`,
 //!     `[]` for lists), so a key used with mixed types still round-trips.
 //!   - RFC-4180 quoting; list elements escape `;` and `\`.
+//!
+//! Known limitation: an empty list `[]` and a single-empty-string-element list
+//! `[""]` both encode to a quoted-empty cell and both decode to `[]` — the
+//! quote bit is already spent distinguishing absent from present-`[]`, leaving
+//! no room for a third empty-content state without a wire-format change. `[""]`
+//! is a degenerate input; the collapse is accepted rather than break every
+//! existing list encoding for it.
 //!
 //! Core divergences (see [`crate::codec`]): edge `:TYPE` is the single edge type
 //! (not a set); the edge `id` column round-trips an assigned external id and is
