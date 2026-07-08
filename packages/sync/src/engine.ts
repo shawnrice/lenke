@@ -289,6 +289,27 @@ export const createSyncEngine = (options: SyncEngineOptions): SyncEngine => {
   const queue: SyncWrite[] = [...(options.initialWrites ?? [])];
   let pumping = false;
 
+  // Side-channel callbacks (a user `onWriteError`, and `notifyChange` → host
+  // `refresh` → `send`, e.g. a `send` on a CLOSING socket) can throw. Contain
+  // them: a thrown reporter/notification must never abort the drain loop — see
+  // `pump`'s `finally`, which is what actually stops a throw from wedging the
+  // queue (a stuck `pumping` would early-return every future pump forever).
+  const reportWriteError = (write: SyncWrite, e: unknown): void => {
+    try {
+      options.onWriteError?.(write, e);
+    } catch {
+      // best-effort: a user callback fault must not block replication
+    }
+  };
+
+  const safeNotify = (): void => {
+    try {
+      notifyChange(); // pendingWrites moved
+    } catch {
+      // non-fatal (e.g. send on a dead socket): the next drain re-notifies
+    }
+  };
+
   const pump = async (): Promise<void> => {
     if (pumping) {
       return;
@@ -296,14 +317,9 @@ export const createSyncEngine = (options: SyncEngineOptions): SyncEngine => {
 
     pumping = true;
 
-    // The side-channel callbacks below (`onWriteError`, `notifyChange` → host
-    // `refresh` → `send`) run inside the drain loop, and either can throw — a
-    // user callback bug, or a `send` on a CLOSING socket right as the upstream
-    // failures that drive retries hit. A throw must NOT wedge the pump: the
-    // outer `finally` guarantees `pumping` is cleared (otherwise every future
-    // pump early-returns and the queue never drains again — writes pile up and
-    // bloat each snapshot, silently), and each callback is contained so one bad
-    // notification can't abort draining the rest of the queue either.
+    // `finally` is load-bearing: if anything below throws, `pumping` must still
+    // clear, or every future pump early-returns and the queue never drains
+    // again — writes pile up and bloat each snapshot, silently.
     try {
       while (queue.length > 0) {
         const [write] = queue; // FIFO; stays queued (and counted) until settled
@@ -318,12 +334,8 @@ export const createSyncEngine = (options: SyncEngineOptions): SyncEngine => {
             if (attempt + 1 >= attempts) {
               // Terminal: drop and report. Roll-back-and-correct needs server
               // cursors (a later step) — silently retrying forever would just
-              // hide a dead upstream. A throwing reporter can't stall the queue.
-              try {
-                options.onWriteError?.(write, e);
-              } catch {
-                // best-effort: a user callback fault must not block replication
-              }
+              // hide a dead upstream.
+              reportWriteError(write, e);
             } else {
               await sleep(Math.min(maxMs, baseMs * 2 ** attempt));
             }
@@ -331,12 +343,7 @@ export const createSyncEngine = (options: SyncEngineOptions): SyncEngine => {
         }
 
         queue.shift();
-
-        try {
-          notifyChange(); // pendingWrites moved
-        } catch {
-          // non-fatal (e.g. send on a dead socket): the next drain re-notifies
-        }
+        safeNotify();
       }
     } finally {
       pumping = false;
