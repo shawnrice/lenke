@@ -128,26 +128,25 @@ Semantics worth knowing:
 
 The load-bearing rule: the local snapshot is **warmth, never truth** — every failure mode (eviction, tamper, wrong key, version/user mismatch, corruption) reads as _absent_ and the app cold-boots. The one exception is the **pending-write queue** (truth-on-client until acked), which rides inside the snapshot.
 
+`createSnapshotStore` is the enforced path — the **key decides where the snapshot lives**, so plaintext can't reach disk:
+
 ```ts
-// Save (on an interval, on visibilitychange — the app decides):
 const key = await importSnapshotKey(rawKeyFromAuth); // worker memory only, never persisted
-const storage = opfsStorage('lenke.snapshot'); // memorySnapshotStorage() off-browser
-await storage.write(
-  await encodeSnapshot(
-    engine.store,
-    {
-      schemaVersion: 'v3',
-      userId: session.userId,
-      serverCursor: stream.cursor, // resume point for the app's sync stream
-      collections: ['people'], // scopes this snapshot covers
-      pendingWrites: engine.queuedWrites(), // unsynced changes survive the reload
-    },
-    { key },
-  ),
-);
+// key present → AES-GCM-sealed + durable on OPFS; key omitted → memory-only,
+// NEVER written to disk (warm within a SharedWorker's life; gone on its exit).
+const snapshots = createSnapshotStore({ filename: 'lenke.snapshot', key });
+
+// Save (on an interval, on visibilitychange — the app decides):
+await snapshots.save(engine.store, {
+  schemaVersion: 'v3',
+  userId: session.userId,
+  serverCursor: stream.cursor, // resume point for the app's sync stream
+  collections: ['people'], // scopes this snapshot covers
+  pendingWrites: engine.queuedWrites(), // unsynced changes survive the reload
+});
 
 // Boot:
-const snap = await readSnapshot(storage, { schemaVersion: 'v3', userId: session.userId }, { key });
+const snap = await snapshots.load({ schemaVersion: 'v3', userId: session.userId });
 const store = createStore(
   snap
     ? graphFromNdjson(backend, snap.ndjson) // warm: answer subscriptions now, reconcile after
@@ -161,10 +160,10 @@ const engine = createSyncEngine({
   upstream,
 });
 // resume the push stream from snap?.header.serverCursor ?? '' — a cursor-too-old
-// answer means: storage.delete(), cold boot.
+// answer means: snapshots.clear(), cold boot.
 ```
 
-Encryption is **secure-by-default**: `encodeSnapshot`/`decodeSnapshot`/`readSnapshot` each take a required, explicit crypto choice — `{ key }` to seal or `{ unencrypted: true }` to persist plaintext on purpose. There's no "pass nothing" path, because an unencrypted snapshot carries no authentication at all, so writing one is a decision rather than a forgotten argument.
+Encryption is **secure-by-default and structural**: `createSnapshotStore` writes to OPFS only when it holds a key; without one the snapshot stays in memory and never touches disk. The lower-level `encodeSnapshot`/`decodeSnapshot`/`readSnapshot` primitives (used above's building blocks) each still take a required, explicit `{ key }` or `{ unencrypted: true }` — there's no "pass nothing" path, because an unencrypted snapshot carries no authentication at all.
 
 Format: a **plaintext header** `{ formatVersion, schemaVersion, userId, serverCursor, collections }` — the invalidation tier, checked before any decryption (`peekHeader` reads it without the key) — then a gzip payload, optionally AES-GCM-sealed (compress-then-encrypt; authenticated, so tamper — payload _or_ the header, bound in as AEAD `additionalData` — reads as absent; fresh IV per save; revocation = drop the key — crypto-shredding). `readSnapshot` deletes an invalid-forever snapshot on the way out. Logout should still answer with `Clear-Site-Data: "storage"` — the browser wipes the origin without trusting app code to clean up.
 

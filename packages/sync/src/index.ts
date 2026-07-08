@@ -44,6 +44,7 @@ export {
   type ReconnectingConnection,
 } from './reconnect.js';
 export {
+  createSnapshotStore,
   decodeSnapshot,
   encodeSnapshot,
   importSnapshotKey,
@@ -55,6 +56,8 @@ export {
   type SnapshotCrypto,
   type SnapshotExpectation,
   type SnapshotHeader,
+  type SnapshotSaveMeta,
+  type SnapshotStore,
   type SnapshotStorage,
 } from './snapshot.js';
 export {

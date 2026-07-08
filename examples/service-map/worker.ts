@@ -16,10 +16,8 @@ import { createStore, graphFromNdjson } from '@lenke/native';
 import { createWasmBackend } from '@lenke/native/wasm';
 import {
   createReconnectingClient,
+  createSnapshotStore,
   createSyncEngine,
-  encodeSnapshot,
-  opfsStorage,
-  readSnapshot,
   type CollectionDefinition,
   type SyncHost,
   type SyncWrite,
@@ -44,14 +42,12 @@ const USER_ID = 'demo'; // a real app: the authenticated user, + a key for AES-G
 // callback below — open a socket, wire its lifecycle, hand back send/close.
 
 const boot = async () => {
-  const storage = opfsStorage('service-map.lnks');
-  // Demo data, no login → persist plaintext on purpose. A real app hands a
-  // per-user CryptoKey here ({ key }) so the snapshot is authenticated at rest.
-  const snap = await readSnapshot(
-    storage,
-    { schemaVersion: SCHEMA_VERSION, userId: USER_ID },
-    { unencrypted: true },
-  );
+  // Demo data, no login → no key, so snapshots stay in memory and never touch
+  // OPFS. This is a SharedWorker, so that memory warms every tab across reloads
+  // for as long as the worker lives (closing every tab drops it → cold boot). A
+  // real app hands a per-user CryptoKey ({ key }) → sealed + durable on disk.
+  const snapshots = createSnapshotStore({ filename: 'service-map.lnks' });
+  const snap = await snapshots.load({ schemaVersion: SCHEMA_VERSION, userId: USER_ID });
 
   const backend = await createWasmBackend(fetch(wasmUrl));
   const store = createStore(
@@ -151,18 +147,12 @@ const boot = async () => {
     );
     lastSaved = store.version;
     lastSavedPending = engine.pendingWrites();
-    await storage.write(
-      await encodeSnapshot(
-        store,
-        {
-          schemaVersion: SCHEMA_VERSION,
-          userId: USER_ID,
-          collections: loaded,
-          pendingWrites: engine.queuedWrites(),
-        },
-        { unencrypted: true }, // demo: no key — see boot() for the rationale
-      ),
-    );
+    await snapshots.save(store, {
+      schemaVersion: SCHEMA_VERSION,
+      userId: USER_ID,
+      collections: loaded,
+      pendingWrites: engine.queuedWrites(),
+    });
   };
 
   setInterval(() => {

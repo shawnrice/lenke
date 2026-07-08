@@ -80,6 +80,15 @@ export type SnapshotExpectation = {
   userId: string;
 };
 
+/** The app-supplied metadata that rides a saved snapshot. */
+export type SnapshotSaveMeta = {
+  schemaVersion: string;
+  userId: string;
+  serverCursor?: string;
+  collections?: readonly string[];
+  pendingWrites?: readonly SyncWrite[];
+};
+
 /**
  * How a snapshot is protected at rest — a *required, explicit* choice so
  * plaintext is never an accidental omission:
@@ -249,13 +258,7 @@ const concat = (...parts: Uint8Array[]): Uint8Array => {
  */
 export const encodeSnapshot = async (
   store: Store,
-  meta: {
-    schemaVersion: string;
-    userId: string;
-    serverCursor?: string;
-    collections?: readonly string[];
-    pendingWrites?: readonly SyncWrite[];
-  },
+  meta: SnapshotSaveMeta,
   crypto: SnapshotCrypto,
 ): Promise<Uint8Array> => {
   const key = resolveKey(crypto);
@@ -431,4 +434,57 @@ export const readSnapshot = async (
   }
 
   return snapshot;
+};
+
+/** A keyed snapshot store — the enforced persistence path. */
+export type SnapshotStore = {
+  /** True when snapshots are encrypted and durable (a key was supplied). */
+  readonly durable: boolean;
+  /** Serialize the store and persist it per the keyed policy below. */
+  save: (store: Store, meta: SnapshotSaveMeta) => Promise<void>;
+  /** Read + validate the latest snapshot, or `null` to cold-boot. */
+  load: (expect: SnapshotExpectation) => Promise<Snapshot | null>;
+  /** Drop the persisted snapshot. */
+  clear: () => Promise<void>;
+};
+
+/**
+ * The enforced, ergonomic persistence path — the **key**, not a storage choice,
+ * decides where a snapshot lives, so plaintext can never reach disk:
+ *
+ * - **With a key** → sealed with AES-GCM and written durably to OPFS
+ *   (`filename`); survives reloads and full process restarts.
+ * - **Without a key** → held in memory only, **never** written to disk. The
+ *   buffer lives as long as this store does: created once per **SharedWorker**
+ *   it warms every tab that (re)connects across the worker's life, but a
+ *   dedicated-worker / main-thread store loses it on unload (there, keyless ≈ no
+ *   warm boot — the live graph is already the only copy).
+ *
+ * This is the structural form of "encrypt at rest or don't persist at all":
+ * there is no parameter that writes a plaintext snapshot to OPFS.
+ */
+export const createSnapshotStore = (config: {
+  /** OPFS file name for the durable, encrypted snapshot (used only when keyed). */
+  filename: string;
+  /** At-rest AES-GCM key. Omit → memory-only, never on disk. */
+  key?: CryptoKey;
+  /** Durable-sink override (tests/servers); defaults to `opfsStorage(filename)`. */
+  durable?: SnapshotStorage;
+}): SnapshotStore => {
+  const { key } = config;
+  const crypto: SnapshotCrypto = key ? { key } : { unencrypted: true };
+  // The load-bearing routing: a key buys durable OPFS; its absence pins the
+  // snapshot to an in-memory buffer that never reaches disk.
+  const storage: SnapshotStorage = key
+    ? (config.durable ?? opfsStorage(config.filename))
+    : memorySnapshotStorage();
+
+  return {
+    durable: key !== undefined,
+    save: async (store, meta) => {
+      await storage.write(await encodeSnapshot(store, meta, crypto));
+    },
+    load: (expect) => readSnapshot(storage, expect, crypto),
+    clear: () => storage.delete(),
+  };
 };

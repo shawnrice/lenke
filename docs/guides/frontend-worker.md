@@ -83,18 +83,20 @@ Not the graph — **query results**. A subscription pushes either the full row s
 
 `@lenke/sync` can snapshot the worker's graph to OPFS (gzip, optional AES-GCM at rest) and warm-boot from it, re-enqueueing any un-acked offline writes:
 
-Encryption is secure-by-default: every `encodeSnapshot`/`readSnapshot` takes an explicit crypto choice — `{ key }` (a per-user WebCrypto `CryptoKey`, authenticated at rest) or `{ unencrypted: true }` to persist plaintext on purpose. There is no silent keyless path.
+`createSnapshotStore` makes the security posture structural: the **key**, not a storage choice, decides where a snapshot lives. Pass a per-user `CryptoKey` and snapshots are AES-GCM-sealed and written durably to OPFS; omit it and they stay **in memory only, never on disk** — plaintext can't leak to durable storage. (In this SharedWorker the in-memory buffer warms every tab that reconnects across the worker's life; a dedicated worker would lose it on unload.)
 
 ```ts
-import { encodeSnapshot, readSnapshot, opfsStorage } from '@lenke/sync';
+import { createSnapshotStore } from '@lenke/sync';
 
-const storage = opfsStorage('graph.snap');
-// Real apps: pass the per-user key → { key }. Non-sensitive/local data may opt
-// into plaintext with { unencrypted: true } — but it has to be spelled out.
-const snap = await readSnapshot(storage, { schemaVersion: '1', userId }, { key });
+// key present → sealed + durable (OPFS); key omitted → memory-only, never disk.
+const snapshots = createSnapshotStore({ filename: 'graph.snap', key });
+const snap = await snapshots.load({ schemaVersion: '1', userId });
 const store = createStore(graphFromNdjson(backend, snap ? snap.ndjson : seedBytes));
 // … build the engine with initialWrites: snap?.pendingWrites ?? [] …
+// … then `await snapshots.save(store, { schemaVersion: '1', userId, … })` on change.
 ```
+
+The lower-level `encodeSnapshot`/`decodeSnapshot`/`readSnapshot` primitives are still exported for advanced use; each takes an explicit `{ key }` or `{ unencrypted: true }` (no silent keyless path).
 
 This tooling is browser-oriented (OPFS, `CompressionStream`, WebCrypto). A server would reuse `toNdjson`/`graphFromNdjson` but not `opfsStorage`.
 

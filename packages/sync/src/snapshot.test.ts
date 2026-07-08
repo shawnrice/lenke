@@ -11,12 +11,14 @@ import { createFfiBackend } from '@lenke/native/ffi';
 
 import { createSyncEngine, type SyncWrite } from './engine.js';
 import {
+  createSnapshotStore,
   decodeSnapshot,
   encodeSnapshot,
   importSnapshotKey,
   memorySnapshotStorage,
   peekHeader,
   readSnapshot,
+  type SnapshotStorage,
 } from './snapshot.js';
 
 const LIB_EXTENSIONS: Partial<Record<NodeJS.Platform, string>> = { darwin: 'dylib', win32: 'dll' };
@@ -199,6 +201,63 @@ suite('@lenke/sync snapshot · codec', () => {
 
     // Absent storage is a quiet cold boot.
     expect(await readSnapshot(storage, EXPECT, PLAIN)).toBeNull();
+  });
+});
+
+suite('@lenke/sync snapshot · createSnapshotStore (keyed routing)', () => {
+  // A durable sink that records everything the store writes to "disk".
+  const spySink = () => {
+    const inner = memorySnapshotStorage();
+    const writes: Uint8Array[] = [];
+    let deletes = 0;
+    const storage: SnapshotStorage = {
+      read: inner.read,
+      write: async (b) => {
+        writes.push(b.slice());
+        await inner.write(b);
+      },
+      delete: async () => {
+        deletes += 1;
+        await inner.delete();
+      },
+    };
+
+    return { storage, writes, deletes: () => deletes };
+  };
+
+  test('keyless: round-trips in memory and never touches the durable sink', async () => {
+    const sink = spySink();
+    // Pass a durable override AND no key — the override must be ignored.
+    const snaps = createSnapshotStore({ filename: 'x.lnks', durable: sink.storage });
+    expect(snaps.durable).toBe(false);
+
+    await snaps.save(newStore(), { ...EXPECT, collections: ['people'] });
+    expect(sink.writes).toHaveLength(0); // nothing hit disk
+
+    const snap = await snaps.load(EXPECT);
+    expect(snap).not.toBeNull();
+    expect(snap!.header.collections).toEqual(['people']);
+    expect(newStore(new TextDecoder().decode(snap!.ndjson)).graph.vertexCount).toBe(2);
+  });
+
+  test('keyed: seals to the durable sink; plaintext never lands on disk', async () => {
+    const sink = spySink();
+    const key = await importSnapshotKey(KEY_BYTES);
+    const snaps = createSnapshotStore({ filename: 'x.lnks', key, durable: sink.storage });
+    expect(snaps.durable).toBe(true);
+
+    await snaps.save(newStore(), EXPECT);
+    expect(sink.writes).toHaveLength(1); // persisted durably
+
+    // What reached "disk" is ciphertext: the header reads, but only the key decodes it.
+    const [onDisk] = sink.writes;
+    expect(peekHeader(onDisk)).toMatchObject({ userId: 'shawn' });
+    expect(await decodeSnapshot(onDisk, EXPECT, PLAIN)).toBeNull(); // not plaintext
+    expect(await snaps.load(EXPECT)).not.toBeNull(); // the store decrypts its own
+
+    await snaps.clear();
+    expect(sink.deletes()).toBe(1);
+    expect(await snaps.load(EXPECT)).toBeNull(); // gone → cold boot
   });
 });
 
