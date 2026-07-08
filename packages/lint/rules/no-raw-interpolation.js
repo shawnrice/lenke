@@ -1,23 +1,24 @@
 // Flags a value spliced into GQL / Gremlin query TEXT — an injection risk.
 //
 // The lenke query APIs are safe two ways:
-//   - a TAGGED TEMPLATE — ``g.query`… ${x}` `` (GQL binds `${x}` as a $param;
-//     Gremlin escapes it into a safe literal). These are TaggedTemplateExpression
-//     nodes, never CallExpression, so this rule never touches them.
+//   - a TAGGED TEMPLATE — ``g.query`… ${x}` `` (GQL binds the interpolation as a
+//     $param; Gremlin escapes it into a safe literal). These are
+//     TaggedTemplateExpression nodes, never CallExpression, so this rule never
+//     touches them.
 //   - a `$name` param bag — `g.query('… WHERE x = $x', { x })`.
 //
 // The UNSAFE path is a plain call whose query-text argument is built at runtime
 // by concatenation (`'MATCH …' + userInput`) or by an interpolated template
 // passed as an ordinary argument (`g.query(`… ${userInput}`)` — note: NOT a tag,
-// so `${userInput}` is string-spliced, not bound). Same method, safe-as-tag vs
-// unsafe-as-plain-call — this rule makes the unsafe shape loud and greppable.
+// so the interpolation is string-spliced, not bound). Same method, safe-as-tag
+// vs unsafe-as-plain-call — this rule makes the unsafe shape loud and greppable.
 //
 // It is intentionally SYNTACTIC (keys on the callee's method name, not its type),
 // so it flags on the shape alone. An inline concat/interpolation in the text
 // position is the smell; a bare variable is NOT flagged (a trusted prepared
 // query can't be told from an unsafe one syntactically). If the text is fully
-// trusted (e.g. assembled from constants), suppress the line with an
-// oxlint-disable comment stating why.
+// trusted (e.g. assembled from constants), suppress the line with a disable
+// comment stating why.
 
 // Method calls whose FIRST argument is query text.
 const METHODS = new Set([
@@ -68,16 +69,21 @@ const rawShape = (arg) => {
   return null;
 };
 
-const rule = {
+/** The ESLint/oxlint rule object (shared verbatim by both linters). */
+export const noRawInterpolation = {
   meta: {
     type: 'problem',
+    docs: {
+      description: 'Disallow interpolating a value into GQL / Gremlin query text (injection risk).',
+    },
     messages: {
       rawInterpolation:
         'A value is spliced into {{fn}} query text via {{how}} — an injection risk. ' +
         'Use a tagged template (interpolations in a tag are bound for GQL / escaped for Gremlin) ' +
-        'or a `$name` param. If the text is fully trusted, suppress this line with an ' +
-        'oxlint-disable comment saying why.',
+        'or a `$name` param. If the text is fully trusted, suppress this line with a disable ' +
+        'comment saying why.',
     },
+    schema: [],
   },
   create(context) {
     return {
@@ -107,11 +113,3 @@ const rule = {
     };
   },
 };
-
-const plugin = {
-  meta: { name: 'query-safety' },
-  rules: { 'no-raw-interpolation': rule },
-};
-
-// eslint-disable-next-line import/no-default-export -- oxlint jsPlugins API requires default export
-export default plugin;

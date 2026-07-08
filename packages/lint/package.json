@@ -1,0 +1,43 @@
+{
+  "name": "@lenke/lint",
+  "description": "Shareable lint rules for apps built on lenke — flags query-injection footguns. Works with ESLint and oxlint.",
+  "keywords": [
+    "eslint",
+    "eslint-plugin",
+    "injection",
+    "lenke",
+    "oxlint",
+    "security"
+  ],
+  "license": "Apache-2.0",
+  "files": [
+    "index.js",
+    "rules"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./index.js",
+    "./rules/*": "./rules/*.js"
+  },
+  "scripts": {
+    "test": "bun test"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/bun": "^1.3.13",
+    "eslint": "^9.0.0"
+  },
+  "peerDependencies": {
+    "eslint": ">=8",
+    "oxlint": ">=0.15"
+  },
+  "peerDependenciesMeta": {
+    "eslint": {
+      "optional": true
+    },
+    "oxlint": {
+      "optional": true
+    }
+  }
+}
