@@ -29,6 +29,29 @@ of this model choice and are _not_ tracked as gaps:
 If we ever adopt multi-property semantics in core, these become real
 gaps. Until then, they're documented in `// doc:` comments inline.
 
+### Null is a first-class property value (deliberate divergence)
+
+TinkerPop has no null property values — `property(k, null)` is not a way to
+store a null. **We store null as a first-class value**, present and distinct
+from an absent property:
+
+- `property(k, null)` **stores** a present null. `values(k)` yields `null`,
+  `valueMap()` includes `k`, and `has(k)` is true. (A read alone can't tell a
+  stored null from an absent key — both yield `null` — but `k in
+element.properties`, the codecs, and the conformance corpus can.)
+- Because setting null no longer removes, **deleting a property is a separate
+  operation**: `.properties(k).drop()` — the TinkerPop-canonical idiom, wired in
+  both engines (traverse to the property element, `drop()` it). GQL uses
+  `REMOVE x.k`; `SET x.k = null` likewise stores a null.
+
+This is symmetric across the pure-TS engine (JS objects keep `null` keys), the
+Rust core, all five serialization codecs, and GQL's SQL-style null-typed value
+model. It sidesteps the "`{ b: string | null }` becomes an unrepresentable
+union" footgun a JS library would otherwise hand its users, and aligns with ISO
+GQL (which has a first-class `null` type and a separate `REMOVE` statement)
+rather than Cypher's "`SET = null` removes" convention. Sibling policy: the
+NaN-ordering decision.
+
 ## Feature gaps surfaced by docs
 
 These are missing capabilities, not behavioral drift. Tests note them
