@@ -8,6 +8,52 @@ import { decode, decodeStream, encode, encodeStream, pgTextCodec } from './index
 
 const lines = (g: Graph): string[] => encode(g).split('\n');
 
+describe('pg-text hardening: labels/keys with delimiters round-trip (no element forgery)', () => {
+  const roundTrip = (g: Graph): Graph => decode(encode(g), new Graph());
+
+  test('a label or key containing a newline cannot forge a new element on decode', () => {
+    const g = new Graph();
+    g.addVertex({
+      id: 'n1',
+      labels: ['ok', 'evil\n999 :Injected'], // a raw newline would split the line
+      properties: { 'weird key\nx': 1 },
+    });
+
+    expect(encode(g).split('\n')).toHaveLength(1); // no raw newline in the node line
+
+    const back = roundTrip(g);
+    expect(back.vertexCount).toBe(1); // NOT 2 — no forged element
+    const n1 = back.getVertexById('n1')!;
+    expect([...n1.labels].sort()).toEqual(['evil\n999 :Injected', 'ok']);
+    expect(n1.properties['weird key\nx']).toBe(1);
+  });
+
+  test('labels/keys with spaces, colons, and quotes round-trip', () => {
+    const g = new Graph();
+    g.addVertex({
+      id: 'n1',
+      labels: ['has space', 'has:colon', 'has"quote'],
+      properties: { 'key with space': 'v', 'key:with:colons': 2, 'q"k': true },
+    });
+
+    const n1 = roundTrip(g).getVertexById('n1')!;
+    expect([...n1.labels].sort()).toEqual(['has space', 'has"quote', 'has:colon']);
+    expect(n1.properties['key with space']).toBe('v');
+    expect(n1.properties['key:with:colons']).toBe(2);
+    expect(n1.properties['q"k']).toBe(true);
+  });
+
+  test('a node whose first property key is quoted is not misread as an edge', () => {
+    const g = new Graph();
+    g.addVertex({ id: 'solo', labels: [], properties: { 'a b': 1 } }); // key needs quoting
+
+    const back = roundTrip(g);
+    expect(back.vertexCount).toBe(1);
+    expect([...back.edges]).toHaveLength(0); // NOT parsed as an edge line
+    expect(back.getVertexById('solo')!.properties['a b']).toBe(1);
+  });
+});
+
 describe('pg-text: encoding shape', () => {
   test('a node line leads with its id, then :labels, then key:value', () => {
     const g = new Graph();

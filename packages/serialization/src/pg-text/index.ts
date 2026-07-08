@@ -50,15 +50,28 @@ const STR_ESCAPE_MAP: Record<string, string> = {
 };
 const STR_UNESCAPE_MAP: Record<string, string> = { n: '\n', r: '\r', t: '\t' };
 
-// An id must be quoted when it contains a `:` (else it reads as a `:label` /
-// `key:value`), whitespace (which would split the token), or a quote/backslash.
+// An id (or property KEY) must be quoted when it contains a `:` (else it reads
+// as a `:label` / `key:value` separator), whitespace (which would split the
+// token), or a quote/backslash. Keys share this rule so an arbitrary property
+// key round-trips instead of tearing a token in two (or, with a newline,
+// forging a whole element on decode).
 const ID_NEEDS_QUOTE = /[\s:"\\]/;
 
-/** Render an id token, quoting + escaping it when it contains a delimiter. */
+// A LABEL is emitted as `:label`, so a `:` inside it is unambiguous (the whole
+// remainder is the label) and needs no quoting — but whitespace / quote /
+// backslash still do (whitespace splits the token; a leading quote would be
+// misread as a quoted span).
+const LABEL_NEEDS_QUOTE = /[\s"\\]/;
+
+/** Render an id / property-key token, quoting + escaping it when it needs it. */
 const idToken = (s: string): string =>
   s === '' || ID_NEEDS_QUOTE.test(s) ? `"${s.replace(STR_ESCAPE, (c) => STR_ESCAPE_MAP[c])}"` : s;
 
-/** Read an id token, unquoting + unescaping it if it was quoted. */
+/** Render a label token (bare, or quoted when it carries whitespace/quote/backslash). */
+const labelToken = (s: string): string =>
+  LABEL_NEEDS_QUOTE.test(s) ? `"${s.replace(STR_ESCAPE, (c) => STR_ESCAPE_MAP[c])}"` : s;
+
+/** Read a quoted-or-bare token, unquoting + unescaping it if it was quoted. */
 const parseId = (raw: string): string => {
   if (!raw.startsWith('"')) {
     return raw;
@@ -69,8 +82,35 @@ const parseId = (raw: string): string => {
   return body.replace(/\\(.)/g, (_, c: string) => STR_UNESCAPE_MAP[c] ?? c);
 };
 
-/** A leading id token: quoted (so an embedded `:` is part of it), or `:`-free. */
-const isIdToken = (t: string): boolean => t.startsWith('"') || !t.includes(':');
+/**
+ * Index just past the closing `"` of a quoted span at `start` (`token[start]`
+ * must be `"`), respecting `\`-escapes; `token.length` if unterminated.
+ */
+const quotedSpanEnd = (token: string, start: number): number => {
+  let i = start + 1;
+
+  while (i < token.length) {
+    if (token[i] === '\\') {
+      i += 2;
+      continue;
+    }
+
+    if (token[i] === '"') {
+      return i + 1;
+    }
+
+    i += 1;
+  }
+
+  return token.length;
+};
+
+// A leading token is an id iff it's a *whole* quoted span (`"…"` with nothing
+// after — an id) or has no `:` (a bare id). A quoted-then-`:value` token is a
+// quoted property key, NOT an id — this is what keeps node/edge detection
+// correct now that keys can be quoted.
+const isIdToken = (t: string): boolean =>
+  t.startsWith('"') ? quotedSpanEnd(t, 0) === t.length : !t.includes(':');
 
 /** Encode one scalar `PropertyValue` (never a list) as a PG-text token value. */
 const encodeScalar = (value: Exclude<PropertyValue, readonly PropertyValue[]>): string => {
@@ -91,17 +131,17 @@ const encodeScalar = (value: Exclude<PropertyValue, readonly PropertyValue[]>): 
 
 /** Append `key:value` tokens for a property; a list expands to one token per element. */
 const pushProperty = (out: string[], key: string, value: PropertyValue): void => {
+  const k = idToken(key); // arbitrary keys are quoted like ids
+
   if (Array.isArray(value)) {
     for (const element of value) {
-      out.push(
-        `${key}:${encodeScalar(element as Exclude<PropertyValue, readonly PropertyValue[]>)}`,
-      );
+      out.push(`${k}:${encodeScalar(element as Exclude<PropertyValue, readonly PropertyValue[]>)}`);
     }
 
     return;
   }
 
-  out.push(`${key}:${encodeScalar(value as Exclude<PropertyValue, readonly PropertyValue[]>)}`);
+  out.push(`${k}:${encodeScalar(value as Exclude<PropertyValue, readonly PropertyValue[]>)}`);
 };
 
 const elementTokens = (
@@ -112,7 +152,7 @@ const elementTokens = (
   const tokens = leading.map(idToken);
 
   for (const label of labels) {
-    tokens.push(`:${label}`);
+    tokens.push(`:${labelToken(label)}`);
   }
 
   const bag = normalizeBag(properties);
@@ -228,18 +268,35 @@ const parseLabelsAndProps = (
 
   for (const token of tokens) {
     if (token.startsWith(':')) {
-      labels.push(token.slice(1));
+      // `:label` or `:"quoted label"` — unquote the latter.
+      const rest = token.slice(1);
+      labels.push(rest.startsWith('"') ? parseId(rest) : rest);
       continue;
     }
 
-    const colon = token.indexOf(':');
+    // Find the key:value separator, skipping a quoted key's own colons.
+    let sep: number;
 
-    if (colon < 0) {
-      continue; // not a label or a property; ignore
+    if (token.startsWith('"')) {
+      const end = quotedSpanEnd(token, 0);
+
+      // A whole quoted span with no trailing `:value` isn't a property (a stray
+      // id-shaped token); ignore it rather than misread it.
+      if (end >= token.length || token[end] !== ':') {
+        continue;
+      }
+
+      sep = end;
+    } else {
+      sep = token.indexOf(':');
+
+      if (sep < 0) {
+        continue; // not a label or a property; ignore
+      }
     }
 
-    const key = token.slice(0, colon);
-    const value = parseScalar(token.slice(colon + 1));
+    const key = parseId(token.slice(0, sep)); // unquotes a quoted key, else verbatim
+    const value = parseScalar(token.slice(sep + 1));
     const list = collected.get(key);
 
     if (list) {

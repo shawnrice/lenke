@@ -60,33 +60,26 @@ fn scalar_token(out: &mut String, v: &Value) {
 
 /// Append `key:value` tokens for one property (a list expands to one per element).
 fn push_property(tokens: &mut Vec<String>, key: &str, v: &Value) {
+    let k = id_token(key); // arbitrary keys are quoted like ids
     match v {
         Value::List(elems) => {
             for el in elems {
-                let mut t = format!("{key}:");
+                let mut t = format!("{k}:");
                 scalar_token(&mut t, el);
                 tokens.push(t);
             }
         }
         _ => {
-            let mut t = format!("{key}:");
+            let mut t = format!("{k}:");
             scalar_token(&mut t, v);
             tokens.push(t);
         }
     }
 }
 
-/// Render an id as a token, quoting + escaping it when it contains a `:`
-/// (which would otherwise read as a `:label` / `key:value`), whitespace (which
-/// would split the token), a quote/backslash, or a control char — so ids with
-/// colons or spaces round-trip instead of corrupting the line shape.
-fn id_token(s: &str) -> String {
-    let needs_quote = s.is_empty()
-        || s.chars()
-            .any(|c| matches!(c, ':' | ' ' | '\t' | '\n' | '\r' | '"' | '\\'));
-    if !needs_quote {
-        return s.to_string();
-    }
+/// Escape a string's quote/backslash/control chars into a quoted token body.
+/// Shared by `id_token` and `label_token`; must match the TS escape scheme.
+fn quote_escaped(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for c in s.chars() {
@@ -103,10 +96,37 @@ fn id_token(s: &str) -> String {
     out
 }
 
+/// Render a label token. A label is emitted as `:label`, so an embedded `:` is
+/// unambiguous and needs no quoting — but whitespace / quote / backslash still
+/// do (whitespace splits the token; a leading quote reads as a quoted span).
+fn label_token(s: &str) -> String {
+    if s.chars()
+        .any(|c| matches!(c, ' ' | '\t' | '\n' | '\r' | '"' | '\\'))
+    {
+        quote_escaped(s)
+    } else {
+        s.to_string()
+    }
+}
+
+/// Render an id as a token, quoting + escaping it when it contains a `:`
+/// (which would otherwise read as a `:label` / `key:value`), whitespace (which
+/// would split the token), a quote/backslash, or a control char — so ids with
+/// colons or spaces round-trip instead of corrupting the line shape.
+fn id_token(s: &str) -> String {
+    let needs_quote = s.is_empty()
+        || s.chars()
+            .any(|c| matches!(c, ':' | ' ' | '\t' | '\n' | '\r' | '"' | '\\'));
+    if !needs_quote {
+        return s.to_string();
+    }
+    quote_escaped(s)
+}
+
 fn element_line(leading: &[&str], labels: &[&str], props: &[(&str, Value)]) -> String {
     let mut tokens: Vec<String> = leading.iter().map(|s| id_token(s)).collect();
     for l in labels {
-        tokens.push(format!(":{l}"));
+        tokens.push(format!(":{}", label_token(l)));
     }
     for (k, v) in props {
         push_property(&mut tokens, k, v);
@@ -238,15 +258,32 @@ fn parse_labels_props(tokens: &[String]) -> (Vec<String>, Vec<(String, Value)>) 
     let mut collected: std::collections::HashMap<String, Vec<Value>> =
         std::collections::HashMap::new();
     for token in tokens {
-        if let Some(label) = token.strip_prefix(':') {
-            labels.push(label.to_string());
+        if let Some(rest) = token.strip_prefix(':') {
+            // `:label` or `:"quoted label"` — unquote the latter.
+            labels.push(if rest.starts_with('"') {
+                parse_id(rest)
+            } else {
+                rest.to_string()
+            });
             continue;
         }
-        let Some(colon) = token.find(':') else {
-            continue;
+        // Find the key:value separator, skipping a quoted key's own colons.
+        let sep = if token.starts_with('"') {
+            let end = quoted_span_end(token, 0);
+            // A whole quoted span with no trailing `:value` is a stray id-shaped
+            // token, not a property; ignore it.
+            if end >= token.len() || token.as_bytes()[end] != b':' {
+                continue;
+            }
+            end
+        } else {
+            match token.find(':') {
+                Some(c) => c,
+                None => continue,
+            }
         };
-        let key = token[..colon].to_string();
-        let value = parse_scalar(&token[colon + 1..]);
+        let key = parse_id(&token[..sep]); // unquotes a quoted key, else verbatim
+        let value = parse_scalar(&token[sep + 1..]);
         if let Some(list) = collected.get_mut(&key) {
             list.push(value);
         } else {
@@ -269,10 +306,32 @@ fn parse_labels_props(tokens: &[String]) -> (Vec<String>, Vec<(String, Value)>) 
     (labels, props)
 }
 
-/// A leading id token: either quoted (so an embedded `:` is part of the id), or
-/// a bare token with no `:` (a `:label` or `key:value` is not an id).
+/// Index just past the closing `"` of a quoted span at `start` (`bytes[start]`
+/// must be `"`), respecting `\`-escapes; `s.len()` if unterminated. Operates on
+/// bytes — quote/backslash are ASCII, so this is UTF-8 safe.
+fn quoted_span_end(s: &str, start: usize) -> usize {
+    let b = s.as_bytes();
+    let mut i = start + 1;
+    while i < b.len() {
+        match b[i] {
+            b'\\' => i += 2,
+            b'"' => return i + 1,
+            _ => i += 1,
+        }
+    }
+    s.len()
+}
+
+/// A leading token is an id iff it's a *whole* quoted span (`"…"` with nothing
+/// after — an id) or has no `:` (a bare id). A quoted-then-`:value` token is a
+/// quoted property key, NOT an id — this keeps node/edge detection correct now
+/// that keys can be quoted.
 fn is_id_token(t: &str) -> bool {
-    t.starts_with('"') || !t.contains(':')
+    if t.starts_with('"') {
+        quoted_span_end(t, 0) == t.len()
+    } else {
+        !t.contains(':')
+    }
 }
 
 /// A second token that is an id (not a `:label` / `key:value`) marks an edge line.
@@ -411,6 +470,66 @@ a b :KNOWS since:2020";
         let to = g2.vid.get("c d").expect("node 'c d'");
         assert_eq!(g2.e_src[0], from);
         assert_eq!(g2.e_dst[0], to);
+    }
+
+    #[test]
+    fn label_or_key_with_newline_cannot_forge_an_element() {
+        // A raw newline in a label/key would split the physical line and inject a
+        // second element on decode; quoting+escaping must prevent that.
+        let g = crate::ndjson::decode(
+            "{\"type\":\"node\",\"id\":\"n1\",\"labels\":[\"ok\",\"evil\\n999 :Injected\"],\
+              \"properties\":{\"weird key\\nx\":1}}",
+        )
+        .unwrap();
+        let out = encode(&g);
+        assert_eq!(out.lines().count(), 1, "encode leaked a raw newline");
+
+        let g2 = decode(&out);
+        assert_eq!(g2.vertex_count(), 1, "a forged element appeared");
+        assert_eq!(g2.edge_count(), 0);
+        let n1 = g2.vid.get("n1").unwrap() as usize;
+        let mut labels = crate::codec::node_labels(&g2, n1 as u32);
+        labels.sort();
+        assert_eq!(labels, vec!["evil\n999 :Injected", "ok"]);
+        assert_eq!(
+            g2.props.value(n1, "weird key\nx", &g2.strs),
+            Value::Num(1.0)
+        );
+    }
+
+    #[test]
+    fn labels_and_keys_with_delimiters_round_trip() {
+        let g = crate::ndjson::decode(
+            "{\"type\":\"node\",\"id\":\"n1\",\"labels\":[\"has space\",\"has:colon\",\"has\\\"quote\"],\
+              \"properties\":{\"key with space\":\"v\",\"key:with:colons\":2}}",
+        )
+        .unwrap();
+        let g2 = decode(&encode(&g));
+        let n1 = g2.vid.get("n1").unwrap() as usize;
+        let mut labels = crate::codec::node_labels(&g2, n1 as u32);
+        labels.sort();
+        assert_eq!(labels, vec!["has space", "has\"quote", "has:colon"]);
+        assert_eq!(
+            g2.props.value(n1, "key with space", &g2.strs),
+            Value::Str("v".into())
+        );
+        assert_eq!(
+            g2.props.value(n1, "key:with:colons", &g2.strs),
+            Value::Num(2.0)
+        );
+    }
+
+    #[test]
+    fn a_quoted_first_key_is_not_misread_as_an_edge() {
+        let g = crate::ndjson::decode(
+            "{\"type\":\"node\",\"id\":\"solo\",\"labels\":[],\"properties\":{\"a b\":1}}",
+        )
+        .unwrap();
+        let g2 = decode(&encode(&g));
+        assert_eq!(g2.vertex_count(), 1);
+        assert_eq!(g2.edge_count(), 0, "a node was mis-classified as an edge");
+        let solo = g2.vid.get("solo").unwrap() as usize;
+        assert_eq!(g2.props.value(solo, "a b", &g2.strs), Value::Num(1.0));
     }
 
     #[test]
