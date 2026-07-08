@@ -8,10 +8,12 @@
  * exception is the **pending-write queue** (truth-on-client until acked),
  * which rides inside the snapshot so unsynced changes survive a reload.
  *
- * ## Format (`LNKS1`)
+ * ## Format (`LNKS2`)
  *
  * ```
- * [magic "LNKS" | version u8] [u32 headerLen LE] [header JSON] [payload]
+ * [magic "LNKS" | version u8] [u32 headerLen LE] [header JSON] [flag u8] [payload]
+ * flag    = 0x01 encrypted | 0x00 plaintext — a WRITE-TIME guard so a durable
+ *           sink can refuse plaintext without a key; not a decrypt signal.
  * payload = gzip( [u32 ndjsonLen LE] [graph NDJSON] [pending-writes JSON] )
  *         …optionally wrapped as [12-byte IV][AES-GCM ciphertext]
  * ```
@@ -58,8 +60,17 @@ import type { QueryParams, Store } from '@lenke/native';
 import type { SyncWrite } from './engine.js';
 
 const MAGIC = [0x4c, 0x4e, 0x4b, 0x53] as const; // "LNKS"
-const FORMAT_VERSION = 1;
+const FORMAT_VERSION = 2; // bumped for the crypto-flag byte (below)
 const IV_BYTES = 12;
+
+// Byte offset where the header JSON begins: MAGIC(4) + version(1) + headerLen u32(4).
+const HEADER_OFFSET = 9;
+// One byte between the header and the payload records how the payload is
+// protected, so a durable sink (opfsStorage) can refuse plaintext WITHOUT a key.
+// It rides outside the AEAD binding — purely a write-time guard, not a decrypt
+// signal (decode still keys off the caller's crypto choice).
+const PLAINTEXT_FLAG = 0x00;
+const ENCRYPTED_FLAG = 0x01;
 
 /** The plaintext invalidation header, written ahead of the payload. */
 export type SnapshotHeader = {
@@ -147,10 +158,31 @@ export type SnapshotStorage = {
 // storage adapters
 // ---------------------------------------------------------------------------
 
+// Read the crypto flag that sits just after the header (see the Format doc):
+// `null` when the bytes are too short/malformed to locate it. Used by the
+// durable sink to reject plaintext before it can reach disk.
+const cryptoFlagOf = (bytes: Uint8Array): number | null => {
+  if (bytes.byteLength < HEADER_OFFSET || MAGIC.some((b, i) => bytes[i] !== b)) {
+    return null;
+  }
+
+  const headerLen = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(
+    5,
+    true,
+  );
+  const at = HEADER_OFFSET + headerLen;
+
+  return at < bytes.byteLength ? bytes[at] : null;
+};
+
 /**
  * OPFS-backed storage (browser / worker). Uses the async `createWritable`
  * path, which works in windows and workers alike; sync access handles are a
  * dedicated-worker-only optimization for later.
+ *
+ * Durable persistence is **encrypted-only**: `write` refuses an unencrypted (or
+ * malformed) snapshot — the storage-level backstop behind `createSnapshotStore`'s
+ * key routing, so plaintext can't reach disk even through the raw primitives.
  */
 const dir = (): Promise<FileSystemDirectoryHandle> => navigator.storage.getDirectory();
 
@@ -167,6 +199,14 @@ export const opfsStorage = (filename: string): SnapshotStorage => {
       }
     },
     write: async (bytes) => {
+      if (cryptoFlagOf(bytes) !== ENCRYPTED_FLAG) {
+        throw new LenkeError(
+          'lenke: refusing to write an unencrypted snapshot to OPFS — seal it with a key ' +
+            '(createSnapshotStore({ key })), or keep plaintext in an in-memory sink',
+          { code: ErrorCode.InvalidGraphOp },
+        );
+      }
+
       const handle = await (await dir()).getFileHandle(filename, { create: true });
       const writable = await handle.createWritable();
       // Snapshot bytes are always heap-backed; the assertion narrows the
@@ -298,6 +338,7 @@ export const encodeSnapshot = async (
     new Uint8Array([...MAGIC, FORMAT_VERSION]),
     u32le(headerBytes.byteLength),
     headerBytes,
+    new Uint8Array([key ? ENCRYPTED_FLAG : PLAINTEXT_FLAG]),
     payload,
   );
 };
@@ -359,7 +400,8 @@ export const decodeSnapshot = async (
   try {
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const headerLen = view.getUint32(5, true);
-    let payload = bytes.subarray(9 + headerLen);
+    // +1 skips the crypto-flag byte between the header and the payload.
+    let payload = bytes.subarray(HEADER_OFFSET + headerLen + 1);
 
     if (key) {
       // The exact header bytes that were sealed (offset 9, length `headerLen`) —

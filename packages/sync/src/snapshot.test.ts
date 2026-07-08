@@ -16,6 +16,7 @@ import {
   encodeSnapshot,
   importSnapshotKey,
   memorySnapshotStorage,
+  opfsStorage,
   peekHeader,
   readSnapshot,
   type SnapshotStorage,
@@ -66,7 +67,7 @@ suite('@lenke/sync snapshot · codec', () => {
     const snap = await decodeSnapshot(bytes, EXPECT, PLAIN);
     expect(snap).not.toBeNull();
     expect(snap!.header).toMatchObject({
-      formatVersion: 1,
+      formatVersion: 2,
       schemaVersion: 'v1',
       userId: 'shawn',
       serverCursor: 'cursor-42',
@@ -201,6 +202,32 @@ suite('@lenke/sync snapshot · codec', () => {
 
     // Absent storage is a quiet cold boot.
     expect(await readSnapshot(storage, EXPECT, PLAIN)).toBeNull();
+  });
+});
+
+suite('@lenke/sync snapshot · opfsStorage backstop (encrypted-only durable)', () => {
+  test('refuses to write a plaintext snapshot to OPFS', async () => {
+    const plain = await encodeSnapshot(newStore(), EXPECT, PLAIN);
+    // The crypto guard runs before any navigator/OPFS access, so it throws even
+    // in this OPFS-less runtime — plaintext can't reach disk via the primitive.
+    expect(opfsStorage('x.lnks').write(plain)).rejects.toThrow(/refusing to write an unencrypted/);
+  });
+
+  test('lets a sealed snapshot through the guard (fails later, not on crypto)', async () => {
+    const key = await importSnapshotKey(KEY_BYTES);
+    const sealed = await encodeSnapshot(newStore(), EXPECT, { key });
+    let msg = '';
+
+    try {
+      await opfsStorage('x.lnks').write(sealed);
+    } catch (e) {
+      msg = e instanceof Error ? e.message : String(e);
+    }
+
+    // No OPFS here, so the write still fails — but on navigator access, NOT the
+    // crypto guard: proof the guard passed a sealed snapshot through.
+    expect(msg).not.toMatch(/refusing to write an unencrypted/);
+    expect(msg).not.toBe('');
   });
 });
 
