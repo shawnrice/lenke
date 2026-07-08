@@ -382,7 +382,12 @@ const compileExpr = (expr: Expr): CompiledExpr => {
     case 'param': {
       const { name } = expr;
 
-      return (env) => env.params[name];
+      // Own-property only: a query text referencing `$__proto__` / `$constructor`
+      // must read undefined (an unbound param), never `Object.prototype`. The
+      // Rust engine is immune (params live in a HashMap); this matches it. A
+      // param the caller genuinely passed under that key is an own property and
+      // still resolves.
+      return (env) => (Object.hasOwn(env.params, name) ? env.params[name] : undefined);
     }
     case 'prop': {
       const { variable, key } = expr;

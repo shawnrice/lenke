@@ -30,6 +30,27 @@ const litValue = (text: string): unknown => {
 
 // --- #1: SET / REMOVE keep the property index consistent ---------------------
 
+describe('hardening: a prototype-key param reference reads unbound, not Object.prototype', () => {
+  test('$__proto__ / $constructor read like any unbound param, not a prototype object', () => {
+    const g = new Graph();
+    g.addVertex({ id: 'a', labels: ['N'], properties: { v: 1 } });
+
+    // A prototype-key reference in the query TEXT (no such param passed) must
+    // behave EXACTLY like an ordinary unbound param — never `Object.prototype`.
+    const unbound = query(g, 'MATCH (n:N) RETURN $nope AS x');
+    expect(query(g, 'MATCH (n:N) RETURN $__proto__ AS x')).toEqual(unbound);
+    expect(query(g, 'MATCH (n:N) RETURN $constructor AS x')).toEqual(unbound);
+    // And concretely: not an object (the whole point).
+    expect(typeof query(g, 'MATCH (n:N) RETURN $__proto__ AS x')[0].x).not.toBe('object');
+
+    // A param the caller genuinely binds under that name (an OWN property —
+    // computed key, so it doesn't set the prototype) still resolves as data.
+    expect(query(g, 'MATCH (n:N) RETURN $__proto__ AS x', { ['__proto__']: 7 })).toEqual([
+      { x: 7 },
+    ]);
+  });
+});
+
 describe('hardening: SET/REMOVE maintain the property index', () => {
   test('SET reindexes, so an indexed seek finds the new value', () => {
     const plain = createTestSocialGraph();
