@@ -232,4 +232,34 @@ describe('Graph Tests', () => {
       expect(v.properties.name).toBe('CHANGED');
     });
   });
+
+  describe('well-formed name validation (ingestion gate)', () => {
+    // A `::` label is unrepresentable in GraphSON; an empty label/key is
+    // unrepresentable across codecs. Reject at the graph's mutation boundary.
+    test('addVertex rejects a :: label, an empty label, and an empty property key', () => {
+      const g = createTestTinkerGraph();
+      expect(() => g.addVertex({ labels: ['a::b'], properties: {} })).toThrow(/::/);
+      expect(() => g.addVertex({ labels: [''], properties: {} })).toThrow(/non-empty/);
+      expect(() => g.addVertex({ labels: ['N'], properties: { '': 1 } })).toThrow(/property key/);
+      expect(
+        hasErrorCode(
+          thrownBy(() => g.addVertex({ labels: ['x::y'], properties: {} })),
+          ErrorCode.InvalidValue,
+        ),
+      ).toBe(true);
+    });
+
+    test('setProperty rejects an empty key; a single-colon label is fine', () => {
+      const g = createTestTinkerGraph();
+      const v = g.addVertex({ labels: ['a:b'], properties: { k: 1 } }); // single colon OK
+      expect(v.properties.k).toBe(1);
+      expect(() => v.setProperty('', 2)).toThrow(/property key/);
+    });
+
+    test('addLabelToVertex rejects a :: label', () => {
+      const g = createTestTinkerGraph();
+      const v = g.addVertex({ labels: ['N'], properties: {} });
+      expect(() => g.addLabelToVertex('a::b', v)).toThrow(/::/);
+    });
+  });
 });

@@ -4,6 +4,7 @@ import { ErrorCode, LenkeError } from '@lenke/errors';
 import { Edge } from './Edge.js';
 import type { GraphEvent, GraphEvents, GraphEventType } from './GraphEvents.js';
 import { PropertyIndex, type RangeBound } from './PropertyIndex.js';
+import { validateElementNames, validateLabel } from './validate.js';
 import { Vertex } from './Vertex.js';
 
 type AddVertexParams = {
@@ -383,6 +384,10 @@ export class Graph {
    * to construct a new one.
    */
   public addVertex = (params: AddVertexParams | Vertex): Vertex => {
+    // Ingestion gate: reject a malformed label / property key before the Vertex
+    // constructor writes it into the graph's element maps.
+    validateElementNames(params.labels, params.properties);
+
     if (params.id && this.getVertexById(params.id)) {
       return this.getVertexById(params.id)!;
     }
@@ -455,6 +460,7 @@ export class Graph {
   };
 
   public addLabelToVertex = (label: string, vertex: Vertex): Vertex => {
+    validateLabel(label);
     const event = this.emit(new EmitterEvent('@graph/LabelAddedToVertex', { label, vertex }));
 
     if (event.defaultPrevented) {
@@ -489,6 +495,9 @@ export class Graph {
    * construct a new one.
    */
   public addEdge = (params: AddEdgeArgs | Edge): Edge => {
+    // Same gate as addVertex — validate before the Edge constructor writes.
+    validateElementNames(params.labels, params.properties);
+
     if (params.id && this.getEdgeById(params.id)) {
       return this.getEdgeById(params.id)!;
     }
@@ -573,6 +582,8 @@ export class Graph {
   };
 
   public addLabelToEdge = (label: string, edge: Edge): Edge => {
+    validateLabel(label);
+
     if (edge.labels.has(label)) {
       return edge;
     }

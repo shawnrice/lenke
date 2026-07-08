@@ -3,6 +3,7 @@ import { rando } from '@lenke/utils';
 
 import type { Edge } from './Edge.js';
 import type { Graph } from './Graph.js';
+import { validatePropertyKey } from './validate.js';
 
 export type VertexParams = {
   id?: string;
@@ -96,6 +97,7 @@ export class Vertex {
   }
 
   setProperty(key: string, value: unknown): void {
+    validatePropertyKey(key);
     const event = this.#graph?.emit(
       new EmitterEvent('@graph/VertexPropertyChanged', { vertex: this, key, value }),
     );

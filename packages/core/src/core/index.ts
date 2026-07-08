@@ -3,6 +3,7 @@ export * from './Element.js';
 export * from './Graph.js';
 export type * from './GraphEvents.js';
 export * from './PropertyIndex.js';
+export * from './validate.js';
 export { timer, sampleTimer, type SampleTimer } from '@lenke/utils';
 export * from './Vertex.js';
 export * from './VertexProperty.js';

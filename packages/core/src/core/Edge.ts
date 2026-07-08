@@ -2,6 +2,7 @@ import { EmitterEvent } from '@lenke/emitter';
 import { rando } from '@lenke/utils';
 
 import type { Graph } from './Graph.js';
+import { validatePropertyKey } from './validate.js';
 import { Vertex } from './Vertex.js';
 
 export type AddEdgeParams = {
@@ -116,6 +117,7 @@ export class Edge {
   }
 
   setProperty(key: string, value: unknown): void {
+    validatePropertyKey(key);
     const event = this.#graph?.emit(
       new EmitterEvent('@graph/EdgePropertyChanged', {
         edge: this,
