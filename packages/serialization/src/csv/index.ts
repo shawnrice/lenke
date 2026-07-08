@@ -244,7 +244,7 @@ const inferColumn = (value: PropertyValue): ColumnType => {
 };
 
 const columnHeader = (key: string, type: ColumnType): string =>
-  `${key}:${type.scalar}${type.list ? '[]' : ''}`;
+  `${guardField(key)}:${type.scalar}${type.list ? '[]' : ''}`;
 
 // A property KEY is arbitrary text (imported graphs carry any JSON key), so a
 // header cell must be quoted exactly like a data cell — an unquoted `,`/`"`/
@@ -261,10 +261,25 @@ const headerLine = (cells: readonly string[]): string => cells.map(quoteField).j
 // reads them as numbers, not formulas, and prefixing would corrupt round-trip.
 const FORMULA_LEAD = /^[=+@\t\r-]/;
 
+// Neutralization for a RAW-TEXT cell that has no escape namespace of its own —
+// a node/edge id, an endpoint id, or a property KEY in a header. `guardField`
+// prefixes a `\` when the cell begins with `\` (so a genuine leading backslash
+// survives) or a formula char (so a spreadsheet won't evaluate it); `unguard
+// Field` strips exactly one leading `\` on decode. Together they round-trip.
+const guardField = (s: string): string =>
+  s.startsWith('\\') || FORMULA_LEAD.test(s) ? `\\${s}` : s;
+const unguardField = (s: string): string => (s.startsWith('\\') ? s.slice(1) : s);
+
+// Neutralization for an ALREADY-`escapeElement`-escaped label / string list
+// element. Its body already doubles a leading `\`, so only a leading formula
+// char needs guarding; `splitList`'s generic `\X`→X strip reverses it on decode.
+const guardElement = (escaped: string): string =>
+  FORMULA_LEAD.test(escaped) ? `\\${escaped}` : escaped;
+
 /** Parse a `key:type[]?` header into its key and column type. */
 const parseHeader = (header: string): { key: string; type: ColumnType } => {
   const colon = header.lastIndexOf(':');
-  const key = header.slice(0, colon);
+  const key = unguardField(header.slice(0, colon));
   let typePart = header.slice(colon + 1);
   const list = typePart.endsWith('[]');
 
@@ -363,7 +378,11 @@ const elementToRaw = (elemScalar: ScalarType, el: PropertyValue): string => {
   const raw = scalarToRaw(actual, el);
 
   if (actual === elemScalar) {
-    return escapeElement(raw);
+    // Guard a formula-leading STRING element (a number like `-5` is left bare);
+    // an override element already begins with `\T`, so it needs no guard.
+    const body = escapeElement(raw);
+
+    return actual === 'string' ? guardElement(body) : body;
   }
 
   return escapeElement(`${OVERRIDE_PREFIX}${SCALAR_CODE[actual]}:${raw}`);
@@ -607,14 +626,14 @@ const propsFromRow = (
 // Join a label set, escaping `;`/`\` inside each label (same scheme as list
 // elements) so a label containing the `;` separator round-trips.
 const joinLabels = (labels: Iterable<string>): string =>
-  [...labels].map(escapeElement).join(LIST_SEP);
+  [...labels].map((l) => guardElement(escapeElement(l))).join(LIST_SEP);
 
 const splitLabels = (text: string): string[] => (text === '' ? [] : splitList(text));
 
 /** Add one vertex from a parsed node row. */
 const applyNodeRow = (graph: Graph, row: Cell[], propCols: readonly ParsedHeader[]): void => {
   graph.addVertex({
-    id: row[0].text,
+    id: unguardField(row[0].text),
     labels: splitLabels(row[1].text),
     properties: propsFromRow(row, propCols, 2),
   });
@@ -622,15 +641,15 @@ const applyNodeRow = (graph: Graph, row: Cell[], propCols: readonly ParsedHeader
 
 /** Add one edge from a parsed edge row, creating endpoints on demand. */
 const applyEdgeRow = (graph: Graph, row: Cell[], propCols: readonly ParsedHeader[]): void => {
-  const fromId = row[1].text;
-  const toId = row[2].text;
+  const fromId = unguardField(row[1].text);
+  const toId = unguardField(row[2].text);
   // Endpoints are created if missing so the edge stream can be decoded without a
   // prior node-decode pass having materialized every referenced vertex.
   const from =
     graph.getVertexById(fromId) ?? graph.addVertex({ id: fromId, labels: [], properties: {} });
   const to = graph.getVertexById(toId) ?? graph.addVertex({ id: toId, labels: [], properties: {} });
   graph.addEdge({
-    id: row[0].text,
+    id: unguardField(row[0].text),
     from,
     to,
     labels: splitLabels(row[3].text),
@@ -659,7 +678,7 @@ export const encodeNodes = (graph: Graph): string => {
 
   for (const vertex of graph.vertices) {
     const labelStr = joinLabels(vertex.labels);
-    rows.push(buildRow([vertex.id, labelStr], keys, types, bags[i]));
+    rows.push(buildRow([guardField(vertex.id), labelStr], keys, types, bags[i]));
     i += 1;
   }
 
@@ -722,7 +741,14 @@ export const encodeEdges = (graph: Graph): string => {
 
   for (const edge of graph.edges) {
     const typeStr = joinLabels(edge.labels);
-    rows.push(buildRow([edge.id, edge.from.id, edge.to.id, typeStr], keys, types, bags[i]));
+    rows.push(
+      buildRow(
+        [guardField(edge.id), guardField(edge.from.id), guardField(edge.to.id), typeStr],
+        keys,
+        types,
+        bags[i],
+      ),
+    );
     i += 1;
   }
 
@@ -748,8 +774,8 @@ const decodeEdgeRows = (rows: Cell[][], graph: Graph): Graph => {
 
   for (let r = 1; r < rows.length; r += 1) {
     const row = rows[r];
-    const fromId = row[1].text;
-    const toId = row[2].text;
+    const fromId = unguardField(row[1].text);
+    const toId = unguardField(row[2].text);
 
     // Batch decode is strict: endpoints must already exist (nodes were decoded
     // first). The streaming edge decoder, by contrast, creates them on demand.
@@ -817,7 +843,7 @@ export async function* encodeNodesStream(graph: Graph): AsyncGenerator<string> {
   let i = 0;
 
   for (const vertex of graph.vertices) {
-    batch.push(buildRow([vertex.id, joinLabels(vertex.labels)], keys, types, bags[i]));
+    batch.push(buildRow([guardField(vertex.id), joinLabels(vertex.labels)], keys, types, bags[i]));
     i += 1;
 
     if (batch.length >= BATCH) {
@@ -848,7 +874,17 @@ export async function* encodeEdgesStream(graph: Graph): AsyncGenerator<string> {
 
   for (const edge of graph.edges) {
     batch.push(
-      buildRow([edge.id, edge.from.id, edge.to.id, joinLabels(edge.labels)], keys, types, bags[i]),
+      buildRow(
+        [
+          guardField(edge.id),
+          guardField(edge.from.id),
+          guardField(edge.to.id),
+          joinLabels(edge.labels),
+        ],
+        keys,
+        types,
+        bags[i],
+      ),
     );
     i += 1;
 

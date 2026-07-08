@@ -18,6 +18,177 @@ import {
 } from './index.js';
 
 const roundTripNodes = (graph: Graph): Graph => decodeNodes(encodeNodes(graph), new Graph());
+const roundTrip = (graph: Graph): Graph => decode(encode(graph), new Graph());
+
+const FORMULA = /^[=+\-@\t\r]/;
+const FORMULA_CHARS = ['=', '+', '-', '@', '\t', '\r'] as const;
+
+/** Quote-aware split into each cell's spreadsheet-visible (RFC-4180 unquoted) content. */
+const cellsOf = (csv: string): string[] => {
+  const out: string[] = [];
+  let f = '';
+  let inQ = false;
+
+  for (let i = 0; i < csv.length; i += 1) {
+    const c = csv[i];
+
+    if (inQ) {
+      if (c === '"') {
+        if (csv[i + 1] === '"') {
+          f += '"';
+          i += 1;
+        } else {
+          inQ = false;
+        }
+      } else {
+        f += c;
+      }
+    } else if (c === '"') {
+      inQ = true;
+    } else if (c === ',' || c === '\n') {
+      out.push(f);
+      f = '';
+    } else if (c !== '\r') {
+      f += c;
+    }
+  }
+
+  out.push(f);
+
+  return out;
+};
+
+// No cell a spreadsheet would evaluate as a formula, EXCEPT the fixed
+// `=== EDGES ===` section marker of the combined format — a constant,
+// library-controlled structural line, never attacker data, and absent from the
+// per-file `encodeNodes`/`encodeEdges` artifacts that are the spreadsheet path.
+// (Use only on graphs with no bare-number cell, since `-5` legitimately leads with `-`.)
+const assertNoFormulaCells = (csv: string): void => {
+  for (const cell of cellsOf(csv)) {
+    if (cell === '=== EDGES ===') {
+      continue;
+    }
+
+    expect({ cell, formula: FORMULA.test(cell) }).toEqual({ cell, formula: false });
+  }
+};
+
+describe('CSV formula neutralization: complete coverage (every string-cell surface)', () => {
+  test('formula-leading node ids, edge ids, and endpoints are neutralized and round-trip', () => {
+    for (const lead of FORMULA_CHARS) {
+      const g = new Graph();
+      const a = g.addVertex({ id: `${lead}from`, labels: ['N'], properties: {} });
+      const b = g.addVertex({ id: `${lead}to`, labels: ['N'], properties: {} });
+      g.addEdge({ id: `${lead}edge`, from: a, to: b, labels: ['R'], properties: {} });
+
+      const csv = encode(g);
+      assertNoFormulaCells(csv);
+      expect(graphContentEqual(roundTrip(g), g)).toBe(true);
+    }
+  });
+
+  test('formula-leading labels and edge types are neutralized and round-trip (any position)', () => {
+    for (const lead of FORMULA_CHARS) {
+      const g = new Graph();
+      const a = g.addVertex({ id: 'a', labels: [`${lead}First`, 'Plain'], properties: {} });
+      const b = g.addVertex({ id: 'b', labels: ['Plain', `${lead}Second`], properties: {} });
+      g.addEdge({ from: a, to: b, labels: [`${lead}TYPE`], properties: {} });
+
+      assertNoFormulaCells(encode(g));
+      expect(graphContentEqual(roundTrip(g), g)).toBe(true);
+    }
+  });
+
+  test('formula-leading property keys are neutralized in the header and round-trip', () => {
+    for (const lead of FORMULA_CHARS) {
+      const g = new Graph();
+      g.addVertex({ id: 'a', labels: ['N'], properties: { [`${lead}key`]: 'v' } });
+
+      assertNoFormulaCells(encode(g));
+      expect(graphContentEqual(roundTrip(g), g)).toBe(true);
+    }
+  });
+
+  test('formula-leading STRING values and string list elements are neutralized and round-trip', () => {
+    for (const lead of FORMULA_CHARS) {
+      const g = new Graph();
+      g.addVertex({
+        id: 'a',
+        labels: ['N'],
+        properties: {
+          scalar: `${lead}danger`,
+          list: [`${lead}first`, 'ok', `${lead}later`], // first AND non-first
+        },
+      });
+
+      assertNoFormulaCells(encode(g));
+      expect(graphContentEqual(roundTrip(g), g)).toBe(true);
+    }
+  });
+
+  test('all surfaces at once, every formula char, still round-trips exactly', () => {
+    const g = new Graph();
+
+    for (const lead of FORMULA_CHARS) {
+      const a = g.addVertex({
+        id: `${lead}id-${lead.charCodeAt(0)}`,
+        labels: [`${lead}Label`],
+        properties: { [`${lead}k`]: `${lead}v`, [`${lead}list`]: [`${lead}e`] },
+      });
+      const b = g.addVertex({ id: `n-${lead.charCodeAt(0)}`, labels: [], properties: {} });
+      g.addEdge({
+        from: a,
+        to: b,
+        labels: [`${lead}T`],
+        properties: { [`${lead}ek`]: `${lead}ev` },
+      });
+    }
+
+    assertNoFormulaCells(encode(g));
+    expect(graphContentEqual(roundTrip(g), g)).toBe(true);
+  });
+
+  test('numbers are NOT neutralized — a spreadsheet reads them as numbers', () => {
+    const g = new Graph();
+    g.addVertex({
+      id: 'a',
+      labels: ['N'],
+      properties: { balance: -5, delta: -2.5, nums: [-5, -6, -7] },
+    });
+
+    const csv = encode(g);
+    // The number cells legitimately begin with `-`; they must not be backslash-guarded.
+    expect(csv).not.toContain('\\-5');
+    expect(csv).not.toContain('\\-2.5');
+    expect(graphContentEqual(roundTrip(g), g)).toBe(true);
+  });
+
+  test('genuine backslash-leading content in every surface round-trips (no corruption)', () => {
+    const g = new Graph();
+    const a = g.addVertex({
+      id: '\\node',
+      labels: ['\\Label', '\\=trap'], // plain-backslash and backslash-then-formula
+      properties: { '\\key': '\\value', '\\list': ['\\a', '\\=b'] },
+    });
+    const b = g.addVertex({ id: '\\=weird', labels: [], properties: {} });
+    g.addEdge({ id: '\\edge', from: a, to: b, labels: ['\\R'], properties: {} });
+
+    // Backslash-leading cells are already spreadsheet-safe; the point is fidelity.
+    assertNoFormulaCells(encode(g));
+    expect(graphContentEqual(roundTrip(g), g)).toBe(true);
+  });
+
+  test('the streaming encoder neutralizes the same way (separate build path)', async () => {
+    const g = new Graph();
+    const a = g.addVertex({ id: '=sid', labels: ['=SLabel'], properties: { '=sk': '=sv' } });
+    const b = g.addVertex({ id: 'plain', labels: [], properties: {} });
+    g.addEdge({ id: '=se', from: a, to: b, labels: ['=ST'], properties: {} });
+
+    const streamed = await collect(encodeStream(g));
+    assertNoFormulaCells(streamed);
+    expect(graphContentEqual(decode(streamed, new Graph()), g)).toBe(true);
+  });
+});
 
 describe('CSV hardening: header quoting + formula neutralization', () => {
   test('a property key containing a comma/quote/newline round-trips (header is quoted)', () => {

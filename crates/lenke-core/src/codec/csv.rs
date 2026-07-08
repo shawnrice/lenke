@@ -125,7 +125,8 @@ fn infer_column(v: &Value) -> ColType {
 
 fn column_header(key: &str, t: ColType) -> String {
     format!(
-        "{key}:{}{}",
+        "{}:{}{}",
+        guard_field(key),
         t.scalar.as_str(),
         if t.list { "[]" } else { "" }
     )
@@ -152,7 +153,7 @@ fn starts_with_formula(s: &str) -> bool {
 
 fn parse_header(header: &str) -> (String, ColType) {
     let colon = header.rfind(':').unwrap_or(header.len());
-    let key = header[..colon].to_string();
+    let key = unguard_field(&header[..colon]);
     let mut type_part = if colon < header.len() {
         &header[colon + 1..]
     } else {
@@ -215,6 +216,33 @@ fn escape_element(s: &str) -> String {
     s.replace('\\', "\\\\").replace(';', "\\;")
 }
 
+// Neutralization for a RAW-TEXT cell with no escape namespace (a node/edge id,
+// an endpoint id, or a property KEY in a header): prefix `\` when it begins with
+// `\` (so a genuine leading backslash survives) or a formula char (so a
+// spreadsheet won't evaluate it); `unguard_field` strips one leading `\`.
+fn guard_field(s: &str) -> String {
+    if s.starts_with('\\') || starts_with_formula(s) {
+        format!("\\{s}")
+    } else {
+        s.to_string()
+    }
+}
+
+fn unguard_field(s: &str) -> String {
+    s.strip_prefix('\\').unwrap_or(s).to_string()
+}
+
+// Neutralization for an already-`escape_element`-escaped label / string list
+// element. Its body already doubles a leading `\`, so only a leading formula
+// char needs guarding; `split_list`'s generic `\X`→X strip reverses it.
+fn guard_element(escaped: String) -> String {
+    if starts_with_formula(&escaped) {
+        format!("\\{escaped}")
+    } else {
+        escaped
+    }
+}
+
 /// Split a list cell on unescaped `;`, unescaping `\;` and `\\` inline.
 fn split_list(raw: &str) -> Vec<String> {
     let mut out = Vec::new();
@@ -239,7 +267,14 @@ fn element_to_raw(elem_scalar: Scalar, el: &Value) -> String {
     let actual = scalar_of_element(el);
     let raw = scalar_to_raw(actual, el);
     if actual == elem_scalar {
-        escape_element(&raw)
+        // Guard a formula-leading STRING element; a number stays bare, and an
+        // override element already begins with `\T`.
+        let body = escape_element(&raw);
+        if actual == Scalar::Str {
+            guard_element(body)
+        } else {
+            body
+        }
     } else {
         escape_element(&format!("{OVERRIDE_PREFIX}{}:{}", actual.code(), raw))
     }
@@ -526,7 +561,7 @@ fn build_row(
 fn join_labels<'a>(labels: impl IntoIterator<Item = &'a str>) -> String {
     labels
         .into_iter()
-        .map(escape_element)
+        .map(|l| guard_element(escape_element(l)))
         .collect::<Vec<_>>()
         .join(";")
 }
@@ -611,7 +646,7 @@ pub fn encode_nodes(g: &Graph) -> String {
     let mut rows = vec![header];
     for (vi, bag) in &entries {
         let labels = join_labels(crate::codec::node_labels(g, *vi));
-        let id = g.vid.text(*vi).to_string();
+        let id = guard_field(g.vid.text(*vi));
         rows.push(build_row(&[&id, &labels], &keys, &types, bag));
     }
     rows.join("\n")
@@ -634,10 +669,10 @@ pub fn encode_edges(g: &Graph) -> String {
     };
     let mut rows = vec![header];
     for (i, bag) in &entries {
-        let id = g.edge_id(*i as u32).into_owned();
-        let from = g.vid.text(g.e_src[*i]).to_string();
-        let to = g.vid.text(g.e_dst[*i]).to_string();
-        let etype = escape_element(g.etype.text(g.e_type[*i]));
+        let id = guard_field(&g.edge_id(*i as u32));
+        let from = guard_field(g.vid.text(g.e_src[*i]));
+        let to = guard_field(g.vid.text(g.e_dst[*i]));
+        let etype = guard_element(escape_element(g.etype.text(g.e_type[*i])));
         rows.push(build_row(&[&id, &from, &to, &etype], &keys, &types, bag));
     }
     rows.join("\n")
@@ -669,7 +704,7 @@ pub fn decode(input: &str) -> CodeResult<Graph> {
     if let Some(header) = node_rows.first() {
         let prop_cols = prop_cols_from_header(header, 2);
         for row in node_rows.iter().skip(1) {
-            let id = row.first().map(|c| c.text.clone()).unwrap_or_default();
+            let id = unguard_field(row.first().map(|c| c.text.as_str()).unwrap_or(""));
             let labels = split_labels(row.get(1).map(|c| c.text.as_str()).unwrap_or(""));
             b.nodes.push(NodeRec {
                 id,
@@ -685,9 +720,10 @@ pub fn decode(input: &str) -> CodeResult<Graph> {
             let id = row
                 .first()
                 .map(|c| c.text.clone())
-                .filter(|s| !s.is_empty());
-            let src = row.get(1).map(|c| c.text.clone()).unwrap_or_default();
-            let dst = row.get(2).map(|c| c.text.clone()).unwrap_or_default();
+                .filter(|s| !s.is_empty())
+                .map(|s| unguard_field(&s));
+            let src = unguard_field(row.get(1).map(|c| c.text.as_str()).unwrap_or(""));
+            let dst = unguard_field(row.get(2).map(|c| c.text.as_str()).unwrap_or(""));
             let etype = split_labels(row.get(3).map(|c| c.text.as_str()).unwrap_or(""))
                 .into_iter()
                 .next()
@@ -874,5 +910,134 @@ mod tests {
         let g2 = decode(&enc).unwrap();
         let n1 = g2.vid.get("n1").unwrap() as usize;
         assert_eq!(g2.props.value(n1, "balance", &g2.strs), Value::Num(-5.0));
+    }
+
+    /// Quote-aware split into each cell's spreadsheet-visible (RFC-4180) content.
+    fn csv_cells(csv: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut f = String::new();
+        let mut in_q = false;
+        let chars: Vec<char> = csv.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            let c = chars[i];
+            if in_q {
+                if c == '"' {
+                    if chars.get(i + 1) == Some(&'"') {
+                        f.push('"');
+                        i += 1;
+                    } else {
+                        in_q = false;
+                    }
+                } else {
+                    f.push(c);
+                }
+            } else if c == '"' {
+                in_q = true;
+            } else if c == ',' || c == '\n' {
+                out.push(std::mem::take(&mut f));
+            } else if c != '\r' {
+                f.push(c);
+            }
+            i += 1;
+        }
+        out.push(f);
+        out
+    }
+
+    /// No cell a spreadsheet would evaluate as a formula, except the fixed
+    /// `=== EDGES ===` structural marker (constant, never attacker data).
+    fn assert_no_formula_cells(csv: &str) {
+        for cell in csv_cells(csv) {
+            if cell == "=== EDGES ===" {
+                continue;
+            }
+            assert!(
+                !matches!(
+                    cell.chars().next(),
+                    Some('=' | '+' | '-' | '@' | '\t' | '\r')
+                ),
+                "spreadsheet-dangerous cell: {cell:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn formula_leading_content_is_neutralized_across_every_surface() {
+        // ids, labels, edge type, keys, string values, and string list elements,
+        // for each printable formula char — all round-trip and none stays dangerous.
+        for l in ['=', '+', '-', '@'] {
+            let doc = format!(
+                "{{\"nodes\":[\
+                   {{\"id\":\"{l}nid\",\"labels\":[\"{l}Lab\",\"Plain\"],\
+                     \"properties\":{{\"{l}k\":\"{l}v\",\"{l}list\":[\"{l}e\",\"ok\"]}}}},\
+                   {{\"id\":\"plain\",\"labels\":[],\"properties\":{{}}}}\
+                 ],\"edges\":[\
+                   {{\"id\":\"{l}eid\",\"from\":\"{l}nid\",\"to\":\"plain\",\
+                     \"labels\":[\"{l}T\"],\"properties\":{{\"{l}ek\":\"{l}ev\"}}}}\
+                 ]}}"
+            );
+            let lead = l;
+            let g = crate::codec::pg_json::decode(&doc).unwrap();
+            let enc = encode(&g);
+            assert_no_formula_cells(&enc);
+
+            let g2 = decode(&enc).unwrap();
+            assert_eq!(g2.vertex_count(), 2);
+            assert_eq!(g2.edge_count(), 1);
+            let nid = g2.vid.get(&format!("{lead}nid")).unwrap() as usize;
+            assert_eq!(
+                g2.props.value(nid, &format!("{lead}k"), &g2.strs),
+                Value::Str(format!("{lead}v").into())
+            );
+            assert_eq!(
+                g2.props.value(nid, &format!("{lead}list"), &g2.strs),
+                Value::List(vec![
+                    Value::Str(format!("{lead}e").into()),
+                    Value::Str("ok".into())
+                ])
+            );
+            let mut labels = crate::codec::node_labels(&g2, nid as u32);
+            labels.sort();
+            assert!(labels.contains(&format!("{lead}Lab").as_str()));
+            assert!(g2.vid.get(&format!("{lead}eid")).is_some() || g2.edge_count() == 1);
+        }
+    }
+
+    #[test]
+    fn control_char_leading_cells_are_neutralized() {
+        // TAB / CR leading a string value or id must not survive as the cell's
+        // first char (a spreadsheet treats leading TAB/CR as a formula too).
+        for esc in ["\\t", "\\r"] {
+            let doc = format!(
+                r#"{{"nodes":[{{"id":"{esc}nid","labels":["N"],"properties":{{"name":"{esc}v"}}}}],"edges":[]}}"#
+            );
+            let g = crate::codec::pg_json::decode(&doc).unwrap();
+            let enc = encode(&g);
+            assert_no_formula_cells(&enc);
+            let g2 = decode(&enc).unwrap();
+            assert_eq!(g2.vertex_count(), 1);
+        }
+    }
+
+    #[test]
+    fn genuine_backslash_leading_content_round_trips() {
+        // A genuine leading backslash (plain, and backslash-then-formula) in ids,
+        // labels, keys, and string values must survive intact.
+        let g = crate::codec::pg_json::decode(
+            r#"{"nodes":[{"id":"\\node","labels":["\\Label","\\=trap"],"properties":{"\\key":"\\value","\\list":["\\a","\\=b"]}},{"id":"\\=weird","labels":[],"properties":{}}],"edges":[{"id":"\\edge","from":"\\node","to":"\\=weird","labels":["\\R"],"properties":{}}]}"#,
+        )
+        .unwrap();
+        let enc = encode(&g);
+        assert_no_formula_cells(&enc);
+        let g2 = decode(&enc).unwrap();
+        assert_eq!(g2.vertex_count(), 2);
+        assert_eq!(g2.edge_count(), 1);
+        let node = g2.vid.get("\\node").unwrap() as usize;
+        assert_eq!(
+            g2.props.value(node, "\\key", &g2.strs),
+            Value::Str("\\value".into())
+        );
+        assert!(g2.vid.get("\\=weird").is_some());
     }
 }
