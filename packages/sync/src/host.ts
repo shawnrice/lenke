@@ -223,6 +223,8 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
     prevOrder: string[];
     last: unknown;
     lastComplete: boolean | null;
+    /** Has an authoritative (complete) push gone out yet this (re)subscribe? */
+    authoritativeSent: boolean;
     stop: () => void;
   };
   const subs = new Map<string, Subscription>();
@@ -262,15 +264,21 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
     const rowsChanged = rows !== s.last;
     // The first *complete* push of a (re)subscribe must be authoritative — the
     // client may hold stale rows from before a reconnect, and an empty result
-    // would otherwise carry no ops and leave them on screen. It must be gated on
-    // `complete`: an incomplete first push (a reconnected host still loading its
-    // scope) is legitimately empty-for-now, and forcing an empty order there
-    // would blank the warm rows the client is meant to keep. `s.last` is null
-    // only before the first push.
-    const firstAuthoritativePush = s.last === null && complete;
+    // would otherwise carry no ops and leave them on screen. Gate on "no
+    // complete push has gone out yet" (NOT "first push ever"): a reconnected
+    // host typically pushes incomplete-and-empty first (still loading its
+    // scope) — that push legitimately carries no order so the client keeps its
+    // warm rows — and only the LATER push, when the scope finishes loading and
+    // `complete` flips true, is the authoritative one that must ship the key
+    // set (even an empty one, to clear rows that were deleted while away).
+    const firstAuthoritativePush = !s.authoritativeSent && complete;
 
     s.last = rows;
     s.lastComplete = complete;
+
+    if (complete) {
+      s.authoritativeSent = true;
+    }
 
     // Gremlin: full result values every push (no `rows`, no keyed diffs).
     if (s.lang === 'gremlin') {
@@ -294,7 +302,11 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
     // unchanged), an empty diff carries the new flag without re-shipping rows.
     const msg: RowsMessage = { type: 'rows', sub, version: store.version, complete };
 
-    if (rowsChanged) {
+    // Also diff when this is the first complete push even if the rows ref didn't
+    // move: a scope that finished loading to an EMPTY result (no writes → same
+    // empty ref) must still emit its authoritative (empty) order, or a client
+    // holding warm rows across the reconnect would keep showing them as complete.
+    if (rowsChanged || firstAuthoritativePush) {
       const d = diffRows(s.key, s.prevByKey, s.prevOrder, rows as Row[], firstAuthoritativePush);
       s.prevByKey = d.byKey;
       s.prevOrder = d.orderKeys;
@@ -350,6 +362,7 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
       prevOrder: [],
       last: null,
       lastComplete: null,
+      authoritativeSent: false,
       stop: () => {},
     };
     s.stop = live.subscribe(() => push(msg.sub, s));

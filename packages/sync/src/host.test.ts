@@ -420,6 +420,42 @@ suite('@lenke/sync host · protocol v1', () => {
     expect(first.patch).toBeUndefined();
   });
 
+  test('an incomplete→complete keyed transition emits the authoritative empty order', () => {
+    const sent: HostMessage[] = [];
+    let loaded = false; // the scope is still filling on (re)subscribe
+    const host = createSyncHost(newStore(), {
+      send: (m) => sent.push(m),
+      isComplete: () => loaded,
+    });
+    sent.length = 0; // drain the attach status
+
+    host.receive({
+      type: 'subscribe',
+      sub: 's1',
+      query: "MATCH (p:Person) WHERE p.name = 'nobody' RETURN p.name",
+      key: 'p.name',
+      deps: ['Person', 'name'],
+    });
+
+    // First push: still loading → incomplete, no order (client keeps warm rows).
+    const first = rowsOf(sent.find((m) => m.type === 'rows') as HostMessage);
+    expect(first.complete).toBe(false);
+    expect(first.order).toBeUndefined();
+    sent.length = 0;
+
+    // The load lands on an EMPTY scope: `complete` flips true, rows ref
+    // unchanged. The FIRST complete push must still ship the authoritative
+    // (empty) order so a client holding warm rows across a reconnect prunes
+    // them — the transition the old `s.last === null` gate missed entirely.
+    loaded = true;
+    host.refresh();
+
+    const second = rowsOf(sent.find((m) => m.type === 'rows') as HostMessage);
+    expect(second.complete).toBe(true);
+    expect(second.order).toEqual([]); // authoritative empty set
+    expect(second.patch).toBeUndefined();
+  });
+
   test('a mutating Gremlin fans out to a subscriber (runs through store.mutate)', () => {
     const store = newStore();
     const { host, take } = attach(store);
