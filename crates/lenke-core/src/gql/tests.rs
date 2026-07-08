@@ -1119,6 +1119,38 @@ fn remove_property() {
 }
 
 #[test]
+fn set_null_stores_a_present_null_and_remove_deletes_it() {
+    // Divergence from Cypher: `SET n.k = null` STORES a present null — it does
+    // NOT remove the property. `REMOVE` is the explicit deletion path. Both a
+    // present null and an absent key satisfy `IS NULL` (three-valued logic).
+    let mut g = modern();
+    rows(&mut g, "MATCH (n:Person {name:'marko'}) SET n.nick = null");
+
+    let marko = g.vid.get("marko").unwrap() as usize;
+    assert!(
+        g.props.is_present(marko, "nick"),
+        "SET null stores a PRESENT null, not a removal"
+    );
+    assert_eq!(g.props.value(marko, "nick", &g.strs), Value::Null);
+
+    // IS NULL matches the stored null.
+    assert_eq!(
+        rows(
+            &mut g,
+            "MATCH (n:Person {name:'marko'}) WHERE n.nick IS NULL RETURN n.name"
+        ),
+        vec![vec![s("marko")]]
+    );
+
+    // REMOVE actually deletes it.
+    rows(&mut g, "MATCH (n:Person {name:'marko'}) REMOVE n.nick");
+    assert!(
+        !g.props.is_present(marko, "nick"),
+        "REMOVE deletes the property outright"
+    );
+}
+
+#[test]
 fn delete_isolated_vertex() {
     let mut g = modern();
     // ripple has only an incoming CREATED edge, so plain DELETE needs DETACH;
