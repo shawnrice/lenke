@@ -1,8 +1,9 @@
 {
   "$schema": "https://raw.githubusercontent.com/oxc-project/oxc/main/npm/oxlint/configuration_schema.json",
-  "jsPlugins": ["./lint-rules/padding-lines.js"],
+  "jsPlugins": ["./lint-rules/padding-lines.js", "./lint-rules/query-safety.js"],
   "rules": {
     "padding-lines/before-exit": "error",
+    "query-safety/no-raw-interpolation": "error",
     "eqeqeq": ["error", "always", { "null": "ignore" }],
     "no-var": "error",
     "prefer-const": "error",
@@ -113,7 +114,8 @@
         "max-statements": "off",
         "max-nested-callbacks": "off",
         "no-shadow": "off",
-        "typescript/require-array-sort-compare": "off"
+        "typescript/require-array-sort-compare": "off",
+        "query-safety/no-raw-interpolation": "off"
       }
     }
   ],

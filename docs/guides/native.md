@@ -67,6 +67,8 @@ g.free(); // or `using`
 
 Writes are GQL DML run through the same `query` call (`INSERT` / `SET` / `REMOVE` / `DELETE`), or Gremlin mutation traversals (`addV` / `addE` / `property` / `drop`) through `gremlin`.
 
+**Injection safety.** Never build query text from untrusted input by string concatenation. Interpolate values only via a **tagged template** — each interpolation is bound as a GQL `$param`, or escaped into a safe literal for Gremlin (which has no engine-side binding, so the tag is the boundary) — or via a **`$name` param bag**, like `query('… WHERE x = $x', { x })`. The plain-string form `query('…' + userInput)` — the same method, no tag — is unsafe; the `query-safety/no-raw-interpolation` lint rule (shipped in `@lenke/dev`'s config) flags it, and you should suppress it with an `oxlint-disable` comment only when the text is genuinely trusted.
+
 ## Picking only one query language
 
 The Rust core compiles GQL and Gremlin as Cargo features. To ship the engine with just the one your shop uses, build with `--features gql` _or_ `--features gremlin` (dropping the other), plus whatever codecs you need. The default build (`build:rust`) includes the full feature set; a trimmed build is smaller. This is the compile-time equivalent of installing one TS frontend package — see [choosing-your-build](./choosing-your-build.md#axis-2--the-query-frontend).
