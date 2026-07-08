@@ -315,11 +315,49 @@ const stateFor = (backend: Backend, handle: GraphHandle): DisposalState => {
   return state;
 };
 
+// Dev-only leak signal. The GC backstop firing at all means a wrapper was
+// collected without free()/`using`: the handle still gets reclaimed below, but
+// that relies on the GC running the finalizer — which the spec never
+// guarantees — so a leak may sit unreleased indefinitely. Warn once to nudge
+// the caller toward deterministic disposal. Silent in production and when
+// LENKE_SILENCE_LEAK_WARNING is set; the reclaim itself is never affected.
+let leakWarned = false;
+
+const leakWarningsEnabled = (): boolean => {
+  // Browser/worker builds have no `process` — keep the dev aid on there, since
+  // there is no NODE_ENV to mark a production bundle. Node/Bun honor both the
+  // explicit opt-out and NODE_ENV=production.
+  if (typeof process === 'undefined') {
+    return true;
+  }
+
+  const { env } = process;
+
+  return !env.LENKE_SILENCE_LEAK_WARNING && env.NODE_ENV !== 'production';
+};
+
+const warnLeak = (): void => {
+  if (leakWarned || !leakWarningsEnabled()) {
+    return;
+  }
+
+  leakWarned = true;
+  console.warn(
+    'lenke: a RustGraph was garbage-collected without free() — the handle was ' +
+      'reclaimed by a GC backstop, but finalizers are not guaranteed to run, so ' +
+      'leaked graphs can sit unreleased. Dispose deterministically with ' +
+      '`using g = ...` or an explicit g.free(). ' +
+      '(Set LENKE_SILENCE_LEAK_WARNING to silence this warning.)',
+  );
+};
+
 // Built at module scope so the registered thunk closes over `backend` /
 // `handle` / `state` only — never the wrapper — or it would pin the very
-// object it exists to reclaim.
+// object it exists to reclaim. Only ever invoked from the GC backstop (free()
+// unregisters its token), so a live `!freed` here is, by construction, a leak.
 const reclaimThunk = (backend: Backend, handle: GraphHandle, state: DisposalState) => (): void => {
   if (!state.freed) {
+    warnLeak();
     state.freed = true;
     disposal.get(backend)?.delete(handle);
     backend.graphFree(handle);

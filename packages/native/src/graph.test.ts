@@ -143,6 +143,39 @@ describe('RustGraph disposal', () => {
     expect(() => g.vertexCount).toThrow('after free');
   });
 
+  test('the GC backstop reclaims a leaked graph and warns once (dev aid)', async () => {
+    const { backend, freed } = countingBackend();
+    const warnings: string[] = [];
+    const realWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map(String).join(' '));
+    };
+
+    try {
+      // Attach and drop the only reference — no free(), no `using`. The IIFE
+      // keeps the wrapper from staying reachable via a lingering binding.
+      (() => {
+        attachGraph(backend, 42);
+      })();
+
+      // Finalizers are best-effort; a forced GC runs them within a tick or two
+      // on Bun, so poll a few rounds until the reclaim lands.
+      for (let i = 0; i < 20 && freed.length === 0; i++) {
+        Bun.gc(true);
+
+        await new Promise((r) => setTimeout(r, 5));
+      }
+
+      expect(freed).toEqual([42]); // reclaimed despite never being freed
+      // Exactly one leak warning, and it names the deterministic-disposal fix.
+      const leakWarns = warnings.filter((w) => w.includes('without free()'));
+      expect(leakWarns).toHaveLength(1);
+      expect(leakWarns[0]).toContain('using');
+    } finally {
+      console.warn = realWarn;
+    }
+  });
+
   test('a disposed store severs subscriptions and keeps snapshots stable', () => {
     const { backend } = countingBackend();
     const store = createStore(attachGraph(backend, 9));
