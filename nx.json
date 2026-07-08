@@ -8,7 +8,11 @@
       "!{projectRoot}/vite.config.@(ts|js|mts|mjs)",
       "!{projectRoot}/build.ts"
     ],
-    "sharedGlobals": []
+    "sharedGlobals": [],
+    "rustCore": [
+      "{workspaceRoot}/crates/lenke-core/src/**/*",
+      "{workspaceRoot}/crates/lenke-core/Cargo.toml"
+    ]
   },
   "targetDefaults": {
     "build": {
