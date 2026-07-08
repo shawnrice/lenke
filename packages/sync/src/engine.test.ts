@@ -359,6 +359,38 @@ suite('@lenke/sync engine · write-back', () => {
     expect(failed).toEqual([{ text: 'INSERT (:Person {name: $n})', params: { n: 'doomed' } }]);
   });
 
+  test('a throwing onWriteError does not wedge the pump — later writes still drain', async () => {
+    const seen: string[] = [];
+    let failNext = true;
+    let reported = false;
+    const { engine } = connect({
+      retry: { attempts: 1, baseMs: 1 },
+      upstream: {
+        push: (w) => {
+          seen.push((w.params as { n: string }).n);
+
+          return failNext ? Promise.reject(new Error('down')) : Promise.resolve();
+        },
+      },
+      onWriteError: () => {
+        reported = true;
+
+        throw new Error('boom in user callback'); // the pump must survive this
+      },
+    });
+
+    engine.mutate('INSERT (:Person {name: $n})', { n: 'one' }); // fails → onWriteError throws
+    await until(() => reported);
+
+    // Upstream recovers. Before the fix, a thrown onWriteError left `pumping`
+    // stuck true, so this write would never drain (pendingWrites stays 1).
+    failNext = false;
+    engine.mutate('INSERT (:Person {name: $n})', { n: 'two' });
+
+    await until(() => engine.pendingWrites() === 0);
+    expect(seen).toContain('two');
+  });
+
   test('client mutations flow through the queue; status reports the backlog', async () => {
     const gate = deferred<void>();
     const pushed: SyncWrite[] = [];

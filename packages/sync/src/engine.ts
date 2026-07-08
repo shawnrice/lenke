@@ -296,32 +296,51 @@ export const createSyncEngine = (options: SyncEngineOptions): SyncEngine => {
 
     pumping = true;
 
-    while (queue.length > 0) {
-      const [write] = queue; // FIFO; stays queued (and counted) until settled
-      let sent = false;
+    // The side-channel callbacks below (`onWriteError`, `notifyChange` → host
+    // `refresh` → `send`) run inside the drain loop, and either can throw — a
+    // user callback bug, or a `send` on a CLOSING socket right as the upstream
+    // failures that drive retries hit. A throw must NOT wedge the pump: the
+    // outer `finally` guarantees `pumping` is cleared (otherwise every future
+    // pump early-returns and the queue never drains again — writes pile up and
+    // bloat each snapshot, silently), and each callback is contained so one bad
+    // notification can't abort draining the rest of the queue either.
+    try {
+      while (queue.length > 0) {
+        const [write] = queue; // FIFO; stays queued (and counted) until settled
+        let sent = false;
 
-      for (let attempt = 0; attempt < attempts && !sent; attempt += 1) {
-        try {
-          // upstream is present by construction: writes only enqueue when it is.
-          await upstream!.push(write);
-          sent = true;
-        } catch (e) {
-          if (attempt + 1 >= attempts) {
-            // Terminal: drop and report. Roll-back-and-correct needs server
-            // cursors (a later step) — silently retrying forever would just
-            // hide a dead upstream.
-            options.onWriteError?.(write, e);
-          } else {
-            await sleep(Math.min(maxMs, baseMs * 2 ** attempt));
+        for (let attempt = 0; attempt < attempts && !sent; attempt += 1) {
+          try {
+            // upstream is present by construction: writes only enqueue when it is.
+            await upstream!.push(write);
+            sent = true;
+          } catch (e) {
+            if (attempt + 1 >= attempts) {
+              // Terminal: drop and report. Roll-back-and-correct needs server
+              // cursors (a later step) — silently retrying forever would just
+              // hide a dead upstream. A throwing reporter can't stall the queue.
+              try {
+                options.onWriteError?.(write, e);
+              } catch {
+                // best-effort: a user callback fault must not block replication
+              }
+            } else {
+              await sleep(Math.min(maxMs, baseMs * 2 ** attempt));
+            }
           }
         }
+
+        queue.shift();
+
+        try {
+          notifyChange(); // pendingWrites moved
+        } catch {
+          // non-fatal (e.g. send on a dead socket): the next drain re-notifies
+        }
       }
-
-      queue.shift();
-      notifyChange(); // pendingWrites moved
+    } finally {
+      pumping = false;
     }
-
-    pumping = false;
   };
 
   const mutate = (text: string, params?: QueryParams, lang?: 'gql' | 'gremlin'): void => {
