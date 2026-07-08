@@ -855,6 +855,56 @@ fn add_vertex_and_property() {
     );
 }
 
+// ===== null is a first-class property value (deliberate TinkerPop divergence) =====
+// TinkerPop disallows null property values; here `property(k, null)` STORES a
+// present null — visible in values/valueMap, and has(k) is true. It's a present
+// property distinct from an absent one. Deleting a property is a SEPARATE op:
+// `.properties(k).drop()` (see `properties_drop_removes_the_property`).
+
+#[test]
+fn property_set_to_null_is_stored_and_visible_not_removed() {
+    let mut g0 = modern();
+    // marko gets a present-null `nick`.
+    let _ = g()
+        .V()
+        .has("name", P::eq("marko"))
+        .property("nick", GVal::Null)
+        .run(&mut g0);
+
+    // values('nick') yields a present Null — not nothing.
+    let vals = g()
+        .V()
+        .has("name", P::eq("marko"))
+        .values(&["nick"])
+        .run(&mut g0);
+    assert_eq!(
+        vals,
+        vec![GVal::Null],
+        "a present null is projected, not dropped"
+    );
+
+    // has(key) (existence) is true for a present null.
+    assert_eq!(
+        one_num(
+            g().V()
+                .has("name", P::eq("marko"))
+                .has_key(&["nick"])
+                .count()
+                .run(&mut g0)
+        ),
+        1.0,
+        "has(key) is true for a present null"
+    );
+
+    // valueMap() carries the nick=null entry.
+    let vm = g()
+        .V()
+        .has("name", P::eq("marko"))
+        .value_map(&["nick"])
+        .run(&mut g0);
+    assert_eq!(vm, vec![GVal::Map(vec![(GVal::from("nick"), GVal::Null)])]);
+}
+
 #[test]
 fn add_edge_between_tagged() {
     let mut g0 = modern();

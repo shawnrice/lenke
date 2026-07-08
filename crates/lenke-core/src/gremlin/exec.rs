@@ -744,14 +744,14 @@ fn prop(graph: &Graph, v: &GVal, key: &str) -> GVal {
     }
 }
 
-/// A `{ key: value }` map of an element's present (non-null) properties.
+/// A `{ key: value }` map of an element's present properties (a stored null is
+/// present and rides through as a `Null` value).
 fn element_props_map(graph: &Graph, v: &GVal) -> GVal {
+    // `present_keys` is already presence-gated, so include every present key —
+    // a present null rides through as a `Null` value (not dropped).
     let entries: Vec<(GVal, GVal)> = present_keys(graph, v)
         .into_iter()
-        .filter_map(|k| {
-            let pv = prop(graph, v, &k);
-            (pv != GVal::Null).then(|| (GVal::Str(Arc::from(k.as_str())), pv))
-        })
+        .map(|k| (GVal::Str(Arc::from(k.as_str())), prop(graph, v, &k)))
         .collect();
     GVal::Map(entries)
 }
@@ -806,9 +806,22 @@ fn present_keys(graph: &Graph, v: &GVal) -> Vec<String> {
         _ => return Vec::new(),
     };
     (0..store.keys.len() as u32)
-        .filter(|&kid| !matches!(store.value_id(idx, kid, &graph.strs), Value::Null))
+        // Presence, not value: a stored null is a present property (first-class
+        // value — divergence from TinkerPop, which has no null property values).
+        .filter(|&kid| store.is_present_id(idx, kid))
         .map(|kid| store.keys.text(kid).to_string())
         .collect()
+}
+
+/// Is property `key` present on element `v`? A stored null counts as present, so
+/// projection steps gate inclusion on this (not `prop(...) != Null`, which also
+/// drops a present null). Property elements / non-elements: not applicable.
+fn prop_present(graph: &Graph, v: &GVal, key: &str) -> bool {
+    match v {
+        GVal::Vertex(i) => graph.props.is_present(*i as usize, key),
+        GVal::Edge(e) => graph.edge_props.is_present(*e as usize, key),
+        _ => false,
+    }
 }
 
 fn elem_id(graph: &Graph, v: &GVal) -> GVal {
@@ -1251,9 +1264,10 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
             for t in &stream {
                 let ks = if keys.is_empty() { present_keys(graph, &t.val) } else { keys.clone() };
                 for k in ks {
-                    let v = prop(graph, &t.val, &k);
-                    if v != GVal::Null {
-                        next.push(t.step(v));
+                    // Gate on PRESENCE, not value != Null: a present null yields
+                    // a `Null` here; only an absent key is skipped.
+                    if prop_present(graph, &t.val, &k) {
+                        next.push(t.step(prop(graph, &t.val, &k)));
                     }
                 }
             }
@@ -1261,18 +1275,19 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
         }
         Step::ValueMap(keys) => map_step(stream, |t| {
             let ks = if keys.is_empty() { present_keys(graph, &t.val) } else { keys.clone() };
-            let entries =
-                ks.into_iter().map(|k| (GVal::Str(Arc::from(k.as_str())), prop(graph, &t.val, &k))).filter(|(_, v)| *v != GVal::Null).collect();
+            let entries = ks
+                .into_iter()
+                .filter(|k| prop_present(graph, &t.val, k))
+                .map(|k| (GVal::Str(Arc::from(k.as_str())), prop(graph, &t.val, &k)))
+                .collect();
             vec![GVal::Map(entries)]
         }),
         Step::PropertyMap(keys) => map_step(stream, |t| {
             let ks = if keys.is_empty() { present_keys(graph, &t.val) } else { keys.clone() };
             let entries = ks
                 .into_iter()
-                .filter_map(|k| {
-                    let v = prop(graph, &t.val, &k);
-                    (v != GVal::Null).then(|| (GVal::Str(Arc::from(k.as_str())), GVal::List(vec![v])))
-                })
+                .filter(|k| prop_present(graph, &t.val, k))
+                .map(|k| (GVal::Str(Arc::from(k.as_str())), GVal::List(vec![prop(graph, &t.val, &k)])))
                 .collect();
             vec![GVal::Map(entries)]
         }),
@@ -1292,9 +1307,8 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
             }
             let ks = if keys.is_empty() { present_keys(graph, &t.val) } else { keys.clone() };
             for k in ks {
-                let v = prop(graph, &t.val, &k);
-                if v != GVal::Null {
-                    entries.push((GVal::Str(Arc::from(k.as_str())), v));
+                if prop_present(graph, &t.val, &k) {
+                    entries.push((GVal::Str(Arc::from(k.as_str())), prop(graph, &t.val, &k)));
                 }
             }
             vec![GVal::Map(entries)]
@@ -1304,8 +1318,8 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
             for t in &stream {
                 let ks = if keys.is_empty() { present_keys(graph, &t.val) } else { keys.clone() };
                 for k in ks {
-                    let v = prop(graph, &t.val, &k);
-                    if v != GVal::Null {
+                    if prop_present(graph, &t.val, &k) {
+                        let v = prop(graph, &t.val, &k);
                         next.push(t.step(GVal::Map(vec![(GVal::Str(Arc::from("key")), GVal::Str(Arc::from(k.as_str()))), (GVal::Str(Arc::from("value")), v)])));
                     }
                 }
