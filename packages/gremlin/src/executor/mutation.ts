@@ -11,7 +11,15 @@ import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { AddEEndpoint, Plan } from '../ast.js';
 import { applyPlanToStream, applyStep } from './dispatch.js';
-import { extend, isEdge, isVertex, type RunContext, type Traverser } from './runtime.js';
+import {
+  extend,
+  isEdge,
+  isVertex,
+  type PropertyElement,
+  propertyOwner,
+  type RunContext,
+  type Traverser,
+} from './runtime.js';
 import { applySource } from './sources.js';
 
 export const addVStep = function* (
@@ -163,6 +171,16 @@ export const dropStep = function* (
       graph.removeVertex(v);
     } else if (isEdge(v)) {
       graph.removeEdge(v);
+    } else {
+      // `.properties(k).drop()` — delete the property from its owner. This is the
+      // ONLY Gremlin-native way to delete a property, because `property(k, null)`
+      // STORES a present null (a deliberate divergence from TinkerPop, which has
+      // no null property values). The owner comes from the side WeakMap.
+      const owner = propertyOwner(v);
+
+      if (owner) {
+        owner.removeProperty((v as PropertyElement).key);
+      }
     }
     // `drop` is a sink — emit nothing for any traverser regardless of type.
   }

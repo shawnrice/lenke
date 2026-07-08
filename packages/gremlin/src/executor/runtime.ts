@@ -109,6 +109,34 @@ export const planReadsPath = (plan: Plan): boolean =>
     (step) => PATH_DEPENDENT_KINDS.has(step.kind) || subPlansOf(step).some(planReadsPath),
   );
 
+/** A `{ key, value }` property element (from `.properties(k)`). */
+export type PropertyElement = { key: string; value: unknown };
+
+/**
+ * A property element stays exactly `{ key, value }`; its owning vertex/edge is
+ * tracked HERE (a side WeakMap keyed by the element's identity), not as a field
+ * on the object — so `.drop()` can delete the property while nothing leaks into
+ * projections, serialization, or structural equality. The WeakMap lets the
+ * element and its owning-link be GC'd together once the traversal drops them.
+ */
+const propertyOwners = new WeakMap<object, Vertex | Edge>();
+
+/** Mint a property element and remember its owner (called by `.properties`). */
+export const ownedProperty = (
+  owner: Vertex | Edge,
+  key: string,
+  value: unknown,
+): PropertyElement => {
+  const el: PropertyElement = { key, value };
+  propertyOwners.set(el, owner);
+
+  return el;
+};
+
+/** The owning vertex/edge of a property element, or `undefined` if `x` isn't one. */
+export const propertyOwner = (x: unknown): Vertex | Edge | undefined =>
+  typeof x === 'object' && x !== null ? propertyOwners.get(x) : undefined;
+
 export const startTraverser = <T>(value: T, tracksPath = true): Traverser<T> => ({
   value,
   path: tracksPath ? [value] : NO_PATH,
