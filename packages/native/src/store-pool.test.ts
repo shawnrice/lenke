@@ -117,4 +117,27 @@ describe('store live-query pool', () => {
     q().getSnapshot();
     expect(counts.query).toBe(2);
   });
+
+  test('the same callback on two live queries is two independent registrations', () => {
+    const { store, bump } = fakeStore();
+    let calls = 0;
+    const cb = (): void => {
+      calls += 1;
+    };
+
+    // One `onChange` reference wired to two DISTINCT live queries.
+    const a = store.liveQuery('MATCH (p:Person) RETURN p', { deps: ['Person'] });
+    const b = store.liveQuery('MATCH (t:Team) RETURN t', { deps: ['Team'] });
+    const stopA = a.subscribe(cb);
+    b.subscribe(cb);
+
+    store.mutate(() => bump());
+    expect(calls).toBe(2); // both registrations fire (was 1: identity-collapsed)
+
+    // Dropping A must not delete B's registration of the same callback.
+    calls = 0;
+    stopA();
+    store.mutate(() => bump());
+    expect(calls).toBe(1); // B still fires (was 0: the survivor was silently killed)
+  });
 });

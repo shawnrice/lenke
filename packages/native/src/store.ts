@@ -103,7 +103,12 @@ const canonical = (v: unknown): string => {
 export const createStore = (graph: RustGraph): Store => {
   ensureDisposeSymbol(); // so the [Symbol.dispose] key below resolves on any runtime
 
-  const listeners = new Set<() => void>();
+  // A Set of per-subscription ENTRIES, not of the callbacks themselves: two
+  // subscriptions that happen to pass the same `onChange` reference (e.g. one
+  // callback wired to two live queries) must be independent registrations, so
+  // unsubscribing one can't delete the other. Keying by callback identity would
+  // collapse them into one and silently kill the survivor's notifications.
+  const listeners = new Set<{ notify: () => void }>();
   // Disposal must sever the subscription graph, not just free the handle: a
   // still-mounted live query would otherwise call query/gremlin on the freed
   // graph on its next getSnapshot. After dispose, snapshots stay on their last
@@ -112,7 +117,7 @@ export const createStore = (graph: RustGraph): Store => {
   let disposed = false;
   const notify = (): void => {
     for (const l of listeners) {
-      l();
+      l.notify();
     }
   };
 
@@ -189,10 +194,11 @@ export const createStore = (graph: RustGraph): Store => {
         }
 
         held.refs += 1;
-        listeners.add(onChange);
+        const entry = { notify: onChange }; // fresh identity per subscribe
+        listeners.add(entry);
 
         return () => {
-          listeners.delete(onChange);
+          listeners.delete(entry);
           held.refs -= 1;
 
           // Last subscriber gone → stop sharing this cell with future callers.
