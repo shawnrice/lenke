@@ -17,6 +17,11 @@ import type { QueryParams, RustGraph, Row } from './graph.js';
  * recomputes only when one of its dependency *epochs* (per label / edge-type /
  * property-key) changed, so an unrelated mutation doesn't recompute it.
  *
+ * Identical standing queries are **pooled**: two `liveQuery` calls with the same
+ * `(kind, deps, params, text)` share one recompute and one cached array, so many
+ * consumers of the same query — most notably several connections on one store
+ * (e.g. several tabs on a SharedWorker's graph) — don't each pay for it.
+ *
  * @example
  * ```ts
  * const store = createStore(graph);
@@ -79,6 +84,22 @@ export type Store = {
   [Symbol.dispose]: () => void;
 };
 
+/** Canonical, key-sorted JSON string of a value — a collision-free identity. */
+const canonical = (v: unknown): string => {
+  if (v === null || typeof v !== 'object') {
+    return JSON.stringify(v) ?? 'null';
+  }
+
+  if (Array.isArray(v)) {
+    return `[${v.map(canonical).join(',')}]`;
+  }
+
+  return `{${Object.keys(v as Record<string, unknown>)
+    .sort()
+    .map((k) => `${JSON.stringify(k)}:${canonical((v as Record<string, unknown>)[k])}`)
+    .join(',')}}`;
+};
+
 export const createStore = (graph: RustGraph): Store => {
   ensureDisposeSymbol(); // so the [Symbol.dispose] key below resolves on any runtime
 
@@ -95,14 +116,71 @@ export const createStore = (graph: RustGraph): Store => {
     }
   };
 
-  // Shared epoch-gated caching for both liveQuery (rows) and liveGremlin
-  // (values): `run` is the only difference. The gating is language-agnostic —
-  // it keys off the graph version and the declared `deps` epochs, not the query.
-  const makeLive = <T>(deps: readonly string[] | null, run: () => T[]): LiveQuery<T> => {
-    // -1 is unreachable for a u64 version/epoch, so the first call always primes.
-    let seenVersion = -1;
-    let seenFingerprint = -1;
-    let cached: T[] = [];
+  // A pooled, epoch-gated computation shared by every handle with the same
+  // signature. `run` is the only difference between liveQuery (rows) and
+  // liveGremlin (values); the gating keys off the graph version and the declared
+  // `deps` epochs, not the query text.
+  type Cell<T> = {
+    readonly deps: readonly string[] | null;
+    readonly run: () => T[];
+    seenVersion: number; // -1 is unreachable for a u64 version/epoch → the first call primes
+    seenFingerprint: number;
+    cached: T[];
+    refs: number; // active subscribers across all handles sharing this cell
+  };
+  const pool = new Map<string, Cell<unknown>>();
+
+  const snapshotOf = <T>(cell: Cell<T>): T[] => {
+    if (disposed) {
+      return cell.cached; // the graph is freed — hold the last snapshot, don't touch it
+    }
+
+    const v = graph.version;
+
+    if (v === cell.seenVersion) {
+      return cell.cached; // nothing mutated since last read → stable reference
+    }
+
+    cell.seenVersion = v;
+    // `null` deps → gate on the global version (recompute every change). `[]` →
+    // a constant fingerprint, so it never recomputes after the first prime.
+    // Otherwise sum the declared epochs and recompute only when one moved.
+    let fingerprint: number;
+
+    if (cell.deps === null) {
+      fingerprint = v;
+    } else if (cell.deps.length === 0) {
+      fingerprint = 0;
+    } else {
+      fingerprint = cell.deps.reduce((acc, d) => acc + graph.epoch(d), 0);
+    }
+
+    if (fingerprint === cell.seenFingerprint) {
+      return cell.cached; // the mutation didn't touch our dependencies
+    }
+
+    cell.seenFingerprint = fingerprint;
+    cell.cached = cell.run();
+
+    return cell.cached;
+  };
+
+  const makeLive = <T>(
+    signature: string,
+    deps: readonly string[] | null,
+    run: () => T[],
+  ): LiveQuery<T> => {
+    let cell = pool.get(signature) as Cell<T> | undefined;
+
+    if (!cell) {
+      cell = { deps, run, seenVersion: -1, seenFingerprint: -1, cached: [], refs: 0 };
+      pool.set(signature, cell as Cell<unknown>);
+    }
+
+    // The handle closes over the cell, so it stays usable even after the cell is
+    // evicted from the pool (a still-held handle just stops sharing with future
+    // callers).
+    const held = cell;
 
     return {
       subscribe: (onChange) => {
@@ -110,49 +188,35 @@ export const createStore = (graph: RustGraph): Store => {
           return () => {};
         }
 
+        held.refs += 1;
         listeners.add(onChange);
 
         return () => {
           listeners.delete(onChange);
+          held.refs -= 1;
+
+          // Last subscriber gone → stop sharing this cell with future callers.
+          // A fresh identical liveQuery after this mints a new cell (correct,
+          // just briefly un-shared); the pool never accumulates dead cells.
+          if (held.refs === 0 && pool.get(signature) === held) {
+            pool.delete(signature);
+          }
         };
       },
-      getSnapshot: () => {
-        if (disposed) {
-          return cached; // the graph is freed — hold the last snapshot, don't touch it
-        }
-
-        const v = graph.version;
-
-        if (v === seenVersion) {
-          return cached; // nothing mutated since last read → stable reference
-        }
-
-        seenVersion = v;
-        // A mutation happened. `null` deps → gate on the global version
-        // (recompute every change). `[]` → a constant fingerprint, so it never
-        // recomputes after the first prime. Otherwise sum the declared epochs
-        // and recompute only when one of them moved.
-        let fingerprint: number;
-
-        if (deps === null) {
-          fingerprint = v;
-        } else if (deps.length === 0) {
-          fingerprint = 0;
-        } else {
-          fingerprint = deps.reduce((acc, d) => acc + graph.epoch(d), 0);
-        }
-
-        if (fingerprint === seenFingerprint) {
-          return cached; // the mutation didn't touch our dependencies
-        }
-
-        seenFingerprint = fingerprint;
-        cached = run();
-
-        return cached;
-      },
+      getSnapshot: () => snapshotOf(held),
     };
   };
+
+  // Pool key: a collision-free JSON identity of the standing query. `deps` are a
+  // set (the fingerprint is a commutative sum) so they sort; `null` stays
+  // distinct from `[]`; params key-sort; text is exact. No false collision could
+  // ever share two different queries' results.
+  const signatureOf = (
+    kind: 'q' | 'g',
+    text: string,
+    deps: readonly string[] | null,
+    params?: QueryParams,
+  ): string => canonical([kind, deps === null ? null : [...deps].sort(), params ?? null, text]);
 
   return {
     graph,
@@ -175,8 +239,12 @@ export const createStore = (graph: RustGraph): Store => {
 
       return result;
     },
-    liveQuery: (text, opts) => makeLive(opts.deps, () => graph.query(text, opts.params)),
-    liveGremlin: (text, opts) => makeLive(opts.deps, () => graph.gremlin(text)),
+    liveQuery: (text, opts) =>
+      makeLive(signatureOf('q', text, opts.deps, opts.params), opts.deps, () =>
+        graph.query(text, opts.params),
+      ),
+    liveGremlin: (text, opts) =>
+      makeLive(signatureOf('g', text, opts.deps), opts.deps, () => graph.gremlin(text)),
     [Symbol.dispose]: () => {
       if (disposed) {
         return;
