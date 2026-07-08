@@ -132,6 +132,10 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
       }
 
       const len = dv().getUint32(outLenPtr, true);
+      // If `len` is corrupt (out of bounds) `readBytes` throws BEFORE this free —
+      // intentional: the buffer's true size is unknown, so `lnk_free_buf(errPtr,
+      // <wrong len>)` would be undefined behavior. Leaking once on broken ABI
+      // data beats a bad dealloc; the `finally` still frees `outLenPtr`.
       const json = decoder.decode(readBytes(errPtr, len, 'last-error'));
       ex.lnk_free_buf(errPtr, len);
 
@@ -183,6 +187,10 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
       }
 
       const len = dv().getUint32(outLenPtr, true);
+      // As in readLastError: a corrupt `len` makes `readBytes` throw before this
+      // free, and `resPtr` is intentionally left unfreed — its true size is
+      // unknown, so freeing with a wrong len would be UB. The outer `finally`
+      // frees the arg pointers regardless.
       const copy = readBytes(resPtr, len, op);
       free(resPtr, len);
 

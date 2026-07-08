@@ -65,9 +65,19 @@ export const createFfiBackend = (libPath: string): Backend => {
       return null;
     }
 
+    // Validate OUTSIDE the try: a throw here means the crate wrote an
+    // unrepresentable `out_len`, so we don't know the buffer's true size and
+    // `lnk_free_buf(errPtr, <wrong len>)` would be undefined behavior — leaking
+    // once on corrupt ABI data is the safe choice. With a valid len, the
+    // `finally` frees even if the copy step OOMs.
     const len = asByteLength(outLen[0], 'last-error');
-    const json = decoder.decode(new Uint8Array(toArrayBuffer(errPtr, 0, len)).slice());
-    symbols.lnk_free_buf(errPtr, len);
+    let json: string;
+
+    try {
+      json = decoder.decode(new Uint8Array(toArrayBuffer(errPtr, 0, len)).slice());
+    } finally {
+      symbols.lnk_free_buf(errPtr, len);
+    }
 
     // A malformed report is itself an FFI fault; `parseErrorReport` returns null
     // and `fail` falls back to a generic code.
@@ -106,11 +116,16 @@ export const createFfiBackend = (libPath: string): Backend => {
       return fail(op, ErrorCode.Ffi);
     }
 
+    // Validate before the try (see readLastError): an unrepresentable len can't
+    // be freed safely, so it leaks by design; a valid len is freed in `finally`
+    // even if the copy OOMs.
     const len = asByteLength(outLen[0], op);
-    const copy = new Uint8Array(toArrayBuffer(resPtr, 0, len)).slice();
-    free(resPtr, len);
 
-    return copy;
+    try {
+      return new Uint8Array(toArrayBuffer(resPtr, 0, len)).slice();
+    } finally {
+      free(resPtr, len);
+    }
   };
 
   return {
