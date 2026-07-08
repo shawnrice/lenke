@@ -1800,12 +1800,27 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
             .collect(),
         Step::Drop => {
             for t in &stream {
-                match t.val {
+                match &t.val {
                     GVal::Vertex(i) => {
-                        let _ = graph.remove_vertex(i, true);
+                        let _ = graph.remove_vertex(*i, true);
                     }
                     GVal::Edge(e) => {
-                        graph.remove_edge(e);
+                        graph.remove_edge(*e);
+                    }
+                    // `.properties(k).drop()` removes the property from its owner.
+                    // This is the ONLY way to delete a property in Gremlin here —
+                    // `property(k, null)` STORES a null (divergence from TinkerPop).
+                    // The property element carries no owner, so recover it from the
+                    // traverser's prior path entry (`.properties()` uses `.step()`,
+                    // pushing the element after the vertex/edge it came from).
+                    GVal::Map(_) => {
+                        if let Some(GVal::Str(key)) = prop_key_field(&t.val) {
+                            match t.path.iter().rev().nth(1) {
+                                Some(GVal::Vertex(i)) => graph.remove_vertex_prop(*i, &key),
+                                Some(GVal::Edge(e)) => graph.remove_edge_prop(*e, &key),
+                                _ => {}
+                            }
+                        }
                     }
                     _ => {}
                 }

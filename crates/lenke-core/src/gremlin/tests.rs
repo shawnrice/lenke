@@ -906,6 +906,70 @@ fn property_set_to_null_is_stored_and_visible_not_removed() {
 }
 
 #[test]
+fn properties_drop_removes_the_property() {
+    // The Gremlin-native way to DELETE a property (since `property(k, null)` now
+    // stores a null): traverse to the property element and `.drop()` it.
+    let mut g0 = modern();
+    let _ = g()
+        .V()
+        .has("name", P::eq("marko"))
+        .property("nick", GVal::Null)
+        .run(&mut g0);
+    assert_eq!(
+        one_num(
+            g().V()
+                .has("name", P::eq("marko"))
+                .has_key(&["nick"])
+                .count()
+                .run(&mut g0)
+        ),
+        1.0
+    );
+
+    // .properties('nick').drop() removes the (present-null) property outright.
+    let _ = g()
+        .V()
+        .has("name", P::eq("marko"))
+        .properties(&["nick"])
+        .drop()
+        .run(&mut g0);
+    assert_eq!(
+        g().V()
+            .has("name", P::eq("marko"))
+            .values(&["nick"])
+            .run(&mut g0),
+        Vec::<GVal>::new(),
+        "the property is gone after drop"
+    );
+    assert_eq!(
+        one_num(
+            g().V()
+                .has("name", P::eq("marko"))
+                .has_key(&["nick"])
+                .count()
+                .run(&mut g0)
+        ),
+        0.0,
+        "has(key) is false after drop"
+    );
+
+    // A real-valued property drops the same way.
+    let _ = g()
+        .V()
+        .has("name", P::eq("marko"))
+        .properties(&["age"])
+        .drop()
+        .run(&mut g0);
+    assert_eq!(
+        g().V()
+            .has("name", P::eq("marko"))
+            .values(&["age"])
+            .run(&mut g0),
+        Vec::<GVal>::new()
+    );
+}
+
+#[test]
 fn add_edge_between_tagged() {
     let mut g0 = modern();
     // marko --LIKES--> ripple
