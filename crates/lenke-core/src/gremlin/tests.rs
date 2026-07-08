@@ -1658,6 +1658,29 @@ fn comparison_of_incomparable_types_faults() {
 }
 
 #[test]
+fn addv_and_property_reject_malformed_names() {
+    use crate::error_codes::ErrorCode::InvalidValue;
+    let mut g = modern();
+    // Gremlin takes arbitrary label/key strings, so a `::` label / empty key is
+    // guarded at the step (codec ingestion has its own gate). try_run surfaces it.
+    let bad = [
+        "g.addV('a::b')",        // GraphSON multi-label separator in a label
+        "g.addV('')",            // empty label
+        "g.V().property('', 1)", // empty property key
+    ];
+    for src in bad {
+        let t = super::parse(src).unwrap();
+        assert_eq!(
+            super::try_run(&mut g, &t).unwrap_err().code,
+            InvalidValue,
+            "{src}"
+        );
+    }
+    // A well-formed addV/property is fine.
+    assert!(super::try_run(&mut g, &super::parse("g.addV('Robot')").unwrap()).is_ok());
+}
+
+#[test]
 fn order_over_mixed_types_faults() {
     let mut g = modern();
     let t = super::parse("g.inject(3, 'a', 1).order()").unwrap();

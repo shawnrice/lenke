@@ -196,14 +196,18 @@ pub fn serialize(g: &Graph, format: &str) -> CodeResult<String> {
 /// yields `UnknownFormat`; a malformed payload of a known format yields the
 /// decoder's own code (`InvalidJson` / `InvalidShape` / …).
 pub fn deserialize(input: &str, format: &str) -> CodeResult<Graph> {
-    match format {
+    let g = match format {
         "pg-json" => pg_json::decode(input),
         "pg-text" => Ok(pg_text::decode(input)),
         "graphson" => graphson::decode(input),
         "csv" => csv::decode(input),
         "ndjson" => crate::ndjson::decode(input),
         other => Err(unknown_format(other)),
-    }
+    }?;
+    // Ingestion gate: reject loaded data holding a malformed label / edge type /
+    // property key so it can't smuggle in a name that won't round-trip.
+    g.validate_wellformed()?;
+    Ok(g)
 }
 
 #[cfg(test)]

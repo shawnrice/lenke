@@ -683,6 +683,27 @@ impl Graph {
     }
 
     /// Add a vertex with the given labels and properties; returns its index.
+    /// Reject a graph holding a malformed label / edge type / property key (see
+    /// [`validate_label`] / [`validate_prop_key`]). One cheap pass over the
+    /// interned name dictionaries (distinct names, not per-element). Called at
+    /// the codec ingestion boundary so loaded data can't smuggle in a name that
+    /// won't round-trip through every codec.
+    pub fn validate_wellformed(&self) -> CodeResult<()> {
+        for name in self.labels.strings.iter().chain(self.etype.strings.iter()) {
+            validate_label(name)?;
+        }
+        for name in self
+            .props
+            .keys
+            .strings
+            .iter()
+            .chain(self.edge_props.keys.strings.iter())
+        {
+            validate_prop_key(name)?;
+        }
+        Ok(())
+    }
+
     pub fn add_vertex(&mut self, labels: &[String], props: Vec<(String, Value)>) -> u32 {
         let id = self.fresh_id();
         let vi = self.vid.intern(&id);
@@ -1293,6 +1314,62 @@ impl Builder {
             vidx: HashMap::new(),
             eidx: HashMap::new(),
         }
+    }
+}
+
+/// A **well-formed label** (node label or edge type): non-empty and free of the
+/// `::` sequence. GraphSON joins a node's labels with `::`, so a `::` inside one
+/// label is ambiguous/unrepresentable there (and bare GQL can't name it either).
+/// An empty label collapses to "no labels" in GraphSON/CSV. Constraining the
+/// model to well-formed labels keeps every codec's round-trip unambiguous.
+pub fn validate_label(name: &str) -> CodeResult<()> {
+    if name.is_empty() {
+        return Err(CodeError::new(
+            ErrorCode::InvalidValue,
+            "a label / edge type must be non-empty",
+        ));
+    }
+    if name.contains("::") {
+        return Err(CodeError::new(
+            ErrorCode::InvalidValue,
+            format!("a label / edge type cannot contain '::' (the GraphSON multi-label separator): {name:?}"),
+        ));
+    }
+    Ok(())
+}
+
+/// A **well-formed property key**: non-empty (an empty key has no CSV column
+/// header / no `key:value` pg-text form, and is meaningless).
+pub fn validate_prop_key(name: &str) -> CodeResult<()> {
+    if name.is_empty() {
+        return Err(CodeError::new(
+            ErrorCode::InvalidValue,
+            "a property key must be non-empty",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod wellformed_names {
+    //! Labels/edge-types must be non-empty and `::`-free (GraphSON's multi-label
+    //! separator); property keys must be non-empty. Enforced at ingestion.
+    use super::*;
+
+    #[test]
+    fn label_rules() {
+        assert!(validate_label("Person").is_ok());
+        assert!(validate_label("a:b").is_ok()); // a single colon is fine
+        assert!(validate_label("").is_err()); // empty collapses to "no labels"
+        assert!(validate_label("a::b").is_err()); // GraphSON multi-label separator
+        assert!(validate_label("::").is_err());
+    }
+
+    #[test]
+    fn key_rules() {
+        assert!(validate_prop_key("name").is_ok());
+        assert!(validate_prop_key("a::b").is_ok()); // keys are never `::`-joined
+        assert!(validate_prop_key("").is_err());
     }
 }
 

@@ -1761,11 +1761,28 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
         // --- mutation ---
         Step::AddV(label) => {
             let labels: Vec<String> = label.iter().cloned().collect();
+            // A malformed label (empty / contains `::`) is a data fault — Gremlin
+            // takes arbitrary label strings, so guard here (codec ingestion has
+            // its own gate). `run` returns nothing; `try_run` surfaces the fault.
+            if labels.iter().any(|l| crate::graph::validate_label(l).is_err()) {
+                ctx.fault.get_or_insert((
+                    crate::error_codes::ErrorCode::InvalidValue,
+                    "addV(): a label must be non-empty and cannot contain '::'",
+                ));
+                return Vec::new();
+            }
             // As a source (`g.addV()`), create one even with no incoming traverser.
             let base = if stream.is_empty() { vec![Trav::root(GVal::Null)] } else { stream };
             base.iter().map(|t| t.with(GVal::Vertex(graph.add_vertex(&labels, vec![])))).collect()
         }
         Step::AddE { label, from, to } => {
+            if crate::graph::validate_label(label).is_err() {
+                ctx.fault.get_or_insert((
+                    crate::error_codes::ErrorCode::InvalidValue,
+                    "addE(): a label must be non-empty and cannot contain '::'",
+                ));
+                return Vec::new();
+            }
             let mut next = Vec::new();
             for t in &stream {
                 let (Some(f), Some(to_v)) = (resolve_endpoint(graph, ctx, from, t), resolve_endpoint(graph, ctx, to, t)) else {
@@ -1781,6 +1798,13 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
                 next.push(t.with(GVal::Edge(e)));
             }
             next
+        }
+        Step::Property(key, _) if crate::graph::validate_prop_key(key).is_err() => {
+            ctx.fault.get_or_insert((
+                crate::error_codes::ErrorCode::InvalidValue,
+                "property(): a key must be non-empty",
+            ));
+            Vec::new()
         }
         Step::Property(key, v) => stream
             .into_iter()

@@ -156,7 +156,9 @@ pub fn decode(text: &str) -> CodeResult<Graph> {
             Rec::Edge(e) => b.edges.push(e),
         }
     }
-    Ok(b.finalize())
+    let g = b.finalize();
+    g.validate_wellformed()?; // reject a malformed label / edge type / property key
+    Ok(g)
 }
 
 /// Decode without parallelism — for isolating rayon's contribution in the bench.
@@ -169,7 +171,9 @@ pub fn decode_serial(text: &str) -> CodeResult<Graph> {
             None => {}
         }
     }
-    Ok(b.finalize())
+    let g = b.finalize();
+    g.validate_wellformed()?;
+    Ok(g)
 }
 
 fn push_value(out: &mut String, v: &Value) {
@@ -383,6 +387,29 @@ mod tests {
     }
     fn str_val(s: &str) -> Value {
         Value::Str(s.into())
+    }
+
+    #[test]
+    fn ingestion_rejects_malformed_labels_and_keys() {
+        // A `::` label is unrepresentable in GraphSON; an empty label/key is
+        // unrepresentable too. Ingestion rejects them with a coded error.
+        let cases = [
+            r#"{"type":"node","id":"a","labels":["x::y"],"properties":{}}"#,
+            r#"{"type":"node","id":"a","labels":[""],"properties":{}}"#,
+            r#"{"type":"node","id":"a","labels":["N"],"properties":{"":1}}"#,
+            r#"{"type":"edge","id":"e","from":"a","to":"a","labels":["A::B"],"properties":{}}"#,
+        ];
+        for c in cases {
+            assert_eq!(
+                decode(c).err().map(|e| e.code),
+                Some(ErrorCode::InvalidValue),
+                "should reject: {c}"
+            );
+        }
+        // A single colon and a well-formed graph are fine.
+        assert!(
+            decode(r#"{"type":"node","id":"a","labels":["a:b"],"properties":{"k":1}}"#).is_ok()
+        );
     }
 
     #[test]
