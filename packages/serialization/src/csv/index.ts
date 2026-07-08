@@ -246,6 +246,21 @@ const inferColumn = (value: PropertyValue): ColumnType => {
 const columnHeader = (key: string, type: ColumnType): string =>
   `${key}:${type.scalar}${type.list ? '[]' : ''}`;
 
+// A property KEY is arbitrary text (imported graphs carry any JSON key), so a
+// header cell must be quoted exactly like a data cell — an unquoted `,`/`"`/
+// newline in a key would break column alignment on decode. The decoder already
+// parses the header row with the same quote-aware parser, so quoting is
+// transparent to `parseHeader`.
+const headerLine = (cells: readonly string[]): string => cells.map(quoteField).join(',');
+
+// Leading characters a spreadsheet interprets as a formula when it opens the CSV
+// (`=` `+` `-` `@`, plus TAB/CR). A STRING value that starts with one is
+// neutralized on encode (see encodeCell) by reusing the leading-backslash escape
+// — the on-disk cell then starts with `\`, harmless to a spreadsheet, and decode
+// strips the backslash back off. Numbers (`-5`) are left alone: a spreadsheet
+// reads them as numbers, not formulas, and prefixing would corrupt round-trip.
+const FORMULA_LEAD = /^[=+@\t\r-]/;
+
 /** Parse a `key:type[]?` header into its key and column type. */
 const parseHeader = (header: string): { key: string; type: ColumnType } => {
   const colon = header.lastIndexOf(':');
@@ -409,8 +424,14 @@ const encodeCell = (
       // empty string from an absent cell, and a leading backslash is doubled
       // (`\x` → `\\x`) so a literal `\N` / `\T…` can never be read as a
       // sentinel. Decode strips exactly one leading backslash.
+      //
+      // A leading FORMULA char (`= + - @` / TAB / CR) gets the same single-
+      // backslash escape: the on-disk cell then begins with `\` (harmless to a
+      // spreadsheet — no formula injection), and since neither `\N` nor `\T`
+      // starts with a formula char, `\=…` falls straight through the sentinel
+      // checks to the string branch's `slice(1)`, so it round-trips unchanged.
       const s = value as string;
-      const raw = s.startsWith('\\') ? `\\${s}` : s;
+      const raw = s.startsWith('\\') || FORMULA_LEAD.test(s) ? `\\${s}` : s;
 
       return { raw, forceQuote: true };
     }
@@ -631,7 +652,7 @@ export const encodeNodes = (graph: Graph): string => {
 
   const { keys, types } = computeColumns(bags);
 
-  const header = ['id', ':LABEL', ...keys.map((k) => columnHeader(k, types.get(k)!))].join(',');
+  const header = headerLine(['id', ':LABEL', ...keys.map((k) => columnHeader(k, types.get(k)!))]);
 
   const rows: string[] = [header];
   let i = 0;
@@ -688,13 +709,13 @@ export const encodeEdges = (graph: Graph): string => {
 
   const { keys, types } = computeColumns(bags);
 
-  const header = [
+  const header = headerLine([
     'id',
     ':START_ID',
     ':END_ID',
     ':TYPE',
     ...keys.map((k) => columnHeader(k, types.get(k)!)),
-  ].join(',');
+  ]);
 
   const rows: string[] = [header];
   let i = 0;
@@ -764,12 +785,16 @@ export const decodeEdges = (csv: string, graph: Graph): Graph =>
 const BATCH = 1024;
 
 const nodeHeaderLine = (keys: readonly string[], types: Map<string, ColumnType>): string =>
-  ['id', ':LABEL', ...keys.map((k) => columnHeader(k, types.get(k)!))].join(',');
+  headerLine(['id', ':LABEL', ...keys.map((k) => columnHeader(k, types.get(k)!))]);
 
 const edgeHeaderLine = (keys: readonly string[], types: Map<string, ColumnType>): string =>
-  ['id', ':START_ID', ':END_ID', ':TYPE', ...keys.map((k) => columnHeader(k, types.get(k)!))].join(
-    ',',
-  );
+  headerLine([
+    'id',
+    ':START_ID',
+    ':END_ID',
+    ':TYPE',
+    ...keys.map((k) => columnHeader(k, types.get(k)!)),
+  ]);
 
 /**
  * Stream the typed nodes CSV. The header is the key-union over *all* vertices,

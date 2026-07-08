@@ -131,6 +131,25 @@ fn column_header(key: &str, t: ColType) -> String {
     )
 }
 
+// A property KEY is arbitrary text, so a header cell must be quoted exactly like
+// a data cell — an unquoted `,`/`"`/newline in a key would break column
+// alignment on decode. The decoder parses the header with the same quote-aware
+// parser, so quoting is transparent to `parse_header`.
+fn header_line(cells: &[String]) -> String {
+    cells
+        .iter()
+        .map(|c| quote_field(c))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+// Leading chars a spreadsheet reads as a formula (`= + - @`, plus TAB/CR). A
+// STRING value starting with one is neutralized on encode by reusing the
+// leading-backslash escape (see encode_cell); numbers (`-5`) are left alone.
+fn starts_with_formula(s: &str) -> bool {
+    matches!(s.chars().next(), Some('=' | '+' | '-' | '@' | '\t' | '\r'))
+}
+
 fn parse_header(header: &str) -> (String, ColType) {
     let colon = header.rfind(':').unwrap_or(header.len());
     let key = header[..colon].to_string();
@@ -287,11 +306,17 @@ fn encode_cell(column: ColType, v: &Value) -> Encoded {
             // scalar strings are always force-quoted (so present "" ≠ absent),
             // and a leading backslash is doubled so a literal `\N`/`\T…` can't be
             // read as a sentinel (decode strips exactly one leading backslash).
+            //
+            // A leading FORMULA char (`= + - @` / TAB / CR) gets the same single-
+            // backslash escape: the on-disk cell then begins with `\` (inert to a
+            // spreadsheet — no formula injection), and since neither `\N` nor
+            // `\T` starts with a formula char, `\=…` falls through the sentinel
+            // checks to the string branch's one-backslash strip, round-tripping.
             let s = match v {
                 Value::Str(s) => s.to_string(),
                 _ => String::new(),
             };
-            let raw = if s.starts_with('\\') {
+            let raw = if s.starts_with('\\') || starts_with_formula(&s) {
                 format!("\\{s}")
             } else {
                 s
@@ -581,7 +606,7 @@ pub fn encode_nodes(g: &Graph) -> String {
     let header = {
         let mut h = vec!["id".to_string(), ":LABEL".to_string()];
         h.extend(keys.iter().map(|k| column_header(k, types[k])));
-        h.join(",")
+        header_line(&h)
     };
     let mut rows = vec![header];
     for (vi, bag) in &entries {
@@ -605,7 +630,7 @@ pub fn encode_edges(g: &Graph) -> String {
             ":TYPE".to_string(),
         ];
         h.extend(keys.iter().map(|k| column_header(k, types[k])));
-        h.join(",")
+        header_line(&h)
     };
     let mut rows = vec![header];
     for (i, bag) in &entries {
@@ -795,5 +820,59 @@ mod tests {
             g2.props.value(a, "note", &g2.strs),
             Value::Str("x\n=== EDGES ===\ny".into())
         );
+    }
+
+    #[test]
+    fn property_key_with_delimiters_round_trips_via_quoted_header() {
+        // An arbitrary key (`a,b`) would break column alignment if the header
+        // cell weren't quoted like a data cell.
+        let g = crate::codec::pg_json::decode(
+            r#"{"nodes":[{"id":"n1","labels":["N"],"properties":{"a,b":1}}],"edges":[]}"#,
+        )
+        .unwrap();
+        let enc = encode(&g);
+        assert!(enc.lines().next().unwrap().contains("\"a,b:integer\""));
+        let g2 = decode(&enc).unwrap();
+        let n1 = g2.vid.get("n1").unwrap() as usize;
+        assert_eq!(g2.props.value(n1, "a,b", &g2.strs), Value::Num(1.0));
+    }
+
+    #[test]
+    fn formula_leading_strings_are_neutralized_and_round_trip() {
+        // A string value starting with a spreadsheet formula char is escaped to a
+        // leading backslash on the wire (inert to a spreadsheet), then restored.
+        let g = crate::codec::pg_json::decode(
+            r#"{"nodes":[{"id":"n1","labels":["N"],"properties":{"name":"=1+2","cmd":"@x","dash":"-danger"}}],"edges":[]}"#,
+        )
+        .unwrap();
+        let enc = encode(&g);
+        assert!(enc.contains("\"\\=1+2\""), "= not neutralized: {enc}");
+        assert!(enc.contains("\"\\@x\""), "@ not neutralized");
+        assert!(enc.contains("\"\\-danger\""), "- not neutralized");
+        let g2 = decode(&enc).unwrap();
+        let n1 = g2.vid.get("n1").unwrap() as usize;
+        assert_eq!(
+            g2.props.value(n1, "name", &g2.strs),
+            Value::Str("=1+2".into())
+        );
+        assert_eq!(
+            g2.props.value(n1, "dash", &g2.strs),
+            Value::Str("-danger".into())
+        );
+    }
+
+    #[test]
+    fn negative_numbers_are_not_neutralized() {
+        // A number is not a formula — a spreadsheet reads `-5` as a number, and
+        // prefixing it would corrupt the round trip.
+        let g = crate::codec::pg_json::decode(
+            r#"{"nodes":[{"id":"n1","labels":["N"],"properties":{"balance":-5}}],"edges":[]}"#,
+        )
+        .unwrap();
+        let enc = encode(&g);
+        assert!(!enc.contains("\\-5"), "number wrongly neutralized: {enc}");
+        let g2 = decode(&enc).unwrap();
+        let n1 = g2.vid.get("n1").unwrap() as usize;
+        assert_eq!(g2.props.value(n1, "balance", &g2.strs), Value::Num(-5.0));
     }
 }

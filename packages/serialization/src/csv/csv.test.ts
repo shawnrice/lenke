@@ -19,6 +19,50 @@ import {
 
 const roundTripNodes = (graph: Graph): Graph => decodeNodes(encodeNodes(graph), new Graph());
 
+describe('CSV hardening: header quoting + formula neutralization', () => {
+  test('a property key containing a comma/quote/newline round-trips (header is quoted)', () => {
+    const g = new Graph();
+    g.addVertex({ id: 'n1', labels: ['N'], properties: { 'a,b': 1, 'c"d': 2, 'e\nf': 3 } });
+
+    const csv = encodeNodes(g);
+    expect(csv.split('\n')[0]).toContain('"a,b:integer"'); // header cell quoted
+
+    const back = roundTripNodes(g);
+    expect(graphContentEqual(back, g)).toBe(true); // keys survive intact
+  });
+
+  test('a string value starting with a formula char is neutralized and round-trips', () => {
+    const g = new Graph();
+    g.addVertex({
+      id: 'n1',
+      labels: ['N'],
+      properties: { name: '=1+2', cmd: '@SUM(A1)', dash: '-danger', plus: '+x' },
+    });
+
+    const csv = encodeNodes(g);
+    // On the wire each dangerous string begins with a backslash — inert to a
+    // spreadsheet (no leading `=`/`@`/`-`/`+`).
+    expect(csv).toContain('"\\=1+2"');
+    expect(csv).toContain('"\\@SUM(A1)"');
+    expect(csv).toContain('"\\-danger"');
+    expect(csv).toContain('"\\+x"');
+
+    const back = roundTripNodes(g);
+    expect(graphContentEqual(back, g)).toBe(true); // decode strips the guard back off
+  });
+
+  test('a negative NUMBER is left alone (a spreadsheet reads it as a number, not a formula)', () => {
+    const g = new Graph();
+    g.addVertex({ id: 'n1', labels: ['N'], properties: { balance: -5, delta: -2.5 } });
+
+    const csv = encodeNodes(g);
+    expect(csv).not.toContain('\\-5'); // no guard — numbers are safe as-is
+
+    const back = roundTripNodes(g);
+    expect(graphContentEqual(back, g)).toBe(true);
+  });
+});
+
 describe('CSV escaping / quoting (RFC 4180)', () => {
   test('quotes fields containing commas, quotes, and newlines', () => {
     const g = new Graph();
