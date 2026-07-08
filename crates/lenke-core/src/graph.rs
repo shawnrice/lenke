@@ -11,7 +11,10 @@
 //! Property model: a key's column is typed by its first non-null value
 //! (Num=f64, Str=interned, Bool); a value that doesn't fit promotes the column
 //! to a `Mixed` fallback so nothing is ever lost. Absent slots use a presence
-//! bitset. Vertices and edges share the same [`Properties`] store type.
+//! bitset. `null` is a **first-class stored value** — present and distinct from
+//! an absent slot (a stored null lives in a `Mixed` column as `Some(Null)`);
+//! use [`Properties::is_present`] for presence, not "value == Null". Vertices
+//! and edges share the same [`Properties`] store type.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -193,6 +196,31 @@ impl Properties {
         }
     }
 
+    /// Does element `idx` HAVE property `key` — regardless of whether its value
+    /// is a stored `Null`? This is the true presence test. `value(...) == Null`
+    /// is NOT presence: it's also true for an absent key, because `Null` is a
+    /// first-class stored value here (see [`set_value`](Self::set_value)) that a
+    /// read cannot distinguish from absence. Enumeration/serialization must gate
+    /// on this, not on the value.
+    pub fn is_present(&self, idx: usize, key: &str) -> bool {
+        self.keys
+            .get(key)
+            .is_some_and(|kid| self.is_present_id(idx, kid))
+    }
+
+    /// [`is_present`](Self::is_present) for an already-resolved key id.
+    pub fn is_present_id(&self, idx: usize, kid: u32) -> bool {
+        match self.cols.get(kid as usize) {
+            Some(
+                Column::Num { present, .. }
+                | Column::Str { present, .. }
+                | Column::Bool { present, .. },
+            ) => present.get(idx),
+            Some(Column::Mixed { data }) => data[idx].is_some(),
+            None => false,
+        }
+    }
+
     /// Append one element slot (absent in every existing column).
     fn push_element(&mut self) {
         for col in &mut self.cols {
@@ -203,12 +231,17 @@ impl Properties {
 
     /// Set element `idx`'s `key` to `v`, creating the column if needed and
     /// promoting it to `Mixed` if `v`'s type disagrees with the existing one.
-    /// Setting `Null` removes the property (ISO `SET x.k = null`).
+    ///
+    /// `Null` is a FIRST-CLASS stored value: `set_value(idx, key, Null)` stores a
+    /// *present* null (promoting the column to `Mixed`) — it does NOT remove the
+    /// property. A stored null and an absent key are distinct (`is_present`
+    /// tells them apart), though both read back as `Null` and are `IS NULL`
+    /// (SQL/GQL three-valued logic). Removal is explicit: [`remove_value`], GQL
+    /// `REMOVE`, or Gremlin `.properties(k).drop()`. This mirrors the TS engine
+    /// and GQL's null-typed value model — and is a deliberate divergence from
+    /// Cypher/TinkerPop, where `SET x = null` (and null property values) mean
+    /// removal.
     pub fn set_value(&mut self, idx: usize, key: &str, v: Value, strs: &mut Dict) {
-        if matches!(v, Value::Null) {
-            self.remove_value(idx, key);
-            return;
-        }
         let kid = self.keys.intern(key) as usize;
         if kid >= self.cols.len() {
             // brand-new key: a column of `len` absent slots, then set below.
@@ -840,7 +873,9 @@ impl Graph {
         // Invalidate the edge's type and every property key it carried.
         let mut touched: Vec<String> = vec![self.etype.text(self.e_type[i]).to_string()];
         for kid in 0..self.edge_props.cols.len() as u32 {
-            if !matches!(self.edge_props.value_id(i, kid, &self.strs), Value::Null) {
+            // Presence, not value: a stored-null key is present and its epoch
+            // must still be bumped on delete.
+            if self.edge_props.is_present_id(i, kid) {
                 touched.push(self.edge_props.keys.text(kid).to_string());
             }
         }
@@ -890,7 +925,8 @@ impl Graph {
             .map(|&l| self.labels.text(l).to_string())
             .collect();
         for kid in 0..self.props.cols.len() as u32 {
-            if !matches!(self.props.value_id(i, kid, &self.strs), Value::Null) {
+            // Presence, not value (stored null is present) — see remove_edge.
+            if self.props.is_present_id(i, kid) {
                 touched.push(self.props.keys.text(kid).to_string());
             }
         }
@@ -1081,13 +1117,13 @@ fn build_props(len: usize, items: &[(usize, &[(String, Value)])], strs: &mut Dic
         .collect();
     for (idx, item) in items {
         for (k, v) in *item {
-            if !matches!(v, Value::Null) {
-                let kid = props.keys.get(k).unwrap() as usize;
-                let col = &mut props.cols[kid];
-                if !col_set(col, *idx, v, strs) {
-                    *col = to_mixed(col, strs);
-                    col_set(col, *idx, v, strs);
-                }
+            // Store every value, `Null` included — a present null promotes the
+            // column to `Mixed` (mirrors `set_value`; null is a first-class value).
+            let kid = props.keys.get(k).unwrap() as usize;
+            let col = &mut props.cols[kid];
+            if !col_set(col, *idx, v, strs) {
+                *col = to_mixed(col, strs);
+                col_set(col, *idx, v, strs);
             }
         }
     }
@@ -1257,5 +1293,65 @@ impl Builder {
             vidx: HashMap::new(),
             eidx: HashMap::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod null_is_first_class {
+    //! `null` is a stored, present property value — NOT sugar for removal. These
+    //! lock in the semantics `set_value`/`is_present`/`remove_value` agree on,
+    //! and guard against a regression back to the old "SET null removes" model
+    //! (a deliberate divergence from Cypher/TinkerPop).
+    use super::*;
+
+    fn props(len: usize) -> Properties {
+        let mut p = Properties::default();
+        for _ in 0..len {
+            p.push_element();
+        }
+        p
+    }
+
+    #[test]
+    fn a_stored_null_is_present_and_distinct_from_absent() {
+        let mut strs = Dict::default();
+        let mut p = props(2);
+        p.set_value(0, "k", Value::Null, &mut strs); // row 0: present null; row 1: untouched
+
+        assert!(p.is_present(0, "k"), "a stored null is present");
+        assert!(
+            matches!(p.value(0, "k", &strs), Value::Null),
+            "and reads back as Null"
+        );
+        assert!(!p.is_present(1, "k"), "an unset key is absent");
+        assert!(
+            matches!(p.value(1, "k", &strs), Value::Null),
+            "absent also reads as Null"
+        );
+    }
+
+    #[test]
+    fn setting_null_stores_it_without_disturbing_a_typed_column() {
+        // A Num key set to null on another row keeps both — the column promotes
+        // to Mixed rather than the null vanishing.
+        let mut strs = Dict::default();
+        let mut p = props(2);
+        p.set_value(0, "k", Value::Num(5.0), &mut strs);
+        p.set_value(1, "k", Value::Null, &mut strs);
+
+        assert!(matches!(p.value(0, "k", &strs), Value::Num(n) if n == 5.0));
+        assert!(p.is_present(1, "k"));
+        assert!(matches!(p.value(1, "k", &strs), Value::Null));
+    }
+
+    #[test]
+    fn remove_value_deletes_even_a_stored_null() {
+        let mut strs = Dict::default();
+        let mut p = props(1);
+        p.set_value(0, "k", Value::Null, &mut strs);
+        assert!(p.is_present(0, "k"));
+
+        p.remove_value(0, "k"); // explicit removal is the ONLY way to unset it
+        assert!(!p.is_present(0, "k"));
     }
 }
