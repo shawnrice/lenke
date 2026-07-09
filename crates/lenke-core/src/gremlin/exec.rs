@@ -52,6 +52,11 @@ fn dedup_key(v: &GVal) -> Option<DedupKey> {
                 .map(|(k, val)| Some((dedup_key(k)?, dedup_key(val)?)))
                 .collect::<Option<_>>()?,
         ),
+        // Owner-agnostic (like PartialEq / the TS engine): dedup a property
+        // element by its key+value.
+        GVal::Property { key, value, .. } => {
+            DedupKey::List(vec![DedupKey::Str(key.clone()), dedup_key(value)?])
+        }
     })
 }
 
@@ -376,6 +381,15 @@ fn write_gval(out: &mut String, graph: &Graph, v: &GVal) {
                 out.push(':');
                 write_gval(out, graph, val);
             }
+            out.push('}');
+        }
+        // A property element serializes as `{"key":…,"value":…}` (TinkerPop's
+        // property shape); its owner back-reference is internal and not emitted.
+        GVal::Property { key, value, .. } => {
+            out.push_str("{\"key\":");
+            push_json_str(out, key);
+            out.push_str(",\"value\":");
+            write_gval(out, graph, value);
             out.push('}');
         }
     }
@@ -1320,7 +1334,11 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
                 for k in ks {
                     if prop_present(graph, &t.val, &k) {
                         let v = prop(graph, &t.val, &k);
-                        next.push(t.step(GVal::Map(vec![(GVal::Str(Arc::from("key")), GVal::Str(Arc::from(k.as_str()))), (GVal::Str(Arc::from("value")), v)])));
+                        next.push(t.step(GVal::Property {
+                            owner: Box::new(t.val.clone()),
+                            key: Arc::from(k.as_str()),
+                            value: Box::new(v),
+                        }));
                     }
                 }
             }
@@ -1331,7 +1349,10 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
         Step::Value => map_step(stream, |t| vec![prop_value_field(&t.val).unwrap_or_else(|| t.val.clone())]),
         Step::Id => map_step(stream, |t| vec![elem_id(graph, &t.val)]),
         Step::Label => map_step(stream, |t| match &t.val {
-            GVal::Map(_) => prop_key_field(&t.val).map(|v| vec![v]).unwrap_or_default(),
+            // A property element's `label()` is its key (TinkerPop).
+            GVal::Property { .. } | GVal::Map(_) => {
+                prop_key_field(&t.val).map(|v| vec![v]).unwrap_or_default()
+            }
             other => vec![elem_label(graph, other)],
         }),
         Step::Path(bys) => stream
@@ -1834,18 +1855,13 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
                     // `.properties(k).drop()` removes the property from its owner.
                     // This is the ONLY way to delete a property in Gremlin here —
                     // `property(k, null)` STORES a null (divergence from TinkerPop).
-                    // The property element carries no owner, so recover it from the
-                    // traverser's prior path entry (`.properties()` uses `.step()`,
-                    // pushing the element after the vertex/edge it came from).
-                    GVal::Map(_) => {
-                        if let Some(GVal::Str(key)) = prop_key_field(&t.val) {
-                            match t.path.iter().rev().nth(1) {
-                                Some(GVal::Vertex(i)) => graph.remove_vertex_prop(*i, &key),
-                                Some(GVal::Edge(e)) => graph.remove_edge_prop(*e, &key),
-                                _ => {}
-                            }
-                        }
-                    }
+                    // The owner is carried on the element itself, so a `project`
+                    // Map (not a Property) can never be mistaken for one.
+                    GVal::Property { owner, key, .. } => match **owner {
+                        GVal::Vertex(i) => graph.remove_vertex_prop(i, key),
+                        GVal::Edge(e) => graph.remove_edge_prop(e, key),
+                        _ => {}
+                    },
                     _ => {}
                 }
             }
@@ -1917,6 +1933,7 @@ fn resolve_endpoint(graph: &mut Graph, ctx: &mut Ctx, ep: &Endpoint, t: &Trav) -
 /// The `value` field of a `{key, value}` property map (for `value`/`hasValue`).
 fn prop_value_field(v: &GVal) -> Option<GVal> {
     match v {
+        GVal::Property { value, .. } => Some((**value).clone()),
         GVal::Map(entries) => entries
             .iter()
             .find(|(k, _)| matches!(k, GVal::Str(s) if s.as_ref() == "value"))
@@ -1926,6 +1943,7 @@ fn prop_value_field(v: &GVal) -> Option<GVal> {
 }
 fn prop_key_field(v: &GVal) -> Option<GVal> {
     match v {
+        GVal::Property { key, .. } => Some(GVal::Str(key.clone())),
         GVal::Map(entries) => entries
             .iter()
             .find(|(k, _)| matches!(k, GVal::Str(s) if s.as_ref() == "key"))

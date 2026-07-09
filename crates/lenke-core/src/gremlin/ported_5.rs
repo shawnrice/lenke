@@ -365,10 +365,12 @@ fn p5_dedup_via_oute_inv() {
 
 /// A `{key, value}` property object as the engine emits it.
 fn prop_obj(key: &str, value: GVal) -> GVal {
-    GVal::Map(vec![
-        (GVal::Str("key".into()), GVal::Str(key.into())),
-        (GVal::Str("value".into()), value),
-    ])
+    // Owner is ignored by `GVal`'s PartialEq, so a placeholder is fine here.
+    GVal::Property {
+        owner: Box::new(GVal::Null),
+        key: key.into(),
+        value: Box::new(value),
+    }
 }
 
 #[test]

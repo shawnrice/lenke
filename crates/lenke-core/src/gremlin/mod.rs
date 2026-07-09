@@ -38,7 +38,12 @@ pub use parse::parse;
 
 /// A runtime traversal value. Graph elements are dense ids (like `gql::Val`);
 /// `List`/`Map` carry `fold`/`valueMap`/`group`/`select`/`path` results.
-#[derive(Clone, Debug, PartialEq)]
+///
+/// `PartialEq` is hand-written (below) only so a `Property` compares by
+/// key+value, ignoring its owner back-reference — the owner is internal
+/// drop-routing metadata that is never observable (never serialized), matching
+/// the TS engine. Every other variant compares structurally as `derive` would.
+#[derive(Clone, Debug)]
 pub enum GVal {
     Null,
     Bool(bool),
@@ -49,6 +54,42 @@ pub enum GVal {
     List(Vec<Self>),
     /// Insertion-ordered key→value pairs (valueMap / group / select / project).
     Map(Vec<(Self, Self)>),
+    /// A property element (from `.properties(k)`): its key/value plus a
+    /// back-reference to the owning `Vertex`/`Edge`. The owner is carried
+    /// EXPLICITLY (not recovered from the traverser path) so `.drop()` deletes
+    /// exactly this property and can never mistake a `project('key')` Map for a
+    /// property element. Serializes as `{key, value}` (TinkerPop's shape).
+    Property {
+        owner: Box<Self>,
+        key: Arc<str>,
+        value: Box<Self>,
+    },
+}
+
+impl PartialEq for GVal {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Null, Self::Null) => true,
+            (Self::Bool(a), Self::Bool(b)) => a == b,
+            (Self::Num(a), Self::Num(b)) => a == b, // f64: NaN != NaN, as derive would
+            (Self::Str(a), Self::Str(b)) => a == b,
+            (Self::Vertex(a), Self::Vertex(b)) => a == b,
+            (Self::Edge(a), Self::Edge(b)) => a == b,
+            (Self::List(a), Self::List(b)) => a == b,
+            (Self::Map(a), Self::Map(b)) => a == b,
+            // Owner ignored: a property element's observable identity is its
+            // key+value (the owner is internal drop-routing metadata).
+            (
+                Self::Property {
+                    key: k1, value: v1, ..
+                },
+                Self::Property {
+                    key: k2, value: v2, ..
+                },
+            ) => k1 == k2 && v1 == v2,
+            _ => false,
+        }
+    }
 }
 
 impl From<f64> for GVal {

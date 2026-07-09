@@ -970,6 +970,20 @@ fn properties_drop_removes_the_property() {
 }
 
 #[test]
+fn drop_cannot_be_spoofed_by_a_project_map() {
+    // Regression: a `project('key')` result is a Map with a `key` entry; it must
+    // NOT be mistaken for a property element by drop() (that would delete an
+    // arbitrary property). The owner now rides the `Property` element itself, so
+    // a Map can never spoof one. Before the fix this deleted `age` everywhere.
+    let mut g = modern();
+    let t = super::parse("g.V().project('key').by(constant('age')).drop()").unwrap();
+    let _ = t.run(&mut g);
+    // All four PERSON vertices keep their age — nothing was deleted.
+    let ages = super::parse("g.V().values('age').count()").unwrap();
+    assert_eq!(one_num(ages.run(&mut g)), 4.0);
+}
+
+#[test]
 fn add_edge_between_tagged() {
     let mut g0 = modern();
     // marko --LIKES--> ripple
