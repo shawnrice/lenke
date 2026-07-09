@@ -1,0 +1,11 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "@lenke/sync",
+  "targets": {
+    "test": {
+      "//": "engine/host/reconnect/gremlin-write/client/snapshot/websocket tests load the REAL Rust cdylib via `createFfiBackend(<path>)`, so — like @lenke/native — the cache must key on `rustCore` (else a Rust-only change serves a stale pass) and rebuild the cdylib first via `dependsOn`.",
+      "inputs": ["default", "^production", "rustCore"],
+      "dependsOn": ["lenke-core:build"]
+    }
+  }
+}
