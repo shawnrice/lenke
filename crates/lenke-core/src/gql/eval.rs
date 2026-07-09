@@ -1018,6 +1018,17 @@ fn fold_extreme(values: Vec<Val>, want: Ordering) -> Val {
 
 // --- scalar functions (dispatched on the resolved enum) ----------------------
 
+/// Slice `len` UTF-16 code units starting at unit index `start` (JS
+/// `String.slice` semantics), decoding back to a `String`. A slice that splits a
+/// surrogate pair yields U+FFFD there (lossy) — an extreme edge JS keeps as a
+/// lone surrogate; not worth carrying invalid UTF-16 through the engine for.
+fn utf16_slice(s: &str, start: usize, len: usize) -> String {
+    let units: Vec<u16> = s.encode_utf16().collect();
+    let end = start.saturating_add(len).min(units.len());
+    let start = start.min(end);
+    String::from_utf16_lossy(&units[start..end])
+}
+
 fn call_scalar(graph: &Graph, func: ScalarFn, args: &[Val]) -> Val {
     use ScalarFn::*;
     let a = args.first();
@@ -1062,32 +1073,36 @@ fn call_scalar(graph: &Graph, func: ScalarFn, args: &[Val]) -> Val {
         Trim => us(|s| vstr(s.trim())),
         Ltrim => us(|s| vstr(s.trim_start())),
         Rtrim => us(|s| vstr(s.trim_end())),
-        CharLength => us(|s| Val::Num(s.chars().count() as f64)),
+        // String length/slicing count UTF-16 code units, matching JS `.length`
+        // (the TS engine) — NOT Unicode code points. So `size('😀')` == 2, and
+        // `left`/`right` slice on the same unit as JS `String.slice`.
+        CharLength => us(|s| Val::Num(s.encode_utf16().count() as f64)),
         Power => bn(|x, y| x.powf(y)),
         Mod => bn(|x, y| x % y),
         Log => bn(|base, value| value.ln() / base.ln()),
         Size => match a {
             Some(Val::List(items)) => Val::Num(items.len() as f64),
-            Some(Val::Str(s)) => Val::Num(s.chars().count() as f64),
+            Some(Val::Str(s)) => Val::Num(s.encode_utf16().count() as f64),
             _ => Val::Null,
         },
         Left => match (a, b) {
             (Some(x), Some(y)) if !is_nullish(x) && !is_nullish(y) => {
                 let s = js_str(graph, x);
                 let n = num_of(y).unwrap_or(0.0).max(0.0) as usize;
-                vstr(s.chars().take(n).collect::<String>())
+                vstr(utf16_slice(&s, 0, n))
             }
             _ => Val::Null,
         },
         Right => match (a, b) {
             (Some(x), Some(y)) if !is_nullish(x) && !is_nullish(y) => {
-                let s: Vec<char> = js_str(graph, x).chars().collect();
+                let s = js_str(graph, x);
+                let units = s.encode_utf16().count();
                 let n = num_of(y).unwrap_or(0.0);
                 if n <= 0.0 {
                     vstr("")
                 } else {
-                    let n = (n as usize).min(s.len());
-                    vstr(s[s.len() - n..].iter().collect::<String>())
+                    let n = (n as usize).min(units);
+                    vstr(utf16_slice(&s, units - n, n))
                 }
             }
             _ => Val::Null,
@@ -4328,24 +4343,11 @@ fn run_linear(
 
 /// Concrete labels a (lowered) label expression names, for element creation;
 /// resolves each ref back to its name. `|`/`!`/`%` can't name a creatable set.
-fn labels_of(expr: Option<&CLabelExpr>, names: &[String]) -> Vec<String> {
-    match expr {
-        Some(CLabelExpr::Label(r)) => vec![names[*r].clone()],
-        Some(CLabelExpr::And(l, r)) => {
-            let mut v = labels_of(Some(l), names);
-            v.extend(labels_of(Some(r), names));
-            v
-        }
-        _ => Vec::new(),
-    }
-}
-
 /// Labels to CREATE for an INSERT element: `None` for no label expression
 /// (a legitimately unlabelled node), the conjunction for `A`/`A&B`, and `None`
-/// wrapped in `Err`-signalling `None` for a disjunction/negation/wildcard — an
-/// ambiguous form that can't be created (the caller raises FAULT_BAD_LABEL).
-/// Distinct from [`labels_of`], which silently flattens the ambiguous forms to
-/// `[]` (fine for MATCH, wrong for INSERT).
+/// for a disjunction/negation/wildcard — an ambiguous form that can't be created
+/// (the caller raises FAULT_BAD_LABEL). A non-INSERT (MATCH) label expression is
+/// handled elsewhere; this deliberately refuses the ambiguous forms.
 fn creatable_labels(expr: Option<&CLabelExpr>, names: &[String]) -> Option<Vec<String>> {
     match expr {
         None => Some(Vec::new()),

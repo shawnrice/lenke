@@ -237,7 +237,10 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, SyntaxError> {
             continue;
         }
 
-        let two = if i + 2 <= b.len() { &src[i..i + 2] } else { "" };
+        // `.get` (not `&src[..]`) so a slice that would cross a UTF-8 char
+        // boundary — e.g. `i` sits just before a multi-byte char — yields None
+        // rather than panicking (a `'😀'` literal used to crash the lexer here).
+        let two = src.get(i..i + 2).unwrap_or("");
 
         // Comments: `//` and `--` line, `/* */` block. Note `--` is a comment,
         // NOT an undirected edge — the main divergence from Cypher.
@@ -249,7 +252,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, SyntaxError> {
         }
         if two == "/*" {
             i += 2;
-            while i < b.len() && &src[i..(i + 2).min(b.len())] != "*/" {
+            while i < b.len() && src.get(i..(i + 2).min(b.len())) != Some("*/") {
                 i += 1;
             }
             if i >= b.len() {
@@ -260,7 +263,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, SyntaxError> {
         }
 
         // Three-char operator (greedy): `<->`.
-        if i + 3 <= b.len() && &src[i..i + 3] == "<->" {
+        if src.get(i..i + 3) == Some("<->") {
             push(&mut tokens, Tt::LRArrow, "<->", i);
             i += 3;
             continue;

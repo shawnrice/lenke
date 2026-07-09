@@ -1186,6 +1186,27 @@ fn detach_delete_cascades_edges() {
 }
 
 #[test]
+fn string_length_counts_utf16_units_like_js() {
+    // Non-BMP chars are 2 UTF-16 units — matching JS `.length` (the TS engine),
+    // not Unicode code points (which Rust's `chars().count()` gave before).
+    let mut g = modern();
+    assert_eq!(rows(&mut g, "RETURN size('😀') AS s"), vec![vec![n(2.0)]]);
+    assert_eq!(
+        rows(&mut g, "RETURN char_length('a😀b') AS s"),
+        vec![vec![n(4.0)]]
+    );
+    // left/right slice on the same UTF-16 unit as JS `String.slice`.
+    assert_eq!(
+        rows(&mut g, "RETURN left('😀x', 2) AS s"),
+        vec![vec![s("😀")]]
+    );
+    assert_eq!(
+        rows(&mut g, "RETURN right('x😀', 2) AS s"),
+        vec![vec![s("😀")]]
+    );
+}
+
+#[test]
 fn insert_rejects_ambiguous_label_and_typeless_edge() {
     // A non-conjunction node label (`|`/`!`/`%`) can't be created (which one?),
     // and an edge must carry exactly one type — both were silently accepted
