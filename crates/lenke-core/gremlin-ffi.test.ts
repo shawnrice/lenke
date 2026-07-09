@@ -7,7 +7,10 @@ import { dlopen, FFIType, ptr, toArrayBuffer } from 'bun:ffi';
 import { describe, expect, test } from 'bun:test';
 
 // Import from source (not the built dist) so the test doesn't depend on a
-// gremlin package build step.
+// gremlin package build step. (`subgraph.js` is public API — re-exported from
+// `@lenke/gremlin` — we just skip the dist to avoid ordering this crate test
+// behind a gremlin build.)
+// oxlint-disable-next-line boundaries/no-cross-package-relative-import -- deliberate source import, see above
 import { type NativeSubgraph, subgraphToGraph } from '../../packages/gremlin/src/subgraph.js';
 
 const lib = dlopen(new URL('./target/release/liblenke_core.dylib', import.meta.url).pathname, {

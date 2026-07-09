@@ -23,6 +23,7 @@ import {
   type SyncWrite,
 } from '@lenke/sync';
 
+// oxlint-disable-next-line boundaries/no-cross-package-relative-import -- Vite `?url` asset import of the compiled wasm build output; a build artifact has no package entry point.
 import wasmUrl from '../../crates/lenke-core/target/wasm32-unknown-unknown/release/lenke_core.wasm?url';
 import { CLUSTERS } from './datagen.ts';
 

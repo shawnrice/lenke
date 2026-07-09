@@ -1,8 +1,13 @@
 {
   "$schema": "https://raw.githubusercontent.com/oxc-project/oxc/main/npm/oxlint/configuration_schema.json",
-  "jsPlugins": ["./lint-rules/padding-lines.js", "@lenke/lint"],
+  "jsPlugins": [
+    "./lint-rules/padding-lines.js",
+    "./lint-rules/module-boundaries.js",
+    "@lenke/lint"
+  ],
   "rules": {
     "padding-lines/before-exit": "error",
+    "boundaries/no-cross-package-relative-import": "error",
     "lenke/no-raw-interpolation": "error",
     "eqeqeq": ["error", "always", { "null": "ignore" }],
     "no-var": "error",
