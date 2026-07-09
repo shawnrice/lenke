@@ -102,6 +102,7 @@ const FAULT_NONE: u8 = 0;
 const FAULT_DIV_ZERO: u8 = 1;
 const FAULT_TYPE: u8 = 2;
 const FAULT_BUDGET: u8 = 3;
+const FAULT_BAD_LABEL: u8 = 4;
 
 /// Per-expansion cap on trail-traversal steps; a guard against exponential blowup.
 const TRAIL_BUDGET: u64 = 1_000_000;
@@ -143,6 +144,10 @@ impl Ctx<'_> {
             FAULT_BUDGET => Err(CodeError::new(
                 ErrorCode::ResourceExhausted,
                 "variable-length pattern exceeded the trail budget; add a tighter bound",
+            )),
+            FAULT_BAD_LABEL => Err(CodeError::new(
+                ErrorCode::InvalidGraphOp,
+                "INSERT: a node's label expression must be a plain conjunction (`A` or `A&B`) and an edge must carry exactly one type — a disjunction/negation/wildcard or a typeless edge is not creatable",
             )),
             _ => Ok(()),
         }
@@ -4335,6 +4340,25 @@ fn labels_of(expr: Option<&CLabelExpr>, names: &[String]) -> Vec<String> {
     }
 }
 
+/// Labels to CREATE for an INSERT element: `None` for no label expression
+/// (a legitimately unlabelled node), the conjunction for `A`/`A&B`, and `None`
+/// wrapped in `Err`-signalling `None` for a disjunction/negation/wildcard — an
+/// ambiguous form that can't be created (the caller raises FAULT_BAD_LABEL).
+/// Distinct from [`labels_of`], which silently flattens the ambiguous forms to
+/// `[]` (fine for MATCH, wrong for INSERT).
+fn creatable_labels(expr: Option<&CLabelExpr>, names: &[String]) -> Option<Vec<String>> {
+    match expr {
+        None => Some(Vec::new()),
+        Some(CLabelExpr::Label(r)) => Some(vec![names[*r].clone()]),
+        Some(CLabelExpr::And(l, r)) => {
+            let mut v = creatable_labels(Some(l), names)?;
+            v.extend(creatable_labels(Some(r), names)?);
+            Some(v)
+        }
+        Some(_) => None, // |, !, % — not a concrete label set
+    }
+}
+
 /// Evaluate a pattern property map to concrete core `Value`s (for create/set).
 fn eval_props(
     graph: &Graph,
@@ -4356,7 +4380,13 @@ fn ensure_node(graph: &mut Graph, ctx: &Ctx, binding: &mut Binding, node: &CNode
             return *vi;
         }
     }
-    let labels = labels_of(node.label.as_ref(), ctx.label_names);
+    // A node may be unlabelled, but a non-conjunction label expression
+    // (`A|B`, `!A`, `%`) is ambiguous — reject it rather than silently create an
+    // unlabelled node.
+    let labels = creatable_labels(node.label.as_ref(), ctx.label_names).unwrap_or_else(|| {
+        ctx.set_fault(FAULT_BAD_LABEL);
+        Vec::new()
+    });
     let props = eval_props(graph, ctx, &node.props, binding);
     let vi = graph.add_vertex(&labels, props);
     if let Some(slot) = node.var_slot {
@@ -4386,10 +4416,15 @@ fn run_insert(
             } else {
                 (prev, next)
             };
-            let etype = labels_of(rel.label.as_ref(), ctx.label_names)
-                .into_iter()
-                .next()
-                .unwrap_or_default();
+            // An edge MUST carry exactly one type: reject a typeless edge or a
+            // non-conjunction type expression (empty → FAULT_BAD_LABEL) instead
+            // of silently creating an empty-type edge that won't round-trip.
+            let etype = creatable_labels(rel.label.as_ref(), ctx.label_names)
+                .and_then(|ls| ls.into_iter().next());
+            let etype = etype.unwrap_or_else(|| {
+                ctx.set_fault(FAULT_BAD_LABEL);
+                String::new()
+            });
             ctx.refresh_ids(graph, plan);
             let eprops = eval_props(graph, ctx, &rel.props, &out);
             let ei = graph.add_edge(from, to, &etype, eprops);

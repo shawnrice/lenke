@@ -1186,6 +1186,35 @@ fn detach_delete_cascades_edges() {
 }
 
 #[test]
+fn insert_rejects_ambiguous_label_and_typeless_edge() {
+    // A non-conjunction node label (`|`/`!`/`%`) can't be created (which one?),
+    // and an edge must carry exactly one type — both were silently accepted
+    // (unlabelled node / empty-type edge) before.
+    for q in [
+        "INSERT (a:Foo|Bar)",
+        "INSERT (a:!Foo)",
+        "INSERT (a)-[r]->(b)",    // typeless edge
+        "INSERT (a)-[:A|B]->(b)", // disjunction edge type
+    ] {
+        let mut g = modern();
+        let err = parse(q)
+            .unwrap()
+            .execute(&mut g, &Params::new())
+            .unwrap_err();
+        assert_eq!(
+            err.code,
+            crate::error_codes::ErrorCode::InvalidGraphOp,
+            "should reject: {q}"
+        );
+    }
+    // Sanity: conjunction, an unlabelled node, and a single-type edge all succeed.
+    let mut g = modern();
+    rows(&mut g, "INSERT (a:Foo&Bar)");
+    rows(&mut g, "INSERT (a)"); // an unlabelled node is legitimate in GQL
+    rows(&mut g, "INSERT (a:X)-[:REL]->(b:Y)");
+}
+
+#[test]
 fn delete_vertex_with_edges_errors_without_detach() {
     let mut g = modern();
     let err = parse("MATCH (n:Person {name:'marko'}) DELETE n")

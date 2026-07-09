@@ -465,6 +465,19 @@ describe('GQL: write statements', () => {
     expect(names(rows, 'b.name')).toEqual(['josh', 'peter', 'vadas']);
   });
 
+  test('INSERT rejects an ambiguous node label / a typeless or disjunction edge', () => {
+    const g = createTestSocialGraph();
+    // A non-conjunction node label can't be created (which one?).
+    expect(() => query(g, `INSERT (a:Foo|Bar)`)).toThrow(/conjunction|not creatable/);
+    expect(() => query(g, `INSERT (a:!Foo)`)).toThrow();
+    // An edge must carry exactly one type.
+    expect(() => query(g, `INSERT (a)-[r]->(b)`)).toThrow(); // typeless
+    expect(() => query(g, `INSERT (a)-[:A|B]->(b)`)).toThrow(); // disjunction type
+    // A conjunction node and an unlabelled node stay valid.
+    query(g, `INSERT (a:Foo&Bar)`);
+    query(g, `INSERT (a)`);
+  });
+
   test('SET a property', () => {
     const g = createTestSocialGraph();
     query(g, `MATCH (n:Person {name: 'marko'}) SET n.age = 30`);

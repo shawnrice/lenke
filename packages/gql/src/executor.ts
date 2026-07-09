@@ -1708,9 +1708,33 @@ type CDelete = { kind: 'delete'; detach: boolean; targets: readonly CompiledExpr
 type CFinish = { kind: 'finish' };
 type CClause = CMatch | CWith | CReturn | CInsert | CSet | CRemove | CDelete | CFinish;
 
+// Labels to CREATE for an INSERT element. A non-conjunction label expression
+// (`A|B`, `!A`, `%`) is ambiguous — reject it rather than silently create an
+// unlabelled node (an unlabelled node — no expression — stays legitimate).
+// Mirrors the Rust `creatable_labels`. (A typeless edge's empty `[]` is caught
+// downstream by `Graph.addEdge`, which requires ≥1 label.)
+const creatableLabels = (expr: LabelExpr | undefined): string[] => {
+  if (!expr) {
+    return [];
+  }
+
+  if (expr.kind === 'label') {
+    return [expr.name];
+  }
+
+  if (expr.kind === 'and') {
+    return [...creatableLabels(expr.left), ...creatableLabels(expr.right)];
+  }
+
+  throw new LenkeError(
+    "INSERT: a node's label expression must be a plain conjunction (`A` or `A&B`) and an edge must carry exactly one type — a disjunction/negation/wildcard is not creatable",
+    { code: ErrorCode.InvalidGraphOp },
+  );
+};
+
 const compileInsertNode = (node: NodePattern): CInsertNode => ({
   variable: node.variable,
-  labels: labelsOf(node.label),
+  labels: creatableLabels(node.label),
   props: compileProps(node.properties),
 });
 
@@ -1719,7 +1743,7 @@ const compileInsertPath = (pattern: PathPattern): CInsertPath => ({
   segments: pattern.segments.map(({ rel, node }) => ({
     rel: {
       variable: rel.variable,
-      labels: labelsOf(rel.label),
+      labels: creatableLabels(rel.label),
       direction: rel.direction,
       props: compileProps(rel.properties),
     },
@@ -1796,22 +1820,6 @@ const compileLinear = (linear: LinearQuery): CLinear => ({
 });
 
 // --- write clauses -----------------------------------------------------------
-
-const labelsOf = (expr: LabelExpr | undefined): string[] => {
-  if (!expr) {
-    return [];
-  }
-
-  if (expr.kind === 'label') {
-    return [expr.name];
-  }
-
-  if (expr.kind === 'and') {
-    return [...labelsOf(expr.left), ...labelsOf(expr.right)];
-  }
-
-  return []; // `|`, `!`, `%` aren't creatable label sets
-};
 
 const isEdge = (v: unknown): v is Edge =>
   typeof v === 'object' && v !== null && 'from' in v && 'to' in v;
