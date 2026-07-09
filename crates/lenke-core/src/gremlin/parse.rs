@@ -533,7 +533,14 @@ impl Parser {
                     t.limit(n)
                 }
             }
-            "skip" => t.skip(count_at(&nums_after_scope(&args), 0, "skip")?),
+            "skip" => {
+                let n = count_at(&nums_after_scope(&args), 0, "skip")?;
+                if scope_local(&args) {
+                    t.skip_local(n)
+                } else {
+                    t.skip(n)
+                }
+            }
             "range" => {
                 let ns = nums_after_scope(&args);
                 let (lo, hi) = (count_at(&ns, 0, "range")?, count_at(&ns, 1, "range")?);
@@ -543,10 +550,17 @@ impl Parser {
                     t.range(lo, hi)
                 }
             }
-            "tail" => t.tail(match nums_after_scope(&args).first() {
-                Some(n) => as_count(*n, "tail")?,
-                None => 1,
-            }),
+            "tail" => {
+                let n = match nums_after_scope(&args).first() {
+                    Some(n) => as_count(*n, "tail")?,
+                    None => 1,
+                };
+                if scope_local(&args) {
+                    t.tail_local(n)
+                } else {
+                    t.tail(n)
+                }
+            }
             "sample" => t.sample(count_at(&nums_after_scope(&args), 0, "sample")?),
             // aggregates
             "count" => {
@@ -563,9 +577,27 @@ impl Parser {
                     t.sum()
                 }
             }
-            "min" => t.min(),
-            "max" => t.max(),
-            "mean" => t.mean(),
+            "min" => {
+                if scope_local(&args) {
+                    t.min_local()
+                } else {
+                    t.min()
+                }
+            }
+            "max" => {
+                if scope_local(&args) {
+                    t.max_local()
+                } else {
+                    t.max()
+                }
+            }
+            "mean" => {
+                if scope_local(&args) {
+                    t.mean_local()
+                } else {
+                    t.mean()
+                }
+            }
             "fold" => t.fold(),
             "order" => t.order(),
             "group" => t.group(),

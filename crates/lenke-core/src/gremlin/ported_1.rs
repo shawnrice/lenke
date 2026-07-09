@@ -255,6 +255,33 @@ fn p1_range_scope_local_open_ended() {
     assert_eq!(r, vec![GVal::List(vec![GVal::Num(32.0), GVal::Num(35.0)])]);
 }
 
+#[test]
+fn p1_scope_local_on_min_max_mean_skip_tail() {
+    // Regression: the text parser dropped `Scope.local` on these five (the
+    // executor supported Local, the builder/parser hardcoded Global). Folded
+    // ages = [29,27,32,35].
+    assert_eq!(
+        qs("g.V().values('age').fold().max(Scope.local)"),
+        vec![GVal::Num(35.0)]
+    );
+    assert_eq!(
+        qs("g.V().values('age').fold().min(Scope.local)"),
+        vec![GVal::Num(27.0)]
+    );
+    assert_eq!(
+        qs("g.V().values('age').fold().mean(Scope.local)"),
+        vec![GVal::Num(30.75)]
+    );
+    assert_eq!(
+        qs("g.V().values('age').fold().skip(Scope.local, 2)"),
+        vec![GVal::List(vec![GVal::Num(32.0), GVal::Num(35.0)])]
+    );
+    assert_eq!(
+        qs("g.V().values('age').fold().tail(Scope.local, 2)"),
+        vec![GVal::List(vec![GVal::Num(32.0), GVal::Num(35.0)])]
+    );
+}
+
 // SKIPPED (divergence): steps/limit.test.ts "Scope.local on non-iterable values
 // is a no-op". TS passes scalars through unchanged ([29,27,32,35]); Rust's
 // slice_local always materializes a List, yielding [[29],[27],[32],[35]]. Not

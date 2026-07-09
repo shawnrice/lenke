@@ -607,6 +607,9 @@ impl Traversal {
     pub fn skip(self, n: usize) -> Self {
         self.push(Step::Skip(n, Scope::Global))
     }
+    pub fn skip_local(self, n: usize) -> Self {
+        self.push(Step::Skip(n, Scope::Local))
+    }
     pub fn range(self, start: usize, end: usize) -> Self {
         self.push(Step::Range(start, end, Scope::Global))
     }
@@ -615,6 +618,9 @@ impl Traversal {
     }
     pub fn tail(self, n: usize) -> Self {
         self.push(Step::Tail(n, Scope::Global))
+    }
+    pub fn tail_local(self, n: usize) -> Self {
+        self.push(Step::Tail(n, Scope::Local))
     }
     pub fn sample(self, n: usize) -> Self {
         self.push(Step::Sample(n))
@@ -639,11 +645,20 @@ impl Traversal {
     pub fn min(self) -> Self {
         self.push(Step::Min(Scope::Global))
     }
+    pub fn min_local(self) -> Self {
+        self.push(Step::Min(Scope::Local))
+    }
     pub fn max(self) -> Self {
         self.push(Step::Max(Scope::Global))
     }
+    pub fn max_local(self) -> Self {
+        self.push(Step::Max(Scope::Local))
+    }
     pub fn mean(self) -> Self {
         self.push(Step::Mean(Scope::Global))
+    }
+    pub fn mean_local(self) -> Self {
+        self.push(Step::Mean(Scope::Local))
     }
     pub fn order(self) -> Self {
         self.push(Step::Order(vec![], false))
