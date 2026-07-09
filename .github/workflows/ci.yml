@@ -71,54 +71,50 @@ jobs:
   # ===========================================================================
   # Native Node addon (@lenke/node) — build + test on Linux and macOS (arm64).
   #
-  # DISABLED ON PURPOSE. We're not ready to run this much CI yet, so it's left
-  # commented out. Standard runners (incl. macOS) are FREE on public repos, so
-  # enabling it costs no money — only CI minutes / queue time. To turn it on,
-  # strip the leading "# " from each line below.
-  #
-  # This gives a *native* build + `node --test` run on Apple Silicon (which the
-  # Linux `ci` job above can't do), and is the seam to later emit per-platform
-  # prebuilt `.node` binaries (add an upload-artifact / napi publish step).
+  # A *native* build + `node --test` run on Apple Silicon (which the Linux `ci`
+  # job above can't do), and the seam to later emit per-platform prebuilt
+  # `.node` binaries (add an upload-artifact / napi publish step). Standard
+  # runners (incl. macOS) are free on public repos, so this costs only CI
+  # minutes / queue time.
   # ===========================================================================
-  #
-  #   node-addon:
-  #     name: node addon · ${{ matrix.os }}
-  #     strategy:
-  #       fail-fast: false
-  #       matrix:
-  #         include:
-  #           - os: ubuntu-latest
-  #             # Portable x86-64 baseline for a distributable prebuilt — overrides
-  #             # the AWS-tuned `x86-64-v3` in .cargo/config.toml, which would
-  #             # SIGILL on pre-Haswell CPUs.
-  #             cpu_baseline: x86-64-v2
-  #           - os: macos-latest # Apple Silicon (arm64)
-  #             # Pin a portable Apple-Silicon baseline instead of the config's
-  #             # `target-cpu=native`, which bakes in the runner's exact CPU.
-  #             cpu_baseline: apple-m1
-  #     runs-on: ${{ matrix.os }}
-  #     steps:
-  #       - uses: actions/checkout@v6
-  #       - name: Set up Bun
-  #         uses: oven-sh/setup-bun@v2
-  #         with:
-  #           bun-version: 1.3.13
-  #       - name: Set up Rust
-  #         uses: dtolnay/rust-toolchain@1.96.0
-  #       - name: Cache cargo
-  #         uses: Swatinem/rust-cache@v2
-  #         with:
-  #           workspaces: packages/node
-  #       - name: Install dependencies
-  #         run: bun install --frozen-lockfile
-  #       # `nx build @lenke/node` runs `napi build --platform --release --esm`
-  #       # and (via ^build) builds the @lenke/native dep the test imports. The
-  #       # RUSTFLAGS override replaces the config's per-target `target-cpu` so a
-  #       # distributed prebuilt runs across the whole arch, not just the runner.
-  #       - name: Build @lenke/node (napi ESM) with a portable CPU baseline
-  #         env:
-  #           RUSTFLAGS: -C target-cpu=${{ matrix.cpu_baseline }}
-  #         run: bunx nx build @lenke/node
-  #       - name: Test @lenke/node
-  #         working-directory: packages/node
-  #         run: node --test
+  node-addon:
+    name: node addon · ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            # Portable x86-64 baseline for a distributable prebuilt — overrides
+            # the AWS-tuned `x86-64-v3` in .cargo/config.toml, which would
+            # SIGILL on pre-Haswell CPUs.
+            cpu_baseline: x86-64-v2
+          - os: macos-latest # Apple Silicon (arm64)
+            # Pin a portable Apple-Silicon baseline instead of the config's
+            # `target-cpu=native`, which bakes in the runner's exact CPU.
+            cpu_baseline: apple-m1
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@1.96.0
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/node
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      # `nx build @lenke/node` runs `napi build --platform --release --esm`
+      # and (via ^build) builds the @lenke/native dep the test imports. The
+      # RUSTFLAGS override replaces the config's per-target `target-cpu` so a
+      # distributed prebuilt runs across the whole arch, not just the runner.
+      - name: Build @lenke/node (napi ESM) with a portable CPU baseline
+        env:
+          RUSTFLAGS: -C target-cpu=${{ matrix.cpu_baseline }}
+        run: bunx nx build @lenke/node
+      - name: Test @lenke/node
+        working-directory: packages/node
+        run: node --test
