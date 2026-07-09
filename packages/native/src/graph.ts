@@ -351,6 +351,14 @@ const warnLeak = (): void => {
   );
 };
 
+// Test-only: clear the one-shot latch. Tests share a single process, so a graph
+// leaked by an earlier test can reclaim and consume the once-per-process warning
+// before the dedicated leak test runs — leaving it with nothing to observe.
+// Resetting first makes that test deterministic. Not part of the public surface.
+export const __resetLeakWarnedForTests = (): void => {
+  leakWarned = false;
+};
+
 // Built at module scope so the registered thunk closes over `backend` /
 // `handle` / `state` only — never the wrapper — or it would pin the very
 // object it exists to reclaim. Only ever invoked from the GC backstop (free()

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 
 import type { Backend, GraphHandle } from './backend.js';
-import { attachGraph } from './graph.js';
+import { __resetLeakWarnedForTests, attachGraph } from './graph.js';
 import { createStore } from './store.js';
 
 // A do-nothing backend that only records graphFree calls — enough to exercise
@@ -150,6 +150,11 @@ describe('RustGraph disposal', () => {
     console.warn = (...args: unknown[]) => {
       warnings.push(args.map(String).join(' '));
     };
+
+    // A graph leaked by an earlier test may already have tripped the
+    // once-per-process latch (its warning went to the real console.warn, before
+    // this override). Reset so this test observes its OWN single warning.
+    __resetLeakWarnedForTests();
 
     try {
       // Attach and drop the only reference — no free(), no `using`. The IIFE
