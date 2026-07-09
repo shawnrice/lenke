@@ -970,6 +970,22 @@ fn properties_drop_removes_the_property() {
 }
 
 #[test]
+fn dedup_by_label_dedupes_on_the_tagged_value() {
+    // marko's two KNOWS-neighbors (vadas, josh) both carry a='marko', so
+    // dedup('a') collapses them to ONE. The old code dropped the label arg and
+    // deduped by the current value (vadas != josh) → kept both.
+    let mut g = modern();
+    let by_label =
+        super::parse("g.V().as('a').out('KNOWS').dedup('a').select('a').values('name')").unwrap();
+    assert_eq!(by_label.run(&mut g), vec![GVal::Str("marko".into())]);
+
+    let mut g2 = modern();
+    let by_value =
+        super::parse("g.V().as('a').out('KNOWS').dedup().select('a').values('name')").unwrap();
+    assert_eq!(by_value.run(&mut g2).len(), 2); // dedup-by-value keeps both
+}
+
+#[test]
 fn drop_cannot_be_spoofed_by_a_project_map() {
     // Regression: a `project('key')` result is a Map with a `key` entry; it must
     // NOT be mistaken for a property element by drop() (that would delete an

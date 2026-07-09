@@ -1244,15 +1244,20 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
         Step::Is(pred) => stream.into_iter().filter(|t| p_matches(pred, &t.val)).collect(),
         Step::SimplePath => stream.into_iter().filter(|t| !has_dup(&t.path)).collect(),
         Step::CyclicPath => stream.into_iter().filter(|t| has_dup(&t.path)).collect(),
-        Step::Dedupe(bys) => {
-            // Key on the full tuple of `by` modulators (TinkerPop `dedup(a,b)`
-            // dedups by the combination), not just the first. A hash set keyed on
-            // the hashable projection of that tuple makes this O(n); the previous
-            // `Vec::contains` scan was O(n²) (`V().out().dedup()` over 200k ≈ 8.7s).
+        Step::Dedupe { labels, bys } => {
+            // Key on: the tuple of values tagged at `labels` (`dedup('a','b')`),
+            // else the tuple of `by` modulators (`dedup().by(...)`), else the
+            // current value. A hash set on the hashable projection makes this
+            // O(n); the old `Vec::contains` scan was O(n²).
             let mut seen: HashSet<Vec<DedupKey>> = HashSet::new();
             let mut next = Vec::new();
             for t in stream {
-                let key: Vec<GVal> = if bys.is_empty() {
+                let key: Vec<GVal> = if !labels.is_empty() {
+                    labels
+                        .iter()
+                        .map(|l| t.recall(l, Pop::Last).unwrap_or(GVal::Null))
+                        .collect()
+                } else if bys.is_empty() {
                     vec![t.val.clone()]
                 } else {
                     bys.iter().map(|by| eval_by(graph, ctx, by, &t.val)).collect()

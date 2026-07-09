@@ -507,7 +507,18 @@ impl Parser {
                 [other] => t.is(P::eq(other.as_gval()?)),
                 _ => return Err("is: expected 1 arg".into()),
             },
-            "dedup" => t.dedup(),
+            "dedup" => {
+                // `dedup('a','b')` dedupes by the values tagged at those labels;
+                // `dedup()`/`dedup().by(...)` by value/projection.
+                let labels: Vec<String> = args
+                    .iter()
+                    .filter_map(|a| match a {
+                        Arg::Str(s) => Some(s.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                t.dedup_labels(labels)
+            }
             "simplePath" => t.simple_path(),
             "cyclicPath" => t.cyclic_path(),
             // projection

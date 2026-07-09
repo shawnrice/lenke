@@ -297,7 +297,12 @@ pub enum Step {
     Is(P),
     SimplePath,
     CyclicPath,
-    Dedupe(Vec<By>),
+    /// `labels` (from `dedup('a','b')`) dedupes by the tuple of values tagged at
+    /// those labels; otherwise `bys` (`dedup().by(...)`) or the current value.
+    Dedupe {
+        labels: Vec<String>,
+        bys: Vec<By>,
+    },
     Values(Vec<String>),
     ValueMap(Vec<String>),
     PropertyMap(Vec<String>),
@@ -432,7 +437,7 @@ impl Traversal {
             | Step::Group(bys)
             | Step::GroupCount(bys)
             | Step::Path(bys)
-            | Step::Dedupe(bys)
+            | Step::Dedupe { bys, .. }
             | Step::Tree(bys)
             | Step::Project(_, bys)
             | Step::WhereKey(_, _, bys)
@@ -553,7 +558,17 @@ impl Traversal {
         self.push(Step::Is(pred))
     }
     pub fn dedup(self) -> Self {
-        self.push(Step::Dedupe(vec![]))
+        self.push(Step::Dedupe {
+            labels: vec![],
+            bys: vec![],
+        })
+    }
+    /// `dedup('a','b')` — dedupe by the tuple of values tagged at those labels.
+    pub fn dedup_labels(self, labels: Vec<String>) -> Self {
+        self.push(Step::Dedupe {
+            labels,
+            bys: vec![],
+        })
     }
     pub fn simple_path(self) -> Self {
         self.push(Step::SimplePath)
