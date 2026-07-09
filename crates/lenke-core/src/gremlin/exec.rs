@@ -60,6 +60,30 @@ fn dedup_key(v: &GVal) -> Option<DedupKey> {
     })
 }
 
+/// Mulberry32 PRNG — a tiny, fast, fully-specified generator. `sample()` uses it
+/// with a FIXED seed so the pseudo-random selection is reproducible AND
+/// byte-identical with the TS engine (which runs the same algorithm). Same seed +
+/// same draw order + same shuffle ⇒ same sample on both engines.
+struct Mulberry32 {
+    s: u32,
+}
+
+impl Mulberry32 {
+    fn new(seed: u32) -> Self {
+        Self { s: seed }
+    }
+    /// Next float in `[0, 1)`.
+    fn next_f64(&mut self) -> f64 {
+        self.s = self.s.wrapping_add(0x6d2b_79f5);
+        let mut t = (self.s ^ (self.s >> 15)).wrapping_mul(1u32 | self.s);
+        t ^= t.wrapping_add((t ^ (t >> 7)).wrapping_mul(61u32 | t));
+        f64::from(t ^ (t >> 14)) / 4_294_967_296.0
+    }
+}
+
+/// The fixed `sample()` seed, shared with the TS engine for cross-engine parity.
+const SAMPLE_SEED: u32 = 0x9e37_79b9;
+
 /// A unit flowing through the pipeline: its value, the path it took, `as(label)`
 /// tags (label → accumulated values, for `select` pop), and the repeat loop count.
 #[derive(Clone)]
@@ -1419,7 +1443,21 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
             let start = e.len().saturating_sub(*n);
             vec![GVal::List(e[start..].to_vec())]
         }),
-        Step::Sample(n) => stream.into_iter().take(*n).collect(), // deterministic prefix sample
+        Step::Sample(n) => {
+            // A pseudo-random sample (partial Fisher-Yates), NOT a prefix. The
+            // fixed-seed Mulberry32 makes it reproducible and byte-identical with
+            // the TS engine's `sampleStep`, which runs the same shuffle.
+            let mut buf = stream;
+            let len = buf.len();
+            let k = (*n).min(len);
+            let mut rng = Mulberry32::new(SAMPLE_SEED);
+            for i in 0..k {
+                let j = i + (rng.next_f64() * (len - i) as f64) as usize;
+                buf.swap(i, j);
+            }
+            buf.truncate(k);
+            buf
+        }
 
         // --- aggregates ---
         Step::Count(Scope::Global) => vec![Trav::root(GVal::Num(stream.len() as f64))],

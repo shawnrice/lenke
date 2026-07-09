@@ -73,16 +73,36 @@ export const tailLocal = (v: unknown, n: number): unknown => {
   return n >= arr.length ? arr : arr.slice(arr.length - n);
 };
 
-// `sample(n)` — Fisher-Yates pick-N over the materialized stream.
+// Mulberry32 PRNG — tiny, fast, fully-specified. `sample(n)` uses it with a
+// FIXED seed so the pseudo-random selection is reproducible AND byte-identical
+// with the Rust engine, which runs the same algorithm. The seed constant and the
+// draw/shuffle order must match `crates/lenke-core/src/gremlin/exec.rs`.
+const SAMPLE_SEED = 0x9e3779b9;
+
+const mulberry32 = (seed: number): (() => number) => {
+  let s = seed >>> 0;
+
+  return () => {
+    s = (s + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t ^= t + Math.imul(t ^ (t >>> 7), 61 | t); // xor is commutative → matches Rust
+
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+};
+
+// `sample(n)` — a pseudo-random partial Fisher-Yates pick-N over the stream,
+// seeded (not `Math.random`) so it's reproducible and matches the Rust engine.
 export const sampleStep = function* (
   stream: Iterable<Traverser<unknown>>,
   n: number,
 ): Iterable<Traverser<unknown>> {
   const buf = [...stream];
   const k = Math.min(n, buf.length);
+  const rand = mulberry32(SAMPLE_SEED);
 
   for (let i = 0; i < k; i++) {
-    const j = i + Math.floor(Math.random() * (buf.length - i));
+    const j = i + Math.floor(rand() * (buf.length - i));
     const tmp = buf[i];
     buf[i] = buf[j]!;
     buf[j] = tmp;

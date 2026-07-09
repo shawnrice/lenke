@@ -555,7 +555,29 @@ fn p3_bothe_v1_ids() {
 }
 
 // ===================== sample.test.ts =====================
-// sample() is nondeterministic — assert on count / cardinality only.
+// sample() is a SEEDED pseudo-random shuffle (fixed Mulberry32 seed): a real
+// random subset (not a stream-order prefix), reproducible, and byte-identical
+// with the TS engine.
+
+#[test]
+fn p3_sample_is_a_seeded_shuffle_not_a_prefix() {
+    // Deterministic (fixed seed): two runs agree.
+    assert_eq!(
+        qs("g.V().values('name').sample(3)"),
+        qs("g.V().values('name').sample(3)")
+    );
+    // sample(all) is a permutation of the full stream (same multiset)…
+    let full = names(qs("g.V().values('name')"));
+    let sampled = names(qs("g.V().values('name').sample(6)"));
+    assert_eq!(full, sampled); // `names` sorts, so this checks the multiset
+                               // …and it's not a mere prefix: the sampled order differs from stream order.
+    let stream_order = ordered(qs("g.V().values('name')"));
+    let sample_order = ordered(qs("g.V().values('name').sample(6)"));
+    assert_ne!(
+        stream_order, sample_order,
+        "sample should shuffle, not take a prefix"
+    );
+}
 
 #[test]
 fn p3_sample_n_returns_n() {
