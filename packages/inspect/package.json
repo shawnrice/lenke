@@ -1,0 +1,29 @@
+{
+  "name": "@lenke/inspect",
+  "description": "Debugging & inspection helpers for lenke graphs: describe(), result-set tables, and element pretty-printers.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "sideEffects": false,
+  "types": "./dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "default": "./dist/esm/index.mjs"
+    }
+  },
+  "scripts": {
+    "build": "bun build.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@lenke/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@lenke/dev": "workspace:*",
+    "@types/bun": "latest",
+    "bun-types": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^6.0.0"
+  }
+}

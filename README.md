@@ -124,16 +124,17 @@ Under Bun, swap `@lenke/native/wasm` for `@lenke/native/ffi` (`createFfiBackend(
 
 **Building blocks**
 
-| Package                              | Description                                                         |
-| ------------------------------------ | ------------------------------------------------------------------- |
-| [`@lenke/emitter`](packages/emitter) | Typed, cancelable, error-isolated event emitter.                    |
-| [`@lenke/errors`](packages/errors)   | Stable `E_*` error codes and a shared `LenkeError` type.            |
-| [`@lenke/fp`](packages/fp)           | Lazy, curried iterable combinators composed with `pipe`.            |
-| [`@lenke/list`](packages/list)       | Lazy, iterator-backed `List<T>`.                                    |
-| [`@lenke/tree`](packages/tree)       | `TreeNode` and `Trie` data structures.                              |
-| [`@lenke/utils`](packages/utils)     | Small shared helpers.                                               |
-| [`@lenke/lint`](packages/lint)       | oxlint/ESLint plugin flagging raw interpolation into query text.    |
-| [`@lenke/dev`](packages/dev)         | Internal build & lint tooling (bundler, lint rules, shared config). |
+| Package                              | Description                                                            |
+| ------------------------------------ | ---------------------------------------------------------------------- |
+| [`@lenke/emitter`](packages/emitter) | Typed, cancelable, error-isolated event emitter.                       |
+| [`@lenke/errors`](packages/errors)   | Stable `E_*` error codes and a shared `LenkeError` type.               |
+| [`@lenke/fp`](packages/fp)           | Lazy, curried iterable combinators composed with `pipe`.               |
+| [`@lenke/list`](packages/list)       | Lazy, iterator-backed `List<T>`.                                       |
+| [`@lenke/tree`](packages/tree)       | `TreeNode` and `Trie` data structures.                                 |
+| [`@lenke/utils`](packages/utils)     | Small shared helpers.                                                  |
+| [`@lenke/inspect`](packages/inspect) | Debug helpers: `describe()` a graph, tabulate results, print elements. |
+| [`@lenke/lint`](packages/lint)       | oxlint/ESLint plugin flagging raw interpolation into query text.       |
+| [`@lenke/dev`](packages/dev)         | Internal build & lint tooling (bundler, lint rules, shared config).    |
 
 Each package has its own README with a full API walkthrough.
 
