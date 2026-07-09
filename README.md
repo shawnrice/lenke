@@ -8,7 +8,7 @@ lenke models data as a labeled property graph — vertices and edges that each c
 
 lenke is a toolkit you compose, not a single binary — you pull in the pieces a given job needs. A few things it's a good fit for:
 
-- **Query connected data in-process, without a graph database.** When your data _is_ the relationships — a social graph, a dependency or org tree, a service/topology map, an access-control graph — model it directly and query it with GQL or Gremlin in your app's memory. No Neo4j to operate, no recursive SQL to hand-write. Pure TypeScript, any JS runtime.
+- **Query connected data in-process, without a graph database.** When your data _is_ the relationships — a social graph, a dependency or org tree, a service/topology map, an access-control graph — model it directly and query it with GQL or Gremlin in your app's memory — no separate graph database to run, no recursive SQL to hand-write. Pure TypeScript, any JS runtime.
   → [pure-ts guide](docs/guides/pure-ts.md)
 
 - **Back a React UI with a reactive graph.** `@lenke/react` renders components straight off a live graph and re-runs a selector only when a mutation touches the labels or keys it actually reads — so a large graph doesn't re-render the tree on every edit. Fits dashboards, topology/network views, and graph editors.
