@@ -6,10 +6,11 @@ This package bundles the helpers and configuration that other packages in the mo
 
 ## What's here
 
-- **`buildPackage` (default export)** — a library build orchestrator. Bundles a package's `src/` entrypoints into ESM (and optionally CJS), with optional minified variants, while emitting `.d.ts` declarations via the TypeScript compiler API. Uses rolldown (Rollup semantics) so re-exported implementations survive in `sideEffects: false` packages, externals every bare specifier, and resolves NodeNext `.js` specifiers back to `.ts`/`.tsx` sources.
-- **`oxlintrc.base.json`** — the shared oxlint base config: core/import/TypeScript/unicorn rule set, test-file overrides, and registration of the custom lint plugin. Exposed at the `@lenke/dev/oxlintrc.base.json` subpath.
+- **`buildPackage` (named export)** — a library build orchestrator. Bundles a package's `src/` entrypoints into ESM (and optionally CJS), with optional minified variants, while emitting `.d.ts` declarations via the TypeScript compiler API. Uses rolldown (Rollup semantics) so re-exported implementations survive in `sideEffects: false` packages, externals every bare specifier, and resolves NodeNext `.js` specifiers back to `.ts`/`.tsx` sources.
+- **`oxlintrc.base.json`** — the shared oxlint base config: core/import/TypeScript/unicorn rule set, test-file overrides, and registration of the custom lint plugins below. Exposed at the `@lenke/dev/oxlintrc.base.json` subpath.
 - **`oxfmtrc.base.json`** — the shared oxfmt base config (print width 100, single quotes, semicolons, trailing commas, always-parenthesized arrow params). Exposed at the `@lenke/dev/oxfmtrc.base.json` subpath.
 - **`lint-rules/padding-lines.js`** — a custom oxlint JS plugin (`padding-lines/before-exit`) that enforces blank lines around block statements (`if`/`for`/`while`/`switch`/`try`) and before exit statements (`return`, `throw`, standalone `yield*`). Auto-fixable.
+- **`lint-rules/module-boundaries.js`** — a custom oxlint JS plugin (`boundaries/no-cross-package-relative-import`) that forbids a relative import/export from reaching outside its own workspace project, so cross-package coupling goes through a package's public `@lenke/*` entry (and stays visible to nx's project graph).
 
 ## Usage
 

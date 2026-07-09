@@ -19,7 +19,7 @@ host → client:  status      { connected, pendingWrites, protocol }
 
 `params` is a flat object of `$name` bindings, on every GQL-carrying message. Values bind engine-side to already-parsed param slots and **never touch the GQL parser** — send values as params; never build query text from user input. `lang: 'gremlin'` runs the text through the Gremlin engine instead (results ride `values`); Gremlin has no param binding, so interpolate values with the `gremlin` tag / `escapeGremlin`.
 
-Conformance is **structural**: consumers may write these shapes down independently, with no dependency in either direction. **Keyed row diffs** (declare `key` on subscribe → `patch`/`remove`/`order` pushes) and **Arrow one-shots** (`format: 'arrow'`, binary transports) have landed as backward-compatible extensions; resumable subscriptions and Arrow on the push path remain future ones.
+Conformance is **structural**: consumers may write these shapes down independently, with no dependency in either direction. Two backward-compatible extensions ride the same protocol: **keyed row diffs** (declare `key` on subscribe → `patch`/`remove`/`order` pushes instead of full rows) and **Arrow one-shots** (`format: 'arrow'` over a binary transport). Resumable subscriptions and Arrow on the push path are out of v1's scope.
 
 ## The host
 
@@ -121,7 +121,7 @@ Semantics worth knowing:
 
 - **Answer now, fill after** — a subscription over an unloaded collection gets its local (possibly stale) rows immediately with `complete: false`; the loader's writes land in one `store.mutate`, epochs route the push, and `complete` flips. An **empty scope still flips** `complete` (same rows, new truth).
 - **Loaders return writes** (`SyncWrite[]` — `{ text, params? }` for GQL, `{ text, lang: 'gremlin' }` for a Gremlin traversal), not graphs — values stay on the params path, and the engine stays ignorant of your fetch/decode shape.
-- **Write-back is optimistic** — local readers see a mutation before upstream answers; the queue is FIFO, one in flight, exponential backoff; a write that exhausted its retries is dropped and reported (`onWriteError`) — rollback-and-correct arrives with server cursors, not v1. A mutation that changed nothing replicates nothing (version-gated).
+- **Write-back is optimistic** — local readers see a mutation before upstream answers; the queue is FIFO, one in flight, exponential backoff; a write that exhausted its retries is dropped and reported (`onWriteError`) — rollback-and-correct is out of v1's scope (it needs server cursors). A mutation that changed nothing replicates nothing (version-gated).
 - **`ingest` never echoes** — server-pushed writes apply locally and route by epoch, with no path back into the queue.
 
 ## Snapshots (warm boot)

@@ -132,6 +132,7 @@ Under Bun, swap `@lenke/native/wasm` for `@lenke/native/ffi` (`createFfiBackend(
 | [`@lenke/list`](packages/list)       | Lazy, iterator-backed `List<T>`.                                    |
 | [`@lenke/tree`](packages/tree)       | `TreeNode` and `Trie` data structures.                              |
 | [`@lenke/utils`](packages/utils)     | Small shared helpers.                                               |
+| [`@lenke/lint`](packages/lint)       | oxlint/ESLint plugin flagging raw interpolation into query text.    |
 | [`@lenke/dev`](packages/dev)         | Internal build & lint tooling (bundler, lint rules, shared config). |
 
 Each package has its own README with a full API walkthrough.

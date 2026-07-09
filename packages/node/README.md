@@ -38,8 +38,8 @@ const people = createStore(g).liveQuery('MATCH (p:Person) RETURN p.name', {
 ## Build
 
 ```
-npm run build      # napi build --platform --release --esm
-                   # → index.js (ESM), index.d.ts, lenke-node.<triple>.node
+bunx nx build @lenke/node    # napi build --platform --release --esm
+                             # → index.js (ESM), index.d.ts, lenke-node.<triple>.node
 ```
 
 The generated `index.js` / `index.d.ts` / `*.node` are git-ignored artifacts. `napi build` cross-compiles for the platforms listed under `napi.targets` in `package.json`; CI produces the per-platform prebuilt binaries.
