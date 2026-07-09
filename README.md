@@ -2,66 +2,25 @@
 
 > A labeled-property-graph toolkit for JavaScript & TypeScript: an in-memory graph you query with **ISO-GQL** or **Gremlin** — as a pure-TypeScript library, or backed by a **Rust columnar engine** over FFI / WebAssembly.
 
-lenke models data as a labeled property graph — vertices and edges that each carry a set of labels and a bag of properties — and lets you query it two ways without standing up an external database. The same data model and query surface come in two interchangeable engines:
+lenke models data as a labeled property graph — vertices and edges that each carry a set of labels and a bag of properties — and lets you query it with **ISO-GQL** or **Apache Gremlin**, with no external database to run. The same data model and query surface come in two interchangeable engines: a **pure-TypeScript** one that runs anywhere with zero native dependencies, and a **Rust columnar core** for throughput, reachable over `bun:ffi`, N-API, or **WebAssembly**. React bindings expose either as a reactive store.
 
-- a **pure-TypeScript** implementation that runs anywhere, and
-- a **Rust columnar core** for throughput, reachable from JS over `bun:ffi` (Bun) or **WebAssembly** (Node, Deno, browsers).
+## What you can build
 
-React bindings expose either engine as a reactive data store.
+lenke is a toolkit you compose, not a single binary — you pull in the pieces a given job needs. A few things it's a good fit for:
 
-## How it fits together
+- **Query connected data in-process, without a graph database.** When your data _is_ the relationships — a social graph, a dependency or org tree, a service/topology map, an access-control graph — model it directly and query it with GQL or Gremlin in your app's memory. No Neo4j to operate, no recursive SQL to hand-write. Pure TypeScript, any JS runtime.
+  → [pure-ts guide](docs/guides/pure-ts.md)
 
-- **Graph & queries (pure TS).** [`@lenke/core`](packages/core) is the in-memory graph; [`@lenke/gql`](packages/gql) and [`@lenke/gremlin`](packages/gremlin) query it; [`@lenke/serialization`](packages/serialization) reads and writes it.
-- **Native engine (Rust).** [`lenke-core`](crates/lenke-core) is a columnar reimplementation of the graph and both query engines; [`@lenke/native`](packages/native) binds it to JS via FFI or wasm. Same query languages, more throughput.
-- **React.** [`@lenke/react`](packages/react) drives components from either the in-process graph or the native store, re-rendering only when a relevant mutation changes what a component reads.
-- **Building blocks.** Small standalone primitives the rest are built on.
+- **Back a React UI with a reactive graph.** `@lenke/react` renders components straight off a live graph and re-runs a selector only when a mutation touches the labels or keys it actually reads — so a large graph doesn't re-render the tree on every edit. Fits dashboards, topology/network views, and graph editors.
+  → [frontend guide](docs/guides/frontend-main-thread.md)
 
-## Packages
+- **Embed a fast in-memory graph cache on a server.** Bulk-load a snapshot (NDJSON, CSV, GraphSON) into the Rust columnar engine and serve GQL/Gremlin from a Node or Bun process — a materialized view or read cache beside your system of record, with Apache Arrow output for columnar hand-off. One process can hold many isolated graphs (multi-tenant).
+  → [backend-embedded guide](docs/guides/backend-embedded.md)
 
-**Graph & queries**
+- **Go local-first with live queries.** Keep the graph in a web worker (the WebAssembly engine) and subscribe to standing queries instead of re-fetching; a result pushes only when it actually changes. The sync host is transport-agnostic — the _identical_ host serves a Worker port in the browser or a WebSocket from a server — so the same live-query code runs offline-capable or client/server.
+  → [frontend-worker guide](docs/guides/frontend-worker.md)
 
-| Package                                          | Description                                                              |
-| ------------------------------------------------ | ------------------------------------------------------------------------ |
-| [`@lenke/core`](packages/core)                   | In-memory labeled-property graph with label and opt-in property indexes. |
-| [`@lenke/gql`](packages/gql)                     | ISO-GQL (ISO/IEC 39075) query engine over a core graph.                  |
-| [`@lenke/gremlin`](packages/gremlin)             | Apache TinkerPop-style Gremlin traversal engine over a core graph.       |
-| [`@lenke/serialization`](packages/serialization) | Graph codecs: pg-json, pg-text, ndjson, GraphSON, CSV.                   |
-
-**Native engine (Rust)**
-
-| Package                            | Description                                                                      |
-| ---------------------------------- | -------------------------------------------------------------------------------- |
-| [`lenke-core`](crates/lenke-core)  | Rust columnar graph + GQL/Gremlin engines + Apache Arrow output, behind a C ABI. |
-| [`@lenke/native`](packages/native) | JS/TS bindings to the Rust core via `bun:ffi` or WebAssembly.                    |
-
-**React**
-
-| Package                          | Description                                                              |
-| -------------------------------- | ------------------------------------------------------------------------ |
-| [`@lenke/react`](packages/react) | Hooks and providers exposing a graph (TS or native) as a reactive store. |
-
-**Building blocks**
-
-| Package                              | Description                                                         |
-| ------------------------------------ | ------------------------------------------------------------------- |
-| [`@lenke/emitter`](packages/emitter) | Typed, cancelable, error-isolated event emitter.                    |
-| [`@lenke/errors`](packages/errors)   | Stable `E_*` error codes and a shared `LenkeError` type.            |
-| [`@lenke/fp`](packages/fp)           | Lazy, curried iterable combinators composed with `pipe`.            |
-| [`@lenke/list`](packages/list)       | Lazy, iterator-backed `List<T>`.                                    |
-| [`@lenke/tree`](packages/tree)       | `TreeNode` and `Trie` data structures.                              |
-| [`@lenke/utils`](packages/utils)     | Small shared helpers.                                               |
-| [`@lenke/dev`](packages/dev)         | Internal build & lint tooling (bundler, lint rules, shared config). |
-
-Each package has its own README with a full API walkthrough.
-
-## Guides
-
-The package READMEs are the API reference; the **[deployment guides](docs/guides/)** are task-oriented — how to wire lenke up for each way you can run it. Every deployment is a point in three orthogonal choices (engine, query frontend, reach-path); [choosing-your-build](docs/guides/choosing-your-build.md) is the matrix.
-
-- [pure-ts](docs/guides/pure-ts.md) — the TypeScript graph, anywhere, no native artifacts
-- [native](docs/guides/native.md) / [wasm](docs/guides/wasm.md) — the Rust engine via N-API / bun:ffi / WebAssembly
-- [frontend-main-thread](docs/guides/frontend-main-thread.md) / [frontend-worker](docs/guides/frontend-worker.md) — React on the main thread, or a worker-resident sync engine
-- [backend-embedded](docs/guides/backend-embedded.md) — an embedded cache / view machine, and multi-tenancy
+The [`examples/service-map`](examples/service-map) app threads one feature through the entire stack — React → worker → sync engine → wasm store, with a Node server host — as a worked reference.
 
 ## Quick start
 
@@ -129,6 +88,62 @@ console.log(rows); // [{ name: 'marko' }, ...]
 ```
 
 Under Bun, swap `@lenke/native/wasm` for `@lenke/native/ffi` (`createFfiBackend(libPath)`) to load the native dynamic library directly — the rest of the API is identical.
+
+## How it fits together
+
+- **Graph & queries (pure TS).** [`@lenke/core`](packages/core) is the in-memory graph; [`@lenke/gql`](packages/gql) and [`@lenke/gremlin`](packages/gremlin) query it; [`@lenke/serialization`](packages/serialization) reads and writes it.
+- **Native engine (Rust).** [`lenke-core`](crates/lenke-core) is a columnar reimplementation of the graph and both query engines; [`@lenke/native`](packages/native) binds it to JS via FFI or wasm. Same query languages, more throughput.
+- **React.** [`@lenke/react`](packages/react) drives components from either the in-process graph or the native store, re-rendering only when a relevant mutation changes what a component reads.
+- **Live queries & sync.** [`@lenke/sync`](packages/sync) turns a store into a declarative live-query service over any port-shaped channel — a Worker in the browser or a WebSocket on a server — pushing an update only when a standing query's result actually changes.
+- **Building blocks.** Small standalone primitives the rest are built on.
+
+## Packages
+
+**Graph & queries**
+
+| Package                                          | Description                                                              |
+| ------------------------------------------------ | ------------------------------------------------------------------------ |
+| [`@lenke/core`](packages/core)                   | In-memory labeled-property graph with label and opt-in property indexes. |
+| [`@lenke/gql`](packages/gql)                     | ISO-GQL (ISO/IEC 39075) query engine over a core graph.                  |
+| [`@lenke/gremlin`](packages/gremlin)             | Apache TinkerPop-style Gremlin traversal engine over a core graph.       |
+| [`@lenke/serialization`](packages/serialization) | Graph codecs: pg-json, pg-text, ndjson, GraphSON, CSV.                   |
+
+**Native engine (Rust)**
+
+| Package                            | Description                                                                      |
+| ---------------------------------- | -------------------------------------------------------------------------------- |
+| [`lenke-core`](crates/lenke-core)  | Rust columnar graph + GQL/Gremlin engines + Apache Arrow output, behind a C ABI. |
+| [`@lenke/native`](packages/native) | JS/TS bindings to the Rust core via `bun:ffi` or WebAssembly.                    |
+
+**React & live queries**
+
+| Package                          | Description                                                                             |
+| -------------------------------- | --------------------------------------------------------------------------------------- |
+| [`@lenke/react`](packages/react) | Hooks and providers exposing a graph (TS or native) as a reactive store.                |
+| [`@lenke/sync`](packages/sync)   | Declarative live-query protocol + a transport-agnostic host (WebSocket or Worker port). |
+
+**Building blocks**
+
+| Package                              | Description                                                         |
+| ------------------------------------ | ------------------------------------------------------------------- |
+| [`@lenke/emitter`](packages/emitter) | Typed, cancelable, error-isolated event emitter.                    |
+| [`@lenke/errors`](packages/errors)   | Stable `E_*` error codes and a shared `LenkeError` type.            |
+| [`@lenke/fp`](packages/fp)           | Lazy, curried iterable combinators composed with `pipe`.            |
+| [`@lenke/list`](packages/list)       | Lazy, iterator-backed `List<T>`.                                    |
+| [`@lenke/tree`](packages/tree)       | `TreeNode` and `Trie` data structures.                              |
+| [`@lenke/utils`](packages/utils)     | Small shared helpers.                                               |
+| [`@lenke/dev`](packages/dev)         | Internal build & lint tooling (bundler, lint rules, shared config). |
+
+Each package has its own README with a full API walkthrough.
+
+## Guides
+
+The package READMEs are the API reference; the **[deployment guides](docs/guides/)** are task-oriented — how to wire lenke up for each way you can run it. Every deployment is a point in three orthogonal choices (engine, query frontend, reach-path); [choosing-your-build](docs/guides/choosing-your-build.md) is the matrix.
+
+- [pure-ts](docs/guides/pure-ts.md) — the TypeScript graph, anywhere, no native artifacts
+- [native](docs/guides/native.md) / [wasm](docs/guides/wasm.md) — the Rust engine via N-API / bun:ffi / WebAssembly
+- [frontend-main-thread](docs/guides/frontend-main-thread.md) / [frontend-worker](docs/guides/frontend-worker.md) — React on the main thread, or a worker-resident sync engine
+- [backend-embedded](docs/guides/backend-embedded.md) — an embedded cache / view machine, and multi-tenancy
 
 ## Develop
 
