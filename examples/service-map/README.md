@@ -1,45 +1,147 @@
-# service map — the vertical slice
+# service map — a local-first vertical slice
 
-A live **service-dependency map**: ~240 services across 4 clusters, `CALLS` edges between them, one editable `status` column. It exists to thread a single feature through every layer at once — React → `createSyncClient` → SharedWorker (`wasm` engine + OPFS + `createSyncEngine`) → WebSocket → Node server (`@lenke/node` addon + `createSyncHost`).
+A small but complete lenke application: a live **service-dependency map**. ~240
+services across 4 clusters, `CALLS` edges between them, and one editable
+`status` column. It is deliberately small — a bare HTML `<table>`, no UI library
+— because the app itself isn't the point. The point is the **plumbing**: this one
+feature is threaded through every layer lenke offers, so you can read one repo
+and see how the pieces compose into a real local-first app.
+
+Concretely, the same status edit travels:
 
 ```
-Tab(s) — dumb <table> over useSyncExternalStore
-  └─ createSyncClient ── MessagePort ──► SharedWorker (one store per origin)
-                                           ├─ wasm engine + createStore
-                                           ├─ OPFS snapshot (warm boot, queue survival)
-                                           ├─ createSyncEngine
-                                           │    ├─ collections per cluster (scope tokens)
-                                           │    └─ upstream: reconnecting WS
-                                           └─ engine.createHost per tab port
-Node server — @lenke/node addon, whole fleet, createSyncHost per socket
+React tab  ──►  sync client  ──►  SharedWorker (wasm store + sync engine)  ──►  WebSocket  ──►  Node server (native store)
+    ▲                                      │
+    └──────────── live push ◄──────────────┘   (and to every other open tab)
 ```
+
+## What it demonstrates
+
+- **One in-memory graph store, queried with GQL and Gremlin** — no database.
+- **Live queries**: the UI _subscribes_ to a standing query and is pushed a new
+  result only when that result actually changes, instead of re-fetching.
+- **The same sync host over two transports** — a `MessagePort` between tab and
+  worker, and a `WebSocket` between worker and server. A socket is structurally
+  a port, so both ends run the identical host.
+- **Local-first**: optimistic edits apply instantly, survive a page reload via an
+  OPFS snapshot, and replicate to the server when it's reachable — offline is
+  just "the socket isn't up yet," not a separate code path.
+- **Both Rust reach-paths**: the browser runs the engine as **WebAssembly**; the
+  server runs it as the **native N-API addon** — same core, same queries.
 
 ## Run it
 
 ```sh
-# once: build the engine artifacts
-bun run --cwd ../../packages/native build:wasm     # lenke_core.wasm
-cd ../../packages/node && bunx napi build --platform --release --esm && cd -
+bun install
+
+# once: build the two engine artifacts the demo loads
+bun run --cwd ../../packages/native build:wasm     # → lenke_core.wasm  (browser)
+bunx nx build @lenke/node                          # → native addon     (server)
 
 bun run server    # terminal 1 → ws://localhost:8787
-bun run dev       # terminal 2 → vite; open the printed URL (Chrome first: SharedWorker + OPFS)
+bun run dev       # terminal 2 → vite; open the printed URL
 ```
 
-Headless check without a browser: `bun run smoke` (spawns the real Node server, drives it with a protocol client over a real socket).
+Open it in Chrome first — it leans on `SharedWorker` and OPFS.
 
-**Real-browser check:** `bunx playwright install chromium` (once), then `bun run e2e`. Playwright boots the ws server + vite and drives the slice in Chromium — the paths the bun/node suites can't reach: the SharedWorker, the wasm engine, OPFS, and the cross-tab MessagePort push (open two tabs, flip a status in one, watch it land in the other). This harness caught a real loader bug the headless tests couldn't: the demand-fill mapped server rows (columns `s.sid`, `s.cluster`, …) straight onto INSERT params (`$sid`, `$cluster`, …), so every service loaded with null properties and the per-cluster `WHERE` matched nothing.
+Two ways to check it without clicking around:
 
-## The three demos
+- `bun run smoke` — spawns the real Node server and drives it with a protocol
+  client over a real socket (no browser). Fast; covers the server + protocol.
+- `bun run e2e` — `bunx playwright install chromium` once, then this boots the
+  server + vite and drives the slice in a real Chromium. It's the only harness
+  that exercises the browser-only paths: the SharedWorker, the wasm engine,
+  OPFS, and the cross-tab `MessagePort` push.
 
-1. **Live everywhere** — open two tabs, pick a cluster, flip a service to `down` in one tab; the other updates instantly (one SharedWorker store, one host per tab, epoch-routed pushes). Click `?` → **blast radius** lists everything transitively upstream of the victim.
-2. **Demand-fill** — switch to a cluster you haven't visited: `loading…` renders from `complete: false`, the worker fetches that cluster from the server (scope-token collections), rows land, `complete` flips.
-3. **Pull the cable** — kill the server (Ctrl-C terminal 1). Edits still apply instantly and the status line counts unsynced changes. **Reload the tab while offline** — the OPFS snapshot warm-boots the store with your queued edits intact. Restart the server — the queue drains, counter hits 0.
+## Things to try
 
-## Findings (the point of the slice)
+1. **Live everywhere.** Open two tabs, pick a cluster, flip a service to `down`
+   in one tab — the other updates instantly. Both tabs share one worker-resident
+   store, so a write in either is pushed to every subscriber. Click `?` on a
+   service for its **blast radius**: everything transitively upstream, in one
+   variable-length GQL query.
+2. **Demand-fill.** Switch to a cluster you haven't opened. It renders
+   `loading…` first (the subscription's result is marked incomplete), the worker
+   fetches just that cluster from the server, the rows arrive, and it flips to
+   complete. Data is loaded lazily, per cluster, on first view.
+3. **Pull the cable.** Kill the server (Ctrl-C in terminal 1). Edits still apply
+   instantly and the status bar counts the unsynced changes. Reload the tab
+   _while still offline_ — the OPFS snapshot warm-boots the store with your
+   queued edits intact. Restart the server and the queue drains to zero.
 
-- **Reconnect helper — now in the library** — this example's server link used to be a ~40-line hand-rolled reconnecting client; it's now `createReconnectingClient` (re-dial with back-off, re-subscribe on reconnect, park writes while offline). The worker's whole transport is the `connect` callback — open a socket, wire its lifecycle. Durable writes still belong to the engine's queue, not the helper.
-- **Value-scoped collections are first-class now** — one `services` collection declares `key: 'cluster'`, and the engine tracks completeness and demand-fill per bound value, reading it straight off the subscription's `$cluster` param. The former synthetic `cluster:<name>` token threaded through the deps channel is gone — no parallel namespace of magic strings, and the scope rides the real (first-class) params path.
-- **Gremlin rides the wire — one-shot AND live** — a `query` with `lang: 'gremlin'` runs a one-shot traversal → `values` (`client.gremlin(traversal)`); a `subscribe` with `lang: 'gremlin'` is a **standing** traversal whose snapshot carries `values`, re-run under the same declared-`deps` gating (`store.liveGremlin`). Full values each push — keyed diffs are a rows notion and don't apply. The blast radius stays native **GQL** var-length (`-[:CALLS]->{1,}` + `DISTINCT`) because GQL covers it, but imperative traversals now cross the same protocol both ways. Gremlin has no engine param binding, so values interpolate via the **`gremlin` tag / `escapeGremlin`** — `${v}` is escaped into a safe literal, so ``client.gremlin`g.V().has('name', ${userInput})` `` is injection-safe (proven inert against a `drop()` injection).
-- **Cold boot from empty bytes was an FFI fault** — fixed in `@lenke/native` (`graphFromNdjson` now treats empty input as an empty graph).
-- **Status is a subscription now** — the host already pushed `status` on every queue/connectivity change; the client wakes `onStatus` subscribers on each, so `StatusBar` is `useSyncExternalStore(client.onStatus, client.getStatus)` with no interval (the former 1 s poll is gone).
-- **Keyed diffs now, Arrow later** — the grid subscribes with `key: 's.sid'`, so a status flip re-ships one cell (`patch`), not the whole cluster's rows; the client applies patch/remove/order onto its retained rows and keeps unchanged rows' identity. A subscription without a `key` still gets full `rows` (aggregates need that). Arrow-buffer transfer — the orthogonal win for large _bulk_ loads, not churn — has landed for one-shots: `client.query(text, params, { format: 'arrow' })` crosses the result as an ARW1 columnar blob (decoded by `decodeArrow`), on a binary-capable transport (MessagePort — where it also transfers zero-copy — or a binary WebSocket). This demo's loaders go worker→server over JSON WebSocket, so they'd need binary framing to use it; the worker→tab MessagePort push is where the zero-copy transfer pays off (subscription-arrow is the follow-on there).
+## How it's built
+
+Four files, one per layer. Read them in this order.
+
+### `src/main.tsx` — the tab
+
+A React view over a **sync client**. It creates one `SharedWorker` for the origin
+and a `createSyncClient` that talks to it over `worker.port`. Views subscribe to
+live queries through `useSyncExternalStore`, so a component re-renders exactly
+when its query's snapshot changes — nothing polls.
+
+A subscription declares its **dependency tokens** (`['Service', 'status', …]`) —
+the labels and property keys whose mutation must re-run it. A `status` flip
+touches `status`, so the service grid re-runs; it doesn't touch anything the
+blast-radius query reads, so that one stays put.
+
+Because a `MessagePort` can't reliably tell the worker its tab has closed, the
+tab sends an explicit `bye` on `pagehide` (and `replay()`s its subscriptions on
+bfcache restore). Without it the worker would keep re-running a dead tab's
+queries forever — the kind of lifecycle detail a real port-based app has to get
+right, so it's here rather than hidden.
+
+### `worker.ts` — the SharedWorker (the heart of it)
+
+One lenke store per origin, shared by every tab. It owns:
+
+- **The graph** — a `createStore` over the **wasm** backend.
+- **A snapshot store** (`createSnapshotStore`, OPFS-backed) — warm-boots the
+  store on load and persists the store + pending write queue on a debounce, so a
+  reload (even offline) comes back where you left off.
+- **The sync engine** (`createSyncEngine`) — holds the optimistic write queue and
+  the **demand-fill collections**. One `services` collection is `key`ed on
+  `cluster`, so the engine tracks completeness and lazy-loading _per cluster
+  value_, reading the value straight off each subscription's `$cluster` param.
+- **The server link** (`createReconnectingClient`) — a reconnecting WebSocket
+  that re-dials with back-off and re-subscribes on reconnect. Loaders are
+  one-shot `query`s against it; write-back is `mutate`. While it's down, writes
+  simply stay queued.
+- **One host per tab** — the SharedWorker's `connect` event hands over a
+  `MessagePort` per tab, and each gets its own `engine.createHost`. This is the
+  identical one-host-per-connection shape the server uses for sockets.
+
+### `server.ts` — the authoritative server
+
+The whole fleet in an embedded lenke store — here on the **native N-API addon**,
+the fast production Node path — with one `createSyncHost` per WebSocket. This is
+the payoff of the transport symmetry: the _same_ `createSyncHost` that sits
+behind the worker's `postMessage` serves TCP sockets here, unchanged. ~45 lines.
+
+### `datagen.ts` — the fixture
+
+Generates the synthetic fleet (services, clusters, `CALLS` edges) as NDJSON, used
+to seed both the server store and the tests. No lenke concepts — just data.
+
+## Why it's built this way
+
+- **Store in a SharedWorker, not per tab.** One store for the origin means every
+  tab shares state and cross-tab live updates come for free — a write in any tab
+  bumps the graph version and the engine pushes to every subscriber whose result
+  moved. The write path never knows subscriptions exist.
+- **Subscribe, don't fetch.** The client asks _"keep me current on this query"_;
+  the host recomputes a subscription only when its dependency tokens move and
+  pushes only when the snapshot reference actually changes. The grid subscribes
+  with a row `key`, so a single status flip ships one changed cell (`patch`), not
+  the whole cluster.
+- **Offline is the default, not a mode.** Optimistic writes land in a durable,
+  version-gated queue; the OPFS snapshot carries that queue across reloads; the
+  reconnecting client replays it when the socket returns. There is no "offline
+  branch" — the socket just isn't settling yet.
+- **Injection-safe by construction.** GQL values are sent as `params` and bind to
+  already-parsed slots — they never touch the query parser. Gremlin has no engine
+  param binding, so its values are escaped through the `` gremlin`…` `` tag /
+  `escapeGremlin` into safe literals. User input never becomes query structure.
+
+The [`../../docs/guides`](../../docs/guides) explain each layer on its own; this
+example is where they meet.
