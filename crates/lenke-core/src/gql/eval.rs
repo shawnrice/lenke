@@ -103,6 +103,7 @@ const FAULT_DIV_ZERO: u8 = 1;
 const FAULT_TYPE: u8 = 2;
 const FAULT_BUDGET: u8 = 3;
 const FAULT_BAD_LABEL: u8 = 4;
+const FAULT_UNKNOWN_FN: u8 = 5;
 
 /// Per-expansion cap on trail-traversal steps; a guard against exponential blowup.
 const TRAIL_BUDGET: u64 = 1_000_000;
@@ -148,6 +149,10 @@ impl Ctx<'_> {
             FAULT_BAD_LABEL => Err(CodeError::new(
                 ErrorCode::InvalidGraphOp,
                 "INSERT: a node's label expression must be a plain conjunction (`A` or `A&B`) and an edge must carry exactly one type — a disjunction/negation/wildcard or a typeless edge is not creatable",
+            )),
+            FAULT_UNKNOWN_FN => Err(CodeError::new(
+                ErrorCode::Unsupported,
+                "call to an unknown or unimplemented function",
             )),
             _ => Ok(()),
         }
@@ -780,6 +785,9 @@ fn eval(env: &Env, expr: &CExpr) -> Val {
             *sub_len,
         ) as f64),
         CExpr::Scalar { func, args } => {
+            if matches!(func, ScalarFn::Unknown) {
+                env.ctx.set_fault(FAULT_UNKNOWN_FN); // fail loud, not silent NULL
+            }
             let vals: Vec<Val> = args.iter().map(|a| eval(env, a)).collect();
             call_scalar(env.graph, *func, &vals)
         }
@@ -926,6 +934,9 @@ fn run(env: &Env, prog: &Program) -> Val {
                     st.push(truth_to_val(if *negated { not3(r) } else { r }));
                 }
                 Op::Scalar(func, argc) => {
+                    if matches!(func, ScalarFn::Unknown) {
+                        env.ctx.set_fault(FAULT_UNKNOWN_FN);
+                    }
                     let at = st.len() - argc;
                     let args = st.split_off(at);
                     st.push(call_scalar(env.graph, *func, &args));
@@ -1120,6 +1131,116 @@ fn call_scalar(graph: &Graph, func: ScalarFn, args: &[Val]) -> Val {
         ElementId => match a {
             Some(Val::Node(i)) => Val::Str(graph.vid.arc(*i)),
             Some(Val::Edge(i)) => vstr(format!("e{i}")),
+            _ => Val::Null,
+        },
+        // --- graph functions --- (label/key order is unspecified → sorted for
+        // deterministic, cross-engine-identical output)
+        Labels => match a {
+            Some(Val::Node(i)) => {
+                let mut ls: Vec<String> = graph
+                    .vertex_labels(*i)
+                    .iter()
+                    .map(|&l| graph.labels.text(l).to_string())
+                    .collect();
+                ls.sort_unstable();
+                Val::List(ls.into_iter().map(vstr).collect())
+            }
+            _ => Val::Null,
+        },
+        Type => match a {
+            Some(Val::Edge(e)) => vstr(graph.etype.text(graph.e_type[*e as usize]).to_string()),
+            _ => Val::Null,
+        },
+        Keys => {
+            let store_idx = match a {
+                Some(Val::Node(i)) => Some((&graph.props, *i as usize)),
+                Some(Val::Edge(e)) => Some((&graph.edge_props, *e as usize)),
+                _ => None,
+            };
+            match store_idx {
+                Some((store, idx)) => {
+                    let mut ks: Vec<String> = (0..store.keys.len() as u32)
+                        .filter(|&kid| store.is_present_id(idx, kid))
+                        .map(|kid| store.keys.text(kid).to_string())
+                        .collect();
+                    ks.sort_unstable();
+                    Val::List(ks.into_iter().map(vstr).collect())
+                }
+                None => Val::Null,
+            }
+        }
+        // --- conversion (null in → null out) ---
+        ToString => match a {
+            Some(v) if !is_nullish(v) => vstr(js_str(graph, v)),
+            _ => Val::Null,
+        },
+        ToInteger => match a {
+            Some(Val::Num(n)) => Val::Num(n.trunc()),
+            Some(Val::Str(s)) => s
+                .trim()
+                .parse::<f64>()
+                .ok()
+                .map_or(Val::Null, |n| Val::Num(n.trunc())),
+            _ => Val::Null,
+        },
+        ToFloat => match a {
+            Some(Val::Num(n)) => Val::Num(*n),
+            Some(Val::Str(s)) => s.trim().parse::<f64>().ok().map_or(Val::Null, Val::Num),
+            _ => Val::Null,
+        },
+        // --- string / list ---
+        Substring => match (a, b) {
+            (Some(x), Some(y)) if !is_nullish(x) && !is_nullish(y) => {
+                let s = js_str(graph, x);
+                let start = num_of(y).unwrap_or(0.0).max(0.0) as usize;
+                let len = match args.get(2) {
+                    Some(z) if !is_nullish(z) => num_of(z).unwrap_or(0.0).max(0.0) as usize,
+                    _ => usize::MAX,
+                };
+                vstr(utf16_slice(&s, start, len))
+            }
+            _ => Val::Null,
+        },
+        Split => match (a, b) {
+            (Some(x), Some(y)) if !is_nullish(x) && !is_nullish(y) => {
+                let s = js_str(graph, x);
+                let delim = js_str(graph, y);
+                let parts: Vec<Val> = if delim.is_empty() {
+                    s.chars().map(|c| vstr(c.to_string())).collect()
+                } else {
+                    s.split(delim.as_str()).map(vstr).collect()
+                };
+                Val::List(parts)
+            }
+            _ => Val::Null,
+        },
+        Replace => match (a, b) {
+            (Some(x), Some(y)) if !is_nullish(x) && !is_nullish(y) => {
+                let s = js_str(graph, x);
+                let search = js_str(graph, y);
+                let repl = match args.get(2) {
+                    Some(z) if !is_nullish(z) => js_str(graph, z),
+                    _ => String::new(),
+                };
+                if search.is_empty() {
+                    vstr(s)
+                } else {
+                    vstr(s.replace(search.as_str(), &repl))
+                }
+            }
+            _ => Val::Null,
+        },
+        Head => match a {
+            Some(Val::List(items)) => items.first().cloned().unwrap_or(Val::Null),
+            _ => Val::Null,
+        },
+        Last => match a {
+            Some(Val::List(items)) => items.last().cloned().unwrap_or(Val::Null),
+            _ => Val::Null,
+        },
+        Reverse => match a {
+            Some(Val::List(items)) => Val::List(items.iter().rev().cloned().collect()),
+            Some(Val::Str(s)) => vstr(s.chars().rev().collect::<String>()),
             _ => Val::Null,
         },
         Unknown => Val::Null,

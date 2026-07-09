@@ -57,6 +57,21 @@ pub enum ScalarFn {
     Coalesce,
     Nullif,
     ElementId,
+    // Graph functions.
+    Labels,
+    Type,
+    Keys,
+    // Conversion.
+    ToString,
+    ToInteger,
+    ToFloat,
+    // String / list.
+    Substring,
+    Split,
+    Replace,
+    Head,
+    Last,
+    Reverse,
     Unknown,
 }
 
@@ -118,6 +133,18 @@ fn scalar_fn(name: &str) -> ScalarFn {
         "coalesce" => ScalarFn::Coalesce,
         "nullif" => ScalarFn::Nullif,
         "element_id" => ScalarFn::ElementId,
+        "labels" => ScalarFn::Labels,
+        "type" => ScalarFn::Type,
+        "keys" => ScalarFn::Keys,
+        "tostring" | "to_string" => ScalarFn::ToString,
+        "tointeger" | "to_integer" => ScalarFn::ToInteger,
+        "tofloat" | "to_float" => ScalarFn::ToFloat,
+        "substring" => ScalarFn::Substring,
+        "split" => ScalarFn::Split,
+        "replace" => ScalarFn::Replace,
+        "head" => ScalarFn::Head,
+        "last" => ScalarFn::Last,
+        "reverse" => ScalarFn::Reverse,
         _ => ScalarFn::Unknown,
     }
 }

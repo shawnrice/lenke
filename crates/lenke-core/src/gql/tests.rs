@@ -1186,6 +1186,78 @@ fn detach_delete_cascades_edges() {
 }
 
 #[test]
+fn scalar_functions_graph_string_list_conversion() {
+    let mut g = modern();
+    // graph functions (label/key order is sorted for determinism)
+    assert_eq!(
+        rows(
+            &mut g,
+            "MATCH (n:Person {name:'marko'}) RETURN labels(n) AS l"
+        ),
+        vec![vec![Value::List(vec![s("Person")])]]
+    );
+    assert_eq!(
+        rows(&mut g, "MATCH ()-[r:KNOWS]->() RETURN type(r) AS t LIMIT 1"),
+        vec![vec![s("KNOWS")]]
+    );
+    assert_eq!(
+        rows(
+            &mut g,
+            "MATCH (n:Person {name:'marko'}) RETURN keys(n) AS k"
+        ),
+        vec![vec![Value::List(vec![s("age"), s("name")])]]
+    );
+    // conversion
+    assert_eq!(
+        rows(&mut g, "RETURN to_integer('42') AS x"),
+        vec![vec![n(42.0)]]
+    );
+    assert_eq!(
+        rows(&mut g, "RETURN to_float('3.5') AS x"),
+        vec![vec![n(3.5)]]
+    );
+    assert_eq!(
+        rows(&mut g, "RETURN to_string(42) AS x"),
+        vec![vec![s("42")]]
+    );
+    // string / list
+    assert_eq!(
+        rows(&mut g, "RETURN substring('hello', 1, 3) AS x"),
+        vec![vec![s("ell")]]
+    );
+    assert_eq!(
+        rows(&mut g, "RETURN split('a,b,c', ',') AS x"),
+        vec![vec![Value::List(vec![s("a"), s("b"), s("c")])]]
+    );
+    assert_eq!(
+        rows(&mut g, "RETURN replace('a.b.c', '.', '-') AS x"),
+        vec![vec![s("a-b-c")]]
+    );
+    assert_eq!(
+        rows(&mut g, "RETURN head([1, 2, 3]) AS x"),
+        vec![vec![n(1.0)]]
+    );
+    assert_eq!(
+        rows(&mut g, "RETURN last([1, 2, 3]) AS x"),
+        vec![vec![n(3.0)]]
+    );
+    assert_eq!(
+        rows(&mut g, "RETURN reverse('abc') AS x"),
+        vec![vec![s("cba")]]
+    );
+}
+
+#[test]
+fn unknown_function_errors_instead_of_silent_null() {
+    let mut g = modern();
+    let err = parse("RETURN nope_fn(1) AS x")
+        .unwrap()
+        .execute(&mut g, &Params::new())
+        .unwrap_err();
+    assert_eq!(err.code, crate::error_codes::ErrorCode::Unsupported);
+}
+
+#[test]
 fn string_length_counts_utf16_units_like_js() {
     // Non-BMP chars are 2 UTF-16 units — matching JS `.length` (the TS engine),
     // not Unicode code points (which Rust's `chars().count()` gave before).

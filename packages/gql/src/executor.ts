@@ -356,7 +356,152 @@ const callScalar = (name: string, args: readonly unknown[]): unknown => {
       // ISO `<element_id function>`: the identifier of a node or edge.
       return a && typeof a === 'object' && 'id' in a ? (a as { id: unknown }).id : null;
     default:
-      throw new Error(`Unknown function: ${name}()`);
+      // Graph/conversion/string/list functions live in a second dispatcher so
+      // neither switch exceeds the complexity budget.
+      return callExtendedScalar(name, args);
+  }
+};
+
+// --- ISO graph / conversion / string-list scalar functions -------------------
+// Split out of `callScalar` (complexity budget). Semantics mirror the Rust
+// engine (`gql/eval.rs`) byte-for-byte so both engines agree: labels/keys are
+// sorted, slices are UTF-16-safe, `null` in → `null` out, and an unknown name is
+// an `Unsupported` fault — never a silent `null`.
+
+// Strict numeric-string parse matching Rust's `str::trim().parse::<f64>()`: the
+// WHOLE trimmed string must be a finite decimal (optional sign, integer/fraction,
+// exponent). `Number.parseFloat` is lenient — it would read `'12abc'` as `12`,
+// diverging from the Rust engine — so we gate on the grammar first. Exotic forms
+// (`inf`, `nan`, hex) are out of scope and yield null on both engines' common path.
+const FINITE_NUMERIC = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
+
+const numericStringToFloat = (s: string): number | null => {
+  const t = s.trim();
+
+  return FINITE_NUMERIC.test(t) ? Number.parseFloat(t) : null;
+};
+
+const toIntScalar = (a: unknown): number | null => {
+  if (isNullish(a)) {
+    return null;
+  }
+
+  if (typeof a === 'number') {
+    return Math.trunc(a);
+  }
+
+  const p = numericStringToFloat(str(a));
+
+  return p === null ? null : Math.trunc(p);
+};
+
+const toFloatScalar = (a: unknown): number | null => {
+  if (isNullish(a)) {
+    return null;
+  }
+
+  if (typeof a === 'number') {
+    return a;
+  }
+
+  return numericStringToFloat(str(a));
+};
+
+const substringScalar = (a: unknown, b: unknown, len: unknown): string | null => {
+  if (isNullish(a) || isNullish(b)) {
+    return null;
+  }
+
+  const s = str(a);
+  const start = Math.max(0, Number(b));
+
+  return isNullish(len) ? s.slice(start) : s.slice(start, start + Math.max(0, Number(len)));
+};
+
+const splitScalar = (a: unknown, b: unknown): string[] | null => {
+  if (isNullish(a) || isNullish(b)) {
+    return null;
+  }
+
+  const delim = str(b);
+
+  // Code-point spread is deliberate: it mirrors Rust's `s.chars()` so an
+  // empty-delimiter split is byte-identical across engines.
+  // oxlint-disable-next-line typescript/no-misused-spread
+  return delim === '' ? [...str(a)] : str(a).split(delim);
+};
+
+const replaceScalar = (a: unknown, b: unknown, repl: unknown): string | null => {
+  if (isNullish(a) || isNullish(b)) {
+    return null;
+  }
+
+  const search = str(b);
+
+  return search === ''
+    ? str(a)
+    : str(a)
+        .split(search)
+        .join(isNullish(repl) ? '' : str(repl));
+};
+
+const headScalar = (a: unknown): unknown => (Array.isArray(a) && a.length > 0 ? a[0] : null);
+
+const lastScalar = (a: unknown): unknown =>
+  Array.isArray(a) && a.length > 0 ? a[a.length - 1] : null;
+
+const reverseScalar = (a: unknown): unknown => {
+  if (isNullish(a)) {
+    return null;
+  }
+
+  if (Array.isArray(a)) {
+    return [...a].reverse();
+  }
+
+  // Code-point reversal mirrors Rust's `s.chars().rev()` (byte-identical).
+  // oxlint-disable-next-line typescript/no-misused-spread
+  return typeof a === 'string' ? [...a].reverse().join('') : null;
+};
+
+const callExtendedScalar = (name: string, args: readonly unknown[]): unknown => {
+  const [a, b] = args;
+
+  switch (name) {
+    // --- graph functions (label/key order sorted for cross-engine parity) ---
+    case 'labels':
+      return isVertex(a) ? [...a.labels].sort() : null;
+    case 'type':
+      return isEdge(a) ? ([...a.labels][0] ?? '') : null;
+    case 'keys':
+      return isElement(a) ? Object.keys(a.properties).sort() : null;
+    // --- conversion (null in → null out) ---
+    case 'tostring':
+    case 'to_string':
+      return isNullish(a) ? null : str(a);
+    case 'tointeger':
+    case 'to_integer':
+      return toIntScalar(a);
+    case 'tofloat':
+    case 'to_float':
+      return toFloatScalar(a);
+    // --- string / list ---
+    case 'substring':
+      return substringScalar(a, b, args[2]);
+    case 'split':
+      return splitScalar(a, b);
+    case 'replace':
+      return replaceScalar(a, b, args[2]);
+    case 'head':
+      return headScalar(a);
+    case 'last':
+      return lastScalar(a);
+    case 'reverse':
+      return reverseScalar(a);
+    default:
+      throw new LenkeError(`call to an unknown or unimplemented function: ${name}()`, {
+        code: ErrorCode.Unsupported,
+      });
   }
 };
 
@@ -1825,6 +1970,7 @@ const isEdge = (v: unknown): v is Edge =>
   typeof v === 'object' && v !== null && 'from' in v && 'to' in v;
 const isElement = (v: unknown): v is Vertex | Edge =>
   typeof v === 'object' && v !== null && 'id' in v;
+const isVertex = (v: unknown): v is Vertex => isElement(v) && !isEdge(v);
 
 const evalProps = (
   props: readonly CProp[],
