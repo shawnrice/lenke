@@ -8,7 +8,7 @@
     "dev": "vite",
     "bundle": "vite build",
     "server": "node server.ts",
-    "smoke": "bun test",
+    "smoke": "bun test server.test.ts",
     "e2e": "playwright test"
   },
   "dependencies": {
