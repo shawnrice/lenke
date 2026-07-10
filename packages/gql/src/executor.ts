@@ -433,9 +433,16 @@ const substringScalar = (a: unknown, b: unknown, len: unknown): string | null =>
   }
 
   const s = str(a);
-  const start = Math.max(0, Number(b));
+  // ISO GQL: the start index is 1-based (SQL `SUBSTRING` convention), so
+  // `substring('crystal hawk river', 1, 7)` → 'crystal'. Convert to a 0-based
+  // UTF-16 offset; a start <= 0 shrinks the window from the front (SQL
+  // semantics), which the native engine mirrors exactly.
+  const zeroStart = Number(b) - 1;
+  const from = Math.max(0, zeroStart);
 
-  return isNullish(len) ? s.slice(start) : s.slice(start, start + Math.max(0, Number(len)));
+  return isNullish(len)
+    ? s.slice(from)
+    : s.slice(from, Math.max(0, zeroStart + Number(len)));
 };
 
 const splitScalar = (a: unknown, b: unknown): string[] | null => {

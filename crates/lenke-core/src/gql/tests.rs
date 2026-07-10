@@ -1235,10 +1235,15 @@ fn scalar_functions_graph_string_list_conversion() {
         rows(&mut g, "RETURN to_string(42) AS x"),
         vec![vec![s("42")]]
     );
-    // string / list
+    // string / list — substring is 1-based (SQL / ISO GQL): positions 1..3.
     assert_eq!(
         rows(&mut g, "RETURN substring('hello', 1, 3) AS x"),
-        vec![vec![s("ell")]]
+        vec![vec![s("hel")]]
+    );
+    assert_eq!(rows(&mut g, "RETURN substring('hello', 4) AS x"), vec![vec![s("lo")]]);
+    assert_eq!(
+        rows(&mut g, "RETURN substring('hello', 0, 3) AS x"),
+        vec![vec![s("he")]]
     );
     assert_eq!(
         rows(&mut g, "RETURN split('a,b,c', ',') AS x"),

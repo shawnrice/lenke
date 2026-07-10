@@ -40,7 +40,11 @@ describe('GQL: ISO graph / conversion / string-list scalar functions', () => {
   });
 
   test('string / list functions', () => {
-    expect(one(`RETURN substring('hello', 1, 3) AS x`)).toBe('ell');
+    // 1-based start (SQL / ISO GQL convention): positions 1..3 of 'hello'.
+    expect(one(`RETURN substring('hello', 1, 3) AS x`)).toBe('hel');
+    // start past the end → empty; a start <= 0 shrinks the window from the front.
+    expect(one(`RETURN substring('hello', 4) AS x`)).toBe('lo');
+    expect(one(`RETURN substring('hello', 0, 3) AS x`)).toBe('he');
     expect(one(`RETURN split('a,b,c', ',') AS x`)).toEqual(['a', 'b', 'c']);
     expect(one(`RETURN replace('a.b.c', '.', '-') AS x`)).toBe('a-b-c');
     expect(one(`RETURN head([1, 2, 3]) AS x`)).toBe(1);

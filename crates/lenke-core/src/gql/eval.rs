@@ -1261,12 +1261,19 @@ fn call_scalar(graph: &Graph, func: ScalarFn, args: &[Val]) -> Val {
         Substring => match (a, b) {
             (Some(x), Some(y)) if !is_nullish(x) && !is_nullish(y) => {
                 let s = js_str(graph, x);
-                let start = num_of(y).unwrap_or(0.0).max(0.0) as usize;
-                let len = match args.get(2) {
-                    Some(z) if !is_nullish(z) => num_of(z).unwrap_or(0.0).max(0.0) as usize,
+                // ISO GQL: 1-based start (SQL `SUBSTRING`). Convert to a 0-based
+                // offset; a start <= 0 shrinks the window from the front (SQL
+                // semantics), byte-identical to the TS engine.
+                let zero_start = num_of(y).unwrap_or(0.0) - 1.0;
+                let from = zero_start.max(0.0) as usize;
+                let count = match args.get(2) {
+                    Some(z) if !is_nullish(z) => {
+                        let end = (zero_start + num_of(z).unwrap_or(0.0)).max(0.0) as usize;
+                        end.saturating_sub(from)
+                    }
                     _ => usize::MAX,
                 };
-                vstr(utf16_slice(&s, start, len))
+                vstr(utf16_slice(&s, from, count))
             }
             _ => Val::Null,
         },
