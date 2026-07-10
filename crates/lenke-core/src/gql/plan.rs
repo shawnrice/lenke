@@ -86,10 +86,11 @@ pub enum ScalarFn {
     Tail,
     Append,
     Range,
-    // NOTE: the ISO GQL set-style list functions (list_union, intersection,
-    // difference, list_contains, list_sort) are intentionally NOT here yet —
-    // their dedup/ordering/return-type semantics aren't pinned by the freely
-    // available references, and this engine does not guess at spec behavior.
+    ListUnion,
+    Intersection,
+    Difference,
+    ListContains,
+    ListSort,
     Unknown,
 }
 
@@ -176,6 +177,11 @@ fn scalar_fn(name: &str) -> ScalarFn {
         "tail" => ScalarFn::Tail,
         "append" => ScalarFn::Append,
         "range" => ScalarFn::Range,
+        "list_union" => ScalarFn::ListUnion,
+        "intersection" => ScalarFn::Intersection,
+        "difference" => ScalarFn::Difference,
+        "list_contains" => ScalarFn::ListContains,
+        "list_sort" => ScalarFn::ListSort,
         _ => ScalarFn::Unknown,
     }
 }

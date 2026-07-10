@@ -151,6 +151,33 @@ suite('GQL function differential (TS vs native)', () => {
     `NOT (n.s CONTAINS 'z')`,
     `n.s CONTAINS 'o' AND n.s STARTS WITH 'H'`,
     `n.s CONTAINS 'l' OR n.s STARTS WITH 'z'`,
+    // Slice 10 — set-style list functions (dedup first-occurrence; sort reuses
+    // the ORDER BY total order). list_contains returns numeric 1/0 per ISO.
+    `list_union([1, 2, 2, 3], [3, 4, 5])`,
+    `intersection([1, 2, 3, 3], [3, 3, 4, 5])`,
+    `difference([1, 2, 2, 3], [3, 4, 5])`,
+    `list_union(n.xs, [1, 9])`,
+    `intersection(n.xs, [2, 9])`,
+    `difference(n.xs, [1])`,
+    `list_contains([1, 2, 3], 2)`,
+    `list_contains([1, 2, 3], 9)`,
+    `list_contains(n.xs, 3)`,
+    `list_contains(['a', 'b'], 'b')`,
+    `list_sort([3, 1, 4, 1, 5])`,
+    `list_sort(n.xs)`,
+    `list_sort([3, 1, 2], 'desc')`,
+    `list_sort(['b', 'a', 'c'])`,
+    `list_sort([3, 1, null, 2])`,
+    `list_sort([3, 1, null, 2], 'asc', 'first')`,
+    `list_sort([3, 1, null, 2], 'desc', 'last')`,
+    // NOTE: mixed-type sorts (e.g. numbers + strings in one list) are NOT
+    // asserted here — `list_sort` reuses the ORDER BY comparator, and ORDER BY
+    // itself already diverges cross-type between the engines (TS imposes a
+    // number<string total order; the Rust core treats cross-type pairs as
+    // incomparable and leaves them in place). That is a pre-existing ORDER BY
+    // divergence, tracked separately; within a single type list_sort is
+    // byte-identical.
+    `list_union([1], 2)`,
   ];
 
   for (const expr of CASES) {

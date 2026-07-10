@@ -412,6 +412,15 @@ fn val_eq(a: &Val, b: &Val) -> bool {
     }
 }
 
+/// Push `v` into `out` unless an equal element is already present (structural
+/// equality, first occurrence wins). The building block for the ISO GQL set-style
+/// list functions (`list_union`/`intersection`/`difference`), all of which dedup.
+fn push_unique(out: &mut Vec<Val>, v: &Val) {
+    if !out.iter().any(|x| val_eq(x, v)) {
+        out.push(v.clone());
+    }
+}
+
 /// Whether `a` and `b` are the same orderable primitive type (number, string,
 /// or boolean). ISO ordering (`< > <= >=`) is only defined within such a type;
 /// across types — or for graph elements — the comparison is UNKNOWN, not a
@@ -1418,6 +1427,66 @@ fn call_scalar(graph: &Graph, func: ScalarFn, args: &[Val]) -> Val {
                 let mut v = items.clone();
                 v.push(b.cloned().unwrap_or(Val::Null));
                 Val::List(v)
+            }
+            _ => Val::Null,
+        },
+        // --- set-style list functions (all dedup; first occurrence wins) ---
+        ListUnion => match (a, b) {
+            (Some(Val::List(x)), Some(Val::List(y))) => {
+                let mut out = Vec::new();
+                for v in x.iter().chain(y.iter()) {
+                    push_unique(&mut out, v);
+                }
+                Val::List(out)
+            }
+            _ => Val::Null,
+        },
+        Intersection => match (a, b) {
+            (Some(Val::List(x)), Some(Val::List(y))) => {
+                let mut out = Vec::new();
+                for v in x {
+                    if y.iter().any(|w| val_eq(w, v)) {
+                        push_unique(&mut out, v);
+                    }
+                }
+                Val::List(out)
+            }
+            _ => Val::Null,
+        },
+        Difference => match (a, b) {
+            (Some(Val::List(x)), Some(Val::List(y))) => {
+                let mut out = Vec::new();
+                for v in x {
+                    if !y.iter().any(|w| val_eq(w, v)) {
+                        push_unique(&mut out, v);
+                    }
+                }
+                Val::List(out)
+            }
+            _ => Val::Null,
+        },
+        // ISO GQL `list_contains` returns the numeric 1 / 0 (per its Return Type),
+        // not a boolean. The value may be null (a first-class value).
+        ListContains => match a {
+            Some(Val::List(items)) => {
+                let found = b.is_some_and(|v| items.iter().any(|w| val_eq(w, v)));
+                Val::Num(if found { 1.0 } else { 0.0 })
+            }
+            _ => Val::Null,
+        },
+        // list_sort(list, [order], [nullOrder]) — reuses the ORDER BY total order
+        // (`compare_sort`) so a sorted list matches ORDER BY byte-for-byte. Stable.
+        ListSort => match a {
+            Some(Val::List(items)) => {
+                let descending = matches!(b, Some(Val::Str(s)) if s.eq_ignore_ascii_case("desc"));
+                let nulls_first = match args.get(2) {
+                    Some(Val::Str(s)) if s.eq_ignore_ascii_case("first") => Some(true),
+                    Some(Val::Str(s)) if s.eq_ignore_ascii_case("last") => Some(false),
+                    _ => None,
+                };
+                let mut sorted = items.clone();
+                sorted.sort_by(|x, y| compare_sort(x, y, descending, nulls_first));
+                Val::List(sorted)
             }
             _ => Val::Null,
         },

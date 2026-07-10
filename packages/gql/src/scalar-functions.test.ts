@@ -92,6 +92,20 @@ describe('GQL: ISO graph / conversion / string-list scalar functions', () => {
     expect(() => query(g, `RETURN CAST(1 AS BYTES) AS x`)).toThrow(/unsupported type/i);
   });
 
+  test('set-style list functions (dedup first-occurrence; sort reuses ORDER BY)', () => {
+    expect(one(`RETURN list_union([1,2,2,3], [3,4,5]) AS x`)).toEqual([1, 2, 3, 4, 5]);
+    expect(one(`RETURN intersection([1,2,3,3], [3,3,4,5]) AS x`)).toEqual([3]);
+    expect(one(`RETURN difference([1,2,2,3], [3,4,5]) AS x`)).toEqual([1, 2]);
+    // ISO GQL: list_contains returns numeric 1 / 0 (not a boolean).
+    expect(one(`RETURN list_contains([1,2,3], 2) AS x`)).toBe(1);
+    expect(one(`RETURN list_contains([1,2,3], 9) AS x`)).toBe(0);
+    expect(one(`RETURN list_sort([3,1,4,1,5]) AS x`)).toEqual([1, 1, 3, 4, 5]);
+    expect(one(`RETURN list_sort([3,1,2], 'desc') AS x`)).toEqual([3, 2, 1]);
+    // null placement follows ORDER BY (default: nulls last on asc).
+    expect(one(`RETURN list_sort([3,1,null,2]) AS x`)).toEqual([1, 2, 3, null]);
+    expect(one(`RETURN list_sort([3,1,null,2], 'asc', 'first') AS x`)).toEqual([null, 1, 2, 3]);
+  });
+
   test('an unknown function is an error, never a silent null', () => {
     expect(() => query(g, `RETURN nope_fn(1) AS x`)).toThrow(/unknown or unimplemented function/);
   });

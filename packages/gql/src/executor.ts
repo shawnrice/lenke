@@ -742,6 +742,104 @@ const callStringListFn = (name: string, args: readonly unknown[]): unknown => {
   }
 };
 
+// Push `v` into `out` unless a structurally-equal element is already present
+// (first occurrence wins) — the dedup building block for the set-style list
+// functions, mirroring the Rust `push_unique`.
+const pushUnique = (out: unknown[], v: unknown): void => {
+  if (!out.some((x) => structuralEq(x, v))) {
+    out.push(v);
+  }
+};
+
+// ISO GQL `list_sort` <nullOrder> arg → the `nullsFirst` flag; `undefined`
+// (default / unrecognized) falls back to the ORDER BY default in `compareSort`.
+const nullOrderArg = (v: unknown): boolean | undefined => {
+  if (typeof v !== 'string') {
+    return undefined;
+  }
+
+  const s = v.toLowerCase();
+
+  if (s === 'first') {
+    return true;
+  }
+
+  return s === 'last' ? false : undefined;
+};
+
+// Set-style list functions (ISO GQL). All dedup by structural equality with the
+// first occurrence winning; list_sort reuses the ORDER BY total order so it is
+// byte-identical with `ORDER BY`.
+const callListSetFn = (name: string, a: unknown, b: unknown, args: readonly unknown[]): unknown => {
+  switch (name) {
+    case 'list_union': {
+      if (!Array.isArray(a) || !Array.isArray(b)) {
+        return null;
+      }
+
+      const out: unknown[] = [];
+
+      for (const v of [...a, ...b]) {
+        pushUnique(out, v);
+      }
+
+      return out;
+    }
+    case 'intersection': {
+      if (!Array.isArray(a) || !Array.isArray(b)) {
+        return null;
+      }
+
+      const out: unknown[] = [];
+
+      for (const v of a) {
+        if (b.some((w) => structuralEq(w, v))) {
+          pushUnique(out, v);
+        }
+      }
+
+      return out;
+    }
+    case 'difference': {
+      if (!Array.isArray(a) || !Array.isArray(b)) {
+        return null;
+      }
+
+      const out: unknown[] = [];
+
+      for (const v of a) {
+        if (!b.some((w) => structuralEq(w, v))) {
+          pushUnique(out, v);
+        }
+      }
+
+      return out;
+    }
+    case 'list_contains':
+      // ISO returns the numeric 1 / 0 (not a boolean); the value may be null.
+      if (!Array.isArray(a)) {
+        return null;
+      }
+
+      return a.some((w) => structuralEq(w, b)) ? 1 : 0;
+    case 'list_sort':
+      if (!Array.isArray(a)) {
+        return null;
+      }
+
+      return [...a].sort((x, y) =>
+        compareSort(
+          x,
+          y,
+          typeof b === 'string' && b.toLowerCase() === 'desc',
+          nullOrderArg(args[2]),
+        ),
+      );
+    default:
+      return UNHANDLED;
+  }
+};
+
 const callExtendedScalar = (name: string, args: readonly unknown[]): unknown => {
   const [a, b] = args;
 
@@ -750,6 +848,7 @@ const callExtendedScalar = (name: string, args: readonly unknown[]): unknown => 
     callConversionFn(name, a),
     callStringPredicateFn(name, a, b),
     callStringListFn(name, args),
+    callListSetFn(name, a, b, args),
   ]) {
     if (result !== UNHANDLED) {
       return result;

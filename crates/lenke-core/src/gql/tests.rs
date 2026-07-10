@@ -1305,6 +1305,52 @@ fn math_round_sign_pi_e() {
 }
 
 #[test]
+fn set_style_list_functions() {
+    let mut g = modern();
+    let list = |xs: Vec<Value>| vec![vec![Value::List(xs)]];
+    assert_eq!(
+        rows(&mut g, "RETURN list_union([1,2,2,3], [3,4,5]) AS x"),
+        list(vec![n(1.0), n(2.0), n(3.0), n(4.0), n(5.0)])
+    );
+    assert_eq!(
+        rows(&mut g, "RETURN intersection([1,2,3,3], [3,3,4,5]) AS x"),
+        list(vec![n(3.0)])
+    );
+    assert_eq!(
+        rows(&mut g, "RETURN difference([1,2,2,3], [3,4,5]) AS x"),
+        list(vec![n(1.0), n(2.0)])
+    );
+    // ISO GQL: list_contains returns numeric 1 / 0.
+    assert_eq!(
+        rows(&mut g, "RETURN list_contains([1,2,3], 2) AS x"),
+        vec![vec![n(1.0)]]
+    );
+    assert_eq!(
+        rows(&mut g, "RETURN list_contains([1,2,3], 9) AS x"),
+        vec![vec![n(0.0)]]
+    );
+    assert_eq!(
+        rows(&mut g, "RETURN list_sort([3,1,4,1,5]) AS x"),
+        list(vec![n(1.0), n(1.0), n(3.0), n(4.0), n(5.0)])
+    );
+    assert_eq!(
+        rows(&mut g, "RETURN list_sort([3,1,2], 'desc') AS x"),
+        list(vec![n(3.0), n(2.0), n(1.0)])
+    );
+    assert_eq!(
+        rows(&mut g, "RETURN list_sort([3,1,null,2]) AS x"),
+        list(vec![n(1.0), n(2.0), n(3.0), Value::Null])
+    );
+    assert_eq!(
+        rows(
+            &mut g,
+            "RETURN list_sort([3,1,null,2], 'asc', 'first') AS x"
+        ),
+        list(vec![Value::Null, n(1.0), n(2.0), n(3.0)])
+    );
+}
+
+#[test]
 fn infix_string_match_predicates() {
     let mut g = modern();
     assert_eq!(
