@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "vite",
     "bundle": "vite build",
-    "test": "bun test",
+    "test": "bun test ./src",
     "e2e": "playwright test"
   },
   "dependencies": {
