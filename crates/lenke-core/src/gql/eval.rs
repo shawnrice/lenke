@@ -1291,6 +1291,51 @@ fn call_scalar(graph: &Graph, func: ScalarFn, args: &[Val]) -> Val {
             Some(Val::Str(s)) => s.trim().parse::<f64>().ok().map_or(Val::Null, Val::Num),
             _ => Val::Null,
         },
+        ToBoolean => match a {
+            Some(Val::Bool(b)) => Val::Bool(*b),
+            Some(Val::Num(n)) if !n.is_nan() => Val::Bool(*n != 0.0),
+            Some(Val::Str(s)) => match s.trim().to_lowercase().as_str() {
+                "true" | "yes" | "1" => Val::Bool(true),
+                "false" | "no" | "0" => Val::Bool(false),
+                _ => Val::Null,
+            },
+            _ => Val::Null,
+        },
+        ToList => match a {
+            Some(v @ Val::List(_)) => v.clone(),
+            // A string → its UTF-16 code-unit characters (same unit model as
+            // split('')); any other non-null scalar → a singleton list.
+            Some(Val::Str(s)) => Val::List(
+                s.encode_utf16()
+                    .map(|u| vstr(String::from_utf16_lossy(&[u])))
+                    .collect(),
+            ),
+            Some(v) if !is_nullish(v) => Val::List(vec![v.clone()]),
+            _ => Val::Null,
+        },
+        // --- string predicates / measurement ---
+        Contains => match (a, b) {
+            (Some(x), Some(y)) if !is_nullish(x) && !is_nullish(y) => {
+                Val::Bool(js_str(graph, x).contains(js_str(graph, y).as_str()))
+            }
+            _ => Val::Null,
+        },
+        StartsWith => match (a, b) {
+            (Some(x), Some(y)) if !is_nullish(x) && !is_nullish(y) => {
+                Val::Bool(js_str(graph, x).starts_with(js_str(graph, y).as_str()))
+            }
+            _ => Val::Null,
+        },
+        EndsWith => match (a, b) {
+            (Some(x), Some(y)) if !is_nullish(x) && !is_nullish(y) => {
+                Val::Bool(js_str(graph, x).ends_with(js_str(graph, y).as_str()))
+            }
+            _ => Val::Null,
+        },
+        ByteLength => match a {
+            Some(v) if !is_nullish(v) => Val::Num(js_str(graph, v).len() as f64),
+            _ => Val::Null,
+        },
         // --- string / list ---
         Substring => match (a, b) {
             (Some(x), Some(y)) if !is_nullish(x) && !is_nullish(y) => {

@@ -537,6 +537,51 @@ const replaceScalar = (a: unknown, b: unknown, repl: unknown): string | null => 
         .join(isNullish(repl) ? '' : str(repl));
 };
 
+// ISO GQL `to_boolean`: bool → itself; number → (x != 0), NaN → null; string →
+// case-insensitive true/false variants ('true'/'yes'/'1' | 'false'/'no'/'0'),
+// anything else → null. Mirrors the Rust `ToBoolean` arm.
+const toBooleanScalar = (a: unknown): boolean | null => {
+  if (isNullish(a)) {
+    return null;
+  }
+
+  if (typeof a === 'boolean') {
+    return a;
+  }
+
+  if (typeof a === 'number') {
+    return Number.isNaN(a) ? null : a !== 0;
+  }
+
+  const t = str(a).trim().toLowerCase();
+
+  if (t === 'true' || t === 'yes' || t === '1') {
+    return true;
+  }
+
+  return t === 'false' || t === 'no' || t === '0' ? false : null;
+};
+
+// ISO GQL `to_list`: a string → its UTF-16 code-unit characters (same unit
+// model as `split('')`); a list → itself; any other value → a singleton list.
+const toListScalar = (a: unknown): unknown[] | null => {
+  if (isNullish(a)) {
+    return null;
+  }
+
+  if (Array.isArray(a)) {
+    return a;
+  }
+
+  return typeof a === 'string' ? (splitScalar(a, '') as string[]) : [a];
+};
+
+const UTF8 = new TextEncoder();
+
+// UTF-8 byte length (ISO GQL `byte_length` / `octet_length`), matching Rust's
+// `str::len()` (a UTF-8 byte count).
+const byteLen = (s: string): number => UTF8.encode(s).length;
+
 const headScalar = (a: unknown): unknown => (Array.isArray(a) && a.length > 0 ? a[0] : null);
 
 const lastScalar = (a: unknown): unknown =>
@@ -589,6 +634,22 @@ const callExtendedScalar = (name: string, args: readonly unknown[]): unknown => 
     case 'tofloat':
     case 'to_float':
       return toFloatScalar(a);
+    case 'toboolean':
+    case 'to_boolean':
+      return toBooleanScalar(a);
+    case 'tolist':
+    case 'to_list':
+      return toListScalar(a);
+    // --- string predicates / measurement (ISO BOOL-returning + byte length) ---
+    case 'contains':
+      return isNullish(a) || isNullish(b) ? null : str(a).includes(str(b));
+    case 'starts_with':
+      return isNullish(a) || isNullish(b) ? null : str(a).startsWith(str(b));
+    case 'ends_with':
+      return isNullish(a) || isNullish(b) ? null : str(a).endsWith(str(b));
+    case 'byte_length':
+    case 'octet_length':
+      return isNullish(a) ? null : byteLen(str(a));
     // --- string / list ---
     case 'substring':
       return substringScalar(a, b, args[2]);
