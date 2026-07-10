@@ -1282,7 +1282,14 @@ fn call_scalar(graph: &Graph, func: ScalarFn, args: &[Val]) -> Val {
                 let s = js_str(graph, x);
                 let delim = js_str(graph, y);
                 let parts: Vec<Val> = if delim.is_empty() {
-                    s.chars().map(|c| vstr(c.to_string())).collect()
+                    // Empty delimiter → one element per UTF-16 code unit (JS
+                    // `.length` model), matching the TS engine. A lone surrogate
+                    // decodes to U+FFFD (`from_utf16_lossy`) — see the module note
+                    // on the UTF-16 non-conformance; this keeps both engines
+                    // byte-identical (UTF-8 can't carry a lone surrogate).
+                    s.encode_utf16()
+                        .map(|u| vstr(String::from_utf16_lossy(&[u])))
+                        .collect()
                 } else {
                     s.split(delim.as_str()).map(vstr).collect()
                 };
@@ -1316,7 +1323,14 @@ fn call_scalar(graph: &Graph, func: ScalarFn, args: &[Val]) -> Val {
         },
         Reverse => match a {
             Some(Val::List(items)) => Val::List(items.iter().rev().cloned().collect()),
-            Some(Val::Str(s)) => vstr(s.chars().rev().collect::<String>()),
+            // Reverse by UTF-16 code unit (JS `.length` model), lossy-decoding
+            // the reversed units the same way the TS engine does. Reversing
+            // across a surrogate pair is inherently lossy → U+FFFD on both.
+            Some(Val::Str(s)) => {
+                let mut units: Vec<u16> = s.encode_utf16().collect();
+                units.reverse();
+                vstr(String::from_utf16_lossy(&units))
+            }
             _ => Val::Null,
         },
         Unknown => Val::Null,

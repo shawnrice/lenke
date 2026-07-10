@@ -57,6 +57,16 @@ suite('GQL function differential (TS vs native)', () => {
     `substring(n.s, 0, 4)`,
     `substring(n.s, 100)`,
     `substring(n.s, -3, 6)`,
+    // Slice 2 — split/reverse operate on UTF-16 code units; astral input is
+    // lossy (U+FFFD) but byte-identical across engines.
+    `split(n.s, '')`,
+    `split(n.s, 'o')`,
+    `reverse(n.s)`,
+    `split('a😀b', '')`,
+    `reverse('a😀b')`,
+    `reverse('café')`,
+    `split('', '')`,
+    `reverse(n.xs)`,
   ];
 
   for (const expr of CASES) {

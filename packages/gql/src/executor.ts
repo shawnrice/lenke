@@ -445,17 +445,53 @@ const substringScalar = (a: unknown, b: unknown, len: unknown): string | null =>
     : s.slice(from, Math.max(0, zeroStart + Number(len)));
 };
 
+// Decode a UTF-16 code-unit sequence to a string exactly as Rust's
+// `String::from_utf16_lossy` does: a valid high+low surrogate pair combines to
+// its scalar; any UNPAIRED surrogate becomes U+FFFD. `split('')` and `reverse`
+// operate on UTF-16 code units (JS `.length` model, so `size` and these agree),
+// and this shared lossy decode keeps them byte-identical with the native
+// engine — whose UTF-8 strings cannot carry a lone surrogate. NOTE: this
+// diverges from JS `String.split('')` / naive reversal, which PRESERVE lone
+// surrogates; splitting or reversing across an astral character is inherently
+// lossy here (documented non-conformance, mirroring the native engine).
+const fromUtf16UnitsLossy = (units: readonly number[]): string => {
+  let out = '';
+
+  for (let i = 0; i < units.length; i++) {
+    const u = units[i]!;
+
+    if (u >= 0xd800 && u <= 0xdbff) {
+      const lo = units[i + 1];
+
+      if (lo !== undefined && lo >= 0xdc00 && lo <= 0xdfff) {
+        out += String.fromCharCode(u, lo);
+        i++;
+      } else {
+        out += '�';
+      }
+    } else if (u >= 0xdc00 && u <= 0xdfff) {
+      out += '�';
+    } else {
+      out += String.fromCharCode(u);
+    }
+  }
+
+  return out;
+};
+
 const splitScalar = (a: unknown, b: unknown): string[] | null => {
   if (isNullish(a) || isNullish(b)) {
     return null;
   }
 
+  const s = str(a);
   const delim = str(b);
 
-  // Code-point spread is deliberate: it mirrors Rust's `s.chars()` so an
-  // empty-delimiter split is byte-identical across engines.
-  // oxlint-disable-next-line typescript/no-misused-spread
-  return delim === '' ? [...str(a)] : str(a).split(delim);
+  // Empty delimiter → one element per UTF-16 code unit (JS `.length` model);
+  // lone surrogates render as U+FFFD for byte-identity with the native engine.
+  return delim === ''
+    ? Array.from({ length: s.length }, (_, i) => fromUtf16UnitsLossy([s.charCodeAt(i)]))
+    : s.split(delim);
 };
 
 const replaceScalar = (a: unknown, b: unknown, repl: unknown): string | null => {
@@ -486,9 +522,21 @@ const reverseScalar = (a: unknown): unknown => {
     return [...a].reverse();
   }
 
-  // Code-point reversal mirrors Rust's `s.chars().rev()` (byte-identical).
-  // oxlint-disable-next-line typescript/no-misused-spread
-  return typeof a === 'string' ? [...a].reverse().join('') : null;
+  if (typeof a !== 'string') {
+    return null;
+  }
+
+  // Reverse by UTF-16 code unit (JS `.length` model), lossy-decoding the
+  // reversed units the same way the native engine does (see fromUtf16UnitsLossy).
+  const units: number[] = [];
+
+  for (let i = 0; i < a.length; i++) {
+    units.push(a.charCodeAt(i));
+  }
+
+  units.reverse();
+
+  return fromUtf16UnitsLossy(units);
 };
 
 const callExtendedScalar = (name: string, args: readonly unknown[]): unknown => {
