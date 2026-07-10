@@ -18,6 +18,8 @@ const countingBackend = (): { backend: Backend; freed: GraphHandle[] } => {
     edgeCount: () => 0,
     version: () => 0,
     epoch: () => 0,
+    createVertexIndex: () => {},
+    createEdgeIndex: () => {},
     queryRows: () => new TextEncoder().encode('{"columns":[],"rows":[]}'),
     queryArrow: () => new Uint8Array(),
     gremlinJson: () => new TextEncoder().encode('[]'),

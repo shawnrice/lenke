@@ -23,6 +23,8 @@ const fakeStore = () => {
     edgeCount: () => 0,
     version: () => version,
     epoch: () => version, // every dep's epoch tracks version → any dep fires on a bump
+    createVertexIndex: () => {},
+    createEdgeIndex: () => {},
     queryRows: () => {
       counts.query += 1;
 

@@ -3036,21 +3036,44 @@ fn lit_to_idxkey(lit: &Lit) -> Option<crate::graph::IdxKey> {
     }
 }
 
-/// A `var.key OP <literal>` comparison, as (var slot, key ref, op, literal).
-fn cmp_bound(e: &CExpr) -> Option<(usize, usize, CompareOp, &Lit)> {
+/// A runtime value as an index key (nulls/lists/elements aren't indexable).
+fn val_to_idxkey(v: &Val) -> Option<crate::graph::IdxKey> {
+    use crate::graph::IdxKey;
+    match v {
+        Val::Str(s) => Some(IdxKey::Str(s.as_ref().into())),
+        Val::Num(n) => Some(IdxKey::Num(*n)),
+        Val::Bool(b) => Some(IdxKey::Bool(*b)),
+        _ => None,
+    }
+}
+
+/// The index key an expression contributes to a seek: an inline literal, or a
+/// `$param` resolved against the current bindings at execute time. Resolving
+/// params here is what lets `WHERE v.k = $x` (not just `= 'lit'`) hit the index —
+/// matching the TS engine, whose planner seeks on params too.
+fn expr_to_idxkey(e: &CExpr, ctx: &Ctx) -> Option<crate::graph::IdxKey> {
+    match e {
+        CExpr::Lit(lit) => lit_to_idxkey(lit),
+        CExpr::Param(slot) => val_to_idxkey(ctx.params.get(*slot)?),
+        _ => None,
+    }
+}
+
+/// A `var.key OP <literal-or-$param>` comparison, as (var slot, key ref, op,
+/// resolved index key). The RHS is resolved via [`expr_to_idxkey`] so params
+/// seek as well as literals.
+fn cmp_bound(e: &CExpr, ctx: &Ctx) -> Option<(usize, usize, CompareOp, crate::graph::IdxKey)> {
     if let CExpr::Compare { op, left, right } = e {
-        if let (CExpr::Prop { var_slot, key_ref }, CExpr::Lit(lit)) =
-            (left.as_ref(), right.as_ref())
-        {
-            return Some((*var_slot, *key_ref, *op, lit));
+        if let CExpr::Prop { var_slot, key_ref } = left.as_ref() {
+            let key = expr_to_idxkey(right, ctx)?;
+            return Some((*var_slot, *key_ref, *op, key));
         }
     }
     None
 }
 
 /// Apply one comparison to a range bound (`Eq` clamps both ends).
-fn apply_bound(rb: &mut crate::graph::RangeBound, op: CompareOp, lit: &Lit) {
-    let Some(k) = lit_to_idxkey(lit) else { return };
+fn apply_bound(rb: &mut crate::graph::RangeBound, op: CompareOp, k: crate::graph::IdxKey) {
     match op {
         CompareOp::Gt => rb.gt = Some(k),
         CompareOp::Ge => rb.gte = Some(k),
@@ -3116,7 +3139,7 @@ fn prop_index_hint(
     let slot_ok = |s: usize| want_slot.is_none_or(|w| w == s);
     match e {
         CExpr::Compare { .. } => {
-            let (vslot, key_ref, op, lit) = cmp_bound(e)?;
+            let (vslot, key_ref, op, key) = cmp_bound(e, ctx)?;
             if !slot_ok(vslot) {
                 return None;
             }
@@ -3125,20 +3148,22 @@ fn prop_index_hint(
                 return None;
             }
             if op == CompareOp::Eq {
-                return idx_eq(graph, name, &lit_to_idxkey(lit)?, edge);
+                return idx_eq(graph, name, &key, edge);
             }
             let mut rb = RangeBound::default();
-            apply_bound(&mut rb, op, lit);
+            apply_bound(&mut rb, op, key);
             idx_range(graph, name, &rb, edge)
         }
         CExpr::And(a, b) => {
-            if let (Some((s1, k1, o1, l1)), Some((s2, k2, o2, l2))) = (cmp_bound(a), cmp_bound(b)) {
+            if let (Some((s1, k1, o1, key1)), Some((s2, k2, o2, key2))) =
+                (cmp_bound(a, ctx), cmp_bound(b, ctx))
+            {
                 if s1 == s2 && k1 == k2 && slot_ok(s1) {
                     if let Some(name) = prop_name(graph, ctx, k1, edge) {
                         if idx_indexed(graph, name, edge) {
                             let mut rb = RangeBound::default();
-                            apply_bound(&mut rb, o1, l1);
-                            apply_bound(&mut rb, o2, l2);
+                            apply_bound(&mut rb, o1, key1);
+                            apply_bound(&mut rb, o2, key2);
                             return idx_range(graph, name, &rb, edge);
                         }
                     }
@@ -3161,10 +3186,9 @@ fn node_index_seed(
 ) -> Option<Vec<u32>> {
     for pc in &node.props {
         if graph.vertex_indexed(&pc.key) {
-            if let CExpr::Lit(lit) = &pc.value {
-                if let Some(k) = lit_to_idxkey(lit) {
-                    return graph.vertices_by_prop(&pc.key, &k).map(<[u32]>::to_vec);
-                }
+            // Inline `{key: lit}` OR `{key: $param}` — both resolve to a seek.
+            if let Some(k) = expr_to_idxkey(&pc.value, ctx) {
+                return graph.vertices_by_prop(&pc.key, &k).map(<[u32]>::to_vec);
             }
         }
     }

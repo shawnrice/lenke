@@ -18,6 +18,8 @@ const SYMBOLS = {
   lnk_graph_edge_count: { args: [FFIType.ptr], returns: U },
   lnk_graph_version: { args: [FFIType.ptr], returns: U },
   lnk_graph_epoch: { args: [FFIType.ptr, FFIType.ptr, U], returns: U },
+  lnk_create_vertex_index: { args: [FFIType.ptr, FFIType.ptr, U], returns: FFIType.i32 },
+  lnk_create_edge_index: { args: [FFIType.ptr, FFIType.ptr, U], returns: FFIType.i32 },
   lnk_query_rows: {
     args: [FFIType.ptr, FFIType.ptr, U, FFIType.ptr, U, FFIType.ptr],
     returns: FFIType.ptr,
@@ -148,6 +150,16 @@ export const createFfiBackend = (libPath: string): Backend => {
       const n = encoder.encode(name);
 
       return Number(symbols.lnk_graph_epoch(asPtr(handle), ptr(n), n.byteLength));
+    },
+    createVertexIndex: (handle, key) => {
+      const k = encoder.encode(key);
+
+      symbols.lnk_create_vertex_index(asPtr(handle), ptr(k), k.byteLength);
+    },
+    createEdgeIndex: (handle, key) => {
+      const k = encoder.encode(key);
+
+      symbols.lnk_create_edge_index(asPtr(handle), ptr(k), k.byteLength);
     },
 
     queryRows: (handle, query, params) => {

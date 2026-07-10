@@ -158,6 +158,55 @@ pub unsafe extern "C" fn lnk_graph_epoch(
     }
 }
 
+/// Declare an opt-in secondary index over a vertex property `key` (backfills the
+/// existing vertices, then stays current). Idempotent. Turns `WHERE v.key = …`
+/// pattern/filter constraints into index seeks instead of scans. Returns 0 on
+/// success, -1 on a null / bad-UTF-8 error.
+///
+/// # Safety
+/// `g` is a valid, uniquely-borrowed `*mut Graph`; `name_ptr`/`name_len` a valid
+/// UTF-8 slice.
+#[no_mangle]
+pub unsafe extern "C" fn lnk_create_vertex_index(
+    g: *mut Graph,
+    name_ptr: *const u8,
+    name_len: usize,
+) -> i32 {
+    if g.is_null() || name_ptr.is_null() {
+        return -1;
+    }
+    match std::str::from_utf8(std::slice::from_raw_parts(name_ptr, name_len)) {
+        Ok(name) => {
+            (*g).create_vertex_index(name);
+            0
+        }
+        Err(_) => -1,
+    }
+}
+
+/// Declare an opt-in secondary index over an edge property `key`. Edge analogue
+/// of [`lnk_create_vertex_index`]. Returns 0 on success, -1 on error.
+///
+/// # Safety
+/// As [`lnk_create_vertex_index`].
+#[no_mangle]
+pub unsafe extern "C" fn lnk_create_edge_index(
+    g: *mut Graph,
+    name_ptr: *const u8,
+    name_len: usize,
+) -> i32 {
+    if g.is_null() || name_ptr.is_null() {
+        return -1;
+    }
+    match std::str::from_utf8(std::slice::from_raw_parts(name_ptr, name_len)) {
+        Ok(name) => {
+            (*g).create_edge_index(name);
+            0
+        }
+        Err(_) => -1,
+    }
+}
+
 /// Parse + run a GQL-subset query, writing the `(count, sum)` signature.
 /// Returns 0 on success, -1 on a parse/null error.
 ///

@@ -30,6 +30,14 @@ export type Backend = {
   epoch: (handle: GraphHandle, name: string) => number;
 
   /**
+   * Declare an opt-in secondary index over a vertex / edge property `key`
+   * (backfills existing elements, then stays current). Idempotent; turns
+   * `WHERE x.key = …` constraints into index seeks instead of full scans.
+   */
+  createVertexIndex: (handle: GraphHandle, key: string) => void;
+  createEdgeIndex: (handle: GraphHandle, key: string) => void;
+
+  /**
    * Run a GQL query; returns the `{columns, rows}` JSON document as bytes.
    * `params` is an optional pre-serialized flat JSON object of `$name`
    * bindings — values bind to already-parsed param slots at execute time and

@@ -243,6 +243,15 @@ export type RustGraph = {
   /** Per-token change epoch (label / edge-type / property-key) for finer invalidation. */
   epoch: (name: string) => number;
   /**
+   * Declare an opt-in secondary index over a vertex / edge property `key`
+   * (backfills existing elements, then stays current). Idempotent. Turns
+   * `WHERE x.key = …` / `x.key IN […]` / range constraints into index seeks
+   * instead of full scans — a large win for repeated point lookups (e.g. bulk
+   * edge inserts that `MATCH` their endpoints by id).
+   */
+  createVertexIndex: (key: string) => void;
+  createEdgeIndex: (key: string) => void;
+  /**
    * Run a GQL query → decoded rows. Two safe, parameterized forms:
    * - tagged template — each `${sub}` compiles to a `$p<n>` **binding**, never
    *   spliced text: ``g.query`MATCH (p:Person) WHERE p.name = ${name} RETURN p` ``
@@ -418,6 +427,8 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
       return backend.version(live());
     },
     epoch: (name) => backend.epoch(live(), name),
+    createVertexIndex: (key) => backend.createVertexIndex(live(), key),
+    createEdgeIndex: (key) => backend.createEdgeIndex(live(), key),
     query: (q: string | TemplateStringsArray, ...subs: unknown[]) => {
       const { text, params } = compileGql(q, subs);
 

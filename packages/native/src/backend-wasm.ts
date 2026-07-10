@@ -19,6 +19,8 @@ type WasmExports = {
   lnk_graph_edge_count: (h: number) => bigint;
   lnk_graph_version: (h: number) => bigint;
   lnk_graph_epoch: (h: number, name: number, nameLen: number) => bigint;
+  lnk_create_vertex_index: (h: number, key: number, keyLen: number) => number;
+  lnk_create_edge_index: (h: number, key: number, keyLen: number) => number;
   lnk_query_rows: (
     h: number,
     q: number,
@@ -238,6 +240,26 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
         return Number(ex.lnk_graph_epoch(handle, p, n.byteLength));
       } finally {
         ex.lnk_dealloc(p, n.byteLength);
+      }
+    },
+    createVertexIndex: (handle, key) => {
+      const k = encoder.encode(key);
+      const p = writeBytes(k);
+
+      try {
+        ex.lnk_create_vertex_index(handle, p, k.byteLength);
+      } finally {
+        ex.lnk_dealloc(p, k.byteLength);
+      }
+    },
+    createEdgeIndex: (handle, key) => {
+      const k = encoder.encode(key);
+      const p = writeBytes(k);
+
+      try {
+        ex.lnk_create_edge_index(handle, p, k.byteLength);
+      } finally {
+        ex.lnk_dealloc(p, k.byteLength);
       }
     },
 

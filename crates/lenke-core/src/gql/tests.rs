@@ -546,6 +546,48 @@ fn parameters() {
 }
 
 #[test]
+fn indexed_param_lookup_matches_scan() {
+    // An index seek must return the SAME rows as a full scan — proving the
+    // param-resolved seek (WHERE `.k = $p` and inline `{k: $p}`) is correct, not
+    // just fast. Compare an indexed graph's results to an un-indexed one.
+    let mk = || {
+        let mut g = modern();
+        g.create_vertex_index("name");
+        g
+    };
+    let param = |name: &str| {
+        let mut p = Params::new();
+        p.insert("who".to_string(), super::eval::Val::Str(name.into()));
+        p
+    };
+    // WHERE with a $param → index seek on `name`.
+    assert_eq!(
+        qp(
+            &mut mk(),
+            "MATCH (n:Person) WHERE n.name = $who RETURN n.age",
+            param("josh")
+        ),
+        vec![vec![n(32.0)]]
+    );
+    // Inline `{name: $param}` → index seek.
+    assert_eq!(
+        qp(
+            &mut mk(),
+            "MATCH (n:Person {name: $who}) RETURN n.age",
+            param("marko")
+        ),
+        vec![vec![n(29.0)]]
+    );
+    // A miss returns nothing (not a stale index hit).
+    assert!(qp(
+        &mut mk(),
+        "MATCH (n:Person {name: $who}) RETURN n.age",
+        param("nobody")
+    )
+    .is_empty());
+}
+
+#[test]
 fn prepared_plan_reused_with_params() {
     use super::eval::Val;
     let mut g = modern();

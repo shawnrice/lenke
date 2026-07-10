@@ -120,6 +120,21 @@ impl Graph {
         self.inner.epoch(&name) as f64
     }
 
+    /// Declare an opt-in secondary index over a vertex property `key` (backfills
+    /// the existing vertices, then stays current). Idempotent; turns
+    /// `WHERE v.key = …` into an index seek instead of a scan.
+    #[napi]
+    pub fn create_vertex_index(&mut self, key: String) {
+        self.inner.create_vertex_index(&key);
+    }
+
+    /// Declare an opt-in secondary index over an edge property `key`. Edge
+    /// analogue of [`Graph::create_vertex_index`].
+    #[napi]
+    pub fn create_edge_index(&mut self, key: String) {
+        self.inner.create_edge_index(&key);
+    }
+
     /// Run a GQL query; returns the `{columns, rows}` JSON document as bytes.
     /// `params_json` optionally carries a flat JSON object of `$name` bindings.
     /// `&mut` because a query may mutate (`INSERT`/`SET`/`REMOVE`/`DELETE`).

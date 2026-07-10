@@ -52,6 +52,26 @@ suite('@lenke/native FFI backend', () => {
     g.free();
   });
 
+  test('createVertexIndex is exposed and an indexed param lookup is correct', () => {
+    const backend = createFfiBackend(LIB);
+    const g = graphFromNdjson(backend, bytes);
+
+    // Idempotent; declaring an index must not change query results — only make
+    // `{k: $x}` / `WHERE .k = $x` seek instead of scan.
+    g.createVertexIndex('name');
+    g.createVertexIndex('name');
+
+    expect(g.query('MATCH (n:P {name: $n}) RETURN n.age', { n: 'marko' })).toEqual([
+      { 'n.age': 29 },
+    ]);
+    expect(g.query('MATCH (n:P) WHERE n.name = $n RETURN n.age', { n: 'vadas' })).toEqual([
+      { 'n.age': 27 },
+    ]);
+    expect(g.query('MATCH (n:P {name: $n}) RETURN n.age', { n: 'nobody' })).toEqual([]);
+
+    g.free();
+  });
+
   test('runs a GQL query through the facade (string + template)', () => {
     const backend = createFfiBackend(LIB);
     const g = graphFromNdjson(backend, bytes);
