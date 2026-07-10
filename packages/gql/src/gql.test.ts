@@ -1,5 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 
+import { Graph } from '@lenke/core';
+
 import type { MatchClause, Query } from './ast.js';
 import { createFinancialGraph } from './fixtures/createFinancialGraph.js';
 import { createTestSocialGraph } from './fixtures/createTestSocialGraph.js';
@@ -771,7 +773,32 @@ describe('GQL: ORDER BY NULLS FIRST / LAST (ISO <null ordering>)', () => {
   // Software nodes (lop, ripple) have no `age`, so `n.age` is null for them.
   const ages = (q: string) => query(g, q).map((r) => r['age']);
 
-  test('default: nulls sort last on ASC, first on DESC', () => {
+  test('ORDER BY / min / max impose a total order across types (num < str < bool)', () => {
+    const g2 = new Graph();
+
+    for (const v of [2, 'a', 1, true, 'b']) {
+      g2.addVertex({ labels: ['X'], properties: { v } });
+    }
+
+    expect(query(g2, `MATCH (n:X) RETURN n.v AS v ORDER BY n.v`).map((r) => r.v)).toEqual([
+      1,
+      2,
+      'a',
+      'b',
+      true,
+    ]);
+    expect(query(g2, `MATCH (n:X) RETURN n.v AS v ORDER BY n.v DESC`).map((r) => r.v)).toEqual([
+      true,
+      'b',
+      'a',
+      2,
+      1,
+    ]);
+    expect(query(g2, `MATCH (n:X) RETURN min(n.v) AS m`)[0].m).toBe(1);
+    expect(query(g2, `MATCH (n:X) RETURN max(n.v) AS m`)[0].m).toBe(true);
+  });
+
+  test('default: nulls sort last in both directions', () => {
     expect(ages(`MATCH (n) RETURN n.age AS age ORDER BY n.age ASC`)).toEqual([
       27,
       29,
@@ -780,13 +807,14 @@ describe('GQL: ORDER BY NULLS FIRST / LAST (ISO <null ordering>)', () => {
       null,
       null,
     ]);
+    // Nulls sort LAST by default in DESC too (our pinned default).
     expect(ages(`MATCH (n) RETURN n.age AS age ORDER BY n.age DESC`)).toEqual([
-      null,
-      null,
       35,
       32,
       29,
       27,
+      null,
+      null,
     ]);
   });
 

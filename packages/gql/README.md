@@ -85,12 +85,11 @@ Both engines (this TS engine and the Rust core) produce **byte-identical** resul
 - **`substring` is 1-based** (SQL / ISO GQL convention: `substring('crystal', 1, 3)` → `'cry'`), not the 0-based Cypher form.
 - **String length and slicing count UTF-16 code units** (JS `.length` parity), not Unicode code points. `split('')` and `reverse` therefore operate on UTF-16 units; splitting or reversing _across_ an astral (surrogate-pair) character is inherently lossy and yields U+FFFD on both engines — a deliberate divergence from JS `String.split('')`, which preserves lone surrogate halves.
 - **`null` is a first-class stored property value** (distinct from absent); remove a property with `REMOVE`, never `SET x.k = null`.
+- **Ordering across unlike types.** ISO GQL doesn't define an order between different value types, so `ORDER BY` / `min` / `max` / `list_sort` impose a deterministic **total order across type groups** — `number < string < boolean < other` (graph elements/lists) — with **nulls last** by default (overridable with `NULLS FIRST`/`LAST`). The relational operators `< > <= >=` are unaffected: comparing unlike types there is still `UNKNOWN`, per ISO.
 
 ### Known gaps (future work)
 
 The `^` power operator and `list[i]` element indexing are not yet parsed (both engines reject them identically). They await the exact spec precedence / indexing base rather than a guess.
-
-`ORDER BY` (and therefore `list_sort`) is byte-identical **within a single type**, but the two engines currently disagree when ordering a mix of types (e.g. numbers and strings in one list): the TS engine imposes a number‑before‑string total order, while the Rust core treats cross-type pairs as incomparable and leaves them in place. Same-type ordering — the overwhelming common case — is identical.
 
 Index-backed seeking is automatic: when a graph has property indexes (`graph.createVertexIndex(key)`), equality, range, and `IN` constraints in patterns or `WHERE` are planned as index seeks rather than full scans.
 

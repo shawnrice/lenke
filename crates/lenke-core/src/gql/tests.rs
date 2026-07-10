@@ -1305,6 +1305,39 @@ fn math_round_sign_pi_e() {
 }
 
 #[test]
+fn order_by_and_minmax_total_order_across_types() {
+    let lines = [
+        r#"{"type":"node","id":"1","labels":["X"],"properties":{"v":2}}"#,
+        r#"{"type":"node","id":"2","labels":["X"],"properties":{"v":"a"}}"#,
+        r#"{"type":"node","id":"3","labels":["X"],"properties":{"v":1}}"#,
+        r#"{"type":"node","id":"4","labels":["X"],"properties":{"v":true}}"#,
+        r#"{"type":"node","id":"5","labels":["X"],"properties":{"v":"b"}}"#,
+    ];
+    let mut g = ndjson::decode(&lines.join("\n")).unwrap();
+    let col = |g: &mut Graph, q: &str| -> Vec<Value> {
+        rows(g, q).into_iter().map(|r| r[0].clone()).collect()
+    };
+    // Total order across type groups: number < string < boolean.
+    assert_eq!(
+        col(&mut g, "MATCH (n:X) RETURN n.v AS v ORDER BY n.v"),
+        vec![n(1.0), n(2.0), s("a"), s("b"), b(true)]
+    );
+    assert_eq!(
+        col(&mut g, "MATCH (n:X) RETURN n.v AS v ORDER BY n.v DESC"),
+        vec![b(true), s("b"), s("a"), n(2.0), n(1.0)]
+    );
+    // min / max use the same total order.
+    assert_eq!(
+        rows(&mut g, "MATCH (n:X) RETURN min(n.v) AS m"),
+        vec![vec![n(1.0)]]
+    );
+    assert_eq!(
+        rows(&mut g, "MATCH (n:X) RETURN max(n.v) AS m"),
+        vec![vec![b(true)]]
+    );
+}
+
+#[test]
 fn set_style_list_functions() {
     let mut g = modern();
     let list = |xs: Vec<Value>| vec![vec![Value::List(xs)]];

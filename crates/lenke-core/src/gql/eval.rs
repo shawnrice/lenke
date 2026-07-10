@@ -432,7 +432,9 @@ fn orderable_pair(a: &Val, b: &Val) -> bool {
     )
 }
 
-/// Ordering for `< > <= >=`, min/max, and ORDER BY. `None` = incomparable.
+/// Partial ordering for the relational operators `< > <= >=`. `None` =
+/// incomparable (different types, or a graph element) → the operator yields
+/// UNKNOWN, never a coerced bool. This is NOT the sort order — see [`cmp_total`].
 fn val_cmp(a: &Val, b: &Val) -> Option<Ordering> {
     match (a, b) {
         (Val::Num(x), Val::Num(y)) => x.partial_cmp(y),
@@ -441,6 +443,49 @@ fn val_cmp(a: &Val, b: &Val) -> Option<Ordering> {
         (Val::Node(x), Val::Node(y)) => Some(x.cmp(y)),
         (Val::Edge(x), Val::Edge(y)) => Some(x.cmp(y)),
         _ => None,
+    }
+}
+
+/// Type-group rank for the TOTAL sort order (mirrors the TS `typeRank`):
+/// number < string < boolean < other (graph elements / lists). Null is handled
+/// by [`cmp_total`] before this is consulted.
+fn type_rank(v: &Val) -> u8 {
+    match v {
+        Val::Num(_) => 0,
+        Val::Str(_) => 1,
+        Val::Bool(_) => 2,
+        _ => 3,
+    }
+}
+
+/// A TOTAL order across value types, used by ORDER BY / min / max / list_sort so
+/// a mixed-type column sorts deterministically (unlike `val_cmp`, which is
+/// partial). Byte-for-byte identical to the TS `compareValues`: null sorts
+/// largest; otherwise different type groups order by `type_rank`, and within a
+/// group numbers/strings/booleans compare naturally while two graph
+/// elements/lists compare Equal (leaving them in stable order). NaN, like the
+/// relational path, compares Equal to every number.
+fn cmp_total(a: &Val, b: &Val) -> Ordering {
+    let a_null = is_nullish(a);
+    let b_null = is_nullish(b);
+    if a_null && b_null {
+        return Ordering::Equal;
+    }
+    if a_null {
+        return Ordering::Greater;
+    }
+    if b_null {
+        return Ordering::Less;
+    }
+    let (ra, rb) = (type_rank(a), type_rank(b));
+    if ra != rb {
+        return ra.cmp(&rb);
+    }
+    match (a, b) {
+        (Val::Num(x), Val::Num(y)) => x.partial_cmp(y).unwrap_or(Ordering::Equal),
+        (Val::Str(x), Val::Str(y)) => x.cmp(y),
+        (Val::Bool(x), Val::Bool(y)) => x.cmp(y),
+        _ => Ordering::Equal,
     }
 }
 
@@ -1105,7 +1150,7 @@ fn fold_extreme(values: Vec<Val>, want: Ordering) -> Val {
         return Val::Null;
     };
     for v in it {
-        if val_cmp(&v, &acc) == Some(want) {
+        if cmp_total(&v, &acc) == want {
             acc = v;
         }
     }
@@ -2199,7 +2244,7 @@ impl Agg {
                 if self
                     .extreme
                     .as_ref()
-                    .is_none_or(|m| val_cmp(&val, m) == Some(Ordering::Less))
+                    .is_none_or(|m| cmp_total(&val, m) == Ordering::Less)
                 {
                     self.extreme = Some(val);
                 }
@@ -2208,7 +2253,7 @@ impl Agg {
                 if self
                     .extreme
                     .as_ref()
-                    .is_none_or(|m| val_cmp(&val, m) == Some(Ordering::Greater))
+                    .is_none_or(|m| cmp_total(&val, m) == Ordering::Greater)
                 {
                     self.extreme = Some(val);
                 }
@@ -4637,14 +4682,17 @@ fn compare_sort(a: &Val, b: &Val, descending: bool, nulls_first: Option<bool>) -
         return Ordering::Equal;
     }
     if a_null || b_null {
-        let first = nulls_first.unwrap_or(descending);
+        // Null placement is absolute (independent of ASC/DESC). With no explicit
+        // NULLS FIRST/LAST, nulls sort LAST — ISO GQL leaves the default
+        // unspecified, so we pin one for cross-engine determinism.
+        let first = nulls_first.unwrap_or(false);
         return if a_null == first {
             Ordering::Less
         } else {
             Ordering::Greater
         };
     }
-    let base = val_cmp(a, b).unwrap_or(Ordering::Equal);
+    let base = cmp_total(a, b);
     if descending {
         base.reverse()
     } else {

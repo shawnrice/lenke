@@ -170,13 +170,13 @@ suite('GQL function differential (TS vs native)', () => {
     `list_sort([3, 1, null, 2])`,
     `list_sort([3, 1, null, 2], 'asc', 'first')`,
     `list_sort([3, 1, null, 2], 'desc', 'last')`,
-    // NOTE: mixed-type sorts (e.g. numbers + strings in one list) are NOT
-    // asserted here — `list_sort` reuses the ORDER BY comparator, and ORDER BY
-    // itself already diverges cross-type between the engines (TS imposes a
-    // number<string total order; the Rust core treats cross-type pairs as
-    // incomparable and leaves them in place). That is a pre-existing ORDER BY
-    // divergence, tracked separately; within a single type list_sort is
-    // byte-identical.
+    // Mixed-type sorts: both engines now share a total order across type groups
+    // (number < string < boolean < other; nulls last) — see cmp_total / typeRank.
+    `list_sort([2, 'a', 1, 'b'])`,
+    `list_sort([true, 1, 'x', false])`,
+    `list_sort([2, 'a', 1, null])`,
+    `list_sort([2, 'a', 1], 'desc')`,
+    `list_sort(['banana', 'apple', 'cherry'])`,
     `list_union([1], 2)`,
   ];
 

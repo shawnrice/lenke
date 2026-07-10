@@ -1265,8 +1265,9 @@ const compareValues = (a: unknown, b: unknown): number => {
 /**
  * Compare two ORDER BY keys, honoring direction and ISO `NULLS FIRST/LAST`. Null
  * placement is absolute (first or last in the final order), independent of the
- * direction applied to non-null values. With no explicit null ordering it
- * defaults to treating null as the largest value (ASC → last, DESC → first).
+ * direction applied to non-null values. With no explicit null ordering, nulls
+ * sort LAST (ISO GQL leaves the default unspecified, so we pin one for
+ * cross-engine determinism — the Rust `compare_sort` matches).
  */
 const compareSort = (
   a: unknown,
@@ -1282,7 +1283,7 @@ const compareSort = (
   }
 
   if (aNull || bNull) {
-    const first = nullsFirst ?? descending;
+    const first = nullsFirst ?? false;
 
     return aNull === first ? -1 : 1;
   }

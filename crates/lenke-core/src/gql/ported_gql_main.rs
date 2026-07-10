@@ -1163,7 +1163,7 @@ fn m_financial_undirected_friendship() {
 // ── "GQL: ORDER BY NULLS FIRST / LAST" ───────────────────────────────────────
 
 #[test]
-fn m_order_by_default_nulls_last_on_asc_first_on_desc() {
+fn m_order_by_default_nulls_last_both_directions() {
     let mut g = modern();
     // Software nodes (lop, ripple) have no age → null
     let asc = rows(&mut g, "MATCH (n) RETURN n.age AS age ORDER BY n.age ASC");
@@ -1176,10 +1176,11 @@ fn m_order_by_default_nulls_last_on_asc_first_on_desc() {
 
     let desc = rows(&mut g, "MATCH (n) RETURN n.age AS age ORDER BY n.age DESC");
     let ages_desc: Vec<Value> = desc.into_iter().map(|row| row[0].clone()).collect();
-    // null first (ISO DESC default), then 35,32,29,27
+    // Nulls sort LAST by default in BOTH directions (our pinned default), then
+    // 35,32,29,27.
     assert_eq!(
         ages_desc,
-        vec![Value::Null, Value::Null, n(35.0), n(32.0), n(29.0), n(27.0)]
+        vec![n(35.0), n(32.0), n(29.0), n(27.0), Value::Null, Value::Null]
     );
 }
 
