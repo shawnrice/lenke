@@ -54,9 +54,24 @@ const StatusBar = () => {
   // useSyncExternalStore, no interval.
   const status = useSyncExternalStore(client.onStatus, client.getStatus);
 
+  if (!status) {
+    return <p style={{ fontFamily: 'monospace' }}>connecting…</p>;
+  }
+
+  // `connected` here is the worker→server link. Offline it stays false and every
+  // cluster's rows never demand-fill — the tables would sit on "loading…". Say
+  // so plainly rather than let it look like a slow load.
+  if (!status.connected) {
+    return (
+      <p style={{ fontFamily: 'monospace', color: '#b45309' }}>
+        server offline — start it too (<code>npm run dev</code> runs both the server and the app)
+      </p>
+    );
+  }
+
   return (
     <p style={{ fontFamily: 'monospace' }}>
-      {status ? `connected · ${status.pendingWrites} unsynced change(s)` : 'connecting…'}
+      connected · {status.pendingWrites} unsynced change(s)
     </p>
   );
 };

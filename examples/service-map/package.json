@@ -5,9 +5,10 @@
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "bundle": "vite build",
+    "dev": "node dev.ts",
+    "frontend": "vite",
     "server": "node server.ts",
+    "bundle": "vite build",
     "smoke": "bun test server.test.ts",
     "e2e": "playwright test"
   },

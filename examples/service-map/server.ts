@@ -27,9 +27,17 @@ console.log(
 const wss = new WebSocketServer({ port: PORT });
 const hosts = new Map<WebSocket, SyncHost>();
 
+// Report the live connection count whenever it changes — the previous one-shot
+// log printed `0` at boot and never updated, so it always looked like nobody
+// was connected.
+const reportConnections = (): void => {
+  console.log(`  ${hosts.size} connection(s)`);
+};
+
 wss.on('connection', (ws) => {
   const host = createSyncHost(store, { send: (m) => ws.send(JSON.stringify(m)) });
   hosts.set(ws, host);
+  reportConnections();
 
   ws.on('message', (raw) => {
     host.receive(JSON.parse(String(raw)));
@@ -37,6 +45,7 @@ wss.on('connection', (ws) => {
   ws.on('close', () => {
     host.close();
     hosts.delete(ws);
+    reportConnections();
   });
   // An 'error' with no listener throws (EventEmitter semantics) and takes the
   // whole server down on any one socket's reset. 'close' follows 'error', so
@@ -44,4 +53,4 @@ wss.on('connection', (ws) => {
   ws.on('error', () => ws.close());
 });
 
-console.log(`listening on ws://localhost:${PORT} (${hosts.size} connections)`);
+console.log(`listening on ws://localhost:${PORT}`);

@@ -38,9 +38,13 @@ bun install
 bun run --cwd ../../packages/native build:wasm     # → lenke_core.wasm  (browser)
 bunx nx build @lenke/node                          # → native addon     (server)
 
-bun run server    # terminal 1 → ws://localhost:8787
-bun run dev       # terminal 2 → vite; open the printed URL
+bun run dev       # runs BOTH the ws server and vite; open the printed URL
 ```
+
+`dev` starts the WebSocket server _and_ the Vite dev server together — the app
+is inert without the server, because each cluster's rows are demand-filled by
+querying it. (Need them apart? `bun run server` and `bun run frontend` run each
+half on its own.)
 
 Open it in Chrome first — it leans on `SharedWorker` and OPFS.
 
