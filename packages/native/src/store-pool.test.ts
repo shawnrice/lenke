@@ -29,6 +29,7 @@ const fakeStore = () => {
     dropEdgeIndex: () => {},
     vertexIndexes: () => [],
     edgeIndexes: () => [],
+    mergeNdjson: () => {},
     prepare: () => 1,
     preparedFree: () => {},
     preparedQueryArrow: () => new Uint8Array(),

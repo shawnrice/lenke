@@ -74,6 +74,7 @@ export function createNodeBackend() {
 
     graphFromNdjson: (bytes, parallel) =>
       coded(() => put(Graph.fromNdjson(asBuffer(bytes), parallel))),
+    mergeNdjson: (handle, bytes) => coded(() => get(handle).mergeNdjson(asBuffer(bytes))),
     // Drop the reference; the underlying lenke-core graph is freed when napi GCs
     // the object. No explicit native free to call.
     graphFree: (handle) => {

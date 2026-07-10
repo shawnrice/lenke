@@ -286,6 +286,13 @@ export type RustGraph = {
   gremlin: (q: string | TemplateStringsArray, ...subs: unknown[]) => unknown[];
   /** Serialize the graph back to NDJSON bytes. */
   toNdjson: () => Uint8Array;
+  /**
+   * Bulk-append NDJSON bytes into this graph — a `COPY FROM` for a live store.
+   * Ingests at bulk speed (no per-`INSERT` parse); a node whose id already
+   * exists is first-wins-skipped, edge endpoints resolve against the graph.
+   * Equivalent to `deserialize(bytes, 'ndjson', existingGraph)` on the TS core.
+   */
+  mergeNdjson: (bytes: Uint8Array) => void;
   /** Serialize the graph in a named format (`pg-json | pg-text | graphson | csv | ndjson`). */
   serialize: (format: string) => string;
   /**
@@ -520,6 +527,7 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
     gremlin: (q, ...subs) =>
       parseJson(backend.gremlinJson(live(), gremlin(q, ...subs)), 'gremlin') as unknown[],
     toNdjson: () => backend.encodeNdjson(live()),
+    mergeNdjson: (bytes) => backend.mergeNdjson(live(), bytes),
     serialize: (format) => decoder.decode(backend.serialize(live(), format)),
     prepare: (text) => makePrepared(backend, live, text),
     free,

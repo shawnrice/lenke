@@ -95,6 +95,37 @@ pub unsafe extern "C" fn lnk_graph_from_ndjson(
     }
 }
 
+/// Bulk-append NDJSON `bytes` into an existing graph — a `COPY FROM` for a live
+/// store (the incremental twin of [`lnk_graph_from_ndjson`], at bulk speed, not
+/// per-`INSERT` speed). Returns 0 on success, -1 on a null / parse error (details
+/// in the last-error channel).
+///
+/// # Safety
+/// `g` valid + uniquely borrowed; `ptr`/`len` a valid UTF-8 slice.
+#[cfg(feature = "ndjson")]
+#[no_mangle]
+pub unsafe extern "C" fn lnk_merge_ndjson(g: *mut Graph, ptr: *const u8, len: usize) -> i32 {
+    crate::ffi_error::begin();
+    if g.is_null() || ptr.is_null() {
+        crate::ffi_error::set_code(ErrorCode::Ffi, "null graph or NDJSON pointer");
+        return -1;
+    }
+    let text = match std::str::from_utf8(std::slice::from_raw_parts(ptr, len)) {
+        Ok(t) => t,
+        Err(_) => {
+            crate::ffi_error::set_code(ErrorCode::Ffi, "NDJSON bytes are not valid UTF-8");
+            return -1;
+        }
+    };
+    match crate::ndjson::append(&mut *g, text) {
+        Ok(()) => 0,
+        Err(e) => {
+            crate::ffi_error::set_code(e.code, &e.message);
+            -1
+        }
+    }
+}
+
 /// # Safety
 /// `g` must be a handle from `lnk_graph_from_ndjson` (or null).
 #[no_mangle]

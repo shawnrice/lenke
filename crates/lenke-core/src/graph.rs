@@ -652,6 +652,12 @@ impl Graph {
         let n: u32 = id.strip_prefix('e')?.parse().ok()?;
         self.is_edge_live(n).then_some(n)
     }
+
+    /// The dense index of the vertex with external `id`, or `None`. Non-mutating
+    /// (unlike `vid.intern`) — used to detect id clashes on bulk append.
+    pub fn vertex_by_id(&self, id: &str) -> Option<u32> {
+        self.vid.get(id)
+    }
     // --- reactive change tracking ----------------------------------------
 
     /// Monotonic mutation counter. An unchanged value means nothing has mutated
@@ -726,8 +732,21 @@ impl Graph {
 
     pub fn add_vertex(&mut self, labels: &[String], props: Vec<(String, Value)>) -> u32 {
         let id = self.fresh_id();
-        let vi = self.vid.intern(&id);
-        debug_assert_eq!(vi as usize, self.n);
+        self.add_vertex_with_id(&id, labels, props)
+    }
+
+    /// Append a vertex carrying an **explicit** external id (vs `add_vertex`,
+    /// which mints one). The id must be fresh — a caller that might collide
+    /// checks `vid.get(id)` first (bulk append / merge does). The building block
+    /// for id-preserving bulk ingest into a live graph.
+    pub fn add_vertex_with_id(
+        &mut self,
+        id: &str,
+        labels: &[String],
+        props: Vec<(String, Value)>,
+    ) -> u32 {
+        let vi = self.vid.intern(id);
+        debug_assert_eq!(vi as usize, self.n, "add_vertex_with_id expects a fresh id");
         self.v_live.push(true);
         self.live_n += 1;
         let lids: Vec<u32> = labels.iter().map(|l| self.labels.intern(l)).collect();

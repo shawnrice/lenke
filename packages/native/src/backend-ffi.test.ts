@@ -91,6 +91,40 @@ suite('@lenke/native FFI backend', () => {
     g.free();
   });
 
+  test('mergeNdjson bulk-appends into a live graph (COPY FROM)', () => {
+    const backend = createFfiBackend(LIB);
+    const g = graphFromNdjson(backend, bytes); // 2 nodes (marko, vadas), 1 edge
+    expect(g.vertexCount).toBe(2);
+    expect(g.edgeCount).toBe(1);
+
+    g.mergeNdjson(
+      new TextEncoder().encode(
+        '{"type":"node","id":"c","labels":["P"],"properties":{"name":"josh","age":32}}\n' +
+          '{"type":"edge","id":"e2","from":"a","to":"c","labels":["knows"],"properties":{}}',
+      ),
+    );
+
+    expect(g.vertexCount).toBe(3);
+    expect(g.edgeCount).toBe(2);
+    expect(g.query('MATCH (n:P) RETURN n.name ORDER BY n.name').map((r) => r['n.name'])).toEqual([
+      'josh',
+      'marko',
+      'vadas',
+    ]);
+    // An indexed key stays queryable — the append maintained the index.
+    g.createVertexIndex('name');
+    g.mergeNdjson(
+      new TextEncoder().encode(
+        '{"type":"node","id":"d","labels":["P"],"properties":{"name":"peter"}}',
+      ),
+    );
+    expect(g.query('MATCH (n:P {name: $n}) RETURN n.name', { n: 'peter' })).toEqual([
+      { 'n.name': 'peter' },
+    ]);
+
+    g.free();
+  });
+
   test('prepare() compiles a reusable query bound to the graph', () => {
     const backend = createFfiBackend(LIB);
     const g = graphFromNdjson(backend, bytes);

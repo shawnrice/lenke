@@ -24,6 +24,7 @@ const countingBackend = (): { backend: Backend; freed: GraphHandle[] } => {
     dropEdgeIndex: () => {},
     vertexIndexes: () => [],
     edgeIndexes: () => [],
+    mergeNdjson: () => {},
     prepare: () => 1,
     preparedFree: () => {},
     preparedQueryRows: () => new TextEncoder().encode('{"columns":[],"rows":[]}'),

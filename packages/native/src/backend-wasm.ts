@@ -14,6 +14,7 @@ type WasmExports = {
   lnk_alloc: (len: number) => number;
   lnk_dealloc: (ptr: number, len: number) => void;
   lnk_graph_from_ndjson: (ptr: number, len: number, parallel: number) => number;
+  lnk_merge_ndjson: (g: number, ptr: number, len: number) => number;
   lnk_graph_free: (h: number) => void;
   lnk_graph_vertex_count: (h: number) => bigint;
   lnk_graph_edge_count: (h: number) => bigint;
@@ -244,6 +245,17 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
         }
 
         return h;
+      } finally {
+        ex.lnk_dealloc(p, bytes.byteLength);
+      }
+    },
+    mergeNdjson: (handle, bytes) => {
+      const p = writeBytes(bytes);
+
+      try {
+        if (ex.lnk_merge_ndjson(handle, p, bytes.byteLength) !== 0) {
+          fail('mergeNdjson', ErrorCode.InvalidJson);
+        }
       } finally {
         ex.lnk_dealloc(p, bytes.byteLength);
       }

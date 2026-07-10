@@ -21,6 +21,12 @@ export type Backend = {
 
   /** Decode NDJSON bytes into a graph; returns an owning handle. */
   graphFromNdjson: (bytes: Uint8Array, parallel: boolean) => GraphHandle;
+  /**
+   * Bulk-append NDJSON bytes into an existing graph — a `COPY FROM` for a live
+   * store. Ingests at bulk speed (no per-`INSERT` parse); a node whose id
+   * already exists is first-wins-skipped. Throws a coded error on a parse fault.
+   */
+  mergeNdjson: (handle: GraphHandle, bytes: Uint8Array) => void;
   /** Release a handle from `graphFromNdjson`. */
   graphFree: (handle: GraphHandle) => void;
 

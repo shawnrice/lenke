@@ -161,6 +161,61 @@ pub fn decode(text: &str) -> CodeResult<Graph> {
     Ok(g)
 }
 
+/// Bulk-append the NDJSON records in `text` to an **existing** graph — a
+/// `COPY FROM` into a live store, the incremental twin of [`decode`].
+///
+/// Semantics match `decode(encode(graph) + "\n" + text)`: a node whose id already
+/// exists is **first-wins** (skipped, the graph's copy kept), an edge with an
+/// already-present explicit id is dropped, an undeclared edge endpoint gets a
+/// bare vertex (the lenient policy `decode` uses), and explicit edge ids are
+/// preserved. It drives the graph's own append machinery (so property indexes
+/// stay current and the version bumps per element) — but with no per-record
+/// parse or FFI crossing, so it runs at bulk speed, not per-`INSERT` speed.
+pub fn append(graph: &mut Graph, text: &str) -> CodeResult<()> {
+    let recs: Vec<Rec> = text
+        .lines()
+        .filter_map(|l| parse_line(l).transpose())
+        .collect::<CodeResult<_>>()?;
+
+    // Nodes first, so an edge may reference a same-batch node declared in any
+    // order (mirrors decode's "declared nodes, then edge endpoints" indexing).
+    for r in &recs {
+        if let Rec::Node(n) = r {
+            if graph.vertex_by_id(&n.id).is_none() {
+                graph.add_vertex_with_id(&n.id, &n.labels, n.props.clone());
+            }
+        }
+    }
+    for r in &recs {
+        if let Rec::Edge(e) = r {
+            if let Some(id) = &e.id {
+                if graph.edge_by_id(id).is_some() {
+                    continue; // duplicate assigned id → drop
+                }
+            }
+            let from = resolve_or_create(graph, &e.src);
+            let to = resolve_or_create(graph, &e.dst);
+            let ei = graph.add_edge(from, to, &e.etype, e.props.clone());
+            if let Some(id) = &e.id {
+                graph.set_edge_id(ei, id);
+            }
+        }
+    }
+
+    graph.validate_wellformed()?;
+    Ok(())
+}
+
+/// A vertex id → its dense index, creating a bare (label-less, prop-less) vertex
+/// on demand — the lenient endpoint policy `decode` uses for an edge that names
+/// an undeclared node.
+fn resolve_or_create(graph: &mut Graph, id: &str) -> u32 {
+    match graph.vertex_by_id(id) {
+        Some(vi) => vi,
+        None => graph.add_vertex_with_id(id, &[], Vec::new()),
+    }
+}
+
 /// Decode without parallelism — for isolating rayon's contribution in the bench.
 pub fn decode_serial(text: &str) -> CodeResult<Graph> {
     let mut b = Builder::default();
@@ -278,6 +333,49 @@ pub fn encode(g: &Graph) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn append_matches_decode_of_concatenation() {
+        let a = "{\"type\":\"node\",\"id\":\"1\",\"labels\":[\"P\"],\"properties\":{\"name\":\"a\",\"age\":1}}\n\
+                 {\"type\":\"node\",\"id\":\"2\",\"labels\":[\"P\"],\"properties\":{\"name\":\"b\"}}\n\
+                 {\"type\":\"edge\",\"id\":\"e0\",\"from\":\"1\",\"to\":\"2\",\"labels\":[\"K\"],\"properties\":{\"w\":0.5}}";
+        let b = "{\"type\":\"node\",\"id\":\"3\",\"labels\":[\"P\",\"Q\"],\"properties\":{\"name\":\"c\"}}\n\
+                 {\"type\":\"edge\",\"id\":\"e1\",\"from\":\"2\",\"to\":\"3\",\"labels\":[\"K\"],\"properties\":{\"w\":1.0}}\n\
+                 {\"type\":\"edge\",\"from\":\"3\",\"to\":\"1\",\"labels\":[\"K\"],\"properties\":{}}";
+
+        // Appending b into decode(a) equals decoding the concatenation.
+        let mut merged = decode(a).unwrap();
+        append(&mut merged, b).unwrap();
+        let combined = decode(&format!("{a}\n{b}")).unwrap();
+        assert_eq!(encode(&merged), encode(&combined));
+
+        // Appending into an empty graph equals a fresh decode.
+        let mut empty = decode("").unwrap();
+        append(&mut empty, a).unwrap();
+        assert_eq!(encode(&empty), encode(&decode(a).unwrap()));
+
+        // A pre-existing id is first-wins (skipped, the graph's copy kept).
+        let mut g = decode(a).unwrap();
+        let before = g.vertex_count();
+        append(
+            &mut g,
+            "{\"type\":\"node\",\"id\":\"1\",\"labels\":[\"Z\"],\"properties\":{\"name\":\"OVERWRITE\"}}",
+        )
+        .unwrap();
+        assert_eq!(g.vertex_count(), before); // no new vertex
+        assert!(!g.vertex_labels(0).is_empty());
+
+        // Indexes survive an append AND are maintained: the new node is findable.
+        let mut idx = decode(a).unwrap();
+        idx.create_vertex_index("name");
+        append(&mut idx, b).unwrap();
+        assert!(idx.vertex_indexed("name"));
+        assert_eq!(
+            idx.vertices_by_prop("name", &crate::graph::IdxKey::Str("c".into()))
+                .map(<[u32]>::len),
+            Some(1)
+        );
+    }
 
     #[test]
     fn nested_object_property_is_invalid_value() {

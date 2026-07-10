@@ -13,6 +13,7 @@ const U = FFIType.u64_fast;
 const SYMBOLS = {
   lnk_abi_version: { args: [], returns: FFIType.u32 },
   lnk_graph_from_ndjson: { args: [FFIType.ptr, U, FFIType.u32], returns: FFIType.ptr },
+  lnk_merge_ndjson: { args: [FFIType.ptr, FFIType.ptr, U], returns: FFIType.i32 },
   lnk_graph_free: { args: [FFIType.ptr], returns: FFIType.void },
   lnk_graph_vertex_count: { args: [FFIType.ptr], returns: U },
   lnk_graph_edge_count: { args: [FFIType.ptr], returns: U },
@@ -155,6 +156,11 @@ export const createFfiBackend = (libPath: string): Backend => {
       }
 
       return asHandle(h);
+    },
+    mergeNdjson: (handle, bytes) => {
+      if (symbols.lnk_merge_ndjson(asPtr(handle), ptr(bytes), bytes.byteLength) !== 0) {
+        fail('mergeNdjson', ErrorCode.InvalidJson);
+      }
     },
     graphFree: (handle) => symbols.lnk_graph_free(asPtr(handle)),
     vertexCount: (handle) => Number(symbols.lnk_graph_vertex_count(asPtr(handle))),
