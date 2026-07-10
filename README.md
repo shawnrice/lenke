@@ -20,7 +20,7 @@ lenke is a toolkit you compose, not a single binary — you pull in the pieces a
 - **Go local-first with live queries.** Keep the graph in a web worker (the WebAssembly engine) and subscribe to standing queries instead of re-fetching; a result pushes only when it actually changes. The sync host is transport-agnostic — the _identical_ host serves a Worker port in the browser or a WebSocket from a server — so the same live-query code runs offline-capable or client/server.
   → [frontend-worker guide](docs/guides/frontend-worker.md)
 
-The [`examples/service-map`](examples/service-map) app threads one feature through the entire stack — React → worker → sync engine → wasm store, with a Node server host — as a worked reference.
+Two worked examples: [`examples/service-map`](examples/service-map) threads one feature through the entire stack — React → worker → sync engine → wasm store, with a Node server host — and [`examples/explorer`](examples/explorer) is a visual graph explorer (force-directed diagram + GQL highlighting) on the pure-TS engine.
 
 ## Quick start
 

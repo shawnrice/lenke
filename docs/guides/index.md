@@ -27,7 +27,7 @@ Pick by what you're building:
 - **A React UI over a graph on the main thread** → [frontend-main-thread](./frontend-main-thread.md) — `@lenke/react`, either engine.
 - **A local-first UI with the graph in a worker** → [frontend-worker](./frontend-worker.md) — `@lenke/sync` as a worker-resident cache against your own API.
 
-The [`examples/service-map`](../../examples/service-map) app threads one feature through the whole stack (React → worker → sync engine → wasm store, and a Node server host) and is the worked reference for the frontend and backend guides.
+The [`examples/service-map`](../../examples/service-map) app threads one feature through the whole stack (React → worker → sync engine → wasm store, and a Node server host) and is the worked reference for the frontend and backend guides. The [`examples/explorer`](../../examples/explorer) app is a smaller, pure-TS reference: a visual force-directed graph explorer that queries with GQL.
 
 ## Conventions in these guides
 
