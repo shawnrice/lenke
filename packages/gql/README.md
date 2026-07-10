@@ -73,9 +73,22 @@ The engine implements the ISO GQL core, not Cypher. Notable differences: `--` is
 
 - **Patterns** — node patterns `(v:Label {prop: value} WHERE pred)`, relationship patterns with direction (`-[:KNOWS]->`, `<-[...]-`, `~[...]~`), and variable-length quantifiers (`*`, `+`, `{n}`, `{n,m}`).
 - **Reading** — `MATCH` / `OPTIONAL MATCH`, `WHERE` with ISO three-valued (Kleene) logic, `WITH` for chaining projections, and `RETURN` with `DISTINCT`, `AS` aliases, `ORDER BY` (`ASC`/`DESC`, `NULLS FIRST`/`LAST`), `SKIP`/`OFFSET`, and `LIMIT`.
-- **Expressions** — arithmetic, string concatenation (`||`), comparisons, `IN`, `IS [NOT] NULL`, `CASE`, `EXISTS { … }` and `COUNT { … }` subqueries, ISO numeric/string scalar functions, and the aggregates `count`, `sum`, `avg`, `min`, `max`, `collect_list` (with implicit grouping).
+- **Expressions** — arithmetic, `||` (string **and** list concatenation), comparisons, `IN`, `IS [NOT] NULL`, the string-matching predicates `CONTAINS` / `STARTS WITH` / `ENDS WITH`, `CASE`, `CAST(value AS type)`, `EXISTS { … }` and `COUNT { … }` subqueries, ISO numeric/string/list scalar functions, and the aggregates `count`, `sum`, `avg`, `min`, `max`, `collect_list` (with implicit grouping).
+- **Scalar functions** — numeric (`abs`, `ceil`/`ceiling`, `floor`, `round`, `sign`, `sqrt`, `power`, `mod`, `exp`, `ln`, `log`, `log10`, trig, `degrees`, `radians`, `pi()`, `e()`); string (`upper`, `lower`, `trim`/`btrim`/`ltrim`/`rtrim`, `left`, `right`, `substring`, `split`, `replace`, `reverse`, `char_length`, `byte_length`/`octet_length`, `contains`, `starts_with`, `ends_with`); conversion (`to_string`, `to_integer`, `to_float`, `to_boolean`, `to_list`); list (`size`/`length`, `head`, `last`, `tail`, `append`, `range`, `reverse`); graph (`labels`, `type`, `keys`, `element_id`); and `coalesce` / `nullif`. An unknown function is a loud `ErrorCode.Unsupported` error, never a silent `null`.
 - **Set operators** — `UNION`, `EXCEPT`, `INTERSECT`, each with optional `ALL`.
 - **Writing** — `INSERT`, `SET`, `REMOVE`, `[DETACH] DELETE`, and `FINISH`.
+
+Both engines (this TS engine and the Rust core) produce **byte-identical** results for every one of the above; the parity is pinned by a table-driven differential test (`@lenke/native`'s `gql-functions-conformance.test.ts`).
+
+### Documented divergences
+
+- **`substring` is 1-based** (SQL / ISO GQL convention: `substring('crystal', 1, 3)` → `'cry'`), not the 0-based Cypher form.
+- **String length and slicing count UTF-16 code units** (JS `.length` parity), not Unicode code points. `split('')` and `reverse` therefore operate on UTF-16 units; splitting or reversing _across_ an astral (surrogate-pair) character is inherently lossy and yields U+FFFD on both engines — a deliberate divergence from JS `String.split('')`, which preserves lone surrogate halves.
+- **`null` is a first-class stored property value** (distinct from absent); remove a property with `REMOVE`, never `SET x.k = null`.
+
+### Known gaps (future work)
+
+The `^` power operator and `list[i]` element indexing are not yet parsed (both engines reject them identically). They await the exact spec precedence / indexing base rather than a guess.
 
 Index-backed seeking is automatic: when a graph has property indexes (`graph.createVertexIndex(key)`), equality, range, and `IN` constraints in patterns or `WHERE` are planned as index seeks rather than full scans.
 
