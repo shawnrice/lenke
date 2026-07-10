@@ -119,6 +119,15 @@ suite('GQL function differential (TS vs native)', () => {
     `range(5, 1)`,
     `range(1, 5, 0)`,
     `size(range(0, 100))`,
+    // Slice 6 — || concatenation: lists concat, strings unchanged.
+    `[1, 2] || [3, 4]`,
+    `n.xs || [9, 8]`,
+    `[1] || [] || [2]`,
+    `'a' || 'b'`,
+    `n.s || '!'`,
+    `[1, 2] || null`,
+    `null || [1]`,
+    `range(1, 3) || range(4, 6)`,
   ];
 
   for (const expr of CASES) {

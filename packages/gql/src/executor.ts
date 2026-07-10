@@ -787,7 +787,16 @@ const compileExpr = (expr: Expr): CompiledExpr => {
         const lv = l(env);
         const rv = r(env);
 
-        return isNullish(lv) || isNullish(rv) ? null : String(lv) + String(rv);
+        if (isNullish(lv) || isNullish(rv)) {
+          return null;
+        }
+
+        // ISO GQL `||`: list ++ list concatenates; otherwise string concat.
+        if (Array.isArray(lv) && Array.isArray(rv)) {
+          return [...lv, ...rv];
+        }
+
+        return String(lv) + String(rv);
       };
     }
     case 'not': {

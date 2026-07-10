@@ -760,10 +760,13 @@ fn eval(env: &Env, expr: &CExpr) -> Val {
         CExpr::Concat { left, right } => {
             let lv = eval(env, left);
             let rv = eval(env, right);
-            if is_nullish(&lv) || is_nullish(&rv) {
-                Val::Null
-            } else {
-                vstr(js_str(env.graph, &lv) + &js_str(env.graph, &rv))
+            match (&lv, &rv) {
+                _ if is_nullish(&lv) || is_nullish(&rv) => Val::Null,
+                // ISO GQL `||`: list ++ list concatenates; otherwise string concat.
+                (Val::List(a), Val::List(b)) => {
+                    Val::List(a.iter().chain(b.iter()).cloned().collect())
+                }
+                _ => vstr(js_str(env.graph, &lv) + &js_str(env.graph, &rv)),
             }
         }
         CExpr::Not(e) => truth_to_val(not3(as_truth(&eval(env, e)))),
@@ -951,10 +954,14 @@ fn run(env: &Env, prog: &Program) -> Val {
                 Op::Concat => {
                     let rv = st.pop().unwrap();
                     let lv = st.pop().unwrap();
-                    st.push(if is_nullish(&lv) || is_nullish(&rv) {
-                        Val::Null
-                    } else {
-                        vstr(js_str(env.graph, &lv) + &js_str(env.graph, &rv))
+                    st.push(match (&lv, &rv) {
+                        _ if is_nullish(&lv) || is_nullish(&rv) => Val::Null,
+                        // ISO GQL `||`: list ++ list concatenates the two lists;
+                        // otherwise it is string concatenation (unchanged).
+                        (Val::List(a), Val::List(b)) => {
+                            Val::List(a.iter().chain(b.iter()).cloned().collect())
+                        }
+                        _ => vstr(js_str(env.graph, &lv) + &js_str(env.graph, &rv)),
                     });
                 }
                 Op::Neg => {
