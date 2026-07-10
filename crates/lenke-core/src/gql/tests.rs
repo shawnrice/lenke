@@ -1290,6 +1290,32 @@ fn math_round_sign_pi_e() {
 }
 
 #[test]
+fn infix_string_match_predicates() {
+    let mut g = modern();
+    assert_eq!(
+        rows(&mut g, "RETURN 'Hello World' CONTAINS 'World' AS x"),
+        vec![vec![Value::Bool(true)]]
+    );
+    assert_eq!(
+        rows(&mut g, "RETURN 'Hello World' STARTS WITH 'Hello' AS x"),
+        vec![vec![Value::Bool(true)]]
+    );
+    assert_eq!(
+        rows(&mut g, "RETURN 'Hello World' ENDS WITH 'World' AS x"),
+        vec![vec![Value::Bool(true)]]
+    );
+    assert_eq!(
+        rows(&mut g, "RETURN 'abc' CONTAINS 'z' AS x"),
+        vec![vec![Value::Bool(false)]]
+    );
+    // as a WHERE filter
+    assert_eq!(
+        rows(&mut g, "MATCH (p:Person) WHERE p.name STARTS WITH 'ma' RETURN p.name AS x"),
+        vec![vec![s("marko")]]
+    );
+}
+
+#[test]
 fn cast_desugars_to_conversion_functions() {
     let mut g = modern();
     assert_eq!(rows(&mut g, "RETURN CAST('42' AS INTEGER) AS x"), vec![vec![n(42.0)]]);

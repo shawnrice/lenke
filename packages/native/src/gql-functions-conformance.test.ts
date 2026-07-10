@@ -141,6 +141,16 @@ suite('GQL function differential (TS vs native)', () => {
     `CAST(n.s AS TEXT)`,
     `CAST(CAST('42' AS INT) AS STRING)`,
     `CAST('nope' AS INT)`,
+    // Slice 8 — infix CONTAINS / STARTS WITH / ENDS WITH predicates.
+    `n.s CONTAINS 'World'`,
+    `n.s CONTAINS 'xyz'`,
+    `n.s STARTS WITH 'Hello'`,
+    `n.s STARTS WITH 'World'`,
+    `n.s ENDS WITH 'World'`,
+    `n.s ENDS WITH 'Hello'`,
+    `NOT (n.s CONTAINS 'z')`,
+    `n.s CONTAINS 'o' AND n.s STARTS WITH 'H'`,
+    `n.s CONTAINS 'l' OR n.s STARTS WITH 'z'`,
   ];
 
   for (const expr of CASES) {

@@ -65,6 +65,18 @@ describe('GQL: ISO graph / conversion / string-list scalar functions', () => {
     expect(one(`RETURN round(null) AS x`)).toBeNull();
   });
 
+  test('infix CONTAINS / STARTS WITH / ENDS WITH predicates', () => {
+    expect(one(`RETURN 'Hello World' CONTAINS 'World' AS x`)).toBe(true);
+    expect(one(`RETURN 'Hello World' STARTS WITH 'Hello' AS x`)).toBe(true);
+    expect(one(`RETURN 'Hello World' ENDS WITH 'World' AS x`)).toBe(true);
+    expect(one(`RETURN 'Hello World' CONTAINS 'xyz' AS x`)).toBe(false);
+    // as a WHERE filter over the social graph
+    const names = query(g, `MATCH (p:Person) WHERE p.name STARTS WITH 'ma' RETURN p.name AS n`).map(
+      (r) => r.n,
+    );
+    expect(names).toEqual(['marko']);
+  });
+
   test('CAST(value AS type) desugars to the conversion functions', () => {
     expect(one(`RETURN CAST('42' AS INTEGER) AS x`)).toBe(42);
     expect(one(`RETURN CAST(3.7 AS INT) AS x`)).toBe(3);

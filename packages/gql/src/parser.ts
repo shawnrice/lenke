@@ -586,6 +586,33 @@ export const parse = (src: string): Query => {
       return { kind: 'in', expr: e, list: parseUnary(), negated: true };
     }
 
+    // ISO string-matching predicates. `contains`/`starts`/`ends` are non-reserved
+    // words (plain idents after a complete operand); they desugar to the
+    // equivalent BOOL functions. `STARTS`/`ENDS` require a following `WITH`.
+    if (check('ident')) {
+      const word = peek().value.toLowerCase();
+
+      if (word === 'contains') {
+        advance();
+
+        return { kind: 'func', name: 'contains', args: [e, parseConcat()], distinct: false, star: false };
+      }
+
+      if (word === 'starts') {
+        advance();
+        expectKeyword('with');
+
+        return { kind: 'func', name: 'starts_with', args: [e, parseConcat()], distinct: false, star: false };
+      }
+
+      if (word === 'ends') {
+        advance();
+        expectKeyword('with');
+
+        return { kind: 'func', name: 'ends_with', args: [e, parseConcat()], distinct: false, star: false };
+      }
+    }
+
     return e;
   };
 

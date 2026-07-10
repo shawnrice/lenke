@@ -600,6 +600,38 @@ impl Parser {
                 negated: true,
             });
         }
+        // ISO string-matching predicates. `contains`/`starts`/`ends` are
+        // non-reserved words (arrive as idents); they desugar to the equivalent
+        // BOOL functions. `STARTS`/`ENDS` require a following `WITH`.
+        if self.check_soft("contains") {
+            self.advance();
+            return Ok(Expr::Func {
+                name: "contains".into(),
+                args: vec![e, self.parse_concat()?],
+                distinct: false,
+                star: false,
+            });
+        }
+        if self.check_soft("starts") {
+            self.advance();
+            self.expect_kw("with")?;
+            return Ok(Expr::Func {
+                name: "starts_with".into(),
+                args: vec![e, self.parse_concat()?],
+                distinct: false,
+                star: false,
+            });
+        }
+        if self.check_soft("ends") {
+            self.advance();
+            self.expect_kw("with")?;
+            return Ok(Expr::Func {
+                name: "ends_with".into(),
+                args: vec![e, self.parse_concat()?],
+                distinct: false,
+                star: false,
+            });
+        }
         Ok(e)
     }
 
