@@ -11,8 +11,8 @@ use super::lexer::{err, is_reserved, tokenize, SyntaxError, Token, Tt};
 /// and returns `None` (a loud CAST error). Mirrors the TS `castTargetFn`.
 fn cast_target_fn(type_name: &str) -> Option<&'static str> {
     Some(match type_name.to_ascii_lowercase().as_str() {
-        "int" | "integer" | "int8" | "int16" | "int32" | "int64" | "int128" | "int256"
-        | "uint" | "uint8" | "uint16" | "uint32" | "uint64" | "uint128" | "uint256" | "bigint"
+        "int" | "integer" | "int8" | "int16" | "int32" | "int64" | "int128" | "int256" | "uint"
+        | "uint8" | "uint16" | "uint32" | "uint64" | "uint128" | "uint256" | "bigint"
         | "ubigint" | "smallint" | "usmallint" | "signed" | "unsigned" => "to_integer",
         "float" | "float32" | "float64" | "double" | "decimal" | "real" | "number" | "numeric" => {
             "to_float"

@@ -303,6 +303,13 @@ const UNARY_NUM: Record<string, (n: number) => number> = {
   tanh: Math.tanh,
   degrees: (n) => (n * 180) / Math.PI,
   radians: (n) => (n * Math.PI) / 180,
+  sign: (n) => mathSign(n),
+};
+
+// ISO GQL 0-arg numeric constants.
+const NUM_CONSTANTS: Record<string, number> = {
+  pi: Math.PI,
+  e: Math.E,
 };
 
 const str = (v: unknown): string => String(v);
@@ -315,8 +322,17 @@ const roundHalfAway = (v: number): number => Math.sign(v) * Math.round(Math.abs(
 // ISO GQL `sign` → -1 | 0 | 1 (NaN passes through). NOT `Math.sign`, whose
 // signed-zero result (`Math.sign(-0) === -0`) and Rust's `f64::signum`
 // (`+1` for `0.0`) both diverge; this explicit form matches across engines.
-const mathSign = (x: number): number =>
-  Number.isNaN(x) ? Number.NaN : x > 0 ? 1 : x < 0 ? -1 : 0;
+const mathSign = (x: number): number => {
+  if (Number.isNaN(x)) {
+    return Number.NaN;
+  }
+
+  if (x > 0) {
+    return 1;
+  }
+
+  return x < 0 ? -1 : 0;
+};
 
 /** ISO unary string value functions: one string in, a value out. */
 const UNARY_STR: Record<string, (s: string) => unknown> = {
@@ -358,14 +374,11 @@ const callScalar = (name: string, args: readonly unknown[]): unknown => {
     return isNullish(a) || isNullish(b) ? null : binaryNum(Number(a), Number(b));
   }
 
+  if (name in NUM_CONSTANTS) {
+    return NUM_CONSTANTS[name];
+  }
+
   switch (name) {
-    // ISO GQL numeric value functions with non-unary shapes.
-    case 'pi':
-      return Math.PI;
-    case 'e':
-      return Math.E;
-    case 'sign':
-      return isNullish(a) ? null : mathSign(Number(a));
     case 'round': {
       // round(num, [digits]) — digits default 0; half away from zero.
       if (isNullish(a)) {
@@ -469,9 +482,7 @@ const substringScalar = (a: unknown, b: unknown, len: unknown): string | null =>
   const zeroStart = Number(b) - 1;
   const from = Math.max(0, zeroStart);
 
-  return isNullish(len)
-    ? s.slice(from)
-    : s.slice(from, Math.max(0, zeroStart + Number(len)));
+  return isNullish(len) ? s.slice(from) : s.slice(from, Math.max(0, zeroStart + Number(len)));
 };
 
 // Decode a UTF-16 code-unit sequence to a string exactly as Rust's
@@ -487,12 +498,12 @@ const fromUtf16UnitsLossy = (units: readonly number[]): string => {
   let out = '';
 
   for (let i = 0; i < units.length; i++) {
-    const u = units[i]!;
+    const u = units[i];
 
     if (u >= 0xd800 && u <= 0xdbff) {
-      const lo = units[i + 1];
+      const lo = i + 1 < units.length ? units[i + 1] : -1;
 
-      if (lo !== undefined && lo >= 0xdc00 && lo <= 0xdfff) {
+      if (lo >= 0xdc00 && lo <= 0xdfff) {
         out += String.fromCharCode(u, lo);
         i++;
       } else {
@@ -643,18 +654,28 @@ const reverseScalar = (a: unknown): unknown => {
   return fromUtf16UnitsLossy(units);
 };
 
-const callExtendedScalar = (name: string, args: readonly unknown[]): unknown => {
-  const [a, b] = args;
+// A sentinel returned by a sub-dispatcher that doesn't handle `name`, so the
+// callers can chain dispatchers (each kept under the complexity budget) and
+// fall through to the unknown-function error.
+const UNHANDLED = Symbol('unhandled');
 
+// Graph functions — label/key order sorted for cross-engine parity.
+const callGraphFn = (name: string, a: unknown): unknown => {
   switch (name) {
-    // --- graph functions (label/key order sorted for cross-engine parity) ---
     case 'labels':
       return isVertex(a) ? [...a.labels].sort() : null;
     case 'type':
       return isEdge(a) ? ([...a.labels][0] ?? '') : null;
     case 'keys':
       return isElement(a) ? Object.keys(a.properties).sort() : null;
-    // --- conversion (null in → null out) ---
+    default:
+      return UNHANDLED;
+  }
+};
+
+// Conversion functions (null in → null out).
+const callConversionFn = (name: string, a: unknown): unknown => {
+  switch (name) {
     case 'tostring':
     case 'to_string':
       return isNullish(a) ? null : str(a);
@@ -670,7 +691,14 @@ const callExtendedScalar = (name: string, args: readonly unknown[]): unknown => 
     case 'tolist':
     case 'to_list':
       return toListScalar(a);
-    // --- string predicates / measurement (ISO BOOL-returning + byte length) ---
+    default:
+      return UNHANDLED;
+  }
+};
+
+// String predicates (ISO BOOL-returning) + byte-length measurement.
+const callStringPredicateFn = (name: string, a: unknown, b: unknown): unknown => {
+  switch (name) {
     case 'contains':
       return isNullish(a) || isNullish(b) ? null : str(a).includes(str(b));
     case 'starts_with':
@@ -680,7 +708,16 @@ const callExtendedScalar = (name: string, args: readonly unknown[]): unknown => 
     case 'byte_length':
     case 'octet_length':
       return isNullish(a) ? null : byteLen(str(a));
-    // --- string / list ---
+    default:
+      return UNHANDLED;
+  }
+};
+
+// String / list functions.
+const callStringListFn = (name: string, args: readonly unknown[]): unknown => {
+  const [a, b] = args;
+
+  switch (name) {
     case 'substring':
       return substringScalar(a, b, args[2]);
     case 'split':
@@ -701,10 +738,27 @@ const callExtendedScalar = (name: string, args: readonly unknown[]): unknown => 
     case 'range':
       return rangeScalar(a, b, args[2]);
     default:
-      throw new LenkeError(`call to an unknown or unimplemented function: ${name}()`, {
-        code: ErrorCode.Unsupported,
-      });
+      return UNHANDLED;
   }
+};
+
+const callExtendedScalar = (name: string, args: readonly unknown[]): unknown => {
+  const [a, b] = args;
+
+  for (const result of [
+    callGraphFn(name, a),
+    callConversionFn(name, a),
+    callStringPredicateFn(name, a, b),
+    callStringListFn(name, args),
+  ]) {
+    if (result !== UNHANDLED) {
+      return result;
+    }
+  }
+
+  throw new LenkeError(`call to an unknown or unimplemented function: ${name}()`, {
+    code: ErrorCode.Unsupported,
+  });
 };
 
 // --- expression compilation --------------------------------------------------

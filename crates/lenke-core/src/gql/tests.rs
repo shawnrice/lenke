@@ -1240,7 +1240,10 @@ fn scalar_functions_graph_string_list_conversion() {
         rows(&mut g, "RETURN substring('hello', 1, 3) AS x"),
         vec![vec![s("hel")]]
     );
-    assert_eq!(rows(&mut g, "RETURN substring('hello', 4) AS x"), vec![vec![s("lo")]]);
+    assert_eq!(
+        rows(&mut g, "RETURN substring('hello', 4) AS x"),
+        vec![vec![s("lo")]]
+    );
     assert_eq!(
         rows(&mut g, "RETURN substring('hello', 0, 3) AS x"),
         vec![vec![s("he")]]
@@ -1273,7 +1276,10 @@ fn math_round_sign_pi_e() {
     // round: half away from zero, optional digits (negative rounds to tens).
     assert_eq!(rows(&mut g, "RETURN round(2.5) AS x"), vec![vec![n(3.0)]]);
     assert_eq!(rows(&mut g, "RETURN round(-2.5) AS x"), vec![vec![n(-3.0)]]);
-    assert_eq!(rows(&mut g, "RETURN round(3.14159, 2) AS x"), vec![vec![n(3.14)]]);
+    assert_eq!(
+        rows(&mut g, "RETURN round(1.2345, 2) AS x"),
+        vec![vec![n(1.23)]]
+    );
     assert_eq!(
         rows(&mut g, "RETURN round(1234.5678, -2) AS x"),
         vec![vec![n(1200.0)]]
@@ -1283,10 +1289,19 @@ fn math_round_sign_pi_e() {
     assert_eq!(rows(&mut g, "RETURN sign(0) AS x"), vec![vec![n(0.0)]]);
     assert_eq!(rows(&mut g, "RETURN sign(5) AS x"), vec![vec![n(1.0)]]);
     // 0-arg constants.
-    assert_eq!(rows(&mut g, "RETURN pi() AS x"), vec![vec![n(std::f64::consts::PI)]]);
-    assert_eq!(rows(&mut g, "RETURN e() AS x"), vec![vec![n(std::f64::consts::E)]]);
+    assert_eq!(
+        rows(&mut g, "RETURN pi() AS x"),
+        vec![vec![n(std::f64::consts::PI)]]
+    );
+    assert_eq!(
+        rows(&mut g, "RETURN e() AS x"),
+        vec![vec![n(std::f64::consts::E)]]
+    );
     // null in → null out.
-    assert_eq!(rows(&mut g, "RETURN round(null) AS x"), vec![vec![Value::Null]]);
+    assert_eq!(
+        rows(&mut g, "RETURN round(null) AS x"),
+        vec![vec![Value::Null]]
+    );
 }
 
 #[test]
@@ -1310,7 +1325,10 @@ fn infix_string_match_predicates() {
     );
     // as a WHERE filter
     assert_eq!(
-        rows(&mut g, "MATCH (p:Person) WHERE p.name STARTS WITH 'ma' RETURN p.name AS x"),
+        rows(
+            &mut g,
+            "MATCH (p:Person) WHERE p.name STARTS WITH 'ma' RETURN p.name AS x"
+        ),
         vec![vec![s("marko")]]
     );
 }
@@ -1318,10 +1336,22 @@ fn infix_string_match_predicates() {
 #[test]
 fn cast_desugars_to_conversion_functions() {
     let mut g = modern();
-    assert_eq!(rows(&mut g, "RETURN CAST('42' AS INTEGER) AS x"), vec![vec![n(42.0)]]);
-    assert_eq!(rows(&mut g, "RETURN CAST(3.7 AS INT) AS x"), vec![vec![n(3.0)]]);
-    assert_eq!(rows(&mut g, "RETURN CAST('3.5' AS FLOAT) AS x"), vec![vec![n(3.5)]]);
-    assert_eq!(rows(&mut g, "RETURN CAST(42 AS STRING) AS x"), vec![vec![s("42")]]);
+    assert_eq!(
+        rows(&mut g, "RETURN CAST('42' AS INTEGER) AS x"),
+        vec![vec![n(42.0)]]
+    );
+    assert_eq!(
+        rows(&mut g, "RETURN CAST(3.7 AS INT) AS x"),
+        vec![vec![n(3.0)]]
+    );
+    assert_eq!(
+        rows(&mut g, "RETURN CAST('3.5' AS FLOAT) AS x"),
+        vec![vec![n(3.5)]]
+    );
+    assert_eq!(
+        rows(&mut g, "RETURN CAST(42 AS STRING) AS x"),
+        vec![vec![s("42")]]
+    );
     assert_eq!(
         rows(&mut g, "RETURN CAST('yes' AS BOOL) AS x"),
         vec![vec![Value::Bool(true)]]

@@ -62,11 +62,38 @@ import { GqlSyntaxError, isReserved, type Token, type TokenType, tokenize } from
 // (temporal, bytes, record, …) has no home in this value model and returns
 // null (a loud CAST error). Mirrors the Rust `cast_target_fn`.
 const CAST_INT = new Set([
-  'int', 'integer', 'int8', 'int16', 'int32', 'int64', 'int128', 'int256',
-  'uint', 'uint8', 'uint16', 'uint32', 'uint64', 'uint128', 'uint256',
-  'bigint', 'ubigint', 'smallint', 'usmallint', 'signed', 'unsigned',
+  'int',
+  'integer',
+  'int8',
+  'int16',
+  'int32',
+  'int64',
+  'int128',
+  'int256',
+  'uint',
+  'uint8',
+  'uint16',
+  'uint32',
+  'uint64',
+  'uint128',
+  'uint256',
+  'bigint',
+  'ubigint',
+  'smallint',
+  'usmallint',
+  'signed',
+  'unsigned',
 ]);
-const CAST_FLOAT = new Set(['float', 'float32', 'float64', 'double', 'decimal', 'real', 'number', 'numeric']);
+const CAST_FLOAT = new Set([
+  'float',
+  'float32',
+  'float64',
+  'double',
+  'decimal',
+  'real',
+  'number',
+  'numeric',
+]);
 const CAST_STRING = new Set(['string', 'text', 'varchar', 'char']);
 const CAST_BOOL = new Set(['bool', 'boolean']);
 const CAST_LIST = new Set(['list', 'array']);
@@ -74,11 +101,25 @@ const CAST_LIST = new Set(['list', 'array']);
 const castTargetFn = (typeName: string): string | null => {
   const t = typeName.toLowerCase();
 
-  if (CAST_INT.has(t)) return 'to_integer';
-  if (CAST_FLOAT.has(t)) return 'to_float';
-  if (CAST_STRING.has(t)) return 'to_string';
-  if (CAST_BOOL.has(t)) return 'to_boolean';
-  if (CAST_LIST.has(t)) return 'to_list';
+  if (CAST_INT.has(t)) {
+    return 'to_integer';
+  }
+
+  if (CAST_FLOAT.has(t)) {
+    return 'to_float';
+  }
+
+  if (CAST_STRING.has(t)) {
+    return 'to_string';
+  }
+
+  if (CAST_BOOL.has(t)) {
+    return 'to_boolean';
+  }
+
+  if (CAST_LIST.has(t)) {
+    return 'to_list';
+  }
 
   return null;
 };
@@ -595,21 +636,39 @@ export const parse = (src: string): Query => {
       if (word === 'contains') {
         advance();
 
-        return { kind: 'func', name: 'contains', args: [e, parseConcat()], distinct: false, star: false };
+        return {
+          kind: 'func',
+          name: 'contains',
+          args: [e, parseConcat()],
+          distinct: false,
+          star: false,
+        };
       }
 
       if (word === 'starts') {
         advance();
         expectKeyword('with');
 
-        return { kind: 'func', name: 'starts_with', args: [e, parseConcat()], distinct: false, star: false };
+        return {
+          kind: 'func',
+          name: 'starts_with',
+          args: [e, parseConcat()],
+          distinct: false,
+          star: false,
+        };
       }
 
       if (word === 'ends') {
         advance();
         expectKeyword('with');
 
-        return { kind: 'func', name: 'ends_with', args: [e, parseConcat()], distinct: false, star: false };
+        return {
+          kind: 'func',
+          name: 'ends_with',
+          args: [e, parseConcat()],
+          distinct: false,
+          star: false,
+        };
       }
     }
 
