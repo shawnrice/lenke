@@ -48,22 +48,6 @@ A `Plan` is built by composing step constructors. Each constructor returns a `St
 - `traversal(...steps)` — produces a `Plan`, ready to pass to `run`.
 - `pipe(...steps)` — produces a single composed `StepFn`, used to build inline sub-plans (e.g. `where(pipe(out('KNOWS'), count()))`). Sub-plan slots accept either a `pipe(...)` `StepFn` or a `traversal(...)` `Plan`.
 
-`explain(plan)` renders a plan's step sequence, with nested sub-traversals (`where`, `repeat`, `union`, …) indented beneath their step — a faithful EXPLAIN, since this AST _is_ what the executor walks:
-
-```ts
-import { explain, traversal, V, hasLabel, out, values, where } from '@lenke/gremlin';
-
-console.log(
-  explain(traversal(V(), hasLabel('Person'), where(traversal(out('KNOWS'))), values('name'))),
-);
-// V {}
-// hasLabel {"labels":["Person"]}
-// where
-//   plan:
-//     out {"labels":["KNOWS"]}
-// values {"keys":["name"]}
-```
-
 Steps span the usual Gremlin categories, all importable from the package root:
 
 - **Sources** — `V(...ids)`, `E(...ids)`, `inject(...values)`.

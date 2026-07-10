@@ -67,37 +67,6 @@ const ast = parseQuery('MATCH (n) RETURN n');
 
 For hot queries, `prepare` (or the lower-level `compile(parse(text))`) does parsing and analysis once and returns a reusable, reentrant `Plan = (graph, params?) => Row[]`.
 
-`explain(query, graph?)` shows the plan. **Pass a graph** and each MATCH shows the _physical_ plan the executor will run against it — which end each pattern seeds from, the seed strategy (index seek / label scan / full scan) with a cardinality estimate, and the expansion. It's the real planner's decision, so it answers "did my index get used?":
-
-```ts
-import { explain } from '@lenke/gql';
-
-const q = `MATCH (a:Person)-[:KNOWS]->(b:Person) WHERE a.age > 55 RETURN b.name LIMIT 5`;
-
-console.log(explain(q, graph));
-// Query — 1 part
-//   MATCH
-//     seed a → label scan :Person  (~100 vertices)
-//       expand -[:KNOWS]-> (b)
-//     filter: WHERE (residual)
-//   RETURN — 1 item, limit 5
-
-graph.createVertexIndex('age');
-console.log(explain(q, graph));
-//     seed a → index seek age (range)  (~8 vertices)   ← the index is now used
-```
-
-**Without a graph** it's the _logical_ view — the parsed clause structure — which is all that's knowable without index sizes:
-
-```ts
-console.log(explain(q));
-// Query — 1 part
-//   MATCH — 1 pattern(s), 3 elements, WHERE
-//   RETURN — 1 item, limit 5
-```
-
-For programmatic use, `planMatch(graph, clause, params?)` returns the seed plan as structured `PatternPlan[]`.
-
 ## Supported query features
 
 The engine implements the ISO GQL core, not Cypher. Notable differences: `--` is a line comment (not an undirected edge), undirected edges use `~`, and label expressions are the boolean-algebra form `A&B` / `A|B` / `!A` / `%` rather than colon-chained `:A:B`.

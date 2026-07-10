@@ -1,7 +1,6 @@
 export * from './ast.js';
 export * from './bind.js';
 export * from './executor.js';
-export { explain } from './explain.js';
 export * from './fixtures/createTestTinkerGraph.js';
 export * from './graph-queries.js';
 export * from './predicates.js';

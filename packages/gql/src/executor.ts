@@ -1454,13 +1454,8 @@ const evalBound = (bound: CRangeBound, env: EvalEnv): RangeBound | null => {
   return any ? out : null;
 };
 
-/**
- * A seekable predicate: its estimated cardinality, a thunk for the set, and a
- * lazy human note (built only by `explain`, never on the execution hot path).
- */
-type SeedCandidate = { count: number; build: () => ReadonlySet<Vertex>; note: () => string };
-
-const showValue = (v: unknown): string => (typeof v === 'string' ? `'${v}'` : String(v));
+/** A seekable predicate: its estimated cardinality and a thunk for the set. */
+type SeedCandidate = { count: number; build: () => ReadonlySet<Vertex> };
 
 /**
  * Every index seek a node pattern offers: its ISO equality constraints
@@ -1477,7 +1472,6 @@ const indexCandidates = function* (
   const eqCandidate = (key: string, v: unknown): SeedCandidate => ({
     count: idx.countEquals(key, v) ?? 0,
     build: () => idx.equals(key, v) ?? EMPTY,
-    note: () => `${key} = ${showValue(v)}`,
   });
 
   for (const { key, value } of node.pred.props) {
@@ -1524,7 +1518,6 @@ const indexCandidates = function* (
 
             return out;
           },
-          note: () => `${hint.key} IN (${list.length} value${list.length === 1 ? '' : 's'})`,
         };
       }
     } else {
@@ -1534,7 +1527,6 @@ const indexCandidates = function* (
         yield {
           count: idx.countRange(hint.key, bound) ?? 0,
           build: () => idx.range(hint.key, bound) ?? EMPTY,
-          note: () => `${hint.key} (range)`,
         };
       }
     }
@@ -1634,154 +1626,6 @@ const orient = (graph: Graph, pattern: CPath, binding: Binding, params: Params):
 
   return endEst < startEst ? reversePath(pattern) : pattern;
 };
-
-// --- explain: report the physical seed plan a MATCH would run ---------------
-
-const EMPTY_BINDING: Binding = new Map();
-
-const labelText = (label: LabelExpr | undefined): string | undefined => {
-  if (!label) {
-    return undefined;
-  }
-
-  switch (label.kind) {
-    case 'label':
-      return label.name;
-    case 'wildcard':
-      return '%';
-    case 'not':
-      return `!${labelText(label.expr) ?? ''}`;
-    case 'and':
-      return `${labelText(label.left) ?? ''}&${labelText(label.right) ?? ''}`;
-    case 'or':
-      return `${labelText(label.left) ?? ''}|${labelText(label.right) ?? ''}`;
-    default:
-      return undefined;
-  }
-};
-
-export type SeedStrategy = 'index seek' | 'label scan' | 'full scan';
-
-export type PatternPlan = {
-  seed: {
-    variable?: string;
-    label?: string;
-    strategy: SeedStrategy;
-    detail?: string;
-    estimated: number;
-  };
-  expansions: ReadonlyArray<{
-    relLabels: readonly string[];
-    direction: RelPattern['direction'];
-    node: { variable?: string; label?: string };
-  }>;
-};
-
-// The seed strategy for one node, decided against the real graph (index sizes +
-// availability), mirroring `seedVertices`. Best-effort: a value that can't be
-// evaluated without a binding/param simply doesn't offer a seek.
-const describeSeed = (
-  graph: Graph,
-  node: CNode,
-  params: Params,
-): { strategy: SeedStrategy; detail?: string; estimated: number } => {
-  const env: EvalEnv = { binding: EMPTY_BINDING, params, graph };
-  let best: SeedCandidate | undefined;
-
-  try {
-    for (const candidate of indexCandidates(graph, node, env)) {
-      if (!best || candidate.count < best.count) {
-        best = candidate;
-      }
-    }
-  } catch {
-    best = undefined;
-  }
-
-  if (best) {
-    return { strategy: 'index seek', detail: best.note(), estimated: best.count };
-  }
-
-  return {
-    strategy: node.label ? 'label scan' : 'full scan',
-    estimated: candidateCount(graph, node.label),
-  };
-};
-
-const relLabels = (rel: CRel): string[] => {
-  const text = labelText(rel.label);
-
-  return text ? text.split(/[&|]/) : [];
-};
-
-// Compile a MATCH's patterns AND lift the seekable conjuncts of its clause-level
-// WHERE onto every pattern node (by variable), so either end can seed. Shared by
-// `compileClause` (execution) and `planMatch` (explain), so explain sees the
-// identical seed hints the run does — a clause `WHERE a.age > 30` surfaces as an
-// index seek, not a scan.
-const compileMatchPatterns = (
-  patterns: readonly PathPattern[],
-  where: Expr | undefined,
-): CPath[] => {
-  const compiled = patterns.map(compilePath);
-
-  if (!where) {
-    return compiled;
-  }
-
-  const hints: HintMap = new Map();
-  collectHints(where, hints);
-
-  const attach = (node: CNode): CNode => {
-    const extra = node.variable ? hints.get(node.variable) : undefined;
-
-    return extra
-      ? { ...node, seedHints: coalesceRangeHints([...(node.seedHints ?? []), ...extra]) }
-      : node;
-  };
-
-  return compiled.map((path) => ({
-    start: attach(path.start),
-    segments: path.segments.map((s) => ({ rel: s.rel, node: attach(s.node) })),
-  }));
-};
-
-/**
- * The physical plan a MATCH clause runs against `graph`: for each pattern, which
- * end it seeds from (the more selective one), the seed strategy (index seek /
- * label scan / full scan) with a cardinality estimate, and the expansion. This
- * is the real planner's decision — the same `orient` / `indexCandidates` /
- * `candidateCount` the executor uses — not a guess from the query text.
- */
-export const planMatch = (
-  graph: Graph,
-  match: { patterns: readonly PathPattern[]; where?: Expr },
-  params: Params = {},
-): PatternPlan[] =>
-  compileMatchPatterns(match.patterns, match.where).map((compiled) => {
-    let path = compiled;
-
-    try {
-      path = orient(graph, compiled, EMPTY_BINDING, params);
-    } catch {
-      path = compiled;
-    }
-
-    const seedNode = path.start;
-
-    return {
-      seed: {
-        variable: seedNode.variable,
-        label: labelText(seedNode.label),
-        ...describeSeed(graph, seedNode, params),
-      },
-      expansions: path.segments.map((seg) => ({
-        relLabels: relLabels(seg.rel),
-        direction: seg.rel.direction,
-        node: { variable: seg.node.variable, label: labelText(seg.node.label) },
-      })),
-    };
-  });
 
 /** Yield every binding that extends `binding` by matching `pattern`. */
 const matchPattern = function* (
@@ -2059,14 +1903,41 @@ const compileSetItem = (item: SetItem): CSetItem =>
 
 const compileClause = (clause: Clause): CClause => {
   switch (clause.kind) {
-    case 'match':
+    case 'match': {
+      const patterns = clause.patterns.map(compilePath);
+
+      // Lift seekable conjuncts of the clause WHERE onto every pattern node by
+      // variable — not just the start — so either end of a pattern can be the
+      // seed side. `MATCH (a:Person) WHERE a.name = 'marko'` then seeds like the
+      // inline `(a:Person {name: 'marko'})` form, and a constraint on the far
+      // end lets `orient` start the walk from there.
+      if (clause.where) {
+        const hints: HintMap = new Map();
+        collectHints(clause.where, hints);
+        const attach = (node: CNode): CNode => {
+          const extra = node.variable ? hints.get(node.variable) : undefined;
+
+          return extra
+            ? { ...node, seedHints: coalesceRangeHints([...(node.seedHints ?? []), ...extra]) }
+            : node;
+        };
+
+        for (let i = 0; i < patterns.length; i++) {
+          patterns[i] = {
+            start: attach(patterns[i].start),
+            segments: patterns[i].segments.map((s) => ({ rel: s.rel, node: attach(s.node) })),
+          };
+        }
+      }
+
       return {
         kind: 'match',
         optional: clause.optional,
-        patterns: compileMatchPatterns(clause.patterns, clause.where),
+        patterns,
         where: clause.where ? compileExpr(clause.where) : undefined,
         nullVars: clause.optional ? patternVars(clause.patterns) : [],
       };
+    }
     case 'with':
       return {
         kind: 'with',
