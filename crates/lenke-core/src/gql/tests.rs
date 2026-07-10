@@ -1268,6 +1268,28 @@ fn scalar_functions_graph_string_list_conversion() {
 }
 
 #[test]
+fn math_round_sign_pi_e() {
+    let mut g = modern();
+    // round: half away from zero, optional digits (negative rounds to tens).
+    assert_eq!(rows(&mut g, "RETURN round(2.5) AS x"), vec![vec![n(3.0)]]);
+    assert_eq!(rows(&mut g, "RETURN round(-2.5) AS x"), vec![vec![n(-3.0)]]);
+    assert_eq!(rows(&mut g, "RETURN round(3.14159, 2) AS x"), vec![vec![n(3.14)]]);
+    assert_eq!(
+        rows(&mut g, "RETURN round(1234.5678, -2) AS x"),
+        vec![vec![n(1200.0)]]
+    );
+    // sign: -1 | 0 | 1.
+    assert_eq!(rows(&mut g, "RETURN sign(-3.7) AS x"), vec![vec![n(-1.0)]]);
+    assert_eq!(rows(&mut g, "RETURN sign(0) AS x"), vec![vec![n(0.0)]]);
+    assert_eq!(rows(&mut g, "RETURN sign(5) AS x"), vec![vec![n(1.0)]]);
+    // 0-arg constants.
+    assert_eq!(rows(&mut g, "RETURN pi() AS x"), vec![vec![n(std::f64::consts::PI)]]);
+    assert_eq!(rows(&mut g, "RETURN e() AS x"), vec![vec![n(std::f64::consts::E)]]);
+    // null in → null out.
+    assert_eq!(rows(&mut g, "RETURN round(null) AS x"), vec![vec![Value::Null]]);
+}
+
+#[test]
 fn unknown_function_errors_instead_of_silent_null() {
     let mut g = modern();
     let err = parse("RETURN nope_fn(1) AS x")

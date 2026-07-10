@@ -67,6 +67,21 @@ suite('GQL function differential (TS vs native)', () => {
     `reverse('café')`,
     `split('', '')`,
     `reverse(n.xs)`,
+    // Slice 3 — round/sign/pi/e.
+    `round(n.num)`,
+    `round(n.num, 1)`,
+    `round(3.14159, 2)`,
+    `round(2.5)`,
+    `round(-2.5)`,
+    `round(2.675, 2)`,
+    `round(1234.5678, -2)`,
+    `sign(n.num)`,
+    `sign(0)`,
+    `sign(5)`,
+    `sign(-0.0)`,
+    `pi()`,
+    `e()`,
+    `round(pi(), 4)`,
   ];
 
   for (const expr of CASES) {

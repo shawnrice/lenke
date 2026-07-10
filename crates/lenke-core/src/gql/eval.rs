@@ -1148,6 +1148,40 @@ fn call_scalar(graph: &Graph, func: ScalarFn, args: &[Val]) -> Val {
         Tanh => un(f64::tanh),
         Degrees => un(f64::to_degrees),
         Radians => un(f64::to_radians),
+        // pi()/e() are 0-arg constants; sign()/round() null-in → null-out.
+        Pi => Val::Num(std::f64::consts::PI),
+        E => Val::Num(std::f64::consts::E),
+        Sign => match a {
+            Some(v) if !is_nullish(v) => {
+                let x = num_of(v).unwrap_or(f64::NAN);
+                // -1 | 0 | 1 (NaN passes through) — matches the TS `mathSign`,
+                // NOT `f64::signum` (which yields +1 for 0.0).
+                Val::Num(if x.is_nan() {
+                    f64::NAN
+                } else if x > 0.0 {
+                    1.0
+                } else if x < 0.0 {
+                    -1.0
+                } else {
+                    0.0
+                })
+            }
+            _ => Val::Null,
+        },
+        Round => match a {
+            Some(v) if !is_nullish(v) => {
+                let x = num_of(v).unwrap_or(f64::NAN);
+                let digits = match b {
+                    Some(d) if !is_nullish(d) => num_of(d).unwrap_or(0.0).trunc() as i32,
+                    _ => 0,
+                };
+                // `f64::round` is already half-away-from-zero (the TS engine
+                // reproduces this via `roundHalfAway`); same op order → same bits.
+                let f = 10f64.powi(digits);
+                Val::Num((x * f).round() / f)
+            }
+            _ => Val::Null,
+        },
         Upper => us(|s| vstr(s.to_uppercase())),
         Lower => us(|s| vstr(s.to_lowercase())),
         Trim => us(|s| vstr(s.trim())),

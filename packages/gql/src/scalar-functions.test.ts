@@ -52,6 +52,19 @@ describe('GQL: ISO graph / conversion / string-list scalar functions', () => {
     expect(one(`RETURN reverse('abc') AS x`)).toBe('cba');
   });
 
+  test('math: round (half away from zero, optional digits), sign, pi, e', () => {
+    expect(one(`RETURN round(2.5) AS x`)).toBe(3);
+    expect(one(`RETURN round(-2.5) AS x`)).toBe(-3);
+    expect(one(`RETURN round(3.14159, 2) AS x`)).toBe(3.14);
+    expect(one(`RETURN round(1234.5678, -2) AS x`)).toBe(1200);
+    expect(one(`RETURN sign(-3.7) AS x`)).toBe(-1);
+    expect(one(`RETURN sign(0) AS x`)).toBe(0);
+    expect(one(`RETURN sign(5) AS x`)).toBe(1);
+    expect(one(`RETURN pi() AS x`)).toBe(Math.PI);
+    expect(one(`RETURN e() AS x`)).toBe(Math.E);
+    expect(one(`RETURN round(null) AS x`)).toBeNull();
+  });
+
   test('an unknown function is an error, never a silent null', () => {
     expect(() => query(g, `RETURN nope_fn(1) AS x`)).toThrow(/unknown or unimplemented function/);
   });

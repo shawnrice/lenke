@@ -307,6 +307,17 @@ const UNARY_NUM: Record<string, (n: number) => number> = {
 
 const str = (v: unknown): string => String(v);
 
+// Round half away from zero — Rust's `f64::round` semantics. JS `Math.round`
+// rounds half toward +∞ (`Math.round(-2.5) === -2`), so we apply the sign
+// around `Math.abs` to match the native engine bit-for-bit.
+const roundHalfAway = (v: number): number => Math.sign(v) * Math.round(Math.abs(v));
+
+// ISO GQL `sign` → -1 | 0 | 1 (NaN passes through). NOT `Math.sign`, whose
+// signed-zero result (`Math.sign(-0) === -0`) and Rust's `f64::signum`
+// (`+1` for `0.0`) both diverge; this explicit form matches across engines.
+const mathSign = (x: number): number =>
+  Number.isNaN(x) ? Number.NaN : x > 0 ? 1 : x < 0 ? -1 : 0;
+
 /** ISO unary string value functions: one string in, a value out. */
 const UNARY_STR: Record<string, (s: string) => unknown> = {
   upper: (s) => s.toUpperCase(),
@@ -348,6 +359,24 @@ const callScalar = (name: string, args: readonly unknown[]): unknown => {
   }
 
   switch (name) {
+    // ISO GQL numeric value functions with non-unary shapes.
+    case 'pi':
+      return Math.PI;
+    case 'e':
+      return Math.E;
+    case 'sign':
+      return isNullish(a) ? null : mathSign(Number(a));
+    case 'round': {
+      // round(num, [digits]) — digits default 0; half away from zero.
+      if (isNullish(a)) {
+        return null;
+      }
+
+      const digits = isNullish(b) ? 0 : Math.trunc(Number(b));
+      const f = 10 ** digits;
+
+      return roundHalfAway(Number(a) * f) / f;
+    }
     case 'size':
     case 'length':
       if (isNullish(a)) {
