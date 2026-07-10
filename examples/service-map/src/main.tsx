@@ -69,6 +69,16 @@ const sortArrow = (active: boolean, dir: 1 | -1): string => {
   return dir === 1 ? ' ▲' : ' ▼';
 };
 
+// Row tint: a `down` service is red; a service transitively depending on one
+// (in the live blast radius) is amber.
+const rowBackground = (isDown: boolean, isImpacted: boolean): string | undefined => {
+  if (isDown) {
+    return '#3a1a1a';
+  }
+
+  return isImpacted ? '#3a2a12' : undefined;
+};
+
 const compareCol = (a: unknown, b: unknown, kind: ColKind): number => {
   if (kind === 'num') {
     return Number(a) - Number(b);
@@ -151,6 +161,27 @@ const ServiceTable = ({ cluster }: { cluster: string }) => {
     [cluster],
   );
   const snap = useLive(live);
+
+  // The live blast radius: every service in this cluster that transitively calls
+  // a service currently marked `down`. One variable-length quantified path
+  // (`->{1,}` = one-or-more CALLS hops) does the whole reachability, and because
+  // it's a LIVE query keyed on `status`, flipping any service to `down` makes its
+  // dependents light up here immediately — across every tab. This is the demo's
+  // point: reachability straight from the graph, reactive and shared.
+  const impactLive = useMemo(
+    () =>
+      client.liveQuery(
+        "MATCH (a:Service)-[:CALLS]->{1,}(x:Service) WHERE x.status = 'down' AND a.cluster = $cluster RETURN DISTINCT a.sid",
+        { params: { cluster }, deps, key: 'a.sid' },
+      ),
+    [cluster],
+  );
+  const impactSnap = useLive(impactLive);
+  const impacted = useMemo(
+    () => new Set(impactSnap.rows.map((r) => String(r['a.sid']))),
+    [impactSnap.rows],
+  );
+
   const [selected, setSelected] = useState<string | null>(null);
   // Default to most-depended-on first: the services whose failure hurts most.
   const [sort, setSort] = useState<{ key: string; dir: 1 | -1 }>({ key: 'callers', dir: -1 });
@@ -176,6 +207,12 @@ const ServiceTable = ({ cluster }: { cluster: string }) => {
   return (
     <>
       {!snap.complete && <p>loading {cluster}…</p>}
+      {impacted.size > 0 && (
+        <p style={{ color: '#b91c1c', fontFamily: 'monospace' }}>
+          ⚠ {impacted.size} service(s) impacted by a downstream outage — set a service to{' '}
+          <code>down</code> and watch its callers light up.
+        </p>
+      )}
       <table border={1} cellPadding={4}>
         <thead>
           <tr>
@@ -196,10 +233,15 @@ const ServiceTable = ({ cluster }: { cluster: string }) => {
         <tbody>
           {sortedRows.map((row) => {
             const sid = String(row['s.sid']);
+            const isDown = String(row['s.status']) === 'down';
+            const isImpacted = impacted.has(sid);
 
             return (
-              <tr key={sid}>
-                <td>{String(row['s.name'])}</td>
+              <tr key={sid} style={{ background: rowBackground(isDown, isImpacted) }}>
+                <td>
+                  {isImpacted && !isDown ? '⚠ ' : ''}
+                  {String(row['s.name'])}
+                </td>
                 <td>{String(row['s.tier'])}</td>
                 <td style={{ textAlign: 'right' }}>{String(row.calls)}</td>
                 <td style={{ textAlign: 'right' }}>{String(row.callers)}</td>
