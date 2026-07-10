@@ -9,6 +9,7 @@ export type { Plan, Row } from './executor.js';
 export { GqlSyntaxError } from './lexer.js';
 export { parse } from './parser.js';
 export { compile, execute } from './executor.js';
+export { explain } from './explain.js';
 
 /**
  * Parse + compile a query string into a reusable `Plan`. Do this once for a hot

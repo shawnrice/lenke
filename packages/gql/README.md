@@ -67,6 +67,23 @@ const ast = parseQuery('MATCH (n) RETURN n');
 
 For hot queries, `prepare` (or the lower-level `compile(parse(text))`) does parsing and analysis once and returns a reusable, reentrant `Plan = (graph, params?) => Row[]`.
 
+`explain(query)` renders a query's logical structure — its clause sequence, per-clause summaries (pattern counts, `WHERE`, distinct/aggregating/order/limit on a projection), and any set operations between parts:
+
+```ts
+import { explain } from '@lenke/gql';
+
+console.log(
+  explain(
+    `MATCH (a:Person)-[:KNOWS]->(b) WHERE a.age > 30 RETURN DISTINCT b.name, count(*) LIMIT 5`,
+  ),
+);
+// Query — 1 part
+//   MATCH — 1 pattern(s), 3 elements, WHERE
+//   RETURN — 2 items, distinct, aggregating, limit 5
+```
+
+It's the _logical_ view: the compiled `Plan` is a tree of closures (no cost-based optimizer), so `explain` reflects what the parser understood, which is the plan's shape.
+
 ## Supported query features
 
 The engine implements the ISO GQL core, not Cypher. Notable differences: `--` is a line comment (not an undirected edge), undirected edges use `~`, and label expressions are the boolean-algebra form `A&B` / `A|B` / `!A` / `%` rather than colon-chained `:A:B`.
