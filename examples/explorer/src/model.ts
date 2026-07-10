@@ -6,6 +6,58 @@ export type GNode = { id: string; labels: string[]; properties: Record<string, u
 export type GEdge = { id: string; from: string; to: string; labels: string[] };
 export type GraphModel = { nodes: GNode[]; edges: GEdge[] };
 
+// The graph's schema at a glance — every vertex label and edge type with its
+// count, plus the property keys in use. This is what lets you explore a graph
+// you didn't author: you can see what's there before writing a query.
+export type LabelCount = { label: string; count: number };
+export type Schema = {
+  vertexLabels: LabelCount[];
+  edgeLabels: LabelCount[];
+  vertexKeys: string[];
+  edgeKeys: string[];
+};
+
+const tally = (m: Map<string, number>, key: string): void => {
+  m.set(key, (m.get(key) ?? 0) + 1);
+};
+
+const byLabel = (m: Map<string, number>): LabelCount[] =>
+  [...m].map(([label, count]) => ({ label, count })).sort((a, b) => a.label.localeCompare(b.label));
+
+export const schemaOf = (graph: Graph): Schema => {
+  const vLabels = new Map<string, number>();
+  const vKeys = new Set<string>();
+  const eLabels = new Map<string, number>();
+  const eKeys = new Set<string>();
+
+  for (const v of graph.vertices) {
+    for (const l of v.labels) {
+      tally(vLabels, l);
+    }
+
+    for (const k of Object.keys(v.properties)) {
+      vKeys.add(k);
+    }
+  }
+
+  for (const e of graph.edges) {
+    for (const l of e.labels) {
+      tally(eLabels, l);
+    }
+
+    for (const k of Object.keys(e.properties)) {
+      eKeys.add(k);
+    }
+  }
+
+  return {
+    vertexLabels: byLabel(vLabels),
+    edgeLabels: byLabel(eLabels),
+    vertexKeys: [...vKeys].sort(),
+    edgeKeys: [...eKeys].sort(),
+  };
+};
+
 export const toModel = (graph: Graph): GraphModel => ({
   nodes: [...graph.vertices].map((v) => ({
     id: v.id,

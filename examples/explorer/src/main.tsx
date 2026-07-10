@@ -1,5 +1,4 @@
 import { Graph } from '@lenke/core';
-import { createTestTinkerGraph } from '@lenke/gremlin';
 import { deserialize, type FormatName } from '@lenke/serialization';
 import {
   type PointerEvent as ReactPointerEvent,
@@ -13,7 +12,8 @@ import {
 import { createRoot } from 'react-dom/client';
 
 import { createLayout } from './layout.ts';
-import { type GNode, highlightFromQuery, toModel } from './model.ts';
+import { type GNode, highlightFromQuery, schemaOf, toModel } from './model.ts';
+import { SAMPLES } from './samples.ts';
 
 const FORMAT_BY_EXT: Record<string, FormatName> = {
   ndjson: 'ndjson',
@@ -68,6 +68,76 @@ const toSvgCoords = (svg: SVGSVGElement, event: ReactPointerEvent): { x: number;
   return { x: point.x, y: point.y };
 };
 
+// The "what's in this graph" panel: every vertex label and edge type, each a
+// one-click query. It's the answer to "I need to know the graph before I can
+// query it" — and the edge chips (`RETURN a, b`) double as a demo of returning
+// more than one node at once.
+const SchemaPanel = ({
+  graph,
+  onPick,
+}: {
+  graph: Graph;
+  onPick: (q: string) => void;
+}): React.JSX.Element => {
+  const schema = useMemo(() => schemaOf(graph), [graph]);
+
+  const chip = (label: string, count: number, query: string, color: string): React.JSX.Element => (
+    <button
+      key={label}
+      type="button"
+      onClick={() => onPick(query)}
+      title={query}
+      style={{
+        display: 'block',
+        width: '100%',
+        textAlign: 'left',
+        margin: '3px 0',
+        padding: '3px 8px',
+        background: '#0d0f14',
+        color: '#c9d1e0',
+        border: `1px solid ${color}`,
+        borderRadius: 4,
+        cursor: 'pointer',
+        font: 'inherit',
+        fontSize: 12,
+      }}
+    >
+      <span style={{ color }}>●</span> {label} <span style={{ color: '#8b93a7' }}>({count})</span>
+    </button>
+  );
+
+  return (
+    <aside
+      style={{
+        width: 210,
+        borderRight: '1px solid #2a2e39',
+        padding: 12,
+        overflow: 'auto',
+        fontSize: 13,
+      }}
+    >
+      <div style={{ color: '#8b93a7', marginBottom: 4 }}>vertex labels</div>
+      {schema.vertexLabels.length === 0 && <div style={{ color: '#5a6172' }}>none</div>}
+      {schema.vertexLabels.map(({ label, count }) =>
+        chip(label, count, `MATCH (n:${label}) RETURN n`, colorFor(label)),
+      )}
+      <div style={{ color: '#8b93a7', margin: '12px 0 4px' }}>edge types</div>
+      {schema.edgeLabels.length === 0 && <div style={{ color: '#5a6172' }}>none</div>}
+      {schema.edgeLabels.map(({ label, count }) =>
+        chip(label, count, `MATCH (a)-[:${label}]->(b) RETURN a, b`, colorFor(label)),
+      )}
+      {schema.vertexKeys.length > 0 && (
+        <>
+          <div style={{ color: '#8b93a7', margin: '12px 0 4px' }}>vertex keys</div>
+          <div style={{ color: '#c9d1e0', fontFamily: 'monospace', fontSize: 11 }}>
+            {schema.vertexKeys.join(', ')}
+          </div>
+        </>
+      )}
+    </aside>
+  );
+};
+
 const Explorer = ({ initialGraph }: { initialGraph: Graph }): React.JSX.Element => {
   const [graph, setGraph] = useState(initialGraph);
   const model = useMemo(() => toModel(graph), [graph]);
@@ -85,6 +155,7 @@ const Explorer = ({ initialGraph }: { initialGraph: Graph }): React.JSX.Element 
   const [highlight, setHighlight] = useState<Set<string> | null>(null);
   const [text, setText] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [showSchema, setShowSchema] = useState(true);
 
   const svgRef = useRef<SVGSVGElement>(null);
   const drag = useRef<string | null>(null);
@@ -113,8 +184,11 @@ const Explorer = ({ initialGraph }: { initialGraph: Graph }): React.JSX.Element 
     setError(null);
   }, [graph]);
 
-  const runQuery = (): void => {
-    if (!text.trim()) {
+  // Run `q` (defaults to the input box). The schema panel passes an explicit
+  // query so a chip click both fills the box and highlights in one go, without
+  // waiting for a `setText` render.
+  const runQuery = (q: string = text): void => {
+    if (!q.trim()) {
       setHighlight(null);
       setError(null);
 
@@ -122,12 +196,21 @@ const Explorer = ({ initialGraph }: { initialGraph: Graph }): React.JSX.Element 
     }
 
     try {
-      setHighlight(highlightFromQuery(graph, text));
+      setHighlight(highlightFromQuery(graph, q));
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setHighlight(null);
     }
+  };
+
+  // A schema chip fills the box AND runs, so clicking a label is a one-tap way
+  // to see every node of that kind (or, for an edge type, both endpoints —
+  // which is also the answer to "how do I return more than one node": list them,
+  // `RETURN a, b`).
+  const pickQuery = (q: string): void => {
+    setText(q);
+    runQuery(q);
   };
 
   const loadFile = async (file: File): Promise<void> => {
@@ -221,7 +304,7 @@ const Explorer = ({ initialGraph }: { initialGraph: Graph }): React.JSX.Element 
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && runQuery()}
-          placeholder="GQL — e.g. MATCH (p:PERSON) WHERE p.age > 30 RETURN p"
+          placeholder="GQL — e.g. MATCH (a)-[:KNOWS]->(b) RETURN a, b   (list vars to light up several nodes; RETURN * for all)"
           spellCheck={false}
           style={{
             flex: 1,
@@ -234,7 +317,7 @@ const Explorer = ({ initialGraph }: { initialGraph: Graph }): React.JSX.Element 
             font: 'inherit',
           }}
         />
-        <button type="button" onClick={runQuery}>
+        <button type="button" onClick={() => runQuery()}>
           Highlight
         </button>
         <button
@@ -246,9 +329,33 @@ const Explorer = ({ initialGraph }: { initialGraph: Graph }): React.JSX.Element 
         >
           Clear
         </button>
-        <button type="button" onClick={() => setGraph(createTestTinkerGraph())}>
-          Sample
+        <button
+          type="button"
+          onClick={() => setShowSchema((s) => !s)}
+          title="Show every vertex label and edge type in this graph"
+        >
+          {showSchema ? 'Hide schema' : 'Schema'}
         </button>
+        <select
+          value=""
+          onChange={(e) => {
+            const sample = SAMPLES.find((s) => s.name === e.target.value);
+
+            if (sample) {
+              setGraph(sample.build());
+            }
+          }}
+          style={{ font: 'inherit', padding: '5px 8px' }}
+        >
+          <option value="" disabled>
+            Sample…
+          </option>
+          {SAMPLES.map((s) => (
+            <option key={s.name} value={s.name}>
+              {s.name}
+            </option>
+          ))}
+        </select>
         <label style={{ cursor: 'pointer', color: '#8b93a7' }}>
           Load file…
           <input
@@ -280,6 +387,7 @@ const Explorer = ({ initialGraph }: { initialGraph: Graph }): React.JSX.Element 
       )}
 
       <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
+        {showSchema && <SchemaPanel graph={graph} onPick={pickQuery} />}
         <svg
           ref={svgRef}
           viewBox="-360 -360 720 720"
@@ -399,6 +507,6 @@ const Explorer = ({ initialGraph }: { initialGraph: Graph }): React.JSX.Element 
 
 createRoot(document.getElementById('root') as HTMLElement).render(
   <StrictMode>
-    <Explorer initialGraph={createTestTinkerGraph()} />
+    <Explorer initialGraph={SAMPLES[0].build()} />
   </StrictMode>,
 );
