@@ -44,6 +44,43 @@ const deps = ['Service', 'name', 'tier', 'status', 'cluster'];
 
 const useLive = (live: ClientLiveQuery) => useSyncExternalStore(live.subscribe, live.getSnapshot);
 
+// The table's columns — sortable, and now showing how each service *connects*:
+// `calls →` is its out-degree (services it depends on) and `← callers` its
+// in-degree (services that depend on it). A high caller count IS the blast
+// radius at a glance; sort by it to surface the services whose failure hurts
+// most. Both come free from GQL `COUNT { … }` correlated subqueries in the live
+// query, so they stay live as the graph changes.
+const TIER_RANK: Record<string, number> = { edge: 0, api: 1, core: 2, data: 3 };
+type ColKind = 'str' | 'tier' | 'num';
+type Column = { key: string; label: string; kind: ColKind };
+const COLUMNS: readonly Column[] = [
+  { key: 's.name', label: 'service', kind: 'str' },
+  { key: 's.tier', label: 'tier', kind: 'tier' },
+  { key: 'calls', label: 'calls →', kind: 'num' },
+  { key: 'callers', label: '← callers', kind: 'num' },
+  { key: 's.status', label: 'status', kind: 'str' },
+];
+
+const sortArrow = (active: boolean, dir: 1 | -1): string => {
+  if (!active) {
+    return '';
+  }
+
+  return dir === 1 ? ' ▲' : ' ▼';
+};
+
+const compareCol = (a: unknown, b: unknown, kind: ColKind): number => {
+  if (kind === 'num') {
+    return Number(a) - Number(b);
+  }
+
+  if (kind === 'tier') {
+    return (TIER_RANK[String(a)] ?? 9) - (TIER_RANK[String(b)] ?? 9);
+  }
+
+  return String(a).localeCompare(String(b));
+};
+
 // ---------------------------------------------------------------------------
 // views
 // ---------------------------------------------------------------------------
@@ -70,9 +107,7 @@ const StatusBar = () => {
   }
 
   return (
-    <p style={{ fontFamily: 'monospace' }}>
-      connected · {status.pendingWrites} unsynced change(s)
-    </p>
+    <p style={{ fontFamily: 'monospace' }}>connected · {status.pendingWrites} unsynced change(s)</p>
   );
 };
 
@@ -105,7 +140,10 @@ const ServiceTable = ({ cluster }: { cluster: string }) => {
   const live = useMemo(
     () =>
       client.liveQuery(
-        'MATCH (s:Service) WHERE s.cluster = $cluster RETURN s.sid, s.name, s.tier, s.status ORDER BY s.tier, s.name',
+        // `calls`/`callers` are the out/in degree via correlated COUNT {…}
+        // subqueries; `$cluster` is the only value and it's a bound param, so the
+        // text is fully static (no interpolation).
+        'MATCH (s:Service) WHERE s.cluster = $cluster RETURN s.sid, s.name, s.tier, s.status, COUNT { (s)-[:CALLS]->(x) } AS calls, COUNT { (y)-[:CALLS]->(s) } AS callers ORDER BY s.tier, s.name',
         // key: s.sid → the host sends keyed diffs, so flipping one service's
         // status re-ships one cell, not the whole cluster's rows.
         { params: { cluster }, deps, key: 's.sid' },
@@ -114,6 +152,22 @@ const ServiceTable = ({ cluster }: { cluster: string }) => {
   );
   const snap = useLive(live);
   const [selected, setSelected] = useState<string | null>(null);
+  // Default to most-depended-on first: the services whose failure hurts most.
+  const [sort, setSort] = useState<{ key: string; dir: 1 | -1 }>({ key: 'callers', dir: -1 });
+
+  const sortedRows = useMemo(() => {
+    const kind = COLUMNS.find((c) => c.key === sort.key)?.kind ?? 'str';
+
+    return [...snap.rows].sort((a, b) => {
+      const c = compareCol(a[sort.key], b[sort.key], kind) * sort.dir;
+
+      // Tie-break by name so the order is always stable and deterministic.
+      return c !== 0 ? c : String(a['s.name']).localeCompare(String(b['s.name']));
+    });
+  }, [snap.rows, sort]);
+
+  const toggleSort = (key: string): void =>
+    setSort((s) => (s.key === key ? { key, dir: s.dir === 1 ? -1 : 1 } : { key, dir: 1 }));
 
   if (snap.error) {
     return <p>error: {snap.error.message}</p>;
@@ -125,20 +179,30 @@ const ServiceTable = ({ cluster }: { cluster: string }) => {
       <table border={1} cellPadding={4}>
         <thead>
           <tr>
-            <th>service</th>
-            <th>tier</th>
-            <th>status</th>
+            {COLUMNS.map((c) => (
+              <th
+                key={c.key}
+                onClick={() => toggleSort(c.key)}
+                title="click to sort"
+                style={{ cursor: 'pointer', userSelect: 'none' }}
+              >
+                {c.label}
+                {sortArrow(sort.key === c.key, sort.dir)}
+              </th>
+            ))}
             <th />
           </tr>
         </thead>
         <tbody>
-          {snap.rows.map((row) => {
+          {sortedRows.map((row) => {
             const sid = String(row['s.sid']);
 
             return (
               <tr key={sid}>
                 <td>{String(row['s.name'])}</td>
                 <td>{String(row['s.tier'])}</td>
+                <td style={{ textAlign: 'right' }}>{String(row.calls)}</td>
+                <td style={{ textAlign: 'right' }}>{String(row.callers)}</td>
                 <td>
                   <select
                     value={String(row['s.status'])}
@@ -161,7 +225,7 @@ const ServiceTable = ({ cluster }: { cluster: string }) => {
                     <BlastRadius sid={sid} />
                   ) : (
                     <button type="button" onClick={() => setSelected(sid)}>
-                      ?
+                      blast radius
                     </button>
                   )}
                 </td>
