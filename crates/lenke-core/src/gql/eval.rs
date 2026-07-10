@@ -1400,6 +1400,50 @@ fn call_scalar(graph: &Graph, func: ScalarFn, args: &[Val]) -> Val {
             Some(Val::List(items)) => items.last().cloned().unwrap_or(Val::Null),
             _ => Val::Null,
         },
+        Tail => match a {
+            Some(Val::List(items)) => Val::List(items.iter().skip(1).cloned().collect()),
+            _ => Val::Null,
+        },
+        Append => match a {
+            // The element may be null (a first-class value); only a null LIST is
+            // null-in → null-out.
+            Some(Val::List(items)) => {
+                let mut v = items.clone();
+                v.push(b.cloned().unwrap_or(Val::Null));
+                Val::List(v)
+            }
+            _ => Val::Null,
+        },
+        Range => match (a, b) {
+            (Some(x), Some(y)) if !is_nullish(x) && !is_nullish(y) => {
+                let s = num_of(x).unwrap_or(0.0).trunc();
+                let e = num_of(y).unwrap_or(0.0).trunc();
+                let st = match args.get(2) {
+                    Some(z) if !is_nullish(z) => num_of(z).unwrap_or(1.0).trunc(),
+                    _ => 1.0,
+                };
+                if st == 0.0 {
+                    Val::Null // a zero step has no defined progression
+                } else {
+                    // Inclusive of both bounds (Cypher/ISO convention).
+                    let mut out = Vec::new();
+                    let mut i = s;
+                    if st > 0.0 {
+                        while i <= e {
+                            out.push(Val::Num(i));
+                            i += st;
+                        }
+                    } else {
+                        while i >= e {
+                            out.push(Val::Num(i));
+                            i += st;
+                        }
+                    }
+                    Val::List(out)
+                }
+            }
+            _ => Val::Null,
+        },
         Reverse => match a {
             Some(Val::List(items)) => Val::List(items.iter().rev().cloned().collect()),
             // Reverse by UTF-16 code unit (JS `.length` model), lossy-decoding

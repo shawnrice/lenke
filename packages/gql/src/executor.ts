@@ -582,6 +582,36 @@ const UTF8 = new TextEncoder();
 // `str::len()` (a UTF-8 byte count).
 const byteLen = (s: string): number => UTF8.encode(s).length;
 
+// ISO GQL `range(start, end, [step])` → an inclusive list of integers. A zero
+// step has no defined progression → null. Mirrors the Rust `Range` arm.
+const rangeScalar = (a: unknown, b: unknown, step: unknown): number[] | null => {
+  if (isNullish(a) || isNullish(b)) {
+    return null;
+  }
+
+  const s = Math.trunc(Number(a));
+  const e = Math.trunc(Number(b));
+  const st = isNullish(step) ? 1 : Math.trunc(Number(step));
+
+  if (st === 0) {
+    return null;
+  }
+
+  const out: number[] = [];
+
+  if (st > 0) {
+    for (let i = s; i <= e; i += st) {
+      out.push(i);
+    }
+  } else {
+    for (let i = s; i >= e; i += st) {
+      out.push(i);
+    }
+  }
+
+  return out;
+};
+
 const headScalar = (a: unknown): unknown => (Array.isArray(a) && a.length > 0 ? a[0] : null);
 
 const lastScalar = (a: unknown): unknown =>
@@ -663,6 +693,13 @@ const callExtendedScalar = (name: string, args: readonly unknown[]): unknown => 
       return lastScalar(a);
     case 'reverse':
       return reverseScalar(a);
+    case 'tail':
+      return Array.isArray(a) ? a.slice(1) : null;
+    case 'append':
+      // The element may be null (a first-class value); only a null LIST → null.
+      return Array.isArray(a) ? [...a, args[1] ?? null] : null;
+    case 'range':
+      return rangeScalar(a, b, args[2]);
     default:
       throw new LenkeError(`call to an unknown or unimplemented function: ${name}()`, {
         code: ErrorCode.Unsupported,

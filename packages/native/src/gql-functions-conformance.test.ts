@@ -105,6 +105,20 @@ suite('GQL function differential (TS vs native)', () => {
     `byte_length('café')`,
     `octet_length('😀')`,
     `byte_length(null)`,
+    // Slice 5 — tail / append / range.
+    `tail(n.xs)`,
+    `tail([1])`,
+    `tail([])`,
+    `append(n.xs, 9)`,
+    `append(n.xs, null)`,
+    `append([], 'x')`,
+    `range(1, 5)`,
+    `range(1, 10, 2)`,
+    `range(10, 1, -3)`,
+    `range(5, 5)`,
+    `range(5, 1)`,
+    `range(1, 5, 0)`,
+    `size(range(0, 100))`,
   ];
 
   for (const expr of CASES) {

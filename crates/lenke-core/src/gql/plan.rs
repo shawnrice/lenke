@@ -83,6 +83,13 @@ pub enum ScalarFn {
     Head,
     Last,
     Reverse,
+    Tail,
+    Append,
+    Range,
+    // NOTE: the ISO GQL set-style list functions (list_union, intersection,
+    // difference, list_contains, list_sort) are intentionally NOT here yet —
+    // their dedup/ordering/return-type semantics aren't pinned by the freely
+    // available references, and this engine does not guess at spec behavior.
     Unknown,
 }
 
@@ -166,6 +173,9 @@ fn scalar_fn(name: &str) -> ScalarFn {
         "head" => ScalarFn::Head,
         "last" => ScalarFn::Last,
         "reverse" => ScalarFn::Reverse,
+        "tail" => ScalarFn::Tail,
+        "append" => ScalarFn::Append,
+        "range" => ScalarFn::Range,
         _ => ScalarFn::Unknown,
     }
 }
