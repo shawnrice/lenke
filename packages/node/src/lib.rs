@@ -135,6 +135,28 @@ impl Graph {
         self.inner.create_edge_index(&key);
     }
 
+    /// Drop a vertex / edge property index (no-op if absent).
+    #[napi]
+    pub fn drop_vertex_index(&mut self, key: String) {
+        self.inner.drop_vertex_index(&key);
+    }
+
+    #[napi]
+    pub fn drop_edge_index(&mut self, key: String) {
+        self.inner.drop_edge_index(&key);
+    }
+
+    /// The currently-indexed vertex / edge property keys (sorted).
+    #[napi]
+    pub fn vertex_indexes(&self) -> Vec<String> {
+        self.inner.vertex_indexes()
+    }
+
+    #[napi]
+    pub fn edge_indexes(&self) -> Vec<String> {
+        self.inner.edge_indexes()
+    }
+
     /// Run a GQL query; returns the `{columns, rows}` JSON document as bytes.
     /// `params_json` optionally carries a flat JSON object of `$name` bindings.
     /// `&mut` because a query may mutate (`INSERT`/`SET`/`REMOVE`/`DELETE`).

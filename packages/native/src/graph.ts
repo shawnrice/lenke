@@ -251,6 +251,12 @@ export type RustGraph = {
    */
   createVertexIndex: (key: string) => void;
   createEdgeIndex: (key: string) => void;
+  /** Drop a vertex / edge property index (no-op if absent). */
+  dropVertexIndex: (key: string) => void;
+  dropEdgeIndex: (key: string) => void;
+  /** The vertex / edge property keys that currently carry a secondary index (sorted). */
+  vertexIndexes: () => string[];
+  edgeIndexes: () => string[];
   /**
    * Run a GQL query → decoded rows. Two safe, parameterized forms:
    * - tagged template — each `${sub}` compiles to a `$p<n>` **binding**, never
@@ -429,6 +435,10 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
     epoch: (name) => backend.epoch(live(), name),
     createVertexIndex: (key) => backend.createVertexIndex(live(), key),
     createEdgeIndex: (key) => backend.createEdgeIndex(live(), key),
+    dropVertexIndex: (key) => backend.dropVertexIndex(live(), key),
+    dropEdgeIndex: (key) => backend.dropEdgeIndex(live(), key),
+    vertexIndexes: () => backend.vertexIndexes(live()),
+    edgeIndexes: () => backend.edgeIndexes(live()),
     query: (q: string | TemplateStringsArray, ...subs: unknown[]) => {
       const { text, params } = compileGql(q, subs);
 

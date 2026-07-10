@@ -545,6 +545,20 @@ impl Graph {
         self.eidx.contains_key(key)
     }
 
+    /// The vertex property keys that currently carry a secondary index, sorted
+    /// for a deterministic listing.
+    pub fn vertex_indexes(&self) -> Vec<String> {
+        let mut ks: Vec<String> = self.vidx.keys().cloned().collect();
+        ks.sort();
+        ks
+    }
+    /// The edge property keys that currently carry a secondary index, sorted.
+    pub fn edge_indexes(&self) -> Vec<String> {
+        let mut ks: Vec<String> = self.eidx.keys().cloned().collect();
+        ks.sort();
+        ks
+    }
+
     /// Equality seek over vertices: live vertices whose `key` == `value` (None = no index).
     pub fn vertices_by_prop(&self, key: &str, value: &IdxKey) -> Option<&[u32]> {
         Some(

@@ -21,6 +21,10 @@ type WasmExports = {
   lnk_graph_epoch: (h: number, name: number, nameLen: number) => bigint;
   lnk_create_vertex_index: (h: number, key: number, keyLen: number) => number;
   lnk_create_edge_index: (h: number, key: number, keyLen: number) => number;
+  lnk_drop_vertex_index: (h: number, key: number, keyLen: number) => number;
+  lnk_drop_edge_index: (h: number, key: number, keyLen: number) => number;
+  lnk_vertex_indexes: (h: number, outLen: number) => number;
+  lnk_edge_indexes: (h: number, outLen: number) => number;
   lnk_query_rows: (
     h: number,
     q: number,
@@ -262,6 +266,52 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
         ex.lnk_dealloc(p, k.byteLength);
       }
     },
+    dropVertexIndex: (handle, key) => {
+      const k = encoder.encode(key);
+      const p = writeBytes(k);
+
+      try {
+        ex.lnk_drop_vertex_index(handle, p, k.byteLength);
+      } finally {
+        ex.lnk_dealloc(p, k.byteLength);
+      }
+    },
+    dropEdgeIndex: (handle, key) => {
+      const k = encoder.encode(key);
+      const p = writeBytes(k);
+
+      try {
+        ex.lnk_drop_edge_index(handle, p, k.byteLength);
+      } finally {
+        ex.lnk_dealloc(p, k.byteLength);
+      }
+    },
+    vertexIndexes: (handle) =>
+      JSON.parse(
+        decoder.decode(
+          takeBuf(
+            handle,
+            null,
+            null,
+            (h, _q, _ql, _p, _pl, o) => ex.lnk_vertex_indexes(h, o),
+            ex.lnk_free_buf,
+            'vertexIndexes',
+          ),
+        ),
+      ) as string[],
+    edgeIndexes: (handle) =>
+      JSON.parse(
+        decoder.decode(
+          takeBuf(
+            handle,
+            null,
+            null,
+            (h, _q, _ql, _p, _pl, o) => ex.lnk_edge_indexes(h, o),
+            ex.lnk_free_buf,
+            'edgeIndexes',
+          ),
+        ),
+      ) as string[],
 
     queryRows: (handle, query, params) =>
       takeBuf(handle, query, params ?? null, ex.lnk_query_rows, ex.lnk_free_buf, 'query'),

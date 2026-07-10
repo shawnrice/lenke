@@ -36,6 +36,12 @@ export type Backend = {
    */
   createVertexIndex: (handle: GraphHandle, key: string) => void;
   createEdgeIndex: (handle: GraphHandle, key: string) => void;
+  /** Drop a vertex / edge property index (no-op if absent). */
+  dropVertexIndex: (handle: GraphHandle, key: string) => void;
+  dropEdgeIndex: (handle: GraphHandle, key: string) => void;
+  /** The currently-indexed vertex / edge property keys (sorted). */
+  vertexIndexes: (handle: GraphHandle) => string[];
+  edgeIndexes: (handle: GraphHandle) => string[];
 
   /**
    * Run a GQL query; returns the `{columns, rows}` JSON document as bytes.

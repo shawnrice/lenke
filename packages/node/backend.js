@@ -66,6 +66,10 @@ export function createNodeBackend() {
     // napi-rs camelCases the Rust `create_vertex_index` / `create_edge_index`.
     createVertexIndex: (handle, key) => get(handle).createVertexIndex(key),
     createEdgeIndex: (handle, key) => get(handle).createEdgeIndex(key),
+    dropVertexIndex: (handle, key) => get(handle).dropVertexIndex(key),
+    dropEdgeIndex: (handle, key) => get(handle).dropEdgeIndex(key),
+    vertexIndexes: (handle) => get(handle).vertexIndexes(),
+    edgeIndexes: (handle) => get(handle).edgeIndexes(),
 
     // `params` arrives pre-serialized (a flat JSON object of $name bindings)
     // per the Backend contract; the addon decodes it crate-side.

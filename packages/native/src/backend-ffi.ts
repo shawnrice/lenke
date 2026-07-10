@@ -20,6 +20,10 @@ const SYMBOLS = {
   lnk_graph_epoch: { args: [FFIType.ptr, FFIType.ptr, U], returns: U },
   lnk_create_vertex_index: { args: [FFIType.ptr, FFIType.ptr, U], returns: FFIType.i32 },
   lnk_create_edge_index: { args: [FFIType.ptr, FFIType.ptr, U], returns: FFIType.i32 },
+  lnk_drop_vertex_index: { args: [FFIType.ptr, FFIType.ptr, U], returns: FFIType.i32 },
+  lnk_drop_edge_index: { args: [FFIType.ptr, FFIType.ptr, U], returns: FFIType.i32 },
+  lnk_vertex_indexes: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.ptr },
+  lnk_edge_indexes: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.ptr },
   lnk_query_rows: {
     args: [FFIType.ptr, FFIType.ptr, U, FFIType.ptr, U, FFIType.ptr],
     returns: FFIType.ptr,
@@ -161,6 +165,36 @@ export const createFfiBackend = (libPath: string): Backend => {
 
       symbols.lnk_create_edge_index(asPtr(handle), ptr(k), k.byteLength);
     },
+    dropVertexIndex: (handle, key) => {
+      const k = encoder.encode(key);
+
+      symbols.lnk_drop_vertex_index(asPtr(handle), ptr(k), k.byteLength);
+    },
+    dropEdgeIndex: (handle, key) => {
+      const k = encoder.encode(key);
+
+      symbols.lnk_drop_edge_index(asPtr(handle), ptr(k), k.byteLength);
+    },
+    vertexIndexes: (handle) =>
+      JSON.parse(
+        decoder.decode(
+          takeBuf(
+            (outLen) => symbols.lnk_vertex_indexes(asPtr(handle), outLen),
+            symbols.lnk_free_buf,
+            'vertexIndexes',
+          ),
+        ),
+      ) as string[],
+    edgeIndexes: (handle) =>
+      JSON.parse(
+        decoder.decode(
+          takeBuf(
+            (outLen) => symbols.lnk_edge_indexes(asPtr(handle), outLen),
+            symbols.lnk_free_buf,
+            'edgeIndexes',
+          ),
+        ),
+      ) as string[],
 
     queryRows: (handle, query, params) => {
       const q = encoder.encode(query);

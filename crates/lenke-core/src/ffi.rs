@@ -207,6 +207,98 @@ pub unsafe extern "C" fn lnk_create_edge_index(
     }
 }
 
+/// Drop a vertex property index (no-op if absent). Returns 0 on success, -1 on
+/// error.
+///
+/// # Safety
+/// As [`lnk_create_vertex_index`].
+#[no_mangle]
+pub unsafe extern "C" fn lnk_drop_vertex_index(
+    g: *mut Graph,
+    name_ptr: *const u8,
+    name_len: usize,
+) -> i32 {
+    if g.is_null() || name_ptr.is_null() {
+        return -1;
+    }
+    match std::str::from_utf8(std::slice::from_raw_parts(name_ptr, name_len)) {
+        Ok(name) => {
+            (*g).drop_vertex_index(name);
+            0
+        }
+        Err(_) => -1,
+    }
+}
+
+/// Drop an edge property index. Edge analogue of [`lnk_drop_vertex_index`].
+///
+/// # Safety
+/// As [`lnk_create_vertex_index`].
+#[no_mangle]
+pub unsafe extern "C" fn lnk_drop_edge_index(
+    g: *mut Graph,
+    name_ptr: *const u8,
+    name_len: usize,
+) -> i32 {
+    if g.is_null() || name_ptr.is_null() {
+        return -1;
+    }
+    match std::str::from_utf8(std::slice::from_raw_parts(name_ptr, name_len)) {
+        Ok(name) => {
+            (*g).drop_edge_index(name);
+            0
+        }
+        Err(_) => -1,
+    }
+}
+
+/// The currently-indexed vertex property keys as a JSON string array (e.g.
+/// `["age","name"]`), returned as an owned buffer (free with [`lnk_free_buf`]);
+/// its byte length is written to `out_len`.
+///
+/// # Safety
+/// `g` valid; `out_len` writable.
+#[no_mangle]
+pub unsafe extern "C" fn lnk_vertex_indexes(g: *const Graph, out_len: *mut usize) -> *mut u8 {
+    let keys = if g.is_null() {
+        Vec::new()
+    } else {
+        (*g).vertex_indexes()
+    };
+    index_keys_buf(&keys, out_len)
+}
+
+/// The currently-indexed edge property keys as a JSON string array. Edge
+/// analogue of [`lnk_vertex_indexes`].
+///
+/// # Safety
+/// `g` valid; `out_len` writable.
+#[no_mangle]
+pub unsafe extern "C" fn lnk_edge_indexes(g: *const Graph, out_len: *mut usize) -> *mut u8 {
+    let keys = if g.is_null() {
+        Vec::new()
+    } else {
+        (*g).edge_indexes()
+    };
+    index_keys_buf(&keys, out_len)
+}
+
+/// Encode a key list as a JSON string array into an owned buffer for the two
+/// `*_indexes` exports (free with [`lnk_free_buf`]).
+unsafe fn index_keys_buf(keys: &[String], out_len: *mut usize) -> *mut u8 {
+    let mut json = String::from("[");
+    for (i, k) in keys.iter().enumerate() {
+        if i > 0 {
+            json.push(',');
+        }
+        crate::jsonfmt::push_json_str(&mut json, k);
+    }
+    json.push(']');
+    let bytes = json.into_bytes().into_boxed_slice();
+    *out_len = bytes.len();
+    Box::into_raw(bytes) as *mut u8
+}
+
 /// Parse + run a GQL-subset query, writing the `(count, sum)` signature.
 /// Returns 0 on success, -1 on a parse/null error.
 ///

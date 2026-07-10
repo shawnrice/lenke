@@ -72,6 +72,25 @@ suite('@lenke/native FFI backend', () => {
     g.free();
   });
 
+  test('the index API round-trips: create → list → drop (parity with the TS graph)', () => {
+    const backend = createFfiBackend(LIB);
+    const g = graphFromNdjson(backend, bytes);
+
+    expect(g.vertexIndexes()).toEqual([]);
+    g.createVertexIndex('name');
+    g.createVertexIndex('age');
+    g.createEdgeIndex('weight');
+    expect(g.vertexIndexes()).toEqual(['age', 'name']); // sorted
+    expect(g.edgeIndexes()).toEqual(['weight']);
+
+    g.dropVertexIndex('age');
+    expect(g.vertexIndexes()).toEqual(['name']);
+    g.dropVertexIndex('missing'); // no-op
+    expect(g.vertexIndexes()).toEqual(['name']);
+
+    g.free();
+  });
+
   test('runs a GQL query through the facade (string + template)', () => {
     const backend = createFfiBackend(LIB);
     const g = graphFromNdjson(backend, bytes);
