@@ -15,6 +15,24 @@ export type GraphHandle = number;
 /** An opaque handle to a compiled, reusable GQL query (see {@link Backend.prepare}). */
 export type PreparedHandle = number;
 
+/**
+ * What a {@link Backend.mergeNdjson} applied vs. skipped — so a caller sees
+ * anything that didn't land cleanly. Empty `*Skipped`/`phantomVertices` arrays
+ * mean a fully clean merge.
+ */
+export type MergeReport = {
+  /** Vertices actually inserted. */
+  nodesAdded: number;
+  /** Edges actually inserted. */
+  edgesAdded: number;
+  /** Batch node ids skipped because the id already existed (first-wins). */
+  nodesSkipped: string[];
+  /** Batch edge ids dropped because that explicit id already existed. */
+  edgesSkipped: string[];
+  /** Ids referenced as an edge endpoint but never declared as a node — created as bare vertices. */
+  phantomVertices: string[];
+};
+
 export type Backend = {
   /** Value of `lnk_abi_version()` for the loaded artifact. */
   readonly abiVersion: number;
@@ -24,9 +42,10 @@ export type Backend = {
   /**
    * Bulk-append NDJSON bytes into an existing graph — a `COPY FROM` for a live
    * store. Ingests at bulk speed (no per-`INSERT` parse); a node whose id
-   * already exists is first-wins-skipped. Throws a coded error on a parse fault.
+   * already exists is first-wins-skipped. Returns a {@link MergeReport} of what
+   * applied vs. skipped. Throws a coded error on a parse fault.
    */
-  mergeNdjson: (handle: GraphHandle, bytes: Uint8Array) => void;
+  mergeNdjson: (handle: GraphHandle, bytes: Uint8Array) => MergeReport;
   /** Release a handle from `graphFromNdjson`. */
   graphFree: (handle: GraphHandle) => void;
 

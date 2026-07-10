@@ -171,18 +171,22 @@ pub fn decode(text: &str) -> CodeResult<Graph> {
 /// preserved. It drives the graph's own append machinery (so property indexes
 /// stay current and the version bumps per element) — but with no per-record
 /// parse or FFI crossing, so it runs at bulk speed, not per-`INSERT` speed.
-pub fn append(graph: &mut Graph, text: &str) -> CodeResult<()> {
+pub fn append(graph: &mut Graph, text: &str) -> CodeResult<MergeReport> {
     let recs: Vec<Rec> = text
         .lines()
         .filter_map(|l| parse_line(l).transpose())
         .collect::<CodeResult<_>>()?;
+    let mut report = MergeReport::default();
 
     // Nodes first, so an edge may reference a same-batch node declared in any
     // order (mirrors decode's "declared nodes, then edge endpoints" indexing).
     for r in &recs {
         if let Rec::Node(n) = r {
-            if graph.vertex_by_id(&n.id).is_none() {
+            if graph.vertex_by_id(&n.id).is_some() {
+                report.nodes_skipped.push(n.id.clone()); // first-wins: existing kept
+            } else {
                 graph.add_vertex_with_id(&n.id, &n.labels, n.props.clone());
+                report.nodes_added += 1;
             }
         }
     }
@@ -190,29 +194,78 @@ pub fn append(graph: &mut Graph, text: &str) -> CodeResult<()> {
         if let Rec::Edge(e) = r {
             if let Some(id) = &e.id {
                 if graph.edge_by_id(id).is_some() {
-                    continue; // duplicate assigned id → drop
+                    report.edges_skipped.push(id.clone()); // duplicate id → drop
+                    continue;
                 }
             }
-            let from = resolve_or_create(graph, &e.src);
-            let to = resolve_or_create(graph, &e.dst);
+            let from = resolve_or_create(graph, &e.src, &mut report);
+            let to = resolve_or_create(graph, &e.dst, &mut report);
             let ei = graph.add_edge(from, to, &e.etype, e.props.clone());
             if let Some(id) = &e.id {
                 graph.set_edge_id(ei, id);
             }
+            report.edges_added += 1;
         }
     }
 
     graph.validate_wellformed()?;
-    Ok(())
+    Ok(report)
 }
 
 /// A vertex id → its dense index, creating a bare (label-less, prop-less) vertex
 /// on demand — the lenient endpoint policy `decode` uses for an edge that names
-/// an undeclared node.
-fn resolve_or_create(graph: &mut Graph, id: &str) -> u32 {
+/// an undeclared node — and recording it as a phantom in the report.
+fn resolve_or_create(graph: &mut Graph, id: &str, report: &mut MergeReport) -> u32 {
     match graph.vertex_by_id(id) {
         Some(vi) => vi,
-        None => graph.add_vertex_with_id(id, &[], Vec::new()),
+        None => {
+            report.phantom_vertices.push(id.to_string());
+            graph.add_vertex_with_id(id, &[], Vec::new())
+        }
+    }
+}
+
+/// What an [`append`] applied vs. skipped — so a caller sees anything that
+/// didn't land cleanly. Empty `*_skipped`/`phantom_vertices` = a clean merge.
+#[derive(Debug, Default, Clone)]
+pub struct MergeReport {
+    /// Vertices actually inserted.
+    pub nodes_added: usize,
+    /// Edges actually inserted.
+    pub edges_added: usize,
+    /// Batch node ids skipped because the id already existed (first-wins).
+    pub nodes_skipped: Vec<String>,
+    /// Batch edge ids dropped because that explicit id already existed.
+    pub edges_skipped: Vec<String>,
+    /// Ids the batch used as an edge endpoint but never declared as a node —
+    /// created as bare (label-less, prop-less) vertices.
+    pub phantom_vertices: Vec<String>,
+}
+
+impl MergeReport {
+    /// The report as JSON (camelCase keys) for the FFI / napi boundary.
+    pub fn to_json(&self) -> String {
+        let arr = |out: &mut String, items: &[String]| {
+            out.push('[');
+            for (i, it) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                push_json_str(out, it);
+            }
+            out.push(']');
+        };
+        let mut s = format!(
+            "{{\"nodesAdded\":{},\"edgesAdded\":{},\"nodesSkipped\":",
+            self.nodes_added, self.edges_added
+        );
+        arr(&mut s, &self.nodes_skipped);
+        s.push_str(",\"edgesSkipped\":");
+        arr(&mut s, &self.edges_skipped);
+        s.push_str(",\"phantomVertices\":");
+        arr(&mut s, &self.phantom_vertices);
+        s.push('}');
+        s
     }
 }
 
@@ -345,25 +398,38 @@ mod tests {
 
         // Appending b into decode(a) equals decoding the concatenation.
         let mut merged = decode(a).unwrap();
-        append(&mut merged, b).unwrap();
+        let rep = append(&mut merged, b).unwrap();
         let combined = decode(&format!("{a}\n{b}")).unwrap();
         assert_eq!(encode(&merged), encode(&combined));
+        // A clean merge: everything applied, nothing skipped, no phantoms.
+        assert_eq!(rep.nodes_added, 1);
+        assert_eq!(rep.edges_added, 2);
+        assert!(rep.nodes_skipped.is_empty());
+        assert!(rep.edges_skipped.is_empty());
+        assert!(rep.phantom_vertices.is_empty());
 
         // Appending into an empty graph equals a fresh decode.
         let mut empty = decode("").unwrap();
         append(&mut empty, a).unwrap();
         assert_eq!(encode(&empty), encode(&decode(a).unwrap()));
 
-        // A pre-existing id is first-wins (skipped, the graph's copy kept).
+        // A pre-existing id is first-wins (skipped) and REPORTED; an undeclared
+        // edge endpoint is created as a phantom and reported too.
         let mut g = decode(a).unwrap();
         let before = g.vertex_count();
-        append(
+        let rep = append(
             &mut g,
-            "{\"type\":\"node\",\"id\":\"1\",\"labels\":[\"Z\"],\"properties\":{\"name\":\"OVERWRITE\"}}",
+            "{\"type\":\"node\",\"id\":\"1\",\"labels\":[\"Z\"],\"properties\":{\"name\":\"OVERWRITE\"}}\n\
+             {\"type\":\"edge\",\"id\":\"e0\",\"from\":\"1\",\"to\":\"2\",\"labels\":[\"K\"],\"properties\":{}}\n\
+             {\"type\":\"edge\",\"from\":\"1\",\"to\":\"ghost\",\"labels\":[\"K\"],\"properties\":{}}",
         )
         .unwrap();
-        assert_eq!(g.vertex_count(), before); // no new vertex
-        assert!(!g.vertex_labels(0).is_empty());
+        assert_eq!(g.vertex_count(), before + 1); // only the phantom `ghost`
+        assert_eq!(rep.nodes_skipped, vec!["1".to_string()]);
+        assert_eq!(rep.edges_skipped, vec!["e0".to_string()]);
+        assert_eq!(rep.phantom_vertices, vec!["ghost".to_string()]);
+        assert_eq!(rep.nodes_added, 0);
+        assert_eq!(rep.edges_added, 1);
 
         // Indexes survive an append AND are maintained: the new node is findable.
         let mut idx = decode(a).unwrap();

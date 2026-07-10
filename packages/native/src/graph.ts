@@ -1,6 +1,6 @@
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
-import type { Backend, GraphHandle, PreparedHandle } from './backend.js';
+import type { Backend, GraphHandle, MergeReport, PreparedHandle } from './backend.js';
 import { ensureDisposeSymbol } from './dispose.js';
 
 /** A decoded result row: column name → cell value. */
@@ -291,8 +291,9 @@ export type RustGraph = {
    * Ingests at bulk speed (no per-`INSERT` parse); a node whose id already
    * exists is first-wins-skipped, edge endpoints resolve against the graph.
    * Equivalent to `deserialize(bytes, 'ndjson', existingGraph)` on the TS core.
+   * Returns a {@link MergeReport} of what applied vs. skipped.
    */
-  mergeNdjson: (bytes: Uint8Array) => void;
+  mergeNdjson: (bytes: Uint8Array) => MergeReport;
   /** Serialize the graph in a named format (`pg-json | pg-text | graphson | csv | ndjson`). */
   serialize: (format: string) => string;
   /**

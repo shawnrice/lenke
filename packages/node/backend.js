@@ -13,6 +13,9 @@ import { Graph, abiVersion, prepare } from './index.js';
 const asBuffer = (u8) =>
   Buffer.isBuffer(u8) ? u8 : Buffer.from(u8.buffer, u8.byteOffset, u8.byteLength);
 
+// Decodes the JSON MergeReport the addon returns from mergeNdjson.
+const mergeDecoder = new TextDecoder();
+
 // The addon throws N-API exceptions tagged with the stable wire code
 // (`… [E_SYNTAX]`); rebuild them as coded LenkeErrors so a consumer matches
 // `hasErrorCode(e, ErrorCode.Syntax)` identically to the bun:ffi / wasm
@@ -74,7 +77,8 @@ export function createNodeBackend() {
 
     graphFromNdjson: (bytes, parallel) =>
       coded(() => put(Graph.fromNdjson(asBuffer(bytes), parallel))),
-    mergeNdjson: (handle, bytes) => coded(() => get(handle).mergeNdjson(asBuffer(bytes))),
+    mergeNdjson: (handle, bytes) =>
+      coded(() => JSON.parse(mergeDecoder.decode(get(handle).mergeNdjson(asBuffer(bytes))))),
     // Drop the reference; the underlying lenke-core graph is freed when napi GCs
     // the object. No explicit native free to call.
     graphFree: (handle) => {

@@ -51,6 +51,14 @@ export type SyncWrite = {
   lang?: 'gql' | 'gremlin';
   /** `$name` bindings (GQL only). */
   params?: QueryParams;
+  /**
+   * A bulk NDJSON payload — a `COPY FROM` into the graph, applied via
+   * `mergeNdjson` at bulk speed instead of a per-record `INSERT`. When set, `text`
+   * is ignored (use `''`). Intended for LOCAL demand-fill (populating a cache
+   * from a batch of rows), not for wire-replicated user mutations, since bytes
+   * don't cross the JSON protocol.
+   */
+  ndjson?: Uint8Array;
 };
 
 /**
@@ -61,6 +69,22 @@ export type SyncWrite = {
  * and host can't import engine (cycle).
  */
 export const runWrite = (g: RustGraph, w: SyncWrite): void => {
+  if (w.ndjson) {
+    // Bulk COPY FROM — the fast demand-fill path. Surface anything that didn't
+    // land cleanly (a rare event for disjoint batches) so it isn't swallowed.
+    const report = g.mergeNdjson(w.ndjson);
+
+    if (report.nodesSkipped.length || report.edgesSkipped.length || report.phantomVertices.length) {
+      // eslint-disable-next-line no-console -- dev-visible signal, matching the store's other diagnostics
+      console.warn(
+        `lenke: mergeNdjson had conflicts — ${report.nodesSkipped.length} node id(s), ` +
+          `${report.edgesSkipped.length} edge id(s) skipped; ${report.phantomVertices.length} phantom endpoint(s).`,
+      );
+    }
+
+    return;
+  }
+
   if (w.lang === 'gremlin') {
     g.gremlin(w.text);
   } else {

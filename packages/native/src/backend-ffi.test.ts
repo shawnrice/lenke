@@ -97,15 +97,37 @@ suite('@lenke/native FFI backend', () => {
     expect(g.vertexCount).toBe(2);
     expect(g.edgeCount).toBe(1);
 
-    g.mergeNdjson(
+    const clean = g.mergeNdjson(
       new TextEncoder().encode(
         '{"type":"node","id":"c","labels":["P"],"properties":{"name":"josh","age":32}}\n' +
           '{"type":"edge","id":"e2","from":"a","to":"c","labels":["knows"],"properties":{}}',
       ),
     );
+    // A clean merge reports what landed and nothing skipped.
+    expect(clean).toEqual({
+      nodesAdded: 1,
+      edgesAdded: 1,
+      nodesSkipped: [],
+      edgesSkipped: [],
+      phantomVertices: [],
+    });
 
-    expect(g.vertexCount).toBe(3);
-    expect(g.edgeCount).toBe(2);
+    // A dirty merge reports the conflicts: an existing id (first-wins), a
+    // duplicate edge id, and an edge endpoint that was never declared.
+    const dirty = g.mergeNdjson(
+      new TextEncoder().encode(
+        '{"type":"node","id":"a","labels":["P"],"properties":{"name":"IGNORED"}}\n' +
+          '{"type":"edge","id":"e2","from":"a","to":"c","labels":["knows"],"properties":{}}\n' +
+          '{"type":"edge","from":"a","to":"ghost","labels":["knows"],"properties":{}}',
+      ),
+    );
+    expect(dirty.nodesSkipped).toEqual(['a']);
+    expect(dirty.edgesSkipped).toEqual(['e2']);
+    expect(dirty.phantomVertices).toEqual(['ghost']);
+    expect(dirty.nodesAdded).toBe(0);
+
+    expect(g.vertexCount).toBe(4); // c + the ghost phantom
+    expect(g.edgeCount).toBe(3);
     expect(g.query('MATCH (n:P) RETURN n.name ORDER BY n.name').map((r) => r['n.name'])).toEqual([
       'josh',
       'marko',

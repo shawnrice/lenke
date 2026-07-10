@@ -3,7 +3,7 @@ import { dlopen, FFIType, type Pointer, ptr, toArrayBuffer } from 'bun:ffi';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import { assertAbi } from './abi.js';
-import type { Backend, GraphHandle } from './backend.js';
+import type { Backend, GraphHandle, MergeReport } from './backend.js';
 import { asByteLength, type ErrorReport, parseErrorReport } from './marshal.js';
 
 // usize / pointer are 64-bit on the native targets we load (arm64 / x86_64);
@@ -13,7 +13,7 @@ const U = FFIType.u64_fast;
 const SYMBOLS = {
   lnk_abi_version: { args: [], returns: FFIType.u32 },
   lnk_graph_from_ndjson: { args: [FFIType.ptr, U, FFIType.u32], returns: FFIType.ptr },
-  lnk_merge_ndjson: { args: [FFIType.ptr, FFIType.ptr, U], returns: FFIType.i32 },
+  lnk_merge_ndjson: { args: [FFIType.ptr, FFIType.ptr, U, FFIType.ptr], returns: FFIType.ptr },
   lnk_graph_free: { args: [FFIType.ptr], returns: FFIType.void },
   lnk_graph_vertex_count: { args: [FFIType.ptr], returns: U },
   lnk_graph_edge_count: { args: [FFIType.ptr], returns: U },
@@ -157,11 +157,17 @@ export const createFfiBackend = (libPath: string): Backend => {
 
       return asHandle(h);
     },
-    mergeNdjson: (handle, bytes) => {
-      if (symbols.lnk_merge_ndjson(asPtr(handle), ptr(bytes), bytes.byteLength) !== 0) {
-        fail('mergeNdjson', ErrorCode.InvalidJson);
-      }
-    },
+    mergeNdjson: (handle, bytes) =>
+      JSON.parse(
+        decoder.decode(
+          takeBuf(
+            (outLen) =>
+              symbols.lnk_merge_ndjson(asPtr(handle), ptr(bytes), bytes.byteLength, outLen),
+            symbols.lnk_free_buf,
+            'mergeNdjson',
+          ),
+        ),
+      ) as MergeReport,
     graphFree: (handle) => symbols.lnk_graph_free(asPtr(handle)),
     vertexCount: (handle) => Number(symbols.lnk_graph_vertex_count(asPtr(handle))),
     edgeCount: (handle) => Number(symbols.lnk_graph_edge_count(asPtr(handle))),

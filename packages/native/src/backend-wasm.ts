@@ -1,7 +1,7 @@
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import { assertAbi } from './abi.js';
-import type { Backend, GraphHandle } from './backend.js';
+import type { Backend, GraphHandle, MergeReport } from './backend.js';
 import { type ErrorReport, parseErrorReport } from './marshal.js';
 
 // The wasm module exports the same `lnk_*` C ABI as the native library, but
@@ -14,7 +14,7 @@ type WasmExports = {
   lnk_alloc: (len: number) => number;
   lnk_dealloc: (ptr: number, len: number) => void;
   lnk_graph_from_ndjson: (ptr: number, len: number, parallel: number) => number;
-  lnk_merge_ndjson: (g: number, ptr: number, len: number) => number;
+  lnk_merge_ndjson: (g: number, ptr: number, len: number, outLen: number) => number;
   lnk_graph_free: (h: number) => void;
   lnk_graph_vertex_count: (h: number) => bigint;
   lnk_graph_edge_count: (h: number) => bigint;
@@ -250,14 +250,25 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
       }
     },
     mergeNdjson: (handle, bytes) => {
-      const p = writeBytes(bytes);
+      // The staged input buffer must outlive the call (the crate reads it, then
+      // writes a fresh result buffer); free it after takeBuf copies the result.
+      const inPtr = writeBytes(bytes);
 
       try {
-        if (ex.lnk_merge_ndjson(handle, p, bytes.byteLength) !== 0) {
-          fail('mergeNdjson', ErrorCode.InvalidJson);
-        }
+        return JSON.parse(
+          decoder.decode(
+            takeBuf(
+              handle,
+              null,
+              null,
+              (_h, _q, _ql, _p, _pl, o) => ex.lnk_merge_ndjson(handle, inPtr, bytes.byteLength, o),
+              ex.lnk_free_buf,
+              'mergeNdjson',
+            ),
+          ),
+        ) as MergeReport;
       } finally {
-        ex.lnk_dealloc(p, bytes.byteLength);
+        ex.lnk_dealloc(inPtr, bytes.byteLength);
       }
     },
     graphFree: (handle) => ex.lnk_graph_free(handle),

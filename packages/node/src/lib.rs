@@ -228,13 +228,17 @@ impl Graph {
     }
 
     /// Bulk-append NDJSON `bytes` into this graph — a `COPY FROM` for a live
-    /// store, at bulk speed (no per-`INSERT` parse). See `ndjson::append`.
+    /// store, at bulk speed (no per-`INSERT` parse). Returns a JSON `MergeReport`
+    /// (what applied vs. skipped). See `ndjson::append`.
     #[napi]
-    pub fn merge_ndjson(&mut self, bytes: Buffer) -> Result<()> {
+    pub fn merge_ndjson(&mut self, bytes: Buffer) -> Result<Buffer> {
         let text = std::str::from_utf8(&bytes).map_err(|_| {
             coded_msg("mergeNdjson", ErrorCode::Ffi, "NDJSON bytes are not valid UTF-8")
         })?;
-        lenke_core::ndjson::append(&mut self.inner, text).map_err(|e| coded("mergeNdjson", e))
+        let report =
+            lenke_core::ndjson::append(&mut self.inner, text).map_err(|e| coded("mergeNdjson", e))?;
+
+        Ok(report.to_json().into_bytes().into())
     }
 }
 
