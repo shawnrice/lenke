@@ -1,0 +1,37 @@
+{
+  "name": "@lenke/cli",
+  "description": "A REPL and command-line tool for lenke: load a graph via any codec, query it in GQL or Gremlin, and serialize it back out.",
+  "license": "Apache-2.0",
+  "bin": {
+    "lenke": "./bin/lenke.mjs"
+  },
+  "files": [
+    "dist",
+    "bin"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "types": "./dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "default": "./dist/esm/index.mjs"
+    }
+  },
+  "scripts": {
+    "build": "bun build.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@lenke/inspect": "workspace:*",
+    "@lenke/native": "workspace:*"
+  },
+  "devDependencies": {
+    "@lenke/dev": "workspace:*",
+    "@types/bun": "latest",
+    "bun-types": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^6.0.0"
+  }
+}

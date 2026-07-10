@@ -133,6 +133,7 @@ Under Bun, swap `@lenke/native/wasm` for `@lenke/native/ffi` (`createFfiBackend(
 | [`@lenke/tree`](packages/tree)       | `TreeNode` and `Trie` data structures.                                 |
 | [`@lenke/utils`](packages/utils)     | Small shared helpers.                                                  |
 | [`@lenke/inspect`](packages/inspect) | Debug helpers: `describe()` a graph, tabulate results, print elements. |
+| [`@lenke/cli`](packages/cli)         | `lenke` REPL/CLI: load a codec, query in GQL/Gremlin, serialize out.   |
 | [`@lenke/lint`](packages/lint)       | oxlint/ESLint plugin flagging raw interpolation into query text.       |
 | [`@lenke/dev`](packages/dev)         | Internal build & lint tooling (bundler, lint rules, shared config).    |
 
