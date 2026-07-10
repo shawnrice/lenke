@@ -67,22 +67,36 @@ const ast = parseQuery('MATCH (n) RETURN n');
 
 For hot queries, `prepare` (or the lower-level `compile(parse(text))`) does parsing and analysis once and returns a reusable, reentrant `Plan = (graph, params?) => Row[]`.
 
-`explain(query)` renders a query's logical structure — its clause sequence, per-clause summaries (pattern counts, `WHERE`, distinct/aggregating/order/limit on a projection), and any set operations between parts:
+`explain(query, graph?)` shows the plan. **Pass a graph** and each MATCH shows the _physical_ plan the executor will run against it — which end each pattern seeds from, the seed strategy (index seek / label scan / full scan) with a cardinality estimate, and the expansion. It's the real planner's decision, so it answers "did my index get used?":
 
 ```ts
 import { explain } from '@lenke/gql';
 
-console.log(
-  explain(
-    `MATCH (a:Person)-[:KNOWS]->(b) WHERE a.age > 30 RETURN DISTINCT b.name, count(*) LIMIT 5`,
-  ),
-);
+const q = `MATCH (a:Person)-[:KNOWS]->(b:Person) WHERE a.age > 55 RETURN b.name LIMIT 5`;
+
+console.log(explain(q, graph));
 // Query — 1 part
-//   MATCH — 1 pattern(s), 3 elements, WHERE
-//   RETURN — 2 items, distinct, aggregating, limit 5
+//   MATCH
+//     seed a → label scan :Person  (~100 vertices)
+//       expand -[:KNOWS]-> (b)
+//     filter: WHERE (residual)
+//   RETURN — 1 item, limit 5
+
+graph.createVertexIndex('age');
+console.log(explain(q, graph));
+//     seed a → index seek age (range)  (~8 vertices)   ← the index is now used
 ```
 
-It's the _logical_ view: the compiled `Plan` is a tree of closures (no cost-based optimizer), so `explain` reflects what the parser understood, which is the plan's shape.
+**Without a graph** it's the _logical_ view — the parsed clause structure — which is all that's knowable without index sizes:
+
+```ts
+console.log(explain(q));
+// Query — 1 part
+//   MATCH — 1 pattern(s), 3 elements, WHERE
+//   RETURN — 1 item, limit 5
+```
+
+For programmatic use, `planMatch(graph, clause, params?)` returns the seed plan as structured `PatternPlan[]`.
 
 ## Supported query features
 

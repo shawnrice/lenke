@@ -1,5 +1,10 @@
-import type { Clause, PathPattern, Projection, Query } from './ast.js';
+import type { Graph } from '@lenke/core';
+
+import type { Clause, MatchClause, PathPattern, Projection, Query } from './ast.js';
+import { type PatternPlan, planMatch } from './executor.js';
 import { parse } from './parser.js';
+
+type Params = Record<string, unknown>;
 
 const AGGREGATES = new Set(['count', 'sum', 'avg', 'min', 'max', 'collect_list']);
 
@@ -48,6 +53,8 @@ const projection = (p: Projection): string => {
   return parts.join(', ');
 };
 
+// The logical, graph-independent one-liner for a clause (used with no graph, and
+// for the non-MATCH clauses even when a graph is given).
 const clauseLine = (clause: Clause): string => {
   switch (clause.kind) {
     case 'match': {
@@ -74,16 +81,61 @@ const clauseLine = (clause: Clause): string => {
   }
 };
 
+const expandArrow = (direction: 'out' | 'in' | 'both', rel: string): string => {
+  if (direction === 'out') {
+    return `-[${rel}]->`;
+  }
+
+  if (direction === 'in') {
+    return `<-[${rel}]-`;
+  }
+
+  return `~[${rel}]~`;
+};
+
+const seedLine = (seed: PatternPlan['seed']): string => {
+  const anchor = seed.variable ?? (seed.label ? `:${seed.label}` : 'node');
+  const detail =
+    seed.detail ?? (seed.label && seed.strategy !== 'index seek' ? `:${seed.label}` : '');
+  const suffix = detail ? ` ${detail}` : '';
+
+  return `seed ${anchor} → ${seed.strategy}${suffix}  (~${seed.estimated} vertices)`;
+};
+
+// The physical plan lines for a MATCH clause, run against a real graph.
+const matchPlan = (graph: Graph, clause: MatchClause, params: Params): string[] => {
+  const out = [`MATCH${clause.optional ? ' (optional)' : ''}`];
+
+  for (const pattern of planMatch(graph, clause, params)) {
+    out.push(`  ${seedLine(pattern.seed)}`);
+
+    for (const step of pattern.expansions) {
+      const rel = step.relLabels.length > 0 ? `:${step.relLabels.join('|')}` : '';
+      const node = step.node.variable ?? (step.node.label ? `:${step.node.label}` : '');
+
+      out.push(`    expand ${expandArrow(step.direction, rel)} (${node})`);
+    }
+  }
+
+  if (clause.where) {
+    out.push('  filter: WHERE (residual)');
+  }
+
+  return out;
+};
+
 /**
- * Render a query's logical structure: its parsed clause sequence (each clause
- * summarized) and any set operations between linear parts.
+ * Render a query's plan.
  *
- * Note: lenke lowers a GQL query into a tree of closures (`compile()`), not an
- * inspectable structure, and has no cost-based optimizer — so this is the
- * *logical* plan (what the parser understood), which is the plan's shape. A
- * physical, index-aware EXPLAIN would need the compiler instrumented.
+ * With a `graph`, each MATCH shows the **physical** plan the executor will run
+ * against it — which end each pattern seeds from, the seed strategy (index seek
+ * / label scan / full scan) with a cardinality estimate, and the expansion. This
+ * is the real planner's decision, so it answers "did my index get used?".
+ *
+ * Without a graph it's the **logical** view — the parsed clause structure — which
+ * is all that can be known without index sizes.
  */
-export const explain = (query: string | Query): string => {
+export const explain = (query: string | Query, graph?: Graph, params: Params = {}): string => {
   const parsed = typeof query === 'string' ? parse(query) : query;
   const out = [`Query — ${parsed.parts.length} part${parsed.parts.length === 1 ? '' : 's'}`];
 
@@ -95,7 +147,13 @@ export const explain = (query: string | Query): string => {
     }
 
     for (const clause of part.clauses) {
-      out.push(`  ${clauseLine(clause)}`);
+      if (graph && clause.kind === 'match') {
+        for (const line of matchPlan(graph, clause, params)) {
+          out.push(`  ${line}`);
+        }
+      } else {
+        out.push(`  ${clauseLine(clause)}`);
+      }
     }
   });
 
