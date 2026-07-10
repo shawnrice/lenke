@@ -25,6 +25,22 @@ type WasmExports = {
   lnk_drop_edge_index: (h: number, key: number, keyLen: number) => number;
   lnk_vertex_indexes: (h: number, outLen: number) => number;
   lnk_edge_indexes: (h: number, outLen: number) => number;
+  lnk_prepare: (q: number, qlen: number) => number;
+  lnk_prepared_free: (p: number) => void;
+  lnk_prepared_query_rows: (
+    p: number,
+    g: number,
+    pr: number,
+    prlen: number,
+    outLen: number,
+  ) => number;
+  lnk_prepared_query_arrow: (
+    p: number,
+    g: number,
+    pr: number,
+    prlen: number,
+    outLen: number,
+  ) => number;
   lnk_query_rows: (
     h: number,
     q: number,
@@ -317,6 +333,40 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
       takeBuf(handle, query, params ?? null, ex.lnk_query_rows, ex.lnk_free_buf, 'query'),
     queryArrow: (handle, query, params) =>
       takeBuf(handle, query, params ?? null, ex.lnk_query_arrow, ex.lnk_free_arrow, 'queryArrow'),
+
+    prepare: (text) => {
+      const t = encoder.encode(text);
+      const p = writeBytes(t);
+
+      try {
+        const h = ex.lnk_prepare(p, t.byteLength);
+
+        return h ? h : fail('prepare', ErrorCode.Syntax);
+      } finally {
+        ex.lnk_dealloc(p, t.byteLength);
+      }
+    },
+    preparedFree: (prepared) => ex.lnk_prepared_free(prepared),
+    // takeBuf stages only the params buffer; the graph handle rides the closure
+    // (the prepared handle takes takeBuf's `handle` slot).
+    preparedQueryRows: (prepared, graph, params) =>
+      takeBuf(
+        prepared,
+        null,
+        params ?? null,
+        (h, _q, _ql, pr, prlen, o) => ex.lnk_prepared_query_rows(h, graph, pr, prlen, o),
+        ex.lnk_free_buf,
+        'preparedQuery',
+      ),
+    preparedQueryArrow: (prepared, graph, params) =>
+      takeBuf(
+        prepared,
+        null,
+        params ?? null,
+        (h, _q, _ql, pr, prlen, o) => ex.lnk_prepared_query_arrow(h, graph, pr, prlen, o),
+        ex.lnk_free_arrow,
+        'preparedQueryArrow',
+      ),
 
     // gremlin takes no params doc: adapt away the unused (p, plen) slots.
     gremlinJson: (handle, query) =>

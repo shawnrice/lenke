@@ -12,6 +12,9 @@
  */
 export type GraphHandle = number;
 
+/** An opaque handle to a compiled, reusable GQL query (see {@link Backend.prepare}). */
+export type PreparedHandle = number;
+
 export type Backend = {
   /** Value of `lnk_abi_version()` for the loaded artifact. */
   readonly abiVersion: number;
@@ -62,4 +65,17 @@ export type Backend = {
   serialize: (handle: GraphHandle, format: string) => Uint8Array;
   /** Deserialize bytes in a named format into a new graph handle. */
   deserialize: (input: Uint8Array, format: string) => GraphHandle;
+
+  /**
+   * Compile a GQL query into a reusable prepared statement (lex/parse/lower
+   * once). Graph-independent; execute it against any graph with fresh params via
+   * {@link Backend.preparedQueryRows}. Throws a coded error on a syntax error.
+   */
+  prepare: (text: string) => PreparedHandle;
+  /** Release a handle from {@link Backend.prepare}. */
+  preparedFree: (prepared: PreparedHandle) => void;
+  /** Execute a prepared statement against `graph` → the `{columns, rows}` JSON bytes. */
+  preparedQueryRows: (prepared: PreparedHandle, graph: GraphHandle, params?: string) => Uint8Array;
+  /** Execute a prepared statement against `graph` → the Arrow ("ARW1") blob bytes. */
+  preparedQueryArrow: (prepared: PreparedHandle, graph: GraphHandle, params?: string) => Uint8Array;
 };

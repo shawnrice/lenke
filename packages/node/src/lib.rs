@@ -228,6 +228,58 @@ impl Graph {
     }
 }
 
+/// A compiled, reusable GQL query — lex/parse/lower done once, then executed
+/// against a graph with fresh params, skipping the per-call re-parse the
+/// `Graph::query` path pays. Graph-independent: one prepare can run against any
+/// graph. (`prepare` is a free function because a `Prepared` doesn't need a
+/// graph to exist.)
+#[napi]
+pub struct PreparedQuery {
+    inner: lenke_core::gql::Prepared,
+}
+
+#[napi]
+impl PreparedQuery {
+    /// Execute against `graph` with `params_json`; returns the `{columns, rows}`
+    /// JSON document as bytes.
+    #[napi]
+    pub fn query(&self, graph: &mut Graph, params_json: Option<String>) -> Result<Buffer> {
+        let params = decode_params("preparedQuery", params_json.as_deref())?;
+        let rows = self
+            .inner
+            .execute(&mut graph.inner, &params)
+            .map_err(|e| coded("preparedQuery", e))?;
+
+        Ok(rows.to_json().into_bytes().into())
+    }
+
+    /// Execute against `graph` → the Apache Arrow ("ARW1") columnar blob.
+    #[napi]
+    pub fn query_arrow(&self, graph: &mut Graph, params_json: Option<String>) -> Result<Buffer> {
+        let params = decode_params("preparedQueryArrow", params_json.as_deref())?;
+        let blob = self
+            .inner
+            .execute_arrow(&mut graph.inner, &params)
+            .map_err(|e| coded("preparedQueryArrow", e))?;
+
+        Ok(blob.into())
+    }
+}
+
+/// Compile a GQL query string into a reusable [`PreparedQuery`].
+#[napi]
+pub fn prepare(text: String) -> Result<PreparedQuery> {
+    let inner = lenke_core::gql::prepare(&text).map_err(|e| {
+        coded_msg(
+            "prepare",
+            ErrorCode::Syntax,
+            format!("{} (pos {})", e.message, e.pos),
+        )
+    })?;
+
+    Ok(PreparedQuery { inner })
+}
+
 /// The engine's ABI version — the same value the C ABI reports via
 /// `lnk_abi_version`, exposed here so the `Backend` adapter can satisfy the
 /// shared contract's `abiVersion` field.

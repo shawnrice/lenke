@@ -29,6 +29,10 @@ const fakeStore = () => {
     dropEdgeIndex: () => {},
     vertexIndexes: () => [],
     edgeIndexes: () => [],
+    prepare: () => 1,
+    preparedFree: () => {},
+    preparedQueryArrow: () => new Uint8Array(),
+    preparedQueryRows: () => rows(['n'], [[counts.query]]),
     queryRows: () => {
       counts.query += 1;
 

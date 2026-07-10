@@ -91,6 +91,28 @@ suite('@lenke/native FFI backend', () => {
     g.free();
   });
 
+  test('prepare() compiles a reusable query bound to the graph', () => {
+    const backend = createFfiBackend(LIB);
+    const g = graphFromNdjson(backend, bytes);
+
+    const q = g.prepare('MATCH (n:P) WHERE n.age > $min RETURN n.name ORDER BY n.name');
+    // Same compiled plan, rerun with fresh params — and identical to query().
+    expect(q.query({ min: 28 })).toEqual([{ 'n.name': 'marko' }]);
+    expect(q.query({ min: 100 })).toEqual([]);
+    expect(q.query({ min: 26 })).toEqual([{ 'n.name': 'marko' }, { 'n.name': 'vadas' }]);
+    expect(q.query({ min: 26 })).toEqual(
+      g.query('MATCH (n:P) WHERE n.age > $min RETURN n.name ORDER BY n.name', { min: 26 }),
+    );
+
+    q.free();
+    expect(() => q.query({ min: 28 })).toThrow(/used after free/);
+
+    // A syntax error surfaces at prepare time.
+    expect(() => g.prepare('MATCH (n RETURN n')).toThrow();
+
+    g.free();
+  });
+
   test('runs a GQL query through the facade (string + template)', () => {
     const backend = createFfiBackend(LIB);
     const g = graphFromNdjson(backend, bytes);

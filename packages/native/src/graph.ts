@@ -1,6 +1,6 @@
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
-import type { Backend, GraphHandle } from './backend.js';
+import type { Backend, GraphHandle, PreparedHandle } from './backend.js';
 import { ensureDisposeSymbol } from './dispose.js';
 
 /** A decoded result row: column name → cell value. */
@@ -96,6 +96,10 @@ const compileGql = (
 
   return { text, params: JSON.stringify(bindings) };
 };
+
+/** Serialize a prepared statement's `$name` bindings (empty/absent → no params). */
+const serializeParams = (params?: QueryParams): string | undefined =>
+  params && Object.keys(params).length ? JSON.stringify(params) : undefined;
 
 /**
  * Serialize a JS scalar to a **safe** Gremlin literal — the injection-proof way
@@ -284,9 +288,33 @@ export type RustGraph = {
   toNdjson: () => Uint8Array;
   /** Serialize the graph in a named format (`pg-json | pg-text | graphson | csv | ndjson`). */
   serialize: (format: string) => string;
+  /**
+   * Compile a GQL query once into a reusable {@link PreparedQuery}, bound to this
+   * graph — parse/lower is paid once, then each `.query(params)` skips it. The
+   * win over `query()` is the ~per-call parse cost; results are identical. A
+   * syntax error throws here, at prepare time. `prepare` takes a plain string
+   * with `$name` params (no tagged-template form — the text is fixed).
+   */
+  prepare: (text: string) => PreparedQuery;
   /** Release the underlying graph. Idempotent; the handle is invalid afterwards. */
   free: () => void;
   /** `using`-compatible alias of {@link RustGraph.free} (Explicit Resource Management). */
+  [Symbol.dispose]: () => void;
+};
+
+/**
+ * A compiled GQL query bound to a graph (from {@link RustGraph.prepare}). Rerun
+ * it cheaply with fresh `$name` params. `free()` releases the compiled plan; the
+ * graph it was prepared on must still be live at execute time.
+ */
+export type PreparedQuery = {
+  /** Execute with optional `$name` bindings → decoded rows. */
+  query: (params?: QueryParams) => Row[];
+  /** Execute → the raw Arrow ("ARW1") columnar blob. */
+  queryArrow: (params?: QueryParams) => Uint8Array;
+  /** Release the compiled plan. Idempotent; the prepared query is dead afterwards. */
+  free: () => void;
+  /** `using`-compatible alias of {@link PreparedQuery.free}. */
   [Symbol.dispose]: () => void;
 };
 
@@ -388,6 +416,44 @@ const reclaimThunk = (backend: Backend, handle: GraphHandle, state: DisposalStat
 };
 
 /** Wrap an existing backend + handle as a {@link RustGraph}. */
+/**
+ * Build a {@link PreparedQuery} over `backend`, bound to the graph guarded by
+ * `live`. Owns its own compiled-plan handle (freed independently of the graph);
+ * `live()` still guards the graph, so a prepared query on a freed graph throws.
+ */
+const makePrepared = (backend: Backend, live: () => GraphHandle, text: string): PreparedQuery => {
+  ensureDisposeSymbol();
+  const prepHandle: PreparedHandle = backend.prepare(text); // throws on a syntax error
+  let freed = false;
+
+  const prepLive = (): PreparedHandle => {
+    if (freed) {
+      throw new LenkeError('lenke: prepared query used after free()', {
+        code: ErrorCode.InvalidGraphOp,
+      });
+    }
+
+    return prepHandle;
+  };
+
+  const free = (): void => {
+    if (freed) {
+      return;
+    }
+
+    backend.preparedFree(prepHandle);
+    freed = true;
+  };
+
+  return {
+    query: (params) =>
+      decodeRows(backend.preparedQueryRows(prepLive(), live(), serializeParams(params))),
+    queryArrow: (params) => backend.preparedQueryArrow(prepLive(), live(), serializeParams(params)),
+    free,
+    [Symbol.dispose]: free,
+  };
+};
+
 export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph => {
   ensureDisposeSymbol(); // so the [Symbol.dispose] key below resolves on any runtime
 
@@ -455,6 +521,7 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
       parseJson(backend.gremlinJson(live(), gremlin(q, ...subs)), 'gremlin') as unknown[],
     toNdjson: () => backend.encodeNdjson(live()),
     serialize: (format) => decoder.decode(backend.serialize(live(), format)),
+    prepare: (text) => makePrepared(backend, live, text),
     free,
     [Symbol.dispose]: free,
   };

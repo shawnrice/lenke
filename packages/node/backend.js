@@ -6,7 +6,7 @@
 // measurements put the compute-to-transfer ratio around 2000:1.
 import { errorFromNapi } from '@lenke/native';
 
-import { Graph, abiVersion } from './index.js';
+import { Graph, abiVersion, prepare } from './index.js';
 
 // The facade passes Uint8Array; the addon wants a Node Buffer. Wrap (no copy)
 // rather than reallocate when we already hold a Uint8Array view.
@@ -48,6 +48,27 @@ export function createNodeBackend() {
     return graph;
   };
 
+  // A parallel registry for prepared statements (their own opaque handle,
+  // independent of any graph — matching the C ABI's `*mut Prepared`).
+  /** @type {Map<number, InstanceType<typeof import('./index.js').PreparedQuery>>} */
+  const prepared = new Map();
+  let nextPrepared = 1;
+  const putPrepared = (pq) => {
+    const handle = nextPrepared++;
+    prepared.set(handle, pq);
+
+    return handle;
+  };
+  const getPrepared = (handle) => {
+    const pq = prepared.get(handle);
+
+    if (pq === undefined) {
+      throw new Error(`lenke: invalid prepared handle ${handle}`);
+    }
+
+    return pq;
+  };
+
   return {
     abiVersion: abiVersion(),
 
@@ -70,6 +91,17 @@ export function createNodeBackend() {
     dropEdgeIndex: (handle, key) => get(handle).dropEdgeIndex(key),
     vertexIndexes: (handle) => get(handle).vertexIndexes(),
     edgeIndexes: (handle) => get(handle).edgeIndexes(),
+
+    // `prepare` is a module-level addon function (a Prepared needs no graph);
+    // execute binds it to a graph at call time.
+    prepare: (text) => coded(() => putPrepared(prepare(text))),
+    preparedFree: (handle) => {
+      prepared.delete(handle);
+    },
+    preparedQueryRows: (prep, graph, params) =>
+      coded(() => getPrepared(prep).query(get(graph), params)),
+    preparedQueryArrow: (prep, graph, params) =>
+      coded(() => getPrepared(prep).queryArrow(get(graph), params)),
 
     // `params` arrives pre-serialized (a flat JSON object of $name bindings)
     // per the Backend contract; the addon decodes it crate-side.

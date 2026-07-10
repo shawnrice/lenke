@@ -546,6 +546,131 @@ pub unsafe extern "C" fn lnk_query_arrow(
     p
 }
 
+// --- prepared statements -----------------------------------------------------
+//
+// `lnk_prepare` lexes/parses/lowers a query ONCE into an owned `Prepared`
+// (opaque handle); `lnk_prepared_query_rows`/`_arrow` execute it against a graph
+// with fresh params, skipping the re-parse every `lnk_query_*` call pays. Free
+// the handle with `lnk_prepared_free`. The `Prepared` is graph-independent — one
+// compile can run against any graph.
+
+/// Compile a GQL query into a reusable prepared statement — an owning
+/// `*mut Prepared` (free with [`lnk_prepared_free`]), or null on a parse / bad-
+/// UTF-8 error (details in the last-error channel).
+///
+/// # Safety
+/// `q_ptr`/`q_len` a valid UTF-8 slice.
+#[no_mangle]
+pub unsafe extern "C" fn lnk_prepare(q_ptr: *const u8, q_len: usize) -> *mut crate::gql::Prepared {
+    crate::ffi_error::begin();
+    if q_ptr.is_null() {
+        crate::ffi_error::set_code(ErrorCode::Ffi, "null query pointer");
+        return std::ptr::null_mut();
+    }
+    let q = match std::str::from_utf8(std::slice::from_raw_parts(q_ptr, q_len)) {
+        Ok(s) => s,
+        Err(_) => {
+            crate::ffi_error::set_code(ErrorCode::Ffi, "query bytes are not valid UTF-8");
+            return std::ptr::null_mut();
+        }
+    };
+    match crate::gql::prepare(q) {
+        Ok(p) => Box::into_raw(Box::new(p)),
+        Err(e) => {
+            crate::ffi_error::set(
+                ErrorCode::Syntax,
+                &e.message,
+                &format!("{{\"pos\":{}}}", e.pos),
+            );
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Free a prepared statement from [`lnk_prepare`].
+///
+/// # Safety
+/// `p` must come from [`lnk_prepare`] and not be freed twice.
+#[no_mangle]
+pub unsafe extern "C" fn lnk_prepared_free(p: *mut crate::gql::Prepared) {
+    if !p.is_null() {
+        drop(Box::from_raw(p));
+    }
+}
+
+/// Execute a prepared statement against `g` with `params`, returning the
+/// `{columns, rows}` JSON buffer (free with [`lnk_free_buf`]) — the prepared
+/// twin of [`lnk_query_rows`], minus the parse.
+///
+/// # Safety
+/// `p` from [`lnk_prepare`]; `g` valid + uniquely borrowed; params a valid UTF-8
+/// slice (or null); `out_len` writable.
+#[no_mangle]
+pub unsafe extern "C" fn lnk_prepared_query_rows(
+    p: *const crate::gql::Prepared,
+    g: *mut Graph,
+    p_ptr: *const u8,
+    p_len: usize,
+    out_len: *mut usize,
+) -> *mut u8 {
+    crate::ffi_error::begin();
+    if p.is_null() || g.is_null() {
+        crate::ffi_error::set_code(ErrorCode::Ffi, "null prepared or graph pointer");
+        return std::ptr::null_mut();
+    }
+    let Ok(params) = decode_params(p_ptr, p_len) else {
+        return std::ptr::null_mut();
+    };
+    let rowset = match (*p).execute(&mut *g, &params) {
+        Ok(rs) => rs,
+        Err(e) => {
+            crate::ffi_error::set_code(e.code, &e.message);
+            return std::ptr::null_mut();
+        }
+    };
+    let bytes = rowset.to_json().into_bytes().into_boxed_slice();
+    *out_len = bytes.len();
+    Box::into_raw(bytes) as *mut u8
+}
+
+/// Execute a prepared statement → Arrow ("ARW1") blob (free with
+/// [`lnk_free_arrow`]). The prepared twin of [`lnk_query_arrow`].
+///
+/// # Safety
+/// As [`lnk_prepared_query_rows`].
+#[no_mangle]
+pub unsafe extern "C" fn lnk_prepared_query_arrow(
+    p: *const crate::gql::Prepared,
+    g: *mut Graph,
+    p_ptr: *const u8,
+    p_len: usize,
+    out_len: *mut usize,
+) -> *mut u8 {
+    crate::ffi_error::begin();
+    if p.is_null() || g.is_null() {
+        crate::ffi_error::set_code(ErrorCode::Ffi, "null prepared or graph pointer");
+        return std::ptr::null_mut();
+    }
+    let Ok(params) = decode_params(p_ptr, p_len) else {
+        return std::ptr::null_mut();
+    };
+    let blob = match (*p).execute_arrow(&mut *g, &params) {
+        Ok(b) => b,
+        Err(e) => {
+            crate::ffi_error::set_code(e.code, &e.message);
+            return std::ptr::null_mut();
+        }
+    };
+    *out_len = blob.len();
+    let len = blob.len().max(1);
+    let layout = std::alloc::Layout::from_size_align(len, 8).unwrap();
+    let ptr = std::alloc::alloc(layout);
+    if !ptr.is_null() {
+        std::ptr::copy_nonoverlapping(blob.as_ptr(), ptr, blob.len());
+    }
+    ptr
+}
+
 /// Free a buffer returned by `lnk_query_arrow`. Must use the same `len` that was
 /// written to `out_len` (the allocation is 8-byte aligned).
 ///

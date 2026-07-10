@@ -24,6 +24,16 @@ const SYMBOLS = {
   lnk_drop_edge_index: { args: [FFIType.ptr, FFIType.ptr, U], returns: FFIType.i32 },
   lnk_vertex_indexes: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.ptr },
   lnk_edge_indexes: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.ptr },
+  lnk_prepare: { args: [FFIType.ptr, U], returns: FFIType.ptr },
+  lnk_prepared_free: { args: [FFIType.ptr], returns: FFIType.void },
+  lnk_prepared_query_rows: {
+    args: [FFIType.ptr, FFIType.ptr, FFIType.ptr, U, FFIType.ptr],
+    returns: FFIType.ptr,
+  },
+  lnk_prepared_query_arrow: {
+    args: [FFIType.ptr, FFIType.ptr, FFIType.ptr, U, FFIType.ptr],
+    returns: FFIType.ptr,
+  },
   lnk_query_rows: {
     args: [FFIType.ptr, FFIType.ptr, U, FFIType.ptr, U, FFIType.ptr],
     returns: FFIType.ptr,
@@ -259,6 +269,50 @@ export const createFfiBackend = (libPath: string): Backend => {
         (outLen) => symbols.lnk_serialize(asPtr(handle), ptr(f), f.byteLength, outLen),
         symbols.lnk_free_buf,
         `serialize(${format})`,
+      );
+    },
+
+    prepare: (text) => {
+      const t = encoder.encode(text);
+      const h = symbols.lnk_prepare(ptr(t), t.byteLength);
+
+      if (!h) {
+        return fail('prepare', ErrorCode.Syntax);
+      }
+
+      return asHandle(h);
+    },
+    preparedFree: (prepared) => symbols.lnk_prepared_free(asPtr(prepared)),
+    preparedQueryRows: (prepared, graph, params) => {
+      const p = params === undefined ? null : encoder.encode(params);
+
+      return takeBuf(
+        (outLen) =>
+          symbols.lnk_prepared_query_rows(
+            asPtr(prepared),
+            asPtr(graph),
+            p ? ptr(p) : null,
+            p?.byteLength ?? 0,
+            outLen,
+          ),
+        symbols.lnk_free_buf,
+        'preparedQuery',
+      );
+    },
+    preparedQueryArrow: (prepared, graph, params) => {
+      const p = params === undefined ? null : encoder.encode(params);
+
+      return takeBuf(
+        (outLen) =>
+          symbols.lnk_prepared_query_arrow(
+            asPtr(prepared),
+            asPtr(graph),
+            p ? ptr(p) : null,
+            p?.byteLength ?? 0,
+            outLen,
+          ),
+        symbols.lnk_free_arrow,
+        'preparedQueryArrow',
       );
     },
 
