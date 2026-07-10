@@ -65,6 +65,21 @@ describe('GQL: ISO graph / conversion / string-list scalar functions', () => {
     expect(one(`RETURN round(null) AS x`)).toBeNull();
   });
 
+  test('CAST(value AS type) desugars to the conversion functions', () => {
+    expect(one(`RETURN CAST('42' AS INTEGER) AS x`)).toBe(42);
+    expect(one(`RETURN CAST(3.7 AS INT) AS x`)).toBe(3);
+    expect(one(`RETURN CAST('3.5' AS FLOAT) AS x`)).toBe(3.5);
+    expect(one(`RETURN CAST(42 AS STRING) AS x`)).toBe('42');
+    expect(one(`RETURN CAST('yes' AS BOOL) AS x`)).toBe(true);
+    expect(one(`RETURN CAST('ab' AS LIST) AS x`)).toEqual(['a', 'b']);
+    expect(one(`RETURN CAST('nope' AS INT) AS x`)).toBeNull();
+  });
+
+  test('CAST to an unrepresentable type is a loud syntax error', () => {
+    expect(() => query(g, `RETURN CAST(1 AS DATE) AS x`)).toThrow(/unsupported type/i);
+    expect(() => query(g, `RETURN CAST(1 AS BYTES) AS x`)).toThrow(/unsupported type/i);
+  });
+
   test('an unknown function is an error, never a silent null', () => {
     expect(() => query(g, `RETURN nope_fn(1) AS x`)).toThrow(/unknown or unimplemented function/);
   });

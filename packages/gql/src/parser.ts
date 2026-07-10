@@ -57,6 +57,32 @@ import type {
 } from './ast.js';
 import { GqlSyntaxError, isReserved, type Token, type TokenType, tokenize } from './lexer.js';
 
+// ISO GQL `CAST` target type name → the conversion function it desugars to.
+// Integer/float/string/bool/list families are representable; anything else
+// (temporal, bytes, record, …) has no home in this value model and returns
+// null (a loud CAST error). Mirrors the Rust `cast_target_fn`.
+const CAST_INT = new Set([
+  'int', 'integer', 'int8', 'int16', 'int32', 'int64', 'int128', 'int256',
+  'uint', 'uint8', 'uint16', 'uint32', 'uint64', 'uint128', 'uint256',
+  'bigint', 'ubigint', 'smallint', 'usmallint', 'signed', 'unsigned',
+]);
+const CAST_FLOAT = new Set(['float', 'float32', 'float64', 'double', 'decimal', 'real', 'number', 'numeric']);
+const CAST_STRING = new Set(['string', 'text', 'varchar', 'char']);
+const CAST_BOOL = new Set(['bool', 'boolean']);
+const CAST_LIST = new Set(['list', 'array']);
+
+const castTargetFn = (typeName: string): string | null => {
+  const t = typeName.toLowerCase();
+
+  if (CAST_INT.has(t)) return 'to_integer';
+  if (CAST_FLOAT.has(t)) return 'to_float';
+  if (CAST_STRING.has(t)) return 'to_string';
+  if (CAST_BOOL.has(t)) return 'to_boolean';
+  if (CAST_LIST.has(t)) return 'to_list';
+
+  return null;
+};
+
 /** Map the surrounding-arrow booleans to a relationship direction. */
 const directionOf = (leftArrow: boolean, rightArrow: boolean): RelPattern['direction'] => {
   if (rightArrow && !leftArrow) {
@@ -682,6 +708,39 @@ export const parse = (src: string): Query => {
     return { args, distinct, star };
   };
 
+  // `CAST(value AS type)` — the leading `cast` ident is consumed; the current
+  // token is `(`. Desugars to the conversion function for the target type. An
+  // unrepresentable target type is a loud syntax error, never a silent null.
+  const parseCast = (): Expr => {
+    expect('lparen', "'(' after CAST");
+    const value = parseExpr();
+
+    if (!checkKeyword('as')) {
+      throw new GqlSyntaxError("expected 'AS' in CAST(value AS type)", peek().pos);
+    }
+
+    advance();
+    const typeTok = peek();
+
+    if (typeTok.type !== 'ident' && typeTok.type !== 'keyword') {
+      throw new GqlSyntaxError(
+        `expected a type name in CAST, got '${typeTok.value || typeTok.type}'`,
+        typeTok.pos,
+      );
+    }
+
+    advance();
+    const fn = castTargetFn(typeTok.value);
+
+    if (fn === null) {
+      throw new GqlSyntaxError(`CAST to unsupported type '${typeTok.value}'`, typeTok.pos);
+    }
+
+    expect('rparen', "')' to close CAST");
+
+    return { kind: 'func', name: fn, args: [value], distinct: false, star: false };
+  };
+
   // EXISTS is a reserved word; it only introduces a braced subquery.
   const parseExists = (): Expr => {
     expectKeyword('exists');
@@ -800,6 +859,12 @@ export const parse = (src: string): Query => {
 
       // Function call: the name may be a reserved word (e.g. UPPER, SUM, ABS).
       if (check('lparen')) {
+        // `CAST(value AS type)` is a keyword-shaped call; desugar it to the
+        // matching conversion function (to_integer/…).
+        if (!t.delimited && t.value.toLowerCase() === 'cast') {
+          return parseCast();
+        }
+
         return { kind: 'func', name: t.value.toLowerCase(), ...parseCallArgs() };
       }
 

@@ -1290,6 +1290,33 @@ fn math_round_sign_pi_e() {
 }
 
 #[test]
+fn cast_desugars_to_conversion_functions() {
+    let mut g = modern();
+    assert_eq!(rows(&mut g, "RETURN CAST('42' AS INTEGER) AS x"), vec![vec![n(42.0)]]);
+    assert_eq!(rows(&mut g, "RETURN CAST(3.7 AS INT) AS x"), vec![vec![n(3.0)]]);
+    assert_eq!(rows(&mut g, "RETURN CAST('3.5' AS FLOAT) AS x"), vec![vec![n(3.5)]]);
+    assert_eq!(rows(&mut g, "RETURN CAST(42 AS STRING) AS x"), vec![vec![s("42")]]);
+    assert_eq!(
+        rows(&mut g, "RETURN CAST('yes' AS BOOL) AS x"),
+        vec![vec![Value::Bool(true)]]
+    );
+    assert_eq!(
+        rows(&mut g, "RETURN CAST('ab' AS LIST) AS x"),
+        vec![vec![Value::List(vec![s("a"), s("b")])]]
+    );
+    assert_eq!(
+        rows(&mut g, "RETURN CAST('nope' AS INT) AS x"),
+        vec![vec![Value::Null]]
+    );
+}
+
+#[test]
+fn cast_to_unrepresentable_type_is_a_syntax_error() {
+    assert!(parse("RETURN CAST(1 AS DATE) AS x").is_err());
+    assert!(parse("RETURN CAST(1 AS BYTES) AS x").is_err());
+}
+
+#[test]
 fn unknown_function_errors_instead_of_silent_null() {
     let mut g = modern();
     let err = parse("RETURN nope_fn(1) AS x")

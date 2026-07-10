@@ -128,6 +128,19 @@ suite('GQL function differential (TS vs native)', () => {
     `[1, 2] || null`,
     `null || [1]`,
     `range(1, 3) || range(4, 6)`,
+    // Slice 7 — CAST(value AS type) → conversion functions.
+    `CAST('42' AS INTEGER)`,
+    `CAST(3.7 AS INT)`,
+    `CAST(n.num AS INTEGER)`,
+    `CAST('3.5' AS FLOAT)`,
+    `CAST(42 AS STRING)`,
+    `CAST(n.num AS STRING)`,
+    `CAST('yes' AS BOOL)`,
+    `CAST(1 AS BOOLEAN)`,
+    `CAST('ab' AS LIST)`,
+    `CAST(n.s AS TEXT)`,
+    `CAST(CAST('42' AS INT) AS STRING)`,
+    `CAST('nope' AS INT)`,
   ];
 
   for (const expr of CASES) {

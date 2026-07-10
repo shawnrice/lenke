@@ -5,6 +5,25 @@
 use super::ast::*;
 use super::lexer::{err, is_reserved, tokenize, SyntaxError, Token, Tt};
 
+/// Map an ISO GQL `CAST` target type name to the conversion function it
+/// desugars to. Integer/float/string/bool/list families are representable;
+/// anything else (temporal, bytes, record, …) has no home in this value model
+/// and returns `None` (a loud CAST error). Mirrors the TS `castTargetFn`.
+fn cast_target_fn(type_name: &str) -> Option<&'static str> {
+    Some(match type_name.to_ascii_lowercase().as_str() {
+        "int" | "integer" | "int8" | "int16" | "int32" | "int64" | "int128" | "int256"
+        | "uint" | "uint8" | "uint16" | "uint32" | "uint64" | "uint128" | "uint256" | "bigint"
+        | "ubigint" | "smallint" | "usmallint" | "signed" | "unsigned" => "to_integer",
+        "float" | "float32" | "float64" | "double" | "decimal" | "real" | "number" | "numeric" => {
+            "to_float"
+        }
+        "string" | "text" | "varchar" | "char" => "to_string",
+        "bool" | "boolean" => "to_boolean",
+        "list" | "array" => "to_list",
+        _ => return None,
+    })
+}
+
 pub fn parse(src: &str) -> Result<Query, SyntaxError> {
     let tokens = tokenize(src)?;
     let mut p = Parser {
@@ -722,6 +741,41 @@ impl Parser {
         Ok((args, distinct, star))
     }
 
+    /// `CAST(value AS type)` — the leading `cast` ident is already consumed and
+    /// the current token is `(`. Desugars to the conversion function matching
+    /// the target type (`to_integer`/`to_float`/`to_string`/`to_boolean`/
+    /// `to_list`). An unrepresentable target type (temporal/bytes/record/…) is a
+    /// loud syntax error, never a silent NULL.
+    fn parse_cast(&mut self) -> R<Expr> {
+        self.expect(Tt::LParen, "'(' after CAST")?;
+        let value = self.parse_expr()?;
+        self.expect_kw("as")?;
+        let type_tok = self.peek().clone();
+        if type_tok.tt != Tt::Ident && type_tok.tt != Tt::Keyword {
+            return err(
+                format!("expected a type name in CAST, got '{}'", type_tok.value),
+                type_tok.pos,
+            );
+        }
+        self.advance();
+        let fn_name = match cast_target_fn(&type_tok.value) {
+            Some(f) => f,
+            None => {
+                return err(
+                    format!("CAST to unsupported type '{}'", type_tok.value),
+                    type_tok.pos,
+                )
+            }
+        };
+        self.expect(Tt::RParen, "')' to close CAST")?;
+        Ok(Expr::Func {
+            name: fn_name.into(),
+            args: vec![value],
+            distinct: false,
+            star: false,
+        })
+    }
+
     fn parse_case(&mut self) -> R<Expr> {
         self.expect_kw("case")?;
         let subject = if self.check_kw("when") {
@@ -829,6 +883,11 @@ impl Parser {
                 self.advance();
                 // Function call: the name may be a reserved word (UPPER, SUM, ABS).
                 if self.check(Tt::LParen) {
+                    // `CAST(value AS type)` is a keyword-shaped call; desugar it
+                    // to the matching conversion function (to_integer/…).
+                    if !t.delimited && t.value.eq_ignore_ascii_case("cast") {
+                        return self.parse_cast();
+                    }
                     let (args, distinct, star) = self.parse_call_args()?;
                     return Ok(Expr::Func {
                         name: t.value.to_ascii_lowercase(),
