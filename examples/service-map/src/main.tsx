@@ -7,6 +7,7 @@ import { StrictMode, useCallback, useMemo, useState, useSyncExternalStore } from
 import { createRoot } from 'react-dom/client';
 
 import { CLUSTERS } from '../datagen.ts';
+import { type GraphEdge, ServiceGraph } from './ServiceGraph.tsx';
 
 // ---------------------------------------------------------------------------
 // wiring: one SharedWorker for the whole origin; this tab is one connection
@@ -182,6 +183,33 @@ const ServiceTable = ({ cluster }: { cluster: string }) => {
     [impactSnap.rows],
   );
 
+  // The call edges within this cluster, for the force-directed view. Static
+  // topology, so this query effectively runs once per cluster.
+  const edgesLive = useMemo(
+    () =>
+      client.liveQuery(
+        'MATCH (a:Service)-[:CALLS]->(b:Service) WHERE a.cluster = $cluster RETURN a.sid AS f, b.sid AS t',
+        { params: { cluster }, deps },
+      ),
+    [cluster],
+  );
+  const edgesSnap = useLive(edgesLive);
+  const edges = useMemo<GraphEdge[]>(
+    () => edgesSnap.rows.map((r) => ({ from: String(r.f), to: String(r.t) })),
+    [edgesSnap.rows],
+  );
+
+  const nodes = useMemo(
+    () =>
+      snap.rows.map((r) => ({
+        sid: String(r['s.sid']),
+        name: String(r['s.name']),
+        tier: String(r['s.tier']),
+        status: String(r['s.status']),
+      })),
+    [snap.rows],
+  );
+
   const [selected, setSelected] = useState<string | null>(null);
   // Default to most-depended-on first: the services whose failure hurts most.
   const [sort, setSort] = useState<{ key: string; dir: 1 | -1 }>({ key: 'callers', dir: -1 });
@@ -213,6 +241,18 @@ const ServiceTable = ({ cluster }: { cluster: string }) => {
           <code>down</code> and watch its callers light up.
         </p>
       )}
+      <ServiceGraph
+        nodes={nodes}
+        edges={edges}
+        impacted={impacted}
+        selected={selected}
+        onSelect={setSelected}
+      />
+      <p style={{ color: '#64748b', fontSize: 13, margin: '4px 0 12px' }}>
+        Force-directed view of the {cluster} call graph — drag to rearrange, click a node to select
+        it. Edges point caller → callee; nodes are colored by tier (or red when down / amber when
+        impacted).
+      </p>
       <table border={1} cellPadding={4}>
         <thead>
           <tr>
@@ -284,10 +324,47 @@ const App = () => {
   const [cluster, setCluster] = useState<string>(CLUSTERS[0]);
 
   return (
-    <main style={{ fontFamily: 'sans-serif', margin: '2rem' }}>
+    <main style={{ fontFamily: 'sans-serif', margin: '2rem', maxWidth: 900 }}>
       <h1>service map</h1>
+      <section
+        style={{
+          background: '#f8fafc',
+          border: '1px solid #e2e8f0',
+          borderRadius: 8,
+          padding: '12px 16px',
+          fontSize: 14,
+          lineHeight: 1.5,
+          color: '#334155',
+        }}
+      >
+        <p style={{ marginTop: 0 }}>
+          A live map of a microservice fleet — every node is a service, every edge a{' '}
+          <code>CALLS</code> dependency. It's a vertical slice of a <strong>local-first</strong> app
+          built on <strong>lenke</strong>:
+        </p>
+        <ul style={{ margin: '0 0 4px' }}>
+          <li>
+            The whole graph lives in a <strong>SharedWorker</strong> (one embedded lenke store for
+            all your tabs). An authoritative Node server holds the source of truth; the worker{' '}
+            <strong>demand-fills</strong> each cluster the first time you open it, then keeps a warm
+            in-memory copy.
+          </li>
+          <li>
+            The table and the graph are <strong>live GQL queries</strong> — they re-render
+            themselves when the data changes, no polling. The <code>calls</code>/
+            <code>callers</code> columns are <code>COUNT {'{…}'}</code> subqueries; the blast radius
+            is one <code>-[:CALLS]-&gt;{'{1,}'}</code> variable-length path.
+          </li>
+          <li>
+            Change a service's <strong>status</strong> and the edit is <strong>optimistic</strong>:
+            it updates every open tab instantly, replicates to the server, and queues offline. Set
+            one to <code>down</code> to watch its blast radius spread through the graph in real
+            time.
+          </li>
+        </ul>
+      </section>
       <StatusBar />
-      <nav>
+      <nav style={{ display: 'flex', gap: 6, margin: '8px 0' }}>
         {CLUSTERS.map((c) => (
           <button key={c} type="button" disabled={c === cluster} onClick={() => setCluster(c)}>
             {c}

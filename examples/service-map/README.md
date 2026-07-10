@@ -59,11 +59,14 @@ Two ways to check it without clicking around:
 
 ## Things to try
 
-1. **Live everywhere.** Open two tabs, pick a cluster, flip a service to `down`
-   in one tab — the other updates instantly. Both tabs share one worker-resident
-   store, so a write in either is pushed to every subscriber. Click `?` on a
-   service for its **blast radius**: everything transitively upstream, in one
-   variable-length GQL query.
+1. **Live everywhere + blast radius.** Open two tabs, pick a cluster, flip a
+   service to `down` in one tab — the other updates instantly, and every service
+   that transitively depends on it lights up amber in **both the table and the
+   force-directed graph**, tracing the failure along the call edges. That
+   cascade is one live variable-length GQL query (`-[:CALLS]->{1,}`); the
+   per-row **blast radius** button lists the affected callers explicitly. Sort
+   the table by `← callers` to find the services whose failure hurts most, and
+   drag nodes in the graph to untangle it.
 2. **Demand-fill.** Switch to a cluster you haven't opened. It renders
    `loading…` first (the subscription's result is marked incomplete), the worker
    fetches just that cluster from the server, the rows arrive, and it flips to
