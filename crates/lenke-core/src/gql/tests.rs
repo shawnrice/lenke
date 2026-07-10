@@ -1953,3 +1953,38 @@ fn trail_budget_guards_dense_unbounded_star() {
         .unwrap_err();
     assert_eq!(err.code, crate::error_codes::ErrorCode::ResourceExhausted);
 }
+
+#[test]
+fn list_value_equality_is_structural() {
+    // Lists compare by size then element-wise (ISO); the TS engine matches this
+    // (it previously used reference identity — a byte-identical violation).
+    let mut g = modern();
+    assert_eq!(
+        rows(&mut g, "RETURN [1, 2] = [1, 2] AS x"),
+        vec![vec![b(true)]]
+    );
+    assert_eq!(
+        rows(&mut g, "RETURN [1, 2] = [1, 3] AS x"),
+        vec![vec![b(false)]]
+    );
+    assert_eq!(
+        rows(&mut g, "RETURN [1, 2] = [1, 2, 3] AS x"),
+        vec![vec![b(false)]]
+    );
+    assert_eq!(
+        rows(&mut g, "RETURN [[1], [2]] = [[1], [2]] AS x"),
+        vec![vec![b(true)]]
+    );
+    assert_eq!(
+        rows(&mut g, "RETURN [1, 2] <> [1, 3] AS x"),
+        vec![vec![b(true)]]
+    );
+    assert_eq!(
+        rows(&mut g, "RETURN [1] IN [[1], [2]] AS x"),
+        vec![vec![b(true)]]
+    );
+    assert_eq!(
+        rows(&mut g, "RETURN [3] IN [[1], [2]] AS x"),
+        vec![vec![b(false)]]
+    );
+}

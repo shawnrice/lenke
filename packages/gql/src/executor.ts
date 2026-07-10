@@ -185,6 +185,26 @@ const numOf = (v: unknown): number | null => {
 // whose identity (empty list) is FALSE. So `null IN []` is FALSE — there is
 // nothing to be uncertain about — while `null IN [1]` and `3 IN [1, null]` are
 // UNKNOWN. A TRUE equality short-circuits past any UNKNOWN.
+// Structural value equality — lists compare by length then element-wise, matching
+// the Rust engine's `val_eq`. (TS previously used reference identity, so
+// `[1,2] = [1,2]` disagreed between the two engines.) A null list element compares
+// equal here, same as Rust; strict ISO three-valued list equality would be
+// UNKNOWN when an element is null — a documented, engine-symmetric deviation.
+const structuralEq = (a: unknown, b: unknown): boolean => {
+  const aList = Array.isArray(a);
+  const bList = Array.isArray(b);
+
+  if (aList && bList) {
+    return a.length === b.length && a.every((x, i) => structuralEq(x, b[i]));
+  }
+
+  if (aList || bList) {
+    return false;
+  }
+
+  return a === b;
+};
+
 const inList = (v: unknown, list: unknown): Truth => {
   if (!Array.isArray(list)) {
     return null;
@@ -198,7 +218,7 @@ const inList = (v: unknown, list: unknown): Truth => {
       continue;
     }
 
-    if (e === v) {
+    if (structuralEq(e, v)) {
       return true;
     }
   }
@@ -661,18 +681,21 @@ const compileExpr = (expr: Expr): CompiledExpr => {
           return null; // UNKNOWN
         }
 
-        // Equality holds across any types (mismatched types are simply unequal).
-        // Ordering is only defined *within* one orderable primitive type
-        // (number, string, or boolean) — comparing a number to a string, or two
-        // graph elements, is UNKNOWN per ISO, not a JS coercion to garbage.
-        if (op !== '=' && op !== '<>') {
-          const t = typeof lv;
-          const orderable =
-            t === typeof rv && (t === 'number' || t === 'string' || t === 'boolean');
+        // Equality is structural and holds across any types (mismatched types are
+        // simply unequal). Ordering is only defined *within* one orderable
+        // primitive type (number, string, or boolean) — comparing a number to a
+        // string, or two graph elements, is UNKNOWN per ISO, not a JS coercion.
+        if (op === '=' || op === '<>') {
+          const eq = structuralEq(lv, rv);
 
-          if (!orderable) {
-            return null; // UNKNOWN
-          }
+          return op === '=' ? eq : !eq;
+        }
+
+        const t = typeof lv;
+        const orderable = t === typeof rv && (t === 'number' || t === 'string' || t === 'boolean');
+
+        if (!orderable) {
+          return null; // UNKNOWN
         }
 
         return fn(lv as number | string, rv as number | string);
