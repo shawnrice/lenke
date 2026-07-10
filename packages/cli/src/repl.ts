@@ -1,12 +1,12 @@
-import { readFile, writeFile } from 'node:fs/promises';
-import { stdin, stdout } from 'node:process';
-import { createInterface } from 'node:readline/promises';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { stdout } from 'node:process';
+import repl from 'node:repl';
+import { inspect } from 'node:util';
 
-import { formatGraph } from '@lenke/inspect';
+import { describe as inspectDescribe, formatGraph, formatRows, type Row } from '@lenke/inspect';
 import type { RustGraph } from '@lenke/native';
 
-import { type Backend, emptyGraph, formatFor, loadGraph, saveGraph } from './io.js';
-import { type Lang, runQuery } from './query.js';
+import { type Backend, FORMATS, formatFor, loadGraph, saveGraph } from './io.js';
 
 export type ReplContext = {
   graph: RustGraph;
@@ -14,23 +14,9 @@ export type ReplContext = {
   color: boolean;
 };
 
-const HELP = `Commands:
-  <query>             run a query — GQL, or Gremlin when it starts with "g."
-  .gql <query>        run the query as GQL
-  .gremlin <query>    run the query as Gremlin
-  .describe           summarize the graph (labels, counts, indexes)
-  .load <file> [fmt]  load a graph from a file (replaces the current one)
-  .save <file> [fmt]  serialize the graph to a file
-  .clear              start over with an empty graph
-  .help               show this
-  .exit               quit (or Ctrl-D)`;
-
-const emit = (s: string): void => void stdout.write(`${s}\n`);
-
-const paint = (ctx: ReplContext, code: number, s: string): string =>
-  ctx.color ? `\x1b[${code}m${s}\x1b[0m` : s;
-
-const errorMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+// The current graph lives in a mutable session so `load()` can swap it and every
+// helper (and the `g` getter) sees the new one.
+type Session = { graph: RustGraph; backend: Backend };
 
 const freeGraph = (graph: RustGraph): void => {
   try {
@@ -40,137 +26,112 @@ const freeGraph = (graph: RustGraph): void => {
   }
 };
 
-const swapGraph = (ctx: ReplContext, next: RustGraph): void => {
-  const previous = ctx.graph;
-  ctx.graph = next;
-  freeGraph(previous);
+const isGraph = (value: unknown): value is RustGraph =>
+  typeof value === 'object' &&
+  value !== null &&
+  typeof (value as { query?: unknown }).query === 'function' &&
+  typeof (value as { vertexCount?: unknown }).vertexCount === 'number';
+
+// Wrap bare scalars (Gremlin returns a heterogeneous stream) so any array renders
+// as a table while the raw array stays the value the user can keep slicing.
+const asRows = (items: readonly unknown[]): Row[] =>
+  items.map((item) =>
+    item !== null && typeof item === 'object' && !Array.isArray(item)
+      ? (item as Row)
+      : { value: item },
+  );
+
+/** The REPL's result renderer: graphs → summary, arrays → table, else util.inspect. */
+export const render = (value: unknown, color: boolean): string => {
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (isGraph(value)) {
+    return formatGraph(value, { color });
+  }
+
+  if (Array.isArray(value)) {
+    return formatRows(asRows(value), { color });
+  }
+
+  return inspect(value, { colors: color });
 };
 
-const runInto = (ctx: ReplContext, out: (s: string) => void, text: string, lang?: Lang): void => {
-  try {
-    out(runQuery(ctx.graph, text, lang ?? undefined, ctx.color).output);
-  } catch (err) {
-    out(paint(ctx, 31, errorMessage(err)));
+/**
+ * The lenke helpers injected into the REPL context. Extracted (and exported) so
+ * the wiring can be unit-tested without standing up a live REPL.
+ */
+export const makeGlobals = (session: Session, color: boolean): Record<string, unknown> => ({
+  query: (text: string, params?: Record<string, unknown>) => session.graph.query(text, params),
+  gremlin: (text: string) => session.graph.gremlin(text),
+  load: (file: string, format?: string): RustGraph => {
+    const next = loadGraph(
+      session.backend,
+      new Uint8Array(readFileSync(file)),
+      formatFor(file, format),
+    );
+
+    freeGraph(session.graph);
+    session.graph = next;
+
+    return next;
+  },
+  save: (file: string, format?: string): string => {
+    const fmt = formatFor(file, format);
+
+    writeFileSync(file, saveGraph(session.graph, fmt));
+
+    return `saved ${file} (${fmt})`;
+  },
+  describe: (graph: RustGraph = session.graph) => inspectDescribe(graph),
+  table: (rows: readonly Row[]) => formatRows(rows, { color }),
+  formats: FORMATS,
+});
+
+const BANNER = `lenke — a GQL/Gremlin REPL on Node's REPL, so full JavaScript is available too.
+Helpers:
+  g                    the current graph            query('…')  run GQL → rows
+  gremlin('…')         run a Gremlin traversal      table(rows) render rows as a table
+  load('file'[,fmt])   load a graph (replaces g)    save('file'[,fmt])  serialize it
+  describe([graph])    graph summary object
+Type g for a summary; .exit or Ctrl-D to quit.`;
+
+/**
+ * Start an interactive session: Node's REPL with the lenke helpers preloaded, so
+ * you get the whole language (multiline, await, history, tab-complete) plus
+ * auto-rendered tables. Node-only — Bun's `node:repl` has no `start()`.
+ */
+export const runRepl = (ctx: ReplContext): Promise<void> => {
+  if (typeof repl.start !== 'function') {
+    throw new Error(
+      "The interactive REPL needs Node (this runtime's node:repl has no start()). " +
+        'Run it under `node`, or use one-shot mode: lenke <file> -q "<query>".',
+    );
   }
-};
 
-// Handle a `.command`. Returns 'exit' to end the session.
-const handleMeta = async (
-  line: string,
-  ctx: ReplContext,
-  out: (s: string) => void,
-): Promise<'exit' | undefined> => {
-  const [cmd, ...rest] = line.slice(1).split(/\s+/);
-  const arg = rest.join(' ');
+  const session: Session = { graph: ctx.graph, backend: ctx.backend };
 
-  switch (cmd) {
-    case 'help':
-    case 'h':
-      out(HELP);
+  stdout.write(`${BANNER}\n`);
 
-      return undefined;
-    case 'describe':
-    case 'd':
-      out(formatGraph(ctx.graph, { color: ctx.color }));
+  const server = repl.start({
+    prompt: 'lenke> ',
+    useColors: ctx.color,
+    ignoreUndefined: true,
+    writer: (value: unknown) => render(value, ctx.color),
+  });
 
-      return undefined;
-    case 'gql':
-      runInto(ctx, out, arg, 'gql');
+  Object.assign(server.context, makeGlobals(session, ctx.color));
+  Object.defineProperty(server.context, 'g', {
+    get: () => session.graph,
+    enumerable: true,
+    configurable: true,
+  });
 
-      return undefined;
-    case 'gremlin':
-    case 'g':
-      runInto(ctx, out, arg, 'gremlin');
-
-      return undefined;
-    case 'load': {
-      const [file, fmt] = rest;
-
-      if (!file) {
-        out('usage: .load <file> [format]');
-
-        return undefined;
-      }
-
-      swapGraph(
-        ctx,
-        loadGraph(ctx.backend, new Uint8Array(await readFile(file)), formatFor(file, fmt)),
-      );
-      out(
-        paint(
-          ctx,
-          2,
-          `loaded ${file} — ${ctx.graph.vertexCount} vertices, ${ctx.graph.edgeCount} edges`,
-        ),
-      );
-
-      return undefined;
-    }
-    case 'save': {
-      const [file, fmt] = rest;
-
-      if (!file) {
-        out('usage: .save <file> [format]');
-
-        return undefined;
-      }
-
-      const format = formatFor(file, fmt);
-      await writeFile(file, saveGraph(ctx.graph, format));
-      out(paint(ctx, 2, `saved ${file} (${format})`));
-
-      return undefined;
-    }
-    case 'clear':
-      swapGraph(ctx, emptyGraph(ctx.backend));
-      out(paint(ctx, 2, 'cleared'));
-
-      return undefined;
-    case 'exit':
-    case 'quit':
-    case 'q':
-      return 'exit';
-    default:
-      out(paint(ctx, 31, `unknown command '.${cmd}' — try .help`));
-
-      return undefined;
-  }
-};
-
-/** The interactive read-eval-print loop. Resolves when the user exits. */
-export const runRepl = async (ctx: ReplContext): Promise<void> => {
-  const rl = createInterface({ input: stdin, output: stdout });
-
-  emit(paint(ctx, 2, 'lenke — GQL/Gremlin REPL. .help for commands, .exit to quit.'));
-
-  try {
-    for (;;) {
-      let line: string;
-
-      try {
-        line = await rl.question('lenke> ');
-      } catch {
-        break; // stream closed (Ctrl-D / piped EOF)
-      }
-
-      const trimmed = line.trim();
-
-      if (!trimmed) {
-        continue;
-      }
-
-      if (trimmed.startsWith('.')) {
-        if ((await handleMeta(trimmed, ctx, emit)) === 'exit') {
-          break;
-        }
-
-        continue;
-      }
-
-      runInto(ctx, emit, trimmed);
-    }
-  } finally {
-    rl.close();
-    freeGraph(ctx.graph);
-  }
+  return new Promise((resolve) => {
+    server.on('exit', () => {
+      freeGraph(session.graph);
+      resolve();
+    });
+  });
 };

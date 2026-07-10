@@ -21,42 +21,61 @@ then the `--wasm <path>` flag, then the workspace build output — so after
 
 ## The REPL
 
+The REPL **is Node's REPL** with the lenke helpers preloaded — so you get the
+whole language (multiline, `await`, history, tab-completion) alongside the graph,
+and query results auto-render as tables.
+
 ```sh
 lenke                      # empty graph
 lenke graph.ndjson         # load a file (codec inferred from the extension)
 ```
 
 ```text
-lenke> INSERT (:Person {name: 'marko', age: 29})
-(0 rows)
-lenke> MATCH (p:Person) RETURN p.name, p.age
+lenke> g
+Graph — 2 vertices, 1 edges (version 3)
+Vertex labels
+  Person  2
+…
+lenke> query('MATCH (p:Person) RETURN p.name, p.age')
 ┌────────┬───────┐
 │ p.name │ p.age │
 ├────────┼───────┤
 │ marko  │ 29    │
+│ josh   │ 32    │
 └────────┴───────┘
-(1 row)
-lenke> g.V().hasLabel('Person').count()
+lenke> query('MATCH (p:Person) RETURN p.name, p.age').filter((r) => r['p.age'] > 30)
+┌────────┬───────┐
+│ p.name │ p.age │
+├────────┼───────┤
+│ josh   │ 32    │
+└────────┴───────┘
+lenke> gremlin("g.V().hasLabel('Person').count()")
 ┌───────┐
 │ value │
 ├───────┤
-│ 1     │
+│ 2     │
 └───────┘
-(1 row)
 ```
 
-A line is run as **Gremlin** when it starts with `g.`, otherwise as **GQL**.
-Meta-commands:
+Because it's the real REPL, a query returns plain data you can keep working with
+in JavaScript (`.filter`, `.map`, assign to a variable, …); it just renders as a
+table when it's the value of the line.
 
-| Command              | Does                                          |
-| -------------------- | --------------------------------------------- |
-| `.describe`          | summarize the graph (labels, counts, indexes) |
-| `.gql <query>`       | run as GQL regardless of the leading text     |
-| `.gremlin <query>`   | run as Gremlin                                |
-| `.load <file> [fmt]` | load a graph (replaces the current one)       |
-| `.save <file> [fmt]` | serialize the graph to a file                 |
-| `.clear`             | start over with an empty graph                |
-| `.help` / `.exit`    | help / quit (Ctrl-D also quits)               |
+Helpers available in the session:
+
+| Helper                 | Does                                                |
+| ---------------------- | --------------------------------------------------- |
+| `g`                    | the current graph (type it for a summary)           |
+| `query('…'[, params])` | run a GQL query → rows                              |
+| `gremlin('…')`         | run a Gremlin traversal → results                   |
+| `describe([graph])`    | the graph summary as data (counts, labels, indexes) |
+| `table(rows)`          | render rows as a table string                       |
+| `load('file'[, fmt])`  | load a graph from a file (replaces `g`)             |
+| `save('file'[, fmt])`  | serialize the graph to a file                       |
+| `formats`              | the list of codec names                             |
+
+> The interactive REPL is **Node-only** — Bun's `node:repl` has no `start()`. The
+> one-shot (`-q`) and conversion (`-o`) modes below work on both Node and Bun.
 
 ## One-shot & conversion
 
