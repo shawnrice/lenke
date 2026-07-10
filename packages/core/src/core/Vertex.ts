@@ -1,5 +1,5 @@
 import { EmitterEvent } from '@lenke/emitter';
-import { rando } from '@lenke/utils';
+import { rando, sortedByKey } from '@lenke/utils';
 
 import type { Edge } from './Edge.js';
 import type { Graph } from './Graph.js';
@@ -209,10 +209,15 @@ export class Vertex {
   }
 
   toJSON(): VertexJSON {
+    // Labels and property keys are emitted in sorted order so a returned
+    // element serializes byte-identically to the native engine, whose columnar
+    // store has no per-element key order and thus canonicalizes to sorted keys
+    // (see `val_to_value`/`props_map` in gql/eval.rs). Top-level field order
+    // (`id, labels, properties`) matches the native `Value::Map` layout.
     return {
       id: this.id,
-      labels: Array.from(this.labels),
-      properties: this.properties,
+      labels: Array.from(this.labels).sort(),
+      properties: sortedByKey(this.properties),
     };
   }
 }

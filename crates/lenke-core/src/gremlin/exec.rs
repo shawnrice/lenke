@@ -760,6 +760,10 @@ fn value_to_gval(v: Value) -> GVal {
         Value::Num(n) => GVal::Num(n),
         Value::Str(s) => GVal::Str(s),
         Value::List(items) => GVal::List(items.into_iter().map(value_to_gval).collect()),
+        // Map is a GQL-result-only value; it never reaches the Gremlin value path.
+        Value::Map(_) => {
+            unreachable!("Value::Map is a GQL query-result value, not a Gremlin value")
+        }
     }
 }
 

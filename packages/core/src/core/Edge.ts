@@ -1,5 +1,5 @@
 import { EmitterEvent } from '@lenke/emitter';
-import { rando } from '@lenke/utils';
+import { rando, sortedByKey } from '@lenke/utils';
 
 import type { Graph } from './Graph.js';
 import { validatePropertyKey } from './validate.js';
@@ -200,12 +200,16 @@ export class Edge {
   }
 
   toJSON(): Record<string, unknown> {
+    // Sorted labels + property keys so a returned edge serializes
+    // byte-identically to the native engine (see Vertex.toJSON). Top-level
+    // field order (`id, from, to, labels, properties`) matches native's edge
+    // `Value::Map` layout in gql/eval.rs.
     return {
       id: this.id,
       from: this.from.id,
       to: this.to.id,
-      labels: Array.from(this.labels),
-      properties: this.properties,
+      labels: Array.from(this.labels).sort(),
+      properties: sortedByKey(this.properties),
     };
   }
 }

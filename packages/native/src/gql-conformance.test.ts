@@ -1,0 +1,101 @@
+// Differential conformance for GQL rich results: the TS GQL engine
+// (@lenke/gql, in-process over @lenke/core) vs the Rust core (this package,
+// over bun:ffi), driven from ONE source of truth — the same NDJSON loaded into
+// both — so a `RETURN n` / `RETURN r` shape can't drift between the two forms.
+//
+//   load once:   identical NDJSON (same ids/labels/properties)
+//   TS engine:   JSON.stringify(query(tsGraph, q))
+//   Rust core:   JSON.stringify(nativeGraph.query(q))
+//   assert:      the two serializations are byte-identical
+//
+// This pins the "rich results" contract: a returned node serializes to
+// `{id, labels, properties}` and a returned edge to
+// `{id, from, to, labels, properties}`, with labels and property keys in
+// sorted order (the columnar core has no per-element key order, so both
+// engines canonicalize to sorted). A bare-id regression on either side, or a
+// key-ordering divergence, shows up here as a red diff.
+//
+// Run: bun test packages/native/src/gql-conformance.test.ts
+import { describe, expect, test } from 'bun:test';
+import { existsSync } from 'node:fs';
+
+import { Graph } from '@lenke/core';
+import { query as tsQuery } from '@lenke/gql';
+import { deserialize as tsDeserialize } from '@lenke/serialization';
+
+import { createFfiBackend } from './backend-ffi.js';
+import { graphFromFormat } from './graph.js';
+
+// --- native library bootstrap (mirrors gremlin-conformance.test.ts) ---------
+const LIB_EXTENSIONS: Partial<Record<NodeJS.Platform, string>> = { darwin: 'dylib', win32: 'dll' };
+const LIB_EXT = LIB_EXTENSIONS[process.platform] ?? 'so';
+const LIB = new URL(
+  `../../../crates/lenke-core/target/release/liblenke_core.${LIB_EXT}`,
+  import.meta.url,
+).pathname;
+const hasLib = existsSync(LIB);
+
+if (!hasLib) {
+  console.warn(`[gql-conformance] skipping: ${LIB} not found — run \`bun run build:rust\`.`);
+}
+
+const suite = hasLib ? describe : describe.skip;
+
+// Same ids/labels/properties as the TinkerPop "modern" graph. Property keys are
+// authored in NON-sorted insertion order (`name` before `age`, `weight` before
+// `since`) precisely so the test proves both engines re-sort them on output.
+const MODERN_NDJSON = [
+  '{"type":"node","id":"1","labels":["Person"],"properties":{"name":"marko","age":29}}',
+  '{"type":"node","id":"2","labels":["Person"],"properties":{"name":"vadas","age":27}}',
+  '{"type":"node","id":"4","labels":["Person"],"properties":{"name":"josh","age":32}}',
+  '{"type":"node","id":"3","labels":["Software"],"properties":{"name":"lop","lang":"java"}}',
+  '{"type":"edge","id":"7","from":"1","to":"2","labels":["KNOWS"],"properties":{"weight":0.5,"since":2018}}',
+  '{"type":"edge","id":"8","from":"1","to":"4","labels":["KNOWS"],"properties":{"weight":1.0,"since":2020}}',
+  '{"type":"edge","id":"9","from":"1","to":"3","labels":["CREATED"],"properties":{"weight":0.4,"since":2009}}',
+].join('\n');
+
+suite('GQL differential: rich RETURN results (TS vs native)', () => {
+  const backend = createFfiBackend(LIB);
+  const nativeGraph = graphFromFormat(backend, MODERN_NDJSON, 'ndjson');
+  const tsGraph = tsDeserialize(MODERN_NDJSON, 'ndjson', new Graph());
+
+  const both = (q: string): [string, string] => [
+    JSON.stringify(tsQuery(tsGraph, q)),
+    JSON.stringify(nativeGraph.query(q)),
+  ];
+
+  test('RETURN n — rich node object, byte-identical, keys sorted', () => {
+    const q = `MATCH (n:Person {name: 'marko'}) RETURN n`;
+    const [ts, native] = both(q);
+    expect(ts).toBe(native);
+    expect(ts).toBe(
+      `[{"n":{"id":"1","labels":["Person"],"properties":{"age":29,"name":"marko"}}}]`,
+    );
+  });
+
+  test('RETURN r — rich edge object, byte-identical, keys sorted', () => {
+    const q = `MATCH (:Person {name: 'marko'})-[r:KNOWS]->(:Person {name: 'josh'}) RETURN r`;
+    const [ts, native] = both(q);
+    expect(ts).toBe(native);
+    expect(ts).toBe(
+      `[{"r":{"id":"8","from":"1","to":"4","labels":["KNOWS"],"properties":{"since":2020,"weight":1}}}]`,
+    );
+  });
+
+  test('RETURN * — a whole node column serializes richly and identically', () => {
+    const [ts, native] = both(`MATCH (n:Person {name: 'vadas'}) RETURN *`);
+    expect(ts).toBe(native);
+  });
+
+  test('RETURN both endpoints — every element column is rich and identical', () => {
+    const q = `MATCH (a:Person {name: 'marko'})-[:CREATED]->(b:Software) RETURN a, b ORDER BY b.name`;
+    const [ts, native] = both(q);
+    expect(ts).toBe(native);
+  });
+
+  test('a scalar projection is unaffected (still a plain value, identical)', () => {
+    const [ts, native] = both(`MATCH (n:Person) RETURN n.name AS name ORDER BY name`);
+    expect(ts).toBe(native);
+    expect(ts).toBe(`[{"name":"josh"},{"name":"marko"},{"name":"vadas"}]`);
+  });
+});

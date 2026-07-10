@@ -101,6 +101,9 @@ pub(crate) fn push_value(out: &mut String, v: &Value) {
             }
             out.push(']');
         }
+        Value::Map(_) => {
+            unreachable!("Value::Map is a query-result value, never a stored property")
+        }
     }
 }
 

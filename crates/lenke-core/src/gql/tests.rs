@@ -2,6 +2,8 @@
 //! `tck.test.ts` spec over the TinkerPop "Modern" fixture. Covers the read
 //! surface, edge properties, and write clauses (the graph is mutable).
 
+use std::sync::Arc;
+
 use super::eval::Params;
 use super::parse;
 use crate::graph::{Graph, Value};
@@ -974,7 +976,20 @@ fn return_star_columns_are_bound_vars() {
     // `*` projects every in-scope variable as a column (here just `n`).
     let (cols, r) = q(&mut g, "MATCH (n:Person {name:'marko'}) RETURN *");
     assert_eq!(cols, vec!["n"]);
-    assert_eq!(r, vec![vec![s("marko")]]); // a node flattens to its external id
+    // A returned node serializes to a rich `{id, labels, properties}` map
+    // (byte-identical to the TS engine); keys/labels are sorted.
+    let node = Value::Map(vec![
+        (Arc::from("id"), s("marko")),
+        (Arc::from("labels"), Value::List(vec![s("Person")])),
+        (
+            Arc::from("properties"),
+            Value::Map(vec![
+                (Arc::from("age"), n(29.0)),
+                (Arc::from("name"), s("marko")),
+            ]),
+        ),
+    ]);
+    assert_eq!(r, vec![vec![node]]);
 }
 
 #[test]

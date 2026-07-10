@@ -107,6 +107,12 @@ pub enum Value {
     Num(f64),
     Str(Arc<str>),
     List(Vec<Self>),
+    /// An ordered key→value object. NOT a stored property value (a property is
+    /// only ever a scalar or list) — it appears only in query results, as the
+    /// serialized form of a returned node/edge reference (`{id, labels,
+    /// properties}`), so `RETURN n` yields something useful rather than a bare
+    /// id. Keys are emitted sorted, for a deterministic, engine-agnostic shape.
+    Map(Vec<(Arc<str>, Self)>),
 }
 
 /// A typed property column. Length == its store's element count.
@@ -995,6 +1001,9 @@ fn value_kind(v: &Value) -> Option<Kind> {
         Value::Bool(_) => Some(Kind::Bool),
         Value::Null => None, // nulls don't determine a column's type
         Value::List(_) => Some(Kind::Mixed),
+        Value::Map(_) => {
+            unreachable!("Value::Map is a query-result value, never a stored property")
+        }
     }
 }
 

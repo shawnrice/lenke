@@ -49,6 +49,9 @@ fn push_typed(out: &mut String, v: &Value) {
             }
             out.push_str("]}");
         }
+        Value::Map(_) => {
+            unreachable!("Value::Map is a query-result value, never a stored property")
+        }
     }
 }
 

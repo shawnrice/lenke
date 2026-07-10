@@ -232,6 +232,18 @@ fn push_json_value(out: &mut String, v: &Value) {
             }
             out.push(']');
         }
+        Value::Map(pairs) => {
+            out.push('{');
+            for (i, (k, val)) in pairs.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                push_json_str(out, k);
+                out.push(':');
+                push_json_value(out, val);
+            }
+            out.push('}');
+        }
     }
 }
 
@@ -712,6 +724,15 @@ fn value_key(v: &Value, out: &mut String) {
             }
             out.push(']');
         }
+        Value::Map(pairs) => {
+            out.push('{');
+            for (k, val) in pairs {
+                let _ = write!(out, "{k}=");
+                value_key(val, out);
+                out.push(',');
+            }
+            out.push('}');
+        }
     }
 }
 
@@ -736,6 +757,7 @@ fn cmp_value(a: &Value, b: &Value) -> std::cmp::Ordering {
             Value::Num(_) => 2,
             Value::Str(_) => 3,
             Value::List(_) => 4,
+            Value::Map(_) => 5,
         }
     }
     match (a, b) {
@@ -749,6 +771,15 @@ fn cmp_value(a: &Value, b: &Value) -> std::cmp::Ordering {
         (Value::List(x), Value::List(y)) => {
             for (xi, yi) in x.iter().zip(y) {
                 let o = cmp_value(xi, yi);
+                if o != Ordering::Equal {
+                    return o;
+                }
+            }
+            x.len().cmp(&y.len())
+        }
+        (Value::Map(x), Value::Map(y)) => {
+            for ((xk, xv), (yk, yv)) in x.iter().zip(y) {
+                let o = xk.cmp(yk).then_with(|| cmp_value(xv, yv));
                 if o != Ordering::Equal {
                     return o;
                 }
@@ -1449,6 +1480,12 @@ mod tests {
             Value::Str(s) => got.as_str() == Some(s.as_ref()),
             Value::List(items) => got.as_array().is_some_and(|a| {
                 a.len() == items.len() && a.iter().zip(items).all(|(g, w)| json_matches(g, w))
+            }),
+            Value::Map(pairs) => got.as_object().is_some_and(|o| {
+                o.len() == pairs.len()
+                    && pairs
+                        .iter()
+                        .all(|(k, w)| got.get(k.as_ref()).is_some_and(|g| json_matches(g, w)))
             }),
         }
     }

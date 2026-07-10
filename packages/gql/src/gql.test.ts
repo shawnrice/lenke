@@ -211,6 +211,28 @@ describe('GQL: RETURN *, ORDER BY, SKIP/OFFSET', () => {
     expect(Object.keys(rows[0])).toEqual(['n']);
   });
 
+  // A returned node/edge is a live element in the pure-TS engine (so consumers
+  // keep methods/traversal), but its SERIALIZATION is byte-identical to the
+  // native engine's plain `{id, labels, properties}` object: top-level field
+  // order fixed, labels and property keys sorted. (Cross-engine parity across
+  // the JSON/sync boundary is pinned by native/src/gql-conformance.test.ts.)
+  test('a returned node serializes to a rich {id, labels, properties} object, keys sorted', () => {
+    const rows = query(g, `MATCH (n:Person {name: 'marko'}) RETURN n`);
+    expect(JSON.stringify(rows[0])).toBe(
+      `{"n":{"id":"1","labels":["Person"],"properties":{"age":29,"name":"marko"}}}`,
+    );
+  });
+
+  test('a returned edge serializes to a rich {id, from, to, labels, properties} object', () => {
+    const rows = query(
+      g,
+      `MATCH (:Person {name: 'marko'})-[r:KNOWS]->(:Person {name: 'josh'}) RETURN r`,
+    );
+    expect(JSON.stringify(rows[0])).toBe(
+      `{"r":{"id":"8","from":"1","to":"4","labels":["KNOWS"],"properties":{"weight":1}}}`,
+    );
+  });
+
   test('ORDER BY ascending (default)', () => {
     const rows = query(g, `MATCH (n:Person) RETURN n.name ORDER BY n.age`);
     expect(rows.map((r) => r['n.name'])).toEqual(['vadas', 'marko', 'josh', 'peter']);

@@ -541,6 +541,15 @@ fn value_key(v: &Value, out: &mut String) {
             }
             out.push(']');
         }
+        Value::Map(pairs) => {
+            out.push('{');
+            for (k, val) in pairs {
+                let _ = write!(out, "{k}=");
+                value_key(val, out);
+                out.push(',');
+            }
+            out.push('}');
+        }
     }
 }
 
@@ -562,11 +571,32 @@ fn value_to_val(v: &Value) -> Val {
         Value::Num(n) => Val::Num(*n),
         Value::Str(s) => Val::Str(s.clone()), // shared Arc — refcount bump, no alloc
         Value::List(items) => Val::List(items.iter().map(value_to_val).collect()),
+        // Map is a query-result-only value (a serialized node/edge); it is never a
+        // stored property, so it never flows back through property/label reads.
+        Value::Map(_) => Val::Null,
     }
 }
 
-/// Project a runtime value to the core output [`Value`]; elements flatten to
-/// their id string (the rowset/JSON model has no element type).
+/// A store element's present properties as a sorted `Value::Map` — the shape a
+/// returned node/edge's `properties` field serializes to. Keys are sorted so the
+/// object is deterministic (the columnar store has no per-element key order).
+fn props_map(store: &crate::graph::Properties, strs: &crate::graph::Dict, idx: usize) -> Value {
+    let mut props: Vec<(Arc<str>, Value)> = (0..store.keys.len() as u32)
+        .filter(|&kid| store.is_present_id(idx, kid))
+        .map(|kid| {
+            (
+                Arc::from(store.keys.text(kid)),
+                store.value_id(idx, kid, strs),
+            )
+        })
+        .collect();
+    props.sort_by(|a, b| a.0.cmp(&b.0));
+    Value::Map(props)
+}
+
+/// Project a runtime value to the core output [`Value`]. A returned node/edge
+/// reference serializes to a `{id, labels, properties}` object (matching the TS
+/// engine) so `RETURN n` is useful, not a bare id.
 fn val_to_value(graph: &Graph, v: &Val) -> Value {
     match v {
         Val::Null => Value::Null,
@@ -574,8 +604,47 @@ fn val_to_value(graph: &Graph, v: &Val) -> Value {
         Val::Num(n) => Value::Num(*n),
         Val::Str(s) => Value::Str(s.clone()), // shared Arc — refcount bump, no alloc
         Val::List(items) => Value::List(items.iter().map(|x| val_to_value(graph, x)).collect()),
-        Val::Node(i) => Value::Str(graph.vid.arc(*i)),
-        Val::Edge(i) => Value::Str(Arc::from(format!("e{i}"))),
+        Val::Node(i) => {
+            let mut labels: Vec<Arc<str>> = graph
+                .vertex_labels(*i)
+                .iter()
+                .map(|&l| graph.labels.arc(l))
+                .collect();
+            labels.sort_unstable();
+            Value::Map(vec![
+                (Arc::from("id"), Value::Str(graph.vid.arc(*i))),
+                (
+                    Arc::from("labels"),
+                    Value::List(labels.into_iter().map(Value::Str).collect()),
+                ),
+                (
+                    Arc::from("properties"),
+                    props_map(&graph.props, &graph.strs, *i as usize),
+                ),
+            ])
+        }
+        Val::Edge(i) => {
+            let idx = *i as usize;
+            Value::Map(vec![
+                (
+                    Arc::from("id"),
+                    Value::Str(Arc::from(graph.edge_id(*i).as_ref())),
+                ),
+                (
+                    Arc::from("from"),
+                    Value::Str(graph.vid.arc(graph.e_src[idx])),
+                ),
+                (Arc::from("to"), Value::Str(graph.vid.arc(graph.e_dst[idx]))),
+                (
+                    Arc::from("labels"),
+                    Value::List(vec![Value::Str(graph.etype.arc(graph.e_type[idx]))]),
+                ),
+                (
+                    Arc::from("properties"),
+                    props_map(&graph.edge_props, &graph.strs, idx),
+                ),
+            ])
+        }
     }
 }
 

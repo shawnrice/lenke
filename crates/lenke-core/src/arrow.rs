@@ -68,6 +68,18 @@ fn cell_str(c: &Value, out: &mut String) {
             }
             out.push(']');
         }
+        Value::Map(pairs) => {
+            out.push('{');
+            for (i, (k, v)) in pairs.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push_str(k);
+                out.push('=');
+                cell_str(v, out);
+            }
+            out.push('}');
+        }
     }
 }
 

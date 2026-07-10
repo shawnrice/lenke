@@ -55,6 +55,9 @@ fn scalar_token(out: &mut String, v: &Value) {
             out.push('"');
         }
         Value::List(_) => {} // handled by the caller (one token per element)
+        Value::Map(_) => {
+            unreachable!("Value::Map is a query-result value, never a stored property")
+        }
     }
 }
 
