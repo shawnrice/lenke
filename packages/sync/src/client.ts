@@ -119,7 +119,11 @@ export type SyncClient = {
    * as a columnar blob and decode it here (smaller wire, no JSON parse) — needs
    * a binary-capable transport; the returned rows are identical either way.
    */
-  query: (query: string, params?: QueryParams, opts?: { format?: 'arrow' }) => Promise<Row[]>;
+  query: <R extends Row = Row>(
+    query: string,
+    params?: QueryParams,
+    opts?: { format?: 'arrow' },
+  ) => Promise<R[]>;
   /**
    * One-shot Gremlin traversal → its JSON result values. Use it as a tagged
    * template to interpolate values safely — each `${v}` is escaped into a
@@ -520,8 +524,12 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
     return entry.handle;
   };
 
-  const query = (text: string, params?: QueryParams, opts?: { format?: 'arrow' }): Promise<Row[]> =>
-    new Promise<Row[]>((resolve, reject) => {
+  const query = <R extends Row = Row>(
+    text: string,
+    params?: QueryParams,
+    opts?: { format?: 'arrow' },
+  ): Promise<R[]> =>
+    new Promise<R[]>((resolve, reject) => {
       const req = `q${++nextId}`;
       const msg: ClientMessage = { type: 'query', req, query: text, params, format: opts?.format };
       pending.set(req, { resolve: resolve as (v: never) => void, reject, kind: 'query', msg });

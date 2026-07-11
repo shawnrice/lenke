@@ -29,10 +29,10 @@ import { type Row, useStore } from './StoreContext.js';
  *     { deps: ['Note', 'LINKS_TO'], params: { id: current } },
  *   );
  */
-export const useLiveQuery = (
+export const useLiveQuery = <R extends Row = Row>(
   text: string,
   opts?: { deps?: readonly string[] | null; params?: Record<string, unknown> },
-): Row[] => {
+): R[] => {
   const store = useStore();
   // Omitted OR `null` both mean coarse (recompute-always); the store's contract
   // is `deps: string[] | null`, so normalize `undefined` → `null` here. Passing
@@ -49,7 +49,7 @@ export const useLiveQuery = (
   const depsKey = deps === null ? ' null' : deps.join(' ');
   const paramsKey = params ? JSON.stringify(params) : '';
   const live = useMemo(
-    () => store.liveQuery(text, { deps, params }),
+    () => store.liveQuery<R>(text, { deps, params }),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- the *Key strings are the stable proxies
     [store, text, depsKey, paramsKey],
   );

@@ -8,9 +8,9 @@ export type Row = Record<string, unknown>;
  * consumes: a stable `getSnapshot` (referentially stable until a relevant
  * mutation) and a `subscribe`.
  */
-export type LiveQueryHandle = {
+export type LiveQueryHandle<R extends Row = Row> = {
   subscribe: (onChange: () => void) => () => void;
-  getSnapshot: () => Row[];
+  getSnapshot: () => R[];
 };
 
 /**
@@ -22,14 +22,14 @@ export type LiveQueryHandle = {
  * package's surface.)
  */
 export type ReactiveStore = {
-  liveQuery: (
+  liveQuery: <R extends Row = Row>(
     text: string,
     // Matches `@lenke/native`'s `Store.liveQuery`: `opts` is required and `deps`
     // is `string[] | null` (null = recompute-always). Declaring it optional here
     // made the canonical `<StoreProvider store={createStore(graph)}>` fail to
     // typecheck (the real store requires `opts`, so it wasn't assignable).
     opts: { deps: readonly string[] | null; params?: Record<string, unknown> },
-  ) => LiveQueryHandle;
+  ) => LiveQueryHandle<R>;
 };
 
 /**

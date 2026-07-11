@@ -211,7 +211,7 @@ for (const n of SIZES) {
     let tSig: Sig | null = null;
 
     try {
-      tSig = tsFingerprint(gqlQuery(tg, q.text) as Record<string, unknown>[]);
+      tSig = tsFingerprint(gqlQuery(tg, q.text));
     } catch {
       // TS engine couldn't produce the result — recorded below.
     }
@@ -232,7 +232,7 @@ for (const n of SIZES) {
     }
 
     const tsT = safeBench(reps, () => {
-      tsFingerprint(gqlQuery(tg, q.text) as Record<string, unknown>[]);
+      tsFingerprint(gqlQuery(tg, q.text));
     });
     const rustT = bench(reps, () => {
       rust.runQuery(rh, q.text);

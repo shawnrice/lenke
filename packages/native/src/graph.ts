@@ -266,10 +266,14 @@ export type RustGraph = {
    * - tagged template — each `${sub}` compiles to a `$p<n>` **binding**, never
    *   spliced text: ``g.query`MATCH (p:Person) WHERE p.name = ${name} RETURN p` ``
    * - string + bindings — `g.query('… WHERE p.name = $name RETURN p', { name })`
+   *
+   * Pass a row shape to type the result — `g.query<{ name: string }>('…')` — an
+   * opt-in, caller-side assertion (rows are `Record<string, unknown>` at
+   * runtime; nothing is validated). Defaults to {@link Row}.
    */
   query: {
-    (text: string, params?: QueryParams): Row[];
-    (strings: TemplateStringsArray, ...subs: unknown[]): Row[];
+    <R extends Row = Row>(text: string, params?: QueryParams): R[];
+    <R extends Row = Row>(strings: TemplateStringsArray, ...subs: unknown[]): R[];
   };
   /** Run a GQL query → raw Arrow ("ARW1") columnar blob. Same two forms as {@link RustGraph.query}. */
   queryArrow: {
@@ -301,9 +305,10 @@ export type RustGraph = {
    * graph — parse/lower is paid once, then each `.query(params)` skips it. The
    * win over `query()` is the ~per-call parse cost; results are identical. A
    * syntax error throws here, at prepare time. `prepare` takes a plain string
-   * with `$name` params (no tagged-template form — the text is fixed).
+   * with `$name` params (no tagged-template form — the text is fixed). Pass a
+   * row shape to type `.query(params)`'s result.
    */
-  prepare: (text: string) => PreparedQuery;
+  prepare: <R extends Row = Row>(text: string) => PreparedQuery<R>;
   /** Release the underlying graph. Idempotent; the handle is invalid afterwards. */
   free: () => void;
   /** `using`-compatible alias of {@link RustGraph.free} (Explicit Resource Management). */
@@ -315,9 +320,9 @@ export type RustGraph = {
  * it cheaply with fresh `$name` params. `free()` releases the compiled plan; the
  * graph it was prepared on must still be live at execute time.
  */
-export type PreparedQuery = {
+export type PreparedQuery<R extends Row = Row> = {
   /** Execute with optional `$name` bindings → decoded rows. */
-  query: (params?: QueryParams) => Row[];
+  query: (params?: QueryParams) => R[];
   /** Execute → the raw Arrow ("ARW1") columnar blob. */
   queryArrow: (params?: QueryParams) => Uint8Array;
   /** Release the compiled plan. Idempotent; the prepared query is dead afterwards. */
@@ -429,7 +434,11 @@ const reclaimThunk = (backend: Backend, handle: GraphHandle, state: DisposalStat
  * `live`. Owns its own compiled-plan handle (freed independently of the graph);
  * `live()` still guards the graph, so a prepared query on a freed graph throws.
  */
-const makePrepared = (backend: Backend, live: () => GraphHandle, text: string): PreparedQuery => {
+const makePrepared = <R extends Row = Row>(
+  backend: Backend,
+  live: () => GraphHandle,
+  text: string,
+): PreparedQuery<R> => {
   ensureDisposeSymbol();
   const prepHandle: PreparedHandle = backend.prepare(text); // throws on a syntax error
   let freed = false;
@@ -455,7 +464,7 @@ const makePrepared = (backend: Backend, live: () => GraphHandle, text: string): 
 
   return {
     query: (params) =>
-      decodeRows(backend.preparedQueryRows(prepLive(), live(), serializeParams(params))),
+      decodeRows(backend.preparedQueryRows(prepLive(), live(), serializeParams(params))) as R[],
     queryArrow: (params) => backend.preparedQueryArrow(prepLive(), live(), serializeParams(params)),
     free,
     [Symbol.dispose]: free,
@@ -513,10 +522,10 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
     dropEdgeIndex: (key) => backend.dropEdgeIndex(live(), key),
     vertexIndexes: () => backend.vertexIndexes(live()),
     edgeIndexes: () => backend.edgeIndexes(live()),
-    query: (q: string | TemplateStringsArray, ...subs: unknown[]) => {
+    query: <R extends Row = Row>(q: string | TemplateStringsArray, ...subs: unknown[]): R[] => {
       const { text, params } = compileGql(q, subs);
 
-      return decodeRows(backend.queryRows(live(), text, params));
+      return decodeRows(backend.queryRows(live(), text, params)) as R[];
     },
     queryArrow: (q: string | TemplateStringsArray, ...subs: unknown[]) => {
       const { text, params } = compileGql(q, subs);
@@ -530,7 +539,7 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
     toNdjson: () => backend.encodeNdjson(live()),
     mergeNdjson: (bytes) => backend.mergeNdjson(live(), bytes),
     serialize: (format) => decoder.decode(backend.serialize(live(), format)),
-    prepare: (text) => makePrepared(backend, live, text),
+    prepare: <R extends Row = Row>(text: string) => makePrepared<R>(backend, live, text),
     free,
     [Symbol.dispose]: free,
   };

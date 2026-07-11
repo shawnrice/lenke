@@ -122,3 +122,14 @@ describe('GQL: ISO graph / conversion / string-list scalar functions', () => {
     }
   });
 });
+
+describe('typed results (opt-in row-shape generic)', () => {
+  test('query<R> returns R[] — no per-field cast, and the values are correct', () => {
+    // Compile-time: `name` is `string` (not `unknown`), so this assigns without a
+    // cast. Runtime: the value is right. A regression in the generic breaks tsc.
+    const rows = query<{ name: string }>(g, `MATCH (p:Person) RETURN p.name AS name`);
+    const names: string[] = rows.map((r) => r.name);
+    expect(names.length).toBeGreaterThan(0);
+    expect(names.every((n) => typeof n === 'string')).toBe(true);
+  });
+});

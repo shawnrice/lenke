@@ -82,8 +82,13 @@ type CompiledExpr = (env: EvalEnv) => unknown;
 /**
  * A reusable execution plan: bind a graph and params, get rows. This is the
  * artifact `compile` produces — analyze once, run many.
+ *
+ * `R` is the row shape you expect back — an opt-in, caller-side assertion (rows
+ * are `Record<string, unknown>` at runtime; nothing is validated), so
+ * `query<{ name: string }>(...)` returns `{ name: string }[]` and drops the
+ * per-field cast. Defaults to `Row`.
  */
-export type Plan = (graph: Graph, params?: Params) => Row[];
+export type Plan<R extends Row = Row> = (graph: Graph, params?: Params) => R[];
 
 // --- binding helpers ---------------------------------------------------------
 
@@ -2672,7 +2677,7 @@ type CQuery = { parts: readonly CLinear[]; ops: readonly SetOp[] };
  * selection — happens here, once. Run the returned plan against any graph and
  * params; it never re-parses or re-analyzes.
  */
-export const compile = (query: Query): Plan => {
+export const compile = <R extends Row = Row>(query: Query): Plan<R> => {
   const referenced = new Set<string>();
   const prev = paramCollector;
   paramCollector = referenced;
@@ -2687,7 +2692,8 @@ export const compile = (query: Query): Plan => {
 
   const names = [...referenced];
 
-  return (graph, params = {}) => {
+  // Rows are `Row` at runtime; `R` is the caller's asserted shape (see `Plan`).
+  const plan: Plan = (graph, params = {}) => {
     // Eager param validation: a `$name` the query references but the caller
     // didn't bind is a programming error — throw before running, not a silent
     // empty result. (The Rust engine does the same in `positional`.)
@@ -2707,8 +2713,13 @@ export const compile = (query: Query): Plan => {
 
     return rows;
   };
+
+  return plan as Plan<R>;
 };
 
 /** Compile and run a parsed query in one call (no plan reuse). */
-export const execute = (query: Query, graph: Graph, params: Params = {}): Row[] =>
-  compile(query)(graph, params);
+export const execute = <R extends Row = Row>(
+  query: Query,
+  graph: Graph,
+  params: Params = {},
+): R[] => compile<R>(query)(graph, params);

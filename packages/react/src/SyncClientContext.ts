@@ -9,9 +9,9 @@ import type { Row } from './StoreContext.js';
  * `ClientSnapshot` (declared structurally here so this connector doesn't
  * hard-depend on `@lenke/sync`).
  */
-export type ClientSnapshot = {
+export type ClientSnapshot<R extends Row = Row> = {
   /** Last pushed rows (a stable `[]` before the first push; empty for a Gremlin query). */
-  rows: Row[];
+  rows: R[];
   /** A `lang: 'gremlin'` subscription's result values; `undefined` for a GQL query. */
   values?: unknown[];
   /** `false` until the host has answered (and on error). */

@@ -2,7 +2,7 @@ import { act, renderHook } from '@testing-library/react';
 import * as React from 'react';
 import { describe, expect, test } from 'vitest';
 
-import { type ReactiveStore, type Row, useStore } from './StoreContext.js';
+import { type LiveQueryHandle, type ReactiveStore, type Row, useStore } from './StoreContext.js';
 import { StoreProvider } from './StoreProvider.js';
 import { useLiveQuery } from './useLiveQuery.js';
 
@@ -19,7 +19,10 @@ const makeFakeStore = (initialRows: Row[]) => {
   let lastOpts: { deps: readonly string[] | null; params?: Record<string, unknown> } | undefined;
 
   const store: ReactiveStore = {
-    liveQuery: (_text, opts) => {
+    liveQuery: <R extends Row = Row>(
+      _text: string,
+      opts: { deps: readonly string[] | null; params?: Record<string, unknown> },
+    ) => {
       // The real store DEREFS `opts.deps` — capture it so a test can prove the
       // hook always passes a well-formed opts (never `undefined`, which crashed).
       lastOpts = opts;
@@ -47,7 +50,8 @@ const makeFakeStore = (initialRows: Row[]) => {
 
           return cached;
         },
-      };
+        // The fake ignores the row-shape generic (test rows are plain records).
+      } as LiveQueryHandle<R>;
     },
   };
 

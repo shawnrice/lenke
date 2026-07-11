@@ -15,11 +15,19 @@ export { compile, execute } from './executor.js';
  * query, then call the plan with just `(graph, params)` — no re-parse, no
  * re-analysis per run.
  */
-export const prepare = (text: string): Plan => compile(parse(text));
+export const prepare = <R extends Row = Row>(text: string): Plan<R> => compile<R>(parse(text));
 
-/** Parse + run a query string against a graph in one call, with optional `$params`. */
-export const query = (graph: Graph, text: string, params?: Record<string, unknown>): Row[] =>
-  execute(parse(text), graph, params);
+/**
+ * Parse + run a query string against a graph in one call, with optional
+ * `$params`. Pass a row shape to type the result — `query<{ name: string }>(g,
+ * '… RETURN a.name AS name')` returns `{ name: string }[]` — an opt-in,
+ * caller-side assertion (rows are `Record<string, unknown>` at runtime).
+ */
+export const query = <R extends Row = Row>(
+  graph: Graph,
+  text: string,
+  params?: Record<string, unknown>,
+): R[] => execute<R>(parse(text), graph, params);
 
 /**
  * Bind a graph and return a runner. Supports both a tagged-template form
@@ -35,10 +43,10 @@ export const query = (graph: Graph, text: string, params?: Record<string, unknow
  * convention as `@lenke/native`'s `RustGraph.query`, so consumers feel no seam
  * between engines.
  */
-export const gql = (graph: Graph) => {
-  return (strings: TemplateStringsArray | string, ...values: unknown[]): Row[] => {
+export const gql = <R extends Row = Row>(graph: Graph) => {
+  return (strings: TemplateStringsArray | string, ...values: unknown[]): R[] => {
     if (typeof strings === 'string') {
-      return execute(parse(strings), graph, values[0] as Record<string, unknown> | undefined);
+      return execute<R>(parse(strings), graph, values[0] as Record<string, unknown> | undefined);
     }
 
     const params: Record<string, unknown> = {};
@@ -52,7 +60,7 @@ export const gql = (graph: Graph) => {
       return `${acc + part}$p${i}`;
     }, '');
 
-    return execute(parse(text), graph, params);
+    return execute<R>(parse(text), graph, params);
   };
 };
 

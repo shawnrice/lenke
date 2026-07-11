@@ -272,10 +272,10 @@ describe('GQL fuzz: set-operation laws', () => {
         query(g, A).length + query(g, B).length,
       );
       expect(query(g, `${A} EXCEPT ${A}`), `EXCEPT self empty\n${ctx}`).toEqual([]);
-      const interSelf = (query(g, `${A} INTERSECT ${A}`) as { id: string }[])
+      const interSelf = query<{ id: string }>(g, `${A} INTERSECT ${A}`)
         .map((r) => r.id)
         .sort();
-      const distinctA = [...new Set((query(g, A) as { id: string }[]).map((r) => r.id))].sort();
+      const distinctA = [...new Set(query<{ id: string }>(g, A).map((r) => r.id))].sort();
       expect(interSelf, `INTERSECT self\n${ctx}`).toEqual(distinctA);
     }
   });

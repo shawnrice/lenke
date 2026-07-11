@@ -63,10 +63,10 @@ export type Store = {
    * {@link inferDeps} if you want to derive `deps` from the query text rather
    * than hand-declare it.
    */
-  liveQuery: (
+  liveQuery: <R extends Row = Row>(
     text: string,
     opts: { deps: readonly string[] | null; params?: QueryParams },
-  ) => LiveQuery<Row>;
+  ) => LiveQuery<R>;
   /**
    * The Gremlin twin of {@link liveQuery}: a standing traversal whose result
    * values (arbitrary JSON, not rows) are recomputed under the same `deps`
@@ -245,9 +245,12 @@ export const createStore = (graph: RustGraph): Store => {
 
       return result;
     },
-    liveQuery: (text, opts) =>
-      makeLive(signatureOf('q', text, opts.deps, opts.params), opts.deps, () =>
-        graph.query(text, opts.params),
+    liveQuery: <R extends Row = Row>(
+      text: string,
+      opts: { deps: readonly string[] | null; params?: QueryParams },
+    ) =>
+      makeLive<R>(signatureOf('q', text, opts.deps, opts.params), opts.deps, () =>
+        graph.query<R>(text, opts.params),
       ),
     liveGremlin: (text, opts) =>
       makeLive(signatureOf('g', text, opts.deps), opts.deps, () => graph.gremlin(text)),
