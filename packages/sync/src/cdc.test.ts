@@ -12,7 +12,13 @@ import { createFfiBackend } from '@lenke/native/ffi';
 
 import { createSyncClient, type SyncClient } from './client.js';
 import { createSyncHost } from './host.js';
-import { runWrite, type ClientMessage, type SyncWrite } from './protocol.js';
+import {
+  runWrite,
+  type ClientMessage,
+  type HostMessage,
+  type SyncWrite,
+  type WritesMessage,
+} from './protocol.js';
 import { createWriteLog, type WriteLog } from './writelog.js';
 
 const LIB_EXTENSIONS: Partial<Record<NodeJS.Platform, string>> = { darwin: 'dylib', win32: 'dll' };
@@ -192,6 +198,33 @@ suite('CDC write stream (TS vs native store)', () => {
 
     expect(seen).toEqual([]); // …but no CDC is delivered
     expect(widgets(store)).toBe(1);
+  });
+
+  test("interest routing: only writes touching the client's subscription deps are forwarded", () => {
+    const store = newStore();
+    const writeLog = createWriteLog();
+    const sent: HostMessage[] = [];
+    const host = createSyncHost(store, { send: (m) => sent.push(m), writeLog });
+
+    // The client declares a live query over :User (deps ['User']) + opts into CDC.
+    host.receive({
+      type: 'subscribe',
+      sub: 's1',
+      query: 'MATCH (u:User) RETURN u.id',
+      deps: ['User'],
+    });
+    host.receive({ type: 'subscribeWrites' });
+    sent.length = 0; // drop the setup pushes
+
+    // Another participant commits a User write and a Team write to the shared log.
+    const other = writeLog.register();
+    writeLog.append(other, { text: 'INSERT (:User {id: 1})' }, ['User']);
+    writeLog.append(other, { text: 'INSERT (:Team {id: 1})' }, ['Team']);
+
+    const forwarded = sent
+      .filter((m): m is WritesMessage => m.type === 'writes')
+      .flatMap((m) => m.writes.map((w) => w.text));
+    expect(forwarded).toEqual(['INSERT (:User {id: 1})']); // the Team write is filtered out
   });
 });
 

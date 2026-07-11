@@ -36,6 +36,7 @@
  */
 
 import { ErrorCode, LenkeError } from '@lenke/errors';
+import { inferDeps } from '@lenke/native';
 import type { LiveQuery, QueryParams, Row, Store } from '@lenke/native';
 
 import {
@@ -53,7 +54,7 @@ import {
   type SubscribeWritesMessage,
   type WireError,
 } from './protocol.js';
-import type { WriteLog } from './writelog.js';
+import type { WriteLog, WriteLogEntry } from './writelog.js';
 
 export type SyncHost = {
   /** Feed one inbound (already-parsed) client message. Unknown tags are ignored. */
@@ -208,6 +209,12 @@ const diffRows = (
     orderKeys,
   };
 };
+
+/** The label / edge-type / property-key tokens a wire write touches, for CDC
+ *  interest routing. Gremlin can't be token-inferred (inferDeps is GQL-shaped),
+ *  so it returns `undefined` → the write is forwarded to every subscriber. */
+const writeTokens = (text: string, lang?: 'gql' | 'gremlin'): string[] | undefined =>
+  lang === 'gremlin' ? undefined : inferDeps(text);
 
 export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost => {
   const { send, writeLog } = options;
@@ -462,7 +469,12 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
       applyMutation(text, msg.params, msg.lang);
       // Publish the committed write to the shared op log so other clients'
       // stream subscribers ingest it (CDC). No-op if no writeLog is configured.
-      writeLog?.append(writeOrigin, { text, lang: msg.lang, params: msg.params });
+      // The tokens ride along for interest routing at fan-out time.
+      writeLog?.append(
+        writeOrigin,
+        { text, lang: msg.lang, params: msg.params },
+        writeTokens(text, msg.lang),
+      );
       send({ type: 'ack', req: msg.req, ok: true });
     } catch (e) {
       send({ type: 'ack', req: msg.req, ok: false, error: toWireError(e) });
@@ -476,6 +488,35 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
 
     writeStreamStop?.(); // a re-subscribe (reconnect) replaces the prior tail
 
+    // Interest routing: forward a write only if its tokens intersect the union
+    // of this client's live-query dependency tokens — so a client watching only
+    // Users never receives a Resource write. No subscriptions (or any
+    // recompute-on-everything sub, or a token-less/Gremlin write) → forward it.
+    // Recomputed per fan-out; `subs` is small (a client's live viewports). This
+    // narrows by label/key, not by row value — see the README on interest
+    // routing's scope (a homogeneous-label app narrows on a different axis).
+    const wants = (tokens: readonly string[] | undefined): boolean => {
+      if (tokens === undefined || tokens.length === 0 || subs.size === 0) {
+        return true;
+      }
+
+      const interest = new Set<string>();
+
+      for (const s of subs.values()) {
+        if (s.deps === null) {
+          return true; // a null-deps sub recomputes on any change → wants all
+        }
+
+        for (const d of s.deps) {
+          interest.add(d);
+        }
+      }
+
+      return tokens.some((t) => interest.has(t));
+    };
+    const deliver = (entry: WriteLogEntry): boolean =>
+      entry.origin !== writeOrigin && wants(entry.tokens);
+
     const backlog = writeLog.since(msg.since ?? 0);
 
     if (backlog === null) {
@@ -485,19 +526,18 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
     } else if (backlog.length > 0) {
       send({
         type: 'writes',
-        writes: backlog.filter((e) => e.origin !== writeOrigin).map((e) => e.write),
+        writes: backlog.filter(deliver).map((e) => e.write),
         cursor: backlog[backlog.length - 1].seq,
       });
     }
 
-    // Live tail: forward every subsequent op. An own-origin op carries no
-    // writes (the client applied it optimistically) but still ticks the cursor,
-    // so the client stays exactly at head and a later `since` never spuriously
-    // resyncs over its own writes.
+    // Live tail: an op is forwarded only if it's another client's AND of
+    // interest; otherwise the batch is empty but STILL ticks the cursor, so the
+    // client stays exactly at head and a later `since` never spuriously resyncs.
     writeStreamStop = writeLog.subscribe((entry) => {
       send({
         type: 'writes',
-        writes: entry.origin === writeOrigin ? [] : [entry.write],
+        writes: deliver(entry) ? [entry.write] : [],
         cursor: entry.seq,
       });
     });

@@ -18,6 +18,13 @@ export type WriteLogEntry = {
    *  client never re-ingests the write it already applied optimistically. */
   origin: number;
   write: SyncWrite;
+  /**
+   * The label / edge-type / property-key tokens this write touches (as by
+   * `inferDeps`), for interest routing — a host forwards the write only to
+   * clients whose subscriptions depend on one of these tokens. `undefined` means
+   * "affects everything / can't infer" (e.g. a Gremlin write) → forward to all.
+   */
+  tokens?: readonly string[];
 };
 
 export type WriteLogOptions = {
@@ -32,8 +39,9 @@ export type WriteLogOptions = {
 export type WriteLog = {
   /** Register a participant; returns its stable origin id (for `append`). */
   register(): number;
-  /** Append a committed write; assigns + returns its `seq` and notifies subscribers. */
-  append(origin: number, write: SyncWrite): number;
+  /** Append a committed write (with the tokens it touches, for interest routing);
+   *  assigns + returns its `seq` and notifies subscribers. */
+  append(origin: number, write: SyncWrite, tokens?: readonly string[]): number;
   /** Subscribe to the live tail. Returns an unsubscribe. */
   subscribe(cb: (entry: WriteLogEntry) => void): () => void;
   /**
@@ -56,9 +64,9 @@ export const createWriteLog = (options: WriteLogOptions = {}): WriteLog => {
   return {
     register: () => nextId++,
 
-    append: (origin, write) => {
+    append: (origin, write, tokens) => {
       seq += 1;
-      const entry: WriteLogEntry = { seq, origin, write };
+      const entry: WriteLogEntry = { seq, origin, write, tokens };
       buffer.push(entry);
 
       if (buffer.length > capacity) {
