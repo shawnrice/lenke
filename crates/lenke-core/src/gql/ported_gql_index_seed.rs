@@ -378,3 +378,71 @@ fn idx_multi_hop_seeds_from_selective_end() {
     assert_eq!(indexed_rows, plain_rows);
     assert_eq!(indexed_rows, vec![s("lop"), s("ripple")]);
 }
+
+// ===========================================================================
+// Multi-anchor comma patterns (R-SEED)
+//
+// A comma-joined MATCH `(a {..}), (b {..})` is a nested-loop cross-join; before
+// R-SEED it bailed out of every vectorized (seek-capable) path and full-scanned
+// *every* anchor — an O(n) footgun on a large graph. These lock in that each
+// anchor now seeds from its property index (inline props AND WHERE conjuncts),
+// byte-identical to the scan fallback, and that unseedable predicates still fall
+// back correctly.
+// ===========================================================================
+
+/// Both comma anchors carry an indexed inline `{name: ...}`: each seeds
+/// independently, and the cross-join is identical to the scan.
+#[test]
+fn idx_multi_anchor_inline_both_seed() {
+    let q_str =
+        "MATCH (a:Person {name: 'marko'}), (b:Software {name: 'lop'}) RETURN a.name, b.name";
+    let (plain, indexed) = both(q_str);
+    assert_eq!(indexed, plain);
+    assert_eq!(indexed, vec![vec![s("marko"), s("lop")]]);
+}
+
+/// The C4 shape: `WHERE a.k=$x AND b.k=$y` across comma patterns. The AND-chain
+/// splits so each anchor seeds on *its own* conjunct (slot-filtered), not the
+/// other's — parity with the scan is the proof it stays sound.
+#[test]
+fn idx_multi_anchor_where_both_seed() {
+    let q_str =
+        "MATCH (a:Person), (b:Software) WHERE a.name = 'marko' AND b.name = 'lop' RETURN a.name, b.name";
+    let (plain, indexed) = both(q_str);
+    assert_eq!(indexed, plain);
+    assert_eq!(indexed, vec![vec![s("marko"), s("lop")]]);
+}
+
+/// A three-anchor cross-join still seeds every anchor.
+#[test]
+fn idx_three_anchor_all_seed() {
+    let q_str = "MATCH (a:Person {name: 'marko'}), (b:Person {name: 'josh'}), (c:Software {name: 'ripple'}) RETURN a.name, b.name, c.name";
+    let (plain, indexed) = both(q_str);
+    assert_eq!(indexed, plain);
+    assert_eq!(indexed, vec![vec![s("marko"), s("josh"), s("ripple")]]);
+}
+
+/// A var-to-var WHERE (`a.name = b.name`) is NOT a literal hint, so neither
+/// anchor may seed on it — both scan, and the (empty) result is unchanged.
+/// Guards against the AND-split wrongly seeding one side from the other's slot.
+#[test]
+fn idx_multi_anchor_var_to_var_where_not_seeded() {
+    let q_str = "MATCH (a:Person), (b:Software) WHERE a.name = b.name RETURN a.name, b.name";
+    let (plain, indexed) = both(q_str);
+    assert_eq!(indexed, plain);
+    // No Person shares a name with any Software vertex.
+    assert!(indexed.is_empty());
+}
+
+/// One anchor seeds inline; the other is unconstrained (full label scan). The
+/// seeded side must not disturb the scanned side's rows.
+#[test]
+fn idx_multi_anchor_mixed_seed_and_scan() {
+    let q_str = "MATCH (a:Person {name: 'marko'}), (b:Software) RETURN a.name, b.name";
+    let (plain, indexed) = both(q_str);
+    assert_eq!(indexed, plain);
+    assert_eq!(
+        indexed,
+        vec![vec![s("marko"), s("lop")], vec![s("marko"), s("ripple")]]
+    );
+}

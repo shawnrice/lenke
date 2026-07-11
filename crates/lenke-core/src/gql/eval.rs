@@ -1890,10 +1890,14 @@ fn walk_segments(
 }
 
 /// Seed and match a single path pattern, emitting each binding via `emit`.
+/// `where_` is the enclosing clause WHERE, threaded here only so the start node
+/// can seed from a property index on a `WHERE var.k = $x` conjunct (in addition
+/// to an inline `{k: $x}`); the full filter is still applied post-join.
 fn visit_pattern(
     graph: &Graph,
     ctx: &Ctx,
     pattern: &CPath,
+    where_: Option<&CExpr>,
     binding: &mut Binding,
     emit: &mut dyn FnMut(&mut Binding) -> bool,
 ) -> bool {
@@ -1902,16 +1906,43 @@ fn visit_pattern(
             walk_segments(graph, ctx, pattern, 0, seed, b, emit)
         })
     };
-    // An already-bound start variable fixes the single seed; otherwise iterate
-    // the label bucket / live vertices directly (no materialized seed list).
     match pattern.start.var_slot {
+        // An already-bound start variable fixes the single seed.
         Some(s) if binding.bound(s) => match binding.get(s) {
             Some(Val::Node(i)) => at_seed(*i, binding),
             _ => true,
         },
-        _ => for_each_seed(graph, ctx, pattern.start.label.as_ref(), &mut |seed| {
-            at_seed(seed, binding)
-        }),
+        // Otherwise prefer a property-index seek (indexed inline `{k:$x}` or a
+        // `WHERE this.k=$x` conjunct), falling back to the label bucket / live
+        // range. Without this, a comma-joined multi-pattern MATCH bails out of
+        // every vectorized (seek-capable) path and full-scans *every* anchor —
+        // the O(n) footgun R-SEED closes; `build_scan` already does this for the
+        // single-pattern fast path. Postings are live-only in principle, but the
+        // index can lag a delete, so re-check liveness (as `build_scan` does).
+        //
+        // Only a *named* start can carry a WHERE hint: `prop_index_hint`'s
+        // slot filter treats a `None` slot as "any", so handing the clause WHERE
+        // to an anonymous node (which WHERE can't even reference) would let it
+        // seed on another var's conjunct. Inline props seed regardless — they're
+        // this node's own.
+        _ => match node_index_seed(
+            graph,
+            ctx,
+            &pattern.start,
+            pattern.start.var_slot.and(where_),
+        ) {
+            Some(cands) => {
+                for seed in cands {
+                    if graph.is_vertex_live(seed) && !at_seed(seed, binding) {
+                        return false;
+                    }
+                }
+                true
+            }
+            None => for_each_seed(graph, ctx, pattern.start.label.as_ref(), &mut |seed| {
+                at_seed(seed, binding)
+            }),
+        },
     }
 }
 
@@ -1935,7 +1966,7 @@ fn visit_patterns(
         }
         return emit(binding);
     }
-    visit_pattern(graph, ctx, &patterns[idx], binding, &mut |b| {
+    visit_pattern(graph, ctx, &patterns[idx], where_, binding, &mut |b| {
         visit_patterns(graph, ctx, patterns, idx + 1, where_, b, emit)
     })
 }
