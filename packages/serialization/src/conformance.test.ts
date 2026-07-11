@@ -68,7 +68,9 @@ describe('codec conformance (shared cross-impl corpus)', () => {
       let caught: unknown;
 
       try {
-        deserialize(input, format, new Graph());
+        // `format` is a plain string from the JSON corpus; the runtime guard in
+        // `codecFor` still rejects an unknown one.
+        deserialize(input, format as FormatName, new Graph());
       } catch (e) {
         caught = e;
       }

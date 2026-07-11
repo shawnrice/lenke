@@ -1,4 +1,4 @@
-import type { Graph } from '@lenke/core';
+import { Graph } from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { Codec } from './codec.js';
@@ -21,19 +21,26 @@ export { ndjsonCodec } from './ndjson/index.js';
 export { graphsonCodec } from './graphson/index.js';
 export { csvCodec } from './csv/index.js';
 
+// `as const satisfies` (not a widening `Record<string, Codec>` annotation) so
+// `keyof typeof codecs` stays the literal union `'pg-json' | 'ndjson' | …`
+// rather than collapsing to `string`. That gives every entry point below real
+// autocomplete and compile-time typo protection (`serialize(g, 'ndsjon')` is a
+// type error, not a runtime throw).
 /** The registered serialization formats, keyed by name. */
-export const codecs: Readonly<Record<string, Codec>> = {
+export const codecs = {
   'pg-json': pgJsonCodec,
   'pg-text': pgTextCodec,
   ndjson: ndjsonCodec,
   graphson: graphsonCodec,
   csv: csvCodec,
-};
+} as const satisfies Record<string, Codec>;
 
 export type FormatName = keyof typeof codecs;
 
 const codecFor = (format: string): Codec => {
-  const codec = codecs[format];
+  // Indexed by a plain `string` (callers pass `FormatName`, but the runtime
+  // guard also fields arbitrary input), so widen past the literal keys here.
+  const codec = (codecs as Record<string, Codec | undefined>)[format];
 
   if (!codec) {
     throw new LenkeError(
@@ -49,9 +56,20 @@ const codecFor = (format: string): Codec => {
 export const serialize = (graph: Graph, format: FormatName): string =>
   codecFor(format).encode(graph);
 
-/** Deserialize a string in the named format into `graph` (mutating it). */
-export const deserialize = (input: string, format: FormatName, graph: Graph): Graph =>
+/**
+ * Deserialize a string in the named format into `graph`, mutating and returning
+ * it. `graph` is optional: omit it to parse into a fresh graph (the common
+ * case), or pass an existing one to append/merge the input into it.
+ */
+export const deserialize = (input: string, format: FormatName, graph: Graph = new Graph()): Graph =>
   codecFor(format).decode(input, graph);
+
+/**
+ * Parse a string in the named format into a NEW graph — sugar for the common
+ * `deserialize(input, format)` with no target. Use {@link deserialize} directly
+ * when you want to append into an existing graph.
+ */
+export const parse = (input: string, format: FormatName): Graph => deserialize(input, format);
 
 /** Stream-serialize a graph in the named format (line-oriented formats only). */
 export const serializeStream = (graph: Graph, format: FormatName): AsyncGenerator<string> => {
@@ -71,7 +89,7 @@ export const serializeStream = (graph: Graph, format: FormatName): AsyncGenerato
 export const deserializeStream = (
   source: ChunkSource,
   format: FormatName,
-  graph: Graph,
+  graph: Graph = new Graph(),
 ): Promise<Graph> => {
   const codec = codecFor(format);
 
@@ -128,7 +146,7 @@ export const serializeAsync = async (graph: Graph, format: FormatName): Promise<
 export const deserializeAsync = async (
   input: string,
   format: FormatName,
-  graph: Graph,
+  graph: Graph = new Graph(),
 ): Promise<Graph> => {
   const codec = codecFor(format);
 

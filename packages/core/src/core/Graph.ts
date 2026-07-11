@@ -193,8 +193,13 @@ export class Graph {
     return { [Symbol.iterator]: () => this.edgesById.values() };
   }
 
+  /**
+   * Total element count — vertices **plus** edges — as a quick "how big is
+   * this?" scalar. For the per-type counts use {@link vertexCount} /
+   * {@link edgeCount}; for the per-label breakdown use {@link stats}.
+   */
   get size(): number {
-    return this.verticesById.size;
+    return this.verticesById.size + this.edgesById.size;
   }
 
   get vertexCount(): number {

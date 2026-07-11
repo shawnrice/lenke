@@ -9,7 +9,14 @@ import { ErrorCode, hasErrorCode, isLenkeError } from '@lenke/errors';
 
 import { ABI_VERSION } from './abi.js';
 import { createFfiBackend } from './backend-ffi.js';
-import { decodeArrow, escapeGremlin, graphFromFormat, graphFromNdjson, gremlin } from './graph.js';
+import {
+  createEmptyGraph,
+  decodeArrow,
+  escapeGremlin,
+  graphFromFormat,
+  graphFromNdjson,
+  gremlin,
+} from './graph.js';
 
 // The shared-library extension is platform-specific: macOS `.dylib`, Linux
 // `.so`, Windows `.dll`. `build:rust` emits the one for the host.
@@ -49,6 +56,17 @@ suite('@lenke/native FFI backend', () => {
     const g = graphFromNdjson(backend, bytes);
     expect(g.vertexCount).toBe(2);
     expect(g.edgeCount).toBe(1);
+    g.free();
+  });
+
+  test('createEmptyGraph cold-boots a blank graph you can INSERT into', () => {
+    const backend = createFfiBackend(LIB);
+    const g = createEmptyGraph(backend);
+    expect(g.vertexCount).toBe(0);
+    expect(g.edgeCount).toBe(0);
+
+    g.query(`INSERT (:Person {name: 'ada'})`);
+    expect(g.vertexCount).toBe(1);
     g.free();
   });
 

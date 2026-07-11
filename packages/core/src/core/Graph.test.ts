@@ -170,6 +170,13 @@ describe('Graph Tests', () => {
     expect(hasErrorCode(err, ErrorCode.InvalidGraphOp)).toBe(true);
   });
 
+  test('size is the total element count (vertices + edges), distinct from vertexCount', () => {
+    const g = createTestTinkerGraph();
+    expect(g.size).toBe(g.vertexCount + g.edgeCount);
+    // and not just the vertex count (the historical, misleading behavior).
+    expect(g.size).toBeGreaterThan(g.vertexCount);
+  });
+
   test('addEdge throws on a missing endpoint and leaves no orphaned state', () => {
     const g = createTestTinkerGraph();
     const a = g.getVertexById('1')!;

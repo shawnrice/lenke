@@ -560,6 +560,14 @@ export const graphFromNdjson = (
   );
 
 /**
+ * A fresh, empty {@link RustGraph} to `INSERT` / `mergeNdjson` into — the
+ * self-documenting cold boot. (Equivalent to `graphFromNdjson(backend, <empty>)`
+ * without the encode-an-empty-buffer incantation.)
+ */
+export const createEmptyGraph = (backend: Backend): RustGraph =>
+  graphFromNdjson(backend, new Uint8Array(0));
+
+/**
  * Deserialize a document in a named format (`pg-json | pg-text | graphson | csv |
  * ndjson`) into a {@link RustGraph}. Accepts a string or raw bytes.
  */

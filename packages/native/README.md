@@ -2,7 +2,7 @@
 
 > JavaScript/TypeScript bindings to the Rust `lenke-core` columnar graph engine, with a single facade over native (FFI) and WebAssembly backends.
 
-Loads a labeled-property graph into the native columnar core and runs GQL or Gremlin queries against it from JS/TS. One C ABI is exposed through two interchangeable backends behind a shared `Backend` contract: a native dynamic library loaded over `bun:ffi` (server/CLI, requires Bun) and a WebAssembly module instantiated from bytes or a `fetch` response (browser). Reach for this when you want the Rust engine's query performance from JS without reimplementing it. The backend modules are split behind subpath exports so importing the package in a browser never pulls in the Bun-only `bun:ffi` builtin.
+Loads a labeled-property graph into the native columnar core and runs GQL or Gremlin queries against it from JS/TS. One C ABI is exposed through interchangeable backends behind a shared `Backend` contract: a native dynamic library loaded over `bun:ffi` (server/CLI, requires Bun), a WebAssembly module instantiated from bytes or a `fetch` response (browser), and — for plain Node — the prebuilt N-API addon in the sibling `@lenke/node` package (`createNodeBackend()`). Reach for this when you want the Rust engine's query performance from JS without reimplementing it. The backend modules are split behind subpath exports so importing the package in a browser never pulls in the Bun-only `bun:ffi` builtin.
 
 ## Install
 
@@ -54,8 +54,9 @@ The entry point (`@lenke/native`) is environment-neutral: it exports the `RustGr
 
 - `@lenke/native/ffi` — `createFfiBackend(libPath: string): Backend`. Requires **Bun** (uses `bun:ffi`). Pass the absolute path to the built `liblenke_core.{dylib,so,dll}`.
 - `@lenke/native/wasm` — `createWasmBackend(source): Promise<Backend>`. `source` is a `WebAssembly.Module`, `ArrayBuffer`, `ArrayBufferView`, or a (promise of a) `fetch` `Response`.
+- **Node** — use the sibling `@lenke/node` package's `createNodeBackend()`, a prebuilt N-API addon. It's the intended production backend under plain Node (no Bun, no wasm overhead) and plugs into this same `Backend` contract.
 
-Both assert that the loaded artifact's ABI version matches the exported `ABI_VERSION`, throwing on mismatch. `isBun` is exported as a convenience flag (`true` when running under Bun, where the FFI backend is available).
+All assert that the loaded artifact's ABI version matches the exported `ABI_VERSION`, throwing on mismatch. `isBun` is exported as a convenience flag (`true` when running under Bun, where the FFI backend is available).
 
 ## Graph API
 
@@ -65,11 +66,12 @@ Both assert that the loaded artifact's ABI version matches the exported `ABI_VER
 - `version` — monotonic mutation counter for O(1) change detection.
 - `epoch(name)` — per-token change epoch (by label / edge-type / property-key).
 - `query(q, ...subs)` — run GQL (tagged template or string) → `Row[]`, where `Row` is `Record<string, unknown>`.
-- `queryArrow(q, ...subs)` — run GQL → raw Arrow (`ARW1`) columnar blob as `Uint8Array` (decode with `apache-arrow`).
+- `queryArrow(q, ...subs)` — run GQL → raw `ARW1` columnar blob as `Uint8Array`. Decode it with the exported `decodeArrow(blob)` (a compact custom framing, **not** Arrow IPC — no `apache-arrow` dependency needed or usable).
 - `gremlin(q, ...subs)` — run textual Gremlin → JSON-decoded `unknown[]`.
 - `toNdjson()` — serialize back to NDJSON bytes.
 - `serialize(format)` — serialize to a named format (`pg-json | pg-text | graphson | csv | ndjson`).
-- `free()` — release the underlying graph; the handle is invalid afterward and is **not** garbage-collected, so call it explicitly.
+- `free()` — release the underlying graph; the handle is invalid afterward. A `FinalizationRegistry` reclaims a leaked handle as a **best-effort backstop** (and warns once in dev), but GC timing is not guaranteed — prefer an explicit `free()` or a `using` binding for prompt, deterministic release.
+- `prepare(text)` — parse/lower a GQL query once into a `PreparedQuery` (`.query(params)` / `.queryArrow(params)`). It has **no GC backstop** (unlike the graph handle): release it with `free()` or a `using` binding, or it leaks.
 
 ## Reactive store
 
