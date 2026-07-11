@@ -23,9 +23,16 @@ graph.addVertex({ id: '1', labels: ['Person'], properties: { name: 'marko', age:
 graph.addVertex({ id: '2', labels: ['Person'], properties: { name: 'vadas', age: 27 } });
 
 function PersonCount() {
-  // A derived value. `deps` scopes invalidation to the 'Person' label, so a
-  // mutation to an unrelated label won't re-run the selector.
-  const count = useGraphSelector((g) => [...g.vertices].length, Object.is, ['Person']);
+  // A derived value. The selector reads only :Person vertices, so its count
+  // changes only on Person mutations — which is exactly what `deps: ['Person']`
+  // gates recompute on (a mutation to an unrelated label won't re-run it). Keep
+  // the selector's reads and its `deps` in sync: a selector that reads whole
+  // elements (`g => [...g.vertices]`) must omit `deps` (coarse mode) instead.
+  const count = useGraphSelector(
+    (g) => [...g.vertices].filter((v) => v.hasLabel('Person')).length,
+    Object.is,
+    ['Person'],
+  );
 
   return <p>{count} people</p>;
 }
