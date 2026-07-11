@@ -1,10 +1,12 @@
 # GQL extensions & the sigil convention
 
-Status: **design settled, implementation in progress.** This is the authoritative
-spec for how lenke adds capabilities that ISO GQL does not define, and the first
-such capability, `_MERGE` (keyed upsert). Written to survive context compaction —
-if you're picking this up cold, read this top to bottom before touching the
-lexer/parser/eval.
+Status: **implemented** — the unique-constraint primitive and `_MERGE` (node +
+edge form, dialect flag, WHERE-gate) ship on both engines, byte-identical, with a
+cross-engine differential and an iso-strict conformance gate. Only multi-hop
+compound `_MERGE` (v2) remains deferred. This is the authoritative spec for how
+lenke adds capabilities ISO GQL does not define, and the first such capability,
+`_MERGE` (keyed upsert). Written to survive context compaction — read it top to
+bottom before touching the lexer/parser/eval.
 
 ---
 

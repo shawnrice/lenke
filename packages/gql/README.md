@@ -100,20 +100,73 @@ Two more runtime errors worth knowing:
 - **Unbound parameter** — a `$name` the query references but the params bag doesn't supply throws `ErrorCode.MissingParameter` (naming the param), rather than binding to a silent `null`. A forgotten/typo'd binding fails loud.
 - **Reserved words** — an ISO GQL keyword used as a bare property key, variable, or **column alias** is an `ErrorCode.Syntax` error; quote it as a delimited identifier to use it as a name. This bites two common cases: a property named after a keyword (`project`, `order`, `value`, `group`, `key`), and an **aggregate aliased to its own name** — `RETURN count(*) AS count` fails, so write `` AS `count` `` (or a different alias like `AS n`). Function/aggregate names (`count`, `sum`, `avg`, `min`, `max`) are all reserved.
 
-### Upsert (there is no `MERGE`)
+## Upsert: unique constraints + `_MERGE`
 
-ISO GQL has no `MERGE`/upsert clause (that's a Cypher extension) — the write clauses are `INSERT` / `SET` / `REMOVE` / `[DETACH] DELETE` / `FINISH`. To "create it if it doesn't exist," match first and insert only when absent. With an index on the key, the existence check is a seek:
+ISO GQL's write clauses are `INSERT` / `SET` / `REMOVE` / `[DETACH] DELETE` / `FINISH` — there is **no** `MERGE`/upsert clause (that's a Cypher extension the standard deliberately omits). lenke fills the gap with two pieces: a **unique-constraint** primitive and a sigil-marked **`_MERGE`** extension. Both behave byte-identically on the pure-TS and native engines, and are covered by a cross-engine differential.
+
+### Unique constraints (a host-language primitive)
+
+`graph.createUniqueConstraint(label, key)` declares that at most one live vertex carrying `label` may hold a given (non-null) value for `key`. It is index-backed (seeks, not scans), and it's the *key* `_MERGE` upserts on.
 
 ```ts
-g.createVertexIndex('name');
-// ensure a :Tag {name:$n} exists, then link the note to it
-if (query(g, 'MATCH (t:Tag {name: $n}) RETURN t.name', { n }).length === 0) {
-  query(g, 'INSERT (:Tag {name: $n})', { n });
-}
-query(g, 'MATCH (note:Note {id: $id}), (t:Tag {name: $n}) INSERT (note)-[:TAGGED]->(t)', { id, n });
+g.createUniqueConstraint('User', 'email'); // throws ConstraintViolation if data already violates it
+query(g, `INSERT (:User {email: 'a@x.io'})`);
+query(g, `INSERT (:User {email: 'a@x.io'})`); // ← throws ErrorCode.ConstraintViolation
 ```
 
-(In the single-writer local store this match-then-insert isn't racy; across a real backend, enforce uniqueness there.)
+A plain `INSERT`/`SET` that would duplicate a constrained value throws `ErrorCode.ConstraintViolation`. Null values are exempt (SQL semantics — NULLs are distinct). It's a host API, not GQL DDL, so it can never collide with a future GQL constraint syntax. (`dropUniqueConstraint`, `uniqueKeys`, `hasUniqueConstraint`, `uniqueConstraints` round out the surface.)
+
+### `_MERGE` — keyed upsert (a lenke extension, not ISO GQL)
+
+`_MERGE` is a **non-standard extension**, so it wears a leading-underscore **sigil** — a reader sees `_MERGE` and knows it's non-portable, and it can never collide with a future ISO keyword. It's recognized only under the default `lenke` dialect; parse with `{ dialect: 'iso-strict' }` and any extension is a syntax error (that's how the conformance harness proves the ISO surface stays pure).
+
+**Node form** — the conflict key is inferred from the pattern's properties ∩ the label's unique constraints (no applicable constraint → error; more than one → ambiguous → error):
+
+```ts
+// presence: a bare _MERGE clobbers the payload, so the cursor tracks
+query(g, `_MERGE (p:Presence {sid: $s, x: $x, y: $y})`);
+
+// full form
+query(g, `
+  _MERGE (u:User {email: $e, name: $n})
+    _ON_CREATE SET u.created = $now      -- birth-only extras
+    _ON_UPDATE SET u.lastSeen = $now     -- replaces the default clobber
+`);
+```
+
+The **update path** has one disposition:
+
+| Disposition | Meaning |
+| --- | --- |
+| *(bare, default)* | clobber the non-key payload to the pattern's values |
+| `_ON_UPDATE SET … [WHERE p]` | **replaces** the default; runs only if `p` holds (last-write-wins) |
+| `_ON_UPDATE_NOTHING` | leave the existing element untouched (`ON CONFLICT DO NOTHING`) |
+
+`_ON_CREATE SET …` adds birth-only fields. WHERE-gating gives optimistic concurrency:
+
+```ts
+// only overwrite if the incoming version is newer
+query(g, `_MERGE (d:Doc {id: $id}) _ON_UPDATE SET d.body = $b, d.version = $v WHERE d.version < $v`);
+```
+
+**Edge form** — endpoints are matched by their key, and the single edge between them (keyed structurally by `from`/`to`/type) is upserted. This is the "ensure-tuple" idiom:
+
+```ts
+g.createUniqueConstraint('User', 'id');
+g.createUniqueConstraint('Team', 'id');
+// ensure a MEMBER edge exists between two existing vertices, idempotently
+query(g, `_MERGE (u:User {id: $u})-[m:MEMBER {since: $t}]->(t:Team {id: $g}) _ON_CREATE SET m.role = 'member'`);
+```
+
+A missing endpoint errors (`ErrorCode.InvalidGraphOp`). Multi-hop compound patterns (where an interior node might be created) are not yet supported.
+
+### How this diverges (documented on purpose)
+
+- **vs Cypher `MERGE`**: `_MERGE` is element-keyed (not whole-pattern), so it can't duplicate a node the way Cypher's `MERGE (a)-[:R]->(b)` can; it **clobbers the payload by default** (Cypher never clobbers — its inline props are all match key); it uses `_ON_UPDATE` (data-op framing) not `ON MATCH`; and it **requires a unique constraint** to define the key.
+- **vs SQL upsert**: same conflict-target / `WHERE` / `DO NOTHING` shape, but `_MERGE` **clobbers by default** where SQL's minimal form leaves the row.
+- A payload `null` is **stored** (present, first-class), not deleted — consistent with lenke's null policy. Delete with `REMOVE`.
+
+Full spec: `docs/design/gql-extensions.md`.
 
 ## License
 
