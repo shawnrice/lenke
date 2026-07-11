@@ -40,6 +40,8 @@ for await (const chunk of serializeStream(graph, 'ndjson')) {
 await deserializeStream(chunkSource, 'ndjson', new Graph());
 ```
 
+`serializeStream` yields **batched** chunks (~1024 records each), not one chunk per element — so a small graph (under a batch) streams as a single chunk. It's a throughput optimization for large graphs, not a fine-grained progress signal.
+
 `serializeAsync` / `deserializeAsync` offer the same whole-string result while yielding the event loop between batches.
 
 ## Formats

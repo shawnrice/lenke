@@ -93,6 +93,25 @@ traversal(V(), has('name', 'web'), shortestPath().with(ShortestPath.target, has(
 const blast = traversal(V(), has('name', 'errors'), inE('DEPENDS_ON'), subgraph('g'), cap('g'));
 ```
 
+**Detecting cycles.** `until(cyclicPath())` walks until the path revisits a
+vertex, then emits that path — so `repeat(out()).until(cyclicPath())` finds the
+loop reachable from a start:
+
+```ts
+import { traversal, V, has, out, repeat, until, cyclicPath, path, toArray } from '@lenke/gremlin';
+
+const cycles = toArray(
+  traversal(V(), has('name', 'store'), repeat(out('DEPENDS_ON')).until(cyclicPath()), path()),
+  g,
+); // e.g. [[store, planner, index, store]]
+
+// "is X *on* a cycle?" vs "does X *reach* one?": a path whose first === last
+// returned to its start, so X is a member of the cycle (not merely upstream of it).
+const onACycle = cycles.some((p) => p[0] === p.at(-1));
+```
+
+(`until()` is do-while — it checks before each body step — and without `until()`/`times()` a `repeat` is capped at 100 iterations.)
+
 ## Predicates
 
 Filter steps such as `has` and `is` take predicate values, built by predicate constructors: `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `between` (half-open `[min, max)`), `inside`, `outside`, `within`, `without`, `startsWith`, `endingWith`, `containing`, `notContaining`, `regex`, and `not(predicate)`. `has(key, value)` is shorthand for `has(key, eq(value))`.

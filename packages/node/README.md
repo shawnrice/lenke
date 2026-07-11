@@ -18,7 +18,7 @@ const doc = JSON.parse(new TextDecoder().decode(g.query('MATCH (p:Person) RETURN
 const arrow = g.queryArrow('MATCH (p:Person) RETURN p.age'); // ARW1 columnar Buffer
 ```
 
-`query` / `queryArrow` / `gremlin` / `serialize` / `encodeNdjson` return `Buffer`; `version()` / `epoch(name)` / `vertexCount` / `edgeCount` are plain numbers.
+`query` / `queryArrow` / `gremlin` / `serialize` / `encodeNdjson` return `Buffer`; `version()` / `epoch(name)` / `vertexCount` / `edgeCount` are plain numbers. `mergeNdjson(bytes)` bulk-appends and returns a `Buffer` of **JSON** — the merge report — which you `JSON.parse` yourself. (This raw `Graph` class hands back `Buffer`s throughout; if you want decoded results — parsed rows, a typed `MergeReport` — use the `Backend` facade below, which does the decoding for you.)
 
 ### 2. The `Backend` adapter (drop-in for the `@lenke/native` facade)
 
