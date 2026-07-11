@@ -21,6 +21,10 @@ const SYMBOLS = {
   lnk_graph_epoch: { args: [FFIType.ptr, FFIType.ptr, U], returns: U },
   lnk_create_vertex_index: { args: [FFIType.ptr, FFIType.ptr, U], returns: FFIType.i32 },
   lnk_create_edge_index: { args: [FFIType.ptr, FFIType.ptr, U], returns: FFIType.i32 },
+  lnk_create_unique_constraint: {
+    args: [FFIType.ptr, FFIType.ptr, U, FFIType.ptr, U],
+    returns: FFIType.i32,
+  },
   lnk_drop_vertex_index: { args: [FFIType.ptr, FFIType.ptr, U], returns: FFIType.i32 },
   lnk_drop_edge_index: { args: [FFIType.ptr, FFIType.ptr, U], returns: FFIType.i32 },
   lnk_vertex_indexes: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.ptr },
@@ -186,6 +190,28 @@ export const createFfiBackend = (libPath: string): Backend => {
       const k = encoder.encode(key);
 
       symbols.lnk_create_edge_index(asPtr(handle), ptr(k), k.byteLength);
+    },
+    createUniqueConstraint: (handle, label, key) => {
+      const l = encoder.encode(label);
+      const k = encoder.encode(key);
+      const r = symbols.lnk_create_unique_constraint(
+        asPtr(handle),
+        ptr(l),
+        l.byteLength,
+        ptr(k),
+        k.byteLength,
+      );
+
+      if (r === -2) {
+        throw new LenkeError(
+          `lenke: createUniqueConstraint(${label}, ${key}): existing data already violates the unique constraint`,
+          { code: ErrorCode.ConstraintViolation },
+        );
+      }
+
+      if (r !== 0) {
+        throw new LenkeError('lenke: createUniqueConstraint failed', { code: ErrorCode.Ffi });
+      }
     },
     dropVertexIndex: (handle, key) => {
       const k = encoder.encode(key);

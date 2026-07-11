@@ -265,6 +265,13 @@ export type RustGraph = {
    */
   createVertexIndex: (key: string) => void;
   createEdgeIndex: (key: string) => void;
+  /**
+   * Declare a UNIQUE constraint on `(label, key)`: at most one vertex carrying
+   * `label` may hold a given non-null value for `key`. Index-backed. Throws
+   * `ConstraintViolation` if the current data already violates it. The Pattern-B
+   * primitive `_MERGE` keys on; see docs/design/gql-extensions.md §3.
+   */
+  createUniqueConstraint: (label: string, key: string) => void;
   /** Drop a vertex / edge property index (no-op if absent). */
   dropVertexIndex: (key: string) => void;
   dropEdgeIndex: (key: string) => void;
@@ -528,6 +535,7 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
     epoch: (name) => backend.epoch(live(), name),
     createVertexIndex: (key) => backend.createVertexIndex(live(), key),
     createEdgeIndex: (key) => backend.createEdgeIndex(live(), key),
+    createUniqueConstraint: (label, key) => backend.createUniqueConstraint(live(), label, key),
     dropVertexIndex: (key) => backend.dropVertexIndex(live(), key),
     dropEdgeIndex: (key) => backend.dropEdgeIndex(live(), key),
     vertexIndexes: () => backend.vertexIndexes(live()),

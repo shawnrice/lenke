@@ -20,6 +20,7 @@ const countingBackend = (): { backend: Backend; freed: GraphHandle[] } => {
     epoch: () => 0,
     createVertexIndex: () => {},
     createEdgeIndex: () => {},
+    createUniqueConstraint: () => {},
     dropVertexIndex: () => {},
     dropEdgeIndex: () => {},
     vertexIndexes: () => [],
