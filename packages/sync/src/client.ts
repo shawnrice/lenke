@@ -803,15 +803,28 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
         return;
       }
       case 'writes': {
-        // CDC push. Advance the cursor even on an empty batch (own-origin ticks)
-        // so a later resume asks from the right place.
-        writeCursor = msg.cursor;
-
         if (msg.resync) {
-          writeResync?.(); // the op log moved past us → cold-boot
+          // The op log moved past us: adopt the resume point and cold-boot.
+          writeCursor = msg.cursor;
+          writeResync?.();
 
           return;
         }
+
+        // Idempotence + ordering guard: a batch at or below the current cursor
+        // was already applied — a duplicate, or a stale echo from before a
+        // reconnect (at-least-once delivery). Skip it, and never regress the
+        // cursor. In-order delivery WITHIN a connection is a transport
+        // guarantee (TCP / MessagePort); this guards the reconnect seam, where
+        // the host re-sends the tail from our `since` (exclusive, so no overlap)
+        // but an in-flight message from the dropped connection may still arrive.
+        if (msg.cursor <= writeCursor) {
+          return;
+        }
+
+        // Advance even on an empty batch (own-origin cursor ticks) so a later
+        // resume asks from the right place.
+        writeCursor = msg.cursor;
 
         if (msg.writes.length > 0) {
           writeHandler?.(msg.writes);

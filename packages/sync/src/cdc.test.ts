@@ -12,7 +12,7 @@ import { createFfiBackend } from '@lenke/native/ffi';
 
 import { createSyncClient, type SyncClient } from './client.js';
 import { createSyncHost } from './host.js';
-import { runWrite, type SyncWrite } from './protocol.js';
+import { runWrite, type ClientMessage, type SyncWrite } from './protocol.js';
 import { createWriteLog, type WriteLog } from './writelog.js';
 
 const LIB_EXTENSIONS: Partial<Record<NodeJS.Platform, string>> = { darwin: 'dylib', win32: 'dll' };
@@ -147,5 +147,91 @@ suite('CDC write stream (TS vs native store)', () => {
     // …and live delivery continues afterward.
     await b.mutate('INSERT (:Widget {id: 2})');
     expect(seen).toEqual(['INSERT (:Widget {id: 1})', 'INSERT (:Widget {id: 2})']);
+  });
+
+  test('a live subscriber receives every write regardless of ring capacity', async () => {
+    const s = server(createWriteLog({ capacity: 1 })); // a tiny ring
+    const a = s.client();
+    const b = s.client();
+    const seen: string[] = [];
+    a.subscribeWrites((w) => seen.push(...w.map((x) => x.text)));
+
+    for (const id of [1, 2, 3, 4]) {
+      await b.mutate(`INSERT (:Widget {id: ${id}})`);
+    }
+
+    // The ring bounds CATCH-UP, not live delivery — a live subscriber sees them all.
+    expect(seen).toEqual([1, 2, 3, 4].map((id) => `INSERT (:Widget {id: ${id}})`));
+  });
+
+  test('interleaved writes from multiple writers arrive in seq order', async () => {
+    const s = server();
+    const watcher = s.client();
+    const b = s.client();
+    const c = s.client();
+    const seen: string[] = [];
+    watcher.subscribeWrites((w) => seen.push(...w.map((x) => x.text)));
+
+    await b.mutate('INSERT (:Widget {id: 1})');
+    await c.mutate('INSERT (:Widget {id: 2})');
+    await b.mutate('INSERT (:Widget {id: 3})');
+    await c.mutate('INSERT (:Widget {id: 4})');
+
+    expect(seen).toEqual([1, 2, 3, 4].map((id) => `INSERT (:Widget {id: ${id}})`));
+  });
+
+  test('subscribeWrites against a host with no writeLog is a silent no-op', async () => {
+    const store = newStore();
+    const link: { c?: SyncClient } = {};
+    const host = createSyncHost(store, { send: (m) => link.c?.receive(m) }); // NO writeLog
+    link.c = createSyncClient({ send: (m) => host.receive(m) });
+    const seen: SyncWrite[] = [];
+    link.c.subscribeWrites((w) => seen.push(...w));
+
+    await link.c.mutate('INSERT (:Widget {id: 1})'); // the mutate still works…
+
+    expect(seen).toEqual([]); // …but no CDC is delivered
+    expect(widgets(store)).toBe(1);
+  });
+});
+
+// The ordering/idempotence guard is pure client logic — drive receive() directly,
+// so these run without the native lib.
+describe('CDC write stream — client ordering guard (transport-free)', () => {
+  test('a duplicate or stale batch is ignored; the cursor never regresses', () => {
+    const sent: ClientMessage[] = [];
+    const client = createSyncClient({ send: (m) => sent.push(m) });
+    const seen: string[] = [];
+    client.subscribeWrites((w) => seen.push(...w.map((x) => x.text)));
+
+    client.receive({ type: 'writes', writes: [{ text: 'a' }], cursor: 1 });
+    client.receive({ type: 'writes', writes: [{ text: 'a-dup' }], cursor: 1 }); // duplicate seq
+    client.receive({ type: 'writes', writes: [{ text: 'stale' }], cursor: 0 }); // stale (< cursor)
+    client.receive({ type: 'writes', writes: [{ text: 'b' }], cursor: 2 });
+
+    expect(seen).toEqual(['a', 'b']); // duplicate + stale dropped, no double-apply
+
+    // The cursor held at 2 (never regressed) — a resume asks from there.
+    client.replay();
+    expect(sent.filter((m) => m.type === 'subscribeWrites').at(-1)).toEqual({
+      type: 'subscribeWrites',
+      since: 2,
+    });
+  });
+
+  test('a resync message fires onResync and moves the resume cursor', () => {
+    const sent: ClientMessage[] = [];
+    const client = createSyncClient({ send: (m) => sent.push(m) });
+    let resynced = false;
+    client.subscribeWrites(() => {}, { onResync: () => (resynced = true) });
+
+    client.receive({ type: 'writes', writes: [], cursor: 42, resync: true });
+
+    expect(resynced).toBe(true);
+    client.replay();
+    expect(sent.filter((m) => m.type === 'subscribeWrites').at(-1)).toEqual({
+      type: 'subscribeWrites',
+      since: 42,
+    });
   });
 });
