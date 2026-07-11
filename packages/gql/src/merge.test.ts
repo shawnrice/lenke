@@ -151,4 +151,27 @@ describe('GQL: _MERGE (keyed upsert, node form)', () => {
       ErrorCode.InvalidGraphOp,
     );
   });
+
+  test('iso-strict parses the whole ISO surface but rejects every extension', () => {
+    // A spread of pure-ISO GQL — all must parse under iso-strict, proving the
+    // ISO surface is self-contained (no extension leaked into it).
+    const iso = [
+      `MATCH (a:Person)-[:KNOWS]->(b) WHERE a.age > 30 RETURN b.name`,
+      `INSERT (:Person {name: 'x', age: 1})`,
+      `MATCH (n:Person) SET n.age = 2`,
+      `MATCH (n:Person) REMOVE n.age`,
+      `MATCH (n:Person) DETACH DELETE n`,
+      `MATCH (n) RETURN count(*) AS c ORDER BY c DESC LIMIT 5`,
+    ];
+    for (const q of iso) {
+      expect(() => parse(q, { dialect: 'iso-strict' }), q).not.toThrow();
+    }
+    // Every extension construct is a syntax error under iso-strict.
+    for (const ext of [
+      `_MERGE (u:Acct {email: 'a'})`,
+      `_MERGE (u:Acct {email: 'a'}) _ON_CREATE SET u.x = 1`,
+    ]) {
+      expect(() => parse(ext, { dialect: 'iso-strict' }), ext).toThrow();
+    }
+  });
 });

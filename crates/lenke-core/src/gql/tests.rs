@@ -1863,13 +1863,44 @@ fn merge_edge_missing_endpoint_errors() {
     let mut g = modern();
     g.create_unique_constraint("User", "id").unwrap();
     g.create_unique_constraint("Team", "id").unwrap();
-    rows(&mut g, "INSERT (:User {id: 'u1'})"); // no Group g1
+    rows(&mut g, "INSERT (:User {id: 'u1'})"); // no Team t1
 
     let err = parse("_MERGE (u:User {id:'u1'})-[m:MEMBER]->(g:Team {id:'g1'})")
         .unwrap()
         .execute(&mut g, &Params::new())
         .unwrap_err();
     assert_eq!(err.code, crate::error_codes::ErrorCode::InvalidGraphOp);
+}
+
+#[test]
+fn iso_strict_parses_iso_surface_rejects_extensions() {
+    use super::ast::Dialect;
+    use super::parser::parse_with_dialect;
+    // The whole ISO surface parses under iso-strict (self-contained; no extension
+    // leaked in).
+    for q in [
+        "MATCH (a:Person)-[:KNOWS]->(b) WHERE a.age > 30 RETURN b.name",
+        "INSERT (:Person {name: 'x', age: 1})",
+        "MATCH (n:Person) SET n.age = 2",
+        "MATCH (n:Person) REMOVE n.age",
+        "MATCH (n:Person) DETACH DELETE n",
+        "MATCH (n) RETURN count(*) AS c ORDER BY c DESC LIMIT 5",
+    ] {
+        assert!(
+            parse_with_dialect(q, Dialect::IsoStrict).is_ok(),
+            "should parse: {q}"
+        );
+    }
+    // Every extension construct is a syntax error under iso-strict.
+    for ext in [
+        "_MERGE (u:Acct {email: 'a'})",
+        "_MERGE (u:Acct {email: 'a'}) _ON_CREATE SET u.x = 1",
+    ] {
+        assert!(
+            parse_with_dialect(ext, Dialect::IsoStrict).is_err(),
+            "should reject: {ext}"
+        );
+    }
 }
 
 #[test]
