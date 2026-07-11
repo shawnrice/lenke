@@ -36,7 +36,7 @@ import { ErrorCode, LenkeError } from '@lenke/errors';
 import type { QueryParams, Store } from '@lenke/native';
 
 import { createSyncHost, type SyncHost, type SyncHostOptions } from './host.js';
-import { runWrite, type SyncWrite } from './protocol.js';
+import { runWrite, toWireError, type SyncWrite, type WireError } from './protocol.js';
 
 export type { SyncWrite } from './protocol.js';
 
@@ -246,8 +246,30 @@ export const createSyncEngine = (options: SyncEngineOptions): SyncEngine => {
   const isComplete = (deps: readonly string[] | null, params?: QueryParams): boolean =>
     matchesFor(deps, params).every((m) => stateOf(m.stateKey) === 'complete');
 
+  // A scope's last load failure, keyed by stateKey. Surfaced to standing queries
+  // as a RETRYABLE error (the sub stays alive; the next demand re-attempts).
+  const loadErrors = new Map<string, WireError>();
+
+  // The load error a subscription should see: the first errored scope it matches
+  // (undefined if every matched scope loaded, or is empty/loading, cleanly).
+  const loadError = (
+    deps: readonly string[] | null,
+    params?: QueryParams,
+  ): WireError | undefined => {
+    for (const m of matchesFor(deps, params)) {
+      const e = loadErrors.get(m.stateKey);
+
+      if (e) {
+        return e;
+      }
+    }
+
+    return undefined;
+  };
+
   const load = async (match: Match): Promise<void> => {
     states.set(match.stateKey, 'loading');
+    loadErrors.delete(match.stateKey); // a fresh attempt clears the stale error → UI shows loading
 
     try {
       const writes = await collections[match.name].load(match.scope);
@@ -261,8 +283,11 @@ export const createSyncEngine = (options: SyncEngineOptions): SyncEngine => {
       });
       states.set(match.stateKey, 'complete');
     } catch (e) {
-      // The next demand re-triggers the load; completeness stays honest.
+      // The next demand re-triggers the load; completeness stays honest. The
+      // error is retained so standing queries over this scope can surface it
+      // (retryable) instead of spinning a forever-skeleton.
       states.set(match.stateKey, 'error');
+      loadErrors.set(match.stateKey, toWireError(e));
       options.onLoadError?.(match.name, e);
     }
 
@@ -432,6 +457,7 @@ export const createSyncEngine = (options: SyncEngineOptions): SyncEngine => {
         send,
         applyMutation: mutate,
         isComplete,
+        loadError,
         onSubscribe: ensure,
         pendingWrites: () => queue.length,
       });

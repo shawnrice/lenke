@@ -657,6 +657,20 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
         }
 
         if (msg.error) {
+          if (msg.retryable) {
+            // A demand-fill LOAD failed (the standing query is fine). Surface the
+            // error but KEEP the subscription and its warm rows — the next
+            // successful load clears it with a fresh push. Tearing down here
+            // would drop rows and force a re-subscribe on every transient blip.
+            settle(entry, {
+              ...entry.snapshot,
+              complete: msg.complete ?? entry.snapshot.complete,
+              error: msg.error,
+            });
+
+            return;
+          }
+
           // The host closed this subscription: surface the error and go wire-
           // inactive. The handle stays canonical — a later subscribe retries.
           bySub.delete(msg.sub);

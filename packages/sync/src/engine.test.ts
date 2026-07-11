@@ -126,7 +126,7 @@ suite('@lenke/sync engine · demand-fill', () => {
     stop();
   });
 
-  test('a failed load reports, stays incomplete, and the next demand retries', async () => {
+  test('a failed load reports, surfaces a retryable error to the client, and the next demand retries', async () => {
     let calls = 0;
     const errors: string[] = [];
     const { engine, client } = connect({
@@ -152,11 +152,19 @@ suite('@lenke/sync engine · demand-fill', () => {
 
     await until(() => engine.collectionState('people') === 'error');
     expect(errors).toEqual(['people']);
-    expect(live.getSnapshot().complete).toBe(false);
 
-    // A new demand (fresh subscription) re-triggers the load.
+    // The failure now reaches the CLIENT as a retryable error (not a silent
+    // forever-skeleton), WITHOUT tearing the subscription down — the handle
+    // stays wire-active so a later successful load just updates it.
+    await until(() => live.getSnapshot().error !== undefined);
+    expect(live.getSnapshot().complete).toBe(false);
+    expect(client.subscriptionCount()).toBe(1);
+
+    // A new demand re-triggers the load; on success the error CLEARS and rows fill.
     engine.ensure(['Person']);
     await until(() => live.getSnapshot().complete);
+    expect(live.getSnapshot().error).toBeUndefined();
+    expect(live.getSnapshot().rows.length).toBeGreaterThan(0);
     expect(calls).toBe(2);
     stop();
   });

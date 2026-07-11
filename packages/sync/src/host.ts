@@ -35,13 +35,14 @@
  * a complete, local-only store.
  */
 
-import { ErrorCode, isLenkeError, LenkeError } from '@lenke/errors';
+import { ErrorCode, LenkeError } from '@lenke/errors';
 import type { LiveQuery, QueryParams, Row, Store } from '@lenke/native';
 
 import {
   isClientMessage,
   keyOf,
   runWrite,
+  toWireError,
   type ClientMessage,
   type HostMessage,
   type MutateMessage,
@@ -87,21 +88,19 @@ export type SyncHostOptions = {
    */
   isComplete?: (deps: readonly string[] | null, params?: QueryParams) => boolean;
   /**
+   * The demand-fill LOAD error for a subscription's scope, if its last load
+   * failed (else `undefined`). Surfaced to the client as a **retryable** error
+   * that keeps the subscription alive — distinct from a standing-query failure,
+   * which closes it. Only the engine host wires this; a bare host has no loads.
+   */
+  loadError?: (deps: readonly string[] | null, params?: QueryParams) => WireError | undefined;
+  /**
    * Called on every subscribe with its declared deps and params — the
    * demand-fill trigger (params carry the scope of value-keyed collections).
    */
   onSubscribe?: (deps: readonly string[] | null, params?: QueryParams) => void;
   /** Pending write-back count for the status message. Defaults to 0. */
   pendingWrites?: () => number;
-};
-
-/** Shape any thrown failure into the wire's coded-error contract. */
-const toWireError = (e: unknown): WireError => {
-  if (isLenkeError(e)) {
-    return { code: e.code, message: e.message };
-  }
-
-  return { code: 'Unknown', message: e instanceof Error ? e.message : String(e) };
 };
 
 type RowDiff = {
@@ -206,6 +205,7 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
     ((text: string, params: QueryParams | undefined, lang?: 'gql' | 'gremlin') =>
       store.mutate((g) => runWrite(g, { text, params, lang })));
   const isComplete = options.isComplete ?? (() => true);
+  const loadError = options.loadError ?? (() => undefined);
   const pendingWrites = options.pendingWrites ?? (() => 0);
 
   type Subscription = {
@@ -223,6 +223,8 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
     prevOrder: string[];
     last: unknown;
     lastComplete: boolean | null;
+    /** Code of the last pushed load error (so an error's arrival/clear re-pushes). */
+    lastErrorKey: string | undefined;
     /** Has an authoritative (complete) push gone out yet this (re)subscribe? */
     authoritativeSent: boolean;
     stop: () => void;
@@ -256,8 +258,10 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
     }
 
     const complete = isComplete(s.deps, s.params);
+    const err = loadError(s.deps, s.params);
+    const errKey = err?.code;
 
-    if (rows === s.last && complete === s.lastComplete) {
+    if (rows === s.last && complete === s.lastComplete && errKey === s.lastErrorKey) {
       return;
     }
 
@@ -275,6 +279,18 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
 
     s.last = rows;
     s.lastComplete = complete;
+    s.lastErrorKey = errKey;
+
+    // A demand-fill LOAD for this scope failed. Surface it as a RETRYABLE error
+    // — the client shows it but keeps the subscription and its warm rows, and a
+    // later successful load (the next demand re-triggers) clears it with a fresh
+    // push. This is NOT the getSnapshot() failure above, which closes the sub:
+    // there the standing query itself is broken.
+    if (err) {
+      send({ type: 'rows', sub, error: err, retryable: true, complete, version: store.version });
+
+      return;
+    }
 
     if (complete) {
       s.authoritativeSent = true;
@@ -362,6 +378,7 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
       prevOrder: [],
       last: null,
       lastComplete: null,
+      lastErrorKey: undefined,
       authoritativeSent: false,
       stop: () => {},
     };

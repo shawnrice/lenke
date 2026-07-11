@@ -30,12 +30,22 @@
  * text from user input.
  */
 
+import { isLenkeError } from '@lenke/errors';
 import type { QueryParams, Row, RustGraph } from '@lenke/native';
 
 /** A failure crossing the wire: the stable code is the contract, the message is free to change. */
 export type WireError = {
   code: string;
   message: string;
+};
+
+/** Shape any thrown failure into the wire's coded-error contract. */
+export const toWireError = (e: unknown): WireError => {
+  if (isLenkeError(e)) {
+    return { code: e.code, message: e.message };
+  }
+
+  return { code: 'Unknown', message: e instanceof Error ? e.message : String(e) };
 };
 
 /** One replicable write: query text, its language, and (GQL only) `$name` bindings. */
@@ -265,6 +275,16 @@ export type RowsMessage = {
    */
   complete?: boolean;
   error?: WireError;
+  /**
+   * How the client should treat `error`. `true` — a demand-fill LOAD failed
+   * (the standing query is fine, the fetch for its data errored): surface the
+   * error but keep the subscription and its warm rows; a later successful load
+   * clears it. `false`/absent — the standing query itself failed: the host
+   * closed the subscription (the client goes wire-inactive; a re-subscribe
+   * retries). Set by the engine, which knows whether it caught a loader vs a
+   * query-execution failure — not inferred from the code.
+   */
+  retryable?: boolean;
 };
 
 /** The single answer to a one-shot `query`. */
