@@ -2,7 +2,17 @@ import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
-import { deserialize, FORMATS, graphContentEqual, parse, serialize } from './index.js';
+import {
+  decodeEdges,
+  decodeNodes,
+  deserialize,
+  encodeEdges,
+  encodeNodes,
+  FORMATS,
+  graphContentEqual,
+  parse,
+  serialize,
+} from './index.js';
 
 describe('serialize/deserialize entry points', () => {
   const doc = ['{"type":"node","id":"a","labels":["Person"],"properties":{"name":"marko"}}'].join(
@@ -45,6 +55,26 @@ describe('serialize/deserialize entry points', () => {
     // Same-graph is trivially equal; a different graph is not.
     expect(graphContentEqual(g, parse(doc, 'ndjson'))).toBe(true);
     expect(graphContentEqual(g, new Graph())).toBe(false);
+  });
+
+  test('the CSV paired-file halves are reachable from the barrel and round-trip', () => {
+    const g = parse(doc, 'ndjson');
+    g.addVertex({ id: 'b', labels: ['Person'], properties: { name: 'vadas' } });
+    g.addEdge({
+      from: g.getVertexById('a')!,
+      to: g.getVertexById('b')!,
+      labels: ['KNOWS'],
+      properties: {},
+    });
+
+    // Import the two CSVs into one fresh graph (nodes first).
+    const back = new Graph();
+    decodeNodes(encodeNodes(g), back);
+    decodeEdges(encodeEdges(g), back);
+
+    expect(back.vertexCount).toBe(2);
+    expect(back.edgeCount).toBe(1);
+    expect(graphContentEqual(back, g)).toBe(true);
   });
 
   test('FORMATS lists every registered format name at runtime', () => {

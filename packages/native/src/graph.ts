@@ -167,8 +167,18 @@ const ARW_UTF8 = 3;
  * referenced Apache-Arrow little-endian buffers; this reads them in place (no
  * Arrow dependency). Its purpose on the wire: ship/transfer the columnar bytes
  * instead of JSON rows, and materialize here only when a consumer wants objects.
+ *
+ * **Scalar columns only.** ARW1 has three column types — float64, bool, utf8 —
+ * so a projection of scalars (numbers, booleans, strings) round-trips
+ * byte-identical to the JSON `query` path. A column holding a **list** (e.g.
+ * `collect_list(...)`) or a whole **element** (`RETURN n`) is flattened into its
+ * text form in the utf8 column, so it does NOT reconstruct as the structured
+ * array/object the JSON path returns. Use `query()` (JSON) for non-scalar
+ * projections; reserve `queryArrow`/`decodeArrow` for scalar analytical columns.
+ *
+ * Pass a row shape to type the result: `decodeArrow<{ n: string }>(blob)`.
  */
-export const decodeArrow = (blob: Uint8Array): Row[] => {
+export const decodeArrow = <R extends Row = Row>(blob: Uint8Array): R[] => {
   const dv = new DataView(blob.buffer, blob.byteOffset, blob.byteLength);
   const td = new TextDecoder();
 
@@ -223,7 +233,7 @@ export const decodeArrow = (blob: Uint8Array): Row[] => {
     }
   }
 
-  return rows;
+  return rows as R[];
 };
 
 /**

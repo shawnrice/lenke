@@ -33,6 +33,11 @@ import { empty, from, isList, of } from './functions/index.js';
 export class List<T> {
   length: number;
 
+  /** Alias of {@link length}, for Set/Map-style `.size` intuition (`Infinity` if unknown). */
+  get size(): number {
+    return this.length;
+  }
+
   iter: NullaryFn<Generator<T, void>>;
 
   constructor(generator: NullaryFn<Generator<T, void>>, length = Infinity) {

@@ -106,8 +106,14 @@ export class Vertex {
 
   setProperty(key: string, value: unknown): void {
     validatePropertyKey(key);
+    const previousValue = this.properties[key]; // read before the write; undefined if absent
     const event = this.#graph?.emit(
-      new EmitterEvent('@graph/VertexPropertyChanged', { vertex: this, key, value }),
+      new EmitterEvent('@graph/VertexPropertyChanged', {
+        vertex: this,
+        key,
+        value,
+        previous: previousValue,
+      }),
     );
 
     if (event?.defaultPrevented) {

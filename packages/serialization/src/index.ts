@@ -22,6 +22,16 @@ export { pgTextCodec } from './pg-text/index.js';
 export { ndjsonCodec } from './ndjson/index.js';
 export { graphsonCodec } from './graphson/index.js';
 export { csvCodec } from './csv/index.js';
+// The CSV codec's node/edge halves — for Neo4j-`admin-import`-style paired files
+// (a nodes CSV + an edges CSV). `decode*` mutate-and-return the passed graph.
+export {
+  decodeEdges,
+  decodeEdgesStream,
+  decodeNodes,
+  decodeNodesStream,
+  encodeEdges,
+  encodeNodes,
+} from './csv/index.js';
 
 // `as const satisfies` (not a widening `Record<string, Codec>` annotation) so
 // `keyof typeof codecs` stays the literal union `'pg-json' | 'ndjson' | …`

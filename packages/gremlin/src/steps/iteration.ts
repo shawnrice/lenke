@@ -25,7 +25,8 @@ export const local = (plan: SubPlan): StepFn =>
 // Inside a `repeat`, the current iteration count (0-indexed).
 export const loops = (): StepFn => appendStep({ kind: 'loops' });
 
-// Declarative pattern match. STUBBED — executor throws.
+// Declarative pattern match: keep traversers satisfying every sub-pattern,
+// binding their `as(...)` tags into scope (see executor `matchStep`).
 export const match = (...patterns: SubPlan[]): StepFn =>
   appendStep({ kind: 'match', patterns: patterns.map(buildPlan) });
 

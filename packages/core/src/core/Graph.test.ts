@@ -270,4 +270,42 @@ describe('Graph Tests', () => {
       expect(() => g.addLabelToVertex('a::b', v)).toThrow(/::/);
     });
   });
+
+  describe('dogfood round-3 ergonomics', () => {
+    test('addVertex/addEdge accept no properties (a plain labeled element)', () => {
+      const g = createTestGraph();
+      const a = g.addVertex({ id: 'x', labels: ['N'] }); // no properties
+      const b = g.addVertex({ id: 'y', labels: ['N'] });
+      const e = g.addEdge({ from: a, to: b, labels: ['E'] }); // no properties
+      expect([...a.labels]).toEqual(['N']);
+      expect(e.hasLabel('E')).toBe(true);
+      expect(a.properties).toEqual({});
+    });
+
+    test('graph.on returns a working unsubscribe', () => {
+      const g = createTestGraph();
+      let hits = 0;
+      const off = g.on('@graph/VertexAdded', () => (hits += 1));
+      g.addVertex({ id: 'a1', labels: ['N'], properties: {} });
+      expect(hits).toBe(1);
+      off();
+      g.addVertex({ id: 'a2', labels: ['N'], properties: {} });
+      expect(hits).toBe(1); // detached — no further hits
+    });
+
+    test('VertexPropertyChanged carries `previous` (for undo without pre-commit reads)', () => {
+      const g = createTestGraph();
+      const v = g.addVertex({ id: 'v', labels: ['N'], properties: { color: 'red' } });
+      const seen: Array<{ previous: unknown; value: unknown }> = [];
+      g.on('@graph/VertexPropertyChanged', (ev) =>
+        seen.push({ previous: ev.value.previous, value: ev.value.value }),
+      );
+      v.setProperty('color', 'blue'); // present → new
+      v.setProperty('size', 'L'); // absent → present
+      expect(seen).toEqual([
+        { previous: 'red', value: 'blue' },
+        { previous: undefined, value: 'L' },
+      ]);
+    });
+  });
 });

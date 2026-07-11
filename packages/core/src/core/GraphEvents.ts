@@ -31,7 +31,9 @@ export type LabelRemovedFromEdge = EmitterEvent<
 
 export type VertexPropertyChanged = EmitterEvent<
   '@graph/VertexPropertyChanged',
-  { key: string; value: any; vertex: Vertex }
+  // `previous` is the value before the write (`undefined` if the key was absent),
+  // so a listener can reverse the change without reading pre-commit state.
+  { key: string; value: any; previous: any; vertex: Vertex }
 >;
 
 export type VertexPropertiesChanged = EmitterEvent<
@@ -51,7 +53,8 @@ export type VertexPropertiesRemoved = EmitterEvent<
 
 export type EdgePropertyChanged = EmitterEvent<
   '@graph/EdgePropertyChanged',
-  { key: string; value: any; edge: Edge }
+  // `previous` is the value before the write (`undefined` if the key was absent).
+  { key: string; value: any; previous: any; edge: Edge }
 >;
 
 export type EdgePropertiesChanged = EmitterEvent<

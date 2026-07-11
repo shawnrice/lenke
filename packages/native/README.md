@@ -66,7 +66,7 @@ All assert that the loaded artifact's ABI version matches the exported `ABI_VERS
 - `version` — monotonic mutation counter for O(1) change detection.
 - `epoch(name)` — per-token change epoch (by label / edge-type / property-key).
 - `query(q, ...subs)` — run GQL (tagged template or string) → `Row[]`, where `Row` is `Record<string, unknown>`.
-- `queryArrow(q, ...subs)` — run GQL → raw `ARW1` columnar blob as `Uint8Array`. Decode it with the exported `decodeArrow(blob)` (a compact custom framing, **not** Arrow IPC — no `apache-arrow` dependency needed or usable).
+- `queryArrow(q, ...subs)` — run GQL → raw `ARW1` columnar blob as `Uint8Array`. Decode it with the exported `decodeArrow<R>(blob)` (a compact custom framing, **not** Arrow IPC — no `apache-arrow` dependency needed or usable). **Scalar columns only:** ARW1 carries float64/bool/utf8, so a list column (`collect_list`) or an element column (`RETURN n`) is flattened to text and won't reconstruct as a structured array/object — use the JSON `query` for those; reserve Arrow for scalar analytical columns.
 - `gremlin(q, ...subs)` — run textual Gremlin → JSON-decoded `unknown[]`.
 - `toNdjson()` — serialize back to NDJSON bytes.
 - `serialize(format)` — serialize to a named format (`pg-json | pg-text | graphson | csv | ndjson`).

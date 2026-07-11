@@ -10,7 +10,8 @@ import { Vertex } from './Vertex.js';
 type AddVertexParams = {
   id?: string;
   labels: string[];
-  properties: Record<string, unknown>;
+  // Optional: a plain labeled vertex needs no properties (defaults to `{}`).
+  properties?: Record<string, unknown>;
 };
 
 type AddEdgeArgs = {
@@ -18,7 +19,8 @@ type AddEdgeArgs = {
   from: Vertex;
   to: Vertex;
   labels: string[];
-  properties: Record<string, unknown>;
+  // Optional: a plain labeled edge needs no properties (defaults to `{}`).
+  properties?: Record<string, unknown>;
 };
 
 export type GraphOptions = {
@@ -391,13 +393,15 @@ export class Graph {
   public addVertex = (params: AddVertexParams | Vertex): Vertex => {
     // Ingestion gate: reject a malformed label / property key before the Vertex
     // constructor writes it into the graph's element maps.
-    validateElementNames(params.labels, params.properties);
+    validateElementNames(params.labels, params.properties ?? {});
 
     if (params.id && this.getVertexById(params.id)) {
       return this.getVertexById(params.id)!;
     }
 
-    const vertex = Vertex.isVertex(params) ? params : new Vertex({ ...params, graph: this });
+    const vertex = Vertex.isVertex(params)
+      ? params
+      : new Vertex({ ...params, properties: params.properties ?? {}, graph: this });
 
     const event = this.emit(new EmitterEvent('@graph/VertexAdded', vertex));
 
@@ -501,7 +505,7 @@ export class Graph {
    */
   public addEdge = (params: AddEdgeArgs | Edge): Edge => {
     // Same gate as addVertex — validate before the Edge constructor writes.
-    validateElementNames(params.labels, params.properties);
+    validateElementNames(params.labels, params.properties ?? {});
 
     if (params.id && this.getEdgeById(params.id)) {
       return this.getEdgeById(params.id)!;
@@ -524,7 +528,9 @@ export class Graph {
       params.labels.length,
     );
 
-    return this.insertEdge(new Edge({ ...params, graph: this }));
+    return this.insertEdge(
+      new Edge({ ...params, properties: params.properties ?? {}, graph: this }),
+    );
   };
 
   /**
@@ -735,12 +741,11 @@ export class Graph {
     this.emitter.disable();
   };
 
+  /** Subscribe to a graph event. Returns an unsubscribe function (call it to detach). */
   public on = <T extends keyof GraphEvents>(
     type: T,
     listener: (event: GraphEvents[T]) => unknown,
-  ): void => {
-    this.emitter.on(type, listener);
-  };
+  ): (() => void) => this.emitter.on(type, listener);
 
   public once = <T extends keyof GraphEvents>(
     type: T,

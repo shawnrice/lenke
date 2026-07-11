@@ -53,7 +53,7 @@ Steps span the usual Gremlin categories, all importable from the package root:
 - **Sources** — `V(...ids)`, `E(...ids)`, `inject(...values)`.
 - **Movement** — `out`, `in_`, `both`, `outE`, `inE`, `bothE`, `outV`, `inV`, `bothV`, `otherV` (each takes optional edge labels).
 - **Filters** — `has`, `hasLabel`, `hasId`, `hasKey`, `hasNot`, `hasValue`, `is`, `where`, `filter`, `and`, `or`, `not`, `dedupe`, `simplePath`, `cyclicPath`.
-- **Projection** — `values`, `valueMap`, `properties`, `propertyMap`, `elementMap`, `id`, `label`, `value`, `project`, `path`, `select`, `as_`.
+- **Projection** — `values`, `valueMap`, `properties`, `propertyMap`, `elementMap`, `id`, `label`, `value`, `project`, `path`, `select`, `as_`, `constant` (emit a fixed value — handy as a `coalesce(..., constant('<default>'))` fallback).
 - **Aggregation / terminals** — `count`, `sum`, `min`, `max`, `mean`, `fold`, `toList`, `order`, `group`, `groupCount`, `tree`.
 - **Branching / iteration** — `union`, `coalesce`, `choose`, `branch`, `optional`, `local`, `repeat`, `loops`, `match`.
 - **Cardinality** — `take`/`limit`, `skip`, `range`, `tail`, `sample`.

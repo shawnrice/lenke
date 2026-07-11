@@ -14,6 +14,12 @@ describe('LazyList tests', () => {
     expect(Array.isArray(List.from([1]).toArray())).toBe(true);
   });
 
+  test('.size aliases .length (Set/Map intuition)', () => {
+    const list = List.from([1, 2, 3, 4, 5]);
+    expect(list.size).toBe(5);
+    expect(list.size).toBe(list.length);
+  });
+
   test('map works', () => {
     expect(
       List.from([1, 2, 3, 4])

@@ -187,9 +187,26 @@ const engine = createSyncEngine({
 // answer means: snapshots.clear(), cold boot.
 ```
 
-Encryption is **secure-by-default and structural**: `createSnapshotStore` writes to OPFS only when it holds a key; without one the snapshot stays in memory and never touches disk. And the durable sink enforces this on its own — `opfsStorage.write` **refuses an unencrypted snapshot** (a one-byte crypto flag in the format lets it check without a key), so plaintext can't reach disk even through the raw primitives. The lower-level `encodeSnapshot`/`decodeSnapshot`/`readSnapshot` each still take a required, explicit `{ key }` or `{ unencrypted: true }` — there's no "pass nothing" path, because an unencrypted snapshot carries no authentication at all.
+**Storage sink (browser vs. server).** `createSnapshotStore({ filename, key })` defaults its durable sink to `opfsStorage(filename)`, which throws off-browser. On Node/Bun pass a `durable` override — `SnapshotStorage` is just `{ read, write, delete }` over bytes:
 
-Format: a **plaintext header** `{ formatVersion, schemaVersion, userId, serverCursor, collections }` — the invalidation tier, checked before any decryption (`peekHeader` reads it without the key) — then a gzip payload, optionally AES-GCM-sealed (compress-then-encrypt; authenticated, so tamper — payload _or_ the header, bound in as AEAD `additionalData` — reads as absent; fresh IV per save; revocation = drop the key — crypto-shredding). `readSnapshot` deletes an invalid-forever snapshot on the way out. Logout should still answer with `Clear-Site-Data: "storage"` — the browser wipes the origin without trusting app code to clean up.
+```ts
+import { readFile, writeFile, rm } from 'node:fs/promises';
+
+const fileStorage = (path: string): SnapshotStorage => ({
+  read: () => readFile(path).catch(() => null),
+  write: (bytes) => writeFile(path, bytes),
+  delete: () => rm(path, { force: true }),
+});
+const snapshots = createSnapshotStore({
+  filename: 'ignored',
+  key,
+  durable: fileStorage('./state.lnks'),
+});
+```
+
+Encryption is **secure-by-default and structural**: `createSnapshotStore` writes durably only when it holds a key; without one the snapshot stays in memory and never touches disk. And the durable sink enforces this on its own — `opfsStorage.write` **refuses an unencrypted snapshot** (a one-byte crypto flag in the format lets it check without a key), so plaintext can't reach disk even through the raw primitives. The lower-level `encodeSnapshot`/`decodeSnapshot`/`readSnapshot` each still take a required, explicit `{ key }` or `{ unencrypted: true }` — there's no "pass nothing" path, because an unencrypted snapshot carries no authentication at all.
+
+Format: a **plaintext header** `{ formatVersion, schemaVersion, userId, serverCursor, collections }` — the invalidation tier, checked before any decryption (`peekHeader` reads it without the key) — then a gzip payload, optionally AES-GCM-sealed (compress-then-encrypt; authenticated, so tamper — payload _or_ the header, bound in as AEAD `additionalData` — reads as absent; fresh IV per save; revocation = drop the key — crypto-shredding). `readSnapshot`/`load` **delete** a snapshot they can't decode on the way out — and this is intentional: a wrong key or a tampered/authentication-failing payload is treated as "invalid, drop it" (a security property — a snapshot you can't open is a snapshot you evict, not keep). So do NOT probe a key against your live snapshot to "test" it — a failed load destroys it. Use `peekHeader` (reads the plaintext header without the key) for a non-destructive check. Logout should still answer with `Clear-Site-Data: "storage"` — the browser wipes the origin without trusting app code to clean up.
 
 ## v1 boundaries (deliberate)
 

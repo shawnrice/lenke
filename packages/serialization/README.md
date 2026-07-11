@@ -60,7 +60,22 @@ The registered codecs are exposed as the `codecs` record (`FormatName` is its ke
 
 Node ids and scalar / multi-element-list properties round-trip through every format. `pg-text` is the one lossy codec — its textual grammar has no edge-id column and encodes lists as repeated keys, so pick `ndjson` / `pg-json` / `graphson` when you need exact edge identity or faithful empty/singleton lists.
 
-Top-level entry points (`serialize`, `deserialize`, `serializeStream`, `deserializeStream`, `serializeAsync`, `deserializeAsync`) take a `FormatName` and dispatch to the matching codec; an unknown format or an unsupported streaming request throws a `LenkeError`. The CSV codec also exposes its node/edge halves directly (`encodeNodes`, `decodeNodes`, `encodeEdges`, `decodeEdges`, and their `*Stream` variants) for Neo4j-`admin-import`-style paired files.
+Top-level entry points (`serialize`, `deserialize`, `serializeStream`, `deserializeStream`, `serializeAsync`, `deserializeAsync`) take a `FormatName` and dispatch to the matching codec; an unknown format or an unsupported streaming request throws a `LenkeError`.
+
+### CSV paired files (Neo4j `admin-import` style)
+
+Neo4j exports a **nodes CSV** and a separate **edges CSV**. The CSV codec's halves are exported for exactly this shape (import both into one graph; `decode*` mutate-and-return the passed graph):
+
+```ts
+import { Graph } from '@lenke/core';
+import { decodeNodes, decodeEdges, encodeNodes, encodeEdges } from '@lenke/serialization';
+
+const g = new Graph();
+decodeNodes(await readFile('nodes.csv', 'utf8'), g); // nodes first (edges resolve endpoints against them)
+decodeEdges(await readFile('edges.csv', 'utf8'), g);
+```
+
+Header/column conventions: `id,:LABEL,key,key:integer,tags:string[]` for nodes; `:START_ID,:END_ID,:TYPE,key…` for edges. A node line's `id` and `:LABEL` (`;`-joined for multi-label) come first; a property column may carry a type (`:integer`/`:float`/`:boolean`/`:string[]`); `\N` is a stored null and a quoted empty `""` a present empty string. `decodeNodesStream` / `decodeEdgesStream` take a `ChunkSource` for large files. **One asymmetry to know:** batch `decodeEdges` **throws** `E_MISSING_VERTEX` on an edge whose endpoint isn't present, while `decodeEdgesStream` **creates** the missing endpoint as a bare vertex (stream decoding can't look ahead) — pre-validate endpoints if you need the strict behavior on the streaming path.
 
 ## License
 
