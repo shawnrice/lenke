@@ -37,6 +37,8 @@ pub enum ErrorCode {
     ResourceExhausted,
     /// An unknown function/step/symbol referenced in a query.
     UnknownFunction,
+    /// A `$name` referenced by a query has no binding in the supplied params.
+    MissingParameter,
     /// A failure crossing the native/wasm FFI boundary.
     Ffi,
 }
@@ -58,6 +60,7 @@ impl ErrorCode {
         ErrorCode::Unsupported,
         ErrorCode::ResourceExhausted,
         ErrorCode::UnknownFunction,
+        ErrorCode::MissingParameter,
         ErrorCode::Ffi,
     ];
 
@@ -77,6 +80,7 @@ impl ErrorCode {
             ErrorCode::Unsupported => "E_UNSUPPORTED",
             ErrorCode::ResourceExhausted => "E_RESOURCE_EXHAUSTED",
             ErrorCode::UnknownFunction => "E_UNKNOWN_FUNCTION",
+            ErrorCode::MissingParameter => "E_MISSING_PARAMETER",
             ErrorCode::Ffi => "E_FFI",
         }
     }

@@ -36,6 +36,8 @@ export const ErrorCode = {
   ResourceExhausted: 'E_RESOURCE_EXHAUSTED',
   /** An unknown function/step/symbol referenced in a query. */
   UnknownFunction: 'E_UNKNOWN_FUNCTION',
+  /** A `$name` referenced by a query has no binding in the supplied params. */
+  MissingParameter: 'E_MISSING_PARAMETER',
   /** A failure crossing the native/wasm FFI boundary. */
   Ffi: 'E_FFI',
 } as const;

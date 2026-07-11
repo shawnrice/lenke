@@ -867,6 +867,13 @@ const callExtendedScalar = (name: string, args: readonly unknown[]): unknown => 
  * to closures *now* and captures them, so the run-time path is plain function
  * application — no AST re-traversal, no `kind`/`op` dispatch.
  */
+// Compile-time side channel: while `compile` walks the tree, every `$name` it
+// meets is recorded here so the plan can eager-validate all referenced params
+// are bound before it runs (mirrors the Rust engine's `positional`). Set only
+// for the duration of one synchronous `compile` call (JS is single-threaded, and
+// sub-patterns compile in-line — no re-entrant `compile`), then cleared.
+let paramCollector: Set<string> | null = null;
+
 const compileExpr = (expr: Expr): CompiledExpr => {
   switch (expr.kind) {
     case 'lit': {
@@ -881,6 +888,7 @@ const compileExpr = (expr: Expr): CompiledExpr => {
     }
     case 'param': {
       const { name } = expr;
+      paramCollector?.add(name);
 
       // Own-property only: a query text referencing `$__proto__` / `$constructor`
       // must read undefined (an unbound param), never `Object.prototype`. The
@@ -2665,12 +2673,33 @@ type CQuery = { parts: readonly CLinear[]; ops: readonly SetOp[] };
  * params; it never re-parses or re-analyzes.
  */
 export const compile = (query: Query): Plan => {
-  const compiled: CQuery = {
-    parts: query.parts.map(compileLinear),
-    ops: query.ops,
-  };
+  const referenced = new Set<string>();
+  const prev = paramCollector;
+  paramCollector = referenced;
+
+  let compiled: CQuery;
+
+  try {
+    compiled = { parts: query.parts.map(compileLinear), ops: query.ops };
+  } finally {
+    paramCollector = prev;
+  }
+
+  const names = [...referenced];
 
   return (graph, params = {}) => {
+    // Eager param validation: a `$name` the query references but the caller
+    // didn't bind is a programming error — throw before running, not a silent
+    // empty result. (The Rust engine does the same in `positional`.)
+    for (const name of names) {
+      if (!Object.hasOwn(params, name)) {
+        throw new LenkeError(`missing parameter: $${name}`, {
+          code: ErrorCode.MissingParameter,
+          details: { param: name },
+        });
+      }
+    }
+
     let rows = runLinear(compiled.parts[0], graph, params);
     compiled.ops.forEach((op, i) => {
       rows = combineRows(op, rows, runLinear(compiled.parts[i + 1], graph, params));

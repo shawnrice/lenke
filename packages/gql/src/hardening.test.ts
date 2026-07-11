@@ -30,18 +30,18 @@ const litValue = (text: string): unknown => {
 
 // --- #1: SET / REMOVE keep the property index consistent ---------------------
 
-describe('hardening: a prototype-key param reference reads unbound, not Object.prototype', () => {
-  test('$__proto__ / $constructor read like any unbound param, not a prototype object', () => {
+describe('hardening: a prototype-key param reference throws, never reads Object.prototype', () => {
+  test('$__proto__ / $constructor / $nope unbound throw MissingParameter, not a prototype object', () => {
     const g = new Graph();
     g.addVertex({ id: 'a', labels: ['N'], properties: { v: 1 } });
 
-    // A prototype-key reference in the query TEXT (no such param passed) must
-    // behave EXACTLY like an ordinary unbound param — never `Object.prototype`.
-    const unbound = query(g, 'MATCH (n:N) RETURN $nope AS x');
-    expect(query(g, 'MATCH (n:N) RETURN $__proto__ AS x')).toEqual(unbound);
-    expect(query(g, 'MATCH (n:N) RETURN $constructor AS x')).toEqual(unbound);
-    // And concretely: not an object (the whole point).
-    expect(typeof query(g, 'MATCH (n:N) RETURN $__proto__ AS x')[0].x).not.toBe('object');
+    // An unbound param reference is a loud error — and a prototype-key name is
+    // no exception: it throws `MissingParameter` before it could ever resolve to
+    // `Object.prototype`. (Previously these read as a silent unbound NULL.)
+    for (const name of ['nope', '__proto__', 'constructor']) {
+      const err = thrown(() => query(g, `MATCH (n:N) RETURN $${name} AS x`));
+      expect(hasErrorCode(err, ErrorCode.MissingParameter)).toBe(true);
+    }
 
     // A param the caller genuinely binds under that name (an OWN property —
     // computed key, so it doesn't set the prototype) still resolves as data.

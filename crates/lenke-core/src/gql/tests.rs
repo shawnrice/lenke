@@ -1504,6 +1504,18 @@ fn unknown_function_errors_instead_of_silent_null() {
 }
 
 #[test]
+fn unbound_param_errors_instead_of_silent_null() {
+    let mut g = modern();
+    // `$missing` is referenced but not supplied — a programming error, not a
+    // silent empty result.
+    let err = parse("MATCH (n) WHERE n.name = $missing RETURN n")
+        .unwrap()
+        .execute(&mut g, &Params::new())
+        .unwrap_err();
+    assert_eq!(err.code, crate::error_codes::ErrorCode::MissingParameter);
+}
+
+#[test]
 fn string_length_counts_utf16_units_like_js() {
     // Non-BMP chars are 2 UTF-16 units — matching JS `.length` (the TS engine),
     // not Unicode code points (which Rust's `chars().count()` gave before).

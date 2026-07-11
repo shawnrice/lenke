@@ -5196,11 +5196,21 @@ fn run_cquery_arrow(plan: &CQuery, graph: &mut Graph, params: &[Val]) -> CodeRes
     Ok(crate::arrow::to_arrow(&rs))
 }
 
-/// Bind named params into the plan's positional slot order.
-fn positional(param_names: &[String], params: &Params) -> Vec<Val> {
+/// Bind named params into the plan's positional slot order. A `$name` the query
+/// references but the caller didn't supply is an error (not a silent NULL) — a
+/// missing binding is a programming mistake, so fail loud. Mirrors the TS
+/// engine's eager check.
+fn positional(param_names: &[String], params: &Params) -> CodeResult<Vec<Val>> {
     param_names
         .iter()
-        .map(|n| params.get(n).cloned().unwrap_or(Val::Null))
+        .map(|n| {
+            params.get(n).cloned().ok_or_else(|| {
+                CodeError::new(
+                    ErrorCode::MissingParameter,
+                    format!("missing parameter: ${n}"),
+                )
+            })
+        })
         .collect()
 }
 
@@ -5214,13 +5224,13 @@ pub struct Prepared {
 
 impl Prepared {
     pub fn execute(&self, graph: &mut Graph, params: &Params) -> CodeResult<RowSet> {
-        run_cquery(&self.plan, graph, &positional(&self.param_names, params))
+        run_cquery(&self.plan, graph, &positional(&self.param_names, params)?)
     }
     /// Execute and return the result as an Apache Arrow columnar blob (see
     /// [`crate::arrow`]) — the zero-copy carrier for the FFI / wasm boundary.
     #[cfg(feature = "arrow")]
     pub fn execute_arrow(&self, graph: &mut Graph, params: &Params) -> CodeResult<Vec<u8>> {
-        run_cquery_arrow(&self.plan, graph, &positional(&self.param_names, params))
+        run_cquery_arrow(&self.plan, graph, &positional(&self.param_names, params)?)
     }
 }
 
@@ -5236,12 +5246,12 @@ impl super::ast::Query {
     /// `parse(q)?.execute(graph, &params)` path; reuse a [`Prepared`] for speed.
     pub fn execute(&self, graph: &mut Graph, params: &Params) -> CodeResult<RowSet> {
         let (plan, param_names) = lower(self);
-        run_cquery(&plan, graph, &positional(&param_names, params))
+        run_cquery(&plan, graph, &positional(&param_names, params)?)
     }
     /// Lower and execute, returning an Apache Arrow columnar blob.
     #[cfg(feature = "arrow")]
     pub fn execute_arrow(&self, graph: &mut Graph, params: &Params) -> CodeResult<Vec<u8>> {
         let (plan, param_names) = lower(self);
-        run_cquery_arrow(&plan, graph, &positional(&param_names, params))
+        run_cquery_arrow(&plan, graph, &positional(&param_names, params)?)
     }
 }
