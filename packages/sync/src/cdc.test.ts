@@ -128,4 +128,24 @@ suite('CDC write stream (TS vs native store)', () => {
     expect(resynced).toBe(true); // since=0 fell off the tail
     expect(seen).toEqual([]);
   });
+
+  test('reconnect (replay) resumes from the cursor without double-applying', async () => {
+    const s = server();
+    const a = s.client();
+    const b = s.client();
+    const seen: string[] = [];
+    a.subscribeWrites((w) => seen.push(...w.map((x) => x.text)));
+
+    await b.mutate('INSERT (:Widget {id: 1})');
+    expect(seen).toEqual(['INSERT (:Widget {id: 1})']);
+
+    // Simulate reconnect: replay re-subscribes the write stream from the cursor.
+    // The cursor is current, so nothing is re-delivered (no double-apply)…
+    a.replay();
+    expect(seen).toEqual(['INSERT (:Widget {id: 1})']);
+
+    // …and live delivery continues afterward.
+    await b.mutate('INSERT (:Widget {id: 2})');
+    expect(seen).toEqual(['INSERT (:Widget {id: 1})', 'INSERT (:Widget {id: 2})']);
+  });
 });

@@ -208,9 +208,36 @@ Encryption is **secure-by-default and structural**: `createSnapshotStore` writes
 
 Format: a **plaintext header** `{ formatVersion, schemaVersion, userId, serverCursor, collections }` — the invalidation tier, checked before any decryption (`peekHeader` reads it without the key) — then a gzip payload, optionally AES-GCM-sealed (compress-then-encrypt; authenticated, so tamper — payload _or_ the header, bound in as AEAD `additionalData` — reads as absent; fresh IV per save; revocation = drop the key — crypto-shredding). `readSnapshot`/`load` **delete** a snapshot they can't decode on the way out — and this is intentional: a wrong key or a tampered/authentication-failing payload is treated as "invalid, drop it" (a security property — a snapshot you can't open is a snapshot you evict, not keep). So do NOT probe a key against your live snapshot to "test" it — a failed load destroys it. Use `peekHeader` (reads the plaintext header without the key) for a non-destructive check. Logout should still answer with `Clear-Site-Data: "storage"` — the browser wipes the origin without trusting app code to clean up.
 
+## Multiplayer: the CDC write stream
+
+Live queries push **rows** — the _result_ of a query, recomputed and re-sent when the store changes. That's enough for one client reading its own store, but for **multiplayer** — many clients, each with an optimistic local engine, that must see _each other's_ writes — you want the writes themselves, not re-derived rows. That's the CDC (change-data-capture) write stream.
+
+**Topology.** One authoritative server: a shared `Store` and a shared `WriteLog`, with one `createSyncHost(store, { …, writeLog })` per connection. Each client runs a local `createSyncEngine` (its own optimistic store) and a `createSyncClient` over the socket.
+
+```ts
+// server: one store, one op log, a host per socket
+const store = createStore(/* … */);
+const writeLog = createWriteLog();
+onConnection((socket) => {
+  const host = createSyncHost(store, { send: (m) => socket.send(m), writeLog });
+  socket.onMessage((m) => host.receive(m));
+});
+
+// client: pipe the write stream into the local optimistic engine
+client.subscribeWrites((writes) => engine.ingest(writes), {
+  onResync: () => coldBootFromSnapshot(),
+});
+```
+
+**How it flows.** When any client mutates, its host commits to the shared store _and_ appends the write to the `WriteLog` — statement-based replication: the op is the `SyncWrite` (write text + resolved params), replayed through `runWrite`, deterministic because the two engines are byte-identical. Every _other_ stream subscriber receives it and `ingest`s it into its local store, so a change appears everywhere without re-querying. The writer never gets its own echo (origin-skip) — it already applied it optimistically.
+
+**Ordering & resume.** Each op carries a monotonic `seq`. `subscribeWrites` takes a `since` cursor; the client tracks the last-applied seq and resumes from it on reconnect (`replay()` re-subscribes automatically). If the client has fallen off the `WriteLog`'s bounded tail (a long disconnect), the host answers `resync` and the client cold-boots from a snapshot.
+
+**Cost.** A write fans out as **O(N)** shared-payload sends (each of N clients must hear about it), not the O(N²) of re-running every client's subscription query per write. v1 broadcasts to every stream subscriber; **interest routing** — only sending a write to clients whose keyed collection it touches — is the natural next refinement. Idempotent writes (`_MERGE`) make the at-least-once cases replay-safe.
+
 ## v1 boundaries (deliberate)
 
 - **`window` is carried but not interpreted** — re-subscribe with the same `sub` to replace a standing query (that is also how a windowed grid will scroll).
 - **Rows are JSON** — Arrow-buffer negotiation is an extension.
 - **No auth/scoping** — a host serves its store; "the server syncs only what this user may see" is a store-construction concern for the sync loop, not a protocol concern.
-- **No resume** — resumable subscriptions (server-side cursor catch-up) are a protocol extension. Reconnect itself is handled: `createReconnectingClient` wraps the client with re-dial/backoff and replays every standing query and parked one-shot over the fresh transport (at-least-once — exactly-once needs server-side request-id dedupe).
+- **No resume for _live-query_ subscriptions** — a reconnect re-subscribes standing queries from scratch (the host re-answers rows; `applyDiff` preserves identity). The **CDC write stream is resumable** (a `since` cursor + bounded op log — see above). `createReconnectingClient` wraps the client with re-dial/backoff and replays every standing query, parked one-shot, and the write-stream cursor over the fresh transport. Delivery is at-least-once — exactly-once needs server-side request-id dedupe.
