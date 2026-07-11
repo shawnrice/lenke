@@ -40,6 +40,10 @@ pub enum Clause {
     Return(Projection),
     /// `INSERT pattern, …`
     Insert(Vec<PathPattern>),
+    /// `_MERGE pattern [_ON_CREATE SET …] [_ON_UPDATE …]` — the lenke keyed-upsert
+    /// extension (NOT ISO GQL; sigil-marked, recognized only under the `Lenke`
+    /// dialect). See docs/design/gql-extensions.md §2.
+    Merge(MergeClause),
     /// `SET n.key = v` / `SET n:Label`
     Set(Vec<SetItem>),
     /// `REMOVE n.key` / `REMOVE n:Label`
@@ -51,6 +55,36 @@ pub enum Clause {
     },
     /// `FINISH` — run for side effects, return nothing.
     Finish,
+}
+
+/// Parse dialect: `Lenke` permits sigil extensions (`_MERGE`); `IsoStrict` rejects
+/// them (they stay ordinary identifiers). See docs/design/gql-extensions.md §1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Dialect {
+    #[default]
+    Lenke,
+    IsoStrict,
+}
+
+/// `_MERGE pattern [_ON_CREATE SET …] [_ON_UPDATE SET … [WHERE p] |
+/// _ON_UPDATE_NOTHING]` — v1 upserts a single element keyed by a unique
+/// constraint; absent `on_update` = clobber the pattern's payload.
+#[derive(Debug, Clone)]
+pub struct MergeClause {
+    pub pattern: PathPattern,
+    pub on_create: Option<Vec<SetItem>>,
+    pub on_update: Option<MergeUpdate>,
+}
+
+#[derive(Debug, Clone)]
+pub enum MergeUpdate {
+    /// `_ON_UPDATE SET … [WHERE p]` — replaces the default clobber; runs only if `where_` holds.
+    Set {
+        items: Vec<SetItem>,
+        where_: Option<Expr>,
+    },
+    /// `_ON_UPDATE_NOTHING` — leave the existing element untouched.
+    Nothing,
 }
 
 /// `[OPTIONAL] MATCH p1, p2, … [WHERE pred]`.

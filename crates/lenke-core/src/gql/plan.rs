@@ -552,6 +552,7 @@ pub enum CClause {
     },
     Return(CProjection),
     Insert(Vec<CPath>),
+    Merge(CMerge),
     Set(Vec<CSetItem>),
     Remove(Vec<CRemoveItem>),
     Delete {
@@ -559,6 +560,23 @@ pub enum CClause {
         targets: Vec<CExpr>,
     },
     Finish,
+}
+
+/// Compiled `_MERGE` (see [`crate::gql::ast::MergeClause`]).
+#[derive(Debug, Clone)]
+pub struct CMerge {
+    pub pattern: CPath,
+    pub on_create: Option<Vec<CSetItem>>,
+    pub on_update: Option<CMergeUpdate>,
+}
+
+#[derive(Debug, Clone)]
+pub enum CMergeUpdate {
+    Set {
+        items: Vec<CSetItem>,
+        where_: Option<CExpr>,
+    },
+    Nothing,
 }
 
 #[derive(Debug, Clone)]
@@ -1126,6 +1144,27 @@ impl Lowerer {
         }
     }
 
+    fn compile_set_items(&mut self, items: &[SetItem]) -> Vec<CSetItem> {
+        items
+            .iter()
+            .map(|i| match i {
+                SetItem::Prop {
+                    variable,
+                    key,
+                    value,
+                } => CSetItem::Prop {
+                    var_slot: self.slot_of(variable),
+                    key: key.clone(),
+                    value: self.expr(value),
+                },
+                SetItem::Label { variable, label } => CSetItem::Label {
+                    var_slot: self.slot_of(variable),
+                    label: label.clone(),
+                },
+            })
+            .collect()
+    }
+
     fn clause(&mut self, c: &Clause) -> CClause {
         match c {
             Clause::Match(m) => {
@@ -1157,26 +1196,29 @@ impl Lowerer {
                 self.add_pattern_vars(ps); // INSERT introduces new bindable vars
                 CClause::Insert(ps.iter().map(|p| self.path(p)).collect())
             }
-            Clause::Set(items) => CClause::Set(
-                items
-                    .iter()
-                    .map(|i| match i {
-                        SetItem::Prop {
-                            variable,
-                            key,
-                            value,
-                        } => CSetItem::Prop {
-                            var_slot: self.slot_of(variable),
-                            key: key.clone(),
-                            value: self.expr(value),
-                        },
-                        SetItem::Label { variable, label } => CSetItem::Label {
-                            var_slot: self.slot_of(variable),
-                            label: label.clone(),
-                        },
-                    })
-                    .collect(),
-            ),
+            Clause::Merge(m) => {
+                // Register the pattern's vars (like INSERT) so _ON_CREATE/_ON_UPDATE
+                // SET items resolve to the pattern node's slot, then compile.
+                self.add_pattern_vars(std::slice::from_ref(&m.pattern));
+                let pattern = self.path(&m.pattern);
+                let on_create = m
+                    .on_create
+                    .as_ref()
+                    .map(|items| self.compile_set_items(items));
+                let on_update = m.on_update.as_ref().map(|u| match u {
+                    MergeUpdate::Nothing => CMergeUpdate::Nothing,
+                    MergeUpdate::Set { items, where_ } => CMergeUpdate::Set {
+                        items: self.compile_set_items(items),
+                        where_: where_.as_ref().map(|e| self.expr(e)),
+                    },
+                });
+                CClause::Merge(CMerge {
+                    pattern,
+                    on_create,
+                    on_update,
+                })
+            }
+            Clause::Set(items) => CClause::Set(self.compile_set_items(items)),
             Clause::Remove(items) => CClause::Remove(
                 items
                     .iter()

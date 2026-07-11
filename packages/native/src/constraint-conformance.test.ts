@@ -101,4 +101,35 @@ suite('unique-constraint differential (TS vs native)', () => {
 
     expect(native).toEqual(ts);
   });
+
+  test('_MERGE outcomes and final state agree across engines', () => {
+    // Exercises every disposition + WHERE-gate + the no-constraint error, run on
+    // both engines, comparing each outcome and the final graph byte-for-byte.
+    const script = [
+      `_MERGE (u:Acct {email: 'm@x.io', name: 'A'}) _ON_CREATE SET u.created = 1`, // create
+      `_MERGE (u:Acct {email: 'm@x.io', name: 'B'})`, // clobber payload
+      `_MERGE (u:Acct {email: 'm@x.io', name: 'IGN'}) _ON_UPDATE SET u.name = 'Upd'`, // replace
+      `_MERGE (u:Acct {email: 'm@x.io', name: 'IGN2'}) _ON_UPDATE_NOTHING`, // no-op
+      `_MERGE (u:Acct {email: 'k@x.io', v: 1})`, // create #2
+      `_MERGE (u:Acct {email: 'k@x.io'}) _ON_UPDATE SET u.v = 9 WHERE u.v < 9`, // LWW: applies
+      `_MERGE (u:Acct {email: 'k@x.io'}) _ON_UPDATE SET u.v = 2 WHERE u.v < 2`, // LWW: no-op
+      `_MERGE (u:Nope {k: 1})`, // no constraint → error (both InvalidGraphOp)
+    ];
+
+    const tsGraph = tsDeserialize(SEED, 'ndjson', new Graph());
+    tsGraph.createUniqueConstraint('Acct', 'email');
+    const backend = createFfiBackend(LIB);
+    const nativeGraph = graphFromFormat(backend, SEED, 'ndjson');
+    nativeGraph.createUniqueConstraint('Acct', 'email');
+
+    for (const sql of script) {
+      const ts = outcome(() => tsQuery(tsGraph, sql));
+      const native = outcome(() => nativeGraph.query(sql));
+
+      expect(native, `_MERGE outcome mismatch: ${sql}`).toEqual(ts);
+    }
+
+    const READ = `MATCH (u:Acct) RETURN u.email, u.name, u.v, u.created ORDER BY u.email`;
+    expect(JSON.stringify(nativeGraph.query(READ))).toEqual(JSON.stringify(tsQuery(tsGraph, READ)));
+  });
 });

@@ -20,8 +20,8 @@ use super::ast::{ArithOp, CompareOp, Direction, Lit, Quantifier, SetOp, SetOpKin
 use super::lexer::SyntaxError;
 use super::plan::{
     has_argless_aggregate, has_nested_aggregate, lower, AggFn, CClause, CExpr, CLabelExpr, CLinear,
-    CNode, CPath, CProjection, CPropConstraint, CQuery, CRel, CRemoveItem, CReturnItem, CSegment,
-    CSetItem, Op, Program, ScalarFn,
+    CMerge, CMergeUpdate, CNode, CPath, CProjection, CPropConstraint, CQuery, CRel, CRemoveItem,
+    CReturnItem, CSegment, CSetItem, Op, Program, ScalarFn,
 };
 #[cfg(feature = "arrow")]
 use crate::arrow::ArrowColumn;
@@ -108,6 +108,8 @@ const FAULT_BUDGET: u8 = 3;
 const FAULT_BAD_LABEL: u8 = 4;
 const FAULT_UNKNOWN_FN: u8 = 5;
 const FAULT_CONSTRAINT: u8 = 6;
+const FAULT_MERGE_KEY: u8 = 7;
+const FAULT_MERGE_EDGE: u8 = 8;
 
 /// Per-expansion cap on trail-traversal steps; a guard against exponential blowup.
 const TRAIL_BUDGET: u64 = 1_000_000;
@@ -157,6 +159,14 @@ impl Ctx<'_> {
             FAULT_CONSTRAINT => Err(CodeError::new(
                 ErrorCode::ConstraintViolation,
                 "write would duplicate a value under a unique constraint (use _MERGE to upsert)",
+            )),
+            FAULT_MERGE_KEY => Err(CodeError::new(
+                ErrorCode::InvalidGraphOp,
+                "_MERGE could not determine a unique key from the pattern — declare a unique constraint on the label (or narrow an ambiguous one)",
+            )),
+            FAULT_MERGE_EDGE => Err(CodeError::new(
+                ErrorCode::NotImplemented,
+                "_MERGE edge form is not yet supported",
             )),
             FAULT_UNKNOWN_FN => {
                 // Name the offending function(s) (as TS does), e.g.
@@ -4809,6 +4819,19 @@ fn run_linear(
                 ctx.check_fault()?;
                 ctx = resolve_ctx(graph, plan, params);
             }
+            CClause::Merge(m) => {
+                if !pending.is_empty() {
+                    bindings = materialize_matches(graph, &ctx, &bindings, &pending);
+                    pending.clear();
+                }
+                let mut merged = Vec::with_capacity(bindings.len());
+                for b in &bindings {
+                    merged.push(run_merge(graph, &ctx, m, b));
+                }
+                bindings = merged;
+                ctx.check_fault()?;
+                ctx = resolve_ctx(graph, plan, params);
+            }
             CClause::Set(items) => {
                 if !pending.is_empty() {
                     bindings = materialize_matches(graph, &ctx, &bindings, &pending);
@@ -4948,6 +4971,130 @@ fn run_insert(
             }
             prev = next;
         }
+    }
+    out
+}
+
+/// Infer the conflict key for `_MERGE`: the single unique-constrained key present
+/// in the pattern's props. `None` if none apply (can't define the key) or if more
+/// than one does (ambiguous) — both surface as `FAULT_MERGE_KEY`
+/// (`InvalidGraphOp`), matching the TS engine's code. See gql-extensions.md §2.2.
+fn infer_merge_key(
+    graph: &Graph,
+    labels: &[String],
+    props: &[(String, Value)],
+) -> Option<(String, String, Value)> {
+    let mut found: Option<(String, String, Value)> = None;
+    for label in labels {
+        for key in graph.unique_keys(label) {
+            if let Some((_, value)) = props.iter().find(|(k, _)| k == key) {
+                if found.is_some() {
+                    return None; // ambiguous — more than one constrained key present
+                }
+                found = Some((label.clone(), key.clone(), value.clone()));
+            }
+        }
+    }
+    found
+}
+
+/// Apply `_ON_CREATE` / `_ON_UPDATE` SET items to the vertex bound in `binding`
+/// (the node path of [`run_set`]).
+fn apply_merge_sets(graph: &mut Graph, ctx: &Ctx, items: &[CSetItem], binding: &Binding) {
+    for item in items {
+        match item {
+            CSetItem::Prop {
+                var_slot,
+                key,
+                value,
+            } => {
+                let Some(Val::Node(vi)) = binding.get(*var_slot).cloned() else {
+                    continue;
+                };
+                let v = {
+                    let env = Env::new(graph, ctx, binding);
+                    val_to_value(graph, &eval(&env, value))
+                };
+                graph.set_vertex_prop(vi, key, v);
+            }
+            CSetItem::Label { var_slot, label } => {
+                if let Some(Val::Node(vi)) = binding.get(*var_slot).cloned() {
+                    graph.add_vertex_label(vi, label);
+                }
+            }
+        }
+    }
+}
+
+/// `_MERGE` keyed upsert (v1: node form). Match by the constraint key; on miss,
+/// insert the pattern (key + payload) then `_ON_CREATE`; on hit, apply the update
+/// disposition — default clobbers the non-key payload, `_ON_UPDATE SET … [WHERE]`
+/// replaces it, `_ON_UPDATE_NOTHING` leaves it. Byte-identical to the TS
+/// `runMerge`. (Edge form arrives in a later slice.)
+fn run_merge(graph: &mut Graph, ctx: &Ctx, clause: &CMerge, binding: &Binding) -> Binding {
+    let mut out = binding.clone();
+
+    // v1: node form only (no segments); the edge form is a later slice.
+    if !clause.pattern.segments.is_empty() {
+        ctx.set_fault(FAULT_MERGE_EDGE);
+        return out;
+    }
+
+    let node = &clause.pattern.start;
+    let labels = creatable_labels(node.label.as_ref(), ctx.label_names).unwrap_or_else(|| {
+        ctx.set_fault(FAULT_BAD_LABEL);
+        Vec::new()
+    });
+    let props = eval_props(graph, ctx, &node.props, binding);
+
+    let Some((label, key, value)) = infer_merge_key(graph, &labels, &props) else {
+        ctx.set_fault(FAULT_MERGE_KEY);
+        return out;
+    };
+
+    let vi = if let Some(vi) = graph.unique_lookup(&label, &key, &value) {
+        // Update path.
+        match &clause.on_update {
+            None => {
+                // Default clobber: write every non-key payload prop.
+                for (k, v) in &props {
+                    if *k != key {
+                        graph.set_vertex_prop(vi, k, v.clone());
+                    }
+                }
+            }
+            Some(CMergeUpdate::Nothing) => {}
+            Some(CMergeUpdate::Set { items, where_ }) => {
+                if let Some(slot) = node.var_slot {
+                    out.set(slot, Val::Node(vi));
+                }
+                let passes = match where_ {
+                    None => true,
+                    Some(w) => {
+                        let env = Env::new(graph, ctx, &out);
+                        as_truth(&eval(&env, w)) == Some(true)
+                    }
+                };
+                if passes {
+                    apply_merge_sets(graph, ctx, items, &out);
+                }
+            }
+        }
+        vi
+    } else {
+        // Create path: insert the pattern (key + payload), then `_ON_CREATE`.
+        let vi = graph.add_vertex(&labels, props);
+        if let Some(slot) = node.var_slot {
+            out.set(slot, Val::Node(vi));
+        }
+        if let Some(items) = &clause.on_create {
+            apply_merge_sets(graph, ctx, items, &out);
+        }
+        vi
+    };
+
+    if let Some(slot) = node.var_slot {
+        out.set(slot, Val::Node(vi));
     }
     out
 }

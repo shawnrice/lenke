@@ -1657,6 +1657,152 @@ fn unique_constraint_introspection_and_drop() {
     assert!(g.has_unique_constraint("Acct", "handle"));
 }
 
+// `_MERGE` keyed upsert (node form). Mirrors the TS `merge.test.ts` so the two
+// engines stay byte-identical. See docs/design/gql-extensions.md §2.
+
+#[test]
+fn merge_create_path_runs_on_create() {
+    let mut g = modern();
+    g.create_unique_constraint("Acct", "email").unwrap();
+    rows(
+        &mut g,
+        "_MERGE (u:Acct {email: 'a@x.io', name: 'A'}) _ON_CREATE SET u.created = 1",
+    );
+    assert_eq!(
+        rows(
+            &mut g,
+            "MATCH (u:Acct {email: 'a@x.io'}) RETURN u.name, u.created"
+        ),
+        vec![vec![s("A"), n(1.0)]]
+    );
+    assert_eq!(
+        rows(&mut g, "MATCH (u:Acct) RETURN count(*) AS c"),
+        vec![vec![n(1.0)]]
+    );
+}
+
+#[test]
+fn merge_update_default_clobbers_payload_keeps_one_node() {
+    let mut g = modern();
+    g.create_unique_constraint("Acct", "email").unwrap();
+    rows(
+        &mut g,
+        "_MERGE (u:Acct {email: 'a@x.io', name: 'A'}) _ON_CREATE SET u.created = 1",
+    );
+    // Present → clobber payload (name); created stays (birth-only); one node.
+    rows(&mut g, "_MERGE (u:Acct {email: 'a@x.io', name: 'A2'})");
+    assert_eq!(
+        rows(
+            &mut g,
+            "MATCH (u:Acct {email: 'a@x.io'}) RETURN u.name, u.created"
+        ),
+        vec![vec![s("A2"), n(1.0)]]
+    );
+    assert_eq!(
+        rows(&mut g, "MATCH (u:Acct) RETURN count(*) AS c"),
+        vec![vec![n(1.0)]]
+    );
+}
+
+#[test]
+fn merge_on_update_set_replaces_default_clobber() {
+    let mut g = modern();
+    g.create_unique_constraint("Acct", "email").unwrap();
+    rows(&mut g, "_MERGE (u:Acct {email: 'a@x.io', name: 'A'})");
+    // Pattern payload 'IGNORED' is NOT written — _ON_UPDATE replaces the default.
+    rows(
+        &mut g,
+        "_MERGE (u:Acct {email: 'a@x.io', name: 'IGNORED'}) _ON_UPDATE SET u.name = 'FromUpdate'",
+    );
+    assert_eq!(
+        rows(&mut g, "MATCH (u:Acct {email: 'a@x.io'}) RETURN u.name"),
+        vec![vec![s("FromUpdate")]]
+    );
+}
+
+#[test]
+fn merge_on_update_nothing_leaves_untouched() {
+    let mut g = modern();
+    g.create_unique_constraint("Acct", "email").unwrap();
+    rows(&mut g, "_MERGE (u:Acct {email: 'a@x.io', name: 'A'})");
+    rows(
+        &mut g,
+        "_MERGE (u:Acct {email: 'a@x.io', name: 'IGNORED'}) _ON_UPDATE_NOTHING",
+    );
+    assert_eq!(
+        rows(&mut g, "MATCH (u:Acct {email: 'a@x.io'}) RETURN u.name"),
+        vec![vec![s("A")]]
+    );
+}
+
+#[test]
+fn merge_where_gated_update_is_last_write_wins() {
+    let mut g = modern();
+    g.create_unique_constraint("Doc", "id").unwrap();
+    rows(&mut g, "_MERGE (d:Doc {id: 1, v: 1, body: 'first'})");
+    // Incoming v (5) newer than stored (1) → applies.
+    rows(
+        &mut g,
+        "_MERGE (d:Doc {id: 1}) _ON_UPDATE SET d.v = 5, d.body = 'newer' WHERE d.v < 5",
+    );
+    assert_eq!(
+        rows(&mut g, "MATCH (d:Doc {id: 1}) RETURN d.v, d.body"),
+        vec![vec![n(5.0), s("newer")]]
+    );
+    // Stored (5) not < 3 → predicate false → no-op.
+    rows(
+        &mut g,
+        "_MERGE (d:Doc {id: 1}) _ON_UPDATE SET d.v = 3, d.body = 'older' WHERE d.v < 3",
+    );
+    assert_eq!(
+        rows(&mut g, "MATCH (d:Doc {id: 1}) RETURN d.v, d.body"),
+        vec![vec![n(5.0), s("newer")]]
+    );
+}
+
+#[test]
+fn merge_presence_idiom_clobbers() {
+    let mut g = modern();
+    g.create_unique_constraint("Presence", "sid").unwrap();
+    rows(&mut g, "_MERGE (p:Presence {sid: 's1', x: 0, y: 0})");
+    rows(&mut g, "_MERGE (p:Presence {sid: 's1', x: 10, y: 20})");
+    assert_eq!(
+        rows(&mut g, "MATCH (p:Presence) RETURN p.x, p.y"),
+        vec![vec![n(10.0), n(20.0)]]
+    );
+    assert_eq!(
+        rows(&mut g, "MATCH (p:Presence) RETURN count(*) AS c"),
+        vec![vec![n(1.0)]]
+    );
+}
+
+#[test]
+fn merge_without_constraint_errors() {
+    let mut g = modern();
+    let err = parse("_MERGE (x:Nope {k: 1})")
+        .unwrap()
+        .execute(&mut g, &Params::new())
+        .unwrap_err();
+    assert_eq!(err.code, crate::error_codes::ErrorCode::InvalidGraphOp);
+}
+
+#[test]
+fn merge_conflicting_dispositions_is_parse_error() {
+    assert!(
+        parse("_MERGE (u:Acct {email: 'a'}) _ON_UPDATE SET u.n = 1 _ON_UPDATE_NOTHING").is_err()
+    );
+}
+
+#[test]
+fn merge_gated_off_under_iso_strict() {
+    use super::ast::Dialect;
+    use super::parser::parse_with_dialect;
+    // Under iso-strict, `_MERGE` is a plain identifier → no clause → syntax error.
+    assert!(parse_with_dialect("_MERGE (u:Acct {email: 'a'})", Dialect::IsoStrict).is_err());
+    // …but it parses fine under the default (lenke) dialect.
+    assert!(parse_with_dialect("_MERGE (u:Acct {email: 'a'})", Dialect::Lenke).is_ok());
+}
+
 #[test]
 fn delete_vertex_with_edges_errors_without_detach() {
     let mut g = modern();

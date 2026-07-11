@@ -25,11 +25,20 @@ fn cast_target_fn(type_name: &str) -> Option<&'static str> {
 }
 
 pub fn parse(src: &str) -> Result<Query, SyntaxError> {
+    parse_with_dialect(src, Dialect::Lenke)
+}
+
+/// Parse under an explicit [`Dialect`]. `IsoStrict` treats sigil extensions
+/// (`_MERGE`) as ordinary identifiers, so an extension clause is a syntax error —
+/// the differential/conformance harness parses under it to prove the ISO surface
+/// stays self-contained. See docs/design/gql-extensions.md §1.
+pub fn parse_with_dialect(src: &str, dialect: Dialect) -> Result<Query, SyntaxError> {
     let tokens = tokenize(src)?;
     let mut p = Parser {
         tokens,
         pos: 0,
         depth: 0,
+        dialect,
     };
     p.parse_query()
 }
@@ -39,6 +48,8 @@ struct Parser {
     pos: usize,
     /// Current recursive-descent nesting depth (see [`Parser::descend`]).
     depth: u32,
+    /// Parse dialect — gates sigil extensions like `_MERGE` (see [`Parser::check_ext`]).
+    dialect: Dialect,
 }
 
 /// Recursion-depth ceiling. Recursive descent over deeply nested input
@@ -77,6 +88,17 @@ impl Parser {
     fn check_soft(&self, word: &str) -> bool {
         let t = self.peek();
         t.tt == Tt::Ident && t.value.eq_ignore_ascii_case(word)
+    }
+    /// A sigil extension keyword (`_MERGE`, `_ON_CREATE`, …) — lexes as an ident,
+    /// matched case-insensitively, never when backtick-delimited, and ONLY under
+    /// the `Lenke` dialect, so it can never shrink the ISO identifier namespace.
+    /// Mirrors the TS `checkExtIdent`.
+    fn check_ext(&self, word: &str) -> bool {
+        let t = self.peek();
+        self.dialect == Dialect::Lenke
+            && t.tt == Tt::Ident
+            && !t.delimited
+            && t.value.eq_ignore_ascii_case(word)
     }
     fn expect(&mut self, tt: Tt, what: &str) -> R<Token> {
         if !self.check(tt) {
@@ -1092,14 +1114,75 @@ impl Parser {
         })
     }
 
-    fn parse_set_clause(&mut self) -> R<Vec<SetItem>> {
-        self.expect_kw("set")?;
+    fn parse_set_list(&mut self) -> R<Vec<SetItem>> {
         let mut items = vec![self.parse_set_item()?];
         while self.check(Tt::Comma) {
             self.advance();
             items.push(self.parse_set_item()?);
         }
         Ok(items)
+    }
+
+    fn parse_set_clause(&mut self) -> R<Vec<SetItem>> {
+        self.expect_kw("set")?;
+        self.parse_set_list()
+    }
+
+    // `_MERGE pattern [_ON_CREATE SET …] [_ON_UPDATE SET … [WHERE p] |
+    // _ON_UPDATE_NOTHING]` — the lenke keyed-upsert extension (sigil-marked; see
+    // docs/design/gql-extensions.md §2). Branches may appear in any order, each at
+    // most once; an explicit _ON_UPDATE excludes _ON_UPDATE_NOTHING.
+    fn parse_merge_clause(&mut self) -> R<MergeClause> {
+        self.advance(); // _MERGE
+        let pattern = self.parse_path_pattern()?;
+        let mut on_create: Option<Vec<SetItem>> = None;
+        let mut on_update: Option<MergeUpdate> = None;
+        loop {
+            if self.check_ext("_on_create") {
+                self.advance();
+                if on_create.is_some() {
+                    return err(
+                        "duplicate _ON_CREATE in _MERGE".to_string(),
+                        self.peek().pos,
+                    );
+                }
+                self.expect_kw("set")?;
+                on_create = Some(self.parse_set_list()?);
+            } else if self.check_ext("_on_update_nothing") {
+                self.advance();
+                if on_update.is_some() {
+                    return err(
+                        "conflicting update disposition in _MERGE".to_string(),
+                        self.peek().pos,
+                    );
+                }
+                on_update = Some(MergeUpdate::Nothing);
+            } else if self.check_ext("_on_update") {
+                self.advance();
+                if on_update.is_some() {
+                    return err(
+                        "conflicting update disposition in _MERGE".to_string(),
+                        self.peek().pos,
+                    );
+                }
+                self.expect_kw("set")?;
+                let items = self.parse_set_list()?;
+                let where_ = if self.check_kw("where") {
+                    self.advance();
+                    Some(self.parse_expr()?)
+                } else {
+                    None
+                };
+                on_update = Some(MergeUpdate::Set { items, where_ });
+            } else {
+                break;
+            }
+        }
+        Ok(MergeClause {
+            pattern,
+            on_create,
+            on_update,
+        })
     }
 
     fn parse_remove_item(&mut self) -> R<RemoveItem> {
@@ -1165,6 +1248,8 @@ impl Parser {
                 clauses.push(Clause::Match(self.parse_match_clause()?));
             } else if self.check_kw("insert") {
                 clauses.push(Clause::Insert(self.parse_insert_clause()?));
+            } else if self.check_ext("_merge") {
+                clauses.push(Clause::Merge(self.parse_merge_clause()?));
             } else if self.check_kw("set") {
                 clauses.push(Clause::Set(self.parse_set_clause()?));
             } else if self.check_kw("remove") {
