@@ -462,7 +462,12 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
     send({ type: 'status', connected: true, pendingWrites: pendingWrites(), protocol: 1 });
   };
 
-  sendStatus();
+  // Announce on a microtask, not synchronously in the constructor. The natural
+  // wiring `const host = createSyncHost(store, { send: (m) => client.receive(m) });
+  // const client = createSyncClient(...)` assigns `client` AFTER this returns,
+  // so a synchronous `send` here would call `client.receive` before it exists.
+  // Deferring one microtask lets either construction order work.
+  queueMicrotask(sendStatus);
 
   return {
     receive: (msg) => {

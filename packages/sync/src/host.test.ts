@@ -56,10 +56,29 @@ const rowsOf = (m: HostMessage): RowsMessage => {
 };
 
 suite('@lenke/sync host · protocol v1', () => {
-  test('announces status on attach', () => {
+  test('announces status on attach', async () => {
     const { sent } = attach(newStore());
 
+    // Status is announced on a microtask (not synchronously in the constructor)
+    // so `const host = …(send: m => client.receive(m)); const client = …` — where
+    // `client` is assigned after the host — can't call `send` before it exists.
+    await Promise.resolve();
     expect(sent[0]).toEqual({ type: 'status', connected: true, pendingWrites: 0, protocol: 1 });
+  });
+
+  test('safe when the host is constructed BEFORE its client (deferred status send)', async () => {
+    // The natural wiring closes `send` over a `client` assigned after the host.
+    // A synchronous status send in the constructor would call `client.receive`
+    // before it exists (throw); deferring one microtask makes this order work.
+    let client: { receive: (m: unknown) => void } | null = null;
+    const seen: unknown[] = [];
+    const host = createSyncHost(newStore(), { send: (m) => client!.receive(m) });
+    client = { receive: (m) => seen.push(m) }; // assigned AFTER the host — no crash
+
+    expect(seen).toHaveLength(0); // nothing sent synchronously
+    await Promise.resolve();
+    expect(seen[0]).toMatchObject({ type: 'status' }); // arrives next microtask
+    host.close();
   });
 
   test('subscribe answers immediately with rows + version + complete', () => {

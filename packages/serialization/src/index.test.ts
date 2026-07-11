@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
-import { deserialize, parse, serialize } from './index.js';
+import { deserialize, FORMATS, parse, serialize } from './index.js';
 
 describe('serialize/deserialize entry points', () => {
   const doc = ['{"type":"node","id":"a","labels":["Person"],"properties":{"name":"marko"}}'].join(
@@ -32,5 +32,14 @@ describe('serialize/deserialize entry points', () => {
     const g = parse(doc, 'ndjson');
     const again = parse(serialize(g, 'ndjson'), 'ndjson');
     expect(again.vertexCount).toBe(1);
+  });
+
+  test('FORMATS lists every registered format name at runtime', () => {
+    expect([...FORMATS].sort()).toEqual(['csv', 'graphson', 'ndjson', 'pg-json', 'pg-text']);
+
+    // Every listed format actually round-trips a trivial graph.
+    for (const f of FORMATS) {
+      expect(parse(serialize(parse(doc, 'ndjson'), f), f).vertexCount).toBe(1);
+    }
   });
 });

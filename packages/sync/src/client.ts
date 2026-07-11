@@ -201,7 +201,11 @@ export type SyncClientOptions = {
 const wireToError = (e: WireError): LenkeError =>
   // Wire codes are the shared ErrorCode vocabulary; the cast keeps the
   // ecosystem's one error type without re-validating strings at this layer.
-  new LenkeError(`lenke: ${e.message}`, { code: e.code as ErrorCode });
+  // Only add the `lenke:` prefix if the origin didn't already (a native/engine
+  // LenkeError arrives pre-prefixed) — otherwise it doubles to `lenke: lenke:`.
+  new LenkeError(e.message.startsWith('lenke:') ? e.message : `lenke: ${e.message}`, {
+    code: e.code as ErrorCode,
+  });
 
 /** Stable JSON for the dedupe key: object keys sorted, arrays kept in order. */
 const canonical = (value: unknown): string => {

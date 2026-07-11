@@ -44,7 +44,7 @@ await deserializeStream(chunkSource, 'ndjson', new Graph());
 
 ## Formats
 
-The registered codecs are exposed as the `codecs` record (`FormatName` is its key type) and individually as `Codec` values. A codec implements `encode(graph) => string` and `decode(input, graph) => Graph`; line-oriented formats additionally implement `encodeStream` / `decodeStream`.
+The registered codecs are exposed as the `codecs` record (`FormatName` is its key type) and individually as `Codec` values; `FORMATS` is the format names as a runtime `readonly FormatName[]` (for a `--format` flag or a `<select>`). A codec implements `encode(graph) => string` and `decode(input, graph) => Graph`; line-oriented formats additionally implement `encodeStream` / `decodeStream`.
 
 | Name       | Codec export    | Streaming | Exact round-trip                                                                       |
 | ---------- | --------------- | --------- | -------------------------------------------------------------------------------------- |

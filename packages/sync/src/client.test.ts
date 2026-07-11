@@ -143,6 +143,8 @@ suite('@lenke/sync client · registry semantics', () => {
       await client.mutate('NOT GQL AT ALL');
     } catch (e) {
       expect(hasErrorCode(e, ErrorCode.Syntax)).toBe(true);
+      // The origin's `lenke:` prefix isn't doubled crossing the wire.
+      expect((e as Error).message).not.toContain('lenke: lenke:');
     }
   });
 
@@ -392,8 +394,9 @@ suite('@lenke/sync client · registry semantics', () => {
     expect(again).toBe(page0);
   });
 
-  test('status handshake is captured', () => {
+  test('status handshake is captured', async () => {
     const { client } = connect();
+    await Promise.resolve(); // the host announces status on a microtask
     expect(client.getStatus()).toEqual({ connected: true, pendingWrites: 0 });
   });
 

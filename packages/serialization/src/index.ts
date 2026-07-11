@@ -37,6 +37,13 @@ export const codecs = {
 
 export type FormatName = keyof typeof codecs;
 
+/**
+ * The registered format names as a runtime array — for building a `--format`
+ * CLI flag, a `<select>`, or validating input without reaching into `codecs`.
+ * Order is stable (matches {@link codecs}).
+ */
+export const FORMATS: readonly FormatName[] = Object.keys(codecs) as FormatName[];
+
 const codecFor = (format: string): Codec => {
   // Indexed by a plain `string` (callers pass `FormatName`, but the runtime
   // guard also fields arbitrary input), so widen past the literal keys here.
