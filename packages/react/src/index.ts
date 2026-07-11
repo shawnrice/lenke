@@ -13,3 +13,17 @@ export type { GraphState } from './GraphContext.js';
 export { StoreProvider } from './StoreProvider.js';
 export { type LiveQueryHandle, type ReactiveStore, type Row, useStore } from './StoreContext.js';
 export { useLiveQuery } from './useLiveQuery.js';
+
+// The sync-client connector — drive React from a `@lenke/sync` client
+// (createSyncClient / createReconnectingClient) whose snapshot carries
+// completeness, demand-fill, and offline behavior. Structural client shape, so
+// this adds no `@lenke/sync` dependency.
+export { SyncClientProvider } from './SyncClientProvider.js';
+export {
+  type ClientLiveQueryHandle,
+  type ClientLiveQueryOptions,
+  type ClientSnapshot,
+  type SyncClientLike,
+  useSyncClient,
+} from './SyncClientContext.js';
+export { useClientLiveQuery } from './useClientLiveQuery.js';
