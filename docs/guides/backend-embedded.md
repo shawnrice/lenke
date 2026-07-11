@@ -29,7 +29,26 @@ store[Symbol.dispose]?.(); // or `using store = createStore(...)`
 
 `createStore` wraps the graph as a reactive store (`store.mutate`, `store.liveQuery`, `store.version`) — the same store the [worker sync engine](./frontend-worker.md) and [React](./frontend-main-thread.md) drive. You can also work the raw `graph` directly for one-off queries.
 
-There's no separate batch-insert API: **bulk load = decode from a serialized format**, one-at-a-time mutation = a GQL/Gremlin write. For a large ingest, prefer building from NDJSON over looping single writes.
+For ingest, prefer a bulk path over looping single GQL/Gremlin writes:
+
+- **Build a fresh graph** from a serialized format — `graphFromNdjson(backend, bytes)` (or `graphFromFormat` for CSV/GraphSON/pg-json/pg-text). This is the fastest cold load.
+- **Bulk-append into a LIVE graph** — `graph.mergeNdjson(bytes)` is a `COPY FROM`: it appends a batch to an existing graph in one native call (no per-record round-trip), keeps indexes current, and returns a `MergeReport` (`{ nodesAdded, edgesAdded, nodesSkipped, edgesSkipped, phantomVertices }`) so you can see what wasn't applied cleanly (duplicate ids, undeclared edge endpoints).
+
+An NDJSON document is one JSON object per line, tagged `node` or `edge`:
+
+```jsonl
+{"type":"node","id":"u1","labels":["User"],"properties":{"name":"Ada","age":36}}
+{"type":"edge","id":"e1","from":"u1","to":"u2","labels":["FOLLOWS"],"properties":{"since":2021}}
+```
+
+(An edge's type is `labels[0]`, and an explicit edge `id` must be a string.)
+
+### Indexes and prepared statements
+
+The native graph mirrors the pure-TS engine's opt-in property indexes and prepared queries:
+
+- `graph.createVertexIndex(key)` / `createEdgeIndex(key)` — a point lookup (`WHERE v.k = $x` or inline `{k: $x}`) then seeks instead of scanning. `vertexIndexes()` / `dropVertexIndex(key)` round it out. (Host-API only — there is no GQL `CREATE INDEX`.)
+- `graph.prepare(text)` returns a `PreparedQuery` — parse/lower once, run many with different `params`. It has **no GC backstop**: release it with `free()` or a `using` binding.
 
 ## Loading and rebuilding from a source of truth
 

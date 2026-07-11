@@ -46,13 +46,15 @@ await deserializeStream(chunkSource, 'ndjson', new Graph());
 
 The registered codecs are exposed as the `codecs` record (`FormatName` is its key type) and individually as `Codec` values. A codec implements `encode(graph) => string` and `decode(input, graph) => Graph`; line-oriented formats additionally implement `encodeStream` / `decodeStream`.
 
-| Name       | Codec export    | Streaming |
-| ---------- | --------------- | --------- |
-| `pg-json`  | `pgJsonCodec`   | no        |
-| `pg-text`  | `pgTextCodec`   | yes       |
-| `ndjson`   | `ndjsonCodec`   | yes       |
-| `graphson` | `graphsonCodec` | yes       |
-| `csv`      | `csvCodec`      | yes       |
+| Name       | Codec export    | Streaming | Exact round-trip                                                                       |
+| ---------- | --------------- | --------- | -------------------------------------------------------------------------------------- |
+| `pg-json`  | `pgJsonCodec`   | no        | yes                                                                                    |
+| `pg-text`  | `pgTextCodec`   | yes       | **lossy**: no edge-id slot (edges get fresh ids); `[]`/`[x]` collapse to absent/scalar |
+| `ndjson`   | `ndjsonCodec`   | yes       | yes                                                                                    |
+| `graphson` | `graphsonCodec` | yes       | yes                                                                                    |
+| `csv`      | `csvCodec`      | yes       | yes                                                                                    |
+
+Node ids and scalar / multi-element-list properties round-trip through every format. `pg-text` is the one lossy codec — its textual grammar has no edge-id column and encodes lists as repeated keys, so pick `ndjson` / `pg-json` / `graphson` when you need exact edge identity or faithful empty/singleton lists.
 
 Top-level entry points (`serialize`, `deserialize`, `serializeStream`, `deserializeStream`, `serializeAsync`, `deserializeAsync`) take a `FormatName` and dispatch to the matching codec; an unknown format or an unsupported streaming request throws a `LenkeError`. The CSV codec also exposes its node/edge halves directly (`encodeNodes`, `decodeNodes`, `encodeEdges`, `decodeEdges`, and their `*Stream` variants) for Neo4j-`admin-import`-style paired files.
 

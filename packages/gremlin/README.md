@@ -60,6 +60,39 @@ Steps span the usual Gremlin categories, all importable from the package root:
 - **Side effects** — `aggregate`, `store`, `cap`, `barrier`, `subgraph`.
 - **Mutation** — `addV`, `addE`, `property`, `drop`.
 
+A few step names differ from TinkerPop: `in_` / `as_` carry a trailing underscore (`in`/`as` are JavaScript keywords), and dedup is spelled **`dedupe`**.
+
+### Builder-shaped steps
+
+Most steps are plain functions, but a few return a **builder** you chain onto — and their sub-traversals are ordinary bare step fns / `pipe(...)`, **not** a TinkerPop-style anonymous `__` (there is no `__` export):
+
+```ts
+import {
+  traversal,
+  V,
+  has,
+  in_,
+  inE,
+  repeat,
+  dedupe,
+  cap,
+  subgraph,
+  shortestPath,
+  ShortestPath,
+} from '@lenke/gremlin';
+
+// repeat(body).until(cond).emit() — .times(n) for a fixed count, .emitBefore()
+// to include the start (bare .emit() is post-form, excluding level 0).
+// Transitive dependents of "core" (walk incoming DEPENDS_ON, collect each hop):
+traversal(V(), has('name', 'core'), repeat(in_('DEPENDS_ON')).emit(), dedupe());
+
+// shortestPath().with(ShortestPath.target, <sub-traversal>) → yields Vertex[][].
+traversal(V(), has('name', 'web'), shortestPath().with(ShortestPath.target, has('name', 'logger')));
+
+// subgraph(key) collects the traversed edges; retrieve the built Graph with cap(key).
+const blast = traversal(V(), has('name', 'errors'), inE('DEPENDS_ON'), subgraph('g'), cap('g'));
+```
+
 ## Predicates
 
 Filter steps such as `has` and `is` take predicate values, built by predicate constructors: `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `between` (half-open `[min, max)`), `inside`, `outside`, `within`, `without`, `startsWith`, `endingWith`, `containing`, `notContaining`, `regex`, and `not(predicate)`. `has(key, value)` is shorthand for `has(key, eq(value))`.

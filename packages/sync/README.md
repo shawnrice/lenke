@@ -25,6 +25,8 @@ Conformance is **structural**: consumers may write these shapes down independent
 
 `createSyncHost(store, { send })` attaches one client connection to a `Store` (from `@lenke/native`). You hand it a `send` function and feed inbound messages to `receive` — which is the shape of every transport:
 
+> **Bare host vs. engine host.** `createSyncHost(store, …)` alone serves a **complete, local-only** store — every subscription is trivially `complete: true`, no demand-fill. For per-collection completeness and demand-fill you want `engine.createHost(…)` (see [The sync engine](#the-sync-engine) below), which wires the same host into a `createSyncEngine`. Reach for the bare host only when the store already holds all the data.
+
 ```ts
 // Server — WebSocket (Bun.serve shown; `ws` on Node is the same three lines):
 Bun.serve({
@@ -62,7 +64,12 @@ ws.onmessage = (e) => client.receive(JSON.parse(String(e.data)));
 // wire subscription; the wire teardown is refcounted. The dedupe signature
 // normalizes formatting (whitespace/comments; values untouched) and treats
 // deps as a set — but never folds case (labels/properties are case-sensitive).
+// `deps` is REQUIRED (the client does no inference): the label / edge-type /
+// property-key tokens whose epochs re-run this query. Pass `null` to recompute
+// on every change, or derive it with `inferDeps(query)` (re-exported here). It's
+// also load-bearing for demand-fill — the collection is keyed off these tokens.
 const live = client.liveQuery('MATCH (p:Person) WHERE p.age >= $min RETURN p.name', {
+  deps: ['Person', 'name'],
   params: { min: 18 },
 });
 
@@ -150,7 +157,7 @@ const snap = await snapshots.load({ schemaVersion: 'v3', userId: session.userId 
 const store = createStore(
   snap
     ? graphFromNdjson(backend, snap.ndjson) // warm: answer subscriptions now, reconcile after
-    : emptyGraph(backend),
+    : createEmptyGraph(backend),
 ); // cold: demand-fill does the rest
 const engine = createSyncEngine({
   store,

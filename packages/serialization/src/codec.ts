@@ -7,8 +7,15 @@ import type { ChunkSource } from './streaming.js';
  * through the GQL or Gremlin interfaces. `encode` reads `graph.vertices` /
  * `graph.edges` / element `properties`; `decode` rebuilds via `addVertex` /
  * `addEdge`. Codecs operate over the LPG `PropertyValue` model (see `value.ts`)
- * and must preserve element identity (node and edge ids) so that
- * `decode(encode(g))` reproduces `g`.
+ * and, where the format can represent it, preserve element identity (node and
+ * edge ids) so that `decode(encode(g))` reproduces `g`.
+ *
+ * A few formats trade fidelity for a natural textual shape — notably `pg-text`,
+ * whose line grammar has no edge-id slot (decoded edges get a fresh id) and
+ * whose repeated-key lists can't distinguish `[]`/`[x]` from absent/scalar. Each
+ * such limit is documented on the codec itself; node ids and scalar/multi-list
+ * properties always round-trip. Prefer `ndjson`/`pg-json`/`graphson` when exact
+ * round-trip identity matters.
  *
  * Multi-part formats (e.g. CSV's nodes + edges) may expose a richer natural API
  * in addition to this single-string contract.

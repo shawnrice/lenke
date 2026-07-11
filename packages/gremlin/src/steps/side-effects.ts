@@ -16,7 +16,9 @@ export const cap = (key: string): StepFn => appendStep({ kind: 'cap', key });
 // a downstream step needs side-effects (e.g. `aggregate`) populated upstream.
 export const barrier = (): StepFn => appendStep({ kind: 'barrier' });
 
-// Side-effect subgraph builder. STUBBED — executor throws.
+// Side-effect subgraph builder: collects the traversed edges (and their
+// endpoints) into a named side-effect graph; retrieve it with `cap(key)`, which
+// yields a `@lenke/core` `Graph`. See `executor/side-effects.ts` for the exec.
 export const subgraph = (key: string): StepFn => appendStep({ kind: 'subgraph', key });
 
 /**

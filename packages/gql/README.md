@@ -74,7 +74,7 @@ The engine implements the ISO GQL core, not Cypher. Notable differences: `--` is
 - **Patterns** — node patterns `(v:Label {prop: value} WHERE pred)`, relationship patterns with direction (`-[:KNOWS]->`, `<-[...]-`, `~[...]~`), and variable-length quantifiers (`*`, `+`, `{n}`, `{n,m}`).
 - **Reading** — `MATCH` / `OPTIONAL MATCH`, `WHERE` with ISO three-valued (Kleene) logic, `WITH` for chaining projections, and `RETURN` with `DISTINCT`, `AS` aliases, `ORDER BY` (`ASC`/`DESC`, `NULLS FIRST`/`LAST`), `SKIP`/`OFFSET`, and `LIMIT`.
 - **Expressions** — arithmetic, `||` (string **and** list concatenation), comparisons, `IN`, `IS [NOT] NULL`, the string-matching predicates `CONTAINS` / `STARTS WITH` / `ENDS WITH`, `CASE`, `CAST(value AS type)`, `EXISTS { … }` and `COUNT { … }` subqueries, ISO numeric/string/list scalar functions, and the aggregates `count`, `sum`, `avg`, `min`, `max`, `collect_list` (with implicit grouping).
-- **Scalar functions** — numeric (`abs`, `ceil`/`ceiling`, `floor`, `round`, `sign`, `sqrt`, `power`, `mod`, `exp`, `ln`, `log`, `log10`, trig, `degrees`, `radians`, `pi()`, `e()`); string (`upper`, `lower`, `trim`/`btrim`/`ltrim`/`rtrim`, `left`, `right`, `substring`, `split`, `replace`, `reverse`, `char_length`, `byte_length`/`octet_length`, `contains`, `starts_with`, `ends_with`); conversion (`to_string`, `to_integer`, `to_float`, `to_boolean`, `to_list`); list (`size`/`length`, `head`, `last`, `tail`, `append`, `range`, `reverse`, `list_union`, `intersection`, `difference`, `list_contains`, `list_sort`); graph (`labels`, `type`, `keys`, `element_id`); and `coalesce` / `nullif`. An unknown function is a loud `ErrorCode.Unsupported` error, never a silent `null`. The set-style list functions (`list_union`/`intersection`/`difference`) dedup with first-occurrence order; `list_contains` returns the numeric `1`/`0` (per the ISO Return Type, not a boolean); `list_sort(list, [order], [nullOrder])` reuses the `ORDER BY` total order.
+- **Scalar functions** — numeric (`abs`, `ceil`/`ceiling`, `floor`, `round`, `sign`, `sqrt`, `power`, `mod`, `exp`, `ln`, `log`, `log10`, trig, `degrees`, `radians`, `pi()`, `e()`); string (`upper`, `lower`, `trim`/`btrim`/`ltrim`/`rtrim`, `left`, `right`, `substring`, `split`, `replace`, `reverse`, `char_length`, `byte_length`/`octet_length`, `contains`, `starts_with`, `ends_with`); conversion (`to_string`, `to_integer`, `to_float`, `to_boolean`, `to_list`); list (`size`/`length`, `head`, `last`, `tail`, `append`, `range`, `reverse`, `list_union`, `intersection`, `difference`, `list_contains`, `list_sort`); graph (`labels`, `type`, `keys`, `element_id`); and `coalesce` / `nullif`. An unknown function is a loud `ErrorCode.UnknownFunction` error, never a silent `null`. The set-style list functions (`list_union`/`intersection`/`difference`) dedup with first-occurrence order; `list_contains` returns the numeric `1`/`0` (per the ISO Return Type, not a boolean); `list_sort(list, [order], [nullOrder])` reuses the `ORDER BY` total order.
 - **Set operators** — `UNION`, `EXCEPT`, `INTERSECT`, each with optional `ALL`.
 - **Writing** — `INSERT`, `SET`, `REMOVE`, `[DETACH] DELETE`, and `FINISH`.
 
@@ -94,6 +94,11 @@ The `^` power operator and `list[i]` element indexing are not yet parsed (both e
 Index-backed seeking is automatic: when a graph has property indexes (`graph.createVertexIndex(key)`), equality, range, and `IN` constraints in patterns or `WHERE` are planned as index seeks rather than full scans.
 
 A syntactically invalid query throws `GqlSyntaxError` (exported), which carries the source offset (`error.pos`) and the stable `ErrorCode.Syntax` code.
+
+Two more runtime errors worth knowing:
+
+- **Unbound parameter** — a `$name` the query references but the params bag doesn't supply throws `ErrorCode.MissingParameter` (naming the param), rather than binding to a silent `null`. A forgotten/typo'd binding fails loud.
+- **Reserved words** — using an ISO GQL keyword (e.g. `project`, `order`, `value`) as a bare property key or variable is an `ErrorCode.Syntax` error; quote it as a delimited identifier (`` `project` ``) to use it as a name.
 
 ## License
 

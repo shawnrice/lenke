@@ -74,6 +74,8 @@ const makeShortestPath = (target?: Plan): ShortestPathStep =>
   });
 
 // Emit the shortest vertex path(s) from each source vertex to the destinations
-// (all reachable vertices by default; restrict with
-// `.with(ShortestPath.target, __.has(...))`). Unweighted BFS over incident edges.
+// (all reachable vertices by default; restrict the targets with a sub-traversal
+// built from bare step fns or `pipe(...)` — there is no anonymous-`__` builder:
+// `shortestPath().with(ShortestPath.target, has('name', 'josh'))`). Unweighted
+// BFS over incident edges.
 export const shortestPath = (): ShortestPathStep => makeShortestPath();

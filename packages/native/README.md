@@ -60,7 +60,7 @@ All assert that the loaded artifact's ABI version matches the exported `ABI_VERS
 
 ## Graph API
 
-`graphFromNdjson(backend, bytes, { parallel? })` and `graphFromFormat(backend, input, format)` deserialize a document into a `RustGraph`. `attachGraph(backend, handle)` wraps an existing backend + handle. A `RustGraph` exposes:
+`graphFromNdjson(backend, bytes, { parallel? })` and `graphFromFormat(backend, input, format)` deserialize a document into a `RustGraph`; `createEmptyGraph(backend)` cold-boots a blank one to `INSERT` / `mergeNdjson` into; `attachGraph(backend, handle)` wraps an existing backend + handle. A `RustGraph` exposes:
 
 - `vertexCount` / `edgeCount` — counts (numbers).
 - `version` — monotonic mutation counter for O(1) change detection.
@@ -70,12 +70,16 @@ All assert that the loaded artifact's ABI version matches the exported `ABI_VERS
 - `gremlin(q, ...subs)` — run textual Gremlin → JSON-decoded `unknown[]`.
 - `toNdjson()` — serialize back to NDJSON bytes.
 - `serialize(format)` — serialize to a named format (`pg-json | pg-text | graphson | csv | ndjson`).
+- `mergeNdjson(bytes)` — bulk-append an NDJSON batch into this live graph (a `COPY FROM`; no per-record round-trip, indexes stay current). Returns a `MergeReport` (`{ nodesAdded, edgesAdded, nodesSkipped, edgesSkipped, phantomVertices }`) so a conflicting/partial merge is auditable.
+- `createVertexIndex(key)` / `createEdgeIndex(key)` (+ `drop*Index`, `vertexIndexes()` / `edgeIndexes()`) — opt-in property indexes; a `WHERE v.k = $x` / inline `{k: $x}` point lookup then seeks instead of scanning. Host-API only (no GQL `CREATE INDEX`).
 - `free()` — release the underlying graph; the handle is invalid afterward. A `FinalizationRegistry` reclaims a leaked handle as a **best-effort backstop** (and warns once in dev), but GC timing is not guaranteed — prefer an explicit `free()` or a `using` binding for prompt, deterministic release.
 - `prepare(text)` — parse/lower a GQL query once into a `PreparedQuery` (`.query(params)` / `.queryArrow(params)`). It has **no GC backstop** (unlike the graph handle): release it with `free()` or a `using` binding, or it leaks.
 
 ## Reactive store
 
-`createStore(graph)` builds a framework-agnostic store designed for React's `useSyncExternalStore` (the package has no React dependency). `store.liveQuery(text, { deps? })` returns a `{ subscribe, getSnapshot }` pair whose snapshot reference is stable until a relevant mutation occurs; `store.mutate(fn)` runs a mutating callback and notifies subscribers only if the graph's `version` actually changed. With `deps` (label / edge-type / property-key tokens) a live query recomputes only when one of its dependency epochs moves; `inferDeps(text)` best-effort extracts those tokens from a query string.
+`createStore(graph)` builds a framework-agnostic store designed for React's `useSyncExternalStore` (the package has no React dependency). `store.liveQuery(text, { deps, params? })` returns a `{ subscribe, getSnapshot }` pair whose snapshot reference is stable until a relevant mutation occurs; `store.mutate(fn)` runs a mutating callback and notifies subscribers only if the graph's `version` actually changed. `deps` is required — the label / edge-type / property-key tokens whose epochs re-run the query (`null` = recompute on any change); `inferDeps(text)` best-effort extracts them from a query string. `params` binds `$name` placeholders safely.
+
+Release the store (and its underlying graph handle) with a `using` binding or an explicit `store[Symbol.dispose]()` — the store has no `free()` method (unlike the raw graph); disposing it frees the graph.
 
 ## License
 
