@@ -13,7 +13,7 @@ describe('serialize/deserialize entry points', () => {
     const g = parse(doc, 'ndjson');
     expect(g).toBeInstanceOf(Graph);
     expect(g.vertexCount).toBe(1);
-    expect(g.getVertexById('a')?.getProperty('name')).toBe('marko');
+    expect(g.getVertexById('a')?.getProperty<string>('name')).toBe('marko');
   });
 
   test('deserialize() with no graph is the same as parse()', () => {

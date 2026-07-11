@@ -112,8 +112,16 @@ export class Edge {
     return prop in this.properties;
   }
 
-  getProperty(prop: string): unknown {
-    return this.properties[prop];
+  /**
+   * Read a property value. Pass a type to skip the cast — `e.getProperty<number>
+   * ('weight')` returns `number` instead of `unknown` — an opt-in, caller-side
+   * assertion (nothing is validated), the same "trust me" contract as GQL
+   * `query<R>`. Returns `undefined` for an absent key and the stored value
+   * (which may be `null`) for a present one; annotate `<number | undefined>` if
+   * the key might be absent. Defaults to `unknown` (unchanged).
+   */
+  getProperty<T = unknown>(prop: string): T {
+    return this.properties[prop] as T;
   }
 
   setProperty(key: string, value: unknown): void {

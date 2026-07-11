@@ -28,7 +28,8 @@ describe('Graph Tests', () => {
     const edge = graph.getEdgeById(edgeId('130'))!;
     expect(edge.from.properties.name).toBe('Gene Hackman');
     expect(edge.hasLabel('ACTED_IN')).toBeTruthy();
-    expect((edge.getProperty('roles') as string[])[0]).toBe('Little Bill Daggett');
+    // getProperty<T> types the read — no cast (returns string[] here, not unknown).
+    expect(edge.getProperty<string[]>('roles')[0]).toBe('Little Bill Daggett');
     expect(edge.to.properties.title).toBe('Unforgiven');
     expect(edge.to.properties.released).toBe(1992);
   });

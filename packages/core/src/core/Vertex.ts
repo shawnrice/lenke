@@ -92,8 +92,16 @@ export class Vertex {
     this.#graph!.elementProperties.set(this.#id, Object.freeze(bag));
   }
 
-  getProperty(key: string): unknown {
-    return this.properties[key];
+  /**
+   * Read a property value. Pass a type to skip the cast — `v.getProperty<string>
+   * ('name')` returns `string` instead of `unknown` — an opt-in, caller-side
+   * assertion (nothing is validated), the same "trust me" contract as GQL
+   * `query<R>`. Returns `undefined` for an absent key and the stored value
+   * (which may be `null`) for a present one; annotate `<string | undefined>` if
+   * the key might be absent. Defaults to `unknown` (unchanged).
+   */
+  getProperty<T = unknown>(key: string): T {
+    return this.properties[key] as T;
   }
 
   setProperty(key: string, value: unknown): void {

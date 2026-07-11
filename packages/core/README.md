@@ -34,7 +34,8 @@ graph.getVerticesByPropertyRange('age', { gte: 30 }); // Set { alice }
 
 // Mutate properties through the element's methods (never write to `.properties`).
 alice.setProperty('age', 35);
-alice.getProperty('age'); // 35
+alice.getProperty('age'); // 35 (typed `unknown`)
+alice.getProperty<number>('age'); // 35 (typed `number` — no cast)
 
 // Traverse edges from a vertex by edge label.
 alice.edgesFromByLabel('KNOWS'); // Set { the alice->bob edge }
@@ -42,7 +43,7 @@ alice.edgesFromByLabel('KNOWS'); // Set { the alice->bob edge }
 
 ## Vertices and edges
 
-`Vertex` and `Edge` are concrete (non-generic) classes. Properties are typed as `Record<string, unknown>`; cast at the application boundary if you need typed access (`vertex.properties as Person`).
+`Vertex` and `Edge` are concrete (non-generic) classes. Properties are typed as `Record<string, unknown>`; to read one without a cast, pass a type to `getProperty` — `vertex.getProperty<string>('name')` returns `string` (an opt-in, caller-side assertion — nothing is validated; use `<string | undefined>` if the key might be absent). Or cast the whole bag at the boundary (`vertex.properties as Person`).
 
 The `.properties` getter returns the graph's live, frozen property bag — a top-level write throws. Mutate through the element instead:
 
