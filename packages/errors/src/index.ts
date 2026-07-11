@@ -24,6 +24,10 @@ export const ErrorCode = {
   MissingVertex: 'E_MISSING_VERTEX',
   /** An invalid graph mutation (e.g. a cycle, a self-reference). */
   InvalidGraphOp: 'E_INVALID_GRAPH_OP',
+  /** A write violated a declared constraint — e.g. an `INSERT`/`SET` that would
+   * duplicate a value under a unique constraint. (An `_MERGE` reconciles instead
+   * of raising this.) */
+  ConstraintViolation: 'E_CONSTRAINT_VIOLATION',
   /** An invalid tree structure or operation. */
   InvalidTree: 'E_INVALID_TREE',
   /** A recognized-but-not-yet-implemented feature. */

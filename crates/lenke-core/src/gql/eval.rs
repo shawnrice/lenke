@@ -107,6 +107,7 @@ const FAULT_TYPE: u8 = 2;
 const FAULT_BUDGET: u8 = 3;
 const FAULT_BAD_LABEL: u8 = 4;
 const FAULT_UNKNOWN_FN: u8 = 5;
+const FAULT_CONSTRAINT: u8 = 6;
 
 /// Per-expansion cap on trail-traversal steps; a guard against exponential blowup.
 const TRAIL_BUDGET: u64 = 1_000_000;
@@ -152,6 +153,10 @@ impl Ctx<'_> {
             FAULT_BAD_LABEL => Err(CodeError::new(
                 ErrorCode::InvalidGraphOp,
                 "INSERT: a node's label expression must be a plain conjunction (`A` or `A&B`) and an edge must carry exactly one type — a disjunction/negation/wildcard or a typeless edge is not creatable",
+            )),
+            FAULT_CONSTRAINT => Err(CodeError::new(
+                ErrorCode::ConstraintViolation,
+                "write would duplicate a value under a unique constraint (use _MERGE to upsert)",
             )),
             FAULT_UNKNOWN_FN => {
                 // Name the offending function(s) (as TS does), e.g.
@@ -4890,6 +4895,14 @@ fn ensure_node(graph: &mut Graph, ctx: &Ctx, binding: &mut Binding, node: &CNode
         Vec::new()
     });
     let props = eval_props(graph, ctx, &node.props, binding);
+    // Reject a plain INSERT that would break a unique constraint (an `_MERGE`
+    // reconciles instead; see docs/design/gql-extensions.md §3). The fault
+    // surfaces as ConstraintViolation at the row boundary and aborts the write;
+    // returning the existing offender keeps downstream code total (unused).
+    if let Some((_, _, existing)) = graph.unique_conflict(&labels, &props, None) {
+        ctx.set_fault(FAULT_CONSTRAINT);
+        return existing;
+    }
     let vi = graph.add_vertex(&labels, props);
     if let Some(slot) = node.var_slot {
         binding.set(slot, Val::Node(vi));
@@ -4955,7 +4968,15 @@ fn run_set(graph: &mut Graph, ctx: &Ctx, items: &[CSetItem], binding: &Binding) 
                     val_to_value(graph, &eval(&env, value))
                 };
                 match el {
-                    Val::Node(vi) => graph.set_vertex_prop(vi, key, v),
+                    // A SET that would collide under a unique constraint faults
+                    // (ConstraintViolation) rather than silently duplicating.
+                    Val::Node(vi) => {
+                        if graph.unique_conflict_on_set(vi, key, &v).is_some() {
+                            ctx.set_fault(FAULT_CONSTRAINT);
+                        } else {
+                            graph.set_vertex_prop(vi, key, v);
+                        }
+                    }
                     Val::Edge(ei) => graph.set_edge_prop(ei, key, v),
                     _ => {}
                 }

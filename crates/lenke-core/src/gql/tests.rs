@@ -1572,6 +1572,92 @@ fn insert_rejects_ambiguous_label_and_typeless_edge() {
 }
 
 #[test]
+fn unique_constraint_enforced_on_insert_and_set() {
+    // A UNIQUE constraint on (Acct, email): at most one live Acct per email. A
+    // plain INSERT/SET that would duplicate faults with ConstraintViolation
+    // (_MERGE, a later slice, reconciles instead). docs/design/gql-extensions.md §3.
+    let mut g = modern(); // has no Acct/Other labels — a clean namespace.
+    g.create_unique_constraint("Acct", "email").unwrap();
+
+    rows(&mut g, "INSERT (:Acct {email: 'a@x.io', name: 'A'})");
+
+    // Duplicate email under the same label → violation (no partial write: the
+    // check precedes add_vertex).
+    let err = parse("INSERT (:Acct {email: 'a@x.io', name: 'B'})")
+        .unwrap()
+        .execute(&mut g, &Params::new())
+        .unwrap_err();
+    assert_eq!(err.code, crate::error_codes::ErrorCode::ConstraintViolation);
+
+    // A different email is fine; a different label with the same email is fine
+    // (the constraint is per-label).
+    rows(&mut g, "INSERT (:Acct {email: 'b@x.io', name: 'B'})");
+    rows(&mut g, "INSERT (:Other {email: 'a@x.io'})");
+
+    // A SET that collides with an existing Acct email → violation …
+    let err = parse("MATCH (n:Acct {email: 'b@x.io'}) SET n.email = 'a@x.io'")
+        .unwrap()
+        .execute(&mut g, &Params::new())
+        .unwrap_err();
+    assert_eq!(err.code, crate::error_codes::ErrorCode::ConstraintViolation);
+    // … but setting a row to its OWN current value is not a self-collision.
+    rows(
+        &mut g,
+        "MATCH (n:Acct {email: 'b@x.io'}) SET n.email = 'b@x.io'",
+    );
+}
+
+#[test]
+fn unique_constraint_null_values_are_exempt() {
+    // SQL semantics: NULLs are distinct, so multiple null-emails don't collide
+    // (lenke stores null first-class, but uniqueness still exempts it — matching
+    // the value index, which never buckets null). An absent value is likewise ok.
+    let mut g = modern();
+    g.create_unique_constraint("Acct", "email").unwrap();
+    rows(&mut g, "INSERT (:Acct {email: null, name: 'A'})");
+    rows(&mut g, "INSERT (:Acct {email: null, name: 'B'})");
+    rows(&mut g, "INSERT (:Acct {name: 'C'})");
+}
+
+#[test]
+fn create_unique_constraint_rejects_preexisting_duplicates() {
+    // Declaring a constraint the current data already violates is meaningless —
+    // SQL rejects the unique-index build the same way.
+    let mut g = ndjson::decode(
+        &[
+            r#"{"type":"node","id":"1","labels":["Acct"],"properties":{"email":"dup@x.io"}}"#,
+            r#"{"type":"node","id":"2","labels":["Acct"],"properties":{"email":"dup@x.io"}}"#,
+        ]
+        .join("\n"),
+    )
+    .unwrap();
+    let err = g.create_unique_constraint("Acct", "email").unwrap_err();
+    assert_eq!(err.code, crate::error_codes::ErrorCode::ConstraintViolation);
+}
+
+#[test]
+fn unique_constraint_introspection_and_drop() {
+    let mut g = modern();
+    g.create_unique_constraint("Acct", "email").unwrap();
+    g.create_unique_constraint("Acct", "handle").unwrap();
+    assert!(g.has_unique_constraint("Acct", "email"));
+    assert_eq!(
+        g.unique_keys("Acct"),
+        &["email".to_string(), "handle".to_string()]
+    );
+    assert_eq!(
+        g.unique_constraints(),
+        vec![
+            ("Acct".to_string(), "email".to_string()),
+            ("Acct".to_string(), "handle".to_string()),
+        ]
+    );
+    g.drop_unique_constraint("Acct", "email");
+    assert!(!g.has_unique_constraint("Acct", "email"));
+    assert!(g.has_unique_constraint("Acct", "handle"));
+}
+
+#[test]
 fn delete_vertex_with_edges_errors_without_detach() {
     let mut g = modern();
     let err = parse("MATCH (n:Person {name:'marko'}) DELETE n")

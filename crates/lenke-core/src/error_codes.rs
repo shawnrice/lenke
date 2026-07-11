@@ -28,6 +28,7 @@ pub enum ErrorCode {
     MissingVertex,
     /// An invalid graph mutation (e.g. a cycle, a self-reference).
     InvalidGraphOp,
+    ConstraintViolation,
     /// An invalid tree structure or operation.
     InvalidTree,
     /// A recognized-but-not-yet-implemented feature.
@@ -55,6 +56,7 @@ impl ErrorCode {
         ErrorCode::DataException,
         ErrorCode::MissingVertex,
         ErrorCode::InvalidGraphOp,
+        ErrorCode::ConstraintViolation,
         ErrorCode::InvalidTree,
         ErrorCode::NotImplemented,
         ErrorCode::Unsupported,
@@ -75,6 +77,7 @@ impl ErrorCode {
             ErrorCode::DataException => "E_DATA_EXCEPTION",
             ErrorCode::MissingVertex => "E_MISSING_VERTEX",
             ErrorCode::InvalidGraphOp => "E_INVALID_GRAPH_OP",
+            ErrorCode::ConstraintViolation => "E_CONSTRAINT_VIOLATION",
             ErrorCode::InvalidTree => "E_INVALID_TREE",
             ErrorCode::NotImplemented => "E_NOT_IMPLEMENTED",
             ErrorCode::Unsupported => "E_UNSUPPORTED",

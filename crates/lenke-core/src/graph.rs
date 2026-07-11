@@ -345,6 +345,14 @@ pub struct Graph {
     /// mutation methods. Absent key ⇒ no index (full scan).
     vidx: PropIndex,
     eidx: PropIndex,
+    /// UNIQUE constraints over vertex properties: label name → the sorted
+    /// property keys that must be unique among live vertices carrying that label.
+    /// Each constrained key is index-backed (declaring the constraint creates the
+    /// vertex index), so enforcement and `_MERGE` key lookups seek rather than
+    /// scan. Null/list values are exempt (SQL semantics — NULLs are distinct),
+    /// which also matches what the value index can hold. See
+    /// `docs/design/gql-extensions.md` §3.
+    v_unique: HashMap<String, Vec<String>>,
 }
 
 /// A set of property indexes (key name → ordered value buckets).
@@ -557,6 +565,180 @@ impl Graph {
         let mut ks: Vec<String> = self.eidx.keys().cloned().collect();
         ks.sort();
         ks
+    }
+
+    // --- unique constraints (declared over `(label, property key)`) ---------
+    // At most one live vertex carrying `label` may hold a given non-null value
+    // for `key`. Backed by the vertex property index (so lookups seek). This is
+    // the Pattern-B primitive `_MERGE` keys on; see `docs/design/gql-extensions.md`.
+
+    /// Declare a UNIQUE constraint on `(label, key)`. Creates the backing vertex
+    /// index if absent, then registers the constraint. Idempotent. Fails with
+    /// [`ErrorCode::ConstraintViolation`] if the *current* data already violates
+    /// it — an already-broken constraint is meaningless (SQL rejects the unique
+    /// index build the same way).
+    pub fn create_unique_constraint(&mut self, label: &str, key: &str) -> CodeResult<()> {
+        if !self.vertex_indexed(key) {
+            self.create_vertex_index(key);
+        }
+        if self.first_label_prop_duplicate(label, key).is_some() {
+            return Err(CodeError::new(
+                ErrorCode::ConstraintViolation,
+                "existing data already violates the unique constraint being declared",
+            ));
+        }
+        let keys = self.v_unique.entry(label.to_string()).or_default();
+        if !keys.iter().any(|k| k == key) {
+            keys.push(key.to_string());
+            keys.sort();
+        }
+        Ok(())
+    }
+
+    /// Drop a unique constraint. The backing index is left in place (drop it via
+    /// [`Graph::drop_vertex_index`] if unwanted). Idempotent.
+    pub fn drop_unique_constraint(&mut self, label: &str, key: &str) {
+        if let Some(keys) = self.v_unique.get_mut(label) {
+            keys.retain(|k| k != key);
+            if keys.is_empty() {
+                self.v_unique.remove(label);
+            }
+        }
+    }
+
+    /// Property keys under a unique constraint for `label` (sorted; empty if
+    /// none). `_MERGE` intersects this with the pattern to infer the conflict key.
+    pub fn unique_keys(&self, label: &str) -> &[String] {
+        self.v_unique.get(label).map_or(&[], Vec::as_slice)
+    }
+
+    /// True iff `(label, key)` carries a unique constraint.
+    pub fn has_unique_constraint(&self, label: &str, key: &str) -> bool {
+        self.v_unique
+            .get(label)
+            .is_some_and(|ks| ks.iter().any(|k| k == key))
+    }
+
+    /// Every declared unique constraint as sorted `(label, key)` pairs — a
+    /// deterministic listing for host introspection.
+    pub fn unique_constraints(&self) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = self
+            .v_unique
+            .iter()
+            .flat_map(|(l, ks)| ks.iter().map(move |k| (l.clone(), k.clone())))
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// The single live vertex carrying `label` whose `key == value`, if any (≤1
+    /// under the constraint). The `_MERGE` create-vs-update decision. A non-null
+    /// scalar `value` seeks the index; null/list yield `None` (exempt).
+    pub fn unique_lookup(&self, label: &str, key: &str, value: &Value) -> Option<u32> {
+        self.vertices_with_label_value(label, key, value)
+            .into_iter()
+            .next()
+    }
+
+    /// If adding a vertex with `labels` + `props` would break a unique constraint,
+    /// the offending `(label, key, existing vertex)`. Drives INSERT enforcement;
+    /// `exclude` skips one vertex (itself, for a re-check). Only constrained keys
+    /// present in `props` are checked; null/list values are exempt.
+    pub fn unique_conflict(
+        &self,
+        labels: &[String],
+        props: &[(String, Value)],
+        exclude: Option<u32>,
+    ) -> Option<(String, String, u32)> {
+        for label in labels {
+            for key in self.unique_keys(label) {
+                let Some((_, value)) = props.iter().find(|(k, _)| k == key) else {
+                    continue;
+                };
+                let hit = self
+                    .vertices_with_label_value(label, key, value)
+                    .into_iter()
+                    .find(|&v| Some(v) != exclude);
+                if let Some(existing) = hit {
+                    return Some((label.clone(), key.clone(), existing));
+                }
+            }
+        }
+        None
+    }
+
+    /// If setting `vi.key = value` would break a unique constraint on one of
+    /// `vi`'s labels, the offending `(label, existing vertex)`.
+    pub fn unique_conflict_on_set(
+        &self,
+        vi: u32,
+        key: &str,
+        value: &Value,
+    ) -> Option<(String, u32)> {
+        for (label, keys) in &self.v_unique {
+            if !keys.iter().any(|k| k == key) {
+                continue;
+            }
+            let Some(lid) = self.labels.get(label) else {
+                continue;
+            };
+            if !self.vlabels[vi as usize].contains(&lid) {
+                continue;
+            }
+            if let Some(existing) = self
+                .vertices_with_label_value(label, key, value)
+                .into_iter()
+                .find(|&v| v != vi)
+            {
+                return Some((label.clone(), existing));
+            }
+        }
+        None
+    }
+
+    /// Live vertices carrying `label` whose property `key == value`. Seeks the
+    /// backing index (a constraint always creates one), falling back to a scan if
+    /// somehow unindexed. Non-indexable values (null/list) yield an empty set —
+    /// exempt from uniqueness (SQL: NULLs distinct), matching the value index.
+    fn vertices_with_label_value(&self, label: &str, key: &str, value: &Value) -> Vec<u32> {
+        let Some(idxk) = IdxKey::from_value(value) else {
+            return Vec::new();
+        };
+        let Some(lid) = self.labels.get(label) else {
+            return Vec::new();
+        };
+        match self.vertices_by_prop(key, &idxk) {
+            Some(ids) => ids
+                .iter()
+                .copied()
+                .filter(|&v| self.vlabels[v as usize].contains(&lid))
+                .collect(),
+            None => self
+                .vertex_indices()
+                .filter(|&v| {
+                    self.vlabels[v as usize].contains(&lid)
+                        && self.props.value(v as usize, key, &self.strs) == *value
+                })
+                .collect(),
+        }
+    }
+
+    /// The first pair of live `label`-vertices that share a value for `key` — for
+    /// validating a unique constraint against existing data at declare time.
+    /// Reuses the (freshly built) backing index; null/list values are exempt.
+    fn first_label_prop_duplicate(&self, label: &str, key: &str) -> Option<(u32, u32)> {
+        let lid = self.labels.get(label)?;
+        let bt = self.vidx.get(key)?;
+        for ids in bt.values() {
+            let mut with_label = ids
+                .iter()
+                .copied()
+                .filter(|&v| self.vlabels[v as usize].contains(&lid));
+            if let (Some(a), Some(b)) = (with_label.next(), with_label.next()) {
+                return Some((a, b));
+            }
+        }
+        None
     }
 
     /// Equality seek over vertices: live vertices whose `key` == `value` (None = no index).
@@ -1355,6 +1537,7 @@ impl Builder {
             synth: 0,
             vidx: HashMap::new(),
             eidx: HashMap::new(),
+            v_unique: HashMap::new(),
         }
     }
 }
