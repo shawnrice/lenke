@@ -517,6 +517,16 @@ impl Graph {
         (0..self.n as u32).filter(move |&v| self.v_live[v as usize])
     }
 
+    /// The first live edge of type `etype` from `from` to `to`, if any — the
+    /// structural key `_MERGE`'s edge form upserts on (ensures at most one such
+    /// edge). First-by-adjacency-order, matching the TS engine.
+    pub fn find_edge(&self, from: u32, to: u32, etype: &str) -> Option<u32> {
+        let tid = self.etype.get(etype)?;
+        self.out.get(from as usize)?.iter().find_map(|a| {
+            (a.nbr == to && a.etype == tid && self.e_live[a.eidx as usize]).then_some(a.eidx)
+        })
+    }
+
     // --- property indexes (opt-in secondary indexes over property values) --
 
     /// Declare (and backfill) a secondary index over a **vertex** property. An

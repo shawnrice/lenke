@@ -652,6 +652,21 @@ export class Graph {
     return new Set(this.edgesByLabel.get(label) ?? []);
   };
 
+  /**
+   * The first live edge of `label` from `from` to `to`, if any — the structural
+   * key `_MERGE`'s edge form upserts on (ensures at most one such edge).
+   * First-by-insertion-order, matching the Rust core.
+   */
+  public findEdge = (from: Vertex, to: Vertex, label: string): Edge | undefined => {
+    for (const edge of this.edgesFromByLabel.get(from.id)?.get(label) ?? []) {
+      if (edge.to === to) {
+        return edge;
+      }
+    }
+
+    return undefined;
+  };
+
   /* Property indexes */
 
   /**

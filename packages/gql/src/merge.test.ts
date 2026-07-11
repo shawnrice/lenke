@@ -119,4 +119,36 @@ describe('GQL: _MERGE (keyed upsert, node form)', () => {
     // …but it parses fine under the default (lenke) dialect.
     expect(() => parse(`_MERGE (u:Acct {email: 'a'})`)).not.toThrow();
   });
+
+  test('edge form: upserts the edge between key-matched endpoints (ensure-tuple)', () => {
+    const g = createTestSocialGraph();
+    g.createUniqueConstraint('User', 'id');
+    g.createUniqueConstraint('Team', 'id');
+    query(g, `INSERT (:User {id: 'u1'}), (:Team {id: 't1'})`);
+
+    query(
+      g,
+      `_MERGE (u:User {id: 'u1'})-[m:MEMBER {since: 1}]->(t:Team {id: 't1'}) _ON_CREATE SET m.role = 'admin'`,
+    );
+    expect(
+      query(g, `MATCH (:User {id:'u1'})-[m:MEMBER]->(:Team {id:'t1'}) RETURN m.since, m.role`),
+    ).toEqual([{ 'm.since': 1, 'm.role': 'admin' }]);
+
+    // Idempotent: clobbers edge props, no duplicate edge, _ON_CREATE not re-run.
+    query(g, `_MERGE (u:User {id: 'u1'})-[m:MEMBER {since: 2}]->(t:Team {id: 't1'})`);
+    expect(
+      query(g, `MATCH (:User {id:'u1'})-[m:MEMBER]->(:Team {id:'t1'}) RETURN m.since, m.role`),
+    ).toEqual([{ 'm.since': 2, 'm.role': 'admin' }]);
+    expect(query(g, `MATCH (:User)-[m:MEMBER]->(:Team) RETURN count(*) AS c`)).toEqual([{ c: 1 }]);
+  });
+
+  test('edge form: a missing endpoint errors', () => {
+    const g = createTestSocialGraph();
+    g.createUniqueConstraint('User', 'id');
+    g.createUniqueConstraint('Team', 'id');
+    query(g, `INSERT (:User {id: 'u1'})`);
+    expect(codeOf(() => query(g, `_MERGE (u:User {id:'u1'})-[m:MEMBER]->(t:Team {id:'t1'})`))).toBe(
+      ErrorCode.InvalidGraphOp,
+    );
+  });
 });

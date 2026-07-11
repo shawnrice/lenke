@@ -1804,6 +1804,75 @@ fn merge_gated_off_under_iso_strict() {
 }
 
 #[test]
+fn merge_edge_form_upserts_edge_between_matched_endpoints() {
+    let mut g = modern();
+    g.create_unique_constraint("User", "id").unwrap();
+    g.create_unique_constraint("Team", "id").unwrap();
+    rows(&mut g, "INSERT (:User {id: 'u1'}), (:Team {id: 'g1'})");
+
+    // ensure-tuple: endpoints matched by key, the MEMBER edge is upserted.
+    rows(
+        &mut g,
+        "_MERGE (u:User {id: 'u1'})-[m:MEMBER {since: 1}]->(g:Team {id: 'g1'}) _ON_CREATE SET m.role = 'admin'",
+    );
+    assert_eq!(
+        rows(
+            &mut g,
+            "MATCH (:User {id:'u1'})-[m:MEMBER]->(:Team {id:'g1'}) RETURN m.since, m.role"
+        ),
+        vec![vec![n(1.0), s("admin")]]
+    );
+
+    // Idempotent: second _MERGE clobbers edge props (default), no duplicate edge;
+    // _ON_CREATE does not re-run, so role stays.
+    rows(
+        &mut g,
+        "_MERGE (u:User {id: 'u1'})-[m:MEMBER {since: 2}]->(g:Team {id: 'g1'})",
+    );
+    assert_eq!(
+        rows(
+            &mut g,
+            "MATCH (:User {id:'u1'})-[m:MEMBER]->(:Team {id:'g1'}) RETURN m.since, m.role"
+        ),
+        vec![vec![n(2.0), s("admin")]]
+    );
+    assert_eq!(
+        rows(
+            &mut g,
+            "MATCH (:User)-[m:MEMBER]->(:Team) RETURN count(*) AS c"
+        ),
+        vec![vec![n(1.0)]]
+    );
+
+    // _ON_UPDATE_NOTHING leaves the edge untouched.
+    rows(
+        &mut g,
+        "_MERGE (u:User {id: 'u1'})-[m:MEMBER {since: 99}]->(g:Team {id: 'g1'}) _ON_UPDATE_NOTHING",
+    );
+    assert_eq!(
+        rows(
+            &mut g,
+            "MATCH (:User {id:'u1'})-[m:MEMBER]->(:Team {id:'g1'}) RETURN m.since"
+        ),
+        vec![vec![n(2.0)]]
+    );
+}
+
+#[test]
+fn merge_edge_missing_endpoint_errors() {
+    let mut g = modern();
+    g.create_unique_constraint("User", "id").unwrap();
+    g.create_unique_constraint("Team", "id").unwrap();
+    rows(&mut g, "INSERT (:User {id: 'u1'})"); // no Group g1
+
+    let err = parse("_MERGE (u:User {id:'u1'})-[m:MEMBER]->(g:Team {id:'g1'})")
+        .unwrap()
+        .execute(&mut g, &Params::new())
+        .unwrap_err();
+    assert_eq!(err.code, crate::error_codes::ErrorCode::InvalidGraphOp);
+}
+
+#[test]
 fn delete_vertex_with_edges_errors_without_detach() {
     let mut g = modern();
     let err = parse("MATCH (n:Person {name:'marko'}) DELETE n")

@@ -132,4 +132,33 @@ suite('unique-constraint differential (TS vs native)', () => {
     const READ = `MATCH (u:Acct) RETURN u.email, u.name, u.v, u.created ORDER BY u.email`;
     expect(JSON.stringify(nativeGraph.query(READ))).toEqual(JSON.stringify(tsQuery(tsGraph, READ)));
   });
+
+  test('_MERGE edge form outcomes and final state agree across engines', () => {
+    const tsGraph = tsDeserialize(SEED, 'ndjson', new Graph());
+    const backend = createFfiBackend(LIB);
+    const nativeGraph = graphFromFormat(backend, SEED, 'ndjson');
+
+    for (const g of [tsGraph, nativeGraph]) {
+      g.createUniqueConstraint('User', 'id');
+      g.createUniqueConstraint('Team', 'id');
+    }
+
+    const script = [
+      `INSERT (:User {id: 'u1'}), (:Team {id: 't1'})`,
+      `_MERGE (u:User {id:'u1'})-[m:MEMBER {since: 1}]->(t:Team {id:'t1'}) _ON_CREATE SET m.role = 'admin'`, // create
+      `_MERGE (u:User {id:'u1'})-[m:MEMBER {since: 2}]->(t:Team {id:'t1'})`, // clobber edge props
+      `_MERGE (u:User {id:'u1'})-[m:MEMBER {since: 9}]->(t:Team {id:'t1'}) _ON_UPDATE_NOTHING`, // no-op
+      `_MERGE (u:User {id:'u1'})-[m:MEMBER]->(t:Team {id:'nope'})`, // missing endpoint → error
+    ];
+
+    for (const sql of script) {
+      const ts = outcome(() => tsQuery(tsGraph, sql));
+      const native = outcome(() => nativeGraph.query(sql));
+
+      expect(native, `edge _MERGE mismatch: ${sql}`).toEqual(ts);
+    }
+
+    const READ = `MATCH (:User)-[m:MEMBER]->(:Team) RETURN m.since, m.role`;
+    expect(JSON.stringify(nativeGraph.query(READ))).toEqual(JSON.stringify(tsQuery(tsGraph, READ)));
+  });
 });

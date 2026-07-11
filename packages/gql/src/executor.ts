@@ -2497,43 +2497,145 @@ const inferMergeKey = (
 };
 
 /** Apply `_ON_CREATE` / `_ON_UPDATE` SET items to the merged `vertex`. */
+// Apply `_ON_CREATE` / `_ON_UPDATE` SET items to the node or edge each item's
+// variable resolves to in `binding` (mirrors `runSet`).
 const applyMergeSets = (
   graph: Graph,
-  vertex: Vertex,
-  variable: string | undefined,
   items: readonly CSetItem[],
   binding: Binding,
   params: Params,
 ): void => {
-  const b = new Map(binding);
-
-  if (variable) {
-    b.set(variable, vertex);
-  }
-
   for (const item of items) {
+    const el = binding.get(item.variable);
+
+    if (!isElement(el)) {
+      continue;
+    }
+
     if ('label' in item) {
-      graph.addLabelToVertex(item.label, vertex);
+      if (isEdge(el)) {
+        graph.addLabelToEdge(item.label, el);
+      } else {
+        graph.addLabelToVertex(item.label, el);
+      }
     } else {
-      vertex.setProperty(item.key, item.value({ binding: b, params, graph }));
+      el.setProperty(item.key, item.value({ binding, params, graph }));
     }
   }
 };
 
-// `_MERGE` keyed upsert (v1: node form). Match an existing element by the
-// constraint key; on miss, insert the pattern (key + payload) then _ON_CREATE;
-// on hit, apply the update disposition — default clobbers the non-key payload,
-// `_ON_UPDATE SET … [WHERE]` replaces it, `_ON_UPDATE_NOTHING` leaves it.
-// (Edge form arrives in a later slice.)
-const runMerge = (graph: Graph, clause: CMerge, binding: Binding, params: Params): Binding => {
-  const out = new Map(binding);
+// Resolve a `_MERGE` edge endpoint: the vertex matched by its unique-constraint
+// key. Throws (InvalidGraphOp) if no key can be inferred or no vertex matches.
+const resolveMergeEndpoint = (
+  graph: Graph,
+  node: CInsertNode,
+  binding: Binding,
+  params: Params,
+): Vertex => {
+  const properties = evalProps(node.props, binding, params, graph);
+  const { label, key, value } = inferMergeKey(graph, node.labels, properties);
+  const found = graph.uniqueLookup(label, key, value);
 
-  if (clause.pattern.segments.length > 0) {
-    throw new LenkeError('_MERGE edge form is not yet supported', {
+  if (found === undefined) {
+    throw new LenkeError(
+      `_MERGE: endpoint (:${node.labels.join('&')} {${key}: …}) not found — its key must match an existing vertex`,
+      { code: ErrorCode.InvalidGraphOp },
+    );
+  }
+
+  return found;
+};
+
+// `_MERGE` edge form (v1): match both endpoints by key, then upsert the single
+// edge between them keyed structurally by (from, to, type). Dispositions apply to
+// the edge (which has no key prop, so the default clobbers all its props).
+const runMergeEdge = (graph: Graph, clause: CMerge, binding: Binding, params: Params): Binding => {
+  const out = new Map(binding);
+  const [seg] = clause.pattern.segments;
+  const startV = resolveMergeEndpoint(graph, clause.pattern.start, out, params);
+  const endV = resolveMergeEndpoint(graph, seg.node, out, params);
+  const [from, to] = seg.rel.direction === 'in' ? [endV, startV] : [startV, endV];
+  const [relType] = seg.rel.labels;
+
+  if (relType === undefined) {
+    throw new LenkeError('_MERGE: an edge must carry exactly one type', {
+      code: ErrorCode.InvalidGraphOp,
+    });
+  }
+
+  const edgeProps = evalProps(seg.rel.props, out, params, graph);
+
+  // Bind the resolved endpoints so the dispositions can read them.
+  if (clause.pattern.start.variable) {
+    out.set(clause.pattern.start.variable, startV);
+  }
+
+  if (seg.node.variable) {
+    out.set(seg.node.variable, endV);
+  }
+
+  const existing = graph.findEdge(from, to, relType);
+  let edge: Edge;
+
+  if (existing === undefined) {
+    edge = graph.addEdge({ from, to, labels: [relType], properties: edgeProps });
+
+    if (seg.rel.variable) {
+      out.set(seg.rel.variable, edge);
+    }
+
+    if (clause.onCreate) {
+      applyMergeSets(graph, clause.onCreate, out, params);
+    }
+  } else {
+    edge = existing;
+
+    if (seg.rel.variable) {
+      out.set(seg.rel.variable, edge);
+    }
+
+    const disp = clause.onUpdate;
+
+    if (disp === undefined) {
+      // An edge has no key prop → the default clobbers all its props.
+      for (const [k, v] of Object.entries(edgeProps)) {
+        edge.setProperty(k, v);
+      }
+    } else if (disp.kind === 'set') {
+      const passes =
+        disp.where === undefined || disp.where({ binding: out, params, graph }) === true;
+
+      if (passes) {
+        applyMergeSets(graph, disp.items, out, params);
+      }
+    }
+    // disp.kind === 'nothing' → leave the edge untouched.
+  }
+
+  if (seg.rel.variable) {
+    out.set(seg.rel.variable, edge);
+  }
+
+  return out;
+};
+
+// `_MERGE` keyed upsert. Node form: match by the constraint key; on miss insert
+// the pattern (key + payload) then `_ON_CREATE`; on hit apply the update
+// disposition — default clobbers the non-key payload, `_ON_UPDATE SET … [WHERE]`
+// replaces it, `_ON_UPDATE_NOTHING` leaves it. One segment → the edge form above;
+// multi-hop compound patterns are deferred (v2).
+const runMerge = (graph: Graph, clause: CMerge, binding: Binding, params: Params): Binding => {
+  if (clause.pattern.segments.length === 1) {
+    return runMergeEdge(graph, clause, binding, params);
+  }
+
+  if (clause.pattern.segments.length > 1) {
+    throw new LenkeError('_MERGE multi-hop compound patterns are not yet supported (v2)', {
       code: ErrorCode.NotImplemented,
     });
   }
 
+  const out = new Map(binding);
   const node = clause.pattern.start;
   const properties = evalProps(node.props, out, params, graph);
   const { label, key, value } = inferMergeKey(graph, node.labels, properties);
@@ -2544,11 +2646,20 @@ const runMerge = (graph: Graph, clause: CMerge, binding: Binding, params: Params
   if (existing === undefined) {
     vertex = graph.addVertex({ labels: [...node.labels], properties });
 
+    if (node.variable) {
+      out.set(node.variable, vertex);
+    }
+
     if (clause.onCreate) {
-      applyMergeSets(graph, vertex, node.variable, clause.onCreate, out, params);
+      applyMergeSets(graph, clause.onCreate, out, params);
     }
   } else {
     vertex = existing;
+
+    if (node.variable) {
+      out.set(node.variable, vertex);
+    }
+
     const disp = clause.onUpdate;
 
     if (disp === undefined) {
@@ -2560,16 +2671,11 @@ const runMerge = (graph: Graph, clause: CMerge, binding: Binding, params: Params
       }
     } else if (disp.kind === 'set') {
       // An explicit update replaces the default, gated by WHERE if present.
-      const b = new Map(out);
-
-      if (node.variable) {
-        b.set(node.variable, vertex);
-      }
-
-      const passes = disp.where === undefined || disp.where({ binding: b, params, graph }) === true;
+      const passes =
+        disp.where === undefined || disp.where({ binding: out, params, graph }) === true;
 
       if (passes) {
-        applyMergeSets(graph, vertex, node.variable, disp.items, out, params);
+        applyMergeSets(graph, disp.items, out, params);
       }
     }
     // disp.kind === 'nothing' → leave the existing element untouched.

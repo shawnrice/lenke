@@ -166,7 +166,7 @@ impl Ctx<'_> {
             )),
             FAULT_MERGE_EDGE => Err(CodeError::new(
                 ErrorCode::NotImplemented,
-                "_MERGE edge form is not yet supported",
+                "_MERGE multi-hop compound patterns are not yet supported (v2)",
             )),
             FAULT_UNKNOWN_FN => {
                 // Name the offending function(s) (as TS does), e.g.
@@ -4998,8 +4998,8 @@ fn infer_merge_key(
     found
 }
 
-/// Apply `_ON_CREATE` / `_ON_UPDATE` SET items to the vertex bound in `binding`
-/// (the node path of [`run_set`]).
+/// Apply `_ON_CREATE` / `_ON_UPDATE` SET items to the node or edge bound in
+/// `binding` (mirrors [`run_set`]).
 fn apply_merge_sets(graph: &mut Graph, ctx: &Ctx, items: &[CSetItem], binding: &Binding) {
     for item in items {
         match item {
@@ -5008,22 +5008,120 @@ fn apply_merge_sets(graph: &mut Graph, ctx: &Ctx, items: &[CSetItem], binding: &
                 key,
                 value,
             } => {
-                let Some(Val::Node(vi)) = binding.get(*var_slot).cloned() else {
-                    continue;
-                };
+                let target = binding.get(*var_slot).cloned();
                 let v = {
                     let env = Env::new(graph, ctx, binding);
                     val_to_value(graph, &eval(&env, value))
                 };
-                graph.set_vertex_prop(vi, key, v);
+                match target {
+                    Some(Val::Node(vi)) => graph.set_vertex_prop(vi, key, v),
+                    Some(Val::Edge(ei)) => graph.set_edge_prop(ei, key, v),
+                    _ => {}
+                }
             }
-            CSetItem::Label { var_slot, label } => {
-                if let Some(Val::Node(vi)) = binding.get(*var_slot).cloned() {
-                    graph.add_vertex_label(vi, label);
+            CSetItem::Label { var_slot, label } => match binding.get(*var_slot).cloned() {
+                Some(Val::Node(vi)) => graph.add_vertex_label(vi, label),
+                Some(Val::Edge(ei)) => graph.add_edge_label(ei, label),
+                _ => {}
+            },
+        }
+    }
+}
+
+/// Resolve a `_MERGE` edge endpoint: the vertex matched by the endpoint's
+/// unique-constraint key. `None` if no key can be inferred or no vertex matches
+/// (surfaced as `FAULT_MERGE_KEY` by the caller).
+fn resolve_merge_endpoint(
+    graph: &Graph,
+    ctx: &Ctx,
+    node: &CNode,
+    binding: &Binding,
+) -> Option<u32> {
+    let labels = creatable_labels(node.label.as_ref(), ctx.label_names)?;
+    let props = eval_props(graph, ctx, &node.props, binding);
+    let (label, key, value) = infer_merge_key(graph, &labels, &props)?;
+    graph.unique_lookup(&label, &key, &value)
+}
+
+/// `_MERGE` edge form (v1): match both endpoints by key, then upsert the single
+/// edge between them keyed structurally by `(from, to, type)`. Dispositions apply
+/// to the edge (which has no key prop, so the default clobbers all its props).
+/// Byte-identical to the TS `runMergeEdge`.
+fn run_merge_edge(graph: &mut Graph, ctx: &Ctx, clause: &CMerge, binding: &Binding) -> Binding {
+    let mut out = binding.clone();
+    let seg = &clause.pattern.segments[0];
+
+    let (Some(a), Some(b)) = (
+        resolve_merge_endpoint(graph, ctx, &clause.pattern.start, binding),
+        resolve_merge_endpoint(graph, ctx, &seg.node, binding),
+    ) else {
+        ctx.set_fault(FAULT_MERGE_KEY);
+        return out;
+    };
+
+    let (from, to) = if seg.rel.direction == Direction::In {
+        (b, a)
+    } else {
+        (a, b)
+    };
+    let Some(etype) = creatable_labels(seg.rel.label.as_ref(), ctx.label_names)
+        .and_then(|ls| ls.into_iter().next())
+    else {
+        ctx.set_fault(FAULT_BAD_LABEL);
+        return out;
+    };
+    let eprops = eval_props(graph, ctx, &seg.rel.props, binding);
+
+    // Bind the resolved endpoints so the dispositions' expressions can read them.
+    if let Some(s) = clause.pattern.start.var_slot {
+        out.set(s, Val::Node(a));
+    }
+    if let Some(s) = seg.node.var_slot {
+        out.set(s, Val::Node(b));
+    }
+
+    let ei = if let Some(ei) = graph.find_edge(from, to, &etype) {
+        // Update path. An edge has no key prop → the default clobbers all props.
+        match &clause.on_update {
+            None => {
+                for (k, v) in &eprops {
+                    graph.set_edge_prop(ei, k, v.clone());
+                }
+            }
+            Some(CMergeUpdate::Nothing) => {}
+            Some(CMergeUpdate::Set { items, where_ }) => {
+                if let Some(s) = seg.rel.var_slot {
+                    out.set(s, Val::Edge(ei));
+                }
+                let passes = match where_ {
+                    None => true,
+                    Some(w) => {
+                        let env = Env::new(graph, ctx, &out);
+                        as_truth(&eval(&env, w)) == Some(true)
+                    }
+                };
+                if passes {
+                    apply_merge_sets(graph, ctx, items, &out);
                 }
             }
         }
+        ei
+    } else {
+        // Create path.
+        let ei = graph.add_edge(from, to, &etype, eprops);
+        if let Some(s) = seg.rel.var_slot {
+            out.set(s, Val::Edge(ei));
+        }
+        if let Some(items) = &clause.on_create {
+            apply_merge_sets(graph, ctx, items, &out);
+        }
+        ei
+    };
+
+    if let Some(s) = seg.rel.var_slot {
+        out.set(s, Val::Edge(ei));
     }
+    out
 }
 
 /// `_MERGE` keyed upsert (v1: node form). Match by the constraint key; on miss,
@@ -5034,10 +5132,15 @@ fn apply_merge_sets(graph: &mut Graph, ctx: &Ctx, items: &[CSetItem], binding: &
 fn run_merge(graph: &mut Graph, ctx: &Ctx, clause: &CMerge, binding: &Binding) -> Binding {
     let mut out = binding.clone();
 
-    // v1: node form only (no segments); the edge form is a later slice.
-    if !clause.pattern.segments.is_empty() {
-        ctx.set_fault(FAULT_MERGE_EDGE);
-        return out;
+    // Edge form = exactly one segment `(a)-(rel)->(b)`. Multi-hop compound
+    // patterns are deferred (v2).
+    match clause.pattern.segments.len() {
+        0 => {}
+        1 => return run_merge_edge(graph, ctx, clause, &out),
+        _ => {
+            ctx.set_fault(FAULT_MERGE_EDGE);
+            return out;
+        }
     }
 
     let node = &clause.pattern.start;
