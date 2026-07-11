@@ -727,6 +727,174 @@ export class Graph {
     this.edgePropertyIndex.update(edge, key, oldValue, newValue);
   };
 
+  /* Unique constraints (declared over `(label, property key)`) */
+  // At most one live vertex carrying `label` may hold a given non-null scalar
+  // value for `key`. Backed by the vertex property index (so lookups seek). This
+  // is the Pattern-B primitive `_MERGE` keys on; byte-identical to the Rust core.
+  // See docs/design/gql-extensions.md §3.
+
+  private readonly vertexUniqueConstraints = new Map<string, Set<string>>();
+
+  /**
+   * A value participates in uniqueness only if it's a non-null scalar — null and
+   * lists/objects are exempt (SQL: NULLs distinct), matching the Rust `IdxKey`
+   * domain so both engines agree on what a constraint can bucket.
+   */
+  private isUniqueKeyable = (value: unknown): value is string | number | boolean =>
+    typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';
+
+  /**
+   * Declare a UNIQUE constraint on `(label, key)`. Creates the backing vertex
+   * index if absent, then registers it. Idempotent. Throws
+   * {@link ErrorCode.ConstraintViolation} if the current data already violates it
+   * — an already-broken constraint is meaningless (as SQL rejects the unique
+   * index build).
+   */
+  public createUniqueConstraint = (label: string, key: string): void => {
+    if (!this.vertexIndexes().includes(key)) {
+      this.createVertexIndex(key);
+    }
+
+    const seen = new Set<unknown>();
+
+    for (const vertex of this.getVerticesByLabel(label)) {
+      const value = vertex.properties[key];
+
+      if (!this.isUniqueKeyable(value)) {
+        continue;
+      }
+
+      if (seen.has(value)) {
+        throw new LenkeError(
+          'existing data already violates the unique constraint being declared',
+          { code: ErrorCode.ConstraintViolation },
+        );
+      }
+
+      seen.add(value);
+    }
+
+    let keys = this.vertexUniqueConstraints.get(label);
+
+    if (!keys) {
+      keys = new Set();
+      this.vertexUniqueConstraints.set(label, keys);
+    }
+
+    keys.add(key);
+  };
+
+  /**
+   * Drop a unique constraint. The backing index is left in place (drop it via
+   * {@link dropVertexIndex} if unwanted). Idempotent.
+   */
+  public dropUniqueConstraint = (label: string, key: string): void => {
+    const keys = this.vertexUniqueConstraints.get(label);
+
+    if (keys) {
+      keys.delete(key);
+
+      if (keys.size === 0) {
+        this.vertexUniqueConstraints.delete(label);
+      }
+    }
+  };
+
+  /** Property keys under a unique constraint for `label` (sorted; empty if none). */
+  public uniqueKeys = (label: string): string[] =>
+    [...(this.vertexUniqueConstraints.get(label) ?? [])].sort();
+
+  /** True iff `(label, key)` carries a unique constraint. */
+  public hasUniqueConstraint = (label: string, key: string): boolean =>
+    this.vertexUniqueConstraints.get(label)?.has(key) ?? false;
+
+  /** Every declared unique constraint as sorted `[label, key]` pairs. */
+  public uniqueConstraints = (): Array<[string, string]> =>
+    [...this.vertexUniqueConstraints]
+      .flatMap(([label, keys]) => [...keys].map((key): [string, string] => [label, key]))
+      .sort((a, b) => (a[0] === b[0] ? a[1].localeCompare(b[1]) : a[0].localeCompare(b[0])));
+
+  /**
+   * The single live vertex carrying `label` whose `key === value`, if any (≤1
+   * under the constraint). The `_MERGE` create-vs-update decision. Null/list
+   * values yield `undefined` (exempt).
+   */
+  public uniqueLookup = (label: string, key: string, value: unknown): Vertex | undefined => {
+    if (!this.isUniqueKeyable(value)) {
+      return undefined;
+    }
+
+    for (const vertex of this.vertexPropertyIndex.equals(key, value) ?? []) {
+      if (vertex.hasLabel(label)) {
+        return vertex;
+      }
+    }
+
+    return undefined;
+  };
+
+  /**
+   * If adding a vertex with `labels` + `properties` would break a unique
+   * constraint, the offending `{ label, key, existing }`. Drives INSERT
+   * enforcement; `exclude` skips one vertex. Only constrained keys present with a
+   * non-null scalar value are checked.
+   */
+  public uniqueConflict = (
+    labels: readonly string[],
+    properties: Readonly<Record<string, unknown>>,
+    exclude?: Vertex,
+  ): { label: string; key: string; existing: Vertex } | undefined => {
+    for (const label of labels) {
+      for (const key of this.uniqueKeys(label)) {
+        if (!(key in properties)) {
+          continue;
+        }
+
+        const value = properties[key];
+
+        if (!this.isUniqueKeyable(value)) {
+          continue;
+        }
+
+        for (const vertex of this.vertexPropertyIndex.equals(key, value) ?? []) {
+          if (vertex !== exclude && vertex.hasLabel(label)) {
+            return { label, key, existing: vertex };
+          }
+        }
+      }
+    }
+
+    return undefined;
+  };
+
+  /**
+   * If setting `vertex.key = value` would break a unique constraint on one of
+   * `vertex`'s labels, the offending `{ label, existing }`.
+   */
+  public uniqueConflictOnSet = (
+    vertex: Vertex,
+    key: string,
+    value: unknown,
+  ): { label: string; existing: Vertex } | undefined => {
+    if (!this.isUniqueKeyable(value)) {
+      return undefined;
+    }
+
+    for (const [label, keys] of this.vertexUniqueConstraints) {
+      if (!keys.has(key) || !vertex.hasLabel(label)) {
+        continue;
+      }
+
+      for (const other of this.vertexPropertyIndex.equals(key, value) ?? []) {
+        if (other !== vertex && other.hasLabel(label)) {
+          return { label, existing: other };
+        }
+      }
+    }
+
+    return undefined;
+  };
+
   /* Event Emitter Proxy */
 
   public eventsEnabled = (): boolean => {

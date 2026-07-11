@@ -2380,10 +2380,18 @@ const ensureNode = (
     return binding.get(node.variable) as Vertex;
   }
 
-  const vertex = graph.addVertex({
-    labels: [...node.labels],
-    properties: evalProps(node.props, binding, params, graph),
-  });
+  const properties = evalProps(node.props, binding, params, graph);
+
+  // Reject a plain INSERT that would break a unique constraint (an `_MERGE`
+  // reconciles instead; see docs/design/gql-extensions.md §3).
+  if (graph.uniqueConflict([...node.labels], properties)) {
+    throw new LenkeError(
+      'INSERT would duplicate a value under a unique constraint (use _MERGE to upsert)',
+      { code: ErrorCode.ConstraintViolation },
+    );
+  }
+
+  const vertex = graph.addVertex({ labels: [...node.labels], properties });
 
   if (node.variable) {
     binding.set(node.variable, vertex);
@@ -2439,7 +2447,18 @@ const runSet = (graph: Graph, clause: CSet, binding: Binding, params: Params): v
         graph.addLabelToVertex(item.label, el);
       }
     } else {
-      el.setProperty(item.key, item.value({ binding, params, graph }));
+      const value = item.value({ binding, params, graph });
+
+      // A SET that would collide under a unique constraint throws rather than
+      // silently duplicating (constraints are vertex-only).
+      if (isVertex(el) && graph.uniqueConflictOnSet(el, item.key, value)) {
+        throw new LenkeError(
+          'SET would duplicate a value under a unique constraint (use _MERGE to upsert)',
+          { code: ErrorCode.ConstraintViolation },
+        );
+      }
+
+      el.setProperty(item.key, value);
     }
   }
 };
