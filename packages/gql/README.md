@@ -98,7 +98,7 @@ A syntactically invalid query throws `GqlSyntaxError` (exported by `@lenke/gql`)
 Two more runtime errors worth knowing:
 
 - **Unbound parameter** — a `$name` the query references but the params bag doesn't supply throws `ErrorCode.MissingParameter` (naming the param), rather than binding to a silent `null`. A forgotten/typo'd binding fails loud.
-- **Reserved words** — an ISO GQL keyword used as a bare property key, variable, or **column alias** is an `ErrorCode.Syntax` error; quote it as a delimited identifier to use it as a name. This bites two common cases: a property named after a keyword (`project`, `order`, `value`, `group`, `key`), and an **aggregate aliased to its own name** — `RETURN count(*) AS count` fails, so write `` AS `count` `` (or a different alias like `AS n`). Function/aggregate names (`count`, `sum`, `avg`, `min`, `max`) are all reserved.
+- **Reserved words** — an ISO GQL keyword used as a bare property key, variable, **column alias**, **or node/edge label** is an `ErrorCode.Syntax` error; quote it as a delimited identifier to use it as a name. This bites several common cases: a property named after a keyword (`project`, `order`, `value`, `group`, `key`); an **aggregate aliased to its own name** — `RETURN count(*) AS count` fails, so write `` AS `count` `` (or a different alias like `AS n`); and a **label that happens to be reserved** — `MATCH (x:Group)` throws (`group` is reserved), which stings for authz-style schemas, so write ``MATCH (x:`Group`)``. Function/aggregate names (`count`, `sum`, `avg`, `min`, `max`) and words like `group`/`value`/`key`/`order` are all reserved; the full list is the ISO/IEC 39075 `<reserved word>` + `<pre-reserved word>` set (verbatim in `lexer.ts`).
 
 ## Upsert: unique constraints + `_MERGE`
 
@@ -106,7 +106,7 @@ ISO GQL's write clauses are `INSERT` / `SET` / `REMOVE` / `[DETACH] DELETE` / `F
 
 ### Unique constraints (a host-language primitive)
 
-`graph.createUniqueConstraint(label, key)` declares that at most one live vertex carrying `label` may hold a given (non-null) value for `key`. It is index-backed (seeks, not scans), and it's the *key* `_MERGE` upserts on.
+`graph.createUniqueConstraint(label, key)` declares that at most one live vertex carrying `label` may hold a given (non-null) value for `key`. It is index-backed (seeks, not scans), and it's the _key_ `_MERGE` upserts on.
 
 ```ts
 g.createUniqueConstraint('User', 'email'); // throws ConstraintViolation if data already violates it
@@ -127,26 +127,32 @@ A plain `INSERT`/`SET` that would duplicate a constrained value throws `ErrorCod
 query(g, `_MERGE (p:Presence {sid: $s, x: $x, y: $y})`);
 
 // full form
-query(g, `
+query(
+  g,
+  `
   _MERGE (u:User {email: $e, name: $n})
     _ON_CREATE SET u.created = $now      -- birth-only extras
     _ON_UPDATE SET u.lastSeen = $now     -- replaces the default clobber
-`);
+`,
+);
 ```
 
 The **update path** has one disposition:
 
-| Disposition | Meaning |
-| --- | --- |
-| *(bare, default)* | clobber the non-key payload to the pattern's values |
+| Disposition                  | Meaning                                                            |
+| ---------------------------- | ------------------------------------------------------------------ |
+| _(bare, default)_            | clobber the non-key payload to the pattern's values                |
 | `_ON_UPDATE SET … [WHERE p]` | **replaces** the default; runs only if `p` holds (last-write-wins) |
-| `_ON_UPDATE_NOTHING` | leave the existing element untouched (`ON CONFLICT DO NOTHING`) |
+| `_ON_UPDATE_NOTHING`         | leave the existing element untouched (`ON CONFLICT DO NOTHING`)    |
 
 `_ON_CREATE SET …` adds birth-only fields. WHERE-gating gives optimistic concurrency:
 
 ```ts
 // only overwrite if the incoming version is newer
-query(g, `_MERGE (d:Doc {id: $id}) _ON_UPDATE SET d.body = $b, d.version = $v WHERE d.version < $v`);
+query(
+  g,
+  `_MERGE (d:Doc {id: $id}) _ON_UPDATE SET d.body = $b, d.version = $v WHERE d.version < $v`,
+);
 ```
 
 **Edge form** — endpoints are matched by their key, and the single edge between them (keyed structurally by `from`/`to`/type) is upserted. This is the "ensure-tuple" idiom:
@@ -155,7 +161,10 @@ query(g, `_MERGE (d:Doc {id: $id}) _ON_UPDATE SET d.body = $b, d.version = $v WH
 g.createUniqueConstraint('User', 'id');
 g.createUniqueConstraint('Team', 'id');
 // ensure a MEMBER edge exists between two existing vertices, idempotently
-query(g, `_MERGE (u:User {id: $u})-[m:MEMBER {since: $t}]->(t:Team {id: $g}) _ON_CREATE SET m.role = 'member'`);
+query(
+  g,
+  `_MERGE (u:User {id: $u})-[m:MEMBER {since: $t}]->(t:Team {id: $g}) _ON_CREATE SET m.role = 'member'`,
+);
 ```
 
 A missing endpoint errors (`ErrorCode.InvalidGraphOp`). Multi-hop compound patterns (where an interior node might be created) are not yet supported.
