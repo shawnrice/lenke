@@ -16,9 +16,15 @@ const makeFakeStore = (initialRows: Row[]) => {
   let rows = initialRows;
   let version = 0;
   let materializations = 0;
+  let lastOpts: { deps: readonly string[] | null; params?: Record<string, unknown> } | undefined;
 
   const store: ReactiveStore = {
-    liveQuery: () => {
+    liveQuery: (_text, opts) => {
+      // The real store DEREFS `opts.deps` — capture it so a test can prove the
+      // hook always passes a well-formed opts (never `undefined`, which crashed).
+      lastOpts = opts;
+      void opts.deps;
+
       let seenVersion = -1;
       let cached: Row[] = [];
 
@@ -49,6 +55,9 @@ const makeFakeStore = (initialRows: Row[]) => {
     store,
     get materializations() {
       return materializations;
+    },
+    get lastOpts() {
+      return lastOpts;
     },
     mutate(next: Row[]) {
       rows = next;
@@ -112,6 +121,33 @@ describe('useLiveQuery', () => {
     rerender();
     rerender();
     expect(fake.materializations).toBe(1); // not re-created → cache preserved
+  });
+
+  test('omitting deps is coarse mode — passes { deps: null }, never undefined (no crash)', () => {
+    const fake = makeFakeStore([{ 'p.name': 'ann' }]);
+    const { result } = renderHook(() => useLiveQuery('MATCH (p:Person) RETURN p.name'), {
+      wrapper: wrapperFor(fake.store),
+    });
+
+    // The documented coarse mode must reach the store as `null`, not `undefined`
+    // (the real store derefs `opts.deps` and would throw on undefined).
+    expect(fake.lastOpts?.deps).toBeNull();
+    expect(result.current).toEqual([{ 'p.name': 'ann' }]);
+  });
+
+  test('forwards params for $name binding', () => {
+    const fake = makeFakeStore([{ n: 1 }]);
+    renderHook(
+      () =>
+        useLiveQuery('MATCH (:Note {id: $id})<-[:LINKS_TO]-(n) RETURN n.title', {
+          deps: ['Note', 'LINKS_TO'],
+          params: { id: 'note-1' },
+        }),
+      { wrapper: wrapperFor(fake.store) },
+    );
+
+    expect(fake.lastOpts?.params).toEqual({ id: 'note-1' });
+    expect(fake.lastOpts?.deps).toEqual(['Note', 'LINKS_TO']);
   });
 
   test('useStore throws a helpful error outside a StoreProvider', () => {

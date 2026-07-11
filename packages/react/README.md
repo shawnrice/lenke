@@ -63,10 +63,43 @@ These hooks drive React from a `@lenke/native` store (`createStore(graph)`) inst
 
 - `StoreProvider({ store, children })` — supplies a `ReactiveStore` (any value exposing `liveQuery`, satisfied structurally by `@lenke/native`'s `Store`).
 - `useStore(): ReactiveStore` — reads the store from context; throws if there is no `StoreProvider` ancestor.
-- `useLiveQuery(text, opts?): Row[]` — subscribes to a live GQL query string, returning the current rows and re-rendering only when the result changes. `opts.deps` scopes invalidation to the named label / edge-type / property-key tokens.
+- `useLiveQuery(text, opts?): Row[]` — subscribes to a live GQL query string, returning the current rows and re-rendering only when the result changes. `opts.deps` scopes invalidation to the named label / edge-type / property-key tokens; omit it (or pass `null`) for the always-correct coarse mode (recompute on any mutation). `opts.params` binds `$name` placeholders — bound at execute time, never spliced, so a UI-supplied id can't inject.
 
 ```tsx
 const rows = useLiveQuery('MATCH (p:Person) RETURN p.name', { deps: ['Person', 'name'] });
+
+// Parameterized — bind `$id` safely instead of splicing it into the string:
+const backlinks = useLiveQuery('MATCH (:Note {id: $id})<-[:LINKS_TO]-(n) RETURN n.title', {
+  deps: ['Note', 'LINKS_TO'],
+  params: { id: current },
+});
+```
+
+### Sync-client connector
+
+Drive React from a `@lenke/sync` client (`createSyncClient` / `createReconnectingClient`) — the port/WebSocket path, whose snapshot carries completeness, demand-fill, and offline behavior (unlike the _local_ store above). The client shape is structural, so this adds no `@lenke/sync` dependency.
+
+- `SyncClientProvider({ client, children })` — supplies a sync client to the hooks below.
+- `useSyncClient()` — reads the client from context; throws outside a `SyncClientProvider`.
+- `useClientLiveQuery(query, opts): ClientSnapshot` — subscribes to a standing query and returns the whole `{ rows, complete, error }` snapshot, so a component renders skeletons while `complete` is `false`, shows `error` when set, and rows otherwise. `opts.deps` is **required** (the client does no inference — pass a token array, `[]`, `null`, or derive it with `inferDeps(query)` from `@lenke/sync`); `opts.params` binds `$name` placeholders.
+
+```tsx
+function Sidebar({ cluster }: { cluster: string }) {
+  const { rows, complete, error } = useClientLiveQuery(
+    'MATCH (s:Service) WHERE s.cluster = $c RETURN s.name',
+    { deps: ['Service', 'name', 'cluster'], params: { c: cluster } },
+  );
+
+  if (error) return <p>failed: {error.message}</p>;
+  if (!complete) return <Skeleton />;
+  return (
+    <ul>
+      {rows.map((r) => (
+        <li key={String(r['s.name'])}>{String(r['s.name'])}</li>
+      ))}
+    </ul>
+  );
+}
 ```
 
 ## License

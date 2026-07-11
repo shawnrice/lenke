@@ -22,7 +22,14 @@ export type LiveQueryHandle = {
  * package's surface.)
  */
 export type ReactiveStore = {
-  liveQuery: (text: string, opts?: { deps?: readonly string[] }) => LiveQueryHandle;
+  liveQuery: (
+    text: string,
+    // Matches `@lenke/native`'s `Store.liveQuery`: `opts` is required and `deps`
+    // is `string[] | null` (null = recompute-always). Declaring it optional here
+    // made the canonical `<StoreProvider store={createStore(graph)}>` fail to
+    // typecheck (the real store requires `opts`, so it wasn't assignable).
+    opts: { deps: readonly string[] | null; params?: Record<string, unknown> },
+  ) => LiveQueryHandle;
 };
 
 /**

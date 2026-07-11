@@ -191,3 +191,6 @@ packages/*/src/**/*.js.map
 # local design notes (not ready to publish)
 docs/sync-engine.md
 .claude/projects
+
+# Dogfooding scratch apps (persona builds)
+.dogfood/
