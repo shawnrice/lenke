@@ -90,6 +90,9 @@ struct Ctx<'a> {
     labels: Vec<(Option<u32>, Option<u32>)>,
     /// label ref -> name (for write clauses, which create labels/types by name).
     label_names: &'a [String],
+    /// Unknown/unimplemented function names the plan references — named in the
+    /// `UnknownFunction` error when one faults (see `FAULT_UNKNOWN_FN`).
+    unknown_fns: &'a [String],
     /// First ISO data exception raised during evaluation (see `FAULT_*`). The
     /// infallible `eval`/VM/vectorized engines can't return `Err`, so they record
     /// the fault here and return a placeholder; the driver checks it at the row
@@ -150,10 +153,24 @@ impl Ctx<'_> {
                 ErrorCode::InvalidGraphOp,
                 "INSERT: a node's label expression must be a plain conjunction (`A` or `A&B`) and an edge must carry exactly one type — a disjunction/negation/wildcard or a typeless edge is not creatable",
             )),
-            FAULT_UNKNOWN_FN => Err(CodeError::new(
-                ErrorCode::UnknownFunction,
-                "call to an unknown or unimplemented function",
-            )),
+            FAULT_UNKNOWN_FN => {
+                // Name the offending function(s) (as TS does), e.g.
+                // "...: frobnicate()" — the plan collected them at lower time.
+                let msg = if self.unknown_fns.is_empty() {
+                    "call to an unknown or unimplemented function".to_string()
+                } else {
+                    let names = self
+                        .unknown_fns
+                        .iter()
+                        .map(|n| format!("{n}()"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+
+                    format!("call to an unknown or unimplemented function: {names}")
+                };
+
+                Err(CodeError::new(ErrorCode::UnknownFunction, msg))
+            }
             _ => Ok(()),
         }
     }
@@ -191,6 +208,7 @@ fn resolve_ctx<'a>(graph: &Graph, plan: &'a CQuery, params: &'a [Val]) -> Ctx<'a
             .map(|n| (graph.labels.get(n), graph.etype.get(n)))
             .collect(),
         label_names: &plan.label_names,
+        unknown_fns: &plan.unknown_fns,
         fault: AtomicU8::new(FAULT_NONE),
     }
 }

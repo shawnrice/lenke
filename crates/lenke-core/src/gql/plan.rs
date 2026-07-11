@@ -574,6 +574,9 @@ pub struct CQuery {
     pub key_names: Vec<String>,
     /// Label/edge-type names, indexed by label ref; resolved to ids per execution.
     pub label_names: Vec<String>,
+    /// Names of unknown/unimplemented functions the query references — surfaced
+    /// in the `UnknownFunction` error when one faults.
+    pub unknown_fns: Vec<String>,
 }
 
 /// Does a lowered expression contain an aggregate anywhere?
@@ -793,6 +796,10 @@ struct Lowerer {
     keys: Vec<String>,
     /// label/edge-type ref -> name (resolved to ids per execution).
     labels: Vec<String>,
+    /// Names of any unknown/unimplemented functions lowered — for the error
+    /// message when one of them faults at execute time (they eval to a fault,
+    /// not a value).
+    unknown_fns: Vec<String>,
 }
 
 /// Intern `name` into `table`, returning its ref index.
@@ -966,10 +973,15 @@ impl Lowerer {
                         star: *star,
                     }
                 } else {
-                    CExpr::Scalar {
-                        func: scalar_fn(name),
-                        args: cargs,
+                    let func = scalar_fn(name);
+
+                    if matches!(func, ScalarFn::Unknown)
+                        && !self.unknown_fns.iter().any(|n| n == name)
+                    {
+                        self.unknown_fns.push(name.to_string());
                     }
+
+                    CExpr::Scalar { func, args: cargs }
                 }
             }
         }
@@ -1203,6 +1215,7 @@ pub fn lower(query: &Query) -> (CQuery, Vec<String>) {
         scope: Vec::new(),
         keys: Vec::new(),
         labels: Vec::new(),
+        unknown_fns: Vec::new(),
     };
     let parts = query.parts.iter().map(|p| l.linear(p)).collect();
     let cquery = CQuery {
@@ -1210,6 +1223,7 @@ pub fn lower(query: &Query) -> (CQuery, Vec<String>) {
         ops: query.ops.clone(),
         key_names: l.keys,
         label_names: l.labels,
+        unknown_fns: l.unknown_fns,
     };
     (cquery, l.params)
 }

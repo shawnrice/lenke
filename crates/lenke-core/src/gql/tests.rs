@@ -1501,6 +1501,12 @@ fn unknown_function_errors_instead_of_silent_null() {
         .execute(&mut g, &Params::new())
         .unwrap_err();
     assert_eq!(err.code, crate::error_codes::ErrorCode::UnknownFunction);
+    // The message NAMES the offending function (parity with the TS engine).
+    assert!(
+        err.message.contains("nope_fn()"),
+        "message should name the function, got: {}",
+        err.message
+    );
 }
 
 #[test]
