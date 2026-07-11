@@ -33,6 +33,12 @@ export {
   type SyncEngineOptions,
 } from './engine.js';
 export { createSyncHost, type SyncHost, type SyncHostOptions } from './host.js';
+export {
+  createWriteLog,
+  type WriteLog,
+  type WriteLogEntry,
+  type WriteLogOptions,
+} from './writelog.js';
 // Port lifecycle helpers — collapse the per-tab `bye`/bfcache host boilerplate
 // a SharedWorker app otherwise hand-rolls on both sides.
 export {

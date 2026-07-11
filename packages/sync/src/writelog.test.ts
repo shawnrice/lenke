@@ -1,0 +1,61 @@
+import { describe, expect, test } from 'bun:test';
+
+import { createWriteLog } from './writelog.js';
+
+const w = (text: string) => ({ text });
+
+describe('WriteLog (CDC op log)', () => {
+  test('append assigns monotonic seq and notifies subscribers in order', () => {
+    const log = createWriteLog();
+    const seen: number[] = [];
+    log.subscribe((e) => seen.push(e.seq));
+
+    expect(log.append(0, w('a'))).toBe(1);
+    expect(log.append(0, w('b'))).toBe(2);
+    expect(seen).toEqual([1, 2]);
+    expect(log.head()).toBe(2);
+  });
+
+  test('since replays the tail, [] when current, null when fallen off the ring', () => {
+    const log = createWriteLog({ capacity: 3 });
+
+    for (const t of ['a', 'b', 'c', 'd', 'e']) {
+      log.append(0, w(t));
+    } // seq 1..5; ring holds 3..5
+
+    expect(log.since(5)).toEqual([]); // current
+    expect(log.since(3)?.map((e) => e.write.text)).toEqual(['d', 'e']); // 4,5
+    expect(log.since(2)?.map((e) => e.write.text)).toEqual(['c', 'd', 'e']); // 3,4,5 (all retained)
+    expect(log.since(1)).toBeNull(); // seq 2 dropped → gap → cold boot
+    expect(log.since(0)).toBeNull();
+  });
+
+  test('since(0) from the start when nothing has dropped', () => {
+    const log = createWriteLog();
+    log.append(0, w('a'));
+    log.append(0, w('b'));
+    expect(log.since(0)?.map((e) => e.write.text)).toEqual(['a', 'b']);
+  });
+
+  test('origin is carried (distinct per participant) for skip-your-own-echo', () => {
+    const log = createWriteLog();
+    const a = log.register();
+    const b = log.register();
+    expect(a).not.toBe(b);
+
+    log.append(a, w('from-a'));
+    log.append(b, w('from-b'));
+    expect(log.since(0)?.map((e) => e.origin)).toEqual([a, b]);
+  });
+
+  test('unsubscribe stops delivery', () => {
+    const log = createWriteLog();
+    const seen: number[] = [];
+    const off = log.subscribe((e) => seen.push(e.seq));
+
+    log.append(0, w('a'));
+    off();
+    log.append(0, w('b'));
+    expect(seen).toEqual([1]);
+  });
+});

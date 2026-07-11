@@ -173,6 +173,19 @@ export type SyncClient = {
   /** Live wire-subscription count — for tests and debugging. */
   subscriptionCount: () => number;
   /**
+   * Opt into the CDC write stream: `onWrites` receives every OTHER client's
+   * committed writes, in order, to hand to a local optimistic engine's `ingest`
+   * — so cross-client changes appear locally without re-querying. Returns an
+   * unsubscribe. `onResync` (optional) fires when the server's op log has moved
+   * past this client's cursor (a long disconnect): the local write-stream is
+   * stale and the app should cold-boot from a fresh snapshot. Survives reconnect
+   * (resumes from the last cursor via {@link replay}).
+   */
+  subscribeWrites: (
+    onWrites: (writes: readonly SyncWrite[]) => void,
+    opts?: { onResync?: () => void },
+  ) => () => void;
+  /**
    * Re-emit every active subscription and every unanswered one-shot over the
    * current transport. A reconnect manager calls this once a fresh connection
    * is open: subscribes are idempotent (the host replaces by `sub` id), reads
@@ -409,6 +422,14 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
   let nextId = 0;
   let status: { connected: boolean; pendingWrites: number } | null = null;
   const statusListeners = new Set<() => void>();
+
+  // CDC write stream: the handler that ingests other clients' writes, the
+  // last-applied op cursor (retained across reconnects to resume via `replay`),
+  // and the cold-boot hook for when the server's log has moved past the cursor.
+  let writeHandler: ((writes: readonly SyncWrite[]) => void) | undefined;
+  let writeResync: (() => void) | undefined;
+  let writeCursor = 0;
+  let writesSubscribed = false;
 
   const liveQuery = (
     query: string,
@@ -781,6 +802,23 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
 
         return;
       }
+      case 'writes': {
+        // CDC push. Advance the cursor even on an empty batch (own-origin ticks)
+        // so a later resume asks from the right place.
+        writeCursor = msg.cursor;
+
+        if (msg.resync) {
+          writeResync?.(); // the op log moved past us → cold-boot
+
+          return;
+        }
+
+        if (msg.writes.length > 0) {
+          writeHandler?.(msg.writes);
+        }
+
+        return;
+      }
       default:
     }
   };
@@ -800,6 +838,18 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
       return () => statusListeners.delete(cb);
     },
     subscriptionCount: () => bySub.size,
+    subscribeWrites: (onWrites, opts) => {
+      writeHandler = onWrites;
+      writeResync = opts?.onResync;
+      writesSubscribed = true;
+      send({ type: 'subscribeWrites', since: writeCursor });
+
+      return () => {
+        writeHandler = undefined;
+        writeResync = undefined;
+        writesSubscribed = false;
+      };
+    },
     replay: () => {
       // Re-subscribe every active standing query (inactive entries — no local
       // subscribers — stay silent), then re-send every unanswered one-shot. The
@@ -821,6 +871,12 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
 
       for (const p of pending.values()) {
         send(p.msg);
+      }
+
+      // Resume the CDC write stream from the last applied cursor — the host
+      // replays the op tail after it, or answers `resync` if we've fallen off.
+      if (writesSubscribed) {
+        send({ type: 'subscribeWrites', since: writeCursor });
       }
     },
     close: () => {

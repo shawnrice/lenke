@@ -50,8 +50,10 @@ import {
   type RowPatch,
   type RowsMessage,
   type SubscribeMessage,
+  type SubscribeWritesMessage,
   type WireError,
 } from './protocol.js';
+import type { WriteLog } from './writelog.js';
 
 export type SyncHost = {
   /** Feed one inbound (already-parsed) client message. Unknown tags are ignored. */
@@ -101,6 +103,15 @@ export type SyncHostOptions = {
   onSubscribe?: (deps: readonly string[] | null, params?: QueryParams) => void;
   /** Pending write-back count for the status message. Defaults to 0. */
   pendingWrites?: () => number;
+  /**
+   * The shared server-side op log behind the CDC write stream. When present,
+   * this host appends every committed write to it (tagged with its own origin)
+   * and, once its client opts in via `subscribeWrites`, forwards OTHER clients'
+   * writes as {@link WritesMessage}s for the client's optimistic engine to
+   * `ingest`. All hosts on one server share one `WriteLog` (as they share one
+   * `Store`). Omit it and the host behaves exactly as before (no write stream).
+   */
+  writeLog?: WriteLog;
 };
 
 type RowDiff = {
@@ -199,7 +210,11 @@ const diffRows = (
 };
 
 export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost => {
-  const { send } = options;
+  const { send, writeLog } = options;
+  // This host's participant id in the shared op log — tags its own client's
+  // writes so their echo is skipped on the way back out.
+  const writeOrigin = writeLog ? writeLog.register() : -1;
+  let writeStreamStop: (() => void) | undefined;
   const applyMutation =
     options.applyMutation ??
     ((text: string, params: QueryParams | undefined, lang?: 'gql' | 'gremlin') =>
@@ -445,10 +460,47 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
       }
 
       applyMutation(text, msg.params, msg.lang);
+      // Publish the committed write to the shared op log so other clients'
+      // stream subscribers ingest it (CDC). No-op if no writeLog is configured.
+      writeLog?.append(writeOrigin, { text, lang: msg.lang, params: msg.params });
       send({ type: 'ack', req: msg.req, ok: true });
     } catch (e) {
       send({ type: 'ack', req: msg.req, ok: false, error: toWireError(e) });
     }
+  };
+
+  const subscribeWrites = (msg: SubscribeWritesMessage): void => {
+    if (!writeLog) {
+      return; // no CDC configured on this host — silently ignore (forward-compat)
+    }
+
+    writeStreamStop?.(); // a re-subscribe (reconnect) replaces the prior tail
+
+    const backlog = writeLog.since(msg.since ?? 0);
+
+    if (backlog === null) {
+      // The requested cursor fell off the retained op log → the client must
+      // cold-boot from a snapshot; point it at the head to resume live after.
+      send({ type: 'writes', writes: [], cursor: writeLog.head(), resync: true });
+    } else if (backlog.length > 0) {
+      send({
+        type: 'writes',
+        writes: backlog.filter((e) => e.origin !== writeOrigin).map((e) => e.write),
+        cursor: backlog[backlog.length - 1].seq,
+      });
+    }
+
+    // Live tail: forward every subsequent op. An own-origin op carries no
+    // writes (the client applied it optimistically) but still ticks the cursor,
+    // so the client stays exactly at head and a later `since` never spuriously
+    // resyncs over its own writes.
+    writeStreamStop = writeLog.subscribe((entry) => {
+      send({
+        type: 'writes',
+        writes: entry.origin === writeOrigin ? [] : [entry.write],
+        cursor: entry.seq,
+      });
+    });
   };
 
   const dispatch: { [T in ClientMessage['type']]: (msg: never) => void } = {
@@ -456,6 +508,7 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
     unsubscribe: (msg: { sub: string }) => drop(msg.sub),
     query,
     mutate,
+    subscribeWrites,
   };
 
   const sendStatus = (): void => {
@@ -477,6 +530,8 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
       // Unknown tags fall through silently: forward-compat with protocol extensions.
     },
     close: () => {
+      writeStreamStop?.();
+
       for (const s of subs.values()) {
         s.stop();
       }

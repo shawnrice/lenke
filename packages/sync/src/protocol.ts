@@ -225,7 +225,26 @@ export type MutateMessage = {
   params?: QueryParams;
 };
 
-export type ClientMessage = SubscribeMessage | UnsubscribeMessage | QueryMessage | MutateMessage;
+/**
+ * Opt into the CDC write stream: after this, the host pushes every OTHER
+ * client's committed write as a {@link WritesMessage}, so a local optimistic
+ * engine can `ingest` them (cross-client optimism over a socket). `since`
+ * requests catch-up — replay the ops after that cursor from a prior session;
+ * omit (or `0`) to start from the current head. If `since` has fallen off the
+ * server's retained op log, the host answers with a `resync` writes message and
+ * the client must cold-boot from a snapshot.
+ */
+export type SubscribeWritesMessage = {
+  type: 'subscribeWrites';
+  since?: number;
+};
+
+export type ClientMessage =
+  | SubscribeMessage
+  | UnsubscribeMessage
+  | QueryMessage
+  | MutateMessage
+  | SubscribeWritesMessage;
 
 // ---------------------------------------------------------------------------
 // host → client
@@ -317,7 +336,22 @@ export type StatusMessage = {
   protocol: 1;
 };
 
-export type HostMessage = RowsMessage | ResultMessage | AckMessage | StatusMessage;
+/**
+ * A CDC push: committed writes from OTHER clients, in seq order, for a local
+ * engine to `ingest`. `cursor` is the seq of the last write here — the client
+ * retains it as its resume point across reconnects. `resync: true` (with no
+ * writes) means the requested `since` fell off the server's retained op log: the
+ * local write-stream is unrecoverable and the client must cold-boot from a
+ * fresh snapshot.
+ */
+export type WritesMessage = {
+  type: 'writes';
+  writes: SyncWrite[];
+  cursor: number;
+  resync?: boolean;
+};
+
+export type HostMessage = RowsMessage | ResultMessage | AckMessage | StatusMessage | WritesMessage;
 
 export type SyncMessage = ClientMessage | HostMessage;
 
@@ -325,8 +359,8 @@ export type SyncMessage = ClientMessage | HostMessage;
 // guards
 // ---------------------------------------------------------------------------
 
-const CLIENT_TYPES = new Set(['subscribe', 'unsubscribe', 'query', 'mutate']);
-const HOST_TYPES = new Set(['rows', 'result', 'ack', 'status']);
+const CLIENT_TYPES = new Set(['subscribe', 'unsubscribe', 'query', 'mutate', 'subscribeWrites']);
+const HOST_TYPES = new Set(['rows', 'result', 'ack', 'status', 'writes']);
 
 /** Cheap structural gate: is this a tagged message at all? (Not a validator.) */
 const tagOf = (msg: unknown): string | null => {
