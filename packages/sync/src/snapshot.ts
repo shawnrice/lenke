@@ -98,6 +98,13 @@ export type SnapshotSaveMeta = {
   serverCursor?: string;
   collections?: readonly string[];
   pendingWrites?: readonly SyncWrite[];
+  /**
+   * Labels marking **ephemeral** nodes (presence, cursors, session-scoped state)
+   * to exclude from the snapshot — a durable warm-boot must not resurrect a peer
+   * who has since disconnected. Nodes carrying any of these labels, and the edges
+   * incident to them, are stripped before encoding.
+   */
+  ephemeralLabels?: readonly string[];
 };
 
 /**
@@ -292,9 +299,60 @@ const concat = (...parts: Uint8Array[]): Uint8Array => {
 };
 
 /**
+ * Drop ephemeral nodes (any carrying a label in `labels`) and the edges incident
+ * to them from a graph NDJSON — so presence / session-scoped data never lands in
+ * a durable snapshot. NDJSON emits nodes before edges, so one pass suffices.
+ * A no-op when `labels` is empty.
+ */
+const stripEphemeral = (ndjson: Uint8Array, labels: readonly string[] = []): Uint8Array => {
+  if (labels.length === 0) {
+    return ndjson;
+  }
+
+  const ephemeral = new Set(labels);
+  const dropped = new Set<string>(); // ids of dropped nodes → also drop their edges
+  const kept: string[] = [];
+
+  for (const line of new TextDecoder().decode(ndjson).split('\n')) {
+    if (line.length === 0) {
+      continue;
+    }
+
+    const rec = JSON.parse(line) as {
+      type?: string;
+      id?: string;
+      labels?: string[];
+      from?: string;
+      to?: string;
+    };
+
+    if (rec.type === 'node' && rec.labels?.some((l) => ephemeral.has(l))) {
+      if (rec.id !== undefined) {
+        dropped.add(rec.id);
+      }
+
+      continue; // drop the ephemeral node
+    }
+
+    if (
+      rec.type === 'edge' &&
+      ((rec.from !== undefined && dropped.has(rec.from)) ||
+        (rec.to !== undefined && dropped.has(rec.to)))
+    ) {
+      continue; // drop edges incident to a dropped node
+    }
+
+    kept.push(line);
+  }
+
+  return new TextEncoder().encode(kept.join('\n'));
+};
+
+/**
  * Serialize a store (graph + pending writes) into snapshot bytes. `crypto`
  * chooses the at-rest posture: `{ key }` to encrypt (compress-then-encrypt) or
- * `{ unencrypted: true }` to persist plaintext deliberately.
+ * `{ unencrypted: true }` to persist plaintext deliberately. Ephemeral nodes
+ * (`meta.ephemeralLabels`) are stripped so presence never persists.
  */
 export const encodeSnapshot = async (
   store: Store,
@@ -312,7 +370,7 @@ export const encodeSnapshot = async (
   const encoder = new TextEncoder();
   const headerBytes = encoder.encode(JSON.stringify(header));
 
-  const ndjson = store.graph.toNdjson();
+  const ndjson = stripEphemeral(store.graph.toNdjson(), meta.ephemeralLabels);
   const writesBytes = encoder.encode(JSON.stringify(meta.pendingWrites ?? []));
   let payload = await pipeThrough(
     concat(u32le(ndjson.byteLength), ndjson, writesBytes),

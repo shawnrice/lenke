@@ -186,6 +186,15 @@ export type SyncClient = {
     opts?: { onResync?: () => void },
   ) => () => void;
   /**
+   * Register ephemeral cleanup writes — run by the host when this connection
+   * closes (and broadcast over the CDC stream), so a presence node vanishes for
+   * everyone on disconnect. Presence itself is a normal `mutate` (an `_MERGE`
+   * upsert); this is just the teardown, e.g. `[{ text: 'MATCH (p:Presence {sid:
+   * $s}) DETACH DELETE p', params: { s } }]`. Re-registering replaces; survives
+   * reconnect (re-sent via {@link replay}).
+   */
+  onDisconnect: (writes: readonly SyncWrite[]) => void;
+  /**
    * Re-emit every active subscription and every unanswered one-shot over the
    * current transport. A reconnect manager calls this once a fresh connection
    * is open: subscribes are idempotent (the host replaces by `sub` id), reads
@@ -436,6 +445,9 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
   let writeResync: (() => void) | undefined;
   let writeCursor = 0;
   let writesSubscribed = false;
+  // Ephemeral cleanup writes registered for this connection (presence teardown);
+  // re-sent on reconnect so the fresh host runs them when THAT connection drops.
+  let disconnectWrites: readonly SyncWrite[] | undefined;
 
   const liveQuery = (
     query: string,
@@ -869,6 +881,10 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
         writesSubscribed = false;
       };
     },
+    onDisconnect: (writes) => {
+      disconnectWrites = writes;
+      send({ type: 'onDisconnect', writes: [...writes] });
+    },
     replay: () => {
       // Re-subscribe every active standing query (inactive entries — no local
       // subscribers — stay silent), then re-send every unanswered one-shot. The
@@ -896,6 +912,12 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
       // replays the op tail after it, or answers `resync` if we've fallen off.
       if (writesSubscribed) {
         send({ type: 'subscribeWrites', since: writeCursor });
+      }
+
+      // Re-register the ephemeral cleanup so the fresh host tears it down if THIS
+      // connection drops.
+      if (disconnectWrites) {
+        send({ type: 'onDisconnect', writes: [...disconnectWrites] });
       }
     },
     close: () => {

@@ -80,6 +80,27 @@ suite('@lenke/sync snapshot · codec', () => {
     expect(restored.graph.vertexCount).toBe(2);
   });
 
+  test('ephemeral nodes (and their incident edges) are stripped from the snapshot', async () => {
+    const seed = [
+      '{"type":"node","id":"u1","labels":["User"],"properties":{"name":"a"}}',
+      '{"type":"node","id":"p1","labels":["Presence"],"properties":{"sid":"x"}}',
+      '{"type":"edge","id":"e1","from":"u1","to":"p1","labels":["HAS_PRESENCE"],"properties":{}}',
+    ].join('\n');
+    const store = newStore(seed);
+
+    const bytes = await encodeSnapshot(store, { ...EXPECT, ephemeralLabels: ['Presence'] }, PLAIN);
+    const snap = await decodeSnapshot(bytes, EXPECT, PLAIN);
+    const text = new TextDecoder().decode(snap!.ndjson);
+
+    expect(text).toContain('User'); // the durable node survives
+    expect(text).not.toContain('Presence'); // the ephemeral node is stripped
+    expect(text).not.toContain('HAS_PRESENCE'); // and the edge incident to it
+
+    // The stripped snapshot still reconstructs cleanly — one durable vertex.
+    const restored = newStore(text);
+    expect(restored.graph.vertexCount).toBe(1);
+  });
+
   test('crypto choice is required — no silent keyless plaintext', async () => {
     const store = newStore();
     // @ts-expect-error the union forbids omitting the crypto choice…

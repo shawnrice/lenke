@@ -239,12 +239,25 @@ export type SubscribeWritesMessage = {
   since?: number;
 };
 
+/**
+ * Register the **ephemeral cleanup** for THIS connection: writes the host runs
+ * when the connection closes (and broadcasts over the CDC stream), so a client's
+ * presence node vanishes for everyone the moment it drops. Presence itself is a
+ * normal `_MERGE` upsert; this is just the tear-down. Re-registering replaces
+ * the prior set; the client re-sends it on reconnect. See the README on presence.
+ */
+export type OnDisconnectMessage = {
+  type: 'onDisconnect';
+  writes: SyncWrite[];
+};
+
 export type ClientMessage =
   | SubscribeMessage
   | UnsubscribeMessage
   | QueryMessage
   | MutateMessage
-  | SubscribeWritesMessage;
+  | SubscribeWritesMessage
+  | OnDisconnectMessage;
 
 // ---------------------------------------------------------------------------
 // host → client
@@ -359,7 +372,14 @@ export type SyncMessage = ClientMessage | HostMessage;
 // guards
 // ---------------------------------------------------------------------------
 
-const CLIENT_TYPES = new Set(['subscribe', 'unsubscribe', 'query', 'mutate', 'subscribeWrites']);
+const CLIENT_TYPES = new Set([
+  'subscribe',
+  'unsubscribe',
+  'query',
+  'mutate',
+  'subscribeWrites',
+  'onDisconnect',
+]);
 const HOST_TYPES = new Set(['rows', 'result', 'ack', 'status', 'writes']);
 
 /** Cheap structural gate: is this a tagged message at all? (Not a validator.) */

@@ -260,6 +260,41 @@ suite('CDC write stream (TS vs native store)', () => {
     expect(sent.some((m) => m.type === 'ack' && !m.ok)).toBe(true); // failed
     expect(dedup.seen('m-a-3')).toBe(false); // not recorded → a retry can still apply
   });
+
+  test('ephemeral: presence is torn down and broadcast on disconnect', async () => {
+    const store = newStore();
+    const writeLog = createWriteLog();
+    const count = (s: Store, label: string): number =>
+      s.mutate((g) => g.query<{ c: number }>(`MATCH (n:${label}) RETURN count(*) AS c`))[0].c;
+
+    // A presenter connection (kept so the test can close it) + a watcher ingesting CDC.
+    const linkP: { c?: SyncClient } = {};
+    const hostP = createSyncHost(store, { send: (m) => linkP.c?.receive(m), writeLog });
+    linkP.c = createSyncClient({ send: (m) => hostP.receive(m) });
+
+    const linkW: { c?: SyncClient } = {};
+    const hostW = createSyncHost(store, { send: (m) => linkW.c?.receive(m), writeLog });
+    linkW.c = createSyncClient({ send: (m) => hostW.receive(m) });
+    const localW = newStore();
+    linkW.c.subscribeWrites((writes) => {
+      localW.mutate((g) => {
+        for (const w of writes) {
+          runWrite(g, w);
+        }
+      });
+    });
+
+    // Register the ephemeral cleanup, then set presence (a normal write).
+    linkP.c.onDisconnect([{ text: "MATCH (p:Presence {sid: 'x'}) DETACH DELETE p" }]);
+    await linkP.c.mutate("INSERT (:Presence {sid: 'x'})");
+    expect(count(store, 'Presence')).toBe(1);
+    expect(count(localW, 'Presence')).toBe(1); // the watcher saw the presence via CDC
+
+    // Presenter drops → host.close runs the cleanup and broadcasts the removal.
+    hostP.close();
+    expect(count(store, 'Presence')).toBe(0); // gone on the server
+    expect(count(localW, 'Presence')).toBe(0); // and the watcher saw the DELETE via CDC
+  });
 });
 
 // The ordering/idempotence guard is pure client logic — drive receive() directly,

@@ -51,8 +51,10 @@ import {
   type QueryMessage,
   type RowPatch,
   type RowsMessage,
+  type OnDisconnectMessage,
   type SubscribeMessage,
   type SubscribeWritesMessage,
+  type SyncWrite,
   type WireError,
 } from './protocol.js';
 import type { WriteLog, WriteLogEntry } from './writelog.js';
@@ -230,6 +232,9 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
   // writes so their echo is skipped on the way back out.
   const writeOrigin = writeLog ? writeLog.register() : -1;
   let writeStreamStop: (() => void) | undefined;
+  // Ephemeral cleanup: writes to run when this connection closes (presence
+  // teardown). Re-registering replaces; the client re-sends on reconnect.
+  let disconnectWrites: SyncWrite[] = [];
   const applyMutation =
     options.applyMutation ??
     ((text: string, params: QueryParams | undefined, lang?: 'gql' | 'gremlin') =>
@@ -560,12 +565,17 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
     });
   };
 
+  const onDisconnect = (msg: OnDisconnectMessage): void => {
+    disconnectWrites = msg.writes;
+  };
+
   const dispatch: { [T in ClientMessage['type']]: (msg: never) => void } = {
     subscribe,
     unsubscribe: (msg: { sub: string }) => drop(msg.sub),
     query,
     mutate,
     subscribeWrites,
+    onDisconnect,
   };
 
   const sendStatus = (): void => {
@@ -587,6 +597,19 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
       // Unknown tags fall through silently: forward-compat with protocol extensions.
     },
     close: () => {
+      // Ephemeral cleanup: run this connection's registered writes (presence
+      // teardown) and broadcast them over the CDC stream so other clients see
+      // the node vanish. Best-effort — a bad cleanup write can't block teardown.
+      for (const w of disconnectWrites) {
+        try {
+          applyMutation(w.text, w.params, w.lang);
+          writeLog?.append(writeOrigin, w, writeTokens(w.text, w.lang));
+        } catch {
+          // ignore — teardown must always complete
+        }
+      }
+
+      disconnectWrites = [];
       writeStreamStop?.();
 
       for (const s of subs.values()) {
