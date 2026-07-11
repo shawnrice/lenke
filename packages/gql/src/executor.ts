@@ -2228,11 +2228,20 @@ type CMatch = {
 type CWith = { kind: 'with'; projection: CProjection; where?: CompiledExpr };
 type CReturn = { kind: 'return'; projection: CProjection };
 type CInsert = { kind: 'insert'; patterns: readonly CInsertPath[] };
+type CMergeUpdate =
+  | { kind: 'set'; items: readonly CSetItem[]; where?: CompiledExpr }
+  | { kind: 'nothing' };
+type CMerge = {
+  kind: 'merge';
+  pattern: CInsertPath;
+  onCreate?: readonly CSetItem[];
+  onUpdate?: CMergeUpdate;
+};
 type CSet = { kind: 'set'; items: readonly CSetItem[] };
 type CRemove = { kind: 'remove'; items: readonly RemoveItem[] };
 type CDelete = { kind: 'delete'; detach: boolean; targets: readonly CompiledExpr[] };
 type CFinish = { kind: 'finish' };
-type CClause = CMatch | CWith | CReturn | CInsert | CSet | CRemove | CDelete | CFinish;
+type CClause = CMatch | CWith | CReturn | CInsert | CMerge | CSet | CRemove | CDelete | CFinish;
 
 // Labels to CREATE for an INSERT element. A non-conjunction label expression
 // (`A|B`, `!A`, `%`) is ambiguous — reject it rather than silently create an
@@ -2329,6 +2338,27 @@ const compileClause = (clause: Clause): CClause => {
       return { kind: 'return', projection: compileProjection(clause.projection) };
     case 'insert':
       return { kind: 'insert', patterns: clause.patterns.map(compileInsertPath) };
+    case 'merge': {
+      const { onUpdate } = clause;
+      const compileUpdate = (): CMergeUpdate | undefined => {
+        if (onUpdate === undefined || onUpdate.kind === 'nothing') {
+          return onUpdate;
+        }
+
+        return {
+          kind: 'set',
+          items: onUpdate.items.map(compileSetItem),
+          where: onUpdate.where ? compileExpr(onUpdate.where) : undefined,
+        };
+      };
+
+      return {
+        kind: 'merge',
+        pattern: compileInsertPath(clause.pattern),
+        onCreate: clause.onCreate?.map(compileSetItem),
+        onUpdate: compileUpdate(),
+      };
+    }
     case 'set':
       return { kind: 'set', items: clause.items.map(compileSetItem) };
     case 'remove':
@@ -2422,6 +2452,131 @@ const runInsert = (graph: Graph, clause: CInsert, binding: Binding, params: Para
 
       prev = next;
     }
+  }
+
+  return out;
+};
+
+/**
+ * Infer the conflict key for `_MERGE`: the single unique-constrained key present
+ * in the pattern's properties. No applicable constraint → error (can't define
+ * "the key"); more than one → ambiguous. See docs/design/gql-extensions.md §2.2.
+ */
+const inferMergeKey = (
+  graph: Graph,
+  labels: readonly string[],
+  properties: Record<string, unknown>,
+): { label: string; key: string; value: unknown } => {
+  const candidates: { label: string; key: string; value: unknown }[] = [];
+
+  for (const label of labels) {
+    for (const key of graph.uniqueKeys(label)) {
+      if (key in properties) {
+        candidates.push({ label, key, value: properties[key] });
+      }
+    }
+  }
+
+  if (candidates.length === 0) {
+    throw new LenkeError(
+      `_MERGE needs a unique constraint on the pattern's label(s) [${labels.join(', ')}] to define the key — declare one with createUniqueConstraint`,
+      { code: ErrorCode.InvalidGraphOp },
+    );
+  }
+
+  if (candidates.length > 1) {
+    throw new LenkeError(
+      `_MERGE key is ambiguous: the pattern touches multiple unique constraints (${candidates
+        .map((c) => `${c.label}.${c.key}`)
+        .join(', ')}) — narrow it to one`,
+      { code: ErrorCode.InvalidGraphOp },
+    );
+  }
+
+  return candidates[0];
+};
+
+/** Apply `_ON_CREATE` / `_ON_UPDATE` SET items to the merged `vertex`. */
+const applyMergeSets = (
+  graph: Graph,
+  vertex: Vertex,
+  variable: string | undefined,
+  items: readonly CSetItem[],
+  binding: Binding,
+  params: Params,
+): void => {
+  const b = new Map(binding);
+
+  if (variable) {
+    b.set(variable, vertex);
+  }
+
+  for (const item of items) {
+    if ('label' in item) {
+      graph.addLabelToVertex(item.label, vertex);
+    } else {
+      vertex.setProperty(item.key, item.value({ binding: b, params, graph }));
+    }
+  }
+};
+
+// `_MERGE` keyed upsert (v1: node form). Match an existing element by the
+// constraint key; on miss, insert the pattern (key + payload) then _ON_CREATE;
+// on hit, apply the update disposition — default clobbers the non-key payload,
+// `_ON_UPDATE SET … [WHERE]` replaces it, `_ON_UPDATE_NOTHING` leaves it.
+// (Edge form arrives in a later slice.)
+const runMerge = (graph: Graph, clause: CMerge, binding: Binding, params: Params): Binding => {
+  const out = new Map(binding);
+
+  if (clause.pattern.segments.length > 0) {
+    throw new LenkeError('_MERGE edge form is not yet supported', {
+      code: ErrorCode.NotImplemented,
+    });
+  }
+
+  const node = clause.pattern.start;
+  const properties = evalProps(node.props, out, params, graph);
+  const { label, key, value } = inferMergeKey(graph, node.labels, properties);
+  const existing = graph.uniqueLookup(label, key, value);
+
+  let vertex: Vertex;
+
+  if (existing === undefined) {
+    vertex = graph.addVertex({ labels: [...node.labels], properties });
+
+    if (clause.onCreate) {
+      applyMergeSets(graph, vertex, node.variable, clause.onCreate, out, params);
+    }
+  } else {
+    vertex = existing;
+    const disp = clause.onUpdate;
+
+    if (disp === undefined) {
+      // Default clobber: write every non-key payload prop to the pattern's value.
+      for (const [k, v] of Object.entries(properties)) {
+        if (k !== key) {
+          vertex.setProperty(k, v);
+        }
+      }
+    } else if (disp.kind === 'set') {
+      // An explicit update replaces the default, gated by WHERE if present.
+      const b = new Map(out);
+
+      if (node.variable) {
+        b.set(node.variable, vertex);
+      }
+
+      const passes = disp.where === undefined || disp.where({ binding: b, params, graph }) === true;
+
+      if (passes) {
+        applyMergeSets(graph, vertex, node.variable, disp.items, out, params);
+      }
+    }
+    // disp.kind === 'nothing' → leave the existing element untouched.
+  }
+
+  if (node.variable) {
+    out.set(node.variable, vertex);
   }
 
   return out;
@@ -2606,6 +2761,9 @@ const runLinear = (linear: CLinear, graph: Graph, params: Params): Row[] => {
       case 'insert':
         // Mutations must run eagerly and exactly once — force evaluation.
         bindings = toArray(map((b: Binding) => runInsert(graph, clause, b, params), bindings));
+        break;
+      case 'merge':
+        bindings = toArray(map((b: Binding) => runMerge(graph, clause, b, params), bindings));
         break;
       case 'set': {
         const arr = toArray(bindings);

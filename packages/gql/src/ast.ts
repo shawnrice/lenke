@@ -33,15 +33,42 @@ export type LinearQuery = {
   clauses: readonly Clause[];
 };
 
+/** Parse dialect: `lenke` permits sigil extensions (`_MERGE`); `iso-strict` rejects them. */
+export type Dialect = 'lenke' | 'iso-strict';
+
 export type Clause =
   | MatchClause
   | WithClause
   | InsertClause
+  | MergeClause
   | SetClause
   | RemoveClause
   | DeleteClause
   | FinishClause
   | ReturnClause;
+
+/**
+ * `_MERGE pattern [_ON_CREATE SET …] [_ON_UPDATE SET … [WHERE p] | _ON_UPDATE_NOTHING]`
+ * — the lenke keyed-upsert **extension** (NOT ISO GQL; sigil-marked, recognized
+ * only under the `lenke` dialect). v1: `pattern` upserts a single element — a
+ * node, or an edge whose endpoints are matched by key. The conflict key is a
+ * declared unique constraint. Absent `onUpdate` = clobber the pattern's payload.
+ * See docs/design/gql-extensions.md §2.
+ */
+export type MergeClause = {
+  kind: 'merge';
+  pattern: PathPattern;
+  /** `_ON_CREATE SET …` — birth-only extras. */
+  onCreate?: readonly SetItem[];
+  /** The update-path disposition; absent ⇒ default clobber of the payload. */
+  onUpdate?: MergeUpdate;
+};
+
+export type MergeUpdate =
+  /** `_ON_UPDATE SET … [WHERE p]` — replaces the default; runs only if `where` holds. */
+  | { kind: 'set'; items: readonly SetItem[]; where?: Expr }
+  /** `_ON_UPDATE_NOTHING` — leave the existing element untouched. */
+  | { kind: 'nothing' };
 
 /** `INSERT pattern, …` — create the pattern's nodes and edges. */
 export type InsertClause = {

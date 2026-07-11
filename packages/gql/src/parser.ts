@@ -36,8 +36,11 @@ import type {
   Expr,
   InsertClause,
   LabelExpr,
+  Dialect,
   LinearQuery,
   MatchClause,
+  MergeClause,
+  MergeUpdate,
   NodePattern,
   PathPattern,
   Projection,
@@ -149,9 +152,13 @@ const COMPARE_OPS: Partial<Record<TokenType, CompareOp>> = {
 const ADD_OPS: Partial<Record<TokenType, ArithOp>> = { plus: '+', dash: '-' };
 const MUL_OPS: Partial<Record<TokenType, ArithOp>> = { star: '*', slash: '/', percent: '%' };
 
-export const parse = (src: string): Query => {
+export const parse = (src: string, opts?: { dialect?: Dialect }): Query => {
   const tokens = tokenize(src);
   let pos = 0;
+  // `lenke` (default) recognizes sigil extensions like `_MERGE`; `iso-strict`
+  // treats them as ordinary identifiers, so an extension clause is a syntax
+  // error — the ISO surface stays provably self-contained.
+  const dialect: Dialect = opts?.dialect ?? 'lenke';
 
   const peek = (): Token => tokens[pos];
   const atEnd = (): boolean => peek().type === 'eof';
@@ -161,6 +168,16 @@ export const parse = (src: string): Query => {
   const check = (type: TokenType): boolean => peek().type === type;
 
   const checkKeyword = (kw: string): boolean => peek().type === 'keyword' && peek().value === kw;
+
+  // A sigil extension keyword (`_MERGE`, `_ON_CREATE`, …) lexes as a plain
+  // identifier, so it's matched contextually here — case-insensitively, never
+  // when backtick-delimited, and only under the `lenke` dialect (so it can never
+  // shrink the ISO identifier namespace). `name` is the upper-cased sigil.
+  const checkExtIdent = (name: string): boolean =>
+    dialect === 'lenke' &&
+    peek().type === 'ident' &&
+    !peek().delimited &&
+    peek().value.toUpperCase() === name;
 
   const expect = (type: TokenType, what: string): Token => {
     if (!check(type)) {
@@ -1115,8 +1132,7 @@ export const parse = (src: string): Query => {
     return { variable, key, value: parseExpr() };
   };
 
-  const parseSetClause = (): SetClause => {
-    expectKeyword('set');
+  const parseSetItemList = (): SetItem[] => {
     const items: SetItem[] = [parseSetItem()];
 
     while (check('comma')) {
@@ -1124,7 +1140,67 @@ export const parse = (src: string): Query => {
       items.push(parseSetItem());
     }
 
-    return { kind: 'set', items };
+    return items;
+  };
+
+  const parseSetClause = (): SetClause => {
+    expectKeyword('set');
+
+    return { kind: 'set', items: parseSetItemList() };
+  };
+
+  // `_MERGE pattern [_ON_CREATE SET …] [_ON_UPDATE SET … [WHERE p] |
+  // _ON_UPDATE_NOTHING]` — the lenke keyed-upsert extension (sigil-marked; see
+  // docs/design/gql-extensions.md §2). The pattern reuses the standard path
+  // grammar; branches may appear in any order, each at most once, and an explicit
+  // _ON_UPDATE excludes _ON_UPDATE_NOTHING (one update disposition).
+  const parseMergeClause = (): MergeClause => {
+    advance(); // _MERGE
+    const pattern = parsePathPattern();
+    let onCreate: SetItem[] | undefined;
+    let onUpdate: MergeUpdate | undefined;
+
+    for (;;) {
+      if (checkExtIdent('_ON_CREATE')) {
+        advance();
+
+        if (onCreate) {
+          throw new GqlSyntaxError('duplicate _ON_CREATE in _MERGE', peek().pos);
+        }
+
+        expectKeyword('set');
+        onCreate = parseSetItemList();
+      } else if (checkExtIdent('_ON_UPDATE_NOTHING')) {
+        advance();
+
+        if (onUpdate) {
+          throw new GqlSyntaxError('conflicting update disposition in _MERGE', peek().pos);
+        }
+
+        onUpdate = { kind: 'nothing' };
+      } else if (checkExtIdent('_ON_UPDATE')) {
+        advance();
+
+        if (onUpdate) {
+          throw new GqlSyntaxError('conflicting update disposition in _MERGE', peek().pos);
+        }
+
+        expectKeyword('set');
+        const items = parseSetItemList();
+        let where: Expr | undefined;
+
+        if (checkKeyword('where')) {
+          advance();
+          where = parseExpr();
+        }
+
+        onUpdate = { kind: 'set', items, where };
+      } else {
+        break;
+      }
+    }
+
+    return { kind: 'merge', pattern, onCreate, onUpdate };
   };
 
   const parseRemoveItem = (): RemoveItem => {
@@ -1191,6 +1267,8 @@ export const parse = (src: string): Query => {
         clauses.push(parseMatchClause());
       } else if (checkKeyword('insert')) {
         clauses.push(parseInsertClause());
+      } else if (checkExtIdent('_MERGE')) {
+        clauses.push(parseMergeClause());
       } else if (checkKeyword('set')) {
         clauses.push(parseSetClause());
       } else if (checkKeyword('remove')) {
