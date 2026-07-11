@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
-import { deserialize, FORMATS, parse, serialize } from './index.js';
+import { deserialize, FORMATS, graphContentEqual, parse, serialize } from './index.js';
 
 describe('serialize/deserialize entry points', () => {
   const doc = ['{"type":"node","id":"a","labels":["Person"],"properties":{"name":"marko"}}'].join(
@@ -32,6 +32,19 @@ describe('serialize/deserialize entry points', () => {
     const g = parse(doc, 'ndjson');
     const again = parse(serialize(g, 'ndjson'), 'ndjson');
     expect(again.vertexCount).toBe(1);
+  });
+
+  test('graphContentEqual verifies a round trip (and flags pg-text edge-id loss)', () => {
+    const g = parse(doc, 'ndjson');
+
+    // The four lossless formats reproduce the graph exactly (ids preserved).
+    for (const f of ['ndjson', 'pg-json', 'graphson', 'csv'] as const) {
+      expect(graphContentEqual(parse(serialize(g, f), f), g)).toBe(true);
+    }
+
+    // Same-graph is trivially equal; a different graph is not.
+    expect(graphContentEqual(g, parse(doc, 'ndjson'))).toBe(true);
+    expect(graphContentEqual(g, new Graph())).toBe(false);
   });
 
   test('FORMATS lists every registered format name at runtime', () => {

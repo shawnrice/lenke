@@ -93,12 +93,27 @@ The `^` power operator and `list[i]` element indexing are not yet parsed (both e
 
 Index-backed seeking is automatic: when a graph has property indexes (`graph.createVertexIndex(key)`), equality, range, and `IN` constraints in patterns or `WHERE` are planned as index seeks rather than full scans.
 
-A syntactically invalid query throws `GqlSyntaxError` (exported), which carries the source offset (`error.pos`) and the stable `ErrorCode.Syntax` code.
+A syntactically invalid query throws `GqlSyntaxError` (exported by `@lenke/gql`), which carries the source offset (`error.pos`) and the stable `ErrorCode.Syntax` code. **Note:** on the native/wasm engines (`@lenke/native`, `@lenke/node`) the same syntax error surfaces as a plain coded `LenkeError` (`ErrorCode.Syntax`) with the offset in the message text — the structured `GqlSyntaxError`/`error.pos` surface is the pure-TS engine's.
 
 Two more runtime errors worth knowing:
 
 - **Unbound parameter** — a `$name` the query references but the params bag doesn't supply throws `ErrorCode.MissingParameter` (naming the param), rather than binding to a silent `null`. A forgotten/typo'd binding fails loud.
-- **Reserved words** — using an ISO GQL keyword (e.g. `project`, `order`, `value`) as a bare property key or variable is an `ErrorCode.Syntax` error; quote it as a delimited identifier (`` `project` ``) to use it as a name.
+- **Reserved words** — an ISO GQL keyword used as a bare property key, variable, or **column alias** is an `ErrorCode.Syntax` error; quote it as a delimited identifier to use it as a name. This bites two common cases: a property named after a keyword (`project`, `order`, `value`, `group`, `key`), and an **aggregate aliased to its own name** — `RETURN count(*) AS count` fails, so write `` AS `count` `` (or a different alias like `AS n`). Function/aggregate names (`count`, `sum`, `avg`, `min`, `max`) are all reserved.
+
+### Upsert (there is no `MERGE`)
+
+ISO GQL has no `MERGE`/upsert clause (that's a Cypher extension) — the write clauses are `INSERT` / `SET` / `REMOVE` / `[DETACH] DELETE` / `FINISH`. To "create it if it doesn't exist," match first and insert only when absent. With an index on the key, the existence check is a seek:
+
+```ts
+g.createVertexIndex('name');
+// ensure a :Tag {name:$n} exists, then link the note to it
+if (query(g, 'MATCH (t:Tag {name: $n}) RETURN t.name', { n }).length === 0) {
+  query(g, 'INSERT (:Tag {name: $n})', { n });
+}
+query(g, 'MATCH (note:Note {id: $id}), (t:Tag {name: $n}) INSERT (note)-[:TAGGED]->(t)', { id, n });
+```
+
+(In the single-writer local store this match-then-insert isn't racy; across a real backend, enforce uniqueness there.)
 
 ## License
 

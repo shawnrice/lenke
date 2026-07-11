@@ -10,6 +10,8 @@ import { pgTextCodec } from './pg-text/index.js';
 import { type ChunkSource, yieldToEventLoop } from './streaming.js';
 
 export type { Codec } from './codec.js';
+// Verify a round trip: `graphContentEqual(deserialize(serialize(g, fmt), fmt), g)`.
+export { graphContentEqual } from './equality.js';
 export type { PropertyValue, PropertyBag } from './value.js';
 export { normalizeValue, normalizeBag } from './value.js';
 export type { ChunkSource } from './streaming.js';

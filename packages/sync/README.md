@@ -113,6 +113,22 @@ const engine = createSyncEngine({
         }));
       },
     },
+    // A KEYED collection tracks completeness + demand-fills per distinct VALUE
+    // of `key`, read straight off the subscription's params. A subscription for
+    // `WHERE t.proj = $proj` with `params: { proj: 'apollo' }` fills only the
+    // apollo scope; a different `$proj` is a separate fill. `key` (a value
+    // partition) is distinct from `deps` (label intersection) — you need both.
+    tasks: {
+      labels: ['Task'],
+      key: 'proj',
+      load: async ({ proj }) => {
+        const res = await fetch(`/api/tasks?proj=${proj}`).then((r) => r.json());
+        return res.map((t) => ({
+          text: 'INSERT (:Task {id: $id, proj: $p})',
+          params: { id: t.id, p: proj },
+        }));
+      },
+    },
   },
   initiallyComplete: ['people'], // when the boot snapshot already covers it
   upstream: { push: (w) => api.mutate(w.text, w.params, w.lang) }, // write-back target — forward the lang!
@@ -127,6 +143,7 @@ const host = engine.createHost({ send: (m) => ws.send(JSON.stringify(m)) });
 Semantics worth knowing:
 
 - **Answer now, fill after** — a subscription over an unloaded collection gets its local (possibly stale) rows immediately with `complete: false`; the loader's writes land in one `store.mutate`, epochs route the push, and `complete` flips. An **empty scope still flips** `complete` (same rows, new truth).
+- **A failed load surfaces as a retryable error, not a forever-skeleton** — if a loader throws, the subscribing client's snapshot gets `{ complete: false, error }` (the subscription stays alive; the next demand re-attempts and clears it), and the worker-side `onLoadError(collection, err)` also fires. The wire `error.code` is whatever the loader threw — throw a `LenkeError` (coded) from your loader if you want a meaningful `code`, else it's `'Unknown'` with the thrown message.
 - **Loaders return writes** (`SyncWrite[]` — `{ text, params? }` for GQL, `{ text, lang: 'gremlin' }` for a Gremlin traversal), not graphs — values stay on the params path, and the engine stays ignorant of your fetch/decode shape.
 - **Write-back is optimistic** — local readers see a mutation before upstream answers; the queue is FIFO, one in flight, exponential backoff; a write that exhausted its retries is dropped and reported (`onWriteError`) — rollback-and-correct is out of v1's scope (it needs server cursors). A mutation that changed nothing replicates nothing (version-gated).
 - **`ingest` never echoes** — server-pushed writes apply locally and route by epoch, with no path back into the queue.

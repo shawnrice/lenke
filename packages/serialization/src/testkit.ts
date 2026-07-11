@@ -104,35 +104,6 @@ export const randomLpgGraph = (seed: number): Graph => {
   return g;
 };
 
-const sameMap = (x: Map<string, string>, y: Map<string, string>): boolean =>
-  x.size === y.size && [...x].every(([k, v]) => y.get(k) === v);
-
-const canon = (labels: Iterable<string>, props: Record<string, unknown>): string => {
-  const labelPart = JSON.stringify([...labels].sort());
-  const propPart = JSON.stringify(
-    Object.keys(props)
-      .sort()
-      .map((k) => [k, props[k]]),
-  );
-
-  return `${labelPart}|${propPart}`;
-};
-
-/**
- * Structural equality of two graphs in the LPG model: same node ids with the
- * same labels (as sets) and properties, and same edges by id with the same
- * endpoints, labels, and properties. Order-independent.
- */
-export const graphContentEqual = (a: Graph, b: Graph): boolean => {
-  const nodeMap = (g: Graph): Map<string, string> =>
-    new Map([...g.vertices].map((v) => [String(v.id), canon(v.labels, v.properties)]));
-  const edgeMap = (g: Graph): Map<string, string> =>
-    new Map(
-      [...g.edges].map((e) => [
-        String(e.id),
-        `${e.from.id}->${e.to.id}|${canon(e.labels, e.properties)}`,
-      ]),
-    );
-
-  return sameMap(nodeMap(a), nodeMap(b)) && sameMap(edgeMap(a), edgeMap(b));
-};
+// `graphContentEqual` moved to ./equality.ts (it's public API now); re-exported
+// here so the codecs' round-trip tests keep importing it from the test kit.
+export { graphContentEqual } from './equality.js';

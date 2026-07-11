@@ -98,7 +98,9 @@ vertex, then emits that path — so `repeat(out()).until(cyclicPath())` finds th
 loop reachable from a start:
 
 ```ts
-import { traversal, V, has, out, repeat, until, cyclicPath, path, toArray } from '@lenke/gremlin';
+// `until` is a method on the repeat builder (`repeat(...).until(...)`), not a
+// standalone step — so it isn't imported here.
+import { traversal, V, has, out, repeat, cyclicPath, path, toArray } from '@lenke/gremlin';
 
 const cycles = toArray(
   traversal(V(), has('name', 'store'), repeat(out('DEPENDS_ON')).until(cyclicPath()), path()),

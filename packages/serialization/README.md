@@ -42,6 +42,8 @@ await deserializeStream(chunkSource, 'ndjson', new Graph());
 
 `serializeStream` yields **batched** chunks (~1024 records each), not one chunk per element — so a small graph (under a batch) streams as a single chunk. It's a throughput optimization for large graphs, not a fine-grained progress signal.
 
+To verify a round trip, `graphContentEqual(a, b)` structurally compares two graphs (node ids + labels + properties; edges by id + endpoints + labels + properties; order-independent): `graphContentEqual(deserialize(serialize(g, fmt), fmt), g)`. It compares **by id**, so it correctly reports a `pg-text` round trip as unequal (that codec mints fresh edge ids — real loss, not a false negative).
+
 `serializeAsync` / `deserializeAsync` offer the same whole-string result while yielding the event loop between batches.
 
 ## Formats
