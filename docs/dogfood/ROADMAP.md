@@ -1,0 +1,77 @@
+# Dogfood pain-point roadmap (living tracker)
+
+Burn-down of everything the personas hit. Status: **OPEN** / **FIXED** (commit) /
+**WONTFIX** (with reason) / **ROADMAP** (structural feature, needs a decision).
+Re-runs update this: when a later round's persona no longer hits an item, mark it
+verified.
+
+---
+
+## OPEN — cheap batch (docs + small consistency), targeted next
+
+| # | Pain point | Source | Fix approach |
+|---|---|---|---|
+| C1 | **How to READ an event value is undocumented**, and the round-3 core-README note ("events carry `previous` alongside `value`") is a *trap* — the payload is `event.value.<field>` (new = `event.value.value`, old = `event.value.previous`), not `event.previous`. A wrong guess (`event.data`) throws from deep in the emitter as an unhandled microtask. | Lena, Sofia (r4) | core README: add a runnable event-read snippet; fix the misleading `previous` phrasing; note the veto is **silent** (C2). |
+| C2 | **`preventDefault()` veto is silent** — a vetoed `addVertex` returns an unattached vertex, `setProperty` returns void; caller can't tell rejected from succeeded. | Lena (r4) | Document it (one line). Behavior change (throw/return-result on veto) is a bigger call — see R-VETO. |
+| C3 | **`previous` missing on removal + bulk property events** — singular `VertexPropertyChanged`/`EdgePropertyChanged` carry `previous` (added r3); `VertexPropertyRemoved`/`EdgePropertyRemoved` and the bulk `VertexPropertiesChanged`/`EdgePropertiesChanged` do not. Asymmetry; audit can't recover a deleted value without pre-commit reads. | Lena, Sofia (r4) | Add `previous` (removed value / old bag) to the removal + bulk events at the emit sites (read before commit, like the singular fix). |
+| C4 | **Index-seek is single-anchor-only, undocumented** — inline `{k:$x}` / `WHERE v.k=$x` seeks, but a *second* comma-joined `{k:$y}` anchor **full-scans** (175× slower: 4.6ms vs 0.003ms). Docs claim inline `{k:$x}` seeks with no caveat. | Priyanka (r4) | native/gql README: warn it's single-anchor; show the single-seed-connected reformulation. (Planner fix = R-SEED.) |
+| C5 | **Var-length pattern placement undocumented** — it's `-[:X]->*(b)` / `-[:X]->{1,2}(b)` (quantifier AFTER the arrow), not Cypher's `-[:X*0..]->`. README lists the quantifiers but shows no written-out pattern; personas guess Cypher → syntax error. | Priyanka (r4) | gql README: add a var-length pattern example. |
+| C6 | **Reserved words also break bare LABELS** — `MATCH (x:Group)` throws (`Group` reserved); the reserved-word note only warns about aliases/keys. `Group` is a central authz label. | Priyanka (r4) | gql README: extend the reserved-word note to labels+variables (quote them). Parser accepting keywords-as-labels = bigger, maybe R-LABELKW. |
+| C7 | **No server-side / multiplayer topology guide, and optimism has no CDC stream** — `frontend-worker.md` steers *away* from the socket-server topology ("no lenke server to stand up"), yet it exists; the protocol carries query **results** (`rows`), never a server→client **write stream**, so cross-client optimism (`engine.ingest` from other clients' writes) can't be wired over a socket. Not flagged anywhere; `service-map` is the only server example and it dodges writes/presence/conflict. | Kenji (r4) | Add a server/multiplayer topology doc section; explicitly state the no-write-stream limitation. (Real feature = R-CDC.) |
+| C8 | **No dev warning for unused mutate params** — a transposed param name (`{color}` for a query using `$c`) fails loud as "missing parameter: $c" (good) but the unused `color` is silently dropped; a "unused params: {…}" dev warning would catch transpositions instantly. | Kenji (r4) | Optional dev-mode warning when supplied params aren't referenced. |
+
+## OPEN — needs verification (possible bug)
+
+| # | Claim | Source | Action |
+|---|---|---|---|
+| V1 | Textual Gremlin `emit().repeat(...)` (pre-emit / emitBefore) **drops the start vertex**, so a zero-hop closure (owner check) returns `false`; only `union(identity(), repeat().emit())` includes zero hops. `emit(true)` errors. | Priyanka (r4) | Verify against the Gremlin `emitBefore` handling (TS + Rust) — if pre-emit really omits level 0, it's a bug (byte-identity too). |
+
+## OPEN — scoped feature
+
+| # | Feature | Source | Note |
+|---|---|---|---|
+| F1 | **`mode` / `arg_max(value, key)` aggregate** in GQL (both engines, byte-identical). Majority-vote label propagation can't run in-engine without it. | Marcus (r4) | Scoped: add to the aggregate set like `collect_list`. |
+
+## ROADMAP — structural capability gaps (owner-prioritized; features, not fixes)
+
+These are what the ambitious use cases actually need. Not quick fixes — product
+direction. Each blocks a confirmed use case.
+
+| # | Capability | Blocks | Surfaced by |
+|---|---|---|---|
+| R-TX | **Transactions / atomic multi-write with rollback** + deferred constraint checks. The event-veto model rejects one mutation at a time, so multi-write invariants (node + mandatory edge, "exactly one" cardinality) need hand-rolled compensation. | Schema/ORM layer | Lena (r4) — the #1 framework gap |
+| R-CDC | **Server→client write/CDC stream** over the sync protocol, so optimistic local engines can `ingest` other clients' writes across a socket (today the two supported halves — bare shared-store vs per-client engine — don't meet for multiplayer). | Multiplayer | Kenji (r4) — his biggest finding |
+| R-DEDUPE | **Server-side request-id dedupe** for exactly-once. At-least-once reconnect replay double-applies non-idempotent writes (increments/appends/INSERTs). | Multiplayer, any write-heavy sync | Kenji (r4) |
+| R-MERGE | **`MERGE`/upsert-by-id** (GQL) OR a documented idiom + a primitive. The single most common multiplayer/authz write (upsert presence, ensure-tuple). NOTE: ISO GQL has no MERGE (it's Cypher) — decide: implement anyway, or ship an atomic upsert primitive. | Multiplayer (presence dupes), authz, ORM | Kenji (r4), Maya (r2) — recurring |
+| R-EPHEMERAL | **Ephemeral / TTL nodes** (presence). Today presence is hand-rolled (server deletes on socket close) and ephemeral nodes leak into checkpoints. | Multiplayer | Kenji (r4) |
+| R-FANOUT | **Fan-out scaling** — every write re-scans+diffs+sends *every* subscription on one thread → O(N²), throughput drops as clients rise (483→240 w/s at 8→48 clients, p99 573ms). Shared-query dedup / incremental push needed for >~100 clients. | Multiplayer at scale | Kenji (r4) |
+| R-FIXPOINT | **In-engine fixpoint/loop** + carry a whole-graph scalar between statements (`WITH`-scalar → `SET`) + `SET` affected-row count. PageRank/CC are JS loops over in-engine relaxation steps; each iter is 3–4 native round-trips. | Analytics | Marcus (r4) |
+| R-TEMPORAL | **Temporal support** — native date/interval types, valid-time semantics, half-open-interval ("as-of") index, append-only/immutable mode, `graph.replay(ops)` + op codec for event-sourcing. | Bitemporal KG | Sofia (r4) |
+| R-SEED | **Multi-anchor index-seed planning** — push a second comma-pattern `{k:$y}` / `WHERE a.k=$x AND b.k=$y` down to a per-node seek instead of full-scan. (Root cause of C4; known limitation in the native-property-indexes memory.) | Authz, any 2-anchor lookup | Priyanka (r4) |
+| R-BATCH | **Batch check / `UNWIND` / list params** — pass an array of inputs in one call instead of N round-trips (Zanzibar BatchCheck). | Authz | Priyanka (r4) |
+| R-VETO | **Non-silent veto** — a `veto(reason)` that surfaces to the mutating call, or `addVertex` throwing on veto (vs C2's doc-only). | Schema/ORM | Lena (r4) |
+| R-LABELKW | Parser: accept reserved words as bare labels (or require quoting consistently). | any keyword-named label (`Group`) | Priyanka (r4) |
+| R-TYPED | Generic/typed entities so a schema layer gets `create<'User'>` inference (lenke's `Vertex`/`Edge` are non-generic by design). | Schema/ORM | Lena (r4) |
+
+## Recurring themes (worth a periodic grep)
+
+- **Stale `// STUBBED — executor throws` comments** on working steps — fixed on `subgraph` (r1) and `match` (r3). Grep before each round.
+- **Documented-but-not-shipped** — CSV paired-file export (fixed r3, commit 23cc361); the Node/Bun `durable` snapshot seam (documented r3).
+- **Reserved-word tax** — `RETURN count(*) AS count`, labels like `Group`, vars like `grant` — recurring across rounds; docs beefed up but the surface is broad.
+- **`MERGE`/upsert** wanted repeatedly (r2 Maya, r4 Kenji + Priyanka) — the recurring feature ask.
+
+## FIXED (history — see git log + memory `dx-ergonomics-pass`)
+
+Rounds 1–3 fixes (commits `463d816`…`b14fd4b`): unknown-function error code +
+message; `client.pushWrite`; `inferDeps` reachability; `FormatName` literal
+union; `createEmptyGraph`; `parse()`; `graph.size` = V+E; React sync hooks +
+`useLiveQuery` coarse/params fix + `StoreProvider` typecheck; sync port helpers;
+loader-error surfacing (retryable); unbound-`$param` throws
+`MissingParameter`; Rust names the unknown fn; result-shape generics
+(`query<R>`/`RustGraph.query<R>`/hooks); `getProperty<T>`; CSV paired-file
+**export** + format docs; `addEdge`/`addVertex` optional `properties`;
+`graph.on` returns unsubscribe; `previous` on singular property events; full
+event-type export + `GraphEvent` alias fix; `decodeArrow<R>` + Arrow scalar-only
+docs; `List.size`; stale STUBBED comments (subgraph, match); `graphContentEqual`
+export; `serveSharedWorker`/`connectSharedWorker`/`servePort`; keyed-collection +
+failed-load docs; `durable` snapshot-storage doc; `mergeNdjson` + `MergeReport`.

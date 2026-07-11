@@ -1,0 +1,11 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "skipLibCheck": true,
+    "types": ["bun"],
+    "jsx": "react-jsx",
+    "allowImportingTsExtensions": true
+  },
+  "include": ["*.ts", "*.tsx"]
+}

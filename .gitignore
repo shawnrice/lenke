@@ -193,4 +193,12 @@ docs/sync-engine.md
 .claude/projects
 
 # Dogfooding scratch apps (persona builds)
-.dogfood/
+# Dogfooding persona apps — track SOURCE (indexed in docs/dogfood/), ignore
+# generated data so the persona code is version-controlled + re-runnable.
+.dogfood/**/*.ndjson
+.dogfood/**/*.csv
+.dogfood/**/*.txt
+.dogfood/**/out/
+.dogfood/**/cases.json
+.dogfood/**/checkpoints.json
+.dogfood/**/event-log.json
