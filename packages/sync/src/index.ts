@@ -33,6 +33,17 @@ export {
   type SyncEngineOptions,
 } from './engine.js';
 export { createSyncHost, type SyncHost, type SyncHostOptions } from './host.js';
+// Port lifecycle helpers — collapse the per-tab `bye`/bfcache host boilerplate
+// a SharedWorker app otherwise hand-rolls on both sides.
+export {
+  connectSharedWorker,
+  serveSharedWorker,
+  servePort,
+  type ByeMessage,
+  type PortLike,
+  type ServedPort,
+  type SharedWorkerService,
+} from './port.js';
 // Re-exported so wire consumers can build safe Gremlin traversal strings (for
 // `client.gremlin` / a `lang: 'gremlin'` live query) without importing native.
 // `inferDeps` derives a live query's `deps` array — the escape hatch the

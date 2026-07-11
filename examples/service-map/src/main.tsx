@@ -1,4 +1,4 @@
-import { createSyncClient, type ClientLiveQuery, type SyncClient } from '@lenke/sync';
+import { connectSharedWorker, type ClientLiveQuery, type SyncClient } from '@lenke/sync';
 // The tab: a deliberately dumb React view over the sync client — a bare
 // <table>, no component library. Everything interesting ends at the
 // useSyncExternalStore seam ({ rows, complete, error }); a real grid (e.g.
@@ -17,21 +17,11 @@ const worker = new SharedWorker(new URL('../worker.ts', import.meta.url), {
   type: 'module',
   name: 'lenke-service-map',
 });
-const client: SyncClient = createSyncClient({ send: (m) => worker.port.postMessage(m) });
-worker.port.onmessage = (e) => client.receive(e.data);
-worker.port.start();
 
-// A MessagePort can't signal its tab's death, so say goodbye explicitly —
-// without it the worker retains this tab's host (and re-runs its standing
-// queries on every change) forever. `pagehide` fires on close, navigation,
-// AND bfcache entry; on bfcache revival (`pageshow` persisted) replay every
-// standing query — the worker mints a fresh host, which re-answers each one.
-window.addEventListener('pagehide', () => worker.port.postMessage({ type: 'bye' }));
-window.addEventListener('pageshow', (e) => {
-  if (e.persisted) {
-    client.replay();
-  }
-});
+// `connectSharedWorker` wires the port both ways AND installs the tab-side
+// lifecycle: a `bye` on pagehide (so the worker drops this tab's host instead of
+// re-running its standing queries forever) and a `replay()` on bfcache revival.
+const client: SyncClient = connectSharedWorker(worker);
 
 const STATUSES = ['healthy', 'degraded', 'down'] as const;
 
