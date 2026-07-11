@@ -219,6 +219,9 @@ impl Parser {
     /// Parse a full traversal: optional `g`/`__` source then a `.method(...)` chain.
     fn traversal(&mut self) -> Result<Traversal, String> {
         let mut t = __();
+        // Pre-form emit()/until() modulators (before their repeat) stash here,
+        // local to THIS traversal so a nested repeat body has its own.
+        let mut pending = PendingMods::default();
         match self.peek() {
             Some(Tok::Ident(id)) if id == "g" || id == "__" => {
                 self.pos += 1;
@@ -227,14 +230,14 @@ impl Parser {
                 // Bare anonymous step (e.g. `out('knows')`): parse the first method
                 // directly, no leading dot.
                 let name = self.ident()?;
-                t = self.method(t, &name)?;
+                t = self.method(t, &name, &mut pending)?;
             }
             other => return Err(format!("expected a traversal, found {other:?}")),
         }
         while self.peek() == Some(&Tok::Dot) {
             self.pos += 1;
             let name = self.ident()?;
-            t = self.method(t, &name)?;
+            t = self.method(t, &name, &mut pending)?;
         }
         Ok(t)
     }
@@ -438,8 +441,14 @@ impl Parser {
         })
     }
 
-    /// Dispatch a `.method(args)` onto the traversal `t`.
-    fn method(&mut self, t: Traversal, name: &str) -> Result<Traversal, String> {
+    /// Dispatch a `.method(args)` onto the traversal `t`. `pending` carries
+    /// pre-form repeat modulators (see [`PendingMods`]).
+    fn method(
+        &mut self,
+        t: Traversal,
+        name: &str,
+        pending: &mut PendingMods,
+    ) -> Result<Traversal, String> {
         let args = self.args()?;
         // scope helper: a leading Scope.local arg means the *_local variant.
         let scope_local = |a: &[Arg]| matches!(a.first(), Some(Arg::Str(s)) if s == "Scope.local");
@@ -462,6 +471,41 @@ impl Parser {
                 }
             })
             .collect();
+
+        // Repeat modulators may appear BEFORE their repeat in TinkerPop
+        // (`emit().repeat(body)` / `until().repeat(body)`). Our builder attaches a
+        // modulator to the LAST step, so a pre-repeat one would be silently
+        // dropped; stash it and let the next `repeat` consume it (emit → pre-form
+        // via `emit_before`; until is while-semantics either side). This is also
+        // where `repeat` itself is built, so it can pull in any stashed modulator.
+        // Post-form (`repeat(body).emit()`) still flows through the match below.
+        // See Priyanka r4: `emit().repeat(out('MEMBER_OF'))` needs the zero-hop start.
+        let ends_in_repeat = matches!(t.steps.last(), Some(Step::Repeat { .. }));
+        match name {
+            "emit" if !ends_in_repeat => {
+                pending.emit = Some(if args.is_empty() {
+                    __()
+                } else {
+                    self.one_trav(args)?
+                });
+                return Ok(t);
+            }
+            "until" if !ends_in_repeat => {
+                pending.until = Some(self.one_trav(args)?);
+                return Ok(t);
+            }
+            "repeat" => {
+                let mut r = t.repeat(self.one_trav(args)?);
+                if let Some(e) = pending.emit.take() {
+                    r = r.emit_before(e);
+                }
+                if let Some(u) = pending.until.take() {
+                    r = r.until(u);
+                }
+                return Ok(r);
+            }
+            _ => {}
+        }
 
         Ok(match name {
             // sources
@@ -653,8 +697,8 @@ impl Parser {
                 _ => return Err("with(): only ShortestPath.target is supported".into()),
             },
             "barrier" => t.barrier(),
-            // iteration
-            "repeat" => t.repeat(self.one_trav(args)?),
+            // iteration (`repeat` is handled above so it can pull in pre-form
+            // emit()/until() modulators)
             "times" => t.times(count_at(&nums_after_scope(&args), 0, "times")?),
             "until" => t.until(self.one_trav(args)?),
             "emit" => {
@@ -816,6 +860,17 @@ fn bare_token(id: &str) -> Option<Arg> {
 }
 
 /// Parse a textual Gremlin query into a [`Traversal`].
+/// Pre-form repeat modulators — `emit()` / `until()` appearing BEFORE their
+/// `repeat(body)` in the text — stashed during a traversal parse and applied when
+/// the next `repeat` is built. (TinkerPop allows the modulator to precede its
+/// repeat; our builder attaches modulators to the last step, so without this a
+/// pre-repeat one would be silently dropped.)
+#[derive(Default)]
+struct PendingMods {
+    emit: Option<Traversal>,
+    until: Option<Traversal>,
+}
+
 pub fn parse(src: &str) -> Result<Traversal, String> {
     let toks = lex(src)?;
     let mut p = Parser {

@@ -162,6 +162,32 @@ fn repeat_emit_before_yields_every_level() {
 }
 
 #[test]
+fn textual_emit_before_repeat_yields_every_level() {
+    // TEXTUAL pre-form emit: `emit().repeat(out()).times(2)` — the emit modulator
+    // PRECEDES its repeat (TinkerPop allows this). It must match the builder's
+    // `.repeat(...).emit_before(...)` above (start vertex + every level), not
+    // silently drop the emit because it came before the repeat step. (Priyanka r4;
+    // owner-check `emit().repeat(out('MEMBER_OF'))` needs the zero-hop start.)
+    let t = super::parse("g.V('1').emit().repeat(out()).times(2).values('name')").unwrap();
+    assert_eq!(
+        sorted_names(q(t)),
+        vec!["josh", "lop", "lop", "marko", "ripple", "vadas"]
+    );
+}
+
+#[test]
+fn textual_until_before_repeat_attaches() {
+    // Same fix, the other pre-form modulator: `until(cond).repeat(out())` — until
+    // precedes its repeat and must ATTACH (stop at the first match), not be
+    // dropped and run to natural termination. From marko, until(name=josh) stops
+    // the walk at josh; without the fix it'd drop until and yield the final
+    // frontier (["lop","ripple"]).
+    let t =
+        super::parse("g.V('1').until(has('name','josh')).repeat(out()).values('name')").unwrap();
+    assert_eq!(sorted_names(q(t)), vec!["josh"]);
+}
+
+#[test]
 fn repeat_emit_loops_predicate_offset() {
     // emit(loops().is(gt(1))) emits both body levels of a times(3) walk.
     let r = g()
