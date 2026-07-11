@@ -420,6 +420,12 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
   const bySub = new Map<string, Entry>(); // wire sub id → entry
   const pending = new Map<string, Pending>(); // req id → resolver
   let nextId = 0;
+  // A stable per-client id — makes each mutate `req` globally unique so the
+  // server can dedupe a re-sent write (exactly-once) across a reconnect, where
+  // the connection (and per-connection counters) would otherwise reset.
+  const clientId =
+    (globalThis as { crypto?: { randomUUID?: () => string } }).crypto?.randomUUID?.() ??
+    `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
   let status: { connected: boolean; pendingWrites: number } | null = null;
   const statusListeners = new Set<() => void>();
 
@@ -584,7 +590,7 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
     }
 
     return new Promise<void>((resolve, reject) => {
-      const req = `m${++nextId}`;
+      const req = `m-${clientId}-${++nextId}`;
       const msg: ClientMessage = { type: 'mutate', req, text, params, lang };
       pending.set(req, { resolve: resolve as (v: never) => void, reject, kind: 'mutate', msg });
       send(msg);
@@ -596,7 +602,7 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
     ...subs: unknown[]
   ): Promise<void> =>
     new Promise<void>((resolve, reject) => {
-      const req = `m${++nextId}`;
+      const req = `m-${clientId}-${++nextId}`;
       // Tagged-template subs are escaped into safe literals; a plain string
       // passes through (buildGremlin is @lenke/native's `gremlin` composer).
       const text = buildGremlin(traversal, ...subs);

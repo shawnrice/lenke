@@ -39,6 +39,7 @@ import { ErrorCode, LenkeError } from '@lenke/errors';
 import { inferDeps } from '@lenke/native';
 import type { LiveQuery, QueryParams, Row, Store } from '@lenke/native';
 
+import type { DedupRegistry } from './dedup.js';
 import {
   isClientMessage,
   keyOf,
@@ -113,6 +114,13 @@ export type SyncHostOptions = {
    * `Store`). Omit it and the host behaves exactly as before (no write stream).
    */
   writeLog?: WriteLog;
+  /**
+   * Shared server-side request-id dedupe for **exactly-once** writes. When
+   * present, a re-sent write (a lost-ack reconnect replay, identified by its
+   * globally-unique `req`) is re-acked without re-applying — no double-increment,
+   * no duplicate INSERT. All hosts on one server share one registry.
+   */
+  dedup?: DedupRegistry;
 };
 
 type RowDiff = {
@@ -217,7 +225,7 @@ const writeTokens = (text: string, lang?: 'gql' | 'gremlin'): string[] | undefin
   lang === 'gremlin' ? undefined : inferDeps(text);
 
 export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost => {
-  const { send, writeLog } = options;
+  const { send, writeLog, dedup } = options;
   // This host's participant id in the shared op log — tags its own client's
   // writes so their echo is skipped on the way back out.
   const writeOrigin = writeLog ? writeLog.register() : -1;
@@ -466,6 +474,14 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
         });
       }
 
+      // Exactly-once: a re-sent write (a lost-ack reconnect replay) whose id was
+      // already applied is re-acked WITHOUT re-running it — and not re-broadcast.
+      if (dedup?.seen(msg.req)) {
+        send({ type: 'ack', req: msg.req, ok: true });
+
+        return;
+      }
+
       applyMutation(text, msg.params, msg.lang);
       // Publish the committed write to the shared op log so other clients'
       // stream subscribers ingest it (CDC). No-op if no writeLog is configured.
@@ -475,6 +491,7 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
         { text, lang: msg.lang, params: msg.params },
         writeTokens(text, msg.lang),
       );
+      dedup?.mark(msg.req); // record only AFTER a successful apply
       send({ type: 'ack', req: msg.req, ok: true });
     } catch (e) {
       send({ type: 'ack', req: msg.req, ok: false, error: toWireError(e) });

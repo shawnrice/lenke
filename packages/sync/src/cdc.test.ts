@@ -11,6 +11,7 @@ import { createStore, graphFromNdjson, type Store } from '@lenke/native';
 import { createFfiBackend } from '@lenke/native/ffi';
 
 import { createSyncClient, type SyncClient } from './client.js';
+import { createDedupRegistry } from './dedup.js';
 import { createSyncHost } from './host.js';
 import {
   runWrite,
@@ -226,6 +227,39 @@ suite('CDC write stream (TS vs native store)', () => {
       .flatMap((m) => m.writes.map((w) => w.text));
     expect(forwarded).toEqual(['INSERT (:User {id: 1})']); // the Team write is filtered out
   });
+
+  test('dedupe: a re-sent write (same req) applies once across a reconnect', () => {
+    const store = newStore();
+    const dedup = createDedupRegistry();
+    const writeLog = createWriteLog();
+    const sent1: HostMessage[] = [];
+    const sent2: HostMessage[] = [];
+    const h1 = createSyncHost(store, { send: (m) => sent1.push(m), dedup, writeLog });
+    const h2 = createSyncHost(store, { send: (m) => sent2.push(m), dedup, writeLog });
+
+    const req = 'm-client-1';
+    h1.receive({ type: 'mutate', req, text: 'INSERT (:Widget {id: 1})' }); // lands on conn 1
+    h2.receive({ type: 'mutate', req, text: 'INSERT (:Widget {id: 1})' }); // replayed on conn 2 (lost ack)
+
+    expect(widgets(store)).toBe(1); // applied exactly once
+    expect(writeLog.head()).toBe(1); // and broadcast exactly once (no double CDC)
+    expect([...sent1, ...sent2].filter((m) => m.type === 'ack' && m.ok).length).toBe(2); // both acked ok
+  });
+
+  test('dedupe: distinct writes both apply; a failed write is not recorded', () => {
+    const store = newStore();
+    const dedup = createDedupRegistry();
+    const sent: HostMessage[] = [];
+    const h = createSyncHost(store, { send: (m) => sent.push(m), dedup });
+
+    h.receive({ type: 'mutate', req: 'm-a-1', text: 'INSERT (:Widget {id: 1})' });
+    h.receive({ type: 'mutate', req: 'm-a-2', text: 'INSERT (:Widget {id: 2})' });
+    expect(widgets(store)).toBe(2); // distinct reqs → both apply
+
+    h.receive({ type: 'mutate', req: 'm-a-3', text: 'NOT VALID GQL' });
+    expect(sent.some((m) => m.type === 'ack' && !m.ok)).toBe(true); // failed
+    expect(dedup.seen('m-a-3')).toBe(false); // not recorded → a retry can still apply
+  });
 });
 
 // The ordering/idempotence guard is pure client logic — drive receive() directly,
@@ -266,5 +300,19 @@ describe('CDC write stream — client ordering guard (transport-free)', () => {
       type: 'subscribeWrites',
       since: 42,
     });
+  });
+
+  test('mutate reqs are globally unique (stable per-client prefix, for dedupe)', () => {
+    const sentA: ClientMessage[] = [];
+    const sentB: ClientMessage[] = [];
+    const a = createSyncClient({ send: (m) => sentA.push(m) });
+    const b = createSyncClient({ send: (m) => sentB.push(m) });
+    void a.mutate('INSERT (:W)');
+    void b.mutate('INSERT (:W)');
+
+    const reqOf = (sent: ClientMessage[]): string =>
+      (sent.find((m) => m.type === 'mutate') as { req: string }).req;
+    // Two clients issuing "the same" write get distinct reqs → no false dedupe.
+    expect(reqOf(sentA)).not.toEqual(reqOf(sentB));
   });
 });
