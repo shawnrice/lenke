@@ -54,6 +54,7 @@ import {
   keyOf,
   type ClientMessage,
   type RowsMessage,
+  type SyncWrite,
   type WireError,
 } from './protocol.js';
 
@@ -145,6 +146,17 @@ export type SyncClient = {
    * on `ack ok`, rejects with the coded error.
    */
   mutateGremlin: (traversal: string | TemplateStringsArray, ...subs: unknown[]) => Promise<void>;
+  /**
+   * Replicate a whole queued {@link SyncWrite} upstream — the drop-in for a
+   * sync engine's `upstream.push`, so `upstream: { push: client.pushWrite }` is
+   * the entire wiring. It forwards the write's `text`, `params`, AND `lang`
+   * together, so a Gremlin write can't lose its language and silently degrade
+   * to GQL on the wire (the exact footgun of hand-calling
+   * `mutate(w.text, w.params)` and forgetting the third argument). A local
+   * bulk `ndjson` load is never replicated, so passing one is a programming
+   * error and rejects.
+   */
+  pushWrite: (write: SyncWrite) => Promise<void>;
   /** The host's last `status` message, if any. */
   getStatus: () => { connected: boolean; pendingWrites: number } | null;
   /**
@@ -560,6 +572,21 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
       send(msg);
     });
 
+  const pushWrite = (write: SyncWrite): Promise<void> => {
+    if (write.ndjson) {
+      // A bulk ndjson batch is a local demand-fill load, not a user mutation —
+      // it never enters the upstream queue. Reaching here means one was routed
+      // to replication by mistake; fail loud rather than send an empty `text`.
+      return Promise.reject(
+        new LenkeError('lenke: a bulk ndjson load is never replicated upstream', {
+          code: ErrorCode.InvalidGraphOp,
+        }),
+      );
+    }
+
+    return mutate(write.text, write.params, write.lang);
+  };
+
   // Apply a keyed diff (patch / remove / order) onto the entry's retained rows.
   // Unchanged rows keep their object identity, so React list reconciliation
   // skips them — including across a reconnect, where the fresh host re-pushes
@@ -739,6 +766,7 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
     gremlin,
     mutate,
     mutateGremlin,
+    pushWrite,
     getStatus: () => status,
     onStatus: (cb) => {
       statusListeners.add(cb);

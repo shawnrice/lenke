@@ -856,7 +856,7 @@ const callExtendedScalar = (name: string, args: readonly unknown[]): unknown => 
   }
 
   throw new LenkeError(`call to an unknown or unimplemented function: ${name}()`, {
-    code: ErrorCode.Unsupported,
+    code: ErrorCode.UnknownFunction,
   });
 };
 

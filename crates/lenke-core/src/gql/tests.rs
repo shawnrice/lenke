@@ -1500,7 +1500,7 @@ fn unknown_function_errors_instead_of_silent_null() {
         .unwrap()
         .execute(&mut g, &Params::new())
         .unwrap_err();
-    assert_eq!(err.code, crate::error_codes::ErrorCode::Unsupported);
+    assert_eq!(err.code, crate::error_codes::ErrorCode::UnknownFunction);
 }
 
 #[test]

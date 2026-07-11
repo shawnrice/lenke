@@ -91,6 +91,7 @@ export type ReconnectingClient = Pick<
   | 'gremlin'
   | 'mutate'
   | 'mutateGremlin'
+  | 'pushWrite'
   | 'getStatus'
   | 'onStatus'
   | 'subscriptionCount'
@@ -208,6 +209,7 @@ export const createReconnectingClient = (
     gremlin: inner.gremlin,
     mutate: inner.mutate,
     mutateGremlin: inner.mutateGremlin,
+    pushWrite: inner.pushWrite,
     getStatus: inner.getStatus,
     onStatus: inner.onStatus,
     subscriptionCount: inner.subscriptionCount,

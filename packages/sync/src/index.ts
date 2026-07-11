@@ -35,7 +35,10 @@ export {
 export { createSyncHost, type SyncHost, type SyncHostOptions } from './host.js';
 // Re-exported so wire consumers can build safe Gremlin traversal strings (for
 // `client.gremlin` / a `lang: 'gremlin'` live query) without importing native.
-export { escapeGremlin, gremlin } from '@lenke/native';
+// `inferDeps` derives a live query's `deps` array — the escape hatch the
+// `liveQuery` docs point at — so a sync consumer can reach it here rather than
+// having to also depend on `@lenke/native`.
+export { escapeGremlin, gremlin, inferDeps } from '@lenke/native';
 export {
   createReconnectingClient,
   type ReconnectingClient,

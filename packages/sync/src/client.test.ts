@@ -146,6 +146,46 @@ suite('@lenke/sync client · registry semantics', () => {
     }
   });
 
+  test('pushWrite replicates a whole SyncWrite — text+params, and lang (no gremlin→gql degrade)', async () => {
+    const { client, store } = connect();
+    const before = store.graph.vertexCount;
+
+    // GQL write: text + params carried through.
+    await client.pushWrite({ text: 'INSERT (:Person {name: $n})', params: { n: 'gql-pushed' } });
+    expect(
+      await client.query('MATCH (p:Person) WHERE p.name = $n RETURN p.name', { n: 'gql-pushed' }),
+    ).toEqual([{ 'p.name': 'gql-pushed' }]);
+
+    // Gremlin write: lang carried through, so it runs as a traversal instead of
+    // being parsed as GQL (which would park/reject on the wire).
+    await client.pushWrite({
+      text: "g.addV('Person').property('name', 'gremlin-pushed')",
+      lang: 'gremlin',
+    });
+    expect(
+      await client.query('MATCH (p:Person) WHERE p.name = $n RETURN p.name', {
+        n: 'gremlin-pushed',
+      }),
+    ).toEqual([{ 'p.name': 'gremlin-pushed' }]);
+
+    expect(store.graph.vertexCount).toBe(before + 2);
+  });
+
+  test('pushWrite refuses a bulk ndjson load — it is never replicated upstream', async () => {
+    const { client } = connect();
+    const batch = new TextEncoder().encode(
+      '{"type":"node","id":"z","labels":["Person"],"properties":{"name":"zed"}}',
+    );
+
+    try {
+      await client.pushWrite({ text: '', ndjson: batch });
+
+      throw new Error('expected a rejection');
+    } catch (e) {
+      expect(hasErrorCode(e, ErrorCode.InvalidGraphOp)).toBe(true);
+    }
+  });
+
   test('an injection-shaped param stays inert through the whole loop', async () => {
     const { client, store } = connect();
     const before = store.graph.vertexCount;

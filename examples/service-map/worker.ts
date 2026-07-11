@@ -145,9 +145,10 @@ const boot = async () => {
       scope: { cluster },
     })),
     initialWrites: snap?.pendingWrites ?? [],
-    // Forward the write's language too — a Gremlin write replicated without it
-    // would be parsed as GQL on the server and park in the queue forever.
-    upstream: { push: (w) => server.mutate(w.text, w.params, w.lang) },
+    // `pushWrite` forwards the whole SyncWrite — text, params, AND lang —
+    // together, so a Gremlin write can't lose its language and get parsed as
+    // GQL on the server (which would park it in the queue forever).
+    upstream: { push: server.pushWrite },
     retry: { attempts: Number.MAX_SAFE_INTEGER, baseMs: 500, maxMs: 5000 }, // outage ≠ poison: park, don't drop
   });
 

@@ -1,5 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 
+import { ErrorCode, hasErrorCode } from '@lenke/errors';
+
 import { createTestSocialGraph } from './fixtures/createTestSocialGraph.js';
 import { query } from './index.js';
 
@@ -107,6 +109,16 @@ describe('GQL: ISO graph / conversion / string-list scalar functions', () => {
   });
 
   test('an unknown function is an error, never a silent null', () => {
+    // A typo'd/unknown function name is `UnknownFunction`, distinct from a
+    // recognized-but-unimplemented feature — so a caller can tell them apart.
     expect(() => query(g, `RETURN nope_fn(1) AS x`)).toThrow(/unknown or unimplemented function/);
+
+    try {
+      query(g, `RETURN nope_fn(1) AS x`);
+
+      throw new Error('expected a throw');
+    } catch (e) {
+      expect(hasErrorCode(e, ErrorCode.UnknownFunction)).toBe(true);
+    }
   });
 });

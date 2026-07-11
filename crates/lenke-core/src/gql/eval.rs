@@ -151,7 +151,7 @@ impl Ctx<'_> {
                 "INSERT: a node's label expression must be a plain conjunction (`A` or `A&B`) and an edge must carry exactly one type — a disjunction/negation/wildcard or a typeless edge is not creatable",
             )),
             FAULT_UNKNOWN_FN => Err(CodeError::new(
-                ErrorCode::Unsupported,
+                ErrorCode::UnknownFunction,
                 "call to an unknown or unimplemented function",
             )),
             _ => Ok(()),
