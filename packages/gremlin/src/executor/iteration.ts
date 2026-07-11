@@ -85,6 +85,12 @@ export const repeatStep = function* (
   stream: Iterable<Traverser<unknown>>,
   step: Extract<Step, { kind: 'repeat' }>,
   graph: Graph,
+  // The enclosing run's context — threaded into the body (and until/emit)
+  // sub-plans so a side-effect step inside the loop (`subgraph`/`store`/
+  // `aggregate`) writes to the OUTER side-effect scope a downstream `cap(key)`
+  // reads. Without it the body ran in a fresh context and its side-effects
+  // silently vanished (a transitive-`subgraph` blast radius came back empty).
+  ctx: RunContext,
 ): Iterable<Traverser<unknown>> {
   // Cap iterations to `times` if given; else 100 to avoid runaway.
   const maxIterations = step.times ?? 100;
@@ -100,7 +106,7 @@ export const repeatStep = function* (
       return true;
     }
 
-    return hasAny(applyPlanToStream(step.emit!, [t], graph));
+    return hasAny(applyPlanToStream(step.emit!, [t], graph, ctx));
   };
 
   let frontier: Traverser<unknown>[] = [...stream].map(incLoops);
@@ -123,7 +129,7 @@ export const repeatStep = function* (
 
     for (const t of frontier) {
       // until(plan) is checked BEFORE applying the body each iteration.
-      if (hasUntil && hasAny(applyPlanToStream(step.until!, [t], graph))) {
+      if (hasUntil && hasAny(applyPlanToStream(step.until!, [t], graph, ctx))) {
         // This traverser is "done"; yield it and stop iterating it.
         yield t;
         continue;
@@ -132,8 +138,9 @@ export const repeatStep = function* (
       survivors.push(t);
     }
 
-    // Advance survivors through the body.
-    for (const t of applyPlanToStream(step.body, survivors, graph)) {
+    // Advance survivors through the body (in the ENCLOSING ctx, so side-effects
+    // inside the body reach the outer scope).
+    for (const t of applyPlanToStream(step.body, survivors, graph, ctx)) {
       work += 1;
 
       if (work > REPEAT_BUDGET) {

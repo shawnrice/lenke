@@ -1,10 +1,23 @@
 import { describe, expect, test } from 'bun:test';
 
-import type { Graph } from '@lenke/core';
+import { Graph } from '@lenke/core';
 
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
-import { cap, E, hasLabel, inV, outE, subgraph, V } from '../steps.js';
+import {
+  cap,
+  E,
+  has,
+  hasLabel,
+  inE,
+  inV,
+  outE,
+  outV,
+  pipe,
+  repeat,
+  subgraph,
+  V,
+} from '../steps.js';
 import { traversal } from '../traversal.js';
 
 const arr = (r: Iterable<unknown>): unknown[] => [...r];
@@ -45,5 +58,45 @@ describe('subgraph() — accumulate matching edges into a named subgraph', () =>
     // 3 vertices (josh, lop, ripple). vadas created nothing.
     expect(created.edgeCount).toBe(2);
     expect(created.vertexCount).toBe(3);
+  });
+
+  test('a subgraph INSIDE a repeat() body accumulates transitively (side-effects escape the loop)', () => {
+    // b->a, c->b, d->c: a chain of dependents pointing at `a`. Walking incoming
+    // edges transitively and collecting them must capture ALL 3, not 0 — the
+    // repeat body shares the enclosing side-effect scope (regression: it used to
+    // run in a fresh context, so `cap` came back empty).
+    const g = new Graph();
+
+    for (const id of ['a', 'b', 'c', 'd']) {
+      g.addVertex({ id, labels: ['N'], properties: { name: id } });
+    }
+
+    for (const [from, to] of [
+      ['b', 'a'],
+      ['c', 'b'],
+      ['d', 'c'],
+    ]) {
+      g.addEdge({
+        from: g.getVertexById(from)!,
+        to: g.getVertexById(to)!,
+        labels: ['E'],
+        properties: {},
+      });
+    }
+
+    const r = arr(
+      run(
+        traversal(
+          V(),
+          has('name', 'a'),
+          repeat(pipe(inE('E'), subgraph('blast'), outV())).emit(),
+          cap('blast'),
+        ),
+        g,
+      ),
+    );
+    const blast = r[0] as Graph;
+    expect(blast.edgeCount).toBe(3);
+    expect(blast.vertexCount).toBe(4);
   });
 });

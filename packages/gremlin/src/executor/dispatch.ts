@@ -509,7 +509,7 @@ export const applyStep = (
       return foldStep(stream);
 
     case 'repeat':
-      return repeatStep(stream, step, graph);
+      return repeatStep(stream, step, graph, ctx);
 
     case 'as':
       return asStep(stream, step.label);
