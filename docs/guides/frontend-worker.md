@@ -60,8 +60,10 @@ const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'modu
 const client = createSyncClient({ send: (m) => worker.postMessage(m) });
 worker.onmessage = (e) => client.receive(e.data);
 
-// Standing query — pushed now and on every relevant change:
-const live = client.liveQuery('MATCH (p:Person) RETURN p.name', { deps: ['Person'] });
+// Standing query — pushed now and on every relevant change. `deps` must list
+// every label AND property key the query reads: `p.name` reads the `name` key,
+// so an in-place `SET p.name` only invalidates the query if `name` is declared.
+const live = client.liveQuery('MATCH (p:Person) RETURN p.name', { deps: ['Person', 'name'] });
 // live.subscribe / live.getSnapshot plug straight into useSyncExternalStore.
 
 // Optimistic writes — the effect returns via subscription pushes:
