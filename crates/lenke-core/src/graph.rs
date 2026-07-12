@@ -715,6 +715,9 @@ impl Graph {
         props: &[(String, Value)],
         exclude: Option<u32>,
     ) -> Option<(String, String, u32)> {
+        if self.v_unique.is_empty() {
+            return None;
+        }
         for label in labels {
             for key in self.unique_keys(label) {
                 let Some((_, value)) = props.iter().find(|(k, _)| k == key) else {
@@ -831,6 +834,9 @@ impl Graph {
         labels: &[String],
         props: &[(String, Value)],
     ) -> Option<(String, String)> {
+        if self.v_required.is_empty() {
+            return None;
+        }
         for label in labels {
             for key in self.required_keys(label) {
                 let present = props
@@ -929,6 +935,9 @@ impl Graph {
         labels: &[String],
         props: &[(String, Value)],
     ) -> Option<(String, String)> {
+        if self.v_type.is_empty() {
+            return None;
+        }
         for label in labels {
             if let Some(cs) = self.v_type.get(label) {
                 for (key, ty) in cs {
