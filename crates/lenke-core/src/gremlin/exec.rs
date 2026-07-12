@@ -25,6 +25,7 @@ enum DedupKey {
     Bool(bool),
     Num(u64),
     Str(Arc<str>),
+    Temporal(crate::temporal::Temporal),
     Vertex(u32),
     Edge(u32),
     List(Vec<Self>),
@@ -44,6 +45,7 @@ fn dedup_key(v: &GVal) -> Option<DedupKey> {
             DedupKey::Num(if *n == 0.0 { 0 } else { n.to_bits() })
         }
         GVal::Str(s) => DedupKey::Str(s.clone()),
+        GVal::Temporal(t) => DedupKey::Temporal(*t),
         GVal::Vertex(id) => DedupKey::Vertex(*id),
         GVal::Edge(id) => DedupKey::Edge(*id),
         GVal::List(xs) => DedupKey::List(xs.iter().map(dedup_key).collect::<Option<_>>()?),
@@ -362,6 +364,8 @@ fn write_gval(out: &mut String, graph: &Graph, v: &GVal) {
         GVal::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         GVal::Num(n) => push_num(out, *n),
         GVal::Str(s) => push_json_str(out, s),
+        // A temporal renders as its ISO-8601 string (values()/valueMap()).
+        GVal::Temporal(t) => push_json_str(out, &t.format()),
         GVal::Vertex(_) | GVal::Edge(_) => {
             let id = match elem_id(graph, v) {
                 GVal::Str(s) => s.to_string(),
@@ -759,6 +763,7 @@ fn value_to_gval(v: Value) -> GVal {
         Value::Bool(b) => GVal::Bool(b),
         Value::Num(n) => GVal::Num(n),
         Value::Str(s) => GVal::Str(s),
+        Value::Temporal(t) => GVal::Temporal(t),
         Value::List(items) => GVal::List(items.into_iter().map(value_to_gval).collect()),
         // Map is a GQL-result-only value; it never reaches the Gremlin value path.
         Value::Map(_) => {
@@ -773,6 +778,7 @@ fn gval_to_value(v: &GVal) -> Value {
         GVal::Bool(b) => Value::Bool(*b),
         GVal::Num(n) => Value::Num(*n),
         GVal::Str(s) => Value::Str(s.clone()),
+        GVal::Temporal(t) => Value::Temporal(*t),
         GVal::List(items) => Value::List(items.iter().map(gval_to_value).collect()),
         _ => Value::Null,
     }

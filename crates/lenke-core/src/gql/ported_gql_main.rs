@@ -89,6 +89,7 @@ fn val_sort_key(v: &Value) -> String {
         Value::Str(s) => s.to_string(),
         Value::Num(f) => format!("{f}"),
         Value::Bool(b) => format!("{b}"),
+        Value::Temporal(t) => t.format(),
         Value::Null => "~null~".to_string(),
         Value::List(_) => "~list~".to_string(),
         Value::Map(_) => "~map~".to_string(),

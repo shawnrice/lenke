@@ -222,6 +222,7 @@ fn push_json_value(out: &mut String, v: &Value) {
             }
         }
         Value::Str(s) => push_json_str(out, s),
+        Value::Temporal(t) => out.push_str(&t.json_tagged()),
         Value::List(items) => {
             out.push('[');
             for (i, e) in items.iter().enumerate() {
@@ -716,6 +717,9 @@ fn value_key(v: &Value, out: &mut String) {
         Value::Str(s) => {
             let _ = write!(out, "s{s}");
         }
+        Value::Temporal(t) => {
+            let _ = write!(out, "t{}{}", t.tag(), t.format());
+        }
         Value::List(items) => {
             out.push('[');
             for it in items {
@@ -756,13 +760,15 @@ fn cmp_value(a: &Value, b: &Value) -> std::cmp::Ordering {
             Value::Bool(_) => 1,
             Value::Num(_) => 2,
             Value::Str(_) => 3,
-            Value::List(_) => 4,
-            Value::Map(_) => 5,
+            Value::Temporal(_) => 4,
+            Value::List(_) => 5,
+            Value::Map(_) => 6,
         }
     }
     match (a, b) {
         (Value::Null, Value::Null) => Ordering::Equal,
         (Value::Bool(x), Value::Bool(y)) => x.cmp(y),
+        (Value::Temporal(x), Value::Temporal(y)) => x.cmp_total(y),
         (Value::Num(x), Value::Num(y)) => match x.partial_cmp(y) {
             Some(o) => o,
             None => x.is_nan().cmp(&y.is_nan()), // NaN last, NaN==NaN
@@ -1478,6 +1484,9 @@ mod tests {
             Value::Num(x) if x.is_finite() => got.as_f64() == Some(*x),
             Value::Num(_) => matches!(got, Json::Null),
             Value::Str(s) => got.as_str() == Some(s.as_ref()),
+            Value::Temporal(t) => {
+                got.as_object().and_then(crate::json::temporal_from_pairs) == Some(Ok(*t))
+            }
             Value::List(items) => got.as_array().is_some_and(|a| {
                 a.len() == items.len() && a.iter().zip(items).all(|(g, w)| json_matches(g, w))
             }),

@@ -40,6 +40,8 @@ pub enum Val {
     Num(f64),
     /// Interned string: cloning is a refcount bump, not an allocation.
     Str(Arc<str>),
+    /// An ISO temporal scalar (`DATE`/`LOCAL DATETIME`/`DURATION`).
+    Temporal(crate::temporal::Temporal),
     List(Vec<Self>),
     Node(u32),
     Edge(u32),
@@ -413,6 +415,7 @@ fn js_str(graph: &Graph, v: &Val) -> String {
         Val::Bool(b) => b.to_string(),
         Val::Num(n) => js_num(*n),
         Val::Str(s) => s.to_string(),
+        Val::Temporal(t) => t.format(),
         Val::Node(i) => graph.vid.text(*i).to_string(),
         Val::Edge(i) => format!("e{i}"),
         Val::List(items) => items
@@ -436,6 +439,8 @@ fn val_eq(a: &Val, b: &Val) -> bool {
         (Val::Bool(x), Val::Bool(y)) => x == y,
         (Val::Num(x), Val::Num(y)) => x == y,
         (Val::Str(x), Val::Str(y)) => x == y,
+        // Distinct kinds (date vs datetime) are never equal (enum inequality).
+        (Val::Temporal(x), Val::Temporal(y)) => x == y,
         (Val::Node(x), Val::Node(y)) => x == y,
         (Val::Edge(x), Val::Edge(y)) => x == y,
         (Val::List(x), Val::List(y)) => {
@@ -459,10 +464,15 @@ fn push_unique(out: &mut Vec<Val>, v: &Val) {
 /// across types — or for graph elements — the comparison is UNKNOWN, not a
 /// coerced bool. (Mirrors the TS executor's `orderable` guard.)
 fn orderable_pair(a: &Val, b: &Val) -> bool {
-    matches!(
-        (a, b),
-        (Val::Num(_), Val::Num(_)) | (Val::Str(_), Val::Str(_)) | (Val::Bool(_), Val::Bool(_))
-    )
+    match (a, b) {
+        (Val::Num(_), Val::Num(_)) | (Val::Str(_), Val::Str(_)) | (Val::Bool(_), Val::Bool(_)) => {
+            true
+        }
+        // Instants (date/datetime, same kind) are relationally orderable;
+        // durations and cross-kind pairs are not (`rel_cmp` → None).
+        (Val::Temporal(x), Val::Temporal(y)) => x.rel_cmp(y).is_some(),
+        _ => false,
+    }
 }
 
 /// Partial ordering for the relational operators `< > <= >=`. `None` =
@@ -473,6 +483,7 @@ fn val_cmp(a: &Val, b: &Val) -> Option<Ordering> {
         (Val::Num(x), Val::Num(y)) => x.partial_cmp(y),
         (Val::Str(x), Val::Str(y)) => Some(x.cmp(y)),
         (Val::Bool(x), Val::Bool(y)) => Some(x.cmp(y)),
+        (Val::Temporal(x), Val::Temporal(y)) => x.rel_cmp(y),
         (Val::Node(x), Val::Node(y)) => Some(x.cmp(y)),
         (Val::Edge(x), Val::Edge(y)) => Some(x.cmp(y)),
         _ => None,
@@ -487,7 +498,8 @@ fn type_rank(v: &Val) -> u8 {
         Val::Num(_) => 0,
         Val::Str(_) => 1,
         Val::Bool(_) => 2,
-        _ => 3,
+        Val::Temporal(_) => 3,
+        _ => 4,
     }
 }
 
@@ -518,6 +530,7 @@ fn cmp_total(a: &Val, b: &Val) -> Ordering {
         (Val::Num(x), Val::Num(y)) => x.partial_cmp(y).unwrap_or(Ordering::Equal),
         (Val::Str(x), Val::Str(y)) => x.cmp(y),
         (Val::Bool(x), Val::Bool(y)) => x.cmp(y),
+        (Val::Temporal(x), Val::Temporal(y)) => x.cmp_total(y),
         _ => Ordering::Equal,
     }
 }
@@ -577,6 +590,9 @@ fn val_key(v: &Val, out: &mut String) {
         Val::Str(s) => {
             let _ = write!(out, "s{s}");
         }
+        Val::Temporal(t) => {
+            let _ = write!(out, "t{}{}", t.tag(), t.format());
+        }
         Val::Node(i) => {
             let _ = write!(out, "@v{i}");
         }
@@ -620,6 +636,9 @@ fn value_key(v: &Value, out: &mut String) {
         Value::Str(s) => {
             let _ = write!(out, "s{s}");
         }
+        Value::Temporal(t) => {
+            let _ = write!(out, "t{}{}", t.tag(), t.format());
+        }
         Value::List(items) => {
             out.push('[');
             for it in items {
@@ -657,6 +676,7 @@ fn value_to_val(v: &Value) -> Val {
         Value::Bool(b) => Val::Bool(*b),
         Value::Num(n) => Val::Num(*n),
         Value::Str(s) => Val::Str(s.clone()), // shared Arc — refcount bump, no alloc
+        Value::Temporal(t) => Val::Temporal(*t),
         Value::List(items) => Val::List(items.iter().map(value_to_val).collect()),
         // Map is a query-result-only value (a serialized node/edge); it is never a
         // stored property, so it never flows back through property/label reads.
@@ -690,6 +710,7 @@ fn val_to_value(graph: &Graph, v: &Val) -> Value {
         Val::Bool(b) => Value::Bool(*b),
         Val::Num(n) => Value::Num(*n),
         Val::Str(s) => Value::Str(s.clone()), // shared Arc — refcount bump, no alloc
+        Val::Temporal(t) => Value::Temporal(*t),
         Val::List(items) => Value::List(items.iter().map(|x| val_to_value(graph, x)).collect()),
         Val::Node(i) => {
             let mut labels: Vec<Arc<str>> = graph

@@ -36,6 +36,15 @@ fn scalar_token(out: &mut String, v: &Value) {
                 out.push_str("null");
             }
         }
+        // Temporals ride as an unquoted `@<kind>:<iso>` token — the ISO form has
+        // no whitespace/newline, so it stays on one physical line, and the `@`
+        // sigil lets the parser distinguish it from a quoted string.
+        Value::Temporal(t) => {
+            out.push('@');
+            out.push_str(t.tag());
+            out.push(':');
+            out.push_str(&t.format());
+        }
         Value::Str(s) => {
             out.push('"');
             for c in s.chars() {

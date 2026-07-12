@@ -39,6 +39,13 @@ fn push_typed(out: &mut String, v: &Value) {
                 out.push('}');
             }
         }
+        Value::Temporal(t) => {
+            out.push_str("{\"@type\":\"");
+            out.push_str(t.graphson_type());
+            out.push_str("\",\"@value\":");
+            push_json_str(out, &t.format());
+            out.push('}');
+        }
         Value::List(a) => {
             out.push_str("{\"@type\":\"g:List\",\"@value\":[");
             for (i, e) in a.iter().enumerate() {

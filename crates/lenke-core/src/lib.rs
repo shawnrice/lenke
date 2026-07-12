@@ -20,6 +20,7 @@ pub mod ffi;
 pub mod ffi_error;
 pub mod graph;
 pub mod query;
+pub mod temporal;
 
 // Composable capabilities — gated so a minimal (e.g. frontend wasm) build ships
 // only what it uses. See the `[features]` table in Cargo.toml.

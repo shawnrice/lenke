@@ -58,6 +58,7 @@ fn cell_str(c: &Value, out: &mut String) {
         Value::Num(n) => {
             let _ = write!(out, "{n}");
         }
+        Value::Temporal(t) => out.push_str(&t.format()),
         Value::List(items) => {
             out.push('[');
             for (i, it) in items.iter().enumerate() {

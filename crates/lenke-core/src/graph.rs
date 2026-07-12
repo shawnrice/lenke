@@ -106,6 +106,9 @@ pub enum Value {
     Bool(bool),
     Num(f64),
     Str(Arc<str>),
+    /// An ISO temporal scalar (`DATE`/`LOCAL DATETIME`/`DURATION`). A stored
+    /// property value, like Num/Str/Bool.
+    Temporal(crate::temporal::Temporal),
     List(Vec<Self>),
     /// An ordered key→value object. NOT a stored property value (a property is
     /// only ever a scalar or list) — it appears only in query results, as the
@@ -1225,6 +1228,9 @@ fn value_kind(v: &Value) -> Option<Kind> {
         Value::Str(_) => Some(Kind::Str),
         Value::Bool(_) => Some(Kind::Bool),
         Value::Null => None, // nulls don't determine a column's type
+        // Temporals live in a Mixed (boxed-Value) column for now — no dedicated
+        // typed column (that's a later perf phase alongside the temporal index).
+        Value::Temporal(_) => Some(Kind::Mixed),
         Value::List(_) => Some(Kind::Mixed),
         Value::Map(_) => {
             unreachable!("Value::Map is a query-result value, never a stored property")

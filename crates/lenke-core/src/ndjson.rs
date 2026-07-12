@@ -25,10 +25,15 @@ fn to_value(j: &Json) -> CodeResult<Value> {
         Json::Num(n) => Value::Num(*n),
         Json::Str(s) => Value::Str(Arc::from(s.as_str())),
         Json::Arr(a) => Value::List(a.iter().map(to_value).collect::<CodeResult<Vec<_>>>()?),
-        Json::Obj(_) => return Err(CodeError::new(
-            ErrorCode::InvalidValue,
-            "ndjson: property value is a nested object, which is outside the LPG scalar/list model",
-        )),
+        // A tagged temporal `{"@date":"…"}` (single key) round-trips as a scalar;
+        // any other object is outside the LPG scalar/list model.
+        Json::Obj(pairs) => match json::temporal_from_pairs(pairs) {
+            Some(res) => Value::Temporal(res.map_err(|e| CodeError::new(ErrorCode::InvalidValue, e))?),
+            None => return Err(CodeError::new(
+                ErrorCode::InvalidValue,
+                "ndjson: property value is a nested object, which is outside the LPG scalar/list model",
+            )),
+        },
     })
 }
 
@@ -290,6 +295,7 @@ fn push_value(out: &mut String, v: &Value) {
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         Value::Num(x) => push_num(out, *x),
         Value::Str(s) => push_json_str(out, s),
+        Value::Temporal(t) => out.push_str(&t.json_tagged()),
         Value::List(a) => {
             out.push('[');
             for (i, e) in a.iter().enumerate() {
@@ -386,6 +392,26 @@ pub fn encode(g: &Graph) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn temporal_props_round_trip() {
+        // Tagged temporals decode to `Value::Temporal` and re-serialize to their
+        // canonical tagged form (the duration normalizes to total months/days).
+        let doc = "{\"type\":\"node\",\"id\":\"1\",\"labels\":[\"Event\"],\"properties\":{\
+            \"at\":{\"@datetime\":\"2020-02-29T13:45:06.5\"},\
+            \"on\":{\"@date\":\"2020-02-29\"},\
+            \"took\":{\"@duration\":\"P1Y2M3DT4H5M6S\"}}}";
+        let g = decode(doc).unwrap();
+        let enc = encode(&g);
+        assert!(enc.contains("{\"@date\":\"2020-02-29\"}"), "{enc}");
+        assert!(
+            enc.contains("{\"@datetime\":\"2020-02-29T13:45:06.5\"}"),
+            "{enc}"
+        );
+        assert!(enc.contains("{\"@duration\":\"P14M3DT14706S\"}"), "{enc}");
+        // Stable: re-decoding the output re-encodes identically.
+        assert_eq!(encode(&decode(&enc).unwrap()), enc);
+    }
 
     #[test]
     fn append_matches_decode_of_concatenation() {

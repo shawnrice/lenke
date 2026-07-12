@@ -49,6 +49,8 @@ pub enum GVal {
     Bool(bool),
     Num(f64),
     Str(Arc<str>),
+    /// An ISO temporal scalar (`DATE`/`LOCAL DATETIME`/`DURATION`).
+    Temporal(crate::temporal::Temporal),
     Vertex(u32),
     Edge(u32),
     List(Vec<Self>),
@@ -73,6 +75,7 @@ impl PartialEq for GVal {
             (Self::Bool(a), Self::Bool(b)) => a == b,
             (Self::Num(a), Self::Num(b)) => a == b, // f64: NaN != NaN, as derive would
             (Self::Str(a), Self::Str(b)) => a == b,
+            (Self::Temporal(a), Self::Temporal(b)) => a == b,
             (Self::Vertex(a), Self::Vertex(b)) => a == b,
             (Self::Edge(a), Self::Edge(b)) => a == b,
             (Self::List(a), Self::List(b)) => a == b,

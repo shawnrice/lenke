@@ -91,6 +91,7 @@ pub(crate) fn push_value(out: &mut String, v: &Value) {
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         Value::Num(x) => push_num(out, *x),
         Value::Str(s) => push_json_str(out, s),
+        Value::Temporal(t) => out.push_str(&t.json_tagged()),
         Value::List(a) => {
             out.push('[');
             for (i, e) in a.iter().enumerate() {
@@ -125,11 +126,17 @@ pub(crate) fn json_to_value(j: &Json) -> CodeResult<Value> {
                 .map(json_to_value)
                 .collect::<CodeResult<Vec<_>>>()?,
         ),
-        Json::Obj(_) => {
-            return Err(CodeError::new(
-                ErrorCode::InvalidValue,
-                "property value is a nested object, which is outside the LPG scalar/list model",
-            ))
+        // A tagged temporal `{"@date":"…"}` (single key) round-trips as a scalar.
+        Json::Obj(pairs) => {
+            match crate::json::temporal_from_pairs(pairs) {
+                Some(res) => {
+                    Value::Temporal(res.map_err(|e| CodeError::new(ErrorCode::InvalidValue, e))?)
+                }
+                None => return Err(CodeError::new(
+                    ErrorCode::InvalidValue,
+                    "property value is a nested object, which is outside the LPG scalar/list model",
+                )),
+            }
         }
     })
 }

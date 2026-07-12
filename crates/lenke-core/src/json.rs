@@ -53,6 +53,17 @@ impl Json {
     }
 }
 
+/// Recognize a single-key tagged-temporal object `{"@<kind>":"<iso>"}` (the
+/// wire form emitted by the JSON-family codecs). `None` if `pairs` isn't that
+/// shape — the caller then treats the object as outside the LPG value model;
+/// `Some(Err)` if the tag matched but the ISO string is malformed.
+pub(crate) fn temporal_from_pairs(
+    pairs: &[(String, Json)],
+) -> Option<Result<crate::temporal::Temporal, String>> {
+    let [(k, v)] = pairs else { return None };
+    crate::temporal::Temporal::from_json_tag(k, v.as_str()?)
+}
+
 const MAX_DEPTH: usize = 128;
 
 /// Parse a complete JSON document. `Err(())` on any malformed input (the callers
