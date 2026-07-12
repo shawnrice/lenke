@@ -220,14 +220,20 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
   test('duration_between returns the exact span, byte-identical', () => {
     const cases: [string, string][] = [
       // Two dates → whole days (96 days from Jan 15 to Apr 20, 2020).
-      [`RETURN duration_between(DATE '2020-01-15', DATE '2020-04-20') AS d`, `[{"d":{"@duration":"P96D"}}]`],
+      [
+        `RETURN duration_between(DATE '2020-01-15', DATE '2020-04-20') AS d`,
+        `[{"d":{"@duration":"P96D"}}]`,
+      ],
       // Two datetimes → seconds (1h 1m 1s = 3661s), no month/day rollup.
       [
         `RETURN duration_between(DATETIME '2020-01-01T00:00:00', DATETIME '2020-01-01T01:01:01') AS d`,
         `[{"d":{"@duration":"PT3661S"}}]`,
       ],
       // Cross-kind → UNKNOWN (null).
-      [`RETURN duration_between(DATE '2020-01-01', DATETIME '2020-01-01T00:00:00') AS d`, `[{"d":null}]`],
+      [
+        `RETURN duration_between(DATE '2020-01-01', DATETIME '2020-01-01T00:00:00') AS d`,
+        `[{"d":null}]`,
+      ],
     ];
 
     for (const [q, want] of cases) {
@@ -245,4 +251,28 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     expect(ts).toBe(native);
     expect(ts).toBe(`[{"d":{"@date":"2020-06-01"}}]`);
   });
+
+  test('temporal arithmetic is byte-identical', () => {
+    const cases: [string, string][] = [
+      [`RETURN DATE '2020-01-31' + DURATION 'P1M' AS d`, `[{"d":{"@date":"2020-02-29"}}]`],
+      [`RETURN DATE '2021-01-31' + DURATION 'P1M' AS d`, `[{"d":{"@date":"2021-02-28"}}]`],
+      [`RETURN DATE '2020-01-15' + DURATION 'P2M3D' AS d`, `[{"d":{"@date":"2020-03-18"}}]`],
+      [
+        `RETURN DATETIME '2020-01-01T10:00:00' + DURATION 'PT1H30M' AS d`,
+        `[{"d":{"@datetime":"2020-01-01T11:30:00"}}]`,
+      ],
+      [`RETURN DATE '2020-03-18' - DURATION 'P2M3D' AS d`, `[{"d":{"@date":"2020-01-15"}}]`],
+      [`RETURN DATE '2020-04-20' - DATE '2020-01-15' AS d`, `[{"d":{"@duration":"P96D"}}]`],
+      [`RETURN DURATION 'P1M' + DURATION 'P2D' AS d`, `[{"d":{"@duration":"P1M2D"}}]`],
+      [`RETURN DURATION 'P1M2DT3S' * 3 AS d`, `[{"d":{"@duration":"P3M6DT9S"}}]`],
+    ];
+
+    for (const [q, want] of cases) {
+      const [ts, native] = both(q);
+
+      expect(ts, q).toBe(native);
+      expect(ts, q).toBe(want);
+    }
+  });
+
 });

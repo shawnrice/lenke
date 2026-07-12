@@ -70,14 +70,16 @@ describe('GQL: temporal constructor functions', () => {
     expect(query(g, `RETURN date('nope') AS d`)).toEqual([{ d: null }]);
     // date(datetime) truncates to the date part.
     expect(
-      (query(g, `RETURN date(local_datetime('2020-02-29T13:45:00')) AS d`)[0].d as LocalDate).toISOString(),
+      (
+        query(g, `RETURN date(local_datetime('2020-02-29T13:45:00')) AS d`)[0].d as LocalDate
+      ).toISOString(),
     ).toBe('2020-02-29');
   });
 
   test('the function form converts a runtime string (not just a literal)', () => {
-    expect(query(new Graph(), `FOR s IN ['2019-03-15'] RETURN date(s) < DATE '2020-01-01' AS x`)).toEqual(
-      [{ x: true }],
-    );
+    expect(
+      query(new Graph(), `FOR s IN ['2019-03-15'] RETURN date(s) < DATE '2020-01-01' AS x`),
+    ).toEqual([{ x: true }]);
   });
 });
 
@@ -99,5 +101,20 @@ describe('GQL: duration_between', () => {
     expect(
       query(g, `RETURN duration_between(DATE '2020-01-01', DATETIME '2020-01-01T00:00:00') AS d`),
     ).toEqual([{ d: null }]);
+  });
+});
+
+describe('GQL: temporal arithmetic', () => {
+  test('month-add clamps; datetime+time; instant−instant; duration ops', () => {
+    const g = new Graph();
+    const one = (q: string): unknown => query(g, q)[0].d;
+    expect(String(one(`RETURN DATE '2020-01-31' + DURATION 'P1M' AS d`))).toBe('2020-02-29');
+    expect(String(one(`RETURN DATE '2021-01-31' + DURATION 'P1M' AS d`))).toBe('2021-02-28');
+    expect(String(one(`RETURN DATETIME '2020-01-01T10:00:00' + DURATION 'PT1H30M' AS d`))).toBe(
+      '2020-01-01T11:30:00',
+    );
+    expect(String(one(`RETURN DATE '2020-03-18' - DURATION 'P2M3D' AS d`))).toBe('2020-01-15');
+    expect(String(one(`RETURN DATE '2020-04-20' - DATE '2020-01-15' AS d`))).toBe('P96D');
+    expect(String(one(`RETURN DURATION 'P1M2DT3S' * 3 AS d`))).toBe('P3M6DT9S');
   });
 });

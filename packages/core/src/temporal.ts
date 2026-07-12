@@ -567,3 +567,164 @@ export function temporalRelCmp(a: Temporal, b: Temporal): number | null {
 
   return null;
 }
+
+// --- calendar arithmetic -----------------------------------------------------
+
+const isLeap = (y: number): boolean => (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+
+/** Days in month `m` (1..=12) of proleptic-Gregorian year `y`. */
+const daysInMonth = (y: number, m: number): number => {
+  if (m === 2) {
+    return isLeap(y) ? 29 : 28;
+  }
+
+  return m === 4 || m === 6 || m === 9 || m === 11 ? 30 : 31;
+};
+
+/**
+ * Add `months` (calendar), CLAMPING the day to the new month's length
+ * (`Jan 31 + 1 month → Feb 28/29`), then `extraDays` as plain days.
+ */
+const addCalendar = (date: LocalDate, months: number, extraDays: number): LocalDate => {
+  const [y, m, d] = civilFromDays(date.days);
+  const total = y * 12 + (m - 1) + months;
+  const ny = Math.floor(total / 12);
+  const nm = (((total % 12) + 12) % 12) + 1;
+  const nd = Math.min(d, daysInMonth(ny, nm));
+
+  return new LocalDate(daysFromCivil(ny, nm, nd) + extraDays);
+};
+
+/** Negate the whole span, keeping `nanos` in `[0, 1e9)`. */
+const negateDuration = (d: Duration): Duration => {
+  const secs = d.nanos === 0 ? -d.secs : -d.secs - 1;
+  const nanos = d.nanos === 0 ? 0 : 1_000_000_000 - d.nanos;
+
+  return new Duration(-d.months, -d.days, secs, nanos);
+};
+
+/** Component-wise sum of two nominal durations (nanos carry into secs). */
+const addDurations = (a: Duration, b: Duration): Duration => {
+  let secs = a.secs + b.secs;
+  let nanos = a.nanos + b.nanos;
+
+  if (nanos >= 1_000_000_000) {
+    nanos -= 1_000_000_000;
+    secs += 1;
+  }
+
+  return new Duration(a.months + b.months, a.days + b.days, secs, nanos);
+};
+
+/** Scale every component by an integer factor (nanos carry into secs). */
+const scaleDuration = (d: Duration, n: number): Duration => {
+  const totalNanos = d.nanos * n;
+  const carry = Math.floor(totalNanos / 1_000_000_000);
+  const nanos = ((totalNanos % 1_000_000_000) + 1_000_000_000) % 1_000_000_000;
+
+  return new Duration(d.months * n, d.days * n, d.secs * n + carry, nanos);
+};
+
+/** `t + duration` for a date/datetime (months clamped, then days, then time). */
+const addDurationTo = (t: Temporal, d: Duration): Temporal | null => {
+  if (t instanceof LocalDate) {
+    return addCalendar(t, d.months, d.days);
+  }
+
+  if (t instanceof LocalDateTime) {
+    const days0 = Math.floor(t.secs / 86_400);
+    const tod = ((t.secs % 86_400) + 86_400) % 86_400;
+    const date = addCalendar(new LocalDate(days0), d.months, d.days);
+    let secs = date.days * 86_400 + tod + d.secs;
+    let nanos = t.nanos + d.nanos;
+
+    if (nanos >= 1_000_000_000) {
+      nanos -= 1_000_000_000;
+      secs += 1;
+    }
+
+    return new LocalDateTime(secs, nanos);
+  }
+
+  return null;
+};
+
+/**
+ * `duration_between(a, b)` = the exact span b − a (a measurement, so fixed units
+ * only): whole days for two dates, secs+nanos for two datetimes; else null.
+ */
+export function durationBetween(a: Temporal, b: Temporal): Temporal | null {
+  if (a instanceof LocalDate && b instanceof LocalDate) {
+    return new Duration(0, b.days - a.days, 0, 0);
+  }
+
+  if (a instanceof LocalDateTime && b instanceof LocalDateTime) {
+    let secs = b.secs - a.secs;
+    let nanos = b.nanos - a.nanos;
+
+    if (nanos < 0) {
+      nanos += 1_000_000_000;
+      secs -= 1;
+    }
+
+    return new Duration(0, 0, secs, nanos);
+  }
+
+  return null;
+}
+
+/**
+ * Temporal `+`/`-`/`*` when either operand is temporal (mirrors the Rust
+ * `temporal_arith`): instant ± a nominal duration anchors it (calendar months
+ * clamped, then days, then time); instant − instant is the exact span; duration
+ * ± duration is component-wise; duration × integer scales. Else null.
+ */
+export function temporalArith(op: string, l: unknown, r: unknown): unknown {
+  if (l === null || l === undefined || r === null || r === undefined) {
+    return null;
+  }
+
+  if (op === '+') {
+    if (l instanceof Duration && r instanceof Duration) {
+      return addDurations(l, r);
+    }
+
+    if (isTemporal(l) && r instanceof Duration) {
+      return addDurationTo(l, r);
+    }
+
+    if (l instanceof Duration && isTemporal(r)) {
+      return addDurationTo(r, l);
+    }
+
+    return null;
+  }
+
+  if (op === '-') {
+    if (l instanceof Duration && r instanceof Duration) {
+      return addDurations(l, negateDuration(r));
+    }
+
+    if (isTemporal(l) && r instanceof Duration) {
+      return addDurationTo(l, negateDuration(r));
+    }
+
+    if (isTemporal(l) && isTemporal(r)) {
+      return durationBetween(r, l); // l − r = span from r to l
+    }
+
+    return null;
+  }
+
+  if (op === '*') {
+    if (l instanceof Duration && typeof r === 'number') {
+      return scaleDuration(l, Math.trunc(r));
+    }
+
+    if (typeof l === 'number' && r instanceof Duration) {
+      return scaleDuration(r, Math.trunc(l));
+    }
+  }
+
+  return null;
+}

@@ -846,9 +846,14 @@ fn eval(env: &Env, expr: &CExpr) -> Val {
             None => Val::Null,
         },
         CExpr::Arith { op, left, right } => {
-            let lv = arith_num(&eval(env, left), env.ctx);
-            let rv = arith_num(&eval(env, right), env.ctx);
-            match (lv, rv) {
+            let lv = eval(env, left);
+            let rv = eval(env, right);
+            if matches!(lv, Val::Temporal(_)) || matches!(rv, Val::Temporal(_)) {
+                return temporal_arith(*op, &lv, &rv);
+            }
+            let a = arith_num(&lv, env.ctx);
+            let b = arith_num(&rv, env.ctx);
+            match (a, b) {
                 (Some(a), Some(b)) => {
                     if matches!(op, ArithOp::Div | ArithOp::Mod) && b == 0.0 {
                         env.ctx.set_fault(FAULT_DIV_ZERO);
@@ -1032,25 +1037,30 @@ fn run(env: &Env, prog: &Program) -> Val {
                     st.push(Val::List(items));
                 }
                 Op::Arith(op) => {
-                    let b = arith_num(&st.pop().unwrap(), env.ctx);
-                    let a = arith_num(&st.pop().unwrap(), env.ctx);
-                    st.push(match (a, b) {
-                        (Some(a), Some(b)) => {
-                            if matches!(op, ArithOp::Div | ArithOp::Mod) && b == 0.0 {
-                                env.ctx.set_fault(FAULT_DIV_ZERO);
-                                Val::Null
-                            } else {
-                                Val::Num(match op {
-                                    ArithOp::Add => a + b,
-                                    ArithOp::Sub => a - b,
-                                    ArithOp::Mul => a * b,
-                                    ArithOp::Div => a / b,
-                                    ArithOp::Mod => a % b,
-                                })
+                    let bv = st.pop().unwrap();
+                    let av = st.pop().unwrap();
+                    let out = if matches!(av, Val::Temporal(_)) || matches!(bv, Val::Temporal(_)) {
+                        temporal_arith(*op, &av, &bv)
+                    } else {
+                        match (arith_num(&av, env.ctx), arith_num(&bv, env.ctx)) {
+                            (Some(a), Some(b)) => {
+                                if matches!(op, ArithOp::Div | ArithOp::Mod) && b == 0.0 {
+                                    env.ctx.set_fault(FAULT_DIV_ZERO);
+                                    Val::Null
+                                } else {
+                                    Val::Num(match op {
+                                        ArithOp::Add => a + b,
+                                        ArithOp::Sub => a - b,
+                                        ArithOp::Mul => a * b,
+                                        ArithOp::Div => a / b,
+                                        ArithOp::Mod => a % b,
+                                    })
+                                }
                             }
+                            _ => Val::Null,
                         }
-                        _ => Val::Null,
-                    });
+                    };
+                    st.push(out);
                 }
                 Op::Compare(op) => {
                     let rv = st.pop().unwrap();
@@ -1699,6 +1709,43 @@ fn duration_between(a: &crate::temporal::Temporal, b: &crate::temporal::Temporal
                 secs,
                 nanos: nanos as u32,
             }))
+        }
+        _ => Val::Null,
+    }
+}
+
+/// Temporal arithmetic for `+`/`-`/`*` when either operand is temporal: an
+/// instant ± a (nominal) duration anchors the duration to the concrete date
+/// (calendar months clamped, then days, then time); instant − instant is the
+/// exact span; duration ± duration is component-wise; duration × integer scales.
+/// Any undefined combination → null.
+fn temporal_arith(op: super::ast::ArithOp, lv: &Val, rv: &Val) -> Val {
+    use super::ast::ArithOp;
+    use crate::temporal::Temporal as T;
+    if is_nullish(lv) || is_nullish(rv) {
+        return Val::Null;
+    }
+    match (op, lv, rv) {
+        (ArithOp::Add, Val::Temporal(T::Duration(a)), Val::Temporal(T::Duration(b))) => {
+            Val::Temporal(T::Duration(a.add(b)))
+        }
+        (ArithOp::Sub, Val::Temporal(T::Duration(a)), Val::Temporal(T::Duration(b))) => {
+            Val::Temporal(T::Duration(a.add(&b.negate())))
+        }
+        // instant ± duration (either order for +).
+        (ArithOp::Add, Val::Temporal(inst), Val::Temporal(T::Duration(d)))
+        | (ArithOp::Add, Val::Temporal(T::Duration(d)), Val::Temporal(inst)) => {
+            inst.add_duration(d).map_or(Val::Null, Val::Temporal)
+        }
+        (ArithOp::Sub, Val::Temporal(inst), Val::Temporal(T::Duration(d))) => inst
+            .add_duration(&d.negate())
+            .map_or(Val::Null, Val::Temporal),
+        // instant − instant → the exact span from `b` to `a` (a − b).
+        (ArithOp::Sub, Val::Temporal(a), Val::Temporal(b)) => duration_between(b, a),
+        // duration × integer (either order; a fractional factor truncates).
+        (ArithOp::Mul, Val::Temporal(T::Duration(d)), Val::Num(n))
+        | (ArithOp::Mul, Val::Num(n), Val::Temporal(T::Duration(d))) => {
+            Val::Temporal(T::Duration(d.scale(*n as i64)))
         }
         _ => Val::Null,
     }

@@ -2851,8 +2851,17 @@ fn temporal_duration_between_is_exact() {
     let mut g = modern();
     // Two dates → whole days.
     assert_eq!(
-        rows(&mut g, "RETURN duration_between(DATE '2020-01-15', DATE '2020-04-20') AS d")
-            .into_iter().flatten().map(|v| match v { Value::Temporal(t) => t.format(), _ => "?".into() }).collect::<Vec<_>>(),
+        rows(
+            &mut g,
+            "RETURN duration_between(DATE '2020-01-15', DATE '2020-04-20') AS d"
+        )
+        .into_iter()
+        .flatten()
+        .map(|v| match v {
+            Value::Temporal(t) => t.format(),
+            _ => "?".into(),
+        })
+        .collect::<Vec<_>>(),
         vec!["P96D"]
     );
     // Two datetimes → seconds.
@@ -2863,7 +2872,84 @@ fn temporal_duration_between_is_exact() {
     );
     // Cross-kind → null.
     assert_eq!(
-        rows(&mut g, "RETURN duration_between(DATE '2020-01-01', DATETIME '2020-01-01T00:00:00') AS d"),
+        rows(
+            &mut g,
+            "RETURN duration_between(DATE '2020-01-01', DATETIME '2020-01-01T00:00:00') AS d"
+        ),
         vec![vec![Value::Null]]
+    );
+}
+
+#[test]
+fn temporal_arithmetic() {
+    let mut g = modern();
+    let fmt = |r: Vec<Vec<Value>>| -> String {
+        match r.into_iter().flatten().next() {
+            Some(Value::Temporal(t)) => t.format(),
+            other => format!("{other:?}"),
+        }
+    };
+    // month-add clamps to the new month's length (2020 is a leap year → Feb 29).
+    assert_eq!(
+        fmt(rows(
+            &mut g,
+            "RETURN DATE '2020-01-31' + DURATION 'P1M' AS d"
+        )),
+        "2020-02-29"
+    );
+    assert_eq!(
+        fmt(rows(
+            &mut g,
+            "RETURN DATE '2021-01-31' + DURATION 'P1M' AS d"
+        )),
+        "2021-02-28"
+    );
+    assert_eq!(
+        fmt(rows(
+            &mut g,
+            "RETURN DATE '2020-01-15' + DURATION 'P2M3D' AS d"
+        )),
+        "2020-03-18"
+    );
+    // datetime + time-duration.
+    assert_eq!(
+        fmt(rows(
+            &mut g,
+            "RETURN DATETIME '2020-01-01T10:00:00' + DURATION 'PT1H30M' AS d"
+        )),
+        "2020-01-01T11:30:00"
+    );
+    // subtraction is the inverse of addition.
+    assert_eq!(
+        fmt(rows(
+            &mut g,
+            "RETURN DATE '2020-03-18' - DURATION 'P2M3D' AS d"
+        )),
+        "2020-01-15"
+    );
+    // instant − instant → the exact span.
+    assert_eq!(
+        fmt(rows(
+            &mut g,
+            "RETURN DATE '2020-04-20' - DATE '2020-01-15' AS d"
+        )),
+        "P96D"
+    );
+    // duration ± duration (component-wise) and duration × integer.
+    assert_eq!(
+        fmt(rows(&mut g, "RETURN DURATION 'P1M' + DURATION 'P2D' AS d")),
+        "P1M2D"
+    );
+    assert_eq!(
+        fmt(rows(&mut g, "RETURN DURATION 'P1M2DT3S' * 3 AS d")),
+        "P3M6DT9S"
+    );
+    // add then subtract the same duration round-trips (clamp is only on the add side).
+    assert_eq!(
+        fmt(rows(
+            &mut g,
+            "RETURN DATE '2020-01-15' + DURATION 'P1M' - DURATION 'P1M' AS d"
+        )),
+        "2020-01-15"
     );
 }

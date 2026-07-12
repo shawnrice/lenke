@@ -1,9 +1,10 @@
 import type { Edge, Graph, IndexableValue, RangeBound, Vertex } from '@lenke/core';
 import {
-  Duration,
+  durationBetween,
   isTemporal,
   LocalDate,
   LocalDateTime,
+  temporalArith,
   temporalCmpTotal,
   temporalParse,
   temporalRelCmp,
@@ -900,31 +901,6 @@ const temporalCtor = (kind: 'date' | 'datetime' | 'duration', v: unknown): unkno
   return null;
 };
 
-/**
- * `duration_between(a, b)` = the exact span b − a (a measurement between two
- * pinned points): whole days for two dates, seconds+nanos for two datetimes.
- * Cross-kind pairs / non-temporals → null. Mirrors the Rust `duration_between`.
- */
-const durationBetween = (a: unknown, b: unknown): unknown => {
-  if (a instanceof LocalDate && b instanceof LocalDate) {
-    return new Duration(0, b.days - a.days, 0, 0);
-  }
-
-  if (a instanceof LocalDateTime && b instanceof LocalDateTime) {
-    let secs = b.secs - a.secs;
-    let nanos = b.nanos - a.nanos;
-
-    if (nanos < 0) {
-      nanos += 1_000_000_000;
-      secs -= 1;
-    }
-
-    return new Duration(0, 0, secs, nanos);
-  }
-
-  return null;
-};
-
 const callTemporalFn = (name: string, args: readonly unknown[]): unknown => {
   const kind = TEMPORAL_CTOR[name];
 
@@ -932,7 +908,13 @@ const callTemporalFn = (name: string, args: readonly unknown[]): unknown => {
     return temporalCtor(kind, args[0]);
   }
 
-  return name === 'duration_between' ? durationBetween(args[0], args[1]) : UNHANDLED;
+  if (name === 'duration_between') {
+    const [x, y] = args;
+
+    return isTemporal(x) && isTemporal(y) ? durationBetween(x, y) : null;
+  }
+
+  return UNHANDLED;
 };
 
 const callExtendedScalar = (name: string, args: readonly unknown[]): unknown => {
@@ -1021,8 +1003,17 @@ const compileExpr = (expr: Expr): CompiledExpr => {
       const fn = ARITH[op];
 
       return (env) => {
-        const lv = numOf(l(env));
-        const rv = numOf(r(env));
+        const lval = l(env);
+        const rval = r(env);
+
+        // Temporal arithmetic (instant ± duration, instant − instant, duration
+        // ± duration, duration × int) when either operand is temporal.
+        if (isTemporal(lval) || isTemporal(rval)) {
+          return temporalArith(op, lval, rval);
+        }
+
+        const lv = numOf(lval);
+        const rv = numOf(rval);
 
         if (lv === null || rv === null) {
           return null;

@@ -412,6 +412,118 @@ impl Temporal {
     }
 }
 
+// --- calendar arithmetic -----------------------------------------------------
+
+const NANOS_PER_SEC: i64 = 1_000_000_000;
+
+fn is_leap(y: i64) -> bool {
+    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+}
+
+/// Days in month `m` (1..=12) of proleptic-Gregorian year `y`.
+fn days_in_month(y: i64, m: u32) -> u32 {
+    match m {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if is_leap(y) {
+                29
+            } else {
+                28
+            }
+        }
+        _ => 30,
+    }
+}
+
+impl Date {
+    /// Add `months` (calendar), **clamping the day to the new month's length**
+    /// (`Jan 31 + 1 month → Feb 28/29`), then `extra_days` as plain days.
+    fn add_calendar(&self, months: i64, extra_days: i64) -> Self {
+        let (y, m, d) = civil_from_days(self.days as i64);
+        let total = y * 12 + (m as i64 - 1) + months;
+        let ny = total.div_euclid(12);
+        let nm = (total.rem_euclid(12) + 1) as u32;
+        let nd = d.min(days_in_month(ny, nm));
+        let base = days_from_civil(ny, i64::from(nm), i64::from(nd));
+        Self {
+            days: (base + extra_days) as i32,
+        }
+    }
+}
+
+impl Duration {
+    /// Negate the whole span, keeping `nanos` in `[0, 1e9)`.
+    pub fn negate(&self) -> Self {
+        let (secs, nanos) = if self.nanos == 0 {
+            (-self.secs, 0)
+        } else {
+            (-self.secs - 1, 1_000_000_000 - self.nanos)
+        };
+        Self {
+            months: -self.months,
+            days: -self.days,
+            secs,
+            nanos,
+        }
+    }
+
+    /// Component-wise sum of two durations (nanos carry into secs). Both are
+    /// nominal — no anchoring — so months/days/secs simply add.
+    pub fn add(&self, o: &Self) -> Self {
+        let mut secs = self.secs + o.secs;
+        let mut nanos = i64::from(self.nanos) + i64::from(o.nanos);
+        if nanos >= NANOS_PER_SEC {
+            nanos -= NANOS_PER_SEC;
+            secs += 1;
+        }
+        Self {
+            months: self.months + o.months,
+            days: self.days + o.days,
+            secs,
+            nanos: nanos as u32,
+        }
+    }
+
+    /// Scale every component by an integer factor (nanos carry into secs).
+    pub fn scale(&self, n: i64) -> Self {
+        let total_nanos = i64::from(self.nanos) * n;
+        Self {
+            months: self.months * n,
+            days: self.days * n,
+            secs: self.secs * n + total_nanos.div_euclid(NANOS_PER_SEC),
+            nanos: total_nanos.rem_euclid(NANOS_PER_SEC) as u32,
+        }
+    }
+}
+
+impl Temporal {
+    /// `self + duration` for a date/datetime: apply calendar months (clamped),
+    /// then days, then the time part (a `DATE` ignores the sub-day part — it has
+    /// no time). `None` if `self` is a duration.
+    pub fn add_duration(&self, d: &Duration) -> Option<Self> {
+        match self {
+            Self::Date(date) => Some(Self::Date(date.add_calendar(d.months, d.days))),
+            Self::DateTime(dt) => {
+                let days0 = dt.secs.div_euclid(SECS_PER_DAY);
+                let tod = dt.secs.rem_euclid(SECS_PER_DAY);
+                let date = Date { days: days0 as i32 }.add_calendar(d.months, d.days);
+                let mut secs = date.days as i64 * SECS_PER_DAY + tod + d.secs;
+                let mut nanos = i64::from(dt.nanos) + i64::from(d.nanos);
+                if nanos >= NANOS_PER_SEC {
+                    nanos -= NANOS_PER_SEC;
+                    secs += 1;
+                }
+                Some(Self::DateTime(DateTime {
+                    secs,
+                    nanos: nanos as u32,
+                }))
+            }
+            Self::Duration(_) => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -27,6 +27,8 @@ export {
   temporalParse,
   temporalCmpTotal,
   temporalRelCmp,
+  temporalArith,
+  durationBetween,
   graphsonType,
   graphsonTag,
   fromTaggedJson,
