@@ -51,6 +51,25 @@ describe('hardening: a prototype-key param reference throws, never reads Object.
   });
 });
 
+describe('hardening: a bigint param is rejected, not silently mishandled', () => {
+  test('a bigint $param throws InvalidValue; a safe-range number still works', () => {
+    const g = new Graph();
+    g.addVertex({ id: 'a', labels: ['N'], properties: { amt: 100 } });
+
+    // The numeric model is float64 — a bigint can't bind without precision loss
+    // above 2^53, so it is rejected the same way the native FFI boundary rejects
+    // it. Previously a bigint param slipped into the comparator and `> $n`
+    // silently dropped every row (round-6 R-BIGINT-MODEL).
+    const err = thrown(() => query(g, 'MATCH (n:N) WHERE n.amt > $n RETURN n.amt', { n: 50n }));
+    expect(hasErrorCode(err, ErrorCode.InvalidValue)).toBe(true);
+
+    // the same query with a plain number binds and filters correctly
+    expect(query(g, 'MATCH (n:N) WHERE n.amt > $n RETURN n.amt AS a', { n: 50 })).toEqual([
+      { a: 100 },
+    ]);
+  });
+});
+
 describe('hardening: SET/REMOVE maintain the property index', () => {
   test('SET reindexes, so an indexed seek finds the new value', () => {
     const plain = createTestSocialGraph();

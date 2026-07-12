@@ -8,6 +8,7 @@ import {
   temporalCmpTotal,
   temporalParse,
   temporalRelCmp,
+  validatePropertyValue,
 } from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 import { filter, flatMap, map, skip, take, toArray } from '@lenke/fp';
@@ -3167,6 +3168,14 @@ export const compile = <R extends Row = Row>(query: Query): Plan<R> => {
           code: ErrorCode.MissingParameter,
           details: { param: name },
         });
+      }
+
+      // A bigint param is rejected here for the same reason the native FFI
+      // boundary rejects it: the numeric model is float64, so a bigint can't
+      // bind without silent precision loss above 2^53. Keeps both engines and
+      // the in-process store on one rule — pass Number(x) or a string.
+      if (Object.hasOwn(params, name)) {
+        validatePropertyValue(params[name]);
       }
     }
 

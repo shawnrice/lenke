@@ -43,6 +43,35 @@ describe('serialization error codes', () => {
     expect(hasErrorCode(caught, ErrorCode.InvalidValue)).toBe(true);
   });
 
+  test('a bigint is rejected (not silently coerced to a lossy number)', () => {
+    // The numeric model is float64; a bigint would lose precision above 2^53, so
+    // every value boundary rejects it rather than downgrade it. NaN/±Infinity are
+    // still coerced to null (JS non-values), unchanged.
+    const caught = (fn: () => void): unknown => {
+      try {
+        fn();
+      } catch (e) {
+        return e;
+      }
+      return undefined;
+    };
+
+    expect(
+      hasErrorCode(
+        caught(() => normalizeValue(9007199254740993n)),
+        ErrorCode.InvalidValue,
+      ),
+    ).toBe(true);
+    expect(
+      hasErrorCode(
+        caught(() => normalizeValue([1, [2, 3n]])),
+        ErrorCode.InvalidValue,
+      ),
+    ).toBe(true);
+    expect(normalizeValue(Number.NaN)).toBeNull();
+    expect(normalizeValue(Infinity)).toBeNull();
+  });
+
   test('a temporal instance and a TC39 Temporal.Plain* both normalize to a temporal', () => {
     const d = parseDate('2020-01-01');
     expect(normalizeValue(d)).toBe(d);

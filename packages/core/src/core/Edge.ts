@@ -2,7 +2,7 @@ import { EmitterEvent } from '@lenke/emitter';
 import { rando, sortedByKey } from '@lenke/utils';
 
 import type { Graph } from './Graph.js';
-import { validatePropertyKey } from './validate.js';
+import { validatePropertyKey, validatePropertyValue } from './validate.js';
 import { Vertex } from './Vertex.js';
 
 export type AddEdgeParams = {
@@ -126,6 +126,7 @@ export class Edge {
 
   setProperty(key: string, value: unknown): void {
     validatePropertyKey(key);
+    validatePropertyValue(value);
     const previousValue = this.properties[key]; // read before the write; undefined if absent
     const event = this.#graph?.emit(
       new EmitterEvent('@graph/EdgePropertyChanged', {
@@ -146,6 +147,10 @@ export class Edge {
   }
 
   setProperties(props: Record<string, unknown>): void {
+    for (const key of Object.keys(props)) {
+      validatePropertyValue(props[key]);
+    }
+
     const event = this.#graph?.emit(
       new EmitterEvent('@graph/EdgePropertiesChanged', {
         edge: this,

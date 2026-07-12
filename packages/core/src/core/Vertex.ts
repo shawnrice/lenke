@@ -3,7 +3,7 @@ import { rando, sortedByKey } from '@lenke/utils';
 
 import type { Edge } from './Edge.js';
 import type { Graph } from './Graph.js';
-import { validatePropertyKey } from './validate.js';
+import { validatePropertyKey, validatePropertyValue } from './validate.js';
 
 export type VertexParams = {
   id?: string;
@@ -106,6 +106,7 @@ export class Vertex {
 
   setProperty(key: string, value: unknown): void {
     validatePropertyKey(key);
+    validatePropertyValue(value);
     const previousValue = this.properties[key]; // read before the write; undefined if absent
     const event = this.#graph?.emit(
       new EmitterEvent('@graph/VertexPropertyChanged', {
@@ -126,6 +127,10 @@ export class Vertex {
   }
 
   setProperties(props: Record<string, unknown>): void {
+    for (const key of Object.keys(props)) {
+      validatePropertyValue(props[key]);
+    }
+
     const event = this.#graph?.emit(
       new EmitterEvent('@graph/VertexPropertiesChanged', {
         vertex: this,

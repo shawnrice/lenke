@@ -18,7 +18,11 @@ export type PropertyBag = Readonly<Record<string, PropertyValue>>;
  * one place lossiness is defined:
  *   - `undefined`            → `null`
  *   - `NaN` / `±Infinity`    → `null` (not representable across formats)
- *   - `bigint`               → `number` (may lose precision above 2^53; core is float64)
+ *   - `bigint`               → throw `E_INVALID_VALUE` (the numeric model is
+ *                              float64; a bigint would lose precision above 2^53,
+ *                              so it is rejected everywhere rather than silently
+ *                              downgraded — pass `Number(x)` or a string). Matches
+ *                              the in-process store + FFI-param boundary.
  *   - arrays                 → each element normalized recursively
  *   - objects / Date / Map / Set / functions / symbols → throw (not LPG scalars)
  *
@@ -46,7 +50,11 @@ const normalizeAt = (value: unknown, depth: number): PropertyValue => {
   }
 
   if (typeof value === 'bigint') {
-    return Number(value);
+    throw new LenkeError(
+      `a bigint value is not supported: the numeric model is float64 — ` +
+        `pass Number(${value}n) for a safe-range value, or a string`,
+      { code: ErrorCode.InvalidValue },
+    );
   }
 
   // A lenke temporal instance passes through; a TC39 `Temporal.PlainDate`/

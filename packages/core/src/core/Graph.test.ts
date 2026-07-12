@@ -269,6 +269,32 @@ describe('Graph Tests', () => {
       const v = g.addVertex({ labels: ['N'], properties: {} });
       expect(() => g.addLabelToVertex('a::b', v)).toThrow(/::/);
     });
+
+    // The numeric model is float64 (the Rust core has no bigint; every codec +
+    // the FFI param boundary already reject it). A raw JS bigint used to be
+    // stored as-is in the pure-JS graph, then handled inconsistently downstream
+    // (a `WHERE bigint > n` silently dropped every row). Reject it at the gate.
+    test('a bigint property value is rejected with InvalidValue (every write path)', () => {
+      const g = createTestTinkerGraph();
+      const v = g.addVertex({ labels: ['N'], properties: { n: 1 } });
+      const a = g.addVertex({ labels: ['A'], properties: {} });
+
+      // message points at the escape hatch, code is E_INVALID_VALUE
+      expect(() => g.addVertex({ labels: ['N'], properties: { big: 1n } })).toThrow(/Number\(/);
+      for (const attempt of [
+        () => g.addVertex({ labels: ['N'], properties: { big: 1n } }),
+        () => g.addVertex({ labels: ['N'], properties: { list: [1, 2n] } }), // hidden in a list
+        () => v.setProperty('big', 9007199254740993n),
+        () => v.setProperties({ big: 5n }),
+        () => g.addEdge({ from: a, to: v, labels: ['E'], properties: { w: 10n } }),
+      ]) {
+        expect(hasErrorCode(thrownBy(attempt), ErrorCode.InvalidValue)).toBe(true);
+      }
+
+      // the escape hatch — an explicit Number() — stores fine
+      const ok = g.addVertex({ labels: ['N'], properties: { big: Number(123n) } });
+      expect(ok.properties.big).toBe(123);
+    });
   });
 
   describe('dogfood round-3 ergonomics', () => {

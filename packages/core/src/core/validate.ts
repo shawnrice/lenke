@@ -31,7 +31,37 @@ export const validatePropertyKey = (key: string): void => {
   }
 };
 
-/** Validate every label and property key of an element about to enter the graph. */
+/**
+ * A well-formed **property value**. The LPG numeric type is float64 (the Rust
+ * core has no bigint; every codec + the FFI param boundary would coerce a bigint
+ * to a number, losing precision above 2^53). So a JS `bigint` is rejected at the
+ * mutation boundary rather than silently downgraded — pass `Number(x)` for a
+ * safe-range value, or a string. Recurses into list elements so a bigint can't
+ * hide inside an array. (`NaN`/`Infinity`/`undefined` are *coerced* to null by
+ * the codec layer, not rejected here — those are JS non-values with no exact
+ * representation; a bigint is a deliberate, present value whose exactness matters.)
+ *
+ * The param + FFI boundaries already reject bigint with the same code; this
+ * closes the pure-JS in-process store, the one path that stored it raw. No Rust
+ * mirror is needed — `bigint` is a JS-only type that cannot reach the core.
+ */
+export const validatePropertyValue = (value: unknown): void => {
+  if (typeof value === 'bigint') {
+    throw new LenkeError(
+      `a bigint property value is not supported: the numeric model is float64 — ` +
+        `pass Number(${value}n) for a safe-range value, or a string`,
+      { code: ErrorCode.InvalidValue },
+    );
+  }
+
+  if (Array.isArray(value)) {
+    for (const element of value) {
+      validatePropertyValue(element);
+    }
+  }
+};
+
+/** Validate every label, property key, and property value about to enter the graph. */
 export const validateElementNames = (
   labels: Iterable<string>,
   properties: Readonly<Record<string, unknown>> | undefined,
@@ -43,6 +73,7 @@ export const validateElementNames = (
   if (properties) {
     for (const key of Object.keys(properties)) {
       validatePropertyKey(key);
+      validatePropertyValue(properties[key]);
     }
   }
 };
