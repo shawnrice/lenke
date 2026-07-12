@@ -88,6 +88,30 @@ Both engines (this TS engine and the Rust core) produce **byte-identical** resul
 - **`null` is a first-class stored property value** (distinct from absent); remove a property with `REMOVE`, never `SET x.k = null`.
 - **Ordering across unlike types.** ISO GQL doesn't define an order between different value types, so `ORDER BY` / `min` / `max` / `list_sort` impose a deterministic **total order across type groups** — `number < string < boolean < other` (graph elements/lists) — with **nulls last** by default (overridable with `NULLS FIRST`/`LAST`). The relational operators `< > <= >=` are unaffected: comparing unlike types there is still `UNKNOWN`, per ISO.
 
+### Temporal values (`DATE` / `LOCAL DATETIME` / `DURATION`)
+
+ISO temporal types are first-class stored values (zone-less; `ZONED DATETIME`/`TIME` are future work), byte-identical between the TS and Rust engines.
+
+- **Literals**: `DATE '2020-01-01'`, `DATETIME '2020-01-01T10:15:30'` (or `TIMESTAMP '…'`), `DURATION 'P1Y2M3DT4H5M6S'`. Written as a type keyword before a string.
+- **Comparison**: `< > <= >=` on dates/datetimes is chronological; a `DURATION` (like a SQL interval) and any cross-kind pair are `UNKNOWN`. `ORDER BY` uses a deterministic total order (durations sort lexicographically). So valid-time as-of filtering just works: `MATCH (f) WHERE f.vfrom <= DATE '2021-06-01' AND DATE '2021-06-01' < f.vto RETURN f`.
+
+**JavaScript interop.** lenke is not a date library — it stores and queries; do date math and formatting in your library of choice and bridge cleanly. Reading a temporal from a result gives a `LocalDate`/`LocalDateTime`/`Duration` (from `@lenke/core`):
+
+```ts
+import { LocalDate, LocalDateTime, parseDate } from '@lenke/core';
+
+date.toISOString();          // '2020-01-01' — the universal bridge (also `String(date)`)
+duration.toISOString();      // 'P14M3DT…'   — round-trips with Temporal.Duration / Luxon Duration.fromISO
+date.toTemporal();           // a TC39 `Temporal.PlainDate` (if the runtime has Temporal)
+
+// Constructing / storing a temporal — any of:
+parseDate('2020-01-01');                     // from an ISO string
+Temporal.PlainDate.from('2020-01-01');       // a TC39 `Temporal.Plain*` is accepted at the value boundary (duck-typed, no dep)
+LocalDateTime.fromJSDate(jsDate, { zone });  // a native Date is a zoned instant — convert EXPLICITLY (a bare Date throws)
+```
+
+A native `Date` is deliberately **not** auto-coerced (it's a zoned instant; our types are zone-less, so a silent timezone guess would corrupt the value) — pass an ISO string, a `Temporal.Plain*`, or use `fromJSDate(d, { zone })`.
+
 ### Known gaps (future work)
 
 The `^` power operator and `list[i]` element indexing are not yet parsed (both engines reject them identically). They await the exact spec precedence / indexing base rather than a guess.

@@ -21,6 +21,7 @@ export {
   LocalDateTime,
   Duration,
   isTemporal,
+  coerceTemporal,
   temporalTag,
   temporalFormat,
   temporalParse,

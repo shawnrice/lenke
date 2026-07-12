@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { Graph } from '@lenke/core';
+import { Graph, parseDate } from '@lenke/core';
 import { ErrorCode, hasErrorCode } from '@lenke/errors';
 
 import { deserialize, serialize } from './index.js';
@@ -41,6 +41,27 @@ describe('serialization error codes', () => {
     }
 
     expect(hasErrorCode(caught, ErrorCode.InvalidValue)).toBe(true);
+  });
+
+  test('a temporal instance and a TC39 Temporal.Plain* both normalize to a temporal', () => {
+    const d = parseDate('2020-01-01');
+    expect(normalizeValue(d)).toBe(d);
+
+    // Duck-typed TC39 Temporal.PlainDate (brand + ISO toString), no hard dep.
+    const fake = { [Symbol.toStringTag]: 'Temporal.PlainDate', toString: () => '2021-02-03' };
+    expect(String(normalizeValue(fake))).toBe('2021-02-03');
+  });
+
+  test('a native Date reject points at the explicit converter', () => {
+    let message = '';
+
+    try {
+      normalizeValue(new Date());
+    } catch (e) {
+      ({ message } = (e as Error));
+    }
+
+    expect(message).toContain('fromJSDate');
   });
 
   // Capture whatever a thunk throws (or undefined if it doesn't).

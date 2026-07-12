@@ -3,9 +3,11 @@ import { describe, expect, test } from 'bun:test';
 import {
   civilFromDays,
   daysFromCivil,
+  coerceTemporal,
   Duration,
   formatDuration,
   LocalDate,
+  LocalDateTime,
   parseDate,
   parseDateTime,
   parseDuration,
@@ -93,5 +95,39 @@ describe('temporal: ordering', () => {
     expect(parseDate('1970-01-02')).toEqual(new LocalDate(1));
     expect(parseDateTime('1970-01-01T00:00:01').secs).toBe(1);
     expect(parseDuration('P2M3DT4S')).toEqual(new Duration(2, 3, 4, 0));
+  });
+});
+
+describe('temporal: JS interop', () => {
+  test('toString / toISOString give the ISO string (the bridge to any library)', () => {
+    expect(String(parseDate('2020-02-29'))).toBe('2020-02-29');
+    expect(parseDateTime('2021-06-15T08:30:00.5').toISOString()).toBe('2021-06-15T08:30:00.5');
+    // Durations: ISO-8601 string round-trips with Temporal.Duration / Luxon.
+    expect(parseDuration('P1Y2M').toString()).toBe('P14M');
+  });
+
+  test('fromJSDate takes the wall clock in an explicit zone', () => {
+    // 2020-01-02T03:04:05.678Z as UTC wall clock.
+    const d = new Date('2020-01-02T03:04:05.678Z');
+    const dt = LocalDateTime.fromJSDate(d, { zone: 'utc' });
+    expect(dt.toISOString()).toBe('2020-01-02T03:04:05.678');
+    expect(LocalDate.fromJSDate(d, { zone: 'utc' }).toISOString()).toBe('2020-01-02');
+  });
+
+  test('coerceTemporal accepts our instances and TC39 Temporal.Plain* (duck-typed)', () => {
+    const mine = parseDate('2020-01-01');
+    expect(coerceTemporal(mine)).toBe(mine);
+
+    // Simulate a TC39 Temporal.PlainDate via its @@toStringTag brand + ISO toString.
+    const fakePlainDate = {
+      [Symbol.toStringTag]: 'Temporal.PlainDate',
+      toString: () => '2022-03-04[u-ca=iso8601]', // with a calendar annotation
+    };
+    expect(coerceTemporal(fakePlainDate)?.toString()).toBe('2022-03-04');
+
+    // A native Date is NOT coerced (zoned instant) — returns null here.
+    expect(coerceTemporal(new Date())).toBeNull();
+    expect(coerceTemporal('2020-01-01')).toBeNull(); // a bare string stays a string
+    expect(coerceTemporal(42)).toBeNull();
   });
 });

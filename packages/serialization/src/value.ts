@@ -5,16 +5,10 @@
  * single source of truth for "what a property value may be" — and where richer
  * JS values lose information — lives here, not in each format.
  */
-import { fromTaggedJson, isTemporal, type Temporal } from '@lenke/core';
+import { coerceTemporal, fromTaggedJson, type Temporal } from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
-export type PropertyValue =
-  | string
-  | boolean
-  | number
-  | null
-  | Temporal
-  | readonly PropertyValue[];
+export type PropertyValue = string | boolean | number | null | Temporal | readonly PropertyValue[];
 
 /** A property bag on a vertex or edge in the LPG model. */
 export type PropertyBag = Readonly<Record<string, PropertyValue>>;
@@ -55,10 +49,13 @@ const normalizeAt = (value: unknown, depth: number): PropertyValue => {
     return Number(value);
   }
 
-  // A temporal instance (LocalDate/LocalDateTime/Duration) passes through as a
-  // first-class scalar.
-  if (isTemporal(value)) {
-    return value;
+  // A lenke temporal instance passes through; a TC39 `Temporal.PlainDate`/
+  // `PlainDateTime`/`Duration` is coerced via its ISO string (no hard dep on the
+  // Temporal proposal — it's duck-typed).
+  const temporal = coerceTemporal(value);
+
+  if (temporal) {
+    return temporal;
   }
 
   if (Array.isArray(value)) {
@@ -72,11 +69,23 @@ const normalizeAt = (value: unknown, depth: number): PropertyValue => {
   }
 
   // A tagged temporal object `{"@date":"…"}` (from a decoded JSON codec) revives
-  // to its instance; anything else is out of the LPG model.
-  const temporal = fromTaggedJson(value);
+  // to its instance.
+  const revived = fromTaggedJson(value);
 
-  if (temporal) {
-    return temporal;
+  if (revived) {
+    return revived;
+  }
+
+  // A native `Date` is a zoned instant; lenke's temporal types are zone-less, so
+  // silently coercing would have to guess a timezone (a data-corruption footgun).
+  // Require the user to name the interpretation.
+  if (value instanceof Date) {
+    throw new LenkeError(
+      'A native `Date` is a zoned instant, but lenke temporal types are zone-less. ' +
+        'Convert explicitly with `LocalDateTime.fromJSDate(date, { zone })` (or `LocalDate.fromJSDate`), ' +
+        'or pass an ISO string / a TC39 `Temporal.PlainDateTime`.',
+      { code: ErrorCode.InvalidValue },
+    );
   }
 
   throw new LenkeError(
