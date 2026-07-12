@@ -4829,6 +4829,50 @@ fn run_linear(
                         .collect()
                 };
             }
+            CClause::For {
+                list,
+                alias_slot,
+                ord,
+                scope_len,
+            } => {
+                // FOR's list can reference a deferred MATCH var, so flush pending
+                // first, then unwind: each incoming binding fans out to one row
+                // per list element (ISO GQL's UNWIND). A list unwinds its
+                // elements; null yields zero rows; any other scalar unwinds as a
+                // one-element list.
+                if !pending.is_empty() {
+                    bindings = materialize_matches(graph, &ctx, &bindings, &pending);
+                    pending.clear();
+                }
+                let mut out = Vec::new();
+                for inb in &bindings {
+                    let mut work = inb.clone();
+                    work.resize(*scope_len);
+                    let listv = {
+                        let env = Env::new(graph, &ctx, &work);
+                        eval(&env, list)
+                    };
+                    let elems = match listv {
+                        Val::List(items) => items,
+                        Val::Null => Vec::new(),
+                        scalar => vec![scalar],
+                    };
+                    for (i, elem) in elems.into_iter().enumerate() {
+                        work.set(*alias_slot, elem);
+                        if let Some((is_ordinality, ord_slot)) = ord {
+                            let counter = if *is_ordinality {
+                                (i + 1) as f64
+                            } else {
+                                i as f64
+                            };
+                            work.set(*ord_slot, Val::Num(counter));
+                        }
+                        out.push(work.clone());
+                    }
+                }
+                bindings = out;
+                ctx.check_fault()?;
+            }
             CClause::Return(proj) => {
                 let rows = project_to_rows(graph, &ctx, &bindings, &pending, proj);
                 ctx.check_fault()?;

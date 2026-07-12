@@ -2584,3 +2584,111 @@ fn list_value_equality_is_structural() {
         vec![vec![b(false)]]
     );
 }
+
+// --- FOR (ISO GQL list unwind / UNWIND) -------------------------------------
+
+#[test]
+fn for_unwinds_a_literal_list() {
+    let mut g = modern();
+    assert_eq!(
+        rows(&mut g, "FOR x IN [1, 2, 3] RETURN x"),
+        vec![vec![n(1.0)], vec![n(2.0)], vec![n(3.0)]]
+    );
+}
+
+#[test]
+fn for_ordinality_counts_from_one() {
+    let mut g = modern();
+    assert_eq!(
+        rows(&mut g, "FOR x IN ['a', 'b'] WITH ORDINALITY i RETURN x, i"),
+        vec![vec![s("a"), n(1.0)], vec![s("b"), n(2.0)]]
+    );
+}
+
+#[test]
+fn for_offset_counts_from_zero() {
+    let mut g = modern();
+    assert_eq!(
+        rows(&mut g, "FOR x IN ['a', 'b'] WITH OFFSET i RETURN x, i"),
+        vec![vec![s("a"), n(0.0)], vec![s("b"), n(1.0)]]
+    );
+}
+
+#[test]
+fn for_over_null_yields_no_rows() {
+    let mut g = modern();
+    assert!(rows(&mut g, "FOR x IN null RETURN x").is_empty());
+}
+
+#[test]
+fn for_over_empty_list_yields_no_rows() {
+    let mut g = modern();
+    assert!(rows(&mut g, "FOR x IN [] RETURN x").is_empty());
+}
+
+#[test]
+fn for_over_scalar_unwinds_as_singleton() {
+    let mut g = modern();
+    assert_eq!(rows(&mut g, "FOR x IN 5 RETURN x"), vec![vec![n(5.0)]]);
+}
+
+#[test]
+fn for_multiplies_prior_match_rows() {
+    let mut g = modern();
+    // One matched row × a two-element list → two rows.
+    assert_eq!(
+        rows(
+            &mut g,
+            "MATCH (p:Person {name: 'marko'}) FOR t IN ['x', 'y'] RETURN p.name, t"
+        ),
+        vec![vec![s("marko"), s("x")], vec![s("marko"), s("y")]]
+    );
+}
+
+#[test]
+fn for_list_can_reference_a_bound_var() {
+    let mut g = modern();
+    // The list expression sees the pending MATCH binding (`p`).
+    assert_eq!(
+        rows(
+            &mut g,
+            "MATCH (p:Person {name: 'marko'}) FOR x IN [p.name, p.age] RETURN x"
+        ),
+        vec![vec![s("marko")], vec![n(29.0)]]
+    );
+}
+
+#[test]
+fn for_bare_with_after_for_starts_a_new_clause() {
+    // `WITH x AS y` is NOT a FOR modifier (no ORDINALITY/OFFSET) — it must be
+    // parsed as a WITH clause, so the lookahead disambiguation matters.
+    let mut g = modern();
+    assert_eq!(
+        rows(&mut g, "FOR x IN [1, 2] WITH x AS y RETURN y"),
+        vec![vec![n(1.0)], vec![n(2.0)]]
+    );
+}
+
+#[test]
+fn for_first_clause_needs_no_seed_row() {
+    // FOR as the very first clause runs against the single empty seed binding.
+    let mut g = modern();
+    assert_eq!(
+        rows(&mut g, "FOR x IN ['only'] RETURN x"),
+        vec![vec![s("only")]]
+    );
+}
+
+#[test]
+fn for_drives_batch_optional_match_allow_and_deny() {
+    // R-BATCH deny-side: one row per requested name, present or not. `josh`
+    // exists (age 32); `nobody` does not, so OPTIONAL MATCH leaves `p` null.
+    let mut g = modern();
+    assert_eq!(
+        rows(
+            &mut g,
+            "FOR name IN ['josh', 'nobody'] OPTIONAL MATCH (p:Person {name: name}) RETURN name, p.age"
+        ),
+        vec![vec![s("josh"), n(32.0)], vec![s("nobody"), Value::Null]]
+    );
+}

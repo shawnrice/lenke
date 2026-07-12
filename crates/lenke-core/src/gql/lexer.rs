@@ -92,6 +92,7 @@ const KEYWORDS: &[&str] = &[
     "nodetach",
     "finish",
     "return",
+    "for",
     "as",
     "is",
     "in",

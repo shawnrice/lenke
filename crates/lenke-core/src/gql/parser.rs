@@ -1083,6 +1083,51 @@ impl Parser {
         Ok(WithClause { projection, where_ })
     }
 
+    /// `FOR <alias> IN <list> [WITH (ORDINALITY|OFFSET) <var>]` — ISO GQL list
+    /// unwind. The list is parsed as a full expression (it may reference any
+    /// prior binding); `IN` is consumed as a keyword up front, so it is not
+    /// mistaken for the `IN` membership operator inside the list expression.
+    fn parse_for_clause(&mut self) -> R<ForClause> {
+        self.expect_kw("for")?;
+        let alias = self.bind_name("a FOR variable")?;
+        self.expect_kw("in")?;
+        let list = self.parse_expr()?;
+        // `WITH ORDINALITY|OFFSET <var>` is a FOR modifier ONLY when ORDINALITY
+        // or OFFSET follows WITH; a bare WITH here begins the next clause and
+        // must be left for the clause loop.
+        let ordinal = if self.check_kw("with") && self.for_modifier_ahead() {
+            self.advance(); // WITH
+            let kind = if self.check_kw("offset") {
+                self.advance();
+                OrdKind::Offset
+            } else {
+                self.advance(); // ORDINALITY (a soft keyword — lexes as an ident)
+                OrdKind::Ordinality
+            };
+            let var = self.bind_name("an ORDINALITY/OFFSET variable")?;
+            Some(ForOrdinal { kind, var })
+        } else {
+            None
+        };
+        Ok(ForClause {
+            alias,
+            list,
+            ordinal,
+        })
+    }
+
+    /// Is the token after `WITH` an ORDINALITY/OFFSET modifier (vs the start of a
+    /// new WITH clause)? `ORDINALITY` is a soft keyword (arrives as an ident).
+    fn for_modifier_ahead(&self) -> bool {
+        match self.tokens.get(self.pos + 1) {
+            Some(t) => {
+                (t.tt == Tt::Keyword && t.value == "offset")
+                    || (t.tt == Tt::Ident && t.value.eq_ignore_ascii_case("ordinality"))
+            }
+            None => false,
+        }
+    }
+
     // --- write clauses -----------------------------------------------------
 
     fn parse_insert_clause(&mut self) -> R<Vec<PathPattern>> {
@@ -1244,6 +1289,8 @@ impl Parser {
                 done = true;
             } else if self.check_kw("with") {
                 clauses.push(Clause::With(self.parse_with_clause()?));
+            } else if self.check_kw("for") {
+                clauses.push(Clause::For(self.parse_for_clause()?));
             } else if self.check_kw("match") || self.check_kw("optional") {
                 clauses.push(Clause::Match(self.parse_match_clause()?));
             } else if self.check_kw("insert") {

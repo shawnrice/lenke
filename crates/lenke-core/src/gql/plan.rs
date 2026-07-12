@@ -551,6 +551,16 @@ pub enum CClause {
         where_prog: Option<Program>,
     },
     Return(CProjection),
+    /// `FOR alias IN list [WITH ORDINALITY|OFFSET]` — unwind `list` into one row
+    /// per element. `ord` is `(is_ordinality, slot)`: a counter bound alongside
+    /// each element, 1-based when `is_ordinality`, else 0-based. `scope_len` is
+    /// the binding width after the alias (+ counter) are bound.
+    For {
+        list: CExpr,
+        alias_slot: usize,
+        ord: Option<(bool, usize)>,
+        scope_len: usize,
+    },
     Insert(Vec<CPath>),
     Merge(CMerge),
     Set(Vec<CSetItem>),
@@ -1189,6 +1199,23 @@ impl Lowerer {
                     projection,
                     where_,
                     where_prog,
+                }
+            }
+            Clause::For(f) => {
+                // Lower the list in the pre-FOR scope (it cannot reference the
+                // alias), THEN bind the alias (+ any ordinality/offset var) so
+                // downstream clauses resolve them.
+                let list = self.expr(&f.list);
+                let alias_slot = self.add_var(&f.alias);
+                let ord = f
+                    .ordinal
+                    .as_ref()
+                    .map(|o| (matches!(o.kind, OrdKind::Ordinality), self.add_var(&o.var)));
+                CClause::For {
+                    list,
+                    alias_slot,
+                    ord,
+                    scope_len: self.scope.len(),
                 }
             }
             Clause::Return(p) => CClause::Return(self.projection(p, true)),

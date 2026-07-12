@@ -44,6 +44,10 @@ pub enum Clause {
     /// extension (NOT ISO GQL; sigil-marked, recognized only under the `Lenke`
     /// dialect). See docs/design/gql-extensions.md §2.
     Merge(MergeClause),
+    /// `FOR x IN <list> [WITH ORDINALITY|OFFSET n]` — ISO GQL list unwind (the
+    /// standard's equivalent of Cypher `UNWIND`). Multiplies the row table by the
+    /// list. Bare ISO syntax (no sigil), accepted under every dialect.
+    For(ForClause),
     /// `SET n.key = v` / `SET n:Label`
     Set(Vec<SetItem>),
     /// `REMOVE n.key` / `REMOVE n:Label`
@@ -100,6 +104,32 @@ pub struct MatchClause {
 pub struct WithClause {
     pub projection: Projection,
     pub where_: Option<Expr>,
+}
+
+/// `FOR <alias> IN <list> [WITH ORDINALITY|OFFSET <var>]` — unwind a list into
+/// one row per element (ISO GQL's UNWIND). The list is evaluated in the scope
+/// *before* `alias` is bound, so it cannot reference the alias.
+#[derive(Debug, Clone)]
+pub struct ForClause {
+    pub alias: String,
+    pub list: Expr,
+    pub ordinal: Option<ForOrdinal>,
+}
+
+/// The optional `WITH ORDINALITY <var>` (1-based index) or `WITH OFFSET <var>`
+/// (0-based index) counter bound alongside each unwound element.
+#[derive(Debug, Clone)]
+pub struct ForOrdinal {
+    pub kind: OrdKind,
+    pub var: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrdKind {
+    /// `WITH ORDINALITY` — counts from 1.
+    Ordinality,
+    /// `WITH OFFSET` — counts from 0.
+    Offset,
 }
 
 #[derive(Debug, Clone)]
