@@ -286,5 +286,14 @@ export const inferDeps = (text: string): string[] => {
     tokens.add(m[1]);
   }
 
+  // Inline-map filter keys — `(o:Purchase {status:'paid', qty:2})`. These read
+  // properties without a `.` prefix, so the property-access regex above misses
+  // them; without this a `SET o.status=…` would not invalidate the query.
+  // Over-grabbing is safe, so we accept the occasional false positive (a map key
+  // that shadows a non-property token).
+  for (const m of text.matchAll(/[{,]\s*([A-Za-z_]\w*)\s*:/g)) {
+    tokens.add(m[1]);
+  }
+
   return [...tokens];
 };
