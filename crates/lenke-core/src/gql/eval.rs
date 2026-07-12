@@ -112,6 +112,7 @@ const FAULT_UNKNOWN_FN: u8 = 5;
 const FAULT_CONSTRAINT: u8 = 6;
 const FAULT_MERGE_KEY: u8 = 7;
 const FAULT_MERGE_EDGE: u8 = 8;
+const FAULT_REQUIRED: u8 = 9;
 
 /// Per-expansion cap on trail-traversal steps; a guard against exponential blowup.
 const TRAIL_BUDGET: u64 = 1_000_000;
@@ -169,6 +170,10 @@ impl Ctx<'_> {
             FAULT_MERGE_EDGE => Err(CodeError::new(
                 ErrorCode::NotImplemented,
                 "_MERGE multi-hop compound patterns are not yet supported (v2)",
+            )),
+            FAULT_REQUIRED => Err(CodeError::new(
+                ErrorCode::ConstraintViolation,
+                "write violates a required-property constraint (a required key is missing, null, or being removed)",
             )),
             FAULT_UNKNOWN_FN => {
                 // Name the offending function(s) (as TS does), e.g.
@@ -5069,8 +5074,9 @@ fn run_linear(
                     pending.clear();
                 }
                 for b in &bindings {
-                    run_remove(graph, items, b);
+                    run_remove(graph, &ctx, items, b);
                 }
+                ctx.check_fault()?;
             }
             CClause::Delete { detach, targets } => {
                 if !pending.is_empty() {
@@ -5145,6 +5151,12 @@ fn ensure_node(graph: &mut Graph, ctx: &Ctx, binding: &mut Binding, node: &CNode
     if let Some((_, _, existing)) = graph.unique_conflict(&labels, &props, None) {
         ctx.set_fault(FAULT_CONSTRAINT);
         return existing;
+    }
+    // Reject a new vertex that omits (or nulls) a required key. The fault aborts
+    // the write at the row boundary; the returned id is unused after a fault.
+    if graph.missing_required(&labels, &props).is_some() {
+        ctx.set_fault(FAULT_REQUIRED);
+        return u32::MAX;
     }
     let vi = graph.add_vertex(&labels, props);
     if let Some(slot) = node.var_slot {
@@ -5438,10 +5450,12 @@ fn run_set(graph: &mut Graph, ctx: &Ctx, items: &[CSetItem], binding: &Binding) 
                     val_to_value(graph, &eval(&env, value))
                 };
                 match el {
-                    // A SET that would collide under a unique constraint faults
-                    // (ConstraintViolation) rather than silently duplicating.
+                    // A SET that would null a required key, or collide under a
+                    // unique constraint, faults (ConstraintViolation).
                     Val::Node(vi) => {
-                        if graph.unique_conflict_on_set(vi, key, &v).is_some() {
+                        if matches!(v, Value::Null) && graph.is_required_key(vi, key) {
+                            ctx.set_fault(FAULT_REQUIRED);
+                        } else if graph.unique_conflict_on_set(vi, key, &v).is_some() {
                             ctx.set_fault(FAULT_CONSTRAINT);
                         } else {
                             graph.set_vertex_prop(vi, key, v);
@@ -5452,7 +5466,14 @@ fn run_set(graph: &mut Graph, ctx: &Ctx, items: &[CSetItem], binding: &Binding) 
                 }
             }
             CSetItem::Label { var_slot, label } => match binding.get(*var_slot) {
-                Some(Val::Node(vi)) => graph.add_vertex_label(*vi, label),
+                // Adding a label brings its required keys into force for this node.
+                Some(Val::Node(vi)) => {
+                    if graph.required_missing_for_label(*vi, label).is_some() {
+                        ctx.set_fault(FAULT_REQUIRED);
+                    } else {
+                        graph.add_vertex_label(*vi, label);
+                    }
+                }
                 Some(Val::Edge(ei)) => graph.add_edge_label(*ei, label),
                 _ => {}
             },
@@ -5460,11 +5481,18 @@ fn run_set(graph: &mut Graph, ctx: &Ctx, items: &[CSetItem], binding: &Binding) 
     }
 }
 
-fn run_remove(graph: &mut Graph, items: &[CRemoveItem], binding: &Binding) {
+fn run_remove(graph: &mut Graph, ctx: &Ctx, items: &[CRemoveItem], binding: &Binding) {
     for item in items {
         match item {
             CRemoveItem::Prop { var_slot, key } => match binding.get(*var_slot) {
-                Some(Val::Node(vi)) => graph.remove_vertex_prop(*vi, key),
+                // Removing a required key faults (ConstraintViolation).
+                Some(Val::Node(vi)) => {
+                    if graph.is_required_key(*vi, key) {
+                        ctx.set_fault(FAULT_REQUIRED);
+                    } else {
+                        graph.remove_vertex_prop(*vi, key);
+                    }
+                }
                 Some(Val::Edge(ei)) => graph.remove_edge_prop(*ei, key),
                 _ => {}
             },

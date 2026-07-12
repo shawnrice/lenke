@@ -356,6 +356,10 @@ pub struct Graph {
     /// which also matches what the value index can hold. See
     /// `docs/design/gql-extensions.md` §3.
     v_unique: HashMap<String, Vec<String>>,
+    /// REQUIRED constraints: `label` → the property keys that must be present and
+    /// non-null on every live vertex carrying that label (R-CONSTRAINTS). Unlike
+    /// `v_unique` these need no backing index — enforcement is a presence check.
+    v_required: HashMap<String, Vec<String>>,
 }
 
 /// A set of property indexes (key name → ordered value buckets).
@@ -704,6 +708,115 @@ impl Graph {
                 .find(|&v| v != vi)
             {
                 return Some((label.clone(), existing));
+            }
+        }
+        None
+    }
+
+    // --- required constraints (R-CONSTRAINTS) --------------------------------
+    // Every live vertex carrying `label` must hold a present, non-null value for
+    // each required `key`. Enforced in the write path (INSERT/SET/REMOVE) like
+    // `unique`; declarative (no closures), so it is byte-identical to the TS core.
+    // No backing index is needed — enforcement is a presence check.
+
+    /// Declare a REQUIRED constraint on `(label, key)`. Idempotent. Fails with
+    /// [`ErrorCode::ConstraintViolation`] if any live vertex with `label` lacks a
+    /// present, non-null `key` — an already-violated constraint is meaningless.
+    pub fn create_required_constraint(&mut self, label: &str, key: &str) -> CodeResult<()> {
+        if let Some(lid) = self.labels.get(label) {
+            for vi in self.vertex_indices() {
+                if self.vlabels[vi as usize].contains(&lid)
+                    && matches!(self.props.value(vi as usize, key, &self.strs), Value::Null)
+                {
+                    return Err(CodeError::new(
+                        ErrorCode::ConstraintViolation,
+                        "existing data already violates the required constraint being declared",
+                    ));
+                }
+            }
+        }
+        let keys = self.v_required.entry(label.to_string()).or_default();
+        if !keys.iter().any(|k| k == key) {
+            keys.push(key.to_string());
+            keys.sort();
+        }
+        Ok(())
+    }
+
+    /// Drop a required constraint. Idempotent.
+    pub fn drop_required_constraint(&mut self, label: &str, key: &str) {
+        if let Some(keys) = self.v_required.get_mut(label) {
+            keys.retain(|k| k != key);
+            if keys.is_empty() {
+                self.v_required.remove(label);
+            }
+        }
+    }
+
+    /// Property keys required for `label` (sorted; empty if none).
+    pub fn required_keys(&self, label: &str) -> &[String] {
+        self.v_required.get(label).map_or(&[], Vec::as_slice)
+    }
+
+    /// True iff `(label, key)` carries a required constraint.
+    pub fn has_required_constraint(&self, label: &str, key: &str) -> bool {
+        self.v_required
+            .get(label)
+            .is_some_and(|ks| ks.iter().any(|k| k == key))
+    }
+
+    /// Every declared required constraint as sorted `(label, key)` pairs.
+    pub fn required_constraints(&self) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = self
+            .v_required
+            .iter()
+            .flat_map(|(l, ks)| ks.iter().map(move |k| (l.clone(), k.clone())))
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// The first `(label, key)` a new vertex with these `labels`/`props` would
+    /// violate by omitting a required key (absent or null value), or `None`.
+    pub fn missing_required(
+        &self,
+        labels: &[String],
+        props: &[(String, Value)],
+    ) -> Option<(String, String)> {
+        for label in labels {
+            for key in self.required_keys(label) {
+                let present = props
+                    .iter()
+                    .any(|(k, v)| k == key && !matches!(v, Value::Null));
+                if !present {
+                    return Some((label.clone(), key.clone()));
+                }
+            }
+        }
+        None
+    }
+
+    /// True iff `key` is required by a label currently on vertex `vi` (so it can't
+    /// be removed or set to null).
+    pub fn is_required_key(&self, vi: u32, key: &str) -> bool {
+        for (label, keys) in &self.v_required {
+            if keys.iter().any(|k| k == key) {
+                if let Some(lid) = self.labels.get(label) {
+                    if self.vlabels[vi as usize].contains(&lid) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// If adding `label` to vertex `vi` would violate a required key the vertex
+    /// lacks (absent or null), that key; else `None`.
+    pub fn required_missing_for_label(&self, vi: u32, label: &str) -> Option<String> {
+        for key in self.required_keys(label) {
+            if matches!(self.props.value(vi as usize, key, &self.strs), Value::Null) {
+                return Some(key.clone());
             }
         }
         None
@@ -1554,6 +1667,7 @@ impl Builder {
             vidx: HashMap::new(),
             eidx: HashMap::new(),
             v_unique: HashMap::new(),
+            v_required: HashMap::new(),
         }
     }
 }

@@ -288,6 +288,7 @@ export type RustGraph = {
    * primitive `_MERGE` keys on; see docs/design/gql-extensions.md §3.
    */
   createUniqueConstraint: (label: string, key: string) => void;
+  createRequiredConstraint: (label: string, key: string) => void;
   /** Drop a vertex / edge property index (no-op if absent). */
   dropVertexIndex: (key: string) => void;
   dropEdgeIndex: (key: string) => void;
@@ -552,6 +553,7 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
     createVertexIndex: (key) => backend.createVertexIndex(live(), key),
     createEdgeIndex: (key) => backend.createEdgeIndex(live(), key),
     createUniqueConstraint: (label, key) => backend.createUniqueConstraint(live(), label, key),
+    createRequiredConstraint: (label, key) => backend.createRequiredConstraint(live(), label, key),
     dropVertexIndex: (key) => backend.dropVertexIndex(live(), key),
     dropEdgeIndex: (key) => backend.dropEdgeIndex(live(), key),
     vertexIndexes: () => backend.vertexIndexes(live()),

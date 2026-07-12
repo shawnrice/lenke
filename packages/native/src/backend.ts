@@ -69,6 +69,7 @@ export type Backend = {
    * if the current data already violates it. See docs/design/gql-extensions.md §3.
    */
   createUniqueConstraint: (handle: GraphHandle, label: string, key: string) => void;
+  createRequiredConstraint: (handle: GraphHandle, label: string, key: string) => void;
   /** Drop a vertex / edge property index (no-op if absent). */
   dropVertexIndex: (handle: GraphHandle, key: string) => void;
   dropEdgeIndex: (handle: GraphHandle, key: string) => void;

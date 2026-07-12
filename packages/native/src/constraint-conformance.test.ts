@@ -162,3 +162,69 @@ suite('unique-constraint differential (TS vs native)', () => {
     expect(JSON.stringify(nativeGraph.query(READ))).toEqual(JSON.stringify(tsQuery(tsGraph, READ)));
   });
 });
+
+suite('required-constraint differential (TS vs native)', () => {
+  // Same INSERT/SET/REMOVE/label sequence on both engines, comparing every write
+  // outcome (same ConstraintViolation, or both succeed) + the final state.
+  const SCRIPT: Array<{ label: string; sql: string }> = [
+    { label: 'insert with required ok', sql: `INSERT (:Acct {email: 'a@x.io', name: 'A'})` },
+    { label: 'insert missing required → violation', sql: `INSERT (:Acct {name: 'B'})` },
+    { label: 'insert null required → violation', sql: `INSERT (:Acct {email: null, name: 'C'})` },
+    { label: 'different label unaffected', sql: `INSERT (:Other {name: 'O'})` },
+    {
+      label: 'set required to null → violation',
+      sql: `MATCH (n:Acct {email: 'a@x.io'}) SET n.email = null`,
+    },
+    {
+      label: 'set required to a new value ok',
+      sql: `MATCH (n:Acct {email: 'a@x.io'}) SET n.email = 'a2@x.io'`,
+    },
+    {
+      label: 'remove required → violation',
+      sql: `MATCH (n:Acct {email: 'a2@x.io'}) REMOVE n.email`,
+    },
+    {
+      label: 'set a non-required key ok',
+      sql: `MATCH (n:Acct {email: 'a2@x.io'}) SET n.name = 'AA'`,
+    },
+    // Adding the constrained label to a node missing the key → violation.
+    { label: 'seed a Person without email', sql: `INSERT (:Person {name: 'P'})` },
+    { label: 'add :Acct to it → violation', sql: `MATCH (p:Person {name: 'P'}) SET p:Acct` },
+  ];
+
+  test('every write outcome and the final state agree across engines', () => {
+    const tsGraph = tsDeserialize(SEED, 'ndjson', new Graph());
+    tsGraph.createRequiredConstraint('Acct', 'email');
+
+    const backend = createFfiBackend(LIB);
+    const nativeGraph = graphFromFormat(backend, SEED, 'ndjson');
+    nativeGraph.createRequiredConstraint('Acct', 'email');
+
+    for (const { label, sql } of SCRIPT) {
+      const ts = outcome(() => tsQuery(tsGraph, sql));
+      const native = outcome(() => nativeGraph.query(sql));
+
+      expect(native, `outcome mismatch: ${label}`).toEqual(ts);
+    }
+
+    const READ = `MATCH (n:Acct) RETURN n.name, n.email ORDER BY n.name`;
+    expect(JSON.stringify(nativeGraph.query(READ))).toEqual(JSON.stringify(tsQuery(tsGraph, READ)));
+  });
+
+  test('declare-time rejection agrees across engines (existing data missing the key)', () => {
+    const missing = [
+      '{"type":"node","id":"1","labels":["Acct"],"properties":{"email":"a@x.io"}}',
+      '{"type":"node","id":"2","labels":["Acct"],"properties":{"name":"no-email"}}',
+    ].join('\n');
+
+    const tsGraph = tsDeserialize(missing, 'ndjson', new Graph());
+    const backend = createFfiBackend(LIB);
+    const nativeGraph = graphFromFormat(backend, missing, 'ndjson');
+
+    const ts = outcome(() => tsGraph.createRequiredConstraint('Acct', 'email'));
+    const native = outcome(() => nativeGraph.createRequiredConstraint('Acct', 'email'));
+
+    expect(native).toEqual(ts);
+    expect(ts).toEqual({ code: 'E_CONSTRAINT_VIOLATION' });
+  });
+});

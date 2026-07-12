@@ -29,6 +29,13 @@ type WasmExports = {
     key: number,
     keyLen: number,
   ) => number;
+  lnk_create_required_constraint: (
+    h: number,
+    label: number,
+    labelLen: number,
+    key: number,
+    keyLen: number,
+  ) => number;
   lnk_drop_vertex_index: (h: number, key: number, keyLen: number) => number;
   lnk_drop_edge_index: (h: number, key: number, keyLen: number) => number;
   lnk_vertex_indexes: (h: number, outLen: number) => number;
@@ -320,6 +327,30 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
 
         if (r !== 0) {
           throw new LenkeError('lenke: createUniqueConstraint failed', { code: ErrorCode.Ffi });
+        }
+      } finally {
+        ex.lnk_dealloc(lp, l.byteLength);
+        ex.lnk_dealloc(kp, k.byteLength);
+      }
+    },
+    createRequiredConstraint: (handle, label, key) => {
+      const l = encoder.encode(label);
+      const lp = writeBytes(l);
+      const k = encoder.encode(key);
+      const kp = writeBytes(k);
+
+      try {
+        const r = ex.lnk_create_required_constraint(handle, lp, l.byteLength, kp, k.byteLength);
+
+        if (r === -2) {
+          throw new LenkeError(
+            `lenke: createRequiredConstraint(${label}, ${key}): existing data already violates the required constraint`,
+            { code: ErrorCode.ConstraintViolation },
+          );
+        }
+
+        if (r !== 0) {
+          throw new LenkeError('lenke: createRequiredConstraint failed', { code: ErrorCode.Ffi });
         }
       } finally {
         ex.lnk_dealloc(lp, l.byteLength);

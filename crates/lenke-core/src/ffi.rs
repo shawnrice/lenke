@@ -281,6 +281,36 @@ pub unsafe extern "C" fn lnk_create_unique_constraint(
     }
 }
 
+/// Declare a REQUIRED constraint on `(label, key)`: every live vertex with
+/// `label` must hold a present, non-null value for `key`. Returns 0 on success,
+/// -1 on a null / bad-UTF-8 error, and **-2** if the current data already
+/// violates it (surfaced as `ConstraintViolation` by the caller).
+///
+/// # Safety
+/// As [`lnk_create_unique_constraint`].
+#[no_mangle]
+pub unsafe extern "C" fn lnk_create_required_constraint(
+    g: *mut Graph,
+    label_ptr: *const u8,
+    label_len: usize,
+    key_ptr: *const u8,
+    key_len: usize,
+) -> i32 {
+    if g.is_null() || label_ptr.is_null() || key_ptr.is_null() {
+        return -1;
+    }
+    let (Ok(label), Ok(key)) = (
+        std::str::from_utf8(std::slice::from_raw_parts(label_ptr, label_len)),
+        std::str::from_utf8(std::slice::from_raw_parts(key_ptr, key_len)),
+    ) else {
+        return -1;
+    };
+    match (*g).create_required_constraint(label, key) {
+        Ok(()) => 0,
+        Err(_) => -2,
+    }
+}
+
 /// Drop a vertex property index (no-op if absent). Returns 0 on success, -1 on
 /// error.
 ///
