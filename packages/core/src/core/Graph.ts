@@ -132,12 +132,9 @@ export class Graph {
       // deferred step below runs, so reading labels/keys there would throw.
       const tokens = this.tokensOf(event);
       const doTheWork = () => {
-        if (event.defaultPrevented) {
-          return;
-        }
-
-        // Advance the reactive counters — deferred so `defaultPrevented` is
-        // final and a vetoed mutation bumps nothing.
+        // Advance the reactive counters (deferred so a burst of mutations
+        // coalesces into one React notify). A mutation event always means a
+        // committed write — events are observation-only, nothing vetoes.
         this.mutationVersion += 1;
 
         for (const token of tokens) {
@@ -349,9 +346,8 @@ export class Graph {
     // handles `@graph/EdgeRemoved`/`@graph/VertexRemoved` (React sync, an audit
     // stream via `@graph/mutate`, the CDC WriteLog), with no special-casing.
     // Edges first, then vertices (a clean teardown order a journal can replay).
-    // The elements are still live at emit time; `truncate` is a hard reset, so a
-    // per-element `preventDefault()` is NOT honored — the events are
-    // notification-only (unlike `removeVertex`/`removeEdge`).
+    // The elements are still live at emit time. Events are observation-only, so
+    // these are notifications — nothing can veto the reset.
     const edges = [...this.edgesById.values()];
     const vertices = [...this.verticesById.values()];
 
@@ -422,11 +418,7 @@ export class Graph {
       ? params
       : new Vertex({ ...params, properties: params.properties ?? {}, graph: this });
 
-    const event = this.emit(new EmitterEvent('@graph/VertexAdded', vertex));
-
-    if (event.defaultPrevented) {
-      return vertex;
-    }
+    this.emit(new EmitterEvent('@graph/VertexAdded', vertex));
 
     this.verticesById.set(vertex.id, vertex);
 
@@ -462,11 +454,7 @@ export class Graph {
       return null;
     }
 
-    const event = this.emit(new EmitterEvent('@graph/VertexRemoved', vertex));
-
-    if (event.defaultPrevented) {
-      return vertex;
-    }
+    this.emit(new EmitterEvent('@graph/VertexRemoved', vertex));
 
     for (const edge of this.incidentEdges(vertex.id)) {
       this.removeEdge(edge);
@@ -489,11 +477,7 @@ export class Graph {
 
   public addLabelToVertex = (label: string, vertex: Vertex): Vertex => {
     validateLabel(label);
-    const event = this.emit(new EmitterEvent('@graph/LabelAddedToVertex', { label, vertex }));
-
-    if (event.defaultPrevented) {
-      return vertex;
-    }
+    this.emit(new EmitterEvent('@graph/LabelAddedToVertex', { label, vertex }));
 
     this.indexVertexLabel(label, vertex);
     const next = new Set(this.elementLabels.get(vertex.id) ?? []);
@@ -504,11 +488,7 @@ export class Graph {
   };
 
   public removeLabelFromVertex = (label: string, vertex: Vertex): Vertex => {
-    const event = this.emit(new EmitterEvent('@graph/LabelRemovedFromVertex', { label, vertex }));
-
-    if (event.defaultPrevented) {
-      return vertex;
-    }
+    this.emit(new EmitterEvent('@graph/LabelRemovedFromVertex', { label, vertex }));
 
     this.deIndexVertexLabel(label, vertex);
     const next = new Set(this.elementLabels.get(vertex.id) ?? []);
@@ -582,11 +562,7 @@ export class Graph {
 
   /** Shared insertion tail: emit, then register the edge in the id and label indexes. */
   private readonly insertEdge = (edge: Edge): Edge => {
-    const event = this.emit(new EmitterEvent('@graph/EdgeAdded', edge));
-
-    if (event.defaultPrevented) {
-      return edge;
-    }
+    this.emit(new EmitterEvent('@graph/EdgeAdded', edge));
 
     this.edgesById.set(edge.id, edge);
 
@@ -600,11 +576,7 @@ export class Graph {
   };
 
   public removeEdge = (edge: Edge): Edge => {
-    const event = this.emit(new EmitterEvent('@graph/EdgeRemoved', edge));
-
-    if (event.defaultPrevented) {
-      return edge;
-    }
+    this.emit(new EmitterEvent('@graph/EdgeRemoved', edge));
 
     for (const label of edge.labels) {
       this.deIndexEdgeLabel(label, edge);
@@ -626,11 +598,7 @@ export class Graph {
       return edge;
     }
 
-    const event = this.emit(new EmitterEvent('@graph/LabelAddedToEdge', { label, edge }));
-
-    if (event.defaultPrevented) {
-      return edge;
-    }
+    this.emit(new EmitterEvent('@graph/LabelAddedToEdge', { label, edge }));
 
     const next = new Set(this.elementLabels.get(edge.id) ?? []);
     next.add(label);
@@ -646,11 +614,7 @@ export class Graph {
       return edge;
     }
 
-    const event = this.emit(new EmitterEvent('@graph/LabelRemovedFromEdge', { label, edge }));
-
-    if (event.defaultPrevented) {
-      return edge;
-    }
+    this.emit(new EmitterEvent('@graph/LabelRemovedFromEdge', { label, edge }));
 
     const next = new Set(this.elementLabels.get(edge.id) ?? []);
     next.delete(label);

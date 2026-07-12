@@ -96,15 +96,20 @@ describe('Emitter', () => {
     expect(returned).toEqual(ev()); // emit still returned the event
   });
 
-  test('preventDefault is observable on the returned event and does not stop propagation', () => {
+  test('events are observation-only: every listener runs and none can veto', () => {
     const emitter = new Emitter({ enabled: true });
+    const first = mock();
     const later = mock();
-    emitter.on('foo', (event) => event.preventDefault());
+    emitter.on('foo', first);
     emitter.on('foo', later);
 
     const event = emitter.emit(ev());
-    expect(event.defaultPrevented).toBe(true); // the caller (e.g. graph) can veto
-    expect(later).toHaveBeenCalledTimes(1); // preventDefault != stopPropagation
+    // A listener reacts; it cannot alter or stop the emission — there is no veto
+    // surface on the event (no preventDefault / defaultPrevented / reject).
+    expect(first).toHaveBeenCalledTimes(1);
+    expect(later).toHaveBeenCalledTimes(1);
+    expect((event as { preventDefault?: unknown }).preventDefault).toBeUndefined();
+    expect((event as { defaultPrevented?: unknown }).defaultPrevented).toBeUndefined();
   });
 
   test('subscribing during emit does not fire in the current emission (snapshot)', () => {

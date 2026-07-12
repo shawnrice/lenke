@@ -21,8 +21,8 @@ graph.dropVertexIndex('age');
 ```
 
 Maintenance is automatic and synchronous: inserts, removes, and property writes
-keep the index current (a mutation that is `preventDefault`-ed never touches it),
-and it survives `clone()`/`snapshot()` without aliasing the source. Bulk loads
+keep the index current, and it survives `clone()`/`snapshot()` without aliasing
+the source. Bulk loads
 that run with events disabled are still indexed, because maintenance lives in the
 graph's mutation methods, not in event listeners.
 

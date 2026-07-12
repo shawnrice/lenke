@@ -78,13 +78,19 @@ describe('PropertyIndex equality', () => {
     expect(ids(graph.getVerticesByProperty('name', 'marko'))).toEqual([]);
   });
 
-  test('a prevented mutation does not touch the index', () => {
+  test('an observing listener does not block the write — the index still updates', () => {
+    // Events are observation-only: a listener reacts (here, just watches) but
+    // cannot veto, so the write commits and the index reflects it.
     const graph = personGraph();
     graph.createVertexIndex('age');
-    graph.on('@graph/VertexPropertyChanged', (event) => event.preventDefault());
+    let seen = 0;
+    graph.on('@graph/VertexPropertyChanged', () => {
+      seen += 1;
+    });
     graph.getVertexById('a')!.setProperty('age', 99);
-    expect(ids(graph.getVerticesByProperty('age', 99))).toEqual([]);
-    expect(ids(graph.getVerticesByProperty('age', 29))).toEqual(['a']);
+    expect(seen).toBe(1); // the listener saw the change…
+    expect(ids(graph.getVerticesByProperty('age', 99))).toEqual(['a']); // …and it committed
+    expect(ids(graph.getVerticesByProperty('age', 29))).toEqual([]);
   });
 });
 

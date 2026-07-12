@@ -2,8 +2,8 @@ import { describe, expect, test } from 'bun:test';
 
 import { Graph } from './Graph.js';
 
-// The version/epoch bump is deferred to the same microtask as snapshot
-// staleness (so it sees the final `defaultPrevented`), so tests flush first.
+// The version/epoch bump is deferred to a microtask (so a burst of mutations
+// coalesces into one notify), so tests flush first.
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 1));
 
 // Subscriber `notify()` is debounced behind a timer (scheduled from inside the

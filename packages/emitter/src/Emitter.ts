@@ -8,11 +8,11 @@ export type EmitterOptions = {
   enabled?: boolean;
   /**
    * Invoked when a listener throws. This isolates failures — one bad listener
-   * can neither stop the other listeners nor break the caller. That last part
-   * matters here: callers inspect `event.defaultPrevented` *after* `emit`
-   * returns (the graph vetoes mutations this way), so `emit` must never throw.
-   * If omitted, a listener error is re-thrown on a microtask, so it surfaces to
-   * the host's unhandled-error handling without interrupting dispatch.
+   * can neither stop the other listeners nor break the caller. Events are
+   * observation-only (a listener reacts, it can't veto), so `emit` must never
+   * throw and every listener must get its turn. If omitted, a listener error is
+   * re-thrown on a microtask, so it surfaces to the host's unhandled-error
+   * handling without interrupting dispatch.
    */
   onError?: (error: unknown, event: EmitterEvent<string, any>) => void;
 };
@@ -110,10 +110,10 @@ export class Emitter<
       try {
         listener(event);
       } catch (error) {
-        // Isolate: a throwing listener must not stop the remaining listeners,
-        // nor break the caller (which reads `event.defaultPrevented` after this
-        // returns). Other listeners — including ones that call preventDefault —
-        // still run, so a partial failure can't silently drop a veto.
+        // Isolate: a throwing listener must not stop the remaining listeners nor
+        // break the caller. Events are observation-only, so every listener runs
+        // regardless — a partial failure can't drop another listener's side
+        // effect (an audit entry, a metric, a React re-render).
         this.onError(error, event);
       }
     }

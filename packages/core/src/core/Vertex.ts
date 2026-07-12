@@ -66,7 +66,7 @@ export class Vertex {
   /**
    * The vertex's property bag — the graph's live internal object, frozen.
    * **Read-only**: a top-level write (`v.properties.age = 40`) throws, because
-   * it would bypass the event/veto system and leave any `PropertyIndex` stale.
+   * it would bypass the event/index maintenance and leave any `PropertyIndex` stale.
    * Always write via {@link setProperty}/{@link setProperties}/{@link removeProperty}.
    * (Freeze is shallow — nested array/object *values* are not protected.)
    */
@@ -108,7 +108,7 @@ export class Vertex {
     validatePropertyKey(key);
     validatePropertyValue(value);
     const previousValue = this.properties[key]; // read before the write; undefined if absent
-    const event = this.#graph?.emit(
+    this.#graph?.emit(
       new EmitterEvent('@graph/VertexPropertyChanged', {
         vertex: this,
         key,
@@ -116,10 +116,6 @@ export class Vertex {
         previous: previousValue,
       }),
     );
-
-    if (event?.defaultPrevented) {
-      return;
-    }
 
     const previous = this.properties;
     this.#commitProperties({ ...previous, [key]: value });
@@ -131,16 +127,12 @@ export class Vertex {
       validatePropertyValue(props[key]);
     }
 
-    const event = this.#graph?.emit(
+    this.#graph?.emit(
       new EmitterEvent('@graph/VertexPropertiesChanged', {
         vertex: this,
         next: props,
       }),
     );
-
-    if (event?.defaultPrevented) {
-      return;
-    }
 
     if (!this.#graph) {
       throw new Error('Vertex has no graph');
@@ -159,13 +151,7 @@ export class Vertex {
       return;
     }
 
-    const event = this.#graph?.emit(
-      new EmitterEvent('@graph/VertexPropertyRemoved', { vertex: this, key }),
-    );
-
-    if (event?.defaultPrevented) {
-      return;
-    }
+    this.#graph?.emit(new EmitterEvent('@graph/VertexPropertyRemoved', { vertex: this, key }));
 
     const previous = this.properties;
     this.#commitProperties(Object.fromEntries(Object.entries(previous).filter(([k]) => key !== k)));
@@ -173,13 +159,7 @@ export class Vertex {
   }
 
   removeProperties(keys: string[]): void {
-    const event = this.#graph?.emit(
-      new EmitterEvent('@graph/VertexPropertiesRemoved', { vertex: this, keys }),
-    );
-
-    if (event?.defaultPrevented) {
-      return;
-    }
+    this.#graph?.emit(new EmitterEvent('@graph/VertexPropertiesRemoved', { vertex: this, keys }));
 
     const previous = this.properties;
     this.#commitProperties(

@@ -69,20 +69,13 @@ describe('useGraphTraversal Hooks', () => {
     expect((tinkerGraph as unknown as { listeners: Set<unknown> }).listeners.size).toBe(0);
   });
 
-  test('we can prevent default', () => {
+  test('a listener observes an add but cannot prevent it (events are observation-only)', () => {
     const { tinkerGraph, wrapper } = createTinkerWrapper();
 
-    const preventNewVertices = vi.fn((event) => {
-      if (event.type === '@graph/VertexAdded') {
-        return event.preventDefault();
-      }
-    });
+    const observer = vi.fn();
+    tinkerGraph.on('@graph/VertexAdded', observer);
 
-    tinkerGraph.on('@graph/VertexAdded', preventNewVertices);
-
-    const { result } = renderHook(() => namesOf('15'), { wrapper });
-
-    expect(result.current).toEqual([]);
+    renderHook(() => namesOf('15'), { wrapper });
 
     act(() => {
       tinkerGraph.addVertex({
@@ -96,7 +89,8 @@ describe('useGraphTraversal Hooks', () => {
       vi.runOnlyPendingTimers();
     });
 
-    expect(result.current).toEqual([]);
-    expect(preventNewVertices).toHaveBeenCalledTimes(1);
+    // The listener saw the add; the vertex committed regardless — no veto.
+    expect(observer).toHaveBeenCalledTimes(1);
+    expect(tinkerGraph.getVertexById('15')).not.toBeNull();
   });
 });
