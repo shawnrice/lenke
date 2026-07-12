@@ -661,8 +661,22 @@ const joinLabels = (labels: Iterable<string>): string =>
 
 const splitLabels = (text: string): string[] => (text === '' ? [] : splitList(text));
 
+// A row must carry at least the fixed leading columns (id + `:LABEL` for nodes;
+// id + from + to + `:LABEL` for edges) before any property columns. A short row
+// (fewer cells than the header's fixed prefix) is malformed input — surface a
+// coded error rather than crash with a raw `undefined.text` TypeError.
+const requireFixedColumns = (row: Cell[], fixedCount: number, kind: string): void => {
+  if (row.length < fixedCount) {
+    throw new LenkeError(
+      `csv: malformed ${kind} row — expected at least ${fixedCount} columns, got ${row.length}`,
+      { code: ErrorCode.InvalidValue },
+    );
+  }
+};
+
 /** Add one vertex from a parsed node row. */
 const applyNodeRow = (graph: Graph, row: Cell[], propCols: readonly ParsedHeader[]): void => {
+  requireFixedColumns(row, 2, 'node');
   graph.addVertex({
     id: unguardField(row[0].text),
     labels: splitLabels(row[1].text),
@@ -672,6 +686,7 @@ const applyNodeRow = (graph: Graph, row: Cell[], propCols: readonly ParsedHeader
 
 /** Add one edge from a parsed edge row, creating endpoints on demand. */
 const applyEdgeRow = (graph: Graph, row: Cell[], propCols: readonly ParsedHeader[]): void => {
+  requireFixedColumns(row, 4, 'edge');
   const fromId = unguardField(row[1].text);
   const toId = unguardField(row[2].text);
   // Endpoints are created if missing so the edge stream can be decoded without a
