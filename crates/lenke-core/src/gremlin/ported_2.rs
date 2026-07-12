@@ -106,8 +106,10 @@ fn p2_repeat_until_software() {
 
 #[test]
 fn p2_repeat_until_ripple_from_start() {
-    // until is checked BEFORE the body — starting at ripple yields ripple.
-    let r = qs("g.V('5').repeat(__.out()).until(__.has('name', eq('ripple'))).values('name')");
+    // Pre-form `until(cond).repeat(body)` is while-do — checked BEFORE the body,
+    // so starting AT ripple yields ripple without running out(). (Post-form
+    // `.until()` is do-while: ripple is a sink → out() drains it → [].)
+    let r = qs("g.V('5').until(__.has('name', eq('ripple'))).repeat(__.out()).values('name')");
     assert_eq!(ordered(r), vec!["ripple"]);
 }
 
@@ -206,8 +208,9 @@ fn p2_repeat_times_zero_passthrough() {
 
 #[test]
 fn p2_repeat_until_true_on_input() {
-    // Starting at lop (SOFTWARE): until checked first → input passes through.
-    let r = qs("g.V('3').repeat(__.out()).until(__.hasLabel('SOFTWARE')).values('name')");
+    // Pre-form `until(cond).repeat(body)` is while-do: starting at lop (SOFTWARE),
+    // the pre-form until is checked first → the input passes through unchanged.
+    let r = qs("g.V('3').until(__.hasLabel('SOFTWARE')).repeat(__.out()).values('name')");
     assert_eq!(ordered(r), vec!["lop"]);
 }
 

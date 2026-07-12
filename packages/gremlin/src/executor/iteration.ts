@@ -109,6 +109,15 @@ export const repeatStep = function* (
     return hasAny(applyPlanToStream(step.emit!, [t], graph, ctx));
   };
 
+  // `until` placement (TinkerPop): pre-form `until(cond).repeat(body)` checks
+  // BEFORE the body (while-do — a satisfier never enters the body); the default
+  // post-form `repeat(body).until(cond)` checks AFTER the body (do-while — the
+  // body runs at least once). Distinguished by the AST `untilBefore` flag.
+  const untilBefore = hasUntil && step.untilBefore === true;
+  const untilAfter = hasUntil && !untilBefore;
+  const untilMatches = (t: Traverser<unknown>): boolean =>
+    hasAny(applyPlanToStream(step.until!, [t], graph, ctx));
+
   let frontier: Traverser<unknown>[] = [...stream].map(incLoops);
   let work = 0;
 
@@ -123,24 +132,27 @@ export const repeatStep = function* (
       }
     }
 
-    // Apply the body to advance the frontier.
-    const next: Traverser<unknown>[] = [];
-    const survivors: Traverser<unknown>[] = [];
+    // while-do: check `until` BEFORE the body — a satisfier exits without ever
+    // running the body.
+    let advancing = frontier;
 
-    for (const t of frontier) {
-      // until(plan) is checked BEFORE applying the body each iteration.
-      if (hasUntil && hasAny(applyPlanToStream(step.until!, [t], graph, ctx))) {
-        // This traverser is "done"; yield it and stop iterating it.
-        yield t;
-        continue;
+    if (untilBefore) {
+      advancing = [];
+
+      for (const t of frontier) {
+        if (untilMatches(t)) {
+          yield t;
+        } else {
+          advancing.push(t);
+        }
       }
-
-      survivors.push(t);
     }
 
-    // Advance survivors through the body (in the ENCLOSING ctx, so side-effects
-    // inside the body reach the outer scope).
-    for (const t of applyPlanToStream(step.body, survivors, graph, ctx)) {
+    // Advance the frontier through the body (in the ENCLOSING ctx, so
+    // side-effects inside the body reach the outer scope).
+    const stepped: Traverser<unknown>[] = [];
+
+    for (const t of applyPlanToStream(step.body, advancing, graph, ctx)) {
       work += 1;
 
       if (work > REPEAT_BUDGET) {
@@ -150,25 +162,41 @@ export const repeatStep = function* (
         );
       }
 
-      next.push(incLoops(t));
+      stepped.push(incLoops(t));
     }
 
-    frontier = next;
-
-    // Post-form emit (TinkerPop's default `repeat(body).emit(...)`): emit
-    // after each body application. The final iteration's body output is
-    // emitted here, so no additional post-loop yield is needed.
+    // Post-form emit (TinkerPop's default `repeat(body).emit(...)`): emit every
+    // body output. The final iteration's output is emitted here, so with an
+    // until stopper no additional post-loop yield is needed.
     if (hasEmit && !emitBefore) {
-      for (const t of frontier) {
+      for (const t of stepped) {
         if (matchesEmit(t)) {
           yield t;
         }
       }
     }
+
+    // do-while: check `until` AFTER the body — a satisfier exits; the rest loop.
+    if (untilAfter) {
+      const cont: Traverser<unknown>[] = [];
+
+      for (const t of stepped) {
+        if (untilMatches(t)) {
+          yield t;
+        } else {
+          cont.push(t);
+        }
+      }
+
+      frontier = cont;
+    } else {
+      frontier = stepped;
+    }
   }
 
   // Post-loop yield rules:
-  //   - With `until()`: traversers exit via the until-yield above; nothing more.
+  //   - With `until()` (either placement): traversers exit via the until-yield
+  //     above; nothing more.
   //   - With post-form emit: every body output was already emitted; nothing more.
   //   - With pre-form emit: pre-emit caught input + intermediates, but the
   //     final body output never had a "next iteration" to be pre-emitted, so

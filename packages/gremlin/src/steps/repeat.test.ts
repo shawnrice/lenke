@@ -45,15 +45,30 @@ describe('repeat tests', () => {
     expect((r as string[]).sort()).toEqual(['lop', 'lop', 'ripple']);
   });
 
-  test('repeat(out()).until(has("name", eq("ripple"))) stops at ripple from start', () => {
-    // until is checked BEFORE each iteration body, so starting AT ripple yields ripple.
+  test('untilBefore(has("name", eq("ripple"))) stops at ripple from start (while-do)', () => {
+    // Pre-form untilBefore checks the condition BEFORE the body, so starting AT
+    // ripple yields ripple without ever running out(). (Post-form .until() would
+    // run the body first — ripple is a sink → out() drains it → [].)
     const r = arr(
       run(
-        traversal(V('5'), repeat(out()).until(has('name', eq('ripple'))), values('name')),
+        traversal(V('5'), repeat(out()).untilBefore(has('name', eq('ripple'))), values('name')),
         tinkerGraph,
       ),
     );
     expect(r).toEqual(['ripple']);
+  });
+
+  test('repeat(out(KNOWS)).until(hasLabel(PERSON)) runs the body once first (do-while)', () => {
+    // Post-form .until() is do-while: from marko (already a PERSON) the body runs
+    // once → out('KNOWS') → josh, vadas (both PERSON) → they satisfy until and
+    // exit. (The old while-do behavior returned [marko] — R-REPEAT-UNTIL.)
+    const r = arr(
+      run(
+        traversal(V('1'), repeat(out('KNOWS')).until(hasLabel('PERSON')), values('name')),
+        tinkerGraph,
+      ),
+    );
+    expect((r as string[]).sort()).toEqual(['josh', 'vadas']);
   });
 
   // doc: g.V(1).repeat(out()).times(2).emit() — post-form: emit AFTER each
@@ -214,12 +229,13 @@ describe('repeat tests', () => {
     expect(r).toEqual(['marko']);
   });
 
-  test('until(plan) true on input passes input through unchanged', () => {
-    // Starting at lop (SOFTWARE) with until(hasLabel(SOFTWARE)): the until is
-    // checked BEFORE the body, so the input traverser is yielded immediately.
+  test('untilBefore(plan) true on input passes input through unchanged (while-do)', () => {
+    // Starting at lop (SOFTWARE) with untilBefore(hasLabel(SOFTWARE)): the pre-form
+    // until is checked BEFORE the body, so the input traverser is yielded
+    // immediately. (Post-form .until() is do-while — see the do-while tests above.)
     const r = arr(
       run(
-        traversal(V('3'), repeat(out()).until(hasLabel('SOFTWARE')), values('name')),
+        traversal(V('3'), repeat(out()).untilBefore(hasLabel('SOFTWARE')), values('name')),
         tinkerGraph,
       ),
     );

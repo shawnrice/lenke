@@ -370,6 +370,10 @@ pub enum Step {
         body: Box<Traversal>,
         times: Option<usize>,
         until: Option<Box<Traversal>>,
+        /// TinkerPop `until` placement: `false` = post-form `repeat(body).until()`
+        /// (do-while — body runs at least once, condition checked AFTER it);
+        /// `true` = pre-form `until().repeat(body)` (while-do — checked BEFORE).
+        until_before: bool,
         emit: Option<Box<Traversal>>,
         emit_before: bool,
     },
@@ -810,6 +814,7 @@ impl Traversal {
             body: Box::new(body),
             times: None,
             until: None,
+            until_before: false,
             emit: None,
             emit_before: false,
         })
@@ -821,8 +826,22 @@ impl Traversal {
         self
     }
     pub fn until(mut self, cond: Self) -> Self {
+        // Post-form `repeat(body).until(cond)` — do-while (until_before stays false).
         if let Some(Step::Repeat { until, .. }) = self.steps.last_mut() {
             *until = Some(Box::new(cond));
+        }
+        self
+    }
+    pub fn until_before(mut self, cond: Self) -> Self {
+        // Pre-form `until(cond).repeat(body)` — while-do.
+        if let Some(Step::Repeat {
+            until,
+            until_before,
+            ..
+        }) = self.steps.last_mut()
+        {
+            *until = Some(Box::new(cond));
+            *until_before = true;
         }
         self
     }

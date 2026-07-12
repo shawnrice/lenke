@@ -187,6 +187,33 @@ fn textual_until_before_repeat_attaches() {
     assert_eq!(sorted_names(q(t)), vec!["josh"]);
 }
 
+// --- repeat().until() is do-while: the body runs at least once ----------------
+// R-REPEAT-UNTIL (Anouk r6): post-form `repeat(body).until(cond)` checks the
+// condition AFTER the body (TinkerPop), so a start already satisfying `until`
+// still runs the body once. Pre-form `until(cond).repeat(body)` stays while-do.
+#[test]
+fn repeat_until_post_form_is_do_while() {
+    // From marko (a PERSON): the body runs once → out('KNOWS') → josh, vadas (both
+    // PERSON → satisfy until and exit). The old while-do returned [marko].
+    let built = q(super::g()
+        .v_ids(&["1"])
+        .repeat(__().out(&["KNOWS"]))
+        .until(__().has_label(&["PERSON"]))
+        .values(&["name"]));
+    assert_eq!(sorted_names(built), vec!["josh", "vadas"]);
+
+    // Textual post-form is byte-identical to the builder.
+    let t = super::parse("g.V('1').repeat(out('KNOWS')).until(hasLabel('PERSON')).values('name')")
+        .unwrap();
+    assert_eq!(sorted_names(q(t)), vec!["josh", "vadas"]);
+
+    // Pre-form `until(cond).repeat(body)` is while-do → marko exits before the body.
+    let pre =
+        super::parse("g.V('1').until(hasLabel('PERSON')).repeat(out('KNOWS')).values('name')")
+            .unwrap();
+    assert_eq!(sorted_names(q(pre)), vec!["marko"]);
+}
+
 // --- order(Scope.local): rank a group Map by value (was a silent no-op) -------
 // R-GREMLIN-AGG (Omar r5): order(Scope.local) sorts WITHIN each traverser's value
 // instead of across the stream — the canonical use is ranking a groupCount() Map

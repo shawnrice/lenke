@@ -500,7 +500,9 @@ impl Parser {
                     r = r.emit_before(e);
                 }
                 if let Some(u) = pending.until.take() {
-                    r = r.until(u);
+                    // A pre-form `until(cond).repeat(body)` is while-do (checked
+                    // BEFORE the body); the post-form `.until()` below is do-while.
+                    r = r.until_before(u);
                 }
                 return Ok(r);
             }

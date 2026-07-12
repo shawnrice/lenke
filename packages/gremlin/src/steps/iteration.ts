@@ -40,13 +40,15 @@ export const match = (...patterns: SubPlan[]): StepFn =>
 // `emit(pred?).repeat(body)`): emits BEFORE each body application, including
 // the input traverser at level 0.
 //
-// LIMITATION vs TinkerPop: until() placement (BEFORE→do-while vs AFTER→while)
-// is not yet distinguished. Our until() always behaves as BEFORE-placement
-// (do-while: check before applying body each iteration). Without `until()`
-// and without `times()`, repeat is capped at 100 iterations.
+// `.until(pred)` is TinkerPop's `repeat(body).until(pred)` post-form: checks the
+// condition AFTER the body (do-while — the body runs at least once).
+// `.untilBefore(pred)` is the pre-form (TP's `until(pred).repeat(body)`): checks
+// BEFORE the body (while-do — a satisfier never enters the body). Without
+// `until()` and without `times()`, repeat is capped at 100 iterations.
 type RepeatBuilder = StepFn & {
   times: (n: number) => RepeatBuilder;
   until: (pred: SubPlan) => RepeatBuilder;
+  untilBefore: (pred: SubPlan) => RepeatBuilder;
   emit: (pred?: SubPlan) => RepeatBuilder;
   emitBefore: (pred?: SubPlan) => RepeatBuilder;
 };
@@ -54,6 +56,7 @@ type RepeatBuilder = StepFn & {
 const makeRepeat = (config: {
   body: Plan;
   until?: Plan;
+  untilBefore?: boolean;
   emit?: Plan;
   emitBefore?: boolean;
   times?: number;
@@ -62,7 +65,9 @@ const makeRepeat = (config: {
 
   return Object.assign(fn, {
     times: (n: number) => makeRepeat({ ...config, times: n }),
-    until: (pred: SubPlan) => makeRepeat({ ...config, until: buildPlan(pred) }),
+    until: (pred: SubPlan) => makeRepeat({ ...config, until: buildPlan(pred), untilBefore: false }),
+    untilBefore: (pred: SubPlan) =>
+      makeRepeat({ ...config, until: buildPlan(pred), untilBefore: true }),
     emit: (pred?: SubPlan) =>
       makeRepeat({ ...config, emit: pred ? buildPlan(pred) : { steps: [] }, emitBefore: false }),
     emitBefore: (pred?: SubPlan) =>

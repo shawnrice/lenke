@@ -110,6 +110,25 @@ direction. Each blocks a confirmed use case.
   wedge the transport — it's caught, surfaced via a new `onIngestError` hook, and
   the cursor advances past it (a deterministic poison would otherwise replay forever,
   e.g. R-SCHEMA-REPL); full atomic ingest still awaits R-TX. (Yuki r5)
+- **Gremlin `order(Scope.local)` now sorts within a value (resolves R-GREMLIN-AGG
+  part 1):** it was silently ignored (`order()` had no Scope param → the Symbol
+  spread into config and did nothing). Now `order(Scope.local)` sorts a group Map's
+  entries by value (the top-N-from-groupCount idiom) or a list's elements; a Scope
+  was added to `Step::Order` in the native engine too. (Omar r5)
+- **Gremlin `group().by(k).by(reduce)` now folds each group (resolves R-GREMLIN-AGG
+  part 2):** a reducing value-by (count/sum/min/max/mean/fold) ran per-traverser and
+  collected `{k:[1,1,…]}`; it now folds over the whole group as a barrier → `{k:n}`.
+  A mapping value-by still collects a list. Both engines byte-identical. (Omar r5, Anouk r6)
+- **Gremlin `repeat().until()` is now do-while (resolves R-REPEAT-UNTIL):** the
+  executor always checked `until` BEFORE the body (while-do), so post-form
+  `repeat(body).until(cond)` didn't guarantee one iteration —
+  `repeat(out('KNOWS')).until(hasLabel('PERSON'))` from marko returned `[marko]`
+  instead of TinkerPop's `[josh,vadas]`. An AST `untilBefore` flag now distinguishes
+  placement: `.until()` (post-form) = do-while (check AFTER the body); new
+  `.untilBefore()` (pre-form `until().repeat()`) = while-do. The native text parser
+  routes pre-form vs post-form accordingly; both executors restructured; the
+  `ported_divergences` / `ported_2` cases that locked in the old results updated.
+  (Anouk r6)
 
 ## FIXED (history — see git log + memory `dx-ergonomics-pass`)
 

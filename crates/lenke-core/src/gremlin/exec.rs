@@ -1792,7 +1792,7 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
             }
         }
         Step::Barrier => stream,
-        Step::Repeat { body, times, until, emit, emit_before } => run_repeat(graph, ctx, &stream, body, *times, until.as_deref(), emit.as_deref(), *emit_before),
+        Step::Repeat { body, times, until, until_before, emit, emit_before } => run_repeat(graph, ctx, &stream, body, *times, until.as_deref(), *until_before, emit.as_deref(), *emit_before),
 
         // --- tagging / select ---
         Step::As(label) => stream
@@ -2219,6 +2219,7 @@ fn insert_tree(node: &mut Vec<(GVal, GVal)>, keys: &[GVal]) {
 
 /// `repeat(body)` with `times` / `until` / `emit` modulators.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn run_repeat(
     graph: &mut Graph,
     ctx: &mut Ctx,
@@ -2226,6 +2227,7 @@ fn run_repeat(
     body: &Traversal,
     times: Option<usize>,
     until: Option<&Traversal>,
+    until_before: bool,
     emit: Option<&Traversal>,
     emit_before: bool,
 ) -> Vec<Trav> {
@@ -2278,20 +2280,21 @@ fn run_repeat(
                 }
             }
         }
-        // `until` is checked BEFORE the body (do-while): satisfiers exit.
-        let mut advancing = Vec::new();
-        for t in std::mem::take(&mut current) {
-            if let Some(u) = until {
-                if sub_nonempty(graph, ctx, u, &t) {
-                    out.push(t);
-                    continue;
+        // while-do: pre-form `until(cond).repeat(body)` checks BEFORE the body —
+        // a satisfier exits without ever running it.
+        let advancing = if until_before {
+            let mut adv = Vec::new();
+            for t in std::mem::take(&mut current) {
+                match until {
+                    Some(u) if sub_nonempty(graph, ctx, u, &t) => out.push(t),
+                    _ => adv.push(t),
                 }
             }
-            advancing.push(t);
-        }
-        if advancing.is_empty() {
-            break;
-        }
+            adv
+        } else {
+            std::mem::take(&mut current)
+        };
+
         let stepped: Vec<Trav> = run_steps(graph, ctx, &body.steps, advancing)
             .into_iter()
             .map(inc_loops)
@@ -2306,10 +2309,24 @@ fn run_repeat(
             }
         }
         work += stepped.len() as u64;
-        current = stepped;
         if work > REPEAT_BUDGET {
             ctx.over_budget = true;
             break;
+        }
+
+        // do-while: post-form `repeat(body).until(cond)` checks AFTER the body —
+        // a satisfier exits; the rest loop on.
+        if until.is_some() && !until_before {
+            let mut cont = Vec::new();
+            for t in stepped {
+                match until {
+                    Some(u) if sub_nonempty(graph, ctx, u, &t) => out.push(t),
+                    _ => cont.push(t),
+                }
+            }
+            current = cont;
+        } else {
+            current = stepped;
         }
     }
     // Pre-emit form yields the final frontier too (it never got a pre-emit pass).

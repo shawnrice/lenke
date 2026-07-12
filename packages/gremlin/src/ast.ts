@@ -141,6 +141,12 @@ export type Step =
       // `.emitBefore()`) emits BEFORE each body application, including the
       // input traverser at level 0.
       emitBefore?: boolean;
+      // TinkerPop `until` placement: `repeat(body).until(cond)` (post-form, the
+      // default `.until()`) checks the condition AFTER the body — do-while, the
+      // body runs at least once. `until(cond).repeat(body)` (pre-form, our
+      // `.untilBefore()`) checks BEFORE the body — while-do, a satisfier never
+      // enters the body.
+      untilBefore?: boolean;
       times?: number;
     }
   // Predicates on the current value
