@@ -178,6 +178,22 @@ describe('CSV formula neutralization: complete coverage (every string-cell surfa
     expect(graphContentEqual(roundTrip(g), g)).toBe(true);
   });
 
+  test('a null LIST element round-trips exactly (the \\Tn: sigil, not the string "null")', () => {
+    const g = new Graph();
+    g.addVertex({
+      labels: ['T'],
+      properties: { dims: [1, null, 2], oneNull: [null] }, // null is a first-class value
+    });
+
+    // On the wire the null element uses the type-override sigil, not "null".
+    expect(encode(g)).toContain('Tn:');
+
+    const back = roundTrip(g);
+    const v = [...back.vertices][0];
+    expect(v.getProperty('dims')).toEqual([1, null, 2]); // was [1, "null", 2] (R-CSV-LISTNULL)
+    expect(v.getProperty('oneNull')).toEqual([null]);
+  });
+
   test('the streaming encoder neutralizes the same way (separate build path)', async () => {
     const g = new Graph();
     const a = g.addVertex({ id: '=sid', labels: ['=SLabel'], properties: { '=sk': '=sv' } });

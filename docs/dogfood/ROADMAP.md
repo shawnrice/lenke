@@ -139,6 +139,15 @@ direction. Each blocks a confirmed use case.
   are notification-only — a per-element `preventDefault()` is not honored (truncate
   is an all-or-nothing reset). Core-only (the event model is the in-process Graph's).
   (Gustavo r6)
+- **CSV null-in-list now round-trips (resolves R-CSV-LISTNULL):** the CSV codec had
+  no null representation for a list _element_, so `[1, null, 2]` decoded to
+  `[1, "null", 2]` — silent data loss, and the only codec that lost it (Ingrid r5).
+  The scalar `\N` token can't be reused inside a list (no per-element quote bit, and
+  `splitList` strips one backslash), so null now gets its own element type-override
+  code — **`\Tn:`** (empty body), the sibling of the existing `\Ti:`/`\Ts:` element
+  tags. Mirrored byte-for-byte in the Rust codec, and the shared conformance corpus
+  gained a null-in-list case (`bob.dims=[1,null,2]`) so both engines are proven to
+  round-trip it identically through every codec. (Ingrid r5)
 
 ## FIXED (history — see git log + memory `dx-ergonomics-pass`)
 

@@ -34,6 +34,8 @@ use crate::graph::{Builder, EdgeRec, Graph, NodeRec, Value};
 const NULL_TOKEN: &str = "\\N";
 const LIST_SEP: char = ';';
 const OVERRIDE_PREFIX: &str = "\\T";
+/// Element type-override code for a null LIST element (`\Tn:`, empty body).
+const NULL_ELEMENT_CODE: &str = "n";
 /// The lone marker row that separates the nodes section from the edges section.
 const EDGES_MARKER: &str = "=== EDGES ===";
 /// The marker as written between the two sections (its own line).
@@ -307,6 +309,14 @@ fn split_list(raw: &str) -> Vec<String> {
 }
 
 fn element_to_raw(elem_scalar: Scalar, el: &Value) -> String {
+    // A null LIST ELEMENT. The scalar `\N` token can't be reused inside a list
+    // (no per-element quote bit, and `split_list` strips one backslash), so null
+    // gets its own type-override code — `\Tn:` (empty body), the sibling of the
+    // `\Ti:`/`\Ts:` element tags — so `[1, null, 2]` round-trips exactly rather
+    // than losing the null to the string `"null"`.
+    if matches!(el, Value::Null) {
+        return escape_element(&format!("{OVERRIDE_PREFIX}{NULL_ELEMENT_CODE}:"));
+    }
     let actual = scalar_of_element(el);
     let raw = scalar_to_raw(actual, el);
     if actual == elem_scalar {
@@ -327,6 +337,9 @@ fn raw_to_element(elem_scalar: Scalar, part: &str) -> Value {
     if let Some(rest) = part.strip_prefix(OVERRIDE_PREFIX) {
         if let Some(colon) = rest.find(':') {
             let code = &rest[..colon];
+            if code == NULL_ELEMENT_CODE {
+                return Value::Null;
+            }
             return raw_to_scalar(Scalar::from_code(code), &rest[colon + 1..]);
         }
     }
@@ -1062,6 +1075,32 @@ mod tests {
             let g2 = decode(&enc).unwrap();
             assert_eq!(g2.vertex_count(), 1);
         }
+    }
+
+    #[test]
+    fn null_list_element_round_trips() {
+        // A null INSIDE a list must round-trip exactly — it was lost to the string
+        // "null" (R-CSV-LISTNULL). It encodes with the `\Tn:` element sigil.
+        let g = crate::codec::pg_json::decode(
+            r#"{"nodes":[{"id":"t","labels":["T"],"properties":{"dims":[1,null,2],"oneNull":[null]}}],"edges":[]}"#,
+        )
+        .unwrap();
+        let enc = encode(&g);
+        assert!(
+            enc.contains("Tn:"),
+            "null element should use the \\Tn: sigil, got: {enc}"
+        );
+
+        let g2 = decode(&enc).unwrap();
+        let t = g2.vid.get("t").unwrap() as usize;
+        assert_eq!(
+            g2.props.value(t, "dims", &g2.strs),
+            Value::List(vec![Value::Num(1.0), Value::Null, Value::Num(2.0)])
+        );
+        assert_eq!(
+            g2.props.value(t, "oneNull", &g2.strs),
+            Value::List(vec![Value::Null])
+        );
     }
 
     #[test]

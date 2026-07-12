@@ -407,8 +407,20 @@ const scalarOfElement = (el: PropertyValue): ScalarType =>
     ? 'string'
     : scalarOf(el as Exclude<PropertyValue, readonly PropertyValue[]>);
 
+// A null LIST ELEMENT. The scalar `\N` null token can't be reused inside a list
+// (there is no per-element quote bit, and `splitList` strips one backslash), so
+// null gets its own type-override code — `\Tn:` (empty body), the sibling of the
+// `\Ti:`/`\Ts:` element type tags. `null` is a first-class stored value, so a
+// `[1, null, 2]` must round-trip exactly rather than losing the null to the
+// string `"null"`.
+const NULL_ELEMENT_CODE = 'n';
+
 /** Serialize one list element, type-tagging it when it deviates from the column element type. */
 const elementToRaw = (elemScalar: ScalarType, el: PropertyValue): string => {
+  if (el === null) {
+    return escapeElement(`${OVERRIDE_PREFIX}${NULL_ELEMENT_CODE}:`);
+  }
+
   const actual = scalarOfElement(el);
   const raw = scalarToRaw(actual, el);
 
@@ -428,6 +440,10 @@ const rawToElement = (elemScalar: ScalarType, part: string): PropertyValue => {
   if (part.startsWith(OVERRIDE_PREFIX)) {
     const colon = part.indexOf(':');
     const code = part.slice(OVERRIDE_PREFIX.length, colon);
+
+    if (code === NULL_ELEMENT_CODE) {
+      return null;
+    }
 
     return rawToScalar(CODE_SCALAR[code], part.slice(colon + 1));
   }
