@@ -418,6 +418,18 @@ export class Graph {
       ? params
       : new Vertex({ ...params, properties: params.properties ?? {}, graph: this });
 
+    // Constraint gate: reject before emitting/committing, so a rejected write
+    // leaves no trace and every write path (direct API, GQL, Gremlin, ingest)
+    // is covered by one chokepoint.
+    const missing = this.missingRequired(vertex.labels, vertex.properties);
+
+    if (missing) {
+      throw new LenkeError(
+        `missing required property '${missing.key}' for label '${missing.label}'`,
+        { code: ErrorCode.ConstraintViolation },
+      );
+    }
+
     this.emit(new EmitterEvent('@graph/VertexAdded', vertex));
 
     this.verticesById.set(vertex.id, vertex);
@@ -477,6 +489,17 @@ export class Graph {
 
   public addLabelToVertex = (label: string, vertex: Vertex): Vertex => {
     validateLabel(label);
+
+    // Adding a label brings its required keys into force for this vertex.
+    for (const key of this.vertexRequiredConstraints.get(label) ?? []) {
+      if (!this.isPresent(vertex.properties[key])) {
+        throw new LenkeError(
+          `cannot add label '${label}': it requires property '${key}', which is missing`,
+          { code: ErrorCode.ConstraintViolation },
+        );
+      }
+    }
+
     this.emit(new EmitterEvent('@graph/LabelAddedToVertex', { label, vertex }));
 
     this.indexVertexLabel(label, vertex);
@@ -819,6 +842,123 @@ export class Graph {
     [...this.vertexUniqueConstraints]
       .flatMap(([label, keys]) => [...keys].map((key): [string, string] => [label, key]))
       .sort((a, b) => (a[0] === b[0] ? a[1].localeCompare(b[1]) : a[0].localeCompare(b[0])));
+
+  // --- REQUIRED constraints (R-CONSTRAINTS) --------------------------------
+  // A required `(label, key)` means: every vertex carrying `label` must have a
+  // present, non-null value under `key`. Enforced at the core mutation boundary
+  // (addVertex + property removal/null-set + addLabel), so every write path —
+  // direct API, GQL, Gremlin, ingest — is covered. Byte-identical to the Rust
+  // core. Declarative (no closures), so it mirrors across engines like `unique`.
+
+  private readonly vertexRequiredConstraints = new Map<string, Set<string>>();
+
+  /** Is a value "present" for a required constraint? Absent (`undefined`) and
+   *  `null` both fail; every other stored value (incl. `''`, `0`, `false`, `[]`)
+   *  satisfies presence. */
+  private isPresent = (value: unknown): boolean => value !== undefined && value !== null;
+
+  /**
+   * Declare a REQUIRED constraint on `(label, key)`. Idempotent. Throws
+   * {@link ErrorCode.ConstraintViolation} if any existing vertex with `label`
+   * lacks a present, non-null `key` — an already-violated constraint is
+   * meaningless.
+   */
+  public createRequiredConstraint = (label: string, key: string): void => {
+    for (const vertex of this.getVerticesByLabel(label)) {
+      if (!this.isPresent(vertex.properties[key])) {
+        throw new LenkeError(
+          `existing data already violates the required constraint being declared on (${label}, ${key})`,
+          { code: ErrorCode.ConstraintViolation },
+        );
+      }
+    }
+
+    let keys = this.vertexRequiredConstraints.get(label);
+
+    if (!keys) {
+      keys = new Set();
+      this.vertexRequiredConstraints.set(label, keys);
+    }
+
+    keys.add(key);
+  };
+
+  /** Drop a required constraint. Idempotent. */
+  public dropRequiredConstraint = (label: string, key: string): void => {
+    const keys = this.vertexRequiredConstraints.get(label);
+
+    if (keys) {
+      keys.delete(key);
+
+      if (keys.size === 0) {
+        this.vertexRequiredConstraints.delete(label);
+      }
+    }
+  };
+
+  /** Property keys required for `label` (sorted; empty if none). */
+  public requiredKeys = (label: string): string[] =>
+    [...(this.vertexRequiredConstraints.get(label) ?? [])].sort();
+
+  /** True iff `(label, key)` carries a required constraint. */
+  public hasRequiredConstraint = (label: string, key: string): boolean =>
+    this.vertexRequiredConstraints.get(label)?.has(key) ?? false;
+
+  /** Every declared required constraint as sorted `[label, key]` pairs. */
+  public requiredConstraints = (): Array<[string, string]> =>
+    [...this.vertexRequiredConstraints]
+      .flatMap(([label, keys]) => [...keys].map((key): [string, string] => [label, key]))
+      .sort((a, b) => (a[0] === b[0] ? a[1].localeCompare(b[1]) : a[0].localeCompare(b[0])));
+
+  /**
+   * The first `(label, key)` a new element with these `labels`/`properties`
+   * would violate by omitting a required key, or `undefined` if all satisfied.
+   */
+  public missingRequired = (
+    labels: Iterable<string>,
+    properties: Readonly<Record<string, unknown>>,
+  ): { label: string; key: string } | undefined => {
+    for (const label of labels) {
+      for (const key of this.vertexRequiredConstraints.get(label) ?? []) {
+        if (!this.isPresent(properties[key])) {
+          return { label, key };
+        }
+      }
+    }
+
+    return undefined;
+  };
+
+  /** True iff `key` is required by any of `vertex`'s labels (so it can't be
+   *  removed or set to null). */
+  public isRequiredKey = (vertex: Vertex, key: string): boolean => {
+    for (const label of vertex.labels) {
+      if (this.vertexRequiredConstraints.get(label)?.has(key)) {
+        return true;
+      }
+    }
+
+    return false;
+  };
+
+  /** Throw if setting `vertex.key = value` would null out a required key. Called
+   *  by the property mutators so every write path is guarded, not just the API. */
+  public assertRequiredOnSet = (vertex: Vertex, key: string, value: unknown): void => {
+    if (!this.isPresent(value) && this.isRequiredKey(vertex, key)) {
+      throw new LenkeError(`cannot set required property '${key}' to null`, {
+        code: ErrorCode.ConstraintViolation,
+      });
+    }
+  };
+
+  /** Throw if removing `vertex.key` would drop a required key. */
+  public assertRequiredOnRemove = (vertex: Vertex, key: string): void => {
+    if (this.isRequiredKey(vertex, key)) {
+      throw new LenkeError(`cannot remove required property '${key}'`, {
+        code: ErrorCode.ConstraintViolation,
+      });
+    }
+  };
 
   /**
    * The single live vertex carrying `label` whose `key === value`, if any (≤1

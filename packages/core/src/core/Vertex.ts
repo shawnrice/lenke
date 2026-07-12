@@ -107,6 +107,7 @@ export class Vertex {
   setProperty(key: string, value: unknown): void {
     validatePropertyKey(key);
     validatePropertyValue(value);
+    this.#graph?.assertRequiredOnSet(this, key, value);
     const previousValue = this.properties[key]; // read before the write; undefined if absent
     this.#graph?.emit(
       new EmitterEvent('@graph/VertexPropertyChanged', {
@@ -125,6 +126,7 @@ export class Vertex {
   setProperties(props: Record<string, unknown>): void {
     for (const key of Object.keys(props)) {
       validatePropertyValue(props[key]);
+      this.#graph?.assertRequiredOnSet(this, key, props[key]);
     }
 
     const previousValues = Object.fromEntries(
@@ -156,6 +158,7 @@ export class Vertex {
       return;
     }
 
+    this.#graph?.assertRequiredOnRemove(this, key);
     const previousValue = this.properties[key];
     this.#graph?.emit(
       new EmitterEvent('@graph/VertexPropertyRemoved', {
@@ -171,6 +174,12 @@ export class Vertex {
   }
 
   removeProperties(keys: string[]): void {
+    for (const key of keys) {
+      if (key in this.properties) {
+        this.#graph?.assertRequiredOnRemove(this, key);
+      }
+    }
+
     const removed = Object.fromEntries(
       keys.filter((key) => key in this.properties).map((key) => [key, this.properties[key]]),
     );
