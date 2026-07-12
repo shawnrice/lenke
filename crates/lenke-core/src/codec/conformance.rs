@@ -148,6 +148,41 @@ fn a_present_null_property_round_trips_every_format() {
 }
 
 #[test]
+fn temporal_properties_round_trip_every_format() {
+    // DATE / LOCAL DATETIME / DURATION must survive encode→decode on every codec,
+    // staying typed temporals (not degraded to plain strings). (The SHARED corpus
+    // gains a temporal fixture once the TS engine handles temporals too; this
+    // Rust-only test locks the Rust codec side meanwhile.)
+    let canonical = concat!(
+        r#"{"type":"node","id":"a","labels":["Event"],"properties":{"#,
+        r#""on":{"@date":"2020-02-29"},"#,
+        r#""at":{"@datetime":"2021-06-15T08:30:00.25"},"#,
+        r#""took":{"@duration":"P3M10DT90S"}}}"#,
+    );
+    let g = crate::ndjson::decode(canonical).unwrap();
+    let want = normalize(&g);
+    // The normal form carries the tagged temporals — proof they decoded as
+    // temporals, not strings (a string would render bare, without the `@` tag).
+    assert!(want.contains(r#"{"@date":"2020-02-29"}"#), "{want}");
+    assert!(
+        want.contains(r#"{"@datetime":"2021-06-15T08:30:00.25"}"#),
+        "{want}"
+    );
+    assert!(want.contains(r#"{"@duration":"P3M10DT90S"}"#), "{want}");
+
+    for format in ["pg-json", "pg-text", "graphson", "csv", "ndjson"] {
+        let blob = serialize(&g, format).unwrap();
+        let g2 = deserialize(&blob, format)
+            .unwrap_or_else(|e| panic!("re-decode failed for {format}: {e:?}"));
+        assert_eq!(
+            normalize(&g2),
+            want,
+            "temporal property lost round-tripping {format}"
+        );
+    }
+}
+
+#[test]
 fn malformed_inputs_rejected_with_expected_code() {
     let c = corpus();
     for case in c.get("reject").and_then(Json::as_array).unwrap() {

@@ -95,6 +95,21 @@ fn decode_typed(node: &Json) -> CodeResult<Value> {
                             .collect::<CodeResult<Vec<_>>>()?,
                     )
                 }
+                // A temporal wrapper (`gx:LocalDate`/`gx:LocalDateTime`/`gx:Duration`)
+                // whose `@value` is the ISO-8601 string.
+                Some(ty) if crate::temporal::Temporal::graphson_tag(ty).is_some() => {
+                    let tag = crate::temporal::Temporal::graphson_tag(ty).unwrap_or("");
+                    let s = value.and_then(Json::as_str).ok_or_else(|| {
+                        CodeError::new(
+                            ErrorCode::InvalidShape,
+                            "graphson: temporal @value must be a string",
+                        )
+                    })?;
+                    Value::Temporal(
+                        crate::temporal::Temporal::parse(tag, s)
+                            .map_err(|e| CodeError::new(ErrorCode::InvalidValue, e))?,
+                    )
+                }
                 // An unknown/missing wrapper is outside the LPG model — reject it
                 // (matches the TS codec) rather than storing a raw out-of-model value.
                 _ => {

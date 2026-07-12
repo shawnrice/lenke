@@ -253,6 +253,16 @@ fn parse_scalar(raw: &str) -> Value {
         }
         return Value::Str(out.into());
     }
+    // A tagged temporal `@<kind>:<iso>` (unquoted; the `@` sigil disambiguates it
+    // from a bare string). A malformed tag/ISO falls through to string handling,
+    // matching pg-text's lenient decode policy.
+    if let Some(rest) = raw.strip_prefix('@') {
+        if let Some((tag, iso)) = rest.split_once(':') {
+            if let Ok(t) = crate::temporal::Temporal::parse(tag, iso) {
+                return Value::Temporal(t);
+            }
+        }
+    }
     match raw {
         "true" => Value::Bool(true),
         "false" => Value::Bool(false),

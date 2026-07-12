@@ -49,6 +49,9 @@ enum Scalar {
     Int,
     Float,
     Bool,
+    Date,
+    DateTime,
+    Duration,
 }
 
 impl Scalar {
@@ -58,6 +61,9 @@ impl Scalar {
             Self::Int => "integer",
             Self::Float => "float",
             Self::Bool => "boolean",
+            Self::Date => "date",
+            Self::DateTime => "datetime",
+            Self::Duration => "duration",
         }
     }
     fn from_str(s: &str) -> Self {
@@ -65,6 +71,9 @@ impl Scalar {
             "integer" => Self::Int,
             "float" => Self::Float,
             "boolean" => Self::Bool,
+            "date" => Self::Date,
+            "datetime" => Self::DateTime,
+            "duration" => Self::Duration,
             _ => Self::Str,
         }
     }
@@ -74,6 +83,9 @@ impl Scalar {
             Self::Int => 'i',
             Self::Float => 'f',
             Self::Bool => 'b',
+            Self::Date => 'd',
+            Self::DateTime => 't',
+            Self::Duration => 'u',
         }
     }
     fn from_code(c: &str) -> Self {
@@ -81,7 +93,20 @@ impl Scalar {
             "i" => Self::Int,
             "f" => Self::Float,
             "b" => Self::Bool,
+            "d" => Self::Date,
+            "t" => Self::DateTime,
+            "u" => Self::Duration,
             _ => Self::Str,
+        }
+    }
+    /// The kind tag (`date`/`datetime`/`duration`) for a temporal scalar type, or
+    /// `None` for a non-temporal type.
+    fn temporal_tag(self) -> Option<&'static str> {
+        match self {
+            Self::Date => Some("date"),
+            Self::DateTime => Some("datetime"),
+            Self::Duration => Some("duration"),
+            _ => None,
         }
     }
 }
@@ -93,6 +118,7 @@ struct ColType {
 }
 
 fn scalar_of(v: &Value) -> Scalar {
+    use crate::temporal::Temporal;
     match v {
         Value::Bool(_) => Scalar::Bool,
         Value::Num(x) => {
@@ -102,6 +128,9 @@ fn scalar_of(v: &Value) -> Scalar {
                 Scalar::Float
             }
         }
+        Value::Temporal(Temporal::Date(_)) => Scalar::Date,
+        Value::Temporal(Temporal::DateTime(_)) => Scalar::DateTime,
+        Value::Temporal(Temporal::Duration(_)) => Scalar::Duration,
         _ => Scalar::Str,
     }
 }
@@ -207,15 +236,22 @@ fn scalar_to_raw(scalar: Scalar, v: &Value) -> String {
         Value::Num(x) => num_str(*x),
         Value::Str(s) => s.to_string(),
         Value::Bool(b) => b.to_string(),
+        Value::Temporal(t) => t.format(),
         _ => String::new(),
     }
 }
 
 fn raw_to_scalar(scalar: Scalar, raw: &str) -> Value {
+    if let Some(tag) = scalar.temporal_tag() {
+        // A well-formed temporal decodes to `Value::Temporal`; a malformed cell
+        // falls back to a string (lenient, matching the other scalar paths).
+        return crate::temporal::Temporal::parse(tag, raw)
+            .map_or_else(|_| Value::Str(raw.into()), Value::Temporal);
+    }
     match scalar {
         Scalar::Bool => Value::Bool(raw == "true"),
         Scalar::Int | Scalar::Float => Value::Num(raw.parse().unwrap_or(f64::NAN)),
-        Scalar::Str => Value::Str(raw.into()),
+        _ => Value::Str(raw.into()),
     }
 }
 
