@@ -38,17 +38,21 @@ export type VertexPropertyChanged = EmitterEvent<
 
 export type VertexPropertiesChanged = EmitterEvent<
   '@graph/VertexPropertiesChanged',
-  { vertex: Vertex; next: { [key: string]: any } }
+  // `previous` holds the prior value of each key in `next` (`undefined` if the
+  // key was absent), so an audit/undo listener can reverse a bulk write.
+  { vertex: Vertex; next: { [key: string]: any }; previous: { [key: string]: any } }
 >;
 
 export type VertexPropertyRemoved = EmitterEvent<
   '@graph/VertexPropertyRemoved',
-  { vertex: Vertex; key: string }
+  // `previous` is the removed value, so an audit can recover it post-commit.
+  { vertex: Vertex; key: string; previous: any }
 >;
 
 export type VertexPropertiesRemoved = EmitterEvent<
   '@graph/VertexPropertiesRemoved',
-  { vertex: Vertex; keys: string[] }
+  // `previous` maps each actually-removed key to its removed value.
+  { vertex: Vertex; keys: string[]; previous: { [key: string]: any } }
 >;
 
 export type EdgePropertyChanged = EmitterEvent<
@@ -59,17 +63,20 @@ export type EdgePropertyChanged = EmitterEvent<
 
 export type EdgePropertiesChanged = EmitterEvent<
   '@graph/EdgePropertiesChanged',
-  { edge: Edge; next: { [key: string]: any } }
+  // `previous` holds the prior value of each key in `next` (`undefined` if absent).
+  { edge: Edge; next: { [key: string]: any }; previous: { [key: string]: any } }
 >;
 
 export type EdgePropertyRemoved = EmitterEvent<
   '@graph/EdgePropertyRemoved',
-  { edge: Edge; key: string }
+  // `previous` is the removed value.
+  { edge: Edge; key: string; previous: any }
 >;
 
 export type EdgePropertiesRemoved = EmitterEvent<
   '@graph/EdgePropertiesRemoved',
-  { edge: Edge; keys: string[] }
+  // `previous` maps each actually-removed key to its removed value.
+  { edge: Edge; keys: string[]; previous: { [key: string]: any } }
 >;
 
 export type OnMutate = EmitterEvent<

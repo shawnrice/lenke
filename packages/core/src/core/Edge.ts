@@ -147,10 +147,15 @@ export class Edge {
       validatePropertyValue(props[key]);
     }
 
+    const previousValues = Object.fromEntries(
+      Object.keys(props).map((key) => [key, this.properties[key]]),
+    );
+
     this.#graph?.emit(
       new EmitterEvent('@graph/EdgePropertiesChanged', {
         edge: this,
         next: props,
+        previous: previousValues,
       }),
     );
 
@@ -167,7 +172,10 @@ export class Edge {
       return;
     }
 
-    this.#graph?.emit(new EmitterEvent('@graph/EdgePropertyRemoved', { edge: this, key }));
+    const previousValue = this.properties[key];
+    this.#graph?.emit(
+      new EmitterEvent('@graph/EdgePropertyRemoved', { edge: this, key, previous: previousValue }),
+    );
 
     const previous = this.properties;
     this.#commitProperties(Object.fromEntries(Object.entries(previous).filter(([k]) => key !== k)));
@@ -175,7 +183,12 @@ export class Edge {
   }
 
   removeProperties(keys: string[]): void {
-    this.#graph?.emit(new EmitterEvent('@graph/EdgePropertiesRemoved', { edge: this, keys }));
+    const removed = Object.fromEntries(
+      keys.filter((key) => key in this.properties).map((key) => [key, this.properties[key]]),
+    );
+    this.#graph?.emit(
+      new EmitterEvent('@graph/EdgePropertiesRemoved', { edge: this, keys, previous: removed }),
+    );
 
     const previous = this.properties;
     this.#commitProperties(

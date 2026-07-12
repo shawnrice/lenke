@@ -127,10 +127,15 @@ export class Vertex {
       validatePropertyValue(props[key]);
     }
 
+    const previousValues = Object.fromEntries(
+      Object.keys(props).map((key) => [key, this.properties[key]]),
+    );
+
     this.#graph?.emit(
       new EmitterEvent('@graph/VertexPropertiesChanged', {
         vertex: this,
         next: props,
+        previous: previousValues,
       }),
     );
 
@@ -151,7 +156,14 @@ export class Vertex {
       return;
     }
 
-    this.#graph?.emit(new EmitterEvent('@graph/VertexPropertyRemoved', { vertex: this, key }));
+    const previousValue = this.properties[key];
+    this.#graph?.emit(
+      new EmitterEvent('@graph/VertexPropertyRemoved', {
+        vertex: this,
+        key,
+        previous: previousValue,
+      }),
+    );
 
     const previous = this.properties;
     this.#commitProperties(Object.fromEntries(Object.entries(previous).filter(([k]) => key !== k)));
@@ -159,7 +171,12 @@ export class Vertex {
   }
 
   removeProperties(keys: string[]): void {
-    this.#graph?.emit(new EmitterEvent('@graph/VertexPropertiesRemoved', { vertex: this, keys }));
+    const removed = Object.fromEntries(
+      keys.filter((key) => key in this.properties).map((key) => [key, this.properties[key]]),
+    );
+    this.#graph?.emit(
+      new EmitterEvent('@graph/VertexPropertiesRemoved', { vertex: this, keys, previous: removed }),
+    );
 
     const previous = this.properties;
     this.#commitProperties(

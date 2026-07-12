@@ -335,6 +335,27 @@ describe('Graph Tests', () => {
       ]);
     });
 
+    test('removal + bulk property events carry `previous` (audit can recover deleted values)', () => {
+      const g = createTestGraph();
+      const v = g.addVertex({ id: 'v', labels: ['N'], properties: { a: 1, b: 2, c: 3 } });
+
+      let removed: unknown;
+      let removedBulk: unknown;
+      let bulkPrev: unknown;
+      g.on('@graph/VertexPropertyRemoved', (ev) => (removed = ev.value.previous));
+      g.on('@graph/VertexPropertiesRemoved', (ev) => (removedBulk = ev.value.previous));
+      g.on('@graph/VertexPropertiesChanged', (ev) => (bulkPrev = ev.value.previous));
+
+      v.removeProperty('a'); // previous = the removed value
+      expect(removed).toBe(1);
+
+      v.setProperties({ b: 20, d: 4 }); // previous = prior values of the written keys
+      expect(bulkPrev).toEqual({ b: 2, d: undefined });
+
+      v.removeProperties(['c', 'z']); // previous = only the actually-removed keys
+      expect(removedBulk).toEqual({ c: 3 });
+    });
+
     test('truncate() emits a removal event for every element (audit visibility)', () => {
       const g = new Graph();
       const a = g.addVertex({ id: 'a', labels: ['N'], properties: { x: 1 } });
