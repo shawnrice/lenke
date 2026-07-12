@@ -517,6 +517,14 @@ export class Graph {
       return this.insertEdge(params);
     }
 
+    // A missing `from`/`to` must surface as a coded error, not a raw TypeError
+    // from dereferencing `params.to.id` below.
+    if (!params.from || !params.to) {
+      throw new LenkeError('Cannot add an edge with missing endpoint vertices.', {
+        code: ErrorCode.MissingVertex,
+      });
+    }
+
     // Validate the *params* before constructing: the `Edge` constructor eagerly
     // writes labels/properties into the graph's element maps via its setters, so
     // rejecting after construction would leave orphaned map entries behind.

@@ -13,6 +13,8 @@
  * come later.
  */
 
+import { ErrorCode, LenkeError } from '@lenke/errors';
+
 const SECS_PER_DAY = 86_400;
 
 /** Rust integer division truncates toward zero — JS `/` does not. */
@@ -21,7 +23,24 @@ const tdiv = (a: number, b: number): number => Math.trunc(a / b);
 /** A calendar date, no time/zone: days since 1970-01-01. */
 export class LocalDate {
   readonly kind = 'date' as const;
-  constructor(readonly days: number) {}
+  constructor(readonly days: number) {
+    // The argument is an epoch-day count, not calendar fields. `new
+    // LocalDate(2026, 1, 15)` is a common mistake (TS flags the excess args, but
+    // a JS/`bun`-stripped call runs) that would silently store day 2026 (=
+    // 1975-07-20) and drop the month/day. Reject it so it fails loudly; use
+    // `LocalDate.of(y, m, d)` or `parseDate('YYYY-MM-DD')` for calendar fields.
+    if (arguments.length !== 1) {
+      throw new LenkeError(
+        `LocalDate(days) takes a single epoch-day count, not calendar fields — ` +
+          `use LocalDate.of(year, month, day) or parseDate('YYYY-MM-DD').`,
+        { code: ErrorCode.InvalidValue },
+      );
+    }
+  }
+  /** Construct from calendar fields, e.g. `LocalDate.of(2026, 1, 15)`. */
+  static of(year: number, month: number, day: number): LocalDate {
+    return new LocalDate(daysFromCivil(year, month, day));
+  }
   /** The ISO-8601 string, e.g. `2020-01-01` — the interop lingua franca. */
   toString(): string {
     return formatDate(this);
