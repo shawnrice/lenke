@@ -98,4 +98,60 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     expect(ts).toBe(native);
     expect(ts).toBe(`[{"name":"josh"},{"name":"marko"},{"name":"vadas"}]`);
   });
+
+  // --- FOR (ISO list unwind / UNWIND) ---------------------------------------
+
+  test('FOR unwinds a literal list identically', () => {
+    const [ts, native] = both(`FOR x IN [1, 2, 3] RETURN x`);
+    expect(ts).toBe(native);
+    expect(ts).toBe(`[{"x":1},{"x":2},{"x":3}]`);
+  });
+
+  test('FOR WITH ORDINALITY (1-based) is identical', () => {
+    const [ts, native] = both(`FOR x IN ['a', 'b'] WITH ORDINALITY i RETURN x, i`);
+    expect(ts).toBe(native);
+    expect(ts).toBe(`[{"x":"a","i":1},{"x":"b","i":2}]`);
+  });
+
+  test('FOR WITH OFFSET (0-based) is identical', () => {
+    const [ts, native] = both(`FOR x IN ['a', 'b'] WITH OFFSET i RETURN x, i`);
+    expect(ts).toBe(native);
+    expect(ts).toBe(`[{"x":"a","i":0},{"x":"b","i":1}]`);
+  });
+
+  test('FOR over null yields no rows on both engines', () => {
+    const [ts, native] = both(`FOR x IN null RETURN x`);
+    expect(ts).toBe(native);
+    expect(ts).toBe(`[]`);
+  });
+
+  test('FOR over a scalar unwinds as a singleton, identically', () => {
+    const [ts, native] = both(`FOR x IN 5 RETURN x`);
+    expect(ts).toBe(native);
+    expect(ts).toBe(`[{"x":5}]`);
+  });
+
+  test('FOR multiplies a prior MATCH row identically', () => {
+    const [ts, native] = both(
+      `MATCH (p:Person {name: 'marko'}) FOR t IN ['x', 'y'] RETURN p.name, t`,
+    );
+    expect(ts).toBe(native);
+  });
+
+  test('the FOR list can reference a bound var, identically', () => {
+    const [ts, native] = both(
+      `MATCH (p:Person {name: 'marko'}) FOR x IN [p.name, p.age] RETURN x`,
+    );
+    expect(ts).toBe(native);
+    expect(ts).toBe(`[{"x":"marko"},{"x":29}]`);
+  });
+
+  test('R-BATCH: FOR drives a batch OPTIONAL MATCH (allow + deny) byte-identically', () => {
+    // One row per requested name; josh exists (age 32), nobody does not (null).
+    const [ts, native] = both(
+      `FOR name IN ['josh', 'nobody'] OPTIONAL MATCH (p:Person {name: name}) RETURN name, p.age`,
+    );
+    expect(ts).toBe(native);
+    expect(ts).toBe(`[{"name":"josh","p.age":32},{"name":"nobody","p.age":null}]`);
+  });
 });
