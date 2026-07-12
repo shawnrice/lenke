@@ -75,7 +75,7 @@ const compileGql = (
 
     return {
       text: q,
-      params: explicit && Object.keys(explicit).length ? JSON.stringify(explicit) : undefined,
+      params: explicit && Object.keys(explicit).length ? stringifyParams(explicit) : undefined,
     };
   }
 
@@ -94,12 +94,28 @@ const compileGql = (
     return `${acc + part}$p${i}`;
   }, '');
 
-  return { text, params: JSON.stringify(bindings) };
+  return { text, params: stringifyParams(bindings) };
 };
+
+// `JSON.stringify` throws a raw `TypeError` on a bigint value; surface a coded
+// error instead. (Serializing a bigint as a JSON number would silently lose
+// precision above 2^53, so a param rejects it rather than corrupt it — pass such
+// a value as a string, or as a number if it is within the safe integer range.)
+const stringifyParams = (params: object): string =>
+  JSON.stringify(params, (_key, value: unknown) => {
+    if (typeof value === 'bigint') {
+      throw new LenkeError(
+        'lenke: a bigint parameter cannot cross the native boundary without precision loss — pass it as a string or a safe-range number',
+        { code: ErrorCode.InvalidValue },
+      );
+    }
+
+    return value;
+  });
 
 /** Serialize a prepared statement's `$name` bindings (empty/absent → no params). */
 const serializeParams = (params?: QueryParams): string | undefined =>
-  params && Object.keys(params).length ? JSON.stringify(params) : undefined;
+  params && Object.keys(params).length ? stringifyParams(params) : undefined;
 
 /**
  * Serialize a JS scalar to a **safe** Gremlin literal — the injection-proof way

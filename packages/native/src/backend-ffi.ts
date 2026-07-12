@@ -59,6 +59,15 @@ const SYMBOLS = {
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
+// bun:ffi `ptr()` rejects a zero-length view, so an empty payload — an empty
+// query string, an empty file to deserialize, an empty Gremlin traversal — would
+// crash with a raw `TypeError` *before* reaching Rust (where it would otherwise
+// produce a normal coded error / empty graph, as the pure-TS engine does). Hand
+// `ptr()` a 1-byte scratch for the empty case while still passing the real (0)
+// byte length, so the crate reads an empty slice instead of the binding throwing.
+const EMPTY_SCRATCH = new Uint8Array(1);
+const bytesPtr = (b: Uint8Array): Pointer => ptr(b.byteLength === 0 ? EMPTY_SCRATCH : b);
+
 // A graph handle is an opaque token in the public contract (a JS `number` so the
 // wasm offset and the native pointer share one type). At the bun boundary it is
 // a branded `Pointer`; these two helpers cross that seam in one place.
@@ -153,7 +162,7 @@ export const createFfiBackend = (libPath: string): Backend => {
     abiVersion,
 
     graphFromNdjson: (bytes, parallel) => {
-      const h = symbols.lnk_graph_from_ndjson(ptr(bytes), bytes.byteLength, parallel ? 1 : 0);
+      const h = symbols.lnk_graph_from_ndjson(bytesPtr(bytes), bytes.byteLength, parallel ? 1 : 0);
 
       if (!h) {
         return fail('graphFromNdjson', ErrorCode.InvalidJson);
@@ -166,7 +175,7 @@ export const createFfiBackend = (libPath: string): Backend => {
         decoder.decode(
           takeBuf(
             (outLen) =>
-              symbols.lnk_merge_ndjson(asPtr(handle), ptr(bytes), bytes.byteLength, outLen),
+              symbols.lnk_merge_ndjson(asPtr(handle), bytesPtr(bytes), bytes.byteLength, outLen),
             symbols.lnk_free_buf,
             'mergeNdjson',
           ),
@@ -253,9 +262,9 @@ export const createFfiBackend = (libPath: string): Backend => {
         (outLen) =>
           symbols.lnk_query_rows(
             asPtr(handle),
-            ptr(q),
+            bytesPtr(q),
             q.byteLength,
-            p ? ptr(p) : null,
+            p ? bytesPtr(p) : null,
             p?.byteLength ?? 0,
             outLen,
           ),
@@ -272,9 +281,9 @@ export const createFfiBackend = (libPath: string): Backend => {
         (outLen) =>
           symbols.lnk_query_arrow(
             asPtr(handle),
-            ptr(q),
+            bytesPtr(q),
             q.byteLength,
-            p ? ptr(p) : null,
+            p ? bytesPtr(p) : null,
             p?.byteLength ?? 0,
             outLen,
           ),
@@ -287,7 +296,7 @@ export const createFfiBackend = (libPath: string): Backend => {
       const q = encoder.encode(query);
 
       return takeBuf(
-        (outLen) => symbols.lnk_gremlin_json(asPtr(handle), ptr(q), q.byteLength, outLen),
+        (outLen) => symbols.lnk_gremlin_json(asPtr(handle), bytesPtr(q), q.byteLength, outLen),
         symbols.lnk_free_buf,
         'gremlin',
       );
@@ -329,7 +338,7 @@ export const createFfiBackend = (libPath: string): Backend => {
           symbols.lnk_prepared_query_rows(
             asPtr(prepared),
             asPtr(graph),
-            p ? ptr(p) : null,
+            p ? bytesPtr(p) : null,
             p?.byteLength ?? 0,
             outLen,
           ),
@@ -345,7 +354,7 @@ export const createFfiBackend = (libPath: string): Backend => {
           symbols.lnk_prepared_query_arrow(
             asPtr(prepared),
             asPtr(graph),
-            p ? ptr(p) : null,
+            p ? bytesPtr(p) : null,
             p?.byteLength ?? 0,
             outLen,
           ),
@@ -356,7 +365,7 @@ export const createFfiBackend = (libPath: string): Backend => {
 
     deserialize: (input, format) => {
       const f = encoder.encode(format);
-      const h = symbols.lnk_deserialize(ptr(input), input.byteLength, ptr(f), f.byteLength);
+      const h = symbols.lnk_deserialize(bytesPtr(input), input.byteLength, ptr(f), f.byteLength);
 
       if (!h) {
         return fail(`deserialize(${format})`, ErrorCode.UnknownFormat);
