@@ -1154,6 +1154,49 @@ fn eval_by(graph: &mut Graph, ctx: &mut Ctx, by: &By, value: &GVal) -> GVal {
     }
 }
 
+/// Does this sub-plan end in a reducing barrier? Such a value-by folds a whole
+/// group to a single value (`count`/`sum`/`min`/`max`/`mean`/`fold`); any other
+/// maps each member and its outputs are collected into a list.
+fn is_reducing(steps: &[Step]) -> bool {
+    matches!(
+        steps.last(),
+        Some(
+            Step::Count(_)
+                | Step::Sum(_)
+                | Step::Min(_)
+                | Step::Max(_)
+                | Step::Mean(_)
+                | Step::Fold
+        )
+    )
+}
+
+/// The value a `group()` bucket maps to. A traversal value-by is applied over the
+/// group's MEMBERS as a barrier (so `count()` counts the group, not each element):
+/// a reducing traversal yields the single folded value; a mapping one collects
+/// every output. A non-traversal by (identity/key/token) maps each member.
+fn group_value(graph: &mut Graph, ctx: &mut Ctx, by: &By, members: Vec<Trav>) -> GVal {
+    match by {
+        By::Traversal(plan, _) => {
+            let outs: Vec<GVal> = run_steps(graph, ctx, &plan.steps, members)
+                .into_iter()
+                .map(|t| t.val)
+                .collect();
+            if is_reducing(&plan.steps) {
+                outs.into_iter().next().unwrap_or(GVal::Null)
+            } else {
+                GVal::List(outs)
+            }
+        }
+        _ => GVal::List(
+            members
+                .iter()
+                .map(|t| eval_by(graph, ctx, by, &t.val))
+                .collect(),
+        ),
+    }
+}
+
 /// Elements of a value for `Scope::local` (non-string iterables; else singleton).
 fn local_elems(v: &GVal) -> Vec<GVal> {
     match v {
@@ -1545,20 +1588,22 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
         }
         Step::Group(bys) => {
             let key_by = bys.first().cloned().unwrap_or(By::Identity(None));
-            let val_by = bys.get(1).cloned();
-            let mut entries: Vec<(GVal, Vec<GVal>)> = Vec::new();
-            for t in &stream {
+            let val_by = bys.get(1).cloned().unwrap_or(By::Identity(None));
+            // Bucket the group's MEMBERS (traversers), keeping key + insertion
+            // order, so a reducing value-by can fold over each group as a barrier.
+            let mut buckets: Vec<(GVal, Vec<Trav>)> = Vec::new();
+            for t in stream {
                 let key = eval_by(graph, ctx, &key_by, &t.val);
-                let value = match &val_by {
-                    Some(by) => eval_by(graph, ctx, by, &t.val),
-                    None => t.val.clone(),
-                };
-                match entries.iter_mut().find(|(k, _)| *k == key) {
-                    Some((_, list)) => list.push(value),
-                    None => entries.push((key, vec![value])),
+                match buckets.iter_mut().find(|(k, _)| *k == key) {
+                    Some((_, members)) => members.push(t),
+                    None => buckets.push((key, vec![t])),
                 }
             }
-            vec![Trav::root(GVal::Map(entries.into_iter().map(|(k, vs)| (k, GVal::List(vs))).collect()))]
+            let entries: Vec<(GVal, GVal)> = buckets
+                .into_iter()
+                .map(|(k, members)| (k, group_value(graph, ctx, &val_by, members)))
+                .collect();
+            vec![Trav::root(GVal::Map(entries))]
         }
         Step::GroupCount(bys) => {
             let by = bys.first().cloned().unwrap_or(By::Identity(None));

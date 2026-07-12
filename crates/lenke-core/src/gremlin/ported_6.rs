@@ -744,20 +744,18 @@ fn p6_group_by_label_by_name() {
 
 #[test]
 fn p6_group_by_label_by_count() {
-    // by(count()) runs the sub-traversal per traverser → list of 1s; sum = bucket size.
+    // A reducing value-by (count) folds over the group as a barrier → a single
+    // per-bucket count, not a per-traverser list of 1s (pre-R-GREMLIN-AGG).
     let out = q(g().V().group().by_label().by_t(super::__().count()));
     let m = as_map(&out[0]);
-    let sum = |v: &GVal| -> f64 {
-        list_of(v)
-            .iter()
-            .map(|x| match x {
-                GVal::Num(n) => *n,
-                _ => panic!(),
-            })
-            .sum()
+    let num = |v: &GVal| -> f64 {
+        match v {
+            GVal::Num(n) => *n,
+            _ => panic!("expected a Num, got {v:?}"),
+        }
     };
-    assert_eq!(sum(map_get(m, "PERSON").unwrap()), 4.0);
-    assert_eq!(sum(map_get(m, "SOFTWARE").unwrap()), 2.0);
+    assert_eq!(num(map_get(m, "PERSON").unwrap()), 4.0);
+    assert_eq!(num(map_get(m, "SOFTWARE").unwrap()), 2.0);
 }
 
 #[test]

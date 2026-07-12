@@ -249,6 +249,50 @@ fn order_local_sorts_a_folded_list() {
     assert_eq!(nums, vec![27.0, 29.0, 32.0, 35.0]);
 }
 
+// --- group().by(k).by(reduce) folds each group to one value (was a list) ------
+// R-GREMLIN-AGG (Omar r5, Anouk r6): a reducing value-by (count/sum/min/max/mean/
+// fold) folds over the group as a barrier — group().by(k).by(count()) yields
+// {k: n}, not {k: [1,1,...]}. A mapping value-by still collects a list.
+#[test]
+fn group_reducing_value_by_folds_the_group() {
+    let entries = |out: &[GVal]| -> Vec<(GVal, GVal)> {
+        match out.first() {
+            Some(GVal::Map(e)) => e.clone(),
+            other => panic!("expected a Map, got {other:?}"),
+        }
+    };
+    let get = |es: &[(GVal, GVal)], k: &str| -> GVal {
+        es.iter()
+            .find(|(key, _)| matches!(key, GVal::Str(s) if &**s == k))
+            .map(|(_, v)| v.clone())
+            .unwrap_or(GVal::Null)
+    };
+
+    // by(count()) → a per-bucket count; the textual form is byte-identical.
+    let by_count = q(super::g().V().group().by_label().by_t(super::__().count()));
+    let es = entries(&by_count);
+    assert_eq!(get(&es, "PERSON"), GVal::Num(4.0));
+    assert_eq!(get(&es, "SOFTWARE"), GVal::Num(2.0));
+    assert_eq!(
+        q(super::parse("g.V().group().by(T.label).by(count())").unwrap()),
+        by_count
+    );
+
+    // by(values('age').sum()) → sum per bucket; SOFTWARE has no ages → Null.
+    let by_sum = q(super::g()
+        .V()
+        .group()
+        .by_label()
+        .by_t(super::__().values(&["age"]).sum()));
+    let es = entries(&by_sum);
+    assert_eq!(get(&es, "PERSON"), GVal::Num(123.0));
+    assert_eq!(get(&es, "SOFTWARE"), GVal::Null);
+
+    // A mapping value-by (a plain key) still collects a list (unchanged).
+    let by_name = q(super::g().V().group().by_label().by("name"));
+    assert!(matches!(get(&entries(&by_name), "SOFTWARE"), GVal::List(v) if v.len() == 2));
+}
+
 #[test]
 fn repeat_emit_loops_predicate_offset() {
     // emit(loops().is(gt(1))) emits both body levels of a times(3) walk.

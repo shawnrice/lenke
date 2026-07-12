@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
-import { V, count, group, hasLabel, label, values } from '../steps.js';
+import { V, count, group, hasLabel, label, sum, values } from '../steps.js';
 import { traversal } from '../traversal.js';
 
 const arr = (r: Iterable<unknown>): unknown[] => [...r];
@@ -64,15 +64,33 @@ describe('STEP, group', () => {
     ]);
   });
 
-  // doc: g.V().group().by(label).by(count())
-  // Note: count() is a sub-traversal that returns 1 per traverser (per-bucket
-  // count in pure Gremlin requires fold semantics inside the value-by). Our
-  // executor runs the sub-traversal per traverser, so values are arrays of 1s.
-  test('group by(label()).by(count()) yields per-bucket count lists', () => {
+  // doc: g.V().group().by(label).by(count()) → {PERSON: 4, SOFTWARE: 2}
+  // A reducing value-by (count/sum/min/max/mean/fold) folds over the whole group
+  // as a barrier, yielding a single value per bucket — not a per-traverser list
+  // of 1s (the pre-R-GREMLIN-AGG behavior).
+  test('group by(label()).by(count()) yields a per-bucket count', () => {
     const result = arr(run(traversal(V(), group().by(label()).by(count())), g));
-    const map = result[0] as Map<unknown, number[]>;
-    expect((map.get('PERSON') as number[]).reduce((a, b) => a + b, 0)).toBe(4);
-    expect((map.get('SOFTWARE') as number[]).reduce((a, b) => a + b, 0)).toBe(2);
+    const map = result[0] as Map<unknown, number>;
+    expect(map.get('PERSON')).toBe(4);
+    expect(map.get('SOFTWARE')).toBe(2);
+  });
+
+  // A reducing sum over a mapped value: group ages by label, sum per bucket.
+  test('group by(label()).by(traversal(values(age), sum())) sums per bucket', () => {
+    const result = arr(
+      run(
+        traversal(
+          V(),
+          group()
+            .by(label())
+            .by(traversal(values('age'), sum())),
+        ),
+        g,
+      ),
+    );
+    const map = result[0] as Map<unknown, number | null>;
+    expect(map.get('PERSON')).toBe(29 + 27 + 32 + 35); // 123
+    expect(map.get('SOFTWARE')).toBeNull(); // no ages → sum of empty is null
   });
 
   // doc: g.V().group().by('age').by('name') — [32:[josh],35:[peter],27:[vadas],29:[marko]]
