@@ -962,6 +962,10 @@ export class Graph {
     labels: Iterable<string>,
     properties: Readonly<Record<string, unknown>>,
   ): { label: string; key: string } | undefined => {
+    if (this.vertexRequiredConstraints.size === 0) {
+      return undefined;
+    }
+
     for (const label of labels) {
       for (const key of this.vertexRequiredConstraints.get(label) ?? []) {
         if (!this.isPresent(properties[key])) {
@@ -976,6 +980,10 @@ export class Graph {
   /** True iff `key` is required by any of `vertex`'s labels (so it can't be
    *  removed or set to null). */
   public isRequiredKey = (vertex: Vertex, key: string): boolean => {
+    if (this.vertexRequiredConstraints.size === 0) {
+      return false;
+    }
+
     for (const label of vertex.labels) {
       if (this.vertexRequiredConstraints.get(label)?.has(key)) {
         return true;
@@ -1107,6 +1115,10 @@ export class Graph {
     labels: Iterable<string>,
     properties: Readonly<Record<string, unknown>>,
   ): { label: string; key: string; expected: ScalarTypeName; got: ScalarTypeName } | undefined => {
+    if (this.vertexTypeConstraints.size === 0) {
+      return undefined;
+    }
+
     for (const label of labels) {
       const cs = this.vertexTypeConstraints.get(label);
 
@@ -1129,6 +1141,10 @@ export class Graph {
   /** Throw if setting `vertex.key = value` would break a type constraint. Null
    *  is exempt (a null has no type — `required` governs presence). */
   public assertTypeOnSet = (vertex: Vertex, key: string, value: unknown): void => {
+    if (this.vertexTypeConstraints.size === 0) {
+      return;
+    }
+
     const got = this.valueType(value);
 
     if (got === null) {
@@ -1192,6 +1208,10 @@ export class Graph {
     properties: Readonly<Record<string, unknown>>,
     exclude?: Vertex,
   ): { label: string; key: string; existing: Vertex } | undefined => {
+    if (this.vertexUniqueConstraints.size === 0) {
+      return undefined;
+    }
+
     for (const label of labels) {
       for (const key of this.uniqueKeys(label)) {
         if (!(key in properties)) {
@@ -1224,7 +1244,7 @@ export class Graph {
     key: string,
     value: unknown,
   ): { label: string; existing: Vertex } | undefined => {
-    if (!this.isUniqueKeyable(value)) {
+    if (this.vertexUniqueConstraints.size === 0 || !this.isUniqueKeyable(value)) {
       return undefined;
     }
 
