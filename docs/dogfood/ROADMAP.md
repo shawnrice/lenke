@@ -96,6 +96,20 @@ direction. Each blocks a confirmed use case.
   did. One rule: pass `Number(x)` for a safe-range value, or a string.
   `NaN`/`Infinity`/`undefined` still coerce to null (JS non-values). First-class
   exact integers are the separate **R-INT64** feature above. (Mireille r6)
+- **CDC origin-skip now survives reconnect (resolves R-CDC-ORIGIN):** origin-skip
+  keyed on a per-connection origin (`WriteLog.register()` per `createSyncHost`), so
+  a client that dropped post-commit/pre-ack re-dialed into a fresh host with a new
+  origin and **re-ingested its own write** from the replayed backlog →
+  optimistic/authoritative divergence (local 2 / server 1), or an aborted reconnect
+  under a unique constraint (Yuki r5). Fix: the op-log entry's `origin` is now the
+  client's **stable `clientId`** (already used for the mutate-`req` dedupe), sent on
+  `mutate` + `subscribeWrites`; the host skips entries whose origin is its own
+  client's id, so the skip holds across reconnects. Legacy clients (no id) fall back
+  to a per-connection origin (prior behavior). Also fixed the companion **ingest
+  error isolation**: a poison write in a CDC batch now can't escape `receive()` and
+  wedge the transport — it's caught, surfaced via a new `onIngestError` hook, and
+  the cursor advances past it (a deterministic poison would otherwise replay forever,
+  e.g. R-SCHEMA-REPL); full atomic ingest still awaits R-TX. (Yuki r5)
 
 ## FIXED (history — see git log + memory `dx-ergonomics-pass`)
 

@@ -223,6 +223,15 @@ export type MutateMessage = {
   lang?: 'gql' | 'gremlin';
   /** `$name` bindings (GQL only). */
   params?: QueryParams;
+  /**
+   * The committing client's **stable id** (the same id embedded in `req`). The
+   * host tags this write's op-log entry with it so origin-skip can filter the
+   * write out of the author's OWN CDC backlog — even across a reconnect, where a
+   * fresh host would otherwise mint a new per-connection origin and echo the
+   * write back to its author. Absent (a legacy client) → a per-connection
+   * fallback (echo-skip within one connection only).
+   */
+  clientId?: string;
 };
 
 /**
@@ -237,6 +246,14 @@ export type MutateMessage = {
 export type SubscribeWritesMessage = {
   type: 'subscribeWrites';
   since?: number;
+  /**
+   * The subscribing client's **stable id** — so the host knows which op-log
+   * entries are this client's own and skips them in the backlog + live tail.
+   * Stable across reconnect, so a re-dialed client never re-ingests a write it
+   * already applied optimistically. Absent (a legacy client) → per-connection
+   * fallback (the prior behavior; breaks on reconnect).
+   */
+  clientId?: string;
 };
 
 /**

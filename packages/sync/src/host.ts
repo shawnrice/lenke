@@ -226,11 +226,20 @@ const diffRows = (
 const writeTokens = (text: string, lang?: 'gql' | 'gremlin'): string[] | undefined =>
   lang === 'gremlin' ? undefined : inferDeps(text);
 
+// Per-connection fallback origin for a legacy client that sends no stable id.
+let connCounter = 0;
+
 export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost => {
   const { send, writeLog, dedup } = options;
-  // This host's participant id in the shared op log — tags its own client's
-  // writes so their echo is skipped on the way back out.
-  const writeOrigin = writeLog ? writeLog.register() : -1;
+  // Origin-skip identity. A write's op-log entry is tagged with the committing
+  // client's STABLE id (not a per-connection id), so the author's own write is
+  // filtered out of its CDC backlog even across a reconnect (a fresh host for the
+  // same client). We learn the id from the first message that carries it (mutate
+  // / subscribeWrites); a legacy client that sends none gets a per-connection
+  // fallback, preserving the old within-connection-only echo-skip.
+  const fallbackOrigin = `conn:${connCounter++}`;
+  let clientId: string | undefined;
+  const myOrigin = (): string => clientId ?? fallbackOrigin;
   let writeStreamStop: (() => void) | undefined;
   // Ephemeral cleanup: writes to run when this connection closes (presence
   // teardown). Re-registering replaces; the client re-sends on reconnect.
@@ -472,6 +481,11 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
     // rejecting a perfectly valid write with a baffling parse error.
     const text = msg.text ?? (msg as { gql?: unknown }).gql;
 
+    // Learn this connection's stable client id (for origin-skip) from the write.
+    if (msg.clientId) {
+      clientId = msg.clientId;
+    }
+
     try {
       if (typeof text !== 'string') {
         throw new LenkeError('lenke: mutate carried no query text', {
@@ -490,9 +504,10 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
       applyMutation(text, msg.params, msg.lang);
       // Publish the committed write to the shared op log so other clients'
       // stream subscribers ingest it (CDC). No-op if no writeLog is configured.
-      // The tokens ride along for interest routing at fan-out time.
+      // The tokens ride along for interest routing at fan-out time. Tagged with
+      // this client's stable id so its own backlog skips it across reconnects.
       writeLog?.append(
-        writeOrigin,
+        myOrigin(),
         { text, lang: msg.lang, params: msg.params },
         writeTokens(text, msg.lang),
       );
@@ -506,6 +521,12 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
   const subscribeWrites = (msg: SubscribeWritesMessage): void => {
     if (!writeLog) {
       return; // no CDC configured on this host — silently ignore (forward-compat)
+    }
+
+    // Learn this connection's stable client id, so the skip below filters this
+    // client's own writes out of its backlog + tail — stable across reconnect.
+    if (msg.clientId) {
+      clientId = msg.clientId;
     }
 
     writeStreamStop?.(); // a re-subscribe (reconnect) replaces the prior tail
@@ -537,7 +558,7 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
       return tokens.some((t) => interest.has(t));
     };
     const deliver = (entry: WriteLogEntry): boolean =>
-      entry.origin !== writeOrigin && wants(entry.tokens);
+      entry.origin !== myOrigin() && wants(entry.tokens);
 
     const backlog = writeLog.since(msg.since ?? 0);
 
@@ -603,7 +624,7 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
       for (const w of disconnectWrites) {
         try {
           applyMutation(w.text, w.params, w.lang);
-          writeLog?.append(writeOrigin, w, writeTokens(w.text, w.lang));
+          writeLog?.append(myOrigin(), w, writeTokens(w.text, w.lang));
         } catch {
           // ignore — teardown must always complete
         }

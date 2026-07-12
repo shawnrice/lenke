@@ -14,9 +14,13 @@ import type { SyncWrite } from './protocol.js';
 export type WriteLogEntry = {
   /** Monotonic sequence number (1-based; `0` means "before the first op"). */
   seq: number;
-  /** The participant (host/connection) that committed it — for origin-skip so a
-   *  client never re-ingests the write it already applied optimistically. */
-  origin: number;
+  /** The **stable client id** that committed it — for origin-skip so a client
+   *  never re-ingests the write it already applied optimistically. Keyed on the
+   *  client's durable id (not the connection), so the skip survives a reconnect:
+   *  a re-dialed client presents the same id and its own writes are still
+   *  filtered out of its backlog. (Legacy clients that send no id get a
+   *  per-connection fallback — echo-skip within one connection only.) */
+  origin: string;
   write: SyncWrite;
   /**
    * The label / edge-type / property-key tokens this write touches (as by
@@ -37,11 +41,10 @@ export type WriteLogOptions = {
 };
 
 export type WriteLog = {
-  /** Register a participant; returns its stable origin id (for `append`). */
-  register(): number;
-  /** Append a committed write (with the tokens it touches, for interest routing);
-   *  assigns + returns its `seq` and notifies subscribers. */
-  append(origin: number, write: SyncWrite, tokens?: readonly string[]): number;
+  /** Append a committed write tagged with the committing client's stable id (with
+   *  the tokens it touches, for interest routing); assigns + returns its `seq`
+   *  and notifies subscribers. */
+  append(origin: string, write: SyncWrite, tokens?: readonly string[]): number;
   /** Subscribe to the live tail. Returns an unsubscribe. */
   subscribe(cb: (entry: WriteLogEntry) => void): () => void;
   /**
@@ -59,11 +62,8 @@ export const createWriteLog = (options: WriteLogOptions = {}): WriteLog => {
   const buffer: WriteLogEntry[] = []; // retained tail, ascending, contiguous seq
   const subscribers = new Set<(entry: WriteLogEntry) => void>();
   let seq = 0;
-  let nextId = 0;
 
   return {
-    register: () => nextId++,
-
     append: (origin, write, tokens) => {
       seq += 1;
       const entry: WriteLogEntry = { seq, origin, write, tokens };

@@ -10,8 +10,8 @@ describe('WriteLog (CDC op log)', () => {
     const seen: number[] = [];
     log.subscribe((e) => seen.push(e.seq));
 
-    expect(log.append(0, w('a'))).toBe(1);
-    expect(log.append(0, w('b'))).toBe(2);
+    expect(log.append('c', w('a'))).toBe(1);
+    expect(log.append('c', w('b'))).toBe(2);
     expect(seen).toEqual([1, 2]);
     expect(log.head()).toBe(2);
   });
@@ -20,7 +20,7 @@ describe('WriteLog (CDC op log)', () => {
     const log = createWriteLog({ capacity: 3 });
 
     for (const t of ['a', 'b', 'c', 'd', 'e']) {
-      log.append(0, w(t));
+      log.append('c', w(t));
     } // seq 1..5; ring holds 3..5
 
     expect(log.since(5)).toEqual([]); // current
@@ -32,16 +32,15 @@ describe('WriteLog (CDC op log)', () => {
 
   test('since(0) from the start when nothing has dropped', () => {
     const log = createWriteLog();
-    log.append(0, w('a'));
-    log.append(0, w('b'));
+    log.append('c', w('a'));
+    log.append('c', w('b'));
     expect(log.since(0)?.map((e) => e.write.text)).toEqual(['a', 'b']);
   });
 
   test('origin is carried (distinct per participant) for skip-your-own-echo', () => {
     const log = createWriteLog();
-    const a = log.register();
-    const b = log.register();
-    expect(a).not.toBe(b);
+    const a = 'client-a';
+    const b = 'client-b';
 
     log.append(a, w('from-a'));
     log.append(b, w('from-b'));
@@ -53,9 +52,9 @@ describe('WriteLog (CDC op log)', () => {
     const seen: number[] = [];
     const off = log.subscribe((e) => seen.push(e.seq));
 
-    log.append(0, w('a'));
+    log.append('c', w('a'));
     off();
-    log.append(0, w('b'));
+    log.append('c', w('b'));
     expect(seen).toEqual([1]);
   });
 });

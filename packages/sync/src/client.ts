@@ -178,12 +178,18 @@ export type SyncClient = {
    * — so cross-client changes appear locally without re-querying. Returns an
    * unsubscribe. `onResync` (optional) fires when the server's op log has moved
    * past this client's cursor (a long disconnect): the local write-stream is
-   * stale and the app should cold-boot from a fresh snapshot. Survives reconnect
-   * (resumes from the last cursor via {@link replay}).
+   * stale and the app should cold-boot from a fresh snapshot. `onIngestError`
+   * (optional) fires when handing a batch to `onWrites` throws — the batch is
+   * isolated so it can't wedge the transport, but ingest isn't atomic yet
+   * (R-TX), so a partial apply means the app should cold-boot to re-sync.
+   * Survives reconnect (resumes from the last cursor via {@link replay}).
    */
   subscribeWrites: (
     onWrites: (writes: readonly SyncWrite[]) => void,
-    opts?: { onResync?: () => void },
+    opts?: {
+      onResync?: () => void;
+      onIngestError?: (error: unknown, writes: readonly SyncWrite[]) => void;
+    },
   ) => () => void;
   /**
    * Register ephemeral cleanup writes — run by the host when this connection
@@ -443,6 +449,7 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
   // and the cold-boot hook for when the server's log has moved past the cursor.
   let writeHandler: ((writes: readonly SyncWrite[]) => void) | undefined;
   let writeResync: (() => void) | undefined;
+  let writeIngestError: ((error: unknown, writes: readonly SyncWrite[]) => void) | undefined;
   let writeCursor = 0;
   let writesSubscribed = false;
   // Ephemeral cleanup writes registered for this connection (presence teardown);
@@ -603,7 +610,7 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
 
     return new Promise<void>((resolve, reject) => {
       const req = `m-${clientId}-${++nextId}`;
-      const msg: ClientMessage = { type: 'mutate', req, text, params, lang };
+      const msg: ClientMessage = { type: 'mutate', req, text, params, lang, clientId };
       pending.set(req, { resolve: resolve as (v: never) => void, reject, kind: 'mutate', msg });
       send(msg);
     });
@@ -618,7 +625,7 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
       // Tagged-template subs are escaped into safe literals; a plain string
       // passes through (buildGremlin is @lenke/native's `gremlin` composer).
       const text = buildGremlin(traversal, ...subs);
-      const msg: ClientMessage = { type: 'mutate', req, text, lang: 'gremlin' };
+      const msg: ClientMessage = { type: 'mutate', req, text, lang: 'gremlin', clientId };
       pending.set(req, { resolve: resolve as (v: never) => void, reject, kind: 'mutate', msg });
       send(msg);
     });
@@ -841,11 +848,23 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
         }
 
         // Advance even on an empty batch (own-origin cursor ticks) so a later
-        // resume asks from the right place.
+        // resume asks from the right place. We advance PAST a failed batch too:
+        // a poison op is usually deterministic (a parse error, or a local
+        // constraint the server's schema doesn't enforce — R-SCHEMA-REPL), so
+        // holding the cursor would replay it forever on every reconnect. Move on
+        // and surface it instead.
         writeCursor = msg.cursor;
 
         if (msg.writes.length > 0) {
-          writeHandler?.(msg.writes);
+          // Isolate ingest: a single un-appliable write must not escape
+          // `receive()` and wedge the transport pump. Surface it via
+          // `onIngestError` — since ingest isn't atomic yet (R-TX), the batch may
+          // have partially applied, so the app should cold-boot to re-sync.
+          try {
+            writeHandler?.(msg.writes);
+          } catch (error) {
+            writeIngestError?.(error, msg.writes);
+          }
         }
 
         return;
@@ -872,12 +891,14 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
     subscribeWrites: (onWrites, opts) => {
       writeHandler = onWrites;
       writeResync = opts?.onResync;
+      writeIngestError = opts?.onIngestError;
       writesSubscribed = true;
-      send({ type: 'subscribeWrites', since: writeCursor });
+      send({ type: 'subscribeWrites', since: writeCursor, clientId });
 
       return () => {
         writeHandler = undefined;
         writeResync = undefined;
+        writeIngestError = undefined;
         writesSubscribed = false;
       };
     },
@@ -910,8 +931,10 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
 
       // Resume the CDC write stream from the last applied cursor — the host
       // replays the op tail after it, or answers `resync` if we've fallen off.
+      // `clientId` re-identifies us to the FRESH host so origin-skip filters our
+      // own writes out of the replayed backlog (the reconnect re-apply bug).
       if (writesSubscribed) {
-        send({ type: 'subscribeWrites', since: writeCursor });
+        send({ type: 'subscribeWrites', since: writeCursor, clientId });
       }
 
       // Re-register the ephemeral cleanup so the fresh host tears it down if THIS

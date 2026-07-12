@@ -218,7 +218,7 @@ suite('CDC write stream (TS vs native store)', () => {
     sent.length = 0; // drop the setup pushes
 
     // Another participant commits a User write and a Team write to the shared log.
-    const other = writeLog.register();
+    const other = 'other-client';
     writeLog.append(other, { text: 'INSERT (:User {id: 1})' }, ['User']);
     writeLog.append(other, { text: 'INSERT (:Team {id: 1})' }, ['Team']);
 
@@ -244,6 +244,52 @@ suite('CDC write stream (TS vs native store)', () => {
     expect(widgets(store)).toBe(1); // applied exactly once
     expect(writeLog.head()).toBe(1); // and broadcast exactly once (no double CDC)
     expect([...sent1, ...sent2].filter((m) => m.type === 'ack' && m.ok).length).toBe(2); // both acked ok
+  });
+
+  test('origin-skip survives reconnect: a client never re-ingests its OWN backlog write (R-CDC-ORIGIN)', () => {
+    const store = newStore();
+    const writeLog = createWriteLog();
+    const sent1: HostMessage[] = [];
+    const sent2: HostMessage[] = [];
+    const sentB: HostMessage[] = [];
+    const h1 = createSyncHost(store, { send: (m) => sent1.push(m), writeLog });
+
+    const clientId = 'client-A';
+
+    // Client A opts into CDC on connection 1 and commits a write. Its own write is
+    // NOT echoed back to it (origin-skip, tagged with A's stable clientId).
+    h1.receive({ type: 'subscribeWrites', clientId });
+    h1.receive({
+      type: 'mutate',
+      req: `m-${clientId}-1`,
+      text: 'INSERT (:Widget {id: 1})',
+      clientId,
+    });
+    const echoedToA1 = sent1
+      .filter((m): m is WritesMessage => m.type === 'writes')
+      .flatMap((m) => m.writes.map((w) => w.text));
+    expect(echoedToA1).toEqual([]); // own write skipped on its own connection
+
+    // The connection drops BEFORE A advanced its cursor. A re-dials → a FRESH host
+    // (which used to mint a new per-connection origin) and resumes from cursor 0.
+    const h2 = createSyncHost(store, { send: (m) => sent2.push(m), writeLog });
+    h2.receive({ type: 'subscribeWrites', since: 0, clientId });
+    const backlogToA2 = sent2
+      .filter((m): m is WritesMessage => m.type === 'writes')
+      .flatMap((m) => m.writes.map((w) => w.text));
+    // The fix: the backlog still skips A's own write, because origin is A's stable
+    // clientId, not the (now different) connection. Before, A re-ingested it → the
+    // optimistic/authoritative divergence.
+    expect(backlogToA2).toEqual([]);
+
+    // A DIFFERENT client B, resuming from 0, DOES receive A's write — the skip is
+    // per-client, not "skip everything".
+    const hB = createSyncHost(store, { send: (m) => sentB.push(m), writeLog });
+    hB.receive({ type: 'subscribeWrites', since: 0, clientId: 'client-B' });
+    const backlogToB = sentB
+      .filter((m): m is WritesMessage => m.type === 'writes')
+      .flatMap((m) => m.writes.map((w) => w.text));
+    expect(backlogToB).toEqual(['INSERT (:Widget {id: 1})']);
   });
 
   test('dedupe: distinct writes both apply; a failed write is not recorded', () => {
@@ -315,7 +361,7 @@ describe('CDC write stream — client ordering guard (transport-free)', () => {
 
     // The cursor held at 2 (never regressed) — a resume asks from there.
     client.replay();
-    expect(sent.filter((m) => m.type === 'subscribeWrites').at(-1)).toEqual({
+    expect(sent.filter((m) => m.type === 'subscribeWrites').at(-1)).toMatchObject({
       type: 'subscribeWrites',
       since: 2,
     });
@@ -331,10 +377,43 @@ describe('CDC write stream — client ordering guard (transport-free)', () => {
 
     expect(resynced).toBe(true);
     client.replay();
-    expect(sent.filter((m) => m.type === 'subscribeWrites').at(-1)).toEqual({
+    expect(sent.filter((m) => m.type === 'subscribeWrites').at(-1)).toMatchObject({
       type: 'subscribeWrites',
       since: 42,
     });
+  });
+
+  test('a poison write is isolated: onIngestError fires, receive() never throws, the pump survives', () => {
+    const client = createSyncClient({ send: () => {} });
+    const applied: string[] = [];
+    const errors: unknown[] = [];
+    client.subscribeWrites(
+      (writes) => {
+        for (const w of writes) {
+          if (w.text === 'POISON') {
+            throw new Error('un-appliable write');
+          }
+          applied.push(w.text);
+        }
+      },
+      { onIngestError: (e) => errors.push(e) },
+    );
+
+    // A good batch applies. A poison batch must NOT escape receive() and wedge the
+    // transport — it's surfaced via onIngestError. A later good batch still applies,
+    // proving the pump survived (before the fix, the throw killed the message loop).
+    expect(() =>
+      client.receive({ type: 'writes', writes: [{ text: 'a' }], cursor: 1 }),
+    ).not.toThrow();
+    expect(() =>
+      client.receive({ type: 'writes', writes: [{ text: 'POISON' }], cursor: 2 }),
+    ).not.toThrow();
+    expect(() =>
+      client.receive({ type: 'writes', writes: [{ text: 'b' }], cursor: 3 }),
+    ).not.toThrow();
+
+    expect(applied).toEqual(['a', 'b']);
+    expect(errors.length).toBe(1);
   });
 
   test('mutate reqs are globally unique (stable per-client prefix, for dedupe)', () => {
