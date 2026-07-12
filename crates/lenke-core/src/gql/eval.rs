@@ -832,6 +832,7 @@ fn eval(env: &Env, expr: &CExpr) -> Val {
             Lit::Bool(b) => Val::Bool(*b),
             Lit::Num(n) => Val::Num(*n),
             Lit::Str(s) => vstr(s.as_str()),
+            Lit::Temporal(t) => Val::Temporal(*t),
         },
         CExpr::Var(slot) => env.binding.get(*slot).cloned().unwrap_or(Val::Null),
         CExpr::Param(slot) => env.ctx.params.get(*slot).cloned().unwrap_or(Val::Null),
@@ -1017,6 +1018,7 @@ fn run(env: &Env, prog: &Program) -> Val {
                     Lit::Bool(b) => Val::Bool(*b),
                     Lit::Num(n) => Val::Num(*n),
                     Lit::Str(s) => vstr(s.as_str()),
+                    Lit::Temporal(t) => Val::Temporal(*t),
                 }),
                 Op::Var(slot) => st.push(env.binding.get(*slot).cloned().unwrap_or(Val::Null)),
                 Op::Param(slot) => st.push(env.ctx.params.get(*slot).cloned().unwrap_or(Val::Null)),
@@ -3117,7 +3119,9 @@ fn lit_to_idxkey(lit: &Lit) -> Option<crate::graph::IdxKey> {
         Lit::Str(s) => Some(IdxKey::Str(s.as_str().into())),
         Lit::Num(n) => Some(IdxKey::Num(*n)),
         Lit::Bool(b) => Some(IdxKey::Bool(*b)),
-        Lit::Null => None,
+        // Temporals aren't index-key-able yet (no temporal range index) — a
+        // temporal comparison falls back to a scan.
+        Lit::Null | Lit::Temporal(_) => None,
     }
 }
 

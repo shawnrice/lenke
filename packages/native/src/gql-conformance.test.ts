@@ -139,9 +139,7 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
   });
 
   test('the FOR list can reference a bound var, identically', () => {
-    const [ts, native] = both(
-      `MATCH (p:Person {name: 'marko'}) FOR x IN [p.name, p.age] RETURN x`,
-    );
+    const [ts, native] = both(`MATCH (p:Person {name: 'marko'}) FOR x IN [p.name, p.age] RETURN x`);
     expect(ts).toBe(native);
     expect(ts).toBe(`[{"x":"marko"},{"x":29}]`);
   });
@@ -153,5 +151,54 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     );
     expect(ts).toBe(native);
     expect(ts).toBe(`[{"name":"josh","p.age":32},{"name":"nobody","p.age":null}]`);
+  });
+
+  // --- temporal literals + comparison (Phase 1) -----------------------------
+
+  test('a DATE literal serializes to the tagged form byte-identically', () => {
+    const [ts, native] = both(`RETURN DATE '2020-02-29' AS d`);
+    expect(ts).toBe(native);
+    expect(ts).toBe(`[{"d":{"@date":"2020-02-29"}}]`);
+  });
+
+  test('a DURATION literal normalizes (years->months) identically', () => {
+    const [ts, native] = both(`RETURN DURATION 'P1Y2M3DT4H5M6S' AS d`);
+    expect(ts).toBe(native);
+    expect(ts).toBe(`[{"d":{"@duration":"P14M3DT14706S"}}]`);
+  });
+
+  test('temporal comparison (incl. cross-kind UNKNOWN) is byte-identical', () => {
+    const cases: [string, string][] = [
+      [`RETURN DATE '2020-01-01' < DATE '2020-06-01' AS x`, `[{"x":true}]`],
+      [`RETURN DATE '2020-06-01' < DATE '2020-01-01' AS x`, `[{"x":false}]`],
+      [`RETURN DATE '2020-01-01' = DATE '2020-01-01' AS x`, `[{"x":true}]`],
+      [`RETURN TIMESTAMP '2021-06-15T08:30:00.5' >= DATETIME '2021-06-15T08:30:00' AS x`, `[{"x":true}]`],
+      [`RETURN DATE '2020-01-01' < DATETIME '2020-01-01T00:00:00' AS x`, `[{"x":null}]`],
+    ];
+
+    for (const [q, want] of cases) {
+      const [ts, native] = both(q);
+      expect(ts, q).toBe(native);
+      expect(ts, q).toBe(want);
+    }
+  });
+
+  test('ORDER BY over temporal literals sorts chronologically, byte-identical', () => {
+    const [ts, native] = both(
+      `FOR d IN [DATE '2020-06-01', DATE '2020-01-01', DATE '2020-03-01'] RETURN d ORDER BY d`,
+    );
+    expect(ts).toBe(native);
+    expect(ts).toBe(
+      `[{"d":{"@date":"2020-01-01"}},{"d":{"@date":"2020-03-01"}},{"d":{"@date":"2020-06-01"}}]`,
+    );
+  });
+
+  test('as-of WHERE filter over temporal values is byte-identical', () => {
+    // Model the as-of over FOR-supplied dates + a WITH…WHERE window: keep the
+    // date that falls inside the half-open [from, to) interval.
+    const q = `FOR d IN [DATE '2020-06-01', DATE '2021-06-01'] WITH d WHERE DATE '2020-01-01' <= d AND d < DATE '2021-01-01' RETURN d`;
+    const [ts, native] = both(q);
+    expect(ts).toBe(native);
+    expect(ts).toBe(`[{"d":{"@date":"2020-06-01"}}]`);
   });
 });

@@ -1,5 +1,5 @@
 import type { Edge, Graph, IndexableValue, RangeBound, Vertex } from '@lenke/core';
-import { isTemporal, temporalCmpTotal } from '@lenke/core';
+import { isTemporal, temporalCmpTotal, temporalRelCmp } from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 import { filter, flatMap, map, skip, take, toArray } from '@lenke/fp';
 
@@ -206,6 +206,12 @@ const structuralEq = (a: unknown, b: unknown): boolean => {
 
   if (aList || bList) {
     return false;
+  }
+
+  // Two temporal instances are equal by value (same kind + same instant/
+  // components), not by reference — `DATE '2020-01-01' = DATE '2020-01-01'`.
+  if (isTemporal(a) && isTemporal(b)) {
+    return temporalCmpTotal(a, b) === 0;
   }
 
   return a === b;
@@ -1047,6 +1053,15 @@ const compileExpr = (expr: Expr): CompiledExpr => {
           const eq = structuralEq(lv, rv);
 
           return op === '=' ? eq : !eq;
+        }
+
+        // Temporals: date/datetime (same kind) order chronologically; durations
+        // and cross-kind pairs are UNKNOWN. `fn(c, 0)` applies the operator to the
+        // -1/0/1 comparison result (e.g. `<` becomes `c < 0`).
+        if (isTemporal(lv) && isTemporal(rv)) {
+          const c = temporalRelCmp(lv, rv);
+
+          return c === null ? null : fn(c, 0);
         }
 
         const t = typeof lv;

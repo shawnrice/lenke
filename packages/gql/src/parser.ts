@@ -59,6 +59,8 @@ import type {
   WithClause,
   ForClause,
 } from './ast.js';
+import { temporalParse } from '@lenke/core';
+
 import { GqlSyntaxError, isReserved, type Token, type TokenType, tokenize } from './lexer.js';
 
 // ISO GQL `CAST` target type name → the conversion function it desugars to.
@@ -149,6 +151,9 @@ const COMPARE_OPS: Partial<Record<TokenType, CompareOp>> = {
   lte: '<=',
   gte: '>=',
 };
+
+// Temporal typed-literal keywords: `<KW> '<iso>'` (e.g. `DATE '2020-01-01'`).
+const TEMPORAL_KW = new Set(['date', 'datetime', 'timestamp', 'duration']);
 
 const ADD_OPS: Partial<Record<TokenType, ArithOp>> = { plus: '+', dash: '-' };
 const MUL_OPS: Partial<Record<TokenType, ArithOp>> = { star: '*', slash: '/', percent: '%' };
@@ -890,6 +895,42 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Query => {
     return { kind: 'case', subject, whens, elseExpr };
   };
 
+  /** Is the current token a temporal type keyword directly before a string? */
+  const temporalLiteralAhead = (): boolean => {
+    const t = peek();
+
+    return (
+      t.type === 'ident' &&
+      !t.delimited &&
+      TEMPORAL_KW.has(t.value.toLowerCase()) &&
+      tokens[pos + 1]?.type === 'string'
+    );
+  };
+
+  const parseTemporalLiteral = (): Expr => {
+    const kw = advance();
+    const strTok = advance();
+    const kind = kw.value.toLowerCase();
+    let tag: 'date' | 'datetime' | 'duration';
+
+    if (kind === 'date') {
+      tag = 'date';
+    } else if (kind === 'duration') {
+      tag = 'duration';
+    } else {
+      tag = 'datetime';
+    }
+
+    try {
+      return { kind: 'lit', value: temporalParse(tag, strTok.value) };
+    } catch (cause) {
+      throw new GqlSyntaxError(
+        `invalid ${kw.value.toUpperCase()} literal: ${(cause as Error).message}`,
+        strTok.pos,
+      );
+    }
+  };
+
   const parsePrimary = (): Expr => {
     const t = peek();
 
@@ -903,6 +944,13 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Query => {
       advance();
 
       return { kind: 'lit', value: t.value };
+    }
+
+    // ISO typed temporal literal: `DATE '2020-01-01'` / `DATETIME '…'` /
+    // `TIMESTAMP '…'` / `DURATION 'P…'` — a soft-keyword ident before a string.
+    // (The `date(…)` constructor-function form falls through to the call path.)
+    if (temporalLiteralAhead()) {
+      return parseTemporalLiteral();
     }
 
     if (t.type === 'param') {

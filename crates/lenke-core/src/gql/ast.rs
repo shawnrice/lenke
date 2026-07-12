@@ -269,6 +269,8 @@ pub enum Lit {
     Bool(bool),
     Num(f64),
     Str(String),
+    /// An ISO temporal literal (`DATE '…'` / `DATETIME '…'` / `DURATION '…'`).
+    Temporal(crate::temporal::Temporal),
 }
 
 /// Expression tree (see TS `Expr`). Sub-expressions are boxed.

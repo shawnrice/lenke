@@ -861,6 +861,38 @@ impl Parser {
         })
     }
 
+    /// Is the current token a temporal type keyword (`date`/`datetime`/
+    /// `timestamp`/`duration`, non-delimited) immediately followed by a string?
+    fn temporal_literal_ahead(&self) -> bool {
+        let t = self.peek();
+        if t.delimited {
+            return false;
+        }
+        let is_kw = matches!(
+            t.value.to_ascii_lowercase().as_str(),
+            "date" | "datetime" | "timestamp" | "duration"
+        );
+        is_kw && matches!(self.tokens.get(self.pos + 1), Some(n) if n.tt == Tt::Str)
+    }
+
+    fn parse_temporal_literal(&mut self) -> R<Expr> {
+        let kw = self.advance();
+        let str_tok = self.advance();
+        let tag = match kw.value.to_ascii_lowercase().as_str() {
+            "date" => "date",
+            "datetime" | "timestamp" => "datetime",
+            "duration" => "duration",
+            _ => unreachable!("guarded by temporal_literal_ahead"),
+        };
+        match crate::temporal::Temporal::parse(tag, &str_tok.value) {
+            Ok(t) => Ok(Expr::Lit(Lit::Temporal(t))),
+            Err(e) => err(
+                format!("invalid {} literal: {e}", kw.value.to_uppercase()),
+                str_tok.pos,
+            ),
+        }
+    }
+
     fn parse_primary(&mut self) -> R<Expr> {
         let t = self.peek().clone();
         match t.tt {
@@ -872,6 +904,11 @@ impl Parser {
                 self.advance();
                 Ok(Expr::Lit(Lit::Str(t.value)))
             }
+            // ISO typed temporal literal: `DATE '2020-01-01'`, `DATETIME '…'`,
+            // `TIMESTAMP '…'`, `DURATION 'P…'` — a soft-keyword ident directly
+            // before a string. (The `date(…)` constructor-function form falls
+            // through to the normal function-call path.)
+            Tt::Ident if self.temporal_literal_ahead() => self.parse_temporal_literal(),
             Tt::Param => {
                 self.advance();
                 Ok(Expr::Param(t.value))

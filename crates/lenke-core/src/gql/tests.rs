@@ -2692,3 +2692,95 @@ fn for_drives_batch_optional_match_allow_and_deny() {
         vec![vec![s("josh"), n(32.0)], vec![s("nobody"), Value::Null]]
     );
 }
+
+// --- temporal literals + comparison (Phase 1) -------------------------------
+
+fn tdate(s: &str) -> Value {
+    Value::Temporal(crate::temporal::Temporal::parse("date", s).unwrap())
+}
+
+#[test]
+fn temporal_date_literal_returns_value() {
+    let mut g = modern();
+    assert_eq!(
+        rows(&mut g, "RETURN DATE '2020-02-29' AS d"),
+        vec![vec![tdate("2020-02-29")]]
+    );
+}
+
+#[test]
+fn temporal_literals_compare_chronologically() {
+    let mut g = modern();
+    assert_eq!(
+        rows(&mut g, "RETURN DATE '2020-01-01' < DATE '2020-06-01' AS x"),
+        vec![vec![b(true)]]
+    );
+    assert_eq!(
+        rows(&mut g, "RETURN DATE '2020-06-01' < DATE '2020-01-01' AS x"),
+        vec![vec![b(false)]]
+    );
+    assert_eq!(
+        rows(&mut g, "RETURN DATE '2020-01-01' = DATE '2020-01-01' AS x"),
+        vec![vec![b(true)]]
+    );
+    // TIMESTAMP is a DATETIME synonym; fractional seconds parse.
+    assert_eq!(
+        rows(
+            &mut g,
+            "RETURN TIMESTAMP '2021-06-15T08:30:00.5' >= DATETIME '2021-06-15T08:30:00' AS x"
+        ),
+        vec![vec![b(true)]]
+    );
+}
+
+#[test]
+fn temporal_cross_kind_comparison_is_unknown() {
+    // date vs datetime relationally → UNKNOWN (null), like a cross-type compare.
+    let mut g = modern();
+    assert_eq!(
+        rows(
+            &mut g,
+            "RETURN DATE '2020-01-01' < DATETIME '2020-01-01T00:00:00' AS x"
+        ),
+        vec![vec![Value::Null]]
+    );
+}
+
+#[test]
+fn temporal_as_of_where_filter() {
+    // Valid-time modeling: keep the fact whose [vfrom, vto) contains the as-of date.
+    let doc = concat!(
+        r#"{"type":"node","id":"1","labels":["Fact"],"properties":{"name":"a","vfrom":{"@date":"2020-01-01"},"vto":{"@date":"2021-01-01"}}}"#,
+        "\n",
+        r#"{"type":"node","id":"2","labels":["Fact"],"properties":{"name":"b","vfrom":{"@date":"2021-01-01"},"vto":{"@date":"2022-01-01"}}}"#,
+    );
+    let mut g = crate::ndjson::decode(doc).unwrap();
+    assert_eq!(
+        rows(
+            &mut g,
+            "MATCH (f:Fact) WHERE f.vfrom <= DATE '2020-06-01' AND DATE '2020-06-01' < f.vto RETURN f.name"
+        ),
+        vec![vec![s("a")]]
+    );
+}
+
+#[test]
+fn temporal_order_by_sorts_chronologically() {
+    let mut g = modern();
+    assert_eq!(
+        rows(
+            &mut g,
+            "FOR d IN [DATE '2020-06-01', DATE '2020-01-01', DATE '2020-03-01'] RETURN d ORDER BY d"
+        ),
+        vec![
+            vec![tdate("2020-01-01")],
+            vec![tdate("2020-03-01")],
+            vec![tdate("2020-06-01")]
+        ]
+    );
+}
+
+#[test]
+fn temporal_bad_literal_is_a_syntax_error() {
+    assert!(parse("RETURN DATE '2020-99-99'").is_err());
+}
