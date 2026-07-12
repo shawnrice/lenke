@@ -58,7 +58,7 @@ describe('serialization error codes', () => {
     try {
       normalizeValue(new Date());
     } catch (e) {
-      ({ message } = (e as Error));
+      ({ message } = e as Error);
     }
 
     expect(message).toContain('fromJSDate');

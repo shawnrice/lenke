@@ -44,7 +44,12 @@ const tagged: Array<[string, string]> = [
 export function seedNdjson(): Uint8Array {
   const recs: Rec[] = [];
   for (const [id, title] of notes) {
-    recs.push({ type: 'node', id, labels: ['Note'], properties: { id, title, body: `${title} body.` } });
+    recs.push({
+      type: 'node',
+      id,
+      labels: ['Note'],
+      properties: { id, title, body: `${title} body.` },
+    });
   }
   for (const name of tags) {
     recs.push({ type: 'node', id: `tag-${name}`, labels: ['Tag'], properties: { name } });
@@ -54,7 +59,14 @@ export function seedNdjson(): Uint8Array {
     recs.push({ type: 'edge', id: `l-${e++}`, from, to, labels: ['LINKS_TO'], properties: {} });
   }
   for (const [from, name] of tagged) {
-    recs.push({ type: 'edge', id: `t-${e++}`, from, to: `tag-${name}`, labels: ['TAGGED'], properties: {} });
+    recs.push({
+      type: 'edge',
+      id: `t-${e++}`,
+      from,
+      to: `tag-${name}`,
+      labels: ['TAGGED'],
+      properties: {},
+    });
   }
   const text = recs.map((r) => JSON.stringify(r)).join('\n');
   return new TextEncoder().encode(text);

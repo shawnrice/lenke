@@ -1,15 +1,28 @@
 // IMPORTANT: this side-effect import must come FIRST — it registers a happy-dom
 // DOM onto globalThis before @testing-library/react / react-dom evaluate.
 import './happydom.js';
-
 import { Graph } from '@lenke/core';
-import { GraphProvider, useGraphSelector, useGraphTraversal, useGraphSubscription } from '@lenke/react';
+import { traversal, V, out, repeat, dedupe, values, type Plan } from '@lenke/gremlin';
+import {
+  GraphProvider,
+  useGraphSelector,
+  useGraphTraversal,
+  useGraphSubscription,
+} from '@lenke/react';
 import { act, render } from '@testing-library/react';
 import * as React from 'react';
 
-import { addNode, addChild, addLink, subtreeTitles, ancestorTitles, depthOf, CHILD, LINK } from './mindmap.js';
 import { History } from './history.js';
-import { traversal, V, out, repeat, dedupe, values, type Plan } from '@lenke/gremlin';
+import {
+  addNode,
+  addChild,
+  addLink,
+  subtreeTitles,
+  ancestorTitles,
+  depthOf,
+  CHILD,
+  LINK,
+} from './mindmap.js';
 
 const planSubtree = (rootId: string): Plan =>
   traversal(V(rootId), repeat(out(CHILD)).emit(), dedupe(), values('title'));
@@ -32,7 +45,10 @@ function check(label: string, cond: boolean, detail = ''): void {
 
 // The graph's change notifications are deferred (queueMicrotask + setTimeout),
 // so flush real timers inside act() to let subscribers/hooks catch up.
-const flush = () => act(async () => { await new Promise((r) => setTimeout(r, 25)); });
+const flush = () =>
+  act(async () => {
+    await new Promise((r) => setTimeout(r, 25));
+  });
 
 // ---------------------------------------------------------------------------
 // React UI — the three Graph-connector hooks
@@ -108,7 +124,10 @@ async function main(): Promise<void> {
   console.log('  ancestors(a2)   =', ancestorTitles(graph, 'a2'));
   console.log('  depth(a2)       =', depthOf(graph, 'a2'));
   check('subtree(root) has 4 descendants', subtreeTitles(graph, 'root').length === 4);
-  check('ancestors(a2) = [Design, Roadmap]', ancestorTitles(graph, 'a2').join(',') === 'Design,Roadmap');
+  check(
+    'ancestors(a2) = [Design, Roadmap]',
+    ancestorTitles(graph, 'a2').join(',') === 'Design,Roadmap',
+  );
   check('depth(a2) === 2', depthOf(graph, 'a2') === 2);
 
   // --- Render the React tree ----------------------------------------------
@@ -133,22 +152,32 @@ async function main(): Promise<void> {
     history.act('rename Palette', () => a2.setProperty('title', 'Color palette'));
   });
   await flush();
-  check('inspector re-rendered on setProperty', inspector() === 'Color palette [task]', inspector()!);
+  check(
+    'inspector re-rendered on setProperty',
+    inspector() === 'Color palette [task]',
+    inspector()!,
+  );
   check('inspector actually re-rendered (render count grew)', inspectorRenders > rendersBefore);
 
   // --- Undo via events: selector snaps back --------------------------------
   console.log('\n[3] Undo/redo driven purely by graph events');
   console.log('  undo stack:', history.undoLabels);
-  await act(async () => { history.undo(); });
+  await act(async () => {
+    history.undo();
+  });
   await flush();
   check('undo restored title', a2.getProperty<string>('title') === 'Palette');
   check('inspector re-rendered after undo', inspector() === 'Palette [task]', inspector()!);
 
-  await act(async () => { history.redo(); });
+  await act(async () => {
+    history.redo();
+  });
   await flush();
   check('redo re-applied title', a2.getProperty<string>('title') === 'Color palette');
   check('inspector reflects redo', inspector() === 'Color palette [task]', inspector()!);
-  await act(async () => { history.undo(); }); // back to 'Palette' for later checks
+  await act(async () => {
+    history.undo();
+  }); // back to 'Palette' for later checks
   await flush();
 
   // --- Live traversal re-render: add a child under root --------------------
@@ -158,7 +187,9 @@ async function main(): Promise<void> {
   });
   await flush();
   check('subtree panel grew after addChild', subtree()!.split(',').includes('Ship'), subtree()!);
-  await act(async () => { history.undo(); });
+  await act(async () => {
+    history.undo();
+  });
   await flush();
   check('subtree panel shrank after undo', !subtree()!.split(',').includes('Ship'), subtree()!);
   // remove the now-orphaned 'Ship' node so later counts are clean
@@ -176,14 +207,32 @@ async function main(): Promise<void> {
   await flush();
   check('vertex gone after remove', graph.getVertexById('a') === null);
   check('cascade removed incident edges', graph.edgeCount < edgesBefore);
-  check('inspector for child a2 shows ancestor loss', depthOf(graph, 'a2') === 0, `depth=${depthOf(graph, 'a2')}`);
+  check(
+    'inspector for child a2 shows ancestor loss',
+    depthOf(graph, 'a2') === 0,
+    `depth=${depthOf(graph, 'a2')}`,
+  );
 
-  await act(async () => { history.undo(); });
+  await act(async () => {
+    history.undo();
+  });
   await flush();
   check('undo restored the vertex', graph.getVertexById('a') !== null);
-  check('undo restored vertex count', graph.vertexCount === vertsBefore, `${graph.vertexCount} vs ${vertsBefore}`);
-  check('undo restored edge count (tree + cross-link)', graph.edgeCount === edgesBefore, `${graph.edgeCount} vs ${edgesBefore}`);
-  check('ancestor chain rebuilt', ancestorTitles(graph, 'a2').join(',') === 'Design,Roadmap', ancestorTitles(graph, 'a2').join(','));
+  check(
+    'undo restored vertex count',
+    graph.vertexCount === vertsBefore,
+    `${graph.vertexCount} vs ${vertsBefore}`,
+  );
+  check(
+    'undo restored edge count (tree + cross-link)',
+    graph.edgeCount === edgesBefore,
+    `${graph.edgeCount} vs ${edgesBefore}`,
+  );
+  check(
+    'ancestor chain rebuilt',
+    ancestorTitles(graph, 'a2').join(',') === 'Design,Roadmap',
+    ancestorTitles(graph, 'a2').join(','),
+  );
   check('cross-link LINK restored', graph.getEdgesByLabel(LINK).size === 1);
 
   // --- Subscription side-effect fired -------------------------------------

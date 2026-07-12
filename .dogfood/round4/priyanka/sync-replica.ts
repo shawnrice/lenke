@@ -1,3 +1,4 @@
+import { createStore, graphFromNdjson } from '@lenke/native';
 // BONUS: propagate a tuple write to a second in-process replica via @lenke/sync.
 //
 // Two independent authz graphs (primary + replica), each fronted by a SyncHost.
@@ -7,7 +8,6 @@
 // a write replicated over the sync protocol to a second in-process store. We
 // prove both graphs re-authorize (and the live query pushes the new grantee).
 import { createNodeBackend } from '@lenke/node/backend';
-import { createStore, graphFromNdjson } from '@lenke/native';
 import { createSyncClient, createSyncHost } from '@lenke/sync';
 
 // Small, clear fixture: u-new is a plain user with no grant on r-shared yet.
@@ -32,7 +32,7 @@ const VIEWERS = `
   MATCH (r:Resource {rid: $r})-[:PARENT]->*(anc)<-[:EDITOR|OWNER|VIEWER]-(p)<-[:MEMBER_OF]-*(m:User)
   RETURN DISTINCT m.uid AS uid ORDER BY uid`;
 const viewers = (store: typeof primary) =>
-  (store.graph.query<{ uid: string }>(VIEWERS, { r: 'r-shared' })).map((x) => x.uid);
+  store.graph.query<{ uid: string }>(VIEWERS, { r: 'r-shared' }).map((x) => x.uid);
 
 console.log('BEFORE write:');
 console.log('  primary viewers:', viewers(primary));
@@ -54,8 +54,12 @@ const client = createSyncClient({
 const live = client.liveQuery(VIEWERS, { deps: null, params: { r: 'r-shared' } });
 const pushes: string[][] = [];
 live.subscribe(() => pushes.push((live.getSnapshot().rows as { uid: string }[]).map((r) => r.uid)));
-console.log('\nlive query initial snapshot complete=', live.getSnapshot().complete,
-  'rows=', (live.getSnapshot().rows as { uid: string }[]).map((r) => r.uid));
+console.log(
+  '\nlive query initial snapshot complete=',
+  live.getSnapshot().complete,
+  'rows=',
+  (live.getSnapshot().rows as { uid: string }[]).map((r) => r.uid),
+);
 
 // --- the tuple write: grant u-new VIEWER on r-shared, over the protocol ---
 console.log('\nwriting tuple: (u-new)-[:VIEWER]->(r-shared) via client.mutate ...');
@@ -73,7 +77,9 @@ const ok =
   viewers(primary).includes('u-new') &&
   viewers(replica).includes('u-new') &&
   pushes.some((p) => p.includes('u-new'));
-console.log(`\n${ok ? 'PASS' : 'FAIL'}: tuple write propagated to primary + replica and pushed to the live query`);
+console.log(
+  `\n${ok ? 'PASS' : 'FAIL'}: tuple write propagated to primary + replica and pushed to the live query`,
+);
 
 live.unsubscribe?.();
 hostPrimary.close();

@@ -9,8 +9,6 @@
  */
 
 import { Graph, type Vertex } from '@lenke/core';
-import { TreeNode, Trie } from '@lenke/tree';
-import { List } from '@lenke/list';
 import {
   traversal,
   run,
@@ -40,6 +38,8 @@ import {
   eq,
   Order,
 } from '@lenke/gremlin';
+import { List } from '@lenke/list';
+import { TreeNode, Trie } from '@lenke/tree';
 
 const hr = (title: string) => console.log(`\n${'='.repeat(64)}\n${title}\n${'='.repeat(64)}`);
 
@@ -75,9 +75,10 @@ const findClass = (name: string): TreeNode<string> | null =>
 hr('1. CLASS HIERARCHY (TreeNode)');
 console.log('depth-first values :', entity.castDepthFirstValue().join(' > '));
 console.log('breadth-first      :', entity.castBreadthFirstValue().join(' '));
-console.log('leaf count (fold)  :', entity.fold<number>((_v, kids) =>
-  kids.length === 0 ? 1 : kids.reduce((a, b) => a + b, 0),
-));
+console.log(
+  'leaf count (fold)  :',
+  entity.fold<number>((_v, kids) => (kids.length === 0 ? 1 : kids.reduce((a, b) => a + b, 0))),
+);
 
 // --- add / detach demo ---
 const reptile = animal.createChild('Reptile'); // add
@@ -127,10 +128,7 @@ const classVertex = new Map<string, Vertex>();
 
 // materialise every class as a CLASS vertex
 for (const node of entity) {
-  classVertex.set(
-    node.value,
-    g.addVertex({ labels: ['CLASS'], properties: { name: node.value } }),
-  );
+  classVertex.set(node.value, g.addVertex({ labels: ['CLASS'], properties: { name: node.value } }));
 }
 // SUBCLASS_OF edges: child --SUBCLASS_OF--> parent
 for (const node of entity) {
@@ -187,10 +185,10 @@ const grouped = toArray(
 for (const [cls, names] of grouped) console.log(`  ${cls.padEnd(8)} -> [${names.join(', ')}]`);
 
 // groupCount(): Map<className, count>
-const counts = toArray(
-  traversal(V(), hasLabel('INSTANCE'), groupCount().by('class')),
-  g,
-)[0] as Map<string, number>;
+const counts = toArray(traversal(V(), hasLabel('INSTANCE'), groupCount().by('class')), g)[0] as Map<
+  string,
+  number
+>;
 console.log('groupCount        :', JSON.stringify(Object.fromEntries(counts)));
 
 hr('4b. PER-CLASS PROJECTION {name, instanceCount, parent}  (project.by sub-traversals)');
@@ -209,9 +207,7 @@ const perClass = toArray(
   g,
 ) as { name: string; instanceCount: number; parent: string }[];
 for (const row of perClass) {
-  console.log(
-    `  ${row.name.padEnd(8)} instances=${row.instanceCount}  parent=${row.parent}`,
-  );
+  console.log(`  ${row.name.padEnd(8)} instances=${row.instanceCount}  parent=${row.parent}`);
 }
 
 hr('4c. choose() — classify each class as populated / empty');
@@ -271,10 +267,7 @@ try {
     traversal(
       V(),
       hasLabel('INSTANCE'),
-      match(
-        pipe(as_('i'), out('INSTANCE_OF'), as_('c')),
-        pipe(as_('c'), has('name', 'Flower')),
-      ),
+      match(pipe(as_('i'), out('INSTANCE_OF'), as_('c')), pipe(as_('c'), has('name', 'Flower'))),
       select('i').by('name'),
     ),
     g,

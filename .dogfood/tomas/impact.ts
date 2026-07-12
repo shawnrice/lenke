@@ -47,10 +47,26 @@ const add = (name: string) => {
 
 // A little monorepo: foundational libs at the bottom, apps at the top.
 const names = [
-  'logger', 'config', 'utils', 'errors', 'fp', 'list',
-  'core', 'emitter', 'codec-json', 'codec-csv',
-  'gremlin', 'gql', 'planner', 'index', 'store',
-  'native', 'cli', 'server', 'web', 'devtools',
+  'logger',
+  'config',
+  'utils',
+  'errors',
+  'fp',
+  'list',
+  'core',
+  'emitter',
+  'codec-json',
+  'codec-csv',
+  'gremlin',
+  'gql',
+  'planner',
+  'index',
+  'store',
+  'native',
+  'cli',
+  'server',
+  'web',
+  'devtools',
 ];
 names.forEach(add);
 
@@ -91,7 +107,7 @@ const deps: [string, string][] = [
   ['devtools', 'gremlin'],
   // --- an intentional dependency CYCLE: planner <-> index -> store -> planner
   ['store', 'planner'], // store depends on planner, planner depends on index depends on... make it cyclic:
-  ['index', 'store'],   // index <-> store cycle (index->store->planner->index)
+  ['index', 'store'], // index <-> store cycle (index->store->planner->index)
 ];
 
 for (const [from, to] of deps) {
@@ -159,7 +175,9 @@ for (const name of names) {
   ) as Vertex[];
   if (closure.some((v) => v.id === start)) onCycle.add(name);
 }
-console.log(`[cycles] packages on a dependency cycle: ${[...onCycle].sort().join(', ') || '(none)'}`);
+console.log(
+  `[cycles] packages on a dependency cycle: ${[...onCycle].sort().join(', ') || '(none)'}`,
+);
 
 // Print one concrete cycle path via repeat(...).path() + cyclicPath().
 const cyclePaths = toArray(
@@ -196,7 +214,7 @@ const sgResult = toArray(
     has('name', 'errors'),
     repeat(in_('DEPENDS_ON')).emit(), // the affected vertices
     dedupe(),
-    inE('DEPENDS_ON'),                // their incoming DEPENDS_ON edges
+    inE('DEPENDS_ON'), // their incoming DEPENDS_ON edges
     subgraph('blast'),
     cap('blast'),
   ),

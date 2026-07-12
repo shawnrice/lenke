@@ -28,13 +28,13 @@ and [`findings/`](./findings/) for each round's raw persona reports.
 The round-4 ambitious apps are use cases the project **intends to support**
 (owner-confirmed). They define the bar:
 
-| Domain | Persona | What it stresses |
-|---|---|---|
-| **ReBAC authorization** (Zanzibar-style) | Priyanka (r4) | traversal `check()` at 200k tuples, multi-anchor index seeking, sync tuple propagation |
-| **Graph analytics / feature engineering** | Marcus (r4) | PageRank/components/centrality at 100k–600k nodes, iterative expressiveness, Arrow columnar export |
-| **Schema-validated data layer ("Prisma for graphs")** | Lena (r4) | constraints, migrations, event-veto enforcement, transactions |
-| **Real-time multiplayer state server** | Kenji (r4) | 48 concurrent WS clients, per-viewport scoping, presence, reconnect, convergence |
-| **Bitemporal knowledge graph** | Sofia (r4) | valid-time + transaction-time, as-of queries, event-sourcing, snapshots-as-checkpoints |
+| Domain                                                | Persona       | What it stresses                                                                                   |
+| ----------------------------------------------------- | ------------- | -------------------------------------------------------------------------------------------------- |
+| **ReBAC authorization** (Zanzibar-style)              | Priyanka (r4) | traversal `check()` at 200k tuples, multi-anchor index seeking, sync tuple propagation             |
+| **Graph analytics / feature engineering**             | Marcus (r4)   | PageRank/components/centrality at 100k–600k nodes, iterative expressiveness, Arrow columnar export |
+| **Schema-validated data layer ("Prisma for graphs")** | Lena (r4)     | constraints, migrations, event-veto enforcement, transactions                                      |
+| **Real-time multiplayer state server**                | Kenji (r4)    | 48 concurrent WS clients, per-viewport scoping, presence, reconnect, convergence                   |
+| **Bitemporal knowledge graph**                        | Sofia (r4)    | valid-time + transaction-time, as-of queries, event-sourcing, snapshots-as-checkpoints             |
 
 Earlier rounds (1–3) covered: browser knowledge-graph (wasm+React+GQL), Node
 recommendation service (napi+bulk+prepared), ETL format migration

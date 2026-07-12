@@ -5,6 +5,7 @@
  * author edge, or neither").
  */
 import { Graph, type Vertex } from '@lenke/core';
+
 import { Schema, ConstraintError, type EntityDef } from './schema.js';
 
 export class Repository {
@@ -81,12 +82,7 @@ export class Repository {
   }
 
   /** Connect two vertices with an edge; throws on cardinality veto. */
-  link(
-    from: Vertex,
-    label: string,
-    to: Vertex,
-    props: Record<string, unknown> = {},
-  ): void {
+  link(from: Vertex, label: string, to: Vertex, props: Record<string, unknown> = {}): void {
     const edge = this.graph.addEdge({ from, to, labels: [label], properties: props });
     this.assertClean();
     if (!this.graph.getEdgeById(edge.id)) {

@@ -1,3 +1,4 @@
+import { expect, test } from 'bun:test';
 /**
  * React-hook wiring for Maya's knowledge-graph sidebar, exercised headlessly.
  *
@@ -10,19 +11,12 @@
  */
 import { readFile } from 'node:fs/promises';
 
-import { expect, test } from 'bun:test';
-import * as React from 'react';
-import { act, render, screen, waitFor } from '@testing-library/react';
-
 import { createEmptyGraph, createStore } from '@lenke/native';
 import { createWasmBackend } from '@lenke/native/wasm';
-import {
-  StoreProvider,
-  useLiveQuery,
-  SyncClientProvider,
-  useClientLiveQuery,
-} from '@lenke/react';
+import { StoreProvider, useLiveQuery, SyncClientProvider, useClientLiveQuery } from '@lenke/react';
 import { createSyncHost, createSyncClient, type SyncClient } from '@lenke/sync';
+import { act, render, screen, waitFor } from '@testing-library/react';
+import * as React from 'react';
 
 const WASM =
   '/home/shawn/projects/pl-graph/crates/lenke-core/target/wasm32-unknown-unknown/release/lenke_core.wasm';
@@ -159,12 +153,8 @@ test('useClientLiveQuery renders + re-renders through the sync client', async ()
 
   // Optimistic write through the client -> host applies -> subscription re-pushes.
   await act(async () => {
-    await client.mutate(
-      `INSERT (:Note {id: 'c', title: 'Arrow interchange'})`,
-    );
-    await client.mutate(
-      `MATCH (c:Note {id: 'c'}), (a:Note {id: 'a'}) INSERT (c)-[:LINKS_TO]->(a)`,
-    );
+    await client.mutate(`INSERT (:Note {id: 'c', title: 'Arrow interchange'})`);
+    await client.mutate(`MATCH (c:Note {id: 'c'}), (a:Note {id: 'a'}) INSERT (c)-[:LINKS_TO]->(a)`);
   });
 
   await waitFor(() => {

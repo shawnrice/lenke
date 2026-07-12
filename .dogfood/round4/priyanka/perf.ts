@@ -1,5 +1,5 @@
-import { createNodeBackend } from '@lenke/node/backend';
 import { graphFromNdjson } from '@lenke/native';
+import { createNodeBackend } from '@lenke/node/backend';
 
 const dir = import.meta.dir;
 const g = graphFromNdjson(createNodeBackend(), await Bun.file(`${dir}/graph.ndjson`).bytes());
@@ -50,7 +50,9 @@ const p6 = g.prepare(`
     MATCH (u)-[:MEMBER_OF]->*(p)-[:EDITOR|OWNER|VIEWER]->(anc),
           (r)-[:PARENT]->*(anc)
   } AS allowed`);
-bench('EXISTS check (u forward, r forward)', 3000, (i) => p6.query({ u: rndUser(i), r: rndRes(i) }));
+bench('EXISTS check (u forward, r forward)', 3000, (i) =>
+  p6.query({ u: rndUser(i), r: rndRes(i) }),
+);
 p6.free();
 
 // 7. alternative: drive from r ancestors, reverse grant, reverse membership to pinned u

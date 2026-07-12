@@ -38,10 +38,26 @@ import {
 const g = new Graph();
 
 const pkgNames = [
-  'core', 'logger', 'config', 'utils', 'errors',
-  'http-client', 'db-driver', 'orm', 'cache', 'auth',
-  'api-server', 'web-ui', 'cli', 'scheduler', 'metrics',
-  'plugin-a', 'plugin-b', 'billing', 'notifications', 'gateway',
+  'core',
+  'logger',
+  'config',
+  'utils',
+  'errors',
+  'http-client',
+  'db-driver',
+  'orm',
+  'cache',
+  'auth',
+  'api-server',
+  'web-ui',
+  'cli',
+  'scheduler',
+  'metrics',
+  'plugin-a',
+  'plugin-b',
+  'billing',
+  'notifications',
+  'gateway',
 ];
 
 const V_: Record<string, Vertex> = {};
@@ -55,19 +71,40 @@ const deps: [string, string][] = [
   ['config', 'core'],
   ['utils', 'core'],
   ['errors', 'core'],
-  ['http-client', 'core'], ['http-client', 'logger'], ['http-client', 'errors'],
-  ['db-driver', 'core'], ['db-driver', 'logger'], ['db-driver', 'config'],
-  ['orm', 'db-driver'], ['orm', 'utils'], ['orm', 'errors'],
-  ['cache', 'core'], ['cache', 'config'],
-  ['auth', 'http-client'], ['auth', 'orm'], ['auth', 'cache'],
-  ['metrics', 'core'], ['metrics', 'logger'],
-  ['scheduler', 'core'], ['scheduler', 'metrics'],
-  ['api-server', 'auth'], ['api-server', 'orm'], ['api-server', 'http-client'], ['api-server', 'metrics'],
-  ['web-ui', 'http-client'], ['web-ui', 'auth'],
-  ['cli', 'config'], ['cli', 'orm'], ['cli', 'logger'],
-  ['billing', 'orm'], ['billing', 'auth'], ['billing', 'notifications'],
-  ['notifications', 'http-client'], ['notifications', 'scheduler'],
-  ['gateway', 'api-server'], ['gateway', 'auth'],
+  ['http-client', 'core'],
+  ['http-client', 'logger'],
+  ['http-client', 'errors'],
+  ['db-driver', 'core'],
+  ['db-driver', 'logger'],
+  ['db-driver', 'config'],
+  ['orm', 'db-driver'],
+  ['orm', 'utils'],
+  ['orm', 'errors'],
+  ['cache', 'core'],
+  ['cache', 'config'],
+  ['auth', 'http-client'],
+  ['auth', 'orm'],
+  ['auth', 'cache'],
+  ['metrics', 'core'],
+  ['metrics', 'logger'],
+  ['scheduler', 'core'],
+  ['scheduler', 'metrics'],
+  ['api-server', 'auth'],
+  ['api-server', 'orm'],
+  ['api-server', 'http-client'],
+  ['api-server', 'metrics'],
+  ['web-ui', 'http-client'],
+  ['web-ui', 'auth'],
+  ['cli', 'config'],
+  ['cli', 'orm'],
+  ['cli', 'logger'],
+  ['billing', 'orm'],
+  ['billing', 'auth'],
+  ['billing', 'notifications'],
+  ['notifications', 'http-client'],
+  ['notifications', 'scheduler'],
+  ['gateway', 'api-server'],
+  ['gateway', 'auth'],
   ['plugin-a', 'api-server'],
   ['plugin-b', 'gateway'],
   // ---- The deliberate cycle: billing -> notifications -> scheduler -> billing
@@ -89,13 +126,7 @@ const name = (v: Vertex) => v.getProperty<string>('name');
 // ---------------------------------------------------------------------------
 function downstream(target: string): string[] {
   const rows = q.toArray(
-    traversal(
-      V(),
-      has('name', target),
-      repeat(in_('DEPENDS_ON')).emit(),
-      dedupe(),
-      values('name'),
-    ),
+    traversal(V(), has('name', target), repeat(in_('DEPENDS_ON')).emit(), dedupe(), values('name')),
   ) as string[];
   return rows.sort();
 }
@@ -128,11 +159,7 @@ for (const p of sp) {
 // ---------------------------------------------------------------------------
 console.log('\n=== Dependency cycles reachable from each package ===');
 const rawCycles = q.toArray(
-  traversal(
-    V(),
-    repeat(out('DEPENDS_ON')).until(cyclicPath()),
-    path(),
-  ),
+  traversal(V(), repeat(out('DEPENDS_ON')).until(cyclicPath()), path()),
 ) as Vertex[][];
 
 // Keep only "true" cycles: paths whose first === last (the start is a cycle member),
@@ -184,8 +211,10 @@ if (sub instanceof Graph) {
   const verts = [...sub.getVerticesByLabel('PACKAGE')]
     .map((v) => v.getProperty<string>('name'))
     .sort();
-  const edgeCount = [...sub.getVerticesByLabel('PACKAGE')]
-    .reduce((acc, v) => acc + v.edgesFromByLabel('DEPENDS_ON').size, 0);
+  const edgeCount = [...sub.getVerticesByLabel('PACKAGE')].reduce(
+    (acc, v) => acc + v.edgesFromByLabel('DEPENDS_ON').size,
+    0,
+  );
   console.log(`  blast subgraph: ${verts.length} vertices, ${edgeCount} edges`);
   console.log('  vertices:', verts);
 } else {
@@ -197,8 +226,6 @@ if (sub instanceof Graph) {
 // ---------------------------------------------------------------------------
 console.log('\n=== Direct dependent counts (fan-in) ===');
 for (const target of ['core', 'auth', 'orm', 'http-client']) {
-  const c = q.toArray(
-    traversal(V(), has('name', target), in_('DEPENDS_ON'), count()),
-  )[0];
+  const c = q.toArray(traversal(V(), has('name', target), in_('DEPENDS_ON'), count()))[0];
   console.log(`  ${target}: ${c} direct dependents`);
 }

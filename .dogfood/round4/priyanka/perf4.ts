@@ -1,5 +1,5 @@
-import { createNodeBackend } from '@lenke/node/backend';
 import { graphFromNdjson } from '@lenke/native';
+import { createNodeBackend } from '@lenke/node/backend';
 
 const dir = import.meta.dir;
 const g = graphFromNdjson(createNodeBackend(), await Bun.file(`${dir}/graph.ndjson`).bytes());
@@ -21,7 +21,9 @@ function bench(label: string, iters: number, fn: (i: number) => void) {
 const A = g.prepare<{ c: number }>(`
   MATCH (r:Resource {rid: $r})-[:PARENT]->*(anc)<-[:EDITOR|OWNER|VIEWER]-(p)<-[:MEMBER_OF]-*(m:User {uid: $u})
   RETURN count(*) AS c`);
-bench('A: r-seed, connected, uid inline (random)', 5000, (i) => A.query({ u: rndUser(i), r: rndRes(i) }));
+bench('A: r-seed, connected, uid inline (random)', 5000, (i) =>
+  A.query({ u: rndUser(i), r: rndRes(i) }),
+);
 bench('A: deep case', 3000, () => A.query({ u: 'u-deep', r: 'r-deepdoc' }));
 console.log('   A deep c=', A.query({ u: 'u-deep', r: 'r-deepdoc' })[0]?.c, '(expect >0)');
 console.log('   A none c=', A.query({ u: 'u-none', r: 'r-deepdoc' })[0]?.c, '(expect 0)');
@@ -32,7 +34,9 @@ A.free();
 const B = g.prepare<{ c: number }>(`
   MATCH (u:User {uid: $u})-[:MEMBER_OF]->*(p)-[:EDITOR|OWNER|VIEWER]->(anc)<-[:PARENT]-*(r:Resource {rid: $r})
   RETURN count(*) AS c`);
-bench('B: u-seed, connected, rid inline (random)', 5000, (i) => B.query({ u: rndUser(i), r: rndRes(i) }));
+bench('B: u-seed, connected, rid inline (random)', 5000, (i) =>
+  B.query({ u: rndUser(i), r: rndRes(i) }),
+);
 bench('B: deep case', 3000, () => B.query({ u: 'u-deep', r: 'r-deepdoc' }));
 console.log('   B deep c=', B.query({ u: 'u-deep', r: 'r-deepdoc' })[0]?.c, '(expect >0)');
 console.log('   B none c=', B.query({ u: 'u-none', r: 'r-deepdoc' })[0]?.c, '(expect 0)');
@@ -44,7 +48,9 @@ const C = g.prepare<{ allowed: boolean }>(`
   RETURN EXISTS {
     MATCH (r)-[:PARENT]->*(anc)<-[:EDITOR|OWNER|VIEWER]-(p)<-[:MEMBER_OF]-*(m:User {uid: $u})
   } AS allowed`);
-bench('C: r-seed + EXISTS short-circuit (random)', 5000, (i) => C.query({ u: rndUser(i), r: rndRes(i) }));
+bench('C: r-seed + EXISTS short-circuit (random)', 5000, (i) =>
+  C.query({ u: rndUser(i), r: rndRes(i) }),
+);
 bench('C: deep case', 3000, () => C.query({ u: 'u-deep', r: 'r-deepdoc' }));
 console.log('   C deep=', C.query({ u: 'u-deep', r: 'r-deepdoc' })[0]?.allowed);
 console.log('   C none=', C.query({ u: 'u-none', r: 'r-deepdoc' })[0]?.allowed);

@@ -1,13 +1,14 @@
 # Round 6 findings — cracks-deepening + new domains + adversarial
 
 Five personas: an adversarial robustness/fuzz pass, pathfinding/routing, geospatial
-+ numeric, event-sourced audit/versioning, and a deep-Gremlin expressiveness sweep.
-Code: `.dogfood/round6/<persona>/`. Verdict: **no hangs, no stack overflows, and
-the two engines agreed on 71/73 realistic GQL queries and all numeric/haversine
-work** — but the adversarial + deep passes found several genuine bugs (two uncoded
-native crashes + a silent CSV corruption, all fixed this round) plus important
-**semantic divergences from TinkerPop** in Gremlin `repeat().until()` and a
-**silently-wrong `WHERE bigint > n`**, both held for a design call.
+
+- numeric, event-sourced audit/versioning, and a deep-Gremlin expressiveness sweep.
+  Code: `.dogfood/round6/<persona>/`. Verdict: **no hangs, no stack overflows, and
+  the two engines agreed on 71/73 realistic GQL queries and all numeric/haversine
+  work** — but the adversarial + deep passes found several genuine bugs (two uncoded
+  native crashes + a silent CSV corruption, all fixed this round) plus important
+  **semantic divergences from TinkerPop** in Gremlin `repeat().until()` and a
+  **silently-wrong `WHERE bigint > n`**, both held for a design call.
 
 **[FIXED]** = committed this round; **[HOLD]** = needs a design decision.
 
@@ -20,7 +21,7 @@ Surfaces: GQL `query` (TS vs native), native Gremlin parser, all 5 codec
 100k, traversal chains to 20k all coded-or-correct). Files: `gql-fuzz.ts`,
 `codec-fuzz.ts`, `gremlin-fuzz.ts`, `gql-realistic.ts`, `probe-*.ts`.
 
-- **[FIXED — 7ce214b]** F1 HIGH (CRASH): 0-byte input crashed *every* native FFI
+- **[FIXED — 7ce214b]** F1 HIGH (CRASH): 0-byte input crashed _every_ native FFI
   entrypoint (`query('')`, all 5 `deserialize`, `gremlin('')`) with a raw
   `TypeError` from bun:ffi `ptr()`. Now reaches Rust → same coded/empty result as
   TS. Whitespace-only was already fine; only exact-empty tripped it.
@@ -112,14 +113,14 @@ history with reconstruct-as-of, diff, bitemporal. **Id-stable snapshots reconstr
 ## Anouk — deep Gremlin expressiveness
 
 Full step vocabulary vs TinkerPop "modern", every step hand-checked; native parity
-verified for the crown jewel. Files: `01`–`10`*.ts, `util.ts`.
+verified for the crown jewel. Files: `01`–`10`\*.ts, `util.ts`.
 
 - **[HOLD → R-REPEAT-UNTIL]** #1 HIGH (DIVERGENCE, crown jewel): `repeat(body)
-  .until(cond)` is **while-do, not do-while** — lenke checks `until` BEFORE the
+.until(cond)` is **while-do, not do-while** — lenke checks `until` BEFORE the
   body regardless of placement, so the post-form doesn't guarantee one iteration.
   `V(marko).repeat(out('KNOWS')).until(hasLabel('PERSON'))` → lenke `["marko"]`,
   TinkerPop `["josh","vadas"]`. Self-contradicts TinkerPop's `times(n) ≡
-  until(loops().is(n))`. **Byte-identical TS==native (shared divergence FROM
+until(loops().is(n))`. **Byte-identical TS==native (shared divergence FROM
   TinkerPop, not a drift).** Held: fixing loop control-flow touches both engines +
   `ported_divergences.rs` currently LOCKS IN the wrong results, mislabeled
   "(TinkerPop)".

@@ -1,3 +1,4 @@
+import { createEmptyGraph, createStore, graphFromNdjson } from '@lenke/native';
 /**
  * Bonus: the port lifecycle helper (`servePort`) and the snapshot store's
  * warm-boot path — an offline write survives a "reload" and drains after.
@@ -5,7 +6,6 @@
  * Run: bun bonus.ts
  */
 import { createFfiBackend } from '@lenke/native/ffi';
-import { createEmptyGraph, createStore, graphFromNdjson } from '@lenke/native';
 import {
   createSnapshotStore,
   createSyncClient,
@@ -61,7 +61,11 @@ async function partOne() {
     deps: ['Task'],
     params: { project: 'proj-x' },
   });
-  live.subscribe(() => log(`  [ui] rows=${JSON.stringify(live.getSnapshot().rows.map((r) => r.id))} complete=${live.getSnapshot().complete}`));
+  live.subscribe(() =>
+    log(
+      `  [ui] rows=${JSON.stringify(live.getSnapshot().rows.map((r) => r.id))} complete=${live.getSnapshot().complete}`,
+    ),
+  );
   await sleep(50);
 
   // A `bye` from the tab tears the host down; the returned `close` also does.
@@ -84,7 +88,11 @@ async function partTwo() {
   const store1 = createStore(createEmptyGraph(backend));
   const engine1 = createSyncEngine({
     store: store1,
-    upstream: { push: async () => { throw new Error('offline'); } }, // never drains
+    upstream: {
+      push: async () => {
+        throw new Error('offline');
+      },
+    }, // never drains
     retry: { attempts: 1, baseMs: 5 },
     onWriteError: () => {}, // 1 attempt then drop — but we snapshot BEFORE it drops
   });
@@ -98,19 +106,27 @@ async function partTwo() {
   // --- Session 2: "reload" — warm-boot from the snapshot, come back ONLINE. ---
   const snap = await snapshots.load(meta);
   if (!snap) throw new Error('snapshot missing');
-  log(`  loaded snapshot: pendingWrites=${snap.pendingWrites.length}, ndjson=${snap.ndjson.byteLength}B`);
+  log(
+    `  loaded snapshot: pendingWrites=${snap.pendingWrites.length}, ndjson=${snap.ndjson.byteLength}B`,
+  );
   const store2 = createStore(graphFromNdjson(backend, snap.ndjson));
   const drained: SyncWrite[] = [];
   const engine2 = createSyncEngine({
     store: store2,
     initialWrites: snap.pendingWrites, // stranded write resumes replication
-    upstream: { push: async (w) => { drained.push(w); } }, // online now
+    upstream: {
+      push: async (w) => {
+        drained.push(w);
+      },
+    }, // online now
   });
   // The write's effect is already in the warm graph:
   const rows = store2.mutate((g) => g.query('MATCH (t:Task) RETURN t.id AS id, t.title AS title'));
   log(`  warm graph already contains: ${JSON.stringify(rows)}`);
   await sleep(50); // engine2 flushes initialWrites on construction
-  log(`  after reconnect: engine2.pendingWrites()=${engine2.pendingWrites()}, upstream drained ${drained.length}`);
+  log(
+    `  after reconnect: engine2.pendingWrites()=${engine2.pendingWrites()}, upstream drained ${drained.length}`,
+  );
   log(`  drained write params: ${JSON.stringify(drained.map((w) => w.params))}`);
   store2[Symbol.dispose]();
 }

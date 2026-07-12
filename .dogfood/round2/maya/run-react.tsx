@@ -2,9 +2,9 @@
 import { registerDom } from './happydom.ts';
 registerDom(); // must run before @testing-library/react is imported
 
-import * as React from 'react';
-import { act, render, cleanup } from '@testing-library/react';
 import { createSyncClient, createSyncHost } from '@lenke/sync';
+import { act, render, cleanup } from '@testing-library/react';
+import * as React from 'react';
 
 import { createNotesStore, addLinkingNote } from './notes-store.ts';
 import { StoreApp, ClientApp } from './react-app.tsx';
@@ -63,10 +63,11 @@ const storeB = await createNotesStore();
 
   // Optimistic write through the client -> host recomputes -> push -> re-render.
   await act(async () => {
-    await client.mutate(
-      'INSERT (n:Note {id: $id, title: $title, body: $body})',
-      { id: 'n-sync', title: 'Sync engine', body: 'b' },
-    );
+    await client.mutate('INSERT (n:Note {id: $id, title: $title, body: $body})', {
+      id: 'n-sync',
+      title: 'Sync engine',
+      body: 'b',
+    });
     await client.mutate(
       'MATCH (n:Note {id: $id}), (m:Note {id: $to}) INSERT (n)-[:LINKS_TO]->(m)',
       { id: 'n-sync', to: 'n-graphs' },
@@ -74,12 +75,17 @@ const storeB = await createNotesStore();
   });
 
   const after = texts(root, 'client-backlinks');
-  check(`client backlinks re-rendered after wire mutate: ${JSON.stringify(after)}`, after.length === 3);
+  check(
+    `client backlinks re-rendered after wire mutate: ${JSON.stringify(after)}`,
+    after.length === 3,
+  );
   check('synced note appears', after.includes('Sync engine'));
   cleanup();
 }
 storeA[Symbol.dispose]();
 storeB[Symbol.dispose]();
 
-console.log(`\nRESULT: ${failures === 0 ? 'PASS — both React connectors live-update' : `FAIL (${failures})`}`);
+console.log(
+  `\nRESULT: ${failures === 0 ? 'PASS — both React connectors live-update' : `FAIL (${failures})`}`,
+);
 process.exit(failures === 0 ? 0 : 1);

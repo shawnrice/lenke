@@ -4,8 +4,9 @@
 // Exercises: createNodeBackend -> graphFromNdjson (bulk) -> mergeNdjson (+report)
 // -> createVertexIndex -> prepare() in a hot loop -> friend-of-friend / mutuals.
 
-import { createNodeBackend } from '@lenke/node/backend';
 import { graphFromNdjson } from '@lenke/native';
+import { createNodeBackend } from '@lenke/node/backend';
+
 import { makeBatch, toNdjson } from './seed.js';
 
 const hr = (label) => console.log(`\n=== ${label} ===`);
@@ -27,7 +28,9 @@ console.log('abiVersion:', backend.abiVersion);
 // initial bulk load: batch A (users 0..1999)
 const a = makeBatch({ start: 0, count: 2000, avgOut: 8, seed: 42 });
 const ndjsonA = toNdjson([...a.nodeLines, ...a.edgeLines]);
-console.log(`batch A ndjson: ${(ndjsonA.length / 1024).toFixed(0)}KB, ${a.nodeLines.length} nodes, ${a.edgeLines.length} edges`);
+console.log(
+  `batch A ndjson: ${(ndjsonA.length / 1024).toFixed(0)}KB, ${a.nodeLines.length} nodes, ${a.edgeLines.length} edges`,
+);
 
 using g = graphFromNdjson(backend, ndjsonA); // freed at scope exit
 console.log(`loaded -> vertexCount=${g.vertexCount} edgeCount=${g.edgeCount}`);
@@ -37,17 +40,28 @@ hr('2. mergeNdjson bulk-append + MergeReport');
 // batch B (users 2000..2999) PLUS a deliberate duplicate node (p0) and an edge
 // whose endpoint (p999999) was never declared as a node -> phantom vertex.
 const b = makeBatch({ start: 2000, count: 1000, avgOut: 8, seed: 7 });
-const dupNode = JSON.stringify({ type: 'node', id: 'p0', labels: ['Person'], properties: { uid: 0, name: 'DUP' } });
-const phantomEdge = JSON.stringify({ type: 'edge', from: 'p2000', to: 'p999999', labels: ['FOLLOWS'], properties: {} });
+const dupNode = JSON.stringify({
+  type: 'node',
+  id: 'p0',
+  labels: ['Person'],
+  properties: { uid: 0, name: 'DUP' },
+});
+const phantomEdge = JSON.stringify({
+  type: 'edge',
+  from: 'p2000',
+  to: 'p999999',
+  labels: ['FOLLOWS'],
+  properties: {},
+});
 const ndjsonB = toNdjson([...b.nodeLines, dupNode, ...b.edgeLines, phantomEdge]);
 
 const report = g.mergeNdjson(ndjsonB);
 console.log('MergeReport:', {
   nodesAdded: report.nodesAdded,
   edgesAdded: report.edgesAdded,
-  nodesSkipped: report.nodesSkipped,          // expect ['p0'] (dup, first-wins)
+  nodesSkipped: report.nodesSkipped, // expect ['p0'] (dup, first-wins)
   edgesSkipped: report.edgesSkipped,
-  phantomVertices: report.phantomVertices,    // expect ['p999999']
+  phantomVertices: report.phantomVertices, // expect ['p999999']
 });
 console.log(`after merge -> vertexCount=${g.vertexCount} edgeCount=${g.edgeCount}`);
 
@@ -55,10 +69,7 @@ console.log(`after merge -> vertexCount=${g.vertexCount} edgeCount=${g.edgeCount
 hr('3. sanity queries');
 const [{ n: personCount }] = g.query('MATCH (p:Person) RETURN count(*) AS n');
 console.log('persons:', personCount);
-const topByCity = g.query(
-  'MATCH (p:Person) WHERE p.city = $c RETURN count(*) AS n',
-  { c: 'sf' },
-);
+const topByCity = g.query('MATCH (p:Person) WHERE p.city = $c RETURN count(*) AS n', { c: 'sf' });
 console.log('persons in sf:', topByCity[0].n);
 
 // ---------------------------------------------------------------------------
@@ -94,16 +105,24 @@ const viaOneShot = g.query(QTEXT, { uid: sampleUid });
 console.log('who-to-follow for uid=50 (prepared):', viaPrepared);
 console.log('prepared == one-shot:', JSON.stringify(viaPrepared) === JSON.stringify(viaOneShot));
 
-const msUnprepared = bench('recommend (one-shot query)', 2000, (i) => g.query(QTEXT, { uid: i % 3000 }));
-const msPrepared = bench('recommend (prepared.query)', 2000, (i) => prepared.query({ uid: i % 3000 }));
+const msUnprepared = bench('recommend (one-shot query)', 2000, (i) =>
+  g.query(QTEXT, { uid: i % 3000 }),
+);
+const msPrepared = bench('recommend (prepared.query)', 2000, (i) =>
+  prepared.query({ uid: i % 3000 }),
+);
 console.log(`prepared speedup (traversal-bound): ${(msUnprepared / msPrepared).toFixed(2)}x`);
 
 // A cheap (parse-dominated) query — this is where prepare() actually pays off,
 // since the per-call lex/parse/lower is a bigger share of total work.
 const CHEAP = 'MATCH (p:Person {uid: $uid}) RETURN p.name AS name';
 using cheapPrepared = g.prepare(CHEAP);
-const msCheapOneShot = bench('cheap (one-shot query)', 5000, (i) => g.query(CHEAP, { uid: i % 3000 }));
-const msCheapPrepared = bench('cheap (prepared.query)', 5000, (i) => cheapPrepared.query({ uid: i % 3000 }));
+const msCheapOneShot = bench('cheap (one-shot query)', 5000, (i) =>
+  g.query(CHEAP, { uid: i % 3000 }),
+);
+const msCheapPrepared = bench('cheap (prepared.query)', 5000, (i) =>
+  cheapPrepared.query({ uid: i % 3000 }),
+);
 console.log(`prepared speedup (parse-bound): ${(msCheapOneShot / msCheapPrepared).toFixed(2)}x`);
 
 // ---------------------------------------------------------------------------

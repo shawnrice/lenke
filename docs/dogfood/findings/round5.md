@@ -5,7 +5,7 @@ functions (constructors, `duration_between`, arithmetic, `current_*`) to their
 ceiling, and probe fresh domains (recommendations, ETL/codec fidelity, KB search,
 live-collab CDC). Code: `.dogfood/round5/<persona>/`. Verdict: **the engines are
 correct on the overwhelming majority of what was thrown at them** — temporal
-*arithmetic* passed ~30 hand-checked calendar edge cases, GQL expressed every
+_arithmetic_ passed ~30 hand-checked calendar edge cases, GQL expressed every
 recommendation/report/search query byte-identically to a JS ground truth. The
 findings are (a) a handful of genuine byte-identity / confidently-wrong bugs
 (mostly fixed this round), (b) one real CDC correctness bug, and (c) a coherent
@@ -58,9 +58,9 @@ exclude-owned via `NOT EXISTS`, HAVING via `WITH … WHERE`, cosine similarity w
 
 - **[HOLD → R-GREMLIN-AGG]** HIGH (BUG/CAP): Gremlin `order(Scope.local)` is
   silently ignored — `order()`'s signature has no Scope param, so `order(Scope
-  .local)` spreads a Symbol → no-op, leaving a grouped map unsorted. **No error.**
+.local)` spreads a Symbol → no-op, leaving a grouped map unsorted. **No error.**
   The canonical top-N-from-`groupCount` idiom is inexpressible; every `by()`
-  modulator workaround also blocked. `limit(Scope.local)` *does* honor local scope,
+  modulator workaround also blocked. `limit(Scope.local)` _does_ honor local scope,
   so it's an inconsistency. Forces JS-side ranking. (GQL has no gap.)
 - **[HOLD → R-GREMLIN-AGG]** MED (BUG): `group().by(k).by(count())` /
   `.by(sum())` returns per-element **lists** (`{x:[1,1]}`) instead of the reduced
@@ -89,7 +89,7 @@ temporals all round-trip through CSV.
   first-class policy. HELD because the fix needs a list-element sentinel rework
   (the element path lacks the scalar path's single/double-backslash + quoting
   discriminator, and `splitList` blindly unescapes) mirrored byte-for-byte in Rust
-  + corpus. Verified independently: `.dogfood/round5/_triage/csv_null_repro.ts`.
+  - corpus. Verified independently: `.dogfood/round5/_triage/csv_null_repro.ts`.
 - **[FIXED — ccf0b7d]** MED (BUG): CSV short row crashed with an uncoded
   `TypeError` (`row[1].text`). Now a coded `LenkeError`.
 - **[HOLD → R-CODEC-STRICT]** MED (BUG): NDJSON's whole-string batch decode
@@ -143,9 +143,9 @@ interest routing, clean reconnect-when-ack-arrived — all verified working.
   optimistic/authoritative divergence (local=2, server=1). Under a unique
   constraint: `E_CONSTRAINT_VIOLATION` thrown out of `replay()` → reconnect
   aborted. Root cause: DedupRegistry guards only the mutate-replay path (keyed on
-  `req`), not the CDC catch-up path; origin-skip is keyed to a per-*connection* id
+  `req`), not the CDC catch-up path; origin-skip is keyed to a per-_connection_ id
   that changes each reconnect. `cdc.test.ts` masks it by reusing the same host.
-  Repro: `04-crownjewel.ts`. Fix needs a stable per-*client* origin id or
+  Repro: `04-crownjewel.ts`. Fix needs a stable per-_client_ origin id or
   ingest-side write-stream dedupe — a protocol decision.
 - **[HOLD → R-CDC-ORIGIN]** MED (BUG): one poison write in a CDC batch escapes
   `client.receive()` and partially applies (no try/catch around the ingest handler,

@@ -11,6 +11,7 @@
  */
 import { Graph } from '@lenke/core';
 import { query } from '@lenke/gql';
+
 import { Schema } from './schema.js';
 
 type Op = '=' | '<>' | '<' | '<=' | '>' | '>=' | 'CONTAINS' | 'STARTS WITH' | 'ENDS WITH';
@@ -72,7 +73,8 @@ export class QueryBuilder {
       });
       clause += ` WHERE ${parts.join(' AND ')}`;
     }
-    const returned = fields.length > 0 ? fields : Object.keys(this.schema.entities.get(this.label)!.properties);
+    const returned =
+      fields.length > 0 ? fields : Object.keys(this.schema.entities.get(this.label)!.properties);
     clause += ` RETURN ${returned.map((f) => `n.${f} AS ${f}`).join(', ')}`;
     if (this.orderField) clause += ` ORDER BY n.${this.orderField} ${this.orderDir}`;
     if (this.limitN !== undefined) clause += ` LIMIT ${this.limitN}`;

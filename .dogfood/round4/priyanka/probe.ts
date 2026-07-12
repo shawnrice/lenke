@@ -1,7 +1,7 @@
+import { graphFromNdjson } from '@lenke/native';
 // Probe GQL features needed for ReBAC check(): variable-length paths,
 // edge-label disjunction, EXISTS subquery, *0.. semantics.
 import { createNodeBackend } from '@lenke/node/backend';
-import { graphFromNdjson } from '@lenke/native';
 
 // Tiny fixture:
 //   alice -MEMBER_OF-> eng -MEMBER_OF-> staff
@@ -68,6 +68,8 @@ tryq(
   { u: 'bob', r: 'doc' },
 );
 // 5. {0,} form
-tryq('vlen {0,}', 'MATCH (u:User {uid:$u})-[:MEMBER_OF]->{0,}(g) RETURN count(*) AS c', { u: 'alice' });
+tryq('vlen {0,}', 'MATCH (u:User {uid:$u})-[:MEMBER_OF]->{0,}(g) RETURN count(*) AS c', {
+  u: 'alice',
+});
 
 g.free();

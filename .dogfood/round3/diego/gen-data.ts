@@ -76,8 +76,5 @@ for (const p of people) {
   }
 }
 
-await Bun.write(
-  new URL('./org-graph.ndjson', import.meta.url).pathname,
-  lines.join('\n') + '\n',
-);
+await Bun.write(new URL('./org-graph.ndjson', import.meta.url).pathname, lines.join('\n') + '\n');
 console.log(`wrote ${people.length} persons + ${edgeId} KNOWS edges`);

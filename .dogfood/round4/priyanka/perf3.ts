@@ -1,5 +1,5 @@
-import { createNodeBackend } from '@lenke/node/backend';
 import { graphFromNdjson } from '@lenke/native';
+import { createNodeBackend } from '@lenke/node/backend';
 
 const dir = import.meta.dir;
 const g = graphFromNdjson(createNodeBackend(), await Bun.file(`${dir}/graph.ndjson`).bytes());
@@ -48,7 +48,10 @@ const q2c = g.prepare<{ allowed: boolean }>(`
 console.log('  deep edit (expect true):', q2c.query({ u: 'u-deep', r: 'r-deepdoc' })[0]?.allowed);
 console.log('  none edit (expect false):', q2c.query({ u: 'u-none', r: 'r-deepdoc' })[0]?.allowed);
 console.log('  owner edit (expect true):', q2c.query({ u: 'u-owner', r: 'r-owned' })[0]?.allowed);
-console.log('  viewer edit (expect false):', q2c.query({ u: 'u-viewer', r: 'r-shared' })[0]?.allowed);
+console.log(
+  '  viewer edit (expect false):',
+  q2c.query({ u: 'u-viewer', r: 'r-shared' })[0]?.allowed,
+);
 q2c.free();
 
 g.free();

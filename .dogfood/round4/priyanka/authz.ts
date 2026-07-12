@@ -1,3 +1,4 @@
+import { graphFromNdjson, type RustGraph } from '@lenke/native';
 // Zanzibar-style ReBAC authorization service on lenke (native N-API backend).
 //
 //   check(user, permission, resource)  — resolves:
@@ -9,7 +10,6 @@
 // "expand" queries a real authz service needs: reverse (list a user's
 // resources) and forward (who can act on a resource).
 import { createNodeBackend } from '@lenke/node/backend';
-import { graphFromNdjson, type RustGraph } from '@lenke/native';
 
 const dir = import.meta.dir;
 
@@ -81,7 +81,9 @@ function bench(label: string, iters: number, fn: (i: number) => void) {
   for (let i = 0; i < iters; i++) fn(i);
   const t1 = performance.now();
   const per = (t1 - t0) / iters;
-  console.log(`  ${label}: ${iters} iters, ${(t1 - t0).toFixed(1)} ms total, ${per.toFixed(3)} ms/op`);
+  console.log(
+    `  ${label}: ${iters} iters, ${(t1 - t0).toFixed(1)} ms total, ${per.toFixed(3)} ms/op`,
+  );
   return per;
 }
 
@@ -94,7 +96,9 @@ const rndRes = (i: number) => `r${(i * 40503) % R}`;
 
 bench('single check() edit  (random u,r)', 2000, (i) => check(rndUser(i), 'edit', rndRes(i)));
 bench('single check() view  (random u,r)', 2000, (i) => check(rndUser(i), 'view', rndRes(i)));
-bench('deep transitive check() (u-deep, r-deepdoc)', 2000, () => check('u-deep', 'edit', 'r-deepdoc'));
+bench('deep transitive check() (u-deep, r-deepdoc)', 2000, () =>
+  check('u-deep', 'edit', 'r-deepdoc'),
+);
 
 // Batched: a single GQL round-trip that answers many (u,r) pairs via UNWIND-less
 // list param is not available, so batch via one query over a param list of pairs
@@ -126,7 +130,10 @@ console.log(`\n=== EXPAND: resources u-deep can view ===`);
     { u: 'u-deep' },
   );
   const t1 = performance.now();
-  console.log(`  ${rows.length} resources in ${(t1 - t0).toFixed(1)} ms:`, rows.map((r) => r.rid).slice(0, 10));
+  console.log(
+    `  ${rows.length} resources in ${(t1 - t0).toFixed(1)} ms:`,
+    rows.map((r) => r.rid).slice(0, 10),
+  );
 }
 
 // ---------------------------------------------------------------- expand: forward
@@ -142,7 +149,10 @@ console.log(`\n=== EXPAND: who can edit r-deepdoc ===`);
     { r: 'r-deepdoc' },
   );
   const t1 = performance.now();
-  console.log(`  ${rows.length} users can edit r-deepdoc in ${(t1 - t0).toFixed(1)} ms:`, rows.map((r) => r.uid).slice(0, 10));
+  console.log(
+    `  ${rows.length} users can edit r-deepdoc in ${(t1 - t0).toFixed(1)} ms:`,
+    rows.map((r) => r.uid).slice(0, 10),
+  );
 }
 
 // a bulk-population "who can edit" on a random deep resource, for a scale feel

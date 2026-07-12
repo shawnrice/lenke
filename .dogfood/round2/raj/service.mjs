@@ -1,9 +1,9 @@
+import { createEmptyGraph, graphFromNdjson } from '@lenke/native';
 // who-to-follow + fraud-signal API slice over a social graph, on the napi
 // backend. Follows the @lenke/node + backend-embedded guides.
 //
 // Run: bun service.mjs
 import { createNodeBackend } from '@lenke/node/backend';
-import { createEmptyGraph, graphFromNdjson } from '@lenke/native';
 
 import { buildNdjson } from './seed.mjs';
 
@@ -27,12 +27,12 @@ const report = graph.mergeNdjson(ndjson);
 const loadMs = performance.now() - t0;
 
 line(`merge report: ${JSON.stringify(report)}`);
+line(`loaded ${graph.vertexCount} vertices, ${graph.edgeCount} edges in ${loadMs.toFixed(1)}ms`);
 line(
-  `loaded ${graph.vertexCount} vertices, ${graph.edgeCount} edges in ${loadMs.toFixed(1)}ms`,
+  `nodesAdded=${report.nodesAdded} edgesAdded=${report.edgesAdded} ` +
+    `nodesSkipped=${report.nodesSkipped.length} edgesSkipped=${report.edgesSkipped.length} ` +
+    `phantomVertices=${report.phantomVertices.length}`,
 );
-line(`nodesAdded=${report.nodesAdded} edgesAdded=${report.edgesAdded} ` +
-  `nodesSkipped=${report.nodesSkipped.length} edgesSkipped=${report.edgesSkipped.length} ` +
-  `phantomVertices=${report.phantomVertices.length}`);
 
 // ---------------------------------------------------------------------------
 // 2. Indexes for fast point lookups. We look users up by `uid` constantly.
@@ -85,8 +85,10 @@ for (let i = 0; i < ITER; i += 1) {
   checksum += recs.length;
 }
 const prepMs = performance.now() - tp0;
-line(`prepared hot loop: ${ITER} runs in ${prepMs.toFixed(0)}ms ` +
-  `(${(prepMs / ITER).toFixed(3)}ms/query), checksum=${checksum}`);
+line(
+  `prepared hot loop: ${ITER} runs in ${prepMs.toFixed(0)}ms ` +
+    `(${(prepMs / ITER).toFixed(3)}ms/query), checksum=${checksum}`,
+);
 
 // Compare against re-parsing each call (plain query with the same text/params).
 const wtfText = `
@@ -101,8 +103,10 @@ for (let i = 0; i < ITER; i += 1) {
   graph.query(wtfText, { uid: users[i % users.length] });
 }
 const reparseMs = performance.now() - tq0;
-line(`re-parse each call: ${ITER} runs in ${reparseMs.toFixed(0)}ms ` +
-  `(${(reparseMs / ITER).toFixed(3)}ms/query)`);
+line(
+  `re-parse each call: ${ITER} runs in ${reparseMs.toFixed(0)}ms ` +
+    `(${(reparseMs / ITER).toFixed(3)}ms/query)`,
+);
 wtf.free();
 
 // ---------------------------------------------------------------------------
@@ -118,13 +122,16 @@ line(`u5 <-> u12 mutuals: ${JSON.stringify(mutual)}`);
 // 6. Fraud signal — young accounts with many outbound follows but few inbound.
 // ---------------------------------------------------------------------------
 h('fraud signal: spray-follow young accounts');
-const suspicious = graph.query(`
+const suspicious = graph.query(
+  `
   MATCH (p:Person)-[:FOLLOWS]->(:Person)
   WITH p, count(*) AS outDeg
   WHERE p.accountAgeDays < $maxAge AND outDeg > $minOut
   RETURN p.uid AS uid, p.name AS name, p.accountAgeDays AS ageDays, outDeg
   ORDER BY outDeg DESC
-  LIMIT 8`, { maxAge: 30, minOut: 20 });
+  LIMIT 8`,
+  { maxAge: 30, minOut: 20 },
+);
 for (const r of suspicious) {
   line(`  ${r.uid} ${r.name} age=${r.ageDays}d out=${r.outDeg}`);
 }
@@ -138,8 +145,10 @@ try {
   graph.query(`MATCH (p:Person) RETURN bogus_fn(p.name)`);
   line('unknown function: NO ERROR (unexpected)');
 } catch (e) {
-  line(`unknown function -> ${e.constructor.name}: ${e.message}` +
-    (e.code !== undefined ? ` [code=${e.code}]` : ''));
+  line(
+    `unknown function -> ${e.constructor.name}: ${e.message}` +
+      (e.code !== undefined ? ` [code=${e.code}]` : ''),
+  );
 }
 
 try {
@@ -147,16 +156,20 @@ try {
   graph.query(`MATCH (p:Person {uid: $uid}) RETURN p.name`);
   line('missing param: NO ERROR (unexpected)');
 } catch (e) {
-  line(`missing param -> ${e.constructor.name}: ${e.message}` +
-    (e.code !== undefined ? ` [code=${e.code}]` : ''));
+  line(
+    `missing param -> ${e.constructor.name}: ${e.message}` +
+      (e.code !== undefined ? ` [code=${e.code}]` : ''),
+  );
 }
 
 try {
   graph.query(`MATCH (p:Person RETURN p.name`); // syntax error
   line('syntax error: NO ERROR (unexpected)');
 } catch (e) {
-  line(`syntax error -> ${e.constructor.name}: ${e.message}` +
-    (e.pos !== undefined ? ` [pos=${e.pos}]` : ''));
+  line(
+    `syntax error -> ${e.constructor.name}: ${e.message}` +
+      (e.pos !== undefined ? ` [pos=${e.pos}]` : ''),
+  );
 }
 
 graph.free();

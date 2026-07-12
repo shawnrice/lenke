@@ -1,5 +1,5 @@
-import { createNodeBackend } from '@lenke/node/backend';
 import { graphFromNdjson } from '@lenke/native';
+import { createNodeBackend } from '@lenke/node/backend';
 
 // two components: {a,b,c} chain, {d,e}
 const lines = [
@@ -31,10 +31,20 @@ for (let it = 0; it < 10; it++) {
   g.query`MATCH (n:N)-[:L]->(m:N) WITH m, min(n.cid) AS nc SET m.cid = CASE WHEN nc < m.cid THEN nc ELSE m.cid END`;
   g.query`MATCH (n:N)-[:L]->(m:N) WITH n, min(m.cid) AS nc SET n.cid = CASE WHEN nc < n.cid THEN nc ELSE n.cid END`;
 }
-attempt('components', () => g.query`MATCH (n:N) RETURN element_id(n) AS id, n.cid AS cid ORDER BY id`);
+attempt(
+  'components',
+  () => g.query`MATCH (n:N) RETURN element_id(n) AS id, n.cid AS cid ORDER BY id`,
+);
 
 // Label propagation majority vote — is there a mode/argmax aggregate?
-attempt('mode aggregate?', () => g.query`MATCH (n:N)-[:L]->(m:N) WITH m, mode(n.cid) AS lbl RETURN m, lbl`);
-attempt('collect_list of neighbor labels', () => g.query`MATCH (n:N)-[:L]->(m:N) WITH m, collect_list(n.cid) AS labels RETURN element_id(m) AS id, labels ORDER BY id`);
+attempt(
+  'mode aggregate?',
+  () => g.query`MATCH (n:N)-[:L]->(m:N) WITH m, mode(n.cid) AS lbl RETURN m, lbl`,
+);
+attempt(
+  'collect_list of neighbor labels',
+  () =>
+    g.query`MATCH (n:N)-[:L]->(m:N) WITH m, collect_list(n.cid) AS labels RETURN element_id(m) AS id, labels ORDER BY id`,
+);
 
 g.free();

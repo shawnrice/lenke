@@ -1,8 +1,14 @@
 // Proof that the wasm store + liveQuery + mutate loop re-fires on mutation.
 // Run: bun run-store.ts
 
-import { addLinkingNote, backlinksOf, createNotesStore, tagCounts, tagNote } from './notes-store.ts';
 import type { Backlink, TagCount } from './data.ts';
+import {
+  addLinkingNote,
+  backlinksOf,
+  createNotesStore,
+  tagCounts,
+  tagNote,
+} from './notes-store.ts';
 
 const fmtBacklinks = (rows: Backlink[]) =>
   rows.length ? rows.map((r) => `${r.title} (${r.id})`).join(', ') : '(none)';
@@ -19,7 +25,9 @@ try {
   let tagFires = 0;
   backlinks.subscribe(() => {
     backlinkFires++;
-    console.log(`  >> backlinks live-fire #${backlinkFires}: ${fmtBacklinks(backlinks.getSnapshot())}`);
+    console.log(
+      `  >> backlinks live-fire #${backlinkFires}: ${fmtBacklinks(backlinks.getSnapshot())}`,
+    );
   });
   tags.subscribe(() => {
     tagFires++;
@@ -43,7 +51,9 @@ try {
   console.log('\n[mutate #3] read-only mutate (no change) — must NOT fire');
   const beforeReadonly = backlinkFires;
   store.mutate((g) => g.query('MATCH (n:Note) RETURN n.id'));
-  console.log(`  backlink fires unchanged after read-only mutate: ${beforeReadonly === backlinkFires}`);
+  console.log(
+    `  backlink fires unchanged after read-only mutate: ${beforeReadonly === backlinkFires}`,
+  );
 
   console.log('\n[final] sidebar snapshot after mutations');
   console.log(`  version=${store.version}`);
@@ -51,9 +61,7 @@ try {
   console.log(`  tag counts: ${fmtTags(tags.getSnapshot())}`);
 
   const ok =
-    backlinkFires >= 1 &&
-    tagFires >= 1 &&
-    backlinks.getSnapshot().some((r) => r.id === 'n-pg');
+    backlinkFires >= 1 && tagFires >= 1 && backlinks.getSnapshot().some((r) => r.id === 'n-pg');
   console.log(`\nRESULT: ${ok ? 'PASS — live updates fired after mutation' : 'FAIL'}`);
   if (!ok) process.exit(1);
 } finally {

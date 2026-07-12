@@ -1,5 +1,6 @@
-import { createNodeBackend } from '@lenke/node/backend';
 import { graphFromNdjson, decodeArrow } from '@lenke/native';
+import { createNodeBackend } from '@lenke/node/backend';
+
 import { generate } from './gen.ts';
 
 const N = Number(process.env.N ?? 100000);
@@ -13,15 +14,19 @@ function time<T>(label: string, fn: () => T): T {
   const t0 = performance.now();
   const r = fn();
   const ms = performance.now() - t0;
-  console.log(`  [${(ms).toFixed(0).padStart(6)} ms] ${label}`);
+  console.log(`  [${ms.toFixed(0).padStart(6)} ms] ${label}`);
   return r;
 }
 
-console.log(`=== lenke graph-analytics slice — N=${N} vertices, M=${M} (target ~${M * N} edges) ===\n`);
+console.log(
+  `=== lenke graph-analytics slice — N=${N} vertices, M=${M} (target ~${M * N} edges) ===\n`,
+);
 
 // ---- generate ----
 const gen = time(`generate NDJSON (${mb(0)})`, () => generate(N, M));
-console.log(`  -> ${gen.nVertices} vertices, ${gen.nEdges} edges, ndjson=${mb(gen.bytes.length)}\n`);
+console.log(
+  `  -> ${gen.nVertices} vertices, ${gen.nEdges} edges, ndjson=${mb(gen.bytes.length)}\n`,
+);
 
 // ---- load on native backend ----
 const backend = createNodeBackend();
@@ -37,10 +42,14 @@ console.log(`  -> RSS load delta: ${mb(rssAfter - rssBefore)} (rss now ${mb(rssA
 // 1. DEGREE + WEIGHTED CENTRALITY  — fully in-engine (GQL aggregation)
 // ============================================================
 console.log('--- Degree / weighted centrality (in-engine GQL aggregation) ---');
-time('SET outdeg  = COUNT{ (n)-[:LINK]->() }', () =>
-  g.query`MATCH (n:V) SET n.outdeg = COUNT { (n)-[:LINK]->() }`);
-time('SET indeg   = COUNT{ (n)<-[:LINK]-() }', () =>
-  g.query`MATCH (n:V) SET n.indeg = COUNT { (n)<-[:LINK]-() }`);
+time(
+  'SET outdeg  = COUNT{ (n)-[:LINK]->() }',
+  () => g.query`MATCH (n:V) SET n.outdeg = COUNT { (n)-[:LINK]->() }`,
+);
+time(
+  'SET indeg   = COUNT{ (n)<-[:LINK]-() }',
+  () => g.query`MATCH (n:V) SET n.indeg = COUNT { (n)<-[:LINK]-() }`,
+);
 // weighted in-degree via edge-weight sum (grouped aggregation write)
 time('SET wdeg base 0 then sum(weight)', () => {
   g.query`MATCH (n:V) SET n.wdeg = 0.0`;
@@ -77,7 +86,9 @@ console.log();
 // ============================================================
 // 3. CONNECTED COMPONENTS — min-label propagation, fully in-engine (GQL SET).
 // ============================================================
-console.log(`--- Connected components (min-label propagation, in-engine SET; <=${CC_ITERS} iters) ---`);
+console.log(
+  `--- Connected components (min-label propagation, in-engine SET; <=${CC_ITERS} iters) ---`,
+);
 g.query`MATCH (n:V) SET n.comp = n.idx`;
 let ccIters = 0;
 time('connected components to fixpoint', () => {
@@ -119,7 +130,8 @@ time(`label propagation ${lpIters} sweeps (pull edges once, argmax in JS)`, () =
       for (const m of ns) cnt.set(label.get(m)!, (cnt.get(label.get(m)!) ?? 0) + 1);
       let best = label.get(n)!;
       let bestC = -1;
-      for (const [lb, c] of cnt) if (c > bestC || (c === bestC && lb < best)) (best = lb), (bestC = c);
+      for (const [lb, c] of cnt)
+        if (c > bestC || (c === bestC && lb < best)) ((best = lb), (bestC = c));
       label.set(n, best);
     }
   }
@@ -132,11 +144,14 @@ console.log();
 // 5. ARROW FEATURE EXPORT — wide numeric feature matrix, columnar.
 // ============================================================
 console.log('--- Arrow feature-vector export (columnar, in-engine -> decodeArrow) ---');
-const featBlob = time('queryArrow feature matrix', () =>
-  g.queryArrow`MATCH (n:V)
+const featBlob = time(
+  'queryArrow feature matrix',
+  () =>
+    g.queryArrow`MATCH (n:V)
     RETURN element_id(n) AS id, n.idx AS idx, n.indeg AS indeg, n.outdeg AS outdeg,
            n.wdeg AS wdeg, n.pr AS pr, n.comp AS comp
-    ORDER BY pr DESC`);
+    ORDER BY pr DESC`,
+);
 console.log(`  arrow blob = ${mb(featBlob.length)}`);
 const feats = time('decodeArrow -> row objects', () => decodeArrow(featBlob));
 console.log(`  decoded ${feats.length} feature vectors; sample:`);

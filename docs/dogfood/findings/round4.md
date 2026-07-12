@@ -2,7 +2,7 @@
 
 Five personas, each a real application built to find the **ceiling** (missing
 capabilities, scale limits), not papercuts. Verdict: **the library is
-structurally solid — it scales, primitives are sound, and every doc *example*
+structurally solid — it scales, primitives are sound, and every doc _example_
 ran verbatim.** Findings are missing higher-level capabilities + doc gaps.
 Code: `.dogfood/round4/<persona>/`.
 
@@ -24,6 +24,7 @@ correct; reverse "resources U can view" 3 in 77ms; "who can edit dense resource"
 Correctness 7/7; Gremlin agrees 5/5.
 
 **Findings:**
+
 - HIGH: second comma-joined `{k:$x}` anchor **full-scans** (175×) → C4 / R-SEED.
 - MED-HIGH: reserved-word **labels** (`MATCH (x:Group)` throws) → C6.
 - MED: no batch check / UNWIND / list params → R-BATCH.
@@ -55,6 +56,7 @@ PageRank per-iter math in-engine, loop+dangling-mass scalar in JS; CC in-engine
 PageRank not expressible (no `sack`).
 
 **Findings:**
+
 - HIGH: no `mode`/argmax aggregate → F1.
 - MED: no in-engine fixpoint/loop; can't carry whole-graph scalar between
   statements; `SET` returns no affected-row count → R-FIXPOINT.
@@ -76,6 +78,7 @@ cardinality / required-prop removal; 3 migrations + `graphContentEqual`
 round-trip; builder query. Constraints, indexes, GQL all held.
 
 **Findings:**
+
 - HIGH: **silent veto** (vetoed call returns normal-looking value) — built a
   violation side-channel → C2 / R-VETO.
 - HIGH: **no transactions/atomic multi-write** — hand-rolled compensating
@@ -107,6 +110,7 @@ Memory a non-issue (70→132MB). Only anomaly: **+2 counter over-count** from
 at-least-once replay (not a store bug).
 
 **Findings:**
+
 - 🔴 **Optimism + shared-server don't compose over a socket** — protocol carries
   `rows`, no server→client write stream for `engine.ingest` → C7 / R-CDC (his
   biggest).
@@ -131,6 +135,7 @@ bitemporal (reconstruct tx-state, then run valid-time query on it). null fidelit
 through ndjson preserved.
 
 **Findings:**
+
 - HIGH: **event value access undocumented** (`e.value.original.value`); bad guess
   (`e.data`) throws unhandled-microtask; core README `previous` note is a trap →
   C1.

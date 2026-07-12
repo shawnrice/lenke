@@ -30,9 +30,7 @@ store.mutate((g) => {
   g.query(`INSERT (:Tag {name: 'db'})`);
   g.query(`INSERT (:Tag {name: 'perf'})`);
   // note b links to note a
-  g.query(
-    `MATCH (a:Note {id: 'a'}), (b:Note {id: 'b'}) INSERT (b)-[:LINKS_TO]->(a)`,
-  );
+  g.query(`MATCH (a:Note {id: 'a'}), (b:Note {id: 'b'}) INSERT (b)-[:LINKS_TO]->(a)`);
   // tag both notes with 'db'
   g.query(`MATCH (n:Note {id: 'a'}), (t:Tag {name: 'db'}) INSERT (n)-[:TAGGED]->(t)`);
   g.query(`MATCH (n:Note {id: 'b'}), (t:Tag {name: 'db'}) INSERT (n)-[:TAGGED]->(t)`);

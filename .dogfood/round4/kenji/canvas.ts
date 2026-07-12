@@ -112,7 +112,10 @@ type ClientStats = {
   viewportRows: number;
 };
 
-function spawnClient(index: number, opts: { observer: boolean }): {
+function spawnClient(
+  index: number,
+  opts: { observer: boolean },
+): {
   client: ReconnectingClient;
   stats: ClientStats;
   killSocket: () => void;
@@ -261,7 +264,8 @@ function spawnClient(index: number, opts: { observer: boolean }): {
       stats.failed += 1;
       if (stats.failed <= 2) console.log(`  [${id}] write failed:`, (e as Error).message);
     }
-    if (running) setTimeout(tick, WRITE_INTERVAL_MS + Math.floor(Math.random() * WRITE_INTERVAL_MS));
+    if (running)
+      setTimeout(tick, WRITE_INTERVAL_MS + Math.floor(Math.random() * WRITE_INTERVAL_MS));
   }
 
   const createdIds: string[] = [];
@@ -328,7 +332,9 @@ async function main() {
     return false;
   };
   const allUp = await waitConnected();
-  console.log(`all clients connected: ${allUp} (${workers.filter((w) => w.client.connected()).length}/${CLIENTS})\n`);
+  console.log(
+    `all clients connected: ${allUp} (${workers.filter((w) => w.client.connected()).length}/${CLIENTS})\n`,
+  );
 
   const t0 = now();
   for (const w of workers) w.start();
@@ -381,7 +387,9 @@ async function main() {
   // Total shapes created = sum of every client's create acks (creates never
   // delete each other; unique ids). Recompute from per-client counters.
   const serverCounter = Number(
-    store.mutate((g) => g.query('MATCH (c:Counter {id: $id}) RETURN c.n AS `n`', { id: 'global' }))[0].n,
+    store.mutate((g) =>
+      g.query('MATCH (c:Counter {id: $id}) RETURN c.n AS `n`', { id: 'global' }),
+    )[0].n,
   );
   const cursorCount = Number(
     store.mutate((g) => g.query('MATCH (c:Cursor) RETURN count(*) AS `c`'))[0].c,
@@ -418,18 +426,28 @@ async function main() {
   console.log(`reconnects:         ${totalReconnects} (storm killed ${Math.floor(CLIENTS / 2)})`);
   console.log(`\n--- server store (authoritative) ---`);
   console.log(`shapes:             ${serverShapeCount}`);
-  console.log(`cursors (presence): ${cursorCount}  (connected clients: ${workers.filter((w) => w.client.connected()).length})`);
+  console.log(
+    `cursors (presence): ${cursorCount}  (connected clients: ${workers.filter((w) => w.client.connected()).length})`,
+  );
   console.log(`atomic counter n:   ${serverCounter}  (expected bumps: ${counterBumps.total})`);
   console.log(`counter lost updates: ${counterBumps.total - serverCounter}`);
   console.log(`\n--- convergence (per-client viewport == authoritative) ---`);
-  console.log(`all clients reached store.version ${store.version}: ${converged} in ${convergeMs.toFixed(0)}ms`);
-  console.log(`convergent clients (row count match): ${convergent}/${CLIENTS}   divergent: ${divergent}`);
+  console.log(
+    `all clients reached store.version ${store.version}: ${converged} in ${convergeMs.toFixed(0)}ms`,
+  );
+  console.log(
+    `convergent clients (row count match): ${convergent}/${CLIENTS}   divergent: ${divergent}`,
+  );
   console.log(`\n--- cross-client push latency (observer, ${latencies.length} samples) ---`);
-  console.log(`p50: ${pct(latencies, 50).toFixed(1)}ms  p95: ${pct(latencies, 95).toFixed(1)}ms  p99: ${pct(latencies, 99).toFixed(1)}ms  max: ${(latencies.at(-1) ?? 0).toFixed(1)}ms`);
+  console.log(
+    `p50: ${pct(latencies, 50).toFixed(1)}ms  p95: ${pct(latencies, 95).toFixed(1)}ms  p99: ${pct(latencies, 99).toFixed(1)}ms  max: ${(latencies.at(-1) ?? 0).toFixed(1)}ms`,
+  );
   console.log(`\n--- snapshot checkpoint ---`);
   console.log(`wrote ${snapshotBytes.byteLength} bytes -> ${snapPath}`);
   console.log(`\n--- memory ---`);
-  console.log(`rss: ${(mem.rss / 1e6).toFixed(0)}MB  heapUsed: ${(mem.heapUsed / 1e6).toFixed(0)}MB`);
+  console.log(
+    `rss: ${(mem.rss / 1e6).toFixed(0)}MB  heapUsed: ${(mem.heapUsed / 1e6).toFixed(0)}MB`,
+  );
 
   // Teardown.
   for (const w of workers) w.client.close();

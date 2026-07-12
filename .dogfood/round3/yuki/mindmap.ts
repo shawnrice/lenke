@@ -1,17 +1,7 @@
 // Mind-map / org-chart domain model over the in-process @lenke/core Graph,
 // plus the Gremlin layout traversals (ancestors / subtree / depth).
 import { Graph, type Vertex } from '@lenke/core';
-import {
-  traversal,
-  toArray,
-  V,
-  out,
-  in_,
-  repeat,
-  dedupe,
-  values,
-  count,
-} from '@lenke/gremlin';
+import { traversal, toArray, V, out, in_, repeat, dedupe, values, count } from '@lenke/gremlin';
 
 export const NODE = 'Node';
 export const CHILD = 'CHILD'; // parent -> child (tree edge)

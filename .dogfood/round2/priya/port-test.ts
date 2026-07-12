@@ -5,8 +5,8 @@
 // what serveSharedWorker calls per connection.
 // Run: bun port-test.ts
 
-import { createFfiBackend } from '@lenke/native/ffi';
 import { createEmptyGraph, createStore } from '@lenke/native';
+import { createFfiBackend } from '@lenke/native/ffi';
 import { createSyncEngine, createSyncClient, servePort, type SyncHost } from '@lenke/sync';
 
 const LIB = '/home/shawn/projects/pl-graph/crates/lenke-core/target/release/liblenke_core.so';

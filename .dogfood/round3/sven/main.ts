@@ -8,9 +8,9 @@
 import { readFileSync } from 'node:fs';
 
 import { Graph } from '@lenke/core';
-import { serialize, deserialize, graphContentEqual } from '@lenke/serialization';
-import { createFfiBackend } from '@lenke/native/ffi';
 import { createEmptyGraph, graphFromNdjson } from '@lenke/native';
+import { createFfiBackend } from '@lenke/native/ffi';
+import { serialize, deserialize, graphContentEqual } from '@lenke/serialization';
 
 import { importPairedCsv, type Issue } from './importer.ts';
 
@@ -41,10 +41,23 @@ const u3 = clean.graph.getVertexById('u3')!;
 const u4 = clean.graph.getVertexById('u4')!;
 console.log('  u1.name           =', JSON.stringify(u1.getProperty('name')));
 console.log('  u1.tags (list)    =', JSON.stringify(u1.getProperty('tags')));
-console.log('  u1.age typeof     =', typeof u1.getProperty('age'), '| score typeof:', typeof u1.getProperty('score'), '| active typeof:', typeof u1.getProperty('active'));
+console.log(
+  '  u1.age typeof     =',
+  typeof u1.getProperty('age'),
+  '| score typeof:',
+  typeof u1.getProperty('score'),
+  '| active typeof:',
+  typeof u1.getProperty('active'),
+);
 console.log('  u2.labels (multi) =', JSON.stringify([...clean.graph.getVertexById('u2')!.labels]));
 console.log('  u3.name (newline) =', JSON.stringify(u3.getProperty('name')));
-console.log('  u4.score (\\N null)=', JSON.stringify(u4.getProperty('score')), '(present:', 'score' in u4.properties, ')');
+console.log(
+  '  u4.score (\\N null)=',
+  JSON.stringify(u4.getProperty('score')),
+  '(present:',
+  'score' in u4.properties,
+  ')',
+);
 console.log('  u4.name (present"")=', JSON.stringify(u4.getProperty('name')));
 
 // ---------------------------------------------------------------------------

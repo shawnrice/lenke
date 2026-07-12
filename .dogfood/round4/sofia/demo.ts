@@ -5,6 +5,7 @@
 
 import { Graph } from '@lenke/core';
 import { query } from '@lenke/gql';
+
 import { TemporalEngine } from './temporal.ts';
 
 const g = new Graph();
@@ -17,12 +18,21 @@ const engine = new TemporalEngine(g);
 // -- helpers ----------------------------------------------------------------
 const P: Record<string, string> = {}; // name -> vertex id
 function hire(name: string, title: string) {
-  const v = g.addVertex({ id: `emp-${name.toLowerCase()}`, labels: ['Person'], properties: { empId: `emp-${name.toLowerCase()}`, name, title } });
+  const v = g.addVertex({
+    id: `emp-${name.toLowerCase()}`,
+    labels: ['Person'],
+    properties: { empId: `emp-${name.toLowerCase()}`, name, title },
+  });
   P[name] = v.id;
   return v.id;
 }
 function reportTo(person: string, manager: string, validFrom: string) {
-  g.addEdge({ from: g.getVertexById(P[person])!, to: g.getVertexById(P[manager])!, labels: ['REPORTS_TO'], properties: { validFrom, validTo: null } });
+  g.addEdge({
+    from: g.getVertexById(P[person])!,
+    to: g.getVertexById(P[manager])!,
+    labels: ['REPORTS_TO'],
+    properties: { validFrom, validTo: null },
+  });
 }
 // close the currently-open REPORTS_TO edge out of `person`
 function endReport(person: string, validTo: string) {
@@ -43,31 +53,44 @@ engine.tx({ validAt: '2023-01-01', actor: 'founders', reason: 'company founded' 
   reportTo('Carol', 'Alice', '2023-01-01');
 });
 
-engine.tx({ validAt: '2023-06-01', actor: 'alice', reason: 'Q2 growth: hire Dave, promote Bob to manage' }, () => {
-  hire('Dave', 'Engineer');
-  retitle('Bob', 'Engineering Manager');
-  reportTo('Dave', 'Bob', '2023-06-01');
-});
+engine.tx(
+  { validAt: '2023-06-01', actor: 'alice', reason: 'Q2 growth: hire Dave, promote Bob to manage' },
+  () => {
+    hire('Dave', 'Engineer');
+    retitle('Bob', 'Engineering Manager');
+    reportTo('Dave', 'Bob', '2023-06-01');
+  },
+);
 
 engine.checkpoint(); // <-- snapshot checkpoint after year-one hiring
 
-engine.tx({ validAt: '2024-01-01', actor: 'alice', reason: 'reorg: Carol moves under Bob; hire Eve' }, () => {
-  endReport('Carol', '2024-01-01');
-  reportTo('Carol', 'Bob', '2024-01-01');
-  hire('Eve', 'Engineer');
-  reportTo('Eve', 'Bob', '2024-01-01');
-});
+engine.tx(
+  { validAt: '2024-01-01', actor: 'alice', reason: 'reorg: Carol moves under Bob; hire Eve' },
+  () => {
+    endReport('Carol', '2024-01-01');
+    reportTo('Carol', 'Bob', '2024-01-01');
+    hire('Eve', 'Engineer');
+    reportTo('Eve', 'Bob', '2024-01-01');
+  },
+);
 
-engine.tx({ validAt: '2024-03-01', actor: 'alice', reason: 'Bob departs; Dave promoted, inherits Bob’s reports' }, () => {
-  retitle('Dave', 'Engineering Manager');
-  endReport('Bob', '2024-03-01'); // Bob no longer reports to Alice
-  endReport('Dave', '2024-03-01');
-  reportTo('Dave', 'Alice', '2024-03-01');
-  endReport('Carol', '2024-03-01');
-  reportTo('Carol', 'Dave', '2024-03-01');
-  endReport('Eve', '2024-03-01');
-  reportTo('Eve', 'Dave', '2024-03-01');
-});
+engine.tx(
+  {
+    validAt: '2024-03-01',
+    actor: 'alice',
+    reason: 'Bob departs; Dave promoted, inherits Bob’s reports',
+  },
+  () => {
+    retitle('Dave', 'Engineering Manager');
+    endReport('Bob', '2024-03-01'); // Bob no longer reports to Alice
+    endReport('Dave', '2024-03-01');
+    reportTo('Dave', 'Alice', '2024-03-01');
+    endReport('Carol', '2024-03-01');
+    reportTo('Carol', 'Dave', '2024-03-01');
+    endReport('Eve', '2024-03-01');
+    reportTo('Eve', 'Dave', '2024-03-01');
+  },
+);
 
 engine.tx({ validAt: '2024-07-01', actor: 'dave', reason: 'Carol promoted to Senior' }, () => {
   retitle('Carol', 'Senior Engineer');
@@ -75,7 +98,13 @@ engine.tx({ validAt: '2024-07-01', actor: 'dave', reason: 'Carol promoted to Sen
 
 // ===========================================================================
 console.log('═'.repeat(70));
-console.log('INGESTED', engine.log.length, 'events across', engine.currentSeq(), 'transaction seqs');
+console.log(
+  'INGESTED',
+  engine.log.length,
+  'events across',
+  engine.currentSeq(),
+  'transaction seqs',
+);
 console.log('snapshot checkpoints at seqs:', engine.snapshotSeqs());
 
 // --- 1. VALID-TIME "as-of" org chart (pure GQL range predicates) -----------
@@ -110,10 +139,13 @@ console.log('\n── audit trail for Carol (', P.Carol, ') ──');
 for (const rec of engine.auditFor(P.Carol)) {
   const o: any = rec.op;
   let what = o.kind;
-  if (o.kind === 'setVertexProp') what = `${o.key}: ${JSON.stringify(o.previous)} → ${JSON.stringify(o.value)}`;
+  if (o.kind === 'setVertexProp')
+    what = `${o.key}: ${JSON.stringify(o.previous)} → ${JSON.stringify(o.value)}`;
   else if (o.kind === 'addVertex') what = `hired as "${o.properties.title}"`;
-  else if (o.kind === 'addEdge') what = `start REPORTS_TO ${o.to} (validFrom ${o.properties.validFrom})`;
-  else if (o.kind === 'setEdgeProp') what = `close REPORTS_TO ${o.to} (${o.key}=${JSON.stringify(o.value)})`;
+  else if (o.kind === 'addEdge')
+    what = `start REPORTS_TO ${o.to} (validFrom ${o.properties.validFrom})`;
+  else if (o.kind === 'setEdgeProp')
+    what = `close REPORTS_TO ${o.to} (${o.key}=${JSON.stringify(o.value)})`;
   console.log(`   seq=${rec.seq} tx#${rec.txId} valid=${rec.validAt} by=${rec.actor}: ${what}`);
 }
 
@@ -122,17 +154,23 @@ for (const rec of engine.auditFor(P.Carol)) {
 // the checkpoint (seq 8), so it exercises snapshot-load + tail-replay.
 const reorgSeq = Math.max(...engine.log.filter((r) => r.txId === 3).map((r) => r.seq));
 const past = engine.reconstructAt(reorgSeq);
-console.log(`\n── reconstruct transaction-state @ seq ${reorgSeq} (just after the 2024-01 reorg) `
-  + `(from snapshot seq ${past.fromSnapshot} + ${past.replayed} replayed events) ──`);
+console.log(
+  `\n── reconstruct transaction-state @ seq ${reorgSeq} (just after the 2024-01 reorg) ` +
+    `(from snapshot seq ${past.fromSnapshot} + ${past.replayed} replayed events) ──`,
+);
 
 function titleMap(graph: Graph): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const r of query(graph, `MATCH (p:Person) RETURN p.name AS n, p.title AS t`)) out[r.n as string] = r.t as string;
+  for (const r of query(graph, `MATCH (p:Person) RETURN p.name AS n, p.title AS t`))
+    out[r.n as string] = r.t as string;
   return out;
 }
 // "open" reporting lines = validTo IS NULL, at the transaction-state's latest belief
 function openLines(graph: Graph): Set<string> {
-  const rows = query(graph, `MATCH (p:Person)-[r:REPORTS_TO]->(m:Person) WHERE r.validTo IS NULL RETURN p.name AS a, m.name AS b`);
+  const rows = query(
+    graph,
+    `MATCH (p:Person)-[r:REPORTS_TO]->(m:Person) WHERE r.validTo IS NULL RETURN p.name AS a, m.name AS b`,
+  );
   return new Set(rows.map((r) => `${r.a} → ${r.b}`));
 }
 
@@ -143,13 +181,20 @@ console.log('   titles now :', JSON.stringify(nowTitles));
 console.log('   title diffs:');
 const allNames = new Set([...Object.keys(pastTitles), ...Object.keys(nowTitles)]);
 for (const n of [...allNames].sort()) {
-  if (pastTitles[n] !== nowTitles[n]) console.log(`     ${n}: ${pastTitles[n] ?? '(absent)'} → ${nowTitles[n] ?? '(absent)'}`);
+  if (pastTitles[n] !== nowTitles[n])
+    console.log(`     ${n}: ${pastTitles[n] ?? '(absent)'} → ${nowTitles[n] ?? '(absent)'}`);
 }
 
 const pastLines = openLines(past.graph);
 const nowLines = openLines(g);
-console.log('   reporting lines added since the reorg state:', [...nowLines].filter((l) => !pastLines.has(l)));
-console.log('   reporting lines removed since the reorg state:', [...pastLines].filter((l) => !nowLines.has(l)));
+console.log(
+  '   reporting lines added since the reorg state:',
+  [...nowLines].filter((l) => !pastLines.has(l)),
+);
+console.log(
+  '   reporting lines removed since the reorg state:',
+  [...pastLines].filter((l) => !nowLines.has(l)),
+);
 
 // --- 5. BITEMPORAL: reconstruct tx-state, THEN valid-time as-of on it -------
 // "As of what we recorded through seq 9, what did the org chart look like on

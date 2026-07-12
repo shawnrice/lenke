@@ -1,7 +1,8 @@
+import { graphFromNdjson, createStore } from '@lenke/native';
 // Doc-accuracy probes: copy-paste guide examples verbatim + inspect errors.
 import { Graph } from '@lenke/node';
 import { createNodeBackend } from '@lenke/node/backend';
-import { graphFromNdjson, createStore } from '@lenke/native';
+
 import { buildNdjson } from './seed.mjs';
 
 const ndjson = buildNdjson({ users: 20, seed: 1 });
@@ -12,7 +13,12 @@ const g = Graph.fromNdjson(Buffer.from(ndjson));
 const doc = JSON.parse(new TextDecoder().decode(g.query('MATCH (p:Person) RETURN p.name')));
 console.log('query() ->', JSON.stringify(doc).slice(0, 80), '...');
 const arrow = g.queryArrow('MATCH (p:Person) RETURN p.accountAgeDays');
-console.log('queryArrow() -> Buffer', arrow.length, 'bytes, first4=', new TextDecoder().decode(arrow.subarray(0, 4)));
+console.log(
+  'queryArrow() -> Buffer',
+  arrow.length,
+  'bytes, first4=',
+  new TextDecoder().decode(arrow.subarray(0, 4)),
+);
 // README: mergeNdjson returns a Buffer of JSON you JSON.parse yourself
 const mr = JSON.parse(new TextDecoder().decode(g.mergeNdjson(Buffer.from(ndjson))));
 console.log('raw mergeNdjson JSON ->', JSON.stringify(mr).slice(0, 80));
@@ -39,8 +45,12 @@ for (const [label, q, params] of [
   try {
     g2.query(q, params);
   } catch (e) {
-    console.log(`${label}: name=${e.constructor.name} code=${JSON.stringify(e.code)} pos=${JSON.stringify(e.pos)}`);
-    console.log(`  ownKeys=${JSON.stringify(Object.getOwnPropertyNames(e).filter((k) => k !== 'stack'))}`);
+    console.log(
+      `${label}: name=${e.constructor.name} code=${JSON.stringify(e.code)} pos=${JSON.stringify(e.pos)}`,
+    );
+    console.log(
+      `  ownKeys=${JSON.stringify(Object.getOwnPropertyNames(e).filter((k) => k !== 'stack'))}`,
+    );
   }
 }
 g2.free();

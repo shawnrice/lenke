@@ -5,8 +5,9 @@
 //   to the SAME rows as the JSON path, at a smaller wire size.
 
 import { readFile } from 'node:fs/promises';
-import { createNodeBackend } from '@lenke/node/backend';
+
 import { graphFromNdjson, decodeArrow, type Row } from '@lenke/native';
+import { createNodeBackend } from '@lenke/node/backend';
 
 const here = (f: string) => new URL(f, import.meta.url).pathname;
 const bytes = await readFile(here('./org-graph.ndjson'));
@@ -15,8 +16,7 @@ const backend = createNodeBackend();
 using g = graphFromNdjson(backend, bytes);
 
 const rule = (s: string) => console.log(`\n=== ${s} ===`);
-const show = (rows: Row[], n = rows.length) =>
-  console.table(rows.slice(0, n));
+const show = (rows: Row[], n = rows.length) => console.table(rows.slice(0, n));
 
 console.log(`loaded graph: ${g.vertexCount} vertices, ${g.edgeCount} edges`);
 
@@ -175,9 +175,7 @@ const aggQ = `
 `;
 const aggJson = g.query<Row>(aggQ);
 const aggArrow = decodeArrow(g.queryArrow(aggQ));
-console.log(
-  `aggregate arrow parity? ${JSON.stringify(aggJson) === JSON.stringify(aggArrow)}`,
-);
+console.log(`aggregate arrow parity? ${JSON.stringify(aggJson) === JSON.stringify(aggArrow)}`);
 console.log('json  :', aggJson[0]);
 console.log('arrow :', aggArrow[0]);
 

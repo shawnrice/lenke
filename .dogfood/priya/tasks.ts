@@ -1,3 +1,4 @@
+import { createEmptyGraph, createStore } from '@lenke/native';
 /**
  * Priya's dogfood slice: an offline-first "team tasks" app on @lenke/sync.
  *
@@ -13,12 +14,7 @@
  * Run: bun tasks.ts
  */
 import { createFfiBackend } from '@lenke/native/ffi';
-import { createEmptyGraph, createStore } from '@lenke/native';
-import {
-  createSyncClient,
-  createSyncEngine,
-  type SyncWrite,
-} from '@lenke/sync';
+import { createSyncClient, createSyncEngine, type SyncWrite } from '@lenke/sync';
 
 const LIB = '/home/shawn/projects/pl-graph/crates/lenke-core/target/release/liblenke_core.so';
 
@@ -104,28 +100,38 @@ async function main() {
 
   log('  [ui] initial snapshot (before any push):', JSON.stringify(alpha.getSnapshot()));
   await sleep(60); // let subscribe -> ensure(load) -> push settle
-  log(`  engine.collectionState('tasks', {project:'proj-alpha'}) = ${engine.collectionState('tasks', { project: 'proj-alpha' })}`);
+  log(
+    `  engine.collectionState('tasks', {project:'proj-alpha'}) = ${engine.collectionState('tasks', { project: 'proj-alpha' })}`,
+  );
 
   hr('2. OPTIMISTIC WRITE while ONLINE');
-  await client.mutate(
-    'INSERT (:Task {id: $id, proj: $project, title: $title, done: $done})',
-    { id: 't3', project: 'proj-alpha', title: 'Ship the slice', done: false },
-  );
+  await client.mutate('INSERT (:Task {id: $id, proj: $project, title: $title, done: $done})', {
+    id: 't3',
+    project: 'proj-alpha',
+    title: 'Ship the slice',
+    done: false,
+  });
   await sleep(40);
-  log(`  upstream received ${upstreamLog.length} write(s), pendingWrites=${engine.pendingWrites()}`);
+  log(
+    `  upstream received ${upstreamLog.length} write(s), pendingWrites=${engine.pendingWrites()}`,
+  );
 
   hr('3. OFFLINE: queue writes while the network is down');
   online = false;
   log('  network -> OFFLINE');
   // These apply locally (optimistic) but can't reach upstream.
-  await client.mutate(
-    'INSERT (:Task {id: $id, proj: $project, title: $title, done: $done})',
-    { id: 't4', project: 'proj-alpha', title: 'Offline edit A', done: false },
-  );
-  await client.mutate(
-    'INSERT (:Task {id: $id, proj: $project, title: $title, done: $done})',
-    { id: 't5', project: 'proj-alpha', title: 'Offline edit B', done: false },
-  );
+  await client.mutate('INSERT (:Task {id: $id, proj: $project, title: $title, done: $done})', {
+    id: 't4',
+    project: 'proj-alpha',
+    title: 'Offline edit A',
+    done: false,
+  });
+  await client.mutate('INSERT (:Task {id: $id, proj: $project, title: $title, done: $done})', {
+    id: 't5',
+    project: 'proj-alpha',
+    title: 'Offline edit B',
+    done: false,
+  });
   await sleep(60);
   log(`  local rows now show optimistic writes; engine.pendingWrites()=${engine.pendingWrites()}`);
   log(`  upstream still has ${upstreamLog.length} write(s) (t4/t5 NOT yet replicated)`);

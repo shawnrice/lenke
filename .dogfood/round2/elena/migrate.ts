@@ -12,6 +12,7 @@
  * Run:  bun migrate.ts
  */
 import { Graph, type Vertex, type Edge } from '@lenke/core';
+import { LenkeError } from '@lenke/errors';
 import {
   serialize,
   deserialize,
@@ -24,7 +25,6 @@ import {
   collect,
   type FormatName,
 } from '@lenke/serialization';
-import { LenkeError } from '@lenke/errors';
 
 // ---------------------------------------------------------------------------
 // A fixture graph that stresses the interesting corners of the LPG value model.
@@ -66,7 +66,10 @@ function buildFixture(): Graph {
 type Canon = {
   vertices: Record<string, { labels: string[]; properties: Record<string, unknown> }>;
   // edge key -> summary. Keyed by id when present.
-  edges: Record<string, { from: string; to: string; labels: string[]; properties: Record<string, unknown> }>;
+  edges: Record<
+    string,
+    { from: string; to: string; labels: string[]; properties: Record<string, unknown> }
+  >;
 };
 
 function sortedProps(props: Record<string, unknown>): Record<string, unknown> {
@@ -111,7 +114,8 @@ function lossyMask(g: Graph): Graph {
     for (const k of Object.keys(v.properties)) {
       const val = v.getProperty(k);
       if (Array.isArray(val)) {
-        if (val.length === 0) v.removeProperty(k); // [] -> absent
+        if (val.length === 0)
+          v.removeProperty(k); // [] -> absent
         else if (val.length === 1) v.setProperty(k, val[0]); // [x] -> scalar x
       }
     }
@@ -153,7 +157,10 @@ async function main() {
     const ok = graphsEqual(expected, actual, { edgeIds });
     const tag = lossy.has(fmt) ? ' (lossy-masked: edge-ids + []/[x] ignored)' : '';
     line(`  ${ok ? PASS : FAIL} ${fmt.padEnd(9)} ${text.length} bytes -> ${summarize(back)}${tag}`);
-    if (!ok) line(`      DIVERGENCE\n      exp ${JSON.stringify(canonicalize(expected, { edgeIds }))}\n      got ${JSON.stringify(canonicalize(actual, { edgeIds }))}`);
+    if (!ok)
+      line(
+        `      DIVERGENCE\n      exp ${JSON.stringify(canonicalize(expected, { edgeIds }))}\n      got ${JSON.stringify(canonicalize(actual, { edgeIds }))}`,
+      );
   }
   line();
 
@@ -205,7 +212,9 @@ async function main() {
     const exp = lossy.has(fmt) ? lossyMask(fixture) : fixture;
     const got = lossy.has(fmt) ? lossyMask(restored) : restored;
     const ok = graphsEqual(exp, got, { edgeIds });
-    line(`  ${ok ? PASS : FAIL} ${fmt.padEnd(9)} ${chunkCount} chunk(s) out, decoded from 7-byte slices -> ${summarize(restored)}`);
+    line(
+      `  ${ok ? PASS : FAIL} ${fmt.padEnd(9)} ${chunkCount} chunk(s) out, decoded from 7-byte slices -> ${summarize(restored)}`,
+    );
   }
 
   // A genuinely large graph to prove streaming batches (>1 chunk, per README).
@@ -215,7 +224,9 @@ async function main() {
   for await (const _ of serializeStream(big, 'ndjson')) bigChunks++;
   const bigText = await collect(serializeStream(big, 'ndjson'));
   const bigBack = await deserializeStream(chunked(bigText, 4096), 'ndjson');
-  line(`  ${graphsEqual(big, bigBack, { edgeIds: true }) ? PASS : FAIL} ndjson large graph: 3000 vertices -> ${bigChunks} batched chunk(s) -> ${summarize(bigBack)}`);
+  line(
+    `  ${graphsEqual(big, bigBack, { edgeIds: true }) ? PASS : FAIL} ndjson large graph: 3000 vertices -> ${bigChunks} batched chunk(s) -> ${summarize(bigBack)}`,
+  );
   line();
 
   // -- 4. malformed-input error case ---------------------------------------
@@ -226,7 +237,9 @@ async function main() {
     line(`  ${FAIL} pg-json: malformed input did NOT throw`);
   } catch (err) {
     const isLenke = err instanceof LenkeError;
-    line(`  ${PASS} pg-json malformed: threw ${(err as Error).constructor.name}${isLenke ? ` (code=${(err as LenkeError).code})` : ''}`);
+    line(
+      `  ${PASS} pg-json malformed: threw ${(err as Error).constructor.name}${isLenke ? ` (code=${(err as LenkeError).code})` : ''}`,
+    );
   }
   // 4b. unknown format name (runtime guard).
   try {
@@ -234,14 +247,20 @@ async function main() {
     serialize(fixture, 'ndsjon');
     line(`  ${FAIL} unknown format did NOT throw`);
   } catch (err) {
-    line(`  ${PASS} unknown format: threw ${(err as Error).constructor.name} - "${(err as Error).message}"`);
+    line(
+      `  ${PASS} unknown format: threw ${(err as Error).constructor.name} - "${(err as Error).message}"`,
+    );
   }
   // 4c. streaming request on a non-streaming format.
   try {
-    for await (const _ of serializeStream(fixture, 'pg-json')) { /* drain */ }
+    for await (const _ of serializeStream(fixture, 'pg-json')) {
+      /* drain */
+    }
     line(`  ${FAIL} streaming pg-json did NOT throw`);
   } catch (err) {
-    line(`  ${PASS} stream on non-streaming format (pg-json): threw ${(err as Error).constructor.name} - "${(err as Error).message}"`);
+    line(
+      `  ${PASS} stream on non-streaming format (pg-json): threw ${(err as Error).constructor.name} - "${(err as Error).message}"`,
+    );
   }
   line();
 
@@ -250,11 +269,17 @@ async function main() {
   for (const fmt of FORMATS) {
     const back = parse(serialize(fixture, fmt), fmt);
     const a = back.getVertexById('a');
-    const nick = a?.hasProperty('nickname') ? JSON.stringify(a.getProperty('nickname')) : '<absent>';
+    const nick = a?.hasProperty('nickname')
+      ? JSON.stringify(a.getProperty('nickname'))
+      : '<absent>';
     const empty = a?.hasProperty('prior') ? JSON.stringify(a.getProperty('prior')) : '<absent>';
-    const single = a?.hasProperty('aliases') ? JSON.stringify(a.getProperty('aliases')) : '<absent>';
+    const single = a?.hasProperty('aliases')
+      ? JSON.stringify(a.getProperty('aliases'))
+      : '<absent>';
     const multi = a?.hasProperty('tags') ? JSON.stringify(a.getProperty('tags')) : '<absent>';
-    line(`  ${fmt.padEnd(9)} null=${String(nick).padEnd(7)} empty[]=${String(empty).padEnd(10)} single[x]=${String(single).padEnd(9)} multi=${multi}`);
+    line(
+      `  ${fmt.padEnd(9)} null=${String(nick).padEnd(7)} empty[]=${String(empty).padEnd(10)} single[x]=${String(single).padEnd(9)} multi=${multi}`,
+    );
   }
   line();
   line('Fixture original for reference:');

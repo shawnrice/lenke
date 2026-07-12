@@ -1,5 +1,5 @@
-import { createNodeBackend } from '@lenke/node/backend';
 import { graphFromNdjson, decodeArrow } from '@lenke/native';
+import { createNodeBackend } from '@lenke/node/backend';
 
 const ndjson = [
   '{"type":"node","id":"a","labels":["N"],"properties":{"name":"a","w":1.0}}',

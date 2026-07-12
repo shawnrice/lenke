@@ -14,8 +14,30 @@ function mulberry32(seed) {
   };
 }
 
-const FIRST = ['ada', 'linus', 'grace', 'alan', 'edsger', 'barbara', 'ken', 'margaret', 'dennis', 'radia'];
-const LAST = ['lovelace', 'torvalds', 'hopper', 'turing', 'dijkstra', 'liskov', 'thompson', 'hamilton', 'ritchie', 'perlman'];
+const FIRST = [
+  'ada',
+  'linus',
+  'grace',
+  'alan',
+  'edsger',
+  'barbara',
+  'ken',
+  'margaret',
+  'dennis',
+  'radia',
+];
+const LAST = [
+  'lovelace',
+  'torvalds',
+  'hopper',
+  'turing',
+  'dijkstra',
+  'liskov',
+  'thompson',
+  'hamilton',
+  'ritchie',
+  'perlman',
+];
 
 export function buildNdjson({ users = 300, seed = 42 } = {}) {
   const rand = mulberry32(seed);

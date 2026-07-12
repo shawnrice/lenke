@@ -6,11 +6,12 @@
 // a liveQuery with deps+params, an optimistic mutate, and offline queue->drain.
 // Plus: what a subscriber sees when a demand-fill LOAD fails.
 
-import { createFfiBackend } from '@lenke/native/ffi';
 import { createEmptyGraph, createStore } from '@lenke/native';
+import { createFfiBackend } from '@lenke/native/ffi';
 import { createSyncEngine, createSyncClient, type SyncWrite } from '@lenke/sync';
-import { makeWire, tick } from './wire.ts';
+
 import { makeServer } from './server.ts';
+import { makeWire, tick } from './wire.ts';
 
 const LIB = '/home/shawn/projects/pl-graph/crates/lenke-core/target/release/liblenke_core.so';
 
@@ -79,10 +80,12 @@ async function main() {
 
   // -- 2. Optimistic write ----------------------------------------------------
   hr('2. OPTIMISTIC WRITE (add a task to apollo)');
-  await client.mutate(
-    'INSERT (:Task {id: $id, proj: $proj, title: $title, done: $done})',
-    { id: 'a3', proj: 'apollo', title: 'Ship the demo', done: false },
-  );
+  await client.mutate('INSERT (:Task {id: $id, proj: $proj, title: $title, done: $done})', {
+    id: 'a3',
+    proj: 'apollo',
+    title: 'Ship the demo',
+    done: false,
+  });
   await tick(30);
   log('apollo rows after optimistic insert:', snap(apollo));
   log('server.received (replicated up):', server.received.length, 'write(s)');
@@ -92,14 +95,18 @@ async function main() {
   hr('3. OFFLINE QUEUE -> DRAIN');
   server.online = false;
   log('-> server offline; issuing two optimistic writes');
-  await client.mutate(
-    'INSERT (:Task {id: $id, proj: $proj, title: $title, done: $done})',
-    { id: 'a4', proj: 'apollo', title: 'Handle reconnect', done: false },
-  );
-  await client.mutate(
-    'INSERT (:Task {id: $id, proj: $proj, title: $title, done: $done})',
-    { id: 'a5', proj: 'apollo', title: 'Drain the queue', done: false },
-  );
+  await client.mutate('INSERT (:Task {id: $id, proj: $proj, title: $title, done: $done})', {
+    id: 'a4',
+    proj: 'apollo',
+    title: 'Handle reconnect',
+    done: false,
+  });
+  await client.mutate('INSERT (:Task {id: $id, proj: $proj, title: $title, done: $done})', {
+    id: 'a5',
+    proj: 'apollo',
+    title: 'Drain the queue',
+    done: false,
+  });
   await tick(60);
   log('local rows while offline:', (snap(apollo) as { rows: unknown[] }).rows.length, 'tasks');
   log('engine.pendingWrites() (queued):', engine.pendingWrites());
@@ -115,10 +122,10 @@ async function main() {
 
   // -- 4. Failed demand-fill LOAD --------------------------------------------
   hr('4. FAILED DEMAND-FILL LOAD (subscribe to project=ghost)');
-  const ghost = client.liveQuery(
-    'MATCH (t:Task) WHERE t.proj = $proj RETURN t.id AS id',
-    { deps: ['Task', 'title', 'done'], params: { proj: 'ghost' } },
-  );
+  const ghost = client.liveQuery('MATCH (t:Task) WHERE t.proj = $proj RETURN t.id AS id', {
+    deps: ['Task', 'title', 'done'],
+    params: { proj: 'ghost' },
+  });
   log('immediately:', snap(ghost));
   await tick(60);
   log('after load throws:', snap(ghost));

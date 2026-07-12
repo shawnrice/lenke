@@ -147,12 +147,7 @@ export class Schema {
     return this.pending.length - before;
   }
 
-  private checkUnique(
-    entity: EntityDef,
-    key: string,
-    value: unknown,
-    self: Vertex,
-  ): boolean {
+  private checkUnique(entity: EntityDef, key: string, value: unknown, self: Vertex): boolean {
     const def = entity.properties[key];
     if (!def?.unique || value === undefined || value === null) return true;
     // O(1) index seek; requires createVertexIndex(key), done in attach().

@@ -2,9 +2,10 @@
 // headlessly. Loads the .wasm bytes, builds a RustGraph + reactive Store, and
 // exposes typed live queries + mutations for the note app.
 
-import { createWasmBackend } from '@lenke/native/wasm';
-import { createStore, graphFromNdjson, type Store } from '@lenke/native';
 import { readFile } from 'node:fs/promises';
+
+import { createStore, graphFromNdjson, type Store } from '@lenke/native';
+import { createWasmBackend } from '@lenke/native/wasm';
 
 import { BACKLINKS, TAG_COUNTS, seedNdjson, type Backlink, type TagCount } from './data.ts';
 
@@ -34,14 +35,15 @@ export function addLinkingNote(
   to: string,
 ): void {
   store.mutate((g) => {
-    g.query(
-      'INSERT (n:Note {id: $id, title: $title, body: $body})',
-      { id: note.id, title: note.title, body: `${note.title} body.` },
-    );
-    g.query(
-      'MATCH (n:Note {id: $id}), (m:Note {id: $to}) INSERT (n)-[:LINKS_TO]->(m)',
-      { id: note.id, to },
-    );
+    g.query('INSERT (n:Note {id: $id, title: $title, body: $body})', {
+      id: note.id,
+      title: note.title,
+      body: `${note.title} body.`,
+    });
+    g.query('MATCH (n:Note {id: $id}), (m:Note {id: $to}) INSERT (n)-[:LINKS_TO]->(m)', {
+      id: note.id,
+      to,
+    });
   });
 }
 
@@ -55,9 +57,9 @@ export function tagNote(store: Store, noteId: string, tag: string): void {
     if (existing.length === 0) {
       g.query('INSERT (:Tag {name: $name})', { name: tag });
     }
-    g.query(
-      'MATCH (n:Note {id: $id}), (t:Tag {name: $name}) INSERT (n)-[:TAGGED]->(t)',
-      { id: noteId, name: tag },
-    );
+    g.query('MATCH (n:Note {id: $id}), (t:Tag {name: $name}) INSERT (n)-[:TAGGED]->(t)', {
+      id: noteId,
+      name: tag,
+    });
   });
 }

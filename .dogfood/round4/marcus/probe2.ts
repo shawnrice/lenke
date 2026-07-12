@@ -1,5 +1,5 @@
-import { createNodeBackend } from '@lenke/node/backend';
 import { graphFromNdjson } from '@lenke/native';
+import { createNodeBackend } from '@lenke/node/backend';
 
 // a->b, a->c, b->c, c->a
 const lines = [
@@ -41,6 +41,9 @@ for (let it = 0; it < 30; it++) {
   for (const m of nodes) for (const t of adj[m]) next[t] += (d * pr[m]) / adj[m].length;
   pr = next;
 }
-console.log('JS  PageRank:', nodes.map((n) => ({ name: n, pr: pr[n] })));
+console.log(
+  'JS  PageRank:',
+  nodes.map((n) => ({ name: n, pr: pr[n] })),
+);
 
 g.free();

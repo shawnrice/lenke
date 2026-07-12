@@ -1,8 +1,8 @@
+import { StoreProvider, useLiveQuery, SyncClientProvider, useClientLiveQuery } from '@lenke/react';
 // The two React connectors for the note-app sidebar.
 //   A) StoreProvider + useLiveQuery       — local wasm store (main-thread).
 //   B) SyncClientProvider + useClientLiveQuery — synced client (worker/wire).
 import * as React from 'react';
-import { StoreProvider, useLiveQuery, SyncClientProvider, useClientLiveQuery } from '@lenke/react';
 
 import { BACKLINKS, TAG_COUNTS, type Backlink, type TagCount } from './data.ts';
 

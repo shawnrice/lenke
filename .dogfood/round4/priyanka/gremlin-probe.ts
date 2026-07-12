@@ -1,6 +1,9 @@
-import { createNodeBackend } from '@lenke/node/backend';
 import { graphFromNdjson, gremlin } from '@lenke/native';
-const g = graphFromNdjson(createNodeBackend(), await Bun.file(`${import.meta.dir}/graph.ndjson`).bytes());
+import { createNodeBackend } from '@lenke/node/backend';
+const g = graphFromNdjson(
+  createNodeBackend(),
+  await Bun.file(`${import.meta.dir}/graph.ndjson`).bytes(),
+);
 g.createVertexIndex('rid');
 
 // Gremlin edit-check. To get zero-hop-INCLUSIVE transitive closure (self +

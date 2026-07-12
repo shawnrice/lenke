@@ -6,8 +6,8 @@
 // encode->encrypt->store->load->decrypt path here. gzip + subtle.crypto are
 // native in Bun.
 
-import { createFfiBackend } from '@lenke/native/ffi';
 import { createEmptyGraph, createStore, graphFromNdjson } from '@lenke/native';
+import { createFfiBackend } from '@lenke/native/ffi';
 import {
   createSyncEngine,
   createSnapshotStore,
@@ -88,7 +88,10 @@ async function main() {
 
   // --- Invalidation: warmth-never-truth --------------------------------------
   hr('INVALIDATION (wrong user / wrong schema → cold boot)');
-  log('load wrong userId  →', await snapshots.load({ schemaVersion: 'v3', userId: 'someone-else' }));
+  log(
+    'load wrong userId  →',
+    await snapshots.load({ schemaVersion: 'v3', userId: 'someone-else' }),
+  );
   log('load wrong schema  →', await snapshots.load({ schemaVersion: 'v9', userId: 'priya' }));
 
   // --- Keyless memory store (docs: key omitted → memory-only, never disk) -----
@@ -113,9 +116,13 @@ async function main() {
   );
   log('unencrypted round-trip present:', !!decoded, '| header:', decoded?.header.schemaVersion);
   // encrypted bytes fed a keyless decode must read as absent:
-  const mustBeNull = await decodeSnapshot(rawBytes!, { schemaVersion: 'v3', userId: 'priya' }, {
-    unencrypted: true,
-  });
+  const mustBeNull = await decodeSnapshot(
+    rawBytes!,
+    { schemaVersion: 'v3', userId: 'priya' },
+    {
+      unencrypted: true,
+    },
+  );
   log('encrypted-bytes + unencrypted decode →', mustBeNull);
 
   store2[Symbol.dispose]();

@@ -24,7 +24,14 @@ import { serialize, deserialize } from '@lenke/serialization';
 export type EventOp =
   | { kind: 'addVertex'; id: string; labels: string[]; properties: Record<string, unknown> }
   | { kind: 'removeVertex'; id: string }
-  | { kind: 'addEdge'; id: string; from: string; to: string; labels: string[]; properties: Record<string, unknown> }
+  | {
+      kind: 'addEdge';
+      id: string;
+      from: string;
+      to: string;
+      labels: string[];
+      properties: Record<string, unknown>;
+    }
   | { kind: 'removeEdge'; id: string; from: string; to: string }
   | { kind: 'setVertexProp'; id: string; key: string; value: unknown; previous: unknown }
   | { kind: 'removeVertexProp'; id: string; key: string; previous: unknown }
@@ -32,7 +39,15 @@ export type EventOp =
   // edge-prop ops carry endpoints too: the event is keyed by edge id, but an
   // entity audit trail must resolve "which of Carol's edges closed" — so we
   // snapshot from/to at emit time (the pre-commit edge still has them).
-  | { kind: 'setEdgeProp'; id: string; from: string; to: string; key: string; value: unknown; previous: unknown }
+  | {
+      kind: 'setEdgeProp';
+      id: string;
+      from: string;
+      to: string;
+      key: string;
+      value: unknown;
+      previous: unknown;
+    }
   | { kind: 'removeEdgeProp'; id: string; from: string; to: string; key: string; previous: unknown }
   | { kind: 'addVertexLabel'; id: string; label: string }
   | { kind: 'removeVertexLabel'; id: string; label: string };
@@ -116,28 +131,66 @@ export class TemporalEngine {
     switch (o.type) {
       case '@graph/VertexAdded': {
         const vx = v as Vertex;
-        return { kind: 'addVertex', id: vx.id, labels: [...vx.labels], properties: { ...vx.properties } };
+        return {
+          kind: 'addVertex',
+          id: vx.id,
+          labels: [...vx.labels],
+          properties: { ...vx.properties },
+        };
       }
       case '@graph/VertexRemoved':
         return { kind: 'removeVertex', id: (v as Vertex).id };
       case '@graph/EdgeAdded': {
         const ed = v as Edge;
-        return { kind: 'addEdge', id: ed.id, from: ed.from.id, to: ed.to.id, labels: [...ed.labels], properties: { ...ed.properties } };
+        return {
+          kind: 'addEdge',
+          id: ed.id,
+          from: ed.from.id,
+          to: ed.to.id,
+          labels: [...ed.labels],
+          properties: { ...ed.properties },
+        };
       }
       case '@graph/EdgeRemoved': {
         const ed = v as Edge;
         return { kind: 'removeEdge', id: ed.id, from: ed.from.id, to: ed.to.id };
       }
       case '@graph/VertexPropertyChanged':
-        return { kind: 'setVertexProp', id: v.vertex.id, key: v.key, value: v.value, previous: v.previous };
+        return {
+          kind: 'setVertexProp',
+          id: v.vertex.id,
+          key: v.key,
+          value: v.value,
+          previous: v.previous,
+        };
       case '@graph/VertexPropertiesChanged':
         return { kind: 'setVertexProps', id: v.vertex.id, next: { ...v.next } };
       case '@graph/VertexPropertyRemoved':
-        return { kind: 'removeVertexProp', id: v.vertex.id, key: v.key, previous: v.vertex.getProperty(v.key) };
+        return {
+          kind: 'removeVertexProp',
+          id: v.vertex.id,
+          key: v.key,
+          previous: v.vertex.getProperty(v.key),
+        };
       case '@graph/EdgePropertyChanged':
-        return { kind: 'setEdgeProp', id: v.edge.id, from: v.edge.from.id, to: v.edge.to.id, key: v.key, value: v.value, previous: v.previous };
+        return {
+          kind: 'setEdgeProp',
+          id: v.edge.id,
+          from: v.edge.from.id,
+          to: v.edge.to.id,
+          key: v.key,
+          value: v.value,
+          previous: v.previous,
+        };
       case '@graph/EdgePropertyRemoved':
-        return { kind: 'removeEdgeProp', id: v.edge.id, from: v.edge.from.id, to: v.edge.to.id, key: v.key, previous: v.edge.getProperty(v.key) };
+        return {
+          kind: 'removeEdgeProp',
+          id: v.edge.id,
+          from: v.edge.from.id,
+          to: v.edge.to.id,
+          key: v.key,
+          previous: v.edge.getProperty(v.key),
+        };
       case '@graph/LabelAddedToVertex':
         return { kind: 'addVertexLabel', id: v.vertex.id, label: v.label };
       case '@graph/LabelRemovedFromVertex':

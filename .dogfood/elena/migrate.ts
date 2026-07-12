@@ -31,12 +31,21 @@ const FORMATS = Object.keys(codecs) as FormatName[];
 // ---------------------------------------------------------------------------
 const canonVal = (v: unknown): string => JSON.stringify(v);
 const canonProps = (p: Record<string, unknown>): string =>
-  JSON.stringify(Object.keys(p).sort().map((k) => [k, canonVal(p[k])]));
+  JSON.stringify(
+    Object.keys(p)
+      .sort()
+      .map((k) => [k, canonVal(p[k])]),
+  );
 const canonLabels = (l: Iterable<string>): string => JSON.stringify([...l].sort());
 
 const graphEqual = (a: Graph, b: Graph): { equal: boolean; why?: string } => {
   const vsig = (g: Graph) =>
-    new Map([...g.vertices].map((v) => [String(v.id), `${canonLabels(v.labels)}|${canonProps(v.properties)}`]));
+    new Map(
+      [...g.vertices].map((v) => [
+        String(v.id),
+        `${canonLabels(v.labels)}|${canonProps(v.properties)}`,
+      ]),
+    );
   const esig = (g: Graph) =>
     new Map(
       [...g.edges].map((e) => [
@@ -46,9 +55,11 @@ const graphEqual = (a: Graph, b: Graph): { equal: boolean; why?: string } => {
     );
   const [va, vb, ea, eb] = [vsig(a), vsig(b), esig(a), esig(b)];
   if (va.size !== vb.size) return { equal: false, why: `vertex count ${va.size} != ${vb.size}` };
-  for (const [id, sig] of va) if (vb.get(id) !== sig) return { equal: false, why: `vertex '${id}': ${sig} != ${vb.get(id)}` };
+  for (const [id, sig] of va)
+    if (vb.get(id) !== sig) return { equal: false, why: `vertex '${id}': ${sig} != ${vb.get(id)}` };
   if (ea.size !== eb.size) return { equal: false, why: `edge count ${ea.size} != ${eb.size}` };
-  for (const [id, sig] of ea) if (eb.get(id) !== sig) return { equal: false, why: `edge '${id}': ${sig} != ${eb.get(id)}` };
+  for (const [id, sig] of ea)
+    if (eb.get(id) !== sig) return { equal: false, why: `edge '${id}': ${sig} != ${eb.get(id)}` };
   return { equal: true };
 };
 
@@ -57,7 +68,12 @@ const graphEqual = (a: Graph, b: Graph): { equal: boolean; why?: string } => {
 // checks that no actual DATA was lost.
 const graphContentEqual = (a: Graph, b: Graph): { equal: boolean; why?: string } => {
   const vsig = (g: Graph) =>
-    new Map([...g.vertices].map((v) => [String(v.id), `${canonLabels(v.labels)}|${canonProps(v.properties)}`]));
+    new Map(
+      [...g.vertices].map((v) => [
+        String(v.id),
+        `${canonLabels(v.labels)}|${canonProps(v.properties)}`,
+      ]),
+    );
   const ebag = (g: Graph): Map<string, number> => {
     const m = new Map<string, number>();
     for (const e of g.edges) {
@@ -68,10 +84,13 @@ const graphContentEqual = (a: Graph, b: Graph): { equal: boolean; why?: string }
   };
   const [va, vb] = [vsig(a), vsig(b)];
   if (va.size !== vb.size) return { equal: false, why: `vertex count ${va.size} != ${vb.size}` };
-  for (const [id, sig] of va) if (vb.get(id) !== sig) return { equal: false, why: `vertex '${id}' differs` };
+  for (const [id, sig] of va)
+    if (vb.get(id) !== sig) return { equal: false, why: `vertex '${id}' differs` };
   const [ma, mb] = [ebag(a), ebag(b)];
-  if (ma.size !== mb.size) return { equal: false, why: `distinct edge shapes ${ma.size} != ${mb.size}` };
-  for (const [k, n] of ma) if (mb.get(k) !== n) return { equal: false, why: `edge shape count differs: ${k}` };
+  if (ma.size !== mb.size)
+    return { equal: false, why: `distinct edge shapes ${ma.size} != ${mb.size}` };
+  for (const [k, n] of ma)
+    if (mb.get(k) !== n) return { equal: false, why: `edge shape count differs: ${k}` };
   return { equal: true };
 };
 
@@ -97,8 +116,20 @@ const sampleGraph = (): Graph => {
     labels: ['Person'],
     properties: {}, // no properties at all
   });
-  g.addEdge({ id: 'e1', from: alice, to: bob, labels: ['KNOWS'], properties: { since: 2020, weight: 0.7 } });
-  g.addEdge({ id: 'e2', from: bob, to: carol, labels: ['KNOWS'], properties: { since: 2021, note: null } });
+  g.addEdge({
+    id: 'e1',
+    from: alice,
+    to: bob,
+    labels: ['KNOWS'],
+    properties: { since: 2020, weight: 0.7 },
+  });
+  g.addEdge({
+    id: 'e2',
+    from: bob,
+    to: carol,
+    labels: ['KNOWS'],
+    properties: { since: 2021, note: null },
+  });
   g.addEdge({ id: 'e3', from: alice, to: carol, labels: ['MENTORS'], properties: {} }); // no props
   return g;
 };
@@ -110,14 +141,18 @@ const rule = (t: string) => line(`\n${'='.repeat(70)}\n${t}\n${'='.repeat(70)}`)
 // CLI mode: bun migrate.ts <in> <from> <to> [out]
 // ---------------------------------------------------------------------------
 const runCli = async (inPath: string, from: string, to: string, outPath?: string) => {
-  if (!FORMATS.includes(from as FormatName)) throw new Error(`unknown --from '${from}' (have: ${FORMATS.join(', ')})`);
-  if (!FORMATS.includes(to as FormatName)) throw new Error(`unknown --to '${to}' (have: ${FORMATS.join(', ')})`);
+  if (!FORMATS.includes(from as FormatName))
+    throw new Error(`unknown --from '${from}' (have: ${FORMATS.join(', ')})`);
+  if (!FORMATS.includes(to as FormatName))
+    throw new Error(`unknown --to '${to}' (have: ${FORMATS.join(', ')})`);
   const text = await Bun.file(inPath).text();
   const graph = deserialize(text, from as FormatName); // into a fresh graph
   const out = serialize(graph, to as FormatName);
   if (outPath) {
     await Bun.write(outPath, out);
-    line(`migrated ${inPath} (${from}) -> ${outPath} (${to}): ${graph.vertexCount} nodes, ${graph.edgeCount} edges`);
+    line(
+      `migrated ${inPath} (${from}) -> ${outPath} (${to}): ${graph.vertexCount} nodes, ${graph.edgeCount} edges`,
+    );
   } else {
     process.stdout.write(out.endsWith('\n') ? out : out + '\n');
   }
@@ -167,8 +202,14 @@ const runDemo = async () => {
   line(strictFails.length ? strictFails.join('\n') : '  all hold ✔');
   line(`  ^ the ${strictFails.length} misses are exactly the pg-text pairings: pg-text does not`);
   line('    round-trip synthetic EDGE ids (assigns a fresh UUID on decode). Node ids survive.');
-  line(`\nContent equality (edges matched by endpoints+labels+props, ignoring edge id): PASS=${contentPass}/${total}`);
-  line(contentFails.length ? contentFails.join('\n') : '  ALL 25 hold — no property/topology data is lost by any format ✔');
+  line(
+    `\nContent equality (edges matched by endpoints+labels+props, ignoring edge id): PASS=${contentPass}/${total}`,
+  );
+  line(
+    contentFails.length
+      ? contentFails.join('\n')
+      : '  ALL 25 hold — no property/topology data is lost by any format ✔',
+  );
   const fail = contentFail; // only genuine data loss counts as a demo failure
 
   rule('3. Null / edge-case fidelity spot-check (pg-json canonical)');
@@ -176,7 +217,9 @@ const runDemo = async () => {
   const a = g.getVertexById('a')!;
   const b = g.getVertexById('b')!;
   const c = g.getVertexById('c')!;
-  line(`a.nick is present-and-null? key present=${'nick' in a.properties}, value=${JSON.stringify(a.properties.nick)}`);
+  line(
+    `a.nick is present-and-null? key present=${'nick' in a.properties}, value=${JSON.stringify(a.properties.nick)}`,
+  );
   line(`a.tags (list) = ${JSON.stringify(a.properties.tags)}`);
   line(`b.tags (multi list) = ${JSON.stringify(b.properties.tags)}`);
   line(`b has 2 labels = ${JSON.stringify([...b.labels])}`);
@@ -207,7 +250,9 @@ const runDemo = async () => {
   const asyncText = await serializeAsync(big, 'ndjson');
   const asyncGraph = await deserializeAsync(asyncText, 'ndjson');
   clearInterval(timer);
-  line(`serializeAsync/deserializeAsync round-trip nodes=${asyncGraph.vertexCount}; event-loop ticks observed while working=${ticks}`);
+  line(
+    `serializeAsync/deserializeAsync round-trip nodes=${asyncGraph.vertexCount}; event-loop ticks observed while working=${ticks}`,
+  );
 
   rule('5. Malformed-input error handling (must fail loudly, caught here)');
   const bads: Array<[FormatName, string]> = [
@@ -234,7 +279,9 @@ const runDemo = async () => {
     line(`  out-of-model value: ${(e as Error).name}: ${(e as Error).message}`);
   }
 
-  rule('6. Known fidelity limit: pg-text repeated-key list encoding is lossy for 0/1-element lists');
+  rule(
+    '6. Known fidelity limit: pg-text repeated-key list encoding is lossy for 0/1-element lists',
+  );
   let ptLossy = 0;
   for (const val of [[], ['x'], ['x', 'y'], [1, 2, 3]] as unknown[]) {
     const one = new Graph();
@@ -242,12 +289,18 @@ const runDemo = async () => {
     const back = parse(serialize(one, 'pg-text'), 'pg-text').getVertexById('x')!.properties.tags;
     const ok = JSON.stringify(back) === JSON.stringify(val);
     if (!ok) ptLossy++;
-    line(`  tags=${JSON.stringify(val).padEnd(12)} -> pg-text -> ${JSON.stringify(back ?? '(absent)')}  ${ok ? 'ok' : 'LOSSY'}`);
+    line(
+      `  tags=${JSON.stringify(val).padEnd(12)} -> pg-text -> ${JSON.stringify(back ?? '(absent)')}  ${ok ? 'ok' : 'LOSSY'}`,
+    );
   }
-  line(`  (empty + singleton lists do not survive pg-text; the JSON/ndjson/graphson/csv codecs preserve them.)`);
+  line(
+    `  (empty + singleton lists do not survive pg-text; the JSON/ndjson/graphson/csv codecs preserve them.)`,
+  );
 
   rule('DONE');
-  line(fail === 0 && streamEq.equal ? 'ALL MATRIX ROUND-TRIPS HOLD ✔' : 'THERE WERE MATRIX FAILURES ✘');
+  line(
+    fail === 0 && streamEq.equal ? 'ALL MATRIX ROUND-TRIPS HOLD ✔' : 'THERE WERE MATRIX FAILURES ✘',
+  );
   line(`(pg-text lossy cases characterized separately in section 6: ${ptLossy}/4)`);
 };
 
