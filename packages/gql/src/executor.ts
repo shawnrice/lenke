@@ -973,7 +973,16 @@ const compileExpr = (expr: Expr): CompiledExpr => {
       // Rust engine is immune (params live in a HashMap); this matches it. A
       // param the caller genuinely passed under that key is an own property and
       // still resolves.
-      return (env) => (Object.hasOwn(env.params, name) ? env.params[name] : undefined);
+      return (env) => {
+        if (Object.hasOwn(env.params, name)) {
+          return env.params[name];
+        }
+
+        // An unsupplied `$__now` (from a bare `current_*`) reads as null to match
+        // the Rust engine; any other unbound param can't reach here (it fails the
+        // eager validation above).
+        return name === '__now' ? null : undefined;
+      };
     }
     case 'prop': {
       const { variable, key } = expr;
@@ -3140,7 +3149,9 @@ export const compile = <R extends Row = Row>(query: Query): Plan<R> => {
     // didn't bind is a programming error — throw before running, not a silent
     // empty result. (The Rust engine does the same in `positional`.)
     for (const name of names) {
-      if (!Object.hasOwn(params, name)) {
+      // The reserved `$__now` (from a bare `current_*` function) is optional: an
+      // unsupplied `now` reads as NULL (so `current_date` → null), not an error.
+      if (name !== '__now' && !Object.hasOwn(params, name)) {
         throw new LenkeError(`missing parameter: $${name}`, {
           code: ErrorCode.MissingParameter,
           details: { param: name },

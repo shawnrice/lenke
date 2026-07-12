@@ -120,9 +120,31 @@ impl Parser<'_> {
             Some(b'n') => self.literal(b"null", Val::Null),
             Some(b'[') if allow_list => self.list(),
             Some(b'[') => Err(self.err("nested arrays are not valid param values")),
-            Some(b'{') => Err(self.err("objects are not valid param values")),
+            // The only valid object param value is a tagged temporal
+            // (`{"@date":"…"}` / `@datetime` / `@duration`).
+            Some(b'{') => self.temporal_object(),
             Some(b'-' | b'0'..=b'9') => self.number(),
             _ => Err(self.err("expected a param value")),
+        }
+    }
+
+    /// A single-key tagged temporal object `{"@date":"…"}` as a `Val::Temporal`.
+    /// The one object shape allowed as a param value — so a `$d` can bind a
+    /// DATE/DATETIME/DURATION (and the reserved `$__now` carries `current_*`).
+    fn temporal_object(&mut self) -> CodeResult<Val> {
+        self.expect(b'{')?;
+        self.skip_ws();
+        let key = self.string()?;
+        self.skip_ws();
+        self.expect(b':')?;
+        self.skip_ws();
+        let iso = self.string()?;
+        self.skip_ws();
+        self.expect(b'}')?;
+        match crate::temporal::Temporal::from_json_tag(&key, &iso) {
+            Some(Ok(t)) => Ok(Val::Temporal(t)),
+            Some(Err(e)) => Err(self.err(&format!("invalid temporal param: {e}"))),
+            None => Err(self.err("the only valid object param value is a tagged temporal")),
         }
     }
 

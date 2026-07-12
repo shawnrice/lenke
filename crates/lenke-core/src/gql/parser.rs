@@ -893,6 +893,21 @@ impl Parser {
         }
     }
 
+    /// A bare now-function keyword: `Some(true)` = `current_date` (a DATE),
+    /// `Some(false)` = `current_timestamp`/`local_timestamp` (a LOCAL DATETIME —
+    /// ISO's zoned `CURRENT_TIMESTAMP` is treated as local here, we're zone-less).
+    fn now_function(&self) -> Option<bool> {
+        let t = self.peek();
+        if t.tt != Tt::Ident || t.delimited {
+            return None;
+        }
+        match t.value.to_ascii_lowercase().as_str() {
+            "current_date" => Some(true),
+            "current_timestamp" | "local_timestamp" => Some(false),
+            _ => None,
+        }
+    }
+
     fn parse_primary(&mut self) -> R<Expr> {
         let t = self.peek().clone();
         match t.tt {
@@ -909,6 +924,30 @@ impl Parser {
             // before a string. (The `date(…)` constructor-function form falls
             // through to the normal function-call path.)
             Tt::Ident if self.temporal_literal_ahead() => self.parse_temporal_literal(),
+            // Bare now-functions `current_date` / `current_timestamp` /
+            // `local_timestamp` desugar to a reserved `$__now` DATETIME param the
+            // host supplies — the engine stays pure (never reads the clock), which
+            // is what keeps the two engines byte-identical and deterministic.
+            // `current_date` truncates via `date(...)`.
+            Tt::Ident if self.now_function().is_some() => {
+                let is_date = self.now_function() == Some(true);
+                self.advance();
+                if self.check(Tt::LParen) {
+                    self.advance();
+                    self.expect(Tt::RParen, "')' to close a now-function")?;
+                }
+                let now = Expr::Param("__now".to_string());
+                Ok(if is_date {
+                    Expr::Func {
+                        name: "date".to_string(),
+                        args: vec![now],
+                        distinct: false,
+                        star: false,
+                    }
+                } else {
+                    now
+                })
+            }
             Tt::Param => {
                 self.advance();
                 Ok(Expr::Param(t.value))

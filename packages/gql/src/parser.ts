@@ -28,6 +28,8 @@
  *   comment    = '//' line | '--' line | block comment
  */
 
+import { temporalParse } from '@lenke/core';
+
 import type {
   ArithOp,
   Clause,
@@ -59,8 +61,6 @@ import type {
   WithClause,
   ForClause,
 } from './ast.js';
-import { temporalParse } from '@lenke/core';
-
 import { GqlSyntaxError, isReserved, type Token, type TokenType, tokenize } from './lexer.js';
 
 // ISO GQL `CAST` target type name → the conversion function it desugars to.
@@ -951,6 +951,29 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Query => {
     // (The `date(…)` constructor-function form falls through to the call path.)
     if (temporalLiteralAhead()) {
       return parseTemporalLiteral();
+    }
+
+    // Bare now-functions `current_date` / `current_timestamp` / `local_timestamp`
+    // desugar to a reserved `$__now` DATETIME param the host supplies — the engine
+    // never reads the clock, which keeps the two engines byte-identical.
+    // `current_date` truncates via `date(...)`.
+    if (t.type === 'ident' && !t.delimited) {
+      const lc = t.value.toLowerCase();
+
+      if (lc === 'current_date' || lc === 'current_timestamp' || lc === 'local_timestamp') {
+        advance();
+
+        if (check('lparen')) {
+          advance();
+          expect('rparen', "')' to close a now-function");
+        }
+
+        const now: Expr = { kind: 'param', name: '__now' };
+
+        return lc === 'current_date'
+          ? { kind: 'func', name: 'date', args: [now], distinct: false, star: false }
+          : now;
+      }
     }
 
     if (t.type === 'param') {

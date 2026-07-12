@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { Graph, type LocalDate } from '@lenke/core';
+import { Graph, type LocalDate, parseDateTime } from '@lenke/core';
 import { deserialize } from '@lenke/serialization';
 
 import { query } from './index.js';
@@ -101,6 +101,21 @@ describe('GQL: duration_between', () => {
     expect(
       query(g, `RETURN duration_between(DATE '2020-01-01', DATETIME '2020-01-01T00:00:00') AS d`),
     ).toEqual([{ d: null }]);
+  });
+});
+
+describe('GQL: current_* read an injected now (the engine never reads a clock)', () => {
+  test('current_date/current_timestamp/local_timestamp desugar to the reserved $__now', () => {
+    const g = new Graph();
+    const now = { __now: parseDateTime('2026-07-12T10:30:45') };
+    expect(String(query(g, `RETURN current_timestamp AS d`, now)[0].d)).toBe('2026-07-12T10:30:45');
+    expect(String(query(g, `RETURN local_timestamp AS d`, now)[0].d)).toBe('2026-07-12T10:30:45');
+    // current_date truncates the injected instant to its date part.
+    expect(String(query(g, `RETURN current_date AS d`, now)[0].d)).toBe('2026-07-12');
+    // Parenthesized call form is accepted too.
+    expect(String(query(g, `RETURN current_timestamp() AS d`, now)[0].d)).toBe('2026-07-12T10:30:45');
+    // No injected now → null (the engine stays pure; it never invents a clock).
+    expect(query(g, `RETURN current_date AS d`)).toEqual([{ d: null }]);
   });
 });
 

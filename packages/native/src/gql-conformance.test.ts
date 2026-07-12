@@ -19,7 +19,7 @@
 import { describe, expect, test } from 'bun:test';
 import { existsSync } from 'node:fs';
 
-import { Graph } from '@lenke/core';
+import { Graph, parseDateTime } from '@lenke/core';
 import { query as tsQuery } from '@lenke/gql';
 import { deserialize as tsDeserialize } from '@lenke/serialization';
 
@@ -59,9 +59,9 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
   const nativeGraph = graphFromFormat(backend, MODERN_NDJSON, 'ndjson');
   const tsGraph = tsDeserialize(MODERN_NDJSON, 'ndjson', new Graph());
 
-  const both = (q: string): [string, string] => [
-    JSON.stringify(tsQuery(tsGraph, q)),
-    JSON.stringify(nativeGraph.query(q)),
+  const both = (q: string, params?: Record<string, unknown>): [string, string] => [
+    JSON.stringify(tsQuery(tsGraph, q, params)),
+    JSON.stringify(nativeGraph.query(q, params)),
   ];
 
   test('RETURN n — rich node object, byte-identical, keys sorted', () => {
@@ -273,6 +273,27 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
       expect(ts, q).toBe(native);
       expect(ts, q).toBe(want);
     }
+  });
+
+  test('current_* read an injected now byte-identically (engine stays pure)', () => {
+    // A FIXED `now` is handed to BOTH engines (via the reserved $__now param), so
+    // the non-deterministic functions become deterministic and byte-identical.
+    const now = { __now: parseDateTime('2026-07-12T10:30:45') };
+
+    for (const [q, want] of [
+      [`RETURN current_timestamp AS t`, `[{"t":{"@datetime":"2026-07-12T10:30:45"}}]`],
+      [`RETURN local_timestamp AS t`, `[{"t":{"@datetime":"2026-07-12T10:30:45"}}]`],
+      [`RETURN current_date AS d`, `[{"d":{"@date":"2026-07-12"}}]`],
+    ] as [string, string][]) {
+      const [ts, native] = both(q, now);
+      expect(ts, q).toBe(native);
+      expect(ts, q).toBe(want);
+    }
+
+    // Without an injected now, both engines return null (no clock read).
+    const [ts0, native0] = both(`RETURN current_date AS d`);
+    expect(ts0).toBe(native0);
+    expect(ts0).toBe(`[{"d":null}]`);
   });
 
 });

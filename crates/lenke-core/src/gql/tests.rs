@@ -2953,3 +2953,48 @@ fn temporal_arithmetic() {
         "2020-01-15"
     );
 }
+
+#[test]
+fn temporal_now_functions_read_injected_now() {
+    let mut g = modern();
+    let now =
+        crate::gql::params_from_json(r#"{"__now":{"@datetime":"2026-07-12T10:30:45"}}"#).unwrap();
+    // current_timestamp / local_timestamp → the injected datetime.
+    assert_eq!(
+        qp(&mut g, "RETURN current_timestamp AS t", now.clone()),
+        vec![vec![Value::Temporal(
+            crate::temporal::Temporal::parse("datetime", "2026-07-12T10:30:45").unwrap()
+        )]]
+    );
+    assert_eq!(
+        qp(&mut g, "RETURN local_timestamp AS t", now.clone()),
+        vec![vec![Value::Temporal(
+            crate::temporal::Temporal::parse("datetime", "2026-07-12T10:30:45").unwrap()
+        )]]
+    );
+    // current_date → the date part (truncated).
+    assert_eq!(
+        qp(&mut g, "RETURN current_date AS d", now.clone()),
+        vec![vec![tdate("2026-07-12")]]
+    );
+    // empty-parens form also parses.
+    assert_eq!(
+        qp(&mut g, "RETURN current_date() AS d", now),
+        vec![vec![tdate("2026-07-12")]]
+    );
+    // without an injected now → null (the engine never reads a clock).
+    assert_eq!(
+        qp(
+            &mut g,
+            "RETURN current_date AS d",
+            crate::gql::eval::Params::new()
+        ),
+        vec![vec![Value::Null]]
+    );
+    // a general temporal param also binds now.
+    let p = crate::gql::params_from_json(r#"{"d":{"@date":"2020-02-29"}}"#).unwrap();
+    assert_eq!(
+        qp(&mut g, "RETURN $d AS d", p),
+        vec![vec![tdate("2020-02-29")]]
+    );
+}

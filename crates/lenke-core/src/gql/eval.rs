@@ -5707,12 +5707,17 @@ fn positional(param_names: &[String], params: &Params) -> CodeResult<Vec<Val>> {
     param_names
         .iter()
         .map(|n| {
-            params.get(n).cloned().ok_or_else(|| {
-                CodeError::new(
+            match params.get(n).cloned() {
+                Some(v) => Ok(v),
+                // The reserved `$__now` (from a bare `current_*` function) is
+                // optional: if the host didn't supply a `now`, it reads as NULL
+                // (so `current_date` → null) rather than a missing-param error.
+                None if n == "__now" => Ok(Val::Null),
+                None => Err(CodeError::new(
                     ErrorCode::MissingParameter,
                     format!("missing parameter: ${n}"),
-                )
-            })
+                )),
+            }
         })
         .collect()
 }
