@@ -1,3 +1,4 @@
+import { isTemporal, temporalRelCmp } from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { Predicate } from './ast.js';
@@ -53,6 +54,17 @@ export const compareValues = (a: unknown, b: unknown): number => {
     }
 
     return a ? 1 : -1;
+  }
+
+  // Temporals of the same instant kind (date/datetime) order chronologically;
+  // durations and cross-kind pairs are not orderable and fall through to the
+  // throw (mirrors the Rust Gremlin `gcmp` and the gql relational policy).
+  if (isTemporal(a) && isTemporal(b)) {
+    const c = temporalRelCmp(a, b);
+
+    if (c !== null) {
+      return c;
+    }
   }
 
   throw new LenkeError(`cannot order ${typeName(a)} with ${typeName(b)}`, {

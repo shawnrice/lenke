@@ -1,4 +1,5 @@
 import type { Graph } from '@lenke/core';
+import { isTemporal, temporalFormat, temporalParse } from '@lenke/core';
 
 import type { Codec } from '../codec.js';
 import { type ChunkSource, linesFromChunks } from '../streaming.js';
@@ -126,6 +127,13 @@ const encodeScalar = (value: Exclude<PropertyValue, readonly PropertyValue[]>): 
     return String(value);
   }
 
+  // A temporal rides as an unquoted `@<kind>:<iso>` token — the ISO form has no
+  // whitespace/newline (stays on one line), and the `@` sigil distinguishes it
+  // from a quoted string on decode.
+  if (isTemporal(value)) {
+    return `@${value.kind}:${temporalFormat(value)}`;
+  }
+
   return `"${value.replace(STR_ESCAPE, (c) => STR_ESCAPE_MAP[c])}"`;
 };
 
@@ -250,6 +258,20 @@ const parseScalar = (raw: string): PropertyValue => {
 
   if (raw === 'null') {
     return null;
+  }
+
+  // A tagged temporal `@<kind>:<iso>` (unquoted). A malformed tag/ISO falls
+  // through to string handling, matching pg-text's lenient decode policy.
+  if (raw.startsWith('@')) {
+    const colon = raw.indexOf(':');
+
+    if (colon !== -1) {
+      try {
+        return temporalParse(raw.slice(1, colon), raw.slice(colon + 1));
+      } catch {
+        // fall through to the remaining scalar checks
+      }
+    }
   }
 
   if (NUMBER.test(raw)) {

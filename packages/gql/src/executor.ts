@@ -1,4 +1,5 @@
 import type { Edge, Graph, IndexableValue, RangeBound, Vertex } from '@lenke/core';
+import { isTemporal, temporalCmpTotal } from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 import { filter, flatMap, map, skip, take, toArray } from '@lenke/fp';
 
@@ -1235,7 +1236,7 @@ const typeRank = (v: unknown): number => {
     case 'boolean':
       return 2;
     default:
-      return 3; // graph elements, lists, other objects
+      return isTemporal(v) ? 3 : 4; // temporal, then graph elements/lists/objects
   }
 };
 
@@ -1263,6 +1264,12 @@ const compareValues = (a: unknown, b: unknown): number => {
 
   if (ra !== rb) {
     return ra < rb ? -1 : 1;
+  }
+
+  // Temporals (same rank) compare by the deterministic total order (date/datetime
+  // chronological, duration lexicographic) — mirrors the Rust `cmp_total`.
+  if (isTemporal(a) && isTemporal(b)) {
+    return temporalCmpTotal(a, b);
   }
 
   const x = a as number | string;

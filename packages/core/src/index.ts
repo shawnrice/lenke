@@ -13,3 +13,24 @@ export type {
 // old export mis-aliased the *map* as `GraphEvent` and omitted the payload
 // types, so a typed reducer over the union wasn't writable.)
 export type * from './core/GraphEvents.js';
+
+// ISO temporal values (DATE / LOCAL DATETIME / DURATION) — the value-model
+// foundation shared by the serialization codecs and the query engines.
+export {
+  LocalDate,
+  LocalDateTime,
+  Duration,
+  isTemporal,
+  temporalTag,
+  temporalFormat,
+  temporalParse,
+  temporalCmpTotal,
+  temporalRelCmp,
+  graphsonType,
+  graphsonTag,
+  fromTaggedJson,
+  parseDate,
+  parseDateTime,
+  parseDuration,
+} from './temporal.js';
+export type { Temporal } from './temporal.js';

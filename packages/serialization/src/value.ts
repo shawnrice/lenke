@@ -5,9 +5,16 @@
  * single source of truth for "what a property value may be" — and where richer
  * JS values lose information — lives here, not in each format.
  */
+import { fromTaggedJson, isTemporal, type Temporal } from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
-export type PropertyValue = string | boolean | number | null | readonly PropertyValue[];
+export type PropertyValue =
+  | string
+  | boolean
+  | number
+  | null
+  | Temporal
+  | readonly PropertyValue[];
 
 /** A property bag on a vertex or edge in the LPG model. */
 export type PropertyBag = Readonly<Record<string, PropertyValue>>;
@@ -48,6 +55,12 @@ const normalizeAt = (value: unknown, depth: number): PropertyValue => {
     return Number(value);
   }
 
+  // A temporal instance (LocalDate/LocalDateTime/Duration) passes through as a
+  // first-class scalar.
+  if (isTemporal(value)) {
+    return value;
+  }
+
   if (Array.isArray(value)) {
     if (depth >= MAX_NESTING) {
       throw new LenkeError('Property value nesting exceeds the maximum depth', {
@@ -56,6 +69,14 @@ const normalizeAt = (value: unknown, depth: number): PropertyValue => {
     }
 
     return value.map((v) => normalizeAt(v, depth + 1));
+  }
+
+  // A tagged temporal object `{"@date":"…"}` (from a decoded JSON codec) revives
+  // to its instance; anything else is out of the LPG model.
+  const temporal = fromTaggedJson(value);
+
+  if (temporal) {
+    return temporal;
   }
 
   throw new LenkeError(

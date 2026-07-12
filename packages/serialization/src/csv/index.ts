@@ -1,4 +1,5 @@
 import type { Graph } from '@lenke/core';
+import { isTemporal, temporalFormat, temporalParse } from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { Codec } from '../codec.js';
@@ -112,7 +113,7 @@ const NULL_TOKEN = '\\N';
 const LIST_SEP = ';';
 
 /** A single column's inferred scalar type. */
-type ScalarType = 'string' | 'integer' | 'float' | 'boolean';
+type ScalarType = 'string' | 'integer' | 'float' | 'boolean' | 'date' | 'datetime' | 'duration';
 
 /** A column type: a scalar, or a homogeneous list of one scalar element type. */
 type ColumnType = { readonly scalar: ScalarType; readonly list: boolean };
@@ -230,6 +231,10 @@ const scalarOf = (value: Exclude<PropertyValue, readonly PropertyValue[]>): Scal
     return Number.isInteger(value) ? 'integer' : 'float';
   }
 
+  if (isTemporal(value)) {
+    return value.kind;
+  }
+
   return 'string';
 };
 
@@ -302,6 +307,10 @@ const scalarToRaw = (scalar: ScalarType, value: PropertyValue): string => {
     return value ? 'true' : 'false';
   }
 
+  if (isTemporal(value)) {
+    return temporalFormat(value);
+  }
+
   return String(value);
 };
 
@@ -313,6 +322,16 @@ const rawToScalar = (scalar: ScalarType, raw: string): PropertyValue => {
     case 'integer':
     case 'float':
       return Number(raw);
+    case 'date':
+    case 'datetime':
+    case 'duration':
+      // A well-formed temporal decodes; a malformed cell falls back to a string
+      // (lenient, matching the other scalar paths and the Rust codec).
+      try {
+        return temporalParse(scalar, raw);
+      } catch {
+        return raw;
+      }
     default:
       return raw;
   }
@@ -323,12 +342,18 @@ const SCALAR_CODE: Record<ScalarType, string> = {
   integer: 'i',
   float: 'f',
   boolean: 'b',
+  date: 'd',
+  datetime: 't',
+  duration: 'u',
 };
 const CODE_SCALAR: Record<string, ScalarType> = {
   s: 'string',
   i: 'integer',
   f: 'float',
   b: 'boolean',
+  d: 'date',
+  t: 'datetime',
+  u: 'duration',
 };
 const OVERRIDE_PREFIX = '\\T';
 

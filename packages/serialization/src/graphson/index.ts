@@ -1,4 +1,5 @@
 import type { Graph } from '@lenke/core';
+import { graphsonTag, graphsonType, isTemporal, temporalFormat, temporalParse } from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { Codec } from '../codec.js';
@@ -50,6 +51,10 @@ const encodeValue = (value: PropertyValue): unknown => {
     return Number.isInteger(value)
       ? { '@type': 'g:Int64', '@value': value }
       : { '@type': 'g:Double', '@value': value };
+  }
+
+  if (isTemporal(value)) {
+    return { '@type': graphsonType(value), '@value': temporalFormat(value) };
   }
 
   // Array → g:List of typed values.
@@ -107,10 +112,24 @@ const decodeValue = (node: unknown, depth = 0): PropertyValue => {
 
       return v.map((el) => decodeValue(el, depth + 1));
     }
-    default:
+    default: {
+      // A temporal wrapper (`gx:LocalDate`/`gx:LocalDateTime`/`gx:Duration`).
+      const tag = graphsonTag(String(typed['@type']));
+
+      if (tag) {
+        const v = typed['@value'];
+
+        if (typeof v !== 'string') {
+          return shapeError('temporal @value must be a string');
+        }
+
+        return temporalParse(tag, v);
+      }
+
       // An unknown/missing wrapper is outside the LPG model (Rust rejects it too,
       // rather than silently storing a raw out-of-model object).
       return shapeError(`unknown typed value '${String(typed['@type'])}'`);
+    }
   }
 };
 
