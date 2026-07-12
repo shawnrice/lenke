@@ -1633,7 +1633,39 @@ fn call_scalar(graph: &Graph, func: ScalarFn, args: &[Val]) -> Val {
             }
             _ => Val::Null,
         },
+        DateOf => temporal_ctor(a, "date"),
+        DateTimeOf => temporal_ctor(a, "datetime"),
+        DurationOf => temporal_ctor(a, "duration"),
         Unknown => Val::Null,
+    }
+}
+
+/// The `date(x)` / `local_datetime(x)` / `duration(x)` constructors: parse a
+/// string, or convert a temporal by kind (`date(datetime)` → the date part,
+/// `local_datetime(date)` → midnight). Null / bad string / unconvertible → null
+/// (lenient, like the `to_*` conversions).
+fn temporal_ctor(v: Option<&Val>, kind: &str) -> Val {
+    use crate::temporal::{Date, DateTime, Temporal};
+    const SECS_PER_DAY: i64 = 86_400;
+    let Some(v) = v else { return Val::Null };
+    match v {
+        Val::Str(s) => Temporal::parse(kind, s)
+            .map(Val::Temporal)
+            .unwrap_or(Val::Null),
+        Val::Temporal(t) => match (kind, t) {
+            ("date", Temporal::Date(_))
+            | ("datetime", Temporal::DateTime(_))
+            | ("duration", Temporal::Duration(_)) => Val::Temporal(*t),
+            ("date", Temporal::DateTime(dt)) => Val::Temporal(Temporal::Date(Date {
+                days: dt.secs.div_euclid(SECS_PER_DAY) as i32,
+            })),
+            ("datetime", Temporal::Date(d)) => Val::Temporal(Temporal::DateTime(DateTime {
+                secs: d.days as i64 * SECS_PER_DAY,
+                nanos: 0,
+            })),
+            _ => Val::Null, // e.g. duration(date) — no sensible conversion
+        },
+        _ => Val::Null,
     }
 }
 

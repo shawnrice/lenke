@@ -60,3 +60,23 @@ describe('GQL: temporal literals + comparison', () => {
     expect(() => query(new Graph(), `RETURN DATE '2020-99-99'`)).toThrow();
   });
 });
+
+describe('GQL: temporal constructor functions', () => {
+  test('date/local_datetime/duration parse strings; bad input → null', () => {
+    const g = new Graph();
+    expect((query(g, `RETURN date('2020-02-29') AS d`)[0].d as LocalDate).toISOString()).toBe(
+      '2020-02-29',
+    );
+    expect(query(g, `RETURN date('nope') AS d`)).toEqual([{ d: null }]);
+    // date(datetime) truncates to the date part.
+    expect(
+      (query(g, `RETURN date(local_datetime('2020-02-29T13:45:00')) AS d`)[0].d as LocalDate).toISOString(),
+    ).toBe('2020-02-29');
+  });
+
+  test('the function form converts a runtime string (not just a literal)', () => {
+    expect(query(new Graph(), `FOR s IN ['2019-03-15'] RETURN date(s) < DATE '2020-01-01' AS x`)).toEqual(
+      [{ x: true }],
+    );
+  });
+});

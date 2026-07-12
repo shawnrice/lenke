@@ -2784,3 +2784,64 @@ fn temporal_order_by_sorts_chronologically() {
 fn temporal_bad_literal_is_a_syntax_error() {
     assert!(parse("RETURN DATE '2020-99-99'").is_err());
 }
+
+// --- temporal constructor functions (Phase 2 slice 1) -----------------------
+
+#[test]
+fn temporal_constructors_parse_strings() {
+    let mut g = modern();
+    assert_eq!(
+        rows(&mut g, "RETURN date('2020-02-29') AS d"),
+        vec![vec![tdate("2020-02-29")]]
+    );
+    // local_datetime + duration return their kinds (checked via re-serialized form).
+    let dt = rows(&mut g, "RETURN local_datetime('2021-06-15T08:30:00') AS d");
+    assert_eq!(dt.len(), 1);
+    let du = rows(&mut g, "RETURN duration('P1Y2M') AS d");
+    assert_eq!(du.len(), 1);
+    // A bad string is lenient → null (like to_integer).
+    assert_eq!(
+        rows(&mut g, "RETURN date('nope') AS d"),
+        vec![vec![Value::Null]]
+    );
+}
+
+#[test]
+fn temporal_constructors_convert_between_kinds() {
+    let mut g = modern();
+    // date(datetime) truncates to the date part.
+    assert_eq!(
+        rows(
+            &mut g,
+            "RETURN date(local_datetime('2020-02-29T13:45:00')) AS d"
+        ),
+        vec![vec![tdate("2020-02-29")]]
+    );
+    // local_datetime(date) is midnight; comparing to the explicit midnight literal.
+    assert_eq!(
+        rows(
+            &mut g,
+            "RETURN local_datetime(date('2020-02-29')) = DATETIME '2020-02-29T00:00:00' AS x"
+        ),
+        vec![vec![b(true)]]
+    );
+    // duration(date) has no sensible conversion → null.
+    assert_eq!(
+        rows(&mut g, "RETURN duration(date('2020-01-01')) AS d"),
+        vec![vec![Value::Null]]
+    );
+}
+
+#[test]
+fn temporal_constructor_converts_a_string_property() {
+    // The point of the function form (vs the literal): convert loaded string data.
+    let doc = r#"{"type":"node","id":"1","labels":["E"],"properties":{"hired":"2019-03-15"}}"#;
+    let mut g = crate::ndjson::decode(doc).unwrap();
+    assert_eq!(
+        rows(
+            &mut g,
+            "MATCH (n:E) RETURN date(n.hired) < DATE '2020-01-01' AS x"
+        ),
+        vec![vec![b(true)]]
+    );
+}

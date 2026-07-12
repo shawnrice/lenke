@@ -172,7 +172,10 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
       [`RETURN DATE '2020-01-01' < DATE '2020-06-01' AS x`, `[{"x":true}]`],
       [`RETURN DATE '2020-06-01' < DATE '2020-01-01' AS x`, `[{"x":false}]`],
       [`RETURN DATE '2020-01-01' = DATE '2020-01-01' AS x`, `[{"x":true}]`],
-      [`RETURN TIMESTAMP '2021-06-15T08:30:00.5' >= DATETIME '2021-06-15T08:30:00' AS x`, `[{"x":true}]`],
+      [
+        `RETURN TIMESTAMP '2021-06-15T08:30:00.5' >= DATETIME '2021-06-15T08:30:00' AS x`,
+        `[{"x":true}]`,
+      ],
       [`RETURN DATE '2020-01-01' < DATETIME '2020-01-01T00:00:00' AS x`, `[{"x":null}]`],
     ];
 
@@ -191,6 +194,27 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     expect(ts).toBe(
       `[{"d":{"@date":"2020-01-01"}},{"d":{"@date":"2020-03-01"}},{"d":{"@date":"2020-06-01"}}]`,
     );
+  });
+
+  test('temporal constructor functions are byte-identical', () => {
+    const cases: [string, string][] = [
+      [`RETURN date('2020-02-29') AS d`, `[{"d":{"@date":"2020-02-29"}}]`],
+      [
+        `RETURN local_datetime('2021-06-15T08:30:00') AS d`,
+        `[{"d":{"@datetime":"2021-06-15T08:30:00"}}]`,
+      ],
+      [`RETURN duration('P1Y2M') AS d`, `[{"d":{"@duration":"P14M"}}]`],
+      [`RETURN date(local_datetime('2020-02-29T13:45:00')) AS d`, `[{"d":{"@date":"2020-02-29"}}]`],
+      [`RETURN date('nope') AS d`, `[{"d":null}]`],
+      // The point of the function form: convert a runtime string into a temporal.
+      [`FOR s IN ['2019-03-15'] RETURN date(s) < DATE '2020-01-01' AS x`, `[{"x":true}]`],
+    ];
+
+    for (const [q, want] of cases) {
+      const [ts, native] = both(q);
+      expect(ts, q).toBe(native);
+      expect(ts, q).toBe(want);
+    }
   });
 
   test('as-of WHERE filter over temporal values is byte-identical', () => {

@@ -91,6 +91,11 @@ pub enum ScalarFn {
     Difference,
     ListContains,
     ListSort,
+    // Temporal constructors: parse a string (or convert a temporal) into a
+    // `DATE` / `LOCAL DATETIME` / `DURATION`.
+    DateOf,
+    DateTimeOf,
+    DurationOf,
     Unknown,
 }
 
@@ -182,6 +187,9 @@ fn scalar_fn(name: &str) -> ScalarFn {
         "difference" => ScalarFn::Difference,
         "list_contains" => ScalarFn::ListContains,
         "list_sort" => ScalarFn::ListSort,
+        "date" => ScalarFn::DateOf,
+        "local_datetime" | "datetime" => ScalarFn::DateTimeOf,
+        "duration" => ScalarFn::DurationOf,
         _ => ScalarFn::Unknown,
     }
 }

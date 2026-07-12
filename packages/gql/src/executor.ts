@@ -1,5 +1,12 @@
 import type { Edge, Graph, IndexableValue, RangeBound, Vertex } from '@lenke/core';
-import { isTemporal, temporalCmpTotal, temporalRelCmp } from '@lenke/core';
+import {
+  isTemporal,
+  LocalDate,
+  LocalDateTime,
+  temporalCmpTotal,
+  temporalParse,
+  temporalRelCmp,
+} from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 import { filter, flatMap, map, skip, take, toArray } from '@lenke/fp';
 
@@ -852,12 +859,59 @@ const callListSetFn = (name: string, a: unknown, b: unknown, args: readonly unkn
   }
 };
 
+// Temporal constructors: `date(x)` / `local_datetime(x)` / `duration(x)`. Mirror
+// the Rust `temporal_ctor` — parse a string, convert a temporal by kind (date↔
+// datetime), else null (lenient, like the to_* conversions).
+const TEMPORAL_CTOR: Record<string, 'date' | 'datetime' | 'duration'> = {
+  date: 'date',
+  local_datetime: 'datetime',
+  datetime: 'datetime',
+  duration: 'duration',
+};
+
+const temporalCtor = (kind: 'date' | 'datetime' | 'duration', v: unknown): unknown => {
+  if (isNullish(v)) {
+    return null;
+  }
+
+  if (typeof v === 'string') {
+    try {
+      return temporalParse(kind, v);
+    } catch {
+      return null;
+    }
+  }
+
+  if (isTemporal(v)) {
+    if (v.kind === kind) {
+      return v;
+    }
+
+    if (kind === 'date' && v instanceof LocalDateTime) {
+      return new LocalDate(Math.floor(v.secs / 86_400));
+    }
+
+    if (kind === 'datetime' && v instanceof LocalDate) {
+      return new LocalDateTime(v.days * 86_400, 0);
+    }
+  }
+
+  return null;
+};
+
+const callTemporalFn = (name: string, a: unknown): unknown => {
+  const kind = TEMPORAL_CTOR[name];
+
+  return kind === undefined ? UNHANDLED : temporalCtor(kind, a);
+};
+
 const callExtendedScalar = (name: string, args: readonly unknown[]): unknown => {
   const [a, b] = args;
 
   for (const result of [
     callGraphFn(name, a),
     callConversionFn(name, a),
+    callTemporalFn(name, a),
     callStringPredicateFn(name, a, b),
     callStringListFn(name, args),
     callListSetFn(name, a, b, args),
