@@ -311,6 +311,40 @@ pub unsafe extern "C" fn lnk_create_required_constraint(
     }
 }
 
+/// Declare a TYPE constraint on `(label, key)` requiring the scalar type named by
+/// `type_ptr` (string/number/boolean/date/datetime/duration/list). Returns 0 on
+/// success, -1 on a null / bad-UTF-8 error, **-2** if the current data already
+/// violates it, and **-3** for an unknown type name.
+///
+/// # Safety
+/// As [`lnk_create_unique_constraint`], plus `type_ptr`/`type_len` a valid slice.
+#[no_mangle]
+pub unsafe extern "C" fn lnk_create_type_constraint(
+    g: *mut Graph,
+    label_ptr: *const u8,
+    label_len: usize,
+    key_ptr: *const u8,
+    key_len: usize,
+    type_ptr: *const u8,
+    type_len: usize,
+) -> i32 {
+    if g.is_null() || label_ptr.is_null() || key_ptr.is_null() || type_ptr.is_null() {
+        return -1;
+    }
+    let (Ok(label), Ok(key), Ok(ty)) = (
+        std::str::from_utf8(std::slice::from_raw_parts(label_ptr, label_len)),
+        std::str::from_utf8(std::slice::from_raw_parts(key_ptr, key_len)),
+        std::str::from_utf8(std::slice::from_raw_parts(type_ptr, type_len)),
+    ) else {
+        return -1;
+    };
+    match (*g).create_type_constraint(label, key, ty) {
+        Ok(()) => 0,
+        Err(e) if e.code == crate::error_codes::ErrorCode::InvalidValue => -3,
+        Err(_) => -2,
+    }
+}
+
 /// Drop a vertex property index (no-op if absent). Returns 0 on success, -1 on
 /// error.
 ///

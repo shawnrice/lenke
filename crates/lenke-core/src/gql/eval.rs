@@ -113,6 +113,7 @@ const FAULT_CONSTRAINT: u8 = 6;
 const FAULT_MERGE_KEY: u8 = 7;
 const FAULT_MERGE_EDGE: u8 = 8;
 const FAULT_REQUIRED: u8 = 9;
+const FAULT_TYPE_CONSTRAINT: u8 = 10;
 
 /// Per-expansion cap on trail-traversal steps; a guard against exponential blowup.
 const TRAIL_BUDGET: u64 = 1_000_000;
@@ -174,6 +175,10 @@ impl Ctx<'_> {
             FAULT_REQUIRED => Err(CodeError::new(
                 ErrorCode::ConstraintViolation,
                 "write violates a required-property constraint (a required key is missing, null, or being removed)",
+            )),
+            FAULT_TYPE_CONSTRAINT => Err(CodeError::new(
+                ErrorCode::ConstraintViolation,
+                "write violates a type constraint (a value is not of the declared scalar type)",
             )),
             FAULT_UNKNOWN_FN => {
                 // Name the offending function(s) (as TS does), e.g.
@@ -5158,6 +5163,10 @@ fn ensure_node(graph: &mut Graph, ctx: &Ctx, binding: &mut Binding, node: &CNode
         ctx.set_fault(FAULT_REQUIRED);
         return u32::MAX;
     }
+    if graph.type_violation(&labels, &props).is_some() {
+        ctx.set_fault(FAULT_TYPE_CONSTRAINT);
+        return u32::MAX;
+    }
     let vi = graph.add_vertex(&labels, props);
     if let Some(slot) = node.var_slot {
         binding.set(slot, Val::Node(vi));
@@ -5455,6 +5464,8 @@ fn run_set(graph: &mut Graph, ctx: &Ctx, items: &[CSetItem], binding: &Binding) 
                     Val::Node(vi) => {
                         if matches!(v, Value::Null) && graph.is_required_key(vi, key) {
                             ctx.set_fault(FAULT_REQUIRED);
+                        } else if graph.type_conflict_on_set(vi, key, &v) {
+                            ctx.set_fault(FAULT_TYPE_CONSTRAINT);
                         } else if graph.unique_conflict_on_set(vi, key, &v).is_some() {
                             ctx.set_fault(FAULT_CONSTRAINT);
                         } else {

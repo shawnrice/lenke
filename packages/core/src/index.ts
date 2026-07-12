@@ -7,6 +7,7 @@ export type {
   GraphOptions,
   IndexableValue,
   RangeBound,
+  ScalarTypeName,
 } from './core/index.js';
 // The full graph-event surface: every per-event payload type (e.g.
 // `VertexPropertyChanged`, `LabelAddedToVertex`), the `GraphEvents` map keyed by

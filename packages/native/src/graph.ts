@@ -1,3 +1,4 @@
+import type { ScalarTypeName } from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { Backend, GraphHandle, MergeReport, PreparedHandle } from './backend.js';
@@ -289,6 +290,7 @@ export type RustGraph = {
    */
   createUniqueConstraint: (label: string, key: string) => void;
   createRequiredConstraint: (label: string, key: string) => void;
+  createTypeConstraint: (label: string, key: string, type: ScalarTypeName) => void;
   /** Drop a vertex / edge property index (no-op if absent). */
   dropVertexIndex: (key: string) => void;
   dropEdgeIndex: (key: string) => void;
@@ -554,6 +556,8 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
     createEdgeIndex: (key) => backend.createEdgeIndex(live(), key),
     createUniqueConstraint: (label, key) => backend.createUniqueConstraint(live(), label, key),
     createRequiredConstraint: (label, key) => backend.createRequiredConstraint(live(), label, key),
+    createTypeConstraint: (label, key, type) =>
+      backend.createTypeConstraint(live(), label, key, type),
     dropVertexIndex: (key) => backend.dropVertexIndex(live(), key),
     dropEdgeIndex: (key) => backend.dropEdgeIndex(live(), key),
     vertexIndexes: () => backend.vertexIndexes(live()),

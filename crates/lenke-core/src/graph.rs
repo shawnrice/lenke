@@ -288,6 +288,51 @@ pub struct Adj {
     pub etype: u32,
 }
 
+/// The scalar type a TYPE constraint (R-CONSTRAINTS) can require of a property
+/// value. Mirrors the TS `ScalarTypeName`; `number` maps to `Num` (the f64 model
+/// has no integer/float split), `list` is "an array" (elements unconstrained).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PropType {
+    Str,
+    Num,
+    Bool,
+    Date,
+    DateTime,
+    Duration,
+    List,
+}
+
+impl PropType {
+    fn from_name(s: &str) -> Option<Self> {
+        match s {
+            "string" => Some(Self::Str),
+            "number" => Some(Self::Num),
+            "boolean" => Some(Self::Bool),
+            "date" => Some(Self::Date),
+            "datetime" => Some(Self::DateTime),
+            "duration" => Some(Self::Duration),
+            "list" => Some(Self::List),
+            _ => None,
+        }
+    }
+}
+
+/// The scalar type of a stored value, or `None` for null / a non-stored `Map`
+/// (both type-exempt — a null has no type).
+fn value_type(v: &Value) -> Option<PropType> {
+    use crate::temporal::Temporal;
+    match v {
+        Value::Null | Value::Map(_) => None,
+        Value::Bool(_) => Some(PropType::Bool),
+        Value::Num(_) => Some(PropType::Num),
+        Value::Str(_) => Some(PropType::Str),
+        Value::Temporal(Temporal::Date(_)) => Some(PropType::Date),
+        Value::Temporal(Temporal::DateTime(_)) => Some(PropType::DateTime),
+        Value::Temporal(Temporal::Duration(_)) => Some(PropType::Duration),
+        Value::List(_) => Some(PropType::List),
+    }
+}
+
 /// The mutable columnar graph.
 pub struct Graph {
     /// Vertex slots (including tombstoned). Index space for queries is `0..n`.
@@ -360,6 +405,9 @@ pub struct Graph {
     /// non-null on every live vertex carrying that label (R-CONSTRAINTS). Unlike
     /// `v_unique` these need no backing index — enforcement is a presence check.
     v_required: HashMap<String, Vec<String>>,
+    /// TYPE constraints: `label` → (`key` → the scalar type its present, non-null
+    /// values must be). Null/absent are exempt (R-CONSTRAINTS).
+    v_type: HashMap<String, HashMap<String, PropType>>,
 }
 
 /// A set of property indexes (key name → ordered value buckets).
@@ -820,6 +868,99 @@ impl Graph {
             }
         }
         None
+    }
+
+    // --- type constraints (R-CONSTRAINTS) ------------------------------------
+    // Every present, non-null value under a constrained `key` on a vertex with
+    // `label` must be of the declared scalar type. Null/absent are exempt.
+    // Enforced in the write path; byte-identical to the TS core.
+
+    /// Declare a TYPE constraint on `(label, key)` requiring `type_name` (one of
+    /// string/number/boolean/date/datetime/duration/list). Fails with
+    /// `InvalidValue` for an unknown type name, or `ConstraintViolation` if any
+    /// existing vertex holds a present, non-null `key` of a different type.
+    pub fn create_type_constraint(
+        &mut self,
+        label: &str,
+        key: &str,
+        type_name: &str,
+    ) -> CodeResult<()> {
+        let Some(ty) = PropType::from_name(type_name) else {
+            return Err(CodeError::new(
+                ErrorCode::InvalidValue,
+                "unknown scalar type name for a type constraint",
+            ));
+        };
+        if let Some(lid) = self.labels.get(label) {
+            for vi in self.vertex_indices() {
+                if self.vlabels[vi as usize].contains(&lid) {
+                    if let Some(got) = value_type(&self.props.value(vi as usize, key, &self.strs)) {
+                        if got != ty {
+                            return Err(CodeError::new(
+                                ErrorCode::ConstraintViolation,
+                                "existing data already violates the type constraint being declared",
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        self.v_type
+            .entry(label.to_string())
+            .or_default()
+            .insert(key.to_string(), ty);
+        Ok(())
+    }
+
+    /// Drop a type constraint. Idempotent.
+    pub fn drop_type_constraint(&mut self, label: &str, key: &str) {
+        if let Some(keys) = self.v_type.get_mut(label) {
+            keys.remove(key);
+            if keys.is_empty() {
+                self.v_type.remove(label);
+            }
+        }
+    }
+
+    /// The first `(label, key)` a new vertex with these `labels`/`props` would
+    /// violate by holding a wrong-typed value, or `None`.
+    pub fn type_violation(
+        &self,
+        labels: &[String],
+        props: &[(String, Value)],
+    ) -> Option<(String, String)> {
+        for label in labels {
+            if let Some(cs) = self.v_type.get(label) {
+                for (key, ty) in cs {
+                    if let Some((_, v)) = props.iter().find(|(k, _)| k == key) {
+                        if let Some(got) = value_type(v) {
+                            if got != *ty {
+                                return Some((label.clone(), key.clone()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// True iff setting `vi.key = value` would break a type constraint on one of
+    /// `vi`'s labels. A null value is exempt.
+    pub fn type_conflict_on_set(&self, vi: u32, key: &str, value: &Value) -> bool {
+        let Some(got) = value_type(value) else {
+            return false;
+        };
+        for (label, cs) in &self.v_type {
+            if let Some(ty) = cs.get(key) {
+                if let Some(lid) = self.labels.get(label) {
+                    if self.vlabels[vi as usize].contains(&lid) && got != *ty {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
     }
 
     /// Live vertices carrying `label` whose property `key == value`. Seeks the
@@ -1668,6 +1809,7 @@ impl Builder {
             eidx: HashMap::new(),
             v_unique: HashMap::new(),
             v_required: HashMap::new(),
+            v_type: HashMap::new(),
         }
     }
 }

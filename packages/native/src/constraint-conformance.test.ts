@@ -228,3 +228,75 @@ suite('required-constraint differential (TS vs native)', () => {
     expect(ts).toEqual({ code: 'E_CONSTRAINT_VIOLATION' });
   });
 });
+
+suite('type-constraint differential (TS vs native)', () => {
+  // A `number` type constraint on Acct.age: the same INSERT/SET sequence on both
+  // engines, comparing each write outcome + the final state.
+  const SCRIPT: Array<{ label: string; sql: string }> = [
+    { label: 'insert right type ok', sql: `INSERT (:Acct {age: 30, name: 'A'})` },
+    { label: 'insert wrong type → violation', sql: `INSERT (:Acct {age: 'old', name: 'B'})` },
+    { label: 'insert null (exempt) ok', sql: `INSERT (:Acct {age: null, name: 'N'})` },
+    { label: 'insert absent (exempt) ok', sql: `INSERT (:Acct {name: 'X'})` },
+    { label: 'different label unaffected', sql: `INSERT (:Other {age: 'text'})` },
+    {
+      label: 'set wrong type → violation',
+      sql: `MATCH (n:Acct {name: 'A'}) SET n.age = 'nope'`,
+    },
+    {
+      label: 'set right type ok',
+      sql: `MATCH (n:Acct {name: 'A'}) SET n.age = 31`,
+    },
+    {
+      label: 'set null (exempt) ok',
+      sql: `MATCH (n:Acct {name: 'A'}) SET n.age = null`,
+    },
+  ];
+
+  test('every write outcome and the final state agree across engines', () => {
+    const tsGraph = tsDeserialize(SEED, 'ndjson', new Graph());
+    tsGraph.createTypeConstraint('Acct', 'age', 'number');
+
+    const backend = createFfiBackend(LIB);
+    const nativeGraph = graphFromFormat(backend, SEED, 'ndjson');
+    nativeGraph.createTypeConstraint('Acct', 'age', 'number');
+
+    for (const { label, sql } of SCRIPT) {
+      const ts = outcome(() => tsQuery(tsGraph, sql));
+      const native = outcome(() => nativeGraph.query(sql));
+
+      expect(native, `outcome mismatch: ${label}`).toEqual(ts);
+    }
+
+    const READ = `MATCH (n:Acct) RETURN n.name, n.age ORDER BY n.name`;
+    expect(JSON.stringify(nativeGraph.query(READ))).toEqual(JSON.stringify(tsQuery(tsGraph, READ)));
+  });
+
+  test('declare-time rejection agrees across engines (existing data has wrong type)', () => {
+    const wrong = [
+      '{"type":"node","id":"1","labels":["Acct"],"properties":{"age":30}}',
+      '{"type":"node","id":"2","labels":["Acct"],"properties":{"age":"old"}}',
+    ].join('\n');
+
+    const tsGraph = tsDeserialize(wrong, 'ndjson', new Graph());
+    const backend = createFfiBackend(LIB);
+    const nativeGraph = graphFromFormat(backend, wrong, 'ndjson');
+
+    const ts = outcome(() => tsGraph.createTypeConstraint('Acct', 'age', 'number'));
+    const native = outcome(() => nativeGraph.createTypeConstraint('Acct', 'age', 'number'));
+
+    expect(native).toEqual(ts);
+    expect(ts).toEqual({ code: 'E_CONSTRAINT_VIOLATION' });
+  });
+
+  test('unknown scalar type name is rejected (InvalidValue) across engines', () => {
+    const tsGraph = tsDeserialize(SEED, 'ndjson', new Graph());
+    const backend = createFfiBackend(LIB);
+    const nativeGraph = graphFromFormat(backend, SEED, 'ndjson');
+
+    const ts = outcome(() => tsGraph.createTypeConstraint('Acct', 'age', 'int' as never));
+    const native = outcome(() => nativeGraph.createTypeConstraint('Acct', 'age', 'int' as never));
+
+    expect(native).toEqual(ts);
+    expect(ts).toEqual({ code: 'E_INVALID_VALUE' });
+  });
+});

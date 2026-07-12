@@ -29,6 +29,10 @@ const SYMBOLS = {
     args: [FFIType.ptr, FFIType.ptr, U, FFIType.ptr, U],
     returns: FFIType.i32,
   },
+  lnk_create_type_constraint: {
+    args: [FFIType.ptr, FFIType.ptr, U, FFIType.ptr, U, FFIType.ptr, U],
+    returns: FFIType.i32,
+  },
   lnk_drop_vertex_index: { args: [FFIType.ptr, FFIType.ptr, U], returns: FFIType.i32 },
   lnk_drop_edge_index: { args: [FFIType.ptr, FFIType.ptr, U], returns: FFIType.i32 },
   lnk_vertex_indexes: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.ptr },
@@ -246,6 +250,37 @@ export const createFfiBackend = (libPath: string): Backend => {
 
       if (r !== 0) {
         throw new LenkeError('lenke: createRequiredConstraint failed', { code: ErrorCode.Ffi });
+      }
+    },
+    createTypeConstraint: (handle, label, key, type) => {
+      const l = encoder.encode(label);
+      const k = encoder.encode(key);
+      const t = encoder.encode(type);
+      const r = symbols.lnk_create_type_constraint(
+        asPtr(handle),
+        ptr(l),
+        l.byteLength,
+        ptr(k),
+        k.byteLength,
+        ptr(t),
+        t.byteLength,
+      );
+
+      if (r === -2) {
+        throw new LenkeError(
+          `lenke: createTypeConstraint(${label}, ${key}, ${type}): existing data already violates the type constraint`,
+          { code: ErrorCode.ConstraintViolation },
+        );
+      }
+
+      if (r === -3) {
+        throw new LenkeError(`lenke: createTypeConstraint: unknown scalar type '${type}'`, {
+          code: ErrorCode.InvalidValue,
+        });
+      }
+
+      if (r !== 0) {
+        throw new LenkeError('lenke: createTypeConstraint failed', { code: ErrorCode.Ffi });
       }
     },
     dropVertexIndex: (handle, key) => {

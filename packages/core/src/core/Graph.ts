@@ -36,6 +36,32 @@ export type GraphOptions = {
 };
 
 /**
+ * The scalar type a TYPE constraint (R-CONSTRAINTS) can require of a property
+ * value — every stored non-null value maps to exactly one of these. `list` means
+ * "an array" (element types are not constrained); the three temporals match the
+ * `LocalDate`/`LocalDateTime`/`Duration` value classes.
+ */
+export type ScalarTypeName =
+  | 'string'
+  | 'number'
+  | 'boolean'
+  | 'date'
+  | 'datetime'
+  | 'duration'
+  | 'list';
+
+/** The set of accepted {@link ScalarTypeName}s, for runtime validation at the constraint boundary. */
+const SCALAR_TYPE_NAMES: ReadonlySet<ScalarTypeName> = new Set([
+  'string',
+  'number',
+  'boolean',
+  'date',
+  'datetime',
+  'duration',
+  'list',
+]);
+
+/**
  * A Property-Label graph.
  *
  * Vertices and Edges are concrete (non-generic) classes. Property types are
@@ -426,6 +452,15 @@ export class Graph {
     if (missing) {
       throw new LenkeError(
         `missing required property '${missing.key}' for label '${missing.label}'`,
+        { code: ErrorCode.ConstraintViolation },
+      );
+    }
+
+    const badType = this.typeViolation(vertex.labels, vertex.properties);
+
+    if (badType) {
+      throw new LenkeError(
+        `property '${badType.key}' must be ${badType.expected} on '${badType.label}', got ${badType.got}`,
         { code: ErrorCode.ConstraintViolation },
       );
     }
@@ -957,6 +992,148 @@ export class Graph {
       throw new LenkeError(`cannot remove required property '${key}'`, {
         code: ErrorCode.ConstraintViolation,
       });
+    }
+  };
+
+  // --- TYPE constraints (R-CONSTRAINTS) ------------------------------------
+  // A type `(label, key, type)` means: every present, non-null value under `key`
+  // on a vertex carrying `label` must be of the given scalar type. Null/absent
+  // are exempt (a null has no type — use a `required` constraint for presence).
+  // Enforced at the core mutation boundary; byte-identical to the Rust core.
+
+  private readonly vertexTypeConstraints = new Map<string, Map<string, ScalarTypeName>>();
+
+  /** The scalar type of a stored value, or `null` for null/absent (type-exempt). */
+  private valueType = (v: unknown): ScalarTypeName | null => {
+    if (v === undefined || v === null) {
+      return null;
+    }
+
+    if (Array.isArray(v)) {
+      return 'list';
+    }
+
+    const t = typeof v;
+
+    if (t === 'string' || t === 'number' || t === 'boolean') {
+      return t;
+    }
+
+    // Temporals carry a `kind` discriminant ('date' | 'datetime' | 'duration').
+    if (typeof v === 'object' && 'kind' in v) {
+      const k = (v as { kind: unknown }).kind;
+
+      if (k === 'date' || k === 'datetime' || k === 'duration') {
+        return k;
+      }
+    }
+
+    return 'string'; // unreachable for a validated scalar value
+  };
+
+  /**
+   * Declare a TYPE constraint on `(label, key)`. Idempotent (re-declaring
+   * replaces). Throws {@link ErrorCode.ConstraintViolation} if any existing
+   * vertex with `label` holds a present, non-null `key` of a different type.
+   */
+  public createTypeConstraint = (label: string, key: string, type: ScalarTypeName): void => {
+    if (!SCALAR_TYPE_NAMES.has(type)) {
+      throw new LenkeError(
+        `unknown scalar type '${type}' for the type constraint on (${label}, ${key}); expected one of ${[...SCALAR_TYPE_NAMES].join(', ')}`,
+        { code: ErrorCode.InvalidValue },
+      );
+    }
+
+    for (const vertex of this.getVerticesByLabel(label)) {
+      const got = this.valueType(vertex.properties[key]);
+
+      if (got !== null && got !== type) {
+        throw new LenkeError(
+          `existing data already violates the type constraint being declared on (${label}, ${key}): found ${got}, expected ${type}`,
+          { code: ErrorCode.ConstraintViolation },
+        );
+      }
+    }
+
+    let keys = this.vertexTypeConstraints.get(label);
+
+    if (!keys) {
+      keys = new Map();
+      this.vertexTypeConstraints.set(label, keys);
+    }
+
+    keys.set(key, type);
+  };
+
+  /** Drop a type constraint. Idempotent. */
+  public dropTypeConstraint = (label: string, key: string): void => {
+    const keys = this.vertexTypeConstraints.get(label);
+
+    if (keys) {
+      keys.delete(key);
+
+      if (keys.size === 0) {
+        this.vertexTypeConstraints.delete(label);
+      }
+    }
+  };
+
+  /** The declared type for `(label, key)`, or `undefined`. */
+  public typeConstraint = (label: string, key: string): ScalarTypeName | undefined =>
+    this.vertexTypeConstraints.get(label)?.get(key);
+
+  /** Every declared type constraint as sorted `[label, key, type]` triples. */
+  public typeConstraints = (): Array<[string, string, ScalarTypeName]> =>
+    [...this.vertexTypeConstraints]
+      .flatMap(([label, keys]) =>
+        [...keys].map(([key, type]): [string, string, ScalarTypeName] => [label, key, type]),
+      )
+      .sort((a, b) => (a[0] === b[0] ? a[1].localeCompare(b[1]) : a[0].localeCompare(b[0])));
+
+  /**
+   * The first type violation a new element with these `labels`/`properties`
+   * would cause, or `undefined`. Null/absent values are exempt.
+   */
+  public typeViolation = (
+    labels: Iterable<string>,
+    properties: Readonly<Record<string, unknown>>,
+  ): { label: string; key: string; expected: ScalarTypeName; got: ScalarTypeName } | undefined => {
+    for (const label of labels) {
+      const cs = this.vertexTypeConstraints.get(label);
+
+      if (!cs) {
+        continue;
+      }
+
+      for (const [key, type] of cs) {
+        const got = this.valueType(properties[key]);
+
+        if (got !== null && got !== type) {
+          return { label, key, expected: type, got };
+        }
+      }
+    }
+
+    return undefined;
+  };
+
+  /** Throw if setting `vertex.key = value` would break a type constraint. Null
+   *  is exempt (a null has no type — `required` governs presence). */
+  public assertTypeOnSet = (vertex: Vertex, key: string, value: unknown): void => {
+    const got = this.valueType(value);
+
+    if (got === null) {
+      return;
+    }
+
+    for (const label of vertex.labels) {
+      const type = this.vertexTypeConstraints.get(label)?.get(key);
+
+      if (type && got !== type) {
+        throw new LenkeError(`property '${key}' must be ${type} on '${label}', got ${got}`, {
+          code: ErrorCode.ConstraintViolation,
+        });
+      }
     }
   };
 

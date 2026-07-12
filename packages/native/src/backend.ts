@@ -70,6 +70,7 @@ export type Backend = {
    */
   createUniqueConstraint: (handle: GraphHandle, label: string, key: string) => void;
   createRequiredConstraint: (handle: GraphHandle, label: string, key: string) => void;
+  createTypeConstraint: (handle: GraphHandle, label: string, key: string, type: string) => void;
   /** Drop a vertex / edge property index (no-op if absent). */
   dropVertexIndex: (handle: GraphHandle, key: string) => void;
   dropEdgeIndex: (handle: GraphHandle, key: string) => void;

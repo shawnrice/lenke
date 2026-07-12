@@ -36,6 +36,15 @@ type WasmExports = {
     key: number,
     keyLen: number,
   ) => number;
+  lnk_create_type_constraint: (
+    h: number,
+    label: number,
+    labelLen: number,
+    key: number,
+    keyLen: number,
+    type: number,
+    typeLen: number,
+  ) => number;
   lnk_drop_vertex_index: (h: number, key: number, keyLen: number) => number;
   lnk_drop_edge_index: (h: number, key: number, keyLen: number) => number;
   lnk_vertex_indexes: (h: number, outLen: number) => number;
@@ -355,6 +364,48 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
       } finally {
         ex.lnk_dealloc(lp, l.byteLength);
         ex.lnk_dealloc(kp, k.byteLength);
+      }
+    },
+    createTypeConstraint: (handle, label, key, type) => {
+      const l = encoder.encode(label);
+      const lp = writeBytes(l);
+      const k = encoder.encode(key);
+      const kp = writeBytes(k);
+      const t = encoder.encode(type);
+      const tp = writeBytes(t);
+
+      try {
+        const r = ex.lnk_create_type_constraint(
+          handle,
+          lp,
+          l.byteLength,
+          kp,
+          k.byteLength,
+          tp,
+          t.byteLength,
+        );
+
+        if (r === -3) {
+          throw new LenkeError(
+            `lenke: createTypeConstraint(${label}, ${key}, ${type}): unknown scalar type`,
+            { code: ErrorCode.InvalidValue },
+          );
+        }
+
+        if (r === -2) {
+          throw new LenkeError(
+            `lenke: createTypeConstraint(${label}, ${key}, ${type}): existing data already violates the type constraint`,
+            { code: ErrorCode.ConstraintViolation },
+          );
+        }
+
+        if (r !== 0) {
+          throw new LenkeError('lenke: createTypeConstraint failed', { code: ErrorCode.Ffi });
+        }
+      } finally {
+        ex.lnk_dealloc(lp, l.byteLength);
+        ex.lnk_dealloc(kp, k.byteLength);
+        ex.lnk_dealloc(tp, t.byteLength);
       }
     },
     createEdgeIndex: (handle, key) => {
