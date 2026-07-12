@@ -57,6 +57,7 @@ import type {
   SetItem,
   SortItem,
   WithClause,
+  ForClause,
 } from './ast.js';
 import { GqlSyntaxError, isReserved, type Token, type TokenType, tokenize } from './lexer.js';
 
@@ -1096,6 +1097,40 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Query => {
     return { kind: 'with', projection, where };
   };
 
+  // Is the token after `WITH` an ORDINALITY/OFFSET modifier (vs the start of a
+  // new WITH clause)? `ORDINALITY` is a soft keyword — it arrives as an ident.
+  const forModifierAhead = (): boolean => {
+    const t = tokens[pos + 1];
+
+    return (
+      t !== undefined &&
+      ((t.type === 'keyword' && t.value === 'offset') ||
+        (t.type === 'ident' && t.value.toLowerCase() === 'ordinality'))
+    );
+  };
+
+  const parseForClause = (): ForClause => {
+    expectKeyword('for');
+    const alias = bindName('a FOR variable');
+    expectKeyword('in');
+    // `IN` is consumed as a keyword up front, so it is not mistaken for the `IN`
+    // membership operator inside the list expression.
+    const list = parseExpr();
+    // `WITH ORDINALITY|OFFSET var` is a FOR modifier ONLY when ORDINALITY/OFFSET
+    // follows WITH; a bare WITH here begins the next clause and must be left for
+    // the clause loop.
+    let ordinality: ForClause['ordinality'];
+
+    if (checkKeyword('with') && forModifierAhead()) {
+      advance(); // WITH
+      const kind: 'ordinality' | 'offset' = checkKeyword('offset') ? 'offset' : 'ordinality';
+      advance(); // OFFSET (keyword) or ORDINALITY (soft ident)
+      ordinality = { kind, var: bindName('an ORDINALITY/OFFSET variable') };
+    }
+
+    return { kind: 'for', alias, list, ordinality };
+  };
+
   const parseReturnClause = (): ReturnClause => {
     expectKeyword('return');
 
@@ -1263,6 +1298,8 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Query => {
         done = true;
       } else if (checkKeyword('with')) {
         clauses.push(parseWithClause());
+      } else if (checkKeyword('for')) {
+        clauses.push(parseForClause());
       } else if (checkKeyword('match') || checkKeyword('optional')) {
         clauses.push(parseMatchClause());
       } else if (checkKeyword('insert')) {

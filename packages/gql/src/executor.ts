@@ -2226,6 +2226,12 @@ type CMatch = {
   nullVars: readonly string[];
 };
 type CWith = { kind: 'with'; projection: CProjection; where?: CompiledExpr };
+type CFor = {
+  kind: 'for';
+  list: CompiledExpr;
+  alias: string;
+  ordinality?: { kind: 'ordinality' | 'offset'; var: string };
+};
 type CReturn = { kind: 'return'; projection: CProjection };
 type CInsert = { kind: 'insert'; patterns: readonly CInsertPath[] };
 type CMergeUpdate =
@@ -2241,7 +2247,17 @@ type CSet = { kind: 'set'; items: readonly CSetItem[] };
 type CRemove = { kind: 'remove'; items: readonly RemoveItem[] };
 type CDelete = { kind: 'delete'; detach: boolean; targets: readonly CompiledExpr[] };
 type CFinish = { kind: 'finish' };
-type CClause = CMatch | CWith | CReturn | CInsert | CMerge | CSet | CRemove | CDelete | CFinish;
+type CClause =
+  | CMatch
+  | CWith
+  | CFor
+  | CReturn
+  | CInsert
+  | CMerge
+  | CSet
+  | CRemove
+  | CDelete
+  | CFinish;
 
 // Labels to CREATE for an INSERT element. A non-conjunction label expression
 // (`A|B`, `!A`, `%`) is ambiguous — reject it rather than silently create an
@@ -2333,6 +2349,13 @@ const compileClause = (clause: Clause): CClause => {
         kind: 'with',
         projection: compileProjection(clause.projection),
         where: clause.where ? compileExpr(clause.where) : undefined,
+      };
+    case 'for':
+      return {
+        kind: 'for',
+        list: compileExpr(clause.list),
+        alias: clause.alias,
+        ordinality: clause.ordinality,
       };
     case 'return':
       return { kind: 'return', projection: compileProjection(clause.projection) };
@@ -2831,6 +2854,42 @@ const runMatch = (
 ): Iterable<Binding> =>
   flatMap((binding: Binding) => matchOrOptional(graph, clause, binding, params), bindings);
 
+/**
+ * Lazily unwind a list per incoming binding — one row per element (ISO GQL's
+ * FOR / UNWIND). A list unwinds its elements; null/undefined yields zero rows;
+ * any other scalar unwinds as a one-element list. Matches the Rust engine
+ * byte-for-byte. ORDINALITY counts from 1, OFFSET from 0.
+ */
+const runFor = (
+  graph: Graph,
+  clause: CFor,
+  bindings: Iterable<Binding>,
+  params: Params,
+): Iterable<Binding> =>
+  flatMap((binding: Binding) => {
+    const listv = clause.list({ binding, params, graph });
+    let elems: unknown[];
+
+    if (listv === null || listv === undefined) {
+      elems = [];
+    } else if (Array.isArray(listv)) {
+      elems = listv;
+    } else {
+      elems = [listv];
+    }
+
+    return elems.map((elem, i) => {
+      const b = new Map(binding);
+      b.set(clause.alias, elem);
+
+      if (clause.ordinality) {
+        b.set(clause.ordinality.var, clause.ordinality.kind === 'ordinality' ? i + 1 : i);
+      }
+
+      return b;
+    });
+  }, bindings);
+
 const mapToRow = (b: Binding): Row => {
   const row: Row = {};
 
@@ -2852,6 +2911,9 @@ const runLinear = (linear: CLinear, graph: Graph, params: Params): Row[] => {
     switch (clause.kind) {
       case 'match':
         bindings = runMatch(graph, clause, bindings, params);
+        break;
+      case 'for':
+        bindings = runFor(graph, clause, bindings, params);
         break;
       case 'with': {
         const projected = applyProjection(clause.projection, bindings, params, graph);

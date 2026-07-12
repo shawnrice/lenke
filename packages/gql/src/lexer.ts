@@ -77,6 +77,7 @@ const KEYWORDS = new Set([
   'nodetach',
   'finish',
   'return',
+  'for',
   'as',
   'is',
   'in',

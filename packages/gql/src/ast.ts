@@ -39,6 +39,7 @@ export type Dialect = 'lenke' | 'iso-strict';
 export type Clause =
   | MatchClause
   | WithClause
+  | ForClause
   | InsertClause
   | MergeClause
   | SetClause
@@ -108,6 +109,20 @@ export type MatchClause = {
   optional: boolean;
   patterns: readonly PathPattern[];
   where?: Expr;
+};
+
+/**
+ * `FOR x IN <list> [WITH ORDINALITY|OFFSET n]` — ISO/IEC 39075 list unwind (the
+ * standard's equivalent of Cypher `UNWIND`). Multiplies the row table: one row
+ * per element of the evaluated list. Core ISO GQL (no sigil), every dialect.
+ * `list` is evaluated in the scope before `alias` is bound. `ordinality`, when
+ * present, binds a counter — 1-based for `ordinality`, 0-based for `offset`.
+ */
+export type ForClause = {
+  kind: 'for';
+  alias: string;
+  list: Expr;
+  ordinality?: { kind: 'ordinality' | 'offset'; var: string };
 };
 
 /** `WITH … [WHERE pred]` — a projection that flows into the next clause. */
