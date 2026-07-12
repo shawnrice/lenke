@@ -96,6 +96,10 @@ pub enum ScalarFn {
     DateOf,
     DateTimeOf,
     DurationOf,
+    /// `duration_between(a, b)` — the EXACT elapsed span (a measurement between
+    /// two pinned points), never calendar months: whole days for two dates,
+    /// seconds+nanos for two datetimes.
+    DurationBetween,
     Unknown,
 }
 
@@ -190,6 +194,7 @@ fn scalar_fn(name: &str) -> ScalarFn {
         "date" => ScalarFn::DateOf,
         "local_datetime" | "datetime" => ScalarFn::DateTimeOf,
         "duration" => ScalarFn::DurationOf,
+        "duration_between" => ScalarFn::DurationBetween,
         _ => ScalarFn::Unknown,
     }
 }

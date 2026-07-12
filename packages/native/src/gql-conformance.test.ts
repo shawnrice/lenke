@@ -217,6 +217,26 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     }
   });
 
+  test('duration_between returns the exact span, byte-identical', () => {
+    const cases: [string, string][] = [
+      // Two dates → whole days (96 days from Jan 15 to Apr 20, 2020).
+      [`RETURN duration_between(DATE '2020-01-15', DATE '2020-04-20') AS d`, `[{"d":{"@duration":"P96D"}}]`],
+      // Two datetimes → seconds (1h 1m 1s = 3661s), no month/day rollup.
+      [
+        `RETURN duration_between(DATETIME '2020-01-01T00:00:00', DATETIME '2020-01-01T01:01:01') AS d`,
+        `[{"d":{"@duration":"PT3661S"}}]`,
+      ],
+      // Cross-kind → UNKNOWN (null).
+      [`RETURN duration_between(DATE '2020-01-01', DATETIME '2020-01-01T00:00:00') AS d`, `[{"d":null}]`],
+    ];
+
+    for (const [q, want] of cases) {
+      const [ts, native] = both(q);
+      expect(ts, q).toBe(native);
+      expect(ts, q).toBe(want);
+    }
+  });
+
   test('as-of WHERE filter over temporal values is byte-identical', () => {
     // Model the as-of over FOR-supplied dates + a WITH…WHERE window: keep the
     // date that falls inside the half-open [from, to) interval.

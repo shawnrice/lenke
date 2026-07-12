@@ -80,3 +80,24 @@ describe('GQL: temporal constructor functions', () => {
     );
   });
 });
+
+describe('GQL: duration_between', () => {
+  test('returns the exact span (days for dates, secs for datetimes)', () => {
+    const g = new Graph();
+    expect(
+      String(query(g, `RETURN duration_between(DATE '2020-01-15', DATE '2020-04-20') AS d`)[0].d),
+    ).toBe('P96D');
+    expect(
+      String(
+        query(
+          g,
+          `RETURN duration_between(DATETIME '2020-01-01T00:00:00', DATETIME '2020-01-01T01:01:01') AS d`,
+        )[0].d,
+      ),
+    ).toBe('PT3661S');
+    // cross-kind → null
+    expect(
+      query(g, `RETURN duration_between(DATE '2020-01-01', DATETIME '2020-01-01T00:00:00') AS d`),
+    ).toEqual([{ d: null }]);
+  });
+});

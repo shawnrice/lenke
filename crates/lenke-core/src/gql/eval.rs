@@ -1636,6 +1636,10 @@ fn call_scalar(graph: &Graph, func: ScalarFn, args: &[Val]) -> Val {
         DateOf => temporal_ctor(a, "date"),
         DateTimeOf => temporal_ctor(a, "datetime"),
         DurationOf => temporal_ctor(a, "duration"),
+        DurationBetween => match (a, b) {
+            (Some(Val::Temporal(x)), Some(Val::Temporal(y))) => duration_between(x, y),
+            _ => Val::Null, // null operand or a non-temporal → UNKNOWN
+        },
         Unknown => Val::Null,
     }
 }
@@ -1665,6 +1669,37 @@ fn temporal_ctor(v: Option<&Val>, kind: &str) -> Val {
             })),
             _ => Val::Null, // e.g. duration(date) — no sensible conversion
         },
+        _ => Val::Null,
+    }
+}
+
+/// `duration_between(a, b)` = the EXACT span from `a` to `b` (b − a). Both ends
+/// are pinned, so the result is a measurement, expressed only in fixed units:
+/// whole days for two dates, seconds+nanos for two datetimes. Cross-kind pairs
+/// (or duration operands) → null.
+fn duration_between(a: &crate::temporal::Temporal, b: &crate::temporal::Temporal) -> Val {
+    use crate::temporal::{Duration, Temporal};
+    match (a, b) {
+        (Temporal::Date(x), Temporal::Date(y)) => Val::Temporal(Temporal::Duration(Duration {
+            months: 0,
+            days: (y.days - x.days) as i64,
+            secs: 0,
+            nanos: 0,
+        })),
+        (Temporal::DateTime(x), Temporal::DateTime(y)) => {
+            let mut secs = y.secs - x.secs;
+            let mut nanos = i64::from(y.nanos) - i64::from(x.nanos);
+            if nanos < 0 {
+                nanos += 1_000_000_000;
+                secs -= 1;
+            }
+            Val::Temporal(Temporal::Duration(Duration {
+                months: 0,
+                days: 0,
+                secs,
+                nanos: nanos as u32,
+            }))
+        }
         _ => Val::Null,
     }
 }

@@ -2845,3 +2845,25 @@ fn temporal_constructor_converts_a_string_property() {
         vec![vec![b(true)]]
     );
 }
+
+#[test]
+fn temporal_duration_between_is_exact() {
+    let mut g = modern();
+    // Two dates → whole days.
+    assert_eq!(
+        rows(&mut g, "RETURN duration_between(DATE '2020-01-15', DATE '2020-04-20') AS d")
+            .into_iter().flatten().map(|v| match v { Value::Temporal(t) => t.format(), _ => "?".into() }).collect::<Vec<_>>(),
+        vec!["P96D"]
+    );
+    // Two datetimes → seconds.
+    assert_eq!(
+        rows(&mut g, "RETURN duration_between(DATETIME '2020-01-01T00:00:00', DATETIME '2020-01-01T01:01:01') AS d")
+            .into_iter().flatten().map(|v| match v { Value::Temporal(t) => t.format(), _ => "?".into() }).collect::<Vec<_>>(),
+        vec!["PT3661S"]
+    );
+    // Cross-kind → null.
+    assert_eq!(
+        rows(&mut g, "RETURN duration_between(DATE '2020-01-01', DATETIME '2020-01-01T00:00:00') AS d"),
+        vec![vec![Value::Null]]
+    );
+}
