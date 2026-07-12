@@ -289,9 +289,13 @@ const guardElement = (escaped: string): string =>
 
 /** Parse a `key:type[]?` header into its key and column type. */
 const parseHeader = (header: string): { key: string; type: ColumnType } => {
-  const colon = header.lastIndexOf(':');
+  // A header with no `:type` suffix is the whole string as the key with a
+  // default (string) type — mirror the Rust codec's `rfind(':').unwrap_or(len)`.
+  // (`lastIndexOf` returns -1 when absent, so `slice(0, -1)` would drop the last
+  // character of the key — a silent corruption of every bare/untyped column.)
+  const colon = header.includes(':') ? header.lastIndexOf(':') : header.length;
   const key = unguardField(header.slice(0, colon));
-  let typePart = header.slice(colon + 1);
+  let typePart = colon < header.length ? header.slice(colon + 1) : '';
   const list = typePart.endsWith('[]');
 
   if (list) {

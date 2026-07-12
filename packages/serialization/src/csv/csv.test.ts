@@ -289,6 +289,16 @@ describe('typed headers', () => {
     expect(p.b).toBe(false);
     expect(p.s).toBe('5');
   });
+
+  // A bare (untyped) header column keeps its FULL name as the key. Regression:
+  // the no-colon path did `slice(0, -1)`, silently truncating every plain header
+  // (`name` → `nam`), diverging from the native codec which keeps the full name.
+  test('a bare/untyped header keeps the full column name as the key', () => {
+    const g = decodeNodes('id,:LABEL,name\n1,A,hello', new Graph());
+    const v = g.getVertexById('1')!;
+    expect(Object.keys(v.properties)).toEqual(['name']);
+    expect(v.properties.name).toBe('hello');
+  });
 });
 
 describe('null vs empty-string vs absent distinction', () => {
