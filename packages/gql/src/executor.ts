@@ -419,7 +419,9 @@ const callScalar = (name: string, args: readonly unknown[]): unknown => {
 
       return Array.isArray(a) || typeof a === 'string' ? a.length : null;
     case 'left':
-      return isNullish(a) || isNullish(b) ? null : str(a).slice(0, Math.max(0, Number(b)));
+      return isNullish(a) || isNullish(b)
+        ? null
+        : sanitizeSurrogates(str(a).slice(0, Math.max(0, Number(b))));
     case 'right': {
       if (isNullish(a) || isNullish(b)) {
         return null;
@@ -428,7 +430,7 @@ const callScalar = (name: string, args: readonly unknown[]): unknown => {
       const s = str(a);
       const n = Number(b);
 
-      return n <= 0 ? '' : s.slice(Math.max(0, s.length - n));
+      return n <= 0 ? '' : sanitizeSurrogates(s.slice(Math.max(0, s.length - n)));
     }
     case 'coalesce':
       return args.find((x) => !isNullish(x)) ?? null;
@@ -503,7 +505,9 @@ const substringScalar = (a: unknown, b: unknown, len: unknown): string | null =>
   const zeroStart = Number(b) - 1;
   const from = Math.max(0, zeroStart);
 
-  return isNullish(len) ? s.slice(from) : s.slice(from, Math.max(0, zeroStart + Number(len)));
+  return sanitizeSurrogates(
+    isNullish(len) ? s.slice(from) : s.slice(from, Math.max(0, zeroStart + Number(len))),
+  );
 };
 
 // Decode a UTF-16 code-unit sequence to a string exactly as Rust's
@@ -539,6 +543,13 @@ const fromUtf16UnitsLossy = (units: readonly number[]): string => {
 
   return out;
 };
+
+// A UTF-16 slice (`substring`/`left`/`right`) can cut a surrogate pair, leaving a
+// LONE surrogate. The native engine's UTF-8 strings can't carry one, so it
+// renders U+FFFD; run every sliced result through the same lossy decode so the
+// two engines stay byte-identical on astral-boundary slices.
+const sanitizeSurrogates = (s: string): string =>
+  fromUtf16UnitsLossy(Array.from({ length: s.length }, (_, i) => s.charCodeAt(i)));
 
 const splitScalar = (a: unknown, b: unknown): string[] | null => {
   if (isNullish(a) || isNullish(b)) {

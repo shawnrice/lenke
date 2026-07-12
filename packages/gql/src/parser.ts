@@ -956,7 +956,10 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Query => {
     // Bare now-functions `current_date` / `current_timestamp` / `local_timestamp`
     // desugar to a reserved `$__now` DATETIME param the host supplies — the engine
     // never reads the clock, which keeps the two engines byte-identical.
-    // `current_date` truncates via `date(...)`.
+    // `current_date` truncates via `date(...)`; the datetime forms wrap in
+    // `local_datetime(...)` so the result is DATETIME-kind regardless of what
+    // kind `$__now` was supplied as (a DATE `$__now` coerces to midnight rather
+    // than leaking a DATE out of `current_timestamp`).
     if (t.type === 'ident' && !t.delimited) {
       const lc = t.value.toLowerCase();
 
@@ -969,10 +972,9 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Query => {
         }
 
         const now: Expr = { kind: 'param', name: '__now' };
+        const fn = lc === 'current_date' ? 'date' : 'local_datetime';
 
-        return lc === 'current_date'
-          ? { kind: 'func', name: 'date', args: [now], distinct: false, star: false }
-          : now;
+        return { kind: 'func', name: fn, args: [now], distinct: false, star: false };
       }
     }
 

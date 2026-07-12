@@ -19,7 +19,7 @@
 import { describe, expect, test } from 'bun:test';
 import { existsSync } from 'node:fs';
 
-import { Graph, parseDateTime } from '@lenke/core';
+import { Graph, parseDate, parseDateTime } from '@lenke/core';
 import { query as tsQuery } from '@lenke/gql';
 import { deserialize as tsDeserialize } from '@lenke/serialization';
 
@@ -265,6 +265,11 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
       [`RETURN DATE '2020-04-20' - DATE '2020-01-15' AS d`, `[{"d":{"@duration":"P96D"}}]`],
       [`RETURN DURATION 'P1M' + DURATION 'P2D' AS d`, `[{"d":{"@duration":"P1M2D"}}]`],
       [`RETURN DURATION 'P1M2DT3S' * 3 AS d`, `[{"d":{"@duration":"P3M6DT9S"}}]`],
+      // A non-integer multiplier is invalid (a calendar duration has no
+      // fractional multiple) → null on both engines, never a truncated value.
+      [`RETURN DURATION 'P10D' * 1.5 AS d`, `[{"d":null}]`],
+      [`RETURN DURATION 'P10D' * 2 AS d`, `[{"d":{"@duration":"P20D"}}]`],
+      [`RETURN 0.5 * DURATION 'P10D' AS d`, `[{"d":null}]`],
     ];
 
     for (const [q, want] of cases) {
@@ -296,4 +301,32 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     expect(ts0).toBe(`[{"d":null}]`);
   });
 
+  test('current_timestamp coerces a DATE $__now to a DATETIME, byte-identically', () => {
+    // A DATE `$__now` must not leak a DATE out of `current_timestamp` — the
+    // datetime now-functions wrap in local_datetime(), coercing to midnight.
+    const dateNow = { __now: parseDate('2026-07-12') };
+
+    for (const [q, want] of [
+      [`RETURN current_timestamp AS t`, `[{"t":{"@datetime":"2026-07-12T00:00:00"}}]`],
+      [`RETURN current_date AS d`, `[{"d":{"@date":"2026-07-12"}}]`],
+    ] as [string, string][]) {
+      const [ts, native] = both(q, dateNow);
+      expect(ts, q).toBe(native);
+      expect(ts, q).toBe(want);
+    }
+  });
+
+  test('UTF-16 slices (substring/left/right) across a surrogate pair are byte-identical', () => {
+    // A slice can cut an astral pair; a lone surrogate must render U+FFFD on
+    // BOTH engines (the native UTF-8 string cannot carry a lone surrogate).
+    for (const q of [
+      `RETURN substring('Rocket 🚀 go', 8, 1) AS s`,
+      `RETURN substring('🚀🚀', 1, 1) AS s`,
+      `RETURN left('🚀ab', 1) AS s`,
+      `RETURN right('ab🚀', 1) AS s`,
+    ]) {
+      const [ts, native] = both(q);
+      expect(ts, q).toBe(native);
+    }
+  });
 });

@@ -717,12 +717,15 @@ export function temporalArith(op: string, l: unknown, r: unknown): unknown {
   }
 
   if (op === '*') {
+    // Only an INTEGER factor scales a duration — a calendar duration (with a
+    // `months` component) has no meaningful fractional multiple, so a
+    // non-integer factor is invalid → null (never a silently-truncated result).
     if (l instanceof Duration && typeof r === 'number') {
-      return scaleDuration(l, Math.trunc(r));
+      return Number.isInteger(r) ? scaleDuration(l, r) : null;
     }
 
     if (typeof l === 'number' && r instanceof Duration) {
-      return scaleDuration(r, Math.trunc(l));
+      return Number.isInteger(l) ? scaleDuration(r, l) : null;
     }
   }
 

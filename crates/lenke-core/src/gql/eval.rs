@@ -1742,10 +1742,16 @@ fn temporal_arith(op: super::ast::ArithOp, lv: &Val, rv: &Val) -> Val {
             .map_or(Val::Null, Val::Temporal),
         // instant − instant → the exact span from `b` to `a` (a − b).
         (ArithOp::Sub, Val::Temporal(a), Val::Temporal(b)) => duration_between(b, a),
-        // duration × integer (either order; a fractional factor truncates).
+        // duration × INTEGER (either order). A calendar duration (with a
+        // `months` component) has no meaningful fractional multiple, so a
+        // non-integer factor is invalid → null, never a silently-truncated value.
         (ArithOp::Mul, Val::Temporal(T::Duration(d)), Val::Num(n))
         | (ArithOp::Mul, Val::Num(n), Val::Temporal(T::Duration(d))) => {
-            Val::Temporal(T::Duration(d.scale(*n as i64)))
+            if n.fract() == 0.0 && n.is_finite() {
+                Val::Temporal(T::Duration(d.scale(*n as i64)))
+            } else {
+                Val::Null
+            }
         }
         _ => Val::Null,
     }

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { Graph, type LocalDate, parseDateTime } from '@lenke/core';
+import { Graph, type LocalDate, parseDate, parseDateTime } from '@lenke/core';
 import { deserialize } from '@lenke/serialization';
 
 import { query } from './index.js';
@@ -113,7 +113,9 @@ describe('GQL: current_* read an injected now (the engine never reads a clock)',
     // current_date truncates the injected instant to its date part.
     expect(String(query(g, `RETURN current_date AS d`, now)[0].d)).toBe('2026-07-12');
     // Parenthesized call form is accepted too.
-    expect(String(query(g, `RETURN current_timestamp() AS d`, now)[0].d)).toBe('2026-07-12T10:30:45');
+    expect(String(query(g, `RETURN current_timestamp() AS d`, now)[0].d)).toBe(
+      '2026-07-12T10:30:45',
+    );
     // No injected now → null (the engine stays pure; it never invents a clock).
     expect(query(g, `RETURN current_date AS d`)).toEqual([{ d: null }]);
   });
@@ -131,5 +133,20 @@ describe('GQL: temporal arithmetic', () => {
     expect(String(one(`RETURN DATE '2020-03-18' - DURATION 'P2M3D' AS d`))).toBe('2020-01-15');
     expect(String(one(`RETURN DATE '2020-04-20' - DATE '2020-01-15' AS d`))).toBe('P96D');
     expect(String(one(`RETURN DURATION 'P1M2DT3S' * 3 AS d`))).toBe('P3M6DT9S');
+    // A non-integer multiplier is invalid → null (never a truncated result).
+    expect(query(g, `RETURN DURATION 'P10D' * 1.5 AS d`)).toEqual([{ d: null }]);
+    expect(String(query(g, `RETURN DURATION 'P10D' * 2 AS d`)[0].d)).toBe('P20D');
+  });
+});
+
+describe('GQL: current_timestamp coerces $__now kind to DATETIME', () => {
+  test('a DATE $__now does not leak a DATE out of current_timestamp', () => {
+    const g = new Graph();
+    const dateNow = { __now: parseDate('2026-07-12') };
+    expect(String(query(g, `RETURN current_timestamp AS d`, dateNow)[0].d)).toBe(
+      '2026-07-12T00:00:00',
+    );
+    // current_date still yields a DATE.
+    expect(String(query(g, `RETURN current_date AS d`, dateNow)[0].d)).toBe('2026-07-12');
   });
 });

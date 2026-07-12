@@ -928,7 +928,10 @@ impl Parser {
             // `local_timestamp` desugar to a reserved `$__now` DATETIME param the
             // host supplies — the engine stays pure (never reads the clock), which
             // is what keeps the two engines byte-identical and deterministic.
-            // `current_date` truncates via `date(...)`.
+            // `current_date` truncates via `date(...)`; the datetime forms wrap in
+            // `local_datetime(...)` so the result is DATETIME-kind regardless of
+            // what kind `$__now` was supplied as (a DATE `$__now` coerces to
+            // midnight rather than leaking a DATE out of `current_timestamp`).
             Tt::Ident if self.now_function().is_some() => {
                 let is_date = self.now_function() == Some(true);
                 self.advance();
@@ -937,15 +940,11 @@ impl Parser {
                     self.expect(Tt::RParen, "')' to close a now-function")?;
                 }
                 let now = Expr::Param("__now".to_string());
-                Ok(if is_date {
-                    Expr::Func {
-                        name: "date".to_string(),
-                        args: vec![now],
-                        distinct: false,
-                        star: false,
-                    }
-                } else {
-                    now
+                Ok(Expr::Func {
+                    name: if is_date { "date" } else { "local_datetime" }.to_string(),
+                    args: vec![now],
+                    distinct: false,
+                    star: false,
                 })
             }
             Tt::Param => {
