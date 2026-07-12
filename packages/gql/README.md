@@ -94,20 +94,23 @@ ISO temporal types are first-class stored values (zone-less; `ZONED DATETIME`/`T
 
 - **Literals**: `DATE '2020-01-01'`, `DATETIME '2020-01-01T10:15:30'` (or `TIMESTAMP '…'`), `DURATION 'P1Y2M3DT4H5M6S'`. Written as a type keyword before a string.
 - **Comparison**: `< > <= >=` on dates/datetimes is chronological; a `DURATION` (like a SQL interval) and any cross-kind pair are `UNKNOWN`. `ORDER BY` uses a deterministic total order (durations sort lexicographically). So valid-time as-of filtering just works: `MATCH (f) WHERE f.vfrom <= DATE '2021-06-01' AND DATE '2021-06-01' < f.vto RETURN f`.
+- **Constructors** (the function form of the types — takes any expression, so it converts a loaded string column): `date(x)`, `local_datetime(x)` (alias `datetime`), `duration(x)`. Parse a string, or convert a temporal by kind (`date(datetime)` → the date part). A null / bad string / unconvertible pair → null. E.g. `SET n.hired = date(n.hiredStr)`.
+- **`duration_between(a, b)`** — the **exact** elapsed span (a measurement between two pinned points, so never calendar months): whole days for two dates, seconds for two datetimes. `duration_between(DATE '2020-01-15', DATE '2020-04-20')` → `P96D`.
+- **Arithmetic** — `date/datetime ± duration` anchors the (nominal) duration to the concrete date: **calendar months are added first, clamping the day to the new month's length** (`DATE '2020-01-31' + DURATION 'P1M'` → `2020-02-29`), then days, then time. `instant − instant` → the exact span; `duration ± duration` is component-wise; `duration × integer` scales.
 
 **JavaScript interop.** lenke is not a date library — it stores and queries; do date math and formatting in your library of choice and bridge cleanly. Reading a temporal from a result gives a `LocalDate`/`LocalDateTime`/`Duration` (from `@lenke/core`):
 
 ```ts
 import { LocalDate, LocalDateTime, parseDate } from '@lenke/core';
 
-date.toISOString();          // '2020-01-01' — the universal bridge (also `String(date)`)
-duration.toISOString();      // 'P14M3DT…'   — round-trips with Temporal.Duration / Luxon Duration.fromISO
-date.toTemporal();           // a TC39 `Temporal.PlainDate` (if the runtime has Temporal)
+date.toISOString(); // '2020-01-01' — the universal bridge (also `String(date)`)
+duration.toISOString(); // 'P14M3DT…'   — round-trips with Temporal.Duration / Luxon Duration.fromISO
+date.toTemporal(); // a TC39 `Temporal.PlainDate` (if the runtime has Temporal)
 
 // Constructing / storing a temporal — any of:
-parseDate('2020-01-01');                     // from an ISO string
-Temporal.PlainDate.from('2020-01-01');       // a TC39 `Temporal.Plain*` is accepted at the value boundary (duck-typed, no dep)
-LocalDateTime.fromJSDate(jsDate, { zone });  // a native Date is a zoned instant — convert EXPLICITLY (a bare Date throws)
+parseDate('2020-01-01'); // from an ISO string
+Temporal.PlainDate.from('2020-01-01'); // a TC39 `Temporal.Plain*` is accepted at the value boundary (duck-typed, no dep)
+LocalDateTime.fromJSDate(jsDate, { zone }); // a native Date is a zoned instant — convert EXPLICITLY (a bare Date throws)
 ```
 
 A native `Date` is deliberately **not** auto-coerced (it's a zoned instant; our types are zone-less, so a silent timezone guess would corrupt the value) — pass an ISO string, a `Temporal.Plain*`, or use `fromJSDate(d, { zone })`.
