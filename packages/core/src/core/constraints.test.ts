@@ -2,8 +2,8 @@ import { describe, expect, test } from 'bun:test';
 
 import { ErrorCode, hasErrorCode } from '@lenke/errors';
 
-import { Graph } from './Graph.js';
 import { parseDate } from '../temporal.js';
+import { Graph } from './Graph.js';
 
 const thrown = (fn: () => unknown): unknown => {
   try {
@@ -104,7 +104,9 @@ describe('R-CONSTRAINTS: type', () => {
     expect(isCV(() => g.addVertex({ id: 'c', labels: ['P'], properties: { dob: 'nope' } }))).toBe(
       true,
     );
-    expect(isCV(() => g.addVertex({ id: 'l', labels: ['P'], properties: { tags: 'x' } }))).toBe(true);
+    expect(isCV(() => g.addVertex({ id: 'l', labels: ['P'], properties: { tags: 'x' } }))).toBe(
+      true,
+    );
 
     // right type commits; a matching temporal/list is fine
     const ok = g.addVertex({
@@ -137,5 +139,48 @@ describe('R-CONSTRAINTS: type', () => {
     ]);
     g.dropTypeConstraint('P', 'age');
     expect(g.typeConstraint('P', 'age')).toBeUndefined();
+  });
+});
+
+// V3 (Rafael, r7): a unique constraint used to be enforced only on the GQL
+// `INSERT`/`SET` path — the direct `addVertex`/`setProperty` API bypassed it,
+// yielding count=2 with no throw. It's now a core invariant at the mutation
+// chokepoint, so every write path agrees.
+describe('R-CONSTRAINTS: unique (direct-API enforcement, V3)', () => {
+  test('addVertex rejects a duplicate under a unique constraint', () => {
+    const g = new Graph();
+    g.createUniqueConstraint('User', 'email');
+
+    g.addVertex({ id: 'a', labels: ['User'], properties: { email: 'x@y.io' } });
+
+    expect(
+      isCV(() => g.addVertex({ id: 'b', labels: ['User'], properties: { email: 'x@y.io' } })),
+    ).toBe(true);
+    // A different value, a different label, and null are all fine.
+    expect(
+      g.addVertex({ id: 'c', labels: ['User'], properties: { email: 'z@y.io' } }),
+    ).toBeTruthy();
+    expect(
+      g.addVertex({ id: 'd', labels: ['Other'], properties: { email: 'x@y.io' } }),
+    ).toBeTruthy();
+    expect(g.addVertex({ id: 'n1', labels: ['User'], properties: { email: null } })).toBeTruthy();
+    expect(g.addVertex({ id: 'n2', labels: ['User'], properties: { email: null } })).toBeTruthy();
+    // The rejected insert left no trace.
+    const emails = [...g.getVerticesByLabel('User')].filter(
+      (v) => v.getProperty('email') === 'x@y.io',
+    );
+    expect(emails).toHaveLength(1);
+  });
+
+  test('setProperty rejects a collision under a unique constraint', () => {
+    const g = new Graph();
+    g.createUniqueConstraint('User', 'email');
+    g.addVertex({ id: 'a', labels: ['User'], properties: { email: 'x@y.io' } });
+    const b = g.addVertex({ id: 'b', labels: ['User'], properties: { email: 'z@y.io' } });
+
+    expect(isCV(() => b.setProperty('email', 'x@y.io'))).toBe(true);
+    // Re-setting a vertex's own value is not a self-collision.
+    b.setProperty('email', 'z@y.io');
+    expect(b.getProperty('email')).toBe('z@y.io');
   });
 });

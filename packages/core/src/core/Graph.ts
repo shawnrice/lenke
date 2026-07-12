@@ -465,6 +465,15 @@ export class Graph {
       );
     }
 
+    const dup = this.uniqueConflict(vertex.labels, vertex.properties, vertex);
+
+    if (dup) {
+      throw new LenkeError(
+        `unique constraint on '${dup.label}.${dup.key}' violated by value ${JSON.stringify(dup.existing.properties[dup.key])}`,
+        { code: ErrorCode.ConstraintViolation },
+      );
+    }
+
     this.emit(new EmitterEvent('@graph/VertexAdded', vertex));
 
     this.verticesById.set(vertex.id, vertex);
@@ -1134,6 +1143,22 @@ export class Graph {
           code: ErrorCode.ConstraintViolation,
         });
       }
+    }
+  };
+
+  /**
+   * Throw if setting `vertex.key = value` would collide with another vertex
+   * under a unique constraint. Called from the property-write chokepoint so the
+   * direct API enforces the same invariant the GQL `SET` path does.
+   */
+  public assertUniqueOnSet = (vertex: Vertex, key: string, value: unknown): void => {
+    const conflict = this.uniqueConflictOnSet(vertex, key, value);
+
+    if (conflict) {
+      throw new LenkeError(
+        `unique constraint on '${conflict.label}.${key}' violated by value ${JSON.stringify(value)}`,
+        { code: ErrorCode.ConstraintViolation },
+      );
     }
   };
 

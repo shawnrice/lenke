@@ -109,6 +109,7 @@ export class Vertex {
     validatePropertyValue(value);
     this.#graph?.assertRequiredOnSet(this, key, value);
     this.#graph?.assertTypeOnSet(this, key, value);
+    this.#graph?.assertUniqueOnSet(this, key, value);
     const previousValue = this.properties[key]; // read before the write; undefined if absent
     this.#graph?.emit(
       new EmitterEvent('@graph/VertexPropertyChanged', {
@@ -129,6 +130,7 @@ export class Vertex {
       validatePropertyValue(props[key]);
       this.#graph?.assertRequiredOnSet(this, key, props[key]);
       this.#graph?.assertTypeOnSet(this, key, props[key]);
+      this.#graph?.assertUniqueOnSet(this, key, props[key]);
     }
 
     const previousValues = Object.fromEntries(
