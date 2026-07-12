@@ -5,6 +5,7 @@ import { ErrorCode, hasErrorCode } from '@lenke/errors';
 
 import { createTestGraph, edgeId, vertexId } from '../fixtures/createTestGraph.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
+import { Graph } from './Graph.js';
 import { Vertex } from './Vertex.js';
 
 const thrownBy = (fn: () => unknown): unknown => {
@@ -332,6 +333,32 @@ describe('Graph Tests', () => {
         { previous: 'red', value: 'blue' },
         { previous: undefined, value: 'L' },
       ]);
+    });
+
+    test('truncate() emits a removal event for every element (audit visibility)', () => {
+      const g = new Graph();
+      const a = g.addVertex({ id: 'a', labels: ['N'], properties: { x: 1 } });
+      const b = g.addVertex({ id: 'b', labels: ['N'], properties: { x: 2 } });
+      g.addEdge({ id: 'e', from: a, to: b, labels: ['E'], properties: {} });
+
+      const removedVertices: string[] = [];
+      const removedEdges: string[] = [];
+      let mutations = 0;
+      g.on('@graph/VertexRemoved', (ev) => removedVertices.push(ev.value.id));
+      g.on('@graph/EdgeRemoved', (ev) => removedEdges.push(ev.value.id));
+      g.on('@graph/mutate', () => (mutations += 1));
+
+      g.truncate();
+
+      // Every element is announced (edges first, then vertices), so an audit
+      // journal / the CDC WriteLog / a React store sees the most destructive op
+      // without special-casing — it used to emit nothing (R-TRUNCATE-EVENTS).
+      expect(removedEdges).toEqual(['e']);
+      expect(removedVertices.sort()).toEqual(['a', 'b']);
+      expect(mutations).toBe(3); // all three flow through @graph/mutate
+      // …and the graph is actually empty afterward.
+      expect([...g.vertices]).toHaveLength(0);
+      expect([...g.edges]).toHaveLength(0);
     });
   });
 });

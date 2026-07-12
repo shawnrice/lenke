@@ -344,6 +344,25 @@ export class Graph {
   };
 
   public truncate = (): void => {
+    // Emit a removal event for every element before clearing, so `truncate` — the
+    // most destructive op — is visible to every listener/journal that already
+    // handles `@graph/EdgeRemoved`/`@graph/VertexRemoved` (React sync, an audit
+    // stream via `@graph/mutate`, the CDC WriteLog), with no special-casing.
+    // Edges first, then vertices (a clean teardown order a journal can replay).
+    // The elements are still live at emit time; `truncate` is a hard reset, so a
+    // per-element `preventDefault()` is NOT honored — the events are
+    // notification-only (unlike `removeVertex`/`removeEdge`).
+    const edges = [...this.edgesById.values()];
+    const vertices = [...this.verticesById.values()];
+
+    for (const edge of edges) {
+      this.emit(new EmitterEvent('@graph/EdgeRemoved', edge));
+    }
+
+    for (const vertex of vertices) {
+      this.emit(new EmitterEvent('@graph/VertexRemoved', vertex));
+    }
+
     this.verticesById = new Map();
     this.edgesById = new Map();
     this.verticesByLabel = new Map();

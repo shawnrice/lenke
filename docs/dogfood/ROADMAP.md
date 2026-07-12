@@ -129,6 +129,16 @@ direction. Each blocks a confirmed use case.
   routes pre-form vs post-form accordingly; both executors restructured; the
   `ported_divergences` / `ported_2` cases that locked in the old results updated.
   (Anouk r6)
+- **`graph.truncate()` now emits removal events (resolves R-TRUNCATE-EVENTS):** the
+  most destructive op cleared every map with **zero events**, so it was invisible to
+  every listener/journal — no audit entry, no React re-render, no CDC replication
+  (Gustavo r6). It now emits `@graph/EdgeRemoved` for each edge then
+  `@graph/VertexRemoved` for each vertex before clearing, so anything already
+  handling those events (the `@graph/mutate` audit stream, the React `notify`, the
+  CDC WriteLog) captures the reset per-element with no special-casing. The events
+  are notification-only — a per-element `preventDefault()` is not honored (truncate
+  is an all-or-nothing reset). Core-only (the event model is the in-process Graph's).
+  (Gustavo r6)
 
 ## FIXED (history — see git log + memory `dx-ergonomics-pass`)
 
