@@ -3,7 +3,14 @@ import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { By } from '../ast.js';
 import { compareValues } from '../predicates.js';
-import { evalBy, isSliceable, type RunContext, startTraverser, type Traverser } from './runtime.js';
+import {
+  evalBy,
+  extend,
+  isSliceable,
+  type RunContext,
+  startTraverser,
+  type Traverser,
+} from './runtime.js';
 
 /** Coerce a numeric-aggregate element, throwing on a non-number (TinkerPop's
  * `sum`/`mean` require `Number`s and raise on anything else, rather than
@@ -152,11 +159,41 @@ const reduceComparable = (items: readonly unknown[], kind: 'min' | 'max'): unkno
   return saw ? best : null;
 };
 
-// `order` materializes the stream, sorts, then re-yields. Boundary step.
-// `bys` is non-empty (caller normalizes legacy `key` into a one-element array).
-// The first by is the primary sort key; subsequent bys are tie-breakers, in
-// order. `desc` flips ALL keys uniformly — comparator-per-by would need
-// closures and is deferred.
+// Sort `items` IN PLACE by projecting each through the `bys` (first = primary
+// key, rest = tie-breakers, in order). Per-by direction prefers the By's
+// `direction`; falls back to the step-level `desc` (legacy `order({desc})` form).
+const sortByBys = <T>(
+  items: T[],
+  project: (item: T) => unknown,
+  bys: readonly By[],
+  desc: boolean,
+  graph: Graph,
+  ctx: RunContext,
+): void => {
+  const dirs = bys.map((by) => by.direction ?? (desc ? 'desc' : 'asc'));
+  const keyed = items.map((item) => ({
+    item,
+    keys: bys.map((by) => evalBy(by, project(item), graph, ctx)),
+  }));
+  keyed.sort((a, b) => {
+    for (let i = 0; i < bys.length; i++) {
+      const c = compareValues(a.keys[i], b.keys[i]) * (dirs[i] === 'desc' ? -1 : 1);
+
+      if (c !== 0) {
+        return c;
+      }
+    }
+
+    return 0;
+  });
+
+  for (let i = 0; i < items.length; i++) {
+    items[i] = keyed[i].item;
+  }
+};
+
+// `order` (global scope) materializes the stream, sorts the traversers by their
+// value, then re-yields. Boundary step.
 export const orderStep = function* (
   stream: Iterable<Traverser<unknown>>,
   bys: readonly By[],
@@ -165,27 +202,36 @@ export const orderStep = function* (
   ctx: RunContext,
 ): Iterable<Traverser<unknown>> {
   const items = [...stream];
-  const projected = items.map((t) => ({
-    traverser: t,
-    sortKeys: bys.map((by) => evalBy(by, t.value, graph, ctx)),
-  }));
-  // Per-by direction: prefer the By's `direction` field; fall back to the
-  // step-level `desc` (legacy / `order({ desc: true })` form).
-  const dirs = bys.map((by) => by.direction ?? (desc ? 'desc' : 'asc'));
-  projected.sort((a, b) => {
-    for (let i = 0; i < bys.length; i++) {
-      const flip = dirs[i] === 'desc' ? -1 : 1;
-      const c = compareValues(a.sortKeys[i], b.sortKeys[i]);
+  sortByBys(items, (t) => t.value, bys, desc, graph, ctx);
+  yield* items;
+};
 
-      if (c !== 0) {
-        return c * flip;
-      }
+// `order(Scope.local)` sorts WITHIN each traverser's value instead of across the
+// stream: a Map's entries by their VALUE (the `groupCount().order(local)` top-N
+// idiom — TinkerPop's Column-parameterized `by(values)`/`by(keys)` isn't modeled,
+// so local order on a Map is by value), or a list's elements. The by-modulator
+// projects the sort key off each entry-value / element (identity → the value
+// itself). A scalar value has nothing to sort → passes through unchanged.
+export const orderLocalStep = function* (
+  stream: Iterable<Traverser<unknown>>,
+  bys: readonly By[],
+  desc: boolean,
+  graph: Graph,
+  ctx: RunContext,
+): Iterable<Traverser<unknown>> {
+  for (const t of stream) {
+    const v = t.value;
+
+    if (v instanceof Map) {
+      const entries = [...v.entries()];
+      sortByBys(entries, (e) => e[1], bys, desc, graph, ctx);
+      yield extend(t, new Map(entries));
+    } else if (isSliceable(v)) {
+      const items = [...(v as Iterable<unknown>)];
+      sortByBys(items, (x) => x, bys, desc, graph, ctx);
+      yield extend(t, items);
+    } else {
+      yield t;
     }
-
-    return 0;
-  });
-
-  for (const { traverser } of projected) {
-    yield traverser;
   }
 };

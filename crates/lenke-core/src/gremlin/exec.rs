@@ -1481,12 +1481,11 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
         Step::Min(Scope::Local) => map_step(stream, |t| vec![local_extreme(&t.val, Ordering::Less)]),
         Step::Max(Scope::Global) => fold_extreme(stream, Ordering::Greater),
         Step::Max(Scope::Local) => map_step(stream, |t| vec![local_extreme(&t.val, Ordering::Greater)]),
-        Step::Order(bys, desc) => {
+        Step::Order(bys, desc, scope) => {
             let bys: Vec<By> = if bys.is_empty() { vec![By::Identity(None)] } else { bys.clone() };
-            // Precompute sort keys (eval_by needs &mut; can't run inside the comparator).
-            let mut keyed: Vec<(Vec<GVal>, Trav)> =
-                stream.into_iter().map(|t| (bys.iter().map(|by| eval_by(graph, ctx, by, &t.val)).collect(), t)).collect();
-            keyed.sort_by(|(ka, _), (kb, _)| {
+
+            // Compare two by-projected key vectors under the per-by direction.
+            let cmp_keys = |ka: &[GVal], kb: &[GVal]| -> Ordering {
                 for (i, by) in bys.iter().enumerate() {
                     let dir = by.direction().unwrap_or(if *desc { Order::Desc } else { Order::Asc });
                     let mut o = cmp_or_fault(&ka[i], &kb[i]).unwrap_or(Ordering::Equal);
@@ -1498,8 +1497,51 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
                     }
                 }
                 Ordering::Equal
-            });
-            keyed.into_iter().map(|(_, t)| t).collect()
+            };
+
+            match scope {
+                // Local: sort WITHIN each traverser's value — a Map's entries by
+                // their VALUE (the groupCount top-N idiom; Column-parameterized
+                // by(values)/by(keys) isn't modeled → local order on a Map is by
+                // value), or a list's elements. A scalar has nothing to sort.
+                Scope::Local => stream
+                    .into_iter()
+                    .map(|t| {
+                        let val = match &t.val {
+                            GVal::Map(entries) => {
+                                let mut es: Vec<(Vec<GVal>, (GVal, GVal))> = entries
+                                    .iter()
+                                    .map(|(k, v)| {
+                                        (bys.iter().map(|by| eval_by(graph, ctx, by, v)).collect(), (k.clone(), v.clone()))
+                                    })
+                                    .collect();
+                                es.sort_by(|(ka, _), (kb, _)| cmp_keys(ka, kb));
+                                GVal::Map(es.into_iter().map(|(_, e)| e).collect())
+                            }
+                            GVal::List(items) => {
+                                let mut xs: Vec<(Vec<GVal>, GVal)> = items
+                                    .iter()
+                                    .map(|x| (bys.iter().map(|by| eval_by(graph, ctx, by, x)).collect(), x.clone()))
+                                    .collect();
+                                xs.sort_by(|(ka, _), (kb, _)| cmp_keys(ka, kb));
+                                GVal::List(xs.into_iter().map(|(_, x)| x).collect())
+                            }
+                            _ => return t,
+                        };
+                        t.step(val)
+                    })
+                    .collect(),
+                // Global: sort the traversers across the stream by their value.
+                Scope::Global => {
+                    // Precompute sort keys (eval_by needs &mut; not usable in the comparator).
+                    let mut keyed: Vec<(Vec<GVal>, Trav)> = stream
+                        .into_iter()
+                        .map(|t| (bys.iter().map(|by| eval_by(graph, ctx, by, &t.val)).collect(), t))
+                        .collect();
+                    keyed.sort_by(|(ka, _), (kb, _)| cmp_keys(ka, kb));
+                    keyed.into_iter().map(|(_, t)| t).collect()
+                }
+            }
         }
         Step::Group(bys) => {
             let key_by = bys.first().cloned().unwrap_or(By::Identity(None));

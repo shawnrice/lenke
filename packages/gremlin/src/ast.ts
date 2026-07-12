@@ -190,7 +190,7 @@ export type Step =
   // is the modulator form (`order().by('age')`). The first `by` projects;
   // additional `by`s are tie-breakers (Gremlin semantics). `desc` flips order
   // (applies to all `by`s for now — comparator-per-by would need closures).
-  | { kind: 'order'; key?: string; desc?: boolean; bys?: readonly By[] }
+  | { kind: 'order'; key?: string; desc?: boolean; bys?: readonly By[]; scope?: 'local' | 'global' }
   // Stop the stream with an error.
   | { kind: 'fail'; message?: string }
   // Sub-traversal filters: keep traverser if the sub-plan produces ≥1 result.

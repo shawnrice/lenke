@@ -187,6 +187,68 @@ fn textual_until_before_repeat_attaches() {
     assert_eq!(sorted_names(q(t)), vec!["josh"]);
 }
 
+// --- order(Scope.local): rank a group Map by value (was a silent no-op) -------
+// R-GREMLIN-AGG (Omar r5): order(Scope.local) sorts WITHIN each traverser's value
+// instead of across the stream — the canonical use is ranking a groupCount() Map
+// by its counts. It was silently ignored; now it matches @lenke/gremlin's
+// orderLocalStep (Map entries sorted by value; a list's elements sorted).
+#[test]
+fn order_local_ranks_group_map_by_value() {
+    // Builder form: groupCount → Map{PERSON:4, SOFTWARE:2}; order(local) by value desc.
+    let out = q(super::g()
+        .V()
+        .group_count()
+        .by_label()
+        .order_local()
+        .by_identity_dir(super::Order::Desc));
+    let entries = match &out[0] {
+        GVal::Map(e) => e,
+        _ => panic!("expected a Map, got {out:?}"),
+    };
+    let got: Vec<(String, f64)> = entries
+        .iter()
+        .map(|(k, v)| {
+            (
+                match k {
+                    GVal::Str(s) => s.to_string(),
+                    _ => panic!("non-string key"),
+                },
+                match v {
+                    GVal::Num(n) => *n,
+                    _ => panic!("non-number value"),
+                },
+            )
+        })
+        .collect();
+    assert_eq!(
+        got,
+        vec![("PERSON".to_string(), 4.0), ("SOFTWARE".to_string(), 2.0)]
+    );
+
+    // Textual form must parse to the same thing (Scope.local routing on `order`).
+    let t =
+        super::parse("g.V().groupCount().by(T.label).order(Scope.local).by(Order.desc)").unwrap();
+    assert_eq!(q(t), out);
+}
+
+#[test]
+fn order_local_sorts_a_folded_list() {
+    let t =
+        super::parse("g.V().hasLabel('PERSON').values('age').fold().order(Scope.local)").unwrap();
+    let out = q(t);
+    let nums: Vec<f64> = match &out[0] {
+        GVal::List(xs) => xs
+            .iter()
+            .map(|x| match x {
+                GVal::Num(n) => *n,
+                _ => panic!("non-number"),
+            })
+            .collect(),
+        _ => panic!("expected a List, got {out:?}"),
+    };
+    assert_eq!(nums, vec![27.0, 29.0, 32.0, 35.0]);
+}
+
 #[test]
 fn repeat_emit_loops_predicate_offset() {
     // emit(loops().is(gt(1))) emits both body levels of a times(3) walk.

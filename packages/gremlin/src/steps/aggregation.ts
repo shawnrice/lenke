@@ -36,14 +36,27 @@ export function mean(scope?: symbol): StepFn {
 // Sort. With no args, natural order on the values themselves; with a `key`,
 // sort by that property (vertex/edge); pass `desc: true` to flip. The
 // modulator form `order().by(...)` overrides the legacy config-object args.
-export const order = (
-  config: { key?: string; desc?: boolean } = {},
-): ByableStep<Extract<Step, { kind: 'order' }>> =>
-  makeByable<Extract<Step, { kind: 'order' }>>((bys) => ({
+// `order(Scope.local)` sorts WITHIN each traverser's value (a group Map's
+// entries by value, or a list's elements) instead of across the stream — e.g.
+// `groupCount().by(x).order(Scope.local).by(Order.desc)` for a top-N ranking.
+export function order(scope: symbol): ByableStep<Extract<Step, { kind: 'order' }>>;
+export function order(config?: {
+  key?: string;
+  desc?: boolean;
+}): ByableStep<Extract<Step, { kind: 'order' }>>;
+export function order(
+  arg: symbol | { key?: string; desc?: boolean } = {},
+): ByableStep<Extract<Step, { kind: 'order' }>> {
+  const scope = typeof arg === 'symbol' ? scopeTokenOf(arg) : undefined;
+  const config = typeof arg === 'symbol' ? {} : arg;
+
+  return makeByable<Extract<Step, { kind: 'order' }>>((bys) => ({
     kind: 'order',
     ...config,
     bys,
+    scope,
   }));
+}
 
 // `group()` collects the whole stream into a single `Map<key, value[]>`.
 // The legacy config-object form (`group({ keyBy, valueBy })`) is still

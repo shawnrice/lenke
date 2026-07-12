@@ -654,6 +654,7 @@ impl Parser {
                 }
             }
             "fold" => t.fold(),
+            "order" if scope_local(&args) => t.order_local(),
             "order" => t.order(),
             "group" => t.group(),
             "groupCount" => t.group_count(),

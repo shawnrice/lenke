@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
-import { Order, V, hasLabel, order, tail, values } from '../steps.js';
+import { Order, Scope, T, V, fold, groupCount, hasLabel, order, tail, values } from '../steps.js';
 import { traversal } from '../traversal.js';
 
 const arr = (r: Iterable<unknown>): unknown[] => [...r];
@@ -70,5 +70,42 @@ describe('Gremlin tests', () => {
       ),
     );
     expect(r).toEqual(['peter', 'josh', 'marko', 'vadas']);
+  });
+
+  // order(Scope.local) sorts WITHIN each traverser's value, not across the stream.
+  // The canonical use: rank a groupCount() Map by its counts (was silently a
+  // no-op — order(Scope.local) spread a Symbol and did nothing; R-GREMLIN-AGG).
+  test('order(Scope.local) sorts a group Map by value desc (top-N-from-groupCount)', () => {
+    const [m] = arr(
+      run(traversal(V(), groupCount().by(T.label), order(Scope.local).by(Order.desc)), tinkerGraph),
+    ) as Map<unknown, number>[];
+    expect([...m.entries()]).toEqual([
+      ['PERSON', 4],
+      ['SOFTWARE', 2],
+    ]);
+  });
+
+  test('order(Scope.local) sorts a folded list (asc default, desc via by)', () => {
+    const asc = arr(
+      run(
+        traversal(V(), hasLabel('PERSON'), values('age'), fold(), order(Scope.local)),
+        tinkerGraph,
+      ),
+    ) as number[][];
+    expect(asc[0]).toEqual([27, 29, 32, 35]);
+
+    const desc = arr(
+      run(
+        traversal(
+          V(),
+          hasLabel('PERSON'),
+          values('age'),
+          fold(),
+          order(Scope.local).by(Order.desc),
+        ),
+        tinkerGraph,
+      ),
+    ) as number[][];
+    expect(desc[0]).toEqual([35, 32, 29, 27]);
   });
 });

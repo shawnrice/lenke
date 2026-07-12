@@ -328,7 +328,7 @@ pub enum Step {
     Min(Scope),
     Max(Scope),
     Mean(Scope),
-    Order(Vec<By>, bool),
+    Order(Vec<By>, bool, Scope),
     Group(Vec<By>),
     GroupCount(Vec<By>),
     Where(Box<Traversal>),
@@ -436,7 +436,7 @@ impl Traversal {
     /// Attach a `by()` modulator to the most recent modulator-bearing step.
     fn attach_by(mut self, by: By) -> Self {
         if let Some(
-            Step::Order(bys, _)
+            Step::Order(bys, _, _)
             | Step::Group(bys)
             | Step::GroupCount(bys)
             | Step::Path(bys)
@@ -679,12 +679,16 @@ impl Traversal {
         self.push(Step::Mean(Scope::Local))
     }
     pub fn order(self) -> Self {
-        self.push(Step::Order(vec![], false))
+        self.push(Step::Order(vec![], false, Scope::Global))
+    }
+    pub fn order_local(self) -> Self {
+        self.push(Step::Order(vec![], false, Scope::Local))
     }
     pub fn order_by(self, key: &str, dir: Order) -> Self {
         self.push(Step::Order(
             vec![By::Key(key.to_string(), Some(dir))],
             false,
+            Scope::Global,
         ))
     }
     pub fn group(self) -> Self {

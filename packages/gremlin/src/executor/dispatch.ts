@@ -23,6 +23,7 @@ import {
   maxLocal,
   meanLocal,
   minLocal,
+  orderLocalStep,
   orderStep,
   sumLocal,
 } from './aggregation.js';
@@ -325,8 +326,14 @@ export const applyStep = (
     case 'properties':
       return projectProperties(stream, step.keys);
 
-    case 'order':
-      return orderStep(stream, normalizeBys(step.bys, step.key), step.desc ?? false, graph, ctx);
+    case 'order': {
+      const bys = normalizeBys(step.bys, step.key);
+      const desc = step.desc ?? false;
+
+      return step.scope === 'local'
+        ? orderLocalStep(stream, bys, desc, graph, ctx)
+        : orderStep(stream, bys, desc, graph, ctx);
+    }
 
     case 'fail':
       return failStep(stream, step.message);
