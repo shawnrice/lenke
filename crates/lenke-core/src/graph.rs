@@ -97,6 +97,31 @@ impl BitSet {
             .get(i >> 6)
             .is_some_and(|w| (w >> (i & 63)) & 1 == 1)
     }
+    /// Are all of the first `len` bits set? Answers "is this column fully present?"
+    /// in O(len/64) whole-word checks — the fast test that lets a fused aggregate
+    /// scan drop the per-element presence branch (and so autovectorize). A word
+    /// that was never written reads as absent, so a short `words` vec is `false`.
+    pub fn all_set(&self, len: usize) -> bool {
+        if len == 0 {
+            return true;
+        }
+        let full_words = len >> 6;
+        if full_words > self.words.len() {
+            return false;
+        }
+        if self.words[..full_words].iter().any(|&w| w != u64::MAX) {
+            return false;
+        }
+        let rem = len & 63;
+        if rem == 0 {
+            return true;
+        }
+        // The final partial word must have its low `rem` bits set.
+        let mask = (1u64 << rem) - 1;
+        self.words
+            .get(full_words)
+            .is_some_and(|&w| w & mask == mask)
+    }
 }
 
 /// A JSON-ish scalar/list value, matching the vendor-neutral LPG value model.

@@ -22,9 +22,9 @@ use super::ast::{
 };
 use super::lexer::SyntaxError;
 use super::plan::{
-    has_argless_aggregate, has_nested_aggregate, lower, AggFn, CClause, CExpr, CLabelExpr, CLinear,
-    CMerge, CMergeUpdate, CNode, CPath, CPredicate, CProjection, CPropConstraint, CQuery, CRel,
-    CRemoveItem, CReturnItem, CSegment, CSetItem, Op, Program, ScalarFn,
+    has_argless_aggregate, has_nested_aggregate, lower, AggFn, CAgg, CClause, CExpr, CLabelExpr,
+    CLinear, CMerge, CMergeUpdate, CNode, CPath, CPredicate, CProjection, CPropConstraint, CQuery,
+    CRel, CRemoveItem, CReturnItem, CSegment, CSetItem, Op, Program, ScalarFn,
 };
 #[cfg(feature = "arrow")]
 use crate::arrow::ArrowColumn;
@@ -3531,6 +3531,42 @@ fn build_scan(
         let seed = node_index_seed(graph, ctx, node, where_);
         let mut ids = Vec::new();
         let needs_check = !node.props.is_empty() || node.where_.is_some();
+
+        // Fast path: no index seed, no inline props/WHERE, and the label is either
+        // absent or a **bare** single label. Then bucket membership already implies
+        // the label (`matches_label` would be a redundant per-vertex re-check), so
+        // clone the live-vertex / label-bucket slice straight into the id column —
+        // skipping 1M closure calls + label scans. Anything richer (And/Or/Not
+        // label, inline constraints, index seed) falls through to the general loop.
+        // `Some(None)` = all live vertices; `Some(Some(slice))` = a label bucket;
+        // `None` = not fast-path-eligible (fall through to the general loop).
+        let fast_bucket: Option<Option<&[u32]>> = if seed.is_some() || needs_check {
+            None
+        } else {
+            match node.label.as_ref() {
+                None => Some(None),
+                Some(CLabelExpr::Label(r)) => Some(Some(match ctx.labels[*r].0 {
+                    Some(lid) => graph.vertices_with_label(lid),
+                    None => &[], // unknown label → no rows
+                })),
+                Some(_) => None, // And/Or/Not label needs the per-vertex re-check
+            }
+        };
+        if let Some(bucket) = fast_bucket {
+            let ids: Vec<u32> = match (bucket, cap) {
+                (Some(b), Some(c)) => b.iter().take(c).copied().collect(),
+                (Some(b), None) => b.to_vec(),
+                (None, Some(c)) => graph.vertex_indices().take(c).collect(),
+                (None, None) => graph.vertex_indices().collect(),
+            };
+            let mut sc = ScanCols::new(scope_len);
+            sc.n = ids.len();
+            if let Some(s) = node.var_slot {
+                sc.slots[s] = Some((Elem::Node, ids));
+            }
+            return Some(sc);
+        }
+
         let mut b = Binding(vec![None; scope_len.max(1)]);
         let consider = |graph: &Graph, vi: u32, ids: &mut Vec<u32>, b: &mut Binding| -> bool {
             if !matches_label(graph, ctx, vi, node.label.as_ref()) {
@@ -4094,6 +4130,133 @@ fn group_ids(
     Some((gid_of_row, rep_row, ngroups))
 }
 
+/// Resolve `arg` to a direct typed **numeric** column read: `(data, present, ids)`
+/// where `data[ids[i]]` is row `i`'s value. `None` unless `arg` is a bare `Prop`
+/// over a `Column::Num` — the shape the fused global aggregate can read straight
+/// out of storage with no per-row `Val` boxing or gathered copy.
+fn num_col_of<'a>(
+    graph: &'a Graph,
+    ctx: &Ctx,
+    sc: &'a ScanCols,
+    arg: &CExpr,
+) -> Option<(&'a [f64], &'a crate::graph::BitSet, &'a [u32])> {
+    let CExpr::Prop { var_slot, key_ref } = arg else {
+        return None;
+    };
+    let (elem, ids) = sc.slot(*var_slot)?;
+    let (store, kid) = match elem {
+        Elem::Node => (&graph.props, ctx.prop_keys[*key_ref].0),
+        Elem::Edge => (&graph.edge_props, ctx.prop_keys[*key_ref].1),
+    };
+    match kid.and_then(|k| store.cols.get(k as usize)) {
+        Some(Column::Num { data, present }) => Some((data.as_slice(), present, ids)),
+        _ => None,
+    }
+}
+
+/// If `ids` is exactly `[base, base+1, …, base+len-1]`, return `base`. Lets a fused
+/// scan reduce over a contiguous `&data[base..]` slice (fully autovectorizable)
+/// instead of gathering `data[ids[i]]` one index at a time. O(len) but branch-free
+/// bar the compare — cheap next to the gather+alloc it replaces.
+fn contiguous_base(ids: &[u32]) -> Option<usize> {
+    let base = *ids.first()? as usize;
+    ids.iter()
+        .enumerate()
+        .all(|(k, &id)| id as usize == base + k)
+        .then_some(base)
+}
+
+/// One fused global (un-grouped) aggregate, computed by reducing straight over the
+/// stored column — no `eval_vec` gather, no materialized `f64`/validity vectors,
+/// no second pass. Handles `count(*)`, and `count`/`sum`/`avg`/`min`/`max` over a
+/// direct numeric property. Returns `None` (→ caller's general path) for anything
+/// else (non-numeric min/max, DISTINCT, collect, expression args, Mixed columns).
+///
+/// Three tiers by column density: a fully-present column over a contiguous id run
+/// reduces over a flat slice (SIMD); a fully-present column at arbitrary ids gathers
+/// with no presence branch; otherwise the presence bit is probed per element.
+fn fused_global_agg(graph: &Graph, ctx: &Ctx, sc: &ScanCols, spec: &CAgg) -> Option<Val> {
+    if spec.distinct {
+        return None;
+    }
+    if spec.func == AggFn::Count && spec.star {
+        // count(*) over one global group is just the live row count.
+        return Some(Val::Num(sc.n as f64));
+    }
+    if matches!(spec.func, AggFn::CollectList) {
+        return None;
+    }
+    let (data, present, ids) = num_col_of(graph, ctx, sc, spec.arg.as_ref()?)?;
+    let dense = present.all_set(data.len());
+
+    // count(prop): number of present values (all rows when the column is dense).
+    if spec.func == AggFn::Count {
+        let c = if dense {
+            ids.len()
+        } else {
+            ids.iter().filter(|&&i| present.get(i as usize)).count()
+        };
+        return Some(Val::Num(c as f64));
+    }
+
+    // sum/avg/min/max fold. `sum`+`n` cover sum and avg; min/max track an extremum.
+    let mut sum = 0.0f64;
+    let mut n = 0usize;
+    let mut ext: Option<f64> = None;
+    let is_min = spec.func == AggFn::Min;
+    let mut fold = |x: f64| {
+        sum += x;
+        n += 1;
+        ext = Some(match ext {
+            Some(e) => {
+                if is_min {
+                    e.min(x)
+                } else {
+                    e.max(x)
+                }
+            }
+            None => x,
+        });
+    };
+
+    match (dense, contiguous_base(ids)) {
+        // Tier 1: dense + contiguous — reduce a flat slice (autovectorizes).
+        (true, Some(base)) => {
+            for &x in &data[base..base + ids.len()] {
+                fold(x);
+            }
+        }
+        // Tier 2: dense, scattered ids — gather, but no presence branch.
+        (true, None) => {
+            for &i in ids {
+                fold(data[i as usize]);
+            }
+        }
+        // Tier 3: sparse — probe presence per element.
+        (false, _) => {
+            for &i in ids {
+                let i = i as usize;
+                if present.get(i) {
+                    fold(data[i]);
+                }
+            }
+        }
+    }
+
+    Some(match spec.func {
+        AggFn::Sum => Val::Num(sum),
+        AggFn::Avg => {
+            if n == 0 {
+                Val::Null
+            } else {
+                Val::Num(sum / n as f64)
+            }
+        }
+        AggFn::Min | AggFn::Max => ext.map_or(Val::Null, Val::Num),
+        _ => return None,
+    })
+}
+
 fn vectorized_aggregate(
     graph: &Graph,
     ctx: &Ctx,
@@ -4109,6 +4272,14 @@ fn vectorized_aggregate(
     for spec in &proj.aggs {
         if spec.distinct {
             return None;
+        }
+        // Global (single-group) aggregates fold straight over the stored column —
+        // no gather, no materialized f64/validity vectors, no second pass.
+        if ngroups == 1 {
+            if let Some(v) = fused_global_agg(graph, ctx, sc, spec) {
+                agg_cols.push(vec![v]);
+                continue;
+            }
         }
         let col: Vec<Val> = if spec.func == AggFn::Count && spec.star {
             let mut cnt = vec![0u64; ngroups];
