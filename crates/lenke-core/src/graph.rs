@@ -463,6 +463,12 @@ pub struct Graph {
     /// must be re-checked at commit (R-TX deferral for edge writes).
     tx_touched_edges: Vec<u32>,
     applying_undo: bool,
+    /// Access mode of the active explicit transaction opened by ISO GQL
+    /// `START TRANSACTION READ ONLY` (see the gql eval layer). Set true by that
+    /// statement, cleared on commit/rollback. Only the GQL statement executor reads
+    /// it — the core mutators are access-mode agnostic; a read-only write is
+    /// rejected at the statement boundary before any mutation applies.
+    tx_read_only: bool,
 }
 
 /// One inverse op recorded by a mutation while a transaction frame is open, to be
@@ -2023,6 +2029,20 @@ impl Graph {
         self.tx_depth > 0
     }
 
+    /// Is the active explicit transaction READ ONLY? Set by ISO GQL
+    /// `START TRANSACTION READ ONLY`, cleared on commit/rollback. The GQL statement
+    /// executor consults this to reject a write statement in a read-only transaction.
+    #[inline]
+    pub fn tx_read_only(&self) -> bool {
+        self.tx_read_only
+    }
+
+    /// Set/clear the active transaction's READ ONLY access mode (see [`Graph::tx_read_only`]).
+    #[inline]
+    pub fn set_tx_read_only(&mut self, read_only: bool) {
+        self.tx_read_only = read_only;
+    }
+
     /// Open a transaction frame. Nesting increments depth; the outermost frame
     /// owns commit/rollback (flat, savepoint-less), matching the TS core.
     pub fn begin_tx(&mut self) {
@@ -3043,6 +3063,7 @@ impl Builder {
             tx_touched: Vec::new(),
             tx_touched_edges: Vec::new(),
             applying_undo: false,
+            tx_read_only: false,
         }
     }
 }

@@ -178,6 +178,95 @@ suite('R-TX differential: deferred constraint checks (TS vs native)', () => {
   });
 });
 
+suite('R-TX differential: ISO transaction keywords (TS vs native)', () => {
+  test('START … INSERT … COMMIT via keywords persists on both engines', () => {
+    differential(() => {}, [
+      { label: 'START', run: (e) => e.query(`START TRANSACTION`) },
+      { label: 'insert a', run: (e) => e.query(`INSERT (:Acct {id: 'a', bal: 100})`) },
+      { label: 'insert b', run: (e) => e.query(`INSERT (:Acct {id: 'b', bal: 200})`) },
+      { label: 'COMMIT', run: (e) => e.query(`COMMIT`) },
+    ]);
+  });
+
+  test('START … INSERT … ROLLBACK via keywords discards on both engines', () => {
+    differential(() => {}, [
+      { label: 'seed', run: (e) => e.query(`INSERT (:Acct {id: 'seed', bal: 1})`) },
+      { label: 'START', run: (e) => e.query(`START TRANSACTION`) },
+      { label: 'insert a', run: (e) => e.query(`INSERT (:Acct {id: 'a', bal: 100})`) },
+      { label: 'ROLLBACK', run: (e) => e.query(`ROLLBACK`) },
+    ]);
+  });
+
+  test('COMMIT WORK / ROLLBACK WORK parse and behave identically', () => {
+    differential(() => {}, [
+      { label: 'START #1', run: (e) => e.query(`START TRANSACTION`) },
+      { label: 'insert a', run: (e) => e.query(`INSERT (:Acct {id: 'a', bal: 1})`) },
+      { label: 'COMMIT WORK', run: (e) => e.query(`COMMIT WORK`) },
+      { label: 'START #2', run: (e) => e.query(`START TRANSACTION`) },
+      { label: 'insert b', run: (e) => e.query(`INSERT (:Acct {id: 'b', bal: 2})`) },
+      { label: 'ROLLBACK WORK', run: (e) => e.query(`ROLLBACK WORK`) },
+    ]);
+  });
+
+  test('a deferred required constraint via keywords: commits when valid', () => {
+    differential(
+      (e) => declareRequired(e),
+      [
+        { label: 'START', run: (e) => e.query(`START TRANSACTION`) },
+        { label: 'insert u (no email)', run: (e) => e.query(`INSERT (:Acct {id: 'u'})`) },
+        {
+          label: 'set email later',
+          run: (e) => e.query(`MATCH (n:Acct {id: 'u'}) SET n.email = 'u@x.io'`),
+        },
+        { label: 'COMMIT', run: (e) => e.query(`COMMIT`) },
+      ],
+    );
+  });
+
+  test('a deferred required constraint via keywords: COMMIT rolls back when invalid', () => {
+    differential(
+      (e) => declareRequired(e),
+      [
+        { label: 'START', run: (e) => e.query(`START TRANSACTION`) },
+        { label: 'insert v ok', run: (e) => e.query(`INSERT (:Acct {id: 'v', email: 'v@x.io'})`) },
+        { label: 'insert w (no email)', run: (e) => e.query(`INSERT (:Acct {id: 'w'})`) },
+        // Both engines throw ConstraintViolation and roll the whole tx back.
+        { label: 'COMMIT → violation', run: (e) => e.query(`COMMIT`) },
+      ],
+    );
+  });
+
+  test('nested START TRANSACTION is the same coded error on both engines', () => {
+    differential(() => {}, [
+      { label: 'START', run: (e) => e.query(`START TRANSACTION`) },
+      { label: 'nested START → error', run: (e) => e.query(`START TRANSACTION`) },
+      // Close the still-open transaction so the final-state read agrees cleanly.
+      { label: 'ROLLBACK', run: (e) => e.query(`ROLLBACK`) },
+    ]);
+  });
+
+  test('COMMIT / ROLLBACK with no active transaction is the same coded error', () => {
+    differential(() => {}, [
+      { label: 'COMMIT no tx → error', run: (e) => e.query(`COMMIT`) },
+      { label: 'ROLLBACK no tx → error', run: (e) => e.query(`ROLLBACK`) },
+    ]);
+  });
+
+  test('READ ONLY rejects a write and allows a read, identically', () => {
+    differential(() => {}, [
+      { label: 'seed', run: (e) => e.query(`INSERT (:Acct {id: 'seed', bal: 1})`) },
+      { label: 'START READ ONLY', run: (e) => e.query(`START TRANSACTION READ ONLY`) },
+      { label: 'read is allowed', run: (e) => e.query(`MATCH (n:Acct) RETURN n.id`) },
+      { label: 'INSERT rejected', run: (e) => e.query(`INSERT (:Acct {id: 'x', bal: 9})`) },
+      { label: 'SET rejected', run: (e) => e.query(`MATCH (n:Acct) SET n.bal = 5`) },
+      { label: 'DELETE rejected', run: (e) => e.query(`MATCH (n:Acct {id: 'seed'}) DELETE n`) },
+      { label: 'COMMIT', run: (e) => e.query(`COMMIT`) },
+      // After commit the mode clears — a write applies on both engines.
+      { label: 'write after commit', run: (e) => e.query(`INSERT (:Acct {id: 'x', bal: 9})`) },
+    ]);
+  });
+});
+
 // A unique constraint isn't declarable via GQL DDL; both engines take the same
 // programmatic call. Small shims keep the driver engine-neutral.
 function declareRequired(e: Engine): void {

@@ -29,7 +29,10 @@ import type {
   RemoveItem,
   SetItem,
   SetOp,
+  Statement,
+  TxControl,
 } from './ast.js';
+import { isTxControl } from './ast.js';
 import {
   candidateCount,
   candidateVertices,
@@ -3043,6 +3046,60 @@ const mapToRow = (b: Binding): Row => {
 
 const WRITE_CLAUSES = new Set(['insert', 'merge', 'set', 'remove', 'delete']);
 
+/** Does a query mutate the graph (contain any INSERT/MERGE/SET/REMOVE/DELETE)? */
+const queryHasWrite = (query: Query): boolean =>
+  query.parts.some((part) => part.clauses.some((clause) => WRITE_CLAUSES.has(clause.kind)));
+
+/**
+ * Execute an ISO GQL transaction-control command (`START TRANSACTION`/`COMMIT`/
+ * `ROLLBACK`) by driving the session's transaction frame on the graph. Returns
+ * nothing (a write-only shape — no rows/columns). ISO semantics are enforced
+ * here, not in the core primitives:
+ *  - `START TRANSACTION` while one is already active → `E_INVALID_GRAPH_OP`
+ *    (ISO forbids nesting). The graph's tx depth reflects only explicit
+ *    transactions here, since a TxControl is not a write and so is never wrapped
+ *    in a per-statement auto-commit frame.
+ *  - `COMMIT`/`ROLLBACK` with no active transaction → `E_INVALID_GRAPH_OP`. The
+ *    depth is checked in the executor so ROLLBACK is symmetric with COMMIT
+ *    *without* changing the core `rollbackTransaction`'s idempotent contract.
+ *  - The READ ONLY access mode is recorded on the graph (and cleared on
+ *    commit/rollback); a subsequent write statement consults it (see `execute`).
+ */
+const runTxControl = (tx: TxControl, graph: Graph): void => {
+  switch (tx.kind) {
+    case 'start':
+      if (graph.isTransacting()) {
+        throw new LenkeError('START TRANSACTION: a transaction is already active', {
+          code: ErrorCode.InvalidGraphOp,
+        });
+      }
+
+      graph.beginTransaction();
+      graph.setTransactionReadOnly(tx.accessMode === 'read only');
+      break;
+    case 'commit':
+      if (!graph.isTransacting()) {
+        throw new LenkeError('COMMIT: no active transaction', { code: ErrorCode.InvalidGraphOp });
+      }
+
+      try {
+        graph.commitTransaction(); // may throw (deferred checks) after rolling back
+      } finally {
+        graph.setTransactionReadOnly(false);
+      }
+
+      break;
+    case 'rollback':
+      if (!graph.isTransacting()) {
+        throw new LenkeError('ROLLBACK: no active transaction', { code: ErrorCode.InvalidGraphOp });
+      }
+
+      graph.rollbackTransaction();
+      graph.setTransactionReadOnly(false);
+      break;
+  }
+};
+
 /**
  * Run one compiled linear query (clause sequence) to result rows. A statement
  * that writes runs inside one transaction, so a mid-statement fault (e.g. a
@@ -3232,9 +3289,30 @@ export const compile = <R extends Row = Row>(query: Query): Plan<R> => {
   return plan as Plan<R>;
 };
 
-/** Compile and run a parsed query in one call (no plan reuse). */
+/**
+ * Compile and run a parsed statement in one call (no plan reuse). A
+ * transaction-control command (`START TRANSACTION`/`COMMIT`/`ROLLBACK`) drives the
+ * session's transaction frame and returns no rows; a linear query compiles and
+ * runs as usual. READ ONLY enforcement lives here, at the statement level: a write
+ * statement (any INSERT/MERGE/SET/REMOVE/DELETE) run while the active transaction
+ * is READ ONLY is rejected *before* it applies — no mutator is touched.
+ */
 export const execute = <R extends Row = Row>(
-  query: Query,
+  stmt: Statement,
   graph: Graph,
   params: Params = {},
-): R[] => compile<R>(query)(graph, params);
+): R[] => {
+  if (isTxControl(stmt)) {
+    runTxControl(stmt, graph);
+
+    return [];
+  }
+
+  if (graph.isReadOnlyTransaction() && queryHasWrite(stmt)) {
+    throw new LenkeError('write statement rejected: the active transaction is READ ONLY', {
+      code: ErrorCode.InvalidGraphOp,
+    });
+  }
+
+  return compile<R>(stmt)(graph, params);
+};

@@ -33,6 +33,39 @@ pub struct LinearQuery {
     pub clauses: Vec<Clause>,
 }
 
+/// A parsed top-level statement: either a linear (pattern) [`Query`] or an ISO
+/// GQL transaction-control command. [`super::parse`] returns this; the FFI query
+/// path dispatches on the variant (a query lowers + runs; a [`TxControl`] drives
+/// the session's transaction frame). Mirrors the TS `Statement` union.
+#[derive(Debug, Clone)]
+pub enum Statement {
+    Query(Query),
+    Tx(TxControl),
+}
+
+/// ISO/IEC 39075 transaction-control command: `START TRANSACTION [READ ONLY |
+/// READ WRITE]`, `COMMIT [WORK]`, `ROLLBACK [WORK]`. Carries no clauses — it drives
+/// `Graph::begin_tx`/`commit_tx`/`rollback_tx`. `access_mode` is only meaningful
+/// for `Start` (defaults to READ WRITE when omitted). Mirrors the TS `TxControl`.
+#[derive(Debug, Clone)]
+pub struct TxControl {
+    pub kind: TxKind,
+    pub access_mode: Option<AccessMode>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TxKind {
+    Start,
+    Commit,
+    Rollback,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccessMode {
+    ReadOnly,
+    ReadWrite,
+}
+
 #[derive(Debug, Clone)]
 pub enum Clause {
     Match(MatchClause),

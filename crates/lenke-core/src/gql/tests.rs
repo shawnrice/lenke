@@ -3200,3 +3200,220 @@ fn temporal_now_functions_read_injected_now() {
         vec![vec![tdate("2020-02-29")]]
     );
 }
+
+// --- ISO transaction keywords (START TRANSACTION / COMMIT / ROLLBACK) ---------
+// Byte-identical with the TS `transaction-keywords.test.ts` and the cross-engine
+// differential (packages/native/src/transaction-conformance.test.ts).
+
+/// The sorted `id`s of every `:Acct` vertex — a compact view of committed state.
+fn acct_ids(g: &mut Graph) -> Vec<String> {
+    rows(g, "MATCH (n:Acct) RETURN n.id AS id ORDER BY n.id")
+        .into_iter()
+        .map(|r| match &r[0] {
+            Value::Str(s) => s.to_string(),
+            other => panic!("expected a string id, got {other:?}"),
+        })
+        .collect()
+}
+
+/// Execute a statement expecting a coded execution error; return its code.
+fn tx_err(g: &mut Graph, query: &str) -> crate::error_codes::ErrorCode {
+    parse(query)
+        .unwrap_or_else(|e| panic!("parse error for `{query}`: {e}"))
+        .execute(g, &Params::new())
+        .unwrap_err()
+        .code
+}
+
+#[test]
+fn tx_keywords_start_insert_commit_persists() {
+    let mut g = ndjson::decode("").unwrap();
+    assert!(q(&mut g, "START TRANSACTION").1.is_empty());
+    assert!(g.in_transaction());
+    q(&mut g, "INSERT (:Acct {id: 'a'})");
+    q(&mut g, "INSERT (:Acct {id: 'b'})");
+    // Read-your-writes inside the transaction.
+    assert_eq!(acct_ids(&mut g), vec!["a", "b"]);
+    q(&mut g, "COMMIT");
+    assert!(!g.in_transaction());
+    assert_eq!(acct_ids(&mut g), vec!["a", "b"]);
+}
+
+#[test]
+fn tx_keywords_start_insert_rollback_discards() {
+    let mut g = ndjson::decode("").unwrap();
+    q(&mut g, "INSERT (:Acct {id: 'seed'})");
+    q(&mut g, "START TRANSACTION");
+    q(&mut g, "INSERT (:Acct {id: 'a'})");
+    q(&mut g, "ROLLBACK");
+    assert!(!g.in_transaction());
+    assert_eq!(acct_ids(&mut g), vec!["seed"]);
+}
+
+#[test]
+fn tx_keywords_commit_work_and_rollback_work() {
+    let mut g = ndjson::decode("").unwrap();
+    q(&mut g, "START TRANSACTION");
+    q(&mut g, "INSERT (:Acct {id: 'a'})");
+    q(&mut g, "COMMIT WORK");
+    assert_eq!(acct_ids(&mut g), vec!["a"]);
+    q(&mut g, "START TRANSACTION");
+    q(&mut g, "INSERT (:Acct {id: 'b'})");
+    q(&mut g, "ROLLBACK WORK");
+    assert_eq!(acct_ids(&mut g), vec!["a"]);
+}
+
+#[test]
+fn tx_keywords_deferred_required_commits_when_valid() {
+    let mut g = ndjson::decode("").unwrap();
+    g.create_required_constraint("Acct", "email").unwrap();
+    // The intermediate state (an Acct with no email) is allowed until COMMIT.
+    q(&mut g, "START TRANSACTION");
+    q(&mut g, "INSERT (:Acct {id: 'a'})");
+    q(&mut g, "MATCH (n:Acct {id: 'a'}) SET n.email = 'a@x.io'");
+    q(&mut g, "COMMIT");
+    assert_eq!(
+        rows(&mut g, "MATCH (n:Acct) RETURN n.email AS e"),
+        vec![vec![s("a@x.io")]]
+    );
+}
+
+#[test]
+fn tx_keywords_deferred_required_rolls_back_when_invalid() {
+    let mut g = ndjson::decode("").unwrap();
+    g.create_required_constraint("Acct", "email").unwrap();
+    q(&mut g, "START TRANSACTION");
+    q(&mut g, "INSERT (:Acct {id: 'a', email: 'a@x.io'})");
+    q(&mut g, "INSERT (:Acct {id: 'b'})"); // never gets an email
+    assert_eq!(
+        tx_err(&mut g, "COMMIT"),
+        crate::error_codes::ErrorCode::ConstraintViolation
+    );
+    assert!(!g.in_transaction());
+    assert!(acct_ids(&mut g).is_empty());
+}
+
+#[test]
+fn tx_keywords_nested_start_is_an_error() {
+    let mut g = ndjson::decode("").unwrap();
+    q(&mut g, "START TRANSACTION");
+    assert_eq!(
+        tx_err(&mut g, "START TRANSACTION"),
+        crate::error_codes::ErrorCode::InvalidGraphOp
+    );
+    // The original transaction is untouched.
+    assert!(g.in_transaction());
+    q(&mut g, "ROLLBACK");
+}
+
+#[test]
+fn tx_keywords_commit_or_rollback_with_no_tx_is_an_error() {
+    let mut g = ndjson::decode("").unwrap();
+    assert_eq!(
+        tx_err(&mut g, "COMMIT"),
+        crate::error_codes::ErrorCode::InvalidGraphOp
+    );
+    assert_eq!(
+        tx_err(&mut g, "ROLLBACK"),
+        crate::error_codes::ErrorCode::InvalidGraphOp
+    );
+}
+
+#[test]
+fn tx_keywords_read_only_rejects_writes_allows_reads() {
+    let mut g = ndjson::decode("").unwrap();
+    q(&mut g, "INSERT (:Acct {id: 'seed'})");
+    q(&mut g, "START TRANSACTION READ ONLY");
+    // A read is fine.
+    assert_eq!(acct_ids(&mut g), vec!["seed"]);
+    // Every write shape is rejected before it applies.
+    assert_eq!(
+        tx_err(&mut g, "INSERT (:Acct {id: 'x'})"),
+        crate::error_codes::ErrorCode::InvalidGraphOp
+    );
+    assert_eq!(
+        tx_err(&mut g, "MATCH (n:Acct) SET n.touched = true"),
+        crate::error_codes::ErrorCode::InvalidGraphOp
+    );
+    assert_eq!(
+        tx_err(&mut g, "MATCH (n:Acct {id: 'seed'}) DELETE n"),
+        crate::error_codes::ErrorCode::InvalidGraphOp
+    );
+    q(&mut g, "COMMIT");
+    // After commit the read-only mode is cleared — writes work again.
+    q(&mut g, "INSERT (:Acct {id: 'x'})");
+    assert_eq!(acct_ids(&mut g), vec!["seed", "x"]);
+}
+
+#[test]
+fn tx_keywords_read_write_allows_writes() {
+    use super::ast::{AccessMode, Statement, TxKind};
+    let mut g = ndjson::decode("").unwrap();
+    q(&mut g, "START TRANSACTION READ WRITE");
+    q(&mut g, "INSERT (:Acct {id: 'a'})");
+    q(&mut g, "ROLLBACK");
+    q(&mut g, "INSERT (:Acct {id: 'b'})");
+    assert_eq!(acct_ids(&mut g), vec!["b"]);
+
+    // The parsed access mode is READ WRITE.
+    match parse("START TRANSACTION READ WRITE").unwrap() {
+        Statement::Tx(tx) => {
+            assert_eq!(tx.kind, TxKind::Start);
+            assert_eq!(tx.access_mode, Some(AccessMode::ReadWrite));
+        }
+        other => panic!("expected a TxControl, got {other:?}"),
+    }
+}
+
+#[test]
+fn tx_keywords_parse_shapes() {
+    use super::ast::{AccessMode, Statement, TxKind};
+    let tx = |src: &str| match parse(src).unwrap() {
+        Statement::Tx(tx) => tx,
+        other => panic!("expected a TxControl for `{src}`, got {other:?}"),
+    };
+    assert_eq!(tx("START TRANSACTION").kind, TxKind::Start);
+    assert_eq!(tx("START TRANSACTION").access_mode, None);
+    assert_eq!(
+        tx("START TRANSACTION READ ONLY").access_mode,
+        Some(AccessMode::ReadOnly)
+    );
+    assert_eq!(
+        tx("start transaction read only").access_mode,
+        Some(AccessMode::ReadOnly)
+    );
+    assert_eq!(tx("COMMIT").kind, TxKind::Commit);
+    assert_eq!(tx("COMMIT WORK").kind, TxKind::Commit);
+    assert_eq!(tx("ROLLBACK").kind, TxKind::Rollback);
+    assert_eq!(tx("ROLLBACK WORK").kind, TxKind::Rollback);
+    // A linear query is NOT a TxControl.
+    assert!(matches!(
+        parse("MATCH (n) RETURN n").unwrap(),
+        Statement::Query(_)
+    ));
+}
+
+#[test]
+fn tx_keywords_malformed_are_syntax_errors() {
+    assert!(parse("START").is_err());
+    assert!(parse("START FROBNICATE").is_err());
+    assert!(parse("START TRANSACTION READ SIDEWAYS").is_err());
+    assert!(parse("START TRANSACTION READ ONLY READ WRITE").is_err());
+    assert!(parse("COMMIT ALL THE THINGS").is_err());
+}
+
+#[test]
+fn tx_keywords_soft_words_stay_identifiers() {
+    // `read` / `write` / `only` / `transaction` are NOT reserved — usable as a
+    // label, variable, property key, and alias.
+    let mut g = ndjson::decode("").unwrap();
+    q(&mut g, "INSERT (:read {write: 1})");
+    assert_eq!(
+        rows(&mut g, "MATCH (read:read) RETURN read.write AS only"),
+        vec![vec![n(1.0)]]
+    );
+    assert_eq!(
+        rows(&mut g, "MATCH (n:read) RETURN n.write AS transaction"),
+        vec![vec![n(1.0)]]
+    );
+}

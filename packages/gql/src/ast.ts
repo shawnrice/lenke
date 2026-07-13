@@ -19,6 +19,29 @@ export type Query = {
   ops: readonly SetOp[];
 };
 
+/**
+ * ISO/IEC 39075 transaction-control command — a complete top-level statement that
+ * is NOT a linear query: `START TRANSACTION [READ ONLY | READ WRITE]`,
+ * `COMMIT [WORK]`, `ROLLBACK [WORK]`. It drives the session's transaction frame
+ * (`Graph.beginTransaction`/`commitTransaction`/`rollbackTransaction`) rather than
+ * matching a pattern, so it carries no clauses. `accessMode` is only meaningful
+ * for `start` (default `read write` when omitted).
+ */
+export type TxControl = {
+  kind: 'start' | 'commit' | 'rollback';
+  accessMode?: 'read only' | 'read write';
+};
+
+/**
+ * A parsed top-level statement: either a linear (pattern) query or a
+ * transaction-control command. `parse()` returns this union; a `TxControl` is
+ * discriminated by its `kind` field (a `Query` has none).
+ */
+export type Statement = Query | TxControl;
+
+/** Narrow a parsed statement to a {@link TxControl} (vs a {@link Query}). */
+export const isTxControl = (stmt: Statement): stmt is TxControl => 'kind' in stmt;
+
 /** `UNION` / `EXCEPT` / `INTERSECT`, optionally `ALL` (keep duplicates). */
 export type SetOp = {
   op: 'union' | 'except' | 'intersect';

@@ -24,8 +24,20 @@ fn cast_target_fn(type_name: &str) -> Option<&'static str> {
     })
 }
 
-pub fn parse(src: &str) -> Result<Query, SyntaxError> {
-    parse_with_dialect(src, Dialect::Lenke)
+/// Parse a top-level [`Statement`]: either a linear query or an ISO GQL
+/// transaction-control command (`START TRANSACTION`/`COMMIT`/`ROLLBACK`). The FFI
+/// query path (`lnk_query_rows`/`lnk_query_arrow`) dispatches on the returned
+/// variant. For the query grammar alone, [`parse_with_dialect`] returns a bare
+/// [`Query`].
+pub fn parse(src: &str) -> Result<Statement, SyntaxError> {
+    let tokens = tokenize(src)?;
+    let mut p = Parser {
+        tokens,
+        pos: 0,
+        depth: 0,
+        dialect: Dialect::Lenke,
+    };
+    p.parse_statement()
 }
 
 /// Parse a bare boolean predicate — a `WHERE`-clause expression — into its `Expr`
@@ -1377,6 +1389,99 @@ impl Parser {
             targets.push(self.parse_expr()?);
         }
         Ok(Clause::Delete { detach, targets })
+    }
+
+    /// A bare (non-delimited) identifier matching `word` case-insensitively — the
+    /// contextual match used for the transaction keywords (START/TRANSACTION/
+    /// COMMIT/ROLLBACK/WORK/READ/ONLY/WRITE), which are recognized here at
+    /// statement start rather than promoted to lexer keywords or reserved words, so
+    /// they stay usable as ordinary identifiers everywhere else.
+    fn is_word(&self, word: &str) -> bool {
+        let t = self.peek();
+        t.tt == Tt::Ident && !t.delimited && t.value.eq_ignore_ascii_case(word)
+    }
+
+    /// A statement is transaction control iff its first token is a bare `START`,
+    /// `COMMIT`, or `ROLLBACK` identifier — a linear query can never begin with
+    /// one, so there is no ambiguity, and a delimited `` `start` `` stays an ident.
+    fn starts_tx_control(&self) -> bool {
+        self.is_word("start") || self.is_word("commit") || self.is_word("rollback")
+    }
+
+    /// Parse a top-level statement: a transaction-control command when it starts
+    /// with one, else a linear query (possibly joined by set operators).
+    fn parse_statement(&mut self) -> R<Statement> {
+        if self.starts_tx_control() {
+            let tx = self.parse_tx_control()?;
+            if !self.at_end() {
+                let t = self.peek();
+                let got = if t.value.is_empty() {
+                    format!("{:?}", t.tt)
+                } else {
+                    t.value.clone()
+                };
+                return err(format!("Unexpected trailing input '{got}'"), t.pos);
+            }
+            return Ok(Statement::Tx(tx));
+        }
+        Ok(Statement::Query(self.parse_query()?))
+    }
+
+    /// `READ ONLY | READ WRITE` — the single optional access mode after
+    /// `START TRANSACTION`. ISO also allows a comma-separated mode list; v1 takes
+    /// one mode (a second mode / trailing comma falls to the top-level trailing-
+    /// input check). `READ` not followed by `ONLY`/`WRITE` is a syntax error.
+    fn parse_access_mode(&mut self) -> R<Option<AccessMode>> {
+        if !self.is_word("read") {
+            return Ok(None);
+        }
+        self.advance(); // READ
+        if self.is_word("only") {
+            self.advance();
+            return Ok(Some(AccessMode::ReadOnly));
+        }
+        if self.is_word("write") {
+            self.advance();
+            return Ok(Some(AccessMode::ReadWrite));
+        }
+        let t = self.peek();
+        err("Expected ONLY or WRITE after READ".to_string(), t.pos)
+    }
+
+    fn parse_tx_control(&mut self) -> R<TxControl> {
+        let kw = self.advance().value.to_ascii_lowercase(); // start | commit | rollback
+        if kw == "start" {
+            if !self.is_word("transaction") {
+                let t = self.peek();
+                let got = if t.value.is_empty() {
+                    format!("{:?}", t.tt)
+                } else {
+                    t.value.clone()
+                };
+                return err(
+                    format!("Expected TRANSACTION after START, got '{got}'"),
+                    t.pos,
+                );
+            }
+            self.advance(); // TRANSACTION
+            let access_mode = self.parse_access_mode()?;
+            return Ok(TxControl {
+                kind: TxKind::Start,
+                access_mode,
+            });
+        }
+        // COMMIT / ROLLBACK — optionally followed by the noise word WORK.
+        if self.is_word("work") {
+            self.advance();
+        }
+        Ok(TxControl {
+            kind: if kw == "commit" {
+                TxKind::Commit
+            } else {
+                TxKind::Rollback
+            },
+            access_mode: None,
+        })
     }
 
     fn parse_linear_query(&mut self) -> R<LinearQuery> {

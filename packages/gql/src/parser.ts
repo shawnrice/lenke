@@ -58,9 +58,12 @@ import type {
   SetClause,
   SetItem,
   SortItem,
+  Statement,
+  TxControl,
   WithClause,
   ForClause,
 } from './ast.js';
+import { isTxControl } from './ast.js';
 import { GqlSyntaxError, isReserved, type Token, type TokenType, tokenize } from './lexer.js';
 
 // ISO GQL `CAST` target type name → the conversion function it desugars to.
@@ -158,7 +161,7 @@ const TEMPORAL_KW = new Set(['date', 'datetime', 'timestamp', 'duration']);
 const ADD_OPS: Partial<Record<TokenType, ArithOp>> = { plus: '+', dash: '-' };
 const MUL_OPS: Partial<Record<TokenType, ArithOp>> = { star: '*', slash: '/', percent: '%' };
 
-export const parse = (src: string, opts?: { dialect?: Dialect }): Query => {
+export const parse = (src: string, opts?: { dialect?: Dialect }): Statement => {
   const tokens = tokenize(src);
   let pos = 0;
   // `lenke` (default) recognizes sigil extensions like `_MERGE`; `iso-strict`
@@ -1400,6 +1403,88 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Query => {
     return { clauses };
   };
 
+  // --- transaction-control statements (ISO/IEC 39075) ------------------------
+
+  // The transaction keywords (START/TRANSACTION/COMMIT/ROLLBACK/WORK/READ/ONLY/
+  // WRITE) are recognized *contextually* — matched here on the identifier text at
+  // statement start rather than promoted to lexer keywords or global reserved
+  // words. That leaves them fully usable as ordinary identifiers (variables,
+  // labels, aliases) everywhere else, so `READ`/`WRITE`/`ONLY`/`WORK`/
+  // `TRANSACTION` never shrink the namespace. (`START`/`COMMIT`/`ROLLBACK` remain
+  // ISO reserved words as they already were — quote them to use as identifiers.)
+  const isWord = (word: string): boolean =>
+    peek().type === 'ident' && !peek().delimited && peek().value.toLowerCase() === word;
+
+  // A statement is transaction control iff its first token is a bare `START`,
+  // `COMMIT`, or `ROLLBACK` identifier. A linear query can never begin with one of
+  // these, so there is no ambiguity — and a delimited `` `start` `` stays an
+  // identifier.
+  const startsTxControl = (): boolean => isWord('start') || isWord('commit') || isWord('rollback');
+
+  // `READ ONLY | READ WRITE` — the single optional access mode after
+  // `START TRANSACTION`. ISO also allows a comma-separated mode list; v1 supports
+  // one mode. A second mode / trailing comma is left to the top-level trailing-
+  // input check (a syntax error), and `READ` not followed by `ONLY`/`WRITE` is a
+  // syntax error here.
+  const parseAccessMode = (): TxControl['accessMode'] | undefined => {
+    if (!isWord('read')) {
+      return undefined;
+    }
+
+    advance(); // READ
+
+    if (isWord('only')) {
+      advance();
+
+      return 'read only';
+    }
+
+    if (isWord('write')) {
+      advance();
+
+      return 'read write';
+    }
+
+    throw new GqlSyntaxError('Expected ONLY or WRITE after READ', peek().pos);
+  };
+
+  const parseTxControl = (): TxControl => {
+    const kw = advance().value.toLowerCase(); // start | commit | rollback
+
+    if (kw === 'start') {
+      if (!isWord('transaction')) {
+        throw new GqlSyntaxError(
+          `Expected TRANSACTION after START, got '${peek().value || peek().type}'`,
+          peek().pos,
+        );
+      }
+
+      advance(); // TRANSACTION
+
+      return { kind: 'start', accessMode: parseAccessMode() };
+    }
+
+    // COMMIT / ROLLBACK — optionally followed by the noise word WORK.
+    if (isWord('work')) {
+      advance();
+    }
+
+    return { kind: kw === 'commit' ? 'commit' : 'rollback' };
+  };
+
+  if (startsTxControl()) {
+    const tx = parseTxControl();
+
+    if (!atEnd()) {
+      throw new GqlSyntaxError(
+        `Unexpected trailing input '${peek().value || peek().type}'`,
+        peek().pos,
+      );
+    }
+
+    return tx;
+  }
+
   // --- top level: linear queries joined by set operators ---------------------
 
   const SET_OPS: Partial<Record<string, SetOp['op']>> = {
@@ -1444,6 +1529,12 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Query => {
  */
 export const parsePredicate = (src: string): Expr => {
   const parsed = parse(`MATCH (_v) WHERE ${src}`);
+
+  // The MATCH wrapper always yields a linear query, never a transaction-control
+  // command — narrow so the `.parts` access below is well-typed.
+  if (isTxControl(parsed)) {
+    throw new GqlSyntaxError('a validator predicate must be a single boolean expression', 0);
+  }
 
   // Exactly one linear query, exactly one clause (the MATCH we wrapped it in) —
   // anything more means the predicate carried extra clauses/set-operators.

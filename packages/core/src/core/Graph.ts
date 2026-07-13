@@ -189,6 +189,12 @@ export class Graph {
   // re-checked at commit (R-TX deferral for edge writes).
   private txTouchedEdges = new Set<string>();
   private applyingUndo = false;
+  // Access mode of the active explicit transaction opened by ISO GQL
+  // `START TRANSACTION READ ONLY` (see @lenke/gql's executor). Set true by that
+  // statement, cleared on commit/rollback. Only the GQL statement executor reads
+  // it — the core mutators are access-mode agnostic; a read-only write is rejected
+  // one level up, at the statement boundary, before any mutation applies.
+  private txReadOnly = false;
 
   constructor(options: GraphOptions = {}) {
     this.verticesById = new Map();
@@ -2383,6 +2389,18 @@ export class Graph {
 
   /** True while a transaction is open and recording writes (not during a rollback replay). */
   public isTransacting = (): boolean => this.txDepth > 0 && !this.applyingUndo;
+
+  /**
+   * Is the active explicit transaction READ ONLY? Set by ISO GQL
+   * `START TRANSACTION READ ONLY`, cleared on commit/rollback. The GQL statement
+   * executor consults this to reject a write statement in a read-only transaction.
+   */
+  public isReadOnlyTransaction = (): boolean => this.txReadOnly;
+
+  /** Set/clear the active transaction's READ ONLY access mode (see {@link isReadOnlyTransaction}). */
+  public setTransactionReadOnly = (readOnly: boolean): void => {
+    this.txReadOnly = readOnly;
+  };
 
   /** Open a transaction frame. Nesting increments depth; the outermost frame owns commit/rollback. */
   public beginTransaction = (): void => {

@@ -1,10 +1,22 @@
 import type { Graph } from '@lenke/core';
+import { ErrorCode, LenkeError } from '@lenke/errors';
 
-import type { Query } from './ast.js';
+import type { Statement } from './ast.js';
+import { isTxControl } from './ast.js';
 import { compile, compileValidator, execute, type Plan, type Row } from './executor.js';
 import { parse, parsePredicate } from './parser.js';
 
-export type { Query, MatchClause, PathPattern, NodePattern, RelPattern, Expr } from './ast.js';
+export type {
+  Query,
+  Statement,
+  TxControl,
+  MatchClause,
+  PathPattern,
+  NodePattern,
+  RelPattern,
+  Expr,
+} from './ast.js';
+export { isTxControl } from './ast.js';
 export type { Plan, Row } from './executor.js';
 export { GqlSyntaxError } from './lexer.js';
 export { parse, parsePredicate } from './parser.js';
@@ -68,7 +80,17 @@ export const createValidator = (
  * evaluator — the byte-identical dual-engine invariant.
  */
 export const createInvariant = (graph: Graph, name: string, querySrc: string): void => {
-  const plan = compile(parse(querySrc));
+  const parsed = parse(querySrc);
+
+  // An invariant must be a whole-graph `MATCH … RETURN` assertion, never a
+  // transaction-control command.
+  if (isTxControl(parsed)) {
+    throw new LenkeError('an invariant must be a MATCH … RETURN query, not a transaction command', {
+      code: ErrorCode.Unsupported,
+    });
+  }
+
+  const plan = compile(parsed);
 
   graph.registerInvariant(name, querySrc, (g) => plan(g));
 };
@@ -78,7 +100,19 @@ export const createInvariant = (graph: Graph, name: string, querySrc: string): v
  * query, then call the plan with just `(graph, params)` — no re-parse, no
  * re-analysis per run.
  */
-export const prepare = <R extends Row = Row>(text: string): Plan<R> => compile<R>(parse(text));
+export const prepare = <R extends Row = Row>(text: string): Plan<R> => {
+  const parsed = parse(text);
+
+  // A transaction-control command has no reusable plan — run it with `query()`.
+  if (isTxControl(parsed)) {
+    throw new LenkeError(
+      'cannot prepare a transaction-control statement (START TRANSACTION/COMMIT/ROLLBACK); run it with query()',
+      { code: ErrorCode.Unsupported },
+    );
+  }
+
+  return compile<R>(parsed);
+};
 
 /**
  * Parse + run a query string against a graph in one call, with optional
@@ -127,5 +161,9 @@ export const gql = <R extends Row = Row>(graph: Graph) => {
   };
 };
 
-/** Parse a query string to its AST without executing (useful for tooling/tests). */
-export const parseQuery = (text: string): Query => parse(text);
+/**
+ * Parse a query string to its AST without executing (useful for tooling/tests).
+ * Returns a {@link Statement}: a {@link Query}, or a {@link TxControl} for a
+ * `START TRANSACTION`/`COMMIT`/`ROLLBACK` command.
+ */
+export const parseQuery = (text: string): Statement => parse(text);

@@ -16,7 +16,10 @@ use std::sync::Arc;
 #[cfg(feature = "parallel-query")]
 use rayon::prelude::*;
 
-use super::ast::{ArithOp, CompareOp, Direction, Lit, Quantifier, SetOp, SetOpKind};
+use super::ast::{
+    AccessMode, ArithOp, Clause, CompareOp, Direction, Lit, Quantifier, Query, SetOp, SetOpKind,
+    Statement, TxControl, TxKind,
+};
 use super::lexer::SyntaxError;
 use super::plan::{
     has_argless_aggregate, has_nested_aggregate, lower, AggFn, CClause, CExpr, CLabelExpr, CLinear,
@@ -5886,9 +5889,13 @@ impl Prepared {
     }
 }
 
-/// Parse and lower a query into a reusable [`Prepared`] plan.
+/// Parse and lower a query into a reusable [`Prepared`] plan. Only the linear
+/// query grammar is preparable — a transaction-control command (`START
+/// TRANSACTION`/`COMMIT`/`ROLLBACK`) has no reusable plan, so it is parsed via the
+/// query grammar here and surfaces the usual "expected a clause" syntax error;
+/// run it through the one-shot query path instead.
 pub fn prepare(text: &str) -> Result<Prepared, SyntaxError> {
-    let query = super::parse(text)?;
+    let query = super::parser::parse_with_dialect(text, super::ast::Dialect::Lenke)?;
     let (plan, param_names) = lower(&query);
     Ok(Prepared { plan, param_names })
 }
@@ -5905,6 +5912,119 @@ pub fn prepare(text: &str) -> Result<Prepared, SyntaxError> {
 pub fn run_invariant(plan: &Prepared, graph: &mut Graph) -> CodeResult<RowSet> {
     let params = positional(&plan.param_names, &Params::new())?;
     run_cquery_body(&plan.plan, graph, &params)
+}
+
+/// Does a query mutate the graph (contain any INSERT/MERGE/SET/REMOVE/DELETE)?
+/// Used to reject a write statement inside a READ ONLY transaction. Mirrors the
+/// TS `queryHasWrite` over the same clause set.
+fn query_has_write(q: &Query) -> bool {
+    q.parts.iter().any(|p| {
+        p.clauses.iter().any(|c| {
+            matches!(
+                c,
+                Clause::Insert(_)
+                    | Clause::Merge(_)
+                    | Clause::Set(_)
+                    | Clause::Remove(_)
+                    | Clause::Delete { .. }
+            )
+        })
+    })
+}
+
+/// Execute an ISO GQL transaction-control command by driving the graph's
+/// transaction frame. Returns an empty [`RowSet`] (no rows/columns), like a
+/// write-only query. ISO semantics are enforced here — NOT in the core primitives:
+///  - `START TRANSACTION` while one is active → `E_INVALID_GRAPH_OP` (no nesting);
+///    the depth reflects only explicit transactions, since a TxControl is not a
+///    write and so is never wrapped in a per-statement auto-commit frame.
+///  - `COMMIT`/`ROLLBACK` with no active transaction → `E_INVALID_GRAPH_OP`; the
+///    depth is checked here so ROLLBACK is symmetric with COMMIT without changing
+///    `Graph::rollback_tx`'s idempotent contract.
+///  - the READ ONLY access mode is recorded on the graph (cleared on
+///    commit/rollback) for a later write statement to consult.
+fn run_tx_control(tx: &TxControl, graph: &mut Graph) -> CodeResult<RowSet> {
+    match tx.kind {
+        TxKind::Start => {
+            if graph.in_transaction() {
+                return Err(CodeError::new(
+                    ErrorCode::InvalidGraphOp,
+                    "START TRANSACTION: a transaction is already active",
+                ));
+            }
+            graph.begin_tx();
+            graph.set_tx_read_only(matches!(tx.access_mode, Some(AccessMode::ReadOnly)));
+        }
+        TxKind::Commit => {
+            if !graph.in_transaction() {
+                return Err(CodeError::new(
+                    ErrorCode::InvalidGraphOp,
+                    "COMMIT: no active transaction",
+                ));
+            }
+            let result = graph.commit_tx();
+            graph.set_tx_read_only(false);
+            if let Err(e) = result {
+                return Err(tx_commit_error(e));
+            }
+        }
+        TxKind::Rollback => {
+            if !graph.in_transaction() {
+                return Err(CodeError::new(
+                    ErrorCode::InvalidGraphOp,
+                    "ROLLBACK: no active transaction",
+                ));
+            }
+            graph.rollback_tx();
+            graph.set_tx_read_only(false);
+        }
+    }
+    Ok(RowSet::new(Vec::new()))
+}
+
+/// Reject a write statement running inside a READ ONLY transaction, before it
+/// applies (statement-level check — no mutator is touched). A read query is
+/// always allowed.
+fn enforce_read_only(graph: &Graph, q: &Query) -> CodeResult<()> {
+    if graph.tx_read_only() && query_has_write(q) {
+        return Err(CodeError::new(
+            ErrorCode::InvalidGraphOp,
+            "write statement rejected: the active transaction is READ ONLY",
+        ));
+    }
+    Ok(())
+}
+
+impl Statement {
+    /// Lower and execute in one call (no plan reuse). A linear query runs as usual;
+    /// a transaction-control command drives the session's transaction frame and
+    /// returns no rows. This is the entry the FFI query path calls after
+    /// [`super::parse`].
+    pub fn execute(&self, graph: &mut Graph, params: &Params) -> CodeResult<RowSet> {
+        match self {
+            Statement::Query(q) => {
+                enforce_read_only(graph, q)?;
+                q.execute(graph, params)
+            }
+            Statement::Tx(tx) => run_tx_control(tx, graph),
+        }
+    }
+
+    /// Lower and execute, returning an Apache Arrow columnar blob. A
+    /// transaction-control command produces an empty column blob.
+    #[cfg(feature = "arrow")]
+    pub fn execute_arrow(&self, graph: &mut Graph, params: &Params) -> CodeResult<Vec<u8>> {
+        match self {
+            Statement::Query(q) => {
+                enforce_read_only(graph, q)?;
+                q.execute_arrow(graph, params)
+            }
+            Statement::Tx(tx) => {
+                let rs = run_tx_control(tx, graph)?;
+                Ok(crate::arrow::to_arrow(&rs))
+            }
+        }
+    }
 }
 
 impl super::ast::Query {
