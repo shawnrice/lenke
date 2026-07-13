@@ -26,6 +26,7 @@ import type {
   PropertyConstraint,
   Query,
   RelPattern,
+  Segment,
   RemoveItem,
   SetItem,
   SetOp,
@@ -2834,9 +2835,267 @@ const compileClause = (clause: Clause): CClause => {
   }
 };
 
-type CLinear = { clauses: readonly CClause[] };
+// --- count(*) shortcuts (edge-anchored + two-hop degree product) -------------
+// Detected on the raw AST at compile time; they compute the count directly from
+// the type-bucket sizes / a degree product instead of enumerating every match.
+// Mirror the native engine's try_count_edges / try_count_two_hop, and are
+// provably identical for the homomorphic count these shapes produce.
+
+/** Edge types a rel label admits: `null` = bail (and/not/wildcard); `undefined`
+ * = "any type" (no `:T`); `string[]` = exactly those types. */
+const relTypeNames = (label: LabelExpr | undefined): string[] | null | undefined => {
+  if (!label) {
+    return undefined;
+  }
+
+  if (label.kind === 'label') {
+    return [label.name];
+  }
+
+  if (label.kind === 'or') {
+    const l = relTypeNames(label.left);
+    const r = relTypeNames(label.right);
+
+    return l && r ? [...l, ...r] : null;
+  }
+
+  return null;
+};
+
+const plainNode = (n: NodePattern): boolean =>
+  (n.properties?.length ?? 0) === 0 && n.where === undefined;
+const plainRel = (r: RelPattern): boolean =>
+  (r.properties?.length ?? 0) === 0 && r.where === undefined && r.quantifier === undefined;
+
+/** The per-type `Set<Edge>` buckets for `types` (undefined = every type). */
+const bucketsFor = (
+  byType: Map<string, Set<Edge>> | undefined,
+  types: string[] | undefined,
+): (Set<Edge> | undefined)[] => {
+  if (!byType) {
+    return [];
+  }
+
+  return types ? types.map((t) => byType.get(t)) : [...byType.values()];
+};
+
+/** Count edges across `buckets` that pass `keep`. */
+const countEdges = (buckets: (Set<Edge> | undefined)[], keep: (e: Edge) => boolean): number => {
+  let n = 0;
+
+  for (const set of buckets) {
+    if (!set) {
+      continue;
+    }
+
+    for (const e of set) {
+      if (keep(e)) {
+        n += 1;
+      }
+    }
+  }
+
+  return n;
+};
+
+type CountFn = (graph: Graph, params: Params) => Row;
+
+/** 1-hop `(a)-[:T]->(b)` count: bucket sizes (unlabeled) or a filtered bucket
+ * scan. `null` if the segment can't be bucket-counted (both/And/Not/wildcard). */
+const buildOneHopCount = (
+  seg: Segment,
+  start: NodePattern,
+  rowOf: (n: number) => Row,
+): CountFn | null => {
+  const { rel, node } = seg;
+
+  if (!plainRel(rel) || !plainNode(node) || rel.direction === 'both') {
+    return null;
+  }
+
+  const types = relTypeNames(rel.label);
+
+  if (types === null) {
+    return null;
+  }
+
+  const aLabel = start.label;
+  const bLabel = node.label;
+  const out = rel.direction === 'out';
+
+  return (graph) => {
+    if (aLabel === undefined && bLabel === undefined && types) {
+      // Unlabeled endpoints → the bucket sizes. O(1) per type.
+      return rowOf(types.reduce((n, t) => n + (graph.edgesByLabel.get(t)?.size ?? 0), 0));
+    }
+
+    return rowOf(
+      countEdges(
+        bucketsFor(graph.edgesByLabel, types),
+        (edge) =>
+          matchesLabel(out ? edge.from : edge.to, aLabel) &&
+          matchesLabel(out ? edge.to : edge.from, bLabel),
+      ),
+    );
+  };
+};
+
+/** 2-hop `(a)-[:T1]->(b)-[:T2]->(c)` count via the degree product
+ * `Σ_b (edges reaching a valid a) × (edges reaching a valid c)`. `null` unless
+ * both rels are anonymous + directed and the node variables are distinct. */
+const buildTwoHopCount = (
+  s1: Segment,
+  s2: Segment,
+  start: NodePattern,
+  rowOf: (n: number) => Row,
+): CountFn | null => {
+  if (
+    !plainRel(s1.rel) ||
+    !plainRel(s2.rel) ||
+    s1.rel.variable !== undefined ||
+    s2.rel.variable !== undefined ||
+    s1.rel.direction === 'both' ||
+    s2.rel.direction === 'both' ||
+    !plainNode(s1.node) ||
+    !plainNode(s2.node)
+  ) {
+    return null;
+  }
+
+  const vars = [start.variable, s1.node.variable, s2.node.variable].filter(
+    (v): v is string => v !== undefined,
+  );
+
+  if (new Set(vars).size !== vars.length) {
+    return null; // a shared node variable is a self-join the product can't express
+  }
+
+  const t1 = relTypeNames(s1.rel.label);
+  const t2 = relTypeNames(s2.rel.label);
+
+  if (t1 === null || t2 === null) {
+    return null;
+  }
+
+  const aLabel = start.label;
+  const midLabel = s1.node.label;
+  const cLabel = s2.node.label;
+  // seg1 reaches `a` from b's reverse side; seg2 reaches `c` from b's forward side.
+  const toAOut = s1.rel.direction === 'in';
+  const fromCOut = s2.rel.direction === 'out';
+  const side = (
+    graph: Graph,
+    bId: string,
+    out: boolean,
+    types: string[] | undefined,
+    far: LabelExpr | undefined,
+  ): number => {
+    const byType = (out ? graph.edgesFromByLabel : graph.edgesToByLabel).get(bId);
+
+    return countEdges(bucketsFor(byType, types), (edge) =>
+      matchesLabel(out ? edge.to : edge.from, far),
+    );
+  };
+
+  return (graph) => {
+    const mids =
+      midLabel !== undefined && midLabel.kind === 'label'
+        ? (graph.verticesByLabel.get(midLabel.name) ?? new Set<Vertex>())
+        : graph.verticesById.values();
+    let count = 0;
+
+    for (const b of mids) {
+      if (!matchesLabel(b, midLabel)) {
+        continue;
+      }
+
+      const ways = side(graph, b.id, toAOut, t1, aLabel);
+
+      if (ways === 0) {
+        continue;
+      }
+
+      count += ways * side(graph, b.id, fromCOut, t2, cLabel);
+    }
+
+    return rowOf(count);
+  };
+};
+
+/**
+ * If a linear query is exactly `MATCH <1- or 2-segment path> RETURN count(*)`,
+ * return a closure computing the count directly (O(1)/O(E)) instead of
+ * enumerating every match; `null` if the shape doesn't qualify. The conditions
+ * match the native engine: 1-hop directed, no props/WHERE; 2-hop additionally
+ * needs anonymous rels and pairwise-distinct node variables (so the homomorphic
+ * degree product is exact).
+ */
+const detectCountShortcut = (clauses: readonly Clause[]): CountFn | null => {
+  if (clauses.length !== 2) {
+    return null;
+  }
+
+  const [m, ret] = clauses;
+
+  if (m.kind !== 'match' || m.optional || m.where !== undefined || m.patterns.length !== 1) {
+    return null;
+  }
+
+  if (ret.kind !== 'return') {
+    return null;
+  }
+
+  const proj = ret.projection;
+
+  if (
+    proj.star ||
+    proj.distinct ||
+    (proj.orderBy?.length ?? 0) > 0 ||
+    proj.skip !== undefined ||
+    proj.limit !== undefined ||
+    proj.items.length !== 1
+  ) {
+    return null;
+  }
+
+  const [item] = proj.items;
+  const e = item.expr;
+
+  if (e.kind !== 'func' || e.name !== 'count' || !e.star || e.distinct) {
+    return null;
+  }
+
+  const column = item.alias ?? columnName(e);
+  const rowOf = (count: number): Row => ({ [column]: count });
+  const [{ start, segments }] = m.patterns;
+
+  if (!plainNode(start)) {
+    return null;
+  }
+
+  if (segments.length === 1) {
+    const [seg] = segments;
+
+    return buildOneHopCount(seg, start, rowOf);
+  }
+
+  if (segments.length === 2) {
+    const [s1, s2] = segments;
+
+    return buildTwoHopCount(s1, s2, start, rowOf);
+  }
+
+  return null;
+};
+
+type CLinear = {
+  clauses: readonly CClause[];
+  /** Precomputed direct-count closure for `MATCH … RETURN count(*)`; else null. */
+  countShortcut: ((graph: Graph, params: Params) => Row) | null;
+};
 const compileLinear = (linear: LinearQuery): CLinear => ({
   clauses: linear.clauses.map(compileClause),
+  countShortcut: detectCountShortcut(linear.clauses),
 });
 
 // --- write clauses -----------------------------------------------------------
@@ -3416,6 +3675,13 @@ const runLinear = (linear: CLinear, graph: Graph, params: Params): Row[] => {
 };
 
 const runLinearClauses = (linear: CLinear, graph: Graph, params: Params): Row[] => {
+  // Direct `count(*)` shortcut (edge-bucket size / degree product) — skips
+  // enumerating every match. Only fires for the exact `MATCH … RETURN count(*)`
+  // shapes `detectCountShortcut` accepts.
+  if (linear.countShortcut) {
+    return [linear.countShortcut(graph, params)];
+  }
+
   // Bindings flow as a lazy stream; only barriers (mutations, aggregation,
   // ORDER BY) force materialization — so a streaming read never holds the whole
   // result set in memory.
