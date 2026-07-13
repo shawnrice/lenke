@@ -4881,6 +4881,126 @@ fn try_count_star(
     Some(rs)
 }
 
+/// Collect the edge-type ids named by a `:T` / `:A|B` relationship label into
+/// `out` (deduped). Returns `false` for `And`/`Not`/wildcard — no cheap type
+/// enumeration, so the caller must fall back to per-vertex expansion.
+fn collect_etype_ids(ctx: &Ctx, expr: &CLabelExpr, out: &mut Vec<u32>) -> bool {
+    match expr {
+        CLabelExpr::Label(r) => {
+            if let Some(t) = ctx.labels[*r].1 {
+                if !out.contains(&t) {
+                    out.push(t);
+                }
+            }
+            true
+        }
+        CLabelExpr::Or(l, r) => collect_etype_ids(ctx, l, out) && collect_etype_ids(ctx, r, out),
+        _ => false,
+    }
+}
+
+/// Edge-anchored shortcut for `MATCH (a)-[:T]->(b) RETURN count(*)`: one directed
+/// fixed-length segment, no WHERE, no inline props/WHERE on either endpoint or the
+/// relationship. Counts by scanning the relationship-**type** bucket(s) — the flat,
+/// contiguous edge-id arrays — instead of pointer-chasing every vertex's adjacency
+/// list. Unlabeled endpoints collapse to `bucket.len()` (O(1) per type); labelled
+/// endpoints filter each candidate edge's two endpoints by label.
+///
+/// Provably identical to the general path: an edge has exactly one type, so the
+/// per-type buckets are disjoint, and every stored edge of the type is exactly one
+/// directed `a→b` match (self-loops included once, matching `out_adj`). `Both` is
+/// left to the scalar path (its self-loop de-duplication differs from a bucket scan).
+fn try_count_edges(
+    linear: &CLinear,
+    graph: &Graph,
+    plan: &CQuery,
+    params: &[Val],
+) -> Option<RowSet> {
+    let [CClause::Match {
+        optional: false,
+        patterns,
+        where_: None,
+        ..
+    }, CClause::Return(proj)] = linear.clauses.as_slice()
+    else {
+        return None;
+    };
+    let [path] = patterns.as_slice() else {
+        return None;
+    };
+    // Exactly one segment; no inline props / WHERE anywhere on the pattern.
+    let [seg] = path.segments.as_slice() else {
+        return None;
+    };
+    if !path.start.props.is_empty() || path.start.where_.is_some() {
+        return None;
+    }
+    if !seg.node.props.is_empty() || seg.node.where_.is_some() {
+        return None;
+    }
+    if !seg.rel.props.is_empty() || seg.rel.where_.is_some() || seg.rel.quantifier.is_some() {
+        return None;
+    }
+    // Directed only — `Both`'s self-loop semantics differ from a bucket scan.
+    let dir = seg.rel.direction;
+    if !matches!(dir, Direction::Out | Direction::In) {
+        return None;
+    }
+    // The projection is exactly `count(*)` (mirrors `try_count_star`).
+    if proj.distinct
+        || !proj.order_by.is_empty()
+        || proj.skip.is_some()
+        || proj.limit.is_some()
+        || proj.out_len != 1
+        || proj.aggs.len() != 1
+        || proj.items.len() != 1
+        || !matches!(proj.items[0].expr, CExpr::AggRef(0))
+    {
+        return None;
+    }
+    let agg = &proj.aggs[0];
+    if !agg.star || agg.distinct || !matches!(agg.func, AggFn::Count) {
+        return None;
+    }
+    // The relationship must name its type(s): `:T` or `:A|B`.
+    let rel_label = seg.rel.label.as_ref()?;
+    let ctx = resolve_ctx(graph, plan, params);
+    let mut tids = Vec::new();
+    if !collect_etype_ids(&ctx, rel_label, &mut tids) {
+        return None;
+    }
+
+    let start_label = path.start.label.as_ref();
+    let node_label = seg.node.label.as_ref();
+    let unlabeled = start_label.is_none() && node_label.is_none();
+
+    let mut count: usize = 0;
+    for tid in tids {
+        let bucket = graph.edges_with_etype(tid);
+        if unlabeled {
+            count += bucket.len(); // every edge of this type is one match
+            continue;
+        }
+        for &eid in bucket {
+            let src = graph.e_src[eid as usize];
+            let dst = graph.e_dst[eid as usize];
+            // Out: `a` is the source, `b` the destination; In reverses them.
+            let (a_end, b_end) = match dir {
+                Direction::In => (dst, src),
+                _ => (src, dst),
+            };
+            if matches_label(graph, &ctx, a_end, start_label)
+                && matches_label(graph, &ctx, b_end, node_label)
+            {
+                count += 1;
+            }
+        }
+    }
+    let mut rs = RowSet::new(proj.out_names.clone());
+    rs.push_row(std::iter::once(Value::Num(count as f64)));
+    Some(rs)
+}
+
 /// Vectorized executor for a whole linear pipeline: `MATCH <path> (WITH …)+
 /// RETURN …`. Threads a single columnar frame stage-to-stage — carrying element
 /// columns forward so prop reads/filters/ORDER BY past a `WITH` stay vectorized,
@@ -4896,6 +5016,10 @@ fn vectorized_linear(
 ) -> Option<RowSet> {
     // O(1) shortcut for a bare `MATCH (n:Label) RETURN count(*)`.
     if let Some(rs) = try_count_star(linear, graph, plan, params) {
+        return Some(rs);
+    }
+    // Edge-anchored shortcut for `MATCH (a)-[:T]->(b) RETURN count(*)`.
+    if let Some(rs) = try_count_edges(linear, graph, plan, params) {
         return Some(rs);
     }
     // Validate the whole clause shape *before* any scan work, so a non-pipeline
