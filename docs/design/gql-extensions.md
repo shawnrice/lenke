@@ -16,7 +16,11 @@ ISO/IEC 39075 GQL v1 (ratified 2024) is a _first edition_. What it specifies wel
 is the **declarative read surface** — pattern matching, projection, aggregation,
 the type system. What it barely touches is the **write / schema / transaction**
 layer: no `MERGE`/upsert, no constraint DDL, transactions largely
-implementation-defined, no temporal types. Every graph vendor (Neo4j, Ultipa,
+implementation-defined, no temporal types. (Transactions are now implemented at
+the core as an engine-neutral host API — `graph.transaction(fn)` / `graph.tx()`,
+matching how Gremlin exposes them — see `docs/design/r-tx.md`. GQL's ISO
+`START TRANSACTION`/`COMMIT`/`ROLLBACK` keywords are a planned thin veneer over
+those primitives, not invented syntax.) Every graph vendor (Neo4j, Ultipa,
 TigerGraph, SQL Server) fills those gaps with **mutually incompatible,
 non-conformant extensions** (see the research summarized in `docs/dogfood/` and
 the memory `iso-gql-reference`). When the whole field is extending in different

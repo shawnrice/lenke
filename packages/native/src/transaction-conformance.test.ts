@@ -1,0 +1,191 @@
+// Cross-engine differential for R-TX. The SAME transaction scripts — explicit
+// begin/commit/rollback around GQL statements, plus per-statement atomicity and
+// deferred constraint checks — run on BOTH the TS engine (@lenke/core + @lenke/gql)
+// and the Rust core (over bun:ffi), asserting the two agree on every outcome AND
+// on the resulting graph state byte-for-byte.
+//
+// Run: bun test packages/native/src/transaction-conformance.test.ts
+import { describe, expect, test } from 'bun:test';
+import { existsSync } from 'node:fs';
+
+import { Graph } from '@lenke/core';
+import { query as tsQuery } from '@lenke/gql';
+import { deserialize as tsDeserialize } from '@lenke/serialization';
+
+import { createFfiBackend } from './backend-ffi.js';
+import { graphFromFormat, type RustGraph } from './graph.js';
+
+const LIB_EXTENSIONS: Partial<Record<NodeJS.Platform, string>> = { darwin: 'dylib', win32: 'dll' };
+const LIB_EXT = LIB_EXTENSIONS[process.platform] ?? 'so';
+const LIB = new URL(
+  `../../../crates/lenke-core/target/release/liblenke_core.${LIB_EXT}`,
+  import.meta.url,
+).pathname;
+const hasLib = existsSync(LIB);
+
+if (!hasLib) {
+  // eslint-disable-next-line no-console
+  console.warn(`[transaction] skipping: ${LIB} not found — run \`bun run build:rust\`.`);
+}
+
+const suite = hasLib ? describe : describe.skip;
+
+const SEED = '{"type":"node","id":"seed","labels":["Seed"],"properties":{}}';
+
+type Outcome = { ok: true } | { code: unknown };
+
+const outcome = (run: () => unknown): Outcome => {
+  try {
+    run();
+
+    return { ok: true };
+  } catch (e) {
+    return { code: (e as { code?: unknown }).code };
+  }
+};
+
+// A single driver shape over either engine, so a script is written once.
+type Engine = {
+  query: (sql: string) => unknown;
+  transaction: (fn: () => void) => void;
+};
+
+const tsEngine = (): Engine & { _g: Graph } => {
+  const g = tsDeserialize(SEED, 'ndjson', new Graph());
+
+  return { query: (sql) => tsQuery(g, sql), transaction: (fn) => g.transaction(fn), _g: g };
+};
+
+const nativeEngine = (): Engine & { _g: RustGraph } => {
+  const backend = createFfiBackend(LIB);
+  const g = graphFromFormat(backend, SEED, 'ndjson');
+
+  return { query: (sql) => g.query(sql), transaction: (fn) => g.transaction(fn), _g: g };
+};
+
+const READ = `MATCH (n:Acct) RETURN n.id, n.bal, n.email ORDER BY n.id`;
+
+/** Run `script` on both engines; assert every outcome and the final Acct state agree. */
+const differential = (
+  declare: (e: Engine) => void,
+  script: Array<{ label: string; run: (e: Engine) => unknown }>,
+): void => {
+  const ts = tsEngine();
+  const native = nativeEngine();
+  declare(ts);
+  declare(native);
+
+  for (const { label, run } of script) {
+    const a = outcome(() => run(ts));
+    const b = outcome(() => run(native));
+
+    expect(b, `outcome mismatch: ${label}`).toEqual(a);
+  }
+
+  expect(JSON.stringify(native.query(READ)), 'final state mismatch').toEqual(
+    JSON.stringify(ts.query(READ)),
+  );
+};
+
+suite('R-TX differential: explicit transactions (TS vs native)', () => {
+  test('a committed transaction persists all its statements', () => {
+    differential(() => {}, [
+      {
+        label: 'atomic two-insert commit',
+        run: (e) =>
+          e.transaction(() => {
+            e.query(`INSERT (:Acct {id: 'a', bal: 100})`);
+            e.query(`INSERT (:Acct {id: 'b', bal: 200})`);
+          }),
+      },
+    ]);
+  });
+
+  test('a transaction whose body throws rolls every statement back', () => {
+    differential(() => {}, [
+      {
+        label: 'rollback on throw leaves no trace',
+        run: (e) => {
+          try {
+            e.transaction(() => {
+              e.query(`INSERT (:Acct {id: 'x', bal: 1})`);
+              e.query(`INSERT (:Acct {id: 'y', bal: 2})`);
+
+              throw new Error('boom');
+            });
+          } catch {
+            // swallow — the point is the graph state, compared below
+          }
+        },
+      },
+    ]);
+  });
+});
+
+suite('R-TX differential: per-statement atomicity (TS vs native)', () => {
+  test('a multi-row INSERT that violates unique on a later row leaves zero rows', () => {
+    differential(
+      (e) => declareUnique(e),
+      [
+        {
+          // One statement, two bindings via FOR-unwind: both rows carry id='dup',
+          // so the second collides. Per-statement atomicity must roll the first
+          // row back too — a partial write would diverge across engines.
+          label: 'FOR-INSERT with a duplicate unique value → violation, zero rows',
+          run: (e) => e.query(`FOR x IN [1, 2] INSERT (:Acct {id: 'dup', bal: x})`),
+        },
+      ],
+    );
+  });
+});
+
+suite('R-TX differential: deferred constraint checks (TS vs native)', () => {
+  test('required is checked at commit, not per statement (fill the key in a later statement)', () => {
+    differential(
+      (e) => declareRequired(e),
+      [
+        {
+          label: 'insert without required, set it, commit — ok',
+          run: (e) =>
+            e.transaction(() => {
+              e.query(`INSERT (:Acct {id: 'u'})`);
+              e.query(`MATCH (n:Acct {id: 'u'}) SET n.email = 'u@x.io'`);
+            }),
+        },
+      ],
+    );
+  });
+
+  test('a required violation that survives to commit rolls the whole transaction back', () => {
+    differential(
+      (e) => declareRequired(e),
+      [
+        {
+          label: 'insert without required, never set it, commit — violation',
+          run: (e) => {
+            try {
+              e.transaction(() => {
+                e.query(`INSERT (:Acct {id: 'v'})`);
+                e.query(`INSERT (:Acct {id: 'w', email: 'w@x.io'})`);
+              });
+            } catch {
+              // compared by final state below
+            }
+          },
+        },
+      ],
+    );
+  });
+});
+
+// A unique constraint isn't declarable via GQL DDL; both engines take the same
+// programmatic call. Small shims keep the driver engine-neutral.
+function declareRequired(e: Engine): void {
+  const g = (e as unknown as { _g: Graph | RustGraph })._g;
+  g.createRequiredConstraint('Acct', 'email');
+}
+
+function declareUnique(e: Engine): void {
+  const g = (e as unknown as { _g: Graph | RustGraph })._g;
+  g.createUniqueConstraint('Acct', 'id');
+}
