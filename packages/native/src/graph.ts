@@ -298,6 +298,32 @@ export type RustGraph = {
   vertexIndexes: () => string[];
   edgeIndexes: () => string[];
   /**
+   * Run `fn` as one atomic transaction (R-TX). Every write inside applies to the
+   * graph immediately (so reads see their own writes), but if `fn` throws — or a
+   * deferred constraint check fails at commit — the whole batch rolls back and
+   * nothing persists. On success the writes commit together. Returns whatever
+   * `fn` returns. Nesting joins the outer transaction (flat, savepoint-less): the
+   * outermost frame owns commit/rollback. The engine-neutral transaction surface,
+   * mirroring the TS core (`packages/core/src/core/Graph.ts`).
+   */
+  transaction: <T>(fn: (graph: RustGraph) => T) => T;
+  /**
+   * Lower-level transaction handle mirroring TinkerPop's `graph.tx()`: the
+   * transaction opens now; call `commit()` or `rollback()` explicitly. Prefer
+   * {@link RustGraph.transaction} for the common auto-managed case.
+   */
+  tx: () => { commit: () => void; rollback: () => void };
+  /** Open a transaction frame. Nesting increments depth; the outermost frame owns commit/rollback. */
+  beginTransaction: () => void;
+  /**
+   * Close the current frame. The outermost commit runs the deferred constraint
+   * checks against the fully-staged graph and throws `ConstraintViolation` (after
+   * rolling the whole transaction back) if one fails.
+   */
+  commitTransaction: () => void;
+  /** Roll the current transaction back: reverse every staged write. No-op if none open. */
+  rollbackTransaction: () => void;
+  /**
    * Run a GQL query → decoded rows. Two safe, parameterized forms:
    * - tagged template — each `${sub}` compiles to a `$p<n>` **binding**, never
    *   spliced text: ``g.query`MATCH (p:Person) WHERE p.name = ${name} RETURN p` ``
@@ -562,6 +588,34 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
     dropEdgeIndex: (key) => backend.dropEdgeIndex(live(), key),
     vertexIndexes: () => backend.vertexIndexes(live()),
     edgeIndexes: () => backend.edgeIndexes(live()),
+    beginTransaction: () => backend.beginTransaction(live()),
+    commitTransaction: () => backend.commitTransaction(live()),
+    rollbackTransaction: () => backend.rollbackTransaction(live()),
+    tx: () => {
+      backend.beginTransaction(live());
+
+      return {
+        commit: () => backend.commitTransaction(live()),
+        rollback: () => backend.rollbackTransaction(live()),
+      };
+    },
+    transaction: <T>(fn: (graph: RustGraph) => T): T => {
+      backend.beginTransaction(live());
+
+      let result: T;
+
+      try {
+        result = fn(graph);
+      } catch (error) {
+        backend.rollbackTransaction(live());
+
+        throw error;
+      }
+
+      backend.commitTransaction(live()); // may throw ConstraintViolation after rolling back
+
+      return result;
+    },
     query: <R extends Row = Row>(q: string | TemplateStringsArray, ...subs: unknown[]): R[] => {
       const { text, params } = compileGql(q, subs);
 

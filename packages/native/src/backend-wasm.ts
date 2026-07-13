@@ -47,6 +47,9 @@ type WasmExports = {
   ) => number;
   lnk_drop_vertex_index: (h: number, key: number, keyLen: number) => number;
   lnk_drop_edge_index: (h: number, key: number, keyLen: number) => number;
+  lnk_begin_tx: (h: number) => number;
+  lnk_commit_tx: (h: number) => number;
+  lnk_rollback_tx: (h: number) => number;
   lnk_vertex_indexes: (h: number, outLen: number) => number;
   lnk_edge_indexes: (h: number, outLen: number) => number;
   lnk_prepare: (q: number, qlen: number) => number;
@@ -436,6 +439,37 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
         ex.lnk_drop_edge_index(handle, p, k.byteLength);
       } finally {
         ex.lnk_dealloc(p, k.byteLength);
+      }
+    },
+    beginTransaction: (handle) => {
+      if (ex.lnk_begin_tx(handle) !== 0) {
+        throw new LenkeError('lenke: beginTransaction failed', { code: ErrorCode.Ffi });
+      }
+    },
+    commitTransaction: (handle) => {
+      const r = ex.lnk_commit_tx(handle);
+
+      // -1 == a deferred constraint check failed (already rolled back); -2 == no
+      // open transaction. Mirrors the FFI backend and the TS core.
+      if (r === -1) {
+        throw new LenkeError('lenke: transaction commit failed a constraint check', {
+          code: ErrorCode.ConstraintViolation,
+        });
+      }
+
+      if (r === -2) {
+        throw new LenkeError('lenke: commit called with no open transaction', {
+          code: ErrorCode.InvalidGraphOp,
+        });
+      }
+
+      if (r !== 0) {
+        throw new LenkeError('lenke: commitTransaction failed', { code: ErrorCode.Ffi });
+      }
+    },
+    rollbackTransaction: (handle) => {
+      if (ex.lnk_rollback_tx(handle) !== 0) {
+        throw new LenkeError('lenke: rollbackTransaction failed', { code: ErrorCode.Ffi });
       }
     },
     vertexIndexes: (handle) =>

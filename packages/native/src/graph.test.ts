@@ -21,8 +21,13 @@ const countingBackend = (): { backend: Backend; freed: GraphHandle[] } => {
     createVertexIndex: () => {},
     createEdgeIndex: () => {},
     createUniqueConstraint: () => {},
+    createRequiredConstraint: () => {},
+    createTypeConstraint: () => {},
     dropVertexIndex: () => {},
     dropEdgeIndex: () => {},
+    beginTransaction: () => {},
+    commitTransaction: () => {},
+    rollbackTransaction: () => {},
     vertexIndexes: () => [],
     edgeIndexes: () => [],
     mergeNdjson: () => ({

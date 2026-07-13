@@ -35,6 +35,9 @@ const SYMBOLS = {
   },
   lnk_drop_vertex_index: { args: [FFIType.ptr, FFIType.ptr, U], returns: FFIType.i32 },
   lnk_drop_edge_index: { args: [FFIType.ptr, FFIType.ptr, U], returns: FFIType.i32 },
+  lnk_begin_tx: { args: [FFIType.ptr], returns: FFIType.i32 },
+  lnk_commit_tx: { args: [FFIType.ptr], returns: FFIType.i32 },
+  lnk_rollback_tx: { args: [FFIType.ptr], returns: FFIType.i32 },
   lnk_vertex_indexes: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.ptr },
   lnk_edge_indexes: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.ptr },
   lnk_prepare: { args: [FFIType.ptr, U], returns: FFIType.ptr },
@@ -292,6 +295,38 @@ export const createFfiBackend = (libPath: string): Backend => {
       const k = encoder.encode(key);
 
       symbols.lnk_drop_edge_index(asPtr(handle), ptr(k), k.byteLength);
+    },
+    beginTransaction: (handle) => {
+      if (symbols.lnk_begin_tx(asPtr(handle)) !== 0) {
+        throw new LenkeError('lenke: beginTransaction failed', { code: ErrorCode.Ffi });
+      }
+    },
+    commitTransaction: (handle) => {
+      const r = symbols.lnk_commit_tx(asPtr(handle));
+
+      // -1 == a deferred constraint check failed at commit (the transaction has
+      // already been rolled back), matching the TS core's ConstraintViolation.
+      if (r === -1) {
+        throw new LenkeError('lenke: transaction commit failed a constraint check', {
+          code: ErrorCode.ConstraintViolation,
+        });
+      }
+
+      // -2 == commit with no open transaction.
+      if (r === -2) {
+        throw new LenkeError('lenke: commit called with no open transaction', {
+          code: ErrorCode.InvalidGraphOp,
+        });
+      }
+
+      if (r !== 0) {
+        throw new LenkeError('lenke: commitTransaction failed', { code: ErrorCode.Ffi });
+      }
+    },
+    rollbackTransaction: (handle) => {
+      if (symbols.lnk_rollback_tx(asPtr(handle)) !== 0) {
+        throw new LenkeError('lenke: rollbackTransaction failed', { code: ErrorCode.Ffi });
+      }
     },
     vertexIndexes: (handle) =>
       JSON.parse(

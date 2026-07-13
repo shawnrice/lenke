@@ -74,6 +74,18 @@ export type Backend = {
   /** Drop a vertex / edge property index (no-op if absent). */
   dropVertexIndex: (handle: GraphHandle, key: string) => void;
   dropEdgeIndex: (handle: GraphHandle, key: string) => void;
+
+  /**
+   * Transaction primitives (R-TX). `beginTransaction` opens a frame (writes still
+   * apply eagerly, but record undo ops); nesting joins the outer frame.
+   * `commitTransaction` closes it — the outermost commit runs the deferred
+   * constraint checks and **throws `ConstraintViolation`** (after rolling back) if
+   * one fails. `rollbackTransaction` reverses every staged write. See
+   * packages/core/src/core/Graph.ts.
+   */
+  beginTransaction: (handle: GraphHandle) => void;
+  commitTransaction: (handle: GraphHandle) => void;
+  rollbackTransaction: (handle: GraphHandle) => void;
   /** The currently-indexed vertex / edge property keys (sorted). */
   vertexIndexes: (handle: GraphHandle) => string[];
   edgeIndexes: (handle: GraphHandle) => string[];

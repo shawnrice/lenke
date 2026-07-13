@@ -26,8 +26,13 @@ const fakeStore = () => {
     createVertexIndex: () => {},
     createEdgeIndex: () => {},
     createUniqueConstraint: () => {},
+    createRequiredConstraint: () => {},
+    createTypeConstraint: () => {},
     dropVertexIndex: () => {},
     dropEdgeIndex: () => {},
+    beginTransaction: () => {},
+    commitTransaction: () => {},
+    rollbackTransaction: () => {},
     vertexIndexes: () => [],
     edgeIndexes: () => [],
     mergeNdjson: () => ({

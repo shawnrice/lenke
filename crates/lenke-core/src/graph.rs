@@ -408,6 +408,61 @@ pub struct Graph {
     /// TYPE constraints: `label` → (`key` → the scalar type its present, non-null
     /// values must be). Null/absent are exempt (R-CONSTRAINTS).
     v_type: HashMap<String, HashMap<String, PropType>>,
+    /// Transaction state (R-TX). `tx_depth > 0` means an open transaction: writes
+    /// still apply eagerly to the live store (read-your-writes with no overlay),
+    /// but each mutation records an inverse op in `tx_undo`, the built-in
+    /// constraint checks defer to commit (the touched vertex ids collect in
+    /// `tx_touched`), and a rollback replays the undo log newest-first. Nesting is
+    /// flat (a depth counter): the outermost frame owns commit/rollback, matching
+    /// the TS core. `applying_undo` is true only while a rollback replays inverse
+    /// ops, which must neither re-record undo nor re-note touched vertices. The
+    /// undo `Vec` allocates lazily (empty until the first in-tx mutation), so an
+    /// auto-commit frame around a read-only statement costs nothing.
+    tx_depth: usize,
+    tx_undo: Vec<Undo>,
+    tx_touched: Vec<u32>,
+    applying_undo: bool,
+}
+
+/// One inverse op recorded by a mutation while a transaction frame is open, to be
+/// replayed (newest-first) on rollback. The tombstone-based delete model makes
+/// these cheap: undo of an insert = tombstone the slot; undo of a delete =
+/// un-tombstone it (the columns are never cleared on delete, so property values
+/// survive in place); undo of a property write = restore the prior columnar value.
+enum Undo {
+    /// An inserted vertex — undo by tombstoning it (`remove_vertex`, detach).
+    InsertVertex(u32),
+    /// An inserted edge — undo by tombstoning it (`remove_edge`).
+    InsertEdge(u32),
+    /// A vertex property write — restore the prior value (`Some`) or absence (`None`).
+    VProp(u32, String, Option<Value>),
+    /// An edge property write — restore the prior value (`Some`) or absence (`None`).
+    EProp(u32, String, Option<Value>),
+    /// A label newly added to a vertex — undo by removing it.
+    VLabelAdd(u32, String),
+    /// A label removed from a vertex — undo by re-adding it.
+    VLabelRemove(u32, String),
+    /// An edge type replaced (edges carry a single type) — restore the prior type name.
+    EType(u32, String),
+    /// A deleted vertex — undo by un-tombstoning the slot and restoring its labels
+    /// (its incident edges are restored by their own `DeleteEdge` inverses, which
+    /// were recorded during the delete cascade and so replay after this one).
+    DeleteVertex { vi: u32, labels: Vec<u32> },
+    /// A deleted edge — undo by un-tombstoning it and restoring any external-id overlay.
+    DeleteEdge { ei: u32, eid: Option<Arc<str>> },
+}
+
+/// Which deferred constraint check failed at commit. All surface to the caller as
+/// `ConstraintViolation`, but are kept distinct for messaging / FFI codes.
+pub enum TxCommitError {
+    /// `commit_tx` was called with no open transaction.
+    NoTx,
+    /// A required-property constraint is unsatisfied on a touched vertex.
+    Required,
+    /// A type constraint is violated on a touched vertex.
+    Type,
+    /// A unique constraint is violated on a touched vertex.
+    Unique,
 }
 
 /// A set of property indexes (key name → ordered value buckets).
@@ -1154,6 +1209,241 @@ impl Graph {
         self.eid_rev.insert(arc, eidx);
     }
 
+    // --- transactions (R-TX) -----------------------------------------------
+    // An atomic mutation boundary with rollback + deferred constraint checks.
+    // Mechanism: eager-apply + undo-log + deferred-check-at-commit. Writes apply
+    // immediately (read-your-writes), each recording an inverse op; the built-in
+    // constraint checks defer to commit, run once against the fully-staged graph;
+    // on failure the whole transaction rolls back via the undo log. The engine is
+    // single-writer and synchronous — no concurrency, MVCC, or isolation levels.
+    // Byte-identical to the TS core (`packages/core/src/core/Graph.ts`).
+
+    /// True while a transaction is open and recording writes (not during a
+    /// rollback replay). Mutations consult this to decide whether to record undo /
+    /// note a touched vertex.
+    #[inline]
+    pub fn tx_active(&self) -> bool {
+        self.tx_depth > 0 && !self.applying_undo
+    }
+
+    /// Is a transaction currently open (at any nesting depth)?
+    #[inline]
+    pub fn in_transaction(&self) -> bool {
+        self.tx_depth > 0
+    }
+
+    /// Open a transaction frame. Nesting increments depth; the outermost frame
+    /// owns commit/rollback (flat, savepoint-less), matching the TS core.
+    pub fn begin_tx(&mut self) {
+        self.tx_depth += 1;
+    }
+
+    /// Close the current frame. An inner commit just decrements depth. The
+    /// outermost commit runs the deferred constraint checks against the fully
+    /// staged graph — on failure it rolls the whole transaction back via the undo
+    /// log and returns the failure — then discards the undo/touched state.
+    pub fn commit_tx(&mut self) -> Result<(), TxCommitError> {
+        if self.tx_depth == 0 {
+            return Err(TxCommitError::NoTx);
+        }
+        self.tx_depth -= 1;
+        if self.tx_depth > 0 {
+            return Ok(()); // an inner commit — the outermost frame finalizes
+        }
+        if let Err(e) = self.run_deferred_checks() {
+            self.apply_undo_and_reset();
+            return Err(e);
+        }
+        self.tx_undo.clear();
+        self.tx_touched.clear();
+        Ok(())
+    }
+
+    /// Roll the current transaction back: replay the undo log in reverse, discard
+    /// the touched set. A no-op if no transaction is open. Idempotent.
+    pub fn rollback_tx(&mut self) {
+        if self.tx_depth == 0 {
+            return;
+        }
+        self.apply_undo_and_reset();
+    }
+
+    /// Record an inverse op to replay on rollback (no-op outside a transaction or
+    /// during an undo replay).
+    #[inline]
+    fn record_undo(&mut self, inverse: Undo) {
+        if self.tx_active() {
+            self.tx_undo.push(inverse);
+        }
+    }
+
+    /// Note a vertex whose built-in constraints must be re-checked at commit. The
+    /// per-write gates (in the GQL eval layer) call this instead of throwing
+    /// immediately while a transaction is open, so an intermediate state — a node
+    /// added before its mandatory property, two rows that momentarily collide —
+    /// doesn't trip a constraint the final state satisfies.
+    #[inline]
+    pub fn tx_note_touched(&mut self, vi: u32) {
+        if self.tx_active() {
+            self.tx_touched.push(vi);
+        }
+    }
+
+    /// Replay the undo log newest-first and reset all transaction state to closed.
+    fn apply_undo_and_reset(&mut self) {
+        self.applying_undo = true;
+        let undo = std::mem::take(&mut self.tx_undo);
+        for u in undo.into_iter().rev() {
+            self.apply_one_undo(u);
+        }
+        self.applying_undo = false;
+        self.tx_depth = 0;
+        self.tx_undo.clear();
+        self.tx_touched.clear();
+    }
+
+    /// Apply a single inverse op. Runs with `applying_undo == true`, so the
+    /// mutation methods it calls neither re-record undo nor re-note touched
+    /// vertices — they only restore known-good state and keep the indexes current.
+    fn apply_one_undo(&mut self, u: Undo) {
+        match u {
+            Undo::InsertVertex(vi) => {
+                let _ = self.remove_vertex(vi, true);
+            }
+            Undo::InsertEdge(ei) => self.remove_edge(ei),
+            Undo::VProp(vi, key, Some(v)) => self.set_vertex_prop(vi, &key, v),
+            Undo::VProp(vi, key, None) => self.remove_vertex_prop(vi, &key),
+            Undo::EProp(ei, key, Some(v)) => self.set_edge_prop(ei, &key, v),
+            Undo::EProp(ei, key, None) => self.remove_edge_prop(ei, &key),
+            Undo::VLabelAdd(vi, name) => self.remove_vertex_label(vi, &name),
+            Undo::VLabelRemove(vi, name) => self.add_vertex_label(vi, &name),
+            Undo::EType(ei, name) => self.add_edge_label(ei, &name),
+            Undo::DeleteVertex { vi, labels } => self.untombstone_vertex(vi, &labels),
+            Undo::DeleteEdge { ei, eid } => self.untombstone_edge(ei, eid),
+        }
+    }
+
+    /// Re-run the built-in vertex constraints (required / type / unique) against
+    /// every vertex touched during the transaction, now that all writes are
+    /// staged. A vertex added then removed within the transaction is skipped.
+    fn run_deferred_checks(&self) -> Result<(), TxCommitError> {
+        for &vi in &self.tx_touched {
+            if !self.is_vertex_live(vi) {
+                continue; // added then removed within the transaction — nothing to check
+            }
+            let labels: Vec<String> = self.vlabels[vi as usize]
+                .iter()
+                .map(|&l| self.labels.text(l).to_string())
+                .collect();
+            let props = self.vertex_props(vi);
+            if self.missing_required(&labels, &props).is_some() {
+                return Err(TxCommitError::Required);
+            }
+            if self.type_violation(&labels, &props).is_some() {
+                return Err(TxCommitError::Type);
+            }
+            if self.unique_conflict(&labels, &props, Some(vi)).is_some() {
+                return Err(TxCommitError::Unique);
+            }
+        }
+        Ok(())
+    }
+
+    /// A live vertex's present properties as `(key, value)` pairs — the shape the
+    /// constraint predicates consume. A stored null is present (and included).
+    fn vertex_props(&self, vi: u32) -> Vec<(String, Value)> {
+        let i = vi as usize;
+        let mut out = Vec::new();
+        for kid in 0..self.props.cols.len() as u32 {
+            if self.props.is_present_id(i, kid) {
+                let key = self.props.keys.text(kid).to_string();
+                let val = self.props.value_id(i, kid, &self.strs);
+                out.push((key, val));
+            }
+        }
+        out
+    }
+
+    /// Reverse a vertex delete: un-tombstone the slot in place (its columns were
+    /// never cleared on delete, so property values survive) and rebuild its label
+    /// membership + property indexes. Adjacency is repopulated by the incident
+    /// edges' own `DeleteEdge` inverses (replayed after this one).
+    fn untombstone_vertex(&mut self, vi: u32, labels: &[u32]) {
+        let i = vi as usize;
+        if self.is_vertex_live(vi) {
+            return;
+        }
+        self.v_live[i] = true;
+        self.live_n += 1;
+        self.vlabels[i] = labels.to_vec();
+        for &lid in labels {
+            self.by_label.entry(lid).or_default().push(vi);
+        }
+        if !self.vidx.is_empty() {
+            for key in self.vidx.keys().cloned().collect::<Vec<_>>() {
+                let val = self.props.value(i, &key, &self.strs);
+                idx_apply(&mut self.vidx, &key, vi, &val, true);
+            }
+        }
+        self.bump();
+        let mut names: Vec<String> = labels
+            .iter()
+            .map(|&l| self.labels.text(l).to_string())
+            .collect();
+        for kid in 0..self.props.cols.len() as u32 {
+            if self.props.is_present_id(i, kid) {
+                names.push(self.props.keys.text(kid).to_string());
+            }
+        }
+        for name in names {
+            self.touch(&name);
+        }
+    }
+
+    /// Reverse an edge delete: un-tombstone it in place and restore its type
+    /// bucket, both endpoints' adjacency, property indexes, and external-id overlay.
+    fn untombstone_edge(&mut self, ei: u32, eid: Option<Arc<str>>) {
+        let i = ei as usize;
+        if self.is_edge_live(ei) {
+            return;
+        }
+        self.e_live[i] = true;
+        self.live_e += 1;
+        let tid = self.e_type[i];
+        let (src, dst) = (self.e_src[i], self.e_dst[i]);
+        self.by_etype.entry(tid).or_default().push(ei);
+        self.out[src as usize].push(Adj {
+            eidx: ei,
+            nbr: dst,
+            etype: tid,
+        });
+        self.in_[dst as usize].push(Adj {
+            eidx: ei,
+            nbr: src,
+            etype: tid,
+        });
+        if !self.eidx.is_empty() {
+            for key in self.eidx.keys().cloned().collect::<Vec<_>>() {
+                let val = self.edge_props.value(i, &key, &self.strs);
+                idx_apply(&mut self.eidx, &key, ei, &val, true);
+            }
+        }
+        if let Some(arc) = eid {
+            self.eid_fwd.insert(ei, arc.clone());
+            self.eid_rev.insert(arc, ei);
+        }
+        self.bump();
+        let mut names: Vec<String> = vec![self.etype.text(tid).to_string()];
+        for kid in 0..self.edge_props.cols.len() as u32 {
+            if self.edge_props.is_present_id(i, kid) {
+                names.push(self.edge_props.keys.text(kid).to_string());
+            }
+        }
+        for name in names {
+            self.touch(&name);
+        }
+    }
+
     // --- mutation ----------------------------------------------------------
 
     fn fresh_id(&mut self) -> String {
@@ -1228,6 +1518,9 @@ impl Graph {
         for l in labels {
             self.touch(l);
         }
+        // Undo of an insert = tombstone the slot (detach removes any edges added
+        // to it later — but on reverse replay those are already undone).
+        self.record_undo(Undo::InsertVertex(vi));
         vi
     }
 
@@ -1269,10 +1562,19 @@ impl Graph {
         // Topology change: bump the global version and the new edge's type.
         self.bump();
         self.touch(etype);
+        self.record_undo(Undo::InsertEdge(ei));
         ei
     }
 
     pub fn set_vertex_prop(&mut self, vi: u32, key: &str, v: Value) {
+        if self.tx_active() {
+            let prior = if self.props.is_present(vi as usize, key) {
+                Some(self.props.value(vi as usize, key, &self.strs))
+            } else {
+                None
+            };
+            self.record_undo(Undo::VProp(vi, key.to_string(), prior));
+        }
         if self.vidx.contains_key(key) {
             let old = self.props.value(vi as usize, key, &self.strs);
             idx_apply(&mut self.vidx, key, vi, &old, false);
@@ -1288,6 +1590,14 @@ impl Graph {
         self.touch(key);
     }
     pub fn remove_vertex_prop(&mut self, vi: u32, key: &str) {
+        if self.tx_active() {
+            let prior = if self.props.is_present(vi as usize, key) {
+                Some(self.props.value(vi as usize, key, &self.strs))
+            } else {
+                None
+            };
+            self.record_undo(Undo::VProp(vi, key.to_string(), prior));
+        }
         if self.vidx.contains_key(key) {
             let old = self.props.value(vi as usize, key, &self.strs);
             idx_apply(&mut self.vidx, key, vi, &old, false);
@@ -1297,6 +1607,14 @@ impl Graph {
         self.touch(key);
     }
     pub fn set_edge_prop(&mut self, ei: u32, key: &str, v: Value) {
+        if self.tx_active() {
+            let prior = if self.edge_props.is_present(ei as usize, key) {
+                Some(self.edge_props.value(ei as usize, key, &self.strs))
+            } else {
+                None
+            };
+            self.record_undo(Undo::EProp(ei, key.to_string(), prior));
+        }
         if self.eidx.contains_key(key) {
             let old = self.edge_props.value(ei as usize, key, &self.strs);
             idx_apply(&mut self.eidx, key, ei, &old, false);
@@ -1311,6 +1629,14 @@ impl Graph {
         self.touch(key);
     }
     pub fn remove_edge_prop(&mut self, ei: u32, key: &str) {
+        if self.tx_active() {
+            let prior = if self.edge_props.is_present(ei as usize, key) {
+                Some(self.edge_props.value(ei as usize, key, &self.strs))
+            } else {
+                None
+            };
+            self.record_undo(Undo::EProp(ei, key.to_string(), prior));
+        }
         if self.eidx.contains_key(key) {
             let old = self.edge_props.value(ei as usize, key, &self.strs);
             idx_apply(&mut self.eidx, key, ei, &old, false);
@@ -1327,16 +1653,21 @@ impl Graph {
             self.by_label.entry(lid).or_default().push(vi);
             self.bump();
             self.touch(name);
+            self.record_undo(Undo::VLabelAdd(vi, name.to_string()));
         }
     }
     pub fn remove_vertex_label(&mut self, vi: u32, name: &str) {
         if let Some(lid) = self.labels.get(name) {
+            let had = self.vlabels[vi as usize].contains(&lid);
             self.vlabels[vi as usize].retain(|&x| x != lid);
             if let Some(bucket) = self.by_label.get_mut(&lid) {
                 bucket.retain(|&x| x != vi);
             }
             self.bump();
             self.touch(name);
+            if had {
+                self.record_undo(Undo::VLabelRemove(vi, name.to_string()));
+            }
         }
     }
 
@@ -1346,6 +1677,11 @@ impl Graph {
         let i = ei as usize;
         // Move the edge between type buckets when its type actually changes.
         let old = self.e_type[i];
+        // Capture the prior type name (for the rollback inverse) before it changes.
+        if old != tid && self.tx_active() {
+            let old_name = self.etype.text(old).to_string();
+            self.record_undo(Undo::EType(ei, old_name));
+        }
         if old != tid {
             if let Some(bucket) = self.by_etype.get_mut(&old) {
                 bucket.retain(|&x| x != ei);
@@ -1380,6 +1716,12 @@ impl Graph {
         let i = ei as usize;
         if !self.is_edge_live(ei) {
             return;
+        }
+        // Record the inverse (un-tombstone) before tombstoning: capture any
+        // external-id overlay, which the removal below drops.
+        if self.tx_active() {
+            let eid = self.eid_fwd.get(&ei).cloned();
+            self.record_undo(Undo::DeleteEdge { ei, eid });
         }
         // Drop the edge from every edge property index before tombstoning.
         if !self.eidx.is_empty() {
@@ -1460,6 +1802,13 @@ impl Graph {
                 idx_apply(&mut self.vidx, &key, vi, &val, false);
             }
         }
+        // Capture the labels for the rollback inverse before clearing them (the
+        // columns are left intact, so property values survive the tombstone).
+        let undo_labels: Vec<u32> = if self.tx_active() {
+            self.vlabels[i].clone()
+        } else {
+            Vec::new()
+        };
         self.vlabels[i].clear();
         self.out[i].clear();
         self.in_[i].clear();
@@ -1469,6 +1818,12 @@ impl Graph {
         for name in touched {
             self.touch(&name);
         }
+        // Recorded last (after the cascade's per-edge `DeleteEdge` inverses), so a
+        // reverse replay un-tombstones the vertex first, then re-adds its edges.
+        self.record_undo(Undo::DeleteVertex {
+            vi,
+            labels: undo_labels,
+        });
         Ok(())
     }
 }
@@ -1819,6 +2174,10 @@ impl Builder {
             v_unique: HashMap::new(),
             v_required: HashMap::new(),
             v_type: HashMap::new(),
+            tx_depth: 0,
+            tx_undo: Vec::new(),
+            tx_touched: Vec::new(),
+            applying_undo: false,
         }
     }
 }
@@ -1936,5 +2295,107 @@ mod null_is_first_class {
 
         p.remove_value(0, "k"); // explicit removal is the ONLY way to unset it
         assert!(!p.is_present(0, "k"));
+    }
+}
+
+#[cfg(test)]
+mod transactions {
+    //! R-TX: an explicit transaction over the GQL eval mutation path must roll
+    //! back to byte-identical prior state, and commit must persist. The eval layer
+    //! wraps each statement in its own auto-commit frame, so these tests exercise
+    //! the *nested* case (explicit begin → statements → rollback/commit), where
+    //! the inner per-statement frames join the outer one.
+    use super::*;
+    use crate::gql::eval::Params;
+    use crate::gql::parse;
+    use crate::ndjson;
+
+    fn run(g: &mut Graph, q: &str) {
+        parse(q)
+            .unwrap()
+            .execute(g, &Params::new())
+            .unwrap_or_else(|e| panic!("query failed: {q}: {e:?}"));
+    }
+
+    #[test]
+    fn rollback_restores_exact_prior_state() {
+        let mut g = ndjson::decode("").unwrap();
+        // Seed committed data (outside any explicit transaction).
+        run(&mut g, "INSERT (:User {name: 'Seed', age: 1})");
+        let before = ndjson::encode(&g);
+        let vc_before = g.vertex_count();
+
+        g.begin_tx();
+        // A brand-new vertex (insert) and a mutation of the seed (property write).
+        run(&mut g, "INSERT (:User {name: 'A'})");
+        run(
+            &mut g,
+            "MATCH (u:User {name: 'Seed'}) SET u.name = 'Changed', u.age = 99",
+        );
+        // Read-your-writes: the staged inserts are visible inside the transaction.
+        assert_eq!(g.vertex_count(), vc_before + 1);
+
+        g.rollback_tx();
+
+        assert_eq!(g.vertex_count(), vc_before, "vertex_count restored");
+        assert_eq!(ndjson::encode(&g), before, "serialization byte-identical");
+        // The seed's property values are exactly as before.
+        let rows = parse("MATCH (u:User {name: 'Seed'}) RETURN u.age")
+            .unwrap()
+            .execute(&mut g, &Params::new())
+            .unwrap();
+        assert_eq!(
+            rows.rows().count(),
+            1,
+            "the changed-then-rolled-back seed is back"
+        );
+    }
+
+    #[test]
+    fn commit_persists() {
+        let mut g = ndjson::decode("").unwrap();
+        g.begin_tx();
+        run(&mut g, "INSERT (:User {name: 'A'})");
+        assert!(matches!(g.commit_tx(), Ok(())));
+        assert_eq!(g.vertex_count(), 1, "the committed insert persists");
+        assert!(!g.in_transaction());
+    }
+
+    #[test]
+    fn rollback_restores_deleted_vertex_and_its_edge() {
+        // DETACH DELETE cascades an edge removal; rollback must un-tombstone both
+        // the vertex and the edge in place (byte-identical serialization).
+        let mut g = ndjson::decode("").unwrap();
+        run(
+            &mut g,
+            "INSERT (:User {name: 'A'})-[:KNOWS {since: 2020}]->(:User {name: 'B'})",
+        );
+        let before = ndjson::encode(&g);
+        let (vc, ec) = (g.vertex_count(), g.edge_count());
+
+        g.begin_tx();
+        run(&mut g, "MATCH (u:User {name: 'A'}) DETACH DELETE u");
+        assert_eq!(g.vertex_count(), vc - 1);
+        assert_eq!(g.edge_count(), ec - 1);
+
+        g.rollback_tx();
+
+        assert_eq!(g.vertex_count(), vc, "vertex restored");
+        assert_eq!(g.edge_count(), ec, "cascaded edge restored");
+        assert_eq!(ndjson::encode(&g), before, "serialization byte-identical");
+    }
+
+    #[test]
+    fn per_statement_atomicity_leaves_no_partial_write() {
+        // A single INSERT of two rows whose second collides under a unique
+        // constraint must leave ZERO rows — the whole statement rolls back.
+        let mut g = ndjson::decode("").unwrap();
+        g.create_unique_constraint("Acct", "email").unwrap();
+        let err = parse("INSERT (:Acct {email: 'a@x.io'}), (:Acct {email: 'a@x.io'})")
+            .unwrap()
+            .execute(&mut g, &Params::new())
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::ConstraintViolation);
+        assert_eq!(g.vertex_count(), 0, "the faulting statement left no trace");
     }
 }

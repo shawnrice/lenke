@@ -27,7 +27,7 @@ use super::plan::{
 use crate::arrow::ArrowColumn;
 use crate::error::{CodeError, CodeResult};
 use crate::error_codes::ErrorCode;
-use crate::graph::{Column, Graph, Value};
+use crate::graph::{Column, Graph, TxCommitError, Value};
 use crate::query::RowSet;
 
 /// A runtime value. Extends the core [`Value`] with graph-element handles
@@ -5149,25 +5149,15 @@ fn ensure_node(graph: &mut Graph, ctx: &Ctx, binding: &mut Binding, node: &CNode
         Vec::new()
     });
     let props = eval_props(graph, ctx, &node.props, binding);
-    // Reject a plain INSERT that would break a unique constraint (an `_MERGE`
-    // reconciles instead; see docs/design/gql-extensions.md §3). The fault
-    // surfaces as ConstraintViolation at the row boundary and aborts the write;
-    // returning the existing offender keeps downstream code total (unused).
-    if let Some((_, _, existing)) = graph.unique_conflict(&labels, &props, None) {
-        ctx.set_fault(FAULT_CONSTRAINT);
-        return existing;
-    }
-    // Reject a new vertex that omits (or nulls) a required key. The fault aborts
-    // the write at the row boundary; the returned id is unused after a fault.
-    if graph.missing_required(&labels, &props).is_some() {
-        ctx.set_fault(FAULT_REQUIRED);
-        return u32::MAX;
-    }
-    if graph.type_violation(&labels, &props).is_some() {
-        ctx.set_fault(FAULT_TYPE_CONSTRAINT);
-        return u32::MAX;
-    }
+    // Create eagerly and note the vertex for the commit-time constraint check
+    // (unique / required / type). Inside the statement's auto-commit frame the
+    // checks defer to end-of-statement, so a multi-row INSERT whose rows only
+    // collide with each other — or a node inserted before a sibling supplies its
+    // key — is judged against the fully-staged graph, and a violation rolls the
+    // whole statement back (per-statement atomicity) instead of leaving a partial
+    // write. `_MERGE` reconciles instead; see docs/design/gql-extensions.md §3.
     let vi = graph.add_vertex(&labels, props);
+    graph.tx_note_touched(vi);
     if let Some(slot) = node.var_slot {
         binding.set(slot, Val::Node(vi));
     }
@@ -5459,31 +5449,25 @@ fn run_set(graph: &mut Graph, ctx: &Ctx, items: &[CSetItem], binding: &Binding) 
                     val_to_value(graph, &eval(&env, value))
                 };
                 match el {
-                    // A SET that would null a required key, or collide under a
-                    // unique constraint, faults (ConstraintViolation).
+                    // Apply eagerly, then note the vertex — a SET that nulls a
+                    // required key, breaks a type constraint, or collides under a
+                    // unique constraint surfaces as ConstraintViolation at the
+                    // frame's commit-time recheck (deferring it lets a
+                    // momentarily-colliding intermediate settle first).
                     Val::Node(vi) => {
-                        if matches!(v, Value::Null) && graph.is_required_key(vi, key) {
-                            ctx.set_fault(FAULT_REQUIRED);
-                        } else if graph.type_conflict_on_set(vi, key, &v) {
-                            ctx.set_fault(FAULT_TYPE_CONSTRAINT);
-                        } else if graph.unique_conflict_on_set(vi, key, &v).is_some() {
-                            ctx.set_fault(FAULT_CONSTRAINT);
-                        } else {
-                            graph.set_vertex_prop(vi, key, v);
-                        }
+                        graph.set_vertex_prop(vi, key, v);
+                        graph.tx_note_touched(vi);
                     }
                     Val::Edge(ei) => graph.set_edge_prop(ei, key, v),
                     _ => {}
                 }
             }
             CSetItem::Label { var_slot, label } => match binding.get(*var_slot) {
-                // Adding a label brings its required keys into force for this node.
+                // Adding a label brings its required keys into force for this node;
+                // the commit-time recheck flags one that's now missing.
                 Some(Val::Node(vi)) => {
-                    if graph.required_missing_for_label(*vi, label).is_some() {
-                        ctx.set_fault(FAULT_REQUIRED);
-                    } else {
-                        graph.add_vertex_label(*vi, label);
-                    }
+                    graph.add_vertex_label(*vi, label);
+                    graph.tx_note_touched(*vi);
                 }
                 Some(Val::Edge(ei)) => graph.add_edge_label(*ei, label),
                 _ => {}
@@ -5492,17 +5476,15 @@ fn run_set(graph: &mut Graph, ctx: &Ctx, items: &[CSetItem], binding: &Binding) 
     }
 }
 
-fn run_remove(graph: &mut Graph, ctx: &Ctx, items: &[CRemoveItem], binding: &Binding) {
+fn run_remove(graph: &mut Graph, _ctx: &Ctx, items: &[CRemoveItem], binding: &Binding) {
     for item in items {
         match item {
             CRemoveItem::Prop { var_slot, key } => match binding.get(*var_slot) {
-                // Removing a required key faults (ConstraintViolation).
+                // Removing a required key surfaces as ConstraintViolation at the
+                // frame's commit-time recheck (the key is then absent → missing).
                 Some(Val::Node(vi)) => {
-                    if graph.is_required_key(*vi, key) {
-                        ctx.set_fault(FAULT_REQUIRED);
-                    } else {
-                        graph.remove_vertex_prop(*vi, key);
-                    }
+                    graph.remove_vertex_prop(*vi, key);
+                    graph.tx_note_touched(*vi);
                 }
                 Some(Val::Edge(ei)) => graph.remove_edge_prop(*ei, key),
                 _ => {}
@@ -5586,9 +5568,60 @@ fn combine(op: SetOp, left: RowSet, right: RowSet) -> RowSet {
     }
 }
 
-/// Execute a lowered plan against a graph with positional params. `run_linear`
-/// already produced the terminal RETURN's flat `RowSet` (cols + columnar cells).
+/// Map a deferred-check failure at commit into the coded error the per-binding
+/// gates used to raise inline, so the surfaced `ConstraintViolation` (and its
+/// message) is unchanged whether a single statement checks eagerly or at commit.
+fn tx_commit_error(e: TxCommitError) -> CodeError {
+    match e {
+        TxCommitError::Required => CodeError::new(
+            ErrorCode::ConstraintViolation,
+            "write violates a required-property constraint (a required key is missing, null, or being removed)",
+        ),
+        TxCommitError::Type => CodeError::new(
+            ErrorCode::ConstraintViolation,
+            "write violates a type constraint (a value is not of the declared scalar type)",
+        ),
+        TxCommitError::Unique => CodeError::new(
+            ErrorCode::ConstraintViolation,
+            "write would duplicate a value under a unique constraint (use _MERGE to upsert)",
+        ),
+        TxCommitError::NoTx => {
+            CodeError::new(ErrorCode::InvalidGraphOp, "commit called with no open transaction")
+        }
+    }
+}
+
+/// Close a statement's auto-commit frame: on success commit (running the deferred
+/// constraint checks — a failure has already rolled the statement's writes back);
+/// on error roll the statement's partial writes back. This gives every top-level
+/// statement per-statement atomicity: a faulting INSERT/SET/DELETE leaves no trace.
+fn finish_statement<T>(graph: &mut Graph, result: CodeResult<T>) -> CodeResult<T> {
+    match result {
+        Ok(v) => match graph.commit_tx() {
+            Ok(()) | Err(TxCommitError::NoTx) => Ok(v),
+            Err(e) => Err(tx_commit_error(e)),
+        },
+        Err(err) => {
+            graph.rollback_tx();
+            Err(err)
+        }
+    }
+}
+
+/// Execute a lowered plan against a graph with positional params, inside a
+/// per-statement auto-commit transaction frame (see [`finish_statement`]). Nesting
+/// joins an outer explicit transaction opened over the FFI boundary — the inner
+/// commit is a no-op and the outermost commit runs the deferred checks.
 fn run_cquery(plan: &CQuery, graph: &mut Graph, params: &[Val]) -> CodeResult<RowSet> {
+    graph.begin_tx();
+    let result = run_cquery_body(plan, graph, params);
+    finish_statement(graph, result)
+}
+
+/// The statement body — runs each linear part and combines set-op results. Its
+/// writes apply eagerly inside the frame [`run_cquery`] opened; a fault propagates
+/// out and rolls them back.
+fn run_cquery_body(plan: &CQuery, graph: &mut Graph, params: &[Val]) -> CodeResult<RowSet> {
     if has_nested_aggregate(plan) {
         return Err(CodeError::new(
             ErrorCode::Unsupported,

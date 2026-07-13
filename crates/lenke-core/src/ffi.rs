@@ -345,6 +345,57 @@ pub unsafe extern "C" fn lnk_create_type_constraint(
     }
 }
 
+/// Open a transaction frame (R-TX): an atomic mutation boundary with rollback +
+/// deferred constraint checks. Writes still apply eagerly (read-your-writes), but
+/// record an inverse op; the outermost commit runs the built-in constraint checks
+/// against the fully-staged graph. Nesting joins the outer frame. Returns 0 on
+/// success, -1 on a null graph.
+///
+/// # Safety
+/// `g` is a valid, uniquely-borrowed `*mut Graph`.
+#[no_mangle]
+pub unsafe extern "C" fn lnk_begin_tx(g: *mut Graph) -> i32 {
+    if g.is_null() {
+        return -1;
+    }
+    (*g).begin_tx();
+    0
+}
+
+/// Commit the current transaction frame. Returns **0** on success (or an inner
+/// commit that the outermost frame will finalize), **-1** if a deferred
+/// constraint check failed — the transaction has already been rolled back, and
+/// the caller surfaces this as `ConstraintViolation` — **-2** if no transaction
+/// is open, and **-3** on a null graph.
+///
+/// # Safety
+/// As [`lnk_begin_tx`].
+#[no_mangle]
+pub unsafe extern "C" fn lnk_commit_tx(g: *mut Graph) -> i32 {
+    if g.is_null() {
+        return -3;
+    }
+    match (*g).commit_tx() {
+        Ok(()) => 0,
+        Err(crate::graph::TxCommitError::NoTx) => -2,
+        Err(_) => -1, // Required / Type / Unique — all surface as ConstraintViolation
+    }
+}
+
+/// Roll the current transaction back: replay the undo log newest-first. A no-op
+/// if no transaction is open. Returns 0 on success, -1 on a null graph.
+///
+/// # Safety
+/// As [`lnk_begin_tx`].
+#[no_mangle]
+pub unsafe extern "C" fn lnk_rollback_tx(g: *mut Graph) -> i32 {
+    if g.is_null() {
+        return -1;
+    }
+    (*g).rollback_tx();
+    0
+}
+
 /// Drop a vertex property index (no-op if absent). Returns 0 on success, -1 on
 /// error.
 ///
