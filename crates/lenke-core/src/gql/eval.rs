@@ -30,7 +30,7 @@ use super::plan::{
 use crate::arrow::ArrowColumn;
 use crate::error::{CodeError, CodeResult};
 use crate::error_codes::ErrorCode;
-use crate::graph::{Column, Graph, TxCommitError, Value};
+use crate::graph::{Adj, Column, Graph, TxCommitError, Value};
 use crate::query::RowSet;
 
 /// A runtime value. Extends the core [`Value`] with graph-element handles
@@ -5200,6 +5200,156 @@ fn try_count_edges(
     Some(rs)
 }
 
+/// The edge-type ids a relationship label admits: `None` = no `:T` constraint
+/// (any type); `Some(v)` = exactly those types; the whole result `None` = an
+/// `And`/`Not`/wildcard label with no cheap enumeration (caller bails).
+fn rel_type_set(ctx: &Ctx, label: Option<&CLabelExpr>) -> Option<Option<Vec<u32>>> {
+    match label {
+        None => Some(None),
+        Some(expr) => {
+            let mut v = Vec::new();
+            collect_etype_ids(ctx, expr, &mut v).then_some(Some(v))
+        }
+    }
+}
+
+/// True if edge type `etype` is admitted by a `rel_type_set` result.
+fn etype_ok(set: &Option<Vec<u32>>, etype: u32) -> bool {
+    set.as_ref().is_none_or(|v| v.contains(&etype))
+}
+
+/// Degree-product shortcut for a **two-hop count**:
+/// `MATCH (a)-[:T1]->(b)-[:T2]->(c) RETURN count(*)`. A homomorphic two-hop count
+/// is `Σ_b (edges into b that reach a valid a) × (edges out of b that reach a
+/// valid c)` — every in/out edge pair at the middle vertex `b` is one path — so it
+/// visits each edge O(1) times (O(E) total) instead of enumerating O(paths). No
+/// materialisation, and single-threaded it beats even the parallel enumeration.
+///
+/// Applies only when the shape can't hide a distinctness/self-join constraint the
+/// product would miss: both relationships anonymous (no var ⇒ no edge-uniqueness
+/// check) and directed, no inline props/WHERE anywhere, and the three node
+/// variables are pairwise distinct (no `(a)…->(a)` self-join). Endpoint/middle
+/// labels are honoured by filtering the incident edges. Returns `None` otherwise.
+fn try_count_two_hop(
+    linear: &CLinear,
+    graph: &Graph,
+    plan: &CQuery,
+    params: &[Val],
+) -> Option<RowSet> {
+    let [CClause::Match {
+        optional: false,
+        patterns,
+        where_: None,
+        ..
+    }, CClause::Return(proj)] = linear.clauses.as_slice()
+    else {
+        return None;
+    };
+    let [path] = patterns.as_slice() else {
+        return None;
+    };
+    let [seg1, seg2] = path.segments.as_slice() else {
+        return None;
+    };
+    // The projection is exactly `count(*)` (mirrors `try_count_star`).
+    if proj.distinct
+        || !proj.order_by.is_empty()
+        || proj.skip.is_some()
+        || proj.limit.is_some()
+        || proj.out_len != 1
+        || proj.aggs.len() != 1
+        || proj.items.len() != 1
+        || !matches!(proj.items[0].expr, CExpr::AggRef(0))
+    {
+        return None;
+    }
+    let agg = &proj.aggs[0];
+    if !agg.star || agg.distinct || !matches!(agg.func, AggFn::Count) {
+        return None;
+    }
+    // Both relationships: anonymous (no edge-uniqueness to enforce), directed, no
+    // inline props / WHERE / quantifier.
+    for rel in [&seg1.rel, &seg2.rel] {
+        if rel.var_slot.is_some()
+            || !rel.props.is_empty()
+            || rel.where_.is_some()
+            || rel.quantifier.is_some()
+            || !matches!(rel.direction, Direction::Out | Direction::In)
+        {
+            return None;
+        }
+    }
+    // No inline node props / WHERE (labels are fine — applied below).
+    for node in [&path.start, &seg1.node, &seg2.node] {
+        if !node.props.is_empty() || node.where_.is_some() {
+            return None;
+        }
+    }
+    // Node variables must be pairwise distinct — a shared variable (e.g.
+    // `(a)-[:T]->()-[:T]->(a)`) is a self-join the product can't express.
+    let slots: Vec<usize> = [path.start.var_slot, seg1.node.var_slot, seg2.node.var_slot]
+        .into_iter()
+        .flatten()
+        .collect();
+    if (1..slots.len()).any(|i| slots[..i].contains(&slots[i])) {
+        return None;
+    }
+
+    let ctx = resolve_ctx(graph, plan, params);
+    let t1 = rel_type_set(&ctx, seg1.rel.label.as_ref())?;
+    let t2 = rel_type_set(&ctx, seg2.rel.label.as_ref())?;
+    let start_label = path.start.label.as_ref(); // `a`
+    let mid_label = seg1.node.label.as_ref(); // `b`
+    let end_label = seg2.node.label.as_ref(); // `c`
+
+    // For the middle vertex `b`: seg1 edges reach `a` from b's *reverse* side (an
+    // out-pattern `a->b` is an in-edge of b), seg2 edges reach `c` from b's
+    // forward side. `Adj.nbr` is always the far endpoint, so it's the a / c to
+    // label-check.
+    let count_side = |b: u32, out_side: bool, tset: &Option<Vec<u32>>, far: Option<&CLabelExpr>| {
+        // `out_adj`/`in_adj` are distinct opaque iterator types, so branch the whole
+        // count rather than the iterator binding.
+        let keep =
+            |adj: &Adj| etype_ok(tset, adj.etype) && matches_label(graph, &ctx, adj.nbr, far);
+        if out_side {
+            graph.out_adj(b).filter(keep).count() as u64
+        } else {
+            graph.in_adj(b).filter(keep).count() as u64
+        }
+    };
+    let to_a_out = seg1.rel.direction == Direction::In; // In ⇒ a via b's out-edges
+    let from_c_out = seg2.rel.direction == Direction::Out; // Out ⇒ c via b's out-edges
+
+    // Each middle vertex `b` contributes `ways_to(b) × ways_from(b)` paths.
+    let contribution = |b: u32| -> u64 {
+        if !matches_label(graph, &ctx, b, mid_label) {
+            return 0;
+        }
+        let ways_to = count_side(b, to_a_out, &t1, start_label);
+        if ways_to == 0 {
+            return 0; // no incoming side ⇒ no paths through b
+        }
+        ways_to * count_side(b, from_c_out, &t2, end_label)
+    };
+    // Candidate middles: the middle label's bucket, else every live vertex.
+    let candidates: Vec<u32> = match mid_label.and_then(seed_label) {
+        Some(r) => match ctx.labels[r].0 {
+            Some(lid) => graph.vertices_with_label(lid).to_vec(),
+            None => Vec::new(), // unknown middle label → no rows
+        },
+        None => graph.vertex_indices().collect(),
+    };
+    // The middles are independent — split them across cores (opt-in) and sum.
+    #[cfg(feature = "parallel-query")]
+    let count: u64 = candidates.par_iter().map(|&b| contribution(b)).sum();
+    #[cfg(not(feature = "parallel-query"))]
+    let count: u64 = candidates.iter().map(|&b| contribution(b)).sum();
+
+    let mut rs = RowSet::new(proj.out_names.clone());
+    rs.push_row(std::iter::once(Value::Num(count as f64)));
+    Some(rs)
+}
+
 /// Intra-query parallel count for `MATCH <path with ≥1 segment> [WHERE …] RETURN
 /// count(*)` — the read-only traversal count that stays scalar (a pure aggregate
 /// over a traversal isn't vectorized, and `try_count_edges` only covers a single
@@ -6363,6 +6513,10 @@ fn run_part(
             return Ok(rs);
         }
         if let Some(rs) = try_count_edges(linear, graph, plan, params) {
+            return Ok(rs);
+        }
+        // Two-hop count via the degree product (O(E), no enumeration / threads).
+        if let Some(rs) = try_count_two_hop(linear, graph, plan, params) {
             return Ok(rs);
         }
     }
