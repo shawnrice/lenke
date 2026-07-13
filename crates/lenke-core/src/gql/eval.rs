@@ -635,7 +635,10 @@ fn val_key(v: &Val, out: &mut String) {
             let _ = write!(out, "n{:016x}", n.to_bits());
         }
         Val::Str(s) => {
-            let _ = write!(out, "s{s}");
+            // Raw byte push (same bytes as `write!("s{s}")`, without the fmt
+            // machinery) — the scalar grouping/DISTINCT key builder is per-row hot.
+            out.push('s');
+            out.push_str(s);
         }
         Val::Temporal(t) => {
             let _ = write!(out, "t{}{}", t.tag(), t.format());
@@ -3085,6 +3088,57 @@ fn scalar_col(graph: &Graph, ctx: &Ctx, sc: &ScanCols, e: &CExpr) -> Vec<Val> {
 
 /// Evaluate `e` over the whole matched row set `sc`. Numeric and boolean
 /// subtrees stay vectorized; everything else degrades to a per-row `Gen` column.
+/// Vectorized `Prop = / <> str-literal` over a `Column::Str`: compare the stored
+/// dictionary **ids** (u32) to the literal's id — resolved once through the graph
+/// interner — instead of byte-comparing an `Arc<str>` per row. A literal that
+/// isn't in the interner equals no stored string (every stored string is
+/// interned), so `=` is all-false and `<>` all-true with **zero** string bytes
+/// read. Returns `None` unless exactly one side is a direct Str-column `Prop` and
+/// the other a string literal, and the op is `Eq`/`Ne` (interner id order is
+/// arbitrary, not lexicographic, so `<`/`>` can't use it). Absent property ⇒ the
+/// row's result is UNKNOWN (invalid), matching three-valued logic.
+fn str_eq_vec(
+    graph: &Graph,
+    ctx: &Ctx,
+    sc: &ScanCols,
+    op: CompareOp,
+    left: &CExpr,
+    right: &CExpr,
+) -> Option<VVec> {
+    if !matches!(op, CompareOp::Eq | CompareOp::Ne) {
+        return None;
+    }
+    // Match the (prop, literal) pair in either operand order.
+    let (prop, lit) = match (left, right) {
+        (p @ CExpr::Prop { .. }, CExpr::Lit(Lit::Str(s)))
+        | (CExpr::Lit(Lit::Str(s)), p @ CExpr::Prop { .. }) => (p, s),
+        _ => return None,
+    };
+    let CExpr::Prop { var_slot, key_ref } = prop else {
+        return None;
+    };
+    let (elem, ids) = sc.slot(*var_slot)?;
+    let (store, kid) = match elem {
+        Elem::Node => (&graph.props, ctx.prop_keys[*key_ref].0),
+        Elem::Edge => (&graph.edge_props, ctx.prop_keys[*key_ref].1),
+    };
+    let Some(Column::Str { data, present }) = kid.and_then(|k| store.cols.get(k as usize)) else {
+        return None; // not a typed string column (Mixed/absent) — scalar handles it
+    };
+    let lit_id = graph.strs.get(lit); // None ⇒ literal not interned ⇒ matches nothing
+    let is_eq = matches!(op, CompareOp::Eq);
+    let mut t = Vec::with_capacity(sc.n);
+    let mut valid = Vec::with_capacity(sc.n);
+    for &row in ids {
+        let i = row as usize;
+        let p = present.get(i);
+        valid.push(p);
+        let eq = p && Some(data[i]) == lit_id;
+        t.push(if is_eq { eq } else { !eq });
+    }
+    Some(VVec::Bool { t, valid })
+}
+
 fn eval_vec(graph: &Graph, ctx: &Ctx, sc: &ScanCols, e: &CExpr) -> VVec {
     let n = sc.n;
     let gen = |e: &CExpr| VVec::Gen(scalar_col(graph, ctx, sc, e));
@@ -3185,6 +3239,10 @@ fn eval_vec(graph: &Graph, ctx: &Ctx, sc: &ScanCols, e: &CExpr) -> VVec {
             }
         }
         CExpr::Compare { op, left, right } => {
+            // Interned-id string equality (`col = / <> literal`) — no per-row bytes.
+            if let Some(v) = str_eq_vec(graph, ctx, sc, *op, left, right) {
+                return v;
+            }
             let l = eval_vec(graph, ctx, sc, left);
             let r = eval_vec(graph, ctx, sc, right);
             // Numeric fast path when both sides are numeric/boolean; otherwise the
@@ -4050,7 +4108,17 @@ fn key_raw_col(
     sc: &ScanCols,
     item: &CReturnItem,
 ) -> Option<Vec<Option<u64>>> {
-    let CExpr::Prop { var_slot, key_ref } = &item.expr else {
+    raw_bits_of(graph, ctx, sc, &item.expr)
+}
+
+/// Per-row raw key bits for a direct `Prop` over a typed column: the interned
+/// string **id** (`Str`), the `f64` bits (`Num`), or the bool (`Bool`) — `None`
+/// per row where the value is absent, `None` overall if the expr isn't a direct
+/// typed-column property (Mixed / absent). Both the vectorized group-by key
+/// ([`key_raw_col`]) and `count(DISTINCT …)` fold on this — dedup on an integer id
+/// with no string materialization/hashing.
+fn raw_bits_of(graph: &Graph, ctx: &Ctx, sc: &ScanCols, expr: &CExpr) -> Option<Vec<Option<u64>>> {
+    let CExpr::Prop { var_slot, key_ref } = expr else {
         return None;
     };
     let (elem, ids) = sc.slot(*var_slot)?;
@@ -4176,8 +4244,16 @@ fn contiguous_base(ids: &[u32]) -> Option<usize> {
 /// reduces over a flat slice (SIMD); a fully-present column at arbitrary ids gathers
 /// with no presence branch; otherwise the presence bit is probed per element.
 fn fused_global_agg(graph: &Graph, ctx: &Ctx, sc: &ScanCols, spec: &CAgg) -> Option<Val> {
+    // count(DISTINCT prop): dedup the interned **ids** (string id / f64 bits / bool)
+    // in an integer set — no `Val` build, no string hashing (the scalar path keys a
+    // `HashSet<String>` of formatted values per row).
     if spec.distinct {
-        return None;
+        if spec.func != AggFn::Count {
+            return None; // sum/avg/min/max DISTINCT stay scalar
+        }
+        let bits = raw_bits_of(graph, ctx, sc, spec.arg.as_ref()?)?;
+        let seen: std::collections::HashSet<u64> = bits.into_iter().flatten().collect();
+        return Some(Val::Num(seen.len() as f64));
     }
     if spec.func == AggFn::Count && spec.star {
         // count(*) over one global group is just the live row count.
@@ -4270,16 +4346,18 @@ fn vectorized_aggregate(
     // Fold each lifted aggregate into a per-group column.
     let mut agg_cols: Vec<Vec<Val>> = Vec::with_capacity(proj.aggs.len());
     for spec in &proj.aggs {
-        if spec.distinct {
-            return None;
-        }
         // Global (single-group) aggregates fold straight over the stored column —
-        // no gather, no materialized f64/validity vectors, no second pass.
+        // no gather, no materialized f64/validity vectors, no second pass. This also
+        // covers `count(DISTINCT prop)` (dedup on interned ids), so it's tried
+        // before the distinct bail below.
         if ngroups == 1 {
             if let Some(v) = fused_global_agg(graph, ctx, sc, spec) {
                 agg_cols.push(vec![v]);
                 continue;
             }
+        }
+        if spec.distinct {
+            return None; // grouped distinct / non-count distinct → scalar
         }
         let col: Vec<Val> = if spec.func == AggFn::Count && spec.star {
             let mut cnt = vec![0u64; ngroups];
