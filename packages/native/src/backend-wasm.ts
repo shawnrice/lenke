@@ -68,6 +68,17 @@ type WasmExports = {
     type: number,
     typeLen: number,
   ) => number;
+  lnk_create_cardinality_constraint: (
+    h: number,
+    label: number,
+    labelLen: number,
+    etype: number,
+    etypeLen: number,
+    direction: number,
+    min: number,
+    // i64 param crosses the wasm boundary as a BigInt (-1n = unbounded).
+    max: bigint,
+  ) => number;
   lnk_drop_vertex_index: (h: number, key: number, keyLen: number) => number;
   lnk_drop_edge_index: (h: number, key: number, keyLen: number) => number;
   lnk_begin_tx: (h: number) => number;
@@ -530,6 +541,42 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
         ex.lnk_dealloc(lp, l.byteLength);
         ex.lnk_dealloc(kp, k.byteLength);
         ex.lnk_dealloc(tp, t.byteLength);
+      }
+    },
+    createCardinalityConstraint: (handle, label, edgeType, direction, min, max) => {
+      const l = encoder.encode(label);
+      const lp = writeBytes(l);
+      const e = encoder.encode(edgeType);
+      const ep = writeBytes(e);
+
+      try {
+        // direction: 0 = out, 1 = in; max: i64 with -1n = unbounded (null).
+        const r = ex.lnk_create_cardinality_constraint(
+          handle,
+          lp,
+          l.byteLength,
+          ep,
+          e.byteLength,
+          direction === 'out' ? 0 : 1,
+          min,
+          BigInt(max ?? -1),
+        );
+
+        if (r === -1) {
+          throw new LenkeError(
+            `lenke: createCardinalityConstraint(${label}, ${edgeType}, ${direction}): existing data already violates the cardinality constraint`,
+            { code: ErrorCode.ConstraintViolation },
+          );
+        }
+
+        if (r !== 0) {
+          throw new LenkeError('lenke: createCardinalityConstraint failed', {
+            code: ErrorCode.Ffi,
+          });
+        }
+      } finally {
+        ex.lnk_dealloc(lp, l.byteLength);
+        ex.lnk_dealloc(ep, e.byteLength);
       }
     },
     createEdgeIndex: (handle, key) => {

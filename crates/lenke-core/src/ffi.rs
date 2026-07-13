@@ -441,6 +441,43 @@ pub unsafe extern "C" fn lnk_create_edge_type_constraint(
     }
 }
 
+/// Declare a CARDINALITY constraint bounding the degree of every vertex carrying
+/// `label` over `etype` in `direction` (0 = out / the vertex is the edge source,
+/// 1 = in / the target) to `min..=max`, where `max < 0` means unbounded. Existing
+/// data is scanned at declare time. Returns **0** on success, **-1** if the
+/// current data already violates it (surfaced as `ConstraintViolation` by the
+/// caller), and **-2** on a null graph / bad-UTF-8 slice.
+///
+/// # Safety
+/// `g` is a valid, uniquely-borrowed `*mut Graph`; both ptr/len pairs are valid
+/// UTF-8 slices.
+#[no_mangle]
+pub unsafe extern "C" fn lnk_create_cardinality_constraint(
+    g: *mut Graph,
+    label_ptr: *const u8,
+    label_len: usize,
+    etype_ptr: *const u8,
+    etype_len: usize,
+    direction: u8,
+    min: u32,
+    max: i64,
+) -> i32 {
+    if g.is_null() || label_ptr.is_null() || etype_ptr.is_null() {
+        return -2;
+    }
+    let (Ok(label), Ok(etype)) = (
+        std::str::from_utf8(std::slice::from_raw_parts(label_ptr, label_len)),
+        std::str::from_utf8(std::slice::from_raw_parts(etype_ptr, etype_len)),
+    ) else {
+        return -2;
+    };
+    let max_opt = if max < 0 { None } else { Some(max as u32) };
+    match (*g).create_cardinality_constraint(label, etype, direction, min, max_opt) {
+        Ok(()) => 0,
+        Err(_) => -1,
+    }
+}
+
 /// Open a transaction frame (R-TX): an atomic mutation boundary with rollback +
 /// deferred constraint checks. Writes still apply eagerly (read-your-writes), but
 /// record an inverse op; the outermost commit runs the built-in constraint checks

@@ -482,3 +482,77 @@ suite('edge type-constraint differential (TS vs native)', () => {
     expect(ts).toEqual({ code: 'E_INVALID_VALUE' });
   });
 });
+
+// Cardinality (degree-bound) constraint: an "exactly one" bound on a Purchase's
+// PLACED_BY out-degree, run identically on both engines. Because every GQL
+// statement auto-commits, BOTH bounds land at the per-statement commit — the
+// node+edge INSERT satisfies it, a bare Purchase INSERT trips min, and a second
+// PLACED_BY trips max. (`Order` is a reserved GQL keyword, so we use `Purchase`.)
+suite('cardinality-constraint differential (TS vs native)', () => {
+  const SCRIPT: Array<{ label: string; sql: string }> = [
+    {
+      label: 'node+edge together satisfies exactly-one',
+      sql: `INSERT (:Purchase {id: 'o1'})-[:PLACED_BY]->(:Customer {id: 'c1'})`,
+    },
+    {
+      label: 'bare Purchase (degree 0) violates min',
+      sql: `INSERT (:Purchase {id: 'o2'})`,
+    },
+    {
+      label: 'a second PLACED_BY (degree 2) violates max',
+      sql: `MATCH (o:Purchase {id: 'o1'}), (c:Customer {id: 'c1'}) INSERT (o)-[:PLACED_BY]->(c)`,
+    },
+    {
+      label: 'a Customer (unconstrained label) is unaffected',
+      sql: `INSERT (:Customer {id: 'c9'})`,
+    },
+    {
+      label: 'another satisfying Purchase ok',
+      sql: `INSERT (:Purchase {id: 'o3'})-[:PLACED_BY]->(:Customer {id: 'c1'})`,
+    },
+  ];
+
+  test('every write outcome and the final state agree across engines', () => {
+    const tsGraph = tsDeserialize(SEED, 'ndjson', new Graph());
+    tsGraph.createCardinalityConstraint('Purchase', 'PLACED_BY', 'out', 1, 1);
+
+    const backend = createFfiBackend(LIB);
+    const nativeGraph = graphFromFormat(backend, SEED, 'ndjson');
+    nativeGraph.createCardinalityConstraint('Purchase', 'PLACED_BY', 'out', 1, 1);
+
+    for (const { label, sql } of SCRIPT) {
+      const ts = outcome(() => tsQuery(tsGraph, sql));
+      const native = outcome(() => nativeGraph.query(sql));
+
+      expect(native, `outcome mismatch: ${label}`).toEqual(ts);
+    }
+
+    // Byte-identical final state: only the satisfying Purchases + their edges landed.
+    const READ = `MATCH (o:Purchase)-[:PLACED_BY]->(c:Customer) RETURN o.id, c.id ORDER BY o.id`;
+    expect(JSON.stringify(nativeGraph.query(READ))).toEqual(JSON.stringify(tsQuery(tsGraph, READ)));
+    const COUNT = `MATCH (o:Purchase) RETURN o.id ORDER BY o.id`;
+    expect(JSON.stringify(nativeGraph.query(COUNT))).toEqual(
+      JSON.stringify(tsQuery(tsGraph, COUNT)),
+    );
+  });
+
+  test('declare-time rejection agrees across engines (existing vertex under min)', () => {
+    // A Purchase with no PLACED_BY out-edge already violates a min:1 bound.
+    const build = `INSERT (:Purchase {id: 'o1'})`;
+    const tsGraph = tsDeserialize(SEED, 'ndjson', new Graph());
+    tsQuery(tsGraph, build);
+    const backend = createFfiBackend(LIB);
+    const nativeGraph = graphFromFormat(backend, SEED, 'ndjson');
+    nativeGraph.query(build);
+
+    const ts = outcome(() =>
+      tsGraph.createCardinalityConstraint('Purchase', 'PLACED_BY', 'out', 1, 1),
+    );
+    const native = outcome(() =>
+      nativeGraph.createCardinalityConstraint('Purchase', 'PLACED_BY', 'out', 1, 1),
+    );
+
+    expect(native).toEqual(ts);
+    expect(ts).toEqual({ code: 'E_CONSTRAINT_VIOLATION' });
+  });
+});

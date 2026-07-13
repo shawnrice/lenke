@@ -26,6 +26,7 @@ const countingBackend = (): { backend: Backend; freed: GraphHandle[] } => {
     createEdgeUniqueConstraint: () => {},
     createEdgeRequiredConstraint: () => {},
     createEdgeTypeConstraint: () => {},
+    createCardinalityConstraint: () => {},
     dropVertexIndex: () => {},
     dropEdgeIndex: () => {},
     beginTransaction: () => {},

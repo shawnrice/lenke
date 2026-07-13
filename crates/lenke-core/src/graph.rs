@@ -419,6 +419,14 @@ pub struct Graph {
     /// analogue of `v_type` (named `e_type_constraints` because `e_type: Vec<u32>`
     /// already holds the per-edge type ids).
     e_type_constraints: HashMap<String, HashMap<String, PropType>>,
+    /// CARDINALITY constraints: bound the DEGREE of every vertex carrying `label`
+    /// over `etype` in `direction` (0 = out / the vertex is the edge source, 1 =
+    /// in / the target) to `min..=max` (`max: None` unbounded). A small flat list
+    /// (schema-sized), searched linearly; keyed by `(label, etype, direction)` for
+    /// declare-replace and drop. Max is checked at commit against touched
+    /// endpoints; min is commit-time only (unsatisfiable by a single write). A
+    /// self-loop counts once for out and once for in. See `docs/design/r-tx.md`.
+    v_cardinality: Vec<CardinalityRule>,
     /// Transaction state (R-TX). `tx_depth > 0` means an open transaction: writes
     /// still apply eagerly to the live store (read-your-writes with no overlay),
     /// but each mutation records an inverse op in `tx_undo`, the built-in
@@ -466,6 +474,18 @@ enum Undo {
     DeleteEdge { ei: u32, eid: Option<Arc<str>> },
 }
 
+/// A declared CARDINALITY constraint: every live vertex carrying `label` must
+/// have `min <= degree <= max` over `etype` in `direction` (0 = out, 1 = in).
+/// `max: None` is unbounded. The Rust analogue of the TS `CardinalityConstraint`.
+#[derive(Clone, Debug)]
+struct CardinalityRule {
+    label: String,
+    etype: String,
+    direction: u8,
+    min: u32,
+    max: Option<u32>,
+}
+
 /// Which deferred constraint check failed at commit. All surface to the caller as
 /// `ConstraintViolation`, but are kept distinct for messaging / FFI codes.
 pub enum TxCommitError {
@@ -477,6 +497,8 @@ pub enum TxCommitError {
     Type,
     /// A unique constraint is violated on a touched vertex.
     Unique,
+    /// A cardinality (degree-bound) constraint is violated on a touched vertex.
+    Cardinality,
 }
 
 /// A set of property indexes (key name → ordered value buckets).
@@ -1367,6 +1389,148 @@ impl Graph {
         out
     }
 
+    // --- cardinality constraints (R-CONSTRAINTS, degree bounds) --------------
+    // Bound the degree of every vertex carrying `label` over `etype` in
+    // `direction` (0 = out / the vertex is the edge source, 1 = in / the target).
+    // Max is deferred to commit against touched endpoints (the GQL layer runs
+    // every statement in an auto-commit frame, so a single over-max edge INSERT is
+    // caught there); min is commit-time only (unsatisfiable by a single write).
+    // The edge write paths note both endpoints as touched; `run_deferred_checks`
+    // re-checks them. Byte-identical to the TS core.
+
+    /// Number of live `etype` edges for which `vi` is the SOURCE (out-degree). The
+    /// adjacency lists hold only live edges, so this is a filtered count. A
+    /// self-loop appears in `out` once, so it counts once here (and once for `in`).
+    pub fn out_degree(&self, vi: u32, etype: &str) -> u32 {
+        let Some(tid) = self.etype.get(etype) else {
+            return 0;
+        };
+        self.out[vi as usize]
+            .iter()
+            .filter(|a| a.etype == tid)
+            .count() as u32
+    }
+
+    /// Number of live `etype` edges for which `vi` is the TARGET (in-degree).
+    pub fn in_degree(&self, vi: u32, etype: &str) -> u32 {
+        let Some(tid) = self.etype.get(etype) else {
+            return 0;
+        };
+        self.in_[vi as usize]
+            .iter()
+            .filter(|a| a.etype == tid)
+            .count() as u32
+    }
+
+    /// Degree of `vi` over `etype` in `direction` (0 = out, 1 = in).
+    fn degree_dir(&self, vi: u32, etype: &str, direction: u8) -> u32 {
+        if direction == 0 {
+            self.out_degree(vi, etype)
+        } else {
+            self.in_degree(vi, etype)
+        }
+    }
+
+    /// Declare a CARDINALITY constraint bounding the degree of every vertex
+    /// carrying `label` over `etype` in `direction` (0 = out, 1 = in) to
+    /// `min..=max` (`max: None` unbounded). Re-declaring `(label, etype,
+    /// direction)` replaces the bounds. Fails with `ConstraintViolation` if any
+    /// existing vertex already violates it (mirrors unique/required declare-time).
+    pub fn create_cardinality_constraint(
+        &mut self,
+        label: &str,
+        etype: &str,
+        direction: u8,
+        min: u32,
+        max: Option<u32>,
+    ) -> CodeResult<()> {
+        if let Some(lid) = self.labels.get(label) {
+            for vi in self.vertex_indices() {
+                if !self.vlabels[vi as usize].contains(&lid) {
+                    continue;
+                }
+                let d = self.degree_dir(vi, etype, direction);
+                if d < min || max.is_some_and(|m| d > m) {
+                    return Err(CodeError::new(
+                        ErrorCode::ConstraintViolation,
+                        "existing data already violates the cardinality constraint being declared",
+                    ));
+                }
+            }
+        }
+        let rule = CardinalityRule {
+            label: label.to_string(),
+            etype: etype.to_string(),
+            direction,
+            min,
+            max,
+        };
+        if let Some(existing) = self.v_cardinality.iter_mut().find(|c| {
+            c.label == rule.label && c.etype == rule.etype && c.direction == rule.direction
+        }) {
+            *existing = rule;
+        } else {
+            self.v_cardinality.push(rule);
+        }
+        Ok(())
+    }
+
+    /// Drop a cardinality constraint on `(label, etype, direction)`. Idempotent.
+    pub fn drop_cardinality_constraint(&mut self, label: &str, etype: &str, direction: u8) {
+        self.v_cardinality
+            .retain(|c| !(c.label == label && c.etype == etype && c.direction == direction));
+    }
+
+    /// Every declared cardinality constraint as sorted `(label, etype, direction,
+    /// min, max)` tuples — introspection, sorted for a deterministic listing.
+    pub fn cardinality_constraints(&self) -> Vec<(String, String, u8, u32, Option<u32>)> {
+        let mut out: Vec<(String, String, u8, u32, Option<u32>)> = self
+            .v_cardinality
+            .iter()
+            .map(|c| (c.label.clone(), c.etype.clone(), c.direction, c.min, c.max))
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+        out
+    }
+
+    /// True iff a touched vertex `vi` violates any cardinality constraint on one of
+    /// its labels (degree below `min` or above `max`). The commit-time check.
+    fn cardinality_violation(&self, vi: u32) -> bool {
+        if self.v_cardinality.is_empty() {
+            return false;
+        }
+        let lids = &self.vlabels[vi as usize];
+        for c in &self.v_cardinality {
+            let Some(lid) = self.labels.get(&c.label) else {
+                continue;
+            };
+            if !lids.contains(&lid) {
+                continue;
+            }
+            let d = self.degree_dir(vi, &c.etype, c.direction);
+            if d < c.min || c.max.is_some_and(|m| d > m) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Note both endpoints of edge `ei` as touched for the commit-time cardinality
+    /// recheck (their degree changed). No-op outside a transaction / during a
+    /// rollback replay, or when no cardinality constraint is declared. Called by
+    /// the edge write paths (`add_edge` / `remove_edge`), so a vertex-delete
+    /// cascade re-checks the surviving neighbor too — mirrors the TS core, whose
+    /// `insertEdge` / `removeEdge` note endpoints at the same core boundary.
+    fn cardinality_note_endpoints(&mut self, ei: u32) {
+        if self.v_cardinality.is_empty() || !self.tx_active() {
+            return;
+        }
+        let i = ei as usize;
+        let (from, to) = (self.e_src[i], self.e_dst[i]);
+        self.tx_touched.push(from);
+        self.tx_touched.push(to);
+    }
+
     /// Live vertices carrying `label` whose property `key == value`. Seeks the
     /// backing index (a constraint always creates one), falling back to a scan if
     /// somehow unindexed. Non-indexable values (null/list) yield an empty set —
@@ -1696,6 +1860,14 @@ impl Graph {
             if self.unique_conflict(&labels, &props, Some(vi)).is_some() {
                 return Err(TxCommitError::Unique);
             }
+            // Cardinality: a vertex is touched when added OR when an incident edge
+            // is added/removed (either endpoint's degree changed). This commit is
+            // where BOTH bounds land — max (also caught eagerly for a direct
+            // addEdge on the TS side) and min (commit-time only, since a single
+            // write can't satisfy a positive lower bound).
+            if self.cardinality_violation(vi) {
+                return Err(TxCommitError::Cardinality);
+            }
         }
         // Edge constraints: re-check every edge touched during the transaction
         // against the fully-staged graph (edge analogue of the vertex loop above).
@@ -1935,6 +2107,10 @@ impl Graph {
         self.bump();
         self.touch(etype);
         self.record_undo(Undo::InsertEdge(ei));
+        // Both endpoints' degree changed — note them for the commit-time
+        // cardinality recheck (no-op unless inside a transaction with a
+        // cardinality constraint declared).
+        self.cardinality_note_endpoints(ei);
         ei
     }
 
@@ -2089,6 +2265,10 @@ impl Graph {
         if !self.is_edge_live(ei) {
             return;
         }
+        // Both endpoints' degree will drop — note them for the commit-time
+        // cardinality recheck (min may now be unmet). Endpoints read from the
+        // still-intact e_src/e_dst; no-op outside a transaction / rollback replay.
+        self.cardinality_note_endpoints(ei);
         // Record the inverse (un-tombstone) before tombstoning: capture any
         // external-id overlay, which the removal below drops.
         if self.tx_active() {
@@ -2549,6 +2729,7 @@ impl Builder {
             e_unique: HashMap::new(),
             e_required: HashMap::new(),
             e_type_constraints: HashMap::new(),
+            v_cardinality: Vec::new(),
             tx_depth: 0,
             tx_undo: Vec::new(),
             tx_touched: Vec::new(),
@@ -2773,5 +2954,125 @@ mod transactions {
             .unwrap_err();
         assert_eq!(err.code, ErrorCode::ConstraintViolation);
         assert_eq!(g.vertex_count(), 0, "the faulting statement left no trace");
+    }
+}
+
+#[cfg(test)]
+mod cardinality {
+    //! R-CONSTRAINTS cardinality (degree bounds), exercised over the GQL eval
+    //! path (each statement is an auto-commit frame, so max AND min land at the
+    //! per-statement commit). Byte-identical to the TS core.
+    use super::*;
+    use crate::gql::eval::Params;
+    use crate::gql::parse;
+    use crate::ndjson;
+
+    fn run(g: &mut Graph, q: &str) -> CodeResult<()> {
+        parse(q).unwrap().execute(g, &Params::new()).map(|_| ())
+    }
+
+    #[test]
+    fn exactly_one_via_gql_commit() {
+        let mut g = ndjson::decode("").unwrap();
+        g.create_cardinality_constraint("Purchase", "PLACED_BY", 0, 1, Some(1))
+            .unwrap();
+
+        // Node + mandatory edge in one INSERT (one auto-commit frame) satisfies it.
+        run(
+            &mut g,
+            "INSERT (:Purchase {id: 'o1'})-[:PLACED_BY]->(:Customer {id: 'c1'})",
+        )
+        .unwrap();
+        assert_eq!(g.vertex_count(), 2);
+
+        // A bare Purchase with no PLACED_BY out-edge is degree 0 < min → rejected, and
+        // the statement rolls back (no trace).
+        let err = run(&mut g, "INSERT (:Purchase {id: 'o2'})").unwrap_err();
+        assert_eq!(err.code, ErrorCode::ConstraintViolation);
+        assert_eq!(g.vertex_count(), 2, "the rejected INSERT left no trace");
+    }
+
+    #[test]
+    fn over_max_is_rejected_at_commit() {
+        let mut g = ndjson::decode("").unwrap();
+        g.create_cardinality_constraint("Purchase", "PLACED_BY", 0, 0, Some(1))
+            .unwrap();
+        run(
+            &mut g,
+            "INSERT (:Purchase {id: 'o1'})-[:PLACED_BY]->(:Customer {id: 'c1'})",
+        )
+        .unwrap();
+        // A second PLACED_BY out-edge from o1 pushes its out-degree to 2 > max 1.
+        let err = run(
+            &mut g,
+            "MATCH (o:Purchase {id: 'o1'}), (c:Customer {id: 'c1'}) INSERT (o)-[:PLACED_BY]->(c)",
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::ConstraintViolation);
+        assert_eq!(g.edge_count(), 1, "the over-max edge rolled back");
+    }
+
+    #[test]
+    fn remove_edge_below_min_rolls_back() {
+        let mut g = ndjson::decode("").unwrap();
+        run(
+            &mut g,
+            "INSERT (:Purchase {id: 'o1'})-[:PLACED_BY]->(:Customer {id: 'c1'})",
+        )
+        .unwrap();
+        g.create_cardinality_constraint("Purchase", "PLACED_BY", 0, 1, Some(1))
+            .unwrap();
+        // Deleting the only PLACED_BY edge drops o1 to degree 0 < min → rejected.
+        let err = run(&mut g, "MATCH (:Purchase)-[r:PLACED_BY]->() DELETE r").unwrap_err();
+        assert_eq!(err.code, ErrorCode::ConstraintViolation);
+        assert_eq!(g.edge_count(), 1, "the delete rolled back");
+    }
+
+    #[test]
+    fn declare_time_scan_and_self_loop_degree() {
+        let mut g = ndjson::decode("").unwrap();
+        run(&mut g, "INSERT (:Purchase {id: 'o1'})").unwrap(); // degree 0
+                                                               // min:1 over existing degree-0 data → rejected at declare time.
+        let err = g
+            .create_cardinality_constraint("Purchase", "PLACED_BY", 0, 1, Some(1))
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::ConstraintViolation);
+
+        // A self-loop counts once for out and once for in.
+        run(
+            &mut g,
+            "MATCH (o:Purchase {id: 'o1'}) INSERT (o)-[:SELF]->(o)",
+        )
+        .unwrap();
+        // The sole Purchase vertex is index 0 (first inserted); `id` is a property,
+        // not the external vertex identity, so degree is read by index here.
+        assert_eq!(g.out_degree(0, "SELF"), 1);
+        assert_eq!(g.in_degree(0, "SELF"), 1);
+    }
+
+    #[test]
+    fn drop_and_introspection() {
+        let mut g = ndjson::decode("").unwrap();
+        g.create_cardinality_constraint("Purchase", "PLACED_BY", 0, 1, Some(1))
+            .unwrap();
+        g.create_cardinality_constraint("Customer", "PRIMARY", 1, 0, Some(1))
+            .unwrap();
+        assert_eq!(
+            g.cardinality_constraints(),
+            vec![
+                ("Customer".into(), "PRIMARY".into(), 1, 0, Some(1)),
+                ("Purchase".into(), "PLACED_BY".into(), 0, 1, Some(1)),
+            ]
+        );
+        // Re-declaring replaces the bounds (not a second entry).
+        g.create_cardinality_constraint("Purchase", "PLACED_BY", 0, 0, None)
+            .unwrap();
+        assert_eq!(g.cardinality_constraints().len(), 2);
+        g.drop_cardinality_constraint("Purchase", "PLACED_BY", 0);
+        assert_eq!(
+            g.cardinality_constraints(),
+            vec![("Customer".into(), "PRIMARY".into(), 1, 0, Some(1))]
+        );
+        g.drop_cardinality_constraint("Purchase", "PLACED_BY", 0); // idempotent
     }
 }

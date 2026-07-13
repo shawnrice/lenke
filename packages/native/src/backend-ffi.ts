@@ -45,6 +45,10 @@ const SYMBOLS = {
     args: [FFIType.ptr, FFIType.ptr, U, FFIType.ptr, U, FFIType.ptr, U],
     returns: FFIType.i32,
   },
+  lnk_create_cardinality_constraint: {
+    args: [FFIType.ptr, FFIType.ptr, U, FFIType.ptr, U, FFIType.u8, FFIType.u32, FFIType.i64],
+    returns: FFIType.i32,
+  },
   lnk_drop_vertex_index: { args: [FFIType.ptr, FFIType.ptr, U], returns: FFIType.i32 },
   lnk_drop_edge_index: { args: [FFIType.ptr, FFIType.ptr, U], returns: FFIType.i32 },
   lnk_begin_tx: { args: [FFIType.ptr], returns: FFIType.i32 },
@@ -371,6 +375,32 @@ export const createFfiBackend = (libPath: string): Backend => {
 
       if (r !== 0) {
         throw new LenkeError('lenke: createEdgeTypeConstraint failed', { code: ErrorCode.Ffi });
+      }
+    },
+    createCardinalityConstraint: (handle, label, edgeType, direction, min, max) => {
+      const l = encoder.encode(label);
+      const e = encoder.encode(edgeType);
+      // direction: 0 = out, 1 = in; max: i64 with -1 = unbounded (null).
+      const r = symbols.lnk_create_cardinality_constraint(
+        asPtr(handle),
+        ptr(l),
+        l.byteLength,
+        ptr(e),
+        e.byteLength,
+        direction === 'out' ? 0 : 1,
+        min,
+        BigInt(max ?? -1),
+      );
+
+      if (r === -1) {
+        throw new LenkeError(
+          `lenke: createCardinalityConstraint(${label}, ${edgeType}, ${direction}): existing data already violates the cardinality constraint`,
+          { code: ErrorCode.ConstraintViolation },
+        );
+      }
+
+      if (r !== 0) {
+        throw new LenkeError('lenke: createCardinalityConstraint failed', { code: ErrorCode.Ffi });
       }
     },
     dropVertexIndex: (handle, key) => {

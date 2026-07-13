@@ -51,6 +51,20 @@ export type ScalarTypeName =
   | 'list';
 
 /**
+ * A declared CARDINALITY constraint (R-CONSTRAINTS): every vertex carrying
+ * `label` must have `min <= degree <= max` over `edgeType` in `direction`
+ * (`out` = the vertex is the edge source, `in` = the target). `max: null` is
+ * unbounded. Returned by {@link Graph.cardinalityConstraints} for introspection.
+ */
+export type CardinalityConstraint = {
+  label: string;
+  edgeType: string;
+  direction: 'out' | 'in';
+  min: number;
+  max: number | null;
+};
+
+/**
  * Where a buffered transaction event stashes its reactive tokens, captured while
  * the element is still live (see {@link Graph.emit}); `markMutated` reads them at
  * commit-time dispatch instead of re-deriving from a possibly-evicted element.
@@ -737,6 +751,12 @@ export class Graph {
       }
     }
 
+    // Cardinality gate: an edge write changes both endpoints' degree. Runs here,
+    // before the edge lands in the adjacency indexes below (so the endpoints'
+    // degree is still pre-insert). Outside a transaction it enforces MAX eagerly;
+    // inside one it records the touched endpoints for the commit-time recheck.
+    this.cardinalityGateOnInsert(edge);
+
     this.emit(new EmitterEvent('@graph/EdgeAdded', edge));
 
     this.edgesById.set(edge.id, edge);
@@ -759,6 +779,11 @@ export class Graph {
     const undoProps = { ...edge.properties };
     const undoFrom = edge.from.id;
     const undoTo = edge.to.id;
+
+    // Cardinality: removing an edge drops both endpoints' degree, which may fall
+    // below `min` — record them for the commit-time recheck (min is never
+    // enforced eagerly). No-op outside a transaction / during a rollback replay.
+    this.cardinalityNoteOnRemove(edge);
 
     this.emit(new EmitterEvent('@graph/EdgeRemoved', edge));
 
@@ -1872,6 +1897,187 @@ export class Graph {
     }
   };
 
+  // --- CARDINALITY constraints (R-CONSTRAINTS, degree bounds) --------------
+  // A cardinality constraint bounds the DEGREE of each vertex carrying `label`
+  // over `edgeType` in `direction` (out = the vertex is the edge source; in =
+  // the target): for every such vertex V, `min <= degree(V) <= max`. "exactly
+  // one" = min:1,max:1; "at most one" = min:0,max:1; "at least one" = min:1,
+  // max:null. A self-loop (V—[e]->V) counts once for out AND once for in (it
+  // appears in both adjacency directions), matching the Rust core.
+  //
+  // Enforcement splits by satisfiability at a single write (see docs/design/r-tx.md):
+  //   - MAX is reachable by one write, so it's eager on a bare `addEdge` outside
+  //     a transaction (the over-the-limit edge throws) and deferred to commit
+  //     inside one.
+  //   - MIN is NOT reachable by one write (a fresh vertex has degree 0), so it is
+  //     commit-time ONLY, checked in `runDeferredChecks` against touched vertices.
+  //     Every GQL statement auto-commits and `transaction(fn)` commits at the end,
+  //     so those are min's enforcement boundaries. A bare `addVertex(...)` outside
+  //     any transaction has NO commit boundary, so it does not trip a min check —
+  //     intended: min inherently needs a second write (the edge), which is why
+  //     R-TX was its prerequisite. Declaring the constraint scans existing data.
+
+  private readonly vertexCardinalityConstraints = new Map<string, CardinalityConstraint>();
+
+  /** Composite registry key for a `(label, edgeType, direction)` cardinality constraint. */
+  private cardKey = (label: string, edgeType: string, direction: 'out' | 'in'): string =>
+    `${label} ${edgeType} ${direction}`;
+
+  /** Number of `edgeType` edges for which `vertex` is the SOURCE (out-degree). */
+  public outDegree = (vertex: Vertex, edgeType: string): number =>
+    this.edgesFromByLabel.get(vertex.id)?.get(edgeType)?.size ?? 0;
+
+  /** Number of `edgeType` edges for which `vertex` is the TARGET (in-degree). */
+  public inDegree = (vertex: Vertex, edgeType: string): number =>
+    this.edgesToByLabel.get(vertex.id)?.get(edgeType)?.size ?? 0;
+
+  /**
+   * Declare a CARDINALITY constraint bounding the degree of every vertex carrying
+   * `label` over `edgeType` in `direction`. Re-declaring `(label, edgeType,
+   * direction)` replaces the bounds. Throws {@link ErrorCode.ConstraintViolation}
+   * if any existing vertex already violates `min`/`max` (mirrors unique/required).
+   */
+  public createCardinalityConstraint = (
+    label: string,
+    edgeType: string,
+    direction: 'out' | 'in',
+    min: number,
+    max: number | null,
+  ): void => {
+    for (const vertex of this.getVerticesByLabel(label)) {
+      const degree =
+        direction === 'out' ? this.outDegree(vertex, edgeType) : this.inDegree(vertex, edgeType);
+
+      if (degree < min || (max !== null && degree > max)) {
+        throw new LenkeError(
+          `existing data already violates the cardinality constraint being declared on '${label}' (${edgeType} ${direction})`,
+          { code: ErrorCode.ConstraintViolation },
+        );
+      }
+    }
+
+    this.vertexCardinalityConstraints.set(this.cardKey(label, edgeType, direction), {
+      label,
+      edgeType,
+      direction,
+      min,
+      max,
+    });
+  };
+
+  /** Drop a cardinality constraint on `(label, edgeType, direction)`. Idempotent. */
+  public dropCardinalityConstraint = (
+    label: string,
+    edgeType: string,
+    direction: 'out' | 'in',
+  ): void => {
+    this.vertexCardinalityConstraints.delete(this.cardKey(label, edgeType, direction));
+  };
+
+  /** Every declared cardinality constraint, sorted by `(label, edgeType, direction)`. */
+  public cardinalityConstraints = (): CardinalityConstraint[] =>
+    [...this.vertexCardinalityConstraints.values()].sort((a, b) =>
+      a.label !== b.label
+        ? a.label.localeCompare(b.label)
+        : a.edgeType !== b.edgeType
+          ? a.edgeType.localeCompare(b.edgeType)
+          : a.direction.localeCompare(b.direction),
+    );
+
+  /**
+   * The first cardinality constraint `vertex` currently violates (degree below
+   * `min` or above `max`), or `undefined`. The commit-time / declare-time check.
+   */
+  private cardinalityViolationOf = (vertex: Vertex): CardinalityConstraint | undefined => {
+    for (const c of this.vertexCardinalityConstraints.values()) {
+      if (!vertex.hasLabel(c.label)) {
+        continue;
+      }
+
+      const degree =
+        c.direction === 'out'
+          ? this.outDegree(vertex, c.edgeType)
+          : this.inDegree(vertex, c.edgeType);
+
+      if (degree < c.min || (c.max !== null && degree > c.max)) {
+        return c;
+      }
+    }
+
+    return undefined;
+  };
+
+  /**
+   * The first MAX cardinality constraint the about-to-be-inserted `edge` would
+   * push its constrained endpoint over, or `undefined`. Called from
+   * {@link insertEdge} before the edge is indexed, so each endpoint's degree is
+   * still pre-insert — hence `+ 1`.
+   */
+  private cardinalityMaxExceededOnAdd = (
+    from: Vertex,
+    to: Vertex,
+    edgeLabels: Set<string>,
+  ): CardinalityConstraint | undefined => {
+    for (const c of this.vertexCardinalityConstraints.values()) {
+      if (c.max === null || !edgeLabels.has(c.edgeType)) {
+        continue;
+      }
+
+      if (c.direction === 'out') {
+        if (from.hasLabel(c.label) && this.outDegree(from, c.edgeType) + 1 > c.max) {
+          return c;
+        }
+      } else if (to.hasLabel(c.label) && this.inDegree(to, c.edgeType) + 1 > c.max) {
+        return c;
+      }
+    }
+
+    return undefined;
+  };
+
+  /**
+   * Cardinality gate for an edge insert. Outside a transaction, enforce MAX
+   * eagerly (a single edge can push a degree over its bound). Inside one, record
+   * both endpoints as touched so {@link runDeferredChecks} re-checks min AND max
+   * at commit. A rollback replay skips entirely (restores known-good state).
+   */
+  private cardinalityGateOnInsert = (edge: Edge): void => {
+    if (this.vertexCardinalityConstraints.size === 0 || this.applyingUndo) {
+      return;
+    }
+
+    if (this.txDepth > 0) {
+      this.txTouched.add(edge.from.id);
+      this.txTouched.add(edge.to.id);
+
+      return;
+    }
+
+    const exceeded = this.cardinalityMaxExceededOnAdd(edge.from, edge.to, edge.labels);
+
+    if (exceeded) {
+      throw new LenkeError(
+        `cardinality constraint on '${exceeded.label}' (${exceeded.edgeType} ${exceeded.direction}) violated: degree would exceed max ${exceeded.max}`,
+        { code: ErrorCode.ConstraintViolation },
+      );
+    }
+  };
+
+  /**
+   * Note both endpoints of a removed edge for the commit-time cardinality
+   * recheck (their degree dropped, possibly below `min`). No-op outside a
+   * transaction — a bare `removeEdge` has no commit boundary, so min is not
+   * enforced there — or during a rollback replay.
+   */
+  private cardinalityNoteOnRemove = (edge: Edge): void => {
+    if (this.vertexCardinalityConstraints.size === 0 || this.applyingUndo || this.txDepth === 0) {
+      return;
+    }
+
+    this.txTouched.add(edge.from.id);
+    this.txTouched.add(edge.to.id);
+  };
+
   /* Event Emitter Proxy */
 
   public eventsEnabled = (): boolean => {
@@ -2083,6 +2289,20 @@ export class Graph {
       if (dup) {
         throw new LenkeError(
           `unique constraint on '${dup.label}.${dup.key}' violated by value ${JSON.stringify(dup.existing.properties[dup.key])}`,
+          { code: ErrorCode.ConstraintViolation },
+        );
+      }
+
+      // Cardinality: a vertex lands in `txTouched` when it's added OR when an
+      // incident edge is added/removed (either endpoint's degree changed). This
+      // is where BOTH bounds are enforced: max (also caught eagerly for a bare
+      // addEdge) and min (only satisfiable across writes, so commit-time only —
+      // this per-statement / transaction commit is min's single enforcement point).
+      const card = this.cardinalityViolationOf(vertex);
+
+      if (card) {
+        throw new LenkeError(
+          `cardinality constraint on '${card.label}' (${card.edgeType} ${card.direction}) violated: degree out of bounds [${card.min}, ${card.max ?? '∞'}]`,
           { code: ErrorCode.ConstraintViolation },
         );
       }

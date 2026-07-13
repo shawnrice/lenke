@@ -2,6 +2,7 @@ export { Edge, Graph, isElement, PropertyIndex, Vertex } from './core/index.js';
 export { validateLabel, validatePropertyKey, validatePropertyValue } from './core/index.js';
 
 export type {
+  CardinalityConstraint,
   Element,
   GraphElement,
   GraphOptions,

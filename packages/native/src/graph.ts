@@ -300,6 +300,20 @@ export type RustGraph = {
   createEdgeUniqueConstraint: (edgeType: string, key: string) => void;
   createEdgeRequiredConstraint: (edgeType: string, key: string) => void;
   createEdgeTypeConstraint: (edgeType: string, key: string, type: ScalarTypeName) => void;
+  /**
+   * Declare a CARDINALITY constraint bounding the degree of every vertex carrying
+   * `label` over `edgeType` in `direction` (`out` = source, `in` = target) to
+   * `min..=max` (`max: null` unbounded). Throws `ConstraintViolation` if the
+   * current data already violates it. Max is enforced at each statement's
+   * auto-commit; min is commit-time only. See docs/design/r-tx.md.
+   */
+  createCardinalityConstraint: (
+    label: string,
+    edgeType: string,
+    direction: 'out' | 'in',
+    min: number,
+    max: number | null,
+  ) => void;
   /** Drop a vertex / edge property index (no-op if absent). */
   dropVertexIndex: (key: string) => void;
   dropEdgeIndex: (key: string) => void;
@@ -599,6 +613,8 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
       backend.createEdgeRequiredConstraint(live(), edgeType, key),
     createEdgeTypeConstraint: (edgeType, key, type) =>
       backend.createEdgeTypeConstraint(live(), edgeType, key, type),
+    createCardinalityConstraint: (label, edgeType, direction, min, max) =>
+      backend.createCardinalityConstraint(live(), label, edgeType, direction, min, max),
     dropVertexIndex: (key) => backend.dropVertexIndex(live(), key),
     dropEdgeIndex: (key) => backend.dropEdgeIndex(live(), key),
     vertexIndexes: () => backend.vertexIndexes(live()),

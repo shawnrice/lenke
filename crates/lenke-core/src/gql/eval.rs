@@ -5607,6 +5607,10 @@ fn tx_commit_error(e: TxCommitError) -> CodeError {
             ErrorCode::ConstraintViolation,
             "write would duplicate a value under a unique constraint (use _MERGE to upsert)",
         ),
+        TxCommitError::Cardinality => CodeError::new(
+            ErrorCode::ConstraintViolation,
+            "write violates a cardinality constraint (a vertex's edge degree is outside its declared min..max bound)",
+        ),
         TxCommitError::NoTx => {
             CodeError::new(ErrorCode::InvalidGraphOp, "commit called with no open transaction")
         }

@@ -342,3 +342,201 @@ describe('R-CONSTRAINTS: edge unique/required/type', () => {
     expect(g.edgeCount).toBe(3);
   });
 });
+
+describe('R-CONSTRAINTS: cardinality', () => {
+  // An Order must be placed by exactly one Customer: bound the OUT-degree of every
+  // :Order over PLACED_BY to [1, 1].
+  const order = (g: Graph, id: string) => g.addVertex({ id, labels: ['Order'], properties: {} });
+  const customer = (g: Graph, id: string) =>
+    g.addVertex({ id, labels: ['Customer'], properties: {} });
+
+  test('declare-time rejection of already-violating data', () => {
+    const g = new Graph();
+    order(g, 'o1'); // out-degree 0, but min:1
+    expect(isCV(() => g.createCardinalityConstraint('Order', 'PLACED_BY', 'out', 1, 1))).toBe(true);
+
+    // With the mandatory edge in place, declaring succeeds.
+    const c1 = customer(g, 'c1');
+    g.addEdge({ from: g.getVertexById('o1')!, to: c1, labels: ['PLACED_BY'], properties: {} });
+    expect(() => g.createCardinalityConstraint('Order', 'PLACED_BY', 'out', 1, 1)).not.toThrow();
+
+    // A max-only constraint (at most one) also rejects pre-existing over-max data.
+    const o2 = order(g, 'o2');
+    g.addEdge({ from: o2, to: c1, labels: ['SHIPPED_TO'], properties: {} });
+    g.addEdge({ from: o2, to: customer(g, 'c2'), labels: ['SHIPPED_TO'], properties: {} });
+    expect(isCV(() => g.createCardinalityConstraint('Order', 'SHIPPED_TO', 'out', 0, 1))).toBe(
+      true,
+    );
+  });
+
+  test('max is rejected EAGERLY on the over-the-limit addEdge (no transaction)', () => {
+    const g = new Graph();
+    g.createCardinalityConstraint('Order', 'PLACED_BY', 'out', 0, 1); // at most one
+    const o1 = order(g, 'o1');
+    const c1 = customer(g, 'c1');
+    const c2 = customer(g, 'c2');
+
+    g.addEdge({ from: o1, to: c1, labels: ['PLACED_BY'], properties: {} }); // degree 1, ok
+    // The second PLACED_BY out-edge would make degree 2 > max 1 → thrown immediately.
+    expect(isCV(() => g.addEdge({ from: o1, to: c2, labels: ['PLACED_BY'], properties: {} }))).toBe(
+      true,
+    );
+    // The rejected edge left no trace.
+    expect(g.outDegree(o1, 'PLACED_BY')).toBe(1);
+    expect(g.edgeCount).toBe(1);
+  });
+
+  test('IN direction bounds the target vertex', () => {
+    const g = new Graph();
+    // A Customer may receive at most one PRIMARY_CONTACT in-edge.
+    g.createCardinalityConstraint('Customer', 'PRIMARY_CONTACT', 'in', 0, 1);
+    const c1 = customer(g, 'c1');
+    g.addEdge({ from: order(g, 'o1'), to: c1, labels: ['PRIMARY_CONTACT'], properties: {} });
+    expect(g.inDegree(c1, 'PRIMARY_CONTACT')).toBe(1);
+    expect(
+      isCV(() =>
+        g.addEdge({ from: order(g, 'o2'), to: c1, labels: ['PRIMARY_CONTACT'], properties: {} }),
+      ),
+    ).toBe(true);
+  });
+
+  test('"exactly one" is satisfied when node+edge are created together in a transaction', () => {
+    const g = new Graph();
+    g.createCardinalityConstraint('Order', 'PLACED_BY', 'out', 1, 1);
+    const c1 = customer(g, 'c1');
+
+    // Node + mandatory edge in one transaction → the intermediate degree-0 state
+    // is never checked; the committed state satisfies min:1,max:1.
+    expect(() =>
+      g.transaction((tx) => {
+        const o = tx.addVertex({ id: 'o1', labels: ['Order'], properties: {} });
+        tx.addEdge({ from: o, to: c1, labels: ['PLACED_BY'], properties: {} });
+      }),
+    ).not.toThrow();
+    expect(g.getVertexById('o1')).toBeTruthy();
+    expect(g.outDegree(g.getVertexById('o1')!, 'PLACED_BY')).toBe(1);
+  });
+
+  test('"exactly one" rolls back when the node is created without the mandatory edge', () => {
+    const g = new Graph();
+    g.createCardinalityConstraint('Order', 'PLACED_BY', 'out', 1, 1);
+
+    expect(
+      isCV(() =>
+        g.transaction((tx) => {
+          tx.addVertex({ id: 'o1', labels: ['Order'], properties: {} }); // no PLACED_BY edge
+        }),
+      ),
+    ).toBe(true);
+    expect(g.getVertexById('o1')).toBeNull(); // rolled back
+  });
+
+  test('min is NOT tripped by a bare direct-API addVertex outside a transaction', () => {
+    const g = new Graph();
+    g.createCardinalityConstraint('Order', 'PLACED_BY', 'out', 1, 1);
+    // A bare addVertex has no commit boundary — min (only satisfiable across
+    // writes) is deliberately not enforced here. The Order lands degree-0.
+    expect(() => order(g, 'o1')).not.toThrow();
+    expect(g.getVertexById('o1')).toBeTruthy();
+    expect(g.outDegree(g.getVertexById('o1')!, 'PLACED_BY')).toBe(0);
+  });
+
+  test('removeEdge dropping below min is rejected at commit (rolls back)', () => {
+    const g = new Graph();
+    const c1 = customer(g, 'c1');
+    const o1 = order(g, 'o1');
+    const e = g.addEdge({ from: o1, to: c1, labels: ['PLACED_BY'], properties: {} });
+    g.createCardinalityConstraint('Order', 'PLACED_BY', 'out', 1, 1); // now satisfied
+
+    // Removing the only PLACED_BY edge inside a transaction drops o1 to degree 0
+    // < min 1 → the commit fails and the removal rolls back.
+    expect(
+      isCV(() =>
+        g.transaction((tx) => {
+          tx.removeEdge(e);
+        }),
+      ),
+    ).toBe(true);
+    expect(g.outDegree(o1, 'PLACED_BY')).toBe(1); // restored
+    expect(g.edgeCount).toBe(1);
+  });
+
+  test('a vertex-delete cascade re-checks the surviving neighbor at commit', () => {
+    const g = new Graph();
+    const c1 = customer(g, 'c1');
+    const o1 = order(g, 'o1');
+    g.addEdge({ from: o1, to: c1, labels: ['PLACED_BY'], properties: {} });
+    g.createCardinalityConstraint('Order', 'PLACED_BY', 'out', 1, 1);
+
+    // Deleting the Customer cascades to the PLACED_BY edge, dropping the surviving
+    // Order to degree 0 < min → the whole delete rolls back.
+    expect(
+      isCV(() =>
+        g.transaction((tx) => {
+          tx.removeVertex('c1');
+        }),
+      ),
+    ).toBe(true);
+    expect(g.getVertexById('c1')).toBeTruthy(); // rolled back
+    expect(g.outDegree(o1, 'PLACED_BY')).toBe(1);
+  });
+
+  test('a self-loop counts once for out AND once for in', () => {
+    const g = new Graph();
+    const v = g.addVertex({ id: 'v', labels: ['Node'], properties: {} });
+    g.addEdge({ from: v, to: v, labels: ['SELF'], properties: {} });
+    expect(g.outDegree(v, 'SELF')).toBe(1);
+    expect(g.inDegree(v, 'SELF')).toBe(1);
+
+    // So an out-bound "at most one" is satisfied, and a second self-loop trips it.
+    g.createCardinalityConstraint('Node', 'SELF', 'out', 0, 1);
+    expect(isCV(() => g.addEdge({ from: v, to: v, labels: ['SELF'], properties: {} }))).toBe(true);
+  });
+
+  test('an unbounded max (min:1, max:null) enforces only the lower bound', () => {
+    const g = new Graph();
+    g.createCardinalityConstraint('Order', 'LINE_ITEM', 'out', 1, null); // at least one
+    const c1 = customer(g, 'c1');
+    // Many out-edges are fine (no upper bound); zero is not.
+    g.transaction((tx) => {
+      const o = tx.addVertex({ id: 'o1', labels: ['Order'], properties: {} });
+      tx.addEdge({ from: o, to: c1, labels: ['LINE_ITEM'], properties: {} });
+      tx.addEdge({ from: o, to: customer(tx, 'c2'), labels: ['LINE_ITEM'], properties: {} });
+    });
+    expect(g.outDegree(g.getVertexById('o1')!, 'LINE_ITEM')).toBe(2);
+    expect(
+      isCV(() =>
+        g.transaction((tx) => tx.addVertex({ id: 'o2', labels: ['Order'], properties: {} })),
+      ),
+    ).toBe(true);
+  });
+
+  test('drop and introspection', () => {
+    const g = new Graph();
+    g.createCardinalityConstraint('Order', 'PLACED_BY', 'out', 1, 1);
+    g.createCardinalityConstraint('Customer', 'PRIMARY_CONTACT', 'in', 0, 1);
+    g.createCardinalityConstraint('Order', 'LINE_ITEM', 'out', 1, null);
+
+    expect(g.cardinalityConstraints()).toEqual([
+      { label: 'Customer', edgeType: 'PRIMARY_CONTACT', direction: 'in', min: 0, max: 1 },
+      { label: 'Order', edgeType: 'LINE_ITEM', direction: 'out', min: 1, max: null },
+      { label: 'Order', edgeType: 'PLACED_BY', direction: 'out', min: 1, max: 1 },
+    ]);
+
+    // Re-declaring the same (label, edgeType, direction) replaces the bounds.
+    g.createCardinalityConstraint('Order', 'PLACED_BY', 'out', 0, 5);
+    expect(g.cardinalityConstraints()).toContainEqual({
+      label: 'Order',
+      edgeType: 'PLACED_BY',
+      direction: 'out',
+      min: 0,
+      max: 5,
+    });
+
+    g.dropCardinalityConstraint('Order', 'PLACED_BY', 'out');
+    expect(
+      g.cardinalityConstraints().map((c) => `${c.label}.${c.edgeType}.${c.direction}`),
+    ).toEqual(['Customer.PRIMARY_CONTACT.in', 'Order.LINE_ITEM.out']);
+    g.dropCardinalityConstraint('Order', 'PLACED_BY', 'out'); // idempotent
+  });
+});

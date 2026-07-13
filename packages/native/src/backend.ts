@@ -85,6 +85,20 @@ export type Backend = {
     key: string,
     type: string,
   ) => void;
+  /**
+   * Declare a CARDINALITY constraint bounding the degree of every vertex carrying
+   * `label` over `edgeType` in `direction` to `min..=max` (`max: null`
+   * unbounded). Throws `ConstraintViolation` if the current data already violates
+   * it. The degree-bound member of R-CONSTRAINTS (see docs/design/r-tx.md).
+   */
+  createCardinalityConstraint: (
+    handle: GraphHandle,
+    label: string,
+    edgeType: string,
+    direction: 'out' | 'in',
+    min: number,
+    max: number | null,
+  ) => void;
   /** Drop a vertex / edge property index (no-op if absent). */
   dropVertexIndex: (handle: GraphHandle, key: string) => void;
   dropEdgeIndex: (handle: GraphHandle, key: string) => void;
