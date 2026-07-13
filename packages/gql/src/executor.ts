@@ -1744,6 +1744,95 @@ const projectBinding = (
 };
 
 /**
+ * The `cap` rows that sort first under `cmp`, in sorted order — an O(n log cap)
+ * bounded selection instead of sorting all n rows to keep a small prefix. Streams
+ * its input (only `cap` rows are ever held). Ties break by original stream
+ * position, so the result is byte-identical to a *stable* full sort + `slice(0,
+ * cap)`. Used for `ORDER BY … LIMIT k`.
+ */
+const boundedTopK = <T>(rows: Iterable<T>, cap: number, cmp: (a: T, b: T) => number): T[] => {
+  if (cap <= 0) {
+    return [];
+  }
+
+  type E = { v: T; i: number };
+  const heap: E[] = []; // max-heap by `less`: the root is the worst (largest) kept
+  const less = (a: E, b: E): boolean => {
+    const c = cmp(a.v, b.v);
+
+    return c !== 0 ? c < 0 : a.i < b.i; // index tiebreak reproduces stable order
+  };
+  const swap = (x: number, y: number) => {
+    const t = heap[x];
+    heap[x] = heap[y];
+    heap[y] = t;
+  };
+  const up = (start: number) => {
+    let i = start;
+
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+
+      if (!less(heap[p], heap[i])) {
+        break; // parent already >= child
+      }
+
+      swap(i, p);
+      i = p;
+    }
+  };
+  const down = (start: number) => {
+    let i = start;
+
+    for (;;) {
+      const l = i * 2 + 1;
+      const r = l + 1;
+      let m = i;
+
+      if (l < heap.length && less(heap[m], heap[l])) {
+        m = l;
+      }
+
+      if (r < heap.length && less(heap[m], heap[r])) {
+        m = r;
+      }
+
+      if (m === i) {
+        break;
+      }
+
+      swap(i, m);
+      i = m;
+    }
+  };
+
+  let idx = 0;
+
+  for (const v of rows) {
+    const e = { v, i: idx };
+    idx += 1;
+
+    if (heap.length < cap) {
+      heap.push(e);
+      up(heap.length - 1);
+    } else if (less(e, heap[0])) {
+      heap[0] = e; // better than the worst kept — evict the root
+      down(0);
+    }
+  }
+
+  heap.sort((a, b) => {
+    if (less(a, b)) {
+      return -1;
+    }
+
+    return less(b, a) ? 1 : 0;
+  });
+
+  return heap.map((e) => e.v);
+};
+
+/**
  * Apply a projection (`RETURN` or `WITH` body) to a set of bindings: implicit
  * grouping/aggregation, then DISTINCT, ORDER BY, SKIP, LIMIT. Returns the
  * projected bindings — `RETURN` turns these into rows, `WITH` feeds them on.
@@ -1819,23 +1908,27 @@ const applyProjection = (
     }, keyed);
   }
 
-  // ORDER BY is the other barrier: materialize, then sort the owned array.
+  // ORDER BY is the other barrier. With a LIMIT we only need skip+limit rows, so a
+  // bounded top-k (O(n log k), never materializing the rest) beats sorting all n;
+  // without a LIMIT, sort the whole owned array.
+  const cmp = (a: Keyed, b: Keyed): number => {
+    for (let i = 0; i < orderBy.length; i += 1) {
+      const c = compareSort(a.keys[i], b.keys[i], orderBy[i].descending, orderBy[i].nullsFirst);
+
+      if (c !== 0) {
+        return c;
+      }
+    }
+
+    return 0;
+  };
   let ordered: Iterable<Keyed> = keyed;
 
-  if (orderBy.length > 0) {
+  if (orderBy.length > 0 && proj.limit !== undefined) {
+    ordered = boundedTopK(keyed, (proj.skip ?? 0) + proj.limit, cmp);
+  } else if (orderBy.length > 0) {
     const arr = toArray(keyed);
-    arr.sort((a, b) => {
-      for (let i = 0; i < orderBy.length; i += 1) {
-        const s = orderBy[i];
-        const cmp = compareSort(a.keys[i], b.keys[i], s.descending, s.nullsFirst);
-
-        if (cmp !== 0) {
-          return cmp;
-        }
-      }
-
-      return 0;
-    });
+    arr.sort(cmp);
     ordered = arr;
   }
 
