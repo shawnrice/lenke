@@ -4596,22 +4596,31 @@ fn project_frame_cols(
             .iter()
             .map(|s| eval_vec(graph, ctx, &sort_sc, &s.expr).into_vals())
             .collect();
-        let mut idx: Vec<usize> = (0..sc.n).collect();
-        idx.sort_by(|&i, &j| {
+        // Total-order comparator: the ORDER BY keys, then the original row index as
+        // a final tiebreak. The index tiebreak makes ties resolve to scan order —
+        // identical to the previous *stable* full sort — while allowing an unstable
+        // partial sort below (which needs a strict weak order to be deterministic).
+        let cmp = |&i: &usize, &j: &usize| -> Ordering {
             for (k, s) in proj.order_by.iter().enumerate() {
                 let o = compare_sort(&keycols[k][i], &keycols[k][j], s.descending, s.nulls_first);
                 if o != Ordering::Equal {
                     return o;
                 }
             }
-            Ordering::Equal
-        });
-        let start = proj.skip.unwrap_or(0).min(idx.len());
-        let end = proj
-            .limit
-            .map(|l| (start + l).min(idx.len()))
-            .unwrap_or(idx.len());
-        let sub = gather_rows(sc, &idx[start..end]);
+            i.cmp(&j)
+        };
+        let start = proj.skip.unwrap_or(0).min(sc.n);
+        let end = proj.limit.map(|l| (start + l).min(sc.n)).unwrap_or(sc.n);
+        let mut idx: Vec<usize> = (0..sc.n).collect();
+        // Partial sort for a LIMIT: partition the top `end` rows out in O(n), then
+        // fully sort just that window — instead of an O(n log n) sort of every row
+        // to keep only a small prefix. No LIMIT ⇒ a full sort (all rows returned).
+        if end >= 1 && end < idx.len() {
+            idx.select_nth_unstable_by(end - 1, cmp);
+            idx.truncate(end);
+        }
+        idx.sort_by(cmp);
+        let sub = gather_rows(sc, &idx[start..end.min(idx.len())]);
         return Some(
             proj.items
                 .iter()
