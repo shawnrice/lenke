@@ -79,6 +79,7 @@ behaves identically whether the store is TS or Rust.
   `START`, or `COMMIT`/`ROLLBACK` with no active transaction, is a coded error.
 
 ## Not in scope (follow-ups)
+
 - ~~The R-CONSTRAINTS items that build on R-TX~~ — **SHIPPED**: edge-side
   constraints, min/`exactly one` cardinality, declarative (GQL-predicate)
   validators, and graph-level (cross-write) invariants all now use these deferred
