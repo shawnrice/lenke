@@ -88,6 +88,29 @@ type ValidatorFn = (element: Vertex | Edge) => boolean | null;
 type ValidatorEntry = { varName: string; src: string; fn: ValidatorFn };
 
 /**
+ * Introspection shape for a declared graph-level INVARIANT (a cross-write
+ * assertion). The compiled query closure is internal — only `@lenke/gql` (which
+ * can parse+compile a GQL query) registers one, via
+ * {@link Graph.registerInvariant}. Returned by {@link Graph.invariants}.
+ */
+export type InvariantInfo = {
+  name: string;
+  src: string;
+};
+
+/**
+ * A compiled graph-level INVARIANT: a whole-graph GQL query → its result rows.
+ * The invariant is VIOLATED iff any returned cell is boolean `false`; everything
+ * else (`true`, `null`, a non-boolean value, an empty result) HOLDS. Runs once,
+ * against the fully-staged graph, at a write transaction's commit.
+ */
+type InvariantFn = (graph: Graph) => ReadonlyArray<Record<string, unknown>>;
+
+/** A registered invariant: its GQL query source (for messaging/introspection)
+ *  and the compiled query closure. */
+type InvariantEntry = { src: string; fn: InvariantFn };
+
+/**
  * Where a buffered transaction event stashes its reactive tokens, captured while
  * the element is still live (see {@link Graph.emit}); `markMutated` reads them at
  * commit-time dispatch instead of re-deriving from a possibly-evicted element.
@@ -2210,6 +2233,60 @@ export class Graph {
     return undefined;
   };
 
+  /* Graph-level INVARIANTS (cross-write assertions) */
+  //
+  // An invariant is a whole-graph GQL assertion query that must hold after every
+  // write transaction (`createInvariant(g, 'balanced', 'MATCH (a:Acct) RETURN
+  // sum(a.balance) = 0')`). Unlike a per-element validator, it's evaluated ONCE
+  // per commit against the fully-staged graph. `false`-only-fails: VIOLATED iff a
+  // returned cell is boolean `false` (everything else — `true`/`null`/non-boolean
+  // /empty — holds). Enforced in `runDeferredChecks`, after the per-element loops,
+  // and only when the transaction actually wrote something (a pure-read commit
+  // skips them). Core cannot parse a GQL query, so `@lenke/gql` owns the public
+  // `createInvariant`: it compiles the query into the closure registered here. The
+  // Rust core stores the query and evaluates it in its byte-identical engine.
+
+  private readonly invariantRegistry = new Map<string, InvariantEntry>();
+
+  /**
+   * Register a compiled graph-level INVARIANT under `name` (re-declaring the same
+   * `name` replaces the prior query). Declare-time run: evaluates `fn` against the
+   * current graph immediately and rejects ({@link ErrorCode.ConstraintViolation})
+   * if it already returns a `false` cell — an already-violated invariant is
+   * meaningless (mirroring the validators/constraints). Called by `@lenke/gql`'s
+   * `createInvariant`, which supplies the parsed+compiled query closure; core
+   * never parses the query itself.
+   */
+  public registerInvariant = (name: string, src: string, fn: InvariantFn): void => {
+    if (this.invariantViolated(fn(this))) {
+      throw new LenkeError(`existing data already violates the invariant '${name}' (${src})`, {
+        code: ErrorCode.ConstraintViolation,
+      });
+    }
+
+    this.invariantRegistry.set(name, { src, fn });
+  };
+
+  /** Drop the graph-level invariant named `name`. Idempotent. */
+  public dropInvariant = (name: string): void => {
+    this.invariantRegistry.delete(name);
+  };
+
+  /** Every declared invariant as `{ name, src }`, sorted by `name`. The compiled
+   *  query closure is internal (not exposed). */
+  public invariants = (): InvariantInfo[] =>
+    [...this.invariantRegistry]
+      .map(([name, e]): InvariantInfo => ({ name, src: e.src }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+  /**
+   * `false`-only-fails: a result set VIOLATES an invariant iff any cell is boolean
+   * `false`. A `true`, a `null`, a non-boolean value, or an empty result all HOLD.
+   * Byte-identical to the Rust `invariant_violated` (`Value::Bool(false)`).
+   */
+  private invariantViolated = (rows: ReadonlyArray<Record<string, unknown>>): boolean =>
+    rows.some((row) => Object.values(row).some((cell) => cell === false));
+
   /* Event Emitter Proxy */
 
   public eventsEnabled = (): boolean => {
@@ -2490,6 +2567,23 @@ export class Graph {
         throw new LenkeError(`validator '${invalid.src}' on '${invalid.label}' violated`, {
           code: ErrorCode.ConstraintViolation,
         });
+      }
+    }
+
+    // Graph-level invariants (cross-write assertions): run ONCE against the fully
+    // staged graph, AFTER the per-element loops above, but only if this
+    // transaction actually wrote something. The undo log is non-empty iff a write
+    // was recorded during the frame, so a pure-read commit skips them (no spurious
+    // cost/throw). Each invariant is a whole-graph GQL query — VIOLATED iff any
+    // returned cell is boolean `false`. A read query run here does NOT re-enter the
+    // transaction machinery (reads skip the auto-commit frame), so this is safe.
+    if (this.invariantRegistry.size > 0 && this.txUndo.length > 0) {
+      for (const [name, entry] of this.invariantRegistry) {
+        if (this.invariantViolated(entry.fn(this))) {
+          throw new LenkeError(`invariant '${name}' (${entry.src}) violated`, {
+            code: ErrorCode.ConstraintViolation,
+          });
+        }
       }
     }
   };

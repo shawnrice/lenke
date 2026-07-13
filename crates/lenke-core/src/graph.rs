@@ -436,6 +436,16 @@ pub struct Graph {
     /// GQL evaluator against each touched element at the commit boundary and in the
     /// declare-time scan. Byte-identical with the TS `createValidator`.
     v_validators: HashMap<String, Vec<ValidatorRule>>,
+    /// Graph-level INVARIANTS (cross-write assertions): a whole-graph GQL query
+    /// that must hold after every transaction that wrote something. Unlike a
+    /// per-element validator, an invariant is evaluated ONCE per commit against
+    /// the fully-staged graph — it is VIOLATED iff any cell in its result set is
+    /// boolean `false` (everything else — `true`/`null`/non-boolean/empty — holds).
+    /// Each entry stores the query source (for messaging/introspection) and the
+    /// query parsed+lowered once at declare time. Byte-identical with the TS
+    /// `createInvariant`. Keyed insertion order is irrelevant; `invariants()`
+    /// sorts by name.
+    v_invariants: Vec<InvariantRule>,
     /// Transaction state (R-TX). `tx_depth > 0` means an open transaction: writes
     /// still apply eagerly to the live store (read-your-writes with no overlay),
     /// but each mutation records an inverse op in `tx_undo`, the built-in
@@ -504,6 +514,17 @@ struct ValidatorRule {
     pred: crate::gql::plan::CPredicate,
 }
 
+/// A registered graph-level INVARIANT: its name, its GQL query source (for
+/// messaging / introspection), and the query parsed+lowered once at declare time
+/// into a reusable [`crate::gql::Prepared`] plan. Evaluated against the fully-
+/// staged graph at commit; VIOLATED iff any result cell is boolean `false`. The
+/// Rust analogue of the TS `{ src, fn }` invariant entry.
+struct InvariantRule {
+    name: String,
+    src: String,
+    plan: crate::gql::Prepared,
+}
+
 /// Which deferred constraint check failed at commit. All surface to the caller as
 /// `ConstraintViolation`, but are kept distinct for messaging / FFI codes.
 pub enum TxCommitError {
@@ -522,6 +543,11 @@ pub enum TxCommitError {
     /// carried [`CodeError`] is surfaced verbatim — a `ConstraintViolation` for a
     /// definite-`false` predicate, or the evaluation fault's own code.
     Validator(CodeError),
+    /// A graph-level INVARIANT query returned a `false` cell (a cross-write
+    /// assertion failed), or the query itself faulted while evaluating. The
+    /// carried [`CodeError`] is surfaced verbatim — a `ConstraintViolation` for a
+    /// definite-`false` result cell, or the evaluation fault's own code.
+    Invariant(CodeError),
 }
 
 /// A set of property indexes (key name → ordered value buckets).
@@ -1659,6 +1685,101 @@ impl Graph {
         Ok(())
     }
 
+    /// Declare a graph-level INVARIANT `name` = a whole-graph GQL `query` that must
+    /// hold after every write transaction. The query is parsed+lowered once here;
+    /// an unparseable query returns [`ErrorCode::Syntax`] (mapped to `-2` at the
+    /// FFI). VIOLATED iff any cell in its result set is boolean `false` (everything
+    /// else — `true`/`null`/non-boolean/empty — holds). A declare-time run rejects
+    /// with [`ErrorCode::ConstraintViolation`] if the current graph already
+    /// violates it (an already-broken invariant is meaningless, mirroring the
+    /// validators/constraints). Re-declaring the same `name` replaces the prior
+    /// query. Byte-identical with the TS `createInvariant`.
+    pub fn create_invariant(&mut self, name: &str, query: &str) -> CodeResult<()> {
+        let plan =
+            crate::gql::prepare(query).map_err(|e| CodeError::new(ErrorCode::Syntax, e.message))?;
+
+        // Declare-time run against the current graph: reject on a definite-`false`
+        // cell (or surface an evaluation fault verbatim via `?`).
+        let rows = crate::gql::run_invariant(&plan, self)?;
+        if Self::invariant_violated(&rows) {
+            return Err(CodeError::new(
+                ErrorCode::ConstraintViolation,
+                format!("existing data already violates the invariant '{name}'"),
+            ));
+        }
+
+        // Replace any prior invariant of the same name (declare is idempotent-ish:
+        // last query wins), then append.
+        self.v_invariants.retain(|r| r.name != name);
+        self.v_invariants.push(InvariantRule {
+            name: name.to_string(),
+            src: query.to_string(),
+            plan,
+        });
+        Ok(())
+    }
+
+    /// Drop the graph-level invariant named `name`. Idempotent.
+    pub fn drop_invariant(&mut self, name: &str) {
+        self.v_invariants.retain(|r| r.name != name);
+    }
+
+    /// Every declared invariant as `(name, src)`, sorted by name. The compiled
+    /// query plan is internal. Introspection for tests/tooling.
+    pub fn invariants(&self) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = self
+            .v_invariants
+            .iter()
+            .map(|r| (r.name.clone(), r.src.clone()))
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
+    /// `false`-only-fails: a result set VIOLATES an invariant iff any cell is a
+    /// boolean `false`. A `true`, a `null`, a non-boolean value (number/string/
+    /// list/map/temporal), or an empty result set all HOLD. Byte-identical to the
+    /// TS `invariantViolated` (`cell === false`).
+    fn invariant_violated(rows: &crate::query::RowSet) -> bool {
+        rows.data.iter().any(|v| matches!(v, Value::Bool(false)))
+    }
+
+    /// Run every declared invariant against the fully-staged graph. Called from
+    /// [`Graph::commit_tx`] only when the transaction actually wrote something.
+    /// `Ok(())` if all hold; `Err` carrying the failing invariant's error (a
+    /// `ConstraintViolation` for a `false` cell, or an evaluation fault's own code).
+    fn check_invariants(&mut self) -> CodeResult<()> {
+        if self.v_invariants.is_empty() {
+            return Ok(());
+        }
+        // Move the rules out so the read-only `run_invariant(&plan, self)` can take
+        // `&mut self` without overlapping the borrow; the run never mutates the
+        // registry, so restoring the same Vec afterwards is exact.
+        let rules = std::mem::take(&mut self.v_invariants);
+        let mut failure: Option<CodeError> = None;
+        for rule in &rules {
+            match crate::gql::run_invariant(&rule.plan, self) {
+                Ok(rows) if Self::invariant_violated(&rows) => {
+                    failure = Some(CodeError::new(
+                        ErrorCode::ConstraintViolation,
+                        format!("invariant '{}' violated", rule.name),
+                    ));
+                    break;
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    failure = Some(e);
+                    break;
+                }
+            }
+        }
+        self.v_invariants = rules;
+        match failure {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
     /// True iff a touched vertex `vi` violates any cardinality constraint on one of
     /// its labels (degree below `min` or above `max`). The commit-time check.
     fn cardinality_violation(&self, vi: u32) -> bool {
@@ -1923,6 +2044,17 @@ impl Graph {
         if let Err(e) = self.run_deferred_checks() {
             self.apply_undo_and_reset();
             return Err(e);
+        }
+        // Graph-level invariants (cross-write assertions): run ONCE against the
+        // fully-staged graph, AFTER the per-element deferred checks, but only if
+        // this transaction actually wrote something — a pure-read commit skips
+        // them (no spurious cost/throw). The undo log is non-empty iff a write was
+        // recorded during the frame. On failure, roll the whole transaction back.
+        if !self.tx_undo.is_empty() {
+            if let Err(e) = self.check_invariants() {
+                self.apply_undo_and_reset();
+                return Err(TxCommitError::Invariant(e));
+            }
         }
         self.tx_undo.clear();
         self.tx_touched.clear();
@@ -2905,6 +3037,7 @@ impl Builder {
             e_type_constraints: HashMap::new(),
             v_cardinality: Vec::new(),
             v_validators: HashMap::new(),
+            v_invariants: Vec::new(),
             tx_depth: 0,
             tx_undo: Vec::new(),
             tx_touched: Vec::new(),
@@ -3335,7 +3468,7 @@ mod validator {
 
         let err = run(
             &mut g,
-            "INSERT (:P {id: 'a'})-[:KNOWS {weight: -1}]->(:P {id: 'b'})",
+            "INSERT (:P {name: 'a'})-[:KNOWS {weight: -1}]->(:P {name: 'b'})",
         )
         .unwrap_err();
         assert_eq!(err.code, ErrorCode::ConstraintViolation);
@@ -3343,7 +3476,7 @@ mod validator {
 
         run(
             &mut g,
-            "INSERT (:P {id: 'a'})-[:KNOWS {weight: 5}]->(:P {id: 'b'})",
+            "INSERT (:P {name: 'a'})-[:KNOWS {weight: 5}]->(:P {name: 'b'})",
         )
         .unwrap();
         assert_eq!(g.edge_count(), 1);
@@ -3390,5 +3523,210 @@ mod validator {
                 .code,
             ErrorCode::Syntax
         );
+    }
+}
+
+#[cfg(test)]
+mod invariant {
+    //! Graph-level INVARIANTS (cross-write assertions): a whole-graph GQL query
+    //! run ONCE per write transaction against the fully-staged graph. `false`-only
+    //! -fails — VIOLATED iff a result cell is boolean `false`; everything else
+    //! (`true`/`null`/non-boolean/empty) holds. Enforced in `commit_tx` after the
+    //! per-element deferred checks, and only when the transaction wrote something.
+    //! Byte-identical to the TS `createInvariant`.
+    use super::*;
+    use crate::gql::eval::Params;
+    use crate::gql::parse;
+    use crate::ndjson;
+
+    fn run(g: &mut Graph, q: &str) -> CodeResult<()> {
+        parse(q).unwrap().execute(g, &Params::new()).map(|_| ())
+    }
+
+    // Two accounts summing to zero; the classic double-entry ledger. The `name`
+    // property (not the ndjson node id) is what MATCH patterns key on.
+    const LEDGER: &str = "\
+{\"type\":\"node\",\"id\":\"a\",\"labels\":[\"Acct\"],\"properties\":{\"name\":\"a\",\"balance\":100}}
+{\"type\":\"node\",\"id\":\"b\",\"labels\":[\"Acct\"],\"properties\":{\"name\":\"b\",\"balance\":-100}}";
+
+    #[test]
+    fn balanced_transfer_commits_unbalanced_rolls_back() {
+        let mut g = ndjson::decode(LEDGER).unwrap();
+        g.create_invariant("balanced", "MATCH (a:Acct) RETURN sum(a.balance) = 0")
+            .unwrap();
+
+        // A transfer that keeps the sum at zero commits.
+        g.begin_tx();
+        run(&mut g, "MATCH (a:Acct {name: 'a'}) SET a.balance = 70").unwrap();
+        run(&mut g, "MATCH (b:Acct {name: 'b'}) SET b.balance = -70").unwrap();
+        assert!(g.commit_tx().is_ok(), "sum still 0 → commits");
+
+        // An unbalanced half-transfer rolls the whole transaction back.
+        g.begin_tx();
+        run(&mut g, "MATCH (a:Acct {name: 'a'}) SET a.balance = 999").unwrap();
+        let err = g.commit_tx().unwrap_err();
+        assert!(matches!(err, TxCommitError::Invariant(_)));
+        g.rollback_tx();
+
+        // The balances are unchanged from the last good commit (70 / -70).
+        let rows = parse("MATCH (a:Acct) RETURN sum(a.balance) AS s")
+            .unwrap()
+            .execute(&mut g, &Params::new())
+            .unwrap();
+        assert_eq!(rows.row(0)[0], Value::Num(0.0));
+    }
+
+    #[test]
+    fn single_statement_unbalanced_write_rejected() {
+        // Every GQL statement auto-commits, so a single unbalanced SET trips the
+        // invariant at its own commit boundary (no explicit transaction needed).
+        let mut g = ndjson::decode(LEDGER).unwrap();
+        g.create_invariant("balanced", "MATCH (a:Acct) RETURN sum(a.balance) = 0")
+            .unwrap();
+
+        let err = run(&mut g, "MATCH (a:Acct {name: 'a'}) SET a.balance = 5").unwrap_err();
+        assert_eq!(err.code, ErrorCode::ConstraintViolation);
+        // Rolled back — the balance is still 100.
+        let rows = parse("MATCH (a:Acct {name: 'a'}) RETURN a.balance AS b")
+            .unwrap()
+            .execute(&mut g, &Params::new())
+            .unwrap();
+        assert_eq!(rows.row(0)[0], Value::Num(100.0));
+    }
+
+    #[test]
+    fn declare_time_rejects_already_violating_graph() {
+        let mut g = ndjson::decode(LEDGER).unwrap();
+        run(&mut g, "MATCH (a:Acct {name: 'a'}) SET a.balance = 5").ok(); // no invariant yet → fine
+                                                                          // Now the sum is -95, so declaring the invariant must reject.
+        let err = g
+            .create_invariant("balanced", "MATCH (a:Acct) RETURN sum(a.balance) = 0")
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::ConstraintViolation);
+        assert!(
+            g.invariants().is_empty(),
+            "rejected declaration stored nothing"
+        );
+    }
+
+    #[test]
+    fn count_invariant_at_least_one_admin() {
+        let seed = "\
+{\"type\":\"node\",\"id\":\"u1\",\"labels\":[\"User\"],\"properties\":{\"name\":\"u1\",\"role\":\"Admin\"}}
+{\"type\":\"node\",\"id\":\"u2\",\"labels\":[\"User\"],\"properties\":{\"name\":\"u2\",\"role\":\"Member\"}}";
+        let mut g = ndjson::decode(seed).unwrap();
+        g.create_invariant(
+            "has_admin",
+            "MATCH (u:User) WHERE u.role = 'Admin' RETURN count(u) > 0",
+        )
+        .unwrap();
+
+        // Demote the member → still one admin → holds.
+        run(&mut g, "MATCH (u:User {name: 'u2'}) SET u.role = 'Guest'").unwrap();
+        // Demote the last admin → count drops to 0 → violated, rolled back.
+        let err = run(&mut g, "MATCH (u:User {name: 'u1'}) SET u.role = 'Guest'").unwrap_err();
+        assert_eq!(err.code, ErrorCode::ConstraintViolation);
+        let rows = parse("MATCH (u:User {role: 'Admin'}) RETURN count(u) AS n")
+            .unwrap()
+            .execute(&mut g, &Params::new())
+            .unwrap();
+        assert_eq!(rows.row(0)[0], Value::Num(1.0));
+    }
+
+    #[test]
+    fn pure_read_transaction_does_not_run_the_invariant() {
+        // The gate proof: with the graph in a state that VIOLATES the invariant, a
+        // pure-read transaction must still commit (the invariant is not run), while
+        // a transaction that writes anything trips it. We break the sum via the
+        // direct store API (which bypasses the GQL auto-commit that would catch it)
+        // to set up a violating-but-committed state.
+        let mut g = ndjson::decode(LEDGER).unwrap();
+        g.create_invariant("balanced", "MATCH (a:Acct) RETURN sum(a.balance) = 0")
+            .unwrap();
+
+        // Directly skew one balance so the sum is now -50 (invariant would fail).
+        let vi = g.vertex_indices().next().unwrap();
+        g.set_vertex_prop(vi, "balance", Value::Num(50.0));
+
+        // A pure-read transaction commits — the invariant is skipped (nothing written).
+        g.begin_tx();
+        parse("MATCH (a:Acct) RETURN a.balance")
+            .unwrap()
+            .execute(&mut g, &Params::new())
+            .unwrap();
+        assert!(g.commit_tx().is_ok(), "pure-read commit skips invariants");
+
+        // But a transaction that writes runs the invariant against the (violating)
+        // staged graph and rolls back.
+        g.begin_tx();
+        run(&mut g, "MATCH (a:Acct {name: 'b'}) SET a.balance = -100").unwrap();
+        assert!(
+            matches!(g.commit_tx().unwrap_err(), TxCommitError::Invariant(_)),
+            "a writing commit runs the invariant"
+        );
+        g.rollback_tx();
+    }
+
+    #[test]
+    fn drop_and_introspection() {
+        let mut g = ndjson::decode(LEDGER).unwrap();
+        g.create_invariant("balanced", "MATCH (a:Acct) RETURN sum(a.balance) = 0")
+            .unwrap();
+        g.create_invariant("has_acct", "MATCH (a:Acct) RETURN count(a) >= 0")
+            .unwrap();
+        assert_eq!(
+            g.invariants(),
+            vec![
+                (
+                    "balanced".into(),
+                    "MATCH (a:Acct) RETURN sum(a.balance) = 0".into()
+                ),
+                (
+                    "has_acct".into(),
+                    "MATCH (a:Acct) RETURN count(a) >= 0".into()
+                ),
+            ]
+        );
+
+        g.drop_invariant("balanced");
+        assert_eq!(
+            g.invariants(),
+            vec![(
+                "has_acct".into(),
+                "MATCH (a:Acct) RETURN count(a) >= 0".into()
+            )]
+        );
+        // Dropped → a previously-rejected unbalanced write now succeeds.
+        run(&mut g, "MATCH (a:Acct {name: 'a'}) SET a.balance = 5").unwrap();
+    }
+
+    #[test]
+    fn unparseable_query_is_a_syntax_error() {
+        let mut g = ndjson::decode("").unwrap();
+        assert_eq!(
+            g.create_invariant("bad", "MATCH (a:Acct) RETURN >>>")
+                .unwrap_err()
+                .code,
+            ErrorCode::Syntax
+        );
+        assert_eq!(
+            g.create_invariant("empty", "").unwrap_err().code,
+            ErrorCode::Syntax
+        );
+    }
+
+    #[test]
+    fn non_boolean_and_null_and_empty_all_hold() {
+        // `false`-only-fails: a non-boolean cell, a null cell, and an empty result
+        // set each HOLD (only a literal `false` cell fails).
+        let mut g = ndjson::decode(LEDGER).unwrap();
+        g.create_invariant("nonbool", "MATCH (a:Acct) RETURN sum(a.balance)")
+            .unwrap(); // yields 0 (a number, not false) → holds
+        g.create_invariant("nullcell", "MATCH (a:Acct) RETURN a.missing")
+            .unwrap(); // null cells → hold
+        g.create_invariant("empty", "MATCH (z:NoSuchLabel) RETURN z.x = z.x")
+            .unwrap(); // empty result → holds
+                       // A write still commits (all three hold regardless of the balance sum).
+        run(&mut g, "MATCH (a:Acct {name: 'a'}) SET a.balance = 12345").unwrap();
     }
 }

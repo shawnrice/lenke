@@ -5648,6 +5648,9 @@ fn tx_commit_error(e: TxCommitError) -> CodeError {
         // A custom validator carries its own error verbatim — a `ConstraintViolation`
         // for a definite-`false` predicate, or an evaluation fault's own code.
         TxCommitError::Validator(e) => e,
+        // A graph-level invariant carries its own error verbatim — a
+        // `ConstraintViolation` for a `false` result cell, or an evaluation fault.
+        TxCommitError::Invariant(e) => e,
         TxCommitError::NoTx => {
             CodeError::new(ErrorCode::InvalidGraphOp, "commit called with no open transaction")
         }
@@ -5888,6 +5891,20 @@ pub fn prepare(text: &str) -> Result<Prepared, SyntaxError> {
     let query = super::parse(text)?;
     let (plan, param_names) = lower(&query);
     Ok(Prepared { plan, param_names })
+}
+
+/// Execute a prepared graph-level INVARIANT query directly against the staged
+/// graph, WITHOUT opening a per-statement auto-commit transaction frame. An
+/// invariant runs from inside `commit_tx`/`run_deferred_checks`, where the frame
+/// [`run_cquery`] normally opens would recurse straight back into the very commit
+/// path that invoked it. The invariant is a `MATCH…RETURN` assertion (no writes),
+/// so skipping the frame is sound — the caller scans the returned rows for a
+/// boolean-`false` cell (`false`-only-fails). Bound with empty params (a whole-
+/// graph invariant takes no `$params`; a query that references one surfaces the
+/// usual missing-parameter error).
+pub fn run_invariant(plan: &Prepared, graph: &mut Graph) -> CodeResult<RowSet> {
+    let params = positional(&plan.param_names, &Params::new())?;
+    run_cquery_body(&plan.plan, graph, &params)
 }
 
 impl super::ast::Query {

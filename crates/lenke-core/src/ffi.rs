@@ -514,6 +514,43 @@ pub unsafe extern "C" fn lnk_create_validator(
     }
 }
 
+/// Declare a graph-level INVARIANT `name` = a whole-graph GQL `query` that must
+/// hold after every write transaction. `false`-only-fails: VIOLATED iff any cell
+/// in the query's result set is boolean `false` (`true`/`null`/non-boolean/empty
+/// all hold). A declare-time run rejects if the current graph already violates it.
+///
+/// Returns `0` on success, `-1` if existing data already violates the invariant
+/// (`ConstraintViolation`), `-2` if the query can't be parsed (`Syntax`), or `-3`
+/// for a null handle. (A bad-UTF-8 string arg — never sent by the TS encoder —
+/// also maps to `-2`, a bad-query input.)
+///
+/// # Safety
+/// `g` is a valid, uniquely-borrowed `*mut Graph`; the two `(ptr, len)` pairs
+/// describe live UTF-8 byte ranges.
+#[no_mangle]
+pub unsafe extern "C" fn lnk_create_invariant(
+    g: *mut Graph,
+    name_ptr: *const u8,
+    name_len: usize,
+    query_ptr: *const u8,
+    query_len: usize,
+) -> i32 {
+    if g.is_null() || name_ptr.is_null() || query_ptr.is_null() {
+        return -3;
+    }
+    let (Ok(name), Ok(query)) = (
+        std::str::from_utf8(std::slice::from_raw_parts(name_ptr, name_len)),
+        std::str::from_utf8(std::slice::from_raw_parts(query_ptr, query_len)),
+    ) else {
+        return -2;
+    };
+    match (*g).create_invariant(name, query) {
+        Ok(()) => 0,
+        Err(e) if e.code == ErrorCode::Syntax => -2,
+        Err(_) => -1,
+    }
+}
+
 /// Open a transaction frame (R-TX): an atomic mutation boundary with rollback +
 /// deferred constraint checks. Writes still apply eagerly (read-your-writes), but
 /// record an inverse op; the outermost commit runs the built-in constraint checks

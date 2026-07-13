@@ -325,6 +325,18 @@ export type RustGraph = {
    * `createValidator`, enforced byte-identically in the Rust GQL evaluator.
    */
   createValidator: (label: string, varName: string, predicate: string) => void;
+  /**
+   * Declare a graph-level INVARIANT `name` = a whole-graph GQL `query` (`MATCH …
+   * RETURN`) that must hold after every write transaction — the cross-write twin
+   * of a per-element validator (`g.createInvariant('balanced', 'MATCH (a:Acct)
+   * RETURN sum(a.balance) = 0')`). Evaluated ONCE per commit against the fully-
+   * staged graph; `false`-only-fails: VIOLATED iff any result cell is boolean
+   * `false` (`true`/`null`/non-boolean/empty all hold). Throws
+   * `ConstraintViolation` if existing data already violates it, or `Syntax` if the
+   * query can't be parsed. The native twin of `@lenke/gql`'s `createInvariant`,
+   * enforced byte-identically in the Rust GQL evaluator.
+   */
+  createInvariant: (name: string, query: string) => void;
   /** Drop a vertex / edge property index (no-op if absent). */
   dropVertexIndex: (key: string) => void;
   dropEdgeIndex: (key: string) => void;
@@ -628,6 +640,7 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
       backend.createCardinalityConstraint(live(), label, edgeType, direction, min, max),
     createValidator: (label, varName, predicate) =>
       backend.createValidator(live(), label, varName, predicate),
+    createInvariant: (name, query) => backend.createInvariant(live(), name, query),
     dropVertexIndex: (key) => backend.dropVertexIndex(live(), key),
     dropEdgeIndex: (key) => backend.dropEdgeIndex(live(), key),
     vertexIndexes: () => backend.vertexIndexes(live()),

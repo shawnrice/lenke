@@ -32,6 +32,8 @@ const fakeStore = () => {
     createEdgeRequiredConstraint: () => {},
     createEdgeTypeConstraint: () => {},
     createCardinalityConstraint: () => {},
+    createValidator: () => {},
+    createInvariant: () => {},
     dropVertexIndex: () => {},
     dropEdgeIndex: () => {},
     beginTransaction: () => {},

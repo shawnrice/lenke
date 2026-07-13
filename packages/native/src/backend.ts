@@ -110,6 +110,16 @@ export type Backend = {
    * predicate)`, enforced byte-identically in the Rust GQL evaluator.
    */
   createValidator: (handle: GraphHandle, label: string, varName: string, predicate: string) => void;
+  /**
+   * Declare a graph-level INVARIANT `name` = a whole-graph GQL `query` (`MATCH …
+   * RETURN`) that must hold after every write transaction. `false`-only-fails:
+   * VIOLATED iff any cell in the result set is boolean `false` (`true`/`null`/
+   * non-boolean/empty all hold). Throws `ConstraintViolation` if existing data
+   * already violates it, or `Syntax` (`E_SYNTAX`) if the query can't be parsed.
+   * The native counterpart of `@lenke/gql`'s `createInvariant` — same `(name,
+   * query)`, enforced byte-identically in the Rust GQL evaluator.
+   */
+  createInvariant: (handle: GraphHandle, name: string, query: string) => void;
   /** Drop a vertex / edge property index (no-op if absent). */
   dropVertexIndex: (handle: GraphHandle, key: string) => void;
   dropEdgeIndex: (handle: GraphHandle, key: string) => void;

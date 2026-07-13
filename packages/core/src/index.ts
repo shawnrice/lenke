@@ -7,6 +7,7 @@ export type {
   GraphElement,
   GraphOptions,
   IndexableValue,
+  InvariantInfo,
   RangeBound,
   ScalarTypeName,
   ValidatorInfo,

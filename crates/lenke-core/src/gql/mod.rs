@@ -33,7 +33,7 @@ mod ported_gql_tck;
 #[cfg(test)]
 mod tests;
 
-pub use eval::{prepare, Prepared};
+pub use eval::{prepare, run_invariant, Prepared};
 pub use lexer::SyntaxError;
 pub use params::params_from_json;
 pub use parser::parse;

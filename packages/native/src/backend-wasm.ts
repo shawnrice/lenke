@@ -88,6 +88,13 @@ type WasmExports = {
     predicate: number,
     predLen: number,
   ) => number;
+  lnk_create_invariant: (
+    h: number,
+    name: number,
+    nameLen: number,
+    query: number,
+    queryLen: number,
+  ) => number;
   lnk_drop_vertex_index: (h: number, key: number, keyLen: number) => number;
   lnk_drop_edge_index: (h: number, key: number, keyLen: number) => number;
   lnk_begin_tx: (h: number) => number;
@@ -628,6 +635,37 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
         ex.lnk_dealloc(lp, l.byteLength);
         ex.lnk_dealloc(vp, v.byteLength);
         ex.lnk_dealloc(pp, p.byteLength);
+      }
+    },
+    createInvariant: (handle, name, query) => {
+      const n = encoder.encode(name);
+      const np = writeBytes(n);
+      const q = encoder.encode(query);
+      const qp = writeBytes(q);
+
+      try {
+        const r = ex.lnk_create_invariant(handle, np, n.byteLength, qp, q.byteLength);
+
+        if (r === -1) {
+          throw new LenkeError(
+            `lenke: createInvariant(${name}): existing data already violates the invariant '${query}'`,
+            { code: ErrorCode.ConstraintViolation },
+          );
+        }
+
+        if (r === -2) {
+          throw new LenkeError(
+            `lenke: createInvariant(${name}): could not parse the query '${query}'`,
+            { code: ErrorCode.Syntax },
+          );
+        }
+
+        if (r !== 0) {
+          throw new LenkeError('lenke: createInvariant failed', { code: ErrorCode.Ffi });
+        }
+      } finally {
+        ex.lnk_dealloc(np, n.byteLength);
+        ex.lnk_dealloc(qp, q.byteLength);
       }
     },
     createEdgeIndex: (handle, key) => {

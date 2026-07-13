@@ -10,7 +10,11 @@ import { describe, expect, test } from 'bun:test';
 import { existsSync } from 'node:fs';
 
 import { Graph } from '@lenke/core';
-import { createValidator as tsCreateValidator, query as tsQuery } from '@lenke/gql';
+import {
+  createInvariant as tsCreateInvariant,
+  createValidator as tsCreateValidator,
+  query as tsQuery,
+} from '@lenke/gql';
 import { deserialize as tsDeserialize } from '@lenke/serialization';
 
 import { createFfiBackend } from './backend-ffi.js';
@@ -657,6 +661,94 @@ suite('validator differential (TS vs native)', () => {
 
     const ts = outcome(() => tsCreateValidator(tsGraph, 'Acct', 'u', 'u.age >>>'));
     const native = outcome(() => nativeGraph.createValidator('Acct', 'u', 'u.age >>>'));
+
+    expect(native).toEqual(ts);
+    expect(ts).toEqual({ code: 'E_SYNTAX' });
+  });
+});
+
+suite('graph-level invariant differential (TS vs native)', () => {
+  // A whole-graph GQL assertion (`sum(balance) = 0`) declared identically on BOTH
+  // engines — TS via `@lenke/gql`'s free `createInvariant` (which compiles a query
+  // closure into core), native via `RustGraph.createInvariant` (Rust parses +
+  // evaluates the same query). The invariant runs once per write commit against
+  // the fully-staged graph; `false`-only-fails. A balanced multi-statement
+  // transaction commits on both; an unbalanced one rolls back on both — with
+  // byte-identical final state.
+  const LEDGER = [
+    '{"type":"node","id":"a","labels":["Acct"],"properties":{"name":"a","balance":100}}',
+    '{"type":"node","id":"b","labels":["Acct"],"properties":{"name":"b","balance":-100}}',
+  ].join('\n');
+
+  const INV = `MATCH (a:Acct) RETURN sum(a.balance) = 0`;
+  const READ = `MATCH (a:Acct) RETURN a.name, a.balance ORDER BY a.name`;
+
+  test('balanced transaction commits, unbalanced rolls back — outcomes + state agree', () => {
+    const tsGraph = tsDeserialize(LEDGER, 'ndjson', new Graph());
+    tsCreateInvariant(tsGraph, 'balanced', INV);
+    const backend = createFfiBackend(LIB);
+    const nativeGraph = graphFromFormat(backend, LEDGER, 'ndjson');
+    nativeGraph.createInvariant('balanced', INV);
+
+    // A balance-preserving transfer (sum stays 0) commits on both engines.
+    const balancedTs = outcome(() =>
+      tsGraph.transaction(() => {
+        tsQuery(tsGraph, `MATCH (a:Acct {name: 'a'}) SET a.balance = 70`);
+        tsQuery(tsGraph, `MATCH (b:Acct {name: 'b'}) SET b.balance = -70`);
+      }),
+    );
+    const balancedNative = outcome(() =>
+      nativeGraph.transaction(() => {
+        nativeGraph.query(`MATCH (a:Acct {name: 'a'}) SET a.balance = 70`);
+        nativeGraph.query(`MATCH (b:Acct {name: 'b'}) SET b.balance = -70`);
+      }),
+    );
+    expect(balancedNative, 'balanced-commit outcome mismatch').toEqual(balancedTs);
+    expect(balancedTs).toEqual({ ok: true });
+
+    // An unbalanced half-transfer (sum ≠ 0) rolls the whole transaction back on both.
+    const unbalancedTs = outcome(() =>
+      tsGraph.transaction(() => {
+        tsQuery(tsGraph, `MATCH (a:Acct {name: 'a'}) SET a.balance = 999`);
+      }),
+    );
+    const unbalancedNative = outcome(() =>
+      nativeGraph.transaction(() => {
+        nativeGraph.query(`MATCH (a:Acct {name: 'a'}) SET a.balance = 999`);
+      }),
+    );
+    expect(unbalancedNative, 'unbalanced-rollback outcome mismatch').toEqual(unbalancedTs);
+    expect(unbalancedTs).toEqual({ code: 'E_CONSTRAINT_VIOLATION' });
+
+    // Final state is byte-identical: the balanced commit landed (70 / -70), the
+    // unbalanced transaction left no trace.
+    expect(JSON.stringify(nativeGraph.query(READ))).toEqual(JSON.stringify(tsQuery(tsGraph, READ)));
+  });
+
+  test('declare-time rejection on an already-unbalanced graph agrees across engines', () => {
+    const skewed = [
+      '{"type":"node","id":"a","labels":["Acct"],"properties":{"name":"a","balance":100}}',
+      '{"type":"node","id":"b","labels":["Acct"],"properties":{"name":"b","balance":-50}}',
+    ].join('\n');
+
+    const tsGraph = tsDeserialize(skewed, 'ndjson', new Graph());
+    const backend = createFfiBackend(LIB);
+    const nativeGraph = graphFromFormat(backend, skewed, 'ndjson');
+
+    const ts = outcome(() => tsCreateInvariant(tsGraph, 'balanced', INV));
+    const native = outcome(() => nativeGraph.createInvariant('balanced', INV));
+
+    expect(native).toEqual(ts);
+    expect(ts).toEqual({ code: 'E_CONSTRAINT_VIOLATION' });
+  });
+
+  test('an unparseable invariant query is E_SYNTAX on both engines', () => {
+    const tsGraph = tsDeserialize(LEDGER, 'ndjson', new Graph());
+    const backend = createFfiBackend(LIB);
+    const nativeGraph = graphFromFormat(backend, LEDGER, 'ndjson');
+
+    const ts = outcome(() => tsCreateInvariant(tsGraph, 'bad', `MATCH (a:Acct) RETURN >>>`));
+    const native = outcome(() => nativeGraph.createInvariant('bad', `MATCH (a:Acct) RETURN >>>`));
 
     expect(native).toEqual(ts);
     expect(ts).toEqual({ code: 'E_SYNTAX' });

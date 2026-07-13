@@ -53,6 +53,10 @@ const SYMBOLS = {
     args: [FFIType.ptr, FFIType.ptr, U, FFIType.ptr, U, FFIType.ptr, U],
     returns: FFIType.i32,
   },
+  lnk_create_invariant: {
+    args: [FFIType.ptr, FFIType.ptr, U, FFIType.ptr, U],
+    returns: FFIType.i32,
+  },
   lnk_drop_vertex_index: { args: [FFIType.ptr, FFIType.ptr, U], returns: FFIType.i32 },
   lnk_drop_edge_index: { args: [FFIType.ptr, FFIType.ptr, U], returns: FFIType.i32 },
   lnk_begin_tx: { args: [FFIType.ptr], returns: FFIType.i32 },
@@ -437,6 +441,35 @@ export const createFfiBackend = (libPath: string): Backend => {
 
       if (r !== 0) {
         throw new LenkeError('lenke: createValidator failed', { code: ErrorCode.Ffi });
+      }
+    },
+    createInvariant: (handle, name, query) => {
+      const n = encoder.encode(name);
+      const q = encoder.encode(query);
+      const r = symbols.lnk_create_invariant(
+        asPtr(handle),
+        ptr(n),
+        n.byteLength,
+        ptr(q),
+        q.byteLength,
+      );
+
+      if (r === -1) {
+        throw new LenkeError(
+          `lenke: createInvariant(${name}): existing data already violates the invariant '${query}'`,
+          { code: ErrorCode.ConstraintViolation },
+        );
+      }
+
+      if (r === -2) {
+        throw new LenkeError(
+          `lenke: createInvariant(${name}): could not parse the query '${query}'`,
+          { code: ErrorCode.Syntax },
+        );
+      }
+
+      if (r !== 0) {
+        throw new LenkeError('lenke: createInvariant failed', { code: ErrorCode.Ffi });
       }
     },
     dropVertexIndex: (handle, key) => {

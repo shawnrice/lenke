@@ -43,6 +43,37 @@ export const createValidator = (
 };
 
 /**
+ * Declare a graph-level INVARIANT: a whole-graph GQL assertion `query` (a full
+ * `MATCH … RETURN`, not a bare predicate) that must hold after every write
+ * transaction — the cross-write analogue of a per-element {@link createValidator}
+ * (`createInvariant(g, 'balanced', 'MATCH (a:Acct) RETURN sum(a.balance) = 0')`).
+ *
+ * Unlike a validator (checked per touched element), an invariant is evaluated
+ * ONCE per commit against the fully-staged graph. `false`-only-fails: the
+ * invariant is VIOLATED iff any cell in the result set is boolean `false`;
+ * everything else — `true`, `null`, a non-boolean value, an empty result set —
+ * HOLDS. So `RETURN sum(a.balance) = 0` fails only when the sum isn't zero.
+ * Violations throw {@link ErrorCode.ConstraintViolation} and roll the transaction
+ * back. It runs at every commit boundary (each auto-committing GQL write
+ * statement, and `graph.transaction(fn)`), but only when the transaction actually
+ * wrote something — a pure-read transaction never pays the cost. A declare-time
+ * run rejects (`ConstraintViolation`) if the current graph already violates it.
+ * An unparseable/uncompilable `query` throws {@link GqlSyntaxError} (`E_SYNTAX`)
+ * here, at declaration time.
+ *
+ * Only `@lenke/gql` can offer this (core can't parse a GQL query): the query is
+ * parsed+compiled into a closure and registered into the graph via
+ * `graph.registerInvariant`. The native engine's `RustGraph.createInvariant`
+ * takes the SAME `(name, query)` and enforces it identically in the Rust GQL
+ * evaluator — the byte-identical dual-engine invariant.
+ */
+export const createInvariant = (graph: Graph, name: string, querySrc: string): void => {
+  const plan = compile(parse(querySrc));
+
+  graph.registerInvariant(name, querySrc, (g) => plan(g));
+};
+
+/**
  * Parse + compile a query string into a reusable `Plan`. Do this once for a hot
  * query, then call the plan with just `(graph, params)` — no re-parse, no
  * re-analysis per run.
