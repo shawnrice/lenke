@@ -131,7 +131,7 @@ export class Edge {
     this.#graph?.assertEdgeTypeOnSet(this, key, value);
     this.#graph?.assertEdgeUniqueOnSet(this, key, value);
     const g = this.#graph;
-    const {id} = this;
+    const { id } = this;
     const had = key in this.properties;
     const previousValue = this.properties[key]; // read before the write; undefined if absent
     // Resolve fresh by id at replay time — a later remove+re-add swaps identity.
@@ -166,7 +166,7 @@ export class Edge {
       Object.keys(props).map((key) => [key, this.properties[key]]),
     );
     const g = this.#graph;
-    const {id} = this;
+    const { id } = this;
     const undoRestore = Object.keys(props).filter((key) => key in this.properties);
     const undoRemove = Object.keys(props).filter((key) => !(key in this.properties));
     const undoValues = Object.fromEntries(undoRestore.map((key) => [key, this.properties[key]]));
@@ -209,7 +209,7 @@ export class Edge {
 
     this.#graph?.assertEdgeRequiredOnRemove(this, key);
     const g = this.#graph;
-    const {id} = this;
+    const { id } = this;
     const previousValue = this.properties[key];
     g?.recordUndo(() => void g.getEdgeById(id)?.setProperty(key, previousValue));
     this.#graph?.emit(
@@ -229,7 +229,7 @@ export class Edge {
     }
 
     const g = this.#graph;
-    const {id} = this;
+    const { id } = this;
     const removed = Object.fromEntries(
       keys.filter((key) => key in this.properties).map((key) => [key, this.properties[key]]),
     );

@@ -111,7 +111,7 @@ export class Vertex {
     this.#graph?.assertTypeOnSet(this, key, value);
     this.#graph?.assertUniqueOnSet(this, key, value);
     const g = this.#graph;
-    const {id} = this;
+    const { id } = this;
     const had = key in this.properties;
     const previousValue = this.properties[key]; // read before the write; undefined if absent
     // Resolve the element fresh by id at replay time — a later remove+re-add in
@@ -148,7 +148,7 @@ export class Vertex {
       Object.keys(props).map((key) => [key, this.properties[key]]),
     );
     const g = this.#graph;
-    const {id} = this;
+    const { id } = this;
     const undoRestore = Object.keys(props).filter((key) => key in this.properties);
     const undoRemove = Object.keys(props).filter((key) => !(key in this.properties));
     const undoValues = Object.fromEntries(undoRestore.map((key) => [key, this.properties[key]]));
@@ -195,7 +195,7 @@ export class Vertex {
 
     this.#graph?.assertRequiredOnRemove(this, key);
     const g = this.#graph;
-    const {id} = this;
+    const { id } = this;
     const previousValue = this.properties[key];
     g?.recordUndo(() => void g.getVertexById(id)?.setProperty(key, previousValue));
     this.#graph?.emit(
@@ -219,7 +219,7 @@ export class Vertex {
     }
 
     const g = this.#graph;
-    const {id} = this;
+    const { id } = this;
     const removed = Object.fromEntries(
       keys.filter((key) => key in this.properties).map((key) => [key, this.properties[key]]),
     );
