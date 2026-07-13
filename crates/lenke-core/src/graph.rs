@@ -342,6 +342,63 @@ impl PropType {
     }
 }
 
+/// An immutable **CSR** (compressed-sparse-row) snapshot of the adjacency: one
+/// flat `Adj` array per direction with an `n+1` offset array, so expanding vertex
+/// `v` is a contiguous slice `adj[off[v]..off[v+1]]`. This is the read-optimized
+/// *base*; the mutable `Vec<Vec<Adj>>` lists stay the write-path *delta*. Chasing
+/// a per-vertex `Vec` header into its own heap allocation (a cache miss + no
+/// prefetch across vertices) becomes a sequential walk of one array — the win that
+/// matters for multi-hop traversal. Built lazily and cached (see [`Graph::csr`]),
+/// dropped on any topology mutation so a rebuild reflects the change.
+struct Csr {
+    out_off: Vec<u32>,
+    out_adj: Vec<Adj>,
+    in_off: Vec<u32>,
+    in_adj: Vec<Adj>,
+}
+
+/// Flatten per-vertex adjacency `Vec`s into `(offsets, concatenated slots)`.
+fn csr_pack(adjs: &[Vec<Adj>]) -> (Vec<u32>, Vec<Adj>) {
+    let total: usize = adjs.iter().map(Vec::len).sum();
+    let mut off = Vec::with_capacity(adjs.len() + 1);
+    let mut flat = Vec::with_capacity(total);
+    off.push(0);
+    for a in adjs {
+        flat.extend_from_slice(a);
+        off.push(flat.len() as u32);
+    }
+    (off, flat)
+}
+
+impl Csr {
+    fn build(out: &[Vec<Adj>], in_: &[Vec<Adj>]) -> Self {
+        let (out_off, out_adj) = csr_pack(out);
+        let (in_off, in_adj) = csr_pack(in_);
+        Self {
+            out_off,
+            out_adj,
+            in_off,
+            in_adj,
+        }
+    }
+    #[inline]
+    fn out(&self, v: u32) -> &[Adj] {
+        Self::slice(&self.out_off, &self.out_adj, v)
+    }
+    #[inline]
+    fn in_(&self, v: u32) -> &[Adj] {
+        Self::slice(&self.in_off, &self.in_adj, v)
+    }
+    #[inline]
+    fn slice<'a>(off: &[u32], adj: &'a [Adj], v: u32) -> &'a [Adj] {
+        let v = v as usize;
+        match (off.get(v), off.get(v + 1)) {
+            (Some(&lo), Some(&hi)) => &adj[lo as usize..hi as usize],
+            _ => &[],
+        }
+    }
+}
+
 /// The scalar type of a stored value, or `None` for null / a non-stored `Map`
 /// (both type-exempt — a null has no type).
 fn value_type(v: &Value) -> Option<PropType> {
@@ -405,9 +462,16 @@ pub struct Graph {
     epochs: HashMap<String, u64>,
     e_live: Vec<bool>,
     live_e: usize,
-    /// per-vertex out / in adjacency (the mutable replacement for CSR)
+    /// per-vertex out / in adjacency — the mutable write-path *delta*. Reads go
+    /// through the cached [`Csr`] snapshot (`csr`) built from these.
     out: Vec<Vec<Adj>>,
     in_: Vec<Vec<Adj>>,
+    /// Lazily-built, cached CSR snapshot of `out`/`in_` for cache-friendly reads.
+    /// `get_or_init` fills it on first expansion; every topology mutation calls
+    /// [`Graph::invalidate_csr`] to drop it so the next read rebuilds. Kept in a
+    /// `OnceLock` (not a plain `Option`) so a shared read-only `&Graph` can build
+    /// it once without `&mut`, and `Graph` stays `Send`/`Sync`.
+    csr: std::sync::OnceLock<Csr>,
     /// counter for synthesized ids of vertices created at runtime
     synth: u64,
     /// Opt-in secondary indexes over vertex / edge property values: key name →
@@ -1948,22 +2012,32 @@ impl Graph {
         range_seek(self.eidx.get(key)?, bound)
     }
 
+    /// The cached CSR snapshot, built (once) from `out`/`in_` on first use and
+    /// reused until a topology mutation drops it. Disjoint-field capture lets the
+    /// init closure read `out`/`in_` while `get_or_init` holds `csr`.
+    fn csr(&self) -> &Csr {
+        self.csr.get_or_init(|| Csr::build(&self.out, &self.in_))
+    }
+    /// Drop the CSR snapshot — called by every topology mutation so the next read
+    /// rebuilds it. A no-op cost when it was never built.
+    fn invalidate_csr(&mut self) {
+        self.csr.take();
+    }
+
     /// Out-edges of `v` as adjacency slots.
     pub fn out_adj(&self, v: u32) -> impl Iterator<Item = Adj> + '_ {
-        self.out[v as usize].iter().copied()
+        self.csr().out(v).iter().copied()
     }
     /// In-edges of `v` as adjacency slots (the reverse index).
     pub fn in_adj(&self, v: u32) -> impl Iterator<Item = Adj> + '_ {
-        self.in_[v as usize].iter().copied()
+        self.csr().in_(v).iter().copied()
     }
     /// Out-neighbors of `v` whose edge type is `etype` (or all if `None`).
     pub fn out_neighbors(&self, v: u32, etype: Option<u32>) -> impl Iterator<Item = u32> + '_ {
-        self.out[v as usize]
-            .iter()
-            .filter_map(move |a| match etype {
-                Some(t) if a.etype != t => None,
-                _ => Some(a.nbr),
-            })
+        self.csr().out(v).iter().filter_map(move |a| match etype {
+            Some(t) if a.etype != t => None,
+            _ => Some(a.nbr),
+        })
     }
 
     /// Labels carried by vertex `v`, as label ids.
@@ -2429,7 +2503,9 @@ impl Graph {
             self.props.set_value(vi as usize, &k, v, &mut self.strs);
         }
         self.n += 1;
-        // Topology change: bump the global version and the new vertex's labels.
+        // Topology change: drop the CSR snapshot, bump the global version and the
+        // new vertex's labels.
+        self.invalidate_csr();
         self.bump();
         for l in labels {
             self.touch(l);
@@ -2475,7 +2551,8 @@ impl Graph {
             self.edge_props
                 .set_value(ei as usize, &k, v, &mut self.strs);
         }
-        // Topology change: bump the global version and the new edge's type.
+        // Topology change: drop the CSR snapshot, bump the global version and type.
+        self.invalidate_csr();
         self.bump();
         self.touch(etype);
         self.record_undo(Undo::InsertEdge(ei));
@@ -2619,8 +2696,10 @@ impl Graph {
             a.etype = tid;
         }
         if old != tid {
-            // Both the old and new type's membership changed.
+            // Both the old and new type's membership changed; the etype stored in
+            // the adjacency slots changed too, so the CSR snapshot is stale.
             let old_name = self.etype.text(old).to_string();
+            self.invalidate_csr();
             self.bump();
             self.touch(&old_name);
             self.touch(name);
@@ -2675,6 +2754,7 @@ impl Graph {
         let (src, dst) = (self.e_src[i] as usize, self.e_dst[i] as usize);
         self.out[src].retain(|a| a.eidx != ei);
         self.in_[dst].retain(|a| a.eidx != ei);
+        self.invalidate_csr();
         self.bump();
         for name in touched {
             self.touch(&name);
@@ -2738,6 +2818,7 @@ impl Graph {
         self.in_[i].clear();
         self.v_live[i] = false;
         self.live_n -= 1;
+        self.invalidate_csr();
         self.bump();
         for name in touched {
             self.touch(&name);
@@ -3092,6 +3173,7 @@ impl Builder {
             live_e: e,
             out,
             in_,
+            csr: std::sync::OnceLock::new(),
             synth: 0,
             vidx: HashMap::new(),
             eidx: HashMap::new(),
