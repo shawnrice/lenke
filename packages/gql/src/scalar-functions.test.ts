@@ -3,7 +3,7 @@ import { describe, expect, test } from 'bun:test';
 import { ErrorCode, hasErrorCode } from '@lenke/errors';
 
 import { createTestSocialGraph } from './fixtures/createTestSocialGraph.js';
-import { query } from './index.js';
+import { compile, parse, query } from './index.js';
 
 // Mirrors the Rust engine's `scalar_functions_graph_string_list_conversion` and
 // `unknown_function_errors_instead_of_silent_null` (gql/tests.rs) so the two
@@ -120,6 +120,36 @@ describe('GQL: ISO graph / conversion / string-list scalar functions', () => {
     } catch (e) {
       expect(hasErrorCode(e, ErrorCode.UnknownFunction)).toBe(true);
     }
+  });
+
+  test('an unknown function faults EAGERLY — even over empty input, a dead branch, or at compile', () => {
+    // The name is resolved at COMPILE time (before any row runs), so an unknown
+    // function faults identically whether the result set is empty or not, and even
+    // when the call sits in a never-taken branch. A lazy per-row fault would
+    // silently return `[]` over zero rows. Matches the Rust engine's plan-time
+    // `unknown_fns` check.
+    const codeOf = (fn: () => unknown): unknown => {
+      try {
+        fn();
+      } catch (e) {
+        return (e as { code?: unknown }).code;
+      }
+
+      throw new Error('expected a throw, got a normal return');
+    };
+
+    // Zero-row result still faults (the bug: this used to return []).
+    expect(codeOf(() => query(g, `MATCH (n) WHERE false RETURN nope_fn(n) AS x`))).toBe(
+      ErrorCode.UnknownFunction,
+    );
+
+    // A never-taken CASE branch: name resolution is reachability-independent.
+    expect(codeOf(() => query(g, `RETURN CASE WHEN false THEN bogus_fn(1) ELSE 1 END AS x`))).toBe(
+      ErrorCode.UnknownFunction,
+    );
+
+    // `compile(parse(...))` throws immediately — before the plan is ever run.
+    expect(codeOf(() => compile(parse(`RETURN nope_fn(1) AS x`)))).toBe(ErrorCode.UnknownFunction);
   });
 });
 

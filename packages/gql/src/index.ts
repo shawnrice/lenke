@@ -3,7 +3,14 @@ import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { Statement } from './ast.js';
 import { isTxControl } from './ast.js';
-import { compile, compileValidator, execute, type Plan, type Row } from './executor.js';
+import {
+  compile,
+  compileValidator,
+  execute,
+  freePredicateVars,
+  type Plan,
+  type Row,
+} from './executor.js';
 import { parse, parsePredicate } from './parser.js';
 
 export type {
@@ -49,6 +56,23 @@ export const createValidator = (
   predicate: string,
 ): void => {
   const expr = parsePredicate(predicate);
+
+  // Reject a predicate that references any variable *other* than the declared
+  // `varName` at DECLARE time. Such a name (`x.age` when the binding is `u`, or a
+  // bare `age`) is unbound → the predicate reads UNKNOWN → the SQL-`CHECK` never
+  // fires and the validator silently does nothing. A predicate with no variable
+  // at all (a constant like `1 = 1`) is legitimately allowed. Uses `E_SYNTAX`,
+  // matching the native engine (whose FFI already maps a bad predicate to that
+  // code) so both engines reject identically.
+  for (const name of freePredicateVars(expr)) {
+    if (name !== varName) {
+      throw new LenkeError(
+        `validator predicate references unbound variable \`${name}\` (only the declared variable \`${varName}\` is in scope)`,
+        { code: ErrorCode.Syntax },
+      );
+    }
+  }
+
   const compiled = compileValidator(expr, varName);
 
   graph.registerValidator(label, varName, predicate, (element) => compiled(element, graph));

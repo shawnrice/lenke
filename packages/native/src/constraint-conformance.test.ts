@@ -665,6 +665,31 @@ suite('validator differential (TS vs native)', () => {
     expect(native).toEqual(ts);
     expect(ts).toEqual({ code: 'E_SYNTAX' });
   });
+
+  test('a predicate referencing the wrong variable is E_SYNTAX on both engines', () => {
+    const tsGraph = tsDeserialize(SEED, 'ndjson', new Graph());
+    const backend = createFfiBackend(LIB);
+    const nativeGraph = graphFromFormat(backend, SEED, 'ndjson');
+
+    // Predicate binds `u`, but references `x` — unbound → the validator would
+    // silently never fire. Both engines reject it at declare time (E_SYNTAX).
+    const wrong = 'x.age >= 0';
+    const tsWrong = outcome(() => tsCreateValidator(tsGraph, 'Acct', 'u', wrong));
+    const nativeWrong = outcome(() => nativeGraph.createValidator('Acct', 'u', wrong));
+    expect(nativeWrong).toEqual(tsWrong);
+    expect(tsWrong).toEqual({ code: 'E_SYNTAX' });
+
+    // A correct-var predicate and a constant predicate are both accepted on both.
+    const tsGood = outcome(() => tsCreateValidator(tsGraph, 'Acct', 'u', 'u.age >= 0'));
+    const nativeGood = outcome(() => nativeGraph.createValidator('Acct', 'u', 'u.age >= 0'));
+    expect(nativeGood).toEqual(tsGood);
+    expect(tsGood).toEqual({ ok: true });
+
+    const tsConst = outcome(() => tsCreateValidator(tsGraph, 'Acct', 'u', '1 = 1'));
+    const nativeConst = outcome(() => nativeGraph.createValidator('Acct', 'u', '1 = 1'));
+    expect(nativeConst).toEqual(tsConst);
+    expect(tsConst).toEqual({ ok: true });
+  });
 });
 
 suite('graph-level invariant differential (TS vs native)', () => {

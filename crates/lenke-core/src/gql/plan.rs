@@ -1325,6 +1325,131 @@ pub fn lower_predicate(var: &str, e: &Expr) -> CPredicate {
     }
 }
 
+/// Add every variable a sub-pattern introduces (start node, each hop's rel +
+/// node) to `bound`.
+fn pattern_bound_vars(p: &PathPattern, bound: &mut Vec<String>) {
+    let add = |v: &Option<String>, bound: &mut Vec<String>| {
+        if let Some(name) = v {
+            if !bound.iter().any(|n| n == name) {
+                bound.push(name.clone());
+            }
+        }
+    };
+    add(&p.start.variable, bound);
+    for seg in &p.segments {
+        add(&seg.rel.variable, bound);
+        add(&seg.node.variable, bound);
+    }
+}
+
+/// Collect every FREE variable a predicate references — a `Var`/`Prop` name NOT
+/// bound by an enclosing `EXISTS`/`COUNT` sub-pattern. A VALIDATOR predicate has
+/// exactly one legitimate free variable, the declared `var` (the element under
+/// test); a reference to any *other* free name (a typo like `x.age` when the
+/// binding is `u`, or a bare `age`) is unbound, so the predicate silently reads
+/// UNKNOWN and the SQL-`CHECK` never fires. [`Graph::create_validator`] rejects
+/// such a predicate at declare time. Sub-query pattern variables are bound
+/// *within* the sub-query, so they are correctly NOT free. Mirrors the TS
+/// `freePredicateVars`.
+pub fn free_predicate_vars(e: &Expr) -> Vec<String> {
+    let mut free = Vec::new();
+    collect_free_vars(e, &[], &mut free);
+    free
+}
+
+fn note_free(name: &str, bound: &[String], free: &mut Vec<String>) {
+    if !bound.iter().any(|n| n == name) && !free.iter().any(|n| n == name) {
+        free.push(name.to_string());
+    }
+}
+
+fn collect_free_vars(e: &Expr, bound: &[String], free: &mut Vec<String>) {
+    match e {
+        Expr::Var(n) => note_free(n, bound, free),
+        Expr::Prop { variable, .. } => note_free(variable, bound, free),
+        Expr::Lit(_) | Expr::Param(_) => {}
+        Expr::List(items) => {
+            for it in items {
+                collect_free_vars(it, bound, free);
+            }
+        }
+        Expr::Neg(x) | Expr::Not(x) => collect_free_vars(x, bound, free),
+        Expr::IsNull { expr, .. } | Expr::IsTruth { expr, .. } | Expr::IsLabeled { expr, .. } => {
+            collect_free_vars(expr, bound, free)
+        }
+        Expr::Compare { left, right, .. }
+        | Expr::Arith { left, right, .. }
+        | Expr::Concat { left, right }
+        | Expr::And(left, right)
+        | Expr::Or(left, right)
+        | Expr::Xor(left, right) => {
+            collect_free_vars(left, bound, free);
+            collect_free_vars(right, bound, free);
+        }
+        Expr::In { expr, list, .. } => {
+            collect_free_vars(expr, bound, free);
+            collect_free_vars(list, bound, free);
+        }
+        Expr::Case {
+            subject,
+            whens,
+            else_,
+        } => {
+            if let Some(s) = subject {
+                collect_free_vars(s, bound, free);
+            }
+            for (w, t) in whens {
+                collect_free_vars(w, bound, free);
+                collect_free_vars(t, bound, free);
+            }
+            if let Some(el) = else_ {
+                collect_free_vars(el, bound, free);
+            }
+        }
+        Expr::Func { args, .. } => {
+            for a in args {
+                collect_free_vars(a, bound, free);
+            }
+        }
+        Expr::Exists { patterns, where_ } | Expr::CountSubquery { patterns, where_ } => {
+            // The sub-pattern binds its own variables; extend the bound set before
+            // descending into its inline predicates and WHERE so those bindings
+            // are not mistaken for free references. Outer names still read free.
+            let mut inner = bound.to_vec();
+            for p in patterns {
+                pattern_bound_vars(p, &mut inner);
+            }
+            for p in patterns {
+                collect_pattern_free_vars(p, &inner, free);
+            }
+            if let Some(w) = where_ {
+                collect_free_vars(w, &inner, free);
+            }
+        }
+    }
+}
+
+fn collect_pattern_free_vars(p: &PathPattern, bound: &[String], free: &mut Vec<String>) {
+    let node = |n: &NodePattern, free: &mut Vec<String>| {
+        for c in &n.props {
+            collect_free_vars(&c.value, bound, free);
+        }
+        if let Some(w) = &n.where_ {
+            collect_free_vars(w, bound, free);
+        }
+    };
+    node(&p.start, free);
+    for seg in &p.segments {
+        for c in &seg.rel.props {
+            collect_free_vars(&c.value, bound, free);
+        }
+        if let Some(w) = &seg.rel.where_ {
+            collect_free_vars(w, bound, free);
+        }
+        node(&seg.node, free);
+    }
+}
+
 /// Lower a parsed query into the IR plus the parameter slot order (slot → name).
 pub fn lower(query: &Query) -> (CQuery, Vec<String>) {
     let mut l = Lowerer {

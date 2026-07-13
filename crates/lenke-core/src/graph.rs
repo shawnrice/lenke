@@ -1561,6 +1561,27 @@ impl Graph {
     pub fn create_validator(&mut self, label: &str, var: &str, predicate: &str) -> CodeResult<()> {
         let expr = crate::gql::parser::parse_predicate(predicate)
             .map_err(|e| CodeError::new(ErrorCode::Syntax, e.message))?;
+
+        // Reject a predicate that references any variable *other* than the declared
+        // `var` at DECLARE time. Such a name (`x.age` when the binding is `u`, or a
+        // bare `age`) is unbound → the predicate reads UNKNOWN → the SQL-`CHECK`
+        // never fires and the validator silently does nothing. A predicate with no
+        // variable at all (a constant like `1 = 1`) is legitimately allowed. Uses
+        // `ErrorCode::Syntax` (the FFI already maps a bad predicate to `-2`/`E_SYNTAX`)
+        // so both engines reject identically.
+        if let Some(name) = crate::gql::plan::free_predicate_vars(&expr)
+            .into_iter()
+            .find(|n| n != var)
+        {
+            return Err(CodeError::new(
+                ErrorCode::Syntax,
+                format!(
+                    "validator predicate references unbound variable `{name}` \
+                     (only the declared variable `{var}` is in scope)"
+                ),
+            ));
+        }
+
         let pred = crate::gql::plan::lower_predicate(var, &expr);
 
         // Declare-time scan: reject if any existing element carrying `label` (a
@@ -3544,6 +3565,40 @@ mod validator {
                 .code,
             ErrorCode::Syntax
         );
+    }
+
+    #[test]
+    fn predicate_referencing_the_wrong_variable_is_rejected_at_declare_time() {
+        let mut g = ndjson::decode("").unwrap();
+        // The predicate references `x`, but the element binds to `u` — `x.age` is
+        // unbound → the predicate reads UNKNOWN → the SQL-CHECK never fires and the
+        // validator would silently do nothing. Reject it at DECLARE time (Syntax).
+        assert_eq!(
+            g.create_validator("User", "u", "x.age >= 0")
+                .unwrap_err()
+                .code,
+            ErrorCode::Syntax
+        );
+        // A bare unbound name (no dotted property) is rejected too.
+        assert_eq!(
+            g.create_validator("User", "u", "age >= 0")
+                .unwrap_err()
+                .code,
+            ErrorCode::Syntax
+        );
+        // The rejected declarations registered nothing.
+        assert!(g.validators().is_empty());
+
+        // The declared variable is fine, and a constant predicate (references NO
+        // variable at all) is legitimately allowed.
+        g.create_validator("User", "u", "u.age >= 0").unwrap();
+        g.create_validator("User", "u", "1 = 1").unwrap();
+        assert_eq!(g.validators().len(), 2);
+
+        // A sub-query pattern variable is bound *within* the sub-query, so a
+        // predicate that references only `u` and its own sub-pattern vars is fine.
+        g.create_validator("User", "u", "EXISTS { (v) WHERE v.age = u.age }")
+            .unwrap();
     }
 }
 

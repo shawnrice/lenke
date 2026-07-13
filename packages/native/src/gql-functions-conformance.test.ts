@@ -188,4 +188,33 @@ suite('GQL function differential (TS vs native)', () => {
       expect(ts).toBe(native);
     });
   }
+
+  // Both engines resolve function names EAGERLY (TS at compile, native off the
+  // plan's `unknown_fns` before the first row), so an unknown function faults
+  // identically whether the result set is non-empty, EMPTY, or the call sits in a
+  // dead branch. A lazy per-row fault would silently return `[]` over zero rows.
+  const outcome = (run: () => unknown): { ok: true } | { code: unknown } => {
+    try {
+      run();
+
+      return { ok: true };
+    } catch (e) {
+      return { code: (e as { code?: unknown }).code };
+    }
+  };
+
+  const UNKNOWN_FN_CASES: string[] = [
+    `MATCH (n:T) RETURN nope_fn(n) AS v`, // one row
+    `MATCH (n:Missing) RETURN nope_fn(n) AS v`, // ZERO rows — the empty-input bug
+    `RETURN CASE WHEN false THEN bogus_fn(1) ELSE 1 END AS v`, // dead branch
+  ];
+
+  for (const q of UNKNOWN_FN_CASES) {
+    test(`unknown fn faults identically: ${q}`, () => {
+      const ts = outcome(() => tsQuery(tsGraph, q));
+      const native = outcome(() => nativeGraph.query(q));
+      expect(native).toEqual(ts);
+      expect(ts).toEqual({ code: 'E_UNKNOWN_FUNCTION' });
+    });
+  }
 });

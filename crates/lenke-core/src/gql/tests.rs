@@ -1510,6 +1510,33 @@ fn unknown_function_errors_instead_of_silent_null() {
 }
 
 #[test]
+fn unknown_function_errors_even_over_empty_input_and_dead_branches() {
+    // The fault is raised EAGERLY off the plan's `unknown_fns`, before the first
+    // row — so an unknown function faults identically whether the result set is
+    // empty or not, and even when the call sits in a never-taken branch. (A lazy
+    // per-row fault would silently return `[]` over zero rows.) Matches the TS
+    // engine's compile-time check.
+    let mut g = modern();
+
+    // Zero-row result: `MATCH (n) WHERE false` yields no rows, yet the unknown
+    // function still faults.
+    let err = parse("MATCH (n) WHERE false RETURN nope_fn(n) AS x")
+        .unwrap()
+        .execute(&mut g, &Params::new())
+        .unwrap_err();
+    assert_eq!(err.code, crate::error_codes::ErrorCode::UnknownFunction);
+    assert!(err.message.contains("nope_fn()"), "got: {}", err.message);
+
+    // A never-taken CASE branch: name resolution is reachability-independent.
+    let err = parse("RETURN CASE WHEN false THEN bogus_fn(1) ELSE 1 END AS x")
+        .unwrap()
+        .execute(&mut g, &Params::new())
+        .unwrap_err();
+    assert_eq!(err.code, crate::error_codes::ErrorCode::UnknownFunction);
+    assert!(err.message.contains("bogus_fn()"), "got: {}", err.message);
+}
+
+#[test]
 fn unbound_param_errors_instead_of_silent_null() {
     let mut g = modern();
     // `$missing` is referenced but not supplied — a programming error, not a

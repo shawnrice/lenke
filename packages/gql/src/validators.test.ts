@@ -139,14 +139,33 @@ describe('GQL: declarative validators', () => {
     expect(codeOf(() => createValidator(g, 'User', 'u', 'true RETURN 1'))).toBe(ErrorCode.Syntax);
   });
 
-  test('a predicate binding the wrong variable never rejects (unbound → null)', () => {
+  test('a predicate referencing the wrong variable is rejected at declare time', () => {
     const g = new Graph();
-    // Predicate references `x`, but the element binds to `u` — `x.age` is null,
-    // so the predicate is UNKNOWN and every write passes. Documented behavior:
-    // a typo'd bind variable silently disables enforcement (both engines agree).
-    createValidator(g, 'User', 'u', 'x.age >= 0');
+    // Predicate references `x`, but the element binds to `u` — `x.age` would be
+    // unbound → the predicate reads UNKNOWN → the SQL-CHECK never fires and the
+    // validator silently does nothing. Reject it at DECLARE time (E_SYNTAX),
+    // naming the offending variable. Both engines agree (see the differential).
+    const code = codeOf(() => createValidator(g, 'User', 'u', 'x.age >= 0'));
+    expect(code).toBe(ErrorCode.Syntax);
 
-    query(g, `INSERT (:User {age: -5})`);
+    // A bare unbound name (no dotted property) is rejected too.
+    expect(codeOf(() => createValidator(g, 'User', 'u', 'age >= 0'))).toBe(ErrorCode.Syntax);
+
+    // The rejected declaration registered nothing.
+    expect(g.validators()).toEqual([]);
+  });
+
+  test('a correct-var predicate and a constant predicate are both accepted', () => {
+    const g = new Graph();
+    // The declared variable is fine…
+    createValidator(g, 'User', 'u', 'u.age >= 0');
+    // …and a predicate that references NO variable at all (a constant) is legit.
+    createValidator(g, 'User', 'u', '1 = 1');
+    expect(g.validators()).toHaveLength(2);
+
+    // The correct-var validator still enforces on write.
+    expect(codeOf(() => query(g, `INSERT (:User {age: -5})`))).toBe(ErrorCode.ConstraintViolation);
+    query(g, `INSERT (:User {age: 5})`);
     expect(g.vertexCount).toBe(1);
   });
 

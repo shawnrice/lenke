@@ -967,6 +967,15 @@ const callExtendedScalar = (name: string, args: readonly unknown[]): unknown => 
 // sub-patterns compile in-line — no re-entrant `compile`), then cleared.
 let paramCollector: Set<string> | null = null;
 
+// Compile-time side channel: the names of unknown/unimplemented functions a
+// *query* references, gathered while `compile` walks the tree so it can throw
+// `UnknownFunction` eagerly (before running, and independent of row count /
+// branch reachability). Set only for the duration of one query `compile`; left
+// null while a validator predicate compiles, so a validator's unknown fn keeps
+// its per-row fault (parity with the Rust `eval_predicate` path). Mirrors the
+// Rust plan's `unknown_fns`, checked in `run_cquery_body`.
+let unknownFnCollector: Set<string> | null = null;
+
 const compileExpr = (expr: Expr): CompiledExpr => {
   switch (expr.kind) {
     case 'lit': {
@@ -1257,11 +1266,51 @@ const compileFunc = (expr: FuncExpr): CompiledExpr => {
   const { name } = expr;
   const args = expr.args.map(compileExpr);
 
+  // Resolve the function NAME eagerly while a *query* compiles — before any row
+  // runs. An unknown function is never valid regardless of row count or branch
+  // reachability, so `bogus_fn(x)` must fault identically over zero rows, one
+  // row, or inside a never-taken `CASE` branch. Previously the `UnknownFunction`
+  // fault fired only from the per-row `callScalar`, so an empty result set (or a
+  // dead branch) silently returned `[]`. The name is recorded into the
+  // query-scoped `unknownFnCollector`; `compile` throws once it finishes walking
+  // the tree (mirrors the Rust plan's `unknown_fns`, checked in `run_cquery_body`
+  // before the first row). A validator predicate compiles with the collector
+  // unset, so its unknown-fn timing stays per-row — matching the Rust
+  // `eval_predicate` path (both engines surface a validator's unknown fn at write
+  // time, not declare time).
+  if (unknownFnCollector && !isKnownScalarFn(name)) {
+    unknownFnCollector.add(name);
+  }
+
   return (env) =>
     callScalar(
       name,
       args.map((f) => f(env)),
     );
+};
+
+// A shared empty probe arg list — `callScalar` treats absent args as null, so a
+// KNOWN scalar function resolves to null (never throwing `UnknownFunction`);
+// only a genuinely unknown name reaches the `UnknownFunction` throw.
+const FN_PROBE_ARGS: readonly unknown[] = [];
+
+/**
+ * Compile-time name resolution for a scalar function. Probes the shared scalar
+ * dispatch with placeholder args: the ONLY source of `ErrorCode.UnknownFunction`
+ * is an unresolved name (every known function returns — or throws some *other*
+ * error — on null args), so a thrown `UnknownFunction` means the name is bogus.
+ * Any other throw means the name DID resolve (its real per-row error, e.g. bad
+ * arity, still stands). Reachability-independent by construction — the name is
+ * resolved whether or not the call ever executes.
+ */
+const isKnownScalarFn = (name: string): boolean => {
+  try {
+    callScalar(name, FN_PROBE_ARGS);
+
+    return true;
+  } catch (error) {
+    return !(error instanceof LenkeError && error.code === ErrorCode.UnknownFunction);
+  }
 };
 
 /**
@@ -1347,6 +1396,161 @@ export const compileValidator = (
 
     return asTruth(fn({ binding, params: {}, graph }));
   };
+};
+
+/** Collect the variables a sub-pattern introduces (start node, each hop's rel + node). */
+const patternBoundVars = (p: PathPattern, into: Set<string>): void => {
+  const addNode = (n: NodePattern): void => {
+    if (n.variable !== undefined) {
+      into.add(n.variable);
+    }
+  };
+
+  addNode(p.start);
+
+  for (const seg of p.segments) {
+    if (seg.rel.variable !== undefined) {
+      into.add(seg.rel.variable);
+    }
+
+    addNode(seg.node);
+  }
+};
+
+/**
+ * Collect every FREE variable a predicate references — a `var`/`prop` name that
+ * is NOT bound by an enclosing `EXISTS`/`COUNT` sub-pattern. A VALIDATOR
+ * predicate has exactly one legitimate free variable, the declared `varName`
+ * (the element under test); a reference to any *other* free name (a typo like
+ * `x.age` when the binding is `u`, or a bare `age`) is unbound, so the predicate
+ * silently evaluates to UNKNOWN and the SQL-`CHECK` never fires. `createValidator`
+ * walks this set and rejects such a predicate at declare time. Sub-query pattern
+ * variables are bound *within* the sub-query, so they are correctly NOT free and
+ * must not be flagged. Mirrors the Rust `free_predicate_vars` (`plan.rs`).
+ */
+export const freePredicateVars = (expr: Expr): Set<string> => {
+  const free = new Set<string>();
+
+  const walkPattern = (p: PathPattern, bound: ReadonlySet<string>): void => {
+    const walkNode = (n: NodePattern): void => {
+      for (const c of n.properties ?? []) {
+        walk(c.value, bound);
+      }
+
+      if (n.where) {
+        walk(n.where, bound);
+      }
+    };
+
+    walkNode(p.start);
+
+    for (const seg of p.segments) {
+      for (const c of seg.rel.properties ?? []) {
+        walk(c.value, bound);
+      }
+
+      if (seg.rel.where) {
+        walk(seg.rel.where, bound);
+      }
+
+      walkNode(seg.node);
+    }
+  };
+
+  const walk = (e: Expr, bound: ReadonlySet<string>): void => {
+    switch (e.kind) {
+      case 'var':
+        if (!bound.has(e.name)) {
+          free.add(e.name);
+        }
+
+        return;
+      case 'prop':
+        if (!bound.has(e.variable)) {
+          free.add(e.variable);
+        }
+
+        return;
+      case 'lit':
+      case 'param':
+        return;
+      case 'list':
+        for (const it of e.items) {
+          walk(it, bound);
+        }
+
+        return;
+      case 'neg':
+      case 'not':
+      case 'isNull':
+      case 'isTruth':
+      case 'isLabeled':
+        walk(e.expr, bound);
+
+        return;
+      case 'compare':
+      case 'arith':
+      case 'concat':
+      case 'and':
+      case 'or':
+      case 'xor':
+        walk(e.left, bound);
+        walk(e.right, bound);
+
+        return;
+      case 'in':
+        walk(e.expr, bound);
+        walk(e.list, bound);
+
+        return;
+      case 'case':
+        if (e.subject) {
+          walk(e.subject, bound);
+        }
+
+        for (const w of e.whens) {
+          walk(w.when, bound);
+          walk(w.then, bound);
+        }
+
+        if (e.elseExpr) {
+          walk(e.elseExpr, bound);
+        }
+
+        return;
+      case 'func':
+        for (const a of e.args) {
+          walk(a, bound);
+        }
+
+        return;
+      case 'exists':
+      case 'countSubquery': {
+        // The sub-pattern binds its own variables; extend the bound set before
+        // descending into its inline predicates and WHERE so those bindings are
+        // not mistaken for free references. Outer names still read as free.
+        const inner = new Set(bound);
+
+        for (const p of e.patterns) {
+          patternBoundVars(p, inner);
+        }
+
+        for (const p of e.patterns) {
+          walkPattern(p, inner);
+        }
+
+        if (e.where) {
+          walk(e.where, inner);
+        }
+
+        return;
+      }
+    }
+  };
+
+  walk(expr, new Set());
+
+  return free;
 };
 
 // --- value / ordering helpers ------------------------------------------------
@@ -3241,15 +3445,33 @@ type CQuery = { parts: readonly CLinear[]; ops: readonly SetOp[] };
  */
 export const compile = <R extends Row = Row>(query: Query): Plan<R> => {
   const referenced = new Set<string>();
-  const prev = paramCollector;
+  const unknownFns = new Set<string>();
+  const prevParam = paramCollector;
+  const prevUnknown = unknownFnCollector;
   paramCollector = referenced;
+  unknownFnCollector = unknownFns;
 
   let compiled: CQuery;
 
   try {
     compiled = { parts: query.parts.map(compileLinear), ops: query.ops };
   } finally {
-    paramCollector = prev;
+    paramCollector = prevParam;
+    unknownFnCollector = prevUnknown;
+  }
+
+  // Eager unknown-function rejection: a name the query references that resolves
+  // to no scalar (or aggregate) function is never valid — throw NOW, at compile
+  // time, before the plan runs, so `compile(parse(q))` / `query(...)` faults
+  // identically over zero rows, one row, or a never-taken branch. Matches the
+  // Rust engine, which raises the same coded error from `run_cquery_body` off the
+  // plan's `unknown_fns`. The message names the offending function(s) verbatim.
+  if (unknownFns.size > 0) {
+    const named = [...unknownFns].map((n) => `${n}()`).join(', ');
+
+    throw new LenkeError(`call to an unknown or unimplemented function: ${named}`, {
+      code: ErrorCode.UnknownFunction,
+    });
   }
 
   const names = [...referenced];

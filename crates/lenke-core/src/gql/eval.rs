@@ -5690,7 +5690,30 @@ fn run_cquery(plan: &CQuery, graph: &mut Graph, params: &[Val]) -> CodeResult<Ro
 /// The statement body — runs each linear part and combines set-op results. Its
 /// writes apply eagerly inside the frame [`run_cquery`] opened; a fault propagates
 /// out and rolls them back.
+/// Eagerly reject any unknown/unimplemented function the plan references, BEFORE
+/// running a single row. An unknown function is never valid regardless of row
+/// count, so an empty result set must fault exactly like a non-empty one (the
+/// per-row `FAULT_UNKNOWN_FN` path would otherwise never fire over zero rows and
+/// silently return no rows). Surfaced here at the execute entry — the prepare
+/// entry returns only a `SyntaxError`, so the coded fault is raised before the
+/// first `run_part`. Matches the TS engine's compile-time `assertKnownScalarFn`.
+fn check_unknown_fns(unknown_fns: &[String]) -> CodeResult<()> {
+    if unknown_fns.is_empty() {
+        return Ok(());
+    }
+    let names = unknown_fns
+        .iter()
+        .map(|n| format!("{n}()"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(CodeError::new(
+        ErrorCode::UnknownFunction,
+        format!("call to an unknown or unimplemented function: {names}"),
+    ))
+}
+
 fn run_cquery_body(plan: &CQuery, graph: &mut Graph, params: &[Val]) -> CodeResult<RowSet> {
+    check_unknown_fns(&plan.unknown_fns)?;
     if has_nested_aggregate(plan) {
         return Err(CodeError::new(
             ErrorCode::Unsupported,
@@ -5805,6 +5828,7 @@ fn vectorized_arrow(
 /// scalar — just not boxing-free).
 #[cfg(feature = "arrow")]
 fn run_cquery_arrow(plan: &CQuery, graph: &mut Graph, params: &[Val]) -> CodeResult<Vec<u8>> {
+    check_unknown_fns(&plan.unknown_fns)?;
     if has_nested_aggregate(plan) {
         return Err(CodeError::new(
             ErrorCode::Unsupported,
