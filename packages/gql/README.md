@@ -127,7 +127,14 @@ A syntactically invalid query throws `GqlSyntaxError` (exported by `@lenke/gql`)
 Two more runtime errors worth knowing:
 
 - **Unbound parameter** — a `$name` the query references but the params bag doesn't supply throws `ErrorCode.MissingParameter` (naming the param), rather than binding to a silent `null`. A forgotten/typo'd binding fails loud.
-- **Reserved words** — an ISO GQL keyword used as a bare property key, variable, **column alias**, **or node/edge label** is an `ErrorCode.Syntax` error; quote it as a delimited identifier to use it as a name. This bites several common cases: a property named after a keyword (`project`, `order`, `value`, `group`, `key`); an **aggregate aliased to its own name** — `RETURN count(*) AS count` fails, so write `` AS `count` `` (or a different alias like `AS n`); and a **label that happens to be reserved** — `MATCH (x:Group)` throws (`group` is reserved), which stings for authz-style schemas, so write ``MATCH (x:`Group`)``. Function/aggregate names (`count`, `sum`, `avg`, `min`, `max`) and words like `group`/`value`/`key`/`order` are all reserved; the full list is the ISO/IEC 39075 `<reserved word>` + `<pre-reserved word>` set (verbatim in `lexer.ts`).
+- **Reserved words** — an ISO GQL keyword used **bare** (unquoted) in any _name_ position — a **node/edge label**, a **variable**, a **property key**, or a **column alias** — is an `ErrorCode.Syntax` error. lenke follows ISO here: to use a reserved word as a name in any of those positions you must **backtick-quote it** as a delimited identifier. The rejection is uniform and now names the fix, keeping your exact casing — `MATCH (x:Order)` reports ``` `Order` is a reserved word and can't be used bare as a label name; quote it as a delimited identifier with backticks: `Order` ```. This bites several common cases: a property named after a keyword (`project`, `order`, `value`, `group`, `key`); an **aggregate aliased to its own name** — `RETURN count(*) AS count` fails, so write `` AS `count` `` (or a different alias like `AS n`); a **label that happens to be reserved** — `MATCH (x:Group)` and `MATCH (x:Order)` both throw (`group`/`order` are reserved), which stings for authz-/commerce-style schemas; and a **variable** named after a keyword (`MATCH (order) …`). The remedy in every case is a backtick:
+
+  ```ts
+  // A reserved-word label — quote it, and the query runs:
+  query(g, 'MATCH (x:`Order`) RETURN x');
+  ```
+
+  Function/aggregate names (`count`, `sum`, `avg`, `min`, `max`) and words like `group`/`value`/`key`/`order` are all reserved; the full list is the ISO/IEC 39075 `<reserved word>` + `<pre-reserved word>` set (verbatim in `lexer.ts`).
 
 ## Upsert: unique constraints + `_MERGE`
 

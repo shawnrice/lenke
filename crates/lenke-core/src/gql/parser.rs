@@ -24,6 +24,22 @@ fn cast_target_fn(type_name: &str) -> Option<&'static str> {
     })
 }
 
+/// The single, consistent reserved-word rejection used in every binding
+/// position. `what` names the role (a label name, a variable, …). The message
+/// names backticks explicitly and echoes the user's ORIGINAL casing in both the
+/// name and the suggested delimited form — `Keyword` tokens lowercase `value`,
+/// so `raw` carries the exact spelling (`` `Order` ``, never `` `order` ``).
+fn reserved_error(tok: &Token, what: &str) -> SyntaxError {
+    let original = tok.raw.as_deref().unwrap_or(&tok.value);
+    SyntaxError {
+        message: format!(
+            "`{original}` is a reserved word and can't be used bare as {what}; \
+             quote it as a delimited identifier with backticks: `{original}`"
+        ),
+        pos: tok.pos,
+    }
+}
+
 /// Parse a top-level [`Statement`]: either a linear query or an ISO GQL
 /// transaction-control command (`START TRANSACTION`/`COMMIT`/`ROLLBACK`). The FFI
 /// query path (`lnk_query_rows`/`lnk_query_arrow`) dispatches on the returned
@@ -213,18 +229,17 @@ impl Parser {
 
     /// Consume an identifier in a binding position (variable, label, key, alias).
     /// A bare reserved word is rejected; a delimited identifier may be any word.
+    /// Both token classes that can't be a bare name here are caught up front so
+    /// the rejection is uniform: a structural `Keyword` token (`Order`, `Count`,
+    /// `Match`, `Set`, …) — which would otherwise fail `expect(Ident)` with a
+    /// generic, casing-losing message — and a reserved-but-not-structural `Ident`
+    /// (`Group`, `Product`).
     fn bind_name(&mut self, what: &str) -> R<String> {
-        let tok = self.expect(Tt::Ident, what)?;
-        if !tok.delimited && is_reserved(&tok.value) {
-            return err(
-                format!(
-                    "'{}' is a reserved word; quote it as a delimited identifier",
-                    tok.value
-                ),
-                tok.pos,
-            );
+        let t = self.peek();
+        if t.tt == Tt::Keyword || (t.tt == Tt::Ident && !t.delimited && is_reserved(&t.value)) {
+            return Err(reserved_error(t, what));
         }
-        Ok(tok.value)
+        Ok(self.expect(Tt::Ident, what)?.value)
     }
 
     // --- patterns ----------------------------------------------------------
@@ -1067,13 +1082,7 @@ impl Parser {
                     });
                 }
                 if !t.delimited && is_reserved(&t.value) {
-                    return err(
-                        format!(
-                            "'{}' is a reserved word; quote it as a delimited identifier",
-                            t.value
-                        ),
-                        t.pos,
-                    );
+                    return Err(reserved_error(&t, "a variable"));
                 }
                 if self.check(Tt::Dot) {
                     self.advance();

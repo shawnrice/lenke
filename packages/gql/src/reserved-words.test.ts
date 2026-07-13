@@ -1,0 +1,96 @@
+import { describe, expect, test } from 'bun:test';
+
+import { ErrorCode } from '@lenke/errors';
+
+import { GqlSyntaxError } from './lexer.js';
+import { parse } from './parser.js';
+
+// Capture the GqlSyntaxError a query is expected to throw (fail loudly if it
+// parses or throws something else).
+const reject = (src: string): GqlSyntaxError => {
+  try {
+    parse(src);
+  } catch (e) {
+    if (e instanceof GqlSyntaxError) {
+      return e;
+    }
+
+    throw e;
+  }
+
+  throw new Error(`expected \`${src}\` to be rejected, but it parsed`);
+};
+
+describe('reserved words in binding positions', () => {
+  // The bug (C10): a reserved-but-structural keyword (`Order`, `Count`, `Match`,
+  // `Set`) lexed as a keyword token and hit `expect('ident')` first, yielding a
+  // generic, lowercased, hintless message; a reserved-but-non-structural ident
+  // (`Group`, `Product`) got a different message. Now every one is rejected with
+  // ONE consistent message that names backticks and keeps the user's casing.
+  const labels = ['Group', 'Product', 'Order', 'Count', 'Match', 'Set'];
+
+  for (const word of labels) {
+    test(`label \`:${word}\` is rejected with a backtick-naming, casing-preserving error`, () => {
+      const err = reject(`MATCH (x:${word}) RETURN x`);
+
+      expect(err.code).toBe(ErrorCode.Syntax);
+      // (a) the user's ORIGINAL casing, in the name and the backtick suggestion.
+      expect(err.message).toContain(`\`${word}\``);
+      // (b) names backticks / the delimited-identifier remedy.
+      expect(err.message).toContain('delimited identifier');
+      expect(err.message).toContain('reserved word');
+    });
+  }
+
+  test('the delimited form `:`Order`` parses', () => {
+    expect(() => parse('MATCH (x:`Order`) RETURN x')).not.toThrow();
+  });
+
+  test('a plain (non-reserved) label parses', () => {
+    expect(() => parse('MATCH (x:Person) RETURN x')).not.toThrow();
+  });
+
+  test('a reserved word as a variable gets the improved message (reserved ident)', () => {
+    const err = reject('MATCH (Group) RETURN 1');
+
+    expect(err.code).toBe(ErrorCode.Syntax);
+    expect(err.message).toContain('`Group`');
+    expect(err.message).toContain('variable');
+    expect(err.message).toContain('delimited identifier');
+  });
+
+  test('a reserved keyword as an alias gets the improved message (casing recovered)', () => {
+    const err = reject('MATCH (x) RETURN x AS Order');
+
+    expect(err.code).toBe(ErrorCode.Syntax);
+    expect(err.message).toContain('`Order`');
+    expect(err.message).toContain('delimited identifier');
+  });
+
+  test('a reserved word as a property key gets the improved message', () => {
+    const err = reject('MATCH (x { Order: 1 }) RETURN x');
+
+    expect(err.code).toBe(ErrorCode.Syntax);
+    expect(err.message).toContain('`Order`');
+    expect(err.message).toContain('delimited identifier');
+  });
+
+  test('the aggregate-aliased-to-its-own-name case still fails, now helpfully', () => {
+    const err = reject('MATCH (x) RETURN count(*) AS count');
+
+    expect(err.code).toBe(ErrorCode.Syntax);
+    expect(err.message).toContain('`count`');
+    expect(err.message).toContain('delimited identifier');
+  });
+
+  // Guard against regressing the positions where a keyword-shaped word is
+  // legitimately allowed: reserved words as function names, and soft keywords.
+  test('reserved words as function names are still accepted', () => {
+    expect(() => parse('MATCH (x) RETURN upper(x.name), count(*)')).not.toThrow();
+  });
+
+  test('soft keywords (contains / starts / ends) are still accepted', () => {
+    expect(() => parse("MATCH (x) WHERE x.name CONTAINS 'a' RETURN x")).not.toThrow();
+    expect(() => parse("MATCH (x) WHERE x.name STARTS WITH 'a' RETURN x")).not.toThrow();
+  });
+});

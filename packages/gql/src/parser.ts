@@ -257,20 +257,39 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Statement => {
     return readCount(what);
   };
 
+  // The single, consistent reserved-word rejection used in every binding
+  // position. `what` names the role (a label name, a variable, …). The message
+  // names backticks explicitly and echoes the user's ORIGINAL casing in both the
+  // name and the suggested delimited form — `keyword` tokens lowercase `value`,
+  // so `raw` carries the exact spelling (`` `Order` ``, never `` `order` ``).
+  const reservedError = (tok: Token, what: string): never => {
+    const original = tok.raw ?? tok.value;
+
+    throw new GqlSyntaxError(
+      `\`${original}\` is a reserved word and can't be used bare as ${what}; ` +
+        `quote it as a delimited identifier with backticks: \`${original}\``,
+      tok.pos,
+    );
+  };
+
   // Consume an identifier in a *binding* position (variable, label, property
   // key, alias). A bare reserved word is rejected per ISO; a delimited
-  // identifier (backtick) may be any word.
+  // identifier (backtick) may be any word. Both token classes that can't be a
+  // bare name here are caught up front so the rejection is uniform: a structural
+  // `keyword` token (`Order`, `Count`, `Match`, `Set`, …) — which would
+  // otherwise fail `expect('ident')` with a generic, casing-losing message — and
+  // a reserved-but-not-structural `ident` (`Group`, `Product`).
   const bindName = (what: string): string => {
-    const tok = expect('ident', what);
+    const tok = peek();
 
-    if (!tok.delimited && isReserved(tok.value)) {
-      throw new GqlSyntaxError(
-        `'${tok.value}' is a reserved word; quote it as a delimited identifier`,
-        tok.pos,
-      );
+    if (
+      tok.type === 'keyword' ||
+      (tok.type === 'ident' && !tok.delimited && isReserved(tok.value))
+    ) {
+      reservedError(tok, what);
     }
 
-    return tok.value;
+    return expect('ident', what).value;
   };
 
   // --- patterns --------------------------------------------------------------
@@ -1050,10 +1069,7 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Statement => {
 
       // A bare reserved word is not a valid variable reference.
       if (!t.delimited && isReserved(t.value)) {
-        throw new GqlSyntaxError(
-          `'${t.value}' is a reserved word; quote it as a delimited identifier`,
-          t.pos,
-        );
+        reservedError(t, 'a variable');
       }
 
       if (check('dot')) {

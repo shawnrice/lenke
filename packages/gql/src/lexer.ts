@@ -56,6 +56,13 @@ export type Token = {
   type: TokenType;
   /** Original source text (for identifiers/strings) or the keyword, lowercased. */
   value: string;
+  /**
+   * The verbatim source text with original casing preserved. Only set for
+   * `keyword` tokens (whose `value` is lowercased for structural matching) — the
+   * parser needs it to echo the user's exact spelling when suggesting the
+   * backtick-delimited form of a reserved word (`` `Order` ``, not `` `order` ``).
+   */
+  raw?: string;
   /** Number value, only set for `number` tokens. */
   num?: number;
   /** True for a backtick-delimited identifier — may be any word, even reserved. */
@@ -467,7 +474,10 @@ export const tokenize = (src: string): Token[] => {
       const lower = text.toLowerCase();
 
       if (KEYWORDS.has(lower)) {
-        push('keyword', lower, start);
+        // Keep `value` lowercased so the parser can dispatch on it, but carry the
+        // original casing in `raw` so a reserved-word rejection can suggest the
+        // user's exact spelling as a delimited identifier.
+        tokens.push({ type: 'keyword', value: lower, raw: text, pos: start });
       } else {
         push('ident', text, start);
       }

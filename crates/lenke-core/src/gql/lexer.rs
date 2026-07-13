@@ -51,6 +51,11 @@ pub struct Token {
     pub tt: Tt,
     /// Source text (identifiers/strings) or the lowercased keyword.
     pub value: String,
+    /// The verbatim source text with original casing. Only set for `Keyword`
+    /// tokens (whose `value` is lowercased for structural matching) — the parser
+    /// needs it to echo the user's exact spelling when suggesting the
+    /// backtick-delimited form of a reserved word (`` `Order` ``, not `` `order` ``).
+    pub raw: Option<String>,
     /// Set only for `Number` tokens.
     pub num: Option<f64>,
     /// True for a backtick-delimited identifier — may be any word, even reserved.
@@ -224,6 +229,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, SyntaxError> {
         tokens.push(Token {
             tt,
             value: value.to_string(),
+            raw: None,
             num: None,
             delimited: false,
             pos,
@@ -347,6 +353,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, SyntaxError> {
             tokens.push(Token {
                 tt: Tt::Str,
                 value: s,
+                raw: None,
                 num: None,
                 delimited: false,
                 pos: start,
@@ -371,6 +378,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, SyntaxError> {
             tokens.push(Token {
                 tt: Tt::Ident,
                 value: name,
+                raw: None,
                 num: None,
                 delimited: true,
                 pos: start,
@@ -392,6 +400,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, SyntaxError> {
             tokens.push(Token {
                 tt: Tt::Param,
                 value: src[name_start..i].to_string(),
+                raw: None,
                 num: None,
                 delimited: false,
                 pos: start,
@@ -463,6 +472,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, SyntaxError> {
             tokens.push(Token {
                 tt: Tt::Number,
                 value: text.to_string(),
+                raw: None,
                 num: Some(num),
                 delimited: false,
                 pos: start,
@@ -479,7 +489,17 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, SyntaxError> {
             let text = &src[start..i];
             let lower = text.to_ascii_lowercase();
             if keywords().contains(lower.as_str()) {
-                push(&mut tokens, Tt::Keyword, &lower, start);
+                // Keep `value` lowercased for structural dispatch, but carry the
+                // original casing in `raw` so a reserved-word rejection can echo
+                // the user's exact spelling as a delimited identifier.
+                tokens.push(Token {
+                    tt: Tt::Keyword,
+                    value: lower,
+                    raw: Some(text.to_string()),
+                    num: None,
+                    delimited: false,
+                    pos: start,
+                });
             } else {
                 push(&mut tokens, Tt::Ident, text, start);
             }

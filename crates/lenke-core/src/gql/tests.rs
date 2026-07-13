@@ -3417,3 +3417,71 @@ fn tx_keywords_soft_words_stay_identifiers() {
         vec![vec![n(1.0)]]
     );
 }
+
+// --- reserved words in binding positions (C10) ------------------------------
+
+/// The message a rejected parse produced (panics if it unexpectedly parsed).
+fn reject_msg(src: &str) -> String {
+    match parse(src) {
+        Ok(_) => panic!("expected `{src}` to be rejected, but it parsed"),
+        Err(e) => e.message,
+    }
+}
+
+#[test]
+fn reserved_word_labels_get_consistent_backtick_naming_errors() {
+    // Both token classes: structural keywords (Order/Count/Match/Set) that used
+    // to fail `expect(Ident)` with a generic lowercased message, and reserved
+    // idents (Group/Product). Every one now names backticks and keeps casing.
+    for word in ["Group", "Product", "Order", "Count", "Match", "Set"] {
+        let msg = reject_msg(&format!("MATCH (x:{word}) RETURN x"));
+        // Original casing, echoed in the name and the backtick suggestion.
+        assert!(
+            msg.contains(&format!("`{word}`")),
+            "label `{word}`: message did not preserve casing / name backticks: {msg}"
+        );
+        assert!(
+            msg.contains("delimited identifier"),
+            "label `{word}`: message did not name the delimited-identifier remedy: {msg}"
+        );
+        assert!(msg.contains("reserved word"), "label `{word}`: {msg}");
+    }
+}
+
+#[test]
+fn reserved_word_delimited_label_parses() {
+    assert!(parse("MATCH (x:`Order`) RETURN x").is_ok());
+}
+
+#[test]
+fn plain_label_parses() {
+    assert!(parse("MATCH (x:Person) RETURN x").is_ok());
+}
+
+#[test]
+fn reserved_word_variable_gets_improved_message() {
+    let msg = reject_msg("MATCH (Group) RETURN 1");
+    assert!(msg.contains("`Group`"), "{msg}");
+    assert!(msg.contains("variable"), "{msg}");
+    assert!(msg.contains("delimited identifier"), "{msg}");
+}
+
+#[test]
+fn reserved_keyword_alias_recovers_casing() {
+    let msg = reject_msg("MATCH (x) RETURN x AS Order");
+    assert!(msg.contains("`Order`"), "{msg}");
+    assert!(msg.contains("delimited identifier"), "{msg}");
+}
+
+#[test]
+fn reserved_word_property_key_gets_improved_message() {
+    let msg = reject_msg("MATCH (x { Order: 1 }) RETURN x");
+    assert!(msg.contains("`Order`"), "{msg}");
+    assert!(msg.contains("delimited identifier"), "{msg}");
+}
+
+#[test]
+fn reserved_words_as_function_names_still_parse() {
+    // Reserved words remain valid in call position — this is not a regression.
+    assert!(parse("MATCH (x) RETURN upper(x.name), count(*)").is_ok());
+}
