@@ -740,15 +740,33 @@ fn value_to_val(v: &Value) -> Val {
 fn props_map(store: &crate::graph::Properties, strs: &crate::graph::Dict, idx: usize) -> Value {
     let mut props: Vec<(Arc<str>, Value)> = (0..store.keys.len() as u32)
         .filter(|&kid| store.is_present_id(idx, kid))
-        .map(|kid| {
-            (
-                Arc::from(store.keys.text(kid)),
-                store.value_id(idx, kid, strs),
-            )
-        })
+        // `keys.arc` shares the interned key Arc (refcount bump) instead of
+        // `Arc::from(text)` allocating a fresh copy per key on every element.
+        .map(|kid| (store.keys.arc(kid), store.value_id(idx, kid, strs)))
         .collect();
     props.sort_by(|a, b| a.0.cmp(&b.0));
     Value::Map(props)
+}
+
+/// Process-lifetime interned `Arc<str>`s for the constant node/edge map keys, so
+/// serializing an element clones them (a refcount bump) instead of re-allocating
+/// `"id"`/`"labels"`/… on every element `val_to_value` emits.
+struct ElemKeys {
+    id: Arc<str>,
+    labels: Arc<str>,
+    properties: Arc<str>,
+    from: Arc<str>,
+    to: Arc<str>,
+}
+fn elem_keys() -> &'static ElemKeys {
+    static K: std::sync::OnceLock<ElemKeys> = std::sync::OnceLock::new();
+    K.get_or_init(|| ElemKeys {
+        id: Arc::from("id"),
+        labels: Arc::from("labels"),
+        properties: Arc::from("properties"),
+        from: Arc::from("from"),
+        to: Arc::from("to"),
+    })
 }
 
 /// Project a runtime value to the core output [`Value`]. A returned node/edge
@@ -769,36 +787,35 @@ fn val_to_value(graph: &Graph, v: &Val) -> Value {
                 .map(|&l| graph.labels.arc(l))
                 .collect();
             labels.sort_unstable();
+            let k = elem_keys();
             Value::Map(vec![
-                (Arc::from("id"), Value::Str(graph.vid.arc(*i))),
+                (k.id.clone(), Value::Str(graph.vid.arc(*i))),
                 (
-                    Arc::from("labels"),
+                    k.labels.clone(),
                     Value::List(labels.into_iter().map(Value::Str).collect()),
                 ),
                 (
-                    Arc::from("properties"),
+                    k.properties.clone(),
                     props_map(&graph.props, &graph.strs, *i as usize),
                 ),
             ])
         }
         Val::Edge(i) => {
             let idx = *i as usize;
+            let k = elem_keys();
             Value::Map(vec![
                 (
-                    Arc::from("id"),
+                    k.id.clone(),
                     Value::Str(Arc::from(graph.edge_id(*i).as_ref())),
                 ),
+                (k.from.clone(), Value::Str(graph.vid.arc(graph.e_src[idx]))),
+                (k.to.clone(), Value::Str(graph.vid.arc(graph.e_dst[idx]))),
                 (
-                    Arc::from("from"),
-                    Value::Str(graph.vid.arc(graph.e_src[idx])),
-                ),
-                (Arc::from("to"), Value::Str(graph.vid.arc(graph.e_dst[idx]))),
-                (
-                    Arc::from("labels"),
+                    k.labels.clone(),
                     Value::List(vec![Value::Str(graph.etype.arc(graph.e_type[idx]))]),
                 ),
                 (
-                    Arc::from("properties"),
+                    k.properties.clone(),
                     props_map(&graph.edge_props, &graph.strs, idx),
                 ),
             ])
@@ -2956,6 +2973,30 @@ impl VVec {
         }
     }
 
+    /// The `i`-th value as a core output [`Value`], read straight from the typed
+    /// buffer — a numeric/bool column skips `Val` boxing entirely (`f64` →
+    /// `Value::Num`); a `Gen` column converts its per-row `Val`. Used by the fused
+    /// terminal transpose to avoid materializing an intermediate `Vec<Val>` column.
+    fn value_at(&self, i: usize, graph: &Graph) -> Value {
+        match self {
+            Self::Num { d, valid } => {
+                if valid[i] {
+                    Value::Num(d[i])
+                } else {
+                    Value::Null
+                }
+            }
+            Self::Bool { t, valid } => {
+                if valid[i] {
+                    Value::Bool(t[i])
+                } else {
+                    Value::Null
+                }
+            }
+            Self::Gen(vs) => val_to_value(graph, &vs[i]),
+        }
+    }
+
     /// Final per-row output values (for projection cells).
     fn into_vals(self) -> Vec<Val> {
         match self {
@@ -3057,6 +3098,28 @@ fn gather_num(col: Option<&Column>, ids: &[u32]) -> Option<VVec> {
             }
             Some(VVec::Num { d, valid })
         }
+        _ => None,
+    }
+}
+
+/// Gather a `Column::Str` at `ids` into a `VVec::Gen` of `Val::Str` (shared Arc
+/// clones; absent → `Null`) — the string analogue of [`gather_num`]. Replaces the
+/// per-row `Binding` rebuild + `eval` dispatch of `scalar_col` with a tight
+/// interner-clone loop, so projecting/sorting a string column stays cheap.
+fn gather_str(col: Option<&Column>, ids: &[u32], strs: &crate::graph::Dict) -> Option<VVec> {
+    match col {
+        Some(Column::Str { data, present }) => Some(VVec::Gen(
+            ids.iter()
+                .map(|&vi| {
+                    let i = vi as usize;
+                    if present.get(i) {
+                        Val::Str(strs.arc(data[i]))
+                    } else {
+                        Val::Null
+                    }
+                })
+                .collect(),
+        )),
         _ => None,
     }
 }
@@ -3174,20 +3237,22 @@ fn eval_vec(graph: &Graph, ctx: &Ctx, sc: &ScanCols, e: &CExpr) -> VVec {
             }
         }
         CExpr::Prop { var_slot, key_ref } => match sc.slot(*var_slot) {
-            Some((Elem::Node, ids)) => gather_num(
-                ctx.prop_keys[*key_ref]
+            Some((Elem::Node, ids)) => {
+                let col = ctx.prop_keys[*key_ref]
                     .0
-                    .and_then(|k| graph.props.cols.get(k as usize)),
-                ids,
-            )
-            .unwrap_or_else(|| gen(e)),
-            Some((Elem::Edge, ids)) => gather_num(
-                ctx.prop_keys[*key_ref]
+                    .and_then(|k| graph.props.cols.get(k as usize));
+                gather_num(col, ids)
+                    .or_else(|| gather_str(col, ids, &graph.strs))
+                    .unwrap_or_else(|| gen(e))
+            }
+            Some((Elem::Edge, ids)) => {
+                let col = ctx.prop_keys[*key_ref]
                     .1
-                    .and_then(|k| graph.edge_props.cols.get(k as usize)),
-                ids,
-            )
-            .unwrap_or_else(|| gen(e)),
+                    .and_then(|k| graph.edge_props.cols.get(k as usize));
+                gather_num(col, ids)
+                    .or_else(|| gather_str(col, ids, &graph.strs))
+                    .unwrap_or_else(|| gen(e))
+            }
             None => gen(e),
         },
         CExpr::Neg(x) => {
@@ -4493,6 +4558,22 @@ fn vectorized_cols(
     matches: &[&CClause],
     proj: &CProjection,
 ) -> Option<Vec<Vec<Val>>> {
+    let sc = vectorized_frame(graph, ctx, incoming, matches, proj)?;
+    project_frame_cols(graph, ctx, &sc, proj)
+}
+
+/// Build (and WHERE-filter) the columnar frame for a single fresh `MATCH … RETURN`
+/// — the shared front half of the vectorized terminal paths ([`vectorized_cols`]
+/// and [`vectorized_rowset`]). Returns `None` (→ scalar driver) unless the shape
+/// qualifies: one fresh `MATCH` of a buildable (non-var-length, no self-join)
+/// path, no `RETURN *`.
+fn vectorized_frame(
+    graph: &Graph,
+    ctx: &Ctx,
+    incoming: &[Binding],
+    matches: &[&CClause],
+    proj: &CProjection,
+) -> Option<ScanCols> {
     if incoming.len() != 1 || incoming[0].0.iter().any(|c| c.is_some()) {
         return None; // a prior WITH/INSERT already produced bindings
     }
@@ -4554,8 +4635,39 @@ fn vectorized_cols(
             .collect();
         compact(&mut sc, &keep);
     }
+    Some(sc)
+}
 
-    project_frame_cols(graph, ctx, &sc, proj)
+/// Terminal `MATCH … RETURN` straight to a [`RowSet`], skipping the intermediate
+/// `Vec<Val>` columns: each item is evaluated as a `VVec`, then rows are
+/// transposed reading `Value`s directly out of the typed buffers — a numeric
+/// column goes `f64 → Value::Num` with no `Val` boxing pass, halving the
+/// materialization for a numeric projection. Only the **plain** (non-aggregating,
+/// non-DISTINCT, non-ORDER-BY) shape qualifies; the others reorder/dedup and need
+/// the materialized-column path. `None` ⇒ caller falls back to `vectorized_cols`.
+fn vectorized_rowset(
+    graph: &Graph,
+    ctx: &Ctx,
+    incoming: &[Binding],
+    matches: &[&CClause],
+    proj: &CProjection,
+) -> Option<RowSet> {
+    if proj.aggregating || proj.distinct || !proj.order_by.is_empty() {
+        return None;
+    }
+    let sc = vectorized_frame(graph, ctx, incoming, matches, proj)?;
+    let vvs: Vec<VVec> = proj
+        .items
+        .iter()
+        .map(|it| eval_vec(graph, ctx, &sc, &it.expr))
+        .collect();
+    let start = proj.skip.unwrap_or(0).min(sc.n);
+    let end = proj.limit.map(|l| (start + l).min(sc.n)).unwrap_or(sc.n);
+    let mut rs = RowSet::new(proj.out_names.clone());
+    for i in start..end {
+        rs.push_row(vvs.iter().map(|vv| vv.value_at(i, graph)));
+    }
+    Some(rs)
 }
 
 /// Project an already-built (and WHERE-filtered) frame `sc` to column-major output
@@ -5330,6 +5442,12 @@ fn project_to_rows(
     proj: &CProjection,
 ) -> RowSet {
     if USE_VEC {
+        // Plain projection: transpose straight from the typed `VVec`s to the
+        // RowSet (no intermediate `Vec<Val>` columns / second conversion pass).
+        if let Some(rs) = vectorized_rowset(graph, ctx, incoming, matches, proj) {
+            return rs;
+        }
+        // Aggregating / ORDER BY / DISTINCT: materialized columns, then transpose.
         if let Some(cols) = vectorized_cols(graph, ctx, incoming, matches, proj) {
             // Terminal output: flatten element handles to their ids.
             let nrows = cols.first().map_or(0, |c| c.len());
