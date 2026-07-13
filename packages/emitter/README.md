@@ -1,8 +1,8 @@
 # @lenke/emitter
 
-> A typed, synchronous event emitter with cancelable events and error-isolated dispatch.
+> A typed, synchronous event emitter with observation-only events and error-isolated dispatch.
 
-Subscribe to named event types and dispatch typed events to their listeners. Events carry a structured payload and support `preventDefault`, so callers can inspect the result after `emit` returns and let listeners veto an action. Reach for it when you need a small, dependency-free emitter whose dispatch never throws and whose events can be canceled.
+Subscribe to named event types and dispatch typed events to their listeners. Events carry a structured payload and are **observation-only** — a listener reacts (re-render, metrics, an audit journal) but cannot alter or veto the action that produced the event; enforcing rules is a validation/constraint concern, not an event-bus one. Reach for it when you need a small, dependency-free emitter whose dispatch never throws.
 
 ## Install
 
@@ -21,23 +21,17 @@ type Events = { 'node:added': NodeAdded };
 
 const emitter = new Emitter<'node:added', Events>();
 
-// Subscribe. `on` returns an unsubscribe function.
+// Subscribe. `on` returns an unsubscribe function. Read the payload off
+// `event.value`.
 const off = emitter.on('node:added', (event) => {
   console.log('added', event.value.id);
-  // Veto the action; the caller can read this after emit returns.
-  if (event.value.id === 'forbidden') {
-    event.preventDefault();
-  }
 });
 
 // A freshly-constructed emitter starts disabled; turn it on to dispatch.
 emitter.enable();
 
-// Build an event and emit it. `emit` returns the same event.
-const result = emitter.emit(emitter.eventFrom('node:added', { id: 'n1' }));
-if (result.defaultPrevented) {
-  // a listener vetoed it
-}
+// Build an event and emit it. `emit` returns the same event (for chaining).
+emitter.emit(emitter.eventFrom('node:added', { id: 'n1' }));
 
 off(); // stop receiving events
 ```
@@ -60,9 +54,7 @@ Methods:
 ### `new EmitterEvent<TType, TValue>(type, value)`
 
 - `type` — the event type string.
-- `value` — the structured payload.
-- `defaultPrevented` — `false` until a listener calls `preventDefault()`.
-- `preventDefault()` — mark the event as vetoed.
+- `value` — the structured payload (read fields off `event.value`). Events are observation-only — there is no `preventDefault`/veto.
 
 ## License
 
