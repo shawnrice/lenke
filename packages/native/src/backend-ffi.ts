@@ -33,6 +33,18 @@ const SYMBOLS = {
     args: [FFIType.ptr, FFIType.ptr, U, FFIType.ptr, U, FFIType.ptr, U],
     returns: FFIType.i32,
   },
+  lnk_create_edge_unique_constraint: {
+    args: [FFIType.ptr, FFIType.ptr, U, FFIType.ptr, U],
+    returns: FFIType.i32,
+  },
+  lnk_create_edge_required_constraint: {
+    args: [FFIType.ptr, FFIType.ptr, U, FFIType.ptr, U],
+    returns: FFIType.i32,
+  },
+  lnk_create_edge_type_constraint: {
+    args: [FFIType.ptr, FFIType.ptr, U, FFIType.ptr, U, FFIType.ptr, U],
+    returns: FFIType.i32,
+  },
   lnk_drop_vertex_index: { args: [FFIType.ptr, FFIType.ptr, U], returns: FFIType.i32 },
   lnk_drop_edge_index: { args: [FFIType.ptr, FFIType.ptr, U], returns: FFIType.i32 },
   lnk_begin_tx: { args: [FFIType.ptr], returns: FFIType.i32 },
@@ -284,6 +296,81 @@ export const createFfiBackend = (libPath: string): Backend => {
 
       if (r !== 0) {
         throw new LenkeError('lenke: createTypeConstraint failed', { code: ErrorCode.Ffi });
+      }
+    },
+    createEdgeUniqueConstraint: (handle, edgeType, key) => {
+      const l = encoder.encode(edgeType);
+      const k = encoder.encode(key);
+      const r = symbols.lnk_create_edge_unique_constraint(
+        asPtr(handle),
+        ptr(l),
+        l.byteLength,
+        ptr(k),
+        k.byteLength,
+      );
+
+      if (r === -2) {
+        throw new LenkeError(
+          `lenke: createEdgeUniqueConstraint(${edgeType}, ${key}): existing data already violates the unique constraint`,
+          { code: ErrorCode.ConstraintViolation },
+        );
+      }
+
+      if (r !== 0) {
+        throw new LenkeError('lenke: createEdgeUniqueConstraint failed', { code: ErrorCode.Ffi });
+      }
+    },
+    createEdgeRequiredConstraint: (handle, edgeType, key) => {
+      const l = encoder.encode(edgeType);
+      const k = encoder.encode(key);
+      const r = symbols.lnk_create_edge_required_constraint(
+        asPtr(handle),
+        ptr(l),
+        l.byteLength,
+        ptr(k),
+        k.byteLength,
+      );
+
+      if (r === -2) {
+        throw new LenkeError(
+          `lenke: createEdgeRequiredConstraint(${edgeType}, ${key}): existing data already violates the required constraint`,
+          { code: ErrorCode.ConstraintViolation },
+        );
+      }
+
+      if (r !== 0) {
+        throw new LenkeError('lenke: createEdgeRequiredConstraint failed', { code: ErrorCode.Ffi });
+      }
+    },
+    createEdgeTypeConstraint: (handle, edgeType, key, type) => {
+      const l = encoder.encode(edgeType);
+      const k = encoder.encode(key);
+      const t = encoder.encode(type);
+      const r = symbols.lnk_create_edge_type_constraint(
+        asPtr(handle),
+        ptr(l),
+        l.byteLength,
+        ptr(k),
+        k.byteLength,
+        ptr(t),
+        t.byteLength,
+      );
+
+      if (r === -2) {
+        throw new LenkeError(
+          `lenke: createEdgeTypeConstraint(${edgeType}, ${key}, ${type}): existing data already violates the type constraint`,
+          { code: ErrorCode.ConstraintViolation },
+        );
+      }
+
+      if (r === -3) {
+        throw new LenkeError(`lenke: createEdgeTypeConstraint: unknown scalar type '${type}'`, {
+          code: ErrorCode.InvalidValue,
+        });
+      }
+
+      if (r !== 0) {
+        throw new LenkeError('lenke: createEdgeTypeConstraint failed', { code: ErrorCode.Ffi });
       }
     },
     dropVertexIndex: (handle, key) => {

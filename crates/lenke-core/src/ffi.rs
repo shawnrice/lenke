@@ -345,6 +345,102 @@ pub unsafe extern "C" fn lnk_create_type_constraint(
     }
 }
 
+/// Declare a UNIQUE constraint on `(edge_type, key)`: at most one live edge of
+/// `edge_type` may hold a given non-null value for `key`. Creates the backing
+/// edge index. Edge analogue of [`lnk_create_unique_constraint`]. Returns 0 on
+/// success, -1 on a null / bad-UTF-8 error, and **-2** if the current data
+/// already violates it.
+///
+/// # Safety
+/// `g` is a valid, uniquely-borrowed `*mut Graph`; both ptr/len pairs are valid
+/// UTF-8 slices.
+#[no_mangle]
+pub unsafe extern "C" fn lnk_create_edge_unique_constraint(
+    g: *mut Graph,
+    etype_ptr: *const u8,
+    etype_len: usize,
+    key_ptr: *const u8,
+    key_len: usize,
+) -> i32 {
+    if g.is_null() || etype_ptr.is_null() || key_ptr.is_null() {
+        return -1;
+    }
+    let (Ok(etype), Ok(key)) = (
+        std::str::from_utf8(std::slice::from_raw_parts(etype_ptr, etype_len)),
+        std::str::from_utf8(std::slice::from_raw_parts(key_ptr, key_len)),
+    ) else {
+        return -1;
+    };
+    match (*g).create_edge_unique_constraint(etype, key) {
+        Ok(()) => 0,
+        Err(_) => -2,
+    }
+}
+
+/// Declare a REQUIRED constraint on `(edge_type, key)`: every live edge of
+/// `edge_type` must hold a present, non-null value for `key`. Edge analogue of
+/// [`lnk_create_required_constraint`]. Returns 0 on success, -1 on error, **-2**
+/// if the current data already violates it.
+///
+/// # Safety
+/// As [`lnk_create_edge_unique_constraint`].
+#[no_mangle]
+pub unsafe extern "C" fn lnk_create_edge_required_constraint(
+    g: *mut Graph,
+    etype_ptr: *const u8,
+    etype_len: usize,
+    key_ptr: *const u8,
+    key_len: usize,
+) -> i32 {
+    if g.is_null() || etype_ptr.is_null() || key_ptr.is_null() {
+        return -1;
+    }
+    let (Ok(etype), Ok(key)) = (
+        std::str::from_utf8(std::slice::from_raw_parts(etype_ptr, etype_len)),
+        std::str::from_utf8(std::slice::from_raw_parts(key_ptr, key_len)),
+    ) else {
+        return -1;
+    };
+    match (*g).create_edge_required_constraint(etype, key) {
+        Ok(()) => 0,
+        Err(_) => -2,
+    }
+}
+
+/// Declare a TYPE constraint on `(edge_type, key)` requiring the scalar type
+/// named by `type_ptr`. Edge analogue of [`lnk_create_type_constraint`]. Returns
+/// 0 on success, -1 on error, **-2** if the current data already violates it, and
+/// **-3** for an unknown type name.
+///
+/// # Safety
+/// As [`lnk_create_edge_unique_constraint`], plus `type_ptr`/`type_len` a valid slice.
+#[no_mangle]
+pub unsafe extern "C" fn lnk_create_edge_type_constraint(
+    g: *mut Graph,
+    etype_ptr: *const u8,
+    etype_len: usize,
+    key_ptr: *const u8,
+    key_len: usize,
+    type_ptr: *const u8,
+    type_len: usize,
+) -> i32 {
+    if g.is_null() || etype_ptr.is_null() || key_ptr.is_null() || type_ptr.is_null() {
+        return -1;
+    }
+    let (Ok(etype), Ok(key), Ok(ty)) = (
+        std::str::from_utf8(std::slice::from_raw_parts(etype_ptr, etype_len)),
+        std::str::from_utf8(std::slice::from_raw_parts(key_ptr, key_len)),
+        std::str::from_utf8(std::slice::from_raw_parts(type_ptr, type_len)),
+    ) else {
+        return -1;
+    };
+    match (*g).create_edge_type_constraint(etype, key, ty) {
+        Ok(()) => 0,
+        Err(e) if e.code == crate::error_codes::ErrorCode::InvalidValue => -3,
+        Err(_) => -2,
+    }
+}
+
 /// Open a transaction frame (R-TX): an atomic mutation boundary with rollback +
 /// deferred constraint checks. Writes still apply eagerly (read-your-writes), but
 /// record an inverse op; the outermost commit runs the built-in constraint checks

@@ -184,3 +184,161 @@ describe('R-CONSTRAINTS: unique (direct-API enforcement, V3)', () => {
     expect(b.getProperty('email')).toBe('z@y.io');
   });
 });
+
+// Edge-side constraints are a direct mirror of the vertex ones, keyed by edge
+// TYPE, enforced at the addEdge gate + Edge property mutators + addLabelToEdge,
+// and deferred to commit inside a transaction (R-TX). Byte-identical to Rust.
+describe('R-CONSTRAINTS: edge unique/required/type', () => {
+  // Two anchor vertices for edges; every edge below runs between them (parallel
+  // edges are fine — an LPG allows many edges between the same pair).
+  const anchors = (g: Graph): [ReturnType<Graph['addVertex']>, ReturnType<Graph['addVertex']>] => [
+    g.addVertex({ labels: ['N'], properties: {} }),
+    g.addVertex({ labels: ['N'], properties: {} }),
+  ];
+  const edge = (
+    g: Graph,
+    a: ReturnType<Graph['addVertex']>,
+    b: ReturnType<Graph['addVertex']>,
+    type: string,
+    properties: Record<string, unknown>,
+  ) => g.addEdge({ from: a, to: b, labels: [type], properties });
+
+  test('declaring over already-violating edges throws (unique/required/type)', () => {
+    const g = new Graph();
+    const [a, b] = anchors(g);
+    edge(g, a, b, 'FOLLOWS', { tag: 'x' });
+    edge(g, a, b, 'FOLLOWS', { tag: 'x' });
+    expect(isCV(() => g.createEdgeUniqueConstraint('FOLLOWS', 'tag'))).toBe(true);
+
+    edge(g, a, b, 'REL', {}); // no `since`
+    expect(isCV(() => g.createEdgeRequiredConstraint('REL', 'since'))).toBe(true);
+
+    edge(g, a, b, 'TYP', { since: 'old' });
+    expect(isCV(() => g.createEdgeTypeConstraint('TYP', 'since', 'number'))).toBe(true);
+  });
+
+  test('the addEdge gate enforces unique (null/other-type/other-value exempt)', () => {
+    const g = new Graph();
+    const [a, b] = anchors(g);
+    g.createEdgeUniqueConstraint('FOLLOWS', 'tag');
+    edge(g, a, b, 'FOLLOWS', { tag: 'x' });
+
+    expect(isCV(() => edge(g, a, b, 'FOLLOWS', { tag: 'x' }))).toBe(true);
+    // A different value, a different type, and null are all fine.
+    expect(edge(g, a, b, 'FOLLOWS', { tag: 'y' })).toBeTruthy();
+    expect(edge(g, a, b, 'LIKES', { tag: 'x' })).toBeTruthy();
+    expect(edge(g, a, b, 'FOLLOWS', { tag: null })).toBeTruthy();
+    expect(edge(g, a, b, 'FOLLOWS', { tag: null })).toBeTruthy();
+    // The rejected insert left no trace: exactly one FOLLOWS tag='x'.
+    const x = [...g.getEdgesByLabel('FOLLOWS')].filter((e) => e.getProperty('tag') === 'x');
+    expect(x).toHaveLength(1);
+  });
+
+  test('the addEdge gate enforces required + type; setProperty too', () => {
+    const g = new Graph();
+    const [a, b] = anchors(g);
+    g.createEdgeRequiredConstraint('REL', 'since');
+    g.createEdgeTypeConstraint('REL', 'since', 'number');
+
+    expect(isCV(() => edge(g, a, b, 'REL', {}))).toBe(true); // missing required
+    expect(isCV(() => edge(g, a, b, 'REL', { since: null }))).toBe(true); // null required
+    expect(isCV(() => edge(g, a, b, 'REL', { since: 'old' }))).toBe(true); // wrong type
+    const e = edge(g, a, b, 'REL', { since: 2020 }); // ok
+
+    // A required key cannot be nulled or removed; a wrong type is rejected.
+    expect(isCV(() => e.setProperty('since', null))).toBe(true);
+    expect(isCV(() => e.removeProperty('since'))).toBe(true);
+    expect(isCV(() => e.setProperty('since', 'nope'))).toBe(true);
+    e.setProperty('since', 2021); // right type, present
+    expect(e.getProperty('since')).toBe(2021);
+  });
+
+  test('setProperty enforces edge unique; self-set is not a collision', () => {
+    const g = new Graph();
+    const [a, b] = anchors(g);
+    g.createEdgeUniqueConstraint('FOLLOWS', 'tag');
+    edge(g, a, b, 'FOLLOWS', { tag: 'x' });
+    const e2 = edge(g, a, b, 'FOLLOWS', { tag: 'y' });
+
+    expect(isCV(() => e2.setProperty('tag', 'x'))).toBe(true);
+    e2.setProperty('tag', 'y'); // re-setting its own value is fine
+    expect(e2.getProperty('tag')).toBe('y');
+  });
+
+  test('adding an edge type brings its required keys into force', () => {
+    const g = new Graph();
+    const [a, b] = anchors(g);
+    g.createEdgeRequiredConstraint('AUDITED', 'at');
+    const e = edge(g, a, b, 'PLAIN', {}); // lacks `at`
+    expect(isCV(() => g.addLabelToEdge('AUDITED', e))).toBe(true);
+    e.setProperty('at', 1);
+    expect(g.addLabelToEdge('AUDITED', e)).toBeTruthy(); // now satisfied
+  });
+
+  test('the edge registries are queryable', () => {
+    const g = new Graph();
+    g.createEdgeUniqueConstraint('FOLLOWS', 'tag');
+    g.createEdgeRequiredConstraint('FOLLOWS', 'since');
+    g.createEdgeTypeConstraint('FOLLOWS', 'since', 'number');
+    expect(g.hasEdgeUniqueConstraint('FOLLOWS', 'tag')).toBe(true);
+    expect(g.edgeUniqueKeys('FOLLOWS')).toEqual(['tag']);
+    expect(g.edgeUniqueConstraintList()).toEqual([['FOLLOWS', 'tag']]);
+    expect(g.hasEdgeRequiredConstraint('FOLLOWS', 'since')).toBe(true);
+    expect(g.edgeRequiredKeys('FOLLOWS')).toEqual(['since']);
+    expect(g.edgeTypeConstraint('FOLLOWS', 'since')).toBe('number');
+    expect(g.edgeTypeConstraintList()).toEqual([['FOLLOWS', 'since', 'number']]);
+    g.dropEdgeUniqueConstraint('FOLLOWS', 'tag');
+    expect(g.hasEdgeUniqueConstraint('FOLLOWS', 'tag')).toBe(false);
+  });
+
+  test('DEFERRED: an intermediate edge violation resolved before commit commits; unresolved rolls back', () => {
+    const g = new Graph();
+    const [a, b] = anchors(g);
+    g.createEdgeRequiredConstraint('REL', 'since');
+    g.createEdgeUniqueConstraint('REL', 'tag');
+
+    // Resolved-before-commit: an edge inserted without its required key, and two
+    // edges that momentarily share a unique value, both settle before commit.
+    g.transaction((tx) => {
+      const e1 = tx.addEdge({
+        from: a,
+        to: b,
+        labels: ['REL'],
+        properties: { since: 1, tag: 'x' },
+      });
+      // A sibling that momentarily collides on `tag`, then is disambiguated.
+      const e2 = tx.addEdge({
+        from: a,
+        to: b,
+        labels: ['REL'],
+        properties: { since: 2, tag: 'x' },
+      });
+      e2.setProperty('tag', 'y');
+      // An edge added missing its required key, then given it before commit.
+      const e3 = tx.addEdge({ from: a, to: b, labels: ['REL'], properties: { tag: 'z' } });
+      e3.setProperty('since', 3);
+      expect(e1.getProperty('tag')).toBe('x');
+    });
+    expect(g.edgeCount).toBe(3); // all three committed
+
+    // Unresolved required violation → the whole transaction rolls back.
+    expect(
+      isCV(() =>
+        g.transaction((tx) => {
+          tx.addEdge({ from: a, to: b, labels: ['REL'], properties: { tag: 'w' } }); // never given `since`
+        }),
+      ),
+    ).toBe(true);
+    expect(g.edgeCount).toBe(3); // rolled back — no new edge
+
+    // Unresolved unique collision → rolls back too.
+    expect(
+      isCV(() =>
+        g.transaction((tx) => {
+          tx.addEdge({ from: a, to: b, labels: ['REL'], properties: { since: 9, tag: 'x' } }); // dup of e1.tag
+        }),
+      ),
+    ).toBe(true);
+    expect(g.edgeCount).toBe(3);
+  });
+});

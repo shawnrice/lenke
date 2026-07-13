@@ -291,6 +291,15 @@ export type RustGraph = {
   createUniqueConstraint: (label: string, key: string) => void;
   createRequiredConstraint: (label: string, key: string) => void;
   createTypeConstraint: (label: string, key: string, type: ScalarTypeName) => void;
+  /**
+   * Declare a UNIQUE / REQUIRED / TYPE constraint on `(edgeType, key)` — the edge
+   * analogue of the vertex constraints above, keyed by edge type and enforced
+   * against edge properties. Throws `ConstraintViolation` (or `InvalidValue` for
+   * an unknown type name) exactly as the vertex forms do.
+   */
+  createEdgeUniqueConstraint: (edgeType: string, key: string) => void;
+  createEdgeRequiredConstraint: (edgeType: string, key: string) => void;
+  createEdgeTypeConstraint: (edgeType: string, key: string, type: ScalarTypeName) => void;
   /** Drop a vertex / edge property index (no-op if absent). */
   dropVertexIndex: (key: string) => void;
   dropEdgeIndex: (key: string) => void;
@@ -584,6 +593,12 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
     createRequiredConstraint: (label, key) => backend.createRequiredConstraint(live(), label, key),
     createTypeConstraint: (label, key, type) =>
       backend.createTypeConstraint(live(), label, key, type),
+    createEdgeUniqueConstraint: (edgeType, key) =>
+      backend.createEdgeUniqueConstraint(live(), edgeType, key),
+    createEdgeRequiredConstraint: (edgeType, key) =>
+      backend.createEdgeRequiredConstraint(live(), edgeType, key),
+    createEdgeTypeConstraint: (edgeType, key, type) =>
+      backend.createEdgeTypeConstraint(live(), edgeType, key, type),
     dropVertexIndex: (key) => backend.dropVertexIndex(live(), key),
     dropEdgeIndex: (key) => backend.dropEdgeIndex(live(), key),
     vertexIndexes: () => backend.vertexIndexes(live()),

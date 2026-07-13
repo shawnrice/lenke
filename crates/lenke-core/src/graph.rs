@@ -408,6 +408,17 @@ pub struct Graph {
     /// TYPE constraints: `label` → (`key` → the scalar type its present, non-null
     /// values must be). Null/absent are exempt (R-CONSTRAINTS).
     v_type: HashMap<String, HashMap<String, PropType>>,
+    /// UNIQUE constraints over **edge** properties: edge-type name → the sorted
+    /// property keys that must be unique among live edges of that type. The edge
+    /// analogue of `v_unique`, backed by the edge property index (`eidx`).
+    e_unique: HashMap<String, Vec<String>>,
+    /// REQUIRED constraints over edges: edge-type → the keys that must be present
+    /// and non-null on every live edge of that type. The edge analogue of `v_required`.
+    e_required: HashMap<String, Vec<String>>,
+    /// TYPE constraints over edges: edge-type → (`key` → scalar type). The edge
+    /// analogue of `v_type` (named `e_type_constraints` because `e_type: Vec<u32>`
+    /// already holds the per-edge type ids).
+    e_type_constraints: HashMap<String, HashMap<String, PropType>>,
     /// Transaction state (R-TX). `tx_depth > 0` means an open transaction: writes
     /// still apply eagerly to the live store (read-your-writes with no overlay),
     /// but each mutation records an inverse op in `tx_undo`, the built-in
@@ -421,6 +432,9 @@ pub struct Graph {
     tx_depth: usize,
     tx_undo: Vec<Undo>,
     tx_touched: Vec<u32>,
+    /// Edge analogue of `tx_touched`: edge indices whose built-in edge constraints
+    /// must be re-checked at commit (R-TX deferral for edge writes).
+    tx_touched_edges: Vec<u32>,
     applying_undo: bool,
 }
 
@@ -1027,6 +1041,332 @@ impl Graph {
         false
     }
 
+    // --- edge constraints (R-CONSTRAINTS, edge types) -----------------------
+    // Direct mirror of the vertex unique/required/type constraints, keyed by edge
+    // TYPE instead of node label, enforced against the edge property store
+    // (`edge_props`) and the edge property index (`eidx`). Byte-identical to the
+    // TS edge constraints. Enforcement is deferred to commit (see
+    // `run_deferred_checks`), exactly like the vertex ones.
+
+    /// Declare a UNIQUE constraint on `(edge_type, key)`. Creates the backing edge
+    /// index if absent. Fails with `ConstraintViolation` if the current data
+    /// already violates it. Idempotent.
+    pub fn create_edge_unique_constraint(&mut self, etype: &str, key: &str) -> CodeResult<()> {
+        if !self.edge_indexed(key) {
+            self.create_edge_index(key);
+        }
+        if self.first_etype_prop_duplicate(etype, key).is_some() {
+            return Err(CodeError::new(
+                ErrorCode::ConstraintViolation,
+                "existing data already violates the edge unique constraint being declared",
+            ));
+        }
+        let keys = self.e_unique.entry(etype.to_string()).or_default();
+        if !keys.iter().any(|k| k == key) {
+            keys.push(key.to_string());
+            keys.sort();
+        }
+        Ok(())
+    }
+
+    /// Drop an edge unique constraint. The backing index is left in place. Idempotent.
+    pub fn drop_edge_unique_constraint(&mut self, etype: &str, key: &str) {
+        if let Some(keys) = self.e_unique.get_mut(etype) {
+            keys.retain(|k| k != key);
+            if keys.is_empty() {
+                self.e_unique.remove(etype);
+            }
+        }
+    }
+
+    /// Property keys under a unique constraint for `etype` (sorted; empty if none).
+    pub fn edge_unique_keys(&self, etype: &str) -> &[String] {
+        self.e_unique.get(etype).map_or(&[], Vec::as_slice)
+    }
+
+    /// True iff `(edge_type, key)` carries a unique constraint.
+    pub fn has_edge_unique_constraint(&self, etype: &str, key: &str) -> bool {
+        self.e_unique
+            .get(etype)
+            .is_some_and(|ks| ks.iter().any(|k| k == key))
+    }
+
+    /// Every declared edge unique constraint as sorted `(edge_type, key)` pairs.
+    pub fn edge_unique_constraints(&self) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = self
+            .e_unique
+            .iter()
+            .flat_map(|(t, ks)| ks.iter().map(move |k| (t.clone(), k.clone())))
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// If adding an edge of `etypes` with `props` would break a unique constraint,
+    /// the offending `(edge_type, key, existing edge)`. `exclude` skips one edge.
+    pub fn edge_unique_conflict(
+        &self,
+        etypes: &[String],
+        props: &[(String, Value)],
+        exclude: Option<u32>,
+    ) -> Option<(String, String, u32)> {
+        if self.e_unique.is_empty() {
+            return None;
+        }
+        for etype in etypes {
+            for key in self.edge_unique_keys(etype) {
+                let Some((_, value)) = props.iter().find(|(k, _)| k == key) else {
+                    continue;
+                };
+                let hit = self
+                    .edges_with_etype_value(etype, key, value)
+                    .into_iter()
+                    .find(|&e| Some(e) != exclude);
+                if let Some(existing) = hit {
+                    return Some((etype.clone(), key.clone(), existing));
+                }
+            }
+        }
+        None
+    }
+
+    /// Declare a REQUIRED constraint on `(edge_type, key)`. Fails with
+    /// `ConstraintViolation` if any live edge of `etype` lacks a present, non-null
+    /// `key`. Idempotent.
+    pub fn create_edge_required_constraint(&mut self, etype: &str, key: &str) -> CodeResult<()> {
+        if let Some(edges) = self.edges_with_etype_name(etype) {
+            for &ei in edges {
+                if matches!(
+                    self.edge_props.value(ei as usize, key, &self.strs),
+                    Value::Null
+                ) {
+                    return Err(CodeError::new(
+                        ErrorCode::ConstraintViolation,
+                        "existing data already violates the edge required constraint being declared",
+                    ));
+                }
+            }
+        }
+        let keys = self.e_required.entry(etype.to_string()).or_default();
+        if !keys.iter().any(|k| k == key) {
+            keys.push(key.to_string());
+            keys.sort();
+        }
+        Ok(())
+    }
+
+    /// Drop an edge required constraint. Idempotent.
+    pub fn drop_edge_required_constraint(&mut self, etype: &str, key: &str) {
+        if let Some(keys) = self.e_required.get_mut(etype) {
+            keys.retain(|k| k != key);
+            if keys.is_empty() {
+                self.e_required.remove(etype);
+            }
+        }
+    }
+
+    /// Property keys required for edge type `etype` (sorted; empty if none).
+    pub fn edge_required_keys(&self, etype: &str) -> &[String] {
+        self.e_required.get(etype).map_or(&[], Vec::as_slice)
+    }
+
+    /// True iff `(edge_type, key)` carries a required constraint.
+    pub fn has_edge_required_constraint(&self, etype: &str, key: &str) -> bool {
+        self.e_required
+            .get(etype)
+            .is_some_and(|ks| ks.iter().any(|k| k == key))
+    }
+
+    /// Every declared edge required constraint as sorted `(edge_type, key)` pairs.
+    pub fn edge_required_constraints(&self) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = self
+            .e_required
+            .iter()
+            .flat_map(|(t, ks)| ks.iter().map(move |k| (t.clone(), k.clone())))
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// The first `(edge_type, key)` a new edge with these `etypes`/`props` would
+    /// violate by omitting a required key (absent or null value), or `None`.
+    pub fn edge_missing_required(
+        &self,
+        etypes: &[String],
+        props: &[(String, Value)],
+    ) -> Option<(String, String)> {
+        if self.e_required.is_empty() {
+            return None;
+        }
+        for etype in etypes {
+            for key in self.edge_required_keys(etype) {
+                let present = props
+                    .iter()
+                    .any(|(k, v)| k == key && !matches!(v, Value::Null));
+                if !present {
+                    return Some((etype.clone(), key.clone()));
+                }
+            }
+        }
+        None
+    }
+
+    /// Declare a TYPE constraint on `(edge_type, key)` requiring `type_name`. Fails
+    /// with `InvalidValue` for an unknown type name, or `ConstraintViolation` if
+    /// any existing edge holds a present, non-null `key` of a different type.
+    pub fn create_edge_type_constraint(
+        &mut self,
+        etype: &str,
+        key: &str,
+        type_name: &str,
+    ) -> CodeResult<()> {
+        let Some(ty) = PropType::from_name(type_name) else {
+            return Err(CodeError::new(
+                ErrorCode::InvalidValue,
+                "unknown scalar type name for an edge type constraint",
+            ));
+        };
+        if let Some(edges) = self.edges_with_etype_name(etype) {
+            for &ei in edges {
+                if let Some(got) = value_type(&self.edge_props.value(ei as usize, key, &self.strs))
+                {
+                    if got != ty {
+                        return Err(CodeError::new(
+                            ErrorCode::ConstraintViolation,
+                            "existing data already violates the edge type constraint being declared",
+                        ));
+                    }
+                }
+            }
+        }
+        self.e_type_constraints
+            .entry(etype.to_string())
+            .or_default()
+            .insert(key.to_string(), ty);
+        Ok(())
+    }
+
+    /// Drop an edge type constraint. Idempotent.
+    pub fn drop_edge_type_constraint(&mut self, etype: &str, key: &str) {
+        if let Some(keys) = self.e_type_constraints.get_mut(etype) {
+            keys.remove(key);
+            if keys.is_empty() {
+                self.e_type_constraints.remove(etype);
+            }
+        }
+    }
+
+    /// The declared type for edge `(edge_type, key)`, or `None`.
+    pub fn edge_type_constraint(&self, etype: &str, key: &str) -> Option<PropType> {
+        self.e_type_constraints.get(etype)?.get(key).copied()
+    }
+
+    /// Every declared edge type constraint as sorted `(edge_type, key)` pairs.
+    pub fn edge_type_constraints(&self) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = self
+            .e_type_constraints
+            .iter()
+            .flat_map(|(t, ks)| ks.keys().map(move |k| (t.clone(), k.clone())))
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// The first `(edge_type, key)` a new edge with these `etypes`/`props` would
+    /// violate by holding a wrong-typed value, or `None`.
+    pub fn edge_type_violation(
+        &self,
+        etypes: &[String],
+        props: &[(String, Value)],
+    ) -> Option<(String, String)> {
+        if self.e_type_constraints.is_empty() {
+            return None;
+        }
+        for etype in etypes {
+            if let Some(cs) = self.e_type_constraints.get(etype) {
+                for (key, ty) in cs {
+                    if let Some((_, v)) = props.iter().find(|(k, _)| k == key) {
+                        if let Some(got) = value_type(v) {
+                            if got != *ty {
+                                return Some((etype.clone(), key.clone()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Live edges of type `etype` whose property `key == value`. Seeks the backing
+    /// edge index (a constraint always creates one), falling back to a scan.
+    /// Non-indexable values (null/list) yield an empty set — exempt from uniqueness.
+    fn edges_with_etype_value(&self, etype: &str, key: &str, value: &Value) -> Vec<u32> {
+        let Some(idxk) = IdxKey::from_value(value) else {
+            return Vec::new();
+        };
+        let Some(tid) = self.etype.get(etype) else {
+            return Vec::new();
+        };
+        match self.edges_by_prop(key, &idxk) {
+            Some(ids) => ids
+                .iter()
+                .copied()
+                .filter(|&e| self.is_edge_live(e) && self.e_type[e as usize] == tid)
+                .collect(),
+            None => (0..self.e_src.len() as u32)
+                .filter(|&e| {
+                    self.is_edge_live(e)
+                        && self.e_type[e as usize] == tid
+                        && self.edge_props.value(e as usize, key, &self.strs) == *value
+                })
+                .collect(),
+        }
+    }
+
+    /// The first pair of live `etype`-edges that share a value for `key` — for
+    /// validating an edge unique constraint against existing data at declare time.
+    fn first_etype_prop_duplicate(&self, etype: &str, key: &str) -> Option<(u32, u32)> {
+        let tid = self.etype.get(etype)?;
+        let bt = self.eidx.get(key)?;
+        for ids in bt.values() {
+            let mut with_type = ids
+                .iter()
+                .copied()
+                .filter(|&e| self.is_edge_live(e) && self.e_type[e as usize] == tid);
+            if let (Some(a), Some(b)) = (with_type.next(), with_type.next()) {
+                return Some((a, b));
+            }
+        }
+        None
+    }
+
+    /// The single type name an edge carries (empty vec for a type-less edge) — the
+    /// edge analogue of a vertex's label list (an edge has exactly one type).
+    fn edge_type_names(&self, ei: u32) -> Vec<String> {
+        let name = self.etype.text(self.e_type[ei as usize]).to_string();
+        if name.is_empty() {
+            Vec::new()
+        } else {
+            vec![name]
+        }
+    }
+
+    /// A live edge's present properties as `(key, value)` pairs — the shape the edge
+    /// constraint predicates consume. Edge analogue of `vertex_props`.
+    fn edge_props_of(&self, ei: u32) -> Vec<(String, Value)> {
+        let i = ei as usize;
+        let mut out = Vec::new();
+        for kid in 0..self.edge_props.cols.len() as u32 {
+            if self.edge_props.is_present_id(i, kid) {
+                let key = self.edge_props.keys.text(kid).to_string();
+                let val = self.edge_props.value_id(i, kid, &self.strs);
+                out.push((key, val));
+            }
+        }
+        out
+    }
+
     /// Live vertices carrying `label` whose property `key == value`. Seeks the
     /// backing index (a constraint always creates one), falling back to a scan if
     /// somehow unindexed. Non-indexable values (null/list) yield an empty set —
@@ -1256,6 +1596,7 @@ impl Graph {
         }
         self.tx_undo.clear();
         self.tx_touched.clear();
+        self.tx_touched_edges.clear();
         Ok(())
     }
 
@@ -1289,6 +1630,15 @@ impl Graph {
         }
     }
 
+    /// Note an edge whose built-in edge constraints must be re-checked at commit —
+    /// the edge analogue of [`Graph::tx_note_touched`] (R-TX deferral for edges).
+    #[inline]
+    pub fn tx_note_touched_edge(&mut self, ei: u32) {
+        if self.tx_active() {
+            self.tx_touched_edges.push(ei);
+        }
+    }
+
     /// Replay the undo log newest-first and reset all transaction state to closed.
     fn apply_undo_and_reset(&mut self) {
         self.applying_undo = true;
@@ -1300,6 +1650,7 @@ impl Graph {
         self.tx_depth = 0;
         self.tx_undo.clear();
         self.tx_touched.clear();
+        self.tx_touched_edges.clear();
     }
 
     /// Apply a single inverse op. Runs with `applying_undo == true`, so the
@@ -1343,6 +1694,27 @@ impl Graph {
                 return Err(TxCommitError::Type);
             }
             if self.unique_conflict(&labels, &props, Some(vi)).is_some() {
+                return Err(TxCommitError::Unique);
+            }
+        }
+        // Edge constraints: re-check every edge touched during the transaction
+        // against the fully-staged graph (edge analogue of the vertex loop above).
+        for &ei in &self.tx_touched_edges {
+            if !self.is_edge_live(ei) {
+                continue; // added then removed within the transaction — nothing to check
+            }
+            let etypes = self.edge_type_names(ei);
+            let props = self.edge_props_of(ei);
+            if self.edge_missing_required(&etypes, &props).is_some() {
+                return Err(TxCommitError::Required);
+            }
+            if self.edge_type_violation(&etypes, &props).is_some() {
+                return Err(TxCommitError::Type);
+            }
+            if self
+                .edge_unique_conflict(&etypes, &props, Some(ei))
+                .is_some()
+            {
                 return Err(TxCommitError::Unique);
             }
         }
@@ -2174,9 +2546,13 @@ impl Builder {
             v_unique: HashMap::new(),
             v_required: HashMap::new(),
             v_type: HashMap::new(),
+            e_unique: HashMap::new(),
+            e_required: HashMap::new(),
+            e_type_constraints: HashMap::new(),
             tx_depth: 0,
             tx_undo: Vec::new(),
             tx_touched: Vec::new(),
+            tx_touched_edges: Vec::new(),
             applying_undo: false,
         }
     }

@@ -300,3 +300,185 @@ suite('type-constraint differential (TS vs native)', () => {
     expect(ts).toEqual({ code: 'E_INVALID_VALUE' });
   });
 });
+
+// Edge-side constraints: the SAME createEdge*Constraint + INSERT/SET edge script
+// on both engines, asserting identical write outcomes and byte-identical final
+// edge state. The edge analogue of the vertex differentials above. Edges are
+// created inline via `INSERT (:P {..})-[:FOLLOWS {..}]->(:P {..})`.
+suite('edge unique-constraint differential (TS vs native)', () => {
+  const SCRIPT: Array<{ label: string; sql: string }> = [
+    {
+      label: 'first FOLLOWS ok',
+      sql: `INSERT (:P {id: 'a'})-[:FOLLOWS {tag: 'x'}]->(:P {id: 'b'})`,
+    },
+    {
+      label: 'dup tag → violation',
+      sql: `INSERT (:P {id: 'c'})-[:FOLLOWS {tag: 'x'}]->(:P {id: 'd'})`,
+    },
+    {
+      label: 'different tag ok',
+      sql: `INSERT (:P {id: 'e'})-[:FOLLOWS {tag: 'y'}]->(:P {id: 'f'})`,
+    },
+    {
+      label: 'different type ok',
+      sql: `INSERT (:P {id: 'g'})-[:LIKES {tag: 'x'}]->(:P {id: 'h'})`,
+    },
+    {
+      label: 'null tag #1 (exempt)',
+      sql: `INSERT (:P {id: 'i'})-[:FOLLOWS {tag: null}]->(:P {id: 'j'})`,
+    },
+    {
+      label: 'null tag #2 (exempt)',
+      sql: `INSERT (:P {id: 'k'})-[:FOLLOWS {tag: null}]->(:P {id: 'l'})`,
+    },
+    {
+      label: 'SET collision → violation',
+      sql: `MATCH ()-[r:FOLLOWS {tag: 'y'}]->() SET r.tag = 'x'`,
+    },
+    { label: 'SET self ok', sql: `MATCH ()-[r:FOLLOWS {tag: 'y'}]->() SET r.tag = 'y'` },
+  ];
+
+  test('every write outcome and the final edge state agree across engines', () => {
+    const tsGraph = tsDeserialize(SEED, 'ndjson', new Graph());
+    tsGraph.createEdgeUniqueConstraint('FOLLOWS', 'tag');
+
+    const backend = createFfiBackend(LIB);
+    const nativeGraph = graphFromFormat(backend, SEED, 'ndjson');
+    nativeGraph.createEdgeUniqueConstraint('FOLLOWS', 'tag');
+
+    for (const { label, sql } of SCRIPT) {
+      const ts = outcome(() => tsQuery(tsGraph, sql));
+      const native = outcome(() => nativeGraph.query(sql));
+
+      expect(native, `outcome mismatch: ${label}`).toEqual(ts);
+    }
+
+    const READ = `MATCH ()-[r:FOLLOWS]->() RETURN r.tag ORDER BY r.tag`;
+    expect(JSON.stringify(nativeGraph.query(READ))).toEqual(JSON.stringify(tsQuery(tsGraph, READ)));
+  });
+
+  test('declare-time rejection agrees across engines (pre-existing duplicate edges)', () => {
+    const build = `INSERT (:P {id: 'a'})-[:FOLLOWS {tag: 'dup'}]->(:P {id: 'b'}), (:P {id: 'c'})-[:FOLLOWS {tag: 'dup'}]->(:P {id: 'd'})`;
+    const tsGraph = tsDeserialize(SEED, 'ndjson', new Graph());
+    tsQuery(tsGraph, build);
+    const backend = createFfiBackend(LIB);
+    const nativeGraph = graphFromFormat(backend, SEED, 'ndjson');
+    nativeGraph.query(build);
+
+    const ts = outcome(() => tsGraph.createEdgeUniqueConstraint('FOLLOWS', 'tag'));
+    const native = outcome(() => nativeGraph.createEdgeUniqueConstraint('FOLLOWS', 'tag'));
+
+    expect(native).toEqual(ts);
+    expect(ts).toEqual({ code: 'E_CONSTRAINT_VIOLATION' });
+  });
+});
+
+suite('edge required-constraint differential (TS vs native)', () => {
+  const SCRIPT: Array<{ label: string; sql: string }> = [
+    {
+      label: 'insert with required ok',
+      sql: `INSERT (:P {id: 'a'})-[:FOLLOWS {since: 1}]->(:P {id: 'b'})`,
+    },
+    {
+      label: 'insert missing required → violation',
+      sql: `INSERT (:P {id: 'c'})-[:FOLLOWS]->(:P {id: 'd'})`,
+    },
+    {
+      label: 'insert null required → violation',
+      sql: `INSERT (:P {id: 'e'})-[:FOLLOWS {since: null}]->(:P {id: 'f'})`,
+    },
+    {
+      label: 'different type unaffected',
+      sql: `INSERT (:P {id: 'g'})-[:LIKES]->(:P {id: 'h'})`,
+    },
+    {
+      label: 'set required to null → violation',
+      sql: `MATCH ()-[r:FOLLOWS]->() SET r.since = null`,
+    },
+    {
+      label: 'set required to a new value ok',
+      sql: `MATCH ()-[r:FOLLOWS]->() SET r.since = 2`,
+    },
+    {
+      label: 'remove required → violation',
+      sql: `MATCH ()-[r:FOLLOWS]->() REMOVE r.since`,
+    },
+  ];
+
+  test('every write outcome and the final edge state agree across engines', () => {
+    const tsGraph = tsDeserialize(SEED, 'ndjson', new Graph());
+    tsGraph.createEdgeRequiredConstraint('FOLLOWS', 'since');
+
+    const backend = createFfiBackend(LIB);
+    const nativeGraph = graphFromFormat(backend, SEED, 'ndjson');
+    nativeGraph.createEdgeRequiredConstraint('FOLLOWS', 'since');
+
+    for (const { label, sql } of SCRIPT) {
+      const ts = outcome(() => tsQuery(tsGraph, sql));
+      const native = outcome(() => nativeGraph.query(sql));
+
+      expect(native, `outcome mismatch: ${label}`).toEqual(ts);
+    }
+
+    const READ = `MATCH ()-[r:FOLLOWS]->() RETURN r.since ORDER BY r.since`;
+    expect(JSON.stringify(nativeGraph.query(READ))).toEqual(JSON.stringify(tsQuery(tsGraph, READ)));
+  });
+});
+
+suite('edge type-constraint differential (TS vs native)', () => {
+  const SCRIPT: Array<{ label: string; sql: string }> = [
+    {
+      label: 'insert right type ok',
+      sql: `INSERT (:P {id: 'a'})-[:FOLLOWS {since: 30}]->(:P {id: 'b'})`,
+    },
+    {
+      label: 'insert wrong type → violation',
+      sql: `INSERT (:P {id: 'c'})-[:FOLLOWS {since: 'old'}]->(:P {id: 'd'})`,
+    },
+    {
+      label: 'insert null (exempt) ok',
+      sql: `INSERT (:P {id: 'e'})-[:FOLLOWS {since: null}]->(:P {id: 'f'})`,
+    },
+    {
+      label: 'set wrong type → violation',
+      sql: `MATCH ()-[r:FOLLOWS {since: 30}]->() SET r.since = 'nope'`,
+    },
+    {
+      label: 'set right type ok',
+      sql: `MATCH ()-[r:FOLLOWS {since: 30}]->() SET r.since = 31`,
+    },
+  ];
+
+  test('every write outcome and the final edge state agree across engines', () => {
+    const tsGraph = tsDeserialize(SEED, 'ndjson', new Graph());
+    tsGraph.createEdgeTypeConstraint('FOLLOWS', 'since', 'number');
+
+    const backend = createFfiBackend(LIB);
+    const nativeGraph = graphFromFormat(backend, SEED, 'ndjson');
+    nativeGraph.createEdgeTypeConstraint('FOLLOWS', 'since', 'number');
+
+    for (const { label, sql } of SCRIPT) {
+      const ts = outcome(() => tsQuery(tsGraph, sql));
+      const native = outcome(() => nativeGraph.query(sql));
+
+      expect(native, `outcome mismatch: ${label}`).toEqual(ts);
+    }
+
+    const READ = `MATCH ()-[r:FOLLOWS]->() RETURN r.since ORDER BY r.since`;
+    expect(JSON.stringify(nativeGraph.query(READ))).toEqual(JSON.stringify(tsQuery(tsGraph, READ)));
+  });
+
+  test('unknown scalar type name is rejected (InvalidValue) across engines', () => {
+    const tsGraph = tsDeserialize(SEED, 'ndjson', new Graph());
+    const backend = createFfiBackend(LIB);
+    const nativeGraph = graphFromFormat(backend, SEED, 'ndjson');
+
+    const ts = outcome(() => tsGraph.createEdgeTypeConstraint('FOLLOWS', 'since', 'int' as never));
+    const native = outcome(() =>
+      nativeGraph.createEdgeTypeConstraint('FOLLOWS', 'since', 'int' as never),
+    );
+
+    expect(native).toEqual(ts);
+    expect(ts).toEqual({ code: 'E_INVALID_VALUE' });
+  });
+});

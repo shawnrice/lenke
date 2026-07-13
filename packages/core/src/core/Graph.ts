@@ -125,6 +125,9 @@ export class Graph {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private txEvents: Array<EmitterEvent<any, any>> = [];
   private txTouched = new Set<string>();
+  // Edge analogue of `txTouched`: edge ids whose built-in edge constraints must be
+  // re-checked at commit (R-TX deferral for edge writes).
+  private txTouchedEdges = new Set<string>();
   private applyingUndo = false;
 
   constructor(options: GraphOptions = {}) {
@@ -702,6 +705,38 @@ export class Graph {
 
   /** Shared insertion tail: emit, then register the edge in the id and label indexes. */
   private readonly insertEdge = (edge: Edge): Edge => {
+    // Constraint gate (mirror addVertex): reject before emitting/committing, so a
+    // rejected edge write leaves no trace. Inside a transaction the checks defer
+    // to commit (record the touched edge); a rollback replay skips them entirely.
+    if (!this.deferEdgeConstraint(edge)) {
+      const missing = this.edgeMissingRequired(edge.labels, edge.properties);
+
+      if (missing) {
+        throw new LenkeError(
+          `missing required property '${missing.key}' for edge type '${missing.label}'`,
+          { code: ErrorCode.ConstraintViolation },
+        );
+      }
+
+      const badType = this.edgeTypeViolation(edge.labels, edge.properties);
+
+      if (badType) {
+        throw new LenkeError(
+          `property '${badType.key}' must be ${badType.expected} on edge type '${badType.label}', got ${badType.got}`,
+          { code: ErrorCode.ConstraintViolation },
+        );
+      }
+
+      const dup = this.edgeUniqueConflict(edge.labels, edge.properties, edge);
+
+      if (dup) {
+        throw new LenkeError(
+          `unique constraint on edge type '${dup.label}.${dup.key}' violated by value ${JSON.stringify(dup.existing.properties[dup.key])}`,
+          { code: ErrorCode.ConstraintViolation },
+        );
+      }
+    }
+
     this.emit(new EmitterEvent('@graph/EdgeAdded', edge));
 
     this.edgesById.set(edge.id, edge);
@@ -755,6 +790,23 @@ export class Graph {
 
     if (edge.labels.has(label)) {
       return edge;
+    }
+
+    // Adding an edge type brings its required keys into force for this edge.
+    // Inside a transaction the check defers to commit (via the touched set).
+    if (this.applyingUndo) {
+      // rollback replay — skip the check.
+    } else if (this.txDepth > 0) {
+      this.txTouchedEdges.add(edge.id);
+    } else {
+      for (const key of this.edgeRequiredConstraints.get(label) ?? []) {
+        if (!this.isPresent(edge.properties[key])) {
+          throw new LenkeError(
+            `cannot add edge type '${label}': it requires property '${key}', which is missing`,
+            { code: ErrorCode.ConstraintViolation },
+          );
+        }
+      }
     }
 
     this.emit(new EmitterEvent('@graph/LabelAddedToEdge', { label, edge }));
@@ -1395,6 +1447,431 @@ export class Graph {
     return undefined;
   };
 
+  // --- EDGE constraints (R-CONSTRAINTS, edge types) ------------------------
+  // A direct mirror of the vertex unique/required/type constraints, keyed by edge
+  // TYPE instead of node label, enforced against each edge's properties and the
+  // edge property index. Byte-identical to the Rust core. Enforcement is at the
+  // core mutation boundary (addEdge gate + Edge property asserts + addLabelToEdge),
+  // and defers to commit inside a transaction exactly like the vertex ones.
+
+  private readonly edgeUniqueConstraints = new Map<string, Set<string>>();
+  private readonly edgeRequiredConstraints = new Map<string, Set<string>>();
+  private readonly edgeTypeConstraints = new Map<string, Map<string, ScalarTypeName>>();
+
+  /**
+   * Inside a transaction (or a rollback replay) the per-write edge-constraint
+   * gates defer to the commit-time recheck. Returns true if the caller should skip
+   * its inline check; records the touched edge so {@link runDeferredChecks}
+   * revisits it at commit (a replay records nothing). Edge analogue of
+   * {@link deferConstraint}.
+   */
+  private deferEdgeConstraint = (edge: Edge): boolean => {
+    if (this.applyingUndo) {
+      return true;
+    }
+
+    if (this.txDepth > 0) {
+      this.txTouchedEdges.add(edge.id);
+
+      return true;
+    }
+
+    return false;
+  };
+
+  /* Edge UNIQUE constraints (declared over `(edge type, key)`) */
+
+  /**
+   * Declare a UNIQUE constraint on `(edgeType, key)`. Creates the backing edge
+   * index if absent. Idempotent. Throws {@link ErrorCode.ConstraintViolation} if
+   * the current data already violates it.
+   */
+  public createEdgeUniqueConstraint = (edgeType: string, key: string): void => {
+    if (!this.edgeIndexes().includes(key)) {
+      this.createEdgeIndex(key);
+    }
+
+    const seen = new Set<unknown>();
+
+    for (const edge of this.getEdgesByLabel(edgeType)) {
+      const value = edge.properties[key];
+
+      if (!this.isUniqueKeyable(value)) {
+        continue;
+      }
+
+      if (seen.has(value)) {
+        throw new LenkeError(
+          'existing data already violates the edge unique constraint being declared',
+          { code: ErrorCode.ConstraintViolation },
+        );
+      }
+
+      seen.add(value);
+    }
+
+    let keys = this.edgeUniqueConstraints.get(edgeType);
+
+    if (!keys) {
+      keys = new Set();
+      this.edgeUniqueConstraints.set(edgeType, keys);
+    }
+
+    keys.add(key);
+  };
+
+  /** Drop an edge unique constraint. The backing index is left in place. Idempotent. */
+  public dropEdgeUniqueConstraint = (edgeType: string, key: string): void => {
+    const keys = this.edgeUniqueConstraints.get(edgeType);
+
+    if (keys) {
+      keys.delete(key);
+
+      if (keys.size === 0) {
+        this.edgeUniqueConstraints.delete(edgeType);
+      }
+    }
+  };
+
+  /** Property keys under a unique constraint for `edgeType` (sorted; empty if none). */
+  public edgeUniqueKeys = (edgeType: string): string[] =>
+    [...(this.edgeUniqueConstraints.get(edgeType) ?? [])].sort();
+
+  /** True iff `(edgeType, key)` carries a unique constraint. */
+  public hasEdgeUniqueConstraint = (edgeType: string, key: string): boolean =>
+    this.edgeUniqueConstraints.get(edgeType)?.has(key) ?? false;
+
+  /** Every declared edge unique constraint as sorted `[edgeType, key]` pairs. */
+  public edgeUniqueConstraintList = (): Array<[string, string]> =>
+    [...this.edgeUniqueConstraints]
+      .flatMap(([edgeType, keys]) => [...keys].map((key): [string, string] => [edgeType, key]))
+      .sort((a, b) => (a[0] === b[0] ? a[1].localeCompare(b[1]) : a[0].localeCompare(b[0])));
+
+  /**
+   * If adding an edge with `labels` + `properties` would break a unique
+   * constraint, the offending `{ label, key, existing }`. Only constrained keys
+   * present with a non-null scalar value are checked. `exclude` skips one edge.
+   */
+  public edgeUniqueConflict = (
+    labels: Iterable<string>,
+    properties: Readonly<Record<string, unknown>>,
+    exclude?: Edge,
+  ): { label: string; key: string; existing: Edge } | undefined => {
+    if (this.edgeUniqueConstraints.size === 0) {
+      return undefined;
+    }
+
+    for (const label of labels) {
+      for (const key of this.edgeUniqueKeys(label)) {
+        if (!(key in properties)) {
+          continue;
+        }
+
+        const value = properties[key];
+
+        if (!this.isUniqueKeyable(value)) {
+          continue;
+        }
+
+        for (const edge of this.edgePropertyIndex.equals(key, value) ?? []) {
+          if (edge !== exclude && edge.hasLabel(label)) {
+            return { label, key, existing: edge };
+          }
+        }
+      }
+    }
+
+    return undefined;
+  };
+
+  /**
+   * If setting `edge.key = value` would break a unique constraint on one of
+   * `edge`'s types, the offending `{ label, existing }`.
+   */
+  public edgeUniqueConflictOnSet = (
+    edge: Edge,
+    key: string,
+    value: unknown,
+  ): { label: string; existing: Edge } | undefined => {
+    if (this.edgeUniqueConstraints.size === 0 || !this.isUniqueKeyable(value)) {
+      return undefined;
+    }
+
+    for (const [label, keys] of this.edgeUniqueConstraints) {
+      if (!keys.has(key) || !edge.hasLabel(label)) {
+        continue;
+      }
+
+      for (const other of this.edgePropertyIndex.equals(key, value) ?? []) {
+        if (other !== edge && other.hasLabel(label)) {
+          return { label, existing: other };
+        }
+      }
+    }
+
+    return undefined;
+  };
+
+  /**
+   * Throw if setting `edge.key = value` would collide with another edge under a
+   * unique constraint. Called from the edge property-write chokepoint.
+   */
+  public assertEdgeUniqueOnSet = (edge: Edge, key: string, value: unknown): void => {
+    if (this.deferEdgeConstraint(edge)) {
+      return;
+    }
+
+    const conflict = this.edgeUniqueConflictOnSet(edge, key, value);
+
+    if (conflict) {
+      throw new LenkeError(
+        `unique constraint on edge type '${conflict.label}.${key}' violated by value ${JSON.stringify(value)}`,
+        { code: ErrorCode.ConstraintViolation },
+      );
+    }
+  };
+
+  /* Edge REQUIRED constraints */
+
+  /**
+   * Declare a REQUIRED constraint on `(edgeType, key)`. Idempotent. Throws
+   * {@link ErrorCode.ConstraintViolation} if any existing edge of `edgeType`
+   * lacks a present, non-null `key`.
+   */
+  public createEdgeRequiredConstraint = (edgeType: string, key: string): void => {
+    for (const edge of this.getEdgesByLabel(edgeType)) {
+      if (!this.isPresent(edge.properties[key])) {
+        throw new LenkeError(
+          `existing data already violates the edge required constraint being declared on (${edgeType}, ${key})`,
+          { code: ErrorCode.ConstraintViolation },
+        );
+      }
+    }
+
+    let keys = this.edgeRequiredConstraints.get(edgeType);
+
+    if (!keys) {
+      keys = new Set();
+      this.edgeRequiredConstraints.set(edgeType, keys);
+    }
+
+    keys.add(key);
+  };
+
+  /** Drop an edge required constraint. Idempotent. */
+  public dropEdgeRequiredConstraint = (edgeType: string, key: string): void => {
+    const keys = this.edgeRequiredConstraints.get(edgeType);
+
+    if (keys) {
+      keys.delete(key);
+
+      if (keys.size === 0) {
+        this.edgeRequiredConstraints.delete(edgeType);
+      }
+    }
+  };
+
+  /** Property keys required for `edgeType` (sorted; empty if none). */
+  public edgeRequiredKeys = (edgeType: string): string[] =>
+    [...(this.edgeRequiredConstraints.get(edgeType) ?? [])].sort();
+
+  /** True iff `(edgeType, key)` carries a required constraint. */
+  public hasEdgeRequiredConstraint = (edgeType: string, key: string): boolean =>
+    this.edgeRequiredConstraints.get(edgeType)?.has(key) ?? false;
+
+  /** Every declared edge required constraint as sorted `[edgeType, key]` pairs. */
+  public edgeRequiredConstraintList = (): Array<[string, string]> =>
+    [...this.edgeRequiredConstraints]
+      .flatMap(([edgeType, keys]) => [...keys].map((key): [string, string] => [edgeType, key]))
+      .sort((a, b) => (a[0] === b[0] ? a[1].localeCompare(b[1]) : a[0].localeCompare(b[0])));
+
+  /**
+   * The first `(edgeType, key)` a new edge with these `labels`/`properties` would
+   * violate by omitting a required key, or `undefined`.
+   */
+  public edgeMissingRequired = (
+    labels: Iterable<string>,
+    properties: Readonly<Record<string, unknown>>,
+  ): { label: string; key: string } | undefined => {
+    if (this.edgeRequiredConstraints.size === 0) {
+      return undefined;
+    }
+
+    for (const label of labels) {
+      for (const key of this.edgeRequiredConstraints.get(label) ?? []) {
+        if (!this.isPresent(properties[key])) {
+          return { label, key };
+        }
+      }
+    }
+
+    return undefined;
+  };
+
+  /** True iff `key` is required by any of `edge`'s types (so it can't be removed
+   *  or set to null). */
+  public isEdgeRequiredKey = (edge: Edge, key: string): boolean => {
+    if (this.edgeRequiredConstraints.size === 0) {
+      return false;
+    }
+
+    for (const label of edge.labels) {
+      if (this.edgeRequiredConstraints.get(label)?.has(key)) {
+        return true;
+      }
+    }
+
+    return false;
+  };
+
+  /** Throw if setting `edge.key = value` would null out a required key. */
+  public assertEdgeRequiredOnSet = (edge: Edge, key: string, value: unknown): void => {
+    if (this.deferEdgeConstraint(edge)) {
+      return;
+    }
+
+    if (!this.isPresent(value) && this.isEdgeRequiredKey(edge, key)) {
+      throw new LenkeError(`cannot set required edge property '${key}' to null`, {
+        code: ErrorCode.ConstraintViolation,
+      });
+    }
+  };
+
+  /** Throw if removing `edge.key` would drop a required key. */
+  public assertEdgeRequiredOnRemove = (edge: Edge, key: string): void => {
+    if (this.deferEdgeConstraint(edge)) {
+      return;
+    }
+
+    if (this.isEdgeRequiredKey(edge, key)) {
+      throw new LenkeError(`cannot remove required edge property '${key}'`, {
+        code: ErrorCode.ConstraintViolation,
+      });
+    }
+  };
+
+  /* Edge TYPE constraints */
+
+  /**
+   * Declare a TYPE constraint on `(edgeType, key)`. Idempotent (re-declaring
+   * replaces). Throws {@link ErrorCode.InvalidValue} for an unknown scalar type,
+   * or {@link ErrorCode.ConstraintViolation} if any existing edge of `edgeType`
+   * holds a present, non-null `key` of a different type.
+   */
+  public createEdgeTypeConstraint = (edgeType: string, key: string, type: ScalarTypeName): void => {
+    if (!SCALAR_TYPE_NAMES.has(type)) {
+      throw new LenkeError(
+        `unknown scalar type '${type}' for the edge type constraint on (${edgeType}, ${key}); expected one of ${[...SCALAR_TYPE_NAMES].join(', ')}`,
+        { code: ErrorCode.InvalidValue },
+      );
+    }
+
+    for (const edge of this.getEdgesByLabel(edgeType)) {
+      const got = this.valueType(edge.properties[key]);
+
+      if (got !== null && got !== type) {
+        throw new LenkeError(
+          `existing data already violates the edge type constraint being declared on (${edgeType}, ${key}): found ${got}, expected ${type}`,
+          { code: ErrorCode.ConstraintViolation },
+        );
+      }
+    }
+
+    let keys = this.edgeTypeConstraints.get(edgeType);
+
+    if (!keys) {
+      keys = new Map();
+      this.edgeTypeConstraints.set(edgeType, keys);
+    }
+
+    keys.set(key, type);
+  };
+
+  /** Drop an edge type constraint. Idempotent. */
+  public dropEdgeTypeConstraint = (edgeType: string, key: string): void => {
+    const keys = this.edgeTypeConstraints.get(edgeType);
+
+    if (keys) {
+      keys.delete(key);
+
+      if (keys.size === 0) {
+        this.edgeTypeConstraints.delete(edgeType);
+      }
+    }
+  };
+
+  /** The declared type for `(edgeType, key)`, or `undefined`. */
+  public edgeTypeConstraint = (edgeType: string, key: string): ScalarTypeName | undefined =>
+    this.edgeTypeConstraints.get(edgeType)?.get(key);
+
+  /** Every declared edge type constraint as sorted `[edgeType, key, type]` triples. */
+  public edgeTypeConstraintList = (): Array<[string, string, ScalarTypeName]> =>
+    [...this.edgeTypeConstraints]
+      .flatMap(([edgeType, keys]) =>
+        [...keys].map(([key, type]): [string, string, ScalarTypeName] => [edgeType, key, type]),
+      )
+      .sort((a, b) => (a[0] === b[0] ? a[1].localeCompare(b[1]) : a[0].localeCompare(b[0])));
+
+  /**
+   * The first type violation a new edge with these `labels`/`properties` would
+   * cause, or `undefined`. Null/absent values are exempt.
+   */
+  public edgeTypeViolation = (
+    labels: Iterable<string>,
+    properties: Readonly<Record<string, unknown>>,
+  ): { label: string; key: string; expected: ScalarTypeName; got: ScalarTypeName } | undefined => {
+    if (this.edgeTypeConstraints.size === 0) {
+      return undefined;
+    }
+
+    for (const label of labels) {
+      const cs = this.edgeTypeConstraints.get(label);
+
+      if (!cs) {
+        continue;
+      }
+
+      for (const [key, type] of cs) {
+        const got = this.valueType(properties[key]);
+
+        if (got !== null && got !== type) {
+          return { label, key, expected: type, got };
+        }
+      }
+    }
+
+    return undefined;
+  };
+
+  /** Throw if setting `edge.key = value` would break a type constraint. Null is
+   *  exempt (a null has no type — `required` governs presence). */
+  public assertEdgeTypeOnSet = (edge: Edge, key: string, value: unknown): void => {
+    if (this.deferEdgeConstraint(edge)) {
+      return;
+    }
+
+    if (this.edgeTypeConstraints.size === 0) {
+      return;
+    }
+
+    const got = this.valueType(value);
+
+    if (got === null) {
+      return;
+    }
+
+    for (const label of edge.labels) {
+      const type = this.edgeTypeConstraints.get(label)?.get(key);
+
+      if (type && got !== type) {
+        throw new LenkeError(
+          `property '${key}' must be ${type} on edge type '${label}', got ${got}`,
+          { code: ErrorCode.ConstraintViolation },
+        );
+      }
+    }
+  };
+
   /* Event Emitter Proxy */
 
   public eventsEnabled = (): boolean => {
@@ -1527,6 +2004,7 @@ export class Graph {
     this.txUndo = [];
     this.txEvents = [];
     this.txTouched.clear();
+    this.txTouchedEdges.clear();
 
     for (const event of events) {
       this.emitter.emit(event as never);
@@ -1564,6 +2042,7 @@ export class Graph {
     this.txUndo = [];
     this.txEvents = []; // discard everything buffered (forward writes and undo replay alike)
     this.txTouched.clear();
+    this.txTouchedEdges.clear();
   };
 
   /**
@@ -1604,6 +2083,43 @@ export class Graph {
       if (dup) {
         throw new LenkeError(
           `unique constraint on '${dup.label}.${dup.key}' violated by value ${JSON.stringify(dup.existing.properties[dup.key])}`,
+          { code: ErrorCode.ConstraintViolation },
+        );
+      }
+    }
+
+    // Edge constraints: re-check every edge touched during the transaction against
+    // the fully-staged graph (edge analogue of the vertex loop above).
+    for (const id of this.txTouchedEdges) {
+      const edge = this.edgesById.get(id);
+
+      if (!edge) {
+        continue; // added then removed within the transaction — nothing to check
+      }
+
+      const missing = this.edgeMissingRequired(edge.labels, edge.properties);
+
+      if (missing) {
+        throw new LenkeError(
+          `missing required property '${missing.key}' for edge type '${missing.label}'`,
+          { code: ErrorCode.ConstraintViolation },
+        );
+      }
+
+      const badType = this.edgeTypeViolation(edge.labels, edge.properties);
+
+      if (badType) {
+        throw new LenkeError(
+          `property '${badType.key}' must be ${badType.expected} on edge type '${badType.label}', got ${badType.got}`,
+          { code: ErrorCode.ConstraintViolation },
+        );
+      }
+
+      const dup = this.edgeUniqueConflict(edge.labels, edge.properties, edge);
+
+      if (dup) {
+        throw new LenkeError(
+          `unique constraint on edge type '${dup.label}.${dup.key}' violated by value ${JSON.stringify(dup.existing.properties[dup.key])}`,
           { code: ErrorCode.ConstraintViolation },
         );
       }

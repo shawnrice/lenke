@@ -5197,6 +5197,9 @@ fn run_insert(
             ctx.refresh_ids(graph, plan);
             let eprops = eval_props(graph, ctx, &rel.props, &out);
             let ei = graph.add_edge(from, to, &etype, eprops);
+            // Note the edge for the commit-time edge-constraint check (unique /
+            // required / type), mirroring `ensure_node`'s vertex handling.
+            graph.tx_note_touched_edge(ei);
             if let Some(slot) = rel.var_slot {
                 out.set(slot, Val::Edge(ei));
             }
@@ -5246,13 +5249,19 @@ fn apply_merge_sets(graph: &mut Graph, ctx: &Ctx, items: &[CSetItem], binding: &
                 };
                 match target {
                     Some(Val::Node(vi)) => graph.set_vertex_prop(vi, key, v),
-                    Some(Val::Edge(ei)) => graph.set_edge_prop(ei, key, v),
+                    Some(Val::Edge(ei)) => {
+                        graph.set_edge_prop(ei, key, v);
+                        graph.tx_note_touched_edge(ei);
+                    }
                     _ => {}
                 }
             }
             CSetItem::Label { var_slot, label } => match binding.get(*var_slot).cloned() {
                 Some(Val::Node(vi)) => graph.add_vertex_label(vi, label),
-                Some(Val::Edge(ei)) => graph.add_edge_label(ei, label),
+                Some(Val::Edge(ei)) => {
+                    graph.add_edge_label(ei, label);
+                    graph.tx_note_touched_edge(ei);
+                }
                 _ => {}
             },
         }
@@ -5352,6 +5361,8 @@ fn run_merge_edge(graph: &mut Graph, ctx: &Ctx, clause: &CMerge, binding: &Bindi
     if let Some(s) = seg.rel.var_slot {
         out.set(s, Val::Edge(ei));
     }
+    // Note the merged edge for the commit-time edge-constraint check.
+    graph.tx_note_touched_edge(ei);
     out
 }
 
@@ -5458,7 +5469,10 @@ fn run_set(graph: &mut Graph, ctx: &Ctx, items: &[CSetItem], binding: &Binding) 
                         graph.set_vertex_prop(vi, key, v);
                         graph.tx_note_touched(vi);
                     }
-                    Val::Edge(ei) => graph.set_edge_prop(ei, key, v),
+                    Val::Edge(ei) => {
+                        graph.set_edge_prop(ei, key, v);
+                        graph.tx_note_touched_edge(ei);
+                    }
                     _ => {}
                 }
             }
@@ -5469,7 +5483,12 @@ fn run_set(graph: &mut Graph, ctx: &Ctx, items: &[CSetItem], binding: &Binding) 
                     graph.add_vertex_label(*vi, label);
                     graph.tx_note_touched(*vi);
                 }
-                Some(Val::Edge(ei)) => graph.add_edge_label(*ei, label),
+                Some(Val::Edge(ei)) => {
+                    // Relabelling an edge replaces its type — bring the new type's
+                    // constraints into force at the commit-time recheck.
+                    graph.add_edge_label(*ei, label);
+                    graph.tx_note_touched_edge(*ei);
+                }
                 _ => {}
             },
         }
@@ -5486,7 +5505,10 @@ fn run_remove(graph: &mut Graph, _ctx: &Ctx, items: &[CRemoveItem], binding: &Bi
                     graph.remove_vertex_prop(*vi, key);
                     graph.tx_note_touched(*vi);
                 }
-                Some(Val::Edge(ei)) => graph.remove_edge_prop(*ei, key),
+                Some(Val::Edge(ei)) => {
+                    graph.remove_edge_prop(*ei, key);
+                    graph.tx_note_touched_edge(*ei);
+                }
                 _ => {}
             },
             CRemoveItem::Label { var_slot, label } => match binding.get(*var_slot) {

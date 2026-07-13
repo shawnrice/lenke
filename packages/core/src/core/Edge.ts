@@ -127,6 +127,9 @@ export class Edge {
   setProperty(key: string, value: unknown): void {
     validatePropertyKey(key);
     validatePropertyValue(value);
+    this.#graph?.assertEdgeRequiredOnSet(this, key, value);
+    this.#graph?.assertEdgeTypeOnSet(this, key, value);
+    this.#graph?.assertEdgeUniqueOnSet(this, key, value);
     const g = this.#graph;
     const id = this.id;
     const had = key in this.properties;
@@ -154,6 +157,9 @@ export class Edge {
   setProperties(props: Record<string, unknown>): void {
     for (const key of Object.keys(props)) {
       validatePropertyValue(props[key]);
+      this.#graph?.assertEdgeRequiredOnSet(this, key, props[key]);
+      this.#graph?.assertEdgeTypeOnSet(this, key, props[key]);
+      this.#graph?.assertEdgeUniqueOnSet(this, key, props[key]);
     }
 
     const previousValues = Object.fromEntries(
@@ -198,6 +204,7 @@ export class Edge {
       return;
     }
 
+    this.#graph?.assertEdgeRequiredOnRemove(this, key);
     const g = this.#graph;
     const id = this.id;
     const previousValue = this.properties[key];
@@ -212,6 +219,12 @@ export class Edge {
   }
 
   removeProperties(keys: string[]): void {
+    for (const key of keys) {
+      if (key in this.properties) {
+        this.#graph?.assertEdgeRequiredOnRemove(this, key);
+      }
+    }
+
     const g = this.#graph;
     const id = this.id;
     const removed = Object.fromEntries(

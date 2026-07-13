@@ -71,6 +71,20 @@ export type Backend = {
   createUniqueConstraint: (handle: GraphHandle, label: string, key: string) => void;
   createRequiredConstraint: (handle: GraphHandle, label: string, key: string) => void;
   createTypeConstraint: (handle: GraphHandle, label: string, key: string, type: string) => void;
+  /**
+   * Declare a UNIQUE / REQUIRED / TYPE constraint on `(edgeType, key)` — the edge
+   * analogue of the vertex constraints above, keyed by edge type. Throws
+   * `ConstraintViolation` (or `InvalidValue` for an unknown type name) as the
+   * vertex forms do.
+   */
+  createEdgeUniqueConstraint: (handle: GraphHandle, edgeType: string, key: string) => void;
+  createEdgeRequiredConstraint: (handle: GraphHandle, edgeType: string, key: string) => void;
+  createEdgeTypeConstraint: (
+    handle: GraphHandle,
+    edgeType: string,
+    key: string,
+    type: string,
+  ) => void;
   /** Drop a vertex / edge property index (no-op if absent). */
   dropVertexIndex: (handle: GraphHandle, key: string) => void;
   dropEdgeIndex: (handle: GraphHandle, key: string) => void;

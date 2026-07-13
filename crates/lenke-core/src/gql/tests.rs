@@ -1657,6 +1657,208 @@ fn unique_constraint_introspection_and_drop() {
     assert!(g.has_unique_constraint("Acct", "handle"));
 }
 
+// --- edge-side constraints (R-CONSTRAINTS, edge types) ----------------------
+// Direct mirror of the vertex constraint tests above, keyed by edge type and
+// enforced against the edge property store. Byte-identical to the TS engine.
+
+#[test]
+fn edge_unique_constraint_enforced_on_insert_and_set() {
+    let mut g = ndjson::decode("").unwrap();
+    g.create_edge_unique_constraint("FOLLOWS", "tag").unwrap();
+
+    rows(
+        &mut g,
+        "INSERT (:P {id: 'a'})-[:FOLLOWS {tag: 'x'}]->(:P {id: 'b'})",
+    );
+
+    // Duplicate tag on the same edge type → violation (whole statement rolls back).
+    let err = parse("INSERT (:P {id: 'c'})-[:FOLLOWS {tag: 'x'}]->(:P {id: 'd'})")
+        .unwrap()
+        .execute(&mut g, &Params::new())
+        .unwrap_err();
+    assert_eq!(err.code, crate::error_codes::ErrorCode::ConstraintViolation);
+
+    // Different tag ok; a different edge type with the same tag ok (per-type).
+    rows(
+        &mut g,
+        "INSERT (:P {id: 'e'})-[:FOLLOWS {tag: 'y'}]->(:P {id: 'f'})",
+    );
+    rows(
+        &mut g,
+        "INSERT (:P {id: 'g'})-[:LIKES {tag: 'x'}]->(:P {id: 'h'})",
+    );
+
+    // A SET that collides → violation …
+    let err = parse("MATCH ()-[r:FOLLOWS {tag: 'y'}]->() SET r.tag = 'x'")
+        .unwrap()
+        .execute(&mut g, &Params::new())
+        .unwrap_err();
+    assert_eq!(err.code, crate::error_codes::ErrorCode::ConstraintViolation);
+    // … but re-setting an edge to its own value is not a self-collision.
+    rows(
+        &mut g,
+        "MATCH ()-[r:FOLLOWS {tag: 'y'}]->() SET r.tag = 'y'",
+    );
+}
+
+#[test]
+fn edge_unique_constraint_null_values_are_exempt() {
+    let mut g = ndjson::decode("").unwrap();
+    g.create_edge_unique_constraint("FOLLOWS", "tag").unwrap();
+    rows(
+        &mut g,
+        "INSERT (:P {id: 'a'})-[:FOLLOWS {tag: null}]->(:P {id: 'b'})",
+    );
+    rows(
+        &mut g,
+        "INSERT (:P {id: 'c'})-[:FOLLOWS {tag: null}]->(:P {id: 'd'})",
+    );
+    rows(&mut g, "INSERT (:P {id: 'e'})-[:FOLLOWS]->(:P {id: 'f'})");
+}
+
+#[test]
+fn edge_required_constraint_enforced() {
+    let mut g = ndjson::decode("").unwrap();
+    g.create_edge_required_constraint("FOLLOWS", "since")
+        .unwrap();
+
+    rows(
+        &mut g,
+        "INSERT (:P {id: 'a'})-[:FOLLOWS {since: 1}]->(:P {id: 'b'})",
+    );
+    // Missing / null required → violation.
+    let err = parse("INSERT (:P {id: 'c'})-[:FOLLOWS]->(:P {id: 'd'})")
+        .unwrap()
+        .execute(&mut g, &Params::new())
+        .unwrap_err();
+    assert_eq!(err.code, crate::error_codes::ErrorCode::ConstraintViolation);
+    // Setting it to null, or removing it, → violation.
+    let err = parse("MATCH ()-[r:FOLLOWS]->() SET r.since = null")
+        .unwrap()
+        .execute(&mut g, &Params::new())
+        .unwrap_err();
+    assert_eq!(err.code, crate::error_codes::ErrorCode::ConstraintViolation);
+    let err = parse("MATCH ()-[r:FOLLOWS]->() REMOVE r.since")
+        .unwrap()
+        .execute(&mut g, &Params::new())
+        .unwrap_err();
+    assert_eq!(err.code, crate::error_codes::ErrorCode::ConstraintViolation);
+}
+
+#[test]
+fn edge_type_constraint_enforced() {
+    let mut g = ndjson::decode("").unwrap();
+    g.create_edge_type_constraint("FOLLOWS", "since", "number")
+        .unwrap();
+
+    rows(
+        &mut g,
+        "INSERT (:P {id: 'a'})-[:FOLLOWS {since: 30}]->(:P {id: 'b'})",
+    );
+    // Wrong type → violation; null is exempt.
+    let err = parse("INSERT (:P {id: 'c'})-[:FOLLOWS {since: 'old'}]->(:P {id: 'd'})")
+        .unwrap()
+        .execute(&mut g, &Params::new())
+        .unwrap_err();
+    assert_eq!(err.code, crate::error_codes::ErrorCode::ConstraintViolation);
+    rows(
+        &mut g,
+        "INSERT (:P {id: 'e'})-[:FOLLOWS {since: null}]->(:P {id: 'f'})",
+    );
+    // A wrong-typed SET faults; unknown scalar type name is InvalidValue.
+    let err = parse("MATCH ()-[r:FOLLOWS {since: 30}]->() SET r.since = 'nope'")
+        .unwrap()
+        .execute(&mut g, &Params::new())
+        .unwrap_err();
+    assert_eq!(err.code, crate::error_codes::ErrorCode::ConstraintViolation);
+    assert_eq!(
+        g.create_edge_type_constraint("FOLLOWS", "since", "int")
+            .unwrap_err()
+            .code,
+        crate::error_codes::ErrorCode::InvalidValue
+    );
+}
+
+#[test]
+fn create_edge_constraint_rejects_preexisting_violations() {
+    let mut g = ndjson::decode(
+        &[
+            r#"{"type":"node","id":"a","labels":["P"],"properties":{}}"#,
+            r#"{"type":"node","id":"b","labels":["P"],"properties":{}}"#,
+            r#"{"type":"edge","from":"a","to":"b","labels":["FOLLOWS"],"properties":{"tag":"dup"}}"#,
+            r#"{"type":"edge","from":"a","to":"b","labels":["FOLLOWS"],"properties":{"tag":"dup"}}"#,
+        ]
+        .join("\n"),
+    )
+    .unwrap();
+    assert_eq!(
+        g.create_edge_unique_constraint("FOLLOWS", "tag")
+            .unwrap_err()
+            .code,
+        crate::error_codes::ErrorCode::ConstraintViolation
+    );
+    assert_eq!(
+        g.create_edge_required_constraint("FOLLOWS", "since")
+            .unwrap_err()
+            .code,
+        crate::error_codes::ErrorCode::ConstraintViolation
+    );
+    assert_eq!(
+        g.create_edge_type_constraint("FOLLOWS", "tag", "number")
+            .unwrap_err()
+            .code,
+        crate::error_codes::ErrorCode::ConstraintViolation
+    );
+}
+
+#[test]
+fn edge_constraint_introspection_and_drop() {
+    let mut g = ndjson::decode("").unwrap();
+    g.create_edge_unique_constraint("FOLLOWS", "tag").unwrap();
+    g.create_edge_required_constraint("FOLLOWS", "since")
+        .unwrap();
+    g.create_edge_type_constraint("FOLLOWS", "since", "number")
+        .unwrap();
+    assert!(g.has_edge_unique_constraint("FOLLOWS", "tag"));
+    assert_eq!(g.edge_unique_keys("FOLLOWS"), &["tag".to_string()]);
+    assert!(g.has_edge_required_constraint("FOLLOWS", "since"));
+    assert_eq!(
+        g.edge_type_constraint("FOLLOWS", "since"),
+        Some(crate::graph::PropType::Num)
+    );
+    assert_eq!(
+        g.edge_unique_constraints(),
+        vec![("FOLLOWS".to_string(), "tag".to_string())]
+    );
+    g.drop_edge_unique_constraint("FOLLOWS", "tag");
+    assert!(!g.has_edge_unique_constraint("FOLLOWS", "tag"));
+}
+
+#[test]
+fn edge_constraint_deferred_within_transaction() {
+    // An intermediate edge violation that resolves before commit is fine; one
+    // left unresolved rolls the whole transaction back.
+    let mut g = ndjson::decode("").unwrap();
+    g.create_edge_required_constraint("FOLLOWS", "since")
+        .unwrap();
+
+    // Resolved-before-commit: insert an edge missing `since`, then supply it.
+    g.begin_tx();
+    rows(&mut g, "INSERT (:P {id: 'a'})-[:FOLLOWS]->(:P {id: 'b'})");
+    rows(&mut g, "MATCH ()-[r:FOLLOWS]->() SET r.since = 2020");
+    assert!(matches!(g.commit_tx(), Ok(())));
+    assert_eq!(g.edge_count(), 1, "the resolved edge committed");
+
+    // Unresolved: the missing required key survives to commit → rollback.
+    g.begin_tx();
+    rows(&mut g, "INSERT (:P {id: 'c'})-[:FOLLOWS]->(:P {id: 'd'})");
+    assert!(matches!(
+        g.commit_tx(),
+        Err(crate::graph::TxCommitError::Required)
+    ));
+    assert_eq!(g.edge_count(), 1, "the unresolved edge rolled back");
+}
+
 // `_MERGE` keyed upsert (node form). Mirrors the TS `merge.test.ts` so the two
 // engines stay byte-identical. See docs/design/gql-extensions.md §2.
 
