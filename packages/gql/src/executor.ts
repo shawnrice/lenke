@@ -2999,7 +2999,7 @@ const buildTwoHopCount = (
 
   return (graph) => {
     const mids =
-      midLabel !== undefined && midLabel.kind === 'label'
+      midLabel?.kind === 'label'
         ? (graph.verticesByLabel.get(midLabel.name) ?? new Set<Vertex>())
         : graph.verticesById.values();
     let count = 0;

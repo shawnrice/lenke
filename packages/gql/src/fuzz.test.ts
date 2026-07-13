@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
+import type { Query } from './ast.js';
 import { compile, parse, query } from './index.js';
 
 /**
@@ -209,7 +210,7 @@ describe('GQL fuzz: compiled plan agrees with the one-shot path', () => {
       const q = `MATCH (n:Node) WHERE ${P} RETURN element_id(n) AS id ORDER BY id`;
       const ctx = `seed=${seed}\nq=${q}`;
       const oneShot = query(g, q);
-      const plan = compile(parse(q));
+      const plan = compile(parse(q) as Query);
       expect(plan(g), `plan≠query\n${ctx}`).toEqual(oneShot);
       expect(plan(g), `plan not stable\n${ctx}`).toEqual(oneShot); // reuse is pure
     }

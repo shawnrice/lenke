@@ -36,7 +36,9 @@ describe('R-CONSTRAINTS: required', () => {
     ).toBe(true);
     // present (even '' / false / 0) satisfies; the write commits
     expect(
-      g.addVertex({ id: 'd', labels: ['User'], properties: { email: '' } }).getProperty('email'),
+      g
+        .addVertex({ id: 'd', labels: ['User'], properties: { email: '' } })
+        .getProperty<string>('email'),
     ).toBe('');
     // a vertex without the constrained label is unaffected
     expect(g.addVertex({ id: 'e', labels: ['Bot'], properties: {} })).toBeTruthy();
@@ -53,9 +55,9 @@ describe('R-CONSTRAINTS: required', () => {
     expect(isCV(() => v.removeProperties(['email']))).toBe(true);
     // a non-required key is free to change
     v.setProperty('name', 'U');
-    expect(v.getProperty('name')).toBe('U');
+    expect(v.getProperty<string>('name')).toBe('U');
     // the required key survived every rejected write
-    expect(v.getProperty('email')).toBe('u@x.io');
+    expect(v.getProperty<string>('email')).toBe('u@x.io');
   });
 
   test('adding a label brings its required keys into force', () => {
@@ -114,7 +116,7 @@ describe('R-CONSTRAINTS: type', () => {
       labels: ['P'],
       properties: { age: 40, name: 'A', dob: parseDate('2000-01-01'), tags: ['x'] },
     });
-    expect(ok.getProperty('age')).toBe(40);
+    expect(ok.getProperty<number>('age')).toBe(40);
     // null and absent are type-exempt (use `required` for presence)
     expect(g.addVertex({ id: 'n', labels: ['P'], properties: { age: null } })).toBeTruthy();
     expect(g.addVertex({ id: 'm', labels: ['P'], properties: {} })).toBeTruthy();
@@ -122,7 +124,7 @@ describe('R-CONSTRAINTS: type', () => {
     // setProperty enforces the type; null is still exempt
     expect(isCV(() => ok.setProperty('age', 'x'))).toBe(true);
     ok.setProperty('age', 41);
-    expect(ok.getProperty('age')).toBe(41);
+    expect(ok.getProperty<number>('age')).toBe(41);
     ok.setProperty('age', null); // exempt
     expect(ok.getProperty('age')).toBeNull();
   });
@@ -181,7 +183,7 @@ describe('R-CONSTRAINTS: unique (direct-API enforcement, V3)', () => {
     expect(isCV(() => b.setProperty('email', 'x@y.io'))).toBe(true);
     // Re-setting a vertex's own value is not a self-collision.
     b.setProperty('email', 'z@y.io');
-    expect(b.getProperty('email')).toBe('z@y.io');
+    expect(b.getProperty<string>('email')).toBe('z@y.io');
   });
 });
 
@@ -250,7 +252,7 @@ describe('R-CONSTRAINTS: edge unique/required/type', () => {
     expect(isCV(() => e.removeProperty('since'))).toBe(true);
     expect(isCV(() => e.setProperty('since', 'nope'))).toBe(true);
     e.setProperty('since', 2021); // right type, present
-    expect(e.getProperty('since')).toBe(2021);
+    expect(e.getProperty<number>('since')).toBe(2021);
   });
 
   test('setProperty enforces edge unique; self-set is not a collision', () => {
@@ -262,7 +264,7 @@ describe('R-CONSTRAINTS: edge unique/required/type', () => {
 
     expect(isCV(() => e2.setProperty('tag', 'x'))).toBe(true);
     e2.setProperty('tag', 'y'); // re-setting its own value is fine
-    expect(e2.getProperty('tag')).toBe('y');
+    expect(e2.getProperty<string>('tag')).toBe('y');
   });
 
   test('adding an edge type brings its required keys into force', () => {
@@ -317,7 +319,7 @@ describe('R-CONSTRAINTS: edge unique/required/type', () => {
       // An edge added missing its required key, then given it before commit.
       const e3 = tx.addEdge({ from: a, to: b, labels: ['REL'], properties: { tag: 'z' } });
       e3.setProperty('since', 3);
-      expect(e1.getProperty('tag')).toBe('x');
+      expect(e1.getProperty<string>('tag')).toBe('x');
     });
     expect(g.edgeCount).toBe(3); // all three committed
 

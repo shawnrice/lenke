@@ -1481,7 +1481,7 @@ export class Graph {
    * non-null scalar value are checked.
    */
   public uniqueConflict = (
-    labels: readonly string[],
+    labels: Iterable<string>,
     properties: Readonly<Record<string, unknown>>,
     exclude?: Vertex,
   ): { label: string; key: string; existing: Vertex } | undefined => {

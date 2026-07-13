@@ -3,7 +3,7 @@ import { describe, expect, test } from 'bun:test';
 import { Graph } from '@lenke/core';
 import { ErrorCode, hasErrorCode } from '@lenke/errors';
 
-import type { ReturnClause } from './ast.js';
+import type { Query, ReturnClause } from './ast.js';
 import { createTestSocialGraph } from './fixtures/createTestSocialGraph.js';
 import { parseQuery, query } from './index.js';
 import { GqlSyntaxError } from './lexer.js';
@@ -22,7 +22,7 @@ const thrown = (fn: () => unknown): unknown => {
 
 /** The value of the first RETURN item's literal, for accept-case assertions. */
 const litValue = (text: string): unknown => {
-  const q = parseQuery(`RETURN ${text} AS r`);
+  const q = parseQuery(`RETURN ${text} AS r`) as Query;
   const [item] = (q.parts[0].clauses[0] as ReturnClause).projection.items;
 
   return (item.expr as { value: unknown }).value;

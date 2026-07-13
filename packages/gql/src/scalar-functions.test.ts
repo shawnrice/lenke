@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 
 import { ErrorCode, hasErrorCode } from '@lenke/errors';
 
+import type { Query } from './ast.js';
 import { createTestSocialGraph } from './fixtures/createTestSocialGraph.js';
 import { compile, parse, query } from './index.js';
 
@@ -149,7 +150,9 @@ describe('GQL: ISO graph / conversion / string-list scalar functions', () => {
     );
 
     // `compile(parse(...))` throws immediately — before the plan is ever run.
-    expect(codeOf(() => compile(parse(`RETURN nope_fn(1) AS x`)))).toBe(ErrorCode.UnknownFunction);
+    expect(codeOf(() => compile(parse(`RETURN nope_fn(1) AS x`) as Query))).toBe(
+      ErrorCode.UnknownFunction,
+    );
   });
 });
 

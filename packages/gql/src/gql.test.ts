@@ -2,13 +2,13 @@ import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
-import type { MatchClause, Query } from './ast.js';
+import type { MatchClause, Query, Statement } from './ast.js';
 import { createFinancialGraph } from './fixtures/createFinancialGraph.js';
 import { createTestSocialGraph } from './fixtures/createTestSocialGraph.js';
 import { compile, gql, parseQuery, prepare, query } from './index.js';
 
 /** The first clause of a query's first linear part is its MATCH (in these tests). */
-const firstMatch = (q: Query): MatchClause => q.parts[0].clauses[0] as MatchClause;
+const firstMatch = (q: Statement): MatchClause => (q as Query).parts[0].clauses[0] as MatchClause;
 
 const g = createTestSocialGraph();
 const names = (rows: { [k: string]: unknown }[], col: string): unknown[] =>
@@ -659,7 +659,7 @@ describe('GQL: compile / prepare (reusable plans)', () => {
   });
 
   test('compile accepts a pre-parsed AST', () => {
-    const plan = compile(parseQuery(`MATCH (n:Person) WHERE n.age > $min RETURN n.name`));
+    const plan = compile(parseQuery(`MATCH (n:Person) WHERE n.age > $min RETURN n.name`) as Query);
     expect(names(plan(g, { min: 31 }), 'n.name')).toEqual(['josh', 'peter']);
   });
 });

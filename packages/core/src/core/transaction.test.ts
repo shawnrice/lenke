@@ -26,7 +26,7 @@ describe('R-TX: atomic transaction (commit / rollback)', () => {
 
     expect(out).toBe(42);
     expect(g.vertexCount).toBe(2);
-    expect(g.getVertexById('a')?.getProperty('name')).toBe('A');
+    expect(g.getVertexById('a')?.getProperty<string>('name')).toBe('A');
   });
 
   test('a throw inside the transaction rolls every write back (leaves no trace)', () => {
@@ -45,7 +45,7 @@ describe('R-TX: atomic transaction (commit / rollback)', () => {
     // Nothing from the transaction survived.
     expect(g.vertexCount).toBe(1);
     expect(g.getVertexById('a')).toBeNull();
-    expect(g.getVertexById('seed')!.getProperty('name')).toBe('S');
+    expect(g.getVertexById('seed')!.getProperty<string>('name')).toBe('S');
   });
 
   test('rollback reverses edges, labels, and property removals too', () => {
@@ -70,8 +70,8 @@ describe('R-TX: atomic transaction (commit / rollback)', () => {
     expect(g.vertexCount).toBe(2);
     expect(g.edgeCount).toBe(1);
     expect(g.getVertexById('b')).not.toBeNull();
-    expect(g.getEdgeById('e')!.getProperty('since')).toBe(2020);
-    expect(g.getVertexById('a')!.getProperty('age')).toBe(30);
+    expect(g.getEdgeById('e')!.getProperty<number>('since')).toBe(2020);
+    expect(g.getVertexById('a')!.getProperty<number>('age')).toBe(30);
     expect(g.getVertexById('a')!.hasLabel('Admin')).toBe(false);
   });
 
@@ -102,7 +102,7 @@ describe('R-TX: deferred constraint checks', () => {
       u.setProperty('email', 'u@x.io');
     });
 
-    expect(g.getVertexById('u')!.getProperty('email')).toBe('u@x.io');
+    expect(g.getVertexById('u')!.getProperty<string>('email')).toBe('u@x.io');
   });
 
   test('a required violation that survives to commit rolls the whole tx back', () => {
@@ -137,8 +137,8 @@ describe('R-TX: deferred constraint checks', () => {
       tx.getVertexById('a')!.setProperty('email', 'b@x.io');
     });
 
-    expect(g.getVertexById('a')!.getProperty('email')).toBe('b@x.io');
-    expect(g.getVertexById('b')!.getProperty('email')).toBe('a@x.io');
+    expect(g.getVertexById('a')!.getProperty<string>('email')).toBe('b@x.io');
+    expect(g.getVertexById('b')!.getProperty<string>('email')).toBe('a@x.io');
   });
 
   test('a genuine unique collision at commit rolls back', () => {
@@ -176,8 +176,8 @@ describe('R-TX: deferred constraint checks', () => {
     ).toThrow();
 
     // Books stayed balanced — no half-applied transfer.
-    expect(g.getVertexById('acct1')!.getProperty('balance')).toBe(1000);
-    expect(g.getVertexById('acct2')!.getProperty('balance')).toBe(0);
+    expect(g.getVertexById('acct1')!.getProperty<number>('balance')).toBe(1000);
+    expect(g.getVertexById('acct2')!.getProperty<number>('balance')).toBe(0);
   });
 });
 
