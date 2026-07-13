@@ -167,6 +167,7 @@ describe('R-TX: deferred constraint checks', () => {
         const a = tx.getVertexById('acct1')!;
         const b = tx.getVertexById('acct2')!;
         a.setProperty('balance', (a.getProperty<number>('balance') ?? 0) - 400);
+
         // leg 2 "fails" before the credit lands
         throw new Error('remote leg failed');
         // eslint-disable-next-line no-unreachable

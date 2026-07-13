@@ -2219,7 +2219,6 @@ fn insert_tree(node: &mut Vec<(GVal, GVal)>, keys: &[GVal]) {
 
 /// `repeat(body)` with `times` / `until` / `emit` modulators.
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 fn run_repeat(
     graph: &mut Graph,
     ctx: &mut Ctx,

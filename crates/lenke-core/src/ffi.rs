@@ -487,6 +487,10 @@ pub unsafe extern "C" fn lnk_create_cardinality_constraint(
 /// (`ConstraintViolation`), `-2` if the predicate can't be parsed (`Syntax`), or
 /// `-3` for a null handle. (A bad-UTF-8 string arg — never sent by the TS encoder
 /// — also maps to `-2`, a bad-predicate input.)
+///
+/// # Safety
+/// `g` is a valid, uniquely-borrowed `*mut Graph`; all three ptr/len pairs are
+/// valid UTF-8 slices.
 #[no_mangle]
 pub unsafe extern "C" fn lnk_create_validator(
     g: *mut Graph,

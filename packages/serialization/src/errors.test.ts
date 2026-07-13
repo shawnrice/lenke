@@ -53,6 +53,7 @@ describe('serialization error codes', () => {
       } catch (e) {
         return e;
       }
+
       return undefined;
     };
 

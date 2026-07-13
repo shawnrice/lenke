@@ -269,12 +269,12 @@ suite('R-TX differential: ISO transaction keywords (TS vs native)', () => {
 
 // A unique constraint isn't declarable via GQL DDL; both engines take the same
 // programmatic call. Small shims keep the driver engine-neutral.
-function declareRequired(e: Engine): void {
+const declareRequired = (e: Engine): void => {
   const g = (e as unknown as { _g: Graph | RustGraph })._g;
   g.createRequiredConstraint('Acct', 'email');
-}
+};
 
-function declareUnique(e: Engine): void {
+const declareUnique = (e: Engine): void => {
   const g = (e as unknown as { _g: Graph | RustGraph })._g;
   g.createUniqueConstraint('Acct', 'id');
-}
+};

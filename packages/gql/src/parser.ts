@@ -47,7 +47,6 @@ import type {
   PathPattern,
   Projection,
   PropertyConstraint,
-  Query,
   RelPattern,
   RemoveClause,
   RemoveItem,
@@ -161,6 +160,21 @@ const TEMPORAL_KW = new Set(['date', 'datetime', 'timestamp', 'duration']);
 const ADD_OPS: Partial<Record<TokenType, ArithOp>> = { plus: '+', dash: '-' };
 const MUL_OPS: Partial<Record<TokenType, ArithOp>> = { star: '*', slash: '/', percent: '%' };
 
+// A bare reserved word in a binding position is rejected per ISO. The message
+// names backticks explicitly and echoes the user's ORIGINAL casing in both the
+// name and the suggested delimited form — `keyword` tokens lowercase `value`,
+// so `raw` carries the exact spelling (`` `Order` ``, never `` `order` ``).
+const reservedError = (tok: Token, what: string): never => {
+  const original = tok.raw ?? tok.value;
+
+  throw new GqlSyntaxError(
+    `\`${original}\` is a reserved word and can't be used bare as ${what}; ` +
+      `quote it as a delimited identifier with backticks: \`${original}\``,
+    tok.pos,
+  );
+};
+
+// eslint-disable-next-line max-statements -- recursive-descent parser: the body is a suite of stateful closures over the token cursor; splitting them would only thread that state through parameters
 export const parse = (src: string, opts?: { dialect?: Dialect }): Statement => {
   const tokens = tokenize(src);
   let pos = 0;
@@ -259,19 +273,6 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Statement => {
 
   // The single, consistent reserved-word rejection used in every binding
   // position. `what` names the role (a label name, a variable, …). The message
-  // names backticks explicitly and echoes the user's ORIGINAL casing in both the
-  // name and the suggested delimited form — `keyword` tokens lowercase `value`,
-  // so `raw` carries the exact spelling (`` `Order` ``, never `` `order` ``).
-  const reservedError = (tok: Token, what: string): never => {
-    const original = tok.raw ?? tok.value;
-
-    throw new GqlSyntaxError(
-      `\`${original}\` is a reserved word and can't be used bare as ${what}; ` +
-        `quote it as a delimited identifier with backticks: \`${original}\``,
-      tok.pos,
-    );
-  };
-
   // Consume an identifier in a *binding* position (variable, label, property
   // key, alias). A bare reserved word is rejected per ISO; a delimited
   // identifier (backtick) may be any word. Both token classes that can't be a
@@ -1559,7 +1560,7 @@ export const parsePredicate = (src: string): Expr => {
       ? parsed.parts[0].clauses[0]
       : undefined;
 
-  if (!clause || clause.kind !== 'match' || clause.where === undefined) {
+  if (clause?.kind !== 'match' || clause.where === undefined) {
     throw new GqlSyntaxError('a validator predicate must be a single boolean expression', 0);
   }
 

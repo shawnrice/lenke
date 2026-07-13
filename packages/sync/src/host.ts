@@ -483,7 +483,7 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
 
     // Learn this connection's stable client id (for origin-skip) from the write.
     if (msg.clientId) {
-      clientId = msg.clientId;
+      ({ clientId } = msg);
     }
 
     try {
@@ -526,7 +526,7 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
     // Learn this connection's stable client id, so the skip below filters this
     // client's own writes out of its backlog + tail — stable across reconnect.
     if (msg.clientId) {
-      clientId = msg.clientId;
+      ({ clientId } = msg);
     }
 
     writeStreamStop?.(); // a re-subscribe (reconnect) replaces the prior tail

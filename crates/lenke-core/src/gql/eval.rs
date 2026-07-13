@@ -6026,11 +6026,11 @@ impl Statement {
     /// [`super::parse`].
     pub fn execute(&self, graph: &mut Graph, params: &Params) -> CodeResult<RowSet> {
         match self {
-            Statement::Query(q) => {
+            Self::Query(q) => {
                 enforce_read_only(graph, q)?;
                 q.execute(graph, params)
             }
-            Statement::Tx(tx) => run_tx_control(tx, graph),
+            Self::Tx(tx) => run_tx_control(tx, graph),
         }
     }
 
@@ -6039,11 +6039,11 @@ impl Statement {
     #[cfg(feature = "arrow")]
     pub fn execute_arrow(&self, graph: &mut Graph, params: &Params) -> CodeResult<Vec<u8>> {
         match self {
-            Statement::Query(q) => {
+            Self::Query(q) => {
                 enforce_read_only(graph, q)?;
                 q.execute_arrow(graph, params)
             }
-            Statement::Tx(tx) => {
+            Self::Tx(tx) => {
                 let rs = run_tx_control(tx, graph)?;
                 Ok(crate::arrow::to_arrow(&rs))
             }

@@ -8,6 +8,7 @@ import { type ErrorReport, parseErrorReport } from './marshal.js';
 // everything is 32-bit linear-memory offsets (usize → i32) and u64 returns
 // arrive as BigInt. JS cannot point at its own heap, so inputs are copied into
 // the module's memory via `lnk_alloc` first.
+/* eslint-disable max-params -- the `lnk_*` declarations mirror the C ABI arity 1:1; the constraint/validator symbols legitimately take 7-8 offset args and can't drop params */
 type WasmExports = {
   memory: WebAssembly.Memory;
   lnk_abi_version: () => number;
@@ -145,6 +146,7 @@ type WasmExports = {
   // does — error-code parity across both backends.
   lnk_last_error_json: (outLen: number) => number;
 };
+/* eslint-enable max-params */
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();

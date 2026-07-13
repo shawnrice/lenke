@@ -163,9 +163,11 @@ describe('GQL: _MERGE (keyed upsert, node form)', () => {
       `MATCH (n:Person) DETACH DELETE n`,
       `MATCH (n) RETURN count(*) AS c ORDER BY c DESC LIMIT 5`,
     ];
+
     for (const q of iso) {
       expect(() => parse(q, { dialect: 'iso-strict' }), q).not.toThrow();
     }
+
     // Every extension construct is a syntax error under iso-strict.
     for (const ext of [
       `_MERGE (u:Acct {email: 'a'})`,

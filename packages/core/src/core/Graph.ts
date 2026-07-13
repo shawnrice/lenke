@@ -2044,13 +2044,17 @@ export class Graph {
 
   /** Every declared cardinality constraint, sorted by `(label, edgeType, direction)`. */
   public cardinalityConstraints = (): CardinalityConstraint[] =>
-    [...this.vertexCardinalityConstraints.values()].sort((a, b) =>
-      a.label !== b.label
-        ? a.label.localeCompare(b.label)
-        : a.edgeType !== b.edgeType
-          ? a.edgeType.localeCompare(b.edgeType)
-          : a.direction.localeCompare(b.direction),
-    );
+    [...this.vertexCardinalityConstraints.values()].sort((a, b) => {
+      if (a.label !== b.label) {
+        return a.label.localeCompare(b.label);
+      }
+
+      if (a.edgeType !== b.edgeType) {
+        return a.edgeType.localeCompare(b.edgeType);
+      }
+
+      return a.direction.localeCompare(b.direction);
+    });
 
   /**
    * The first cardinality constraint `vertex` currently violates (degree below

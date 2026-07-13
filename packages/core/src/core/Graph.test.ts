@@ -282,6 +282,7 @@ describe('Graph Tests', () => {
 
       // message points at the escape hatch, code is E_INVALID_VALUE
       expect(() => g.addVertex({ labels: ['N'], properties: { big: 1n } })).toThrow(/Number\(/);
+
       for (const attempt of [
         () => g.addVertex({ labels: ['N'], properties: { big: 1n } }),
         () => g.addVertex({ labels: ['N'], properties: { list: [1, 2n] } }), // hidden in a list

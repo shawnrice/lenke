@@ -203,6 +203,7 @@ export const orderStep = function* (
 ): Iterable<Traverser<unknown>> {
   const items = [...stream];
   sortByBys(items, (t) => t.value, bys, desc, graph, ctx);
+
   yield* items;
 };
 
@@ -225,10 +226,12 @@ export const orderLocalStep = function* (
     if (v instanceof Map) {
       const entries = [...v.entries()];
       sortByBys(entries, (e) => e[1], bys, desc, graph, ctx);
+
       yield extend(t, new Map(entries));
     } else if (isSliceable(v)) {
-      const items = [...(v as Iterable<unknown>)];
+      const items = [...v];
       sortByBys(items, (x) => x, bys, desc, graph, ctx);
+
       yield extend(t, items);
     } else {
       yield t;

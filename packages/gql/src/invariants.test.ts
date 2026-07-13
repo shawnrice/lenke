@@ -26,7 +26,7 @@ const ledger = (): Graph => {
 };
 
 const sum = (g: Graph): number =>
-  (query<{ s: number }>(g, `MATCH (a:Acct) RETURN sum(a.balance) AS s`)[0]?.s ?? NaN) as number;
+  query<{ s: number }>(g, `MATCH (a:Acct) RETURN sum(a.balance) AS s`)[0]?.s ?? NaN;
 
 // A graph-level INVARIANT is a whole-graph GQL assertion query that must hold
 // after every write transaction. Unlike a per-element validator, it runs ONCE per

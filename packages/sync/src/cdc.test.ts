@@ -393,6 +393,7 @@ describe('CDC write stream — client ordering guard (transport-free)', () => {
           if (w.text === 'POISON') {
             throw new Error('un-appliable write');
           }
+
           applied.push(w.text);
         }
       },
