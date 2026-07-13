@@ -75,6 +75,8 @@ decodeNodes(await readFile('nodes.csv', 'utf8'), g); // nodes first (edges resol
 decodeEdges(await readFile('edges.csv', 'utf8'), g);
 ```
 
+**`decodeNodes` is the Neo4j `admin-import` node codec, not a general CSV loader.** It expects the header's second column to be `:LABEL`: a plain business CSV like `id,name,email` silently consumes column 2 (`name`) as the label set and drops its header — no error, wrong graph. Point it at admin-import-shaped CSV only; for arbitrary CSV, map the columns yourself and build the graph via the normal API.
+
 Header/column conventions: `id,:LABEL,key,key:integer,tags:string[]` for nodes; `:START_ID,:END_ID,:TYPE,key…` for edges. A node line's `id` and `:LABEL` (`;`-joined for multi-label) come first; a property column may carry a type (`:integer`/`:float`/`:boolean`/`:string[]`); `\N` is a stored null and a quoted empty `""` a present empty string. `decodeNodesStream` / `decodeEdgesStream` take a `ChunkSource` for large files. **One asymmetry to know:** batch `decodeEdges` **throws** `E_MISSING_VERTEX` on an edge whose endpoint isn't present, while `decodeEdgesStream` **creates** the missing endpoint as a bare vertex (stream decoding can't look ahead) — pre-validate endpoints if you need the strict behavior on the streaming path.
 
 ## License

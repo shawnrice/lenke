@@ -69,7 +69,20 @@ Drop an index with `dropVertexIndex(key)` / `dropEdgeIndex(key)`, and list activ
 
 ## Events and reactivity
 
-Mutations emit typed graph events you can listen to with `graph.on(type, listener)` / `graph.once(...)`; **`graph.on` returns an unsubscribe function** (call it to detach). A listener may call `event.preventDefault()` to veto the mutation — which is possible because **events fire pre-commit** (before the change is written), so a handler also sees the element's current/old state. The singular property-change events (`VertexPropertyChanged` / `EdgePropertyChanged`) carry `previous` (the value before the write, `undefined` if the key was absent) alongside `value` — enough to build an undo/redo stack purely from events without reading pre-commit state yourself. `graph.subscribe(callback)` registers a coalesced change callback (one deferred notification per tick) and returns an unsubscribe function. `graph.version` is a monotonic mutation counter, and `graph.epoch(name)` is a per-token (label / edge-type / property-key) change counter — both suited to `useSyncExternalStore`-style snapshots. Use `enableEvents()` / `disableEvents()` to toggle emission.
+Mutations emit typed graph events you can listen to with `graph.on(type, listener)` / `graph.once(...)`; **`graph.on` returns an unsubscribe function** (call it to detach). Events are **observation-only** — a notification that a write happened, for side effects and reactivity (there is no veto; enforce rules with constraints instead, below). Inside a `graph.transaction(...)` events are buffered and dispatched as one batch on commit (and discarded on rollback), so an emitted event always corresponds to a committed write.
+
+**Read the payload off `event.value`, not off `event`.** Each listener receives an event whose `.value` is the payload object — a common trip-up is reaching for `event.previous` (which is `undefined`); it's `event.value.previous`:
+
+```ts
+const off = graph.on('@graph/VertexPropertyChanged', (event) => {
+  const { vertex, key, value, previous } = event.value;
+  //     ^element  ^key   ^new   ^old (undefined if the key was absent)
+  console.log(`${vertex.id}.${key}: ${previous} → ${value}`);
+});
+off(); // detach
+```
+
+The singular property-change events (`VertexPropertyChanged` / `EdgePropertyChanged`) carry `previous` alongside `value` — enough to build an undo/redo stack purely from events. `graph.subscribe(callback)` registers a coalesced change callback (one deferred notification per tick) and returns an unsubscribe function. `graph.version` is a monotonic mutation counter, and `graph.epoch(name)` is a per-token (label / edge-type / property-key) change counter — both suited to `useSyncExternalStore`-style snapshots. Use `enableEvents()` / `disableEvents()` to toggle emission.
 
 `graph.clone()` produces an independent deep copy; `graph.snapshot()` returns the live graph for reads; `graph.truncate()` empties the graph while keeping declared indexes.
 
