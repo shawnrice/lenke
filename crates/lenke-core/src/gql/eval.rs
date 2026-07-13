@@ -5001,6 +5001,118 @@ fn try_count_edges(
     Some(rs)
 }
 
+/// Intra-query parallel count for `MATCH <path with ≥1 segment> [WHERE …] RETURN
+/// count(*)` — the read-only traversal count that stays scalar (a pure aggregate
+/// over a traversal isn't vectorized, and `try_count_edges` only covers a single
+/// WHERE-less segment). The seed vertices are split across rayon threads; each
+/// runs the **same** single-threaded matcher over its chunk with a thread-local
+/// counter and its own binding, then the partials are summed — the "accumulator"
+/// model. `Graph`/`Ctx` are `Sync` and the walk is read-only, so this is a pure
+/// latency win (the outer seed loop is embarrassingly parallel). Any WHERE fault
+/// is recorded atomically and surfaced via `check_fault` exactly as the serial
+/// path would. Returns `None` below a seed threshold (serial keeps small queries
+/// off the thread hand-off) or when the shape doesn't qualify.
+#[cfg(feature = "parallel-query")]
+fn try_parallel_count(
+    linear: &CLinear,
+    graph: &Graph,
+    plan: &CQuery,
+    params: &[Val],
+) -> Option<CodeResult<RowSet>> {
+    let [CClause::Match {
+        optional: false,
+        patterns,
+        where_,
+        where_prog,
+        scope_len,
+    }, CClause::Return(proj)] = linear.clauses.as_slice()
+    else {
+        return None;
+    };
+    let [path] = patterns.as_slice() else {
+        return None;
+    };
+    // Traversals only — a bare-node scan/filter count has its own fast paths.
+    if path.segments.is_empty() {
+        return None;
+    }
+    // The projection is exactly `count(*)` (mirrors `try_count_star`).
+    if proj.distinct
+        || !proj.order_by.is_empty()
+        || proj.skip.is_some()
+        || proj.limit.is_some()
+        || proj.out_len != 1
+        || proj.aggs.len() != 1
+        || proj.items.len() != 1
+        || !matches!(proj.items[0].expr, CExpr::AggRef(0))
+    {
+        return None;
+    }
+    let agg = &proj.aggs[0];
+    if !agg.star || agg.distinct || !matches!(agg.func, AggFn::Count) {
+        return None;
+    }
+
+    let threads = rayon::current_num_threads();
+    if threads <= 1 {
+        return None;
+    }
+    let ctx = resolve_ctx(graph, plan, params);
+
+    // Seed set — mirror `match_one_path`: a bare start label seeds its bucket,
+    // otherwise every live vertex.
+    let seeds: Vec<u32> = match path.start.label.as_ref().and_then(seed_label) {
+        Some(r) => match ctx.labels[r].0 {
+            Some(lid) => graph.vertices_with_label(lid).to_vec(),
+            None => return Some(count_rows(proj, 0)), // unknown label → 0
+        },
+        None => graph.vertex_indices().collect(),
+    };
+    // Below this, the thread hand-off would dominate the walk — stay serial.
+    const MIN_SEEDS: usize = 8_192;
+    if seeds.len() < MIN_SEEDS {
+        return None;
+    }
+
+    let cwhere = where_.as_ref();
+    let cwhere_prog = where_prog.as_ref();
+    let width = (*scope_len).max(1);
+    // Chunk for work-stealing balance while keeping per-chunk overhead low.
+    let chunk = (seeds.len() / (threads * 4)).max(1_024);
+    let count: u64 = seeds
+        .par_chunks(chunk)
+        .map(|chunk| {
+            let mut local = 0u64;
+            let mut b = Binding(vec![None; width]);
+            for &s in chunk {
+                if ctx.faulted() {
+                    break; // a sibling chunk already faulted — stop early
+                }
+                match_node_continue(graph, &ctx, &mut b, &path.start, s, path, 0, &mut |bnd| {
+                    if where_keep(&Env::new(graph, &ctx, bnd), cwhere, cwhere_prog) {
+                        local += 1;
+                    }
+                    true // never stop — a full count visits every match
+                });
+            }
+            local
+        })
+        .sum();
+
+    if let Err(e) = ctx.check_fault() {
+        return Some(Err(e));
+    }
+    Some(count_rows(proj, count))
+}
+
+/// Build the single-row `count(*)` result for a projection.
+#[cfg(feature = "parallel-query")]
+fn count_rows(proj: &CProjection, count: u64) -> CodeResult<RowSet> {
+    let mut rs = RowSet::new(proj.out_names.clone());
+    rs.push_row(std::iter::once(Value::Num(count as f64)));
+    Ok(rs)
+}
+
 /// Vectorized executor for a whole linear pipeline: `MATCH <path> (WITH …)+
 /// RETURN …`. Threads a single columnar frame stage-to-stage — carrying element
 /// columns forward so prop reads/filters/ORDER BY past a `WITH` stay vectorized,
@@ -5014,14 +5126,9 @@ fn vectorized_linear(
     plan: &CQuery,
     params: &[Val],
 ) -> Option<RowSet> {
-    // O(1) shortcut for a bare `MATCH (n:Label) RETURN count(*)`.
-    if let Some(rs) = try_count_star(linear, graph, plan, params) {
-        return Some(rs);
-    }
-    // Edge-anchored shortcut for `MATCH (a)-[:T]->(b) RETURN count(*)`.
-    if let Some(rs) = try_count_edges(linear, graph, plan, params) {
-        return Some(rs);
-    }
+    // The `count(*)` shortcuts (`try_count_star` / `try_count_edges`) are applied
+    // earlier, in `run_part`, ahead of the parallel path — so they aren't repeated
+    // here.
     // Validate the whole clause shape *before* any scan work, so a non-pipeline
     // query bails for free (no wasted build_scan) and keeps the entry path.
     let (first, rest) = linear.clauses.split_first()?;
@@ -6042,6 +6149,28 @@ fn run_part(
     plan: &CQuery,
     params: &[Val],
 ) -> CodeResult<RowSet> {
+    // Cheapest first: the O(1) / edge-scan `count(*)` shortcuts — a bare-node
+    // count reads a label bucket length, a single WHERE-less typed segment reads
+    // the edge-type bucket. These beat both parallel and the vectorized frame, so
+    // they run ahead of them (e.g. `MATCH ()-[:T]->() RETURN count(*)` is O(1)).
+    if USE_VEC {
+        if let Some(rs) = try_count_star(linear, graph, plan, params) {
+            return Ok(rs);
+        }
+        if let Some(rs) = try_count_edges(linear, graph, plan, params) {
+            return Ok(rs);
+        }
+    }
+    // Intra-query parallel count over a traversal (opt-in `parallel-query`). Tried
+    // before the vectorized pipeline: for a pure `count(*)` over a multi-hop or
+    // filtered traversal the vectorized path *materializes* every intermediate row
+    // into a frame just to count it, whereas this streams the walk across all
+    // cores with per-thread counters — no materialization. Only fires above a seed
+    // threshold, so small queries still take the vectorized/scalar path below.
+    #[cfg(feature = "parallel-query")]
+    if let Some(res) = try_parallel_count(linear, graph, plan, params) {
+        return res;
+    }
     if USE_VEC {
         if let Some(rs) = vectorized_linear(linear, graph, plan, params) {
             return Ok(rs);
