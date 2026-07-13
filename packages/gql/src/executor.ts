@@ -3018,8 +3018,27 @@ const mapToRow = (b: Binding): Row => {
   return row;
 };
 
-/** Run one compiled linear query (clause sequence) to result rows. */
+const WRITE_CLAUSES = new Set(['insert', 'merge', 'set', 'remove', 'delete']);
+
+/**
+ * Run one compiled linear query (clause sequence) to result rows. A statement
+ * that writes runs inside one transaction, so a mid-statement fault (e.g. a
+ * later row of a multi-row INSERT violating a constraint) rolls the earlier rows
+ * back instead of leaving the write half-applied — per-statement atomicity,
+ * byte-identical to the native engine's auto-commit frame. Read-only statements
+ * skip the frame (no undo/commit overhead).
+ */
 const runLinear = (linear: CLinear, graph: Graph, params: Params): Row[] => {
+  const writes = linear.clauses.some((clause) => WRITE_CLAUSES.has(clause.kind));
+
+  if (!writes) {
+    return runLinearClauses(linear, graph, params);
+  }
+
+  return graph.transaction(() => runLinearClauses(linear, graph, params));
+};
+
+const runLinearClauses = (linear: CLinear, graph: Graph, params: Params): Row[] => {
   // Bindings flow as a lazy stream; only barriers (mutations, aggregation,
   // ORDER BY) force materialization — so a streaming read never holds the whole
   // result set in memory.

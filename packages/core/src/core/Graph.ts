@@ -50,6 +50,13 @@ export type ScalarTypeName =
   | 'duration'
   | 'list';
 
+/**
+ * Where a buffered transaction event stashes its reactive tokens, captured while
+ * the element is still live (see {@link Graph.emit}); `markMutated` reads them at
+ * commit-time dispatch instead of re-deriving from a possibly-evicted element.
+ */
+const TX_TOKENS = Symbol('lenke.txTokens');
+
 /** The set of accepted {@link ScalarTypeName}s, for runtime validation at the constraint boundary. */
 const SCALAR_TYPE_NAMES: ReadonlySet<ScalarTypeName> = new Set([
   'string',
@@ -169,8 +176,11 @@ export class Graph {
     const markMutated = (event: GraphEvent) => {
       // Capture the touched tokens NOW, synchronously, while the element is
       // still attached — a removal nulls the element's graph ref before the
-      // deferred step below runs, so reading labels/keys there would throw.
-      const tokens = this.tokensOf(event);
+      // deferred step below runs, so reading labels/keys there would throw. A
+      // buffered transaction event already captured them at buffer time (the
+      // element is evicted by the time it dispatches at commit), so prefer those.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const tokens = (event as any)[TX_TOKENS] ?? this.tokensOf(event);
       const doTheWork = () => {
         // Advance the reactive counters (deferred so a burst of mutations
         // coalesces into one React notify). A mutation event always means a
@@ -1418,6 +1428,11 @@ export class Graph {
     // both treat it that way), so staged writes that might roll back must not
     // fire until commit. Flushed on commit; discarded on rollback.
     if (this.txDepth > 0) {
+      // Capture the reactive tokens now, while the element is still live — a
+      // removal evicts the element (nulls its graph ref) before this event is
+      // dispatched at commit, after which its `labels` getter would throw.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (event as any)[TX_TOKENS] = this.tokensOf(event as never);
       this.txEvents.push(event);
 
       return event;
