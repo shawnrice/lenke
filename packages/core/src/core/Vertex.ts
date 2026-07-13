@@ -110,7 +110,18 @@ export class Vertex {
     this.#graph?.assertRequiredOnSet(this, key, value);
     this.#graph?.assertTypeOnSet(this, key, value);
     this.#graph?.assertUniqueOnSet(this, key, value);
+    const g = this.#graph;
+    const id = this.id;
+    const had = key in this.properties;
     const previousValue = this.properties[key]; // read before the write; undefined if absent
+    // Resolve the element fresh by id at replay time — a later remove+re-add in
+    // the same transaction swaps the object identity, so a captured `this` would
+    // be a stale, evicted handle.
+    g?.recordUndo(
+      had
+        ? () => void g.getVertexById(id)?.setProperty(key, previousValue)
+        : () => void g.getVertexById(id)?.removeProperty(key),
+    );
     this.#graph?.emit(
       new EmitterEvent('@graph/VertexPropertyChanged', {
         vertex: this,
@@ -136,6 +147,23 @@ export class Vertex {
     const previousValues = Object.fromEntries(
       Object.keys(props).map((key) => [key, this.properties[key]]),
     );
+    const g = this.#graph;
+    const id = this.id;
+    const undoRestore = Object.keys(props).filter((key) => key in this.properties);
+    const undoRemove = Object.keys(props).filter((key) => !(key in this.properties));
+    const undoValues = Object.fromEntries(undoRestore.map((key) => [key, this.properties[key]]));
+    g?.recordUndo(() => {
+      const v = g.getVertexById(id);
+      if (!v) {
+        return;
+      }
+      if (undoRestore.length > 0) {
+        v.setProperties(undoValues);
+      }
+      if (undoRemove.length > 0) {
+        v.removeProperties(undoRemove);
+      }
+    });
 
     this.#graph?.emit(
       new EmitterEvent('@graph/VertexPropertiesChanged', {
@@ -163,7 +191,10 @@ export class Vertex {
     }
 
     this.#graph?.assertRequiredOnRemove(this, key);
+    const g = this.#graph;
+    const id = this.id;
     const previousValue = this.properties[key];
+    g?.recordUndo(() => void g.getVertexById(id)?.setProperty(key, previousValue));
     this.#graph?.emit(
       new EmitterEvent('@graph/VertexPropertyRemoved', {
         vertex: this,
@@ -184,9 +215,12 @@ export class Vertex {
       }
     }
 
+    const g = this.#graph;
+    const id = this.id;
     const removed = Object.fromEntries(
       keys.filter((key) => key in this.properties).map((key) => [key, this.properties[key]]),
     );
+    g?.recordUndo(() => void g.getVertexById(id)?.setProperties(removed));
     this.#graph?.emit(
       new EmitterEvent('@graph/VertexPropertiesRemoved', { vertex: this, keys, previous: removed }),
     );

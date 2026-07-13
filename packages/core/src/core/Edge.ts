@@ -127,7 +127,16 @@ export class Edge {
   setProperty(key: string, value: unknown): void {
     validatePropertyKey(key);
     validatePropertyValue(value);
+    const g = this.#graph;
+    const id = this.id;
+    const had = key in this.properties;
     const previousValue = this.properties[key]; // read before the write; undefined if absent
+    // Resolve fresh by id at replay time — a later remove+re-add swaps identity.
+    g?.recordUndo(
+      had
+        ? () => void g.getEdgeById(id)?.setProperty(key, previousValue)
+        : () => void g.getEdgeById(id)?.removeProperty(key),
+    );
     this.#graph?.emit(
       new EmitterEvent('@graph/EdgePropertyChanged', {
         edge: this,
@@ -150,6 +159,23 @@ export class Edge {
     const previousValues = Object.fromEntries(
       Object.keys(props).map((key) => [key, this.properties[key]]),
     );
+    const g = this.#graph;
+    const id = this.id;
+    const undoRestore = Object.keys(props).filter((key) => key in this.properties);
+    const undoRemove = Object.keys(props).filter((key) => !(key in this.properties));
+    const undoValues = Object.fromEntries(undoRestore.map((key) => [key, this.properties[key]]));
+    g?.recordUndo(() => {
+      const e = g.getEdgeById(id);
+      if (!e) {
+        return;
+      }
+      if (undoRestore.length > 0) {
+        e.setProperties(undoValues);
+      }
+      if (undoRemove.length > 0) {
+        e.removeProperties(undoRemove);
+      }
+    });
 
     this.#graph?.emit(
       new EmitterEvent('@graph/EdgePropertiesChanged', {
@@ -172,7 +198,10 @@ export class Edge {
       return;
     }
 
+    const g = this.#graph;
+    const id = this.id;
     const previousValue = this.properties[key];
+    g?.recordUndo(() => void g.getEdgeById(id)?.setProperty(key, previousValue));
     this.#graph?.emit(
       new EmitterEvent('@graph/EdgePropertyRemoved', { edge: this, key, previous: previousValue }),
     );
@@ -183,9 +212,12 @@ export class Edge {
   }
 
   removeProperties(keys: string[]): void {
+    const g = this.#graph;
+    const id = this.id;
     const removed = Object.fromEntries(
       keys.filter((key) => key in this.properties).map((key) => [key, this.properties[key]]),
     );
+    g?.recordUndo(() => void g.getEdgeById(id)?.setProperties(removed));
     this.#graph?.emit(
       new EmitterEvent('@graph/EdgePropertiesRemoved', { edge: this, keys, previous: removed }),
     );

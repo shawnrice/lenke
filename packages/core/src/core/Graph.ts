@@ -106,6 +106,20 @@ export class Graph {
 
   emitter: Emitter<keyof GraphEvents, GraphEvents>;
 
+  // R-TX transaction state. `txDepth > 0` means an open transaction: writes still
+  // apply eagerly to the live store (so reads inside see their own writes), but
+  // each mutation records an inverse op in `txUndo`, emitted events buffer in
+  // `txEvents` (dispatched together on commit, discarded on rollback), and the
+  // built-in constraint checks defer to commit — the touched vertex ids collect
+  // in `txTouched`. `applyingUndo` is true only while a rollback replays inverse
+  // ops, which must neither re-record undo nor re-run constraint checks.
+  private txDepth = 0;
+  private txUndo: Array<() => void> = [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private txEvents: Array<EmitterEvent<any, any>> = [];
+  private txTouched = new Set<string>();
+  private applyingUndo = false;
+
   constructor(options: GraphOptions = {}) {
     this.verticesById = new Map();
     this.edgesById = new Map();
@@ -367,6 +381,15 @@ export class Graph {
   };
 
   public truncate = (): void => {
+    // A wholesale reset can't be captured as a bounded undo-log (it would clone
+    // the entire graph), so it's not reversible inside a transaction. Callers who
+    // need it should truncate outside the transaction boundary.
+    if (this.txDepth > 0) {
+      throw new LenkeError('truncate() is not supported inside a transaction', {
+        code: ErrorCode.InvalidGraphOp,
+      });
+    }
+
     // Emit a removal event for every element before clearing, so `truncate` — the
     // most destructive op — is visible to every listener/journal that already
     // handles `@graph/EdgeRemoved`/`@graph/VertexRemoved` (React sync, an audit
@@ -446,32 +469,39 @@ export class Graph {
 
     // Constraint gate: reject before emitting/committing, so a rejected write
     // leaves no trace and every write path (direct API, GQL, Gremlin, ingest)
-    // is covered by one chokepoint.
-    const missing = this.missingRequired(vertex.labels, vertex.properties);
+    // is covered by one chokepoint. Inside a transaction the checks defer to
+    // commit (record the touched vertex); a rollback replay skips them entirely.
+    if (this.applyingUndo) {
+      // rollback replay restores known-good state — never re-check.
+    } else if (this.txDepth > 0) {
+      this.txTouched.add(vertex.id);
+    } else {
+      const missing = this.missingRequired(vertex.labels, vertex.properties);
 
-    if (missing) {
-      throw new LenkeError(
-        `missing required property '${missing.key}' for label '${missing.label}'`,
-        { code: ErrorCode.ConstraintViolation },
-      );
-    }
+      if (missing) {
+        throw new LenkeError(
+          `missing required property '${missing.key}' for label '${missing.label}'`,
+          { code: ErrorCode.ConstraintViolation },
+        );
+      }
 
-    const badType = this.typeViolation(vertex.labels, vertex.properties);
+      const badType = this.typeViolation(vertex.labels, vertex.properties);
 
-    if (badType) {
-      throw new LenkeError(
-        `property '${badType.key}' must be ${badType.expected} on '${badType.label}', got ${badType.got}`,
-        { code: ErrorCode.ConstraintViolation },
-      );
-    }
+      if (badType) {
+        throw new LenkeError(
+          `property '${badType.key}' must be ${badType.expected} on '${badType.label}', got ${badType.got}`,
+          { code: ErrorCode.ConstraintViolation },
+        );
+      }
 
-    const dup = this.uniqueConflict(vertex.labels, vertex.properties, vertex);
+      const dup = this.uniqueConflict(vertex.labels, vertex.properties, vertex);
 
-    if (dup) {
-      throw new LenkeError(
-        `unique constraint on '${dup.label}.${dup.key}' violated by value ${JSON.stringify(dup.existing.properties[dup.key])}`,
-        { code: ErrorCode.ConstraintViolation },
-      );
+      if (dup) {
+        throw new LenkeError(
+          `unique constraint on '${dup.label}.${dup.key}' violated by value ${JSON.stringify(dup.existing.properties[dup.key])}`,
+          { code: ErrorCode.ConstraintViolation },
+        );
+      }
     }
 
     this.emit(new EmitterEvent('@graph/VertexAdded', vertex));
@@ -483,6 +513,8 @@ export class Graph {
     }
 
     this.vertexPropertyIndex.add(vertex, vertex.properties);
+
+    this.recordUndo(() => this.removeVertex(vertex.id));
 
     return vertex;
   };
@@ -510,6 +542,14 @@ export class Graph {
       return null;
     }
 
+    // Capture the vertex's state while it's still live, so a rollback can
+    // reconstruct it. Its incident edges reconstruct via each `removeEdge`'s own
+    // inverse below (recorded before this vertex's re-add, so on reverse replay
+    // the vertex comes back first, then its edges).
+    const undoId = vertex.id;
+    const undoLabels = [...vertex.labels];
+    const undoProps = { ...vertex.properties };
+
     this.emit(new EmitterEvent('@graph/VertexRemoved', vertex));
 
     for (const edge of this.incidentEdges(vertex.id)) {
@@ -528,19 +568,32 @@ export class Graph {
 
     vertex.evict();
 
+    this.recordUndo(() =>
+      this.addVertex({ id: undoId, labels: undoLabels, properties: undoProps }),
+    );
+
     return vertex;
   };
 
   public addLabelToVertex = (label: string, vertex: Vertex): Vertex => {
     validateLabel(label);
 
-    // Adding a label brings its required keys into force for this vertex.
-    for (const key of this.vertexRequiredConstraints.get(label) ?? []) {
-      if (!this.isPresent(vertex.properties[key])) {
-        throw new LenkeError(
-          `cannot add label '${label}': it requires property '${key}', which is missing`,
-          { code: ErrorCode.ConstraintViolation },
-        );
+    const hadLabel = (this.elementLabels.get(vertex.id) ?? new Set()).has(label);
+
+    // Adding a label brings its required keys into force for this vertex. Inside
+    // a transaction the check defers to commit (via the touched set).
+    if (this.applyingUndo) {
+      // rollback replay — skip the check.
+    } else if (this.txDepth > 0) {
+      this.txTouched.add(vertex.id);
+    } else {
+      for (const key of this.vertexRequiredConstraints.get(label) ?? []) {
+        if (!this.isPresent(vertex.properties[key])) {
+          throw new LenkeError(
+            `cannot add label '${label}': it requires property '${key}', which is missing`,
+            { code: ErrorCode.ConstraintViolation },
+          );
+        }
       }
     }
 
@@ -551,16 +604,26 @@ export class Graph {
     next.add(label);
     this.elementLabels.set(vertex.id, next);
 
+    if (!hadLabel) {
+      this.recordUndo(() => this.removeLabelFromVertex(label, vertex));
+    }
+
     return vertex;
   };
 
   public removeLabelFromVertex = (label: string, vertex: Vertex): Vertex => {
+    const hadLabel = (this.elementLabels.get(vertex.id) ?? new Set()).has(label);
+
     this.emit(new EmitterEvent('@graph/LabelRemovedFromVertex', { label, vertex }));
 
     this.deIndexVertexLabel(label, vertex);
     const next = new Set(this.elementLabels.get(vertex.id) ?? []);
     next.delete(label);
     this.elementLabels.set(vertex.id, next);
+
+    if (hadLabel) {
+      this.recordUndo(() => this.addLabelToVertex(label, vertex));
+    }
 
     return vertex;
   };
@@ -639,10 +702,19 @@ export class Graph {
 
     this.edgePropertyIndex.add(edge, edge.properties);
 
+    this.recordUndo(() => this.removeEdge(edge));
+
     return edge;
   };
 
   public removeEdge = (edge: Edge): Edge => {
+    // Capture the edge's shape while live, so a rollback can reconstruct it.
+    const undoId = edge.id;
+    const undoLabels = [...edge.labels];
+    const undoProps = { ...edge.properties };
+    const undoFrom = edge.from.id;
+    const undoTo = edge.to.id;
+
     this.emit(new EmitterEvent('@graph/EdgeRemoved', edge));
 
     for (const label of edge.labels) {
@@ -654,6 +726,16 @@ export class Graph {
     this.edgesById.delete(edge.id);
 
     edge.evict();
+
+    this.recordUndo(() =>
+      this.addEdge({
+        id: undoId,
+        from: this.getVertexById(undoFrom)!,
+        to: this.getVertexById(undoTo)!,
+        labels: undoLabels,
+        properties: undoProps,
+      }),
+    );
 
     return edge;
   };
@@ -673,6 +755,8 @@ export class Graph {
 
     this.indexEdgeLabel(label, edge);
 
+    this.recordUndo(() => this.removeLabelFromEdge(label, edge));
+
     return edge;
   };
 
@@ -688,6 +772,8 @@ export class Graph {
     this.elementLabels.set(edge.id, next);
 
     this.deIndexEdgeLabel(label, edge);
+
+    this.recordUndo(() => this.addLabelToEdge(label, edge));
 
     return edge;
   };
@@ -993,9 +1079,33 @@ export class Graph {
     return false;
   };
 
+  /**
+   * Inside a transaction (or a rollback replay) the per-write constraint gates
+   * defer to the commit-time recheck rather than throwing immediately. Returns
+   * true if the caller should skip its inline check; records the touched vertex
+   * so {@link runDeferredChecks} revisits it at commit (a replay records nothing).
+   */
+  private deferConstraint = (vertex: Vertex): boolean => {
+    if (this.applyingUndo) {
+      return true;
+    }
+
+    if (this.txDepth > 0) {
+      this.txTouched.add(vertex.id);
+
+      return true;
+    }
+
+    return false;
+  };
+
   /** Throw if setting `vertex.key = value` would null out a required key. Called
    *  by the property mutators so every write path is guarded, not just the API. */
   public assertRequiredOnSet = (vertex: Vertex, key: string, value: unknown): void => {
+    if (this.deferConstraint(vertex)) {
+      return;
+    }
+
     if (!this.isPresent(value) && this.isRequiredKey(vertex, key)) {
       throw new LenkeError(`cannot set required property '${key}' to null`, {
         code: ErrorCode.ConstraintViolation,
@@ -1005,6 +1115,10 @@ export class Graph {
 
   /** Throw if removing `vertex.key` would drop a required key. */
   public assertRequiredOnRemove = (vertex: Vertex, key: string): void => {
+    if (this.deferConstraint(vertex)) {
+      return;
+    }
+
     if (this.isRequiredKey(vertex, key)) {
       throw new LenkeError(`cannot remove required property '${key}'`, {
         code: ErrorCode.ConstraintViolation,
@@ -1141,6 +1255,10 @@ export class Graph {
   /** Throw if setting `vertex.key = value` would break a type constraint. Null
    *  is exempt (a null has no type — `required` governs presence). */
   public assertTypeOnSet = (vertex: Vertex, key: string, value: unknown): void => {
+    if (this.deferConstraint(vertex)) {
+      return;
+    }
+
     if (this.vertexTypeConstraints.size === 0) {
       return;
     }
@@ -1168,6 +1286,10 @@ export class Graph {
    * direct API enforces the same invariant the GQL `SET` path does.
    */
   public assertUniqueOnSet = (vertex: Vertex, key: string, value: unknown): void => {
+    if (this.deferConstraint(vertex)) {
+      return;
+    }
+
     const conflict = this.uniqueConflictOnSet(vertex, key, value);
 
     if (conflict) {
@@ -1291,7 +1413,186 @@ export class Graph {
   };
 
   public emit = <T extends EmitterEvent<any, any>>(event: T): T => {
+    // Inside a transaction, buffer instead of dispatching — an emitted event is
+    // meant to signal a *committed* write (React reactivity + the sync WriteLog
+    // both treat it that way), so staged writes that might roll back must not
+    // fire until commit. Flushed on commit; discarded on rollback.
+    if (this.txDepth > 0) {
+      this.txEvents.push(event);
+
+      return event;
+    }
+
     return this.emitter.emit(event as never) as T;
+  };
+
+  /* Transactions (R-TX) */
+
+  /**
+   * Run `fn` as one atomic transaction. Every write inside applies to the live
+   * graph immediately (so reads see their own writes), but if `fn` throws — or a
+   * deferred constraint check fails at commit — the whole batch rolls back and
+   * nothing is observed. On success the writes commit together and their events
+   * fire as a single batch. Returns whatever `fn` returns. Nesting joins the
+   * outer transaction (flat, savepoint-less): the outermost frame owns
+   * commit/rollback.
+   *
+   * This is the engine-neutral transaction surface — the same mechanism backs
+   * GQL and Gremlin (Gremlin has no transaction *language*, only this host API;
+   * the ISO GQL `START TRANSACTION`/`COMMIT`/`ROLLBACK` keywords are a thin layer
+   * over the same primitives).
+   */
+  public transaction = <T>(fn: (graph: this) => T): T => {
+    this.beginTransaction();
+
+    let result: T;
+
+    try {
+      result = fn(this);
+    } catch (error) {
+      this.rollbackTransaction();
+
+      throw error;
+    }
+
+    this.commitTransaction(); // may throw after rolling back if a deferred check fails
+
+    return result;
+  };
+
+  /**
+   * Lower-level transaction handle mirroring TinkerPop's `graph.tx()`: the
+   * transaction opens now; call `commit()` or `rollback()` explicitly. Prefer
+   * {@link transaction} for the common auto-managed case.
+   */
+  public tx = (): { commit: () => void; rollback: () => void } => {
+    this.beginTransaction();
+
+    return {
+      commit: () => this.commitTransaction(),
+      rollback: () => this.rollbackTransaction(),
+    };
+  };
+
+  /** True while a transaction is open and recording writes (not during a rollback replay). */
+  public isTransacting = (): boolean => this.txDepth > 0 && !this.applyingUndo;
+
+  /** Open a transaction frame. Nesting increments depth; the outermost frame owns commit/rollback. */
+  public beginTransaction = (): void => {
+    this.txDepth += 1;
+  };
+
+  /**
+   * Close the current frame. The outermost commit runs the deferred constraint
+   * checks against the fully-staged graph — on failure it rolls the whole
+   * transaction back and throws — then dispatches the buffered events as one batch.
+   */
+  public commitTransaction = (): void => {
+    if (this.txDepth === 0) {
+      throw new LenkeError('commit called with no open transaction', {
+        code: ErrorCode.InvalidGraphOp,
+      });
+    }
+
+    this.txDepth -= 1;
+
+    if (this.txDepth > 0) {
+      return; // an inner commit — the outermost frame finalizes
+    }
+
+    try {
+      this.runDeferredChecks();
+    } catch (error) {
+      this.applyUndoAndReset();
+
+      throw error;
+    }
+
+    const events = this.txEvents;
+    this.txUndo = [];
+    this.txEvents = [];
+    this.txTouched.clear();
+
+    for (const event of events) {
+      this.emitter.emit(event as never);
+    }
+  };
+
+  /** Roll the current transaction back: replay inverse ops in reverse, discard buffered events. Idempotent. */
+  public rollbackTransaction = (): void => {
+    if (this.txDepth === 0) {
+      return;
+    }
+
+    this.applyUndoAndReset();
+  };
+
+  /** Record an inverse op to replay if the current transaction rolls back (no-op outside a transaction). */
+  public recordUndo = (inverse: () => void): void => {
+    if (this.txDepth > 0 && !this.applyingUndo) {
+      this.txUndo.push(inverse);
+    }
+  };
+
+  private applyUndoAndReset = (): void => {
+    this.applyingUndo = true;
+
+    const undo = this.txUndo;
+
+    // Replay inverse ops newest-first; each reverses exactly one forward write.
+    for (let i = undo.length - 1; i >= 0; i -= 1) {
+      undo[i]();
+    }
+
+    this.applyingUndo = false;
+    this.txDepth = 0;
+    this.txUndo = [];
+    this.txEvents = []; // discard everything buffered (forward writes and undo replay alike)
+    this.txTouched.clear();
+  };
+
+  /**
+   * Re-run the built-in vertex constraints (required / type / unique) against
+   * every vertex touched during the transaction, now that all writes are staged.
+   * The per-write gates defer to here so an intermediate state — a node added
+   * before its mandatory property, two rows that momentarily collide — doesn't
+   * trip a constraint the final state satisfies.
+   */
+  private runDeferredChecks = (): void => {
+    for (const id of this.txTouched) {
+      const vertex = this.verticesById.get(id);
+
+      if (!vertex) {
+        continue; // added then removed within the transaction — nothing to check
+      }
+
+      const missing = this.missingRequired(vertex.labels, vertex.properties);
+
+      if (missing) {
+        throw new LenkeError(
+          `missing required property '${missing.key}' for label '${missing.label}'`,
+          { code: ErrorCode.ConstraintViolation },
+        );
+      }
+
+      const badType = this.typeViolation(vertex.labels, vertex.properties);
+
+      if (badType) {
+        throw new LenkeError(
+          `property '${badType.key}' must be ${badType.expected} on '${badType.label}', got ${badType.got}`,
+          { code: ErrorCode.ConstraintViolation },
+        );
+      }
+
+      const dup = this.uniqueConflict(vertex.labels, vertex.properties, vertex);
+
+      if (dup) {
+        throw new LenkeError(
+          `unique constraint on '${dup.label}.${dup.key}' violated by value ${JSON.stringify(dup.existing.properties[dup.key])}`,
+          { code: ErrorCode.ConstraintViolation },
+        );
+      }
+    }
   };
 
   /* Internal Methods */
