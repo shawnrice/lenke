@@ -1,0 +1,141 @@
+//! Correctness check for the count fast paths (edge-anchored + parallel): build a
+//! graph large enough to cross the parallel seed threshold, print the exact count
+//! for each shape. Run the SAME binary built with and without `parallel-query`
+//! and diff the output — identical counts prove the parallel path matches serial.
+//!   cargo run --release --example count_check > /tmp/serial.txt
+//!   cargo run --release --features parallel-query --example count_check > /tmp/par.txt
+//!   diff /tmp/serial.txt /tmp/par.txt
+
+use lenke_core::gql::eval::Params;
+use lenke_core::gql::prepare;
+use lenke_core::graph::{Builder, EdgeRec, Graph, NodeRec, Value};
+
+struct Rng(u64);
+impl Rng {
+    fn below(&mut self, n: usize) -> usize {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.0 = x;
+        (x % n as u64) as usize
+    }
+}
+
+fn build(n: usize, eper: usize) -> Graph {
+    let mut b = Builder::default();
+    for i in 0..n {
+        // Two labels so a labelled-endpoint filter is exercised on both ends.
+        let labels = if i % 3 == 0 {
+            vec!["Person".to_string(), "Admin".to_string()]
+        } else {
+            vec!["Person".to_string()]
+        };
+        b.nodes.push(NodeRec {
+            id: format!("p{i}"),
+            labels,
+            props: vec![
+                ("age".to_string(), Value::Num((18 + (i % 62)) as f64)),
+                ("name".to_string(), Value::Str(format!("name{i}").into())),
+                (
+                    "city".to_string(),
+                    Value::Str(format!("city{}", i % 50).into()),
+                ),
+            ],
+        });
+    }
+    let mut rng = Rng(0x1234_5678_9abc_def0);
+    for i in 0..n {
+        for _ in 0..eper {
+            b.edges.push(EdgeRec {
+                src: format!("p{i}"),
+                dst: format!("p{}", rng.below(n)),
+                etype: "KNOWS".to_string(),
+                props: vec![],
+                id: None,
+            });
+        }
+    }
+    b.finalize()
+}
+
+fn count(g: &mut Graph, q: &str) -> i64 {
+    let plan = prepare(q).unwrap();
+    let rs = plan.execute(g, &Params::new()).unwrap();
+    // The single cell of the single result row.
+    match rs.row(0).first() {
+        Some(Value::Num(n)) => *n as i64,
+        _ => -1,
+    }
+}
+
+fn main() {
+    // 20k vertices → 20k seeds, above the parallel MIN_SEEDS threshold (8192).
+    let mut g = build(20_000, 6);
+    println!("parallel-query={}", cfg!(feature = "parallel-query"));
+    for q in [
+        "MATCH (a:Person)-[:KNOWS]->(b) RETURN count(*) AS c",
+        "MATCH (a:Person)-[:KNOWS]->()-[:KNOWS]->(b) RETURN count(*) AS c",
+        "MATCH (a:Person)-[:KNOWS]->(b) WHERE b.age > 40 RETURN count(*) AS c",
+        "MATCH (a:Admin)-[:KNOWS]->(b:Person) RETURN count(*) AS c",
+        "MATCH (a)-[:KNOWS]->(b) WHERE a.age >= 50 AND b.age < 30 RETURN count(*) AS c",
+        "MATCH ()-[:KNOWS]->() RETURN count(*) AS c",
+        "MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(c) WHERE c.age > 60 RETURN count(*) AS c",
+    ] {
+        println!("{:>12}  {q}", count(&mut g, q));
+    }
+
+    // Known-answer checks for the interned-string paths (20k vertices, city = i%50).
+    let checks = [
+        (
+            "MATCH (n:Person) WHERE n.name = 'name100' RETURN count(*) AS c",
+            1,
+        ),
+        (
+            "MATCH (n:Person) WHERE n.name = 'nope' RETURN count(*) AS c",
+            0,
+        ),
+        (
+            "MATCH (n:Person) WHERE n.name <> 'name100' RETURN count(*) AS c",
+            19_999,
+        ),
+        ("MATCH (n:Person) RETURN count(DISTINCT n.city) AS c", 50),
+    ];
+    for (q, want) in checks {
+        let got = count(&mut g, q);
+        println!("{got:>12}  (want {want})  {q}");
+        assert_eq!(got, want, "MISMATCH on: {q}");
+    }
+
+    // ORDER BY + LIMIT partial-sort vs an independently-computed expected result.
+    // age = 18 + i%62 ⇒ max age 79 at i%62==61; among those, ORDER BY name ASC.
+    let ordered = order_names(
+        &mut g,
+        "MATCH (n:Person) RETURN n.name AS name ORDER BY n.age DESC, n.name LIMIT 3",
+    );
+    let mut top_names: Vec<String> = (0..20_000)
+        .filter(|i| i % 62 == 61) // the max-age (79) rows
+        .map(|i| format!("name{i}"))
+        .collect();
+    top_names.sort(); // lexicographic, matching the ORDER BY name ASC tiebreak
+    let want_order = &top_names[..3];
+    println!("order top3: {ordered:?}  (want {want_order:?})");
+    assert_eq!(
+        ordered, want_order,
+        "ORDER BY partial-sort produced wrong rows"
+    );
+
+    println!("all string-path + order checks OK");
+}
+
+/// Collect the first-column string values of a query's result rows, in order.
+fn order_names(g: &mut Graph, q: &str) -> Vec<String> {
+    let plan = prepare(q).unwrap();
+    let rs = plan.execute(g, &Params::new()).unwrap();
+    rs.rows()
+        .filter_map(|r| match r.first() {
+            Some(Value::Str(s)) => Some(s.to_string()),
+            _ => None,
+        })
+        .collect()
+}
