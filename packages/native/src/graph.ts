@@ -314,6 +314,17 @@ export type RustGraph = {
     min: number,
     max: number | null,
   ) => void;
+  /**
+   * Declare a custom VALIDATOR on `label` (a vertex label OR an edge type): every
+   * element carrying the label must satisfy the GQL boolean `predicate` (pure ISO
+   * WHERE-clause syntax), with the element bound to `varName`
+   * (`g.createValidator('User', 'u', 'u.age >= 0 AND u.age < 150')`). SQL-`CHECK`
+   * semantics — rejected only on a definite `false`; a null/unknown result passes.
+   * Throws `ConstraintViolation` if existing data already violates it, or `Syntax`
+   * if the predicate can't be parsed. The native twin of `@lenke/gql`'s
+   * `createValidator`, enforced byte-identically in the Rust GQL evaluator.
+   */
+  createValidator: (label: string, varName: string, predicate: string) => void;
   /** Drop a vertex / edge property index (no-op if absent). */
   dropVertexIndex: (key: string) => void;
   dropEdgeIndex: (key: string) => void;
@@ -615,6 +626,8 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
       backend.createEdgeTypeConstraint(live(), edgeType, key, type),
     createCardinalityConstraint: (label, edgeType, direction, min, max) =>
       backend.createCardinalityConstraint(live(), label, edgeType, direction, min, max),
+    createValidator: (label, varName, predicate) =>
+      backend.createValidator(live(), label, varName, predicate),
     dropVertexIndex: (key) => backend.dropVertexIndex(live(), key),
     dropEdgeIndex: (key) => backend.dropEdgeIndex(live(), key),
     vertexIndexes: () => backend.vertexIndexes(live()),

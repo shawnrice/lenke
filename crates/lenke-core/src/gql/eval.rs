@@ -20,8 +20,8 @@ use super::ast::{ArithOp, CompareOp, Direction, Lit, Quantifier, SetOp, SetOpKin
 use super::lexer::SyntaxError;
 use super::plan::{
     has_argless_aggregate, has_nested_aggregate, lower, AggFn, CClause, CExpr, CLabelExpr, CLinear,
-    CMerge, CMergeUpdate, CNode, CPath, CProjection, CPropConstraint, CQuery, CRel, CRemoveItem,
-    CReturnItem, CSegment, CSetItem, Op, Program, ScalarFn,
+    CMerge, CMergeUpdate, CNode, CPath, CPredicate, CProjection, CPropConstraint, CQuery, CRel,
+    CRemoveItem, CReturnItem, CSegment, CSetItem, Op, Program, ScalarFn,
 };
 #[cfg(feature = "arrow")]
 use crate::arrow::ArrowColumn;
@@ -238,6 +238,40 @@ fn resolve_ctx<'a>(graph: &Graph, plan: &'a CQuery, params: &'a [Val]) -> Ctx<'a
         unknown_fns: &plan.unknown_fns,
         fault: AtomicU8::new(FAULT_NONE),
     }
+}
+
+/// Evaluate a compiled VALIDATOR predicate against a single graph element
+/// (`Val::Node` or `Val::Edge`) bound to slot 0, with empty params. Returns the
+/// ISO three-valued result — `Some(true)` / `Some(false)` / `None` (UNKNOWN/NULL)
+/// — computed by the *same* evaluator a `WHERE` clause uses, so a validator and a
+/// `WHERE` agree bit-for-bit with the TS engine. SQL-`CHECK` callers reject only
+/// on `Some(false)`; `None` passes. An evaluation fault (e.g. an unknown function
+/// or a data exception in the predicate) surfaces as `Err`, exactly as it would
+/// in a query — mirroring the TS side, where the compiled closure throws.
+pub fn eval_predicate(graph: &Graph, pred: &CPredicate, element: Val) -> CodeResult<Option<bool>> {
+    let ctx = Ctx {
+        params: &[],
+        prop_keys: pred
+            .key_names
+            .iter()
+            .map(|n| (graph.props.keys.get(n), graph.edge_props.keys.get(n)))
+            .collect(),
+        labels: pred
+            .label_names
+            .iter()
+            .map(|n| (graph.labels.get(n), graph.etype.get(n)))
+            .collect(),
+        label_names: &pred.label_names,
+        unknown_fns: &pred.unknown_fns,
+        fault: AtomicU8::new(FAULT_NONE),
+    };
+    let mut binding = Binding::default();
+    binding.set(0, element);
+    let env = Env::new(graph, &ctx, &binding);
+    let v = eval(&env, &pred.expr);
+    ctx.check_fault()?;
+
+    Ok(as_truth(&v))
 }
 
 /// A/B toggle for the expression VM at the hot per-row sites. Flip to `true`
@@ -5611,6 +5645,9 @@ fn tx_commit_error(e: TxCommitError) -> CodeError {
             ErrorCode::ConstraintViolation,
             "write violates a cardinality constraint (a vertex's edge degree is outside its declared min..max bound)",
         ),
+        // A custom validator carries its own error verbatim — a `ConstraintViolation`
+        // for a definite-`false` predicate, or an evaluation fault's own code.
+        TxCommitError::Validator(e) => e,
         TxCommitError::NoTx => {
             CodeError::new(ErrorCode::InvalidGraphOp, "commit called with no open transaction")
         }

@@ -28,6 +28,35 @@ pub fn parse(src: &str) -> Result<Query, SyntaxError> {
     parse_with_dialect(src, Dialect::Lenke)
 }
 
+/// Parse a bare boolean predicate — a `WHERE`-clause expression — into its `Expr`
+/// AST. This is the compiler surface a declarative VALIDATOR constraint needs
+/// (`create_validator("User", "u", "u.age >= 0")`): it runs the *same* ISO
+/// expression grammar as a real `WHERE`, then asserts the whole predicate was
+/// consumed. Returns a `SyntaxError` (→ `E_SYNTAX` at the FFI boundary) on an
+/// unparseable predicate or one with trailing input. Byte-identical predicate
+/// semantics with the TS `parsePredicate`.
+pub fn parse_predicate(src: &str) -> Result<Expr, SyntaxError> {
+    let tokens = tokenize(src)?;
+    let mut p = Parser {
+        tokens,
+        pos: 0,
+        depth: 0,
+        dialect: Dialect::Lenke,
+    };
+    let e = p.parse_expr()?;
+    if !p.at_end() {
+        let t = p.peek();
+        return err(
+            format!(
+                "Unexpected trailing input '{}' in validator predicate",
+                t.value
+            ),
+            t.pos,
+        );
+    }
+    Ok(e)
+}
+
 /// Parse under an explicit [`Dialect`]. `IsoStrict` treats sigil extensions
 /// (`_MERGE`) as ordinary identifiers, so an extension clause is a syntax error —
 /// the differential/conformance harness parses under it to prove the ISO surface

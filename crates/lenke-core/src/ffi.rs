@@ -478,6 +478,42 @@ pub unsafe extern "C" fn lnk_create_cardinality_constraint(
     }
 }
 
+/// Declare a custom VALIDATOR on `label` (a vertex label OR an edge type): every
+/// element carrying the label must satisfy the GQL boolean `predicate`, with the
+/// element bound to `var`. SQL-`CHECK` semantics — rejected only on a definite
+/// `false`, a null/unknown result passes.
+///
+/// Returns `0` on success, `-1` if existing data already violates the predicate
+/// (`ConstraintViolation`), `-2` if the predicate can't be parsed (`Syntax`), or
+/// `-3` for a null handle. (A bad-UTF-8 string arg — never sent by the TS encoder
+/// — also maps to `-2`, a bad-predicate input.)
+#[no_mangle]
+pub unsafe extern "C" fn lnk_create_validator(
+    g: *mut Graph,
+    label_ptr: *const u8,
+    label_len: usize,
+    var_ptr: *const u8,
+    var_len: usize,
+    pred_ptr: *const u8,
+    pred_len: usize,
+) -> i32 {
+    if g.is_null() || label_ptr.is_null() || var_ptr.is_null() || pred_ptr.is_null() {
+        return -3;
+    }
+    let (Ok(label), Ok(var), Ok(predicate)) = (
+        std::str::from_utf8(std::slice::from_raw_parts(label_ptr, label_len)),
+        std::str::from_utf8(std::slice::from_raw_parts(var_ptr, var_len)),
+        std::str::from_utf8(std::slice::from_raw_parts(pred_ptr, pred_len)),
+    ) else {
+        return -2;
+    };
+    match (*g).create_validator(label, var, predicate) {
+        Ok(()) => 0,
+        Err(e) if e.code == ErrorCode::Syntax => -2,
+        Err(_) => -1,
+    }
+}
+
 /// Open a transaction frame (R-TX): an atomic mutation boundary with rollback +
 /// deferred constraint checks. Writes still apply eagerly (read-your-writes), but
 /// record an inverse op; the outermost commit runs the built-in constraint checks

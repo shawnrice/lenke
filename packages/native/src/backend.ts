@@ -99,6 +99,17 @@ export type Backend = {
     min: number,
     max: number | null,
   ) => void;
+  /**
+   * Declare a custom VALIDATOR on `label` (a vertex label OR an edge type): every
+   * element carrying the label must satisfy the GQL boolean `predicate` (pure ISO
+   * WHERE-clause syntax), with the element bound to `varName`. SQL-`CHECK`
+   * semantics — rejected only on a definite `false`; a null/unknown result passes.
+   * Throws `ConstraintViolation` if existing data already violates the predicate,
+   * or `Syntax` (`E_SYNTAX`) if the predicate can't be parsed. The native
+   * counterpart of `@lenke/gql`'s `createValidator` — same `(label, varName,
+   * predicate)`, enforced byte-identically in the Rust GQL evaluator.
+   */
+  createValidator: (handle: GraphHandle, label: string, varName: string, predicate: string) => void;
   /** Drop a vertex / edge property index (no-op if absent). */
   dropVertexIndex: (handle: GraphHandle, key: string) => void;
   dropEdgeIndex: (handle: GraphHandle, key: string) => void;

@@ -65,6 +65,29 @@ export type CardinalityConstraint = {
 };
 
 /**
+ * A declared VALIDATOR (custom constraint, R-CONSTRAINTS): every element carrying
+ * `label` — vertex label OR edge type, one namespace — must satisfy the GQL
+ * boolean predicate `src`, with the element bound to variable `varName`.
+ * SQL-`CHECK` semantics: the element is rejected only when the predicate is a
+ * *definite* `false`; a `null`/unknown result PASSES (an absent optional property
+ * isn't a violation). The compiled predicate closure is internal — only
+ * `@lenke/gql` (which can parse+compile a GQL expression) registers one, via
+ * {@link Graph.registerValidator}. Returned by {@link Graph.validators}.
+ */
+export type ValidatorInfo = {
+  label: string;
+  varName: string;
+  src: string;
+};
+
+/** A compiled validator predicate: the element (vertex or edge) → three-valued
+ *  result (`true` / `false` / `null` = UNKNOWN). Rejects only on a definite `false`. */
+type ValidatorFn = (element: Vertex | Edge) => boolean | null;
+
+/** A registered validator: its bind variable, its GQL source, and the compiled predicate. */
+type ValidatorEntry = { varName: string; src: string; fn: ValidatorFn };
+
+/**
  * Where a buffered transaction event stashes its reactive tokens, captured while
  * the element is still live (see {@link Graph.emit}); `markMutated` reads them at
  * commit-time dispatch instead of re-deriving from a possibly-evicted element.
@@ -529,6 +552,14 @@ export class Graph {
           { code: ErrorCode.ConstraintViolation },
         );
       }
+
+      const invalid = this.validatorViolationOf(vertex);
+
+      if (invalid) {
+        throw new LenkeError(`validator '${invalid.src}' on '${invalid.label}' violated`, {
+          code: ErrorCode.ConstraintViolation,
+        });
+      }
     }
 
     this.emit(new EmitterEvent('@graph/VertexAdded', vertex));
@@ -748,6 +779,14 @@ export class Graph {
           `unique constraint on edge type '${dup.label}.${dup.key}' violated by value ${JSON.stringify(dup.existing.properties[dup.key])}`,
           { code: ErrorCode.ConstraintViolation },
         );
+      }
+
+      const invalid = this.validatorViolationOf(edge);
+
+      if (invalid) {
+        throw new LenkeError(`validator '${invalid.src}' on '${invalid.label}' violated`, {
+          code: ErrorCode.ConstraintViolation,
+        });
       }
     }
 
@@ -2078,6 +2117,99 @@ export class Graph {
     this.txTouched.add(edge.to.id);
   };
 
+  // --- VALIDATORS (R-CONSTRAINTS, custom GQL-predicate constraints) ---------
+  // A validator attaches a GQL boolean expression to a label (vertex label OR
+  // edge type — one string namespace): every element carrying `label` must
+  // satisfy the predicate, with the element bound to `varName`. SQL-`CHECK`
+  // semantics — a write is rejected only when the predicate is a *definite*
+  // `false`; a `null`/unknown result passes (an absent optional property is not a
+  // violation). Enforced at the core mutation boundary (addVertex / insertEdge
+  // gates) and deferred to commit inside a transaction (via the same touched-set
+  // machinery the other constraints use), so every write path is covered.
+  //
+  // Core cannot parse or evaluate a GQL expression, so `@lenke/gql` owns the
+  // public `createValidator`: it parses+compiles the predicate into the closure
+  // registered here. The Rust core stores the predicate STRING and evaluates it
+  // in its own byte-identical GQL evaluator — the same predicate accepts/rejects
+  // identically on both engines.
+
+  private readonly validatorRegistry = new Map<string, ValidatorEntry[]>();
+
+  /**
+   * Register a compiled VALIDATOR predicate on `label`. Appends (a label may
+   * carry several validators). Declare-time scan: rejects
+   * ({@link ErrorCode.ConstraintViolation}) if any existing element carrying
+   * `label` — vertex OR edge — currently evaluates to a definite `false` (an
+   * already-violated validator is meaningless, mirroring unique/required/type/
+   * cardinality). Called by `@lenke/gql`'s `createValidator`, which supplies the
+   * parsed+compiled `fn`; core never parses the predicate itself.
+   */
+  public registerValidator = (
+    label: string,
+    varName: string,
+    src: string,
+    fn: ValidatorFn,
+  ): void => {
+    for (const element of [...this.getVerticesByLabel(label), ...this.getEdgesByLabel(label)]) {
+      if (fn(element) === false) {
+        throw new LenkeError(
+          `existing data already violates the validator '${src}' being declared on '${label}'`,
+          { code: ErrorCode.ConstraintViolation },
+        );
+      }
+    }
+
+    let list = this.validatorRegistry.get(label);
+
+    if (!list) {
+      list = [];
+      this.validatorRegistry.set(label, list);
+    }
+
+    list.push({ varName, src, fn });
+  };
+
+  /** Drop every validator declared on `label`. Idempotent. */
+  public dropValidator = (label: string): void => {
+    this.validatorRegistry.delete(label);
+  };
+
+  /**
+   * Every declared validator as `{ label, varName, src }`, sorted by
+   * `(label, src)`. The compiled predicate closure is internal (not exposed).
+   */
+  public validators = (): ValidatorInfo[] =>
+    [...this.validatorRegistry]
+      .flatMap(([label, entries]) =>
+        entries.map((e): ValidatorInfo => ({ label, varName: e.varName, src: e.src })),
+      )
+      .sort((a, b) =>
+        a.label === b.label ? a.src.localeCompare(b.src) : a.label.localeCompare(b.label),
+      );
+
+  /**
+   * The first validator `element` (vertex or edge) currently fails — a *definite*
+   * `false` over any label it carries — or `undefined`. A `null`/unknown result
+   * passes (SQL-`CHECK`). The per-write / declare-time / commit-time check.
+   */
+  private validatorViolationOf = (
+    element: Vertex | Edge,
+  ): { label: string; src: string } | undefined => {
+    if (this.validatorRegistry.size === 0) {
+      return undefined;
+    }
+
+    for (const label of element.labels) {
+      for (const entry of this.validatorRegistry.get(label) ?? []) {
+        if (entry.fn(element) === false) {
+          return { label, src: entry.src };
+        }
+      }
+    }
+
+    return undefined;
+  };
+
   /* Event Emitter Proxy */
 
   public eventsEnabled = (): boolean => {
@@ -2306,6 +2438,14 @@ export class Graph {
           { code: ErrorCode.ConstraintViolation },
         );
       }
+
+      const invalid = this.validatorViolationOf(vertex);
+
+      if (invalid) {
+        throw new LenkeError(`validator '${invalid.src}' on '${invalid.label}' violated`, {
+          code: ErrorCode.ConstraintViolation,
+        });
+      }
     }
 
     // Edge constraints: re-check every edge touched during the transaction against
@@ -2342,6 +2482,14 @@ export class Graph {
           `unique constraint on edge type '${dup.label}.${dup.key}' violated by value ${JSON.stringify(dup.existing.properties[dup.key])}`,
           { code: ErrorCode.ConstraintViolation },
         );
+      }
+
+      const invalid = this.validatorViolationOf(edge);
+
+      if (invalid) {
+        throw new LenkeError(`validator '${invalid.src}' on '${invalid.label}' violated`, {
+          code: ErrorCode.ConstraintViolation,
+        });
       }
     }
   };

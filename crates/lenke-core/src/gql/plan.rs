@@ -1290,6 +1290,41 @@ impl Lowerer {
     }
 }
 
+/// A compiled VALIDATOR predicate: the lowered boolean expression plus the
+/// key/label name tables it references (resolved to graph ids per evaluation).
+/// The validated element binds to slot 0 — the sole in-scope variable — so a
+/// reference to any *other* name lowers to `UNBOUND` and reads as NULL, exactly
+/// like a `WHERE` over a lone pattern variable. Evaluated by
+/// [`crate::gql::eval::eval_predicate`].
+#[derive(Debug, Clone)]
+pub struct CPredicate {
+    pub expr: CExpr,
+    pub key_names: Vec<String>,
+    pub label_names: Vec<String>,
+    pub unknown_fns: Vec<String>,
+}
+
+/// Lower a bare predicate `Expr` with a single in-scope variable `var` (slot 0)
+/// into a [`CPredicate`] — the compiled form a validator evaluates against one
+/// element. Mirrors the TS `compileValidator`, which compiles the same `Expr`
+/// against a binding `{ [var]: element }`.
+pub fn lower_predicate(var: &str, e: &Expr) -> CPredicate {
+    let mut l = Lowerer {
+        params: Vec::new(),
+        scope: vec![var.to_string()],
+        keys: Vec::new(),
+        labels: Vec::new(),
+        unknown_fns: Vec::new(),
+    };
+    let expr = l.expr(e);
+    CPredicate {
+        expr,
+        key_names: l.keys,
+        label_names: l.labels,
+        unknown_fns: l.unknown_fns,
+    }
+}
+
 /// Lower a parsed query into the IR plus the parameter slot order (slot → name).
 pub fn lower(query: &Query) -> (CQuery, Vec<String>) {
     let mut l = Lowerer {

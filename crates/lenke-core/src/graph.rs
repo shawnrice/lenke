@@ -427,6 +427,15 @@ pub struct Graph {
     /// endpoints; min is commit-time only (unsatisfiable by a single write). A
     /// self-loop counts once for out and once for in. See `docs/design/r-tx.md`.
     v_cardinality: Vec<CardinalityRule>,
+    /// VALIDATOR constraints: a custom GQL boolean predicate per label (a vertex
+    /// label OR an edge type — one string namespace). Every element carrying the
+    /// label must satisfy the predicate at the mutation boundary; SQL-`CHECK`
+    /// semantics — rejected only on a *definite* `false`, a null/unknown result
+    /// passes. Keyed by label; a label may carry several. The predicate is parsed
+    /// and lowered once at declare time (into a `CPredicate`) and evaluated in the
+    /// GQL evaluator against each touched element at the commit boundary and in the
+    /// declare-time scan. Byte-identical with the TS `createValidator`.
+    v_validators: HashMap<String, Vec<ValidatorRule>>,
     /// Transaction state (R-TX). `tx_depth > 0` means an open transaction: writes
     /// still apply eagerly to the live store (read-your-writes with no overlay),
     /// but each mutation records an inverse op in `tx_undo`, the built-in
@@ -486,6 +495,15 @@ struct CardinalityRule {
     max: Option<u32>,
 }
 
+/// A registered VALIDATOR: its bind variable name, its GQL predicate source (for
+/// messaging / introspection), and the predicate parsed+lowered once at declare
+/// time. The Rust analogue of the TS `{ varName, src, fn }` validator entry.
+struct ValidatorRule {
+    var: String,
+    src: String,
+    pred: crate::gql::plan::CPredicate,
+}
+
 /// Which deferred constraint check failed at commit. All surface to the caller as
 /// `ConstraintViolation`, but are kept distinct for messaging / FFI codes.
 pub enum TxCommitError {
@@ -499,6 +517,11 @@ pub enum TxCommitError {
     Unique,
     /// A cardinality (degree-bound) constraint is violated on a touched vertex.
     Cardinality,
+    /// A custom VALIDATOR predicate failed on a touched vertex/edge, or the
+    /// predicate itself faulted while evaluating (e.g. an unknown function). The
+    /// carried [`CodeError`] is surfaced verbatim — a `ConstraintViolation` for a
+    /// definite-`false` predicate, or the evaluation fault's own code.
+    Validator(CodeError),
 }
 
 /// A set of property indexes (key name → ordered value buckets).
@@ -1493,6 +1516,149 @@ impl Graph {
         out
     }
 
+    // --- VALIDATORS (custom GQL-predicate constraints) -----------------------
+
+    /// Declare a VALIDATOR on `label` (a vertex label OR an edge type): every
+    /// element carrying `label` must satisfy the GQL boolean `predicate`, with the
+    /// element bound to `var`. Appends (a label may carry several). The predicate
+    /// is parsed+lowered once here. Two failure modes, distinguished by error code
+    /// so the FFI can map them: an unparseable predicate returns
+    /// `ErrorCode::Syntax`; existing data that already evaluates to a definite
+    /// `false` returns `ErrorCode::ConstraintViolation` (the declare-time scan).
+    /// SQL-`CHECK` semantics — a null/unknown result passes.
+    pub fn create_validator(&mut self, label: &str, var: &str, predicate: &str) -> CodeResult<()> {
+        let expr = crate::gql::parser::parse_predicate(predicate)
+            .map_err(|e| CodeError::new(ErrorCode::Syntax, e.message))?;
+        let pred = crate::gql::plan::lower_predicate(var, &expr);
+
+        // Declare-time scan: reject if any existing element carrying `label` (a
+        // vertex OR an edge — one namespace) currently evaluates to a definite
+        // false. An already-violated validator is meaningless (mirrors the other
+        // constraints). A predicate evaluation fault (e.g. an unknown function)
+        // surfaces verbatim via `?`.
+        if let Some(lid) = self.labels.get(label) {
+            for vi in self.vertex_indices() {
+                if self.vlabels[vi as usize].contains(&lid)
+                    && crate::gql::eval::eval_predicate(
+                        self,
+                        &pred,
+                        crate::gql::eval::Val::Node(vi),
+                    )? == Some(false)
+                {
+                    return Err(CodeError::new(
+                        ErrorCode::ConstraintViolation,
+                        "existing data already violates the validator being declared",
+                    ));
+                }
+            }
+        }
+
+        if let Some(tid) = self.etype.get(label) {
+            // `edges_with_etype` borrows `self.by_etype`; copy the indices out so the
+            // per-edge `eval_predicate(self, …)` isn't a second overlapping borrow.
+            let eids: Vec<u32> = self.edges_with_etype(tid).to_vec();
+            for ei in eids {
+                if self.is_edge_live(ei)
+                    && crate::gql::eval::eval_predicate(
+                        self,
+                        &pred,
+                        crate::gql::eval::Val::Edge(ei),
+                    )? == Some(false)
+                {
+                    return Err(CodeError::new(
+                        ErrorCode::ConstraintViolation,
+                        "existing data already violates the validator being declared",
+                    ));
+                }
+            }
+        }
+
+        self.v_validators
+            .entry(label.to_string())
+            .or_default()
+            .push(ValidatorRule {
+                var: var.to_string(),
+                src: predicate.to_string(),
+                pred,
+            });
+        Ok(())
+    }
+
+    /// Drop every validator declared on `label`. Idempotent.
+    pub fn drop_validator(&mut self, label: &str) {
+        self.v_validators.remove(label);
+    }
+
+    /// Every declared validator as `(label, var, src)`, sorted by `(label, src)`.
+    /// The compiled predicate is internal. Introspection for tests/tooling.
+    pub fn validators(&self) -> Vec<(String, String, String)> {
+        let mut out: Vec<(String, String, String)> = self
+            .v_validators
+            .iter()
+            .flat_map(|(label, rules)| {
+                rules
+                    .iter()
+                    .map(move |r| (label.clone(), r.var.clone(), r.src.clone()))
+            })
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0).then(a.2.cmp(&b.2)));
+        out
+    }
+
+    /// Check every validator declared on a touched vertex `vi`. `Ok(())` if all
+    /// pass (a null/unknown result passes); `Err` on a definite `false` or an
+    /// evaluation fault. The commit-time check (the eager per-write gate is the
+    /// statement's auto-commit, which runs this via `run_deferred_checks`).
+    fn check_validators_vertex(&self, vi: u32) -> CodeResult<()> {
+        if self.v_validators.is_empty() {
+            return Ok(());
+        }
+        for &lid in &self.vlabels[vi as usize] {
+            let name = self.labels.text(lid);
+            if let Some(rules) = self.v_validators.get(name) {
+                for rule in rules {
+                    if crate::gql::eval::eval_predicate(
+                        self,
+                        &rule.pred,
+                        crate::gql::eval::Val::Node(vi),
+                    )? == Some(false)
+                    {
+                        return Err(CodeError::new(
+                            ErrorCode::ConstraintViolation,
+                            format!("validator '{}' on '{}' violated", rule.src, name),
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Edge analogue of [`Graph::check_validators_vertex`].
+    fn check_validators_edge(&self, ei: u32) -> CodeResult<()> {
+        if self.v_validators.is_empty() {
+            return Ok(());
+        }
+        for name in self.edge_type_names(ei) {
+            if let Some(rules) = self.v_validators.get(&name) {
+                for rule in rules {
+                    if crate::gql::eval::eval_predicate(
+                        self,
+                        &rule.pred,
+                        crate::gql::eval::Val::Edge(ei),
+                    )? == Some(false)
+                    {
+                        return Err(CodeError::new(
+                            ErrorCode::ConstraintViolation,
+                            format!("validator '{}' on '{}' violated", rule.src, name),
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// True iff a touched vertex `vi` violates any cardinality constraint on one of
     /// its labels (degree below `min` or above `max`). The commit-time check.
     fn cardinality_violation(&self, vi: u32) -> bool {
@@ -1868,6 +2034,11 @@ impl Graph {
             if self.cardinality_violation(vi) {
                 return Err(TxCommitError::Cardinality);
             }
+            // Custom validators (a definite-false predicate, or an evaluation fault
+            // like an unknown function) — surfaced with their own carried error.
+            if let Err(e) = self.check_validators_vertex(vi) {
+                return Err(TxCommitError::Validator(e));
+            }
         }
         // Edge constraints: re-check every edge touched during the transaction
         // against the fully-staged graph (edge analogue of the vertex loop above).
@@ -1888,6 +2059,9 @@ impl Graph {
                 .is_some()
             {
                 return Err(TxCommitError::Unique);
+            }
+            if let Err(e) = self.check_validators_edge(ei) {
+                return Err(TxCommitError::Validator(e));
             }
         }
         Ok(())
@@ -2730,6 +2904,7 @@ impl Builder {
             e_required: HashMap::new(),
             e_type_constraints: HashMap::new(),
             v_cardinality: Vec::new(),
+            v_validators: HashMap::new(),
             tx_depth: 0,
             tx_undo: Vec::new(),
             tx_touched: Vec::new(),
@@ -3074,5 +3249,146 @@ mod cardinality {
             vec![("Customer".into(), "PRIMARY".into(), 1, 0, Some(1))]
         );
         g.drop_cardinality_constraint("Purchase", "PLACED_BY", 0); // idempotent
+    }
+}
+
+#[cfg(test)]
+mod validator {
+    //! R-CONSTRAINTS custom validators (a GQL boolean predicate per label),
+    //! exercised over the GQL eval path (each statement is an auto-commit frame,
+    //! so the predicate is re-checked against every touched element at the
+    //! per-statement commit). SQL-`CHECK` semantics — a definite `false` fails, a
+    //! null/unknown passes. Byte-identical to the TS `createValidator`.
+    use super::*;
+    use crate::gql::eval::Params;
+    use crate::gql::parse;
+    use crate::ndjson;
+
+    fn run(g: &mut Graph, q: &str) -> CodeResult<()> {
+        parse(q).unwrap().execute(g, &Params::new()).map(|_| ())
+    }
+
+    #[test]
+    fn per_write_reject_accept_and_null_passes() {
+        let mut g = ndjson::decode("").unwrap();
+        g.create_validator("User", "u", "u.age >= 0 AND u.age < 150")
+            .unwrap();
+
+        let err = run(&mut g, "INSERT (:User {age: -5})").unwrap_err();
+        assert_eq!(err.code, ErrorCode::ConstraintViolation);
+        assert_eq!(g.vertex_count(), 0, "the rejected INSERT left no trace");
+
+        run(&mut g, "INSERT (:User {age: 20})").unwrap();
+        // No `age` → `u.age` is null → predicate UNKNOWN → passes (SQL-CHECK).
+        run(&mut g, "INSERT (:User {name: 'Ada'})").unwrap();
+        run(&mut g, "INSERT (:User {age: null, name: 'Bo'})").unwrap();
+        assert_eq!(g.vertex_count(), 3);
+    }
+
+    #[test]
+    fn declare_time_scan_rejects_violating_data() {
+        let mut g = ndjson::decode("").unwrap();
+        run(&mut g, "INSERT (:User {age: -5})").unwrap();
+
+        let err = g.create_validator("User", "u", "u.age >= 0").unwrap_err();
+        assert_eq!(err.code, ErrorCode::ConstraintViolation);
+        // The rejected declaration registered nothing.
+        assert!(g.validators().is_empty());
+    }
+
+    #[test]
+    fn deferred_within_a_transaction() {
+        // Briefly-invalid-then-fixed across an explicit multi-statement frame → the
+        // final state satisfies the validator, so the transaction commits.
+        let mut g2 = ndjson::decode("").unwrap();
+        g2.create_validator("User", "u", "u.age >= 0").unwrap();
+        g2.begin_tx();
+        parse("INSERT (:User {id: 'a', age: -5})")
+            .unwrap()
+            .execute(&mut g2, &Params::new())
+            .unwrap();
+        parse("MATCH (u:User {id: 'a'}) SET u.age = 5")
+            .unwrap()
+            .execute(&mut g2, &Params::new())
+            .unwrap();
+        assert!(g2.commit_tx().is_ok(), "final state valid → commits");
+        assert_eq!(g2.vertex_count(), 1);
+
+        // Left invalid across the frame → the whole transaction rolls back.
+        let mut g3 = ndjson::decode("").unwrap();
+        g3.create_validator("User", "u", "u.age >= 0").unwrap();
+        g3.begin_tx();
+        parse("INSERT (:User {id: 'b', age: -1})")
+            .unwrap()
+            .execute(&mut g3, &Params::new())
+            .unwrap();
+        let err = g3.commit_tx().unwrap_err();
+        assert!(matches!(err, TxCommitError::Validator(_)));
+        g3.rollback_tx();
+        assert_eq!(g3.vertex_count(), 0, "rolled back");
+    }
+
+    #[test]
+    fn edge_validator() {
+        let mut g = ndjson::decode("").unwrap();
+        g.create_validator("KNOWS", "r", "r.weight >= 0").unwrap();
+
+        let err = run(
+            &mut g,
+            "INSERT (:P {id: 'a'})-[:KNOWS {weight: -1}]->(:P {id: 'b'})",
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::ConstraintViolation);
+        assert_eq!(g.edge_count(), 0, "rejected edge left no trace");
+
+        run(
+            &mut g,
+            "INSERT (:P {id: 'a'})-[:KNOWS {weight: 5}]->(:P {id: 'b'})",
+        )
+        .unwrap();
+        assert_eq!(g.edge_count(), 1);
+    }
+
+    #[test]
+    fn drop_and_introspection() {
+        let mut g = ndjson::decode("").unwrap();
+        g.create_validator("User", "u", "u.age >= 0").unwrap();
+        g.create_validator("User", "u", "u.age < 150").unwrap();
+
+        assert_eq!(
+            g.validators(),
+            vec![
+                ("User".into(), "u".into(), "u.age < 150".into()),
+                ("User".into(), "u".into(), "u.age >= 0".into()),
+            ]
+        );
+
+        g.drop_validator("User");
+        assert!(g.validators().is_empty());
+        // No validator left → a previously-rejected write now succeeds.
+        run(&mut g, "INSERT (:User {age: -5})").unwrap();
+        assert_eq!(g.vertex_count(), 1);
+    }
+
+    #[test]
+    fn unparseable_predicate_is_a_syntax_error() {
+        let mut g = ndjson::decode("").unwrap();
+        assert_eq!(
+            g.create_validator("User", "u", "u.age >>>")
+                .unwrap_err()
+                .code,
+            ErrorCode::Syntax
+        );
+        assert_eq!(
+            g.create_validator("User", "u", "").unwrap_err().code,
+            ErrorCode::Syntax
+        );
+        // A predicate smuggling in an extra clause is rejected too.
+        assert_eq!(
+            g.create_validator("User", "u", "true RETURN 1")
+                .unwrap_err()
+                .code,
+            ErrorCode::Syntax
+        );
     }
 }

@@ -10,7 +10,7 @@ import { describe, expect, test } from 'bun:test';
 import { existsSync } from 'node:fs';
 
 import { Graph } from '@lenke/core';
-import { query as tsQuery } from '@lenke/gql';
+import { createValidator as tsCreateValidator, query as tsQuery } from '@lenke/gql';
 import { deserialize as tsDeserialize } from '@lenke/serialization';
 
 import { createFfiBackend } from './backend-ffi.js';
@@ -554,5 +554,111 @@ suite('cardinality-constraint differential (TS vs native)', () => {
 
     expect(native).toEqual(ts);
     expect(ts).toEqual({ code: 'E_CONSTRAINT_VIOLATION' });
+  });
+});
+
+suite('validator differential (TS vs native)', () => {
+  // A custom GQL-predicate validator declared identically on BOTH engines — TS
+  // via `@lenke/gql`'s free `createValidator` (which compiles a closure into
+  // core), native via `RustGraph.createValidator` (Rust parses + evaluates the
+  // same predicate). The same predicate string must accept/reject byte-identically
+  // and leave byte-identical state — the whole point of the dual-engine invariant.
+  const SCRIPT: Array<{ label: string; sql: string }> = [
+    { label: 'insert valid age ok', sql: `INSERT (:Acct {age: 20, name: 'A'})` },
+    { label: 'insert negative age → violation', sql: `INSERT (:Acct {age: -5, name: 'B'})` },
+    { label: 'insert over-max age → violation', sql: `INSERT (:Acct {age: 200, name: 'C'})` },
+    // null / absent age is exempt (SQL-CHECK: UNKNOWN passes).
+    { label: 'insert no age (null passes)', sql: `INSERT (:Acct {name: 'D'})` },
+    { label: 'insert explicit null age (passes)', sql: `INSERT (:Acct {age: null, name: 'E'})` },
+    { label: 'different label unaffected', sql: `INSERT (:Other {age: -99})` },
+    {
+      label: 'SET age below 0 → violation',
+      sql: `MATCH (n:Acct {name: 'A'}) SET n.age = -1`,
+    },
+    {
+      label: 'SET age to a valid value ok',
+      sql: `MATCH (n:Acct {name: 'A'}) SET n.age = 30`,
+    },
+    {
+      label: 'SET age to null (passes)',
+      sql: `MATCH (n:Acct {name: 'A'}) SET n.age = null`,
+    },
+  ];
+
+  test('every write outcome and the final state agree across engines', () => {
+    const tsGraph = tsDeserialize(SEED, 'ndjson', new Graph());
+    tsCreateValidator(tsGraph, 'Acct', 'u', 'u.age >= 0 AND u.age < 150');
+
+    const backend = createFfiBackend(LIB);
+    const nativeGraph = graphFromFormat(backend, SEED, 'ndjson');
+    nativeGraph.createValidator('Acct', 'u', 'u.age >= 0 AND u.age < 150');
+
+    for (const { label, sql } of SCRIPT) {
+      const ts = outcome(() => tsQuery(tsGraph, sql));
+      const native = outcome(() => nativeGraph.query(sql));
+
+      expect(native, `outcome mismatch: ${label}`).toEqual(ts);
+    }
+
+    const READ = `MATCH (n:Acct) RETURN n.name, n.age ORDER BY n.name`;
+    expect(JSON.stringify(nativeGraph.query(READ))).toEqual(JSON.stringify(tsQuery(tsGraph, READ)));
+  });
+
+  test('edge validator: outcomes + final state agree across engines', () => {
+    const seed = [
+      '{"type":"node","id":"a","labels":["P"],"properties":{}}',
+      '{"type":"node","id":"b","labels":["P"],"properties":{}}',
+    ].join('\n');
+
+    const tsGraph = tsDeserialize(seed, 'ndjson', new Graph());
+    tsCreateValidator(tsGraph, 'KNOWS', 'r', 'r.weight >= 0');
+    const backend = createFfiBackend(LIB);
+    const nativeGraph = graphFromFormat(backend, seed, 'ndjson');
+    nativeGraph.createValidator('KNOWS', 'r', 'r.weight >= 0');
+
+    const script = [
+      `MATCH (a:P), (b:P) WHERE a <> b INSERT (a)-[:KNOWS {weight: -1}]->(b)`, // violation
+      `MATCH (a:P), (b:P) WHERE a <> b INSERT (a)-[:KNOWS {weight: 5}]->(b)`, // ok
+      `MATCH (a:P), (b:P) WHERE a <> b INSERT (a)-[:KNOWS]->(b)`, // null weight passes
+    ];
+
+    for (const sql of script) {
+      const ts = outcome(() => tsQuery(tsGraph, sql));
+      const native = outcome(() => nativeGraph.query(sql));
+
+      expect(native, `edge validator mismatch: ${sql}`).toEqual(ts);
+    }
+
+    const READ = `MATCH ()-[r:KNOWS]->() RETURN r.weight ORDER BY r.weight`;
+    expect(JSON.stringify(nativeGraph.query(READ))).toEqual(JSON.stringify(tsQuery(tsGraph, READ)));
+  });
+
+  test('declare-time rejection agrees across engines (existing violating data)', () => {
+    const dup = [
+      '{"type":"node","id":"1","labels":["Acct"],"properties":{"age":-5}}',
+      '{"type":"node","id":"2","labels":["Acct"],"properties":{"age":30}}',
+    ].join('\n');
+
+    const tsGraph = tsDeserialize(dup, 'ndjson', new Graph());
+    const backend = createFfiBackend(LIB);
+    const nativeGraph = graphFromFormat(backend, dup, 'ndjson');
+
+    const ts = outcome(() => tsCreateValidator(tsGraph, 'Acct', 'u', 'u.age >= 0'));
+    const native = outcome(() => nativeGraph.createValidator('Acct', 'u', 'u.age >= 0'));
+
+    expect(native).toEqual(ts);
+    expect(ts).toEqual({ code: 'E_CONSTRAINT_VIOLATION' });
+  });
+
+  test('an unparseable predicate is E_SYNTAX on both engines', () => {
+    const tsGraph = tsDeserialize(SEED, 'ndjson', new Graph());
+    const backend = createFfiBackend(LIB);
+    const nativeGraph = graphFromFormat(backend, SEED, 'ndjson');
+
+    const ts = outcome(() => tsCreateValidator(tsGraph, 'Acct', 'u', 'u.age >>>'));
+    const native = outcome(() => nativeGraph.createValidator('Acct', 'u', 'u.age >>>'));
+
+    expect(native).toEqual(ts);
+    expect(ts).toEqual({ code: 'E_SYNTAX' });
   });
 });

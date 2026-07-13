@@ -1432,3 +1432,29 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Query => {
 
   return { parts, ops };
 };
+
+/**
+ * Parse a bare boolean predicate — a WHERE-clause expression — into its `Expr`
+ * AST. This is the compiler surface a declarative VALIDATOR constraint needs
+ * (`createValidator(g, 'User', 'u', 'u.age >= 0')`). It runs the *same* ISO
+ * expression grammar as a real `WHERE` by parsing a minimal wrapper query and
+ * lifting its predicate, so the validator path can never drift from `WHERE`.
+ * Throws {@link GqlSyntaxError} (code `E_SYNTAX`) on an unparseable predicate,
+ * or a predicate that smuggles in extra clauses (e.g. a trailing `RETURN`).
+ */
+export const parsePredicate = (src: string): Expr => {
+  const parsed = parse(`MATCH (_v) WHERE ${src}`);
+
+  // Exactly one linear query, exactly one clause (the MATCH we wrapped it in) —
+  // anything more means the predicate carried extra clauses/set-operators.
+  const clause =
+    parsed.parts.length === 1 && parsed.parts[0].clauses.length === 1
+      ? parsed.parts[0].clauses[0]
+      : undefined;
+
+  if (!clause || clause.kind !== 'match' || clause.where === undefined) {
+    throw new GqlSyntaxError('a validator predicate must be a single boolean expression', 0);
+  }
+
+  return clause.where;
+};

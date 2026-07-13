@@ -79,6 +79,15 @@ type WasmExports = {
     // i64 param crosses the wasm boundary as a BigInt (-1n = unbounded).
     max: bigint,
   ) => number;
+  lnk_create_validator: (
+    h: number,
+    label: number,
+    labelLen: number,
+    varName: number,
+    varLen: number,
+    predicate: number,
+    predLen: number,
+  ) => number;
   lnk_drop_vertex_index: (h: number, key: number, keyLen: number) => number;
   lnk_drop_edge_index: (h: number, key: number, keyLen: number) => number;
   lnk_begin_tx: (h: number) => number;
@@ -577,6 +586,48 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
       } finally {
         ex.lnk_dealloc(lp, l.byteLength);
         ex.lnk_dealloc(ep, e.byteLength);
+      }
+    },
+    createValidator: (handle, label, varName, predicate) => {
+      const l = encoder.encode(label);
+      const lp = writeBytes(l);
+      const v = encoder.encode(varName);
+      const vp = writeBytes(v);
+      const p = encoder.encode(predicate);
+      const pp = writeBytes(p);
+
+      try {
+        const r = ex.lnk_create_validator(
+          handle,
+          lp,
+          l.byteLength,
+          vp,
+          v.byteLength,
+          pp,
+          p.byteLength,
+        );
+
+        if (r === -1) {
+          throw new LenkeError(
+            `lenke: createValidator(${label}, ${varName}): existing data already violates the predicate '${predicate}'`,
+            { code: ErrorCode.ConstraintViolation },
+          );
+        }
+
+        if (r === -2) {
+          throw new LenkeError(
+            `lenke: createValidator(${label}, ${varName}): could not parse the predicate '${predicate}'`,
+            { code: ErrorCode.Syntax },
+          );
+        }
+
+        if (r !== 0) {
+          throw new LenkeError('lenke: createValidator failed', { code: ErrorCode.Ffi });
+        }
+      } finally {
+        ex.lnk_dealloc(lp, l.byteLength);
+        ex.lnk_dealloc(vp, v.byteLength);
+        ex.lnk_dealloc(pp, p.byteLength);
       }
     },
     createEdgeIndex: (handle, key) => {

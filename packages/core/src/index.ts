@@ -9,6 +9,7 @@ export type {
   IndexableValue,
   RangeBound,
   ScalarTypeName,
+  ValidatorInfo,
 } from './core/index.js';
 // The full graph-event surface: every per-event payload type (e.g.
 // `VertexPropertyChanged`, `LabelAddedToVertex`), the `GraphEvents` map keyed by

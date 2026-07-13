@@ -1,14 +1,46 @@
 import type { Graph } from '@lenke/core';
 
 import type { Query } from './ast.js';
-import { compile, execute, type Plan, type Row } from './executor.js';
-import { parse } from './parser.js';
+import { compile, compileValidator, execute, type Plan, type Row } from './executor.js';
+import { parse, parsePredicate } from './parser.js';
 
 export type { Query, MatchClause, PathPattern, NodePattern, RelPattern, Expr } from './ast.js';
 export type { Plan, Row } from './executor.js';
 export { GqlSyntaxError } from './lexer.js';
-export { parse } from './parser.js';
-export { compile, execute } from './executor.js';
+export { parse, parsePredicate } from './parser.js';
+export { compile, compileValidator, execute } from './executor.js';
+
+/**
+ * Declare a custom VALIDATOR constraint: every element carrying `label` (a vertex
+ * label OR an edge type) must satisfy the GQL boolean `predicate`, with the
+ * element bound to `varName` (`createValidator(g, 'User', 'u', 'u.age >= 0 AND
+ * u.age < 150')`). `predicate` is pure ISO GQL — exactly what can follow `WHERE`.
+ *
+ * SQL-`CHECK` semantics: a write is rejected ({@link ErrorCode.ConstraintViolation})
+ * only when the predicate evaluates to a *definite* `false`; a `null`/unknown
+ * result PASSES (an element with an absent optional property isn't a violation).
+ * Enforced at the mutation boundary and deferred to a transaction/statement
+ * commit like the other constraints. A declare-time scan rejects if any existing
+ * element already fails. An unparseable `predicate` throws {@link GqlSyntaxError}
+ * (`E_SYNTAX`) here, at declaration time.
+ *
+ * Only `@lenke/gql` can offer this (core can't parse a GQL expression): the
+ * predicate is parsed+compiled into a closure and registered into the graph via
+ * `graph.registerValidator`. The native engine's `RustGraph.createValidator`
+ * takes the SAME `(label, varName, predicate)` and enforces it identically in the
+ * Rust GQL evaluator — the byte-identical dual-engine invariant.
+ */
+export const createValidator = (
+  graph: Graph,
+  label: string,
+  varName: string,
+  predicate: string,
+): void => {
+  const expr = parsePredicate(predicate);
+  const compiled = compileValidator(expr, varName);
+
+  graph.registerValidator(label, varName, predicate, (element) => compiled(element, graph));
+};
 
 /**
  * Parse + compile a query string into a reusable `Plan`. Do this once for a hot

@@ -1323,6 +1323,29 @@ const compileAggregate = (expr: FuncExpr): CompiledExpr => {
   };
 };
 
+/**
+ * Compile a standalone boolean predicate (a declarative VALIDATOR constraint,
+ * see `@lenke/gql`'s `createValidator`) into a closure that evaluates it against
+ * a single graph element bound to `varName`, with empty params. Returns the
+ * three-valued result — `true` / `false` / `null` (UNKNOWN) — computed by the
+ * *same* expression evaluator a `WHERE` clause uses, so a validator and a `WHERE`
+ * agree bit-for-bit. SQL-`CHECK` callers reject only on a definite `false`; a
+ * `null` passes. `graph` is read only by an EXISTS/COUNT subquery in the
+ * predicate (rare in a validator, but supported for parity with `WHERE`).
+ */
+export const compileValidator = (
+  expr: Expr,
+  varName: string,
+): ((element: Vertex | Edge, graph: Graph) => boolean | null) => {
+  const fn = compileExpr(expr);
+
+  return (element, graph) => {
+    const binding: Binding = new Map([[varName, element]]);
+
+    return asTruth(fn({ binding, params: {}, graph }));
+  };
+};
+
 // --- value / ordering helpers ------------------------------------------------
 
 /** Derive a column name for a RETURN item that has no explicit `AS` alias. */
