@@ -3,15 +3,23 @@
 //! common among its neighbours (edges undirected — both in- and out-neighbours
 //! count), ties broken by the **smallest label string**. Rounds are synchronous
 //! (all vertices read the previous round's labels, then commit together) for a
-//! fixed `iterations` count (default 10). The winner is chosen by (count, then
-//! lexicographic label), which is independent of neighbour-enumeration order, so
-//! the TS mirror is byte-identical.
+//! fixed `iterations` count (default 10), with an early stop once a round changes
+//! nothing (the remaining rounds are no-ops, so the result is unchanged).
+//!
+//! A label is carried internally as the **dense id of the vertex whose external id
+//! is that label** (all labels are vertex external ids, so this is exact) — so a
+//! round tallies `u32`s in a reused scratch map instead of hashing strings, and the
+//! per-round work parallelizes across vertices (each vertex reads only the frozen
+//! snapshot). The winner is chosen by (count, then smallest external-id string),
+//! independent of neighbour-enumeration order, so the TS mirror is byte-identical.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
 
 use super::AlgoConfig;
-use crate::graph::{Adj, Graph, Value};
+use crate::graph::{Graph, Value};
 
 const DEFAULT_ITERATIONS: u32 = 10;
 
@@ -21,42 +29,15 @@ pub fn label_propagation(graph: &Graph, cfg: &AlgoConfig) -> Vec<(u32, Value)> {
     // unknown type → no edges, so every vertex keeps its own label forever.
     let etype = cfg.etype(graph);
 
-    // Labels indexed by dense id over the whole slot space; tombstoned slots are
-    // never read (they are neither vertices nor edge endpoints).
-    let mut labels: Vec<Arc<str>> = (0..graph.n as u32).map(|v| graph.vid.arc(v)).collect();
+    // labels[v] = the dense id of the vertex whose external id is v's current label;
+    // starts as v itself. Tombstoned slots are self-labelled and never read.
+    let mut labels: Vec<u32> = (0..graph.n as u32).collect();
 
-    let passes = |a: &Adj| match etype {
-        Some(Some(t)) => a.etype == t,
-        _ => true,
-    };
-
-    // `etype` is `None` only for a named-but-unknown type; skip propagation then.
-    if etype.is_some() {
+    if let Some(etype) = etype {
         for _ in 0..iterations {
-            let mut next = labels.clone();
-            for v in graph.vertex_indices() {
-                // Tally neighbour labels from the frozen `labels` snapshot.
-                let mut counts: HashMap<&Arc<str>, u32> = HashMap::new();
-                for a in graph.out_adj(v).chain(graph.in_adj(v)) {
-                    if passes(&a) {
-                        *counts.entry(&labels[a.nbr as usize]).or_insert(0) += 1;
-                    }
-                }
-                // Adopt the most-frequent label; tie → lexicographically smallest.
-                // No neighbours → keep the current label.
-                let mut best: Option<(&Arc<str>, u32)> = None;
-                for (&lbl, &c) in &counts {
-                    let better = match best {
-                        None => true,
-                        Some((bl, bc)) => c > bc || (c == bc && lbl.as_ref() < bl.as_ref()),
-                    };
-                    if better {
-                        best = Some((lbl, c));
-                    }
-                }
-                if let Some((lbl, _)) = best {
-                    next[v as usize] = lbl.clone();
-                }
+            let next = round(graph, &labels, etype);
+            if next == labels {
+                break; // converged — later rounds would be no-ops
             }
             labels = next;
         }
@@ -64,6 +45,54 @@ pub fn label_propagation(graph: &Graph, cfg: &AlgoConfig) -> Vec<(u32, Value)> {
 
     graph
         .vertex_indices()
-        .map(|v| (v, Value::Str(labels[v as usize].clone())))
+        .map(|v| (v, Value::Str(graph.vid.arc(labels[v as usize]))))
         .collect()
+}
+
+/// One synchronous round: every vertex adopts the winning neighbour label from the
+/// frozen `labels` snapshot. Parallel across vertices (each is independent); a
+/// per-thread scratch map is reused across the vertices that thread handles.
+fn round(graph: &Graph, labels: &[u32], etype: Option<u32>) -> Vec<u32> {
+    let pick = |v: u32, counts: &mut HashMap<u32, u32>| -> u32 {
+        if !graph.is_vertex_live(v) {
+            return labels[v as usize];
+        }
+        counts.clear();
+        for a in graph.out_adj(v).chain(graph.in_adj(v)) {
+            let ok = match etype {
+                Some(t) => a.etype == t,
+                None => true,
+            };
+            if ok {
+                *counts.entry(labels[a.nbr as usize]).or_insert(0) += 1;
+            }
+        }
+        // Adopt the most-frequent label; tie → lexicographically smallest external
+        // id. No neighbours → keep the current label.
+        let mut best: Option<(u32, u32)> = None;
+        for (&lbl, &c) in counts.iter() {
+            let better = match best {
+                None => true,
+                Some((bl, bc)) => c > bc || (c == bc && graph.vid.text(lbl) < graph.vid.text(bl)),
+            };
+            if better {
+                best = Some((lbl, c));
+            }
+        }
+        best.map_or(labels[v as usize], |(lbl, _)| lbl)
+    };
+
+    let n = graph.n as u32;
+    #[cfg(feature = "parallel")]
+    {
+        (0..n)
+            .into_par_iter()
+            .map_init(HashMap::new, |counts, v| pick(v, counts))
+            .collect()
+    }
+    #[cfg(not(feature = "parallel"))]
+    {
+        let mut counts = HashMap::new();
+        (0..n).map(|v| pick(v, &mut counts)).collect()
+    }
 }

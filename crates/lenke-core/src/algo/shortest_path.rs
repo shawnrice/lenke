@@ -59,6 +59,12 @@ pub fn shortest_path(graph: &Graph, cfg: &AlgoConfig) -> Vec<(u32, Value)> {
     };
 
     let slots = graph.n;
+    // Precompute per-edge weights once (weighted runs read them per relaxation, so a
+    // hashed property lookup there would dominate). `None` = unweighted.
+    let weights: Option<Vec<f64>> = cfg
+        .weight_property
+        .as_deref()
+        .map(|k| super::edge_weights(graph, k));
 
     // A* is a goal-directed backend: given a `target`, it returns just the source→
     // target distance (identical to Dijkstra's, so interchangeable), exploring far
@@ -67,7 +73,7 @@ pub fn shortest_path(graph: &Graph, cfg: &AlgoConfig) -> Vec<(u32, Value)> {
         let Some(tgt) = cfg.target.as_deref().and_then(|t| graph.vid.get(t)) else {
             return Vec::new();
         };
-        return match astar(graph, src, tgt, slots, cfg, &passes) {
+        return match astar(graph, src, tgt, slots, cfg, weights.as_deref(), &passes) {
             Some(d) => vec![(tgt, Value::Num(d))],
             None => Vec::new(),
         };
@@ -78,9 +84,9 @@ pub fn shortest_path(graph: &Graph, cfg: &AlgoConfig) -> Vec<(u32, Value)> {
     // algorithm, so it yields the identical canonical distances — it is a drop-in
     // *performance* backend (its specialized pivot/partial-sort structure is a
     // deferred internal optimization), validated against this reference.
-    let dist = match &cfg.weight_property {
+    let dist = match weights.as_deref() {
         None => bfs(graph, src, slots, &passes),
-        Some(key) => dijkstra(graph, src, slots, key, &passes),
+        Some(w) => dijkstra(graph, src, slots, w, &passes),
     };
 
     graph
@@ -102,6 +108,7 @@ fn astar(
     tgt: u32,
     slots: usize,
     cfg: &AlgoConfig,
+    weights: Option<&[f64]>,
     passes: &impl Fn(&Adj) -> bool,
 ) -> Option<f64> {
     let hkey = cfg.heuristic_property.as_deref();
@@ -114,16 +121,7 @@ fn astar(
             },
         }
     };
-    let wkey = cfg.weight_property.as_deref();
-    let weight = |a: &Adj| -> f64 {
-        match wkey {
-            None => 1.0,
-            Some(k) => match graph.edge_props.value(a.eidx as usize, k, &graph.strs) {
-                Value::Num(x) => x,
-                _ => 0.0,
-            },
-        }
-    };
+    let weight = |a: &Adj| -> f64 { weights.map_or(1.0, |w| w[a.eidx as usize]) };
 
     let mut g = vec![f64::INFINITY; slots];
     let mut closed = vec![false; slots];
@@ -176,13 +174,14 @@ fn bfs(graph: &Graph, src: u32, slots: usize, passes: &impl Fn(&Adj) -> bool) ->
     dist
 }
 
-/// Weighted Dijkstra f64 distance, `INFINITY` for unreached. Missing/non-numeric
-/// edge weights count as 0.0; negative weights are out of contract (Dijkstra).
+/// Weighted Dijkstra f64 distance, `INFINITY` for unreached. `weights` is the
+/// precomputed per-edge weight (indexed by edge id); negative weights are out of
+/// contract (Dijkstra).
 fn dijkstra(
     graph: &Graph,
     src: u32,
     slots: usize,
-    key: &str,
+    weights: &[f64],
     passes: &impl Fn(&Adj) -> bool,
 ) -> Vec<f64> {
     let mut dist = vec![f64::INFINITY; slots];
@@ -201,11 +200,7 @@ fn dijkstra(
             if !passes(&a) {
                 continue;
             }
-            let w = match graph.edge_props.value(a.eidx as usize, key, &graph.strs) {
-                Value::Num(x) => x,
-                _ => 0.0,
-            };
-            let nd = du + w;
+            let nd = du + weights[a.eidx as usize];
             if nd < dist[a.nbr as usize] {
                 dist[a.nbr as usize] = nd;
                 heap.push(State {

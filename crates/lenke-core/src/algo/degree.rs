@@ -1,6 +1,10 @@
 //! Degree centrality: per-vertex count of incident edges — out (default), in, or
 //! both — optionally restricted to a single edge type. O(V + E), in dense-vertex-id
 //! order (= NDJSON insertion order) so it matches the TS mirror exactly.
+//!
+//! Left serial deliberately: at ~16 ms for 1M vertices it is memory-bandwidth-bound
+//! and so cheap that a rayon fan-out measured *neutral-to-slower* (thread hand-off +
+//! parallel tuple-collect cost more than the counting), so parallelism buys nothing.
 
 use super::AlgoConfig;
 use crate::graph::{Adj, Graph, Value};

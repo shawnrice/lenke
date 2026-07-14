@@ -13,6 +13,14 @@
 //! insertion order, which the TS engine also iterates), summing a vertex's
 //! neighbours in adjacency (edge insertion) order — no sorting — so the TS mirror in
 //! `@lenke/core` is byte-identical, including PageRank's f64 arithmetic.
+//!
+//! Parallelism (behind the `parallel` feature; serial twins for wasm) is applied
+//! only where it preserves that contract: PageRank fans out **across targets** (each
+//! target still sums its own fixed-order contribution list) and label propagation
+//! **across vertices** per round (each reads only the frozen snapshot; the winner is
+//! order-independent). The dangling reduction and per-source weight sums stay serial
+//! — reordering those f64 additions would change the last bits. So parallel-native
+//! == serial-native == serial-TS, verified by the differential conformance suite.
 
 use crate::graph::{Graph, Value};
 use crate::json;
@@ -81,6 +89,23 @@ impl AlgoConfig {
             Some(name) => graph.etype.get(name).map(Some),
         }
     }
+}
+
+/// Per-edge numeric weights (indexed by edge id) for property `key`: resolve the
+/// key to a dense id once and read each edge via `value_id` — no per-edge key-string
+/// hashing and one flat allocation the weighted algorithms can index directly.
+/// Absent/non-numeric values read as `0.0`, exactly as `Properties::value` would.
+pub(super) fn edge_weights(graph: &Graph, key: &str) -> Vec<f64> {
+    let kid = graph.edge_props.keys.get(key);
+    (0..graph.edge_slots())
+        .map(|ei| match kid {
+            Some(k) => match graph.edge_props.value_id(ei, k, &graph.strs) {
+                Value::Num(x) => x,
+                _ => 0.0,
+            },
+            None => 0.0,
+        })
+        .collect()
 }
 
 /// Run algorithm `name` with a JSON `config`, optionally write each vertex's result
