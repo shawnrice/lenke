@@ -206,6 +206,16 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     // count(DISTINCT) is a single deterministic value.
     const cq = `MATCH (a:Node {name: 's0'})-[:R]->+(b) RETURN count(DISTINCT b) AS c`;
     expect(JSON.stringify(nat.query(cq)), cq).toBe(JSON.stringify(tsQuery(ts, cq)));
+
+    // EXISTS { reachability }: both engines BFS (was: trail enumeration, faulted on
+    // an unreachable target). Reachable t3, unreachable 'nope', endpoint WHERE.
+    for (const q of [
+      `MATCH (a:Node {name: 's0'}) RETURN EXISTS { (a)-[:R]->+(b:Target) } AS r`,
+      `MATCH (a:Node {name: 's0'}) RETURN EXISTS { (a)-[:R]->+(b:Node {name: 'nope'}) } AS r`,
+      `MATCH (a:Node {name: 's0'}) RETURN EXISTS { (a)-[:R]->+(b) WHERE b.name = 'a2' } AS r`,
+    ]) {
+      expect(JSON.stringify(nat.query(q)), q).toBe(JSON.stringify(tsQuery(ts, q)));
+    }
   });
 
   // --- FOR (ISO list unwind / UNWIND) ---------------------------------------

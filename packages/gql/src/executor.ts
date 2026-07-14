@@ -1243,11 +1243,122 @@ const compileSubMatch = (sub: { patterns: readonly PathPattern[]; where?: Expr }
   nullVars: [],
 });
 
+/**
+ * Reachability fast path for `EXISTS { (a)-[:T]->+/*(b …) }`: a single unbounded
+ * var-length segment from an already-bound `a` is *reachability* — BFS the reached
+ * set and stop at the first vertex satisfying the endpoint, instead of enumerating
+ * trails (exponential; testing an *unreachable* target hits the trail budget and
+ * faults). Mirrors the native `any_match_reachable`. Returns `undefined` when the
+ * shape doesn't apply.
+ */
+const existsReachable = (
+  graph: Graph,
+  sub: CMatch,
+  binding: Binding,
+  params: Params,
+): boolean | undefined => {
+  if (sub.patterns.length !== 1 || sub.patterns[0].segments.length !== 1) {
+    return undefined;
+  }
+
+  const [path] = sub.patterns;
+  const [{ rel, node }] = path.segments;
+  const { quantifier: q } = rel;
+
+  if (!q) {
+    return undefined;
+  }
+
+  const startVar = path.start.variable;
+  const types = relTypeNames(rel.label);
+
+  if (
+    q.max !== null ||
+    rel.variable !== undefined ||
+    rel.direction === 'both' ||
+    rel.pred.props.length > 0 ||
+    rel.pred.where !== undefined ||
+    types === null ||
+    startVar === undefined ||
+    !binding.has(startVar) ||
+    path.start.pred.props.length > 0 ||
+    path.start.pred.where !== undefined
+  ) {
+    return undefined;
+  }
+
+  const startV = binding.get(startVar) as Vertex;
+  const out = rel.direction === 'out';
+  const nbrs = (v: Vertex): Vertex[] => {
+    const byType = (out ? graph.edgesFromByLabel : graph.edgesToByLabel).get(v.id);
+    const acc: Vertex[] = [];
+
+    for (const set of bucketsFor(byType, types ?? undefined)) {
+      if (set) {
+        for (const e of set) {
+          acc.push(out ? e.to : e.from);
+        }
+      }
+    }
+
+    return acc;
+  };
+  // Is `v` a valid endpoint (label + inline pred + the EXISTS WHERE)?
+  const hit = (v: Vertex): boolean => {
+    const bound = matchNode(binding, node, v, params, graph);
+
+    return (
+      bound !== null &&
+      (sub.where === undefined || asTruth(sub.where({ binding: bound, params, graph })) === true)
+    );
+  };
+
+  // `->*` also admits the zero-length path — the start itself.
+  if (q.min === 0 && hit(startV)) {
+    return true;
+  }
+
+  const seen = new Set<string>();
+  const stack: Vertex[] = [];
+  const visit = (w: Vertex): boolean => {
+    if (seen.has(w.id)) {
+      return false;
+    }
+
+    seen.add(w.id);
+    stack.push(w);
+
+    return true;
+  };
+
+  for (const w of nbrs(startV)) {
+    if (visit(w) && hit(w)) {
+      return true;
+    }
+  }
+
+  while (stack.length > 0) {
+    for (const w of nbrs(stack.pop()!)) {
+      if (visit(w) && hit(w)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+};
+
 /** ISO EXISTS: TRUE iff the correlated sub-pattern has at least one match. */
 const compileExists = (expr: Extract<Expr, { kind: 'exists' }>): CompiledExpr => {
   const sub = compileSubMatch(expr);
 
   return (env) => {
+    const reach = existsReachable(env.graph, sub, env.binding, env.params);
+
+    if (reach !== undefined) {
+      return reach;
+    }
+
     const matches = matchClauseBindings(env.graph, sub, env.binding, env.params)[Symbol.iterator]();
 
     return !matches.next().done;

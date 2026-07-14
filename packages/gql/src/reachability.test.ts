@@ -53,4 +53,21 @@ describe('unbounded var-length + DISTINCT: BFS reachability (no trail-budget fau
     const star = query(g, `MATCH (a:Node {name: 'n0'})-[:ROAD]->*(b) RETURN DISTINCT b.name AS n`);
     expect(star.length).toBe(3000);
   });
+
+  // EXISTS { reachability } BFSes instead of enumerating trails — so testing an
+  // UNREACHABLE target completes (was: trail-budget fault) and returns false.
+  test('EXISTS { ->+ target } completes for reachable and unreachable targets', () => {
+    const g = ring(5000, 10_000);
+    const reachable = query(
+      g,
+      `MATCH (a:Node {name: 'n0'}) RETURN EXISTS { (a)-[:ROAD]->+(b:Node {name: 'n2500'}) } AS r`,
+    );
+    expect(reachable).toEqual([{ r: true }]);
+
+    const unreachable = query(
+      g,
+      `MATCH (a:Node {name: 'n0'}) RETURN EXISTS { (a)-[:ROAD]->+(b:Node {name: 'nope'}) } AS r`,
+    );
+    expect(unreachable).toEqual([{ r: false }]);
+  });
 });

@@ -2231,6 +2231,94 @@ fn visit_patterns(
     })
 }
 
+/// Reachability fast path for `EXISTS { (a)-[:T]->+/*(b …) }`: a single unbounded
+/// var-length segment from an already-bound `a` is *reachability* — BFS the reached
+/// set and stop at the first vertex satisfying the endpoint (label / inline props /
+/// WHERE), instead of enumerating trails (exponential — it hits the trail budget and
+/// faults, e.g. testing whether an *unreachable* target is reachable). Returns
+/// `Some(bool)` when it applies, else `None` (fall back to the general matcher).
+fn any_match_reachable(
+    graph: &Graph,
+    ctx: &Ctx,
+    patterns: &[CPath],
+    where_: Option<&CExpr>,
+    binding: &Binding,
+    sub_len: usize,
+) -> Option<bool> {
+    let [path] = patterns else { return None };
+    let [seg] = path.segments.as_slice() else {
+        return None;
+    };
+    let q = seg.rel.quantifier?;
+    if q.max.is_some()
+        || seg.rel.var_slot.is_some()
+        || !seg.rel.props.is_empty()
+        || seg.rel.where_.is_some()
+        || !matches!(seg.rel.direction, Direction::Out | Direction::In)
+        || !path.start.props.is_empty()
+        || path.start.where_.is_some()
+    {
+        return None;
+    }
+    // The start must already be bound (the correlated `a`).
+    let sv = match path.start.var_slot.and_then(|s| binding.get(s)) {
+        Some(Val::Node(v)) => *v,
+        _ => return None,
+    };
+
+    let mut work = binding.clone();
+    work.resize(sub_len);
+    let b_slot = seg.node.var_slot;
+    // Is `v` a valid endpoint `b` (label + inline props/WHERE + the EXISTS WHERE)?
+    let hit = |graph: &Graph, v: u32, work: &mut Binding| -> bool {
+        if !matches_label(graph, ctx, v, seg.node.label.as_ref()) {
+            return false;
+        }
+        if let Some(bs) = b_slot {
+            work.set(bs, Val::Node(v));
+        }
+        if !satisfies(
+            graph,
+            ctx,
+            &Val::Node(v),
+            &seg.node.props,
+            seg.node.where_.as_ref(),
+            work,
+        ) {
+            return false;
+        }
+        where_.is_none_or(|w| as_truth(&eval(&Env::new(graph, ctx, work), w)) == Some(true))
+    };
+
+    // `->*` also admits the zero-length path — the start itself.
+    if q.min == 0 && hit(graph, sv, &mut work) {
+        return Some(true);
+    }
+    let (dir, el) = (seg.rel.direction, seg.rel.label.as_ref());
+    let mut seen = crate::graph::BitSet::zeros(graph.vertex_count());
+    let mut stack: Vec<u32> = Vec::new();
+    let visit = |w: u32, seen: &mut crate::graph::BitSet, stack: &mut Vec<u32>| -> bool {
+        !seen.get(w as usize) && {
+            seen.set(w as usize);
+            stack.push(w);
+            true
+        }
+    };
+    for (_e, w) in expand(graph, ctx, sv, dir, el) {
+        if visit(w, &mut seen, &mut stack) && hit(graph, w, &mut work) {
+            return Some(true);
+        }
+    }
+    while let Some(u) = stack.pop() {
+        for (_e, w) in expand(graph, ctx, u, dir, el) {
+            if visit(w, &mut seen, &mut stack) && hit(graph, w, &mut work) {
+                return Some(true);
+            }
+        }
+    }
+    Some(false)
+}
+
 /// Does the (correlated) sub-pattern have at least one match? Short-circuits.
 /// The work binding is the outer binding grown to the sub-scope (`sub_len`):
 /// outer slots stay set (correlation), the sub's own slots start unbound.
@@ -2242,6 +2330,9 @@ fn any_match(
     binding: &Binding,
     sub_len: usize,
 ) -> bool {
+    if let Some(res) = any_match_reachable(graph, ctx, patterns, where_, binding, sub_len) {
+        return res;
+    }
     let mut found = false;
     let mut work = binding.clone();
     work.resize(sub_len);

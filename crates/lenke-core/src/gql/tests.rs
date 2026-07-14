@@ -63,6 +63,72 @@ fn rows(g: &mut Graph, query: &str) -> Vec<Vec<Value>> {
     q(g, query).1
 }
 
+/// `EXISTS { (a)-[:T]->+/*(b …) }` reachability: the BFS fast path must agree with
+/// the enumerated answer. Cross-checked against a *bounded* `->{1,big}` EXISTS
+/// (which the fast path does NOT intercept, so it enumerates) — and covers a
+/// reachable target, an UNREACHABLE one (the fault the fast path fixes), an endpoint
+/// WHERE, and `->*` zero-length self-inclusion.
+#[test]
+fn exists_reachability_matches_enumeration() {
+    // s → x → y → c (a chain); z is isolated (unreachable).
+    let lines = [
+        r#"{"type":"node","id":"s","labels":["N"],"properties":{"name":"s"}}"#,
+        r#"{"type":"node","id":"x","labels":["N"],"properties":{"name":"x"}}"#,
+        r#"{"type":"node","id":"y","labels":["N"],"properties":{"name":"y"}}"#,
+        r#"{"type":"node","id":"c","labels":["N"],"properties":{"name":"c"}}"#,
+        r#"{"type":"node","id":"z","labels":["N"],"properties":{"name":"z"}}"#,
+        r#"{"type":"edge","from":"s","to":"x","labels":["R"],"properties":{}}"#,
+        r#"{"type":"edge","from":"x","to":"y","labels":["R"],"properties":{}}"#,
+        r#"{"type":"edge","from":"y","to":"c","labels":["R"],"properties":{}}"#,
+    ];
+    let mut g = ndjson::decode(&lines.join("\n")).unwrap();
+    let ex = |g: &mut Graph, query: &str| -> bool {
+        match q(g, query).1[0][0] {
+            Value::Bool(b) => b,
+            ref o => panic!("expected bool, got {o:?}"),
+        }
+    };
+    let pairs = [
+        // reachable target c (3 hops)
+        (
+            "MATCH (a:N {name:'s'}) RETURN EXISTS { (a)-[:R]->+(b:N {name:'c'}) } AS r",
+            "MATCH (a:N {name:'s'}) RETURN EXISTS { (a)-[:R]->{1,20}(b:N {name:'c'}) } AS r",
+            true,
+        ),
+        // UNREACHABLE target z — the enumeration explores every trail then says false;
+        // on a bigger graph that faults, which the BFS fast path avoids.
+        (
+            "MATCH (a:N {name:'s'}) RETURN EXISTS { (a)-[:R]->+(b:N {name:'z'}) } AS r",
+            "MATCH (a:N {name:'s'}) RETURN EXISTS { (a)-[:R]->{1,20}(b:N {name:'z'}) } AS r",
+            false,
+        ),
+        // endpoint WHERE
+        (
+            "MATCH (a:N {name:'s'}) RETURN EXISTS { (a)-[:R]->+(b) WHERE b.name = 'y' } AS r",
+            "MATCH (a:N {name:'s'}) RETURN EXISTS { (a)-[:R]->{1,20}(b) WHERE b.name = 'y' } AS r",
+            true,
+        ),
+        // ->* admits the 0-hop start: s reaches itself
+        (
+            "MATCH (a:N {name:'s'}) RETURN EXISTS { (a)-[:R]->*(b:N {name:'s'}) } AS r",
+            "MATCH (a:N {name:'s'}) RETURN EXISTS { (a)-[:R]->{0,20}(b:N {name:'s'}) } AS r",
+            true,
+        ),
+        // ->+ from s to s needs a cycle — there is none.
+        (
+            "MATCH (a:N {name:'s'}) RETURN EXISTS { (a)-[:R]->+(b:N {name:'s'}) } AS r",
+            "MATCH (a:N {name:'s'}) RETURN EXISTS { (a)-[:R]->{1,20}(b:N {name:'s'}) } AS r",
+            false,
+        ),
+    ];
+    for (bfs, enumerated, want) in pairs {
+        let b = ex(&mut g, bfs);
+        let e = ex(&mut g, enumerated);
+        assert_eq!(b, e, "BFS != enumerated:\n  {bfs}");
+        assert_eq!(b, want, "wrong reachability for: {bfs}");
+    }
+}
+
 /// ISO `percentile_cont` / `percentile_disc` ordered-set aggregates over known
 /// values: cont interpolates between ranks, disc returns an actual element.
 #[test]
