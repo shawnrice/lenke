@@ -5,6 +5,7 @@ import type {
   LabelRow,
   PageRankRow,
   ScalarTypeName,
+  ShortestPathRow,
 } from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
@@ -437,6 +438,15 @@ export type RustGraph = {
    * the data-last twin is `pagerank` in `@lenke/core`.
    */
   pagerank: (config?: AlgorithmConfig) => PageRankRow[];
+  /**
+   * Single-source shortest path — from `config.source` (an external id), following
+   * out-edges, run natively in one call → `{ node, distance }` rows for every
+   * reachable vertex (source at 0), in insertion order. Unweighted → BFS hop
+   * distance; set `weightProperty` for weighted Dijkstra. `config` also takes an
+   * `edgeLabel` filter and a `writeProperty`. Data-first (graph is `this`); the
+   * data-last twin is `shortestPath` in `@lenke/core`.
+   */
+  shortestPath: (config?: AlgorithmConfig) => ShortestPathRow[];
   /** Serialize the graph back to NDJSON bytes. */
   toNdjson: () => Uint8Array;
   /**
@@ -742,6 +752,10 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
       decodeRows(
         backend.algo(live(), 'pagerank', config && JSON.stringify(config)),
       ) as PageRankRow[],
+    shortestPath: (config) =>
+      decodeRows(
+        backend.algo(live(), 'shortestPath', config && JSON.stringify(config)),
+      ) as ShortestPathRow[],
     toNdjson: () => backend.encodeNdjson(live()),
     mergeNdjson: (bytes) => backend.mergeNdjson(live(), bytes),
     serialize: (format) => decoder.decode(backend.serialize(live(), format)),

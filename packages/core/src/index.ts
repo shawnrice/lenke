@@ -50,6 +50,7 @@ export {
   degree,
   labelPropagation,
   pagerank,
+  shortestPath,
   type AlgorithmConfig,
   type AlgorithmRow,
   type ComponentRow,
@@ -57,4 +58,5 @@ export {
   type GraphAlgorithm,
   type LabelRow,
   type PageRankRow,
+  type ShortestPathRow,
 } from './algorithms/index.js';

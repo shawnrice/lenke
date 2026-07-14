@@ -26,6 +26,7 @@ import {
   Graph,
   labelPropagation,
   pagerank,
+  shortestPath,
 } from '@lenke/core';
 import { query as tsQuery } from '@lenke/gql';
 import { deserialize as tsDeserialize } from '@lenke/serialization';
@@ -277,6 +278,64 @@ suite('graph-algorithm differential: pagerank (TS core vs native, f64)', () => {
     nativeGraph.pagerank(config);
 
     const readBack = 'MATCH (n) RETURN n.pr AS pr ORDER BY n.pr DESC, n.pr';
+    expect(JSON.stringify(tsQuery(tsGraph, readBack))).toBe(
+      JSON.stringify(nativeGraph.query(readBack)),
+    );
+  });
+});
+
+// A weighted diamond with fractional weights: a→b→d (0.1+0.2 = 0.30000000000000004)
+// vs the direct a→d (0.3) — the classic f64 non-associativity trap, so this pins
+// that both engines settle the same minimum float distance. Plus a longer branch
+// and a sink (e).
+const SHORTEST_NDJSON = [
+  '{"type":"node","id":"a","labels":["N"]}',
+  '{"type":"node","id":"b","labels":["N"]}',
+  '{"type":"node","id":"c","labels":["N"]}',
+  '{"type":"node","id":"d","labels":["N"]}',
+  '{"type":"node","id":"e","labels":["N"]}',
+  '{"type":"edge","id":"1","from":"a","to":"b","labels":["E"],"properties":{"w":0.1}}',
+  '{"type":"edge","id":"2","from":"b","to":"d","labels":["E"],"properties":{"w":0.2}}',
+  '{"type":"edge","id":"3","from":"a","to":"d","labels":["E"],"properties":{"w":0.3}}',
+  '{"type":"edge","id":"4","from":"a","to":"c","labels":["E"],"properties":{"w":1.5}}',
+  '{"type":"edge","id":"5","from":"c","to":"d","labels":["E"],"properties":{"w":0.5}}',
+  '{"type":"edge","id":"6","from":"c","to":"e","labels":["E"],"properties":{"w":2.0}}',
+  '{"type":"edge","id":"7","from":"d","to":"e","labels":["E"],"properties":{"w":0.25}}',
+].join('\n');
+
+suite('graph-algorithm differential: shortestPath (TS core vs native)', () => {
+  const backend = createFfiBackend(LIB);
+  const nativeGraph = graphFromFormat(backend, SHORTEST_NDJSON, 'ndjson');
+  const tsGraph = tsDeserialize(SHORTEST_NDJSON, 'ndjson', new Graph());
+
+  for (const config of [
+    { source: 'a' } as const, // BFS (unweighted)
+    { source: 'a', weightProperty: 'w' } as const, // Dijkstra, f64 diamond
+    { source: 'c', weightProperty: 'w' } as const,
+    { source: 'e', weightProperty: 'w' } as const, // sink → only e:0
+    { source: 'a', weightProperty: 'w', edgeLabel: 'E' } as const,
+    { source: 'a', edgeLabel: 'NOPE' } as const, // no edges → only source
+    { source: 'zzz' } as const, // unknown source → empty
+  ]) {
+    test(`shortestPath ${JSON.stringify(config)} — byte-identical`, () => {
+      expect(JSON.stringify(shortestPath(config, tsGraph))).toBe(
+        JSON.stringify(nativeGraph.shortestPath(config)),
+      );
+    });
+  }
+
+  test('known-answer: weighted diamond settles the direct 0.3, not 0.1+0.2', () => {
+    const d = nativeGraph.shortestPath({ source: 'a', weightProperty: 'w' });
+    expect(d.find((r) => r.node === 'd')?.distance).toBe(0.3);
+    expect(d.find((r) => r.node === 'e')?.distance).toBe(0.55);
+  });
+
+  test('writeProperty round-trips identically through GQL on both engines', () => {
+    const config = { source: 'a', weightProperty: 'w', writeProperty: 'sp' } as const;
+    shortestPath(config, tsGraph);
+    nativeGraph.shortestPath(config);
+
+    const readBack = 'MATCH (n) RETURN n.sp AS sp ORDER BY n.sp, n.sp';
     expect(JSON.stringify(tsQuery(tsGraph, readBack))).toBe(
       JSON.stringify(nativeGraph.query(readBack)),
     );

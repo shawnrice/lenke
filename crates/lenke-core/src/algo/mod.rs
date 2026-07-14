@@ -22,6 +22,7 @@ mod components;
 mod degree;
 mod label_prop;
 mod pagerank;
+mod shortest_path;
 
 /// Parsed algorithm configuration (a superset; each algorithm reads the fields it
 /// needs). Deserialized from the JSON object handed across the FFI boundary.
@@ -96,6 +97,7 @@ pub fn run(graph: &mut Graph, name: &str, config: &str) -> Result<RowSet, String
         "connectedComponents" => ("componentId", components::connected_components(graph, &cfg)),
         "labelPropagation" => ("label", label_prop::label_propagation(graph, &cfg)),
         "pagerank" => ("score", pagerank::pagerank(graph, &cfg)),
+        "shortestPath" => ("distance", shortest_path::shortest_path(graph, &cfg)),
         other => return Err(format!("unknown algorithm: {other}")),
     };
 
@@ -381,5 +383,56 @@ mod tests {
         let s = scores(&mut m, "{}");
         let by = |id: &str| s.iter().find(|(v, _)| v == id).unwrap().1;
         assert!(by("3") > by("2"));
+    }
+
+    /// `(external id, distance)` rows in engine order.
+    fn paths(g: &mut Graph, cfg: &str) -> Vec<(String, f64)> {
+        let rs = run(g, "shortestPath", cfg).unwrap();
+        rs.rows()
+            .map(|r| match (&r[0], &r[1]) {
+                (Value::Str(id), Value::Num(d)) => (id.to_string(), *d),
+                _ => panic!("unexpected shortest-path row shape"),
+            })
+            .collect()
+    }
+
+    /// 1→2 (w1), 2→3 (w2), 1→3 (w5); node 4 isolated (unreachable from 1).
+    fn weighted_chain() -> Graph {
+        let lines = [
+            r#"{"type":"node","id":"1","labels":["N"]}"#,
+            r#"{"type":"node","id":"2","labels":["N"]}"#,
+            r#"{"type":"node","id":"3","labels":["N"]}"#,
+            r#"{"type":"node","id":"4","labels":["N"]}"#,
+            r#"{"type":"edge","from":"1","to":"2","labels":["E"],"properties":{"w":1.0}}"#,
+            r#"{"type":"edge","from":"2","to":"3","labels":["E"],"properties":{"w":2.0}}"#,
+            r#"{"type":"edge","from":"1","to":"3","labels":["E"],"properties":{"w":5.0}}"#,
+        ];
+        ndjson::decode(&lines.join("\n")).unwrap()
+    }
+
+    #[test]
+    fn shortest_path_bfs_and_dijkstra() {
+        let mut g = weighted_chain();
+        // Unweighted BFS from 1: 1→3 is a direct edge, so node 3 is 1 hop.
+        assert_eq!(
+            paths(&mut g, r#"{"source":"1"}"#),
+            vec![("1".into(), 0.0), ("2".into(), 1.0), ("3".into(), 1.0)],
+        );
+        // Weighted Dijkstra from 1: 1→2→3 (1+2=3) beats the direct 1→3 (5).
+        assert_eq!(
+            paths(&mut g, r#"{"source":"1","weightProperty":"w"}"#),
+            vec![("1".into(), 0.0), ("2".into(), 1.0), ("3".into(), 3.0)],
+        );
+        // From 2 (weighted): only 2 and 3 reachable; node 1 is upstream, omitted.
+        assert_eq!(
+            paths(&mut g, r#"{"source":"2","weightProperty":"w"}"#),
+            vec![("2".into(), 0.0), ("3".into(), 2.0)],
+        );
+        // Unknown source → no rows; unknown edge type → only the source at 0.
+        assert!(paths(&mut g, r#"{"source":"99"}"#).is_empty());
+        assert_eq!(
+            paths(&mut g, r#"{"source":"1","edgeLabel":"NOPE"}"#),
+            vec![("1".into(), 0.0)],
+        );
     }
 }
