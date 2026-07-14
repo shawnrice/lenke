@@ -3798,12 +3798,16 @@ fn try_orient_node_seed(
 }
 
 /// Whether `build_scan` will turn this scan into an index seek (so a LIMIT cap
-/// can't early-stop it and should be dropped).
+/// can't early-stop it and should be dropped). Only a *genuine* seek counts: a
+/// node/edge property index. A label-only traversal seeds a label bucket and
+/// expands, which `expand_scan` **can** early-stop at the cap — so it is not
+/// "hinted" (the edge-type fallback must not drop the cap, else `LIMIT n` with no
+/// WHERE materializes every row before slicing).
 fn scan_is_hinted(graph: &Graph, ctx: &Ctx, path: &CPath, where_: Option<&CExpr>) -> bool {
     if path.segments.is_empty() {
         node_index_seed(graph, ctx, &path.start, where_).is_some()
     } else if path.segments.len() == 1 {
-        edge_index_seed(graph, ctx, &path.segments[0].rel, where_).is_some()
+        edge_prop_seed(graph, ctx, &path.segments[0].rel, where_).is_some()
     } else {
         false
     }

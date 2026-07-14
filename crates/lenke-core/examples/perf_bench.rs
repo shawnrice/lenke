@@ -298,6 +298,39 @@ fn main() {
             "join",
             "MATCH (a:Person)-[:KNOWS]->(b), (a)-[:KNOWS]->(c) WHERE b.age > 60 AND c.age < 25 RETURN count(*) AS c",
         ),
+        // --- unmeasured common patterns: semi/anti-joins, DISTINCT, LIMIT ---
+        // EXISTS semi-join: keep `a` if it has ANY qualifying edge — should stop at
+        // the first match per `a`, not enumerate every neighbor.
+        (
+            "exists_semi",
+            "semi",
+            "MATCH (a:Person) WHERE EXISTS { (a)-[:KNOWS]->(:Hub) } RETURN count(*) AS c",
+        ),
+        // Anti-join: sink vertices (no outgoing KNOWS).
+        (
+            "not_exists",
+            "semi",
+            "MATCH (a:Person) WHERE NOT EXISTS { (a)-[:KNOWS]->() } RETURN count(*) AS c",
+        ),
+        // DISTINCT neighbors of the Hubs — dedup over an expansion.
+        (
+            "distinct_nbr",
+            "distinct",
+            "MATCH (a:Person)-[:KNOWS]->(b) RETURN count(DISTINCT b) AS c",
+        ),
+        // Traversal + small LIMIT with no WHERE — should early-stop the scan.
+        (
+            "limit_trav",
+            "limit",
+            "MATCH (a:Person)-[:KNOWS]->(b) RETURN a.name AS an, b.name AS bn LIMIT 100",
+        ),
+        // Grouped count on the START node = out-degree; group order is start-seed
+        // order, so a degree shortcut *could* preserve it (unlike end-grouped).
+        (
+            "group_deg",
+            "group",
+            "MATCH (a:Hub)-[:KNOWS]->(b) RETURN a.name AS an, count(*) AS c",
+        ),
     ];
 
     println!("  {:<14} {:<8} {:>11}   rows", "shape", "lever", "ms");
