@@ -137,6 +137,18 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     }
   });
 
+  // --- count(DISTINCT endpoint): native marks a reachable frontier, TS enumerates
+  // then dedups. Same reachable-set size. --------------------------------------
+  test('count(DISTINCT endpoint) matches enumerated dedup (TS vs native)', () => {
+    for (const q of [
+      `MATCH (a:Person)-[:KNOWS]->(b) RETURN count(DISTINCT b) AS c`,
+      `MATCH (a:Person)-[:CREATED]->(b:Software) RETURN count(DISTINCT b) AS c`,
+      `MATCH (a:Person)-[:KNOWS]->()-[:CREATED]->(c) RETURN count(DISTINCT c) AS c`,
+    ]) {
+      expect(JSON.stringify(nativeGraph.query(q)), q).toBe(JSON.stringify(tsQuery(tsGraph, q)));
+    }
+  });
+
   // --- FOR (ISO list unwind / UNWIND) ---------------------------------------
 
   test('FOR unwinds a literal list identically', () => {

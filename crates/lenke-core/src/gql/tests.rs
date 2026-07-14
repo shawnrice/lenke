@@ -121,6 +121,76 @@ fn exists_count_matches_reverse_semi_join() {
     assert_eq!(exists_rev, 1.0);
 }
 
+/// `count(DISTINCT <endpoint>)` over a traversal (`try_count_distinct_reachable`,
+/// frontier marking) must equal the size of the enumerated reachable set —
+/// including convergent paths (two starts reaching one endpoint dedup to one) and
+/// the endpoint label filter.
+#[test]
+fn count_distinct_reachable_matches_enumeration() {
+    // p0,p1,p2 : Person ; t3,t4,t5 : Target.
+    let lines = [
+        r#"{"type":"node","id":"p0","labels":["Person"],"properties":{}}"#,
+        r#"{"type":"node","id":"p1","labels":["Person"],"properties":{}}"#,
+        r#"{"type":"node","id":"p2","labels":["Person"],"properties":{}}"#,
+        r#"{"type":"node","id":"t3","labels":["Target"],"properties":{}}"#,
+        r#"{"type":"node","id":"t4","labels":["Target"],"properties":{}}"#,
+        r#"{"type":"node","id":"t5","labels":["Target"],"properties":{}}"#,
+        r#"{"type":"edge","from":"p0","to":"t3","labels":["KNOWS"],"properties":{}}"#,
+        r#"{"type":"edge","from":"p1","to":"t3","labels":["KNOWS"],"properties":{}}"#, // p0,p1 → t3
+        r#"{"type":"edge","from":"p1","to":"t4","labels":["KNOWS"],"properties":{}}"#,
+        r#"{"type":"edge","from":"p2","to":"t4","labels":["KNOWS"],"properties":{}}"#,
+        r#"{"type":"edge","from":"t3","to":"t5","labels":["KNOWS"],"properties":{}}"#,
+        r#"{"type":"edge","from":"t4","to":"t5","labels":["KNOWS"],"properties":{}}"#,
+    ];
+    let mut g = ndjson::decode(&lines.join("\n")).unwrap();
+    let edges: [(u32, u32); 6] = [(0, 3), (1, 3), (1, 4), (2, 4), (3, 5), (4, 5)];
+    let reachable = |starts: &[u32], depth: usize| -> usize {
+        let mut cur: std::collections::HashSet<u32> = starts.iter().copied().collect();
+        for _ in 0..depth {
+            let mut next = std::collections::HashSet::new();
+            for &(s, d) in &edges {
+                if cur.contains(&s) {
+                    next.insert(d);
+                }
+            }
+            cur = next;
+        }
+        cur.len()
+    };
+    let c = |g: &mut Graph, query: &str| -> usize {
+        match q(g, query).1[0][0] {
+            Value::Num(v) => v as usize,
+            ref o => panic!("expected count, got {o:?}"),
+        }
+    };
+    // 1-hop distinct endpoints from Person {0,1,2} = {t3, t4} (t3 reached twice).
+    assert_eq!(
+        c(
+            &mut g,
+            "MATCH (a:Person)-[:KNOWS]->(b) RETURN count(DISTINCT b) AS c"
+        ),
+        reachable(&[0, 1, 2], 1),
+    );
+    assert_eq!(reachable(&[0, 1, 2], 1), 2);
+    // 2-hop distinct endpoints = out-neighbors of {t3,t4} = {t5}.
+    assert_eq!(
+        c(
+            &mut g,
+            "MATCH (a:Person)-[:KNOWS]->()-[:KNOWS]->(c) RETURN count(DISTINCT c) AS c",
+        ),
+        reachable(&[0, 1, 2], 2),
+    );
+    assert_eq!(reachable(&[0, 1, 2], 2), 1);
+    // Endpoint label filter: 1-hop distinct b that are Target = {t3, t4}.
+    assert_eq!(
+        c(
+            &mut g,
+            "MATCH (a:Person)-[:KNOWS]->(b:Target) RETURN count(DISTINCT b) AS c",
+        ),
+        2,
+    );
+}
+
 #[test]
 fn count_star_alias() {
     let mut g = modern();

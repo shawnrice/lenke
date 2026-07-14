@@ -331,6 +331,56 @@ fn main() {
             "group",
             "MATCH (a:Hub)-[:KNOWS]->(b) RETURN a.name AS an, count(*) AS c",
         ),
+        // --- round 3: wider net ---
+        // 2-hop ROWS to a selective end — does orient reverse the whole path?
+        (
+            "multihop_sel",
+            "plan",
+            "MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(c:Hub) RETURN a.name AS an, c.name AS cn",
+        ),
+        // NOT EXISTS with a labeled (selective) inner endpoint — reverse anti-join.
+        (
+            "not_exists_hub",
+            "semi",
+            "MATCH (a:Person) WHERE NOT EXISTS { (a)-[:KNOWS]->(:Hub) } RETURN count(*) AS c",
+        ),
+        // count(*) grouped by the START node = out-degree; 1M groups, first-seen =
+        // seed order (a degree shortcut could preserve it — unlike end-grouped).
+        (
+            "start_group",
+            "group",
+            "MATCH (a:Person)-[:KNOWS]->(b) RETURN a.name AS an, count(*) AS c",
+        ),
+        // count(DISTINCT) over a 2-hop from the big end (scalar, no parallel).
+        (
+            "distinct_2hop",
+            "distinct",
+            "MATCH (a:Person)-[:KNOWS]->()-[:KNOWS]->(c) RETURN count(DISTINCT c) AS c",
+        ),
+        // Substring scan over the high-cardinality name column (full 1M scan).
+        (
+            "contains_scan",
+            "scan",
+            "MATCH (n:Person) WHERE n.name CONTAINS '999' RETURN count(*) AS c",
+        ),
+        // Full ORDER BY over 1M rows, no LIMIT (whole-column sort).
+        (
+            "order_big",
+            "sort",
+            "MATCH (n:Person) RETURN n.name AS name ORDER BY n.age",
+        ),
+        // 3-hop count from the tiny Hub end (degree-product territory?).
+        (
+            "three_hop",
+            "multihop",
+            "MATCH (a:Hub)-[:KNOWS]->()-[:KNOWS]->()-[:KNOWS]->(d) RETURN count(*) AS c",
+        ),
+        // Anti-self-join: pairs of Persons sharing a common KNOWS target (co-citation).
+        (
+            "cocite",
+            "join",
+            "MATCH (a:Hub)-[:KNOWS]->(x)<-[:KNOWS]-(b:Person) RETURN count(*) AS c",
+        ),
     ];
 
     println!("  {:<14} {:<8} {:>11}   rows", "shape", "lever", "ms");

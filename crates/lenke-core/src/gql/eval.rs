@@ -5922,6 +5922,117 @@ fn try_count_semi_join(
     Some(rs)
 }
 
+/// Frontier-marking shortcut for `count(DISTINCT <endpoint node>)` over a plain
+/// fixed-length traversal: `MATCH (a:La?)-[:T]->…->(c:Lc?) RETURN count(DISTINCT c)`.
+///
+/// The answer is the size of the **set of vertices reachable** as `c` — path
+/// *multiplicity* is irrelevant to a DISTINCT count, so instead of enumerating
+/// every path (O(#paths), exponential in hops) propagate a deduped frontier level
+/// by level (each level dedups, so a vertex expands once) and return the final
+/// frontier size — O(depth·E). Walk-vs-trail doesn't matter: both reach the same
+/// vertex set.
+///
+/// Gated: single plain MATCH (no WHERE), a fixed-length non-var-length path with no
+/// edge variable / props / WHERE, no repeated node variable (self-join), and the
+/// DISTINCT argument is exactly the final node's variable.
+fn try_count_distinct_reachable(
+    linear: &CLinear,
+    graph: &Graph,
+    plan: &CQuery,
+    params: &[Val],
+) -> Option<RowSet> {
+    let [CClause::Match {
+        optional: false,
+        patterns,
+        where_: None,
+        ..
+    }, CClause::Return(proj)] = linear.clauses.as_slice()
+    else {
+        return None;
+    };
+    let [path] = patterns.as_slice() else {
+        return None;
+    };
+    if path.segments.is_empty() || path.segments.iter().any(|s| s.rel.quantifier.is_some()) {
+        return None;
+    }
+    // Projection is exactly `count(DISTINCT <var>)`.
+    if proj.distinct
+        || !proj.order_by.is_empty()
+        || proj.skip.is_some()
+        || proj.limit.is_some()
+        || proj.out_len != 1
+        || proj.aggs.len() != 1
+        || proj.items.len() != 1
+        || !matches!(proj.items[0].expr, CExpr::AggRef(0))
+    {
+        return None;
+    }
+    let agg = &proj.aggs[0];
+    if agg.star || !agg.distinct || !matches!(agg.func, AggFn::Count) {
+        return None;
+    }
+    // The DISTINCT argument must be the final node's variable.
+    let end_slot = path.segments[path.segments.len() - 1].node.var_slot?;
+    if !matches!(&agg.arg, Some(CExpr::Var(s)) if *s == end_slot) {
+        return None;
+    }
+    // No edge variable / props / WHERE on any relationship; no inline node
+    // props / WHERE (labels are fine, applied per frontier level).
+    for seg in &path.segments {
+        if seg.rel.var_slot.is_some()
+            || !seg.rel.props.is_empty()
+            || seg.rel.where_.is_some()
+            || !seg.node.props.is_empty()
+            || seg.node.where_.is_some()
+        {
+            return None;
+        }
+    }
+    if !path.start.props.is_empty() || path.start.where_.is_some() {
+        return None;
+    }
+    // No repeated node variable — a self-join (`(a)…->(a)`) constrains endpoints in
+    // a way plain reachability can't express.
+    let slots: Vec<usize> = std::iter::once(&path.start)
+        .chain(path.segments.iter().map(|s| &s.node))
+        .filter_map(|n| n.var_slot)
+        .collect();
+    let mut seen_slots = HashSet::new();
+    if slots.iter().any(|s| !seen_slots.insert(*s)) {
+        return None;
+    }
+
+    let ctx = resolve_ctx(graph, plan, params);
+    // Seed frontier: distinct start vertices matching the start label.
+    let mut cur: Vec<u32> = Vec::new();
+    for_each_seed(graph, &ctx, path.start.label.as_ref(), &mut |v| {
+        if matches_label(graph, &ctx, v, path.start.label.as_ref()) {
+            cur.push(v);
+        }
+        true
+    });
+    // Expand level by level, deduping each frontier so every vertex expands once.
+    for seg in &path.segments {
+        let mut seen = crate::graph::BitSet::zeros(graph.vertex_count());
+        let mut next: Vec<u32> = Vec::new();
+        for &v in &cur {
+            for (_e, w) in expand(graph, &ctx, v, seg.rel.direction, seg.rel.label.as_ref()) {
+                if !seen.get(w as usize) && matches_label(graph, &ctx, w, seg.node.label.as_ref()) {
+                    seen.set(w as usize);
+                    next.push(w);
+                }
+            }
+        }
+        cur = next;
+    }
+    let count = cur.len();
+
+    let mut rs = RowSet::new(proj.out_names.clone());
+    rs.push_row(std::iter::once(Value::Num(count as f64)));
+    Some(rs)
+}
+
 /// Intra-query parallel count for `MATCH <path with ≥1 segment> [WHERE …] RETURN
 /// count(*)` — the read-only traversal count that stays scalar (a pure aggregate
 /// over a traversal isn't vectorized, and `try_count_edges` only covers a single
@@ -7345,6 +7456,11 @@ fn run_part(
         // Reverse semi-join for a correlated `[NOT] EXISTS { … }` count — seed the
         // selective inner endpoint instead of testing every outer row.
         if let Some(rs) = try_count_semi_join(linear, graph, plan, params) {
+            return Ok(rs);
+        }
+        // count(DISTINCT endpoint) over a traversal via frontier marking (O(depth·E),
+        // no path enumeration).
+        if let Some(rs) = try_count_distinct_reachable(linear, graph, plan, params) {
             return Ok(rs);
         }
     }
