@@ -149,6 +149,18 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     }
   });
 
+  // --- COUNT { } degree: native takes an adjacency-count fast path, TS enumerates
+  // the sub-pattern. Same per-row count. ---------------------------------------
+  test('COUNT { } single-segment degree matches enumeration (TS vs native)', () => {
+    for (const q of [
+      `MATCH (a:Person) RETURN a.name AS name, COUNT { (a)-[:KNOWS]->() } AS deg ORDER BY name`,
+      `MATCH (a:Person) RETURN a.name AS name, COUNT { (a)-[:CREATED]->(:Software) } AS d ORDER BY name`,
+      `MATCH (a:Person) RETURN a.name AS name, COUNT { (a)<-[:KNOWS]-() } AS indeg ORDER BY name`,
+    ]) {
+      expect(JSON.stringify(nativeGraph.query(q)), q).toBe(JSON.stringify(tsQuery(tsGraph, q)));
+    }
+  });
+
   // --- unbounded var-length + DISTINCT: native BFSes the reachable set, TS
   // enumerates trails then dedups. On a small graph (enumeration completes) they
   // must agree — including ->+ vs ->* seed inclusion and a cycle. -------------

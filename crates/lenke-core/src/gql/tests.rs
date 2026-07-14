@@ -63,6 +63,58 @@ fn rows(g: &mut Graph, query: &str) -> Vec<Vec<Value>> {
     q(g, query).1
 }
 
+/// The `COUNT { … }` degree fast path (single plain correlated segment) must equal
+/// the enumerated count. Cross-checked by adding an always-true inner `WHERE`, which
+/// bails the fast path onto the recursive matcher — so fast == enumerated. Covers a
+/// labelled endpoint, the `In` direction, parallel edges and a self-loop.
+#[test]
+fn count_subquery_degree_matches_enumeration() {
+    let lines = [
+        r#"{"type":"node","id":"n0","labels":["Node"],"properties":{"name":"n0"}}"#,
+        r#"{"type":"node","id":"n1","labels":["Node","Target"],"properties":{"name":"n1"}}"#,
+        r#"{"type":"node","id":"n2","labels":["Node"],"properties":{"name":"n2"}}"#,
+        r#"{"type":"edge","from":"n0","to":"n1","labels":["R"],"properties":{}}"#,
+        r#"{"type":"edge","from":"n0","to":"n1","labels":["R"],"properties":{}}"#, // parallel
+        r#"{"type":"edge","from":"n0","to":"n2","labels":["R"],"properties":{}}"#,
+        r#"{"type":"edge","from":"n0","to":"n0","labels":["R"],"properties":{}}"#, // self-loop
+        r#"{"type":"edge","from":"n2","to":"n1","labels":["R"],"properties":{}}"#,
+    ];
+    let mut g = ndjson::decode(&lines.join("\n")).unwrap();
+    let val = |g: &mut Graph, query: &str| -> f64 {
+        match q(g, query).1[0][0] {
+            Value::Num(v) => v,
+            ref o => panic!("expected number, got {o:?}"),
+        }
+    };
+    // (fast COUNT{}, enumerated COUNT{ … WHERE true }) — must be equal, and match the
+    // hand-computed degree from n0. n0 out-R: to n1, n1, n2, n0 (self) = 4.
+    let pairs = [
+        (
+            "MATCH (n:Node) WHERE n.name = 'n0' RETURN COUNT { (n)-[:R]->() } AS c",
+            "MATCH (n:Node) WHERE n.name = 'n0' RETURN COUNT { (n)-[:R]->(m) WHERE true } AS c",
+            4.0,
+        ),
+        (
+            // labelled endpoint: n0 → Target(n1) twice = 2.
+            "MATCH (n:Node) WHERE n.name = 'n0' RETURN COUNT { (n)-[:R]->(:Target) } AS c",
+            "MATCH (n:Node) WHERE n.name = 'n0' RETURN COUNT { (n)-[:R]->(m:Target) WHERE true } AS c",
+            2.0,
+        ),
+        (
+            // In direction: in-R of n1 = from n0 (×2) and n2 = 3.
+            "MATCH (n:Node) WHERE n.name = 'n1' RETURN COUNT { (n)<-[:R]-() } AS c",
+            "MATCH (n:Node) WHERE n.name = 'n1' RETURN COUNT { (n)<-[:R]-(m) WHERE true } AS c",
+            3.0,
+        ),
+    ];
+    for (fast, enumerated, want) in pairs {
+        let f = val(&mut g, fast);
+        let e = val(&mut g, enumerated);
+        assert_eq!(f, e, "fast != enumerated:\n  {fast}");
+        assert_eq!(f, want, "wrong degree for: {fast}");
+    }
+}
+
 /// The reverse semi-join fast path (`try_count_semi_join`) must equal the enumerated
 /// answer: `EXISTS` count == `count(DISTINCT a)` of the same join, and `NOT EXISTS`
 /// == all rows minus that. Both edge directions; some `a`s have a qualifying edge,

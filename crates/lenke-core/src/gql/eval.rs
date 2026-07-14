@@ -2217,6 +2217,41 @@ fn count_matches(
     binding: &Binding,
     sub_len: usize,
 ) -> u64 {
+    // Degree fast path: `COUNT { (n)-[:T]->(m) }` with `n` already bound and a
+    // single plain directed segment (no quantifier, no inline props/WHERE, no inner
+    // WHERE, a fresh endpoint) is just `n`'s matching adjacency count — skip the
+    // per-call binding clone and the recursive matcher. `COUNT { … }` in a `SET` /
+    // `RETURN` runs once per outer row, so this turns an O(rows·degree) enumeration
+    // (with a clone each) into a tight adjacency scan.
+    if where_.is_none() {
+        if let [path] = patterns {
+            if let ([seg], Some(s)) = (path.segments.as_slice(), path.start.var_slot) {
+                let ok_start = path.start.props.is_empty() && path.start.where_.is_none();
+                let ok_rel = seg.rel.quantifier.is_none()
+                    && seg.rel.props.is_empty()
+                    && seg.rel.where_.is_none()
+                    && matches!(seg.rel.direction, Direction::Out | Direction::In);
+                let ok_node = seg.node.props.is_empty()
+                    && seg.node.where_.is_none()
+                    // A bound endpoint (self-join / correlated target) isn't a plain
+                    // degree. A fresh sub-scope slot sits beyond the outer binding.
+                    && seg
+                        .node
+                        .var_slot
+                        .is_none_or(|ns| ns >= binding.0.len() || !binding.bound(ns));
+                if ok_start && ok_rel && ok_node && binding.bound(s) {
+                    if let Some(Val::Node(v)) = binding.get(s) {
+                        return expand(graph, ctx, *v, seg.rel.direction, seg.rel.label.as_ref())
+                            .filter(|(_e, nbr)| {
+                                matches_label(graph, ctx, *nbr, seg.node.label.as_ref())
+                            })
+                            .count() as u64;
+                    }
+                }
+            }
+        }
+    }
+
     let mut count = 0u64;
     let mut work = binding.clone();
     work.resize(sub_len);

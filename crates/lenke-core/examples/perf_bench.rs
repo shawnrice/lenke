@@ -381,6 +381,45 @@ fn main() {
             "join",
             "MATCH (a:Hub)-[:KNOWS]->(x)<-[:KNOWS]-(b:Person) RETURN count(*) AS c",
         ),
+        // --- round 4: subqueries, ORDER-BY-count grouping, aggregates over var-len ---
+        // Per-row COUNT{} subquery = out-degree; over all 1M Person.
+        (
+            "count_subq",
+            "subq",
+            "MATCH (n:Person) RETURN sum(COUNT { (n)-[:KNOWS]->() }) AS s",
+        ),
+        // End-grouped count with ORDER BY count DESC — order is by count, not
+        // first-seen, so a degree shortcut would be legal (unlike no-ORDER-BY).
+        (
+            "group_order_cnt",
+            "group",
+            "MATCH (a:Person)-[:KNOWS]->(b) RETURN b.age AS age, count(*) AS c ORDER BY c DESC",
+        ),
+        // Recommendation 2-hop through a Hub's neighbors (co-purchase shape),
+        // seeded from the tiny Hub end.
+        (
+            "recommend",
+            "join",
+            "MATCH (a:Hub)-[:KNOWS]->(u)-[:KNOWS]->(y) RETURN y.name AS n",
+        ),
+        // Numeric range scan (age is unindexed here → full column scan).
+        (
+            "range_scan",
+            "scan",
+            "MATCH (n:Person) WHERE n.age >= 50 AND n.age <= 55 RETURN count(*) AS c",
+        ),
+        // Aggregate over a bounded var-length reach from the Hub end.
+        (
+            "varlen_sum",
+            "varlen",
+            "MATCH (a:Hub)-[:KNOWS]->{1,3}(b) RETURN sum(b.age) AS s",
+        ),
+        // Whole-node materialization: properties(n) over a filtered scan.
+        (
+            "props_scan",
+            "out",
+            "MATCH (n:Person) WHERE n.age > 60 RETURN properties(n) AS p",
+        ),
     ];
 
     println!("  {:<14} {:<8} {:>11}   rows", "shape", "lever", "ms");
