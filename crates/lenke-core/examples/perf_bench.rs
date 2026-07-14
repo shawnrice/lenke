@@ -395,6 +395,14 @@ fn main() {
             "subq",
             "MATCH (n:Person) RETURN sum(COUNT { (a)-[:KNOWS]->(n) }) AS s",
         ),
+        // PageRank/CC-style gather: group 8M edges by the ENDPOINT node, aggregate
+        // over sources (marcus/analytics.ts). The group key is a node — stringified
+        // per edge today.
+        (
+            "gather_by_node",
+            "group",
+            "MATCH (m:Person)-[:KNOWS]->(n) WITH n, sum(m.age) AS s RETURN count(*) AS c",
+        ),
         // End-grouped count with ORDER BY count DESC — order is by count, not
         // first-seen, so a degree shortcut would be legal (unlike no-ORDER-BY).
         (
