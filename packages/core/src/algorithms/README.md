@@ -58,7 +58,15 @@ object isn't structured-cloneable, so pass it as NDJSON. The reusable core is ju
 
 ```ts
 // algo-worker-core.ts
-import { type AlgorithmConfig, connectedComponents, degree, labelPropagation, pagerank, shortestPath, Graph } from '@lenke/core';
+import {
+  type AlgorithmConfig,
+  connectedComponents,
+  degree,
+  labelPropagation,
+  pagerank,
+  shortestPath,
+  Graph,
+} from '@lenke/core';
 import { deserialize } from '@lenke/serialization';
 
 const ALGOS = { degree, connectedComponents, labelPropagation, pagerank, shortestPath };
