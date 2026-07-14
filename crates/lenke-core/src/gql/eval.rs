@@ -2559,6 +2559,7 @@ impl Agg {
     /// group's members share their group-key values, keeping either representative
     /// binding is equivalent, so only the fold state needs merging. Merging chunks
     /// in seed order reproduces the serial first-seen order exactly.
+    #[cfg(feature = "parallel-query")]
     fn merge(&mut self, other: Self) {
         self.n += other.n;
         self.sum += other.sum;
@@ -5561,12 +5562,24 @@ fn try_parallel_agg(
     if proj.aggs.iter().any(|a| a.distinct) {
         return None;
     }
-    let [path] = patterns.as_slice() else {
-        return None; // single path for now (multi-pattern joins are a follow-up)
-    };
-    // Traversals only (a bare-node aggregate is already vectorized), and no
-    // var-length quantifier (its matcher isn't driven per-seed here).
-    if path.segments.is_empty() || path.segments.iter().any(|s| s.rel.quantifier.is_some()) {
+    // Anchor at the first pattern's start node: every complete match binds it, so
+    // partitioning the seeds by it is a clean split (no double-count, no miss). A
+    // single path uses the direct matcher; a comma-join pre-binds the anchor and
+    // drives all patterns via `drive_matches`.
+    let anchor = &patterns[0].start;
+    let single = patterns.len() == 1;
+    // A comma-join needs a variable anchor to pre-bind. Traversals only (a bare-node
+    // aggregate is already vectorized). No var-length (its matcher isn't per-seed).
+    if !single && anchor.var_slot.is_none() {
+        return None;
+    }
+    if patterns.iter().all(|p| p.segments.is_empty()) {
+        return None;
+    }
+    if patterns
+        .iter()
+        .any(|p| p.segments.iter().any(|s| s.rel.quantifier.is_some()))
+    {
         return None;
     }
 
@@ -5575,7 +5588,7 @@ fn try_parallel_agg(
         return None;
     }
     let ctx = resolve_ctx(graph, plan, params);
-    let seeds: Vec<u32> = match path.start.label.as_ref().and_then(seed_label) {
+    let seeds: Vec<u32> = match anchor.label.as_ref().and_then(seed_label) {
         Some(r) => match ctx.labels[r].0 {
             Some(lid) => graph.vertices_with_label(lid).to_vec(),
             None => Vec::new(), // unknown label → no matches (finish emits the empty result)
@@ -5590,6 +5603,8 @@ fn try_parallel_agg(
     let cwhere = where_.as_ref();
     let cwhere_prog = where_prog.as_ref();
     let width = (*scope_len).max(1);
+    let anchor_slot = anchor.var_slot;
+    let match_clause: [&CClause; 1] = [&linear.clauses[0]]; // for drive_matches
     let chunk = (seeds.len() / (threads * 4)).max(1_024);
     // Per-chunk accumulator; rayon preserves chunk order, so the reduce below sees
     // chunks in seed order and reproduces the serial first-seen group order.
@@ -5602,12 +5617,33 @@ fn try_parallel_agg(
                 if ctx.faulted() {
                     break;
                 }
-                match_node_continue(graph, &ctx, &mut b, &path.start, s, path, 0, &mut |bnd| {
-                    if where_keep(&Env::new(graph, &ctx, bnd), cwhere, cwhere_prog) {
+                if single {
+                    // Direct matcher; the clause WHERE is applied per emitted match.
+                    match_node_continue(
+                        graph,
+                        &ctx,
+                        &mut b,
+                        anchor,
+                        s,
+                        &patterns[0],
+                        0,
+                        &mut |bnd| {
+                            if where_keep(&Env::new(graph, &ctx, bnd), cwhere, cwhere_prog) {
+                                acc.accept(graph, &ctx, bnd);
+                            }
+                            true
+                        },
+                    );
+                } else {
+                    // Comma-join: pre-bind the anchor, drive every pattern (which
+                    // applies the clause WHERE itself), fold each complete match.
+                    b.0.iter_mut().for_each(|c| *c = None);
+                    b.set(anchor_slot.unwrap(), Val::Node(s));
+                    drive_matches(graph, &ctx, &match_clause, 0, &mut b, &mut |bnd| {
                         acc.accept(graph, &ctx, bnd);
-                    }
-                    true // aggregation visits every match
-                });
+                        true
+                    });
+                }
             }
             acc
         })

@@ -120,6 +120,10 @@ fn main() {
         "MATCH (a:Person)-[:KNOWS]->(b) RETURN sum(b.age) AS s, avg(b.age) AS av, min(b.age) AS mnn, max(b.age) AS mx, count(*) AS c",
         // 2-hop grouped (the trav2_group shape), first-seen order
         "MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(c) RETURN c.city AS city, count(*) AS n",
+        // comma-join sharing `a` (the join_multi shape): grouped, first-seen order
+        "MATCH (a:Person)-[:KNOWS]->(b), (a)-[:KNOWS]->(c) WHERE b.age > 40 RETURN a.city AS city, count(*) AS n",
+        // comma-join, global aggregates over the join
+        "MATCH (a:Person)-[:KNOWS]->(b), (a)-[:KNOWS]->(c) WHERE b.age > 60 AND c.age < 25 RETURN count(*) AS c, min(a.name) AS mn, max(c.age) AS mx",
     ] {
         println!("--- {q}");
         dump_rows(&mut g, q);
