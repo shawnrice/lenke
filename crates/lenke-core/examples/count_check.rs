@@ -181,7 +181,45 @@ fn main() {
         "ORDER BY partial-sort produced wrong rows"
     );
 
-    println!("all string-path + order checks OK");
+    // Orientation correctness: a pattern and its reverse describe the SAME edges,
+    // so — regardless of which end each seeds from — they must return the identical
+    // row SET. reverse_path preserving bindings is exactly this equality. Compare
+    // sorted so the (legitimately different) row ORDER doesn't matter.
+    let orient_pairs = [
+        (
+            "MATCH (a:Person)-[:KNOWS]->(b:Admin) RETURN a.name AS an, b.name AS bn",
+            "MATCH (b:Admin)<-[:KNOWS]-(a:Person) RETURN a.name AS an, b.name AS bn",
+        ),
+        (
+            // 2-hop: forward vs fully reversed (segments + directions flipped).
+            "MATCH (a:Admin)-[:KNOWS]->(b)-[:KNOWS]->(c:Admin) RETURN a.name AS x, c.name AS y",
+            "MATCH (c:Admin)<-[:KNOWS]-(b)<-[:KNOWS]-(a:Admin) RETURN a.name AS x, c.name AS y",
+        ),
+        (
+            "MATCH (a:Person)-[:KNOWS]->(b:Admin) WHERE a.age > 76 RETURN a.name AS an, b.age AS ba",
+            "MATCH (b:Admin)<-[:KNOWS]-(a:Person) WHERE a.age > 76 RETURN a.name AS an, b.age AS ba",
+        ),
+    ];
+    for (fwd, rev) in orient_pairs {
+        let mut a = sorted_rows(&mut g, fwd);
+        let mut b = sorted_rows(&mut g, rev);
+        a.sort();
+        b.sort();
+        println!("orient pair: {} rows, match={}", a.len(), a == b);
+        assert_eq!(a, b, "orientation changed the row SET:\n  {fwd}\n  {rev}");
+        assert!(!a.is_empty(), "orient-check query returned no rows: {fwd}");
+    }
+
+    println!("all string-path + order + orientation checks OK");
+}
+
+/// Every result row as a `|`-joined string (all cells), for set comparison.
+fn sorted_rows(g: &mut Graph, q: &str) -> Vec<String> {
+    let plan = prepare(q).unwrap();
+    let rs = plan.execute(g, &Params::new()).unwrap();
+    rs.rows()
+        .map(|r| r.iter().map(fmt_val).collect::<Vec<_>>().join("|"))
+        .collect()
 }
 
 /// Collect the first-column string values of a query's result rows, in order.

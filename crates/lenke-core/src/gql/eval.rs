@@ -3662,7 +3662,10 @@ fn etype_label_seed(graph: &Graph, ctx: &Ctx, expr: &CLabelExpr) -> Option<Vec<u
     }
 }
 
-fn edge_index_seed(
+/// A *selective* edge seed: an indexed edge-property equality (inline `{k: v}`) or
+/// a seekable WHERE hint on the edge variable. Excludes the edge-type fallback, so
+/// the caller can decide between this true seek and node-side seeding.
+fn edge_prop_seed(
     graph: &Graph,
     ctx: &Ctx,
     rel: &CRel,
@@ -3677,16 +3680,121 @@ fn edge_index_seed(
             }
         }
     }
+    where_.and_then(|w| prop_index_hint(graph, ctx, w, rel.var_slot, true))
+}
+
+fn edge_index_seed(
+    graph: &Graph,
+    ctx: &Ctx,
+    rel: &CRel,
+    where_: Option<&CExpr>,
+) -> Option<Vec<u32>> {
     // Prefer a (usually more selective) property hint; otherwise seed from the
     // edge type. edge_first_build re-validates label + props, so a type seed is
     // a correct superset for any extra constraints.
-    where_
-        .and_then(|w| prop_index_hint(graph, ctx, w, rel.var_slot, true))
-        .or_else(|| {
-            rel.label
-                .as_ref()
-                .and_then(|lbl| etype_label_seed(graph, ctx, lbl))
-        })
+    edge_prop_seed(graph, ctx, rel, where_).or_else(|| {
+        rel.label
+            .as_ref()
+            .and_then(|lbl| etype_label_seed(graph, ctx, lbl))
+    })
+}
+
+/// Flip a relationship direction for path reversal (`Out`↔`In`; `Both` fixed).
+fn flip_direction(d: Direction) -> Direction {
+    match d {
+        Direction::Out => Direction::In,
+        Direction::In => Direction::Out,
+        Direction::Both => Direction::Both,
+    }
+}
+
+/// Walk a fixed-length path from its other end: reverse the segment order and flip
+/// each relationship's direction. The matched bindings are identical (same edges /
+/// nodes) — only the seed side, and thus enumeration order, change. Mirrors the TS
+/// engine's `reversePath` so both engines can seed the same end.
+fn reverse_path(path: &CPath) -> CPath {
+    // Nodes in written order: [start, seg0.node, seg1.node, …].
+    let n = path.segments.len();
+    let node_at = |i: usize| -> &CNode {
+        if i == 0 {
+            &path.start
+        } else {
+            &path.segments[i - 1].node
+        }
+    };
+    let mut segments = Vec::with_capacity(n);
+    for i in (0..n).rev() {
+        let seg = &path.segments[i];
+        segments.push(CSegment {
+            rel: CRel {
+                direction: flip_direction(seg.rel.direction),
+                ..seg.rel.clone()
+            },
+            node: node_at(i).clone(),
+        });
+    }
+    CPath {
+        start: path.segments[n - 1].node.clone(),
+        segments,
+    }
+}
+
+/// Estimated seed count for anchoring a pattern at `node`: its label bucket size,
+/// or all live vertices when unlabeled. Drives orientation; index hints are handled
+/// separately (a hinted node keeps the pattern on the index-seed path).
+fn estimate_seed_card(graph: &Graph, ctx: &Ctx, node: &CNode) -> usize {
+    match node.label.as_ref().and_then(seed_label) {
+        Some(r) => ctx.labels[r]
+            .0
+            .map_or(0, |lid| graph.vertices_with_label(lid).len()),
+        None => graph.vertex_count(),
+    }
+}
+
+/// Cardinality-based orientation for a **label-only** fixed-length traversal: pick
+/// the more selective node end to seed from, reversing the path if the far end is
+/// smaller. Returns the (possibly reversed) path to seed via `scan_start_seed` +
+/// `expand_scan`, or `None` to leave the pattern on its existing path.
+///
+/// Bails for anything with an index seek or edge/where property hint (those are
+/// handled by `edge_first_build` / the isolated seek) or a var-length segment, so
+/// this only ever *replaces* the O(E) edge-type-bucket scan with an O(seeds·degree)
+/// node walk — never abandons a more selective seek. Used by both `build_scan` and
+/// `try_parallel_scan`, so serial and parallel seed identically.
+fn try_orient_node_seed(
+    graph: &Graph,
+    ctx: &Ctx,
+    path: &CPath,
+    where_: Option<&CExpr>,
+) -> Option<CPath> {
+    if path.segments.is_empty() || path.segments.iter().any(|s| s.rel.quantifier.is_some()) {
+        return None;
+    }
+    let end_node = &path.segments[path.segments.len() - 1].node;
+    // Don't interfere with a real index seek on either endpoint.
+    if node_index_seed(graph, ctx, &path.start, where_).is_some()
+        || node_index_seed(graph, ctx, end_node, where_).is_some()
+    {
+        return None;
+    }
+    // Any edge property / WHERE hint means edge_first_build has a selective seed.
+    for seg in &path.segments {
+        if !seg.rel.props.is_empty()
+            || seg.rel.where_.is_some()
+            || edge_prop_seed(graph, ctx, &seg.rel, where_).is_some()
+        {
+            return None;
+        }
+    }
+    // Orient to the smaller end. A strict `<` keeps the written orientation on a
+    // tie, matching the TS engine's `orient`.
+    let start_est = estimate_seed_card(graph, ctx, &path.start);
+    let end_est = estimate_seed_card(graph, ctx, end_node);
+    Some(if end_est < start_est {
+        reverse_path(path)
+    } else {
+        path.clone()
+    })
 }
 
 /// Whether `build_scan` will turn this scan into an index seek (so a LIMIT cap
@@ -3800,6 +3908,14 @@ fn build_scan(
     }
     if path.segments.iter().any(|s| s.rel.quantifier.is_some()) {
         return None;
+    }
+    // Cardinality-based orientation: a label-only traversal seeds from its more
+    // selective node end and walks its adjacency (O(seeds·degree)) instead of
+    // scanning the whole edge-type bucket (O(E)). Same decision as
+    // `try_parallel_scan`, so the serial and parallel paths seed identically.
+    if let Some(oriented) = try_orient_node_seed(graph, ctx, path, where_) {
+        let endpoint = scan_start_seed(graph, ctx, &oriented.start, scope_len);
+        return expand_scan(graph, ctx, &oriented, scope_len, endpoint, cap);
     }
     // Edge-first: a single segment with an indexed edge-property hint → seek the
     // matching edges and validate the surrounding (a)-[r]->(b) pattern, instead
@@ -5761,7 +5877,11 @@ fn try_parallel_scan(
         return None;
     }
     let ctx = resolve_ctx(graph, plan, params);
-    let start_ids = scan_start_seed(graph, &ctx, &path.start, *scope_len);
+    // Orient exactly as build_scan does; decline (→ serial path) for any shape it
+    // wouldn't orient (an index / edge-property seek), so serial and parallel seed
+    // from the identical end and produce the identical row order.
+    let oriented = try_orient_node_seed(graph, &ctx, path, where_.as_ref())?;
+    let start_ids = scan_start_seed(graph, &ctx, &oriented.start, *scope_len);
     const MIN_SEEDS: usize = 8_192;
     if start_ids.len() < MIN_SEEDS {
         return None;
@@ -5774,7 +5894,7 @@ fn try_parallel_scan(
     let frags: Vec<Option<RowSet>> = start_ids
         .par_chunks(chunk)
         .map(|c| {
-            let mut sc = expand_scan(graph, &ctx, path, *scope_len, c.to_vec(), None)?;
+            let mut sc = expand_scan(graph, &ctx, &oriented, *scope_len, c.to_vec(), None)?;
             if let Some(w) = w {
                 let keep: Vec<bool> = eval_vec(graph, &ctx, &sc, w)
                     .into_truth()
