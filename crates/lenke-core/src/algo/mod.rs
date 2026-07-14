@@ -21,6 +21,7 @@ use crate::query::RowSet;
 mod components;
 mod degree;
 mod label_prop;
+mod pagerank;
 
 /// Parsed algorithm configuration (a superset; each algorithm reads the fields it
 /// needs). Deserialized from the JSON object handed across the FFI boundary.
@@ -94,6 +95,7 @@ pub fn run(graph: &mut Graph, name: &str, config: &str) -> Result<RowSet, String
         "degree" => ("degree", degree::degree(graph, &cfg)),
         "connectedComponents" => ("componentId", components::connected_components(graph, &cfg)),
         "labelPropagation" => ("label", label_prop::label_propagation(graph, &cfg)),
+        "pagerank" => ("score", pagerank::pagerank(graph, &cfg)),
         other => return Err(format!("unknown algorithm: {other}")),
     };
 
@@ -333,5 +335,51 @@ mod tests {
                 .map(|i| (i.to_string(), i.to_string()))
                 .collect::<Vec<_>>(),
         );
+    }
+
+    /// `(external id, score)` rows in engine order.
+    fn scores(g: &mut Graph, cfg: &str) -> Vec<(String, f64)> {
+        let rs = run(g, "pagerank", cfg).unwrap();
+        rs.rows()
+            .map(|r| match (&r[0], &r[1]) {
+                (Value::Str(id), Value::Num(s)) => (id.to_string(), *s),
+                _ => panic!("unexpected pagerank row shape"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn pagerank_two_cycle_is_uniform_and_mass_conserving() {
+        // 1↔2 symmetric cycle → exactly [0.5, 0.5] (a fixed point of the iteration).
+        let two_cycle = ndjson::decode(
+            &[
+                r#"{"type":"node","id":"1","labels":["N"]}"#,
+                r#"{"type":"node","id":"2","labels":["N"]}"#,
+                r#"{"type":"edge","from":"1","to":"2","labels":["E"]}"#,
+                r#"{"type":"edge","from":"2","to":"1","labels":["E"]}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        let mut g = two_cycle;
+        assert_eq!(
+            scores(&mut g, "{}"),
+            vec![("1".into(), 0.5), ("2".into(), 0.5)]
+        );
+
+        // Mass conservation: the scores form a probability distribution summing to 1
+        // (dangling redistribution keeps total rank constant). The modern graph has
+        // dangling sinks (lop, vadas, ripple), so this exercises that path.
+        let mut m = modern();
+        let total: f64 = scores(&mut m, "{}").iter().map(|(_, s)| s).sum();
+        assert!(
+            (total - 1.0).abs() < 1e-9,
+            "PageRank mass not conserved: {total}"
+        );
+
+        // The most-created software (lop, id 3: in-degree 3) outranks a leaf (vadas).
+        let s = scores(&mut m, "{}");
+        let by = |id: &str| s.iter().find(|(v, _)| v == id).unwrap().1;
+        assert!(by("3") > by("2"));
     }
 }

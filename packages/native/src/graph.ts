@@ -3,6 +3,7 @@ import type {
   ComponentRow,
   DegreeRow,
   LabelRow,
+  PageRankRow,
   ScalarTypeName,
 } from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
@@ -428,6 +429,14 @@ export type RustGraph = {
    * data-last twin is `labelPropagation` in `@lenke/core`.
    */
   labelPropagation: (config?: AlgorithmConfig) => LabelRow[];
+  /**
+   * PageRank — the whole fixed-iteration computation runs natively in one call →
+   * `{ node, score }` rows in insertion order. `config` takes `iterations`
+   * (default 20), `dampingFactor` (default 0.85), an optional `weightProperty`,
+   * an `edgeLabel` filter, and a `writeProperty`. Data-first (graph is `this`);
+   * the data-last twin is `pagerank` in `@lenke/core`.
+   */
+  pagerank: (config?: AlgorithmConfig) => PageRankRow[];
   /** Serialize the graph back to NDJSON bytes. */
   toNdjson: () => Uint8Array;
   /**
@@ -729,6 +738,10 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
       decodeRows(
         backend.algo(live(), 'labelPropagation', config && JSON.stringify(config)),
       ) as LabelRow[],
+    pagerank: (config) =>
+      decodeRows(
+        backend.algo(live(), 'pagerank', config && JSON.stringify(config)),
+      ) as PageRankRow[],
     toNdjson: () => backend.encodeNdjson(live()),
     mergeNdjson: (bytes) => backend.mergeNdjson(live(), bytes),
     serialize: (format) => decoder.decode(backend.serialize(live(), format)),

@@ -49,10 +49,12 @@ export {
   connectedComponents,
   degree,
   labelPropagation,
+  pagerank,
   type AlgorithmConfig,
   type AlgorithmRow,
   type ComponentRow,
   type DegreeRow,
   type GraphAlgorithm,
   type LabelRow,
+  type PageRankRow,
 } from './algorithms/index.js';

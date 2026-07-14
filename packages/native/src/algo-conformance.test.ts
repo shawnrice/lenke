@@ -25,6 +25,7 @@ import {
   degree,
   Graph,
   labelPropagation,
+  pagerank,
 } from '@lenke/core';
 import { query as tsQuery } from '@lenke/gql';
 import { deserialize as tsDeserialize } from '@lenke/serialization';
@@ -220,6 +221,62 @@ suite('graph-algorithm differential: labelPropagation (TS core vs native)', () =
     nativeGraph.labelPropagation(config);
 
     const readBack = 'MATCH (n) RETURN n.lbl AS lbl ORDER BY n.lbl, n.lbl';
+    expect(JSON.stringify(tsQuery(tsGraph, readBack))).toBe(
+      JSON.stringify(nativeGraph.query(readBack)),
+    );
+  });
+});
+
+// A weighted graph with INTERLEAVED edge types into a common hub (e's in-edges are
+// T1,T2,T1,T2 in insertion order) — this is exactly the shape that diverges if an
+// engine iterated adjacency grouped-by-type instead of edge-insertion order, so it
+// pins the f64 summation order. Also a dangling structure (b, a sink) and weights.
+const PAGERANK_NDJSON = [
+  '{"type":"node","id":"a","labels":["N"]}',
+  '{"type":"node","id":"b","labels":["N"]}',
+  '{"type":"node","id":"c","labels":["N"]}',
+  '{"type":"node","id":"d","labels":["N"]}',
+  '{"type":"node","id":"e","labels":["N"]}',
+  '{"type":"edge","id":"1","from":"a","to":"e","labels":["T1"],"properties":{"w":0.5}}',
+  '{"type":"edge","id":"2","from":"b","to":"e","labels":["T2"],"properties":{"w":1.5}}',
+  '{"type":"edge","id":"3","from":"c","to":"e","labels":["T1"],"properties":{"w":2.0}}',
+  '{"type":"edge","id":"4","from":"d","to":"e","labels":["T2"],"properties":{"w":0.25}}',
+  '{"type":"edge","id":"5","from":"e","to":"a","labels":["T1"],"properties":{"w":1.0}}',
+  '{"type":"edge","id":"6","from":"a","to":"c","labels":["T2"],"properties":{"w":0.7}}',
+  '{"type":"edge","id":"7","from":"c","to":"d","labels":["T1"],"properties":{"w":1.3}}',
+].join('\n');
+
+suite('graph-algorithm differential: pagerank (TS core vs native, f64)', () => {
+  const backend = createFfiBackend(LIB);
+  const nativeGraph = graphFromFormat(backend, PAGERANK_NDJSON, 'ndjson');
+  const tsGraph = tsDeserialize(PAGERANK_NDJSON, 'ndjson', new Graph());
+
+  for (const config of [
+    {} as const, // default 20 iterations, d=0.85, unweighted
+    { iterations: 1 } as const, // single round — catches first-step drift
+    { iterations: 5 } as const,
+    { iterations: 50 } as const, // near-converged: bit drift would compound
+    { dampingFactor: 0.5 } as const,
+    { dampingFactor: 0.99 } as const,
+    { weightProperty: 'w' } as const, // weighted — stresses weight reads + order
+    { weightProperty: 'w', iterations: 7 } as const,
+    { weightProperty: 'w', edgeLabel: 'T1' } as const,
+    { edgeLabel: 'T2' } as const,
+    { edgeLabel: 'NOPE' } as const, // no edges → uniform 1/N
+  ]) {
+    test(`pagerank ${JSON.stringify(config)} — f64 byte-identical`, () => {
+      expect(JSON.stringify(pagerank(config, tsGraph))).toBe(
+        JSON.stringify(nativeGraph.pagerank(config)),
+      );
+    });
+  }
+
+  test('writeProperty round-trips identically through GQL on both engines', () => {
+    const config = { writeProperty: 'pr' } as const;
+    pagerank(config, tsGraph);
+    nativeGraph.pagerank(config);
+
+    const readBack = 'MATCH (n) RETURN n.pr AS pr ORDER BY n.pr DESC, n.pr';
     expect(JSON.stringify(tsQuery(tsGraph, readBack))).toBe(
       JSON.stringify(nativeGraph.query(readBack)),
     );
