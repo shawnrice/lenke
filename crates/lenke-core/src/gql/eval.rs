@@ -2360,27 +2360,47 @@ fn count_matches(
     // (with a clone each) into a tight adjacency scan.
     if where_.is_none() {
         if let [path] = patterns {
-            if let ([seg], Some(s)) = (path.segments.as_slice(), path.start.var_slot) {
-                let ok_start = path.start.props.is_empty() && path.start.where_.is_none();
+            if let [seg] = path.segments.as_slice() {
+                let plain = |n: &CNode| n.props.is_empty() && n.where_.is_none();
                 let ok_rel = seg.rel.quantifier.is_none()
                     && seg.rel.props.is_empty()
                     && seg.rel.where_.is_none()
                     && matches!(seg.rel.direction, Direction::Out | Direction::In);
-                let ok_node = seg.node.props.is_empty()
-                    && seg.node.where_.is_none()
-                    // A bound endpoint (self-join / correlated target) isn't a plain
-                    // degree. A fresh sub-scope slot sits beyond the outer binding.
-                    && seg
-                        .node
-                        .var_slot
-                        .is_none_or(|ns| ns >= binding.0.len() || !binding.bound(ns));
-                if ok_start && ok_rel && ok_node && binding.bound(s) {
-                    if let Some(Val::Node(v)) = binding.get(s) {
-                        return expand(graph, ctx, *v, seg.rel.direction, seg.rel.label.as_ref())
-                            .filter(|(_e, nbr)| {
-                                matches_label(graph, ctx, *nbr, seg.node.label.as_ref())
-                            })
-                            .count() as u64;
+                // The live `Node` a pattern node is already bound to (a fresh sub-scope
+                // slot sits beyond the outer binding, so guard the index).
+                let bound_of = |n: &CNode| -> Option<u32> {
+                    n.var_slot
+                        .filter(|&s| s < binding.0.len())
+                        .and_then(|s| binding.get(s))
+                        .and_then(|v| match v {
+                            Val::Node(i) => Some(*i),
+                            _ => None,
+                        })
+                };
+                if ok_rel && plain(&path.start) && plain(&seg.node) {
+                    // Anchor at whichever end is the bound correlated vertex; the other
+                    // (free) end supplies a label filter. Its matching-adjacency count
+                    // is the (reverse-)degree — no per-row clone, no recursion.
+                    let cnt = |anchor: u32, dir: Direction, far: Option<&CLabelExpr>| -> u64 {
+                        expand(graph, ctx, anchor, dir, seg.rel.label.as_ref())
+                            .filter(|(_e, nbr)| matches_label(graph, ctx, *nbr, far))
+                            .count() as u64
+                    };
+                    match (bound_of(&path.start), bound_of(&seg.node)) {
+                        // `(a)-[:T]{dir}-(m)`, `a` bound → a's `dir` adjacency to m's label.
+                        (Some(a), None) => {
+                            return cnt(a, seg.rel.direction, seg.node.label.as_ref())
+                        }
+                        // `(m)-[:T]{dir}-(b)`, `b` bound → b's *reverse*-side adjacency to
+                        // m's (start's) label: the reverse degree (e.g. `COUNT { (:U)->(b) }`).
+                        (None, Some(b)) => {
+                            return cnt(
+                                b,
+                                flip_direction(seg.rel.direction),
+                                path.start.label.as_ref(),
+                            );
+                        }
+                        _ => {} // both bound (specific edge) / both free (global) → enumerate
                     }
                 }
             }

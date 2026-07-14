@@ -388,6 +388,13 @@ fn main() {
             "subq",
             "MATCH (n:Person) RETURN sum(COUNT { (n)-[:KNOWS]->() }) AS s",
         ),
+        // Reverse degree — the correlated node is the ENDPOINT (dogfood popularity
+        // shape `COUNT { (:User)-[:PURCHASED]->(y) }`): per-row in-degree.
+        (
+            "count_subq_rev",
+            "subq",
+            "MATCH (n:Person) RETURN sum(COUNT { (a)-[:KNOWS]->(n) }) AS s",
+        ),
         // End-grouped count with ORDER BY count DESC — order is by count, not
         // first-seen, so a degree shortcut would be legal (unlike no-ORDER-BY).
         (

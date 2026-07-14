@@ -169,6 +169,9 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
       `MATCH (a:Person) RETURN a.name AS name, COUNT { (a)-[:KNOWS]->() } AS deg ORDER BY name`,
       `MATCH (a:Person) RETURN a.name AS name, COUNT { (a)-[:CREATED]->(:Software) } AS d ORDER BY name`,
       `MATCH (a:Person) RETURN a.name AS name, COUNT { (a)<-[:KNOWS]-() } AS indeg ORDER BY name`,
+      // reverse degree — the correlated node is the endpoint (native anchors there)
+      `MATCH (s:Software) RETURN s.name AS name, COUNT { (:Person)-[:CREATED]->(s) } AS pop ORDER BY name`,
+      `MATCH (a:Person) RETURN a.name AS name, COUNT { (b)-[:KNOWS]->(a) } AS indeg ORDER BY name`,
     ]) {
       expect(JSON.stringify(nativeGraph.query(q)), q).toBe(JSON.stringify(tsQuery(tsGraph, q)));
     }

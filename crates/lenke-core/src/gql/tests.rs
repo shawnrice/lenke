@@ -240,6 +240,26 @@ fn count_subquery_degree_matches_enumeration() {
             "MATCH (n:Node) WHERE n.name = 'n1' RETURN COUNT { (n)<-[:R]-(m) WHERE true } AS c",
             3.0,
         ),
+        (
+            // Reverse degree — the correlated node is the ENDPOINT (like the dogfood
+            // `COUNT { (:User)-[:PURCHASED]->(y) }`). in-R of n1 from a free start = 3.
+            "MATCH (n:Node) WHERE n.name = 'n1' RETURN COUNT { (m)-[:R]->(n) } AS c",
+            "MATCH (n:Node) WHERE n.name = 'n1' RETURN COUNT { (m)-[:R]->(n) WHERE true } AS c",
+            3.0,
+        ),
+        (
+            // Reverse degree with a label on the free start: in-R of n1 whose source
+            // is a Target. n1's in-neighbours n0/n2 are not Target → 0.
+            "MATCH (n:Node) WHERE n.name = 'n1' RETURN COUNT { (m:Target)-[:R]->(n) } AS c",
+            "MATCH (n:Node) WHERE n.name = 'n1' RETURN COUNT { (m:Target)-[:R]->(n) WHERE true } AS c",
+            0.0,
+        ),
+        (
+            // Reverse out-degree: `(m)<-[:R]-(n)` with n bound = n's out-edges. n0 → 4.
+            "MATCH (n:Node) WHERE n.name = 'n0' RETURN COUNT { (m)<-[:R]-(n) } AS c",
+            "MATCH (n:Node) WHERE n.name = 'n0' RETURN COUNT { (m)<-[:R]-(n) WHERE true } AS c",
+            4.0,
+        ),
     ];
     for (fast, enumerated, want) in pairs {
         let f = val(&mut g, fast);
