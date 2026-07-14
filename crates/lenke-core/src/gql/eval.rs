@@ -1049,7 +1049,8 @@ fn eval(env: &Env, expr: &CExpr) -> Val {
             arg,
             distinct,
             star,
-        } => eval_aggregate(env, *func, arg.as_deref(), *distinct, *star),
+            frac,
+        } => eval_aggregate(env, *func, arg.as_deref(), *distinct, *star, *frac),
         CExpr::AggRef(idx) => env
             .agg_values
             .and_then(|a| a.get(*idx))
@@ -1224,7 +1225,14 @@ fn run(env: &Env, prog: &Program) -> Val {
     })
 }
 
-fn eval_aggregate(env: &Env, func: AggFn, arg: Option<&CExpr>, distinct: bool, star: bool) -> Val {
+fn eval_aggregate(
+    env: &Env,
+    func: AggFn,
+    arg: Option<&CExpr>,
+    distinct: bool,
+    star: bool,
+    frac: Option<f64>,
+) -> Val {
     let single;
     let group: &[Binding] = match env.group {
         Some(g) => g,
@@ -1280,7 +1288,43 @@ fn eval_aggregate(env: &Env, func: AggFn, arg: Option<&CExpr>, distinct: bool, s
         AggFn::Min => fold_extreme(values, Ordering::Less),
         AggFn::Max => fold_extreme(values, Ordering::Greater),
         AggFn::CollectList => Val::List(values),
+        AggFn::PercentileCont => percentile(&values, frac.unwrap_or(0.0), true),
+        AggFn::PercentileDisc => percentile(&values, frac.unwrap_or(0.0), false),
     }
+}
+
+/// ISO ordered-set percentile over a group's numeric values. `cont` (=
+/// `percentile_cont`) interpolates linearly between the two ranks bracketing
+/// `frac·(n−1)`; otherwise (`percentile_disc`) it returns the value at the smallest
+/// 0-based rank `k` with `(k+1)/n ≥ frac`. Non-numeric / non-finite values are
+/// dropped; `frac` is pre-clamped to `[0, 1]`. Empty input → `Null`.
+fn percentile(values: &[Val], frac: f64, cont: bool) -> Val {
+    let mut nums: Vec<f64> = values
+        .iter()
+        .filter_map(num_of)
+        .filter(|x| x.is_finite())
+        .collect();
+    if nums.is_empty() {
+        return Val::Null;
+    }
+    nums.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+    let n = nums.len();
+    let result = if cont {
+        let rn = frac * (n - 1) as f64;
+        let lo = rn.floor() as usize;
+        let hi = rn.ceil() as usize;
+        if lo == hi {
+            nums[lo]
+        } else {
+            nums[lo] + (rn - lo as f64) * (nums[hi] - nums[lo])
+        }
+    } else {
+        let idx = ((frac * n as f64).ceil() as usize)
+            .saturating_sub(1)
+            .min(n - 1);
+        nums[idx]
+    };
+    Val::Num(result)
 }
 
 fn fold_extreme(values: Vec<Val>, want: Ordering) -> Val {
@@ -2521,6 +2565,8 @@ struct Agg {
     /// dense id, so dedup by a tagged `u64` (no per-value string key). Scalars fall
     /// back to `seen`.
     seen_ids: HashSet<u64>,
+    /// Percentile fraction (clamped `[0, 1]`); unused by other aggregates.
+    frac: f64,
 }
 
 /// Tag bit distinguishing an edge id from a node id in [`Agg::seen_ids`] (dense ids
@@ -2539,6 +2585,7 @@ impl Agg {
             list: Vec::new(),
             seen: HashSet::new(),
             seen_ids: HashSet::new(),
+            frac: spec.frac.unwrap_or(0.0),
         }
     }
     fn step(&mut self, value: Option<Val>) {
@@ -2590,7 +2637,9 @@ impl Agg {
                     self.extreme = Some(val);
                 }
             }
-            AggFn::CollectList => self.list.push(val),
+            AggFn::CollectList | AggFn::PercentileCont | AggFn::PercentileDisc => {
+                self.list.push(val)
+            }
         }
     }
     fn finish(self) -> Val {
@@ -2606,6 +2655,8 @@ impl Agg {
             }
             AggFn::Min | AggFn::Max => self.extreme.unwrap_or(Val::Null),
             AggFn::CollectList => Val::List(self.list),
+            AggFn::PercentileCont => percentile(&self.list, self.frac, true),
+            AggFn::PercentileDisc => percentile(&self.list, self.frac, false),
         }
     }
 
@@ -4588,8 +4639,11 @@ fn fused_global_agg(graph: &Graph, ctx: &Ctx, sc: &ScanCols, spec: &CAgg) -> Opt
         // count(*) over one global group is just the live row count.
         return Some(Val::Num(sc.n as f64));
     }
-    if matches!(spec.func, AggFn::CollectList) {
-        return None;
+    if matches!(
+        spec.func,
+        AggFn::CollectList | AggFn::PercentileCont | AggFn::PercentileDisc
+    ) {
+        return None; // collect-then-compute aggregates aren't vectorized
     }
     let (data, present, ids) = num_col_of(graph, ctx, sc, spec.arg.as_ref()?)?;
     let dense = present.all_set(data.len());

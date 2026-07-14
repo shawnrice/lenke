@@ -149,6 +149,19 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     }
   });
 
+  // --- percentile_cont / percentile_disc: ISO ordered-set aggregates, newly
+  // implemented in both engines — must compute byte-identically. ---------------
+  test('percentile_cont / percentile_disc agree (TS vs native)', () => {
+    for (const q of [
+      `MATCH (n:Person) RETURN percentile_cont(n.age, 0.5) AS x`,
+      `MATCH (n:Person) RETURN percentile_disc(n.age, 0.5) AS x`,
+      `MATCH (n:Person) RETURN percentile_cont(n.age, 0.9) AS x, percentile_disc(n.age, 0.9) AS y`,
+      `MATCH (n:Person) RETURN percentile_cont(n.age, 0.0) AS lo, percentile_cont(n.age, 1.0) AS hi`,
+    ]) {
+      expect(JSON.stringify(nativeGraph.query(q)), q).toBe(JSON.stringify(tsQuery(tsGraph, q)));
+    }
+  });
+
   // --- COUNT { } degree: native takes an adjacency-count fast path, TS enumerates
   // the sub-pattern. Same per-row count. ---------------------------------------
   test('COUNT { } single-segment degree matches enumeration (TS vs native)', () => {

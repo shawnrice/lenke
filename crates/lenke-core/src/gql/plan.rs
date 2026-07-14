@@ -111,6 +111,12 @@ pub enum AggFn {
     Min,
     Max,
     CollectList,
+    /// ISO ordered-set aggregates: `percentile_cont(value, fraction)` (linear
+    /// interpolation between ranks) and `percentile_disc(value, fraction)` (the
+    /// value at the smallest rank whose cumulative fraction ≥ `fraction`). The
+    /// fraction is carried on [`CAgg::frac`] / [`CExpr::Aggregate`].
+    PercentileCont,
+    PercentileDisc,
 }
 
 fn agg_fn(name: &str) -> Option<AggFn> {
@@ -121,6 +127,8 @@ fn agg_fn(name: &str) -> Option<AggFn> {
         "min" => AggFn::Min,
         "max" => AggFn::Max,
         "collect_list" => AggFn::CollectList,
+        "percentile_cont" => AggFn::PercentileCont,
+        "percentile_disc" => AggFn::PercentileDisc,
         _ => return None,
     })
 }
@@ -286,6 +294,9 @@ pub enum CExpr {
         arg: Option<Box<Self>>,
         distinct: bool,
         star: bool,
+        /// The literal fraction for `percentile_cont` / `percentile_disc` (already
+        /// clamped to `[0, 1]`); `None` for every other aggregate.
+        frac: Option<f64>,
     },
     /// Reference to a projection's `i`th extracted aggregate (its folded value).
     /// Projection/ORDER BY expressions have their aggregates lifted out into
@@ -442,6 +453,8 @@ pub struct CAgg {
     pub arg: Option<CExpr>,
     pub distinct: bool,
     pub star: bool,
+    /// Percentile fraction (clamped to `[0, 1]`); `None` for other aggregates.
+    pub frac: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -696,6 +709,7 @@ fn extract_aggs(expr: CExpr, aggs: &mut Vec<CAgg>) -> CExpr {
             arg,
             distinct,
             star,
+            frac,
         } => {
             let idx = aggs.len();
             aggs.push(CAgg {
@@ -703,6 +717,7 @@ fn extract_aggs(expr: CExpr, aggs: &mut Vec<CAgg>) -> CExpr {
                 arg: arg.map(|a| *a),
                 distinct,
                 star,
+                frac,
             });
             CExpr::AggRef(idx)
         }
@@ -1007,11 +1022,35 @@ impl Lowerer {
             } => {
                 let cargs: Vec<CExpr> = args.iter().map(|a| self.expr(a)).collect();
                 if let Some(func) = agg_fn(name) {
-                    CExpr::Aggregate {
-                        func,
-                        arg: cargs.into_iter().next().map(Box::new),
-                        distinct: *distinct,
-                        star: *star,
+                    // Percentile aggregates are `(value, literal fraction)`. A
+                    // malformed call (wrong arity / non-literal fraction) falls
+                    // through to an unknown-function error rather than silently
+                    // mis-evaluating.
+                    let is_pct = matches!(func, AggFn::PercentileCont | AggFn::PercentileDisc);
+                    let frac = if is_pct {
+                        match (cargs.len(), cargs.get(1)) {
+                            (2, Some(CExpr::Lit(Lit::Num(f)))) => Some(f.clamp(0.0, 1.0)),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+                    if is_pct && frac.is_none() {
+                        if !self.unknown_fns.iter().any(|n| n == name) {
+                            self.unknown_fns.push(name.to_string());
+                        }
+                        CExpr::Scalar {
+                            func: ScalarFn::Unknown,
+                            args: cargs,
+                        }
+                    } else {
+                        CExpr::Aggregate {
+                            func,
+                            arg: cargs.into_iter().next().map(Box::new),
+                            distinct: *distinct,
+                            star: *star,
+                            frac,
+                        }
                     }
                 } else {
                     let func = scalar_fn(name);

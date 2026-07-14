@@ -63,6 +63,74 @@ fn rows(g: &mut Graph, query: &str) -> Vec<Vec<Value>> {
     q(g, query).1
 }
 
+/// ISO `percentile_cont` / `percentile_disc` ordered-set aggregates over known
+/// values: cont interpolates between ranks, disc returns an actual element.
+#[test]
+fn percentile_aggregates() {
+    let odd = ndjson::decode(
+        &(1..=5)
+            .map(|i| {
+                format!(r#"{{"type":"node","id":"n{i}","labels":["V"],"properties":{{"v":{i}}}}}"#)
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+    .unwrap();
+    let even = ndjson::decode(
+        &(1..=4)
+            .map(|i| {
+                format!(r#"{{"type":"node","id":"n{i}","labels":["V"],"properties":{{"v":{i}}}}}"#)
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+    .unwrap();
+    let num = |g: &mut Graph, query: &str| -> f64 {
+        match q(g, query).1[0][0] {
+            Value::Num(v) => v,
+            ref o => panic!("expected number, got {o:?}"),
+        }
+    };
+    let mut o = odd;
+    // [1,2,3,4,5]: median = 3 (cont & disc). cont(0.25)=2 (rn=1.0, exact rank).
+    assert_eq!(
+        num(&mut o, "MATCH (n:V) RETURN percentile_cont(n.v, 0.5) AS x"),
+        3.0
+    );
+    assert_eq!(
+        num(&mut o, "MATCH (n:V) RETURN percentile_disc(n.v, 0.5) AS x"),
+        3.0
+    );
+    assert_eq!(
+        num(&mut o, "MATCH (n:V) RETURN percentile_cont(n.v, 0.25) AS x"),
+        2.0
+    );
+    assert_eq!(
+        num(&mut o, "MATCH (n:V) RETURN percentile_cont(n.v, 0.0) AS x"),
+        1.0
+    );
+    assert_eq!(
+        num(&mut o, "MATCH (n:V) RETURN percentile_cont(n.v, 1.0) AS x"),
+        5.0
+    );
+
+    let mut e = even;
+    // [1,2,3,4]: cont(0.5) interpolates to 2.5; disc(0.5) is the element 2.
+    assert_eq!(
+        num(&mut e, "MATCH (n:V) RETURN percentile_cont(n.v, 0.5) AS x"),
+        2.5
+    );
+    assert_eq!(
+        num(&mut e, "MATCH (n:V) RETURN percentile_disc(n.v, 0.5) AS x"),
+        2.0
+    );
+    // Grouped: verify it folds per group too (all one group here → same answer).
+    assert_eq!(
+        num(&mut e, "MATCH (n:V) RETURN percentile_cont(n.v, 0.75) AS x"),
+        3.25, // rn = 0.75*3 = 2.25 → 3 + 0.25*(4-3)
+    );
+}
+
 /// The `COUNT { … }` degree fast path (single plain correlated segment) must equal
 /// the enumerated count. Cross-checked by adding an always-true inner `WHERE`, which
 /// bails the fast path onto the recursive matcher — so fast == enumerated. Covers a

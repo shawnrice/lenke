@@ -271,7 +271,45 @@ const COMPARE: Record<CompareOp, (a: number | string, b: number | string) => boo
 
 type FuncExpr = Extract<Expr, { kind: 'func' }>;
 
-const AGGREGATES = new Set(['count', 'sum', 'avg', 'min', 'max', 'collect_list']);
+const AGGREGATES = new Set([
+  'count',
+  'sum',
+  'avg',
+  'min',
+  'max',
+  'collect_list',
+  'percentile_cont',
+  'percentile_disc',
+]);
+
+/**
+ * ISO ordered-set percentile over a group's numeric values. `cont`
+ * (`percentile_cont`) interpolates linearly between the two ranks bracketing
+ * `frac·(n−1)`; otherwise (`percentile_disc`) it returns the value at the smallest
+ * 0-based rank `k` with `(k+1)/n ≥ frac`. Non-numeric / non-finite values are
+ * dropped; `frac` is pre-clamped to `[0, 1]`. Empty input → `null`.
+ */
+const percentileOf = (values: readonly unknown[], frac: number, cont: boolean): number | null => {
+  const nums = values
+    .map(Number)
+    .filter((x) => Number.isFinite(x))
+    .sort((a, b) => a - b);
+  const n = nums.length;
+
+  if (n === 0) {
+    return null;
+  }
+
+  if (cont) {
+    const rn = frac * (n - 1);
+    const lo = Math.floor(rn);
+    const hi = Math.ceil(rn);
+
+    return lo === hi ? nums[lo] : nums[lo] + (rn - lo) * (nums[hi] - nums[lo]);
+  }
+
+  return nums[Math.min(n - 1, Math.max(0, Math.ceil(frac * n) - 1))];
+};
 
 /** Does an expression contain an aggregate anywhere (→ implicit grouping)? */
 const hasAggregate = (expr: Expr): boolean => {
@@ -1338,6 +1376,23 @@ const compileAggregate = (expr: FuncExpr): CompiledExpr => {
     });
   }
 
+  // Percentile aggregates take `(value, literal fraction)`. A malformed call
+  // (wrong arity / non-literal fraction) is rejected, mirroring the native engine.
+  const isPercentile = name === 'percentile_cont' || name === 'percentile_disc';
+  let frac = 0;
+
+  if (isPercentile) {
+    const [, f] = expr.args;
+
+    if (expr.args.length !== 2 || f?.kind !== 'lit' || typeof f.value !== 'number') {
+      throw new LenkeError(`${name}() requires a numeric literal fraction`, {
+        code: ErrorCode.Unsupported,
+      });
+    }
+
+    frac = Math.min(1, Math.max(0, f.value));
+  }
+
   const argFn = expr.args[0] ? compileExpr(expr.args[0]) : undefined;
 
   return (env) => {
@@ -1370,6 +1425,10 @@ const compileAggregate = (expr: FuncExpr): CompiledExpr => {
           : values.reduce((m, v) => (compareValues(v, m) > 0 ? v : m));
       case 'collect_list':
         return values;
+      case 'percentile_cont':
+        return percentileOf(values, frac, true);
+      case 'percentile_disc':
+        return percentileOf(values, frac, false);
       default:
         return null;
     }
