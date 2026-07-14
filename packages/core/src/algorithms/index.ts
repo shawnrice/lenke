@@ -5,3 +5,4 @@
 // vertex-for-vertex (insertion order, no sorting) so results are byte-identical.
 export type { AlgorithmConfig, AlgorithmRow, GraphAlgorithm } from './types.js';
 export { degree, type DegreeRow } from './degree.js';
+export { connectedComponents, type ComponentRow } from './connected-components.js';

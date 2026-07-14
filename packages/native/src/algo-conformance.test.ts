@@ -19,7 +19,7 @@
 import { describe, expect, test } from 'bun:test';
 import { existsSync } from 'node:fs';
 
-import { type AlgorithmConfig, degree, Graph } from '@lenke/core';
+import { type AlgorithmConfig, connectedComponents, degree, Graph } from '@lenke/core';
 import { query as tsQuery } from '@lenke/gql';
 import { deserialize as tsDeserialize } from '@lenke/serialization';
 
@@ -112,5 +112,57 @@ suite('graph-algorithm differential: degree (TS core vs native)', () => {
     // lop(3) has in-degree 3 (marko, josh, peter), out 0 → both = 3.
     expect(nativeGraph.degree({ direction: 'both' })[3]).toEqual({ node: '3', degree: 3 });
     expect(nativeRows).toContain('"deg":3');
+  });
+});
+
+// A graph with two disjoint components {a,b,c} and {e,d} plus an isolated vertex
+// f — nodes in NON-sorted insertion order to prove both engines root each
+// component at its first-inserted (lowest dense-id) member, not by id string.
+const TWO_COMPONENT_NDJSON = [
+  '{"type":"node","id":"a","labels":["N"]}',
+  '{"type":"node","id":"b","labels":["N"]}',
+  '{"type":"node","id":"c","labels":["N"]}',
+  '{"type":"node","id":"e","labels":["N"]}',
+  '{"type":"node","id":"d","labels":["N"]}',
+  '{"type":"node","id":"f","labels":["N"]}',
+  '{"type":"edge","id":"1","from":"a","to":"b","labels":["E"]}',
+  '{"type":"edge","id":"2","from":"b","to":"c","labels":["E"]}',
+  '{"type":"edge","id":"3","from":"e","to":"d","labels":["E"]}',
+].join('\n');
+
+suite('graph-algorithm differential: connectedComponents (TS core vs native)', () => {
+  const backend = createFfiBackend(LIB);
+  const nativeGraph = graphFromFormat(backend, TWO_COMPONENT_NDJSON, 'ndjson');
+  const tsGraph = tsDeserialize(TWO_COMPONENT_NDJSON, 'ndjson', new Graph());
+
+  for (const config of [{} as const, { edgeLabel: 'E' } as const, { edgeLabel: 'NOPE' } as const]) {
+    test(`connectedComponents ${JSON.stringify(config)} — byte-identical`, () => {
+      expect(JSON.stringify(connectedComponents(config, tsGraph))).toBe(
+        JSON.stringify(nativeGraph.connectedComponents(config)),
+      );
+    });
+  }
+
+  test('known-answer: roots are first-inserted member (a, e), f isolated', () => {
+    // Insertion order a,b,c,e,d,f → {a,b,c} root "a"; {e,d} root "e"; {f} root "f".
+    expect(nativeGraph.connectedComponents({})).toEqual([
+      { node: 'a', componentId: 'a' },
+      { node: 'b', componentId: 'a' },
+      { node: 'c', componentId: 'a' },
+      { node: 'e', componentId: 'e' },
+      { node: 'd', componentId: 'e' },
+      { node: 'f', componentId: 'f' },
+    ]);
+  });
+
+  test('writeProperty round-trips identically through GQL on both engines', () => {
+    const config = { writeProperty: 'comp' } as const;
+    connectedComponents(config, tsGraph);
+    nativeGraph.connectedComponents(config);
+
+    const readBack = 'MATCH (n) RETURN n.comp AS comp ORDER BY n.comp, n.comp';
+    expect(JSON.stringify(tsQuery(tsGraph, readBack))).toBe(
+      JSON.stringify(nativeGraph.query(readBack)),
+    );
   });
 });

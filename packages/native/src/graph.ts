@@ -1,4 +1,4 @@
-import type { AlgorithmConfig, DegreeRow, ScalarTypeName } from '@lenke/core';
+import type { AlgorithmConfig, ComponentRow, DegreeRow, ScalarTypeName } from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { Backend, GraphHandle, MergeReport, PreparedHandle } from './backend.js';
@@ -405,6 +405,14 @@ export type RustGraph = {
    * (the graph is `this`); the data-last twin is `degree` in `@lenke/core`.
    */
   degree: (config?: AlgorithmConfig) => DegreeRow[];
+  /**
+   * Weakly-connected components — union-find over the whole graph in one call →
+   * `{ node, componentId }` rows in insertion order, where `componentId` is the
+   * external id of the component's first-inserted vertex. `config` takes an
+   * optional `edgeLabel` filter and a `writeProperty`. Data-first (graph is
+   * `this`); the data-last twin is `connectedComponents` in `@lenke/core`.
+   */
+  connectedComponents: (config?: AlgorithmConfig) => ComponentRow[];
   /** Serialize the graph back to NDJSON bytes. */
   toNdjson: () => Uint8Array;
   /**
@@ -698,6 +706,10 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
       parseJson(backend.gremlinJson(live(), gremlin(q, ...subs)), 'gremlin') as unknown[],
     degree: (config) =>
       decodeRows(backend.algo(live(), 'degree', config && JSON.stringify(config))) as DegreeRow[],
+    connectedComponents: (config) =>
+      decodeRows(
+        backend.algo(live(), 'connectedComponents', config && JSON.stringify(config)),
+      ) as ComponentRow[],
     toNdjson: () => backend.encodeNdjson(live()),
     mergeNdjson: (bytes) => backend.mergeNdjson(live(), bytes),
     serialize: (format) => decoder.decode(backend.serialize(live(), format)),

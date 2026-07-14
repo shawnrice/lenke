@@ -18,6 +18,7 @@ use crate::graph::{Graph, Value};
 use crate::json;
 use crate::query::RowSet;
 
+mod components;
 mod degree;
 
 /// Parsed algorithm configuration (a superset; each algorithm reads the fields it
@@ -90,6 +91,7 @@ pub fn run(graph: &mut Graph, name: &str, config: &str) -> Result<RowSet, String
     // the optional property write and row materialization uniformly.
     let (column, results): (&str, Vec<(u32, Value)>) = match name {
         "degree" => ("degree", degree::degree(graph, &cfg)),
+        "connectedComponents" => ("componentId", components::connected_components(graph, &cfg)),
         other => return Err(format!("unknown algorithm: {other}")),
     };
 
@@ -212,5 +214,60 @@ mod tests {
             .unwrap();
         assert_eq!(rs.row(0)[0], Value::Num(3.0));
         assert!(run(&mut g, "nope", "{}").is_err());
+    }
+
+    /// `(external id, componentId)` rows in engine order.
+    fn components(g: &mut Graph, cfg: &str) -> Vec<(String, String)> {
+        let rs = run(g, "connectedComponents", cfg).unwrap();
+        rs.rows()
+            .map(|r| match (&r[0], &r[1]) {
+                (Value::Str(id), Value::Str(c)) => (id.to_string(), c.to_string()),
+                _ => panic!("unexpected component row shape"),
+            })
+            .collect()
+    }
+
+    /// Two disjoint components (1–2–3 and 5–4) plus an isolated vertex (6). Node
+    /// insertion order 1,2,3,4,5,6 makes the component roots the min-index member:
+    /// {1,2,3}→"1", {4,5}→"4", {6}→"6". Edge `5→4` also proves undirected union.
+    fn two_components() -> Graph {
+        let lines = [
+            r#"{"type":"node","id":"1","labels":["N"]}"#,
+            r#"{"type":"node","id":"2","labels":["N"]}"#,
+            r#"{"type":"node","id":"3","labels":["N"]}"#,
+            r#"{"type":"node","id":"4","labels":["N"]}"#,
+            r#"{"type":"node","id":"5","labels":["N"]}"#,
+            r#"{"type":"node","id":"6","labels":["N"]}"#,
+            r#"{"type":"edge","from":"1","to":"2","labels":["E"]}"#,
+            r#"{"type":"edge","from":"2","to":"3","labels":["E"]}"#,
+            r#"{"type":"edge","from":"5","to":"4","labels":["E"]}"#,
+        ];
+        ndjson::decode(&lines.join("\n")).unwrap()
+    }
+
+    #[test]
+    fn wcc_roots_are_min_index_member() {
+        let mut g = two_components();
+        assert_eq!(
+            components(&mut g, "{}"),
+            vec![
+                ("1".into(), "1".into()),
+                ("2".into(), "1".into()),
+                ("3".into(), "1".into()),
+                ("4".into(), "4".into()),
+                ("5".into(), "4".into()),
+                ("6".into(), "6".into()),
+            ],
+        );
+        // The whole modern graph is one weakly-connected component rooted at "1".
+        let mut m = modern();
+        assert!(components(&mut m, "{}").iter().all(|(_, c)| c == "1"));
+        // A named-but-unknown edge type → every vertex is its own component.
+        assert_eq!(
+            components(&mut g, r#"{"edgeLabel":"NOPE"}"#),
+            (1..=6)
+                .map(|i| (i.to_string(), i.to_string()))
+                .collect::<Vec<_>>(),
+        );
     }
 }
