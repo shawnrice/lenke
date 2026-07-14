@@ -12,6 +12,13 @@
 //! per-round work parallelizes across vertices (each vertex reads only the frozen
 //! snapshot). The winner is chosen by (count, then smallest external-id string),
 //! independent of neighbour-enumeration order, so the TS mirror is byte-identical.
+//!
+//! Two structural changes that help the *TS* mirror were tried here and reverted,
+//! because native's data structures are already tighter: a precomputed neighbour CSR
+//! (native `out_adj`/`in_adj` are already flat CSR slices) and a count-array +
+//! dirty-list tally (a full-size count array thrashes cache on a spread-out random
+//! graph, where the small `HashMap<u32,u32>` working set does not). Both live in the
+//! TS version, which pays a high per-op cost for nested maps / the JS `Map`.
 
 use std::collections::HashMap;
 

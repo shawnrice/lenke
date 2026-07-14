@@ -42,28 +42,52 @@ const compute = (config: AlgorithmConfig, graph: Graph): PageRankRow[] => {
     return typeof w === 'number' ? w : 0;
   };
 
-  // Pass 1: out-strength per source, accumulated in edge-insertion order — the
-  // exact sequence the native engine scans (dense eidx == edgesById order).
+  // Pass 1 (single sweep in edge-insertion order — the exact sequence native scans,
+  // dense eidx == edgesById order): out-strength per source, in-degree per target,
+  // and — when weighted — each edge's weight cached once so pass 2 doesn't re-read
+  // the property (halving `getProperty` calls).
+  const weighted = weightProperty !== undefined;
   const outStrength = new Float64Array(n);
+  const incOff = new Int32Array(n + 1);
+  const edgeW: number[] = [];
 
   for (const edge of graph.edges) {
+    const w = weightOf(edge);
+
+    if (weighted) {
+      edgeW.push(w);
+    }
+
     if (typeOk(edge)) {
-      outStrength[index.get(edge.from.id)!] += weightOf(edge);
+      outStrength[index.get(edge.from.id)!] += w;
+      incOff[index.get(edge.to.id)! + 1]++;
     }
   }
 
-  // Pass 2: per-target contribution list (source index, weight/out-strength),
-  // pushed in edge-insertion order so each target's later sum is order-canonical.
-  const incoming: Array<Array<[number, number]>> = Array.from({ length: n }, () => []);
+  // Pass 2: per-target contribution lists as a flat CSR — `incOff[v]..incOff[v+1]`
+  // indexes `(incSrc, incFac)` for target v, filled in edge-insertion order so each
+  // target's later sum keeps its canonical f64 order. Typed arrays (vs an array of
+  // boxed [src, factor] tuples) make the hot pull loop contiguous and allocation-free.
+  for (let v = 0; v < n; v++) {
+    incOff[v + 1] += incOff[v];
+  }
+
+  const incSrc = new Int32Array(incOff[n]);
+  const incFac = new Float64Array(incOff[n]);
+  const cursor = incOff.slice(0, n);
+  let ei = 0;
 
   for (const edge of graph.edges) {
+    const w = weighted ? edgeW[ei++] : 1;
+
     if (!typeOk(edge)) {
       continue;
     }
 
     const src = index.get(edge.from.id)!;
-    const factor = weightOf(edge) / outStrength[src];
-    incoming[index.get(edge.to.id)!].push([src, factor]);
+    const pos = cursor[index.get(edge.to.id)!]++;
+    incSrc[pos] = src;
+    incFac[pos] = w / outStrength[src];
   }
 
   let pr = new Float64Array(n).fill(1 / nf);
@@ -84,8 +108,8 @@ const compute = (config: AlgorithmConfig, graph: Graph): PageRankRow[] => {
     for (let v = 0; v < n; v++) {
       let sum = 0;
 
-      for (const [u, factor] of incoming[v]) {
-        sum += pr[u] * factor;
+      for (let j = incOff[v]; j < incOff[v + 1]; j++) {
+        sum += pr[incSrc[j]] * incFac[j];
       }
 
       next[v] = base + d * sum;

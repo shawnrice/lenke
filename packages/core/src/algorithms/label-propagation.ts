@@ -8,17 +8,17 @@ export type LabelRow = AlgorithmRow<'label', string>;
 const DEFAULT_ITERATIONS = 10;
 
 /**
- * Yield the id of each neighbour reachable from a vertex's adjacency entry
- * (`edgesFromByLabel`/`edgesToByLabel` value), optionally restricted to one edge
- * type. `end` picks which endpoint is the neighbour ('to' for out-edges, 'from'
- * for in-edges). One yield per edge, so parallel edges / self-loops count with
- * multiplicity — matching the native per-Adj tally.
+ * Collect a vertex's neighbour indices (out-edge targets + in-edge sources,
+ * optionally restricted to one edge type) into `out`. One push per edge, so
+ * parallel edges / self-loops keep their multiplicity — matching the native tally.
  */
-const neighbourIds = function* (
+const collectNeighbours = (
   byLabel: Map<string, Set<Edge>> | undefined,
-  edgeLabel: string | undefined,
   end: 'to' | 'from',
-): Iterable<string> {
+  edgeLabel: string | undefined,
+  index: Map<string, number>,
+  out: number[],
+): void => {
   if (byLabel === undefined) {
     return;
   }
@@ -31,7 +31,7 @@ const neighbourIds = function* (
     }
 
     for (const edge of set) {
-      yield edge[end].id;
+      out.push(index.get(edge[end].id)!);
     }
   }
 };
@@ -39,64 +39,110 @@ const neighbourIds = function* (
 const compute = (config: AlgorithmConfig, graph: Graph): LabelRow[] => {
   const { edgeLabel, writeProperty, iterations = DEFAULT_ITERATIONS } = config;
 
-  // Insertion order == native dense-id order. Every vertex starts labelled with
-  // its own external id (a known/unknown edge type with no edges simply leaves
-  // labels untouched — same as native skipping propagation).
+  // Insertion order == native dense-id order. A label is carried as the index of
+  // the vertex whose external id is that label (all labels are vertex ids), so a
+  // round tallies numbers in a reused Map instead of hashing label strings.
   const order = [...graph.vertices];
-  let labels = new Map<string, string>();
+  const n = order.length;
+  const index = new Map<string, number>();
 
-  for (const v of order) {
-    labels.set(v.id, v.id);
+  order.forEach((v, i) => index.set(v.id, i));
+
+  // Precompute the undirected neighbour adjacency ONCE as a flat CSR — the graph is
+  // static across rounds, so this replaces per-round nested-map/Set traversal +
+  // edge-type filtering with a contiguous typed-array scan.
+  const off = new Int32Array(n + 1);
+  const lists: number[][] = order.map((v) => {
+    const list: number[] = [];
+    collectNeighbours(graph.edgesFromByLabel.get(v.id), 'to', edgeLabel, index, list);
+    collectNeighbours(graph.edgesToByLabel.get(v.id), 'from', edgeLabel, index, list);
+
+    return list;
+  });
+
+  for (let i = 0; i < n; i++) {
+    off[i + 1] = off[i] + lists[i].length;
   }
 
+  const data = new Int32Array(off[n]);
+  let k = 0;
+
+  for (const list of lists) {
+    for (const nbr of list) {
+      data[k++] = nbr;
+    }
+  }
+
+  let labels = new Int32Array(n);
+
+  for (let i = 0; i < n; i++) {
+    labels[i] = i;
+  }
+
+  // Tally neighbour labels with a reused count array indexed by label (a vertex
+  // index in [0, n)) plus a dirty-list of the labels touched, so counting and the
+  // per-vertex reset are plain array indexing — far cheaper than a Map in JS, and
+  // the reset stays O(distinct labels) rather than O(n).
+  const count = new Int32Array(n);
+  const dirty: number[] = [];
+
   for (let iter = 0; iter < iterations; iter++) {
-    const next = new Map<string, string>();
+    const nextLabels = new Int32Array(n);
+    let changed = false;
 
-    for (const v of order) {
-      // Tally neighbour labels from the frozen `labels` snapshot (undirected).
-      const counts = new Map<string, number>();
+    for (let v = 0; v < n; v++) {
+      dirty.length = 0;
 
-      const bump = (id: string): void => {
-        const lbl = labels.get(id)!;
-        counts.set(lbl, (counts.get(lbl) ?? 0) + 1);
-      };
+      for (let j = off[v]; j < off[v + 1]; j++) {
+        const l = labels[data[j]];
 
-      for (const id of neighbourIds(graph.edgesFromByLabel.get(v.id), edgeLabel, 'to')) {
-        bump(id);
-      }
-
-      for (const id of neighbourIds(graph.edgesToByLabel.get(v.id), edgeLabel, 'from')) {
-        bump(id);
-      }
-
-      // Adopt the most-frequent label; tie → lexicographically smallest. No
-      // neighbours → keep the current label.
-      let best: string | undefined;
-      let bestCount = 0;
-
-      for (const [lbl, c] of counts) {
-        if (best === undefined || c > bestCount || (c === bestCount && lbl < best)) {
-          best = lbl;
-          bestCount = c;
+        if (count[l]++ === 0) {
+          dirty.push(l);
         }
       }
 
-      next.set(v.id, best ?? labels.get(v.id)!);
+      // Adopt the most-frequent label; tie → lexicographically smallest external id.
+      // No neighbours → keep the current label. (Selection is order-independent, so
+      // the dirty-list order does not affect the result.)
+      let best = -1;
+      let bestCount = 0;
+
+      for (const lbl of dirty) {
+        const c = count[lbl];
+
+        if (best === -1 || c > bestCount || (c === bestCount && order[lbl].id < order[best].id)) {
+          best = lbl;
+          bestCount = c;
+        }
+
+        count[lbl] = 0; // reset for the next vertex
+      }
+
+      const nv = best === -1 ? labels[v] : best;
+      nextLabels[v] = nv;
+
+      if (nv !== labels[v]) {
+        changed = true;
+      }
     }
 
-    labels = next;
+    labels = nextLabels;
+
+    if (!changed) {
+      break; // converged — later rounds would be no-ops
+    }
   }
 
   const rows: LabelRow[] = [];
 
-  for (const v of order) {
-    const label = labels.get(v.id)!;
+  for (let i = 0; i < n; i++) {
+    const label = order[labels[i]].id;
 
     if (writeProperty !== undefined) {
-      v.setProperty(writeProperty, label);
+      order[i].setProperty(writeProperty, label);
     }
 
-    rows.push({ node: v.id, label });
+    rows.push({ node: order[i].id, label });
   }
 
   return rows;
@@ -106,9 +152,9 @@ const compute = (config: AlgorithmConfig, graph: Graph): LabelRow[] => {
  * Synchronous label propagation (community detection) — each vertex starts
  * labelled with its own external id and each round adopts the most-frequent
  * neighbour label (edges undirected), ties broken by the smallest label string,
- * for a fixed `iterations` count (default 10). Deterministic and exact.
- * Data-last dual-form: `labelPropagation(config, graph)` or
- * `labelPropagation(config)(graph)`.
+ * for a fixed `iterations` count (default 10), stopping early once a round changes
+ * nothing. Deterministic and exact. Data-last dual-form: `labelPropagation(config,
+ * graph)` or `labelPropagation(config)(graph)`.
  */
 export function labelPropagation(config: AlgorithmConfig): (graph: Graph) => LabelRow[];
 export function labelPropagation(config: AlgorithmConfig, graph: Graph): LabelRow[];

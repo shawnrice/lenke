@@ -53,25 +53,14 @@ const compute = (config: AlgorithmConfig, graph: Graph): ComponentRow[] => {
     parent[i] = i;
   }
 
-  // Each out-edge unions its endpoints (undirected). A named-but-unknown edge
-  // type simply has no adjacency entries → every vertex stays its own component.
-  for (const v of order) {
-    const byLabel = graph.edgesFromByLabel.get(v.id);
-
-    if (byLabel === undefined) {
-      continue;
-    }
-
-    const sets = edgeLabel === undefined ? byLabel.values() : [byLabel.get(edgeLabel)];
-
-    for (const set of sets) {
-      if (set === undefined) {
-        continue;
-      }
-
-      for (const edge of set) {
-        union(parent, index.get(edge.from.id)!, index.get(edge.to.id)!);
-      }
+  // Each edge unions its endpoints (undirected). A single flat sweep over all edges
+  // (union-by-min is order-independent, so the components are identical to a
+  // per-vertex sweep) is cheaper than walking the nested adjacency maps. A
+  // named-but-unknown edge type matches nothing → every vertex stays its own
+  // component.
+  for (const edge of graph.edges) {
+    if (edgeLabel === undefined || edge.labels.has(edgeLabel)) {
+      union(parent, index.get(edge.from.id)!, index.get(edge.to.id)!);
     }
   }
 

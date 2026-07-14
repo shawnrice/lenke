@@ -44,14 +44,11 @@ pub fn connected_components(graph: &Graph, cfg: &AlgoConfig) -> Vec<(u32, Value)
     let mut parent: Vec<u32> = (0..graph.n as u32).collect();
 
     if let Some(etype) = etype {
-        for v in graph.vertex_indices() {
-            for a in graph.out_adj(v) {
-                if let Some(t) = etype {
-                    if a.etype != t {
-                        continue;
-                    }
-                }
-                union(&mut parent, v, a.nbr);
+        // One flat sweep over the edge columns (contiguous) unions each edge's
+        // endpoints — union-by-min is order-independent, so the forest is identical.
+        for ei in 0..graph.edge_slots() {
+            if graph.is_edge_live(ei as u32) && etype.is_none_or(|t| graph.e_type[ei] == t) {
+                union(&mut parent, graph.e_src[ei], graph.e_dst[ei]);
             }
         }
     }
