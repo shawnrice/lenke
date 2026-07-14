@@ -73,6 +73,11 @@ pub fn shortest_path(graph: &Graph, cfg: &AlgoConfig) -> Vec<(u32, Value)> {
         };
     }
 
+    // Full SSSP. `algorithm` "dijkstra" (default) and "bmssp" both resolve here:
+    // the Duan et al. 2025 sorting-barrier SSSP (arXiv 2504.17033) is an exact
+    // algorithm, so it yields the identical canonical distances — it is a drop-in
+    // *performance* backend (its specialized pivot/partial-sort structure is a
+    // deferred internal optimization), validated against this reference.
     let dist = match &cfg.weight_property {
         None => bfs(graph, src, slots, &passes),
         Some(key) => dijkstra(graph, src, slots, key, &passes),

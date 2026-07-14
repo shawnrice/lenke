@@ -328,6 +328,8 @@ suite('graph-algorithm differential: shortestPath (TS core vs native)', () => {
     } as const,
     { source: 'a', target: 'd', weightProperty: 'w', algorithm: 'astar' } as const,
     { source: 'e', target: 'a', weightProperty: 'w', algorithm: 'astar' } as const, // unreachable
+    // bmssp is an exact same-result backend — currently resolves to Dijkstra.
+    { source: 'a', weightProperty: 'w', algorithm: 'bmssp' } as const,
   ]) {
     test(`shortestPath ${JSON.stringify(config)} — byte-identical`, () => {
       expect(JSON.stringify(shortestPath(config, tsGraph))).toBe(
@@ -335,6 +337,17 @@ suite('graph-algorithm differential: shortestPath (TS core vs native)', () => {
       );
     });
   }
+
+  test('bmssp backend yields Dijkstra-identical distances', () => {
+    const dijkstra = nativeGraph.shortestPath({ source: 'a', weightProperty: 'w' });
+    const bmssp = nativeGraph.shortestPath({
+      source: 'a',
+      weightProperty: 'w',
+      algorithm: 'bmssp',
+    });
+
+    expect(JSON.stringify(bmssp)).toBe(JSON.stringify(dijkstra));
+  });
 
   test('A* target distance equals Dijkstra (with and without a heuristic)', () => {
     const dijkstra = nativeGraph.shortestPath({ source: 'a', weightProperty: 'w' });
