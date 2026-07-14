@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '../core/Graph.js';
-import { labelPropagation } from './label-propagation.js';
+import { labelPropagation, labelPropagationAsync } from './label-propagation.js';
 
 // Two disjoint triangles {1,2,3} and {4,5,6}. Each triangle is a clique, so
 // synchronous LPA converges it to its smallest-id label and stays there —
@@ -74,5 +74,20 @@ describe('label propagation', () => {
   test('dual-form: curried application equals direct', () => {
     const g = twoTriangles();
     expect(labelPropagation({})(g)).toEqual(labelPropagation({}, twoTriangles()));
+  });
+
+  test('labelPropagationAsync resolves to the exact sync result', async () => {
+    const sync = labelPropagation({ writeProperty: 'lbl' }, twoTriangles());
+    const async = await labelPropagationAsync({ writeProperty: 'lbl' }, twoTriangles());
+    expect(JSON.stringify(async)).toBe(JSON.stringify(sync));
+  });
+
+  test('labelPropagationAsync yields to the event loop between rounds', async () => {
+    let ticked = false;
+    setTimeout(() => {
+      ticked = true;
+    }, 0);
+    await labelPropagationAsync({}, twoTriangles());
+    expect(ticked).toBe(true);
   });
 });

@@ -6,6 +6,6 @@
 export type { AlgorithmConfig, AlgorithmRow, GraphAlgorithm } from './types.js';
 export { degree, type DegreeRow } from './degree.js';
 export { connectedComponents, type ComponentRow } from './connected-components.js';
-export { labelPropagation, type LabelRow } from './label-propagation.js';
-export { pagerank, type PageRankRow } from './pagerank.js';
+export { labelPropagation, labelPropagationAsync, type LabelRow } from './label-propagation.js';
+export { pagerank, pagerankAsync, type PageRankRow } from './pagerank.js';
 export { shortestPath, type ShortestPathRow } from './shortest-path.js';

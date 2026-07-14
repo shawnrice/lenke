@@ -1,4 +1,5 @@
 import type { Graph } from '../core/Graph.js';
+import { type AlgorithmGen, asyncAlgorithm, drainSync } from './async.js';
 import type { AlgorithmConfig, AlgorithmRow } from './types.js';
 
 /** A PageRank result row: `{ node, score }`. */
@@ -7,7 +8,7 @@ export type PageRankRow = AlgorithmRow<'score', number>;
 const DEFAULT_DAMPING = 0.85;
 const DEFAULT_ITERATIONS = 20;
 
-const compute = (config: AlgorithmConfig, graph: Graph): PageRankRow[] => {
+const computeGen = function* (config: AlgorithmConfig, graph: Graph): AlgorithmGen<PageRankRow> {
   const {
     edgeLabel,
     weightProperty,
@@ -116,6 +117,10 @@ const compute = (config: AlgorithmConfig, graph: Graph): PageRankRow[] => {
     }
 
     pr = next;
+
+    if (iter < iterations - 1) {
+      yield; // checkpoint between iterations (async surface interleaves here)
+    }
   }
 
   const rows: PageRankRow[] = [];
@@ -147,5 +152,22 @@ export function pagerank(
   config: AlgorithmConfig,
   graph?: Graph,
 ): PageRankRow[] | ((graph: Graph) => PageRankRow[]) {
-  return graph ? compute(config, graph) : (g: Graph) => compute(config, g);
+  return graph
+    ? drainSync(computeGen(config, graph))
+    : (g: Graph) => drainSync(computeGen(config, g));
+}
+
+/**
+ * Non-blocking {@link pagerank}: identical scores, but it yields to the event loop
+ * between iterations so a long run stays responsive in-process (server or browser).
+ * `pagerankAsync(config, graph)` or `pagerankAsync(config)(graph)` →
+ * `Promise<PageRankRow[]>`.
+ */
+export function pagerankAsync(config: AlgorithmConfig): (graph: Graph) => Promise<PageRankRow[]>;
+export function pagerankAsync(config: AlgorithmConfig, graph: Graph): Promise<PageRankRow[]>;
+export function pagerankAsync(
+  config: AlgorithmConfig,
+  graph?: Graph,
+): Promise<PageRankRow[]> | ((graph: Graph) => Promise<PageRankRow[]>) {
+  return asyncAlgorithm(computeGen)(config, graph);
 }

@@ -1,5 +1,6 @@
 import type { Edge } from '../core/Edge.js';
 import type { Graph } from '../core/Graph.js';
+import { type AlgorithmGen, asyncAlgorithm, drainSync } from './async.js';
 import type { AlgorithmConfig, AlgorithmRow } from './types.js';
 
 /** A label-propagation result row: `{ node, label }`. */
@@ -36,7 +37,7 @@ const collectNeighbours = (
   }
 };
 
-const compute = (config: AlgorithmConfig, graph: Graph): LabelRow[] => {
+const computeGen = function* (config: AlgorithmConfig, graph: Graph): AlgorithmGen<LabelRow> {
   const { edgeLabel, writeProperty, iterations = DEFAULT_ITERATIONS } = config;
 
   // Insertion order == native dense-id order. A label is carried as the index of
@@ -131,6 +132,8 @@ const compute = (config: AlgorithmConfig, graph: Graph): LabelRow[] => {
     if (!changed) {
       break; // converged — later rounds would be no-ops
     }
+
+    yield; // checkpoint between rounds (async surface interleaves the event loop here)
   }
 
   const rows: LabelRow[] = [];
@@ -162,5 +165,24 @@ export function labelPropagation(
   config: AlgorithmConfig,
   graph?: Graph,
 ): LabelRow[] | ((graph: Graph) => LabelRow[]) {
-  return graph ? compute(config, graph) : (g: Graph) => compute(config, g);
+  return graph
+    ? drainSync(computeGen(config, graph))
+    : (g: Graph) => drainSync(computeGen(config, g));
+}
+
+/**
+ * Non-blocking {@link labelPropagation}: identical result, but it yields to the
+ * event loop between rounds so a long run stays responsive in-process (server or
+ * browser). `labelPropagationAsync(config, graph)` or
+ * `labelPropagationAsync(config)(graph)` → `Promise<LabelRow[]>`.
+ */
+export function labelPropagationAsync(
+  config: AlgorithmConfig,
+): (graph: Graph) => Promise<LabelRow[]>;
+export function labelPropagationAsync(config: AlgorithmConfig, graph: Graph): Promise<LabelRow[]>;
+export function labelPropagationAsync(
+  config: AlgorithmConfig,
+  graph?: Graph,
+): Promise<LabelRow[]> | ((graph: Graph) => Promise<LabelRow[]>) {
+  return asyncAlgorithm(computeGen)(config, graph);
 }

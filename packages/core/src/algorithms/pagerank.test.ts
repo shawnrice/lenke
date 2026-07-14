@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '../core/Graph.js';
-import { pagerank } from './pagerank.js';
+import { pagerank, pagerankAsync } from './pagerank.js';
 
 const line = (edges: [string, string][], nodes = ['1', '2', '3']): Graph => {
   const g = new Graph();
@@ -77,5 +77,34 @@ describe('pagerank', () => {
       ['2', '3'],
     ];
     expect(pagerank({})(line(edges))).toEqual(pagerank({}, line(edges)));
+  });
+
+  test('pagerankAsync resolves to the exact sync result (byte-identical)', async () => {
+    const edges: [string, string][] = [
+      ['1', '2'],
+      ['2', '3'],
+      ['1', '3'],
+    ];
+    const g = line(edges);
+    const sync = pagerank({ writeProperty: 'pr' }, g);
+    const async = await pagerankAsync({ writeProperty: 'pr' }, line(edges));
+    expect(JSON.stringify(async)).toBe(JSON.stringify(sync));
+    // The written property matches too (async applies the same writes).
+    expect(g.getVertexById('3')?.getProperty<number>('pr')).toBe(async[2].score);
+  });
+
+  test('pagerankAsync does not block the event loop between iterations', async () => {
+    const g = line([
+      ['1', '2'],
+      ['2', '3'],
+    ]);
+    let ticked = false;
+    // A macrotask scheduled now must run before a 20-iteration async PageRank
+    // finishes — proving the loop yielded.
+    setTimeout(() => {
+      ticked = true;
+    }, 0);
+    await pagerankAsync({}, g);
+    expect(ticked).toBe(true);
   });
 });
