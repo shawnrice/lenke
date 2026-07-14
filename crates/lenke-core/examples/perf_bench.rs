@@ -266,6 +266,13 @@ fn main() {
             "varlen",
             "MATCH (a:Hub)-[:KNOWS]->{1,3}(b) RETURN count(*) AS c",
         ),
+        // Var-length grouped aggregation — goes through try_parallel_agg (not the
+        // count shortcut), so it exercises the quantified per-seed accumulator.
+        (
+            "varlen_group",
+            "varlen",
+            "MATCH (a:Person)-[:KNOWS]->{1,2}(b) RETURN b.city AS city, count(*) AS n",
+        ),
         // Multi-hop that RETURNs (not count): the degree-product shortcut can't
         // help; full 2-hop expansion + grouping.
         (

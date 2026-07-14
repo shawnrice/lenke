@@ -124,6 +124,10 @@ fn main() {
         "MATCH (a:Person)-[:KNOWS]->(b), (a)-[:KNOWS]->(c) WHERE b.age > 40 RETURN a.city AS city, count(*) AS n",
         // comma-join, global aggregates over the join
         "MATCH (a:Person)-[:KNOWS]->(b), (a)-[:KNOWS]->(c) WHERE b.age > 60 AND c.age < 25 RETURN count(*) AS c, min(a.name) AS mn, max(c.age) AS mx",
+        // var-length grouped aggregation (try_parallel_agg over a quantified segment)
+        "MATCH (a:Person)-[:KNOWS]->{1,2}(b) RETURN b.city AS city, count(*) AS n",
+        // var-length global aggregates
+        "MATCH (a:Person)-[:KNOWS]->{1,2}(b) RETURN count(*) AS c, min(b.age) AS mn, max(b.age) AS mx",
     ] {
         println!("--- {q}");
         dump_rows(&mut g, q);

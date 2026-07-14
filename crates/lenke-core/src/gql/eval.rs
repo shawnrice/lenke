@@ -5535,9 +5535,10 @@ fn count_rows(proj: &CProjection, count: u64) -> CodeResult<RowSet> {
 /// serial first-seen group order exactly, so the result is byte-identical.
 ///
 /// Gated to traversals (a bare-node scan aggregate is already vectorized) with
-/// **non-DISTINCT** aggregates (a distinct fold can't be merged from partials) and
-/// no var-length. `ORDER BY`/`SKIP`/`LIMIT` are applied by `finish` after the
-/// merge, so they're fine.
+/// **non-DISTINCT** aggregates (a distinct fold can't be merged from partials).
+/// Var-length is fine (same per-seed matcher as `try_parallel_count`).
+/// `ORDER BY`/`SKIP`/`LIMIT` are applied by `finish` after the merge, so they're
+/// fine.
 #[cfg(feature = "parallel-query")]
 fn try_parallel_agg(
     linear: &CLinear,
@@ -5569,17 +5570,13 @@ fn try_parallel_agg(
     let anchor = &patterns[0].start;
     let single = patterns.len() == 1;
     // A comma-join needs a variable anchor to pre-bind. Traversals only (a bare-node
-    // aggregate is already vectorized). No var-length (its matcher isn't per-seed).
+    // aggregate is already vectorized). Var-length is fine — the matcher (`reachable`)
+    // is all-local plus the shared atomic fault, exactly as `try_parallel_count` runs
+    // it per-seed, so splitting the seed loop is still a pure latency win.
     if !single && anchor.var_slot.is_none() {
         return None;
     }
     if patterns.iter().all(|p| p.segments.is_empty()) {
-        return None;
-    }
-    if patterns
-        .iter()
-        .any(|p| p.segments.iter().any(|s| s.rel.quantifier.is_some()))
-    {
         return None;
     }
 
