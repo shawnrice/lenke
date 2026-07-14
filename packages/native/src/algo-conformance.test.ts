@@ -288,12 +288,13 @@ suite('graph-algorithm differential: pagerank (TS core vs native, f64)', () => {
 // vs the direct a→d (0.3) — the classic f64 non-associativity trap, so this pins
 // that both engines settle the same minimum float distance. Plus a longer branch
 // and a sink (e).
+// `he` is an admissible heuristic (≤ true distance to e) used by the A* cases.
 const SHORTEST_NDJSON = [
-  '{"type":"node","id":"a","labels":["N"]}',
-  '{"type":"node","id":"b","labels":["N"]}',
-  '{"type":"node","id":"c","labels":["N"]}',
-  '{"type":"node","id":"d","labels":["N"]}',
-  '{"type":"node","id":"e","labels":["N"]}',
+  '{"type":"node","id":"a","labels":["N"],"properties":{"he":0.5}}',
+  '{"type":"node","id":"b","labels":["N"],"properties":{"he":0.4}}',
+  '{"type":"node","id":"c","labels":["N"],"properties":{"he":0.7}}',
+  '{"type":"node","id":"d","labels":["N"],"properties":{"he":0.2}}',
+  '{"type":"node","id":"e","labels":["N"],"properties":{"he":0.0}}',
   '{"type":"edge","id":"1","from":"a","to":"b","labels":["E"],"properties":{"w":0.1}}',
   '{"type":"edge","id":"2","from":"b","to":"d","labels":["E"],"properties":{"w":0.2}}',
   '{"type":"edge","id":"3","from":"a","to":"d","labels":["E"],"properties":{"w":0.3}}',
@@ -316,6 +317,17 @@ suite('graph-algorithm differential: shortestPath (TS core vs native)', () => {
     { source: 'a', weightProperty: 'w', edgeLabel: 'E' } as const,
     { source: 'a', edgeLabel: 'NOPE' } as const, // no edges → only source
     { source: 'zzz' } as const, // unknown source → empty
+    // A* (goal-directed): h=0 (degrades to Dijkstra) and an admissible heuristic.
+    { source: 'a', target: 'e', weightProperty: 'w', algorithm: 'astar' } as const,
+    {
+      source: 'a',
+      target: 'e',
+      weightProperty: 'w',
+      algorithm: 'astar',
+      heuristicProperty: 'he',
+    } as const,
+    { source: 'a', target: 'd', weightProperty: 'w', algorithm: 'astar' } as const,
+    { source: 'e', target: 'a', weightProperty: 'w', algorithm: 'astar' } as const, // unreachable
   ]) {
     test(`shortestPath ${JSON.stringify(config)} — byte-identical`, () => {
       expect(JSON.stringify(shortestPath(config, tsGraph))).toBe(
@@ -323,6 +335,29 @@ suite('graph-algorithm differential: shortestPath (TS core vs native)', () => {
       );
     });
   }
+
+  test('A* target distance equals Dijkstra (with and without a heuristic)', () => {
+    const dijkstra = nativeGraph.shortestPath({ source: 'a', weightProperty: 'w' });
+
+    for (const target of ['b', 'c', 'd', 'e']) {
+      const dj = dijkstra.find((r) => r.node === target)?.distance;
+      const plain = nativeGraph.shortestPath({
+        source: 'a',
+        target,
+        weightProperty: 'w',
+        algorithm: 'astar',
+      });
+      const heur = nativeGraph.shortestPath({
+        source: 'a',
+        target,
+        weightProperty: 'w',
+        algorithm: 'astar',
+        heuristicProperty: 'he',
+      });
+      expect(plain).toEqual([{ node: target, distance: dj! }]);
+      expect(heur).toEqual([{ node: target, distance: dj! }]);
+    }
+  });
 
   test('known-answer: weighted diamond settles the direct 0.3, not 0.1+0.2', () => {
     const d = nativeGraph.shortestPath({ source: 'a', weightProperty: 'w' });

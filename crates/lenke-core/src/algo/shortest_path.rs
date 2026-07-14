@@ -59,6 +59,20 @@ pub fn shortest_path(graph: &Graph, cfg: &AlgoConfig) -> Vec<(u32, Value)> {
     };
 
     let slots = graph.n;
+
+    // A* is a goal-directed backend: given a `target`, it returns just the source→
+    // target distance (identical to Dijkstra's, so interchangeable), exploring far
+    // fewer vertices via the admissible `heuristicProperty`.
+    if cfg.algorithm.as_deref() == Some("astar") {
+        let Some(tgt) = cfg.target.as_deref().and_then(|t| graph.vid.get(t)) else {
+            return Vec::new();
+        };
+        return match astar(graph, src, tgt, slots, cfg, &passes) {
+            Some(d) => vec![(tgt, Value::Num(d))],
+            None => Vec::new(),
+        };
+    }
+
     let dist = match &cfg.weight_property {
         None => bfs(graph, src, slots, &passes),
         Some(key) => dijkstra(graph, src, slots, key, &passes),
@@ -69,6 +83,74 @@ pub fn shortest_path(graph: &Graph, cfg: &AlgoConfig) -> Vec<(u32, Value)> {
         .filter(|&v| dist[v as usize].is_finite())
         .map(|v| (v, Value::Num(dist[v as usize])))
         .collect()
+}
+
+/// Goal-directed A\*: explore by `f = g + h`, where `h` is the admissible estimate
+/// to `tgt` read from each vertex's `heuristicProperty` (absent → 0, degrading to
+/// Dijkstra). Returns `Some(distance)` when `tgt` is settled (its `g` is then
+/// optimal — identical to Dijkstra), `None` if unreachable. Edge weights come from
+/// `weightProperty` (absent → unit weights). Same `(priority, idx)` tie-break as
+/// Dijkstra, so native and TS explore identically.
+fn astar(
+    graph: &Graph,
+    src: u32,
+    tgt: u32,
+    slots: usize,
+    cfg: &AlgoConfig,
+    passes: &impl Fn(&Adj) -> bool,
+) -> Option<f64> {
+    let hkey = cfg.heuristic_property.as_deref();
+    let h = |v: u32| -> f64 {
+        match hkey {
+            None => 0.0,
+            Some(k) => match graph.props.value(v as usize, k, &graph.strs) {
+                Value::Num(x) => x,
+                _ => 0.0,
+            },
+        }
+    };
+    let wkey = cfg.weight_property.as_deref();
+    let weight = |a: &Adj| -> f64 {
+        match wkey {
+            None => 1.0,
+            Some(k) => match graph.edge_props.value(a.eidx as usize, k, &graph.strs) {
+                Value::Num(x) => x,
+                _ => 0.0,
+            },
+        }
+    };
+
+    let mut g = vec![f64::INFINITY; slots];
+    let mut closed = vec![false; slots];
+    g[src as usize] = 0.0;
+    let mut heap = BinaryHeap::new();
+    heap.push(State {
+        dist: h(src),
+        idx: src,
+    });
+    while let Some(State { idx: u, .. }) = heap.pop() {
+        if closed[u as usize] {
+            continue;
+        }
+        closed[u as usize] = true;
+        if u == tgt {
+            return Some(g[u as usize]);
+        }
+        for a in graph.out_adj(u) {
+            if !passes(&a) || closed[a.nbr as usize] {
+                continue;
+            }
+            let ng = g[u as usize] + weight(&a);
+            if ng < g[a.nbr as usize] {
+                g[a.nbr as usize] = ng;
+                heap.push(State {
+                    dist: ng + h(a.nbr),
+                    idx: a.nbr,
+                });
+            }
+        }
+    }
+    None
 }
 
 /// Unweighted BFS hop distance (as f64), `INFINITY` for unreached.

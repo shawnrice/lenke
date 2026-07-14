@@ -1,5 +1,6 @@
 import type { Edge } from '../core/Edge.js';
 import type { Graph } from '../core/Graph.js';
+import type { Vertex } from '../core/Vertex.js';
 import type { AlgorithmConfig, AlgorithmRow } from './types.js';
 
 /** A shortest-path result row: `{ node, distance }`. */
@@ -82,8 +83,79 @@ const outEdges = function* (
   }
 };
 
+/**
+ * Goal-directed A* — explore by `f = g + h`, where `h` is the admissible estimate
+ * to the target read from each vertex's `heuristicProperty` (absent → 0, degrading
+ * to Dijkstra). Returns the source→target distance (optimal when the target is
+ * settled, so identical to Dijkstra), or `undefined` if unreachable. Same
+ * `(priority, index)` tie-break as the Dijkstra heap, so native and TS agree.
+ */
+/** Shared traversal context — the graph plus the derived index/weight helpers. */
+type PathContext = {
+  graph: Graph;
+  order: Vertex[];
+  index: Map<string, number>;
+  edgeLabel: string | undefined;
+  weightOf: (edge: Edge) => number;
+};
+
+const astar = (
+  ctx: PathContext,
+  srcIdx: number,
+  tgtIdx: number,
+  heuristicProperty: string | undefined,
+): number | undefined => {
+  const { graph, order, index, edgeLabel, weightOf } = ctx;
+  const heuristicOf = (i: number): number => {
+    if (heuristicProperty === undefined) {
+      return 0;
+    }
+
+    const h = order[i].getProperty(heuristicProperty);
+
+    return typeof h === 'number' ? h : 0;
+  };
+
+  const g = new Float64Array(order.length).fill(Infinity);
+  const closed = new Uint8Array(order.length);
+  g[srcIdx] = 0;
+  const heap: HeapItem[] = [[heuristicOf(srcIdx), srcIdx]];
+
+  while (heap.length > 0) {
+    const [, u] = heapPop(heap);
+
+    if (closed[u]) {
+      continue;
+    }
+
+    closed[u] = 1;
+
+    if (u === tgtIdx) {
+      return g[u];
+    }
+
+    for (const edge of outEdges(graph.edgesFromByLabel.get(order[u].id), edgeLabel)) {
+      const v = index.get(edge.to.id)!;
+
+      if (closed[v]) {
+        continue;
+      }
+
+      const ng = g[u] + weightOf(edge);
+
+      if (ng < g[v]) {
+        g[v] = ng;
+        heapPush(heap, [ng + heuristicOf(v), v]);
+      }
+    }
+  }
+
+  return undefined;
+};
+
 const compute = (config: AlgorithmConfig, graph: Graph): ShortestPathRow[] => {
-  const { source, edgeLabel, weightProperty, writeProperty } = config;
+  const { source, target, edgeLabel, weightProperty, heuristicProperty, algorithm, writeProperty } =
+    config;
 
   const order = [...graph.vertices];
   const index = new Map<string, number>();
@@ -97,9 +169,6 @@ const compute = (config: AlgorithmConfig, graph: Graph): ShortestPathRow[] => {
     return [];
   }
 
-  const dist = new Float64Array(order.length).fill(Infinity);
-  dist[srcIdx] = 0;
-
   const weightOf = (edge: Edge): number => {
     if (weightProperty === undefined) {
       return 1;
@@ -109,6 +178,33 @@ const compute = (config: AlgorithmConfig, graph: Graph): ShortestPathRow[] => {
 
     return typeof w === 'number' ? w : 0;
   };
+
+  // A* is a goal-directed backend returning just the source→target distance
+  // (identical to Dijkstra's), exploring fewer vertices via the admissible
+  // heuristic. Falls back to no rows for an unknown/unreachable target.
+  if (algorithm === 'astar') {
+    const tgtIdx = target === undefined ? undefined : index.get(target);
+
+    if (tgtIdx === undefined) {
+      return [];
+    }
+
+    const ctx: PathContext = { graph, order, index, edgeLabel, weightOf };
+    const d = astar(ctx, srcIdx, tgtIdx, heuristicProperty);
+
+    if (d === undefined) {
+      return [];
+    }
+
+    if (writeProperty !== undefined) {
+      order[tgtIdx].setProperty(writeProperty, d);
+    }
+
+    return [{ node: order[tgtIdx].id, distance: d }];
+  }
+
+  const dist = new Float64Array(order.length).fill(Infinity);
+  dist[srcIdx] = 0;
 
   if (weightProperty === undefined) {
     // Unweighted BFS — hop distance (order-independent unique layers).

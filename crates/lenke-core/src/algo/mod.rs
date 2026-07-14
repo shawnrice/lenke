@@ -435,4 +435,34 @@ mod tests {
             vec![("1".into(), 0.0)],
         );
     }
+
+    #[test]
+    fn astar_matches_dijkstra_target_distance() {
+        let mut g = weighted_chain();
+        // A* to node 3 returns just the target's distance, identical to Dijkstra (3).
+        assert_eq!(
+            paths(
+                &mut g,
+                r#"{"source":"1","target":"3","weightProperty":"w","algorithm":"astar"}"#,
+            ),
+            vec![("3".into(), 3.0)],
+        );
+        // For every reachable target, A* agrees with Dijkstra's distance.
+        let dijkstra = paths(&mut g, r#"{"source":"1","weightProperty":"w"}"#);
+        for (id, dist) in dijkstra {
+            let astar = paths(
+                &mut g,
+                &format!(
+                    r#"{{"source":"1","target":"{id}","weightProperty":"w","algorithm":"astar"}}"#
+                ),
+            );
+            assert_eq!(astar, vec![(id, dist)]);
+        }
+        // Unreachable target (upstream) → no rows.
+        assert!(paths(
+            &mut g,
+            r#"{"source":"3","target":"1","weightProperty":"w","algorithm":"astar"}"#,
+        )
+        .is_empty());
+    }
 }
