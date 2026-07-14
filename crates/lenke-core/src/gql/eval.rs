@@ -2550,6 +2550,36 @@ impl Agg {
             AggFn::CollectList => Val::List(self.list),
         }
     }
+
+    /// Fold `other`'s partial into `self` — the reduce step for parallel
+    /// aggregation. `other` must be the same `func` (and non-DISTINCT: distinct
+    /// aggregates can't merge from `(sum, seen)` alone, so they stay serial). Only
+    /// the fields the func uses are non-default, so the unconditional `n`/`sum`/
+    /// `list` merges are correct; `Min`/`Max` take the better extreme. Because a
+    /// group's members share their group-key values, keeping either representative
+    /// binding is equivalent, so only the fold state needs merging. Merging chunks
+    /// in seed order reproduces the serial first-seen order exactly.
+    fn merge(&mut self, other: Self) {
+        self.n += other.n;
+        self.sum += other.sum;
+        self.list.extend(other.list);
+        if let Some(o) = other.extreme {
+            let take = match self.func {
+                AggFn::Min => self
+                    .extreme
+                    .as_ref()
+                    .is_none_or(|m| cmp_total(&o, m) == Ordering::Less),
+                AggFn::Max => self
+                    .extreme
+                    .as_ref()
+                    .is_none_or(|m| cmp_total(&o, m) == Ordering::Greater),
+                _ => false,
+            };
+            if take {
+                self.extreme = Some(o);
+            }
+        }
+    }
 }
 
 /// Fold one input binding into a group's aggregate states (one per extracted
@@ -2827,6 +2857,39 @@ impl<'p> ProjAccum<'p> {
             rows.truncate(n);
         }
         rows
+    }
+
+    /// Fold another chunk's aggregate state into this one — the reduce step for
+    /// parallel aggregation. Merges the global accumulator and each group's
+    /// accumulators (appending `other`'s new groups in its first-seen order);
+    /// caller gates to the aggregating, non-topk, non-DISTINCT-agg case. Merging
+    /// chunks in seed order reproduces the serial first-seen group order exactly.
+    #[cfg(feature = "parallel-query")]
+    fn merge(&mut self, mut other: Self) {
+        if let Some((rep, other_aggs)) = other.global.take() {
+            match &mut self.global {
+                Some((_, aggs)) => {
+                    for (a, o) in aggs.iter_mut().zip(other_aggs) {
+                        a.merge(o);
+                    }
+                }
+                None => self.global = Some((rep, other_aggs)),
+            }
+        }
+        for key in other.group_order {
+            let (rep, other_aggs) = other.groups.remove(&key).unwrap();
+            match self.groups.get_mut(&key) {
+                Some((_, aggs)) => {
+                    for (a, o) in aggs.iter_mut().zip(other_aggs) {
+                        a.merge(o);
+                    }
+                }
+                None => {
+                    self.group_order.push(key.clone());
+                    self.groups.insert(key, (rep, other_aggs));
+                }
+            }
+        }
     }
 }
 
@@ -5462,6 +5525,114 @@ fn count_rows(proj: &CProjection, count: u64) -> CodeResult<RowSet> {
     Ok(rs)
 }
 
+/// Intra-query parallel **aggregation** for `MATCH <traversal> [WHERE …] RETURN
+/// <group keys>, <aggregates>` — the general form of [`try_parallel_count`].
+/// Aggregating over a traversal isn't vectorized, so it stream-folds one match at
+/// a time on a single thread; here the seed vertices are split across rayon
+/// threads, each folds its matches into a thread-local [`ProjAccum`], and the
+/// partials are reduced in seed order (`ProjAccum::merge`) — which reproduces the
+/// serial first-seen group order exactly, so the result is byte-identical.
+///
+/// Gated to traversals (a bare-node scan aggregate is already vectorized) with
+/// **non-DISTINCT** aggregates (a distinct fold can't be merged from partials) and
+/// no var-length. `ORDER BY`/`SKIP`/`LIMIT` are applied by `finish` after the
+/// merge, so they're fine.
+#[cfg(feature = "parallel-query")]
+fn try_parallel_agg(
+    linear: &CLinear,
+    graph: &Graph,
+    plan: &CQuery,
+    params: &[Val],
+) -> Option<CodeResult<RowSet>> {
+    let [CClause::Match {
+        optional: false,
+        patterns,
+        where_,
+        where_prog,
+        scope_len,
+    }, CClause::Return(proj)] = linear.clauses.as_slice()
+    else {
+        return None;
+    };
+    if !proj.aggregating || proj.star {
+        return None;
+    }
+    // DISTINCT aggregates can't merge from partial (sum, seen) state — stay serial.
+    if proj.aggs.iter().any(|a| a.distinct) {
+        return None;
+    }
+    let [path] = patterns.as_slice() else {
+        return None; // single path for now (multi-pattern joins are a follow-up)
+    };
+    // Traversals only (a bare-node aggregate is already vectorized), and no
+    // var-length quantifier (its matcher isn't driven per-seed here).
+    if path.segments.is_empty() || path.segments.iter().any(|s| s.rel.quantifier.is_some()) {
+        return None;
+    }
+
+    let threads = rayon::current_num_threads();
+    if threads <= 1 {
+        return None;
+    }
+    let ctx = resolve_ctx(graph, plan, params);
+    let seeds: Vec<u32> = match path.start.label.as_ref().and_then(seed_label) {
+        Some(r) => match ctx.labels[r].0 {
+            Some(lid) => graph.vertices_with_label(lid).to_vec(),
+            None => Vec::new(), // unknown label → no matches (finish emits the empty result)
+        },
+        None => graph.vertex_indices().collect(),
+    };
+    const MIN_SEEDS: usize = 8_192;
+    if seeds.len() < MIN_SEEDS {
+        return None;
+    }
+
+    let cwhere = where_.as_ref();
+    let cwhere_prog = where_prog.as_ref();
+    let width = (*scope_len).max(1);
+    let chunk = (seeds.len() / (threads * 4)).max(1_024);
+    // Per-chunk accumulator; rayon preserves chunk order, so the reduce below sees
+    // chunks in seed order and reproduces the serial first-seen group order.
+    let accs: Vec<ProjAccum> = seeds
+        .par_chunks(chunk)
+        .map(|chunk| {
+            let mut acc = ProjAccum::new(proj);
+            let mut b = Binding(vec![None; width]);
+            for &s in chunk {
+                if ctx.faulted() {
+                    break;
+                }
+                match_node_continue(graph, &ctx, &mut b, &path.start, s, path, 0, &mut |bnd| {
+                    if where_keep(&Env::new(graph, &ctx, bnd), cwhere, cwhere_prog) {
+                        acc.accept(graph, &ctx, bnd);
+                    }
+                    true // aggregation visits every match
+                });
+            }
+            acc
+        })
+        .collect();
+
+    if let Err(e) = ctx.check_fault() {
+        return Some(Err(e));
+    }
+    let mut merged = ProjAccum::new(proj);
+    for a in accs {
+        merged.merge(a);
+    }
+    let bindings = merged.finish(graph, &ctx);
+
+    let mut rs = RowSet::new(proj.out_names.clone());
+    for b in bindings {
+        rs.push_row((0..proj.out_len).map(|i| {
+            b.get(i)
+                .map(|v| val_to_value(graph, v))
+                .unwrap_or(Value::Null)
+        }));
+    }
+    Some(Ok(rs))
+}
+
 /// Vectorized executor for a whole linear pipeline: `MATCH <path> (WITH …)+
 /// RETURN …`. Threads a single columnar frame stage-to-stage — carrying element
 /// columns forward so prop reads/filters/ORDER BY past a `WITH` stay vectorized,
@@ -6528,6 +6699,13 @@ fn run_part(
     // threshold, so small queries still take the vectorized/scalar path below.
     #[cfg(feature = "parallel-query")]
     if let Some(res) = try_parallel_count(linear, graph, plan, params) {
+        return res;
+    }
+    // General parallel aggregation over a traversal (group-by / sum / avg / …) —
+    // the scalar aggregating path stream-folds one match at a time; this splits
+    // the seed loop across cores with per-thread accumulators merged in seed order.
+    #[cfg(feature = "parallel-query")]
+    if let Some(res) = try_parallel_agg(linear, graph, plan, params) {
         return res;
     }
     if USE_VEC {

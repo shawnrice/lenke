@@ -69,6 +69,29 @@ fn count(g: &mut Graph, q: &str) -> i64 {
     }
 }
 
+/// A deterministic textual form of a result value, for the serial-vs-parallel diff.
+fn fmt_val(v: &Value) -> String {
+    match v {
+        Value::Null => "null".to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Num(n) => format!("{n:.6}"),
+        Value::Str(s) => s.to_string(),
+        other => format!("{other:?}"),
+    }
+}
+
+/// Print every result row, in engine order, one row per line (`|`-joined cells).
+fn dump_rows(g: &mut Graph, q: &str) {
+    let plan = prepare(q).unwrap();
+    let rs = plan.execute(g, &Params::new()).unwrap();
+    for r in rs.rows() {
+        println!(
+            "  {}",
+            r.iter().map(fmt_val).collect::<Vec<_>>().join(" | ")
+        );
+    }
+}
+
 fn main() {
     // 20k vertices → 20k seeds, above the parallel MIN_SEEDS threshold (8192).
     let mut g = build(20_000, 6);
@@ -83,6 +106,23 @@ fn main() {
         "MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(c) WHERE c.age > 60 RETURN count(*) AS c",
     ] {
         println!("{:>12}  {q}", count(&mut g, q));
+    }
+
+    // Parallel aggregation over a traversal (try_parallel_agg): dump full rows in
+    // engine order, so a serial-vs-parallel diff catches any aggregate-value OR
+    // first-seen group-order divergence.
+    for q in [
+        // grouped, no ORDER BY → exercises first-seen group-order preservation
+        "MATCH (a:Person)-[:KNOWS]->(b) RETURN b.city AS city, count(*) AS n",
+        // grouped, multiple aggregates, ordered
+        "MATCH (a:Person)-[:KNOWS]->(b) RETURN b.age AS age, count(*) AS n, avg(a.age) AS aa, min(b.name) AS mn ORDER BY age",
+        // global aggregates over a traversal
+        "MATCH (a:Person)-[:KNOWS]->(b) RETURN sum(b.age) AS s, avg(b.age) AS av, min(b.age) AS mnn, max(b.age) AS mx, count(*) AS c",
+        // 2-hop grouped (the trav2_group shape), first-seen order
+        "MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(c) RETURN c.city AS city, count(*) AS n",
+    ] {
+        println!("--- {q}");
+        dump_rows(&mut g, q);
     }
 
     // Known-answer checks for the interned-string paths (20k vertices, city = i%50).
