@@ -37,9 +37,17 @@ impl Rng {
 fn build(n: usize, eper: usize) -> Graph {
     let mut b = Builder::default();
     for i in 0..n {
+        // Every 1000th vertex is also a `Hub` — a small, selective second label
+        // (~n/1000 of them) so a pattern can be anchored at the big `Person` end or
+        // the tiny `Hub` end, exposing the cost of seed/anchor selection.
+        let labels = if i % 1000 == 0 {
+            vec!["Person".to_string(), "Hub".to_string()]
+        } else {
+            vec!["Person".to_string()]
+        };
         b.nodes.push(NodeRec {
             id: format!("p{i}"),
-            labels: vec!["Person".to_string()],
+            labels,
             props: vec![
                 ("age".to_string(), Value::Num((18 + (i % 62)) as f64)),
                 // `name`: high cardinality (unique). `city`: low cardinality (~50).
@@ -82,6 +90,48 @@ fn bench(g: &mut Graph, q: &str) -> (f64, i64) {
         let _ = plan.execute(g, &p).unwrap();
     }
     (t.elapsed().as_secs_f64() * 1e3 / iters as f64, rows)
+}
+
+/// Write-path throughput: raw mutation rate (ops/sec) for the three hot writes,
+/// outside a transaction and (for property writes) inside one — so the undo-log
+/// cost of the transaction path is visible. Run last, on a copy of the graph, so
+/// it doesn't perturb the read timings above.
+fn bench_writes(ops: usize) {
+    let mut g = build(200_000, 4);
+    let n = g.vertex_count() as u32;
+    let mut rng = Rng(0xDEAD_BEEF_CAFE_1234);
+    let rate = |ops: usize, secs: f64| ops as f64 / secs / 1e6; // M ops/sec
+
+    // add_edge (grows adjacency + invalidates the CSR each call).
+    let t = Instant::now();
+    for _ in 0..ops {
+        let a = rng.below(n as usize) as u32;
+        let b = rng.below(n as usize) as u32;
+        g.add_edge(a, b, "NEW", vec![]);
+    }
+    let add_edge = rate(ops, t.elapsed().as_secs_f64());
+
+    // set_vertex_prop, outside any transaction (no undo recorded).
+    let t = Instant::now();
+    for i in 0..ops {
+        g.set_vertex_prop((i as u32) % n, "w", Value::Num(i as f64));
+    }
+    let set_prop = rate(ops, t.elapsed().as_secs_f64());
+
+    // set_vertex_prop inside a transaction (each write records an undo op).
+    g.begin_tx();
+    let t = Instant::now();
+    for i in 0..ops {
+        g.set_vertex_prop((i as u32) % n, "w2", Value::Num(i as f64));
+    }
+    let set_prop_tx = rate(ops, t.elapsed().as_secs_f64());
+    let _ = g.commit_tx();
+
+    println!("\n  write throughput (M ops/sec, higher is better):");
+    println!("    add_edge              {add_edge:>7.2}");
+    println!("    set_prop (no tx)      {set_prop:>7.2}");
+    println!("    set_prop (in tx)      {set_prop_tx:>7.2}");
+    std::hint::black_box(&g);
 }
 
 fn main() {
@@ -180,13 +230,63 @@ fn main() {
             "out",
             "MATCH (a:Person)-[:KNOWS]->(b) RETURN a.name AS an, b.age AS ba",
         ),
+        // --- unmeasured territory: the gaps that decide where to push next ---
+        // Anchor asymmetry: the SAME edges reached from the big Person end vs the
+        // tiny Hub end. A large fwd/bwd gap = the win an anchor-chooser would give;
+        // a small gap = seed selection isn't worth a planner. (Rows, not count, so
+        // it goes through seed+expand rather than the edge-anchored count shortcut.)
+        // diagnostics: is the Hub bucket actually the seed? hub_count is O(1)-ish;
+        // hub_out anchors 1000 Hubs and expands out — if fast, Hub-seeding works.
+        ("hub_count", "diag", "MATCH (b:Hub) RETURN count(*) AS c"),
+        (
+            "hub_out",
+            "diag",
+            "MATCH (b:Hub)-[:KNOWS]->(x) RETURN x.name AS n",
+        ),
+        (
+            "asym_fwd",
+            "plan",
+            "MATCH (a:Person)-[:KNOWS]->(b:Hub) RETURN a.name AS an, b.name AS bn",
+        ),
+        (
+            "asym_bwd",
+            "plan",
+            "MATCH (b:Hub)<-[:KNOWS]-(a:Person) RETURN a.name AS an, b.name AS bn",
+        ),
+        // Var-length / recursive traversal — entirely on the scalar path today.
+        // Full-graph depth-2 (shows scale), and reachability-from-Hubs at depth-3
+        // (bounded, realistic — "everything within 3 hops of a hub").
+        (
+            "varlen_all_1_2",
+            "varlen",
+            "MATCH (a:Person)-[:KNOWS]->{1,2}(b) RETURN count(*) AS c",
+        ),
+        (
+            "varlen_hub_1_3",
+            "varlen",
+            "MATCH (a:Hub)-[:KNOWS]->{1,3}(b) RETURN count(*) AS c",
+        ),
+        // Multi-hop that RETURNs (not count): the degree-product shortcut can't
+        // help; full 2-hop expansion + grouping.
+        (
+            "trav2_group",
+            "multihop",
+            "MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(c) RETURN c.city AS city, count(*) AS n",
+        ),
+        // Comma-pattern join sharing `a` — the fixed left-to-right join order.
+        (
+            "join_multi",
+            "join",
+            "MATCH (a:Person)-[:KNOWS]->(b), (a)-[:KNOWS]->(c) WHERE b.age > 60 AND c.age < 25 RETURN count(*) AS c",
+        ),
     ];
 
-    println!("  {:<14} {:<7} {:>11}   rows", "shape", "lever", "ms");
+    println!("  {:<14} {:<8} {:>11}   rows", "shape", "lever", "ms");
     for (label, lever, q) in shapes {
         let (ms, rows) = bench(&mut g, q);
-        println!("  {label:<14} {lever:<7} {ms:>11.3}   {rows}");
+        println!("  {label:<14} {lever:<8} {ms:>11.3}   {rows}");
     }
 
     std::hint::black_box(&g);
+    bench_writes(500_000);
 }
