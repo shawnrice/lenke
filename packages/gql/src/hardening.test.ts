@@ -390,5 +390,8 @@ describe('hardening: variable-length trail semantics', () => {
 
     const e = thrown(() => query(g, `MATCH (a)-[:R]->*(b) RETURN count(*) AS c`));
     expect(hasErrorCode(e, ErrorCode.ResourceExhausted)).toBe(true);
-  });
+    // Explicit generous timeout: this asserts a *correctness* property (the trail
+    // budget throws), not a wall-clock bound — the enumeration runs ~5 s and would
+    // otherwise flake against bun's 5 s default on a loaded CI runner.
+  }, 30_000);
 });
