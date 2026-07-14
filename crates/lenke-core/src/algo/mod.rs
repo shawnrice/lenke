@@ -20,6 +20,7 @@ use crate::query::RowSet;
 
 mod components;
 mod degree;
+mod label_prop;
 
 /// Parsed algorithm configuration (a superset; each algorithm reads the fields it
 /// needs). Deserialized from the JSON object handed across the FFI boundary.
@@ -92,6 +93,7 @@ pub fn run(graph: &mut Graph, name: &str, config: &str) -> Result<RowSet, String
     let (column, results): (&str, Vec<(u32, Value)>) = match name {
         "degree" => ("degree", degree::degree(graph, &cfg)),
         "connectedComponents" => ("componentId", components::connected_components(graph, &cfg)),
+        "labelPropagation" => ("label", label_prop::label_propagation(graph, &cfg)),
         other => return Err(format!("unknown algorithm: {other}")),
     };
 
@@ -265,6 +267,68 @@ mod tests {
         // A named-but-unknown edge type → every vertex is its own component.
         assert_eq!(
             components(&mut g, r#"{"edgeLabel":"NOPE"}"#),
+            (1..=6)
+                .map(|i| (i.to_string(), i.to_string()))
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    /// `(external id, label)` rows in engine order.
+    fn labels(g: &mut Graph, cfg: &str) -> Vec<(String, String)> {
+        let rs = run(g, "labelPropagation", cfg).unwrap();
+        rs.rows()
+            .map(|r| match (&r[0], &r[1]) {
+                (Value::Str(id), Value::Str(l)) => (id.to_string(), l.to_string()),
+                _ => panic!("unexpected label row shape"),
+            })
+            .collect()
+    }
+
+    /// Two disjoint triangles {1,2,3} and {4,5,6}. A triangle is a clique, so
+    /// synchronous LPA converges each to its smallest-id label within a couple of
+    /// rounds and stays there — {1,2,3}→"1", {4,5,6}→"4".
+    fn two_triangles() -> Graph {
+        let lines = [
+            r#"{"type":"node","id":"1","labels":["N"]}"#,
+            r#"{"type":"node","id":"2","labels":["N"]}"#,
+            r#"{"type":"node","id":"3","labels":["N"]}"#,
+            r#"{"type":"node","id":"4","labels":["N"]}"#,
+            r#"{"type":"node","id":"5","labels":["N"]}"#,
+            r#"{"type":"node","id":"6","labels":["N"]}"#,
+            r#"{"type":"edge","from":"1","to":"2","labels":["E"]}"#,
+            r#"{"type":"edge","from":"2","to":"3","labels":["E"]}"#,
+            r#"{"type":"edge","from":"1","to":"3","labels":["E"]}"#,
+            r#"{"type":"edge","from":"4","to":"5","labels":["E"]}"#,
+            r#"{"type":"edge","from":"5","to":"6","labels":["E"]}"#,
+            r#"{"type":"edge","from":"4","to":"6","labels":["E"]}"#,
+        ];
+        ndjson::decode(&lines.join("\n")).unwrap()
+    }
+
+    #[test]
+    fn label_prop_triangles_converge_to_min_label() {
+        let mut g = two_triangles();
+        assert_eq!(
+            labels(&mut g, "{}"),
+            vec![
+                ("1".into(), "1".into()),
+                ("2".into(), "1".into()),
+                ("3".into(), "1".into()),
+                ("4".into(), "4".into()),
+                ("5".into(), "4".into()),
+                ("6".into(), "4".into()),
+            ],
+        );
+        // Zero iterations → every vertex keeps its own external id as its label.
+        assert_eq!(
+            labels(&mut g, r#"{"iterations":0}"#),
+            (1..=6)
+                .map(|i| (i.to_string(), i.to_string()))
+                .collect::<Vec<_>>(),
+        );
+        // A named-but-unknown edge type → no propagation, labels stay = own id.
+        assert_eq!(
+            labels(&mut g, r#"{"edgeLabel":"NOPE"}"#),
             (1..=6)
                 .map(|i| (i.to_string(), i.to_string()))
                 .collect::<Vec<_>>(),

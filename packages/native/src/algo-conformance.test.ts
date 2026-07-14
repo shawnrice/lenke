@@ -19,7 +19,13 @@
 import { describe, expect, test } from 'bun:test';
 import { existsSync } from 'node:fs';
 
-import { type AlgorithmConfig, connectedComponents, degree, Graph } from '@lenke/core';
+import {
+  type AlgorithmConfig,
+  connectedComponents,
+  degree,
+  Graph,
+  labelPropagation,
+} from '@lenke/core';
 import { query as tsQuery } from '@lenke/gql';
 import { deserialize as tsDeserialize } from '@lenke/serialization';
 
@@ -161,6 +167,59 @@ suite('graph-algorithm differential: connectedComponents (TS core vs native)', (
     nativeGraph.connectedComponents(config);
 
     const readBack = 'MATCH (n) RETURN n.comp AS comp ORDER BY n.comp, n.comp';
+    expect(JSON.stringify(tsQuery(tsGraph, readBack))).toBe(
+      JSON.stringify(nativeGraph.query(readBack)),
+    );
+  });
+});
+
+// Two triangles {a,b,c} and {e,d,g} (non-sorted insertion order) plus a bridge
+// edge c→e joining them, and an isolated vertex f. Exercises convergence, a
+// bridged super-component, and a singleton in one graph.
+const LABELPROP_NDJSON = [
+  '{"type":"node","id":"a","labels":["N"]}',
+  '{"type":"node","id":"b","labels":["N"]}',
+  '{"type":"node","id":"c","labels":["N"]}',
+  '{"type":"node","id":"e","labels":["N"]}',
+  '{"type":"node","id":"d","labels":["N"]}',
+  '{"type":"node","id":"g","labels":["N"]}',
+  '{"type":"node","id":"f","labels":["N"]}',
+  '{"type":"edge","id":"1","from":"a","to":"b","labels":["E"]}',
+  '{"type":"edge","id":"2","from":"b","to":"c","labels":["E"]}',
+  '{"type":"edge","id":"3","from":"a","to":"c","labels":["E"]}',
+  '{"type":"edge","id":"4","from":"e","to":"d","labels":["E"]}',
+  '{"type":"edge","id":"5","from":"d","to":"g","labels":["E"]}',
+  '{"type":"edge","id":"6","from":"e","to":"g","labels":["E"]}',
+  '{"type":"edge","id":"7","from":"c","to":"e","labels":["E"]}',
+].join('\n');
+
+suite('graph-algorithm differential: labelPropagation (TS core vs native)', () => {
+  const backend = createFfiBackend(LIB);
+  const nativeGraph = graphFromFormat(backend, LABELPROP_NDJSON, 'ndjson');
+  const tsGraph = tsDeserialize(LABELPROP_NDJSON, 'ndjson', new Graph());
+
+  for (const config of [
+    {} as const, // default 10 iterations
+    { iterations: 0 } as const, // no propagation
+    { iterations: 1 } as const, // one round — catches any per-round drift
+    { iterations: 3 } as const,
+    { iterations: 25 } as const,
+    { edgeLabel: 'E' } as const,
+    { edgeLabel: 'NOPE' } as const, // unknown type → labels stay = own id
+  ]) {
+    test(`labelPropagation ${JSON.stringify(config)} — byte-identical`, () => {
+      expect(JSON.stringify(labelPropagation(config, tsGraph))).toBe(
+        JSON.stringify(nativeGraph.labelPropagation(config)),
+      );
+    });
+  }
+
+  test('writeProperty round-trips identically through GQL on both engines', () => {
+    const config = { writeProperty: 'lbl' } as const;
+    labelPropagation(config, tsGraph);
+    nativeGraph.labelPropagation(config);
+
+    const readBack = 'MATCH (n) RETURN n.lbl AS lbl ORDER BY n.lbl, n.lbl';
     expect(JSON.stringify(tsQuery(tsGraph, readBack))).toBe(
       JSON.stringify(nativeGraph.query(readBack)),
     );

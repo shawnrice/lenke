@@ -48,9 +48,11 @@ export type { Temporal } from './temporal.js';
 export {
   connectedComponents,
   degree,
+  labelPropagation,
   type AlgorithmConfig,
   type AlgorithmRow,
   type ComponentRow,
   type DegreeRow,
   type GraphAlgorithm,
+  type LabelRow,
 } from './algorithms/index.js';

@@ -1,4 +1,10 @@
-import type { AlgorithmConfig, ComponentRow, DegreeRow, ScalarTypeName } from '@lenke/core';
+import type {
+  AlgorithmConfig,
+  ComponentRow,
+  DegreeRow,
+  LabelRow,
+  ScalarTypeName,
+} from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { Backend, GraphHandle, MergeReport, PreparedHandle } from './backend.js';
@@ -413,6 +419,15 @@ export type RustGraph = {
    * `this`); the data-last twin is `connectedComponents` in `@lenke/core`.
    */
   connectedComponents: (config?: AlgorithmConfig) => ComponentRow[];
+  /**
+   * Synchronous label propagation (community detection) — every vertex starts
+   * labelled with its own external id and each of `config.iterations` rounds
+   * (default 10) adopts the most-frequent neighbour label (edges undirected),
+   * ties broken by the smallest label string. `config` also takes an optional
+   * `edgeLabel` filter and `writeProperty`. Data-first (graph is `this`); the
+   * data-last twin is `labelPropagation` in `@lenke/core`.
+   */
+  labelPropagation: (config?: AlgorithmConfig) => LabelRow[];
   /** Serialize the graph back to NDJSON bytes. */
   toNdjson: () => Uint8Array;
   /**
@@ -710,6 +725,10 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
       decodeRows(
         backend.algo(live(), 'connectedComponents', config && JSON.stringify(config)),
       ) as ComponentRow[],
+    labelPropagation: (config) =>
+      decodeRows(
+        backend.algo(live(), 'labelPropagation', config && JSON.stringify(config)),
+      ) as LabelRow[],
     toNdjson: () => backend.encodeNdjson(live()),
     mergeNdjson: (bytes) => backend.mergeNdjson(live(), bytes),
     serialize: (format) => decoder.decode(backend.serialize(live(), format)),
