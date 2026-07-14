@@ -3809,6 +3809,58 @@ fn build_scan(
             return edge_first_build(graph, ctx, path, scope_len, &edges);
         }
     }
+    // Seed the start-node endpoints, then expand the segments into columns.
+    let endpoint = scan_start_seed(graph, ctx, &path.start, scope_len);
+    expand_scan(graph, ctx, path, scope_len, endpoint, cap)
+}
+
+/// The filtered start-node endpoints for a traversal scan: every live vertex that
+/// matches the start node's label + inline props/WHERE, in seed order. Split off
+/// from [`build_scan`] so the parallel driver can chunk it — a contiguous slice of
+/// this feeds [`expand_scan`] to build a contiguous slice of the full result.
+fn scan_start_seed(graph: &Graph, ctx: &Ctx, start: &CNode, scope_len: usize) -> Vec<u32> {
+    let start_check = !start.props.is_empty() || start.where_.is_some();
+    let mut sb = Binding(vec![None; scope_len.max(1)]);
+    let mut endpoint: Vec<u32> = Vec::new();
+    for_each_seed(graph, ctx, start.label.as_ref(), &mut |vi| {
+        if !matches_label(graph, ctx, vi, start.label.as_ref()) {
+            return true;
+        }
+        if start_check {
+            if let Some(s) = start.var_slot {
+                sb.set(s, Val::Node(vi));
+            }
+            if !satisfies(
+                graph,
+                ctx,
+                &Val::Node(vi),
+                &start.props,
+                start.where_.as_ref(),
+                &sb,
+            ) {
+                return true;
+            }
+        }
+        endpoint.push(vi);
+        true
+    });
+    endpoint
+}
+
+/// Expand a traversal `path` from the given start-node `endpoint` ids into
+/// columnar [`ScanCols`], replicating bound columns as each segment fans out. The
+/// row order is fully determined by (`endpoint` order, per-segment `expand` order),
+/// so a chunk of `endpoint` yields a contiguous slice of the full result in the
+/// same order — the parallel driver builds chunks independently and concatenates.
+/// Returns `None` for a self-join (a slot bound twice); caller falls back to scalar.
+fn expand_scan(
+    graph: &Graph,
+    ctx: &Ctx,
+    path: &CPath,
+    scope_len: usize,
+    mut endpoint: Vec<u32>,
+    cap: Option<usize>,
+) -> Option<ScanCols> {
     // Bound slots and their element kind, in path order.
     let mut kinds: Vec<(usize, Elem)> = Vec::new();
     if let Some(s) = path.start.var_slot {
@@ -3833,7 +3885,6 @@ fn build_scan(
     for &(s, _) in &kinds {
         cols[s] = Some(Vec::new());
     }
-    let mut endpoint: Vec<u32> = Vec::new();
 
     // Which slots are populated so far. A later segment's rel/node slots are in
     // `kinds` (and pre-allocated in `cols`) but their columns stay empty until
@@ -3841,37 +3892,8 @@ fn build_scan(
     let mut bound = vec![false; scope_len.max(1)];
     if let Some(s) = path.start.var_slot {
         bound[s] = true;
+        cols[s] = Some(endpoint.clone()); // start col = the seeded endpoints
     }
-
-    // Seed from the start node (label + inline props/WHERE).
-    let start = &path.start;
-    let start_check = !start.props.is_empty() || start.where_.is_some();
-    let mut sb = Binding(vec![None; scope_len.max(1)]);
-    for_each_seed(graph, ctx, start.label.as_ref(), &mut |vi| {
-        if !matches_label(graph, ctx, vi, start.label.as_ref()) {
-            return true;
-        }
-        if start_check {
-            if let Some(s) = start.var_slot {
-                sb.set(s, Val::Node(vi));
-            }
-            if !satisfies(
-                graph,
-                ctx,
-                &Val::Node(vi),
-                &start.props,
-                start.where_.as_ref(),
-                &sb,
-            ) {
-                return true;
-            }
-        }
-        endpoint.push(vi);
-        if let Some(s) = start.var_slot {
-            cols[s].as_mut().unwrap().push(vi);
-        }
-        true
-    });
 
     // Expand each segment: every frontier row fans out to its matching neighbors,
     // replicating the already-bound columns and appending this segment's ids.
@@ -4732,6 +4754,25 @@ fn vectorized_rowset(
         rs.push_row(vvs.iter().map(|vv| vv.value_at(i, graph)));
     }
     Some(rs)
+}
+
+/// Transpose every row of an already-built (and WHERE-filtered) frame `sc` into a
+/// [`RowSet`] via the plain projection — no SKIP/LIMIT (the parallel driver applies
+/// those globally after concatenating chunk fragments). The `Val`-boxing-free
+/// analogue of [`vectorized_rowset`]'s tail, factored out for the parallel path.
+#[cfg(feature = "parallel-query")]
+fn project_scan_rows(graph: &Graph, ctx: &Ctx, sc: &ScanCols, proj: &CProjection) -> RowSet {
+    let vvs: Vec<VVec> = proj
+        .items
+        .iter()
+        .map(|it| eval_vec(graph, ctx, sc, &it.expr))
+        .collect();
+    let mut rs = RowSet::new(proj.out_names.clone());
+    rs.data.reserve(sc.n * proj.items.len().max(1));
+    for i in 0..sc.n {
+        rs.push_row(vvs.iter().map(|vv| vv.value_at(i, graph)));
+    }
+    rs
 }
 
 /// Project an already-built (and WHERE-filtered) frame `sc` to column-major output
@@ -5663,6 +5704,109 @@ fn try_parallel_agg(
                 .unwrap_or(Value::Null)
         }));
     }
+    Some(Ok(rs))
+}
+
+/// Intra-query parallel **row materialization** for `MATCH <traversal> [WHERE …]
+/// RETURN <plain projection>` — the row-returning analogue of [`try_parallel_agg`].
+/// The vectorized builder ([`build_scan`]) enumerates the whole join into columns
+/// on one thread; here the filtered start seeds are split across rayon threads,
+/// each runs [`expand_scan`] over its chunk (+ the clause WHERE mask) and projects
+/// its slice to a [`RowSet`] fragment, and the fragments are concatenated in seed
+/// order — reproducing the serial row order exactly, so the result is byte-identical.
+///
+/// Gated to a single fresh traversal MATCH with a plain projection (no aggregate /
+/// DISTINCT / ORDER BY — those reorder or fold and stay on the existing paths) and
+/// no var-length. A LIMIT with no WHERE is left to the serial scan, which early-
+/// stops it cheaply (parallel would build every row first). Below a seed threshold
+/// it declines so small queries skip the thread hand-off.
+#[cfg(feature = "parallel-query")]
+fn try_parallel_scan(
+    linear: &CLinear,
+    graph: &Graph,
+    plan: &CQuery,
+    params: &[Val],
+) -> Option<CodeResult<RowSet>> {
+    let [CClause::Match {
+        optional: false,
+        patterns,
+        where_,
+        scope_len,
+        ..
+    }, CClause::Return(proj)] = linear.clauses.as_slice()
+    else {
+        return None;
+    };
+    // Plain row projection only — aggregate/DISTINCT/ORDER BY reorder or fold and
+    // are handled by try_parallel_agg / the vectorized column path.
+    if proj.star || proj.aggregating || proj.distinct || !proj.order_by.is_empty() {
+        return None;
+    }
+    let [path] = patterns.as_slice() else {
+        return None;
+    };
+    // Traversals only (an isolated-node scan is a cheap bucket clone), non-var-length.
+    if path.segments.is_empty() || path.segments.iter().any(|s| s.rel.quantifier.is_some()) {
+        return None;
+    }
+    // A LIMIT with no WHERE lets the serial scan stop early — don't intercept it
+    // (parallel would materialize every row before truncating). With a WHERE the
+    // scan can't early-stop, so building all rows in parallel is a pure win.
+    if where_.is_none() && proj.limit.is_some() {
+        return None;
+    }
+
+    let threads = rayon::current_num_threads();
+    if threads <= 1 {
+        return None;
+    }
+    let ctx = resolve_ctx(graph, plan, params);
+    let start_ids = scan_start_seed(graph, &ctx, &path.start, *scope_len);
+    const MIN_SEEDS: usize = 8_192;
+    if start_ids.len() < MIN_SEEDS {
+        return None;
+    }
+
+    let w = where_.as_ref();
+    let chunk = (start_ids.len() / (threads * 4)).max(1_024);
+    // Each chunk builds + filters + projects independently; rayon preserves chunk
+    // order, so concatenating the fragments reproduces the serial row order.
+    let frags: Vec<Option<RowSet>> = start_ids
+        .par_chunks(chunk)
+        .map(|c| {
+            let mut sc = expand_scan(graph, &ctx, path, *scope_len, c.to_vec(), None)?;
+            if let Some(w) = w {
+                let keep: Vec<bool> = eval_vec(graph, &ctx, &sc, w)
+                    .into_truth()
+                    .iter()
+                    .map(|t| *t == Some(true))
+                    .collect();
+                compact(&mut sc, &keep);
+            }
+            Some(project_scan_rows(graph, &ctx, &sc, proj))
+        })
+        .collect();
+
+    // A `None` fragment = a self-join expand_scan can't vectorize (shape-based, so
+    // every chunk agrees) — decline and let the serial vectorized/scalar path run.
+    if frags.iter().any(Option::is_none) {
+        return None;
+    }
+    // A data exception during the vectorized WHERE can't return `Err` from here;
+    // decline so the scalar path re-evaluates and surfaces the `CodeError` — the
+    // same fallback the serial vectorized path uses.
+    if ctx.faulted() {
+        return None;
+    }
+
+    let total: usize = frags.iter().flatten().map(|f| f.nrows).sum();
+    let mut rs = RowSet::new(proj.out_names.clone());
+    rs.data.reserve(total * proj.out_len.max(1));
+    for f in frags.into_iter().flatten() {
+        rs.nrows += f.nrows;
+        rs.data.extend(f.data);
+    }
+    rs.apply_skip_limit(proj.skip.unwrap_or(0), proj.limit);
     Some(Ok(rs))
 }
 
@@ -6739,6 +6883,13 @@ fn run_part(
     // the seed loop across cores with per-thread accumulators merged in seed order.
     #[cfg(feature = "parallel-query")]
     if let Some(res) = try_parallel_agg(linear, graph, plan, params) {
+        return res;
+    }
+    // Parallel row materialization over a traversal: the vectorized builder below
+    // enumerates the whole join into columns on one thread, whereas this splits the
+    // seed loop across cores, each building + projecting its slice, then concats.
+    #[cfg(feature = "parallel-query")]
+    if let Some(res) = try_parallel_scan(linear, graph, plan, params) {
         return res;
     }
     if USE_VEC {

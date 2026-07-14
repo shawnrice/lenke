@@ -128,6 +128,14 @@ fn main() {
         "MATCH (a:Person)-[:KNOWS]->{1,2}(b) RETURN b.city AS city, count(*) AS n",
         // var-length global aggregates
         "MATCH (a:Person)-[:KNOWS]->{1,2}(b) RETURN count(*) AS c, min(b.age) AS mn, max(b.age) AS mx",
+        // Parallel row materialization (try_parallel_scan): a plain traversal
+        // projection over a WHERE-filtered join. Order-sensitive dump — a divergent
+        // chunk concat order or filter would show up as a row mismatch. Selective
+        // WHEREs keep the output small while still seeding all 20k Person (> the
+        // parallel threshold, so the parallel path fires).
+        "MATCH (a:Person)-[:KNOWS]->(b) WHERE a.age = 79 AND b.age > 74 RETURN a.name AS an, b.city AS bc, b.age AS ba",
+        // labeled endpoint (b:Admin) exercises the in-expansion node-label filter
+        "MATCH (a:Person)-[:KNOWS]->(b:Admin) WHERE a.age > 76 RETURN a.name AS an, b.name AS bn, b.age AS ba",
     ] {
         println!("--- {q}");
         dump_rows(&mut g, q);
