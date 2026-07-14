@@ -16,7 +16,7 @@ const fakeStore = () => {
   let version = 0;
   const counts = { query: 0, gremlin: 0 };
   const backend: Backend = {
-    abiVersion: 9,
+    abiVersion: 10,
     graphFromNdjson: () => 1,
     graphFree: () => {},
     vertexCount: () => 0,

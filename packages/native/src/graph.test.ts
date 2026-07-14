@@ -9,7 +9,7 @@ import { createStore } from './store.js';
 const countingBackend = (): { backend: Backend; freed: GraphHandle[] } => {
   const freed: GraphHandle[] = [];
   const backend: Backend = {
-    abiVersion: 9,
+    abiVersion: 10,
     graphFromNdjson: () => 1,
     graphFree: (handle) => {
       freed.push(handle);
