@@ -136,6 +136,14 @@ type WasmExports = {
     outLen: number,
   ) => number;
   lnk_gremlin_json: (h: number, q: number, qlen: number, outLen: number) => number;
+  lnk_algo: (
+    h: number,
+    name: number,
+    nameLen: number,
+    cfg: number,
+    cfgLen: number,
+    outLen: number,
+  ) => number;
   lnk_encode_ndjson: (h: number, outLen: number) => number;
   lnk_serialize: (h: number, fmt: number, fmtLen: number, outLen: number) => number;
   lnk_deserialize: (ptr: number, len: number, fmt: number, fmtLen: number) => number;
@@ -807,6 +815,10 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
         ex.lnk_free_buf,
         'gremlin',
       ),
+
+    // name rides the query slot, config the params slot — both staged by takeBuf.
+    algo: (handle, name, config) =>
+      takeBuf(handle, name, config ?? null, ex.lnk_algo, ex.lnk_free_buf, 'algo'),
 
     // encode takes no query string: pass null and call with (handle, outLen).
     encodeNdjson: (handle) =>

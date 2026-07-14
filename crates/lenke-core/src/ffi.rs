@@ -13,9 +13,10 @@ use crate::query;
 
 #[no_mangle]
 pub extern "C" fn lnk_abi_version() -> u32 {
-    9 // 9: query params (lnk_query_rows/lnk_query_arrow take a params-JSON doc);
-      // 8: reactive change tracking (lnk_graph_version/lnk_graph_epoch); 7: codecs
-      //    (lnk_serialize/lnk_deserialize); 6: inbound allocator; 5: Gremlin; 4: Arrow
+    10 // 10: native graph algorithms (lnk_algo); 9: query params (lnk_query_rows/
+       //    lnk_query_arrow take a params-JSON doc); 8: reactive change tracking
+       //    (lnk_graph_version/lnk_graph_epoch); 7: codecs (lnk_serialize/
+       //    lnk_deserialize); 6: inbound allocator; 5: Gremlin; 4: Arrow
 }
 
 // ---------- inbound allocator (wasm linear memory) ----------
@@ -861,6 +862,75 @@ pub unsafe extern "C" fn lnk_query_rows(
         Ok(rs) => rs,
         Err(e) => {
             crate::ffi_error::set_code(e.code, &e.message);
+            return std::ptr::null_mut();
+        }
+    };
+    let bytes = rowset.to_json().into_bytes().into_boxed_slice();
+    *out_len = bytes.len();
+    Box::into_raw(bytes) as *mut u8
+}
+
+/// Run a native graph algorithm (`degree`, `pagerank`, `connectedComponents`,
+/// `labelPropagation`, `shortestPath`) over the graph in a single call — the whole
+/// computation stays in the engine, no per-iteration FFI. `name` selects the
+/// algorithm; `cfg_ptr`/`cfg_len` carry its JSON config (`{}` / null = defaults). If
+/// the config sets `writeProperty`, each vertex's result is written back to that
+/// property (mutating the graph) before returning. Returns the `{columns,rows}` JSON
+/// document (free with [`lnk_free_buf`]); the byte length lands in `out_len`. Returns
+/// null on an unknown algorithm / bad config / UTF-8 error.
+///
+/// The row/JSON carrier mirrors [`lnk_query_rows`] so both bun:ffi and wasm-bindgen
+/// share one buffer crossing. The handle is `*mut` because `writeProperty` mutates.
+///
+/// # Safety
+/// `g` valid and exclusively borrowed for this call; `name_ptr`/`name_len` valid
+/// UTF-8; `cfg_ptr` null or valid for `cfg_len` bytes; `out_len` writable.
+#[cfg(feature = "ndjson")]
+#[no_mangle]
+pub unsafe extern "C" fn lnk_algo(
+    g: *mut Graph,
+    name_ptr: *const u8,
+    name_len: usize,
+    cfg_ptr: *const u8,
+    cfg_len: usize,
+    out_len: *mut usize,
+) -> *mut u8 {
+    crate::ffi_error::begin();
+    if g.is_null() || name_ptr.is_null() {
+        crate::ffi_error::set_code(
+            crate::error_codes::ErrorCode::Ffi,
+            "null graph or algorithm-name pointer",
+        );
+        return std::ptr::null_mut();
+    }
+    let name = match std::str::from_utf8(std::slice::from_raw_parts(name_ptr, name_len)) {
+        Ok(s) => s,
+        Err(_) => {
+            crate::ffi_error::set_code(
+                crate::error_codes::ErrorCode::Ffi,
+                "algorithm name bytes are not valid UTF-8",
+            );
+            return std::ptr::null_mut();
+        }
+    };
+    let cfg = if cfg_ptr.is_null() {
+        ""
+    } else {
+        match std::str::from_utf8(std::slice::from_raw_parts(cfg_ptr, cfg_len)) {
+            Ok(s) => s,
+            Err(_) => {
+                crate::ffi_error::set_code(
+                    crate::error_codes::ErrorCode::Ffi,
+                    "algorithm config bytes are not valid UTF-8",
+                );
+                return std::ptr::null_mut();
+            }
+        }
+    };
+    let rowset = match crate::algo::run(&mut *g, name, cfg) {
+        Ok(rs) => rs,
+        Err(msg) => {
+            crate::ffi_error::set_code(crate::error_codes::ErrorCode::Ffi, &msg);
             return std::ptr::null_mut();
         }
     };

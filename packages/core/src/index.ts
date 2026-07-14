@@ -42,3 +42,13 @@ export {
   parseDuration,
 } from './temporal.js';
 export type { Temporal } from './temporal.js';
+
+// In-engine graph algorithms (degree centrality, …) — data-last, dual-form free
+// functions mirroring the native engine byte-for-byte. See ./algorithms.
+export {
+  degree,
+  type AlgorithmConfig,
+  type AlgorithmRow,
+  type DegreeRow,
+  type GraphAlgorithm,
+} from './algorithms/index.js';

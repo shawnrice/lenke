@@ -113,6 +113,7 @@ export function createNodeBackend() {
     queryRows: (handle, query, params) => coded(() => get(handle).query(query, params)),
     queryArrow: (handle, query, params) => coded(() => get(handle).queryArrow(query, params)),
     gremlinJson: (handle, query) => coded(() => get(handle).gremlin(query)),
+    algo: (handle, name, config) => coded(() => get(handle).algo(name, config)),
 
     encodeNdjson: (handle) => get(handle).encodeNdjson(),
     serialize: (handle, format) => coded(() => get(handle).serialize(format)),

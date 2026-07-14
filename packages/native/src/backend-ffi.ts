@@ -83,6 +83,10 @@ const SYMBOLS = {
     returns: FFIType.ptr,
   },
   lnk_gremlin_json: { args: [FFIType.ptr, FFIType.ptr, U, FFIType.ptr], returns: FFIType.ptr },
+  lnk_algo: {
+    args: [FFIType.ptr, FFIType.ptr, U, FFIType.ptr, U, FFIType.ptr],
+    returns: FFIType.ptr,
+  },
   lnk_encode_ndjson: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.ptr },
   lnk_serialize: { args: [FFIType.ptr, FFIType.ptr, U, FFIType.ptr], returns: FFIType.ptr },
   lnk_deserialize: { args: [FFIType.ptr, U, FFIType.ptr, U], returns: FFIType.ptr },
@@ -581,6 +585,26 @@ export const createFfiBackend = (libPath: string): Backend => {
         (outLen) => symbols.lnk_gremlin_json(asPtr(handle), bytesPtr(q), q.byteLength, outLen),
         symbols.lnk_free_buf,
         'gremlin',
+      );
+    },
+
+    algo: (handle, name, config) => {
+      const n = encoder.encode(name);
+      // Config rides its own buffer; null pointer = "defaults" on the C side.
+      const c = config === undefined ? null : encoder.encode(config);
+
+      return takeBuf(
+        (outLen) =>
+          symbols.lnk_algo(
+            asPtr(handle),
+            bytesPtr(n),
+            n.byteLength,
+            c ? bytesPtr(c) : null,
+            c?.byteLength ?? 0,
+            outLen,
+          ),
+        symbols.lnk_free_buf,
+        'algo',
       );
     },
 

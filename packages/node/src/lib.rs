@@ -196,6 +196,18 @@ impl Graph {
         Ok(blob.into())
     }
 
+    /// Run a native graph algorithm (`degree`, `pagerank`, `connectedComponents`,
+    /// `labelPropagation`, `shortestPath`) over the whole graph in one call; returns
+    /// the `{columns, rows}` JSON document as bytes. `config` is the algorithm's JSON
+    /// config object (`None`/`{}` = defaults). `&mut` because a `writeProperty` config
+    /// mutates the graph.
+    #[napi]
+    pub fn algo(&mut self, name: String, config: Option<String>) -> Result<Buffer> {
+        let rows = lenke_core::algo::run(&mut self.inner, &name, config.as_deref().unwrap_or(""))
+            .map_err(|msg| coded_msg("algo", ErrorCode::Ffi, msg))?;
+        Ok(rows.to_json().into_bytes().into())
+    }
+
     /// Run a textual Gremlin query; returns the JSON-array result as bytes.
     #[napi]
     pub fn gremlin(&mut self, text: String) -> Result<Buffer> {

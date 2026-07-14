@@ -63,6 +63,7 @@ const fakeStore = () => {
 
       return new TextEncoder().encode(`[${counts.gremlin}]`);
     },
+    algo: () => rows(['node', 'degree'], []),
     encodeNdjson: () => new Uint8Array(),
     serialize: () => new Uint8Array(),
     deserialize: (): GraphHandle => 1,

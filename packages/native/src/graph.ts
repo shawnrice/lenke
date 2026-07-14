@@ -1,4 +1,4 @@
-import type { ScalarTypeName } from '@lenke/core';
+import type { AlgorithmConfig, DegreeRow, ScalarTypeName } from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { Backend, GraphHandle, MergeReport, PreparedHandle } from './backend.js';
@@ -396,6 +396,15 @@ export type RustGraph = {
    * traversal string for elsewhere with the {@link gremlin} tag.
    */
   gremlin: (q: string | TemplateStringsArray, ...subs: unknown[]) => unknown[];
+  /**
+   * Degree centrality — per-vertex count of incident edges, run natively over the
+   * whole graph in one call → `{ node, degree }` rows in insertion order. `config`
+   * selects the `direction` (`'out'` default / `'in'` / `'both'`) and an optional
+   * `edgeLabel` filter; a `writeProperty` config writes each degree back to that
+   * vertex property (readable from GQL/Gremlin over the same graph). Data-first
+   * (the graph is `this`); the data-last twin is `degree` in `@lenke/core`.
+   */
+  degree: (config?: AlgorithmConfig) => DegreeRow[];
   /** Serialize the graph back to NDJSON bytes. */
   toNdjson: () => Uint8Array;
   /**
@@ -687,6 +696,8 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
     // property — object keys don't bind in scope.
     gremlin: (q, ...subs) =>
       parseJson(backend.gremlinJson(live(), gremlin(q, ...subs)), 'gremlin') as unknown[],
+    degree: (config) =>
+      decodeRows(backend.algo(live(), 'degree', config && JSON.stringify(config))) as DegreeRow[],
     toNdjson: () => backend.encodeNdjson(live()),
     mergeNdjson: (bytes) => backend.mergeNdjson(live(), bytes),
     serialize: (format) => decoder.decode(backend.serialize(live(), format)),

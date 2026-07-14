@@ -50,6 +50,7 @@ const countingBackend = (): { backend: Backend; freed: GraphHandle[] } => {
     queryRows: () => new TextEncoder().encode('{"columns":[],"rows":[]}'),
     queryArrow: () => new Uint8Array(),
     gremlinJson: () => new TextEncoder().encode('[]'),
+    algo: () => new TextEncoder().encode('{"columns":[],"rows":[]}'),
     encodeNdjson: () => new Uint8Array(),
     serialize: () => new Uint8Array(),
     deserialize: () => 1,

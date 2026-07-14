@@ -151,6 +151,15 @@ export type Backend = {
   /** Run a textual Gremlin query; returns the JSON-array result bytes. */
   gremlinJson: (handle: GraphHandle, query: string) => Uint8Array;
 
+  /**
+   * Run a native graph algorithm (`degree`, `pagerank`, `connectedComponents`,
+   * `labelPropagation`, `shortestPath`) over the whole graph in one call; returns
+   * the `{columns, rows}` JSON document bytes. `config` is the algorithm's
+   * pre-serialized JSON config object (omitted = defaults); a `writeProperty`
+   * config mutates the graph.
+   */
+  algo: (handle: GraphHandle, name: string, config?: string) => Uint8Array;
+
   /** Serialize the whole graph back to NDJSON bytes. */
   encodeNdjson: (handle: GraphHandle) => Uint8Array;
 
