@@ -253,6 +253,18 @@ fn main() {
             "plan",
             "MATCH (b:Hub)<-[:KNOWS]-(a:Person) RETURN a.name AS an, b.name AS bn",
         ),
+        // Labeled-endpoint COUNT: seed the tiny Hub bucket + count adjacency,
+        // instead of scanning every KNOWS edge (the count-side of orientation).
+        (
+            "asym_cnt_fwd",
+            "plan",
+            "MATCH (a:Person)-[:KNOWS]->(b:Hub) RETURN count(*) AS c",
+        ),
+        (
+            "asym_cnt_bwd",
+            "plan",
+            "MATCH (b:Hub)<-[:KNOWS]-(a:Person) RETURN count(*) AS c",
+        ),
         // Var-length / recursive traversal — entirely on the scalar path today.
         // Full-graph depth-2 (shows scale), and reachability-from-Hubs at depth-3
         // (bounded, realistic — "everything within 3 hops of a hub").

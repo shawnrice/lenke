@@ -210,7 +210,25 @@ fn main() {
         assert!(!a.is_empty(), "orient-check query returned no rows: {fwd}");
     }
 
-    println!("all string-path + order + orientation checks OK");
+    // Count-seed correctness: the cardinality-seeded try_count_edges must equal the
+    // enumerated row count of the same pattern (both directions, both seed ends).
+    for count_vs_rows in [
+        "MATCH (a:Person)-[:KNOWS]->(b:Admin)",
+        "MATCH (b:Admin)<-[:KNOWS]-(a:Person)",
+        "MATCH (a:Admin)-[:KNOWS]->(b:Admin)",
+        "MATCH (a:Admin)-[:KNOWS]->(b:Person)",
+    ] {
+        let c = count(&mut g, &format!("{count_vs_rows} RETURN count(*) AS c"));
+        let rows = sorted_rows(
+            &mut g,
+            &format!("{count_vs_rows} RETURN a.name AS an, b.name AS bn"),
+        )
+        .len() as i64;
+        println!("count-seed: count={c} rows={rows}  {count_vs_rows}");
+        assert_eq!(c, rows, "count-seed != enumerated rows: {count_vs_rows}");
+    }
+
+    println!("all string-path + order + orientation + count-seed checks OK");
 }
 
 /// Every result row as a `|`-joined string (all cells), for set comparison.

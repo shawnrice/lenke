@@ -5394,6 +5394,56 @@ fn try_count_edges(
     let node_label = seg.node.label.as_ref();
     let unlabeled = start_label.is_none() && node_label.is_none();
 
+    // Cardinality-based seed: when a labeled endpoint's bucket is smaller than the
+    // whole edge-type set, seed from it and count matching adjacency — O(bucket·deg)
+    // instead of O(E) scanning every edge. Order-independent, so this only affects
+    // speed; each qualifying edge is counted once (from one endpoint's adjacency).
+    let etype_total: usize = tids.iter().map(|&t| graph.edges_with_etype(t).len()).sum();
+    let bucket_card = |lbl: Option<&CLabelExpr>| -> Option<usize> {
+        lbl.and_then(seed_label)
+            .and_then(|r| ctx.labels[r].0)
+            .map(|lid| graph.vertices_with_label(lid).len())
+    };
+    let (start_card, node_card) = (bucket_card(start_label), bucket_card(node_label));
+    // Seed from the smaller labeled endpoint (start on a tie).
+    let seed_start = match (start_card, node_card) {
+        (Some(s), Some(n)) => s <= n,
+        (Some(_), None) => true,
+        _ => false,
+    };
+    if let Some(sc) = if seed_start { start_card } else { node_card } {
+        if sc < etype_total {
+            // Seed side: which end we anchor, whether it's the edge source, and the
+            // *other* end's label to validate. `dir` is Out/In (Both bailed above).
+            let (seed_lbl, far_lbl, v_is_src) = if seed_start {
+                (start_label, node_label, dir == Direction::Out)
+            } else {
+                (node_label, start_label, dir == Direction::In)
+            };
+            let seeds: &[u32] = seed_lbl
+                .and_then(seed_label)
+                .and_then(|r| ctx.labels[r].0)
+                .map_or(&[], |lid| graph.vertices_with_label(lid));
+            let mut count: usize = 0;
+            for &v in seeds {
+                // The bucket is only a *superset* for a conjunct label — re-validate.
+                if !matches_label(graph, &ctx, v, seed_lbl) {
+                    continue;
+                }
+                let hit =
+                    |a: &Adj| tids.contains(&a.etype) && matches_label(graph, &ctx, a.nbr, far_lbl);
+                count += if v_is_src {
+                    graph.out_adj(v).filter(hit).count()
+                } else {
+                    graph.in_adj(v).filter(hit).count()
+                };
+            }
+            let mut rs = RowSet::new(proj.out_names.clone());
+            rs.push_row(std::iter::once(Value::Num(count as f64)));
+            return Some(rs);
+        }
+    }
+
     let mut count: usize = 0;
     for tid in tids {
         let bucket = graph.edges_with_etype(tid);
