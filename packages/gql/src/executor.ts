@@ -3088,15 +3088,231 @@ const detectCountShortcut = (clauses: readonly Clause[]): CountFn | null => {
   return null;
 };
 
+type ReachFn = (graph: Graph, params: Params) => Row[];
+
+/** Whether `e` reads only variable `v` (a bare `v`, `v.key`, or a constant). */
+const refsOnlyVar = (e: Expr, v: string): boolean => {
+  switch (e.kind) {
+    case 'var':
+      return e.name === v;
+    case 'prop':
+      return e.variable === v;
+    case 'lit':
+    case 'param':
+      return true;
+    default:
+      return false;
+  }
+};
+
+/**
+ * Reachability shortcut for **unbounded var-length with DISTINCT**:
+ * `MATCH (a{..})-[:T]->+(b) RETURN DISTINCT <b…>` (and `->*`, `count(DISTINCT b)`).
+ * Trail enumeration is exponential on a connected graph and hits `TRAIL_BUDGET`
+ * (a fault), but a DISTINCT result only wants the reachable *set* — multiplicity
+ * collapses — which a plain O(V+E) BFS answers. `->+` = reachable via ≥1 hop; `->*`
+ * also includes the seed(s). Mirrors the native engine's `try_reachable_distinct`
+ * so both engines behave identically. Seeds via the compiled start node.
+ */
+type ReachSpec = {
+  cstart: CNode;
+  items: readonly CReturnItem[];
+  bVar: string;
+  bLabel: LabelExpr | undefined;
+  out: boolean;
+  types: string[] | undefined;
+  minZero: boolean;
+  isCount: boolean;
+  skip: number;
+  limit?: number;
+};
+
+/** BFS the reachable set, then project the endpoint + DISTINCT (or count it). */
+const runReach = (spec: ReachSpec, graph: Graph, params: Params): Row[] => {
+  const { cstart, items, bVar, bLabel, out, types, minZero, isCount, skip: skipN, limit } = spec;
+  const seeds = [...seedVertices(graph, cstart, new Map(), params)];
+  const nbrs = (v: Vertex): Vertex[] => {
+    const byType = (out ? graph.edgesFromByLabel : graph.edgesToByLabel).get(v.id);
+    const acc: Vertex[] = [];
+
+    for (const set of bucketsFor(byType, types)) {
+      if (set) {
+        for (const e of set) {
+          acc.push(out ? e.to : e.from);
+        }
+      }
+    }
+
+    return acc;
+  };
+
+  // Forward reachability (≥1 hop) as a DFS closure — each vertex expands once.
+  const seen = new Set<string>();
+  const reached: Vertex[] = [];
+  const stack: Vertex[] = [];
+  const push = (w: Vertex): void => {
+    if (!seen.has(w.id)) {
+      seen.add(w.id);
+      reached.push(w);
+      stack.push(w);
+    }
+  };
+
+  for (const s of seeds) {
+    for (const w of nbrs(s)) {
+      push(w);
+    }
+  }
+
+  while (stack.length > 0) {
+    for (const w of nbrs(stack.pop()!)) {
+      push(w);
+    }
+  }
+
+  // `->*` also admits the zero-length path — the seeds themselves.
+  if (minZero) {
+    for (const s of seeds) {
+      if (!seen.has(s.id)) {
+        seen.add(s.id);
+        reached.push(s);
+      }
+    }
+  }
+
+  const kept = reached.filter((v) => matchesLabel(v, bLabel));
+
+  if (isCount) {
+    return [{ [items[0].name]: kept.length }];
+  }
+
+  // DISTINCT rows: project the endpoint per reached vertex, dedup the tuples.
+  const seenRows = new Set<string>();
+  const rows: Row[] = [];
+
+  for (const v of kept) {
+    const env: EvalEnv = { binding: new Map([[bVar, v]]), params, graph };
+    const cells = items.map((it) => it.fn(env));
+    const key = cells.map(valueKey).join('');
+
+    if (!seenRows.has(key)) {
+      seenRows.add(key);
+      rows.push(Object.fromEntries(items.map((it, i) => [it.name, cells[i]])));
+    }
+  }
+
+  if (skipN === 0 && limit === undefined) {
+    return rows;
+  }
+
+  return rows.slice(skipN, limit === undefined ? undefined : skipN + limit);
+};
+
+/** True when the projection is exactly `count(DISTINCT b)`. */
+const isReachCount = (proj: Projection, bVar: string): boolean => {
+  const first = proj.items[0]?.expr;
+
+  return (
+    proj.items.length === 1 &&
+    first?.kind === 'func' &&
+    first.name === 'count' &&
+    first.distinct &&
+    !first.star &&
+    first.args.length === 1 &&
+    first.args[0].kind === 'var' &&
+    first.args[0].name === bVar
+  );
+};
+
+const detectReachableShortcut = (
+  clauses: readonly Clause[],
+  compiled: readonly CClause[],
+): ReachFn | null => {
+  if (clauses.length !== 2) {
+    return null;
+  }
+
+  const [m, ret] = clauses;
+  const [cm, cret] = compiled;
+
+  if (
+    m.kind !== 'match' ||
+    m.optional ||
+    m.where !== undefined ||
+    m.patterns.length !== 1 ||
+    ret.kind !== 'return' ||
+    cm.kind !== 'match' ||
+    cret.kind !== 'return'
+  ) {
+    return null;
+  }
+
+  if (m.patterns[0].segments.length !== 1) {
+    return null;
+  }
+
+  const [{ rel, node }] = m.patterns[0].segments;
+  const { quantifier: q } = rel;
+  const bVar = node.variable;
+  const types = relTypeNames(rel.label);
+
+  // Unbounded (`->+` / `->*`) directed segment, no edge var / props / WHERE, a bare
+  // labelled endpoint bound to a variable, a buildable rel type, no ORDER BY.
+  if (
+    q?.max !== null ||
+    rel.variable !== undefined ||
+    rel.direction === 'both' ||
+    (rel.properties?.length ?? 0) > 0 ||
+    rel.where !== undefined ||
+    bVar === undefined ||
+    (node.properties?.length ?? 0) > 0 ||
+    node.where !== undefined ||
+    types === null ||
+    (ret.projection.orderBy?.length ?? 0) > 0
+  ) {
+    return null;
+  }
+
+  const { projection } = ret;
+  const isCount = isReachCount(projection, bVar);
+  const isRows = projection.distinct && projection.items.every((it) => refsOnlyVar(it.expr, bVar));
+
+  if (!isCount && !isRows) {
+    return null;
+  }
+
+  const spec: ReachSpec = {
+    cstart: cm.patterns[0].start,
+    items: cret.projection.items,
+    bVar,
+    bLabel: node.label,
+    out: rel.direction === 'out',
+    types: types ?? undefined,
+    minZero: q.min === 0,
+    isCount,
+    skip: projection.skip ?? 0,
+    limit: projection.limit,
+  };
+
+  return (graph, params) => runReach(spec, graph, params);
+};
+
 type CLinear = {
   clauses: readonly CClause[];
   /** Precomputed direct-count closure for `MATCH … RETURN count(*)`; else null. */
   countShortcut: ((graph: Graph, params: Params) => Row) | null;
+  /** BFS closure for unbounded var-length + DISTINCT; else null. */
+  reachShortcut: ReachFn | null;
 };
-const compileLinear = (linear: LinearQuery): CLinear => ({
-  clauses: linear.clauses.map(compileClause),
-  countShortcut: detectCountShortcut(linear.clauses),
-});
+const compileLinear = (linear: LinearQuery): CLinear => {
+  const clauses = linear.clauses.map(compileClause);
+
+  return {
+    clauses,
+    countShortcut: detectCountShortcut(linear.clauses),
+    reachShortcut: detectReachableShortcut(linear.clauses, clauses),
+  };
+};
 
 // --- write clauses -----------------------------------------------------------
 
@@ -3680,6 +3896,12 @@ const runLinearClauses = (linear: CLinear, graph: Graph, params: Params): Row[] 
   // shapes `detectCountShortcut` accepts.
   if (linear.countShortcut) {
     return [linear.countShortcut(graph, params)];
+  }
+
+  // Unbounded var-length + DISTINCT → BFS the reachable set instead of enumerating
+  // trails (exponential, hits the trail budget). See `detectReachableShortcut`.
+  if (linear.reachShortcut) {
+    return linear.reachShortcut(graph, params);
   }
 
   // Bindings flow as a lazy stream; only barriers (mutations, aggregation,

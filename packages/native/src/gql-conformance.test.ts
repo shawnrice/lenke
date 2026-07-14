@@ -169,15 +169,15 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     // DISTINCT rows with no ORDER BY are a set — the native BFS and TS enumeration
     // legitimately differ in row order, so compare the sorted name sets.
     const names = (rowset: Array<{ n: string }>): string[] => rowset.map((r) => r.n).sort();
+
     for (const q of [
       `MATCH (a:Node {name: 's0'})-[:R]->+(b) RETURN DISTINCT b.name AS n`,
       `MATCH (a:Node {name: 's0'})-[:R]->*(b) RETURN DISTINCT b.name AS n`,
       `MATCH (a:Node {name: 's0'})-[:R]->+(b:Target) RETURN DISTINCT b.name AS n`,
     ]) {
-      expect(names(nat.query(q) as Array<{ n: string }>), q).toEqual(
-        names(tsQuery(ts, q) as Array<{ n: string }>),
-      );
+      expect(names(nat.query(q)), q).toEqual(names(tsQuery(ts, q)));
     }
+
     // count(DISTINCT) is a single deterministic value.
     const cq = `MATCH (a:Node {name: 's0'})-[:R]->+(b) RETURN count(DISTINCT b) AS c`;
     expect(JSON.stringify(nat.query(cq)), cq).toBe(JSON.stringify(tsQuery(ts, cq)));

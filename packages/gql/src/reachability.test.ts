@@ -1,0 +1,56 @@
+import { describe, expect, test } from 'bun:test';
+
+import { Graph } from '@lenke/core';
+
+import { query } from './index.js';
+
+/** A connected "road" graph: a ring (one strongly-connected component) + chords. */
+const ring = (n: number, chords: number): Graph => {
+  const g = new Graph();
+  const v = Array.from({ length: n }, (_, i) =>
+    g.addVertex({ id: `v${i}`, labels: ['Node'], properties: { name: `n${i}` } }),
+  );
+
+  for (let i = 0; i < n; i += 1) {
+    g.addEdge({ from: v[i], to: v[(i + 1) % n], labels: ['ROAD'], properties: {} });
+  }
+
+  // Deterministic pseudo-random chords (xorshift) so the test is stable.
+  let x = 0x1234_5678;
+  const below = (m: number): number => {
+    x ^= x << 13;
+    x ^= x >>> 17;
+    x ^= x << 5;
+
+    return Math.abs(x) % m;
+  };
+
+  for (let i = 0; i < chords; i += 1) {
+    g.addEdge({ from: v[below(n)], to: v[below(n)], labels: ['ROAD'], properties: {} });
+  }
+
+  return g;
+};
+
+describe('unbounded var-length + DISTINCT: BFS reachability (no trail-budget fault)', () => {
+  // Trail enumeration is exponential here and would exceed TRAIL_BUDGET; the BFS
+  // shortcut answers the reachable set directly. A ring reaches every node.
+  test('->+ over a 5000-node connected graph completes and returns the reachable set', () => {
+    const g = ring(5000, 10_000);
+
+    const rows = query(g, `MATCH (a:Node {name: 'n0'})-[:ROAD]->+(b) RETURN DISTINCT b.name AS n`);
+    expect(rows.length).toBe(5000); // every node reachable (n0 too, via the ring cycle)
+
+    const count = query(
+      g,
+      `MATCH (a:Node {name: 'n0'})-[:ROAD]->+(b) RETURN count(DISTINCT b) AS c`,
+    );
+    expect(count).toEqual([{ c: 5000 }]);
+  });
+
+  test('->* includes the seed; the reachable set is unchanged on a ring', () => {
+    const g = ring(3000, 6000);
+    const star = query(g, `MATCH (a:Node {name: 'n0'})-[:ROAD]->*(b) RETURN DISTINCT b.name AS n`);
+    expect(star.length).toBe(3000);
+  });
+});
