@@ -108,23 +108,41 @@ pub(super) fn edge_weights(graph: &Graph, key: &str) -> Vec<f64> {
         .collect()
 }
 
+/// An algorithm's output: the result column name + per-vertex `(dense id, value)`s.
+type AlgoOutput = (&'static str, Vec<(u32, Value)>);
+/// Pending `writeProperty` writes: the property key + per-vertex `(dense id, value)`s.
+type PendingWrites = Option<(String, Vec<(u32, Value)>)>;
+
+/// Dispatch by name to the pure `&Graph -> Vec<(vertex, Value)>` algorithm, returning
+/// the result column name alongside. Read-only. Unknown `name` → `Err`.
+fn dispatch(graph: &Graph, name: &str, cfg: &AlgoConfig) -> Result<AlgoOutput, String> {
+    Ok(match name {
+        "degree" => ("degree", degree::degree(graph, cfg)),
+        "connectedComponents" => ("componentId", components::connected_components(graph, cfg)),
+        "labelPropagation" => ("label", label_prop::label_propagation(graph, cfg)),
+        "pagerank" => ("score", pagerank::pagerank(graph, cfg)),
+        "shortestPath" => ("distance", shortest_path::shortest_path(graph, cfg)),
+        other => return Err(format!("unknown algorithm: {other}")),
+    })
+}
+
+/// Materialize `(vertex, value)` results into a `(node, <column>)` RowSet, mapping
+/// each dense vertex id to its external id. Read-only.
+fn build_rowset(graph: &Graph, column: &str, results: &[(u32, Value)]) -> RowSet {
+    let mut rs = RowSet::new(vec!["node".to_string(), column.to_string()]);
+    for (v, val) in results {
+        rs.push_row([Value::Str(graph.vid.arc(*v)), val.clone()]);
+    }
+    rs
+}
+
 /// Run algorithm `name` with a JSON `config`, optionally write each vertex's result
 /// to `config.writeProperty`, and return the result rows `(node, <result-column>)`
 /// where `node` is the external vertex id. Unknown `name` → `Err`.
 pub fn run(graph: &mut Graph, name: &str, config: &str) -> Result<RowSet, String> {
     let cfg =
         AlgoConfig::from_json(config).map_err(|()| "invalid algorithm config JSON".to_string())?;
-
-    // Each algorithm is a pure `&Graph -> Vec<(vertex, Value)>`; the driver handles
-    // the optional property write and row materialization uniformly.
-    let (column, results): (&str, Vec<(u32, Value)>) = match name {
-        "degree" => ("degree", degree::degree(graph, &cfg)),
-        "connectedComponents" => ("componentId", components::connected_components(graph, &cfg)),
-        "labelPropagation" => ("label", label_prop::label_propagation(graph, &cfg)),
-        "pagerank" => ("score", pagerank::pagerank(graph, &cfg)),
-        "shortestPath" => ("distance", shortest_path::shortest_path(graph, &cfg)),
-        other => return Err(format!("unknown algorithm: {other}")),
-    };
+    let (column, results) = dispatch(graph, name, &cfg)?;
 
     if let Some(prop) = &cfg.write_property {
         for (v, val) in &results {
@@ -132,11 +150,24 @@ pub fn run(graph: &mut Graph, name: &str, config: &str) -> Result<RowSet, String
         }
     }
 
-    let mut rs = RowSet::new(vec!["node".to_string(), column.to_string()]);
-    for (v, val) in results {
-        rs.push_row([Value::Str(graph.vid.arc(v)), val]);
-    }
-    Ok(rs)
+    Ok(build_rowset(graph, column, &results))
+}
+
+/// Read-only counterpart of [`run`] for the async (off-thread) path: compute the
+/// result RowSet and return any pending `writeProperty` writes for the caller to
+/// apply back on the main thread (where `&mut Graph` is exclusive again). The whole
+/// computation touches only `&Graph`, so it is safe to run off the JS thread.
+pub fn compute_parts(
+    graph: &Graph,
+    name: &str,
+    config: &str,
+) -> Result<(RowSet, PendingWrites), String> {
+    let cfg =
+        AlgoConfig::from_json(config).map_err(|()| "invalid algorithm config JSON".to_string())?;
+    let (column, results) = dispatch(graph, name, &cfg)?;
+    let rs = build_rowset(graph, column, &results);
+    let writes = cfg.write_property.map(|prop| (prop, results));
+    Ok((rs, writes))
 }
 
 #[cfg(test)]

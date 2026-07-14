@@ -160,6 +160,15 @@ export type Backend = {
    */
   algo: (handle: GraphHandle, name: string, config?: string) => Uint8Array;
 
+  /**
+   * Non-blocking {@link Backend.algo}: runs the algorithm off the JS thread and
+   * resolves the same `{columns, rows}` bytes. Present only on backends that have a
+   * real threadpool (the Node/napi backend); absent on bun:ffi and wasm, where the
+   * facade falls back to the synchronous {@link Backend.algo}. While the promise is
+   * pending the graph must not be touched by another call (the facade guards this).
+   */
+  algoAsync?: (handle: GraphHandle, name: string, config?: string) => Promise<Uint8Array>;
+
   /** Serialize the whole graph back to NDJSON bytes. */
   encodeNdjson: (handle: GraphHandle) => Uint8Array;
 

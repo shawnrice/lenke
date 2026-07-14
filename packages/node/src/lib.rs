@@ -56,6 +56,51 @@ pub struct Graph {
     inner: CoreGraph,
 }
 
+/// A [`Graph::algo_async`] unit of work: computes the algorithm on a libuv
+/// threadpool thread reading `&Graph` through `graph_ptr` (a `usize` so the task is
+/// `Send`), then — back on the main thread in `resolve` — applies any `writeProperty`
+/// writes and hands back the `{columns, rows}` JSON bytes.
+///
+/// The pointer is valid for the task's lifetime because the JS `Graph` object stays
+/// referenced by the awaiting frame, and the `@lenke/native` facade refuses any other
+/// native call on the graph while the promise is pending, so the off-thread read
+/// never races a mutation.
+pub struct AlgoTask {
+    graph_ptr: usize,
+    name: String,
+    config: Option<String>,
+}
+
+impl Task for AlgoTask {
+    // (rows JSON bytes, pending writeProperty writes to apply on the main thread)
+    type Output = (Vec<u8>, Option<(String, Vec<(u32, lenke_core::graph::Value)>)>);
+    type JsValue = Buffer;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        // SAFETY: `graph_ptr` points at a live `CoreGraph` (the JS object is pinned by
+        // the pending promise) and the facade guarantees no concurrent mutation, so
+        // this shared read is sound. Only `&Graph` is taken here.
+        let graph = unsafe { &*(self.graph_ptr as *const CoreGraph) };
+        let (rows, writes) =
+            lenke_core::algo::compute_parts(graph, &self.name, self.config.as_deref().unwrap_or(""))
+                .map_err(|msg| coded_msg("algoAsync", ErrorCode::Ffi, msg))?;
+        Ok((rows.to_json().into_bytes(), writes))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Buffer> {
+        let (bytes, writes) = output;
+        if let Some((prop, results)) = writes {
+            // SAFETY: `resolve` runs on the main thread with no other JS executing, so
+            // this exclusive `&mut` cannot alias the (now-finished) off-thread read.
+            let graph = unsafe { &mut *(self.graph_ptr as *mut CoreGraph) };
+            for (v, val) in results {
+                graph.set_vertex_prop(v, &prop, val);
+            }
+        }
+        Ok(bytes.into())
+    }
+}
+
 #[napi]
 impl Graph {
     /// Decode NDJSON bytes into a graph. `parallel` (default true) uses the
@@ -206,6 +251,22 @@ impl Graph {
         let rows = lenke_core::algo::run(&mut self.inner, &name, config.as_deref().unwrap_or(""))
             .map_err(|msg| coded_msg("algo", ErrorCode::Ffi, msg))?;
         Ok(rows.to_json().into_bytes().into())
+    }
+
+    /// Non-blocking [`Graph::algo`]: runs the whole algorithm on a libuv threadpool
+    /// thread (keeping the engine's internal parallelism) and resolves a `Promise`
+    /// with the `{columns, rows}` bytes, so the JS event loop stays free. The compute
+    /// is read-only (`&Graph`); a `writeProperty` config's writes are applied back on
+    /// the main thread in `resolve`.
+    ///
+    /// Safety contract (enforced by the `@lenke/native` facade's single-flight guard):
+    /// the graph must not be touched by another native call while the returned promise
+    /// is pending — the task holds a pointer into this graph and reads it off-thread,
+    /// so a concurrent mutation would be a data race.
+    #[napi(ts_return_type = "Promise<Buffer>")]
+    pub fn algo_async(&mut self, name: String, config: Option<String>) -> AsyncTask<AlgoTask> {
+        let graph_ptr = &mut self.inner as *mut CoreGraph as usize;
+        AsyncTask::new(AlgoTask { graph_ptr, name, config })
     }
 
     /// Run a textual Gremlin query; returns the JSON-array result as bytes.

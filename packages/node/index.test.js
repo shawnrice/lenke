@@ -173,3 +173,39 @@ test('createNodeBackend powers the @lenke/native facade + liveQuery', () => {
   assert.notStrictEqual(after, before);
   assert.equal(after.length, 3);
 });
+
+test('async algorithms run off-thread: same result, non-blocking, single-flight', async () => {
+  const backend = createNodeBackend();
+  const g = graphFromNdjson(backend, NDJSON);
+
+  // 1. The off-thread result is byte-identical to the synchronous one.
+  const sync = g.pagerank({});
+  const asyncRows = await g.pagerankAsync({});
+  assert.equal(JSON.stringify(asyncRows), JSON.stringify(sync));
+
+  // 2. It does not block the event loop — a macrotask scheduled now runs before a
+  //    long off-thread run (many PageRank iterations) resolves. On a synchronous
+  //    (blocking) implementation the timer could not fire until after the result.
+  let ticked = false;
+  setTimeout(() => {
+    ticked = true;
+  }, 0);
+  await g.pagerankAsync({ iterations: 20_000 });
+  assert.ok(ticked, 'event loop should have ticked during the async run');
+
+  // 3. writeProperty writes are applied (on the main thread) before it resolves.
+  //    (g is the @lenke/native facade — query() returns decoded rows, not bytes.)
+  await g.pagerankAsync({ writeProperty: 'pr' });
+  const rows = g.query('MATCH (n:Person {name: "marko"}) RETURN n.pr AS pr');
+  assert.equal(typeof rows[0].pr, 'number');
+
+  // 4. Single-flight: touching the graph while an async run is pending throws, and
+  //    the graph is usable again once it settles.
+  const pending = g.pagerankAsync({});
+  assert.throws(
+    () => g.query('MATCH (n) RETURN n'),
+    (e) => hasErrorCode(e, ErrorCode.InvalidGraphOp),
+  );
+  await pending;
+  assert.ok(g.query('MATCH (n) RETURN count(*) AS c')[0].c >= 2);
+});

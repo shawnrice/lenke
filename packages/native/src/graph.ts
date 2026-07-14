@@ -447,6 +447,20 @@ export type RustGraph = {
    * data-last twin is `shortestPath` in `@lenke/core`.
    */
   shortestPath: (config?: AlgorithmConfig) => ShortestPathRow[];
+  /**
+   * Non-blocking twins of the algorithm methods above: same rows, but the whole
+   * computation runs off the JS thread (on the Node/napi backend's threadpool,
+   * keeping the engine's internal parallelism) so the event loop stays free —
+   * `const rows = await g.pagerankAsync({ … })`. While the promise is pending the
+   * graph is single-flight-locked: any other call on it throws until it settles. On
+   * the bun:ffi / wasm backends (no threadpool) these resolve the same result but the
+   * run still blocks; use the `@lenke/core` cooperative-yield variants there instead.
+   */
+  degreeAsync: (config?: AlgorithmConfig) => Promise<DegreeRow[]>;
+  connectedComponentsAsync: (config?: AlgorithmConfig) => Promise<ComponentRow[]>;
+  labelPropagationAsync: (config?: AlgorithmConfig) => Promise<LabelRow[]>;
+  pagerankAsync: (config?: AlgorithmConfig) => Promise<PageRankRow[]>;
+  shortestPathAsync: (config?: AlgorithmConfig) => Promise<ShortestPathRow[]>;
   /** Serialize the graph back to NDJSON bytes. */
   toNdjson: () => Uint8Array;
   /**
@@ -502,7 +516,7 @@ const reclaim: FinalizationRegistry<() => void> | undefined =
       })
     : undefined;
 
-type DisposalState = { freed: boolean };
+type DisposalState = { freed: boolean; busy: boolean };
 
 // Disposal state shared per (backend, handle) — NOT per wrapper — so two
 // wrappers attached to the same handle share one freed-once guard: a.free()
@@ -523,7 +537,7 @@ const stateFor = (backend: Backend, handle: GraphHandle): DisposalState => {
   let state = states.get(handle);
 
   if (!state) {
-    state = { freed: false };
+    state = { freed: false, busy: false };
     states.set(handle, state);
   }
 
@@ -648,6 +662,16 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
       throw new LenkeError('lenke: graph used after free()', { code: ErrorCode.InvalidGraphOp });
     }
 
+    // Single-flight guard for the async algorithm path: while an off-thread run is
+    // reading this graph, any other native call would risk a data race, so it throws
+    // until the promise settles. (This is what makes `algoAsync` sound.)
+    if (state.busy) {
+      throw new LenkeError(
+        'lenke: graph is busy running an async algorithm — await it before the next call',
+        { code: ErrorCode.InvalidGraphOp },
+      );
+    }
+
     return handle;
   };
 
@@ -662,6 +686,28 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
     state.freed = true;
     disposal.get(backend)?.delete(handle);
     reclaim?.unregister(token);
+  };
+
+  // Run an algorithm off the JS thread (Promise-returning). `live()` first rejects a
+  // freed/busy graph, then the busy flag is set so no other native call can touch the
+  // graph while the off-thread run reads it (the soundness guard for the native
+  // `algoAsync`); it clears when the promise settles. Backends without a real
+  // threadpool (bun:ffi, wasm) have no `algoAsync`, so this falls back to the
+  // synchronous `algo` — the API stays a Promise, but that run does block.
+  const runAlgoAsync = async (name: string, config?: AlgorithmConfig): Promise<Row[]> => {
+    const handleForRun = live();
+    const cfg = config && JSON.stringify(config);
+    state.busy = true;
+
+    try {
+      const bytes = backend.algoAsync
+        ? await backend.algoAsync(handleForRun, name, cfg)
+        : backend.algo(handleForRun, name, cfg);
+
+      return decodeRows(bytes);
+    } finally {
+      state.busy = false;
+    }
   };
 
   const graph: RustGraph = {
@@ -756,6 +802,14 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
       decodeRows(
         backend.algo(live(), 'shortestPath', config && JSON.stringify(config)),
       ) as ShortestPathRow[],
+    degreeAsync: (config) => runAlgoAsync('degree', config) as Promise<DegreeRow[]>,
+    connectedComponentsAsync: (config) =>
+      runAlgoAsync('connectedComponents', config) as Promise<ComponentRow[]>,
+    labelPropagationAsync: (config) =>
+      runAlgoAsync('labelPropagation', config) as Promise<LabelRow[]>,
+    pagerankAsync: (config) => runAlgoAsync('pagerank', config) as Promise<PageRankRow[]>,
+    shortestPathAsync: (config) =>
+      runAlgoAsync('shortestPath', config) as Promise<ShortestPathRow[]>,
     toNdjson: () => backend.encodeNdjson(live()),
     mergeNdjson: (bytes) => backend.mergeNdjson(live(), bytes),
     serialize: (format) => decoder.decode(backend.serialize(live(), format)),

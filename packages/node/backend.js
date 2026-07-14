@@ -29,6 +29,16 @@ const coded = (fn) => {
   }
 };
 
+// Async twin of `coded`: rebuild an addon rejection (or a synchronous throw before
+// the promise is returned) as a coded LenkeError.
+const codedAsync = async (fn) => {
+  try {
+    return await fn();
+  } catch (e) {
+    throw errorFromNapi(e && typeof e.message === 'string' ? e.message : undefined);
+  }
+};
+
 /** @returns {import('@lenke/native').Backend} */
 export function createNodeBackend() {
   /** @type {Map<number, InstanceType<typeof Graph>>} */
@@ -114,6 +124,8 @@ export function createNodeBackend() {
     queryArrow: (handle, query, params) => coded(() => get(handle).queryArrow(query, params)),
     gremlinJson: (handle, query) => coded(() => get(handle).gremlin(query)),
     algo: (handle, name, config) => coded(() => get(handle).algo(name, config)),
+    // Off-thread on a libuv worker → Promise<Buffer>; the event loop stays free.
+    algoAsync: (handle, name, config) => codedAsync(() => get(handle).algoAsync(name, config)),
 
     encodeNdjson: (handle) => get(handle).encodeNdjson(),
     serialize: (handle, format) => coded(() => get(handle).serialize(format)),
