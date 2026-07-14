@@ -63,6 +63,64 @@ fn rows(g: &mut Graph, query: &str) -> Vec<Vec<Value>> {
     q(g, query).1
 }
 
+/// The reverse semi-join fast path (`try_count_semi_join`) must equal the enumerated
+/// answer: `EXISTS` count == `count(DISTINCT a)` of the same join, and `NOT EXISTS`
+/// == all rows minus that. Both edge directions; some `a`s have a qualifying edge,
+/// some don't, and one `a` reaches an Admin two ways (dedup must hold).
+#[test]
+fn exists_count_matches_reverse_semi_join() {
+    let lines = [
+        r#"{"type":"node","id":"p1","labels":["Person"],"properties":{}}"#,
+        r#"{"type":"node","id":"p2","labels":["Person"],"properties":{}}"#,
+        r#"{"type":"node","id":"p3","labels":["Person"],"properties":{}}"#,
+        r#"{"type":"node","id":"m1","labels":["Person","Admin"],"properties":{}}"#,
+        r#"{"type":"node","id":"m2","labels":["Person","Admin"],"properties":{}}"#,
+        // p1 → m1 and p1 → m2 (two ways to an Admin — must count p1 once).
+        r#"{"type":"edge","from":"p1","to":"m1","labels":["KNOWS"],"properties":{}}"#,
+        r#"{"type":"edge","from":"p1","to":"m2","labels":["KNOWS"],"properties":{}}"#,
+        // p2 → m1 (one Admin). p3 → p2 (no Admin). m1 → m2 (Admin → Admin).
+        r#"{"type":"edge","from":"p2","to":"m1","labels":["KNOWS"],"properties":{}}"#,
+        r#"{"type":"edge","from":"p3","to":"p2","labels":["KNOWS"],"properties":{}}"#,
+        r#"{"type":"edge","from":"m1","to":"m2","labels":["KNOWS"],"properties":{}}"#,
+    ];
+    let mut g = ndjson::decode(&lines.join("\n")).unwrap();
+    let c = |g: &mut Graph, query: &str| -> f64 {
+        match q(g, query).1[0][0] {
+            Value::Num(v) => v,
+            ref o => panic!("expected count, got {o:?}"),
+        }
+    };
+    // EXISTS (a)-[:KNOWS]->(:Admin): predecessors of Admins = {p1, p2, m1}. = 3.
+    let exists = c(
+        &mut g,
+        "MATCH (a:Person) WHERE EXISTS { (a)-[:KNOWS]->(:Admin) } RETURN count(*) AS c",
+    );
+    let distinct = c(
+        &mut g,
+        "MATCH (a:Person)-[:KNOWS]->(b:Admin) RETURN count(DISTINCT a) AS c",
+    );
+    assert_eq!(exists, distinct, "EXISTS count != count(DISTINCT a)");
+    assert_eq!(exists, 3.0);
+    // NOT EXISTS = all 5 Person minus the 3 that reach an Admin.
+    let not_exists = c(
+        &mut g,
+        "MATCH (a:Person) WHERE NOT EXISTS { (a)-[:KNOWS]->(:Admin) } RETURN count(*) AS c",
+    );
+    assert_eq!(not_exists, 2.0);
+    // Reverse direction: (a)<-[:KNOWS]-(:Admin) — a is an out-neighbor of an Admin.
+    // Admin out-neighbors: m1→m2. So {m2}. = 1.
+    let exists_rev = c(
+        &mut g,
+        "MATCH (a:Person) WHERE EXISTS { (a)<-[:KNOWS]-(:Admin) } RETURN count(*) AS c",
+    );
+    let distinct_rev = c(
+        &mut g,
+        "MATCH (a:Person)<-[:KNOWS]-(b:Admin) RETURN count(DISTINCT a) AS c",
+    );
+    assert_eq!(exists_rev, distinct_rev);
+    assert_eq!(exists_rev, 1.0);
+}
+
 #[test]
 fn count_star_alias() {
     let mut g = modern();

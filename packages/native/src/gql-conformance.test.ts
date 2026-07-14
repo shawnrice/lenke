@@ -125,6 +125,18 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     }
   });
 
+  // --- correlated EXISTS count: native uses a reverse semi-join (seed the selective
+  // inner endpoint), TS tests every outer row. They must agree. Software (1 vertex)
+  // is more selective than Person, so the fast path fires. ---------------------
+  test('EXISTS / NOT EXISTS count matches per-row evaluation (TS vs native)', () => {
+    for (const q of [
+      `MATCH (a:Person) WHERE EXISTS { (a)-[:CREATED]->(:Software) } RETURN count(*) AS c`,
+      `MATCH (a:Person) WHERE NOT EXISTS { (a)-[:CREATED]->(:Software) } RETURN count(*) AS c`,
+    ]) {
+      expect(JSON.stringify(nativeGraph.query(q)), q).toBe(JSON.stringify(tsQuery(tsGraph, q)));
+    }
+  });
+
   // --- FOR (ISO list unwind / UNWIND) ---------------------------------------
 
   test('FOR unwinds a literal list identically', () => {

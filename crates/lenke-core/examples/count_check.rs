@@ -228,7 +228,39 @@ fn main() {
         assert_eq!(c, rows, "count-seed != enumerated rows: {count_vs_rows}");
     }
 
-    println!("all string-path + order + orientation + count-seed checks OK");
+    // Semi-join correctness: EXISTS count == count(DISTINCT a) of the join (a wholly
+    // different code path — reverse-seed set vs join + distinct fold), and
+    // NOT EXISTS count == |La| − that. Admin = i%3==0 (the smaller, seedable end).
+    let semi_pairs = [
+        (
+            "MATCH (a:Person) WHERE EXISTS { (a)-[:KNOWS]->(:Admin) } RETURN count(*) AS c",
+            "MATCH (a:Person)-[:KNOWS]->(b:Admin) RETURN count(DISTINCT a) AS c",
+        ),
+        (
+            "MATCH (a:Person) WHERE EXISTS { (a)<-[:KNOWS]-(:Admin) } RETURN count(*) AS c",
+            "MATCH (a:Person)<-[:KNOWS]-(b:Admin) RETURN count(DISTINCT a) AS c",
+        ),
+    ];
+    for (exists_q, distinct_q) in semi_pairs {
+        let e = count(&mut g, exists_q);
+        let d = count(&mut g, distinct_q);
+        println!("semi-join: exists={e} distinct={d}  {exists_q}");
+        assert_eq!(e, d, "EXISTS count != count(DISTINCT a):\n  {exists_q}");
+    }
+    // NOT EXISTS = every Person minus those that satisfy EXISTS.
+    let people = count(&mut g, "MATCH (a:Person) RETURN count(*) AS c");
+    let has = count(
+        &mut g,
+        "MATCH (a:Person) WHERE EXISTS { (a)-[:KNOWS]->(:Admin) } RETURN count(*) AS c",
+    );
+    let hasnt = count(
+        &mut g,
+        "MATCH (a:Person) WHERE NOT EXISTS { (a)-[:KNOWS]->(:Admin) } RETURN count(*) AS c",
+    );
+    println!("semi-join NOT: people={people} has={has} hasnt={hasnt}");
+    assert_eq!(has + hasnt, people, "EXISTS + NOT EXISTS != all Person");
+
+    println!("all string-path + order + orientation + count-seed + semi-join checks OK");
 }
 
 /// Every result row as a `|`-joined string (all cells), for set comparison.

@@ -5777,6 +5777,151 @@ fn try_count_varlen_1_2(
     Some(rs)
 }
 
+/// Reverse semi-join for a correlated `EXISTS` count:
+/// `MATCH (a:La?) WHERE [NOT] EXISTS { (a)-[:T]->(b:Lb) } RETURN count(*)`.
+///
+/// The satisfying `a`s are exactly the `T`-predecessors of the `Lb` vertices, so
+/// when `Lb` is more selective than `La`, seed the small `Lb` bucket and collect
+/// the distinct `a`s from its reverse adjacency — O(|Lb|·degree) — instead of
+/// testing `EXISTS` for every one of the many `a`s (O(|La|·degree)). `EXISTS` →
+/// the predecessor count; `NOT EXISTS` → `|La|` minus it.
+///
+/// Tightly gated: a single bare correlated start, a single directed non-var-length
+/// inner segment with no edge variable / props / WHERE, a labeled (seedable) fresh
+/// inner endpoint, and `Lb` smaller than `La`. Anything else falls through to the
+/// per-row `any_match`.
+fn try_count_semi_join(
+    linear: &CLinear,
+    graph: &Graph,
+    plan: &CQuery,
+    params: &[Val],
+) -> Option<RowSet> {
+    let [CClause::Match {
+        optional: false,
+        patterns,
+        where_: Some(w),
+        ..
+    }, CClause::Return(proj)] = linear.clauses.as_slice()
+    else {
+        return None;
+    };
+    let [outer] = patterns.as_slice() else {
+        return None;
+    };
+    // Outer is a bare node `(a:La?)` — the rows are the `a`s.
+    if !outer.segments.is_empty() || !outer.start.props.is_empty() || outer.start.where_.is_some() {
+        return None;
+    }
+    let a_slot = outer.start.var_slot?;
+    // Exactly `count(*)` (mirrors try_count_star).
+    if proj.distinct
+        || !proj.order_by.is_empty()
+        || proj.skip.is_some()
+        || proj.limit.is_some()
+        || proj.out_len != 1
+        || proj.aggs.len() != 1
+        || proj.items.len() != 1
+        || !matches!(proj.items[0].expr, CExpr::AggRef(0))
+    {
+        return None;
+    }
+    let agg = &proj.aggs[0];
+    if !agg.star || agg.distinct || !matches!(agg.func, AggFn::Count) {
+        return None;
+    }
+    // Unwrap `EXISTS { … }` or `NOT EXISTS { … }`.
+    let (inner_patterns, inner_where, negated) = match w {
+        CExpr::Exists {
+            patterns, where_, ..
+        } => (patterns, where_, false),
+        CExpr::Not(inner) => match inner.as_ref() {
+            CExpr::Exists {
+                patterns, where_, ..
+            } => (patterns, where_, true),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    if inner_where.is_some() {
+        return None;
+    }
+    let [inner] = inner_patterns.as_slice() else {
+        return None;
+    };
+    let [seg] = inner.segments.as_slice() else {
+        return None;
+    };
+    // Inner start is the correlated `a` (bare, same slot). Inner endpoint `b` is a
+    // fresh selective node — not `a` (no self-referential `(a)-[:T]->(a)`).
+    if inner.start.var_slot != Some(a_slot)
+        || inner.start.label.is_some()
+        || !inner.start.props.is_empty()
+        || inner.start.where_.is_some()
+        || seg.node.var_slot == Some(a_slot)
+        || !seg.node.props.is_empty()
+        || seg.node.where_.is_some()
+    {
+        return None;
+    }
+    let rel = &seg.rel;
+    if rel.var_slot.is_some()
+        || !rel.props.is_empty()
+        || rel.where_.is_some()
+        || rel.quantifier.is_some()
+        || !matches!(rel.direction, Direction::Out | Direction::In)
+    {
+        return None;
+    }
+
+    let ctx = resolve_ctx(graph, plan, params);
+    let la = outer.start.label.as_ref();
+    let lb = seg.node.label.as_ref();
+    let tset = rel_type_set(&ctx, rel.label.as_ref())?;
+    // `Lb` must seed a bucket; only reverse-seed when it's smaller than `La`.
+    let lb_bucket: &[u32] = lb
+        .and_then(seed_label)
+        .and_then(|r| ctx.labels[r].0)
+        .map_or(&[], |lid| graph.vertices_with_label(lid));
+    let la_card = match la.and_then(seed_label).and_then(|r| ctx.labels[r].0) {
+        Some(lid) => graph.vertices_with_label(lid).len(),
+        None => graph.vertex_count(),
+    };
+    if lb.is_none() || lb_bucket.len() >= la_card {
+        return None;
+    }
+
+    // Distinct `a`s reachable back from the `Lb` bucket over `T`. For `(a)-[:T]->b`
+    // (Out) `a` is `b`'s in-neighbor; for `(a)<-[:T]-b` (In) `a` is `b`'s out-neighbor.
+    let out_side = rel.direction == Direction::In;
+    let mut preds: HashSet<u32> = HashSet::new();
+    for &b in lb_bucket {
+        if !matches_label(graph, &ctx, b, lb) {
+            continue; // conjunct label: the bucket is only a superset
+        }
+        let keep =
+            |adj: &Adj| etype_ok(&tset, adj.etype) && matches_label(graph, &ctx, adj.nbr, la);
+        if out_side {
+            for adj in graph.out_adj(b).filter(keep) {
+                preds.insert(adj.nbr);
+            }
+        } else {
+            for adj in graph.in_adj(b).filter(keep) {
+                preds.insert(adj.nbr);
+            }
+        }
+    }
+    let semi = preds.len();
+    let count = if negated {
+        la_card.saturating_sub(semi)
+    } else {
+        semi
+    };
+
+    let mut rs = RowSet::new(proj.out_names.clone());
+    rs.push_row(std::iter::once(Value::Num(count as f64)));
+    Some(rs)
+}
+
 /// Intra-query parallel count for `MATCH <path with ≥1 segment> [WHERE …] RETURN
 /// count(*)` — the read-only traversal count that stays scalar (a pure aggregate
 /// over a traversal isn't vectorized, and `try_count_edges` only covers a single
@@ -7195,6 +7340,11 @@ fn run_part(
         }
         // Var-length `{1,2}` count via degree products (O(V+E), no trail enumeration).
         if let Some(rs) = try_count_varlen_1_2(linear, graph, plan, params) {
+            return Ok(rs);
+        }
+        // Reverse semi-join for a correlated `[NOT] EXISTS { … }` count — seed the
+        // selective inner endpoint instead of testing every outer row.
+        if let Some(rs) = try_count_semi_join(linear, graph, plan, params) {
             return Ok(rs);
         }
     }
