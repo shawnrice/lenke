@@ -149,6 +149,40 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     }
   });
 
+  // --- unbounded var-length + DISTINCT: native BFSes the reachable set, TS
+  // enumerates trails then dedups. On a small graph (enumeration completes) they
+  // must agree — including ->+ vs ->* seed inclusion and a cycle. -------------
+  test('unbounded var-length DISTINCT matches trail enumeration (TS vs native)', () => {
+    const REACH_NDJSON = [
+      '{"type":"node","id":"s0","labels":["Node"],"properties":{"name":"s0"}}',
+      '{"type":"node","id":"a1","labels":["Node"],"properties":{"name":"a1"}}',
+      '{"type":"node","id":"a2","labels":["Node"],"properties":{"name":"a2"}}',
+      '{"type":"node","id":"t3","labels":["Node","Target"],"properties":{"name":"t3"}}',
+      '{"type":"edge","id":"r1","from":"s0","to":"a1","labels":["R"],"properties":{}}',
+      '{"type":"edge","id":"r2","from":"a1","to":"a2","labels":["R"],"properties":{}}',
+      '{"type":"edge","id":"r3","from":"a2","to":"a1","labels":["R"],"properties":{}}',
+      '{"type":"edge","id":"r4","from":"a2","to":"t3","labels":["R"],"properties":{}}',
+    ].join('\n');
+    const nat = graphFromFormat(backend, REACH_NDJSON, 'ndjson');
+    const ts = tsDeserialize(REACH_NDJSON, 'ndjson', new Graph());
+
+    // DISTINCT rows with no ORDER BY are a set — the native BFS and TS enumeration
+    // legitimately differ in row order, so compare the sorted name sets.
+    const names = (rowset: Array<{ n: string }>): string[] => rowset.map((r) => r.n).sort();
+    for (const q of [
+      `MATCH (a:Node {name: 's0'})-[:R]->+(b) RETURN DISTINCT b.name AS n`,
+      `MATCH (a:Node {name: 's0'})-[:R]->*(b) RETURN DISTINCT b.name AS n`,
+      `MATCH (a:Node {name: 's0'})-[:R]->+(b:Target) RETURN DISTINCT b.name AS n`,
+    ]) {
+      expect(names(nat.query(q) as Array<{ n: string }>), q).toEqual(
+        names(tsQuery(ts, q) as Array<{ n: string }>),
+      );
+    }
+    // count(DISTINCT) is a single deterministic value.
+    const cq = `MATCH (a:Node {name: 's0'})-[:R]->+(b) RETURN count(DISTINCT b) AS c`;
+    expect(JSON.stringify(nat.query(cq)), cq).toBe(JSON.stringify(tsQuery(ts, cq)));
+  });
+
   // --- FOR (ISO list unwind / UNWIND) ---------------------------------------
 
   test('FOR unwinds a literal list identically', () => {

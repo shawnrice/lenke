@@ -191,6 +191,81 @@ fn count_distinct_reachable_matches_enumeration() {
     );
 }
 
+/// Unbounded var-length with DISTINCT (`try_reachable_distinct`, BFS) must equal the
+/// enumerated reachable set on a graph small enough that trail enumeration completes.
+/// Covers `->+` vs `->*` (seed inclusion), a cycle (seed reachable from itself), and
+/// the endpoint label filter.
+#[test]
+fn reachable_distinct_matches_enumeration() {
+    // s0 → a1 → a2 → a1 (cycle a1↔a2 via a2→a1); a2 → t3 (Target). s0 is Node.
+    let lines = [
+        r#"{"type":"node","id":"s0","labels":["Node"],"properties":{"name":"s0"}}"#,
+        r#"{"type":"node","id":"a1","labels":["Node"],"properties":{"name":"a1"}}"#,
+        r#"{"type":"node","id":"a2","labels":["Node"],"properties":{"name":"a2"}}"#,
+        r#"{"type":"node","id":"t3","labels":["Node","Target"],"properties":{"name":"t3"}}"#,
+        r#"{"type":"node","id":"z9","labels":["Node"],"properties":{"name":"z9"}}"#, // unreachable
+        r#"{"type":"edge","from":"s0","to":"a1","labels":["R"],"properties":{}}"#,
+        r#"{"type":"edge","from":"a1","to":"a2","labels":["R"],"properties":{}}"#,
+        r#"{"type":"edge","from":"a2","to":"a1","labels":["R"],"properties":{}}"#, // cycle
+        r#"{"type":"edge","from":"a2","to":"t3","labels":["R"],"properties":{}}"#,
+    ];
+    let mut g = ndjson::decode(&lines.join("\n")).unwrap();
+    let names = |g: &mut Graph, query: &str| -> Vec<String> {
+        let mut v: Vec<String> = rows(g, query)
+            .iter()
+            .map(|r| match &r[0] {
+                Value::Str(s) => s.to_string(),
+                o => panic!("expected string, got {o:?}"),
+            })
+            .collect();
+        v.sort();
+        v
+    };
+    // ->+ from s0: reachable via ≥1 hop = {a1, a2, t3}. s0 NOT included (no path back to it).
+    assert_eq!(
+        names(
+            &mut g,
+            "MATCH (a:Node {name: 's0'})-[:R]->+(b) RETURN DISTINCT b.name AS n"
+        ),
+        vec!["a1", "a2", "t3"],
+    );
+    // ->* also includes the 0-hop seed s0.
+    assert_eq!(
+        names(
+            &mut g,
+            "MATCH (a:Node {name: 's0'})-[:R]->*(b) RETURN DISTINCT b.name AS n"
+        ),
+        vec!["a1", "a2", "s0", "t3"],
+    );
+    // Endpoint label filter: only Target endpoints = {t3}.
+    assert_eq!(
+        names(
+            &mut g,
+            "MATCH (a:Node {name: 's0'})-[:R]->+(b:Target) RETURN DISTINCT b.name AS n",
+        ),
+        vec!["t3"],
+    );
+    // A cycle makes a1 reachable from itself via ≥1 hop: ->+ from a1 includes a1.
+    assert_eq!(
+        names(
+            &mut g,
+            "MATCH (a:Node {name: 'a1'})-[:R]->+(b) RETURN DISTINCT b.name AS n"
+        ),
+        vec!["a1", "a2", "t3"],
+    );
+    // count(DISTINCT b) over the unbounded reach from s0 = |{a1,a2,t3}| = 3.
+    let c = match q(
+        &mut g,
+        "MATCH (a:Node {name: 's0'})-[:R]->+(b) RETURN count(DISTINCT b) AS c",
+    )
+    .1[0][0]
+    {
+        Value::Num(v) => v as i64,
+        ref o => panic!("{o:?}"),
+    };
+    assert_eq!(c, 3);
+}
+
 #[test]
 fn count_star_alias() {
     let mut g = modern();

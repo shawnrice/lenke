@@ -6033,6 +6033,235 @@ fn try_count_distinct_reachable(
     Some(rs)
 }
 
+/// Start vertices matching a bare seed node (label + inline props/WHERE), using a
+/// property index when the inline map / WHERE offers one, else a label scan.
+fn reach_seed_vertices(graph: &Graph, ctx: &Ctx, start: &CNode, scope_len: usize) -> Vec<u32> {
+    let needs_check = !start.props.is_empty() || start.where_.is_some();
+    let mut b = Binding(vec![None; scope_len.max(1)]);
+    let mut out = Vec::new();
+    let ok = |graph: &Graph, vi: u32, b: &mut Binding| -> bool {
+        if !matches_label(graph, ctx, vi, start.label.as_ref()) {
+            return false;
+        }
+        if needs_check {
+            if let Some(s) = start.var_slot {
+                b.set(s, Val::Node(vi));
+            }
+            if !satisfies(
+                graph,
+                ctx,
+                &Val::Node(vi),
+                &start.props,
+                start.where_.as_ref(),
+                b,
+            ) {
+                return false;
+            }
+        }
+        true
+    };
+    match node_index_seed(graph, ctx, start, None) {
+        Some(cands) => {
+            for vi in cands {
+                if graph.is_vertex_live(vi) && ok(graph, vi, &mut b) {
+                    out.push(vi);
+                }
+            }
+        }
+        None => {
+            for_each_seed(graph, ctx, start.label.as_ref(), &mut |vi| {
+                if ok(graph, vi, &mut b) {
+                    out.push(vi);
+                }
+                true
+            });
+        }
+    }
+    out
+}
+
+/// Whether `expr` reads only the endpoint variable `b` (a bare `b` or `b.<prop>`).
+/// A projection that also reads the start `a` (or an intermediate) can't be served
+/// by a reachability set, which loses the per-path source correspondence.
+fn refs_only_endpoint(expr: &CExpr, b: usize) -> bool {
+    match expr {
+        CExpr::Var(s) => *s == b,
+        CExpr::Prop { var_slot, .. } => *var_slot == b,
+        CExpr::Lit(_) => true,
+        _ => false,
+    }
+}
+
+/// Reachability shortcut for **unbounded var-length with DISTINCT**:
+/// `MATCH (a:La {..})-[:T]->+(b:Lb?) RETURN DISTINCT <b…>` (also `->*` and
+/// `count(DISTINCT b)`). Trail enumeration is exponential on a connected graph and
+/// hits the trail budget (a *fault*), but a DISTINCT result only wants the reachable
+/// *set* — multiplicity is collapsed — which a plain O(V+E) graph search answers.
+/// `->+` = reachable via ≥1 hop; `->*` also includes the seed(s).
+///
+/// Gated to a single unbounded (`max = None`) directed segment (no edge var / props
+/// / WHERE), a DISTINCT projection with no ORDER BY that reads only the endpoint,
+/// and the endpoint bound. Bounded quantifiers keep enumerating (already small).
+fn try_reachable_distinct(
+    linear: &CLinear,
+    graph: &Graph,
+    plan: &CQuery,
+    params: &[Val],
+) -> Option<CodeResult<RowSet>> {
+    let [CClause::Match {
+        optional: false,
+        patterns,
+        where_: None,
+        scope_len,
+        ..
+    }, CClause::Return(proj)] = linear.clauses.as_slice()
+    else {
+        return None;
+    };
+    let [path] = patterns.as_slice() else {
+        return None;
+    };
+    let [seg] = path.segments.as_slice() else {
+        return None;
+    };
+    // Only an *unbounded* quantifier blows up; bounded `{lo,hi}` enumeration is small.
+    let q = seg.rel.quantifier?;
+    if q.max.is_some() {
+        return None;
+    }
+    if seg.rel.var_slot.is_some()
+        || !seg.rel.props.is_empty()
+        || seg.rel.where_.is_some()
+        || !matches!(seg.rel.direction, Direction::Out | Direction::In)
+        || !seg.node.props.is_empty()
+        || seg.node.where_.is_some()
+    {
+        return None;
+    }
+    let b_slot = seg.node.var_slot?;
+    if !proj.order_by.is_empty() {
+        return None;
+    }
+    // DISTINCT rows over `b`, or `count(DISTINCT <b…>)`.
+    let rows_mode = proj.distinct
+        && !proj.aggregating
+        && proj
+            .items
+            .iter()
+            .all(|it| refs_only_endpoint(&it.expr, b_slot));
+    let count_mode = proj.aggregating
+        && proj.aggs.len() == 1
+        && proj.items.len() == 1
+        && matches!(proj.items[0].expr, CExpr::AggRef(0))
+        && {
+            let a = &proj.aggs[0];
+            a.distinct
+                && !a.star
+                && matches!(a.func, AggFn::Count)
+                && a.arg
+                    .as_ref()
+                    .is_some_and(|e| refs_only_endpoint(e, b_slot))
+        };
+    if !rows_mode && !count_mode {
+        return None;
+    }
+
+    let ctx = resolve_ctx(graph, plan, params);
+    let seeds = reach_seed_vertices(graph, &ctx, &path.start, *scope_len);
+    // Forward reachability (≥1 hop) as a DFS closure — each vertex expands once.
+    let (dir, el) = (seg.rel.direction, seg.rel.label.as_ref());
+    let mut seen = crate::graph::BitSet::zeros(graph.vertex_count());
+    let mut reached: Vec<u32> = Vec::new();
+    let mut stack: Vec<u32> = Vec::new();
+    for &s in &seeds {
+        for (_e, w) in expand(graph, &ctx, s, dir, el) {
+            if !seen.get(w as usize) {
+                seen.set(w as usize);
+                reached.push(w);
+                stack.push(w);
+            }
+        }
+    }
+    while let Some(u) = stack.pop() {
+        for (_e, w) in expand(graph, &ctx, u, dir, el) {
+            if !seen.get(w as usize) {
+                seen.set(w as usize);
+                reached.push(w);
+                stack.push(w);
+            }
+        }
+    }
+    // `->*` also admits the zero-length path — the seeds themselves.
+    if q.min == 0 {
+        for &s in &seeds {
+            if !seen.get(s as usize) {
+                seen.set(s as usize);
+                reached.push(s);
+            }
+        }
+    }
+
+    let lb = seg.node.label.as_ref();
+    let width = (*scope_len).max(1);
+    let mut bind = Binding(vec![None; width]);
+
+    if count_mode {
+        let arg = proj.aggs[0].arg.as_ref();
+        let (mut ids, mut strs) = (HashSet::new(), HashSet::new());
+        let mut n = 0u64;
+        for &v in &reached {
+            if !matches_label(graph, &ctx, v, lb) {
+                continue;
+            }
+            bind.set(b_slot, Val::Node(v));
+            let val = match arg {
+                Some(e) => eval(&Env::new(graph, &ctx, &bind), e),
+                None => Val::Node(v),
+            };
+            if is_nullish(&val) {
+                continue;
+            }
+            let novel = match &val {
+                Val::Node(i) => ids.insert(*i as u64),
+                Val::Edge(i) => ids.insert(*i as u64 | EDGE_ID_TAG),
+                _ => {
+                    let mut k = String::new();
+                    val_key(&val, &mut k);
+                    strs.insert(k)
+                }
+            };
+            if novel {
+                n += 1;
+            }
+        }
+        let mut rs = RowSet::new(proj.out_names.clone());
+        rs.push_row(std::iter::once(Value::Num(n as f64)));
+        return Some(Ok(rs));
+    }
+
+    // rows_mode: project the endpoint per reached vertex, dedup the output tuples.
+    let mut rs = RowSet::new(proj.out_names.clone());
+    let mut seen_rows: HashSet<String> = HashSet::new();
+    for &v in &reached {
+        if !matches_label(graph, &ctx, v, lb) {
+            continue;
+        }
+        bind.set(b_slot, Val::Node(v));
+        let env = Env::new(graph, &ctx, &bind);
+        let vals: Vec<Val> = proj.items.iter().map(|it| eval_item(&env, it)).collect();
+        let mut key = String::new();
+        for val in &vals {
+            val_key(val, &mut key);
+            key.push('\u{1}');
+        }
+        if seen_rows.insert(key) {
+            rs.push_row(vals.iter().map(|val| val_to_value(graph, val)));
+        }
+    }
+    rs.apply_skip_limit(proj.skip.unwrap_or(0), proj.limit);
+    Some(Ok(rs))
+}
+
 /// Intra-query parallel count for `MATCH <path with ≥1 segment> [WHERE …] RETURN
 /// count(*)` — the read-only traversal count that stays scalar (a pure aggregate
 /// over a traversal isn't vectorized, and `try_count_edges` only covers a single
@@ -7463,6 +7692,11 @@ fn run_part(
         if let Some(rs) = try_count_distinct_reachable(linear, graph, plan, params) {
             return Ok(rs);
         }
+    }
+    // Unbounded var-length with a DISTINCT result → BFS the reachable set instead of
+    // enumerating trails (which is exponential and hits the trail budget / faults).
+    if let Some(res) = try_reachable_distinct(linear, graph, plan, params) {
+        return res;
     }
     // Intra-query parallel count over a traversal (opt-in `parallel-query`). Tried
     // before the vectorized pipeline: for a pure `count(*)` over a multi-hop or
