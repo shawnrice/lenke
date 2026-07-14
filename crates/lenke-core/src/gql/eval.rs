@@ -1253,11 +1253,17 @@ fn eval_aggregate(env: &Env, func: AggFn, arg: Option<&CExpr>, distinct: bool, s
         .collect();
     let mut values: Vec<Val> = raw.into_iter().filter(|v| !is_nullish(v)).collect();
     if distinct {
+        // Mirror Agg::step: dedup element values by dense id, scalars by `val_key`.
         let mut seen = HashSet::new();
-        values.retain(|v| {
-            let mut k = String::new();
-            val_key(v, &mut k);
-            seen.insert(k)
+        let mut seen_ids = HashSet::new();
+        values.retain(|v| match v {
+            Val::Node(i) => seen_ids.insert(*i as u64),
+            Val::Edge(i) => seen_ids.insert(*i as u64 | EDGE_ID_TAG),
+            _ => {
+                let mut k = String::new();
+                val_key(v, &mut k);
+                seen.insert(k)
+            }
         });
     }
     match func {
@@ -2476,7 +2482,15 @@ struct Agg {
     extreme: Option<Val>,
     list: Vec<Val>,
     seen: HashSet<String>,
+    /// DISTINCT fast path for element values: a node/edge is identified by its
+    /// dense id, so dedup by a tagged `u64` (no per-value string key). Scalars fall
+    /// back to `seen`.
+    seen_ids: HashSet<u64>,
 }
+
+/// Tag bit distinguishing an edge id from a node id in [`Agg::seen_ids`] (dense ids
+/// are `u32`, so the tag never collides with the value).
+const EDGE_ID_TAG: u64 = 1 << 32;
 
 impl Agg {
     fn new(spec: &super::plan::CAgg) -> Self {
@@ -2489,6 +2503,7 @@ impl Agg {
             extreme: None,
             list: Vec::new(),
             seen: HashSet::new(),
+            seen_ids: HashSet::new(),
         }
     }
     fn step(&mut self, value: Option<Val>) {
@@ -2501,9 +2516,17 @@ impl Agg {
             return;
         }
         if self.distinct {
-            let mut k = String::new();
-            val_key(&val, &mut k);
-            if !self.seen.insert(k) {
+            // Element values dedup by dense id (no string key); scalars by `val_key`.
+            let novel = match &val {
+                Val::Node(i) => self.seen_ids.insert(*i as u64),
+                Val::Edge(i) => self.seen_ids.insert(*i as u64 | EDGE_ID_TAG),
+                _ => {
+                    let mut k = String::new();
+                    val_key(&val, &mut k);
+                    self.seen.insert(k)
+                }
+            };
+            if !novel {
                 return;
             }
         }
