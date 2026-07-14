@@ -1,6 +1,7 @@
 import type { Edge } from '../core/Edge.js';
 import type { Graph } from '../core/Graph.js';
 import type { Vertex } from '../core/Vertex.js';
+import { type AlgorithmGen, defineAlgorithm, YIELD_EVERY } from './async.js';
 import type { AlgorithmConfig, AlgorithmRow } from './types.js';
 
 /** A shortest-path result row: `{ node, distance }`. */
@@ -153,7 +154,10 @@ const astar = (
   return undefined;
 };
 
-const compute = (config: AlgorithmConfig, graph: Graph): ShortestPathRow[] => {
+const computeGen = function* (
+  config: AlgorithmConfig,
+  graph: Graph,
+): AlgorithmGen<ShortestPathRow> {
   const { source, target, edgeLabel, weightProperty, heuristicProperty, algorithm, writeProperty } =
     config;
 
@@ -206,6 +210,8 @@ const compute = (config: AlgorithmConfig, graph: Graph): ShortestPathRow[] => {
   const dist = new Float64Array(order.length).fill(Infinity);
   dist[srcIdx] = 0;
 
+  let sinceYield = 0;
+
   if (weightProperty === undefined) {
     // Unweighted BFS — hop distance (order-independent unique layers).
     const queue: number[] = [srcIdx];
@@ -221,6 +227,12 @@ const compute = (config: AlgorithmConfig, graph: Graph): ShortestPathRow[] => {
           dist[v] = dist[u] + 1;
           queue.push(v);
         }
+      }
+
+      if (++sinceYield >= YIELD_EVERY) {
+        sinceYield = 0;
+
+        yield;
       }
     }
   } else {
@@ -243,6 +255,12 @@ const compute = (config: AlgorithmConfig, graph: Graph): ShortestPathRow[] => {
           dist[v] = nd;
           heapPush(heap, [nd, v]);
         }
+      }
+
+      if (++sinceYield >= YIELD_EVERY) {
+        sinceYield = 0;
+
+        yield;
       }
     }
   }
@@ -267,16 +285,10 @@ const compute = (config: AlgorithmConfig, graph: Graph): ShortestPathRow[] => {
 /**
  * Single-source shortest path from a `source` external id, following out-edges
  * (optionally of one `edgeLabel`). Unweighted → BFS hop distance; weighted (a
- * `weightProperty` is set) → Dijkstra. Returns `{ node, distance }` for every
- * reachable vertex (source at 0), in insertion order. Distances are the canonical
- * minimum path cost, so they are byte-identical to the native engine. Data-last
- * dual-form: `shortestPath(config, graph)` or `shortestPath(config)(graph)`.
+ * `weightProperty` is set) → Dijkstra. Resolves `Promise<ShortestPathRow[]>` for
+ * every reachable vertex (source at 0), in insertion order, without blocking the
+ * event loop. Distances are the canonical minimum path cost, so they are
+ * byte-identical to the native engine. Data-last dual-form: `shortestPath(config,
+ * graph)` or `shortestPath(config)(graph)`.
  */
-export function shortestPath(config: AlgorithmConfig): (graph: Graph) => ShortestPathRow[];
-export function shortestPath(config: AlgorithmConfig, graph: Graph): ShortestPathRow[];
-export function shortestPath(
-  config: AlgorithmConfig,
-  graph?: Graph,
-): ShortestPathRow[] | ((graph: Graph) => ShortestPathRow[]) {
-  return graph ? compute(config, graph) : (g: Graph) => compute(config, g);
-}
+export const shortestPath = defineAlgorithm(computeGen);

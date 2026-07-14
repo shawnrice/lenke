@@ -1,4 +1,5 @@
 import type { Graph } from '../core/Graph.js';
+import { type AlgorithmGen, defineAlgorithm, YIELD_EVERY } from './async.js';
 import type { AlgorithmConfig, AlgorithmRow } from './types.js';
 
 /** A weakly-connected-components result row: `{ node, componentId }`. */
@@ -37,7 +38,7 @@ const union = (parent: Int32Array, a: number, b: number): void => {
   parent[drop] = keep;
 };
 
-const compute = (config: AlgorithmConfig, graph: Graph): ComponentRow[] => {
+const computeGen = function* (config: AlgorithmConfig, graph: Graph): AlgorithmGen<ComponentRow> {
   const { edgeLabel, writeProperty } = config;
 
   // Insertion index == native dense id, so smaller-index roots pick the same
@@ -58,9 +59,17 @@ const compute = (config: AlgorithmConfig, graph: Graph): ComponentRow[] => {
   // per-vertex sweep) is cheaper than walking the nested adjacency maps. A
   // named-but-unknown edge type matches nothing → every vertex stays its own
   // component.
+  let sinceYield = 0;
+
   for (const edge of graph.edges) {
     if (edgeLabel === undefined || edge.labels.has(edgeLabel)) {
       union(parent, index.get(edge.from.id)!, index.get(edge.to.id)!);
+    }
+
+    if (++sinceYield >= YIELD_EVERY) {
+      sinceYield = 0;
+
+      yield;
     }
   }
 
@@ -74,6 +83,12 @@ const compute = (config: AlgorithmConfig, graph: Graph): ComponentRow[] => {
     }
 
     rows.push({ node: v.id, componentId });
+
+    if (++sinceYield >= YIELD_EVERY) {
+      sinceYield = 0;
+
+      yield;
+    }
   }
 
   return rows;
@@ -82,14 +97,8 @@ const compute = (config: AlgorithmConfig, graph: Graph): ComponentRow[] => {
 /**
  * Weakly-connected components via union-find — edges undirected, union by smaller
  * insertion index so each component id is its first-inserted vertex's external id.
- * Deterministic and exact. Data-last dual-form: `connectedComponents(config,
- * graph)` or `connectedComponents(config)(graph)`.
+ * Deterministic and exact. Resolves `Promise<ComponentRow[]>` without blocking the
+ * event loop. Data-last dual-form: `connectedComponents(config, graph)` or
+ * `connectedComponents(config)(graph)`.
  */
-export function connectedComponents(config: AlgorithmConfig): (graph: Graph) => ComponentRow[];
-export function connectedComponents(config: AlgorithmConfig, graph: Graph): ComponentRow[];
-export function connectedComponents(
-  config: AlgorithmConfig,
-  graph?: Graph,
-): ComponentRow[] | ((graph: Graph) => ComponentRow[]) {
-  return graph ? compute(config, graph) : (g: Graph) => compute(config, g);
-}
+export const connectedComponents = defineAlgorithm(computeGen);

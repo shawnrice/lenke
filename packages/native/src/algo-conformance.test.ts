@@ -72,9 +72,9 @@ suite('graph-algorithm differential: degree (TS core vs native)', () => {
   const nativeGraph = graphFromFormat(backend, MODERN_NDJSON, 'ndjson');
   const tsGraph = tsDeserialize(MODERN_NDJSON, 'ndjson', new Graph());
 
-  const both = (config: AlgorithmConfig): [string, string] => [
-    JSON.stringify(degree(config, tsGraph)),
-    JSON.stringify(nativeGraph.degree(config)),
+  const both = async (config: AlgorithmConfig): Promise<[string, string]> => [
+    JSON.stringify(await degree(config, tsGraph)),
+    JSON.stringify(await nativeGraph.degree(config)),
   ];
 
   for (const config of [
@@ -87,15 +87,15 @@ suite('graph-algorithm differential: degree (TS core vs native)', () => {
     { edgeLabel: 'NOPE' } as const, // unknown edge type → all zero
     {} as const, // defaults (out, all types)
   ]) {
-    test(`degree ${JSON.stringify(config)} — byte-identical`, () => {
-      const [ts, native] = both(config);
+    test(`degree ${JSON.stringify(config)} — byte-identical`, async () => {
+      const [ts, native] = await both(config);
       expect(ts).toBe(native);
     });
   }
 
-  test('known-answer: out-degree over all types', () => {
+  test('known-answer: out-degree over all types', async () => {
     // marko(1)=3, vadas(2)=0, josh(4)=2, lop(3)=0, ripple(5)=0, peter(6)=1.
-    expect(nativeGraph.degree({ direction: 'out' })).toEqual([
+    expect(await nativeGraph.degree({ direction: 'out' })).toEqual([
       { node: '1', degree: 3 },
       { node: '2', degree: 0 },
       { node: '4', degree: 2 },
@@ -105,11 +105,11 @@ suite('graph-algorithm differential: degree (TS core vs native)', () => {
     ]);
   });
 
-  test('writeProperty round-trips identically through GQL on both engines', () => {
+  test('writeProperty round-trips identically through GQL on both engines', async () => {
     const config = { direction: 'both', writeProperty: 'deg' } as const;
     // Mutate both graphs.
-    degree(config, tsGraph);
-    nativeGraph.degree(config);
+    await degree(config, tsGraph);
+    await nativeGraph.degree(config);
 
     // Read the written property back through BOTH GQL engines: identical output
     // proves the two graphs were mutated identically by their respective `degree`.
@@ -118,7 +118,7 @@ suite('graph-algorithm differential: degree (TS core vs native)', () => {
     const nativeRows = JSON.stringify(nativeGraph.query(readBack));
     expect(tsRows).toBe(nativeRows);
     // lop(3) has in-degree 3 (marko, josh, peter), out 0 → both = 3.
-    expect(nativeGraph.degree({ direction: 'both' })[3]).toEqual({ node: '3', degree: 3 });
+    expect((await nativeGraph.degree({ direction: 'both' }))[3]).toEqual({ node: '3', degree: 3 });
     expect(nativeRows).toContain('"deg":3');
   });
 });
@@ -144,16 +144,16 @@ suite('graph-algorithm differential: connectedComponents (TS core vs native)', (
   const tsGraph = tsDeserialize(TWO_COMPONENT_NDJSON, 'ndjson', new Graph());
 
   for (const config of [{} as const, { edgeLabel: 'E' } as const, { edgeLabel: 'NOPE' } as const]) {
-    test(`connectedComponents ${JSON.stringify(config)} — byte-identical`, () => {
-      expect(JSON.stringify(connectedComponents(config, tsGraph))).toBe(
-        JSON.stringify(nativeGraph.connectedComponents(config)),
+    test(`connectedComponents ${JSON.stringify(config)} — byte-identical`, async () => {
+      expect(JSON.stringify(await connectedComponents(config, tsGraph))).toBe(
+        JSON.stringify(await nativeGraph.connectedComponents(config)),
       );
     });
   }
 
-  test('known-answer: roots are first-inserted member (a, e), f isolated', () => {
+  test('known-answer: roots are first-inserted member (a, e), f isolated', async () => {
     // Insertion order a,b,c,e,d,f → {a,b,c} root "a"; {e,d} root "e"; {f} root "f".
-    expect(nativeGraph.connectedComponents({})).toEqual([
+    expect(await nativeGraph.connectedComponents({})).toEqual([
       { node: 'a', componentId: 'a' },
       { node: 'b', componentId: 'a' },
       { node: 'c', componentId: 'a' },
@@ -163,10 +163,10 @@ suite('graph-algorithm differential: connectedComponents (TS core vs native)', (
     ]);
   });
 
-  test('writeProperty round-trips identically through GQL on both engines', () => {
+  test('writeProperty round-trips identically through GQL on both engines', async () => {
     const config = { writeProperty: 'comp' } as const;
-    connectedComponents(config, tsGraph);
-    nativeGraph.connectedComponents(config);
+    await connectedComponents(config, tsGraph);
+    await nativeGraph.connectedComponents(config);
 
     const readBack = 'MATCH (n) RETURN n.comp AS comp ORDER BY n.comp, n.comp';
     expect(JSON.stringify(tsQuery(tsGraph, readBack))).toBe(
@@ -209,17 +209,17 @@ suite('graph-algorithm differential: labelPropagation (TS core vs native)', () =
     { edgeLabel: 'E' } as const,
     { edgeLabel: 'NOPE' } as const, // unknown type → labels stay = own id
   ]) {
-    test(`labelPropagation ${JSON.stringify(config)} — byte-identical`, () => {
-      expect(JSON.stringify(labelPropagation(config, tsGraph))).toBe(
-        JSON.stringify(nativeGraph.labelPropagation(config)),
+    test(`labelPropagation ${JSON.stringify(config)} — byte-identical`, async () => {
+      expect(JSON.stringify(await labelPropagation(config, tsGraph))).toBe(
+        JSON.stringify(await nativeGraph.labelPropagation(config)),
       );
     });
   }
 
-  test('writeProperty round-trips identically through GQL on both engines', () => {
+  test('writeProperty round-trips identically through GQL on both engines', async () => {
     const config = { writeProperty: 'lbl' } as const;
-    labelPropagation(config, tsGraph);
-    nativeGraph.labelPropagation(config);
+    await labelPropagation(config, tsGraph);
+    await nativeGraph.labelPropagation(config);
 
     const readBack = 'MATCH (n) RETURN n.lbl AS lbl ORDER BY n.lbl, n.lbl';
     expect(JSON.stringify(tsQuery(tsGraph, readBack))).toBe(
@@ -265,17 +265,17 @@ suite('graph-algorithm differential: pagerank (TS core vs native, f64)', () => {
     { edgeLabel: 'T2' } as const,
     { edgeLabel: 'NOPE' } as const, // no edges → uniform 1/N
   ]) {
-    test(`pagerank ${JSON.stringify(config)} — f64 byte-identical`, () => {
-      expect(JSON.stringify(pagerank(config, tsGraph))).toBe(
-        JSON.stringify(nativeGraph.pagerank(config)),
+    test(`pagerank ${JSON.stringify(config)} — f64 byte-identical`, async () => {
+      expect(JSON.stringify(await pagerank(config, tsGraph))).toBe(
+        JSON.stringify(await nativeGraph.pagerank(config)),
       );
     });
   }
 
-  test('writeProperty round-trips identically through GQL on both engines', () => {
+  test('writeProperty round-trips identically through GQL on both engines', async () => {
     const config = { writeProperty: 'pr' } as const;
-    pagerank(config, tsGraph);
-    nativeGraph.pagerank(config);
+    await pagerank(config, tsGraph);
+    await nativeGraph.pagerank(config);
 
     const readBack = 'MATCH (n) RETURN n.pr AS pr ORDER BY n.pr DESC, n.pr';
     expect(JSON.stringify(tsQuery(tsGraph, readBack))).toBe(
@@ -331,16 +331,16 @@ suite('graph-algorithm differential: shortestPath (TS core vs native)', () => {
     // bmssp is an exact same-result backend — currently resolves to Dijkstra.
     { source: 'a', weightProperty: 'w', algorithm: 'bmssp' } as const,
   ]) {
-    test(`shortestPath ${JSON.stringify(config)} — byte-identical`, () => {
-      expect(JSON.stringify(shortestPath(config, tsGraph))).toBe(
-        JSON.stringify(nativeGraph.shortestPath(config)),
+    test(`shortestPath ${JSON.stringify(config)} — byte-identical`, async () => {
+      expect(JSON.stringify(await shortestPath(config, tsGraph))).toBe(
+        JSON.stringify(await nativeGraph.shortestPath(config)),
       );
     });
   }
 
-  test('bmssp backend yields Dijkstra-identical distances', () => {
-    const dijkstra = nativeGraph.shortestPath({ source: 'a', weightProperty: 'w' });
-    const bmssp = nativeGraph.shortestPath({
+  test('bmssp backend yields Dijkstra-identical distances', async () => {
+    const dijkstra = await nativeGraph.shortestPath({ source: 'a', weightProperty: 'w' });
+    const bmssp = await nativeGraph.shortestPath({
       source: 'a',
       weightProperty: 'w',
       algorithm: 'bmssp',
@@ -349,18 +349,18 @@ suite('graph-algorithm differential: shortestPath (TS core vs native)', () => {
     expect(JSON.stringify(bmssp)).toBe(JSON.stringify(dijkstra));
   });
 
-  test('A* target distance equals Dijkstra (with and without a heuristic)', () => {
-    const dijkstra = nativeGraph.shortestPath({ source: 'a', weightProperty: 'w' });
+  test('A* target distance equals Dijkstra (with and without a heuristic)', async () => {
+    const dijkstra = await nativeGraph.shortestPath({ source: 'a', weightProperty: 'w' });
 
     for (const target of ['b', 'c', 'd', 'e']) {
       const dj = dijkstra.find((r) => r.node === target)?.distance;
-      const plain = nativeGraph.shortestPath({
+      const plain = await nativeGraph.shortestPath({
         source: 'a',
         target,
         weightProperty: 'w',
         algorithm: 'astar',
       });
-      const heur = nativeGraph.shortestPath({
+      const heur = await nativeGraph.shortestPath({
         source: 'a',
         target,
         weightProperty: 'w',
@@ -372,16 +372,16 @@ suite('graph-algorithm differential: shortestPath (TS core vs native)', () => {
     }
   });
 
-  test('known-answer: weighted diamond settles the direct 0.3, not 0.1+0.2', () => {
-    const d = nativeGraph.shortestPath({ source: 'a', weightProperty: 'w' });
+  test('known-answer: weighted diamond settles the direct 0.3, not 0.1+0.2', async () => {
+    const d = await nativeGraph.shortestPath({ source: 'a', weightProperty: 'w' });
     expect(d.find((r) => r.node === 'd')?.distance).toBe(0.3);
     expect(d.find((r) => r.node === 'e')?.distance).toBe(0.55);
   });
 
-  test('writeProperty round-trips identically through GQL on both engines', () => {
+  test('writeProperty round-trips identically through GQL on both engines', async () => {
     const config = { source: 'a', weightProperty: 'w', writeProperty: 'sp' } as const;
-    shortestPath(config, tsGraph);
-    nativeGraph.shortestPath(config);
+    await shortestPath(config, tsGraph);
+    await nativeGraph.shortestPath(config);
 
     const readBack = 'MATCH (n) RETURN n.sp AS sp ORDER BY n.sp, n.sp';
     expect(JSON.stringify(tsQuery(tsGraph, readBack))).toBe(

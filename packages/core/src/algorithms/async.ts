@@ -3,22 +3,18 @@ import type { AlgorithmConfig } from './types.js';
 
 /**
  * A graph algorithm expressed as a generator: it `yield`s at safe checkpoints
- * (e.g. between iterations) and finally `return`s its rows. Driving it synchronously
- * reproduces the plain function exactly; driving it with a yield between checkpoints
- * keeps the event loop responsive. One body → both surfaces, so they can't drift.
+ * (between iterations, or every {@link YIELD_EVERY} items of a single pass) and
+ * finally `return`s its rows. The public functions drive it with a macrotask
+ * between checkpoints, so a long computation never blocks the event loop.
  */
 export type AlgorithmGen<Row> = Generator<void, Row[], void>;
 
-/** Run a generator to completion synchronously — the sync algorithm surface. */
-export const drainSync = <Row>(gen: AlgorithmGen<Row>): Row[] => {
-  let step = gen.next();
-
-  while (!step.done) {
-    step = gen.next();
-  }
-
-  return step.value;
-};
+/**
+ * Items (vertices / edges / frontier pops) a single-pass algorithm processes
+ * between checkpoints. Large enough that the per-checkpoint macrotask overhead is
+ * negligible, small enough that a chunk stays well under a frame.
+ */
+export const YIELD_EVERY = 16_384;
 
 /**
  * Yield control to the host event loop once, so pending I/O / timers / rendering
@@ -31,12 +27,11 @@ const yieldToEventLoop = (): Promise<void> =>
   });
 
 /**
- * Run a generator to completion, awaiting a macrotask at each checkpoint so the
- * process (or browser UI) stays responsive during a long computation. The result
- * is byte-identical to {@link drainSync} — the checkpoints only interleave the same
- * work with the event loop; they do not change it.
+ * Run a generator to completion, awaiting a macrotask at each checkpoint. The
+ * result is exactly what the body computes — the checkpoints only interleave the
+ * same work with the event loop; they never change it.
  */
-export const drainAsync = async <Row>(gen: AlgorithmGen<Row>): Promise<Row[]> => {
+export const drain = async <Row>(gen: AlgorithmGen<Row>): Promise<Row[]> => {
   let step = gen.next();
 
   while (!step.done) {
@@ -48,11 +43,23 @@ export const drainAsync = async <Row>(gen: AlgorithmGen<Row>): Promise<Row[]> =>
 };
 
 /**
- * Build the data-last, dual-form async variant of an algorithm from its generator
- * factory — callable as `algoAsync(config, graph)` or `algoAsync(config)(graph)`,
- * matching the sync surface. Resolves to the same rows the sync function returns.
+ * Build a data-last, dual-form algorithm from its generator factory — callable as
+ * `algo(config, graph)` or `algo(config)(graph)`, always resolving to `Promise<Row[]>`.
  */
-export const asyncAlgorithm =
-  <Row>(gen: (config: AlgorithmConfig, graph: Graph) => AlgorithmGen<Row>) =>
-  (config: AlgorithmConfig, graph?: Graph): Promise<Row[]> | ((graph: Graph) => Promise<Row[]>) =>
-    graph ? drainAsync(gen(config, graph)) : (g: Graph) => drainAsync(gen(config, g));
+export function defineAlgorithm<Row>(
+  gen: (config: AlgorithmConfig, graph: Graph) => AlgorithmGen<Row>,
+): {
+  (config: AlgorithmConfig): (graph: Graph) => Promise<Row[]>;
+  (config: AlgorithmConfig, graph: Graph): Promise<Row[]>;
+} {
+  function algorithm(config: AlgorithmConfig): (graph: Graph) => Promise<Row[]>;
+  function algorithm(config: AlgorithmConfig, graph: Graph): Promise<Row[]>;
+  function algorithm(
+    config: AlgorithmConfig,
+    graph?: Graph,
+  ): Promise<Row[]> | ((graph: Graph) => Promise<Row[]>) {
+    return graph ? drain(gen(config, graph)) : (g: Graph) => drain(gen(config, g));
+  }
+
+  return algorithm;
+}

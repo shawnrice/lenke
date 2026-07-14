@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '../core/Graph.js';
-import { pagerank, pagerankAsync } from './pagerank.js';
+import { pagerank } from './pagerank.js';
 
 const line = (edges: [string, string][], nodes = ['1', '2', '3']): Graph => {
   const g = new Graph();
@@ -21,7 +21,7 @@ const map = (rows: { node: string; score: number }[]): Record<string, number> =>
   Object.fromEntries(rows.map((r) => [r.node, r.score]));
 
 describe('pagerank', () => {
-  test('symmetric 2-cycle → exactly [0.5, 0.5]', () => {
+  test('symmetric 2-cycle → exactly [0.5, 0.5]', async () => {
     const g = line(
       [
         ['1', '2'],
@@ -29,37 +29,37 @@ describe('pagerank', () => {
       ],
       ['1', '2'],
     );
-    expect(map(pagerank({}, g))).toEqual({ 1: 0.5, 2: 0.5 });
+    expect(map(await pagerank({}, g))).toEqual({ 1: 0.5, 2: 0.5 });
   });
 
-  test('mass is conserved (scores sum to 1) even with dangling sinks', () => {
+  test('mass is conserved (scores sum to 1) even with dangling sinks', async () => {
     // 1→2→3, 3 is a dangling sink.
     const g = line([
       ['1', '2'],
       ['2', '3'],
     ]);
-    const total = pagerank({}, g).reduce((s, r) => s + r.score, 0);
+    const total = (await pagerank({}, g)).reduce((s, r) => s + r.score, 0);
     expect(Math.abs(total - 1)).toBeLessThan(1e-9);
   });
 
-  test('a sink outranks a source', () => {
+  test('a sink outranks a source', async () => {
     const g = line([
       ['1', '2'],
       ['2', '3'],
     ]);
-    const s = map(pagerank({}, g));
+    const s = map(await pagerank({}, g));
     expect(s['3']).toBeGreaterThan(s['1']);
   });
 
-  test('unknown edge type → uniform 1/N', () => {
+  test('unknown edge type → uniform 1/N', async () => {
     const g = line([['1', '2']]);
-    const s = map(pagerank({ edgeLabel: 'NOPE' }, g));
+    const s = map(await pagerank({ edgeLabel: 'NOPE' }, g));
     expect(s['1']).toBeCloseTo(1 / 3, 12);
     expect(s['2']).toBeCloseTo(1 / 3, 12);
     expect(s['3']).toBeCloseTo(1 / 3, 12);
   });
 
-  test('writeProperty writes each score back to the vertex', () => {
+  test('writeProperty writes each score back to the vertex', async () => {
     const g = line(
       [
         ['1', '2'],
@@ -67,44 +67,15 @@ describe('pagerank', () => {
       ],
       ['1', '2'],
     );
-    pagerank({ writeProperty: 'pr' }, g);
+    await pagerank({ writeProperty: 'pr' }, g);
     expect(g.getVertexById('1')?.getProperty<number>('pr')).toBe(0.5);
   });
 
-  test('dual-form: curried application equals direct', () => {
+  test('dual-form: curried application equals direct', async () => {
     const edges: [string, string][] = [
       ['1', '2'],
       ['2', '3'],
     ];
-    expect(pagerank({})(line(edges))).toEqual(pagerank({}, line(edges)));
-  });
-
-  test('pagerankAsync resolves to the exact sync result (byte-identical)', async () => {
-    const edges: [string, string][] = [
-      ['1', '2'],
-      ['2', '3'],
-      ['1', '3'],
-    ];
-    const g = line(edges);
-    const sync = pagerank({ writeProperty: 'pr' }, g);
-    const async = await pagerankAsync({ writeProperty: 'pr' }, line(edges));
-    expect(JSON.stringify(async)).toBe(JSON.stringify(sync));
-    // The written property matches too (async applies the same writes).
-    expect(g.getVertexById('3')?.getProperty<number>('pr')).toBe(async[2].score);
-  });
-
-  test('pagerankAsync does not block the event loop between iterations', async () => {
-    const g = line([
-      ['1', '2'],
-      ['2', '3'],
-    ]);
-    let ticked = false;
-    // A macrotask scheduled now must run before a 20-iteration async PageRank
-    // finishes — proving the loop yielded.
-    setTimeout(() => {
-      ticked = true;
-    }, 0);
-    await pagerankAsync({}, g);
-    expect(ticked).toBe(true);
+    expect(await pagerank({})(line(edges))).toEqual(await pagerank({}, line(edges)));
   });
 });

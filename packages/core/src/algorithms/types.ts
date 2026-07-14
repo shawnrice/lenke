@@ -41,9 +41,10 @@ export type AlgorithmRow<K extends string, V> = { node: string } & Record<K, V>;
  * Data-last, dual-form graph algorithm — call it directly `algo(config, graph)`
  * or curried `algo(config)(graph)` (the latter composes under `pipe`). Matches
  * the `@lenke/fp` convention: passing the graph applies it, omitting it returns
- * the partially-applied function awaiting a graph.
+ * the partially-applied function awaiting a graph. Always resolves a `Promise`, so
+ * a long run never blocks the event loop.
  */
 export type GraphAlgorithm<Row> = {
-  (config: AlgorithmConfig): (graph: Graph) => Row[];
-  (config: AlgorithmConfig, graph: Graph): Row[];
+  (config: AlgorithmConfig): (graph: Graph) => Promise<Row[]>;
+  (config: AlgorithmConfig, graph: Graph): Promise<Row[]>;
 };

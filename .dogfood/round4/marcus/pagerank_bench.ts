@@ -14,9 +14,9 @@ const M = Number(process.env.M ?? 10);
 const ITERS = Number(process.env.PR_ITERS ?? 20);
 const d = 0.85;
 
-const time = <T>(label: string, fn: () => T): T => {
+const time = async <T>(label: string, fn: () => T | Promise<T>): Promise<T> => {
   const t0 = performance.now();
-  const r = fn();
+  const r = await fn();
   console.log(`  [${(performance.now() - t0).toFixed(0).padStart(7)} ms] ${label}`);
   return r;
 };
@@ -29,7 +29,7 @@ console.log(`graph: ${g.vertexCount} vertices, ${g.edgeCount} edges; PageRank ${
 // --- old approach: GQL fixpoint loop (needs outdeg materialized first) ---
 g.query`MATCH (n:V) SET n.outdeg = COUNT { (n)-[:LINK]->() }`;
 g.query`MATCH (n:V) SET n.pr = ${1 / N}`;
-time(`GQL fixpoint loop (${ITERS} iters, WITH-agg + SET per iter)`, () => {
+await time(`GQL fixpoint loop (${ITERS} iters, WITH-agg + SET per iter)`, () => {
   for (let it = 0; it < ITERS; it++) {
     const dm = g.query`MATCH (n:V) WHERE n.outdeg = 0 RETURN sum(n.pr) AS m` as { m: number }[];
     const base = (1 - d) / N + (d * ((dm[0]?.m ?? 0) || 0)) / N;
@@ -41,7 +41,7 @@ time(`GQL fixpoint loop (${ITERS} iters, WITH-agg + SET per iter)`, () => {
 const gqlSum = (g.query`MATCH (n:V) RETURN sum(n.pr) AS s` as { s: number }[])[0]!.s;
 
 // --- new approach: one native call ---
-const rows = time('native g.pagerank({}) — whole computation in one call', () =>
+const rows = await time('native g.pagerank({}) — whole computation in one call', () =>
   g.pagerank({ iterations: ITERS }),
 );
 const nativeSum = rows.reduce((s, r) => s + r.score, 0);

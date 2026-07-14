@@ -1,60 +1,50 @@
-# Graph algorithms — running them without blocking the thread
+# Graph algorithms
 
-The algorithms (`degree`, `connectedComponents`, `labelPropagation`, `pagerank`,
-`shortestPath`) are CPU-bound whole-graph computations. On a large graph a single
-call can run for seconds, and a synchronous call **blocks the event loop** for that
-whole time — freezing a server's other request handling, or a browser/wasm UI. Pick
-the surface that matches where you're running.
+`degree`, `connectedComponents`, `labelPropagation`, `pagerank`, `shortestPath` —
+whole-graph computations over the public `Graph` surface, data-last and dual-form
+(`pagerank(config, graph)` or `pagerank(config)(graph)`), byte-identical to the
+native engine.
 
-## 1. Synchronous (default) — small graphs, offline scripts
+## They're async — and that's the whole point
+
+These are CPU-bound and can run for seconds on a large graph. A synchronous call
+would **block the event loop** for that whole time (freezing a server's other
+requests, or a browser/wasm UI). So there is exactly one form of each — an **async**
+function that resolves a `Promise` and never blocks the loop:
 
 ```ts
 import { pagerank } from '@lenke/core';
-const scores = pagerank({ iterations: 20 }, graph); // blocks until done
+
+const scores = await pagerank({ iterations: 20 }, graph);
 ```
 
-Fine when the graph is small or you're in a batch job where blocking is acceptable.
+No `sync` vs `async` split, no `Async` suffix. The pure-TS functions yield to the
+event loop at checkpoints (between iterations, or every ~16k vertices/edges of a
+single pass) so the process stays responsive; the result is exactly what the
+computation produces — the checkpoints only interleave the same work.
 
-## 2. Native, off-thread (Node) — the production path
+## Native (Node) runs off the JS thread
 
-The native `@lenke/node` backend runs the whole algorithm on a libuv threadpool
-thread (keeping the engine's internal parallelism) and resolves a `Promise`, so the
-event loop stays free. Every algorithm has an `Async` twin on the `RustGraph`:
+On the native `@lenke/node` backend the `RustGraph` methods have the same async
+shape, but the whole computation runs on a **libuv threadpool thread** (keeping the
+engine's rayon parallelism) — genuinely off the main thread, not just yielding:
 
 ```ts
 const g = graphFromNdjson(backend, bytes); // @lenke/native facade over @lenke/node
-const scores = await g.pagerankAsync({ iterations: 20, writeProperty: 'pr' });
+const scores = await g.pagerank({ iterations: 20, writeProperty: 'pr' });
 ```
 
-Result is byte-identical to `g.pagerank(...)`. **Single-flight:** while the promise is
-pending the graph is locked — any other call on it throws `E_INVALID_GRAPH_OP` until
-it settles (the off-thread read must not race a mutation), so `await` it before the
-next call. Not available on bun:ffi / wasm (no threadpool); there these fall back to a
-blocking call wrapped in a Promise — use option 3 or 4 instead.
+**Single-flight:** while the promise is pending the graph is locked — any other call
+on it throws `E_INVALID_GRAPH_OP` until it settles (the off-thread read must not race
+a mutation), so `await` it before the next call. On the bun:ffi / wasm backends
+(no threadpool) the method still resolves the same rows but the run blocks the
+thread during compute — prefer the `@lenke/core` functions there (they yield).
 
-## 3. Pure TS, cooperative-yield — in-process responsiveness (incl. browser)
+## Worker offload — parallelism for pure TS
 
-The pure-TS iterative algorithms have `Async` variants that yield to the event loop
-between iterations, so the process (or browser UI) stays responsive. Same bytes as the
-sync result — the checkpoints only interleave the work, they don't change it.
-
-```ts
-import { pagerankAsync, labelPropagationAsync } from '@lenke/core';
-const scores = await pagerankAsync({ iterations: 20 }, graph);
-```
-
-This does not use extra threads (JS is single-threaded), so it doesn't speed the
-computation up — it trades a little total time for a responsive loop. Available for
-`pagerankAsync` and `labelPropagationAsync` (the multi-second iterative ones); the
-single-pass algorithms don't have a natural checkpoint yet.
-
-## 4. Worker offload — true off-main-thread for pure TS
-
-For genuine parallelism in a pure-TS setting, run the algorithm in a worker. The graph
-object isn't structured-cloneable, so pass it as NDJSON. The reusable core is just
-"deserialize, run the named algorithm" — the worker wiring differs per runtime.
-
-**Worker entry (shared logic):**
+For true off-main-thread execution in a pure-TS setting, run the algorithm in a
+worker. The graph object isn't structured-cloneable, so pass it as NDJSON. The
+reusable core is just "deserialize, run the named algorithm":
 
 ```ts
 // algo-worker-core.ts
@@ -71,9 +61,13 @@ import { deserialize } from '@lenke/serialization';
 
 const ALGOS = { degree, connectedComponents, labelPropagation, pagerank, shortestPath };
 
-export function runAlgorithm(ndjson: string, name: keyof typeof ALGOS, config: AlgorithmConfig) {
+export async function runAlgorithm(
+  ndjson: string,
+  name: keyof typeof ALGOS,
+  config: AlgorithmConfig,
+) {
   const graph = deserialize(ndjson, 'ndjson', new Graph());
-  return ALGOS[name](config, graph);
+  return ALGOS[name](config, graph); // already a Promise
 }
 ```
 
@@ -83,8 +77,8 @@ export function runAlgorithm(ndjson: string, name: keyof typeof ALGOS, config: A
 // worker.ts
 import { parentPort } from 'node:worker_threads';
 import { runAlgorithm } from './algo-worker-core.js';
-parentPort!.on('message', ({ ndjson, name, config }) => {
-  parentPort!.postMessage(runAlgorithm(ndjson, name, config));
+parentPort!.on('message', async ({ ndjson, name, config }) => {
+  parentPort!.postMessage(await runAlgorithm(ndjson, name, config));
 });
 
 // main.ts
@@ -97,14 +91,13 @@ const rows = await new Promise((resolve) => {
 ```
 
 **Browser (`Web Worker`):** identical shape with `self.onmessage` /
-`self.postMessage` in the worker and `new Worker(url, { type: 'module' })` on the main
-thread. Cost: serializing the graph to NDJSON in and the rows out.
+`self.postMessage` in the worker and `new Worker(url, { type: 'module' })` on the
+main thread. Cost: serializing the graph to NDJSON in and the rows out.
 
 ## Which to use
 
-- **Node server, big graph:** option 2 (`g.pagerankAsync`) — real off-thread, fastest.
-- **Node/Bun server, pure-TS graph:** option 4 (worker) for parallelism, or option 3
-  to just stay responsive.
-- **Browser/wasm:** option 3 to keep the UI responsive, or option 4 (Web Worker) to
-  move the work off the render thread entirely.
-- **Small graph / script:** option 1.
+- **Node server, big graph:** the native `g.pagerank(...)` — real off-thread, fastest.
+- **Node/Bun server, pure-TS graph:** the `@lenke/core` functions (yield to stay
+  responsive), or a worker for parallelism.
+- **Browser/wasm:** the `@lenke/core` functions to keep the UI responsive, or a Web
+  Worker to move the work off the render thread entirely.

@@ -405,62 +405,28 @@ export type RustGraph = {
    */
   gremlin: (q: string | TemplateStringsArray, ...subs: unknown[]) => unknown[];
   /**
-   * Degree centrality — per-vertex count of incident edges, run natively over the
-   * whole graph in one call → `{ node, degree }` rows in insertion order. `config`
-   * selects the `direction` (`'out'` default / `'in'` / `'both'`) and an optional
-   * `edgeLabel` filter; a `writeProperty` config writes each degree back to that
-   * vertex property (readable from GQL/Gremlin over the same graph). Data-first
-   * (the graph is `this`); the data-last twin is `degree` in `@lenke/core`.
+   * The graph algorithms — each runs the whole computation natively and resolves a
+   * `Promise` of `{ node, … }` rows in insertion order. On the Node/napi backend
+   * the run happens **off the JS thread** (on the libuv threadpool, keeping the
+   * engine's internal parallelism), so the event loop stays free; while the promise
+   * is pending the graph is single-flight-locked (any other call on it throws until
+   * it settles — the off-thread read must not race a mutation). On the bun:ffi /
+   * wasm backends (no threadpool) they resolve the same rows but the run blocks;
+   * prefer the `@lenke/core` cooperative-yield functions there. A `writeProperty`
+   * config writes each result back to that vertex property.
+   *
+   * `degree`: `direction` (`'out'` default / `'in'` / `'both'`) + optional
+   * `edgeLabel`. `connectedComponents`: `componentId` = the component's first-inserted
+   * vertex id. `labelPropagation`: `iterations` (default 10). `pagerank`:
+   * `iterations` (default 20), `dampingFactor` (default 0.85), optional
+   * `weightProperty`. `shortestPath`: from `config.source`, unweighted BFS or (with
+   * `weightProperty`) Dijkstra. Each has a data-last twin in `@lenke/core`.
    */
-  degree: (config?: AlgorithmConfig) => DegreeRow[];
-  /**
-   * Weakly-connected components — union-find over the whole graph in one call →
-   * `{ node, componentId }` rows in insertion order, where `componentId` is the
-   * external id of the component's first-inserted vertex. `config` takes an
-   * optional `edgeLabel` filter and a `writeProperty`. Data-first (graph is
-   * `this`); the data-last twin is `connectedComponents` in `@lenke/core`.
-   */
-  connectedComponents: (config?: AlgorithmConfig) => ComponentRow[];
-  /**
-   * Synchronous label propagation (community detection) — every vertex starts
-   * labelled with its own external id and each of `config.iterations` rounds
-   * (default 10) adopts the most-frequent neighbour label (edges undirected),
-   * ties broken by the smallest label string. `config` also takes an optional
-   * `edgeLabel` filter and `writeProperty`. Data-first (graph is `this`); the
-   * data-last twin is `labelPropagation` in `@lenke/core`.
-   */
-  labelPropagation: (config?: AlgorithmConfig) => LabelRow[];
-  /**
-   * PageRank — the whole fixed-iteration computation runs natively in one call →
-   * `{ node, score }` rows in insertion order. `config` takes `iterations`
-   * (default 20), `dampingFactor` (default 0.85), an optional `weightProperty`,
-   * an `edgeLabel` filter, and a `writeProperty`. Data-first (graph is `this`);
-   * the data-last twin is `pagerank` in `@lenke/core`.
-   */
-  pagerank: (config?: AlgorithmConfig) => PageRankRow[];
-  /**
-   * Single-source shortest path — from `config.source` (an external id), following
-   * out-edges, run natively in one call → `{ node, distance }` rows for every
-   * reachable vertex (source at 0), in insertion order. Unweighted → BFS hop
-   * distance; set `weightProperty` for weighted Dijkstra. `config` also takes an
-   * `edgeLabel` filter and a `writeProperty`. Data-first (graph is `this`); the
-   * data-last twin is `shortestPath` in `@lenke/core`.
-   */
-  shortestPath: (config?: AlgorithmConfig) => ShortestPathRow[];
-  /**
-   * Non-blocking twins of the algorithm methods above: same rows, but the whole
-   * computation runs off the JS thread (on the Node/napi backend's threadpool,
-   * keeping the engine's internal parallelism) so the event loop stays free —
-   * `const rows = await g.pagerankAsync({ … })`. While the promise is pending the
-   * graph is single-flight-locked: any other call on it throws until it settles. On
-   * the bun:ffi / wasm backends (no threadpool) these resolve the same result but the
-   * run still blocks; use the `@lenke/core` cooperative-yield variants there instead.
-   */
-  degreeAsync: (config?: AlgorithmConfig) => Promise<DegreeRow[]>;
-  connectedComponentsAsync: (config?: AlgorithmConfig) => Promise<ComponentRow[]>;
-  labelPropagationAsync: (config?: AlgorithmConfig) => Promise<LabelRow[]>;
-  pagerankAsync: (config?: AlgorithmConfig) => Promise<PageRankRow[]>;
-  shortestPathAsync: (config?: AlgorithmConfig) => Promise<ShortestPathRow[]>;
+  degree: (config?: AlgorithmConfig) => Promise<DegreeRow[]>;
+  connectedComponents: (config?: AlgorithmConfig) => Promise<ComponentRow[]>;
+  labelPropagation: (config?: AlgorithmConfig) => Promise<LabelRow[]>;
+  pagerank: (config?: AlgorithmConfig) => Promise<PageRankRow[]>;
+  shortestPath: (config?: AlgorithmConfig) => Promise<ShortestPathRow[]>;
   /** Serialize the graph back to NDJSON bytes. */
   toNdjson: () => Uint8Array;
   /**
@@ -784,32 +750,12 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
     // property — object keys don't bind in scope.
     gremlin: (q, ...subs) =>
       parseJson(backend.gremlinJson(live(), gremlin(q, ...subs)), 'gremlin') as unknown[],
-    degree: (config) =>
-      decodeRows(backend.algo(live(), 'degree', config && JSON.stringify(config))) as DegreeRow[],
+    degree: (config) => runAlgoAsync('degree', config) as Promise<DegreeRow[]>,
     connectedComponents: (config) =>
-      decodeRows(
-        backend.algo(live(), 'connectedComponents', config && JSON.stringify(config)),
-      ) as ComponentRow[],
-    labelPropagation: (config) =>
-      decodeRows(
-        backend.algo(live(), 'labelPropagation', config && JSON.stringify(config)),
-      ) as LabelRow[],
-    pagerank: (config) =>
-      decodeRows(
-        backend.algo(live(), 'pagerank', config && JSON.stringify(config)),
-      ) as PageRankRow[],
-    shortestPath: (config) =>
-      decodeRows(
-        backend.algo(live(), 'shortestPath', config && JSON.stringify(config)),
-      ) as ShortestPathRow[],
-    degreeAsync: (config) => runAlgoAsync('degree', config) as Promise<DegreeRow[]>,
-    connectedComponentsAsync: (config) =>
       runAlgoAsync('connectedComponents', config) as Promise<ComponentRow[]>,
-    labelPropagationAsync: (config) =>
-      runAlgoAsync('labelPropagation', config) as Promise<LabelRow[]>,
-    pagerankAsync: (config) => runAlgoAsync('pagerank', config) as Promise<PageRankRow[]>,
-    shortestPathAsync: (config) =>
-      runAlgoAsync('shortestPath', config) as Promise<ShortestPathRow[]>,
+    labelPropagation: (config) => runAlgoAsync('labelPropagation', config) as Promise<LabelRow[]>,
+    pagerank: (config) => runAlgoAsync('pagerank', config) as Promise<PageRankRow[]>,
+    shortestPath: (config) => runAlgoAsync('shortestPath', config) as Promise<ShortestPathRow[]>,
     toNdjson: () => backend.encodeNdjson(live()),
     mergeNdjson: (bytes) => backend.mergeNdjson(live(), bytes),
     serialize: (format) => decoder.decode(backend.serialize(live(), format)),

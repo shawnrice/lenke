@@ -1,6 +1,6 @@
 import type { Edge } from '../core/Edge.js';
 import type { Graph } from '../core/Graph.js';
-import { type AlgorithmGen, asyncAlgorithm, drainSync } from './async.js';
+import { type AlgorithmGen, defineAlgorithm } from './async.js';
 import type { AlgorithmConfig, AlgorithmRow } from './types.js';
 
 /** A label-propagation result row: `{ node, label }`. */
@@ -152,37 +152,12 @@ const computeGen = function* (config: AlgorithmConfig, graph: Graph): AlgorithmG
 };
 
 /**
- * Synchronous label propagation (community detection) — each vertex starts
- * labelled with its own external id and each round adopts the most-frequent
- * neighbour label (edges undirected), ties broken by the smallest label string,
- * for a fixed `iterations` count (default 10), stopping early once a round changes
- * nothing. Deterministic and exact. Data-last dual-form: `labelPropagation(config,
- * graph)` or `labelPropagation(config)(graph)`.
+ * Label propagation (community detection) — each vertex starts labelled with its
+ * own external id and each round adopts the most-frequent neighbour label (edges
+ * undirected), ties broken by the smallest label string, for a fixed `iterations`
+ * count (default 10), stopping early once a round changes nothing. Deterministic and
+ * exact. Runs without blocking the event loop (it yields between rounds), resolving
+ * `Promise<LabelRow[]>`. Data-last dual-form: `labelPropagation(config, graph)` or
+ * `labelPropagation(config)(graph)`.
  */
-export function labelPropagation(config: AlgorithmConfig): (graph: Graph) => LabelRow[];
-export function labelPropagation(config: AlgorithmConfig, graph: Graph): LabelRow[];
-export function labelPropagation(
-  config: AlgorithmConfig,
-  graph?: Graph,
-): LabelRow[] | ((graph: Graph) => LabelRow[]) {
-  return graph
-    ? drainSync(computeGen(config, graph))
-    : (g: Graph) => drainSync(computeGen(config, g));
-}
-
-/**
- * Non-blocking {@link labelPropagation}: identical result, but it yields to the
- * event loop between rounds so a long run stays responsive in-process (server or
- * browser). `labelPropagationAsync(config, graph)` or
- * `labelPropagationAsync(config)(graph)` → `Promise<LabelRow[]>`.
- */
-export function labelPropagationAsync(
-  config: AlgorithmConfig,
-): (graph: Graph) => Promise<LabelRow[]>;
-export function labelPropagationAsync(config: AlgorithmConfig, graph: Graph): Promise<LabelRow[]>;
-export function labelPropagationAsync(
-  config: AlgorithmConfig,
-  graph?: Graph,
-): Promise<LabelRow[]> | ((graph: Graph) => Promise<LabelRow[]>) {
-  return asyncAlgorithm(computeGen)(config, graph);
-}
+export const labelPropagation = defineAlgorithm(computeGen);

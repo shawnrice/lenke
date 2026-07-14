@@ -28,8 +28,8 @@ const map = (rows: { node: string; componentId: string }[]): Record<string, stri
   Object.fromEntries(rows.map((r) => [r.node, r.componentId]));
 
 describe('weakly-connected components', () => {
-  test('roots are the min-index member of each component', () => {
-    expect(map(connectedComponents({}, twoComponents()))).toEqual({
+  test('roots are the min-index member of each component', async () => {
+    expect(map(await connectedComponents({}, twoComponents()))).toEqual({
       1: '1',
       2: '1',
       3: '1',
@@ -39,8 +39,8 @@ describe('weakly-connected components', () => {
     });
   });
 
-  test('rows are in insertion order', () => {
-    expect(connectedComponents({}, twoComponents()).map((r) => r.node)).toEqual([
+  test('rows are in insertion order', async () => {
+    expect((await connectedComponents({}, twoComponents())).map((r) => r.node)).toEqual([
       '1',
       '2',
       '3',
@@ -50,8 +50,8 @@ describe('weakly-connected components', () => {
     ]);
   });
 
-  test('unknown edge type → every vertex is its own component', () => {
-    expect(map(connectedComponents({ edgeLabel: 'NOPE' }, twoComponents()))).toEqual({
+  test('unknown edge type → every vertex is its own component', async () => {
+    expect(map(await connectedComponents({ edgeLabel: 'NOPE' }, twoComponents()))).toEqual({
       1: '1',
       2: '2',
       3: '3',
@@ -61,15 +61,17 @@ describe('weakly-connected components', () => {
     });
   });
 
-  test('writeProperty writes each componentId back to the vertex', () => {
+  test('writeProperty writes each componentId back to the vertex', async () => {
     const g = twoComponents();
-    connectedComponents({ writeProperty: 'comp' }, g);
+    await connectedComponents({ writeProperty: 'comp' }, g);
     expect(g.getVertexById('3')?.getProperty<string>('comp')).toBe('1');
     expect(g.getVertexById('5')?.getProperty<string>('comp')).toBe('4');
   });
 
-  test('dual-form: curried application equals direct', () => {
+  test('dual-form: curried application equals direct', async () => {
     const g = twoComponents();
-    expect(connectedComponents({})(g)).toEqual(connectedComponents({}, twoComponents()));
+    expect(await connectedComponents({})(g)).toEqual(
+      await connectedComponents({}, twoComponents()),
+    );
   });
 });

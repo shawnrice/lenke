@@ -1,5 +1,5 @@
 import type { Graph } from '../core/Graph.js';
-import { type AlgorithmGen, asyncAlgorithm, drainSync } from './async.js';
+import { type AlgorithmGen, defineAlgorithm } from './async.js';
 import type { AlgorithmConfig, AlgorithmRow } from './types.js';
 
 /** A PageRank result row: `{ node, score }`. */
@@ -143,31 +143,8 @@ const computeGen = function* (config: AlgorithmConfig, graph: Graph): AlgorithmG
  * d·dangling/N` for a fixed `iterations` (default 20), damping `dampingFactor`
  * (default 0.85), optionally weighted by `weightProperty` and filtered to
  * `edgeLabel`. Every f64 accumulation is taken in global edge-insertion order, so
- * scores are byte-identical to the native engine. Data-last dual-form:
- * `pagerank(config, graph)` or `pagerank(config)(graph)`.
+ * scores are byte-identical to the native engine. Runs without blocking the event
+ * loop (it yields between iterations), resolving `Promise<PageRankRow[]>`. Data-last
+ * dual-form: `pagerank(config, graph)` or `pagerank(config)(graph)`.
  */
-export function pagerank(config: AlgorithmConfig): (graph: Graph) => PageRankRow[];
-export function pagerank(config: AlgorithmConfig, graph: Graph): PageRankRow[];
-export function pagerank(
-  config: AlgorithmConfig,
-  graph?: Graph,
-): PageRankRow[] | ((graph: Graph) => PageRankRow[]) {
-  return graph
-    ? drainSync(computeGen(config, graph))
-    : (g: Graph) => drainSync(computeGen(config, g));
-}
-
-/**
- * Non-blocking {@link pagerank}: identical scores, but it yields to the event loop
- * between iterations so a long run stays responsive in-process (server or browser).
- * `pagerankAsync(config, graph)` or `pagerankAsync(config)(graph)` →
- * `Promise<PageRankRow[]>`.
- */
-export function pagerankAsync(config: AlgorithmConfig): (graph: Graph) => Promise<PageRankRow[]>;
-export function pagerankAsync(config: AlgorithmConfig, graph: Graph): Promise<PageRankRow[]>;
-export function pagerankAsync(
-  config: AlgorithmConfig,
-  graph?: Graph,
-): Promise<PageRankRow[]> | ((graph: Graph) => Promise<PageRankRow[]>) {
-  return asyncAlgorithm(computeGen)(config, graph);
-}
+export const pagerank = defineAlgorithm(computeGen);

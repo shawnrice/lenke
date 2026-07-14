@@ -174,14 +174,14 @@ test('createNodeBackend powers the @lenke/native facade + liveQuery', () => {
   assert.equal(after.length, 3);
 });
 
-test('async algorithms run off-thread: same result, non-blocking, single-flight', async () => {
+test('algorithms run off-thread: resolve rows, non-blocking, single-flight', async () => {
   const backend = createNodeBackend();
   const g = graphFromNdjson(backend, NDJSON);
 
-  // 1. The off-thread result is byte-identical to the synchronous one.
-  const sync = g.pagerank({});
-  const asyncRows = await g.pagerankAsync({});
-  assert.equal(JSON.stringify(asyncRows), JSON.stringify(sync));
+  // 1. Resolves the result rows (PageRank is a probability distribution ~ sums to 1).
+  const rows = await g.pagerank({});
+  const total = rows.reduce((s, r) => s + r.score, 0);
+  assert.ok(Math.abs(total - 1) < 1e-9, 'PageRank mass should sum to 1');
 
   // 2. It does not block the event loop — a macrotask scheduled now runs before a
   //    long off-thread run (many PageRank iterations) resolves. On a synchronous
@@ -190,18 +190,18 @@ test('async algorithms run off-thread: same result, non-blocking, single-flight'
   setTimeout(() => {
     ticked = true;
   }, 0);
-  await g.pagerankAsync({ iterations: 20_000 });
-  assert.ok(ticked, 'event loop should have ticked during the async run');
+  await g.pagerank({ iterations: 20_000 });
+  assert.ok(ticked, 'event loop should have ticked during the off-thread run');
 
   // 3. writeProperty writes are applied (on the main thread) before it resolves.
   //    (g is the @lenke/native facade — query() returns decoded rows, not bytes.)
-  await g.pagerankAsync({ writeProperty: 'pr' });
-  const rows = g.query('MATCH (n:Person {name: "marko"}) RETURN n.pr AS pr');
-  assert.equal(typeof rows[0].pr, 'number');
+  await g.pagerank({ writeProperty: 'pr' });
+  const back = g.query('MATCH (n:Person {name: "marko"}) RETURN n.pr AS pr');
+  assert.equal(typeof back[0].pr, 'number');
 
-  // 4. Single-flight: touching the graph while an async run is pending throws, and
-  //    the graph is usable again once it settles.
-  const pending = g.pagerankAsync({});
+  // 4. Single-flight: touching the graph while a run is pending throws, and the
+  //    graph is usable again once it settles.
+  const pending = g.pagerank({});
   assert.throws(
     () => g.query('MATCH (n) RETURN n'),
     (e) => hasErrorCode(e, ErrorCode.InvalidGraphOp),

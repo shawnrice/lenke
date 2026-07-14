@@ -43,20 +43,20 @@ const t0 = performance.now();
 const g = deserialize(lines.join('\n'), 'ndjson', new Graph());
 console.log(`built ${N} vertices, ~${N * E} edges in ${(performance.now() - t0).toFixed(0)} ms\n`);
 
-const time = (label: string, fn: () => unknown): void => {
+const time = async (label: string, fn: () => unknown): Promise<void> => {
   const t = performance.now();
-  const r = fn() as unknown[];
+  const r = (await fn()) as unknown[];
   console.log(
     `  [${(performance.now() - t).toFixed(0).padStart(7)} ms] ${label} (${r.length} rows)`,
   );
 };
 
-time('degree (out)', () => degree({ direction: 'out' }, g));
-time('connectedComponents', () => connectedComponents({}, g));
-time('labelPropagation (10 iters)', () => labelPropagation({}, g));
-time('pagerank (20 iters, unweighted)', () => pagerank({}, g));
-time('pagerank (20 iters, weighted)', () => pagerank({ weightProperty: 'w' }, g));
-time('shortestPath BFS (from p0)', () => shortestPath({ source: 'p0' }, g));
-time('shortestPath Dijkstra (from p0)', () =>
+await time('degree (out)', () => degree({ direction: 'out' }, g));
+await time('connectedComponents', () => connectedComponents({}, g));
+await time('labelPropagation (10 iters)', () => labelPropagation({}, g));
+await time('pagerank (20 iters, unweighted)', () => pagerank({}, g));
+await time('pagerank (20 iters, weighted)', () => pagerank({ weightProperty: 'w' }, g));
+await time('shortestPath BFS (from p0)', () => shortestPath({ source: 'p0' }, g));
+await time('shortestPath Dijkstra (from p0)', () =>
   shortestPath({ source: 'p0', weightProperty: 'w' }, g),
 );
