@@ -99,6 +99,32 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     expect(ts).toBe(`[{"name":"josh"},{"name":"marko"},{"name":"vadas"}]`);
   });
 
+  // --- var-length {1,2} count: native uses a degree-product fast path, TS
+  // enumerates trails. They must agree, including with parallel edges + self-loops
+  // (which the degree product would double-count without the correction). -------
+  test('var-length {1,2} count matches trail enumeration (TS vs native)', () => {
+    const VARLEN_NDJSON = [
+      '{"type":"node","id":"a","labels":["Person","VIP"],"properties":{}}',
+      '{"type":"node","id":"b","labels":["Person"],"properties":{}}',
+      '{"type":"node","id":"c","labels":["Person"],"properties":{}}',
+      '{"type":"edge","id":"e0","from":"a","to":"b","labels":["KNOWS"],"properties":{}}',
+      '{"type":"edge","id":"e1","from":"a","to":"b","labels":["KNOWS"],"properties":{}}',
+      '{"type":"edge","id":"e2","from":"b","to":"c","labels":["KNOWS"],"properties":{}}',
+      '{"type":"edge","id":"e3","from":"b","to":"b","labels":["KNOWS"],"properties":{}}',
+      '{"type":"edge","id":"e4","from":"a","to":"a","labels":["KNOWS"],"properties":{}}',
+      '{"type":"edge","id":"e5","from":"c","to":"a","labels":["KNOWS"],"properties":{}}',
+    ].join('\n');
+    const nat = graphFromFormat(backend, VARLEN_NDJSON, 'ndjson');
+    const ts = tsDeserialize(VARLEN_NDJSON, 'ndjson', new Graph());
+
+    for (const q of [
+      `MATCH (x)-[:KNOWS]->{1,2}(y) RETURN count(*) AS c`,
+      `MATCH (x:VIP)-[:KNOWS]->{1,2}(y) RETURN count(*) AS c`,
+    ]) {
+      expect(JSON.stringify(nat.query(q)), q).toBe(JSON.stringify(tsQuery(ts, q)));
+    }
+  });
+
   // --- FOR (ISO list unwind / UNWIND) ---------------------------------------
 
   test('FOR unwinds a literal list identically', () => {

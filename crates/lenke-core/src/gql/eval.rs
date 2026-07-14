@@ -5621,6 +5621,135 @@ fn try_count_two_hop(
     Some(rs)
 }
 
+/// Degree-product shortcut for a **var-length `{1,2}` count**:
+/// `MATCH (a:La?)-[:T]->{1,2}(b:Lb?) RETURN count(*)` — count length-1 + length-2
+/// trails without enumerating every trail (which is O(#trails), quadratic in
+/// degree). Directed `Out`, no edge variable / inline props / WHERE.
+///
+/// - Length-1 trails = matching single edges: `Σ_{a:La} out_T→Lb(a)`.
+/// - Length-2 trails `a→x→y` (edges distinct) = `Σ_x in_T←La(x) · out_T→Lb(x)`
+///   minus the self-loop double-count: a self-loop `e` at `x` is both an in- and
+///   out-edge, so the product counts the invalid `a→a→a` that reuses `e` for both
+///   hops (forbidden — a trail traverses each edge at most once). It's subtracted
+///   only when `x` matches both endpoints' labels (it is the `a` *and* the `b`).
+///
+/// Other quantifiers/directions fall through to the enumerating parallel count.
+fn try_count_varlen_1_2(
+    linear: &CLinear,
+    graph: &Graph,
+    plan: &CQuery,
+    params: &[Val],
+) -> Option<RowSet> {
+    let [CClause::Match {
+        optional: false,
+        patterns,
+        where_: None,
+        ..
+    }, CClause::Return(proj)] = linear.clauses.as_slice()
+    else {
+        return None;
+    };
+    let [path] = patterns.as_slice() else {
+        return None;
+    };
+    let [seg] = path.segments.as_slice() else {
+        return None;
+    };
+    // Exactly `count(*)` (mirrors try_count_star).
+    if proj.distinct
+        || !proj.order_by.is_empty()
+        || proj.skip.is_some()
+        || proj.limit.is_some()
+        || proj.out_len != 1
+        || proj.aggs.len() != 1
+        || proj.items.len() != 1
+        || !matches!(proj.items[0].expr, CExpr::AggRef(0))
+    {
+        return None;
+    }
+    let agg = &proj.aggs[0];
+    if !agg.star || agg.distinct || !matches!(agg.func, AggFn::Count) {
+        return None;
+    }
+    // The one relationship: `{1,2}`, directed Out, anonymous, no inline props/WHERE.
+    let rel = &seg.rel;
+    if rel.var_slot.is_some()
+        || !rel.props.is_empty()
+        || rel.where_.is_some()
+        || rel.direction != Direction::Out
+    {
+        return None;
+    }
+    match rel.quantifier {
+        Some(q) if q.min == 1 && q.max == Some(2) => {}
+        _ => return None,
+    }
+    // Start / endpoint: no inline props/WHERE (labels are fine, applied below).
+    if !path.start.props.is_empty()
+        || path.start.where_.is_some()
+        || !seg.node.props.is_empty()
+        || seg.node.where_.is_some()
+    {
+        return None;
+    }
+
+    let ctx = resolve_ctx(graph, plan, params);
+    let tset = rel_type_set(&ctx, rel.label.as_ref())?;
+    let la = path.start.label.as_ref(); // the `a` end
+    let lb = seg.node.label.as_ref(); // the `b` end
+    let out_to_lb = |x: u32| -> u64 {
+        graph
+            .out_adj(x)
+            .filter(|a| etype_ok(&tset, a.etype) && matches_label(graph, &ctx, a.nbr, lb))
+            .count() as u64
+    };
+    let in_from_la = |x: u32| -> u64 {
+        graph
+            .in_adj(x)
+            .filter(|a| etype_ok(&tset, a.etype) && matches_label(graph, &ctx, a.nbr, la))
+            .count() as u64
+    };
+    let self_loops = |x: u32| -> u64 {
+        graph
+            .out_adj(x)
+            .filter(|a| etype_ok(&tset, a.etype) && a.nbr == x)
+            .count() as u64
+    };
+    // Per middle-vertex `x`: (length-1 from x as `a`, length-2 through x, self-loop
+    // correction). Every live vertex is a candidate middle (the intermediate is
+    // unconstrained); `a`/`b` labels gate the length-1 and correction terms.
+    let contribution = |x: u32| -> (u64, u64, u64) {
+        let out_lb = out_to_lb(x);
+        let l2 = in_from_la(x) * out_lb;
+        let mut l1 = 0;
+        let mut corr = 0;
+        if matches_label(graph, &ctx, x, la) {
+            l1 = out_lb; // `x` is a valid start `a`
+            if matches_label(graph, &ctx, x, lb) {
+                corr = self_loops(x); // invalid a→a→a reusing the self-loop
+            }
+        }
+        (l1, l2, corr)
+    };
+    let candidates: Vec<u32> = graph.vertex_indices().collect();
+    let add = |a: (u64, u64, u64), b: (u64, u64, u64)| (a.0 + b.0, a.1 + b.1, a.2 + b.2);
+    #[cfg(feature = "parallel-query")]
+    let (l1, l2, corr) = candidates
+        .par_iter()
+        .map(|&x| contribution(x))
+        .reduce(|| (0, 0, 0), add);
+    #[cfg(not(feature = "parallel-query"))]
+    let (l1, l2, corr) = candidates
+        .iter()
+        .map(|&x| contribution(x))
+        .fold((0, 0, 0), add);
+    let count = l1 + l2 - corr;
+
+    let mut rs = RowSet::new(proj.out_names.clone());
+    rs.push_row(std::iter::once(Value::Num(count as f64)));
+    Some(rs)
+}
+
 /// Intra-query parallel count for `MATCH <path with ≥1 segment> [WHERE …] RETURN
 /// count(*)` — the read-only traversal count that stays scalar (a pure aggregate
 /// over a traversal isn't vectorized, and `try_count_edges` only covers a single
@@ -7035,6 +7164,10 @@ fn run_part(
         }
         // Two-hop count via the degree product (O(E), no enumeration / threads).
         if let Some(rs) = try_count_two_hop(linear, graph, plan, params) {
+            return Ok(rs);
+        }
+        // Var-length `{1,2}` count via degree products (O(V+E), no trail enumeration).
+        if let Some(rs) = try_count_varlen_1_2(linear, graph, plan, params) {
             return Ok(rs);
         }
     }

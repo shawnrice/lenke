@@ -71,6 +71,71 @@ fn count_star_alias() {
     assert_eq!(r, vec![vec![n(4.0)]]);
 }
 
+/// The var-length `{1,2}` count fast path (`try_count_varlen_1_2`, degree products)
+/// must equal a brute-force trail enumeration, including the tricky cases: parallel
+/// edges (two `a→b`), self-loops (`a→a`, `b→b`, which the degree product would
+/// double-count as an invalid edge-reusing `a→a→a` without the correction), and a
+/// selective start label. `a=0, b=1, c=2` by insertion order.
+#[test]
+fn varlen_1_2_count_matches_trail_enumeration() {
+    let lines = [
+        r#"{"type":"node","id":"a","labels":["Person","VIP"],"properties":{}}"#,
+        r#"{"type":"node","id":"b","labels":["Person"],"properties":{}}"#,
+        r#"{"type":"node","id":"c","labels":["Person"],"properties":{}}"#,
+        r#"{"type":"edge","from":"a","to":"b","labels":["KNOWS"],"properties":{}}"#,
+        r#"{"type":"edge","from":"a","to":"b","labels":["KNOWS"],"properties":{}}"#,
+        r#"{"type":"edge","from":"b","to":"c","labels":["KNOWS"],"properties":{}}"#,
+        r#"{"type":"edge","from":"b","to":"b","labels":["KNOWS"],"properties":{}}"#,
+        r#"{"type":"edge","from":"a","to":"a","labels":["KNOWS"],"properties":{}}"#,
+        r#"{"type":"edge","from":"c","to":"a","labels":["KNOWS"],"properties":{}}"#,
+    ];
+    let mut g = ndjson::decode(&lines.join("\n")).unwrap();
+    // The authored edge list (src, dst), by vertex index.
+    let edges: [(u32, u32); 6] = [(0, 1), (0, 1), (1, 2), (1, 1), (0, 0), (2, 0)];
+
+    // Brute force: length-1 trails = edges with a matching source; length-2 trails
+    // = ordered edge pairs (e_i ending at m, e_j starting at m) with i != j (each
+    // edge used at most once — trail semantics).
+    let brute = |src_ok: &dyn Fn(u32) -> bool| -> u64 {
+        let mut c = edges.iter().filter(|(s, _)| src_ok(*s)).count() as u64;
+        for (i, &(s, m)) in edges.iter().enumerate() {
+            if !src_ok(s) {
+                continue;
+            }
+            for (j, &(s2, _)) in edges.iter().enumerate() {
+                if i != j && s2 == m {
+                    c += 1;
+                }
+            }
+        }
+        c
+    };
+    let count_of = |g: &mut Graph, query: &str| -> u64 {
+        match q(g, query).1[0][0] {
+            Value::Num(v) => v as u64,
+            ref other => panic!("expected numeric count, got {other:?}"),
+        }
+    };
+
+    // La = none (every vertex is a valid start).
+    assert_eq!(
+        count_of(&mut g, "MATCH (x)-[:KNOWS]->{1,2}(y) RETURN count(*) AS c"),
+        brute(&|_| true),
+    );
+    // La = VIP (only `a`) — exercises the src-label filter on the length-1 and
+    // in-side terms and the self-loop correction gating.
+    assert_eq!(
+        count_of(
+            &mut g,
+            "MATCH (x:VIP)-[:KNOWS]->{1,2}(y) RETURN count(*) AS c"
+        ),
+        brute(&|v| v == 0),
+    );
+    // Independent hand-computed anchors.
+    assert_eq!(brute(&|_| true), 17);
+    assert_eq!(brute(&|v| v == 0), 9);
+}
+
 /// A numeric `score` present on some nodes, absent on others — so the column
 /// carries NaN for the absent ones. Exercises the absent→NaN columnar path that
 /// the vectorized aggregate executor now handles for plain `MATCH … WHERE …
