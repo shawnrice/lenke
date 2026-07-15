@@ -99,6 +99,28 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     expect(ts).toBe(`[{"name":"josh"},{"name":"marko"},{"name":"vadas"}]`);
   });
 
+  // --- ANY SHORTEST: the path value serializes byte-identically across engines.
+  test('RETURN p — a shortest Path is {vertices, edges, length}, byte-identical', () => {
+    const q = `MATCH p = ANY SHORTEST (a)-[]->*(b) WHERE a.name = 'marko' AND b.name = 'lop' RETURN p`;
+    const [ts, native] = both(q);
+    expect(ts).toBe(native);
+    expect(ts).toBe(
+      `[{"p":{"vertices":[` +
+        `{"id":"1","labels":["Person"],"properties":{"age":29,"name":"marko"}},` +
+        `{"id":"3","labels":["Software"],"properties":{"lang":"java","name":"lop"}}` +
+        `],"edges":[` +
+        `{"id":"9","from":"1","to":"3","labels":["CREATED"],"properties":{"since":2009,"weight":0.4}}` +
+        `],"length":1}}]`,
+    );
+  });
+
+  test('ANY SHORTEST endpoint set + per-endpoint path, identical under ORDER BY', () => {
+    const [ts, native] = both(
+      `MATCH p = ANY SHORTEST (a)-[]->*(b) WHERE a.name = 'marko' RETURN b.name AS n, p ORDER BY n`,
+    );
+    expect(ts).toBe(native);
+  });
+
   // --- var-length {1,2} count: native uses a degree-product fast path, TS
   // enumerates trails. They must agree, including with parallel edges + self-loops
   // (which the degree product would double-count without the correction). -------

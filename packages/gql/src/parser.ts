@@ -45,6 +45,7 @@ import type {
   MergeUpdate,
   NodePattern,
   PathPattern,
+  PathSelector,
   Projection,
   PropertyConstraint,
   RelPattern,
@@ -538,8 +539,62 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Statement => {
     return undefined;
   };
 
+  // An optional ISO path selector prefixing a pattern. Only `ANY SHORTEST` is
+  // supported today; the other ISO forms are rejected with a pointed message.
+  const parsePathSelector = (): PathSelector => {
+    const pos0 = peek().pos;
+
+    if (checkKeyword('any')) {
+      advance();
+
+      if (checkKeyword('shortest')) {
+        advance();
+
+        return 'anyShortest';
+      }
+
+      throw new GqlSyntaxError('expected SHORTEST after ANY (bare ANY is not yet supported)', pos0);
+    }
+
+    if (checkKeyword('all')) {
+      advance();
+
+      throw new GqlSyntaxError(
+        checkKeyword('shortest')
+          ? 'ALL SHORTEST is not yet supported'
+          : 'the bare ALL path selector is not yet supported',
+        pos0,
+      );
+    }
+
+    if (checkKeyword('shortest')) {
+      throw new GqlSyntaxError('SHORTEST must be written as `ANY SHORTEST`', pos0);
+    }
+
+    return 'walk';
+  };
+
   const parsePathPattern = (): PathPattern =>
     descend((): PathPattern => {
+      // Optional path variable `p = …`: at the start of a pattern an identifier
+      // followed by `=` can only be a path-variable binding (a node opens with `(`).
+      const selPos = peek().pos;
+      let pathVar: string | undefined;
+
+      if (check('ident') && tokens[pos + 1]?.type === 'eq') {
+        pathVar = advance().value;
+        advance(); // '='
+      }
+
+      const selector = parsePathSelector();
+
+      if (pathVar !== undefined && selector === 'walk') {
+        throw new GqlSyntaxError(
+          'a named path variable currently requires a path selector (e.g. `p = ANY SHORTEST …`)',
+          selPos,
+        );
+      }
+
       const start = parseNode();
       const segments: Segment[] = [];
 
@@ -550,7 +605,25 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Statement => {
         segments.push({ rel: quantifier ? { ...rel, quantifier } : rel, node });
       }
 
-      return { start, segments };
+      // A selector matches exactly one variable-length segment with a `*`/`+`
+      // (min ≤ 1) quantifier — the canonical shortest shape `(a)-[]->*(b)`.
+      if (selector !== 'walk') {
+        const q = segments.length === 1 ? segments[0].rel.quantifier : undefined;
+
+        if (!q || q.min > 1) {
+          throw new GqlSyntaxError(
+            'ANY SHORTEST currently supports a single variable-length segment with a `*` or `+` (min ≤ 1) quantifier, e.g. `(a)-[]->*(b)`',
+            selPos,
+          );
+        }
+      }
+
+      return {
+        start,
+        segments,
+        ...(pathVar !== undefined ? { pathVar } : {}),
+        selector,
+      };
     });
 
   const parseMatchClause = (): MatchClause => {

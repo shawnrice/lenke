@@ -1,0 +1,78 @@
+import { describe, expect, test } from 'bun:test';
+
+import { Graph, Path } from '@lenke/core';
+
+import { parseQuery, query } from './index.js';
+
+// The TinkerPop "modern" graph (same topology as the native GQL tests).
+const modern = (): Graph => {
+  const g = new Graph();
+  const v = (id: string, label: string, name: string) =>
+    g.addVertex({ id, labels: [label], properties: { name } });
+  const marko = v('marko', 'Person', 'marko');
+  const vadas = v('vadas', 'Person', 'vadas');
+  const josh = v('josh', 'Person', 'josh');
+  const peter = v('peter', 'Person', 'peter');
+  const lop = v('lop', 'Software', 'lop');
+  const ripple = v('ripple', 'Software', 'ripple');
+  g.addEdge({ from: marko, to: vadas, labels: ['KNOWS'], properties: {} });
+  g.addEdge({ from: marko, to: josh, labels: ['KNOWS'], properties: {} });
+  g.addEdge({ from: marko, to: lop, labels: ['CREATED'], properties: {} });
+  g.addEdge({ from: josh, to: ripple, labels: ['CREATED'], properties: {} });
+  g.addEdge({ from: josh, to: lop, labels: ['CREATED'], properties: {} });
+  g.addEdge({ from: peter, to: lop, labels: ['CREATED'], properties: {} });
+
+  return g;
+};
+
+const names = (rows: readonly Record<string, unknown>[]): string[] =>
+  rows.map((r) => r.n as string).sort();
+
+describe('ANY SHORTEST path patterns', () => {
+  test('reachable set from marko over ->* (min 0 includes marko itself)', () => {
+    const rows = query(
+      modern(),
+      "MATCH ANY SHORTEST (a)-[]->*(b) WHERE a.name = 'marko' RETURN b.name AS n",
+    );
+    expect(names(rows)).toEqual(['josh', 'lop', 'marko', 'ripple', 'vadas']);
+  });
+
+  test('binds a genuinely shortest path (1-hop marko->lop, not marko->josh->lop)', () => {
+    const rows = query(
+      modern(),
+      "MATCH p = ANY SHORTEST (a)-[]->*(b) WHERE a.name = 'marko' AND b.name = 'lop' RETURN p",
+    );
+    expect(rows).toHaveLength(1);
+    const p = rows[0].p as Path;
+    expect(p).toBeInstanceOf(Path);
+    expect(p.hops).toBe(1);
+    expect(p.vertices.map((x) => x.id)).toEqual(['marko', 'lop']);
+    expect(p.edges).toHaveLength(1);
+  });
+
+  test('-> + excludes the zero-length self path', () => {
+    const rows = query(
+      modern(),
+      "MATCH ANY SHORTEST (a)-[]->+(b) WHERE a.name = 'marko' RETURN b.name AS n",
+    );
+    expect(names(rows)).toEqual(['josh', 'lop', 'ripple', 'vadas']);
+  });
+
+  test('->{1,1} keeps only the direct out-neighbours', () => {
+    const rows = query(
+      modern(),
+      "MATCH ANY SHORTEST (a)-[]->{1,1}(b) WHERE a.name = 'marko' RETURN b.name AS n",
+    );
+    expect(names(rows)).toEqual(['josh', 'lop', 'vadas']);
+  });
+
+  test('unsupported selector shapes are rejected at parse time', () => {
+    expect(() => parseQuery('MATCH (a)-[]->*(b) RETURN b')).not.toThrow();
+    expect(() => parseQuery('MATCH ALL SHORTEST (a)-[]->*(b) RETURN b')).toThrow();
+    expect(() => parseQuery('MATCH SHORTEST (a)-[]->*(b) RETURN b')).toThrow();
+    expect(() => parseQuery('MATCH ANY (a)-[]->*(b) RETURN b')).toThrow();
+    expect(() => parseQuery('MATCH ANY SHORTEST (a)-[]->(b) RETURN b')).toThrow();
+    expect(() => parseQuery('MATCH ANY SHORTEST (a)-[]->{2,4}(b) RETURN b')).toThrow();
+    expect(() => parseQuery('MATCH p = (a)-[]->(b) RETURN p')).toThrow();
+  });
+});

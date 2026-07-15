@@ -94,6 +94,8 @@ const KEYWORDS = new Set([
   'not',
   'distinct',
   'all',
+  'any',
+  'shortest',
   'case',
   'when',
   'then',

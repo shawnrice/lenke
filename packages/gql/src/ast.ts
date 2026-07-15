@@ -169,7 +169,18 @@ export type ReturnClause = {
 export type PathPattern = {
   start: NodePattern;
   segments: readonly Segment[];
+  /** The whole path bound to this variable (`p = …`), or unnamed. */
+  pathVar?: string;
+  /** Which matching paths to keep; defaults to `walk` (every match). */
+  selector?: PathSelector;
 };
+
+/**
+ * How many of the paths matching a pattern to keep. `walk` (the ISO default, no
+ * selector) keeps every match; `anyShortest` (`ANY SHORTEST`) keeps one
+ * fewest-hop path per endpoint pair.
+ */
+export type PathSelector = 'walk' | 'anyShortest';
 
 /** One hop: traverse `rel`, land on `node`. */
 export type Segment = {

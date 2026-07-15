@@ -4,6 +4,7 @@ import {
   isTemporal,
   LocalDate,
   LocalDateTime,
+  Path,
   temporalArith,
   temporalCmpTotal,
   temporalParse,
@@ -22,6 +23,7 @@ import type {
   LinearQuery,
   NodePattern,
   PathPattern,
+  PathSelector,
   Projection,
   PropertyConstraint,
   Query,
@@ -107,7 +109,7 @@ export type Plan<R extends Row = Row> = (graph: Graph, params?: Params) => R[];
 
 // --- binding helpers ---------------------------------------------------------
 
-const withBinding = (binding: Binding, name: string | undefined, value: Bound): Binding => {
+const withBinding = (binding: Binding, name: string | undefined, value: Bound | Path): Binding => {
   if (!name) {
     return binding;
   }
@@ -1577,6 +1579,10 @@ const patternBoundVars = (p: PathPattern, into: Set<string>): void => {
     }
   };
 
+  if (p.pathVar !== undefined) {
+    into.add(p.pathVar);
+  }
+
   addNode(p.start);
 
   for (const seg of p.segments) {
@@ -2149,7 +2155,14 @@ type CRel = {
   quantifier?: RelPattern['quantifier'];
 };
 type CSegment = { rel: CRel; node: CNode };
-type CPath = { start: CNode; segments: readonly CSegment[] };
+type CPath = {
+  start: CNode;
+  segments: readonly CSegment[];
+  /** Whole path bound to this variable (`p = …`), or unnamed. */
+  pathVar?: string;
+  /** Which matching paths to keep; defaults to `walk`. */
+  selector: PathSelector;
+};
 
 const compileProps = (props: readonly PropertyConstraint[] | undefined): CProp[] =>
   (props ?? []).map(({ key, value }) => ({ key, value: compileExpr(value) }));
@@ -2361,6 +2374,8 @@ const compilePath = (pattern: PathPattern): CPath => ({
     rel: compileRel(rel),
     node: compileNode(node),
   })),
+  ...(pattern.pathVar !== undefined ? { pathVar: pattern.pathVar } : {}),
+  selector: pattern.selector ?? 'walk',
 });
 
 /**
@@ -2599,7 +2614,13 @@ const reversePath = (path: CPath): CPath => {
     });
   }
 
-  return { start: nodes[nodes.length - 1], segments };
+  // Reversing swaps the endpoints but not what the path binds to.
+  return {
+    start: nodes[nodes.length - 1],
+    segments,
+    ...(path.pathVar !== undefined ? { pathVar: path.pathVar } : {}),
+    selector: path.selector,
+  };
 };
 
 /**
@@ -2620,6 +2641,85 @@ const orient = (graph: Graph, pattern: CPath, binding: Binding, params: Params):
   return endEst < startEst ? reversePath(pattern) : pattern;
 };
 
+/**
+ * `ANY SHORTEST` over a single quantified segment `(start)-[rel q]->(end)`: from
+ * the already-matched `seed`, BFS out to one fewest-hop path per reachable
+ * endpoint (a vertex is discovered once, keeping its first/shortest predecessor),
+ * bind that {@link Path} to the path variable (if named), and yield.
+ *
+ * Determinism (so native == TS): endpoints are emitted in graph insertion order
+ * — the mirror of native's ascending dense-vertex-id order. `q.max` bounds the
+ * BFS depth; `q.min ≤ 1` is guaranteed by the parser.
+ */
+const shortestWalk = function* (
+  graph: Graph,
+  pattern: CPath,
+  seed: Vertex,
+  binding: Binding,
+  params: Params,
+): Iterable<Binding> {
+  const [{ rel, node: endNode }] = pattern.segments;
+  const { min, max } = rel.quantifier!;
+
+  // BFS: shortest hop distance + predecessor (vertex, edge) for each vertex.
+  const dist = new Map<string, number>([[seed.id, 0]]);
+  const pred = new Map<string, { prev: Vertex; edge: Edge }>();
+  // A live array iterator: vertices pushed during the walk are visited in turn,
+  // giving a FIFO breadth-first order.
+  const queue: Vertex[] = [seed];
+
+  for (const v of queue) {
+    const d = dist.get(v.id)!;
+
+    if (max !== null && d >= max) {
+      continue; // don't expand past the hop ceiling
+    }
+
+    for (const { edge, node: nbr } of expand(graph, v, rel)) {
+      if (!dist.has(nbr.id)) {
+        dist.set(nbr.id, d + 1);
+        pred.set(nbr.id, { prev: v, edge });
+        queue.push(nbr);
+      }
+    }
+  }
+
+  // Endpoints in insertion order (= native's dense-id order).
+  for (const end of graph.vertices) {
+    const d = dist.get(end.id);
+
+    if (d === undefined || d < min) {
+      continue;
+    }
+
+    const matched = matchNode(binding, endNode, end, params, graph);
+
+    if (!matched) {
+      continue;
+    }
+
+    if (pattern.pathVar === undefined) {
+      yield matched;
+
+      continue;
+    }
+
+    // Reconstruct the shortest path seed…end from the predecessor tree.
+    const steps: { edge: Edge; vertex: Vertex }[] = [];
+    let cur = end;
+
+    while (cur.id !== seed.id) {
+      const step = pred.get(cur.id)!;
+      steps.push({ edge: step.edge, vertex: cur });
+      cur = step.prev;
+    }
+
+    steps.reverse();
+
+    yield withBinding(matched, pattern.pathVar, Path.fromSteps(seed, steps));
+  }
+};
+
 /** Yield every binding that extends `binding` by matching `pattern`. */
 const matchPattern = function* (
   graph: Graph,
@@ -2627,6 +2727,24 @@ const matchPattern = function* (
   binding: Binding,
   params: Params,
 ): Iterable<Binding> {
+  // A path selector (`ANY SHORTEST`) is matched by its own BFS driver.
+  if (pattern.selector === 'anyShortest') {
+    const seeds: Iterable<Vertex> =
+      pattern.start.variable && binding.has(pattern.start.variable)
+        ? [binding.get(pattern.start.variable) as Vertex]
+        : seedVertices(graph, pattern.start, binding, params);
+
+    for (const seed of seeds) {
+      const seeded = matchNode(binding, pattern.start, seed, params, graph);
+
+      if (seeded) {
+        yield* shortestWalk(graph, pattern, seed, seeded, params);
+      }
+    }
+
+    return;
+  }
+
   // Seed from whichever end is more selective, then walk from there.
   const path = orient(graph, pattern, binding, params);
 
@@ -2794,6 +2912,10 @@ const patternVars = (patterns: readonly PathPattern[]): string[] => {
   const vars: string[] = [];
 
   for (const p of patterns) {
+    if (p.pathVar) {
+      vars.push(p.pathVar);
+    }
+
     if (p.start.variable) {
       vars.push(p.start.variable);
     }
@@ -2942,6 +3064,7 @@ const compileClause = (clause: Clause): CClause => {
 
         for (let i = 0; i < patterns.length; i++) {
           patterns[i] = {
+            ...patterns[i],
             start: attach(patterns[i].start),
             segments: patterns[i].segments.map((s) => ({ rel: s.rel, node: attach(s.node) })),
           };
@@ -3418,6 +3541,11 @@ const detectReachableShortcut = (
   }
 
   if (m.patterns[0].segments.length !== 1) {
+    return null;
+  }
+
+  // A path selector (`ANY SHORTEST`) is handled only by the general matcher.
+  if ((m.patterns[0].selector ?? 'walk') !== 'walk') {
     return null;
   }
 
