@@ -2710,13 +2710,23 @@ fn drive_matches(
         return false;
     }
     if !matched && *optional {
-        // OPTIONAL with no match: null-fill this clause's slots and continue.
+        // OPTIONAL with no match: null-fill this clause's slots and continue —
+        // then UNDO the fill, exactly as a successful match backtracks its
+        // bindings. Without this, the stale nulls leak into the NEXT outer
+        // binding, where `bind_slot` mistakes them for a join conflict and silently
+        // drops that row's real matches.
+        let mut filled = Vec::new();
         for s in pattern_slots(patterns) {
             if !binding.bound(s) {
                 binding.set(s, Val::Null);
+                filled.push(s);
             }
         }
-        return drive_matches(graph, ctx, matches, idx + 1, binding, sink);
+        let keep = drive_matches(graph, ctx, matches, idx + 1, binding, sink);
+        for s in filled {
+            binding.unset(s);
+        }
+        return keep;
     }
     true
 }

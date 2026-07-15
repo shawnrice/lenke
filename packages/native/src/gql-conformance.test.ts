@@ -146,6 +146,16 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     expect(tsN).toBe(natN);
   });
 
+  test('correlated OPTIONAL MATCH after MATCH (no barrier) is byte-identical', () => {
+    // Regression: the native OPTIONAL null-fill used to leak into the next start
+    // binding and drop real matches; must match TS for every start vertex.
+    const [ts, native] = both(
+      `MATCH (p:Person) OPTIONAL MATCH (p)-[:CREATED]->(w) ` +
+        `RETURN p.name AS pn, w.name AS wn ORDER BY pn, wn`,
+    );
+    expect(ts).toBe(native);
+  });
+
   test('inline subquery CALL (correlated lateral join) is byte-identical', () => {
     // Per-person created-count via a correlated subquery.
     const [tsC, natC] = both(

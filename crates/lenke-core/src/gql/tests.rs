@@ -4294,3 +4294,28 @@ fn decorrelate_non_agg_multi_start() {
         ]
     );
 }
+
+/// Regression: a non-optional MATCH immediately followed by a correlated OPTIONAL
+/// MATCH (no barrier between them) must find EVERY start vertex's matches. The
+/// OPTIONAL null-fill used to leak stale nulls into the next start binding, where
+/// `bind_slot` mistook them for a join conflict and dropped that row's real
+/// matches (only the first start — marko — survived).
+#[test]
+fn optional_match_after_match_no_barrier() {
+    let mut g = modern();
+    let r = rows(
+        &mut g,
+        "MATCH (p:Person) OPTIONAL MATCH (p)-[:CREATED]->(w) \
+         RETURN p.name AS pn, w.name AS wn ORDER BY pn, wn",
+    );
+    assert_eq!(
+        r,
+        vec![
+            vec![s("josh"), s("lop")],
+            vec![s("josh"), s("ripple")],
+            vec![s("marko"), s("lop")],
+            vec![s("peter"), s("lop")],
+            vec![s("vadas"), Value::Null], // creates nothing → kept with null
+        ]
+    );
+}
