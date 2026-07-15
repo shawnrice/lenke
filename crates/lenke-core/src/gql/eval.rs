@@ -767,6 +767,28 @@ fn value_to_val(v: &Value) -> Val {
     }
 }
 
+/// Set one field of a graph-algorithm config from a CALL config-map entry. The
+/// map keys are the algorithm's JSON config field names; unknown keys are ignored.
+fn apply_algo_config(cfg: &mut crate::algo::AlgoConfig, field: &str, v: &Val) {
+    let s = |v: &Val| match v {
+        Val::Str(s) => Some(s.to_string()),
+        _ => None,
+    };
+    match field {
+        "edgeLabel" => cfg.edge_label = s(v),
+        "direction" => cfg.direction = s(v),
+        "weightProperty" => cfg.weight_property = s(v),
+        "dampingFactor" => cfg.damping_factor = num_of(v),
+        "iterations" => cfg.iterations = num_of(v).map(|n| n as u32),
+        "source" => cfg.source = s(v),
+        "target" => cfg.target = s(v),
+        "writeProperty" => cfg.write_property = s(v),
+        "algorithm" => cfg.algorithm = s(v),
+        "heuristicProperty" => cfg.heuristic_property = s(v),
+        _ => {}
+    }
+}
+
 /// A store element's present properties as a sorted `Value::Map` — the shape a
 /// returned node/edge's `properties` field serializes to. Keys are sorted so the
 /// object is deterministic (the columnar store has no per-element key order).
@@ -7401,6 +7423,76 @@ fn run_linear(
                 }
                 bindings = out;
                 ctx.check_fault()?;
+            }
+            CClause::CallNamed {
+                optional,
+                proc_name,
+                algo,
+                config,
+                binds,
+                scope_len,
+            } => {
+                if !pending.is_empty() {
+                    bindings = materialize_matches(graph, &ctx, &bindings, &pending);
+                    pending.clear();
+                }
+                let Some(dispatch) = algo else {
+                    return Err(CodeError::new(
+                        ErrorCode::Unsupported,
+                        format!("unknown procedure: {proc_name}"),
+                    ));
+                };
+                // Build the algorithm config from the (constant) config exprs.
+                let cfg = {
+                    let scratch = Binding::default();
+                    let env = Env::new(graph, &ctx, &scratch);
+                    let mut cfg = crate::algo::AlgoConfig::default();
+                    for (field, expr) in config {
+                        apply_algo_config(&mut cfg, field, &eval(&env, expr));
+                    }
+                    cfg
+                };
+                let rowset = crate::algo::run_with(graph, dispatch, &cfg)
+                    .map_err(|e| CodeError::new(ErrorCode::InvalidValue, e))?;
+                // Resolve each YIELD bind to its source column index once.
+                let mut bind_cols: Vec<(usize, usize)> = Vec::with_capacity(binds.len());
+                for b in binds {
+                    let Some(ci) = rowset.cols.iter().position(|c| c == &b.column) else {
+                        return Err(CodeError::new(
+                            ErrorCode::InvalidValue,
+                            format!(
+                                "procedure `{proc_name}` has no output column `{}`",
+                                b.column
+                            ),
+                        ));
+                    };
+                    bind_cols.push((ci, b.slot));
+                }
+                // Cross-join incoming bindings with the procedure's rows (the call
+                // is uncorrelated); OPTIONAL keeps the outer row (null-filled) when
+                // the procedure yields nothing.
+                let mut out = Vec::new();
+                for inb in &bindings {
+                    let mut work = inb.clone();
+                    work.resize(*scope_len);
+                    if rowset.nrows == 0 && *optional {
+                        for (_, slot) in &bind_cols {
+                            work.set(*slot, Val::Null);
+                        }
+                        out.push(work);
+                        continue;
+                    }
+                    for row in rowset.rows() {
+                        let mut w = work.clone();
+                        for (ci, slot) in &bind_cols {
+                            w.set(*slot, value_to_val(&row[*ci]));
+                        }
+                        out.push(w);
+                    }
+                }
+                bindings = out;
+                ctx.check_fault()?;
+                ctx = resolve_ctx(graph, plan, params); // writeProperty may have mutated
             }
             CClause::Return(proj) => {
                 let rows = project_to_rows(graph, &ctx, &bindings, &pending, proj);

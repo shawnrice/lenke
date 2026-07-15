@@ -92,6 +92,32 @@ pub enum Clause {
     },
     /// `FINISH` — run for side effects, return nothing.
     Finish,
+    /// `[OPTIONAL] CALL name(args) [YIELD col [AS alias], …]` — an ISO GQL named
+    /// procedure call (§`callProcedureStatement` → `namedProcedureCall`). Invokes a
+    /// catalog procedure (here: the built-in graph algorithms); `yields` picks and
+    /// renames its output columns (`None` = every column, under its own name).
+    CallNamed(CallNamed),
+}
+
+/// A named procedure call (`CALL name(args) YIELD …`).
+#[derive(Debug, Clone)]
+pub struct CallNamed {
+    /// `OPTIONAL CALL` — keep the outer row (null-filled) if the call is empty.
+    pub optional: bool,
+    /// Procedure name (a dotted `parent.name` is joined with `.`).
+    pub name: String,
+    /// The procedure's configuration, written as a `{key: value}` map argument
+    /// (empty if the call is `name()`). For the graph-algorithm procedures these
+    /// are the algorithm's config fields (`iterations`, `writeProperty`, …).
+    pub config: Vec<PropertyConstraint>,
+    pub yields: Option<Vec<YieldItem>>,
+}
+
+/// One `YIELD` output item: an output column, optionally renamed with `AS`.
+#[derive(Debug, Clone)]
+pub struct YieldItem {
+    pub name: String,
+    pub alias: Option<String>,
 }
 
 /// Parse dialect: `Lenke` permits sigil extensions (`_MERGE`); `IsoStrict` rejects

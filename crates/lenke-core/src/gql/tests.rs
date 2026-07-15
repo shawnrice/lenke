@@ -4128,3 +4128,51 @@ fn path_accessor_functions() {
     };
     assert_eq!(el.len(), 5);
 }
+
+/// ISO GQL named procedure CALL invoking the built-in graph algorithms, with
+/// YIELD, aliasing, config, and downstream clauses over the yielded columns.
+#[test]
+fn call_named_procedure_algorithms() {
+    let mut g = modern();
+
+    // pagerank: lop has the most incoming edges → the top score.
+    let top = rows(
+        &mut g,
+        "CALL pagerank() YIELD node, score RETURN node ORDER BY score DESC, node LIMIT 1",
+    );
+    assert_eq!(top, vec![vec![s("lop")]]);
+
+    // degree: one row per vertex (YIELD-less binds node + degree automatically).
+    let degs = rows(&mut g, "CALL degree() RETURN node, degree");
+    assert_eq!(degs.len(), 6);
+
+    // YIELD aliasing, then ISO filtering via WITH … WHERE over the yielded column.
+    let hi = rows(
+        &mut g,
+        "CALL degree() YIELD node AS v, degree AS d WITH v, d WHERE d >= 3 RETURN v ORDER BY v",
+    );
+    // Default degree is out-degree; only marko has out-degree ≥ 3.
+    assert_eq!(hi, vec![vec![s("marko")]]);
+
+    // config: writeProperty mutates the graph; the property is then readable.
+    let _ = rows(
+        &mut g,
+        "CALL degree({writeProperty: 'deg'}) YIELD node RETURN node",
+    );
+    let read = rows(&mut g, "MATCH (n) WHERE n.name = 'marko' RETURN n.deg AS d");
+    assert_eq!(read, vec![vec![Value::Num(3.0)]]); // marko has out-degree 3
+}
+
+/// CALL parse-level behavior: unknown procedure faults; the inline-subquery form
+/// is rejected with a pointed message (deferred).
+#[test]
+fn call_unknown_and_inline_rejected() {
+    let mut g = modern();
+    assert!(parse("CALL bogus() YIELD x RETURN x")
+        .unwrap()
+        .execute(&mut g, &Params::new())
+        .is_err());
+    // Inline subquery CALL is not yet supported (parse-time rejection).
+    assert!(parse("CALL { MATCH (n) RETURN n }").is_err());
+    assert!(parse("CALL (a) { MATCH (n) RETURN n }").is_err());
+}

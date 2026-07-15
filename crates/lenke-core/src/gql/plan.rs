@@ -608,6 +608,39 @@ pub enum CClause {
         targets: Vec<CExpr>,
     },
     Finish,
+    /// `[OPTIONAL] CALL name(config) [YIELD …]` — a named procedure call. `algo`
+    /// is the resolved algorithm dispatch name (`None` = unknown procedure, faults
+    /// at run time). `config` = each config field's compiled value expr. `binds`
+    /// maps a procedure output column to the binding slot it yields into.
+    CallNamed {
+        optional: bool,
+        proc_name: String,
+        algo: Option<&'static str>,
+        config: Vec<(String, CExpr)>,
+        binds: Vec<CallBind>,
+        scope_len: usize,
+    },
+}
+
+/// One `YIELD` binding: procedure output column → binding slot.
+#[derive(Debug, Clone)]
+pub struct CallBind {
+    pub column: String,
+    pub slot: usize,
+}
+
+/// The built-in procedure catalog: procedure name → (algorithm dispatch name,
+/// its non-`node` result column). Output columns are always `[node, <result>]`.
+pub fn procedure_spec(name: &str) -> Option<(&'static str, &'static str)> {
+    Some(match name {
+        "pagerank" => ("pagerank", "score"),
+        "connected_components" => ("connectedComponents", "componentId"),
+        "label_propagation" => ("labelPropagation", "label"),
+        "peer_pressure" => ("peerPressure", "cluster"),
+        "degree" => ("degree", "degree"),
+        "shortest_path" => ("shortestPath", "distance"),
+        _ => return None,
+    })
 }
 
 /// Compiled `_MERGE` (see [`crate::gql::ast::MergeClause`]).
@@ -1284,6 +1317,45 @@ impl Lowerer {
                     list,
                     alias_slot,
                     ord,
+                    scope_len: self.scope.len(),
+                }
+            }
+            Clause::CallNamed(c) => {
+                let spec = procedure_spec(&c.name);
+                // Config exprs compile in the pre-CALL scope (constants — no vars).
+                let config = c
+                    .config
+                    .iter()
+                    .map(|p| (p.key.clone(), self.expr(&p.value)))
+                    .collect();
+                // Output columns of a known procedure: [node, <result>].
+                let columns: Vec<String> = spec
+                    .map(|(_, col)| vec!["node".to_string(), col.to_string()])
+                    .unwrap_or_default();
+                let binds = match &c.yields {
+                    // Explicit YIELD: bind each named column to alias|name.
+                    Some(items) => items
+                        .iter()
+                        .map(|it| CallBind {
+                            column: it.name.clone(),
+                            slot: self.add_var(it.alias.as_ref().unwrap_or(&it.name)),
+                        })
+                        .collect(),
+                    // No YIELD: bind every output column under its own name.
+                    None => columns
+                        .iter()
+                        .map(|col| CallBind {
+                            column: col.clone(),
+                            slot: self.add_var(col),
+                        })
+                        .collect(),
+                };
+                CClause::CallNamed {
+                    optional: c.optional,
+                    proc_name: c.name.clone(),
+                    algo: spec.map(|(dispatch, _)| dispatch),
+                    config,
+                    binds,
                     scope_len: self.scope.len(),
                 }
             }

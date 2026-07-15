@@ -619,6 +619,78 @@ impl Parser {
         Ok(PathSelector::Walk)
     }
 
+    /// Is the token right after the current one the keyword `kw`? (Used to tell
+    /// `OPTIONAL CALL` from `OPTIONAL MATCH` without consuming.)
+    fn kw_after(&self, kw: &str) -> bool {
+        matches!(self.tokens.get(self.pos + 1), Some(t) if t.tt == Tt::Keyword && t.value == kw)
+    }
+
+    /// `[OPTIONAL] CALL name(args) [YIELD col [AS alias], …]`. The inline-subquery
+    /// form (`CALL { … }` / `CALL (…) { … }`) is not yet supported — it's rejected
+    /// with a pointed message rather than mis-parsed as a named call.
+    fn parse_call_clause(&mut self) -> R<Clause> {
+        let optional = self.check_kw("optional") && {
+            self.advance();
+            true
+        };
+        self.expect_kw("call")?;
+
+        if self.check(Tt::LBrace) || self.check(Tt::LParen) {
+            return err(
+                "inline subquery CALL (`CALL { … }`) is not yet supported; use a named procedure call `CALL name(…)`",
+                self.peek().pos,
+            );
+        }
+
+        // Procedure reference: a (possibly dotted) name.
+        let mut name = self.bind_name("a procedure name")?;
+        while self.check(Tt::Dot) {
+            self.advance();
+            name.push('.');
+            name.push_str(&self.bind_name("a procedure name segment")?);
+        }
+
+        self.expect(Tt::LParen, "'(' after a procedure name")?;
+        // The procedure's config, as a `{key: value}` map argument (or nothing).
+        let config = if self.check(Tt::LBrace) {
+            self.parse_property_map()?
+        } else {
+            Vec::new()
+        };
+        self.expect(Tt::RParen, "')' to close procedure arguments")?;
+
+        let yields = if self.check_kw("yield") {
+            self.advance();
+            let mut items = vec![self.parse_yield_item()?];
+            while self.check(Tt::Comma) {
+                self.advance();
+                items.push(self.parse_yield_item()?);
+            }
+            Some(items)
+        } else {
+            None
+        };
+
+        Ok(Clause::CallNamed(CallNamed {
+            optional,
+            name,
+            config,
+            yields,
+        }))
+    }
+
+    fn parse_yield_item(&mut self) -> R<YieldItem> {
+        let name = self.bind_name("a YIELD column name")?;
+        let alias = if self.check_kw("as") {
+            self.advance();
+            Some(self.bind_name("a YIELD alias")?)
+        } else {
+            None
+        };
+
+        Ok(YieldItem { name, alias })
+    }
+
     fn parse_match_clause(&mut self) -> R<MatchClause> {
         let optional = if self.check_kw("optional") {
             self.advance();
@@ -1586,6 +1658,9 @@ impl Parser {
                 clauses.push(Clause::With(self.parse_with_clause()?));
             } else if self.check_kw("for") {
                 clauses.push(Clause::For(self.parse_for_clause()?));
+            } else if self.check_kw("call") || (self.check_kw("optional") && self.kw_after("call"))
+            {
+                clauses.push(self.parse_call_clause()?);
             } else if self.check_kw("match") || self.check_kw("optional") {
                 clauses.push(Clause::Match(self.parse_match_clause()?));
             } else if self.check_kw("insert") {
