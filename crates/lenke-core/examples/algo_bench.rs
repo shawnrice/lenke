@@ -108,6 +108,7 @@ fn main() {
         "labelPropagation",
         "{}",
     );
+    bench(&mut g, "peerPressure (<=30 iters)", "peerPressure", "{}");
     bench(&mut g, "pagerank (20 iters, unweighted)", "pagerank", "{}");
     bench(
         &mut g,

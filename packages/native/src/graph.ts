@@ -1,5 +1,6 @@
 import type {
   AlgorithmConfig,
+  ClusterRow,
   ComponentRow,
   DegreeRow,
   LabelRow,
@@ -425,6 +426,7 @@ export type RustGraph = {
   degree: (config?: AlgorithmConfig) => Promise<DegreeRow[]>;
   connectedComponents: (config?: AlgorithmConfig) => Promise<ComponentRow[]>;
   labelPropagation: (config?: AlgorithmConfig) => Promise<LabelRow[]>;
+  peerPressure: (config?: AlgorithmConfig) => Promise<ClusterRow[]>;
   pagerank: (config?: AlgorithmConfig) => Promise<PageRankRow[]>;
   shortestPath: (config?: AlgorithmConfig) => Promise<ShortestPathRow[]>;
   /** Serialize the graph back to NDJSON bytes. */
@@ -754,6 +756,7 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
     connectedComponents: (config) =>
       runAlgoAsync('connectedComponents', config) as Promise<ComponentRow[]>,
     labelPropagation: (config) => runAlgoAsync('labelPropagation', config) as Promise<LabelRow[]>,
+    peerPressure: (config) => runAlgoAsync('peerPressure', config) as Promise<ClusterRow[]>,
     pagerank: (config) => runAlgoAsync('pagerank', config) as Promise<PageRankRow[]>,
     shortestPath: (config) => runAlgoAsync('shortestPath', config) as Promise<ShortestPathRow[]>,
     toNdjson: () => backend.encodeNdjson(live()),

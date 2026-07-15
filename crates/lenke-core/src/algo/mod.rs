@@ -1,7 +1,7 @@
 //! In-engine graph algorithms — degree centrality, connected components, label
-//! propagation, PageRank, and shortest path — run natively over `&Graph` in a
-//! single call (no per-iteration FFI round-trip), so a whole PageRank/CC/label-prop
-//! computation stays in the engine instead of looping in JS.
+//! propagation, peer pressure (community detection), PageRank, and shortest path —
+//! run natively over `&Graph` in a single call (no per-iteration FFI round-trip), so
+//! a whole PageRank/CC/label-prop computation stays in the engine instead of JS.
 //!
 //! Each algorithm is a pure function over the **public** `Graph` surface
 //! (`vertex_indices`, `out_adj`/`in_adj`, `vid`, `set_vertex_prop`, …) so a user can
@@ -30,6 +30,7 @@ mod components;
 mod degree;
 mod label_prop;
 mod pagerank;
+mod peer_pressure;
 mod shortest_path;
 
 /// Parsed algorithm configuration (a superset; each algorithm reads the fields it
@@ -120,6 +121,7 @@ fn dispatch(graph: &Graph, name: &str, cfg: &AlgoConfig) -> Result<AlgoOutput, S
         "degree" => ("degree", degree::degree(graph, cfg)),
         "connectedComponents" => ("componentId", components::connected_components(graph, cfg)),
         "labelPropagation" => ("label", label_prop::label_propagation(graph, cfg)),
+        "peerPressure" => ("cluster", peer_pressure::peer_pressure(graph, cfg)),
         "pagerank" => ("score", pagerank::pagerank(graph, cfg)),
         "shortestPath" => ("distance", shortest_path::shortest_path(graph, cfg)),
         other => return Err(format!("unknown algorithm: {other}")),
@@ -439,6 +441,57 @@ mod tests {
         let s = scores(&mut m, "{}");
         let by = |id: &str| s.iter().find(|(v, _)| v == id).unwrap().1;
         assert!(by("3") > by("2"));
+    }
+
+    /// `(external id, cluster)` rows in engine order.
+    fn clusters(g: &mut Graph, cfg: &str) -> Vec<(String, String)> {
+        let rs = run(g, "peerPressure", cfg).unwrap();
+        rs.rows()
+            .map(|r| match (&r[0], &r[1]) {
+                (Value::Str(id), Value::Str(c)) => (id.to_string(), c.to_string()),
+                _ => panic!("unexpected peerPressure row shape"),
+            })
+            .collect()
+    }
+
+    /// Two directed cliques {1,2,3} and {4,5,6} (all 6 intra-triangle edges each) —
+    /// peer pressure converges each to its smallest-id cluster ("1" and "4").
+    fn two_cliques() -> Graph {
+        let mut lines: Vec<String> = (1..=6)
+            .map(|i| format!(r#"{{"type":"node","id":"{i}","labels":["N"]}}"#))
+            .collect();
+        for &(a, b) in &[(1, 2), (1, 3), (2, 3), (4, 5), (4, 6), (5, 6)] {
+            lines.push(format!(
+                r#"{{"type":"edge","from":"{a}","to":"{b}","labels":["E"]}}"#
+            ));
+            lines.push(format!(
+                r#"{{"type":"edge","from":"{b}","to":"{a}","labels":["E"]}}"#
+            ));
+        }
+        ndjson::decode(&lines.join("\n")).unwrap()
+    }
+
+    #[test]
+    fn peer_pressure_cliques_converge_to_min_cluster() {
+        let mut g = two_cliques();
+        assert_eq!(
+            clusters(&mut g, "{}"),
+            vec![
+                ("1".into(), "1".into()),
+                ("2".into(), "1".into()),
+                ("3".into(), "1".into()),
+                ("4".into(), "4".into()),
+                ("5".into(), "4".into()),
+                ("6".into(), "4".into()),
+            ],
+        );
+        // A named-but-unknown edge type → no votes, every vertex its own cluster.
+        assert_eq!(
+            clusters(&mut g, r#"{"edgeLabel":"NOPE"}"#),
+            (1..=6)
+                .map(|i| (i.to_string(), i.to_string()))
+                .collect::<Vec<_>>(),
+        );
     }
 
     /// `(external id, distance)` rows in engine order.

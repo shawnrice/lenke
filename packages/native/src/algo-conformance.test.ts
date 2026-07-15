@@ -26,6 +26,7 @@ import {
   Graph,
   labelPropagation,
   pagerank,
+  peerPressure,
   shortestPath,
 } from '@lenke/core';
 import { query as tsQuery } from '@lenke/gql';
@@ -222,6 +223,57 @@ suite('graph-algorithm differential: labelPropagation (TS core vs native)', () =
     await nativeGraph.labelPropagation(config);
 
     const readBack = 'MATCH (n) RETURN n.lbl AS lbl ORDER BY n.lbl, n.lbl';
+    expect(JSON.stringify(tsQuery(tsGraph, readBack))).toBe(
+      JSON.stringify(nativeGraph.query(readBack)),
+    );
+  });
+});
+
+// Two communities {a,b,c} and {d,e} bridged by c→d, with INTERLEAVED edge types and
+// VARIED out-degrees (a,b,c have 2 out-edges → vote 0.5; e has 1 → vote 1.0) so the
+// 1/out-degree f64 vote energies exercise the canonical edge-order summation.
+const PEERPRESSURE_NDJSON = [
+  '{"type":"node","id":"a","labels":["N"]}',
+  '{"type":"node","id":"b","labels":["N"]}',
+  '{"type":"node","id":"c","labels":["N"]}',
+  '{"type":"node","id":"d","labels":["N"]}',
+  '{"type":"node","id":"e","labels":["N"]}',
+  '{"type":"edge","id":"1","from":"a","to":"b","labels":["T1"]}',
+  '{"type":"edge","id":"2","from":"a","to":"c","labels":["T2"]}',
+  '{"type":"edge","id":"3","from":"b","to":"a","labels":["T1"]}',
+  '{"type":"edge","id":"4","from":"b","to":"c","labels":["T2"]}',
+  '{"type":"edge","id":"5","from":"c","to":"a","labels":["T1"]}',
+  '{"type":"edge","id":"6","from":"c","to":"d","labels":["T2"]}',
+  '{"type":"edge","id":"7","from":"d","to":"e","labels":["T1"]}',
+  '{"type":"edge","id":"8","from":"e","to":"d","labels":["T2"]}',
+].join('\n');
+
+suite('graph-algorithm differential: peerPressure (TS core vs native, f64 votes)', () => {
+  const backend = createFfiBackend(LIB);
+  const nativeGraph = graphFromFormat(backend, PEERPRESSURE_NDJSON, 'ndjson');
+  const tsGraph = tsDeserialize(PEERPRESSURE_NDJSON, 'ndjson', new Graph());
+
+  for (const config of [
+    {} as const, // default 30-iteration cap
+    { iterations: 1 } as const, // one round — catches per-round drift
+    { iterations: 3 } as const,
+    { iterations: 50 } as const,
+    { edgeLabel: 'T1' } as const, // typed filter changes out-degrees → different votes
+    { edgeLabel: 'NOPE' } as const, // unknown type → every vertex its own cluster
+  ]) {
+    test(`peerPressure ${JSON.stringify(config)} — byte-identical`, async () => {
+      expect(JSON.stringify(await peerPressure(config, tsGraph))).toBe(
+        JSON.stringify(await nativeGraph.peerPressure(config)),
+      );
+    });
+  }
+
+  test('writeProperty round-trips identically through GQL on both engines', async () => {
+    const config = { writeProperty: 'cl' } as const;
+    await peerPressure(config, tsGraph);
+    await nativeGraph.peerPressure(config);
+
+    const readBack = 'MATCH (n) RETURN n.cl AS cl ORDER BY n.cl, n.cl';
     expect(JSON.stringify(tsQuery(tsGraph, readBack))).toBe(
       JSON.stringify(nativeGraph.query(readBack)),
     );
