@@ -1751,14 +1751,19 @@ fn try_decorrelate(c: &CallInline, outer: &[String]) -> Option<(MatchClause, Wit
         unknown_fns: Vec::new(),
     };
     let cproj = probe.projection(proj, true);
-    // Aggregating bodies COULD decorrelate to `OPTIONAL MATCH … WITH <outer>,
-    // <aggs>` (verified correct + order-preserving now the OPTIONAL MATCH bug is
-    // fixed), but that form is bottlenecked by GROUP BY on a node key — as slow as
-    // the correlated path — so it's no win yet. Left correlated until group-by-node
-    // is optimized; then flip this to decorrelate all-aggregate bodies.
-    if cproj.aggregating {
+    // A GLOBAL-aggregate body (all items aggregate, no inner grouping key) yields
+    // exactly ONE row per outer row — the zero-aggregate over an empty match (e.g.
+    // `count` = 0) — so the outer row is always kept. Decorrelating to `OPTIONAL
+    // MATCH … WITH <outer>, <aggs>` reproduces that: the null-fill row groups under
+    // the outer key with the aggregate over null (count = 0, sum = null). Now that
+    // grouped + OPTIONAL aggregation is columnar (fast), this is a real win, not
+    // just correct. A body that GROUPS (has a non-agg item beyond the outer vars)
+    // yields ZERO rows for an empty match — dropping the outer row — which the
+    // null-fill would NOT reproduce, so leave those correlated.
+    if cproj.aggregating && !cproj.items.iter().all(|i| i.is_agg) {
         return None;
     }
+    let aggregating = cproj.aggregating;
     // Column-collision guard: a projected output name must not shadow an outer var.
     for name in &cproj.out_names {
         if outer.iter().any(|v| v == name) {
@@ -1779,7 +1784,10 @@ fn try_decorrelate(c: &CallInline, outer: &[String]) -> Option<(MatchClause, Wit
     items.extend(proj.items.iter().cloned());
 
     let mat = MatchClause {
-        optional: c.optional,
+        // A global-aggregate body must keep every outer row (the aggregate is
+        // defined over the empty match), so its flat form is always OPTIONAL —
+        // regardless of whether the CALL itself was optional.
+        optional: c.optional || aggregating,
         patterns: m.patterns.clone(),
         where_: m.where_.clone(),
     };

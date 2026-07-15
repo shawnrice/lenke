@@ -677,6 +677,25 @@ suite('GQL differential: columnar grouped aggregation (TS vs native)', () => {
       'OPTIONAL MATCH with inline node label',
       `MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(f:Person) WITH p, count(f) AS c RETURN p.name AS name, c ORDER BY name`,
     ],
+    // Agg-subquery DECORRELATION (native rewrites the correlated CALL to
+    // `OPTIONAL MATCH … WITH p, count(f)`; TS stays correlated) — the strongest
+    // check that the two forms agree. Friendless `d` → count 0 via the null-fill.
+    [
+      'correlated CALL count → decorrelated, byte-identical',
+      `MATCH (p:Person) CALL (p) { MATCH (p)-[:KNOWS]->(f) RETURN count(f) AS c } RETURN p.name AS name, c ORDER BY name`,
+    ],
+    // Same, WITHOUT an outer ORDER BY — pins that decorrelation preserves the
+    // correlated form's row order (outer scan order = first-seen group order).
+    [
+      'correlated CALL count → decorrelated, order preserved (no ORDER BY)',
+      `MATCH (p:Person) CALL (p) { MATCH (p)-[:KNOWS]->(f) RETURN count(f) AS c } RETURN p.name AS name, c`,
+    ],
+    // Decorrelated sum over an edge property: friendless `d`'s sum over the empty
+    // match is null (not 0) — the aggregate-over-null semantics.
+    [
+      'correlated CALL sum → decorrelated (empty = null)',
+      `MATCH (p:Person) CALL (p) { MATCH (p)-[e:KNOWS]->(f) RETURN sum(e.weight) AS sw } RETURN p.name AS name, sw ORDER BY name`,
+    ],
   ];
 
   for (const [name, q] of cases) {
