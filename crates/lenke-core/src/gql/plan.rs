@@ -1471,8 +1471,10 @@ impl Lowerer {
 
     fn linear(&mut self, l: &LinearQuery) -> CLinear {
         self.scope.clear(); // each linear query starts with a fresh scope
+                            // Decorrelate safe correlated inline subqueries into flat MATCH+WITH first.
+        let clauses = decorrelate_clauses(&l.clauses);
         CLinear {
-            clauses: l.clauses.iter().map(|c| self.clause(c)).collect(),
+            clauses: clauses.iter().map(|c| self.clause(c)).collect(),
         }
     }
 }
@@ -1639,6 +1641,157 @@ fn collect_pattern_free_vars(p: &PathPattern, bound: &[String], free: &mut Vec<S
 }
 
 /// Lower a parsed query into the IR plus the parameter slot order (slot → name).
+/// Decorrelate a linear query's clauses: rewrite a correlated **non-aggregating**
+/// inline `CALL (scope) { MATCH … RETURN <items> }` into flat `[OPTIONAL] MATCH …
+/// WITH <outer vars>, <items>`. This produces byte-IDENTICAL output (same rows,
+/// same order) — the flat MATCH nests exactly as the per-outer-row subquery did —
+/// but runs in a single pass through the optimized MATCH path instead of
+/// re-executing the subquery per outer row. Only fires when provably safe (see
+/// `try_decorrelate`); anything else stays correlated. Aggregating bodies are left
+/// alone (a grouping rewrite would reorder rows, breaking the identical-output
+/// guarantee this relies on).
+fn decorrelate_clauses(clauses: &[Clause]) -> Vec<Clause> {
+    let mut out = Vec::with_capacity(clauses.len());
+    let mut bound: Vec<String> = Vec::new();
+    // The rewrite is only sound while the prefix is plain MATCH clauses (so
+    // `bound` == the exact in-scope variable set). A WITH/FOR/write/CALL resets or
+    // complicates the scope, after which we stop decorrelating.
+    let mut simple_prefix = true;
+
+    for clause in clauses {
+        if simple_prefix {
+            if let Clause::CallInline(c) = clause {
+                if let Some((mc, wc)) = try_decorrelate(c, &bound) {
+                    for p in &mc.patterns {
+                        pattern_bound_vars(p, &mut bound);
+                    }
+                    out.push(Clause::Match(mc));
+                    out.push(Clause::With(wc));
+                    simple_prefix = false; // the injected WITH ends the plain prefix
+                    continue;
+                }
+            }
+        }
+
+        match clause {
+            Clause::Match(m) => {
+                for p in &m.patterns {
+                    pattern_bound_vars(p, &mut bound);
+                }
+            }
+            _ => simple_prefix = false,
+        }
+        out.push(clause.clone());
+    }
+
+    out
+}
+
+/// Try to flatten one non-aggregating correlated inline CALL into `MATCH` + `WITH`.
+/// Returns `None` (→ stay correlated) unless every safety guard holds.
+fn try_decorrelate(c: &CallInline, outer: &[String]) -> Option<(MatchClause, WithClause)> {
+    // Shape: body is exactly `MATCH <non-optional> RETURN <plain projection>`.
+    if c.body.clauses.len() != 2 {
+        return None;
+    }
+    let Clause::Match(m) = &c.body.clauses[0] else {
+        return None;
+    };
+    let Clause::Return(proj) = &c.body.clauses[1] else {
+        return None;
+    };
+    if m.optional
+        || proj.star
+        || proj.distinct
+        || !proj.order_by.is_empty()
+        || proj.skip.is_some()
+        || proj.limit.is_some()
+    {
+        return None;
+    }
+
+    // Vars the nested pattern introduces.
+    let mut nested = Vec::new();
+    for p in &m.patterns {
+        pattern_bound_vars(p, &mut nested);
+    }
+    // Collision guard: a nested-only var (not an imported scope var) must not
+    // clash with an outer var — decorrelating would wrongly join on it.
+    for v in &nested {
+        if !c.scope.contains(v) && outer.contains(v) {
+            return None;
+        }
+    }
+    // Isolation guard: the body must reference only scope vars + its own pattern
+    // vars. If it references an *unscoped* outer var, the correlated form reads
+    // NULL (isolated) but the flat form would read the value — a divergence.
+    let mut free = Vec::new();
+    for p in &m.patterns {
+        collect_pattern_free_vars(p, &nested, &mut free);
+    }
+    if let Some(w) = &m.where_ {
+        collect_free_vars(w, &nested, &mut free);
+    }
+    for it in &proj.items {
+        collect_free_vars(&it.expr, &nested, &mut free);
+    }
+    for v in &free {
+        if outer.contains(v) && !c.scope.contains(v) {
+            return None;
+        }
+    }
+
+    // Compile the projection with the same aggregate detection the real lowering
+    // uses (no divergence risk), to get `aggregating` + the output column names.
+    let mut probe = Lowerer {
+        params: Vec::new(),
+        scope: [outer, nested.as_slice()].concat(),
+        keys: Vec::new(),
+        labels: Vec::new(),
+        unknown_fns: Vec::new(),
+    };
+    let cproj = probe.projection(proj, true);
+    if cproj.aggregating {
+        return None; // aggregating body → keep correlated (would reorder rows)
+    }
+    // Column-collision guard: a projected output name must not shadow an outer var.
+    for name in &cproj.out_names {
+        if outer.iter().any(|v| v == name) {
+            return None;
+        }
+    }
+
+    // Flatten: `[OPTIONAL] MATCH <patterns> [WHERE …]` then a WITH that carries the
+    // outer vars unchanged and adds the subquery's projected columns (dropping the
+    // nested-only pattern vars — exactly the merge semantics of the CALL).
+    let mut items: Vec<ReturnItem> = outer
+        .iter()
+        .map(|v| ReturnItem {
+            expr: Expr::Var(v.clone()),
+            alias: None,
+        })
+        .collect();
+    items.extend(proj.items.iter().cloned());
+
+    let mat = MatchClause {
+        optional: c.optional,
+        patterns: m.patterns.clone(),
+        where_: m.where_.clone(),
+    };
+    let with = WithClause {
+        projection: Projection {
+            star: false,
+            items,
+            distinct: false,
+            order_by: Vec::new(),
+            skip: None,
+            limit: None,
+        },
+        where_: None,
+    };
+    Some((mat, with))
+}
+
 pub fn lower(query: &Query) -> (CQuery, Vec<String>) {
     let mut l = Lowerer {
         params: Vec::new(),

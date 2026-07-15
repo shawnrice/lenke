@@ -4237,3 +4237,37 @@ fn call_inline_scope_isolation() {
     );
     assert_eq!(total, vec![vec![Value::Num(6.0)]]);
 }
+
+/// Decorrelation safety: a non-aggregating inline CALL that references an UNSCOPED
+/// outer var must stay correlated (the guard falls back). The empty `()` scope
+/// isolates `a`, so `c = a` compares against NULL → no rows → the outer row is
+/// dropped. If wrongly decorrelated (a made visible), it would match and return
+/// rows — so a non-empty result here would be a correctness bug.
+#[test]
+fn decorrelate_respects_scope_isolation() {
+    let mut g = modern();
+    let r = rows(
+        &mut g,
+        "MATCH (a:Person) WHERE a.name = 'marko' \
+         CALL () { MATCH (b:Person)-[:KNOWS]->(c) WHERE c = a RETURN c.name AS cn } \
+         RETURN cn",
+    );
+    assert!(
+        r.is_empty(),
+        "unscoped `a` must be NULL inside the subquery, got {r:?}"
+    );
+}
+
+/// The non-aggregating correlated CALL decorrelates to an order-identical flat
+/// form; this pins the exact rows (the same assertion works correlated or flat).
+#[test]
+fn decorrelate_non_agg_rows_unchanged() {
+    let mut g = modern();
+    let r = rows(
+        &mut g,
+        "MATCH (p:Person {name: 'marko'}) \
+         CALL (p) { MATCH (p)-[:KNOWS]->(f) RETURN f.name AS friend } \
+         RETURN friend ORDER BY friend",
+    );
+    assert_eq!(r, vec![vec![s("josh")], vec![s("vadas")]]);
+}
