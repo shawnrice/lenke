@@ -64,7 +64,6 @@ export {
   type GraphAlgorithm,
   type LabelRow,
   type AlgorithmName,
-  type OlapAlgorithmName,
   type PageRankRow,
   type ShortestPathRow,
 } from './algorithms/index.js';

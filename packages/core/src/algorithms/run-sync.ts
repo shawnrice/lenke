@@ -21,9 +21,6 @@ export type AlgorithmName =
   | 'labelPropagation'
   | 'shortestPath';
 
-/** @deprecated use {@link AlgorithmName} — the OLAP subset is no longer distinct. */
-export type OlapAlgorithmName = AlgorithmName;
-
 /**
  * Synchronously run a whole-graph algorithm and (when `config.writeProperty` is
  * set) write each vertex's result to that property — the mirror of native
