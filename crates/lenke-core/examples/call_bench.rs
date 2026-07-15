@@ -103,11 +103,31 @@ fn main() {
     println!("{:<44} {:>12} {:>10}", "query", "avg", "rows");
     println!("{}", "-".repeat(68));
     let named: &[(&str, &str, u32)] = &[
-        ("degree YIELD node,degree count(*)", "CALL degree() YIELD node, degree RETURN count(*) AS c", 30),
-        ("degree YIELD node only, LIMIT 10", "CALL degree() YIELD node RETURN node LIMIT 10", 30),
-        ("degree top-10 by degree", "CALL degree() YIELD node, degree RETURN node ORDER BY degree DESC, node LIMIT 10", 30),
-        ("pagerank top-10 by score", "CALL pagerank() YIELD node, score RETURN node ORDER BY score DESC, node LIMIT 10", 10),
-        ("connected_components count", "CALL connected_components() YIELD node RETURN count(*) AS c", 30),
+        (
+            "degree YIELD node,degree count(*)",
+            "CALL degree() YIELD node, degree RETURN count(*) AS c",
+            30,
+        ),
+        (
+            "degree YIELD node only, LIMIT 10",
+            "CALL degree() YIELD node RETURN node LIMIT 10",
+            30,
+        ),
+        (
+            "degree top-10 by degree",
+            "CALL degree() YIELD node, degree RETURN node ORDER BY degree DESC, node LIMIT 10",
+            30,
+        ),
+        (
+            "pagerank top-10 by score",
+            "CALL pagerank() YIELD node, score RETURN node ORDER BY score DESC, node LIMIT 10",
+            10,
+        ),
+        (
+            "connected_components count",
+            "CALL connected_components() YIELD node RETURN count(*) AS c",
+            30,
+        ),
     ];
     for (label, q, iters) in named {
         let (us, rows) = bench(&mut g, q, *iters);

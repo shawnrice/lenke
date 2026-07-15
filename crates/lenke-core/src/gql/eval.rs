@@ -7347,7 +7347,7 @@ fn run_linear(
     plan: &CQuery,
     params: &[Val],
 ) -> CodeResult<RowSet> {
-    run_linear_from(linear, graph, plan, params, vec![Binding::default()])
+    run_linear_from(linear, graph, plan, params, vec![Binding::default()], None)
 }
 
 /// [`run_linear`] starting from a given set of bindings — the seed for an inline
@@ -7358,14 +7358,30 @@ fn run_linear_from(
     plan: &CQuery,
     params: &[Val],
     initial: Vec<Binding>,
+    shared: Option<&Ctx>,
 ) -> CodeResult<RowSet> {
     // `bindings` is the materialized row set at the last barrier; `pending` are
     // MATCH clauses deferred so a projection (or write) can stream them directly.
     let mut bindings: Vec<Binding> = initial;
     let mut pending: Vec<&CClause> = Vec::new();
-    // Refs (keys/labels) resolved to ids once; rebuilt after a write, since a
-    // mutation may introduce a new key or label the rest of the query reads.
-    let mut ctx = resolve_ctx(graph, plan, params);
+    // Refs (keys/labels) resolved to ids. A correlated inline subquery reuses the
+    // caller's ctx (`shared`) — it shares the plan's tables, so resolving per
+    // outer row is pure waste — and only OWNS a ctx if it writes (re-resolved
+    // after each mutation). A top-level run always owns its ctx.
+    let mut owned: Option<Ctx> = match shared {
+        Some(_) => None,
+        None => Some(resolve_ctx(graph, plan, params)),
+    };
+    // The current read ctx: the owned one if we've resolved (top-level or after a
+    // write), else the shared borrow. Expands inline, so it never holds a borrow
+    // across the write arms' `owned.as_mut()` / re-resolve.
+    macro_rules! ctx {
+        () => {
+            owned
+                .as_ref()
+                .unwrap_or_else(|| shared.expect("a shared ctx"))
+        };
+    }
 
     for clause in &linear.clauses {
         match clause {
@@ -7375,7 +7391,7 @@ fn run_linear_from(
                 where_,
                 where_prog,
             } => {
-                let projected = project_matches(graph, &ctx, &bindings, &pending, projection);
+                let projected = project_matches(graph, ctx!(), &bindings, &pending, projection);
                 pending.clear();
                 bindings = if where_.is_none() {
                     projected
@@ -7384,7 +7400,7 @@ fn run_linear_from(
                         .into_iter()
                         .filter(|b| {
                             where_keep(
-                                &Env::new(graph, &ctx, b),
+                                &Env::new(graph, ctx!(), b),
                                 where_.as_ref(),
                                 where_prog.as_ref(),
                             )
@@ -7404,7 +7420,7 @@ fn run_linear_from(
                 // elements; null yields zero rows; any other scalar unwinds as a
                 // one-element list.
                 if !pending.is_empty() {
-                    bindings = materialize_matches(graph, &ctx, &bindings, &pending);
+                    bindings = materialize_matches(graph, ctx!(), &bindings, &pending);
                     pending.clear();
                 }
                 let mut out = Vec::new();
@@ -7412,7 +7428,7 @@ fn run_linear_from(
                     let mut work = inb.clone();
                     work.resize(*scope_len);
                     let listv = {
-                        let env = Env::new(graph, &ctx, &work);
+                        let env = Env::new(graph, ctx!(), &work);
                         eval(&env, list)
                     };
                     let elems = match listv {
@@ -7434,7 +7450,7 @@ fn run_linear_from(
                     }
                 }
                 bindings = out;
-                ctx.check_fault()?;
+                ctx!().check_fault()?;
             }
             CClause::CallNamed {
                 optional,
@@ -7445,7 +7461,7 @@ fn run_linear_from(
                 scope_len,
             } => {
                 if !pending.is_empty() {
-                    bindings = materialize_matches(graph, &ctx, &bindings, &pending);
+                    bindings = materialize_matches(graph, ctx!(), &bindings, &pending);
                     pending.clear();
                 }
                 let Some(dispatch) = algo else {
@@ -7457,7 +7473,7 @@ fn run_linear_from(
                 // Build the algorithm config from the (constant) config exprs.
                 let cfg = {
                     let scratch = Binding::default();
-                    let env = Env::new(graph, &ctx, &scratch);
+                    let env = Env::new(graph, ctx!(), &scratch);
                     let mut cfg = crate::algo::AlgoConfig::default();
                     for (field, expr) in config {
                         apply_algo_config(&mut cfg, field, &eval(&env, expr));
@@ -7503,22 +7519,24 @@ fn run_linear_from(
                     }
                 }
                 bindings = out;
-                ctx.check_fault()?;
-                ctx = resolve_ctx(graph, plan, params); // writeProperty may have mutated
+                ctx!().check_fault()?;
+                owned = Some(resolve_ctx(graph, plan, params)); // writeProperty may have mutated
             }
             CClause::CallInline {
                 optional,
                 imports,
                 body,
                 out_binds,
+                body_read_only,
             } => {
                 if !pending.is_empty() {
-                    bindings = materialize_matches(graph, &ctx, &bindings, &pending);
+                    bindings = materialize_matches(graph, ctx!(), &bindings, &pending);
                     pending.clear();
                 }
                 // Run the nested query once per outer row (correlated), seeding it
                 // with only the imported scope variables, and merge its RETURN
-                // columns back — one merged row per nested row.
+                // columns back — one merged row per nested row. A read-only body
+                // reuses this ctx (shared plan tables) so it never re-resolves.
                 let mut out = Vec::new();
                 for outer in &bindings {
                     let mut seed = Binding::default();
@@ -7527,7 +7545,8 @@ fn run_linear_from(
                             seed.set(*nested_slot, v.clone());
                         }
                     }
-                    let rs = run_linear_from(body, graph, plan, params, vec![seed])?;
+                    let reuse = if *body_read_only { Some(ctx!()) } else { None };
+                    let rs = run_linear_from(body, graph, plan, params, vec![seed], reuse)?;
                     if rs.nrows == 0 && *optional {
                         let mut w = outer.clone();
                         for slot in out_binds {
@@ -7545,12 +7564,12 @@ fn run_linear_from(
                     }
                 }
                 bindings = out;
-                ctx = resolve_ctx(graph, plan, params); // a nested write may have mutated
-                ctx.check_fault()?;
+                owned = Some(resolve_ctx(graph, plan, params)); // a nested write may have mutated
+                ctx!().check_fault()?;
             }
             CClause::Return(proj) => {
-                let rows = project_to_rows(graph, &ctx, &bindings, &pending, proj);
-                ctx.check_fault()?;
+                let rows = project_to_rows(graph, ctx!(), &bindings, &pending, proj);
+                ctx!().check_fault()?;
                 return Ok(rows);
             }
             CClause::Finish => return Ok(RowSet::new(Vec::new())),
@@ -7558,63 +7577,69 @@ fn run_linear_from(
             // matches first, then re-resolve refs against the mutated graph.
             CClause::Insert(patterns) => {
                 if !pending.is_empty() {
-                    bindings = materialize_matches(graph, &ctx, &bindings, &pending);
+                    bindings = materialize_matches(graph, ctx!(), &bindings, &pending);
                     pending.clear();
                 }
                 let mut inserted = Vec::with_capacity(bindings.len());
                 for b in &bindings {
-                    inserted.push(run_insert(graph, &mut ctx, plan, patterns, b));
+                    inserted.push(run_insert(
+                        graph,
+                        owned.as_mut().expect("a write clause owns its ctx"),
+                        plan,
+                        patterns,
+                        b,
+                    ));
                 }
                 bindings = inserted;
-                ctx.check_fault()?;
-                ctx = resolve_ctx(graph, plan, params);
+                ctx!().check_fault()?;
+                owned = Some(resolve_ctx(graph, plan, params));
             }
             CClause::Merge(m) => {
                 if !pending.is_empty() {
-                    bindings = materialize_matches(graph, &ctx, &bindings, &pending);
+                    bindings = materialize_matches(graph, ctx!(), &bindings, &pending);
                     pending.clear();
                 }
                 let mut merged = Vec::with_capacity(bindings.len());
                 for b in &bindings {
-                    merged.push(run_merge(graph, &ctx, m, b));
+                    merged.push(run_merge(graph, ctx!(), m, b));
                 }
                 bindings = merged;
-                ctx.check_fault()?;
-                ctx = resolve_ctx(graph, plan, params);
+                ctx!().check_fault()?;
+                owned = Some(resolve_ctx(graph, plan, params));
             }
             CClause::Set(items) => {
                 if !pending.is_empty() {
-                    bindings = materialize_matches(graph, &ctx, &bindings, &pending);
+                    bindings = materialize_matches(graph, ctx!(), &bindings, &pending);
                     pending.clear();
                 }
                 for b in &bindings {
-                    run_set(graph, &ctx, items, b);
+                    run_set(graph, ctx!(), items, b);
                 }
-                ctx.check_fault()?;
-                ctx = resolve_ctx(graph, plan, params);
+                ctx!().check_fault()?;
+                owned = Some(resolve_ctx(graph, plan, params));
             }
             CClause::Remove(items) => {
                 if !pending.is_empty() {
-                    bindings = materialize_matches(graph, &ctx, &bindings, &pending);
+                    bindings = materialize_matches(graph, ctx!(), &bindings, &pending);
                     pending.clear();
                 }
                 for b in &bindings {
-                    run_remove(graph, &ctx, items, b);
+                    run_remove(graph, ctx!(), items, b);
                 }
-                ctx.check_fault()?;
+                ctx!().check_fault()?;
             }
             CClause::Delete { detach, targets } => {
                 if !pending.is_empty() {
-                    bindings = materialize_matches(graph, &ctx, &bindings, &pending);
+                    bindings = materialize_matches(graph, ctx!(), &bindings, &pending);
                     pending.clear();
                 }
                 for b in &bindings {
-                    run_delete(graph, &ctx, *detach, targets, b)?;
+                    run_delete(graph, ctx!(), *detach, targets, b)?;
                 }
             }
         }
     }
-    ctx.check_fault()?;
+    ctx!().check_fault()?;
     Ok(RowSet::new(Vec::new())) // write-only / no RETURN
 }
 

@@ -629,6 +629,10 @@ pub enum CClause {
         imports: Vec<(usize, usize)>,
         body: CLinear,
         out_binds: Vec<usize>,
+        /// True if the nested body only reads — then every correlated run reuses
+        /// the caller's resolved Ctx (no per-outer-row resolve). A writing body
+        /// resolves per row (a mutation may invalidate the shared tables).
+        body_read_only: bool,
     },
 }
 
@@ -1396,11 +1400,22 @@ impl Lowerer {
                     .map(|(nested_slot, name)| (self.slot_of(name), nested_slot))
                     .collect();
                 let out_binds = out_cols.iter().map(|n| self.add_var(n)).collect();
+                let body_read_only = body.clauses.iter().all(|cl| {
+                    !matches!(
+                        cl,
+                        CClause::Insert(_)
+                            | CClause::Merge(_)
+                            | CClause::Set(_)
+                            | CClause::Remove(_)
+                            | CClause::Delete { .. }
+                    )
+                });
                 CClause::CallInline {
                     optional: c.optional,
                     imports,
                     body,
                     out_binds,
+                    body_read_only,
                 }
             }
             Clause::Return(p) => CClause::Return(self.projection(p, true)),
