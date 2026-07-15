@@ -180,7 +180,9 @@ fn scalar_fn(name: &str) -> ScalarFn {
         "element_id" => ScalarFn::ElementId,
         "labels" => ScalarFn::Labels,
         "type" => ScalarFn::Type,
-        "keys" => ScalarFn::Keys,
+        // `property_names` is the ISO GQL name for an element's property-name list;
+        // `keys` is the openCypher spelling of the same thing.
+        "keys" | "property_names" => ScalarFn::Keys,
         "nodes" => ScalarFn::PathNodes,
         "relationships" => ScalarFn::PathEdges,
         "elements" => ScalarFn::PathElements,

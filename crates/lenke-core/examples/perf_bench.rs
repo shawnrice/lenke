@@ -429,11 +429,12 @@ fn main() {
             "varlen",
             "MATCH (a:Hub)-[:KNOWS]->{1,3}(b) RETURN sum(b.age) AS s",
         ),
-        // Whole-node materialization: properties(n) over a filtered scan.
+        // Whole-node materialization: the rich node ({id,labels,properties}) over a
+        // filtered scan (ISO GQL has no `properties()`; `RETURN n` materializes it).
         (
             "props_scan",
             "out",
-            "MATCH (n:Person) WHERE n.age > 60 RETURN properties(n) AS p",
+            "MATCH (n:Person) WHERE n.age > 60 RETURN n",
         ),
     ];
 

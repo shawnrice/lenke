@@ -759,6 +759,8 @@ const callGraphFn = (name: string, a: unknown): unknown => {
       return isVertex(a) ? [...a.labels].sort() : null;
     case 'type':
       return isEdge(a) ? ([...a.labels][0] ?? '') : null;
+    // `property_names` is the ISO GQL name; `keys` is the openCypher spelling.
+    case 'property_names':
     case 'keys':
       return isElement(a) ? Object.keys(a.properties).sort() : null;
     // ISO GQL path functions. Vertices/edges stay live element handles (they

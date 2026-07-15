@@ -99,6 +99,18 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     expect(ts).toBe(`[{"name":"josh"},{"name":"marko"},{"name":"vadas"}]`);
   });
 
+  test('property_names(n) — ISO GQL element function, sorted, byte-identical', () => {
+    const q = `MATCH (n:Person {name: 'marko'}) RETURN property_names(n) AS ks`;
+    const [ts, native] = both(q);
+    expect(ts).toBe(native);
+    // Sorted property-name list (both engines canonicalize to sorted order).
+    expect(ts).toBe(`[{"ks":["age","name"]}]`);
+    // `keys(n)` is the openCypher spelling of the same function — identical result.
+    const [tsK, natK] = both(`MATCH (n:Person {name: 'marko'}) RETURN keys(n) AS ks`);
+    expect(tsK).toBe(natK);
+    expect(tsK).toBe(ts);
+  });
+
   // --- ANY SHORTEST: the path value serializes byte-identically across engines.
   test('RETURN p — a shortest Path is {vertices, edges, length}, byte-identical', () => {
     const q = `MATCH p = ANY SHORTEST (a)-[]->*(b) WHERE a.name = 'marko' AND b.name = 'lop' RETURN p`;
