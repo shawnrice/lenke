@@ -184,11 +184,25 @@ pub enum RemoveItem {
     Label { variable: String, label: String },
 }
 
-/// A linear path pattern: a start node followed by `(rel)(node)` segments.
+/// How many of the paths matching a pattern to keep. `Walk` (the ISO default,
+/// no selector) keeps every match; `AnyShortest` (`ANY SHORTEST`) keeps one
+/// fewest-hop path per endpoint pair.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum PathSelector {
+    #[default]
+    Walk,
+    AnyShortest,
+}
+
+/// A linear path pattern: a start node followed by `(rel)(node)` segments,
+/// optionally bound to a `path_var` (`p = …`) and prefixed by a `selector`
+/// (`ANY SHORTEST …`).
 #[derive(Debug, Clone)]
 pub struct PathPattern {
     pub start: NodePattern,
     pub segments: Vec<Segment>,
+    pub path_var: Option<String>,
+    pub selector: PathSelector,
 }
 
 /// One hop: traverse `rel`, land on `node`.

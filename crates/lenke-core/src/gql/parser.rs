@@ -518,6 +518,29 @@ impl Parser {
 
     fn parse_path_pattern(&mut self) -> R<PathPattern> {
         self.descend(|p| {
+            // Optional path variable: `p = …`. At the start of a pattern an
+            // identifier followed by `=` can only be a path-variable binding (a
+            // node pattern always opens with `(`).
+            let sel_pos = p.peek().pos;
+            let path_var = if p.check(Tt::Ident)
+                && matches!(p.tokens.get(p.pos + 1), Some(n) if n.tt == Tt::Eq)
+            {
+                let name = p.advance().value;
+                p.advance(); // '='
+                Some(name)
+            } else {
+                None
+            };
+
+            // Optional path selector (`ANY SHORTEST`).
+            let selector = p.parse_path_selector()?;
+            if path_var.is_some() && selector == PathSelector::Walk {
+                return err(
+                    "a named path variable currently requires a path selector (e.g. `p = ANY SHORTEST …`)",
+                    sel_pos,
+                );
+            }
+
             let start = p.parse_node()?;
             let mut segments = Vec::new();
             while p.starts_relationship() {
@@ -538,8 +561,62 @@ impl Parser {
                 let node = p.parse_node()?;
                 segments.push(Segment { rel, node });
             }
-            Ok(PathPattern { start, segments })
+
+            // For now a selector matches exactly one variable-length segment with
+            // a `*`/`+`-style minimum (min ≤ 1) — the canonical shortest-path
+            // shape `… (a)-[]->*(b)`. A larger minimum would need search beyond the
+            // globally shortest path, which BFS doesn't do.
+            if selector != PathSelector::Walk {
+                let ok = segments.len() == 1
+                    && segments[0].rel.quantifier.is_some_and(|q| q.min <= 1);
+                if !ok {
+                    return err(
+                        "ANY SHORTEST currently supports a single variable-length segment with a `*` or `+` (min ≤ 1) quantifier, e.g. `(a)-[]->*(b)`",
+                        sel_pos,
+                    );
+                }
+            }
+
+            Ok(PathPattern {
+                start,
+                segments,
+                path_var,
+                selector,
+            })
         })
+    }
+
+    /// Parse an optional ISO path selector prefixing a pattern. Only `ANY
+    /// SHORTEST` is supported today; the other ISO forms (`ALL SHORTEST`, bare
+    /// `ANY`/`ALL`, `SHORTEST k`) are rejected with a pointed message.
+    fn parse_path_selector(&mut self) -> R<PathSelector> {
+        let pos = self.peek().pos;
+        if self.check_kw("any") {
+            self.advance();
+            if self.check_kw("shortest") {
+                self.advance();
+
+                return Ok(PathSelector::AnyShortest);
+            }
+
+            return err(
+                "expected SHORTEST after ANY (bare ANY is not yet supported)",
+                pos,
+            );
+        }
+        if self.check_kw("all") {
+            self.advance();
+            if self.check_kw("shortest") {
+                return err("ALL SHORTEST is not yet supported", pos);
+            }
+
+            return err("the bare ALL path selector is not yet supported", pos);
+        }
+        if self.check_kw("shortest") {
+            return err("SHORTEST must be written as `ANY SHORTEST`", pos);
+        }
+
+        Ok(PathSelector::Walk)
     }
 
     fn parse_match_clause(&mut self) -> R<MatchClause> {

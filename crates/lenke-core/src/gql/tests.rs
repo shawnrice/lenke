@@ -3986,3 +3986,96 @@ fn reserved_words_as_function_names_still_parse() {
     // Reserved words remain valid in call position — this is not a regression.
     assert!(parse("MATCH (x) RETURN upper(x.name), count(*)").is_ok());
 }
+
+/// `ANY SHORTEST` over a single quantified segment: the correct reachable set,
+/// and a genuinely *shortest* path (the 1-hop `marko→lop`, not the 2-hop
+/// `marko→josh→lop`), with the path value bound to `p`.
+#[test]
+fn any_shortest_reachability_and_path() {
+    let mut g = modern();
+
+    // Reachable from marko over `->*` (min 0 → marko reaches itself too).
+    let mut names: Vec<String> = rows(
+        &mut g,
+        "MATCH ANY SHORTEST (a)-[]->*(b) WHERE a.name = 'marko' RETURN b.name AS n",
+    )
+    .into_iter()
+    .map(|r| match &r[0] {
+        Value::Str(s) => s.to_string(),
+        other => panic!("expected a name, got {other:?}"),
+    })
+    .collect();
+    names.sort();
+    assert_eq!(names, vec!["josh", "lop", "marko", "ripple", "vadas"]);
+
+    // Shortest marko→lop is the direct 1-hop CREATED edge, not marko→josh→lop.
+    let r = rows(
+        &mut g,
+        "MATCH p = ANY SHORTEST (a)-[]->*(b) WHERE a.name = 'marko' AND b.name = 'lop' RETURN p",
+    );
+    assert_eq!(r.len(), 1);
+    let Value::Map(m) = &r[0][0] else {
+        panic!("expected a path map, got {:?}", r[0][0]);
+    };
+    let field = |k: &str| m.iter().find(|(key, _)| &**key == k).map(|(_, v)| v);
+    assert_eq!(field("length"), Some(&Value::Num(1.0))); // one hop
+    let Some(Value::List(vs)) = field("vertices") else {
+        panic!("expected a vertices list");
+    };
+    assert_eq!(vs.len(), 2); // marko, lop
+    let Some(Value::List(es)) = field("edges") else {
+        panic!("expected an edges list");
+    };
+    assert_eq!(es.len(), 1);
+}
+
+/// `+` (min 1) excludes the zero-length self path; a bounded ceiling (`->{1,1}`)
+/// keeps only the direct out-neighbours.
+#[test]
+fn any_shortest_plus_and_bounded() {
+    let mut g = modern();
+
+    // `->+` from marko: every reachable vertex EXCEPT marko itself (no 0-hop).
+    let mut plus: Vec<String> = rows(
+        &mut g,
+        "MATCH ANY SHORTEST (a)-[]->+(b) WHERE a.name = 'marko' RETURN b.name AS n",
+    )
+    .into_iter()
+    .map(|r| match &r[0] {
+        Value::Str(s) => s.to_string(),
+        other => panic!("{other:?}"),
+    })
+    .collect();
+    plus.sort();
+    assert_eq!(plus, vec!["josh", "lop", "ripple", "vadas"]);
+
+    // `->{1,1}` from marko: only the direct out-neighbours.
+    let mut one: Vec<String> = rows(
+        &mut g,
+        "MATCH ANY SHORTEST (a)-[]->{1,1}(b) WHERE a.name = 'marko' RETURN b.name AS n",
+    )
+    .into_iter()
+    .map(|r| match &r[0] {
+        Value::Str(s) => s.to_string(),
+        other => panic!("{other:?}"),
+    })
+    .collect();
+    one.sort();
+    assert_eq!(one, vec!["josh", "lop", "vadas"]);
+}
+
+/// The unsupported selector shapes fail to parse with a pointed message.
+#[test]
+fn shortest_unsupported_shapes_rejected() {
+    assert!(parse("MATCH (a)-[]->*(b) RETURN b").is_ok()); // no selector: still fine
+    assert!(parse("MATCH ALL SHORTEST (a)-[]->*(b) RETURN b").is_err());
+    assert!(parse("MATCH SHORTEST (a)-[]->*(b) RETURN b").is_err());
+    assert!(parse("MATCH ANY (a)-[]->*(b) RETURN b").is_err());
+    // A selector needs a single variable-length segment.
+    assert!(parse("MATCH ANY SHORTEST (a)-[]->(b) RETURN b").is_err());
+    assert!(parse("MATCH ANY SHORTEST (a)-[]->*(b)-[]->*(c) RETURN c").is_err());
+    // min > 1 is not the shortest semantics yet.
+    assert!(parse("MATCH ANY SHORTEST (a)-[]->{2,4}(b) RETURN b").is_err());
+    // A named path needs a selector for now.
+    assert!(parse("MATCH p = (a)-[]->(b) RETURN p").is_err());
+}

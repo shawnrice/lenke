@@ -8,7 +8,7 @@
 //! different params (positional, slotted at lower time) against any graph.
 
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU8, Ordering as AtomOrdering};
 use std::sync::Arc;
@@ -17,8 +17,8 @@ use std::sync::Arc;
 use rayon::prelude::*;
 
 use super::ast::{
-    AccessMode, ArithOp, Clause, CompareOp, Direction, Lit, Quantifier, Query, SetOp, SetOpKind,
-    Statement, TxControl, TxKind,
+    AccessMode, ArithOp, Clause, CompareOp, Direction, Lit, PathSelector, Quantifier, Query, SetOp,
+    SetOpKind, Statement, TxControl, TxKind,
 };
 use super::lexer::SyntaxError;
 use super::plan::{
@@ -2215,6 +2215,111 @@ fn walk_segments(
     true
 }
 
+/// `ANY SHORTEST` over a single quantified segment `(start)-[rel q]->(end)`: from
+/// the already-matched `seed` (bound to `start`), find one fewest-hop path to each
+/// reachable vertex that matches `end`, bind it to the path variable (if named),
+/// and emit. BFS gives the shortest hop distance and a predecessor tree; a vertex
+/// is discovered once (its first, shortest predecessor), so one path per endpoint.
+///
+/// Determinism (so native == TS, byte-identical): incident edges are processed in
+/// ascending global edge index — the canonical order both engines share — so the
+/// predecessor chosen for each vertex is identical, and endpoints are emitted in
+/// ascending vertex id. `q.max` bounds the BFS depth; `q.min ≤ 1` is enforced at
+/// parse time (a larger minimum needs longer-than-shortest search).
+fn shortest_walk(
+    graph: &Graph,
+    ctx: &Ctx,
+    pattern: &CPath,
+    seed: u32,
+    binding: &mut Binding,
+    emit: &mut dyn FnMut(&mut Binding) -> bool,
+) -> bool {
+    if ctx.faulted() {
+        return true;
+    }
+    let seg = &pattern.segments[0];
+    let rel = &seg.rel;
+    let end_node = &seg.node;
+    let q = rel
+        .quantifier
+        .expect("an ANY SHORTEST pattern has a quantified segment");
+
+    // BFS: shortest hop distance + predecessor (vertex, edge) for each vertex.
+    let mut dist: HashMap<u32, u32> = HashMap::from([(seed, 0)]);
+    let mut pred: HashMap<u32, (u32, u32)> = HashMap::new();
+    let mut queue: VecDeque<u32> = VecDeque::from([seed]);
+
+    while let Some(v) = queue.pop_front() {
+        let d = dist[&v];
+        if q.max.is_some_and(|m| d >= m) {
+            continue; // don't expand past the hop ceiling
+        }
+        let mut nbrs: Vec<(u32, u32)> =
+            expand(graph, ctx, v, rel.direction, rel.label.as_ref()).collect();
+        nbrs.sort_unstable_by_key(|&(eidx, _)| eidx);
+        for (eidx, nbr) in nbrs {
+            if let std::collections::hash_map::Entry::Vacant(slot) = dist.entry(nbr) {
+                slot.insert(d + 1);
+                pred.insert(nbr, (v, eidx));
+                queue.push_back(nbr);
+            }
+        }
+    }
+
+    // Endpoints: every vertex reached within [min, max] hops, ascending by id.
+    let mut ends: Vec<u32> = dist
+        .iter()
+        .filter(|&(_, &d)| d >= q.min)
+        .map(|(&v, _)| v)
+        .collect();
+    ends.sort_unstable();
+
+    for end in ends {
+        let path = reconstruct_path(seed, end, &pred);
+        let path_slot = pattern.path_var_slot;
+        let stop = !match_node_then(graph, ctx, binding, end_node, end, &mut |b| {
+            if let Some(s) = path_slot {
+                b.set(
+                    s,
+                    Val::Path {
+                        vertices: path.0.clone(),
+                        edges: path.1.clone(),
+                    },
+                );
+            }
+            let keep = emit(b);
+            if let Some(s) = path_slot {
+                b.unset(s);
+            }
+
+            keep
+        });
+        if stop {
+            return false;
+        }
+    }
+
+    true
+}
+
+/// Walk the BFS predecessor tree back from `end` to `seed`, returning the path's
+/// `(vertices, edges)` in forward order. `end == seed` gives the zero-hop path.
+fn reconstruct_path(seed: u32, end: u32, pred: &HashMap<u32, (u32, u32)>) -> (Vec<u32>, Vec<u32>) {
+    let mut vertices = vec![end];
+    let mut edges = Vec::new();
+    let mut cur = end;
+    while cur != seed {
+        let (prev, edge) = pred[&cur];
+        edges.push(edge);
+        vertices.push(prev);
+        cur = prev;
+    }
+    vertices.reverse();
+    edges.reverse();
+
+    (vertices, edges)
+}
+
 /// Seed and match a single path pattern, emitting each binding via `emit`.
 /// `where_` is the enclosing clause WHERE, threaded here only so the start node
 /// can seed from a property index on a `WHERE var.k = $x` conjunct (in addition
@@ -2228,9 +2333,17 @@ fn visit_pattern(
     emit: &mut dyn FnMut(&mut Binding) -> bool,
 ) -> bool {
     let mut at_seed = |seed: u32, binding: &mut Binding| {
-        match_node_then(graph, ctx, binding, &pattern.start, seed, &mut |b| {
-            walk_segments(graph, ctx, pattern, 0, seed, b, emit)
-        })
+        match_node_then(
+            graph,
+            ctx,
+            binding,
+            &pattern.start,
+            seed,
+            &mut |b| match pattern.selector {
+                PathSelector::Walk => walk_segments(graph, ctx, pattern, 0, seed, b, emit),
+                PathSelector::AnyShortest => shortest_walk(graph, ctx, pattern, seed, b, emit),
+            },
+        )
     };
     match pattern.start.var_slot {
         // An already-bound start variable fixes the single seed.
@@ -2492,6 +2605,7 @@ fn pattern_slots(patterns: &[CPath]) -> Vec<usize> {
         }
     };
     for p in patterns {
+        push(p.path_var_slot);
         push(p.start.var_slot);
         for CSegment { rel, node } in &p.segments {
             push(rel.var_slot);
@@ -2708,7 +2822,10 @@ fn single_simple_clause<'a>(matches: &[&'a CClause]) -> Option<SimpleWhere<'a>> 
             where_,
             where_prog,
             scope_len,
-        } if patterns.len() == 1 => Some((
+            // A path selector (`ANY SHORTEST`) needs the general `visit_pattern`
+            // driver (which knows `shortest_walk`); `match_one_path` would
+            // enumerate every trail, so decline the fast path here.
+        } if patterns.len() == 1 && patterns[0].selector == PathSelector::Walk => Some((
             &patterns[0],
             where_.as_ref(),
             where_prog.as_ref(),
@@ -4022,6 +4139,9 @@ fn reverse_path(path: &CPath) -> CPath {
     CPath {
         start: path.segments[n - 1].node.clone(),
         segments,
+        // Reversing swaps the endpoints but not what the path binds to.
+        path_var_slot: path.path_var_slot,
+        selector: path.selector,
     }
 }
 
@@ -4107,6 +4227,10 @@ fn build_scan(
     cap: Option<usize>,
     where_: Option<&CExpr>,
 ) -> Option<ScanCols> {
+    // A path selector (`ANY SHORTEST`) is handled only by the scalar driver.
+    if path.selector != PathSelector::Walk {
+        return None;
+    }
     // Fast path: an isolated node is a tight scan. An index hint (inline `{k:v}`
     // eq or a WHERE comparison on the node) seeds just the candidate vertices;
     // otherwise the label bucket / all-live range. Either way the node's label +
@@ -7920,6 +8044,15 @@ fn run_cquery_body(plan: &CQuery, graph: &mut Graph, params: &[Val]) -> CodeResu
     Ok(rs)
 }
 
+/// Does any MATCH in this part carry a path selector (`ANY SHORTEST`)? Such a
+/// part must take the general scalar driver, which is the only one that honors it.
+fn linear_has_selector(linear: &CLinear) -> bool {
+    linear.clauses.iter().any(|c| {
+        matches!(c, CClause::Match { patterns, .. }
+            if patterns.iter().any(|p| p.selector != PathSelector::Walk))
+    })
+}
+
 /// Run one linear part: try the fully-vectorized pipeline executor first (it
 /// handles read-only `MATCH … WITH … RETURN` chains end-to-end), else the scalar
 /// binding-based driver.
@@ -7929,6 +8062,13 @@ fn run_part(
     plan: &CQuery,
     params: &[Val],
 ) -> CodeResult<RowSet> {
+    // A path selector (`ANY SHORTEST`) is only implemented in the general scalar
+    // driver (`visit_pattern`'s `shortest_walk`). Skip every count / vectorized /
+    // parallel fast path below — they enumerate trails or ignore the selector,
+    // both of which would be wrong for a shortest match.
+    if linear_has_selector(linear) {
+        return run_linear(linear, graph, plan, params);
+    }
     // Cheapest first: the O(1) / edge-scan `count(*)` shortcuts — a bare-node
     // count reads a label bucket length, a single WHERE-less typed segment reads
     // the edge-type bucket. These beat both parallel and the vectorized frame, so

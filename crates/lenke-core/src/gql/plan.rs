@@ -495,6 +495,10 @@ pub struct CSegment {
 pub struct CPath {
     pub start: CNode,
     pub segments: Vec<CSegment>,
+    /// Slot the whole path binds to (`p = …`), or `None` if the path is unnamed.
+    pub path_var_slot: Option<usize>,
+    /// Which matching paths to keep (`Walk` = all; `AnyShortest` = one per pair).
+    pub selector: PathSelector,
 }
 
 #[derive(Debug, Clone)]
@@ -912,6 +916,9 @@ impl Lowerer {
     /// before lowering the patterns' predicates (which may reference any of them).
     fn add_pattern_vars(&mut self, patterns: &[PathPattern]) {
         for p in patterns {
+            if let Some(v) = &p.path_var {
+                self.add_var(v);
+            }
             if let Some(v) = &p.start.variable {
                 self.add_var(v);
             }
@@ -1127,6 +1134,8 @@ impl Lowerer {
                     node: self.node(&s.node),
                 })
                 .collect(),
+            path_var_slot: p.path_var.as_ref().map(|v| self.slot_of(v)),
+            selector: p.selector,
         }
     }
 
@@ -1374,6 +1383,7 @@ fn pattern_bound_vars(p: &PathPattern, bound: &mut Vec<String>) {
             }
         }
     };
+    add(&p.path_var, bound);
     add(&p.start.variable, bound);
     for seg in &p.segments {
         add(&seg.rel.variable, bound);
