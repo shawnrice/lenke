@@ -176,12 +176,12 @@ fn main() {
         (
             "[manual] OPTIONAL MATCH + WITH group-by-p",
             "MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(f) WITH p, count(f) AS c RETURN sum(c) AS total",
-            10,
+            60,
         ),
         (
             "[manual] inner MATCH + WITH group-by-p",
             "MATCH (p:Person)-[:KNOWS]->(f) WITH p, count(f) AS c RETURN sum(c) AS total",
-            10,
+            60,
         ),
     ];
     for (label, q, iters) in inline {

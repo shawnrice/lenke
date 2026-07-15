@@ -10,8 +10,61 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Write as _;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::sync::atomic::{AtomicU8, Ordering as AtomOrdering};
 use std::sync::Arc;
+
+/// A fast, non-cryptographic hasher (FxHash — the one rustc uses) for the internal
+/// grouping / dedup maps, where the default SipHash dominates: `GROUP BY <node>`
+/// over a big result hashes a short key per row, and SipHash's ~40 ns there is the
+/// wall. FxHash processes 8-byte words with a multiply-rotate-xor, ~3–4× faster on
+/// these keys, and needs no dependency. These maps are internal (never keyed by
+/// untrusted external data in a way that a hash-flood would matter), so the DoS
+/// resistance SipHash buys is not needed here.
+#[derive(Default)]
+struct FxHasher(u64);
+
+impl Hasher for FxHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        // FxHash's raw accumulator has weak high-bit avalanche, so structured keys
+        // (`@v0`, `@v1`, … — a common prefix + a small varying suffix) cluster and
+        // the map probes more. A splitmix64 finalize (3 mul-xor-shift, once per
+        // hash) fully mixes it — restoring good distribution while keeping the fast
+        // per-word write. Without this, FxHash was *slower* than SipHash here.
+        let mut x = self.0;
+        x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        x ^ (x >> 31)
+    }
+    #[inline]
+    fn write(&mut self, mut bytes: &[u8]) {
+        const SEED: u64 = 0x51_7c_c1_b7_27_22_0a_95;
+        let mut h = self.0;
+        while bytes.len() >= 8 {
+            let w = u64::from_le_bytes(bytes[..8].try_into().unwrap());
+            h = (h.rotate_left(5) ^ w).wrapping_mul(SEED);
+            bytes = &bytes[8..];
+        }
+        if !bytes.is_empty() {
+            let mut w = 0u64;
+            for (i, &b) in bytes.iter().enumerate() {
+                w |= (b as u64) << (i * 8);
+            }
+            h = (h.rotate_left(5) ^ w).wrapping_mul(SEED);
+        }
+        self.0 = h;
+    }
+    #[inline]
+    fn write_u64(&mut self, w: u64) {
+        const SEED: u64 = 0x51_7c_c1_b7_27_22_0a_95;
+        self.0 = (self.0.rotate_left(5) ^ w).wrapping_mul(SEED);
+    }
+}
+
+type FxBuild = BuildHasherDefault<FxHasher>;
+type FxHashMap<K, V> = HashMap<K, V, FxBuild>;
+type FxHashSet<K> = HashSet<K, FxBuild>;
 
 #[cfg(feature = "parallel-query")]
 use rayon::prelude::*;
@@ -690,6 +743,33 @@ fn val_key(v: &Val, out: &mut String) {
                 let _ = write!(out, "e{e}");
             }
         }
+    }
+}
+
+/// Are two grouping-key value tuples the same group, WITHOUT building the string
+/// key? A correct *refinement* of [`val_key`] equality: `true` ⇒ the `val_key`
+/// strings are equal (safe to accumulate into the same group). It may return
+/// `false` for equal-but-uncommon kinds (temporal/list/path) — that only forgoes
+/// the fast path (the row falls through to the string-keyed map, still correct).
+/// Used for the streaming "same as previous row" fast path in grouped aggregation,
+/// where `WITH <driving-var>, <agg>` yields rows already contiguous by the key —
+/// so most rows never build or hash a key string.
+fn group_vals_eq(a: &[Val], b: &[Val]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| group_val_eq(x, y))
+}
+
+fn group_val_eq(a: &Val, b: &Val) -> bool {
+    match (a, b) {
+        (Val::Null, Val::Null) => true,
+        (Val::Bool(x), Val::Bool(y)) => x == y,
+        (Val::Num(x), Val::Num(y)) => x.to_bits() == y.to_bits(),
+        (Val::Str(x), Val::Str(y)) => x == y,
+        (Val::Node(x), Val::Node(y)) => x == y,
+        (Val::Edge(x), Val::Edge(y)) => x == y,
+        // Temporal/List/Path: defer to the slow (string-keyed) path — comparing
+        // them here can allocate (temporal format) or recurse, and they are rare
+        // grouping keys. Returning `false` is always correctness-safe.
+        _ => false,
     }
 }
 
@@ -3089,12 +3169,21 @@ struct ProjAccum<'p> {
     rows: Vec<(Binding, Vec<Val>)>,
     /// Global aggregate (no group keys): one running accumulator set.
     global: Option<(Binding, Vec<Agg>)>,
-    /// Grouped aggregate: group key -> (rep binding, agg states), first-seen order.
-    group_order: Vec<String>,
-    groups: HashMap<String, (Binding, Vec<Agg>)>,
-    distinct_seen: HashSet<String>,
-    /// Reused scratch for building a group key (no per-row String alloc on hits).
+    /// Grouped aggregate: groups in first-seen order (the `Vec` *is* the order —
+    /// no separate order list), plus a `key -> index` map for reappearing keys.
+    /// Holding an index (not a `&mut` into a map) lets the streaming fast path
+    /// keep a pointer to the current group across rows without a borrow conflict.
+    group_vec: Vec<(String, Binding, Vec<Agg>)>,
+    group_index: FxHashMap<String, usize>,
+    /// Streaming fast path: the previous row's grouping values + its group index.
+    /// `WITH <driving-var>, <agg>` emits rows contiguous by key, so a plain value
+    /// compare against these accumulates the whole run with no key string/hash.
+    last_key_vals: Vec<Val>,
+    last_idx: Option<usize>,
+    /// Reused scratch: current row's grouping values, and the built string key.
+    key_vals: Vec<Val>,
     key_buf: String,
+    distinct_seen: FxHashSet<String>,
 }
 
 impl<'p> ProjAccum<'p> {
@@ -3113,10 +3202,13 @@ impl<'p> ProjAccum<'p> {
             sort_scratch: Binding::default(),
             rows: Vec::new(),
             global: None,
-            group_order: Vec::new(),
-            groups: HashMap::new(),
-            distinct_seen: HashSet::new(),
+            group_vec: Vec::new(),
+            group_index: FxHashMap::default(),
+            last_key_vals: Vec::new(),
+            last_idx: None,
+            key_vals: Vec::new(),
             key_buf: String::new(),
+            distinct_seen: FxHashSet::default(),
         }
     }
 
@@ -3224,27 +3316,48 @@ impl<'p> ProjAccum<'p> {
                 step_aggs(&mut entry.1, &proj.aggs, graph, ctx, binding);
                 return true;
             }
-            // Build the group key into the reused buffer.
-            self.key_buf.clear();
+            // Evaluate this row's grouping values into the reused scratch.
+            self.key_vals.clear();
             {
                 let env = Env::new(graph, ctx, binding);
                 for item in proj.items.iter().filter(|i| !i.is_agg) {
-                    val_key(&eval_item(&env, item), &mut self.key_buf);
-                    self.key_buf.push('\u{1}');
+                    self.key_vals.push(eval_item(&env, item));
                 }
             }
-            // One hash on the group-hit path (the common case): get_mut by &str,
-            // and only a brand-new group clones the key + allocates accumulators.
-            match self.groups.get_mut(self.key_buf.as_str()) {
-                Some(entry) => step_aggs(&mut entry.1, &proj.aggs, graph, ctx, binding),
+            // Streaming fast path: rows for one group usually arrive contiguously
+            // (grouping by the driving variable), so if this row's values equal the
+            // previous row's, fold straight into that group — no key string, no hash.
+            if let Some(li) = self.last_idx {
+                if group_vals_eq(&self.key_vals, &self.last_key_vals) {
+                    step_aggs(&mut self.group_vec[li].2, &proj.aggs, graph, ctx, binding);
+                    return true;
+                }
+            }
+            // Key changed (or is out of order): build the string key and consult the
+            // index. Only a run boundary (≪ every row) pays the build + hash here.
+            self.key_buf.clear();
+            for v in &self.key_vals {
+                val_key(v, &mut self.key_buf);
+                self.key_buf.push('\u{1}');
+            }
+            let idx = match self.group_index.get(self.key_buf.as_str()) {
+                Some(&idx) => {
+                    step_aggs(&mut self.group_vec[idx].2, &proj.aggs, graph, ctx, binding);
+                    idx
+                }
                 None => {
-                    self.group_order.push(self.key_buf.clone());
+                    let idx = self.group_vec.len();
                     let mut aggs: Vec<Agg> = proj.aggs.iter().map(Agg::new).collect();
                     step_aggs(&mut aggs, &proj.aggs, graph, ctx, binding);
-                    self.groups
-                        .insert(self.key_buf.clone(), (binding.clone(), aggs));
+                    self.group_vec
+                        .push((self.key_buf.clone(), binding.clone(), aggs));
+                    self.group_index.insert(self.key_buf.clone(), idx);
+                    idx
                 }
-            }
+            };
+            self.last_idx = Some(idx);
+            self.last_key_vals.clear();
+            self.last_key_vals.extend_from_slice(&self.key_vals);
             return true;
         }
         // Non-aggregating: project the row now (no full-binding clone retained).
@@ -3278,8 +3391,8 @@ impl<'p> ProjAccum<'p> {
                 let keys = self.sort_keys(graph, ctx, &rep, &projected, Some(&agg_values));
                 self.rows.push((projected, keys));
             } else {
-                for key in &self.group_order {
-                    let (rep, aggs) = self.groups.remove(key).unwrap();
+                let groups = std::mem::take(&mut self.group_vec);
+                for (_key, rep, aggs) in groups {
                     let agg_values: Vec<Val> = aggs.into_iter().map(Agg::finish).collect();
                     let projected = self.project_row(graph, ctx, &rep, Some(&agg_values));
                     let keys = self.sort_keys(graph, ctx, &rep, &projected, Some(&agg_values));
@@ -3343,17 +3456,17 @@ impl<'p> ProjAccum<'p> {
                 None => self.global = Some((rep, other_aggs)),
             }
         }
-        for key in other.group_order {
-            let (rep, other_aggs) = other.groups.remove(&key).unwrap();
-            match self.groups.get_mut(&key) {
-                Some((_, aggs)) => {
-                    for (a, o) in aggs.iter_mut().zip(other_aggs) {
+        for (key, rep, other_aggs) in other.group_vec {
+            match self.group_index.get(&key) {
+                Some(&idx) => {
+                    for (a, o) in self.group_vec[idx].2.iter_mut().zip(other_aggs) {
                         a.merge(o);
                     }
                 }
                 None => {
-                    self.group_order.push(key.clone());
-                    self.groups.insert(key, (rep, other_aggs));
+                    let idx = self.group_vec.len();
+                    self.group_index.insert(key.clone(), idx);
+                    self.group_vec.push((key, rep, other_aggs));
                 }
             }
         }
