@@ -7,7 +7,10 @@ export type ClusterRow = AlgorithmRow<'cluster', string>;
 
 const DEFAULT_ITERATIONS = 30;
 
-const computeGen = function* (config: AlgorithmConfig, graph: Graph): AlgorithmGen<ClusterRow> {
+export const computeGen = function* (
+  config: AlgorithmConfig,
+  graph: Graph,
+): AlgorithmGen<ClusterRow> {
   const { edgeLabel, writeProperty, iterations = DEFAULT_ITERATIONS } = config;
 
   const order = yield* materializeVertices(graph);

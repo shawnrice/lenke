@@ -345,6 +345,19 @@ export type Step =
   // `.with(ShortestPath.target, …)`) filters which vertices are destinations;
   // absent ⇒ every reachable vertex. Unweighted BFS over incident edges.
   | { kind: 'shortestPath'; target?: Plan }
+  // --- OLAP graph algorithms (computed locally) -------------------------
+  //
+  // Each step runs a whole-graph algorithm and writes a per-vertex result to a
+  // property, then passes the incoming traversers through so a downstream step
+  // reads it (`g.V().pageRank().order().by('gremlin.pageRankVertexProgram.pageRank')`).
+  // `property` overrides the default TinkerPop column name (via
+  // `.with(<Algo>.propertyName, …)`); `times` sets the iteration count
+  // (`.with(<Algo>.times, …)`); PageRank's `alpha` is the damping factor.
+  // `withComputer()` is accepted upstream as a no-op — lenke always computes
+  // in-process — so it leaves no step.
+  | { kind: 'pageRank'; property?: string; times?: number; alpha?: number }
+  | { kind: 'connectedComponent'; property?: string }
+  | { kind: 'peerPressure'; property?: string; times?: number }
   // --- Mutation (graph-write) -------------------------------------------
   //
   // `addV(label?)` inserts a fresh vertex into the graph. The output stream

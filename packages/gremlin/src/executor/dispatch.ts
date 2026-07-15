@@ -27,6 +27,7 @@ import {
   orderStep,
   sumLocal,
 } from './aggregation.js';
+import { connectedComponentStep, pageRankStep, peerPressureStep } from './algorithms.js';
 import {
   sampleStep,
   skipTraversers,
@@ -413,6 +414,15 @@ export const applyStep = (
 
     case 'shortestPath':
       return shortestPathStep(stream, step, graph);
+
+    case 'pageRank':
+      return pageRankStep(stream, step, graph);
+
+    case 'connectedComponent':
+      return connectedComponentStep(stream, step, graph);
+
+    case 'peerPressure':
+      return peerPressureStep(stream, step, graph);
 
     case 'hasLabelAnd':
       return filterStream(stream, (v) => {

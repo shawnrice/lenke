@@ -8,7 +8,10 @@ export type PageRankRow = AlgorithmRow<'score', number>;
 const DEFAULT_DAMPING = 0.85;
 const DEFAULT_ITERATIONS = 20;
 
-const computeGen = function* (config: AlgorithmConfig, graph: Graph): AlgorithmGen<PageRankRow> {
+export const computeGen = function* (
+  config: AlgorithmConfig,
+  graph: Graph,
+): AlgorithmGen<PageRankRow> {
   const {
     edgeLabel,
     weightProperty,

@@ -51,6 +51,7 @@ export {
   labelPropagation,
   pagerank,
   peerPressure,
+  runAlgorithmSync,
   shortestPath,
   type AlgorithmConfig,
   type AlgorithmRow,
@@ -59,6 +60,7 @@ export {
   type DegreeRow,
   type GraphAlgorithm,
   type LabelRow,
+  type OlapAlgorithmName,
   type PageRankRow,
   type ShortestPathRow,
 } from './algorithms/index.js';

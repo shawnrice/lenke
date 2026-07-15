@@ -20,4 +20,5 @@ export * from './iteration.js';
 export * from './side-effects.js';
 export * from './mutation.js';
 export * from './path.js';
+export * from './algorithms.js';
 export * from './misc.js';

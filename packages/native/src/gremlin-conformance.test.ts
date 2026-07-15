@@ -30,9 +30,11 @@ import {
   V,
   type By,
   branch,
+  connectedComponent,
   constant,
   count,
   createTestTinkerGraph,
+  dedupe,
   eq,
   gt,
   has,
@@ -42,6 +44,9 @@ import {
   math,
   order,
   out,
+  PageRank,
+  pageRank,
+  peerPressure,
   type Plan,
   type Predicate,
   regex,
@@ -170,6 +175,28 @@ const emitBy = (by: By): string => {
   }
 };
 
+// A `.with(<option>, <value>)` modulator suffix, or '' when the field is unset.
+const emitWith = (option: string, value: string | number | undefined): string =>
+  value === undefined ? '' : `.with(${option}, ${emitLiteral(value)})`;
+
+// OLAP algorithm steps → Groovy, reconstructing the `.with(...)` modulators from
+// the step's config fields. Split out of `emitStep` to keep its complexity low.
+const emitAlgoStep = (
+  step: Extract<Step, { kind: 'pageRank' | 'connectedComponent' | 'peerPressure' }>,
+): string => {
+  switch (step.kind) {
+    case 'pageRank': {
+      const base = step.alpha === undefined ? 'pageRank()' : `pageRank(${emitLiteral(step.alpha)})`;
+
+      return `${base}${emitWith('PageRank.propertyName', step.property)}${emitWith('PageRank.times', step.times)}`;
+    }
+    case 'connectedComponent':
+      return `connectedComponent()${emitWith('ConnectedComponent.propertyName', step.property)}`;
+    case 'peerPressure':
+      return `peerPressure()${emitWith('PeerPressure.propertyName', step.property)}${emitWith('PeerPressure.times', step.times)}`;
+  }
+};
+
 const emitStep = (step: Step): string => {
   switch (step.kind) {
     case 'V':
@@ -231,10 +258,21 @@ const emitStep = (step: Step): string => {
   }
 };
 
-// An anonymous sub-traversal (no `g.` prefix): `out('KNOWS').values('name')`.
-const emitSubPlan = (p: Plan): string => p.steps.map(emitStep).join('.');
+// OLAP kinds route to `emitAlgoStep`; everything else to the core `emitStep`
+// switch — kept separate so neither function's cyclomatic complexity grows.
+const ALGO_KINDS = new Set<Step['kind']>(['pageRank', 'connectedComponent', 'peerPressure']);
 
-export const planToGremlin = (plan: Plan): string => `g.${plan.steps.map(emitStep).join('.')}`;
+const emitAnyStep = (step: Step): string =>
+  ALGO_KINDS.has(step.kind)
+    ? emitAlgoStep(
+        step as Extract<Step, { kind: 'pageRank' | 'connectedComponent' | 'peerPressure' }>,
+      )
+    : emitStep(step);
+
+// An anonymous sub-traversal (no `g.` prefix): `out('KNOWS').values('name')`.
+const emitSubPlan = (p: Plan): string => p.steps.map(emitAnyStep).join('.');
+
+export const planToGremlin = (plan: Plan): string => `g.${plan.steps.map(emitAnyStep).join('.')}`;
 
 // --- canonJson: normalize a TS result to the Rust JSON-carrier shape --------
 //
@@ -404,6 +442,53 @@ const CORPUS: Case[] = [
     name: 'inject(adversarial string) — escaping round-trips to valid JSON',
     plan: traversal(inject('a"b\\c/dé\u{1F980}')),
     verdict: { kind: 'agree', expected: ['a"b\\c/dé\u{1F980}'] },
+  },
+  // OLAP algorithm steps — computed locally in both engines, byte-identical.
+  // The scores/labels are order-sensitive (V() insertion order) and depend on
+  // canonical f64 summation order; agreement here proves the whole gremlin path
+  // (parse → run_with vs builder → runAlgorithmSync) matches, on top of the
+  // algo-conformance differential over the core math.
+  {
+    name: "V().pageRank().values('…pageRank')  [scores, f64 byte-identity]",
+    plan: traversal(V(), pageRank(), values('gremlin.pageRankVertexProgram.pageRank')),
+    verdict: {
+      kind: 'agree',
+      expected: [
+        0.11375485828122382, 0.14598540145985406, 0.14598540145985406, 0.11375485828122382,
+        0.3047208266161827, 0.1757986539016618,
+      ],
+    },
+  },
+  {
+    name: 'V().pageRank().count()  [pass-through: one traverser per source]',
+    plan: traversal(V(), pageRank(), count()),
+    verdict: { kind: 'agree', expected: [6] },
+  },
+  {
+    name: "V().pageRank(0.85).with(propertyName,'pr').values('pr')  [custom property + alpha]",
+    plan: traversal(V(), pageRank(0.85).with(PageRank.propertyName, 'pr'), values('pr')),
+    verdict: {
+      kind: 'agree',
+      expected: [
+        0.11375485828122382, 0.14598540145985406, 0.14598540145985406, 0.11375485828122382,
+        0.3047208266161827, 0.1757986539016618,
+      ],
+    },
+  },
+  {
+    name: "V().connectedComponent().values('…component').dedup()  [one WCC → root '1']",
+    plan: traversal(
+      V(),
+      connectedComponent(),
+      values('gremlin.connectedComponentVertexProgram.component'),
+      dedupe(),
+    ),
+    verdict: { kind: 'agree', expected: ['1'] },
+  },
+  {
+    name: "V().peerPressure().values('…cluster')  [cluster labels]",
+    plan: traversal(V(), peerPressure(), values('gremlin.peerPressureVertexProgram.cluster')),
+    verdict: { kind: 'agree', expected: ['1', '1', '1', '6', '6', '1'] },
   },
   // Type-fault: incomparable order — both engines throw (shared fault).
   {

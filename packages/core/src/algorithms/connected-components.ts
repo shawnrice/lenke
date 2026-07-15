@@ -38,7 +38,10 @@ const union = (parent: Int32Array, a: number, b: number): void => {
   parent[drop] = keep;
 };
 
-const computeGen = function* (config: AlgorithmConfig, graph: Graph): AlgorithmGen<ComponentRow> {
+export const computeGen = function* (
+  config: AlgorithmConfig,
+  graph: Graph,
+): AlgorithmGen<ComponentRow> {
   const { edgeLabel, writeProperty } = config;
 
   // Insertion index == native dense id, so smaller-index roots pick the same

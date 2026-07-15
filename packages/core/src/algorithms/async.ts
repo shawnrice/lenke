@@ -103,6 +103,26 @@ export const drain = async <Row>(gen: AlgorithmGen<Row>): Promise<Row[]> => {
 };
 
 /**
+ * Run a generator straight to completion with NO event-loop yields — the
+ * synchronous counterpart of {@link drain}. This blocks the thread for the whole
+ * computation, so it is only for callers that are already synchronous and cannot
+ * await: the GQL / Gremlin query engines, which embed an OLAP algorithm as one
+ * step of a synchronous traversal (TinkerPop's GraphComputer is likewise a
+ * stop-the-world job). The public {@link drain}-backed free functions remain the
+ * non-blocking path. The generator's `yield` checkpoints are simply resumed
+ * immediately; the returned rows are identical either way.
+ */
+export const drainSync = <Row>(gen: AlgorithmGen<Row>): Row[] => {
+  let step = gen.next();
+
+  while (!step.done) {
+    step = gen.next();
+  }
+
+  return step.value;
+};
+
+/**
  * Build a data-last, dual-form algorithm from its generator factory — callable as
  * `algo(config, graph)` or `algo(config)(graph)`, always resolving to `Promise<Row[]>`.
  */
