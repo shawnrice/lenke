@@ -703,6 +703,34 @@ fn build_paths(
     }
 }
 
+/// Run an in-process OLAP algorithm (`pageRank`/`connectedComponent`/`peerPressure`)
+/// over the whole graph, writing each vertex's result to `property`. The computation
+/// is local — `withComputer()` is accepted only as a spec-currency marker. The
+/// incoming traversers pass straight through so downstream steps read the written
+/// property (`g.V().pageRank().order().by('...')`).
+fn algo_step(
+    graph: &mut Graph,
+    ctx: &mut Ctx,
+    stream: Vec<Trav>,
+    name: &str,
+    property: String,
+    configure: impl FnOnce(&mut crate::algo::AlgoConfig),
+) -> Vec<Trav> {
+    let mut cfg = crate::algo::AlgoConfig {
+        write_property: Some(property),
+        ..Default::default()
+    };
+    configure(&mut cfg);
+    if crate::algo::run_with(graph, name, &cfg).is_err() {
+        ctx.fault.get_or_insert((
+            crate::error_codes::ErrorCode::InvalidValue,
+            "graph algorithm step failed",
+        ));
+        return Vec::new();
+    }
+    stream
+}
+
 fn shortest_path_step(
     graph: &mut Graph,
     ctx: &mut Ctx,
@@ -1773,6 +1801,43 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
             stream
         }
         Step::ShortestPath { target } => shortest_path_step(graph, ctx, target.as_deref(), stream),
+        Step::PageRank {
+            property,
+            times,
+            alpha,
+        } => algo_step(
+            graph,
+            ctx,
+            stream,
+            "pagerank",
+            property
+                .clone()
+                .unwrap_or_else(|| "gremlin.pageRankVertexProgram.pageRank".to_string()),
+            |cfg| {
+                cfg.iterations = *times;
+                cfg.damping_factor = *alpha;
+            },
+        ),
+        Step::ConnectedComponent { property } => algo_step(
+            graph,
+            ctx,
+            stream,
+            "connectedComponents",
+            property
+                .clone()
+                .unwrap_or_else(|| "gremlin.connectedComponentVertexProgram.component".to_string()),
+            |_| {},
+        ),
+        Step::PeerPressure { property, times } => algo_step(
+            graph,
+            ctx,
+            stream,
+            "peerPressure",
+            property
+                .clone()
+                .unwrap_or_else(|| "gremlin.peerPressureVertexProgram.cluster".to_string()),
+            |cfg| cfg.iterations = *times,
+        ),
         Step::Cap(key) => {
             // A subgraph key caps to a self-describing {vertices, edges} map of
             // full element records (GVal has no graph type — the TS engine returns

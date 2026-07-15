@@ -317,6 +317,9 @@ impl Parser {
                         | "TextP"
                         | "P"
                         | "ShortestPath"
+                        | "PageRank"
+                        | "ConnectedComponent"
+                        | "PeerPressure"
                         | "__"
                 ) && self.peek_at(1) == Some(&Tok::Dot)
                 {
@@ -382,6 +385,9 @@ impl Parser {
             ("Pop", "all") => Arg::Pop(Pop::All),
             ("Scope", _) => Arg::Str(format!("Scope.{member}")), // consumed by scope-aware steps
             ("ShortestPath", _) => Arg::Str(format!("ShortestPath.{member}")), // consumed by with()
+            ("PageRank", _) => Arg::Str(format!("PageRank.{member}")), // consumed by with()
+            ("ConnectedComponent", _) => Arg::Str(format!("ConnectedComponent.{member}")),
+            ("PeerPressure", _) => Arg::Str(format!("PeerPressure.{member}")),
             _ => return Err(format!("unknown token {ns}.{member}")),
         })
     }
@@ -693,11 +699,37 @@ impl Parser {
             "cap" => t.cap(args.first().ok_or("cap: expected a key")?.as_str()?),
             "subgraph" => t.subgraph(args.first().ok_or("subgraph: expected a name")?.as_str()?),
             "shortestPath" => t.shortest_path(),
+            // Whole-graph OLAP algorithm steps (run locally). `pageRank(alpha?)`.
+            "pageRank" => t.page_rank(match args.as_slice() {
+                [] => None,
+                [a] => match a.as_gval()? {
+                    GVal::Num(n) => Some(n),
+                    _ => return Err("pageRank(alpha): expected a number".into()),
+                },
+                _ => return Err("pageRank: expected an optional alpha".into()),
+            }),
+            "connectedComponent" => t.connected_component(),
+            "peerPressure" => t.peer_pressure(),
+            // `withComputer()` marks OLAP intent; lenke always computes in-process, so
+            // it is accepted as a no-op (any args ignored).
+            "withComputer" => t,
             "with" => match args.as_slice() {
                 [Arg::Str(opt), Arg::Trav(target)] if opt == "ShortestPath.target" => {
                     t.with_shortest_path_target(target.clone())
                 }
-                _ => return Err("with(): only ShortestPath.target is supported".into()),
+                [Arg::Str(opt), rest] if opt.ends_with(".propertyName") => {
+                    t.with_algo_property(rest.as_str()?.to_string())
+                }
+                [Arg::Str(opt), rest] if opt.ends_with(".times") => match rest.as_gval()? {
+                    GVal::Num(n) => t.with_algo_times(n as u32),
+                    _ => return Err("with(times): expected a number".into()),
+                },
+                [Arg::Str(opt), _] if opt.ends_with(".edges") => {
+                    return Err(
+                        "with(<Algo>.edges): the edges modulator is not yet supported (defaults to all out-edges)".into(),
+                    );
+                }
+                _ => return Err("with(): unsupported option".into()),
             },
             "barrier" => t.barrier(),
             // iteration (`repeat` is handled above so it can pull in pre-form

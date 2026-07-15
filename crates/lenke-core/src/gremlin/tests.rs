@@ -1989,3 +1989,115 @@ fn results_json_numbers() {
         r#"[{"5":"v"}]"#
     );
 }
+
+// --- OLAP algorithm steps (local compute; withComputer is a spec-currency no-op) ---
+
+#[test]
+fn algo_page_rank_writes_and_passes_through() {
+    // pageRank() computes over the whole graph, writes the default property, and
+    // passes the incoming traversers through so `.values()` reads the scores back.
+    let scores = q(g()
+        .V()
+        .page_rank(None)
+        .values(&["gremlin.pageRankVertexProgram.pageRank"]));
+    // One score per vertex, all finite numbers.
+    assert_eq!(scores.len(), 6);
+    assert!(scores
+        .iter()
+        .all(|v| matches!(v, GVal::Num(n) if n.is_finite() && *n > 0.0)));
+}
+
+#[test]
+fn algo_page_rank_custom_property_and_alpha() {
+    // pageRank(alpha) + .with(PageRank.propertyName, 'pr') writes where asked.
+    let scores = q(g()
+        .V()
+        .page_rank(Some(0.85))
+        .with_algo_property("pr".to_string())
+        .values(&["pr"]));
+    assert_eq!(scores.len(), 6);
+    // The default property was not written.
+    assert!(q(g()
+        .V()
+        .page_rank(Some(0.85))
+        .with_algo_property("pr".to_string())
+        .values(&["gremlin.pageRankVertexProgram.pageRank"]))
+    .is_empty());
+}
+
+#[test]
+fn algo_connected_component_single_component() {
+    // The Modern graph is one weakly-connected component: every vertex shares the
+    // same component id (the min-insertion-index root's external id).
+    let comps = q(g()
+        .V()
+        .connected_component()
+        .values(&["gremlin.connectedComponentVertexProgram.component"])
+        .dedup());
+    assert_eq!(comps.len(), 1);
+}
+
+#[test]
+fn algo_peer_pressure_writes_cluster() {
+    let clusters = q(g()
+        .V()
+        .peer_pressure()
+        .values(&["gremlin.peerPressureVertexProgram.cluster"]));
+    // One cluster label per vertex; labels are external-id strings.
+    assert_eq!(clusters.len(), 6);
+    assert!(clusters.iter().all(|v| matches!(v, GVal::Str(_))));
+}
+
+#[test]
+fn algo_peer_pressure_times() {
+    // .with(PeerPressure.times, 1) caps iterations without error.
+    let clusters = q(g()
+        .V()
+        .peer_pressure()
+        .with_algo_times(1)
+        .values(&["gremlin.peerPressureVertexProgram.cluster"]));
+    assert_eq!(clusters.len(), 6);
+}
+
+#[test]
+fn algo_parse_string_form() {
+    // The string parser accepts the TinkerPop OLAP surface: withComputer() as a
+    // no-op marker, pageRank()/connectedComponent()/peerPressure(), and the
+    // .with(<Algo>.propertyName / .times) modulators.
+    let scores = super::parse(
+        "g.withComputer().V().pageRank().values('gremlin.pageRankVertexProgram.pageRank')",
+    )
+    .unwrap()
+    .run(&mut modern());
+    assert_eq!(scores.len(), 6);
+
+    let comps = super::parse(
+        "g.V().connectedComponent().values('gremlin.connectedComponentVertexProgram.component').dedup()",
+    )
+    .unwrap()
+    .run(&mut modern());
+    assert_eq!(comps.len(), 1);
+
+    let pr = super::parse("g.V().pageRank(0.85).with(PageRank.propertyName, 'pr').values('pr')")
+        .unwrap()
+        .run(&mut modern());
+    assert_eq!(pr.len(), 6);
+
+    let clusters = super::parse(
+        "g.V().peerPressure().with(PeerPressure.times, 2).values('gremlin.peerPressureVertexProgram.cluster')",
+    )
+    .unwrap()
+    .run(&mut modern());
+    assert_eq!(clusters.len(), 6);
+}
+
+#[test]
+fn algo_parse_edges_modulator_rejected() {
+    // The .edges() modulator is not yet supported — it errors rather than silently
+    // ignoring the requested edge set.
+    let err = super::parse("g.V().pageRank().with(PageRank.edges, __.outE())");
+    assert!(
+        err.is_err(),
+        "expected .with(PageRank.edges,...) to be rejected"
+    );
+}

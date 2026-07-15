@@ -144,7 +144,14 @@ fn build_rowset(graph: &Graph, column: &str, results: &[(u32, Value)]) -> RowSet
 pub fn run(graph: &mut Graph, name: &str, config: &str) -> Result<RowSet, String> {
     let cfg =
         AlgoConfig::from_json(config).map_err(|()| "invalid algorithm config JSON".to_string())?;
-    let (column, results) = dispatch(graph, name, &cfg)?;
+    run_with(graph, name, &cfg)
+}
+
+/// Like [`run`] but taking a pre-built [`AlgoConfig`] (no JSON round-trip) — the entry
+/// used by the in-query Gremlin algorithm steps, which build the config from their
+/// step modulators directly.
+pub fn run_with(graph: &mut Graph, name: &str, cfg: &AlgoConfig) -> Result<RowSet, String> {
+    let (column, results) = dispatch(graph, name, cfg)?;
 
     if let Some(prop) = &cfg.write_property {
         for (v, val) in &results {

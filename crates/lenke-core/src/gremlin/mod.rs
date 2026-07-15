@@ -365,6 +365,23 @@ pub enum Step {
     ShortestPath {
         target: Option<Box<Traversal>>,
     },
+    /// Whole-graph OLAP algorithm steps (TinkerPop `pageRank()` / `connectedComponent()`
+    /// / `peerPressure()`): compute over the whole graph, write each vertex's result to
+    /// `property` (a TinkerPop-style default when unset), then pass the incoming stream
+    /// through so downstream steps read the property. Run locally — a preceding
+    /// `withComputer()` is accepted but the computation is always in-process.
+    PageRank {
+        property: Option<String>,
+        times: Option<u32>,
+        alpha: Option<f64>,
+    },
+    ConnectedComponent {
+        property: Option<String>,
+    },
+    PeerPressure {
+        property: Option<String>,
+        times: Option<u32>,
+    },
     Barrier,
     Repeat {
         body: Box<Traversal>,
@@ -803,6 +820,43 @@ impl Traversal {
     pub fn with_shortest_path_target(mut self, target: Self) -> Self {
         if let Some(Step::ShortestPath { target: tgt }) = self.steps.last_mut() {
             *tgt = Some(Box::new(target));
+        }
+        self
+    }
+    pub fn page_rank(self, alpha: Option<f64>) -> Self {
+        self.push(Step::PageRank {
+            property: None,
+            times: None,
+            alpha,
+        })
+    }
+    pub fn connected_component(self) -> Self {
+        self.push(Step::ConnectedComponent { property: None })
+    }
+    pub fn peer_pressure(self) -> Self {
+        self.push(Step::PeerPressure {
+            property: None,
+            times: None,
+        })
+    }
+    /// `.with(<Algo>.propertyName, name)` — set where the last algorithm step writes.
+    pub fn with_algo_property(mut self, name: String) -> Self {
+        if let Some(
+            Step::PageRank { property, .. }
+            | Step::ConnectedComponent { property }
+            | Step::PeerPressure { property, .. },
+        ) = self.steps.last_mut()
+        {
+            *property = Some(name);
+        }
+        self
+    }
+    /// `.with(<Algo>.times, n)` — set the iteration count for the last algorithm step.
+    pub fn with_algo_times(mut self, n: u32) -> Self {
+        if let Some(Step::PageRank { times, .. } | Step::PeerPressure { times, .. }) =
+            self.steps.last_mut()
+        {
+            *times = Some(n);
         }
         self
     }
