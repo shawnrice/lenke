@@ -183,6 +183,21 @@ fn main() {
             "MATCH (p:Person)-[:KNOWS]->(f) WITH p, count(f) AS c RETURN sum(c) AS total",
             60,
         ),
+        (
+            "[term]   terminal grouped agg, no ORDER BY",
+            "MATCH (p:Person)-[:KNOWS]->(f) RETURN p.name AS n, count(f) AS c",
+            60,
+        ),
+        (
+            "[term]   terminal grouped agg + ORDER BY",
+            "MATCH (p:Person)-[:KNOWS]->(f) RETURN p.name AS n, count(f) AS c ORDER BY n",
+            60,
+        ),
+        (
+            "[term]   terminal grouped agg + ORDER BY count DESC LIMIT 10",
+            "MATCH (p:Person)-[:KNOWS]->(f) RETURN p.name AS n, count(f) AS c ORDER BY c DESC, n LIMIT 10",
+            60,
+        ),
     ];
     for (label, q, iters) in inline {
         let (us, rows) = bench(&mut g, q, *iters);

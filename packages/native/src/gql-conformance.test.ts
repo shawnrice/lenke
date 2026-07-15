@@ -696,6 +696,24 @@ suite('GQL differential: columnar grouped aggregation (TS vs native)', () => {
       'correlated CALL sum → decorrelated (empty = null)',
       `MATCH (p:Person) CALL (p) { MATCH (p)-[e:KNOWS]->(f) RETURN sum(e.weight) AS sw } RETURN p.name AS name, sw ORDER BY name`,
     ],
+    // Terminal grouped aggregate + ORDER BY — vectorized_aggregate sorts the group
+    // rows internally (was scalar). Order by the group key.
+    [
+      'terminal grouped agg + ORDER BY group key',
+      `MATCH (p:Person)-[:KNOWS]->(f) RETURN p.name AS n, count(f) AS c ORDER BY n`,
+    ],
+    // Order by the AGGREGATE descending, tiebreak by the group key.
+    [
+      'terminal grouped agg + ORDER BY aggregate DESC',
+      `MATCH (p:Person)-[:KNOWS]->(f) RETURN p.name AS n, count(f) AS c ORDER BY c DESC, n`,
+    ],
+    // Order by aggregate + LIMIT with a genuine TIE (b and c both count 1): the
+    // tiebreak must resolve to first-seen group order on BOTH engines, else the
+    // LIMIT keeps a different row. The strongest tie-order check.
+    [
+      'terminal grouped agg + ORDER BY agg DESC + LIMIT (tie)',
+      `MATCH (p:Person)-[:KNOWS]->(f) RETURN p.name AS n, count(f) AS c ORDER BY c DESC LIMIT 2`,
+    ],
   ];
 
   for (const [name, q] of cases) {

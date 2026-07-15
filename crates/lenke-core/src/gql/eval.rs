@@ -5326,30 +5326,59 @@ fn vectorized_aggregate(
     let (gid_of_row, rep_row, ngroups) = group_ids(graph, ctx, sc, &key_items)?;
     let agg_cols = fold_group_agg_cols(graph, ctx, sc, proj, &gid_of_row, ngroups)?;
 
-    // Build one output row per group (column-major): re-evaluate the item
-    // expressions scalar (few groups), resolving group keys against the
-    // representative row and `AggRef`s against this group's folded values.
-    let start = proj.skip.unwrap_or(0).min(ngroups);
-    let end = proj
-        .limit
-        .map(|l| (start + l).min(ngroups))
-        .unwrap_or(ngroups);
-    let mut out: Vec<Vec<Val>> = vec![Vec::with_capacity(end - start); proj.items.len()];
-    let mut b = Binding(vec![None; sc.slots.len()]);
-    for g in start..end {
-        // `usize::MAX` = an empty global group (no input rows) — leave the
-        // binding unbound; only pure aggregates (e.g. count = 0) reference it.
+    // Bind group `g`'s representative row's element slots into `b` (for a computed
+    // group key / an aggregate expr that references a key). `usize::MAX` = the empty
+    // global group (no input rows) — leave unbound; only pure aggregates read it.
+    let bind_rep = |b: &mut Binding, g: usize| {
         if let Some(&ri) = rep_row.get(g).filter(|&&ri| ri != usize::MAX) {
             for (slot, col) in sc.slots.iter().enumerate() {
                 if let Some((elem, ids)) = col {
-                    let v = match elem {
-                        Elem::Node => Val::Node(ids[ri]),
-                        Elem::Edge => Val::Edge(ids[ri]),
-                    };
-                    b.set(slot, v);
+                    b.set(
+                        slot,
+                        match elem {
+                            Elem::Node => Val::Node(ids[ri]),
+                            Elem::Edge => Val::Edge(ids[ri]),
+                        },
+                    );
                 }
             }
         }
+    };
+
+    let mut b = Binding(vec![None; sc.slots.len()]);
+    if proj.order_by.is_empty() {
+        // No ORDER BY: emit groups in first-seen order, applying SKIP/LIMIT directly.
+        let start = proj.skip.unwrap_or(0).min(ngroups);
+        let end = proj
+            .limit
+            .map(|l| (start + l).min(ngroups))
+            .unwrap_or(ngroups);
+        let mut out: Vec<Vec<Val>> = vec![Vec::with_capacity(end - start); proj.items.len()];
+        for g in start..end {
+            bind_rep(&mut b, g);
+            let agg_values: Vec<Val> = agg_cols.iter().map(|c| c[g].clone()).collect();
+            let env = Env {
+                graph,
+                ctx,
+                binding: &b,
+                group: None,
+                agg_values: Some(&agg_values),
+            };
+            for (item_idx, item) in proj.items.iter().enumerate() {
+                out[item_idx].push(eval(&env, &item.expr));
+            }
+        }
+        return Some(out);
+    }
+
+    // ORDER BY: materialize every group's projected row + its sort keys, then sort
+    // (input-keyed, exactly like the scalar `sort_keys`: keys evaluated over the
+    // projected output + `order_overlay` input slots + the folded aggregates), then
+    // SKIP/LIMIT, then transpose the selected rows to columns.
+    let mut rows: Vec<Vec<Val>> = Vec::with_capacity(ngroups);
+    let mut keys: Vec<Vec<Val>> = Vec::with_capacity(ngroups);
+    for g in 0..ngroups {
+        bind_rep(&mut b, g);
         let agg_values: Vec<Val> = agg_cols.iter().map(|c| c[g].clone()).collect();
         let env = Env {
             graph,
@@ -5358,8 +5387,58 @@ fn vectorized_aggregate(
             group: None,
             agg_values: Some(&agg_values),
         };
-        for (item_idx, item) in proj.items.iter().enumerate() {
-            out[item_idx].push(eval(&env, &item.expr));
+        let row: Vec<Val> = proj
+            .items
+            .iter()
+            .map(|item| eval(&env, &item.expr))
+            .collect();
+        // Sort-key env: projected output at slots 0..out_len, then the order_overlay
+        // input slots appended — matches `ProjAccum::sort_keys` exactly.
+        let mut sort_binding = Binding(row.iter().map(|v| Some(v.clone())).collect());
+        for &islot in &proj.order_overlay {
+            sort_binding.0.push(b.get(islot).cloned());
+        }
+        let senv = Env {
+            graph,
+            ctx,
+            binding: &sort_binding,
+            group: None,
+            agg_values: Some(&agg_values),
+        };
+        keys.push(proj.order_by.iter().map(|s| eval(&senv, &s.expr)).collect());
+        rows.push(row);
+    }
+
+    // Total order: ORDER BY keys, then the group's first-seen index as the final
+    // tiebreak — so ties resolve to first-seen group order (a stable sort's result),
+    // which lets the partial sort below stay unstable yet deterministic. Mirrors the
+    // non-aggregate ORDER BY branch and the scalar path's group order.
+    let cmp = |&i: &usize, &j: &usize| -> Ordering {
+        for (k, s) in proj.order_by.iter().enumerate() {
+            let o = compare_sort(&keys[i][k], &keys[j][k], s.descending, s.nulls_first);
+            if o != Ordering::Equal {
+                return o;
+            }
+        }
+        i.cmp(&j)
+    };
+    let start = proj.skip.unwrap_or(0).min(ngroups);
+    let end = proj
+        .limit
+        .map(|l| (start + l).min(ngroups))
+        .unwrap_or(ngroups);
+    let mut idx: Vec<usize> = (0..ngroups).collect();
+    // Partial sort for a LIMIT: quickselect the smallest `end`, then sort only those.
+    if end >= 1 && end < idx.len() {
+        idx.select_nth_unstable_by(end - 1, cmp);
+        idx.truncate(end);
+    }
+    idx.sort_by(cmp);
+    let sel = &idx[start.min(idx.len())..end.min(idx.len())];
+    let mut out: Vec<Vec<Val>> = vec![Vec::with_capacity(sel.len()); proj.items.len()];
+    for &gi in sel {
+        for (c, v) in rows[gi].iter().enumerate() {
+            out[c].push(v.clone());
         }
     }
     Some(out)
@@ -5401,10 +5480,12 @@ fn vectorized_frame(
     if matches.len() != 1 || proj.star {
         return None;
     }
-    // ORDER BY only when the sort keys read input vars (not output aliases) and
-    // it's a plain projection — grouped/global sort and DISTINCT+ORDER BY stay scalar.
+    // ORDER BY: an aggregate sorts its group rows internally ([`vectorized_aggregate`],
+    // which resolves output aliases + aggregates), so it's allowed. A non-aggregate
+    // sort only vectorizes when the keys read input vars (not output aliases);
+    // DISTINCT + ORDER BY stays scalar.
     let has_order = !proj.order_by.is_empty();
-    if has_order && (proj.aggregating || proj.distinct || proj.order_needs_output) {
+    if has_order && (proj.distinct || (!proj.aggregating && proj.order_needs_output)) {
         return None;
     }
     let CClause::Match {
@@ -5521,7 +5602,10 @@ fn project_frame_cols(
     proj: &CProjection,
 ) -> Option<Vec<Vec<Val>>> {
     let has_order = !proj.order_by.is_empty();
-    if has_order && (proj.aggregating || proj.distinct || proj.order_needs_output) {
+    // Aggregating + ORDER BY is handled inside `vectorized_aggregate` (it sorts the
+    // group rows, resolving output aliases + aggregates); DISTINCT + ORDER BY and a
+    // non-aggregate sort over output aliases stay scalar.
+    if has_order && (proj.distinct || (!proj.aggregating && proj.order_needs_output)) {
         return None;
     }
     if proj.aggregating {
