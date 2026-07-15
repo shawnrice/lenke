@@ -1,5 +1,5 @@
 import type { Graph } from '../core/Graph.js';
-import { type AlgorithmGen, defineAlgorithm } from './async.js';
+import { type AlgorithmGen, defineAlgorithm, materializeVertices, YIELD_EVERY } from './async.js';
 import type { AlgorithmConfig, AlgorithmRow } from './types.js';
 
 /** A PageRank result row: `{ node, score }`. */
@@ -17,7 +17,7 @@ const computeGen = function* (config: AlgorithmConfig, graph: Graph): AlgorithmG
     iterations = DEFAULT_ITERATIONS,
   } = config;
 
-  const order = [...graph.vertices];
+  const order = yield* materializeVertices(graph);
   const n = order.length;
 
   if (n === 0) {
@@ -27,7 +27,20 @@ const computeGen = function* (config: AlgorithmConfig, graph: Graph): AlgorithmG
   const nf = n;
   const index = new Map<string, number>();
 
-  order.forEach((v, i) => index.set(v.id, i));
+  // A single counter drives every O(V)/O(E) loop below (build passes included, not
+  // just the iteration): the driver turns these frequent checkpoints into time-
+  // bounded chunks, so even the setup over a huge edge list never blocks a frame.
+  let sinceYield = 0;
+
+  for (let i = 0; i < n; i++) {
+    index.set(order[i].id, i);
+
+    if (++sinceYield >= YIELD_EVERY) {
+      sinceYield = 0;
+
+      yield;
+    }
+  }
 
   // A named-but-unknown edge type matches no edge → every vertex is dangling and
   // converges to a uniform 1/N (handled naturally by the loop below).
@@ -63,6 +76,12 @@ const computeGen = function* (config: AlgorithmConfig, graph: Graph): AlgorithmG
       outStrength[index.get(edge.from.id)!] += w;
       incOff[index.get(edge.to.id)! + 1]++;
     }
+
+    if (++sinceYield >= YIELD_EVERY) {
+      sinceYield = 0;
+
+      yield;
+    }
   }
 
   // Pass 2: per-target contribution lists as a flat CSR — `incOff[v]..incOff[v+1]`
@@ -71,6 +90,12 @@ const computeGen = function* (config: AlgorithmConfig, graph: Graph): AlgorithmG
   // boxed [src, factor] tuples) make the hot pull loop contiguous and allocation-free.
   for (let v = 0; v < n; v++) {
     incOff[v + 1] += incOff[v];
+
+    if (++sinceYield >= YIELD_EVERY) {
+      sinceYield = 0;
+
+      yield;
+    }
   }
 
   const incSrc = new Int32Array(incOff[n]);
@@ -89,6 +114,12 @@ const computeGen = function* (config: AlgorithmConfig, graph: Graph): AlgorithmG
     const pos = cursor[index.get(edge.to.id)!]++;
     incSrc[pos] = src;
     incFac[pos] = w / outStrength[src];
+
+    if (++sinceYield >= YIELD_EVERY) {
+      sinceYield = 0;
+
+      yield;
+    }
   }
 
   let pr = new Float64Array(n).fill(1 / nf);
@@ -100,6 +131,12 @@ const computeGen = function* (config: AlgorithmConfig, graph: Graph): AlgorithmG
     for (let u = 0; u < n; u++) {
       if (outStrength[u] === 0) {
         dangling += pr[u];
+      }
+
+      if (++sinceYield >= YIELD_EVERY) {
+        sinceYield = 0;
+
+        yield;
       }
     }
 
@@ -114,26 +151,37 @@ const computeGen = function* (config: AlgorithmConfig, graph: Graph): AlgorithmG
       }
 
       next[v] = base + d * sum;
+
+      // Checkpoint within the iteration — `next` is being built while `pr` is frozen,
+      // so yielding here can't change the result.
+      if (++sinceYield >= YIELD_EVERY) {
+        sinceYield = 0;
+
+        yield;
+      }
     }
 
     pr = next;
-
-    if (iter < iterations - 1) {
-      yield; // checkpoint between iterations (async surface interleaves here)
-    }
   }
 
-  const rows: PageRankRow[] = [];
+  const rows: PageRankRow[] = new Array(n);
 
-  order.forEach((v, i) => {
+  for (let i = 0; i < n; i++) {
+    const v = order[i];
     const score = pr[i];
 
     if (writeProperty !== undefined) {
       v.setProperty(writeProperty, score);
     }
 
-    rows.push({ node: v.id, score });
-  });
+    rows[i] = { node: v.id, score };
+
+    if (++sinceYield >= YIELD_EVERY) {
+      sinceYield = 0;
+
+      yield;
+    }
+  }
 
   return rows;
 };

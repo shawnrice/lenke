@@ -1,5 +1,5 @@
 import type { Graph } from '../core/Graph.js';
-import { type AlgorithmGen, defineAlgorithm, YIELD_EVERY } from './async.js';
+import { type AlgorithmGen, defineAlgorithm, materializeVertices, YIELD_EVERY } from './async.js';
 import type { AlgorithmConfig, AlgorithmRow } from './types.js';
 
 /** A weakly-connected-components result row: `{ node, componentId }`. */
@@ -43,7 +43,7 @@ const computeGen = function* (config: AlgorithmConfig, graph: Graph): AlgorithmG
 
   // Insertion index == native dense id, so smaller-index roots pick the same
   // representative vertex in both engines → identical component-id strings.
-  const order = [...graph.vertices];
+  const order = yield* materializeVertices(graph);
   const index = new Map<string, number>();
 
   order.forEach((v, i) => index.set(v.id, i));

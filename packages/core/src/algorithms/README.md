@@ -18,10 +18,16 @@ import { pagerank } from '@lenke/core';
 const scores = await pagerank({ iterations: 20 }, graph);
 ```
 
-No `sync` vs `async` split, no `Async` suffix. The pure-TS functions yield to the
-event loop at checkpoints (between iterations, or every ~16k vertices/edges of a
-single pass) so the process stays responsive; the result is exactly what the
-computation produces — the checkpoints only interleave the same work.
+No `sync` vs `async` split, no `Async` suffix. The pure-TS functions interleave with
+the event loop on a **time budget**, not a fixed item count: the generator
+checkpoints often and cheaply, and the driver only actually yields once a chunk has
+run for ~5 ms (React's frame-slice), so each synchronous burst stays **~5–10 ms** —
+under one 16.7 ms frame — regardless of the algorithm or the graph size. (A
+count-based threshold can't do this: per-item cost varies ~25× across these
+algorithms, so 16k items is ~4 ms for degree but ~100 ms for Dijkstra.) It yields
+via `setImmediate`/`MessageChannel` (not `setTimeout(0)`, which browsers clamp to
+~4 ms). The result is exactly what the computation produces — the checkpoints only
+interleave the same work.
 
 ## Native (Node) runs off the JS thread
 

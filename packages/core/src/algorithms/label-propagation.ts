@@ -1,6 +1,6 @@
 import type { Edge } from '../core/Edge.js';
 import type { Graph } from '../core/Graph.js';
-import { type AlgorithmGen, defineAlgorithm } from './async.js';
+import { type AlgorithmGen, defineAlgorithm, materializeVertices, YIELD_EVERY } from './async.js';
 import type { AlgorithmConfig, AlgorithmRow } from './types.js';
 
 /** A label-propagation result row: `{ node, label }`. */
@@ -43,26 +43,43 @@ const computeGen = function* (config: AlgorithmConfig, graph: Graph): AlgorithmG
   // Insertion order == native dense-id order. A label is carried as the index of
   // the vertex whose external id is that label (all labels are vertex ids), so a
   // round tallies numbers in a reused Map instead of hashing label strings.
-  const order = [...graph.vertices];
+  const order = yield* materializeVertices(graph);
   const n = order.length;
   const index = new Map<string, number>();
 
-  order.forEach((v, i) => index.set(v.id, i));
+  // One counter drives every O(V)/O(E) loop (the CSR build passes included, not just
+  // the rounds); the driver turns these frequent checkpoints into time-bounded chunks.
+  let sinceYield = 0;
+
+  for (let i = 0; i < n; i++) {
+    index.set(order[i].id, i);
+
+    if (++sinceYield >= YIELD_EVERY) {
+      sinceYield = 0;
+
+      yield;
+    }
+  }
 
   // Precompute the undirected neighbour adjacency ONCE as a flat CSR — the graph is
   // static across rounds, so this replaces per-round nested-map/Set traversal +
   // edge-type filtering with a contiguous typed-array scan.
   const off = new Int32Array(n + 1);
-  const lists: number[][] = order.map((v) => {
-    const list: number[] = [];
-    collectNeighbours(graph.edgesFromByLabel.get(v.id), 'to', edgeLabel, index, list);
-    collectNeighbours(graph.edgesToByLabel.get(v.id), 'from', edgeLabel, index, list);
-
-    return list;
-  });
+  const lists: number[][] = [];
 
   for (let i = 0; i < n; i++) {
-    off[i + 1] = off[i] + lists[i].length;
+    const list: number[] = [];
+    collectNeighbours(graph.edgesFromByLabel.get(order[i].id), 'to', edgeLabel, index, list);
+    collectNeighbours(graph.edgesToByLabel.get(order[i].id), 'from', edgeLabel, index, list);
+    lists.push(list);
+    off[i + 1] = off[i] + list.length;
+    sinceYield += list.length;
+
+    if (sinceYield >= YIELD_EVERY) {
+      sinceYield = 0;
+
+      yield;
+    }
   }
 
   const data = new Int32Array(off[n]);
@@ -71,6 +88,12 @@ const computeGen = function* (config: AlgorithmConfig, graph: Graph): AlgorithmG
   for (const list of lists) {
     for (const nbr of list) {
       data[k++] = nbr;
+    }
+
+    if (++sinceYield >= YIELD_EVERY) {
+      sinceYield = 0;
+
+      yield;
     }
   }
 
@@ -125,6 +148,14 @@ const computeGen = function* (config: AlgorithmConfig, graph: Graph): AlgorithmG
       if (nv !== labels[v]) {
         changed = true;
       }
+
+      // Checkpoint within the round — `nextLabels` is being built while `labels` is
+      // frozen, so yielding here can't change the result.
+      if (++sinceYield >= YIELD_EVERY) {
+        sinceYield = 0;
+
+        yield;
+      }
     }
 
     labels = nextLabels;
@@ -132,11 +163,9 @@ const computeGen = function* (config: AlgorithmConfig, graph: Graph): AlgorithmG
     if (!changed) {
       break; // converged — later rounds would be no-ops
     }
-
-    yield; // checkpoint between rounds (async surface interleaves the event loop here)
   }
 
-  const rows: LabelRow[] = [];
+  const rows: LabelRow[] = new Array(n);
 
   for (let i = 0; i < n; i++) {
     const label = order[labels[i]].id;
@@ -145,7 +174,13 @@ const computeGen = function* (config: AlgorithmConfig, graph: Graph): AlgorithmG
       order[i].setProperty(writeProperty, label);
     }
 
-    rows.push({ node: order[i].id, label });
+    rows[i] = { node: order[i].id, label };
+
+    if (++sinceYield >= YIELD_EVERY) {
+      sinceYield = 0;
+
+      yield;
+    }
   }
 
   return rows;

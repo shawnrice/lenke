@@ -1,41 +1,101 @@
 import type { Graph } from '../core/Graph.js';
+import type { Vertex } from '../core/Vertex.js';
 import type { AlgorithmConfig } from './types.js';
 
 /**
- * A graph algorithm expressed as a generator: it `yield`s at safe checkpoints
- * (between iterations, or every {@link YIELD_EVERY} items of a single pass) and
- * finally `return`s its rows. The public functions drive it with a macrotask
- * between checkpoints, so a long computation never blocks the event loop.
+ * A graph algorithm expressed as a generator: it `yield`s frequently at safe
+ * points (every {@link YIELD_EVERY} items, and between iterations) and finally
+ * `return`s its rows. The driver ({@link drain}) throttles the *actual* event-loop
+ * yields to a time budget, so a long computation stays responsive without the
+ * per-item overhead of yielding for real every time.
  */
 export type AlgorithmGen<Row> = Generator<void, Row[], void>;
 
 /**
- * Items (vertices / edges / frontier pops) a single-pass algorithm processes
- * between checkpoints. Large enough that the per-checkpoint macrotask overhead is
- * negligible, small enough that a chunk stays well under a frame.
+ * How many items (vertices / edges / frontier pops) a generator processes between
+ * `yield` checkpoints. Small, so the synchronous burst between checkpoints stays
+ * well under the frame budget even for the most expensive per-item algorithm
+ * (Dijkstra ≈ 7 µs/pop → ≈ 1.8 ms for 256). The driver decides whether each
+ * checkpoint becomes a real yield, so a small value here is cheap.
  */
-export const YIELD_EVERY = 16_384;
+export const YIELD_EVERY = 256;
 
 /**
- * Yield control to the host event loop once, so pending I/O / timers / rendering
- * can run before the next chunk. A macrotask (`setTimeout(0)`) rather than a
- * microtask, since microtasks would starve I/O just like a synchronous loop does.
+ * Max wall-clock a chunk of work runs before yielding to the event loop. ~5 ms
+ * (React's time-slice) leaves ~11 ms of a 16.7 ms frame for the browser's own
+ * layout/paint, so a long algorithm drops few or no frames.
  */
-const yieldToEventLoop = (): Promise<void> =>
-  new Promise((resolve) => {
-    setTimeout(resolve, 0);
-  });
+const BUDGET_MS = 5;
+
+const now = (): number => globalThis.performance?.now?.() ?? Date.now();
 
 /**
- * Run a generator to completion, awaiting a macrotask at each checkpoint. The
- * result is exactly what the body computes — the checkpoints only interleave the
- * same work with the event loop; they never change it.
+ * Materialize `graph.vertices` (insertion order) into an array, yielding at
+ * checkpoints so even this O(V) setup step over a huge vertex set never blocks a
+ * frame. Delegate with `const order = yield* materializeVertices(graph)`.
+ */
+export function* materializeVertices(graph: Graph): Generator<void, Vertex[], void> {
+  const order: Vertex[] = [];
+  let since = 0;
+
+  for (const v of graph.vertices) {
+    order.push(v);
+
+    if (++since >= YIELD_EVERY) {
+      since = 0;
+
+      yield;
+    }
+  }
+
+  return order;
+}
+
+/**
+ * Schedule a callback as a **macrotask** (so I/O and rendering can run before it),
+ * using the fastest primitive the host offers: `setImmediate` on Node/Bun, a
+ * `MessageChannel` in the browser (neither is clamped like `setTimeout(0)`, which
+ * browsers throttle to ~4 ms and would roughly double a sliced run's wall-clock).
+ */
+const scheduleMacrotask: (task: () => void) => void = (() => {
+  if (typeof setImmediate === 'function') {
+    return (task) => void setImmediate(task);
+  }
+
+  if (typeof MessageChannel === 'function') {
+    const channel = new MessageChannel();
+    const queue: Array<() => void> = [];
+    channel.port1.onmessage = () => queue.shift()?.();
+
+    return (task) => {
+      queue.push(task);
+      channel.port2.postMessage(null);
+    };
+  }
+
+  return (task) => void setTimeout(task, 0);
+})();
+
+const nextTick = (): Promise<void> => new Promise((resolve) => scheduleMacrotask(resolve));
+
+/**
+ * Run a generator to completion, yielding to the event loop whenever a chunk has
+ * run for {@link BUDGET_MS}. The generator offers checkpoints often; most are
+ * resumed immediately (no event-loop round-trip) and only ~one per budget window
+ * becomes a real macrotask yield — so chunks are time-bounded (frame-safe) and
+ * independent of the algorithm's per-item cost. The result is exactly what the body
+ * computes; the yields only interleave the same work with the event loop.
  */
 export const drain = async <Row>(gen: AlgorithmGen<Row>): Promise<Row[]> => {
+  let deadline = now() + BUDGET_MS;
   let step = gen.next();
 
   while (!step.done) {
-    await yieldToEventLoop();
+    if (now() >= deadline) {
+      await nextTick();
+      deadline = now() + BUDGET_MS;
+    }
+
     step = gen.next();
   }
 

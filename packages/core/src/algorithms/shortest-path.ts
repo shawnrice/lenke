@@ -1,7 +1,7 @@
 import type { Edge } from '../core/Edge.js';
 import type { Graph } from '../core/Graph.js';
 import type { Vertex } from '../core/Vertex.js';
-import { type AlgorithmGen, defineAlgorithm, YIELD_EVERY } from './async.js';
+import { type AlgorithmGen, defineAlgorithm, materializeVertices, YIELD_EVERY } from './async.js';
 import type { AlgorithmConfig, AlgorithmRow } from './types.js';
 
 /** A shortest-path result row: `{ node, distance }`. */
@@ -161,7 +161,7 @@ const computeGen = function* (
   const { source, target, edgeLabel, weightProperty, heuristicProperty, algorithm, writeProperty } =
     config;
 
-  const order = [...graph.vertices];
+  const order = yield* materializeVertices(graph);
   const index = new Map<string, number>();
 
   order.forEach((v, i) => index.set(v.id, i));
