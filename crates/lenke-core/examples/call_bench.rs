@@ -173,6 +173,16 @@ fn main() {
             "MATCH (p:Person)-[:KNOWS]->(f) RETURN count(*) AS c",
             50,
         ),
+        (
+            "[manual] OPTIONAL MATCH + WITH group-by-p",
+            "MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(f) WITH p, count(f) AS c RETURN sum(c) AS total",
+            10,
+        ),
+        (
+            "[manual] inner MATCH + WITH group-by-p",
+            "MATCH (p:Person)-[:KNOWS]->(f) WITH p, count(f) AS c RETURN sum(c) AS total",
+            10,
+        ),
     ];
     for (label, q, iters) in inline {
         let (us, rows) = bench(&mut g, q, *iters);

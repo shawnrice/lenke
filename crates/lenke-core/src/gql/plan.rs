@@ -1751,10 +1751,12 @@ fn try_decorrelate(c: &CallInline, outer: &[String]) -> Option<(MatchClause, Wit
         unknown_fns: Vec::new(),
     };
     let cproj = probe.projection(proj, true);
+    // Aggregating bodies COULD decorrelate to `OPTIONAL MATCH … WITH <outer>,
+    // <aggs>` (verified correct + order-preserving now the OPTIONAL MATCH bug is
+    // fixed), but that form is bottlenecked by GROUP BY on a node key — as slow as
+    // the correlated path — so it's no win yet. Left correlated until group-by-node
+    // is optimized; then flip this to decorrelate all-aggregate bodies.
     if cproj.aggregating {
-        // Aggregating bodies would decorrelate to `OPTIONAL MATCH … WITH <outer>,
-        // <aggs>`, but correlated OPTIONAL MATCH has a correctness bug (drops some
-        // bound-start matches), so keep them correlated for now.
         return None;
     }
     // Column-collision guard: a projected output name must not shadow an outer var.

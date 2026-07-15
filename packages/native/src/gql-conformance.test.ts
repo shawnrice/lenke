@@ -188,6 +188,17 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
         `RETURN p.name AS pn, thing ORDER BY pn, thing`,
     );
     expect(tsM).toBe(natM);
+
+    // AGGREGATING subquery, deliberately NO `ORDER BY`: native decorrelates it to
+    // OPTIONAL MATCH + grouped WITH, TS runs it correlated — the row ORDER (not
+    // just the set) must still match, proving the grouped first-seen order equals
+    // the correlated outer order.
+    const [tsA, natA] = both(
+      `MATCH (p:Person) ` +
+        `CALL (p) { MATCH (p)-[:CREATED]->(w) RETURN count(w) AS c } ` +
+        `RETURN p.name AS pn, c`,
+    );
+    expect(tsA).toBe(natA);
   });
 
   test('ISO path functions on a bound path are byte-identical', () => {
