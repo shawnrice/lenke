@@ -650,11 +650,32 @@ suite('GQL differential: columnar grouped aggregation (TS vs native)', () => {
       'global aggregate over a traversal',
       `MATCH (p:Person)-[e:KNOWS]->(f) RETURN count(*) AS c, sum(e.weight) AS s, min(e.since) AS mn`,
     ],
-    // OPTIONAL MATCH grouped agg: stays on the scalar path (expand_frame doesn't
-    // vectorize optional yet) — pinned here so it stays byte-identical regardless.
+    // OPTIONAL MATCH grouped agg — now VECTORIZED (expand_frame_optional): person
+    // `d` has no out-edges, so its group is null-filled → count 0 (the null-fill row
+    // path). Byte-identical to the scalar accumulator.
     [
-      'OPTIONAL MATCH grouped (scalar fallback) stays identical',
+      'OPTIONAL MATCH grouped → count (null-fill = 0)',
       `MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(f) WITH p, count(f) AS c RETURN p.name AS name, c ORDER BY name`,
+    ],
+    // OPTIONAL non-aggregating: `f`/`e` are nullable value columns — `f.name` is
+    // null for the unmatched outer row `d` (val-column property access).
+    [
+      'OPTIONAL MATCH non-agg → null property for unmatched row',
+      `MATCH (p:Person) OPTIONAL MATCH (p)-[e:KNOWS]->(f) RETURN p.name AS pn, f.name AS fn ORDER BY pn, fn`,
+    ],
+    // OPTIONAL aggregate over an edge property: `d`'s sum over zero edges is null,
+    // avg is null, min is null — the folded aggregate on a null-only group.
+    [
+      'OPTIONAL MATCH → sum/avg/min over edge prop (empty group = null)',
+      `MATCH (p:Person) OPTIONAL MATCH (p)-[e:KNOWS]->(f)
+       WITH p, count(f) AS c, sum(e.weight) AS s, avg(e.weight) AS a, min(e.since) AS mn
+       RETURN p.name AS name, c, s, a, mn ORDER BY name`,
+    ],
+    // OPTIONAL with an inline label on the optional node — the label filter runs as
+    // a match check (a non-matching candidate is not a match → may null-fill).
+    [
+      'OPTIONAL MATCH with inline node label',
+      `MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(f:Person) WITH p, count(f) AS c RETURN p.name AS name, c ORDER BY name`,
     ],
   ];
 

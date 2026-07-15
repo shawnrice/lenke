@@ -5952,6 +5952,158 @@ fn expand_frame(
     Some(cur)
 }
 
+/// OPTIONAL single-segment expansion as a columnar frame transform: like
+/// [`expand_frame`], but **every outer row survives** — one output row per match,
+/// or a single NULL-filled row when an outer row has no match (ISO `OPTIONAL
+/// MATCH`). The segment's new rel/node slots become **value** columns: they must
+/// hold `Val::Null` for the unmatched rows, which an element `slots` column (a bare
+/// `Vec<u32>`) can't. Downstream reads them via `val_slot` (bare var) /`scalar_col`
+/// (property access), and `count(f)` counts the non-null rows (`num_of` marks a
+/// node valid, null invalid) — matching the scalar accumulator exactly.
+///
+/// Scoped to a **single fixed-length segment from a bare re-stated start** (no
+/// start label/props/WHERE — those would need null-fill semantics, not a compacting
+/// filter; no var-length; no self-join). Anything else → `None` (scalar fallback).
+/// A clause-level WHERE on the OPTIONAL clause is refused by the caller (it, too,
+/// would have to null-fill rather than drop).
+fn expand_frame_optional(
+    graph: &Graph,
+    ctx: &Ctx,
+    sc: &ScanCols,
+    path: &CPath,
+    scope_len: usize,
+) -> Option<ScanCols> {
+    if path.segments.len() != 1 {
+        return None;
+    }
+    let start = &path.start;
+    if start.label.is_some() || !start.props.is_empty() || start.where_.is_some() {
+        return None;
+    }
+    let start_slot = start.var_slot?;
+    let start_ids: Vec<u32> = match sc.slot(start_slot) {
+        Some((Elem::Node, ids)) => ids.to_vec(),
+        _ => return None,
+    };
+    let seg = &path.segments[0];
+    if seg.rel.quantifier.is_some() {
+        return None;
+    }
+    let rel = &seg.rel;
+    let node = &seg.node;
+    // The new rel/node slots must be fresh (no self-join back onto a bound column).
+    let mut seen = HashSet::new();
+    for s in [rel.var_slot, node.var_slot].into_iter().flatten() {
+        if !seen.insert(s) || sc.slot(s).is_some() || sc.val_slot(s).is_some() {
+            return None;
+        }
+    }
+    let width = scope_len.max(sc.slots.len());
+    let rel_check = !rel.props.is_empty() || rel.where_.is_some();
+    let node_check = !node.props.is_empty() || node.where_.is_some();
+    let need_bind = rel_check || node_check;
+
+    // Carried columns keep their kind (element/value); the segment's rel/node slots
+    // are nullable value columns.
+    let mut out = ScanCols::new(width);
+    for s in 0..width {
+        if Some(s) == rel.var_slot || Some(s) == node.var_slot {
+            out.vals[s] = Some(Vec::new());
+        } else if s < sc.slots.len() {
+            if let Some((e, _)) = &sc.slots[s] {
+                out.slots[s] = Some((*e, Vec::new()));
+            } else if sc.vals[s].is_some() {
+                out.vals[s] = Some(Vec::new());
+            }
+        }
+    }
+
+    // Append one output row: carried columns read from outer row `i`; the segment's
+    // rel/node value columns take `rv`/`nv` (both `Val::Null` for the no-match fill).
+    let push = |out: &mut ScanCols, i: usize, rv: &Val, nv: &Val| {
+        for s in 0..width {
+            if Some(s) == rel.var_slot {
+                out.vals[s].as_mut().unwrap().push(rv.clone());
+            } else if Some(s) == node.var_slot {
+                out.vals[s].as_mut().unwrap().push(nv.clone());
+            } else if s < sc.slots.len() {
+                if let Some((_, ids)) = &sc.slots[s] {
+                    out.slots[s].as_mut().unwrap().1.push(ids[i]);
+                } else if let Some(v) = &sc.vals[s] {
+                    out.vals[s].as_mut().unwrap().push(v[i].clone());
+                }
+            }
+        }
+    };
+
+    let mut nb = Binding(vec![None; width]);
+    let mut nrows = 0usize;
+    for i in 0..sc.n {
+        if need_bind {
+            for s in 0..sc.slots.len() {
+                if let Some((e, ids)) = &sc.slots[s] {
+                    nb.set(
+                        s,
+                        match e {
+                            Elem::Node => Val::Node(ids[i]),
+                            Elem::Edge => Val::Edge(ids[i]),
+                        },
+                    );
+                } else if let Some(v) = &sc.vals[s] {
+                    nb.set(s, v[i].clone());
+                }
+            }
+        }
+        let mut matched = false;
+        for (eidx, nbr) in expand(graph, ctx, start_ids[i], rel.direction, rel.label.as_ref()) {
+            if !matches_label(graph, ctx, nbr, node.label.as_ref()) {
+                continue;
+            }
+            if need_bind {
+                if let Some(s) = rel.var_slot {
+                    nb.set(s, Val::Edge(eidx));
+                }
+                if let Some(s) = node.var_slot {
+                    nb.set(s, Val::Node(nbr));
+                }
+                if rel_check
+                    && !satisfies(
+                        graph,
+                        ctx,
+                        &Val::Edge(eidx),
+                        &rel.props,
+                        rel.where_.as_ref(),
+                        &nb,
+                    )
+                {
+                    continue;
+                }
+                if node_check
+                    && !satisfies(
+                        graph,
+                        ctx,
+                        &Val::Node(nbr),
+                        &node.props,
+                        node.where_.as_ref(),
+                        &nb,
+                    )
+                {
+                    continue;
+                }
+            }
+            push(&mut out, i, &Val::Edge(eidx), &Val::Node(nbr));
+            nrows += 1;
+            matched = true;
+        }
+        if !matched {
+            push(&mut out, i, &Val::Null, &Val::Null);
+            nrows += 1;
+        }
+    }
+    out.n = nrows;
+    Some(out)
+}
+
 /// O(1) shortcut for `MATCH (n:Label) RETURN count(*)`: no WHERE, no path, no
 /// grouping / extra aggregate / DISTINCT / ORDER BY / SKIP / LIMIT. The result is
 /// exactly the label bucket's size, so read `vertices_with_label(l).len()` instead
@@ -7340,16 +7492,9 @@ fn vectorized_linear(
         return None;
     };
     // Middle clauses are WITHs or expanding MATCHes.
-    let mid_ok = mid.iter().all(|c| {
-        matches!(
-            c,
-            CClause::With { .. }
-                | CClause::Match {
-                    optional: false,
-                    ..
-                }
-        )
-    });
+    let mid_ok = mid
+        .iter()
+        .all(|c| matches!(c, CClause::With { .. } | CClause::Match { .. }));
     if !mid_ok {
         return None;
     }
@@ -7391,14 +7536,24 @@ fn vectorized_linear(
                 patterns,
                 where_,
                 scope_len,
+                optional,
                 ..
             } => {
                 if patterns.len() != 1 {
                     return None;
                 }
-                sc = expand_frame(graph, &ctx, &sc, &patterns[0], *scope_len)?;
-                if let Some(w) = where_ {
-                    filter(&mut sc, w);
+                if *optional {
+                    // A clause-level WHERE on an OPTIONAL clause would have to
+                    // null-fill (not drop) rows that fail it — not handled; scalar.
+                    if where_.is_some() {
+                        return None;
+                    }
+                    sc = expand_frame_optional(graph, &ctx, &sc, &patterns[0], *scope_len)?;
+                } else {
+                    sc = expand_frame(graph, &ctx, &sc, &patterns[0], *scope_len)?;
+                    if let Some(w) = where_ {
+                        filter(&mut sc, w);
+                    }
                 }
             }
             _ => return None,
