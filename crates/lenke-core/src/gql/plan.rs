@@ -65,6 +65,11 @@ pub enum ScalarFn {
     Labels,
     Type,
     Keys,
+    // Path functions (ISO GQL): the vertices, the edges, and the interleaved
+    // vertex/edge sequence of a bound path. Hop count reuses `Size`.
+    PathNodes,
+    PathEdges,
+    PathElements,
     // Conversion.
     ToString,
     ToInteger,
@@ -167,7 +172,7 @@ fn scalar_fn(name: &str) -> ScalarFn {
         "power" => ScalarFn::Power,
         "mod" => ScalarFn::Mod,
         "log" => ScalarFn::Log,
-        "size" | "length" => ScalarFn::Size,
+        "size" | "length" | "path_length" => ScalarFn::Size,
         "left" => ScalarFn::Left,
         "right" => ScalarFn::Right,
         "coalesce" => ScalarFn::Coalesce,
@@ -176,6 +181,9 @@ fn scalar_fn(name: &str) -> ScalarFn {
         "labels" => ScalarFn::Labels,
         "type" => ScalarFn::Type,
         "keys" => ScalarFn::Keys,
+        "nodes" => ScalarFn::PathNodes,
+        "relationships" => ScalarFn::PathEdges,
+        "elements" => ScalarFn::PathElements,
         "tostring" | "to_string" => ScalarFn::ToString,
         "tointeger" | "to_integer" => ScalarFn::ToInteger,
         "tofloat" | "to_float" => ScalarFn::ToFloat,

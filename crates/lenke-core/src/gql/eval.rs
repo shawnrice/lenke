@@ -1507,6 +1507,8 @@ fn call_scalar(graph: &Graph, func: ScalarFn, args: &[Val]) -> Val {
         Size => match a {
             Some(Val::List(items)) => Val::Num(items.len() as f64),
             Some(Val::Str(s)) => Val::Num(s.encode_utf16().count() as f64),
+            // `length`/`path_length` over a path: the hop (edge) count.
+            Some(Val::Path { edges, .. }) => Val::Num(edges.len() as f64),
             _ => Val::Null,
         },
         Left => match (a, b) {
@@ -1582,6 +1584,35 @@ fn call_scalar(graph: &Graph, func: ScalarFn, args: &[Val]) -> Val {
                 None => Val::Null,
             }
         }
+        // --- path functions (ISO GQL) — vertices/edges kept as live element
+        // handles, so each still serializes richly and supports property reads.
+        PathNodes => match a {
+            Some(Val::Path { vertices, .. }) => {
+                Val::List(vertices.iter().map(|&v| Val::Node(v)).collect())
+            }
+            _ => Val::Null,
+        },
+        PathEdges => match a {
+            Some(Val::Path { edges, .. }) => {
+                Val::List(edges.iter().map(|&e| Val::Edge(e)).collect())
+            }
+            _ => Val::Null,
+        },
+        PathElements => match a {
+            Some(Val::Path { vertices, edges }) => {
+                let mut out = Vec::with_capacity(vertices.len() + edges.len());
+                for (i, &v) in vertices.iter().enumerate() {
+                    if i > 0 {
+                        out.push(Val::Edge(edges[i - 1]));
+                    }
+
+                    out.push(Val::Node(v));
+                }
+
+                Val::List(out)
+            }
+            _ => Val::Null,
+        },
         // --- conversion (null in → null out) ---
         ToString => match a {
             Some(v) if !is_nullish(v) => vstr(js_str(graph, v)),

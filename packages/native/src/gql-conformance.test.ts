@@ -121,6 +121,27 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     expect(ts).toBe(native);
   });
 
+  test('ISO path functions on a bound path are byte-identical', () => {
+    const q =
+      `MATCH p = ANY SHORTEST (a)-[]->*(b) WHERE a.name = 'marko' AND b.name = 'lop' ` +
+      `RETURN path_length(p) AS len, length(p) AS len2, ` +
+      `nodes(p) AS ns, relationships(p) AS es, elements(p) AS el`;
+    const [ts, native] = both(q);
+    expect(ts).toBe(native);
+    // Length is the hop count; nodes/edges/elements are rich element lists.
+    expect(ts).toBe(
+      `[{"len":1,"len2":1,` +
+        `"ns":[` +
+        `{"id":"1","labels":["Person"],"properties":{"age":29,"name":"marko"}},` +
+        `{"id":"3","labels":["Software"],"properties":{"lang":"java","name":"lop"}}],` +
+        `"es":[{"id":"9","from":"1","to":"3","labels":["CREATED"],"properties":{"since":2009,"weight":0.4}}],` +
+        `"el":[` +
+        `{"id":"1","labels":["Person"],"properties":{"age":29,"name":"marko"}},` +
+        `{"id":"9","from":"1","to":"3","labels":["CREATED"],"properties":{"since":2009,"weight":0.4}},` +
+        `{"id":"3","labels":["Software"],"properties":{"lang":"java","name":"lop"}}]}]`,
+    );
+  });
+
   // --- var-length {1,2} count: native uses a degree-product fast path, TS
   // enumerates trails. They must agree, including with parallel edges + self-loops
   // (which the degree product would double-count without the correction). -------

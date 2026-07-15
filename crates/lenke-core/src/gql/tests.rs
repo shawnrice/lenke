@@ -4079,3 +4079,52 @@ fn shortest_unsupported_shapes_rejected() {
     // A named path needs a selector for now.
     assert!(parse("MATCH p = (a)-[]->(b) RETURN p").is_err());
 }
+
+/// ISO GQL path functions over a bound path: `path_length`/`length` (hops),
+/// `nodes`/`relationships` (element lists), `elements` (interleaved).
+#[test]
+fn path_accessor_functions() {
+    let mut g = modern();
+
+    // marko→josh→ripple is the shortest marko→ripple path (2 hops).
+    let r = rows(
+        &mut g,
+        "MATCH p = ANY SHORTEST (a)-[]->*(b) WHERE a.name='marko' AND b.name='ripple' \
+         RETURN path_length(p) AS len, length(p) AS len2, \
+                nodes(p) AS ns, relationships(p) AS es, elements(p) AS el",
+    );
+    assert_eq!(r.len(), 1);
+    let row = &r[0];
+
+    assert_eq!(row[0], Value::Num(2.0)); // path_length
+    assert_eq!(row[1], Value::Num(2.0)); // length synonym
+
+    // nodes(p): the three vertices as rich element maps (marko, josh, ripple).
+    let Value::List(ns) = &row[2] else {
+        panic!("nodes(p) should be a list, got {:?}", row[2]);
+    };
+    assert_eq!(ns.len(), 3);
+    let node_id = |v: &Value| match v {
+        Value::Map(m) => match m.iter().find(|(k, _)| &**k == "id").map(|(_, x)| x) {
+            Some(Value::Str(s)) => s.to_string(),
+            _ => panic!("no id"),
+        },
+        _ => panic!("not a node map"),
+    };
+    assert_eq!(
+        ns.iter().map(node_id).collect::<Vec<_>>(),
+        vec!["marko", "josh", "ripple"]
+    );
+
+    // relationships(p): the two edges.
+    let Value::List(es) = &row[3] else {
+        panic!("relationships(p) should be a list");
+    };
+    assert_eq!(es.len(), 2);
+
+    // elements(p): interleaved node, edge, node, edge, node → 5 items.
+    let Value::List(el) = &row[4] else {
+        panic!("elements(p) should be a list");
+    };
+    assert_eq!(el.len(), 5);
+}

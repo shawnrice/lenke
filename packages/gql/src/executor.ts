@@ -419,6 +419,22 @@ const BINARY_NUM: Record<string, (x: number, y: number) => number> = {
   log: (base, value) => Math.log(value) / Math.log(base),
 };
 
+/**
+ * `size`/`length`/`path_length`: a path's hop count (NOT `Path.length`, which is
+ * the interleaved element count per the List contract), else a list/string length.
+ */
+const lengthOf = (a: unknown): number | null => {
+  if (isNullish(a)) {
+    return null;
+  }
+
+  if (a instanceof Path) {
+    return a.hops;
+  }
+
+  return Array.isArray(a) || typeof a === 'string' ? a.length : null;
+};
+
 /** Scalar (non-aggregate) functions: the ISO numeric/string value functions. */
 const callScalar = (name: string, args: readonly unknown[]): unknown => {
   const [a, b] = args;
@@ -458,11 +474,8 @@ const callScalar = (name: string, args: readonly unknown[]): unknown => {
     }
     case 'size':
     case 'length':
-      if (isNullish(a)) {
-        return null;
-      }
-
-      return Array.isArray(a) || typeof a === 'string' ? a.length : null;
+    case 'path_length':
+      return lengthOf(a);
     case 'left':
       return isNullish(a) || isNullish(b)
         ? null
@@ -745,6 +758,15 @@ const callGraphFn = (name: string, a: unknown): unknown => {
       return isEdge(a) ? ([...a.labels][0] ?? '') : null;
     case 'keys':
       return isElement(a) ? Object.keys(a.properties).sort() : null;
+    // ISO GQL path functions. Vertices/edges stay live element handles (they
+    // serialize richly, like `RETURN a`); `elements` is the path's own
+    // interleaved iteration (vertex, edge, …, vertex).
+    case 'nodes':
+      return a instanceof Path ? [...a.vertices] : null;
+    case 'relationships':
+      return a instanceof Path ? [...a.edges] : null;
+    case 'elements':
+      return a instanceof Path ? [...a] : null;
     default:
       return UNHANDLED;
   }

@@ -66,6 +66,26 @@ describe('ANY SHORTEST path patterns', () => {
     expect(names(rows)).toEqual(['josh', 'lop', 'vadas']);
   });
 
+  test('ISO path functions: path_length/length, nodes, relationships, elements', () => {
+    const rows = query(
+      modern(),
+      "MATCH p = ANY SHORTEST (a)-[]->*(b) WHERE a.name = 'marko' AND b.name = 'ripple' " +
+        'RETURN path_length(p) AS len, length(p) AS len2, ' +
+        'nodes(p) AS ns, relationships(p) AS es, elements(p) AS el',
+    );
+    expect(rows).toHaveLength(1);
+    const [row] = rows;
+
+    expect(row.len).toBe(2); // marko -> josh -> ripple
+    expect(row.len2).toBe(2);
+
+    const ns = row.ns as Array<{ id: string }>;
+    expect(ns.map((v) => v.id)).toEqual(['marko', 'josh', 'ripple']);
+
+    expect((row.es as unknown[]).length).toBe(2);
+    expect((row.el as unknown[]).length).toBe(5); // interleaved node,edge,node,edge,node
+  });
+
   test('unsupported selector shapes are rejected at parse time', () => {
     expect(() => parseQuery('MATCH (a)-[]->*(b) RETURN b')).not.toThrow();
     expect(() => parseQuery('MATCH ALL SHORTEST (a)-[]->*(b) RETURN b')).toThrow();
