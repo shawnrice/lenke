@@ -3016,6 +3016,14 @@ type CCallNamed = {
   /** Procedure output column → the variable it yields into. */
   binds: readonly { column: string; var: string }[];
 };
+type CCallInline = {
+  kind: 'callInline';
+  optional: boolean;
+  scope: readonly string[];
+  body: CLinear;
+  /** Output columns of the nested RETURN (for OPTIONAL null-fill). */
+  returnColumns: readonly string[];
+};
 type CClause =
   | CMatch
   | CWith
@@ -3026,6 +3034,7 @@ type CClause =
   | CSet
   | CRemove
   | CCallNamed
+  | CCallInline
   | CDelete
   | CFinish;
 
@@ -3144,6 +3153,21 @@ const compileClause = (clause: Clause): CClause => {
         algo: spec?.algo ?? null,
         config: clause.config.map((p) => ({ key: p.key, value: compileExpr(p.value) })),
         binds,
+      };
+    }
+    case 'callInline': {
+      const ret = clause.body.clauses.find((c) => c.kind === 'return');
+      const returnColumns =
+        ret && !ret.projection.star
+          ? ret.projection.items.map((i) => i.alias ?? columnName(i.expr))
+          : [];
+
+      return {
+        kind: 'callInline',
+        optional: clause.optional,
+        scope: clause.scope,
+        body: compileLinear(clause.body),
+        returnColumns,
       };
     }
     case 'insert':
@@ -4217,6 +4241,52 @@ const runCall = (
   }, outer);
 };
 
+/**
+ * `[OPTIONAL] CALL (scope) { … }`: run the nested query once per outer row
+ * (correlated / lateral), seeding it with only the imported scope variables, and
+ * merge the nested RETURN columns back — duplicating the outer row per nested row.
+ * OPTIONAL keeps the outer row (nested columns null-filled) when the subquery is
+ * empty; a non-OPTIONAL empty subquery drops the outer row.
+ */
+const runCallInline = (
+  graph: Graph,
+  clause: CCallInline,
+  bindings: Iterable<Binding>,
+  params: Params,
+): Iterable<Binding> =>
+  flatMap((outer: Binding) => {
+    // Import only the scoped variables into the subquery's initial binding.
+    const seed = new Map<string, unknown>();
+
+    for (const v of clause.scope) {
+      if (outer.has(v)) {
+        seed.set(v, outer.get(v));
+      }
+    }
+
+    const nested = runLinearClauses(clause.body, graph, params, seed);
+
+    if (nested.length === 0 && clause.optional) {
+      const b = new Map(outer);
+
+      for (const col of clause.returnColumns) {
+        b.set(col, null);
+      }
+
+      return [b];
+    }
+
+    return nested.map((row) => {
+      const b = new Map(outer);
+
+      for (const [k, val] of Object.entries(row)) {
+        b.set(k, val);
+      }
+
+      return b;
+    });
+  }, bindings);
+
 const runFor = (
   graph: Graph,
   clause: CFor,
@@ -4331,24 +4401,33 @@ const runLinear = (linear: CLinear, graph: Graph, params: Params): Row[] => {
   return graph.transaction(() => runLinearClauses(linear, graph, params));
 };
 
-const runLinearClauses = (linear: CLinear, graph: Graph, params: Params): Row[] => {
-  // Direct `count(*)` shortcut (edge-bucket size / degree product) — skips
-  // enumerating every match. Only fires for the exact `MATCH … RETURN count(*)`
-  // shapes `detectCountShortcut` accepts.
-  if (linear.countShortcut) {
-    return [linear.countShortcut(graph, params)];
-  }
+const runLinearClauses = (
+  linear: CLinear,
+  graph: Graph,
+  params: Params,
+  initial?: Binding,
+): Row[] => {
+  // The fast paths assume an empty start; a seeded (inline-subquery) run skips
+  // them and takes the general clause loop.
+  if (initial === undefined) {
+    // Direct `count(*)` shortcut (edge-bucket size / degree product) — skips
+    // enumerating every match. Only fires for the exact `MATCH … RETURN count(*)`
+    // shapes `detectCountShortcut` accepts.
+    if (linear.countShortcut) {
+      return [linear.countShortcut(graph, params)];
+    }
 
-  // Unbounded var-length + DISTINCT → BFS the reachable set instead of enumerating
-  // trails (exponential, hits the trail budget). See `detectReachableShortcut`.
-  if (linear.reachShortcut) {
-    return linear.reachShortcut(graph, params);
+    // Unbounded var-length + DISTINCT → BFS the reachable set instead of enumerating
+    // trails (exponential, hits the trail budget). See `detectReachableShortcut`.
+    if (linear.reachShortcut) {
+      return linear.reachShortcut(graph, params);
+    }
   }
 
   // Bindings flow as a lazy stream; only barriers (mutations, aggregation,
   // ORDER BY) force materialization — so a streaming read never holds the whole
   // result set in memory.
-  let bindings: Iterable<Binding> = [new Map()];
+  let bindings: Iterable<Binding> = [initial ?? new Map()];
 
   for (const clause of linear.clauses) {
     switch (clause.kind) {
@@ -4360,6 +4439,9 @@ const runLinearClauses = (linear: CLinear, graph: Graph, params: Params): Row[] 
         break;
       case 'callNamed':
         bindings = runCall(graph, clause, bindings, params);
+        break;
+      case 'callInline':
+        bindings = runCallInline(graph, clause, bindings, params);
         break;
       case 'with': {
         const projected = applyProjection(clause.projection, bindings, params, graph);

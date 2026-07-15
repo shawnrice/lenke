@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
-import { parseQuery, query } from './index.js';
+import { query } from './index.js';
 
 // The TinkerPop "modern" graph.
 const modern = (): Graph => {
@@ -54,9 +54,70 @@ describe('named procedure CALL', () => {
     expect(read).toEqual([{ d: 3 }]);
   });
 
-  test('unknown procedure faults; inline-subquery CALL is rejected at parse', () => {
+  test('unknown procedure faults', () => {
     expect(() => query(modern(), 'CALL bogus() YIELD x RETURN x')).toThrow();
-    expect(() => parseQuery('CALL { MATCH (n) RETURN n }')).toThrow();
-    expect(() => parseQuery('CALL (a) { MATCH (n) RETURN n }')).toThrow();
+  });
+});
+
+describe('inline subquery CALL', () => {
+  test('correlated subquery — lateral join, merges nested RETURN columns', () => {
+    // For each person, count how many things they created.
+    const rows = query(
+      modern(),
+      `MATCH (p:Person)
+       CALL (p) {
+         MATCH (p)-[:CREATED]->(w)
+         RETURN count(w) AS created
+       }
+       RETURN p.name AS name, created ORDER BY name`,
+    );
+    expect(rows).toEqual([
+      { name: 'josh', created: 2 },
+      { name: 'marko', created: 1 },
+      { name: 'peter', created: 1 },
+      { name: 'vadas', created: 0 },
+    ]);
+  });
+
+  test('row duplication — a subquery returning N rows fans the outer row out', () => {
+    const rows = query(
+      modern(),
+      `MATCH (p:Person {name: 'marko'})
+       CALL (p) { MATCH (p)-[:KNOWS]->(f) RETURN f.name AS friend }
+       RETURN friend ORDER BY friend`,
+    );
+    expect(rows).toEqual([{ friend: 'josh' }, { friend: 'vadas' }]);
+  });
+
+  test('non-OPTIONAL empty subquery drops the outer row; OPTIONAL keeps it', () => {
+    // vadas created nothing → dropped without OPTIONAL.
+    const dropped = query(
+      modern(),
+      `MATCH (p:Person)
+       CALL (p) { MATCH (p)-[:CREATED]->(w) RETURN w.name AS thing }
+       RETURN p.name AS name ORDER BY name`,
+    );
+    expect(dropped.map((r) => r.name)).toEqual(['josh', 'josh', 'marko', 'peter']);
+
+    // OPTIONAL keeps vadas, with the nested column null-filled.
+    const kept = query(
+      modern(),
+      `MATCH (p:Person)
+       OPTIONAL CALL (p) { MATCH (p)-[:CREATED]->(w) RETURN w.name AS thing }
+       RETURN p.name AS name, thing ORDER BY name, thing`,
+    );
+    expect(kept.some((r) => r.name === 'vadas' && r.thing === null)).toBe(true);
+  });
+
+  test('scope isolation — an unscoped outer var is not visible to the subquery', () => {
+    // `p` is not imported, so the inner MATCH (p) is a fresh unbound pattern
+    // matching every vertex — not the outer marko.
+    const rows = query(
+      modern(),
+      `MATCH (p:Person {name: 'marko'})
+       CALL () { MATCH (n) RETURN count(n) AS total }
+       RETURN total`,
+    );
+    expect(rows).toEqual([{ total: 6 }]); // all 6 vertices, not just marko's
   });
 });

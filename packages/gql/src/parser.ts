@@ -43,6 +43,7 @@ import type {
   MatchClause,
   MergeClause,
   MergeUpdate,
+  CallInlineClause,
   CallNamedClause,
   NodePattern,
   PathPattern,
@@ -643,17 +644,40 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Statement => {
     return { name, ...(alias !== undefined ? { alias } : {}) };
   };
 
-  // `[OPTIONAL] CALL name(config) [YIELD col [AS alias], …]`. The inline-subquery
-  // form (`CALL { … }` / `CALL (…) { … }`) is rejected — that's a later slice.
-  const parseCallClause = (): CallNamedClause => {
+  // `[OPTIONAL] CALL (scope) { … }` — an inline subquery.
+  const parseInlineCall = (optional: boolean): CallInlineClause => {
+    const scope: string[] = [];
+
+    if (check('lparen')) {
+      advance();
+
+      if (!check('rparen')) {
+        scope.push(bindName('a scoped variable'));
+
+        while (check('comma')) {
+          advance();
+          scope.push(bindName('a scoped variable'));
+        }
+      }
+
+      expect('rparen', "')' to close the variable scope");
+    }
+
+    expect('lbrace', "'{' to open an inline subquery");
+    const body = parseLinearQuery();
+    expect('rbrace', "'}' to close an inline subquery");
+
+    return { kind: 'callInline', optional, scope, body };
+  };
+
+  // `[OPTIONAL] CALL …`: the named-procedure form `CALL name(config) [YIELD …]`,
+  // or the inline-subquery form `CALL (scope) { … }` / `CALL { … }`.
+  const parseCallClause = (): CallNamedClause | CallInlineClause => {
     const optional = checkKeyword('optional') ? (advance(), true) : false;
     expectKeyword('call');
 
     if (check('lbrace') || check('lparen')) {
-      throw new GqlSyntaxError(
-        'inline subquery CALL (`CALL { … }`) is not yet supported; use a named procedure call `CALL name(…)`',
-        peek().pos,
-      );
+      return parseInlineCall(optional);
     }
 
     let name = bindName('a procedure name');

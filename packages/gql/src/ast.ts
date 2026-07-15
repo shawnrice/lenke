@@ -70,7 +70,23 @@ export type Clause =
   | DeleteClause
   | FinishClause
   | CallNamedClause
+  | CallInlineClause
   | ReturnClause;
+
+/**
+ * `[OPTIONAL] CALL (scope) { … }` — an ISO GQL inline procedure call
+ * (`callProcedureStatement` → `inlineProcedureCall`). Runs the nested query once
+ * per incoming row (correlated / lateral), importing only the `scope` variables,
+ * and merges the nested `RETURN` columns back into the row. OPTIONAL keeps the
+ * outer row (nested columns null-filled) when the subquery yields nothing.
+ */
+export type CallInlineClause = {
+  kind: 'callInline';
+  optional: boolean;
+  /** Outer variables the subquery imports (`(a, b)`); empty = none / `()`. */
+  scope: readonly string[];
+  body: LinearQuery;
+};
 
 /**
  * `[OPTIONAL] CALL name(config) [YIELD col [AS alias], …]` — an ISO GQL named
