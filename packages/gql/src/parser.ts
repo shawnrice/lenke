@@ -43,10 +43,12 @@ import type {
   MatchClause,
   MergeClause,
   MergeUpdate,
+  CallNamedClause,
   NodePattern,
   PathPattern,
   PathSelector,
   Projection,
+  YieldItem,
   PropertyConstraint,
   RelPattern,
   RemoveClause,
@@ -625,6 +627,60 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Statement => {
         selector,
       };
     });
+
+  // Is the token after the current one the keyword `kw`? (Tells `OPTIONAL CALL`
+  // from `OPTIONAL MATCH` without consuming.)
+  const kwAfter = (kw: string): boolean => {
+    const t = tokens[pos + 1];
+
+    return t?.type === 'keyword' && t.value === kw;
+  };
+
+  const parseYieldItem = (): YieldItem => {
+    const name = bindName('a YIELD column name');
+    const alias = checkKeyword('as') ? (advance(), bindName('a YIELD alias')) : undefined;
+
+    return { name, ...(alias !== undefined ? { alias } : {}) };
+  };
+
+  // `[OPTIONAL] CALL name(config) [YIELD col [AS alias], …]`. The inline-subquery
+  // form (`CALL { … }` / `CALL (…) { … }`) is rejected — that's a later slice.
+  const parseCallClause = (): CallNamedClause => {
+    const optional = checkKeyword('optional') ? (advance(), true) : false;
+    expectKeyword('call');
+
+    if (check('lbrace') || check('lparen')) {
+      throw new GqlSyntaxError(
+        'inline subquery CALL (`CALL { … }`) is not yet supported; use a named procedure call `CALL name(…)`',
+        peek().pos,
+      );
+    }
+
+    let name = bindName('a procedure name');
+
+    while (check('dot')) {
+      advance();
+      name += `.${bindName('a procedure name segment')}`;
+    }
+
+    expect('lparen', "'(' after a procedure name");
+    const config = check('lbrace') ? parsePropertyMap() : [];
+    expect('rparen', "')' to close procedure arguments");
+
+    let yields: YieldItem[] | undefined;
+
+    if (checkKeyword('yield')) {
+      advance();
+      yields = [parseYieldItem()];
+
+      while (check('comma')) {
+        advance();
+        yields.push(parseYieldItem());
+      }
+    }
+
+    return { kind: 'callNamed', optional, name, config, ...(yields ? { yields } : {}) };
+  };
 
   const parseMatchClause = (): MatchClause => {
     const optional = checkKeyword('optional') ? (advance(), true) : false;
@@ -1466,6 +1522,8 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Statement => {
         clauses.push(parseWithClause());
       } else if (checkKeyword('for')) {
         clauses.push(parseForClause());
+      } else if (checkKeyword('call') || (checkKeyword('optional') && kwAfter('call'))) {
+        clauses.push(parseCallClause());
       } else if (checkKeyword('match') || checkKeyword('optional')) {
         clauses.push(parseMatchClause());
       } else if (checkKeyword('insert')) {

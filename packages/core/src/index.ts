@@ -63,6 +63,7 @@ export {
   type DegreeRow,
   type GraphAlgorithm,
   type LabelRow,
+  type AlgorithmName,
   type OlapAlgorithmName,
   type PageRankRow,
   type ShortestPathRow,

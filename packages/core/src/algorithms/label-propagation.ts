@@ -37,7 +37,10 @@ const collectNeighbours = (
   }
 };
 
-const computeGen = function* (config: AlgorithmConfig, graph: Graph): AlgorithmGen<LabelRow> {
+export const computeGen = function* (
+  config: AlgorithmConfig,
+  graph: Graph,
+): AlgorithmGen<LabelRow> {
   const { edgeLabel, writeProperty, iterations = DEFAULT_ITERATIONS } = config;
 
   // Insertion order == native dense-id order. A label is carried as the index of

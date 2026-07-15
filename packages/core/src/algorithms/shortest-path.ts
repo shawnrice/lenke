@@ -154,7 +154,7 @@ const astar = (
   return undefined;
 };
 
-const computeGen = function* (
+export const computeGen = function* (
   config: AlgorithmConfig,
   graph: Graph,
 ): AlgorithmGen<ShortestPathRow> {

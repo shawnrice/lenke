@@ -29,7 +29,10 @@ const countDir = (byLabel: Map<string, Set<Edge>> | undefined, edgeLabel?: strin
   return n;
 };
 
-const computeGen = function* (config: AlgorithmConfig, graph: Graph): AlgorithmGen<DegreeRow> {
+export const computeGen = function* (
+  config: AlgorithmConfig,
+  graph: Graph,
+): AlgorithmGen<DegreeRow> {
   const { edgeLabel, direction = 'out', writeProperty } = config;
   const rows: DegreeRow[] = [];
   let sinceYield = 0;

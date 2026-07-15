@@ -69,7 +69,28 @@ export type Clause =
   | RemoveClause
   | DeleteClause
   | FinishClause
+  | CallNamedClause
   | ReturnClause;
+
+/**
+ * `[OPTIONAL] CALL name(config) [YIELD col [AS alias], …]` — an ISO GQL named
+ * procedure call (`callProcedureStatement` → `namedProcedureCall`). Invokes a
+ * catalog procedure (here: the built-in graph algorithms); `yields` picks and
+ * renames its output columns (absent ⇒ every column, under its own name).
+ */
+export type CallNamedClause = {
+  kind: 'callNamed';
+  /** `OPTIONAL CALL` — keep the outer row (null-filled) if the call is empty. */
+  optional: boolean;
+  /** Procedure name (a dotted `parent.name` is joined with `.`). */
+  name: string;
+  /** The procedure's config, written as a `{key: value}` map argument. */
+  config: readonly PropertyConstraint[];
+  yields?: readonly YieldItem[];
+};
+
+/** One `YIELD` output item: an output column, optionally renamed with `AS`. */
+export type YieldItem = { name: string; alias?: string };
 
 /**
  * `_MERGE pattern [_ON_CREATE SET …] [_ON_UPDATE SET … [WHERE p] | _ON_UPDATE_NOTHING]`

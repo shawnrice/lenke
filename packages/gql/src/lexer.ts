@@ -76,6 +76,8 @@ const KEYWORDS = new Set([
   'optional',
   'with',
   'where',
+  'call',
+  'yield',
   'insert',
   'set',
   'remove',

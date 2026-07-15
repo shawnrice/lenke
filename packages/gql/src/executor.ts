@@ -1,10 +1,13 @@
 import type { Edge, Graph, IndexableValue, RangeBound, Vertex } from '@lenke/core';
 import {
+  type AlgorithmConfig,
+  type AlgorithmName,
   durationBetween,
   isTemporal,
   LocalDate,
   LocalDateTime,
   Path,
+  runAlgorithmSync,
   temporalArith,
   temporalCmpTotal,
   temporalParse,
@@ -3003,6 +3006,16 @@ type CSet = { kind: 'set'; items: readonly CSetItem[] };
 type CRemove = { kind: 'remove'; items: readonly RemoveItem[] };
 type CDelete = { kind: 'delete'; detach: boolean; targets: readonly CompiledExpr[] };
 type CFinish = { kind: 'finish' };
+type CCallNamed = {
+  kind: 'callNamed';
+  optional: boolean;
+  procName: string;
+  /** Resolved algorithm dispatch name; `null` = unknown procedure (faults). */
+  algo: AlgorithmName | null;
+  config: readonly { key: string; value: CompiledExpr }[];
+  /** Procedure output column → the variable it yields into. */
+  binds: readonly { column: string; var: string }[];
+};
 type CClause =
   | CMatch
   | CWith
@@ -3012,6 +3025,7 @@ type CClause =
   | CMerge
   | CSet
   | CRemove
+  | CCallNamed
   | CDelete
   | CFinish;
 
@@ -3116,6 +3130,22 @@ const compileClause = (clause: Clause): CClause => {
       };
     case 'return':
       return { kind: 'return', projection: compileProjection(clause.projection) };
+    case 'callNamed': {
+      const spec = procedureSpec(clause.name);
+      const columns = spec ? ['node', spec.resultColumn] : [];
+      const binds = clause.yields
+        ? clause.yields.map((y) => ({ column: y.name, var: y.alias ?? y.name }))
+        : columns.map((c) => ({ column: c, var: c }));
+
+      return {
+        kind: 'callNamed',
+        optional: clause.optional,
+        procName: clause.name,
+        algo: spec?.algo ?? null,
+        config: clause.config.map((p) => ({ key: p.key, value: compileExpr(p.value) })),
+        binds,
+      };
+    }
     case 'insert':
       return { kind: 'insert', patterns: clause.patterns.map(compileInsertPath) };
     case 'merge': {
@@ -4096,6 +4126,97 @@ const runMatch = (
  * any other scalar unwinds as a one-element list. Matches the Rust engine
  * byte-for-byte. ORDINALITY counts from 1, OFFSET from 0.
  */
+/**
+ * The built-in procedure catalog: procedure name → its algorithm and non-`node`
+ * result column. Output columns are always `[node, <result>]`. Mirrors native
+ * `procedure_spec` in plan.rs.
+ */
+const PROCEDURES: Record<string, { algo: AlgorithmName; resultColumn: string }> = {
+  pagerank: { algo: 'pagerank', resultColumn: 'score' },
+  connected_components: { algo: 'connectedComponents', resultColumn: 'componentId' },
+  label_propagation: { algo: 'labelPropagation', resultColumn: 'label' },
+  peer_pressure: { algo: 'peerPressure', resultColumn: 'cluster' },
+  degree: { algo: 'degree', resultColumn: 'degree' },
+  shortest_path: { algo: 'shortestPath', resultColumn: 'distance' },
+};
+
+const procedureSpec = (name: string): { algo: AlgorithmName; resultColumn: string } | null =>
+  PROCEDURES[name] ?? null;
+
+/** Set one algorithm-config field from a CALL config-map entry (keys = the
+ * algorithm's JSON config fields; unknown keys are ignored). */
+const applyAlgoConfig = (cfg: AlgorithmConfig, key: string, v: unknown): void => {
+  const mut = cfg as Record<string, unknown>;
+  const FIELDS = new Set([
+    'edgeLabel',
+    'direction',
+    'weightProperty',
+    'dampingFactor',
+    'iterations',
+    'source',
+    'target',
+    'writeProperty',
+    'algorithm',
+    'heuristicProperty',
+  ]);
+
+  if (FIELDS.has(key)) {
+    mut[key] = v;
+  }
+};
+
+/**
+ * `[OPTIONAL] CALL name(config) YIELD …`: run the algorithm once (uncorrelated),
+ * then cross-join its rows into the binding stream, binding each yielded column.
+ * OPTIONAL keeps the outer row (null-filled) when the procedure yields nothing.
+ */
+const runCall = (
+  graph: Graph,
+  clause: CCallNamed,
+  bindings: Iterable<Binding>,
+  params: Params,
+): Iterable<Binding> => {
+  if (!clause.algo) {
+    throw new LenkeError(`unknown procedure: ${clause.procName}`, {
+      code: ErrorCode.Unsupported,
+    });
+  }
+
+  const config: AlgorithmConfig = {};
+  const scratch: Binding = new Map();
+
+  for (const c of clause.config) {
+    applyAlgoConfig(config, c.key, c.value({ binding: scratch, params, graph }));
+  }
+
+  const rows = runAlgorithmSync(clause.algo, config, graph) as Array<Record<string, unknown>>;
+  // Materialize the outer bindings first: the call may write a property, and the
+  // outer stream must be read against the pre-write graph.
+  const outer = toArray(bindings);
+
+  return flatMap((binding: Binding) => {
+    if (rows.length === 0 && clause.optional) {
+      const b = new Map(binding);
+
+      for (const bind of clause.binds) {
+        b.set(bind.var, null);
+      }
+
+      return [b];
+    }
+
+    return rows.map((r) => {
+      const b = new Map(binding);
+
+      for (const bind of clause.binds) {
+        b.set(bind.var, r[bind.column]);
+      }
+
+      return b;
+    });
+  }, outer);
+};
+
 const runFor = (
   graph: Graph,
   clause: CFor,
@@ -4236,6 +4357,9 @@ const runLinearClauses = (linear: CLinear, graph: Graph, params: Params): Row[] 
         break;
       case 'for':
         bindings = runFor(graph, clause, bindings, params);
+        break;
+      case 'callNamed':
+        bindings = runCall(graph, clause, bindings, params);
         break;
       case 'with': {
         const projected = applyProjection(clause.projection, bindings, params, graph);

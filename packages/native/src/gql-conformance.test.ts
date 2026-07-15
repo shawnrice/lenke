@@ -121,6 +121,24 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     expect(ts).toBe(native);
   });
 
+  test('named procedure CALL (algorithms) is byte-identical across engines', () => {
+    // Whole-graph degree, streamed via YIELD + projected — same rows both engines.
+    const [tsD, natD] = both('CALL degree() YIELD node, degree RETURN node, degree ORDER BY node');
+    expect(tsD).toBe(natD);
+
+    // pagerank scores (f64) through the CALL surface, ordered deterministically.
+    const [tsP, natP] = both(
+      'CALL pagerank() YIELD node, score RETURN node, score ORDER BY score DESC, node',
+    );
+    expect(tsP).toBe(natP);
+
+    // YIELD aliasing + WITH…WHERE filtering.
+    const [tsF, natF] = both(
+      'CALL degree() YIELD node AS v, degree AS d WITH v, d WHERE d >= 2 RETURN v ORDER BY v',
+    );
+    expect(tsF).toBe(natF);
+  });
+
   test('ISO path functions on a bound path are byte-identical', () => {
     const q =
       `MATCH p = ANY SHORTEST (a)-[]->*(b) WHERE a.name = 'marko' AND b.name = 'lop' ` +
