@@ -7347,9 +7347,21 @@ fn run_linear(
     plan: &CQuery,
     params: &[Val],
 ) -> CodeResult<RowSet> {
+    run_linear_from(linear, graph, plan, params, vec![Binding::default()])
+}
+
+/// [`run_linear`] starting from a given set of bindings — the seed for an inline
+/// subquery's correlated run (the imported scope variables live in `initial`).
+fn run_linear_from(
+    linear: &CLinear,
+    graph: &mut Graph,
+    plan: &CQuery,
+    params: &[Val],
+    initial: Vec<Binding>,
+) -> CodeResult<RowSet> {
     // `bindings` is the materialized row set at the last barrier; `pending` are
     // MATCH clauses deferred so a projection (or write) can stream them directly.
-    let mut bindings: Vec<Binding> = vec![Binding::default()];
+    let mut bindings: Vec<Binding> = initial;
     let mut pending: Vec<&CClause> = Vec::new();
     // Refs (keys/labels) resolved to ids once; rebuilt after a write, since a
     // mutation may introduce a new key or label the rest of the query reads.
@@ -7493,6 +7505,48 @@ fn run_linear(
                 bindings = out;
                 ctx.check_fault()?;
                 ctx = resolve_ctx(graph, plan, params); // writeProperty may have mutated
+            }
+            CClause::CallInline {
+                optional,
+                imports,
+                body,
+                out_binds,
+            } => {
+                if !pending.is_empty() {
+                    bindings = materialize_matches(graph, &ctx, &bindings, &pending);
+                    pending.clear();
+                }
+                // Run the nested query once per outer row (correlated), seeding it
+                // with only the imported scope variables, and merge its RETURN
+                // columns back — one merged row per nested row.
+                let mut out = Vec::new();
+                for outer in &bindings {
+                    let mut seed = Binding::default();
+                    for (outer_slot, nested_slot) in imports {
+                        if let Some(v) = outer.get(*outer_slot) {
+                            seed.set(*nested_slot, v.clone());
+                        }
+                    }
+                    let rs = run_linear_from(body, graph, plan, params, vec![seed])?;
+                    if rs.nrows == 0 && *optional {
+                        let mut w = outer.clone();
+                        for slot in out_binds {
+                            w.set(*slot, Val::Null);
+                        }
+                        out.push(w);
+                        continue;
+                    }
+                    for row in rs.rows() {
+                        let mut w = outer.clone();
+                        for (i, slot) in out_binds.iter().enumerate() {
+                            w.set(*slot, value_to_val(&row[i]));
+                        }
+                        out.push(w);
+                    }
+                }
+                bindings = out;
+                ctx = resolve_ctx(graph, plan, params); // a nested write may have mutated
+                ctx.check_fault()?;
             }
             CClause::Return(proj) => {
                 let rows = project_to_rows(graph, &ctx, &bindings, &pending, proj);

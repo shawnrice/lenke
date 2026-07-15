@@ -635,11 +635,9 @@ impl Parser {
         };
         self.expect_kw("call")?;
 
+        // Inline subquery form: `CALL { … }` or `CALL (scope) { … }`.
         if self.check(Tt::LBrace) || self.check(Tt::LParen) {
-            return err(
-                "inline subquery CALL (`CALL { … }`) is not yet supported; use a named procedure call `CALL name(…)`",
-                self.peek().pos,
-            );
+            return self.parse_inline_call(optional);
         }
 
         // Procedure reference: a (possibly dotted) name.
@@ -676,6 +674,32 @@ impl Parser {
             name,
             config,
             yields,
+        }))
+    }
+
+    /// `[OPTIONAL] CALL (scope) { <linear query> }` — an inline subquery.
+    fn parse_inline_call(&mut self, optional: bool) -> R<Clause> {
+        let mut scope = Vec::new();
+        if self.check(Tt::LParen) {
+            self.advance();
+            if !self.check(Tt::RParen) {
+                scope.push(self.bind_name("a scoped variable")?);
+                while self.check(Tt::Comma) {
+                    self.advance();
+                    scope.push(self.bind_name("a scoped variable")?);
+                }
+            }
+            self.expect(Tt::RParen, "')' to close the variable scope")?;
+        }
+
+        self.expect(Tt::LBrace, "'{' to open an inline subquery")?;
+        let body = self.parse_linear_query()?;
+        self.expect(Tt::RBrace, "'}' to close an inline subquery")?;
+
+        Ok(Clause::CallInline(CallInline {
+            optional,
+            scope,
+            body,
         }))
     }
 

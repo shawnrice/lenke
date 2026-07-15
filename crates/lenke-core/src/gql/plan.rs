@@ -620,6 +620,16 @@ pub enum CClause {
         binds: Vec<CallBind>,
         scope_len: usize,
     },
+    /// `[OPTIONAL] CALL (scope) { … }`. `imports` maps each scoped variable's
+    /// outer slot to the nested slot the subquery reads it from; `out_binds` maps
+    /// each nested `RETURN` output column (in order) to the outer slot it merges
+    /// into. The nested query shares the plan's key/label/param tables.
+    CallInline {
+        optional: bool,
+        imports: Vec<(usize, usize)>,
+        body: CLinear,
+        out_binds: Vec<usize>,
+    },
 }
 
 /// One `YIELD` binding: procedure output column → binding slot.
@@ -1357,6 +1367,40 @@ impl Lowerer {
                     config,
                     binds,
                     scope_len: self.scope.len(),
+                }
+            }
+            Clause::CallInline(c) => {
+                // Compile the nested body in its OWN scope (the imported variables
+                // occupy nested slots 0..k), sharing the key/label/param tables so
+                // a single Ctx resolves both queries.
+                let saved = std::mem::replace(&mut self.scope, c.scope.clone());
+                let body = CLinear {
+                    clauses: c.body.clauses.iter().map(|cl| self.clause(cl)).collect(),
+                };
+                // The nested RETURN's output columns, in order.
+                let out_cols = body
+                    .clauses
+                    .iter()
+                    .rev()
+                    .find_map(|cl| match cl {
+                        CClause::Return(proj) => Some(proj.out_names.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+                // Restore the outer scope, then resolve imports + merge slots.
+                self.scope = saved;
+                let imports = c
+                    .scope
+                    .iter()
+                    .enumerate()
+                    .map(|(nested_slot, name)| (self.slot_of(name), nested_slot))
+                    .collect();
+                let out_binds = out_cols.iter().map(|n| self.add_var(n)).collect();
+                CClause::CallInline {
+                    optional: c.optional,
+                    imports,
+                    body,
+                    out_binds,
                 }
             }
             Clause::Return(p) => CClause::Return(self.projection(p, true)),

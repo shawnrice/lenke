@@ -4166,13 +4166,73 @@ fn call_named_procedure_algorithms() {
 /// CALL parse-level behavior: unknown procedure faults; the inline-subquery form
 /// is rejected with a pointed message (deferred).
 #[test]
-fn call_unknown_and_inline_rejected() {
+fn call_unknown_procedure_faults() {
     let mut g = modern();
     assert!(parse("CALL bogus() YIELD x RETURN x")
         .unwrap()
         .execute(&mut g, &Params::new())
         .is_err());
-    // Inline subquery CALL is not yet supported (parse-time rejection).
-    assert!(parse("CALL { MATCH (n) RETURN n }").is_err());
-    assert!(parse("CALL (a) { MATCH (n) RETURN n }").is_err());
+}
+
+/// ISO GQL inline subquery CALL: correlated lateral join, row duplication,
+/// OPTIONAL null-fill vs drop, and scope isolation.
+#[test]
+fn call_inline_subquery() {
+    // For each person, count what they created (marko 1, vadas 0, josh 2, peter 1).
+    let mut g = modern();
+    let counts = rows(
+        &mut g,
+        "MATCH (p:Person) \
+         CALL (p) { MATCH (p)-[:CREATED]->(w) RETURN count(w) AS created } \
+         RETURN p.name AS name, created ORDER BY name",
+    );
+    assert_eq!(
+        counts,
+        vec![
+            vec![s("josh"), Value::Num(2.0)],
+            vec![s("marko"), Value::Num(1.0)],
+            vec![s("peter"), Value::Num(1.0)],
+            vec![s("vadas"), Value::Num(0.0)],
+        ]
+    );
+
+    // Row duplication: marko knows vadas + josh → the outer row fans to two.
+    let friends = rows(
+        &mut g,
+        "MATCH (p:Person {name: 'marko'}) \
+         CALL (p) { MATCH (p)-[:KNOWS]->(f) RETURN f.name AS friend } \
+         RETURN friend ORDER BY friend",
+    );
+    assert_eq!(friends, vec![vec![s("josh")], vec![s("vadas")]]);
+
+    // Non-OPTIONAL empty subquery drops the outer row (vadas created nothing).
+    let dropped = rows(
+        &mut g,
+        "MATCH (p:Person) \
+         CALL (p) { MATCH (p)-[:CREATED]->(w) RETURN w.name AS thing } \
+         RETURN p.name AS name ORDER BY name",
+    );
+    let names: Vec<String> = dropped
+        .iter()
+        .map(|r| match &r[0] {
+            Value::Str(s) => s.to_string(),
+            _ => panic!(),
+        })
+        .collect();
+    assert_eq!(names, vec!["josh", "josh", "marko", "peter"]);
+}
+
+/// Scope isolation: an unscoped outer variable is invisible inside the subquery.
+#[test]
+fn call_inline_scope_isolation() {
+    let mut g = modern();
+    // `p` is NOT imported → the inner `MATCH (p)` is a fresh unbound pattern over
+    // all 6 vertices, not the outer marko.
+    let total = rows(
+        &mut g,
+        "MATCH (p:Person {name: 'marko'}) \
+         CALL () { MATCH (n) RETURN count(n) AS total } \
+         RETURN total",
+    );
+    assert_eq!(total, vec![vec![Value::Num(6.0)]]);
 }

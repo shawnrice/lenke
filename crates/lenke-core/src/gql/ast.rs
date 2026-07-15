@@ -97,6 +97,21 @@ pub enum Clause {
     /// catalog procedure (here: the built-in graph algorithms); `yields` picks and
     /// renames its output columns (`None` = every column, under its own name).
     CallNamed(CallNamed),
+    /// `[OPTIONAL] CALL (scope) { … }` — an ISO GQL inline procedure call
+    /// (§`inlineProcedureCall`). Runs the nested query once per incoming row
+    /// (correlated / lateral), importing only the `scope` variables, and merges
+    /// its `RETURN` columns back. OPTIONAL keeps the outer row (nested columns
+    /// null-filled) when the subquery is empty.
+    CallInline(CallInline),
+}
+
+/// An inline procedure call (`CALL (scope) { <nested query> }`).
+#[derive(Debug, Clone)]
+pub struct CallInline {
+    pub optional: bool,
+    /// Outer variables the subquery imports (`(a, b)`); empty = none / `()`.
+    pub scope: Vec<String>,
+    pub body: LinearQuery,
 }
 
 /// A named procedure call (`CALL name(args) YIELD …`).

@@ -139,6 +139,31 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     expect(tsF).toBe(natF);
   });
 
+  test('inline subquery CALL (correlated lateral join) is byte-identical', () => {
+    // Per-person created-count via a correlated subquery.
+    const [tsC, natC] = both(
+      `MATCH (p:Person) ` +
+        `CALL (p) { MATCH (p)-[:CREATED]->(w) RETURN count(w) AS created } ` +
+        `RETURN p.name AS name, created ORDER BY name`,
+    );
+    expect(tsC).toBe(natC);
+
+    // Row duplication (marko's KNOWS neighbours) via the subquery.
+    const [tsD, natD] = both(
+      `MATCH (p:Person {name: 'marko'}) ` +
+        `CALL (p) { MATCH (p)-[:KNOWS]->(f) RETURN f.name AS friend } ` +
+        `RETURN friend ORDER BY friend`,
+    );
+    expect(tsD).toBe(natD);
+
+    // Scope isolation: `()` imports nothing, so the inner MATCH is unbound.
+    const [tsS, natS] = both(
+      `MATCH (p:Person {name: 'marko'}) ` +
+        `CALL () { MATCH (n) RETURN count(n) AS total } RETURN total`,
+    );
+    expect(tsS).toBe(natS);
+  });
+
   test('ISO path functions on a bound path are byte-identical', () => {
     const q =
       `MATCH p = ANY SHORTEST (a)-[]->*(b) WHERE a.name = 'marko' AND b.name = 'lop' ` +
