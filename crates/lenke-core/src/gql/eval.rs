@@ -48,6 +48,14 @@ pub enum Val {
     List(Vec<Self>),
     Node(u32),
     Edge(u32),
+    /// A walked path: interleaved vertices and edges (`vertices.len() ==
+    /// edges.len() + 1`). Bound by a `SHORTEST`/quantified path pattern.
+    /// Serializes to `{vertices, edges, length}` (length = hop count), the mirror
+    /// of the TS `Path` class.
+    Path {
+        vertices: Vec<u32>,
+        edges: Vec<u32>,
+    },
 }
 
 /// One candidate solution: variable slot → value. Slots are assigned per scope
@@ -470,6 +478,19 @@ fn js_str(graph: &Graph, v: &Val) -> String {
             .map(|x| js_str(graph, x))
             .collect::<Vec<_>>()
             .join(","),
+        Val::Path { vertices, edges } => {
+            // Stringify like the interleaved element sequence (vertex, edge, …).
+            let mut parts = Vec::with_capacity(vertices.len() + edges.len());
+            for (i, &v) in vertices.iter().enumerate() {
+                if i > 0 {
+                    parts.push(js_str(graph, &Val::Edge(edges[i - 1])));
+                }
+
+                parts.push(js_str(graph, &Val::Node(v)));
+            }
+
+            parts.join(",")
+        }
     }
 }
 
@@ -657,6 +678,18 @@ fn val_key(v: &Val, out: &mut String) {
             }
             out.push(']');
         }
+        Val::Path { vertices, edges } => {
+            // Structural: two paths are the same key iff they visit the same
+            // vertices in the same order via the same edges (so `DISTINCT p` works).
+            out.push('P');
+            for &v in vertices {
+                let _ = write!(out, "v{v}");
+            }
+            out.push('|');
+            for &e in edges {
+                let _ = write!(out, "e{e}");
+            }
+        }
     }
 }
 
@@ -757,6 +790,9 @@ struct ElemKeys {
     properties: Arc<str>,
     from: Arc<str>,
     to: Arc<str>,
+    vertices: Arc<str>,
+    edges: Arc<str>,
+    length: Arc<str>,
 }
 fn elem_keys() -> &'static ElemKeys {
     static K: std::sync::OnceLock<ElemKeys> = std::sync::OnceLock::new();
@@ -766,6 +802,9 @@ fn elem_keys() -> &'static ElemKeys {
         properties: Arc::from("properties"),
         from: Arc::from("from"),
         to: Arc::from("to"),
+        vertices: Arc::from("vertices"),
+        edges: Arc::from("edges"),
+        length: Arc::from("length"),
     })
 }
 
@@ -818,6 +857,33 @@ fn val_to_value(graph: &Graph, v: &Val) -> Value {
                     k.properties.clone(),
                     props_map(&graph.edge_props, &graph.strs, idx),
                 ),
+            ])
+        }
+        Val::Path { vertices, edges } => {
+            // `{vertices, edges, length}` — the vertices/edges reuse the element
+            // serialization above; `length` is the hop (edge) count. Mirrors the
+            // TS `Path.toJSON()` byte-for-byte (field order, sorted labels/props).
+            let k = elem_keys();
+            Value::Map(vec![
+                (
+                    k.vertices.clone(),
+                    Value::List(
+                        vertices
+                            .iter()
+                            .map(|&v| val_to_value(graph, &Val::Node(v)))
+                            .collect(),
+                    ),
+                ),
+                (
+                    k.edges.clone(),
+                    Value::List(
+                        edges
+                            .iter()
+                            .map(|&e| val_to_value(graph, &Val::Edge(e)))
+                            .collect(),
+                    ),
+                ),
+                (k.length.clone(), Value::Num(edges.len() as f64)),
             ])
         }
     }
@@ -8238,5 +8304,82 @@ impl super::ast::Query {
     pub fn execute_arrow(&self, graph: &mut Graph, params: &Params) -> CodeResult<Vec<u8>> {
         let (plan, param_names) = lower(self);
         run_cquery_arrow(&plan, graph, &positional(&param_names, params)?)
+    }
+}
+
+#[cfg(test)]
+mod path_value_tests {
+    use super::*;
+    use crate::ndjson;
+    use crate::query::RowSet;
+
+    // a —KNOWS(e1)→ b —KNOWS(e2)→ c. Dense ids follow NDJSON insertion order, so
+    // vertices are 0,1,2 and edges 0,1.
+    const NDJSON: &str = concat!(
+        r#"{"type":"node","id":"a","labels":["P"],"properties":{"name":"A"}}"#,
+        "\n",
+        r#"{"type":"node","id":"b","labels":["P"],"properties":{"name":"B"}}"#,
+        "\n",
+        r#"{"type":"node","id":"c","labels":["P"],"properties":{"name":"C"}}"#,
+        "\n",
+        r#"{"type":"edge","id":"e1","from":"a","to":"b","labels":["KNOWS"],"properties":{}}"#,
+        "\n",
+        r#"{"type":"edge","id":"e2","from":"b","to":"c","labels":["KNOWS"],"properties":{}}"#,
+    );
+
+    /// A `Val::Path` serializes to `{vertices, edges, length}` — byte-for-byte the
+    /// TS `Path.toJSON()` shape (see packages/core/src/core/Path.test.ts): vertices
+    /// and edges as the rich element maps (sorted labels/props, fixed field order),
+    /// `length` the hop count.
+    #[test]
+    fn path_serializes_to_vertices_edges_length() {
+        let g = ndjson::decode(NDJSON).unwrap();
+        let path = Val::Path {
+            vertices: vec![0, 1, 2],
+            edges: vec![0, 1],
+        };
+
+        let mut rs = RowSet::new(vec!["p".to_string()]);
+        rs.push_row([val_to_value(&g, &path)]);
+
+        assert_eq!(
+            rs.to_json(),
+            concat!(
+                r#"{"columns":["p"],"rows":[[{"vertices":["#,
+                r#"{"id":"a","labels":["P"],"properties":{"name":"A"}},"#,
+                r#"{"id":"b","labels":["P"],"properties":{"name":"B"}},"#,
+                r#"{"id":"c","labels":["P"],"properties":{"name":"C"}}],"#,
+                r#""edges":["#,
+                r#"{"id":"e1","from":"a","to":"b","labels":["KNOWS"],"properties":{}},"#,
+                r#"{"id":"e2","from":"b","to":"c","labels":["KNOWS"],"properties":{}}],"#,
+                r#""length":2}]]}"#,
+            )
+        );
+    }
+
+    /// The DISTINCT/grouping key is structural: same vertices + edges → same key.
+    #[test]
+    fn path_val_key_is_structural() {
+        let same_a = Val::Path {
+            vertices: vec![0, 1, 2],
+            edges: vec![0, 1],
+        };
+        let same_b = Val::Path {
+            vertices: vec![0, 1, 2],
+            edges: vec![0, 1],
+        };
+        let diff = Val::Path {
+            vertices: vec![0, 1],
+            edges: vec![0],
+        };
+
+        let key = |v: &Val| {
+            let mut s = String::new();
+            val_key(v, &mut s);
+            s
+        };
+
+        assert_eq!(key(&same_a), key(&same_b));
+        assert_ne!(key(&same_a), key(&diff));
     }
 }

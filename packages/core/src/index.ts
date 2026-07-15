@@ -1,4 +1,4 @@
-export { Edge, Graph, isElement, PropertyIndex, Vertex } from './core/index.js';
+export { Edge, Graph, isElement, Path, PropertyIndex, Vertex } from './core/index.js';
 export { validateLabel, validatePropertyKey, validatePropertyValue } from './core/index.js';
 
 export type {
@@ -8,6 +8,9 @@ export type {
   GraphOptions,
   IndexableValue,
   InvariantInfo,
+  PathElement,
+  PathJSON,
+  PathStep,
   RangeBound,
   ScalarTypeName,
   ValidatorInfo,
