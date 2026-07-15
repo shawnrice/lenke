@@ -110,7 +110,8 @@ pub(super) fn edge_weights(graph: &Graph, key: &str) -> Vec<f64> {
 }
 
 /// An algorithm's output: the result column name + per-vertex `(dense id, value)`s.
-type AlgoOutput = (&'static str, Vec<(u32, Value)>);
+/// An algorithm's output: the result column name + `(dense vertex id, value)` rows.
+pub type AlgoOutput = (&'static str, Vec<(u32, Value)>);
 /// Pending `writeProperty` writes: the property key + per-vertex `(dense id, value)`s.
 type PendingWrites = Option<(String, Vec<(u32, Value)>)>;
 
@@ -151,6 +152,17 @@ pub fn run(graph: &mut Graph, name: &str, config: &str) -> Result<RowSet, String
 /// used by the in-query Gremlin algorithm steps, which build the config from their
 /// step modulators directly.
 pub fn run_with(graph: &mut Graph, name: &str, cfg: &AlgoConfig) -> Result<RowSet, String> {
+    let (column, results) = run_columns(graph, name, cfg)?;
+
+    Ok(build_rowset(graph, column, &results))
+}
+
+/// Run an algorithm and return the raw `(dense vertex id, result value)` rows plus
+/// the result column name — applying `writeProperty` but WITHOUT materializing a
+/// `RowSet`. The GQL `CALL` path uses this so it can bind `node` as a live
+/// `Val::Node` handle (deferring the `{id, labels, properties}` hydration to the
+/// rows that actually survive to output) instead of a pre-stringified id.
+pub fn run_columns(graph: &mut Graph, name: &str, cfg: &AlgoConfig) -> Result<AlgoOutput, String> {
     let (column, results) = dispatch(graph, name, cfg)?;
 
     if let Some(prop) = &cfg.write_property {
@@ -159,7 +171,7 @@ pub fn run_with(graph: &mut Graph, name: &str, cfg: &AlgoConfig) -> Result<RowSe
         }
     }
 
-    Ok(build_rowset(graph, column, &results))
+    Ok((column, results))
 }
 
 /// Read-only counterpart of [`run`] for the async (off-thread) path: compute the

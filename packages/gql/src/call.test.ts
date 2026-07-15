@@ -27,24 +27,25 @@ const modern = (): Graph => {
 
 describe('named procedure CALL', () => {
   test('CALL pagerank YIELD — lop (most in-edges) is the top score', () => {
+    // `node` is a live vertex handle, so `node.name` reads its property.
     const rows = query(
       modern(),
-      'CALL pagerank() YIELD node, score RETURN node ORDER BY score DESC, node LIMIT 1',
+      'CALL pagerank() YIELD node, score RETURN node.name AS n ORDER BY score DESC, n LIMIT 1',
     );
-    expect(rows).toEqual([{ node: 'lop' }]);
+    expect(rows).toEqual([{ n: 'lop' }]);
   });
 
   test('CALL degree — YIELD-less binds node + degree; one row per vertex', () => {
-    const rows = query(modern(), 'CALL degree() RETURN node, degree');
+    const rows = query(modern(), 'CALL degree() RETURN node.name AS n, degree');
     expect(rows).toHaveLength(6);
   });
 
   test('YIELD aliasing + ISO WITH … WHERE filtering', () => {
     const rows = query(
       modern(),
-      'CALL degree() YIELD node AS v, degree AS d WITH v, d WHERE d >= 3 RETURN v ORDER BY v',
+      'CALL degree() YIELD node AS v, degree AS d WITH v, d WHERE d >= 3 RETURN v.name AS n ORDER BY n',
     );
-    expect(rows).toEqual([{ v: 'marko' }]); // marko has out-degree 3
+    expect(rows).toEqual([{ n: 'marko' }]); // marko has out-degree 3
   });
 
   test('config writeProperty mutates the graph', () => {

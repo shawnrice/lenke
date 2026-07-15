@@ -122,21 +122,28 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
   });
 
   test('named procedure CALL (algorithms) is byte-identical across engines', () => {
-    // Whole-graph degree, streamed via YIELD + projected — same rows both engines.
-    const [tsD, natD] = both('CALL degree() YIELD node, degree RETURN node, degree ORDER BY node');
+    // `node` is a live vertex handle; `node.name` reads its property.
+    const [tsD, natD] = both(
+      'CALL degree() YIELD node, degree RETURN node.name AS n, degree ORDER BY n',
+    );
     expect(tsD).toBe(natD);
 
     // pagerank scores (f64) through the CALL surface, ordered deterministically.
     const [tsP, natP] = both(
-      'CALL pagerank() YIELD node, score RETURN node, score ORDER BY score DESC, node',
+      'CALL pagerank() YIELD node, score RETURN node.name AS n, score ORDER BY score DESC, n',
     );
     expect(tsP).toBe(natP);
 
     // YIELD aliasing + WITH…WHERE filtering.
     const [tsF, natF] = both(
-      'CALL degree() YIELD node AS v, degree AS d WITH v, d WHERE d >= 2 RETURN v ORDER BY v',
+      'CALL degree() YIELD node AS v, degree AS d WITH v, d WHERE d >= 2 RETURN v.name AS n ORDER BY n',
     );
     expect(tsF).toBe(natF);
+
+    // Returning the whole node hydrates the rich {id,labels,properties} map —
+    // byte-identical across engines, exactly like `MATCH (n) RETURN n`.
+    const [tsN, natN] = both('CALL degree() YIELD node RETURN node ORDER BY node.name LIMIT 2');
+    expect(tsN).toBe(natN);
   });
 
   test('inline subquery CALL (correlated lateral join) is byte-identical', () => {

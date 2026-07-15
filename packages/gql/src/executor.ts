@@ -4233,7 +4233,12 @@ const runCall = (
       const b = new Map(binding);
 
       for (const bind of clause.binds) {
-        b.set(bind.var, r[bind.column]);
+        // `node` binds as the live Vertex handle (so it hydrates only when
+        // actually returned whole, and `node.name` / further MATCH work);
+        // mirrors native's `Val::Node`. Other columns are the raw value.
+        const value =
+          bind.column === 'node' ? graph.verticesById.get(r.node as string) : r[bind.column];
+        b.set(bind.var, value);
       }
 
       return b;

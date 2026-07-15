@@ -7480,12 +7480,20 @@ fn run_linear_from(
                     }
                     cfg
                 };
-                let rowset = crate::algo::run_with(graph, dispatch, &cfg)
+                // Raw `(vertex, result)` rows — no RowSet, so `node` binds as a
+                // live `Val::Node` handle (hydrated to `{id,labels,properties}`
+                // only for rows that survive to output) rather than a stringified id.
+                let (result_col, results) = crate::algo::run_columns(graph, dispatch, &cfg)
                     .map_err(|e| CodeError::new(ErrorCode::InvalidValue, e))?;
-                // Resolve each YIELD bind to its source column index once.
-                let mut bind_cols: Vec<(usize, usize)> = Vec::with_capacity(binds.len());
+                // Resolve each YIELD bind to its source: the vertex handle or the
+                // result value.
+                let mut bind_src: Vec<(bool, usize)> = Vec::with_capacity(binds.len());
                 for b in binds {
-                    let Some(ci) = rowset.cols.iter().position(|c| c == &b.column) else {
+                    let is_node = if b.column == "node" {
+                        true
+                    } else if b.column == result_col {
+                        false
+                    } else {
                         return Err(CodeError::new(
                             ErrorCode::InvalidValue,
                             format!(
@@ -7494,7 +7502,7 @@ fn run_linear_from(
                             ),
                         ));
                     };
-                    bind_cols.push((ci, b.slot));
+                    bind_src.push((is_node, b.slot));
                 }
                 // Cross-join incoming bindings with the procedure's rows (the call
                 // is uncorrelated); OPTIONAL keeps the outer row (null-filled) when
@@ -7503,17 +7511,22 @@ fn run_linear_from(
                 for inb in &bindings {
                     let mut work = inb.clone();
                     work.resize(*scope_len);
-                    if rowset.nrows == 0 && *optional {
-                        for (_, slot) in &bind_cols {
+                    if results.is_empty() && *optional {
+                        for (_, slot) in &bind_src {
                             work.set(*slot, Val::Null);
                         }
                         out.push(work);
                         continue;
                     }
-                    for row in rowset.rows() {
+                    for (vertex, value) in &results {
                         let mut w = work.clone();
-                        for (ci, slot) in &bind_cols {
-                            w.set(*slot, value_to_val(&row[*ci]));
+                        for (is_node, slot) in &bind_src {
+                            let bound = if *is_node {
+                                Val::Node(*vertex)
+                            } else {
+                                value_to_val(value)
+                            };
+                            w.set(*slot, bound);
                         }
                         out.push(w);
                     }

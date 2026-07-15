@@ -4135,21 +4135,22 @@ fn path_accessor_functions() {
 fn call_named_procedure_algorithms() {
     let mut g = modern();
 
-    // pagerank: lop has the most incoming edges → the top score.
+    // pagerank: lop has the most incoming edges → the top score. `node` is a live
+    // vertex handle, so `node.name` reads its property directly.
     let top = rows(
         &mut g,
-        "CALL pagerank() YIELD node, score RETURN node ORDER BY score DESC, node LIMIT 1",
+        "CALL pagerank() YIELD node, score RETURN node.name AS n ORDER BY score DESC, n LIMIT 1",
     );
     assert_eq!(top, vec![vec![s("lop")]]);
 
     // degree: one row per vertex (YIELD-less binds node + degree automatically).
-    let degs = rows(&mut g, "CALL degree() RETURN node, degree");
+    let degs = rows(&mut g, "CALL degree() RETURN node.name AS n, degree");
     assert_eq!(degs.len(), 6);
 
     // YIELD aliasing, then ISO filtering via WITH … WHERE over the yielded column.
     let hi = rows(
         &mut g,
-        "CALL degree() YIELD node AS v, degree AS d WITH v, d WHERE d >= 3 RETURN v ORDER BY v",
+        "CALL degree() YIELD node AS v, degree AS d WITH v, d WHERE d >= 3 RETURN v.name AS n ORDER BY n",
     );
     // Default degree is out-degree; only marko has out-degree ≥ 3.
     assert_eq!(hi, vec![vec![s("marko")]]);

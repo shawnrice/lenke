@@ -114,6 +114,21 @@ fn main() {
             30,
         ),
         (
+            "degree RETURN node [ALL 21k, full hydration]",
+            "CALL degree() YIELD node RETURN node",
+            10,
+        ),
+        (
+            "degree RETURN node.name [ALL, one prop]",
+            "CALL degree() YIELD node RETURN node.name AS n",
+            10,
+        ),
+        (
+            "degree count(node) [ALL, no hydration]",
+            "CALL degree() YIELD node RETURN count(node) AS c",
+            30,
+        ),
+        (
             "degree top-10 by degree",
             "CALL degree() YIELD node, degree RETURN node ORDER BY degree DESC, node LIMIT 10",
             30,
