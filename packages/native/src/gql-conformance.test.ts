@@ -575,3 +575,101 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     }
   });
 });
+
+// Columnar grouped aggregation (`MATCH … WITH <key>, <agg> … RETURN`) runs the
+// native side through the vectorized `with_frame` path (group by raw ids + folded
+// columns), the TS side through its scalar accumulator. This block pins that the
+// vectorized path stays byte-identical to the scalar one across key kinds (node
+// identity, edge identity, property, multi-key), every aggregate, group-then-WHERE,
+// rich-element carry-through, and the OPTIONAL fallback (which stays scalar).
+suite('GQL differential: columnar grouped aggregation (TS vs native)', () => {
+  // A small directed KNOWS graph where multiple sources have out-edges, so a
+  // group-by-source produces several groups (a→2, b→1, c→1) — exercising the
+  // group_ids refinement + first-seen ordering, not just a single group.
+  const NDJSON = [
+    '{"type":"node","id":"1","labels":["Person"],"properties":{"name":"a","age":30}}',
+    '{"type":"node","id":"2","labels":["Person"],"properties":{"name":"b","age":20}}',
+    '{"type":"node","id":"3","labels":["Person"],"properties":{"name":"c","age":40}}',
+    '{"type":"node","id":"4","labels":["Person"],"properties":{"name":"d","age":20}}',
+    '{"type":"edge","id":"10","from":"1","to":"2","labels":["KNOWS"],"properties":{"weight":0.5,"since":2018}}',
+    '{"type":"edge","id":"11","from":"1","to":"3","labels":["KNOWS"],"properties":{"weight":1.0,"since":2020}}',
+    '{"type":"edge","id":"12","from":"2","to":"3","labels":["KNOWS"],"properties":{"weight":0.3,"since":2019}}',
+    '{"type":"edge","id":"13","from":"3","to":"1","labels":["KNOWS"],"properties":{"weight":0.7,"since":2021}}',
+  ].join('\n');
+
+  const backend = createFfiBackend(LIB);
+  const nativeGraph = graphFromFormat(backend, NDJSON, 'ndjson');
+  const tsGraph = tsDeserialize(NDJSON, 'ndjson', new Graph());
+  const both = (q: string): [string, string] => [
+    JSON.stringify(tsQuery(tsGraph, q)),
+    JSON.stringify(nativeGraph.query(q)),
+  ];
+
+  const cases: Array<[string, string]> = [
+    // group by node identity → count; the driving var is the group key.
+    [
+      'group by node → count',
+      `MATCH (p:Person)-[:KNOWS]->(f) WITH p, count(f) AS c RETURN p.name AS name, c ORDER BY name`,
+    ],
+    // group by node identity, RETURN the rich node — proves the element handle is
+    // carried through the grouped frame (not flattened to an id).
+    [
+      'group by node → rich node carried',
+      `MATCH (p:Person)-[:KNOWS]->(f) WITH p, count(f) AS c RETURN p ORDER BY p.name`,
+    ],
+    // sum/avg/min/max over an edge property, grouped by the source node.
+    [
+      'group by node → sum/avg/min/max over edge prop',
+      `MATCH (p:Person)-[e:KNOWS]->(f)
+       WITH p, count(*) AS c, sum(e.weight) AS s, avg(e.weight) AS a, min(e.since) AS mn, max(e.since) AS mx
+       RETURN p.name AS name, c, s, a, mn, mx ORDER BY name`,
+    ],
+    // group by a property key (edge.since) → count.
+    [
+      'group by edge property → count',
+      `MATCH (p:Person)-[e:KNOWS]->(f) WITH e.since AS yr, count(*) AS c RETURN yr, c ORDER BY yr`,
+    ],
+    // multi-key grouping (two property keys) — refinement over two columns.
+    [
+      'group by two property keys',
+      `MATCH (p:Person)-[:KNOWS]->(f) WITH p.age AS pa, f.age AS fa, count(*) AS c
+       RETURN pa, fa, c ORDER BY pa, fa`,
+    ],
+    // group by edge identity (bare edge var) → count.
+    [
+      'group by edge identity',
+      `MATCH (p:Person)-[e:KNOWS]->(f) WITH e, count(*) AS c RETURN e.since AS yr, c ORDER BY yr`,
+    ],
+    // group-then-filter (HAVING via WITH … WHERE) over the aggregate.
+    [
+      'group by node then WHERE on the aggregate',
+      `MATCH (p:Person)-[:KNOWS]->(f) WITH p, count(f) AS c WHERE c > 1 RETURN p.name AS name, c ORDER BY name`,
+    ],
+    // global aggregate through the same path (ngroups == 1 fused fold).
+    [
+      'global aggregate over a traversal',
+      `MATCH (p:Person)-[e:KNOWS]->(f) RETURN count(*) AS c, sum(e.weight) AS s, min(e.since) AS mn`,
+    ],
+    // OPTIONAL MATCH grouped agg: stays on the scalar path (expand_frame doesn't
+    // vectorize optional yet) — pinned here so it stays byte-identical regardless.
+    [
+      'OPTIONAL MATCH grouped (scalar fallback) stays identical',
+      `MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(f) WITH p, count(f) AS c RETURN p.name AS name, c ORDER BY name`,
+    ],
+  ];
+
+  for (const [name, q] of cases) {
+    test(name, () => {
+      const [ts, native] = both(q);
+      expect(ts, q).toBe(native);
+    });
+  }
+
+  test('group by node → count — exact expected shape', () => {
+    const [ts, native] = both(
+      `MATCH (p:Person)-[:KNOWS]->(f) WITH p, count(f) AS c RETURN p.name AS name, c ORDER BY name`,
+    );
+    expect(ts).toBe(native);
+    expect(ts).toBe(`[{"name":"a","c":2},{"name":"b","c":1},{"name":"c","c":1}]`);
+  });
+});

@@ -4975,6 +4975,14 @@ fn key_raw_col(
 /// ([`key_raw_col`]) and `count(DISTINCT …)` fold on this — dedup on an integer id
 /// with no string materialization/hashing.
 fn raw_bits_of(graph: &Graph, ctx: &Ctx, sc: &ScanCols, expr: &CExpr) -> Option<Vec<Option<u64>>> {
+    // Grouping / DISTINCT by element *identity* (`WITH p, …`, `count(DISTINCT p)`):
+    // the vertex/edge id is already a dense integer key — no property lookup, never
+    // absent. (A single key column is one element type, so a node id and an edge id
+    // never share a refinement pass; matches the scalar `@v{id}` / `@e{id}` key.)
+    if let CExpr::Var(slot) = expr {
+        let (_elem, ids) = sc.slot(*slot)?;
+        return Some(ids.iter().map(|&id| Some(id as u64)).collect());
+    }
     let CExpr::Prop { var_slot, key_ref } = expr else {
         return None;
     };
@@ -5193,17 +5201,23 @@ fn fused_global_agg(graph: &Graph, ctx: &Ctx, sc: &ScanCols, spec: &CAgg) -> Opt
     })
 }
 
-fn vectorized_aggregate(
+/// Fold every aggregate in `proj` into a per-group column (`Vec<Val>` of length
+/// `ngroups`, one per `proj.aggs` spec), given the row→group map from
+/// [`group_ids`]. The tight loops (`count`/`sum`/`avg`/`min`/`max`) index the
+/// group id directly — no per-row `eval` or string key. Returns `None` (→ caller
+/// falls back to the scalar accumulator) for a shape not vectorized here: grouped
+/// DISTINCT, non-numeric `min`/`max`, `collect`/percentile. A single global group
+/// (`ngroups == 1`) folds straight over storage via [`fused_global_agg`]. Shared
+/// by the terminal [`vectorized_aggregate`] and the pipeline [`with_frame`].
+fn fold_group_agg_cols(
     graph: &Graph,
     ctx: &Ctx,
     sc: &ScanCols,
     proj: &CProjection,
+    gid_of_row: &[usize],
+    ngroups: usize,
 ) -> Option<Vec<Vec<Val>>> {
-    let key_items: Vec<&CReturnItem> = proj.items.iter().filter(|i| !i.is_agg).collect();
     let n = sc.n;
-    let (gid_of_row, rep_row, ngroups) = group_ids(graph, ctx, sc, &key_items)?;
-
-    // Fold each lifted aggregate into a per-group column.
     let mut agg_cols: Vec<Vec<Val>> = Vec::with_capacity(proj.aggs.len());
     for spec in &proj.aggs {
         // Global (single-group) aggregates fold straight over the stored column —
@@ -5221,7 +5235,7 @@ fn vectorized_aggregate(
         }
         let col: Vec<Val> = if spec.func == AggFn::Count && spec.star {
             let mut cnt = vec![0u64; ngroups];
-            for &g in &gid_of_row {
+            for &g in gid_of_row {
                 cnt[g] += 1;
             }
             cnt.into_iter().map(|c| Val::Num(c as f64)).collect()
@@ -5299,6 +5313,18 @@ fn vectorized_aggregate(
         };
         agg_cols.push(col);
     }
+    Some(agg_cols)
+}
+
+fn vectorized_aggregate(
+    graph: &Graph,
+    ctx: &Ctx,
+    sc: &ScanCols,
+    proj: &CProjection,
+) -> Option<Vec<Vec<Val>>> {
+    let key_items: Vec<&CReturnItem> = proj.items.iter().filter(|i| !i.is_agg).collect();
+    let (gid_of_row, rep_row, ngroups) = group_ids(graph, ctx, sc, &key_items)?;
+    let agg_cols = fold_group_agg_cols(graph, ctx, sc, proj, &gid_of_row, ngroups)?;
 
     // Build one output row per group (column-major): re-evaluate the item
     // expressions scalar (few groups), resolving group keys against the
@@ -5641,14 +5667,16 @@ fn project_frame_cols(
 /// (aggregate / DISTINCT / ORDER BY / SKIP / LIMIT / `*`) — those end the pipeline
 /// or fall back to scalar.
 fn with_frame(graph: &Graph, ctx: &Ctx, sc: &ScanCols, proj: &CProjection) -> Option<ScanCols> {
-    if proj.aggregating
-        || proj.distinct
+    if proj.distinct
         || !proj.order_by.is_empty()
         || proj.skip.is_some()
         || proj.limit.is_some()
         || proj.star
     {
         return None;
+    }
+    if proj.aggregating {
+        return with_frame_aggregate(graph, ctx, sc, proj);
     }
     let mut out = ScanCols::new(proj.out_len);
     out.n = sc.n;
@@ -5665,6 +5693,94 @@ fn with_frame(graph: &Graph, ctx: &Ctx, sc: &ScanCols, proj: &CProjection) -> Op
         }
         out.vals[i] = Some(eval_vec(graph, ctx, sc, &item.expr).into_vals());
     }
+    Some(out)
+}
+
+/// A grouped/global aggregating `WITH` as a columnar frame → frame transform: one
+/// output row per group (first-seen order), replacing the scalar per-row
+/// accumulator. Groups by raw ids ([`group_ids`], now including element identity),
+/// folds each aggregate columnar ([`fold_group_agg_cols`]), then materializes each
+/// output item at the group's representative row. Bare element group keys carry
+/// their element column forward (so downstream `p.name` / `RETURN p` still resolve
+/// the handle); computed keys and aggregate expressions eval per group (few groups)
+/// against the rep binding + folded values. `None` (→ scalar `run_linear`) when the
+/// keys/aggregates aren't raw-vectorizable — identical fallback surface to the
+/// terminal [`vectorized_aggregate`].
+fn with_frame_aggregate(
+    graph: &Graph,
+    ctx: &Ctx,
+    sc: &ScanCols,
+    proj: &CProjection,
+) -> Option<ScanCols> {
+    let key_items: Vec<&CReturnItem> = proj.items.iter().filter(|i| !i.is_agg).collect();
+    let (gid_of_row, rep_row, ngroups) = group_ids(graph, ctx, sc, &key_items)?;
+    let agg_cols = fold_group_agg_cols(graph, ctx, sc, proj, &gid_of_row, ngroups)?;
+
+    let mut out = ScanCols::new(proj.out_len);
+    out.n = ngroups;
+    // Items that can't be read straight from a carried column — computed group
+    // keys and aggregate expressions — are evaluated per group below.
+    let mut need_eval: Vec<usize> = Vec::new();
+    for (i, item) in proj.items.iter().enumerate() {
+        if !item.is_agg {
+            if let CExpr::Var(slot) = &item.expr {
+                // A bare element group key: carry its column, gathered at each
+                // group's representative row. (Bare element keys ⇒ `ngroups` is the
+                // real group count, so every `rep_row` entry is a live row.)
+                if let Some((elem, ids)) = sc.slot(*slot) {
+                    out.slots[i] = Some((elem, rep_row.iter().map(|&ri| ids[ri]).collect()));
+                    continue;
+                }
+                // A bare carried value column (a key from an upstream WITH): gather.
+                if let Some(vals) = sc.val_slot(*slot) {
+                    out.vals[i] = Some(rep_row.iter().map(|&ri| vals[ri].clone()).collect());
+                    continue;
+                }
+            }
+        }
+        need_eval.push(i);
+    }
+
+    if !need_eval.is_empty() {
+        let mut cols: Vec<Vec<Val>> = need_eval
+            .iter()
+            .map(|_| Vec::with_capacity(ngroups))
+            .collect();
+        let mut b = Binding(vec![None; sc.slots.len()]);
+        for g in 0..ngroups {
+            // Rebind the representative row's element slots so a computed group key
+            // (`p.age`) or an aggregate expr that references a key resolves.
+            // `usize::MAX` = the empty global group (no rows); leave unbound.
+            if let Some(&ri) = rep_row.get(g).filter(|&&ri| ri != usize::MAX) {
+                for (slot, col) in sc.slots.iter().enumerate() {
+                    if let Some((elem, ids)) = col {
+                        b.set(
+                            slot,
+                            match elem {
+                                Elem::Node => Val::Node(ids[ri]),
+                                Elem::Edge => Val::Edge(ids[ri]),
+                            },
+                        );
+                    }
+                }
+            }
+            let agg_values: Vec<Val> = agg_cols.iter().map(|c| c[g].clone()).collect();
+            let env = Env {
+                graph,
+                ctx,
+                binding: &b,
+                group: None,
+                agg_values: Some(&agg_values),
+            };
+            for (k, &i) in need_eval.iter().enumerate() {
+                cols[k].push(eval(&env, &proj.items[i].expr));
+            }
+        }
+        for (k, &i) in need_eval.iter().enumerate() {
+            out.vals[i] = Some(std::mem::take(&mut cols[k]));
+        }
+    }
+
     Some(out)
 }
 
