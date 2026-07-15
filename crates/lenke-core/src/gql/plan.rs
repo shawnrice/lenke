@@ -1752,7 +1752,10 @@ fn try_decorrelate(c: &CallInline, outer: &[String]) -> Option<(MatchClause, Wit
     };
     let cproj = probe.projection(proj, true);
     if cproj.aggregating {
-        return None; // aggregating body → keep correlated (would reorder rows)
+        // Aggregating bodies would decorrelate to `OPTIONAL MATCH … WITH <outer>,
+        // <aggs>`, but correlated OPTIONAL MATCH has a correctness bug (drops some
+        // bound-start matches), so keep them correlated for now.
+        return None;
     }
     // Column-collision guard: a projected output name must not shadow an outer var.
     for name in &cproj.out_names {

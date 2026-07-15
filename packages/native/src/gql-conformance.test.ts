@@ -169,6 +169,15 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
         `CALL () { MATCH (n) RETURN count(n) AS total } RETURN total`,
     );
     expect(tsS).toBe(natS);
+
+    // Non-agg subquery over MULTIPLE start vertices (native decorrelates this to a
+    // flat join; TS runs it correlated) — the outputs must still match exactly.
+    const [tsM, natM] = both(
+      `MATCH (p:Person) ` +
+        `CALL (p) { MATCH (p)-[:CREATED]->(w) RETURN w.name AS thing } ` +
+        `RETURN p.name AS pn, thing ORDER BY pn, thing`,
+    );
+    expect(tsM).toBe(natM);
   });
 
   test('ISO path functions on a bound path are byte-identical', () => {

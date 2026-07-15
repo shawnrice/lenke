@@ -4271,3 +4271,26 @@ fn decorrelate_non_agg_rows_unchanged() {
     );
     assert_eq!(r, vec![vec![s("josh")], vec![s("vadas")]]);
 }
+
+/// Non-agg decorrelation over MULTIPLE start vertices (not anchored to one) —
+/// the case that would expose a bad flattening of the correlation join.
+#[test]
+fn decorrelate_non_agg_multi_start() {
+    let mut g = modern();
+    let r = rows(
+        &mut g,
+        "MATCH (p:Person) \
+         CALL (p) { MATCH (p)-[:CREATED]->(w) RETURN w.name AS thing } \
+         RETURN p.name AS pn, thing ORDER BY pn, thing",
+    );
+    // marko→lop, josh→{lop,ripple}, peter→lop; vadas creates nothing (dropped, non-OPTIONAL).
+    assert_eq!(
+        r,
+        vec![
+            vec![s("josh"), s("lop")],
+            vec![s("josh"), s("ripple")],
+            vec![s("marko"), s("lop")],
+            vec![s("peter"), s("lop")],
+        ]
+    );
+}
