@@ -6566,6 +6566,220 @@ fn try_count_two_hop(
     Some(rs)
 }
 
+/// Collect the variable slots referenced by `e` into `out`; `false` if `e` contains
+/// a construct not analyzed here (subquery / aggregate / CASE / function call), so
+/// the caller can't safely reason about which branch a predicate belongs to.
+fn expr_slot_refs(e: &CExpr, out: &mut Vec<usize>) -> bool {
+    match e {
+        CExpr::Var(s) => {
+            out.push(*s);
+            true
+        }
+        CExpr::Prop { var_slot, .. } => {
+            out.push(*var_slot);
+            true
+        }
+        CExpr::Param(_) | CExpr::Lit(_) => true,
+        CExpr::List(xs) => xs.iter().all(|x| expr_slot_refs(x, out)),
+        CExpr::Compare { left, right, .. }
+        | CExpr::Arith { left, right, .. }
+        | CExpr::Concat { left, right }
+        | CExpr::And(left, right)
+        | CExpr::Or(left, right)
+        | CExpr::Xor(left, right) => expr_slot_refs(left, out) && expr_slot_refs(right, out),
+        CExpr::Neg(x) | CExpr::Not(x) => expr_slot_refs(x, out),
+        CExpr::IsNull { expr, .. }
+        | CExpr::IsTruth { expr, .. }
+        | CExpr::IsLabeled { expr, .. } => expr_slot_refs(expr, out),
+        CExpr::In { expr, list, .. } => expr_slot_refs(expr, out) && expr_slot_refs(list, out),
+        _ => false, // Exists / CountSubquery / Case / Scalar / Aggregate / AggRef
+    }
+}
+
+/// Flatten a top-level `AND` chain into its conjuncts.
+fn split_conjuncts<'a>(e: &'a CExpr, out: &mut Vec<&'a CExpr>) {
+    if let CExpr::And(l, r) = e {
+        split_conjuncts(l, out);
+        split_conjuncts(r, out);
+    } else {
+        out.push(e);
+    }
+}
+
+/// Filtered-degree-product shortcut for a comma-join count:
+/// `MATCH (a:La?)-[:T1]->(b:Lb?), (a)-[:T2]->(c:Lc?) WHERE <φ> RETURN count(*)`.
+///
+/// The two branches share only the anchor `a`, so the number of matches at each `a`
+/// is `|B(a)| · |C(a)|` — the product of the two independently-filtered out-degrees —
+/// and the total is `Σ_a |B(a)|·|C(a)|`. Computing that per anchor is O(deg) instead
+/// of enumerating the O(deg²) cross product the scalar join materializes. Requires
+/// the `WHERE` to factor: every conjunct references at most one branch endpoint
+/// (`b`-only or `c`-only, plus the anchor); a cross-branch conjunct (`b.x < c.y`)
+/// can't factor, so it bails. Anonymous rels ⇒ no edge-uniqueness (homomorphism,
+/// same as `try_count_two_hop`), so the plain product is exact. A global `count(*)`,
+/// so there's no group order to preserve.
+#[allow(clippy::too_many_lines, reason = "one self-contained count shortcut")]
+fn try_count_comma_join(
+    linear: &CLinear,
+    graph: &Graph,
+    plan: &CQuery,
+    params: &[Val],
+) -> Option<RowSet> {
+    let [CClause::Match {
+        optional: false,
+        patterns,
+        where_: Some(w),
+        ..
+    }, CClause::Return(proj)] = linear.clauses.as_slice()
+    else {
+        return None;
+    };
+    // Exactly `count(*)`.
+    if proj.distinct
+        || !proj.order_by.is_empty()
+        || proj.skip.is_some()
+        || proj.limit.is_some()
+        || proj.out_len != 1
+        || proj.aggs.len() != 1
+        || proj.items.len() != 1
+        || !matches!(proj.items[0].expr, CExpr::AggRef(0))
+    {
+        return None;
+    }
+    let agg = &proj.aggs[0];
+    if !agg.star || agg.distinct || !matches!(agg.func, AggFn::Count) {
+        return None;
+    }
+    let [p1, p2] = patterns.as_slice() else {
+        return None;
+    };
+    let ([seg1], [seg2]) = (p1.segments.as_slice(), p2.segments.as_slice()) else {
+        return None;
+    };
+    for (p, seg) in [(p1, seg1), (p2, seg2)] {
+        if !p.start.props.is_empty() || p.start.where_.is_some() {
+            return None;
+        }
+        let rel = &seg.rel;
+        if rel.var_slot.is_some()
+            || !rel.props.is_empty()
+            || rel.where_.is_some()
+            || rel.quantifier.is_some()
+            || rel.direction != Direction::Out
+        {
+            return None;
+        }
+        if !seg.node.props.is_empty() || seg.node.where_.is_some() {
+            return None;
+        }
+    }
+    // Shared anchor `a`; distinct named endpoints `b`, `c`.
+    let a_slot = p1.start.var_slot?;
+    if p2.start.var_slot != Some(a_slot) {
+        return None;
+    }
+    let b_slot = seg1.node.var_slot?;
+    let c_slot = seg2.node.var_slot?;
+    if b_slot == c_slot || b_slot == a_slot || c_slot == a_slot {
+        return None;
+    }
+
+    // Partition the WHERE conjuncts into anchor / b-branch / c-branch; bail on a
+    // cross-branch conjunct or a reference to any variable other than a/b/c.
+    let mut conjuncts = Vec::new();
+    split_conjuncts(w, &mut conjuncts);
+    let (mut a_preds, mut b_preds, mut c_preds): (Vec<&CExpr>, Vec<&CExpr>, Vec<&CExpr>) =
+        (Vec::new(), Vec::new(), Vec::new());
+    for conj in conjuncts {
+        let mut slots = Vec::new();
+        if !expr_slot_refs(conj, &mut slots) {
+            return None;
+        }
+        if slots
+            .iter()
+            .any(|s| *s != a_slot && *s != b_slot && *s != c_slot)
+        {
+            return None;
+        }
+        let refs_b = slots.contains(&b_slot);
+        let refs_c = slots.contains(&c_slot);
+        match (refs_b, refs_c) {
+            (true, true) => return None, // cross-branch — can't factor
+            (true, false) => b_preds.push(conj),
+            (false, true) => c_preds.push(conj),
+            (false, false) => a_preds.push(conj),
+        }
+    }
+
+    let ctx = resolve_ctx(graph, plan, params);
+    let la1 = p1.start.label.as_ref();
+    let la2 = p2.start.label.as_ref();
+    let lb = seg1.node.label.as_ref();
+    let lc = seg2.node.label.as_ref();
+    let width = a_slot.max(b_slot).max(c_slot) + 1;
+
+    // For one anchor `a`, the filtered out-degree of a branch: neighbours matching
+    // the endpoint label and every branch predicate (with `a` + the endpoint bound).
+    let branch_degree = |bind: &mut Binding,
+                         a: u32,
+                         dir_label: Option<&CLabelExpr>,
+                         end_slot: usize,
+                         end_label: Option<&CLabelExpr>,
+                         preds: &[&CExpr]|
+     -> u64 {
+        let mut d = 0u64;
+        for (_e, nbr) in expand(graph, &ctx, a, Direction::Out, dir_label) {
+            if !matches_label(graph, &ctx, nbr, end_label) {
+                continue;
+            }
+            bind.set(end_slot, Val::Node(nbr));
+            let env = Env::new(graph, &ctx, bind);
+            if preds.iter().all(|p| as_truth(&eval(&env, p)) == Some(true)) {
+                d += 1;
+            }
+        }
+        d
+    };
+
+    let mut count: u64 = 0;
+    let mut bind = Binding(vec![None; width]);
+    let mut faulted = false;
+    for_each_seed(graph, &ctx, la1, &mut |a| {
+        if !matches_label(graph, &ctx, a, la2) {
+            return true;
+        }
+        bind.set(a_slot, Val::Node(a));
+        // Anchor predicates (with only `a` bound).
+        {
+            let env = Env::new(graph, &ctx, &bind);
+            if !a_preds
+                .iter()
+                .all(|p| as_truth(&eval(&env, p)) == Some(true))
+            {
+                return true;
+            }
+        }
+        let d1 = branch_degree(&mut bind, a, seg1.rel.label.as_ref(), b_slot, lb, &b_preds);
+        if d1 == 0 {
+            return true;
+        }
+        let d2 = branch_degree(&mut bind, a, seg2.rel.label.as_ref(), c_slot, lc, &c_preds);
+        count += d1 * d2;
+        if ctx.faulted() {
+            faulted = true;
+            return false;
+        }
+        true
+    });
+    if faulted {
+        return None;
+    }
+
+    let mut rs = RowSet::new(proj.out_names.clone());
+    rs.push_row(std::iter::once(Value::Num(count as f64)));
+    Some(rs)
+}
+
 /// Degree-product shortcut for a **var-length `{1,2}` count**:
 /// `MATCH (a:La?)-[:T]->{1,2}(b:Lb?) RETURN count(*)` — count length-1 + length-2
 /// trails without enumerating every trail (which is O(#trails), quadratic in
@@ -9026,6 +9240,11 @@ fn run_part(
         // Var-length `{lo,hi≤2}` count GROUPED by an endpoint value — guarded
         // frequency propagation (O(V+E)) instead of enumerating every trail row.
         if let Some(rs) = try_grouped_varlen_1_2(linear, graph, plan, params) {
+            return Ok(rs);
+        }
+        // Comma-join `count(*)` (`(a)->(b), (a)->(c) WHERE …`) via the product of the
+        // two anchors' filtered degrees — O(deg), not the O(deg²) cross product.
+        if let Some(rs) = try_count_comma_join(linear, graph, plan, params) {
             return Ok(rs);
         }
         // Reverse semi-join for a correlated `[NOT] EXISTS { … }` count — seed the

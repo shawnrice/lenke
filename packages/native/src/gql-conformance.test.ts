@@ -818,3 +818,64 @@ suite('GQL differential: grouped var-length count shortcut (TS vs native)', () =
     });
   }
 });
+
+// Comma-join count shortcut: native takes `try_count_comma_join` (Σ_a filtered-
+// out-degree(b) × filtered-out-degree(c), O(deg)); TS enumerates the cross product.
+// Byte-identity proves the product equals the enumerated count — including the
+// homomorphism cases where `b` and `c` can bind the SAME neighbour (overlapping
+// predicates), which would diverge if either engine enforced node/edge uniqueness.
+suite('GQL differential: comma-join count shortcut (TS vs native)', () => {
+  const NDJSON = [
+    '{"type":"node","id":"1","labels":["Person"],"properties":{"age":40}}',
+    '{"type":"node","id":"2","labels":["Person"],"properties":{"age":70}}',
+    '{"type":"node","id":"3","labels":["Person"],"properties":{"age":20}}',
+    '{"type":"node","id":"4","labels":["Person"],"properties":{"age":65}}',
+    '{"type":"node","id":"5","labels":["Person"],"properties":{"age":22}}',
+    '{"type":"node","id":"6","labels":["Account"],"properties":{"age":80}}',
+    '{"type":"edge","id":"10","from":"1","to":"2","labels":["KNOWS"]}',
+    '{"type":"edge","id":"11","from":"1","to":"3","labels":["KNOWS"]}',
+    '{"type":"edge","id":"12","from":"1","to":"4","labels":["KNOWS"]}',
+    '{"type":"edge","id":"13","from":"1","to":"5","labels":["KNOWS"]}',
+    '{"type":"edge","id":"14","from":"1","to":"6","labels":["OWNS"]}',
+    '{"type":"edge","id":"15","from":"2","to":"3","labels":["KNOWS"]}',
+  ].join('\n');
+
+  const backend = createFfiBackend(LIB);
+  const nativeGraph = graphFromFormat(backend, NDJSON, 'ndjson');
+  const tsGraph = tsDeserialize(NDJSON, 'ndjson', new Graph());
+  const both = (q: string): [string, string] => [
+    JSON.stringify(tsQuery(tsGraph, q)),
+    JSON.stringify(nativeGraph.query(q)),
+  ];
+
+  const cases: Array<[string, string]> = [
+    // Disjoint per-branch predicates (b>60 and c<25 can't be the same vertex).
+    [
+      'disjoint per-branch predicates',
+      `MATCH (a:Person)-[:KNOWS]->(b), (a)-[:KNOWS]->(c) WHERE b.age > 60 AND c.age < 25 RETURN count(*) AS n`,
+    ],
+    // OVERLAPPING predicates: a neighbour can be BOTH b and c — the count must
+    // include the b==c diagonal (homomorphism), which the product does.
+    [
+      'overlapping predicates (b == c allowed)',
+      `MATCH (a:Person)-[:KNOWS]->(b), (a)-[:KNOWS]->(c) WHERE b.age > 30 AND c.age > 30 RETURN count(*) AS n`,
+    ],
+    // No WHERE-free branch: an anchor predicate (references only `a`).
+    [
+      'anchor predicate + one branch predicate',
+      `MATCH (a:Person)-[:KNOWS]->(b), (a)-[:KNOWS]->(c) WHERE a.age = 40 AND b.age > 60 RETURN count(*) AS n`,
+    ],
+    // Different endpoint labels + different rel types per branch.
+    [
+      'different labels and rel types per branch',
+      `MATCH (a:Person)-[:KNOWS]->(b:Person), (a)-[:OWNS]->(c:Account) WHERE b.age > 60 RETURN count(*) AS n`,
+    ],
+  ];
+
+  for (const [name, q] of cases) {
+    test(name, () => {
+      const [ts, native] = both(q);
+      expect(ts, q).toBe(native);
+    });
+  }
+});
