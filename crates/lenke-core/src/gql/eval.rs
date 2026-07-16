@@ -1076,6 +1076,20 @@ fn eval(env: &Env, expr: &CExpr) -> Val {
             prop_of(env.graph, env.ctx, &bound, *key_ref)
         }
         CExpr::List(items) => Val::List(items.iter().map(|e| eval(env, e)).collect()),
+        CExpr::Index { base, index } => {
+            // ISO GQL list subscript `base[index]`: 0-based, out of range → null, and
+            // null-safe (non-list base, null / non-integer / negative index → null).
+            let base_v = eval(env, base);
+            let idx_v = eval(env, index);
+            match (base_v, num_of(&idx_v)) {
+                (Val::List(items), Some(i))
+                    if i >= 0.0 && i.fract() == 0.0 && (i as usize) < items.len() =>
+                {
+                    items[i as usize].clone()
+                }
+                _ => Val::Null,
+            }
+        }
         CExpr::Neg(e) => match arith_num(&eval(env, e), env.ctx) {
             Some(n) => Val::Num(-n),
             None => Val::Null,

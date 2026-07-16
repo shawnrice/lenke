@@ -249,6 +249,11 @@ pub enum CExpr {
     },
     Lit(Lit),
     List(Vec<Self>),
+    /// ISO GQL list element access `base[index]` — 0-based; out of range → null.
+    Index {
+        base: Box<Self>,
+        index: Box<Self>,
+    },
     Compare {
         op: CompareOp,
         left: Box<Self>,
@@ -449,10 +454,11 @@ fn emit(e: &CExpr, out: &mut Vec<Op>) {
             out.push(Op::Scalar(*func, args.len()));
         }
         CExpr::AggRef(i) => out.push(Op::AggRef(*i)),
-        // Control flow / subquery / aggregate: tree-walk this subexpression.
+        // Control flow / subquery / aggregate / list subscript: tree-walk it.
         CExpr::Case { .. }
         | CExpr::Exists { .. }
         | CExpr::CountSubquery { .. }
+        | CExpr::Index { .. }
         | CExpr::Aggregate { .. } => out.push(Op::Tree(e.clone())),
     }
 }
@@ -719,6 +725,7 @@ fn has_aggregate(expr: &CExpr) -> bool {
         | CExpr::Compare { left, right, .. } => has_aggregate(left) || has_aggregate(right),
         CExpr::In { expr, list, .. } => has_aggregate(expr) || has_aggregate(list),
         CExpr::List(items) => items.iter().any(has_aggregate),
+        CExpr::Index { base, index } => has_aggregate(base) || has_aggregate(index),
         CExpr::Case {
             subject,
             whens,
@@ -793,6 +800,10 @@ fn extract_aggs(expr: CExpr, aggs: &mut Vec<CAgg>) -> CExpr {
         CExpr::List(items) => {
             CExpr::List(items.into_iter().map(|e| extract_aggs(e, aggs)).collect())
         }
+        CExpr::Index { base, index } => CExpr::Index {
+            base: b(base, aggs),
+            index: b(index, aggs),
+        },
         CExpr::Compare { op, left, right } => CExpr::Compare {
             op,
             left: b(left, aggs),
@@ -871,6 +882,7 @@ fn refs_slot_below(expr: &CExpr, n: usize) -> bool {
         CExpr::Var(s) => *s < n,
         CExpr::Prop { var_slot, .. } => *var_slot < n,
         CExpr::List(items) => items.iter().any(|e| refs_slot_below(e, n)),
+        CExpr::Index { base, index } => refs_slot_below(base, n) || refs_slot_below(index, n),
         CExpr::Neg(e) | CExpr::Not(e) => refs_slot_below(e, n),
         CExpr::IsNull { expr, .. }
         | CExpr::IsTruth { expr, .. }
@@ -1008,6 +1020,10 @@ impl Lowerer {
             },
             Expr::Lit(l) => CExpr::Lit(l.clone()),
             Expr::List(items) => CExpr::List(items.iter().map(|x| self.expr(x)).collect()),
+            Expr::Index { base, index } => CExpr::Index {
+                base: self.boxed(base),
+                index: self.boxed(index),
+            },
             Expr::Compare { op, left, right } => CExpr::Compare {
                 op: *op,
                 left: self.boxed(left),
@@ -1574,6 +1590,10 @@ fn collect_free_vars(e: &Expr, bound: &[String], free: &mut Vec<String>) {
             }
         }
         Expr::Neg(x) | Expr::Not(x) => collect_free_vars(x, bound, free),
+        Expr::Index { base, index } => {
+            collect_free_vars(base, bound, free);
+            collect_free_vars(index, bound, free);
+        }
         Expr::IsNull { expr, .. } | Expr::IsTruth { expr, .. } | Expr::IsLabeled { expr, .. } => {
             collect_free_vars(expr, bound, free)
         }

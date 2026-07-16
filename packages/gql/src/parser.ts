@@ -938,7 +938,21 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Statement => {
         return parseUnary();
       }
 
-      return parsePrimary();
+      // Postfix list subscript `base[index]` (0-based, ISO GQL); chains left to
+      // right. A leading `[` is still a list literal (parsePrimary); this only
+      // fires after a primary.
+      let e = parsePrimary();
+
+      while (check('lbracket')) {
+        advance();
+
+        const idx = parseExpr();
+
+        expect('rbracket', "']' to close a list subscript");
+        e = { kind: 'index', base: e, index: idx };
+      }
+
+      return e;
     });
 
   // The body shared by the braced subqueries `EXISTS { … }` and `COUNT { … }`:

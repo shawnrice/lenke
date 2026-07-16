@@ -338,6 +338,8 @@ const hasAggregate = (expr: Expr): boolean => {
       return hasAggregate(expr.left) || hasAggregate(expr.right);
     case 'in':
       return hasAggregate(expr.expr) || hasAggregate(expr.list);
+    case 'index':
+      return hasAggregate(expr.base) || hasAggregate(expr.index);
     case 'list':
       return expr.items.some(hasAggregate);
     case 'case':
@@ -1088,6 +1090,30 @@ const compileExpr = (expr: Expr): CompiledExpr => {
 
       return (env) => items.map((f) => f(env));
     }
+    case 'index': {
+      // ISO GQL list subscript `base[index]`: 0-based, out of range → null, and
+      // null-safe (non-list base, null / non-integer / negative index → null).
+      // `numOf` mirrors the native `num_of` coercion for byte-identity.
+      const baseF = compileExpr(expr.base);
+      const idxF = compileExpr(expr.index);
+
+      return (env) => {
+        const base = baseF(env);
+        const i = numOf(idxF(env));
+
+        if (
+          !Array.isArray(base) ||
+          i === null ||
+          !Number.isInteger(i) ||
+          i < 0 ||
+          i >= base.length
+        ) {
+          return null;
+        }
+
+        return base[i] ?? null;
+      };
+    }
     case 'func':
       return compileFunc(expr);
     case 'neg': {
@@ -1711,6 +1737,11 @@ export const freePredicateVars = (expr: Expr): Set<string> => {
         for (const it of e.items) {
           walk(it, bound);
         }
+
+        return;
+      case 'index':
+        walk(e.base, bound);
+        walk(e.index, bound);
 
         return;
       case 'neg':

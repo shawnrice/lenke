@@ -319,6 +319,8 @@ export type Expr =
   | { kind: 'prop'; variable: string; key: string }
   | { kind: 'lit'; value: unknown }
   | { kind: 'list'; items: readonly Expr[] }
+  // ISO GQL list element access `base[index]` — 0-based; out of range → null.
+  | { kind: 'index'; base: Expr; index: Expr }
   | { kind: 'compare'; op: CompareOp; left: Expr; right: Expr }
   | { kind: 'arith'; op: ArithOp; left: Expr; right: Expr }
   | { kind: 'concat'; left: Expr; right: Expr }

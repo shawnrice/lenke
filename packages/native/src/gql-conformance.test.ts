@@ -130,6 +130,35 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     expect(ts1).toBe(`[{"sp":0,"ss":null}]`);
   });
 
+  test('list[i] — ISO GQL 0-based subscript, null-safe, byte-identical', () => {
+    const cases: Array<[string, string]> = [
+      // 0-based: [0] is the first element.
+      [`RETURN [10, 20, 30][0] AS a`, `[{"a":10}]`],
+      [`RETURN [10, 20, 30][2] AS a`, `[{"a":30}]`],
+      // Out of range / negative / null index → null (null-safe).
+      [`RETURN [10, 20, 30][5] AS a`, `[{"a":null}]`],
+      [`RETURN [10, 20, 30][-1] AS a`, `[{"a":null}]`],
+      [`RETURN [10, 20, 30][null] AS a`, `[{"a":null}]`],
+      // Index is any expression; chained subscripts nest left to right.
+      [`RETURN [10, 20, 30][1 + 1] AS a`, `[{"a":30}]`],
+      [`RETURN [[1, 2], [3, 4]][1][0] AS a`, `[{"a":3}]`],
+      // Non-list base → null (not an error).
+      [`RETURN 5[0] AS a`, `[{"a":null}]`],
+    ];
+
+    for (const [q, want] of cases) {
+      const [ts, native] = both(q);
+      expect(ts, q).toBe(native);
+      expect(ts, q).toBe(want);
+    }
+
+    // Indexing a collected list over a bound variable.
+    const [tsC, natC] = both(
+      `MATCH (n:Person) WITH collect_list(n.name) AS names RETURN names[0] AS first`,
+    );
+    expect(tsC).toBe(natC);
+  });
+
   // --- ANY SHORTEST: the path value serializes byte-identically across engines.
   test('RETURN p — a shortest Path is {vertices, edges, length}, byte-identical', () => {
     const q = `MATCH p = ANY SHORTEST (a)-[]->*(b) WHERE a.name = 'marko' AND b.name = 'lop' RETURN p`;

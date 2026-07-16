@@ -372,6 +372,11 @@ pub enum Expr {
     },
     Lit(Lit),
     List(Vec<Self>),
+    /// ISO GQL list element access `base[index]` — 0-based; out of range → null.
+    Index {
+        base: Box<Self>,
+        index: Box<Self>,
+    },
     Compare {
         op: CompareOp,
         left: Box<Self>,

@@ -977,7 +977,20 @@ impl Parser {
                 p.advance();
                 return p.parse_unary();
             }
-            p.parse_primary()
+            // Postfix list subscript `base[index]` (0-based, ISO GQL); chains left
+            // to right (`a[0][1]`). A leading `[` is still a list literal (handled
+            // in `parse_primary`); this only fires *after* a primary.
+            let mut e = p.parse_primary()?;
+            while p.check(Tt::LBracket) {
+                p.advance();
+                let index = p.parse_expr()?;
+                p.expect(Tt::RBracket, "']' to close a list subscript")?;
+                e = Expr::Index {
+                    base: Box::new(e),
+                    index: Box::new(index),
+                };
+            }
+            Ok(e)
         })
     }
 
