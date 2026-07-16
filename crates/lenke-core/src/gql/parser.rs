@@ -1766,7 +1766,7 @@ impl Parser {
     }
 
     fn parse_query(&mut self) -> R<Query> {
-        let query = self.parse_set_op_query()?;
+        let query = self.parse_next_chain()?;
         if !self.at_end() {
             let t = self.peek();
             let got = if t.value.is_empty() {
@@ -1777,6 +1777,88 @@ impl Parser {
             return err(format!("Unexpected trailing input '{got}'"), t.pos);
         }
         Ok(query)
+    }
+
+    /// ISO GQL `NEXT` linear-statement composition: `A NEXT [YIELD …] B [NEXT …]`
+    /// pipes each statement's RETURN output forward as the next statement's driving
+    /// table. Implemented as a rewrite — each pre-NEXT `RETURN` becomes a `WITH`
+    /// (plus a second `WITH` for `YIELD`'s column select/rename), concatenated with
+    /// the following statement into one linear query, reusing all WITH machinery.
+    /// Only single-linear segments are supported (no set operators around NEXT).
+    fn parse_next_chain(&mut self) -> R<Query> {
+        let head = self.parse_set_op_query()?;
+        if !self.check_kw("next") {
+            return Ok(head);
+        }
+        let mut clauses = self.take_linear_for_next(head)?;
+        while self.check_kw("next") {
+            self.advance();
+            // The prior statement's terminal RETURN becomes a WITH piping it forward.
+            match clauses.pop() {
+                Some(Clause::Return(proj)) => clauses.push(Clause::With(WithClause {
+                    projection: proj,
+                    where_: None,
+                })),
+                _ => return err("NEXT must follow a RETURN".to_string(), self.peek().pos),
+            }
+            // Optional `YIELD col [AS alias], …` → a second WITH selecting/renaming
+            // the piped columns (each yielded name resolves against the prior scope).
+            if self.check_kw("yield") {
+                self.advance();
+                let mut items = vec![self.next_yield_item()?];
+                while self.check(Tt::Comma) {
+                    self.advance();
+                    items.push(self.next_yield_item()?);
+                }
+                clauses.push(Clause::With(WithClause {
+                    projection: Projection {
+                        star: false,
+                        items,
+                        distinct: false,
+                        order_by: Vec::new(),
+                        skip: None,
+                        limit: None,
+                    },
+                    where_: None,
+                }));
+            }
+            let seg = self.parse_set_op_query()?;
+            clauses.extend(self.take_linear_for_next(seg)?);
+        }
+        Ok(Query {
+            parts: vec![LinearQuery { clauses }],
+            ops: Vec::new(),
+        })
+    }
+
+    /// A NEXT segment must be a single linear query (no set operators) for the
+    /// RETURN→WITH rewrite. Returns its clauses, or errors on a set-op segment.
+    fn take_linear_for_next(&mut self, q: Query) -> R<Vec<Clause>> {
+        if !q.ops.is_empty() || q.parts.len() != 1 {
+            return err(
+                "NEXT does not support set operators (UNION/EXCEPT/INTERSECT) in a composed \
+                 statement"
+                    .to_string(),
+                self.peek().pos,
+            );
+        }
+        Ok(q.parts.into_iter().next().unwrap().clauses)
+    }
+
+    /// One `YIELD col [AS alias]` for NEXT → a `Var(col)` projection item aliased to
+    /// `alias` (or `col`), so the piped column is selected (and optionally renamed).
+    fn next_yield_item(&mut self) -> R<ReturnItem> {
+        let name = self.bind_name("a YIELD column")?;
+        let alias = if self.check_kw("as") {
+            self.advance();
+            Some(self.bind_name("a YIELD alias")?)
+        } else {
+            Some(name.clone())
+        };
+        Ok(ReturnItem {
+            expr: Expr::Var(name),
+            alias,
+        })
     }
 
     /// Parse one or more linear parts joined by set operators, WITHOUT requiring

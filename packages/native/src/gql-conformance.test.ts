@@ -469,6 +469,53 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     expect(tsG).toBe(`[{"who":"marko"}]`);
   });
 
+  test('NEXT statement composition (ISO) is byte-identical', () => {
+    // Pipe a statement's RETURN output as the next statement's driving table.
+    const [tsF, natF] = both(
+      `MATCH (p:Person) RETURN p.name AS n, p.age AS a NEXT FILTER a > 28 RETURN n ORDER BY n`,
+    );
+    expect(tsF).toBe(natF);
+    expect(tsF).toBe(`[{"n":"josh"},{"n":"marko"}]`);
+
+    // An ELEMENT carried across NEXT stays a node handle, so it can be re-matched.
+    const [tsE, natE] = both(
+      `MATCH (p:Person) RETURN p AS person ` +
+        `NEXT MATCH (person)-[:KNOWS]->(f) RETURN person.name AS pn, f.name AS fn ORDER BY pn, fn`,
+    );
+    expect(tsE).toBe(natE);
+    expect(tsE).toBe(`[{"pn":"marko","fn":"josh"},{"pn":"marko","fn":"vadas"}]`);
+
+    // YIELD selects (and can rename) the piped columns.
+    const [tsY, natY] = both(
+      `MATCH (p:Person) RETURN p.name AS n, p.age AS a NEXT YIELD n AS who RETURN who ORDER BY who`,
+    );
+    expect(tsY).toBe(natY);
+    expect(tsY).toBe(`[{"who":"josh"},{"who":"marko"},{"who":"vadas"}]`);
+
+    // Chained NEXT with LET + FILTER + ORDER BY across the boundaries.
+    const [tsC, natC] = both(
+      `MATCH (p:Person) RETURN p.age AS a NEXT LET b = a * 2 RETURN b ORDER BY b ` +
+        `NEXT FILTER b > 55 RETURN b ORDER BY b`,
+    );
+    expect(tsC).toBe(natC);
+    expect(tsC).toBe(`[{"b":58},{"b":64}]`);
+
+    // Set operators around NEXT are a documented limitation — both engines reject.
+    const threw = (run: () => unknown): boolean => {
+      try {
+        run();
+
+        return false;
+      } catch {
+        return true;
+      }
+    };
+    const setOpNext = `MATCH (p:Person) RETURN p.name AS n UNION MATCH (s:Software) RETURN s.name AS n NEXT RETURN n`;
+
+    expect(threw(() => tsQuery(tsGraph, setOpNext))).toBe(true);
+    expect(threw(() => nativeGraph.query(setOpNext))).toBe(true);
+  });
+
   test('ISO path functions on a bound path are byte-identical', () => {
     const q =
       `MATCH p = ANY SHORTEST (a)-[]->*(b) WHERE a.name = 'marko' AND b.name = 'lop' ` +

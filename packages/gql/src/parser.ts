@@ -1733,7 +1733,71 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Statement => {
 
   // --- top level: linear queries joined by set operators ---------------------
 
-  const query = parseSetOpQuery();
+  // A NEXT segment must be a single linear query (no set operators) for the
+  // RETURN→WITH rewrite below. Returns a mutable copy of its clauses.
+  const takeLinearForNext = (q: Query): Clause[] => {
+    if (q.ops.length > 0 || q.parts.length !== 1) {
+      throw new GqlSyntaxError(
+        'NEXT does not support set operators (UNION/EXCEPT/INTERSECT) in a composed statement',
+        peek().pos,
+      );
+    }
+
+    return [...q.parts[0].clauses];
+  };
+
+  // One `YIELD col [AS alias]` → a `Var(col)` projection item aliased to `alias`
+  // (or `col`), so the piped column is selected (and optionally renamed).
+  const nextYieldItem = (): ReturnItem => {
+    const name = bindName('a YIELD column');
+    const alias = checkKeyword('as') ? (advance(), bindName('a YIELD alias')) : name;
+
+    return { expr: { kind: 'var', name }, alias };
+  };
+
+  // ISO GQL `NEXT` linear-statement composition: `A NEXT [YIELD …] B [NEXT …]`
+  // pipes each statement's RETURN output forward as the next's driving table.
+  // Rewrite: each pre-NEXT RETURN becomes a WITH (plus a second WITH for YIELD),
+  // concatenated into one linear query — reusing all WITH machinery.
+  const parseNextChain = (): Query => {
+    const head = parseSetOpQuery();
+
+    if (!checkKeyword('next')) {
+      return head;
+    }
+
+    const clauses = takeLinearForNext(head);
+
+    while (checkKeyword('next')) {
+      advance();
+
+      const last = clauses.pop();
+
+      if (last?.kind !== 'return') {
+        throw new GqlSyntaxError('NEXT must follow a RETURN', peek().pos);
+      }
+
+      clauses.push({ kind: 'with', projection: last.projection });
+
+      if (checkKeyword('yield')) {
+        advance();
+        const items = [nextYieldItem()];
+
+        while (check('comma')) {
+          advance();
+          items.push(nextYieldItem());
+        }
+
+        clauses.push({ kind: 'with', projection: { star: false, items, distinct: false } });
+      }
+
+      clauses.push(...takeLinearForNext(parseSetOpQuery()));
+    }
+
+    return { parts: [{ clauses }], ops: [] };
+  };
+
+  const query = parseNextChain();
 
   if (!atEnd()) {
     throw new GqlSyntaxError(
