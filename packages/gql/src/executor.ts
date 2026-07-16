@@ -3087,6 +3087,12 @@ type CCallInline = {
   optional: boolean;
   scope: readonly string[];
   body: CLinear;
+  /**
+   * Additional set-op parts (`… UNION/EXCEPT/INTERSECT …`) after the first. Empty
+   * for a plain single-part body; each part shares the same imported scope and
+   * yields the same columns, folded with `combineRows`.
+   */
+  bodyMore: readonly { op: SetOp; part: CLinear }[];
   /** Output columns of the nested RETURN (for OPTIONAL null-fill). */
   returnColumns: readonly string[];
 };
@@ -3222,7 +3228,9 @@ const compileClause = (clause: Clause): CClause => {
       };
     }
     case 'callInline': {
-      const ret = clause.body.clauses.find((c) => c.kind === 'return');
+      // All set-op parts share the same output columns, so the first is
+      // authoritative for the OPTIONAL null-fill column names.
+      const ret = clause.body.parts[0].clauses.find((c) => c.kind === 'return');
       const returnColumns =
         ret && !ret.projection.star
           ? ret.projection.items.map((i) => i.alias ?? columnName(i.expr))
@@ -3232,7 +3240,11 @@ const compileClause = (clause: Clause): CClause => {
         kind: 'callInline',
         optional: clause.optional,
         scope: clause.scope,
-        body: compileLinear(clause.body),
+        body: compileLinear(clause.body.parts[0]),
+        bodyMore: clause.body.ops.map((op, i) => ({
+          op,
+          part: compileLinear(clause.body.parts[i + 1]),
+        })),
         returnColumns,
       };
     }
@@ -4335,7 +4347,13 @@ const runCallInline = (
       }
     }
 
-    const nested = runLinearClauses(clause.body, graph, params, seed);
+    let nested = runLinearClauses(clause.body, graph, params, new Map(seed));
+
+    // Fold in any set-op parts (`… UNION/EXCEPT/INTERSECT …`), each run against
+    // the same seed, matching the top-level set-op semantics.
+    for (const { op, part } of clause.bodyMore) {
+      nested = combineRows(op, nested, runLinearClauses(part, graph, params, new Map(seed)));
+    }
 
     if (nested.length === 0 && clause.optional) {
       const b = new Map(outer);

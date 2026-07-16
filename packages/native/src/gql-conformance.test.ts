@@ -283,6 +283,80 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     expect(tsA).toBe(natA);
   });
 
+  test('inline subquery CALL with set operators is byte-identical', () => {
+    // UNION (distinct) inside the correlated body: per person, KNOWS-neighbour
+    // names ∪ CREATED-thing names. marko → {vadas, josh} ∪ {lop}; others empty.
+    const [tsU, natU] = both(
+      `MATCH (p:Person) ` +
+        `CALL (p) { MATCH (p)-[:KNOWS]->(f) RETURN f.name AS x ` +
+        `UNION MATCH (p)-[:CREATED]->(w) RETURN w.name AS x } ` +
+        `RETURN p.name AS pn, x ORDER BY pn, x`,
+    );
+    expect(tsU).toBe(natU);
+    expect(tsU).not.toBe('[]');
+
+    // UNION ALL keeps duplicates: each KNOWS-neighbour twice.
+    const [tsUA, natUA] = both(
+      `MATCH (p:Person) ` +
+        `CALL (p) { MATCH (p)-[:KNOWS]->(f) RETURN f.name AS x ` +
+        `UNION ALL MATCH (p)-[:KNOWS]->(f) RETURN f.name AS x } ` +
+        `RETURN p.name AS pn, x ORDER BY pn, x`,
+    );
+    expect(tsUA).toBe(natUA);
+    expect(tsUA).not.toBe('[]');
+
+    // EXCEPT where the correlation feeds the RIGHT side: all Software names
+    // EXCEPT those p created. marko created lop ⇒ empty; vadas/josh ⇒ {lop}.
+    const [tsE, natE] = both(
+      `MATCH (p:Person) ` +
+        `CALL (p) { MATCH (s:Software) RETURN s.name AS x ` +
+        `EXCEPT MATCH (p)-[:CREATED]->(w) RETURN w.name AS x } ` +
+        `RETURN p.name AS pn, x ORDER BY pn, x`,
+    );
+    expect(tsE).toBe(natE);
+    expect(tsE).not.toBe('[]');
+
+    // INTERSECT: p's created things that are Software. marko ⇒ {lop}; others ∅.
+    const [tsI, natI] = both(
+      `MATCH (p:Person) ` +
+        `CALL (p) { MATCH (p)-[:CREATED]->(w) RETURN w.name AS x ` +
+        `INTERSECT MATCH (s:Software) RETURN s.name AS x } ` +
+        `RETURN p.name AS pn, x ORDER BY pn, x`,
+    );
+    expect(tsI).toBe(natI);
+    expect(tsI).not.toBe('[]');
+
+    // OPTIONAL + a set-op body that is EMPTY for vadas/josh ⇒ null-filled rows.
+    const [tsO, natO] = both(
+      `MATCH (p:Person) ` +
+        `OPTIONAL CALL (p) { MATCH (p)-[:KNOWS]->(f) RETURN f.name AS x ` +
+        `UNION MATCH (p)-[:CREATED]->(w) RETURN w.name AS x } ` +
+        `RETURN p.name AS pn, x ORDER BY pn, x`,
+    );
+    expect(tsO).toBe(natO);
+
+    // Uncorrelated `CALL () { … UNION … }`: a global union, one outer row.
+    const [tsG, natG] = both(
+      `MATCH (p:Person {name: 'marko'}) ` +
+        `CALL () { MATCH (n:Person) RETURN n.name AS x ` +
+        `UNION MATCH (n:Software) RETURN n.name AS x } ` +
+        `RETURN x ORDER BY x`,
+    );
+    expect(tsG).toBe(natG);
+    expect(tsG).not.toBe('[]');
+
+    // Three parts (left-associative): UNION then UNION, correlated.
+    const [tsT, natT] = both(
+      `MATCH (p:Person) ` +
+        `CALL (p) { MATCH (p)-[:KNOWS]->(f) RETURN f.name AS x ` +
+        `UNION MATCH (p)-[:CREATED]->(w) RETURN w.name AS x ` +
+        `UNION MATCH (s:Software) RETURN s.name AS x } ` +
+        `RETURN p.name AS pn, x ORDER BY pn, x`,
+    );
+    expect(tsT).toBe(natT);
+    expect(tsT).not.toBe('[]');
+  });
+
   test('ISO path functions on a bound path are byte-identical', () => {
     const q =
       `MATCH p = ANY SHORTEST (a)-[]->*(b) WHERE a.name = 'marko' AND b.name = 'lop' ` +

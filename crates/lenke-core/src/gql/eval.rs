@@ -8843,6 +8843,7 @@ fn run_linear_from(
                 optional,
                 imports,
                 body,
+                body_more,
                 out_binds,
                 body_read_only,
             } => {
@@ -8863,7 +8864,15 @@ fn run_linear_from(
                         }
                     }
                     let reuse = if *body_read_only { Some(ctx!()) } else { None };
-                    let rs = run_linear_from(body, graph, plan, params, vec![seed], reuse)?;
+                    let mut rs =
+                        run_linear_from(body, graph, plan, params, vec![seed.clone()], reuse)?;
+                    // Fold in any set-op parts (`… UNION/EXCEPT/INTERSECT …`), each run
+                    // against the same seed, matching the top-level set-op semantics.
+                    for (op, part) in body_more {
+                        let right =
+                            run_linear_from(part, graph, plan, params, vec![seed.clone()], reuse)?;
+                        rs = combine(*op, rs, right);
+                    }
                     if rs.nrows == 0 && *optional {
                         let mut w = outer.clone();
                         for slot in out_binds {

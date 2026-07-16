@@ -693,7 +693,7 @@ impl Parser {
         }
 
         self.expect(Tt::LBrace, "'{' to open an inline subquery")?;
-        let body = self.parse_linear_query()?;
+        let body = self.parse_set_op_query()?;
         self.expect(Tt::RBrace, "'}' to close an inline subquery")?;
 
         Ok(Clause::CallInline(CallInline {
@@ -1733,6 +1733,24 @@ impl Parser {
     }
 
     fn parse_query(&mut self) -> R<Query> {
+        let query = self.parse_set_op_query()?;
+        if !self.at_end() {
+            let t = self.peek();
+            let got = if t.value.is_empty() {
+                format!("{:?}", t.tt)
+            } else {
+                t.value.clone()
+            };
+            return err(format!("Unexpected trailing input '{got}'"), t.pos);
+        }
+        Ok(query)
+    }
+
+    /// Parse one or more linear parts joined by set operators, WITHOUT requiring
+    /// end-of-input afterward — so it works both at top level (wrapped by
+    /// `parse_query`, which adds the trailing-input check) and inside an inline
+    /// `CALL (…) { … }` body (terminated by `}`).
+    fn parse_set_op_query(&mut self) -> R<Query> {
         let mut parts = vec![self.parse_linear_query()?];
         let mut ops = Vec::new();
         loop {
@@ -1759,15 +1777,6 @@ impl Parser {
             };
             ops.push(SetOp { op, all });
             parts.push(self.parse_linear_query()?);
-        }
-        if !self.at_end() {
-            let t = self.peek();
-            let got = if t.value.is_empty() {
-                format!("{:?}", t.tt)
-            } else {
-                t.value.clone()
-            };
-            return err(format!("Unexpected trailing input '{got}'"), t.pos);
         }
         Ok(Query { parts, ops })
     }

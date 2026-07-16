@@ -49,6 +49,7 @@ import type {
   PathPattern,
   PathSelector,
   Projection,
+  Query,
   YieldItem,
   PropertyConstraint,
   RelPattern,
@@ -644,6 +645,34 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Statement => {
     return { name, ...(alias !== undefined ? { alias } : {}) };
   };
 
+  const SET_OPS: Partial<Record<string, SetOp['op']>> = {
+    union: 'union',
+    except: 'except',
+    intersect: 'intersect',
+  };
+
+  // Parse one or more linear parts joined by set operators, WITHOUT requiring
+  // end-of-input afterward — so it serves both the top level (wrapped with the
+  // trailing-input check) and an inline `CALL (…) { … }` body (closed by `}`).
+  const parseSetOpQuery = (): Query => {
+    const parts: LinearQuery[] = [parseLinearQuery()];
+    const ops: SetOp[] = [];
+
+    while (peek().type === 'keyword' && SET_OPS[peek().value]) {
+      const op = SET_OPS[advance().value]!;
+      const all = checkKeyword('all') ? (advance(), true) : false;
+
+      if (!all && checkKeyword('distinct')) {
+        advance();
+      }
+
+      ops.push({ op, all });
+      parts.push(parseLinearQuery());
+    }
+
+    return { parts, ops };
+  };
+
   // `[OPTIONAL] CALL (scope) { … }` — an inline subquery.
   const parseInlineCall = (optional: boolean): CallInlineClause => {
     const scope: string[] = [];
@@ -664,7 +693,7 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Statement => {
     }
 
     expect('lbrace', "'{' to open an inline subquery");
-    const body = parseLinearQuery();
+    const body = parseSetOpQuery();
     expect('rbrace', "'}' to close an inline subquery");
 
     return { kind: 'callInline', optional, scope, body };
@@ -1673,26 +1702,7 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Statement => {
 
   // --- top level: linear queries joined by set operators ---------------------
 
-  const SET_OPS: Partial<Record<string, SetOp['op']>> = {
-    union: 'union',
-    except: 'except',
-    intersect: 'intersect',
-  };
-
-  const parts: LinearQuery[] = [parseLinearQuery()];
-  const ops: SetOp[] = [];
-
-  while (peek().type === 'keyword' && SET_OPS[peek().value]) {
-    const op = SET_OPS[advance().value]!;
-    const all = checkKeyword('all') ? (advance(), true) : false;
-
-    if (!all && checkKeyword('distinct')) {
-      advance();
-    }
-
-    ops.push({ op, all });
-    parts.push(parseLinearQuery());
-  }
+  const query = parseSetOpQuery();
 
   if (!atEnd()) {
     throw new GqlSyntaxError(
@@ -1701,7 +1711,7 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Statement => {
     );
   }
 
-  return { parts, ops };
+  return query;
 };
 
 /**

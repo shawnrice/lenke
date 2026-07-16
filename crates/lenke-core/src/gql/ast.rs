@@ -111,7 +111,9 @@ pub struct CallInline {
     pub optional: bool,
     /// Outer variables the subquery imports (`(a, b)`); empty = none / `()`.
     pub scope: Vec<String>,
-    pub body: LinearQuery,
+    /// The nested query: one or more linear parts joined by set operators
+    /// (`UNION`/`EXCEPT`/`INTERSECT`). A plain body is a single part, no ops.
+    pub body: Query,
 }
 
 /// A named procedure call (`CALL name(args) YIELD …`).

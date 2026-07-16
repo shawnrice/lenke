@@ -648,6 +648,10 @@ pub enum CClause {
         optional: bool,
         imports: Vec<(usize, usize)>,
         body: CLinear,
+        /// Additional set-op parts (`… UNION … EXCEPT …`) after the first. Empty
+        /// for a plain single-part body. Each part shares the same imported scope
+        /// and produces the same output columns; results are folded with `combine`.
+        body_more: Vec<(SetOp, CLinear)>,
         out_binds: Vec<usize>,
         /// True if the nested body only reads — then every correlated run reuses
         /// the caller's resolved Ctx (no per-outer-row resolve). A writing body
@@ -1409,9 +1413,28 @@ impl Lowerer {
                 // a single Ctx resolves both queries.
                 let saved = std::mem::replace(&mut self.scope, c.scope.clone());
                 let body = CLinear {
-                    clauses: c.body.clauses.iter().map(|cl| self.clause(cl)).collect(),
+                    clauses: c.body.parts[0]
+                        .clauses
+                        .iter()
+                        .map(|cl| self.clause(cl))
+                        .collect(),
                 };
-                // The nested RETURN's output columns, in order.
+                // Additional set-op parts (`… UNION …`). Each imports the SAME base
+                // scope, so reset to it before compiling — parts don't share bindings.
+                let mut body_more = Vec::with_capacity(c.body.ops.len());
+                for (i, op) in c.body.ops.iter().enumerate() {
+                    self.scope = c.scope.clone();
+                    let part = CLinear {
+                        clauses: c.body.parts[i + 1]
+                            .clauses
+                            .iter()
+                            .map(|cl| self.clause(cl))
+                            .collect(),
+                    };
+                    body_more.push((*op, part));
+                }
+                // The nested RETURN's output columns, in order. All set-op parts share
+                // the same output columns, so the first part is authoritative.
                 let out_cols = body
                     .clauses
                     .iter()
@@ -1430,20 +1453,25 @@ impl Lowerer {
                     .map(|(nested_slot, name)| (self.slot_of(name), nested_slot))
                     .collect();
                 let out_binds = out_cols.iter().map(|n| self.add_var(n)).collect();
-                let body_read_only = body.clauses.iter().all(|cl| {
-                    !matches!(
-                        cl,
-                        CClause::Insert(_)
-                            | CClause::Merge(_)
-                            | CClause::Set(_)
-                            | CClause::Remove(_)
-                            | CClause::Delete { .. }
-                    )
-                });
+                let is_read_only = |lin: &CLinear| {
+                    lin.clauses.iter().all(|cl| {
+                        !matches!(
+                            cl,
+                            CClause::Insert(_)
+                                | CClause::Merge(_)
+                                | CClause::Set(_)
+                                | CClause::Remove(_)
+                                | CClause::Delete { .. }
+                        )
+                    })
+                };
+                let body_read_only =
+                    is_read_only(&body) && body_more.iter().all(|(_, p)| is_read_only(p));
                 CClause::CallInline {
                     optional: c.optional,
                     imports,
                     body,
+                    body_more,
                     out_binds,
                     body_read_only,
                 }
@@ -1724,14 +1752,19 @@ fn decorrelate_clauses(clauses: &[Clause]) -> Vec<Clause> {
 /// Try to flatten one non-aggregating correlated inline CALL into `MATCH` + `WITH`.
 /// Returns `None` (→ stay correlated) unless every safety guard holds.
 fn try_decorrelate(c: &CallInline, outer: &[String]) -> Option<(MatchClause, WithClause)> {
-    // Shape: body is exactly `MATCH <non-optional> RETURN <plain projection>`.
-    if c.body.clauses.len() != 2 {
+    // Shape: body is a single part (no set-ops) that is exactly
+    // `MATCH <non-optional> RETURN <plain projection>`.
+    if !c.body.ops.is_empty() || c.body.parts.len() != 1 {
         return None;
     }
-    let Clause::Match(m) = &c.body.clauses[0] else {
+    let part = &c.body.parts[0];
+    if part.clauses.len() != 2 {
+        return None;
+    }
+    let Clause::Match(m) = &part.clauses[0] else {
         return None;
     };
-    let Clause::Return(proj) = &c.body.clauses[1] else {
+    let Clause::Return(proj) = &part.clauses[1] else {
         return None;
     };
     if m.optional

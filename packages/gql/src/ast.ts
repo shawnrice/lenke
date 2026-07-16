@@ -85,7 +85,11 @@ export type CallInlineClause = {
   optional: boolean;
   /** Outer variables the subquery imports (`(a, b)`); empty = none / `()`. */
   scope: readonly string[];
-  body: LinearQuery;
+  /**
+   * The nested query: one or more linear parts joined by set operators
+   * (`UNION`/`EXCEPT`/`INTERSECT`). A plain body is a single part, no ops.
+   */
+  body: Query;
 };
 
 /**
