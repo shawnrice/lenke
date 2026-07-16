@@ -192,7 +192,9 @@ fn scalar_fn(name: &str) -> ScalarFn {
         // `keys` is the openCypher spelling of the same thing.
         "keys" | "property_names" => ScalarFn::Keys,
         "nodes" => ScalarFn::PathNodes,
-        "relationships" => ScalarFn::PathEdges,
+        // `edges` is the ISO GQL name for a path's edge list; `relationships` is
+        // the openCypher spelling of the same accessor.
+        "relationships" | "edges" => ScalarFn::PathEdges,
         "elements" => ScalarFn::PathElements,
         "tostring" | "to_string" => ScalarFn::ToString,
         "tointeger" | "to_integer" => ScalarFn::ToInteger,

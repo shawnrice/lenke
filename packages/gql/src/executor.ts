@@ -772,6 +772,8 @@ const callGraphFn = (name: string, a: unknown): unknown => {
     // interleaved iteration (vertex, edge, …, vertex).
     case 'nodes':
       return a instanceof Path ? [...a.vertices] : null;
+    // `edges` is the ISO GQL name; `relationships` is the openCypher spelling.
+    case 'edges':
     case 'relationships':
       return a instanceof Path ? [...a.edges] : null;
     case 'elements':

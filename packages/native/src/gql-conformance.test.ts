@@ -181,6 +181,17 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     expect(ts).toBe(native);
   });
 
+  test('edges(path) — ISO name for the path edge list, == relationships(path)', () => {
+    const base = `MATCH p = ANY SHORTEST (a)-[]->*(b) WHERE a.name = 'marko' AND b.name = 'lop'`;
+    const [tsE, natE] = both(`${base} RETURN path_length(p) AS len, edges(p) AS es`);
+    expect(tsE).toBe(natE);
+    // `edges` (ISO) and `relationships` (openCypher) are the same accessor.
+    const [tsR, natR] = both(`${base} RETURN edges(p) AS es`);
+    const [tsR2] = both(`${base} RETURN relationships(p) AS es`);
+    expect(tsR).toBe(natR);
+    expect(tsR).toBe(tsR2);
+  });
+
   test('named procedure CALL (algorithms) is byte-identical across engines', () => {
     // `node` is a live vertex handle; `node.name` reads its property.
     const [tsD, natD] = both(
