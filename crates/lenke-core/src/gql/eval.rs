@@ -6695,6 +6695,248 @@ fn try_count_varlen_1_2(
     Some(rs)
 }
 
+/// Does `e` reference only slot `slot`? Conservative: a bare var or a direct
+/// property of it. Anything else (arithmetic, another var) bails — so the grouped
+/// var-length shortcut only fires when every group key is a value of the endpoint.
+fn expr_refs_only_slot(e: &CExpr, slot: usize) -> bool {
+    match e {
+        CExpr::Var(s) => *s == slot,
+        CExpr::Prop { var_slot, .. } => *var_slot == slot,
+        _ => false,
+    }
+}
+
+/// Grouped var-length count shortcut:
+/// `MATCH (a:La?)-[:T]->{lo,hi}(b:Lb?) RETURN <key(b)…>, count(*)` with `hi <= 2`.
+///
+/// **Why it's exact.** At bound ≤2, ISO trail semantics (each edge once) coincides
+/// with walk semantics — the shortest edge-reusing walk has length 3 — so per-
+/// endpoint *trail* multiplicity is just the walk count, a guarded frequency
+/// propagation: `into[x]` = #`T`-edges into `x` from a valid start; a `b`'s
+/// multiplicity is `[len-0] + into[b] (len-1) + Σ_{x→b} into[x] (len-2) − self-loop
+/// correction`. `count(*)` grouped by a value of the endpoint is a guarded
+/// aggregate, so each endpoint's multiplicity is added to its own group. This is
+/// O(V+E) instead of enumerating every trail endpoint (the scalar path's cost).
+///
+/// **Order.** Group *counts* are exact; the group *first-seen order* (contractual
+/// for a non-`ORDER BY` aggregate) is recovered by replaying the scalar walk order
+/// (`reachable` per seed, endpoint filtered by `Lb`) only until every group — whose
+/// full set is already known from the O(V+E) pass — has appeared. For a low-
+/// cardinality group key that stops almost immediately; worst case it costs no more
+/// than the scalar enumeration it replaces (and it never groups a 14M-row stream).
+#[allow(clippy::too_many_lines, reason = "one self-contained count shortcut")]
+fn try_grouped_varlen_1_2(
+    linear: &CLinear,
+    graph: &Graph,
+    plan: &CQuery,
+    params: &[Val],
+) -> Option<RowSet> {
+    let [CClause::Match {
+        optional: false,
+        patterns,
+        where_: None,
+        ..
+    }, CClause::Return(proj)] = linear.clauses.as_slice()
+    else {
+        return None;
+    };
+    let [path] = patterns.as_slice() else {
+        return None;
+    };
+    let [seg] = path.segments.as_slice() else {
+        return None;
+    };
+    let rel = &seg.rel;
+    if rel.var_slot.is_some()
+        || !rel.props.is_empty()
+        || rel.where_.is_some()
+        || rel.direction != Direction::Out
+    {
+        return None;
+    }
+    // A bounded quantifier with `hi <= 2` (where trail == walk); `*`/`+`/`hi>2` stay
+    // scalar (edge-uniqueness bites at length ≥3).
+    let q = rel.quantifier?;
+    let hi = q.max?;
+    if hi > 2 || q.min > hi {
+        return None;
+    }
+    let (lo, hi) = (q.min, hi);
+    if !path.start.props.is_empty()
+        || path.start.where_.is_some()
+        || !seg.node.props.is_empty()
+        || seg.node.where_.is_some()
+    {
+        return None;
+    }
+    let b_slot = seg.node.var_slot?;
+    // A grouped `count(*)`: no DISTINCT/SKIP/LIMIT/`*`, no ORDER BY (first-seen only
+    // for v1), at least one non-agg key, exactly one bare `count(*)`.
+    if proj.distinct
+        || proj.skip.is_some()
+        || proj.limit.is_some()
+        || proj.star
+        || !proj.order_by.is_empty()
+        || !proj.aggregating
+        || proj.aggs.len() != 1
+    {
+        return None;
+    }
+    let agg = &proj.aggs[0];
+    if !agg.star || agg.distinct || !matches!(agg.func, AggFn::Count) {
+        return None;
+    }
+    // Every non-agg item is a group key over `b`; the one agg item is a bare count.
+    let key_items: Vec<&CReturnItem> = proj.items.iter().filter(|i| !i.is_agg).collect();
+    if key_items.is_empty() {
+        return None; // a global count uses `try_count_varlen_1_2`
+    }
+    for it in &key_items {
+        if !expr_refs_only_slot(&it.expr, b_slot) {
+            return None;
+        }
+    }
+    if !proj
+        .items
+        .iter()
+        .any(|i| i.is_agg && matches!(i.expr, CExpr::AggRef(0)))
+    {
+        return None;
+    }
+
+    let ctx = resolve_ctx(graph, plan, params);
+    let tset = rel_type_set(&ctx, rel.label.as_ref())?;
+    let la = path.start.label.as_ref();
+    let lb = seg.node.label.as_ref();
+    let n = graph.n;
+
+    // into[x] = # `T`-edges a→x with `a` matching La (the length-1 count into x).
+    let into: Vec<u64> = (0..n as u32)
+        .map(|x| {
+            graph
+                .in_adj(x)
+                .filter(|a| etype_ok(&tset, a.etype) && matches_label(graph, &ctx, a.nbr, la))
+                .count() as u64
+        })
+        .collect();
+
+    // Per-endpoint trail multiplicity (bound ≤2 ⇒ trail == walk).
+    let mult: Vec<i64> = (0..n as u32)
+        .map(|b| {
+            if !graph.is_vertex_live(b) {
+                return 0;
+            }
+            let bi = b as usize;
+            let mut m: i64 = 0;
+            let in_la = matches_label(graph, &ctx, b, la);
+            if lo == 0 && in_la {
+                m += 1; // length-0: the start itself
+            }
+            if lo <= 1 {
+                m += into[bi] as i64; // length-1: a→b
+            }
+            // length-2: a→x→b over in-edges x→b (hi is always ≥2 here when lo≤2<hi
+            // is false; guard on hi).
+            if hi >= 2 {
+                let l2: i64 = graph
+                    .in_adj(b)
+                    .filter(|a| etype_ok(&tset, a.etype))
+                    .map(|a| into[a.nbr as usize] as i64)
+                    .sum();
+                m += l2;
+                if in_la {
+                    // Trail correction: a→b→b reusing the same self-loop edge.
+                    let sl = graph
+                        .out_adj(b)
+                        .filter(|a| etype_ok(&tset, a.etype) && a.nbr == b)
+                        .count() as i64;
+                    m -= sl;
+                }
+            }
+            m
+        })
+        .collect();
+
+    // Accumulate group counts (order-independent): endpoints matching Lb with a
+    // positive multiplicity, keyed by the `val_key` of their group-key values.
+    let mut groups: HashMap<String, (Vec<Val>, i64)> = HashMap::new();
+    let mut bb = Binding(vec![None; b_slot + 1]);
+    let mut key_buf = String::new();
+    for b in 0..n as u32 {
+        let m = mult[b as usize];
+        if m <= 0 || !matches_label(graph, &ctx, b, lb) {
+            continue;
+        }
+        bb.set(b_slot, Val::Node(b));
+        let vals: Vec<Val> = {
+            let env = Env::new(graph, &ctx, &bb);
+            key_items.iter().map(|it| eval_item(&env, it)).collect()
+        };
+        key_buf.clear();
+        for v in &vals {
+            val_key(v, &mut key_buf);
+            key_buf.push('\u{1}');
+        }
+        let entry = groups.entry(key_buf.clone()).or_insert_with(|| (vals, 0));
+        entry.1 += m;
+    }
+
+    // Recover first-seen group order by replaying the scalar walk order until every
+    // group has appeared (the group set is already fixed by `groups`).
+    let target = groups.len();
+    let mut seen: HashSet<String> = HashSet::with_capacity(target);
+    let mut order: Vec<String> = Vec::with_capacity(target);
+    let mut faulted = false;
+    for_each_seed(graph, &ctx, la, &mut |a| {
+        for end in reachable(graph, &ctx, a, rel, q) {
+            if !matches_label(graph, &ctx, end, lb) {
+                continue;
+            }
+            bb.set(b_slot, Val::Node(end));
+            key_buf.clear();
+            {
+                let env = Env::new(graph, &ctx, &bb);
+                for it in &key_items {
+                    val_key(&eval_item(&env, it), &mut key_buf);
+                    key_buf.push('\u{1}');
+                }
+            }
+            if seen.insert(key_buf.clone()) {
+                order.push(key_buf.clone());
+                if order.len() == target {
+                    return false; // every group seen — stop the walk
+                }
+            }
+        }
+        if ctx.faulted() {
+            faulted = true;
+            return false;
+        }
+        true
+    });
+    if faulted {
+        return None; // trail budget blew — let the scalar path surface it
+    }
+
+    // Emit one row per group in first-seen order: group-key values interleaved with
+    // the count, following the projection's item order.
+    let mut rs = RowSet::new(proj.out_names.clone());
+    for key in &order {
+        let (vals, cnt) = &groups[key];
+        let mut ki = 0;
+        rs.push_row(proj.items.iter().map(|it| {
+            if it.is_agg {
+                Value::Num(*cnt as f64)
+            } else {
+                let v = val_to_value(graph, &vals[ki]);
+                ki += 1;
+                v
+            }
+        }));
+    }
+    Some(rs)
+}
+
 /// Reverse semi-join for a correlated `EXISTS` count:
 /// `MATCH (a:La?) WHERE [NOT] EXISTS { (a)-[:T]->(b:Lb) } RETURN count(*)`.
 ///
@@ -8779,6 +9021,11 @@ fn run_part(
         }
         // Var-length `{1,2}` count via degree products (O(V+E), no trail enumeration).
         if let Some(rs) = try_count_varlen_1_2(linear, graph, plan, params) {
+            return Ok(rs);
+        }
+        // Var-length `{lo,hi≤2}` count GROUPED by an endpoint value — guarded
+        // frequency propagation (O(V+E)) instead of enumerating every trail row.
+        if let Some(rs) = try_grouped_varlen_1_2(linear, graph, plan, params) {
             return Ok(rs);
         }
         // Reverse semi-join for a correlated `[NOT] EXISTS { … }` count — seed the

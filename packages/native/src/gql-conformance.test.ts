@@ -743,3 +743,78 @@ suite('GQL differential: columnar grouped aggregation (TS vs native)', () => {
     expect(ts).toBe(`[{"name":"a","c":2},{"name":"b","c":1},{"name":"c","c":1}]`);
   });
 });
+
+// Grouped bounded var-length count — native takes the guarded-frequency-propagation
+// shortcut (`try_grouped_varlen_1_2`, O(V+E), no trail enumeration); TS enumerates
+// trails and groups. Byte-identity here proves the shortcut's per-endpoint trail
+// multiplicity, its self-loop correction, and its replayed first-seen group order
+// all match the enumerating engine. The graph deliberately includes a self-loop and
+// a 2-cycle (the trail-vs-walk edge cases at bound ≤2).
+suite('GQL differential: grouped var-length count shortcut (TS vs native)', () => {
+  const NDJSON = [
+    '{"type":"node","id":"1","labels":["Person"],"properties":{"city":"A"}}',
+    '{"type":"node","id":"2","labels":["Person"],"properties":{"city":"B"}}',
+    '{"type":"node","id":"3","labels":["Person"],"properties":{"city":"A"}}',
+    '{"type":"node","id":"4","labels":["City"],"properties":{"city":"C"}}',
+    // a 3-cycle 1→2→3→1, a chord 1→3, a self-loop 1→1, and an edge into the City node.
+    '{"type":"edge","id":"10","from":"1","to":"2","labels":["KNOWS"]}',
+    '{"type":"edge","id":"11","from":"2","to":"3","labels":["KNOWS"]}',
+    '{"type":"edge","id":"12","from":"3","to":"1","labels":["KNOWS"]}',
+    '{"type":"edge","id":"13","from":"1","to":"3","labels":["KNOWS"]}',
+    '{"type":"edge","id":"14","from":"1","to":"1","labels":["KNOWS"]}',
+    '{"type":"edge","id":"15","from":"2","to":"4","labels":["KNOWS"]}',
+  ].join('\n');
+
+  const backend = createFfiBackend(LIB);
+  const nativeGraph = graphFromFormat(backend, NDJSON, 'ndjson');
+  const tsGraph = tsDeserialize(NDJSON, 'ndjson', new Graph());
+  const both = (q: string): [string, string] => [
+    JSON.stringify(tsQuery(tsGraph, q)),
+    JSON.stringify(nativeGraph.query(q)),
+  ];
+
+  const cases: Array<[string, string]> = [
+    // The headline shape: {1,2} grouped by endpoint property, first-seen order.
+    [
+      '{1,2} group by endpoint city',
+      `MATCH (a)-[:KNOWS]->{1,2}(b) RETURN b.city AS c, count(*) AS n`,
+    ],
+    // Length-1 only — no self-loop-twice correction, no length-2 term.
+    [
+      '{1,1} group by endpoint city',
+      `MATCH (a)-[:KNOWS]->{1,1}(b) RETURN b.city AS c, count(*) AS n`,
+    ],
+    // Length-2 only — isolates the length-2 term + self-loop correction.
+    [
+      '{2,2} group by endpoint city',
+      `MATCH (a)-[:KNOWS]->{2,2}(b) RETURN b.city AS c, count(*) AS n`,
+    ],
+    // {0,2} includes the length-0 start-as-endpoint term.
+    [
+      '{0,2} group by endpoint city',
+      `MATCH (a)-[:KNOWS]->{0,2}(b) RETURN b.city AS c, count(*) AS n`,
+    ],
+    // Start label filter (only Person starts).
+    [
+      '{1,2} with start label',
+      `MATCH (a:Person)-[:KNOWS]->{1,2}(b) RETURN b.city AS c, count(*) AS n`,
+    ],
+    // Endpoint label filter (only City endpoints).
+    [
+      '{1,2} with endpoint label',
+      `MATCH (a)-[:KNOWS]->{1,2}(b:City) RETURN b.city AS c, count(*) AS n`,
+    ],
+    // Group by the endpoint node identity (not a property).
+    [
+      '{1,2} group by endpoint id',
+      `MATCH (a:Person)-[:KNOWS]->{1,2}(b) RETURN element_id(b) AS id, count(*) AS n ORDER BY id`,
+    ],
+  ];
+
+  for (const [name, q] of cases) {
+    test(name, () => {
+      const [ts, native] = both(q);
+      expect(ts, q).toBe(native);
+    });
+  }
+});
