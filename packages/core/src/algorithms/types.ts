@@ -24,8 +24,8 @@ export type AlgorithmConfig = {
   target?: string;
   /** If set, each vertex's result is written to this property before returning. */
   writeProperty?: string;
-  /** Shortest-path backend — `'dijkstra'` (default) / `'astar'` / `'bmssp'`. */
-  algorithm?: 'dijkstra' | 'astar' | 'bmssp';
+  /** Shortest-path backend — `'dijkstra'` (default, full SSSP) / `'astar'`. */
+  algorithm?: 'dijkstra' | 'astar';
   /** Admissible-heuristic vertex property for A*. */
   heuristicProperty?: string;
 };
