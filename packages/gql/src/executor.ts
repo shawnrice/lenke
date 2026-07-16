@@ -3051,6 +3051,8 @@ type CMatch = {
   nullVars: readonly string[];
 };
 type CWith = { kind: 'with'; projection: CProjection; where?: CompiledExpr };
+type CFilter = { kind: 'filter'; where: CompiledExpr };
+type CLet = { kind: 'let'; items: readonly { var: string; expr: CompiledExpr }[] };
 type CFor = {
   kind: 'for';
   list: CompiledExpr;
@@ -3099,6 +3101,8 @@ type CCallInline = {
 type CClause =
   | CMatch
   | CWith
+  | CFilter
+  | CLet
   | CFor
   | CReturn
   | CInsert
@@ -3201,6 +3205,13 @@ const compileClause = (clause: Clause): CClause => {
         kind: 'with',
         projection: compileProjection(clause.projection),
         where: clause.where ? compileExpr(clause.where) : undefined,
+      };
+    case 'filter':
+      return { kind: 'filter', where: compileExpr(clause.where) };
+    case 'let':
+      return {
+        kind: 'let',
+        items: clause.items.map((it) => ({ var: it.var, expr: compileExpr(it.expr) })),
       };
     case 'for':
       return {
@@ -4543,6 +4554,26 @@ const runLinearClauses = (
               );
         break;
       }
+      case 'filter':
+        // ISO §14.6: drop rows where the condition is not TRUE (three-valued).
+        bindings = filter(
+          (b: Binding) => clause.where({ binding: b, params, graph }) === true,
+          bindings,
+        );
+        break;
+      case 'let':
+        // ISO §14.7: bind new vars additively, left-to-right (a later item sees
+        // an earlier one via the in-progress binding copy).
+        bindings = map((b: Binding) => {
+          const nb = new Map(b);
+
+          for (const it of clause.items) {
+            nb.set(it.var, it.expr({ binding: nb, params, graph }));
+          }
+
+          return nb;
+        }, bindings);
+        break;
       case 'insert':
         // Mutations must run eagerly and exactly once — force evaluation.
         bindings = toArray(map((b: Binding) => runInsert(graph, clause, b, params), bindings));

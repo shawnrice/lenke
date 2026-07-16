@@ -65,6 +65,8 @@ import type {
   Statement,
   TxControl,
   WithClause,
+  FilterClause,
+  LetClause,
   ForClause,
 } from './ast.js';
 import { isTxControl } from './ast.js';
@@ -1386,6 +1388,31 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Statement => {
     return { kind: 'with', projection, where };
   };
 
+  // `FILTER [WHERE] <condition>` — ISO GQL §14.6 (the WHERE is optional noise).
+  const parseFilterClause = (): FilterClause => {
+    expectKeyword('filter');
+
+    if (checkKeyword('where')) {
+      advance();
+    }
+
+    return { kind: 'filter', where: parseExpr() };
+  };
+
+  // `LET x = <expr> [, y = <expr>]*` — ISO GQL §14.7. Comma-separated bindings.
+  const parseLetClause = (): LetClause => {
+    expectKeyword('let');
+    const items: { var: string; expr: Expr }[] = [];
+
+    do {
+      const v = bindName('a LET variable');
+      expect('eq', "'=' after a LET variable");
+      items.push({ var: v, expr: parseExpr() });
+    } while (check('comma') && (advance(), true));
+
+    return { kind: 'let', items };
+  };
+
   // Is the token after `WITH` an ORDINALITY/OFFSET modifier (vs the start of a
   // new WITH clause)? `ORDINALITY` is a soft keyword — it arrives as an ident.
   const forModifierAhead = (): boolean => {
@@ -1587,6 +1614,10 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Statement => {
         done = true;
       } else if (checkKeyword('with')) {
         clauses.push(parseWithClause());
+      } else if (checkKeyword('let')) {
+        clauses.push(parseLetClause());
+      } else if (checkKeyword('filter')) {
+        clauses.push(parseFilterClause());
       } else if (checkKeyword('for')) {
         clauses.push(parseForClause());
       } else if (checkKeyword('call') || (checkKeyword('optional') && kwAfter('call'))) {

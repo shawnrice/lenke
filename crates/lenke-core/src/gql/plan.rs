@@ -609,6 +609,14 @@ pub enum CClause {
         where_prog: Option<Program>,
     },
     Return(CProjection),
+    /// `FILTER [WHERE] <cond>` — drop rows where `pred` is not TRUE.
+    Filter {
+        pred: CExpr,
+        prog: Program,
+    },
+    /// `LET x = e, …` — bind new value variables (additive). Each `(slot, expr,
+    /// prog)` is evaluated and stored, left-to-right (a later item sees earlier).
+    Let(Vec<(usize, CExpr, Program)>),
     /// `FOR alias IN list [WITH ORDINALITY|OFFSET]` — unwind `list` into one row
     /// per element. `ord` is `(is_ordinality, slot)`: a counter bound alongside
     /// each element, 1-based when `is_ordinality`, else 0-based. `scope_len` is
@@ -1356,6 +1364,27 @@ impl Lowerer {
                     where_,
                     where_prog,
                 }
+            }
+            Clause::Filter(cond) => {
+                // FILTER's condition is a predicate over the CURRENT scope (the
+                // working table) — no projection, no new vars.
+                let pred = self.expr(cond);
+                let prog = compile_program(&pred);
+                CClause::Filter { pred, prog }
+            }
+            Clause::Let(items) => {
+                // Each binding is compiled against the scope so far (prior LET vars
+                // included), THEN its variable is added so later items can see it.
+                let compiled = items
+                    .iter()
+                    .map(|it| {
+                        let expr = self.expr(&it.expr);
+                        let prog = compile_program(&expr);
+                        let slot = self.add_var(&it.var);
+                        (slot, expr, prog)
+                    })
+                    .collect();
+                CClause::Let(compiled)
             }
             Clause::For(f) => {
                 // Lower the list in the pre-FOR scope (it cannot reference the

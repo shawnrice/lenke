@@ -409,6 +409,66 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     expect(tsR).toContain('"labels":["Person"]');
   });
 
+  test('FILTER statement (ISO §14.6) is byte-identical', () => {
+    // Bare condition (no WHERE) drops rows where the predicate is not TRUE.
+    const [tsF, natF] = both(`MATCH (p:Person) FILTER p.age > 28 RETURN p.name AS n ORDER BY n`);
+    expect(tsF).toBe(natF);
+    expect(tsF).toBe(`[{"n":"josh"},{"n":"marko"}]`);
+
+    // The optional WHERE keyword form is equivalent.
+    const [tsW, natW] = both(
+      `MATCH (p:Person) FILTER WHERE p.age > 28 RETURN p.name AS n ORDER BY n`,
+    );
+    expect(tsW).toBe(natW);
+    expect(tsW).toBe(tsF);
+
+    // FILTER over a projected working table (after WITH).
+    const [tsP, natP] = both(
+      `MATCH (p:Person) WITH p.name AS nm, p.age AS a FILTER a >= 29 RETURN nm ORDER BY nm`,
+    );
+    expect(tsP).toBe(natP);
+
+    // Three-valued: a null-yielding predicate drops the row (not TRUE).
+    const [tsN, natN] = both(`MATCH (p:Person) FILTER p.missing > 1 RETURN p.name AS n`);
+    expect(tsN).toBe(natN);
+    expect(tsN).toBe('[]');
+  });
+
+  test('LET statement (ISO §14.7) is byte-identical', () => {
+    // Additive binding of a computed value.
+    const [tsL, natL] = both(
+      `MATCH (p:Person) LET doubled = p.age * 2 RETURN p.name AS n, doubled ORDER BY n`,
+    );
+    expect(tsL).toBe(natL);
+    expect(tsL).toContain('"doubled":58'); // marko 29*2
+
+    // Comma-list, left-to-right: y references x bound in the same LET.
+    const [tsS, natS] = both(
+      `MATCH (p:Person) LET x = p.age, y = x + 1 RETURN p.name AS n, y ORDER BY n`,
+    );
+    expect(tsS).toBe(natS);
+    expect(tsS).toContain('"y":30'); // marko 29+1
+
+    // A LET var feeds a subsequent FILTER.
+    const [tsC, natC] = both(
+      `MATCH (p:Person) LET a = p.age FILTER a > 28 RETURN p.name AS n ORDER BY n`,
+    );
+    expect(tsC).toBe(natC);
+    expect(tsC).toBe(`[{"n":"josh"},{"n":"marko"}]`);
+
+    // LET binding a value pulled from a matched neighbour, then projected.
+    const [tsE, natE] = both(
+      `MATCH (p:Person)-[:KNOWS]->(f) LET fn = f.name RETURN p.name AS pn, fn ORDER BY pn, fn`,
+    );
+    expect(tsE).toBe(natE);
+    expect(tsE).not.toBe('[]');
+
+    // LET binding a string-valued property, then returning it under the new name.
+    const [tsG, natG] = both(`MATCH (p:Person {name: 'marko'}) LET who = p.name RETURN who`);
+    expect(tsG).toBe(natG);
+    expect(tsG).toBe(`[{"who":"marko"}]`);
+  });
+
   test('ISO path functions on a bound path are byte-identical', () => {
     const q =
       `MATCH p = ANY SHORTEST (a)-[]->*(b) WHERE a.name = 'marko' AND b.name = 'lop' ` +

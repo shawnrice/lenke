@@ -1394,6 +1394,35 @@ impl Parser {
         Ok(WithClause { projection, where_ })
     }
 
+    /// `FILTER [WHERE] <condition>` — ISO GQL §14.6. The `WHERE` is optional
+    /// noise; the condition is a full boolean expression over the current scope.
+    fn parse_filter_clause(&mut self) -> R<Expr> {
+        self.expect_kw("filter")?;
+        if self.check_kw("where") {
+            self.advance();
+        }
+        self.parse_expr()
+    }
+
+    /// `LET x = <expr> [, y = <expr>]*` — ISO GQL §14.7. Comma-separated bindings,
+    /// evaluated left-to-right (a later item may reference an earlier one).
+    fn parse_let_clause(&mut self) -> R<Vec<LetItem>> {
+        self.expect_kw("let")?;
+        let mut items = Vec::new();
+        loop {
+            let var = self.bind_name("a LET variable")?;
+            self.expect(Tt::Eq, "'=' after a LET variable")?;
+            let expr = self.parse_expr()?;
+            items.push(LetItem { var, expr });
+            if self.check(Tt::Comma) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        Ok(items)
+    }
+
     /// `FOR <alias> IN <list> [WITH (ORDINALITY|OFFSET) <var>]` — ISO GQL list
     /// unwind. The list is parsed as a full expression (it may reference any
     /// prior binding); `IN` is consumed as a keyword up front, so it is not
@@ -1693,6 +1722,10 @@ impl Parser {
                 done = true;
             } else if self.check_kw("with") {
                 clauses.push(Clause::With(self.parse_with_clause()?));
+            } else if self.check_kw("let") {
+                clauses.push(Clause::Let(self.parse_let_clause()?));
+            } else if self.check_kw("filter") {
+                clauses.push(Clause::Filter(self.parse_filter_clause()?));
             } else if self.check_kw("for") {
                 clauses.push(Clause::For(self.parse_for_clause()?));
             } else if self.check_kw("call") || (self.check_kw("optional") && self.kw_after("call"))

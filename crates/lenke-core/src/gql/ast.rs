@@ -81,6 +81,15 @@ pub enum Clause {
     /// standard's equivalent of Cypher `UNWIND`). Multiplies the row table by the
     /// list. Bare ISO syntax (no sigil), accepted under every dialect.
     For(ForClause),
+    /// `FILTER [WHERE] <condition>` — ISO GQL §14.6 `<filter statement>`. Drops
+    /// rows from the working table where the condition is not TRUE (three-valued,
+    /// exactly like a `WHERE`). The `WHERE` keyword is optional.
+    Filter(Expr),
+    /// `LET x = e, y = e, …` — ISO GQL §14.7 `<let statement>`. Binds new value
+    /// variables into the current scope (additive: existing bindings are kept).
+    /// Bindings are evaluated left-to-right, so a later item may reference an
+    /// earlier one (`LET x = 1, y = x + 1`).
+    Let(Vec<LetItem>),
     /// `SET n.key = v` / `SET n:Label`
     Set(Vec<SetItem>),
     /// `REMOVE n.key` / `REMOVE n:Label`
@@ -103,6 +112,13 @@ pub enum Clause {
     /// its `RETURN` columns back. OPTIONAL keeps the outer row (nested columns
     /// null-filled) when the subquery is empty.
     CallInline(CallInline),
+}
+
+/// One binding of a `LET` clause: `variable = expression`.
+#[derive(Debug, Clone)]
+pub struct LetItem {
+    pub var: String,
+    pub expr: Expr,
 }
 
 /// An inline procedure call (`CALL (scope) { <nested query> }`).

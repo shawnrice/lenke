@@ -62,6 +62,8 @@ export type Dialect = 'lenke' | 'iso-strict';
 export type Clause =
   | MatchClause
   | WithClause
+  | FilterClause
+  | LetClause
   | ForClause
   | InsertClause
   | MergeClause
@@ -194,6 +196,25 @@ export type WithClause = {
   kind: 'with';
   projection: Projection;
   where?: Expr;
+};
+
+/**
+ * `FILTER [WHERE] <condition>` — ISO GQL §14.6. Drops rows where the condition
+ * is not TRUE (three-valued, like `WHERE`). The `WHERE` keyword is optional.
+ */
+export type FilterClause = {
+  kind: 'filter';
+  where: Expr;
+};
+
+/**
+ * `LET x = e, y = e, …` — ISO GQL §14.7. Binds new value variables into scope
+ * (additive). Items evaluate left-to-right, so a later one may reference an
+ * earlier (`LET x = 1, y = x + 1`).
+ */
+export type LetClause = {
+  kind: 'let';
+  items: readonly { var: string; expr: Expr }[];
 };
 
 /** `RETURN …` — the final projection producing result rows. */

@@ -8737,6 +8737,34 @@ fn run_linear_from(
                         .collect()
                 };
             }
+            CClause::Filter { pred, prog } => {
+                // Flush deferred matches (the predicate may reference their vars),
+                // then drop every row where the condition is not TRUE.
+                if !pending.is_empty() {
+                    bindings = materialize_matches(graph, ctx!(), &bindings, &pending);
+                    pending.clear();
+                }
+                bindings
+                    .retain(|b| where_keep(&Env::new(graph, ctx!(), b), Some(pred), Some(prog)));
+            }
+            CClause::Let(items) => {
+                // Flush deferred matches, then bind each new variable into every
+                // row (left-to-right, so a later item sees an earlier one).
+                if !pending.is_empty() {
+                    bindings = materialize_matches(graph, ctx!(), &bindings, &pending);
+                    pending.clear();
+                }
+                for b in &mut bindings {
+                    for (slot, expr, _prog) in items {
+                        let v = {
+                            let env = Env::new(graph, ctx!(), b);
+                            eval(&env, expr)
+                        };
+                        b.set(*slot, v);
+                    }
+                }
+                ctx!().check_fault()?;
+            }
             CClause::For {
                 list,
                 alias_slot,
