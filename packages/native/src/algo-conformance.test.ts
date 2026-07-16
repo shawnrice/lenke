@@ -380,7 +380,9 @@ suite('graph-algorithm differential: shortestPath (TS core vs native)', () => {
     } as const,
     { source: 'a', target: 'd', weightProperty: 'w', algorithm: 'astar' } as const,
     { source: 'e', target: 'a', weightProperty: 'w', algorithm: 'astar' } as const, // unreachable
-    // bmssp is an exact same-result backend — currently resolves to Dijkstra.
+    // bmssp: the native Duan et al. 2025 backend, exact same distances as the TS
+    // Dijkstra reference (byte-identical; see the Rust differential tests for the
+    // exhaustive random/large/dense-tie validation against Dijkstra).
     { source: 'a', weightProperty: 'w', algorithm: 'bmssp' } as const,
   ]) {
     test(`shortestPath ${JSON.stringify(config)} — byte-identical`, async () => {

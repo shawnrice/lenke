@@ -281,6 +281,149 @@ mod tests {
             .all(|(_, d)| *d == 0));
     }
 
+    // --- BMSSP differential: exact byte-identity vs the Dijkstra reference ---
+
+    fn xorshift(state: &mut u64) -> u64 {
+        let mut x = *state;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        *state = x;
+        x
+    }
+
+    /// A random directed weighted graph: `nodes` vertices ("0".."n-1") and `edges`
+    /// random edges with integer weight `w` (1..=50); naturally includes self-loops,
+    /// parallel edges, and disconnected vertices.
+    fn random_weighted(seed: u64, nodes: usize, edges: usize) -> Graph {
+        let mut st = seed | 1;
+        let mut lines = Vec::with_capacity(nodes + edges);
+        for i in 0..nodes {
+            lines.push(format!(
+                r#"{{"type":"node","id":"{i}","labels":["N"],"properties":{{}}}}"#
+            ));
+        }
+        for _ in 0..edges {
+            let a = (xorshift(&mut st) as usize) % nodes;
+            let b = (xorshift(&mut st) as usize) % nodes;
+            let w = 1 + (xorshift(&mut st) % 50);
+            lines.push(format!(
+                r#"{{"type":"edge","from":"{a}","to":"{b}","labels":["E"],"properties":{{"w":{w}}}}}"#
+            ));
+        }
+        ndjson::decode(&lines.join("\n")).unwrap()
+    }
+
+    /// `(external id, distance bits)` rows from a shortest_path run, for exact compare.
+    fn sp_bits(g: &mut Graph, cfg: &str) -> Vec<(String, u64)> {
+        run(g, "shortestPath", cfg)
+            .unwrap()
+            .rows()
+            .map(|r| match (&r[0], &r[1]) {
+                (Value::Str(id), Value::Num(d)) => (id.to_string(), d.to_bits()),
+                _ => panic!("unexpected shortest_path row shape"),
+            })
+            .collect()
+    }
+
+    /// `None` if bmssp == dijkstra from `src`, else a description of the first diff.
+    fn sp_diff(g: &mut Graph, src: usize) -> Option<String> {
+        let dij = sp_bits(
+            g,
+            &format!(r#"{{"source":"{src}","weightProperty":"w","algorithm":"dijkstra"}}"#),
+        );
+        let bms = sp_bits(
+            g,
+            &format!(r#"{{"source":"{src}","weightProperty":"w","algorithm":"bmssp"}}"#),
+        );
+        if dij == bms {
+            return None;
+        }
+        let bm: std::collections::HashMap<_, _> = bms.iter().cloned().collect();
+        for (id, dist) in &dij {
+            match bm.get(id) {
+                None => return Some(format!("bmssp MISSING {id}")),
+                Some(bd) if bd != dist => {
+                    return Some(format!("{id}: dijkstra {dist} vs bmssp {bd}"))
+                }
+                _ => {}
+            }
+        }
+        Some(format!(
+            "counts dijkstra {} vs bmssp {}",
+            dij.len(),
+            bms.len()
+        ))
+    }
+
+    #[test]
+    fn bmssp_matches_dijkstra_random() {
+        for seed in 1..=40u64 {
+            let nodes = 5 + (seed as usize % 60);
+            let edges = nodes * (1 + (seed as usize % 4));
+            let mut g = random_weighted(seed, nodes, edges);
+            for src in 0..nodes.min(6) {
+                if let Some(msg) = sp_diff(&mut g, src) {
+                    panic!("seed={seed} src={src}: {msg}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bmssp_matches_dijkstra_large() {
+        for (seed, nodes, deg) in [(101u64, 2000usize, 3usize), (202, 5000, 2), (303, 1000, 6)] {
+            let mut g = random_weighted(seed, nodes, nodes * deg);
+            if let Some(msg) = sp_diff(&mut g, 0) {
+                panic!("large seed={seed} nodes={nodes}: {msg}");
+            }
+        }
+    }
+
+    #[test]
+    fn bmssp_matches_dijkstra_dense_ties() {
+        // Dense graph with MANY equal-weight edges → many equal-distance paths, the
+        // worst case for tie-break determinism / byte-identity.
+        let n = 60usize;
+        let mut lines: Vec<String> = (0..n)
+            .map(|i| format!(r#"{{"type":"node","id":"{i}","labels":["N"],"properties":{{}}}}"#))
+            .collect();
+        let mut st = 7u64;
+        for a in 0..n {
+            for b in 0..n {
+                // ~40% of ordered pairs, weight 1 or 2 → dense with heavy ties.
+                if a != b && xorshift(&mut st) % 5 < 2 {
+                    let w = 1 + xorshift(&mut st) % 2;
+                    lines.push(format!(
+                        r#"{{"type":"edge","from":"{a}","to":"{b}","labels":["E"],"properties":{{"w":{w}}}}}"#
+                    ));
+                }
+            }
+        }
+        let mut g = ndjson::decode(&lines.join("\n")).unwrap();
+        for src in 0..8 {
+            assert!(sp_diff(&mut g, src).is_none(), "dense-ties src={src}");
+        }
+    }
+
+    #[test]
+    fn bmssp_matches_dijkstra_chain() {
+        // A long chain forces the deepest recursion; distances are the running sum.
+        let n = 30usize;
+        let mut lines: Vec<String> = (0..n)
+            .map(|i| format!(r#"{{"type":"node","id":"{i}","labels":["N"],"properties":{{}}}}"#))
+            .collect();
+        for i in 0..n - 1 {
+            lines.push(format!(
+                r#"{{"type":"edge","from":"{i}","to":"{}","labels":["E"],"properties":{{"w":{}}}}}"#,
+                i + 1,
+                1 + i % 7
+            ));
+        }
+        let mut chain = ndjson::decode(&lines.join("\n")).unwrap();
+        assert!(sp_diff(&mut chain, 0).is_none());
+    }
+
     #[test]
     fn write_property_and_unknown_algo() {
         let mut g = modern();
