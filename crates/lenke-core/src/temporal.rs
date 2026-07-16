@@ -1,5 +1,5 @@
 //! ISO/IEC 39075 temporal values — `DATE`, `LOCAL TIME`, `LOCAL DATETIME`,
-//! `DURATION`.
+//! `ZONED TIME`, `ZONED DATETIME`, `DURATION`.
 //!
 //! Dependency-free (no `chrono`/`time`): the calendar math is Howard Hinnant's
 //! civil-from-days algorithm and the ISO-8601 parse/format is hand-rolled, so
@@ -8,9 +8,9 @@
 //! is defined by the ISO-8601 string** (`format`) and the comparison order, not
 //! by the representation.
 //!
-//! Scope: the zone-less set (date, local time, local datetime, duration). The
-//! ZONED variants (`ZONED DATETIME` / `ZONED TIME`) come later; the `Temporal`
-//! enum leaves room for them.
+//! The ZONED variants carry a numeric UTC offset (`±HH:MM`/`Z`), never a named
+//! zone, so they stay dependency-free; the offset is preserved for round-trip and
+//! participates in identity/ordering (instant first, offset second).
 
 use std::cmp::Ordering;
 
@@ -54,13 +54,46 @@ pub struct Duration {
     pub nanos: u32,
 }
 
-/// The zone-less temporal trio, carried as one `Value`/`Val`/`GVal` variant so
-/// each exhaustive match gains a single arm.
+/// A datetime with a UTC offset (ISO "ZONED DATETIME" / "TIMESTAMP WITH TIME
+/// ZONE"). Stored as the UTC instant plus the offset it was written in — the
+/// offset is PRESERVED for round-trip rendering, and it participates in identity
+/// and ordering (so `12:00Z` and `13:00+01:00` — same instant, different offset
+/// — are ordered by instant first, offset second; a deliberate simplification of
+/// ISO's inferred `=`-by-instant rule, kept for a consistent total/relational
+/// model). Fields ordered `secs, nanos, offset` so the derived `Ord` is
+/// instant-primary. ISO stores a numeric offset, never a named zone.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct ZonedDateTime {
+    /// UTC instant: seconds since 1970-01-01T00:00:00Z.
+    pub secs: i64,
+    /// 0..1_000_000_000
+    pub nanos: u32,
+    /// Offset from UTC in whole minutes (`Z` = 0), for round-trip rendering.
+    pub offset: i16,
+}
+
+/// A time of day with a UTC offset (ISO "ZONED TIME" / "TIME WITH TIME ZONE").
+/// Stored as the UTC seconds-of-day + the offset; ordered by UTC time-of-day then
+/// offset. No date component. ISO uses a numeric offset, never a named zone.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct ZonedTime {
+    /// UTC seconds-of-day, 0..86_400 (the wall clock minus the offset, wrapped).
+    pub secs: u32,
+    /// 0..1_000_000_000
+    pub nanos: u32,
+    /// Offset from UTC in whole minutes, for round-trip rendering.
+    pub offset: i16,
+}
+
+/// The temporal value family, carried as one `Value`/`Val`/`GVal` variant so each
+/// exhaustive match gains a single arm.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Temporal {
     Date(Date),
     Time(Time),
     DateTime(DateTime),
+    ZonedTime(ZonedTime),
+    ZonedDateTime(ZonedDateTime),
     Duration(Duration),
 }
 
@@ -139,6 +172,54 @@ fn fmt_frac(nanos: u32) -> String {
     }
     let s = format!("{nanos:09}");
     format!(".{}", s.trim_end_matches('0'))
+}
+
+/// Render a UTC offset (whole minutes) as `Z` (=0) or `±HH:MM`.
+fn fmt_offset(offset: i16) -> String {
+    if offset == 0 {
+        return "Z".to_string();
+    }
+    let sign = if offset < 0 { '-' } else { '+' };
+    let a = offset.unsigned_abs();
+    format!("{sign}{:02}:{:02}", a / 60, a % 60)
+}
+
+/// Split a trailing UTC offset (`Z` / `±HH:MM` / `±HHMM`) off `s`, returning the
+/// part before it and the offset in whole minutes. Errors if no offset is present
+/// (a ZONED value requires one). Only the tail is inspected, so a date's `-`
+/// separators are never mistaken for the offset sign.
+fn split_offset(s: &str) -> Result<(&str, i16), String> {
+    if let Some(rest) = s.strip_suffix('Z') {
+        return Ok((rest, 0));
+    }
+    let b = s.as_bytes();
+    let n = b.len();
+    for (width, colon) in [(6usize, true), (5usize, false)] {
+        if n < width {
+            continue;
+        }
+        let start = n - width;
+        let sign = b[start];
+        if sign != b'+' && sign != b'-' {
+            continue;
+        }
+        let hh = &s[start + 1..start + 3];
+        let mm = if colon {
+            if b[start + 3] != b':' {
+                continue;
+            }
+            &s[start + 4..start + 6]
+        } else {
+            &s[start + 3..start + 5]
+        };
+        if let (Ok(h), Ok(m)) = (hh.parse::<i16>(), mm.parse::<i16>()) {
+            if (0..=23).contains(&h) && (0..60).contains(&m) {
+                let mag = h * 60 + m;
+                return Ok((&s[..start], if sign == b'-' { -mag } else { mag }));
+            }
+        }
+    }
+    Err(format!("missing/invalid time-zone offset in '{s}'"))
 }
 
 // --- Date --------------------------------------------------------------------
@@ -225,6 +306,57 @@ impl Time {
     pub fn format(&self) -> String {
         let (h, m, s) = (self.secs / 3600, (self.secs % 3600) / 60, self.secs % 60);
         format!("{h:02}:{m:02}:{s:02}{}", fmt_frac(self.nanos))
+    }
+}
+
+// --- ZonedDateTime -----------------------------------------------------------
+
+impl ZonedDateTime {
+    /// Parse `YYYY-MM-DDTHH:MM:SS[.frac](Z|±HH:MM)`. The wall clock is the
+    /// pre-offset datetime; the stored instant is that minus the offset.
+    pub fn parse(s: &str) -> Result<Self, String> {
+        let (dt_str, offset) = split_offset(s)?;
+        let local = DateTime::parse(dt_str)?;
+        Ok(Self {
+            secs: local.secs - i64::from(offset) * 60,
+            nanos: local.nanos,
+            offset,
+        })
+    }
+
+    pub fn format(&self) -> String {
+        let local = DateTime {
+            secs: self.secs + i64::from(self.offset) * 60,
+            nanos: self.nanos,
+        };
+        format!("{}{}", local.format(), fmt_offset(self.offset))
+    }
+}
+
+// --- ZonedTime ---------------------------------------------------------------
+
+impl ZonedTime {
+    /// Parse `HH:MM:SS[.frac](Z|±HH:MM)`. The wall clock is the pre-offset time;
+    /// the stored UTC seconds-of-day is that minus the offset, wrapped into a day.
+    pub fn parse(s: &str) -> Result<Self, String> {
+        let (t_str, offset) = split_offset(s)?;
+        let (tod, nanos) = parse_time(t_str)?;
+        let utc = (tod - i64::from(offset) * 60).rem_euclid(SECS_PER_DAY);
+        Ok(Self {
+            secs: utc as u32,
+            nanos,
+            offset,
+        })
+    }
+
+    pub fn format(&self) -> String {
+        let local = (i64::from(self.secs) + i64::from(self.offset) * 60).rem_euclid(SECS_PER_DAY);
+        let (h, m, s) = (local / 3600, (local % 3600) / 60, local % 60);
+        format!(
+            "{h:02}:{m:02}:{s:02}{}{}",
+            fmt_frac(self.nanos),
+            fmt_offset(self.offset)
+        )
     }
 }
 
@@ -354,6 +486,8 @@ impl Temporal {
             Self::Date(_) => "date",
             Self::Time(_) => "localtime",
             Self::DateTime(_) => "datetime",
+            Self::ZonedTime(_) => "zoned_time",
+            Self::ZonedDateTime(_) => "zoned_datetime",
             Self::Duration(_) => "duration",
         }
     }
@@ -364,6 +498,8 @@ impl Temporal {
             Self::Date(_) => "gx:LocalDate",
             Self::Time(_) => "gx:LocalTime",
             Self::DateTime(_) => "gx:LocalDateTime",
+            Self::ZonedTime(_) => "gx:OffsetTime",
+            Self::ZonedDateTime(_) => "gx:OffsetDateTime",
             Self::Duration(_) => "gx:Duration",
         }
     }
@@ -374,6 +510,8 @@ impl Temporal {
             "gx:LocalDate" => Some("date"),
             "gx:LocalTime" => Some("localtime"),
             "gx:LocalDateTime" => Some("datetime"),
+            "gx:OffsetTime" => Some("zoned_time"),
+            "gx:OffsetDateTime" => Some("zoned_datetime"),
             "gx:Duration" => Some("duration"),
             _ => None,
         }
@@ -385,6 +523,8 @@ impl Temporal {
             Self::Date(d) => d.format(),
             Self::Time(t) => t.format(),
             Self::DateTime(dt) => dt.format(),
+            Self::ZonedTime(t) => t.format(),
+            Self::ZonedDateTime(dt) => dt.format(),
             Self::Duration(du) => du.format(),
         }
     }
@@ -401,7 +541,11 @@ impl Temporal {
     /// value (the single-key tagged form). `None` if the key isn't a temporal tag.
     pub fn from_json_tag(key: &str, s: &str) -> Option<Result<Self, String>> {
         let tag = key.strip_prefix('@')?;
-        matches!(tag, "date" | "localtime" | "datetime" | "duration").then(|| Self::parse(tag, s))
+        matches!(
+            tag,
+            "date" | "localtime" | "datetime" | "zoned_time" | "zoned_datetime" | "duration"
+        )
+        .then(|| Self::parse(tag, s))
     }
 
     /// Build from a kind tag + ISO string (the codec decode path).
@@ -410,19 +554,23 @@ impl Temporal {
             "date" => Date::parse(s).map(Temporal::Date),
             "localtime" => Time::parse(s).map(Temporal::Time),
             "datetime" => DateTime::parse(s).map(Temporal::DateTime),
+            "zoned_time" => ZonedTime::parse(s).map(Temporal::ZonedTime),
+            "zoned_datetime" => ZonedDateTime::parse(s).map(Temporal::ZonedDateTime),
             "duration" => Duration::parse(s).map(Temporal::Duration),
             _ => Err(format!("unknown temporal kind '{tag}'")),
         }
     }
 
-    /// Kind rank for the cross-kind total order
-    /// (date < localtime < datetime < duration).
+    /// Kind rank for the cross-kind total order (date < localtime < datetime <
+    /// zoned_time < zoned_datetime < duration).
     fn kind_rank(&self) -> u8 {
         match self {
             Self::Date(_) => 0,
             Self::Time(_) => 1,
             Self::DateTime(_) => 2,
-            Self::Duration(_) => 3,
+            Self::ZonedTime(_) => 3,
+            Self::ZonedDateTime(_) => 4,
+            Self::Duration(_) => 5,
         }
     }
 
@@ -434,6 +582,8 @@ impl Temporal {
             (Self::Date(a), Self::Date(b)) => a.cmp(b),
             (Self::Time(a), Self::Time(b)) => a.cmp(b),
             (Self::DateTime(a), Self::DateTime(b)) => a.cmp(b),
+            (Self::ZonedTime(a), Self::ZonedTime(b)) => a.cmp(b),
+            (Self::ZonedDateTime(a), Self::ZonedDateTime(b)) => a.cmp(b),
             (Self::Duration(a), Self::Duration(b)) => a.total_key().cmp(&b.total_key()),
             _ => self.kind_rank().cmp(&other.kind_rank()),
         }
@@ -447,6 +597,10 @@ impl Temporal {
             (Self::Date(a), Self::Date(b)) => Some(a.cmp(b)),
             (Self::Time(a), Self::Time(b)) => Some(a.cmp(b)),
             (Self::DateTime(a), Self::DateTime(b)) => Some(a.cmp(b)),
+            // Zoned instants compare within-kind (by UTC instant, then offset);
+            // zoned-vs-local is a type mismatch → UNKNOWN, like the other pairs.
+            (Self::ZonedTime(a), Self::ZonedTime(b)) => Some(a.cmp(b)),
+            (Self::ZonedDateTime(a), Self::ZonedDateTime(b)) => Some(a.cmp(b)),
             _ => None,
         }
     }
@@ -569,6 +723,40 @@ impl Temporal {
                     nanos: nanos as u32,
                 }))
             }
+            // Zoned ± duration: apply it to the LOCAL wall clock (so calendar
+            // months/days are correct in the value's own zone), then re-anchor to
+            // the UTC instant, keeping the offset.
+            Self::ZonedDateTime(zdt) => {
+                let local = DateTime {
+                    secs: zdt.secs + i64::from(zdt.offset) * 60,
+                    nanos: zdt.nanos,
+                };
+                let Self::DateTime(nl) = Self::DateTime(local).add_duration(d)? else {
+                    return None;
+                };
+                Some(Self::ZonedDateTime(ZonedDateTime {
+                    secs: nl.secs - i64::from(zdt.offset) * 60,
+                    nanos: nl.nanos,
+                    offset: zdt.offset,
+                }))
+            }
+            Self::ZonedTime(zt) => {
+                let local_secs =
+                    (i64::from(zt.secs) + i64::from(zt.offset) * 60).rem_euclid(SECS_PER_DAY);
+                let local = Time {
+                    secs: local_secs as u32,
+                    nanos: zt.nanos,
+                };
+                let Self::Time(nt) = Self::Time(local).add_duration(d)? else {
+                    return None;
+                };
+                let utc = (i64::from(nt.secs) - i64::from(zt.offset) * 60).rem_euclid(SECS_PER_DAY);
+                Some(Self::ZonedTime(ZonedTime {
+                    secs: utc as u32,
+                    nanos: nt.nanos,
+                    offset: zt.offset,
+                }))
+            }
             Self::Duration(_) => None,
         }
     }
@@ -624,6 +812,32 @@ mod tests {
             DateTime::parse("2020-01-01 10:15:30").unwrap().format(),
             "2020-01-01T10:15:30"
         );
+    }
+
+    #[test]
+    fn zoned_parse_format_round_trip_and_instant() {
+        // Offset and `Z` both round-trip byte-for-byte.
+        for s in [
+            "2020-01-01T12:00:00+05:00",
+            "2020-01-01T12:00:00Z",
+            "2020-06-15T08:30:00.25-08:00",
+            "2020-01-01T02:00:00+05:30",
+        ] {
+            assert_eq!(ZonedDateTime::parse(s).unwrap().format(), s);
+        }
+        for s in ["12:20:02+08:00", "03:02:11.7-06:00", "00:00:00Z"] {
+            assert_eq!(ZonedTime::parse(s).unwrap().format(), s);
+        }
+        // Same instant, different offset → equal UTC secs (compare-by-instant core),
+        // but distinct values (offset is a tiebreaker in the total order).
+        let a = ZonedDateTime::parse("2020-01-01T12:00:00Z").unwrap();
+        let b = ZonedDateTime::parse("2020-01-01T13:00:00+01:00").unwrap();
+        assert_eq!(a.secs, b.secs, "same UTC instant");
+        assert_ne!(a, b, "different offset → distinct value");
+        assert!(a < b, "instant-equal, ordered by offset (+00 < +01)");
+        // A later instant sorts after, regardless of wall-clock/offset.
+        let later = ZonedDateTime::parse("2020-01-01T12:00:01Z").unwrap();
+        assert!(a < later);
     }
 
     #[test]

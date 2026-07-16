@@ -28,6 +28,8 @@ export {
   LocalDate,
   LocalTime,
   LocalDateTime,
+  ZonedTime,
+  ZonedDateTime,
   Duration,
   isTemporal,
   coerceTemporal,
@@ -44,6 +46,8 @@ export {
   parseDate,
   parseLocalTime,
   parseDateTime,
+  parseZonedTime,
+  parseZonedDateTime,
   parseDuration,
 } from './temporal.js';
 export type { Temporal } from './temporal.js';

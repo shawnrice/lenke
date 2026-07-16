@@ -1,6 +1,6 @@
 /**
  * ISO/IEC 39075 temporal values — `DATE`, `LOCAL TIME`, `LOCAL DATETIME`,
- * `DURATION`.
+ * `ZONED TIME`, `ZONED DATETIME`, `DURATION`.
  *
  * A byte-for-byte port of the Rust core's `temporal` module: the calendar math
  * is Howard Hinnant's civil-from-days algorithm and the ISO-8601 parse/format is
@@ -10,8 +10,8 @@
  * type is a small branded class (discriminated by `instanceof` + a `kind` tag),
  * with a `toJSON()` that emits the tagged form the JSON codecs round-trip.
  *
- * Scope: the zone-less set (date, local time, local datetime, duration). The
- * ZONED variants (`ZONED DATETIME` / `ZONED TIME`) come later.
+ * The ZONED variants carry a numeric UTC offset (`±HH:MM`/`Z`), never a named
+ * zone, so they stay dependency-free; the offset is preserved for round-trip.
  */
 
 import { ErrorCode, LenkeError } from '@lenke/errors';
@@ -127,6 +127,55 @@ export class LocalDateTime {
   }
 }
 
+/**
+ * A datetime with a UTC offset (ISO "ZONED DATETIME" / "TIMESTAMP WITH TIME
+ * ZONE"): the UTC instant + the offset it was written in (whole minutes; `Z`=0).
+ * The offset is preserved for round-trip and participates in identity/ordering
+ * (instant first, offset second). ISO carries a numeric offset, never a named zone.
+ */
+export class ZonedDateTime {
+  readonly kind = 'zoned_datetime' as const;
+  constructor(
+    readonly secs: number, // UTC instant seconds since the epoch
+    readonly nanos: number,
+    readonly offset: number, // whole minutes
+  ) {}
+  toString(): string {
+    return formatZonedDateTime(this);
+  }
+  toISOString(): string {
+    return formatZonedDateTime(this);
+  }
+  toJSON(): { '@zoned_datetime': string } {
+    return { '@zoned_datetime': formatZonedDateTime(this) };
+  }
+  static parse(s: string): ZonedDateTime {
+    return parseZonedDateTime(s);
+  }
+}
+
+/** A time of day with a UTC offset (ISO "ZONED TIME" / "TIME WITH TIME ZONE"). */
+export class ZonedTime {
+  readonly kind = 'zoned_time' as const;
+  constructor(
+    readonly secs: number, // UTC seconds-of-day (0..86_400)
+    readonly nanos: number,
+    readonly offset: number, // whole minutes
+  ) {}
+  toString(): string {
+    return formatZonedTime(this);
+  }
+  toISOString(): string {
+    return formatZonedTime(this);
+  }
+  toJSON(): { '@zoned_time': string } {
+    return { '@zoned_time': formatZonedTime(this) };
+  }
+  static parse(s: string): ZonedTime {
+    return parseZonedTime(s);
+  }
+}
+
 /** An ISO-8601 calendar duration (months/days kept separate from seconds). */
 export class Duration {
   readonly kind = 'duration' as const;
@@ -157,12 +206,14 @@ export class Duration {
   }
 }
 
-export type Temporal = LocalDate | LocalTime | LocalDateTime | Duration;
+export type Temporal = LocalDate | LocalTime | LocalDateTime | ZonedTime | ZonedDateTime | Duration;
 
 export const isTemporal = (v: unknown): v is Temporal =>
   v instanceof LocalDate ||
   v instanceof LocalTime ||
   v instanceof LocalDateTime ||
+  v instanceof ZonedTime ||
+  v instanceof ZonedDateTime ||
   v instanceof Duration;
 
 // --- civil calendar (Hinnant) ------------------------------------------------
@@ -227,6 +278,70 @@ const fmtFrac = (nanos: number): string => {
   return `.${pad(nanos, 9).replace(/0+$/, '')}`;
 };
 
+/** Render a UTC offset (whole minutes) as `Z` (=0) or `±HH:MM`. */
+const fmtOffset = (offset: number): string => {
+  if (offset === 0) {
+    return 'Z';
+  }
+
+  const sign = offset < 0 ? '-' : '+';
+  const a = Math.abs(offset);
+
+  return `${sign}${pad(Math.trunc(a / 60), 2)}:${pad(a % 60, 2)}`;
+};
+
+/**
+ * Split a trailing UTC offset (`Z` / `±HH:MM` / `±HHMM`) off `s`, returning
+ * `[part-before, offset-minutes]`; throws if none (a ZONED value requires one).
+ * Only the tail is inspected, so a date's `-` separators are never mistaken for
+ * the offset sign.
+ */
+const splitOffset = (s: string): [string, number] => {
+  if (s.endsWith('Z')) {
+    return [s.slice(0, -1), 0];
+  }
+
+  const n = s.length;
+
+  for (const [width, colon] of [
+    [6, true],
+    [5, false],
+  ] as const) {
+    if (n < width) {
+      continue;
+    }
+
+    const start = n - width;
+    const sign = s[start];
+
+    if (sign !== '+' && sign !== '-') {
+      continue;
+    }
+
+    const hh = s.slice(start + 1, start + 3);
+    let mm: string | undefined;
+
+    if (colon) {
+      mm = s[start + 3] === ':' ? s.slice(start + 4, start + 6) : undefined;
+    } else {
+      mm = s.slice(start + 3, start + 5);
+    }
+
+    if (mm !== undefined && /^\d\d$/.test(hh) && /^\d\d$/.test(mm)) {
+      const h = Number(hh);
+      const m = Number(mm);
+
+      if (h <= 23 && m < 60) {
+        const mag = h * 60 + m;
+
+        return [s.slice(0, start), sign === '-' ? -mag : mag];
+      }
+    }
+  }
+
+  throw new Error(`missing/invalid time-zone offset in '${s}'`);
+};
+
 /** Parse `HH:MM:SS[.fraction]` into [seconds-of-day, nanos]. */
 const parseTime = (s: string): [number, number] => {
   const dot = s.indexOf('.');
@@ -285,6 +400,38 @@ export function formatTime(t: LocalTime): string {
   const s = t.secs % 60;
 
   return `${pad(h, 2)}:${pad(m, 2)}:${pad(s, 2)}${fmtFrac(t.nanos)}`;
+}
+
+// --- Zoned -------------------------------------------------------------------
+
+export function parseZonedDateTime(s: string): ZonedDateTime {
+  const [dtStr, offset] = splitOffset(s);
+  const local = parseDateTime(dtStr);
+
+  return new ZonedDateTime(local.secs - offset * 60, local.nanos, offset);
+}
+
+export function formatZonedDateTime(z: ZonedDateTime): string {
+  const local = new LocalDateTime(z.secs + z.offset * 60, z.nanos);
+
+  return `${formatDateTime(local)}${fmtOffset(z.offset)}`;
+}
+
+export function parseZonedTime(s: string): ZonedTime {
+  const [tStr, offset] = splitOffset(s);
+  const [tod, nanos] = parseTime(tStr);
+  const utc = (((tod - offset * 60) % SECS_PER_DAY) + SECS_PER_DAY) % SECS_PER_DAY;
+
+  return new ZonedTime(utc, nanos, offset);
+}
+
+export function formatZonedTime(z: ZonedTime): string {
+  const local = (((z.secs + z.offset * 60) % SECS_PER_DAY) + SECS_PER_DAY) % SECS_PER_DAY;
+  const h = tdiv(local, 3600);
+  const m = tdiv(local % 3600, 60);
+  const s = local % 60;
+
+  return `${pad(h, 2)}:${pad(m, 2)}:${pad(s, 2)}${fmtFrac(z.nanos)}${fmtOffset(z.offset)}`;
 }
 
 // --- DateTime ----------------------------------------------------------------
@@ -415,7 +562,9 @@ export function formatDuration(d: Duration): string {
 
 // --- Temporal (kind-agnostic) helpers ----------------------------------------
 
-export const temporalTag = (t: Temporal): 'date' | 'localtime' | 'datetime' | 'duration' => t.kind;
+type TemporalTag = 'date' | 'localtime' | 'datetime' | 'zoned_time' | 'zoned_datetime' | 'duration';
+
+export const temporalTag = (t: Temporal): TemporalTag => t.kind;
 
 export function temporalFormat(t: Temporal): string {
   if (t instanceof LocalDate) {
@@ -428,6 +577,14 @@ export function temporalFormat(t: Temporal): string {
 
   if (t instanceof LocalDateTime) {
     return formatDateTime(t);
+  }
+
+  if (t instanceof ZonedTime) {
+    return formatZonedTime(t);
+  }
+
+  if (t instanceof ZonedDateTime) {
+    return formatZonedDateTime(t);
   }
 
   return formatDuration(t);
@@ -445,6 +602,14 @@ export function temporalParse(tag: string, s: string): Temporal {
 
   if (tag === 'datetime') {
     return parseDateTime(s);
+  }
+
+  if (tag === 'zoned_time') {
+    return parseZonedTime(s);
+  }
+
+  if (tag === 'zoned_datetime') {
+    return parseZonedDateTime(s);
   }
 
   if (tag === 'duration') {
@@ -468,13 +633,19 @@ export function graphsonType(t: Temporal): string {
     return 'gx:LocalDateTime';
   }
 
+  if (t instanceof ZonedTime) {
+    return 'gx:OffsetTime';
+  }
+
+  if (t instanceof ZonedDateTime) {
+    return 'gx:OffsetDateTime';
+  }
+
   return 'gx:Duration';
 }
 
 /** GraphSON `@type` → kind tag, or `undefined` if not a temporal type. */
-export function graphsonTag(
-  ty: string,
-): 'date' | 'localtime' | 'datetime' | 'duration' | undefined {
+export function graphsonTag(ty: string): TemporalTag | undefined {
   if (ty === 'gx:LocalDate') {
     return 'date';
   }
@@ -485,6 +656,14 @@ export function graphsonTag(
 
   if (ty === 'gx:LocalDateTime') {
     return 'datetime';
+  }
+
+  if (ty === 'gx:OffsetTime') {
+    return 'zoned_time';
+  }
+
+  if (ty === 'gx:OffsetDateTime') {
+    return 'zoned_datetime';
   }
 
   if (ty === 'gx:Duration') {
@@ -508,7 +687,14 @@ export function fromTaggedJson(v: unknown): Temporal | null {
 
   const [key] = keys;
 
-  if (key !== '@date' && key !== '@localtime' && key !== '@datetime' && key !== '@duration') {
+  if (
+    key !== '@date' &&
+    key !== '@localtime' &&
+    key !== '@datetime' &&
+    key !== '@zoned_time' &&
+    key !== '@zoned_datetime' &&
+    key !== '@duration'
+  ) {
     return null;
   }
 
@@ -593,7 +779,15 @@ const kindRank = (t: Temporal): number => {
     return 2;
   }
 
-  return 3;
+  if (t instanceof ZonedTime) {
+    return 3;
+  }
+
+  if (t instanceof ZonedDateTime) {
+    return 4;
+  }
+
+  return 5;
 };
 
 const cmpNum = (a: number, b: number): number => {
@@ -637,6 +831,14 @@ export function temporalCmpTotal(a: Temporal, b: Temporal): number {
     return cmpTuple([a.secs, a.nanos], [b.secs, b.nanos]);
   }
 
+  if (a instanceof ZonedTime && b instanceof ZonedTime) {
+    return cmpTuple([a.secs, a.nanos, a.offset], [b.secs, b.nanos, b.offset]);
+  }
+
+  if (a instanceof ZonedDateTime && b instanceof ZonedDateTime) {
+    return cmpTuple([a.secs, a.nanos, a.offset], [b.secs, b.nanos, b.offset]);
+  }
+
   if (a instanceof Duration && b instanceof Duration) {
     return cmpTuple([a.months, a.days, a.secs, a.nanos], [b.months, b.days, b.secs, b.nanos]);
   }
@@ -659,6 +861,14 @@ export function temporalRelCmp(a: Temporal, b: Temporal): number | null {
 
   if (a instanceof LocalDateTime && b instanceof LocalDateTime) {
     return cmpTuple([a.secs, a.nanos], [b.secs, b.nanos]);
+  }
+
+  if (a instanceof ZonedTime && b instanceof ZonedTime) {
+    return cmpTuple([a.secs, a.nanos, a.offset], [b.secs, b.nanos, b.offset]);
+  }
+
+  if (a instanceof ZonedDateTime && b instanceof ZonedDateTime) {
+    return cmpTuple([a.secs, a.nanos, a.offset], [b.secs, b.nanos, b.offset]);
   }
 
   return null;
@@ -751,6 +961,29 @@ const addDurationTo = (t: Temporal, d: Duration): Temporal | null => {
     }
 
     return new LocalDateTime(secs, nanos);
+  }
+
+  // Zoned ± duration: apply to the LOCAL wall clock (calendar-correct in its own
+  // zone), re-anchor to the UTC instant, keep the offset.
+  if (t instanceof ZonedDateTime) {
+    const shifted = addDurationTo(new LocalDateTime(t.secs + t.offset * 60, t.nanos), d);
+
+    return shifted instanceof LocalDateTime
+      ? new ZonedDateTime(shifted.secs - t.offset * 60, shifted.nanos, t.offset)
+      : null;
+  }
+
+  if (t instanceof ZonedTime) {
+    const localSecs = (((t.secs + t.offset * 60) % 86_400) + 86_400) % 86_400;
+    const shifted = addDurationTo(new LocalTime(localSecs, t.nanos), d);
+
+    if (shifted instanceof LocalTime) {
+      const utc = (((shifted.secs - t.offset * 60) % 86_400) + 86_400) % 86_400;
+
+      return new ZonedTime(utc, shifted.nanos, t.offset);
+    }
+
+    return null;
   }
 
   return null;

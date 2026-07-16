@@ -956,16 +956,21 @@ const callListSetFn = (name: string, a: unknown, b: unknown, args: readonly unkn
 // Temporal constructors: `date(x)` / `local_datetime(x)` / `duration(x)`. Mirror
 // the Rust `temporal_ctor` — parse a string, convert a temporal by kind (date↔
 // datetime), else null (lenient, like the to_* conversions).
-const TEMPORAL_CTOR: Record<string, 'date' | 'localtime' | 'datetime' | 'duration'> = {
+const TEMPORAL_CTOR: Record<
+  string,
+  'date' | 'localtime' | 'datetime' | 'zoned_time' | 'zoned_datetime' | 'duration'
+> = {
   date: 'date',
   local_time: 'localtime',
   local_datetime: 'datetime',
   datetime: 'datetime',
+  zoned_time: 'zoned_time',
+  zoned_datetime: 'zoned_datetime',
   duration: 'duration',
 };
 
 const temporalCtor = (
-  kind: 'date' | 'localtime' | 'datetime' | 'duration',
+  kind: 'date' | 'localtime' | 'datetime' | 'zoned_time' | 'zoned_datetime' | 'duration',
   v: unknown,
 ): unknown => {
   if (isNullish(v)) {

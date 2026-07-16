@@ -54,6 +54,8 @@ enum Scalar {
     Date,
     Time,
     DateTime,
+    ZonedTime,
+    ZonedDateTime,
     Duration,
 }
 
@@ -67,6 +69,8 @@ impl Scalar {
             Self::Date => "date",
             Self::Time => "localtime",
             Self::DateTime => "datetime",
+            Self::ZonedTime => "zoned_time",
+            Self::ZonedDateTime => "zoned_datetime",
             Self::Duration => "duration",
         }
     }
@@ -78,6 +82,8 @@ impl Scalar {
             "date" => Self::Date,
             "localtime" => Self::Time,
             "datetime" => Self::DateTime,
+            "zoned_time" => Self::ZonedTime,
+            "zoned_datetime" => Self::ZonedDateTime,
             "duration" => Self::Duration,
             _ => Self::Str,
         }
@@ -91,6 +97,8 @@ impl Scalar {
             Self::Date => 'd',
             Self::Time => 'l',
             Self::DateTime => 't',
+            Self::ZonedTime => 'w',
+            Self::ZonedDateTime => 'z',
             Self::Duration => 'u',
         }
     }
@@ -102,17 +110,20 @@ impl Scalar {
             "d" => Self::Date,
             "l" => Self::Time,
             "t" => Self::DateTime,
+            "w" => Self::ZonedTime,
+            "z" => Self::ZonedDateTime,
             "u" => Self::Duration,
             _ => Self::Str,
         }
     }
-    /// The kind tag (`date`/`localtime`/`datetime`/`duration`) for a temporal scalar
-    /// type, or `None` for a non-temporal type.
+    /// The kind tag for a temporal scalar type, or `None` for a non-temporal type.
     fn temporal_tag(self) -> Option<&'static str> {
         match self {
             Self::Date => Some("date"),
             Self::Time => Some("localtime"),
             Self::DateTime => Some("datetime"),
+            Self::ZonedTime => Some("zoned_time"),
+            Self::ZonedDateTime => Some("zoned_datetime"),
             Self::Duration => Some("duration"),
             _ => None,
         }
@@ -139,6 +150,8 @@ fn scalar_of(v: &Value) -> Scalar {
         Value::Temporal(Temporal::Date(_)) => Scalar::Date,
         Value::Temporal(Temporal::Time(_)) => Scalar::Time,
         Value::Temporal(Temporal::DateTime(_)) => Scalar::DateTime,
+        Value::Temporal(Temporal::ZonedTime(_)) => Scalar::ZonedTime,
+        Value::Temporal(Temporal::ZonedDateTime(_)) => Scalar::ZonedDateTime,
         Value::Temporal(Temporal::Duration(_)) => Scalar::Duration,
         _ => Scalar::Str,
     }

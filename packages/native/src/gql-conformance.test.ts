@@ -551,6 +551,50 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     expect(tsO.indexOf('06:30:00')).toBeLessThan(tsO.indexOf('23:15:00'));
   });
 
+  test('ZONED temporal types (ISO) are byte-identical', () => {
+    // Offset and `Z` both round-trip byte-for-byte (offset preserved, not normalized).
+    const [tsC, natC] = both(
+      `RETURN zoned_datetime('2020-01-01T12:00:00+05:00') AS a, ` +
+        `zoned_datetime('2020-06-15T08:30:00.25Z') AS b, ` +
+        `zoned_time('12:20:02+08:00') AS c`,
+    );
+    expect(tsC).toBe(natC);
+    expect(tsC).toBe(
+      `[{"a":{"@zoned_datetime":"2020-01-01T12:00:00+05:00"},` +
+        `"b":{"@zoned_datetime":"2020-06-15T08:30:00.25Z"},` +
+        `"c":{"@zoned_time":"12:20:02+08:00"}}]`,
+    );
+
+    // A datetime string with no offset is not a zoned value → null.
+    const [tsN, natN] = both(`RETURN zoned_datetime('2020-01-01T12:00:00') AS bad`);
+    expect(tsN).toBe(natN);
+    expect(tsN).toBe(`[{"bad":null}]`);
+
+    // Ordering/relational is by UTC instant: 09:00Z is before 12:00Z; a later
+    // instant sorts after regardless of wall-clock/offset.
+    const [tsL, natL] = both(
+      `RETURN zoned_datetime('2020-01-01T12:00:00Z') < zoned_datetime('2020-01-01T12:00:01Z') AS lt`,
+    );
+    expect(tsL).toBe(natL);
+    expect(tsL).toBe(`[{"lt":true}]`);
+
+    // Zoned + duration applies in the value's own zone (crossing local midnight)
+    // and keeps the offset.
+    const [tsA, natA] = both(
+      `RETURN zoned_datetime('2020-06-15T23:00:00+02:00') + duration('PT3H') AS plus`,
+    );
+    expect(tsA).toBe(natA);
+    expect(tsA).toBe(`[{"plus":{"@zoned_datetime":"2020-06-16T02:00:00+02:00"}}]`);
+
+    // ORDER BY sorts by the absolute instant.
+    const [tsO, natO] = both(
+      `FOR t IN [zoned_datetime('2020-01-01T12:00:00Z'), zoned_datetime('2020-01-01T09:00:00Z')] ` +
+        `RETURN t ORDER BY t`,
+    );
+    expect(tsO).toBe(natO);
+    expect(tsO.indexOf('09:00:00')).toBeLessThan(tsO.indexOf('12:00:00'));
+  });
+
   test('ISO path functions on a bound path are byte-identical', () => {
     const q =
       `MATCH p = ANY SHORTEST (a)-[]->*(b) WHERE a.name = 'marko' AND b.name = 'lop' ` +

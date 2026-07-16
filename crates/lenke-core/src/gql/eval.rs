@@ -2007,6 +2007,8 @@ fn call_scalar(graph: &Graph, func: ScalarFn, args: &[Val]) -> Val {
         DateOf => temporal_ctor(a, "date"),
         LocalTimeOf => temporal_ctor(a, "localtime"),
         DateTimeOf => temporal_ctor(a, "datetime"),
+        ZonedTimeOf => temporal_ctor(a, "zoned_time"),
+        ZonedDateTimeOf => temporal_ctor(a, "zoned_datetime"),
         DurationOf => temporal_ctor(a, "duration"),
         DurationBetween => match (a, b) {
             (Some(Val::Temporal(x)), Some(Val::Temporal(y))) => duration_between(x, y),

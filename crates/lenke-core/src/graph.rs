@@ -324,6 +324,8 @@ pub enum PropType {
     Date,
     Time,
     DateTime,
+    ZonedTime,
+    ZonedDateTime,
     Duration,
     List,
 }
@@ -337,6 +339,8 @@ impl PropType {
             "date" => Some(Self::Date),
             "localtime" => Some(Self::Time),
             "datetime" => Some(Self::DateTime),
+            "zoned_time" => Some(Self::ZonedTime),
+            "zoned_datetime" => Some(Self::ZonedDateTime),
             "duration" => Some(Self::Duration),
             "list" => Some(Self::List),
             _ => None,
@@ -413,6 +417,8 @@ fn value_type(v: &Value) -> Option<PropType> {
         Value::Temporal(Temporal::Date(_)) => Some(PropType::Date),
         Value::Temporal(Temporal::Time(_)) => Some(PropType::Time),
         Value::Temporal(Temporal::DateTime(_)) => Some(PropType::DateTime),
+        Value::Temporal(Temporal::ZonedTime(_)) => Some(PropType::ZonedTime),
+        Value::Temporal(Temporal::ZonedDateTime(_)) => Some(PropType::ZonedDateTime),
         Value::Temporal(Temporal::Duration(_)) => Some(PropType::Duration),
         Value::List(_) => Some(PropType::List),
     }

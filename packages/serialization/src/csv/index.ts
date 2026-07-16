@@ -121,6 +121,8 @@ type ScalarType =
   | 'date'
   | 'localtime'
   | 'datetime'
+  | 'zoned_time'
+  | 'zoned_datetime'
   | 'duration';
 
 /** A column type: a scalar, or a homogeneous list of one scalar element type. */
@@ -337,6 +339,8 @@ const rawToScalar = (scalar: ScalarType, raw: string): PropertyValue => {
     case 'date':
     case 'localtime':
     case 'datetime':
+    case 'zoned_time':
+    case 'zoned_datetime':
     case 'duration':
       // A well-formed temporal decodes; a malformed cell falls back to a string
       // (lenient, matching the other scalar paths and the Rust codec).
@@ -358,6 +362,8 @@ const SCALAR_CODE: Record<ScalarType, string> = {
   date: 'd',
   localtime: 'l',
   datetime: 't',
+  zoned_time: 'w',
+  zoned_datetime: 'z',
   duration: 'u',
 };
 const CODE_SCALAR: Record<string, ScalarType> = {
@@ -368,6 +374,8 @@ const CODE_SCALAR: Record<string, ScalarType> = {
   d: 'date',
   l: 'localtime',
   t: 'datetime',
+  w: 'zoned_time',
+  z: 'zoned_datetime',
   u: 'duration',
 };
 const OVERRIDE_PREFIX = '\\T';
