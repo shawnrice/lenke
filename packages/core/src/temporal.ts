@@ -1,5 +1,6 @@
 /**
- * ISO/IEC 39075 temporal values — `DATE`, `LOCAL DATETIME`, `DURATION`.
+ * ISO/IEC 39075 temporal values — `DATE`, `LOCAL TIME`, `LOCAL DATETIME`,
+ * `DURATION`.
  *
  * A byte-for-byte port of the Rust core's `temporal` module: the calendar math
  * is Howard Hinnant's civil-from-days algorithm and the ISO-8601 parse/format is
@@ -9,8 +10,8 @@
  * type is a small branded class (discriminated by `instanceof` + a `kind` tag),
  * with a `toJSON()` that emits the tagged form the JSON codecs round-trip.
  *
- * Scope (phase 0): the zone-less trio. `ZONED DATETIME` / `LOCAL|ZONED TIME`
- * come later.
+ * Scope: the zone-less set (date, local time, local datetime, duration). The
+ * ZONED variants (`ZONED DATETIME` / `ZONED TIME`) come later.
  */
 
 import { ErrorCode, LenkeError } from '@lenke/errors';
@@ -62,6 +63,31 @@ export class LocalDate {
   /** Take the calendar date of a native `Date`, in an explicit zone (default UTC). */
   static fromJSDate(d: Date, opts?: { zone?: 'utc' | 'local' }): LocalDate {
     return new LocalDate(Math.floor(wallMs(d, opts?.zone ?? 'utc') / 86_400_000));
+  }
+}
+
+/** A zone-less time of day (ISO "LOCAL TIME"): secs since midnight + nanos. */
+export class LocalTime {
+  readonly kind = 'localtime' as const;
+  constructor(
+    readonly secs: number, // 0..86_400
+    readonly nanos: number,
+  ) {}
+  toString(): string {
+    return formatTime(this);
+  }
+  toISOString(): string {
+    return formatTime(this);
+  }
+  toJSON(): { '@localtime': string } {
+    return { '@localtime': formatTime(this) };
+  }
+  /** A TC39 `Temporal.PlainTime` (throws if the runtime lacks `Temporal`). */
+  toTemporal(): unknown {
+    return toTemporalGlobal('PlainTime', formatTime(this));
+  }
+  static parse(s: string): LocalTime {
+    return parseLocalTime(s);
   }
 }
 
@@ -131,10 +157,13 @@ export class Duration {
   }
 }
 
-export type Temporal = LocalDate | LocalDateTime | Duration;
+export type Temporal = LocalDate | LocalTime | LocalDateTime | Duration;
 
 export const isTemporal = (v: unknown): v is Temporal =>
-  v instanceof LocalDate || v instanceof LocalDateTime || v instanceof Duration;
+  v instanceof LocalDate ||
+  v instanceof LocalTime ||
+  v instanceof LocalDateTime ||
+  v instanceof Duration;
 
 // --- civil calendar (Hinnant) ------------------------------------------------
 
@@ -240,6 +269,22 @@ export function formatDate(dt: LocalDate): string {
   const [y, m, d] = civilFromDays(dt.days);
 
   return `${pad(y, 4)}-${pad(m, 2)}-${pad(d, 2)}`;
+}
+
+// --- Time --------------------------------------------------------------------
+
+export function parseLocalTime(s: string): LocalTime {
+  const [tod, nanos] = parseTime(s);
+
+  return new LocalTime(tod, nanos);
+}
+
+export function formatTime(t: LocalTime): string {
+  const h = tdiv(t.secs, 3600);
+  const m = tdiv(t.secs % 3600, 60);
+  const s = t.secs % 60;
+
+  return `${pad(h, 2)}:${pad(m, 2)}:${pad(s, 2)}${fmtFrac(t.nanos)}`;
 }
 
 // --- DateTime ----------------------------------------------------------------
@@ -370,11 +415,15 @@ export function formatDuration(d: Duration): string {
 
 // --- Temporal (kind-agnostic) helpers ----------------------------------------
 
-export const temporalTag = (t: Temporal): 'date' | 'datetime' | 'duration' => t.kind;
+export const temporalTag = (t: Temporal): 'date' | 'localtime' | 'datetime' | 'duration' => t.kind;
 
 export function temporalFormat(t: Temporal): string {
   if (t instanceof LocalDate) {
     return formatDate(t);
+  }
+
+  if (t instanceof LocalTime) {
+    return formatTime(t);
   }
 
   if (t instanceof LocalDateTime) {
@@ -388,6 +437,10 @@ export function temporalFormat(t: Temporal): string {
 export function temporalParse(tag: string, s: string): Temporal {
   if (tag === 'date') {
     return parseDate(s);
+  }
+
+  if (tag === 'localtime') {
+    return parseLocalTime(s);
   }
 
   if (tag === 'datetime') {
@@ -407,6 +460,10 @@ export function graphsonType(t: Temporal): string {
     return 'gx:LocalDate';
   }
 
+  if (t instanceof LocalTime) {
+    return 'gx:LocalTime';
+  }
+
   if (t instanceof LocalDateTime) {
     return 'gx:LocalDateTime';
   }
@@ -415,9 +472,15 @@ export function graphsonType(t: Temporal): string {
 }
 
 /** GraphSON `@type` → kind tag, or `undefined` if not a temporal type. */
-export function graphsonTag(ty: string): 'date' | 'datetime' | 'duration' | undefined {
+export function graphsonTag(
+  ty: string,
+): 'date' | 'localtime' | 'datetime' | 'duration' | undefined {
   if (ty === 'gx:LocalDate') {
     return 'date';
+  }
+
+  if (ty === 'gx:LocalTime') {
+    return 'localtime';
   }
 
   if (ty === 'gx:LocalDateTime') {
@@ -445,7 +508,7 @@ export function fromTaggedJson(v: unknown): Temporal | null {
 
   const [key] = keys;
 
-  if (key !== '@date' && key !== '@datetime' && key !== '@duration') {
+  if (key !== '@date' && key !== '@localtime' && key !== '@datetime' && key !== '@duration') {
     return null;
   }
 
@@ -466,7 +529,7 @@ const wallMs = (d: Date, zone: 'utc' | 'local'): number =>
 
 /** Build a TC39 `Temporal.<kind>` from an ISO string, or throw if unavailable. */
 const toTemporalGlobal = (
-  kind: 'PlainDate' | 'PlainDateTime' | 'Duration',
+  kind: 'PlainDate' | 'PlainTime' | 'PlainDateTime' | 'Duration',
   iso: string,
 ): unknown => {
   const T = (globalThis as unknown as { Temporal?: Record<string, { from(s: string): unknown }> })
@@ -506,6 +569,8 @@ export function coerceTemporal(v: unknown): Temporal | null {
   switch (brandOf(v)) {
     case 'Temporal.PlainDate':
       return parseDate(stripAnnotation(String(v)));
+    case 'Temporal.PlainTime':
+      return parseLocalTime(stripAnnotation(String(v)));
     case 'Temporal.PlainDateTime':
       return parseDateTime(stripAnnotation(String(v)));
     case 'Temporal.Duration':
@@ -520,11 +585,15 @@ const kindRank = (t: Temporal): number => {
     return 0;
   }
 
-  if (t instanceof LocalDateTime) {
+  if (t instanceof LocalTime) {
     return 1;
   }
 
-  return 2;
+  if (t instanceof LocalDateTime) {
+    return 2;
+  }
+
+  return 3;
 };
 
 const cmpNum = (a: number, b: number): number => {
@@ -560,6 +629,10 @@ export function temporalCmpTotal(a: Temporal, b: Temporal): number {
     return cmpNum(a.days, b.days);
   }
 
+  if (a instanceof LocalTime && b instanceof LocalTime) {
+    return cmpTuple([a.secs, a.nanos], [b.secs, b.nanos]);
+  }
+
   if (a instanceof LocalDateTime && b instanceof LocalDateTime) {
     return cmpTuple([a.secs, a.nanos], [b.secs, b.nanos]);
   }
@@ -578,6 +651,10 @@ export function temporalCmpTotal(a: Temporal, b: Temporal): number {
 export function temporalRelCmp(a: Temporal, b: Temporal): number | null {
   if (a instanceof LocalDate && b instanceof LocalDate) {
     return cmpNum(a.days, b.days);
+  }
+
+  if (a instanceof LocalTime && b instanceof LocalTime) {
+    return cmpTuple([a.secs, a.nanos], [b.secs, b.nanos]);
   }
 
   if (a instanceof LocalDateTime && b instanceof LocalDateTime) {
@@ -648,6 +725,17 @@ const scaleDuration = (d: Duration, n: number): Duration => {
 const addDurationTo = (t: Temporal, d: Duration): Temporal | null => {
   if (t instanceof LocalDate) {
     return addCalendar(t, d.months, d.days);
+  }
+
+  // A bare time has no calendar part; the duration's time component wraps within
+  // the 24h day (months/days are ignored).
+  if (t instanceof LocalTime) {
+    const carryNanos = t.nanos + d.nanos;
+    const secs = t.secs + d.secs + Math.floor(carryNanos / 1_000_000_000);
+    const wrapped = ((secs % 86_400) + 86_400) % 86_400;
+    const nanos = ((carryNanos % 1_000_000_000) + 1_000_000_000) % 1_000_000_000;
+
+    return new LocalTime(wrapped, nanos);
   }
 
   if (t instanceof LocalDateTime) {

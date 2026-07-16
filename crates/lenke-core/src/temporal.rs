@@ -1,4 +1,5 @@
-//! ISO/IEC 39075 temporal values — `DATE`, `LOCAL DATETIME`, `DURATION`.
+//! ISO/IEC 39075 temporal values — `DATE`, `LOCAL TIME`, `LOCAL DATETIME`,
+//! `DURATION`.
 //!
 //! Dependency-free (no `chrono`/`time`): the calendar math is Howard Hinnant's
 //! civil-from-days algorithm and the ISO-8601 parse/format is hand-rolled, so
@@ -7,8 +8,9 @@
 //! is defined by the ISO-8601 string** (`format`) and the comparison order, not
 //! by the representation.
 //!
-//! Scope (phase 0): the zone-less trio. `ZONED DATETIME`, `LOCAL/ZONED TIME`
-//! come later; the `Temporal` enum leaves room for them.
+//! Scope: the zone-less set (date, local time, local datetime, duration). The
+//! ZONED variants (`ZONED DATETIME` / `ZONED TIME`) come later; the `Temporal`
+//! enum leaves room for them.
 
 use std::cmp::Ordering;
 
@@ -18,6 +20,16 @@ use std::cmp::Ordering;
 pub struct Date {
     /// Days since the Unix epoch (1970-01-01).
     pub days: i32,
+}
+
+/// A zone-less time of day (ISO "LOCAL TIME"): seconds since midnight plus a
+/// sub-second nanosecond part. Ordered chronologically within the day.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct Time {
+    /// Seconds since midnight, 0..86_400.
+    pub secs: u32,
+    /// 0..1_000_000_000
+    pub nanos: u32,
 }
 
 /// A zone-less datetime (ISO "LOCAL DATETIME"): seconds since 1970-01-01T00:00:00
@@ -47,6 +59,7 @@ pub struct Duration {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Temporal {
     Date(Date),
+    Time(Time),
     DateTime(DateTime),
     Duration(Duration),
 }
@@ -197,6 +210,24 @@ impl PartialOrd for DateTime {
     }
 }
 
+// --- Time --------------------------------------------------------------------
+
+impl Time {
+    /// Parse `HH:MM:SS[.fraction]`.
+    pub fn parse(s: &str) -> Result<Self, String> {
+        let (tod, nanos) = parse_time(s)?;
+        Ok(Self {
+            secs: tod as u32,
+            nanos,
+        })
+    }
+
+    pub fn format(&self) -> String {
+        let (h, m, s) = (self.secs / 3600, (self.secs % 3600) / 60, self.secs % 60);
+        format!("{h:02}:{m:02}:{s:02}{}", fmt_frac(self.nanos))
+    }
+}
+
 // --- Duration ----------------------------------------------------------------
 
 impl Duration {
@@ -321,6 +352,7 @@ impl Temporal {
     pub fn tag(&self) -> &'static str {
         match self {
             Self::Date(_) => "date",
+            Self::Time(_) => "localtime",
             Self::DateTime(_) => "datetime",
             Self::Duration(_) => "duration",
         }
@@ -330,6 +362,7 @@ impl Temporal {
     pub fn graphson_type(&self) -> &'static str {
         match self {
             Self::Date(_) => "gx:LocalDate",
+            Self::Time(_) => "gx:LocalTime",
             Self::DateTime(_) => "gx:LocalDateTime",
             Self::Duration(_) => "gx:Duration",
         }
@@ -339,6 +372,7 @@ impl Temporal {
     pub fn graphson_tag(ty: &str) -> Option<&'static str> {
         match ty {
             "gx:LocalDate" => Some("date"),
+            "gx:LocalTime" => Some("localtime"),
             "gx:LocalDateTime" => Some("datetime"),
             "gx:Duration" => Some("duration"),
             _ => None,
@@ -349,6 +383,7 @@ impl Temporal {
     pub fn format(&self) -> String {
         match self {
             Self::Date(d) => d.format(),
+            Self::Time(t) => t.format(),
             Self::DateTime(dt) => dt.format(),
             Self::Duration(du) => du.format(),
         }
@@ -366,25 +401,28 @@ impl Temporal {
     /// value (the single-key tagged form). `None` if the key isn't a temporal tag.
     pub fn from_json_tag(key: &str, s: &str) -> Option<Result<Self, String>> {
         let tag = key.strip_prefix('@')?;
-        matches!(tag, "date" | "datetime" | "duration").then(|| Self::parse(tag, s))
+        matches!(tag, "date" | "localtime" | "datetime" | "duration").then(|| Self::parse(tag, s))
     }
 
     /// Build from a kind tag + ISO string (the codec decode path).
     pub fn parse(tag: &str, s: &str) -> Result<Self, String> {
         match tag {
             "date" => Date::parse(s).map(Temporal::Date),
+            "localtime" => Time::parse(s).map(Temporal::Time),
             "datetime" => DateTime::parse(s).map(Temporal::DateTime),
             "duration" => Duration::parse(s).map(Temporal::Duration),
             _ => Err(format!("unknown temporal kind '{tag}'")),
         }
     }
 
-    /// Kind rank for the cross-kind total order (date < datetime < duration).
+    /// Kind rank for the cross-kind total order
+    /// (date < localtime < datetime < duration).
     fn kind_rank(&self) -> u8 {
         match self {
             Self::Date(_) => 0,
-            Self::DateTime(_) => 1,
-            Self::Duration(_) => 2,
+            Self::Time(_) => 1,
+            Self::DateTime(_) => 2,
+            Self::Duration(_) => 3,
         }
     }
 
@@ -394,6 +432,7 @@ impl Temporal {
     pub fn cmp_total(&self, other: &Self) -> Ordering {
         match (self, other) {
             (Self::Date(a), Self::Date(b)) => a.cmp(b),
+            (Self::Time(a), Self::Time(b)) => a.cmp(b),
             (Self::DateTime(a), Self::DateTime(b)) => a.cmp(b),
             (Self::Duration(a), Self::Duration(b)) => a.total_key().cmp(&b.total_key()),
             _ => self.kind_rank().cmp(&other.kind_rank()),
@@ -406,6 +445,7 @@ impl Temporal {
     pub fn rel_cmp(&self, other: &Self) -> Option<Ordering> {
         match (self, other) {
             (Self::Date(a), Self::Date(b)) => Some(a.cmp(b)),
+            (Self::Time(a), Self::Time(b)) => Some(a.cmp(b)),
             (Self::DateTime(a), Self::DateTime(b)) => Some(a.cmp(b)),
             _ => None,
         }
@@ -504,6 +544,16 @@ impl Temporal {
     pub fn add_duration(&self, d: &Duration) -> Option<Self> {
         match self {
             Self::Date(date) => Some(Self::Date(date.add_calendar(d.months, d.days))),
+            // A bare time has no calendar part; the duration's time component wraps
+            // within the 24h day (months/days are ignored).
+            Self::Time(t) => {
+                let carry_nanos = i64::from(t.nanos) + i64::from(d.nanos);
+                let secs = i64::from(t.secs) + d.secs + carry_nanos.div_euclid(NANOS_PER_SEC);
+                Some(Self::Time(Time {
+                    secs: secs.rem_euclid(SECS_PER_DAY) as u32,
+                    nanos: carry_nanos.rem_euclid(NANOS_PER_SEC) as u32,
+                }))
+            }
             Self::DateTime(dt) => {
                 let days0 = dt.secs.div_euclid(SECS_PER_DAY);
                 let tod = dt.secs.rem_euclid(SECS_PER_DAY);

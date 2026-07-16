@@ -156,6 +156,7 @@ fn temporal_properties_round_trip_every_format() {
     let canonical = concat!(
         r#"{"type":"node","id":"a","labels":["Event"],"properties":{"#,
         r#""on":{"@date":"2020-02-29"},"#,
+        r#""by":{"@localtime":"08:30:00.25"},"#,
         r#""at":{"@datetime":"2021-06-15T08:30:00.25"},"#,
         r#""took":{"@duration":"P3M10DT90S"}}}"#,
     );
@@ -164,6 +165,7 @@ fn temporal_properties_round_trip_every_format() {
     // The normal form carries the tagged temporals — proof they decoded as
     // temporals, not strings (a string would render bare, without the `@` tag).
     assert!(want.contains(r#"{"@date":"2020-02-29"}"#), "{want}");
+    assert!(want.contains(r#"{"@localtime":"08:30:00.25"}"#), "{want}");
     assert!(
         want.contains(r#"{"@datetime":"2021-06-15T08:30:00.25"}"#),
         "{want}"

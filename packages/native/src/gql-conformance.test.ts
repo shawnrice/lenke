@@ -516,6 +516,41 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     expect(threw(() => nativeGraph.query(setOpNext))).toBe(true);
   });
 
+  test('LOCAL TIME temporal type (ISO) is byte-identical', () => {
+    // Constructor from a string, incl. fractional seconds; the wire form is the
+    // tagged ISO-8601 string.
+    const [tsC, natC] = both(`RETURN local_time('13:45:30') AS a, local_time('08:00:00.25') AS b`);
+    expect(tsC).toBe(natC);
+    expect(tsC).toBe(`[{"a":{"@localtime":"13:45:30"},"b":{"@localtime":"08:00:00.25"}}]`);
+
+    // A non-time string → null (lenient, like the other temporal constructors).
+    const [tsN, natN] = both(`RETURN local_time('2020-01-01') AS bad`);
+    expect(tsN).toBe(natN);
+    expect(tsN).toBe(`[{"bad":null}]`);
+
+    // local_time(datetime) → the time-of-day part.
+    const [tsF, natF] = both(`RETURN local_time(local_datetime('2020-06-15T13:45:30')) AS t`);
+    expect(tsF).toBe(natF);
+    expect(tsF).toBe(`[{"t":{"@localtime":"13:45:30"}}]`);
+
+    // Time ± duration wraps within the 24h day (25h past 01:00 → 02:00).
+    const [tsA, natA] = both(
+      `RETURN local_time('01:00:00') + duration('PT25H') AS wrap, ` +
+        `local_time('05:00:00') - duration('PT2H') AS minus`,
+    );
+    expect(tsA).toBe(natA);
+    expect(tsA).toBe(`[{"wrap":{"@localtime":"02:00:00"},"minus":{"@localtime":"03:00:00"}}]`);
+
+    // Relational comparison + ORDER BY total order over times.
+    const [tsO, natO] = both(
+      `FOR t IN [local_time('12:00:00'), local_time('06:30:00'), local_time('23:15:00')] ` +
+        `RETURN t ORDER BY t`,
+    );
+    expect(tsO).toBe(natO);
+    expect(tsO).toContain(`"06:30:00"`);
+    expect(tsO.indexOf('06:30:00')).toBeLessThan(tsO.indexOf('23:15:00'));
+  });
+
   test('ISO path functions on a bound path are byte-identical', () => {
     const q =
       `MATCH p = ANY SHORTEST (a)-[]->*(b) WHERE a.name = 'marko' AND b.name = 'lop' ` +

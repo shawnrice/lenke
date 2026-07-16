@@ -5,6 +5,7 @@ import {
   durationBetween,
   isTemporal,
   LocalDate,
+  LocalTime,
   LocalDateTime,
   Path,
   runAlgorithmSync,
@@ -955,14 +956,18 @@ const callListSetFn = (name: string, a: unknown, b: unknown, args: readonly unkn
 // Temporal constructors: `date(x)` / `local_datetime(x)` / `duration(x)`. Mirror
 // the Rust `temporal_ctor` — parse a string, convert a temporal by kind (date↔
 // datetime), else null (lenient, like the to_* conversions).
-const TEMPORAL_CTOR: Record<string, 'date' | 'datetime' | 'duration'> = {
+const TEMPORAL_CTOR: Record<string, 'date' | 'localtime' | 'datetime' | 'duration'> = {
   date: 'date',
+  local_time: 'localtime',
   local_datetime: 'datetime',
   datetime: 'datetime',
   duration: 'duration',
 };
 
-const temporalCtor = (kind: 'date' | 'datetime' | 'duration', v: unknown): unknown => {
+const temporalCtor = (
+  kind: 'date' | 'localtime' | 'datetime' | 'duration',
+  v: unknown,
+): unknown => {
   if (isNullish(v)) {
     return null;
   }
@@ -982,6 +987,11 @@ const temporalCtor = (kind: 'date' | 'datetime' | 'duration', v: unknown): unkno
 
     if (kind === 'date' && v instanceof LocalDateTime) {
       return new LocalDate(Math.floor(v.secs / 86_400));
+    }
+
+    // local_time(datetime) → the time-of-day part.
+    if (kind === 'localtime' && v instanceof LocalDateTime) {
+      return new LocalTime(((v.secs % 86_400) + 86_400) % 86_400, v.nanos);
     }
 
     if (kind === 'datetime' && v instanceof LocalDate) {

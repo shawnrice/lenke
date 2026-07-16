@@ -99,6 +99,7 @@ pub enum ScalarFn {
     // Temporal constructors: parse a string (or convert a temporal) into a
     // `DATE` / `LOCAL DATETIME` / `DURATION`.
     DateOf,
+    LocalTimeOf,
     DateTimeOf,
     DurationOf,
     /// `duration_between(a, b)` — the EXACT elapsed span (a measurement between
@@ -222,6 +223,7 @@ fn scalar_fn(name: &str) -> ScalarFn {
         "list_contains" => ScalarFn::ListContains,
         "list_sort" => ScalarFn::ListSort,
         "date" => ScalarFn::DateOf,
+        "local_time" => ScalarFn::LocalTimeOf,
         "local_datetime" | "datetime" => ScalarFn::DateTimeOf,
         "duration" => ScalarFn::DurationOf,
         "duration_between" => ScalarFn::DurationBetween,

@@ -113,7 +113,15 @@ const NULL_TOKEN = '\\N';
 const LIST_SEP = ';';
 
 /** A single column's inferred scalar type. */
-type ScalarType = 'string' | 'integer' | 'float' | 'boolean' | 'date' | 'datetime' | 'duration';
+type ScalarType =
+  | 'string'
+  | 'integer'
+  | 'float'
+  | 'boolean'
+  | 'date'
+  | 'localtime'
+  | 'datetime'
+  | 'duration';
 
 /** A column type: a scalar, or a homogeneous list of one scalar element type. */
 type ColumnType = { readonly scalar: ScalarType; readonly list: boolean };
@@ -327,6 +335,7 @@ const rawToScalar = (scalar: ScalarType, raw: string): PropertyValue => {
     case 'float':
       return Number(raw);
     case 'date':
+    case 'localtime':
     case 'datetime':
     case 'duration':
       // A well-formed temporal decodes; a malformed cell falls back to a string
@@ -347,6 +356,7 @@ const SCALAR_CODE: Record<ScalarType, string> = {
   float: 'f',
   boolean: 'b',
   date: 'd',
+  localtime: 'l',
   datetime: 't',
   duration: 'u',
 };
@@ -356,6 +366,7 @@ const CODE_SCALAR: Record<string, ScalarType> = {
   f: 'float',
   b: 'boolean',
   d: 'date',
+  l: 'localtime',
   t: 'datetime',
   u: 'duration',
 };

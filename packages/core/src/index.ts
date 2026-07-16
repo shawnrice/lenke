@@ -26,6 +26,7 @@ export type * from './core/GraphEvents.js';
 // foundation shared by the serialization codecs and the query engines.
 export {
   LocalDate,
+  LocalTime,
   LocalDateTime,
   Duration,
   isTemporal,
@@ -41,6 +42,7 @@ export {
   graphsonTag,
   fromTaggedJson,
   parseDate,
+  parseLocalTime,
   parseDateTime,
   parseDuration,
 } from './temporal.js';

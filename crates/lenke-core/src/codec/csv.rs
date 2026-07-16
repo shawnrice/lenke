@@ -52,6 +52,7 @@ enum Scalar {
     Float,
     Bool,
     Date,
+    Time,
     DateTime,
     Duration,
 }
@@ -64,6 +65,7 @@ impl Scalar {
             Self::Float => "float",
             Self::Bool => "boolean",
             Self::Date => "date",
+            Self::Time => "localtime",
             Self::DateTime => "datetime",
             Self::Duration => "duration",
         }
@@ -74,6 +76,7 @@ impl Scalar {
             "float" => Self::Float,
             "boolean" => Self::Bool,
             "date" => Self::Date,
+            "localtime" => Self::Time,
             "datetime" => Self::DateTime,
             "duration" => Self::Duration,
             _ => Self::Str,
@@ -86,6 +89,7 @@ impl Scalar {
             Self::Float => 'f',
             Self::Bool => 'b',
             Self::Date => 'd',
+            Self::Time => 'l',
             Self::DateTime => 't',
             Self::Duration => 'u',
         }
@@ -96,16 +100,18 @@ impl Scalar {
             "f" => Self::Float,
             "b" => Self::Bool,
             "d" => Self::Date,
+            "l" => Self::Time,
             "t" => Self::DateTime,
             "u" => Self::Duration,
             _ => Self::Str,
         }
     }
-    /// The kind tag (`date`/`datetime`/`duration`) for a temporal scalar type, or
-    /// `None` for a non-temporal type.
+    /// The kind tag (`date`/`localtime`/`datetime`/`duration`) for a temporal scalar
+    /// type, or `None` for a non-temporal type.
     fn temporal_tag(self) -> Option<&'static str> {
         match self {
             Self::Date => Some("date"),
+            Self::Time => Some("localtime"),
             Self::DateTime => Some("datetime"),
             Self::Duration => Some("duration"),
             _ => None,
@@ -131,6 +137,7 @@ fn scalar_of(v: &Value) -> Scalar {
             }
         }
         Value::Temporal(Temporal::Date(_)) => Scalar::Date,
+        Value::Temporal(Temporal::Time(_)) => Scalar::Time,
         Value::Temporal(Temporal::DateTime(_)) => Scalar::DateTime,
         Value::Temporal(Temporal::Duration(_)) => Scalar::Duration,
         _ => Scalar::Str,
