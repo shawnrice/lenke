@@ -7354,6 +7354,111 @@ fn try_grouped_2hop(
     Some(rs)
 }
 
+/// `MATCH (m:La?)-[:T]->(n:Lb?) WITH n [, <aggs>] RETURN count(*)`: the outer
+/// `count(*)` counts the WITH's rows — one per distinct `n` — and the aggregates
+/// are computed only to be discarded. So the answer is just the number of distinct
+/// endpoints `n` (matching `Lb`) with at least one `T`-edge from a start matching
+/// `La`. That's a per-vertex membership test, O(V+E), instead of materializing +
+/// grouping every `(m,n)` row. A global count ⇒ no group order to preserve.
+fn try_count_distinct_endpoint(
+    linear: &CLinear,
+    graph: &Graph,
+    plan: &CQuery,
+    params: &[Val],
+) -> Option<RowSet> {
+    let [CClause::Match {
+        optional: false,
+        patterns,
+        where_: None,
+        ..
+    }, CClause::With {
+        projection: wp,
+        where_: None,
+        ..
+    }, CClause::Return(rp)] = linear.clauses.as_slice()
+    else {
+        return None;
+    };
+    let [path] = patterns.as_slice() else {
+        return None;
+    };
+    let [seg] = path.segments.as_slice() else {
+        return None;
+    };
+    let rel = &seg.rel;
+    if rel.var_slot.is_some()
+        || !rel.props.is_empty()
+        || rel.where_.is_some()
+        || rel.quantifier.is_some()
+        || rel.direction != Direction::Out
+        || !path.start.props.is_empty()
+        || path.start.where_.is_some()
+        || !seg.node.props.is_empty()
+        || seg.node.where_.is_some()
+    {
+        return None;
+    }
+    let n_slot = seg.node.var_slot?;
+    // The WITH groups by exactly the bare endpoint `n` (its aggregates are discarded
+    // by the outer count). A property key / extra key / non-aggregating WITH is a
+    // different distinct set.
+    if !wp.aggregating {
+        return None;
+    }
+    let key_items: Vec<&CReturnItem> = wp.items.iter().filter(|i| !i.is_agg).collect();
+    if key_items.len() != 1 || !matches!(key_items[0].expr, CExpr::Var(s) if s == n_slot) {
+        return None;
+    }
+    // The RETURN is exactly `count(*)`.
+    if rp.distinct
+        || !rp.order_by.is_empty()
+        || rp.skip.is_some()
+        || rp.limit.is_some()
+        || rp.out_len != 1
+        || rp.aggs.len() != 1
+        || rp.items.len() != 1
+        || !matches!(rp.items[0].expr, CExpr::AggRef(0))
+    {
+        return None;
+    }
+    let agg = &rp.aggs[0];
+    if !agg.star || agg.distinct || !matches!(agg.func, AggFn::Count) {
+        return None;
+    }
+
+    let ctx = resolve_ctx(graph, plan, params);
+    let tset = rel_type_set(&ctx, rel.label.as_ref())?;
+    let la = path.start.label.as_ref();
+    let lb = seg.node.label.as_ref();
+    // A distinct endpoint `n`: matches `Lb` and has ≥1 `T`-edge from an `La` start.
+    let reached = |n: u32| -> u64 {
+        if !matches_label(graph, &ctx, n, lb) {
+            return 0;
+        }
+        u64::from(
+            graph
+                .in_adj(n)
+                .any(|e| etype_ok(&tset, e.etype) && matches_label(graph, &ctx, e.nbr, la)),
+        )
+    };
+    // Candidate endpoints: the `Lb` bucket, else every live vertex.
+    let candidates: Vec<u32> = match lb.and_then(seed_label) {
+        Some(r) => match ctx.labels[r].0 {
+            Some(lid) => graph.vertices_with_label(lid).to_vec(),
+            None => Vec::new(),
+        },
+        None => graph.vertex_indices().collect(),
+    };
+    #[cfg(feature = "parallel-query")]
+    let count: u64 = candidates.par_iter().map(|&n| reached(n)).sum();
+    #[cfg(not(feature = "parallel-query"))]
+    let count: u64 = candidates.iter().map(|&n| reached(n)).sum();
+
+    let mut rs = RowSet::new(rp.out_names.clone());
+    rs.push_row(std::iter::once(Value::Num(count as f64)));
+    Some(rs)
+}
+
 /// Reverse semi-join for a correlated `EXISTS` count:
 /// `MATCH (a:La?) WHERE [NOT] EXISTS { (a)-[:T]->(b:Lb) } RETURN count(*)`.
 ///
@@ -9453,6 +9558,11 @@ fn run_part(
         // Fixed two-hop count GROUPED by the endpoint (`(a)->(b)->(c) RETURN c.x,
         // count(*)`) via frequency propagation (O(V+E)), not row enumeration.
         if let Some(rs) = try_grouped_2hop(linear, graph, plan, params) {
+            return Ok(rs);
+        }
+        // `… WITH n [,aggs] RETURN count(*)` = count of distinct endpoints `n` — a
+        // per-vertex membership test, not a materialize-and-group.
+        if let Some(rs) = try_count_distinct_endpoint(linear, graph, plan, params) {
             return Ok(rs);
         }
         // Reverse semi-join for a correlated `[NOT] EXISTS { … }` count — seed the

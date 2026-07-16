@@ -885,6 +885,17 @@ suite('GQL differential: comma-join count shortcut (TS vs native)', () => {
       'different labels and rel types per branch',
       `MATCH (a:Person)-[:KNOWS]->(b:Person), (a)-[:OWNS]->(c:Account) WHERE b.age > 60 RETURN count(*) AS n`,
     ],
+    // `WITH n, sum(...) RETURN count(*)` = count of distinct endpoints (the sum is
+    // discarded) — native takes try_count_distinct_endpoint; TS materializes+groups.
+    [
+      'WITH endpoint, agg RETURN count(*) = distinct endpoints',
+      `MATCH (m:Person)-[:KNOWS]->(n) WITH n, sum(m.age) AS s RETURN count(*) AS c`,
+    ],
+    // Endpoint label filter on the distinct-count.
+    [
+      'distinct endpoints with endpoint label',
+      `MATCH (m:Person)-[:KNOWS]->(n:Person) WITH n, count(*) AS k RETURN count(*) AS c`,
+    ],
   ];
 
   for (const [name, q] of cases) {
