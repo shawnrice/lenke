@@ -479,6 +479,8 @@ const callScalar = (name: string, args: readonly unknown[]): unknown => {
 
       return roundHalfAway(Number(a) * f) / f;
     }
+    // `cardinality` is the ISO GQL / SQL name; `size` is the openCypher spelling.
+    case 'cardinality':
     case 'size':
     case 'length':
     case 'path_length':

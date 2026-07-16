@@ -180,7 +180,9 @@ fn scalar_fn(name: &str) -> ScalarFn {
         "power" => ScalarFn::Power,
         "mod" => ScalarFn::Mod,
         "log" => ScalarFn::Log,
-        "size" | "length" | "path_length" => ScalarFn::Size,
+        // `cardinality` is the ISO GQL / SQL name for a collection's element count;
+        // `size` is the openCypher spelling (`length`/`path_length` alias paths).
+        "size" | "cardinality" | "length" | "path_length" => ScalarFn::Size,
         "left" => ScalarFn::Left,
         "right" => ScalarFn::Right,
         "coalesce" => ScalarFn::Coalesce,

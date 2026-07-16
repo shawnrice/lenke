@@ -159,6 +159,17 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     expect(tsC).toBe(natC);
   });
 
+  test('cardinality(list) — ISO GQL name for collection size, == size', () => {
+    const [ts, native] = both(`RETURN cardinality([10, 20, 30]) AS c, size([10, 20, 30]) AS s`);
+    expect(ts).toBe(native);
+    expect(ts).toBe(`[{"c":3,"s":3}]`);
+    // Over a collected list bound to a variable.
+    const [tsC, natC] = both(
+      `MATCH (n:Person) WITH collect_list(n.name) AS names RETURN cardinality(names) AS c`,
+    );
+    expect(tsC).toBe(natC);
+  });
+
   // --- ANY SHORTEST: the path value serializes byte-identically across engines.
   test('RETURN p — a shortest Path is {vertices, edges, length}, byte-identical', () => {
     const q = `MATCH p = ANY SHORTEST (a)-[]->*(b) WHERE a.name = 'marko' AND b.name = 'lop' RETURN p`;
