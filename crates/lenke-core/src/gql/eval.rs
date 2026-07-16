@@ -6741,13 +6741,17 @@ fn try_count_comma_join(
         d
     };
 
-    let mut count: u64 = 0;
-    let mut bind = Binding(vec![None; width]);
-    let mut faulted = false;
+    // Collect the anchors (matching both re-stated start labels), then fan the
+    // independent per-anchor products across cores (opt-in `parallel-query`).
+    let mut anchors: Vec<u32> = Vec::new();
     for_each_seed(graph, &ctx, la1, &mut |a| {
-        if !matches_label(graph, &ctx, a, la2) {
-            return true;
+        if matches_label(graph, &ctx, a, la2) {
+            anchors.push(a);
         }
+        true
+    });
+    let per_anchor = |a: u32| -> u64 {
+        let mut bind = Binding(vec![None; width]);
         bind.set(a_slot, Val::Node(a));
         // Anchor predicates (with only `a` bound).
         {
@@ -6756,24 +6760,20 @@ fn try_count_comma_join(
                 .iter()
                 .all(|p| as_truth(&eval(&env, p)) == Some(true))
             {
-                return true;
+                return 0;
             }
         }
         let d1 = branch_degree(&mut bind, a, seg1.rel.label.as_ref(), b_slot, lb, &b_preds);
         if d1 == 0 {
-            return true;
+            return 0;
         }
         let d2 = branch_degree(&mut bind, a, seg2.rel.label.as_ref(), c_slot, lc, &c_preds);
-        count += d1 * d2;
-        if ctx.faulted() {
-            faulted = true;
-            return false;
-        }
-        true
-    });
-    if faulted {
-        return None;
-    }
+        d1 * d2
+    };
+    #[cfg(feature = "parallel-query")]
+    let count: u64 = anchors.par_iter().map(|&a| per_anchor(a)).sum();
+    #[cfg(not(feature = "parallel-query"))]
+    let count: u64 = anchors.iter().map(|&a| per_anchor(a)).sum();
 
     let mut rs = RowSet::new(proj.out_names.clone());
     rs.push_row(std::iter::once(Value::Num(count as f64)));
@@ -6909,6 +6909,19 @@ fn try_count_varlen_1_2(
     Some(rs)
 }
 
+/// Map `f` over `0..n` into a `Vec`, across rayon threads when `parallel-query` is
+/// on (else serial). Used for the independent per-vertex degree passes in the
+/// grouped count shortcuts — the same `par_iter`/`iter` split the other shortcuts
+/// (`try_count_two_hop`, …) use, factored so the call sites stay `cfg`-free.
+#[cfg(feature = "parallel-query")]
+fn par_map<T: Send>(n: usize, f: impl Fn(u32) -> T + Sync + Send) -> Vec<T> {
+    (0..n as u32).into_par_iter().map(f).collect()
+}
+#[cfg(not(feature = "parallel-query"))]
+fn par_map<T>(n: usize, f: impl Fn(u32) -> T) -> Vec<T> {
+    (0..n as u32).map(f).collect()
+}
+
 /// Does `e` reference only slot `slot`? Conservative: a bare var or a direct
 /// property of it. Anything else (arithmetic, another var) bails — so the grouped
 /// var-length shortcut only fires when every group key is a value of the endpoint.
@@ -7025,51 +7038,47 @@ fn try_grouped_varlen_1_2(
     let n = graph.n;
 
     // into[x] = # `T`-edges a→x with `a` matching La (the length-1 count into x).
-    let into: Vec<u64> = (0..n as u32)
-        .map(|x| {
-            graph
-                .in_adj(x)
-                .filter(|a| etype_ok(&tset, a.etype) && matches_label(graph, &ctx, a.nbr, la))
-                .count() as u64
-        })
-        .collect();
+    let into: Vec<u64> = par_map(n, |x| {
+        graph
+            .in_adj(x)
+            .filter(|a| etype_ok(&tset, a.etype) && matches_label(graph, &ctx, a.nbr, la))
+            .count() as u64
+    });
 
     // Per-endpoint trail multiplicity (bound ≤2 ⇒ trail == walk).
-    let mult: Vec<i64> = (0..n as u32)
-        .map(|b| {
-            if !graph.is_vertex_live(b) {
-                return 0;
+    let mult: Vec<i64> = par_map(n, |b| {
+        if !graph.is_vertex_live(b) {
+            return 0;
+        }
+        let bi = b as usize;
+        let mut m: i64 = 0;
+        let in_la = matches_label(graph, &ctx, b, la);
+        if lo == 0 && in_la {
+            m += 1; // length-0: the start itself
+        }
+        if lo <= 1 {
+            m += into[bi] as i64; // length-1: a→b
+        }
+        // length-2: a→x→b over in-edges x→b (hi is always ≥2 here when lo≤2<hi
+        // is false; guard on hi).
+        if hi >= 2 {
+            let l2: i64 = graph
+                .in_adj(b)
+                .filter(|a| etype_ok(&tset, a.etype))
+                .map(|a| into[a.nbr as usize] as i64)
+                .sum();
+            m += l2;
+            if in_la {
+                // Trail correction: a→b→b reusing the same self-loop edge.
+                let sl = graph
+                    .out_adj(b)
+                    .filter(|a| etype_ok(&tset, a.etype) && a.nbr == b)
+                    .count() as i64;
+                m -= sl;
             }
-            let bi = b as usize;
-            let mut m: i64 = 0;
-            let in_la = matches_label(graph, &ctx, b, la);
-            if lo == 0 && in_la {
-                m += 1; // length-0: the start itself
-            }
-            if lo <= 1 {
-                m += into[bi] as i64; // length-1: a→b
-            }
-            // length-2: a→x→b over in-edges x→b (hi is always ≥2 here when lo≤2<hi
-            // is false; guard on hi).
-            if hi >= 2 {
-                let l2: i64 = graph
-                    .in_adj(b)
-                    .filter(|a| etype_ok(&tset, a.etype))
-                    .map(|a| into[a.nbr as usize] as i64)
-                    .sum();
-                m += l2;
-                if in_la {
-                    // Trail correction: a→b→b reusing the same self-loop edge.
-                    let sl = graph
-                        .out_adj(b)
-                        .filter(|a| etype_ok(&tset, a.etype) && a.nbr == b)
-                        .count() as i64;
-                    m -= sl;
-                }
-            }
-            m
-        })
-        .collect();
+        }
+        m
+    });
 
     // Accumulate group counts (order-independent): endpoints matching Lb with a
     // positive multiplicity, keyed by the `val_key` of their group-key values.
@@ -7250,30 +7259,26 @@ fn try_grouped_2hop(
     let n = graph.n;
 
     // into[b] = #`T1`-edges a→b with `a` matching La, if `b` is a valid middle.
-    let into: Vec<u64> = (0..n as u32)
-        .map(|b| {
-            if !matches_label(graph, &ctx, b, lb) {
-                return 0;
-            }
-            graph
-                .in_adj(b)
-                .filter(|e| etype_ok(&t1, e.etype) && matches_label(graph, &ctx, e.nbr, la))
-                .count() as u64
-        })
-        .collect();
+    let into: Vec<u64> = par_map(n, |b| {
+        if !matches_label(graph, &ctx, b, lb) {
+            return 0;
+        }
+        graph
+            .in_adj(b)
+            .filter(|e| etype_ok(&t1, e.etype) && matches_label(graph, &ctx, e.nbr, la))
+            .count() as u64
+    });
     // Per endpoint `c` (matching Lc): Σ over T2-edges b→c of into[b] (walk count).
-    let mult: Vec<i64> = (0..n as u32)
-        .map(|c| {
-            if !graph.is_vertex_live(c) || !matches_label(graph, &ctx, c, lc) {
-                return 0;
-            }
-            graph
-                .in_adj(c)
-                .filter(|e| etype_ok(&t2, e.etype))
-                .map(|e| into[e.nbr as usize] as i64)
-                .sum()
-        })
-        .collect();
+    let mult: Vec<i64> = par_map(n, |c| {
+        if !graph.is_vertex_live(c) || !matches_label(graph, &ctx, c, lc) {
+            return 0;
+        }
+        graph
+            .in_adj(c)
+            .filter(|e| etype_ok(&t2, e.etype))
+            .map(|e| into[e.nbr as usize] as i64)
+            .sum()
+    });
 
     // Accumulate group counts, then recover first-seen order (both share the tail
     // shape with `try_grouped_varlen_1_2`).
