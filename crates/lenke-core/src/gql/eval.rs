@@ -1458,7 +1458,38 @@ fn eval_aggregate(
         AggFn::CollectList => Val::List(values),
         AggFn::PercentileCont => percentile(&values, frac.unwrap_or(0.0), true),
         AggFn::PercentileDisc => percentile(&values, frac.unwrap_or(0.0), false),
+        AggFn::StddevPop | AggFn::StddevSamp => {
+            let (mut n, mut sum, mut sum_sq) = (0u64, 0.0f64, 0.0f64);
+            for x in values.iter().filter_map(num_of_owned) {
+                sum += x;
+                sum_sq += x * x;
+                n += 1;
+            }
+            stddev_of(n, sum, sum_sq, func == AggFn::StddevSamp)
+        }
     }
+}
+
+/// Population / sample standard deviation from the one-pass moments. `stddev_pop`
+/// is null over 0 rows (else `sqrt(Σx²/n − mean²)`); `stddev_samp` is null over
+/// fewer than 2 rows (dividing the summed squared deviations by `n−1`). The summed
+/// squared deviation is clamped at 0 so floating-point cancellation can't make a
+/// tiny negative slip into `sqrt` (→ NaN). Written identically in both engines.
+fn stddev_of(n: u64, sum: f64, sum_sq: f64, sample: bool) -> Val {
+    let denom = if sample {
+        if n < 2 {
+            return Val::Null;
+        }
+        (n - 1) as f64
+    } else {
+        if n == 0 {
+            return Val::Null;
+        }
+        n as f64
+    };
+    let nf = n as f64;
+    let variance = (sum_sq - sum * sum / nf) / denom;
+    Val::Num(variance.max(0.0).sqrt())
 }
 
 /// ISO ordered-set percentile over a group's numeric values. `cont` (=
@@ -2995,6 +3026,8 @@ struct Agg {
     distinct: bool,
     n: u64,
     sum: f64,
+    /// Running Σx² for the one-pass `stddev_pop` / `stddev_samp`; 0 for others.
+    sum_sq: f64,
     extreme: Option<Val>,
     list: Vec<Val>,
     seen: HashSet<String>,
@@ -3018,6 +3051,7 @@ impl Agg {
             distinct: spec.distinct,
             n: 0,
             sum: 0.0,
+            sum_sq: 0.0,
             extreme: None,
             list: Vec::new(),
             seen: HashSet::new(),
@@ -3054,6 +3088,12 @@ impl Agg {
             AggFn::Sum => self.sum += num_of(&val).unwrap_or(f64::NAN),
             AggFn::Avg => {
                 self.sum += num_of(&val).unwrap_or(f64::NAN);
+                self.n += 1;
+            }
+            AggFn::StddevPop | AggFn::StddevSamp => {
+                let x = num_of(&val).unwrap_or(f64::NAN);
+                self.sum += x;
+                self.sum_sq += x * x;
                 self.n += 1;
             }
             AggFn::Min => {
@@ -3094,6 +3134,8 @@ impl Agg {
             AggFn::CollectList => Val::List(self.list),
             AggFn::PercentileCont => percentile(&self.list, self.frac, true),
             AggFn::PercentileDisc => percentile(&self.list, self.frac, false),
+            AggFn::StddevPop => stddev_of(self.n, self.sum, self.sum_sq, false),
+            AggFn::StddevSamp => stddev_of(self.n, self.sum, self.sum_sq, true),
         }
     }
 
@@ -3109,6 +3151,7 @@ impl Agg {
     fn merge(&mut self, other: Self) {
         self.n += other.n;
         self.sum += other.sum;
+        self.sum_sq += other.sum_sq;
         self.list.extend(other.list);
         if let Some(o) = other.extreme {
             let take = match self.func {

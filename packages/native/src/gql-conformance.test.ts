@@ -111,6 +111,25 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     expect(tsK).toBe(ts);
   });
 
+  test('stddev_pop / stddev_samp — ISO aggregates, byte-identical f64', () => {
+    // Global over the three Person ages (29, 27, 32).
+    const [ts, native] = both(
+      `MATCH (n:Person) RETURN stddev_pop(n.age) AS sp, stddev_samp(n.age) AS ss`,
+    );
+    expect(ts).toBe(native);
+    // Grouped stddev (per label bucket) — exercises the group-fold path.
+    const [tsG, natG] = both(
+      `MATCH (n)-[e:KNOWS]->(m) RETURN stddev_pop(e.weight) AS sp, count(*) AS c`,
+    );
+    expect(tsG).toBe(natG);
+    // Edge cases: 1 value ⇒ pop = 0, samp = null; the exact numeric shape.
+    const [ts1, nat1] = both(
+      `MATCH (n:Person {name: 'marko'}) RETURN stddev_pop(n.age) AS sp, stddev_samp(n.age) AS ss`,
+    );
+    expect(ts1).toBe(nat1);
+    expect(ts1).toBe(`[{"sp":0,"ss":null}]`);
+  });
+
   // --- ANY SHORTEST: the path value serializes byte-identically across engines.
   test('RETURN p — a shortest Path is {vertices, edges, length}, byte-identical', () => {
     const q = `MATCH p = ANY SHORTEST (a)-[]->*(b) WHERE a.name = 'marko' AND b.name = 'lop' RETURN p`;

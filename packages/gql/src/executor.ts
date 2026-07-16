@@ -285,6 +285,8 @@ const AGGREGATES = new Set([
   'collect_list',
   'percentile_cont',
   'percentile_disc',
+  'stddev_pop',
+  'stddev_samp',
 ]);
 
 /**
@@ -1569,6 +1571,33 @@ const compileAggregate = (expr: FuncExpr): CompiledExpr => {
         return percentileOf(values, frac, true);
       case 'percentile_disc':
         return percentileOf(values, frac, false);
+      // ISO population / sample standard deviation, one-pass over the group's
+      // numeric values — the SAME formula the native engine uses, so the f64
+      // result is byte-identical. `stddev_pop` null over 0 rows; `stddev_samp`
+      // null over fewer than 2; the summed squared deviation is clamped at 0 so
+      // float cancellation can't slip a tiny negative into sqrt.
+      case 'stddev_pop':
+      case 'stddev_samp': {
+        const sample = name === 'stddev_samp';
+        const n = values.length;
+
+        if (sample ? n < 2 : n === 0) {
+          return null;
+        }
+
+        let s = 0;
+        let sq = 0;
+
+        for (const v of values) {
+          const x = Number(v);
+          s += x;
+          sq += x * x;
+        }
+
+        const variance = (sq - (s * s) / n) / (sample ? n - 1 : n);
+
+        return Math.sqrt(Math.max(0, variance));
+      }
       default:
         return null;
     }

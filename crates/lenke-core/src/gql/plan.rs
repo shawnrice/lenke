@@ -122,6 +122,12 @@ pub enum AggFn {
     /// fraction is carried on [`CAgg::frac`] / [`CExpr::Aggregate`].
     PercentileCont,
     PercentileDisc,
+    /// ISO population / sample standard deviation over a group's numeric values.
+    /// Both are one-pass (running count, sum, sum-of-squares). `stddev_pop` divides
+    /// the summed squared deviations by `n` (null over 0 rows); `stddev_samp` by
+    /// `n-1` (null over fewer than 2 rows).
+    StddevPop,
+    StddevSamp,
 }
 
 fn agg_fn(name: &str) -> Option<AggFn> {
@@ -134,6 +140,8 @@ fn agg_fn(name: &str) -> Option<AggFn> {
         "collect_list" => AggFn::CollectList,
         "percentile_cont" => AggFn::PercentileCont,
         "percentile_disc" => AggFn::PercentileDisc,
+        "stddev_pop" => AggFn::StddevPop,
+        "stddev_samp" => AggFn::StddevSamp,
         _ => return None,
     })
 }
