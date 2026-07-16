@@ -8645,13 +8645,35 @@ fn compare_sort(a: &Val, b: &Val, descending: bool, nulls_first: Option<bool>) -
 
 // --- linear query & set ops --------------------------------------------------
 
+/// The result of running one linear query part. A top-level part produces a
+/// `RowSet` of output `Value`s; an inline `CALL` body produces projected
+/// `Binding`s instead — so element columns (`RETURN *`, `RETURN n`) keep their
+/// `Val::Node`/`Val::Edge` identity across the merge-back into the outer row (a
+/// serialized `Value::Map` can't round-trip to a `Val`). Selected by the
+/// `want_binds` flag on [`run_linear_from`].
+enum LinearOut {
+    Rows(RowSet),
+    Binds(Vec<Binding>),
+}
+
 fn run_linear(
     linear: &CLinear,
     graph: &mut Graph,
     plan: &CQuery,
     params: &[Val],
 ) -> CodeResult<RowSet> {
-    run_linear_from(linear, graph, plan, params, vec![Binding::default()], None)
+    match run_linear_from(
+        linear,
+        graph,
+        plan,
+        params,
+        vec![Binding::default()],
+        None,
+        false,
+    )? {
+        LinearOut::Rows(rs) => Ok(rs),
+        LinearOut::Binds(_) => unreachable!("top-level run requests rows"),
+    }
 }
 
 /// [`run_linear`] starting from a given set of bindings — the seed for an inline
@@ -8663,7 +8685,10 @@ fn run_linear_from(
     params: &[Val],
     initial: Vec<Binding>,
     shared: Option<&Ctx>,
-) -> CodeResult<RowSet> {
+    // When true, a terminal RETURN projects to `Binding`s (element-preserving,
+    // for an inline `CALL` merge-back) instead of a `RowSet` of output values.
+    want_binds: bool,
+) -> CodeResult<LinearOut> {
     // `bindings` is the materialized row set at the last barrier; `pending` are
     // MATCH clauses deferred so a projection (or write) can stream them directly.
     let mut bindings: Vec<Binding> = initial;
@@ -8845,6 +8870,7 @@ fn run_linear_from(
                 body,
                 body_more,
                 out_binds,
+                body_star,
                 body_read_only,
             } => {
                 if !pending.is_empty() {
@@ -8864,27 +8890,55 @@ fn run_linear_from(
                         }
                     }
                     let reuse = if *body_read_only { Some(ctx!()) } else { None };
-                    let mut rs =
-                        run_linear_from(body, graph, plan, params, vec![seed.clone()], reuse)?;
+                    // Run the body to element-preserving bindings so a returned
+                    // node/edge/`*` merges back with its `Val` identity intact.
+                    let LinearOut::Binds(mut rows) = run_linear_from(
+                        body,
+                        graph,
+                        plan,
+                        params,
+                        vec![seed.clone()],
+                        reuse,
+                        true,
+                    )?
+                    else {
+                        unreachable!("inline body requests binds")
+                    };
                     // Fold in any set-op parts (`… UNION/EXCEPT/INTERSECT …`), each run
                     // against the same seed, matching the top-level set-op semantics.
                     for (op, part) in body_more {
-                        let right =
-                            run_linear_from(part, graph, plan, params, vec![seed.clone()], reuse)?;
-                        rs = combine(*op, rs, right);
+                        let LinearOut::Binds(right) = run_linear_from(
+                            part,
+                            graph,
+                            plan,
+                            params,
+                            vec![seed.clone()],
+                            reuse,
+                            true,
+                        )?
+                        else {
+                            unreachable!("inline body requests binds")
+                        };
+                        rows = combine_binds(*op, rows, right, out_binds.len());
                     }
-                    if rs.nrows == 0 && *optional {
+                    if rows.is_empty() && *optional {
+                        // A named RETURN null-fills its produced columns; a `RETURN *`
+                        // produces no new named columns (its columns are scope vars,
+                        // imports included), so keep the outer row untouched — leaving
+                        // freshly-introduced vars unbound, matching the TS engine.
                         let mut w = outer.clone();
-                        for slot in out_binds {
-                            w.set(*slot, Val::Null);
+                        if !*body_star {
+                            for slot in out_binds {
+                                w.set(*slot, Val::Null);
+                            }
                         }
                         out.push(w);
                         continue;
                     }
-                    for row in rs.rows() {
+                    for row in &rows {
                         let mut w = outer.clone();
                         for (i, slot) in out_binds.iter().enumerate() {
-                            w.set(*slot, value_to_val(&row[i]));
+                            w.set(*slot, row.get(i).cloned().unwrap_or(Val::Null));
                         }
                         out.push(w);
                     }
@@ -8894,11 +8948,23 @@ fn run_linear_from(
                 ctx!().check_fault()?;
             }
             CClause::Return(proj) => {
-                let rows = project_to_rows(graph, ctx!(), &bindings, &pending, proj);
+                let out = if want_binds {
+                    // Inline-CALL body: project to element-preserving bindings (same
+                    // path a WITH uses), so a returned node/edge/`*` keeps identity.
+                    LinearOut::Binds(project_matches(graph, ctx!(), &bindings, &pending, proj))
+                } else {
+                    LinearOut::Rows(project_to_rows(graph, ctx!(), &bindings, &pending, proj))
+                };
                 ctx!().check_fault()?;
-                return Ok(rows);
+                return Ok(out);
             }
-            CClause::Finish => return Ok(RowSet::new(Vec::new())),
+            CClause::Finish => {
+                return Ok(if want_binds {
+                    LinearOut::Binds(Vec::new())
+                } else {
+                    LinearOut::Rows(RowSet::new(Vec::new()))
+                });
+            }
             // Mutations run eagerly, exactly once per binding. Flush deferred
             // matches first, then re-resolve refs against the mutated graph.
             CClause::Insert(patterns) => {
@@ -8966,7 +9032,12 @@ fn run_linear_from(
         }
     }
     ctx!().check_fault()?;
-    Ok(RowSet::new(Vec::new())) // write-only / no RETURN
+    // write-only / no RETURN
+    Ok(if want_binds {
+        LinearOut::Binds(Vec::new())
+    } else {
+        LinearOut::Rows(RowSet::new(Vec::new()))
+    })
 }
 
 // --- write execution ---------------------------------------------------------
@@ -9426,6 +9497,69 @@ fn filter_rows(rs: RowSet, mut keep: impl FnMut(&str) -> bool) -> RowSet {
 fn distinct_rows(rs: RowSet) -> RowSet {
     let mut seen = HashSet::new();
     filter_rows(rs, |k| seen.insert(k.to_string()))
+}
+
+/// Dedup key over the first `n` output slots of a projected binding (the inline
+/// body's output columns). Element-aware via [`val_key`], so two rows are equal
+/// iff their columns hold the same scalars / the same node/edge handles.
+fn binds_row_key(b: &Binding, n: usize) -> String {
+    let mut s = String::new();
+    for i in 0..n {
+        match b.get(i) {
+            Some(v) => val_key(v, &mut s),
+            None => s.push('\u{2}'),
+        }
+        s.push('\u{1}');
+    }
+    s
+}
+
+fn distinct_binds(rows: Vec<Binding>, n: usize) -> Vec<Binding> {
+    let mut seen = HashSet::new();
+    rows.into_iter()
+        .filter(|b| seen.insert(binds_row_key(b, n)))
+        .collect()
+}
+
+/// Set-op fold over inline-body result bindings (the binding twin of [`combine`]),
+/// keeping element identity. `n` is the output column count. Mirrors the
+/// top-level `combine` semantics exactly (first-seen distinct, ALL keeps dups).
+fn combine_binds(op: SetOp, left: Vec<Binding>, right: Vec<Binding>, n: usize) -> Vec<Binding> {
+    match op.op {
+        SetOpKind::Union => {
+            let mut all = left;
+            all.extend(right);
+            if op.all {
+                all
+            } else {
+                distinct_binds(all, n)
+            }
+        }
+        SetOpKind::Except => {
+            let rk: HashSet<String> = right.iter().map(|b| binds_row_key(b, n)).collect();
+            let kept: Vec<Binding> = left
+                .into_iter()
+                .filter(|b| !rk.contains(&binds_row_key(b, n)))
+                .collect();
+            if op.all {
+                kept
+            } else {
+                distinct_binds(kept, n)
+            }
+        }
+        SetOpKind::Intersect => {
+            let rk: HashSet<String> = right.iter().map(|b| binds_row_key(b, n)).collect();
+            let kept: Vec<Binding> = left
+                .into_iter()
+                .filter(|b| rk.contains(&binds_row_key(b, n)))
+                .collect();
+            if op.all {
+                kept
+            } else {
+                distinct_binds(kept, n)
+            }
+        }
+    }
 }
 
 fn combine(op: SetOp, left: RowSet, right: RowSet) -> RowSet {

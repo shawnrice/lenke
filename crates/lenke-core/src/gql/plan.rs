@@ -653,6 +653,12 @@ pub enum CClause {
         /// and produces the same output columns; results are folded with `combine`.
         body_more: Vec<(SetOp, CLinear)>,
         out_binds: Vec<usize>,
+        /// True when the body's RETURN is `*` — its output columns are the scope
+        /// vars (imports included). On an OPTIONAL empty run we then keep the outer
+        /// row untouched (leaving fresh vars unbound) rather than null-filling
+        /// `out_binds`, which would clobber an imported var. (A named RETURN's
+        /// columns are genuinely produced by the subquery, so those DO null-fill.)
+        body_star: bool,
         /// True if the nested body only reads — then every correlated run reuses
         /// the caller's resolved Ctx (no per-outer-row resolve). A writing body
         /// resolves per row (a mutation may invalidate the shared tables).
@@ -1435,15 +1441,12 @@ impl Lowerer {
                 }
                 // The nested RETURN's output columns, in order. All set-op parts share
                 // the same output columns, so the first part is authoritative.
-                let out_cols = body
-                    .clauses
-                    .iter()
-                    .rev()
-                    .find_map(|cl| match cl {
-                        CClause::Return(proj) => Some(proj.out_names.clone()),
-                        _ => None,
-                    })
-                    .unwrap_or_default();
+                let ret_proj = body.clauses.iter().rev().find_map(|cl| match cl {
+                    CClause::Return(proj) => Some(proj),
+                    _ => None,
+                });
+                let out_cols = ret_proj.map(|p| p.out_names.clone()).unwrap_or_default();
+                let body_star = ret_proj.is_some_and(|p| p.star);
                 // Restore the outer scope, then resolve imports + merge slots.
                 self.scope = saved;
                 let imports = c
@@ -1473,6 +1476,7 @@ impl Lowerer {
                     body,
                     body_more,
                     out_binds,
+                    body_star,
                     body_read_only,
                 }
             }

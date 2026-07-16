@@ -357,6 +357,58 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     expect(tsT).not.toBe('[]');
   });
 
+  test('inline subquery CALL with RETURN * / element columns is byte-identical', () => {
+    // RETURN * carries the newly-bound var (f) into the outer scope.
+    const [tsS, natS] = both(
+      `MATCH (p:Person {name: 'marko'}) ` +
+        `CALL (p) { MATCH (p)-[:KNOWS]->(f) RETURN * } ` +
+        `RETURN f.name AS fn ORDER BY fn`,
+    );
+    expect(tsS).toBe(natS);
+    expect(tsS).not.toBe('[]');
+
+    // RETURN * carries BOTH the imported var (p) and the new one (f).
+    const [tsB, natB] = both(
+      `MATCH (p:Person) ` +
+        `CALL (p) { MATCH (p)-[:KNOWS]->(f) RETURN * } ` +
+        `RETURN p.name AS pn, f.name AS fn ORDER BY pn, fn`,
+    );
+    expect(tsB).toBe(natB);
+    expect(tsB).not.toBe('[]');
+
+    // OPTIONAL + empty `RETURN *` body: the outer row survives with the imported
+    // var intact and the fresh var unbound (→ null on access) — NOT null-filling
+    // the imported var. vadas/josh have no KNOWS edge, so their bodies are empty.
+    const [tsO, natO] = both(
+      `MATCH (p:Person) ` +
+        `OPTIONAL CALL (p) { MATCH (p)-[:KNOWS]->(f) RETURN * } ` +
+        `RETURN p.name AS pn, f.name AS fn ORDER BY pn, fn`,
+    );
+    expect(tsO).toBe(natO);
+    // Every person appears at least once (marko twice, vadas/josh/… null-filled).
+    expect(tsO).toContain('"pn":"vadas","fn":null');
+
+    // A bare element column (`RETURN f`) merges the node handle back so `f.name`
+    // resolves in the outer query — previously lost to null in the native engine.
+    const [tsE, natE] = both(
+      `MATCH (p:Person {name: 'marko'}) ` +
+        `CALL (p) { MATCH (p)-[:KNOWS]->(f) RETURN f } ` +
+        `RETURN f.name AS fn ORDER BY fn`,
+    );
+    expect(tsE).toBe(natE);
+    expect(tsE).not.toBe('[]');
+
+    // The carried node re-serializes to the SAME rich {id,labels,properties} map
+    // in both engines when returned whole.
+    const [tsR, natR] = both(
+      `MATCH (p:Person {name: 'marko'}) ` +
+        `CALL (p) { MATCH (p)-[:KNOWS]->(f) RETURN * } ` +
+        `RETURN f ORDER BY f.name`,
+    );
+    expect(tsR).toBe(natR);
+    expect(tsR).toContain('"labels":["Person"]');
+  });
+
   test('ISO path functions on a bound path are byte-identical', () => {
     const q =
       `MATCH p = ANY SHORTEST (a)-[]->*(b) WHERE a.name = 'marko' AND b.name = 'lop' ` +
