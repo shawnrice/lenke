@@ -7151,6 +7151,209 @@ fn try_grouped_varlen_1_2(
     Some(rs)
 }
 
+/// Fixed two-hop count GROUPED by an endpoint value:
+/// `MATCH (a:La?)-[:T1]->(b:Lb?)-[:T2]->(c:Lc?) RETURN <key(c)…>, count(*)`.
+///
+/// Analogous to [`try_grouped_varlen_1_2`] but for two *fixed* directed segments,
+/// so — anonymous rels ⇒ homomorphism (no edge-uniqueness, same as
+/// [`try_count_two_hop`]) — it's plain **walk** counting with NO self-loop
+/// correction. Per endpoint `c`: `Σ_{b→c via T2} into[b]`, where `into[b]` = #`T1`-
+/// edges into a valid middle `b` from a valid start `a`. O(V+E) instead of
+/// enumerating the O(deg²) two-hop rows. Counts exact; first-seen group order
+/// recovered by replaying the scalar nested expansion until every (already-known)
+/// group appears.
+#[allow(clippy::too_many_lines, reason = "one self-contained count shortcut")]
+fn try_grouped_2hop(
+    linear: &CLinear,
+    graph: &Graph,
+    plan: &CQuery,
+    params: &[Val],
+) -> Option<RowSet> {
+    let [CClause::Match {
+        optional: false,
+        patterns,
+        where_: None,
+        ..
+    }, CClause::Return(proj)] = linear.clauses.as_slice()
+    else {
+        return None;
+    };
+    let [path] = patterns.as_slice() else {
+        return None;
+    };
+    let [seg1, seg2] = path.segments.as_slice() else {
+        return None;
+    };
+    for rel in [&seg1.rel, &seg2.rel] {
+        if rel.var_slot.is_some()
+            || !rel.props.is_empty()
+            || rel.where_.is_some()
+            || rel.quantifier.is_some()
+            || rel.direction != Direction::Out
+        {
+            return None;
+        }
+    }
+    for node in [&path.start, &seg1.node, &seg2.node] {
+        if !node.props.is_empty() || node.where_.is_some() {
+            return None;
+        }
+    }
+    // Distinct node variables; the endpoint `c` must be named (it's the group key).
+    let a_slot = path.start.var_slot;
+    let b_slot = seg1.node.var_slot;
+    let c_slot = seg2.node.var_slot?;
+    let named: Vec<usize> = [a_slot, b_slot, Some(c_slot)]
+        .into_iter()
+        .flatten()
+        .collect();
+    if (1..named.len()).any(|i| named[..i].contains(&named[i])) {
+        return None;
+    }
+    if proj.distinct
+        || proj.skip.is_some()
+        || proj.limit.is_some()
+        || proj.star
+        || !proj.order_by.is_empty()
+        || !proj.aggregating
+        || proj.aggs.len() != 1
+    {
+        return None;
+    }
+    let agg = &proj.aggs[0];
+    if !agg.star || agg.distinct || !matches!(agg.func, AggFn::Count) {
+        return None;
+    }
+    let key_items: Vec<&CReturnItem> = proj.items.iter().filter(|i| !i.is_agg).collect();
+    if key_items.is_empty() {
+        return None;
+    }
+    for it in &key_items {
+        if !expr_refs_only_slot(&it.expr, c_slot) {
+            return None;
+        }
+    }
+    if !proj
+        .items
+        .iter()
+        .any(|i| i.is_agg && matches!(i.expr, CExpr::AggRef(0)))
+    {
+        return None;
+    }
+
+    let ctx = resolve_ctx(graph, plan, params);
+    let t1 = rel_type_set(&ctx, seg1.rel.label.as_ref())?;
+    let t2 = rel_type_set(&ctx, seg2.rel.label.as_ref())?;
+    let la = path.start.label.as_ref();
+    let lb = seg1.node.label.as_ref();
+    let lc = seg2.node.label.as_ref();
+    let n = graph.n;
+
+    // into[b] = #`T1`-edges a→b with `a` matching La, if `b` is a valid middle.
+    let into: Vec<u64> = (0..n as u32)
+        .map(|b| {
+            if !matches_label(graph, &ctx, b, lb) {
+                return 0;
+            }
+            graph
+                .in_adj(b)
+                .filter(|e| etype_ok(&t1, e.etype) && matches_label(graph, &ctx, e.nbr, la))
+                .count() as u64
+        })
+        .collect();
+    // Per endpoint `c` (matching Lc): Σ over T2-edges b→c of into[b] (walk count).
+    let mult: Vec<i64> = (0..n as u32)
+        .map(|c| {
+            if !graph.is_vertex_live(c) || !matches_label(graph, &ctx, c, lc) {
+                return 0;
+            }
+            graph
+                .in_adj(c)
+                .filter(|e| etype_ok(&t2, e.etype))
+                .map(|e| into[e.nbr as usize] as i64)
+                .sum()
+        })
+        .collect();
+
+    // Accumulate group counts, then recover first-seen order (both share the tail
+    // shape with `try_grouped_varlen_1_2`).
+    let mut groups: HashMap<String, (Vec<Val>, i64)> = HashMap::new();
+    let mut bb = Binding(vec![None; c_slot + 1]);
+    let mut key_buf = String::new();
+    for c in 0..n as u32 {
+        let m = mult[c as usize];
+        if m <= 0 {
+            continue;
+        }
+        bb.set(c_slot, Val::Node(c));
+        let vals: Vec<Val> = {
+            let env = Env::new(graph, &ctx, &bb);
+            key_items.iter().map(|it| eval_item(&env, it)).collect()
+        };
+        key_buf.clear();
+        for v in &vals {
+            val_key(v, &mut key_buf);
+            key_buf.push('\u{1}');
+        }
+        let entry = groups.entry(key_buf.clone()).or_insert_with(|| (vals, 0));
+        entry.1 += m;
+    }
+
+    let target = groups.len();
+    let mut seen: HashSet<String> = HashSet::with_capacity(target);
+    let mut order: Vec<String> = Vec::with_capacity(target);
+    'seeds: for a in {
+        let mut starts: Vec<u32> = Vec::new();
+        for_each_seed(graph, &ctx, la, &mut |v| {
+            starts.push(v);
+            true
+        });
+        starts
+    } {
+        for be in expand(graph, &ctx, a, Direction::Out, seg1.rel.label.as_ref()) {
+            if !matches_label(graph, &ctx, be.1, lb) {
+                continue;
+            }
+            for ce in expand(graph, &ctx, be.1, Direction::Out, seg2.rel.label.as_ref()) {
+                if !matches_label(graph, &ctx, ce.1, lc) {
+                    continue;
+                }
+                bb.set(c_slot, Val::Node(ce.1));
+                key_buf.clear();
+                {
+                    let env = Env::new(graph, &ctx, &bb);
+                    for it in &key_items {
+                        val_key(&eval_item(&env, it), &mut key_buf);
+                        key_buf.push('\u{1}');
+                    }
+                }
+                if seen.insert(key_buf.clone()) {
+                    order.push(key_buf.clone());
+                    if order.len() == target {
+                        break 'seeds;
+                    }
+                }
+            }
+        }
+    }
+
+    let mut rs = RowSet::new(proj.out_names.clone());
+    for key in &order {
+        let (vals, cnt) = &groups[key];
+        let mut ki = 0;
+        rs.push_row(proj.items.iter().map(|it| {
+            if it.is_agg {
+                Value::Num(*cnt as f64)
+            } else {
+                let v = val_to_value(graph, &vals[ki]);
+                ki += 1;
+                v
+            }
+        }));
+    }
+    Some(rs)
+}
+
 /// Reverse semi-join for a correlated `EXISTS` count:
 /// `MATCH (a:La?) WHERE [NOT] EXISTS { (a)-[:T]->(b:Lb) } RETURN count(*)`.
 ///
@@ -9245,6 +9448,11 @@ fn run_part(
         // Comma-join `count(*)` (`(a)->(b), (a)->(c) WHERE …`) via the product of the
         // two anchors' filtered degrees — O(deg), not the O(deg²) cross product.
         if let Some(rs) = try_count_comma_join(linear, graph, plan, params) {
+            return Ok(rs);
+        }
+        // Fixed two-hop count GROUPED by the endpoint (`(a)->(b)->(c) RETURN c.x,
+        // count(*)`) via frequency propagation (O(V+E)), not row enumeration.
+        if let Some(rs) = try_grouped_2hop(linear, graph, plan, params) {
             return Ok(rs);
         }
         // Reverse semi-join for a correlated `[NOT] EXISTS { … }` count — seed the

@@ -809,6 +809,21 @@ suite('GQL differential: grouped var-length count shortcut (TS vs native)', () =
       '{1,2} group by endpoint id',
       `MATCH (a:Person)-[:KNOWS]->{1,2}(b) RETURN element_id(b) AS id, count(*) AS n ORDER BY id`,
     ],
+    // Fixed two-hop grouped by the endpoint (try_grouped_2hop) — WALK semantics, so
+    // the self-loop 1→1 makes 1→1→x paths count with NO trail correction (unlike the
+    // var-length cases above). Same graph ⇒ the difference is provable.
+    [
+      'fixed 2-hop group by endpoint city',
+      `MATCH (a)-[:KNOWS]->(b)-[:KNOWS]->(c) RETURN c.city AS city, count(*) AS n`,
+    ],
+    [
+      'fixed 2-hop with middle + end labels',
+      `MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c) RETURN c.city AS city, count(*) AS n`,
+    ],
+    [
+      'fixed 2-hop group by endpoint id',
+      `MATCH (a)-[:KNOWS]->(b)-[:KNOWS]->(c) RETURN element_id(c) AS id, count(*) AS n ORDER BY id`,
+    ],
   ];
 
   for (const [name, q] of cases) {
