@@ -3879,15 +3879,12 @@ const ensureNode = (
 
   const properties = evalProps(node.props, binding, params, graph);
 
-  // Reject a plain INSERT that would break a unique constraint (an `_MERGE`
-  // reconciles instead; see docs/design/gql-extensions.md §3).
-  if (graph.uniqueConflict([...node.labels], properties)) {
-    throw new LenkeError(
-      'INSERT would duplicate a value under a unique constraint (use _MERGE to upsert)',
-      { code: ErrorCode.ConstraintViolation },
-    );
-  }
-
+  // A plain INSERT that breaks a unique constraint is rejected — but the check is
+  // deferred to commit (via `addVertex`'s constraint chokepoint + `runDeferredChecks`),
+  // not eager, so a transient duplicate resolved before commit is allowed. This
+  // matches the native engine's R-TX deferred-check semantics; an eager check here
+  // wrongly rejected `INSERT` + later `DELETE` of the dup within one transaction
+  // (round-12 F3). `_MERGE` still reconciles instead (docs/design/gql-extensions.md §3).
   const vertex = graph.addVertex({ labels: [...node.labels], properties });
 
   if (node.variable) {
@@ -4177,15 +4174,11 @@ const runSet = (graph: Graph, clause: CSet, binding: Binding, params: Params): v
     } else {
       const value = item.value({ binding, params, graph });
 
-      // A SET that would collide under a unique constraint throws rather than
-      // silently duplicating (constraints are vertex-only).
-      if (isVertex(el) && graph.uniqueConflictOnSet(el, item.key, value)) {
-        throw new LenkeError(
-          'SET would duplicate a value under a unique constraint (use _MERGE to upsert)',
-          { code: ErrorCode.ConstraintViolation },
-        );
-      }
-
+      // A SET that collides under a unique constraint is rejected via the core
+      // property-write chokepoint (`assertUniqueOnSet`), which defers the check to
+      // commit inside a transaction. Deferring (rather than an eager check here)
+      // lets a transient collision that is reverted before commit succeed, matching
+      // the native engine's R-TX semantics (round-12 F3). Constraints are vertex-only.
       el.setProperty(item.key, value);
     }
   }

@@ -43,6 +43,40 @@ describe('GQL: unique constraints', () => {
     query(g, `MATCH (n:Acct {email: 'b@x.io'}) SET n.email = 'b@x.io'`);
   });
 
+  test('the check is deferred to commit — a transient duplicate resolved before commit is allowed (round-12 F3)', () => {
+    const g = createTestSocialGraph();
+    g.createUniqueConstraint('Acct', 'id');
+    query(g, `INSERT (:Acct {id: 1, bal: 100})`);
+
+    // Inside one transaction: create a duplicate id, then resolve it before
+    // commit. The eager per-statement check used to reject this; the native
+    // engine defers to commit and accepts it — now TS matches.
+    g.transaction(() => {
+      query(g, `INSERT (:Acct {id: 1, bal: 999})`); // transiently two id=1
+      query(g, `MATCH (n:Acct {id: 1, bal: 999}) DELETE n`); // resolved before commit
+    });
+    expect(query(g, `MATCH (n:Acct) RETURN count(*) AS c`)).toEqual([{ c: 1 }]);
+
+    // A SET that collides and is reverted within the same transaction also commits.
+    query(g, `INSERT (:Acct {id: 2, bal: 50})`);
+    g.transaction(() => {
+      query(g, `MATCH (n:Acct {id: 2}) SET n.id = 1`); // collides transiently
+      query(g, `MATCH (n:Acct {id: 1, bal: 50}) SET n.id = 2`); // reverted
+    });
+    expect(query(g, `MATCH (n:Acct) RETURN count(*) AS c`)).toEqual([{ c: 2 }]);
+
+    // But a duplicate that SURVIVES to commit still rolls the whole tx back.
+    expect(
+      codeOf(() =>
+        g.transaction(() => {
+          query(g, `INSERT (:Acct {id: 3, bal: 1})`);
+          query(g, `INSERT (:Acct {id: 3, bal: 2})`); // unresolved → violation at commit
+        }),
+      ),
+    ).toBe(ErrorCode.ConstraintViolation);
+    expect(query(g, `MATCH (n:Acct) RETURN count(*) AS c`)).toEqual([{ c: 2 }]);
+  });
+
   test('null and absent values are exempt (SQL: NULLs distinct)', () => {
     const g = createTestSocialGraph();
     g.createUniqueConstraint('Acct', 'email');
