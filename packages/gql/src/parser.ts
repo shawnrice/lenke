@@ -195,7 +195,10 @@ const reservedError = (tok: Token, what: string): never => {
 };
 
 // eslint-disable-next-line max-statements -- recursive-descent parser: the body is a suite of stateful closures over the token cursor; splitting them would only thread that state through parameters
-export const parse = (src: string, opts?: { dialect?: Dialect }): Statement => {
+export const parse = (
+  src: string,
+  opts?: { dialect?: Dialect; maxOperatorChain?: number },
+): Statement => {
   const tokens = tokenize(src);
   let pos = 0;
   // `lenke` (default) recognizes sigil extensions like `_MERGE`; `iso-strict`
@@ -271,8 +274,9 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Statement => {
   // is not a chain-deep tree and every walk (eval, analysis) is a loop — no stack
   // overflow regardless of chain length. This is therefore a pure anti-resource-
   // abuse guard (each operand is an allocation + an eval step), not crash-safety.
-  // Mirrors the native parser's `MAX_CHAIN` so both engines reject identically.
-  const MAX_CHAIN = 100_000;
+  // Defaults to 10k; configurable per graph (`new Graph({ maxOperatorChain })`,
+  // read by `query()`), which mirrors the native engine's per-graph setting.
+  const MAX_CHAIN = opts?.maxOperatorChain ?? 10_000;
   const chainLimit = (count: number): void => {
     if (count > MAX_CHAIN) {
       throw new GqlSyntaxError('Operator chain too long', peek().pos);

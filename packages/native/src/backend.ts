@@ -64,6 +64,13 @@ export type Backend = {
    */
   createVertexIndex: (handle: GraphHandle, key: string) => void;
   createEdgeIndex: (handle: GraphHandle, key: string) => void;
+
+  /**
+   * Set the GQL operator-chain ceiling for this graph (the `maxOperatorChain`
+   * option); the parser rejects a longer `a AND b AND …` / `x + y + …` chain with
+   * `E_SYNTAX`. Anti-resource-abuse only — the n-ary AST never overflows the stack.
+   */
+  setMaxOperatorChain: (handle: GraphHandle, n: number) => void;
   /**
    * Declare a UNIQUE constraint on `(label, key)`. Throws `ConstraintViolation`
    * if the current data already violates it. See docs/design/gql-extensions.md §3.

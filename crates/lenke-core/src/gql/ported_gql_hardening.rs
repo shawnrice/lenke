@@ -5,7 +5,7 @@
 //! `// SKIPPED (divergence): ...` or `// SKIPPED (unsupported): ...`.
 
 use super::eval::Params;
-use super::parse;
+use super::{parse, parse_with_max_chain};
 use crate::error_codes::ErrorCode;
 use crate::graph::{Graph, Value};
 use crate::ndjson;
@@ -167,13 +167,17 @@ fn h_normally_nested_query_still_parses() {
 
 /// The associative operator AST is n-ary (a flat `Vec`), so a long
 /// left-associative chain far past the old crash point (~40k) parses AND
-/// *evaluates* — no stack overflow — instead of aborting the process. Regression
-/// test for round-12 C1 (native SIGSEGV on `RETURN true AND true AND … (100k)`).
+/// *evaluates* — no stack overflow — instead of aborting the process (given a
+/// ceiling that admits it). Regression test for round-12 C1 (native SIGSEGV on
+/// `RETURN true AND true AND … (100k)`).
 #[test]
 fn h_long_chain_evaluates_without_stack_overflow() {
     let val = |q: &str| -> Value {
         let mut g = ndjson::decode("").unwrap();
-        let rs = parse(q).unwrap().execute(&mut g, &Params::new()).unwrap();
+        let rs = parse_with_max_chain(q, 200_000)
+            .unwrap()
+            .execute(&mut g, &Params::new())
+            .unwrap();
         let rows: Vec<Vec<Value>> = rs.rows().map(|r| r.to_vec()).collect();
         rows[0][0].clone()
     };
@@ -190,23 +194,37 @@ fn h_long_chain_evaluates_without_stack_overflow() {
     );
 }
 
-/// Past the anti-resource-abuse `MAX_CHAIN` ceiling, an operator chain is a clean
-/// `SyntaxError` (identical in both engines), never an OOM.
+/// Past the anti-resource-abuse ceiling (default 10k), an operator chain is a
+/// clean `SyntaxError` (identical in both engines), never an OOM.
 #[test]
 fn h_over_cap_operator_chain_is_syntax_error() {
     for chain in [
-        vec!["true"; 100_002].join(" AND "), // 100_001 ops > MAX_CHAIN
-        vec!["1"; 100_002].join(" + "),
+        vec!["true"; 10_002].join(" AND "), // 10_001 ops > DEFAULT_MAX_CHAIN
+        vec!["1"; 10_002].join(" + "),
     ] {
         assert!(parse(&format!("RETURN {chain} AS r")).is_err());
     }
 }
 
-/// A chain just under the ceiling still parses (99_999 ops < MAX_CHAIN).
+/// A chain at the default ceiling still parses (10_000 ops); the ceiling is
+/// configurable per parse via [`parse_with_max_chain`].
 #[test]
-fn h_operator_chain_under_ceiling_still_parses() {
-    let ok = format!("RETURN {} AS r", vec!["true"; 100_000].join(" AND "));
-    assert!(parse(&ok).is_ok());
+fn h_operator_chain_ceiling_is_configurable() {
+    // default: 10_000 ops ok, 10_001 rejected
+    assert!(parse(&format!(
+        "RETURN {} AS r",
+        vec!["true"; 10_001].join(" AND ")
+    ))
+    .is_ok());
+    assert!(parse(&format!(
+        "RETURN {} AS r",
+        vec!["true"; 10_002].join(" AND ")
+    ))
+    .is_err());
+    // a lower configured ceiling rejects sooner; a higher one admits more
+    let five = format!("RETURN {} AS r", ["true"; 7].join(" AND ")); // 6 ops
+    assert!(parse_with_max_chain(&five, 5).is_err());
+    assert!(parse_with_max_chain(&five, 100).is_ok());
 }
 
 // ---------------------------------------------------------------------------

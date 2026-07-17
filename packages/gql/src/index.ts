@@ -171,7 +171,12 @@ export const query = <R extends Row = Row>(
   graph: Graph,
   text: string,
   params?: Record<string, unknown>,
-): R[] => execute<R>(parse(text), graph, withClock(graph, params));
+): R[] =>
+  execute<R>(
+    parse(text, { maxOperatorChain: graph.maxOperatorChain }),
+    graph,
+    withClock(graph, params),
+  );
 
 /**
  * Bind a graph and return a runner. Supports both a tagged-template form
@@ -192,7 +197,11 @@ export const gql = <R extends Row = Row>(graph: Graph) => {
     if (typeof strings === 'string') {
       const params = values[0] as Record<string, unknown> | undefined;
 
-      return execute<R>(parse(strings), graph, withClock(graph, params));
+      return execute<R>(
+        parse(strings, { maxOperatorChain: graph.maxOperatorChain }),
+        graph,
+        withClock(graph, params),
+      );
     }
 
     const params: Record<string, unknown> = {};
@@ -206,7 +215,11 @@ export const gql = <R extends Row = Row>(graph: Graph) => {
       return `${acc + part}$p${i}`;
     }, '');
 
-    return execute<R>(parse(text), graph, withClock(graph, params));
+    return execute<R>(
+      parse(text, { maxOperatorChain: graph.maxOperatorChain }),
+      graph,
+      withClock(graph, params),
+    );
   };
 };
 

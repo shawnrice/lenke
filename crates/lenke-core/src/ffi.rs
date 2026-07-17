@@ -13,7 +13,8 @@ use crate::query;
 
 #[no_mangle]
 pub extern "C" fn lnk_abi_version() -> u32 {
-    10 // 10: native graph algorithms (lnk_algo); 9: query params (lnk_query_rows/
+    11 // 11: per-graph operator-chain ceiling (lnk_graph_set_max_operator_chain);
+       // 10: native graph algorithms (lnk_algo); 9: query params (lnk_query_rows/
        //    lnk_query_arrow take a params-JSON doc); 8: reactive change tracking
        //    (lnk_graph_version/lnk_graph_epoch); 7: codecs (lnk_serialize/
        //    lnk_deserialize); 6: inbound allocator; 5: Gremlin; 4: Arrow
@@ -155,6 +156,19 @@ pub unsafe extern "C" fn lnk_graph_vertex_count(g: *const Graph) -> u64 {
         return 0;
     }
     (*g).vertex_count() as u64
+}
+
+/// Set the graph's GQL operator-chain ceiling (the native `maxOperatorChain`
+/// option); the parser rejects a longer chain with `E_SYNTAX`. A no-op on a null
+/// handle.
+///
+/// # Safety
+/// `g` must be a valid graph handle.
+#[no_mangle]
+pub unsafe extern "C" fn lnk_graph_set_max_operator_chain(g: *mut Graph, n: u64) {
+    if !g.is_null() {
+        (*g).set_max_operator_chain(n as usize);
+    }
 }
 
 /// # Safety
@@ -847,7 +861,7 @@ pub unsafe extern "C" fn lnk_query_rows(
     // Route to the full GQL engine (the complete ISO-subset port). A parse
     // failure carries its source offset; an execution failure (an unsupported
     // clause in this partial engine) carries the engine's message.
-    let parsed = match crate::gql::parse(q) {
+    let parsed = match crate::gql::parse_with_max_chain(q, (*g).max_operator_chain()) {
         Ok(p) => p,
         Err(e) => {
             crate::ffi_error::set(
@@ -984,7 +998,7 @@ pub unsafe extern "C" fn lnk_query_arrow(
     };
     // The error rides the last-error channel, never this return pointer — so the
     // binary Arrow carrier below stays a pure column blob with no error union.
-    let parsed = match crate::gql::parse(q) {
+    let parsed = match crate::gql::parse_with_max_chain(q, (*g).max_operator_chain()) {
         Ok(p) => p,
         Err(e) => {
             crate::ffi_error::set(

@@ -832,23 +832,30 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
 export const graphFromNdjson = (
   backend: Backend,
   bytes: Uint8Array,
-  opts: { parallel?: boolean } = {},
-): RustGraph =>
-  attachGraph(
-    backend,
-    backend.graphFromNdjson(
-      bytes.byteLength === 0 ? new TextEncoder().encode('\n') : bytes,
-      opts.parallel ?? true,
-    ),
+  opts: { parallel?: boolean; maxOperatorChain?: number } = {},
+): RustGraph => {
+  const handle = backend.graphFromNdjson(
+    bytes.byteLength === 0 ? new TextEncoder().encode('\n') : bytes,
+    opts.parallel ?? true,
   );
+
+  if (opts.maxOperatorChain !== undefined) {
+    backend.setMaxOperatorChain(handle, opts.maxOperatorChain);
+  }
+
+  return attachGraph(backend, handle);
+};
 
 /**
  * A fresh, empty {@link RustGraph} to `INSERT` / `mergeNdjson` into — the
  * self-documenting cold boot. (Equivalent to `graphFromNdjson(backend, <empty>)`
- * without the encode-an-empty-buffer incantation.)
+ * without the encode-an-empty-buffer incantation.) Pass `{ maxOperatorChain }` to
+ * override the GQL operator-chain ceiling (default 10_000).
  */
-export const createEmptyGraph = (backend: Backend): RustGraph =>
-  graphFromNdjson(backend, new Uint8Array(0));
+export const createEmptyGraph = (
+  backend: Backend,
+  opts: { maxOperatorChain?: number } = {},
+): RustGraph => graphFromNdjson(backend, new Uint8Array(0), opts);
 
 /**
  * Deserialize a document in a named format (`pg-json | pg-text | graphson | csv |
@@ -858,8 +865,14 @@ export const graphFromFormat = (
   backend: Backend,
   input: string | Uint8Array,
   format: string,
+  opts: { maxOperatorChain?: number } = {},
 ): RustGraph => {
   const bytes = typeof input === 'string' ? new TextEncoder().encode(input) : input;
+  const handle = backend.deserialize(bytes, format);
 
-  return attachGraph(backend, backend.deserialize(bytes, format));
+  if (opts.maxOperatorChain !== undefined) {
+    backend.setMaxOperatorChain(handle, opts.maxOperatorChain);
+  }
+
+  return attachGraph(backend, handle);
 };

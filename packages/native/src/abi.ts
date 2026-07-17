@@ -5,7 +5,7 @@
  *
  * Bump in lockstep with `lnk_abi_version()` in `crates/lenke-core/src/ffi.rs`.
  */
-export const ABI_VERSION = 10;
+export const ABI_VERSION = 11;
 
 export const assertAbi = (loaded: number): void => {
   if (loaded !== ABI_VERSION) {

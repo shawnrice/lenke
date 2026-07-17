@@ -161,9 +161,10 @@ describe('hardening: deep nesting is a syntax error, not a stack overflow', () =
   // Round-12 C1: the associative operator AST is n-ary (a flat array), so a long
   // left-associative chain far past the old crash point evaluates without a stack
   // overflow (native SIGSEGV'd; TS threw an uncatchable RangeError) instead of
-  // aborting. Only the anti-resource-abuse MAX_CHAIN ceiling rejects.
+  // aborting — given a ceiling that admits it. Only the anti-resource-abuse
+  // ceiling (default 10k, configurable per graph) rejects.
   test('a long AND / arithmetic chain evaluates without a stack overflow', () => {
-    const g = new Graph();
+    const g = new Graph({ maxOperatorChain: 200_000 });
     expect(query(g, `RETURN ${Array(50_000).fill('true').join(' AND ')} AS r`)).toEqual([
       { r: true },
     ]);
@@ -171,18 +172,28 @@ describe('hardening: deep nesting is a syntax error, not a stack overflow', () =
   });
 
   test('an over-cap operator chain is a clean E_SYNTAX', () => {
-    // 100_001 operators > MAX_CHAIN
-    const e = thrown(() => parse(`RETURN ${Array(100_002).fill('true').join(' AND ')} AS r`));
+    // 10_001 operators > default ceiling (10k)
+    const e = thrown(() => parse(`RETURN ${Array(10_002).fill('true').join(' AND ')} AS r`));
     expect(e).toBeInstanceOf(GqlSyntaxError);
     expect(hasErrorCode(e, ErrorCode.Syntax)).toBe(true);
-    expect(() => parse(`RETURN ${Array(100_002).fill('1').join(' + ')} AS r`)).toThrow(
+    expect(() => parse(`RETURN ${Array(10_002).fill('1').join(' + ')} AS r`)).toThrow(
       GqlSyntaxError,
     );
   });
 
-  test('a chain just under the ceiling still parses', () => {
-    // 100_000 terms = 99_999 operators < MAX_CHAIN
-    expect(() => parse(`RETURN ${Array(100_000).fill('true').join(' AND ')} AS r`)).not.toThrow();
+  test('the operator-chain ceiling is configurable per graph', () => {
+    // default: 10_000 ops ok, 10_001 rejected
+    expect(() => parse(`RETURN ${Array(10_001).fill('true').join(' AND ')} AS r`)).not.toThrow();
+    expect(() => parse(`RETURN ${Array(10_002).fill('true').join(' AND ')} AS r`)).toThrow(
+      GqlSyntaxError,
+    );
+    // a lower configured ceiling rejects sooner; a higher one admits more
+    const tight = new Graph({ maxOperatorChain: 5 });
+    expect(() => query(tight, `RETURN ${Array(7).fill('true').join(' AND ')} AS r`)).toThrow(); // 6 ops
+    const loose = new Graph({ maxOperatorChain: 100 });
+    expect(query(loose, `RETURN ${Array(51).fill('true').join(' AND ')} AS r`)).toEqual([
+      { r: true },
+    ]);
   });
 });
 

@@ -34,6 +34,18 @@ export type GraphOptions = {
    * without interrupting dispatch. Mirrors the Emitter's `onError`.
    */
   onError?: (error: unknown) => void;
+
+  /**
+   * The maximum length of a single left-associative operator chain (`a AND b AND
+   * …`, `x + y + …`) a GQL query may contain before the parser rejects it with
+   * `E_SYNTAX`. The associative operator AST is n-ary, so a long chain never
+   * overflows the stack regardless of this value — it is a pure anti-resource-
+   * abuse ceiling (each operand is an allocation + an eval step). Defaults to
+   * 10_000, far beyond any hand- or machine-generated predicate; raise it only if
+   * a legitimate generated query needs longer chains. Mirrors the native engine's
+   * `createEmptyGraph(backend, { maxOperatorChain })`.
+   */
+  maxOperatorChain?: number;
 };
 
 /**
@@ -203,6 +215,10 @@ export class Graph {
   // engine, so the engine stays a pure function of (graph, params).
   private queryClock: Clock | null = null;
 
+  // Anti-resource-abuse ceiling on operator-chain length (see GraphOptions).
+  // Read by `@lenke/gql`'s query entries and passed to the parser. Default 10k.
+  private maxChain = 10_000;
+
   /**
    * Wire (or clear, with `null`) the host {@link Clock} that supplies `$__now`
    * for the ISO now-functions. `@lenke/gql`'s `query`/`gql` call it once per
@@ -222,6 +238,11 @@ export class Graph {
     return this.queryClock;
   }
 
+  /** The operator-chain ceiling (see {@link GraphOptions.maxOperatorChain}). */
+  get maxOperatorChain(): number {
+    return this.maxChain;
+  }
+
   constructor(options: GraphOptions = {}) {
     this.verticesById = new Map();
     this.edgesById = new Map();
@@ -235,6 +256,10 @@ export class Graph {
 
     this.vertexPropertyIndex = new PropertyIndex();
     this.edgePropertyIndex = new PropertyIndex();
+
+    if (options.maxOperatorChain !== undefined) {
+      this.maxChain = options.maxOperatorChain;
+    }
 
     this.mutationVersion = 0;
     this.tokenEpochs = new Map();

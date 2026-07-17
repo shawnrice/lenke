@@ -55,12 +55,20 @@ fn reserved_error(tok: &Token, what: &str) -> SyntaxError {
 /// variant. For the query grammar alone, [`parse_with_dialect`] returns a bare
 /// [`Query`].
 pub fn parse(src: &str) -> Result<Statement, SyntaxError> {
+    parse_with_max_chain(src, DEFAULT_MAX_CHAIN)
+}
+
+/// Like [`parse`] but with a caller-supplied operator-chain ceiling (see
+/// [`DEFAULT_MAX_CHAIN`]). The FFI query path passes the graph's configured value
+/// (`Graph::max_operator_chain`); everything else uses [`parse`]'s default.
+pub fn parse_with_max_chain(src: &str, max_chain: usize) -> Result<Statement, SyntaxError> {
     let tokens = tokenize(src)?;
     let mut p = Parser {
         tokens,
         pos: 0,
         depth: 0,
         dialect: Dialect::Lenke,
+        max_chain,
     };
     p.parse_statement()
 }
@@ -79,6 +87,7 @@ pub fn parse_predicate(src: &str) -> Result<Expr, SyntaxError> {
         pos: 0,
         depth: 0,
         dialect: Dialect::Lenke,
+        max_chain: DEFAULT_MAX_CHAIN,
     };
     let e = p.parse_expr()?;
     if !p.at_end() {
@@ -105,6 +114,7 @@ pub fn parse_with_dialect(src: &str, dialect: Dialect) -> Result<Query, SyntaxEr
         pos: 0,
         depth: 0,
         dialect,
+        max_chain: DEFAULT_MAX_CHAIN,
     };
     p.parse_query()
 }
@@ -116,6 +126,8 @@ struct Parser {
     depth: u32,
     /// Parse dialect — gates sigil extensions like `_MERGE` (see [`Parser::check_ext`]).
     dialect: Dialect,
+    /// Operator-chain ceiling for this parse (see [`DEFAULT_MAX_CHAIN`]).
+    max_chain: usize,
 }
 
 /// Recursion-depth ceiling. Recursive descent over deeply nested input
@@ -129,16 +141,16 @@ struct Parser {
 /// query yet leaves the descent comfortably within a 2 MiB stack.
 const MAX_DEPTH: u32 = 128;
 
-/// Operator-chain sanity ceiling. The associative operator nodes are n-ary (a
-/// flat `Vec`, see `ast::Expr`), so a long chain like `true AND true AND … (500k)`
-/// is *not* a chain-deep tree and every walk over it (eval, compile, drop, the
-/// analysis passes) is a loop bounded by real nesting depth — no stack-overflow
-/// risk regardless of chain length or thread-stack size. This bound is therefore
-/// no longer about crash-safety; it's a pure anti-resource-abuse guard (each
+/// Default operator-chain sanity ceiling. The associative operator nodes are
+/// n-ary (a flat `Vec`, see `ast::Expr`), so a long chain like `true AND true
+/// AND … (500k)` is *not* a chain-deep tree and every walk over it (eval, compile,
+/// drop, the analysis passes) is a loop bounded by real nesting depth — no
+/// stack-overflow risk regardless of chain length or thread-stack size. This bound
+/// is therefore not crash-safety; it's a pure anti-resource-abuse guard (each
 /// operand is an allocation + an eval step), set far beyond any legitimate hand-
-/// or machine-generated predicate. Mirrored in the TS parser so both engines
-/// reject an over-long chain identically (`E_SYNTAX`).
-const MAX_CHAIN: usize = 100_000;
+/// or machine-generated predicate. Configurable per graph
+/// (`createEmptyGraph(backend, { maxOperatorChain })`), mirrored by the TS parser.
+const DEFAULT_MAX_CHAIN: usize = 10_000;
 
 type R<T> = Result<T, SyntaxError>;
 
@@ -782,7 +794,7 @@ impl Parser {
     /// per iteration of an iterative binary-operator loop so an over-long chain
     /// becomes a `SyntaxError` before it can build a stack-overflowing AST.
     fn chain_limit(&self, count: usize) -> R<()> {
-        if count > MAX_CHAIN {
+        if count > self.max_chain {
             return err("Operator chain too long", self.peek().pos);
         }
         Ok(())

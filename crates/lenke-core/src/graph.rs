@@ -561,6 +561,10 @@ pub struct Graph {
     /// must be re-checked at commit (R-TX deferral for edge writes).
     tx_touched_edges: Vec<u32>,
     applying_undo: bool,
+    /// Anti-resource-abuse ceiling on GQL operator-chain length, passed to the
+    /// parser on each query (see `gql::parser::DEFAULT_MAX_CHAIN`). Defaults to
+    /// 10_000; set at graph creation via the native `maxOperatorChain` option.
+    max_operator_chain: usize,
     /// Access mode of the active explicit transaction opened by ISO GQL
     /// `START TRANSACTION READ ONLY` (see the gql eval layer). Set true by that
     /// statement, cleared on commit/rollback. Only the GQL statement executor reads
@@ -2172,6 +2176,18 @@ impl Graph {
         self.tx_read_only = read_only;
     }
 
+    /// The configured operator-chain ceiling (see [`Graph::max_operator_chain`]).
+    #[inline]
+    pub fn max_operator_chain(&self) -> usize {
+        self.max_operator_chain
+    }
+
+    /// Set the operator-chain ceiling (the native `maxOperatorChain` graph option).
+    #[inline]
+    pub fn set_max_operator_chain(&mut self, n: usize) {
+        self.max_operator_chain = n;
+    }
+
     /// Open a transaction frame. Nesting increments depth; the outermost frame
     /// owns commit/rollback (flat, savepoint-less), matching the TS core.
     pub fn begin_tx(&mut self) {
@@ -3201,6 +3217,7 @@ impl Builder {
             tx_touched_edges: Vec::new(),
             applying_undo: false,
             tx_read_only: false,
+            max_operator_chain: 10_000,
         }
     }
 }

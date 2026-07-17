@@ -202,13 +202,21 @@ impl Graph {
         self.inner.edge_indexes()
     }
 
+    /// Set the GQL operator-chain ceiling (the native `maxOperatorChain` option);
+    /// the parser rejects a longer chain with `E_SYNTAX`. Defaults to 10_000.
+    #[napi]
+    pub fn set_max_operator_chain(&mut self, n: f64) {
+        self.inner.set_max_operator_chain(n as usize);
+    }
+
     /// Run a GQL query; returns the `{columns, rows}` JSON document as bytes.
     /// `params_json` optionally carries a flat JSON object of `$name` bindings.
     /// `&mut` because a query may mutate (`INSERT`/`SET`/`REMOVE`/`DELETE`).
     #[napi]
     pub fn query(&mut self, text: String, params_json: Option<String>) -> Result<Buffer> {
         let params = decode_params("query", params_json.as_deref())?;
-        let parsed = lenke_core::gql::parse(&text).map_err(|e| {
+        let parsed = lenke_core::gql::parse_with_max_chain(&text, self.inner.max_operator_chain())
+            .map_err(|e| {
             coded_msg(
                 "query",
                 ErrorCode::Syntax,
@@ -227,7 +235,8 @@ impl Graph {
     #[napi]
     pub fn query_arrow(&mut self, text: String, params_json: Option<String>) -> Result<Buffer> {
         let params = decode_params("queryArrow", params_json.as_deref())?;
-        let parsed = lenke_core::gql::parse(&text).map_err(|e| {
+        let parsed = lenke_core::gql::parse_with_max_chain(&text, self.inner.max_operator_chain())
+            .map_err(|e| {
             coded_msg(
                 "queryArrow",
                 ErrorCode::Syntax,
