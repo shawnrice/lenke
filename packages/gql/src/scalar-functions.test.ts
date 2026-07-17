@@ -90,9 +90,38 @@ describe('GQL: ISO graph / conversion / string-list scalar functions', () => {
     expect(one(`RETURN CAST('nope' AS INT) AS x`)).toBeNull();
   });
 
+  test('temporal CAST targets desugar to the temporal constructor functions', () => {
+    // `one` returns the raw temporal instance; compare its tagged JSON form.
+    const tag = (q: string): unknown => (one(q) as { toJSON(): unknown }).toJSON();
+
+    expect(tag(`RETURN CAST('2020-01-01' AS DATE) AS x`)).toEqual({ '@date': '2020-01-01' });
+    expect(tag(`RETURN CAST('2020-01-01T08:30:00' AS DATETIME) AS x`)).toEqual({
+      '@datetime': '2020-01-01T08:30:00',
+    });
+    // A bare date-only string coerces to midnight for a DATETIME target.
+    expect(tag(`RETURN CAST('2020-01-01' AS TIMESTAMP) AS x`)).toEqual({
+      '@datetime': '2020-01-01T00:00:00',
+    });
+    expect(tag(`RETURN CAST('2020-01-01T08:30:00' AS LOCAL DATETIME) AS x`)).toEqual({
+      '@datetime': '2020-01-01T08:30:00',
+    });
+    expect(tag(`RETURN CAST('08:30:00' AS LOCAL TIME) AS x`)).toEqual({ '@localtime': '08:30:00' });
+    expect(tag(`RETURN CAST('08:30:00+02:00' AS ZONED TIME) AS x`)).toEqual({
+      '@zoned_time': '08:30:00+02:00',
+    });
+    expect(tag(`RETURN CAST('2020-01-01T08:30:00+02:00' AS ZONED DATETIME) AS x`)).toEqual({
+      '@zoned_datetime': '2020-01-01T08:30:00+02:00',
+    });
+    expect(tag(`RETURN CAST('P1Y2M3DT4H' AS DURATION) AS x`)).toEqual({
+      '@duration': 'P14M3DT14400S',
+    });
+    // A non-string operand desugars to the constructor and returns null (lenient).
+    expect(one(`RETURN CAST(1 AS DATE) AS x`)).toBeNull();
+  });
+
   test('CAST to an unrepresentable type is a loud syntax error', () => {
-    expect(() => query(g, `RETURN CAST(1 AS DATE) AS x`)).toThrow(/unsupported type/i);
     expect(() => query(g, `RETURN CAST(1 AS BYTES) AS x`)).toThrow(/unsupported type/i);
+    expect(() => query(g, `RETURN CAST(1 AS RECORD) AS x`)).toThrow(/unsupported type/i);
   });
 
   test('set-style list functions (dedup first-occurrence; sort reuses ORDER BY)', () => {

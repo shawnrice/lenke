@@ -170,6 +170,33 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     expect(tsC).toBe(natC);
   });
 
+  // --- tagged-temporal param revival: a single-key `{'@date':'…'}` param (the
+  // engine's OWN tagged output shape, for @date/@datetime/@localtime/@zoned_time/
+  // @zoned_datetime/@duration) is revived into its temporal value, so the output
+  // round-trips as an input param. Native revives while parsing the param string;
+  // this pins the TS engine to the same behavior (was a silent divergence: TS
+  // left the plain object un-revived → temporal-vs-object compare → UNKNOWN → 0).
+  test('tagged-temporal param revives + round-trips, byte-identical', () => {
+    const [ts, native] = both(`RETURN $asof AS d`, { asof: { '@date': '2020-07-01' } });
+    expect(ts).toBe(native);
+    expect(ts).toBe(`[{"d":{"@date":"2020-07-01"}}]`);
+
+    // The revived param compares as a temporal against a temporal literal.
+    const [tsCmp, natCmp] = both(`RETURN (DATE '2020-06-01' <= $asof) AS le`, {
+      asof: { '@date': '2020-07-01' },
+    });
+    expect(tsCmp).toBe(natCmp);
+    expect(tsCmp).toBe(`[{"le":true}]`);
+
+    // Every tagged kind revives; also inside a list param.
+    const [tsAll, natAll] = both(`RETURN $dt AS dt, $dur AS dur, $xs AS xs`, {
+      dt: { '@datetime': '2020-06-15T08:30:00' },
+      dur: { '@duration': 'P1Y2M3DT4H' },
+      xs: [{ '@date': '2020-01-01' }, { '@localtime': '08:30:00' }],
+    });
+    expect(tsAll).toBe(natAll);
+  });
+
   // --- ANY SHORTEST: the path value serializes byte-identically across engines.
   test('RETURN p — a shortest Path is {vertices, edges, length}, byte-identical', () => {
     const q = `MATCH p = ANY SHORTEST (a)-[]->*(b) WHERE a.name = 'marko' AND b.name = 'lop' RETURN p`;

@@ -2027,6 +2027,17 @@ fn temporal_ctor(v: Option<&Val>, kind: &str) -> Val {
     const SECS_PER_DAY: i64 = 86_400;
     let Some(v) = v else { return Val::Null };
     match v {
+        // A bare date-only `YYYY-MM-DD` (no time part) coerces to midnight for a
+        // datetime target — consistent with date() and the DATE `$__now` → midnight
+        // precedent. Mirrors the TS `temporalCtor`.
+        Val::Str(s) if kind == "datetime" && !s.contains(['T', ' ']) => Date::parse(s)
+            .map(|d| {
+                Val::Temporal(Temporal::DateTime(DateTime {
+                    secs: d.days as i64 * SECS_PER_DAY,
+                    nanos: 0,
+                }))
+            })
+            .unwrap_or(Val::Null),
         Val::Str(s) => Temporal::parse(kind, s)
             .map(Val::Temporal)
             .unwrap_or(Val::Null),

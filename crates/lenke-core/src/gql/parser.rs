@@ -20,6 +20,15 @@ fn cast_target_fn(type_name: &str) -> Option<&'static str> {
         "string" | "text" | "varchar" | "char" => "to_string",
         "bool" | "boolean" => "to_boolean",
         "list" | "array" => "to_list",
+        // Temporal CAST targets desugar to the matching temporal constructor
+        // function; `timestamp` is a DATETIME alias. Mirrors the TS `CAST_TEMPORAL`.
+        "date" => "date",
+        "datetime" | "timestamp" => "datetime",
+        "local_datetime" => "local_datetime",
+        "local_time" => "local_time",
+        "zoned_time" => "zoned_time",
+        "zoned_datetime" => "zoned_datetime",
+        "duration" => "duration",
         _ => return None,
     })
 }
@@ -1054,11 +1063,26 @@ impl Parser {
             );
         }
         self.advance();
-        let fn_name = match cast_target_fn(&type_tok.value) {
+        // Two-word temporal type names: `LOCAL DATETIME` / `LOCAL TIME` /
+        // `ZONED TIME` / `ZONED DATETIME`. The compact `LOCAL_DATETIME` keyword
+        // forms are single tokens and fall through unchanged. Mirrors TS `parseCast`.
+        let mut type_name = type_tok.value.clone();
+        let lead = type_name.to_ascii_lowercase();
+        if lead == "local" || lead == "zoned" {
+            let next = self.peek().clone();
+            if next.tt == Tt::Ident || next.tt == Tt::Keyword {
+                let word = next.value.to_ascii_lowercase();
+                if word == "datetime" || word == "time" {
+                    self.advance();
+                    type_name = format!("{lead}_{word}");
+                }
+            }
+        }
+        let fn_name = match cast_target_fn(&type_name) {
             Some(f) => f,
             None => {
                 return err(
-                    format!("CAST to unsupported type '{}'", type_tok.value),
+                    format!("CAST to unsupported type '{type_name}'"),
                     type_tok.pos,
                 )
             }

@@ -141,6 +141,29 @@ suite('GQL function differential (TS vs native)', () => {
     `CAST(n.s AS TEXT)`,
     `CAST(CAST('42' AS INT) AS STRING)`,
     `CAST('nope' AS INT)`,
+    // Slice 7b — temporal CAST targets desugar to the temporal constructor
+    // functions (date/datetime/local_time/zoned_*/duration). Single-word and the
+    // two-word `LOCAL DATETIME` / `LOCAL TIME` / `ZONED TIME` / `ZONED DATETIME`
+    // spellings; `TIMESTAMP` is a DATETIME alias.
+    `CAST('2020-01-01' AS DATE)`,
+    `CAST('2020-06-15T08:30:00' AS DATETIME)`,
+    `CAST('2020-06-15T08:30:00' AS TIMESTAMP)`,
+    `CAST('2020-06-15T08:30:00' AS LOCAL DATETIME)`,
+    `CAST('08:30:00' AS LOCAL TIME)`,
+    `CAST('08:30:00+02:00' AS ZONED TIME)`,
+    `CAST('2020-06-15T08:30:00+02:00' AS ZONED DATETIME)`,
+    `CAST('P1Y2M3DT4H' AS DURATION)`,
+    // A bare date-only string coerces to midnight for a datetime CAST (bug 3).
+    `CAST('2020-06-15' AS DATETIME)`,
+    `CAST('not-a-date' AS DATE)`,
+    // Slice 7c — datetime()/local_datetime() coerce a bare date-only string to
+    // midnight, consistent with date() (bug 3). date() unchanged; a datetime with
+    // a real time part is untouched.
+    `datetime('2020-06-15')`,
+    `local_datetime('2020-06-15')`,
+    `datetime('2020-06-15T08:30:00')`,
+    `date('2020-06-15')`,
+    `datetime('nope')`,
     // Slice 8 — infix CONTAINS / STARTS WITH / ENDS WITH predicates.
     `n.s CONTAINS 'World'`,
     `n.s CONTAINS 'xyz'`,

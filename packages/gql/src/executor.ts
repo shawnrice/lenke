@@ -3,6 +3,7 @@ import {
   type AlgorithmConfig,
   type AlgorithmName,
   durationBetween,
+  fromTaggedJson,
   isTemporal,
   LocalDate,
   LocalTime,
@@ -978,6 +979,19 @@ const temporalCtor = (
   }
 
   if (typeof v === 'string') {
+    // A bare date-only `YYYY-MM-DD` (no time part) coerces to midnight for a
+    // datetime target — consistent with date() and the DATE `$__now` → midnight
+    // precedent. Mirrors the Rust `temporal_ctor`.
+    if (kind === 'datetime' && !/[T ]/.test(v)) {
+      try {
+        const d = temporalParse('date', v) as LocalDate;
+
+        return new LocalDateTime(d.days * 86_400, 0);
+      } catch {
+        return null;
+      }
+    }
+
     try {
       return temporalParse(kind, v);
     } catch {
@@ -4680,6 +4694,36 @@ const combineRows = (op: SetOp, left: readonly Row[], right: readonly Row[]): Ro
 type CQuery = { parts: readonly CLinear[]; ops: readonly SetOp[] };
 
 /**
+ * Revive a single param value: a single-key tagged-temporal object
+ * (`{'@date':'…'}`) becomes its `Temporal`, a list has its elements revived
+ * (mirroring the Rust param parser, which revives tagged temporals inside a list
+ * too), anything else passes through unchanged.
+ */
+const reviveParamValue = (v: unknown): unknown => {
+  if (Array.isArray(v)) {
+    return v.map(reviveParamValue);
+  }
+
+  return fromTaggedJson(v) ?? v;
+};
+
+/** Revive every param value, sharing the input object when nothing changed. */
+const reviveParams = (params: Params): Params => {
+  let out: Params | null = null;
+
+  for (const key of Object.keys(params)) {
+    const revived = reviveParamValue(params[key]);
+
+    if (revived !== params[key]) {
+      out ??= { ...params };
+      out[key] = revived;
+    }
+  }
+
+  return out ?? params;
+};
+
+/**
  * Compile a parsed query into a reusable `Plan`. All graph/param-independent
  * work — operator dispatch, aggregate detection, alias resolution, label-seed
  * selection — happens here, once. Run the returned plan against any graph and
@@ -4719,7 +4763,14 @@ export const compile = <R extends Row = Row>(query: Query): Plan<R> => {
   const names = [...referenced];
 
   // Rows are `Row` at runtime; `R` is the caller's asserted shape (see `Plan`).
-  const plan: Plan = (graph, params = {}) => {
+  const plan: Plan = (graph, rawParams = {}) => {
+    // Revive any single-key tagged-temporal object param (`{'@date':'…'}`,
+    // `@datetime`, `@localtime`, `@zoned_time`, `@zoned_datetime`, `@duration`)
+    // into its temporal value, so the engine's OWN tagged output round-trips as
+    // an input param. The Rust engine already does this while parsing its param
+    // string (`temporal_object`); this closes the byte-identity gap.
+    const params = reviveParams(rawParams);
+
     // Eager param validation: a `$name` the query references but the caller
     // didn't bind is a programming error — throw before running, not a silent
     // empty result. (The Rust engine does the same in `positional`.)

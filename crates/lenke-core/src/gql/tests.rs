@@ -1963,8 +1963,12 @@ fn cast_desugars_to_conversion_functions() {
 
 #[test]
 fn cast_to_unrepresentable_type_is_a_syntax_error() {
-    assert!(parse("RETURN CAST(1 AS DATE) AS x").is_err());
     assert!(parse("RETURN CAST(1 AS BYTES) AS x").is_err());
+    assert!(parse("RETURN CAST(1 AS RECORD) AS x").is_err());
+    // A temporal target (DATE/DATETIME/…) is now a representable CAST that
+    // desugars to the temporal constructor function — no longer a syntax error.
+    assert!(parse("RETURN CAST('2020-01-01' AS DATE) AS x").is_ok());
+    assert!(parse("RETURN CAST('2020-01-01T00:00:00' AS LOCAL DATETIME) AS x").is_ok());
 }
 
 #[test]

@@ -112,6 +112,18 @@ const CAST_FLOAT = new Set([
 const CAST_STRING = new Set(['string', 'text', 'varchar', 'char']);
 const CAST_BOOL = new Set(['bool', 'boolean']);
 const CAST_LIST = new Set(['list', 'array']);
+// Temporal CAST targets desugar to the matching temporal constructor function
+// (`date()`/`datetime()`/`local_time()`/…). `timestamp` is a DATETIME alias.
+const CAST_TEMPORAL = new Map<string, string>([
+  ['date', 'date'],
+  ['datetime', 'datetime'],
+  ['timestamp', 'datetime'],
+  ['local_datetime', 'local_datetime'],
+  ['local_time', 'local_time'],
+  ['zoned_time', 'zoned_time'],
+  ['zoned_datetime', 'zoned_datetime'],
+  ['duration', 'duration'],
+]);
 
 const castTargetFn = (typeName: string): string | null => {
   const t = typeName.toLowerCase();
@@ -136,7 +148,7 @@ const castTargetFn = (typeName: string): string | null => {
     return 'to_list';
   }
 
-  return null;
+  return CAST_TEMPORAL.get(t) ?? null;
 };
 
 /** Map the surrounding-arrow booleans to a relationship direction. */
@@ -1060,10 +1072,30 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Statement => {
     }
 
     advance();
-    const fn = castTargetFn(typeTok.value);
+
+    // Two-word temporal type names: `LOCAL DATETIME` / `LOCAL TIME` /
+    // `ZONED TIME` / `ZONED DATETIME`. The compact `LOCAL_DATETIME` keyword forms
+    // are single tokens and fall through unchanged.
+    let typeName = typeTok.value;
+    const lead = typeName.toLowerCase();
+
+    if (lead === 'local' || lead === 'zoned') {
+      const next = peek();
+
+      if (next.type === 'ident' || next.type === 'keyword') {
+        const word = next.value.toLowerCase();
+
+        if (word === 'datetime' || word === 'time') {
+          advance();
+          typeName = `${lead}_${word}`;
+        }
+      }
+    }
+
+    const fn = castTargetFn(typeName);
 
     if (fn === null) {
-      throw new GqlSyntaxError(`CAST to unsupported type '${typeTok.value}'`, typeTok.pos);
+      throw new GqlSyntaxError(`CAST to unsupported type '${typeName}'`, typeTok.pos);
     }
 
     expect('rparen', "')' to close CAST");
