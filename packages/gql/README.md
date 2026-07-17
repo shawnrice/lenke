@@ -88,16 +88,26 @@ Both engines (this TS engine and the Rust core) produce **byte-identical** resul
 - **`null` is a first-class stored property value** (distinct from absent); remove a property with `REMOVE`, never `SET x.k = null`.
 - **Ordering across unlike types.** ISO GQL doesn't define an order between different value types, so `ORDER BY` / `min` / `max` / `list_sort` impose a deterministic **total order across type groups** — `number < string < boolean < other` (graph elements/lists) — with **nulls last** by default (overridable with `NULLS FIRST`/`LAST`). The relational operators `< > <= >=` are unaffected: comparing unlike types there is still `UNKNOWN`, per ISO.
 
-### Temporal values (`DATE` / `LOCAL DATETIME` / `DURATION`)
+### Temporal values (`DATE` / `DATETIME` / `TIME` / zoned / `DURATION`)
 
-ISO temporal types are first-class stored values (zone-less; `ZONED DATETIME`/`TIME` are future work), byte-identical between the TS and Rust engines.
+ISO temporal types are first-class stored values, byte-identical between the TS and Rust engines. Both zone-less (`DATE`, `LOCAL TIME`, `LOCAL DATETIME`) and zoned (`ZONED TIME`, `ZONED DATETIME`) kinds are supported, plus `DURATION`.
 
-- **Literals**: `DATE '2020-01-01'`, `DATETIME '2020-01-01T10:15:30'` (or `TIMESTAMP '…'`), `DURATION 'P1Y2M3DT4H5M6S'`. Written as a type keyword before a string.
+- **Literals**: `DATE '2020-01-15'`, `DATETIME '2020-01-01T10:15:30'` (or `TIMESTAMP '…'`), `DURATION 'P1Y2M3DT4H5M6S'`. Written as a type keyword before a string. Time-of-day and zoned kinds are reached through their constructors (below).
 - **Comparison**: `< > <= >=` on dates/datetimes is chronological; a `DURATION` (like a SQL interval) and any cross-kind pair are `UNKNOWN`. `ORDER BY` uses a deterministic total order (durations sort lexicographically). So valid-time as-of filtering just works: `MATCH (f) WHERE f.vfrom <= DATE '2021-06-01' AND DATE '2021-06-01' < f.vto RETURN f`.
-- **Constructors** (the function form of the types — takes any expression, so it converts a loaded string column): `date(x)`, `local_datetime(x)` (alias `datetime`), `duration(x)`. Parse a string, or convert a temporal by kind (`date(datetime)` → the date part). A null / bad string / unconvertible pair → null. E.g. `SET n.hired = date(n.hiredStr)`.
+- **Constructors** (the function form of the types — takes any expression, so they convert a loaded string column): `date(x)`, `local_datetime(x)` (alias `datetime`), `local_time(x)`, `zoned_time(x)`, `zoned_datetime(x)`, `duration(x)`. Parse a string, or convert a temporal by kind (`date(datetime)` → the date part). A null / bad string / unconvertible pair → null. E.g. `SET n.hired = date(n.hiredStr)`; `RETURN zoned_datetime('2020-01-01T10:15:30+02:00') AS z` → `2020-01-01T10:15:30+02:00`.
 - **`duration_between(a, b)`** — the **exact** elapsed span (a measurement between two pinned points, so never calendar months): whole days for two dates, seconds for two datetimes. `duration_between(DATE '2020-01-15', DATE '2020-04-20')` → `P96D`.
 - **Arithmetic** — `date/datetime ± duration` anchors the (nominal) duration to the concrete date: **calendar months are added first, clamping the day to the new month's length** (`DATE '2020-01-31' + DURATION 'P1M'` → `2020-02-29`), then days, then time. `instant − instant` → the exact span; `duration ± duration` is component-wise; `duration × integer` scales.
-- **`current_date` / `current_timestamp` / `local_timestamp`** — the current instant, kept **deterministic and byte-identical by never reading a clock**: each reads a reserved `$__now` DATETIME the host supplies (`current_timestamp`/`local_timestamp` → `$__now`; `current_date` → its date part). Pass it like any binding — `query(g, 'RETURN current_date AS today', { __now: parseDateTime('2026-07-12T10:30:45') })` → `2026-07-12`. With no `$__now` supplied they read as `null` (the engine never invents a time). Call with or without parens (`current_timestamp` ≡ `current_timestamp()`).
+- **`current_date` / `current_timestamp` / `local_timestamp`** — the current instant, read from a **host-injected clock** so results stay deterministic by default (the engine never reads a clock itself). Wire wall time on the graph with `setClock`, and the now-functions pick it up:
+
+  ```ts
+  import { Graph, LocalDateTime } from '@lenke/core';
+  const g = new Graph().setClock(() => LocalDateTime.fromJSDate(new Date(), { zone: 'utc' }));
+  query(g, `RETURN current_date AS today`); // → [{ today: <today's date> }]
+  ```
+
+  `current_date` is the clock's date part; `current_timestamp`/`local_timestamp` its datetime. With **no clock wired** (and no explicit `$__now` param) they read as `null` — the engine invents no time. For a fixed, reproducible instant (tests/repro), pass an explicit `$__now` DATETIME, which always overrides the clock: `query(g, 'RETURN current_date AS today', { __now: parseDateTime('2026-07-12T10:30:45') })` → `2026-07-12`. Call with or without parens (`current_timestamp` ≡ `current_timestamp()`).
+
+- **Passing a temporal as a param.** Bind a temporal value, not a raw string, so comparison stays chronological. Two stable patterns: wrap the param with the matching constructor in the query — `WHERE f.d <= date($asof)` with `{ asof: '2021-06-01' }` — or pass a lenke temporal instance directly — `WHERE f.d <= $asof` with `{ asof: parseDate('2021-06-01') }` (`parseDate`/`parseDateTime`/… and the `LocalDate`/`LocalDateTime`/… classes come from `@lenke/core`). Both are byte-identical; pick whichever keeps the call site cleaner.
 
 **JavaScript interop.** lenke is not a date library — it stores and queries; do date math and formatting in your library of choice and bridge cleanly. Reading a temporal from a result gives a `LocalDate`/`LocalDateTime`/`Duration` (from `@lenke/core`):
 
@@ -135,6 +145,46 @@ Two more runtime errors worth knowing:
   ```
 
   Function/aggregate names (`count`, `sum`, `avg`, `min`, `max`) and words like `group`/`value`/`key`/`order` are all reserved; the full list is the ISO/IEC 39075 `<reserved word>` + `<pre-reserved word>` set (verbatim in `lexer.ts`). To avoid escaping altogether, ISO GQL itself recommends naming identifiers so they don't collide with a reserved word — a trailing underscore (`Order_`) for a single word, or camelCase/PascalCase for the rest; see the ISO/IEC 39075 identifier rules (and the vendor GQL guides that restate them).
+
+## Graph algorithms (`CALL … YIELD`)
+
+The in-engine graph algorithms are reachable from GQL through the ISO named-procedure form — `CALL <name>(config) YIELD <columns>` — so an analytical run composes into an ordinary query (`ORDER BY`, `LIMIT`, joins onto the yielded `node`):
+
+```ts
+// top vertex by PageRank
+query(g, `CALL pagerank() YIELD node, score RETURN node.name AS n ORDER BY score DESC, n LIMIT 1`);
+// => [{ n: 'c' }]
+```
+
+The built-in procedures and their `YIELD` columns:
+
+| Procedure              | Yields                | Notes                                                           |
+| ---------------------- | --------------------- | --------------------------------------------------------------- |
+| `pagerank`             | `node`, `score`       | `{ iterations, dampingFactor, weightProperty }`                 |
+| `connected_components` | `node`, `componentId` | weakly-connected; id = the component's first-seen vertex        |
+| `label_propagation`    | `node`, `label`       | `{ iterations }`                                                |
+| `peer_pressure`        | `node`, `cluster`     | community detection                                             |
+| `degree`               | `node`, `degree`      | `{ direction: 'out' \| 'in' \| 'both', edgeLabel }`             |
+| `shortest_path`        | `node`, `distance`    | `{ source, target, weightProperty }` (source is an external id) |
+
+The `config` map is optional (`CALL pagerank()`), and each procedure reads only the fields it needs. Results are **byte-identical** to the `@lenke/core` free functions (`pagerank(config, graph)`), the native `RustGraph` methods, and the Gremlin steps — same computation, four surfaces. GQL's other `CALL` form, the inline subquery `CALL (scope) { … }` (a correlated lateral join), is also supported.
+
+## Constraints & validators
+
+Beyond the unique constraint below, a graph carries the full R-CONSTRAINTS surface — enforced at the mutation boundary on **both** engines, throwing `ErrorCode.ConstraintViolation` on a violating write. The core primitives (`createRequiredConstraint`, `createTypeConstraint`, `createCardinalityConstraint`, edge variants) live on the `Graph` — see [`@lenke/core`](../core#constraints). `@lenke/gql` adds two that need a GQL expression:
+
+```ts
+import { createValidator, createInvariant } from '@lenke/gql';
+
+// per-element CHECK: the predicate is exactly what can follow WHERE, bound to `u`
+createValidator(g, 'User', 'u', 'u.age >= 0 AND u.age < 150');
+query(g, `INSERT (:User {name: 'E', age: 999})`); // → throws E_CONSTRAINT_VIOLATION
+
+// whole-graph invariant, re-checked at each commit
+createInvariant(g, 'balanced', 'MATCH (a:Acct) RETURN sum(a.balance) = 0');
+```
+
+`createValidator` follows SQL-`CHECK` semantics (a write is rejected only on a _definite_ `false`; `null`/unknown passes). Both are declared once, scan existing data at declare time, and defer to the transaction/statement commit like every other constraint.
 
 ## Upsert: unique constraints + `_MERGE`
 

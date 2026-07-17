@@ -114,6 +114,42 @@ const onACycle = cycles.some((p) => p[0] === p.at(-1));
 
 (`until()` is do-while — it checks before each body step — and without `until()`/`times()` a `repeat` is capped at 100 iterations.)
 
+## Graph algorithms
+
+The in-engine whole-graph algorithms surface as `GraphComputer`-style steps: `pageRank`, `connectedComponent`, `peerPressure`, and `shortestPath` (shown above). Each annotates every vertex with its result under a property, so you read the score back with a normal projection (`values(...)`) and keep traversing:
+
+```ts
+import {
+  traversal,
+  toArray,
+  V,
+  pageRank,
+  PageRank,
+  connectedComponent,
+  ConnectedComponent,
+  values,
+} from '@lenke/gremlin';
+
+// PageRank scores, written to a property of your choice
+const ranks = toArray(
+  traversal(V(), pageRank().with(PageRank.propertyName, 'rank'), values('rank')),
+  g,
+);
+// => [0.2128, 0.2128, 0.5745]
+
+// weakly-connected component ids
+const comps = toArray(
+  traversal(
+    V(),
+    connectedComponent().with(ConnectedComponent.propertyName, 'comp'),
+    values('comp'),
+  ),
+  g,
+);
+```
+
+Each step is a builder configured with `.with(<Token>, value)`: `pageRank(alpha?)` takes `PageRank.propertyName` / `PageRank.times`; `peerPressure()` takes `PeerPressure.propertyName` / `PeerPressure.times`; `connectedComponent()` takes `ConnectedComponent.propertyName`. Without an explicit `propertyName` the result lands under the TinkerPop default key (e.g. `gremlin.pageRankVertexProgram.pageRank`). Results are **byte-identical** to the same algorithms run via `@lenke/core`'s `pagerank(config, graph)` free functions, the native `RustGraph` methods, and GQL's `CALL pagerank() YIELD …`.
+
 ## Predicates
 
 Filter steps such as `has` and `is` take predicate values, built by predicate constructors: `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `between` (half-open `[min, max)`), `inside`, `outside`, `within`, `without`, `startsWith`, `endingWith`, `containing`, `notContaining`, `regex`, and `not(predicate)`. `has(key, value)` is shorthand for `has(key, eq(value))`.

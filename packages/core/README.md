@@ -86,6 +86,94 @@ The singular property-change events (`VertexPropertyChanged` / `EdgePropertyChan
 
 `graph.clone()` produces an independent deep copy; `graph.snapshot()` returns the live graph for reads; `graph.truncate()` empties the graph while keeping declared indexes.
 
+## Transactions
+
+Wrap a set of writes in `graph.transaction(fn)` and they apply atomically: the callback's writes commit together, or — if it throws — roll back as if none happened (buffered events are discarded, not dispatched). This is the engine-neutral transaction surface: the same mechanism backs both `@lenke/gql` and `@lenke/gremlin`, and any constraints (below) are checked once at the commit boundary.
+
+```ts
+const a = graph.addVertex({ labels: ['Acct'], properties: { name: 'a', balance: 100 } });
+const b = graph.addVertex({ labels: ['Acct'], properties: { name: 'b', balance: 0 } });
+
+try {
+  graph.transaction(() => {
+    a.setProperty('balance', a.getProperty<number>('balance') - 100);
+    b.setProperty('balance', b.getProperty<number>('balance') + 100);
+    throw new Error('abort'); // → both writes revert
+  });
+} catch {}
+// a.balance === 100, b.balance === 0  (neither write survived)
+```
+
+For explicit control there's a TinkerPop-style handle — `const t = graph.tx(); …; t.commit()` (or `t.rollback()`). Transactions are flat (savepoint-less): a nested `transaction(...)` joins the outer frame, which owns the commit.
+
+## Constraints
+
+Declare integrity rules enforced **at the mutation boundary** — a violating write throws `ErrorCode.ConstraintViolation` (and, inside a transaction, rolls the whole thing back). They're host APIs (not query DDL), so both query engines honor them identically, and declaring one that existing data already violates throws immediately.
+
+```ts
+graph.createUniqueConstraint('User', 'email'); // ≤ one live :User per non-null email
+graph.createRequiredConstraint('User', 'name'); // every :User must carry name
+graph.createTypeConstraint('User', 'age', 'number'); // age, if present, is a number
+```
+
+- `createUniqueConstraint(label, key)` — index-backed; null values are exempt (SQL semantics). It's also what `_MERGE` upserts on (see [`@lenke/gql`](../gql)).
+- `createRequiredConstraint(label, key)` — the key must be present.
+- `createTypeConstraint(label, key, type)` — `type` is a `ScalarTypeName` (`'string' | 'number' | 'boolean' | 'date' | 'datetime' | 'duration' | 'list'`).
+- `createCardinalityConstraint(label, edgeType, direction, min, max)` — bound a vertex's degree along an edge type (`direction` is `'out' | 'in'`; `max` may be `null` for unbounded).
+
+Edge analogues exist too (`createEdgeUniqueConstraint`, `createEdgeRequiredConstraint`, `createEdgeTypeConstraint`), each with `drop*` / introspection companions. `@lenke/gql` layers two GQL-expression constraints on top — `createValidator(graph, label, varName, predicate)` (a per-element SQL-`CHECK`) and `createInvariant(graph, name, query)` (a whole-graph assertion re-checked at each commit).
+
+## Schema validation (`defineNode`)
+
+`defineNode(label, schema)` binds a node label to any [Standard Schema](https://standardschema.dev) — a Zod (≥3.24), Valibot, or ArkType object schema, or anything exposing `~standard` — with **zero added dependency** and full type inference (lenke owns no schema DSL; you bring your validator):
+
+```ts
+import { z } from 'zod';
+import { defineNode } from '@lenke/core';
+
+const User = defineNode('User', z.object({ name: z.string().trim(), age: z.number().optional() }));
+
+const v = await User.create(graph, { name: '  ada  ' }); // validates, then writes a :User vertex
+User.parse({ name: 'ada' }); // validate only, no write
+```
+
+`create` validates HOST-side and stores the schema's **output** — a schema that trims/defaults/coerces persists the normalized value (`v.getProperty('name') === 'ada'` above). A failure throws `ConstraintViolation` listing every issue; both `create` and `parse` are async (a Standard Schema may validate asynchronously). Because it runs in JS before the write, `defineNode` guards `create` calls — **not** a raw GQL `INSERT`; for engine-level enforcement that also covers raw writes, use the constraints above. The two compose cleanly: a schema at the app boundary, constraints at the engine.
+
+## Graph algorithms
+
+Whole-graph computations ship as data-last, **async** free functions — `degree`, `connectedComponents`, `labelPropagation`, `pagerank`, `peerPressure`, `shortestPath`:
+
+```ts
+import { pagerank } from '@lenke/core';
+
+const scores = await pagerank({ iterations: 20 }, graph);
+// → [{ node: '…', score: 0.2128 }, …]   (data-last: pagerank(config)(graph) also composes under pipe)
+```
+
+They're always async so a long run never blocks the event loop (the pure-TS driver checkpoints on a ~5 ms time budget). A `writeProperty` config writes each result back onto its vertex — `pagerank({ writeProperty: 'pr' }, graph)`, then read `p.pr`. The `config` shape (`edgeLabel`, `direction`, `weightProperty`, `dampingFactor`, `iterations`, `source`/`target`, …) is portable verbatim to the native engine. The same computations are reachable from the native `RustGraph` (`g.pagerank(config)`, off-thread), from GQL (`CALL pagerank() YIELD node, score`), and from Gremlin (`pageRank()`) — **byte-identical** across all four. See [`src/algorithms/README.md`](src/algorithms/README.md) for the worker-offload recipe and which form to reach for.
+
+## Temporal values & the host clock
+
+lenke stores ISO temporal values as first-class property values — `LocalDate`, `LocalTime`, `LocalDateTime`, `ZonedTime`, `ZonedDateTime`, `Duration` (all exported). Construct one with a `parse*` helper and store it like any value:
+
+```ts
+import { parseDate } from '@lenke/core';
+
+vertex.setProperty('hired', parseDate('2020-01-15'));
+```
+
+Reading one back gives the same class, which bridges to your date library via `.toISOString()` / `.toTemporal()` (a TC39 `Temporal.Plain*`). A native `Date` is deliberately **not** auto-coerced (it's a zoned instant; the local types are zone-less) — pass an ISO string, a `Temporal.Plain*`, or `LocalDateTime.fromJSDate(d, { zone })`.
+
+**Current time is host-injected.** The GQL now-functions (`current_date` / `current_timestamp`) read a clock you wire, keeping results deterministic by default. Wire wall time with `setClock` (chainable, returns the graph):
+
+```ts
+import { LocalDateTime } from '@lenke/core';
+
+graph.setClock(() => LocalDateTime.fromJSDate(new Date(), { zone: 'utc' }));
+```
+
+With no clock wired (and no explicit `$__now` param) the now-functions read as `null` — the engine never invents a time. See [`@lenke/gql`](../gql) for the full temporal query surface (literals, constructors, arithmetic, ordering).
+
 ## License
 
 Apache-2.0
