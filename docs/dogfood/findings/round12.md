@@ -121,7 +121,8 @@ The three real findings were triaged with the user and fixed the same session:
   free-var/slot analysis, conjunct splitting, index-range coalescing, and the TS
   compile-to-closure evaluator — is now a loop bounded by real nesting depth
   (paren depth, capped at 128). `MAX_CHAIN` is demoted to a pure anti-resource-
-  abuse bound (100k). Behaviour preserved exactly (left-to-right fold, no
+  abuse bound, default 10k, configurable per graph (`new Graph({ maxOperatorChain })` /
+  `createEmptyGraph(backend, { maxOperatorChain })`). Behaviour preserved exactly (left-to-right fold, no
   short-circuit, three-valued logic, float associativity, div-zero fault, null
   propagation), pinned by a new golden regression suite (native + TS) written
   _before_ the refactor. Proven by evaluating 500k-term AND/ADD chains in both

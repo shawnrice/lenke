@@ -22,7 +22,7 @@ capacity note **S1** plus the carried-over inbox below.
   every walk (both native evaluators, compile, drop, the analysis passes, the TS
   compile-to-closure evaluator) is a loop bounded by real nesting depth. Deep chains now
   _evaluate_ on any stack (proven at 500k terms); `MAX_CHAIN` is demoted to a pure
-  anti-resource-abuse bound (100k). Behaviour pinned by a golden regression suite written
+  anti-resource-abuse bound (default 10k, configurable per graph). Behaviour pinned by a golden regression suite written
   before the refactor; no follow-up needed.
 - **F3 · UNIQUE check timing** → `569bf2b`. Removed the GQL executor's eager INSERT/SET
   pre-checks; the core already defers unique/required/type to commit (`runDeferredChecks`),
