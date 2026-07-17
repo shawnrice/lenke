@@ -52,8 +52,9 @@ also reproduces at 35k terms over the napi backend). Root cause is precise and l
 
 TS hits the same deep tree and throws an **uncatchable `RangeError`** ("Maximum call
 stack size exceeded") — it survives under Bun's top-level catch but is uncoded, so the
-two engines already diverged here. **Fixed** (`8001891`): a shared `MAX_CHAIN` bound in
-both parsers → `E_SYNTAX`, byte-identical. See Fixes below.
+two engines already diverged here. **Fixed** in two steps: a shared `MAX_CHAIN` bound
+(`8001891`), then an **n-ary AST refactor** that removes the stack dependence entirely so
+a long chain evaluates on any stack instead of being rejected. See Fixes below.
 
 ## Divergences (FuzzHunter2)
 
@@ -107,15 +108,25 @@ range predicates) worked.
 
 The three real findings were triaged with the user and fixed the same session:
 
-- **`8001891`** (C1, crash) bound each iterative binary-operator loop
-  (`AND`/`OR`/`XOR`/`||`/`+`/`*`) to `MAX_CHAIN = 10_000` in **both** engines,
-  returning `E_SYNTAX` past the bound. Measured headroom: FFI and napi-worker
-  stacks handle recursive eval/drop past 20k, so the cap sits far below the crash
-  point yet above any realistic predicate. (Assessed the additional iterative
-  eval/drop rewrite the combination-robustness idea called for and found it
-  unnecessary _and_ costly under the cap — recursive eval/drop is measured safe at
-  the ceiling on every backend, and a custom `Expr::Drop` would tax the hot path;
-  the cap alone is the byte-identity-preserving fix.)
+- **`8001891`** (C1, crash — first cut) bound each iterative binary-operator loop
+  (`AND`/`OR`/`XOR`/`||`/`+`/`*`) to `MAX_CHAIN` in **both** engines, returning
+  `E_SYNTAX` past the bound — stopping the crash immediately and byte-identically.
+- **`7c38102`, `0336257`, `2603bb9`** (C1 hardening — depth-independence) then
+  removed the stack dependence entirely, so the fix holds on _any_ stack (a
+  128 KB musl thread, WASM) rather than relying on a stack-tuned cap value. The
+  associative operator AST is now **n-ary** in both engines (`And`/`Or`/`Xor`/
+  `Concat` hold a flat `Vec`; `Arith` holds `head` + a `(op, operand)` tail), so a
+  long chain is a flat list, not a chain-deep tree. Every walk over it — both
+  native evaluators, the compile step, the RPN emitter, aggregate extraction,
+  free-var/slot analysis, conjunct splitting, index-range coalescing, and the TS
+  compile-to-closure evaluator — is now a loop bounded by real nesting depth
+  (paren depth, capped at 128). `MAX_CHAIN` is demoted to a pure anti-resource-
+  abuse bound (100k). Behaviour preserved exactly (left-to-right fold, no
+  short-circuit, three-valued logic, float associativity, div-zero fault, null
+  propagation), pinned by a new golden regression suite (native + TS) written
+  _before_ the refactor. Proven by evaluating 500k-term AND/ADD chains in both
+  engines — agreeing exactly — where the old binary tree SIGSEGV'd (~40k native)
+  or threw an uncatchable `RangeError` (TS).
 - **`6654813`** (F1) reject lone/unpaired UTF-16 surrogates at the two TS ingest
   boundaries (`@lenke/serialization` value normalizer + `@lenke/gql` param
   validation) with `E_INVALID_JSON`, matching native's serde rejection. Valid

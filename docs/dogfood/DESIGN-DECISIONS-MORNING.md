@@ -14,13 +14,16 @@ capacity note **S1** plus the carried-over inbox below.
 
 ## ✅ Fixed this session (was top priority)
 
-- **C1 · native SIGSEGV on a long operator chain** → `8001891`. Bounded each iterative
-  binary-operator loop to `MAX_CHAIN = 10_000` in both engines (`E_SYNTAX` past the
-  bound). We considered the additional iterative-eval/custom-`Drop` rewrite for
-  defense-in-depth but measured that recursive eval/drop is safe past 20k on every
-  backend (FFI + napi worker), so the cap alone is sufficient and byte-identity-preserving
-  — and a custom `Expr::Drop` would tax the hot path. Revisit only if the 10k ceiling ever
-  proves too low for a real workload.
+- **C1 · native SIGSEGV on a long operator chain** → `8001891` (cap), then
+  `7c38102`/`0336257`/`2603bb9` (n-ary AST). First a shared `MAX_CHAIN` bound stopped the
+  crash byte-identically. Then — since a stack-tuned cap value is environment-dependent (a
+  128 KB musl thread or WASM could crash below it) — the associative operator AST was made
+  **n-ary** in both engines, so a long chain is a flat `Vec`, not a chain-deep tree, and
+  every walk (both native evaluators, compile, drop, the analysis passes, the TS
+  compile-to-closure evaluator) is a loop bounded by real nesting depth. Deep chains now
+  _evaluate_ on any stack (proven at 500k terms); `MAX_CHAIN` is demoted to a pure
+  anti-resource-abuse bound (100k). Behaviour pinned by a golden regression suite written
+  before the refactor; no follow-up needed.
 - **F3 · UNIQUE check timing** → `569bf2b`. Removed the GQL executor's eager INSERT/SET
   pre-checks; the core already defers unique/required/type to commit (`runDeferredChecks`),
   so TS now matches native's R-TX deferred semantics.
