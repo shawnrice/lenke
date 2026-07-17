@@ -3,7 +3,7 @@ import { describe, expect, test } from 'bun:test';
 import { Graph } from '@lenke/core';
 import { deserialize } from '@lenke/serialization';
 
-import { query } from './index.js';
+import { prepare, query } from './index.js';
 
 // Behavioral golden tests for operator-CHAIN semantics, pinned BEFORE the n-ary
 // AST flatten refactor (round-12 C1 hardening) so a regression in precedence,
@@ -143,5 +143,18 @@ describe('operator-chain semantics (n-ary refactor regression guard)', () => {
         colA(g, 'MATCH (n:N) WHERE n.id = $x AND n.b = $y RETURN n.a AS a', { x: 'n6', y: 0 }),
       ).toEqual([6]);
     }
+  });
+
+  test('a prepared statement honours the operator-chain ceiling too (default 10k, configurable)', () => {
+    const over = `RETURN ${Array(10_002).fill('true').join(' AND ')} AS r`; // 10_001 ops
+
+    expect(() => prepare(over)).toThrow(); // default 10k rejects
+    const plan = prepare<{ r: boolean }>(
+      `RETURN ${Array(50_000).fill('true').join(' AND ')} AS r`,
+      {
+        maxOperatorChain: 200_000,
+      },
+    );
+    expect(plan(new Graph())).toEqual([{ r: true }]);
   });
 });

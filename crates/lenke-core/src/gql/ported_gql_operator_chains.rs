@@ -8,9 +8,23 @@
 //! values were captured from the pre-refactor engine, where TS and native agree.
 
 use super::eval::{Params, Val};
-use super::parse;
+use super::{parse, prepare, prepare_with_max_chain};
 use crate::graph::{Graph, Value};
 use crate::ndjson;
+
+/// A prepared statement honours the operator-chain ceiling too: `prepare` uses the
+/// default (10k), `prepare_with_max_chain` overrides it (round-12 C1 follow-up).
+#[test]
+fn oc_prepared_statement_ceiling_is_configurable() {
+    let over = format!("RETURN {} AS r", vec!["true"; 10_002].join(" AND ")); // 10_001 ops
+    assert!(prepare(&over).is_err()); // default 10k rejects
+    let deep = format!("RETURN {} AS r", vec!["true"; 50_000].join(" AND "));
+    let plan = prepare_with_max_chain(&deep, 200_000).unwrap(); // override admits it
+    let mut g = ndjson::decode("").unwrap();
+    let rs = plan.execute(&mut g, &Params::new()).unwrap();
+    let rows: Vec<Vec<Value>> = rs.rows().map(|r| r.to_vec()).collect();
+    assert_eq!(rows[0][0], Value::Bool(true));
+}
 
 fn empty() -> Graph {
     ndjson::decode("").unwrap()
