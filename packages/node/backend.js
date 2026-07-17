@@ -110,7 +110,7 @@ export function createNodeBackend() {
 
     // `prepare` is a module-level addon function (a Prepared needs no graph);
     // execute binds it to a graph at call time.
-    prepare: (text) => coded(() => putPrepared(prepare(text))),
+    prepare: (text, maxOperatorChain) => coded(() => putPrepared(prepare(text, maxOperatorChain))),
     preparedFree: (handle) => {
       prepared.delete(handle);
     },

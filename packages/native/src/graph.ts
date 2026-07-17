@@ -486,9 +486,14 @@ export type RustGraph = {
    * win over `query()` is the ~per-call parse cost; results are identical. A
    * syntax error throws here, at prepare time. `prepare` takes a plain string
    * with `$name` params (no tagged-template form — the text is fixed). Pass a
-   * row shape to type `.query(params)`'s result.
+   * row shape to type `.query(params)`'s result. `maxOperatorChain` overrides the
+   * operator-chain ceiling for this parse (default 10_000; prepared statements are
+   * graph-independent, so this is a prepare-time option, not the graph's setting).
    */
-  prepare: <R extends Row = Row>(text: string) => PreparedQuery<R>;
+  prepare: <R extends Row = Row>(
+    text: string,
+    opts?: { maxOperatorChain?: number },
+  ) => PreparedQuery<R>;
   /** Release the underlying graph. Idempotent; the handle is invalid afterwards. */
   free: () => void;
   /** `using`-compatible alias of {@link RustGraph.free} (Explicit Resource Management). */
@@ -618,9 +623,11 @@ const makePrepared = <R extends Row = Row>(
   backend: Backend,
   live: () => GraphHandle,
   text: string,
+  maxOperatorChain?: number,
 ): PreparedQuery<R> => {
   ensureDisposeSymbol();
-  const prepHandle: PreparedHandle = backend.prepare(text); // throws on a syntax error
+  // throws on a syntax error
+  const prepHandle: PreparedHandle = backend.prepare(text, maxOperatorChain);
   let freed = false;
 
   const prepLive = (): PreparedHandle => {
@@ -813,7 +820,8 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
     toNdjson: () => backend.encodeNdjson(live()),
     mergeNdjson: (bytes) => backend.mergeNdjson(live(), bytes),
     serialize: (format) => decoder.decode(backend.serialize(live(), format)),
-    prepare: <R extends Row = Row>(text: string) => makePrepared<R>(backend, live, text),
+    prepare: <R extends Row = Row>(text: string, opts?: { maxOperatorChain?: number }) =>
+      makePrepared<R>(backend, live, text, opts?.maxOperatorChain),
     free,
     [Symbol.dispose]: free,
   };

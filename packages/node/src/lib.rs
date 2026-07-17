@@ -362,10 +362,12 @@ impl PreparedQuery {
     }
 }
 
-/// Compile a GQL query string into a reusable [`PreparedQuery`].
+/// Compile a GQL query string into a reusable [`PreparedQuery`]. `max_operator_chain`
+/// is the anti-resource-abuse operator-chain ceiling (default 10_000 when omitted).
 #[napi]
-pub fn prepare(text: String) -> Result<PreparedQuery> {
-    let inner = lenke_core::gql::prepare(&text).map_err(|e| {
+pub fn prepare(text: String, max_operator_chain: Option<f64>) -> Result<PreparedQuery> {
+    let max = max_operator_chain.map_or(10_000, |n| n as usize);
+    let inner = lenke_core::gql::prepare_with_max_chain(&text, max).map_err(|e| {
         coded_msg(
             "prepare",
             ErrorCode::Syntax,

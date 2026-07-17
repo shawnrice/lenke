@@ -124,8 +124,11 @@ export const createInvariant = (graph: Graph, name: string, querySrc: string): v
  * query, then call the plan with just `(graph, params)` — no re-parse, no
  * re-analysis per run.
  */
-export const prepare = <R extends Row = Row>(text: string): Plan<R> => {
-  const parsed = parse(text);
+export const prepare = <R extends Row = Row>(
+  text: string,
+  opts?: { maxOperatorChain?: number },
+): Plan<R> => {
+  const parsed = parse(text, { maxOperatorChain: opts?.maxOperatorChain });
 
   // A transaction-control command has no reusable plan — run it with `query()`.
   if (isTxControl(parsed)) {

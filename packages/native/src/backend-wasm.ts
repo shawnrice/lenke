@@ -104,7 +104,7 @@ type WasmExports = {
   lnk_rollback_tx: (h: number) => number;
   lnk_vertex_indexes: (h: number, outLen: number) => number;
   lnk_edge_indexes: (h: number, outLen: number) => number;
-  lnk_prepare: (q: number, qlen: number) => number;
+  lnk_prepare: (q: number, qlen: number, max: number) => number;
   lnk_prepared_free: (p: number) => void;
   lnk_prepared_query_rows: (
     p: number,
@@ -775,12 +775,12 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
     queryArrow: (handle, query, params) =>
       takeBuf(handle, query, params ?? null, ex.lnk_query_arrow, ex.lnk_free_arrow, 'queryArrow'),
 
-    prepare: (text) => {
+    prepare: (text, maxOperatorChain) => {
       const t = encoder.encode(text);
       const p = writeBytes(t);
 
       try {
-        const h = ex.lnk_prepare(p, t.byteLength);
+        const h = ex.lnk_prepare(p, t.byteLength, maxOperatorChain ?? 10_000);
 
         return h ? h : fail('prepare', ErrorCode.Syntax);
       } finally {

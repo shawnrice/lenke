@@ -13,7 +13,8 @@ use crate::query;
 
 #[no_mangle]
 pub extern "C" fn lnk_abi_version() -> u32 {
-    11 // 11: per-graph operator-chain ceiling (lnk_graph_set_max_operator_chain);
+    12 // 12: lnk_prepare takes a max-operator-chain arg; 11: per-graph operator-chain
+       //    ceiling (lnk_graph_set_max_operator_chain);
        // 10: native graph algorithms (lnk_algo); 9: query params (lnk_query_rows/
        //    lnk_query_arrow take a params-JSON doc); 8: reactive change tracking
        //    (lnk_graph_version/lnk_graph_epoch); 7: codecs (lnk_serialize/
@@ -1044,7 +1045,11 @@ pub unsafe extern "C" fn lnk_query_arrow(
 /// # Safety
 /// `q_ptr`/`q_len` a valid UTF-8 slice.
 #[no_mangle]
-pub unsafe extern "C" fn lnk_prepare(q_ptr: *const u8, q_len: usize) -> *mut crate::gql::Prepared {
+pub unsafe extern "C" fn lnk_prepare(
+    q_ptr: *const u8,
+    q_len: usize,
+    max_chain: u64,
+) -> *mut crate::gql::Prepared {
     crate::ffi_error::begin();
     if q_ptr.is_null() {
         crate::ffi_error::set_code(ErrorCode::Ffi, "null query pointer");
@@ -1057,7 +1062,7 @@ pub unsafe extern "C" fn lnk_prepare(q_ptr: *const u8, q_len: usize) -> *mut cra
             return std::ptr::null_mut();
         }
     };
-    match crate::gql::prepare(q) {
+    match crate::gql::prepare_with_max_chain(q, max_chain as usize) {
         Ok(p) => Box::into_raw(Box::new(p)),
         Err(e) => {
             crate::ffi_error::set(

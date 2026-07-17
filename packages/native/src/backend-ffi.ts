@@ -65,7 +65,7 @@ const SYMBOLS = {
   lnk_rollback_tx: { args: [FFIType.ptr], returns: FFIType.i32 },
   lnk_vertex_indexes: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.ptr },
   lnk_edge_indexes: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.ptr },
-  lnk_prepare: { args: [FFIType.ptr, U], returns: FFIType.ptr },
+  lnk_prepare: { args: [FFIType.ptr, U, U], returns: FFIType.ptr },
   lnk_prepared_free: { args: [FFIType.ptr], returns: FFIType.void },
   lnk_prepared_query_rows: {
     args: [FFIType.ptr, FFIType.ptr, FFIType.ptr, U, FFIType.ptr],
@@ -629,9 +629,9 @@ export const createFfiBackend = (libPath: string): Backend => {
       );
     },
 
-    prepare: (text) => {
+    prepare: (text, maxOperatorChain) => {
       const t = encoder.encode(text);
-      const h = symbols.lnk_prepare(ptr(t), t.byteLength);
+      const h = symbols.lnk_prepare(ptr(t), t.byteLength, maxOperatorChain ?? 10_000);
 
       if (!h) {
         return fail('prepare', ErrorCode.Syntax);

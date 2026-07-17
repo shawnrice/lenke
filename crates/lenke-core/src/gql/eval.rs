@@ -10198,7 +10198,14 @@ impl Prepared {
 /// query grammar here and surfaces the usual "expected a clause" syntax error;
 /// run it through the one-shot query path instead.
 pub fn prepare(text: &str) -> Result<Prepared, SyntaxError> {
-    let query = super::parser::parse_with_dialect(text, super::ast::Dialect::Lenke)?;
+    prepare_with_max_chain(text, super::parser::DEFAULT_MAX_CHAIN)
+}
+
+/// Like [`prepare`] but with a caller-supplied operator-chain ceiling (see
+/// `parser::DEFAULT_MAX_CHAIN`) — the prepared-statement analogue of
+/// `parse_with_max_chain`, honouring the native `maxOperatorChain` option.
+pub fn prepare_with_max_chain(text: &str, max_chain: usize) -> Result<Prepared, SyntaxError> {
+    let query = super::parser::parse_query_with_max_chain(text, max_chain)?;
     let (plan, param_names) = lower(&query);
     Ok(Prepared { plan, param_names })
 }

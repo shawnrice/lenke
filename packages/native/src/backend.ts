@@ -188,8 +188,10 @@ export type Backend = {
    * Compile a GQL query into a reusable prepared statement (lex/parse/lower
    * once). Graph-independent; execute it against any graph with fresh params via
    * {@link Backend.preparedQueryRows}. Throws a coded error on a syntax error.
+   * `maxOperatorChain` is the anti-resource-abuse operator-chain ceiling applied
+   * while parsing (default 10_000 when omitted).
    */
-  prepare: (text: string) => PreparedHandle;
+  prepare: (text: string, maxOperatorChain?: number) => PreparedHandle;
   /** Release a handle from {@link Backend.prepare}. */
   preparedFree: (prepared: PreparedHandle) => void;
   /** Execute a prepared statement against `graph` → the `{columns, rows}` JSON bytes. */

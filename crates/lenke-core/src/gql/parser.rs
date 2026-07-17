@@ -119,6 +119,21 @@ pub fn parse_with_dialect(src: &str, dialect: Dialect) -> Result<Query, SyntaxEr
     p.parse_query()
 }
 
+/// Parse the bare query grammar (Lenke dialect) under a caller-supplied
+/// operator-chain ceiling. The prepared-statement path uses this so a prepared
+/// query honours the same `maxOperatorChain` option as a one-shot query.
+pub fn parse_query_with_max_chain(src: &str, max_chain: usize) -> Result<Query, SyntaxError> {
+    let tokens = tokenize(src)?;
+    let mut p = Parser {
+        tokens,
+        pos: 0,
+        depth: 0,
+        dialect: Dialect::Lenke,
+        max_chain,
+    };
+    p.parse_query()
+}
+
 struct Parser {
     tokens: Vec<Token>,
     pos: usize,
@@ -150,7 +165,7 @@ const MAX_DEPTH: u32 = 128;
 /// operand is an allocation + an eval step), set far beyond any legitimate hand-
 /// or machine-generated predicate. Configurable per graph
 /// (`createEmptyGraph(backend, { maxOperatorChain })`), mirrored by the TS parser.
-const DEFAULT_MAX_CHAIN: usize = 10_000;
+pub(crate) const DEFAULT_MAX_CHAIN: usize = 10_000;
 
 type R<T> = Result<T, SyntaxError>;
 
