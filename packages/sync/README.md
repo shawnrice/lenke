@@ -229,11 +229,66 @@ client.subscribeWrites((writes) => engine.ingest(writes), {
 });
 ```
 
+**A complete in-process fan-out (N replicas, no sockets).** The transport is just a pair of `send` callbacks, so you can wire host↔client directly in one process — useful for tests and for seeing the whole loop at once. One authoritative store + one `WriteLog`; each client gets its own host and its own local store; a write on any client appears on every other. This example is runnable as-is:
+
+```ts
+import { createStore, graphFromNdjson, type Store } from '@lenke/native';
+import { createFfiBackend } from '@lenke/native/ffi';
+import { createSyncClient, createSyncHost, createWriteLog, type SyncClient } from '@lenke/sync';
+
+const backend = createFfiBackend('/path/to/liblenke_core.so'); // your built cdylib
+const emptyStore = (): Store =>
+  createStore(graphFromNdjson(backend, new TextEncoder().encode('\n'))); // one newline = empty
+
+// Authoritative server: one shared Store + one shared WriteLog.
+const server = emptyStore();
+const writeLog = createWriteLog();
+
+// Attach one client connection: its own host (on the shared store + log) and its
+// own local optimistic store, fed by the CDC stream. No wire liveQuery here — a
+// pure-CDC replica, so it receives ALL writes (interest routing doesn't narrow it).
+function connect() {
+  const local = emptyStore();
+  const link: { c?: SyncClient } = {};
+  const host = createSyncHost(server, { send: (m) => link.c?.receive(m), writeLog });
+  const client = createSyncClient({ send: (m) => host.receive(m) });
+  link.c = client;
+  client.subscribeWrites((writes) => {
+    for (const w of writes) local.mutate((g) => g.query(w.text, w.params));
+  });
+  return { local, client };
+}
+
+const a = connect();
+const b = connect();
+const c = connect();
+
+await a.client.mutate('INSERT (:Widget {n: $n})', { n: 1 }); // A writes
+await new Promise((r) => setTimeout(r, 10)); // let the fan-out flush
+
+const count = (s: Store) =>
+  s.mutate((g) => g.query<{ c: number }>('MATCH (n:Widget) RETURN count(*) AS c'))[0].c;
+console.log(count(server), count(b.local), count(c.local)); // → 1 1 1
+```
+
+B and C never subscribed to a live query, yet both received A's `Widget` insert — the pure-CDC path. (Swap the direct `send` callbacks for `ws.send`/`ws.onmessage` and it's a real server, unchanged.)
+
 **How it flows.** When any client mutates, its host commits to the shared store _and_ appends the write to the `WriteLog` — statement-based replication: the op is the `SyncWrite` (write text + resolved params), replayed through `runWrite`, deterministic because the two engines are byte-identical. Every _other_ stream subscriber receives it and `ingest`s it into its local store, so a change appears everywhere without re-querying. The writer never gets its own echo (origin-skip) — it already applied it optimistically.
 
-**Ordering & resume.** Each op carries a monotonic `seq`. `subscribeWrites` takes a `since` cursor; the client tracks the last-applied seq and resumes from it on reconnect (`replay()` re-subscribes automatically). If the client has fallen off the `WriteLog`'s bounded tail (a long disconnect), the host answers `resync` and the client cold-boots from a snapshot.
+**Ordering & resume.** Each op carries a monotonic `seq`. `subscribeWrites` sends `{ since: writeCursor }`; the client tracks the last-applied seq and resumes from it on reconnect (`replay()` re-subscribes automatically). If the client has fallen off the `WriteLog`'s bounded tail (a long disconnect), the host answers `resync` and the client cold-boots from a snapshot.
 
-**Cost & interest routing.** A write fans out as **O(N)** shared-payload sends (each of N clients must hear about it), not the O(N²) of re-running every client's subscription query per write. **Interest routing** narrows it further: the host forwards a write to a client only if the write's tokens — labels / edge-types / property keys, via `inferDeps` — intersect that client's live-query `deps`, so a client watching only `:User` never receives a `:Resource` write. A client with no subscriptions (or a `deps: null` "recompute on everything" one) gets all writes; a Gremlin write (no inferable tokens) is forwarded to all. Routing is by **label/token, not row value**: a homogeneous-label app (every node a `:Shape`) still fans a shape-write to every shape-watcher — row/viewport-level routing would reintroduce the per-subscription evaluation the op-stream exists to avoid. Skipped writes still tick the client's cursor (an empty batch), so resume never spuriously resyncs. Idempotent writes (`_MERGE`) make the at-least-once cases replay-safe.
+**v1 catch-up is full-replay — there is no snapshot+cursor bootstrap.** The host answers `since` with `writeLog.since(msg.since ?? 0)`, and `since(0)` means _from the very start of the retained tail_, not "from head". A **fresh** client boots with `writeCursor = 0`, so its first `subscribeWrites` replays the **entire retained backlog** (up to the `WriteLog`'s `capacity`, default 1024 ops) before it goes live. That is the intended v1 behavior: a new replica reconstructs state by replaying the op log, statement by statement — there is no "load a snapshot, then resume from its cursor" fast path yet (a snapshot's `serverCursor` belongs to the _app's own_ sync stream, not this op log). Two implications: (1) size `capacity` for your worst-case cold client, since anything older than the tail is unrecoverable via CDC (it answers `resync` → cold-boot from an app snapshot); (2) the `SubscribeWritesMessage` JSDoc phrase "omit (or `0`) to start from the current head" describes the _intended_ opt-out, but the shipped `since(0)` path replays from the start — pass an explicit non-zero cursor (`writeLog.head()`, surfaced by a prior session) if you truly want head-only. A returning client that carries a real `writeCursor` resumes from exactly there (exclusive), so it never re-applies or double-counts.
+
+**Cost & interest routing.** A write fans out as **O(N)** shared-payload sends (each of N clients must hear about it), not the O(N²) of re-running every client's subscription query per write. **Interest routing** narrows it further: the host forwards a write to a client only if the write's tokens — labels / edge-types / property keys, via `inferDeps` — intersect that client's **wire** live-query `deps`, so a client watching only `:User` never receives a `:Resource` write. A client with no _wire_ subscriptions (or a `deps: null` "recompute on everything" one) gets all writes; a Gremlin write (no inferable tokens) is forwarded to all. Routing is by **label/token, not row value**: a homogeneous-label app (every node a `:Shape`) still fans a shape-write to every shape-watcher — row/viewport-level routing would reintroduce the per-subscription evaluation the op-stream exists to avoid. Skipped writes still tick the client's cursor (an empty batch), so resume never spuriously resyncs. Idempotent writes (`_MERGE`) make the at-least-once cases replay-safe.
+
+**Two `liveQuery` surfaces — and only one drives routing.** They are named alike but sit on opposite sides of the wire:
+
+- **`store.liveQuery`** (from `@lenke/native`'s `createStore`) — a standing query over the client's **local replica**. It's a purely in-process reactive read; it registers **no host interest** and sends nothing over the socket. This is what your UI binds to for the fast, optimistic local view.
+- **`client.liveQuery`** (from `createSyncClient`) — a standing query over the **wire**. _This_ is what emits a `subscribe` to the host, and its `deps` are the only thing interest routing narrows on.
+
+The consequence is easy to trip over: **a pure-CDC replica — one that ingests the write stream but registers no `client.liveQuery` — has no wire `deps`, so the host routes it ALL writes** (same as `deps: null`). That's usually what you want (a replica reconstructing the whole graph from the op stream must see every write), but it means interest routing does _not_ filter a CDC-only client. To narrow what a client receives, it must hold a wire `client.liveQuery` (or wire `subscribe`) whose `deps` name the tokens it cares about — a _local_ `store.liveQuery` will not narrow the stream, because the host never learns about it.
+
+**Constraints and schema do NOT replicate over the write stream.** The op log carries only `SyncWrite`s (DML — `INSERT`/`SET`/`REMOVE`/`DELETE`/`_MERGE`), replayed through `runWrite`. Catalog declarations — `createUniqueConstraint`, `createCardinalityConstraint`, property indexes — are **not** ops and never cross the wire. Each replica must **re-declare** the same constraints on its own store _before_ ingesting writes that depend on them. This matters most for keyed upserts: `_MERGE` needs the target label's **unique constraint** present to resolve the key, so a replica that ingests a `_MERGE` without first running `createUniqueConstraint` will not upsert correctly. Treat schema as boot-time setup that every replica performs identically (the same way the byte-identical engines make statement replay deterministic) — it is a store-construction concern, not a replicated one.
 
 ## v1 boundaries (deliberate)
 

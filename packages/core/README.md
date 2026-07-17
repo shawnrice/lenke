@@ -180,7 +180,9 @@ import { parseDate } from '@lenke/core';
 vertex.setProperty('hired', parseDate('2020-01-15'));
 ```
 
-Reading one back gives the same class, which bridges to your date library via `.toISOString()` / `.toTemporal()` (a TC39 `Temporal.Plain*`). A native `Date` is deliberately **not** auto-coerced (it's a zoned instant; the local types are zone-less) — pass an ISO string, a `Temporal.Plain*`, or `LocalDateTime.fromJSDate(d, { zone })`.
+Reading one back gives the same class, which bridges to your date library via `.toISOString()` / `.toTemporal()` (a TC39 `Temporal.Plain*`). A native `Date` is deliberately **not** auto-coerced (it's a zoned instant; the local types are zone-less) — pass an ISO string, a `Temporal.Plain*`, or `LocalDateTime.fromJSDate(d, { zone })`. Note that `JSON.stringify` on a result row renders a temporal cell as its tagged wire form (`{"@date":"2020-01-01"}`); map cells through `.toISOString()` (or `String(cell)`) when you want a plain ISO string in JSON output.
+
+> Snapshot/round-trip helpers like `graphContentEqual` live in **`@lenke/serialization`** (alongside `serialize`/`deserialize`), not `@lenke/core`.
 
 **Current time is host-injected.** The GQL now-functions (`current_date` / `current_timestamp`) read a clock you wire, keeping results deterministic by default. Wire wall time with `setClock` (chainable, returns the graph):
 
