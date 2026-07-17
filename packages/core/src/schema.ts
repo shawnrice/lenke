@@ -137,6 +137,14 @@ export const defineNode = <S extends StandardSchemaV1>(
  * An endpoint accepted by `EdgeSchema.create`: a live `Vertex` OR a bare vertex
  * `id` (string). Passing ids avoids the ergonomic tax of holding onto `Vertex`
  * objects — the edge only needs an endpoint the graph can resolve.
+ *
+ * ⚠️ A string `VertexRef` is resolved as the vertex **id** (the graph's UUID /
+ * `Vertex.id`, via `getVertexById`), NOT as a natural/business key property. A
+ * common footgun: passing `'alice'` because a vertex has `{ name: 'alice' }` will
+ * NOT match — it looks up the vertex whose *id* is `'alice'` and throws
+ * `MissingVertex` if none exists. To key off a business property, look the vertex
+ * up yourself first (e.g. a GQL/Gremlin match on that property) and pass the
+ * resulting `Vertex` (or its `.id`).
  */
 export type VertexRef = Vertex | string;
 
@@ -170,8 +178,9 @@ export type EdgeSchema<S extends StandardSchemaV1> = {
   parse: (input: InferInput<S>) => Promise<InferOutput<S>>;
   /**
    * Validate `input`, then add an `edgeType`-labeled edge from `from` to `to`.
-   * Endpoints may be `Vertex` objects OR bare vertex ids (strings) — ids are
-   * resolved against `graph`, throwing `MissingVertex` if absent. The validated
+   * Endpoints may be `Vertex` objects OR bare vertex ids (strings) — a string is
+   * the vertex **id** (UUID), NOT a business-key property (see {@link VertexRef}),
+   * resolved against `graph` and throwing `MissingVertex` if absent. The validated
    * (parsed/coerced) OUTPUT is what gets stored.
    */
   create: (graph: Graph, from: VertexRef, to: VertexRef, input: InferInput<S>) => Promise<Edge>;

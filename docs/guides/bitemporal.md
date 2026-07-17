@@ -131,6 +131,13 @@ An as-of query on lenke is _just a `WHERE` clause over the period columns you ch
 
 SQL:2011 earns `AS OF SYSTEM_TIME` only because it also mandates `PERIOD FOR SYSTEM_TIME (sys_start, sys_end)` — the engine _owns_ those two columns, auto-stamps them on every write, and forbids you from setting them. The keyword is sugar over an engine-managed schema contract. lenke deliberately declines that contract: **you** pick the column names, **you** decide how many axes you model (uni- or bitemporal), and **you** stamp them in your own writes (a correction's `txFrom` is _your_ correction date, not the engine's commit instant). That flexibility is the point — a knowledge graph often wants valid time without system time, or four columns with domain-specific names. A hardcoded `AS OF` over engine-owned `PERIOD` columns would impose exactly the schema mandate lenke avoids. The predicate is three lines; keep the control.
 
+## Temporal gotchas
+
+Two footguns worth internalizing before you build windows or velocity checks on top of the period columns:
+
+- **Never compare two durations relationally.** `duration <op> duration` (e.g. `WHERE (e.txTo - e.txFrom) < DURATION 'P30D'`) is `UNKNOWN` under GQL's three-valued logic, and a `WHERE` that evaluates to `UNKNOWN` **silently drops the row** — the query returns nothing, with no error. Compare **instants** instead: anchor the duration to a point in time and compare the resulting instants — `WHERE e.txTo < e.txFrom + DURATION 'P30D'` ("open less than 30 days") or `WHERE e.txTo >= e.txFrom + DURATION 'P30D'`. The same rule governs any "within N days / at least N days" window.
+- **Temporal literal prefixes are BARE.** Write `DATETIME '…'`, `DATE '…'`, `TIMESTAMP '…'`, `DURATION '…'` — never `LOCAL DATETIME '…'`. Even though the underlying _type_ is named `LOCAL DATETIME` / `LOCAL TIME`, `LOCAL` is a reserved word in that position, so a `LOCAL DATETIME '…'` literal is `E_SYNTAX`.
+
 ## Durability
 
 Because the temporal columns are ordinary `DATE` properties, they survive serialization with everything else — snapshot the whole graph (`serialize(g, 'ndjson')`), restore into a fresh `Graph`, and every as-of query answers identically against the restored copy. Bitemporality needs no special persistence path.

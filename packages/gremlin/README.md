@@ -62,6 +62,8 @@ Steps span the usual Gremlin categories, all importable from the package root:
 
 A few step names differ from TinkerPop: `in_` / `as_` carry a trailing underscore (`in`/`as` are JavaScript keywords), and dedup is spelled **`dedupe`**.
 
+> **Map-shaped steps emit different container types — mind the accessor.** `project(...)` yields a **plain `Object`** (read `row.key`, iterate `Object.entries`), while `group(...)` and `groupCount(...)` yield a real JS **`Map`** (read `row.get(key)`, iterate `map.entries()`), and `valueMap(...)` yields a plain **`Object`**. Reaching for `.get(...)` on a `project()` row (or `row.key` on a `groupCount()` Map) silently reads `undefined`. Relatedly, `order().by('<key>')` / `.by(select('<key>'))` does **not** work over `project()` rows or `group`/`groupCount` Maps (it can only project a property off a `Vertex`/`Edge`) — sort those in your own code after materializing the rows.
+
 ### Builder-shaped steps
 
 Most steps are plain functions, but a few return a **builder** you chain onto — and their sub-traversals are ordinary bare step fns / `pipe(...)`, **not** a TinkerPop-style anonymous `__` (there is no `__` export):
@@ -73,6 +75,7 @@ import {
   has,
   in_,
   inE,
+  pipe,
   repeat,
   dedupe,
   cap,
@@ -83,10 +86,17 @@ import {
 
 // repeat(body).until(cond).emit() — .times(n) for a fixed count, .emitBefore()
 // to include the start (bare .emit() is post-form, excluding level 0).
-// Transitive dependents of "core" (walk incoming DEPENDS_ON, collect each hop):
-traversal(V(), has('name', 'core'), repeat(in_('DEPENDS_ON')).emit(), dedupe());
+// Transitive dependents of "core" (walk incoming DEPENDS_ON, collect each hop).
+// NOTE: dedupe() INSIDE the repeat body, not just after it — on a high-fan-in
+// graph an un-deduped frontier re-expands the same vertices every hop and blows
+// the traversal budget (see below). Collapse the frontier each iteration:
+traversal(V(), has('name', 'core'), repeat(pipe(in_('DEPENDS_ON'), dedupe())).emit(), dedupe());
 
 // shortestPath().with(ShortestPath.target, <sub-traversal>) → yields Vertex[][].
+// ⚠️ shortestPath() is UNDIRECTED: it does BFS over incident edges in BOTH
+// directions, so on a directed graph it can return paths that traverse edges
+// backwards. For direction-respecting shortest paths use the GQL `ANY SHORTEST`
+// form (`MATCH p = ANY SHORTEST (a)-[]->*(b)`), which honors edge orientation.
 traversal(V(), has('name', 'web'), shortestPath().with(ShortestPath.target, has('name', 'logger')));
 
 // subgraph(key) collects the traversed edges; retrieve the built Graph with cap(key).
@@ -113,6 +123,8 @@ const onACycle = cycles.some((p) => p[0] === p.at(-1));
 ```
 
 (`until()` is do-while — it checks before each body step — and without `until()`/`times()` a `repeat` is capped at 100 iterations.)
+
+> **Two independent caps guard `repeat()`.** Besides the 100-**iteration** ceiling, there is a total-**work** cap — `REPEAT_BUDGET` (1,000,000 traverser-steps across all iterations). A high-fan-in traversal can exhaust the work budget well before 100 iterations and raise `ResourceExhausted` ("repeat() exceeded the traversal budget"). The fix is almost always to `dedupe()` **inside** the repeat body so the frontier doesn't re-expand the same vertices each hop (see the reachability example above), or to add a tighter `until()`/`times()`.
 
 ## Graph algorithms
 

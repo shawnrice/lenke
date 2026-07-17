@@ -86,13 +86,13 @@ const top = query(
 > query(
 >   g,
 >   `CALL pagerank({ iterations: 20 }) YIELD node, score
->    ORDER BY score DESC LIMIT 3
 >    MATCH (node)-[:KNOWS]->(friend)
->    RETURN node.name AS influencer, friend.name AS reaches`,
+>    RETURN node.name AS influencer, friend.name AS reaches, score
+>    ORDER BY score DESC LIMIT 3`,
 > );
 > ```
 >
-> Because `node` is a real element, `MATCH (node)-[…]->()` resolves against the same vertex the procedure scored — no id round-trip, no re-lookup.
+> Because `node` is a real element, `MATCH (node)-[…]->()` resolves against the same vertex the procedure scored — no id round-trip, no re-lookup. The ranking (`ORDER BY score DESC LIMIT 3`) lives on the **final `RETURN`**: a standalone `ORDER BY`/`LIMIT` cannot sit as its own clause between `YIELD` and `MATCH` (that is `E_SYNTAX`) — order and limit the result rows, not the mid-query stream.
 
 ## Surface 4 — Gremlin steps
 

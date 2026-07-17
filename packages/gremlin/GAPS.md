@@ -78,6 +78,17 @@ where applicable.
 by `by()`, and `by()` supports comparator/token forms. The gremlin test package
 has no skipped tests.)
 
+> **Known limitation — `order().by()` over Map/projection rows (BUG A).** The
+> `by('<key>')` / `.by(select('<key>'))` modulators only project a property off a
+> `Vertex`/`Edge`. Over `project()` rows (plain objects) or `group`/`groupCount`
+> Maps they do NOT extract the named key — the whole row/Map reaches the
+> comparator, which faults ("cannot order an element with an element" /
+> "cannot order null with null"). This is **at parity with the Rust core**
+> (`eval_by` has the identical element-only behavior by design), so it is a shared
+> limitation, not TS drift. TinkerPop's `by(String)` is likewise element-only; the
+> map-extraction form would be a `select`-from-Map feature, deferred. Sort such
+> rows in application code after materializing them.
+
 ### Cross-engine parity (TS engine ⟷ Rust core)
 
 The Rust gremlin engine (`crates/lenke-core/src/gremlin`) mirrors the TS package
