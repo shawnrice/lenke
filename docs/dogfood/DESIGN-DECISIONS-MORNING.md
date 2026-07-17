@@ -31,6 +31,23 @@ capacity note **S1** plus the carried-over inbox below.
   `E_INVALID_JSON` at the two TS ingest boundaries (serialization value normalizer + gql
   param validation), matching native serde.
 
+### Defect follow-up (this session)
+
+- **D4 · temporal astronomical overflow** → `ce6c6a3`. `DATE + huge DURATION` silently
+  wrapped native's i32 day count to a negative year while TS produced a huge date. Now
+  out-of-range date arithmetic yields **null** in both engines (non-representable → null,
+  the same policy numeric overflow uses) — keeps the compact date backing, no divergence.
+- **BUG A · Gremlin `order().by('<key>')` over `project()`/Map rows** → `982ea0c`. Both
+  engines' `eval_by` only projected a key off a vertex/edge; for a Map row it returned the
+  whole container → "cannot order an element with an element". Now `by('key')` projects the
+  value at that key from a Map / project-row object. Byte-identical.
+- **CDC live-tail gap-detection** → `8403c90`. The tail assumed in-order delivery and
+  silently skipped a lost/reordered batch. A new optional `from` cursor on the writes
+  message lets the client detect a gap/reorder and cold-boot (resync). Back-compat.
+- **Computed non-finite policy** — RESOLVED earlier (round-11 value-model fix): `1e308*10`
+  now → null in both engines; the `1/0`-throws vs overflow-nulls split is ISO-defensible.
+  Removed from the list below.
+
 ## ⚠️ Remaining from this round
 
 ### S1 · Whole-graph algorithms ~2× the resident graph in peak RSS
@@ -72,18 +89,15 @@ betweenness" below.
 - **Duration relational-order policy** (R11). `duration <op> duration` is UNKNOWN
   (three-valued) → silently drops WHERE rows; define when it's unambiguous, or keep
   instant-arithmetic as the sanctioned pattern (documented).
-- **Computed non-finite policy** (R11 D-inbox). `1.0/0.0` throws `E_DATA_EXCEPTION` but
-  `1e308*10.0` silently stores/returns null — reconcile overflow-vs-error for computed
-  values across both engines.
-- **Temporal astronomical overflow** (R11 D4). `DATE + P10000000Y` wraps to a negative
-  year in native (i32 day count) vs f64 in TS — needs a valid-range/overflow policy.
+- ~~**Computed non-finite policy** (R11 D-inbox)~~ — RESOLVED (see "Defect follow-up").
+- ~~**Temporal astronomical overflow** (R11 D4)~~ — FIXED `ce6c6a3` (overflow → null both).
 
 ## Medium — Gremlin completeness
 
-- **`order().by(<key>)` over `project()`/Map rows** (R11 BUG A). Shared engine limitation
-  (not TS drift); needs a `by(select(key))` feature.
+- ~~**`order().by(<key>)` over `project()`/Map rows** (R11 BUG A)~~ — FIXED `982ea0c`
+  (`by('key')` now projects the value off a Map/project-row in both engines).
 - **`shortestPath()` is undirected** (R11). Add a direction option (documented as a
-  footgun for now).
+  footgun for now). — still open (feature-shaped; the wrong default is a correctness trap).
 - **Gremlin CF steps** (Ravi). `where(neq('me'))`, `order(local).by(values, desc)`
   unsupported → idiomatic Gremlin collaborative-filtering inexpressible (GQL is fine).
 
@@ -104,9 +118,8 @@ betweenness" below.
   can't do multiplayer + reconnect together. Widen the surface?
 - **Export `runWrite` from `@lenke/sync`.** Declared in protocol.d.ts:441 (the canonical
   write-dispatch) but not re-exported → hand-rolled ingest reimplements dispatch.
-- **CDC live-tail gap-detection.** Add a per-message seq check on the live tail that
-  trips `resync` on a gap/reorder (reconnect path gap-detects; tail doesn't). FIFO
-  assumption is documented; this makes it robust.
+- ~~**CDC live-tail gap-detection**~~ — FIXED `8403c90` (a `from` cursor on the writes
+  message trips `resync` on a gap/reorder).
 - **Value-level scope / per-room CDC channel.** Interest routing is label-only → a
   many-room app replicates the whole graph per client. Needs a value-keyed write filter.
 - **LWW tiebreak recipe / HLC.** `_MERGE … WHERE version < $v` diverges on colliding
