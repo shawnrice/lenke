@@ -902,18 +902,28 @@ const daysInMonth = (y: number, m: number): number => {
   return m === 4 || m === 6 || m === 9 || m === 11 ? 30 : 31;
 };
 
+// A LocalDate is `i32` days from 1970 in the native engine (≈±5.88M years). Date
+// arithmetic that lands outside this range yields null (non-representable → null,
+// matching the numeric-overflow policy) rather than a value the engines disagree
+// on — byte-identical with native's `Date::add_calendar`.
+const DATE_DAYS_MIN = -2_147_483_648;
+const DATE_DAYS_MAX = 2_147_483_647;
+const inDateRange = (days: number): boolean => days >= DATE_DAYS_MIN && days <= DATE_DAYS_MAX;
+
 /**
  * Add `months` (calendar), CLAMPING the day to the new month's length
- * (`Jan 31 + 1 month → Feb 28/29`), then `extraDays` as plain days.
+ * (`Jan 31 + 1 month → Feb 28/29`), then `extraDays` as plain days. Returns null
+ * when the result falls outside the representable date range.
  */
-const addCalendar = (date: LocalDate, months: number, extraDays: number): LocalDate => {
+const addCalendar = (date: LocalDate, months: number, extraDays: number): LocalDate | null => {
   const [y, m, d] = civilFromDays(date.days);
   const total = y * 12 + (m - 1) + months;
   const ny = Math.floor(total / 12);
   const nm = (((total % 12) + 12) % 12) + 1;
   const nd = Math.min(d, daysInMonth(ny, nm));
+  const days = daysFromCivil(ny, nm, nd) + extraDays;
 
-  return new LocalDate(daysFromCivil(ny, nm, nd) + extraDays);
+  return inDateRange(days) ? new LocalDate(days) : null;
 };
 
 /** Negate the whole span, keeping `nanos` in `[0, 1e9)`. */
@@ -966,7 +976,17 @@ const addDurationTo = (t: Temporal, d: Duration): Temporal | null => {
   if (t instanceof LocalDateTime) {
     const days0 = Math.floor(t.secs / 86_400);
     const tod = ((t.secs % 86_400) + 86_400) % 86_400;
+
+    if (!inDateRange(days0)) {
+      return null;
+    }
+
     const date = addCalendar(new LocalDate(days0), d.months, d.days);
+
+    if (!date) {
+      return null;
+    }
+
     let secs = date.days * 86_400 + tod + d.secs;
     let nanos = t.nanos + d.nanos;
 

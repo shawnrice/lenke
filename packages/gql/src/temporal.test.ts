@@ -177,6 +177,26 @@ describe('GQL: temporal arithmetic', () => {
     expect(query(g, `RETURN DURATION 'P10D' * 1.5 AS d`)).toEqual([{ d: null }]);
     expect(String(query(g, `RETURN DURATION 'P10D' * 2 AS d`)[0].d)).toBe('P20D');
   });
+
+  test('a date arithmetic result outside the representable range is null (round-12 D4)', () => {
+    const g = new Graph();
+    // A LocalDate is i32 days from 1970 (≈±5.88M years) in the native engine, so
+    // an astronomical shift yields null (non-representable → null) rather than a
+    // value the two engines disagree on — native used to wrap to a negative year.
+    expect(query(g, `RETURN DATE '2020-01-01' + DURATION 'P10000000Y' AS d`)).toEqual([
+      { d: null },
+    ]);
+    expect(query(g, `RETURN DATE '2020-01-01' - DURATION 'P10000000Y' AS d`)).toEqual([
+      { d: null },
+    ]);
+    expect(query(g, `RETURN DATETIME '2020-01-01T00:00:00' + DURATION 'P10000000Y' AS d`)).toEqual([
+      { d: null },
+    ]);
+    // ~5M years stays in range and still succeeds.
+    expect(String(query(g, `RETURN DATE '2020-01-01' + DURATION 'P5000000Y' AS d`)[0].d)).toBe(
+      '5002020-01-01',
+    );
+  });
 });
 
 describe('GQL: current_timestamp coerces $__now kind to DATETIME', () => {

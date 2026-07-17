@@ -632,17 +632,22 @@ fn days_in_month(y: i64, m: u32) -> u32 {
 
 impl Date {
     /// Add `months` (calendar), **clamping the day to the new month's length**
-    /// (`Jan 31 + 1 month → Feb 28/29`), then `extra_days` as plain days.
-    fn add_calendar(&self, months: i64, extra_days: i64) -> Self {
+    /// (`Jan 31 + 1 month → Feb 28/29`), then `extra_days` as plain days. Returns
+    /// `None` when the result falls outside the representable date range (a `Date`
+    /// is `i32` days from 1970, ≈±5.88M years), so an astronomical `DATE + DURATION`
+    /// yields null rather than a silently-wrapped negative year — the same
+    /// non-representable → null policy the numeric model uses for overflow, and
+    /// byte-identical with the TS engine.
+    fn add_calendar(&self, months: i64, extra_days: i64) -> Option<Self> {
         let (y, m, d) = civil_from_days(self.days as i64);
         let total = y * 12 + (m as i64 - 1) + months;
         let ny = total.div_euclid(12);
         let nm = (total.rem_euclid(12) + 1) as u32;
         let nd = d.min(days_in_month(ny, nm));
         let base = days_from_civil(ny, i64::from(nm), i64::from(nd));
-        Self {
-            days: (base + extra_days) as i32,
-        }
+        i32::try_from(base + extra_days)
+            .ok()
+            .map(|days| Self { days })
     }
 }
 
@@ -697,7 +702,7 @@ impl Temporal {
     /// no time). `None` if `self` is a duration.
     pub fn add_duration(&self, d: &Duration) -> Option<Self> {
         match self {
-            Self::Date(date) => Some(Self::Date(date.add_calendar(d.months, d.days))),
+            Self::Date(date) => date.add_calendar(d.months, d.days).map(Self::Date),
             // A bare time has no calendar part; the duration's time component wraps
             // within the 24h day (months/days are ignored).
             Self::Time(t) => {
@@ -711,7 +716,10 @@ impl Temporal {
             Self::DateTime(dt) => {
                 let days0 = dt.secs.div_euclid(SECS_PER_DAY);
                 let tod = dt.secs.rem_euclid(SECS_PER_DAY);
-                let date = Date { days: days0 as i32 }.add_calendar(d.months, d.days);
+                let date = Date {
+                    days: i32::try_from(days0).ok()?,
+                }
+                .add_calendar(d.months, d.days)?;
                 let mut secs = date.days as i64 * SECS_PER_DAY + tod + d.secs;
                 let mut nanos = i64::from(dt.nanos) + i64::from(d.nanos);
                 if nanos >= NANOS_PER_SEC {
@@ -786,6 +794,33 @@ mod tests {
         assert_eq!(days_from_civil(1970, 1, 1), 0);
         assert_eq!(days_from_civil(1970, 1, 2), 1);
         assert_eq!(days_from_civil(1969, 12, 31), -1);
+    }
+
+    #[test]
+    fn date_arithmetic_out_of_range_is_none_not_wrapped() {
+        // Round-12 D4: `DATE + huge DURATION` must not silently wrap the i32 day
+        // count to a negative year — it yields None (→ null), byte-identical with
+        // the TS engine, while an in-range shift still succeeds.
+        let base = Temporal::Date(Date::parse("2020-01-01").unwrap());
+        let ten_million_years = Duration {
+            months: 10_000_000 * 12,
+            days: 0,
+            secs: 0,
+            nanos: 0,
+        };
+        assert_eq!(base.add_duration(&ten_million_years), None);
+        assert_eq!(base.add_duration(&ten_million_years.negate()), None);
+        // ~5M years stays within i32 days (≈±5.88M years) and succeeds.
+        let five_million_years = Duration {
+            months: 5_000_000 * 12,
+            days: 0,
+            secs: 0,
+            nanos: 0,
+        };
+        assert!(base.add_duration(&five_million_years).is_some());
+        // DateTime + a huge duration is None too.
+        let dt = Temporal::DateTime(DateTime::parse("2020-01-01T00:00:00").unwrap());
+        assert_eq!(dt.add_duration(&ten_million_years), None);
     }
 
     #[test]
