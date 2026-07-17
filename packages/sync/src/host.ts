@@ -560,29 +560,35 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
     const deliver = (entry: WriteLogEntry): boolean =>
       entry.origin !== myOrigin() && wants(entry.tokens);
 
+    // The last cursor sent to this client, stamped as `from` on each batch so the
+    // client can verify the tail is contiguous (gap/reorder → cold-boot). Starts
+    // at the client's resume point; a `resync` restarts the chain at head.
+    let lastSentCursor = msg.since ?? 0;
+    const sendWrites = (writes: SyncWrite[], cursor: number): void => {
+      send({ type: 'writes', writes, cursor, from: lastSentCursor });
+      lastSentCursor = cursor;
+    };
+
     const backlog = writeLog.since(msg.since ?? 0);
 
     if (backlog === null) {
       // The requested cursor fell off the retained op log → the client must
       // cold-boot from a snapshot; point it at the head to resume live after.
-      send({ type: 'writes', writes: [], cursor: writeLog.head(), resync: true });
+      const head = writeLog.head();
+      send({ type: 'writes', writes: [], cursor: head, resync: true });
+      lastSentCursor = head;
     } else if (backlog.length > 0) {
-      send({
-        type: 'writes',
-        writes: backlog.filter(deliver).map((e) => e.write),
-        cursor: backlog[backlog.length - 1].seq,
-      });
+      sendWrites(
+        backlog.filter(deliver).map((e) => e.write),
+        backlog[backlog.length - 1].seq,
+      );
     }
 
     // Live tail: an op is forwarded only if it's another client's AND of
     // interest; otherwise the batch is empty but STILL ticks the cursor, so the
     // client stays exactly at head and a later `since` never spuriously resyncs.
     writeStreamStop = writeLog.subscribe((entry) => {
-      send({
-        type: 'writes',
-        writes: deliver(entry) ? [entry.write] : [],
-        cursor: entry.seq,
-      });
+      sendWrites(deliver(entry) ? [entry.write] : [], entry.seq);
     });
   };
 

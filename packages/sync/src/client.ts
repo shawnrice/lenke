@@ -56,6 +56,7 @@ import {
   type RowsMessage,
   type SyncWrite,
   type WireError,
+  type WritesMessage,
 } from './protocol.js';
 
 /** What a standing query currently knows. Stable reference between pushes. */
@@ -726,6 +727,54 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
     settle(entry, { rows, complete: msg.complete ?? true, version: msg.version });
   };
 
+  // Apply a CDC `writes` batch: cold-boot on a resync/gap/reorder, skip a
+  // stale/duplicate, otherwise advance the cursor and ingest. Split out of
+  // `receive` to keep that dispatcher's branching in check.
+  const handleWrites = (msg: WritesMessage): void => {
+    if (msg.resync) {
+      // The op log moved past us: adopt the resume point and cold-boot.
+      writeCursor = msg.cursor;
+      writeResync?.();
+
+      return;
+    }
+
+    // Idempotence guard: a batch at or below the cursor was already applied (a
+    // duplicate, or a stale echo from before a reconnect). Skip it; never regress.
+    if (msg.cursor <= writeCursor) {
+      return;
+    }
+
+    // Gap/reorder guard: `from` is the cursor this batch contiguously follows. If
+    // it doesn't match ours, a live-tail message was lost or delivered out of
+    // order (a non-FIFO transport / reordered send) — applying it would silently
+    // skip the missing writes, so cold-boot instead. `from === undefined` (an
+    // older host) disables the check, keeping the prior in-order assumption.
+    if (msg.from !== undefined && msg.from !== writeCursor) {
+      writeCursor = msg.cursor;
+      writeResync?.();
+
+      return;
+    }
+
+    // Advance even on an empty batch (own-origin cursor ticks) so a later resume
+    // asks from the right place — and PAST a failed batch (a poison op is usually
+    // deterministic, so holding the cursor would replay it forever). Move on and
+    // surface the error instead.
+    writeCursor = msg.cursor;
+
+    if (msg.writes.length > 0) {
+      // Isolate ingest: an un-appliable write must not escape `receive()` and
+      // wedge the transport pump. Since ingest isn't atomic yet (R-TX) the batch
+      // may have partially applied, so the app should cold-boot to re-sync.
+      try {
+        writeHandler?.(msg.writes);
+      } catch (error) {
+        writeIngestError?.(error, msg.writes);
+      }
+    }
+  };
+
   const receive = (msg: unknown): void => {
     if (!isHostMessage(msg)) {
       return; // forward-compat: unknown tags fall through silently
@@ -852,48 +901,10 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
 
         return;
       }
-      case 'writes': {
-        if (msg.resync) {
-          // The op log moved past us: adopt the resume point and cold-boot.
-          writeCursor = msg.cursor;
-          writeResync?.();
-
-          return;
-        }
-
-        // Idempotence + ordering guard: a batch at or below the current cursor
-        // was already applied — a duplicate, or a stale echo from before a
-        // reconnect (at-least-once delivery). Skip it, and never regress the
-        // cursor. In-order delivery WITHIN a connection is a transport
-        // guarantee (TCP / MessagePort); this guards the reconnect seam, where
-        // the host re-sends the tail from our `since` (exclusive, so no overlap)
-        // but an in-flight message from the dropped connection may still arrive.
-        if (msg.cursor <= writeCursor) {
-          return;
-        }
-
-        // Advance even on an empty batch (own-origin cursor ticks) so a later
-        // resume asks from the right place. We advance PAST a failed batch too:
-        // a poison op is usually deterministic (a parse error, or a local
-        // constraint the server's schema doesn't enforce — R-SCHEMA-REPL), so
-        // holding the cursor would replay it forever on every reconnect. Move on
-        // and surface it instead.
-        writeCursor = msg.cursor;
-
-        if (msg.writes.length > 0) {
-          // Isolate ingest: a single un-appliable write must not escape
-          // `receive()` and wedge the transport pump. Surface it via
-          // `onIngestError` — since ingest isn't atomic yet (R-TX), the batch may
-          // have partially applied, so the app should cold-boot to re-sync.
-          try {
-            writeHandler?.(msg.writes);
-          } catch (error) {
-            writeIngestError?.(error, msg.writes);
-          }
-        }
+      case 'writes':
+        handleWrites(msg);
 
         return;
-      }
       default:
     }
   };

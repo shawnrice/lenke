@@ -139,6 +139,30 @@ suite('CDC write stream (TS vs native store)', () => {
     expect(seen).toEqual([]);
   });
 
+  test('the live tail cold-boots on a gap or reordered batch (round-10 B1)', () => {
+    const s = server();
+    const a = s.client();
+
+    let resynced = false;
+    const seen: string[] = [];
+    a.subscribeWrites((w) => seen.push(...w.map((x) => x.text)), {
+      onResync: () => (resynced = true),
+    });
+
+    // Contiguous batches (each `from` chains off the client's cursor, from 0) apply.
+    a.receive({ type: 'writes', writes: [{ text: 'INSERT (:A)' }], cursor: 1, from: 0 });
+    a.receive({ type: 'writes', writes: [{ text: 'INSERT (:B)' }], cursor: 2, from: 1 });
+    expect(seen).toEqual(['INSERT (:A)', 'INSERT (:B)']);
+    expect(resynced).toBe(false);
+
+    // A batch that does NOT follow our cursor (from=4, but we're at 2) means a
+    // live-tail message was lost or reordered → cold-boot, and the out-of-order
+    // writes are NOT silently applied.
+    a.receive({ type: 'writes', writes: [{ text: 'INSERT (:D)' }], cursor: 5, from: 4 });
+    expect(resynced).toBe(true);
+    expect(seen).toEqual(['INSERT (:A)', 'INSERT (:B)']);
+  });
+
   test('reconnect (replay) resumes from the cursor without double-applying', async () => {
     const s = server();
     const a = s.client();

@@ -378,6 +378,17 @@ export type WritesMessage = {
   type: 'writes';
   writes: SyncWrite[];
   cursor: number;
+  /**
+   * The cursor this batch contiguously FOLLOWS (the last cursor the host sent
+   * this client). A client compares it to its own cursor to detect a gap or a
+   * reordered message on the live tail — `from !== myCursor` means a batch was
+   * lost or delivered out of order, so it cold-boots (resyncs) rather than
+   * silently skipping the missing writes. Optional for back-compat: a host that
+   * omits it (older, or none configured) simply disables the check, and the tail
+   * falls back to assuming in-order delivery. Own-origin/uninterested writes tick
+   * the cursor via empty batches, so `from` still chains contiguously.
+   */
+  from?: number;
   resync?: boolean;
 };
 
