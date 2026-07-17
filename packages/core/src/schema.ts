@@ -60,16 +60,16 @@ const validateWith = async <S extends StandardSchemaV1>(
   const result = await schema['~standard'].validate(input);
 
   if (result.issues) {
-    const detail = result.issues
-      .map((i) => {
-        const at = formatPath(i);
-
-        return at ? `${at}: ${i.message}` : i.message;
-      })
-      .join('; ');
+    // Normalize each Standard-Schema issue to `{ message, path }` (path as the
+    // `key.0.name` dotted string used in the message). Attached as
+    // `details.issues` so a caller can handle failures field-by-field without
+    // parsing the joined message string.
+    const issues = result.issues.map((i) => ({ message: i.message, path: formatPath(i) }));
+    const detail = issues.map((i) => (i.path ? `${i.path}: ${i.message}` : i.message)).join('; ');
 
     throw new LenkeError(`lenke: ${label} failed schema validation — ${detail}`, {
       code: ErrorCode.ConstraintViolation,
+      details: { issues },
     });
   }
 
@@ -106,6 +106,14 @@ export type NodeSchema<S extends StandardSchemaV1> = {
  * writes, use the R-CONSTRAINTS surface (`createTypeConstraint` /
  * `createRequiredConstraint` / `createUniqueConstraint` / `createValidator`);
  * the two compose — a schema at the app boundary, constraints at the engine.
+ *
+ * **Type inference needs `~standard.types`.** `create`'s input/output typing comes
+ * from `InferInput`/`InferOutput`, which read the schema's `~standard.types`
+ * carrier. Zod/Valibot/ArkType expose it, so inference is automatic. A HAND-ROLLED
+ * validator that only implements `~standard.validate` (no `~standard.types`) still
+ * validates at runtime, but `create`/`parse` silently infer `never` for the input
+ * — so add a `~standard.types` (typically a phantom `{} as { input: T; output: T }`)
+ * if you want typed calls.
  *
  * @example
  * const User = defineNode('User', z.object({ name: z.string(), age: z.number().optional() }))
@@ -183,6 +191,10 @@ export type EdgeSchema<S extends StandardSchemaV1> = {
  * edge constraints (`createEdgeRequiredConstraint` / `createEdgeTypeConstraint`
  * / `createEdgeUniqueConstraint`): a schema at the app boundary, constraints at
  * the engine.
+ *
+ * **Type inference needs `~standard.types`** (as with `defineNode`): a hand-rolled
+ * validator that omits the `~standard.types` carrier still validates at runtime,
+ * but `create` infers `never` for the props — add `~standard.types` for typed calls.
  *
  * @example
  * const Follows = defineEdge('FOLLOWS', z.object({ since: z.number() }))

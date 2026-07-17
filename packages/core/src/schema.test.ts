@@ -89,9 +89,12 @@ describe('defineNode: Standard Schema adapter', () => {
     const g = new Graph();
     const User = defineNode('User', userSchema());
 
-    expect(String(await rejection(User.create(g, { age: 5 } as unknown as User)))).toMatch(
-      /name must be a string/,
-    );
+    const err = await rejection(User.create(g, { age: 5 } as unknown as User));
+    expect(String(err)).toMatch(/name must be a string/);
+    // The structured issues are attached (not just the joined message string), so a
+    // caller can handle failures field-by-field.
+    const { details } = err as { details?: { issues?: { message: string; path: string }[] } };
+    expect(details?.issues).toEqual([{ message: 'name must be a string', path: 'name' }]);
     // The failed create left the graph untouched — validation is before the write.
     expect(g.vertexCount).toBe(0);
   });
