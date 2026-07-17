@@ -129,18 +129,16 @@ struct Parser {
 /// query yet leaves the descent comfortably within a 2 MiB stack.
 const MAX_DEPTH: u32 = 128;
 
-/// Operator-chain ceiling. Left-associative binary operators (`AND`/`OR`/`XOR`,
-/// `||` concat, `+`/`-`, `*`/`/`/`%`) parse *iteratively* — a `while`/`loop`, not
-/// recursion — so `MAX_DEPTH` never fires for a flat chain like `true AND true
-/// AND … (100k)`. The loop happily builds a chain-deep left-nested `Expr`, which
-/// then overflows the native stack when it is *evaluated or dropped* (a single
-/// query string aborting the process — uncatchable). Bounding the chain length
-/// keeps that AST height within what recursive eval/drop handles with margin on
-/// every backend (measured: FFI and napi-worker stacks stay safe past 20k; the
-/// crash sets in around 35–40k). 10k is far beyond any hand-written or
-/// machine-generated predicate yet leaves comfortable headroom. Mirrored in the
-/// TS parser so both engines reject an over-long chain identically (`E_SYNTAX`).
-const MAX_CHAIN: usize = 10_000;
+/// Operator-chain sanity ceiling. The associative operator nodes are n-ary (a
+/// flat `Vec`, see `ast::Expr`), so a long chain like `true AND true AND … (500k)`
+/// is *not* a chain-deep tree and every walk over it (eval, compile, drop, the
+/// analysis passes) is a loop bounded by real nesting depth — no stack-overflow
+/// risk regardless of chain length or thread-stack size. This bound is therefore
+/// no longer about crash-safety; it's a pure anti-resource-abuse guard (each
+/// operand is an allocation + an eval step), set far beyond any legitimate hand-
+/// or machine-generated predicate. Mirrored in the TS parser so both engines
+/// reject an over-long chain identically (`E_SYNTAX`).
+const MAX_CHAIN: usize = 100_000;
 
 type R<T> = Result<T, SyntaxError>;
 

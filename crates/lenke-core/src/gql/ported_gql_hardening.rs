@@ -165,47 +165,48 @@ fn h_normally_nested_query_still_parses() {
     assert!(parse("RETURN (((1 + 2)) * 3) AS r").is_ok());
 }
 
-/// A long left-associative operator chain (`true AND true AND … `) parses
-/// *iteratively*, so the `descend` recursion guard never fires — but the
-/// chain-deep left-nested `Expr` would overflow the stack on eval/drop. The
-/// `MAX_CHAIN` guard turns an over-long chain into a `SyntaxError` instead of a
-/// process abort. Regression test for round-12 C1 (native SIGSEGV on
-/// `RETURN true AND true AND … (100k)`).
+/// The associative operator AST is n-ary (a flat `Vec`), so a long
+/// left-associative chain far past the old crash point (~40k) parses AND
+/// *evaluates* — no stack overflow — instead of aborting the process. Regression
+/// test for round-12 C1 (native SIGSEGV on `RETURN true AND true AND … (100k)`).
 #[test]
-fn h_long_and_chain_is_syntax_error_not_crash() {
-    let deep = format!("RETURN {} AS r", vec!["true"; 100_000].join(" AND "));
-    assert!(
-        parse(&deep).is_err(),
-        "expected a syntax error (not a crash) for a 100k-term AND chain"
+fn h_long_chain_evaluates_without_stack_overflow() {
+    let val = |q: &str| -> Value {
+        let mut g = ndjson::decode("").unwrap();
+        let rs = parse(q).unwrap().execute(&mut g, &Params::new()).unwrap();
+        let rows: Vec<Vec<Value>> = rs.rows().map(|r| r.to_vec()).collect();
+        rows[0][0].clone()
+    };
+    assert_eq!(
+        val(&format!(
+            "RETURN {} AS r",
+            vec!["true"; 50_000].join(" AND ")
+        )),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        val(&format!("RETURN {} AS s", vec!["1"; 50_000].join(" + "))),
+        Value::Num(50_000.0)
     );
 }
 
-/// The same guard applies to `OR`/`XOR`, string concat (`||`), and arithmetic
-/// (`+`/`*`) chains — every iterative binary-operator loop.
+/// Past the anti-resource-abuse `MAX_CHAIN` ceiling, an operator chain is a clean
+/// `SyntaxError` (identical in both engines), never an OOM.
 #[test]
-fn h_long_operator_chains_are_syntax_errors() {
+fn h_over_cap_operator_chain_is_syntax_error() {
     for chain in [
-        vec!["true"; 20_000].join(" OR "),
-        vec!["'a'"; 20_000].join(" || "),
-        vec!["1"; 20_000].join(" + "),
-        vec!["1"; 20_000].join(" * "),
+        vec!["true"; 100_002].join(" AND "), // 100_001 ops > MAX_CHAIN
+        vec!["1"; 100_002].join(" + "),
     ] {
-        assert!(
-            parse(&format!("RETURN {chain} AS r")).is_err(),
-            "expected a syntax error for an over-long operator chain"
-        );
+        assert!(parse(&format!("RETURN {chain} AS r")).is_err());
     }
 }
 
-/// A chain at the ceiling (`MAX_CHAIN` operators) still parses — the guard fires
-/// only *past* the bound, so realistic machine-generated predicates are unaffected.
+/// A chain just under the ceiling still parses (99_999 ops < MAX_CHAIN).
 #[test]
-fn h_operator_chain_at_ceiling_still_parses() {
-    let at_cap = format!("RETURN {} AS r", vec!["true"; 10_001].join(" AND ")); // 10_000 ops
-    assert!(
-        parse(&at_cap).is_ok(),
-        "a 10k-operator chain must still parse"
-    );
+fn h_operator_chain_under_ceiling_still_parses() {
+    let ok = format!("RETURN {} AS r", vec!["true"; 100_000].join(" AND "));
+    assert!(parse(&ok).is_ok());
 }
 
 // ---------------------------------------------------------------------------

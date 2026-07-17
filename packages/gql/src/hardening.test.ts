@@ -158,32 +158,31 @@ describe('hardening: deep nesting is a syntax error, not a stack overflow', () =
     expect(() => parse(`RETURN (((1 + 2)) * 3) AS r`)).not.toThrow();
   });
 
-  // Round-12 C1: a long left-associative operator chain parses *iteratively*, so
-  // the recursion-depth guard never fires — the chain-deep AST would overflow the
-  // stack on eval (native SIGSEGV'd; TS threw an uncatchable RangeError). The
-  // MAX_CHAIN guard turns an over-long chain into a clean E_SYNTAX in both engines.
-  test('a long AND chain is a syntax error, not a stack overflow', () => {
-    const deep = `RETURN ${Array(100_000).fill('true').join(' AND ')} AS r`;
-    const e = thrown(() => parse(deep));
+  // Round-12 C1: the associative operator AST is n-ary (a flat array), so a long
+  // left-associative chain far past the old crash point evaluates without a stack
+  // overflow (native SIGSEGV'd; TS threw an uncatchable RangeError) instead of
+  // aborting. Only the anti-resource-abuse MAX_CHAIN ceiling rejects.
+  test('a long AND / arithmetic chain evaluates without a stack overflow', () => {
+    const g = new Graph();
+    expect(query(g, `RETURN ${Array(50_000).fill('true').join(' AND ')} AS r`)).toEqual([
+      { r: true },
+    ]);
+    expect(query(g, `RETURN ${Array(50_000).fill('1').join(' + ')} AS s`)).toEqual([{ s: 50_000 }]);
+  });
+
+  test('an over-cap operator chain is a clean E_SYNTAX', () => {
+    // 100_001 operators > MAX_CHAIN
+    const e = thrown(() => parse(`RETURN ${Array(100_002).fill('true').join(' AND ')} AS r`));
     expect(e).toBeInstanceOf(GqlSyntaxError);
     expect(hasErrorCode(e, ErrorCode.Syntax)).toBe(true);
-  });
-
-  test('OR / concat / arithmetic chains are guarded too', () => {
-    expect(() => parse(`RETURN ${Array(20_000).fill('true').join(' OR ')} AS r`)).toThrow(
-      GqlSyntaxError,
-    );
-    expect(() => parse(`RETURN ${Array(20_000).fill("'a'").join(' || ')} AS r`)).toThrow(
-      GqlSyntaxError,
-    );
-    expect(() => parse(`RETURN ${Array(20_000).fill('1').join(' + ')} AS r`)).toThrow(
+    expect(() => parse(`RETURN ${Array(100_002).fill('1').join(' + ')} AS r`)).toThrow(
       GqlSyntaxError,
     );
   });
 
-  test('an operator chain at the ceiling still parses', () => {
-    // 10_001 terms = 10_000 operators = MAX_CHAIN (the guard fires only past it)
-    expect(() => parse(`RETURN ${Array(10_001).fill('true').join(' AND ')} AS r`)).not.toThrow();
+  test('a chain just under the ceiling still parses', () => {
+    // 100_000 terms = 99_999 operators < MAX_CHAIN
+    expect(() => parse(`RETURN ${Array(100_000).fill('true').join(' AND ')} AS r`)).not.toThrow();
   });
 });
 

@@ -267,6 +267,48 @@ const ARITH: Record<ArithOp, (a: number, b: number) => number> = {
   '/': (a, b) => a / b,
   '%': (a, b) => a % b,
 };
+
+/**
+ * One step of a left-associative arithmetic fold `lval <op> rval`. Preserves the
+ * binary semantics: temporal arithmetic when either side is temporal, null from a
+ * non-numeric operand, and a division/modulo-by-zero data exception.
+ */
+const arithStep = (
+  op: ArithOp,
+  fn: (a: number, b: number) => number,
+  lval: unknown,
+  rval: unknown,
+): unknown => {
+  if (isTemporal(lval) || isTemporal(rval)) {
+    return temporalArith(op, lval, rval);
+  }
+
+  const lv = numOf(lval);
+  const rv = numOf(rval);
+
+  if (lv === null || rv === null) {
+    return null;
+  }
+
+  if ((op === '/' || op === '%') && rv === 0) {
+    return dataException('division by zero');
+  }
+
+  return fn(lv, rv);
+};
+
+/** One step of a left-associative `||` fold: null propagates; two lists concat. */
+const concatStep = (lv: unknown, rv: unknown): unknown => {
+  if (isNullish(lv) || isNullish(rv)) {
+    return null;
+  }
+
+  if (Array.isArray(lv) && Array.isArray(rv)) {
+    return [...lv, ...rv];
+  }
+
+  return String(lv) + String(rv);
+};
 const COMPARE: Record<CompareOp, (a: number | string, b: number | string) => boolean> = {
   '=': (a, b) => a === b,
   '<>': (a, b) => a !== b,
@@ -332,10 +374,12 @@ const hasAggregate = (expr: Expr): boolean => {
     case 'isLabeled':
       return hasAggregate(expr.expr);
     case 'arith':
+      return hasAggregate(expr.head) || expr.tail.some(([, e]) => hasAggregate(e));
     case 'concat':
     case 'and':
     case 'or':
     case 'xor':
+      return expr.items.some(hasAggregate);
     case 'compare':
       return hasAggregate(expr.left) || hasAggregate(expr.right);
     case 'in':
@@ -1178,54 +1222,33 @@ const compileExpr = (expr: Expr): CompiledExpr => {
       };
     }
     case 'arith': {
-      const l = compileExpr(expr.left);
-      const r = compileExpr(expr.right);
-      const { op } = expr;
-      const fn = ARITH[op];
+      // n-ary left-associative fold: `head` then each `[op, operand]`. Every
+      // operand is evaluated (no short-circuit — a fault propagates), matching
+      // the old left-nested binary tree, but with no per-chain recursion depth.
+      const head = compileExpr(expr.head);
+      const steps = expr.tail.map(([op, e]) => ({ op, fn: ARITH[op], ce: compileExpr(e) }));
 
       return (env) => {
-        const lval = l(env);
-        const rval = r(env);
+        let acc = head(env);
 
-        // Temporal arithmetic (instant ± duration, instant − instant, duration
-        // ± duration, duration × int) when either operand is temporal.
-        if (isTemporal(lval) || isTemporal(rval)) {
-          return temporalArith(op, lval, rval);
+        for (const { op, fn, ce } of steps) {
+          acc = arithStep(op, fn, acc, ce(env));
         }
 
-        const lv = numOf(lval);
-        const rv = numOf(rval);
-
-        if (lv === null || rv === null) {
-          return null;
-        }
-
-        // ISO: division/modulo by zero is a data exception, not Infinity/NaN.
-        if ((op === '/' || op === '%') && rv === 0) {
-          return dataException('division by zero');
-        }
-
-        return fn(lv, rv);
+        return acc;
       };
     }
     case 'concat': {
-      const l = compileExpr(expr.left);
-      const r = compileExpr(expr.right);
+      const parts = expr.items.map(compileExpr);
 
       return (env) => {
-        const lv = l(env);
-        const rv = r(env);
+        let acc = parts[0](env);
 
-        if (isNullish(lv) || isNullish(rv)) {
-          return null;
+        for (let i = 1; i < parts.length; i++) {
+          acc = concatStep(acc, parts[i](env));
         }
 
-        // ISO GQL `||`: list ++ list concatenates; otherwise string concat.
-        if (Array.isArray(lv) && Array.isArray(rv)) {
-          return [...lv, ...rv];
-        }
-
-        return String(lv) + String(rv);
+        return acc;
       };
     }
     case 'not': {
@@ -1236,11 +1259,18 @@ const compileExpr = (expr: Expr): CompiledExpr => {
     case 'and':
     case 'or':
     case 'xor': {
-      const l = compileExpr(expr.left);
-      const r = compileExpr(expr.right);
       const fn = BOOL3[expr.kind];
+      const parts = expr.items.map(compileExpr);
 
-      return (env) => fn(asTruth(l(env)), asTruth(r(env)));
+      return (env) => {
+        let acc = asTruth(parts[0](env));
+
+        for (let i = 1; i < parts.length; i++) {
+          acc = fn(acc, asTruth(parts[i](env)));
+        }
+
+        return acc;
+      };
     }
     case 'isNull': {
       const fn = compileExpr(expr.expr);
@@ -1805,13 +1835,25 @@ export const freePredicateVars = (expr: Expr): Set<string> => {
 
         return;
       case 'compare':
+        walk(e.left, bound);
+        walk(e.right, bound);
+
+        return;
       case 'arith':
+        walk(e.head, bound);
+
+        for (const [, el] of e.tail) {
+          walk(el, bound);
+        }
+
+        return;
       case 'concat':
       case 'and':
       case 'or':
       case 'xor':
-        walk(e.left, bound);
-        walk(e.right, bound);
+        for (const el of e.items) {
+          walk(el, bound);
+        }
 
         return;
       case 'in':
@@ -2392,8 +2434,9 @@ const BOUND_OF: Partial<Record<CompareOp, keyof CRangeBound>> = {
 const collectHints = (where: Expr, into: HintMap): void => {
   switch (where.kind) {
     case 'and':
-      collectHints(where.left, into);
-      collectHints(where.right, into);
+      for (const conjunct of where.items) {
+        collectHints(conjunct, into);
+      }
 
       return;
     case 'compare': {

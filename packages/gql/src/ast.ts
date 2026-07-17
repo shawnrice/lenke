@@ -356,12 +356,17 @@ export type Expr =
   // ISO GQL list element access `base[index]` — 0-based; out of range → null.
   | { kind: 'index'; base: Expr; index: Expr }
   | { kind: 'compare'; op: CompareOp; left: Expr; right: Expr }
-  | { kind: 'arith'; op: ArithOp; left: Expr; right: Expr }
-  | { kind: 'concat'; left: Expr; right: Expr }
+  // n-ary left-associative operator runs: a long chain is a flat array, not a
+  // chain-deep binary tree that would overflow the stack when walked (C1).
+  // `arith` folds `head` then each `[op, operand]` left to right (non-regroupable
+  // `- / %` keep per-element ops); `concat`/`and`/`or`/`xor` fold a same-operator
+  // run (mixed OR/XOR nests on the operator switch).
+  | { kind: 'arith'; head: Expr; tail: readonly (readonly [ArithOp, Expr])[] }
+  | { kind: 'concat'; items: readonly Expr[] }
   | { kind: 'neg'; expr: Expr }
-  | { kind: 'and'; left: Expr; right: Expr }
-  | { kind: 'or'; left: Expr; right: Expr }
-  | { kind: 'xor'; left: Expr; right: Expr }
+  | { kind: 'and'; items: readonly Expr[] }
+  | { kind: 'or'; items: readonly Expr[] }
+  | { kind: 'xor'; items: readonly Expr[] }
   | { kind: 'not'; expr: Expr }
   | { kind: 'isNull'; expr: Expr; negated: boolean }
   // ISO `<boolean test>`: `x IS [NOT] TRUE|FALSE|UNKNOWN`. `truth` is the target

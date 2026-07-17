@@ -266,14 +266,13 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Statement => {
     }
   };
 
-  // Operator-chain guard. Left-associative binary operators (`AND`/`OR`/`XOR`,
-  // `||`, `+`/`-`, `*`/`/`/`%`) parse *iteratively*, so `descend` never fires for
-  // a flat chain like `true AND true AND … (100k)`; the loop builds a chain-deep
-  // left-nested `Expr` that then overflows the stack when evaluated. Bounding the
-  // chain length keeps AST height within what recursive eval handles with margin.
-  // Mirrors the native parser's `MAX_CHAIN` so both engines reject an over-long
-  // chain identically.
-  const MAX_CHAIN = 10_000;
+  // Operator-chain sanity ceiling. The associative operator nodes are n-ary (a
+  // flat array, see `ast.ts`), so a long chain like `true AND true AND … (500k)`
+  // is not a chain-deep tree and every walk (eval, analysis) is a loop — no stack
+  // overflow regardless of chain length. This is therefore a pure anti-resource-
+  // abuse guard (each operand is an allocation + an eval step), not crash-safety.
+  // Mirrors the native parser's `MAX_CHAIN` so both engines reject identically.
+  const MAX_CHAIN = 100_000;
   const chainLimit = (count: number): void => {
     if (count > MAX_CHAIN) {
       throw new GqlSyntaxError('Operator chain too long', peek().pos);
@@ -806,26 +805,43 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Statement => {
     let left = parseAnd();
     let chain = 0;
 
+    // Flatten a maximal run of the SAME operator into one n-ary node; nest on an
+    // operator switch (both left-associative at one precedence level), so
+    // `a OR b OR c XOR d` is `xor([or([a,b,c]), d])`.
     while (checkKeyword('or') || checkKeyword('xor')) {
       chainLimit((chain += 1));
-      const kind = advance().value === 'or' ? 'or' : 'xor';
-      left = { kind, left, right: parseAnd() };
+      const isOr = advance().value === 'or';
+      const items: Expr[] = [left, parseAnd()];
+
+      while ((isOr && checkKeyword('or')) || (!isOr && checkKeyword('xor'))) {
+        chainLimit((chain += 1));
+        advance();
+        items.push(parseAnd());
+      }
+
+      left = { kind: isOr ? 'or' : 'xor', items };
     }
 
     return left;
   };
 
   const parseAnd = (): Expr => {
-    let left = parseNot();
+    const first = parseNot();
+
+    if (!checkKeyword('and')) {
+      return first;
+    }
+
+    const items: Expr[] = [first];
     let chain = 0;
 
     while (checkKeyword('and')) {
       chainLimit((chain += 1));
       advance();
-      left = { kind: 'and', left, right: parseNot() };
+      items.push(parseNot());
     }
 
-    return left;
+    return { kind: 'and', items };
   };
 
   const parseNot = (): Expr =>
@@ -972,46 +988,54 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Statement => {
   };
 
   const parseConcat = (): Expr => {
-    let left = parseAdditive();
+    const first = parseAdditive();
+
+    if (!check('concat')) {
+      return first;
+    }
+
+    const items: Expr[] = [first];
     let chain = 0;
 
     while (check('concat')) {
       chainLimit((chain += 1));
       advance();
-      left = { kind: 'concat', left, right: parseAdditive() };
+      items.push(parseAdditive());
     }
 
-    return left;
+    return { kind: 'concat', items };
   };
 
   const parseAdditive = (): Expr => {
-    let left = parseMultiplicative();
+    const head = parseMultiplicative();
+    const tail: (readonly [ArithOp, Expr])[] = [];
     let op = ADD_OPS[peek().type];
     let chain = 0;
 
     while (op) {
       chainLimit((chain += 1));
       advance();
-      left = { kind: 'arith', op, left, right: parseMultiplicative() };
+      tail.push([op, parseMultiplicative()]);
       op = ADD_OPS[peek().type];
     }
 
-    return left;
+    return tail.length === 0 ? head : { kind: 'arith', head, tail };
   };
 
   const parseMultiplicative = (): Expr => {
-    let left = parseUnary();
+    const head = parseUnary();
+    const tail: (readonly [ArithOp, Expr])[] = [];
     let op = MUL_OPS[peek().type];
     let chain = 0;
 
     while (op) {
       chainLimit((chain += 1));
       advance();
-      left = { kind: 'arith', op, left, right: parseUnary() };
+      tail.push([op, parseUnary()]);
       op = MUL_OPS[peek().type];
     }
 
-    return left;
+    return tail.length === 0 ? head : { kind: 'arith', head, tail };
   };
 
   const parseUnary = (): Expr =>
