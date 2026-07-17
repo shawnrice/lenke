@@ -1172,6 +1172,14 @@ fn eval_by(graph: &mut Graph, ctx: &mut Ctx, by: &By, value: &GVal) -> GVal {
         By::Identity(_) => value.clone(),
         By::Key(key, _) => match value {
             GVal::Vertex(_) | GVal::Edge(_) => prop(graph, value, key),
+            // `by('k')` over a Map (`group`/`groupCount`/`project()` row) projects
+            // the value at that key — e.g. `project('name','age').order().by('age')`.
+            // Without this the whole Map reached the comparator ("cannot order …").
+            GVal::Map(entries) => entries
+                .iter()
+                .find(|(k, _)| matches!(k, GVal::Str(s) if s.as_ref() == key.as_str()))
+                .map(|(_, v)| v.clone())
+                .unwrap_or(GVal::Null),
             _ => value.clone(),
         },
         By::Token(tok, _) => token_project(graph, *tok, value),

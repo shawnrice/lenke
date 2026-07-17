@@ -222,6 +222,24 @@ fn p4_by_order_by_key() {
 }
 
 #[test]
+fn p4_order_by_key_over_project_rows() {
+    // Round-11 BUG A: `order().by('<key>')` over `project()` Map rows sorts by the
+    // keyed value, not "cannot order an element with an element" (both engines had
+    // this — `eval_by` only projected a key off a vertex/edge, not a Map).
+    let rows = run(
+        "g.V().hasLabel('PERSON').project('name','age').by('name').by('age').order().by('age')",
+    );
+    let ages: Vec<f64> = rows
+        .iter()
+        .map(|r| match map_get(r, "age") {
+            Some(GVal::Num(n)) => *n,
+            other => panic!("expected an age, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(ages, vec![27.0, 29.0, 32.0, 35.0]);
+}
+
+#[test]
 fn p4_by_dedupe_by_label() {
     // dedupe().by(label()) keeps one element per distinct label ⇒ 2.
     assert_eq!(run("g.V().dedup().by(label())").len(), 2);

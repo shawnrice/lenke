@@ -386,6 +386,17 @@ export const evalBy = (by: By, value: unknown, graph: Graph, ctx: RunContext): u
         return value.properties[by.key];
       }
 
+      // `by('k')` over a Map (`group`/`groupCount`) or a `project()` row object
+      // projects the value at that key — e.g. `project('name','age').order().by('age')`.
+      // Without this the whole container reached the comparator ("cannot order …").
+      if (value instanceof Map) {
+        return value.get(by.key);
+      }
+
+      if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+        return (value as Record<string, unknown>)[by.key];
+      }
+
       return value;
     case 'traversal': {
       const out = applyPlanToStream(by.plan, [startTraverser(value)], graph, ctx);

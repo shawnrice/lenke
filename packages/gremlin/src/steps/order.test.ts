@@ -2,13 +2,47 @@ import { describe, expect, test } from 'bun:test';
 
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
-import { Order, Scope, T, V, fold, groupCount, hasLabel, order, tail, values } from '../steps.js';
+import {
+  Order,
+  Scope,
+  T,
+  V,
+  fold,
+  groupCount,
+  hasLabel,
+  order,
+  project,
+  tail,
+  values,
+} from '../steps.js';
 import { traversal } from '../traversal.js';
 
 const arr = (r: Iterable<unknown>): unknown[] => [...r];
 
 describe('Gremlin tests', () => {
   const tinkerGraph = createTestTinkerGraph();
+
+  // Round-11 BUG A: order().by('<key>') over project() Map rows sorts by the keyed
+  // value instead of throwing "cannot order an element with an element".
+  test('order().by(key) sorts project() rows by the keyed value', () => {
+    const rows = arr(
+      run(
+        traversal(
+          V(),
+          hasLabel('PERSON'),
+          project(['name', 'age'], ['name', 'age']),
+          order().by('age'),
+        ),
+        tinkerGraph,
+      ),
+    );
+    expect(rows).toEqual([
+      { name: 'vadas', age: 27 },
+      { name: 'marko', age: 29 },
+      { name: 'josh', age: 32 },
+      { name: 'peter', age: 35 },
+    ]);
+  });
 
   test('simple ordering works', () => {
     const result = arr(run(traversal(V(), values('name'), order()), tinkerGraph));
