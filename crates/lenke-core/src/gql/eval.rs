@@ -1091,6 +1091,73 @@ fn truth_to_val(t: Truth) -> Val {
     }
 }
 
+/// One step of a left-associative arithmetic fold `lv <op> rv`. Preserves the
+/// pre-refactor binary semantics: temporal arithmetic, division/modulo-by-zero
+/// faulting to null, and null propagation from a non-numeric operand.
+fn arith_step(env: &Env, op: ArithOp, lv: Val, rv: Val) -> Val {
+    if matches!(lv, Val::Temporal(_)) || matches!(rv, Val::Temporal(_)) {
+        return temporal_arith(op, &lv, &rv);
+    }
+    match (arith_num(&lv, env.ctx), arith_num(&rv, env.ctx)) {
+        (Some(a), Some(b)) => {
+            if matches!(op, ArithOp::Div | ArithOp::Mod) && b == 0.0 {
+                env.ctx.set_fault(FAULT_DIV_ZERO);
+                Val::Null
+            } else {
+                Val::Num(match op {
+                    ArithOp::Add => a + b,
+                    ArithOp::Sub => a - b,
+                    ArithOp::Mul => a * b,
+                    ArithOp::Div => a / b,
+                    ArithOp::Mod => a % b,
+                })
+            }
+        }
+        _ => Val::Null,
+    }
+}
+
+/// One step of a left-associative string/list concat fold `lv || rv`. A null
+/// operand yields null; two lists concatenate; otherwise the operands stringify.
+fn concat_step(env: &Env, lv: Val, rv: Val) -> Val {
+    if is_nullish(&lv) || is_nullish(&rv) {
+        return Val::Null;
+    }
+    match (&lv, &rv) {
+        (Val::List(a), Val::List(b)) => Val::List(a.iter().chain(b.iter()).cloned().collect()),
+        _ => vstr(js_str(env.graph, &lv) + &js_str(env.graph, &rv)),
+    }
+}
+
+/// One column-at-a-time step of a left-associative arithmetic fold in the
+/// vectorized evaluator. Both operands are already known to be numeric columns
+/// (a general column falls back to scalar in the caller). Preserves the
+/// division/modulo-by-zero fault scan and NaN-avoiding validity mask.
+fn arith_vec_step(ctx: &Ctx, op: ArithOp, l: VVec, r: VVec, n: usize) -> VVec {
+    let (ld, lv) = l.into_num();
+    let (rd, rv) = r.into_num();
+    if matches!(op, ArithOp::Div | ArithOp::Mod) {
+        for i in 0..n {
+            if rv[i] && rd[i] == 0.0 {
+                ctx.set_fault(FAULT_DIV_ZERO);
+                break;
+            }
+        }
+    }
+    let mut d = Vec::with_capacity(n);
+    for i in 0..n {
+        d.push(match op {
+            ArithOp::Add => ld[i] + rd[i],
+            ArithOp::Sub => ld[i] - rd[i],
+            ArithOp::Mul => ld[i] * rd[i],
+            ArithOp::Div => ld[i] / rd[i],
+            ArithOp::Mod => ld[i] % rd[i],
+        });
+    }
+    let valid = (0..n).map(|i| lv[i] && rv[i]).collect();
+    VVec::Num { d, valid }
+}
+
 fn eval(env: &Env, expr: &CExpr) -> Val {
     match expr {
         CExpr::Lit(l) => match l {
@@ -1125,48 +1192,47 @@ fn eval(env: &Env, expr: &CExpr) -> Val {
             Some(n) => Val::Num(-n),
             None => Val::Null,
         },
-        CExpr::Arith { op, left, right } => {
-            let lv = eval(env, left);
-            let rv = eval(env, right);
-            if matches!(lv, Val::Temporal(_)) || matches!(rv, Val::Temporal(_)) {
-                return temporal_arith(*op, &lv, &rv);
+        // n-ary left-associative fold: `head` then each `(op, operand)` left to
+        // right. Every operand is evaluated (no short-circuit — a fault in any
+        // element still faults), matching the old left-nested binary tree.
+        CExpr::Arith { head, tail } => {
+            let mut acc = eval(env, head);
+            for (op, e) in tail {
+                let rv = eval(env, e);
+                acc = arith_step(env, *op, acc, rv);
             }
-            let a = arith_num(&lv, env.ctx);
-            let b = arith_num(&rv, env.ctx);
-            match (a, b) {
-                (Some(a), Some(b)) => {
-                    if matches!(op, ArithOp::Div | ArithOp::Mod) && b == 0.0 {
-                        env.ctx.set_fault(FAULT_DIV_ZERO);
-                        Val::Null
-                    } else {
-                        Val::Num(match op {
-                            ArithOp::Add => a + b,
-                            ArithOp::Sub => a - b,
-                            ArithOp::Mul => a * b,
-                            ArithOp::Div => a / b,
-                            ArithOp::Mod => a % b,
-                        })
-                    }
-                }
-                _ => Val::Null,
-            }
+            acc
         }
-        CExpr::Concat { left, right } => {
-            let lv = eval(env, left);
-            let rv = eval(env, right);
-            match (&lv, &rv) {
-                _ if is_nullish(&lv) || is_nullish(&rv) => Val::Null,
-                // ISO GQL `||`: list ++ list concatenates; otherwise string concat.
-                (Val::List(a), Val::List(b)) => {
-                    Val::List(a.iter().chain(b.iter()).cloned().collect())
-                }
-                _ => vstr(js_str(env.graph, &lv) + &js_str(env.graph, &rv)),
+        CExpr::Concat(items) => {
+            let mut acc = eval(env, &items[0]);
+            for e in &items[1..] {
+                let rv = eval(env, e);
+                acc = concat_step(env, acc, rv);
             }
+            acc
         }
         CExpr::Not(e) => truth_to_val(not3(as_truth(&eval(env, e)))),
-        CExpr::And(l, r) => truth_to_val(and3(as_truth(&eval(env, l)), as_truth(&eval(env, r)))),
-        CExpr::Or(l, r) => truth_to_val(or3(as_truth(&eval(env, l)), as_truth(&eval(env, r)))),
-        CExpr::Xor(l, r) => truth_to_val(xor3(as_truth(&eval(env, l)), as_truth(&eval(env, r)))),
+        CExpr::And(items) => {
+            let mut acc = as_truth(&eval(env, &items[0]));
+            for e in &items[1..] {
+                acc = and3(acc, as_truth(&eval(env, e)));
+            }
+            truth_to_val(acc)
+        }
+        CExpr::Or(items) => {
+            let mut acc = as_truth(&eval(env, &items[0]));
+            for e in &items[1..] {
+                acc = or3(acc, as_truth(&eval(env, e)));
+            }
+            truth_to_val(acc)
+        }
+        CExpr::Xor(items) => {
+            let mut acc = as_truth(&eval(env, &items[0]));
+            for e in &items[1..] {
+                acc = xor3(acc, as_truth(&eval(env, e)));
+            }
+            truth_to_val(acc)
+        }
         CExpr::IsNull { expr, negated } => {
             let isnull = is_nullish(&eval(env, expr));
             Val::Bool(if *negated { !isnull } else { isnull })
@@ -4019,40 +4085,23 @@ fn eval_vec(graph: &Graph, ctx: &Ctx, sc: &ScanCols, e: &CExpr) -> VVec {
                 VVec::Num { d, valid }
             }
         }
-        CExpr::Arith { op, left, right } => {
-            let l = eval_vec(graph, ctx, sc, left);
-            let r = eval_vec(graph, ctx, sc, right);
-            // A non-numeric operand (general column) → scalar fallback, which
-            // raises the ISO type error per-row rather than coercing to NaN.
-            if matches!(l, VVec::Gen(_)) || matches!(r, VVec::Gen(_)) {
-                gen(e)
-            } else {
-                let (ld, lv) = l.into_num();
-                let (rd, rv) = r.into_num();
-                // ISO: division/modulo by a zero divisor is a data exception. Scan
-                // (a separate, vectorizable pass) so the arithmetic loop below
-                // stays autovectorizable.
-                if matches!(op, ArithOp::Div | ArithOp::Mod) {
-                    for i in 0..n {
-                        if rv[i] && rd[i] == 0.0 {
-                            ctx.set_fault(FAULT_DIV_ZERO);
-                            break;
-                        }
-                    }
-                }
-                let mut d = Vec::with_capacity(n);
-                for i in 0..n {
-                    d.push(match op {
-                        ArithOp::Add => ld[i] + rd[i],
-                        ArithOp::Sub => ld[i] - rd[i],
-                        ArithOp::Mul => ld[i] * rd[i],
-                        ArithOp::Div => ld[i] / rd[i],
-                        ArithOp::Mod => ld[i] % rd[i],
-                    });
-                }
-                let valid = (0..n).map(|i| lv[i] && rv[i]).collect();
-                VVec::Num { d, valid }
+        CExpr::Arith { head, tail } => {
+            // n-ary left-associative fold, column at a time. A non-numeric operand
+            // (general column, incl. temporal) → scalar fallback for the whole
+            // node, which raises the ISO type error / does temporal arithmetic
+            // per-row rather than coercing to NaN.
+            let mut acc = eval_vec(graph, ctx, sc, head);
+            if matches!(acc, VVec::Gen(_)) {
+                return gen(e);
             }
+            for (op, rhs) in tail {
+                let r = eval_vec(graph, ctx, sc, rhs);
+                if matches!(r, VVec::Gen(_)) {
+                    return gen(e);
+                }
+                acc = arith_vec_step(ctx, *op, acc, r, n);
+            }
+            acc
         }
         CExpr::Compare { op, left, right } => {
             // Interned-id string equality (`col = / <> literal`) — no per-row bytes.
@@ -4099,20 +4148,35 @@ fn eval_vec(graph: &Graph, ctx: &Ctx, sc: &ScanCols, e: &CExpr) -> VVec {
             let tr = eval_vec(graph, ctx, sc, x).into_truth();
             kleene_vec(tr.iter().map(|&t| not3(t)))
         }
-        CExpr::And(l, r) => {
-            let a = eval_vec(graph, ctx, sc, l).into_truth();
-            let b = eval_vec(graph, ctx, sc, r).into_truth();
-            kleene_vec((0..n).map(|i| and3(a[i], b[i])))
+        CExpr::And(items) => {
+            let mut acc = eval_vec(graph, ctx, sc, &items[0]).into_truth();
+            for e in &items[1..] {
+                let b = eval_vec(graph, ctx, sc, e).into_truth();
+                for i in 0..n {
+                    acc[i] = and3(acc[i], b[i]);
+                }
+            }
+            kleene_vec(acc.into_iter())
         }
-        CExpr::Or(l, r) => {
-            let a = eval_vec(graph, ctx, sc, l).into_truth();
-            let b = eval_vec(graph, ctx, sc, r).into_truth();
-            kleene_vec((0..n).map(|i| or3(a[i], b[i])))
+        CExpr::Or(items) => {
+            let mut acc = eval_vec(graph, ctx, sc, &items[0]).into_truth();
+            for e in &items[1..] {
+                let b = eval_vec(graph, ctx, sc, e).into_truth();
+                for i in 0..n {
+                    acc[i] = or3(acc[i], b[i]);
+                }
+            }
+            kleene_vec(acc.into_iter())
         }
-        CExpr::Xor(l, r) => {
-            let a = eval_vec(graph, ctx, sc, l).into_truth();
-            let b = eval_vec(graph, ctx, sc, r).into_truth();
-            kleene_vec((0..n).map(|i| xor3(a[i], b[i])))
+        CExpr::Xor(items) => {
+            let mut acc = eval_vec(graph, ctx, sc, &items[0]).into_truth();
+            for e in &items[1..] {
+                let b = eval_vec(graph, ctx, sc, e).into_truth();
+                for i in 0..n {
+                    acc[i] = xor3(acc[i], b[i]);
+                }
+            }
+            kleene_vec(acc.into_iter())
         }
         CExpr::IsNull { expr, negated } => {
             let (_, valid) = eval_vec(graph, ctx, sc, expr).into_num();
@@ -4284,23 +4348,32 @@ fn prop_index_hint(
             apply_bound(&mut rb, op, key);
             idx_range(graph, name, &rb, edge)
         }
-        CExpr::And(a, b) => {
-            if let (Some((s1, k1, o1, key1)), Some((s2, k2, o2, key2))) =
-                (cmp_bound(a, ctx), cmp_bound(b, ctx))
-            {
-                if s1 == s2 && k1 == k2 && slot_ok(s1) {
-                    if let Some(name) = prop_name(graph, ctx, k1, edge) {
-                        if idx_indexed(graph, name, edge) {
-                            let mut rb = RangeBound::default();
-                            apply_bound(&mut rb, o1, key1);
-                            apply_bound(&mut rb, o2, key2);
-                            return idx_range(graph, name, &rb, edge);
+        CExpr::And(items) => {
+            // Coalesce any pair of same-var/same-key comparisons into one tight
+            // range seek (e.g. `x >= a AND … AND x <= b`).
+            for (i, first) in items.iter().enumerate() {
+                let Some((s1, k1, o1, key1)) = cmp_bound(first, ctx) else {
+                    continue;
+                };
+                for second in &items[i + 1..] {
+                    if let Some((s2, k2, o2, key2)) = cmp_bound(second, ctx) {
+                        if s1 == s2 && k1 == k2 && slot_ok(s1) {
+                            if let Some(name) = prop_name(graph, ctx, k1, edge) {
+                                if idx_indexed(graph, name, edge) {
+                                    let mut rb = RangeBound::default();
+                                    apply_bound(&mut rb, o1, key1.clone());
+                                    apply_bound(&mut rb, o2, key2);
+                                    return idx_range(graph, name, &rb, edge);
+                                }
+                            }
                         }
                     }
                 }
             }
-            prop_index_hint(graph, ctx, a, want_slot, edge)
-                .or_else(|| prop_index_hint(graph, ctx, b, want_slot, edge))
+            // Else the first usable single conjunct.
+            items
+                .iter()
+                .find_map(|it| prop_index_hint(graph, ctx, it, want_slot, edge))
         }
         _ => None,
     }
@@ -6698,12 +6771,15 @@ fn expr_slot_refs(e: &CExpr, out: &mut Vec<usize>) -> bool {
         }
         CExpr::Param(_) | CExpr::Lit(_) => true,
         CExpr::List(xs) => xs.iter().all(|x| expr_slot_refs(x, out)),
-        CExpr::Compare { left, right, .. }
-        | CExpr::Arith { left, right, .. }
-        | CExpr::Concat { left, right }
-        | CExpr::And(left, right)
-        | CExpr::Or(left, right)
-        | CExpr::Xor(left, right) => expr_slot_refs(left, out) && expr_slot_refs(right, out),
+        CExpr::Compare { left, right, .. } => {
+            expr_slot_refs(left, out) && expr_slot_refs(right, out)
+        }
+        CExpr::Arith { head, tail } => {
+            expr_slot_refs(head, out) && tail.iter().all(|(_, e)| expr_slot_refs(e, out))
+        }
+        CExpr::Concat(items) | CExpr::And(items) | CExpr::Or(items) | CExpr::Xor(items) => {
+            items.iter().all(|e| expr_slot_refs(e, out))
+        }
         CExpr::Neg(x) | CExpr::Not(x) => expr_slot_refs(x, out),
         CExpr::IsNull { expr, .. }
         | CExpr::IsTruth { expr, .. }
@@ -6715,9 +6791,10 @@ fn expr_slot_refs(e: &CExpr, out: &mut Vec<usize>) -> bool {
 
 /// Flatten a top-level `AND` chain into its conjuncts.
 fn split_conjuncts<'a>(e: &'a CExpr, out: &mut Vec<&'a CExpr>) {
-    if let CExpr::And(l, r) = e {
-        split_conjuncts(l, out);
-        split_conjuncts(r, out);
+    if let CExpr::And(items) = e {
+        for it in items {
+            split_conjuncts(it, out);
+        }
     } else {
         out.push(e);
     }

@@ -411,19 +411,25 @@ pub enum Expr {
         left: Box<Self>,
         right: Box<Self>,
     },
+    /// A left-associative arithmetic run at one precedence level (additive or
+    /// multiplicative): `head` then each `(op, operand)` folded left to right, so
+    /// `a - b - c` is `head=a, tail=[(Sub,b),(Sub,c)]`. n-ary (not nested `Box`s)
+    /// so a long chain is a flat `Vec`, not a chain-deep tree that would overflow
+    /// the stack when walked — see round-12 C1.
     Arith {
-        op: ArithOp,
-        left: Box<Self>,
-        right: Box<Self>,
+        head: Box<Self>,
+        tail: Vec<(ArithOp, Self)>,
     },
-    Concat {
-        left: Box<Self>,
-        right: Box<Self>,
-    },
+    /// A left-associative string-concat run `a || b || …`. n-ary; any null
+    /// operand yields null.
+    Concat(Vec<Self>),
     Neg(Box<Self>),
-    And(Box<Self>, Box<Self>),
-    Or(Box<Self>, Box<Self>),
-    Xor(Box<Self>, Box<Self>),
+    /// n-ary boolean runs (fully associative three-valued folds). A run of the
+    /// *same* operator flattens into one `Vec`; a mixed `OR`/`XOR` run nests on
+    /// the operator switch (both are left-associative at one precedence level).
+    And(Vec<Self>),
+    Or(Vec<Self>),
+    Xor(Vec<Self>),
     Not(Box<Self>),
     IsNull {
         expr: Box<Self>,

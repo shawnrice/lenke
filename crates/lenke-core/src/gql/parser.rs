@@ -793,30 +793,43 @@ impl Parser {
     fn parse_or_xor(&mut self) -> R<Expr> {
         let mut left = self.parse_and()?;
         let mut chain = 0;
+        // Flatten a maximal run of the SAME operator into one n-ary node; nest on
+        // an operator switch (both are left-associative at one precedence level),
+        // so `a OR b OR c XOR d` is `Xor([Or([a,b,c]), d])`.
         while self.check_kw("or") || self.check_kw("xor") {
             chain += 1;
             self.chain_limit(chain)?;
             let is_or = self.advance().value == "or";
-            let right = self.parse_and()?;
+            let mut items = vec![left, self.parse_and()?];
+            while (is_or && self.check_kw("or")) || (!is_or && self.check_kw("xor")) {
+                chain += 1;
+                self.chain_limit(chain)?;
+                self.advance();
+                items.push(self.parse_and()?);
+            }
             left = if is_or {
-                Expr::Or(Box::new(left), Box::new(right))
+                Expr::Or(items)
             } else {
-                Expr::Xor(Box::new(left), Box::new(right))
+                Expr::Xor(items)
             };
         }
         Ok(left)
     }
 
     fn parse_and(&mut self) -> R<Expr> {
-        let mut left = self.parse_not()?;
+        let first = self.parse_not()?;
+        if !self.check_kw("and") {
+            return Ok(first);
+        }
+        let mut items = vec![first];
         let mut chain = 0;
         while self.check_kw("and") {
             chain += 1;
             self.chain_limit(chain)?;
             self.advance();
-            left = Expr::And(Box::new(left), Box::new(self.parse_not()?));
+            items.push(self.parse_not()?);
         }
-        Ok(left)
+        Ok(Expr::And(items))
     }
 
     fn parse_not(&mut self) -> R<Expr> {
@@ -970,71 +983,68 @@ impl Parser {
     }
 
     fn parse_concat(&mut self) -> R<Expr> {
-        let mut left = self.parse_additive()?;
+        let first = self.parse_additive()?;
+        if !self.check(Tt::Concat) {
+            return Ok(first);
+        }
+        let mut items = vec![first];
         let mut chain = 0;
         while self.check(Tt::Concat) {
             chain += 1;
             self.chain_limit(chain)?;
             self.advance();
-            left = Expr::Concat {
-                left: Box::new(left),
-                right: Box::new(self.parse_additive()?),
-            };
+            items.push(self.parse_additive()?);
         }
-        Ok(left)
+        Ok(Expr::Concat(items))
     }
 
     fn parse_additive(&mut self) -> R<Expr> {
-        let mut left = self.parse_multiplicative()?;
+        let head = self.parse_multiplicative()?;
+        let mut tail: Vec<(ArithOp, Expr)> = Vec::new();
         let mut chain = 0;
         loop {
             let op = match self.peek().tt {
-                Tt::Plus => Some(ArithOp::Add),
-                Tt::Dash => Some(ArithOp::Sub),
-                _ => None,
+                Tt::Plus => ArithOp::Add,
+                Tt::Dash => ArithOp::Sub,
+                _ => break,
             };
-            match op {
-                Some(op) => {
-                    chain += 1;
-                    self.chain_limit(chain)?;
-                    self.advance();
-                    left = Expr::Arith {
-                        op,
-                        left: Box::new(left),
-                        right: Box::new(self.parse_multiplicative()?),
-                    };
-                }
-                None => break,
-            }
+            chain += 1;
+            self.chain_limit(chain)?;
+            self.advance();
+            tail.push((op, self.parse_multiplicative()?));
         }
-        Ok(left)
+        if tail.is_empty() {
+            return Ok(head);
+        }
+        Ok(Expr::Arith {
+            head: Box::new(head),
+            tail,
+        })
     }
 
     fn parse_multiplicative(&mut self) -> R<Expr> {
-        let mut left = self.parse_unary()?;
+        let head = self.parse_unary()?;
+        let mut tail: Vec<(ArithOp, Expr)> = Vec::new();
         let mut chain = 0;
         loop {
             let op = match self.peek().tt {
-                Tt::Star => Some(ArithOp::Mul),
-                Tt::Slash => Some(ArithOp::Div),
-                Tt::Percent => Some(ArithOp::Mod),
-                _ => None,
+                Tt::Star => ArithOp::Mul,
+                Tt::Slash => ArithOp::Div,
+                Tt::Percent => ArithOp::Mod,
+                _ => break,
             };
-            match op {
-                Some(op) => {
-                    chain += 1;
-                    self.chain_limit(chain)?;
-                    self.advance();
-                    left = Expr::Arith {
-                        op,
-                        left: Box::new(left),
-                        right: Box::new(self.parse_unary()?),
-                    };
-                }
-                None => break,
-            }
+            chain += 1;
+            self.chain_limit(chain)?;
+            self.advance();
+            tail.push((op, self.parse_unary()?));
         }
-        Ok(left)
+        if tail.is_empty() {
+            return Ok(head);
+        }
+        Ok(Expr::Arith {
+            head: Box::new(head),
+            tail,
+        })
     }
 
     fn parse_unary(&mut self) -> R<Expr> {

@@ -269,19 +269,19 @@ pub enum CExpr {
         left: Box<Self>,
         right: Box<Self>,
     },
+    /// n-ary left-associative arithmetic run (mirrors `ast::Expr::Arith`): a flat
+    /// `Vec`, not a chain-deep tree, so eval/drop never overflow the stack (C1).
     Arith {
-        op: ArithOp,
-        left: Box<Self>,
-        right: Box<Self>,
+        head: Box<Self>,
+        tail: Vec<(ArithOp, Self)>,
     },
-    Concat {
-        left: Box<Self>,
-        right: Box<Self>,
-    },
+    /// n-ary left-associative string-concat run.
+    Concat(Vec<Self>),
     Neg(Box<Self>),
-    And(Box<Self>, Box<Self>),
-    Or(Box<Self>, Box<Self>),
-    Xor(Box<Self>, Box<Self>),
+    /// n-ary boolean runs (three-valued folds; same-operator run flattened).
+    And(Vec<Self>),
+    Or(Vec<Self>),
+    Xor(Vec<Self>),
     Not(Box<Self>),
     IsNull {
         expr: Box<Self>,
@@ -390,39 +390,51 @@ fn emit(e: &CExpr, out: &mut Vec<Op>) {
             }
             out.push(Op::MakeList(items.len()));
         }
-        CExpr::Arith { op, left, right } => {
-            emit(left, out);
-            emit(right, out);
-            out.push(Op::Arith(*op));
+        // n-ary nodes emit a left-associative sequence of binary stack ops:
+        // `head e1 <op1> e2 <op2> …`, computing the same fold as the evaluator.
+        CExpr::Arith { head, tail } => {
+            emit(head, out);
+            for (op, e) in tail {
+                emit(e, out);
+                out.push(Op::Arith(*op));
+            }
         }
         CExpr::Compare { op, left, right } => {
             emit(left, out);
             emit(right, out);
             out.push(Op::Compare(*op));
         }
-        CExpr::Concat { left, right } => {
-            emit(left, out);
-            emit(right, out);
-            out.push(Op::Concat);
+        CExpr::Concat(items) => {
+            emit(&items[0], out);
+            for e in &items[1..] {
+                emit(e, out);
+                out.push(Op::Concat);
+            }
         }
         CExpr::Neg(x) => {
             emit(x, out);
             out.push(Op::Neg);
         }
-        CExpr::And(l, r) => {
-            emit(l, out);
-            emit(r, out);
-            out.push(Op::And);
+        CExpr::And(items) => {
+            emit(&items[0], out);
+            for e in &items[1..] {
+                emit(e, out);
+                out.push(Op::And);
+            }
         }
-        CExpr::Or(l, r) => {
-            emit(l, out);
-            emit(r, out);
-            out.push(Op::Or);
+        CExpr::Or(items) => {
+            emit(&items[0], out);
+            for e in &items[1..] {
+                emit(e, out);
+                out.push(Op::Or);
+            }
         }
-        CExpr::Xor(l, r) => {
-            emit(l, out);
-            emit(r, out);
-            out.push(Op::Xor);
+        CExpr::Xor(items) => {
+            emit(&items[0], out);
+            for e in &items[1..] {
+                emit(e, out);
+                out.push(Op::Xor);
+            }
         }
         CExpr::Not(x) => {
             emit(x, out);
@@ -755,12 +767,13 @@ fn has_aggregate(expr: &CExpr) -> bool {
         CExpr::IsNull { expr, .. }
         | CExpr::IsTruth { expr, .. }
         | CExpr::IsLabeled { expr, .. } => has_aggregate(expr),
-        CExpr::Arith { left, right, .. }
-        | CExpr::Concat { left, right }
-        | CExpr::And(left, right)
-        | CExpr::Or(left, right)
-        | CExpr::Xor(left, right)
-        | CExpr::Compare { left, right, .. } => has_aggregate(left) || has_aggregate(right),
+        CExpr::Arith { head, tail } => {
+            has_aggregate(head) || tail.iter().any(|(_, e)| has_aggregate(e))
+        }
+        CExpr::Concat(items) | CExpr::And(items) | CExpr::Or(items) | CExpr::Xor(items) => {
+            items.iter().any(has_aggregate)
+        }
+        CExpr::Compare { left, right, .. } => has_aggregate(left) || has_aggregate(right),
         CExpr::In { expr, list, .. } => has_aggregate(expr) || has_aggregate(list),
         CExpr::List(items) => items.iter().any(has_aggregate),
         CExpr::Index { base, index } => has_aggregate(base) || has_aggregate(index),
@@ -847,19 +860,20 @@ fn extract_aggs(expr: CExpr, aggs: &mut Vec<CAgg>) -> CExpr {
             left: b(left, aggs),
             right: b(right, aggs),
         },
-        CExpr::Arith { op, left, right } => CExpr::Arith {
-            op,
-            left: b(left, aggs),
-            right: b(right, aggs),
+        CExpr::Arith { head, tail } => CExpr::Arith {
+            head: b(head, aggs),
+            tail: tail
+                .into_iter()
+                .map(|(op, e)| (op, extract_aggs(e, aggs)))
+                .collect(),
         },
-        CExpr::Concat { left, right } => CExpr::Concat {
-            left: b(left, aggs),
-            right: b(right, aggs),
-        },
+        CExpr::Concat(items) => {
+            CExpr::Concat(items.into_iter().map(|e| extract_aggs(e, aggs)).collect())
+        }
         CExpr::Neg(e) => CExpr::Neg(b(e, aggs)),
-        CExpr::And(l, r) => CExpr::And(b(l, aggs), b(r, aggs)),
-        CExpr::Or(l, r) => CExpr::Or(b(l, aggs), b(r, aggs)),
-        CExpr::Xor(l, r) => CExpr::Xor(b(l, aggs), b(r, aggs)),
+        CExpr::And(items) => CExpr::And(items.into_iter().map(|e| extract_aggs(e, aggs)).collect()),
+        CExpr::Or(items) => CExpr::Or(items.into_iter().map(|e| extract_aggs(e, aggs)).collect()),
+        CExpr::Xor(items) => CExpr::Xor(items.into_iter().map(|e| extract_aggs(e, aggs)).collect()),
         CExpr::Not(e) => CExpr::Not(b(e, aggs)),
         CExpr::IsNull { expr, negated } => CExpr::IsNull {
             expr: b(expr, aggs),
@@ -925,14 +939,13 @@ fn refs_slot_below(expr: &CExpr, n: usize) -> bool {
         CExpr::IsNull { expr, .. }
         | CExpr::IsTruth { expr, .. }
         | CExpr::IsLabeled { expr, .. } => refs_slot_below(expr, n),
-        CExpr::Arith { left, right, .. }
-        | CExpr::Concat { left, right }
-        | CExpr::And(left, right)
-        | CExpr::Or(left, right)
-        | CExpr::Xor(left, right)
-        | CExpr::Compare { left, right, .. } => {
-            refs_slot_below(left, n) || refs_slot_below(right, n)
+        CExpr::Arith { head, tail } => {
+            refs_slot_below(head, n) || tail.iter().any(|(_, e)| refs_slot_below(e, n))
         }
+        CExpr::Concat(items) | CExpr::And(items) | CExpr::Or(items) | CExpr::Xor(items) => {
+            items.iter().any(|e| refs_slot_below(e, n))
+        }
+        CExpr::Compare { left, right, .. } => refs_slot_below(left, n) || refs_slot_below(right, n),
         CExpr::In { expr, list, .. } => refs_slot_below(expr, n) || refs_slot_below(list, n),
         CExpr::Case {
             subject,
@@ -1067,19 +1080,15 @@ impl Lowerer {
                 left: self.boxed(left),
                 right: self.boxed(right),
             },
-            Expr::Arith { op, left, right } => CExpr::Arith {
-                op: *op,
-                left: self.boxed(left),
-                right: self.boxed(right),
+            Expr::Arith { head, tail } => CExpr::Arith {
+                head: self.boxed(head),
+                tail: tail.iter().map(|(op, e)| (*op, self.expr(e))).collect(),
             },
-            Expr::Concat { left, right } => CExpr::Concat {
-                left: self.boxed(left),
-                right: self.boxed(right),
-            },
+            Expr::Concat(items) => CExpr::Concat(items.iter().map(|x| self.expr(x)).collect()),
             Expr::Neg(x) => CExpr::Neg(self.boxed(x)),
-            Expr::And(l, r) => CExpr::And(self.boxed(l), self.boxed(r)),
-            Expr::Or(l, r) => CExpr::Or(self.boxed(l), self.boxed(r)),
-            Expr::Xor(l, r) => CExpr::Xor(self.boxed(l), self.boxed(r)),
+            Expr::And(items) => CExpr::And(items.iter().map(|x| self.expr(x)).collect()),
+            Expr::Or(items) => CExpr::Or(items.iter().map(|x| self.expr(x)).collect()),
+            Expr::Xor(items) => CExpr::Xor(items.iter().map(|x| self.expr(x)).collect()),
             Expr::Not(x) => CExpr::Not(self.boxed(x)),
             Expr::IsNull { expr, negated } => CExpr::IsNull {
                 expr: self.boxed(expr),
@@ -1687,14 +1696,20 @@ fn collect_free_vars(e: &Expr, bound: &[String], free: &mut Vec<String>) {
         Expr::IsNull { expr, .. } | Expr::IsTruth { expr, .. } | Expr::IsLabeled { expr, .. } => {
             collect_free_vars(expr, bound, free)
         }
-        Expr::Compare { left, right, .. }
-        | Expr::Arith { left, right, .. }
-        | Expr::Concat { left, right }
-        | Expr::And(left, right)
-        | Expr::Or(left, right)
-        | Expr::Xor(left, right) => {
+        Expr::Compare { left, right, .. } => {
             collect_free_vars(left, bound, free);
             collect_free_vars(right, bound, free);
+        }
+        Expr::Arith { head, tail } => {
+            collect_free_vars(head, bound, free);
+            for (_, e) in tail {
+                collect_free_vars(e, bound, free);
+            }
+        }
+        Expr::Concat(items) | Expr::And(items) | Expr::Or(items) | Expr::Xor(items) => {
+            for e in items {
+                collect_free_vars(e, bound, free);
+            }
         }
         Expr::In { expr, list, .. } => {
             collect_free_vars(expr, bound, free);
