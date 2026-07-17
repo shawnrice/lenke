@@ -52,9 +52,8 @@ also reproduces at 35k terms over the napi backend). Root cause is precise and l
 
 TS hits the same deep tree and throws an **uncatchable `RangeError`** ("Maximum call
 stack size exceeded") — it survives under Bun's top-level catch but is uncoded, so the
-two engines already diverge here. Fix needs a shared, byte-identical bound; see the
-morning brief (it carries a cap-value / iterative-eval policy decision, so it was **not**
-applied overnight).
+two engines already diverged here. **Fixed** (`8001891`): a shared `MAX_CHAIN` bound in
+both parsers → `E_SYNTAX`, byte-identical. See Fixes below.
 
 ## Divergences (FuzzHunter2)
 
@@ -64,16 +63,13 @@ applied overnight).
   **resolves it before commit** (`DETACH DELETE` the dup, or `SET`-collide-then-revert)
   is accepted by native but wrongly rejected by TS with `E_CONSTRAINT_VIOLATION`.
   REQUIRED constraints already defer correctly in _both_ engines, and native matches the
-  documented R-TX deferred-check design — TS-unique is the lone outlier. Aligning it is a
-  cross-package change (move unique validation into the commit-time deferred pass) that
-  existing autocommit constraint tests pin, so it is a morning-brief item, not an
-  overnight fix.
-- **F1 — lone UTF-16 surrogate (MEDIUM).** TS accepts a string containing a lone
+  documented R-TX deferred-check design — TS-unique was the lone outlier. **Fixed**
+  (`569bf2b`): removed the executor's eager pre-checks; the core already defers to commit.
+- **F1 — lone UTF-16 surrogate (MEDIUM).** TS accepted a string containing a lone
   surrogate (`"\ud800"`) on both the NDJSON load path and the GQL INSERT `$param` path;
-  native rejects it with `E_INVALID_JSON`. TS is the more permissive side (native refuses
-  invalid Unicode). Same family as the round-11 "tighten TS param validation to match
-  native" fixes, but it needs a stated policy (reject lone surrogates everywhere, and
-  with which code?) → brief.
+  native rejects it with `E_INVALID_JSON`. TS was the more permissive side (native refuses
+  invalid Unicode). **Fixed** (`6654813`): reject at both TS ingest boundaries with
+  `E_INVALID_JSON`, matching native.
 - **F2 — CSV nested-list flattening (WAI, not a bug).** A CSV round-trip flattens
   `[[1,2],[3,[4,5]],[]]` to `["1,2","3,4,5",""]`. This is a cross-_format_ lossy encoding
   (CSV cannot represent nested lists), not a cross-_engine_ divergence; TS and native
@@ -107,9 +103,35 @@ No Cypher-ism was silently accepted anywhere this round; all ISO forms exercised
 personas (label predicates, `NOT EXISTS`, `LIMIT $param`, `_MERGE`, bitemporal string
 range predicates) worked.
 
-## Fixes applied
+## Fixes applied (verified green, byte-identical, committed — not pushed)
 
-**None this round.** Every finding is either WAI/known or carries a design decision
-(cap policy, constraint-timing semantics, surrogate policy) and was deferred to
-`DESIGN-DECISIONS-MORNING.md`. The round's value is the verification breadth, the
-zero-bug integrated app, and locating C1.
+The three real findings were triaged with the user and fixed the same session:
+
+- **`8001891`** (C1, crash) bound each iterative binary-operator loop
+  (`AND`/`OR`/`XOR`/`||`/`+`/`*`) to `MAX_CHAIN = 10_000` in **both** engines,
+  returning `E_SYNTAX` past the bound. Measured headroom: FFI and napi-worker
+  stacks handle recursive eval/drop past 20k, so the cap sits far below the crash
+  point yet above any realistic predicate. (Assessed the additional iterative
+  eval/drop rewrite the combination-robustness idea called for and found it
+  unnecessary _and_ costly under the cap — recursive eval/drop is measured safe at
+  the ceiling on every backend, and a custom `Expr::Drop` would tax the hot path;
+  the cap alone is the byte-identity-preserving fix.)
+- **`6654813`** (F1) reject lone/unpaired UTF-16 surrogates at the two TS ingest
+  boundaries (`@lenke/serialization` value normalizer + `@lenke/gql` param
+  validation) with `E_INVALID_JSON`, matching native's serde rejection. Valid
+  surrogate pairs and internally-sliced lone surrogates (U+FFFD elsewhere) are
+  unaffected.
+- **`569bf2b`** (F3) remove the GQL executor's eager unique pre-checks at
+  INSERT/SET; enforcement now flows through the core's already-deferred
+  chokepoints (`runDeferredChecks` at commit), so a transient duplicate resolved
+  before commit succeeds — byte-identical to native's R-TX deferred checks.
+
+Each shipped with regression tests (native + TS hardening, serialization/gql unit,
+and a GQL deferred-constraint test) and a full gate: native crate suite (1229) and
+every TS package (gql 423 / core / serialization 124 / sync 132 / gremlin 650 /
+native 437 / node 12 / errors / fp) green; the round-12 differential set
+(mutseq 38.4k, txfuzz, surrogate, keys_unicode) and MegaApp back to **0
+divergences / 0 bugs**.
+
+WAI/known items (CSV nested-list flattening, reserved-word DX, GC-leak warnings)
+and the pre-existing deferral inbox remain in `DESIGN-DECISIONS-MORNING.md`.

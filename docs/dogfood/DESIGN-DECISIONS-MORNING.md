@@ -4,60 +4,31 @@ Everything the autonomous run deferred because it needs a **design decision** (a
 an API-shape choice, or a delicate change that shouldn't land unattended). Obvious bugs
 were already fixed and committed (see each round's findings). Ordered by priority.
 
-Round 12 was interrupted (host OOM on the 10M scale tier) and resumed; its four items
-(C1, F3, F1, S1) are new this session and sit at the top.
+Round 12 was interrupted (host OOM on the 10M scale tier) and resumed. Its three
+correctness findings — **C1** (crash), **F3** (unique-check timing), **F1** (lone
+surrogate) — were triaged with the user and **fixed this session** (commits `8001891`,
+`569bf2b`, `6654813`); see `findings/round12.md`. What remains for the morning is the
+capacity note **S1** plus the carried-over inbox below.
 
 ---
 
-## ⚠️ Top priority — new this round
+## ✅ Fixed this session (was top priority)
 
-### C1 · Native SIGSEGV on a long operator chain (crash / DoS-class)
+- **C1 · native SIGSEGV on a long operator chain** → `8001891`. Bounded each iterative
+  binary-operator loop to `MAX_CHAIN = 10_000` in both engines (`E_SYNTAX` past the
+  bound). We considered the additional iterative-eval/custom-`Drop` rewrite for
+  defense-in-depth but measured that recursive eval/drop is safe past 20k on every
+  backend (FFI + napi worker), so the cap alone is sufficient and byte-identity-preserving
+  — and a custom `Expr::Drop` would tax the hot path. Revisit only if the 10k ceiling ever
+  proves too low for a real workload.
+- **F3 · UNIQUE check timing** → `569bf2b`. Removed the GQL executor's eager INSERT/SET
+  pre-checks; the core already defers unique/required/type to commit (`runDeferredChecks`),
+  so TS now matches native's R-TX deferred semantics.
+- **F1 · lone UTF-16 surrogate** → `6654813`. Reject lone/unpaired surrogates with
+  `E_INVALID_JSON` at the two TS ingest boundaries (serialization value normalizer + gql
+  param validation), matching native serde.
 
-A single query — `RETURN true AND true AND … (100k terms)` — **crashes the native
-process** (core dump; repro also at 35k terms via napi). Root cause is understood and
-localized:
-
-- `parse_and`/`parse_or_xor` (`crates/lenke-core/src/gql/parser.rs`) build the chain
-  **iteratively**, so the `descend` recursion guard (`MAX_DEPTH = 128`) never trips —
-  it only bounds parser _recursion_ (parens/lists/NOT), which is why those reject
-  cleanly. The resulting ~100k-deep left-nested `Expr::And` tree then overflows the
-  stack when **evaluated or dropped**.
-- TS throws an uncatchable `RangeError` on the same input (survives, but uncoded) — so
-  the engines already diverge here.
-
-**Decision needed:** how to bound this byte-identically. Options:
-
-1. **Shared depth cap** — count operator-chain length in the iterative parse loops
-   (`and`/`or`/`xor`/comparison/additive/multiplicative/concat) against a limit, return
-   `E_SYNTAX "Query nested too deeply"` in _both_ engines (align TS's `RangeError` to
-   `E_SYNTAX`). Simple, precedented by the paren guard — but `MAX_DEPTH = 128` is too low
-   for machine-generated `AND`/`OR` chains, so it needs its **own, higher cap value**
-   (a policy pick).
-2. **Iterative eval + custom `Drop`** for left-associative chains — no cap, no new
-   rejections, but a bigger Rust change and it doesn't fix the TS `RangeError` (so
-   byte-identity would then diverge the _other_ way unless TS is also made iterative).
-
-Recommendation: (1) with a generous dedicated cap (e.g. 10k) + a conformance differential;
-it's the byte-identity-preserving choice. Confirm the cap value.
-
-### F3 · UNIQUE constraint check timing — TS eager vs native deferred
-
-Native defers unique checks to **commit** (matching the R-TX deferred-check design);
-TS checks them **eagerly** at INSERT/SET. A transaction that transiently duplicates a
-unique key and resolves it before commit is accepted by native but rejected by TS
-(`E_CONSTRAINT_VIOLATION`). REQUIRED constraints already defer in both engines, so the
-target behavior is settled — native is correct. **Decision:** approve moving TS unique
-validation out of the eager INSERT/SET path (`packages/gql/src/executor.ts`) into the
-commit-time deferred pass (where required already lives), and re-baseline the autocommit
-constraint tests that currently pin the eager error. Delicate but well-specified.
-
-### F1 · Lone UTF-16 surrogate — TS accepts, native rejects
-
-TS accepts `"\ud800"` as a string value (NDJSON load + INSERT `$param`); native rejects
-`E_INVALID_JSON`. **Decision:** adopt native's stricter policy (reject lone/unpaired
-surrogates at every entry point, aligning TS — same shape as the round-11 D2/D3 param
-tightening) and pick the error code (`E_INVALID_JSON` vs `E_INVALID_VALUE`). Low-risk
-once the policy is stated.
+## ⚠️ Remaining from this round
 
 ### S1 · Whole-graph algorithms ~2× the resident graph in peak RSS
 
