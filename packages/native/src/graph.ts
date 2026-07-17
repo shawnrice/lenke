@@ -1,5 +1,6 @@
 import type {
   AlgorithmConfig,
+  Clock,
   ClusterRow,
   ComponentRow,
   DegreeRow,
@@ -79,18 +80,22 @@ export type QueryParams = Record<string, unknown>;
 const compileGql = (
   q: string | TemplateStringsArray,
   subs: unknown[],
+  clock?: Clock,
 ): { text: string; params: string | undefined } => {
   if (!isTemplate(q)) {
     const explicit = subs[0] as QueryParams | undefined;
+    const bindings = withClock(explicit, clock);
 
     return {
       text: q,
-      params: explicit && Object.keys(explicit).length ? stringifyParams(explicit) : undefined,
+      params: bindings && Object.keys(bindings).length ? stringifyParams(bindings) : undefined,
     };
   }
 
   if (subs.length === 0) {
-    return { text: q.join(''), params: undefined };
+    const bindings = withClock(undefined, clock);
+
+    return { text: q.join(''), params: bindings ? stringifyParams(bindings) : undefined };
   }
 
   const bindings: QueryParams = {};
@@ -104,7 +109,25 @@ const compileGql = (
     return `${acc + part}$p${i}`;
   }, '');
 
-  return { text, params: stringifyParams(bindings) };
+  return { text, params: stringifyParams(withClock(bindings, clock) ?? bindings) };
+};
+
+/**
+ * Fold a wired {@link Clock} into a query's bindings: bind `$__now` from the
+ * clock unless the caller supplied it explicitly (explicit always wins). Returns
+ * the bindings unchanged when no clock is wired — zero cost on the common path.
+ * The `LocalDateTime` the clock returns serializes (via `toJSON`) to a tagged
+ * temporal the crate revives into the reserved `$__now` param.
+ */
+const withClock = (
+  params: QueryParams | undefined,
+  clock: Clock | undefined,
+): QueryParams | undefined => {
+  if (!clock || (params && Object.hasOwn(params, '__now'))) {
+    return params;
+  }
+
+  return { ...params, __now: clock() };
 };
 
 // `JSON.stringify` throws a raw `TypeError` on a bigint value; surface a coded
@@ -379,6 +402,15 @@ export type RustGraph = {
   /** Roll the current transaction back: reverse every staged write. No-op if none open. */
   rollbackTransaction: () => void;
   /**
+   * Wire (or clear, with `null`) the host {@link Clock} that supplies `$__now`
+   * for the ISO now-functions (`current_date`/`current_timestamp`). Read once
+   * per `query`/`queryArrow`, and only when that call didn't pass an explicit
+   * `$__now` (so an explicit value still wins). The engine never reads a clock
+   * itself — the clock's `LocalDateTime` is serialized and bound as a param, so
+   * native and wasm stay identical. Returns the graph for chaining.
+   */
+  setClock: (clock: Clock | null) => RustGraph;
+  /**
    * Run a GQL query → decoded rows. Two safe, parameterized forms:
    * - tagged template — each `${sub}` compiles to a `$p<n>` **binding**, never
    *   spliced text: ``g.query`MATCH (p:Person) WHERE p.name = ${name} RETURN p` ``
@@ -615,6 +647,11 @@ const makePrepared = <R extends Row = Row>(
 export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph => {
   ensureDisposeSymbol(); // so the [Symbol.dispose] key below resolves on any runtime
 
+  // The host wall-clock wired via `setClock`, read on every `query`/`queryArrow`
+  // to supply `$__now` for the ISO now-functions. Null → those read null: the
+  // engine never invents a clock, so it stays pure across native and wasm.
+  let clock: Clock | null = null;
+
   // Shared with every other wrapper on this (backend, handle). Note free()
   // deletes the map entry, so attaching AFTER a free gets fresh state — that is
   // deliberate: a backend may recycle handle values (ffi handles are pointers),
@@ -738,13 +775,18 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
 
       return result;
     },
+    setClock: (c) => {
+      clock = c;
+
+      return graph;
+    },
     query: <R extends Row = Row>(q: string | TemplateStringsArray, ...subs: unknown[]): R[] => {
-      const { text, params } = compileGql(q, subs);
+      const { text, params } = compileGql(q, subs, clock ?? undefined);
 
       return decodeRows(backend.queryRows(live(), text, params)) as R[];
     },
     queryArrow: (q: string | TemplateStringsArray, ...subs: unknown[]) => {
-      const { text, params } = compileGql(q, subs);
+      const { text, params } = compileGql(q, subs, clock ?? undefined);
 
       return backend.queryArrow(live(), text, params);
     },

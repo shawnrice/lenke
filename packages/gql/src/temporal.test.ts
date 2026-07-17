@@ -3,7 +3,7 @@ import { describe, expect, test } from 'bun:test';
 import { Graph, type LocalDate, parseDate, parseDateTime } from '@lenke/core';
 import { deserialize } from '@lenke/serialization';
 
-import { query } from './index.js';
+import { gql, query } from './index.js';
 
 // Mirrors the Rust `gql::tests` temporal-literal suite: literals parse, compare
 // chronologically, drive as-of WHERE filtering, and ORDER BY sorts them.
@@ -118,6 +118,46 @@ describe('GQL: current_* read an injected now (the engine never reads a clock)',
     );
     // No injected now → null (the engine stays pure; it never invents a clock).
     expect(query(g, `RETURN current_date AS d`)).toEqual([{ d: null }]);
+  });
+
+  test('a wired host clock supplies $__now: statement-stable within a query, advances across', () => {
+    const g = new Graph();
+    // The clock is a plain host function — Date.now in prod, a mock here. The
+    // engine never calls it; the host does, once per query. This mock advances
+    // one minute each call so we can see the two time scales.
+    const stamps = ['2026-07-13T09:00:00', '2026-07-13T09:01:00', '2026-07-13T09:02:00'];
+    let calls = 0;
+    g.setClock(() => parseDateTime(stamps[calls++]));
+
+    const run = gql<{ d: LocalDate; t: LocalDate }>(g);
+
+    // Within ONE query, two now-references see the SAME instant (one clock call
+    // per query) — current_date is just current_timestamp truncated.
+    const [row] = run('RETURN current_date AS d, current_timestamp AS t');
+    expect(String(row.d)).toBe('2026-07-13');
+    expect(String(row.t)).toBe('2026-07-13T09:00:00');
+    expect(calls).toBe(1);
+
+    // A SECOND query advances the clock (a fresh $__now per call).
+    expect(String(run('RETURN current_timestamp AS t')[0].t)).toBe('2026-07-13T09:01:00');
+    expect(calls).toBe(2);
+  });
+
+  test('an explicit $__now overrides the wired clock (deterministic pin)', () => {
+    const g = new Graph().setClock(() => parseDateTime('2026-07-13T09:00:00'));
+    const run = gql(g);
+
+    expect(
+      String(run('RETURN current_date AS d', { __now: parseDateTime('2000-01-01T00:00:00') })[0].d),
+    ).toBe('2000-01-01');
+  });
+
+  test('the wired clock also feeds the standalone query() entry; setClock(null) clears it', () => {
+    const g = new Graph().setClock(() => parseDateTime('2026-07-13T09:00:00'));
+    expect(String(query(g, 'RETURN current_date AS d')[0].d)).toBe('2026-07-13');
+    // Clearing the clock restores the pure default: no clock, no $__now → null.
+    g.setClock(null);
+    expect(query(g, 'RETURN current_date AS d')).toEqual([{ d: null }]);
   });
 });
 

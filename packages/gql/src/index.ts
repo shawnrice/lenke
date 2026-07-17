@@ -139,16 +139,39 @@ export const prepare = <R extends Row = Row>(text: string): Plan<R> => {
 };
 
 /**
+ * Fold a graph's wired {@link Clock} (`graph.setClock`) into a query's params:
+ * bind `$__now` from the clock for the ISO now-functions, unless the caller
+ * passed an explicit `$__now` (explicit always wins — deterministic for tests).
+ * Returns the params unchanged when no clock is wired — zero cost on the common
+ * path. The engine never reads a clock; this resolves one host-side per query.
+ */
+const withClock = (
+  graph: Graph,
+  params: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined => {
+  const { clock } = graph;
+
+  if (!clock || (params && Object.hasOwn(params, '__now'))) {
+    return params;
+  }
+
+  return { ...params, __now: clock() };
+};
+
+/**
  * Parse + run a query string against a graph in one call, with optional
  * `$params`. Pass a row shape to type the result — `query<{ name: string }>(g,
  * '… RETURN a.name AS name')` returns `{ name: string }[]` — an opt-in,
  * caller-side assertion (rows are `Record<string, unknown>` at runtime).
+ *
+ * `graph.setClock(() => …)` makes `current_date`/`current_timestamp` read wall
+ * time; an explicit `params.__now` overrides that clock.
  */
 export const query = <R extends Row = Row>(
   graph: Graph,
   text: string,
   params?: Record<string, unknown>,
-): R[] => execute<R>(parse(text), graph, params);
+): R[] => execute<R>(parse(text), graph, withClock(graph, params));
 
 /**
  * Bind a graph and return a runner. Supports both a tagged-template form
@@ -167,7 +190,9 @@ export const query = <R extends Row = Row>(
 export const gql = <R extends Row = Row>(graph: Graph) => {
   return (strings: TemplateStringsArray | string, ...values: unknown[]): R[] => {
     if (typeof strings === 'string') {
-      return execute<R>(parse(strings), graph, values[0] as Record<string, unknown> | undefined);
+      const params = values[0] as Record<string, unknown> | undefined;
+
+      return execute<R>(parse(strings), graph, withClock(graph, params));
     }
 
     const params: Record<string, unknown> = {};
@@ -181,7 +206,7 @@ export const gql = <R extends Row = Row>(graph: Graph) => {
       return `${acc + part}$p${i}`;
     }, '');
 
-    return execute<R>(parse(text), graph, params);
+    return execute<R>(parse(text), graph, withClock(graph, params));
   };
 };
 

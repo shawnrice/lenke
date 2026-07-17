@@ -1,6 +1,7 @@
 import { Emitter, EmitterEvent } from '@lenke/emitter';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
+import type { Clock } from '../temporal.js';
 import { Edge } from './Edge.js';
 import type { GraphEvent, GraphEvents, GraphEventType } from './GraphEvents.js';
 import { PropertyIndex, type RangeBound } from './PropertyIndex.js';
@@ -195,6 +196,31 @@ export class Graph {
   // it — the core mutators are access-mode agnostic; a read-only write is rejected
   // one level up, at the statement boundary, before any mutation applies.
   private txReadOnly = false;
+
+  // The host wall-clock this graph's GQL now-functions (`current_date`,
+  // `current_timestamp`) read, wired via `setClock`. Null → those functions read
+  // null: the engine never invents a clock. The clock lives here, not in the
+  // engine, so the engine stays a pure function of (graph, params).
+  private queryClock: Clock | null = null;
+
+  /**
+   * Wire (or clear, with `null`) the host {@link Clock} that supplies `$__now`
+   * for the ISO now-functions. `@lenke/gql`'s `query`/`gql` call it once per
+   * query — and only when that query didn't pass an explicit `$__now`, so an
+   * explicit value still wins (deterministic for tests). The engine never reads
+   * a clock itself; this is the host opting into wall time. Returns `this` for
+   * chaining: `new Graph().setClock(() => LocalDateTime.fromJSDate(new Date()))`.
+   */
+  setClock(clock: Clock | null): this {
+    this.queryClock = clock;
+
+    return this;
+  }
+
+  /** The wired host {@link Clock}, or null. Read by the GQL query entries. */
+  get clock(): Clock | null {
+    return this.queryClock;
+  }
 
   constructor(options: GraphOptions = {}) {
     this.verticesById = new Map();

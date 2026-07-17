@@ -940,6 +940,33 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     expect(ts0).toBe(`[{"d":null}]`);
   });
 
+  test('a host-wired clock (setClock) supplies $__now across the FFI, byte-identically', () => {
+    // The clock lives in the JS host, not the engine — the same function wired
+    // via setClock into both a native RustGraph and the TS core Graph. The
+    // clock's LocalDateTime serializes to a tagged param, crosses the FFI, and
+    // the crate revives it as $__now — so `current_*` reads it identically.
+    const clock = () => parseDateTime('2026-07-13T09:00:00');
+    const nat = graphFromFormat(backend, MODERN_NDJSON, 'ndjson').setClock(clock);
+    const ts = tsDeserialize(MODERN_NDJSON, 'ndjson', new Graph()).setClock(clock);
+
+    for (const [q, want] of [
+      [`RETURN current_date AS d`, `[{"d":{"@date":"2026-07-13"}}]`],
+      [`RETURN current_timestamp AS t`, `[{"t":{"@datetime":"2026-07-13T09:00:00"}}]`],
+    ] as [string, string][]) {
+      const native = JSON.stringify(nat.query(q));
+      const tsOut = JSON.stringify(tsQuery(ts, q));
+      expect(native, q).toBe(tsOut);
+      expect(native, q).toBe(want);
+    }
+
+    // An explicit $__now still overrides the wired clock, on both sides.
+    const pin = { __now: parseDateTime('2000-01-01T00:00:00') };
+    expect(JSON.stringify(nat.query(`RETURN current_date AS d`, pin))).toBe(
+      JSON.stringify(tsQuery(ts, `RETURN current_date AS d`, pin)),
+    );
+    nat.free();
+  });
+
   test('current_timestamp coerces a DATE $__now to a DATETIME, byte-identically', () => {
     // A DATE `$__now` must not leak a DATE out of `current_timestamp` — the
     // datetime now-functions wrap in local_datetime(), coercing to midnight.

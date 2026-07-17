@@ -208,6 +208,21 @@ export class Duration {
 
 export type Temporal = LocalDate | LocalTime | LocalDateTime | ZonedTime | ZonedDateTime | Duration;
 
+/**
+ * A host clock: a nullary function the host wires into a query runner to supply
+ * the reserved `$__now` param that the ISO now-functions (`current_date`,
+ * `current_timestamp`, `local_timestamp`) desugar to. Return a `LocalDateTime`
+ * for a timestamp (or a `LocalDate` for a date-only clock).
+ *
+ * The engine NEVER calls a clock itself — it stays a pure function of (graph,
+ * params). The clock runs in the HOST, once per query, and its result is bound
+ * as a value, so the impurity is explicit and opt-in: wiring a clock is how you
+ * declare "this runner reads wall time." A query that passes an explicit
+ * `$__now` overrides the clock (deterministic, for tests/repro), and with no
+ * clock and no `$__now` the now-functions read as null (the honest default).
+ */
+export type Clock = () => LocalDate | LocalDateTime;
+
 export const isTemporal = (v: unknown): v is Temporal =>
   v instanceof LocalDate ||
   v instanceof LocalTime ||
