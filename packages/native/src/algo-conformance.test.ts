@@ -338,6 +338,41 @@ suite('graph-algorithm differential: pagerank (TS core vs native, f64)', () => {
   });
 });
 
+// B1 regression: a node whose TOTAL out-weight is 0 (here `a`, whose only out-edge
+// has w:0) must be treated as a DANGLING node, not divided by zero. Before the fix,
+// `w / S[a] == 0/0 == NaN` poisoned every score to null on BOTH engines; the two
+// stayed byte-identical only by being identically broken. This pins the repaired
+// behavior: finite, mass-conserving scores, still byte-identical across engines.
+const ZERO_WEIGHT_NDJSON = [
+  '{"type":"node","id":"a","labels":["N"]}',
+  '{"type":"node","id":"b","labels":["N"]}',
+  '{"type":"node","id":"c","labels":["N"]}',
+  '{"type":"edge","id":"1","from":"a","to":"b","labels":["R"],"properties":{"w":0}}',
+  '{"type":"edge","id":"2","from":"b","to":"c","labels":["R"],"properties":{"w":0.5}}',
+].join('\n');
+
+suite('graph-algorithm differential: weighted pagerank with a zero-out-weight node', () => {
+  const backend = createFfiBackend(LIB);
+  const nativeGraph = graphFromFormat(backend, ZERO_WEIGHT_NDJSON, 'ndjson');
+  const tsGraph = tsDeserialize(ZERO_WEIGHT_NDJSON, 'ndjson', new Graph());
+
+  for (const config of [
+    { edgeLabel: 'R', weightProperty: 'w' } as const, // the exact repro
+    { edgeLabel: 'R', weightProperty: 'w', iterations: 30 } as const, // near-converged
+  ]) {
+    test(`zero-out-weight pagerank ${JSON.stringify(config)} — finite + byte-identical`, async () => {
+      const ts = await pagerank(config, tsGraph);
+      const nat = await nativeGraph.pagerank(config);
+      expect(JSON.stringify(ts)).toBe(JSON.stringify(nat));
+
+      // Repaired: every score is a finite number (no NaN/null poisoning).
+      for (const row of ts as ReadonlyArray<{ score: number }>) {
+        expect(Number.isFinite(row.score)).toBe(true);
+      }
+    });
+  }
+});
+
 // A weighted diamond with fractional weights: a→b→d (0.1+0.2 = 0.30000000000000004)
 // vs the direct a→d (0.3) — the classic f64 non-associativity trap, so this pins
 // that both engines settle the same minimum float distance. Plus a longer branch

@@ -116,7 +116,13 @@ export const computeGen = function* (
     const src = index.get(edge.from.id)!;
     const pos = cursor[index.get(edge.to.id)!]++;
     incSrc[pos] = src;
-    incFac[pos] = w / outStrength[src];
+    // A node whose total out-weight is 0 (only reachable when weighted and every
+    // out-edge has weight 0) is a DANGLING node: its rank mass is redistributed
+    // uniformly via the `dangling` sum below — it must NOT be divided by zero
+    // (`w / 0 === 0/0 === NaN`, which would poison every score). Emit a 0 factor
+    // so this edge carries no directed mass; the CSR slot is still filled, keeping
+    // the summation order byte-identical to the unweighted path and to native.
+    incFac[pos] = outStrength[src] === 0 ? 0 : w / outStrength[src];
 
     if (++sinceYield >= YIELD_EVERY) {
       sinceYield = 0;

@@ -77,8 +77,19 @@ pub fn pagerank(graph: &Graph, cfg: &AlgoConfig) -> Vec<(u32, Value)> {
             continue;
         }
         let src = graph.e_src[ei];
-        // out_strength[src] > 0 here (this edge contributes to it); no zero-divide.
-        let factor = weight_of(ei) / out_strength[src as usize];
+        // A node whose total out-weight is 0 (only reachable in the weighted path,
+        // when every out-edge has weight 0) is a DANGLING node: its rank mass is
+        // redistributed uniformly via the `dangling` sum below — it must NOT be
+        // divided by zero (`weight_of / 0 == 0/0 == NaN`, which would poison every
+        // score). Emit a 0 factor so this edge carries no directed mass. The CSR
+        // slot is still filled (Pass 1 reserved it), so the summation order stays
+        // byte-identical to the unweighted path and to the TS engine. Unweighted
+        // never hits this branch: an existing edge implies out_strength > 0.
+        let factor = if out_strength[src as usize] == 0.0 {
+            0.0
+        } else {
+            weight_of(ei) / out_strength[src as usize]
+        };
         let pos = cursor[graph.e_dst[ei] as usize];
         cursor[graph.e_dst[ei] as usize] += 1;
         inc_src[pos] = src;
