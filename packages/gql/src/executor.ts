@@ -23,6 +23,7 @@ import type {
   ArithOp,
   Clause,
   CompareOp,
+  CountValue,
   Expr,
   LabelExpr,
   LinearQuery,
@@ -1081,6 +1082,25 @@ let paramCollector: Set<string> | null = null;
 // Rust plan's `unknown_fns`, checked in `run_cquery_body`.
 let unknownFnCollector: Set<string> | null = null;
 
+// Compile-time side channel: the names of `$param`s used as a `LIMIT` / `OFFSET`
+// bound. Their bound value must be a non-negative integer, so it is validated
+// up-front in the plan closure (mirrors the Rust engine's `check_count_params`),
+// making a bad bound fault before any row is produced — identically over zero
+// rows or many. The name is also added to `paramCollector` so a missing bound
+// param surfaces the usual `MissingParameter` error.
+let countParamCollector: Set<string> | null = null;
+
+// Resolve a `LIMIT` / `OFFSET` bound to a concrete count at execution: a literal
+// passes through; a `$param` is read from the bound params (its value is already
+// validated to be a non-negative integer up-front, in the plan closure).
+const resolveCount = (v: CountValue | undefined, params: Params): number | undefined => {
+  if (v === undefined || typeof v === 'number') {
+    return v;
+  }
+
+  return Number(params[v.param]);
+};
+
 const compileExpr = (expr: Expr): CompiledExpr => {
   switch (expr.kind) {
     case 'lit': {
@@ -1985,8 +2005,17 @@ type CProjection = {
   /** The non-aggregate item closures, used to build each group's key. */
   groupKeys: readonly CompiledExpr[];
   orderBy: readonly CSortItem[];
-  skip?: number;
-  limit?: number;
+  skip?: CountValue;
+  limit?: CountValue;
+};
+
+// Register a LIMIT/OFFSET bound param so it is both bound-checked (MissingParameter)
+// and value-checked (non-negative integer) up-front, exactly like the Rust plan.
+const noteCountParam = (v: CountValue | undefined): void => {
+  if (v !== undefined && typeof v === 'object') {
+    paramCollector?.add(v.param);
+    countParamCollector?.add(v.param);
+  }
 };
 
 const compileProjection = (projection: Projection): CProjection => {
@@ -1996,6 +2025,8 @@ const compileProjection = (projection: Projection): CProjection => {
     isAgg: hasAggregate(i.expr),
   }));
   const aggregating = !projection.star && items.some((i) => i.isAgg);
+  noteCountParam(projection.skip);
+  noteCountParam(projection.limit);
   const groupKeys = items.filter((i) => !i.isAgg).map((i) => i.fn);
   // ORDER BY keys are evaluated against the projected output overlaid on the
   // input binding (see `applyProjection`), so output aliases resolve even inside
@@ -2141,6 +2172,9 @@ const applyProjection = (
   graph: Graph,
 ): Iterable<Binding> => {
   const { orderBy } = proj;
+  // A `$param` bound resolves here (validated up-front); a literal passes through.
+  const skipBound = resolveCount(proj.skip, params);
+  const limitBound = resolveCount(proj.limit, params);
   type Keyed = { b: Binding; keys: readonly unknown[] };
   let keyed: Iterable<Keyed>;
 
@@ -2221,8 +2255,8 @@ const applyProjection = (
   };
   let ordered: Iterable<Keyed> = keyed;
 
-  if (orderBy.length > 0 && proj.limit !== undefined) {
-    ordered = boundedTopK(keyed, (proj.skip ?? 0) + proj.limit, cmp);
+  if (orderBy.length > 0 && limitBound !== undefined) {
+    ordered = boundedTopK(keyed, (skipBound ?? 0) + limitBound, cmp);
   } else if (orderBy.length > 0) {
     const arr = toArray(keyed);
     arr.sort(cmp);
@@ -2231,11 +2265,11 @@ const applyProjection = (
 
   // SKIP/LIMIT stay lazy — `take` short-circuits, so `LIMIT n` over a huge
   // unordered stream stops after n rows instead of computing them all.
-  const start = proj.skip ?? 0;
+  const start = skipBound ?? 0;
   let sliced: Iterable<Keyed> = start > 0 ? skip(start, ordered) : ordered;
 
-  if (proj.limit !== undefined) {
-    sliced = take(proj.limit, sliced);
+  if (limitBound !== undefined) {
+    sliced = take(limitBound, sliced);
   }
 
   return map((r: Keyed) => r.b, sliced);
@@ -3610,13 +3644,16 @@ type ReachSpec = {
   types: string[] | undefined;
   minZero: boolean;
   isCount: boolean;
-  skip: number;
-  limit?: number;
+  skip: CountValue;
+  limit?: CountValue;
 };
 
 /** BFS the reachable set, then project the endpoint + DISTINCT (or count it). */
 const runReach = (spec: ReachSpec, graph: Graph, params: Params): Row[] => {
-  const { cstart, items, bVar, bLabel, out, types, minZero, isCount, skip: skipN, limit } = spec;
+  const { cstart, items, bVar, bLabel, out, types, minZero, isCount } = spec;
+  // A `$param` bound resolves here (validated up-front); a literal passes through.
+  const skipN = resolveCount(spec.skip, params) ?? 0;
+  const limit = resolveCount(spec.limit, params);
   const seeds = [...seedVertices(graph, cstart, new Map(), params)];
   const nbrs = (v: Vertex): Vertex[] => {
     const byType = (out ? graph.edgesFromByLabel : graph.edgesToByLabel).get(v.id);
@@ -4734,10 +4771,13 @@ const reviveParams = (params: Params): Params => {
 export const compile = <R extends Row = Row>(query: Query): Plan<R> => {
   const referenced = new Set<string>();
   const unknownFns = new Set<string>();
+  const countParams = new Set<string>();
   const prevParam = paramCollector;
   const prevUnknown = unknownFnCollector;
+  const prevCount = countParamCollector;
   paramCollector = referenced;
   unknownFnCollector = unknownFns;
+  countParamCollector = countParams;
 
   let compiled: CQuery;
 
@@ -4746,6 +4786,7 @@ export const compile = <R extends Row = Row>(query: Query): Plan<R> => {
   } finally {
     paramCollector = prevParam;
     unknownFnCollector = prevUnknown;
+    countParamCollector = prevCount;
   }
 
   // Eager unknown-function rejection: a name the query references that resolves
@@ -4763,6 +4804,7 @@ export const compile = <R extends Row = Row>(query: Query): Plan<R> => {
   }
 
   const names = [...referenced];
+  const countNames = [...countParams];
 
   // Rows are `Row` at runtime; `R` is the caller's asserted shape (see `Plan`).
   const plan: Plan = (graph, rawParams = {}) => {
@@ -4792,6 +4834,21 @@ export const compile = <R extends Row = Row>(query: Query): Plan<R> => {
       // the in-process store on one rule — pass Number(x) or a string.
       if (Object.hasOwn(params, name)) {
         validatePropertyValue(params[name]);
+      }
+    }
+
+    // Eager LIMIT/OFFSET bound-value validation: a `$param` used as a bound must
+    // resolve to a non-negative integer. Checked here, before any row is produced,
+    // so a bad bound faults identically over zero rows or many — mirroring the Rust
+    // engine's `check_count_params`. (Missing/bigint binds are already caught above.)
+    for (const name of countNames) {
+      const v = params[name];
+
+      if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) {
+        throw new LenkeError('a LIMIT/OFFSET parameter must resolve to a non-negative integer', {
+          code: ErrorCode.InvalidValue,
+          details: { param: name },
+        });
       }
     }
 

@@ -1610,6 +1610,55 @@ fn m_is_labeled_boolean_expression() {
 }
 
 #[test]
+fn m_colon_label_predicate_desugars_to_is_labeled() {
+    let mut g = modern();
+    // `WHERE n:Person` — the ISO COLON label-test predicate (opengql:2078) — is the
+    // same predicate as `IS LABELED Person`.
+    let r = rows(&mut g, "MATCH (x) WHERE x:Person RETURN x.name");
+    let mut names: Vec<Value> = r.into_iter().map(|row| row[0].clone()).collect();
+    names.sort_by_key(val_sort_key);
+    assert_eq!(names, vec![s("josh"), s("marko"), s("peter"), s("vadas")]);
+
+    // A label EXPRESSION after the colon works too (reuses the pattern grammar).
+    let r2 = rows(
+        &mut g,
+        "MATCH (x) WHERE x:Person | Software RETURN count(*) AS c",
+    );
+    assert_eq!(r2, vec![vec![n(6.0)]]);
+}
+
+#[test]
+fn m_limit_offset_accept_dynamic_param() {
+    let mut g = modern();
+    // `LIMIT $n` / `OFFSET $o` — ISO nonNegativeIntegerSpecification (opengql:2268).
+    let mut params = Params::new();
+    params.insert("o".to_string(), Val::Num(1.0));
+    params.insert("n".to_string(), Val::Num(2.0));
+    let r = qp(
+        &mut g,
+        "MATCH (n:Person) RETURN n.name AS name ORDER BY name OFFSET $o LIMIT $n",
+        params,
+    );
+    assert_eq!(r, vec![vec![s("marko")], vec![s("peter")]]);
+
+    // A non-integer bound faults with E_INVALID_VALUE, before any row is produced.
+    let mut bad = Params::new();
+    bad.insert("n".to_string(), Val::Num(2.5));
+    let e = prepare("MATCH (n:Person) RETURN n.name LIMIT $n")
+        .unwrap()
+        .execute(&mut g, &bad)
+        .unwrap_err();
+    assert_eq!(e.code, crate::error_codes::ErrorCode::InvalidValue);
+}
+
+#[test]
+fn m_skip_rejects_dynamic_param() {
+    // SKIP is the Cypher synonym for OFFSET and stays literal-only: `SKIP $n` is a
+    // syntax error (only `OFFSET $n` / `LIMIT $n` accept a dynamic param).
+    assert!(parse("MATCH (n:Person) RETURN n.name SKIP $n").is_err());
+}
+
+#[test]
 fn m_element_id_returns_identifier() {
     let mut g = modern();
     // In our Rust modern() fixture, the id for marko is "marko" (not "1" like TS)

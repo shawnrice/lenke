@@ -34,6 +34,7 @@ import type {
   ArithOp,
   Clause,
   CompareOp,
+  CountValue,
   DeleteClause,
   Expr,
   InsertClause,
@@ -288,6 +289,18 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Statement => {
     }
 
     return readCount(what);
+  };
+
+  // A `LIMIT` / `OFFSET` bound: an integer literal, or — when `allowParam` — a
+  // dynamic `$param` (ISO `nonNegativeIntegerSpecification`, opengql:2268). The
+  // param's bound value is validated to be a non-negative integer at execution.
+  // `SKIP` passes `allowParam=false`, so `SKIP $x` stays rejected (Cypher-only).
+  const expectCountValue = (what: string, allowParam: boolean): CountValue => {
+    if (allowParam && check('param')) {
+      return { param: advance().value };
+    }
+
+    return expectCount(what);
   };
 
   // The single, consistent reserved-word rejection used in every binding
@@ -812,6 +825,16 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Statement => {
   // `x [NOT] IN list`.
   const parsePostfixPredicate = (): Expr => {
     const e = parseComparison();
+
+    // ISO `<labeled predicate>` COLON form: `n:Label` on a bare element variable
+    // reference (opengql:2078 — `elementVariableReference COLON labelExpression`).
+    // Desugars to the same `isLabeled` node as `IS LABELED`, reusing the pattern
+    // parser's label-expression grammar (so `n:A|B`, `n:A&B`, `n:!A` all work).
+    if (check('colon') && e.kind === 'var') {
+      advance();
+
+      return { kind: 'isLabeled', expr: e, label: parseLabelExpr(), negated: false };
+    }
 
     if (checkKeyword('is')) {
       advance();
@@ -1395,18 +1418,21 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Statement => {
       }
     }
 
-    let skip: number | undefined;
+    let skip: CountValue | undefined;
 
     if (checkKeyword('skip') || checkKeyword('offset')) {
+      // OFFSET is the ISO spelling and accepts a dynamic `$param`; SKIP is the
+      // Cypher synonym and stays literal-only.
+      const allowParam = checkKeyword('offset');
       advance();
-      skip = expectCount('a non-negative integer after SKIP/OFFSET');
+      skip = expectCountValue('a non-negative integer after SKIP/OFFSET', allowParam);
     }
 
-    let limit: number | undefined;
+    let limit: CountValue | undefined;
 
     if (checkKeyword('limit')) {
       advance();
-      limit = expectCount('a non-negative integer after LIMIT');
+      limit = expectCountValue('a non-negative integer after LIMIT', true);
     }
 
     return { star, items, distinct, orderBy, skip, limit };

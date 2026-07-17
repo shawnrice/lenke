@@ -75,9 +75,10 @@ use super::ast::{
 };
 use super::lexer::SyntaxError;
 use super::plan::{
-    has_argless_aggregate, has_nested_aggregate, lower, AggFn, CAgg, CClause, CExpr, CLabelExpr,
-    CLinear, CMerge, CMergeUpdate, CNode, CPath, CPredicate, CProjection, CPropConstraint, CQuery,
-    CRel, CRemoveItem, CReturnItem, CSegment, CSetItem, Op, Program, ScalarFn,
+    has_argless_aggregate, has_nested_aggregate, lower, AggFn, CAgg, CClause, CCount, CExpr,
+    CLabelExpr, CLinear, CMerge, CMergeUpdate, CNode, CPath, CPredicate, CProjection,
+    CPropConstraint, CQuery, CRel, CRemoveItem, CReturnItem, CSegment, CSetItem, Op, Program,
+    ScalarFn,
 };
 #[cfg(feature = "arrow")]
 use crate::arrow::ArrowColumn;
@@ -301,6 +302,36 @@ fn resolve_ctx<'a>(graph: &Graph, plan: &'a CQuery, params: &'a [Val]) -> Ctx<'a
         label_names: &plan.label_names,
         unknown_fns: &plan.unknown_fns,
         fault: AtomicU8::new(FAULT_NONE),
+    }
+}
+
+/// Coerce a `$param` bound value (already validated by `check_count_params`) to a
+/// concrete count. Defaults to 0 for anything not a finite non-negative integer —
+/// unreachable after the up-front check, but keeps the accessor total/infallible.
+fn count_param_val(v: Option<&Val>) -> usize {
+    match v {
+        Some(Val::Num(n)) if n.is_finite() && n.fract() == 0.0 && *n >= 0.0 => *n as usize,
+        _ => 0,
+    }
+}
+
+impl CProjection {
+    /// Effective `SKIP` / `OFFSET`, resolving a dynamic `$param` bound; 0 if absent.
+    fn skip_val(&self, ctx: &Ctx) -> usize {
+        match &self.skip {
+            None => 0,
+            Some(CCount::Lit(n)) => *n,
+            Some(CCount::Param(slot)) => count_param_val(ctx.params.get(*slot)),
+        }
+    }
+
+    /// Effective `LIMIT`, resolving a dynamic `$param` bound; `None` if absent.
+    fn limit_val(&self, ctx: &Ctx) -> Option<usize> {
+        match &self.limit {
+            None => None,
+            Some(CCount::Lit(n)) => Some(*n),
+            Some(CCount::Param(slot)) => Some(count_param_val(ctx.params.get(*slot))),
+        }
     }
 }
 
@@ -3264,7 +3295,7 @@ struct ProjAccum<'p> {
 }
 
 impl<'p> ProjAccum<'p> {
-    fn new(proj: &'p CProjection) -> Self {
+    fn new(proj: &'p CProjection, ctx: &Ctx) -> Self {
         let topk = !proj.aggregating
             && !proj.order_by.is_empty()
             && proj.limit.is_some()
@@ -3274,7 +3305,7 @@ impl<'p> ProjAccum<'p> {
             proj,
             grouped: proj.aggregating && proj.items.iter().any(|i| !i.is_agg),
             topk,
-            cap: proj.skip.unwrap_or(0) + proj.limit.unwrap_or(0),
+            cap: proj.skip_val(ctx) + proj.limit_val(ctx).unwrap_or(0),
             threshold: None,
             sort_scratch: Binding::default(),
             rows: Vec::new(),
@@ -3446,8 +3477,8 @@ impl<'p> ProjAccum<'p> {
         self.rows.push((projected, keys));
         // Streamable LIMIT: with no ORDER BY, match order is result order.
         if proj.order_by.is_empty() {
-            if let Some(limit) = proj.limit {
-                if self.rows.len() >= proj.skip.unwrap_or(0) + limit {
+            if let Some(limit) = proj.limit_val(ctx) {
+                if self.rows.len() >= proj.skip_val(ctx) + limit {
                     return false;
                 }
             }
@@ -3500,7 +3531,7 @@ impl<'p> ProjAccum<'p> {
             // ORDER BY + LIMIT: partition the smallest `cap` with quickselect
             // (O(n)), then sort only those — instead of a full O(n log n) sort.
             let n = self.rows.len();
-            if let Some(cap) = proj.limit.map(|l| proj.skip.unwrap_or(0) + l) {
+            if let Some(cap) = proj.limit_val(ctx).map(|l| proj.skip_val(ctx) + l) {
                 if cap >= 1 && cap < n {
                     self.rows.select_nth_unstable_by(cap - 1, cmp);
                     self.rows.truncate(cap);
@@ -3508,9 +3539,9 @@ impl<'p> ProjAccum<'p> {
             }
             self.rows.sort_by(cmp);
         }
-        let start = proj.skip.unwrap_or(0);
+        let start = proj.skip_val(ctx);
         let mut rows: Vec<Binding> = self.rows.into_iter().map(|(b, _)| b).skip(start).collect();
-        if let Some(n) = proj.limit {
+        if let Some(n) = proj.limit_val(ctx) {
             rows.truncate(n);
         }
         rows
@@ -3569,7 +3600,7 @@ fn project_matches(
                 .collect();
         }
     }
-    let mut acc = ProjAccum::new(proj);
+    let mut acc = ProjAccum::new(proj, ctx);
     let simple = single_simple_clause(matches);
     for inb in incoming {
         let mut work = inb.clone();
@@ -5425,9 +5456,9 @@ fn vectorized_aggregate(
     let mut b = Binding(vec![None; sc.slots.len()]);
     if proj.order_by.is_empty() {
         // No ORDER BY: emit groups in first-seen order, applying SKIP/LIMIT directly.
-        let start = proj.skip.unwrap_or(0).min(ngroups);
+        let start = proj.skip_val(ctx).min(ngroups);
         let end = proj
-            .limit
+            .limit_val(ctx)
             .map(|l| (start + l).min(ngroups))
             .unwrap_or(ngroups);
         let mut out: Vec<Vec<Val>> = vec![Vec::with_capacity(end - start); proj.items.len()];
@@ -5499,9 +5530,9 @@ fn vectorized_aggregate(
         }
         i.cmp(&j)
     };
-    let start = proj.skip.unwrap_or(0).min(ngroups);
+    let start = proj.skip_val(ctx).min(ngroups);
     let end = proj
-        .limit
+        .limit_val(ctx)
         .map(|l| (start + l).min(ngroups))
         .unwrap_or(ngroups);
     let mut idx: Vec<usize> = (0..ngroups).collect();
@@ -5592,7 +5623,7 @@ fn vectorized_frame(
     // scan early — preserving the scalar path's streaming advantage for small
     // LIMITs. (DISTINCT/aggregation need every row before producing output.)
     let cap = (where_.is_none() && !proj.aggregating && !proj.distinct && !has_order)
-        .then(|| proj.limit.map(|l| proj.skip.unwrap_or(0) + l))
+        .then(|| proj.limit_val(ctx).map(|l| proj.skip_val(ctx) + l))
         .flatten();
     // Seed an isolated-node scan from a property index when an indexed eq/range
     // hint applies (cap can't early-stop a seeded scan, so drop it then).
@@ -5640,8 +5671,11 @@ fn vectorized_rowset(
         .iter()
         .map(|it| eval_vec(graph, ctx, &sc, &it.expr))
         .collect();
-    let start = proj.skip.unwrap_or(0).min(sc.n);
-    let end = proj.limit.map(|l| (start + l).min(sc.n)).unwrap_or(sc.n);
+    let start = proj.skip_val(ctx).min(sc.n);
+    let end = proj
+        .limit_val(ctx)
+        .map(|l| (start + l).min(sc.n))
+        .unwrap_or(sc.n);
     let mut rs = RowSet::new(proj.out_names.clone());
     for i in start..end {
         rs.push_row(vvs.iter().map(|vv| vv.value_at(i, graph)));
@@ -5722,8 +5756,11 @@ fn project_frame_cols(
             }
             i.cmp(&j)
         };
-        let start = proj.skip.unwrap_or(0).min(sc.n);
-        let end = proj.limit.map(|l| (start + l).min(sc.n)).unwrap_or(sc.n);
+        let start = proj.skip_val(ctx).min(sc.n);
+        let end = proj
+            .limit_val(ctx)
+            .map(|l| (start + l).min(sc.n))
+            .unwrap_or(sc.n);
         let mut idx: Vec<usize> = (0..sc.n).collect();
         // Partial sort for a LIMIT: partition the top `end` rows out in O(n), then
         // fully sort just that window — instead of an O(n log n) sort of every row
@@ -5749,9 +5786,9 @@ fn project_frame_cols(
     if proj.distinct {
         let all_items: Vec<&CReturnItem> = proj.items.iter().collect();
         if let Some((_, rep_row, ngroups)) = group_ids(graph, ctx, sc, &all_items) {
-            let start = proj.skip.unwrap_or(0).min(ngroups);
+            let start = proj.skip_val(ctx).min(ngroups);
             let end = proj
-                .limit
+                .limit_val(ctx)
                 .map(|l| (start + l).min(ngroups))
                 .unwrap_or(ngroups);
             let mut out: Vec<Vec<Val>> = vec![Vec::with_capacity(end - start); proj.items.len()];
@@ -5784,7 +5821,7 @@ fn project_frame_cols(
         // Generic DISTINCT (expression / non-typed items): keep the first
         // occurrence of each row in scan order, dedup on a composite cell key.
         let mut seen: HashSet<String> = HashSet::new();
-        let skip = proj.skip.unwrap_or(0);
+        let skip = proj.skip_val(ctx);
         let mut seen_count = 0usize;
         let mut kept: Vec<usize> = Vec::new();
         for i in 0..sc.n {
@@ -5797,7 +5834,7 @@ fn project_frame_cols(
                 continue;
             }
             if seen_count >= skip {
-                if proj.limit.is_some_and(|l| kept.len() >= l) {
+                if proj.limit_val(ctx).is_some_and(|l| kept.len() >= l) {
                     break;
                 }
                 kept.push(i);
@@ -5811,8 +5848,11 @@ fn project_frame_cols(
         )
     } else {
         // Window each column to the SKIP/LIMIT row range (no ORDER BY ⇒ scan order).
-        let start = proj.skip.unwrap_or(0).min(sc.n);
-        let end = proj.limit.map(|l| (start + l).min(sc.n)).unwrap_or(sc.n);
+        let start = proj.skip_val(ctx).min(sc.n);
+        let end = proj
+            .limit_val(ctx)
+            .map(|l| (start + l).min(sc.n))
+            .unwrap_or(sc.n);
         for c in &mut cols {
             c.truncate(end);
             c.drain(0..start);
@@ -8022,7 +8062,7 @@ fn try_reachable_distinct(
             rs.push_row(vals.iter().map(|val| val_to_value(graph, val)));
         }
     }
-    rs.apply_skip_limit(proj.skip.unwrap_or(0), proj.limit);
+    rs.apply_skip_limit(proj.skip_val(&ctx), proj.limit_val(&ctx));
     Some(Ok(rs))
 }
 
@@ -8220,7 +8260,7 @@ fn try_parallel_agg(
     let accs: Vec<ProjAccum> = seeds
         .par_chunks(chunk)
         .map(|chunk| {
-            let mut acc = ProjAccum::new(proj);
+            let mut acc = ProjAccum::new(proj, &ctx);
             let mut b = Binding(vec![None; width]);
             for &s in chunk {
                 if ctx.faulted() {
@@ -8261,7 +8301,7 @@ fn try_parallel_agg(
     if let Err(e) = ctx.check_fault() {
         return Some(Err(e));
     }
-    let mut merged = ProjAccum::new(proj);
+    let mut merged = ProjAccum::new(proj, &ctx);
     for a in accs {
         merged.merge(a);
     }
@@ -8381,7 +8421,7 @@ fn try_parallel_scan(
         rs.nrows += f.nrows;
         rs.data.extend(f.data);
     }
-    rs.apply_skip_limit(proj.skip.unwrap_or(0), proj.limit);
+    rs.apply_skip_limit(proj.skip_val(&ctx), proj.limit_val(&ctx));
     Some(Ok(rs))
 }
 
@@ -8549,7 +8589,7 @@ fn project_to_rows(
     }
     // Fast path: project each row straight into the flat cell buffer — no
     // intermediate per-row Vec, no second conversion pass.
-    let cap = proj.limit.map(|l| proj.skip.unwrap_or(0) + l);
+    let cap = proj.limit_val(ctx).map(|l| proj.skip_val(ctx) + l);
     let mut seen: HashSet<String> = HashSet::new();
     let simple = single_simple_clause(matches);
     for inb in incoming {
@@ -8592,7 +8632,7 @@ fn project_to_rows(
             break;
         }
     }
-    rs.apply_skip_limit(proj.skip.unwrap_or(0), proj.limit);
+    rs.apply_skip_limit(proj.skip_val(ctx), proj.limit_val(ctx));
     rs
 }
 
@@ -9728,8 +9768,56 @@ fn check_unknown_fns(unknown_fns: &[String]) -> CodeResult<()> {
     ))
 }
 
+/// Push every `CCount::Param` slot referenced by a projection anywhere in the
+/// clause list — including nested CALL-subquery bodies — into `out`.
+fn collect_count_param_slots(clauses: &[CClause], out: &mut Vec<usize>) {
+    for clause in clauses {
+        match clause {
+            CClause::With { projection, .. } | CClause::Return(projection) => {
+                for b in [&projection.skip, &projection.limit].into_iter().flatten() {
+                    if let CCount::Param(slot) = b {
+                        out.push(*slot);
+                    }
+                }
+            }
+            CClause::CallInline {
+                body, body_more, ..
+            } => {
+                collect_count_param_slots(&body.clauses, out);
+                for (_, part) in body_more {
+                    collect_count_param_slots(&part.clauses, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Eagerly validate every `LIMIT` / `OFFSET` `$param` bound: its value must be a
+/// non-negative integer. Checked BEFORE any row is produced, so a bad bound faults
+/// identically over zero rows or many — mirroring the TS engine's up-front check
+/// in `compile`. A missing bound param is already caught by `positional`.
+fn check_count_params(plan: &CQuery, params: &[Val]) -> CodeResult<()> {
+    let mut slots = Vec::new();
+    for part in &plan.parts {
+        collect_count_param_slots(&part.clauses, &mut slots);
+    }
+    for slot in slots {
+        let v = params.get(slot);
+        let ok = matches!(v, Some(Val::Num(n)) if n.is_finite() && n.fract() == 0.0 && *n >= 0.0);
+        if !ok {
+            return Err(CodeError::new(
+                ErrorCode::InvalidValue,
+                "a LIMIT/OFFSET parameter must resolve to a non-negative integer",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn run_cquery_body(plan: &CQuery, graph: &mut Graph, params: &[Val]) -> CodeResult<RowSet> {
     check_unknown_fns(&plan.unknown_fns)?;
+    check_count_params(plan, params)?;
     if has_nested_aggregate(plan) {
         return Err(CodeError::new(
             ErrorCode::Unsupported,
@@ -9901,7 +9989,7 @@ fn vectorized_arrow(
     let path = &patterns[0];
     let cap = where_
         .is_none()
-        .then(|| proj.limit.map(|l| proj.skip.unwrap_or(0) + l))
+        .then(|| proj.limit_val(ctx).map(|l| proj.skip_val(ctx) + l))
         .flatten();
     // An index hint (vertex or edge) makes the scan a seek, so the LIMIT cap
     // can't early-stop it — drop the cap when a hint applies.
@@ -9919,8 +10007,11 @@ fn vectorized_arrow(
             .collect();
         compact(&mut sc, &keep);
     }
-    let start = proj.skip.unwrap_or(0).min(sc.n);
-    let end = proj.limit.map(|l| (start + l).min(sc.n)).unwrap_or(sc.n);
+    let start = proj.skip_val(ctx).min(sc.n);
+    let end = proj
+        .limit_val(ctx)
+        .map(|l| (start + l).min(sc.n))
+        .unwrap_or(sc.n);
     let cols = proj
         .items
         .iter()

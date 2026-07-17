@@ -1110,6 +1110,18 @@ describe('GQL: IS LABELED predicate & ELEMENT_ID (ISO)', () => {
     );
   });
 
+  // ISO COLON label-test predicate (opengql:2078): `n:Label` desugars to the same
+  // predicate as `IS LABELED`, reusing the pattern parser's label-expression grammar.
+  test('WHERE n:Label — COLON form, same as IS LABELED', () => {
+    expect(names(query(g, `MATCH (x) WHERE x:Person RETURN x.name`), 'x.name')).toEqual(
+      names(query(g, `MATCH (x) WHERE x IS LABELED Person RETURN x.name`), 'x.name'),
+    );
+    // a label expression after the colon works too.
+    expect(query(g, `MATCH (x) WHERE x:Person|Software RETURN count(*) AS c`)).toEqual([
+      { c: query(g, `MATCH (x) RETURN count(*) AS c`)[0].c },
+    ]);
+  });
+
   test('ELEMENT_ID returns the element identifier', () => {
     expect(query(g, `MATCH (n:Person {name: 'marko'}) RETURN element_id(n) AS id`)).toEqual([
       { id: '1' },

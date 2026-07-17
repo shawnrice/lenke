@@ -310,9 +310,18 @@ export type Projection = {
   items: readonly ReturnItem[];
   distinct: boolean;
   orderBy?: readonly SortItem[];
-  skip?: number;
-  limit?: number;
+  skip?: CountValue;
+  limit?: CountValue;
 };
+
+/**
+ * A `LIMIT` / `OFFSET` bound. ISO GQL's `nonNegativeIntegerSpecification`
+ * (opengql:2268) is `unsignedInteger | dynamicParameterSpecification`, so the
+ * bound is either an integer literal or a `$param` resolved (and validated to be
+ * a non-negative integer) at execution. `SKIP` is the Cypher spelling of
+ * `OFFSET` and accepts only a literal — a `$param` after `SKIP` is rejected.
+ */
+export type CountValue = number | { param: string };
 
 /** One `ORDER BY` key, with optional ISO `NULLS FIRST` / `NULLS LAST`. */
 export type SortItem = {

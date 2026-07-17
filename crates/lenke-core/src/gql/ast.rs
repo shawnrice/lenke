@@ -322,6 +322,17 @@ pub struct RelPattern {
     pub quantifier: Option<Quantifier>,
 }
 
+/// A `LIMIT` / `OFFSET` bound. ISO GQL's `nonNegativeIntegerSpecification`
+/// (opengql:2268) is `unsignedInteger | dynamicParameterSpecification`, so the
+/// bound is either an integer literal or a `$param` resolved — and validated to
+/// be a non-negative integer — at execution. `SKIP` is the Cypher spelling of
+/// `OFFSET` and accepts only a literal (a `$param` after `SKIP` is rejected).
+#[derive(Debug, Clone)]
+pub enum CountBound {
+    Lit(usize),
+    Param(String),
+}
+
 /// A projection body shared by `RETURN` and `WITH`.
 #[derive(Debug, Clone)]
 pub struct Projection {
@@ -329,8 +340,8 @@ pub struct Projection {
     pub items: Vec<ReturnItem>,
     pub distinct: bool,
     pub order_by: Vec<SortItem>,
-    pub skip: Option<usize>,
-    pub limit: Option<usize>,
+    pub skip: Option<CountBound>,
+    pub limit: Option<CountBound>,
 }
 
 /// A single RETURN expression with an optional `AS` alias.

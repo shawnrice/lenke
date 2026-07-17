@@ -1341,3 +1341,52 @@ suite('GQL differential: comma-join count shortcut (TS vs native)', () => {
     });
   }
 });
+
+// ISO GQL `LIMIT`/`OFFSET` accept a dynamic `$param` (nonNegativeIntegerSpecification,
+// opengql:2268), and the COLON label-test predicate `WHERE n:Label` (opengql:2078).
+// Both must produce byte-identical rows across the two engines.
+suite('GQL differential: LIMIT/OFFSET $param + label-test predicate (TS vs native)', () => {
+  const backend = createFfiBackend(LIB);
+  const nativeGraph = graphFromFormat(backend, MODERN_NDJSON, 'ndjson');
+  const tsGraph = tsDeserialize(MODERN_NDJSON, 'ndjson', new Graph());
+  const both = (q: string, params?: Record<string, unknown>): [string, string] => [
+    JSON.stringify(tsQuery(tsGraph, q, params)),
+    JSON.stringify(nativeGraph.query(q, params)),
+  ];
+
+  test('LIMIT $n — dynamic bound resolves identically', () => {
+    const q = `MATCH (n:Person) RETURN n.name AS name ORDER BY name LIMIT $n`;
+    const [ts, native] = both(q, { n: 2 });
+    expect(ts).toBe(native);
+    expect(ts).toBe(`[{"name":"josh"},{"name":"marko"}]`);
+  });
+
+  test('OFFSET $o LIMIT $n — both bounds dynamic', () => {
+    const q = `MATCH (n:Person) RETURN n.name AS name ORDER BY name OFFSET $o LIMIT $n`;
+    const [ts, native] = both(q, { o: 1, n: 1 });
+    expect(ts).toBe(native);
+    expect(ts).toBe(`[{"name":"marko"}]`);
+  });
+
+  test('LIMIT $n over an unordered stream — set-based, still identical', () => {
+    const [ts, native] = both(`MATCH (n:Person) RETURN count(*) AS c LIMIT $n`, { n: 5 });
+    expect(ts).toBe(native);
+  });
+
+  test('WHERE n:Label — COLON label test, identical to IS LABELED', () => {
+    const q = `MATCH (n) WHERE n:Person RETURN n.name AS name ORDER BY name`;
+    const [ts, native] = both(q);
+    expect(ts).toBe(native);
+    expect(ts).toBe(`[{"name":"josh"},{"name":"marko"},{"name":"vadas"}]`);
+    // Same result as the spelled-out predicate.
+    const [tsL] = both(`MATCH (n) WHERE n IS LABELED Person RETURN n.name AS name ORDER BY name`);
+    expect(tsL).toBe(ts);
+  });
+
+  test('WHERE n:A|B — COLON with a label expression (disjunction)', () => {
+    const q = `MATCH (n) WHERE n:Person|Software RETURN count(*) AS c`;
+    const [ts, native] = both(q);
+    expect(ts).toBe(native);
+    expect(ts).toBe(`[{"c":4}]`);
+  });
+});

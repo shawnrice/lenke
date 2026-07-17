@@ -194,6 +194,31 @@ describe('hardening: SKIP/LIMIT/quantifier require non-negative integers', () =>
     expect(() => parse(`MATCH (a)-[:R]->{1,3}(b) RETURN b`)).not.toThrow();
     expect(() => parse(`MATCH (a)-[:R]->{2}(b) RETURN b`)).not.toThrow();
   });
+
+  // ISO `nonNegativeIntegerSpecification` (opengql:2268) = literal | dynamic param.
+  test('LIMIT / OFFSET accept a dynamic $param', () => {
+    expect(() => parse(`MATCH (n) RETURN n LIMIT $lim`)).not.toThrow();
+    expect(() => parse(`MATCH (n) RETURN n OFFSET $off LIMIT $lim`)).not.toThrow();
+  });
+
+  test('SKIP stays literal-only (Cypher synonym) — SKIP $n is rejected', () => {
+    expect(() => parse(`MATCH (n) RETURN n SKIP $n`)).toThrow(GqlSyntaxError);
+  });
+
+  test('a $param LIMIT bound must resolve to a non-negative integer', () => {
+    const g = createTestSocialGraph();
+
+    for (const bad of [2.5, -1, 'x', null]) {
+      const e = thrown(() => query(g, `MATCH (n:Person) RETURN n LIMIT $lim`, { lim: bad }));
+      expect(hasErrorCode(e, ErrorCode.InvalidValue)).toBe(true);
+    }
+
+    // A missing bound param is the usual MissingParameter error.
+    const miss = thrown(() => query(g, `MATCH (n:Person) RETURN n LIMIT $lim`));
+    expect(hasErrorCode(miss, ErrorCode.MissingParameter)).toBe(true);
+    // A valid bound runs.
+    expect(() => query(g, `MATCH (n:Person) RETURN n LIMIT $lim`, { lim: 2 })).not.toThrow();
+  });
 });
 
 // --- #5: plain DELETE must not orphan relationships -------------------------

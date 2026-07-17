@@ -575,8 +575,16 @@ pub struct CProjection {
     /// When false, sort keys come from the input alone, so `ORDER BY … LIMIT n`
     /// can keep only the top-k *input* bindings and project just those.
     pub order_needs_output: bool,
-    pub skip: Option<usize>,
-    pub limit: Option<usize>,
+    pub skip: Option<CCount>,
+    pub limit: Option<CCount>,
+}
+
+/// A lowered `LIMIT` / `OFFSET` bound: an integer literal, or a `$param` slot
+/// resolved — and validated to be a non-negative integer — at execute time.
+#[derive(Debug, Clone)]
+pub enum CCount {
+    Lit(usize),
+    Param(usize),
 }
 
 #[derive(Debug, Clone)]
@@ -1321,9 +1329,18 @@ impl Lowerer {
             order_by,
             order_overlay,
             order_needs_output,
-            skip: p.skip,
-            limit: p.limit,
+            skip: self.count_bound(&p.skip),
+            limit: self.count_bound(&p.limit),
         }
+    }
+
+    /// Lower a `LIMIT` / `OFFSET` bound, allocating a positional slot for a
+    /// `$param` bound (so `positional` bound-checks it like any other param).
+    fn count_bound(&mut self, b: &Option<CountBound>) -> Option<CCount> {
+        b.as_ref().map(|c| match c {
+            CountBound::Lit(n) => CCount::Lit(*n),
+            CountBound::Param(name) => CCount::Param(self.param_slot(name)),
+        })
     }
 
     fn compile_set_items(&mut self, items: &[SetItem]) -> Vec<CSetItem> {

@@ -236,6 +236,17 @@ impl Parser {
         Ok(self.read_count(what)? as usize)
     }
 
+    /// A `LIMIT` / `OFFSET` bound: an integer literal, or — when `allow_param` — a
+    /// dynamic `$param` (ISO `nonNegativeIntegerSpecification`, opengql:2268). The
+    /// param's bound value is validated to be a non-negative integer at execution.
+    /// `SKIP` passes `allow_param=false`, so `SKIP $x` stays rejected (Cypher-only).
+    fn expect_count_bound(&mut self, what: &str, allow_param: bool) -> R<CountBound> {
+        if allow_param && self.check(Tt::Param) {
+            return Ok(CountBound::Param(self.advance().value));
+        }
+        Ok(CountBound::Lit(self.expect_count(what)?))
+    }
+
     /// Consume an identifier in a binding position (variable, label, key, alias).
     /// A bare reserved word is rejected; a delimited identifier may be any word.
     /// Both token classes that can't be a bare name here are caught up front so
@@ -791,6 +802,18 @@ impl Parser {
 
     fn parse_postfix_predicate(&mut self) -> R<Expr> {
         let e = self.parse_comparison()?;
+        // ISO `<labeled predicate>` COLON form: `n:Label` on a bare element variable
+        // reference (opengql:2078 — `elementVariableReference COLON labelExpression`).
+        // Desugars to the same `IsLabeled` node as `IS LABELED`, reusing the pattern
+        // parser's label-expression grammar (so `n:A|B`, `n:A&B`, `n:!A` all work).
+        if self.check(Tt::Colon) && matches!(e, Expr::Var(_)) {
+            self.advance();
+            return Ok(Expr::IsLabeled {
+                expr: Box::new(e),
+                label: self.parse_label_expr()?,
+                negated: false,
+            });
+        }
         if self.check_kw("is") {
             self.advance();
             let negated = if self.check_kw("not") {
@@ -1388,13 +1411,18 @@ impl Parser {
         }
         let mut skip = None;
         if self.check_kw("skip") || self.check_kw("offset") {
+            // OFFSET is the ISO spelling and accepts a dynamic `$param`; SKIP is
+            // the Cypher synonym and stays literal-only.
+            let allow_param = self.check_kw("offset");
             self.advance();
-            skip = Some(self.expect_count("a non-negative integer after SKIP/OFFSET")?);
+            skip = Some(
+                self.expect_count_bound("a non-negative integer after SKIP/OFFSET", allow_param)?,
+            );
         }
         let mut limit = None;
         if self.check_kw("limit") {
             self.advance();
-            limit = Some(self.expect_count("a non-negative integer after LIMIT")?);
+            limit = Some(self.expect_count_bound("a non-negative integer after LIMIT", true)?);
         }
         Ok(Projection {
             star,
