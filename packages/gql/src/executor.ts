@@ -4769,14 +4769,49 @@ const isEffectivelyMissing = (v: unknown): boolean =>
  * (`reviveParams` ran first), so it passes as a scalar — never mistaken for a
  * rejected plain object.
  */
+/**
+ * Does `s` contain a lone (unpaired) UTF-16 surrogate? Mirrors
+ * `@lenke/serialization`'s `hasLoneSurrogate` (duplicated to avoid a package
+ * dependency): the native store is UTF-8 and rejects a lone surrogate as it
+ * JSON-decodes a param crossing the FFI boundary, so the TS param path must
+ * reject it too for byte-identity (a JS string can carry one; native cannot).
+ */
+const hasLoneSurrogate = (s: string): boolean => {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+
+    if (c >= 0xd800 && c <= 0xdbff) {
+      // `charCodeAt` past the end is NaN; the positive-form test treats an
+      // end-of-string high surrogate (no following low) as lone.
+      const next = s.charCodeAt(i + 1);
+
+      if (!(next >= 0xdc00 && next <= 0xdfff)) {
+        return true;
+      }
+
+      i++;
+    } else if (c >= 0xdc00 && c <= 0xdfff) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
 const validateParamScalar = (name: string, v: unknown): void => {
-  if (
-    v === null ||
-    typeof v === 'string' ||
-    typeof v === 'boolean' ||
-    typeof v === 'number' ||
-    isTemporal(v)
-  ) {
+  if (typeof v === 'string') {
+    if (hasLoneSurrogate(v)) {
+      throw new LenkeError(
+        `parameter $${name} is a string containing a lone (unpaired) UTF-16 surrogate, ` +
+          `which is not a valid Unicode scalar in the LPG string model`,
+        { code: ErrorCode.InvalidJson, details: { param: name } },
+      );
+    }
+
+    return;
+  }
+
+  if (v === null || typeof v === 'boolean' || typeof v === 'number' || isTemporal(v)) {
     return;
   }
 

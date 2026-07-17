@@ -70,6 +70,23 @@ describe('hardening: a bigint param is rejected, not silently mishandled', () =>
   });
 });
 
+describe('hardening: a lone-surrogate string param is rejected (round-12 F1)', () => {
+  test('an unpaired UTF-16 surrogate $param throws InvalidJson; a valid pair binds', () => {
+    const g = new Graph();
+
+    // A JS string can carry a lone surrogate; the native store (UTF-8) cannot, and
+    // rejects it as the param JSON-crosses the FFI boundary. The TS param path must
+    // reject it too so both engines accept/reject the same inputs.
+    for (const bad of ['\uD800', '\uDC00', 'a\uD800b']) {
+      const err = thrown(() => query(g, 'INSERT (:X {v: $s})', { s: bad }));
+      expect(hasErrorCode(err, ErrorCode.InvalidJson)).toBe(true);
+    }
+
+    // a well-formed astral character binds fine
+    expect(() => query(g, 'INSERT (:X {v: $s})', { s: '😀' })).not.toThrow();
+  });
+});
+
 describe('hardening: SET/REMOVE maintain the property index', () => {
   test('SET reindexes, so an indexed seek finds the new value', () => {
     const plain = createTestSocialGraph();

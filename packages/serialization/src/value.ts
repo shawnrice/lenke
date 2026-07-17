@@ -36,8 +36,52 @@ export type PropertyBag = Readonly<Record<string, PropertyValue>>;
  */
 const MAX_NESTING = 128;
 
+/**
+ * Does `s` contain a lone (unpaired) UTF-16 surrogate? A high surrogate must be
+ * immediately followed by a low surrogate and vice-versa; anything else is not a
+ * valid Unicode scalar. The native engine stores UTF-8, which cannot represent a
+ * lone surrogate, and its JSON decoders reject one at ingest — so the shared LPG
+ * string model excludes them, and this is the boundary that enforces it (in TS a
+ * `\uD800` escape survives `JSON.parse`, unlike Rust's serde). Exported so the
+ * GQL param boundary can apply the identical check.
+ */
+export const hasLoneSurrogate = (s: string): boolean => {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+
+    if (c >= 0xd800 && c <= 0xdbff) {
+      // high surrogate: must be followed by a low. `charCodeAt` past the end is
+      // NaN, and `NaN >= …` is false, so the positive-form test catches an
+      // end-of-string high surrogate too.
+      const next = s.charCodeAt(i + 1);
+
+      if (!(next >= 0xdc00 && next <= 0xdfff)) {
+        return true;
+      }
+
+      i++; // valid pair — skip the low half
+    } else if (c >= 0xdc00 && c <= 0xdfff) {
+      return true; // low with no preceding high
+    }
+  }
+
+  return false;
+};
+
 const normalizeAt = (value: unknown, depth: number): PropertyValue => {
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') {
+  if (value === null || typeof value === 'boolean') {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    if (hasLoneSurrogate(value)) {
+      throw new LenkeError(
+        'a string value contains a lone (unpaired) UTF-16 surrogate, which is not a valid ' +
+          'Unicode scalar in the LPG string model',
+        { code: ErrorCode.InvalidJson },
+      );
+    }
+
     return value;
   }
 

@@ -73,6 +73,44 @@ describe('serialization error codes', () => {
     expect(normalizeValue(Infinity)).toBeNull();
   });
 
+  test('a lone UTF-16 surrogate is rejected (round-12 F1: match native serde)', () => {
+    // A `\uD800` escape survives JSON.parse in JS but the native UTF-8 store
+    // can't hold a lone surrogate — its serde JSON decoder rejects it at ingest.
+    // The value boundary rejects it too so both engines accept/reject the same
+    // documents. Valid pairs (astral chars) still pass.
+    const caught = (fn: () => void): unknown => {
+      try {
+        fn();
+      } catch (e) {
+        return e;
+      }
+
+      return undefined;
+    };
+
+    for (const bad of ['\uD800', '\uDC00', 'a\uD800b', 'x\uDFFF']) {
+      expect(
+        hasErrorCode(
+          caught(() => normalizeValue(bad)),
+          ErrorCode.InvalidJson,
+        ),
+      ).toBe(true);
+    }
+
+    // a well-formed surrogate pair (😀) and plain text are unaffected
+    expect(normalizeValue('😀')).toBe('😀');
+    expect(normalizeValue('hello')).toBe('hello');
+
+    // and end-to-end through the ndjson decoder
+    const nd = String.raw`{"type":"node","id":"a","labels":["U"],"properties":{"bad":"\ud800"}}`;
+    expect(
+      hasErrorCode(
+        caught(() => deserialize(nd, 'ndjson', new Graph())),
+        ErrorCode.InvalidJson,
+      ),
+    ).toBe(true);
+  });
+
   test('a temporal instance and a TC39 Temporal.Plain* both normalize to a temporal', () => {
     const d = parseDate('2020-01-01');
     expect(normalizeValue(d)).toBe(d);
