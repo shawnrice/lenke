@@ -2863,6 +2863,11 @@ const shortestWalk = function* (
   // A live array iterator: vertices pushed during the walk are visited in turn,
   // giving a FIFO breadth-first order.
   const queue: Vertex[] = [seed];
+  // The shortest cycle back to the seed (its first BFS re-arrival). The seed is
+  // marked at distance 0 and never re-discovered, so a `+`/`{1,n}` path that
+  // closes on it (`(a)-[]->+(a)`, or any endpoint reached via a cycle) would
+  // otherwise be missed.
+  let seedCycle: { dist: number; prev: Vertex; edge: Edge } | null = null;
 
   for (const v of queue) {
     const d = dist.get(v.id)!;
@@ -2872,6 +2877,10 @@ const shortestWalk = function* (
     }
 
     for (const { edge, node: nbr } of expand(graph, v, rel)) {
+      if (nbr.id === seed.id && seedCycle === null) {
+        seedCycle = { dist: d + 1, prev: v, edge };
+      }
+
       if (!dist.has(nbr.id)) {
         dist.set(nbr.id, d + 1);
         pred.set(nbr.id, { prev: v, edge });
@@ -2880,11 +2889,17 @@ const shortestWalk = function* (
     }
   }
 
+  // When `min ≥ 1` excludes the seed's zero-hop path but a cycle back to it fits
+  // the hop ceiling, the seed is an endpoint at the shortest-cycle distance.
+  // `min ≤ 1` is guaranteed, so this never double-emits a seed already at dist 0.
+  const seedCycleEnd = min >= 1 && seedCycle !== null && (max === null || seedCycle.dist <= max);
+
   // Endpoints in insertion order (= native's dense-id order).
   for (const end of graph.vertices) {
+    const isSeedCycle = end.id === seed.id && seedCycleEnd;
     const d = dist.get(end.id);
 
-    if (d === undefined || d < min) {
+    if (!isSeedCycle && (d === undefined || d < min)) {
       continue;
     }
 
@@ -2900,9 +2915,10 @@ const shortestWalk = function* (
       continue;
     }
 
-    // Reconstruct the shortest path seed…end from the predecessor tree.
+    // Reconstruct the path from the predecessor tree — the shortest path seed…end,
+    // or (for the seed-cycle endpoint) the path seed…prev closed by the cycle edge.
     const steps: { edge: Edge; vertex: Vertex }[] = [];
-    let cur = end;
+    let cur = isSeedCycle ? seedCycle!.prev : end;
 
     while (cur.id !== seed.id) {
       const step = pred.get(cur.id)!;
@@ -2911,6 +2927,10 @@ const shortestWalk = function* (
     }
 
     steps.reverse();
+
+    if (isSeedCycle) {
+      steps.push({ edge: seedCycle!.edge, vertex: seed });
+    }
 
     yield withBinding(matched, pattern.pathVar, Path.fromSteps(seed, steps));
   }

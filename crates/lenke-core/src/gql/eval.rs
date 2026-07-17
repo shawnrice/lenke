@@ -2543,6 +2543,12 @@ fn shortest_walk(
     let mut dist: HashMap<u32, u32> = HashMap::from([(seed, 0)]);
     let mut pred: HashMap<u32, (u32, u32)> = HashMap::new();
     let mut queue: VecDeque<u32> = VecDeque::from([seed]);
+    // The shortest cycle back to the seed `(dist, last-predecessor, last-edge)`:
+    // the seed is marked at distance 0 and never re-discovered, so a `+`/`{1,n}`
+    // path that closes on the seed (`(a)-[]->+(a)`, or any endpoint reached via a
+    // cycle) would otherwise be missed. BFS order makes the first re-arrival the
+    // shortest, and identical across engines.
+    let mut seed_cycle: Option<(u32, u32, u32)> = None;
 
     while let Some(v) = queue.pop_front() {
         let d = dist[&v];
@@ -2553,6 +2559,9 @@ fn shortest_walk(
             expand(graph, ctx, v, rel.direction, rel.label.as_ref()).collect();
         nbrs.sort_unstable_by_key(|&(eidx, _)| eidx);
         for (eidx, nbr) in nbrs {
+            if nbr == seed && seed_cycle.is_none() {
+                seed_cycle = Some((d + 1, v, eidx));
+            }
             if let std::collections::hash_map::Entry::Vacant(slot) = dist.entry(nbr) {
                 slot.insert(d + 1);
                 pred.insert(nbr, (v, eidx));
@@ -2567,10 +2576,24 @@ fn shortest_walk(
         .filter(|&(_, &d)| d >= q.min)
         .map(|(&v, _)| v)
         .collect();
+    // When `q.min ≥ 1` excludes the seed's zero-hop path but a cycle back to it
+    // exists within the hop ceiling, the seed is an endpoint at the shortest-cycle
+    // distance (`(a)-[]->+(a)`). `q.min ≤ 1` is enforced, so this never
+    // double-adds a seed already present at dist 0 (min = 0 case).
+    let seed_cycle_end =
+        q.min >= 1 && seed_cycle.is_some_and(|(cd, _, _)| q.max.is_none_or(|m| cd <= m));
+    if seed_cycle_end {
+        ends.push(seed);
+    }
     ends.sort_unstable();
 
     for end in ends {
-        let path = reconstruct_path(seed, end, &pred);
+        let path = if end == seed && seed_cycle_end {
+            let (_, pv, edge) = seed_cycle.expect("seed_cycle_end implies Some");
+            reconstruct_cycle(seed, pv, edge, &pred)
+        } else {
+            reconstruct_path(seed, end, &pred)
+        };
         let path_slot = pattern.path_var_slot;
         let stop = !match_node_then(graph, ctx, binding, end_node, end, &mut |b| {
             if let Some(s) = path_slot {
@@ -2611,6 +2634,21 @@ fn reconstruct_path(seed: u32, end: u32, pred: &HashMap<u32, (u32, u32)>) -> (Ve
     }
     vertices.reverse();
     edges.reverse();
+
+    (vertices, edges)
+}
+
+/// Reconstruct a shortest cycle back to the seed: the forward path `seed … pv`
+/// (from the BFS predecessor tree) closed by the final edge `pv --edge--> seed`.
+fn reconstruct_cycle(
+    seed: u32,
+    pv: u32,
+    edge: u32,
+    pred: &HashMap<u32, (u32, u32)>,
+) -> (Vec<u32>, Vec<u32>) {
+    let (mut vertices, mut edges) = reconstruct_path(seed, pv, pred);
+    vertices.push(seed);
+    edges.push(edge);
 
     (vertices, edges)
 }

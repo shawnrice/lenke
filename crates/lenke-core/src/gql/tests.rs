@@ -4068,6 +4068,37 @@ fn any_shortest_plus_and_bounded() {
     assert_eq!(one, vec!["josh", "lop", "vadas"]);
 }
 
+/// Round-11 B2: `->+(a)` closing on the seed finds the shortest cycle back to it
+/// (the seed is marked at BFS distance 0 yet is a valid endpoint via a cycle),
+/// while `->*` still yields the zero-length self path.
+#[test]
+fn any_shortest_closes_on_the_seed_cycle() {
+    let mut g = ndjson::decode(
+        &[
+            r#"{"type":"node","id":"a","labels":["N"],"properties":{"id":"a"}}"#,
+            r#"{"type":"node","id":"b","labels":["N"],"properties":{"id":"b"}}"#,
+            r#"{"type":"edge","id":"e1","from":"a","to":"b","labels":["R"],"properties":{}}"#,
+            r#"{"type":"edge","id":"e2","from":"b","to":"a","labels":["R"],"properties":{}}"#,
+        ]
+        .join("\n"),
+    )
+    .unwrap();
+
+    // `->+(a)`: the shortest cycle a→b→a, length 2.
+    let plus = rows(
+        &mut g,
+        "MATCH p = ANY SHORTEST (a:N {id:'a'})-[:R]->+(a) RETURN path_length(p) AS len",
+    );
+    assert_eq!(plus, vec![vec![Value::Num(2.0)]]);
+
+    // `->*(a)`: min 0 admits the zero-length self path (length 0), unchanged.
+    let star = rows(
+        &mut g,
+        "MATCH p = ANY SHORTEST (a:N {id:'a'})-[:R]->*(a) RETURN path_length(p) AS len",
+    );
+    assert_eq!(star, vec![vec![Value::Num(0.0)]]);
+}
+
 /// The unsupported selector shapes fail to parse with a pointed message.
 #[test]
 fn shortest_unsupported_shapes_rejected() {

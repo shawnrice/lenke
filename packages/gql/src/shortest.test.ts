@@ -58,6 +58,25 @@ describe('ANY SHORTEST path patterns', () => {
     expect(names(rows)).toEqual(['josh', 'lop', 'ripple', 'vadas']);
   });
 
+  test('-> + closes on the seed via the shortest cycle (round-11 B2)', () => {
+    const g = new Graph();
+    const a = g.addVertex({ id: 'a', labels: ['N'], properties: { id: 'a' } });
+    const b = g.addVertex({ id: 'b', labels: ['N'], properties: { id: 'b' } });
+    g.addEdge({ from: a, to: b, labels: ['R'], properties: {} });
+    g.addEdge({ from: b, to: a, labels: ['R'], properties: {} });
+
+    // ->+(a): the shortest cycle a→b→a (hops 2), closing on the seed variable.
+    const plus = query(g, "MATCH p = ANY SHORTEST (a:N {id:'a'})-[:R]->+(a) RETURN p");
+    expect(plus).toHaveLength(1);
+    const p = plus[0].p as Path;
+    expect(p.hops).toBe(2);
+    expect(p.vertices.map((x) => x.id)).toEqual(['a', 'b', 'a']);
+
+    // ->*(a): min 0 admits the zero-length self path (hops 0), unchanged.
+    const star = query(g, "MATCH p = ANY SHORTEST (a:N {id:'a'})-[:R]->*(a) RETURN p");
+    expect((star[0].p as Path).hops).toBe(0);
+  });
+
   test('->{1,1} keeps only the direct out-neighbours', () => {
     const rows = query(
       modern(),
