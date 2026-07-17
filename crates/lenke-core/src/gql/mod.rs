@@ -29,6 +29,8 @@ mod ported_gql_main;
 #[cfg(test)]
 mod ported_gql_misc;
 #[cfg(test)]
+mod ported_gql_operator_chains;
+#[cfg(test)]
 mod ported_gql_tck;
 #[cfg(test)]
 mod tests;
