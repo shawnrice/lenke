@@ -22,7 +22,18 @@ fn to_value(j: &Json) -> CodeResult<Value> {
     Ok(match j {
         Json::Null => Value::Null,
         Json::Bool(b) => Value::Bool(*b),
-        Json::Num(n) => Value::Num(*n),
+        // A JSON number that overflowed to ±Infinity (e.g. `1e400`) — or a NaN —
+        // is not representable in the LPG numeric model, so it maps to `null` at
+        // this entry point (matching the TS ndjson/pg-json codecs and the shared
+        // `codec::json_to_value`). Storing a real non-finite float would silently
+        // corrupt count/sum/min/max/`IS NULL`/comparisons and diverge from TS.
+        Json::Num(n) => {
+            if n.is_finite() {
+                Value::Num(*n)
+            } else {
+                Value::Null
+            }
+        }
         Json::Str(s) => Value::Str(Arc::from(s.as_str())),
         Json::Arr(a) => Value::List(a.iter().map(to_value).collect::<CodeResult<Vec<_>>>()?),
         // A tagged temporal `{"@date":"…"}` (single key) round-trips as a scalar;
@@ -630,6 +641,32 @@ mod tests {
         assert_eq!(decoded(r#"{"n":1.5}"#, "n"), Value::Num(1.5));
         assert_eq!(decoded(r#"{"n":1.5e3}"#, "n"), Value::Num(1500.0)); // exponent
         assert_eq!(decoded(r#"{"n":2.5e-3}"#, "n"), Value::Num(0.0025));
+    }
+
+    #[test]
+    fn decode_nonfinite_number_maps_to_null() {
+        // A JSON literal that overflows f64 to ±Infinity is not representable in
+        // the LPG numeric model → stored as `null` (matching TS ndjson/pg-json,
+        // whose `normalizeValue` maps NaN/±Inf → null). Storing a real non-finite
+        // float would corrupt count/sum/min/max/`IS NULL` and diverge from TS.
+        assert_eq!(decoded(r#"{"n":1e400}"#, "n"), Value::Null); // +Infinity
+        assert_eq!(decoded(r#"{"n":-1e400}"#, "n"), Value::Null); // -Infinity
+                                                                  // The stored null is a PRESENT value (first-class), not absence.
+        let line = r#"{"type":"node","id":"a","labels":["N"],"properties":{"v":1e400}}"#;
+        let g = decode(line).unwrap();
+        let a = g.vid.get("a").unwrap() as usize;
+        assert_eq!(g.props.value(a, "v", &g.strs), Value::Null);
+        assert!(g.props.is_present(a, "v"), "the coerced null is present");
+        // Same coercion via the COPY-FROM `append` path.
+        let mut m = decode("").unwrap();
+        append(&mut m, line).unwrap();
+        let ai = m.vid.get("a").unwrap() as usize;
+        assert_eq!(m.props.value(ai, "v", &m.strs), Value::Null);
+        // Inside a list, a non-finite element is coerced too.
+        assert_eq!(
+            decoded(r#"{"xs":[1,1e400,2]}"#, "xs"),
+            Value::List(vec![Value::Num(1.0), Value::Null, Value::Num(2.0)])
+        );
     }
 
     #[test]

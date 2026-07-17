@@ -119,7 +119,17 @@ pub(crate) fn json_to_value(j: &Json) -> CodeResult<Value> {
     Ok(match j {
         Json::Null => Value::Null,
         Json::Bool(b) => Value::Bool(*b),
-        Json::Num(n) => Value::Num(*n),
+        // A non-finite JSON number (±Infinity from an overflowing literal like
+        // `1e400`, or NaN) is not representable in the LPG numeric model → `null`,
+        // matching the TS `normalizeValue` contract. Storing a real non-finite
+        // float would corrupt aggregates and `IS NULL` and diverge from TS.
+        Json::Num(n) => {
+            if n.is_finite() {
+                Value::Num(*n)
+            } else {
+                Value::Null
+            }
+        }
         Json::Str(s) => Value::Str(Arc::from(s.as_str())),
         Json::Arr(a) => Value::List(
             a.iter()

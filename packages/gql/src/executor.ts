@@ -14,7 +14,6 @@ import {
   temporalCmpTotal,
   temporalParse,
   temporalRelCmp,
-  validatePropertyValue,
 } from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 import { filter, flatMap, map, skip, take, toArray } from '@lenke/fp';
@@ -4746,6 +4745,75 @@ const reviveParamValue = (v: unknown): unknown => {
   return fromTaggedJson(v) ?? v;
 };
 
+/**
+ * A param value of `undefined`, a function, or a symbol is dropped by the native
+ * FFI's `JSON.stringify` param marshalling, so its binding reads as MISSING there
+ * (→ `E_MISSING_PARAMETER`). The TS engine must agree instead of silently
+ * evaluating `$name` to `undefined` (which returns `[]` for `WHERE n.x = $name`
+ * with no error). (D2)
+ */
+const isEffectivelyMissing = (v: unknown): boolean =>
+  v === undefined || typeof v === 'function' || typeof v === 'symbol';
+
+/**
+ * Validate one already-revived param value against the LPG param model, matching
+ * the native FFI param decoder (`gql/params.rs`) so both engines accept and reject
+ * exactly the same inputs (D3). Accepts a scalar (`string | number | boolean |
+ * null`), a revived tagged-temporal instance, or a FLAT list of those. Rejects:
+ *   - a `bigint` → `E_INVALID_VALUE` (float64 model; native rejects it JS-side in
+ *     `stringifyParams` before the FFI crossing)
+ *   - a nested list, or a plain (non-temporal) object → `E_INVALID_JSON` (native:
+ *     "nested arrays are not valid param values" / "the only valid object param
+ *     value is a tagged temporal")
+ * A tagged-temporal object is already a `Temporal` instance by this point
+ * (`reviveParams` ran first), so it passes as a scalar — never mistaken for a
+ * rejected plain object.
+ */
+const validateParamScalar = (name: string, v: unknown): void => {
+  if (
+    v === null ||
+    typeof v === 'string' ||
+    typeof v === 'boolean' ||
+    typeof v === 'number' ||
+    isTemporal(v)
+  ) {
+    return;
+  }
+
+  if (typeof v === 'bigint') {
+    throw new LenkeError(
+      `a bigint parameter ($${name}) is not supported: the numeric model is float64 — ` +
+        `pass Number(x) or a string`,
+      { code: ErrorCode.InvalidValue, details: { param: name } },
+    );
+  }
+
+  throw new LenkeError(
+    `parameter $${name} is outside the LPG param model: only a scalar, a flat list ` +
+      `of scalars, or a tagged-temporal object is a valid param value`,
+    { code: ErrorCode.InvalidJson, details: { param: name } },
+  );
+};
+
+const validateParamValue = (name: string, v: unknown): void => {
+  if (Array.isArray(v)) {
+    for (const el of v) {
+      if (Array.isArray(el)) {
+        throw new LenkeError(`parameter $${name}: nested arrays are not valid param values`, {
+          code: ErrorCode.InvalidJson,
+          details: { param: name },
+        });
+      }
+
+      validateParamScalar(name, el);
+    }
+
+    return;
+  }
+
+  validateParamScalar(name, v);
+};
+
 /** Revive every param value, sharing the input object when nothing changed. */
 const reviveParams = (params: Params): Params => {
   let out: Params | null = null;
@@ -4819,21 +4887,26 @@ export const compile = <R extends Row = Row>(query: Query): Plan<R> => {
     // didn't bind is a programming error — throw before running, not a silent
     // empty result. (The Rust engine does the same in `positional`.)
     for (const name of names) {
+      const present = Object.hasOwn(params, name);
+      const value = present ? params[name] : undefined;
+
       // The reserved `$__now` (from a bare `current_*` function) is optional: an
       // unsupplied `now` reads as NULL (so `current_date` → null), not an error.
-      if (name !== '__now' && !Object.hasOwn(params, name)) {
+      // A bound value of `undefined`/function/symbol counts as MISSING too (D2),
+      // because native's `JSON.stringify` param marshalling drops such keys.
+      if (name !== '__now' && (!present || isEffectivelyMissing(value))) {
         throw new LenkeError(`missing parameter: $${name}`, {
           code: ErrorCode.MissingParameter,
           details: { param: name },
         });
       }
 
-      // A bigint param is rejected here for the same reason the native FFI
-      // boundary rejects it: the numeric model is float64, so a bigint can't
-      // bind without silent precision loss above 2^53. Keeps both engines and
-      // the in-process store on one rule — pass Number(x) or a string.
-      if (Object.hasOwn(params, name)) {
-        validatePropertyValue(params[name]);
+      // Validate the value against the LPG param model — the same rules the native
+      // FFI decoder enforces (D3): a bigint is rejected (float64 model), and a
+      // nested list / plain (non-temporal) object is rejected rather than reaching
+      // the engine as a silent no-op. Skips `$__now` when it wasn't supplied.
+      if (present && !isEffectivelyMissing(value)) {
+        validateParamValue(name, value);
       }
     }
 

@@ -1390,3 +1390,124 @@ suite('GQL differential: LIMIT/OFFSET $param + label-test predicate (TS vs nativ
     expect(ts).toBe(`[{"c":4}]`);
   });
 });
+
+// --- D1: a non-finite JSON number in a loaded document coerces to null on BOTH
+// engines. TS coerces via `normalizeBag` on decode; native's ndjson/pg-json
+// codecs map ±Infinity / NaN → null at the parse boundary. Storing a real
+// non-finite float would corrupt count/sum/min/max/`IS NULL` and diverge.
+suite('GQL differential: non-finite number coerces to null (D1)', () => {
+  const backend = createFfiBackend(LIB);
+  // `1e400` overflows an f64 to +Infinity; `-1e400` to -Infinity.
+  const NF_NDJSON = [
+    '{"type":"node","id":"1","labels":["N"],"properties":{"k":1,"v":1e400}}',
+    '{"type":"node","id":"2","labels":["N"],"properties":{"k":2,"v":-1e400}}',
+    '{"type":"node","id":"3","labels":["N"],"properties":{"k":3,"v":2.5}}',
+  ].join('\n');
+  const nativeGraph = graphFromFormat(backend, NF_NDJSON, 'ndjson');
+  const tsGraph = tsDeserialize(NF_NDJSON, 'ndjson', new Graph());
+
+  const both = (q: string): [string, string] => [
+    JSON.stringify(tsQuery(tsGraph, q)),
+    JSON.stringify(nativeGraph.query(q)),
+  ];
+
+  test('an overflowing literal reads back as a PRESENT null', () => {
+    const [ts, native] = both(`MATCH (n:N) RETURN n.v AS v ORDER BY n.k`);
+    expect(ts).toBe(native);
+    expect(ts).toBe(`[{"v":null},{"v":null},{"v":2.5}]`);
+  });
+
+  test('IS NULL sees the coerced value as null (the repro)', () => {
+    const [ts, native] = both(`MATCH (n:N) WHERE n.v IS NULL RETURN count(*) AS c`);
+    expect(ts).toBe(native);
+    expect(ts).toBe(`[{"c":2}]`);
+  });
+
+  test('aggregates ignore the coerced nulls identically (no NaN poisoning)', () => {
+    const [ts, native] = both(
+      `MATCH (n:N) RETURN count(n.v) AS c, sum(n.v) AS s, min(n.v) AS mn, max(n.v) AS mx`,
+    );
+    expect(ts).toBe(native);
+    expect(ts).toBe(`[{"c":1,"s":2.5,"mn":2.5,"mx":2.5}]`);
+  });
+});
+
+// --- D2/D3: TS param validation matches native's FFI param decoder. Both engines
+// accept and reject exactly the same param shapes with the same error code.
+suite('GQL differential: param value validation (D2/D3)', () => {
+  const backend = createFfiBackend(LIB);
+  const nativeGraph = graphFromFormat(backend, MODERN_NDJSON, 'ndjson');
+  const tsGraph = tsDeserialize(MODERN_NDJSON, 'ndjson', new Graph());
+
+  const outcome = (run: () => unknown): { ok: true } | { code: unknown } => {
+    try {
+      run();
+
+      return { ok: true };
+    } catch (e) {
+      return { code: (e as { code?: unknown }).code };
+    }
+  };
+  const both = (q: string, params: Record<string, unknown>) => ({
+    ts: outcome(() => tsQuery(tsGraph, q, params)),
+    native: outcome(() => nativeGraph.query(q, params)),
+  });
+
+  const Q = `MATCH (n:Person) WHERE n.age = $x RETURN count(*) AS c`;
+
+  // D2: a bound value of undefined / a function / a symbol is dropped by native's
+  // JSON.stringify marshalling → MISSING; TS must not silently evaluate it to
+  // undefined (which returns [] with no error).
+  for (const [label, value] of [
+    ['undefined', undefined],
+    ['a function', () => 1],
+    ['a symbol', Symbol('x')],
+  ] as const) {
+    test(`D2: ${label} param faults as E_MISSING_PARAMETER on both engines`, () => {
+      const { ts, native } = both(Q, { x: value });
+      expect(native).toEqual(ts);
+      expect(ts).toEqual({ code: 'E_MISSING_PARAMETER' });
+    });
+  }
+
+  // D3: a nested object / nested array is outside the LPG param model → both
+  // engines reject with E_INVALID_JSON (native's `params.rs` grammar).
+  for (const [label, value] of [
+    ['a nested object', { a: 1 }],
+    ['a nested array', [[1]]],
+  ] as const) {
+    test(`D3: ${label} param faults as E_INVALID_JSON on both engines`, () => {
+      const { ts, native } = both(`RETURN $x AS x`, { x: value });
+      expect(native).toEqual(ts);
+      expect(ts).toEqual({ code: 'E_INVALID_JSON' });
+    });
+  }
+
+  test('D3: a bigint param faults as E_INVALID_VALUE on both engines', () => {
+    const { ts, native } = both(Q, { x: 10n });
+    expect(native).toEqual(ts);
+    expect(ts).toEqual({ code: 'E_INVALID_VALUE' });
+  });
+
+  // Guardrails: valid scalar, flat-list, and tagged-temporal params still run and
+  // stay byte-identical (the fix must NOT reject these).
+  test('valid params (scalar, flat list, tagged temporal) still run identically', () => {
+    const scalar = both(Q, { x: 29 });
+    expect(scalar.ts).toEqual({ ok: true });
+    expect(scalar.native).toEqual({ ok: true });
+
+    const list = [
+      JSON.stringify(tsQuery(tsGraph, `RETURN $xs AS xs`, { xs: [1, 'two', true, null] })),
+      JSON.stringify(nativeGraph.query(`RETURN $xs AS xs`, { xs: [1, 'two', true, null] })),
+    ];
+    expect(list[0]).toBe(list[1]);
+    expect(list[0]).toBe(`[{"xs":[1,"two",true,null]}]`);
+
+    const temporal = [
+      JSON.stringify(tsQuery(tsGraph, `RETURN $d AS d`, { d: { '@date': '2020-07-01' } })),
+      JSON.stringify(nativeGraph.query(`RETURN $d AS d`, { d: { '@date': '2020-07-01' } })),
+    ];
+    expect(temporal[0]).toBe(temporal[1]);
+    expect(temporal[0]).toBe(`[{"d":{"@date":"2020-07-01"}}]`);
+  });
+});
