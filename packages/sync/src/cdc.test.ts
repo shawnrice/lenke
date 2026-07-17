@@ -49,12 +49,15 @@ const widgets = (s: Store): number =>
  *  fresh connection (its own host) to it. */
 const server = (writeLog: WriteLog = createWriteLog()) => {
   const store = newStore();
-  const client = (): SyncClient => {
+  // A fresh connection (its own host) on the shared store+log. Pass a `clientId`
+  // to pin a stable identity — the same value re-attached over a new host is a
+  // reconnect of the SAME client (origin-skip must hold across it).
+  const client = (clientId?: string): SyncClient => {
     // Circular wiring (host.send → client, client.send → host); a box lets both
     // stay `const` while the client is assigned after the host is built.
     const link: { c?: SyncClient } = {};
     const host = createSyncHost(store, { send: (m) => link.c?.receive(m), writeLog });
-    link.c = createSyncClient({ send: (m) => host.receive(m) });
+    link.c = createSyncClient({ send: (m) => host.receive(m), clientId });
 
     return link.c;
   };
@@ -290,6 +293,47 @@ suite('CDC write stream (TS vs native store)', () => {
       .filter((m): m is WritesMessage => m.type === 'writes')
       .flatMap((m) => m.writes.map((w) => w.text));
     expect(backlogToB).toEqual(['INSERT (:Widget {id: 1})']);
+  });
+
+  test('createSyncClient({ clientId }): origin-skip survives a reconnect end-to-end', () => {
+    const s = server();
+    const clientId = 'device-42'; // a durable, caller-supplied identity
+
+    // Client A (fixed clientId) opts into CDC and commits — its own write is not
+    // echoed to it. The connection drops BEFORE A's cursor advanced.
+    const a1 = s.client(clientId);
+    expect(a1.clientId).toBe(clientId); // the option is exposed for readback/persistence
+    const seenA1: string[] = [];
+    a1.subscribeWrites((w) => seenA1.push(...w.map((x) => x.text)));
+    // In-process wiring: the write applies + broadcasts synchronously during
+    // `receive`, so the CDC assertions below hold without awaiting the ack.
+    void a1.mutate('INSERT (:Widget {id: 1})');
+    expect(seenA1).toEqual([]); // no self-echo
+
+    // A re-dials: a FRESH host + client, but the SAME persisted clientId, resuming
+    // from cursor 0. Its own backlog write must still be skipped (durable
+    // origin-skip) — the whole point of a stable clientId across reconnects.
+    const a2 = s.client(clientId);
+    const seenA2: string[] = [];
+    a2.subscribeWrites((w) => seenA2.push(...w.map((x) => x.text)));
+    expect(seenA2).toEqual([]);
+
+    // A DIFFERENT client, resuming from 0, DOES receive A's write — the skip is
+    // per-identity, not "skip the backlog".
+    const other = s.client('someone-else');
+    const seenOther: string[] = [];
+    other.subscribeWrites((w) => seenOther.push(...w.map((x) => x.text)));
+    expect(seenOther).toEqual(['INSERT (:Widget {id: 1})']);
+  });
+
+  test('createSyncClient without clientId still mints a unique, readable id', () => {
+    const s = server();
+    const a = s.client();
+    const b = s.client();
+
+    expect(typeof a.clientId).toBe('string');
+    expect(a.clientId.length).toBeGreaterThan(0);
+    expect(a.clientId).not.toBe(b.clientId); // per-instance, so two clients differ
   });
 
   test('dedupe: distinct writes both apply; a failed write is not recorded', () => {

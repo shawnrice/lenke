@@ -81,6 +81,14 @@ export type ClientLiveQuery = {
 };
 
 export type SyncClient = {
+  /**
+   * This client's stable identity — the `clientId` option verbatim, or the
+   * random default generated when it was omitted. Threaded into every `mutate`
+   * and `subscribeWrites` for exactly-once dedupe and origin-skip. Read it to
+   * **persist a generated default** (e.g. to `localStorage`) so a later
+   * `createSyncClient` can pass it back and keep origin-skip across a restart.
+   */
+  readonly clientId: string;
   /** Feed one inbound (already-parsed) host message. Unknown tags are ignored. */
   receive: (msg: unknown) => void;
   /**
@@ -228,6 +236,18 @@ export type SyncClientOptions = {
    * search-as-you-type) grows the retained-result memory without limit.
    */
   maxInactiveQueries?: number;
+  /**
+   * A **stable identity for this client**, threaded into every `mutate` and
+   * `subscribeWrites` message. The host uses it two ways: to dedupe a re-sent
+   * write (exactly-once) and — crucially — for **origin-skip**, so the CDC
+   * stream never echoes your own writes back to you. Supply a durable value
+   * (persisted per device/tab) to keep origin-skip working **across a
+   * reconnect**: a fresh host re-learns which origin is "you" from this id, so
+   * writes you made before the drop aren't replayed to you as if foreign. If
+   * omitted, a random per-instance id is generated — unique, but it changes on
+   * every `createSyncClient`, so it can't survive a process restart.
+   */
+  clientId?: string;
 };
 
 const wireToError = (e: WireError): LenkeError =>
@@ -437,8 +457,13 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
   let nextId = 0;
   // A stable per-client id — makes each mutate `req` globally unique so the
   // server can dedupe a re-sent write (exactly-once) across a reconnect, where
-  // the connection (and per-connection counters) would otherwise reset.
+  // the connection (and per-connection counters) would otherwise reset. It's
+  // ALSO the origin-skip key: an explicit `clientId` persisted by the caller
+  // keeps the host filtering out our own writes across a reconnect (a fresh host
+  // re-learns "us" from it). Omitted → a random per-instance id (unique, but
+  // reborn on every construction, so origin-skip resets on a process restart).
   const clientId =
+    options.clientId ??
     (globalThis as { crypto?: { randomUUID?: () => string } }).crypto?.randomUUID?.() ??
     `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
   let status: { connected: boolean; pendingWrites: number } | null = null;
@@ -874,6 +899,7 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
   };
 
   return {
+    clientId,
     receive,
     liveQuery,
     query,
