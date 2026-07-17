@@ -51,6 +51,8 @@ export {
   parseDuration,
 } from './temporal.js';
 export type { Clock, Temporal } from './temporal.js';
+export { defineNode } from './schema.js';
+export type { InferInput, InferOutput, NodeSchema, StandardSchemaV1 } from './schema.js';
 
 // In-engine graph algorithms (degree centrality, …) — data-last, dual-form free
 // functions mirroring the native engine byte-for-byte. See ./algorithms.
