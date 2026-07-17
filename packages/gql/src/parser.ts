@@ -266,6 +266,20 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Statement => {
     }
   };
 
+  // Operator-chain guard. Left-associative binary operators (`AND`/`OR`/`XOR`,
+  // `||`, `+`/`-`, `*`/`/`/`%`) parse *iteratively*, so `descend` never fires for
+  // a flat chain like `true AND true AND … (100k)`; the loop builds a chain-deep
+  // left-nested `Expr` that then overflows the stack when evaluated. Bounding the
+  // chain length keeps AST height within what recursive eval handles with margin.
+  // Mirrors the native parser's `MAX_CHAIN` so both engines reject an over-long
+  // chain identically.
+  const MAX_CHAIN = 10_000;
+  const chainLimit = (count: number): void => {
+    if (count > MAX_CHAIN) {
+      throw new GqlSyntaxError('Operator chain too long', peek().pos);
+    }
+  };
+
   // Consume a number token already known to be present and require it to be a
   // non-negative integer — for SKIP/LIMIT/OFFSET and quantifier bounds, where a
   // float, hex, NaN, or out-of-range value is never valid.
@@ -790,8 +804,10 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Statement => {
   // than OR — we follow the ISO grammar, not Cypher.
   const parseOrXor = (): Expr => {
     let left = parseAnd();
+    let chain = 0;
 
     while (checkKeyword('or') || checkKeyword('xor')) {
+      chainLimit((chain += 1));
       const kind = advance().value === 'or' ? 'or' : 'xor';
       left = { kind, left, right: parseAnd() };
     }
@@ -801,8 +817,10 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Statement => {
 
   const parseAnd = (): Expr => {
     let left = parseNot();
+    let chain = 0;
 
     while (checkKeyword('and')) {
+      chainLimit((chain += 1));
       advance();
       left = { kind: 'and', left, right: parseNot() };
     }
@@ -955,8 +973,10 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Statement => {
 
   const parseConcat = (): Expr => {
     let left = parseAdditive();
+    let chain = 0;
 
     while (check('concat')) {
+      chainLimit((chain += 1));
       advance();
       left = { kind: 'concat', left, right: parseAdditive() };
     }
@@ -967,8 +987,10 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Statement => {
   const parseAdditive = (): Expr => {
     let left = parseMultiplicative();
     let op = ADD_OPS[peek().type];
+    let chain = 0;
 
     while (op) {
+      chainLimit((chain += 1));
       advance();
       left = { kind: 'arith', op, left, right: parseMultiplicative() };
       op = ADD_OPS[peek().type];
@@ -980,8 +1002,10 @@ export const parse = (src: string, opts?: { dialect?: Dialect }): Statement => {
   const parseMultiplicative = (): Expr => {
     let left = parseUnary();
     let op = MUL_OPS[peek().type];
+    let chain = 0;
 
     while (op) {
+      chainLimit((chain += 1));
       advance();
       left = { kind: 'arith', op, left, right: parseUnary() };
       op = MUL_OPS[peek().type];

@@ -129,6 +129,19 @@ struct Parser {
 /// query yet leaves the descent comfortably within a 2 MiB stack.
 const MAX_DEPTH: u32 = 128;
 
+/// Operator-chain ceiling. Left-associative binary operators (`AND`/`OR`/`XOR`,
+/// `||` concat, `+`/`-`, `*`/`/`/`%`) parse *iteratively* — a `while`/`loop`, not
+/// recursion — so `MAX_DEPTH` never fires for a flat chain like `true AND true
+/// AND … (100k)`. The loop happily builds a chain-deep left-nested `Expr`, which
+/// then overflows the native stack when it is *evaluated or dropped* (a single
+/// query string aborting the process — uncatchable). Bounding the chain length
+/// keeps that AST height within what recursive eval/drop handles with margin on
+/// every backend (measured: FFI and napi-worker stacks stay safe past 20k; the
+/// crash sets in around 35–40k). 10k is far beyond any hand-written or
+/// machine-generated predicate yet leaves comfortable headroom. Mirrored in the
+/// TS parser so both engines reject an over-long chain identically (`E_SYNTAX`).
+const MAX_CHAIN: usize = 10_000;
+
 type R<T> = Result<T, SyntaxError>;
 
 impl Parser {
@@ -767,9 +780,22 @@ impl Parser {
         self.descend(|p| p.parse_or_xor())
     }
 
+    /// Bound a left-associative operator chain (see [`MAX_CHAIN`]). Called once
+    /// per iteration of an iterative binary-operator loop so an over-long chain
+    /// becomes a `SyntaxError` before it can build a stack-overflowing AST.
+    fn chain_limit(&self, count: usize) -> R<()> {
+        if count > MAX_CHAIN {
+            return err("Operator chain too long", self.peek().pos);
+        }
+        Ok(())
+    }
+
     fn parse_or_xor(&mut self) -> R<Expr> {
         let mut left = self.parse_and()?;
+        let mut chain = 0;
         while self.check_kw("or") || self.check_kw("xor") {
+            chain += 1;
+            self.chain_limit(chain)?;
             let is_or = self.advance().value == "or";
             let right = self.parse_and()?;
             left = if is_or {
@@ -783,7 +809,10 @@ impl Parser {
 
     fn parse_and(&mut self) -> R<Expr> {
         let mut left = self.parse_not()?;
+        let mut chain = 0;
         while self.check_kw("and") {
+            chain += 1;
+            self.chain_limit(chain)?;
             self.advance();
             left = Expr::And(Box::new(left), Box::new(self.parse_not()?));
         }
@@ -942,7 +971,10 @@ impl Parser {
 
     fn parse_concat(&mut self) -> R<Expr> {
         let mut left = self.parse_additive()?;
+        let mut chain = 0;
         while self.check(Tt::Concat) {
+            chain += 1;
+            self.chain_limit(chain)?;
             self.advance();
             left = Expr::Concat {
                 left: Box::new(left),
@@ -954,6 +986,7 @@ impl Parser {
 
     fn parse_additive(&mut self) -> R<Expr> {
         let mut left = self.parse_multiplicative()?;
+        let mut chain = 0;
         loop {
             let op = match self.peek().tt {
                 Tt::Plus => Some(ArithOp::Add),
@@ -962,6 +995,8 @@ impl Parser {
             };
             match op {
                 Some(op) => {
+                    chain += 1;
+                    self.chain_limit(chain)?;
                     self.advance();
                     left = Expr::Arith {
                         op,
@@ -977,6 +1012,7 @@ impl Parser {
 
     fn parse_multiplicative(&mut self) -> R<Expr> {
         let mut left = self.parse_unary()?;
+        let mut chain = 0;
         loop {
             let op = match self.peek().tt {
                 Tt::Star => Some(ArithOp::Mul),
@@ -986,6 +1022,8 @@ impl Parser {
             };
             match op {
                 Some(op) => {
+                    chain += 1;
+                    self.chain_limit(chain)?;
                     self.advance();
                     left = Expr::Arith {
                         op,

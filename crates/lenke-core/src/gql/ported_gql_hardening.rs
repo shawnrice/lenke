@@ -165,6 +165,49 @@ fn h_normally_nested_query_still_parses() {
     assert!(parse("RETURN (((1 + 2)) * 3) AS r").is_ok());
 }
 
+/// A long left-associative operator chain (`true AND true AND … `) parses
+/// *iteratively*, so the `descend` recursion guard never fires — but the
+/// chain-deep left-nested `Expr` would overflow the stack on eval/drop. The
+/// `MAX_CHAIN` guard turns an over-long chain into a `SyntaxError` instead of a
+/// process abort. Regression test for round-12 C1 (native SIGSEGV on
+/// `RETURN true AND true AND … (100k)`).
+#[test]
+fn h_long_and_chain_is_syntax_error_not_crash() {
+    let deep = format!("RETURN {} AS r", vec!["true"; 100_000].join(" AND "));
+    assert!(
+        parse(&deep).is_err(),
+        "expected a syntax error (not a crash) for a 100k-term AND chain"
+    );
+}
+
+/// The same guard applies to `OR`/`XOR`, string concat (`||`), and arithmetic
+/// (`+`/`*`) chains — every iterative binary-operator loop.
+#[test]
+fn h_long_operator_chains_are_syntax_errors() {
+    for chain in [
+        vec!["true"; 20_000].join(" OR "),
+        vec!["'a'"; 20_000].join(" || "),
+        vec!["1"; 20_000].join(" + "),
+        vec!["1"; 20_000].join(" * "),
+    ] {
+        assert!(
+            parse(&format!("RETURN {chain} AS r")).is_err(),
+            "expected a syntax error for an over-long operator chain"
+        );
+    }
+}
+
+/// A chain at the ceiling (`MAX_CHAIN` operators) still parses — the guard fires
+/// only *past* the bound, so realistic machine-generated predicates are unaffected.
+#[test]
+fn h_operator_chain_at_ceiling_still_parses() {
+    let at_cap = format!("RETURN {} AS r", vec!["true"; 10_001].join(" AND ")); // 10_000 ops
+    assert!(
+        parse(&at_cap).is_ok(),
+        "a 10k-operator chain must still parse"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // § 3 — Lexer numeric-literal validation
 // TS: describe('hardening: malformed numeric literals are rejected', ...)

@@ -140,6 +140,34 @@ describe('hardening: deep nesting is a syntax error, not a stack overflow', () =
   test('a normally-nested query still parses', () => {
     expect(() => parse(`RETURN (((1 + 2)) * 3) AS r`)).not.toThrow();
   });
+
+  // Round-12 C1: a long left-associative operator chain parses *iteratively*, so
+  // the recursion-depth guard never fires — the chain-deep AST would overflow the
+  // stack on eval (native SIGSEGV'd; TS threw an uncatchable RangeError). The
+  // MAX_CHAIN guard turns an over-long chain into a clean E_SYNTAX in both engines.
+  test('a long AND chain is a syntax error, not a stack overflow', () => {
+    const deep = `RETURN ${Array(100_000).fill('true').join(' AND ')} AS r`;
+    const e = thrown(() => parse(deep));
+    expect(e).toBeInstanceOf(GqlSyntaxError);
+    expect(hasErrorCode(e, ErrorCode.Syntax)).toBe(true);
+  });
+
+  test('OR / concat / arithmetic chains are guarded too', () => {
+    expect(() => parse(`RETURN ${Array(20_000).fill('true').join(' OR ')} AS r`)).toThrow(
+      GqlSyntaxError,
+    );
+    expect(() => parse(`RETURN ${Array(20_000).fill("'a'").join(' || ')} AS r`)).toThrow(
+      GqlSyntaxError,
+    );
+    expect(() => parse(`RETURN ${Array(20_000).fill('1').join(' + ')} AS r`)).toThrow(
+      GqlSyntaxError,
+    );
+  });
+
+  test('an operator chain at the ceiling still parses', () => {
+    // 10_001 terms = 10_000 operators = MAX_CHAIN (the guard fires only past it)
+    expect(() => parse(`RETURN ${Array(10_001).fill('true').join(' AND ')} AS r`)).not.toThrow();
+  });
 });
 
 // --- #3: lexer numeric-literal validation -----------------------------------
