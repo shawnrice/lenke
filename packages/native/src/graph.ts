@@ -213,7 +213,8 @@ const ARW_UTF8 = 3;
 /**
  * Decode an ARW1 columnar blob (from {@link RustGraph.queryArrow} /
  * `lnk_query_arrow`) back into {@link Row}s. The blob is a 24-byte header
- * (`"ARW1" | version | nrows | ncols`) + `ncols` × 40-byte descriptors + the
+ * (`"ARW1"` magic [4 bytes] | `version` u32 LE [4 bytes] | `nrows` **u64 LE**
+ * [8 bytes] | `ncols` **u64 LE** [8 bytes]) + `ncols` × 40-byte descriptors + the
  * referenced Apache-Arrow little-endian buffers; this reads them in place (no
  * Arrow dependency). Its purpose on the wire: ship/transfer the columnar bytes
  * instead of JSON rows, and materialize here only when a consumer wants objects.

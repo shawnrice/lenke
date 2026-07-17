@@ -80,6 +80,20 @@ const top = query(
 
 `YIELD` names the columns the procedure produces (`node`, `score` for PageRank; `node`, `componentId` for components; and so on), and everything after it is normal GQL — `WHERE`, `ORDER BY`, `RETURN`, joins against other patterns.
 
+> **`node` is the whole vertex element, not just an id.** The yielded `node` binds a full graph element, so you can read its properties (`node.name`) and — crucially — **join it back into the graph** in the same query. This makes a two-line "rank, then expand its neighbourhood" query trivial:
+>
+> ```ts
+> query(
+>   g,
+>   `CALL pagerank({ iterations: 20 }) YIELD node, score
+>    ORDER BY score DESC LIMIT 3
+>    MATCH (node)-[:KNOWS]->(friend)
+>    RETURN node.name AS influencer, friend.name AS reaches`,
+> );
+> ```
+>
+> Because `node` is a real element, `MATCH (node)-[…]->()` resolves against the same vertex the procedure scored — no id round-trip, no re-lookup.
+
 ## Surface 4 — Gremlin steps
 
 The Gremlin frontend exposes the same computations as traversal steps:
