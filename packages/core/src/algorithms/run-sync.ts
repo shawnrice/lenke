@@ -1,5 +1,6 @@
 import type { Graph } from '../core/Graph.js';
 import { drainSync } from './async.js';
+import { betweennessGen, closenessGen } from './centrality.js';
 import { computeGen as connectedComponentsGen } from './connected-components.js';
 import { computeGen as degreeGen } from './degree.js';
 import { computeGen as labelPropagationGen } from './label-propagation.js';
@@ -19,6 +20,8 @@ export type AlgorithmName =
   | 'peerPressure'
   | 'degree'
   | 'labelPropagation'
+  | 'betweenness'
+  | 'closeness'
   | 'shortestPath';
 
 /**
@@ -46,6 +49,10 @@ export const runAlgorithmSync = (
       return drainSync(degreeGen(config, graph));
     case 'labelPropagation':
       return drainSync(labelPropagationGen(config, graph));
+    case 'betweenness':
+      return drainSync(betweennessGen(config, graph));
+    case 'closeness':
+      return drainSync(closenessGen(config, graph));
     case 'shortestPath':
       return drainSync(shortestPathGen(config, graph));
   }

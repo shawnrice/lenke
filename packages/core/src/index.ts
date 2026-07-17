@@ -64,6 +64,8 @@ export type {
 // In-engine graph algorithms (degree centrality, …) — data-last, dual-form free
 // functions mirroring the native engine byte-for-byte. See ./algorithms.
 export {
+  betweenness,
+  closeness,
   connectedComponents,
   degree,
   labelPropagation,
@@ -73,6 +75,7 @@ export {
   shortestPath,
   type AlgorithmConfig,
   type AlgorithmRow,
+  type CentralityRow,
   type ClusterRow,
   type ComponentRow,
   type DegreeRow,

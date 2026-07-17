@@ -150,6 +150,8 @@ const comps = toArray(
 
 Each step is a builder configured with `.with(<Token>, value)`: `pageRank(alpha?)` takes `PageRank.propertyName` / `PageRank.times`; `peerPressure()` takes `PeerPressure.propertyName` / `PeerPressure.times`; `connectedComponent()` takes `ConnectedComponent.propertyName`. Without an explicit `propertyName` the result lands under the TinkerPop default key (e.g. `gremlin.pageRankVertexProgram.pageRank`). Results are **byte-identical** to the same algorithms run via `@lenke/core`'s `pagerank(config, graph)` free functions, the native `RustGraph` methods, and GQL's `CALL pagerank() YIELD …`.
 
+Some algorithms have no TinkerPop OLAP step (they aren't GraphComputer programs) — `degree`, `shortestPath` (as a whole-graph SSSP), and the **`betweenness`** (Brandes) / **`closeness`** shortest-path centralities. Reach those through GQL's impl-defined procedure catalog instead: `CALL betweenness() YIELD node, centrality` / `CALL closeness() YIELD node, centrality` (directed, unnormalized, `writeProperty`-capable, **O(V·E)** — small-to-mid graphs), byte-identical to the `@lenke/core` and native forms.
+
 ## Predicates
 
 Filter steps such as `has` and `is` take predicate values, built by predicate constructors: `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `between` (half-open `[min, max)`), `inside`, `outside`, `within`, `without`, `startsWith`, `endingWith`, `containing`, `notContaining`, `regex`, and `not(predicate)`. `has(key, value)` is shorthand for `has(key, eq(value))`.

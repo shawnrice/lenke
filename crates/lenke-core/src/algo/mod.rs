@@ -26,6 +26,7 @@ use crate::graph::{Graph, Value};
 use crate::json;
 use crate::query::RowSet;
 
+mod centrality;
 mod components;
 mod degree;
 mod label_prop;
@@ -125,6 +126,8 @@ fn dispatch(graph: &Graph, name: &str, cfg: &AlgoConfig) -> Result<AlgoOutput, S
         "labelPropagation" => ("label", label_prop::label_propagation(graph, cfg)),
         "peerPressure" => ("cluster", peer_pressure::peer_pressure(graph, cfg)),
         "pagerank" => ("score", pagerank::pagerank(graph, cfg)),
+        "betweenness" => ("centrality", centrality::betweenness(graph, cfg)),
+        "closeness" => ("centrality", centrality::closeness(graph, cfg)),
         "shortestPath" => ("distance", shortest_path::shortest_path(graph, cfg)),
         other => return Err(format!("unknown algorithm: {other}")),
     })
@@ -562,6 +565,114 @@ mod tests {
         assert_eq!(
             paths(&mut g, r#"{"source":"1","edgeLabel":"NOPE"}"#),
             vec![("1".into(), 0.0)],
+        );
+    }
+
+    /// `(external id, f64 value)` rows in engine order for a centrality algorithm.
+    fn centrality(g: &mut Graph, name: &str, cfg: &str) -> Vec<(String, f64)> {
+        let rs = run(g, name, cfg).unwrap();
+        rs.rows()
+            .map(|r| match (&r[0], &r[1]) {
+                (Value::Str(id), Value::Num(x)) => (id.to_string(), *x),
+                _ => panic!("unexpected centrality row shape"),
+            })
+            .collect()
+    }
+
+    /// A directed path 1→2→3→4: the two interior vertices lie on shortest paths.
+    fn directed_path() -> Graph {
+        let lines = [
+            r#"{"type":"node","id":"1","labels":["N"]}"#,
+            r#"{"type":"node","id":"2","labels":["N"]}"#,
+            r#"{"type":"node","id":"3","labels":["N"]}"#,
+            r#"{"type":"node","id":"4","labels":["N"]}"#,
+            r#"{"type":"edge","from":"1","to":"2","labels":["E"]}"#,
+            r#"{"type":"edge","from":"2","to":"3","labels":["E"]}"#,
+            r#"{"type":"edge","from":"3","to":"4","labels":["E"]}"#,
+        ];
+        ndjson::decode(&lines.join("\n")).unwrap()
+    }
+
+    #[test]
+    fn betweenness_directed_path_and_diamond() {
+        // Path 1→2→3→4 (directed): vertex 2 is on paths (1,3),(1,4); vertex 3 on
+        // (1,4),(2,4). CB[2]=2, CB[3]=2, endpoints 0.
+        let mut g = directed_path();
+        assert_eq!(
+            centrality(&mut g, "betweenness", "{}"),
+            vec![
+                ("1".into(), 0.0),
+                ("2".into(), 2.0),
+                ("3".into(), 2.0),
+                ("4".into(), 0.0),
+            ],
+        );
+
+        // Diamond 1→2→4, 1→3→4 (two disjoint shortest 1→4 paths): 2 and 3 each carry
+        // half of the single (1,4) pair → CB = 0.5 each; sinks/sources 0.
+        let diamond = ndjson::decode(
+            &[
+                r#"{"type":"node","id":"1","labels":["N"]}"#,
+                r#"{"type":"node","id":"2","labels":["N"]}"#,
+                r#"{"type":"node","id":"3","labels":["N"]}"#,
+                r#"{"type":"node","id":"4","labels":["N"]}"#,
+                r#"{"type":"edge","from":"1","to":"2","labels":["E"]}"#,
+                r#"{"type":"edge","from":"1","to":"3","labels":["E"]}"#,
+                r#"{"type":"edge","from":"2","to":"4","labels":["E"]}"#,
+                r#"{"type":"edge","from":"3","to":"4","labels":["E"]}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        let mut d = diamond;
+        assert_eq!(
+            centrality(&mut d, "betweenness", "{}"),
+            vec![
+                ("1".into(), 0.0),
+                ("2".into(), 0.5),
+                ("3".into(), 0.5),
+                ("4".into(), 0.0),
+            ],
+        );
+        // A named-but-unknown edge type → no paths → every score 0.
+        assert!(centrality(&mut d, "betweenness", r#"{"edgeLabel":"NOPE"}"#)
+            .iter()
+            .all(|(_, x)| *x == 0.0));
+    }
+
+    #[test]
+    fn closeness_directed_path_unnormalized() {
+        // Path 1→2→3→4: 1/(1+2+3)=1/6, 1/(1+2)=1/3, 1/1=1, sink 4 reaches nothing → 0.
+        let mut g = directed_path();
+        assert_eq!(
+            centrality(&mut g, "closeness", "{}"),
+            vec![
+                ("1".into(), 1.0 / 6.0),
+                ("2".into(), 1.0 / 3.0),
+                ("3".into(), 1.0),
+                ("4".into(), 0.0),
+            ],
+        );
+        // Weighted: put w=2 on each edge → distances double, closeness halves.
+        let weighted = ndjson::decode(
+            &[
+                r#"{"type":"node","id":"1","labels":["N"]}"#,
+                r#"{"type":"node","id":"2","labels":["N"]}"#,
+                r#"{"type":"node","id":"3","labels":["N"]}"#,
+                r#"{"type":"edge","from":"1","to":"2","labels":["E"],"properties":{"w":2.0}}"#,
+                r#"{"type":"edge","from":"2","to":"3","labels":["E"],"properties":{"w":2.0}}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        let mut w = weighted;
+        assert_eq!(
+            centrality(&mut w, "closeness", r#"{"weightProperty":"w"}"#),
+            vec![
+                ("1".into(), 1.0 / 6.0),
+                ("2".into(), 1.0 / 2.0),
+                ("3".into(), 0.0),
+            ],
         );
     }
 

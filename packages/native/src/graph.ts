@@ -1,5 +1,6 @@
 import type {
   AlgorithmConfig,
+  CentralityRow,
   Clock,
   ClusterRow,
   ComponentRow,
@@ -453,13 +454,18 @@ export type RustGraph = {
    * vertex id. `labelPropagation`: `iterations` (default 10). `pagerank`:
    * `iterations` (default 20), `dampingFactor` (default 0.85), optional
    * `weightProperty`. `shortestPath`: from `config.source`, unweighted BFS or (with
-   * `weightProperty`) Dijkstra. Each has a data-last twin in `@lenke/core`.
+   * `weightProperty`) Dijkstra. `betweenness` / `closeness`: shortest-path centrality
+   * over out-edges (optionally `edgeLabel` / `weightProperty`), directed and
+   * unnormalized — **O(V·E)**, so not for very large graphs. Each has a data-last
+   * twin in `@lenke/core`.
    */
   degree: (config?: AlgorithmConfig) => Promise<DegreeRow[]>;
   connectedComponents: (config?: AlgorithmConfig) => Promise<ComponentRow[]>;
   labelPropagation: (config?: AlgorithmConfig) => Promise<LabelRow[]>;
   peerPressure: (config?: AlgorithmConfig) => Promise<ClusterRow[]>;
   pagerank: (config?: AlgorithmConfig) => Promise<PageRankRow[]>;
+  betweenness: (config?: AlgorithmConfig) => Promise<CentralityRow[]>;
+  closeness: (config?: AlgorithmConfig) => Promise<CentralityRow[]>;
   shortestPath: (config?: AlgorithmConfig) => Promise<ShortestPathRow[]>;
   /** Serialize the graph back to NDJSON bytes. */
   toNdjson: () => Uint8Array;
@@ -800,6 +806,8 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
     labelPropagation: (config) => runAlgoAsync('labelPropagation', config) as Promise<LabelRow[]>,
     peerPressure: (config) => runAlgoAsync('peerPressure', config) as Promise<ClusterRow[]>,
     pagerank: (config) => runAlgoAsync('pagerank', config) as Promise<PageRankRow[]>,
+    betweenness: (config) => runAlgoAsync('betweenness', config) as Promise<CentralityRow[]>,
+    closeness: (config) => runAlgoAsync('closeness', config) as Promise<CentralityRow[]>,
     shortestPath: (config) => runAlgoAsync('shortestPath', config) as Promise<ShortestPathRow[]>,
     toNdjson: () => backend.encodeNdjson(live()),
     mergeNdjson: (bytes) => backend.mergeNdjson(live(), bytes),

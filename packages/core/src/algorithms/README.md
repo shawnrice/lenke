@@ -1,9 +1,17 @@
 # Graph algorithms
 
-`degree`, `connectedComponents`, `labelPropagation`, `pagerank`, `shortestPath` —
-whole-graph computations over the public `Graph` surface, data-last and dual-form
-(`pagerank(config, graph)` or `pagerank(config)(graph)`), byte-identical to the
-native engine.
+`degree`, `connectedComponents`, `labelPropagation`, `pagerank`, `peerPressure`,
+`betweenness`, `closeness`, `shortestPath` — whole-graph computations over the
+public `Graph` surface, data-last and dual-form (`pagerank(config, graph)` or
+`pagerank(config)(graph)`), byte-identical to the native engine.
+
+`betweenness` (Brandes) and `closeness` are directed, **unnormalized**
+shortest-path centralities (`{ node, centrality }` rows). Both run one
+single-source shortest-path pass per vertex, so they are **O(V·E)** — fine for
+small-to-mid graphs, not million-node ones. Their cross-engine byte-identity comes
+from building each vertex's out-adjacency in **global edge-insertion order** (a CSR,
+exactly like `pagerank`), so both engines explore BFS/Dijkstra — and accumulate
+Brandes' dependencies — in the identical order.
 
 ## They're async — and that's the whole point
 

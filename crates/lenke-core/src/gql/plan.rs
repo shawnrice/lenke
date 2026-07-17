@@ -696,6 +696,8 @@ pub fn procedure_spec(name: &str) -> Option<(&'static str, &'static str)> {
         "label_propagation" => ("labelPropagation", "label"),
         "peer_pressure" => ("peerPressure", "cluster"),
         "degree" => ("degree", "degree"),
+        "betweenness" => ("betweenness", "centrality"),
+        "closeness" => ("closeness", "centrality"),
         "shortest_path" => ("shortestPath", "distance"),
         _ => return None,
     })

@@ -21,6 +21,8 @@ import { existsSync } from 'node:fs';
 
 import {
   type AlgorithmConfig,
+  betweenness,
+  closeness,
   connectedComponents,
   degree,
   Graph,
@@ -423,6 +425,108 @@ suite('graph-algorithm differential: shortestPath (TS core vs native)', () => {
     await nativeGraph.shortestPath(config);
 
     const readBack = 'MATCH (n) RETURN n.sp AS sp ORDER BY n.sp, n.sp';
+    expect(JSON.stringify(tsQuery(tsGraph, readBack))).toBe(
+      JSON.stringify(nativeGraph.query(readBack)),
+    );
+  });
+});
+
+// A directed diamond with a tail: 1→2→4 and 1→3→4 are two equal shortest 1→4 paths
+// (so σ(4)=2 exercises the fractional dependency split), then 4→5. Edge types are
+// INTERLEAVED (node 1's out-edges are T1 then T2) so a grouped-by-label traversal
+// would diverge — pinning the global edge-insertion order both engines' CSR uses.
+// Weights are the 0.1/0.2 f64 trap but keep the two diamond paths equal (both
+// 0.1+0.2 = 0.30000000000000004), so the weighted `σ += σ` and closeness distance
+// sums exercise non-associative f64 in lockstep.
+const CENTRALITY_NDJSON = [
+  '{"type":"node","id":"1","labels":["N"]}',
+  '{"type":"node","id":"2","labels":["N"]}',
+  '{"type":"node","id":"3","labels":["N"]}',
+  '{"type":"node","id":"4","labels":["N"]}',
+  '{"type":"node","id":"5","labels":["N"]}',
+  '{"type":"edge","id":"1","from":"1","to":"2","labels":["T1"],"properties":{"w":0.1}}',
+  '{"type":"edge","id":"2","from":"1","to":"3","labels":["T2"],"properties":{"w":0.1}}',
+  '{"type":"edge","id":"3","from":"2","to":"4","labels":["T1"],"properties":{"w":0.2}}',
+  '{"type":"edge","id":"4","from":"3","to":"4","labels":["T2"],"properties":{"w":0.2}}',
+  '{"type":"edge","id":"5","from":"4","to":"5","labels":["T1"],"properties":{"w":0.3}}',
+].join('\n');
+
+suite('graph-algorithm differential: betweenness (Brandes, TS core vs native)', () => {
+  const backend = createFfiBackend(LIB);
+  const nativeGraph = graphFromFormat(backend, CENTRALITY_NDJSON, 'ndjson');
+  const tsGraph = tsDeserialize(CENTRALITY_NDJSON, 'ndjson', new Graph());
+
+  for (const config of [
+    {} as const, // unweighted BFS Brandes
+    { weightProperty: 'w' } as const, // Dijkstra Brandes over the f64 trap
+    { edgeLabel: 'T1' } as const, // typed: only 1→2→4→5 survives
+    { edgeLabel: 'NOPE' } as const, // unknown type → all zero
+  ]) {
+    test(`betweenness ${JSON.stringify(config)} — f64 byte-identical`, async () => {
+      expect(JSON.stringify(await betweenness(config, tsGraph))).toBe(
+        JSON.stringify(await nativeGraph.betweenness(config)),
+      );
+    });
+  }
+
+  test('known-answer: diamond middles carry 0.5 each of (1,4); hub 4 carries 3', async () => {
+    // CB[2]=CB[3]=1 (each half of pairs (1,4) and (1,5)); CB[4]=3 (on (1,5),(2,5),(3,5)).
+    expect(await nativeGraph.betweenness({})).toEqual([
+      { node: '1', centrality: 0 },
+      { node: '2', centrality: 1 },
+      { node: '3', centrality: 1 },
+      { node: '4', centrality: 3 },
+      { node: '5', centrality: 0 },
+    ]);
+  });
+
+  test('writeProperty round-trips identically through GQL on both engines', async () => {
+    const config = { writeProperty: 'bt' } as const;
+    await betweenness(config, tsGraph);
+    await nativeGraph.betweenness(config);
+
+    const readBack = 'MATCH (n) RETURN n.bt AS bt ORDER BY n.bt DESC, n.bt';
+    expect(JSON.stringify(tsQuery(tsGraph, readBack))).toBe(
+      JSON.stringify(nativeGraph.query(readBack)),
+    );
+  });
+});
+
+suite('graph-algorithm differential: closeness (TS core vs native)', () => {
+  const backend = createFfiBackend(LIB);
+  const nativeGraph = graphFromFormat(backend, CENTRALITY_NDJSON, 'ndjson');
+  const tsGraph = tsDeserialize(CENTRALITY_NDJSON, 'ndjson', new Graph());
+
+  for (const config of [
+    {} as const, // unweighted BFS distance sum
+    { weightProperty: 'w' } as const, // Dijkstra f64 distance sum
+    { edgeLabel: 'T1' } as const,
+    { edgeLabel: 'NOPE' } as const, // no edges → every vertex 0
+  ]) {
+    test(`closeness ${JSON.stringify(config)} — f64 byte-identical`, async () => {
+      expect(JSON.stringify(await closeness(config, tsGraph))).toBe(
+        JSON.stringify(await nativeGraph.closeness(config)),
+      );
+    });
+  }
+
+  test('known-answer: unnormalized 1/Σd; sink 5 reaches nothing → 0', async () => {
+    // 1 reaches {2:1,3:1,4:2,5:3} → 1/7; 2,3 → 1/3; 4 → 1/1; 5 → 0.
+    expect(await nativeGraph.closeness({})).toEqual([
+      { node: '1', centrality: 1 / 7 },
+      { node: '2', centrality: 1 / 3 },
+      { node: '3', centrality: 1 / 3 },
+      { node: '4', centrality: 1 },
+      { node: '5', centrality: 0 },
+    ]);
+  });
+
+  test('writeProperty round-trips identically through GQL on both engines', async () => {
+    const config = { writeProperty: 'cl' } as const;
+    await closeness(config, tsGraph);
+    await nativeGraph.closeness(config);
+
+    const readBack = 'MATCH (n) RETURN n.cl AS cl ORDER BY n.cl DESC, n.cl';
     expect(JSON.stringify(tsQuery(tsGraph, readBack))).toBe(
       JSON.stringify(nativeGraph.query(readBack)),
     );

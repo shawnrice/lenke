@@ -4279,6 +4279,8 @@ const PROCEDURES: Record<string, { algo: AlgorithmName; resultColumn: string }> 
   label_propagation: { algo: 'labelPropagation', resultColumn: 'label' },
   peer_pressure: { algo: 'peerPressure', resultColumn: 'cluster' },
   degree: { algo: 'degree', resultColumn: 'degree' },
+  betweenness: { algo: 'betweenness', resultColumn: 'centrality' },
+  closeness: { algo: 'closeness', resultColumn: 'centrality' },
   shortest_path: { algo: 'shortestPath', resultColumn: 'distance' },
 };
 
