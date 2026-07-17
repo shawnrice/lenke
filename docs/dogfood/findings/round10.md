@@ -26,13 +26,15 @@ Code: `.dogfood/round10/<persona>/` (gitignored scratch).
   reconnect verified. Zero crashes / wrong results / double-applies.
 
 ## Cypher-vs-ISO gate (working as intended)
+
 Personas reached for Cypher-isms that lenke **correctly rejected**: a pattern
 comprehension `[ (me)-[:R]->(x) | x.id ]` (Ravi) and `SKIP` (Cypher synonym) —
 both non-ISO. The ISO forms (`NOT EXISTS { … }`, `OFFSET`) work. Two frictions that
-*looked* like Cypher turned out to be genuine **ISO conformance gaps** and were
+_looked_ like Cypher turned out to be genuine **ISO conformance gaps** and were
 fixed (below).
 
 ## Fixes applied (verified green, byte-identical, committed — not pushed)
+
 - **`e6aa6a4`** `LIMIT $param` / `OFFSET $param` — ISO (`nonNegativeIntegerSpecification`
   accepts a dynamic parameter); both engines, byte-identical, eager `E_INVALID_VALUE`
   on a non-integer bound. `SKIP` stays rejected (Cypher).
@@ -47,6 +49,7 @@ fixed (below).
   claim); CDC live-tail assumes in-order (FIFO) delivery.
 
 ## Deferred to the morning design brief
+
 Planner no-index multi-hop cliff (⚠️ top perf item), auto-index/PK hint, real Arrow
 IPC egress, sampled betweenness, personalized PageRank, Gremlin CF steps,
 `createReconnectingClient` CDC surface, `runWrite` export, value-level CDC scoping,
