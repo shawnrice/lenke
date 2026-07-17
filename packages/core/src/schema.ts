@@ -1,6 +1,6 @@
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
-import type { Graph, Vertex } from './core/index.js';
+import type { Edge, Graph, Vertex } from './core/index.js';
 
 /**
  * The [Standard Schema](https://standardschema.dev) v1 interface, inlined
@@ -122,5 +122,87 @@ export const defineNode = <S extends StandardSchemaV1>(
     const value = await validateWith(label, schema, input);
 
     return graph.addVertex({ labels: [label], properties: value as Record<string, unknown> });
+  },
+});
+
+/**
+ * An endpoint accepted by `EdgeSchema.create`: a live `Vertex` OR a bare vertex
+ * `id` (string). Passing ids avoids the ergonomic tax of holding onto `Vertex`
+ * objects — the edge only needs an endpoint the graph can resolve.
+ */
+export type VertexRef = Vertex | string;
+
+/** Resolve a `Vertex`-or-id endpoint to the live vertex, or throw `MissingVertex`. */
+const resolveEndpoint = (graph: Graph, ref: VertexRef, role: 'from' | 'to'): Vertex => {
+  if (typeof ref !== 'string') {
+    return ref;
+  }
+
+  const vertex = graph.getVertexById(ref);
+
+  if (!vertex) {
+    throw new LenkeError(`lenke: edge '${role}' endpoint vertex '${ref}' is not in this graph`, {
+      code: ErrorCode.MissingVertex,
+    });
+  }
+
+  return vertex;
+};
+
+/**
+ * An edge type bound to a Standard Schema: `create` validates typed edge
+ * properties host-side and, on success, writes an `edgeType`-labeled edge
+ * between two endpoints. `parse` validates without writing. Reusable across
+ * graphs (the schema holds no graph). The `edgeType` mirror of `defineNode`.
+ */
+export type EdgeSchema<S extends StandardSchemaV1> = {
+  readonly edgeType: string;
+  readonly schema: S;
+  /** Validate `input` (throwing `ConstraintViolation` on failure) without writing. */
+  parse: (input: InferInput<S>) => Promise<InferOutput<S>>;
+  /**
+   * Validate `input`, then add an `edgeType`-labeled edge from `from` to `to`.
+   * Endpoints may be `Vertex` objects OR bare vertex ids (strings) — ids are
+   * resolved against `graph`, throwing `MissingVertex` if absent. The validated
+   * (parsed/coerced) OUTPUT is what gets stored.
+   */
+  create: (graph: Graph, from: VertexRef, to: VertexRef, input: InferInput<S>) => Promise<Edge>;
+};
+
+/**
+ * Bind an `edgeType` to any [Standard Schema](https://standardschema.dev) — the
+ * edge-property mirror of `defineNode`. You get the schema's own type inference
+ * for free (`create`'s input is typed) plus validate-before-write, with no
+ * schema DSL to learn and no dependency added.
+ *
+ * `create` takes the two endpoints (`Vertex` objects OR bare vertex ids —
+ * Marcus's ergonomic tax: you rarely still hold the `Vertex`) plus the typed
+ * props. Like `defineNode`, this validates HOST-side, before the write — it
+ * guards `create` calls, not a raw GQL `INSERT` or `mergeNdjson`. For
+ * both-engine enforcement that also guards raw writes, compose with the engine
+ * edge constraints (`createEdgeRequiredConstraint` / `createEdgeTypeConstraint`
+ * / `createEdgeUniqueConstraint`): a schema at the app boundary, constraints at
+ * the engine.
+ *
+ * @example
+ * const Follows = defineEdge('FOLLOWS', z.object({ since: z.number() }))
+ * const e = await Follows.create(graph, ada.id, lin.id, { since: 2020 }) // typed + validated
+ */
+export const defineEdge = <S extends StandardSchemaV1>(
+  edgeType: string,
+  schema: S,
+): EdgeSchema<S> => ({
+  edgeType,
+  schema,
+  parse: (input) => validateWith(edgeType, schema, input),
+  create: async (graph, from, to, input) => {
+    const value = await validateWith(edgeType, schema, input);
+
+    return graph.addEdge({
+      from: resolveEndpoint(graph, from, 'from'),
+      to: resolveEndpoint(graph, to, 'to'),
+      labels: [edgeType],
+      properties: value as Record<string, unknown>,
+    });
   },
 });

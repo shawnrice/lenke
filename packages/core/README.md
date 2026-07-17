@@ -139,6 +139,22 @@ User.parse({ name: 'ada' }); // validate only, no write
 
 `create` validates HOST-side and stores the schema's **output** — a schema that trims/defaults/coerces persists the normalized value (`v.getProperty('name') === 'ada'` above). A failure throws `ConstraintViolation` listing every issue; both `create` and `parse` are async (a Standard Schema may validate asynchronously). Because it runs in JS before the write, `defineNode` guards `create` calls — **not** a raw GQL `INSERT`; for engine-level enforcement that also covers raw writes, use the constraints above. The two compose cleanly: a schema at the app boundary, constraints at the engine.
 
+`defineEdge(edgeType, schema)` is the edge-property mirror. Its `create` takes the two endpoints — **`Vertex` objects _or_ bare vertex ids** (you rarely still hold the `Vertex`) — followed by the typed props:
+
+```ts
+import { defineEdge } from '@lenke/core';
+
+const Follows = defineEdge(
+  'FOLLOWS',
+  z.object({ since: z.number(), tag: z.string().trim().optional() }),
+);
+
+const e = await Follows.create(graph, ada.id, lin.id, { since: 2020 }); // validates, then writes an :FOLLOWS edge
+Follows.parse({ since: 2020 }); // validate only, no write
+```
+
+An unresolved endpoint id throws `MissingVertex`. Everything else matches `defineNode`: validate-before-write, stores the coerced output, async, host-side only. It composes with the engine edge constraints (`createEdgeRequiredConstraint` / `createEdgeTypeConstraint` / `createEdgeUniqueConstraint`) exactly as `defineNode` composes with the vertex constraints.
+
 ## Graph algorithms
 
 Whole-graph computations ship as data-last, **async** free functions — `degree`, `connectedComponents`, `labelPropagation`, `pagerank`, `peerPressure`, `shortestPath`:
