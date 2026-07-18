@@ -35,30 +35,29 @@ with its disposition. Summary:
 
 ---
 
-## 🆕 Round 13 — deferred items (2026-07-18)
+## 🆕 Round 13 — outcomes (2026-07-18)
 
 A fresh 4-persona round (RBAC engine, routing/shortest-path, Arrow egress, differential
 fuzzer). The surfaces changed this session (var-length, reachability, EXISTS, CALL,
-aggregates) held byte-identical across ~58k+ checks. Obvious bugs were **fixed +
-committed** (eager var-length enumeration → short-circuiting walker; D1 boolean-vs-number
-coercion; D3 `-0`→`"0"`; the `arrowTable` doc); see `findings/round13.md`. These remain
-**deferred — each needs a decision, not an obvious fix:**
+aggregates) held byte-identical across ~58k+ checks. Every finding is now resolved —
+**FIXED**, **DECIDED/SKIP**, or **NON-ISSUE**; see `findings/round13.md`. The earlier
+batch (eager var-length enumeration → short-circuiting walker; D1 boolean-vs-number
+coercion; D3 `-0`→`"0"`; the `arrowTable` doc) plus the items below:
 
-- **Gremlin element form** (MED). Native Gremlin serializes an element as reference
-  `{id,label}` (singular `label`, no properties); native **GQL** and **TS** Gremlin emit
-  full `{id,labels[],properties}`. Cross-engine byte-identity break on every
-  element-returning traversal. **Recommendation:** align native Gremlin to the full form
-  (2 of 3 surfaces already use it; native Gremlin is the outlier) — but it's a Gremlin
-  output-contract change with heavy ported-test churn, and there's a TinkerPop argument
-  for reference form, so it's a deliberate call.
-- **Number→string notation** (D2, MED). `to_string`/`CAST … AS STRING` renders decimal
-  in native (Rust Display: `"0.0000000001"`, `"1000000000000000000000"`) vs exponential
-  in TS (JS `Number.toString`: `"1e-10"`, `"1e+21"`) at magnitude extremes (|x|<1e-6,
-  |x|≥1e21). `js_num` is _named_ for JS parity, so JS notation is arguably canonical —
-  but matching JS's exact shortest-round-trip + exponential thresholds in Rust is
-  non-trivial. Pick canonical, then align both.
-- **List→string null element** (D4, MED). `to_string([1,null,3])` → native `"1,null,3"`
-  vs TS `"1,,3"`. Null-first-class policy leans toward `"null"`; pick + align.
+- **Gremlin element form** → **FIXED** `4919e82`. Native Gremlin
+  emitted the reference `{id,label}` form while native GQL and TS Gremlin emit full
+  `{id,labels[],properties}`. Native Gremlin now reuses GQL's canonical element
+  `Value::Map` (sorted labels/props, tagged temporals) via a shared serializer —
+  byte-identical native Gremlin == native GQL == TS Gremlin (verified vertices + edges,
+  multi-label, temporal props). BREAKING: changed native Gremlin element output.
+- **List→string null element** (D4) → **FIXED**. `to_string([1,null,3])` was `"1,null,3"`
+  (native) vs `"1,,3"` (TS); JS `Array.join` renders a null element as empty, so native
+  now matches (`"1,,3"`, incl. nested `[1,[2,null],3]` → `"1,2,,3"`). Byte-identical.
+- **Number→string notation** (D2) → **SKIP (user, 2026-07-18).** Native renders decimal
+  (Rust `Display`), TS exponential (JS `Number.toString`) at magnitude extremes (|x|<1e-6,
+  |x|≥1e21). Exponential is just JS's big/small-number quirk; **there's no reason to teach
+  native to emit it.** Left as a known divergence at magnitude extremes. If ever closed,
+  the direction is TS→decimal (native's cleaner form), not native→exponential.
 - **`power()` precision at extreme exponents** (D5). **DECIDED (user, 2026-07-18):
   won't fix — leave to the platforms.** `power(100,100)` → native `1e+200` vs TS
   `1.0000000000000005e+200`, differing only at extreme exponents where the platforms'
@@ -66,28 +65,32 @@ coercion; D3 `-0`→`"0"`; the `arrowTable` doc); see `findings/round13.md`. The
   exactly what JS provides; there's no sense supporting more precision than JS, and
   forcing bit-identity would mean reimplementing one platform's `pow` on the other.
   Accept the platform-level divergence at magnitude extremes.
-- **Error-code split** (LOW). Edge variable on a quantified segment (`(a)-[e:R]->*(b)`)
-  → native `E_SYNTAX` vs TS `E_UNSUPPORTED`. Both correctly reject; align the code.
-- **`shortestPath` algorithm-config `direction`** → **FIXED** `72f08d2`. The
-  `direction:'out'|'in'|'both'` config field on the algorithm surface
-  (`g.shortestPath({…})` / `CALL shortest_path` / `@lenke/core` free-fn) was accepted but
-  silently ignored (BFS/Dijkstra/A\* hardcoded out-adjacency). Now honored like `degree`,
-  both engines byte-identical (verified out≠in≠both, weighted+unweighted). This is where
-  direction belongs. **Still open:** Dijkstra `target` is still accepted-but-ignored (only
-  A\* honors it) — deciding whether `{target}` should return a single row or the full map
-  is a separate result-shape call.
+- **Error-code split** (LOW) → **DEFERRED (not worth the churn).** Edge variable on a
+  quantified segment (`(a)-[e:R]->*(b)`) → native `E_SYNTAX` vs TS `E_UNSUPPORTED`. Both
+  reject at parse with the **identical, clear message**; only the enum string differs.
+  Native's parser only produces `SyntaxError` (→ `E_SYNTAX`); emitting `E_UNSUPPORTED`
+  would mean threading a code through the parse-error path across multiple FFI sites (or
+  moving the check to the execute phase) — disproportionate for a cosmetic gap, and TS
+  tests assert `Unsupported`. Left as an accepted minor divergence.
+- **`shortestPath` config footguns** (`direction`, `target`) → **FIXED** (`72f08d2` +
+  the `target` commit). Both were accepted-but-ignored by BFS/Dijkstra (only `degree`
+  honored `direction`, only A\* honored `target`). Now the algorithm honors `direction`
+  (out/in/both, like `degree`) and restricts to `target` (single row, like A\*), both
+  engines byte-identical. No `target` still returns the full reachable map.
 - **Non-standard `ShortestPath.direction` Gremlin modulator** → **DONE: reimplemented as
   the conformant `ShortestPath.edges`.** Replaced `.with(ShortestPath.direction,
 'out'|'in'|'both')` (a lenke invention) with TinkerPop's `.with(ShortestPath.edges,
 Direction.OUT|IN|BOTH)` in both engines — internal representation + execution unchanged,
   so results stay byte-identical; only the API surface conforms. Native parses
   `Direction.*` and rejects a non-`Direction` value; TS gained a runtime `Direction` enum.
-- **Reserved-keyword error message** (DX, both engines). `GROUP`/`ON`/`USER`… as a label
-  or rel-type gives an opaque `E_SYNTAX`; a "reserved keyword — quote with backticks"
-  hint would save real confusion (backtick-quoting works on both engines).
-- **Arrow list-column flatten** (doc). A list column flattens to non-JSON text
-  (`"[a,b]"`) — documented as lossy, but worth a one-line caveat that it won't
-  `JSON.parse` back.
+- **Reserved-keyword error message** (DX) → **NON-ISSUE.** Both engines already emit a
+  clear message: "`Group` is a reserved word and can't be used bare as a label name; quote
+  it as a delimited identifier with backticks: `` `Group` ``". AccessGraph only saw the
+  `E_SYNTAX` code (the harness hid the message) and mis-flagged it.
+- **Arrow list-column flatten** (doc) → **FIXED.** Sharpened the `queryArrow`/`decodeArrow`
+  caveat in `packages/native/README.md`: the flattened list text is lossy and **not JSON**
+  (`["a","b"]` → the string `"[a,b]"`), so it won't `JSON.parse` back — use the JSON
+  `query` for list/element projections.
 
 ---
 
