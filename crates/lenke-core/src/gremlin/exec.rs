@@ -358,6 +358,28 @@ pub fn results_to_json(graph: &Graph, vals: &[GVal]) -> String {
     out
 }
 
+/// Serialize a query-result `Value` — which, unlike a stored property, may be a
+/// `Map` (a graph element `{id, labels, properties}`) — to JSON. Scalars, lists,
+/// and temporals go through the shared `codec::push_value` (so numbers, strings,
+/// and tagged temporals match GQL exactly); a `Map` becomes a JSON object.
+fn push_result_value(out: &mut String, v: &Value) {
+    match v {
+        Value::Map(pairs) => {
+            out.push('{');
+            for (i, (k, val)) in pairs.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                push_json_str(out, k);
+                out.push(':');
+                push_result_value(out, val);
+            }
+            out.push('}');
+        }
+        other => crate::codec::push_value(out, other),
+    }
+}
+
 fn write_gval(out: &mut String, graph: &Graph, v: &GVal) {
     match v {
         GVal::Null => out.push_str("null"),
@@ -366,21 +388,11 @@ fn write_gval(out: &mut String, graph: &Graph, v: &GVal) {
         GVal::Str(s) => push_json_str(out, s),
         // A temporal renders as its ISO-8601 string (values()/valueMap()).
         GVal::Temporal(t) => push_json_str(out, &t.format()),
-        GVal::Vertex(_) | GVal::Edge(_) => {
-            let id = match elem_id(graph, v) {
-                GVal::Str(s) => s.to_string(),
-                _ => String::new(),
-            };
-            let label = match elem_label(graph, v) {
-                GVal::Str(s) => s.to_string(),
-                _ => String::new(),
-            };
-            out.push_str("{\"id\":");
-            push_json_str(out, &id);
-            out.push_str(",\"label\":");
-            push_json_str(out, &label);
-            out.push('}');
-        }
+        // An element serializes to the full `{id, labels, properties}` (edge:
+        // `{id, from, to, labels, properties}`) form — byte-identical to GQL and the
+        // TS engine, via the shared canonical `Value::Map`.
+        GVal::Vertex(i) => push_result_value(out, &crate::gql::eval::node_result_value(graph, *i)),
+        GVal::Edge(i) => push_result_value(out, &crate::gql::eval::edge_result_value(graph, *i)),
         GVal::List(items) => {
             out.push('[');
             for (i, x) in items.iter().enumerate() {

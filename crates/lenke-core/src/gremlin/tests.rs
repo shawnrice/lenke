@@ -1207,7 +1207,11 @@ fn parse_vertex_json_has_id_label() {
     let t = super::parse("g.V('1')").unwrap();
     let vals = t.run(&mut g);
     let json = super::exec::results_to_json(&g, &vals);
-    assert_eq!(json, r#"[{"id":"1","label":"PERSON"}]"#);
+    // Full `{id, labels, properties}` form — byte-identical to GQL `RETURN n`.
+    assert_eq!(
+        json,
+        r#"[{"id":"1","labels":["PERSON"],"properties":{"age":29,"name":"marko"}}]"#
+    );
 }
 
 // ===== property-index seeding (results must equal the scan path) =====
@@ -1993,14 +1997,15 @@ fn results_json_escaping_and_structure() {
         r#"[{"age":"a","name":"m","zzz":"z"}]"#
     );
 
-    // Graph elements project to `{id, label}`.
+    // Graph elements serialize to the full `{id, labels, properties}` form (edge:
+    // `{id, from, to, labels, properties}`) — byte-identical to GQL and the TS engine.
     assert_eq!(
         results_json(vec![GVal::Vertex(0)]),
-        r#"[{"id":"1","label":"PERSON"}]"#
+        r#"[{"id":"1","labels":["PERSON"],"properties":{"age":29,"name":"marko"}}]"#
     );
     assert_eq!(
         results_json(vec![GVal::Edge(0)]),
-        r#"[{"id":"e0","label":"KNOWS"}]"#
+        r#"[{"id":"e0","from":"1","to":"2","labels":["KNOWS"],"properties":{"weight":0.5}}]"#
     );
 }
 
