@@ -76,14 +76,12 @@ coercion; D3 `-0`→`"0"`; the `arrowTable` doc); see `findings/round13.md`. The
   direction belongs. **Still open:** Dijkstra `target` is still accepted-but-ignored (only
   A\* honors it) — deciding whether `{target}` should return a single row or the full map
   is a separate result-shape call.
-- **Remove the non-standard `ShortestPath.direction` Gremlin modulator** (pending). It's a
-  lenke invention (added task #10) — real TinkerPop has no `ShortestPath.direction`;
-  direction is expressed via `ShortestPath.edges` (a `Direction` / edge-traversal). Now
-  that direction lives correctly on the graph-algorithm config, the Gremlin modulator is
-  redundant AND non-conformant. **Recommendation:** remove it — the Gremlin
-  `shortestPath()` step then defaults to the TinkerPop-conformant undirected `both`, and
-  directed shortest-path is served by the graph-algo config. (Removing shipped+tested API
-  is a Gremlin-surface change → confirm before ripping out.)
+- **Non-standard `ShortestPath.direction` Gremlin modulator** → **DONE: reimplemented as
+  the conformant `ShortestPath.edges`.** Replaced `.with(ShortestPath.direction,
+'out'|'in'|'both')` (a lenke invention) with TinkerPop's `.with(ShortestPath.edges,
+Direction.OUT|IN|BOTH)` in both engines — internal representation + execution unchanged,
+  so results stay byte-identical; only the API surface conforms. Native parses
+  `Direction.*` and rejects a non-`Direction` value; TS gained a runtime `Direction` enum.
 - **Reserved-keyword error message** (DX, both engines). `GROUP`/`ON`/`USER`… as a label
   or rel-type gives an opaque `E_SYNTAX`; a "reserved keyword — quote with backticks"
   hint would save real confusion (backtick-quoting works on both engines).
