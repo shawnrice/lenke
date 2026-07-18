@@ -3706,6 +3706,10 @@ type ReachSpec = {
   types: string[] | undefined;
   minZero: boolean;
   isCount: boolean;
+  /** For `count(DISTINCT <expr>)` with a non-bare arg (e.g. `b.k`): the compiled
+   *  arg to evaluate + dedup per reached vertex. Undefined = bare `count(DISTINCT
+   *  b)`, whose distinct count is just the reached-set size. */
+  countArg?: CompiledExpr;
   skip: CountValue;
   limit?: CountValue;
 };
@@ -3716,7 +3720,13 @@ const runReach = (spec: ReachSpec, graph: Graph, params: Params): Row[] => {
   // A `$param` bound resolves here (validated up-front); a literal passes through.
   const skipN = resolveCount(spec.skip, params) ?? 0;
   const limit = resolveCount(spec.limit, params);
-  const seeds = [...seedVertices(graph, cstart, new Map(), params)];
+  // Seeds matching the start's label + inline props/WHERE. `seedVertices` only
+  // narrows by label/index, so a no-index inline predicate (`{k:0}`) still needs a
+  // per-seed check — otherwise we'd seed from the whole label and overcount the
+  // reachable set. Mirrors the native `reach_seed_vertices`.
+  const seeds = [...seedVertices(graph, cstart, new Map(), params)].filter(
+    (v) => matchNode(new Map(), cstart, v, params, graph) !== null,
+  );
   const nbrs = (v: Vertex): Vertex[] => {
     const byType = (out ? graph.edgesFromByLabel : graph.edgesToByLabel).get(v.id);
     const acc: Vertex[] = [];
@@ -3769,7 +3779,32 @@ const runReach = (spec: ReachSpec, graph: Graph, params: Params): Row[] => {
   const kept = reached.filter((v) => matchesLabel(v, bLabel));
 
   if (isCount) {
-    return [{ [items[0].name]: kept.length }];
+    // Bare `count(DISTINCT b)`: distinct endpoints = the reached set.
+    if (spec.countArg === undefined) {
+      return [{ [items[0].name]: kept.length }];
+    }
+
+    // `count(DISTINCT <expr>)` (e.g. `b.k`): evaluate per reached vertex, skip
+    // nulls, dedup values — mirrors the native `try_reachable_distinct` count mode.
+    const seenVals = new Set<string>();
+    let n = 0;
+
+    for (const v of kept) {
+      const cell = spec.countArg({ binding: new Map([[bVar, v]]), params, graph });
+
+      if (isNullish(cell)) {
+        continue;
+      }
+
+      const k = valueKey(cell);
+
+      if (!seenVals.has(k)) {
+        seenVals.add(k);
+        n += 1;
+      }
+    }
+
+    return [{ [items[0].name]: n }];
   }
 
   // DISTINCT rows: project the endpoint per reached vertex, dedup the tuples.
@@ -3794,20 +3829,36 @@ const runReach = (spec: ReachSpec, graph: Graph, params: Params): Row[] => {
   return rows.slice(skipN, limit === undefined ? undefined : skipN + limit);
 };
 
-/** True when the projection is exactly `count(DISTINCT b)`. */
-const isReachCount = (proj: Projection, bVar: string): boolean => {
+/**
+ * If the projection is exactly `count(DISTINCT <expr over only b>)`, return the
+ * arg AST — `'bare'` when it is exactly `b` (so distinct endpoints = the reached
+ * set), else the sub-expression (e.g. `b.k`) to evaluate + dedup per reached
+ * vertex. `null` when it is not a count-distinct over the endpoint. Uses the same
+ * `refsOnlyVar` gate as the native `refs_only_endpoint`, so both engines take the
+ * shortcut on the same query (previously TS only accepted a bare `b`, so
+ * `count(DISTINCT b.k)` fell through to trail enumeration and faulted where native
+ * answered via BFS).
+ */
+const reachCount = (proj: Projection, bVar: string): { countArg?: CompiledExpr } | null => {
   const first = proj.items[0]?.expr;
 
-  return (
-    proj.items.length === 1 &&
-    first?.kind === 'func' &&
-    first.name === 'count' &&
-    first.distinct &&
-    !first.star &&
-    first.args.length === 1 &&
-    first.args[0].kind === 'var' &&
-    first.args[0].name === bVar
-  );
+  if (
+    proj.items.length !== 1 ||
+    first?.kind !== 'func' ||
+    first.name !== 'count' ||
+    !first.distinct ||
+    first.star ||
+    first.args.length !== 1 ||
+    !refsOnlyVar(first.args[0], bVar)
+  ) {
+    return null;
+  }
+
+  const [arg] = first.args;
+
+  // Bare `count(DISTINCT b)` → no arg (distinct endpoints = reached set); an
+  // expression (`b.k`) → compile it to evaluate + dedup per reached vertex.
+  return arg.kind === 'var' && arg.name === bVar ? {} : { countArg: compileExpr(arg) };
 };
 
 const detectReachableShortcut = (
@@ -3865,10 +3916,10 @@ const detectReachableShortcut = (
   }
 
   const { projection } = ret;
-  const isCount = isReachCount(projection, bVar);
+  const count = reachCount(projection, bVar);
   const isRows = projection.distinct && projection.items.every((it) => refsOnlyVar(it.expr, bVar));
 
-  if (!isCount && !isRows) {
+  if (count === null && !isRows) {
     return null;
   }
 
@@ -3880,7 +3931,8 @@ const detectReachableShortcut = (
     out: rel.direction === 'out',
     types: types ?? undefined,
     minZero: q.min === 0,
-    isCount,
+    isCount: count !== null,
+    countArg: count?.countArg,
     skip: projection.skip ?? 0,
     limit: projection.limit,
   };
