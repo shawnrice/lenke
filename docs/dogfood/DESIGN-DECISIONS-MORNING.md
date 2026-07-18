@@ -85,7 +85,7 @@ betweenness" below.
   hubby/scale-free graphs.
 - ~~**Personalized PageRank / random-walk-with-restart**~~ (Ravi) — SHIPPED
   `personalizedPagerank` (@lenke/core fn, RustGraph method, GQL `CALL
-  personalized_pagerank`): restarts to a `sourceNodes` seed set, byte-identical
+personalized_pagerank`): restarts to a `sourceNodes` seed set, byte-identical
   native↔TS; empty/unknown seeds degenerate to global PageRank.
 - **SCC** — SHIPPED `stronglyConnectedComponents` (iterative Tarjan, min-index
   representative → byte-identical native↔TS; @lenke/core fn, RustGraph method, GQL
@@ -111,7 +111,7 @@ duration` → UNKNOWN is spec-correct (durations aren't totally ordered: a month
   this was a missing option, not a wrong default.
 - ~~**Gremlin CF steps**~~ (Ravi) — SHIPPED both engines byte-identical:
   `where(neq('me'))` (predicate-only where vs a step label), `order(local).by(values|
-  keys, desc)` (Column selector), and `select(Column.keys|values)` (the observable
+keys, desc)` (Column selector), and `select(Column.keys|values)` (the observable
   reader — a bare Map serializes key-sorted, so the ranked order shows through a
   list-producing step). The full recommendation traversal is now expressible.
 
