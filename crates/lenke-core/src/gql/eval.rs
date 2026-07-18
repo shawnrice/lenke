@@ -166,15 +166,15 @@ struct Ctx<'a> {
     /// boundary and converts it to a `CodeError`. Atomic so the parallel (rayon)
     /// vectorized path can record faults safely.
     fault: AtomicU8,
-    /// Reused per-edge trail-mark scratch for `reachable` (var-length TRAIL walk):
-    /// `edge_marks[eidx]` == "this edge is on the current trail." Held here rather
-    /// than freshly `HashSet`-allocated per call because `reachable` invocations are
-    /// strictly *sequential* — `for end in reachable(..)` runs the call to completion
-    /// (draining its marks back to all-false via backtracking) before the loop body
-    /// can re-enter — so one buffer, resized once to `edge_slots`, serves every seed
-    /// with O(1) index ops instead of hashing. Left clean by backtracking on normal
-    /// exit; the fault path clears the live stack's marks before returning.
-    edge_marks: std::cell::RefCell<Vec<bool>>,
+    /// Pool of reusable per-edge trail-mark buffers for `reachable_each` (var-length
+    /// TRAIL walk): `buf[eidx]` == "this edge is on the current trail." Pooled rather
+    /// than `HashSet`-per-call to get O(1) index ops without re-allocating each call.
+    /// A pool (not one buffer) because the walk is now *lazy*: it invokes a callback
+    /// per endpoint that may re-enter `reachable_each` (a nested quantified segment)
+    /// while the outer walk's marks are still live — so each active walk borrows its
+    /// own buffer (`take_marks`) and returns it clean (`return_marks`). The RefCell is
+    /// held only for the brief pop/push, never across the walk, so nesting is safe.
+    edge_marks_pool: std::cell::RefCell<Vec<Vec<bool>>>,
 }
 
 const FAULT_NONE: u8 = 0;
@@ -208,6 +208,24 @@ impl Ctx<'_> {
             .iter()
             .map(|n| (graph.labels.get(n), graph.etype.get(n)))
             .collect();
+    }
+
+    /// Borrow an all-`false` trail-mark buffer sized for every edge slot, from the
+    /// pool (or a fresh one). Returned clean by `return_marks`, so a pooled buffer is
+    /// already all-`false`; only grow it if the graph gained edges since last use.
+    fn take_marks(&self, slots: usize) -> Vec<bool> {
+        let mut buf = self.edge_marks_pool.borrow_mut().pop().unwrap_or_default();
+        if buf.len() < slots {
+            buf.resize(slots, false);
+        }
+        buf
+    }
+
+    /// Return a trail-mark buffer to the pool. The caller must leave it all-`false`
+    /// (backtracking clears it on the normal path; the stop/fault paths clear the
+    /// live stack's marks before returning).
+    fn return_marks(&self, buf: Vec<bool>) {
+        self.edge_marks_pool.borrow_mut().push(buf);
     }
 
     /// Record a data-exception fault (first one wins; later faults are ignored).
@@ -311,7 +329,7 @@ fn resolve_ctx<'a>(graph: &Graph, plan: &'a CQuery, params: &'a [Val]) -> Ctx<'a
         label_names: &plan.label_names,
         unknown_fns: &plan.unknown_fns,
         fault: AtomicU8::new(FAULT_NONE),
-        edge_marks: std::cell::RefCell::new(Vec::new()),
+        edge_marks_pool: std::cell::RefCell::new(Vec::new()),
     }
 }
 
@@ -369,7 +387,7 @@ pub fn eval_predicate(graph: &Graph, pred: &CPredicate, element: Val) -> CodeRes
         label_names: &pred.label_names,
         unknown_fns: &pred.unknown_fns,
         fault: AtomicU8::new(FAULT_NONE),
-        edge_marks: std::cell::RefCell::new(Vec::new()),
+        edge_marks_pool: std::cell::RefCell::new(Vec::new()),
     };
     let mut binding = Binding::default();
     binding.set(0, element);
@@ -2386,18 +2404,32 @@ fn match_node_then(
     keep
 }
 
-/// Endpoints of every *trail* — a path traversing each relationship at most once
+/// Every *trail* endpoint — a path traversing each relationship at most once
 /// (ISO/IEC 39075 default for a quantified path) — from `from` within [min, max]
-/// hops of `rel`. One entry per trail, so an endpoint reached by `k` distinct
-/// trails appears `k` times (ISO per-path multiplicity); `min == 0` includes the
-/// zero-length trail (the start node).
+/// hops of `rel`, streamed to `on_end` in trail-discovery order. An endpoint
+/// reached by `k` distinct trails is emitted `k` times (ISO per-path
+/// multiplicity); `min == 0` emits the zero-length trail (the start node) first.
+///
+/// **Lazy / short-circuiting:** `on_end` returns `false` to stop the walk; this
+/// returns `false` when it did (propagating a consumer's stop, e.g. `EXISTS`
+/// found a witness or `LIMIT` filled), `true` when the trails were exhausted.
+/// Streaming (not collecting into a `Vec`) is what lets `EXISTS`/`LIMIT` avoid
+/// enumerating an exponential trail set on a dense graph — the eager version hit
+/// the trail budget and faulted where a single witness sufficed.
 ///
 /// Iterative (explicit stack) so a long chain can't overflow the native stack;
-/// edge-uniqueness bounds trail length to the edge count, so it always
-/// terminates on cycles. The *number* of trails can be exponential, so a
-/// per-expansion step budget records a `FAULT_BUDGET` (→ `ResourceExhausted`)
-/// and stops rather than exhausting memory/time.
-fn reachable(graph: &Graph, ctx: &Ctx, from: u32, rel: &CRel, q: Quantifier) -> Vec<u32> {
+/// edge-uniqueness bounds trail length to the edge count, so it always terminates
+/// on cycles. The number of trails can still be exponential, so when a consumer
+/// does need them all a per-expansion step budget records `FAULT_BUDGET`
+/// (→ `ResourceExhausted`) and stops rather than exhausting memory/time.
+fn reachable_each(
+    graph: &Graph,
+    ctx: &Ctx,
+    from: u32,
+    rel: &CRel,
+    q: Quantifier,
+    on_end: &mut dyn FnMut(u32) -> bool,
+) -> bool {
     let collect = |v: u32| -> Vec<(u32, u32)> {
         expand(graph, ctx, v, rel.direction, rel.label.as_ref()).collect()
     };
@@ -2406,26 +2438,20 @@ fn reachable(graph: &Graph, ctx: &Ctx, from: u32, rel: &CRel, q: Quantifier) -> 
     // boundary will surface the fault) — otherwise each seed vertex would burn a
     // full budget before the query gives up.
     if ctx.faulted() {
-        return Vec::new();
+        return true;
     }
 
-    let mut ends: Vec<u32> = Vec::new();
-    if q.min == 0 {
-        ends.push(from);
+    if q.min == 0 && !on_end(from) {
+        return false;
     }
 
-    // Edges on the *current* trail: `used[eidx]` == on-trail. A per-call HashSet
-    // (or a per-call `vec![false; edge_count]`) would re-pay an allocation for every
-    // seed vertex — which dominates for short bounded quantifiers over many seeds.
-    // Instead this is a scratch buffer reused across all `reachable` calls (safe
-    // because the calls are sequential — see `Ctx::edge_marks`): resized once to
-    // cover every edge slot, always all-`false` on entry (backtracking clears it on
-    // the normal path; the fault path clears the live stack below).
-    let mut used = ctx.edge_marks.borrow_mut();
-    if used.len() < graph.edge_slots() {
-        used.resize(graph.edge_slots(), false);
-    }
+    // Edges on the *current* trail: `used[eidx]` == on-trail. A pooled buffer (see
+    // `Ctx::edge_marks_pool`) gives O(1) index ops without a per-call allocation; a
+    // pool rather than one shared buffer because `on_end` may re-enter this function
+    // (a nested quantified segment) while these marks are live.
+    let mut used = ctx.take_marks(graph.edge_slots());
     let mut steps: u64 = 0;
+    let mut cont = true;
 
     // Each frame walks one vertex's outgoing steps; `entry` is the edge taken to
     // reach it, unmarked when the frame pops (backtrack).
@@ -2463,7 +2489,7 @@ fn reachable(graph: &Graph, ctx: &Ctx, from: u32, rel: &CRel, q: Quantifier) -> 
         if steps > TRAIL_BUDGET {
             ctx.set_fault(FAULT_BUDGET);
             // Fault exit leaves the live stack's edges marked; clear them so the
-            // reused buffer is all-`false` for the next (short-circuited) call.
+            // pooled buffer is all-`false` when returned.
             for f in &stack {
                 if let Some(e) = f.entry {
                     used[e as usize] = false;
@@ -2474,8 +2500,17 @@ fn reachable(graph: &Graph, ctx: &Ctx, from: u32, rel: &CRel, q: Quantifier) -> 
 
         used[eidx as usize] = true;
         let d = depth + 1;
-        if d >= q.min {
-            ends.push(nbr);
+        if d >= q.min && !on_end(nbr) {
+            // Consumer asked to stop: clear the just-marked edge + the live stack's
+            // marks so the pooled buffer is returned all-`false`, then bail.
+            cont = false;
+            used[eidx as usize] = false;
+            for f in &stack {
+                if let Some(e) = f.entry {
+                    used[e as usize] = false;
+                }
+            }
+            break;
         }
 
         stack.push(Frame {
@@ -2486,6 +2521,19 @@ fn reachable(graph: &Graph, ctx: &Ctx, from: u32, rel: &CRel, q: Quantifier) -> 
         });
     }
 
+    ctx.return_marks(used);
+    cont
+}
+
+/// Collect every trail endpoint into a `Vec` (eager). For callers that genuinely
+/// consume the whole set (e.g. grouped-count replay); short-circuiting consumers
+/// (`EXISTS`/`LIMIT`) use `reachable_each` directly so they can stop early.
+fn reachable(graph: &Graph, ctx: &Ctx, from: u32, rel: &CRel, q: Quantifier) -> Vec<u32> {
+    let mut ends: Vec<u32> = Vec::new();
+    reachable_each(graph, ctx, from, rel, q, &mut |e| {
+        ends.push(e);
+        true
+    });
     ends
 }
 
@@ -2506,15 +2554,14 @@ fn walk_segments(
     let CSegment { rel, node } = &pattern.segments[index];
     if let Some(q) = rel.quantifier {
         // Var-length: edge variable / per-edge predicate not bound (known simplification).
-        for end in reachable(graph, ctx, from, rel, q) {
-            let stop = !match_node_then(graph, ctx, binding, node, end, &mut |b| {
+        // Stream endpoints and stop the moment a consumer (EXISTS / LIMIT) is satisfied
+        // — `match_node_then` returns false to propagate the stop, which `reachable_each`
+        // returns, avoiding an exponential trail enumeration on a dense graph.
+        return reachable_each(graph, ctx, from, rel, q, &mut |end| {
+            match_node_then(graph, ctx, binding, node, end, &mut |b| {
                 walk_segments(graph, ctx, pattern, index + 1, end, b, emit)
-            });
-            if stop {
-                return false;
-            }
-        }
-        return true;
+            })
+        });
     }
     for (eidx, nbr) in expand(graph, ctx, from, rel.direction, rel.label.as_ref()) {
         let Some(did_set) = bind_slot(binding, rel.var_slot, &Val::Edge(eidx)) else {
@@ -3125,12 +3172,11 @@ fn match_path<F: FnMut(&mut Binding) -> bool>(
     }
     let CSegment { rel, node } = &path.segments[idx];
     if let Some(q) = rel.quantifier {
-        for end in reachable(graph, ctx, from, rel, q) {
-            if !match_node_continue(graph, ctx, binding, node, end, path, idx + 1, emit) {
-                return false;
-            }
-        }
-        return true;
+        // Stream endpoints, stopping as soon as a consumer is satisfied (see the twin
+        // in `walk_segments`) — `match_node_continue` returns false to propagate.
+        return reachable_each(graph, ctx, from, rel, q, &mut |end| {
+            match_node_continue(graph, ctx, binding, node, end, path, idx + 1, emit)
+        });
     }
     for (eidx, nbr) in expand(graph, ctx, from, rel.direction, rel.label.as_ref()) {
         let Some(eset) = bind_slot(binding, rel.var_slot, &Val::Edge(eidx)) else {
