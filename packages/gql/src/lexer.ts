@@ -167,6 +167,22 @@ const RESERVED = new Set<string>(
 /** Is `word` (case-insensitive) an ISO reserved word, hence not a bare identifier? */
 export const isReserved = (word: string): boolean => RESERVED.has(word.toLowerCase());
 
+// A bare (un-delimited) identifier: an ASCII letter/underscore start, then
+// letters/digits/underscores. Conservative — anything outside this (spaces,
+// dots, punctuation, leading digit, non-ASCII) must be a delimited identifier.
+const BARE_IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * Quote `ident` (a label, property key, alias, or variable) for safe splicing
+ * into a GQL query. A reserved word (`order`, `value`) or a name that isn't a
+ * valid bare identifier (spaces, dots, punctuation, …) becomes a backtick-
+ * delimited identifier, with any internal backtick doubled (`` `a``b` ``); a
+ * plain non-reserved name is returned unchanged. The result is always a valid,
+ * inert identifier — the counterpart to `$param` binding for values.
+ */
+export const quoteIdent = (ident: string): string =>
+  BARE_IDENT.test(ident) && !isReserved(ident) ? ident : `\`${ident.replace(/`/g, '``')}\``;
+
 const isDigit = (c: string): boolean => c >= '0' && c <= '9';
 
 // Valid digits per integer base: hex `0x`, octal `0o`, binary `0b`. Sharing one
@@ -360,13 +376,24 @@ export const tokenize = (src: string): Token[] => {
     }
 
     // Delimited identifier: `` `odd name` `` — keeps its exact spelling and is
-    // never a keyword.
+    // never a keyword. A backtick inside is written doubled (`` `a``b` `` → a`b),
+    // the ISO/SQL delimiter-escape convention, so any string can round-trip.
     if (c === '`') {
       const start = i;
       i += 1;
       let name = '';
 
-      while (i < src.length && src[i] !== '`') {
+      while (i < src.length) {
+        if (src[i] === '`') {
+          if (src[i + 1] === '`') {
+            name += '`'; // escaped backtick (doubled)
+            i += 2;
+            continue;
+          }
+
+          break; // a lone backtick closes the identifier
+        }
+
         name += src[i];
         i += 1;
       }

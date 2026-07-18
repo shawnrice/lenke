@@ -25,7 +25,7 @@ export type {
 } from './ast.js';
 export { isTxControl } from './ast.js';
 export type { Plan, Row } from './executor.js';
-export { GqlSyntaxError } from './lexer.js';
+export { GqlSyntaxError, isReserved, quoteIdent } from './lexer.js';
 export { parse, parsePredicate } from './parser.js';
 export { compile, compileValidator, execute } from './executor.js';
 

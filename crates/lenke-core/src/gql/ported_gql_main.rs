@@ -759,6 +759,22 @@ fn m_backtick_delimited_variable_and_property() {
     assert_eq!(r, vec![vec![s("Marko P")]]);
 }
 
+/// A backtick inside a delimited identifier is written doubled (ISO/SQL escape),
+/// so a property key containing a backtick round-trips.
+#[test]
+fn m_delimited_identifier_escapes_a_doubled_backtick() {
+    let mut g = modern();
+    rows(
+        &mut g,
+        "MATCH (n:Person {name: 'marko'}) SET n.`odd``key` = 'v'",
+    );
+    let r = rows(
+        &mut g,
+        "MATCH (n:Person {name: 'marko'}) RETURN n.`odd``key` AS `my``col`",
+    );
+    assert_eq!(r, vec![vec![s("v")]]);
+}
+
 // ── "GQL: write statements" ──────────────────────────────────────────────────
 
 #[test]

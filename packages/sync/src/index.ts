@@ -84,6 +84,7 @@ export {
 export {
   isClientMessage,
   isHostMessage,
+  runWrite,
   type AckMessage,
   type ClientMessage,
   type HostMessage,

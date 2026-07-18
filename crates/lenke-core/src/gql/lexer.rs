@@ -369,17 +369,27 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, SyntaxError> {
         }
 
         // Delimited identifier: backtick — keeps exact spelling, never a keyword.
+        // A backtick inside is written doubled (`` `a``b` `` → a`b), the ISO/SQL
+        // delimiter-escape convention, so any string can round-trip.
         if c == '`' {
             let start = i;
             i += 1;
             let mut name = String::new();
-            while i < b.len() && b[i] != b'`' {
+            loop {
+                if i >= b.len() {
+                    return err("Unterminated delimited identifier", start);
+                }
+                if b[i] == b'`' {
+                    if b.get(i + 1) == Some(&b'`') {
+                        name.push('`'); // escaped backtick (doubled)
+                        i += 2;
+                        continue;
+                    }
+                    break; // a lone backtick closes the identifier
+                }
                 let ch = src[i..].chars().next().unwrap();
                 name.push(ch);
                 i += ch.len_utf8();
-            }
-            if i >= b.len() {
-                return err("Unterminated delimited identifier", start);
             }
             i += 1;
             tokens.push(Token {

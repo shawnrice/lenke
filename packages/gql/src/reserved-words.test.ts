@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 
 import { ErrorCode } from '@lenke/errors';
 
-import { GqlSyntaxError } from './lexer.js';
+import { GqlSyntaxError, quoteIdent } from './lexer.js';
 import { parse } from './parser.js';
 
 // Capture the GqlSyntaxError a query is expected to throw (fail loudly if it
@@ -92,5 +92,40 @@ describe('reserved words in binding positions', () => {
   test('soft keywords (contains / starts / ends) are still accepted', () => {
     expect(() => parse("MATCH (x) WHERE x.name CONTAINS 'a' RETURN x")).not.toThrow();
     expect(() => parse("MATCH (x) WHERE x.name STARTS WITH 'a' RETURN x")).not.toThrow();
+  });
+});
+
+describe('quoteIdent', () => {
+  // A bare identifier (a safe first char + safe body, not a reserved word) is
+  // passed through untouched — the common case stays readable.
+  test('leaves a bare, non-reserved identifier untouched', () => {
+    expect(quoteIdent('name')).toBe('name');
+    expect(quoteIdent('full_name2')).toBe('full_name2');
+  });
+
+  // Reserved words, non-bare characters, and the empty string are backtick-quoted.
+  test('quotes reserved words and non-bare identifiers', () => {
+    expect(quoteIdent('order')).toBe('`order`');
+    expect(quoteIdent('Value')).toBe('`Value`');
+    expect(quoteIdent('odd name')).toBe('`odd name`');
+    expect(quoteIdent('a.b.c')).toBe('`a.b.c`');
+    expect(quoteIdent('')).toBe('``');
+    expect(quoteIdent('1st')).toBe('`1st`');
+  });
+
+  // An internal backtick is doubled (ISO/SQL delimited-identifier escape).
+  test('doubles an internal backtick', () => {
+    expect(quoteIdent('a`b')).toBe('`a``b`');
+    // open + doubled-backtick (the escaped single backtick) + close = four backticks.
+    expect(quoteIdent('`')).toBe('````');
+  });
+
+  // The output re-parses to exactly the original identifier — the round-trip the
+  // helper exists to guarantee, including a reserved word used as a label.
+  test('output round-trips through the parser as a label', () => {
+    for (const key of ['order', 'odd name', 'a`b', 'a.b.c']) {
+      const q = `MATCH (n:${quoteIdent(key)}) RETURN n`;
+      expect(() => parse(q)).not.toThrow();
+    }
   });
 });
