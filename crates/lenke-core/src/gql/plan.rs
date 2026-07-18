@@ -712,6 +712,7 @@ pub struct CallBind {
 pub fn procedure_spec(name: &str) -> Option<(&'static str, &'static str)> {
     Some(match name {
         "pagerank" => ("pagerank", "score"),
+        "personalized_pagerank" => ("personalizedPagerank", "score"),
         "connected_components" => ("connectedComponents", "componentId"),
         "label_propagation" => ("labelPropagation", "label"),
         "peer_pressure" => ("peerPressure", "cluster"),

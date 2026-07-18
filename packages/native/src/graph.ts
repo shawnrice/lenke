@@ -465,6 +465,14 @@ export type RustGraph = {
   labelPropagation: (config?: AlgorithmConfig) => Promise<LabelRow[]>;
   peerPressure: (config?: AlgorithmConfig) => Promise<ClusterRow[]>;
   pagerank: (config?: AlgorithmConfig) => Promise<PageRankRow[]>;
+  /**
+   * Personalized PageRank / random-walk-with-restart: like {@link pagerank} but the
+   * surfer restarts to the `sourceNodes` seed set (external ids) instead of
+   * uniformly, ranking by proximity to those seeds. Same `iterations` /
+   * `dampingFactor` / `weightProperty` / `edgeLabel` knobs; an empty/all-unknown
+   * seed set degenerates to global PageRank.
+   */
+  personalizedPagerank: (config?: AlgorithmConfig) => Promise<PageRankRow[]>;
   betweenness: (config?: AlgorithmConfig) => Promise<CentralityRow[]>;
   closeness: (config?: AlgorithmConfig) => Promise<CentralityRow[]>;
   shortestPath: (config?: AlgorithmConfig) => Promise<ShortestPathRow[]>;
@@ -814,6 +822,8 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
     labelPropagation: (config) => runAlgoAsync('labelPropagation', config) as Promise<LabelRow[]>,
     peerPressure: (config) => runAlgoAsync('peerPressure', config) as Promise<ClusterRow[]>,
     pagerank: (config) => runAlgoAsync('pagerank', config) as Promise<PageRankRow[]>,
+    personalizedPagerank: (config) =>
+      runAlgoAsync('personalizedPagerank', config) as Promise<PageRankRow[]>,
     betweenness: (config) => runAlgoAsync('betweenness', config) as Promise<CentralityRow[]>,
     closeness: (config) => runAlgoAsync('closeness', config) as Promise<CentralityRow[]>,
     shortestPath: (config) => runAlgoAsync('shortestPath', config) as Promise<ShortestPathRow[]>,

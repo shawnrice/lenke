@@ -4,7 +4,10 @@ import { betweennessGen, closenessGen } from './centrality.js';
 import { computeGen as connectedComponentsGen } from './connected-components.js';
 import { computeGen as degreeGen } from './degree.js';
 import { computeGen as labelPropagationGen } from './label-propagation.js';
-import { computeGen as pagerankGen } from './pagerank.js';
+import {
+  computeGen as pagerankGen,
+  personalizedComputeGen as personalizedPagerankGen,
+} from './pagerank.js';
 import { computeGen as peerPressureGen } from './peer-pressure.js';
 import { computeGen as shortestPathGen } from './shortest-path.js';
 import type { AlgorithmConfig, AlgorithmRow } from './types.js';
@@ -16,6 +19,7 @@ import type { AlgorithmConfig, AlgorithmRow } from './types.js';
  */
 export type AlgorithmName =
   | 'pagerank'
+  | 'personalizedPagerank'
   | 'connectedComponents'
   | 'peerPressure'
   | 'degree'
@@ -41,6 +45,8 @@ export const runAlgorithmSync = (
   switch (name) {
     case 'pagerank':
       return drainSync(pagerankGen(config, graph));
+    case 'personalizedPagerank':
+      return drainSync(personalizedPagerankGen(config, graph));
     case 'connectedComponents':
       return drainSync(connectedComponentsGen(config, graph));
     case 'peerPressure':

@@ -20,6 +20,11 @@ export type AlgorithmConfig = {
   iterations?: number;
   /** Source vertex external id (shortest path). */
   source?: string;
+  /**
+   * Seed vertex external ids for personalized PageRank / random-walk-with-restart
+   * (the restart set). Omitted/empty → degenerates to global PageRank.
+   */
+  sourceNodes?: string[];
   /** Target vertex external id (goal-directed shortest path). */
   target?: string;
   /** If set, each vertex's result is written to this property before returning. */

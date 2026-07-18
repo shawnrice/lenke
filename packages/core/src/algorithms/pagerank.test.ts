@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '../core/Graph.js';
-import { pagerank } from './pagerank.js';
+import { pagerank, personalizedPagerank } from './pagerank.js';
 
 const line = (edges: [string, string][], nodes = ['1', '2', '3']): Graph => {
   const g = new Graph();
@@ -77,5 +77,65 @@ describe('pagerank', () => {
       ['2', '3'],
     ];
     expect(await pagerank({})(line(edges))).toEqual(await pagerank({}, line(edges)));
+  });
+});
+
+describe('personalizedPagerank', () => {
+  // a→b→c→a cycle, a→d (dangling sink), e→a (source into the cycle).
+  const seedGraph = (): Graph =>
+    line(
+      [
+        ['a', 'b'],
+        ['b', 'c'],
+        ['c', 'a'],
+        ['a', 'd'],
+        ['e', 'a'],
+      ],
+      ['a', 'b', 'c', 'd', 'e'],
+    );
+
+  test('mass is conserved', async () => {
+    const total = (await personalizedPagerank({ sourceNodes: ['a'] }, seedGraph())).reduce(
+      (s, r) => s + r.score,
+      0,
+    );
+    expect(Math.abs(total - 1)).toBeLessThan(1e-9);
+  });
+
+  test('restarting at a seed ranks it above an unreachable node', async () => {
+    // Restart at `a`: node `e` (only points INTO the graph, never reached) stays low.
+    const s = map(await personalizedPagerank({ sourceNodes: ['a'] }, seedGraph()));
+    expect(s['a']).toBeGreaterThan(s['e']);
+  });
+
+  test('damping 0 → exactly the personalization vector', async () => {
+    const s = map(
+      await personalizedPagerank({ sourceNodes: ['a', 'c'], dampingFactor: 0 }, seedGraph()),
+    );
+    expect(s).toEqual({ a: 0.5, b: 0, c: 0.5, d: 0, e: 0 });
+  });
+
+  test('a repeated seed does not double-weight (distinct set)', async () => {
+    const once = await personalizedPagerank({ sourceNodes: ['a'] }, seedGraph());
+    const twice = await personalizedPagerank({ sourceNodes: ['a', 'a'] }, seedGraph());
+    expect(twice).toEqual(once);
+  });
+
+  test('an unknown seed id is dropped', async () => {
+    const clean = await personalizedPagerank({ sourceNodes: ['a'] }, seedGraph());
+    const withJunk = await personalizedPagerank({ sourceNodes: ['a', 'zzz'] }, seedGraph());
+    expect(withJunk).toEqual(clean);
+  });
+
+  test('no resolvable seed degenerates to global PageRank', async () => {
+    const global = map(await pagerank({}, seedGraph()));
+
+    for (const cfg of [{ sourceNodes: [] }, { sourceNodes: ['nope'] }]) {
+      const s = map(await personalizedPagerank(cfg, seedGraph()));
+
+      for (const id of Object.keys(global)) {
+        expect(s[id]).toBeCloseTo(global[id], 12);
+      }
+    }
   });
 });

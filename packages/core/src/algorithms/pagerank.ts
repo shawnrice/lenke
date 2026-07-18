@@ -1,4 +1,5 @@
 import type { Graph } from '../core/Graph.js';
+import type { Vertex } from '../core/Vertex.js';
 import { type AlgorithmGen, defineAlgorithm, materializeVertices, YIELD_EVERY } from './async.js';
 import type { AlgorithmConfig, AlgorithmRow } from './types.js';
 
@@ -8,14 +9,97 @@ export type PageRankRow = AlgorithmRow<'score', number>;
 const DEFAULT_DAMPING = 0.85;
 const DEFAULT_ITERATIONS = 20;
 
-export const computeGen = function* (
+/**
+ * The personalization vector `p` for personalized PageRank: uniform `1/k` over the
+ * k distinct, resolvable seeds — unknown ids dropped, a Set de-duplicating so a
+ * repeated id never double-weights — or uniform `1/n` when no seed resolves
+ * (degenerating to global PageRank). Each external id resolves through the same
+ * `index` the native engine uses, so `p` matches vertex-for-vertex.
+ */
+const personalizationVector = (
+  sourceNodes: string[] | undefined,
+  index: Map<string, number>,
+  n: number,
+): Float64Array => {
+  const p = new Float64Array(n);
+  const seeds = new Set<number>();
+
+  for (const id of sourceNodes ?? []) {
+    const idx = index.get(id);
+
+    if (idx !== undefined) {
+      seeds.add(idx);
+    }
+  }
+
+  if (seeds.size === 0) {
+    p.fill(1 / n);
+
+    return p;
+  }
+
+  const share = 1 / seeds.size;
+
+  for (const s of seeds) {
+    p[s] = share;
+  }
+
+  return p;
+};
+
+/**
+ * Materialize `{ node, score }` rows in vertex order, writing each score back to
+ * `writeProperty` when set — the shared tail of both PageRank variants, split out
+ * to keep each core generator under the statement-count lint bound. Yields
+ * periodically so a huge vertex list never blocks a frame.
+ */
+const emitRows = function* (
+  order: Vertex[],
+  pr: Float64Array,
+  writeProperty: string | undefined,
+): AlgorithmGen<PageRankRow> {
+  const rows: PageRankRow[] = new Array(order.length);
+  let sinceYield = 0;
+
+  for (let i = 0; i < order.length; i++) {
+    const v = order[i];
+    const score = pr[i];
+
+    if (writeProperty !== undefined) {
+      v.setProperty(writeProperty, score);
+    }
+
+    rows[i] = { node: v.id, score };
+
+    if (++sinceYield >= YIELD_EVERY) {
+      sinceYield = 0;
+
+      yield;
+    }
+  }
+
+  return rows;
+};
+
+/**
+ * The shared PageRank core (pull model, f64). `personalized = false` is classic
+ * global PageRank (uniform restart); `true` is personalized PageRank / RWR, whose
+ * restart (and dangling redistribution) targets the `config.sourceNodes` seed set
+ * via a personalization vector `p` (uniform `1/k` over the k distinct resolvable
+ * seeds, else uniform `1/N`). Both share every build pass and pull-loop order, so
+ * each matches its native twin bit-for-bit; the global branch keeps its exact
+ * original `base` arithmetic.
+ */
+const pagerankCore = function* (
   config: AlgorithmConfig,
   graph: Graph,
+  personalized: boolean,
 ): AlgorithmGen<PageRankRow> {
   const {
     edgeLabel,
     weightProperty,
     writeProperty,
+    sourceNodes,
     dampingFactor: d = DEFAULT_DAMPING,
     iterations = DEFAULT_ITERATIONS,
   } = config;
@@ -131,7 +215,12 @@ export const computeGen = function* (
     }
   }
 
-  let pr = new Float64Array(n).fill(1 / nf);
+  // The personalization vector `p` drives a personalized run's restart; an unused
+  // empty array on the global path (where `base` handles the uniform restart).
+  const p = personalized ? personalizationVector(sourceNodes, index, n) : new Float64Array(0);
+
+  // Initial rank: the personalization vector for a personalized run, else uniform.
+  let pr = personalized ? p.slice() : new Float64Array(n).fill(1 / nf);
 
   for (let iter = 0; iter < iterations; iter++) {
     // Dangling mass: Σ pr[u] over out-strength-0 vertices, in vertex order.
@@ -149,7 +238,10 @@ export const computeGen = function* (
       }
     }
 
+    // Global keeps its exact original base; personalized redistributes the restart
+    // mass (damping complement + dangling) per `p` — `teleport * p[v]`.
     const base = (1 - d) / nf + (d * dangling) / nf;
+    const teleport = 1 - d + d * dangling;
     const next = new Float64Array(n);
 
     for (let v = 0; v < n; v++) {
@@ -159,7 +251,7 @@ export const computeGen = function* (
         sum += pr[incSrc[j]] * incFac[j];
       }
 
-      next[v] = base + d * sum;
+      next[v] = personalized ? teleport * p[v] + d * sum : base + d * sum;
 
       // Checkpoint within the iteration — `next` is being built while `pr` is frozen,
       // so yielding here can't change the result.
@@ -173,26 +265,21 @@ export const computeGen = function* (
     pr = next;
   }
 
-  const rows: PageRankRow[] = new Array(n);
+  return yield* emitRows(order, pr, writeProperty);
+};
 
-  for (let i = 0; i < n; i++) {
-    const v = order[i];
-    const score = pr[i];
+export const computeGen = function* (
+  config: AlgorithmConfig,
+  graph: Graph,
+): AlgorithmGen<PageRankRow> {
+  return yield* pagerankCore(config, graph, false);
+};
 
-    if (writeProperty !== undefined) {
-      v.setProperty(writeProperty, score);
-    }
-
-    rows[i] = { node: v.id, score };
-
-    if (++sinceYield >= YIELD_EVERY) {
-      sinceYield = 0;
-
-      yield;
-    }
-  }
-
-  return rows;
+export const personalizedComputeGen = function* (
+  config: AlgorithmConfig,
+  graph: Graph,
+): AlgorithmGen<PageRankRow> {
+  return yield* pagerankCore(config, graph, true);
 };
 
 /**
@@ -205,3 +292,14 @@ export const computeGen = function* (
  * dual-form: `pagerank(config, graph)` or `pagerank(config)(graph)`.
  */
 export const pagerank = defineAlgorithm(computeGen);
+
+/**
+ * Personalized PageRank / random-walk-with-restart — identical to {@link pagerank}
+ * but the random surfer restarts (and dangling mass redistributes) to the
+ * `sourceNodes` seed set instead of uniformly, ranking the graph by proximity to
+ * those seeds (the graph-native recsys ranker). The personalization vector is
+ * uniform over the distinct, resolvable seeds; an empty/all-unknown seed set
+ * degenerates to global PageRank. Byte-identical to the native engine. Data-last
+ * dual-form: `personalizedPagerank(config, graph)` or `personalizedPagerank(config)(graph)`.
+ */
+export const personalizedPagerank = defineAlgorithm(personalizedComputeGen);

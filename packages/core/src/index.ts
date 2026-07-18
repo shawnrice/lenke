@@ -70,6 +70,7 @@ export {
   degree,
   labelPropagation,
   pagerank,
+  personalizedPagerank,
   peerPressure,
   runAlgorithmSync,
   shortestPath,

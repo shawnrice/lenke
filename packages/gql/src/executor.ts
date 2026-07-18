@@ -4367,6 +4367,7 @@ const runMatch = (
  */
 const PROCEDURES: Record<string, { algo: AlgorithmName; resultColumn: string }> = {
   pagerank: { algo: 'pagerank', resultColumn: 'score' },
+  personalized_pagerank: { algo: 'personalizedPagerank', resultColumn: 'score' },
   connected_components: { algo: 'connectedComponents', resultColumn: 'componentId' },
   label_propagation: { algo: 'labelPropagation', resultColumn: 'label' },
   peer_pressure: { algo: 'peerPressure', resultColumn: 'cluster' },
@@ -4390,6 +4391,7 @@ const applyAlgoConfig = (cfg: AlgorithmConfig, key: string, v: unknown): void =>
     'dampingFactor',
     'iterations',
     'source',
+    'sourceNodes',
     'target',
     'writeProperty',
     'algorithm',

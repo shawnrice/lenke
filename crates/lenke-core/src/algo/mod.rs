@@ -50,6 +50,9 @@ pub struct AlgoConfig {
     pub iterations: Option<u32>,
     /// Source vertex external id (shortest path).
     pub source: Option<String>,
+    /// Seed vertex external ids for personalized PageRank / random-walk-with-restart
+    /// (the restart set). `None`/empty → degenerates to global PageRank.
+    pub source_nodes: Option<Vec<String>>,
     /// Target vertex external id (goal-directed shortest path).
     pub target: Option<String>,
     /// If set, write each vertex's result to this property before returning.
@@ -69,6 +72,15 @@ impl AlgoConfig {
         let j = json::parse(s)?;
         let string = |k: &str| j.get(k).and_then(json::Json::as_str).map(str::to_string);
         let num = |k: &str| j.get(k).and_then(json::Json::as_f64);
+        // A string array (personalized-PageRank seed set): keep only the string
+        // elements, dropping any non-string; an absent/non-array key → None.
+        let string_array = |k: &str| {
+            j.get(k).and_then(json::Json::as_array).map(|a| {
+                a.iter()
+                    .filter_map(|e| e.as_str().map(str::to_string))
+                    .collect()
+            })
+        };
         Ok(Self {
             edge_label: string("edgeLabel"),
             direction: string("direction"),
@@ -76,6 +88,7 @@ impl AlgoConfig {
             damping_factor: num("dampingFactor"),
             iterations: num("iterations").map(|n| n as u32),
             source: string("source"),
+            source_nodes: string_array("sourceNodes"),
             target: string("target"),
             write_property: string("writeProperty"),
             algorithm: string("algorithm"),
@@ -126,6 +139,7 @@ fn dispatch(graph: &Graph, name: &str, cfg: &AlgoConfig) -> Result<AlgoOutput, S
         "labelPropagation" => ("label", label_prop::label_propagation(graph, cfg)),
         "peerPressure" => ("cluster", peer_pressure::peer_pressure(graph, cfg)),
         "pagerank" => ("score", pagerank::pagerank(graph, cfg)),
+        "personalizedPagerank" => ("score", pagerank::personalized_pagerank(graph, cfg)),
         "betweenness" => ("centrality", centrality::betweenness(graph, cfg)),
         "closeness" => ("centrality", centrality::closeness(graph, cfg)),
         "shortestPath" => ("distance", shortest_path::shortest_path(graph, cfg)),
@@ -464,6 +478,56 @@ mod tests {
         let s = scores(&mut m, "{}");
         let by = |id: &str| s.iter().find(|(v, _)| v == id).unwrap().1;
         assert!(by("3") > by("2"));
+    }
+
+    /// `(external id, score)` rows for personalized PageRank in engine order.
+    fn pscores(g: &mut Graph, cfg: &str) -> Vec<(String, f64)> {
+        let rs = run(g, "personalizedPagerank", cfg).unwrap();
+        rs.rows()
+            .map(|r| match (&r[0], &r[1]) {
+                (Value::Str(id), Value::Num(s)) => (id.to_string(), *s),
+                _ => panic!("unexpected personalizedPagerank row shape"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn personalized_pagerank_restarts_to_the_seed_set() {
+        let mut m = modern();
+
+        // Mass conservation: a personalized distribution still sums to 1.
+        let seeded = pscores(&mut m, r#"{"sourceNodes":["1"]}"#);
+        let total: f64 = seeded.iter().map(|(_, s)| s).sum();
+        assert!((total - 1.0).abs() < 1e-9, "mass not conserved: {total}");
+
+        // Restarting at marko (id 1) concentrates rank near marko relative to a
+        // global run: marko outscores peter (id 6), who is unreachable from marko.
+        let by = |v: &[(String, f64)], id: &str| v.iter().find(|(x, _)| x == id).unwrap().1;
+        assert!(by(&seeded, "1") > by(&seeded, "6"));
+        // Personalizing to peter instead flips it: now peter outscores marko.
+        let to_peter = pscores(&mut m, r#"{"sourceNodes":["6"]}"#);
+        assert!(by(&to_peter, "6") > by(&to_peter, "1"));
+
+        // Damping 0 → no propagation: the result is exactly the personalization
+        // vector (all mass split evenly across the two distinct seeds).
+        let d0 = pscores(&mut m, r#"{"sourceNodes":["1","4"],"dampingFactor":0}"#);
+        for (id, s) in &d0 {
+            let expect = if id == "1" || id == "4" { 0.5 } else { 0.0 };
+            assert_eq!(*s, expect, "vertex {id}");
+        }
+        // A repeated seed doesn't double-weight (distinct set): ["1","1"] == ["1"].
+        assert_eq!(pscores(&mut m, r#"{"sourceNodes":["1","1"]}"#), seeded);
+        // An unknown seed id is dropped: ["1","999"] still == ["1"].
+        assert_eq!(pscores(&mut m, r#"{"sourceNodes":["1","999"]}"#), seeded);
+
+        // No resolvable seed degenerates to global PageRank (mathematically; the
+        // teleport arithmetic differs from global's base in the last f64 bits).
+        let global = scores(&mut m, "{}");
+        for cfg in [r#"{"sourceNodes":[]}"#, r#"{"sourceNodes":["nope"]}"#] {
+            for ((_, a), (_, b)) in pscores(&mut m, cfg).iter().zip(&global) {
+                assert!((a - b).abs() < 1e-12, "empty-seed != global: {a} vs {b}");
+            }
+        }
     }
 
     /// `(external id, cluster)` rows in engine order.

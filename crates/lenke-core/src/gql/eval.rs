@@ -885,6 +885,12 @@ fn apply_algo_config(cfg: &mut crate::algo::AlgoConfig, field: &str, v: &Val) {
         Val::Str(s) => Some(s.to_string()),
         _ => None,
     };
+    // A list config value (personalized-PageRank seed set): keep only its string
+    // elements, exactly as the JSON-config path does.
+    let strs = |v: &Val| match v {
+        Val::List(items) => Some(items.iter().filter_map(s).collect()),
+        _ => None,
+    };
     match field {
         "edgeLabel" => cfg.edge_label = s(v),
         "direction" => cfg.direction = s(v),
@@ -892,6 +898,7 @@ fn apply_algo_config(cfg: &mut crate::algo::AlgoConfig, field: &str, v: &Val) {
         "dampingFactor" => cfg.damping_factor = num_of(v),
         "iterations" => cfg.iterations = num_of(v).map(|n| n as u32),
         "source" => cfg.source = s(v),
+        "sourceNodes" => cfg.source_nodes = strs(v),
         "target" => cfg.target = s(v),
         "writeProperty" => cfg.write_property = s(v),
         "algorithm" => cfg.algorithm = s(v),

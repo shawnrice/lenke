@@ -20,15 +20,22 @@ use crate::graph::{Graph, Value};
 const DEFAULT_DAMPING: f64 = 0.85;
 const DEFAULT_ITERATIONS: u32 = 20;
 
-pub fn pagerank(graph: &Graph, cfg: &AlgoConfig) -> Vec<(u32, Value)> {
-    let d = cfg.damping_factor.unwrap_or(DEFAULT_DAMPING);
-    let iterations = cfg.iterations.unwrap_or(DEFAULT_ITERATIONS);
-    let n = graph.vertex_count();
-    if n == 0 {
-        return Vec::new();
-    }
-    let nf = n as f64;
+/// The per-target contribution CSR shared by every PageRank variant. `inc_off[v]..
+/// inc_off[v+1]` indexes `(inc_src, inc_fac)` for target v, filled in global
+/// edge-insertion order so each target's pull sum is order-canonical (the f64
+/// byte-identity contract). `out_strength[u]` is u's out-strength (its dangling
+/// test). All arrays are `slots`-sized (dead slots see an empty CSR range).
+struct PullGraph {
+    out_strength: Vec<f64>,
+    inc_off: Vec<usize>,
+    inc_src: Vec<u32>,
+    inc_fac: Vec<f64>,
+}
 
+/// Build the pull CSR once. Two edge sweeps in insertion order (out-strength /
+/// slot counts, then the transposed contribution lists) — the exact sequence the
+/// TS mirror scans, so factors land in identical order.
+fn build_pull_graph(graph: &Graph, cfg: &AlgoConfig) -> PullGraph {
     // Some(None) = every type; Some(Some(t)) = one type; None = unknown type → no
     // edges (every vertex dangling → uniform 1/N).
     let etype = cfg.etype(graph);
@@ -56,10 +63,9 @@ pub fn pagerank(graph: &Graph, cfg: &AlgoConfig) -> Vec<(u32, Value)> {
         }
     }
 
-    // Pass 2: per-target contribution lists as a flat CSR — `inc_off[v]..inc_off[v+1]`
-    // indexes `(inc_src, inc_fac)` for target v, filled in edge-insertion order so
-    // each target's later sum is order-canonical. Flat arrays (vs Vec<Vec>) give the
-    // hot pull loop contiguous, cache-friendly reads and one allocation.
+    // Pass 2: per-target contribution lists as a flat CSR — filled in edge-insertion
+    // order so each target's later sum is order-canonical. Flat arrays (vs Vec<Vec>)
+    // give the hot pull loop contiguous, cache-friendly reads and one allocation.
     let mut inc_off = vec![0usize; slots + 1];
     for ei in 0..graph.edge_slots() {
         if graph.is_edge_live(ei as u32) && type_ok(graph.e_type[ei]) {
@@ -96,6 +102,31 @@ pub fn pagerank(graph: &Graph, cfg: &AlgoConfig) -> Vec<(u32, Value)> {
         inc_fac[pos] = factor;
     }
 
+    PullGraph {
+        out_strength,
+        inc_off,
+        inc_src,
+        inc_fac,
+    }
+}
+
+pub fn pagerank(graph: &Graph, cfg: &AlgoConfig) -> Vec<(u32, Value)> {
+    let d = cfg.damping_factor.unwrap_or(DEFAULT_DAMPING);
+    let iterations = cfg.iterations.unwrap_or(DEFAULT_ITERATIONS);
+    let n = graph.vertex_count();
+    if n == 0 {
+        return Vec::new();
+    }
+    let nf = n as f64;
+    let slots = graph.n;
+
+    let PullGraph {
+        out_strength,
+        inc_off,
+        inc_src,
+        inc_fac,
+    } = build_pull_graph(graph, cfg);
+
     let mut pr = vec![0.0f64; slots];
     for v in graph.vertex_indices() {
         pr[v as usize] = 1.0 / nf;
@@ -122,6 +153,107 @@ pub fn pagerank(graph: &Graph, cfg: &AlgoConfig) -> Vec<(u32, Value)> {
                 sum += pr[inc_src[j] as usize] * inc_fac[j];
             }
             *nv = base + d * sum;
+        };
+        #[cfg(feature = "parallel")]
+        next.par_iter_mut()
+            .enumerate()
+            .for_each(|(v, nv)| pull(v, nv));
+        #[cfg(not(feature = "parallel"))]
+        for (v, nv) in next.iter_mut().enumerate() {
+            pull(v, nv);
+        }
+        pr = next;
+    }
+
+    graph
+        .vertex_indices()
+        .map(|v| (v, Value::Num(pr[v as usize])))
+        .collect()
+}
+
+/// Personalized PageRank / random-walk-with-restart: identical to global PageRank
+/// except the random surfer restarts (and dangling mass redistributes) to a **seed
+/// set** `cfg.source_nodes` instead of uniformly. The personalization vector `p` is
+/// uniform `1/k` over the k distinct, resolvable seeds and 0 elsewhere; the initial
+/// rank is `p` too. Unknown seed ids are dropped; if no seed resolves, `p` falls
+/// back to uniform `1/N` — i.e. it degenerates to global PageRank. Byte-identical
+/// across engines: `p`, the teleport scalar (dangling summed in vertex order), and
+/// every pull sum (fixed CSR order) match the TS mirror bit-for-bit.
+pub fn personalized_pagerank(graph: &Graph, cfg: &AlgoConfig) -> Vec<(u32, Value)> {
+    let d = cfg.damping_factor.unwrap_or(DEFAULT_DAMPING);
+    let iterations = cfg.iterations.unwrap_or(DEFAULT_ITERATIONS);
+    let n = graph.vertex_count();
+    if n == 0 {
+        return Vec::new();
+    }
+    let nf = n as f64;
+    let slots = graph.n;
+
+    let PullGraph {
+        out_strength,
+        inc_off,
+        inc_src,
+        inc_fac,
+    } = build_pull_graph(graph, cfg);
+
+    // Resolve seed external ids → dense slots, dedup, drop unknowns (a seed pointing
+    // at no live vertex contributes nothing). `seen` keeps the set distinct so a
+    // repeated id never double-weights.
+    let mut seed_slots: Vec<usize> = Vec::new();
+    let mut seen = vec![false; slots];
+    if let Some(ids) = &cfg.source_nodes {
+        for id in ids {
+            if let Some(slot) = graph.vid.get(id) {
+                let s = slot as usize;
+                if !seen[s] {
+                    seen[s] = true;
+                    seed_slots.push(s);
+                }
+            }
+        }
+    }
+
+    // The personalization vector `p`: uniform `1/k` over the k distinct seeds, or —
+    // when no seed resolves — uniform `1/N` (degenerate to global PageRank), keeping
+    // mass conservation well-defined.
+    let mut p = vec![0.0f64; slots];
+    if seed_slots.is_empty() {
+        for v in graph.vertex_indices() {
+            p[v as usize] = 1.0 / nf;
+        }
+    } else {
+        let share = 1.0 / seed_slots.len() as f64;
+        for &s in &seed_slots {
+            p[s] = share;
+        }
+    }
+
+    // Initial rank = the personalization vector (a proper distribution summing to 1).
+    let mut pr = p.clone();
+
+    for _ in 0..iterations {
+        // Dangling mass: Σ pr[u] over out-strength-0 vertices, in vertex order (serial
+        // reduction — a parallel one would reorder the f64 sum).
+        let mut dangling = 0.0;
+        for u in graph.vertex_indices() {
+            if out_strength[u as usize] == 0.0 {
+                dangling += pr[u as usize];
+            }
+        }
+        // The restart mass (damping complement + dangling) is redistributed per the
+        // personalization vector `p` rather than uniformly, so `teleport * p[v]` is
+        // v's share. With `p[v] = 1/N` everywhere this equals global PageRank's base.
+        let teleport = (1.0 - d) + d * dangling;
+
+        // Pull: each target's sum is independent and taken in its own fixed CSR order,
+        // so parallelizing ACROSS targets keeps every accumulation bit-identical.
+        let mut next = vec![0.0f64; slots];
+        let pull = |v: usize, nv: &mut f64| {
+            let mut sum = 0.0;
+            for j in inc_off[v]..inc_off[v + 1] {
+                sum += pr[inc_src[j] as usize] * inc_fac[j];
+            }
+            *nv = teleport * p[v] + d * sum;
         };
         #[cfg(feature = "parallel")]
         next.par_iter_mut()
