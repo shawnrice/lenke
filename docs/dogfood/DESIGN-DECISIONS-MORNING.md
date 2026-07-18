@@ -93,8 +93,17 @@ personalized_pagerank`): restarts to a `sourceNodes` seed set, byte-identical
 - **SCC + onCycle** — SHIPPED `stronglyConnectedComponents` (iterative Tarjan, min-index
   representative → byte-identical native↔TS; @lenke/core fn, RustGraph method, GQL
   `CALL strongly_connected_components`) and now `onCycle` (per-vertex directed-cycle
-  membership: SCC size>1 or self-loop, byte-identical, `CALL on_cycle`). Simple-cycle
-  ENUMERATION + the cyclic-match perf cliff (~2.5×/hop) still open.
+  membership: SCC size>1 or self-loop, byte-identical, `CALL on_cycle`).
+  - **Simple-cycle ENUMERATION** — **WON'T FIX** (decided). Enumeration output is
+    exponential in the worst case (Johnson's is output-sensitive; a dense graph has
+    factorially-many simple cycles), so it's an unbounded footgun, and it doesn't fit
+    the per-vertex `(node, value)` result shape (it returns a list of paths). The common
+    need is already covered: `onCycle` answers "which nodes are cyclic," and `MATCH p =
+    (a)-[:R]->+(a)` / Gremlin `cyclicPath()` find a cycle through a given vertex. Revisit
+    only if a concrete use case needs the complete cycle set — and only bounded (per-SCC,
+    `maxCycles`/`maxLength`).
+  - The cyclic variable-length **match perf cliff** (~2.5×/hop) is a separate perf item,
+    still open.
 - ~~**`ANY SHORTEST` can't close on its seed** (R11 B2)~~ — FIXED `ada1782` (BFS now
   tracks the shortest cycle back to the seed; `->+(a)` finds it, both engines).
 - **Sliding-window temporal aggregation** (R11). No windowed aggregate primitive.
