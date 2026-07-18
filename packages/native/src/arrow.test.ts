@@ -1,13 +1,15 @@
 // Proof that `@lenke/native/arrow` emits real, conformant Apache Arrow IPC: build
-// an ARW1 blob from a live query, then reconstruct a Table AND round-trip both IPC
-// layouts (stream + file/Feather) through `apache-arrow`'s reference decoder — the
-// same decoder pandas / Polars / DuckDB use. Loads the real FFI cdylib by path.
+// an ARW1 blob from a live query, then round-trip BOTH IPC layouts (stream +
+// file/Feather) through `apache-arrow`'s reference decoder — the same decoder
+// pandas / Polars / DuckDB use. `apache-arrow` is a dev-only verifier here; the
+// module itself hand-writes the IPC framing with zero runtime deps. Loads the real
+// FFI cdylib by path.
 import { describe, expect, test } from 'bun:test';
 import { existsSync } from 'node:fs';
 
 import { tableFromIPC } from 'apache-arrow';
 
-import { arrowTable, toArrowIPC } from './arrow.js';
+import { toArrowIPC } from './arrow.js';
 import { createFfiBackend } from './backend-ffi.js';
 import { graphFromFormat } from './graph.js';
 
@@ -52,8 +54,8 @@ suite('@lenke/native/arrow — real Arrow IPC egress', () => {
     { name: 'josh', age: 32, active: false },
   ];
 
-  test('arrowTable reconstructs a typed Table (Utf8/Float64/Bool) with nulls', () => {
-    const t = arrowTable(blobOf(QUERY));
+  test('the reconstructed schema is typed Utf8/Float64/Bool', () => {
+    const t = tableFromIPC(toArrowIPC(blobOf(QUERY), 'stream'));
 
     expect(t.numRows).toBe(3);
     expect(t.schema.fields.map((f) => `${f.name}:${f.type}`)).toEqual([
@@ -61,7 +63,6 @@ suite('@lenke/native/arrow — real Arrow IPC egress', () => {
       'age:Float64',
       'active:Bool',
     ]);
-    expect([...t].map((r) => ({ name: r.name, age: r.age, active: r.active }))).toEqual(EXPECTED);
   });
 
   test('IPC stream round-trips through the reference decoder', () => {
@@ -91,12 +92,82 @@ suite('@lenke/native/arrow — real Arrow IPC egress', () => {
   });
 
   test('an all-null column survives the round-trip', () => {
-    const back = tableFromIPC(toArrowIPC(blobOf('MATCH (n:P) RETURN n.dept AS dept'), 'stream'));
+    for (const fmt of ['stream', 'file'] as const) {
+      const back = tableFromIPC(toArrowIPC(blobOf('MATCH (n:P) RETURN n.dept AS dept'), fmt));
+      expect([...back].map((r) => r.dept)).toEqual([null, null, null]);
+    }
+  });
 
-    expect([...back].map((r) => r.dept)).toEqual([null, null, null]);
+  test('a zero-row result round-trips (empty buffers, valid framing)', () => {
+    for (const fmt of ['stream', 'file'] as const) {
+      const back = tableFromIPC(
+        toArrowIPC(
+          blobOf('MATCH (n:P) WHERE n.age > 999 RETURN n.name AS name, n.age AS age'),
+          fmt,
+        ),
+      );
+      expect(back.numRows).toBe(0);
+      expect(back.schema.fields.map((f) => f.name)).toEqual(['name', 'age']);
+    }
+  });
+
+  test('a single numeric column round-trips', () => {
+    const back = tableFromIPC(toArrowIPC(blobOf('MATCH (n:P) RETURN n.age AS age ORDER BY n.age')));
+    expect([...back].map((r) => r.age)).toEqual([27, 29, 32]);
+  });
+
+  test('unicode strings survive (multi-byte offsets)', () => {
+    const g = graphFromFormat(
+      backend,
+      [
+        '{"type":"node","id":"a","labels":["P"],"properties":{"name":"café ☕"}}',
+        '{"type":"node","id":"b","labels":["P"],"properties":{"name":"日本語"}}',
+        '{"type":"node","id":"c","labels":["P"],"properties":{"name":"marko`s"}}',
+      ].join('\n'),
+      'ndjson',
+    );
+
+    try {
+      const back = tableFromIPC(toArrowIPC(g.queryArrow('MATCH (n:P) RETURN n.name AS name')));
+      expect([...back].map((r) => r.name).sort()).toEqual(['café ☕', 'marko`s', '日本語'].sort());
+    } finally {
+      g.free();
+    }
+  });
+
+  test('a wide result past the builder growth threshold round-trips', () => {
+    // >1k rows and many string columns forces the flatbuffer builder to grow its
+    // backing buffer and re-pad — exercises the grow path, not just the small case.
+    const rows = Array.from(
+      { length: 1500 },
+      (_, i) =>
+        `{"type":"node","id":"n${i}","labels":["P"],"properties":{"name":"user_${i}","age":${i % 90},"flag":${i % 2 === 0}}}`,
+    ).join('\n');
+    const g = graphFromFormat(backend, rows, 'ndjson');
+
+    try {
+      for (const fmt of ['stream', 'file'] as const) {
+        const back = tableFromIPC(
+          toArrowIPC(
+            g.queryArrow(
+              'MATCH (n:P) RETURN n.name AS name, n.age AS age, n.flag AS flag ORDER BY n.age, n.name',
+            ),
+            fmt,
+          ),
+        );
+        expect(back.numRows).toBe(1500);
+        // Spot-check a row deep in the batch (exercises a mid-buffer read).
+        const r = [...back].at(777)!;
+        expect(typeof r.name).toBe('string');
+        expect(typeof r.age).toBe('number');
+        expect(typeof r.flag).toBe('boolean');
+      }
+    } finally {
+      g.free();
+    }
   });
 
   test('rejects a non-ARW1 blob', () => {
-    expect(() => arrowTable(new Uint8Array([1, 2, 3, 4]))).toThrow();
+    expect(() => toArrowIPC(new Uint8Array([1, 2, 3, 4]))).toThrow();
   });
 });
