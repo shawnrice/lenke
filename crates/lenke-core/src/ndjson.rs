@@ -188,10 +188,15 @@ pub fn decode(text: &str) -> CodeResult<Graph> {
 /// stay current and the version bumps per element) — but with no per-record
 /// parse or FFI crossing, so it runs at bulk speed, not per-`INSERT` speed.
 pub fn append(graph: &mut Graph, text: &str) -> CodeResult<MergeReport> {
-    let recs: Vec<Rec> = text
-        .lines()
-        .filter_map(|l| parse_line(l).transpose())
-        .collect::<CodeResult<_>>()?;
+    // Parse the lines in parallel — the same rayon fan-out `decode` uses, closing
+    // the ~25% gap the serial parse cost. Order is preserved (so first-wins node
+    // dedupe is deterministic), and the apply below stays serial (it mutates the
+    // shared graph). One bad line short-circuits the whole batch.
+    #[cfg(feature = "parallel")]
+    let parsed: Vec<Option<Rec>> = text.par_lines().map(parse_line).collect::<CodeResult<_>>()?;
+    #[cfg(not(feature = "parallel"))]
+    let parsed: Vec<Option<Rec>> = text.lines().map(parse_line).collect::<CodeResult<_>>()?;
+    let recs: Vec<Rec> = parsed.into_iter().flatten().collect();
     let mut report = MergeReport::default();
 
     // Nodes first, so an edge may reference a same-batch node declared in any
