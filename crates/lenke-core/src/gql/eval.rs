@@ -554,6 +554,9 @@ fn js_num(n: f64) -> String {
             "-Infinity".to_string()
         }
     } else {
+        // Negative zero renders as "0" — JS `String(-0)` and the repo's -0→0 numeric
+        // policy — not Rust's Display "-0". (`-0.0 == 0.0`, so this normalizes both.)
+        let n = if n == 0.0 { 0.0 } else { n };
         format!("{n}")
     }
 }
