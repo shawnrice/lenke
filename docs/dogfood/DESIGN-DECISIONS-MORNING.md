@@ -70,8 +70,12 @@ betweenness" below.
   — risks regressions, needs profiling. Top perf item.
 - **Auto-index / primary-key hint** (Marcus R10). Id-like lookups full-scan until
   `createVertexIndex` (683× speedup when indexed). Auto-index, or a PK declaration?
-- **Real Arrow IPC egress** (Marcus R10, task #53). ARW1 is in-process-only; no
-  Feather/Parquet/IPC handoff to DuckDB/Polars/pandas. Biggest feature-store gap.
+- ~~**Real Arrow IPC egress**~~ (Marcus R10, task #53) — SHIPPED `@lenke/native/arrow`:
+  `toArrowIPC(blob)` / `arrowTable(blob)` reconstruct a real apache-arrow Table from
+  the ARW1 buffers (which already are Arrow's physical layout) and emit standard
+  flatbuffer-framed IPC (stream default, or file/Feather-v2) — what DuckDB/Polars/
+  pandas read. apache-arrow is an optional peer dep on that subpath only; core stays
+  dependency-free. Verified by round-tripping both layouts through apache-arrow.
 
 ## Medium — algorithms & query surface
 
@@ -79,10 +83,14 @@ betweenness" below.
   whole-graph at 100k+; needs a deterministic approximate variant (byte-identity).
 - **labelPropagation resolution/seed knob** (Marcus). Degenerates to one community on
   hubby/scale-free graphs.
-- **Personalized PageRank / random-walk-with-restart** (Ravi). Only global PageRank
-  exists; seed-set personalized ranking is the graph-native recsys ranker.
-- **SCC / simple-cycle operator + cyclic-match perf cliff** (R11). No SCC/simple-cycle
-  primitive; cyclic variable-length match is ~2.5×/hop.
+- ~~**Personalized PageRank / random-walk-with-restart**~~ (Ravi) — SHIPPED
+  `personalizedPagerank` (@lenke/core fn, RustGraph method, GQL `CALL
+  personalized_pagerank`): restarts to a `sourceNodes` seed set, byte-identical
+  native↔TS; empty/unknown seeds degenerate to global PageRank.
+- **SCC** — SHIPPED `stronglyConnectedComponents` (iterative Tarjan, min-index
+  representative → byte-identical native↔TS; @lenke/core fn, RustGraph method, GQL
+  `CALL strongly_connected_components`). Simple-cycle operator + cyclic-match perf
+  cliff (~2.5×/hop) still open.
 - ~~**`ANY SHORTEST` can't close on its seed** (R11 B2)~~ — FIXED `ada1782` (BFS now
   tracks the shortest cycle back to the seed; `->+(a)` finds it, both engines).
 - **Sliding-window temporal aggregation** (R11). No windowed aggregate primitive.
@@ -101,8 +109,11 @@ duration` → UNKNOWN is spec-correct (durations aren't totally ordered: a month
   `.with(ShortestPath.direction, 'out'|'in'|'both')`, default 'both'/undirected =
   TinkerPop-conformant; both engines). The undirected default was already conformant, so
   this was a missing option, not a wrong default.
-- **Gremlin CF steps** (Ravi). `where(neq('me'))`, `order(local).by(values, desc)`
-  unsupported → idiomatic Gremlin collaborative-filtering inexpressible (GQL is fine).
+- ~~**Gremlin CF steps**~~ (Ravi) — SHIPPED both engines byte-identical:
+  `where(neq('me'))` (predicate-only where vs a step label), `order(local).by(values|
+  keys, desc)` (Column selector), and `select(Column.keys|values)` (the observable
+  reader — a bare Map serializes key-sorted, so the ranked order shows through a
+  list-producing step). The full recommendation traversal is now expressible.
 
 ## Medium — ORM / typed surface (Lena R10)
 
@@ -110,17 +121,18 @@ duration` → UNKNOWN is spec-correct (durations aren't totally ordered: a month
   findMany/count/createMany. Repository layer in-scope for lenke, or app-layer?
 - **Typed query builder.** `query()` is string-only; typed rows are a "trust me" cast.
   Expose column types from a prepared Plan, or a builder?
-- **Public `quoteIdent` / safe-label helper.** Reinforced again in R12 (`at`/`value`).
-  Given how many domain nouns are reserved, expose label/identifier escaping from
-  `@lenke/gql`. Small API — naming decision.
+- ~~**Public `quoteIdent` / safe-label helper.**~~ — SHIPPED `quoteIdent` from
+  `@lenke/gql`: bare non-reserved names pass through, everything else is backtick-
+  quoted with internal backticks doubled (ISO/SQL escape). Both lexers now decode a
+  doubled backtick in a delimited identifier, so a backtick-bearing key round-trips.
 
 ## Medium — sync / CDC (Kenji R10)
 
 - **`createReconnectingClient` omits the CDC surface** (biggest sync gap). The reconnect
   wrapper `Pick<>`s out subscribeWrites/onDisconnect/pushWrite/replay/clientId/receive →
   can't do multiplayer + reconnect together. Widen the surface?
-- **Export `runWrite` from `@lenke/sync`.** Declared in protocol.d.ts:441 (the canonical
-  write-dispatch) but not re-exported → hand-rolled ingest reimplements dispatch.
+- ~~**Export `runWrite` from `@lenke/sync`.**~~ — SHIPPED: `runWrite` (the canonical
+  CDC write-dispatch) is now re-exported from `@lenke/sync`.
 - ~~**CDC live-tail gap-detection**~~ — FIXED `8403c90` (a `from` cursor on the writes
   message trips `resync` on a gap/reorder).
 - **Value-level scope / per-room CDC channel.** Interest routing is label-only → a
