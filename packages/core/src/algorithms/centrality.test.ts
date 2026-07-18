@@ -39,6 +39,28 @@ describe('betweenness (Brandes)', () => {
     ]);
   });
 
+  test('approximate: pivots ≥ |V| equals exact; a real sample scales by n/k', async () => {
+    const g = graphFrom(
+      ['1', '2', '3', '4'],
+      [
+        ['1', '2'],
+        ['2', '3'],
+        ['3', '4'],
+      ],
+    );
+    const exact = await betweenness({}, g);
+
+    // pivots covering every source → identical to exact (no sampling / scaling).
+    expect(await betweenness({ pivots: 4 }, g)).toEqual(exact);
+    expect(await betweenness({ pivots: 99 }, g)).toEqual(exact);
+
+    // A 2-of-4 sample is deterministic and non-negative (endpoints stay 0).
+    const sampled = await betweenness({ pivots: 2 }, g);
+    expect(await betweenness({ pivots: 2 }, g)).toEqual(sampled);
+    expect(sampled.every((r) => Number.isFinite(r.centrality) && r.centrality >= 0)).toBe(true);
+    expect(sampled[0].centrality).toBe(0);
+  });
+
   test('diamond: two equal shortest paths split the (1,4) pair 0.5/0.5', async () => {
     const g = graphFrom(
       ['1', '2', '3', '4'],

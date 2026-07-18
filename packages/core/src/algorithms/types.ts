@@ -18,6 +18,12 @@ export type AlgorithmConfig = {
   dampingFactor?: number;
   /** Fixed iteration count (PageRank / label propagation). */
   iterations?: number;
+  /**
+   * Sample-source count for **approximate betweenness**. When set (and `< |V|`),
+   * Brandes runs from a deterministic evenly-spaced sample of `pivots` sources and
+   * scales the result by `|V|/pivots` — O(pivots·E) instead of O(V·E). Omit for exact.
+   */
+  pivots?: number;
   /** Source vertex external id (shortest path). */
   source?: string;
   /**

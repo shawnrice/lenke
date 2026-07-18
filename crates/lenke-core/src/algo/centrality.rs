@@ -190,9 +190,23 @@ fn sssp(csr: &OutCsr, slots: usize, s: u32) -> Sssp {
 pub fn betweenness(graph: &Graph, cfg: &AlgoConfig) -> Vec<(u32, Value)> {
     let slots = graph.n;
     let csr = build_csr(graph, cfg);
-    let mut cb = vec![0f64; slots];
+    let verts: Vec<u32> = graph.vertex_indices().collect();
+    let n = verts.len();
 
-    for s in graph.vertex_indices() {
+    // Source set: exact = every vertex; approximate = a deterministic evenly-spaced
+    // sample of `pivots` vertices (indices `i*n/k`), so both engines pick the SAME
+    // sources → byte-identical estimate. A sampled run scales the summed
+    // dependencies by n/k (the Brandes–Pich estimator).
+    let sources: Vec<u32> = match cfg.pivots {
+        Some(k) if (k as usize) < n && k > 0 => {
+            let k = k as usize;
+            (0..k).map(|i| verts[i * n / k]).collect()
+        }
+        _ => verts.clone(),
+    };
+
+    let mut cb = vec![0f64; slots];
+    for &s in &sources {
         let sp = sssp(&csr, slots, s);
         let mut delta = vec![0f64; slots];
         // Pop in reverse visit order (non-increasing distance): each w's dependency
@@ -205,6 +219,15 @@ pub fn betweenness(graph: &Graph, cfg: &AlgoConfig) -> Vec<(u32, Value)> {
             if w != s {
                 cb[w as usize] += delta[w as usize];
             }
+        }
+    }
+
+    // Scale a sampled run up to a full-graph estimate. (Exact runs use every
+    // source, so `sources.len() == n` and the scale is 1.)
+    if sources.len() < n {
+        let scale = n as f64 / sources.len() as f64;
+        for v in &mut cb {
+            *v *= scale;
         }
     }
 

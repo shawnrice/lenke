@@ -226,7 +226,16 @@ export const betweennessGen = function* (
   const cb = new Float64Array(n);
   let sinceYield = 0;
 
-  for (let s = 0; s < n; s++) {
+  // Source set: exact = every vertex; approximate (config.pivots) = a deterministic
+  // evenly-spaced sample of `pivots` sources (indices `i*n/k`), identical to native,
+  // scaled below by n/k (the Brandes–Pich estimator).
+  const { pivots } = config;
+  const sources: number[] =
+    pivots !== undefined && pivots < n && pivots > 0
+      ? Array.from({ length: pivots }, (_, i) => Math.floor((i * n) / pivots))
+      : Array.from({ length: n }, (_, i) => i);
+
+  for (const s of sources) {
     const sp = sssp(csr, n, s);
     const delta = new Float64Array(n);
 
@@ -250,6 +259,15 @@ export const betweennessGen = function* (
       sinceYield = 0;
 
       yield;
+    }
+  }
+
+  // Scale a sampled run up to a full-graph estimate (exact runs use every source).
+  if (sources.length < n) {
+    const scale = n / sources.length;
+
+    for (let i = 0; i < n; i++) {
+      cb[i] *= scale;
     }
   }
 

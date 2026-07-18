@@ -49,6 +49,11 @@ pub struct AlgoConfig {
     pub damping_factor: Option<f64>,
     /// Fixed iteration count (PageRank / label propagation).
     pub iterations: Option<u32>,
+    /// Sample-source count for approximate betweenness. When set (and `< |V|`),
+    /// Brandes runs from a deterministic evenly-spaced sample of `pivots` sources
+    /// and scales the result by `|V|/pivots` — turning the O(V·E) exact pass into
+    /// O(pivots·E). Omitted → exact.
+    pub pivots: Option<u32>,
     /// Source vertex external id (shortest path).
     pub source: Option<String>,
     /// Seed vertex external ids for personalized PageRank / random-walk-with-restart
@@ -88,6 +93,7 @@ impl AlgoConfig {
             weight_property: string("weightProperty"),
             damping_factor: num("dampingFactor"),
             iterations: num("iterations").map(|n| n as u32),
+            pivots: num("pivots").map(|n| n as u32),
             source: string("source"),
             source_nodes: string_array("sourceNodes"),
             target: string("target"),
@@ -798,6 +804,27 @@ mod tests {
         assert!(centrality(&mut d, "betweenness", r#"{"edgeLabel":"NOPE"}"#)
             .iter()
             .all(|(_, x)| *x == 0.0));
+    }
+
+    #[test]
+    fn betweenness_sampled_pivots() {
+        let mut g = directed_path(); // 1→2→3→4; exact CB = [0, 2, 2, 0]
+        let exact = centrality(&mut g, "betweenness", "{}");
+
+        // `pivots` ≥ |V| (or 0) is exactly the exact pass — no sampling, no scaling.
+        assert_eq!(centrality(&mut g, "betweenness", r#"{"pivots":4}"#), exact);
+        assert_eq!(centrality(&mut g, "betweenness", r#"{"pivots":99}"#), exact);
+
+        // A real sample (2 of 4 sources, evenly spaced → vertices 1 and 3) scales the
+        // summed dependencies by 4/2 = 2. Deterministic: same input → same estimate.
+        let sampled = centrality(&mut g, "betweenness", r#"{"pivots":2}"#);
+        assert_eq!(
+            sampled,
+            centrality(&mut g, "betweenness", r#"{"pivots":2}"#)
+        );
+        // The estimate is finite and non-negative everywhere (endpoints stay 0).
+        assert!(sampled.iter().all(|(_, x)| x.is_finite() && *x >= 0.0));
+        assert_eq!(sampled[0].1, 0.0); // vertex 1 is never an interior node
     }
 
     #[test]
