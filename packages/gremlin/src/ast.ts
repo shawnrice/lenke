@@ -13,6 +13,10 @@ export type ID = string | number;
 
 export type Direction = 'out' | 'in' | 'both';
 
+/** Runtime `Direction` enum (TinkerPop `Direction.OUT`/`IN`/`BOTH`), e.g.
+ *  `shortestPath().with(ShortestPath.edges, Direction.OUT)`. */
+export const Direction = { OUT: 'out', IN: 'in', BOTH: 'both' } as const;
+
 export type Predicate =
   | { op: 'eq'; value: unknown }
   | { op: 'neq'; value: unknown }
@@ -353,9 +357,9 @@ export type Step =
   | { kind: 'subgraph'; key: string }
   // Emit the shortest vertex path(s) from each source vertex. `target` (set via
   // `.with(ShortestPath.target, …)`) filters which vertices are destinations;
-  // absent ⇒ every reachable vertex. `direction` (`.with(ShortestPath.direction,
-  // …)`) picks which incident edges the BFS follows — `'both'` (default,
-  // TinkerPop-conformant undirected), `'out'`, or `'in'` for a directed search.
+  // absent ⇒ every reachable vertex. `direction` (set via `.with(ShortestPath.edges,
+  // Direction.OUT|IN|BOTH)`) picks which incident edges the BFS follows — `'both'`
+  // (default, TinkerPop-conformant undirected), `'out'`, or `'in'`.
   | { kind: 'shortestPath'; target?: Plan; direction?: Direction }
   // --- OLAP graph algorithms (computed locally) -------------------------
   //

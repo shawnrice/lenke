@@ -315,6 +315,7 @@ impl Parser {
                         | "Pop"
                         | "Scope"
                         | "Column"
+                        | "Direction"
                         | "TextP"
                         | "P"
                         | "ShortestPath"
@@ -381,6 +382,7 @@ impl Parser {
             ("T", "value") => Arg::Token(Token::Value),
             ("Column", "keys") => Arg::Column(Column::Keys),
             ("Column", "values") => Arg::Column(Column::Values),
+            ("Direction", "OUT" | "IN" | "BOTH") => Arg::Str(format!("Direction.{member}")),
             ("Order", "asc" | "incr") => Arg::Order(Order::Asc),
             ("Order", "desc" | "decr") => Arg::Order(Order::Desc),
             ("Pop", "first") => Arg::Pop(Pop::First),
@@ -725,8 +727,10 @@ impl Parser {
                 [Arg::Str(opt), Arg::Trav(target)] if opt == "ShortestPath.target" => {
                     t.with_shortest_path_target(target.clone())
                 }
-                [Arg::Str(opt), rest] if opt == "ShortestPath.direction" => {
-                    t.with_shortest_path_direction(rest.as_str()?)
+                // TinkerPop: `.with(ShortestPath.edges, Direction.OUT|IN|BOTH)` chooses
+                // which incident edges the search follows (default BOTH = undirected).
+                [Arg::Str(opt), rest] if opt == "ShortestPath.edges" => {
+                    t.with_shortest_path_edges(rest.as_str()?)?
                 }
                 [Arg::Str(opt), rest] if opt.ends_with(".propertyName") => {
                     t.with_algo_property(rest.as_str()?.to_string())
@@ -735,11 +739,6 @@ impl Parser {
                     GVal::Num(n) => t.with_algo_times(n as u32),
                     _ => return Err("with(times): expected a number".into()),
                 },
-                [Arg::Str(opt), _] if opt.ends_with(".edges") => {
-                    return Err(
-                        "with(<Algo>.edges): the edges modulator is not yet supported (defaults to all out-edges)".into(),
-                    );
-                }
                 _ => return Err("with(): unsupported option".into()),
             },
             "barrier" => t.barrier(),

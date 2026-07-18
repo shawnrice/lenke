@@ -666,16 +666,18 @@ fn p5_shortest_path_direction_is_configurable() {
         g().V()
             .has("name", P::eq("vadas"))
             .shortest_path()
-            .with_shortest_path_direction("out"),
+            .with_shortest_path_edges("Direction.OUT")
+            .unwrap(),
     );
     assert_eq!(out, vec![vec!["2".to_string()]]);
 
-    // `both` explicitly is the same as the default.
+    // `Direction.BOTH` explicitly is the same as the default.
     let both2 = sp_paths(
         g().V()
             .has("name", P::eq("vadas"))
             .shortest_path()
-            .with_shortest_path_direction("both"),
+            .with_shortest_path_edges("Direction.BOTH")
+            .unwrap(),
     );
     assert_eq!(both2.len(), both.len());
 }

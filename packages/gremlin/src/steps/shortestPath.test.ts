@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 
 import type { Vertex } from '@lenke/core';
 
+import { Direction } from '../ast.js';
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
 import { has, ShortestPath, shortestPath, V } from '../steps.js';
@@ -39,7 +40,11 @@ describe('shortestPath() — shortest vertex paths from each source', () => {
     const out = ids(
       arr(
         run(
-          traversal(V(), has('name', 'vadas'), shortestPath().with(ShortestPath.direction, 'out')),
+          traversal(
+            V(),
+            has('name', 'vadas'),
+            shortestPath().with(ShortestPath.edges, Direction.OUT),
+          ),
           g,
         ),
       ),
@@ -53,7 +58,7 @@ describe('shortestPath() — shortest vertex paths from each source', () => {
             V(),
             has('name', 'vadas'),
             shortestPath()
-              .with(ShortestPath.direction, 'in')
+              .with(ShortestPath.edges, Direction.IN)
               .with(ShortestPath.target, has('name', 'marko')),
           ),
           g,

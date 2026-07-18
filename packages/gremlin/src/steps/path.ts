@@ -67,11 +67,11 @@ export const ShortestPath = {
   /** A sub-traversal selecting the destination vertices. */
   target: Symbol('ShortestPath.target'),
   /**
-   * Edge direction the BFS follows: `'both'` (default, undirected — matches
-   * TinkerPop), `'out'`, or `'in'`. Our simplified form of TinkerPop's
-   * `ShortestPath.edges` modulator, for a directed shortest-path search.
+   * Which incident edges the search follows, as a `Direction`: `Direction.BOTH`
+   * (default, undirected — TinkerPop's default), `Direction.OUT`, or
+   * `Direction.IN`. TinkerPop's `ShortestPath.edges` modulator.
    */
-  direction: Symbol('ShortestPath.direction'),
+  edges: Symbol('ShortestPath.edges'),
 } as const;
 
 /** A `shortestPath()` step builder, configurable via `.with(...)`. */
@@ -92,7 +92,7 @@ const makeShortestPath = (target?: Plan, direction?: Direction): ShortestPathSte
           return makeShortestPath(buildPlan(value as SubPlan), direction);
         }
 
-        if (option === ShortestPath.direction) {
+        if (option === ShortestPath.edges) {
           return makeShortestPath(target, value as Direction);
         }
 

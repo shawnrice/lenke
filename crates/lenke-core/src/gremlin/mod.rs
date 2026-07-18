@@ -381,7 +381,7 @@ pub enum Step {
     /// Emit the shortest vertex path(s) from each source vertex; `target`
     /// (set via `.with(ShortestPath.target, …)`) filters destinations. `out`/`inn`
     /// pick which incident edges the BFS follows (both true = undirected, the
-    /// TinkerPop default; set via `.with(ShortestPath.direction, 'out'|'in'|'both')`).
+    /// TinkerPop default; set via `.with(ShortestPath.edges, Direction.OUT|IN|BOTH)`).
     ShortestPath {
         target: Option<Box<Traversal>>,
         out: bool,
@@ -864,18 +864,24 @@ impl Traversal {
         }
         self
     }
-    /// Set the edge direction on the most recent `shortestPath` step (the textual
-    /// `.with(ShortestPath.direction, 'out'|'in'|'both')` modulator). An
-    /// unrecognized value leaves the default (undirected).
-    pub fn with_shortest_path_direction(mut self, dir: &str) -> Self {
-        if let Some(Step::ShortestPath { out, inn, .. }) = self.steps.last_mut() {
-            match dir {
-                "out" => (*out, *inn) = (true, false),
-                "in" => (*out, *inn) = (false, true),
-                _ => (*out, *inn) = (true, true),
+    /// Set which incident edges the most recent `shortestPath` step follows, from the
+    /// conformant `.with(ShortestPath.edges, Direction.OUT|IN|BOTH)` modulator (`BOTH`
+    /// = undirected, the TinkerPop default). Rejects any non-`Direction` value.
+    pub fn with_shortest_path_edges(mut self, edges: &str) -> Result<Self, String> {
+        let (out, inn) = match edges {
+            "Direction.OUT" => (true, false),
+            "Direction.IN" => (false, true),
+            "Direction.BOTH" => (true, true),
+            _ => {
+                return Err(
+                    "with(ShortestPath.edges, …): expected Direction.OUT, Direction.IN, or Direction.BOTH".into(),
+                );
             }
+        };
+        if let Some(Step::ShortestPath { out: o, inn: i, .. }) = self.steps.last_mut() {
+            (*o, *i) = (out, inn);
         }
-        self
+        Ok(self)
     }
     pub fn page_rank(self, alpha: Option<f64>) -> Self {
         self.push(Step::PageRank {
