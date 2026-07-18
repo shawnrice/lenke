@@ -73,6 +73,14 @@ export type ReconnectingClientOptions = {
    */
   retry?: { baseMs?: number; maxMs?: number };
   /**
+   * This client's stable identity, passed through to the inner client. Crucial for
+   * multiplayer over a reconnecting transport: the SAME `clientId` re-attaches on
+   * every re-dial, so the host's origin-skip and write-stream dedupe hold ACROSS a
+   * reconnect (a re-sent write isn't echoed back as if from a new peer). Omit for a
+   * per-connection random id (fine for a pure read/live-query client).
+   */
+  clientId?: string;
+  /**
    * Passed through to the inner client (which lives for this manager's whole
    * life, so the bound matters most here): how many wire-inactive standing
    * queries to keep warm. Default 64.
@@ -81,17 +89,23 @@ export type ReconnectingClientOptions = {
 };
 
 /**
- * The client surface plus connectivity. `receive` is absent — the manager owns
- * the transport, so inbound messages are fed internally, never by the caller.
+ * The client surface plus connectivity. Includes the full CDC/multiplayer surface
+ * — `clientId`, `subscribeWrites`, `onDisconnect` — which survive reconnect via the
+ * manager's internal {@link SyncClient.replay}, so multiplayer + reconnect compose.
+ * `receive` and `replay` are absent by design: the manager owns the transport, so
+ * inbound messages and re-emits are driven internally, never by the caller.
  */
 export type ReconnectingClient = Pick<
   SyncClient,
+  | 'clientId'
   | 'liveQuery'
   | 'query'
   | 'gremlin'
   | 'mutate'
   | 'mutateGremlin'
   | 'pushWrite'
+  | 'subscribeWrites'
+  | 'onDisconnect'
   | 'getStatus'
   | 'onStatus'
   | 'subscriptionCount'
@@ -125,6 +139,7 @@ export const createReconnectingClient = (
         conn.send(m);
       }
     },
+    clientId: options.clientId,
     maxInactiveQueries: options.maxInactiveQueries,
   });
 
@@ -204,12 +219,18 @@ export const createReconnectingClient = (
   dial();
 
   return {
+    clientId: inner.clientId,
     liveQuery: inner.liveQuery,
     query: inner.query,
     gremlin: inner.gremlin,
     mutate: inner.mutate,
     mutateGremlin: inner.mutateGremlin,
     pushWrite: inner.pushWrite,
+    // The CDC surface — writes subscription + presence teardown. Both live on the
+    // long-lived inner client and re-emit on reconnect via replay(), so a
+    // multiplayer app keeps its cross-client stream and presence across drops.
+    subscribeWrites: inner.subscribeWrites,
+    onDisconnect: inner.onDisconnect,
     getStatus: inner.getStatus,
     onStatus: inner.onStatus,
     subscriptionCount: inner.subscriptionCount,

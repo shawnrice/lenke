@@ -128,9 +128,13 @@ keys, desc)` (Column selector), and `select(Column.keys|values)` (the observable
 
 ## Medium — sync / CDC (Kenji R10)
 
-- **`createReconnectingClient` omits the CDC surface** (biggest sync gap). The reconnect
-  wrapper `Pick<>`s out subscribeWrites/onDisconnect/pushWrite/replay/clientId/receive →
-  can't do multiplayer + reconnect together. Widen the surface?
+- ~~**`createReconnectingClient` omits the CDC surface**~~ (was the biggest sync gap) —
+  FIXED. Widened the reconnect surface to expose `clientId` + `subscribeWrites` +
+  `onDisconnect` (which survive reconnect via the manager's internal `replay()`), AND
+  added a `clientId` option threaded to the inner client so multiplayer identity /
+  origin-skip holds ACROSS a reconnect. `receive`/`replay` stay internal by design
+  (the manager owns the transport). Test proves cross-client writes arrive before AND
+  after a reconnect (multiplayer + reconnect together).
 - ~~**Export `runWrite` from `@lenke/sync`.**~~ — SHIPPED: `runWrite` (the canonical
   CDC write-dispatch) is now re-exported from `@lenke/sync`.
 - ~~**CDC live-tail gap-detection**~~ — FIXED `8403c90` (a `from` cursor on the writes

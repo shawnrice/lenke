@@ -9,9 +9,11 @@ import { existsSync } from 'node:fs';
 import { createStore, graphFromNdjson } from '@lenke/native';
 import { createFfiBackend } from '@lenke/native/ffi';
 
+import { createSyncClient } from './client.js';
 import { createSyncHost } from './host.js';
 import type { HostMessage } from './protocol.js';
 import { createReconnectingClient } from './reconnect.js';
+import { createWriteLog, type WriteLog } from './writelog.js';
 
 const LIB_EXTENSIONS: Partial<Record<NodeJS.Platform, string>> = { darwin: 'dylib', win32: 'dll' };
 const LIB_EXT = LIB_EXTENSIONS[process.platform] ?? 'so';
@@ -52,7 +54,10 @@ suite('createReconnectingClient', () => {
   // A controllable transport: each connection gets a fresh host over the shared
   // store (exactly the per-socket-host topology a server runs). `cut()` drops
   // the live connection, which triggers the manager's re-dial.
-  const makeTransport = (store: ReturnType<typeof createStore>, opts?: { syncOpen?: boolean }) => {
+  const makeTransport = (
+    store: ReturnType<typeof createStore>,
+    opts?: { syncOpen?: boolean; writeLog?: WriteLog },
+  ) => {
     let liveClosed: (() => void) | null = null;
     let liveHost: ReturnType<typeof createSyncHost> | null = null;
     let allow = true; // when false, every dial fails to open (a held outage)
@@ -72,6 +77,7 @@ suite('createReconnectingClient', () => {
       connects++;
       const host = createSyncHost(store, {
         send: (m: HostMessage) => queueMicrotask(() => received(m)),
+        writeLog: opts?.writeLog,
       });
       liveHost = host;
       liveClosed = closed;
@@ -170,6 +176,57 @@ suite('createReconnectingClient', () => {
     await done; // resolves only once the wire returns and the ack arrives
     expect(acked).toBe(true);
     await until(() => live.getSnapshot().rows.length === 3, 'the parked write is visible');
+
+    client.close();
+  });
+
+  test('the CDC write stream + clientId survive a reconnect (multiplayer + reconnect)', async () => {
+    const store = createStore(
+      graphFromNdjson(createFfiBackend(LIB), new TextEncoder().encode(NDJSON)),
+    );
+    // The CDC stream needs a shared op log across every per-connection host.
+    const writeLog = createWriteLog();
+    const t = makeTransport(store, { writeLog });
+    const client = createReconnectingClient({
+      connect: t.connect,
+      retry: { baseMs: 1, maxMs: 5 },
+      clientId: 'me',
+    });
+
+    // clientId is now exposed (it used to be Pick<>'d out of the reconnect surface).
+    expect(client.clientId).toBe('me');
+
+    // A second, independent client on the same server — the "other player".
+    const box: { c?: ReturnType<typeof createSyncClient> } = {};
+    const otherHost = createSyncHost(store, {
+      send: (m) => queueMicrotask(() => box.c?.receive(m)),
+      writeLog,
+    });
+    box.c = createSyncClient({ send: (m) => queueMicrotask(() => otherHost.receive(m)) });
+    const other = box.c;
+
+    await until(() => client.connected(), 'first open');
+
+    // Subscribe to the CDC stream on the reconnecting client (the widened surface).
+    const seen: string[] = [];
+    client.subscribeWrites((w) => seen.push(...w.map((x) => x.text)));
+    // onDisconnect is exposed too — registering ephemeral teardown must not throw.
+    client.onDisconnect([{ text: "MATCH (p:Presence {sid: 'me'}) DETACH DELETE p" }]);
+
+    // The other player's write arrives on the reconnecting client's CDC stream.
+    await other.mutate("INSERT (:Person {name: 'carol'})");
+    await until(() => seen.length === 1, 'first cross-client write');
+
+    // Drop + auto-reconnect; replay() must re-subscribe the write stream from the cursor.
+    t.cut();
+    await until(() => !client.connected(), 'offline');
+    await until(() => client.connected(), 'reconnect');
+
+    // A write AFTER the reconnect still reaches the stream — proving replay
+    // re-subscribed it (this is exactly "multiplayer + reconnect together").
+    await other.mutate("INSERT (:Person {name: 'dave'})");
+    await until(() => seen.length === 2, 'cross-client write after reconnect');
+    expect(seen).toEqual(["INSERT (:Person {name: 'carol'})", "INSERT (:Person {name: 'dave'})"]);
 
     client.close();
   });
