@@ -12,8 +12,9 @@
 //! 8-byte aligned, LSB-first validity bitmap, `i32` Utf8 offsets), so the JS side
 //! reconstructs real `arrow.Vector`s via `makeData` with zero copy. The envelope
 //! around them is a compact custom header (below) rather than Arrow's flatbuffer
-//! IPC framing — that keeps this dependency-free; an IPC-stream wrapper (for
-//! `tableFromIPC`) can layer on top later without changing the buffers.
+//! IPC framing — that keeps this dependency-free. The standard Arrow **IPC**
+//! wrapper (for `tableFromIPC` / DuckDB / Polars / pandas) layers on top of these
+//! exact buffers in `@lenke/native/arrow` (`toArrowIPC`), without changing them.
 //!
 //! ## Blob layout (all integers little-endian)
 //! ```text

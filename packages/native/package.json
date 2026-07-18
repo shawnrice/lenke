@@ -17,6 +17,10 @@
     "./wasm": {
       "types": "./dist/types/backend-wasm.d.ts",
       "default": "./dist/esm/backend-wasm.mjs"
+    },
+    "./arrow": {
+      "types": "./dist/types/arrow.d.ts",
+      "default": "./dist/esm/arrow.mjs"
     }
   },
   "scripts": {
@@ -32,9 +36,16 @@
   "devDependencies": {
     "@lenke/dev": "workspace:*",
     "@types/bun": "^1.3.13",
+    "apache-arrow": "^21.1.0",
     "bun-types": "latest"
   },
   "peerDependencies": {
+    "apache-arrow": ">=17",
     "typescript": "^6.0.0"
+  },
+  "peerDependenciesMeta": {
+    "apache-arrow": {
+      "optional": true
+    }
   }
 }

@@ -17,7 +17,6 @@
     "typecheck": "bunx tsc --noEmit",
     "check": "bun run typecheck && bun run lint && bun run fmt:check"
   },
-  "dependencies": {},
   "devDependencies": {
     "@lenke/dev": "workspace:*",
     "@nx/vite": "23.0.1",
