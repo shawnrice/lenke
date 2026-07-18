@@ -193,7 +193,10 @@ pub fn append(graph: &mut Graph, text: &str) -> CodeResult<MergeReport> {
     // dedupe is deterministic), and the apply below stays serial (it mutates the
     // shared graph). One bad line short-circuits the whole batch.
     #[cfg(feature = "parallel")]
-    let parsed: Vec<Option<Rec>> = text.par_lines().map(parse_line).collect::<CodeResult<_>>()?;
+    let parsed: Vec<Option<Rec>> = text
+        .par_lines()
+        .map(parse_line)
+        .collect::<CodeResult<_>>()?;
     #[cfg(not(feature = "parallel"))]
     let parsed: Vec<Option<Rec>> = text.lines().map(parse_line).collect::<CodeResult<_>>()?;
     let recs: Vec<Rec> = parsed.into_iter().flatten().collect();
