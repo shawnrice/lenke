@@ -29,6 +29,15 @@ export type WriteLogEntry = {
    * "affects everything / can't infer" (e.g. a Gremlin write) → forward to all.
    */
   tokens?: readonly string[];
+  /**
+   * The write's content-derived **value-scope** — the distinct values of the
+   * host's configured scope key across the elements this write touched (e.g.
+   * `['42']` for a write into room 42). A host with a `scopes` filter forwards the
+   * write only if this intersects it. `undefined` means "unscoped / can't derive"
+   * (no scope key configured, or the write touched no scoped element) → forward
+   * regardless of any scope filter.
+   */
+  scope?: readonly string[];
 };
 
 export type WriteLogOptions = {
@@ -42,9 +51,14 @@ export type WriteLogOptions = {
 
 export type WriteLog = {
   /** Append a committed write tagged with the committing client's stable id (with
-   *  the tokens it touches, for interest routing); assigns + returns its `seq`
-   *  and notifies subscribers. */
-  append(origin: string, write: SyncWrite, tokens?: readonly string[]): number;
+   *  the tokens it touches, and its value-scope, for interest routing); assigns +
+   *  returns its `seq` and notifies subscribers. */
+  append(
+    origin: string,
+    write: SyncWrite,
+    tokens?: readonly string[],
+    scope?: readonly string[],
+  ): number;
   /** Subscribe to the live tail. Returns an unsubscribe. */
   subscribe(cb: (entry: WriteLogEntry) => void): () => void;
   /**
@@ -64,9 +78,9 @@ export const createWriteLog = (options: WriteLogOptions = {}): WriteLog => {
   let seq = 0;
 
   return {
-    append: (origin, write, tokens) => {
+    append: (origin, write, tokens, scope) => {
       seq += 1;
-      const entry: WriteLogEntry = { seq, origin, write, tokens };
+      const entry: WriteLogEntry = { seq, origin, write, tokens, scope };
       buffer.push(entry);
 
       if (buffer.length > capacity) {

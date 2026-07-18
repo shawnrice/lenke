@@ -106,6 +106,7 @@ export function createNodeBackend() {
     dropVertexIndex: (handle, key) => get(handle).dropVertexIndex(key),
     dropEdgeIndex: (handle, key) => get(handle).dropEdgeIndex(key),
     vertexIndexes: (handle) => get(handle).vertexIndexes(),
+    lastWriteScope: (handle, key) => get(handle).lastWriteScope(key),
     edgeIndexes: (handle) => get(handle).edgeIndexes(),
 
     // `prepare` is a module-level addon function (a Prepared needs no graph);

@@ -254,6 +254,17 @@ export type SubscribeWritesMessage = {
    * fallback (the prior behavior; breaks on reconnect).
    */
   clientId?: string;
+  /**
+   * Value-scope filter — the set of scope-key values this client cares about
+   * (e.g. `['42']` for room 42). When set, the host forwards only writes whose
+   * content-derived value-scope intersects it, so a many-room app replicates just
+   * the client's rooms rather than the whole graph. Requires the host to be
+   * configured with a `scopeKey` (the property that names the scope, e.g.
+   * `'room'`); without one, or omitted here, the stream is unscoped (every write,
+   * subject to token routing). Interest routing, not a security boundary — the
+   * host may still enforce/derive scopes from auth.
+   */
+  scopes?: readonly string[];
 };
 
 /**

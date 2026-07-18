@@ -47,7 +47,7 @@ const widgets = (s: Store): number =>
 
 /** A server: one authoritative store + one shared op log; `client()` attaches a
  *  fresh connection (its own host) to it. */
-const server = (writeLog: WriteLog = createWriteLog()) => {
+const server = (writeLog: WriteLog = createWriteLog(), scopeKey?: string) => {
   const store = newStore();
   // A fresh connection (its own host) on the shared store+log. Pass a `clientId`
   // to pin a stable identity — the same value re-attached over a new host is a
@@ -56,7 +56,7 @@ const server = (writeLog: WriteLog = createWriteLog()) => {
     // Circular wiring (host.send → client, client.send → host); a box lets both
     // stay `const` while the client is assigned after the host is built.
     const link: { c?: SyncClient } = {};
-    const host = createSyncHost(store, { send: (m) => link.c?.receive(m), writeLog });
+    const host = createSyncHost(store, { send: (m) => link.c?.receive(m), writeLog, scopeKey });
     link.c = createSyncClient({ send: (m) => host.receive(m), clientId });
 
     return link.c;
@@ -103,6 +103,57 @@ suite('CDC write stream (TS vs native store)', () => {
 
     expect(aSeen.map((w) => w.text)).toEqual(['INSERT (:Widget {id: 1})']);
     expect(bSeen).toEqual([]); // B applied it optimistically; no self-echo
+  });
+
+  test('value-scope routing: a room-scoped subscriber gets only its room', async () => {
+    // The server partitions the CDC stream by the `room` property.
+    const s = server(createWriteLog(), 'room');
+    const a = s.client(); // watches room 42 only
+    const b = s.client(); // watches rooms 7 and 9
+    const writer = s.client();
+    const aSeen: string[] = [];
+    const bSeen: string[] = [];
+    a.subscribeWrites((w) => aSeen.push(...w.map((x) => x.text)), { scopes: ['42'] });
+    b.subscribeWrites((w) => bSeen.push(...w.map((x) => x.text)), { scopes: ['7', '9'] });
+
+    await writer.mutate('INSERT (:Msg {room: 42, body: $t})', { t: 'to-42' });
+    await writer.mutate('INSERT (:Msg {room: 7, body: $t})', { t: 'to-7' });
+    await writer.mutate('INSERT (:Msg {room: 99, body: $t})', { t: 'to-99' });
+
+    // A (room 42) saw only the 42 write; B (rooms 7,9) saw only the 7 write; the
+    // room-99 write reached neither — the graph is NOT replicated whole.
+    expect(aSeen).toEqual(['INSERT (:Msg {room: 42, body: $t})']);
+    expect(bSeen).toEqual(['INSERT (:Msg {room: 7, body: $t})']);
+  });
+
+  test('an unscoped subscriber still receives every write (opt-in only)', async () => {
+    const s = server(createWriteLog(), 'room');
+    const watcher = s.client(); // no scopes → fire hose (back-compat)
+    const writer = s.client();
+    const seen: string[] = [];
+    watcher.subscribeWrites((w) => seen.push(...w.map((x) => x.text)));
+
+    await writer.mutate('INSERT (:Msg {room: 1})');
+    await writer.mutate('INSERT (:Msg {room: 2})');
+
+    expect(seen).toEqual(['INSERT (:Msg {room: 1})', 'INSERT (:Msg {room: 2})']);
+  });
+
+  test('a write with no scope value reaches a scoped subscriber (fail-open)', async () => {
+    // A write that touches no `room`-bearing element can't be scoped, so it is
+    // NOT hidden from a scoped subscriber — scope only ever narrows, never drops
+    // an unclassifiable write.
+    const s = server(createWriteLog(), 'room');
+    const a = s.client();
+    const writer = s.client();
+    const seen: string[] = [];
+    a.subscribeWrites((w) => seen.push(...w.map((x) => x.text)), { scopes: ['42'] });
+
+    await writer.mutate('INSERT (:Note {body: $b})', { b: 'unscoped' }); // no room
+    await writer.mutate('INSERT (:Msg {room: 42})'); // in scope
+    await writer.mutate('INSERT (:Msg {room: 7})'); // out of scope
+
+    expect(seen).toEqual(['INSERT (:Note {body: $b})', 'INSERT (:Msg {room: 42})']);
   });
 
   test('catch-up: a late subscriber replays the retained tail', async () => {

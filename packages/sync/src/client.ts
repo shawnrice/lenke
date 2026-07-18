@@ -198,6 +198,13 @@ export type SyncClient = {
     opts?: {
       onResync?: () => void;
       onIngestError?: (error: unknown, writes: readonly SyncWrite[]) => void;
+      /**
+       * Value-scope filter — only receive writes whose content-derived scope
+       * intersects these values (e.g. `['42']` for room 42), so a many-room app
+       * replicates just this client's rooms. Requires the host to be configured
+       * with a `scopeKey`. Survives reconnect (re-sent via {@link replay}).
+       */
+      scopes?: readonly string[];
     },
   ) => () => void;
   /**
@@ -478,6 +485,8 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
   let writeIngestError: ((error: unknown, writes: readonly SyncWrite[]) => void) | undefined;
   let writeCursor = 0;
   let writesSubscribed = false;
+  // Value-scope filter for the CDC stream (retained so `replay` re-sends it).
+  let writeScopes: readonly string[] | undefined;
   // Ephemeral cleanup writes registered for this connection (presence teardown);
   // re-sent on reconnect so the fresh host runs them when THAT connection drops.
   let disconnectWrites: readonly SyncWrite[] | undefined;
@@ -929,8 +938,9 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
       writeHandler = onWrites;
       writeResync = opts?.onResync;
       writeIngestError = opts?.onIngestError;
+      writeScopes = opts?.scopes;
       writesSubscribed = true;
-      send({ type: 'subscribeWrites', since: writeCursor, clientId });
+      send({ type: 'subscribeWrites', since: writeCursor, clientId, scopes: writeScopes });
 
       return () => {
         writeHandler = undefined;
@@ -971,7 +981,7 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
       // `clientId` re-identifies us to the FRESH host so origin-skip filters our
       // own writes out of the replayed backlog (the reconnect re-apply bug).
       if (writesSubscribed) {
-        send({ type: 'subscribeWrites', since: writeCursor, clientId });
+        send({ type: 'subscribeWrites', since: writeCursor, clientId, scopes: writeScopes });
       }
 
       // Re-register the ephemeral cleanup so the fresh host tears it down if THIS

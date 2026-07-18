@@ -139,8 +139,17 @@ keys, desc)` (Column selector), and `select(Column.keys|values)` (the observable
   CDC write-dispatch) is now re-exported from `@lenke/sync`.
 - ~~**CDC live-tail gap-detection**~~ — FIXED `8403c90` (a `from` cursor on the writes
   message trips `resync` on a gap/reorder).
-- **Value-level scope / per-room CDC channel.** Interest routing is label-only → a
-  many-room app replicates the whole graph per client. Needs a value-keyed write filter.
+- ~~**Value-level scope / per-room CDC channel.**~~ — SHIPPED (content-derived,
+  measured cheap). A host configured with `scopeKey: 'room'` tags every committed
+  write with its value-scope — the distinct values of that property across the
+  write's touched elements, read natively via `graph.lastWriteScope` off the
+  already-collected `tx_touched` set (~13 ns/read, <1% of the write; bench in
+  `examples/cdc_extract_bench.rs`). A client `subscribeWrites(onWrites, { scopes:
+  ['42'] })` then receives only its rooms — a many-room app no longer replicates the
+  whole graph. Fail-open (an unclassifiable/unscoped write still forwards; scope only
+  narrows) and an **optimization, not a security boundary** (client-declared, like
+  the existing token routing). Deferred: traversal-resolved scope (scope on a related
+  element, not a direct property) + server-enforced scopes from auth.
 - **LWW tiebreak recipe / HLC.** `_MERGE … WHERE version < $v` diverges on colliding
   version stamps; no built-in Lamport/HLC or (version, clientId) tiebreak.
 - **`RustGraph.store.free()` ergonomics.** Reinforced R12 — replica fleets fire

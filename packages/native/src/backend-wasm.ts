@@ -103,6 +103,7 @@ type WasmExports = {
   lnk_commit_tx: (h: number) => number;
   lnk_rollback_tx: (h: number) => number;
   lnk_vertex_indexes: (h: number, outLen: number) => number;
+  lnk_last_write_scope: (h: number, key: number, keyLen: number, outLen: number) => number;
   lnk_edge_indexes: (h: number, outLen: number) => number;
   lnk_prepare: (q: number, qlen: number, max: number) => number;
   lnk_prepared_free: (p: number) => void;
@@ -775,6 +776,20 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
             (h, _q, _ql, _p, _pl, o) => ex.lnk_edge_indexes(h, o),
             ex.lnk_free_buf,
             'edgeIndexes',
+          ),
+        ),
+      ) as string[],
+    // The scope key rides `takeBuf`'s query slot (staged into wasm memory as q/qlen).
+    lastWriteScope: (handle, key) =>
+      JSON.parse(
+        decoder.decode(
+          takeBuf(
+            handle,
+            key,
+            null,
+            (h, q, ql, _p, _pl, o) => ex.lnk_last_write_scope(h, q, ql, o),
+            ex.lnk_free_buf,
+            'lastWriteScope',
           ),
         ),
       ) as string[],

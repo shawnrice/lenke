@@ -197,6 +197,13 @@ impl Graph {
         self.inner.vertex_indexes()
     }
 
+    /// The distinct values of property `key` across the vertices the most recent
+    /// committed write touched — that write's content-derived CDC value-scope.
+    #[napi]
+    pub fn last_write_scope(&self, key: String) -> Vec<String> {
+        self.inner.last_write_scope(&key)
+    }
+
     #[napi]
     pub fn edge_indexes(&self) -> Vec<String> {
         self.inner.edge_indexes()

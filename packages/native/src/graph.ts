@@ -378,6 +378,15 @@ export type RustGraph = {
   vertexIndexes: () => string[];
   edgeIndexes: () => string[];
   /**
+   * The distinct values of property `key` across the vertices the most recent
+   * committed write touched — that write's content-derived **value-scope**, for CDC
+   * interest routing (`lastWriteScope('room')` → `['42']` right after a write into
+   * room 42). Empty when the last write touched no vertex carrying `key`. Reads a
+   * handful of columns off the already-collected touched set — see
+   * `crates/lenke-core/examples/cdc_extract_bench.rs`.
+   */
+  lastWriteScope: (key: string) => string[];
+  /**
    * Run `fn` as one atomic transaction (R-TX). Every write inside applies to the
    * graph immediately (so reads see their own writes), but if `fn` throws — or a
    * deferred constraint check fails at commit — the whole batch rolls back and
@@ -786,6 +795,7 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
     dropVertexIndex: (key) => backend.dropVertexIndex(live(), key),
     dropEdgeIndex: (key) => backend.dropEdgeIndex(live(), key),
     vertexIndexes: () => backend.vertexIndexes(live()),
+    lastWriteScope: (key) => backend.lastWriteScope(live(), key),
     edgeIndexes: () => backend.edgeIndexes(live()),
     beginTransaction: () => backend.beginTransaction(live()),
     commitTransaction: () => backend.commitTransaction(live()),

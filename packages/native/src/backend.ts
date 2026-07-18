@@ -145,6 +145,9 @@ export type Backend = {
   /** The currently-indexed vertex / edge property keys (sorted). */
   vertexIndexes: (handle: GraphHandle) => string[];
   edgeIndexes: (handle: GraphHandle) => string[];
+  /** The distinct values of property `key` across the last committed write's touched
+   * vertices — that write's content-derived CDC value-scope. */
+  lastWriteScope: (handle: GraphHandle, key: string) => string[];
 
   /**
    * Run a GQL query; returns the `{columns, rows}` JSON document as bytes.

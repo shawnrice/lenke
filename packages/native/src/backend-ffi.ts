@@ -64,6 +64,7 @@ const SYMBOLS = {
   lnk_commit_tx: { args: [FFIType.ptr], returns: FFIType.i32 },
   lnk_rollback_tx: { args: [FFIType.ptr], returns: FFIType.i32 },
   lnk_vertex_indexes: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.ptr },
+  lnk_last_write_scope: { args: [FFIType.ptr, FFIType.ptr, U, FFIType.ptr], returns: FFIType.ptr },
   lnk_edge_indexes: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.ptr },
   lnk_prepare: { args: [FFIType.ptr, U, U], returns: FFIType.ptr },
   lnk_prepared_free: { args: [FFIType.ptr], returns: FFIType.void },
@@ -546,6 +547,20 @@ export const createFfiBackend = (libPath: string): Backend => {
           ),
         ),
       ) as string[],
+    lastWriteScope: (handle, key) => {
+      const k = encoder.encode(key);
+
+      return JSON.parse(
+        decoder.decode(
+          takeBuf(
+            (outLen) =>
+              symbols.lnk_last_write_scope(asPtr(handle), bytesPtr(k), k.byteLength, outLen),
+            symbols.lnk_free_buf,
+            'lastWriteScope',
+          ),
+        ),
+      ) as string[];
+    },
 
     queryRows: (handle, query, params) => {
       const q = encoder.encode(query);

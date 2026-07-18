@@ -13,7 +13,8 @@ use crate::query;
 
 #[no_mangle]
 pub extern "C" fn lnk_abi_version() -> u32 {
-    13 // 13: lnk_query_arrow_ipc (native Arrow IPC egress);
+    14 // 14: lnk_last_write_scope (content-derived CDC value-scope);
+       // 13: lnk_query_arrow_ipc (native Arrow IPC egress);
        // 12: lnk_prepare takes a max-operator-chain arg; 11: per-graph operator-chain
        //    ceiling (lnk_graph_set_max_operator_chain);
        // 10: native graph algorithms (lnk_algo); 9: query params (lnk_query_rows/
@@ -713,6 +714,32 @@ unsafe fn index_keys_buf(keys: &[String], out_len: *mut usize) -> *mut u8 {
     let bytes = json.into_bytes().into_boxed_slice();
     *out_len = bytes.len();
     Box::into_raw(bytes) as *mut u8
+}
+
+/// The distinct values of property `key` across the vertices touched by the most
+/// recent committed write — that write's content-derived CDC value-scope — as a
+/// JSON string array (free with [`lnk_free_buf`]). Empty (`[]`) when the last write
+/// touched no vertex carrying `key`. Null graph / bad UTF-8 → an empty array.
+///
+/// # Safety
+/// `g` valid + shared for this call; `key_ptr`/`key_len` valid UTF-8; `out_len`
+/// writable.
+#[no_mangle]
+pub unsafe extern "C" fn lnk_last_write_scope(
+    g: *const Graph,
+    key_ptr: *const u8,
+    key_len: usize,
+    out_len: *mut usize,
+) -> *mut u8 {
+    let scope = if g.is_null() || key_ptr.is_null() {
+        Vec::new()
+    } else {
+        match std::str::from_utf8(std::slice::from_raw_parts(key_ptr, key_len)) {
+            Ok(key) => (*g).last_write_scope(key),
+            Err(_) => Vec::new(),
+        }
+    };
+    index_keys_buf(&scope, out_len)
 }
 
 /// Parse + run a GQL-subset query, writing the `(count, sum)` signature.

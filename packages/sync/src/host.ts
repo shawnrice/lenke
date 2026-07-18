@@ -117,6 +117,16 @@ export type SyncHostOptions = {
    */
   writeLog?: WriteLog;
   /**
+   * The property whose value names a write's **scope** for value-level CDC routing
+   * (e.g. `'room'` or `'tenant'`). When set, every committed write is tagged with
+   * the distinct values of this property across the elements it touched (via the
+   * native `graph.lastWriteScope`), and a client that subscribes with a `scopes`
+   * filter receives only writes whose scope intersects it — so a many-room app
+   * replicates just the client's rooms, not the whole graph. Omit for label-only
+   * interest routing (the prior behavior). Optimization, not a security boundary.
+   */
+  scopeKey?: string;
+  /**
    * Shared server-side request-id dedupe for **exactly-once** writes. When
    * present, a re-sent write (a lost-ack reconnect replay, identified by its
    * globally-unique `req`) is re-acked without re-applying — no double-increment,
@@ -230,7 +240,12 @@ const writeTokens = (text: string, lang?: 'gql' | 'gremlin'): string[] | undefin
 let connCounter = 0;
 
 export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost => {
-  const { send, writeLog, dedup } = options;
+  const { send, writeLog, dedup, scopeKey } = options;
+  // The just-committed write's value-scope (distinct scope-key values across its
+  // touched elements), read straight off the store — `undefined` when no scopeKey
+  // is configured, so an unscoped host stays exactly as before.
+  const writeScope = (): readonly string[] | undefined =>
+    scopeKey === undefined ? undefined : store.graph.lastWriteScope(scopeKey);
   // Origin-skip identity. A write's op-log entry is tagged with the committing
   // client's STABLE id (not a per-connection id), so the author's own write is
   // filtered out of its CDC backlog even across a reconnect (a fresh host for the
@@ -506,10 +521,13 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
       // stream subscribers ingest it (CDC). No-op if no writeLog is configured.
       // The tokens ride along for interest routing at fan-out time. Tagged with
       // this client's stable id so its own backlog skips it across reconnects.
+      // Read the write's value-scope right after it commits (before any other
+      // write moves the store's last-write pointer), so the CDC entry carries it.
       writeLog?.append(
         myOrigin(),
         { text, lang: msg.lang, params: msg.params },
         writeTokens(text, msg.lang),
+        writeScope(),
       );
       dedup?.mark(msg.req); // record only AFTER a successful apply
       send({ type: 'ack', req: msg.req, ok: true });
@@ -557,8 +575,20 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
 
       return tokens.some((t) => interest.has(t));
     };
+
+    // Value-scope routing: a client that declared `scopes` receives only writes
+    // whose content-derived scope intersects it (e.g. a room-42 client skips a
+    // room-7 write). No filter, or an unscoped write (no scopeKey / touched no
+    // scoped element), forwards regardless — fail-open, so scope only ever narrows.
+    const scopeFilter = msg.scopes && msg.scopes.length > 0 ? new Set(msg.scopes) : undefined;
+    const inScope = (scope: readonly string[] | undefined): boolean =>
+      scopeFilter === undefined ||
+      scope === undefined ||
+      scope.length === 0 || // touched no scoped element → unclassifiable → fail-open
+      scope.some((v) => scopeFilter.has(v));
+
     const deliver = (entry: WriteLogEntry): boolean =>
-      entry.origin !== myOrigin() && wants(entry.tokens);
+      entry.origin !== myOrigin() && wants(entry.tokens) && inScope(entry.scope);
 
     // The last cursor sent to this client, stamped as `from` on each batch so the
     // client can verify the tail is contiguous (gap/reorder → cold-boot). Starts

@@ -560,6 +560,11 @@ pub struct Graph {
     /// Edge analogue of `tx_touched`: edge indices whose built-in edge constraints
     /// must be re-checked at commit (R-TX deferral for edge writes).
     tx_touched_edges: Vec<u32>,
+    /// The vertices touched by the most recent committed write — a snapshot of
+    /// `tx_touched` taken at commit (before it's cleared), so a caller can derive
+    /// that write's value-scope for CDC routing (`last_write_scope`). Content-derived
+    /// scope extraction rides the touched set the commit already collects.
+    last_touched: Vec<u32>,
     applying_undo: bool,
     /// Anti-resource-abuse ceiling on GQL operator-chain length, passed to the
     /// parser on each query (see `gql::parser::DEFAULT_MAX_CHAIN`). Defaults to
@@ -811,6 +816,35 @@ impl Graph {
     }
     pub fn is_vertex_live(&self, v: u32) -> bool {
         self.v_live.get(v as usize).copied().unwrap_or(false)
+    }
+
+    /// The distinct values of property `key` across the vertices touched by the most
+    /// recent committed write — the content-derived **value-scope** of that write,
+    /// for CDC interest routing (e.g. `last_write_scope("room")` → `["42"]` after a
+    /// write into room 42). Rides the touched set the commit already collects, so
+    /// it's a handful of columnar reads (see `examples/cdc_extract_bench.rs`). Tombstoned
+    /// vertices and elements without the key are skipped. Values render like a scope
+    /// token: numbers without a trailing `.0`, strings verbatim, booleans as
+    /// `true`/`false`.
+    pub fn last_write_scope(&self, key: &str) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for &vi in &self.last_touched {
+            if !self.is_vertex_live(vi) {
+                continue;
+            }
+            let rendered = match self.props.value(vi as usize, key, &self.strs) {
+                Value::Null => continue,
+                Value::Str(s) => s.to_string(),
+                Value::Bool(b) => b.to_string(),
+                Value::Num(n) => format!("{n}"),
+                // A structured value can't be a scope token.
+                Value::List(_) | Value::Map(_) | Value::Temporal(_) => continue,
+            };
+            if !out.contains(&rendered) {
+                out.push(rendered);
+            }
+        }
+        out
     }
     pub fn is_edge_live(&self, e: u32) -> bool {
         self.e_live.get(e as usize).copied().unwrap_or(false)
@@ -2221,6 +2255,14 @@ impl Graph {
                 return Err(TxCommitError::Invariant(e));
             }
         }
+        // Snapshot the touched vertices so a caller can derive this write's
+        // value-scope (`last_write_scope`) after the transaction closes. Only a
+        // write leaves a non-empty undo log — a pure-read commit clears the snapshot.
+        if self.tx_undo.is_empty() {
+            self.last_touched.clear();
+        } else {
+            self.last_touched.clone_from(&self.tx_touched);
+        }
         self.tx_undo.clear();
         self.tx_touched.clear();
         self.tx_touched_edges.clear();
@@ -3215,6 +3257,7 @@ impl Builder {
             tx_undo: Vec::new(),
             tx_touched: Vec::new(),
             tx_touched_edges: Vec::new(),
+            last_touched: Vec::new(),
             applying_undo: false,
             tx_read_only: false,
             max_operator_chain: 10_000,
@@ -3275,6 +3318,49 @@ mod wellformed_names {
         assert!(validate_prop_key("name").is_ok());
         assert!(validate_prop_key("a::b").is_ok()); // keys are never `::`-joined
         assert!(validate_prop_key("").is_err());
+    }
+}
+
+#[cfg(test)]
+mod last_write_scope {
+    //! The content-derived CDC value-scope of the most recent committed write.
+    use super::*;
+
+    fn run(g: &mut Graph, q: &str) {
+        crate::gql::parse(q)
+            .unwrap()
+            .execute(g, &crate::gql::eval::Params::new())
+            .unwrap();
+    }
+
+    #[test]
+    fn scope_reflects_the_last_write_touched_values() {
+        let mut g = crate::ndjson::decode(
+            r#"{"type":"node","id":"a","labels":["Msg"],"properties":{"room":1}}"#,
+        )
+        .unwrap();
+
+        // An INSERT into room 42 → scope ["42"] (a number renders without `.0`).
+        run(&mut g, "INSERT (:Msg {room: 42, body: 'hi'})");
+        assert_eq!(g.last_write_scope("room"), vec!["42".to_string()]);
+
+        // A SET touching the seed vertex (room 1) → scope ["1"].
+        run(&mut g, "MATCH (m:Msg {room: 1}) SET m.body = 'edited'");
+        assert_eq!(g.last_write_scope("room"), vec!["1".to_string()]);
+
+        // A write touching two rooms → both, distinct, in touch order.
+        run(
+            &mut g,
+            "INSERT (:Msg {room: 7}), (:Msg {room: 7}), (:Msg {room: 9})",
+        );
+        let scope = g.last_write_scope("room");
+        assert_eq!(scope.len(), 2);
+        assert!(scope.contains(&"7".to_string()) && scope.contains(&"9".to_string()));
+
+        // A string scope key renders verbatim; a missing key contributes nothing.
+        run(&mut g, "INSERT (:Msg {tenant: 'acme', body: 'x'})");
+        assert_eq!(g.last_write_scope("tenant"), vec!["acme".to_string()]);
+        assert!(g.last_write_scope("room").is_empty()); // that write set no room
     }
 }
 
