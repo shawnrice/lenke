@@ -79,18 +79,22 @@ betweenness" below.
 
 ## Medium — algorithms & query surface
 
-- **Sampled/approximate betweenness** (Marcus). Exact Brandes O(V·E) is unusable
-  whole-graph at 100k+; needs a deterministic approximate variant (byte-identity).
-- **labelPropagation resolution/seed knob** (Marcus). Degenerates to one community on
-  hubby/scale-free graphs.
+- ~~**Sampled/approximate betweenness**~~ (Marcus) — SHIPPED. A `pivots` config runs
+  Brandes from a deterministic evenly-spaced sample of k sources scaled by n/k
+  (O(pivots·E)); evenly-spaced (not RNG) so both engines pick the same sources →
+  byte-identical. `pivots >= |V|` == exact.
+- ~~**labelPropagation resolution/seed knob**~~ (Marcus) — SHIPPED as `seedProperty`:
+  a vertex carrying a non-null value for that key is an anchor (pinned to its own
+  label), so communities form around seeds instead of collapsing. Byte-identical.
 - ~~**Personalized PageRank / random-walk-with-restart**~~ (Ravi) — SHIPPED
   `personalizedPagerank` (@lenke/core fn, RustGraph method, GQL `CALL
 personalized_pagerank`): restarts to a `sourceNodes` seed set, byte-identical
   native↔TS; empty/unknown seeds degenerate to global PageRank.
-- **SCC** — SHIPPED `stronglyConnectedComponents` (iterative Tarjan, min-index
+- **SCC + onCycle** — SHIPPED `stronglyConnectedComponents` (iterative Tarjan, min-index
   representative → byte-identical native↔TS; @lenke/core fn, RustGraph method, GQL
-  `CALL strongly_connected_components`). Simple-cycle operator + cyclic-match perf
-  cliff (~2.5×/hop) still open.
+  `CALL strongly_connected_components`) and now `onCycle` (per-vertex directed-cycle
+  membership: SCC size>1 or self-loop, byte-identical, `CALL on_cycle`). Simple-cycle
+  ENUMERATION + the cyclic-match perf cliff (~2.5×/hop) still open.
 - ~~**`ANY SHORTEST` can't close on its seed** (R11 B2)~~ — FIXED `ada1782` (BFS now
   tracks the shortest cycle back to the seed; `->+(a)` finds it, both engines).
 - **Sliding-window temporal aggregation** (R11). No windowed aggregate primitive.
@@ -145,20 +149,22 @@ keys, desc)` (Column selector), and `select(Column.keys|values)` (the observable
   write's touched elements, read natively via `graph.lastWriteScope` off the
   already-collected `tx_touched` set (~13 ns/read, <1% of the write; bench in
   `examples/cdc_extract_bench.rs`). A client `subscribeWrites(onWrites, { scopes:
-  ['42'] })` then receives only its rooms — a many-room app no longer replicates the
+['42'] })` then receives only its rooms — a many-room app no longer replicates the
   whole graph. Fail-open (an unclassifiable/unscoped write still forwards; scope only
   narrows) and an **optimization, not a security boundary** (client-declared, like
   the existing token routing). Deferred: traversal-resolved scope (scope on a related
   element, not a direct property) + server-enforced scopes from auth.
 - **LWW tiebreak recipe / HLC.** `_MERGE … WHERE version < $v` diverges on colliding
   version stamps; no built-in Lamport/HLC or (version, clientId) tiebreak.
-- **`RustGraph.store.free()` ergonomics.** Reinforced R12 — replica fleets fire
-  GC-leak warnings; no easy deterministic free without `using`.
+- ~~**`RustGraph.store.free()` ergonomics.**~~ — SHIPPED `Store.free()`: deterministic
+  imperative disposal (sever subscriptions + free the handle) without `using`;
+  `[Symbol.dispose]` delegates to it. Idempotent.
 
 ## Lower — misc
 
-- **`mergeNdjson` not parallel** (Marcus). COPY-FROM path 25% slower than parallel
-  `graphFromNdjson`.
+- ~~**`mergeNdjson` not parallel**~~ (Marcus) — SHIPPED. `ndjson::append` now parses
+  lines with the same rayon fan-out as `decode` (apply stays serial; order preserved →
+  byte-identical merge).
 - **HAVING** — NOTE: not ISO GQL (ISO uses WITH-pipe filtering). WAI, not a gap;
   listed only to close it out.
 - **Natural-key addressing** (R11) — a string `VertexRef` is a vertex UUID, not a
