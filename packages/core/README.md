@@ -157,7 +157,7 @@ An unresolved endpoint id throws `MissingVertex`. Everything else matches `defin
 
 ## Graph algorithms
 
-Whole-graph computations ship as data-last, **async** free functions — `degree`, `connectedComponents`, `labelPropagation`, `pagerank`, `peerPressure`, `betweenness`, `closeness`, `shortestPath`:
+Whole-graph computations ship as data-last, **async** free functions — `degree`, `connectedComponents`, `stronglyConnectedComponents`, `onCycle`, `labelPropagation`, `pagerank`, `personalizedPagerank`, `peerPressure`, `betweenness`, `closeness`, `shortestPath`:
 
 ```ts
 import { pagerank } from '@lenke/core';
@@ -168,7 +168,7 @@ const scores = await pagerank({ iterations: 20 }, graph);
 
 They're always async so a long run never blocks the event loop (the pure-TS driver checkpoints on a ~5 ms time budget). A `writeProperty` config writes each result back onto its vertex — `pagerank({ writeProperty: 'pr' }, graph)`, then read `p.pr`. The `config` shape (`edgeLabel`, `direction`, `weightProperty`, `dampingFactor`, `iterations`, `source`/`target`, …) is portable verbatim to the native engine. The same computations are reachable from the native `RustGraph` (`g.pagerank(config)`, off-thread), from GQL (`CALL pagerank() YIELD node, score`), and from Gremlin (`pageRank()`) — **byte-identical** across all four. See [`src/algorithms/README.md`](src/algorithms/README.md) for the worker-offload recipe and which form to reach for.
 
-`betweenness` and `closeness` are shortest-path **centrality** measures over the directed graph (out-edges, optionally one `edgeLabel`, unweighted BFS or weighted via `weightProperty`), each yielding a `{ node, centrality }` row: `betweenness` is Brandes' algorithm (directed, **unnormalized** — no `1/((n-1)(n-2))` scaling), `closeness` is `1 / Σ d(s,t)` over reachable `t` (**unnormalized**; a vertex that reaches nothing scores 0). Both run one shortest-path pass per vertex — **O(V·E)** (unweighted) — so they're intended for small-to-mid graphs, not million-node ones. Reachable as `betweenness(config, graph)`, `g.betweenness(config)`, and `CALL betweenness() YIELD node, centrality` (same for `closeness`) — byte-identical across engines.
+`betweenness` and `closeness` are shortest-path **centrality** measures over the directed graph (out-edges, optionally one `edgeLabel`, unweighted BFS or weighted via `weightProperty`), each yielding a `{ node, centrality }` row: `betweenness` is Brandes' algorithm (directed, **unnormalized** — no `1/((n-1)(n-2))` scaling), `closeness` is `1 / Σ d(s,t)` over reachable `t` (**unnormalized**; a vertex that reaches nothing scores 0). Both run one shortest-path pass per vertex — **O(V·E)** (unweighted) — so they're intended for small-to-mid graphs; past ~100k nodes pass `betweenness({ pivots: k })` for a deterministic **approximate** run (Brandes from an evenly-spaced k-source sample scaled by `|V|/k`, O(pivots·E), still byte-identical; `pivots >= |V|` is exact). Reachable as `betweenness(config, graph)`, `g.betweenness(config)`, and `CALL betweenness() YIELD node, centrality` (same for `closeness`) — byte-identical across engines.
 
 ## Temporal values & the host clock
 

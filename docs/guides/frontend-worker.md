@@ -111,4 +111,4 @@ The protocol, host, client, sync loop, and snapshotting are shipped. A few piece
 - **Resumable subscriptions / server-cursor catch-up** — reconnect replays standing queries from scratch (correct under the snapshot model, but not a cursor resume).
 - **Write reconciliation (rollback-and-correct)** — a write that exhausts its retries is dropped and reported (`onWriteError`); true reconciliation needs server cursors.
 
-For flaky-network transports (a WebSocket rather than a worker port), `createReconnectingClient` adds re-dial/backoff and parks writes while offline.
+For flaky-network transports (a WebSocket rather than a worker port), `createReconnectingClient` adds re-dial/backoff and parks writes while offline. It carries the **full CDC/multiplayer surface** too — `clientId`, `subscribeWrites`, and `onDisconnect` survive a reconnect (re-emitted internally), so a multiplayer app can consume other clients' writes _and_ reconnect together. A host configured with a `scopeKey` (e.g. `'room'`) plus `subscribeWrites(fn, { scopes: ['42'] })` value-scopes the write stream, so a many-room app replicates only the client's rooms rather than the whole graph.

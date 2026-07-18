@@ -1,25 +1,30 @@
 # In-engine graph algorithms
 
-lenke runs whole-graph algorithms **inside** the engine — PageRank, connected components, label propagation, degree, shortest path, peer pressure, and betweenness/closeness centrality. They are not a bolt-on library that pulls your graph out into JS arrays; they execute against the live store (the Rust core uses its rayon parallelism; the pure-TS driver time-slices so it never blocks the event loop) and, on the native engine, run genuinely off the JS thread.
+lenke runs whole-graph algorithms **inside** the engine — PageRank (and personalized PageRank), connected components, strongly-connected components, cycle membership, label propagation, degree, shortest path, peer pressure, and betweenness/closeness centrality. They are not a bolt-on library that pulls your graph out into JS arrays; they execute against the live store (the Rust core uses its rayon parallelism; the pure-TS driver time-slices so it never blocks the event loop) and, on the native engine, run genuinely off the JS thread.
 
 The same computation is reachable from **four surfaces**. Pick the one that fits your call site — the `config` shape and the results are identical across all of them, and the numeric output is **byte-identical** across the pure-TS and Rust engines (a fixed summation order is the rule that guarantees it, so a score computed in the browser matches one computed on the server bit for bit).
 
 ## The shipped algorithms
 
-| Name                  | Result rows             | What it computes                                     |
-| --------------------- | ----------------------- | ---------------------------------------------------- |
-| `pagerank`            | `{ node, score }`       | Influence / centrality by link structure.            |
-| `connectedComponents` | `{ node, componentId }` | Weakly-connected component membership.               |
-| `labelPropagation`    | `{ node, label }`       | Community detection by label spreading.              |
-| `peerPressure`        | `{ node, label }`       | Community detection by majority vote.                |
-| `degree`              | `{ node, degree }`      | In/out/total edge count per node.                    |
-| `shortestPath`        | path result             | Shortest path between `source` and `target`.         |
-| `betweenness`         | `{ node, centrality }`  | Brokerage — how often a node lies on shortest paths. |
-| `closeness`           | `{ node, centrality }`  | Reciprocal of total distance to reachable nodes.     |
+| Name                          | Result rows             | What it computes                                          |
+| ----------------------------- | ----------------------- | -------------------------------------------------------- |
+| `pagerank`                    | `{ node, score }`       | Influence / centrality by link structure.                |
+| `personalizedPagerank`        | `{ node, score }`       | PageRank restarted to a `sourceNodes` seed set (proximity/RWR). |
+| `connectedComponents`         | `{ node, componentId }` | Weakly-connected component membership (edges undirected). |
+| `stronglyConnectedComponents` | `{ node, componentId }` | Strongly-connected component membership (directed).       |
+| `onCycle`                     | `{ node, onCycle }`     | Whether a node lies on a directed cycle (SCC>1 or self-loop). |
+| `labelPropagation`            | `{ node, label }`       | Community detection by label spreading.                  |
+| `peerPressure`                | `{ node, label }`       | Community detection by majority vote.                    |
+| `degree`                      | `{ node, degree }`      | In/out/total edge count per node.                        |
+| `shortestPath`                | `{ node, distance }`    | Shortest path from `source` (BFS / Dijkstra / A\*).      |
+| `betweenness`                 | `{ node, centrality }`  | Brokerage — how often a node lies on shortest paths.     |
+| `closeness`                   | `{ node, centrality }`  | Reciprocal of total distance to reachable nodes.         |
 
-The shared `config` object (all fields optional) carries `edgeLabel`, `direction` (`'out' | 'in'`), `weightProperty`, `dampingFactor`, `iterations`, `source`/`target`, and `writeProperty`. It is portable _verbatim_ across the four surfaces below.
+The shared `config` object (all fields optional) carries `edgeLabel`, `direction` (`'out' | 'in'`), `weightProperty`, `dampingFactor`, `iterations`, `source`/`target`, `writeProperty`, and a few algorithm-specific knobs: `sourceNodes` (personalized-PageRank seed set), `pivots` (approximate betweenness — see below), and `seedProperty` (label-propagation anchors — a vertex carrying a non-null value for that key keeps its own label, so communities form around seeds instead of collapsing on a hubby graph). It is portable _verbatim_ across the four surfaces below.
 
-> **Centrality cost.** `betweenness` (Brandes' algorithm) and `closeness` are exact and byte-identical across engines, but **O(V·E)** — every node runs a full traversal. Fine for thousands of nodes; for very large graphs, sample or precompute. `betweenness`/`closeness` are directed and unnormalized (`closeness = 1 / Σ distance`, 0 when nothing is reachable).
+> **Centrality cost — exact vs approximate.** `betweenness` (Brandes' algorithm) and `closeness` are exact and byte-identical across engines, but **O(V·E)** — every node runs a full traversal. Fine for thousands of nodes; past ~100k, pass `betweenness({ pivots: k })` for an **approximate** run — Brandes from a deterministic evenly-spaced sample of `k` sources scaled by `|V|/k`, so it's O(pivots·E) and still byte-identical across engines (`pivots >= |V|` is exact). `betweenness`/`closeness` are directed and unnormalized (`closeness = 1 / Σ distance`, 0 when nothing is reachable).
+>
+> **Memory sizing.** A whole-graph algorithm allocates per-vertex working state on top of the resident graph, so peak RSS during a run is roughly **~2× the resident graph** (budget ≈760 B/element resident as a rough guide). A ~30M-element graph therefore wants ~40+ GB to run centrality/PageRank comfortably; size the host accordingly, or fan the work out (per-component, or the `pivots` sample for betweenness) when the graph doesn't fit ~2× in RAM.
 
 ## Surface 1 — `@lenke/core` async free functions
 

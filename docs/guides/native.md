@@ -60,10 +60,13 @@ Whichever reach-path loaded the backend, `graphFromNdjson` / `graphFromFormat` r
 g.query`MATCH (p:Person) WHERE p.name = ${name} RETURN p`; // GQL; ${} → a bound $param, never spliced
 g.query('MATCH (p:Person) WHERE p.age > $min RETURN p', { min: 30 });
 g.gremlin`g.V().has('name', ${name}).values('age')`; // Gremlin; ${} escaped to a safe literal
-g.queryArrow`MATCH (p:Person) RETURN p.name, p.age`; // raw Arrow (ARW1) columnar bytes
+g.queryArrow`MATCH (p:Person) RETURN p.name, p.age`; // raw in-process Arrow (ARW1) columnar bytes
+g.queryArrowIpc`MATCH (p:Person) RETURN p.name, p.age`; // standard Arrow IPC bytes (DuckDB/Polars/pandas)
 g.toNdjson(); // serialize back out
 g.free(); // or `using`
 ```
+
+**Arrow egress → DuckDB / Polars / pandas.** `queryArrow` returns lenke's compact in-process columnar blob (zero-copy for JS consumers). To hand a result to another Arrow tool, `queryArrowIpc(query, { format: 'stream' | 'file' })` frames it as **standard Apache Arrow IPC** entirely in the engine — the stream layout (`pyarrow.ipc.open_stream`, `polars.read_ipc_stream`) or the file / Feather-v2 layout (`pandas.read_feather`, `polars.read_ipc`). A pure-JS transcode of an existing blob is also available (`toArrowIPC(blob, format)` from `@lenke/native/arrow`, which brings its own zero runtime deps); the two produce byte-identical bytes.
 
 Writes are GQL DML run through the same `query` call (`INSERT` / `SET` / `REMOVE` / `DELETE`), or Gremlin mutation traversals (`addV` / `addE` / `property` / `drop`) through `gremlin`.
 
