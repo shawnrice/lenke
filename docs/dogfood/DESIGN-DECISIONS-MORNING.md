@@ -157,7 +157,12 @@ keys, desc)` (Column selector), and `select(Column.keys|values)` (the observable
   the existing token routing). Deferred: traversal-resolved scope (scope on a related
   element, not a direct property) + server-enforced scopes from auth.
 - **LWW tiebreak recipe / HLC.** `_MERGE … WHERE version < $v` diverges on colliding
-  version stamps; no built-in Lamport/HLC or (version, clientId) tiebreak.
+  version stamps; no built-in Lamport/HLC or (version, clientId) tiebreak. **Design +
+  threat model written** — `docs/design/conflict-resolution.md`: a client-assigned HLC
+  is poisonable (skew-to-win + persistent clock-inflation that spreads on receive), so
+  the stamp MUST be **host-assigned, bounded-skew-rejected, and advanced only host↔host**
+  (clients propose, the host decides). Recipe-vs-built-in still open, but the
+  host-validation requirements are fixed either way.
 - ~~**`RustGraph.store.free()` ergonomics.**~~ — SHIPPED `Store.free()`: deterministic
   imperative disposal (sever subscriptions + free the handle) without `using`;
   `[Symbol.dispose]` delegates to it. Idempotent.
