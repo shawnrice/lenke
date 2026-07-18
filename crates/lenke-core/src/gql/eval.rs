@@ -2813,8 +2813,22 @@ fn any_match_reachable(
     let mut work = binding.clone();
     work.resize(sub_len);
     let b_slot = seg.node.var_slot;
-    // Is `v` a valid endpoint `b` (label + inline props/WHERE + the EXISTS WHERE)?
+    // If the endpoint variable is *already bound* — a back-reference: the closed
+    // cyclic `(a)-[:R]->+(a)`, or a second already-correlated var — then a valid
+    // match must reach *that specific vertex*, not merely any reachable one.
+    // Without this guard the BFS answers "does `a` reach anything" instead of
+    // "does `a` reach the target", so e.g. every DAG vertex wrongly looks on-cycle.
+    let bound_end: Option<u32> = match b_slot.and_then(|bs| binding.get(bs)) {
+        Some(Val::Node(v)) => Some(*v),
+        Some(_) => return None, // bound to a non-node: decline to the general matcher
+        None => None,
+    };
+    // Is `v` a valid endpoint `b` (bound-target + label + inline props/WHERE + the
+    // EXISTS WHERE)?
     let hit = |graph: &Graph, v: u32, work: &mut Binding| -> bool {
+        if bound_end.is_some_and(|be| v != be) {
+            return false;
+        }
         if !matches_label(graph, ctx, v, seg.node.label.as_ref()) {
             return false;
         }
