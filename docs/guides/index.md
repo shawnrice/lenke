@@ -29,6 +29,13 @@ Pick by what you're building:
 
 The [`examples/service-map`](../../examples/service-map) app threads one feature through the whole stack (React → worker → sync engine → wasm store, and a Node server host) and is the worked reference for the frontend and backend guides. The [`examples/explorer`](../../examples/explorer) app is a smaller, pure-TS reference: a visual force-directed graph explorer that queries with GQL.
 
+## Patterns & topics
+
+Cross-cutting guides that apply on any build:
+
+- **[algorithms](./algorithms.md)** — the in-engine graph algorithms (PageRank, connected/strongly-connected components, label propagation, betweenness/closeness, shortest path, …), their four call surfaces, and the byte-identity guarantee across engines.
+- **[bitemporal](./bitemporal.md)** — modelling valid + transaction time from the shipped primitives (`DATE` columns, parameterized `WHERE`, the host clock, atomic corrections). Covers both the edge-period and version-node shapes, "as of" queries, and the supersession pitfalls. A documented recipe — lenke ships no bitemporal engine by design.
+
 ## Conventions in these guides
 
 - Snippets use the real exported APIs. Where a capability is on the roadmap but not yet shipped, it's called out explicitly — the guides don't describe vaporware as if it exists.

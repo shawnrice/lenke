@@ -121,8 +121,10 @@ keys, desc)` (Column selector), and `select(Column.keys|values)` (the observable
 
 ## Medium — ORM / typed surface (Lena R10)
 
-- **ORM CRUD on defineNode/Edge.** Today create/parse-only — no findUnique/update/delete/
-  findMany/count/createMany. Repository layer in-scope for lenke, or app-layer?
+- ~~**ORM CRUD on defineNode/Edge.**~~ — **OUT OF SCOPE** (decided). A findUnique/
+  update/delete/findMany/count/createMany repository layer is app-layer, not lenke's:
+  the engine gives you GQL/Gremlin + `defineNode` validation; a CRUD/repository
+  abstraction belongs in the application (or a separate userland package).
 - **Typed query builder.** `query()` is string-only; typed rows are a "trust me" cast.
   Expose column types from a prepared Plan, or a builder?
 - ~~**Public `quoteIdent` / safe-label helper.**~~ — SHIPPED `quoteIdent` from
@@ -169,6 +171,8 @@ keys, desc)` (Column selector), and `select(Column.keys|values)` (the observable
   listed only to close it out.
 - **Natural-key addressing** (R11) — a string `VertexRef` is a vertex UUID, not a
   business key; documented, but a business-id addressing convenience is a possible feature.
-- **Bitemporal built-in** — MegaApp (R12) and KnowGraph (R11) both hand-roll bitemporal
-  as `ProfileVersion` nodes; correct but easy to get the correction/supersession logic
-  wrong. Is a bitemporal helper (or documented recipe) in scope?
+- ~~**Bitemporal built-in**~~ — **DECIDED: docs, not a built-in.** A bitemporal helper
+  isn't in scope; the pattern is a documented recipe instead — see
+  `docs/guides/bitemporal.md` (edge-period AND version-node modelling, the two time
+  axes, correction/supersession, point-in-time "as of" queries, the supersession
+  pitfalls MegaApp/KnowGraph hit).

@@ -125,6 +125,78 @@ g.transaction(() => {
 - An as-of query at `tx = today, valid = 2021-06-15` returns **no row** — the corrected belief says she had left by then.
 - The full transaction-time history is queryable by simply dropping the `txTo` filter, giving you a superseded-belief audit trail for free.
 
+## The version-node variant (and its supersession trap)
+
+The model above puts the period columns **on the fact itself** — the `EMPLOYED_BY` edge _is_ the versioned thing. That is the cleanest shape when the fact is a relationship. But a lot of apps version a whole **entity snapshot** instead: a stable identity node plus one _version node_ per belief, each carrying the four period columns and a copy of the mutable fields. This is the `ProfileVersion` shape teams reach for first — and it's where the correction logic is easiest to get subtly wrong, so it's worth spelling out.
+
+```ts
+const INF = "DATE '9999-12-31'";
+
+g.createUniqueConstraint('Person', 'id');
+query(g, `INSERT (:Person {id: 'alice'})`); // stable identity — never versioned
+
+// v1 belief (recorded 2020-01-05): Alice = Engineer from 2020-01-01, believed permanent.
+query(g, `INSERT (:PersonVersion {vid: 1, title: 'Engineer',
+  validFrom: DATE '2020-01-01', validTo: ${INF},
+  txFrom:    DATE '2020-01-05', txTo:    ${INF}})`);
+query(g, `MATCH (p:Person {id:'alice'}), (v:PersonVersion {vid:1})
+          INSERT (p)-[:HAS_VERSION]->(v)`);
+```
+
+The identity node holds only the immutable key; every mutable attribute lives on the version nodes, fanned out from it by `:HAS_VERSION`. An **as-of query is the same four-term predicate**, now matched over the version nodes:
+
+```ts
+const asOf = (tx: string, valid: string) =>
+  query(
+    g,
+    `MATCH (p:Person {id:'alice'})-[:HAS_VERSION]->(v:PersonVersion)
+     WHERE v.validFrom <= date($valid) AND date($valid) < v.validTo
+       AND v.txFrom    <= date($tx)    AND date($tx)    < v.txTo
+     RETURN v.title AS title`,
+    { tx, valid },
+  );
+```
+
+### The correction: close one belief, open a *split* of two
+
+Say on 2021-06-10 we learn Alice actually became **Senior Engineer** on 2021-06-01. The old belief was "Engineer, forever." The corrected belief splits valid time in two — Engineer `[2020-01-01, 2021-06-01)`, Senior Engineer `[2021-06-01, ∞)` — both recorded under a fresh, open transaction interval. One transaction:
+
+```ts
+g.transaction(() => {
+  // 1. Close the currently-believed version (the one whose tx interval is open).
+  query(g, `MATCH (p:Person {id:'alice'})-[:HAS_VERSION]->(v:PersonVersion)
+            WHERE v.txTo = ${INF}
+            SET v.txTo = DATE '2021-06-10'`);
+  // 2a. Re-assert the unchanged pre-correction slice under the new belief.
+  query(g, `MATCH (p:Person {id:'alice'})
+            INSERT (p)-[:HAS_VERSION]->(:PersonVersion {vid: 2, title: 'Engineer',
+              validFrom: DATE '2020-01-01', validTo: DATE '2021-06-01',
+              txFrom:    DATE '2021-06-10', txTo:    ${INF}})`);
+  // 2b. Insert the corrected post-change slice.
+  query(g, `MATCH (p:Person {id:'alice'})
+            INSERT (p)-[:HAS_VERSION]->(:PersonVersion {vid: 3, title: 'Senior Engineer',
+              validFrom: DATE '2021-06-01', validTo: ${INF},
+              txFrom:    DATE '2021-06-10', txTo:    ${INF}})`);
+});
+```
+
+After it, history is intact and the split is clean:
+
+- `asOf('2021-01-01', '2021-07-01')` → **Engineer** — the old belief is untouched (an audit trail, not a mutation).
+- `asOf('2021-08-01', '2021-07-01')` → **Senior Engineer** — the corrected belief.
+- `asOf('2021-08-01', '2020-03-01')` → **Engineer** — the pre-change slice is still there under the new belief.
+
+### Supersession pitfalls (the part teams get wrong)
+
+The version-node shape has four failure modes the edge-period shape mostly sidesteps. Each produces _wrong answers with no error_, so guard for them:
+
+1. **Re-assert the unchanged slice — don't just close and append one.** A correction that splits an interval must re-insert BOTH halves under the new belief (steps 2a **and** 2b). Skipping 2a leaves a hole: `asOf('2021-08-01', '2020-03-01')` would return no row, silently losing the still-true early history.
+2. **Only one open version may cover a given valid instant.** Within a single belief (`txTo = INF`), the version nodes' valid intervals must **partition** — no overlap. Two open versions valid at the same instant makes an as-of query return _two_ rows for one entity. After any correction, assert the invariant: `MATCH (p)-[:HAS_VERSION]->(v) WHERE v.txTo = <INF> AND v.validFrom <= date($t) AND date($t) < v.validTo` must return **exactly one** row per entity.
+3. **Close by the open-tx match, not by id.** Step 1 closes "the version whose `txTo` is the sentinel," never a hardcoded `vid`. Closing the wrong (already-superseded) version corrupts the belief history; matching on `txTo = INF` always finds the live one.
+4. **Link every new version to the identity node in the same statement.** An `INSERT (:PersonVersion {…})` with no `(p)-[:HAS_VERSION]->` makes an **orphan** — invisible to every as-of query (which traverses from the identity), yet occupying space and, worse, matching a bare `MATCH (v:PersonVersion)`. The `INSERT (p)-[:HAS_VERSION]->(:PersonVersion {…})` form above creates the node and its link atomically, so an orphan is impossible.
+
+Wrap the close-and-split in `graph.transaction(fn)` (as shown) so a throw between the writes rolls the whole correction back — never a half-applied belief.
+
 ## Why no `AS OF` keyword
 
 An as-of query on lenke is _just a `WHERE` clause over the period columns you chose_. Adding an `AS OF` keyword would buy nothing here — worse, it would be a lie about what the engine does.
