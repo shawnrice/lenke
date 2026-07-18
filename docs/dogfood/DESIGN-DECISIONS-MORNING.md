@@ -68,19 +68,22 @@ coercion; D3 `-0`→`"0"`; the `arrowTable` doc); see `findings/round13.md`. The
   Accept the platform-level divergence at magnitude extremes.
 - **Error-code split** (LOW). Edge variable on a quantified segment (`(a)-[e:R]->*(b)`)
   → native `E_SYNTAX` vs TS `E_UNSUPPORTED`. Both correctly reject; align the code.
-- **`shortestPath` _algorithm-config_ footguns** (both engines agree — not a divergence).
-  On the **algorithm** surface (`g.shortestPath({…})` / `CALL shortest_path` /
-  `@lenke/core` free-fn), the `direction:'in'|'both'` and Dijkstra `target` config fields
-  are **accepted but silently ignored** — `shortest_path(graph, cfg)` never reads
-  `cfg.direction` (its BFS/Dijkstra always follow out-adjacency), and only A\* honors
-  `target`. Separate from the Gremlin `shortestPath()` _step_, whose direction DOES work
-  (see next). Honor, reject, or document; accepted-but-ignored is the worst option.
-- **`ShortestPath.direction` is a lenke extension, not TinkerPop** (context for the
-  above — not a bug). The Gremlin step's undirected `both` default IS conformant, but the
-  `.with(ShortestPath.direction, 'out'|'in'|'both')` modulator _key_ is ours (added task
-  #10); real TinkerPop controls shortestPath edges via `ShortestPath.edges` (a `Direction`
-  / edge-traversal), there is no `ShortestPath.direction`. Decide: keep the extension, or
-  express direction via `ShortestPath.edges` for strict conformance.
+- **`shortestPath` algorithm-config `direction`** → **FIXED** `72f08d2`. The
+  `direction:'out'|'in'|'both'` config field on the algorithm surface
+  (`g.shortestPath({…})` / `CALL shortest_path` / `@lenke/core` free-fn) was accepted but
+  silently ignored (BFS/Dijkstra/A\* hardcoded out-adjacency). Now honored like `degree`,
+  both engines byte-identical (verified out≠in≠both, weighted+unweighted). This is where
+  direction belongs. **Still open:** Dijkstra `target` is still accepted-but-ignored (only
+  A\* honors it) — deciding whether `{target}` should return a single row or the full map
+  is a separate result-shape call.
+- **Remove the non-standard `ShortestPath.direction` Gremlin modulator** (pending). It's a
+  lenke invention (added task #10) — real TinkerPop has no `ShortestPath.direction`;
+  direction is expressed via `ShortestPath.edges` (a `Direction` / edge-traversal). Now
+  that direction lives correctly on the graph-algorithm config, the Gremlin modulator is
+  redundant AND non-conformant. **Recommendation:** remove it — the Gremlin
+  `shortestPath()` step then defaults to the TinkerPop-conformant undirected `both`, and
+  directed shortest-path is served by the graph-algo config. (Removing shipped+tested API
+  is a Gremlin-surface change → confirm before ripping out.)
 - **Reserved-keyword error message** (DX, both engines). `GROUP`/`ON`/`USER`… as a label
   or rel-type gives an opaque `E_SYNTAX`; a "reserved keyword — quote with backticks"
   hint would save real confusion (backtick-quoting works on both engines).
