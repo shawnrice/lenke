@@ -136,11 +136,17 @@ g.createUniqueConstraint('Person', 'id');
 query(g, `INSERT (:Person {id: 'alice'})`); // stable identity — never versioned
 
 // v1 belief (recorded 2020-01-05): Alice = Engineer from 2020-01-01, believed permanent.
-query(g, `INSERT (:PersonVersion {vid: 1, title: 'Engineer',
+query(
+  g,
+  `INSERT (:PersonVersion {vid: 1, title: 'Engineer',
   validFrom: DATE '2020-01-01', validTo: ${INF},
-  txFrom:    DATE '2020-01-05', txTo:    ${INF}})`);
-query(g, `MATCH (p:Person {id:'alice'}), (v:PersonVersion {vid:1})
-          INSERT (p)-[:HAS_VERSION]->(v)`);
+  txFrom:    DATE '2020-01-05', txTo:    ${INF}})`,
+);
+query(
+  g,
+  `MATCH (p:Person {id:'alice'}), (v:PersonVersion {vid:1})
+          INSERT (p)-[:HAS_VERSION]->(v)`,
+);
 ```
 
 The identity node holds only the immutable key; every mutable attribute lives on the version nodes, fanned out from it by `:HAS_VERSION`. An **as-of query is the same four-term predicate**, now matched over the version nodes:
@@ -157,26 +163,35 @@ const asOf = (tx: string, valid: string) =>
   );
 ```
 
-### The correction: close one belief, open a *split* of two
+### The correction: close one belief, open a _split_ of two
 
 Say on 2021-06-10 we learn Alice actually became **Senior Engineer** on 2021-06-01. The old belief was "Engineer, forever." The corrected belief splits valid time in two — Engineer `[2020-01-01, 2021-06-01)`, Senior Engineer `[2021-06-01, ∞)` — both recorded under a fresh, open transaction interval. One transaction:
 
 ```ts
 g.transaction(() => {
   // 1. Close the currently-believed version (the one whose tx interval is open).
-  query(g, `MATCH (p:Person {id:'alice'})-[:HAS_VERSION]->(v:PersonVersion)
+  query(
+    g,
+    `MATCH (p:Person {id:'alice'})-[:HAS_VERSION]->(v:PersonVersion)
             WHERE v.txTo = ${INF}
-            SET v.txTo = DATE '2021-06-10'`);
+            SET v.txTo = DATE '2021-06-10'`,
+  );
   // 2a. Re-assert the unchanged pre-correction slice under the new belief.
-  query(g, `MATCH (p:Person {id:'alice'})
+  query(
+    g,
+    `MATCH (p:Person {id:'alice'})
             INSERT (p)-[:HAS_VERSION]->(:PersonVersion {vid: 2, title: 'Engineer',
               validFrom: DATE '2020-01-01', validTo: DATE '2021-06-01',
-              txFrom:    DATE '2021-06-10', txTo:    ${INF}})`);
+              txFrom:    DATE '2021-06-10', txTo:    ${INF}})`,
+  );
   // 2b. Insert the corrected post-change slice.
-  query(g, `MATCH (p:Person {id:'alice'})
+  query(
+    g,
+    `MATCH (p:Person {id:'alice'})
             INSERT (p)-[:HAS_VERSION]->(:PersonVersion {vid: 3, title: 'Senior Engineer',
               validFrom: DATE '2021-06-01', validTo: ${INF},
-              txFrom:    DATE '2021-06-10', txTo:    ${INF}})`);
+              txFrom:    DATE '2021-06-10', txTo:    ${INF}})`,
+  );
 });
 ```
 
