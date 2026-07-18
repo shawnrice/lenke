@@ -59,15 +59,28 @@ coercion; D3 `-0`→`"0"`; the `arrowTable` doc); see `findings/round13.md`. The
   non-trivial. Pick canonical, then align both.
 - **List→string null element** (D4, MED). `to_string([1,null,3])` → native `"1,null,3"`
   vs TS `"1,,3"`. Null-first-class policy leans toward `"null"`; pick + align.
-- **`power()` precision at extreme exponents** (D5, MED). `power(100,100)` → native
-  `1e+200` vs TS `1.0000000000000005e+200`. Byte-identity needs an identical float `pow`
-  algorithm across engines (float determinism) — the deferred-hard one.
+- **`power()` precision at extreme exponents** (D5). **DECIDED (user, 2026-07-18):
+  won't fix — leave to the platforms.** `power(100,100)` → native `1e+200` vs TS
+  `1.0000000000000005e+200`, differing only at extreme exponents where the platforms'
+  `pow` (Rust libm vs V8 `Math.pow`) round differently. The numeric model is f64 =
+  exactly what JS provides; there's no sense supporting more precision than JS, and
+  forcing bit-identity would mean reimplementing one platform's `pow` on the other.
+  Accept the platform-level divergence at magnitude extremes.
 - **Error-code split** (LOW). Edge variable on a quantified segment (`(a)-[e:R]->*(b)`)
   → native `E_SYNTAX` vs TS `E_UNSUPPORTED`. Both correctly reject; align the code.
-- **`shortestPath` config footguns** (both engines agree — not a divergence).
-  `direction:'in'|'both'` and Dijkstra `target` are **accepted but silently ignored**
-  (only `degree` honors `direction`, only A\* honors `target`). Honor, reject, or document
-  — accepted-but-ignored is the worst option.
+- **`shortestPath` _algorithm-config_ footguns** (both engines agree — not a divergence).
+  On the **algorithm** surface (`g.shortestPath({…})` / `CALL shortest_path` /
+  `@lenke/core` free-fn), the `direction:'in'|'both'` and Dijkstra `target` config fields
+  are **accepted but silently ignored** — `shortest_path(graph, cfg)` never reads
+  `cfg.direction` (its BFS/Dijkstra always follow out-adjacency), and only A\* honors
+  `target`. Separate from the Gremlin `shortestPath()` _step_, whose direction DOES work
+  (see next). Honor, reject, or document; accepted-but-ignored is the worst option.
+- **`ShortestPath.direction` is a lenke extension, not TinkerPop** (context for the
+  above — not a bug). The Gremlin step's undirected `both` default IS conformant, but the
+  `.with(ShortestPath.direction, 'out'|'in'|'both')` modulator _key_ is ours (added task
+  #10); real TinkerPop controls shortestPath edges via `ShortestPath.edges` (a `Direction`
+  / edge-traversal), there is no `ShortestPath.direction`. Decide: keep the extension, or
+  express direction via `ShortestPath.edges` for strict conformance.
 - **Reserved-keyword error message** (DX, both engines). `GROUP`/`ON`/`USER`… as a label
   or rel-type gives an opaque `E_SYNTAX`; a "reserved keyword — quote with backticks"
   hint would save real confusion (backtick-quoting works on both engines).

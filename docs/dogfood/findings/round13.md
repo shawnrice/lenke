@@ -80,10 +80,15 @@ short-circuits`. Native's `reachable()` eagerly collected every trail endpoint i
   (TS, JS `Number.toString`) at magnitude extremes (|x|<1e-6, |x|≥1e21). Needs a
   canonical decision, then match JS or match Rust in both.
 - **D4 list→string null element** (MED): native `"1,null,3"` vs TS `"1,,3"`.
-- **D5 `power()` precision** (MED): differs only at extreme exponents (`power(100,100)`)
-  — needs an identical float algorithm across engines.
-- **`shortestPath` config footguns** (both engines agree): `direction:'in'|'both'` and
-  Dijkstra `target` are accepted-but-ignored — honor, reject, or document.
+- **D5 `power()` precision** — **DECIDED (user): won't fix, leave to the platforms**
+  (f64 = what JS gives; no sense exceeding JS precision). Differs only at extreme
+  exponents (`power(100,100)`: native `1e+200` vs TS `1.0000000000000005e+200`).
+- **`shortestPath` _algorithm-config_ footguns** (both engines agree): on the algorithm
+  surface (`g.shortestPath({…})` / `CALL shortest_path` / free-fn), `direction` and
+  Dijkstra `target` are accepted-but-ignored (the algo BFS/Dijkstra always follow
+  out-adjacency; only A\* honors `target`). Separate from the Gremlin `shortestPath()`
+  _step_, whose direction works. NB `ShortestPath.direction` is a lenke extension —
+  TinkerPop uses `ShortestPath.edges`, not a `direction` key.
 - **Reserved-keyword error message** (DX, both engines): `GROUP`/`ON` as labels give an
   opaque `E_SYNTAX` with no "quote with backticks" hint.
 - **Arrow list-column flatten** (doc): a list column flattens to non-JSON text
