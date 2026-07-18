@@ -386,8 +386,10 @@ fn write_gval(out: &mut String, graph: &Graph, v: &GVal) {
         GVal::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         GVal::Num(n) => push_num(out, *n),
         GVal::Str(s) => push_json_str(out, s),
-        // A temporal renders as its ISO-8601 string (values()/valueMap()).
-        GVal::Temporal(t) => push_json_str(out, &t.format()),
+        // A temporal renders as the tagged `{"@date":…}` form (`values()`,
+        // `valueMap()`, `project()`, …) — byte-identical to GQL and TS, which both
+        // keep the type tag; the bare ISO string dropped the type.
+        GVal::Temporal(t) => out.push_str(&t.json_tagged()),
         // An element serializes to the full `{id, labels, properties}` (edge:
         // `{id, from, to, labels, properties}`) form — byte-identical to GQL and the
         // TS engine, via the shared canonical `Value::Map`.
