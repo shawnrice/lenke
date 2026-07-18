@@ -508,8 +508,11 @@ export const toArrowIPC = (blob: Uint8Array, format: 'stream' | 'file' = 'stream
   const rbMsg = recordBatchMessage(columns, nrows, buffers, body);
 
   if (format === 'stream') {
-    // End-of-stream marker: continuation + zero-length metadata.
-    return concat([schemaMsg, rbMsg, new Uint8Array(8).fill(0)]);
+    // End-of-stream marker: continuation (0xFFFFFFFF) + zero-length metadata.
+    const eos = new Uint8Array(8);
+    new DataView(eos.buffer).setUint32(0, 0xffffffff, true);
+
+    return concat([schemaMsg, rbMsg, eos]);
   }
 
   const magic = new TextEncoder().encode('ARROW1\0\0'); // 8-byte, padded

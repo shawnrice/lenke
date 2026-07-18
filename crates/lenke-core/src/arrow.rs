@@ -12,9 +12,12 @@
 //! 8-byte aligned, LSB-first validity bitmap, `i32` Utf8 offsets), so the JS side
 //! reconstructs real `arrow.Vector`s via `makeData` with zero copy. The envelope
 //! around them is a compact custom header (below) rather than Arrow's flatbuffer
-//! IPC framing — that keeps this dependency-free. The standard Arrow **IPC**
-//! wrapper (for `tableFromIPC` / DuckDB / Polars / pandas) layers on top of these
-//! exact buffers in `@lenke/native/arrow` (`toArrowIPC`), without changing them.
+//! IPC framing — that keeps this compact carrier dependency-free. The standard
+//! Arrow **IPC** wrapper (for `tableFromIPC` / DuckDB / Polars / pandas) layers on
+//! top of these exact buffers without changing them: natively via [`to_arrow_ipc`] /
+//! [`arrow_ipc_from_blob`] (also `lnk_query_arrow_ipc` / `RustGraph.queryArrowIpc`,
+//! no JS re-encode), or JS-side via `toArrowIPC` in `@lenke/native/arrow`. The two
+//! encoders are byte-identical.
 //!
 //! ## Blob layout (all integers little-endian)
 //! ```text
@@ -313,6 +316,439 @@ pub fn to_arrow(rs: &RowSet) -> Vec<u8> {
     to_arrow_cols(&rs.cols, &cols, rs.nrows)
 }
 
+// ── Apache Arrow IPC framing ────────────────────────────────────────────────
+//
+// The `ARW1` buffers above already ARE Arrow's physical column layout, so real
+// Arrow IPC is just those buffers concatenated (the RecordBatch body) plus the
+// standard flatbuffer `Schema` / `RecordBatch` / `Footer` messages. This produces
+// bytes byte-for-byte identical to the TS encoder in `@lenke/native/arrow`, so a
+// Rust consumer (or the one-shot `lnk_query_arrow_ipc`) gets IPC without a JS hop.
+
+// Arrow flatbuffer enum values we emit.
+const METADATA_V5: i16 = 4; // MetadataVersion.V5
+const MSG_SCHEMA: u8 = 1; // MessageHeader.Schema
+const MSG_RECORD_BATCH: u8 = 3; // MessageHeader.RecordBatch
+const TYPE_FLOATINGPOINT: u8 = 3; // Type.FloatingPoint
+const TYPE_UTF8: u8 = 5; // Type.Utf8
+const TYPE_BOOL: u8 = 6; // Type.Bool
+const PRECISION_DOUBLE: i16 = 2; // Precision.DOUBLE
+
+/// A minimal back-to-front FlatBuffers builder — mirrors the TS one in
+/// `@lenke/native/arrow` exactly (tables + vtables, offset/struct vectors, strings,
+/// inline scalars), so both engines emit byte-identical IPC. Values are written
+/// toward the front of `buf`; offsets are measured from the end.
+struct Fbb {
+    buf: Vec<u8>,
+    space: usize,
+    minalign: usize,
+    vtable: Vec<usize>,
+    object_start: usize,
+}
+
+impl Fbb {
+    fn new() -> Self {
+        Self {
+            buf: vec![0u8; 1024],
+            space: 1024,
+            minalign: 1,
+            vtable: Vec::new(),
+            object_start: 0,
+        }
+    }
+
+    fn offset(&self) -> usize {
+        self.buf.len() - self.space
+    }
+
+    fn grow(&mut self) {
+        let old = self.buf.len();
+        let mut nb = vec![0u8; old * 2];
+        nb[old..].copy_from_slice(&self.buf);
+        self.buf = nb;
+        self.space += old;
+    }
+
+    fn prep(&mut self, size: usize, additional: usize) {
+        if size > self.minalign {
+            self.minalign = size;
+        }
+        let align_size = self.offset().wrapping_add(additional).wrapping_neg() & (size - 1);
+        while self.space < align_size + size + additional {
+            self.grow();
+        }
+        for _ in 0..align_size {
+            self.space -= 1;
+            self.buf[self.space] = 0;
+        }
+    }
+
+    fn ensure(&mut self, n: usize) {
+        while self.space < n {
+            self.grow();
+        }
+    }
+
+    fn pad(&mut self, n: usize) {
+        self.ensure(n);
+        for _ in 0..n {
+            self.space -= 1;
+            self.buf[self.space] = 0;
+        }
+    }
+
+    fn add_u8(&mut self, v: u8) {
+        self.prep(1, 0);
+        self.space -= 1;
+        self.buf[self.space] = v;
+    }
+
+    fn add_i16(&mut self, v: i16) {
+        self.prep(2, 0);
+        self.space -= 2;
+        self.buf[self.space..self.space + 2].copy_from_slice(&v.to_le_bytes());
+    }
+
+    fn add_i32(&mut self, v: i32) {
+        self.prep(4, 0);
+        self.space -= 4;
+        self.buf[self.space..self.space + 4].copy_from_slice(&v.to_le_bytes());
+    }
+
+    fn add_i64(&mut self, v: i64) {
+        self.prep(8, 0);
+        self.space -= 8;
+        self.buf[self.space..self.space + 8].copy_from_slice(&v.to_le_bytes());
+    }
+
+    /// A forward uoffset to a previously-built object at rev-offset `off`.
+    fn add_offset(&mut self, off: usize) {
+        self.prep(4, 0);
+        let val = (self.offset() - off + 4) as i32;
+        self.space -= 4;
+        self.buf[self.space..self.space + 4].copy_from_slice(&val.to_le_bytes());
+    }
+
+    fn create_string(&mut self, s: &str) -> usize {
+        let bytes = s.as_bytes();
+        self.add_u8(0); // trailing null
+        self.prep(4, bytes.len());
+        self.ensure(bytes.len());
+        self.space -= bytes.len();
+        self.buf[self.space..self.space + bytes.len()].copy_from_slice(bytes);
+        self.add_i32(bytes.len() as i32);
+        self.offset()
+    }
+
+    fn start_vector(&mut self, elem_size: usize, num_elems: usize, alignment: usize) {
+        self.prep(4, elem_size * num_elems);
+        self.prep(alignment, elem_size * num_elems);
+    }
+
+    fn end_vector(&mut self, num_elems: usize) -> usize {
+        self.add_i32(num_elems as i32);
+        self.offset()
+    }
+
+    fn offset_vector(&mut self, offsets: &[usize]) -> usize {
+        self.start_vector(4, offsets.len(), 4);
+        for &off in offsets.iter().rev() {
+            self.add_offset(off);
+        }
+        self.end_vector(offsets.len())
+    }
+
+    /// A vector of 16-byte `{a, b}` i64 structs (FieldNode / Buffer).
+    fn struct_vector16(&mut self, structs: &[(i64, i64)]) -> usize {
+        self.start_vector(16, structs.len(), 8);
+        for &(a, b) in structs.iter().rev() {
+            // Back-to-front → forward layout is [a, b].
+            self.add_i64(b);
+            self.add_i64(a);
+        }
+        self.end_vector(structs.len())
+    }
+
+    /// A vector of one 24-byte `Block` struct: offset:i64 @0, metaDataLength:i32 @8
+    /// (+4 pad), bodyLength:i64 @16.
+    fn block_vector(&mut self, offset: i64, metadata_len: i32, body_len: i64) -> usize {
+        self.start_vector(24, 1, 8);
+        // Back-to-front → forward [offset, metaDataLength, pad(4), bodyLength].
+        self.add_i64(body_len);
+        self.pad(4);
+        self.add_i32(metadata_len);
+        self.add_i64(offset);
+        self.end_vector(1)
+    }
+
+    fn start_object(&mut self, numfields: usize) {
+        self.vtable = vec![0usize; numfields];
+        self.object_start = self.offset();
+    }
+
+    fn slot(&mut self, voffset: usize) {
+        self.vtable[voffset] = self.offset();
+    }
+
+    fn add_field_i8(&mut self, voffset: usize, value: u8, def: u8) {
+        if value != def {
+            self.add_u8(value);
+            self.slot(voffset);
+        }
+    }
+
+    fn add_field_i16(&mut self, voffset: usize, value: i16, def: i16) {
+        if value != def {
+            self.add_i16(value);
+            self.slot(voffset);
+        }
+    }
+
+    fn add_field_i64(&mut self, voffset: usize, value: i64, def: i64) {
+        if value != def {
+            self.add_i64(value);
+            self.slot(voffset);
+        }
+    }
+
+    fn add_field_offset(&mut self, voffset: usize, value: usize) {
+        if value != 0 {
+            self.add_offset(value);
+            self.slot(voffset);
+        }
+    }
+
+    fn end_object(&mut self) -> usize {
+        self.add_i32(0); // soffset placeholder
+        let vtableloc = self.offset();
+
+        let mut i = self.vtable.len() as isize - 1;
+        while i >= 0 && self.vtable[i as usize] == 0 {
+            i -= 1;
+        }
+        let trimmed = (i + 1) as usize;
+
+        while i >= 0 {
+            let v = self.vtable[i as usize];
+            self.add_i16(if v != 0 { (vtableloc - v) as i16 } else { 0 });
+            i -= 1;
+        }
+
+        self.add_i16((vtableloc - self.object_start) as i16); // object size
+        self.add_i16(((trimmed + 2) * 2) as i16); // vtable byte size
+
+        // Point the object's soffset at the vtable we just wrote.
+        let cur = self.offset();
+        let pos = self.buf.len() - vtableloc;
+        self.buf[pos..pos + 4].copy_from_slice(&((cur - vtableloc) as i32).to_le_bytes());
+        vtableloc
+    }
+
+    fn finish(mut self, root: usize) -> Vec<u8> {
+        self.prep(self.minalign, 4);
+        self.add_offset(root);
+        self.buf[self.space..].to_vec()
+    }
+}
+
+/// One column's ARW1 view for IPC framing: name, Arrow type tag, null count, and
+/// the Arrow buffers in order (validity, then values / offsets+data).
+struct IpcCol<'a> {
+    name: &'a str,
+    tag: u32,
+    null_count: i64,
+    buffers: Vec<&'a [u8]>,
+}
+
+/// Read a little-endian `u32` at byte offset `o` in `b`.
+fn u32le(b: &[u8], o: usize) -> usize {
+    u32::from_le_bytes(b[o..o + 4].try_into().unwrap()) as usize
+}
+
+/// Build the Arrow `Field` sub-table for one column; returns its offset.
+fn build_field(b: &mut Fbb, col: &IpcCol, empty_children: usize) -> usize {
+    let name_off = b.create_string(col.name);
+    let (type_type, type_off) = match col.tag {
+        T_FLOAT64 => {
+            b.start_object(1);
+            b.add_field_i16(0, PRECISION_DOUBLE, 0);
+            (TYPE_FLOATINGPOINT, b.end_object())
+        }
+        T_BOOL => {
+            b.start_object(0);
+            (TYPE_BOOL, b.end_object())
+        }
+        _ => {
+            b.start_object(0);
+            (TYPE_UTF8, b.end_object())
+        }
+    };
+    b.start_object(7);
+    b.add_field_offset(0, name_off); // name
+    b.add_field_i8(1, 1, 0); // nullable = true
+    b.add_field_i8(2, type_type, 0); // type_type (union discriminant)
+    b.add_field_offset(3, type_off); // type (union value)
+    b.add_field_offset(5, empty_children); // children (empty)
+    b.end_object()
+}
+
+/// Build the Arrow `Schema` sub-table for these columns; returns its offset.
+fn build_schema(b: &mut Fbb, cols: &[IpcCol]) -> usize {
+    let empty_children = b.offset_vector(&[]);
+    let fields: Vec<usize> = cols
+        .iter()
+        .map(|c| build_field(b, c, empty_children))
+        .collect();
+    let fields_vec = b.offset_vector(&fields);
+    b.start_object(4);
+    b.add_field_offset(1, fields_vec); // fields (endianness defaults to Little)
+    b.end_object()
+}
+
+/// A finished, framed `Schema` IPC message (metadata only, no body).
+fn schema_message(cols: &[IpcCol]) -> Vec<u8> {
+    let mut b = Fbb::new();
+    let schema_off = build_schema(&mut b, cols);
+    b.start_object(5);
+    b.add_field_i16(0, METADATA_V5, 0);
+    b.add_field_i8(1, MSG_SCHEMA, 0);
+    b.add_field_offset(2, schema_off);
+    let msg = b.end_object();
+    encapsulate(&b.finish(msg), None)
+}
+
+/// A finished, framed `RecordBatch` IPC message with its data body.
+fn record_batch_message(
+    cols: &[IpcCol],
+    nrows: usize,
+    buffers: &[(i64, i64)],
+    body: &[u8],
+) -> Vec<u8> {
+    let mut b = Fbb::new();
+    let nodes: Vec<(i64, i64)> = cols.iter().map(|c| (nrows as i64, c.null_count)).collect();
+    let buffers_vec = b.struct_vector16(buffers);
+    let nodes_vec = b.struct_vector16(&nodes);
+    b.start_object(5);
+    b.add_field_i64(0, nrows as i64, 0); // length
+    b.add_field_offset(1, nodes_vec);
+    b.add_field_offset(2, buffers_vec);
+    let rb_off = b.end_object();
+    b.start_object(5);
+    b.add_field_i16(0, METADATA_V5, 0);
+    b.add_field_i8(1, MSG_RECORD_BATCH, 0);
+    b.add_field_offset(2, rb_off);
+    b.add_field_i64(3, body.len() as i64, 0); // bodyLength
+    let msg = b.end_object();
+    encapsulate(&b.finish(msg), Some(body))
+}
+
+/// The file-layout `Footer`: the schema again + one Block per record batch.
+fn footer_bytes(cols: &[IpcCol], rb_offset: i64, metadata_len: i32, body_len: i64) -> Vec<u8> {
+    let mut b = Fbb::new();
+    let schema_off = build_schema(&mut b, cols);
+    let record_batches = b.block_vector(rb_offset, metadata_len, body_len);
+    b.start_object(5);
+    b.add_field_i16(0, METADATA_V5, 0);
+    b.add_field_offset(1, schema_off);
+    b.add_field_offset(3, record_batches);
+    let footer = b.end_object();
+    b.finish(footer)
+}
+
+/// Wrap a flatbuffer message in the IPC encapsulation (continuation + size +
+/// padding, then the body). The body offset lands on an 8-byte boundary.
+fn encapsulate(meta: &[u8], body: Option<&[u8]>) -> Vec<u8> {
+    let meta_padded = (meta.len() + 7) & !7;
+    let body_len = body.map_or(0, <[u8]>::len);
+    let mut out = Vec::with_capacity(8 + meta_padded + body_len);
+    out.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes()); // continuation marker
+    out.extend_from_slice(&(meta_padded as i32).to_le_bytes()); // metadata size (incl padding)
+    out.extend_from_slice(meta);
+    out.resize(8 + meta_padded, 0);
+    if let Some(body) = body {
+        out.extend_from_slice(body);
+    }
+    out
+}
+
+/// Transcode an `ARW1` columnar blob into standard Apache Arrow IPC bytes —
+/// `file` selects the file / Feather-v2 layout, else the IPC stream layout.
+/// Float64 / Bool / Utf8 columns (the tags `ARW1` emits) are supported.
+pub fn arrow_ipc_from_blob(blob: &[u8], file: bool) -> Vec<u8> {
+    let nrows = u64::from_le_bytes(blob[8..16].try_into().unwrap()) as usize;
+    let ncols = u64::from_le_bytes(blob[16..24].try_into().unwrap()) as usize;
+
+    let mut cols: Vec<IpcCol> = Vec::with_capacity(ncols);
+    for c in 0..ncols {
+        let d = 24 + c * 40;
+        let tag = u32le(blob, d) as u32;
+        let null_count = u32le(blob, d + 4) as i64;
+        let name = std::str::from_utf8(
+            &blob[u32le(blob, d + 8)..u32le(blob, d + 8) + u32le(blob, d + 12)],
+        )
+        .unwrap_or("");
+        let validity = &blob[u32le(blob, d + 16)..u32le(blob, d + 16) + u32le(blob, d + 20)];
+        let buf1 = &blob[u32le(blob, d + 24)..u32le(blob, d + 24) + u32le(blob, d + 28)];
+        let buf2 = &blob[u32le(blob, d + 32)..u32le(blob, d + 32) + u32le(blob, d + 36)];
+        let buffers = if tag == T_UTF8 {
+            vec![validity, buf1, buf2]
+        } else {
+            vec![validity, buf1]
+        };
+        cols.push(IpcCol {
+            name,
+            tag,
+            null_count,
+            buffers,
+        });
+    }
+
+    // Body: every Arrow buffer concatenated on an 8-byte boundary, whole body
+    // padded to 8; record each buffer's (offset, length).
+    let mut body: Vec<u8> = Vec::new();
+    let mut buffers: Vec<(i64, i64)> = Vec::new();
+    for col in &cols {
+        for b in &col.buffers {
+            while !body.len().is_multiple_of(8) {
+                body.push(0);
+            }
+            buffers.push((body.len() as i64, b.len() as i64));
+            body.extend_from_slice(b);
+        }
+    }
+    while !body.len().is_multiple_of(8) {
+        body.push(0);
+    }
+
+    let schema_msg = schema_message(&cols);
+    let rb_msg = record_batch_message(&cols, nrows, &buffers, &body);
+
+    let mut out = Vec::new();
+    if !file {
+        out.extend_from_slice(&schema_msg);
+        out.extend_from_slice(&rb_msg);
+        out.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0]); // end-of-stream
+        return out;
+    }
+
+    let magic = b"ARROW1\0\0";
+    let rb_offset = (magic.len() + schema_msg.len()) as i64;
+    let metadata_len = (rb_msg.len() - body.len()) as i32;
+    let footer = footer_bytes(&cols, rb_offset, metadata_len, body.len() as i64);
+    out.extend_from_slice(magic);
+    out.extend_from_slice(&schema_msg);
+    out.extend_from_slice(&rb_msg);
+    out.extend_from_slice(&footer);
+    out.extend_from_slice(&(footer.len() as i32).to_le_bytes());
+    out.extend_from_slice(b"ARROW1");
+    out
+}
+
+/// Encode a [`RowSet`] directly as Apache Arrow IPC bytes (the pure-Rust egress
+/// path — no JS round-trip). `file` selects the file / Feather layout.
+pub fn to_arrow_ipc(rs: &RowSet, file: bool) -> Vec<u8> {
+    arrow_ipc_from_blob(&to_arrow(rs), file)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -501,5 +937,42 @@ mod tests {
                 .unwrap();
             assert_eq!(typed, to_arrow(&rs), "blob mismatch for `{q}`");
         }
+    }
+
+    #[test]
+    fn ipc_framing_invariants_and_determinism() {
+        let s = |x: &str| Value::Str(Arc::from(x));
+        let rs = rowset(
+            &["name", "age", "flag"],
+            vec![
+                vec![s("marko"), Value::Num(29.0), Value::Bool(true)],
+                vec![s("vadas"), Value::Num(27.0), Value::Null],
+            ],
+        );
+
+        let stream = to_arrow_ipc(&rs, false);
+        // A stream starts with an encapsulated message (continuation marker) and ends
+        // with the 8-byte end-of-stream marker (continuation + zero length).
+        assert_eq!(&stream[0..4], &[0xFF, 0xFF, 0xFF, 0xFF]);
+        assert_eq!(
+            &stream[stream.len() - 8..],
+            &[0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0]
+        );
+
+        let file = to_arrow_ipc(&rs, true);
+        // The file / Feather layout is bracketed by the ARROW1 magic.
+        assert_eq!(&file[0..6], b"ARROW1");
+        assert_eq!(&file[file.len() - 6..], b"ARROW1");
+
+        // Deterministic: same rows → identical bytes (byte-identity to the TS encoder
+        // is proven in packages/native/src/arrow.test.ts against apache-arrow).
+        assert_eq!(to_arrow_ipc(&rs, false), stream);
+        assert_eq!(arrow_ipc_from_blob(&to_arrow(&rs), true), file);
+
+        // An empty result still frames validly (schema + zero-row batch).
+        let empty = rowset(&["a", "b"], vec![]);
+        let es = to_arrow_ipc(&empty, false);
+        assert_eq!(&es[0..4], &[0xFF, 0xFF, 0xFF, 0xFF]);
+        assert!(es.len() > 8);
     }
 }

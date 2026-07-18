@@ -83,6 +83,10 @@ const SYMBOLS = {
     args: [FFIType.ptr, FFIType.ptr, U, FFIType.ptr, U, FFIType.ptr],
     returns: FFIType.ptr,
   },
+  lnk_query_arrow_ipc: {
+    args: [FFIType.ptr, FFIType.ptr, U, FFIType.ptr, U, FFIType.u32, FFIType.ptr],
+    returns: FFIType.ptr,
+  },
   lnk_gremlin_json: { args: [FFIType.ptr, FFIType.ptr, U, FFIType.ptr], returns: FFIType.ptr },
   lnk_algo: {
     args: [FFIType.ptr, FFIType.ptr, U, FFIType.ptr, U, FFIType.ptr],
@@ -579,6 +583,26 @@ export const createFfiBackend = (libPath: string): Backend => {
           ),
         symbols.lnk_free_arrow,
         'queryArrow',
+      );
+    },
+
+    queryArrowIpc: (handle, query, file, params) => {
+      const q = encoder.encode(query);
+      const p = params === undefined ? null : encoder.encode(params);
+
+      return takeBuf(
+        (outLen) =>
+          symbols.lnk_query_arrow_ipc(
+            asPtr(handle),
+            bytesPtr(q),
+            q.byteLength,
+            p ? bytesPtr(p) : null,
+            p?.byteLength ?? 0,
+            file ? 1 : 0,
+            outLen,
+          ),
+        symbols.lnk_free_arrow,
+        'queryArrowIpc',
       );
     },
 

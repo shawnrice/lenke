@@ -136,6 +136,15 @@ type WasmExports = {
     plen: number,
     outLen: number,
   ) => number;
+  lnk_query_arrow_ipc: (
+    h: number,
+    q: number,
+    qlen: number,
+    p: number,
+    plen: number,
+    file: number,
+    outLen: number,
+  ) => number;
   lnk_gremlin_json: (h: number, q: number, qlen: number, outLen: number) => number;
   lnk_algo: (
     h: number,
@@ -774,6 +783,15 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
       takeBuf(handle, query, params ?? null, ex.lnk_query_rows, ex.lnk_free_buf, 'query'),
     queryArrow: (handle, query, params) =>
       takeBuf(handle, query, params ?? null, ex.lnk_query_arrow, ex.lnk_free_arrow, 'queryArrow'),
+    queryArrowIpc: (handle, query, file, params) =>
+      takeBuf(
+        handle,
+        query,
+        params ?? null,
+        (h, q, ql, p, pl, o) => ex.lnk_query_arrow_ipc(h, q, ql, p, pl, file ? 1 : 0, o),
+        ex.lnk_free_arrow,
+        'queryArrowIpc',
+      ),
 
     prepare: (text, maxOperatorChain) => {
       const t = encoder.encode(text);

@@ -155,6 +155,9 @@ export type Backend = {
   queryRows: (handle: GraphHandle, query: string, params?: string) => Uint8Array;
   /** Run a GQL query; returns the Arrow ("ARW1") columnar blob bytes. Same optional `params`. */
   queryArrow: (handle: GraphHandle, query: string, params?: string) => Uint8Array;
+  /** Run a GQL query and return standard Apache Arrow IPC bytes, framed natively.
+   * `file` selects the file / Feather-v2 layout, else the IPC stream layout. */
+  queryArrowIpc: (handle: GraphHandle, query: string, file: boolean, params?: string) => Uint8Array;
   /** Run a textual Gremlin query; returns the JSON-array result bytes. */
   gremlinJson: (handle: GraphHandle, query: string) => Uint8Array;
 

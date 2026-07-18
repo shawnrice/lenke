@@ -250,6 +250,32 @@ impl Graph {
         Ok(blob.into())
     }
 
+    /// Run a GQL query and return standard Apache Arrow IPC bytes (`file` → the
+    /// file / Feather-v2 layout, else the IPC stream layout) — the whole query→IPC
+    /// path runs natively, no JS re-encode. Same params as [`Graph::query_arrow`].
+    #[napi]
+    pub fn query_arrow_ipc(
+        &mut self,
+        text: String,
+        params_json: Option<String>,
+        file: bool,
+    ) -> Result<Buffer> {
+        let params = decode_params("queryArrowIpc", params_json.as_deref())?;
+        let parsed = lenke_core::gql::parse_with_max_chain(&text, self.inner.max_operator_chain())
+            .map_err(|e| {
+            coded_msg(
+                "queryArrowIpc",
+                ErrorCode::Syntax,
+                format!("{} (pos {})", e.message, e.pos),
+            )
+        })?;
+        let blob = parsed
+            .execute_arrow(&mut self.inner, &params)
+            .map_err(|e| coded("queryArrowIpc", e))?;
+
+        Ok(lenke_core::arrow::arrow_ipc_from_blob(&blob, file).into())
+    }
+
     /// Run a native graph algorithm (`degree`, `pagerank`, `connectedComponents`,
     /// `labelPropagation`, `shortestPath`) over the whole graph in one call; returns
     /// the `{columns, rows}` JSON document as bytes. `config` is the algorithm's JSON

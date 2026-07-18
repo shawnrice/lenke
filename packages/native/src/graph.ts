@@ -432,6 +432,18 @@ export type RustGraph = {
     (strings: TemplateStringsArray, ...subs: unknown[]): Uint8Array;
   };
   /**
+   * Run a GQL query → standard **Apache Arrow IPC** bytes, framed **natively** (no
+   * JS re-encode) — the interop handoff to DuckDB / Polars / pandas. `opts.format`
+   * picks the IPC stream layout (default) or the file / Feather-v2 layout; the
+   * tagged-template form (injection-safe `${}` interpolation, like {@link query})
+   * always emits the stream layout. For a JS-side transcode of an existing ARW1
+   * blob instead, see `toArrowIPC` in `@lenke/native/arrow`.
+   */
+  queryArrowIpc: {
+    (text: string, opts?: { params?: QueryParams; format?: 'stream' | 'file' }): Uint8Array;
+    (strings: TemplateStringsArray, ...subs: unknown[]): Uint8Array;
+  };
+  /**
    * Run a textual Gremlin query → JSON-decoded result stream. Gremlin has no
    * engine param surface, so template `${}` values are escaped into safe
    * literals via {@link escapeGremlin} (not raw-spliced) — so
@@ -817,6 +829,23 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
       const { text, params } = compileGql(q, subs, clock ?? undefined);
 
       return backend.queryArrow(live(), text, params);
+    },
+    queryArrowIpc: (q: string | TemplateStringsArray, ...rest: unknown[]) => {
+      // String form: (text, { params?, format? }). Tagged-template form: stream only.
+      if (typeof q === 'string') {
+        const opts = (rest[0] ?? {}) as { params?: QueryParams; format?: 'stream' | 'file' };
+        const { text, params } = compileGql(
+          q,
+          opts.params === undefined ? [] : [opts.params],
+          clock ?? undefined,
+        );
+
+        return backend.queryArrowIpc(live(), text, opts.format === 'file', params);
+      }
+
+      const { text, params } = compileGql(q, rest, clock ?? undefined);
+
+      return backend.queryArrowIpc(live(), text, false, params);
     },
     // `gremlin(...)` here is the module-level composer (safe escaping), not this
     // property — object keys don't bind in scope.

@@ -13,7 +13,8 @@ use crate::query;
 
 #[no_mangle]
 pub extern "C" fn lnk_abi_version() -> u32 {
-    12 // 12: lnk_prepare takes a max-operator-chain arg; 11: per-graph operator-chain
+    13 // 13: lnk_query_arrow_ipc (native Arrow IPC egress);
+       // 12: lnk_prepare takes a max-operator-chain arg; 11: per-graph operator-chain
        //    ceiling (lnk_graph_set_max_operator_chain);
        // 10: native graph algorithms (lnk_algo); 9: query params (lnk_query_rows/
        //    lnk_query_arrow take a params-JSON doc); 8: reactive change tracking
@@ -1026,6 +1027,72 @@ pub unsafe extern "C" fn lnk_query_arrow(
     let p = std::alloc::alloc(layout);
     if !p.is_null() {
         std::ptr::copy_nonoverlapping(blob.as_ptr(), p, blob.len());
+    }
+    p
+}
+
+/// Run a GQL query and return standard **Apache Arrow IPC** bytes (`file != 0` →
+/// the file / Feather-v2 layout, else the IPC stream layout) — the whole
+/// query→IPC path runs natively, so a caller never re-encodes in JS. Same
+/// contract as [`lnk_query_arrow`] (last-error channel, `lnk_free_arrow` with
+/// `out_len`, null on error). Returns null (and leaves `out_len` untouched) on a
+/// parse / null / UTF-8 error.
+///
+/// # Safety
+/// As [`lnk_query_arrow`]: `g` valid + exclusively borrowed; `q_ptr`/`q_len` valid
+/// UTF-8; `p_ptr` null or valid for `p_len` bytes; `out_len` writable.
+#[cfg(feature = "arrow")]
+#[no_mangle]
+pub unsafe extern "C" fn lnk_query_arrow_ipc(
+    g: *mut Graph,
+    q_ptr: *const u8,
+    q_len: usize,
+    p_ptr: *const u8,
+    p_len: usize,
+    file: u32,
+    out_len: *mut usize,
+) -> *mut u8 {
+    crate::ffi_error::begin();
+    if g.is_null() || q_ptr.is_null() {
+        crate::ffi_error::set_code(ErrorCode::Ffi, "null graph or query pointer");
+        return std::ptr::null_mut();
+    }
+    let q = match std::str::from_utf8(std::slice::from_raw_parts(q_ptr, q_len)) {
+        Ok(s) => s,
+        Err(_) => {
+            crate::ffi_error::set_code(ErrorCode::Ffi, "query bytes are not valid UTF-8");
+            return std::ptr::null_mut();
+        }
+    };
+    let Ok(params) = decode_params(p_ptr, p_len) else {
+        return std::ptr::null_mut();
+    };
+    let parsed = match crate::gql::parse_with_max_chain(q, (*g).max_operator_chain()) {
+        Ok(p) => p,
+        Err(e) => {
+            crate::ffi_error::set(
+                ErrorCode::Syntax,
+                &e.message,
+                &format!("{{\"pos\":{}}}", e.pos),
+            );
+            return std::ptr::null_mut();
+        }
+    };
+    // Reuse the typed Arrow column path, then frame it as IPC natively.
+    let blob = match parsed.execute_arrow(&mut *g, &params) {
+        Ok(b) => b,
+        Err(e) => {
+            crate::ffi_error::set_code(e.code, &e.message);
+            return std::ptr::null_mut();
+        }
+    };
+    let ipc = crate::arrow::arrow_ipc_from_blob(&blob, file != 0);
+    *out_len = ipc.len();
+    let len = ipc.len().max(1);
+    let layout = std::alloc::Layout::from_size_align(len, 8).unwrap();
+    let p = std::alloc::alloc(layout);
+    if !p.is_null() {
+        std::ptr::copy_nonoverlapping(ipc.as_ptr(), p, ipc.len());
     }
     p
 }

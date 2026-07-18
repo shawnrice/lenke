@@ -123,6 +123,8 @@ export function createNodeBackend() {
     // per the Backend contract; the addon decodes it crate-side.
     queryRows: (handle, query, params) => coded(() => get(handle).query(query, params)),
     queryArrow: (handle, query, params) => coded(() => get(handle).queryArrow(query, params)),
+    queryArrowIpc: (handle, query, file, params) =>
+      coded(() => get(handle).queryArrowIpc(query, params, file)),
     gremlinJson: (handle, query) => coded(() => get(handle).gremlin(query)),
     algo: (handle, name, config) => coded(() => get(handle).algo(name, config)),
     // Off-thread on a libuv worker → Promise<Buffer>; the event loop stays free.

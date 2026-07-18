@@ -170,4 +170,39 @@ suite('@lenke/native/arrow — real Arrow IPC egress', () => {
   test('rejects a non-ARW1 blob', () => {
     expect(() => toArrowIPC(new Uint8Array([1, 2, 3, 4]))).toThrow();
   });
+
+  // The native one-shot: RustGraph.queryArrowIpc runs query→IPC entirely in Rust
+  // (no JS transcode). It must produce byte-identical IPC to the JS encoder AND
+  // read back through the reference decoder.
+  test('native queryArrowIpc matches the JS encoder byte-for-byte and decodes', () => {
+    const g = graphFromFormat(backend, NDJSON, 'ndjson');
+
+    try {
+      for (const format of ['stream', 'file'] as const) {
+        const native = g.queryArrowIpc(QUERY, { format });
+        const js = toArrowIPC(g.queryArrow(QUERY), format);
+
+        expect(Buffer.compare(Buffer.from(native), Buffer.from(js))).toBe(0);
+        expect(
+          [...tableFromIPC(native)].map((r) => ({ name: r.name, age: r.age, active: r.active })),
+        ).toEqual(EXPECTED);
+      }
+    } finally {
+      g.free();
+    }
+  });
+
+  test('native queryArrowIpc binds params (tagged-template form is stream)', () => {
+    const g = graphFromFormat(backend, NDJSON, 'ndjson');
+
+    try {
+      const ipc = g.queryArrowIpc`MATCH (n:P) WHERE n.age > ${28} RETURN n.name AS name ORDER BY n.name`;
+      const back = tableFromIPC(ipc);
+
+      expect(new TextDecoder().decode(ipc.subarray(0, 6))).not.toBe('ARROW1'); // stream
+      expect([...back].map((r) => r.name)).toEqual(['josh', 'marko']);
+    } finally {
+      g.free();
+    }
+  });
 });
