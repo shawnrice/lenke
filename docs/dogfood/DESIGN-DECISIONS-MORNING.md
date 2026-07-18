@@ -83,12 +83,13 @@ betweenness" below.
   exists; seed-set personalized ranking is the graph-native recsys ranker.
 - **SCC / simple-cycle operator + cyclic-match perf cliff** (R11). No SCC/simple-cycle
   primitive; cyclic variable-length match is ~2.5×/hop.
-- **`ANY SHORTEST` can't close on its seed** (R11 B2). Misses self-cycles; `{m,n}(a)`
-  workaround. Real matcher defect, delicate.
+- ~~**`ANY SHORTEST` can't close on its seed** (R11 B2)~~ — FIXED `ada1782` (BFS now
+  tracks the shortest cycle back to the seed; `->+(a)` finds it, both engines).
 - **Sliding-window temporal aggregation** (R11). No windowed aggregate primitive.
-- **Duration relational-order policy** (R11). `duration <op> duration` is UNKNOWN
-  (three-valued) → silently drops WHERE rows; define when it's unambiguous, or keep
-  instant-arithmetic as the sanctioned pattern (documented).
+- **Duration relational-order policy** (R11) — DECIDED: keep as-is (WAI). `duration <op>
+duration` → UNKNOWN is spec-correct (durations aren't totally ordered: a month vs 30
+  days is ambiguous), both engines identical, with the documented instant-arithmetic
+  workaround; `ORDER BY` still uses a deterministic total order. Not a defect.
 - ~~**Computed non-finite policy** (R11 D-inbox)~~ — RESOLVED (see "Defect follow-up").
 - ~~**Temporal astronomical overflow** (R11 D4)~~ — FIXED `ce6c6a3` (overflow → null both).
 
@@ -96,8 +97,10 @@ betweenness" below.
 
 - ~~**`order().by(<key>)` over `project()`/Map rows** (R11 BUG A)~~ — FIXED `982ea0c`
   (`by('key')` now projects the value off a Map/project-row in both engines).
-- **`shortestPath()` is undirected** (R11). Add a direction option (documented as a
-  footgun for now). — still open (feature-shaped; the wrong default is a correctness trap).
+- ~~**`shortestPath()` is undirected** (R11)~~ — DONE `fa227b7` (added
+  `.with(ShortestPath.direction, 'out'|'in'|'both')`, default 'both'/undirected =
+  TinkerPop-conformant; both engines). The undirected default was already conformant, so
+  this was a missing option, not a wrong default.
 - **Gremlin CF steps** (Ravi). `where(neq('me'))`, `order(local).by(values, desc)`
   unsupported → idiomatic Gremlin collaborative-filtering inexpressible (GQL is fine).
 
