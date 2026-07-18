@@ -40,6 +40,24 @@ const newStore = () => {
 };
 
 suite('@lenke/native reactive store', () => {
+  test('store.free() releases the graph imperatively and is idempotent', () => {
+    const store = newStore();
+    const live = store.liveQuery('MATCH (n:P) RETURN n.name', { deps: null });
+    const before = live.getSnapshot();
+    expect(before.length).toBe(2);
+
+    store.free();
+
+    // The native handle is released: a mutate now throws a coded error.
+    expect(() => store.mutate((g) => g.query("INSERT (:P {name: 'zoe'})"))).toThrow();
+    // A still-mounted live query is severed — its snapshot stays on the last value
+    // (stable reference, safe for useSyncExternalStore) instead of hitting the freed graph.
+    expect(live.getSnapshot()).toBe(before);
+    // Idempotent — a second free (and the dispose symbol) are no-ops.
+    expect(() => store.free()).not.toThrow();
+    expect(() => store[Symbol.dispose]()).not.toThrow();
+  });
+
   test('getSnapshot is referentially stable with no mutation', () => {
     const store = newStore();
     const names = store.liveQuery('MATCH (n:P) RETURN n.name ORDER BY n.name', { deps: null });

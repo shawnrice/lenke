@@ -77,9 +77,20 @@ export type Store = {
    */
   liveGremlin: (text: string, opts: { deps: readonly string[] | null }) => LiveQuery<unknown>;
   /**
+   * Deterministically release the store: sever every live subscription and
+   * {@link RustGraph.free | free} the underlying graph handle. The imperative twin
+   * of `[Symbol.dispose]` — call it when a runtime/tool can't use `using` (a replica
+   * fleet freed in a loop, a test `afterEach`, a `finally`), so you get deterministic
+   * release without leaning on the {@link FinalizationRegistry} backstop (which only
+   * fires when the GC happens to run, and warns about the leak until it does).
+   * Idempotent. After it, snapshots stay on their last cached value and `mutate`
+   * throws a coded error.
+   */
+  free: () => void;
+  /**
    * Dispose the store and {@link RustGraph.free | free} its underlying graph, so
    * `using store = createStore(graph)` releases the native/wasm handle at scope
-   * exit. Idempotent (delegates to the graph's own freed-once guard).
+   * exit. Idempotent; identical to {@link Store.free}.
    */
   [Symbol.dispose]: () => void;
 };
@@ -119,6 +130,19 @@ export const createStore = (graph: RustGraph): Store => {
     for (const l of listeners) {
       l.notify();
     }
+  };
+
+  // Deterministic release: sever subscriptions (so a still-mounted live query never
+  // calls into the freed graph on its next getSnapshot) then free the handle.
+  // Idempotent — the graph's own freed-once guard makes a double free a no-op too.
+  const free = (): void => {
+    if (disposed) {
+      return;
+    }
+
+    disposed = true;
+    listeners.clear();
+    graph.free();
   };
 
   // A pooled, epoch-gated computation shared by every handle with the same
@@ -254,15 +278,8 @@ export const createStore = (graph: RustGraph): Store => {
       ),
     liveGremlin: (text, opts) =>
       makeLive(signatureOf('g', text, opts.deps), opts.deps, () => graph.gremlin(text)),
-    [Symbol.dispose]: () => {
-      if (disposed) {
-        return;
-      }
-
-      disposed = true;
-      listeners.clear();
-      graph.free();
-    },
+    free,
+    [Symbol.dispose]: free,
   };
 };
 
