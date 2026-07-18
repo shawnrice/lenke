@@ -32,6 +32,7 @@ mod degree;
 mod label_prop;
 mod pagerank;
 mod peer_pressure;
+mod scc;
 mod shortest_path;
 
 /// Parsed algorithm configuration (a superset; each algorithm reads the fields it
@@ -136,6 +137,10 @@ fn dispatch(graph: &Graph, name: &str, cfg: &AlgoConfig) -> Result<AlgoOutput, S
     Ok(match name {
         "degree" => ("degree", degree::degree(graph, cfg)),
         "connectedComponents" => ("componentId", components::connected_components(graph, cfg)),
+        "stronglyConnectedComponents" => (
+            "componentId",
+            scc::strongly_connected_components(graph, cfg),
+        ),
         "labelPropagation" => ("label", label_prop::label_propagation(graph, cfg)),
         "peerPressure" => ("cluster", peer_pressure::peer_pressure(graph, cfg)),
         "pagerank" => ("score", pagerank::pagerank(graph, cfg)),
@@ -369,6 +374,97 @@ mod tests {
             (1..=6)
                 .map(|i| (i.to_string(), i.to_string()))
                 .collect::<Vec<_>>(),
+        );
+    }
+
+    /// `(external id, componentId)` rows for SCC in engine order.
+    fn scc(g: &mut Graph, cfg: &str) -> Vec<(String, String)> {
+        let rs = run(g, "stronglyConnectedComponents", cfg).unwrap();
+        rs.rows()
+            .map(|r| match (&r[0], &r[1]) {
+                (Value::Str(id), Value::Str(c)) => (id.to_string(), c.to_string()),
+                _ => panic!("unexpected SCC row shape"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn scc_finds_directed_cycles() {
+        // 1→2→3→1 is one SCC; 4→3 and 5→4 are their own singletons (no path back).
+        let g = ndjson::decode(
+            &[
+                r#"{"type":"node","id":"1","labels":["N"]}"#,
+                r#"{"type":"node","id":"2","labels":["N"]}"#,
+                r#"{"type":"node","id":"3","labels":["N"]}"#,
+                r#"{"type":"node","id":"4","labels":["N"]}"#,
+                r#"{"type":"node","id":"5","labels":["N"]}"#,
+                r#"{"type":"edge","from":"1","to":"2","labels":["E"]}"#,
+                r#"{"type":"edge","from":"2","to":"3","labels":["E"]}"#,
+                r#"{"type":"edge","from":"3","to":"1","labels":["E"]}"#,
+                r#"{"type":"edge","from":"4","to":"3","labels":["E"]}"#,
+                r#"{"type":"edge","from":"5","to":"4","labels":["E"]}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        let mut g = g;
+        assert_eq!(
+            scc(&mut g, "{}"),
+            vec![
+                ("1".into(), "1".into()),
+                ("2".into(), "1".into()),
+                ("3".into(), "1".into()),
+                ("4".into(), "4".into()),
+                ("5".into(), "5".into()),
+            ],
+        );
+
+        // Direction matters: the modern graph is one WCC but has NO directed cycle,
+        // so every vertex is its own SCC (id = own external id).
+        let mut m = modern();
+        assert_eq!(
+            scc(&mut m, "{}"),
+            (1..=6)
+                .map(|i| (i.to_string(), i.to_string()))
+                .collect::<Vec<_>>(),
+        );
+
+        // A named-but-unknown edge type → no edges → every vertex its own component.
+        assert_eq!(
+            scc(&mut g, r#"{"edgeLabel":"NOPE"}"#),
+            (1..=5)
+                .map(|i| (i.to_string(), i.to_string()))
+                .collect::<Vec<_>>(),
+        );
+
+        // A 2-cycle nested with a self-referential chain: {1,2} strongly connected,
+        // and a longer 3→4→5→3 cycle, sharing the min-index id per component.
+        let mut two = ndjson::decode(
+            &[
+                r#"{"type":"node","id":"1","labels":["N"]}"#,
+                r#"{"type":"node","id":"2","labels":["N"]}"#,
+                r#"{"type":"node","id":"3","labels":["N"]}"#,
+                r#"{"type":"node","id":"4","labels":["N"]}"#,
+                r#"{"type":"node","id":"5","labels":["N"]}"#,
+                r#"{"type":"edge","from":"1","to":"2","labels":["E"]}"#,
+                r#"{"type":"edge","from":"2","to":"1","labels":["E"]}"#,
+                r#"{"type":"edge","from":"3","to":"4","labels":["E"]}"#,
+                r#"{"type":"edge","from":"4","to":"5","labels":["E"]}"#,
+                r#"{"type":"edge","from":"5","to":"3","labels":["E"]}"#,
+                r#"{"type":"edge","from":"2","to":"3","labels":["E"]}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        assert_eq!(
+            scc(&mut two, "{}"),
+            vec![
+                ("1".into(), "1".into()),
+                ("2".into(), "1".into()),
+                ("3".into(), "3".into()),
+                ("4".into(), "3".into()),
+                ("5".into(), "3".into()),
+            ],
         );
     }
 

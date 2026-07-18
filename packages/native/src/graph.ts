@@ -462,6 +462,12 @@ export type RustGraph = {
    */
   degree: (config?: AlgorithmConfig) => Promise<DegreeRow[]>;
   connectedComponents: (config?: AlgorithmConfig) => Promise<ComponentRow[]>;
+  /**
+   * Strongly-connected components (directed): two vertices share a component iff
+   * each is reachable from the other along directed edges. Each `componentId` is the
+   * component's first-inserted member's external id. Optional `edgeLabel` filter.
+   */
+  stronglyConnectedComponents: (config?: AlgorithmConfig) => Promise<ComponentRow[]>;
   labelPropagation: (config?: AlgorithmConfig) => Promise<LabelRow[]>;
   peerPressure: (config?: AlgorithmConfig) => Promise<ClusterRow[]>;
   pagerank: (config?: AlgorithmConfig) => Promise<PageRankRow[]>;
@@ -819,6 +825,8 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
     degree: (config) => runAlgoAsync('degree', config) as Promise<DegreeRow[]>,
     connectedComponents: (config) =>
       runAlgoAsync('connectedComponents', config) as Promise<ComponentRow[]>,
+    stronglyConnectedComponents: (config) =>
+      runAlgoAsync('stronglyConnectedComponents', config) as Promise<ComponentRow[]>,
     labelPropagation: (config) => runAlgoAsync('labelPropagation', config) as Promise<LabelRow[]>,
     peerPressure: (config) => runAlgoAsync('peerPressure', config) as Promise<ClusterRow[]>,
     pagerank: (config) => runAlgoAsync('pagerank', config) as Promise<PageRankRow[]>,

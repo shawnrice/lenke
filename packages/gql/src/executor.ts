@@ -4369,6 +4369,10 @@ const PROCEDURES: Record<string, { algo: AlgorithmName; resultColumn: string }> 
   pagerank: { algo: 'pagerank', resultColumn: 'score' },
   personalized_pagerank: { algo: 'personalizedPagerank', resultColumn: 'score' },
   connected_components: { algo: 'connectedComponents', resultColumn: 'componentId' },
+  strongly_connected_components: {
+    algo: 'stronglyConnectedComponents',
+    resultColumn: 'componentId',
+  },
   label_propagation: { algo: 'labelPropagation', resultColumn: 'label' },
   peer_pressure: { algo: 'peerPressure', resultColumn: 'cluster' },
   degree: { algo: 'degree', resultColumn: 'degree' },

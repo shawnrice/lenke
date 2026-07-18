@@ -74,6 +74,7 @@ export {
   peerPressure,
   runAlgorithmSync,
   shortestPath,
+  stronglyConnectedComponents,
   type AlgorithmConfig,
   type AlgorithmRow,
   type CentralityRow,
