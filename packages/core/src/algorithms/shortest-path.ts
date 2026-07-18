@@ -84,6 +84,37 @@ const outEdges = function* (
   }
 };
 
+/** Which incident edges to follow, from `config.direction` (default `out`, mirroring
+ *  `degree`); `both` treats the graph as undirected. */
+type Dir = 'out' | 'in' | 'both';
+const dirOf = (config: AlgorithmConfig): Dir =>
+  config.direction === 'in' || config.direction === 'both' ? config.direction : 'out';
+
+/**
+ * Yield `[edge, neighbourId]` for each incident edge of `u` in the configured
+ * direction — the far endpoint is `edge.to` for an out-edge, `edge.from` for an
+ * in-edge. `both` yields out-edges then in-edges, matching native `visit_adj`'s
+ * order so the Dijkstra `(distance, index)` tie-break stays byte-identical.
+ */
+const neighbours = function* (
+  graph: Graph,
+  u: Vertex,
+  dir: Dir,
+  edgeLabel: string | undefined,
+): Iterable<[Edge, string]> {
+  if (dir === 'out' || dir === 'both') {
+    for (const e of outEdges(graph.edgesFromByLabel.get(u.id), edgeLabel)) {
+      yield [e, e.to.id];
+    }
+  }
+
+  if (dir === 'in' || dir === 'both') {
+    for (const e of outEdges(graph.edgesToByLabel.get(u.id), edgeLabel)) {
+      yield [e, e.from.id];
+    }
+  }
+};
+
 /**
  * Goal-directed A* — explore by `f = g + h`, where `h` is the admissible estimate
  * to the target read from each vertex's `heuristicProperty` (absent → 0, degrading
@@ -97,6 +128,7 @@ type PathContext = {
   order: Vertex[];
   index: Map<string, number>;
   edgeLabel: string | undefined;
+  dir: Dir;
   weightOf: (edge: Edge) => number;
 };
 
@@ -106,7 +138,7 @@ const astar = (
   tgtIdx: number,
   heuristicProperty: string | undefined,
 ): number | undefined => {
-  const { graph, order, index, edgeLabel, weightOf } = ctx;
+  const { graph, order, index, edgeLabel, dir, weightOf } = ctx;
   const heuristicOf = (i: number): number => {
     if (heuristicProperty === undefined) {
       return 0;
@@ -135,8 +167,8 @@ const astar = (
       return g[u];
     }
 
-    for (const edge of outEdges(graph.edgesFromByLabel.get(order[u].id), edgeLabel)) {
-      const v = index.get(edge.to.id)!;
+    for (const [edge, vid] of neighbours(graph, order[u], dir, edgeLabel)) {
+      const v = index.get(vid)!;
 
       if (closed[v]) {
         continue;
@@ -167,6 +199,7 @@ export const computeGen = function* (
   order.forEach((v, i) => index.set(v.id, i));
 
   const srcIdx = source === undefined ? undefined : index.get(source);
+  const dir = dirOf(config);
 
   // Unknown/absent source → no reachable set.
   if (srcIdx === undefined) {
@@ -193,7 +226,7 @@ export const computeGen = function* (
       return [];
     }
 
-    const ctx: PathContext = { graph, order, index, edgeLabel, weightOf };
+    const ctx: PathContext = { graph, order, index, edgeLabel, dir, weightOf };
     const d = astar(ctx, srcIdx, tgtIdx, heuristicProperty);
 
     if (d === undefined) {
@@ -220,8 +253,8 @@ export const computeGen = function* (
     while (head < queue.length) {
       const u = queue[head++];
 
-      for (const edge of outEdges(graph.edgesFromByLabel.get(order[u].id), edgeLabel)) {
-        const v = index.get(edge.to.id)!;
+      for (const [, vid] of neighbours(graph, order[u], dir, edgeLabel)) {
+        const v = index.get(vid)!;
 
         if (dist[v] === Infinity) {
           dist[v] = dist[u] + 1;
@@ -247,8 +280,8 @@ export const computeGen = function* (
         continue;
       }
 
-      for (const edge of outEdges(graph.edgesFromByLabel.get(order[u].id), edgeLabel)) {
-        const v = index.get(edge.to.id)!;
+      for (const [edge, vid] of neighbours(graph, order[u], dir, edgeLabel)) {
+        const v = index.get(vid)!;
         const nd = du + weightOf(edge);
 
         if (nd < dist[v]) {
@@ -283,8 +316,9 @@ export const computeGen = function* (
 };
 
 /**
- * Single-source shortest path from a `source` external id, following out-edges
- * (optionally of one `edgeLabel`). Unweighted → BFS hop distance; weighted (a
+ * Single-source shortest path from a `source` external id, following edges in the
+ * configured `direction` (`out` default / `in` / `both`; `both` = undirected),
+ * optionally of one `edgeLabel`. Unweighted → BFS hop distance; weighted (a
  * `weightProperty` is set) → Dijkstra. Resolves `Promise<ShortestPathRow[]>` for
  * every reachable vertex (source at 0), in insertion order, without blocking the
  * event loop. Distances are the canonical minimum path cost, so they are

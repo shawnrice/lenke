@@ -1,5 +1,7 @@
-//! Single-source shortest path from a `source` external id, following out-edges
-//! (optionally of one type). Unweighted → BFS integer hop distance; weighted (a
+//! Single-source shortest path from a `source` external id, following edges in the
+//! configured `direction` (`out` default / `in` / `both`, mirroring `degree`;
+//! `both` = undirected), optionally of one type. Unweighted → BFS integer hop
+//! distance; weighted (a
 //! `weightProperty` is set) → Dijkstra f64 distance. Returns `{node, distance}` for
 //! every reachable vertex (including the source at 0), in vertex-insertion order.
 //!
@@ -45,6 +47,52 @@ impl PartialOrd for State {
     }
 }
 
+/// Which incident edges the traversal follows, from `AlgorithmConfig.direction`
+/// (default `out`, mirroring `degree`); `both` treats the graph as undirected.
+#[derive(Clone, Copy)]
+enum Dir {
+    Out,
+    In,
+    Both,
+}
+
+impl Dir {
+    fn of(cfg: &AlgoConfig) -> Self {
+        match cfg.direction.as_deref() {
+            Some("in") => Self::In,
+            Some("both") => Self::Both,
+            _ => Self::Out,
+        }
+    }
+}
+
+/// Visit each incident edge of `u` in the configured direction. `a.nbr` is the far
+/// endpoint in every case (target of an out-edge, source of an in-edge), so callers
+/// relax toward `a.nbr` uniformly. `both` visits out-edges then in-edges — both
+/// engines share this order so Dijkstra's `(dist, idx)` tie-break stays identical.
+fn visit_adj(graph: &Graph, u: u32, dir: Dir, f: &mut impl FnMut(&Adj)) {
+    match dir {
+        Dir::Out => {
+            for a in graph.out_adj(u) {
+                f(&a);
+            }
+        }
+        Dir::In => {
+            for a in graph.in_adj(u) {
+                f(&a);
+            }
+        }
+        Dir::Both => {
+            for a in graph.out_adj(u) {
+                f(&a);
+            }
+            for a in graph.in_adj(u) {
+                f(&a);
+            }
+        }
+    }
+}
+
 pub fn shortest_path(graph: &Graph, cfg: &AlgoConfig) -> Vec<(u32, Value)> {
     // Resolve the source external id → dense id; unknown/absent → no reachable set.
     let Some(src) = cfg.source.as_deref().and_then(|s| graph.vid.get(s)) else {
@@ -59,6 +107,7 @@ pub fn shortest_path(graph: &Graph, cfg: &AlgoConfig) -> Vec<(u32, Value)> {
     };
 
     let slots = graph.n;
+    let dir = Dir::of(cfg);
     // Precompute per-edge weights once (weighted runs read them per relaxation, so a
     // hashed property lookup there would dominate). `None` = unweighted.
     let weights: Option<Vec<f64>> = cfg
@@ -81,8 +130,8 @@ pub fn shortest_path(graph: &Graph, cfg: &AlgoConfig) -> Vec<(u32, Value)> {
 
     // Full SSSP (the default): unweighted BFS layers, or weighted Dijkstra.
     let dist = match weights.as_deref() {
-        None => bfs(graph, src, slots, &passes),
-        Some(w) => dijkstra(graph, src, slots, w, &passes),
+        None => bfs(graph, src, slots, dir, &passes),
+        Some(w) => dijkstra(graph, src, slots, dir, w, &passes),
     };
 
     graph
@@ -107,6 +156,7 @@ fn astar(
     weights: Option<&[f64]>,
     passes: &impl Fn(&Adj) -> bool,
 ) -> Option<f64> {
+    let dir = Dir::of(cfg);
     let hkey = cfg.heuristic_property.as_deref();
     let h = |v: u32| -> f64 {
         match hkey {
@@ -135,11 +185,11 @@ fn astar(
         if u == tgt {
             return Some(g[u as usize]);
         }
-        for a in graph.out_adj(u) {
-            if !passes(&a) || closed[a.nbr as usize] {
-                continue;
+        visit_adj(graph, u, dir, &mut |a| {
+            if !passes(a) || closed[a.nbr as usize] {
+                return;
             }
-            let ng = g[u as usize] + weight(&a);
+            let ng = g[u as usize] + weight(a);
             if ng < g[a.nbr as usize] {
                 g[a.nbr as usize] = ng;
                 heap.push(State {
@@ -147,25 +197,31 @@ fn astar(
                     idx: a.nbr,
                 });
             }
-        }
+        });
     }
     None
 }
 
 /// Unweighted BFS hop distance (as f64), `INFINITY` for unreached.
-fn bfs(graph: &Graph, src: u32, slots: usize, passes: &impl Fn(&Adj) -> bool) -> Vec<f64> {
+fn bfs(
+    graph: &Graph,
+    src: u32,
+    slots: usize,
+    dir: Dir,
+    passes: &impl Fn(&Adj) -> bool,
+) -> Vec<f64> {
     let mut dist = vec![f64::INFINITY; slots];
     dist[src as usize] = 0.0;
     let mut queue = VecDeque::new();
     queue.push_back(src);
     while let Some(u) = queue.pop_front() {
         let du = dist[u as usize];
-        for a in graph.out_adj(u) {
-            if passes(&a) && dist[a.nbr as usize].is_infinite() {
+        visit_adj(graph, u, dir, &mut |a| {
+            if passes(a) && dist[a.nbr as usize].is_infinite() {
                 dist[a.nbr as usize] = du + 1.0;
                 queue.push_back(a.nbr);
             }
-        }
+        });
     }
     dist
 }
@@ -177,6 +233,7 @@ fn dijkstra(
     graph: &Graph,
     src: u32,
     slots: usize,
+    dir: Dir,
     weights: &[f64],
     passes: &impl Fn(&Adj) -> bool,
 ) -> Vec<f64> {
@@ -192,9 +249,9 @@ fn dijkstra(
         if du > dist[u as usize] {
             continue;
         }
-        for a in graph.out_adj(u) {
-            if !passes(&a) {
-                continue;
+        visit_adj(graph, u, dir, &mut |a| {
+            if !passes(a) {
+                return;
             }
             let nd = du + weights[a.eidx as usize];
             if nd < dist[a.nbr as usize] {
@@ -204,7 +261,7 @@ fn dijkstra(
                     idx: a.nbr,
                 });
             }
-        }
+        });
     }
     dist
 }
