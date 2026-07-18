@@ -12,6 +12,29 @@ capacity note **S1** plus the carried-over inbox below.
 
 ---
 
+## 🧭 Triage (2026-07-18) — doing NONE of the remaining items now
+
+Every open item below was reviewed against three questions: is it just missing
+**user indexing**, does it belong **outside the library**, or is it **already covered
+by docs / decided**? Verdict: **none are being taken up.** Each is annotated inline
+with its disposition. Summary:
+
+- **User-side (index your keys — `createVertexIndex` already exists):** no-index
+  multi-hop cliff, auto-index/PK hint, natural-key addressing. Auto-indexing arbitrary
+  properties is a write-amplification / memory anti-pattern, not a feature.
+- **Outside the library:** typed query builder (userland DX, same call as ORM CRUD),
+  sliding-window aggregation (delegate to DuckDB via the shipped Arrow egress),
+  server-enforced CDC scopes (host/auth layer, by design).
+- **Already docs / decided:** algorithm memory sizing (in `algorithms.md`), LWW/HLC
+  (design note → **recipe, not a built-in**, matching bitemporal).
+- **Inherent / mostly done:** cyclic var-length enumeration (exponential output;
+  existence/shortest/distinct already BFS — see this session's routing fixes).
+
+**There is no planner / planning stage in the engine**, so any idea that assumed one
+(e.g. a "plan warning" for the no-index cliff) has no home and is dropped.
+
+---
+
 ## ✅ Fixed this session (was top priority)
 
 - **C1 · native SIGSEGV on a long operator chain** → `8001891` (cap), then
@@ -58,6 +81,11 @@ Not a bug, but a capacity fact worth a decision: document a memory-sizing guidel
 algorithm variants for graphs that don't fit ~2× in RAM. Relates to "sampled/approximate
 betweenness" below.
 
+> **Verdict (2026-07-18): already covered by docs.** The memory-sizing guideline is
+> documented in `docs/guides/algorithms.md` ("Memory sizing"). Streaming/blocked
+> algorithm variants are pure YAGNI until someone runs a graph that doesn't fit ~2× in
+> RAM — revisit on a real demand, not speculatively. **Not taking it up now.**
+
 ---
 
 ## High priority — carried from rounds 10–11
@@ -66,10 +94,20 @@ betweenness" below.
   literal-bound anchor without an index seeds from the wrong end: `(me{uid:$id})-[:R]->
 ()<-[:R]-(peer)-[:R]->(rec)` = 71,000 ms unindexed vs 5.7 ms indexed; 4-hop `WHERE`
   vs inline is ~190× at 6M. Anchor label-scan is ~1.6 ms, so it's join-order/seed
-  selection, not seek cost. A join-order heuristic change (or at least a plan warning)
-  — risks regressions, needs profiling. Top perf item.
+  selection, not seek cost.
+  - **Verdict (2026-07-18): user-side (index your lookup keys). Not taking it up.**
+    The 71,000 ms case is specifically an _unindexed point-lookup key_ (`{uid:$id}`) —
+    an identity lookup every database expects indexed; with the index it's 5.7 ms. A
+    join-order heuristic to rescue the no-index case is a large, regression-prone build
+    for a user anti-pattern, and lenke **has no planner/planning stage** where such a
+    heuristic (or a "plan warning") would even live. Guidance: index your point-lookup
+    keys (docs). Reopen only if a cost-based planner is pursued for other reasons.
 - **Auto-index / primary-key hint** (Marcus R10). Id-like lookups full-scan until
   `createVertexIndex` (683× speedup when indexed). Auto-index, or a PK declaration?
+  - **Verdict (2026-07-18): user-side; API already exists. Not taking it up.**
+    `createVertexIndex` is the answer. Auto-indexing arbitrary properties is a
+    write-amplification + memory anti-pattern (surprise cost), not a feature. A PK/`@id`
+    hint on `defineNode` is at most mild sugar over `createVertexIndex` — deferred.
 - ~~**Real Arrow IPC egress**~~ (Marcus R10, task #53) — SHIPPED `@lenke/native/arrow`:
   `toArrowIPC(blob)` / `arrowTable(blob)` reconstruct a real apache-arrow Table from
   the ARW1 buffers (which already are Arrow's physical layout) and emit standard
@@ -102,11 +140,23 @@ personalized_pagerank`): restarts to a `sourceNodes` seed set, byte-identical
 (a)-[:R]->+(a)` / Gremlin `cyclicPath()` find a cycle through a given vertex. Revisit
     only if a concrete use case needs the complete cycle set — and only bounded (per-SCC,
     `maxCycles`/`maxLength`).
-  - The cyclic variable-length **match perf cliff** (~2.5×/hop) is a separate perf item,
-    still open.
+  - The cyclic variable-length **match perf cliff** (~2.5×/hop).
+    **Verdict (2026-07-18): inherent + mostly addressed. Not taking it up.** Enumerating
+    _all_ cyclic paths is exponential-output by nature (the trail count), so the ~2.5×/hop
+    is intrinsic, not a fixable inefficiency. The cases that don't need all paths already
+    route to O(V+E) BFS in both engines: **existence** (`EXISTS`), **shortest**
+    (`ANY SHORTEST`), and **distinct endpoints** (`count(DISTINCT b)` / `RETURN DISTINCT
+b`). This session also (a) reused a trail-mark bitset in the walker (~30% on genuine
+    enumeration) and (b) fixed the count/EXISTS→BFS routing byte-identically. What's left
+    would only come from a cost-based planner (see the no-index cliff above — also declined).
 - ~~**`ANY SHORTEST` can't close on its seed** (R11 B2)~~ — FIXED `ada1782` (BFS now
   tracks the shortest cycle back to the seed; `->+(a)` finds it, both engines).
 - **Sliding-window temporal aggregation** (R11). No windowed aggregate primitive.
+  **Verdict (2026-07-18): outside the library. Not taking it up.** Window functions
+  aren't in ISO GQL, and lenke already ships Arrow IPC egress to DuckDB/Polars precisely
+  for this class of analytics — DuckDB has real `OVER (…)` window functions. Delegate
+  windowed aggregation there (worth one doc pointer from the egress guide); don't grow a
+  non-ISO window syntax in the engine.
 - **Duration relational-order policy** (R11) — DECIDED: keep as-is (WAI). `duration <op>
 duration` → UNKNOWN is spec-correct (durations aren't totally ordered: a month vs 30
   days is ambiguous), both engines identical, with the documented instant-arithmetic
@@ -136,6 +186,11 @@ keys, desc)` (Column selector), and `select(Column.keys|values)` (the observable
   abstraction belongs in the application (or a separate userland package).
 - **Typed query builder.** `query()` is string-only; typed rows are a "trust me" cast.
   Expose column types from a prepared Plan, or a builder?
+  - **Verdict (2026-07-18): outside the library. Not taking it up.** A Kysely-style
+    typed builder is a DX layer over string GQL, not a correctness gap — the same
+    reasoning that put ORM CRUD out of scope. It belongs in userland or a separate
+    package; string GQL stays the ISO-conformant interface. (`defineNode` already covers
+    typed _writes_ via Standard Schema.)
 - ~~**Public `quoteIdent` / safe-label helper.**~~ — SHIPPED `quoteIdent` from
   `@lenke/gql`: bare non-reserved names pass through, everything else is backtick-
   quoted with internal backticks doubled (ISO/SQL escape). Both lexers now decode a
@@ -165,13 +220,23 @@ keys, desc)` (Column selector), and `select(Column.keys|values)` (the observable
   narrows) and an **optimization, not a security boundary** (client-declared, like
   the existing token routing). Deferred: traversal-resolved scope (scope on a related
   element, not a direct property) + server-enforced scopes from auth.
+  - **Verdict (2026-07-18):** server-enforced scopes are **host/auth-layer, by design**
+    — the doc already states scope routing is an optimization, not a security boundary,
+    and auth is the host's job; not a library item. Traversal-resolved scope is a
+    genuine-but-niche feature — **parked** until a concrete use case. Not taking either
+    up now.
 - **LWW tiebreak recipe / HLC.** `_MERGE … WHERE version < $v` diverges on colliding
   version stamps; no built-in Lamport/HLC or (version, clientId) tiebreak. **Design +
   threat model written** — `docs/design/conflict-resolution.md`: a client-assigned HLC
   is poisonable (skew-to-win + persistent clock-inflation that spreads on receive), so
   the stamp MUST be **host-assigned, bounded-skew-rejected, and advanced only host↔host**
-  (clients propose, the host decides). Recipe-vs-built-in still open, but the
-  host-validation requirements are fixed either way.
+  (clients propose, the host decides).
+  - **Verdict (2026-07-18): already covered by the design note → recipe, not a
+    built-in. Not taking it up.** This matches the bitemporal call (docs, not a
+    built-in). The threat model actually argues _against_ shipping a naive built-in
+    (a client-assigned HLC is poisonable), and the host-validation requirements are the
+    same whether documented or coded. Reopen only if a first-class host-stamped `_MERGE`
+    HLC path is specifically wanted.
 - ~~**`RustGraph.store.free()` ergonomics.**~~ — SHIPPED `Store.free()`: deterministic
   imperative disposal (sever subscriptions + free the handle) without `using`;
   `[Symbol.dispose]` delegates to it. Idempotent.
@@ -184,7 +249,10 @@ keys, desc)` (Column selector), and `select(Column.keys|values)` (the observable
 - **HAVING** — NOTE: not ISO GQL (ISO uses WITH-pipe filtering). WAI, not a gap;
   listed only to close it out.
 - **Natural-key addressing** (R11) — a string `VertexRef` is a vertex UUID, not a
-  business key; documented, but a business-id addressing convenience is a possible feature.
+  business key; documented.
+  **Verdict (2026-07-18): user-side + already documented. Not taking it up.** A
+  "business key → vertex" lookup is just `MATCH (n {bizKey:$k})` over an indexed
+  property; the UUID-vs-business-key distinction is already documented. Sugar, not a gap.
 - ~~**Bitemporal built-in**~~ — **DECIDED: docs, not a built-in.** A bitemporal helper
   isn't in scope; the pattern is a documented recipe instead — see
   `docs/guides/bitemporal.md` (edge-period AND version-node modelling, the two time
