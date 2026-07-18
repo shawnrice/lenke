@@ -63,7 +63,10 @@ export type By =
   | { kind: 'traversal'; plan: Plan; direction?: 'asc' | 'desc' }
   // Tokens project to well-known facets of an element rather than a property.
   // Mirrors Gremlin's `T.id`, `T.label`, `T.key`, `T.value`.
-  | { kind: 'token'; token: 'id' | 'label' | 'key' | 'value'; direction?: 'asc' | 'desc' };
+  | { kind: 'token'; token: 'id' | 'label' | 'key' | 'value'; direction?: 'asc' | 'desc' }
+  // `Column.keys` / `Column.values` — in `order(local)` selects whether a Map's
+  // entries sort by their key or value.
+  | { kind: 'column'; column: 'keys' | 'values'; direction?: 'asc' | 'desc' };
 
 // --- Closure types passed to user-supplied steps ---
 // These functions are opaque to the optimizer and break plan serialization.
@@ -211,6 +214,10 @@ export type Step =
   //    the start- and end-tag values.
   | { kind: 'where'; plan: Plan }
   | { kind: 'where'; startKey: string; pred: Predicate; bys?: readonly By[] }
+  //  - `where(predicate)`: compare the CURRENT traverser value to the value tagged
+  //    at `pred.value` (a step label), via the predicate's op — e.g.
+  //    `where(neq('me'))`. Narrowed by having `pred` but no `startKey`/`plan`.
+  | { kind: 'where'; pred: Predicate }
   // Logical combinators over sub-plans (each plan starts from the current traverser).
   | { kind: 'and'; plans: readonly Plan[] }
   | { kind: 'or'; plans: readonly Plan[] }
@@ -254,6 +261,9 @@ export type Step =
       // fewer entries than labels, the extra labels project as identity.
       bys?: readonly By[];
     }
+  // `select(Column.keys)` / `select(Column.values)`: extract a Map's keys or values
+  // as a list, preserving entry order (the observable reader for `order(local)`).
+  | { kind: 'selectColumn'; column: 'keys' | 'values' }
   // Aggregation: collect the entire stream into one Map<key, value[]>.
   // `keyBy` / `valueBy` are property names for now; full sub-traversal `by()`
   // lands later. Without `keyBy`, group by the value itself; without

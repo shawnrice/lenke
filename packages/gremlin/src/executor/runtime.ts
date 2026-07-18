@@ -409,5 +409,14 @@ export const evalBy = (by: By, value: unknown, graph: Graph, ctx: RunContext): u
     }
     case 'token':
       return projectToken(by.token, value);
+    case 'column':
+      // `Column.keys` / `Column.values` over a Map yields the list of its keys /
+      // values (TinkerPop `select(Column)`); `order(local)` special-cases it to sort
+      // a Map's entries and never routes through here. Non-map → identity.
+      if (value instanceof Map) {
+        return by.column === 'keys' ? [...value.keys()] : [...value.values()];
+      }
+
+      return value;
   }
 };

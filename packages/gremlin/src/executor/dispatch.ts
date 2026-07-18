@@ -36,7 +36,13 @@ import {
   tailTraversers,
   takeTraversers,
 } from './cardinality.js';
-import { failStep, hasRevisit, whereCompareStep, whereSubPlanStep } from './filters.js';
+import {
+  failStep,
+  hasRevisit,
+  whereCompareStep,
+  whereCurrentStep,
+  whereSubPlanStep,
+} from './filters.js';
 import {
   branchStep,
   chooseStep,
@@ -61,6 +67,7 @@ import {
   projectStep,
   projectValueMap,
   projectValues,
+  selectColumnStep,
   selectStep,
   treeStep,
 } from './projection.js';
@@ -340,10 +347,15 @@ export const applyStep = (
       return failStep(stream, step.message);
 
     case 'where':
-      // Two AST shapes share kind 'where'; TS narrows on which fields are set.
-      return 'plan' in step
-        ? whereSubPlanStep(stream, step.plan, graph)
-        : whereCompareStep(stream, step, graph, ctx);
+      // Three AST shapes share kind 'where'; TS narrows on which fields are set:
+      // a sub-plan, a two-key compare (`startKey`), or a current-vs-label predicate.
+      if ('plan' in step) {
+        return whereSubPlanStep(stream, step.plan, graph);
+      }
+
+      return 'startKey' in step
+        ? whereCompareStep(stream, step, graph, ctx)
+        : whereCurrentStep(stream, step);
 
     case 'and':
       return filterTraverser(stream, (t) =>
@@ -533,6 +545,9 @@ export const applyStep = (
 
     case 'select':
       return selectStep(stream, step.labels, step.pop ?? 'last', step.bys, graph, ctx);
+
+    case 'selectColumn':
+      return selectColumnStep(stream, step.column);
 
     case 'group': {
       const keyBy = step.bys?.[0] ?? keyToBy(step.keyBy);

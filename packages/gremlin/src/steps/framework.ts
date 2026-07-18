@@ -75,6 +75,21 @@ export const Scope = {
   local: Symbol.for('@lenke/gremlin/Scope.local'),
 } as const;
 
+// Map column selectors: `Column.keys` / `Column.values`. In `order(local).by(...)`
+// they choose whether to sort a Map's entries by their key or value; in
+// `select(Column.x)` they extract that column as a list.
+export const Column = {
+  keys: Symbol.for('@lenke/gremlin/Column.keys'),
+  values: Symbol.for('@lenke/gremlin/Column.values'),
+} as const;
+
+export type ColumnSym = (typeof Column)[keyof typeof Column];
+
+export const COLUMN_TO_KIND: ReadonlyMap<symbol, 'keys' | 'values'> = new Map([
+  [Column.keys, 'keys'],
+  [Column.values, 'values'],
+]);
+
 // Property cardinality, used with `property(Cardinality.X, key, value)`.
 // `single` overwrites; `list` appends; `set` appends only if not present.
 // Our storage is single-valued today; the cardinality is still threaded
@@ -118,7 +133,7 @@ export const POP_TO_STR: ReadonlyMap<symbol, 'first' | 'last' | 'all'> = new Map
 //   - Order.asc/desc → identity projection with comparator direction (order only)
 //   - StepFn     → run a single-step sub-traversal (e.g. `count()`)
 //   - Plan       → run a multi-step sub-traversal built via `traversal(...)`
-export type ByModulator = string | Token | StepFn | Plan;
+export type ByModulator = string | Token | ColumnSym | StepFn | Plan;
 
 export type ByableStep<S extends Step> = StepFn & {
   readonly by: (modulator?: ByModulator, comparator?: OrderSym) => ByableStep<S>;
@@ -173,6 +188,12 @@ export const toBy = (modulator: ByModulator | undefined, comparator?: OrderSym):
 
     if (tokenKind) {
       return { kind: 'token', token: tokenKind, direction };
+    }
+
+    const columnKind = COLUMN_TO_KIND.get(modulator);
+
+    if (columnKind) {
+      return { kind: 'column', column: columnKind, direction };
     }
 
     throw new LenkeError(`Unrecognized symbol: ${String(modulator)}`, {

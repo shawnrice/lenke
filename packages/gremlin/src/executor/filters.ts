@@ -78,6 +78,40 @@ export const whereCompareStep = function* (
   }
 };
 
+// Predicate-only `where(neq('me'))`: compare the CURRENT traverser value to the
+// value tagged at `pred.value` (a step label), via the predicate's op. Mirrors
+// `whereCompareStep` but with the current value as the start (no `startKey`).
+export const whereCurrentStep = function* (
+  stream: Iterable<Traverser<unknown>>,
+  step: Extract<Step, { kind: 'where'; pred: Predicate }>,
+): Iterable<Traverser<unknown>> {
+  const { pred } = step;
+  const valueBearing = pred as Predicate & { value: unknown };
+
+  if (!('value' in valueBearing)) {
+    throw new LenkeError(
+      `where(predicate): only single-value predicates are supported (eq, neq, gt, gte, lt, lte, within, without). Got op '${pred.op}'.`,
+      { code: ErrorCode.Unsupported },
+    );
+  }
+
+  const endKey = valueBearing.value as string;
+
+  for (const t of stream) {
+    const end = recallTag(t.tags, endKey, 'last');
+
+    if (!end.ok) {
+      continue; // the referenced label isn't bound → drop, as whereCompareStep does
+    }
+
+    const resolved = { ...pred, value: end.value } as Predicate;
+
+    if (matches(resolved, t.value)) {
+      yield t;
+    }
+  }
+};
+
 export const hasRevisit = (path: readonly unknown[]): boolean => {
   const seen = new Set<unknown>();
 

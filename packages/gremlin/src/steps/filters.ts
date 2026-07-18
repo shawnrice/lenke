@@ -90,13 +90,13 @@ export const is = (pred: Predicate): StepFn => appendStep({ kind: 'is', pred });
 // by which fields are set (`plan` vs `startKey`/`pred`), so downstream
 // pattern-matching narrows via TS's discriminated-union support without
 // needing nullable fields.
-export function where(plan: SubPlan): StepFn;
+export function where(planOrPred: SubPlan | Predicate): StepFn;
 export function where(
   startKey: string,
   pred: Predicate,
 ): ByableStep<Extract<Step, { kind: 'where'; startKey: string }>>;
 export function where(
-  arg: SubPlan | string,
+  arg: SubPlan | string | Predicate,
   pred?: Predicate,
 ): StepFn | ByableStep<Extract<Step, { kind: 'where'; startKey: string }>> {
   if (typeof arg === 'string' && pred !== undefined) {
@@ -106,6 +106,11 @@ export function where(
       pred,
       bys,
     }));
+  }
+
+  // `where(neq('me'))`: predicate-only — compare the current value to a step label.
+  if (isPredicate(arg)) {
+    return appendStep({ kind: 'where', pred: arg });
   }
 
   return appendStep({ kind: 'where', plan: buildPlan(arg as SubPlan) });

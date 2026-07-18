@@ -208,11 +208,11 @@ export const orderStep = function* (
 };
 
 // `order(Scope.local)` sorts WITHIN each traverser's value instead of across the
-// stream: a Map's entries by their VALUE (the `groupCount().order(local)` top-N
-// idiom — TinkerPop's Column-parameterized `by(values)`/`by(keys)` isn't modeled,
-// so local order on a Map is by value), or a list's elements. The by-modulator
-// projects the sort key off each entry-value / element (identity → the value
-// itself). A scalar value has nothing to sort → passes through unchanged.
+// stream: a Map's entries — by their VALUE by default, or by their KEY when a
+// `by(keys)` Column selector is given (the `groupCount().order(local)` top-N idiom;
+// `by(values)` is the explicit default) — or a list's elements. A non-column
+// by-modulator projects the sort key off each entry-value / element (identity → the
+// value itself). A scalar value has nothing to sort → passes through unchanged.
 export const orderLocalStep = function* (
   stream: Iterable<Traverser<unknown>>,
   bys: readonly By[],
@@ -220,14 +220,39 @@ export const orderLocalStep = function* (
   graph: Graph,
   ctx: RunContext,
 ): Iterable<Traverser<unknown>> {
+  // A Map entry's sort key for one `by`: `by(keys)` → the entry key, `by(values)` →
+  // the entry value, any other by → projected off the value (matches native).
+  const entryKey = (by: By, entry: [unknown, unknown]): unknown => {
+    if (by.kind === 'column') {
+      return by.column === 'keys' ? entry[0] : entry[1];
+    }
+
+    return evalBy(by, entry[1], graph, ctx);
+  };
+
   for (const t of stream) {
     const v = t.value;
 
     if (v instanceof Map) {
-      const entries = [...v.entries()];
-      sortByBys(entries, (e) => e[1], bys, desc, graph, ctx);
+      const dirs = bys.map((by) => by.direction ?? (desc ? 'desc' : 'asc'));
+      const keyed = [...v.entries()].map((entry) => ({
+        entry,
+        keys: bys.map((by) => entryKey(by, entry)),
+      }));
 
-      yield extend(t, new Map(entries));
+      keyed.sort((a, b) => {
+        for (let i = 0; i < bys.length; i++) {
+          const c = compareValues(a.keys[i], b.keys[i]) * (dirs[i] === 'desc' ? -1 : 1);
+
+          if (c !== 0) {
+            return c;
+          }
+        }
+
+        return 0;
+      });
+
+      yield extend(t, new Map(keyed.map((k) => k.entry)));
     } else if (isSliceable(v)) {
       const items = [...v];
       sortByBys(items, (x) => x, bys, desc, graph, ctx);

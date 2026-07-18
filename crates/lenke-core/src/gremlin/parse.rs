@@ -9,7 +9,7 @@
 //! predicate (`gt(30)`, `within('a','b')`), a token (`T.label`, `Order.desc`,
 //! `Pop.first`, `Scope.local`), or a nested traversal (`__.out().count()`).
 
-use super::{GVal, Order, Pop, Step, Token, Traversal, __, P};
+use super::{Column, GVal, Order, Pop, Step, Token, Traversal, __, P};
 
 // --- lexer ------------------------------------------------------------------
 
@@ -144,6 +144,7 @@ enum Arg {
     Order(Order),
     Pop(Pop),
     Token(Token),
+    Column(Column),
 }
 
 impl Arg {
@@ -378,6 +379,8 @@ impl Parser {
             ("T", "label") => Arg::Token(Token::Label),
             ("T", "key") => Arg::Token(Token::Key),
             ("T", "value") => Arg::Token(Token::Value),
+            ("Column", "keys") => Arg::Column(Column::Keys),
+            ("Column", "values") => Arg::Column(Column::Values),
             ("Order", "asc" | "incr") => Arg::Order(Order::Asc),
             ("Order", "desc" | "decr") => Arg::Order(Order::Desc),
             ("Pop", "first") => Arg::Pop(Pop::First),
@@ -669,8 +672,13 @@ impl Parser {
             // combinators
             "where" => match args.as_slice() {
                 [Arg::Trav(sub)] => t.where_(sub.clone()),
+                [Arg::Pred(p)] => t.where_pred(p.clone()),
                 [Arg::Str(start), Arg::Pred(p)] => t.where_key(start, p.clone()),
-                _ => return Err("where: expected (traversal) or (key, predicate)".into()),
+                _ => {
+                    return Err(
+                        "where: expected (traversal), (predicate), or (key, predicate)".into(),
+                    )
+                }
             },
             "and" => t.and(self.travs(args)?),
             "or" => t.or(self.travs(args)?),
@@ -749,6 +757,7 @@ impl Parser {
             // tagging / select
             "as" => t.as_(args.first().ok_or("as: expected a tag name")?.as_str()?),
             "select" => match args.first() {
+                Some(Arg::Column(c)) => t.select_column(*c),
                 Some(Arg::Pop(p)) => t.select_pop(*p, &str_labels),
                 _ => t.select(&str_labels),
             },
@@ -824,6 +833,8 @@ impl Parser {
             (Some(Arg::Str(k)), None) => t.by(k),
             (Some(Arg::Str(k)), Some(d)) => t.by_dir(k, d),
             (Some(Arg::Token(tok)), _) => t.by_token(*tok),
+            (Some(Arg::Column(c)), None) => t.by_column(*c),
+            (Some(Arg::Column(c)), Some(d)) => t.by_column_dir(*c, d),
             (Some(Arg::Trav(p)), None) => t.by_t(p.clone()),
             (Some(Arg::Trav(p)), Some(d)) => t.by_t_dir(p.clone(), d),
             _ => return Err("by: unsupported modulator".into()),
@@ -883,6 +894,9 @@ fn bare_token(id: &str) -> Option<Arg> {
     Some(match id {
         "asc" | "incr" => Arg::Order(Order::Asc),
         "desc" | "decr" => Arg::Order(Order::Desc),
+        // Static-import Column selectors for `order(local).by(values|keys, …)`.
+        "keys" => Arg::Column(Column::Keys),
+        "values" => Arg::Column(Column::Values),
         "local" => Arg::Str("Scope.local".to_string()),
         "global" => Arg::Str("Scope.global".to_string()),
         "first" => Arg::Pop(Pop::First),

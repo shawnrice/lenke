@@ -3,6 +3,8 @@ import {
   appendStep,
   buildPlan,
   type ByableStep,
+  type ColumnSym,
+  COLUMN_TO_KIND,
   makeByable,
   type Pop,
   POP_TO_STR,
@@ -28,9 +30,15 @@ export function select(
   pop: (typeof Pop)[keyof typeof Pop],
   ...labels: string[]
 ): ByableStep<Extract<Step, { kind: 'select' }>>;
+export function select(column: ColumnSym): StepFn;
 export function select(
-  ...args: [string | (typeof Pop)[keyof typeof Pop], ...string[]] | string[]
-): ByableStep<Extract<Step, { kind: 'select' }>> {
+  ...args: [ColumnSym] | [string | (typeof Pop)[keyof typeof Pop], ...string[]] | string[]
+): ByableStep<Extract<Step, { kind: 'select' }>> | StepFn {
+  // `select(Column.keys)` / `select(Column.values)`: extract a Map's keys/values.
+  if (typeof args[0] === 'symbol' && COLUMN_TO_KIND.has(args[0])) {
+    return appendStep({ kind: 'selectColumn', column: COLUMN_TO_KIND.get(args[0])! });
+  }
+
   let pop: 'first' | 'last' | 'all' = 'last';
   let labels: readonly string[];
 

@@ -251,19 +251,34 @@ pub enum Token {
     Value,
 }
 
+/// A `Column` selector for a Map: its keys or its values. Used by
+/// `order(local).by(values, desc)` / `.by(keys)` to sort a Map's entries.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Column {
+    Keys,
+    Values,
+}
+
 /// A `by()` modulator: how to project a value before a parent step uses it.
 #[derive(Clone, Debug)]
 pub enum By {
     Identity(Option<Order>),
     Key(String, Option<Order>),
     Token(Token, Option<Order>),
+    /// A `Column.keys` / `Column.values` selector — in `order(local)` it sorts a
+    /// Map's entries by their key or value.
+    Column(Column, Option<Order>),
     Traversal(Box<Traversal>, Option<Order>),
 }
 
 impl By {
     fn direction(&self) -> Option<Order> {
         match self {
-            Self::Identity(d) | Self::Key(_, d) | Self::Token(_, d) | Self::Traversal(_, d) => *d,
+            Self::Identity(d)
+            | Self::Key(_, d)
+            | Self::Token(_, d)
+            | Self::Column(_, d)
+            | Self::Traversal(_, d) => *d,
         }
     }
 }
@@ -333,6 +348,9 @@ pub enum Step {
     GroupCount(Vec<By>),
     Where(Box<Traversal>),
     WhereKey(String, P, Vec<By>),
+    /// `where(neq('me'))` — a predicate-only where: compares the CURRENT traverser
+    /// against the value tagged at the predicate's step-label operand.
+    WherePred(P),
     And(Vec<Traversal>),
     Or(Vec<Traversal>),
     Not(Box<Traversal>),
@@ -404,6 +422,10 @@ pub enum Step {
         pop: Pop,
         bys: Vec<By>,
     },
+    /// `select(Column.keys)` / `select(Column.values)` — extract a Map's keys or
+    /// values as a list, preserving entry order (the observable reader for
+    /// `order(local)`, whose reordering a key-sorted Map serialization would hide).
+    SelectColumn(Column),
     /// Declarative pattern matching: each sub-traversal is an `as(start) … [as(end)]`
     /// constraint; emits one traverser per consistent label assignment.
     Match(Vec<Traversal>),
@@ -487,6 +509,12 @@ impl Traversal {
     }
     pub fn by_token(self, tok: Token) -> Self {
         self.attach_by(By::Token(tok, None))
+    }
+    pub fn by_column(self, col: Column) -> Self {
+        self.attach_by(By::Column(col, None))
+    }
+    pub fn by_column_dir(self, col: Column, dir: Order) -> Self {
+        self.attach_by(By::Column(col, Some(dir)))
     }
     pub fn by_id(self) -> Self {
         self.attach_by(By::Token(Token::Id, None))
@@ -730,6 +758,9 @@ impl Traversal {
     pub fn where_key(self, start: &str, pred: P) -> Self {
         self.push(Step::WhereKey(start.to_string(), pred, vec![]))
     }
+    pub fn where_pred(self, pred: P) -> Self {
+        self.push(Step::WherePred(pred))
+    }
     pub fn and(self, plans: Vec<Self>) -> Self {
         self.push(Step::And(plans))
     }
@@ -963,6 +994,9 @@ impl Traversal {
             pop,
             bys: vec![],
         })
+    }
+    pub fn select_column(self, col: Column) -> Self {
+        self.push(Step::SelectColumn(col))
     }
     pub fn match_(self, patterns: Vec<Self>) -> Self {
         self.push(Step::Match(patterns))

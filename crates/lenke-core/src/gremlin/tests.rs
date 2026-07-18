@@ -1073,6 +1073,41 @@ fn qs(query: &str) -> Vec<GVal> {
 }
 
 #[test]
+fn cf_where_pred_and_order_local_column() {
+    // `where(neq('me'))`: among lop's co-creators (marko, josh, peter), exclude the
+    // seed marko → josh, peter.
+    assert_eq!(
+        names(qs(
+            "g.V('1').as('me').out('CREATED').in('CREATED').where(neq('me')).values('name')"
+        )),
+        vec!["josh", "peter"]
+    );
+
+    // `order(local).by(values, desc).select(Column.keys)` ranks a groupCount Map by
+    // descending count: lop (created by 3) outranks ripple (created by 1).
+    let ranked = qs(
+        "g.V().out('CREATED').groupCount().by('name').order(Scope.local).by(values, desc).select(Column.keys)",
+    );
+    match &ranked[..] {
+        [GVal::List(items)] => assert_eq!(
+            items.iter().map(s).collect::<Vec<_>>(),
+            vec!["lop".to_string(), "ripple".to_string()]
+        ),
+        other => panic!("expected one ranked list, got {other:?}"),
+    }
+
+    // `by(keys, desc)` sorts on the entry KEY instead: ripple > lop lexically.
+    let by_keys = qs(
+        "g.V().out('CREATED').groupCount().by('name').order(Scope.local).by(keys, desc).select(Column.values)",
+    );
+    match &by_keys[..] {
+        // ripple's count (1) first, then lop's count (3).
+        [GVal::List(items)] => assert_eq!(items, &vec![GVal::Num(1.0), GVal::Num(3.0)]),
+        other => panic!("expected one value list, got {other:?}"),
+    }
+}
+
+#[test]
 fn parse_basic_chain() {
     assert_eq!(
         names(qs("g.V().has('name', 'marko').out('KNOWS').values('name')")),

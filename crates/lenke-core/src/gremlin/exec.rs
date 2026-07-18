@@ -9,7 +9,7 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use super::{By, Endpoint, GVal, Order, Pop, Scope, Step, Token, Traversal, P};
+use super::{By, Column, Endpoint, GVal, Order, Pop, Scope, Step, Token, Traversal, P};
 use crate::graph::{Graph, IdxKey, RangeBound, Value};
 use crate::jsonfmt::{push_json_str, push_num};
 
@@ -1191,6 +1191,24 @@ fn eval_by(graph: &mut Graph, ctx: &mut Ctx, by: &By, value: &GVal) -> GVal {
             _ => value.clone(),
         },
         By::Token(tok, _) => token_project(graph, *tok, value),
+        // `Column.keys` / `Column.values` over a Map yields the list of its keys /
+        // values (TinkerPop `select(Column)`); `order(local)` special-cases it to
+        // sort a Map's entries and never routes through here. Non-map → identity.
+        By::Column(col, _) => match value {
+            GVal::Map(entries) => GVal::List(
+                entries
+                    .iter()
+                    .map(|(k, v)| {
+                        if *col == Column::Keys {
+                            k.clone()
+                        } else {
+                            v.clone()
+                        }
+                    })
+                    .collect(),
+            ),
+            _ => value.clone(),
+        },
         By::Traversal(plan, _) => sub_vals(graph, ctx, plan, &Trav::root(value.clone()))
             .into_iter()
             .next()
@@ -1596,10 +1614,21 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
                     .map(|t| {
                         let val = match &t.val {
                             GVal::Map(entries) => {
+                                // Sort a Map's entries. `by(keys)` sorts on the entry
+                                // KEY, `by(values)` (the default) on its VALUE, and a
+                                // key/traversal by projects out of the value.
                                 let mut es: Vec<(Vec<GVal>, (GVal, GVal))> = entries
                                     .iter()
                                     .map(|(k, v)| {
-                                        (bys.iter().map(|by| eval_by(graph, ctx, by, v)).collect(), (k.clone(), v.clone()))
+                                        let key: Vec<GVal> = bys
+                                            .iter()
+                                            .map(|by| match by {
+                                                By::Column(Column::Keys, _) => k.clone(),
+                                                By::Column(Column::Values, _) => v.clone(),
+                                                _ => eval_by(graph, ctx, by, v),
+                                            })
+                                            .collect();
+                                        (key, (k.clone(), v.clone()))
                                     })
                                     .collect();
                                 es.sort_by(|(ka, _), (kb, _)| cmp_keys(ka, kb));
@@ -1680,6 +1709,25 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
                 let ev = eval_by(graph, ctx, &end_by, &ev);
                 let resolved = substitute_rhs(pred, ev);
                 if p_matches(&resolved, &sv) {
+                    next.push(t);
+                }
+            }
+            next
+        }
+        Step::WherePred(pred) => {
+            // Predicate-only `where(neq('me'))`: compare the CURRENT traverser value
+            // against the value tagged at the predicate's step-label operand.
+            let Some(GVal::Str(label)) = pred.rhs() else {
+                return stream; // non-comparison predicate; nothing to compare against
+            };
+            let label = label.to_string();
+            let mut next = Vec::new();
+            for t in stream {
+                let Some(ev) = t.recall(&label, Pop::Last) else {
+                    continue; // the referenced label isn't bound → drop, as WhereKey does
+                };
+                let resolved = substitute_rhs(pred, ev);
+                if p_matches(&resolved, &t.val) {
                     next.push(t);
                 }
             }
@@ -1889,6 +1937,22 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
                 t
             })
             .collect(),
+        Step::SelectColumn(col) => {
+            // Extract a Map's keys or values as a list, preserving entry order (so a
+            // preceding `order(local)` is observable). A non-map traverser is dropped,
+            // as TinkerPop's `select(Column)` filters it.
+            let mut next = Vec::new();
+            for t in stream {
+                if let GVal::Map(entries) = &t.val {
+                    let list = entries
+                        .iter()
+                        .map(|(k, v)| if *col == Column::Keys { k.clone() } else { v.clone() })
+                        .collect();
+                    next.push(t.step(GVal::List(list)));
+                }
+            }
+            next
+        }
         Step::Select { labels, pop, bys } => {
             let mut next = Vec::new();
             for t in &stream {
