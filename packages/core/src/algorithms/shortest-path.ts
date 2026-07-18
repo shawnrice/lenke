@@ -298,6 +298,22 @@ export const computeGen = function* (
     }
   }
 
+  // A `target` restricts the result to that one vertex's distance (like A*),
+  // instead of a row per reachable vertex. Unknown/unreachable target → no rows.
+  if (target !== undefined) {
+    const ti = index.get(target);
+
+    if (ti === undefined || !Number.isFinite(dist[ti])) {
+      return [];
+    }
+
+    if (writeProperty !== undefined) {
+      order[ti].setProperty(writeProperty, dist[ti]);
+    }
+
+    return [{ node: order[ti].id, distance: dist[ti] }];
+  }
+
   const rows: ShortestPathRow[] = [];
 
   order.forEach((v, i) => {

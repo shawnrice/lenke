@@ -134,6 +134,15 @@ pub fn shortest_path(graph: &Graph, cfg: &AlgoConfig) -> Vec<(u32, Value)> {
         Some(w) => dijkstra(graph, src, slots, dir, w, &passes),
     };
 
+    // A `target` restricts the result to that one vertex's distance (like A*),
+    // instead of a row per reachable vertex. Unknown/unreachable target → no rows.
+    if let Some(t) = cfg.target.as_deref() {
+        let Some(tgt) = graph.vid.get(t).filter(|&v| dist[v as usize].is_finite()) else {
+            return Vec::new();
+        };
+        return vec![(tgt, Value::Num(dist[tgt as usize]))];
+    }
+
     graph
         .vertex_indices()
         .filter(|&v| dist[v as usize].is_finite())
