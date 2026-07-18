@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '../core/Graph.js';
-import { stronglyConnectedComponents } from './strongly-connected-components.js';
+import { onCycle, stronglyConnectedComponents } from './strongly-connected-components.js';
 
 const build = (nodes: string[], edges: [string, string][]): Graph => {
   const g = new Graph();
@@ -135,5 +135,43 @@ describe('stronglyConnectedComponents', () => {
     expect(await stronglyConnectedComponents({})(build(nodes, edges))).toEqual(
       await stronglyConnectedComponents({}, build(nodes, edges)),
     );
+  });
+});
+
+describe('onCycle', () => {
+  test('flags cycle members and self-loops, not chains (mirrors native)', async () => {
+    const g = build(
+      ['1', '2', '3', '4', '5', '6'],
+      [
+        ['1', '2'],
+        ['2', '3'],
+        ['3', '1'], // cycle {1,2,3}
+        ['4', '5'], // chain
+        ['6', '6'], // self-loop
+      ],
+    );
+    const rows = await onCycle({}, g);
+
+    expect(Object.fromEntries(rows.map((r) => [r.node, r.onCycle]))).toEqual({
+      1: true,
+      2: true,
+      3: true,
+      4: false,
+      5: false,
+      6: true,
+    });
+  });
+
+  test('a named-but-unknown edge type → nothing is on a cycle', async () => {
+    const g = build(
+      ['1', '2', '3'],
+      [
+        ['1', '2'],
+        ['2', '3'],
+        ['3', '1'],
+      ],
+    );
+
+    expect((await onCycle({ edgeLabel: 'NOPE' }, g)).every((r) => !r.onCycle)).toBe(true);
   });
 });

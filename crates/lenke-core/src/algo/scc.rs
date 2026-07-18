@@ -10,7 +10,10 @@
 use super::AlgoConfig;
 use crate::graph::{Graph, Value};
 
-pub fn strongly_connected_components(graph: &Graph, cfg: &AlgoConfig) -> Vec<(u32, Value)> {
+/// The SCC partition as `comp[slot] = the component's min-dense-index member` — the
+/// shared byte-identical Tarjan pass behind both `strongly_connected_components` and
+/// `on_cycle`. Dead/unvisited slots stay `u32::MAX`.
+fn scc_reps(graph: &Graph, cfg: &AlgoConfig) -> Vec<u32> {
     let slots = graph.n;
 
     // Some(None) = every type; Some(Some(t)) = one type; None = a named-but-unknown
@@ -111,8 +114,58 @@ pub fn strongly_connected_components(graph: &Graph, cfg: &AlgoConfig) -> Vec<(u3
         }
     }
 
+    comp
+}
+
+pub fn strongly_connected_components(graph: &Graph, cfg: &AlgoConfig) -> Vec<(u32, Value)> {
+    let comp = scc_reps(graph, cfg);
     graph
         .vertex_indices()
         .map(|v| (v, Value::Str(graph.vid.arc(comp[v as usize]))))
+        .collect()
+}
+
+/// Per-vertex cycle membership: `true` iff the vertex lies on a directed cycle —
+/// i.e. its SCC has more than one member OR it has a self-loop (a 1-cycle). Derived
+/// from the same byte-identical SCC partition + a deterministic self-loop scan, so
+/// the TS mirror matches. A named-but-unknown edge type → no edges → every vertex
+/// is `false`.
+pub fn on_cycle(graph: &Graph, cfg: &AlgoConfig) -> Vec<(u32, Value)> {
+    let slots = graph.n;
+    let comp = scc_reps(graph, cfg);
+
+    // Component sizes: a component with >1 member is a cycle (every member is on it).
+    let mut size = vec![0u32; slots];
+    for v in graph.vertex_indices() {
+        let rep = comp[v as usize];
+        if (rep as usize) < slots {
+            size[rep as usize] += 1;
+        }
+    }
+
+    // Self-loops (v→v of the selected type) put a singleton on a 1-cycle too.
+    let etype = cfg.etype(graph);
+    let type_ok = |ty: u32| match etype {
+        Some(Some(t)) => ty == t,
+        Some(None) => true,
+        None => false,
+    };
+    let mut self_loop = vec![false; slots];
+    for ei in 0..graph.edge_slots() {
+        if graph.is_edge_live(ei as u32)
+            && type_ok(graph.e_type[ei])
+            && graph.e_src[ei] == graph.e_dst[ei]
+        {
+            self_loop[graph.e_src[ei] as usize] = true;
+        }
+    }
+
+    graph
+        .vertex_indices()
+        .map(|v| {
+            let vu = v as usize;
+            let cyclic = size[comp[vu] as usize] > 1 || self_loop[vu];
+            (v, Value::Bool(cyclic))
+        })
         .collect()
 }

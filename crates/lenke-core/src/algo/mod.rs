@@ -153,6 +153,7 @@ fn dispatch(graph: &Graph, name: &str, cfg: &AlgoConfig) -> Result<AlgoOutput, S
             "componentId",
             scc::strongly_connected_components(graph, cfg),
         ),
+        "onCycle" => ("onCycle", scc::on_cycle(graph, cfg)),
         "labelPropagation" => ("label", label_prop::label_propagation(graph, cfg)),
         "peerPressure" => ("cluster", peer_pressure::peer_pressure(graph, cfg)),
         "pagerank" => ("score", pagerank::pagerank(graph, cfg)),
@@ -478,6 +479,50 @@ mod tests {
                 ("5".into(), "3".into()),
             ],
         );
+    }
+
+    #[test]
+    fn on_cycle_flags_cycle_members_and_self_loops() {
+        // 1→2→3→1 (a cycle); 4→5 (a chain, not on a cycle); 6→6 (a self-loop).
+        let mut g = ndjson::decode(
+            &[
+                r#"{"type":"node","id":"1","labels":["N"]}"#,
+                r#"{"type":"node","id":"2","labels":["N"]}"#,
+                r#"{"type":"node","id":"3","labels":["N"]}"#,
+                r#"{"type":"node","id":"4","labels":["N"]}"#,
+                r#"{"type":"node","id":"5","labels":["N"]}"#,
+                r#"{"type":"node","id":"6","labels":["N"]}"#,
+                r#"{"type":"edge","from":"1","to":"2","labels":["E"]}"#,
+                r#"{"type":"edge","from":"2","to":"3","labels":["E"]}"#,
+                r#"{"type":"edge","from":"3","to":"1","labels":["E"]}"#,
+                r#"{"type":"edge","from":"4","to":"5","labels":["E"]}"#,
+                r#"{"type":"edge","from":"6","to":"6","labels":["E"]}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        let rs = run(&mut g, "onCycle", "{}").unwrap();
+        let got: Vec<(String, bool)> = rs
+            .rows()
+            .map(|r| match (&r[0], &r[1]) {
+                (Value::Str(id), Value::Bool(b)) => (id.to_string(), *b),
+                _ => panic!("unexpected onCycle row"),
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("1".into(), true), // SCC {1,2,3}
+                ("2".into(), true),
+                ("3".into(), true),
+                ("4".into(), false), // chain
+                ("5".into(), false),
+                ("6".into(), true), // self-loop
+            ],
+        );
+        // A named-but-unknown edge type → no edges → nothing is on a cycle.
+        let none = run(&mut g, "onCycle", r#"{"edgeLabel":"NOPE"}"#).unwrap();
+        assert!(none.rows().all(|r| matches!(&r[1], Value::Bool(false))));
     }
 
     /// `(external id, label)` rows in engine order.

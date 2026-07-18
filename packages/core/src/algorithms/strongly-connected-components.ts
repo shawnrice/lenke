@@ -114,22 +114,17 @@ const tarjanScc = function* (adj: number[][], n: number): Generator<void, Int32A
   return comp;
 };
 
-export const computeGen = function* (
-  config: AlgorithmConfig,
+/**
+ * Forward directed adjacency (each edge appends `to` to `from`'s list), filtered to
+ * one `edgeLabel` if given. A named-but-unknown label matches nothing → no edges.
+ * Shared by both SCC and onCycle so their component pass is identical.
+ */
+const buildForwardAdj = function* (
   graph: Graph,
-): AlgorithmGen<ComponentRow> {
-  const { edgeLabel, writeProperty } = config;
-
-  // Insertion index == native dense id, so the min-index representative resolves to
-  // the same vertex in both engines → identical component-id strings.
-  const order = yield* materializeVertices(graph);
-  const index = new Map<string, number>();
-
-  order.forEach((v, i) => index.set(v.id, i));
-
-  // Forward adjacency (directed): each edge appends `to` to `from`'s neighbour list.
-  // A named-but-unknown edge type matches nothing → no edges → every vertex is its
-  // own singleton SCC.
+  order: readonly { id: string }[],
+  index: Map<string, number>,
+  edgeLabel: string | undefined,
+): Generator<void, number[][], void> {
   const adj: number[][] = Array.from({ length: order.length }, () => []);
   let sinceYield = 0;
 
@@ -144,6 +139,25 @@ export const computeGen = function* (
       yield;
     }
   }
+
+  return adj;
+};
+
+export const computeGen = function* (
+  config: AlgorithmConfig,
+  graph: Graph,
+): AlgorithmGen<ComponentRow> {
+  const { edgeLabel, writeProperty } = config;
+
+  // Insertion index == native dense id, so the min-index representative resolves to
+  // the same vertex in both engines → identical component-id strings.
+  const order = yield* materializeVertices(graph);
+  const index = new Map<string, number>();
+
+  order.forEach((v, i) => index.set(v.id, i));
+
+  const adj = yield* buildForwardAdj(graph, order, index, edgeLabel);
+  let sinceYield = 0;
 
   const comp = yield* tarjanScc(adj, order.length);
   const rows: ComponentRow[] = [];
@@ -178,3 +192,59 @@ export const computeGen = function* (
  * `stronglyConnectedComponents(config)(graph)`.
  */
 export const stronglyConnectedComponents = defineAlgorithm(computeGen);
+
+/** An on-cycle result row: `{ node, onCycle }`. */
+export type OnCycleRow = AlgorithmRow<'onCycle', boolean>;
+
+export const onCycleGen = function* (
+  config: AlgorithmConfig,
+  graph: Graph,
+): AlgorithmGen<OnCycleRow> {
+  const { edgeLabel, writeProperty } = config;
+  const order = yield* materializeVertices(graph);
+  const index = new Map<string, number>();
+
+  order.forEach((v, i) => index.set(v.id, i));
+
+  const adj = yield* buildForwardAdj(graph, order, index, edgeLabel);
+  const comp = yield* tarjanScc(adj, order.length);
+
+  // A vertex is on a cycle iff its SCC has >1 member OR it has a self-loop (adj[v]
+  // contains v). Both are derived from the byte-identical Tarjan pass + adjacency.
+  const size = new Int32Array(order.length);
+
+  for (let i = 0; i < order.length; i++) {
+    size[comp[i]] += 1;
+  }
+
+  const rows: OnCycleRow[] = new Array(order.length);
+  let sinceYield = 0;
+
+  for (let i = 0; i < order.length; i++) {
+    const v = order[i];
+    const onCycle = size[comp[i]] > 1 || adj[i].includes(i);
+
+    if (writeProperty !== undefined) {
+      v.setProperty(writeProperty, onCycle);
+    }
+
+    rows[i] = { node: v.id, onCycle };
+
+    if (++sinceYield >= YIELD_EVERY) {
+      sinceYield = 0;
+
+      yield;
+    }
+  }
+
+  return rows;
+};
+
+/**
+ * Per-vertex **cycle membership**: `onCycle` is `true` iff the vertex lies on a
+ * directed cycle — its strongly-connected component has more than one member, or it
+ * has a self-loop (a 1-cycle). Derived from the same iterative-Tarjan partition as
+ * {@link stronglyConnectedComponents}, so it's byte-identical to the native engine.
+ * Data-last dual-form: `onCycle(config, graph)` / `onCycle(config)(graph)`.
+ */
+export const onCycle = defineAlgorithm(onCycleGen);

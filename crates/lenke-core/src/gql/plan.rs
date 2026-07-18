@@ -715,6 +715,7 @@ pub fn procedure_spec(name: &str) -> Option<(&'static str, &'static str)> {
         "personalized_pagerank" => ("personalizedPagerank", "score"),
         "connected_components" => ("connectedComponents", "componentId"),
         "strongly_connected_components" => ("stronglyConnectedComponents", "componentId"),
+        "on_cycle" => ("onCycle", "onCycle"),
         "label_propagation" => ("labelPropagation", "label"),
         "peer_pressure" => ("peerPressure", "cluster"),
         "degree" => ("degree", "degree"),

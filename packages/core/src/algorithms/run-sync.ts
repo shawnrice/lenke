@@ -10,7 +10,10 @@ import {
 } from './pagerank.js';
 import { computeGen as peerPressureGen } from './peer-pressure.js';
 import { computeGen as shortestPathGen } from './shortest-path.js';
-import { computeGen as stronglyConnectedComponentsGen } from './strongly-connected-components.js';
+import {
+  computeGen as stronglyConnectedComponentsGen,
+  onCycleGen,
+} from './strongly-connected-components.js';
 import type { AlgorithmConfig, AlgorithmRow } from './types.js';
 
 /**
@@ -23,6 +26,7 @@ export type AlgorithmName =
   | 'personalizedPagerank'
   | 'connectedComponents'
   | 'stronglyConnectedComponents'
+  | 'onCycle'
   | 'peerPressure'
   | 'degree'
   | 'labelPropagation'
@@ -53,6 +57,8 @@ export const runAlgorithmSync = (
       return drainSync(connectedComponentsGen(config, graph));
     case 'stronglyConnectedComponents':
       return drainSync(stronglyConnectedComponentsGen(config, graph));
+    case 'onCycle':
+      return drainSync(onCycleGen(config, graph));
     case 'peerPressure':
       return drainSync(peerPressureGen(config, graph));
     case 'degree':

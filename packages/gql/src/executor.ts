@@ -4373,6 +4373,7 @@ const PROCEDURES: Record<string, { algo: AlgorithmName; resultColumn: string }> 
     algo: 'stronglyConnectedComponents',
     resultColumn: 'componentId',
   },
+  on_cycle: { algo: 'onCycle', resultColumn: 'onCycle' },
   label_propagation: { algo: 'labelPropagation', resultColumn: 'label' },
   peer_pressure: { algo: 'peerPressure', resultColumn: 'cluster' },
   degree: { algo: 'degree', resultColumn: 'degree' },
