@@ -1,8 +1,8 @@
 import type { Graph, Vertex } from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
-import type { Step } from '../ast.js';
-import { bothEdgesOf } from '../graph-queries.js';
+import type { Direction, Step } from '../ast.js';
+import { bothEdgesOf, inEdgesOf, outEdgesOf } from '../graph-queries.js';
 import { applyPlanToStream } from './dispatch.js';
 import { otherEndpoint } from './movement.js';
 import { extend, hasAny, isVertex, startTraverser, type Traverser } from './runtime.js';
@@ -16,15 +16,18 @@ const SHORTEST_PATH_BUDGET = 1_000_000;
 
 /**
  * All shortest (fewest-hop) vertex paths from `src` to each destination, as
- * vertex arrays `[src, …, dest]`. Unweighted BFS over incident edges (both
- * directions). `targets` (null ⇒ every reached vertex) filters destinations.
- * Equal-length alternatives are all returned (a predecessor DAG is tracked).
+ * vertex arrays `[src, …, dest]`. Unweighted BFS over incident edges in
+ * `direction` (`'both'` = undirected, the default; `'out'`/`'in'` = directed).
+ * `targets` (null ⇒ every reached vertex) filters destinations. Equal-length
+ * alternatives are all returned (a predecessor DAG is tracked).
  */
 const shortestPathsFrom = (
   graph: Graph,
   src: Vertex,
   targets: ReadonlySet<string> | null,
+  direction: Direction,
 ): Vertex[][] => {
+  const edgesOf = { out: outEdgesOf, in: inEdgesOf, both: bothEdgesOf }[direction];
   const dist = new Map<string, number>([[src.id, 0]]);
   const preds = new Map<string, Vertex[]>(); // id → predecessors on a shortest path
   const byId = new Map<string, Vertex>([[src.id, src]]);
@@ -36,8 +39,8 @@ const shortestPathsFrom = (
     for (const v of frontier) {
       const d = dist.get(v.id)!;
 
-      for (const e of bothEdgesOf(graph, v)) {
-        const n = otherEndpoint('both', e, v);
+      for (const e of edgesOf(graph, v)) {
+        const n = otherEndpoint(direction, e, v);
         const nd = dist.get(n.id);
 
         if (nd === undefined) {
@@ -109,7 +112,7 @@ export const shortestPathStep = function* (
       continue;
     }
 
-    for (const path of shortestPathsFrom(graph, t.value, targets)) {
+    for (const path of shortestPathsFrom(graph, t.value, targets, step.direction ?? 'both')) {
       yield extend(t, path);
     }
   }

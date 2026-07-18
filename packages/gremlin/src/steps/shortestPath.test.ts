@@ -29,6 +29,40 @@ describe('shortestPath() — shortest vertex paths from each source', () => {
     expect(ids(r)).toEqual([['1', '4']]); // marko —knows→ josh (one hop)
   });
 
+  test('direction via with() — out/in run a directed search', () => {
+    // vadas (2) has only an incoming edge (marko→vadas). Undirected (default)
+    // reaches beyond it; a directed `out` reaches only vadas; a directed `in`
+    // follows that edge backward to marko.
+    const both = ids(arr(run(traversal(V(), has('name', 'vadas'), shortestPath()), g)));
+    expect(both.length).toBeGreaterThan(1);
+
+    const out = ids(
+      arr(
+        run(
+          traversal(V(), has('name', 'vadas'), shortestPath().with(ShortestPath.direction, 'out')),
+          g,
+        ),
+      ),
+    );
+    expect(out).toEqual([['2']]);
+
+    const inToMarko = ids(
+      arr(
+        run(
+          traversal(
+            V(),
+            has('name', 'vadas'),
+            shortestPath()
+              .with(ShortestPath.direction, 'in')
+              .with(ShortestPath.target, has('name', 'marko')),
+          ),
+          g,
+        ),
+      ),
+    );
+    expect(inToMarko).toEqual([['2', '1']]);
+  });
+
   test('multi-hop shortest path — marko → ripple', () => {
     // marko(1) —knows→ josh(4) —created→ ripple(5): two hops, the shortest route
     // (the marko→lop→josh→ripple chain is longer).

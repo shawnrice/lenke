@@ -653,7 +653,13 @@ fn match_solve(
 /// All shortest (fewest-hop) vertex paths from `src` to each destination, as
 /// vertex-index arrays `[src, …, dest]`. `targets` (None ⇒ every reached vertex)
 /// filters destinations; equal-length alternatives are all returned.
-fn shortest_paths_from(graph: &Graph, src: u32, targets: Option<&HashSet<u32>>) -> Vec<Vec<u32>> {
+fn shortest_paths_from(
+    graph: &Graph,
+    src: u32,
+    targets: Option<&HashSet<u32>>,
+    out: bool,
+    inn: bool,
+) -> Vec<Vec<u32>> {
     let mut dist: HashMap<u32, usize> = HashMap::from([(src, 0)]);
     let mut preds: HashMap<u32, Vec<u32>> = HashMap::new();
     let mut frontier = vec![src];
@@ -661,7 +667,7 @@ fn shortest_paths_from(graph: &Graph, src: u32, targets: Option<&HashSet<u32>>) 
         let mut next = Vec::new();
         for &v in &frontier {
             let d = dist[&v];
-            for (_, n) in adj_in_label_order(graph, v, true, true, &[]) {
+            for (_, n) in adj_in_label_order(graph, v, out, inn, &[]) {
                 match dist.get(&n).copied() {
                     None => {
                         dist.insert(n, d + 1);
@@ -735,6 +741,8 @@ fn shortest_path_step(
     graph: &mut Graph,
     ctx: &mut Ctx,
     target: Option<&Traversal>,
+    out: bool,
+    inn: bool,
     stream: Vec<Trav>,
 ) -> Vec<Trav> {
     // Resolve the destination set once: run the target sub-plan over every vertex.
@@ -752,7 +760,7 @@ fn shortest_path_step(
     let mut next = Vec::new();
     for t in &stream {
         if let GVal::Vertex(src) = t.val {
-            for path in shortest_paths_from(graph, src, targets.as_ref()) {
+            for path in shortest_paths_from(graph, src, targets.as_ref(), out, inn) {
                 next.push(t.with(GVal::List(path.into_iter().map(GVal::Vertex).collect())));
             }
         }
@@ -1808,7 +1816,9 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
             }
             stream
         }
-        Step::ShortestPath { target } => shortest_path_step(graph, ctx, target.as_deref(), stream),
+        Step::ShortestPath { target, out, inn } => {
+            shortest_path_step(graph, ctx, target.as_deref(), *out, *inn, stream)
+        }
         Step::PageRank {
             property,
             times,

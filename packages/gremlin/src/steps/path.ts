@@ -1,4 +1,4 @@
-import type { Plan } from '../ast.js';
+import type { Direction, Plan } from '../ast.js';
 import {
   appendStep,
   buildPlan,
@@ -58,20 +58,40 @@ export const tree = (): ByableStep<Extract<Step, { kind: 'tree' }>> =>
 export const ShortestPath = {
   /** A sub-traversal selecting the destination vertices. */
   target: Symbol('ShortestPath.target'),
+  /**
+   * Edge direction the BFS follows: `'both'` (default, undirected — matches
+   * TinkerPop), `'out'`, or `'in'`. Our simplified form of TinkerPop's
+   * `ShortestPath.edges` modulator, for a directed shortest-path search.
+   */
+  direction: Symbol('ShortestPath.direction'),
 } as const;
 
 /** A `shortestPath()` step builder, configurable via `.with(...)`. */
 export type ShortestPathStep = StepFn & {
-  readonly with: (option: symbol, value: SubPlan) => ShortestPathStep;
+  readonly with: (option: symbol, value: SubPlan | Direction) => ShortestPathStep;
 };
 
-const makeShortestPath = (target?: Plan): ShortestPathStep =>
-  Object.assign(appendStep({ kind: 'shortestPath', ...(target ? { target } : {}) }) as StepFn, {
-    with: (option: symbol, value: SubPlan): ShortestPathStep =>
-      option === ShortestPath.target
-        ? makeShortestPath(buildPlan(value))
-        : makeShortestPath(target),
-  });
+const makeShortestPath = (target?: Plan, direction?: Direction): ShortestPathStep =>
+  Object.assign(
+    appendStep({
+      kind: 'shortestPath',
+      ...(target ? { target } : {}),
+      ...(direction ? { direction } : {}),
+    }) as StepFn,
+    {
+      with: (option: symbol, value: SubPlan | Direction): ShortestPathStep => {
+        if (option === ShortestPath.target) {
+          return makeShortestPath(buildPlan(value as SubPlan), direction);
+        }
+
+        if (option === ShortestPath.direction) {
+          return makeShortestPath(target, value as Direction);
+        }
+
+        return makeShortestPath(target, direction);
+      },
+    },
+  );
 
 // Emit the shortest vertex path(s) from each source vertex to the destinations
 // (all reachable vertices by default; restrict the targets with a sub-traversal

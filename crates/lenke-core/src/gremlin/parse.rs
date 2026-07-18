@@ -717,6 +717,9 @@ impl Parser {
                 [Arg::Str(opt), Arg::Trav(target)] if opt == "ShortestPath.target" => {
                     t.with_shortest_path_target(target.clone())
                 }
+                [Arg::Str(opt), rest] if opt == "ShortestPath.direction" => {
+                    t.with_shortest_path_direction(rest.as_str()?)
+                }
                 [Arg::Str(opt), rest] if opt.ends_with(".propertyName") => {
                     t.with_algo_property(rest.as_str()?.to_string())
                 }

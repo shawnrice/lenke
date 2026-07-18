@@ -655,6 +655,31 @@ fn p5_shortest_path_no_target_reaches_all() {
     );
 }
 
+#[test]
+fn p5_shortest_path_direction_is_configurable() {
+    // vadas (id 2) has only an incoming edge (marko→vadas). Undirected (default)
+    // reaches beyond it; a directed `out` search reaches only vadas itself.
+    let both = sp_paths(g().V().has("name", P::eq("vadas")).shortest_path());
+    assert!(both.len() > 1, "undirected reaches marko and beyond");
+
+    let out = sp_paths(
+        g().V()
+            .has("name", P::eq("vadas"))
+            .shortest_path()
+            .with_shortest_path_direction("out"),
+    );
+    assert_eq!(out, vec![vec!["2".to_string()]]);
+
+    // `both` explicitly is the same as the default.
+    let both2 = sp_paths(
+        g().V()
+            .has("name", P::eq("vadas"))
+            .shortest_path()
+            .with_shortest_path_direction("both"),
+    );
+    assert_eq!(both2.len(), both.len());
+}
+
 // ===== id.test.ts =====
 
 #[test]

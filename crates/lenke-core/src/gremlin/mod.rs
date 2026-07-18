@@ -361,9 +361,13 @@ pub enum Step {
     /// Side-effect: accumulate matching edges (+ endpoints) into a named subgraph.
     Subgraph(String),
     /// Emit the shortest vertex path(s) from each source vertex; `target`
-    /// (set via `.with(ShortestPath.target, …)`) filters destinations.
+    /// (set via `.with(ShortestPath.target, …)`) filters destinations. `out`/`inn`
+    /// pick which incident edges the BFS follows (both true = undirected, the
+    /// TinkerPop default; set via `.with(ShortestPath.direction, 'out'|'in'|'both')`).
     ShortestPath {
         target: Option<Box<Traversal>>,
+        out: bool,
+        inn: bool,
     },
     /// Whole-graph OLAP algorithm steps (TinkerPop `pageRank()` / `connectedComponent()`
     /// / `peerPressure()`): compute over the whole graph, write each vertex's result to
@@ -807,19 +811,38 @@ impl Traversal {
         self.push(Step::Subgraph(key.to_string()))
     }
     pub fn shortest_path(self) -> Self {
-        self.push(Step::ShortestPath { target: None })
+        self.push(Step::ShortestPath {
+            target: None,
+            out: true,
+            inn: true,
+        })
     }
     /// `shortestPath().with(ShortestPath.target, target)` — restrict destinations.
     pub fn shortest_path_to(self, target: Self) -> Self {
         self.push(Step::ShortestPath {
             target: Some(Box::new(target)),
+            out: true,
+            inn: true,
         })
     }
     /// Set the target sub-traversal on the most recent `shortestPath` step (the
     /// textual `.with(ShortestPath.target, …)` modulator).
     pub fn with_shortest_path_target(mut self, target: Self) -> Self {
-        if let Some(Step::ShortestPath { target: tgt }) = self.steps.last_mut() {
+        if let Some(Step::ShortestPath { target: tgt, .. }) = self.steps.last_mut() {
             *tgt = Some(Box::new(target));
+        }
+        self
+    }
+    /// Set the edge direction on the most recent `shortestPath` step (the textual
+    /// `.with(ShortestPath.direction, 'out'|'in'|'both')` modulator). An
+    /// unrecognized value leaves the default (undirected).
+    pub fn with_shortest_path_direction(mut self, dir: &str) -> Self {
+        if let Some(Step::ShortestPath { out, inn, .. }) = self.steps.last_mut() {
+            match dir {
+                "out" => (*out, *inn) = (true, false),
+                "in" => (*out, *inn) = (false, true),
+                _ => (*out, *inn) = (true, true),
+            }
         }
         self
     }

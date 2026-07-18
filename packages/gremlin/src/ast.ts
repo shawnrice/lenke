@@ -343,8 +343,10 @@ export type Step =
   | { kind: 'subgraph'; key: string }
   // Emit the shortest vertex path(s) from each source vertex. `target` (set via
   // `.with(ShortestPath.target, …)`) filters which vertices are destinations;
-  // absent ⇒ every reachable vertex. Unweighted BFS over incident edges.
-  | { kind: 'shortestPath'; target?: Plan }
+  // absent ⇒ every reachable vertex. `direction` (`.with(ShortestPath.direction,
+  // …)`) picks which incident edges the BFS follows — `'both'` (default,
+  // TinkerPop-conformant undirected), `'out'`, or `'in'` for a directed search.
+  | { kind: 'shortestPath'; target?: Plan; direction?: Direction }
   // --- OLAP graph algorithms (computed locally) -------------------------
   //
   // Each step runs a whole-graph algorithm and writes a per-vertex result to a
