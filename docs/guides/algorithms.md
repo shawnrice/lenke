@@ -6,19 +6,19 @@ The same computation is reachable from **four surfaces**. Pick the one that fits
 
 ## The shipped algorithms
 
-| Name                          | Result rows             | What it computes                                          |
-| ----------------------------- | ----------------------- | -------------------------------------------------------- |
-| `pagerank`                    | `{ node, score }`       | Influence / centrality by link structure.                |
+| Name                          | Result rows             | What it computes                                                |
+| ----------------------------- | ----------------------- | --------------------------------------------------------------- |
+| `pagerank`                    | `{ node, score }`       | Influence / centrality by link structure.                       |
 | `personalizedPagerank`        | `{ node, score }`       | PageRank restarted to a `sourceNodes` seed set (proximity/RWR). |
-| `connectedComponents`         | `{ node, componentId }` | Weakly-connected component membership (edges undirected). |
-| `stronglyConnectedComponents` | `{ node, componentId }` | Strongly-connected component membership (directed).       |
-| `onCycle`                     | `{ node, onCycle }`     | Whether a node lies on a directed cycle (SCC>1 or self-loop). |
-| `labelPropagation`            | `{ node, label }`       | Community detection by label spreading.                  |
-| `peerPressure`                | `{ node, label }`       | Community detection by majority vote.                    |
-| `degree`                      | `{ node, degree }`      | In/out/total edge count per node.                        |
-| `shortestPath`                | `{ node, distance }`    | Shortest path from `source` (BFS / Dijkstra / A\*).      |
-| `betweenness`                 | `{ node, centrality }`  | Brokerage — how often a node lies on shortest paths.     |
-| `closeness`                   | `{ node, centrality }`  | Reciprocal of total distance to reachable nodes.         |
+| `connectedComponents`         | `{ node, componentId }` | Weakly-connected component membership (edges undirected).       |
+| `stronglyConnectedComponents` | `{ node, componentId }` | Strongly-connected component membership (directed).             |
+| `onCycle`                     | `{ node, onCycle }`     | Whether a node lies on a directed cycle (SCC>1 or self-loop).   |
+| `labelPropagation`            | `{ node, label }`       | Community detection by label spreading.                         |
+| `peerPressure`                | `{ node, label }`       | Community detection by majority vote.                           |
+| `degree`                      | `{ node, degree }`      | In/out/total edge count per node.                               |
+| `shortestPath`                | `{ node, distance }`    | Shortest path from `source` (BFS / Dijkstra / A\*).             |
+| `betweenness`                 | `{ node, centrality }`  | Brokerage — how often a node lies on shortest paths.            |
+| `closeness`                   | `{ node, centrality }`  | Reciprocal of total distance to reachable nodes.                |
 
 The shared `config` object (all fields optional) carries `edgeLabel`, `direction` (`'out' | 'in'`), `weightProperty`, `dampingFactor`, `iterations`, `source`/`target`, `writeProperty`, and a few algorithm-specific knobs: `sourceNodes` (personalized-PageRank seed set), `pivots` (approximate betweenness — see below), and `seedProperty` (label-propagation anchors — a vertex carrying a non-null value for that key keeps its own label, so communities form around seeds instead of collapsing on a hubby graph). It is portable _verbatim_ across the four surfaces below.
 

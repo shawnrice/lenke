@@ -99,7 +99,7 @@ personalized_pagerank`): restarts to a `sourceNodes` seed set, byte-identical
     factorially-many simple cycles), so it's an unbounded footgun, and it doesn't fit
     the per-vertex `(node, value)` result shape (it returns a list of paths). The common
     need is already covered: `onCycle` answers "which nodes are cyclic," and `MATCH p =
-    (a)-[:R]->+(a)` / Gremlin `cyclicPath()` find a cycle through a given vertex. Revisit
+(a)-[:R]->+(a)` / Gremlin `cyclicPath()` find a cycle through a given vertex. Revisit
     only if a concrete use case needs the complete cycle set — and only bounded (per-SCC,
     `maxCycles`/`maxLength`).
   - The cyclic variable-length **match perf cliff** (~2.5×/hop) is a separate perf item,

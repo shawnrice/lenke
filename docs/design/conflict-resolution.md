@@ -1,7 +1,7 @@
 # Conflict resolution (LWW / HLC) — design note & threat model
 
 Status: **Not shipped.** This is a design + threat-model note for last-write-wins
-(LWW) conflict resolution in the multiplayer / CDC path, written *before* any
+(LWW) conflict resolution in the multiplayer / CDC path, written _before_ any
 implementation so the one dangerous mistake is on record. The "documented recipe
 vs built-in" decision is open; **either way, the host-validation requirements
 below are non-negotiable.**
@@ -16,7 +16,7 @@ consistency).
 
 LWW answers "the write with the latest timestamp wins," and lenke already exposes the
 mechanism — `_MERGE (n {k:$k}) _ON_UPDATE SET … WHERE current.version < $incoming`.
-The open question is only *what the timestamp is* and *who is trusted to assign it*.
+The open question is only _what the timestamp is_ and _who is trusted to assign it_.
 
 ## The trap: a client-assigned clock is untrusted metadata
 
@@ -26,7 +26,7 @@ HLC (and Lamport, and wall-clock LWW) assume cooperative, roughly-honest partici
 Two concrete attacks break it:
 
 1. **Skew-to-win.** A client stamps its writes at a far-future time (year 3000) and
-   wins *every* conflict until real time catches up — i.e. never. It's just choosing a
+   wins _every_ conflict until real time catches up — i.e. never. It's just choosing a
    big number the loser agreed to honor.
 2. **Clock poisoning (worse — it's persistent and it spreads).** HLC's defining rule is
    "on receiving a stamp higher than mine, advance to it." So one poisoned far-future
@@ -53,7 +53,7 @@ the following at the host:
    most**, never the authoritative value used in the `WHERE current < incoming`
    comparison. This alone kills skew-to-win — the client no longer mints the winning
    number.
-2. **Reject / clamp out-of-bound stamps.** If a client *is* allowed to propose a stamp
+2. **Reject / clamp out-of-bound stamps.** If a client _is_ allowed to propose a stamp
    (e.g. for an offline queue that must preserve intent), the host MUST reject or clamp
    any proposed time more than a small bound `ε` ahead of the host's own `now`. An
    unbounded proposed value must never enter the monotonic chain. This kills poisoning
@@ -64,7 +64,7 @@ the following at the host:
    NOT advance the authoritative clock from a value that originated at a client. A
    client write never moves the host's clock forward except by the host's own
    `max(now, hostClock)+1` tick.
-4. **Authorization gates *who may write*, before any clock compares *which write wins*.**
+4. **Authorization gates _who may write_, before any clock compares _which write wins_.**
    Conflict resolution orders the writes that were **already authorized**; it is not an
    access-control mechanism. A client with no permission to touch an element must be
    rejected by authz regardless of any timestamp it presents. Never let "won the LWW
@@ -88,7 +88,7 @@ convention:
 - Ingest/merge resolves with the host-assigned value:
   `_MERGE (n {id:$id}) _ON_UPDATE SET … WHERE n.hlc < $incomingHlc` — where
   `$incomingHlc` came off the CDC entry, never from a client body.
-- A client's offline-queued write carries *intent* (the fields it wants), not the
+- A client's offline-queued write carries _intent_ (the fields it wants), not the
   authoritative order; the host re-stamps on replay, subject to the ε bound.
 
 A built-in would wire the same host-side stamping + comparison into `_MERGE` / the CDC
@@ -96,7 +96,7 @@ ingest path directly; the trust rules are identical.
 
 ## Boundaries worth stating out loud
 
-- **LWW discards the loser.** Even host-stamped and un-poisonable, LWW *silently drops*
+- **LWW discards the loser.** Even host-stamped and un-poisonable, LWW _silently drops_
   the losing write. Fine for a presence field or a cursor position; wrong for anything
   you can't afford to lose. Those want a mergeable type (a CRDT) or to **surface** the
   conflict for the app to resolve, not auto-resolve by timestamp.
@@ -106,6 +106,6 @@ ingest path directly; the trust rules are identical.
   always in the write path.
 
 See also: the CDC write stream (`packages/sync/README.md` → "Multiplayer") and the
-value-scope routing that decides *which* writes a client receives
+value-scope routing that decides _which_ writes a client receives
 (`../guides/frontend-worker.md`) — scope routing is likewise an optimization, not a
 security boundary, and is enforced at the host.
