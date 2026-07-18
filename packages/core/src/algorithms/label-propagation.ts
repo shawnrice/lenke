@@ -1,5 +1,6 @@
 import type { Edge } from '../core/Edge.js';
 import type { Graph } from '../core/Graph.js';
+import type { Vertex } from '../core/Vertex.js';
 import { type AlgorithmGen, defineAlgorithm, materializeVertices, YIELD_EVERY } from './async.js';
 import type { AlgorithmConfig, AlgorithmRow } from './types.js';
 
@@ -37,11 +38,44 @@ const collectNeighbours = (
   }
 };
 
+/**
+ * The seed/anchor mask: `1` for a vertex carrying a non-null `seedProperty`
+ * (pinned to its own label), else `0`. `!= null` catches both absent (undefined)
+ * and stored-null, matching native's `!= Value::Null`. Split out to keep computeGen
+ * under the statement-count lint bound; yields so a huge vertex list never blocks.
+ */
+const buildSeedMask = function* (
+  order: readonly Vertex[],
+  seedProperty: string | undefined,
+): Generator<void, Uint8Array, void> {
+  const isSeed = new Uint8Array(order.length);
+
+  if (seedProperty === undefined) {
+    return isSeed;
+  }
+
+  let sinceYield = 0;
+
+  for (let i = 0; i < order.length; i++) {
+    if (order[i].getProperty(seedProperty) != null) {
+      isSeed[i] = 1;
+    }
+
+    if (++sinceYield >= YIELD_EVERY) {
+      sinceYield = 0;
+
+      yield;
+    }
+  }
+
+  return isSeed;
+};
+
 export const computeGen = function* (
   config: AlgorithmConfig,
   graph: Graph,
 ): AlgorithmGen<LabelRow> {
-  const { edgeLabel, writeProperty, iterations = DEFAULT_ITERATIONS } = config;
+  const { edgeLabel, writeProperty, seedProperty, iterations = DEFAULT_ITERATIONS } = config;
 
   // Insertion order == native dense-id order. A label is carried as the index of
   // the vertex whose external id is that label (all labels are vertex ids), so a
@@ -100,6 +134,11 @@ export const computeGen = function* (
     }
   }
 
+  // Seed/anchor vertices (carrying a non-null `seedProperty`) never adopt a
+  // neighbour's label — they stay pinned to their own id, so communities nucleate
+  // around them instead of collapsing to one.
+  const isSeed = yield* buildSeedMask(order, seedProperty);
+
   let labels = new Int32Array(n);
 
   for (let i = 0; i < n; i++) {
@@ -118,6 +157,19 @@ export const computeGen = function* (
     let changed = false;
 
     for (let v = 0; v < n; v++) {
+      // A seed anchor keeps its label — never tallies, never changes.
+      if (isSeed[v] === 1) {
+        nextLabels[v] = labels[v];
+
+        if (++sinceYield >= YIELD_EVERY) {
+          sinceYield = 0;
+
+          yield;
+        }
+
+        continue;
+      }
+
       dirty.length = 0;
 
       for (let j = off[v]; j < off[v + 1]; j++) {

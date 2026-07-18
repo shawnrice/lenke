@@ -75,4 +75,36 @@ describe('label propagation', () => {
     const g = twoTriangles();
     expect(await labelPropagation({})(g)).toEqual(await labelPropagation({}, twoTriangles()));
   });
+
+  test('seedProperty anchors pin communities (mirrors native)', async () => {
+    // Triangle {1,2,3}: unsupervised collapses to min "1"; anchoring 3 breaks the
+    // collapse into three distinct communities (byte-identical to native).
+    const build = (): Graph => {
+      const g = new Graph();
+      g.addVertex({ id: '1', labels: ['N'] });
+      g.addVertex({ id: '2', labels: ['N'] });
+      g.addVertex({ id: '3', labels: ['N'], properties: { anchor: true } });
+      const v = (id: string) => g.getVertexById(id)!;
+      g.addEdge({ from: v('1'), to: v('2'), labels: ['E'] });
+      g.addEdge({ from: v('2'), to: v('3'), labels: ['E'] });
+      g.addEdge({ from: v('1'), to: v('3'), labels: ['E'] });
+
+      return g;
+    };
+    const map = (r: { node: string; label: string }[]): Record<string, string> =>
+      Object.fromEntries(r.map((x) => [x.node, x.label]));
+
+    expect(map(await labelPropagation({}, build()))).toEqual({ 1: '1', 2: '1', 3: '1' });
+    expect(map(await labelPropagation({ seedProperty: 'anchor' }, build()))).toEqual({
+      1: '1',
+      2: '2',
+      3: '3', // the seed keeps its own id
+    });
+    // A seed key no vertex carries → unsupervised.
+    expect(map(await labelPropagation({ seedProperty: 'nope' }, build()))).toEqual({
+      1: '1',
+      2: '1',
+      3: '1',
+    });
+  });
 });

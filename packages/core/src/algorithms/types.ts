@@ -24,6 +24,13 @@ export type AlgorithmConfig = {
    * scales the result by `|V|/pivots` — O(pivots·E) instead of O(V·E). Omit for exact.
    */
   pivots?: number;
+  /**
+   * Seed/anchor property for **label propagation**: a vertex carrying a non-null
+   * value for this key keeps its own label forever, so communities form around the
+   * seeds instead of collapsing to one on a hubby/scale-free graph. Omit for
+   * unsupervised propagation.
+   */
+  seedProperty?: string;
   /** Source vertex external id (shortest path). */
   source?: string;
   /**

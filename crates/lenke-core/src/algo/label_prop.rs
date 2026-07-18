@@ -36,13 +36,26 @@ pub fn label_propagation(graph: &Graph, cfg: &AlgoConfig) -> Vec<(u32, Value)> {
     // unknown type → no edges, so every vertex keeps its own label forever.
     let etype = cfg.etype(graph);
 
+    // Seed/anchor vertices (carrying a non-null `seedProperty`) never adopt a
+    // neighbour's label — they stay pinned to their own id, so communities nucleate
+    // around them instead of collapsing to one label. Empty (all false) → the prior
+    // unsupervised behaviour.
+    let is_seed: Vec<bool> = cfg.seed_property.as_deref().map_or_else(
+        || vec![false; graph.n],
+        |key| {
+            (0..graph.n)
+                .map(|v| !matches!(graph.props.value(v, key, &graph.strs), Value::Null))
+                .collect()
+        },
+    );
+
     // labels[v] = the dense id of the vertex whose external id is v's current label;
     // starts as v itself. Tombstoned slots are self-labelled and never read.
     let mut labels: Vec<u32> = (0..graph.n as u32).collect();
 
     if let Some(etype) = etype {
         for _ in 0..iterations {
-            let next = round(graph, &labels, etype);
+            let next = round(graph, &labels, etype, &is_seed);
             if next == labels {
                 break; // converged — later rounds would be no-ops
             }
@@ -59,9 +72,10 @@ pub fn label_propagation(graph: &Graph, cfg: &AlgoConfig) -> Vec<(u32, Value)> {
 /// One synchronous round: every vertex adopts the winning neighbour label from the
 /// frozen `labels` snapshot. Parallel across vertices (each is independent); a
 /// per-thread scratch map is reused across the vertices that thread handles.
-fn round(graph: &Graph, labels: &[u32], etype: Option<u32>) -> Vec<u32> {
+fn round(graph: &Graph, labels: &[u32], etype: Option<u32>, is_seed: &[bool]) -> Vec<u32> {
     let pick = |v: u32, counts: &mut HashMap<u32, u32>| -> u32 {
-        if !graph.is_vertex_live(v) {
+        // A seed anchor (and a dead slot) keeps its current label — never adopts.
+        if is_seed[v as usize] || !graph.is_vertex_live(v) {
             return labels[v as usize];
         }
         counts.clear();

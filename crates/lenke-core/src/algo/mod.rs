@@ -54,6 +54,11 @@ pub struct AlgoConfig {
     /// and scales the result by `|V|/pivots` — turning the O(V·E) exact pass into
     /// O(pivots·E). Omitted → exact.
     pub pivots: Option<u32>,
+    /// Seed/anchor property for label propagation: a vertex carrying a **non-null**
+    /// value for this key keeps its own label forever, so communities form around
+    /// the seeds instead of collapsing to one on a hubby/scale-free graph. Omitted →
+    /// unsupervised (the prior behaviour).
+    pub seed_property: Option<String>,
     /// Source vertex external id (shortest path).
     pub source: Option<String>,
     /// Seed vertex external ids for personalized PageRank / random-walk-with-restart
@@ -94,6 +99,7 @@ impl AlgoConfig {
             damping_factor: num("dampingFactor"),
             iterations: num("iterations").map(|n| n as u32),
             pivots: num("pivots").map(|n| n as u32),
+            seed_property: string("seedProperty"),
             source: string("source"),
             source_nodes: string_array("sourceNodes"),
             target: string("target"),
@@ -533,6 +539,46 @@ mod tests {
             (1..=6)
                 .map(|i| (i.to_string(), i.to_string()))
                 .collect::<Vec<_>>(),
+        );
+    }
+
+    #[test]
+    fn label_prop_seed_anchors_pin_communities() {
+        // Triangle {1,2,3}. Unsupervised, it collapses to the single min label "1".
+        // Anchoring vertex 3 keeps it pinned to "3", which breaks the collapse — the
+        // deterministic result is three distinct communities instead of one.
+        let mut g = ndjson::decode(
+            &[
+                r#"{"type":"node","id":"1","labels":["N"]}"#,
+                r#"{"type":"node","id":"2","labels":["N"]}"#,
+                r#"{"type":"node","id":"3","labels":["N"],"properties":{"anchor":true}}"#,
+                r#"{"type":"edge","from":"1","to":"2","labels":["E"]}"#,
+                r#"{"type":"edge","from":"2","to":"3","labels":["E"]}"#,
+                r#"{"type":"edge","from":"1","to":"3","labels":["E"]}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        assert_eq!(
+            labels(&mut g, "{}"),
+            vec![
+                ("1".into(), "1".into()),
+                ("2".into(), "1".into()),
+                ("3".into(), "1".into()),
+            ],
+        );
+        assert_eq!(
+            labels(&mut g, r#"{"seedProperty":"anchor"}"#),
+            vec![
+                ("1".into(), "1".into()),
+                ("2".into(), "2".into()),
+                ("3".into(), "3".into()), // the seed keeps its own id
+            ],
+        );
+        // A seed key no vertex carries → unsupervised (every value reads null).
+        assert_eq!(
+            labels(&mut g, r#"{"seedProperty":"nope"}"#),
+            labels(&mut g, "{}"),
         );
     }
 
