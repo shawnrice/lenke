@@ -35,6 +35,48 @@ with its disposition. Summary:
 
 ---
 
+## 🆕 Round 13 — deferred items (2026-07-18)
+
+A fresh 4-persona round (RBAC engine, routing/shortest-path, Arrow egress, differential
+fuzzer). The surfaces changed this session (var-length, reachability, EXISTS, CALL,
+aggregates) held byte-identical across ~58k+ checks. Obvious bugs were **fixed +
+committed** (eager var-length enumeration → short-circuiting walker; D1 boolean-vs-number
+coercion; D3 `-0`→`"0"`; the `arrowTable` doc); see `findings/round13.md`. These remain
+**deferred — each needs a decision, not an obvious fix:**
+
+- **Gremlin element form** (MED). Native Gremlin serializes an element as reference
+  `{id,label}` (singular `label`, no properties); native **GQL** and **TS** Gremlin emit
+  full `{id,labels[],properties}`. Cross-engine byte-identity break on every
+  element-returning traversal. **Recommendation:** align native Gremlin to the full form
+  (2 of 3 surfaces already use it; native Gremlin is the outlier) — but it's a Gremlin
+  output-contract change with heavy ported-test churn, and there's a TinkerPop argument
+  for reference form, so it's a deliberate call.
+- **Number→string notation** (D2, MED). `to_string`/`CAST … AS STRING` renders decimal
+  in native (Rust Display: `"0.0000000001"`, `"1000000000000000000000"`) vs exponential
+  in TS (JS `Number.toString`: `"1e-10"`, `"1e+21"`) at magnitude extremes (|x|<1e-6,
+  |x|≥1e21). `js_num` is _named_ for JS parity, so JS notation is arguably canonical —
+  but matching JS's exact shortest-round-trip + exponential thresholds in Rust is
+  non-trivial. Pick canonical, then align both.
+- **List→string null element** (D4, MED). `to_string([1,null,3])` → native `"1,null,3"`
+  vs TS `"1,,3"`. Null-first-class policy leans toward `"null"`; pick + align.
+- **`power()` precision at extreme exponents** (D5, MED). `power(100,100)` → native
+  `1e+200` vs TS `1.0000000000000005e+200`. Byte-identity needs an identical float `pow`
+  algorithm across engines (float determinism) — the deferred-hard one.
+- **Error-code split** (LOW). Edge variable on a quantified segment (`(a)-[e:R]->*(b)`)
+  → native `E_SYNTAX` vs TS `E_UNSUPPORTED`. Both correctly reject; align the code.
+- **`shortestPath` config footguns** (both engines agree — not a divergence).
+  `direction:'in'|'both'` and Dijkstra `target` are **accepted but silently ignored**
+  (only `degree` honors `direction`, only A\* honors `target`). Honor, reject, or document
+  — accepted-but-ignored is the worst option.
+- **Reserved-keyword error message** (DX, both engines). `GROUP`/`ON`/`USER`… as a label
+  or rel-type gives an opaque `E_SYNTAX`; a "reserved keyword — quote with backticks"
+  hint would save real confusion (backtick-quoting works on both engines).
+- **Arrow list-column flatten** (doc). A list column flattens to non-JSON text
+  (`"[a,b]"`) — documented as lossy, but worth a one-line caveat that it won't
+  `JSON.parse` back.
+
+---
+
 ## ✅ Fixed this session (was top priority)
 
 - **C1 · native SIGSEGV on a long operator chain** → `8001891` (cap), then
@@ -108,12 +150,16 @@ betweenness" below.
     `createVertexIndex` is the answer. Auto-indexing arbitrary properties is a
     write-amplification + memory anti-pattern (surprise cost), not a feature. A PK/`@id`
     hint on `defineNode` is at most mild sugar over `createVertexIndex` — deferred.
-- ~~**Real Arrow IPC egress**~~ (Marcus R10, task #53) — SHIPPED `@lenke/native/arrow`:
-  `toArrowIPC(blob)` / `arrowTable(blob)` reconstruct a real apache-arrow Table from
-  the ARW1 buffers (which already are Arrow's physical layout) and emit standard
-  flatbuffer-framed IPC (stream default, or file/Feather-v2) — what DuckDB/Polars/
-  pandas read. apache-arrow is an optional peer dep on that subpath only; core stays
-  dependency-free. Verified by round-tripping both layouts through apache-arrow.
+- ~~**Real Arrow IPC egress**~~ (Marcus R10, task #53) — SHIPPED. Native
+  `RustGraph.queryArrowIpc(q, {format})` frames standard Apache Arrow IPC in Rust;
+  `toArrowIPC(blob, format)` from `@lenke/native/arrow` transcodes an `ARW1` blob
+  (from `queryArrow`) to byte-identical IPC — both from the ARW1 buffers, which are
+  already Arrow's physical layout — as stream (default) or file/Feather-v2, what
+  DuckDB/Polars/pandas read. Decode an `ARW1` blob back to rows with `decodeArrow`
+  (exported from `@lenke/native`). apache-arrow is a dev-only verifier; core stays
+  dependency-free. Verified byte-identical native↔JS + reference-decoded through
+  apache-arrow (round-13 ArrowPipe, 89 compares). (There is no `arrowTable` export —
+  earlier drafts of this note named one; the real surface is the three fns above.)
 
 ## Medium — algorithms & query surface
 
