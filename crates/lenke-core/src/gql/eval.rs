@@ -591,7 +591,13 @@ fn js_str(graph: &Graph, v: &Val) -> String {
         Val::Edge(i) => format!("e{i}"),
         Val::List(items) => items
             .iter()
-            .map(|x| js_str(graph, x))
+            // JS `Array.prototype.join` renders a null/undefined element as the empty
+            // string (`String([1,null,3])` === "1,,3"), unlike a top-level
+            // `String(null)` === "null". Match it so a list→string is byte-identical.
+            .map(|x| match x {
+                Val::Null => String::new(),
+                _ => js_str(graph, x),
+            })
             .collect::<Vec<_>>()
             .join(","),
         Val::Path { vertices, edges } => {
