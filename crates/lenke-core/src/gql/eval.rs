@@ -166,6 +166,15 @@ struct Ctx<'a> {
     /// boundary and converts it to a `CodeError`. Atomic so the parallel (rayon)
     /// vectorized path can record faults safely.
     fault: AtomicU8,
+    /// Reused per-edge trail-mark scratch for `reachable` (var-length TRAIL walk):
+    /// `edge_marks[eidx]` == "this edge is on the current trail." Held here rather
+    /// than freshly `HashSet`-allocated per call because `reachable` invocations are
+    /// strictly *sequential* — `for end in reachable(..)` runs the call to completion
+    /// (draining its marks back to all-false via backtracking) before the loop body
+    /// can re-enter — so one buffer, resized once to `edge_slots`, serves every seed
+    /// with O(1) index ops instead of hashing. Left clean by backtracking on normal
+    /// exit; the fault path clears the live stack's marks before returning.
+    edge_marks: std::cell::RefCell<Vec<bool>>,
 }
 
 const FAULT_NONE: u8 = 0;
@@ -302,6 +311,7 @@ fn resolve_ctx<'a>(graph: &Graph, plan: &'a CQuery, params: &'a [Val]) -> Ctx<'a
         label_names: &plan.label_names,
         unknown_fns: &plan.unknown_fns,
         fault: AtomicU8::new(FAULT_NONE),
+        edge_marks: std::cell::RefCell::new(Vec::new()),
     }
 }
 
@@ -359,6 +369,7 @@ pub fn eval_predicate(graph: &Graph, pred: &CPredicate, element: Val) -> CodeRes
         label_names: &pred.label_names,
         unknown_fns: &pred.unknown_fns,
         fault: AtomicU8::new(FAULT_NONE),
+        edge_marks: std::cell::RefCell::new(Vec::new()),
     };
     let mut binding = Binding::default();
     binding.set(0, element);
@@ -2400,10 +2411,17 @@ fn reachable(graph: &Graph, ctx: &Ctx, from: u32, rel: &CRel, q: Quantifier) -> 
         ends.push(from);
     }
 
-    // Edges on the *current* trail (size bounded by trail length, not graph
-    // size — a dense `vec![false; edge_count]` would cost an O(E) alloc per seed
-    // vertex, which dominates for short bounded quantifiers over many seeds).
-    let mut used: HashSet<u32> = HashSet::new();
+    // Edges on the *current* trail: `used[eidx]` == on-trail. A per-call HashSet
+    // (or a per-call `vec![false; edge_count]`) would re-pay an allocation for every
+    // seed vertex — which dominates for short bounded quantifiers over many seeds.
+    // Instead this is a scratch buffer reused across all `reachable` calls (safe
+    // because the calls are sequential — see `Ctx::edge_marks`): resized once to
+    // cover every edge slot, always all-`false` on entry (backtracking clears it on
+    // the normal path; the fault path clears the live stack below).
+    let mut used = ctx.edge_marks.borrow_mut();
+    if used.len() < graph.edge_slots() {
+        used.resize(graph.edge_slots(), false);
+    }
     let mut steps: u64 = 0;
 
     // Each frame walks one vertex's outgoing steps; `entry` is the edge taken to
@@ -2424,7 +2442,7 @@ fn reachable(graph: &Graph, ctx: &Ctx, from: u32, rel: &CRel, q: Quantifier) -> 
     while let Some(top) = stack.last_mut() {
         if q.max.is_some_and(|m| top.depth >= m) || top.idx >= top.edges.len() {
             if let Some(e) = top.entry {
-                used.remove(&e);
+                used[e as usize] = false;
             }
             stack.pop();
             continue;
@@ -2434,17 +2452,24 @@ fn reachable(graph: &Graph, ctx: &Ctx, from: u32, rel: &CRel, q: Quantifier) -> 
         let depth = top.depth;
         top.idx += 1; // borrow of `stack` ends here (NLL)
 
-        if used.contains(&eidx) {
+        if used[eidx as usize] {
             continue; // trail: each relationship traversed at most once
         }
 
         steps += 1;
         if steps > TRAIL_BUDGET {
             ctx.set_fault(FAULT_BUDGET);
+            // Fault exit leaves the live stack's edges marked; clear them so the
+            // reused buffer is all-`false` for the next (short-circuited) call.
+            for f in &stack {
+                if let Some(e) = f.entry {
+                    used[e as usize] = false;
+                }
+            }
             break;
         }
 
-        used.insert(eidx);
+        used[eidx as usize] = true;
         let d = depth + 1;
         if d >= q.min {
             ends.push(nbr);
