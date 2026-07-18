@@ -4194,10 +4194,19 @@ fn eval_vec(graph: &Graph, ctx: &Ctx, sc: &ScanCols, e: &CExpr) -> VVec {
             }
             let l = eval_vec(graph, ctx, sc, left);
             let r = eval_vec(graph, ctx, sc, right);
-            // Numeric fast path when both sides are numeric/boolean; otherwise the
-            // comparison may be over strings/identity → scalar fallback.
+            // Numeric fast path when both sides are the same category (Num/Num or
+            // Bool/Bool); otherwise the comparison is over strings/identity or is
+            // cross-type → scalar fallback.
             match (&l, &r) {
                 (VVec::Gen(_), _) | (_, VVec::Gen(_)) => gen(e),
+                // A boolean compared with a number is cross-type: the numeric path
+                // below would wrongly coerce true/false to 1/0 (so `1 = true` passed
+                // a WHERE). Route to the scalar evaluator, which gives the LPG
+                // cross-type result (eq → false, order → null) — matching the
+                // const-folded and property-vs-bool paths and the TS engine.
+                (VVec::Num { .. }, VVec::Bool { .. }) | (VVec::Bool { .. }, VVec::Num { .. }) => {
+                    gen(e)
+                }
                 _ => {
                     let (ld, lv) = l.into_num();
                     let (rd, rv) = r.into_num();
