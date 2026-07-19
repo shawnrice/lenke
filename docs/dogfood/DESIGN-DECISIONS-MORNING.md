@@ -94,6 +94,38 @@ Direction.OUT|IN|BOTH)` in both engines — internal representation + execution 
 
 ---
 
+## 🆕 Round 14 — outcomes (2026-07-18)
+
+Four personas (Gremlin social network, temporal/bitemporal, ledger tx+constraints,
+differential fuzzer incl. the new native-vs-TS Gremlin differential). Round 13's Gremlin
+element-form rewrite held byte-identical across ~27,600 Gremlin pairs. Obvious bugs
+**fixed + committed**: native Gremlin temporal-tag stripping (`858cd0c`), `Date`/object
+param validation (`ca23e7c`), non-representable Duration → null (`bb3b3dc`), `project()`
+varargs (`e275945`); see `findings/round14.md`. **Deferred — delicate ordering / DX:**
+
+- **Adjacency enumeration order** (MED). `out()`/`in()`/`both()` — native/TinkerPop use
+  edge-insertion order; **TS label-buckets** (all `A` edges, then `B`). Set-based for bare
+  rows, breaks byte-identity when order is captured (`fold`/`path`/`valueMap`-list/
+  `group().by(…fold())`). TS is the outlier. **Fix (delicate):** TS's adjacency is
+  `Map<vertexId, Map<label, Set<Edge>>>` with no global edge order — needs an
+  edge-sequence key + bucket merge, or an adjacency restructure. Perf-sensitive TS-core
+  change, so it wants a dedicated pass, not an end-of-session edit.
+- **Gremlin map key order** (MED). Native alpha-sorts map keys (`valueMap`/`project`/
+  `group`); TS preserves declared/insertion. Two answers: `project(k1,k2)` must preserve
+  **declared** order (native should stop sorting), but `valueMap()` keys come from
+  properties where **native's columnar store has no per-element order** (it can only sort)
+  — so there TS must sort too. Per-map-type decision needed.
+- **TS `group`/`groupCount` `Map` has no `toJSON`** (DX). `JSON.stringify` → `{}` vs
+  native's populated object. Fix: a `Map` subclass with `toJSON()` at the `aggregation.ts`
+  sites.
+- **`createValidator`/`createInvariant` asymmetry** (DX). Free-fn (TS `Graph`) vs method
+  (native `RustGraph`); passing a `RustGraph` to the free fn throws a raw `TypeError`.
+  Unify or throw a coded error.
+- **Doc notes:** zoned/local-time are constructor-only (no literal prefix); reserved-word
+  labels need backticks; the Duration-overflow → null policy.
+
+---
+
 ## ✅ Fixed this session (was top priority)
 
 - **C1 · native SIGSEGV on a long operator chain** → `8001891` (cap), then
