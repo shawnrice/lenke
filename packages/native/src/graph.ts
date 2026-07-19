@@ -11,6 +11,7 @@ import type {
   ScalarTypeName,
   ShortestPathRow,
 } from '@lenke/core';
+import { isTemporal } from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { Backend, GraphHandle, MergeReport, PreparedHandle } from './backend.js';
@@ -136,8 +137,96 @@ const withClock = (
 // error instead. (Serializing a bigint as a JSON number would silently lose
 // precision above 2^53, so a param rejects it rather than corrupt it — pass such
 // a value as a string, or as a number if it is within the safe integer range.)
-const stringifyParams = (params: object): string =>
-  JSON.stringify(params, (_key, value: unknown) => {
+const TEMPORAL_TAGS = new Set([
+  '@date',
+  '@datetime',
+  '@localtime',
+  '@time',
+  '@zoned_datetime',
+  '@duration',
+]);
+
+/** A tagged-temporal plain object, e.g. `{ '@date': '2027-05-25' }` (one @-key,
+ *  string value) — the only object shape valid as a param value. */
+const isTaggedTemporalObject = (v: object): boolean => {
+  const keys = Object.keys(v);
+
+  return (
+    keys.length === 1 &&
+    TEMPORAL_TAGS.has(keys[0]) &&
+    typeof (v as Record<string, unknown>)[keys[0]] === 'string'
+  );
+};
+
+/**
+ * Validate a param value against the LPG param model BEFORE it JSON-encodes,
+ * matching the TS engine's `validateParam` and native `gql/params.rs` so both
+ * engines accept/reject exactly the same inputs. Without this a JS `Date` (or any
+ * object with a `toJSON`) silently coerced to a string across the FFI while TS
+ * rejected it, and a plain object faulted with a different code. Accepts a scalar,
+ * a lenke `Temporal`, a tagged-temporal object, or a flat list of scalars/temporals.
+ */
+const assertParamModel = (name: string, value: unknown, inList = false): void => {
+  if (
+    value === null ||
+    typeof value === 'string' ||
+    typeof value === 'boolean' ||
+    typeof value === 'number'
+  ) {
+    return;
+  }
+
+  if (typeof value === 'bigint') {
+    throw new LenkeError(
+      `a bigint parameter ($${name}) is not supported: the numeric model is float64 — pass Number(x) or a string`,
+      { code: ErrorCode.InvalidValue, details: { param: name } },
+    );
+  }
+
+  if (isTemporal(value)) {
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    if (inList) {
+      throw new LenkeError(
+        `parameter $${name} is a nested list; only a flat list of scalars is a valid param value`,
+        { code: ErrorCode.InvalidJson, details: { param: name } },
+      );
+    }
+
+    for (const el of value) {
+      assertParamModel(name, el, true);
+    }
+
+    return;
+  }
+
+  if (typeof value === 'object' && isTaggedTemporalObject(value)) {
+    return;
+  }
+
+  // `undefined` / function / symbol are dropped by `JSON.stringify`, so the binding
+  // is simply absent → `E_MISSING_PARAMETER` at execute (both engines already agree
+  // on this). Only a value that *would* encode to a non-model shape (a `Date` via
+  // `toJSON`, a plain object) is rejected here.
+  if (value === undefined || typeof value === 'function' || typeof value === 'symbol') {
+    return;
+  }
+
+  throw new LenkeError(
+    `parameter $${name} is outside the LPG param model: only a scalar, a flat list ` +
+      `of scalars, or a tagged-temporal object is a valid param value`,
+    { code: ErrorCode.InvalidJson, details: { param: name } },
+  );
+};
+
+const stringifyParams = (params: object): string => {
+  for (const [name, value] of Object.entries(params)) {
+    assertParamModel(name, value);
+  }
+
+  return JSON.stringify(params, (_key, value: unknown) => {
     if (typeof value === 'bigint') {
       throw new LenkeError(
         'lenke: a bigint parameter cannot cross the native boundary without precision loss — pass it as a string or a safe-range number',
@@ -147,6 +236,7 @@ const stringifyParams = (params: object): string =>
 
     return value;
   });
+};
 
 /** Serialize a prepared statement's `$name` bindings (empty/absent → no params). */
 const serializeParams = (params?: QueryParams): string | undefined =>
