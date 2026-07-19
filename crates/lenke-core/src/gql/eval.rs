@@ -2261,12 +2261,12 @@ fn temporal_arith(op: super::ast::ArithOp, lv: &Val, rv: &Val) -> Val {
         return Val::Null;
     }
     match (op, lv, rv) {
-        (ArithOp::Add, Val::Temporal(T::Duration(a)), Val::Temporal(T::Duration(b))) => {
-            Val::Temporal(T::Duration(a.add(b)))
-        }
-        (ArithOp::Sub, Val::Temporal(T::Duration(a)), Val::Temporal(T::Duration(b))) => {
-            Val::Temporal(T::Duration(a.add(&b.negate())))
-        }
+        (ArithOp::Add, Val::Temporal(T::Duration(a)), Val::Temporal(T::Duration(b))) => a
+            .add(b)
+            .map_or(Val::Null, |d| Val::Temporal(T::Duration(d))),
+        (ArithOp::Sub, Val::Temporal(T::Duration(a)), Val::Temporal(T::Duration(b))) => a
+            .add(&b.negate())
+            .map_or(Val::Null, |d| Val::Temporal(T::Duration(d))),
         // instant ± duration (either order for +).
         (ArithOp::Add, Val::Temporal(inst), Val::Temporal(T::Duration(d)))
         | (ArithOp::Add, Val::Temporal(T::Duration(d)), Val::Temporal(inst)) => {
@@ -2283,7 +2283,8 @@ fn temporal_arith(op: super::ast::ArithOp, lv: &Val, rv: &Val) -> Val {
         (ArithOp::Mul, Val::Temporal(T::Duration(d)), Val::Num(n))
         | (ArithOp::Mul, Val::Num(n), Val::Temporal(T::Duration(d))) => {
             if n.fract() == 0.0 && n.is_finite() {
-                Val::Temporal(T::Duration(d.scale(*n as i64)))
+                d.scale(*n as i64)
+                    .map_or(Val::Null, |r| Val::Temporal(T::Duration(r)))
             } else {
                 Val::Null
             }

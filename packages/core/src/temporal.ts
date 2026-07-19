@@ -554,7 +554,16 @@ export function parseDuration(s: string): Duration {
     }
   }
 
-  return new Duration(months, days, secs, nanos);
+  const d = new Duration(months, days, secs, nanos);
+
+  // A component at/beyond 2^53 isn't a JS-safe integer — f64 can't hold it exactly,
+  // and native rejects it too (Duration::representable) — so reject rather than
+  // silently round, keeping the engines byte-identical.
+  if (!durationRepresentable(d)) {
+    throw new Error(`duration component is not representable as float64: '${s}'`);
+  }
+
+  return d;
 }
 
 export function formatDuration(d: Duration): string {
@@ -934,8 +943,19 @@ const negateDuration = (d: Duration): Duration => {
   return new Duration(-d.months, -d.days, secs, nanos);
 };
 
-/** Component-wise sum of two nominal durations (nanos carry into secs). */
-const addDurations = (a: Duration, b: Duration): Duration => {
+/**
+ * A duration is representable only when every component is a JS **safe integer**
+ * (|x| ≤ 2^53−1); beyond that f64 rounds and native (i64) would keep an exact value
+ * or wrap, so the two engines would diverge. Such a duration is non-representable →
+ * `null` (arithmetic) / rejected (parse), matching the native `Duration::representable`
+ * contract and the numeric-overflow → null policy.
+ */
+const durationRepresentable = (d: Duration): boolean =>
+  Number.isSafeInteger(d.months) && Number.isSafeInteger(d.days) && Number.isSafeInteger(d.secs);
+
+/** Component-wise sum of two nominal durations (nanos carry into secs); `null` when
+ *  a component leaves the safe-integer range (→ null, byte-identical to native). */
+const addDurations = (a: Duration, b: Duration): Duration | null => {
   let secs = a.secs + b.secs;
   let nanos = a.nanos + b.nanos;
 
@@ -944,16 +964,21 @@ const addDurations = (a: Duration, b: Duration): Duration => {
     secs += 1;
   }
 
-  return new Duration(a.months + b.months, a.days + b.days, secs, nanos);
+  const sum = new Duration(a.months + b.months, a.days + b.days, secs, nanos);
+
+  return durationRepresentable(sum) ? sum : null;
 };
 
-/** Scale every component by an integer factor (nanos carry into secs). */
-const scaleDuration = (d: Duration, n: number): Duration => {
+/** Scale every component by an integer factor (nanos carry into secs); `null` when
+ *  a component leaves the safe-integer range. */
+const scaleDuration = (d: Duration, n: number): Duration | null => {
   const totalNanos = d.nanos * n;
   const carry = Math.floor(totalNanos / 1_000_000_000);
   const nanos = ((totalNanos % 1_000_000_000) + 1_000_000_000) % 1_000_000_000;
 
-  return new Duration(d.months * n, d.days * n, d.secs * n + carry, nanos);
+  const scaled = new Duration(d.months * n, d.days * n, d.secs * n + carry, nanos);
+
+  return durationRepresentable(scaled) ? scaled : null;
 };
 
 /** `t + duration` for a date/datetime (months clamped, then days, then time). */

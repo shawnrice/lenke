@@ -417,12 +417,14 @@ impl Duration {
                 return Err(format!("dangling number in duration '{s}'"));
             }
         }
-        Ok(Self {
+        Self {
             months,
             days,
             secs,
             nanos,
-        })
+        }
+        .representable()
+        .ok_or_else(|| format!("duration component is not representable as float64: '{s}'"))
     }
 
     /// Canonical ISO-8601: `P<months>M<days>DT<secs>S`, each component omitted
@@ -669,30 +671,60 @@ impl Duration {
 
     /// Component-wise sum of two durations (nanos carry into secs). Both are
     /// nominal — no anchoring — so months/days/secs simply add.
-    pub fn add(&self, o: &Self) -> Self {
-        let mut secs = self.secs + o.secs;
-        let mut nanos = i64::from(self.nanos) + i64::from(o.nanos);
-        if nanos >= NANOS_PER_SEC {
-            nanos -= NANOS_PER_SEC;
-            secs += 1;
-        }
-        Self {
-            months: self.months + o.months,
-            days: self.days + o.days,
-            secs,
-            nanos: nanos as u32,
+    /// A duration component at or beyond 2^53 isn't a JS *safe* integer, so the TS
+    /// engine (f64) can't represent it exactly — it rounds — while native (i64)
+    /// would keep an unrepresentable exact value or wrap on overflow. Both engines
+    /// treat such a duration as **non-representable → null**, the same policy numeric
+    /// overflow and out-of-range date arithmetic use, so they stay byte-identical
+    /// (both null) instead of diverging (round vs wrap). The `>=` bound matches JS
+    /// `Number.isSafeInteger` (|x| ≤ 2^53−1) exactly, so a value TS could round is
+    /// rejected on both sides regardless of which engine parses/computes it.
+    const MAX_SAFE: u64 = 1 << 53;
+
+    /// `Some(self)` when every component is a JS-safe integer, else `None` (→ null).
+    fn representable(self) -> Option<Self> {
+        if self.months.unsigned_abs() >= Self::MAX_SAFE
+            || self.days.unsigned_abs() >= Self::MAX_SAFE
+            || self.secs.unsigned_abs() >= Self::MAX_SAFE
+        {
+            None
+        } else {
+            Some(self)
         }
     }
 
-    /// Scale every component by an integer factor (nanos carry into secs).
-    pub fn scale(&self, n: i64) -> Self {
-        let total_nanos = i64::from(self.nanos) * n;
-        Self {
-            months: self.months * n,
-            days: self.days * n,
-            secs: self.secs * n + total_nanos.div_euclid(NANOS_PER_SEC),
-            nanos: total_nanos.rem_euclid(NANOS_PER_SEC) as u32,
+    /// Nominal add (no anchoring). `None` if the result overflows i64 or leaves the
+    /// f64-exact range (→ null; see [`Self::representable`]).
+    pub fn add(&self, o: &Self) -> Option<Self> {
+        let mut secs = self.secs.checked_add(o.secs)?;
+        let mut nanos = i64::from(self.nanos) + i64::from(o.nanos);
+        if nanos >= NANOS_PER_SEC {
+            nanos -= NANOS_PER_SEC;
+            secs = secs.checked_add(1)?;
         }
+        Self {
+            months: self.months.checked_add(o.months)?,
+            days: self.days.checked_add(o.days)?,
+            secs,
+            nanos: nanos as u32,
+        }
+        .representable()
+    }
+
+    /// Scale every component by an integer factor (nanos carry into secs). `None` on
+    /// i64 overflow or leaving the f64-exact range (→ null).
+    pub fn scale(&self, n: i64) -> Option<Self> {
+        let total_nanos = i64::from(self.nanos).checked_mul(n)?;
+        Some(Self {
+            months: self.months.checked_mul(n)?,
+            days: self.days.checked_mul(n)?,
+            secs: self
+                .secs
+                .checked_mul(n)?
+                .checked_add(total_nanos.div_euclid(NANOS_PER_SEC))?,
+            nanos: total_nanos.rem_euclid(NANOS_PER_SEC) as u32,
+        })
+        .and_then(Self::representable)
     }
 }
 
