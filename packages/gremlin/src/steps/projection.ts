@@ -36,18 +36,29 @@ export const id = (): StepFn => appendStep({ kind: 'id' });
 // Project to the element label (first label if multiple).
 export const label = (): StepFn => appendStep({ kind: 'label' });
 
-// `project(keys, bys?)` emits a `{ [key]: value }` per traverser. `bys[i]`
-// is the modulator for `keys[i]` (or omitted to project the traverser value
-// itself). The optional `bys` arg accepts strings/StepFns/undefined for
-// backward compatibility; the chained `.by(...)` form appends one at a time.
-export const project = (
+// `project(...)` emits a `{ [key]: value }` per traverser. Two call styles:
+//   - TinkerPop varargs: `project('a', 'b').by(…).by(…)` (keys as varargs, one
+//     `.by()` modulator per key) — matches the native string API and TinkerPop.
+//   - Array form: `project(['a', 'b'], [byA, byB]?)` — keys array + optional
+//     parallel `bys` array; `bys[i]` modulates `keys[i]`.
+export function project(...keys: string[]): ByableStep<Extract<Step, { kind: 'project' }>>;
+export function project(
   keys: readonly string[],
   bys?: readonly (string | StepFn | undefined)[],
-): ByableStep<Extract<Step, { kind: 'project' }>> => {
+): ByableStep<Extract<Step, { kind: 'project' }>>;
+export function project(
+  first: string | readonly string[],
+  ...rest: unknown[]
+): ByableStep<Extract<Step, { kind: 'project' }>> {
+  const arrayForm = Array.isArray(first);
+  const keys = arrayForm ? (first as readonly string[]) : [first as string, ...(rest as string[])];
+  const bys = arrayForm
+    ? (rest[0] as readonly (string | StepFn | undefined)[] | undefined)
+    : undefined;
   const initial = bys?.map((b) => toBy(b));
 
   return makeByable<Extract<Step, { kind: 'project' }>>(
     (later) => ({ kind: 'project', keys, bys: later }),
     initial,
   );
-};
+}
