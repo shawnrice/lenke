@@ -55,6 +55,27 @@ export const createValidator = (
   varName: string,
   predicate: string,
 ): void => {
+  // A native `RustGraph` compiles + enforces the predicate in-engine (no JS
+  // closure), exposing `createValidator` as a *method*. Dispatch to it so this
+  // free-function form works on either engine instead of throwing a raw
+  // `TypeError` ("registerValidator is not a function") on a native graph.
+  const nat = graph as unknown as {
+    registerValidator?: unknown;
+    createValidator?: (l: string, v: string, p: string) => void;
+  };
+
+  if (typeof nat.registerValidator !== 'function') {
+    if (typeof nat.createValidator === 'function') {
+      nat.createValidator(label, varName, predicate);
+
+      return;
+    }
+
+    throw new LenkeError('createValidator: expected a @lenke/core Graph or a native RustGraph', {
+      code: ErrorCode.InvalidGraphOp,
+    });
+  }
+
   const expr = parsePredicate(predicate);
 
   // Reject a predicate that references any variable *other* than the declared
@@ -104,6 +125,25 @@ export const createValidator = (
  * evaluator — the byte-identical dual-engine invariant.
  */
 export const createInvariant = (graph: Graph, name: string, querySrc: string): void => {
+  // Native `RustGraph` exposes `createInvariant` as a *method* (enforced
+  // in-engine); dispatch to it so this free-function form works on either engine.
+  const nat = graph as unknown as {
+    registerInvariant?: unknown;
+    createInvariant?: (n: string, q: string) => void;
+  };
+
+  if (typeof nat.registerInvariant !== 'function') {
+    if (typeof nat.createInvariant === 'function') {
+      nat.createInvariant(name, querySrc);
+
+      return;
+    }
+
+    throw new LenkeError('createInvariant: expected a @lenke/core Graph or a native RustGraph', {
+      code: ErrorCode.InvalidGraphOp,
+    });
+  }
+
   const parsed = parse(querySrc);
 
   // An invariant must be a whole-graph `MATCH … RETURN` assertion, never a
