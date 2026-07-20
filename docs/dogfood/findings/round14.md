@@ -62,17 +62,18 @@ divergences — the clear ones fixed, the delicate ordering ones documented belo
   **Future rounds:** compare unordered results (rows, `fold`/`path` lists, map keys) as
   sets/multisets — an ordered-comparison hit here is expected. Content stays byte-identical.
 
-## Deferred — DX (optional)
+## DX — resolved / decided
 
-- **TS `group`/`groupCount` return a `Map` with no `toJSON`** (DX). `JSON.stringify` →
-  `{}` (native returns a populated object). A real serialization footgun; **fix:** a `Map`
-  subclass with `toJSON()` → object, at the `aggregation.ts` construction sites.
-- **`createValidator`/`createInvariant` free-fn vs method asymmetry** (DX). `@lenke/gql`'s
-  free functions work on a TS `Graph` but throw a raw `TypeError` on a native `RustGraph`
-  (which exposes them as methods). Unify the surface or throw a coded error.
-- **Doc notes:** zoned/local-time types are **constructor-only** (no literal prefix);
-  reserved-word labels (`Product`/`Order`/`Group`/`ON`) need backtick-delimiting; the
-  Duration-overflow → null policy.
+- **`createValidator`/`createInvariant` free-fn vs method asymmetry** → **FIXED**
+  (`15db398`). The `@lenke/gql` free functions now duck-type-dispatch to a native
+  `RustGraph`'s methods (byte-identical enforcement); a non-graph object gets a coded
+  `E_INVALID_GRAPH_OP` instead of a raw `TypeError`.
+- **TS `group`/`groupCount` `Map` has no `toJSON`** → **WON'T FIX (user).** A `Map` is the
+  right JS return type; byte-identity is the test harness's concern, not something users
+  diff — people pick one engine and stay. Compare Map results structurally in tests.
+- **Doc notes** → done: added the "zoned/time types have no literal form" clause to the GQL
+  README (`bc75f3b`); reserved-word labels were already documented there. The
+  Duration-overflow policy is now `E_DATA_EXCEPTION` (see above).
 
 ## Confirmed solid (byte-identical, zero findings)
 
