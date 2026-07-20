@@ -188,6 +188,7 @@ const FAULT_MERGE_KEY: u8 = 7;
 const FAULT_MERGE_EDGE: u8 = 8;
 const FAULT_REQUIRED: u8 = 9;
 const FAULT_TYPE_CONSTRAINT: u8 = 10;
+const FAULT_DURATION_OVERFLOW: u8 = 11;
 
 /// Per-expansion cap on trail-traversal steps; a guard against exponential blowup.
 const TRAIL_BUDGET: u64 = 1_000_000;
@@ -240,6 +241,10 @@ impl Ctx<'_> {
     fn check_fault(&self) -> CodeResult<()> {
         match self.fault.load(AtomOrdering::Relaxed) {
             FAULT_DIV_ZERO => Err(CodeError::new(ErrorCode::DataException, "division by zero")),
+            FAULT_DURATION_OVERFLOW => Err(CodeError::new(
+                ErrorCode::DataException,
+                "duration overflow: a component exceeds the representable (float64-safe-integer) range",
+            )),
             FAULT_TYPE => Err(CodeError::new(
                 ErrorCode::DataException,
                 "arithmetic requires a number",
@@ -1153,7 +1158,7 @@ fn truth_to_val(t: Truth) -> Val {
 /// faulting to null, and null propagation from a non-numeric operand.
 fn arith_step(env: &Env, op: ArithOp, lv: Val, rv: Val) -> Val {
     if matches!(lv, Val::Temporal(_)) || matches!(rv, Val::Temporal(_)) {
-        return temporal_arith(op, &lv, &rv);
+        return temporal_arith(env.ctx, op, &lv, &rv);
     }
     match (arith_num(&lv, env.ctx), arith_num(&rv, env.ctx)) {
         (Some(a), Some(b)) => {
@@ -1444,7 +1449,7 @@ fn run(env: &Env, prog: &Program) -> Val {
                     let bv = st.pop().unwrap();
                     let av = st.pop().unwrap();
                     let out = if matches!(av, Val::Temporal(_)) || matches!(bv, Val::Temporal(_)) {
-                        temporal_arith(*op, &av, &bv)
+                        temporal_arith(env.ctx, *op, &av, &bv)
                     } else {
                         match (arith_num(&av, env.ctx), arith_num(&bv, env.ctx)) {
                             (Some(a), Some(b)) => {
@@ -2254,19 +2259,30 @@ fn duration_between(a: &crate::temporal::Temporal, b: &crate::temporal::Temporal
 /// (calendar months clamped, then days, then time); instant − instant is the
 /// exact span; duration ± duration is component-wise; duration × integer scales.
 /// Any undefined combination → null.
-fn temporal_arith(op: super::ast::ArithOp, lv: &Val, rv: &Val) -> Val {
+fn temporal_arith(ctx: &Ctx, op: super::ast::ArithOp, lv: &Val, rv: &Val) -> Val {
     use super::ast::ArithOp;
-    use crate::temporal::Temporal as T;
+    use crate::temporal::{Duration, Temporal as T};
     if is_nullish(lv) || is_nullish(rv) {
         return Val::Null;
     }
+    // A duration whose sum/scale overflows the representable (f64-safe-integer)
+    // range is a **data exception**, not a silent null — the result is a real
+    // duration we can't store, so fail loud (byte-identical to TS), like division
+    // by zero. (Date/datetime *range* overflow keeps its decided → null policy.)
+    let dur = |r: Option<Duration>| match r {
+        Some(d) => Val::Temporal(T::Duration(d)),
+        None => {
+            ctx.set_fault(FAULT_DURATION_OVERFLOW);
+            Val::Null
+        }
+    };
     match (op, lv, rv) {
-        (ArithOp::Add, Val::Temporal(T::Duration(a)), Val::Temporal(T::Duration(b))) => a
-            .add(b)
-            .map_or(Val::Null, |d| Val::Temporal(T::Duration(d))),
-        (ArithOp::Sub, Val::Temporal(T::Duration(a)), Val::Temporal(T::Duration(b))) => a
-            .add(&b.negate())
-            .map_or(Val::Null, |d| Val::Temporal(T::Duration(d))),
+        (ArithOp::Add, Val::Temporal(T::Duration(a)), Val::Temporal(T::Duration(b))) => {
+            dur(a.add(b))
+        }
+        (ArithOp::Sub, Val::Temporal(T::Duration(a)), Val::Temporal(T::Duration(b))) => {
+            dur(a.add(&b.negate()))
+        }
         // instant ± duration (either order for +).
         (ArithOp::Add, Val::Temporal(inst), Val::Temporal(T::Duration(d)))
         | (ArithOp::Add, Val::Temporal(T::Duration(d)), Val::Temporal(inst)) => {
@@ -2283,8 +2299,7 @@ fn temporal_arith(op: super::ast::ArithOp, lv: &Val, rv: &Val) -> Val {
         (ArithOp::Mul, Val::Temporal(T::Duration(d)), Val::Num(n))
         | (ArithOp::Mul, Val::Num(n), Val::Temporal(T::Duration(d))) => {
             if n.fract() == 0.0 && n.is_finite() {
-                d.scale(*n as i64)
-                    .map_or(Val::Null, |r| Val::Temporal(T::Duration(r)))
+                dur(d.scale(*n as i64))
             } else {
                 Val::Null
             }

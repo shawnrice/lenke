@@ -953,9 +953,19 @@ const negateDuration = (d: Duration): Duration => {
 const durationRepresentable = (d: Duration): boolean =>
   Number.isSafeInteger(d.months) && Number.isSafeInteger(d.days) && Number.isSafeInteger(d.secs);
 
-/** Component-wise sum of two nominal durations (nanos carry into secs); `null` when
- *  a component leaves the safe-integer range (→ null, byte-identical to native). */
-const addDurations = (a: Duration, b: Duration): Duration | null => {
+/** A duration whose sum/scale overflows the safe-integer range is a **data
+ *  exception** (a real duration we can't represent), not a silent null — fail loud,
+ *  byte-identical to the native engine (like division by zero). */
+const durationOverflow = (): never => {
+  throw new LenkeError(
+    'duration overflow: a component exceeds the representable (float64-safe-integer) range',
+    { code: ErrorCode.DataException },
+  );
+};
+
+/** Component-wise sum of two nominal durations (nanos carry into secs). Throws
+ *  `DataException` when a component leaves the safe-integer range. */
+const addDurations = (a: Duration, b: Duration): Duration => {
   let secs = a.secs + b.secs;
   let nanos = a.nanos + b.nanos;
 
@@ -966,19 +976,19 @@ const addDurations = (a: Duration, b: Duration): Duration | null => {
 
   const sum = new Duration(a.months + b.months, a.days + b.days, secs, nanos);
 
-  return durationRepresentable(sum) ? sum : null;
+  return durationRepresentable(sum) ? sum : durationOverflow();
 };
 
-/** Scale every component by an integer factor (nanos carry into secs); `null` when
- *  a component leaves the safe-integer range. */
-const scaleDuration = (d: Duration, n: number): Duration | null => {
+/** Scale every component by an integer factor (nanos carry into secs). Throws
+ *  `DataException` when a component leaves the safe-integer range. */
+const scaleDuration = (d: Duration, n: number): Duration => {
   const totalNanos = d.nanos * n;
   const carry = Math.floor(totalNanos / 1_000_000_000);
   const nanos = ((totalNanos % 1_000_000_000) + 1_000_000_000) % 1_000_000_000;
 
   const scaled = new Duration(d.months * n, d.days * n, d.secs * n + carry, nanos);
 
-  return durationRepresentable(scaled) ? scaled : null;
+  return durationRepresentable(scaled) ? scaled : durationOverflow();
 };
 
 /** `t + duration` for a date/datetime (months clamped, then days, then time). */
