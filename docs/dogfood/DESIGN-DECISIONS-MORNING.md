@@ -100,7 +100,7 @@ Four personas (Gremlin social network, temporal/bitemporal, ledger tx+constraint
 differential fuzzer incl. the new native-vs-TS Gremlin differential). Round 13's Gremlin
 element-form rewrite held byte-identical across ~27,600 Gremlin pairs. Obvious bugs
 **fixed + committed**: native Gremlin temporal-tag stripping (`858cd0c`), `Date`/object
-param validation (`ca23e7c`), non-representable Duration → null (`bb3b3dc`), `project()`
+param validation (`ca23e7c`), non-representable Duration → loud `E_DATA_EXCEPTION` (`bb3b3dc` + follow-up), `project()`
 varargs (`e275945`); see `findings/round14.md`. **Deferred — delicate ordering / DX:**
 
 - **Result/adjacency/map-key order** → **DECIDED (user, 2026-07-20): WON'T FIX — order

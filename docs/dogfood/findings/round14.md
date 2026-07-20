@@ -35,9 +35,13 @@ divergences — the clear ones fixed, the delicate ordering ones documented belo
   faulted with a different code. Added `assertParamModel` before the FFI, mirroring the
   TS `validateParam` + native `gql/params.rs` contract — all 9 param shapes now
   byte-identical.
-- **HIGH¹ · non-representable Duration** → `bb3b3dc`. A component ≥ 2^53 diverged (native
-  i64 wrapped — sign-flip — vs TS f64 rounded). Both now treat it as non-representable →
-  null (arithmetic) / rejected (parse); the ≥ 2^53 bound matches `Number.isSafeInteger`.
+- **HIGH¹ · non-representable Duration** → `bb3b3dc` + follow-up. A component ≥ 2^53
+  diverged (native i64 wrapped — sign-flip — vs TS f64 rounded). Both engines now treat it
+  as non-representable identically (the ≥ 2^53 bound matches `Number.isSafeInteger`):
+  arithmetic (`dur±dur`/`dur×n`) raises a loud **`E_DATA_EXCEPTION`** (a swallowed null was
+  itself wrong — it looks like data; made loud like division by zero, per user), and a
+  duration _literal_ past 2^53 rejects at parse (`E_SYNTAX`). Date/datetime _range_
+  overflow keeps its decided → null policy (D4).
 - **DX · `project()` varargs** → `e275945`. The TS builder took a keys _array_; the
   TinkerPop/native-string call `project('a','b')` crashed. Added a varargs overload.
 
