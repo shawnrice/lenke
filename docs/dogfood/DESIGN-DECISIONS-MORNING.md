@@ -103,18 +103,20 @@ element-form rewrite held byte-identical across ~27,600 Gremlin pairs. Obvious b
 param validation (`ca23e7c`), non-representable Duration → null (`bb3b3dc`), `project()`
 varargs (`e275945`); see `findings/round14.md`. **Deferred — delicate ordering / DX:**
 
-- **Adjacency enumeration order** (MED). `out()`/`in()`/`both()` — native/TinkerPop use
-  edge-insertion order; **TS label-buckets** (all `A` edges, then `B`). Set-based for bare
-  rows, breaks byte-identity when order is captured (`fold`/`path`/`valueMap`-list/
-  `group().by(…fold())`). TS is the outlier. **Fix (delicate):** TS's adjacency is
-  `Map<vertexId, Map<label, Set<Edge>>>` with no global edge order — needs an
-  edge-sequence key + bucket merge, or an adjacency restructure. Perf-sensitive TS-core
-  change, so it wants a dedicated pass, not an end-of-session edit.
-- **Gremlin map key order** (MED). Native alpha-sorts map keys (`valueMap`/`project`/
-  `group`); TS preserves declared/insertion. Two answers: `project(k1,k2)` must preserve
-  **declared** order (native should stop sorting), but `valueMap()` keys come from
-  properties where **native's columnar store has no per-element order** (it can only sort)
-  — so there TS must sort too. Per-map-type decision needed.
+- **Result/adjacency/map-key order** → **DECIDED (user, 2026-07-20): WON'T FIX — order
+  is unspecified.** Covers adjacency enumeration (`out()`/`in()`/`both()` — native
+  insertion vs TS label-bucketed) AND Gremlin map-key order (`project`/`valueMap`/`group`
+  — native sorts vs TS preserves). Rationale: like SQL `SELECT` without `ORDER BY` (and
+  like TinkerPop, which leaves adjacency provider-dependent — TinkerGraph's order is a JVM
+  `HashMap`/`HashSet` artifact, not a spec guarantee), **lenke does not guarantee order
+  for unordered results**, and paying a permanent **sort perf tax** to fake byte-identical
+  order isn't worth it — a consumer adds explicit ordering if it needs one. Object key
+  order is semantically insignificant anyway (`JSON.parse` is order-free), so the
+  `project` "divergence" is a raw-`JSON.stringify` artifact — the harness's `stable()`
+  already sorts keys and shows agreement. **Implication for future rounds:** compare
+  unordered results (rows, `fold`/`path` lists, map keys) as **sets/multisets**, not byte
+  strings — an ordered-comparison "divergence" here is expected, not a bug. The _content_
+  (rows, values, keys) remains byte-identical; only positional order is free.
 - **TS `group`/`groupCount` `Map` has no `toJSON`** (DX). `JSON.stringify` → `{}` vs
   native's populated object. Fix: a `Map` subclass with `toJSON()` at the `aggregation.ts`
   sites.

@@ -43,21 +43,23 @@ divergences — the clear ones fixed, the delicate ordering ones documented belo
 
 ¹ astronomical magnitudes only.
 
-## Deferred — delicate ordering / DX (precise fix directions)
+## Decided WON'T FIX — order is unspecified (user, 2026-07-20)
 
-- **Adjacency enumeration order** (MED). `out()`/`in()`/`both()` — native/TinkerPop use
-  edge-insertion order, **TS label-buckets** (all `A` edges, then all `B`). Set-based for
-  bare rows, but breaks byte-identity when order is captured (`fold`/`path`/`valueMap`
-  list/`group().by(…fold())`). TS is the outlier. **Fix:** make TS's neighbour iteration
-  insertion-ordered — but TS's adjacency is `Map<vertexId, Map<label, Set<Edge>>>` with no
-  surfaced global edge order, so it's a **TS-core structural change** (add an edge-sequence
-  key and merge the buckets by it, or restructure adjacency). Delicate + perf-sensitive.
-- **Gremlin map key order** (MED). Native alpha-sorts map keys (`valueMap`/`project`/
-  `group`); TS preserves declared/insertion order. Two sub-cases with different answers:
-  `project('z','m','a')` must preserve **declared** order (TinkerPop — native should stop
-  sorting), but `valueMap()` key order comes from properties, where **native's columnar
-  store has no per-element key order** (it canonicalizes to sorted) so it _can't_ preserve
-  insertion — there the resolution is TS also sorting. Needs a deliberate per-map-type call.
+- **Adjacency enumeration order + Gremlin map-key order** (were MED). Adjacency
+  (`out()`/`in()`/`both()`: native insertion vs TS label-bucketed) and map-key order
+  (`project`/`valueMap`/`group`: native sorts vs TS preserves) are **not bugs** — order
+  for an unordered result is unspecified, exactly like SQL `SELECT` without `ORDER BY`,
+  and like TinkerPop itself (adjacency is provider-dependent; TinkerGraph's order is a JVM
+  `HashMap`/`HashSet` artifact, not a spec guarantee — so `project`'s `LinkedHashMap`
+  declared-order is moot once serialized to JSON). lenke won't pay a permanent **sort perf
+  tax** to fake byte-identical order; a consumer adds explicit ordering if it needs one.
+  Object key order is semantically free anyway (the harness `stable()` already sorts keys
+  and shows agreement — the `project` "divergence" was a raw-`JSON.stringify` artifact).
+  **Future rounds:** compare unordered results (rows, `fold`/`path` lists, map keys) as
+  sets/multisets — an ordered-comparison hit here is expected. Content stays byte-identical.
+
+## Deferred — DX (optional)
+
 - **TS `group`/`groupCount` return a `Map` with no `toJSON`** (DX). `JSON.stringify` →
   `{}` (native returns a populated object). A real serialization footgun; **fix:** a `Map`
   subclass with `toJSON()` → object, at the `aggregation.ts` construction sites.
