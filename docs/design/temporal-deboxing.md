@@ -145,16 +145,33 @@ Updated op scoreboard (avg across types, baseline → final):
 | project        | 4.63 ms  | ~2.1 ms | ~2.2×   |
 | order by       | 37.28 ms | ~26 ms  | ~1.4×   |
 
-### Remaining opportunity — ORDER BY
+### Phase (c) — ORDER BY typed sort (single-key fast path, shipped)
 
-`order by` is still comparison-bound on `Val` ordering: `keycols` is `Vec<Vec<Val>>`
-and the sort comparator dispatches `cmp_total` through `Val` per compare. A typed key
-column (compare `Temporal` directly, skipping the `Val` wrapper) has ~3× headroom
-(temporal ~26 ms vs a numeric ~8 ms 200k sort). Deferred: it means typing the **shared
-multi-key sort comparator**, a hot path used by every value type where a regression
-breaks byte-identity broadly — a different risk class than the two isolated
-interceptions above. Worth a single-temporal-key fast path if ORDER BY on temporals
-becomes hot.
+A **single** temporal ORDER BY key now sorts `Vec<Option<Temporal>>` via
+`Temporal::cmp_total` directly (`temporal_sort_key` + `temporal_compare_sort`),
+skipping the `Val` wrapper + dispatch. Multi-key / non-temporal / mixed keys fall
+through to the **unchanged** generic `Vec<Val>` sort — so the shared comparator is
+untouched and only the narrow new branch carries risk (guarded by
+`fuzz_temporal_order_by_vec_eq_scalar`, which runs every temporal ORDER BY through
+both engines). **order by: ~26 → ~20 ms (~1.3×; ~1.9× vs baseline).**
+
+This closed the *dispatch* overhead, not the *cache-density* gap — `Option<Temporal>`
+is still 40 B/key vs a numeric sort's dense 8 B `f64`. The remaining headroom (a 200k
+temporal sort ~20 ms vs a numeric ~8 ms) needs a **dense packed sort key**: reduce each
+kind to a monotonic integer (`Date` → `i64` days = 8 B; `Time`/`ZonedTime` → bit-packed
+`i64`; `DateTime`/`ZonedDateTime` → `i128` = 16 B; `Duration`'s 4-component lexicographic
+order doesn't reduce, stays on the typed comparator). That would bring `Date` toward the
+~8 ms numeric floor (~2.5× more). Deferred as a separate, per-kind bit-packing step —
+the correctness net is already in place for it.
+
+### Final op scoreboard (avg across types, baseline → final)
+
+| op             | baseline | final    | speedup |
+| -------------- | -------- | -------- | ------- |
+| filter>p count | 13.57 ms | ~1.7 ms  | ~7×     |
+| min/max        | 22.10 ms | ~1.3 ms  | ~16×    |
+| project        | 4.63 ms  | ~2.1 ms  | ~2.2×   |
+| order by       | 37.28 ms | ~20 ms   | ~1.9×   |
 
 ## Prerequisite shipped
 

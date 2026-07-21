@@ -4182,6 +4182,69 @@ fn gather_temporal(col: Option<&Column>, ids: &[u32]) -> Option<VVec> {
     }
 }
 
+/// If `e` is a `Prop` over a typed `Column::Temporal` in `sc`, gather it as a
+/// column of `Option<Temporal>` (absent → `None`) for a typed ORDER BY — the sort
+/// then compares Copy temporals via `cmp_total`, skipping the `Val` wrapper +
+/// dispatch of the generic `Vec<Val>` keycol. `None` (→ generic sort) otherwise.
+fn temporal_sort_key(
+    graph: &Graph,
+    ctx: &Ctx,
+    sc: &ScanCols,
+    e: &CExpr,
+) -> Option<Vec<Option<crate::temporal::Temporal>>> {
+    let CExpr::Prop { var_slot, key_ref } = e else {
+        return None;
+    };
+    let (elem, ids) = sc.slot(*var_slot)?;
+    let (store, kid) = match elem {
+        Elem::Node => (&graph.props, ctx.prop_keys[*key_ref].0),
+        Elem::Edge => (&graph.edge_props, ctx.prop_keys[*key_ref].1),
+    };
+    let Some(Column::Temporal { data, present }) = kid.and_then(|k| store.cols.get(k as usize))
+    else {
+        return None;
+    };
+    Some(
+        ids.iter()
+            .map(|&vi| {
+                let i = vi as usize;
+                present.get(i).then(|| data.get(i))
+            })
+            .collect(),
+    )
+}
+
+/// `compare_sort` for a typed temporal key — byte-identical to the generic
+/// [`compare_sort`] (both-null → Equal; one-null → absolute placement, default
+/// last, independent of ASC/DESC; both-present → `cmp_total`, reversed if
+/// descending) but on `Option<Temporal>` instead of `&Val`.
+fn temporal_compare_sort(
+    a: &Option<crate::temporal::Temporal>,
+    b: &Option<crate::temporal::Temporal>,
+    descending: bool,
+    nulls_first: Option<bool>,
+) -> Ordering {
+    match (a, b) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) | (Some(_), None) => {
+            let first = nulls_first.unwrap_or(false);
+            if a.is_none() == first {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            }
+        }
+        (Some(x), Some(y)) => {
+            let base = x.cmp_total(y);
+            if descending {
+                base.reverse()
+            } else {
+                base
+            }
+        }
+    }
+}
+
 /// Scalar fallback: evaluate `e` once per row into a `Vec<Val>` (the slow path
 /// for any subexpression outside the numeric vector subset). Reuses one binding,
 /// setting every scanned slot to its per-row element.
@@ -6197,16 +6260,36 @@ fn project_frame_cols(
                 sort_sc.vals[proj.out_len + j] = Some(vals.clone());
             }
         }
-        let keycols: Vec<Vec<Val>> = proj
-            .order_by
-            .iter()
-            .map(|s| eval_vec(graph, ctx, &sort_sc, &s.expr).into_vals())
-            .collect();
+        // Fast path: a single temporal ORDER BY key sorts packed Copy temporals via
+        // `cmp_total`, skipping the `Val` keycol + dispatch. Falls through to the
+        // generic `Vec<Val>` sort for multi-key / non-temporal / mixed keys (that
+        // path is left exactly as-is).
+        let temporal_key: Option<(Vec<Option<crate::temporal::Temporal>>, bool, Option<bool>)> =
+            (proj.order_by.len() == 1)
+                .then(|| {
+                    let s = &proj.order_by[0];
+                    temporal_sort_key(graph, ctx, &sort_sc, &s.expr)
+                        .map(|k| (k, s.descending, s.nulls_first))
+                })
+                .flatten();
+        // Only the generic path needs the `Vec<Val>` keycols.
+        let keycols: Vec<Vec<Val>> = if temporal_key.is_some() {
+            Vec::new()
+        } else {
+            proj.order_by
+                .iter()
+                .map(|s| eval_vec(graph, ctx, &sort_sc, &s.expr).into_vals())
+                .collect()
+        };
         // Total-order comparator: the ORDER BY keys, then the original row index as
         // a final tiebreak. The index tiebreak makes ties resolve to scan order —
         // identical to the previous *stable* full sort — while allowing an unstable
         // partial sort below (which needs a strict weak order to be deterministic).
         let cmp = |&i: &usize, &j: &usize| -> Ordering {
+            if let Some((key, descending, nulls_first)) = &temporal_key {
+                let o = temporal_compare_sort(&key[i], &key[j], *descending, *nulls_first);
+                return if o != Ordering::Equal { o } else { i.cmp(&j) };
+            }
             for (k, s) in proj.order_by.iter().enumerate() {
                 let o = compare_sort(&keycols[k][i], &keycols[k][j], s.descending, s.nulls_first);
                 if o != Ordering::Equal {
