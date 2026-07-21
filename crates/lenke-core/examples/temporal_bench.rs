@@ -206,6 +206,11 @@ fn main() {
             "MATCH (n:Person) RETURN n.{K} ORDER BY n.{K}",
             30,
         ),
+        (
+            "top-k 20",
+            "MATCH (n:Person) RETURN n.{K} ORDER BY n.{K} LIMIT 20",
+            100,
+        ),
         ("project K", "MATCH (n:Person) RETURN n.{K}", 50),
         (
             "min/max K",

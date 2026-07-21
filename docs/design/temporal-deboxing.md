@@ -155,23 +155,43 @@ untouched and only the narrow new branch carries risk (guarded by
 `fuzz_temporal_order_by_vec_eq_scalar`, which runs every temporal ORDER BY through
 both engines). **order by: ~26 → ~20 ms (~1.3×; ~1.9× vs baseline).**
 
-This closed the *dispatch* overhead, not the *cache-density* gap — `Option<Temporal>`
-is still 40 B/key vs a numeric sort's dense 8 B `f64`. The remaining headroom (a 200k
-temporal sort ~20 ms vs a numeric ~8 ms) needs a **dense packed sort key**: reduce each
-kind to a monotonic integer (`Date` → `i64` days = 8 B; `Time`/`ZonedTime` → bit-packed
-`i64`; `DateTime`/`ZonedDateTime` → `i128` = 16 B; `Duration`'s 4-component lexicographic
-order doesn't reduce, stays on the typed comparator). That would bring `Date` toward the
-~8 ms numeric floor (~2.5× more). Deferred as a separate, per-kind bit-packing step —
-the correctness net is already in place for it.
+### Phase (c) — ORDER BY dense sort key (all instant kinds)
+
+The typed comparator closed _dispatch_ but not _cache density_ (`Option<Temporal>` is
+40 B/key). A **dense packed key** — one monotonic `i128` per row
+([`TemporalCol::monotonic_key`], each instant kind packs its components highest-field
+first; the signed zoned `offset` biased to unsigned) — sorts a flat integer array like
+a numeric column. `Duration`'s 4-component lexicographic order doesn't reduce to one
+integer, so it stays on the typed comparator.
+
+The win is **workload-dependent**, which is why it's kept: measured on a full-sort
+alone it's marginal (~5%, because materializing 200k `Val::Temporal` **outputs**
+co-dominates — inherent, the result _is_ temporal values), but on **top-k**
+(`ORDER BY ts LIMIT n` — output is tiny, comparisons are the whole cost) it's a real
+win. A database serves both, so both matter.
+
+| workload         | typed comparator | dense `i128` key |
+| ---------------- | ---------------- | ---------------- |
+| full-sort (200k) | ~20 ms           | ~19 ms (~5%)     |
+| top-k 20         | ~2.4 ms          | ~1.9 ms (~1.25×) |
+
+Design note: `i128` is uniform across the instant kinds (`DateTime`/`Zoned*` _need_ it —
+`secs` is a full `i64`). A `Date`/`Time`-only `i64` key measured faster on top-k (~1.36
+vs ~1.82 ms, since `i128` compares two words) but only covers two kinds and needs a
+second packing width + cascade level — not worth the split; uniform `i128` wins on
+simplicity. The packing's monotonicity is an invariant the compiler can't enforce (it
+depends on each struct's field ranges + derived `Ord`); `fuzz_temporal_order_by_vec_eq_scalar`
+is what guards it — it caught nothing here, including the zoned offset bias.
 
 ### Final op scoreboard (avg across types, baseline → final)
 
-| op             | baseline | final    | speedup |
-| -------------- | -------- | -------- | ------- |
-| filter>p count | 13.57 ms | ~1.7 ms  | ~7×     |
-| min/max        | 22.10 ms | ~1.3 ms  | ~16×    |
-| project        | 4.63 ms  | ~2.1 ms  | ~2.2×   |
-| order by       | 37.28 ms | ~20 ms   | ~1.9×   |
+| op              | baseline | final   | speedup |
+| --------------- | -------- | ------- | ------- |
+| filter>p count  | 13.57 ms | ~1.7 ms | ~7×     |
+| min/max         | 22.10 ms | ~1.3 ms | ~16×    |
+| project         | 4.63 ms  | ~2.1 ms | ~2.2×   |
+| order by (full) | 37.28 ms | ~19 ms  | ~2×     |
+| order by top-k  | —        | ~1.9 ms | (dense) |
 
 ## Prerequisite shipped
 

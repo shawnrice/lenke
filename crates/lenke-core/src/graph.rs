@@ -251,6 +251,49 @@ impl TemporalCol {
         }
     }
 
+    /// A single `i128` sort key at row `i` that is **monotonic with `cmp_total`
+    /// within this (homogeneous) column** — a dense ORDER BY key that sorts like a
+    /// numeric column, no `Val`/`cmp_total` dispatch. Each instant kind packs its
+    /// components (highest-significance field first; the signed zoned `offset` is
+    /// biased to unsigned so the packed order matches the derived `Ord`). Field
+    /// ranges (`secs < 2^17` for a wall-clock, `nanos < 2^30`, `offset` an `i16`)
+    /// keep the packs non-overlapping and inside `i128`. `Duration`'s 4-component
+    /// lexicographic order does NOT reduce to one integer → `None` (that column
+    /// falls back to the `cmp_total` comparator).
+    ///
+    /// SAFETY-OF-CORRECTNESS: this packing must stay monotonic with each struct's
+    /// derived `Ord`; a change to a field's range or `Ord` order would silently
+    /// break it. The `fuzz_temporal_order_by_vec_eq_scalar` differential (every
+    /// kind, both engines) is what guards that invariant — the compiler can't.
+    pub(crate) fn monotonic_key(&self, i: usize) -> Option<i128> {
+        // `offset` (whole minutes, i16) biased to a non-negative 0..=65535.
+        const OFF_BIAS: i128 = 32_768;
+        Some(match self {
+            Self::Date(d) => d[i] as i128,
+            Self::Time { secs, nanos } => ((secs[i] as i128) << 32) | (nanos[i] as i128),
+            Self::DateTime { secs, nanos } => ((secs[i] as i128) << 32) | (nanos[i] as i128),
+            Self::ZonedTime {
+                secs,
+                nanos,
+                offset,
+            } => {
+                ((secs[i] as i128) << 48)
+                    | ((nanos[i] as i128) << 16)
+                    | ((offset[i] as i128) + OFF_BIAS)
+            }
+            Self::ZonedDateTime {
+                secs,
+                nanos,
+                offset,
+            } => {
+                ((secs[i] as i128) << 48)
+                    | ((nanos[i] as i128) << 16)
+                    | ((offset[i] as i128) + OFF_BIAS)
+            }
+            Self::Duration { .. } => return None,
+        })
+    }
+
     /// Bytes per stored slot across all component arrays (the packed width — 4 for
     /// `Date`, 28 for `Duration`, etc.). Diagnostic, for memory measurement.
     fn slot_bytes(&self) -> usize {

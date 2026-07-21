@@ -4214,6 +4214,84 @@ fn temporal_sort_key(
     )
 }
 
+/// A single-key **dense** ORDER BY sort column: packed `i128` keys + a presence
+/// flag per row, plus the key's `descending` and `nulls_first` spec.
+type DenseSortCol = (Vec<i128>, Vec<bool>, bool, Option<bool>);
+/// A single-key **typed** ORDER BY sort column (Duration): `Option<Temporal>` per
+/// row (absent → `None`), plus `descending` and `nulls_first`.
+type TypedSortCol = (Vec<Option<crate::temporal::Temporal>>, bool, Option<bool>);
+
+/// If `e` is a `Prop` over an **instant** `Column::Temporal` in `sc` (every kind
+/// except `Duration`), gather a **dense** sort key: one `i128` per row (packed by
+/// [`TemporalCol::monotonic_key`]) + a presence flag. The key is monotonic with
+/// `cmp_total` within the column, so it sorts cache-friendly like a numeric column
+/// — no `Val`, no `cmp_total` dispatch — which is what makes `ORDER BY ts LIMIT n`
+/// (top-k) fast. `None` for `Duration` (uses the `cmp_total` comparator) or a
+/// non-temporal / mixed column (generic sort).
+fn dense_sort_key(
+    graph: &Graph,
+    ctx: &Ctx,
+    sc: &ScanCols,
+    e: &CExpr,
+) -> Option<(Vec<i128>, Vec<bool>)> {
+    let CExpr::Prop { var_slot, key_ref } = e else {
+        return None;
+    };
+    let (elem, ids) = sc.slot(*var_slot)?;
+    let (store, kid) = match elem {
+        Elem::Node => (&graph.props, ctx.prop_keys[*key_ref].0),
+        Elem::Edge => (&graph.edge_props, ctx.prop_keys[*key_ref].1),
+    };
+    let Some(Column::Temporal { data, present }) = kid.and_then(|k| store.cols.get(k as usize))
+    else {
+        return None;
+    };
+    // Probe the first present row: a `Duration` column has no `i128` key → bail.
+    data.monotonic_key(*ids.first()? as usize)?;
+    let mut key = Vec::with_capacity(ids.len());
+    let mut valid = Vec::with_capacity(ids.len());
+    for &vi in ids {
+        let i = vi as usize;
+        key.push(data.monotonic_key(i).unwrap_or(0));
+        valid.push(present.get(i));
+    }
+    Some((key, valid))
+}
+
+/// `compare_sort` for the dense `i128` key: byte-identical to [`compare_sort`]
+/// (same null placement + direction) but on `(i128 key, present)` — a plain integer
+/// compare, no `Val`, no `cmp_total` dispatch.
+#[inline]
+fn dense_compare_sort(
+    a: i128,
+    a_present: bool,
+    b: i128,
+    b_present: bool,
+    descending: bool,
+    nulls_first: Option<bool>,
+) -> Ordering {
+    match (a_present, b_present) {
+        (false, false) => Ordering::Equal,
+        (false, true) | (true, false) => {
+            let first = nulls_first.unwrap_or(false);
+            // `a` is the null iff `!a_present`; place it first when NULLS FIRST.
+            if a_present != first {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            }
+        }
+        (true, true) => {
+            let base = a.cmp(&b);
+            if descending {
+                base.reverse()
+            } else {
+                base
+            }
+        }
+    }
+}
+
 /// `compare_sort` for a typed temporal key — byte-identical to the generic
 /// [`compare_sort`] (both-null → Equal; one-null → absolute placement, default
 /// last, independent of ASC/DESC; both-present → `cmp_total`, reversed if
@@ -6264,16 +6342,24 @@ fn project_frame_cols(
         // `cmp_total`, skipping the `Val` keycol + dispatch. Falls through to the
         // generic `Vec<Val>` sort for multi-key / non-temporal / mixed keys (that
         // path is left exactly as-is).
-        let temporal_key: Option<(Vec<Option<crate::temporal::Temporal>>, bool, Option<bool>)> =
-            (proj.order_by.len() == 1)
-                .then(|| {
-                    let s = &proj.order_by[0];
+        let single = (proj.order_by.len() == 1).then(|| &proj.order_by[0]);
+        // Densest: a single instant key sorts a flat i128 array (cache-friendly,
+        // like a numeric sort) — the top-k fast path.
+        let dense_key: Option<DenseSortCol> = single.and_then(|s| {
+            dense_sort_key(graph, ctx, &sort_sc, &s.expr)
+                .map(|(k, v)| (k, v, s.descending, s.nulls_first))
+        });
+        // Duration (no dense key): compare Copy temporals via `cmp_total`.
+        let temporal_key: Option<TypedSortCol> = (dense_key.is_none())
+            .then(|| {
+                single.and_then(|s| {
                     temporal_sort_key(graph, ctx, &sort_sc, &s.expr)
                         .map(|k| (k, s.descending, s.nulls_first))
                 })
-                .flatten();
+            })
+            .flatten();
         // Only the generic path needs the `Vec<Val>` keycols.
-        let keycols: Vec<Vec<Val>> = if temporal_key.is_some() {
+        let keycols: Vec<Vec<Val>> = if dense_key.is_some() || temporal_key.is_some() {
             Vec::new()
         } else {
             proj.order_by
@@ -6286,6 +6372,17 @@ fn project_frame_cols(
         // identical to the previous *stable* full sort — while allowing an unstable
         // partial sort below (which needs a strict weak order to be deterministic).
         let cmp = |&i: &usize, &j: &usize| -> Ordering {
+            if let Some((key, valid, descending, nulls_first)) = &dense_key {
+                let o = dense_compare_sort(
+                    key[i],
+                    valid[i],
+                    key[j],
+                    valid[j],
+                    *descending,
+                    *nulls_first,
+                );
+                return if o != Ordering::Equal { o } else { i.cmp(&j) };
+            }
             if let Some((key, descending, nulls_first)) = &temporal_key {
                 let o = temporal_compare_sort(&key[i], &key[j], *descending, *nulls_first);
                 return if o != Ordering::Equal { o } else { i.cmp(&j) };
