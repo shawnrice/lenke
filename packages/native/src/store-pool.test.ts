@@ -58,6 +58,7 @@ const fakeStore = () => {
       return rows(['n'], [[counts.query]]);
     },
     queryArrow: () => new Uint8Array(),
+    queryArrowIpc: () => new Uint8Array(),
     gremlinJson: () => {
       counts.gremlin += 1;
 
@@ -67,6 +68,8 @@ const fakeStore = () => {
     encodeNdjson: () => new Uint8Array(),
     serialize: () => new Uint8Array(),
     deserialize: (): GraphHandle => 1,
+    setMaxOperatorChain: () => {},
+    lastWriteScope: () => [],
   };
   const store = createStore(attachGraph(backend, 1));
 

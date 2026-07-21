@@ -182,7 +182,10 @@ suite('@lenke/native/arrow — real Arrow IPC egress', () => {
         const native = g.queryArrowIpc(QUERY, { format });
         const js = toArrowIPC(g.queryArrow(QUERY), format);
 
-        expect(Buffer.compare(Buffer.from(native), Buffer.from(js))).toBe(0);
+        // Copy into plain ArrayBuffer-backed views: `Buffer`/native blobs are typed
+        // `Uint8Array<ArrayBufferLike>`, which `Buffer.compare` (wanting
+        // `Uint8Array<ArrayBuffer>`) rejects under TS's generic-typed-array lib.
+        expect(Buffer.compare(new Uint8Array(native), new Uint8Array(js))).toBe(0);
         expect(
           [...tableFromIPC(native)].map((r) => ({ name: r.name, age: r.age, active: r.active })),
         ).toEqual(EXPECTED);
