@@ -3157,6 +3157,85 @@ fn date_arithmetic_overflow_raises_data_exception() {
 }
 
 #[test]
+fn vectorized_temporal_filter_matches_canonical_compare() {
+    // The typed vectorized temporal comparator (temporal_cmp_vec) must produce the
+    // exact same counts as the canonical compare_vals: relational order on dates,
+    // reversed operands, Eq, cross-kind → UNKNOWN (0 rows), duration unordered
+    // (0 rows), and an absent value → UNKNOWN. Isolated-node scans take the
+    // vectorized path.
+    let lines = [
+        r#"{"type":"node","id":"a","labels":["P"],"properties":{"d":{"@date":"2020-01-01"}}}"#,
+        r#"{"type":"node","id":"b","labels":["P"],"properties":{"d":{"@date":"2020-06-01"}}}"#,
+        r#"{"type":"node","id":"c","labels":["P"],"properties":{"d":{"@date":"2020-12-01"}}}"#,
+        // an absent `d` — the compare is UNKNOWN, so the row is excluded
+        r#"{"type":"node","id":"e","labels":["P"],"properties":{"name":"x"}}"#,
+        r#"{"type":"node","id":"f","labels":["P"],"properties":{"dur":{"@duration":"P30D"}}}"#,
+    ];
+    let mut g = ndjson::decode(&lines.join("\n")).unwrap();
+    let count = |g: &mut Graph, q: &str| -> f64 {
+        match rows(g, q)[0][0] {
+            Value::Num(n) => n,
+            ref v => panic!("expected count, got {v:?}"),
+        }
+    };
+    // relational order; reversed operand order; boundary (>= includes equal).
+    assert_eq!(
+        count(
+            &mut g,
+            "MATCH (n:P) WHERE n.d > DATE '2020-06-01' RETURN count(*) AS c"
+        ),
+        1.0
+    );
+    assert_eq!(
+        count(
+            &mut g,
+            "MATCH (n:P) WHERE n.d >= DATE '2020-06-01' RETURN count(*) AS c"
+        ),
+        2.0
+    );
+    assert_eq!(
+        count(
+            &mut g,
+            "MATCH (n:P) WHERE DATE '2020-06-01' < n.d RETURN count(*) AS c"
+        ),
+        1.0
+    );
+    assert_eq!(
+        count(
+            &mut g,
+            "MATCH (n:P) WHERE n.d = DATE '2020-06-01' RETURN count(*) AS c"
+        ),
+        1.0
+    );
+    // cross-kind date vs datetime → UNKNOWN → 0 rows (not a coerced compare).
+    assert_eq!(
+        count(
+            &mut g,
+            "MATCH (n:P) WHERE n.d > DATETIME '2020-06-01T00:00:00' RETURN count(*) AS c"
+        ),
+        0.0
+    );
+    // durations are relationally unordered → every compare is UNKNOWN → 0 rows.
+    assert_eq!(
+        count(
+            &mut g,
+            "MATCH (n:P) WHERE n.dur > DURATION 'P1D' RETURN count(*) AS c"
+        ),
+        0.0
+    );
+    // typed min/max fold (fused_global_agg → temporal_minmax): canonical total
+    // order, absent values skipped.
+    assert_eq!(
+        rows(&mut g, "MATCH (n:P) RETURN min(n.d) AS m")[0][0],
+        tdate("2020-01-01")
+    );
+    assert_eq!(
+        rows(&mut g, "MATCH (n:P) RETURN max(n.d) AS m")[0][0],
+        tdate("2020-12-01")
+    );
+}
+
+#[test]
 fn non_numeric_arithmetic_raises_data_exception() {
     let mut g = modern();
     for q in ["RETURN 'abc' + 1 AS r", "RETURN true * 2 AS r"] {

@@ -4228,6 +4228,124 @@ fn str_eq_vec(
     Some(VVec::Bool { t, valid })
 }
 
+/// Extract a row-independent temporal scalar from `e` — a temporal literal
+/// (`DATE '…'`) or a `$param` bound to a temporal — else `None`.
+fn scalar_temporal(e: &CExpr, ctx: &Ctx) -> Option<crate::temporal::Temporal> {
+    match e {
+        CExpr::Lit(Lit::Temporal(t)) => Some(*t),
+        CExpr::Param(s) => match ctx.params.get(*s) {
+            Some(Val::Temporal(t)) => Some(*t),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Vectorized `<temporal col> <op> <temporal scalar>` (either operand order):
+/// compare the packed temporal column against a single scalar via the SAME
+/// [`compare_vals`] the scalar path uses — so it's byte-identical, including
+/// `Eq`/`Ne`, three-valued null handling, and duration/cross-kind → UNKNOWN — but
+/// without the per-row `Binding` rebuild + `Env` + expr-tree `eval`. Returns `None`
+/// (fall back to scalar) unless exactly one side is a temporal Prop column and the
+/// other a temporal scalar (literal or `$param`).
+fn temporal_cmp_vec(
+    graph: &Graph,
+    ctx: &Ctx,
+    sc: &ScanCols,
+    op: CompareOp,
+    left: &CExpr,
+    right: &CExpr,
+) -> Option<VVec> {
+    let (prop, scalar, prop_left) = match (left, right) {
+        (p @ CExpr::Prop { .. }, other) => (p, scalar_temporal(other, ctx)?, true),
+        (other, p @ CExpr::Prop { .. }) => (p, scalar_temporal(other, ctx)?, false),
+        _ => return None,
+    };
+    let CExpr::Prop { var_slot, key_ref } = prop else {
+        return None;
+    };
+    let (elem, ids) = sc.slot(*var_slot)?;
+    let (store, kid) = match elem {
+        Elem::Node => (&graph.props, ctx.prop_keys[*key_ref].0),
+        Elem::Edge => (&graph.edge_props, ctx.prop_keys[*key_ref].1),
+    };
+    let Some(Column::Temporal { data, present }) = kid.and_then(|k| store.cols.get(k as usize))
+    else {
+        return None; // not a typed temporal column (Mixed/absent) — scalar handles it
+    };
+    let scalar_val = Val::Temporal(scalar);
+    let mut t = Vec::with_capacity(sc.n);
+    let mut valid = Vec::with_capacity(sc.n);
+    for &row in ids {
+        let i = row as usize;
+        let stored = if present.get(i) {
+            Val::Temporal(data.get(i))
+        } else {
+            Val::Null
+        };
+        let (lv, rv) = if prop_left {
+            (&stored, &scalar_val)
+        } else {
+            (&scalar_val, &stored)
+        };
+        // `compare_vals` yields Bool (Eq/Ne, or an ordered pair) or Null (UNKNOWN:
+        // a null operand, or an unordered/cross-kind `< > <= >=`). Map the latter to
+        // an invalid slot — exactly what `VVec::Gen`+`into_truth` would produce.
+        match compare_vals(op, lv, rv) {
+            Val::Bool(b) => {
+                t.push(b);
+                valid.push(true);
+            }
+            _ => {
+                t.push(false);
+                valid.push(false);
+            }
+        }
+    }
+    Some(VVec::Bool { t, valid })
+}
+
+/// `min`/`max` over a typed temporal column, folded via the canonical total order
+/// (`Temporal::cmp_total`, first-seen on ties — identical to the scalar
+/// `fold_extreme`) on reconstructed Copy temporals: no `Val` build per row, no
+/// scalar accumulator. `None` unless `spec.arg` is a `Prop` over a
+/// `Column::Temporal` and `spec.func` is `Min`/`Max`.
+fn temporal_minmax(graph: &Graph, ctx: &Ctx, sc: &ScanCols, spec: &CAgg) -> Option<Val> {
+    if !matches!(spec.func, AggFn::Min | AggFn::Max) {
+        return None;
+    }
+    let CExpr::Prop { var_slot, key_ref } = spec.arg.as_ref()? else {
+        return None;
+    };
+    let (elem, ids) = sc.slot(*var_slot)?;
+    let (store, kid) = match elem {
+        Elem::Node => (&graph.props, ctx.prop_keys[*key_ref].0),
+        Elem::Edge => (&graph.edge_props, ctx.prop_keys[*key_ref].1),
+    };
+    let Some(Column::Temporal { data, present }) = kid.and_then(|k| store.cols.get(k as usize))
+    else {
+        return None;
+    };
+    let want = if spec.func == AggFn::Min {
+        Ordering::Less
+    } else {
+        Ordering::Greater
+    };
+    let mut ext: Option<crate::temporal::Temporal> = None;
+    for &row in ids {
+        let i = row as usize;
+        if present.get(i) {
+            let v = data.get(i);
+            ext = Some(match ext {
+                Some(e) if v.cmp_total(&e) == want => v,
+                Some(e) => e,
+                None => v,
+            });
+        }
+    }
+    Some(ext.map_or(Val::Null, Val::Temporal))
+}
+
 fn eval_vec(graph: &Graph, ctx: &Ctx, sc: &ScanCols, e: &CExpr) -> VVec {
     let n = sc.n;
     let gen = |e: &CExpr| VVec::Gen(scalar_col(graph, ctx, sc, e));
@@ -4317,6 +4435,11 @@ fn eval_vec(graph: &Graph, ctx: &Ctx, sc: &ScanCols, e: &CExpr) -> VVec {
         CExpr::Compare { op, left, right } => {
             // Interned-id string equality (`col = / <> literal`) — no per-row bytes.
             if let Some(v) = str_eq_vec(graph, ctx, sc, *op, left, right) {
+                return v;
+            }
+            // Typed `<temporal col> <op> <temporal scalar>` — packed compare, no
+            // per-row eval dispatch (byte-identical via `compare_vals`).
+            if let Some(v) = temporal_cmp_vec(graph, ctx, sc, *op, left, right) {
                 return v;
             }
             let l = eval_vec(graph, ctx, sc, left);
@@ -5530,6 +5653,12 @@ fn fused_global_agg(graph: &Graph, ctx: &Ctx, sc: &ScanCols, spec: &CAgg) -> Opt
         AggFn::CollectList | AggFn::PercentileCont | AggFn::PercentileDisc
     ) {
         return None; // collect-then-compute aggregates aren't vectorized
+    }
+    // min/max over a typed temporal column: the numeric `num_col_of` fold below
+    // can't read a temporal column (it would bail to the scalar accumulator), so
+    // handle it here via the canonical total order.
+    if let Some(v) = temporal_minmax(graph, ctx, sc, spec) {
+        return Some(v);
     }
     let (data, present, ids) = num_col_of(graph, ctx, sc, spec.arg.as_ref()?)?;
     let dense = present.all_set(data.len());

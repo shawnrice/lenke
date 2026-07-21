@@ -14,12 +14,12 @@ Duration = four parallel `Vec`s). Threaded through `value_kind`/`empty_col_for(_
 `Temporal::kind()` classify a value to its column kind; a key mixing temporal
 sub-kinds (or temporal + other) promotes to `Mixed` like any type disagreement.
 
-Phase (b) is implemented as **vectorized gather** (`gather_temporal` → `VVec::Gen` of
+Phase (b) is a **vectorized gather** (`gather_temporal` → `VVec::Gen` of
 `Val::Temporal`, chained after `gather_num`/`gather_str` at the Prop sites): a temporal
-property now reconstructs from the packed arrays in a tight loop instead of the per-row
-`Binding`+`eval` dispatch, engaging the vectorized scan. (A fully-typed integer-loop
-comparator with Duration-SoA lexicographic compare is a further, riskier optimization
-left for later — see "Remaining opportunity"; the gather captured most of the win.)
+property reconstructs from the packed arrays in a tight loop instead of the per-row
+`Binding`+`eval` dispatch. Phase (c) adds **typed comparators** for filter and min/max
+(`temporal_cmp_vec` / `temporal_minmax`) — see Results → Phase (c). ORDER BY's typed
+sort is the one remaining piece (see Remaining opportunity).
 
 ## Context
 
@@ -120,13 +120,41 @@ cache-bound _integer-loop_ scan — the deferred typed-compare, and even there s
 bounded by more than byte count. `project` doubling reflects the gather removing the
 per-row eval dispatch (its dominant cost), not the memory ratio.
 
-### Remaining opportunity
+### Phase (c) — typed comparator (shipped for filter + min/max)
 
-`filter`/`order`/`min-max` still compare through `Val` ordering, not tight integer
-loops — a typed `VVec::Temporal` with per-kind comparison (and `DURATION` SoA
-early-resolve on `months`) would push these further, at real risk to the hot path.
-Deferred until a temporal-heavy workload justifies it; the gather already delivered the
-low-risk majority (project 2×, the rest ~1.4–1.5×).
+Two isolated interceptions in the vectorized scan, each reusing the **canonical**
+comparator so they're byte-identical by construction (no re-derived ordering):
+
+- `temporal_cmp_vec` — `<temporal col> <op> <temporal scalar>` (literal or `$param`,
+  either operand order) via `compare_vals`. Skips the per-row `Binding`+`Env`+expr-tree
+  dispatch. **filter: ~9.5 → ~1.7 ms (~5.5×; ~7× vs baseline).**
+- `temporal_minmax` — global `min`/`max` fold via `Temporal::cmp_total` (first-seen on
+  ties, identical to the scalar `fold_extreme`); previously bailed to the scalar
+  accumulator. **min/max: ~14 → ~1.3 ms (~11×; ~16× vs baseline).**
+
+Both use `compare_vals`/`cmp_total` on reconstructed Copy temporals — correctness is
+inherited, not reimplemented (covers duration-unordered → UNKNOWN, cross-kind → UNKNOWN,
+three-valued nulls). Regression test: `vectorized_temporal_filter_matches_canonical_compare`.
+
+Updated op scoreboard (avg across types, baseline → final):
+
+| op             | baseline | final   | speedup |
+| -------------- | -------- | ------- | ------- |
+| filter>p count | 13.57 ms | ~1.7 ms | ~7×     |
+| min/max        | 22.10 ms | ~1.3 ms | ~16×    |
+| project        | 4.63 ms  | ~2.1 ms | ~2.2×   |
+| order by       | 37.28 ms | ~26 ms  | ~1.4×   |
+
+### Remaining opportunity — ORDER BY
+
+`order by` is still comparison-bound on `Val` ordering: `keycols` is `Vec<Vec<Val>>`
+and the sort comparator dispatches `cmp_total` through `Val` per compare. A typed key
+column (compare `Temporal` directly, skipping the `Val` wrapper) has ~3× headroom
+(temporal ~26 ms vs a numeric ~8 ms 200k sort). Deferred: it means typing the **shared
+multi-key sort comparator**, a hot path used by every value type where a regression
+breaks byte-identity broadly — a different risk class than the two isolated
+interceptions above. Worth a single-temporal-key fast path if ORDER BY on temporals
+becomes hot.
 
 ## Prerequisite shipped
 
