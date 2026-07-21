@@ -1,9 +1,21 @@
 import { describe, expect, test } from 'bun:test';
 
 import { Graph, type LocalDate, parseDate, parseDateTime } from '@lenke/core';
+import { ErrorCode, hasErrorCode } from '@lenke/errors';
 import { deserialize } from '@lenke/serialization';
 
 import { gql, query } from './index.js';
+
+/** Run `fn`, returning whatever it throws (or undefined if it doesn't). */
+const thrown = (fn: () => unknown): unknown => {
+  try {
+    fn();
+  } catch (e) {
+    return e;
+  }
+
+  return undefined;
+};
 
 // Mirrors the Rust `gql::tests` temporal-literal suite: literals parse, compare
 // chronologically, drive as-of WHERE filtering, and ORDER BY sorts them.
@@ -178,20 +190,27 @@ describe('GQL: temporal arithmetic', () => {
     expect(String(query(g, `RETURN DURATION 'P10D' * 2 AS d`)[0].d)).toBe('P20D');
   });
 
-  test('a date arithmetic result outside the representable range is null (round-12 D4)', () => {
+  test('a date arithmetic result outside the representable range raises E_DATA_EXCEPTION', () => {
     const g = new Graph();
-    // A LocalDate is i32 days from 1970 (≈±5.88M years) in the native engine, so
-    // an astronomical shift yields null (non-representable → null) rather than a
-    // value the two engines disagree on — native used to wrap to a negative year.
-    expect(query(g, `RETURN DATE '2020-01-01' + DURATION 'P10000000Y' AS d`)).toEqual([
-      { d: null },
-    ]);
-    expect(query(g, `RETURN DATE '2020-01-01' - DURATION 'P10000000Y' AS d`)).toEqual([
-      { d: null },
-    ]);
-    expect(query(g, `RETURN DATETIME '2020-01-01T00:00:00' + DURATION 'P10000000Y' AS d`)).toEqual([
-      { d: null },
-    ]);
+
+    // A LocalDate is i32 days from 1970 (≈±5.88M years), so an astronomical shift
+    // lands on a real-but-unstorable date. That's a loud data exception, not a
+    // silent null — same policy as duration overflow and division by zero
+    // (supersedes the old D4 → null). Byte-identical with native's
+    // FAULT_DATE_OVERFLOW.
+    for (const q of [
+      `RETURN DATE '2020-01-01' + DURATION 'P10000000Y' AS d`,
+      `RETURN DATE '2020-01-01' - DURATION 'P10000000Y' AS d`,
+      `RETURN DATETIME '2020-01-01T00:00:00' + DURATION 'P10000000Y' AS d`,
+    ]) {
+      expect(
+        hasErrorCode(
+          thrown(() => query(g, q)),
+          ErrorCode.DataException,
+        ),
+      ).toBe(true);
+    }
+
     // ~5M years stays in range and still succeeds.
     expect(String(query(g, `RETURN DATE '2020-01-01' + DURATION 'P5000000Y' AS d`)[0].d)).toBe(
       '5002020-01-01',

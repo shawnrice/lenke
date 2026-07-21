@@ -963,6 +963,22 @@ const durationOverflow = (): never => {
   );
 };
 
+/** Instant ± duration whose result leaves the representable date range (a date is
+ *  `i32` days, ≈±5.88M years) is a **data exception** — the target date is real but
+ *  unstorable — not a silent null. Fail loud, byte-identical to native's
+ *  `FAULT_DATE_OVERFLOW` (supersedes the old D4 → null). */
+const dateOverflow = (): never => {
+  throw new LenkeError('date overflow: arithmetic result is outside the representable date range', {
+    code: ErrorCode.DataException,
+  });
+};
+
+/** Anchor a duration to an instant (`addDurationTo`), raising `dateOverflow` when
+ *  the result is out of the representable date range (`addDurationTo` → null). A
+ *  bare time never overflows (it wraps), so this only throws for date-carrying
+ *  instants. */
+const anchorOrThrow = (t: Temporal, d: Duration): Temporal => addDurationTo(t, d) ?? dateOverflow();
+
 /** Component-wise sum of two nominal durations (nanos carry into secs). Throws
  *  `DataException` when a component leaves the safe-integer range. */
 const addDurations = (a: Duration, b: Duration): Duration => {
@@ -1100,11 +1116,11 @@ export function temporalArith(op: string, l: unknown, r: unknown): unknown {
     }
 
     if (isTemporal(l) && r instanceof Duration) {
-      return addDurationTo(l, r);
+      return anchorOrThrow(l, r);
     }
 
     if (l instanceof Duration && isTemporal(r)) {
-      return addDurationTo(r, l);
+      return anchorOrThrow(r, l);
     }
 
     return null;
@@ -1116,7 +1132,7 @@ export function temporalArith(op: string, l: unknown, r: unknown): unknown {
     }
 
     if (isTemporal(l) && r instanceof Duration) {
-      return addDurationTo(l, negateDuration(r));
+      return anchorOrThrow(l, negateDuration(r));
     }
 
     if (isTemporal(l) && isTemporal(r)) {

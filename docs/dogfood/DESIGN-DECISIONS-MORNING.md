@@ -149,10 +149,15 @@ varargs (`e275945`); see `findings/round14.md`. **Deferred — delicate ordering
 
 ### Defect follow-up (this session)
 
-- **D4 · temporal astronomical overflow** → `ce6c6a3`. `DATE + huge DURATION` silently
-  wrapped native's i32 day count to a negative year while TS produced a huge date. Now
-  out-of-range date arithmetic yields **null** in both engines (non-representable → null,
-  the same policy numeric overflow uses) — keeps the compact date backing, no divergence.
+- **D4 · temporal astronomical overflow** → `ce6c6a3`, **behavior superseded (see below)**.
+  `DATE + huge DURATION` silently wrapped native's i32 day count to a negative year while TS
+  produced a huge date. First fix made out-of-range date arithmetic yield **null** in both
+  engines. **Superseded:** it now raises a loud **`E_DATA_EXCEPTION`** in both engines
+  (byte-identical, native `FAULT_DATE_OVERFLOW`), matching duration overflow and division by
+  zero — a real-but-unstorable date is a swallowed error, not data. The wall stays i32/±5.88M
+  years (Arrow `Date32`-aligned; the compact backing is unchanged and covers all real dates).
+  Rationale: date/datetime range overflow is the same _computed-fault_ axis as duration
+  overflow, not the boundary-coercion axis that NaN/Inf→null lives on.
 - **BUG A · Gremlin `order().by('<key>')` over `project()`/Map rows** → `982ea0c`. Both
   engines' `eval_by` only projected a key off a vertex/edge; for a Map row it returned the
   whole container → "cannot order an element with an element". Now `by('key')` projects the
@@ -259,7 +264,8 @@ duration` → UNKNOWN is spec-correct (durations aren't totally ordered: a month
   days is ambiguous), both engines identical, with the documented instant-arithmetic
   workaround; `ORDER BY` still uses a deterministic total order. Not a defect.
 - ~~**Computed non-finite policy** (R11 D-inbox)~~ — RESOLVED (see "Defect follow-up").
-- ~~**Temporal astronomical overflow** (R11 D4)~~ — FIXED `ce6c6a3` (overflow → null both).
+- ~~**Temporal astronomical overflow** (R11 D4)~~ — FIXED `ce6c6a3` (null), then superseded:
+  date/datetime overflow now raises `E_DATA_EXCEPTION` in both engines (see "Defect follow-up").
 
 ## Medium — Gremlin completeness
 

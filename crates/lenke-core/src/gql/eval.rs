@@ -189,6 +189,7 @@ const FAULT_MERGE_EDGE: u8 = 8;
 const FAULT_REQUIRED: u8 = 9;
 const FAULT_TYPE_CONSTRAINT: u8 = 10;
 const FAULT_DURATION_OVERFLOW: u8 = 11;
+const FAULT_DATE_OVERFLOW: u8 = 12;
 
 /// Per-expansion cap on trail-traversal steps; a guard against exponential blowup.
 const TRAIL_BUDGET: u64 = 1_000_000;
@@ -244,6 +245,10 @@ impl Ctx<'_> {
             FAULT_DURATION_OVERFLOW => Err(CodeError::new(
                 ErrorCode::DataException,
                 "duration overflow: a component exceeds the representable (float64-safe-integer) range",
+            )),
+            FAULT_DATE_OVERFLOW => Err(CodeError::new(
+                ErrorCode::DataException,
+                "date overflow: arithmetic result is outside the representable date range",
             )),
             FAULT_TYPE => Err(CodeError::new(
                 ErrorCode::DataException,
@@ -1101,6 +1106,9 @@ fn prop_of(graph: &Graph, ctx: &Ctx, bound: &Val, key_ref: usize) -> Val {
         Some(Column::Bool { data, present }) if present.get(idx) => Val::Bool(data[idx]),
         Some(Column::Str { data, present }) if present.get(idx) => {
             Val::Str(graph.strs.arc(data[idx]))
+        }
+        Some(Column::Temporal { data, present }) if present.get(idx) => {
+            Val::Temporal(data.get(idx))
         }
         Some(Column::Mixed { data }) => data[idx].as_ref().map(value_to_val).unwrap_or(Val::Null),
         _ => Val::Null,
@@ -2268,11 +2276,22 @@ fn temporal_arith(ctx: &Ctx, op: super::ast::ArithOp, lv: &Val, rv: &Val) -> Val
     // A duration whose sum/scale overflows the representable (f64-safe-integer)
     // range is a **data exception**, not a silent null — the result is a real
     // duration we can't store, so fail loud (byte-identical to TS), like division
-    // by zero. (Date/datetime *range* overflow keeps its decided → null policy.)
+    // by zero.
     let dur = |r: Option<Duration>| match r {
         Some(d) => Val::Temporal(T::Duration(d)),
         None => {
             ctx.set_fault(FAULT_DURATION_OVERFLOW);
+            Val::Null
+        }
+    };
+    // Instant ± duration whose result leaves the representable date range (Date is
+    // i32 days, ≈±5.88M years) is likewise a **data exception**, not a silent null:
+    // the target date is a real calendar date we can't store, so fail loud — same
+    // as duration overflow and division by zero (supersedes the old D4 → null).
+    let inst = |r: Option<T>| match r {
+        Some(t) => Val::Temporal(t),
+        None => {
+            ctx.set_fault(FAULT_DATE_OVERFLOW);
             Val::Null
         }
     };
@@ -2284,13 +2303,13 @@ fn temporal_arith(ctx: &Ctx, op: super::ast::ArithOp, lv: &Val, rv: &Val) -> Val
             dur(a.add(&b.negate()))
         }
         // instant ± duration (either order for +).
-        (ArithOp::Add, Val::Temporal(inst), Val::Temporal(T::Duration(d)))
-        | (ArithOp::Add, Val::Temporal(T::Duration(d)), Val::Temporal(inst)) => {
-            inst.add_duration(d).map_or(Val::Null, Val::Temporal)
+        (ArithOp::Add, Val::Temporal(t), Val::Temporal(T::Duration(d)))
+        | (ArithOp::Add, Val::Temporal(T::Duration(d)), Val::Temporal(t)) => {
+            inst(t.add_duration(d))
         }
-        (ArithOp::Sub, Val::Temporal(inst), Val::Temporal(T::Duration(d))) => inst
-            .add_duration(&d.negate())
-            .map_or(Val::Null, Val::Temporal),
+        (ArithOp::Sub, Val::Temporal(t), Val::Temporal(T::Duration(d))) => {
+            inst(t.add_duration(&d.negate()))
+        }
         // instant − instant → the exact span from `b` to `a` (a − b).
         (ArithOp::Sub, Val::Temporal(a), Val::Temporal(b)) => duration_between(b, a),
         // duration × INTEGER (either order). A calendar duration (with a
@@ -4108,6 +4127,29 @@ fn gather_str(col: Option<&Column>, ids: &[u32], strs: &crate::graph::Dict) -> O
     }
 }
 
+/// Gather a `Column::Temporal` at `ids` into a `VVec::Gen` of `Val::Temporal`
+/// (absent → `Null`) — the temporal analogue of [`gather_str`]. Reconstructs each
+/// value straight from the packed per-type arrays in a tight loop, replacing the
+/// per-row `Binding` rebuild + `eval` dispatch of `scalar_col` — so projecting or
+/// ordering a temporal column engages the vectorized scan instead of falling back.
+fn gather_temporal(col: Option<&Column>, ids: &[u32]) -> Option<VVec> {
+    match col {
+        Some(Column::Temporal { data, present }) => Some(VVec::Gen(
+            ids.iter()
+                .map(|&vi| {
+                    let i = vi as usize;
+                    if present.get(i) {
+                        Val::Temporal(data.get(i))
+                    } else {
+                        Val::Null
+                    }
+                })
+                .collect(),
+        )),
+        _ => None,
+    }
+}
+
 /// Scalar fallback: evaluate `e` once per row into a `Vec<Val>` (the slow path
 /// for any subexpression outside the numeric vector subset). Reuses one binding,
 /// setting every scanned slot to its per-row element.
@@ -4227,6 +4269,7 @@ fn eval_vec(graph: &Graph, ctx: &Ctx, sc: &ScanCols, e: &CExpr) -> VVec {
                     .and_then(|k| graph.props.cols.get(k as usize));
                 gather_num(col, ids)
                     .or_else(|| gather_str(col, ids, &graph.strs))
+                    .or_else(|| gather_temporal(col, ids))
                     .unwrap_or_else(|| gen(e))
             }
             Some((Elem::Edge, ids)) => {
@@ -4235,6 +4278,7 @@ fn eval_vec(graph: &Graph, ctx: &Ctx, sc: &ScanCols, e: &CExpr) -> VVec {
                     .and_then(|k| graph.edge_props.cols.get(k as usize));
                 gather_num(col, ids)
                     .or_else(|| gather_str(col, ids, &graph.strs))
+                    .or_else(|| gather_temporal(col, ids))
                     .unwrap_or_else(|| gen(e))
             }
             None => gen(e),

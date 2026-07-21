@@ -41,7 +41,8 @@ divergences — the clear ones fixed, the delicate ordering ones documented belo
   arithmetic (`dur±dur`/`dur×n`) raises a loud **`E_DATA_EXCEPTION`** (a swallowed null was
   itself wrong — it looks like data; made loud like division by zero, per user), and a
   duration _literal_ past 2^53 rejects at parse (`E_SYNTAX`). Date/datetime _range_
-  overflow keeps its decided → null policy (D4).
+  overflow (D4) was later brought onto the same policy — it now raises
+  `E_DATA_EXCEPTION` too (native `FAULT_DATE_OVERFLOW`), superseding its earlier → null.
 - **DX · `project()` varargs** → `e275945`. The TS builder took a keys _array_; the
   TinkerPop/native-string call `project('a','b')` crashed. Added a varargs overload.
 

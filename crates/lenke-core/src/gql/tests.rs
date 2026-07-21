@@ -3126,6 +3126,37 @@ fn division_by_zero_raises_over_rows_vectorized() {
 }
 
 #[test]
+fn date_arithmetic_overflow_raises_data_exception() {
+    // A date/datetime shifted past the representable range (Date is i32 days,
+    // ≈±5.88M years) is a loud data exception, not a silent null — same policy as
+    // duration overflow and division by zero (supersedes the old D4 → null).
+    let mut g = modern();
+    for q in [
+        "RETURN DATE '2020-01-01' + DURATION 'P10000000Y' AS d",
+        "RETURN DATE '2020-01-01' - DURATION 'P10000000Y' AS d",
+        "RETURN DATETIME '2020-01-01T00:00:00' + DURATION 'P10000000Y' AS d",
+    ] {
+        let err = parse(q)
+            .unwrap()
+            .execute(&mut g, &Params::new())
+            .unwrap_err();
+        assert_eq!(
+            err.code,
+            crate::error_codes::ErrorCode::DataException,
+            "{q}"
+        );
+    }
+    // An in-range shift (~5M years) still succeeds.
+    assert_eq!(
+        rows(
+            &mut g,
+            "RETURN DATE '2020-01-01' + DURATION 'P5000000Y' AS d"
+        ),
+        vec![vec![tdate("5002020-01-01")]]
+    );
+}
+
+#[test]
 fn non_numeric_arithmetic_raises_data_exception() {
     let mut g = modern();
     for q in ["RETURN 'abc' + 1 AS r", "RETURN true * 2 AS r"] {

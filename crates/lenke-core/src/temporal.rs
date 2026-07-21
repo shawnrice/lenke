@@ -97,6 +97,33 @@ pub enum Temporal {
     Duration(Duration),
 }
 
+/// Which temporal variant a value is — the discriminant only, no payload. Used by
+/// the columnar store to key a homogeneous packed temporal column (a column holds
+/// exactly one kind; a key that mixes kinds falls back to `Mixed`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TemporalKind {
+    Date,
+    Time,
+    DateTime,
+    ZonedTime,
+    ZonedDateTime,
+    Duration,
+}
+
+impl Temporal {
+    /// The discriminant (no payload), for typing a packed temporal column.
+    pub fn kind(&self) -> TemporalKind {
+        match self {
+            Self::Date(_) => TemporalKind::Date,
+            Self::Time(_) => TemporalKind::Time,
+            Self::DateTime(_) => TemporalKind::DateTime,
+            Self::ZonedTime(_) => TemporalKind::ZonedTime,
+            Self::ZonedDateTime(_) => TemporalKind::ZonedDateTime,
+            Self::Duration(_) => TemporalKind::Duration,
+        }
+    }
+}
+
 const SECS_PER_DAY: i64 = 86_400;
 
 // --- civil calendar (Hinnant) ------------------------------------------------
@@ -636,10 +663,10 @@ impl Date {
     /// Add `months` (calendar), **clamping the day to the new month's length**
     /// (`Jan 31 + 1 month → Feb 28/29`), then `extra_days` as plain days. Returns
     /// `None` when the result falls outside the representable date range (a `Date`
-    /// is `i32` days from 1970, ≈±5.88M years), so an astronomical `DATE + DURATION`
-    /// yields null rather than a silently-wrapped negative year — the same
-    /// non-representable → null policy the numeric model uses for overflow, and
-    /// byte-identical with the TS engine.
+    /// is `i32` days from 1970, ≈±5.88M years) instead of silently wrapping to a
+    /// bogus year. This stays a pure range check; the arithmetic layer
+    /// (`temporal_arith`) turns a `None` into a loud `E_DATA_EXCEPTION` (byte-
+    /// identical to the TS engine), like duration overflow and division by zero.
     fn add_calendar(&self, months: i64, extra_days: i64) -> Option<Self> {
         let (y, m, d) = civil_from_days(self.days as i64);
         let total = y * 12 + (m as i64 - 1) + months;
@@ -674,14 +701,16 @@ impl Duration {
     /// A duration component at or beyond 2^53 isn't a JS *safe* integer, so the TS
     /// engine (f64) can't represent it exactly — it rounds — while native (i64)
     /// would keep an unrepresentable exact value or wrap on overflow. Both engines
-    /// treat such a duration as **non-representable → null**, the same policy numeric
-    /// overflow and out-of-range date arithmetic use, so they stay byte-identical
-    /// (both null) instead of diverging (round vs wrap). The `>=` bound matches JS
-    /// `Number.isSafeInteger` (|x| ≤ 2^53−1) exactly, so a value TS could round is
-    /// rejected on both sides regardless of which engine parses/computes it.
+    /// treat such a duration as **non-representable** (this returns `None`); the
+    /// arithmetic layer turns that into a loud `E_DATA_EXCEPTION` (like out-of-range
+    /// date arithmetic and division by zero), so they stay byte-identical instead of
+    /// diverging (round vs wrap). The `>=` bound matches JS `Number.isSafeInteger`
+    /// (|x| ≤ 2^53−1) exactly, so a value TS could round is rejected on both sides
+    /// regardless of which engine parses/computes it.
     const MAX_SAFE: u64 = 1 << 53;
 
-    /// `Some(self)` when every component is a JS-safe integer, else `None` (→ null).
+    /// `Some(self)` when every component is a JS-safe integer, else `None`
+    /// (→ `E_DATA_EXCEPTION` at the arithmetic layer).
     fn representable(self) -> Option<Self> {
         if self.months.unsigned_abs() >= Self::MAX_SAFE
             || self.days.unsigned_abs() >= Self::MAX_SAFE
@@ -830,9 +859,11 @@ mod tests {
 
     #[test]
     fn date_arithmetic_out_of_range_is_none_not_wrapped() {
-        // Round-12 D4: `DATE + huge DURATION` must not silently wrap the i32 day
-        // count to a negative year — it yields None (→ null), byte-identical with
-        // the TS engine, while an in-range shift still succeeds.
+        // `DATE + huge DURATION` must not silently wrap the i32 day count to a
+        // negative year — the pure calendar op yields None, which the arithmetic
+        // layer (`temporal_arith`) turns into a loud `E_DATA_EXCEPTION` (see the
+        // gql-level `date_arithmetic_overflow_raises_data_exception`). An in-range
+        // shift still succeeds.
         let base = Temporal::Date(Date::parse("2020-01-01").unwrap());
         let ten_million_years = Duration {
             months: 10_000_000 * 12,

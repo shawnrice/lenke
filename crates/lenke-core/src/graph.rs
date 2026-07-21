@@ -19,6 +19,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use crate::temporal::{Temporal, TemporalKind};
+
 use crate::error::{CodeError, CodeResult};
 use crate::error_codes::ErrorCode;
 
@@ -160,10 +162,253 @@ pub enum Column {
         data: Vec<bool>,
         present: BitSet,
     },
+    /// A homogeneous temporal column: values de-boxed into per-type packed arrays
+    /// (see [`TemporalCol`]) instead of a 40-byte `Option<Value>` slot. Absent
+    /// slots hold a zero payload, flagged in `present`.
+    Temporal {
+        data: TemporalCol,
+        present: BitSet,
+    },
     /// Heterogeneous / list / mixed-type keys: keep the raw values.
     Mixed {
         data: Vec<Option<Value>>,
     },
+}
+
+/// Packed, struct-of-arrays storage for a homogeneous temporal column — one
+/// variant per [`TemporalKind`], each holding the type's native integer
+/// components in parallel `Vec`s. This is what recovers memory over `Mixed`
+/// (`DATE` = one `Vec<i32>` = 4 B/slot vs 40 B) and lets scans read tight integer
+/// loops. `DURATION` keeps its components separate (SoA) so an `ORDER BY` that
+/// resolves on `months` streams only the 8-byte primary array.
+#[derive(Debug)]
+pub enum TemporalCol {
+    Date(Vec<i32>),
+    Time {
+        secs: Vec<u32>,
+        nanos: Vec<u32>,
+    },
+    DateTime {
+        secs: Vec<i64>,
+        nanos: Vec<u32>,
+    },
+    ZonedTime {
+        secs: Vec<u32>,
+        nanos: Vec<u32>,
+        offset: Vec<i16>,
+    },
+    ZonedDateTime {
+        secs: Vec<i64>,
+        nanos: Vec<u32>,
+        offset: Vec<i16>,
+    },
+    Duration {
+        months: Vec<i64>,
+        days: Vec<i64>,
+        secs: Vec<i64>,
+        nanos: Vec<u32>,
+    },
+}
+
+impl TemporalCol {
+    /// A fresh column of `len` zero-filled (absent) slots for `kind`.
+    fn with_len(kind: TemporalKind, len: usize) -> Self {
+        match kind {
+            TemporalKind::Date => Self::Date(vec![0; len]),
+            TemporalKind::Time => Self::Time {
+                secs: vec![0; len],
+                nanos: vec![0; len],
+            },
+            TemporalKind::DateTime => Self::DateTime {
+                secs: vec![0; len],
+                nanos: vec![0; len],
+            },
+            TemporalKind::ZonedTime => Self::ZonedTime {
+                secs: vec![0; len],
+                nanos: vec![0; len],
+                offset: vec![0; len],
+            },
+            TemporalKind::ZonedDateTime => Self::ZonedDateTime {
+                secs: vec![0; len],
+                nanos: vec![0; len],
+                offset: vec![0; len],
+            },
+            TemporalKind::Duration => Self::Duration {
+                months: vec![0; len],
+                days: vec![0; len],
+                secs: vec![0; len],
+                nanos: vec![0; len],
+            },
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::Date(d) => d.len(),
+            Self::Time { secs, .. } | Self::ZonedTime { secs, .. } => secs.len(),
+            Self::DateTime { secs, .. } | Self::ZonedDateTime { secs, .. } => secs.len(),
+            Self::Duration { months, .. } => months.len(),
+        }
+    }
+
+    /// Bytes per stored slot across all component arrays (the packed width — 4 for
+    /// `Date`, 28 for `Duration`, etc.). Diagnostic, for memory measurement.
+    fn slot_bytes(&self) -> usize {
+        use std::mem::size_of;
+        match self {
+            Self::Date(_) => size_of::<i32>(),
+            Self::Time { .. } => 2 * size_of::<u32>(),
+            Self::DateTime { .. } => size_of::<i64>() + size_of::<u32>(),
+            Self::ZonedTime { .. } => 2 * size_of::<u32>() + size_of::<i16>(),
+            Self::ZonedDateTime { .. } => size_of::<i64>() + size_of::<u32>() + size_of::<i16>(),
+            Self::Duration { .. } => 3 * size_of::<i64>() + size_of::<u32>(),
+        }
+    }
+
+    /// Append one zero (absent) slot to every component array.
+    fn push_absent(&mut self) {
+        match self {
+            Self::Date(d) => d.push(0),
+            Self::Time { secs, nanos } => {
+                secs.push(0);
+                nanos.push(0);
+            }
+            Self::DateTime { secs, nanos } => {
+                secs.push(0);
+                nanos.push(0);
+            }
+            Self::ZonedTime {
+                secs,
+                nanos,
+                offset,
+            } => {
+                secs.push(0);
+                nanos.push(0);
+                offset.push(0);
+            }
+            Self::ZonedDateTime {
+                secs,
+                nanos,
+                offset,
+            } => {
+                secs.push(0);
+                nanos.push(0);
+                offset.push(0);
+            }
+            Self::Duration {
+                months,
+                days,
+                secs,
+                nanos,
+            } => {
+                months.push(0);
+                days.push(0);
+                secs.push(0);
+                nanos.push(0);
+            }
+        }
+    }
+
+    /// Reconstruct the `Temporal` at `i` (caller guarantees `present`).
+    pub(crate) fn get(&self, i: usize) -> Temporal {
+        use crate::temporal as t;
+        match self {
+            Self::Date(d) => Temporal::Date(t::Date { days: d[i] }),
+            Self::Time { secs, nanos } => Temporal::Time(t::Time {
+                secs: secs[i],
+                nanos: nanos[i],
+            }),
+            Self::DateTime { secs, nanos } => Temporal::DateTime(t::DateTime {
+                secs: secs[i],
+                nanos: nanos[i],
+            }),
+            Self::ZonedTime {
+                secs,
+                nanos,
+                offset,
+            } => Temporal::ZonedTime(t::ZonedTime {
+                secs: secs[i],
+                nanos: nanos[i],
+                offset: offset[i],
+            }),
+            Self::ZonedDateTime {
+                secs,
+                nanos,
+                offset,
+            } => Temporal::ZonedDateTime(t::ZonedDateTime {
+                secs: secs[i],
+                nanos: nanos[i],
+                offset: offset[i],
+            }),
+            Self::Duration {
+                months,
+                days,
+                secs,
+                nanos,
+            } => Temporal::Duration(t::Duration {
+                months: months[i],
+                days: days[i],
+                secs: secs[i],
+                nanos: nanos[i],
+            }),
+        }
+    }
+
+    /// Write `val`'s components at `i`, returning `false` if `val`'s kind doesn't
+    /// match this column (the caller then promotes to `Mixed`).
+    fn set(&mut self, i: usize, val: &Temporal) -> bool {
+        match (self, val) {
+            (Self::Date(d), Temporal::Date(v)) => d[i] = v.days,
+            (Self::Time { secs, nanos }, Temporal::Time(v)) => {
+                secs[i] = v.secs;
+                nanos[i] = v.nanos;
+            }
+            (Self::DateTime { secs, nanos }, Temporal::DateTime(v)) => {
+                secs[i] = v.secs;
+                nanos[i] = v.nanos;
+            }
+            (
+                Self::ZonedTime {
+                    secs,
+                    nanos,
+                    offset,
+                },
+                Temporal::ZonedTime(v),
+            ) => {
+                secs[i] = v.secs;
+                nanos[i] = v.nanos;
+                offset[i] = v.offset;
+            }
+            (
+                Self::ZonedDateTime {
+                    secs,
+                    nanos,
+                    offset,
+                },
+                Temporal::ZonedDateTime(v),
+            ) => {
+                secs[i] = v.secs;
+                nanos[i] = v.nanos;
+                offset[i] = v.offset;
+            }
+            (
+                Self::Duration {
+                    months,
+                    days,
+                    secs,
+                    nanos,
+                },
+                Temporal::Duration(v),
+            ) => {
+                months[i] = v.months;
+                days[i] = v.days;
+                secs[i] = v.secs;
+                nanos[i] = v.nanos;
+            }
+            _ => return false,
+        }
+        true
+    }
 }
 
 impl Column {
@@ -173,6 +418,7 @@ impl Column {
             Self::Num { data, .. } => data.push(f64::NAN),
             Self::Str { data, .. } => data.push(u32::MAX),
             Self::Bool { data, .. } => data.push(false),
+            Self::Temporal { data, present: _ } => data.push_absent(),
             Self::Mixed { data } => data.push(None),
         }
     }
@@ -181,7 +427,22 @@ impl Column {
             Self::Num { data, .. } => data.len(),
             Self::Str { data, .. } => data.len(),
             Self::Bool { data, .. } => data.len(),
+            Self::Temporal { data, .. } => data.len(),
             Self::Mixed { data } => data.len(),
+        }
+    }
+
+    /// Heap bytes this column occupies: the packed data array(s) plus the presence
+    /// bitset. Diagnostic — for memory profiling (see [`Graph::vertex_prop_bytes`]).
+    fn heap_bytes(&self) -> usize {
+        use std::mem::size_of;
+        let bits = |p: &BitSet| p.words.len() * size_of::<u64>();
+        match self {
+            Self::Num { data, present } => data.len() * size_of::<f64>() + bits(present),
+            Self::Str { data, present } => data.len() * size_of::<u32>() + bits(present),
+            Self::Bool { data, present } => data.len() * size_of::<bool>() + bits(present),
+            Self::Temporal { data, present } => data.len() * data.slot_bytes() + bits(present),
+            Self::Mixed { data } => data.len() * size_of::<Option<Value>>(),
         }
     }
 }
@@ -225,6 +486,9 @@ impl Properties {
             Some(Column::Str { data, present }) if present.get(idx) => {
                 Value::Str(strs.arc(data[idx]))
             }
+            Some(Column::Temporal { data, present }) if present.get(idx) => {
+                Value::Temporal(data.get(idx))
+            }
             Some(Column::Mixed { data }) => data[idx].clone().unwrap_or(Value::Null),
             _ => Value::Null,
         }
@@ -248,7 +512,8 @@ impl Properties {
             Some(
                 Column::Num { present, .. }
                 | Column::Str { present, .. }
-                | Column::Bool { present, .. },
+                | Column::Bool { present, .. }
+                | Column::Temporal { present, .. },
             ) => present.get(idx),
             Some(Column::Mixed { data }) => data[idx].is_some(),
             None => false,
@@ -296,7 +561,8 @@ impl Properties {
                 match col {
                     Column::Num { present, .. }
                     | Column::Str { present, .. }
-                    | Column::Bool { present, .. } => present.clear(idx),
+                    | Column::Bool { present, .. }
+                    | Column::Temporal { present, .. } => present.clear(idx),
                     Column::Mixed { data } => data[idx] = None,
                 }
             }
@@ -408,7 +674,6 @@ impl Csr {
 /// The scalar type of a stored value, or `None` for null / a non-stored `Map`
 /// (both type-exempt — a null has no type).
 fn value_type(v: &Value) -> Option<PropType> {
-    use crate::temporal::Temporal;
     match v {
         Value::Null | Value::Map(_) => None,
         Value::Bool(_) => Some(PropType::Bool),
@@ -809,6 +1074,16 @@ impl Graph {
     }
     pub fn edge_count(&self) -> usize {
         self.live_e
+    }
+    /// Diagnostic: `(packed_heap_bytes, mixed_equiv_bytes)` for vertex property
+    /// `key`'s column — the actual heap it uses vs what the same column would cost
+    /// boxed in a `Mixed` (`len × size_of::<Option<Value>>()`). `None` if the key
+    /// is unknown. Used to measure the de-boxing memory win per type.
+    pub fn vertex_prop_bytes(&self, key: &str) -> Option<(usize, usize)> {
+        let kid = self.props.keys.get(key)?;
+        let col = self.props.cols.get(kid as usize)?;
+        let mixed = col.element_len() * std::mem::size_of::<Option<Value>>();
+        Some((col.heap_bytes(), mixed))
     }
     /// Total edge slots (including tombstoned) — for encoders that scan them.
     pub fn edge_slots(&self) -> usize {
@@ -2909,6 +3184,10 @@ enum Kind {
     Num,
     Str,
     Bool,
+    /// A homogeneous temporal column, keyed by which temporal variant. Two
+    /// different temporal sub-kinds in one key promote to `Mixed`, like any other
+    /// type disagreement.
+    Temporal(TemporalKind),
     Mixed,
 }
 
@@ -2918,9 +3197,9 @@ fn value_kind(v: &Value) -> Option<Kind> {
         Value::Str(_) => Some(Kind::Str),
         Value::Bool(_) => Some(Kind::Bool),
         Value::Null => None, // nulls don't determine a column's type
-        // Temporals live in a Mixed (boxed-Value) column for now — no dedicated
-        // typed column (that's a later perf phase alongside the temporal index).
-        Value::Temporal(_) => Some(Kind::Mixed),
+        // A temporal value gets a packed, de-boxed column keyed by its kind (see
+        // [`TemporalCol`]); a key mixing temporal sub-kinds falls back to `Mixed`.
+        Value::Temporal(t) => Some(Kind::Temporal(t.kind())),
         Value::List(_) => Some(Kind::Mixed),
         Value::Map(_) => {
             unreachable!("Value::Map is a query-result value, never a stored property")
@@ -2928,9 +3207,9 @@ fn value_kind(v: &Value) -> Option<Kind> {
     }
 }
 
-/// A fresh, all-absent column sized to `len`, typed for a (non-null) value.
-fn empty_col_for(v: &Value, len: usize) -> Column {
-    match value_kind(v) {
+/// A fresh, all-absent column of `len` slots for a resolved [`Kind`].
+fn empty_col_for_kind(kind: Option<Kind>, len: usize) -> Column {
+    match kind {
         Some(Kind::Num) => Column::Num {
             data: vec![f64::NAN; len],
             present: BitSet::zeros(len),
@@ -2943,10 +3222,19 @@ fn empty_col_for(v: &Value, len: usize) -> Column {
             data: vec![false; len],
             present: BitSet::zeros(len),
         },
+        Some(Kind::Temporal(tk)) => Column::Temporal {
+            data: TemporalCol::with_len(tk, len),
+            present: BitSet::zeros(len),
+        },
         _ => Column::Mixed {
             data: vec![None; len],
         },
     }
+}
+
+/// A fresh, all-absent column sized to `len`, typed for a (non-null) value.
+fn empty_col_for(v: &Value, len: usize) -> Column {
+    empty_col_for_kind(value_kind(v), len)
 }
 
 /// Set element `idx` in a column; returns `false` if the value's type doesn't
@@ -2968,6 +3256,15 @@ fn col_set(col: &mut Column, idx: usize, v: &Value, strs: &mut Dict) -> bool {
             present.set(idx);
             true
         }
+        (Column::Temporal { data, present }, Value::Temporal(t)) => {
+            // A different temporal sub-kind doesn't fit → `false` promotes to Mixed.
+            if data.set(idx, t) {
+                present.set(idx);
+                true
+            } else {
+                false
+            }
+        }
         (Column::Mixed { data }, val) => {
             data[idx] = Some(val.clone());
             true
@@ -2985,6 +3282,9 @@ fn to_mixed(col: &Column, strs: &Dict) -> Column {
             Column::Num { data, present } if present.get(i) => Some(Value::Num(data[i])),
             Column::Bool { data, present } if present.get(i) => Some(Value::Bool(data[i])),
             Column::Str { data, present } if present.get(i) => Some(Value::Str(strs.arc(data[i]))),
+            Column::Temporal { data, present } if present.get(i) => {
+                Some(Value::Temporal(data.get(i)))
+            }
             Column::Mixed { data } => data[i].clone(),
             _ => None,
         };
@@ -3048,23 +3348,7 @@ fn build_props(len: usize, items: &[(usize, &[(String, Value)])], strs: &mut Dic
     }
     // One column per interned key (dense by id); an all-null key gets an empty Mixed.
     props.cols = (0..props.keys.len() as u32)
-        .map(|kid| match kinds.get(&kid) {
-            Some(Kind::Num) => Column::Num {
-                data: vec![f64::NAN; len],
-                present: BitSet::zeros(len),
-            },
-            Some(Kind::Str) => Column::Str {
-                data: vec![u32::MAX; len],
-                present: BitSet::zeros(len),
-            },
-            Some(Kind::Bool) => Column::Bool {
-                data: vec![false; len],
-                present: BitSet::zeros(len),
-            },
-            _ => Column::Mixed {
-                data: vec![None; len],
-            },
-        })
+        .map(|kid| empty_col_for_kind(kinds.get(&kid).copied(), len))
         .collect();
     for (idx, item) in items {
         for (k, v) in *item {

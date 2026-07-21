@@ -336,7 +336,8 @@ fn col_present(col: &Column, idx: usize) -> bool {
     match col {
         Column::Num { present, .. }
         | Column::Str { present, .. }
-        | Column::Bool { present, .. } => present.get(idx),
+        | Column::Bool { present, .. }
+        | Column::Temporal { present, .. } => present.get(idx),
         Column::Mixed { data } => data[idx].is_some(),
     }
 }
@@ -360,6 +361,7 @@ fn push_props(out: &mut String, store: &Properties, strs: &Dict, idx: usize) {
             Column::Num { data, .. } => push_num(out, data[idx]),
             Column::Str { data, .. } => push_json_str(out, strs.text(data[idx])),
             Column::Bool { data, .. } => out.push_str(if data[idx] { "true" } else { "false" }),
+            Column::Temporal { data, .. } => push_value(out, &Value::Temporal(data.get(idx))),
             Column::Mixed { data } => push_value(out, data[idx].as_ref().unwrap()),
         }
     }
