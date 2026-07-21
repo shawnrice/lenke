@@ -3215,6 +3215,16 @@ fn vectorized_temporal_filter_matches_canonical_compare() {
         ),
         0.0
     );
+    // `<>` must NOT count the absent-value row: `null <> x` is UNKNOWN, not true
+    // (the bug the scalar-vs-vectorized differential caught). Only a,c differ; the
+    // node with no `d` is excluded.
+    assert_eq!(
+        count(
+            &mut g,
+            "MATCH (n:P) WHERE n.d <> DATE '2020-06-01' RETURN count(*) AS c"
+        ),
+        2.0
+    );
     // durations are relationally unordered → every compare is UNKNOWN → 0 rows.
     assert_eq!(
         count(

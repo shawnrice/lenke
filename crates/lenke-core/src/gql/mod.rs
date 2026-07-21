@@ -33,6 +33,8 @@ mod ported_gql_operator_chains;
 #[cfg(test)]
 mod ported_gql_tck;
 #[cfg(test)]
+mod temporal_differential;
+#[cfg(test)]
 mod tests;
 
 pub use eval::{prepare, prepare_with_max_chain, run_invariant, Prepared};

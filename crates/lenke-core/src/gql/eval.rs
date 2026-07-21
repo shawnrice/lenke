@@ -478,6 +478,38 @@ const USE_VM: bool = false;
 ///     batched build in `build_scan` pays off.)
 const USE_VEC: bool = true;
 
+/// Whether the vectorized scan is enabled. Normally the [`USE_VEC`] const, but in
+/// test builds a thread-local override lets a differential test drive the SAME
+/// query through both the vectorized and scalar engines and assert they agree
+/// (see `set_vec_override` / `with_vec_override`). Zero cost in release: the
+/// `#[cfg(test)]` block compiles out and this inlines to the const.
+#[inline]
+fn use_vec() -> bool {
+    #[cfg(test)]
+    {
+        if let Some(v) = VEC_OVERRIDE.with(|c| c.get()) {
+            return v;
+        }
+    }
+    USE_VEC
+}
+
+#[cfg(test)]
+thread_local! {
+    static VEC_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// Force the vectorized scan on/off for the current thread while `f` runs, then
+/// restore the previous setting — so a test can execute a query under both engines
+/// and compare. Test-only.
+#[cfg(test)]
+pub(crate) fn with_vec_override<T>(on: bool, f: impl FnOnce() -> T) -> T {
+    let prev = VEC_OVERRIDE.with(|c| c.replace(Some(on)));
+    let out = f();
+    VEC_OVERRIDE.with(|c| c.set(prev));
+    out
+}
+
 /// The environment an expression evaluates against.
 struct Env<'a> {
     graph: &'a Graph,
@@ -3842,7 +3874,7 @@ fn project_matches(
     matches: &[&CClause],
     proj: &CProjection,
 ) -> Vec<Binding> {
-    if USE_VEC {
+    if use_vec() {
         if let Some(cols) = vectorized_cols(graph, ctx, incoming, matches, proj) {
             // WITH stage: carry output forward as bindings, *preserving* element
             // handles (a carried node stays `Val::Node`, not flattened to an id).
@@ -4278,19 +4310,24 @@ fn temporal_cmp_vec(
     let mut valid = Vec::with_capacity(sc.n);
     for &row in ids {
         let i = row as usize;
-        let stored = if present.get(i) {
-            Val::Temporal(data.get(i))
-        } else {
-            Val::Null
-        };
+        // An absent value is a NULL operand → the whole comparison is UNKNOWN for
+        // EVERY op, including `=`/`<>` (three-valued logic). The scalar path guards
+        // this before `compare_vals` (`is_nullish` → Val::Null), so we must too —
+        // otherwise `col <> $p` would wrongly count absent rows.
+        if !present.get(i) {
+            t.push(false);
+            valid.push(false);
+            continue;
+        }
+        let stored = Val::Temporal(data.get(i));
         let (lv, rv) = if prop_left {
             (&stored, &scalar_val)
         } else {
             (&scalar_val, &stored)
         };
-        // `compare_vals` yields Bool (Eq/Ne, or an ordered pair) or Null (UNKNOWN:
-        // a null operand, or an unordered/cross-kind `< > <= >=`). Map the latter to
-        // an invalid slot — exactly what `VVec::Gen`+`into_truth` would produce.
+        // Both operands present: `compare_vals` yields Bool (Eq/Ne, or an ordered
+        // pair) or Null (UNKNOWN — an unordered/cross-kind `< > <= >=`). Map Null to
+        // an invalid slot, exactly what `VVec::Gen`+`into_truth` would produce.
         match compare_vals(op, lv, rv) {
             Val::Bool(b) => {
                 t.push(b);
@@ -8983,7 +9020,7 @@ fn project_to_rows(
     matches: &[&CClause],
     proj: &CProjection,
 ) -> RowSet {
-    if USE_VEC {
+    if use_vec() {
         // Plain projection: transpose straight from the typed `VVec`s to the
         // RowSet (no intermediate `Vec<Val>` columns / second conversion pass).
         if let Some(rs) = vectorized_rowset(graph, ctx, incoming, matches, proj) {
@@ -10297,7 +10334,7 @@ fn run_part(
     // count reads a label bucket length, a single WHERE-less typed segment reads
     // the edge-type bucket. These beat both parallel and the vectorized frame, so
     // they run ahead of them (e.g. `MATCH ()-[:T]->() RETURN count(*)` is O(1)).
-    if USE_VEC {
+    if use_vec() {
         if let Some(rs) = try_count_star(linear, graph, plan, params) {
             return Ok(rs);
         }
@@ -10372,7 +10409,7 @@ fn run_part(
     if let Some(res) = try_parallel_scan(linear, graph, plan, params) {
         return res;
     }
-    if USE_VEC {
+    if use_vec() {
         if let Some(rs) = vectorized_linear(linear, graph, plan, params) {
             return Ok(rs);
         }
@@ -10469,7 +10506,7 @@ fn run_cquery_arrow(plan: &CQuery, graph: &mut Graph, params: &[Val]) -> CodeRes
             "aggregate function requires an argument (only count(*) is argless)",
         ));
     }
-    if USE_VEC && plan.ops.is_empty() && plan.parts.len() == 1 {
+    if use_vec() && plan.ops.is_empty() && plan.parts.len() == 1 {
         let linear = &plan.parts[0];
         if let Some((CClause::Return(proj), rest)) = linear.clauses.split_last() {
             if rest.iter().all(|c| {
