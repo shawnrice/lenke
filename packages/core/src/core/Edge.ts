@@ -137,8 +137,8 @@ export class Edge {
     // Resolve fresh by id at replay time — a later remove+re-add swaps identity.
     g?.recordUndo(
       had
-        ? () => void g.getEdgeById(id)?.setProperty(key, previousValue)
-        : () => void g.getEdgeById(id)?.removeProperty(key),
+        ? () => g.getEdgeById(id)?.setProperty(key, previousValue)
+        : () => g.getEdgeById(id)?.removeProperty(key),
     );
     this.#graph?.emit(
       new EmitterEvent('@graph/EdgePropertyChanged', {
@@ -211,7 +211,7 @@ export class Edge {
     const g = this.#graph;
     const { id } = this;
     const previousValue = this.properties[key];
-    g?.recordUndo(() => void g.getEdgeById(id)?.setProperty(key, previousValue));
+    g?.recordUndo(() => g.getEdgeById(id)?.setProperty(key, previousValue));
     this.#graph?.emit(
       new EmitterEvent('@graph/EdgePropertyRemoved', { edge: this, key, previous: previousValue }),
     );
@@ -233,7 +233,7 @@ export class Edge {
     const removed = Object.fromEntries(
       keys.filter((key) => key in this.properties).map((key) => [key, this.properties[key]]),
     );
-    g?.recordUndo(() => void g.getEdgeById(id)?.setProperties(removed));
+    g?.recordUndo(() => g.getEdgeById(id)?.setProperties(removed));
     this.#graph?.emit(
       new EmitterEvent('@graph/EdgePropertiesRemoved', { edge: this, keys, previous: removed }),
     );

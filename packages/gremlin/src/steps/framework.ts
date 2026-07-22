@@ -29,14 +29,25 @@ export type SubPlan = StepFn | Plan;
 
 // ---------- Token tables ----------
 
+// A registry (`Symbol.for`) symbol tagged with its family, so the token tables
+// (`T` / `Order` / `Column`) become DISTINCT nominal types rather than all
+// collapsing to bare `symbol`. Without the brand, `Token`, `OrderSym`, and
+// `ColumnSym` are structurally identical (every `Symbol.for(...)` is typed
+// `symbol`), so `by()` couldn't reject a symbol from the wrong family and
+// `ByModulator = string | Token | ColumnSym | …` had a duplicate constituent.
+// The brand is phantom (type-level only); at runtime these are plain symbols.
+type FamilySymbol<Family extends string> = symbol & { readonly __family: Family };
+const familySymbol = <Family extends string>(key: string): FamilySymbol<Family> =>
+  Symbol.for(key) as FamilySymbol<Family>;
+
 // Tokens for `by()` — project to well-known facets of an element. Symbols
 // (rather than string literals) so they don't collide with user-supplied
 // property names.
 export const T = {
-  id: Symbol.for('@lenke/gremlin/T.id'),
-  label: Symbol.for('@lenke/gremlin/T.label'),
-  key: Symbol.for('@lenke/gremlin/T.key'),
-  value: Symbol.for('@lenke/gremlin/T.value'),
+  id: familySymbol<'Token'>('@lenke/gremlin/T.id'),
+  label: familySymbol<'Token'>('@lenke/gremlin/T.label'),
+  key: familySymbol<'Token'>('@lenke/gremlin/T.key'),
+  value: familySymbol<'Token'>('@lenke/gremlin/T.value'),
 } as const;
 
 export type Token = (typeof T)[keyof typeof T];
@@ -52,8 +63,8 @@ const TOKEN_TO_KIND: ReadonlyMap<symbol, 'id' | 'label' | 'key' | 'value'> = new
 // natural-order direction, or as the second arg (`by('age', Order.desc)`) to
 // pair with a projection.
 export const Order = {
-  asc: Symbol.for('@lenke/gremlin/Order.asc'),
-  desc: Symbol.for('@lenke/gremlin/Order.desc'),
+  asc: familySymbol<'Order'>('@lenke/gremlin/Order.asc'),
+  desc: familySymbol<'Order'>('@lenke/gremlin/Order.desc'),
 } as const;
 
 export type OrderSym = (typeof Order)[keyof typeof Order];
@@ -79,8 +90,8 @@ export const Scope = {
 // they choose whether to sort a Map's entries by their key or value; in
 // `select(Column.x)` they extract that column as a list.
 export const Column = {
-  keys: Symbol.for('@lenke/gremlin/Column.keys'),
-  values: Symbol.for('@lenke/gremlin/Column.values'),
+  keys: familySymbol<'Column'>('@lenke/gremlin/Column.keys'),
+  values: familySymbol<'Column'>('@lenke/gremlin/Column.values'),
 } as const;
 
 export type ColumnSym = (typeof Column)[keyof typeof Column];
@@ -133,7 +144,7 @@ export const POP_TO_STR: ReadonlyMap<symbol, 'first' | 'last' | 'all'> = new Map
 //   - Order.asc/desc → identity projection with comparator direction (order only)
 //   - StepFn     → run a single-step sub-traversal (e.g. `count()`)
 //   - Plan       → run a multi-step sub-traversal built via `traversal(...)`
-export type ByModulator = string | Token | ColumnSym | StepFn | Plan;
+export type ByModulator = string | Token | ColumnSym | OrderSym | StepFn | Plan;
 
 export type ByableStep<S extends Step> = StepFn & {
   readonly by: (modulator?: ByModulator, comparator?: OrderSym) => ByableStep<S>;

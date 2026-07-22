@@ -119,8 +119,8 @@ export class Vertex {
     // be a stale, evicted handle.
     g?.recordUndo(
       had
-        ? () => void g.getVertexById(id)?.setProperty(key, previousValue)
-        : () => void g.getVertexById(id)?.removeProperty(key),
+        ? () => g.getVertexById(id)?.setProperty(key, previousValue)
+        : () => g.getVertexById(id)?.removeProperty(key),
     );
     this.#graph?.emit(
       new EmitterEvent('@graph/VertexPropertyChanged', {
@@ -197,7 +197,7 @@ export class Vertex {
     const g = this.#graph;
     const { id } = this;
     const previousValue = this.properties[key];
-    g?.recordUndo(() => void g.getVertexById(id)?.setProperty(key, previousValue));
+    g?.recordUndo(() => g.getVertexById(id)?.setProperty(key, previousValue));
     this.#graph?.emit(
       new EmitterEvent('@graph/VertexPropertyRemoved', {
         vertex: this,
@@ -223,7 +223,7 @@ export class Vertex {
     const removed = Object.fromEntries(
       keys.filter((key) => key in this.properties).map((key) => [key, this.properties[key]]),
     );
-    g?.recordUndo(() => void g.getVertexById(id)?.setProperties(removed));
+    g?.recordUndo(() => g.getVertexById(id)?.setProperties(removed));
     this.#graph?.emit(
       new EmitterEvent('@graph/VertexPropertiesRemoved', { vertex: this, keys, previous: removed }),
     );

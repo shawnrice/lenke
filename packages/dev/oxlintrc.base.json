@@ -5,6 +5,9 @@
     "./lint-rules/module-boundaries.js",
     "@lenke/lint"
   ],
+  "categories": {
+    "correctness": "error"
+  },
   "rules": {
     "padding-lines/before-exit": "error",
     "boundaries/no-cross-package-relative-import": "error",
@@ -121,6 +124,19 @@
         "no-shadow": "off",
         "typescript/require-array-sort-compare": "off",
         "lenke/no-raw-interpolation": "off"
+      }
+    },
+    {
+      "files": ["**/*.test.js"],
+      "rules": {
+        "typescript/no-floating-promises": "off"
+      }
+    },
+    {
+      "files": ["examples/**"],
+      "rules": {
+        "typescript/no-base-to-string": "off",
+        "typescript/restrict-template-expressions": "off"
       }
     }
   ],

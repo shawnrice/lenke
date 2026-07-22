@@ -31,6 +31,7 @@ export const addVStep = function* (
   // the vertex map, so adding vertices mid-iteration would feed the new
   // vertices back in and loop forever. Buffering matches TinkerPop's semantics
   // (one addition per pre-existing input).
+  // oxlint-disable-next-line unicorn/no-useless-spread -- snapshot the live source before mutating
   for (const t of [...stream]) {
     const v = graph.addVertex({
       labels: label ? [label] : [],
@@ -107,6 +108,7 @@ export const addEStep = function* (
   ctx: RunContext,
 ): Iterable<Traverser<unknown>> {
   // Snapshot before mutating — an `E()` source iterates a live edge view.
+  // oxlint-disable-next-line unicorn/no-useless-spread -- snapshot the live source before mutating
   for (const t of [...stream]) {
     if (step.from === undefined && step.to === undefined) {
       throw new LenkeError(
@@ -164,6 +166,7 @@ export const dropStep = function* (
   // Snapshot before mutating — `V()`/`E()` sources iterate live views, and a
   // drop mid-iteration both invalidates the iterator and (via edge cascade)
   // can hide elements the traversal still needs to reach.
+  // oxlint-disable-next-line unicorn/no-useless-spread -- snapshot the live source before mutating
   for (const t of [...stream]) {
     const v = t.value;
 
