@@ -32,8 +32,13 @@
  */
 
 export { ABI_VERSION } from './abi.js';
+// Re-exported so consumers can name the `type` arg of `createTypeConstraint` /
+// `createEdgeTypeConstraint` (and build replicable schema ops) without reaching
+// past this facade into `@lenke/core`.
+export type { ScalarTypeName } from '@lenke/core';
 export type { Backend, GraphHandle, MergeReport } from './backend.js';
 export {
+  applySchemaOp,
   attachGraph,
   createEmptyGraph,
   decodeArrow,
@@ -44,6 +49,7 @@ export {
   type QueryParams,
   type RustGraph,
   type Row,
+  type SchemaOp,
 } from './graph.js';
 export { createStore, inferDeps, type Store, type LiveQuery } from './store.js';
 // The napi adapter rebuilds coded LenkeErrors from the wire-code tag its N-API

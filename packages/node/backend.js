@@ -108,6 +108,9 @@ export function createNodeBackend() {
     vertexIndexes: (handle) => get(handle).vertexIndexes(),
     lastWriteScope: (handle, key) => get(handle).lastWriteScope(key),
     edgeIndexes: (handle) => get(handle).edgeIndexes(),
+    // JSON string over the addon boundary (like the C ABI's lnk_dump_schema), parsed
+    // to the SchemaOp[] the Backend contract returns.
+    dumpSchema: (handle) => JSON.parse(get(handle).dumpSchema()),
 
     // `prepare` is a module-level addon function (a Prepared needs no graph);
     // execute binds it to a graph at call time.

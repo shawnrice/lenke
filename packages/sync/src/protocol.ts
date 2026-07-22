@@ -31,7 +31,18 @@
  */
 
 import { isLenkeError } from '@lenke/errors';
-import type { QueryParams, Row, RustGraph } from '@lenke/native';
+import {
+  applySchemaOp,
+  type QueryParams,
+  type Row,
+  type RustGraph,
+  type SchemaOp,
+} from '@lenke/native';
+
+// `SchemaOp` + `applySchemaOp` are native primitives (they describe / dispatch a
+// `RustGraph`'s own schema methods, and pair with `RustGraph.dumpSchema`). Re-
+// exported here so wire consumers keep importing them from `@lenke/sync`.
+export { applySchemaOp, type SchemaOp } from '@lenke/native';
 
 /** A failure crossing the wire: the stable code is the contract, the message is free to change. */
 export type WireError = {
@@ -69,16 +80,28 @@ export type SyncWrite = {
    * don't cross the JSON protocol.
    */
   ndjson?: Uint8Array;
+  /**
+   * A schema declaration to (re)apply instead of a data write. When set, `text`
+   * is ignored (use `''`). This is how constraints/validators/invariants/indexes
+   * replicate across the CDC log — see [`SchemaOp`].
+   */
+  schema?: SchemaOp;
 };
 
 /**
- * Apply one write to a graph: GQL via `query`, Gremlin via `gremlin`. The ONE
- * write-language dispatch — the engine's loop and the host's default
- * `applyMutation` both route through it, so a new language (or a per-language
- * step) lands in exactly one place. Lives here because both import protocol
- * and host can't import engine (cycle).
+ * Apply one write to a graph: GQL via `query`, Gremlin via `gremlin`, or a schema
+ * declaration via [`applySchemaOp`]. The ONE write-language dispatch — the
+ * engine's loop and the host's default `applyMutation` both route through it, so a
+ * new language (or a per-language step) lands in exactly one place. Lives here
+ * because both import protocol and host can't import engine (cycle).
  */
 export const runWrite = (g: RustGraph, w: SyncWrite): void => {
+  if (w.schema) {
+    applySchemaOp(g, w.schema);
+
+    return;
+  }
+
   if (w.ndjson) {
     // Bulk COPY FROM — the fast demand-fill path. Surface anything that didn't
     // land cleanly (a rare event for disjoint batches) so it isn't swallowed.

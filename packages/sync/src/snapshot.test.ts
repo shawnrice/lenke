@@ -14,6 +14,7 @@ import {
   createSnapshotStore,
   decodeSnapshot,
   encodeSnapshot,
+  graphFromSnapshot,
   importSnapshotKey,
   memorySnapshotStorage,
   opfsStorage,
@@ -67,7 +68,7 @@ suite('@lenke/sync snapshot · codec', () => {
     const snap = await decodeSnapshot(bytes, EXPECT, PLAIN);
     expect(snap).not.toBeNull();
     expect(snap!.header).toMatchObject({
-      formatVersion: 2,
+      formatVersion: 3,
       schemaVersion: 'v1',
       userId: 'shawn',
       serverCursor: 'cursor-42',
@@ -366,5 +367,64 @@ suite('@lenke/sync snapshot · warm boot', () => {
     });
     expect(held).toEqual([{ text: 'INSERT (:Person {name: $n})', params: { n: 'offline-edit' } }]);
     expect(session2.pendingWrites()).toBe(0);
+  });
+});
+
+// A snapshot carries the graph's schema (constraints/validators/invariants/indexes)
+// in its own section — data NDJSON can't — so a COLD BOOT restores a graph that
+// still enforces them. Without this, a warm-booted replica would silently drop its
+// constraints and a queued `_MERGE` would throw for want of the key it upserts on.
+suite('@lenke/sync snapshot · schema restore', () => {
+  test('constraints + validators survive encode → decode → graphFromSnapshot', async () => {
+    const store = newStore('\n'); // empty graph; declare schema, then upsert into it
+    store.mutate((g) => {
+      g.createUniqueConstraint('User', 'email');
+      g.createValidator('User', 'u', 'u.age >= 0');
+      g.createVertexIndex('email');
+      g.query("_MERGE (u:User {email: 'a@b.com', age: 30})");
+    });
+
+    const bytes = await encodeSnapshot(store, { ...EXPECT, pendingWrites: [] }, PLAIN);
+    const snap = await decodeSnapshot(bytes, EXPECT, PLAIN);
+    expect(snap).not.toBeNull();
+    // The schema section decoded as structured ops (not write-language text).
+    expect(snap!.schema).toContainEqual({
+      op: 'createUniqueConstraint',
+      label: 'User',
+      key: 'email',
+    });
+    expect(snap!.schema).toContainEqual({
+      op: 'createValidator',
+      label: 'User',
+      varName: 'u',
+      predicate: 'u.age >= 0',
+    });
+
+    // Rebuild the graph the complete way — data AND schema replayed.
+    const restored = createStore(graphFromSnapshot(createFfiBackend(LIB), snap!));
+
+    // The unique constraint is live: the keyed `_MERGE` upserts (doesn't duplicate)…
+    restored.mutate((g) => g.query("_MERGE (u:User {email: 'a@b.com', age: 31})"));
+    const users = restored.mutate((g) =>
+      g.query<{ email: string; age: number }>(
+        'MATCH (u:User) RETURN u.email AS email, u.age AS age',
+      ),
+    );
+    expect(users).toEqual([{ email: 'a@b.com', age: 31 }]); // one row, payload updated
+
+    // …and the validator is live: a forbidden write is rejected on the replica.
+    expect(() =>
+      restored.mutate((g) => g.query('INSERT (:User {email: $e, age: -5})', { e: 'x@y.z' })),
+    ).toThrow();
+  });
+
+  test('a schema-less graph round-trips with an empty schema section', async () => {
+    const store = newStore(); // two Persons, no constraints
+    const bytes = await encodeSnapshot(store, { ...EXPECT, pendingWrites: [] }, PLAIN);
+    const snap = await decodeSnapshot(bytes, EXPECT, PLAIN);
+    expect(snap!.schema).toEqual([]);
+    // Data still restores fine through the complete-boot helper.
+    const restored = createStore(graphFromSnapshot(createFfiBackend(LIB), snap!));
+    expect(restored.graph.vertexCount).toBe(2);
   });
 });

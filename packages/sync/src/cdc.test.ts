@@ -20,6 +20,7 @@ import {
   type SyncWrite,
   type WritesMessage,
 } from './protocol.js';
+import { applySchema } from './schema.js';
 import { createWriteLog, type WriteLog } from './writelog.js';
 
 const LIB_EXTENSIONS: Partial<Record<NodeJS.Platform, string>> = { darwin: 'dylib', win32: 'dll' };
@@ -548,5 +549,138 @@ describe('CDC write stream — client ordering guard (transport-free)', () => {
       (sent.find((m) => m.type === 'mutate') as { req: string }).req;
     // Two clients issuing "the same" write get distinct reqs → no false dedupe.
     expect(reqOf(sentA)).not.toEqual(reqOf(sentB));
+  });
+});
+
+// Schema (constraints / validators / invariants / indexes) rides the SAME CDC log
+// as data — `applySchema` applies it to the authoritative store and appends a
+// structured op, so a replica replaying the stream stays schema-in-lock-step. This
+// is what lets a replica derive a keyed `_MERGE` or reject the same writes as the
+// source — without it, the replica is missing the constraints. Server-authoritative
+// (no CRDT): the store is the single writer; replicas receive, they don't originate.
+suite('schema replication over the CDC log (R-SCHEMA-REPL)', () => {
+  /** A replica: pipe the write stream into a fresh local store (what engine.ingest
+   *  does). Subscribing with a default cursor replays the full backlog in seq order. */
+  const replicaOf = (c: SyncClient): Store => {
+    const local = newStore();
+    c.subscribeWrites((writes) => {
+      local.mutate((g) => {
+        for (const w of writes) {
+          runWrite(g, w);
+        }
+      });
+    });
+
+    return local;
+  };
+
+  const accts = (s: Store): Array<{ email: string; name: string | null }> =>
+    s.mutate((g) =>
+      g.query<{ email: string; name: string | null }>(
+        'MATCH (u:Acct) RETURN u.email AS email, u.name AS name ORDER BY u.email',
+      ),
+    );
+
+  test("a unique constraint replicates so a replica's keyed _MERGE derives its key", () => {
+    const s = server();
+    const local = replicaOf(s.client());
+
+    // Before the constraint lands, a keyed upsert on the replica has no key to
+    // upsert on → it errors, exactly as on any fresh engine.
+    expect(() => local.mutate((g) => g.query("_MERGE (u:Acct {email: 'm@x.io'})"))).toThrow();
+
+    // Publish the schema over the log; the replica ingests + applies it in order.
+    applySchema(
+      s.store,
+      { op: 'createUniqueConstraint', label: 'Acct', key: 'email' },
+      { writeLog: s.writeLog },
+    );
+
+    // Now the same upsert succeeds on the replica AND is idempotent on the key —
+    // the second _MERGE clobbers the payload of the one row rather than inserting.
+    local.mutate((g) => {
+      g.query("_MERGE (u:Acct {email: 'm@x.io', name: 'A'})");
+      g.query("_MERGE (u:Acct {email: 'm@x.io', name: 'B'})");
+    });
+    expect(accts(local)).toEqual([{ email: 'm@x.io', name: 'B' }]);
+
+    // …and the authoritative store enforces the very same constraint.
+    expect(() =>
+      s.store.mutate((g) => {
+        g.query("INSERT (:Acct {email: 'x@x.io'})");
+        g.query("INSERT (:Acct {email: 'x@x.io'})");
+      }),
+    ).toThrow();
+  });
+
+  test('a validator replicates so the replica rejects the same forbidden write', () => {
+    const s = server();
+    const local = replicaOf(s.client());
+
+    applySchema(
+      s.store,
+      { op: 'createValidator', label: 'User', varName: 'u', predicate: 'u.age >= 0' },
+      { writeLog: s.writeLog },
+    );
+
+    // The replica now rejects a write the predicate forbids — same as the source.
+    expect(() => local.mutate((g) => g.query('INSERT (:User {age: -1})'))).toThrow();
+    // A conforming write still lands.
+    local.mutate((g) => g.query('INSERT (:User {age: 5})'));
+    expect(
+      local.mutate((g) => g.query<{ c: number }>('MATCH (u:User) RETURN count(*) AS c'))[0].c,
+    ).toBe(1);
+  });
+
+  test('a schema change rejected by existing data throws and never reaches the log', () => {
+    const s = server();
+    // Seed two Accts sharing an email directly on the store (does NOT log — only a
+    // host mutate appends). A unique constraint can't hold over this data.
+    s.store.mutate((g) => {
+      g.query("INSERT (:Acct {email: 'dup@x.io'})");
+      g.query("INSERT (:Acct {email: 'dup@x.io'})");
+    });
+    const headBefore = s.writeLog.head();
+
+    // Apply-then-log: the store rejects the constraint, so nothing is published —
+    // a replica never sees a constraint the source itself couldn't take.
+    expect(() =>
+      applySchema(
+        s.store,
+        { op: 'createUniqueConstraint', label: 'Acct', key: 'email' },
+        { writeLog: s.writeLog },
+      ),
+    ).toThrow();
+    expect(s.writeLog.head()).toBe(headBefore);
+  });
+
+  test('a late-joining replica replays schema THEN data from the backlog in order', async () => {
+    const s = server();
+    const writer = s.client();
+
+    // Schema first, then a keyed upsert that depends on it — both land in the log.
+    applySchema(
+      s.store,
+      { op: 'createUniqueConstraint', label: 'Acct', key: 'email' },
+      { writeLog: s.writeLog },
+    );
+    await writer.mutate("_MERGE (u:Acct {email: 'k@x.io', name: 'K'})");
+
+    // A replica connects only now and replays the whole backlog from seq 0. If the
+    // constraint didn't replay BEFORE the _MERGE, the upsert would have thrown.
+    const local = replicaOf(s.client());
+    expect(accts(local)).toEqual([{ email: 'k@x.io', name: 'K' }]);
+  });
+
+  test('an index declaration replicates (structured op, not write-language text)', () => {
+    const s = server();
+    const local = replicaOf(s.client());
+
+    applySchema(s.store, { op: 'createVertexIndex', key: 'email' }, { writeLog: s.writeLog });
+
+    // The op reached the replica's engine — the index now exists there too. (A
+    // seek-plan speedup isn't observable from results; presence is the contract.)
+    expect(local.mutate((g) => g.vertexIndexes())).toContain('email');
+    expect(s.store.mutate((g) => g.vertexIndexes())).toContain('email');
   });
 });

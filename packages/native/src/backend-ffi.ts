@@ -4,6 +4,7 @@ import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import { assertAbi } from './abi.js';
 import type { Backend, GraphHandle, MergeReport } from './backend.js';
+import type { SchemaOp } from './graph.js';
 import { asByteLength, type ErrorReport, parseErrorReport } from './marshal.js';
 
 // usize / pointer are 64-bit on the native targets we load (arm64 / x86_64);
@@ -66,6 +67,7 @@ const SYMBOLS = {
   lnk_vertex_indexes: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.ptr },
   lnk_last_write_scope: { args: [FFIType.ptr, FFIType.ptr, U, FFIType.ptr], returns: FFIType.ptr },
   lnk_edge_indexes: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.ptr },
+  lnk_dump_schema: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.ptr },
   lnk_prepare: { args: [FFIType.ptr, U, U], returns: FFIType.ptr },
   lnk_prepared_free: { args: [FFIType.ptr], returns: FFIType.void },
   lnk_prepared_query_rows: {
@@ -547,6 +549,16 @@ export const createFfiBackend = (libPath: string): Backend => {
           ),
         ),
       ) as string[],
+    dumpSchema: (handle) =>
+      JSON.parse(
+        decoder.decode(
+          takeBuf(
+            (outLen) => symbols.lnk_dump_schema(asPtr(handle), outLen),
+            symbols.lnk_free_buf,
+            'dumpSchema',
+          ),
+        ),
+      ) as SchemaOp[],
     lastWriteScope: (handle, key) => {
       const k = encoder.encode(key);
 

@@ -2,6 +2,7 @@ import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import { assertAbi } from './abi.js';
 import type { Backend, GraphHandle, MergeReport } from './backend.js';
+import type { SchemaOp } from './graph.js';
 import { type ErrorReport, parseErrorReport } from './marshal.js';
 
 // The wasm module exports the same `lnk_*` C ABI as the native library, but
@@ -105,6 +106,7 @@ type WasmExports = {
   lnk_vertex_indexes: (h: number, outLen: number) => number;
   lnk_last_write_scope: (h: number, key: number, keyLen: number, outLen: number) => number;
   lnk_edge_indexes: (h: number, outLen: number) => number;
+  lnk_dump_schema: (h: number, outLen: number) => number;
   lnk_prepare: (q: number, qlen: number, max: number) => number;
   lnk_prepared_free: (p: number) => void;
   lnk_prepared_query_rows: (
@@ -779,6 +781,19 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
           ),
         ),
       ) as string[],
+    dumpSchema: (handle) =>
+      JSON.parse(
+        decoder.decode(
+          takeBuf(
+            handle,
+            null,
+            null,
+            (h, _q, _ql, _p, _pl, o) => ex.lnk_dump_schema(h, o),
+            ex.lnk_free_buf,
+            'dumpSchema',
+          ),
+        ),
+      ) as SchemaOp[],
     // The scope key rides `takeBuf`'s query slot (staged into wasm memory as q/qlen).
     lastWriteScope: (handle, key) =>
       JSON.parse(

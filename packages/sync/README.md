@@ -173,7 +173,7 @@ await snapshots.save(engine.store, {
 const snap = await snapshots.load({ schemaVersion: 'v3', userId: session.userId });
 const store = createStore(
   snap
-    ? graphFromNdjson(backend, snap.ndjson) // warm: answer subscriptions now, reconcile after
+    ? graphFromSnapshot(backend, snap) // warm: restores data AND schema (constraints/indexes)
     : createEmptyGraph(backend),
 ); // cold: demand-fill does the rest
 const engine = createSyncEngine({
@@ -206,7 +206,7 @@ const snapshots = createSnapshotStore({
 
 Encryption is **secure-by-default and structural**: `createSnapshotStore` writes durably only when it holds a key; without one the snapshot stays in memory and never touches disk. And the durable sink enforces this on its own — `opfsStorage.write` **refuses an unencrypted snapshot** (a one-byte crypto flag in the format lets it check without a key), so plaintext can't reach disk even through the raw primitives. The lower-level `encodeSnapshot`/`decodeSnapshot`/`readSnapshot` each still take a required, explicit `{ key }` or `{ unencrypted: true }` — there's no "pass nothing" path, because an unencrypted snapshot carries no authentication at all.
 
-Format: a **plaintext header** `{ formatVersion, schemaVersion, userId, serverCursor, collections }` — the invalidation tier, checked before any decryption (`peekHeader` reads it without the key) — then a gzip payload, optionally AES-GCM-sealed (compress-then-encrypt; authenticated, so tamper — payload _or_ the header, bound in as AEAD `additionalData` — reads as absent; fresh IV per save; revocation = drop the key — crypto-shredding). `readSnapshot`/`load` **delete** a snapshot they can't decode on the way out — and this is intentional: a wrong key or a tampered/authentication-failing payload is treated as "invalid, drop it" (a security property — a snapshot you can't open is a snapshot you evict, not keep). So do NOT probe a key against your live snapshot to "test" it — a failed load destroys it. Use `peekHeader` (reads the plaintext header without the key) for a non-destructive check. Logout should still answer with `Clear-Site-Data: "storage"` — the browser wipes the origin without trusting app code to clean up.
+Format: a **plaintext header** `{ formatVersion, schemaVersion, userId, serverCursor, collections }` — the invalidation tier, checked before any decryption (`peekHeader` reads it without the key) — then a gzip payload of three sections: the graph **NDJSON** (data), the **pending-write queue**, and the **schema** (constraints / validators / invariants / indexes, read straight from the engine via `dumpSchema` — data NDJSON can't carry them, and the engine is the one source of truth so they never drift). NDJSON stays pure data; schema rides its own section, which is why `graphFromSnapshot` (data **and** schema) is the complete warm-boot path where a bare `graphFromNdjson` would silently drop constraints. The payload is optionally AES-GCM-sealed (compress-then-encrypt; authenticated, so tamper — payload _or_ the header, bound in as AEAD `additionalData` — reads as absent; fresh IV per save; revocation = drop the key — crypto-shredding). `readSnapshot`/`load` **delete** a snapshot they can't decode on the way out — and this is intentional: a wrong key or a tampered/authentication-failing payload is treated as "invalid, drop it" (a security property — a snapshot you can't open is a snapshot you evict, not keep). So do NOT probe a key against your live snapshot to "test" it — a failed load destroys it. Use `peekHeader` (reads the plaintext header without the key) for a non-destructive check. Logout should still answer with `Clear-Site-Data: "storage"` — the browser wipes the origin without trusting app code to clean up.
 
 ## Multiplayer: the CDC write stream
 
@@ -290,7 +290,25 @@ B and C never subscribed to a live query, yet both received A's `Widget` insert 
 
 The consequence is easy to trip over: **a pure-CDC replica — one that ingests the write stream but registers no `client.liveQuery` — has no wire `deps`, so the host routes it ALL writes** (same as `deps: null`). That's usually what you want (a replica reconstructing the whole graph from the op stream must see every write), but it means interest routing does _not_ filter a CDC-only client. To narrow what a client receives, it must hold a wire `client.liveQuery` (or wire `subscribe`) whose `deps` name the tokens it cares about — a _local_ `store.liveQuery` will not narrow the stream, because the host never learns about it.
 
-**Constraints and schema do NOT replicate over the write stream.** The op log carries only `SyncWrite`s (DML — `INSERT`/`SET`/`REMOVE`/`DELETE`/`_MERGE`), replayed through `runWrite`. Catalog declarations — `createUniqueConstraint`, `createCardinalityConstraint`, property indexes — are **not** ops and never cross the wire. Each replica must **re-declare** the same constraints on its own store _before_ ingesting writes that depend on them. This matters most for keyed upserts: `_MERGE` needs the target label's **unique constraint** present to resolve the key, so a replica that ingests a `_MERGE` without first running `createUniqueConstraint` will not upsert correctly. Treat schema as boot-time setup that every replica performs identically (the same way the byte-identical engines make statement replay deterministic) — it is a store-construction concern, not a replicated one.
+### Schema replication — constraints ride the same log
+
+Constraints, validators, invariants, and indexes replicate over the **same op stream** as data. A schema declaration is set up through the programmatic API (`g.createUniqueConstraint(…)`, `g.createValidator(…)`, `g.createVertexIndex(…)`), not as write-language text, so it rides the log as a **structured `SchemaOp`** rather than a `text` statement — and `runWrite` replays it on every replica (`runWrite` → `applySchemaOp`), keeping schema in lock-step. This is what lets a replica derive a keyed `_MERGE` (which needs the target label's unique constraint to resolve the key) or reject the same writes as the source. Without it, a replica was silently missing the constraints and a replayed `_MERGE` threw.
+
+Apply a schema change on the **authoritative** side with `applySchema` — it applies the op to the store _and_ appends it to the `WriteLog` in one call, so replicas replay it in order with the surrounding data:
+
+```ts
+import { applySchema } from '@lenke/sync';
+
+// server side: `store` + `writeLog` are the shared authoritative pair.
+applySchema(store, { op: 'createUniqueConstraint', label: 'User', key: 'email' }, { writeLog });
+// every subscribed replica now enforces it — and a keyed `_MERGE (:User {email})` upserts everywhere.
+```
+
+**Server-authoritative — not a CRDT.** Matching statement replication, the store is the single writer of schema; replicas _receive_ it, they don't originate it. `applySchema` **applies before it logs**, so a constraint the source's own data already violates throws and is **never published** — a replica never sees a constraint the source itself couldn't take. A schema op is unscoped and un-tokened, so it forwards past interest/scope routing to **every** subscriber (schema is graph-global). All 13 declaration methods replicate: vertex/edge index (+ drop), unique/required/type (node & edge), cardinality, validator, invariant.
+
+`defineNode`/`defineEdge` are the deliberate exception: they bind a label to a **host-side JS validator** (a Zod/Valibot/ArkType schema), which isn't engine state and can't cross the wire. Their _writes_ replicate; a replica that runs its own local `.create()` executes the same app code. If the engine itself must enforce a slice on every replica, pair them with an in-engine type/required constraint (which _does_ replicate here).
+
+**Cold boot carries schema too.** A late replica catches up by replaying the log backlog, which includes the schema ops. And if the log has rolled past a constraint's creation (older than the bounded tail → `resync` → cold-boot from an app snapshot), the **snapshot carries schema** as well: `encodeSnapshot` reads the live schema out of the engine (`graph.dumpSchema()`) into its own section, and `graphFromSnapshot(backend, snap)` replays it on boot (see [Snapshots (warm boot)](#snapshots-warm-boot) above). So a warm-booted replica enforces the same constraints without re-declaring them — use `graphFromSnapshot` instead of a bare `graphFromNdjson` and there's nothing left to do by hand.
 
 ## v1 boundaries (deliberate)
 

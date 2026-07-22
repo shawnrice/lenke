@@ -36,6 +36,7 @@ const countingBackend = (): { backend: Backend; freed: GraphHandle[] } => {
     rollbackTransaction: () => {},
     vertexIndexes: () => [],
     edgeIndexes: () => [],
+    dumpSchema: () => [],
     mergeNdjson: () => ({
       nodesAdded: 0,
       edgesAdded: 0,

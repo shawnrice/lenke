@@ -667,6 +667,63 @@ impl PropType {
             _ => None,
         }
     }
+
+    /// The exact inverse of [`from_name`](Self::from_name) — the scalar-type name a
+    /// `createTypeConstraint` op carries. Used by [`Graph::dump_schema`] to round-trip
+    /// a declared type constraint back into a replayable op string.
+    fn to_name(self) -> &'static str {
+        match self {
+            Self::Str => "string",
+            Self::Num => "number",
+            Self::Bool => "boolean",
+            Self::Date => "date",
+            Self::Time => "localtime",
+            Self::DateTime => "datetime",
+            Self::ZonedTime => "zoned_time",
+            Self::ZonedDateTime => "zoned_datetime",
+            Self::Duration => "duration",
+            Self::List => "list",
+        }
+    }
+}
+
+/// A scalar field value for [`schema_op`] — the small set of JSON leaf shapes a
+/// [`SchemaOp`](Graph::dump_schema) object carries.
+enum Jv<'a> {
+    /// A JSON string (escaped on write).
+    S(&'a str),
+    /// A JSON number.
+    N(u32),
+    /// A JSON number, or `null` (an unbounded cardinality `max`).
+    NOpt(Option<u32>),
+}
+
+/// Build one `SchemaOp` JSON object: `{"op":<op>, <k>:<v>, …}` with `op` first,
+/// then each field in the given order. String values are JSON-escaped via the
+/// shared `jsonfmt` so the output is byte-identical to `JSON.stringify`.
+fn schema_op(op: &str, fields: &[(&str, Jv)]) -> String {
+    use std::fmt::Write as _;
+    let mut s = String::from("{");
+    crate::jsonfmt::push_json_str(&mut s, "op");
+    s.push(':');
+    crate::jsonfmt::push_json_str(&mut s, op);
+    for (k, v) in fields {
+        s.push(',');
+        crate::jsonfmt::push_json_str(&mut s, k);
+        s.push(':');
+        match v {
+            Jv::S(x) => crate::jsonfmt::push_json_str(&mut s, x),
+            Jv::N(n) => {
+                let _ = write!(s, "{n}");
+            }
+            Jv::NOpt(Some(n)) => {
+                let _ = write!(s, "{n}");
+            }
+            Jv::NOpt(None) => s.push_str("null"),
+        }
+    }
+    s.push('}');
+    s
 }
 
 /// An immutable **CSR** (compressed-sparse-row) snapshot of the adjacency: one
@@ -2227,6 +2284,124 @@ impl Graph {
             .collect();
         out.sort_by(|a, b| a.0.cmp(&b.0));
         out
+    }
+
+    /// The full active schema as a JSON array of replayable **op objects** — the
+    /// read side of [`create_*`] (the inverse of applying them). Each element
+    /// mirrors the TS `SchemaOp` union (`{"op":"createUniqueConstraint","label":…,
+    /// "key":…}`, …), emitted in a fixed section order (indexes → node constraints →
+    /// edge constraints → cardinality → validators → invariants), each section
+    /// sorted, so the output is **deterministic** for a given schema. The snapshot
+    /// codec calls this to persist schema alongside the graph NDJSON; a cold boot
+    /// replays each op via `applySchemaOp`, so a restored replica keeps the
+    /// constraints/validators/indexes it can't reconstruct from data alone.
+    pub fn dump_schema(&self) -> String {
+        let mut ops: Vec<String> = Vec::new();
+
+        for k in self.vertex_indexes() {
+            ops.push(schema_op("createVertexIndex", &[("key", Jv::S(&k))]));
+        }
+        for k in self.edge_indexes() {
+            ops.push(schema_op("createEdgeIndex", &[("key", Jv::S(&k))]));
+        }
+        for (label, key) in self.unique_constraints() {
+            ops.push(schema_op(
+                "createUniqueConstraint",
+                &[("label", Jv::S(&label)), ("key", Jv::S(&key))],
+            ));
+        }
+        for (label, key) in self.required_constraints() {
+            ops.push(schema_op(
+                "createRequiredConstraint",
+                &[("label", Jv::S(&label)), ("key", Jv::S(&key))],
+            ));
+        }
+        // Node type constraints carry the scalar type, which the `(label, key)`
+        // readers drop — iterate the map directly (sorted for determinism).
+        let mut vtypes: Vec<(String, String, &'static str)> = self
+            .v_type
+            .iter()
+            .flat_map(|(label, ks)| {
+                ks.iter()
+                    .map(move |(k, t)| (label.clone(), k.clone(), t.to_name()))
+            })
+            .collect();
+        vtypes.sort();
+        for (label, key, ty) in vtypes {
+            ops.push(schema_op(
+                "createTypeConstraint",
+                &[
+                    ("label", Jv::S(&label)),
+                    ("key", Jv::S(&key)),
+                    ("type", Jv::S(ty)),
+                ],
+            ));
+        }
+        for (etype, key) in self.edge_unique_constraints() {
+            ops.push(schema_op(
+                "createEdgeUniqueConstraint",
+                &[("edgeType", Jv::S(&etype)), ("key", Jv::S(&key))],
+            ));
+        }
+        for (etype, key) in self.edge_required_constraints() {
+            ops.push(schema_op(
+                "createEdgeRequiredConstraint",
+                &[("edgeType", Jv::S(&etype)), ("key", Jv::S(&key))],
+            ));
+        }
+        let mut etypes: Vec<(String, String, &'static str)> = self
+            .e_type_constraints
+            .iter()
+            .flat_map(|(et, ks)| {
+                ks.iter()
+                    .map(move |(k, t)| (et.clone(), k.clone(), t.to_name()))
+            })
+            .collect();
+        etypes.sort();
+        for (etype, key, ty) in etypes {
+            ops.push(schema_op(
+                "createEdgeTypeConstraint",
+                &[
+                    ("edgeType", Jv::S(&etype)),
+                    ("key", Jv::S(&key)),
+                    ("type", Jv::S(ty)),
+                ],
+            ));
+        }
+        for (label, etype, dir, min, max) in self.cardinality_constraints() {
+            let direction = if dir == 0 { "out" } else { "in" };
+            ops.push(schema_op(
+                "createCardinalityConstraint",
+                &[
+                    ("label", Jv::S(&label)),
+                    ("edgeType", Jv::S(&etype)),
+                    ("direction", Jv::S(direction)),
+                    ("min", Jv::N(min)),
+                    ("max", Jv::NOpt(max)),
+                ],
+            ));
+        }
+        for (label, var, predicate) in self.validators() {
+            ops.push(schema_op(
+                "createValidator",
+                &[
+                    ("label", Jv::S(&label)),
+                    ("varName", Jv::S(&var)),
+                    ("predicate", Jv::S(&predicate)),
+                ],
+            ));
+        }
+        for (name, query) in self.invariants() {
+            ops.push(schema_op(
+                "createInvariant",
+                &[("name", Jv::S(&name)), ("query", Jv::S(&query))],
+            ));
+        }
+
+        let mut json = String::from("[");
+        json.push_str(&ops.join(","));
+        json.push(']');
+        json
     }
 
     /// `false`-only-fails: a result set VIOLATES an invariant iff any cell is a

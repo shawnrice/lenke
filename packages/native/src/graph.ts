@@ -20,6 +20,89 @@ import { ensureDisposeSymbol } from './dispose.js';
 /** A decoded result row: column name → cell value. */
 export type Row = Record<string, unknown>;
 
+/**
+ * A **schema** declaration as structured data — a constraint / validator /
+ * invariant / index (or an index drop). These are set up via the programmatic API
+ * ({@link RustGraph.createUniqueConstraint} …), so this union is the serializable
+ * form: {@link applySchemaOp} applies one to a graph, {@link RustGraph.dumpSchema}
+ * reads them all back out. `@lenke/sync` rides them over the CDC log so a replica
+ * stays schema-in-lock-step, and the snapshot codec persists them for cold boot.
+ * (`defineNode`/`defineEdge` are NOT here: they bind a label to a host-side JS
+ * validator, which isn't engine state and can't be serialized — their *writes*
+ * replicate instead.)
+ */
+export type SchemaOp =
+  | { op: 'createVertexIndex'; key: string }
+  | { op: 'createEdgeIndex'; key: string }
+  | { op: 'dropVertexIndex'; key: string }
+  | { op: 'dropEdgeIndex'; key: string }
+  | { op: 'createUniqueConstraint'; label: string; key: string }
+  | { op: 'createRequiredConstraint'; label: string; key: string }
+  | { op: 'createTypeConstraint'; label: string; key: string; type: ScalarTypeName }
+  | { op: 'createEdgeUniqueConstraint'; edgeType: string; key: string }
+  | { op: 'createEdgeRequiredConstraint'; edgeType: string; key: string }
+  | { op: 'createEdgeTypeConstraint'; edgeType: string; key: string; type: ScalarTypeName }
+  | {
+      op: 'createCardinalityConstraint';
+      label: string;
+      edgeType: string;
+      direction: 'out' | 'in';
+      min: number;
+      max: number | null;
+    }
+  | { op: 'createValidator'; label: string; varName: string; predicate: string }
+  | { op: 'createInvariant'; name: string; query: string };
+
+/**
+ * Apply one {@link SchemaOp} to a graph by calling the matching declaration
+ * method — the inverse of {@link RustGraph.dumpSchema}, and the single dispatch
+ * shared by CDC replay (`@lenke/sync`) and snapshot cold-boot. Any throw (e.g.
+ * existing data already violates the constraint) surfaces to the caller.
+ */
+export const applySchemaOp = (g: RustGraph, s: SchemaOp): void => {
+  switch (s.op) {
+    case 'createVertexIndex':
+      g.createVertexIndex(s.key);
+      break;
+    case 'createEdgeIndex':
+      g.createEdgeIndex(s.key);
+      break;
+    case 'dropVertexIndex':
+      g.dropVertexIndex(s.key);
+      break;
+    case 'dropEdgeIndex':
+      g.dropEdgeIndex(s.key);
+      break;
+    case 'createUniqueConstraint':
+      g.createUniqueConstraint(s.label, s.key);
+      break;
+    case 'createRequiredConstraint':
+      g.createRequiredConstraint(s.label, s.key);
+      break;
+    case 'createTypeConstraint':
+      g.createTypeConstraint(s.label, s.key, s.type);
+      break;
+    case 'createEdgeUniqueConstraint':
+      g.createEdgeUniqueConstraint(s.edgeType, s.key);
+      break;
+    case 'createEdgeRequiredConstraint':
+      g.createEdgeRequiredConstraint(s.edgeType, s.key);
+      break;
+    case 'createEdgeTypeConstraint':
+      g.createEdgeTypeConstraint(s.edgeType, s.key, s.type);
+      break;
+    case 'createCardinalityConstraint':
+      g.createCardinalityConstraint(s.label, s.edgeType, s.direction, s.min, s.max);
+      break;
+    case 'createValidator':
+      g.createValidator(s.label, s.varName, s.predicate);
+      break;
+    case 'createInvariant':
+      g.createInvariant(s.name, s.query);
+      break;
+  }
+};
+
 type RowSetJson = { columns: string[]; rows: unknown[][] };
 
 const decoder = new TextDecoder();
@@ -469,6 +552,17 @@ export type RustGraph = {
   vertexIndexes: () => string[];
   edgeIndexes: () => string[];
   /**
+   * The full active schema as replayable {@link SchemaOp}s — constraints,
+   * validators, invariants, and indexes — in a deterministic order. The read side
+   * of the `create*` declarations (their inverse): feed each back through
+   * {@link applySchemaOp} to reconstruct the schema on another graph. This is how
+   * the snapshot codec persists schema alongside the graph data, so a cold boot
+   * restores the constraints/validators/indexes that can't be derived from data.
+   * `defineNode`/`defineEdge` are NOT here — a host-side JS validator isn't engine
+   * state.
+   */
+  dumpSchema: () => SchemaOp[];
+  /**
    * The distinct values of property `key` across the vertices the most recent
    * committed write touched — that write's content-derived **value-scope**, for CDC
    * interest routing (`lastWriteScope('room')` → `['42']` right after a write into
@@ -894,6 +988,7 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
     vertexIndexes: () => backend.vertexIndexes(live()),
     lastWriteScope: (key) => backend.lastWriteScope(live(), key),
     edgeIndexes: () => backend.edgeIndexes(live()),
+    dumpSchema: () => backend.dumpSchema(live()),
     beginTransaction: () => backend.beginTransaction(live()),
     commitTransaction: () => backend.commitTransaction(live()),
     rollbackTransaction: () => backend.rollbackTransaction(live()),

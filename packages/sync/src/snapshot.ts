@@ -14,8 +14,12 @@
  * [magic "LNKS" | version u8] [u32 headerLen LE] [header JSON] [flag u8] [payload]
  * flag    = 0x01 encrypted | 0x00 plaintext — a WRITE-TIME guard so a durable
  *           sink can refuse plaintext without a key; not a decrypt signal.
- * payload = gzip( [u32 ndjsonLen LE] [graph NDJSON] [pending-writes JSON] )
+ * payload = gzip( [u32 ndjsonLen LE] [graph NDJSON]
+ *                 [u32 writesLen LE] [pending-writes JSON] [schema-ops JSON] )
  *         …optionally wrapped as [12-byte IV][AES-GCM ciphertext]
+ * The trailing schema-ops section (v3) carries the graph's constraints /
+ * validators / invariants / indexes — data NDJSON can't — so a cold boot restores
+ * them via `applySchemaOp`. NDJSON stays pure data (node/edge records only).
  * ```
  *
  * The **header is plaintext by design** — it is the invalidation tier, checked
@@ -55,12 +59,20 @@
  */
 
 import { ErrorCode, LenkeError } from '@lenke/errors';
-import type { QueryParams, Store } from '@lenke/native';
+import {
+  applySchemaOp,
+  graphFromNdjson,
+  type Backend,
+  type QueryParams,
+  type RustGraph,
+  type SchemaOp,
+  type Store,
+} from '@lenke/native';
 
 import type { SyncWrite } from './engine.js';
 
 const MAGIC = [0x4c, 0x4e, 0x4b, 0x53] as const; // "LNKS"
-const FORMAT_VERSION = 2; // bumped for the crypto-flag byte (below)
+const FORMAT_VERSION = 3; // v2 = crypto-flag byte; v3 = schema section (below)
 const IV_BYTES = 12;
 
 // Byte offset where the header JSON begins: MAGIC(4) + version(1) + headerLen u32(4).
@@ -148,10 +160,41 @@ const resolveKey = (crypto: SnapshotCrypto): CryptoKey | undefined => {
 
 export type Snapshot = {
   header: SnapshotHeader;
-  /** Graph NDJSON — feed to `graphFromNdjson`. */
+  /** Graph NDJSON — feed to `graphFromNdjson` (or use {@link graphFromSnapshot},
+   *  which also replays `schema`). */
   ndjson: Uint8Array;
   /** The persisted pending-write queue → the engine's `initialWrites`. */
   pendingWrites: SyncWrite[];
+  /**
+   * The graph's active schema (constraints / validators / invariants / indexes) at
+   * save time. Data NDJSON can't carry these, so a warm boot must replay them —
+   * {@link graphFromSnapshot} does it for you (via `applySchemaOp`). Empty for a
+   * schema-less graph (or a pre-v3 snapshot, which is rejected by version anyway).
+   */
+  schema: SchemaOp[];
+};
+
+/**
+ * Rebuild a graph from a {@link Snapshot} the complete way: load its NDJSON data
+ * AND replay its `schema` (constraints / validators / invariants / indexes) via
+ * {@link applySchemaOp}. Use this instead of a bare `graphFromNdjson(backend,
+ * snap.ndjson)` on warm boot — otherwise the restored graph is missing its
+ * constraints and, e.g., a queued `_MERGE` would throw for want of the unique
+ * constraint it keys on.
+ *
+ * Schema is replayed AFTER the data loads; each declaration re-validates against
+ * the restored data, which necessarily satisfies it (it did at save time), so the
+ * scan is a cheap consistency check rather than a risk. Wrap the result in
+ * `createStore` exactly as you would `graphFromNdjson`'s.
+ */
+export const graphFromSnapshot = (backend: Backend, snapshot: Snapshot): RustGraph => {
+  const graph = graphFromNdjson(backend, snapshot.ndjson);
+
+  for (const op of snapshot.schema) {
+    applySchemaOp(graph, op);
+  }
+
+  return graph;
 };
 
 /** Where snapshot bytes live. All-or-nothing semantics per call. */
@@ -372,8 +415,18 @@ export const encodeSnapshot = async (
 
   const ndjson = stripEphemeral(store.graph.toNdjson(), meta.ephemeralLabels);
   const writesBytes = encoder.encode(JSON.stringify(meta.pendingWrites ?? []));
+  // The active schema (constraints/validators/invariants/indexes) — read straight
+  // from the engine, the single source of truth, so it can never drift from the
+  // data it constrains. NDJSON stays data-only; schema rides its own section.
+  const schemaBytes = encoder.encode(JSON.stringify(store.graph.dumpSchema()));
   let payload = await pipeThrough(
-    concat(u32le(ndjson.byteLength), ndjson, writesBytes),
+    concat(
+      u32le(ndjson.byteLength),
+      ndjson,
+      u32le(writesBytes.byteLength),
+      writesBytes,
+      schemaBytes,
+    ),
     new CompressionStream('gzip'),
   );
 
@@ -476,9 +529,19 @@ export const decodeSnapshot = async (
     }
 
     const inner = await pipeThrough(payload, new DecompressionStream('gzip'));
-    const ndjsonLen = new DataView(inner.buffer, inner.byteOffset).getUint32(0, true);
+    const innerView = new DataView(inner.buffer, inner.byteOffset, inner.byteLength);
+    const ndjsonLen = innerView.getUint32(0, true);
     const ndjson = inner.subarray(4, 4 + ndjsonLen);
-    const writesJson = new TextDecoder().decode(inner.subarray(4 + ndjsonLen));
+    // v3 layout: after the NDJSON, a u32-framed pending-writes section, then the
+    // schema-ops section runs to the end. (v2 had writes run to the end with no
+    // frame — but a v2 snapshot is already rejected by the formatVersion check.)
+    const writesLen = innerView.getUint32(4 + ndjsonLen, true);
+    const writesStart = 8 + ndjsonLen;
+    const decoder = new TextDecoder();
+    const writesJson = decoder.decode(inner.subarray(writesStart, writesStart + writesLen));
+    const schema = JSON.parse(
+      decoder.decode(inner.subarray(writesStart + writesLen)),
+    ) as SchemaOp[];
     const raw = JSON.parse(writesJson) as {
       text?: string;
       gql?: string;
@@ -504,7 +567,12 @@ export const decodeSnapshot = async (
         ...(w.params !== undefined ? { params: w.params } : {}),
       }));
 
-    return { header, ndjson: ndjson.slice(), pendingWrites };
+    return {
+      header,
+      ndjson: ndjson.slice(),
+      pendingWrites,
+      schema: Array.isArray(schema) ? schema : [],
+    };
   } catch {
     // Wrong key, tamper, truncation, gzip corruption: all read as absent.
     return null;

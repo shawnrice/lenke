@@ -68,6 +68,7 @@ export {
   createSnapshotStore,
   decodeSnapshot,
   encodeSnapshot,
+  graphFromSnapshot,
   importSnapshotKey,
   memorySnapshotStorage,
   opfsStorage,
@@ -82,6 +83,7 @@ export {
   type SnapshotStorage,
 } from './snapshot.js';
 export {
+  applySchemaOp,
   isClientMessage,
   isHostMessage,
   runWrite,
@@ -93,9 +95,11 @@ export {
   type ResultMessage,
   type RowPatch,
   type RowsMessage,
+  type SchemaOp,
   type StatusMessage,
   type SubscribeMessage,
   type SyncMessage,
   type UnsubscribeMessage,
   type WireError,
 } from './protocol.js';
+export { applySchema, type ApplySchemaOptions } from './schema.js';

@@ -10,6 +10,11 @@
  * A graph handle is opaque: a native pointer or a wasm linear-memory offset,
  * both representable as a JS `number`. Treat it as a token, never arithmetic.
  */
+// Type-only import — a `SchemaOp` is the shape `dumpSchema` returns. The reverse
+// edge (graph.ts imports `Backend`) makes this a type-level cycle, which is erased
+// at compile and so carries no runtime dependency.
+import type { SchemaOp } from './graph.js';
+
 export type GraphHandle = number;
 
 /** An opaque handle to a compiled, reusable GQL query (see {@link Backend.prepare}). */
@@ -145,6 +150,10 @@ export type Backend = {
   /** The currently-indexed vertex / edge property keys (sorted). */
   vertexIndexes: (handle: GraphHandle) => string[];
   edgeIndexes: (handle: GraphHandle) => string[];
+  /** The full active schema as replayable {@link SchemaOp}s (constraints, validators,
+   * invariants, indexes), deterministic order — the read side of the `create*`
+   * declarations, for snapshot persistence + CDC replication. */
+  dumpSchema: (handle: GraphHandle) => SchemaOp[];
   /** The distinct values of property `key` across the last committed write's touched
    * vertices — that write's content-derived CDC value-scope. */
   lastWriteScope: (handle: GraphHandle, key: string) => string[];

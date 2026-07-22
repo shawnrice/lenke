@@ -209,6 +209,16 @@ impl Graph {
         self.inner.edge_indexes()
     }
 
+    /// The full active schema as a JSON array of replayable `SchemaOp` objects
+    /// (constraints / validators / invariants / indexes) — the read side of the
+    /// `create_*` declarations. Returned as a JSON string the `Backend` adapter
+    /// parses, mirroring the C ABI's `lnk_dump_schema`. Used to persist schema in
+    /// a snapshot so a cold boot restores what data alone can't.
+    #[napi]
+    pub fn dump_schema(&self) -> String {
+        self.inner.dump_schema()
+    }
+
     /// Set the GQL operator-chain ceiling (the native `maxOperatorChain` option);
     /// the parser rejects a longer chain with `E_SYNTAX`. Defaults to 10_000.
     #[napi]

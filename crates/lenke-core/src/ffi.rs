@@ -13,7 +13,8 @@ use crate::query;
 
 #[no_mangle]
 pub extern "C" fn lnk_abi_version() -> u32 {
-    14 // 14: lnk_last_write_scope (content-derived CDC value-scope);
+    15 // 15: lnk_dump_schema (read schema back as SchemaOps, for snapshot persistence);
+       // 14: lnk_last_write_scope (content-derived CDC value-scope);
        // 13: lnk_query_arrow_ipc (native Arrow IPC egress);
        // 12: lnk_prepare takes a max-operator-chain arg; 11: per-graph operator-chain
        //    ceiling (lnk_graph_set_max_operator_chain);
@@ -698,6 +699,25 @@ pub unsafe extern "C" fn lnk_edge_indexes(g: *const Graph, out_len: *mut usize) 
         (*g).edge_indexes()
     };
     index_keys_buf(&keys, out_len)
+}
+
+/// The full active schema as a JSON array of replayable `SchemaOp` objects (see
+/// [`Graph::dump_schema`]) — constraints, validators, invariants, and indexes.
+/// The snapshot codec persists this alongside the graph NDJSON so a cold boot can
+/// replay the schema the data alone can't reconstruct. Free with [`lnk_free_buf`].
+///
+/// # Safety
+/// `g` valid; `out_len` writable.
+#[no_mangle]
+pub unsafe extern "C" fn lnk_dump_schema(g: *const Graph, out_len: *mut usize) -> *mut u8 {
+    let json = if g.is_null() {
+        String::from("[]")
+    } else {
+        (*g).dump_schema()
+    };
+    let bytes = json.into_bytes().into_boxed_slice();
+    *out_len = bytes.len();
+    Box::into_raw(bytes) as *mut u8
 }
 
 /// Encode a key list as a JSON string array into an owned buffer for the two
