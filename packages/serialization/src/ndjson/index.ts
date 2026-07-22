@@ -119,12 +119,32 @@ const addNode = (graph: Graph, record: NodeRecord): void => {
   });
 };
 
+// Lenient endpoint policy (streaming): a missing endpoint is created bare.
 const ensureVertex = (graph: Graph, id: string) =>
   graph.getVertexById(id) ?? graph.addVertex({ id, labels: [], properties: {} });
 
-const addEdge = (graph: Graph, record: EdgeRecord): void => {
-  const from = ensureVertex(graph, String(record.from));
-  const to = ensureVertex(graph, String(record.to));
+// Strict endpoint policy (one-shot decode): a truly-dangling edge is rejected,
+// matching native `decode` and the pg-json/graphson/csv codecs. Safe in the
+// two-pass `decode` because all node lines are applied before any edge.
+const requireVertex = (graph: Graph, id: string) => {
+  const v = graph.getVertexById(id);
+
+  if (!v) {
+    throw new LenkeError(`edge references a non-existent vertex '${id}'`, {
+      code: ErrorCode.MissingVertex,
+    });
+  }
+
+  return v;
+};
+
+const addEdge = (
+  graph: Graph,
+  record: EdgeRecord,
+  resolve: (graph: Graph, id: string) => ReturnType<typeof ensureVertex> = ensureVertex,
+): void => {
+  const from = resolve(graph, String(record.from));
+  const to = resolve(graph, String(record.to));
   graph.addEdge({
     id: record.id != null ? String(record.id) : undefined,
     from,
@@ -144,8 +164,10 @@ const apply = (graph: Graph, record: NodeRecord | EdgeRecord): void => {
 
 /**
  * Deserialize an NDJSON string into `graph`. Two passes — nodes first, then
- * edges — so records may appear in any order; an edge endpoint without its own
- * node line is created bare.
+ * edges — so records may appear in any order. A dangling edge (an endpoint with
+ * no node line anywhere in the input) is rejected with `MissingVertex`, matching
+ * native `decode` and the other document codecs. (The streaming `decodeStream`
+ * keeps the lenient create-bare policy for its single-pass, batch-at-a-time use.)
  */
 export const decode = (input: string, graph: Graph): Graph => {
   const wasEnabled = graph.eventsEnabled();
@@ -172,7 +194,7 @@ export const decode = (input: string, graph: Graph): Graph => {
   }
 
   for (const record of edges) {
-    addEdge(graph, record);
+    addEdge(graph, record, requireVertex);
   }
 
   if (wasEnabled) {

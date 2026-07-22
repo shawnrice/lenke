@@ -172,7 +172,12 @@ pub fn decode(text: &str) -> CodeResult<Graph> {
             Rec::Edge(e) => b.edges.push(e),
         }
     }
-    let g = b.finalize();
+    // A one-shot decode rejects a dangling edge (an endpoint never declared as a
+    // node) instead of fabricating a phantom vertex — a truly-missing endpoint is
+    // bad input, and this matches the pg-json/graphson/csv document codecs. The
+    // streaming *merge* path (`decode_into`) keeps the lenient create-and-report
+    // policy, where an endpoint can legitimately arrive in a later batch.
+    let g = b.finalize_strict()?;
     g.validate_wellformed()?; // reject a malformed label / edge type / property key
     Ok(g)
 }
@@ -303,7 +308,7 @@ pub fn decode_serial(text: &str) -> CodeResult<Graph> {
             None => {}
         }
     }
-    let g = b.finalize();
+    let g = b.finalize_strict()?; // reject a dangling edge — see `decode`
     g.validate_wellformed()?;
     Ok(g)
 }
@@ -604,6 +609,25 @@ mod tests {
     }
 
     #[test]
+    fn one_shot_decode_rejects_a_dangling_edge() {
+        // A one-shot `decode` no longer fabricates a phantom for an edge whose
+        // endpoint was never declared — it rejects it (like pg-json/graphson/csv).
+        let dangling =
+            "{\"type\":\"node\",\"id\":\"a\",\"labels\":[\"N\"],\"properties\":{}}\n\
+             {\"type\":\"edge\",\"from\":\"a\",\"to\":\"ghost\",\"labels\":[\"K\"],\"properties\":{}}";
+        assert_eq!(
+            decode(dangling).err().map(|e| e.code),
+            Some(ErrorCode::MissingVertex)
+        );
+        // Endpoints declared in ANY order within the batch are fine (edge first).
+        let out_of_order =
+            "{\"type\":\"edge\",\"from\":\"a\",\"to\":\"b\",\"labels\":[\"K\"],\"properties\":{}}\n\
+             {\"type\":\"node\",\"id\":\"a\",\"labels\":[\"N\"],\"properties\":{}}\n\
+             {\"type\":\"node\",\"id\":\"b\",\"labels\":[\"N\"],\"properties\":{}}";
+        assert!(decode(out_of_order).is_ok());
+    }
+
+    #[test]
     fn ingestion_rejects_malformed_labels_and_keys() {
         // A `::` label is unrepresentable in GraphSON; an empty label/key is
         // unrepresentable too. Ingestion rejects them with a coded error.
@@ -611,7 +635,9 @@ mod tests {
             r#"{"type":"node","id":"a","labels":["x::y"],"properties":{}}"#,
             r#"{"type":"node","id":"a","labels":[""],"properties":{}}"#,
             r#"{"type":"node","id":"a","labels":["N"],"properties":{"":1}}"#,
-            r#"{"type":"edge","id":"e","from":"a","to":"a","labels":["A::B"],"properties":{}}"#,
+            // declare the endpoint so this isolates the malformed edge LABEL (a
+            // dangling edge is now a separate `MissingVertex` rejection).
+            "{\"type\":\"node\",\"id\":\"a\",\"labels\":[\"N\"],\"properties\":{}}\n{\"type\":\"edge\",\"id\":\"e\",\"from\":\"a\",\"to\":\"a\",\"labels\":[\"A::B\"],\"properties\":{}}",
         ];
         for c in cases {
             assert_eq!(

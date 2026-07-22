@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@lenke/core';
+import { ErrorCode, hasErrorCode } from '@lenke/errors';
 
 import { chunked, collect } from '../streaming.js';
 import { graphContentEqual, randomLpgGraph } from '../testkit.js';
@@ -53,9 +54,31 @@ describe('ndjson: validation', () => {
     expect(g.getVertexById('a')).not.toBeNull();
   });
 
-  test('an edge with an unseen endpoint creates a bare node', () => {
-    const g = decode('{"type":"edge","id":"e","from":"a","to":"b","labels":["R"]}', new Graph());
-    expect(g.getVertexById('a')).not.toBeNull();
+  test('a one-shot decode rejects a dangling edge (MissingVertex)', () => {
+    let caught: unknown;
+
+    try {
+      decode('{"type":"edge","id":"e","from":"a","to":"b","labels":["R"]}', new Graph());
+    } catch (e) {
+      caught = e;
+    }
+
+    expect(hasErrorCode(caught, ErrorCode.MissingVertex)).toBe(true);
+
+    // Endpoints declared in ANY order within the batch are fine (edge first).
+    const g = decode(
+      '{"type":"edge","from":"a","to":"b","labels":["R"]}\n{"type":"node","id":"a"}\n{"type":"node","id":"b"}',
+      new Graph(),
+    );
+    expect([...g.edges]).toHaveLength(1);
+  });
+
+  test('the streaming decode keeps the lenient create-bare policy', async () => {
+    const g = await decodeStream(
+      chunked('{"type":"node","id":"a"}\n{"type":"edge","from":"a","to":"b","labels":["R"]}', 5),
+      new Graph(),
+    );
+    expect(g.getVertexById('b')).not.toBeNull();
     expect([...g.edges]).toHaveLength(1);
   });
 });
