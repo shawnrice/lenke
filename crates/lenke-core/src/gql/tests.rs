@@ -1821,6 +1821,26 @@ fn math_round_sign_pi_e() {
 }
 
 #[test]
+fn math_atan2_binary_arctangent() {
+    let mut g = modern();
+    // atan2(y, x): quadrant-correct angle. Exact/stable values.
+    assert_eq!(
+        rows(&mut g, "RETURN atan2(1, 1) AS x"),
+        vec![vec![n(std::f64::consts::FRAC_PI_4)]]
+    );
+    assert_eq!(rows(&mut g, "RETURN atan2(0, 1) AS x"), vec![vec![n(0.0)]]);
+    assert_eq!(
+        rows(&mut g, "RETURN atan2(1, 0) AS x"),
+        vec![vec![n(std::f64::consts::FRAC_PI_2)]]
+    );
+    // null operand → null.
+    assert_eq!(
+        rows(&mut g, "RETURN atan2(null, 1) AS x"),
+        vec![vec![Value::Null]]
+    );
+}
+
+#[test]
 fn order_by_and_minmax_total_order_across_types() {
     let lines = [
         r#"{"type":"node","id":"1","labels":["X"],"properties":{"v":2}}"#,

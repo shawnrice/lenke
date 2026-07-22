@@ -147,7 +147,7 @@ fn keywords() -> &'static HashSet<&'static str> {
 
 // The complete ISO/IEC 39075 reserved-word list (verbatim from the TS port).
 const RESERVED_WORDS: &str =
-    "abs acos all all_different and any array as asc ascending asin at atan avg big bigint \
+    "abs acos all all_different and any array as asc ascending asin at atan atan2 avg big bigint \
 binary bool boolean both btrim by byte_length bytes call cardinality case cast ceil ceiling \
 char char_length character_length characteristics close coalesce collect_list commit copy cos \
 cosh cot count create current_date current_graph current_property_graph current_schema \

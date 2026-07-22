@@ -470,6 +470,9 @@ const BINARY_NUM: Record<string, (x: number, y: number) => number> = {
   power: (x, y) => x ** y,
   mod: (x, y) => x % y,
   log: (base, value) => Math.log(value) / Math.log(base),
+  // atan2(y, x): the ISO GQL binary arctangent (quadrant-correct). Mirrors the
+  // native `y.atan2(x)`.
+  atan2: (y, x) => Math.atan2(y, x),
 };
 
 /**

@@ -1850,6 +1850,8 @@ fn call_scalar(graph: &Graph, func: ScalarFn, args: &[Val]) -> Val {
         Power => bn(|x, y| x.powf(y)),
         Mod => bn(|x, y| x % y),
         Log => bn(|base, value| value.ln() / base.ln()),
+        // `atan2(y, x)` — the ISO GQL binary arctangent (quadrant-correct angle).
+        Atan2 => bn(|y, x| y.atan2(x)),
         Size => match a {
             Some(Val::List(items)) => Val::Num(items.len() as f64),
             Some(Val::Str(s)) => Val::Num(s.encode_utf16().count() as f64),

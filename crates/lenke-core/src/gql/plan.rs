@@ -55,6 +55,7 @@ pub enum ScalarFn {
     Power,
     Mod,
     Log,
+    Atan2,
     Size,
     Left,
     Right,
@@ -183,6 +184,7 @@ fn scalar_fn(name: &str) -> ScalarFn {
         "power" => ScalarFn::Power,
         "mod" => ScalarFn::Mod,
         "log" => ScalarFn::Log,
+        "atan2" => ScalarFn::Atan2,
         // `cardinality` is the ISO GQL / SQL name for a collection's element count;
         // `size` is the openCypher spelling (`length`/`path_length` alias paths).
         "size" | "cardinality" | "length" | "path_length" => ScalarFn::Size,

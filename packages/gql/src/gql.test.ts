@@ -964,6 +964,11 @@ describe('GQL: ISO numeric & string value functions', () => {
     expect(v('radians(180)')).toBeCloseTo(Math.PI);
     expect(v('degrees(radians(90))')).toBeCloseTo(90);
     expect(v('sin(0)')).toBe(0);
+    // atan2(y, x): quadrant-correct angle (ISO GQL binary arctangent).
+    expect(v('atan2(1, 1)')).toBe(Math.PI / 4);
+    expect(v('atan2(0, 1)')).toBe(0);
+    expect(v('atan2(1, 0)')).toBe(Math.PI / 2);
+    expect(v('atan2(null, 1)')).toBeNull();
   });
 
   test('string value functions', () => {
