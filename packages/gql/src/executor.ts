@@ -2,6 +2,7 @@ import type { Edge, Graph, IndexableValue, RangeBound, Vertex } from '@lenke/cor
 import {
   type AlgorithmConfig,
   type AlgorithmName,
+  Duration,
   durationBetween,
   fromTaggedJson,
   isTemporal,
@@ -473,6 +474,32 @@ const BINARY_NUM: Record<string, (x: number, y: number) => number> = {
   // atan2(y, x): the ISO GQL binary arctangent (quadrant-correct). Mirrors the
   // native `y.atan2(x)`.
   atan2: (y, x) => Math.atan2(y, x),
+};
+
+/** The loud data exception for `avg` over a temporal, or `sum` over a
+ *  non-DURATION temporal — byte-identical message to native `FAULT_TEMPORAL_AGG`. */
+const unsupportedTemporalAgg = (): LenkeError =>
+  new LenkeError(
+    "unsupported temporal aggregate: sum() is defined only for DURATION (dates/times aren't " +
+      'summable), and avg() over DURATION would need duration/count (often non-representable, ' +
+      'e.g. avg(P1M,P2M)=P1.5M); use min()/max(), or sum() + host division',
+    { code: ErrorCode.DataException },
+  );
+
+/** `sum` over gathered temporal values: fold DURATIONs via the same `dur + dur`
+ *  (`temporalArith('+')`, which throws on overflow); fault on any non-DURATION. */
+const temporalSum = (values: unknown[]): unknown => {
+  let acc: unknown;
+
+  for (const v of values) {
+    if (!(v instanceof Duration)) {
+      throw unsupportedTemporalAgg();
+    }
+
+    acc = acc === undefined ? v : temporalArith('+', acc, v);
+  }
+
+  return acc ?? null;
 };
 
 /**
@@ -1662,9 +1689,18 @@ const compileAggregate = (expr: FuncExpr): CompiledExpr => {
     switch (name) {
       case 'count':
         return values.length;
+      // `sum` over DURATIONs folds via the same `dur + dur` (overflow throws);
+      // `avg` over any temporal, and `sum` over a non-DURATION, are loud data
+      // exceptions rather than a silent NaN → null. Mirrors the native engine.
       case 'sum':
-        return values.reduce<number>((s, v) => s + Number(v), 0);
+        return values.length > 0 && isTemporal(values[0])
+          ? temporalSum(values)
+          : values.reduce<number>((s, v) => s + Number(v), 0);
       case 'avg':
+        if (values.length > 0 && isTemporal(values[0])) {
+          throw unsupportedTemporalAgg();
+        }
+
         return values.length === 0
           ? null
           : values.reduce<number>((s, v) => s + Number(v), 0) / values.length;

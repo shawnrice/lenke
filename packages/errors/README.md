@@ -66,7 +66,7 @@ hasErrorCode(error: unknown, code: ErrorCode): boolean;
 | `E_INVALID_SHAPE`      | Input parsed but didn't match the expected document shape.                                        |
 | `E_UNKNOWN_FORMAT`     | An unknown serialization format name.                                                             |
 | `E_INVALID_VALUE`      | A value outside the LPG property-value model.                                                     |
-| `E_DATA_EXCEPTION`     | An ISO data exception at evaluation time (division by zero, type mismatch, out-of-range numeric). |
+| `E_DATA_EXCEPTION`     | An ISO data exception at evaluation time: division by zero, type mismatch, out-of-range numeric, **temporal arithmetic overflow** (`date`/`datetime`/`duration` out of representable range — never a silent null), or an **unsupported temporal aggregate** (`avg` over a temporal, or `sum` over a non-`DURATION` temporal). |
 | `E_MISSING_VERTEX`     | An edge or operation referenced a vertex id that doesn't exist.                                   |
 | `E_INVALID_GRAPH_OP`   | An invalid graph mutation (e.g. a cycle, a self-reference).                                       |
 | `E_INVALID_TREE`       | An invalid tree structure or operation.                                                           |

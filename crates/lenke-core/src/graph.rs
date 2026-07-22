@@ -251,6 +251,18 @@ impl TemporalCol {
         }
     }
 
+    /// Which [`TemporalKind`] this (homogeneous) column stores.
+    pub(crate) fn kind(&self) -> TemporalKind {
+        match self {
+            Self::Date(_) => TemporalKind::Date,
+            Self::Time { .. } => TemporalKind::Time,
+            Self::DateTime { .. } => TemporalKind::DateTime,
+            Self::ZonedTime { .. } => TemporalKind::ZonedTime,
+            Self::ZonedDateTime { .. } => TemporalKind::ZonedDateTime,
+            Self::Duration { .. } => TemporalKind::Duration,
+        }
+    }
+
     /// A single `i128` sort key at row `i` that is **monotonic with `cmp_total`
     /// within this (homogeneous) column** — a dense ORDER BY key that sorts like a
     /// numeric column, no `Val`/`cmp_total` dispatch. Each instant kind packs its

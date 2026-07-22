@@ -224,6 +224,13 @@ Two footguns worth internalizing before you build windows or velocity checks on 
 
 - **Never compare two durations relationally.** `duration <op> duration` (e.g. `WHERE (e.txTo - e.txFrom) < DURATION 'P30D'`) is `UNKNOWN` under GQL's three-valued logic, and a `WHERE` that evaluates to `UNKNOWN` **silently drops the row** — the query returns nothing, with no error. Compare **instants** instead: anchor the duration to a point in time and compare the resulting instants — `WHERE e.txTo < e.txFrom + DURATION 'P30D'` ("open less than 30 days") or `WHERE e.txTo >= e.txFrom + DURATION 'P30D'`. The same rule governs any "within N days / at least N days" window.
 - **Temporal literal prefixes are BARE.** Write `DATETIME '…'`, `DATE '…'`, `TIMESTAMP '…'`, `DURATION '…'` — never `LOCAL DATETIME '…'`. Even though the underlying _type_ is named `LOCAL DATETIME` / `LOCAL TIME`, `LOCAL` is a reserved word in that position, so a `LOCAL DATETIME '…'` literal is `E_SYNTAX`.
+- **Temporal arithmetic overflow THROWS — it is never a silent null.** An out-of-range result is a loud `E_DATA_EXCEPTION` (like division by zero), byte-identical in both engines, so a swallowed overflow can't masquerade as data:
+  - `date/datetime ± duration` that lands outside the representable date range (a `DATE` is `i32` days, ≈±5.88M years) → `E_DATA_EXCEPTION` (`FAULT_DATE_OVERFLOW`).
+  - `duration ± duration` / `duration × n` whose component leaves the f64-safe-integer range (≥ 2⁵³) → `E_DATA_EXCEPTION` (`FAULT_DURATION_OVERFLOW`).
+  - A `DURATION '…'` literal past 2⁵³ is rejected earlier still, at parse (`E_SYNTAX`).
+- **Temporal aggregates: `min`/`max`/`sum` compute; `avg` throws.** `min`/`max` over any temporal use the total order. `sum` is defined **only for `DURATION`** (folded component-wise, with the same overflow-throw as `dur + dur`) — a real "total tenure" duration, not a `NaN → null`. But:
+  - `sum` over a **non-`DURATION`** temporal (`DATE`/`TIME`/…) is `E_DATA_EXCEPTION` — dates and times aren't summable.
+  - `avg` over **any** temporal is `E_DATA_EXCEPTION` — averaging needs `duration ÷ count`, which is often non-representable (`avg(P1M, P2M) = P1.5M`, and a half-month has no integer-component form). Use `sum()` and divide in the host, or `min()`/`max()`.
 
 ## Durability
 

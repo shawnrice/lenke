@@ -280,6 +280,21 @@ describe('GQL: aggregation', () => {
     ]);
   });
 
+  test('sum(DURATION) computes; avg(DURATION) / sum(non-duration temporal) throw', () => {
+    // sum folds component-wise (P1M10D + P2M5D = P3M15D), not a NaN → null.
+    expect(
+      String(query(g, `FOR d IN [DURATION 'P1M10D', DURATION 'P2M5D'] RETURN sum(d) AS s`)[0].s),
+    ).toBe('P3M15D');
+    // avg over durations is a loud error (needs unrepresentable duration/count).
+    expect(() =>
+      query(g, `FOR d IN [DURATION 'P1M10D', DURATION 'P2M5D'] RETURN avg(d) AS a`),
+    ).toThrow();
+    // dates aren't summable → loud error.
+    expect(() =>
+      query(g, `FOR d IN [DATE '2020-01-01', DATE '2020-02-01'] RETURN sum(d) AS s`),
+    ).toThrow();
+  });
+
   test('collect_list (ISO; Cypher collect is not a function here)', () => {
     const rows = query(g, `MATCH (n:Person) RETURN collect_list(n.name) AS names`);
     expect((rows[0].names as string[]).sort()).toEqual(['josh', 'marko', 'peter', 'vadas']);

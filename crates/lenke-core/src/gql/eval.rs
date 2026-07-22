@@ -190,6 +190,7 @@ const FAULT_REQUIRED: u8 = 9;
 const FAULT_TYPE_CONSTRAINT: u8 = 10;
 const FAULT_DURATION_OVERFLOW: u8 = 11;
 const FAULT_DATE_OVERFLOW: u8 = 12;
+const FAULT_TEMPORAL_AGG: u8 = 13;
 
 /// Per-expansion cap on trail-traversal steps; a guard against exponential blowup.
 const TRAIL_BUDGET: u64 = 1_000_000;
@@ -249,6 +250,12 @@ impl Ctx<'_> {
             FAULT_DATE_OVERFLOW => Err(CodeError::new(
                 ErrorCode::DataException,
                 "date overflow: arithmetic result is outside the representable date range",
+            )),
+            FAULT_TEMPORAL_AGG => Err(CodeError::new(
+                ErrorCode::DataException,
+                "unsupported temporal aggregate: sum() is defined only for DURATION (dates/times \
+                 aren't summable), and avg() over DURATION would need duration/count (often \
+                 non-representable, e.g. avg(P1M,P2M)=P1.5M); use min()/max(), or sum() + host division",
             )),
             FAULT_TYPE => Err(CodeError::new(
                 ErrorCode::DataException,
@@ -1655,9 +1662,19 @@ fn eval_aggregate(
             }
         });
     }
+    let temporal = values
+        .first()
+        .is_some_and(|v| matches!(v, Val::Temporal(_)));
     match func {
         AggFn::Count => Val::Num(values.len() as f64),
+        // `sum` over DURATIONs computes; over a non-summable temporal it faults.
+        AggFn::Sum if temporal => temporal_values_sum(&values, env.ctx),
         AggFn::Sum => Val::Num(values.iter().filter_map(num_of_owned).sum()),
+        // `avg` over any temporal faults (needs unrepresentable duration÷count).
+        AggFn::Avg if temporal => {
+            env.ctx.set_fault(FAULT_TEMPORAL_AGG);
+            Val::Null
+        }
         AggFn::Avg => {
             if values.is_empty() {
                 Val::Null
@@ -3377,6 +3394,12 @@ struct Agg {
     distinct: bool,
     n: u64,
     sum: f64,
+    /// Running DURATION sum for `sum()` over a temporal column (`None` until the
+    /// first duration; keeps `sum` for the numeric path).
+    tsum: Option<crate::temporal::Duration>,
+    /// A pending temporal-aggregate fault (`avg`/non-summable-kind → unsupported;
+    /// duration overflow), surfaced via `ctx` by [`step_aggs`].
+    tfault: Option<u8>,
     /// Running Σx² for the one-pass `stddev_pop` / `stddev_samp`; 0 for others.
     sum_sq: f64,
     extreme: Option<Val>,
@@ -3402,6 +3425,8 @@ impl Agg {
             distinct: spec.distinct,
             n: 0,
             sum: 0.0,
+            tsum: None,
+            tfault: None,
             sum_sq: 0.0,
             extreme: None,
             list: Vec::new(),
@@ -3436,6 +3461,27 @@ impl Agg {
         }
         match self.func {
             AggFn::Count => self.n += 1,
+            // `sum` over DURATIONs folds component-wise (like `dur + dur`); over a
+            // non-summable temporal kind it faults. `avg` over any temporal faults.
+            AggFn::Sum if matches!(val, Val::Temporal(_)) => {
+                if let Val::Temporal(crate::temporal::Temporal::Duration(d)) = &val {
+                    self.tsum = Some(match self.tsum {
+                        None => *d,
+                        Some(a) => match a.add(d) {
+                            Some(s) => s,
+                            None => {
+                                self.tfault = Some(FAULT_DURATION_OVERFLOW);
+                                a
+                            }
+                        },
+                    });
+                } else {
+                    self.tfault = Some(FAULT_TEMPORAL_AGG);
+                }
+            }
+            AggFn::Avg if matches!(val, Val::Temporal(_)) => {
+                self.tfault = Some(FAULT_TEMPORAL_AGG);
+            }
             AggFn::Sum => self.sum += num_of(&val).unwrap_or(f64::NAN),
             AggFn::Avg => {
                 self.sum += num_of(&val).unwrap_or(f64::NAN);
@@ -3473,7 +3519,10 @@ impl Agg {
     fn finish(self) -> Val {
         match self.func {
             AggFn::Count => Val::Num(self.n as f64),
-            AggFn::Sum => Val::Num(self.sum),
+            AggFn::Sum => match self.tsum {
+                Some(d) => Val::Temporal(crate::temporal::Temporal::Duration(d)),
+                None => Val::Num(self.sum),
+            },
             AggFn::Avg => {
                 if self.n == 0 {
                     Val::Null
@@ -3504,6 +3553,21 @@ impl Agg {
         self.sum += other.sum;
         self.sum_sq += other.sum_sq;
         self.list.extend(other.list);
+        // DURATION sum folds across partials (same `Duration::add`); a fault in
+        // either partial wins.
+        self.tfault = self.tfault.or(other.tfault);
+        if let Some(o) = other.tsum {
+            self.tsum = Some(match self.tsum {
+                None => o,
+                Some(a) => match a.add(&o) {
+                    Some(s) => s,
+                    None => {
+                        self.tfault = self.tfault.or(Some(FAULT_DURATION_OVERFLOW));
+                        a
+                    }
+                },
+            });
+        }
         if let Some(o) = other.extreme {
             let take = match self.func {
                 AggFn::Min => self
@@ -3538,6 +3602,11 @@ fn step_aggs(
             .as_ref()
             .map(|a| eval(&Env::new(graph, ctx, binding), a));
         agg.step(v);
+        // Surface a temporal-aggregate fault (avg/non-summable → unsupported;
+        // duration overflow) to the row boundary. `set_fault` is first-wins.
+        if let Some(f) = agg.tfault {
+            ctx.set_fault(f);
+        }
     }
 }
 
@@ -4490,8 +4559,34 @@ fn temporal_cmp_vec(
 /// `fold_extreme`) on reconstructed Copy temporals: no `Val` build per row, no
 /// scalar accumulator. `None` unless `spec.arg` is a `Prop` over a
 /// `Column::Temporal` and `spec.func` is `Min`/`Max`.
-fn temporal_minmax(graph: &Graph, ctx: &Ctx, sc: &ScanCols, spec: &CAgg) -> Option<Val> {
-    if !matches!(spec.func, AggFn::Min | AggFn::Max) {
+/// `sum` over a slice of already-gathered temporal `Val`s: fold DURATIONs
+/// component-wise (overflow → loud), fault on any non-DURATION (dates/times aren't
+/// summable). Used by the tree-walking [`eval_aggregate`].
+fn temporal_values_sum(values: &[Val], ctx: &Ctx) -> Val {
+    use crate::temporal::Temporal as T;
+    let mut acc: Option<crate::temporal::Duration> = None;
+    for v in values {
+        let Val::Temporal(T::Duration(d)) = v else {
+            ctx.set_fault(FAULT_TEMPORAL_AGG);
+            return Val::Null;
+        };
+        acc = Some(match acc {
+            None => *d,
+            Some(a) => match a.add(d) {
+                Some(s) => s,
+                None => {
+                    ctx.set_fault(FAULT_DURATION_OVERFLOW);
+                    return Val::Null;
+                }
+            },
+        });
+    }
+    acc.map_or(Val::Null, |d| Val::Temporal(T::Duration(d)))
+}
+
+fn temporal_agg(graph: &Graph, ctx: &Ctx, sc: &ScanCols, spec: &CAgg) -> Option<Val> {
+    use crate::temporal::{Temporal as T, TemporalKind};
+    if !matches!(spec.func, AggFn::Min | AggFn::Max | AggFn::Sum | AggFn::Avg) {
         return None;
     }
     let CExpr::Prop { var_slot, key_ref } = spec.arg.as_ref()? else {
@@ -4506,24 +4601,56 @@ fn temporal_minmax(graph: &Graph, ctx: &Ctx, sc: &ScanCols, spec: &CAgg) -> Opti
     else {
         return None;
     };
-    let want = if spec.func == AggFn::Min {
-        Ordering::Less
-    } else {
-        Ordering::Greater
-    };
-    let mut ext: Option<crate::temporal::Temporal> = None;
+    // `avg` over any temporal, and `sum` over a non-DURATION temporal, are loud
+    // data exceptions — not a silent null. `avg` needs duration÷count (often
+    // non-representable, e.g. avg(P1M,P2M)=P1.5M); dates/times aren't summable.
+    if spec.func == AggFn::Avg || (spec.func == AggFn::Sum && data.kind() != TemporalKind::Duration)
+    {
+        ctx.set_fault(FAULT_TEMPORAL_AGG);
+        return Some(Val::Null);
+    }
+    if let AggFn::Min | AggFn::Max = spec.func {
+        let want = if spec.func == AggFn::Min {
+            Ordering::Less
+        } else {
+            Ordering::Greater
+        };
+        let mut ext: Option<T> = None;
+        for &row in ids {
+            let i = row as usize;
+            if present.get(i) {
+                let v = data.get(i);
+                ext = Some(match ext {
+                    Some(e) if v.cmp_total(&e) == want => v,
+                    Some(e) => e,
+                    None => v,
+                });
+            }
+        }
+        return Some(ext.map_or(Val::Null, Val::Temporal));
+    }
+    // `sum` over a DURATION column: component-wise fold via the same `Duration::add`
+    // as `dur + dur`, so overflow is loud (byte-identical to scalar arithmetic).
+    let mut acc: Option<crate::temporal::Duration> = None;
     for &row in ids {
         let i = row as usize;
         if present.get(i) {
-            let v = data.get(i);
-            ext = Some(match ext {
-                Some(e) if v.cmp_total(&e) == want => v,
-                Some(e) => e,
-                None => v,
+            let T::Duration(d) = data.get(i) else {
+                unreachable!("kind checked above")
+            };
+            acc = Some(match acc {
+                None => d,
+                Some(a) => match a.add(&d) {
+                    Some(s) => s,
+                    None => {
+                        ctx.set_fault(FAULT_DURATION_OVERFLOW);
+                        return Some(Val::Null);
+                    }
+                },
             });
         }
     }
-    Some(ext.map_or(Val::Null, Val::Temporal))
+    Some(acc.map_or(Val::Null, |d| Val::Temporal(T::Duration(d))))
 }
 
 fn eval_vec(graph: &Graph, ctx: &Ctx, sc: &ScanCols, e: &CExpr) -> VVec {
@@ -5834,10 +5961,11 @@ fn fused_global_agg(graph: &Graph, ctx: &Ctx, sc: &ScanCols, spec: &CAgg) -> Opt
     ) {
         return None; // collect-then-compute aggregates aren't vectorized
     }
-    // min/max over a typed temporal column: the numeric `num_col_of` fold below
-    // can't read a temporal column (it would bail to the scalar accumulator), so
-    // handle it here via the canonical total order.
-    if let Some(v) = temporal_minmax(graph, ctx, sc, spec) {
+    // Temporal aggregates over a typed temporal column: min/max via the total
+    // order and sum via DURATION addition compute here; avg (and sum over a
+    // non-DURATION kind) faults loud. The numeric `num_col_of` fold below can't
+    // read a temporal column (it would silently NaN → null).
+    if let Some(v) = temporal_agg(graph, ctx, sc, spec) {
         return Some(v);
     }
     let (data, present, ids) = num_col_of(graph, ctx, sc, spec.arg.as_ref()?)?;
@@ -5954,6 +6082,12 @@ fn fold_group_agg_cols(
             let av = eval_vec(graph, ctx, sc, arg);
             // min/max compare by value; only correct here for numeric columns.
             if matches!(spec.func, AggFn::Min | AggFn::Max) && !matches!(av, VVec::Num { .. }) {
+                return None;
+            }
+            // Temporal (gathered → `Gen`) sum/avg can't go through the numeric fold
+            // (it would NaN → null); bail to the scalar accumulator, which sums
+            // DURATIONs and faults on avg / non-summable kinds.
+            if matches!(spec.func, AggFn::Sum | AggFn::Avg) && matches!(av, VVec::Gen(_)) {
                 return None;
             }
             let (d, valid) = av.into_num();

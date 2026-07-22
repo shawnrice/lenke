@@ -1821,6 +1821,45 @@ fn math_round_sign_pi_e() {
 }
 
 #[test]
+fn sum_duration_computes_avg_duration_throws() {
+    let lines = [
+        r#"{"type":"node","id":"a","labels":["T"],"properties":{"g":1,"d":{"@duration":"P1M10D"}}}"#,
+        r#"{"type":"node","id":"b","labels":["T"],"properties":{"g":1,"d":{"@duration":"P2M5D"}}}"#,
+        r#"{"type":"node","id":"c","labels":["T"],"properties":{"g":2,"d":{"@duration":"P7D"}}}"#,
+    ];
+    let mut g = ndjson::decode(&lines.join("\n")).unwrap();
+    let tdur = |s: &str| Value::Temporal(crate::temporal::Temporal::parse("duration", s).unwrap());
+    // sum(DURATION): component-wise total (P1M10D + P2M5D + P7D = P3M22D), not NaN→null.
+    assert_eq!(
+        rows(&mut g, "MATCH (n:T) RETURN sum(n.d) AS s"),
+        vec![vec![tdur("P3M22D")]]
+    );
+    // Grouped sum (routes through the scalar accumulator): per-group totals.
+    assert_eq!(
+        rows(
+            &mut g,
+            "MATCH (n:T) RETURN n.g AS g, sum(n.d) AS s ORDER BY n.g"
+        ),
+        vec![vec![n(1.0), tdur("P3M15D")], vec![n(2.0), tdur("P7D")],]
+    );
+    // avg(DURATION) is a loud data exception (needs unrepresentable duration÷count).
+    let err = parse("MATCH (n:T) RETURN avg(n.d) AS a")
+        .unwrap()
+        .execute(&mut g, &Params::new())
+        .unwrap_err();
+    assert_eq!(err.code, crate::error_codes::ErrorCode::DataException);
+    // sum over a non-DURATION temporal (dates aren't summable) also throws.
+    let lines2 =
+        [r#"{"type":"node","id":"x","labels":["T"],"properties":{"dt":{"@date":"2020-01-01"}}}"#];
+    let mut g2 = ndjson::decode(&lines2.join("\n")).unwrap();
+    let err2 = parse("MATCH (n:T) RETURN sum(n.dt) AS s")
+        .unwrap()
+        .execute(&mut g2, &Params::new())
+        .unwrap_err();
+    assert_eq!(err2.code, crate::error_codes::ErrorCode::DataException);
+}
+
+#[test]
 fn math_atan2_binary_arctangent() {
     let mut g = modern();
     // atan2(y, x): quadrant-correct angle. Exact/stable values.
