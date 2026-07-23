@@ -3445,6 +3445,52 @@ fn trail_budget_guards_dense_unbounded_star() {
     assert_eq!(err.code, crate::error_codes::ErrorCode::ResourceExhausted);
 }
 
+/// A fixed-length multi-hop pattern with a per-hop WHERE and a LIMIT must be
+/// answered by the scalar depth-first driver — which filters during traversal and
+/// stops the instant the LIMIT fills — NOT the breadth-first vectorized path,
+/// which materializes the full cross-product of partial matches (millions of rows
+/// on a dense graph, an OOM on a large one) before the LIMIT ever applies. This is
+/// the routing that keeps native's result identical to the TS engine's and keeps
+/// the host alive. The `INTERMEDIATE_BUDGET` fault in `expand_scan` is the
+/// separate backstop for the enumerate-all case (no LIMIT, plain projection),
+/// which must materialize the full cross-product to return it: past the ceiling it
+/// faults with `E_RESOURCE_EXHAUSTED` rather than OOM-killing the host. That path
+/// is impractical to unit-test cheaply — tripping the ceiling means materializing
+/// tens of millions of rows — so this test covers the routing that makes the
+/// common case both correct and bounded. Found by the round-16 dogfood simulation,
+/// where a correlated multi-hop join took the host down with an OOM kill.
+#[test]
+fn multi_hop_with_limit_streams_and_stays_correct() {
+    // A small DAG: a -> {b,c} -> {d,e} -> f, with rising `amt` on exactly one
+    // fully-increasing path (a-b-d-f: 1 < 3 < 6). The per-hop `<` filter selects
+    // that path and no other, so the answer is deterministic and independent of
+    // enumeration order.
+    let lines = [
+        r#"{"type":"node","id":"a","labels":["A"],"properties":{"nm":"a"}}"#,
+        r#"{"type":"node","id":"b","labels":["A"],"properties":{"nm":"b"}}"#,
+        r#"{"type":"node","id":"c","labels":["A"],"properties":{"nm":"c"}}"#,
+        r#"{"type":"node","id":"d","labels":["A"],"properties":{"nm":"d"}}"#,
+        r#"{"type":"node","id":"e","labels":["A"],"properties":{"nm":"e"}}"#,
+        r#"{"type":"node","id":"f","labels":["A"],"properties":{"nm":"f"}}"#,
+        r#"{"type":"edge","from":"a","to":"b","labels":["E"],"properties":{"amt":1}}"#,
+        r#"{"type":"edge","from":"b","to":"d","labels":["E"],"properties":{"amt":3}}"#,
+        r#"{"type":"edge","from":"d","to":"f","labels":["E"],"properties":{"amt":6}}"#,
+        // a decoy path whose amounts do not strictly increase (2, 1, 9)
+        r#"{"type":"edge","from":"a","to":"c","labels":["E"],"properties":{"amt":2}}"#,
+        r#"{"type":"edge","from":"c","to":"e","labels":["E"],"properties":{"amt":1}}"#,
+        r#"{"type":"edge","from":"e","to":"f","labels":["E"],"properties":{"amt":9}}"#,
+    ];
+    let mut g = ndjson::decode(&lines.join("\n")).unwrap();
+    let out = rows(
+        &mut g,
+        "MATCH (v0:A)-[e1:E]->(v1:A)-[e2:E]->(v2:A)-[e3:E]->(v3:A) \
+         WHERE e1.amt < e2.amt AND e2.amt < e3.amt \
+         RETURN v0.nm AS s, v3.nm AS t LIMIT 100",
+    );
+    // Exactly the increasing path a->b->d->f, and nothing from the decoy.
+    assert_eq!(out, vec![vec![s("a"), s("f")]]);
+}
+
 #[test]
 fn list_value_equality_is_structural() {
     // Lists compare by size then element-wise (ISO); the TS engine matches this

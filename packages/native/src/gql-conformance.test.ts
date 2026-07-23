@@ -669,6 +669,36 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     }
   });
 
+  // --- fixed-length multi-hop with a per-hop WHERE + LIMIT: native routes this to
+  // the scalar depth-first driver (filters during traversal, stops at the LIMIT)
+  // instead of the breadth-first vectorized path (which materializes the whole
+  // cross-product of partial matches, and on a dense graph OOMs the host). TS has
+  // always streamed it. They must return the same rows. Regression: the round-16
+  // dogfood sim drove native to an OOM kill on exactly this shape. -------------
+  test('multi-hop with per-hop WHERE + LIMIT agrees (TS vs native)', () => {
+    const CHAIN_NDJSON = [
+      '{"type":"node","id":"a","labels":["A"],"properties":{"nm":"a"}}',
+      '{"type":"node","id":"b","labels":["A"],"properties":{"nm":"b"}}',
+      '{"type":"node","id":"c","labels":["A"],"properties":{"nm":"c"}}',
+      '{"type":"node","id":"d","labels":["A"],"properties":{"nm":"d"}}',
+      '{"type":"node","id":"e","labels":["A"],"properties":{"nm":"e"}}',
+      '{"type":"node","id":"f","labels":["A"],"properties":{"nm":"f"}}',
+      '{"type":"edge","from":"a","to":"b","labels":["E"],"properties":{"amt":1}}',
+      '{"type":"edge","from":"b","to":"d","labels":["E"],"properties":{"amt":3}}',
+      '{"type":"edge","from":"d","to":"f","labels":["E"],"properties":{"amt":6}}',
+      '{"type":"edge","from":"a","to":"c","labels":["E"],"properties":{"amt":2}}',
+      '{"type":"edge","from":"c","to":"e","labels":["E"],"properties":{"amt":1}}',
+      '{"type":"edge","from":"e","to":"f","labels":["E"],"properties":{"amt":9}}',
+    ].join('\n');
+    const nat = graphFromFormat(backend, CHAIN_NDJSON, 'ndjson');
+    const ts = tsDeserialize(CHAIN_NDJSON, 'ndjson', new Graph());
+    const q =
+      'MATCH (v0:A)-[e1:E]->(v1:A)-[e2:E]->(v2:A)-[e3:E]->(v3:A) ' +
+      'WHERE e1.amt < e2.amt AND e2.amt < e3.amt ' +
+      'RETURN v0.nm AS s, v3.nm AS t ORDER BY s, t LIMIT 100';
+    expect(JSON.stringify(nat.query(q)), q).toBe(JSON.stringify(tsQuery(ts, q)));
+  });
+
   // --- correlated EXISTS count: native uses a reverse semi-join (seed the selective
   // inner endpoint), TS tests every outer row. They must agree. Software (1 vertex)
   // is more selective than Person, so the fast path fires. ---------------------

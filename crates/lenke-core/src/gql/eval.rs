@@ -192,9 +192,20 @@ const FAULT_DURATION_OVERFLOW: u8 = 11;
 const FAULT_DATE_OVERFLOW: u8 = 12;
 const FAULT_TEMPORAL_AGG: u8 = 13;
 const FAULT_NONNUMERIC_AGG: u8 = 14;
+const FAULT_INTERMEDIATE: u8 = 15;
 
 /// Per-expansion cap on trail-traversal steps; a guard against exponential blowup.
 const TRAIL_BUDGET: u64 = 1_000_000;
+
+/// Ceiling on the intermediate frontier a fixed-length multi-segment scan may
+/// materialize. A chain `(a)-[]->(b)-[]->(c)-[]->…` fans out the cross-product of
+/// partial matches segment by segment, and the trailing LIMIT only prunes the
+/// *last* segment — every earlier layer is built in full first. On a dense graph
+/// that reaches billions of rows and takes the host down with an OOM kill rather
+/// than the query erroring. This bounds it: past the ceiling the scan faults with
+/// `E_RESOURCE_EXHAUSTED` (see [`FAULT_INTERMEDIATE`]). Generous enough that a real
+/// analytical join clears it; only a runaway cross-product trips it.
+const INTERMEDIATE_BUDGET: usize = 50_000_000;
 
 impl Ctx<'_> {
     /// Re-resolve property-key and label ids against the current graph (keeping
@@ -270,6 +281,11 @@ impl Ctx<'_> {
             FAULT_BUDGET => Err(CodeError::new(
                 ErrorCode::ResourceExhausted,
                 "variable-length pattern exceeded the trail budget; add a tighter bound",
+            )),
+            FAULT_INTERMEDIATE => Err(CodeError::new(
+                ErrorCode::ResourceExhausted,
+                "multi-hop pattern materialized too many intermediate rows; add selective \
+                 per-hop predicates, anchor an endpoint, or shorten the chain",
             )),
             FAULT_BAD_LABEL => Err(CodeError::new(
                 ErrorCode::InvalidGraphOp,
@@ -5592,8 +5608,21 @@ fn expand_scan(
                 if is_last && cap.is_some_and(|c| new_endpoint.len() >= c) {
                     break 'rows;
                 }
+                // Bound the frontier before it takes the host down. The cross-product
+                // of partial matches can reach billions of rows on a dense graph, and
+                // only the *last* segment's LIMIT prunes early. Checked here inside the
+                // build — not after the segment — so a single layer that would jump to
+                // a billion rows caps at the ceiling instead of materializing the whole
+                // layer first. Faults (surfaced as `E_RESOURCE_EXHAUSTED` at the row
+                // boundary) and bails; returning drops `new_cols`/`new_endpoint`, so
+                // the memory is released rather than continuing to grow.
+                if new_endpoint.len() > INTERMEDIATE_BUDGET {
+                    ctx.set_fault(FAULT_INTERMEDIATE);
+                    return None;
+                }
             }
         }
+
         // This segment's rel/node columns are now populated for every row.
         if let Some(s) = rel.var_slot {
             bound[s] = true;
@@ -6426,6 +6455,25 @@ fn vectorized_frame(
     // per-row expression to vectorize. With a WHERE, the batched build + masked
     // count can pay for itself.
     if !path.segments.is_empty() && proj.aggregating && where_.is_none() {
+        return None;
+    }
+
+    // A multi-segment pattern with a LIMIT and a plain projection is answered far
+    // better by the scalar depth-first driver, so defer to it. This path is
+    // breadth-first: it materializes each segment's full frontier and the LIMIT
+    // only prunes the *last* one, so a dense multi-hop chain builds the entire
+    // cross-product of partial matches — millions of rows to return a handful, and
+    // on a large graph an OOM. DFS filters during traversal and stops the instant
+    // the LIMIT fills, at every level, matching the TS engine's streaming
+    // semantics. Aggregation / DISTINCT / ORDER BY genuinely need every row, so
+    // they stay here; a limitless multi-hop is enumerate-all and the intermediate
+    // budget in `expand_scan` bounds it.
+    if path.segments.len() >= 2
+        && !proj.aggregating
+        && !proj.distinct
+        && !has_order
+        && proj.limit_val(ctx).is_some()
+    {
         return None;
     }
 
@@ -9425,6 +9473,14 @@ fn project_to_rows(
                 rs.push_row(cols.iter().map(|c| val_to_value(graph, &c[i])));
             }
             return rs;
+        }
+        // A vectorized attempt that bailed on the intermediate budget set the fault
+        // and returned None. Don't fall through to the scalar driver — it would
+        // re-enumerate the same runaway cross-product. The fault is drained at the
+        // statement boundary, so the (empty) RowSet is discarded and the
+        // E_RESOURCE_EXHAUSTED surfaces.
+        if ctx.faulted() {
+            return RowSet::new(proj.out_names.clone());
         }
     }
     let mut rs = RowSet::new(proj.out_names.clone());
