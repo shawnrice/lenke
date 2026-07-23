@@ -16,7 +16,19 @@
  * throw `EmitUnsupported`, tagged so a caller can distinguish "TS-only superset"
  * from "gap in the emitter".
  */
+import { isTemporal } from '@lenke/core';
+
 import type { By, Plan, Predicate, Step } from './ast.js';
+
+/** Tagged-JSON key -> the text dialect's literal constructor. */
+const TEMPORAL_CTOR: Readonly<Record<string, string>> = {
+  '@date': 'date',
+  '@localtime': 'time',
+  '@datetime': 'datetime',
+  '@zoned_time': 'zoned_time',
+  '@zoned_datetime': 'zoned_datetime',
+  '@duration': 'duration',
+};
 
 //
 // The reason a case can't be dual-authored by hand: this derives the Groovy
@@ -55,6 +67,21 @@ const emitLiteral = (v: unknown): string => {
     }
 
     return String(v);
+  }
+
+  // A temporal emits as the dialect's constructor call — `date('2020-01-01')`.
+  // Its `toJSON` tag is the discriminant, so the emitted spelling and the
+  // parser's accepted spelling are derived from one table rather than two.
+  if (isTemporal(v)) {
+    const tagged = v.toJSON() as Record<string, string>;
+    const [tag] = Object.keys(tagged);
+    const ctor = TEMPORAL_CTOR[tag];
+
+    if (!ctor) {
+      throw new EmitUnsupported('unsupported', `temporal tag ${tag}`);
+    }
+
+    return `${ctor}(${emitLiteral(tagged[tag])})`;
   }
 
   throw new EmitUnsupported('unsupported', `literal of type ${typeof v}`);
@@ -122,7 +149,161 @@ const emitAlgoStep = (
   }
 };
 
+/**
+ * Edge steps and the vertex steps that come back off them. Split out of
+ * `emitStep` purely to keep any one function's branch count reasonable.
+ */
+/** Steps that emit as a bare `name()` — no arguments, no modulators. */
+const NILADIC: ReadonlySet<Step['kind']> = new Set([
+  'id',
+  'label',
+  'value',
+  'sum',
+  'min',
+  'max',
+  'mean',
+  'fold',
+  'unfold',
+  'identity',
+  'count',
+] as const);
+
+const emitEdgeStep = (step: Step): string | null => {
+  switch (step.kind) {
+    case 'E':
+      return `E(${(step.ids ?? []).map(emitLiteral).join(', ')})`;
+    case 'outE':
+    case 'inE':
+    case 'bothE':
+      return `${step.kind}(${step.labels.map(emitLiteral).join(', ')})`;
+    case 'outV':
+    case 'inV':
+    case 'bothV':
+    case 'otherV':
+      return `${step.kind}()`;
+    default:
+      return null;
+  }
+};
+
+/** Slicing. The TS names differ from the dialect's: `take` is `limit`, and a
+ *  local scope is spelled as a leading `local` argument. */
+const emitSliceStep = (step: Step): string | null => {
+  switch (step.kind) {
+    case 'take':
+    case 'tail': {
+      const name = step.kind === 'take' ? 'limit' : 'tail';
+
+      return step.scope === 'local' ? `${name}(local, ${step.n})` : `${name}(${step.n})`;
+    }
+    case 'skip':
+      return step.scope === 'local' ? `skip(local, ${step.n})` : `skip(${step.n})`;
+    case 'range':
+      return step.scope === 'local'
+        ? `range(local, ${step.start}, ${step.end})`
+        : `range(${step.start}, ${step.end})`;
+    default:
+      return null;
+  }
+};
+
+/** The `by()`-modulated steps. Legacy scalar `by`/`keyBy`/`valueBy` are property
+ *  names; the `bys` modulator form takes precedence wherever both exist. */
+const emitModulatedStep = (step: Step): string | null => {
+  const mods = (bys: readonly By[] | undefined): string => (bys ?? []).map(emitBy).join('');
+
+  switch (step.kind) {
+    case 'path':
+      return `path()${mods(step.bys)}`;
+    case 'valueMap':
+      return `valueMap(${(step.keys ?? []).map(emitLiteral).join(', ')})`;
+    case 'groupCount': {
+      if (step.bys?.length) {
+        return `groupCount()${mods(step.bys)}`;
+      }
+
+      return step.by === undefined ? 'groupCount()' : `groupCount().by(${emitLiteral(step.by)})`;
+    }
+    case 'group': {
+      if (step.bys?.length) {
+        return `group()${mods(step.bys)}`;
+      }
+
+      const legacy = [step.keyBy, step.valueBy]
+        .filter((k): k is string => k !== undefined)
+        .map((k) => `.by(${emitLiteral(k)})`)
+        .join('');
+
+      return `group()${legacy}`;
+    }
+    case 'select': {
+      const pop = step.pop && step.pop !== 'last' ? `${step.pop}, ` : '';
+
+      return `select(${pop}${step.labels.map(emitLiteral).join(', ')})${mods(step.bys)}`;
+    }
+    case 'selectColumn':
+      return `select(${step.column})`;
+    case 'project':
+      return `project(${step.keys.map(emitLiteral).join(', ')})${mods(step.bys)}`;
+    case 'order': {
+      // `order()` used to drop its modulators, which would have emitted a
+      // differently-ordered result rather than an error.
+      const scope = step.scope === 'local' ? 'local' : '';
+
+      if (step.bys?.length) {
+        return `order(${scope})${mods(step.bys)}`;
+      }
+
+      if (step.key !== undefined) {
+        return `order(${scope}).by(${emitLiteral(step.key)}${step.desc ? ', desc' : ''})`;
+      }
+
+      return step.desc ? `order(${scope}).by(desc)` : `order(${scope})`;
+    }
+    default:
+      return null;
+  }
+};
+
+/** Steps carrying whole sub-plans. */
+const emitNestedStep = (step: Step): string | null => {
+  switch (step.kind) {
+    case 'union':
+      return `union(${step.plans.map(emitSubPlan).join(', ')})`;
+    case 'not':
+      return `not(${emitSubPlan(step.plan)})`;
+    case 'repeat': {
+      // Placement is semantic, not cosmetic: `until(c).repeat(b)` is while-do,
+      // `repeat(b).until(c)` is do-while, and the same distinction applies to
+      // `emit`. Emitting the wrong side would silently change the result, so a
+      // pre-form modulator is emitted BEFORE the repeat.
+      const until = step.until ? `until(${emitSubPlan(step.until)})` : '';
+      const emit = step.emit ? `emit(${emitSubPlan(step.emit)})` : '';
+      const pre =
+        (step.untilBefore && until ? `${until}.` : '') +
+        (step.emitBefore && emit ? `${emit}.` : '');
+      const post =
+        (!step.untilBefore && until ? `.${until}` : '') +
+        (!step.emitBefore && emit ? `.${emit}` : '') +
+        (step.times === undefined ? '' : `.times(${step.times})`);
+
+      return `${pre}repeat(${emitSubPlan(step.body)})${post}`;
+    }
+    default:
+      return null;
+  }
+};
+
 const emitStep = (step: Step): string => {
+  // Edge / slice / modulated / nested families first — each returns null for a
+  // kind it does not own, so the switch below stays the simple-step case.
+  const family =
+    emitEdgeStep(step) ?? emitSliceStep(step) ?? emitModulatedStep(step) ?? emitNestedStep(step);
+
+  if (family !== null) {
+    return family;
+  }
+
   switch (step.kind) {
     case 'V':
       return `V(${(step.ids ?? []).map(emitLiteral).join(', ')})`;
@@ -144,20 +325,6 @@ const emitStep = (step: Step): string => {
       return `dedup(${(step.labels ?? []).map(emitLiteral).join(', ')})`;
     case 'constant':
       return `constant(${emitLiteral(step.value)})`;
-    case 'count':
-      return 'count()';
-    case 'id':
-    case 'label':
-    case 'value':
-    case 'sum':
-    case 'min':
-    case 'max':
-    case 'mean':
-    case 'fold':
-    case 'unfold':
-    case 'order':
-    case 'identity':
-      return `${step.kind}()`;
     // The TS-superset kinds: no native form. Classified tsOnly.
     case 'mapFn':
     case 'flatMapFn':
@@ -179,6 +346,12 @@ const emitStep = (step: Step): string => {
       return `branch(${emitSubPlan(step.test)})${opts}${def}`;
     }
     default:
+      // Arity-0 steps emit as a bare `name()`; kept in a set rather than a case
+      // arm each so this switch's branch count stays reviewable.
+      if (NILADIC.has(step.kind)) {
+        return `${step.kind}()`;
+      }
+
       throw new EmitUnsupported('unsupported', `step ${step.kind}`);
   }
 };

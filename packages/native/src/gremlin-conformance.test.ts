@@ -25,7 +25,7 @@
 import { describe, expect, test } from 'bun:test';
 import { existsSync } from 'node:fs';
 
-import { isElement } from '@lenke/core';
+import { Graph, isElement } from '@lenke/core';
 import { ErrorCode, hasErrorCode } from '@lenke/errors';
 import {
   V,
@@ -36,8 +36,21 @@ import {
   count,
   createTestTinkerGraph,
   dedupe,
+  E,
+  inE,
+  gte,
+  inV,
   isTsOnly,
+  lte,
+  bothE,
+  not,
+  otherV,
+  outE,
+  outV,
   planToGremlin,
+  select,
+  take,
+  union,
   eq,
   gt,
   has,
@@ -437,6 +450,74 @@ const CORPUS: Case[] = [
   },
   // Non-finite literal: unreachable across the boundary — classified tsOnly by
   // the emitter (documents that `inject(NaN)` cannot reach the native engine).
+  // --- step families the emitter could not previously express -----------------
+  //
+  // `planToGremlin` covered vertex-to-vertex traversal with scalar predicates
+  // only: every edge step, and every literal that was not a string/number/bool,
+  // threw `unsupported`. That meant no edge-PROPERTY predicate of any kind
+  // crossed the bridge — and a bitemporal model stores every interval as an edge
+  // property, so nothing bitemporal did either. These pin the round-trip, not
+  // just the emission: each runs on both engines and the results must match.
+  {
+    name: "V().outE('CREATED').count()",
+    plan: traversal(V(), outE('CREATED'), count()),
+    verdict: { kind: 'agree', expected: [4] },
+  },
+  {
+    name: "V().inE('KNOWS').count()",
+    plan: traversal(V(), inE('KNOWS'), count()),
+    verdict: { kind: 'agree', expected: [2] },
+  },
+  {
+    name: "V().bothE('CREATED').count()",
+    plan: traversal(V(), bothE('CREATED'), count()),
+    verdict: { kind: 'agree', expected: [8] },
+  },
+  {
+    name: "V().has('name', eq('marko')).outE('CREATED').inV().values('name')",
+    plan: traversal(V(), has('name', eq('marko')), outE('CREATED'), inV(), values('name')),
+    verdict: { kind: 'agree', expected: ['lop'] },
+  },
+  {
+    name: "V().has('name', eq('lop')).inE('CREATED').outV().values('name')",
+    plan: traversal(V(), has('name', eq('lop')), inE('CREATED'), outV(), values('name')),
+    verdict: { kind: 'agree', expected: ['marko', 'josh', 'peter'] },
+  },
+  {
+    name: "V().has('name', eq('marko')).outE('CREATED').otherV().values('name')",
+    plan: traversal(V(), has('name', eq('marko')), outE('CREATED'), otherV(), values('name')),
+    verdict: { kind: 'agree', expected: ['lop'] },
+  },
+  {
+    name: 'E().count()',
+    plan: traversal(E(), count()),
+    verdict: { kind: 'agree', expected: [6] },
+  },
+  {
+    name: "E().hasLabel('CREATED').count()",
+    plan: traversal(E(), hasLabel('CREATED'), count()),
+    verdict: { kind: 'agree', expected: [4] },
+  },
+  {
+    name: "V().hasLabel('PERSON').values('age').order().limit(2)",
+    plan: traversal(V(), hasLabel('PERSON'), values('age'), order(), take(2)),
+    verdict: { kind: 'agree', expected: [27, 29] },
+  },
+  {
+    name: "V().has('name', eq('marko')).union(out('KNOWS'), out('CREATED')).count()",
+    plan: traversal(V(), has('name', eq('marko')), union(out('KNOWS'), out('CREATED')), count()),
+    verdict: { kind: 'agree', expected: [3] },
+  },
+  {
+    name: "V().not(hasLabel('PERSON')).values('name')",
+    plan: traversal(V(), not(hasLabel('PERSON')), values('name')),
+    verdict: { kind: 'agree', expected: ['lop', 'ripple'] },
+  },
+  {
+    name: "V().has('name', eq('marko')).as('x').select('x').values('name')",
+    plan: traversal(V(), has('name', eq('marko')), as_('x'), select('x'), values('name')),
+    verdict: { kind: 'agree', expected: ['marko'] },
+  },
   {
     name: 'inject(NaN).count()  [unreachable literal → tsOnly]',
     plan: traversal(inject(Number.NaN), count()),
@@ -494,4 +575,95 @@ suite('gremlin conformance: TS engine ⟷ Rust core (over ffi)', () => {
       expect(nativeRun(groovy)).toEqual(expected);
     });
   }
+});
+
+// The bitemporal as-of shape, end to end across the bridge. Kept separate from
+// CORPUS because it needs edges carrying temporal properties, and the shared
+// "modern" fixture deliberately has none.
+//
+// This is the query that motivated the whole thread: an as-of read needs
+// `vf <= t AND vt > t` on an EDGE, so it requires edge steps and temporal
+// literals together. Before, the emitter refused it ("unsupported: step outE"),
+// and even hand-written the dialect could not express `date(...)`.
+suite('gremlin conformance: bitemporal as-of across the bridge', () => {
+  const TEMPORAL_NDJSON = [
+    { type: 'node', id: 'a', labels: ['E'], properties: { id: 'a' } },
+    { type: 'node', id: 'b', labels: ['E'], properties: { id: 'b' } },
+    { type: 'node', id: 'c', labels: ['E'], properties: { id: 'c' } },
+    // a->b is current as of 2021-06-01; a->c expired in 2019.
+    {
+      type: 'edge',
+      id: 'e1',
+      from: 'a',
+      to: 'b',
+      labels: ['R'],
+      properties: { vf: { '@date': '2020-01-01' }, vt: { '@date': '2099-12-31' } },
+    },
+    {
+      type: 'edge',
+      id: 'e2',
+      from: 'a',
+      to: 'c',
+      labels: ['R'],
+      properties: { vf: { '@date': '2018-01-01' }, vt: { '@date': '2019-01-01' } },
+    },
+  ]
+    .map((r) => JSON.stringify(r))
+    .join('\n');
+
+  const asOf = { '@date': '2021-06-01' };
+  const plan = traversal(
+    V(),
+    has('id', eq('a')),
+    outE('R'),
+    has('vf', lte(asOf as never)),
+    has('vt', gte(asOf as never)),
+    inV(),
+    values('id'),
+  );
+
+  test('emits edge steps and temporal literals, and both engines agree', () => {
+    const groovy = planToGremlin(plan);
+
+    expect(groovy).toContain("outE('R')");
+    expect(groovy).toContain("date('2021-06-01')");
+
+    // Same NDJSON both sides, with explicit element ids, so the engines cannot
+    // synthesize different ids and make identical results look like a divergence.
+    const g = new Graph();
+
+    for (const line of TEMPORAL_NDJSON.split('\n')) {
+      const r = JSON.parse(line) as {
+        type: string;
+        id: string;
+        labels: string[];
+        properties: Record<string, unknown>;
+        from?: string;
+        to?: string;
+      };
+
+      if (r.type === 'node') {
+        g.addVertex({ id: r.id, labels: r.labels, properties: r.properties });
+      } else {
+        g.addEdge({
+          id: r.id,
+          from: g.getVertexById(r.from!)!,
+          to: g.getVertexById(r.to!)!,
+          labels: r.labels,
+          properties: r.properties,
+        });
+      }
+    }
+
+    const handle = backend!.graphFromNdjson(new TextEncoder().encode(TEMPORAL_NDJSON), false);
+
+    try {
+      const native = JSON.parse(decoder.decode(backend!.gremlinJson(handle, groovy))) as unknown[];
+
+      expect(toArray(plan, g).map(canonJson)).toEqual(['b']);
+      expect(native).toEqual(['b']);
+    } finally {
+      backend!.graphFree(handle);
+    }
+  });
 });
