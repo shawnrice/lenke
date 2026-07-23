@@ -63,13 +63,17 @@ backlog replay, apply-first rejection). The divergences found are all in _older_
 
 ## Byte-identical shared behavior (conformance/design notes, NOT divergences)
 
-- **MED · invalid calendar dates silently roll over** — `DATE '2025-02-29'` → `2025-03-01`,
-  `DATE '2025-04-31'` → `2025-05-01`, on **both** engines; yet out-of-range fields (month 13,
-  day 32) → `E_SYNTAX` on both. Validation range-checks fields but not day-vs-month/leap-year.
-  ISO GQL / Postgres / Neo4j reject `2025-02-29`. Consistent with this session's
-  temporal-throw precedent, rejecting would be more coherent — but it's a shared behavior
-  change + conformance-corpus update. Repro: `.dogfood/round15/_verify_batch.ts`,
-  `knowledgeapp/_probe_dateinv.ts`.
+- **WON'T-CHANGE (works as designed) · invalid calendar dates roll over** — `DATE
+'2025-02-29'` → `2025-03-01`, `DATE '2025-04-31'` → `2025-05-01`, on **both** engines; yet
+  out-of-range fields (month 13, day 32) → `E_SYNTAX`. These dates are **representable** (a
+  real date results), so this is NOT the temporal-arithmetic-overflow case (which throws
+  because the result leaves the value model). It's a "which convention" call: legacy JS `Date`
+  rolls over (lenke's choice), TC39 Temporal clamps (`overflow: 'constrain'` → Feb 28) or
+  rejects (`'reject'`), SQL/Postgres/Neo4j reject. Keeping rollover is **consistent with
+  lenke's own date arithmetic** (which also rolls over, only throwing when the result is
+  genuinely unrepresentable) — clamping/rejecting _parsing_ while arithmetic rolls over would
+  be the inconsistent choice. lenke dates are ultimately JS `Date`-semantics values; overflow
+  is a legitimate property, not a bug. Repro: `.dogfood/round15/_verify_batch.ts`.
 - **RESOLVED · `dumpSchema` non-idempotent after dropping a constraint's auto-index** — you
   could drop a unique constraint's backing index, then a `dump → apply → re-dump` would differ
   (the replay re-created the index), and a snapshot would resurrect it on warm boot. Now moot:
