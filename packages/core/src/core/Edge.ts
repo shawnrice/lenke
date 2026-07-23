@@ -2,7 +2,7 @@ import { EmitterEvent } from '@lenke/emitter';
 import { rando, sortedByKey } from '@lenke/utils';
 
 import type { Graph } from './Graph.js';
-import { validatePropertyKey, validatePropertyValue } from './validate.js';
+import { normalizeProperties, validatePropertyKey, validatePropertyValue } from './validate.js';
 import { Vertex } from './Vertex.js';
 
 export type AddEdgeParams = {
@@ -93,7 +93,13 @@ export class Edge {
    * mutators (which already build a fresh object) to avoid a redundant copy.
    */
   #commitProperties(bag: Record<string, unknown>): void {
-    this.#graph!.elementProperties.set(this.#id, Object.freeze(bag));
+    // Single funnel for every property write — constructor, setProperty,
+    // setProperties, removeProperty — so normalizing here lifts a tagged temporal
+    // (`{"@date": …}`) to its instance no matter which path wrote it. Without it a
+    // value round-tripped out of the graph and back in stored as a plain object
+    // and silently compared equal to nothing. Returns the same bag when nothing
+    // moved, so the common case costs one pass and no allocation.
+    this.#graph!.elementProperties.set(this.#id, Object.freeze(normalizeProperties(bag)));
   }
 
   addLabel(label: string): Edge | null {

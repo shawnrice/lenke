@@ -1,5 +1,7 @@
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
+import { fromTaggedJson } from '../temporal.js';
+
 /**
  * A well-formed **label** (node label / edge type): non-empty and free of the
  * `::` sequence. GraphSON joins a node's labels with `::`, so a `::` inside one
@@ -76,4 +78,55 @@ export const validateElementNames = (
       validatePropertyValue(properties[key]);
     }
   }
+};
+
+/**
+ * Lift a tagged temporal literal (`{"@date": "2020-01-01"}`) back to its instance.
+ *
+ * Temporals are *boxed* on the way out — `toJSON` emits this tagged form, so it is
+ * what comes back through NDJSON, snapshots, `elementMap`, and any caller handing
+ * back a value it previously read. Storing it raw made it silently uncomparable:
+ * `WHERE v.vf = DATE '2020-01-01'` and every Gremlin predicate returned nothing,
+ * because comparison needs an instance. Boxing on output obliges unboxing on
+ * input — a store has to be able to ingest its own output format.
+ *
+ * Lists lift element-wise. Everything else passes through by identity, and the
+ * common case allocates nothing.
+ */
+export const normalizePropertyValue = (value: unknown): unknown => {
+  const lifted = fromTaggedJson(value);
+
+  if (lifted) {
+    return lifted;
+  }
+
+  if (Array.isArray(value)) {
+    let changed = false;
+    const out = value.map((v) => {
+      const n = normalizePropertyValue(v);
+
+      changed ||= n !== v;
+
+      return n;
+    });
+
+    return changed ? out : value;
+  }
+
+  return value;
+};
+
+/** [`normalizePropertyValue`] across a property bag, reusing it when nothing moved. */
+export const normalizeProperties = (bag: Record<string, unknown>): Record<string, unknown> => {
+  let changed = false;
+  const out: Record<string, unknown> = {};
+
+  for (const key of Object.keys(bag)) {
+    const v = normalizePropertyValue(bag[key]);
+
+    changed ||= v !== bag[key];
+    out[key] = v;
+  }
+
+  return changed ? out : bag;
 };
