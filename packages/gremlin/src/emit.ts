@@ -16,19 +16,9 @@
  * throw `EmitUnsupported`, tagged so a caller can distinguish "TS-only superset"
  * from "gap in the emitter".
  */
-import { isTemporal } from '@lenke/core';
+import { isTemporal, temporalLiteralParts } from '@lenke/core';
 
 import type { By, Plan, Predicate, Step } from './ast.js';
-
-/** Tagged-JSON key -> the text dialect's literal constructor. */
-const TEMPORAL_CTOR: Readonly<Record<string, string>> = {
-  '@date': 'date',
-  '@localtime': 'time',
-  '@datetime': 'datetime',
-  '@zoned_time': 'zoned_time',
-  '@zoned_datetime': 'zoned_datetime',
-  '@duration': 'duration',
-};
 
 //
 // The reason a case can't be dual-authored by hand: this derives the Groovy
@@ -73,15 +63,13 @@ const emitLiteral = (v: unknown): string => {
   // Its `toJSON` tag is the discriminant, so the emitted spelling and the
   // parser's accepted spelling are derived from one table rather than two.
   if (isTemporal(v)) {
-    const tagged = v.toJSON() as Record<string, string>;
-    const [tag] = Object.keys(tagged);
-    const ctor = TEMPORAL_CTOR[tag];
+    const parts = temporalLiteralParts(v);
 
-    if (!ctor) {
-      throw new EmitUnsupported('unsupported', `temporal tag ${tag}`);
+    if (parts === null) {
+      throw new EmitUnsupported('unsupported', 'unrecognized temporal kind');
     }
 
-    return `${ctor}(${emitLiteral(tagged[tag])})`;
+    return `${parts.kind}(${emitLiteral(parts.iso)})`;
   }
 
   throw new EmitUnsupported('unsupported', `literal of type ${typeof v}`);

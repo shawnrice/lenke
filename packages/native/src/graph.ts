@@ -11,7 +11,7 @@ import type {
   ScalarTypeName,
   ShortestPathRow,
 } from '@lenke/core';
-import { isTemporal } from '@lenke/core';
+import { fromTaggedJson, isTemporal, temporalLiteralParts } from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { Backend, GraphHandle, MergeReport, PreparedHandle } from './backend.js';
@@ -354,11 +354,27 @@ export const escapeGremlin = (value: unknown): string => {
 
       return text;
     }
-    default:
+    default: {
+      // A temporal embeds as the dialect's literal constructor — `date('…')`.
+      // Accepts both a stored instance and the tagged wire form `{"@date": …}`,
+      // since a caller most often passes back a value it read out of a graph or
+      // wrote into one. Without this a temporal could only be hand-spelled, which
+      // is exactly what this helper exists to avoid.
+      const temporal = isTemporal(value) ? value : fromTaggedJson(value);
+
+      if (temporal) {
+        const parts = temporalLiteralParts(temporal);
+
+        if (parts) {
+          return `${parts.kind}(${escapeGremlin(parts.iso)})`;
+        }
+      }
+
       throw new LenkeError(
         `lenke: gremlin cannot embed a ${value === null ? 'null' : typeof value} value as a literal`,
         { code: ErrorCode.InvalidGraphOp },
       );
+    }
   }
 };
 
@@ -370,6 +386,19 @@ export const escapeGremlin = (value: unknown): string => {
  */
 export const gremlin = (q: string | TemplateStringsArray, ...subs: unknown[]): string => {
   if (!isTemplate(q)) {
+    // A plain string has no interpolation sites, so any extra arguments would be
+    // silently discarded. That reads exactly like GQL's `query(text, params)` and
+    // fails far downstream as a parse error on the un-substituted text, so refuse
+    // it here and say what to use instead.
+    if (subs.length > 0) {
+      throw new LenkeError(
+        'lenke: gremlin(text, params) is not a binding form — Gremlin has no engine-side ' +
+          'parameter binding. Use the tagged template so values are escaped into the text: ' +
+          "g.gremlin`g.V().has('k', eq(<value>))` — every interpolation is escaped.",
+        { code: ErrorCode.InvalidGraphOp },
+      );
+    }
+
     return q;
   }
 

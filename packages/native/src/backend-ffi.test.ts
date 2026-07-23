@@ -227,6 +227,40 @@ suite('@lenke/native FFI backend', () => {
     );
   });
 
+  // Gremlin has no engine-side `$name` binding — the tagged template IS the
+  // binding mechanism. It refused every non-scalar, so a temporal could only be
+  // hand-spelled into the text, which defeats the point of an escaping helper and
+  // is unsafe for any value that isn't a trusted constant.
+  test('escapeGremlin embeds temporals as dialect literal constructors', () => {
+    // Both the stored instance and the tagged wire form a caller reads back out.
+    expect(escapeGremlin({ '@date': '2020-01-01' })).toBe("date('2020-01-01')");
+    expect(escapeGremlin({ '@datetime': '2020-01-01T12:30:00' })).toBe(
+      "datetime('2020-01-01T12:30:00')",
+    );
+    expect(escapeGremlin({ '@duration': 'P1D' })).toBe("duration('P1D')");
+    // `@localtime` is spelled `time(...)`, so a plain tag-slice would be wrong.
+    expect(escapeGremlin({ '@localtime': '12:30:00' })).toBe("time('12:30:00')");
+
+    expect(gremlin`g.V().has('vf', lte(${{ '@date': '2021-06-01' }}))`).toBe(
+      "g.V().has('vf', lte(date('2021-06-01')))",
+    );
+  });
+
+  // `gremlin(text, params)` reads exactly like GQL's `query(text, params)`, but a
+  // plain string has no interpolation sites — the params were silently discarded
+  // and the failure surfaced far downstream as a parse error on un-substituted
+  // text. Refuse it at the call instead, and name the form that does work.
+  test('gremlin(text, params) is refused rather than silently dropping the params', () => {
+    expect(() =>
+      (gremlin as (q: string, ...s: unknown[]) => string)("g.V().has('vf', lte($v))", {
+        v: { '@date': '2021-06-01' },
+      }),
+    ).toThrow(/not a binding form/);
+
+    // A plain string with nothing to substitute still passes through untouched.
+    expect(gremlin('g.V().count()')).toBe('g.V().count()');
+  });
+
   test('the Gremlin tagged template escapes interpolations — injection stays inert', () => {
     const backend = createFfiBackend(LIB);
     const g = graphFromNdjson(backend, bytes);

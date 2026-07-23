@@ -37,6 +37,7 @@ export {
   temporalFormat,
   temporalParse,
   temporalCmpTotal,
+  temporalLiteralParts,
   temporalRelCmp,
   temporalArith,
   durationBetween,

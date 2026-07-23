@@ -1157,3 +1157,28 @@ export function temporalArith(op: string, l: unknown, r: unknown): unknown {
 
   return null;
 }
+
+/** The textual kind name and ISO payload of a temporal, derived from its tagged
+ *  JSON form. `{"@date": "2020-01-01"}` -> `{ kind: 'date', iso: '2020-01-01' }`.
+ *
+ *  The kind names are the ones both textual dialects use as literal constructors
+ *  (`date('…')`, `zoned_datetime('…')`), so a caller can format a literal without
+ *  restating the tag table. Note `@localtime` maps to `time`, which is why a
+ *  plain `tag.slice(1)` will not do.
+ */
+const TEMPORAL_TAG_KIND: Readonly<Record<string, string>> = {
+  '@date': 'date',
+  '@localtime': 'time',
+  '@datetime': 'datetime',
+  '@zoned_time': 'zoned_time',
+  '@zoned_datetime': 'zoned_datetime',
+  '@duration': 'duration',
+};
+
+export const temporalLiteralParts = (v: Temporal): { kind: string; iso: string } | null => {
+  const tagged = v.toJSON() as Record<string, string>;
+  const [tag] = Object.keys(tagged);
+  const kind = TEMPORAL_TAG_KIND[tag];
+
+  return kind === undefined ? null : { kind, iso: tagged[tag] };
+};
