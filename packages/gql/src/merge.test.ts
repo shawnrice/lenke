@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
+import { Graph } from '@lenke/core';
 import { ErrorCode } from '@lenke/errors';
 
 import { createTestSocialGraph } from './fixtures/createTestSocialGraph.js';
@@ -175,5 +176,28 @@ describe('GQL: _MERGE (keyed upsert, node form)', () => {
     ]) {
       expect(() => parse(ext, { dialect: 'iso-strict' }), ext).toThrow();
     }
+  });
+
+  // Edge `_MERGE` with endpoints bound by a preceding MATCH — the natural way to
+  // upsert an edge between two known vertices. Regression: resolveMergeEndpoint
+  // ignored the binding and re-inferred a unique key from the (empty) node
+  // pattern, so the bound-variable edge-merge form was unusable (it threw
+  // "_MERGE needs a unique constraint on the pattern's label(s) []"). Found by the
+  // round-16 dogfood sim (ScenarioForge). Mirrors the native
+  // `merge_edge_between_bound_endpoints_upserts` test for byte-identity.
+  test('edge form: upserts between bound endpoints (create then update)', () => {
+    const g = new Graph();
+    g.addVertex({ id: 'a', labels: ['A'], properties: { id: 'a' } });
+    g.addVertex({ id: 'b', labels: ['A'], properties: { id: 'b' } });
+    g.createUniqueConstraint('A', 'id');
+
+    const merge =
+      "MATCH (a:A {id: 'a'}), (b:A {id: 'b'}) " +
+      '_MERGE (a)-[r:R]->(b) _ON_CREATE SET r.n = 1 _ON_UPDATE SET r.n = r.n + 100 ' +
+      'RETURN r.n AS n';
+
+    expect(query(g, merge)).toEqual([{ n: 1 }]); // created
+    expect(query(g, merge)).toEqual([{ n: 101 }]); // updated, not duplicated
+    expect(query(g, 'MATCH (:A)-[r:R]->(:A) RETURN count(r) AS c')).toEqual([{ c: 1 }]);
   });
 });

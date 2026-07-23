@@ -2435,6 +2435,36 @@ fn edge_constraint_deferred_within_transaction() {
 // `_MERGE` keyed upsert (node form). Mirrors the TS `merge.test.ts` so the two
 // engines stay byte-identical. See docs/design/gql-extensions.md §2.
 
+/// Edge `_MERGE` with endpoints bound by a preceding MATCH — `MATCH (a), (b)
+/// _MERGE (a)-[:R]->(b)`, the natural way to upsert an edge between two known
+/// vertices. Regression: `resolve_merge_endpoint` ignored the binding and re-
+/// inferred a unique key from the (empty) node pattern, so every bound-variable
+/// edge merge failed with `_MERGE could not determine a unique key` — the whole
+/// keyed-edge-upsert path was unreachable. Found by the round-16 dogfood sim
+/// (ScenarioForge), which needed it to replay edges as upserts during a merge.
+#[test]
+fn merge_edge_between_bound_endpoints_upserts() {
+    let mut g = ndjson::decode(
+        &[
+            r#"{"type":"node","id":"a","labels":["A"],"properties":{"id":"a"}}"#,
+            r#"{"type":"node","id":"b","labels":["A"],"properties":{"id":"b"}}"#,
+        ]
+        .join("\n"),
+    )
+    .unwrap();
+    g.create_unique_constraint("A", "id").unwrap();
+
+    let merge = "MATCH (a:A {id: 'a'}), (b:A {id: 'b'}) \
+                 _MERGE (a)-[r:R]->(b) _ON_CREATE SET r.n = 1 _ON_UPDATE SET r.n = r.n + 100 \
+                 RETURN r.n AS n";
+    assert_eq!(rows(&mut g, merge), vec![vec![n(1.0)]]); // created
+    assert_eq!(rows(&mut g, merge), vec![vec![n(101.0)]]); // updated, not duplicated
+    assert_eq!(
+        rows(&mut g, "MATCH (:A)-[r:R]->(:A) RETURN count(r) AS c"),
+        vec![vec![n(1.0)]] // exactly one edge
+    );
+}
+
 #[test]
 fn merge_create_path_runs_on_create() {
     let mut g = modern();

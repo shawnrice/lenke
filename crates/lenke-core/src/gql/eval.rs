@@ -10216,6 +10216,16 @@ fn resolve_merge_endpoint(
     node: &CNode,
     binding: &Binding,
 ) -> Option<u32> {
+    // An endpoint bound by a preceding clause — `MATCH (a), (b) _MERGE (a)-[:R]->(b)`,
+    // the natural way to merge an edge between two known vertices — is already a
+    // resolved vertex. Use it directly rather than re-inferring a unique key from
+    // the (empty) node pattern, which would fail with FAULT_MERGE_KEY and made the
+    // bound-variable form of edge `_MERGE` unusable.
+    if let Some(slot) = node.var_slot {
+        if let Some(Val::Node(vi)) = binding.get(slot) {
+            return Some(*vi);
+        }
+    }
     let labels = creatable_labels(node.label.as_ref(), ctx.label_names)?;
     let props = eval_props(graph, ctx, &node.props, binding);
     let (label, key, value) = infer_merge_key(graph, &labels, &props)?;

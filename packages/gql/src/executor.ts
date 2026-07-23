@@ -4201,6 +4201,19 @@ const resolveMergeEndpoint = (
   binding: Binding,
   params: Params,
 ): Vertex => {
+  // An endpoint bound by a preceding clause — `MATCH (a), (b) _MERGE (a)-[:R]->(b)`,
+  // the natural way to merge an edge between two known vertices — is already a
+  // resolved vertex. Use it directly rather than re-inferring a unique key from the
+  // (empty) node pattern, which would throw and made the bound-variable form of
+  // edge `_MERGE` unusable. Mirrors the native engine's `resolve_merge_endpoint`.
+  if (node.variable !== undefined) {
+    const bound = binding.get(node.variable);
+
+    if (isVertex(bound)) {
+      return bound;
+    }
+  }
+
   const properties = evalProps(node.props, binding, params, graph);
   const { label, key, value } = inferMergeKey(graph, node.labels, properties);
   const found = graph.uniqueLookup(label, key, value);
