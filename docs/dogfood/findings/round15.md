@@ -60,6 +60,29 @@ backlog replay, apply-first rejection). The divergences found are all in _older_
 - **WON'T-FIX (works as designed) · index-listing order** — `vertexIndexes()`/`edgeIndexes()`
   order differs (native sorted, TS insertion-order). Per the order-is-unspecified policy this
   is a set, not an ordered result; compare as a set. No change.
+- **WON'T-FIX · `power`/`pow`/`^` differ by ≤1 ULP cross-engine** — the pure-TS engine uses
+  V8's `Math.pow`/`**`; the native/wasm engines use Rust `powf` (glibc `pow`). They agree to
+  the bit almost everywhere but differ by **≤1 ULP** on some inputs: `power(0.7,10)` → native
+  `0x3f9ceceb4e8dc4af` / TS `…4ae`; `power(2,-0.5)` → native `0x3fe6a09e667f3bcd` / TS `…bcc`.
+  Confirmed identical in GQL (`RETURN power(…)`) and Gremlin `math()` (`pow`/`^`) — same shared
+  kernel. **Every other numeric function is byte-identical** (trig/`sqrt`/`exp`/`ln`/`log10`/
+  `atan2`/…): a raw-f64-bit differential over 1117+ `math()` pairs found **zero** non-`pow`
+  divergences. A true fix needs a shared deterministic pow kernel (e.g. a vendored soft-float
+  `pow`), deferred as not worth the cost. Documented at the `Power` kernel in both engines
+  (`gql/eval.rs`, `gql/executor.ts`) and in `packages/gql/README.md`.
+
+## Gremlin `math()` extension (this session, follow-up to 6129010)
+
+- **FIXED · bare/juxtaposition function form `sin _` broke byte-identity.** `math('sin _')`
+  (a documented TinkerPop form, no parens) faulted with **different error codes** — native
+  `E_INVALID_VALUE`, TS `E_UNSUPPORTED` — while `sin(_)` agreed. Two fixes: (1) both engines
+  now **parse the bare form** (`sin _` == `sin(_)`, binds tighter than binary ops, chains
+  right-assoc `sin cos _` == `sin(cos(_))`, arg is a full unary so `abs -3` works; multi-arg
+  `atan2`/`pow`/`log` still require parens); (2) **all `math()` faults now carry ONE code,
+  `E_INVALID_VALUE`, on both engines** (the TS parser previously threw plain `Error`/
+  `Unsupported`). Differential now compares raw f64 bits for successes **and** error codes for
+  failures — zero divergences (except the `pow` ULP note above). The plan path (conformance
+  emitter) and the native textual path (`g.gremlin("…math('sin _')…")`) both agree.
 
 ## Byte-identical shared behavior (conformance/design notes, NOT divergences)
 

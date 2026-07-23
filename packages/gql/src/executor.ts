@@ -468,6 +468,12 @@ const UNARY_STR: Record<string, (s: string) => unknown> = {
 
 /** ISO binary numeric value functions: LOG takes (base, value). */
 const BINARY_NUM: Record<string, (x: number, y: number) => number> = {
+  // KNOWN LIMITATION (won't-fix): V8's `**`/`Math.pow` differs from Rust's
+  // `powf` (glibc `pow`, the native engine) by ≤1 ULP on some inputs — e.g.
+  // power(0.7,10) → …4ae here vs …4af native; power(2,-0.5) → …bcc vs …bcd. So
+  // `power`/`pow`/`^` are NOT byte-identical cross-engine on those inputs; a true
+  // fix needs a shared deterministic pow kernel. See docs/dogfood/findings/
+  // round15.md and this package's README.md.
   power: (x, y) => x ** y,
   mod: (x, y) => x % y,
   log: (base, value) => Math.log(value) / Math.log(base),

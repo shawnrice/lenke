@@ -970,6 +970,17 @@ fn math_vars(expr: &str) -> Vec<String> {
             while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '_') {
                 i += 1;
             }
+            // An identifier immediately followed by `(` (whitespace allowed) is a
+            // function call (`sin`, `atan2`, …), not an operand — skip it so it
+            // neither consumes a by() modulator nor is looked up as an unbound
+            // tag. Mirrors the TS `mathVars`.
+            let mut j = i;
+            while j < chars.len() && chars[j].is_whitespace() {
+                j += 1;
+            }
+            if j < chars.len() && chars[j] == '(' {
+                continue;
+            }
             let name: String = chars[start..i].iter().collect();
             if seen.insert(name.clone()) {
                 out.push(name);
@@ -981,10 +992,85 @@ fn math_vars(expr: &str) -> Vec<String> {
     out
 }
 
-/// Recursive-descent evaluator for the tiny `math()` grammar: `+ - * /`, parens,
-/// numeric literals, and identifiers resolved via `vals`. Returns `None` on any
-/// malformed expression or unknown identifier (surfaced as a fault). A faithful
-/// port of the TS `evalMath`.
+/// Numeric constant identifiers recognized in `math()` (mXparser's `pi`/`e`).
+/// Only used when the name is not shadowed by a bound variable — the parser
+/// checks `vals` first. Mirrors the TS `MATH_CONSTS`.
+fn math_const(name: &str) -> Option<f64> {
+    match name {
+        "pi" => Some(std::f64::consts::PI),
+        "e" => Some(std::f64::consts::E),
+        _ => None,
+    }
+}
+
+/// `math()` `signum`: -1 | 0 | 1 with NaN passing through. Matches the GQL
+/// `sign` kernel (NOT `f64::signum`, which yields +1 for 0.0) and the TS twin.
+fn math_signum(x: f64) -> f64 {
+    if x.is_nan() {
+        f64::NAN
+    } else if x > 0.0 {
+        1.0
+    } else if x < 0.0 {
+        -1.0
+    } else {
+        0.0
+    }
+}
+
+/// The unary `math()` functions, keyed by name. Each is the SAME f64 primitive
+/// the GQL `call_scalar` kernel uses (`f64::sin`, …), so `math()` stays
+/// bit-identical to GQL and to the TS twin. Membership also decides the
+/// bare/juxtaposition form (`sin _` == `sin(_)`) — only unary functions take it.
+fn unary_math_fn(name: &str) -> Option<fn(f64) -> f64> {
+    Some(match name {
+        "sin" => f64::sin,
+        "cos" => f64::cos,
+        "tan" => f64::tan,
+        "asin" => f64::asin,
+        "acos" => f64::acos,
+        "atan" => f64::atan,
+        "sinh" => f64::sinh,
+        "cosh" => f64::cosh,
+        "tanh" => f64::tanh,
+        "sqrt" => f64::sqrt,
+        "abs" => f64::abs,
+        "ceil" => f64::ceil,
+        "floor" => f64::floor,
+        "exp" => f64::exp,
+        "ln" => f64::ln,
+        "log10" => f64::log10,
+        "signum" => math_signum,
+        _ => return None,
+    })
+}
+
+/// Dispatch a `math()` function call. `b` is `Some` for the 2-arg forms
+/// (`atan2`/`pow`/`log`), which REQUIRE parens — the bare form is unary-only.
+/// `pow` inherits GQL's `Power`: `x.powf(y)` matches JS `x ** y` except for a
+/// ≤1-ULP glibc-`powf`-vs-V8-`pow` difference on some inputs (see
+/// `docs/dogfood/findings/round15.md` — a documented won't-fix). Arity mismatch
+/// → `None` (fault). Note: `log(base, value)` and `ln` (natural) follow GQL
+/// naming; TinkerPop/mXparser spells natural log `log`.
+fn math_call(name: &str, a: f64, b: Option<f64>) -> Option<f64> {
+    if let Some(y) = b {
+        return match name {
+            "atan2" => Some(a.atan2(y)),
+            "pow" => Some(a.powf(y)),
+            "log" => Some(y.ln() / a.ln()),
+            _ => None,
+        };
+    }
+    unary_math_fn(name).map(|f| f(a))
+}
+
+/// Recursive-descent evaluator for the `math()` grammar. Precedence, loosest to
+/// tightest (mXparser / TinkerPop): `+ -` < `* / %` < `^` (right-assoc) < unary
+/// `- +` < primary. Primary = numeric literal, parenthesized expr, `name(args)`
+/// function call, bare/juxtaposition unary application (`sin _`), constant
+/// (`pi`/`e`), or an identifier resolved via `vals` (variables win over
+/// constants and function names). Returns `None` on any malformed expression or
+/// unknown identifier — surfaced as an `InvalidValue` fault, the SAME code the
+/// TS twin raises. A faithful port of the TS `evalMath`.
 struct MathP<'a> {
     c: Vec<char>,
     pos: usize,
@@ -1019,13 +1105,45 @@ impl MathP<'_> {
                 self.pos += 1;
             }
             let name: String = self.c[start..self.pos].iter().collect();
-            return self.vals.get(&name).copied();
+            // Variables win over constants and function names: resolve `vals`
+            // first (the eager loop pre-populated it for bound tags / `_`).
+            if let Some(v) = self.vals.get(&name) {
+                return Some(*v);
+            }
+            // Function call: identifier immediately followed by `(`.
+            self.skip();
+            if self.peek() == '(' {
+                self.pos += 1; // consume '('
+                let a = self.add()?;
+                self.skip();
+                let mut b = None;
+                if self.peek() == ',' {
+                    self.pos += 1;
+                    b = Some(self.add()?);
+                    self.skip();
+                }
+                if self.peek() != ')' {
+                    return None;
+                }
+                self.pos += 1;
+                return math_call(&name, a, b);
+            }
+            // Bare/juxtaposition form (TinkerPop): a unary function name NOT
+            // followed by `(` applies to the next unary expression. Binds tighter
+            // than binary ops (`sin _ + 1` == `(sin _) + 1`) and chains
+            // right-associatively (`sin cos _` == `sin(cos(_))`); the unary arg
+            // also allows a leading sign (`abs -3` == `abs(-3)`). Multi-arg
+            // functions still require parens (handled above), so they fall
+            // through here to a fault.
+            if let Some(f) = unary_math_fn(&name) {
+                let arg = self.unary()?;
+                return Some(f(arg));
+            }
+            // Unshadowed constant (`pi`/`e`), else an unbound identifier (fault).
+            return math_const(&name);
         }
-        // Numeric literal, with an optional leading sign.
+        // Numeric literal (a leading sign is handled by `unary`).
         let start = self.pos;
-        if ch == '-' || ch == '+' {
-            self.pos += 1;
-        }
         while self.peek().is_ascii_digit() || self.peek() == '.' {
             self.pos += 1;
         }
@@ -1035,17 +1153,43 @@ impl MathP<'_> {
         let lit: String = self.c[start..self.pos].iter().collect();
         lit.parse::<f64>().ok()
     }
-    fn mul(&mut self) -> Option<f64> {
-        let mut left = self.primary()?;
+    fn power(&mut self) -> Option<f64> {
+        // Unary binds tighter than `^` (mXparser): `-2 ^ 2` == `(-2) ^ 2` == 4.
+        let base = self.unary()?;
         self.skip();
-        while self.peek() == '*' || self.peek() == '/' {
+        if self.peek() == '^' {
+            self.pos += 1;
+            // Right-associative: `2 ^ 3 ^ 2` == `2 ^ (3 ^ 2)` == 512.
+            let exp = self.power()?;
+            return Some(base.powf(exp));
+        }
+        Some(base)
+    }
+    fn unary(&mut self) -> Option<f64> {
+        self.skip();
+        match self.peek() {
+            '-' => {
+                self.pos += 1;
+                Some(-self.unary()?)
+            }
+            '+' => {
+                self.pos += 1;
+                self.unary()
+            }
+            _ => self.primary(),
+        }
+    }
+    fn mul(&mut self) -> Option<f64> {
+        let mut left = self.power()?;
+        self.skip();
+        while matches!(self.peek(), '*' | '/' | '%') {
             let op = self.peek();
             self.pos += 1;
-            let right = self.primary()?;
-            left = if op == '*' {
-                left * right
-            } else {
-                left / right
+            let right = self.power()?;
+            left = match op {
+                '*' => left * right,
+                '/' => left / right,
+                _ => left % right,
             };
             self.skip();
         }
@@ -2034,6 +2178,12 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
                         t.recall(name, Pop::Last)
                     };
                     let Some(base) = base else {
+                        // Unbound: fine if it's a constant (`pi`/`e`) or a bare
+                        // function name (`sin _`) — the parser supplies the value
+                        // and neither takes a by() projection.
+                        if math_const(name).is_some() || unary_math_fn(name).is_some() {
+                            continue;
+                        }
                         set_type_fault(); // unbound variable
                         ok = false;
                         break;

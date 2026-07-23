@@ -26,8 +26,10 @@ import { describe, expect, test } from 'bun:test';
 import { existsSync } from 'node:fs';
 
 import { isElement } from '@lenke/core';
+import { ErrorCode, hasErrorCode } from '@lenke/errors';
 import {
   V,
+  as_,
   type By,
   branch,
   connectedComponent,
@@ -262,12 +264,18 @@ const emitStep = (step: Step): string => {
 // switch — kept separate so neither function's cyclomatic complexity grows.
 const ALGO_KINDS = new Set<Step['kind']>(['pageRank', 'connectedComponent', 'peerPressure']);
 
-const emitAnyStep = (step: Step): string =>
-  ALGO_KINDS.has(step.kind)
+const emitAnyStep = (step: Step): string => {
+  // `as('label')` — kept out of `emitStep`'s switch to hold its complexity budget.
+  if (step.kind === 'as') {
+    return `as(${emitLiteral(step.label)})`;
+  }
+
+  return ALGO_KINDS.has(step.kind)
     ? emitAlgoStep(
         step as Extract<Step, { kind: 'pageRank' | 'connectedComponent' | 'peerPressure' }>,
       )
     : emitStep(step);
+};
 
 // An anonymous sub-traversal (no `g.` prefix): `out('KNOWS').values('name')`.
 const emitSubPlan = (p: Plan): string => p.steps.map(emitAnyStep).join('.');
@@ -352,7 +360,7 @@ const tsRun = (plan: Plan): unknown[] => toArray(plan, tsGraph).map(canonJson);
 type Verdict =
   | { kind: 'agree'; expected: unknown[] }
   | { kind: 'tsOnly' } //  planToGremlin must throw a superset-kind error
-  | { kind: 'bothThrow' }; //  both engines fault (parity of failure)
+  | { kind: 'bothThrow'; code?: ErrorCode }; //  both engines fault; optionally same code
 
 type Case = {
   name: string;
@@ -401,6 +409,123 @@ const CORPUS: Case[] = [
     name: "V().hasLabel('PERSON').math('_ + 1').by('age')  [by-projected operand]",
     plan: traversal(V(), hasLabel('PERSON'), math('_ + 1').by('age')),
     verdict: { kind: 'agree', expected: [30, 28, 33, 36] },
+  },
+  // math() functions + operators — every op is the shared f64 kernel, so the two
+  // engines must agree to the bit. `expected` is authored via the same JS
+  // primitive the TS engine uses; native must `toEqual` it in full precision.
+  {
+    name: "inject(0.7).math('sin(_)')  [trig, shared kernel]",
+    plan: traversal(inject(0.7), math('sin(_)')),
+    verdict: { kind: 'agree', expected: [Math.sin(0.7)] },
+  },
+  {
+    name: "inject(0.7).math('cos(_) + tan(_)')  [multiple functions]",
+    plan: traversal(inject(0.7), math('cos(_) + tan(_)')),
+    verdict: { kind: 'agree', expected: [Math.cos(0.7) + Math.tan(0.7)] },
+  },
+  {
+    name: "inject(0.5).math('atan2(_, 1) - asin(_)')  [2-arg + inverse trig]",
+    plan: traversal(inject(0.5), math('atan2(_, 1) - asin(_)')),
+    verdict: { kind: 'agree', expected: [Math.atan2(0.5, 1) - Math.asin(0.5)] },
+  },
+  {
+    name: "inject(2).math('pow(_, 10) + log(_, 8)')  [pow + log(base,value)]",
+    plan: traversal(inject(2), math('pow(_, 10) + log(_, 8)')),
+    verdict: { kind: 'agree', expected: [2 ** 10 + Math.log(8) / Math.log(2)] },
+  },
+  {
+    name: "inject(0.7).math('sqrt(_) + exp(_) + ln(_) + log10(_)')  [unary set]",
+    plan: traversal(inject(0.7), math('sqrt(_) + exp(_) + ln(_) + log10(_)')),
+    verdict: {
+      kind: 'agree',
+      expected: [Math.sqrt(0.7) + Math.exp(0.7) + Math.log(0.7) + Math.log10(0.7)],
+    },
+  },
+  {
+    name: "inject(-1.3).math('abs(_) + ceil(_) + floor(_) + signum(_)')  [rounding/sign]",
+    plan: traversal(inject(-1.3), math('abs(_) + ceil(_) + floor(_) + signum(_)')),
+    verdict: {
+      kind: 'agree',
+      expected: [Math.abs(-1.3) + Math.ceil(-1.3) + Math.floor(-1.3) + -1],
+    },
+  },
+  {
+    name: "inject(0).math('2 ^ 3 ^ 2')  [`^` right-associative → 512]",
+    plan: traversal(inject(0), math('2 ^ 3 ^ 2')),
+    verdict: { kind: 'agree', expected: [512] },
+  },
+  {
+    name: "inject(0).math('2 * 3 ^ 2')  [`^` above `*` → 18]",
+    plan: traversal(inject(0), math('2 * 3 ^ 2')),
+    verdict: { kind: 'agree', expected: [18] },
+  },
+  {
+    name: "inject(0).math('-2 ^ 2')  [unary tighter than `^` → 4]",
+    plan: traversal(inject(0), math('-2 ^ 2')),
+    verdict: { kind: 'agree', expected: [4] },
+  },
+  {
+    name: "inject(10).math('_ % 3 + -_ % 4')  [modulo + unary]",
+    plan: traversal(inject(10), math('_ % 3 + -_ % 4')),
+    verdict: { kind: 'agree', expected: [(10 % 3) + (-10 % 4)] },
+  },
+  {
+    name: "inject(0).math('2 * pi + e')  [constants pi/e]",
+    plan: traversal(inject(0), math('2 * pi + e')),
+    verdict: { kind: 'agree', expected: [2 * Math.PI + Math.E] },
+  },
+  {
+    name: "inject(42).as('sin').math('sin + 1')  [variable shadows function name]",
+    plan: traversal(inject(42), as_('sin'), math('sin + 1')),
+    verdict: { kind: 'agree', expected: [43] },
+  },
+  {
+    name: "inject(1).math('nope(_)')  [unknown function → bothThrow, same code]",
+    plan: traversal(inject(1), math('nope(_)')),
+    verdict: { kind: 'bothThrow', code: ErrorCode.InvalidValue },
+  },
+  // Bare/juxtaposition function form (`sin _` == `sin(_)`) — the byte-identity
+  // break the paren-only corpus missed: native faulted E_INVALID_VALUE while TS
+  // faulted E_UNSUPPORTED. Now both parse it and agree to the bit.
+  {
+    name: "inject(0.7).math('sin _')  [bare form == sin(_)]",
+    plan: traversal(inject(0.7), math('sin _')),
+    verdict: { kind: 'agree', expected: [Math.sin(0.7)] },
+  },
+  {
+    name: "inject(0.7).math('sin _ + 1')  [bare binds tighter than +]",
+    plan: traversal(inject(0.7), math('sin _ + 1')),
+    verdict: { kind: 'agree', expected: [Math.sin(0.7) + 1] },
+  },
+  {
+    name: "inject(0.7).math('sin _ * 2')  [bare binds tighter than *]",
+    plan: traversal(inject(0.7), math('sin _ * 2')),
+    verdict: { kind: 'agree', expected: [Math.sin(0.7) * 2] },
+  },
+  {
+    name: "inject(0.7).math('-sin _')  [unary over bare application]",
+    plan: traversal(inject(0.7), math('-sin _')),
+    verdict: { kind: 'agree', expected: [-Math.sin(0.7)] },
+  },
+  {
+    name: "inject(0).math('abs -3')  [bare arg allows a leading sign]",
+    plan: traversal(inject(0), math('abs -3')),
+    verdict: { kind: 'agree', expected: [3] },
+  },
+  {
+    name: "inject(0.7).math('sin cos _')  [right-assoc chain == sin(cos(_))]",
+    plan: traversal(inject(0.7), math('sin cos _')),
+    verdict: { kind: 'agree', expected: [Math.sin(Math.cos(0.7))] },
+  },
+  {
+    name: "inject(42).as('sin').math('sin')  [bound tag shadows bare fn name]",
+    plan: traversal(inject(42), as_('sin'), math('sin')),
+    verdict: { kind: 'agree', expected: [42] },
+  },
+  {
+    name: "inject(1).math('atan2 _')  [bare form is unary-only → bothThrow, same code]",
+    plan: traversal(inject(1), math('atan2 _')),
+    verdict: { kind: 'bothThrow', code: ErrorCode.InvalidValue },
   },
   // branch() — a TS-superset control step now at native parity (Tier-2 fix).
   {
@@ -527,8 +652,25 @@ suite('gremlin conformance: TS engine ⟷ Rust core (over ffi)', () => {
       const groovy = planToGremlin(c.plan);
 
       if (c.verdict.kind === 'bothThrow') {
-        expect(() => tsRun(c.plan)).toThrow();
-        expect(() => nativeRun(groovy)).toThrow();
+        const { code } = c.verdict;
+        const caught = (fn: () => void): unknown => {
+          try {
+            fn();
+          } catch (e) {
+            return e;
+          }
+
+          throw new Error('expected a throw');
+        };
+        const tsErr = caught(() => tsRun(c.plan));
+        const ntErr = caught(() => nativeRun(groovy));
+
+        // Error-code parity: a byte-identity break hides as differing codes
+        // (native E_INVALID_VALUE vs TS E_UNSUPPORTED was the bare-`sin _` bug).
+        if (code !== undefined) {
+          expect(hasErrorCode(tsErr, code)).toBe(true);
+          expect(hasErrorCode(ntErr, code)).toBe(true);
+        }
 
         return;
       }

@@ -1882,6 +1882,12 @@ fn call_scalar(graph: &Graph, func: ScalarFn, args: &[Val]) -> Val {
         // (the TS engine) — NOT Unicode code points. So `size('😀')` == 2, and
         // `left`/`right` slice on the same unit as JS `String.slice`.
         CharLength => us(|s| Val::Num(s.encode_utf16().count() as f64)),
+        // KNOWN LIMITATION (won't-fix): `powf` is glibc's `pow`, which differs
+        // from V8's `Math.pow`/`**` (the TS engine) by ≤1 ULP on some inputs —
+        // e.g. power(0.7,10) → …4af here vs …4ae in JS; power(2,-0.5) → …bcd vs
+        // …bcc. So `power`/`pow`/`^` are NOT byte-identical cross-engine on those
+        // inputs; a true fix needs a shared deterministic pow kernel. See
+        // docs/dogfood/findings/round15.md and packages/gql/README.md.
         Power => bn(|x, y| x.powf(y)),
         Mod => bn(|x, y| x % y),
         Log => bn(|base, value| value.ln() / base.ln()),

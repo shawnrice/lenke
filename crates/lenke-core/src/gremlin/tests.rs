@@ -1836,6 +1836,118 @@ fn math_malformed_expression_faults() {
     assert!(super::try_run(&mut g, &t).is_err());
 }
 
+// --- math(): functions, `^`/`%`, unary, constants (parity with @lenke/gremlin) -
+
+#[test]
+fn math_functions_use_the_shared_f64_kernel() {
+    // Each function must call the SAME primitive as the GQL `call_scalar` kernel,
+    // so `math()` stays bit-identical to GQL and to the TS engine.
+    let f = |expr: &str| one_num(q(g().inject([GVal::Num(0.7)]).math(expr)));
+    assert_eq!(f("sin(_)"), 0.7_f64.sin());
+    assert_eq!(f("cos(_)"), 0.7_f64.cos());
+    assert_eq!(f("tan(_)"), 0.7_f64.tan());
+    assert_eq!(f("asin(_)"), 0.7_f64.asin());
+    assert_eq!(f("acos(_)"), 0.7_f64.acos());
+    assert_eq!(f("atan(_)"), 0.7_f64.atan());
+    assert_eq!(f("sinh(_)"), 0.7_f64.sinh());
+    assert_eq!(f("cosh(_)"), 0.7_f64.cosh());
+    assert_eq!(f("tanh(_)"), 0.7_f64.tanh());
+    assert_eq!(f("sqrt(_)"), 0.7_f64.sqrt());
+    assert_eq!(f("abs(-_)"), 0.7_f64);
+    assert_eq!(f("ceil(_)"), 1.0);
+    assert_eq!(f("floor(_)"), 0.0);
+    assert_eq!(f("exp(_)"), 0.7_f64.exp());
+    assert_eq!(f("ln(_)"), 0.7_f64.ln());
+    assert_eq!(f("log10(_)"), 0.7_f64.log10());
+    assert_eq!(f("signum(_)"), 1.0);
+    assert_eq!(f("signum(-_)"), -1.0);
+}
+
+#[test]
+fn math_two_arg_functions() {
+    let f = |expr: &str| one_num(q(g().inject([GVal::Num(2.0)]).math(expr)));
+    assert_eq!(f("pow(_, 10)"), 1024.0);
+    assert_eq!(f("atan2(_, 1)"), 2.0_f64.atan2(1.0));
+    // log(base, value): log base 2 of 8 == 3 (via value.ln()/base.ln()).
+    assert_eq!(f("log(_, 8)"), 8.0_f64.ln() / 2.0_f64.ln());
+}
+
+#[test]
+fn math_power_operator_right_assoc() {
+    let n = |expr: &str| one_num(q(g().inject([GVal::Num(0.0)]).math(expr)));
+    assert_eq!(n("2 ^ 3 ^ 2"), 512.0); // right-associative
+    assert_eq!(n("2 * 3 ^ 2"), 18.0); // `^` above `*`
+    assert_eq!(n("-2 ^ 2"), 4.0); // unary binds tighter than `^`
+    assert_eq!(n("2 ^ -1"), 0.5);
+}
+
+#[test]
+fn math_modulo_and_unary() {
+    let n = |expr: &str| one_num(q(g().inject([GVal::Num(10.0)]).math(expr)));
+    assert_eq!(n("_ % 3"), 1.0);
+    assert_eq!(n("-_ + 3"), -7.0);
+    assert_eq!(n("- -_"), 10.0);
+    assert_eq!(n("2 * 3 % 4"), 2.0); // `%` same tier as `*`, left-to-right
+}
+
+#[test]
+fn math_constants_pi_and_e() {
+    let n = |expr: &str| one_num(q(g().inject([GVal::Num(0.0)]).math(expr)));
+    assert_eq!(n("pi"), std::f64::consts::PI);
+    assert_eq!(n("e"), std::f64::consts::E);
+    assert_eq!(n("2 * pi"), 2.0 * std::f64::consts::PI);
+}
+
+#[test]
+fn math_variable_shadows_function_name() {
+    // A bound tag named `sin` resolves as the variable, not the sine function.
+    let r = q(g().inject([GVal::Num(42.0)]).as_("sin").math("sin + 1"));
+    assert_eq!(one_num(r), 43.0);
+}
+
+#[test]
+fn math_unknown_function_faults() {
+    let mut g = modern();
+    let t = super::parse("g.inject(1).math('nope(_)')").unwrap();
+    assert!(super::try_run(&mut g, &t).is_err());
+}
+
+#[test]
+fn math_bare_juxtaposition_function_form() {
+    // `sin _` == `sin(_)`; binds tighter than binary ops; right-assoc chains;
+    // unary arg (so `abs -3` works). Parity with TS `evalMath`.
+    let n = |expr: &str, x: f64| one_num(q(g().inject([GVal::Num(x)]).math(expr)));
+    assert_eq!(n("sin _", 0.7), 0.7_f64.sin());
+    assert_eq!(n("sin(_)", 0.7), 0.7_f64.sin()); // agrees with paren form
+    assert_eq!(n("sin _ + 1", 0.7), 0.7_f64.sin() + 1.0);
+    assert_eq!(n("sin _ * 2", 0.7), 0.7_f64.sin() * 2.0);
+    assert_eq!(n("-sin _", 0.7), -(0.7_f64.sin()));
+    assert_eq!(n("abs -3", 0.0), 3.0);
+    assert_eq!(n("sin cos _", 0.7), 0.7_f64.cos().sin()); // right-assoc
+    assert_eq!(n("sqrt _", 2.0), 2.0_f64.sqrt());
+    assert_eq!(n("sin (_ + 1)", 0.7), (0.7_f64 + 1.0).sin());
+}
+
+#[test]
+fn math_bare_form_multiarg_requires_parens() {
+    // `atan2` is 2-arg; the bare form is unary-only, so bare `atan2 _` faults.
+    let mut g = modern();
+    let t = super::parse("g.inject(1).math('atan2 _')").unwrap();
+    assert!(super::try_run(&mut g, &t).is_err());
+}
+
+#[test]
+fn math_bare_form_variable_shadows_function() {
+    // A bound tag `sin` wins over the sine function even in the bare position:
+    // `sin` resolves to the variable, leaving `_` as trailing input → fault
+    // (byte-identical to TS). With just `sin`, it returns the variable.
+    let r = q(g().inject([GVal::Num(42.0)]).as_("sin").math("sin"));
+    assert_eq!(one_num(r), 42.0);
+    let mut g2 = modern();
+    let t = super::parse("g.inject(42).as('sin').math('sin _')").unwrap();
+    assert!(super::try_run(&mut g2, &t).is_err());
+}
+
 // --- branch(): switch on a sub-plan's result — parity with @lenke/gremlin ------
 
 #[test]
