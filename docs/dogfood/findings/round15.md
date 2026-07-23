@@ -43,15 +43,20 @@ backlog replay, apply-first rejection). The divergences found are all in _older_
   refuse it. Wired through all layers (Rust `graph.rs` + FFI/wasm/napi, TS `@lenke/core`).
   Regression: `constraint-conformance.test.ts` (drop-refused differential). Also resolves the
   `dumpSchema`-idempotency-after-index-drop note below (that state is now unreachable).
-- **OPEN (pending prior-art decision) · `sum`/`min`/`max` over list-valued columns** —
-  `sum([3],[1],[2])`: native `null`, TS `6` (sums elements). `min`: native `[3]`
-  (first-scanned, **no comparison**), TS `[1]` (lexicographic). Native min/max over lists is
-  under-implemented. Repro: `schemafuzz/repro_agg.ts`, `.dogfood/round15/_verify_agg.ts`.
-  **Prior art (SQL/Postgres/DuckDB/Cypher/ISO):** `sum`/`avg` over an array/list → type
-  ERROR (nobody element-sums); `min`/`max` → element-wise lexicographic (arrays are ordered).
-  So the likely resolution is _both throw for sum/avg_ (matching the #2 principle) and _both
-  use lenke's existing total order for min/max_ (TS is already right; native must compare).
-  Awaiting the go-ahead.
+- **HIGH · `sum`/`min`/`max` over list-valued columns** — was: `sum([3],[1],[2])` native
+  `null` / TS `6` (element-sum); `min` native `[3]` (first-scanned) / TS `[1]`. **FIXED**,
+  guided by prior art (SQL/Postgres/DuckDB/Cypher/ISO all agree): **`sum`/`avg` over a list →
+  throw** `E_DATA_EXCEPTION` (nobody element-sums; that's the Gremlin `Scope.local` job);
+  **`min`/`max` → element-wise lexicographic** via the total order, recursing. Both engines
+  now agree — and this exposed a _latent_ bug: TS `compareValues` had **no** list branch, so it
+  fell through to `x < y` which string-coerces arrays (`[10] < [9]`); native's `cmp_total`
+  returned `Equal` for any two lists. Both now compare element-wise (native `cmp_total` + TS
+  `compareValues`), so `min`/`max` AND `ORDER BY` over lists are well-defined and identical
+  (e.g. `[10]` vs `[9]` → `[9]`/`[10]`, not string order). Regression:
+  `constraint-conformance.test.ts` (list-in-aggregate differential). **Gremlin cross-check:**
+  native-Gremlin == TS-Gremlin (both throw `E_INVALID_VALUE` for list sum/min/max) — the
+  Gremlin frontend keeps its own TinkerPop-flavored semantics (throw, not order), distinct
+  from GQL by design; unaffected by this GQL fix (separate code path).
 - **WON'T-FIX (works as designed) · index-listing order** — `vertexIndexes()`/`edgeIndexes()`
   order differs (native sorted, TS insertion-order). Per the order-is-unspecified policy this
   is a set, not an ordered result; compare as a set. No change.

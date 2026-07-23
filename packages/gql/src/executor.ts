@@ -486,6 +486,15 @@ const unsupportedTemporalAgg = (): LenkeError =>
     { code: ErrorCode.DataException },
   );
 
+/** `sum`/`avg` over a list/map is not numeric — throw loud rather than element-sum
+ *  (which is the Gremlin `Scope.local` behavior, not a global aggregate). */
+const nonNumericAgg = (): LenkeError =>
+  new LenkeError(
+    'sum()/avg() require numeric values; a list/map is not summable — reduce it first ' +
+      '(Gremlin sum(local), or GQL UNWIND + sum)',
+    { code: ErrorCode.DataException },
+  );
+
 /** `sum` over gathered temporal values: fold DURATIONs via the same `dur + dur`
  *  (`temporalArith('+')`, which throws on overflow); fault on any non-DURATION. */
 const temporalSum = (values: unknown[]): unknown => {
@@ -1697,12 +1706,22 @@ const compileAggregate = (expr: FuncExpr): CompiledExpr => {
       // throw, not silently coerce the temporal to `NaN`→`null`. Native faults
       // per-value, so we scan for any temporal to stay byte-identical.
       case 'sum':
-        return values.some(isTemporal)
-          ? temporalSum(values)
-          : values.reduce<number>((s, v) => s + Number(v), 0);
+        if (values.some(isTemporal)) {
+          return temporalSum(values);
+        }
+
+        if (values.some(Array.isArray)) {
+          throw nonNumericAgg();
+        }
+
+        return values.reduce<number>((s, v) => s + Number(v), 0);
       case 'avg':
         if (values.some(isTemporal)) {
           throw unsupportedTemporalAgg();
+        }
+
+        if (values.some(Array.isArray)) {
+          throw nonNumericAgg();
         }
 
         return values.length === 0
@@ -2012,6 +2031,28 @@ const compareValues = (a: unknown, b: unknown): number => {
   // chronological, duration lexicographic) — mirrors the Rust `cmp_total`.
   if (isTemporal(a) && isTemporal(b)) {
     return temporalCmpTotal(a, b);
+  }
+
+  // Lists compare element-wise (lexicographic, shorter-is-less on a prefix),
+  // recursing through the same order — mirrors the Rust `cmp_total`. Without this
+  // they'd fall to `x < y`, which coerces arrays to strings (`[10] < [9]`), so
+  // `min`/`max` and `ORDER BY` over lists would diverge from the native engine.
+  if (Array.isArray(a) && Array.isArray(b)) {
+    const n = Math.min(a.length, b.length);
+
+    for (let i = 0; i < n; i++) {
+      const c = compareValues(a[i], b[i]);
+
+      if (c !== 0) {
+        return c;
+      }
+    }
+
+    if (a.length < b.length) {
+      return -1;
+    }
+
+    return a.length > b.length ? 1 : 0;
   }
 
   const x = a as number | string;

@@ -850,3 +850,50 @@ suite('temporal-in-aggregate differential (TS vs native)', () => {
     });
   }
 });
+
+// Round 15: aggregates over LIST-valued columns. Prior art (SQL/Postgres/DuckDB/
+// Cypher/ISO): sum/avg over an array is a type error; min/max order arrays
+// element-wise. lenke's GQL now matches — sum/avg throw, min/max use the total
+// order recursively (both engines). (Gremlin keeps its own TinkerPop semantics —
+// tested in gremlin-conformance, not here.)
+suite('list-in-aggregate differential (TS vs native)', () => {
+  const seed = (rows: readonly string[]) => {
+    const tsGraph = tsDeserialize(SEED, 'ndjson', new Graph());
+    const nativeGraph = graphFromFormat(createFfiBackend(LIB), SEED, 'ndjson');
+
+    for (const s of rows) {
+      tsQuery(tsGraph, s);
+      nativeGraph.query(s);
+    }
+
+    return { tsGraph, nativeGraph };
+  };
+
+  for (const agg of ['sum', 'avg']) {
+    test(`${agg}() over a list column throws E_DATA_EXCEPTION on both engines`, () => {
+      const { tsGraph, nativeGraph } = seed([`INSERT (:P {k: [3]})`, `INSERT (:P {k: [1]})`]);
+      const q = `MATCH (n:P) RETURN ${agg}(n.k) AS v`;
+
+      const ts = outcome(() => tsQuery(tsGraph, q));
+      const native = outcome(() => nativeGraph.query(q));
+
+      expect(native).toEqual(ts);
+      expect(native).toEqual({ code: 'E_DATA_EXCEPTION' });
+    });
+  }
+
+  for (const agg of ['min', 'max']) {
+    test(`${agg}() over lists compares element-wise (not string-coerced), byte-identical`, () => {
+      // [10] vs [9] is the trap: element-wise 10 > 9, but string coercion gives
+      // "10" < "9". Plus a length tie-break case.
+      const { tsGraph, nativeGraph } = seed([
+        `INSERT (:P {k: [10]})`,
+        `INSERT (:P {k: [9]})`,
+        `INSERT (:P {k: [10, 0]})`,
+      ]);
+      const q = `MATCH (n:P) RETURN ${agg}(n.k) AS v`;
+
+      expect(JSON.stringify(nativeGraph.query(q))).toEqual(JSON.stringify(tsQuery(tsGraph, q)));
+    });
+  }
+});

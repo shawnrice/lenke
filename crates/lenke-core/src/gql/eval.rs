@@ -191,6 +191,7 @@ const FAULT_TYPE_CONSTRAINT: u8 = 10;
 const FAULT_DURATION_OVERFLOW: u8 = 11;
 const FAULT_DATE_OVERFLOW: u8 = 12;
 const FAULT_TEMPORAL_AGG: u8 = 13;
+const FAULT_NONNUMERIC_AGG: u8 = 14;
 
 /// Per-expansion cap on trail-traversal steps; a guard against exponential blowup.
 const TRAIL_BUDGET: u64 = 1_000_000;
@@ -256,6 +257,11 @@ impl Ctx<'_> {
                 "unsupported temporal aggregate: sum() is defined only for DURATION (dates/times \
                  aren't summable), and avg() over DURATION would need duration/count (often \
                  non-representable, e.g. avg(P1M,P2M)=P1.5M); use min()/max(), or sum() + host division",
+            )),
+            FAULT_NONNUMERIC_AGG => Err(CodeError::new(
+                ErrorCode::DataException,
+                "sum()/avg() require numeric values; a list/map is not summable — reduce it first \
+                 (Gremlin sum(local), or GQL UNWIND + sum)",
             )),
             FAULT_TYPE => Err(CodeError::new(
                 ErrorCode::DataException,
@@ -770,6 +776,18 @@ fn cmp_total(a: &Val, b: &Val) -> Ordering {
         (Val::Str(x), Val::Str(y)) => x.cmp(y),
         (Val::Bool(x), Val::Bool(y)) => x.cmp(y),
         (Val::Temporal(x), Val::Temporal(y)) => x.cmp_total(y),
+        // Lists compare element-wise (lexicographic, shorter-is-less on a prefix),
+        // recursing through the same total order — so `min`/`max` and `ORDER BY`
+        // over list values are well-defined and match the TS `compareValues`.
+        (Val::List(x), Val::List(y)) => {
+            for (xi, yi) in x.iter().zip(y.iter()) {
+                let c = cmp_total(xi, yi);
+                if c != Ordering::Equal {
+                    return c;
+                }
+            }
+            x.len().cmp(&y.len())
+        }
         _ => Ordering::Equal,
     }
 }
@@ -3481,6 +3499,11 @@ impl Agg {
             }
             AggFn::Avg if matches!(val, Val::Temporal(_)) => {
                 self.tfault = Some(FAULT_TEMPORAL_AGG);
+            }
+            // A list (or other non-scalar) isn't summable — fault loud rather than
+            // silently NaN → null, matching the temporal rule (and the TS twin).
+            AggFn::Sum | AggFn::Avg if matches!(val, Val::List(_)) => {
+                self.tfault = Some(FAULT_NONNUMERIC_AGG);
             }
             AggFn::Sum => self.sum += num_of(&val).unwrap_or(f64::NAN),
             AggFn::Avg => {
