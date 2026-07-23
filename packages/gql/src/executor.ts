@@ -4575,6 +4575,25 @@ const runCall = (
   }
 
   const rows = runAlgorithmSync(clause.algo, config, graph) as Array<Record<string, unknown>>;
+
+  // Validate the YIELD columns against what the procedure actually exposes: a
+  // vertex handle as `node`, plus its single result column. Anything else is an
+  // error — previously an undeclared column (`YIELD nodeId`, or any typo) bound
+  // silently to `undefined`, so the query returned rows with that column simply
+  // missing. A silent wrong answer, and a divergence: native raises
+  // E_INVALID_VALUE here. Checked after the algorithm runs, mirroring native, so a
+  // `writeProperty` side effect lands identically on both engines.
+  const resultColumn = procedureSpec(clause.procName)?.resultColumn;
+
+  for (const bind of clause.binds) {
+    if (bind.column !== 'node' && bind.column !== resultColumn) {
+      throw new LenkeError(
+        `procedure \`${clause.procName}\` has no output column \`${bind.column}\``,
+        { code: ErrorCode.InvalidValue },
+      );
+    }
+  }
+
   // Materialize the outer bindings first: the call may write a property, and the
   // outer stream must be read against the pre-write graph.
   const outer = toArray(bindings);

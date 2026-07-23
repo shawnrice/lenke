@@ -110,6 +110,23 @@ describe('inline subquery CALL', () => {
     expect(kept.some((r) => r.name === 'vadas' && r.thing === null)).toBe(true);
   });
 
+  // Regression: an undeclared YIELD column used to bind silently to `undefined`,
+  // so `YIELD nodeId` (or any typo) returned rows with the column simply missing —
+  // a silent wrong answer, and a divergence from native, which raises
+  // E_INVALID_VALUE. Found by the round-16 dogfood sim (`_p14_bug.ts`).
+  test('YIELD rejects a column the procedure does not expose', () => {
+    // `node` and the single result column are the whole contract.
+    expect(() =>
+      query(modern(), `CALL degree({direction: 'both'}) YIELD node, degree RETURN count(*) AS n`),
+    ).not.toThrow();
+
+    for (const bad of ['nodeId', 'totally_made_up_column']) {
+      expect(() =>
+        query(modern(), `CALL degree({direction: 'both'}) YIELD ${bad} RETURN count(*) AS n`),
+      ).toThrow(new RegExp(`has no output column \`${bad}\``));
+    }
+  });
+
   test('scope isolation — an unscoped outer var is not visible to the subquery', () => {
     // `p` is not imported, so the inner MATCH (p) is a fresh unbound pattern
     // matching every vertex — not the outer marko.
