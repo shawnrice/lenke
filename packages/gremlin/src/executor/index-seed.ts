@@ -27,7 +27,7 @@
 // label half). Non-seedable predicates (neq, outside, without, the string/
 // regex ops, not) stay as ordinary residual filters.
 
-import type { Edge, Graph, PropertyIndex, RangeBound, Vertex } from '@lenke/core';
+import type { Edge, Graph, IndexableValue, PropertyIndex, RangeBound, Vertex } from '@lenke/core';
 
 import type { Plan, Predicate, Step } from '../ast.js';
 import { startTraverser, type Traverser } from './runtime.js';
@@ -44,8 +44,11 @@ const COMMUTING_FILTERS = new Set<Step['kind']>([
 
 const EMPTY: ReadonlySet<never> = new Set<never>();
 
-/** A scalar the property index can seek on (mirrors PropertyIndex's IndexableValue). */
-const isScalar = (v: unknown): boolean =>
+/** A scalar the property index can seek on (mirrors PropertyIndex's IndexableValue).
+ *  A type predicate so callers narrow: ordering predicates now admit temporals
+ *  (`Orderable`), which the index cannot seek — those must decline the seed and
+ *  fall back to a scan rather than being passed through as an index key. */
+const isScalar = (v: unknown): v is IndexableValue =>
   v === null ||
   typeof v === 'string' ||
   typeof v === 'boolean' ||
@@ -154,9 +157,13 @@ const seedForPred = <E>(
     case 'lte':
       return isScalar(pred.value) ? rangeCandidate(index, key, { lte: pred.value }) : null;
     case 'between':
-      return rangeCandidate(index, key, { gte: pred.min, lt: pred.max });
+      return isScalar(pred.min) && isScalar(pred.max)
+        ? rangeCandidate(index, key, { gte: pred.min, lt: pred.max })
+        : null;
     case 'inside':
-      return rangeCandidate(index, key, { gt: pred.min, lt: pred.max });
+      return isScalar(pred.min) && isScalar(pred.max)
+        ? rangeCandidate(index, key, { gt: pred.min, lt: pred.max })
+        : null;
     case 'startsWith': {
       // A prefix search is the string slice [prefix, succ(prefix)) — a range
       // the sorted index can seek. Kept as a residual filter.

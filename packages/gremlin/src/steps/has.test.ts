@@ -1,8 +1,25 @@
 import { describe, expect, test } from 'bun:test';
 
+import { Graph } from '@lenke/core';
+import { query as gqlQuery } from '@lenke/gql';
+
 import { run } from '../executor.js';
 import { createTestTinkerGraph } from '../fixtures/createTestTinkerGraph.js';
-import { eq, gt, inside, outside, regex, startsWith, within, without } from '../predicates.js';
+import {
+  between,
+  eq,
+  gt,
+  gte,
+  inside,
+  lt,
+  lte,
+  neq,
+  outside,
+  regex,
+  startsWith,
+  within,
+  without,
+} from '../predicates.js';
 import { V, elementMap, has, hasLabel, not, out, outE, values } from '../steps.js';
 import { traversal } from '../traversal.js';
 
@@ -192,6 +209,49 @@ describe('Gremlin tests', () => {
       // Suppress unused-import noise — eq/startsWith are exercised above.
       void eq;
       void startsWith;
+    });
+
+    // Regression: temporal predicates. The graph stores temporals as class
+    // instances, but callers pass the tagged wire form (`{"@date": "…"}`) — the
+    // same shape `toJSON` emits and GQL params take. `eq` compared the two with
+    // `===` and SILENTLY matched nothing, while the ordering predicates never
+    // reached the temporal branch of `compareValues` (`isTemporal` recognizes only
+    // instances) and threw E_INVALID_VALUE. A silent empty result is the worse of
+    // the two: it ships. Found by the round-16 dogfood sim (report §0.2/§5,
+    // "a bitemporal app is unbuildable on that frontend").
+    describe('temporal predicates', () => {
+      const D = (iso: string) => ({ '@date': iso });
+      // Built through GQL so `vf` is stored as a real temporal instance, which is
+      // what a DATE literal produces.
+      const dated = (): Graph => {
+        const g = new Graph();
+
+        gqlQuery(
+          g,
+          "INSERT (:V {vf: DATE '2020-01-01', n: 1}), (:V {vf: DATE '2022-06-15', n: 2})",
+        );
+
+        return g;
+      };
+      const ns = (pred: unknown): unknown[] =>
+        arr(run(traversal(V(), has('vf', pred as never), values('n')), dated()));
+
+      test('equality matches by value, not reference', () => {
+        expect(ns(D('2020-01-01'))).toEqual([1]); // bare value
+        expect(ns(eq(D('2020-01-01')))).toEqual([1]);
+        expect(ns(neq(D('2020-01-01')))).toEqual([2]);
+        expect(ns(within(D('2022-06-15')))).toEqual([2]);
+        expect(ns(without(D('2022-06-15')))).toEqual([1]);
+      });
+
+      test('ordering predicates compare chronologically', () => {
+        expect(ns(lt(D('2021-01-01')))).toEqual([1]);
+        expect(ns(lte(D('2020-01-01')))).toEqual([1]);
+        expect(ns(gt(D('2021-01-01')))).toEqual([2]);
+        expect(ns(gte(D('2022-06-15')))).toEqual([2]);
+        expect(ns(between(D('2019-01-01'), D('2021-01-01')))).toEqual([1]);
+        expect(ns(inside(D('2019-01-01'), D('2021-01-01')))).toEqual([1]);
+      });
     });
   });
 });

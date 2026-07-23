@@ -1,3 +1,5 @@
+import type { Temporal } from '@lenke/core';
+
 /**
  * The traversal AST. A `Plan` is a sequence of `Step`s. The DSL constructors
  * build these declaratively; strategies rewrite them; an executor runs them
@@ -17,20 +19,27 @@ export type Direction = 'out' | 'in' | 'both';
  *  `shortestPath().with(ShortestPath.edges, Direction.OUT)`. */
 export const Direction = { OUT: 'out', IN: 'in', BOTH: 'both' } as const;
 
+/** What an ordering predicate can be compared against. Temporals are admitted
+ *  alongside numbers and strings: a stored DATE/DATETIME orders chronologically,
+ *  and the predicate constructors lift a tagged literal (`{"@date": …}`) to an
+ *  instance so `lt(D('2021-01-01'))` reaches the temporal comparator instead of
+ *  falling through to the incomparable-types throw. */
+export type Orderable = number | string | Temporal;
+
 export type Predicate =
   | { op: 'eq'; value: unknown }
   | { op: 'neq'; value: unknown }
-  | { op: 'gt'; value: number | string }
-  | { op: 'gte'; value: number | string }
-  | { op: 'lt'; value: number | string }
-  | { op: 'lte'; value: number | string }
+  | { op: 'gt'; value: Orderable }
+  | { op: 'gte'; value: Orderable }
+  | { op: 'lt'; value: Orderable }
+  | { op: 'lte'; value: Orderable }
   // Gremlin semantics: half-open [first, second). To match, our `between`
   // is inclusive on `min` and exclusive on `max`.
-  | { op: 'between'; min: number | string; max: number | string }
+  | { op: 'between'; min: Orderable; max: Orderable }
   // Strict open (first, second) — exclusive on both ends.
-  | { op: 'inside'; min: number | string; max: number | string }
+  | { op: 'inside'; min: Orderable; max: Orderable }
   // Strict complement: value < min || value > max.
-  | { op: 'outside'; min: number | string; max: number | string }
+  | { op: 'outside'; min: Orderable; max: Orderable }
   | { op: 'within'; values: readonly unknown[] }
   | { op: 'without'; values: readonly unknown[] }
   | { op: 'startsWith'; value: string }

@@ -1,7 +1,40 @@
-import { isTemporal, temporalRelCmp } from '@lenke/core';
+import { fromTaggedJson, isTemporal, temporalCmpTotal, temporalRelCmp } from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
-import type { Predicate } from './ast.js';
+import type { Orderable, Predicate } from './ast.js';
+
+/**
+ * Accept a tagged temporal literal (`{"@date": "2020-01-01"}`) anywhere a stored
+ * temporal could appear.
+ *
+ * The graph stores temporals as class instances, but they arrive from users and
+ * from the text dialect in the tagged wire form — the same form `toJSON` emits
+ * and GQL params take. Without lifting, the two never met: `eq` compared a plain
+ * object to a `LocalDate` by `===` and **silently matched nothing**, and the
+ * ordering predicates never reached the temporal branch of `compareValues`
+ * (`isTemporal` only recognizes instances) so they threw `E_INVALID_VALUE`. A
+ * silent empty result is the worse of the two — it ships.
+ *
+ * Lifted once at predicate construction rather than per candidate value.
+ */
+const lift = (v: unknown): unknown => fromTaggedJson(v) ?? v;
+
+/**
+ * `lift` for the ordering predicates, whose AST slot is `Orderable`. The cast is
+ * the honest boundary: callers may pass anything, and a value that is not
+ * actually comparable is rejected at match time by `compareValues`, which throws
+ * `cannot order X with Y` rather than coercing to a misleading boolean. Checking
+ * here instead would move that error from evaluation to construction and diverge
+ * from the numeric/string behaviour.
+ */
+const liftOrd = (v: unknown): Orderable => lift(v) as Orderable;
+
+/**
+ * Equality matching the GQL engine: two temporals are equal by value — same kind
+ * and same instant/components — not by reference. Everything else keeps `===`.
+ */
+const valueEq = (a: unknown, b: unknown): boolean =>
+  isTemporal(a) && isTemporal(b) ? temporalCmpTotal(a, b) === 0 : a === b;
 
 const typeName = (v: unknown): string => {
   if (v === null || v === undefined) {
@@ -94,34 +127,40 @@ const compiledRegex = (pattern: string): RegExp => {
   return re;
 };
 
-export const eq = (value: unknown): Predicate => ({ op: 'eq', value });
-export const neq = (value: unknown): Predicate => ({ op: 'neq', value });
-export const gt = (value: number | string): Predicate => ({ op: 'gt', value });
-export const gte = (value: number | string): Predicate => ({ op: 'gte', value });
-export const lt = (value: number | string): Predicate => ({ op: 'lt', value });
-export const lte = (value: number | string): Predicate => ({ op: 'lte', value });
+export const eq = (value: unknown): Predicate => ({ op: 'eq', value: lift(value) });
+export const neq = (value: unknown): Predicate => ({ op: 'neq', value: lift(value) });
+export const gt = (value: unknown): Predicate => ({ op: 'gt', value: liftOrd(value) });
+export const gte = (value: unknown): Predicate => ({ op: 'gte', value: liftOrd(value) });
+export const lt = (value: unknown): Predicate => ({ op: 'lt', value: liftOrd(value) });
+export const lte = (value: unknown): Predicate => ({ op: 'lte', value: liftOrd(value) });
 // Half-open [min, max). Matches Gremlin's `P.between` semantics.
-export const between = (min: number | string, max: number | string): Predicate => ({
+export const between = (min: unknown, max: unknown): Predicate => ({
   op: 'between',
-  min,
-  max,
+  min: liftOrd(min),
+  max: liftOrd(max),
 });
 
 // Strict open (min, max). Matches Gremlin's `P.inside`.
-export const inside = (min: number | string, max: number | string): Predicate => ({
+export const inside = (min: unknown, max: unknown): Predicate => ({
   op: 'inside',
-  min,
-  max,
+  min: liftOrd(min),
+  max: liftOrd(max),
 });
 
 // Strict complement: value < min OR value > max. Matches `P.outside`.
-export const outside = (min: number | string, max: number | string): Predicate => ({
+export const outside = (min: unknown, max: unknown): Predicate => ({
   op: 'outside',
-  min,
-  max,
+  min: liftOrd(min),
+  max: liftOrd(max),
 });
-export const within = (...values: readonly unknown[]): Predicate => ({ op: 'within', values });
-export const without = (...values: readonly unknown[]): Predicate => ({ op: 'without', values });
+export const within = (...values: readonly unknown[]): Predicate => ({
+  op: 'within',
+  values: values.map(lift),
+});
+export const without = (...values: readonly unknown[]): Predicate => ({
+  op: 'without',
+  values: values.map(lift),
+});
 export const startsWith = (value: string): Predicate => ({ op: 'startsWith', value });
 // TextP-style string predicates.
 export const endingWith = (value: string): Predicate => ({ op: 'endingWith', value });
@@ -149,9 +188,9 @@ export const regex = (value: string): Predicate => {
 export const matches = (pred: Predicate, value: unknown): boolean => {
   switch (pred.op) {
     case 'eq':
-      return value === pred.value;
+      return valueEq(value, pred.value);
     case 'neq':
-      return value !== pred.value;
+      return !valueEq(value, pred.value);
     // Ordering predicates: a missing value is filtered out (false), not an
     // error; a present-but-incomparable value throws via `compareValues`.
     case 'gt':
@@ -175,9 +214,9 @@ export const matches = (pred: Predicate, value: unknown): boolean => {
         value != null && (compareValues(value, pred.min) < 0 || compareValues(value, pred.max) > 0)
       );
     case 'within':
-      return pred.values.includes(value);
+      return pred.values.some((x) => valueEq(value, x));
     case 'without':
-      return !pred.values.includes(value);
+      return !pred.values.some((x) => valueEq(value, x));
     case 'startsWith':
       return typeof value === 'string' && value.startsWith(pred.value);
     case 'endingWith':

@@ -1,3 +1,4 @@
+import { eq } from '../predicates.js';
 import {
   appendStep,
   buildPlan,
@@ -34,12 +35,16 @@ export function has(a: string, b?: unknown, c?: unknown): StepFn {
   }
 
   if (c === undefined) {
-    const pred = isPredicate(b) ? b : { op: 'eq' as const, value: b };
+    // Route a bare value through `eq()` rather than building the predicate
+    // inline, so a tagged temporal literal is lifted to an instance exactly as
+    // it would be in `has(key, eq(v))`. Inline construction skipped that and
+    // `has('vf', D('2020-01-01'))` silently matched nothing.
+    const pred = isPredicate(b) ? b : eq(b);
 
     return appendStep({ kind: 'has', key: a, pred });
   }
 
-  const pred = isPredicate(c) ? c : { op: 'eq' as const, value: c };
+  const pred = isPredicate(c) ? c : eq(c);
 
   return appendStep({ kind: 'hasLabelAnd', label: a, key: b as string, pred });
 }
