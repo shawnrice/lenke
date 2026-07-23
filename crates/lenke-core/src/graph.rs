@@ -741,6 +741,11 @@ struct Csr {
     in_adj: Vec<Adj>,
 }
 
+/// Adjacency reads since the last invalidation before the CSR snapshot is rebuilt.
+/// Low enough that a bulk scan gets locality almost immediately; high enough that a
+/// write→read→write→read workload never pays the O(V+E) repack.
+const CSR_WARM_READS: u32 = 64;
+
 /// Flatten per-vertex adjacency `Vec`s into `(offsets, concatenated slots)`.
 fn csr_pack(adjs: &[Vec<Adj>]) -> (Vec<u32>, Vec<Adj>) {
     let total: usize = adjs.iter().map(Vec::len).sum();
@@ -858,6 +863,10 @@ pub struct Graph {
     /// `OnceLock` (not a plain `Option`) so a shared read-only `&Graph` can build
     /// it once without `&mut`, and `Graph` stays `Send`/`Sync`.
     csr: std::sync::OnceLock<Csr>,
+    /// Adjacency reads since the snapshot was last dropped, for the rebuild
+    /// heuristic in [`Graph::adj`]. `AtomicU32` (not `Cell`) so `&Graph` stays
+    /// `Send`/`Sync` alongside the `OnceLock`.
+    csr_reads: std::sync::atomic::AtomicU32,
     /// counter for synthesized ids of vertices created at runtime
     synth: u64,
     /// Opt-in secondary indexes over vertex / edge property values: key name →
@@ -2592,26 +2601,61 @@ impl Graph {
     /// The cached CSR snapshot, built (once) from `out`/`in_` on first use and
     /// reused until a topology mutation drops it. Disjoint-field capture lets the
     /// init closure read `out`/`in_` while `get_or_init` holds `csr`.
-    fn csr(&self) -> &Csr {
-        self.csr.get_or_init(|| Csr::build(&self.out, &self.in_))
-    }
-    /// Drop the CSR snapshot — called by every topology mutation so the next read
+    /// Drop the CSR snapshot — called by every topology mutation so a later read
     /// rebuilds it. A no-op cost when it was never built.
     fn invalidate_csr(&mut self) {
         self.csr.take();
+        self.csr_reads
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// One vertex's adjacency slots, `out` selecting the forward index.
+    ///
+    /// The CSR snapshot is a **cache-locality optimization for bulk traversal, not
+    /// a correctness requirement**: a single vertex's slots are equally available
+    /// from the `out`/`in_` delta, in O(degree), and in the identical order
+    /// (`csr_pack` concatenates the per-vertex `Vec`s as-is). Building it is
+    /// O(V+E), so serving reads exclusively through `get_or_init` meant the first
+    /// read after *every* write repacked the entire graph — an interleaved
+    /// write→read workload paid O(V+E) per read and went quadratic overall, while
+    /// warm read-only scans looked perfectly fine.
+    ///
+    /// So: use the snapshot when it already exists, otherwise read the delta and
+    /// only rebuild once enough reads have accumulated to amortize the repack. A
+    /// bulk scan crosses the threshold almost immediately and gets its locality; a
+    /// write-heavy workload never pays for a snapshot it would discard.
+    #[inline]
+    fn adj(&self, v: u32, out: bool) -> &[Adj] {
+        if let Some(c) = self.csr.get() {
+            return if out { c.out(v) } else { c.in_(v) };
+        }
+
+        if self
+            .csr_reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            >= CSR_WARM_READS
+        {
+            let c = self.csr.get_or_init(|| Csr::build(&self.out, &self.in_));
+
+            return if out { c.out(v) } else { c.in_(v) };
+        }
+
+        let delta = if out { &self.out } else { &self.in_ };
+
+        delta.get(v as usize).map_or(&[][..], Vec::as_slice)
     }
 
     /// Out-edges of `v` as adjacency slots.
     pub fn out_adj(&self, v: u32) -> impl Iterator<Item = Adj> + '_ {
-        self.csr().out(v).iter().copied()
+        self.adj(v, true).iter().copied()
     }
     /// In-edges of `v` as adjacency slots (the reverse index).
     pub fn in_adj(&self, v: u32) -> impl Iterator<Item = Adj> + '_ {
-        self.csr().in_(v).iter().copied()
+        self.adj(v, false).iter().copied()
     }
     /// Out-neighbors of `v` whose edge type is `etype` (or all if `None`).
     pub fn out_neighbors(&self, v: u32, etype: Option<u32>) -> impl Iterator<Item = u32> + '_ {
-        self.csr().out(v).iter().filter_map(move |a| match etype {
+        self.adj(v, true).iter().filter_map(move |a| match etype {
             Some(t) if a.etype != t => None,
             _ => Some(a.nbr),
         })
@@ -3821,6 +3865,7 @@ impl Builder {
             out,
             in_,
             csr: std::sync::OnceLock::new(),
+            csr_reads: std::sync::atomic::AtomicU32::new(0),
             synth: 0,
             vidx: HashMap::new(),
             eidx: HashMap::new(),

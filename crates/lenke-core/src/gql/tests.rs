@@ -3992,6 +3992,70 @@ fn traversal_anchored_on_the_target_is_independent_of_graph_size() {
     );
 }
 
+/// Interleaving writes with traversals must not cost more as the graph grows.
+/// Regression (the second, independent defect): every adjacency read went through
+/// `csr()`'s `get_or_init`, and every topology mutation dropped the snapshot — so
+/// the first read after each write repacked the WHOLE graph, O(V+E) per read, and
+/// an ingest that reads as it writes went quadratic. Warm read-only scans hid it
+/// completely, which is why the read-only benches never saw it.
+///
+/// `Graph::adj` now serves a single vertex from the `out`/`in_` delta and only
+/// repacks once `CSR_WARM_READS` reads accumulate. Same 16x-spread / 6x-bound
+/// construction as the sibling test below. Found by the round-16 dogfood sim
+/// (`_p33_csr.ts`, first-call column).
+#[test]
+fn interleaved_write_and_traverse_is_independent_of_graph_size() {
+    use std::time::Instant;
+
+    let mut g = ndjson::decode("").unwrap();
+    g.create_vertex_index("id");
+    q(&mut g, "INSERT (:Dept {id: 'D0'})");
+
+    let grow_to = |g: &mut Graph, upto: usize, from: usize| {
+        for i in from..upto {
+            q(g, &format!("INSERT (:Emp {{id: 'e{i}'}})"));
+            q(
+                g,
+                &format!(
+                    "MATCH (s:Emp {{id: 'e{i}'}}), (t:Dept {{id: 'D0'}}) INSERT (s)-[:IN_DEPT]->(t)"
+                ),
+            );
+        }
+    };
+
+    // One write immediately followed by one traversal — the shape that repacked.
+    let cycle = |g: &mut Graph, i: usize| {
+        q(g, &format!("MATCH (s:Emp {{id: 'e0'}}) SET s.w = {i}"));
+        q(
+            g,
+            "MATCH (s:Emp {id: 'e0'})-[r:IN_DEPT]->(t) RETURN t.id AS x",
+        );
+    };
+    let time = |g: &mut Graph| {
+        for i in 0..20 {
+            cycle(g, i);
+        }
+        let t = Instant::now();
+        for i in 0..100 {
+            cycle(g, i);
+        }
+        t.elapsed().as_secs_f64()
+    };
+
+    grow_to(&mut g, 2_000, 0);
+    let small = time(&mut g);
+    grow_to(&mut g, 32_000, 2_000);
+    let large = time(&mut g);
+
+    let ratio = large / small.max(f64::MIN_POSITIVE);
+    assert!(
+        ratio < 6.0,
+        "interleaved write+traverse scaled with graph size: 16x more vertices cost \
+         {ratio:.1}x more time ({small:.4}s -> {large:.4}s). A read after a write is \
+         rebuilding the whole CSR snapshot instead of reading the adjacency delta."
+    );
+}
+
 /// A traversal from an index-anchored, degree-1 source must cost the same whether
 /// the traversed edge type holds 2k edges or 32k. Regression: `build_scan` fell
 /// through to `edge_index_seed`, whose `by_etype` fallback materializes EVERY edge
