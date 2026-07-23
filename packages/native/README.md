@@ -68,7 +68,7 @@ All assert that the loaded artifact's ABI version matches the exported `ABI_VERS
 - `query(q, ...subs)` — run GQL (tagged template or string) → `Row[]`, where `Row` is `Record<string, unknown>`.
 - `queryArrow(q, ...subs)` — run GQL → raw `ARW1` columnar blob as `Uint8Array` (a compact in-process framing; decode it with the exported `decodeArrow<R>(blob)`, no dependency). **Scalar columns only:** ARW1 carries float64/bool/utf8, so a list column (`collect_list`) or an element column (`RETURN n`) is flattened to a text cell and won't reconstruct as a structured array/object. The flattened text is **lossy and not JSON** — a list renders bare and comma-joined (`[1,2,3]` → the string `"[1,2,3]"`, `["a","b"]` → `"[a,b]"`), so it will **not** `JSON.parse` back. Use the JSON `query` for list/element projections; reserve Arrow for scalar analytical columns.
 - `queryArrowIpc(q, { format?, params? })` — run GQL → **standard Apache Arrow IPC** bytes, framed natively (no JS re-encode), for hand-off to DuckDB / Polars / pandas. `format` picks the IPC `'stream'` (default) or `'file'` / Feather-v2 layout. To transcode an existing `ARW1` blob JS-side instead, `toArrowIPC(blob, format)` from the `@lenke/native/arrow` subpath produces byte-identical bytes with zero runtime deps.
-- `gremlin(q, ...subs)` — run textual Gremlin → JSON-decoded `unknown[]`.
+- `gremlin(q, ...subs)` — run textual Gremlin → JSON-decoded `unknown[]`. **Use the tagged-template form** — it is Gremlin's parameter binding; see [Passing values into a query](#passing-values-into-a-query).
 - `toNdjson()` — serialize back to NDJSON bytes.
 - `serialize(format)` — serialize to a named format (`pg-json | pg-text | graphson | csv | ndjson`).
 - `mergeNdjson(bytes)` — bulk-append an NDJSON batch into this live graph (a `COPY FROM`; no per-record round-trip, indexes stay current). Returns a `MergeReport` (`{ nodesAdded, edgesAdded, nodesSkipped, edgesSkipped, phantomVertices }`) so a conflicting/partial merge is auditable.
@@ -80,6 +80,44 @@ All assert that the loaded artifact's ABI version matches the exported `ABI_VERS
 ```ts
 const scores = await g.pagerank({ iterations: 20, writeProperty: 'pr' });
 ```
+
+## Passing values into a query
+
+The two query languages bind values differently, and the difference is load-bearing.
+
+**GQL has engine-side binding.** Values travel beside the text and are decoded by the crate, so a value never reaches the parser:
+
+```ts
+g.query('MATCH (p:Person) WHERE p.name = $name RETURN p.age AS age', { name: userInput });
+g.query`MATCH (p:Person) WHERE p.name = ${userInput} RETURN p.age AS age`; // → $p0
+```
+
+**Gremlin has none.** There is no `$name` in the traversal language, so values are escaped _into_ the text at compose time. The tagged template is that seam — it is the binding mechanism, not a convenience:
+
+```ts
+const asOf = { '@date': '2021-06-01' };
+
+g.gremlin`g.V().has('name', ${userInput}).values('age')`;
+g.gremlin`g.V().has('id', eq(${id})).outE('R').has('vf', lte(${asOf})).inV().values('id')`;
+```
+
+A string interpolation becomes a single quoted literal with `\` and `'` escaped exactly as the lexer decodes them, so a hostile value collapses to inert data rather than closing the quote and injecting steps:
+
+```ts
+const evil = "marko'); g.V().drop(); //";
+g.gremlin`g.V().has('name', ${evil}).values('name')`; // → [] — and the graph is intact
+```
+
+`escapeGremlin(value)` is the per-value rule, exported for building text yourself: strings quote-and-escape; finite non-exponential numbers, bigints and booleans pass through; temporals become their literal constructors (`date('2021-06-01')`, `duration('P1D')`), accepting either a stored instance or the tagged wire form `{"@date": …}`. Anything else — `null`, arrays, plain objects — has no Gremlin literal and throws. The `GremlinLiteral` type names exactly that set, so an unembeddable value is a **compile** error.
+
+Two shapes to avoid, both rejected by the types:
+
+```ts
+g.gremlin('g.V().has($v)', { v: asOf }); // ✗ not a binding form — Gremlin has no $name
+g.gremlin('g.V().has(' + userInput + ')'); // ✗ string concatenation is the injection
+```
+
+Pass a plain string only when it is a constant. To build traversal text for somewhere else — a sync client, a log, a stored query — use the exported `gremlin` tag directly; it returns the composed string instead of running it.
 
 ## Reactive store
 

@@ -10,6 +10,7 @@ import type {
   PageRankRow,
   ScalarTypeName,
   ShortestPathRow,
+  Temporal,
 } from '@lenke/core';
 import { fromTaggedJson, isTemporal, temporalLiteralParts } from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
@@ -19,6 +20,13 @@ import { ensureDisposeSymbol } from './dispose.js';
 
 /** A decoded result row: column name → cell value. */
 export type Row = Record<string, unknown>;
+
+/**
+ * The tagged wire form of a temporal — what `toJSON` emits and what comes back
+ * through NDJSON, snapshots and `elementMap`: `{"@date": "2020-01-01"}`,
+ * `{"@duration": "P1D"}`, and so on.
+ */
+export type TaggedTemporal = Readonly<Record<`@${string}`, string>>;
 
 /**
  * A **schema** declaration as structured data — a constraint / validator /
@@ -379,17 +387,60 @@ export const escapeGremlin = (value: unknown): string => {
 };
 
 /**
- * Build Gremlin traversal text with each `${value}` escaped via
- * {@link escapeGremlin} — the safe way to construct a traversal string for the
- * wire (e.g. to hand to a sync client). As a plain string it is a pass-through
- * (nothing to escape). This is Gremlin's answer to GQL parameter binding.
+ * A value {@link escapeGremlin} can embed as a Gremlin literal: the scalars the
+ * lexer has literal forms for, plus a temporal (either a stored instance or the
+ * tagged wire form `{"@date": "2020-01-01"}` that `toJSON` emits). Anything else
+ * — `null`, arrays, plain objects, a `Vertex` — has no literal and is rejected.
  */
-export const gremlin = (q: string | TemplateStringsArray, ...subs: unknown[]): string => {
+export type GremlinLiteral = string | number | bigint | boolean | Temporal | TaggedTemporal;
+
+/**
+ * Build Gremlin traversal text, escaping every `${value}` via
+ * {@link escapeGremlin}.
+ *
+ * **This is Gremlin's parameter binding.** Unlike GQL — where `query(text, {p})`
+ * sends bindings alongside the text and a value never reaches the parser —
+ * Gremlin here has no engine-side `$name`. Values are escaped *into* the text at
+ * compose time, and this tagged template is the seam that does it safely:
+ *
+ * ```ts
+ * const asOf = { '@date': '2021-06-01' };
+ * g.gremlin`g.V().has('id', eq(${userId})).outE('R').has('vf', lte(${asOf}))`;
+ * ```
+ *
+ * A string interpolation is single-quoted with `\` and `'` escaped exactly as
+ * the lexer decodes them, so a hostile value collapses to one inert literal
+ * rather than closing the quote and injecting steps. Never build traversal text
+ * with `+` or a bare template literal — that is the injection you are avoiding.
+ *
+ * There is deliberately **no** `gremlin(text, params)` form. It reads like GQL's
+ * and would silently discard the bindings (a plain string has no interpolation
+ * sites), so it is a type error, and a runtime throw if the types are bypassed.
+ * A plain string with nothing to substitute passes through unchanged.
+ *
+ * @see escapeGremlin for the per-value rules.
+ * @see RustGraph.gremlin to compose and run in one step.
+ */
+export function gremlin(q: string): string;
+export function gremlin(q: TemplateStringsArray, ...subs: readonly GremlinLiteral[]): string;
+export function gremlin(q: string | TemplateStringsArray, ...subs: unknown[]): string {
+  return composeGremlin(q, ...subs);
+}
+
+/**
+ * {@link gremlin} without the overloads — for forwarding wrappers whose own
+ * parameter is the `string | TemplateStringsArray` union (a tagged-template
+ * method cannot narrow its own argument before passing it on). Same runtime
+ * behaviour, including the `(text, params)` refusal; prefer {@link gremlin} in
+ * user-facing code, where the overloads make that call a compile error.
+ */
+export function composeGremlin(q: string | TemplateStringsArray, ...subs: unknown[]): string {
   if (!isTemplate(q)) {
     // A plain string has no interpolation sites, so any extra arguments would be
     // silently discarded. That reads exactly like GQL's `query(text, params)` and
     // fails far downstream as a parse error on the un-substituted text, so refuse
-    // it here and say what to use instead.
+    // it here and say what to use instead. The overloads above make this
+    // unreachable from typed code; this catches JS callers and `as any` casts.
     if (subs.length > 0) {
       throw new LenkeError(
         'lenke: gremlin(text, params) is not a binding form — Gremlin has no engine-side ' +
@@ -406,7 +457,7 @@ export const gremlin = (q: string | TemplateStringsArray, ...subs: unknown[]): s
     (acc, part, i) => acc + part + (i < subs.length ? escapeGremlin(subs[i]) : ''),
     '',
   );
-};
+}
 
 // ARW1 column type tags (mirrors crates/lenke-core/src/arrow.rs).
 const ARW_FLOAT64 = 1;
@@ -667,13 +718,33 @@ export type RustGraph = {
     (strings: TemplateStringsArray, ...subs: unknown[]): Uint8Array;
   };
   /**
-   * Run a textual Gremlin query → JSON-decoded result stream. Gremlin has no
-   * engine param surface, so template `${}` values are escaped into safe
-   * literals via {@link escapeGremlin} (not raw-spliced) — so
-   * ``g.gremlin`g.V().has('name', ${userInput})` `` is injection-safe. Build a
-   * traversal string for elsewhere with the {@link gremlin} tag.
+   * Run a textual Gremlin traversal → JSON-decoded result stream.
+   *
+   * **Use the tagged template — it is Gremlin's parameter binding.** GQL sends
+   * bindings beside the text (`query(text, { p })`) so a value never reaches the
+   * parser; Gremlin has no engine-side `$name`, so values are escaped *into* the
+   * text at compose time via {@link escapeGremlin}:
+   *
+   * ```ts
+   * g.gremlin`g.V().has('name', ${userInput}).values('age')`;
+   * g.gremlin`g.V().outE('R').has('vf', lte(${asOfDate}))`;
+   * ```
+   *
+   * A string interpolation becomes one quoted literal with `\` and `'` escaped,
+   * so a hostile value matches nothing instead of closing the quote and
+   * injecting steps. Numbers, booleans, bigints and temporals get their literal
+   * forms; anything else throws rather than guessing.
+   *
+   * Do **not** hand-build the text with `+` or a bare template literal, and note
+   * there is no `gremlin(text, params)` form — it reads like GQL's but would
+   * silently drop the bindings, so it is a type error. Pass a plain string only
+   * when it is a constant. To build text for elsewhere (a sync client, a log)
+   * without running it, use the {@link gremlin} tag directly.
    */
-  gremlin: (q: string | TemplateStringsArray, ...subs: unknown[]) => unknown[];
+  gremlin: {
+    (q: string): unknown[];
+    (q: TemplateStringsArray, ...subs: readonly GremlinLiteral[]): unknown[];
+  };
   /**
    * The graph algorithms — each runs the whole computation natively and resolves a
    * `Promise` of `{ node, … }` rows in insertion order. On the Node/napi backend
@@ -1081,7 +1152,7 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
     // `gremlin(...)` here is the module-level composer (safe escaping), not this
     // property — object keys don't bind in scope.
     gremlin: (q, ...subs) =>
-      parseJson(backend.gremlinJson(live(), gremlin(q, ...subs)), 'gremlin') as unknown[],
+      parseJson(backend.gremlinJson(live(), composeGremlin(q, ...subs)), 'gremlin') as unknown[],
     degree: (config) => runAlgoAsync('degree', config) as Promise<DegreeRow[]>,
     connectedComponents: (config) =>
       runAlgoAsync('connectedComponents', config) as Promise<ComponentRow[]>,

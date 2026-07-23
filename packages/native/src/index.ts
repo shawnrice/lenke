@@ -45,6 +45,8 @@ export {
   escapeGremlin,
   graphFromFormat,
   graphFromNdjson,
+  composeGremlin,
+  type GremlinLiteral,
   gremlin,
   type QueryParams,
   type RustGraph,

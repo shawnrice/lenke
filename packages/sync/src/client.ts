@@ -47,7 +47,13 @@
  */
 
 import { ErrorCode, LenkeError } from '@lenke/errors';
-import { decodeArrow, gremlin as buildGremlin, type QueryParams, type Row } from '@lenke/native';
+import {
+  composeGremlin as buildGremlin,
+  decodeArrow,
+  type GremlinLiteral,
+  type QueryParams,
+  type Row,
+} from '@lenke/native';
 
 import {
   isHostMessage,
@@ -140,7 +146,10 @@ export type SyncClient = {
    * ``client.gremlin`g.V().has('name', ${userInput}).values('age')` `` is
    * injection-safe. A plain string is sent as-is (you own its safety).
    */
-  gremlin: (traversal: string | TemplateStringsArray, ...subs: unknown[]) => Promise<unknown[]>;
+  gremlin: {
+    (traversal: string): Promise<unknown[]>;
+    (traversal: TemplateStringsArray, ...subs: readonly GremlinLiteral[]): Promise<unknown[]>;
+  };
   /**
    * Apply a mutation; resolves on `ack ok`, rejects with the coded error. GQL
    * by default (values ride `params`). `lang: 'gremlin'` sends the text as a
@@ -158,7 +167,10 @@ export type SyncClient = {
    * injection-safe. A plain string is sent as-is (you own its safety). Resolves
    * on `ack ok`, rejects with the coded error.
    */
-  mutateGremlin: (traversal: string | TemplateStringsArray, ...subs: unknown[]) => Promise<void>;
+  mutateGremlin: {
+    (traversal: string): Promise<void>;
+    (traversal: TemplateStringsArray, ...subs: readonly GremlinLiteral[]): Promise<void>;
+  };
   /**
    * Replicate a whole queued {@link SyncWrite} upstream — the drop-in for a
    * sync engine's `upstream.push`, so `upstream: { push: client.pushWrite }` is
