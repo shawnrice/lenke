@@ -1072,6 +1072,75 @@ fn qs(query: &str) -> Vec<GVal> {
     t.run(&mut g)
 }
 
+/// The text dialect can express and compare temporal literals — `date(...)`,
+/// `datetime(...)`, `duration(...)` — so an as-of predicate is writable.
+///
+/// Regression, two independent gaps that had to be closed together: the grammar
+/// had no temporal constructor (every spelling was `E_SYNTAX`, so the literal was
+/// inexpressible), and `gcmp` had no `Temporal` arm (so once it parsed, ordering
+/// still raised `E_INVALID_VALUE`). Between them, a bitemporal query — the
+/// `vf <= t` slice every as-of read needs — could not be written on this dialect
+/// at all, on the engine the perf guidance recommends as the default. Found by the
+/// round-16 dogfood sim (report §5, `_p38_bridge.ts`).
+#[test]
+fn text_dialect_temporal_literals_and_ordering() {
+    let mut g = ndjson::decode(
+        &[
+            r#"{"type":"node","id":"a","labels":["V"],"properties":{"vf":{"@date":"2020-01-01"},"n":1}}"#,
+            r#"{"type":"node","id":"b","labels":["V"],"properties":{"vf":{"@date":"2022-06-15"},"n":2}}"#,
+        ]
+        .join("\n"),
+    )
+    .unwrap();
+    let run = |g: &mut Graph, q: &str| -> Vec<GVal> {
+        super::parse(q)
+            .unwrap_or_else(|e| panic!("parse `{q}`: {e}"))
+            .run(g)
+    };
+    let nums = |vs: Vec<GVal>| -> Vec<f64> {
+        vs.into_iter()
+            .filter_map(|v| match v {
+                GVal::Num(n) => Some(n),
+                _ => None,
+            })
+            .collect()
+    };
+
+    // Equality against a DATE literal.
+    assert_eq!(
+        nums(run(
+            &mut g,
+            "g.V().has('vf', date('2020-01-01')).values('n')"
+        )),
+        vec![1.0]
+    );
+    // Ordering — the as-of slice shape.
+    assert_eq!(
+        nums(run(
+            &mut g,
+            "g.V().has('vf', lte(date('2021-01-01'))).values('n')"
+        )),
+        vec![1.0]
+    );
+    assert_eq!(
+        nums(run(
+            &mut g,
+            "g.V().has('vf', gt(date('2021-01-01'))).values('n')"
+        )),
+        vec![2.0]
+    );
+    assert_eq!(
+        nums(run(
+            &mut g,
+            "g.V().has('vf', between(date('2019-01-01'), date('2021-01-01'))).values('n')"
+        )),
+        vec![1.0]
+    );
+    // A duration literal parses (durations are deliberately NOT relationally
+    // ordered, so this only asserts the grammar accepts the constructor).
+    assert!(super::parse("g.V().has('d', duration('P1D')).values('n')").is_ok());
+}
+
 #[test]
 fn cf_where_pred_and_order_local_column() {
     // `where(neq('me'))`: among lop's co-creators (marko, josh, peter), exclude the

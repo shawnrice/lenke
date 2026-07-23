@@ -1235,6 +1235,14 @@ fn gcmp(a: &GVal, b: &GVal) -> Option<Ordering> {
         (GVal::Num(x), GVal::Num(y)) => x.partial_cmp(y),
         (GVal::Str(x), GVal::Str(y)) => Some(x.as_ref().cmp(y.as_ref())),
         (GVal::Bool(x), GVal::Bool(y)) => Some(x.cmp(y)),
+        // Temporals of the same instant kind order chronologically; durations and
+        // cross-kind pairs are not relationally ordered (`rel_cmp` → None) and so
+        // fault as incomparable, matching the GQL relational policy and the TS
+        // Gremlin `compareValues`. Without this arm an as-of predicate —
+        // `has('vf', lte(date('2021-06-01')))` — raised E_INVALID_VALUE even once
+        // the grammar could express the literal, so the whole bitemporal query
+        // shape was unwritable on this dialect.
+        (GVal::Temporal(x), GVal::Temporal(y)) => x.rel_cmp(y),
         _ => None,
     }
 }

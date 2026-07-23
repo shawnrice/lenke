@@ -10,6 +10,7 @@
 //! `Pop.first`, `Scope.local`), or a nested traversal (`__.out().count()`).
 
 use super::{Column, GVal, Order, Pop, Step, Token, Traversal, __, P};
+use crate::temporal::{Date, DateTime, Duration, Temporal, Time, ZonedDateTime, ZonedTime};
 
 // --- lexer ------------------------------------------------------------------
 
@@ -139,6 +140,13 @@ enum Arg {
     Str(String),
     Num(f64),
     Bool(bool),
+    /// A temporal literal: `date('2020-01-01')`, `datetime('…')`, `duration('P1D')`,
+    /// `time('…')`, `zoned_time('…')`, `zoned_datetime('…')`. The executor has
+    /// carried `GVal::Temporal` all along and reads stored temporals fine — only
+    /// the text grammar could not *write* one, so an as-of predicate
+    /// (`has('vf', lte(date('2021-06-01')))`) was inexpressible in this dialect
+    /// and a bitemporal query could not be written at all.
+    Temporal(Temporal),
     Pred(P),
     Trav(Traversal),
     Order(Order),
@@ -153,6 +161,7 @@ impl Arg {
             Self::Str(s) => Ok(GVal::Str(s.as_str().into())),
             Self::Num(n) => Ok(GVal::Num(*n)),
             Self::Bool(b) => Ok(GVal::Bool(*b)),
+            Self::Temporal(t) => Ok(GVal::Temporal(*t)),
             _ => Err("expected a literal value".into()),
         }
     }
@@ -161,6 +170,30 @@ impl Arg {
             Self::Str(s) => Ok(s),
             _ => Err("expected a string".into()),
         }
+    }
+}
+
+/// Names accepted as temporal literal constructors in the text dialect.
+const TEMPORAL_CTORS: &[&str] = &[
+    "date",
+    "datetime",
+    "time",
+    "duration",
+    "zoned_time",
+    "zoned_datetime",
+];
+
+/// Build a [`Temporal`] from a constructor name and its string argument, reusing
+/// the per-kind parsers so the accepted syntax matches GQL exactly.
+fn parse_temporal_literal(ctor: &str, lit: &str) -> Result<Temporal, String> {
+    match ctor {
+        "date" => Date::parse(lit).map(Temporal::Date),
+        "datetime" => DateTime::parse(lit).map(Temporal::DateTime),
+        "time" => Time::parse(lit).map(Temporal::Time),
+        "duration" => Duration::parse(lit).map(Temporal::Duration),
+        "zoned_time" => ZonedTime::parse(lit).map(Temporal::ZonedTime),
+        "zoned_datetime" => ZonedDateTime::parse(lit).map(Temporal::ZonedDateTime),
+        other => Err(format!("unknown temporal constructor '{other}'")),
     }
 }
 
@@ -250,6 +283,15 @@ impl Parser {
         }
     }
 
+    /// The string argument of a literal constructor, e.g. the `'2020-01-01'` in
+    /// `date('2020-01-01')`.
+    fn string(&mut self) -> Result<String, String> {
+        match self.next() {
+            Some(Tok::Str(s)) => Ok(s),
+            other => Err(format!("expected a string literal, found {other:?}")),
+        }
+    }
+
     /// Parse `( arg, arg, ... )`.
     fn args(&mut self) -> Result<Vec<Arg>, String> {
         self.expect(&Tok::LParen)?;
@@ -299,6 +341,17 @@ impl Parser {
                 if id == "false" {
                     self.pos += 1;
                     return Ok(Arg::Bool(false));
+                }
+                // Temporal literal constructors — the text analogue of GQL's
+                // `DATE '2020-01-01'`. Parsed with the same `Temporal` parsers the
+                // GQL lexer uses, so both frontends accept identical spellings and
+                // reject identical ones.
+                if TEMPORAL_CTORS.contains(&id.as_str()) && self.peek_at(1) == Some(&Tok::LParen) {
+                    self.pos += 2; // ident + '('
+                    let lit = self.string()?;
+                    self.expect(&Tok::RParen)?;
+
+                    return Ok(Arg::Temporal(parse_temporal_literal(&id, &lit)?));
                 }
                 // Bare tokens (static-import style: `desc`, `local`, `first`, …),
                 // i.e. an enum member not used as a call.
