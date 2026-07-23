@@ -3923,6 +3923,129 @@ fn tx_keywords_start_insert_commit_persists() {
     assert_eq!(acct_ids(&mut g), vec!["a", "b"]);
 }
 
+/// The seekable endpoint may be the TARGET, not the source: `(e)-[:T]->(m {id:$m})`
+/// must cost the same at any graph size. Regression: `try_orient_node_seed` bailed
+/// whenever either endpoint had a real index seek ("don't interfere with a real
+/// index seek"), so a target-anchored pattern seeded from the *unindexed* source
+/// and scanned its whole label bucket — 26x at N=32k while the source-anchored
+/// form was already flat. It now orients toward the seekable end, reversing the
+/// path when that end is last. Found by the round-16 dogfood sim (report §4,
+/// `directReportsOf`), isolated by `_p35_target_anchor.ts`.
+#[test]
+fn traversal_anchored_on_the_target_is_independent_of_graph_size() {
+    use std::time::Instant;
+
+    let mut g = ndjson::decode("").unwrap();
+    g.create_vertex_index("id");
+    q(&mut g, "INSERT (:Emp {id: 'BOSS'})");
+    q(&mut g, "INSERT (:Emp {id: 'SOLO'})");
+    q(&mut g, "INSERT (:Emp {id: 'ONE'})");
+    q(
+        &mut g,
+        "MATCH (a:Emp {id: 'ONE'}), (b:Emp {id: 'SOLO'}) INSERT (a)-[:REPORTS_TO]->(b)",
+    );
+
+    let grow_to = |g: &mut Graph, upto: usize, from: usize| {
+        for i in from..upto {
+            q(g, &format!("INSERT (:Emp {{id: 'e{i}'}})"));
+            q(
+                g,
+                &format!(
+                    "MATCH (a:Emp {{id: 'e{i}'}}), (b:Emp {{id: 'BOSS'}}) INSERT (a)-[:REPORTS_TO]->(b)"
+                ),
+            );
+        }
+    };
+    // Exactly one edge ever points at SOLO, whatever the graph size.
+    let probe = "MATCH (e:Emp)-[r:REPORTS_TO]->(m:Emp {id: 'SOLO'}) RETURN e.id AS x";
+    let time = |g: &mut Graph| {
+        for _ in 0..20 {
+            q(g, probe);
+        }
+        let t = Instant::now();
+        for _ in 0..200 {
+            q(g, probe);
+        }
+        t.elapsed().as_secs_f64()
+    };
+
+    grow_to(&mut g, 2_000, 0);
+    let small = time(&mut g);
+    grow_to(&mut g, 32_000, 2_000);
+    let large = time(&mut g);
+
+    let ratio = large / small.max(f64::MIN_POSITIVE);
+    assert!(
+        ratio < 6.0,
+        "target-anchored traversal scaled with graph size: 16x more vertices cost \
+         {ratio:.1}x more time ({small:.4}s -> {large:.4}s). The plan is seeding the \
+         unindexed source instead of orienting toward the seekable target."
+    );
+}
+
+/// A traversal from an index-anchored, degree-1 source must cost the same whether
+/// the traversed edge type holds 2k edges or 32k. Regression: `build_scan` fell
+/// through to `edge_index_seed`, whose `by_etype` fallback materializes EVERY edge
+/// of the type — and `try_orient_node_seed` deliberately bails on an indexed
+/// endpoint, so having a usable index actively *diverted* the plan into that scan.
+/// A one-edge lookup cost O(edges of type); measured 193x at N=32k.
+///
+/// Timing-based, but the spread is 16x of graph size against a 6x bound: unfixed
+/// this ratio is ~16, fixed it is ~1. Found by the round-16 dogfood sim
+/// (`_p34_edgetype.ts`), which discriminated edge-type population from graph size.
+#[test]
+fn traversal_from_indexed_anchor_is_independent_of_edge_type_size() {
+    use std::time::Instant;
+
+    // One probe vertex with exactly ONE outgoing edge, whatever else exists.
+    let mut g = ndjson::decode("").unwrap();
+    g.create_vertex_index("id");
+    q(&mut g, "INSERT (:Dept {id: 'D0'})");
+    q(&mut g, "INSERT (:Probe {id: 'PR'})");
+    q(
+        &mut g,
+        "MATCH (s:Probe {id: 'PR'}), (t:Dept {id: 'D0'}) INSERT (s)-[:IN_DEPT]->(t)",
+    );
+
+    let grow_to = |g: &mut Graph, upto: usize, from: usize| {
+        for i in from..upto {
+            q(g, &format!("INSERT (:Emp {{id: 'e{i}'}})"));
+            q(
+                g,
+                &format!(
+                    "MATCH (s:Emp {{id: 'e{i}'}}), (t:Dept {{id: 'D0'}}) INSERT (s)-[:IN_DEPT]->(t)"
+                ),
+            );
+        }
+    };
+    // The probe's own traversal is identical at both sizes — only the population
+    // of the IN_DEPT edge type changes underneath it.
+    let probe = "MATCH (s:Probe {id: 'PR'})-[r:IN_DEPT]->(t) RETURN t.id AS x";
+    let time = |g: &mut Graph| {
+        for _ in 0..20 {
+            q(g, probe);
+        }
+        let t = Instant::now();
+        for _ in 0..200 {
+            q(g, probe);
+        }
+        t.elapsed().as_secs_f64()
+    };
+
+    grow_to(&mut g, 2_000, 0);
+    let small = time(&mut g);
+    grow_to(&mut g, 32_000, 2_000);
+    let large = time(&mut g);
+
+    let ratio = large / small.max(f64::MIN_POSITIVE);
+    assert!(
+        ratio < 6.0,
+        "one-edge traversal scaled with edge-type population: 16x more edges cost \
+         {ratio:.1}x more time ({small:.4}s -> {large:.4}s). The planner is scanning \
+         the by_etype bucket instead of seeking the indexed anchor's adjacency."
+    );
+}
+
 #[test]
 fn tx_keywords_start_insert_rollback_discards() {
     let mut g = ndjson::decode("").unwrap();

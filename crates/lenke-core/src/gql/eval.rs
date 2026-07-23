@@ -5213,13 +5213,8 @@ fn try_orient_node_seed(
         return None;
     }
     let end_node = &path.segments[path.segments.len() - 1].node;
-    // Don't interfere with a real index seek on either endpoint.
-    if node_index_seed(graph, ctx, &path.start, where_).is_some()
-        || node_index_seed(graph, ctx, end_node, where_).is_some()
-    {
-        return None;
-    }
-    // Any edge property / WHERE hint means edge_first_build has a selective seed.
+    // Any edge property / WHERE hint means edge_first_build has a selective seed,
+    // which beats any node seed — checked first so it still wins outright.
     for seg in &path.segments {
         if !seg.rel.props.is_empty()
             || seg.rel.where_.is_some()
@@ -5227,6 +5222,22 @@ fn try_orient_node_seed(
         {
             return None;
         }
+    }
+    // A real index seek on an endpoint is the best seed available, so orient
+    // TOWARD it rather than declining to act. This used to bail whenever either
+    // endpoint was seekable ("don't interfere with a real index seek") — which
+    // left a *target*-anchored pattern, `(e:Emp)-[:T]->(m:Emp {id: $m})`, seeding
+    // from the unindexed source and scanning its entire label bucket on every
+    // lookup. Seeding the start was fixed separately; this is the mirror case.
+    let start_seek = node_index_seed(graph, ctx, &path.start, where_).is_some();
+    let end_seek = node_index_seed(graph, ctx, end_node, where_).is_some();
+
+    if start_seek {
+        return Some(path.clone()); // already leads with the seekable end
+    }
+
+    if end_seek {
+        return Some(reverse_path(path)); // flip so the seekable end leads
     }
     // Orient to the smaller end. A strict `<` keeps the written orientation on a
     // tie, matching the TS engine's `orient`.
@@ -5371,7 +5382,22 @@ fn build_scan(
     // matching edges and validate the surrounding (a)-[r]->(b) pattern, instead
     // of expanding every vertex's adjacency.
     if path.segments.len() == 1 {
-        if let Some(edges) = edge_index_seed(graph, ctx, &path.segments[0].rel, where_) {
+        // A *selective* edge seed (an indexed edge property) is always worth taking.
+        // The `by_etype` fallback is not: it materializes every edge of the type,
+        // O(E_type), which loses badly whenever an endpoint is index-seekable —
+        // that seeds a handful of vertices and walks their adjacency, O(seeds·deg).
+        // `try_orient_node_seed` above deliberately bails on an indexed endpoint so
+        // as "not to interfere with a real index seek"; without this guard control
+        // fell straight through to here and an indexed anchor *diverted* the plan
+        // into the whole-type scan — making the index actively harmful.
+        let endpoint_seekable = node_index_seed(graph, ctx, &path.start, where_).is_some()
+            || node_index_seed(graph, ctx, &path.segments[0].node, where_).is_some();
+        let seed = if endpoint_seekable {
+            edge_prop_seed(graph, ctx, &path.segments[0].rel, where_)
+        } else {
+            edge_index_seed(graph, ctx, &path.segments[0].rel, where_)
+        };
+        if let Some(edges) = seed {
             return edge_first_build(graph, ctx, path, scope_len, &edges);
         }
     }
@@ -5388,28 +5414,47 @@ fn scan_start_seed(graph: &Graph, ctx: &Ctx, start: &CNode, scope_len: usize) ->
     let start_check = !start.props.is_empty() || start.where_.is_some();
     let mut sb = Binding(vec![None; scope_len.max(1)]);
     let mut endpoint: Vec<u32> = Vec::new();
-    for_each_seed(graph, ctx, start.label.as_ref(), &mut |vi| {
-        if !matches_label(graph, ctx, vi, start.label.as_ref()) {
-            return true;
-        }
-        if start_check {
-            if let Some(s) = start.var_slot {
-                sb.set(s, Val::Node(vi));
-            }
-            if !satisfies(
-                graph,
-                ctx,
-                &Val::Node(vi),
-                &start.props,
-                start.where_.as_ref(),
-                &sb,
-            ) {
+    {
+        let mut keep = |vi: u32| -> bool {
+            if !matches_label(graph, ctx, vi, start.label.as_ref()) {
                 return true;
             }
+            if start_check {
+                if let Some(s) = start.var_slot {
+                    sb.set(s, Val::Node(vi));
+                }
+                if !satisfies(
+                    graph,
+                    ctx,
+                    &Val::Node(vi),
+                    &start.props,
+                    start.where_.as_ref(),
+                    &sb,
+                ) {
+                    return true;
+                }
+            }
+            endpoint.push(vi);
+            true
+        };
+        // An indexed inline `{k: lit}` / `{k: $param}` pins the start to a handful
+        // of candidates — seek them rather than walking the whole label bucket.
+        // Without this a traversal from an indexed anchor costs O(label bucket)
+        // instead of O(degree): `(s:Employee {id:$x})-[:T]->(t)` scanned every
+        // Employee to reach one vertex. The per-vertex label + props re-check above
+        // still runs, so the seek only ever *narrows* the same candidate set and
+        // seed order is unchanged for the unindexed path.
+        match node_index_seed(graph, ctx, start, None) {
+            Some(cands) => {
+                for vi in cands {
+                    keep(vi);
+                }
+            }
+            None => {
+                for_each_seed(graph, ctx, start.label.as_ref(), &mut keep);
+            }
         }
-        endpoint.push(vi);
-        true
-    });
+    }
     endpoint
 }
 
