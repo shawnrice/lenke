@@ -794,6 +794,15 @@ export type RustGraph = {
   betweenness: (config?: AlgorithmConfig) => Promise<CentralityRow[]>;
   closeness: (config?: AlgorithmConfig) => Promise<CentralityRow[]>;
   shortestPath: (config?: AlgorithmConfig) => Promise<ShortestPathRow[]>;
+  /**
+   * Deep-copy this graph into a fresh, fully independent {@link RustGraph} — the
+   * fast fork/branch substrate. An O(V+E) native clone of the columnar store, not
+   * a serialize→parse NDJSON round-trip: no text, no re-validation, no re-indexing,
+   * and element ids are preserved exactly (a base-vs-copy diff by id is exact).
+   * The copy owns its own native memory and must be `free`d (or `using`-bound)
+   * independently — freeing one does not affect the other.
+   */
+  copy: () => RustGraph;
   /** Serialize the graph back to NDJSON bytes. */
   toNdjson: () => Uint8Array;
   /**
@@ -1167,6 +1176,7 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
     betweenness: (config) => runAlgoAsync('betweenness', config) as Promise<CentralityRow[]>,
     closeness: (config) => runAlgoAsync('closeness', config) as Promise<CentralityRow[]>,
     shortestPath: (config) => runAlgoAsync('shortestPath', config) as Promise<ShortestPathRow[]>,
+    copy: () => attachGraph(backend, backend.graphClone(live())),
     toNdjson: () => backend.encodeNdjson(live()),
     mergeNdjson: (bytes) => backend.mergeNdjson(live(), bytes),
     serialize: (format) => decoder.decode(backend.serialize(live(), format)),

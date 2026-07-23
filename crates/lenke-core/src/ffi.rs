@@ -143,6 +143,23 @@ pub unsafe extern "C" fn lnk_merge_ndjson(
     }
 }
 
+/// Deep-copy a graph into a fresh, fully independent handle — the fast substrate
+/// for a fork/branch. An O(V+E) clone of the columnar store (see `impl Clone for
+/// Graph`), not a serialize→parse NDJSON round-trip: no text, no re-validation, no
+/// re-indexing, and the element ids are preserved exactly (a base-vs-copy diff by
+/// id is exact). The returned handle must be freed with [`lnk_graph_free`] like any
+/// other. Null in → null out.
+///
+/// # Safety
+/// `g` must be a valid graph handle (or null).
+#[no_mangle]
+pub unsafe extern "C" fn lnk_graph_clone(g: *const Graph) -> *mut Graph {
+    if g.is_null() {
+        return std::ptr::null_mut();
+    }
+    Box::into_raw(Box::new((*g).clone()))
+}
+
 /// # Safety
 /// `g` must be a handle from `lnk_graph_from_ndjson` (or null).
 #[no_mangle]

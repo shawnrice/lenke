@@ -15,6 +15,7 @@ const SYMBOLS = {
   lnk_abi_version: { args: [], returns: FFIType.u32 },
   lnk_graph_from_ndjson: { args: [FFIType.ptr, U, FFIType.u32], returns: FFIType.ptr },
   lnk_merge_ndjson: { args: [FFIType.ptr, FFIType.ptr, U, FFIType.ptr], returns: FFIType.ptr },
+  lnk_graph_clone: { args: [FFIType.ptr], returns: FFIType.ptr },
   lnk_graph_free: { args: [FFIType.ptr], returns: FFIType.void },
   lnk_graph_vertex_count: { args: [FFIType.ptr], returns: U },
   lnk_graph_edge_count: { args: [FFIType.ptr], returns: U },
@@ -228,6 +229,15 @@ export const createFfiBackend = (libPath: string): Backend => {
           ),
         ),
       ) as MergeReport,
+    graphClone: (handle) => {
+      const h = symbols.lnk_graph_clone(asPtr(handle));
+
+      if (!h) {
+        return fail('graphClone', ErrorCode.InvalidGraphOp);
+      }
+
+      return asHandle(h);
+    },
     graphFree: (handle) => symbols.lnk_graph_free(asPtr(handle)),
     vertexCount: (handle) => Number(symbols.lnk_graph_vertex_count(asPtr(handle))),
     edgeCount: (handle) => Number(symbols.lnk_graph_edge_count(asPtr(handle))),

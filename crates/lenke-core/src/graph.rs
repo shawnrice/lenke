@@ -30,7 +30,7 @@ use crate::error_codes::ErrorCode;
 /// so a string property is never re-allocated end to end. `Arc` (not `Rc`) keeps
 /// the graph `Send` — needed for the parallel ndjson decode and a shared
 /// read-only graph on the server.
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct Dict {
     map: HashMap<Arc<str>, u32>,
     pub strings: Vec<Arc<str>>,
@@ -146,7 +146,7 @@ pub enum Value {
 }
 
 /// A typed property column. Length == its store's element count.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum Column {
     /// Numbers as f64 (absent = NaN, also flagged in `present`).
     Num {
@@ -181,7 +181,7 @@ pub enum Column {
 /// (`DATE` = one `Vec<i32>` = 4 B/slot vs 40 B) and lets scans read tight integer
 /// loops. `DURATION` keeps its components separate (SoA) so an `ORDER BY` that
 /// resolves on `months` streams only the 8-byte primary array.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum TemporalCol {
     Date(Vec<i32>),
     Time {
@@ -506,7 +506,7 @@ impl Column {
 /// length `len` elements. Vertices and edges use this **identically** — a
 /// property is a property regardless of whether its element is a node or a
 /// relationship. The graph holds two: one indexed by vertex, one by edge.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Properties {
     pub keys: Dict,
     /// Columns indexed by **dense key id** (`keys.intern` order), so a resolved
@@ -964,11 +964,76 @@ pub struct Graph {
     tx_read_only: bool,
 }
 
+/// A deep, independent copy of the graph — the fast substrate for a fork/branch
+/// (`graph.copy()` over the FFI), an O(V+E) clone of the columnar store rather than
+/// a serialize→parse NDJSON round-trip that also re-validates and re-indexes.
+///
+/// Every data field is cloned faithfully, so the copy is indistinguishable from
+/// the original — same element ids (a base-vs-copy diff by id is exact), same
+/// indexes, constraints, and any open transaction frame (the undo log clones, so
+/// the copy can roll back independently). Only the lazy CSR read-cache is reset:
+/// it is pure derived state rebuilt on first traversal, and cloning a warm cache
+/// would copy work the write path would discard. A struct literal (not `..`) so
+/// the compiler rejects the clone if a field is ever added and not handled here.
+impl Clone for Graph {
+    fn clone(&self) -> Self {
+        Self {
+            n: self.n,
+            live_n: self.live_n,
+            v_live: self.v_live.clone(),
+            vid: self.vid.clone(),
+            labels: self.labels.clone(),
+            etype: self.etype.clone(),
+            strs: self.strs.clone(),
+            vlabels: self.vlabels.clone(),
+            by_label: self.by_label.clone(),
+            props: self.props.clone(),
+            edge_props: self.edge_props.clone(),
+            e_src: self.e_src.clone(),
+            e_dst: self.e_dst.clone(),
+            e_type: self.e_type.clone(),
+            by_etype: self.by_etype.clone(),
+            eid_fwd: self.eid_fwd.clone(),
+            eid_rev: self.eid_rev.clone(),
+            version: self.version,
+            epochs: self.epochs.clone(),
+            e_live: self.e_live.clone(),
+            live_e: self.live_e,
+            out: self.out.clone(),
+            in_: self.in_.clone(),
+            // Derived read-cache — reset, rebuilt lazily on first traversal.
+            csr: std::sync::OnceLock::new(),
+            csr_reads: std::sync::atomic::AtomicU32::new(0),
+            synth: self.synth,
+            vidx: self.vidx.clone(),
+            eidx: self.eidx.clone(),
+            v_unique: self.v_unique.clone(),
+            v_required: self.v_required.clone(),
+            v_type: self.v_type.clone(),
+            e_unique: self.e_unique.clone(),
+            e_required: self.e_required.clone(),
+            e_type_constraints: self.e_type_constraints.clone(),
+            v_cardinality: self.v_cardinality.clone(),
+            v_validators: self.v_validators.clone(),
+            v_invariants: self.v_invariants.clone(),
+            tx_depth: self.tx_depth,
+            tx_undo: self.tx_undo.clone(),
+            tx_touched: self.tx_touched.clone(),
+            tx_touched_edges: self.tx_touched_edges.clone(),
+            last_touched: self.last_touched.clone(),
+            applying_undo: self.applying_undo,
+            max_operator_chain: self.max_operator_chain,
+            tx_read_only: self.tx_read_only,
+        }
+    }
+}
+
 /// One inverse op recorded by a mutation while a transaction frame is open, to be
 /// replayed (newest-first) on rollback. The tombstone-based delete model makes
 /// these cheap: undo of an insert = tombstone the slot; undo of a delete =
 /// un-tombstone it (the columns are never cleared on delete, so property values
 /// survive in place); undo of a property write = restore the prior columnar value.
+#[derive(Clone)]
 enum Undo {
     /// An inserted vertex — undo by tombstoning it (`remove_vertex`, detach).
     InsertVertex(u32),
@@ -1007,6 +1072,7 @@ struct CardinalityRule {
 /// A registered VALIDATOR: its bind variable name, its GQL predicate source (for
 /// messaging / introspection), and the predicate parsed+lowered once at declare
 /// time. The Rust analogue of the TS `{ varName, src, fn }` validator entry.
+#[derive(Clone)]
 struct ValidatorRule {
     var: String,
     src: String,
@@ -1018,10 +1084,11 @@ struct ValidatorRule {
 /// into a reusable [`crate::gql::Prepared`] plan. Evaluated against the fully-
 /// staged graph at commit; VIOLATED iff any result cell is boolean `false`. The
 /// Rust analogue of the TS `{ src, fn }` invariant entry.
+#[derive(Clone)]
 struct InvariantRule {
     name: String,
     src: String,
-    plan: crate::gql::Prepared,
+    plan: std::sync::Arc<crate::gql::Prepared>,
 }
 
 /// Which deferred constraint check failed at commit. All surface to the caller as
@@ -2298,7 +2365,7 @@ impl Graph {
         self.v_invariants.push(InvariantRule {
             name: name.to_string(),
             src: query.to_string(),
-            plan,
+            plan: std::sync::Arc::new(plan),
         });
         Ok(())
     }
@@ -4648,5 +4715,94 @@ mod invariant {
             .unwrap(); // empty result → holds
                        // A write still commits (all three hold regardless of the balance sum).
         run(&mut g, "MATCH (a:Acct {name: 'a'}) SET a.balance = 12345").unwrap();
+    }
+}
+
+#[cfg(test)]
+mod clone_graph {
+    //! `Graph: Clone` — the fast fork/branch substrate. A deep, independent copy
+    //! of the columnar store (element ids preserved exactly), the native half of
+    //! `graph.copy()` over the FFI. Mirrors the TS `Graph.copy()` for parity.
+    use super::*;
+    use crate::gql::eval::Params;
+    use crate::gql::parse;
+    use crate::ndjson;
+
+    fn run(g: &mut Graph, q: &str) -> CodeResult<Vec<Vec<crate::graph::Value>>> {
+        parse(q)
+            .unwrap()
+            .execute(g, &Params::new())
+            .map(|rs| rs.rows().map(<[Value]>::to_vec).collect())
+    }
+
+    #[test]
+    fn clone_is_independent_and_preserves_ids_and_constraints() {
+        let mut base = ndjson::decode(
+            &[
+                r#"{"type":"node","id":"a","labels":["P"],"properties":{"id":"a","v":1}}"#,
+                r#"{"type":"node","id":"b","labels":["P"],"properties":{"id":"b","v":2}}"#,
+                r#"{"type":"edge","id":"e1","from":"a","to":"b","labels":["R"],"properties":{}}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        base.create_unique_constraint("P", "id").unwrap();
+
+        let mut copy = base.clone();
+
+        // Independent: a write to one is invisible to the other.
+        run(&mut copy, "INSERT (:P {id: 'c', v: 3})").unwrap();
+        run(&mut base, "MATCH (n:P {id: 'a'}) SET n.v = 99").unwrap();
+        assert_eq!(
+            run(&mut base, "MATCH (n:P) RETURN count(*) AS c").unwrap(),
+            vec![vec![Value::Num(2.0)]]
+        );
+        assert_eq!(
+            run(&mut copy, "MATCH (n:P) RETURN count(*) AS c").unwrap(),
+            vec![vec![Value::Num(3.0)]]
+        );
+        assert_eq!(
+            run(&mut copy, "MATCH (n:P {id: 'a'}) RETURN n.v AS v").unwrap(),
+            vec![vec![Value::Num(1.0)]] // unaffected by base's SET
+        );
+
+        // Ids preserved exactly: the edge still connects the same endpoints.
+        assert_eq!(
+            run(
+                &mut copy,
+                "MATCH (:P {id: 'a'})-[:R]->(x:P) RETURN x.id AS id"
+            )
+            .unwrap(),
+            vec![vec![Value::Str("b".into())]]
+        );
+
+        // Indexes come along and are functional (declared + populated): the seek
+        // path is used, and the index is listed on the copy.
+        base.create_vertex_index("v");
+        base.create_edge_index("w");
+        let mut copy2 = base.clone();
+        assert!(copy2.vertex_indexes().contains(&"v".to_string()));
+        assert!(copy2.edge_indexes().contains(&"w".to_string()));
+        // `b.v` is 2 (untouched); `a.v` was set to 99 earlier in this test.
+        assert_eq!(
+            run(&mut copy2, "MATCH (n:P {v: 2}) RETURN n.id AS id").unwrap(),
+            vec![vec![Value::Str("b".into())]]
+        );
+
+        // Every constraint kind is enforced on the copy, not just unique. Required
+        // + type on a fresh graph so the checks are unambiguous.
+        let mut g2 = ndjson::decode(
+            &[r#"{"type":"node","id":"a","labels":["P"],"properties":{"id":"a","age":30}}"#]
+                .join("\n"),
+        )
+        .unwrap();
+        g2.create_required_constraint("P", "id").unwrap();
+        g2.create_type_constraint("P", "age", "number").unwrap();
+        let mut copy3 = g2.clone();
+        assert!(run(&mut copy3, "INSERT (:P {age: 1})").is_err()); // missing required id
+        assert!(run(&mut copy3, "INSERT (:P {id: 'z', age: 'x'})").is_err()); // wrong type
+
+        // The unique constraint came along: a duplicate id is rejected in the copy.
+        assert!(run(&mut copy, "INSERT (:P {id: 'a'})").is_err());
     }
 }

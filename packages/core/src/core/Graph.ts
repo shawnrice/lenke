@@ -149,6 +149,40 @@ const SCALAR_TYPE_NAMES: ReadonlySet<ScalarTypeName> = new Set([
  * if you need typed access (`vertex.properties as Person`), or wrap the
  * graph with a schema-aware layer.
  */
+/** Max wall-clock a {@link Graph.copy} run holds the thread before yielding (ms).
+ *  Time-based, not element-count-based, so the loop is released at a bounded
+ *  interval regardless of how heavy each element is. */
+const COPY_YIELD_MS = 5;
+
+/** Release the event loop so a large {@link Graph.copy} doesn't block it. A
+ *  `setTimeout(0)` macrotask — the honest yield: it lets pending timers and I/O
+ *  run before the copy resumes. NOT `await Promise.resolve()`, which is a
+ *  microtask: a self-replenishing microtask loop never reaches the macrotask
+ *  phase, so it looks async but starves timers/I/O entirely (measured: 0 turns for
+ *  a concurrent timer, vs a fair ~1 per yield here). */
+const yieldToLoop = (): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, 0);
+  });
+
+/** Deep-copy a `label → Set<key>` constraint map (used by {@link Graph.clone} /
+ *  {@link Graph.copy}). */
+const copySetMap = (src: ReadonlyMap<string, Set<string>>, dst: Map<string, Set<string>>): void => {
+  for (const [k, v] of src) {
+    dst.set(k, new Set(v));
+  }
+};
+
+/** Deep-copy a `label → Map<key, type>` constraint map. */
+const copyTypeMap = (
+  src: ReadonlyMap<string, Map<string, ScalarTypeName>>,
+  dst: Map<string, Map<string, ScalarTypeName>>,
+): void => {
+  for (const [k, v] of src) {
+    dst.set(k, new Map(v));
+  }
+};
+
 export class Graph {
   verticesById: Map<string, Vertex>;
   verticesByLabel: Map<string, Set<Vertex>>;
@@ -502,6 +536,104 @@ export class Graph {
         }),
       );
     }
+
+    this.#copyRegistriesInto(next);
+
+    if (this.eventsEnabled()) {
+      next.enableEvents();
+    }
+
+    return next;
+  };
+
+  /**
+   * Deep-copy the constraint / validator / invariant registries into `next`.
+   * Copied directly (not re-declared via `create*Constraint`, which would re-scan
+   * the data) — the elements came from a valid graph, so the copy already
+   * satisfies them. Shared by {@link clone} and {@link copy}.
+   */
+  #copyRegistriesInto = (next: Graph): void => {
+    copySetMap(this.vertexUniqueConstraints, next.vertexUniqueConstraints);
+    copySetMap(this.vertexRequiredConstraints, next.vertexRequiredConstraints);
+    copyTypeMap(this.vertexTypeConstraints, next.vertexTypeConstraints);
+    copySetMap(this.edgeUniqueConstraints, next.edgeUniqueConstraints);
+    copySetMap(this.edgeRequiredConstraints, next.edgeRequiredConstraints);
+    copyTypeMap(this.edgeTypeConstraints, next.edgeTypeConstraints);
+
+    for (const [k, v] of this.vertexCardinalityConstraints) {
+      next.vertexCardinalityConstraints.set(k, { ...v });
+    }
+
+    // Validator / invariant entries are immutable descriptors holding a compiled
+    // fn — share the entries, copy the containers.
+    for (const [k, entries] of this.validatorRegistry) {
+      next.validatorRegistry.set(k, [...entries]);
+    }
+
+    for (const [k, entry] of this.invariantRegistry) {
+      next.invariantRegistry.set(k, entry);
+    }
+  };
+
+  /**
+   * Async deep copy — the event-loop-friendly {@link clone}. Same faithful result
+   * (fresh vertices/edges bound to the copy, own labels/property bags, indexes,
+   * and all constraints), but it yields to the event loop whenever a run has held
+   * the thread for {@link COPY_YIELD_MS}, so copying a large graph doesn't block it. The parity with
+   * the native engine's `copy()`; async because it is pure-JS O(V+E) work, where
+   * the native copy is an off-thread-fast columnar memcpy.
+   */
+  public copy = async (): Promise<Graph> => {
+    const next = new Graph();
+    next.disableEvents();
+
+    for (const key of this.vertexPropertyIndex.indexedKeys()) {
+      next.vertexPropertyIndex.createIndex(key);
+    }
+
+    for (const key of this.edgePropertyIndex.indexedKeys()) {
+      next.edgePropertyIndex.createIndex(key);
+    }
+
+    let lastYield = performance.now();
+
+    for (const vertex of this.verticesById.values()) {
+      next.addVertex(
+        new Vertex({
+          id: vertex.id,
+          labels: [...vertex.labels],
+          properties: { ...vertex.properties },
+          graph: next,
+        }),
+      );
+
+      if (performance.now() - lastYield >= COPY_YIELD_MS) {
+        // eslint-disable-next-line no-await-in-loop
+        await yieldToLoop();
+        lastYield = performance.now();
+      }
+    }
+
+    for (const edge of this.edgesById.values()) {
+      next.addEdge(
+        new Edge({
+          id: edge.id,
+          from: next.getVertexById(edge.from.id)!,
+          to: next.getVertexById(edge.to.id)!,
+          labels: [...edge.labels],
+          properties: { ...edge.properties },
+          graph: next,
+        }),
+      );
+
+      if (performance.now() - lastYield >= COPY_YIELD_MS) {
+        // eslint-disable-next-line no-await-in-loop
+        await yieldToLoop();
+        lastYield = performance.now();
+      }
+    }
+
+    this.#copyRegistriesInto(next);
 
     if (this.eventsEnabled()) {
       next.enableEvents();

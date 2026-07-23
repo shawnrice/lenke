@@ -91,6 +91,7 @@ export function createNodeBackend() {
       coded(() => JSON.parse(mergeDecoder.decode(get(handle).mergeNdjson(asBuffer(bytes))))),
     // Drop the reference; the underlying lenke-core graph is freed when napi GCs
     // the object. No explicit native free to call.
+    graphClone: (handle) => coded(() => put(get(handle).cloneGraph())),
     graphFree: (handle) => {
       registry.delete(handle);
     },

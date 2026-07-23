@@ -51,6 +51,14 @@ export type Backend = {
    * applied vs. skipped. Throws a coded error on a parse fault.
    */
   mergeNdjson: (handle: GraphHandle, bytes: Uint8Array) => MergeReport;
+  /**
+   * Deep-copy a graph into a fresh, fully independent handle — the fast
+   * fork/branch substrate. An O(V+E) clone of the columnar store, not a
+   * serialize→parse round-trip: no text, no re-validation, no re-indexing, and
+   * element ids are preserved exactly. The returned handle owns its own memory and
+   * must be `graphFree`d.
+   */
+  graphClone: (handle: GraphHandle) => GraphHandle;
   /** Release a handle from `graphFromNdjson`. */
   graphFree: (handle: GraphHandle) => void;
 

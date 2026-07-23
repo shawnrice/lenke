@@ -124,6 +124,17 @@ impl Graph {
         Ok(Self { inner })
     }
 
+    /// Deep-copy this graph into a fresh, fully independent handle — the fast
+    /// fork/branch substrate. An O(V+E) clone of the columnar store (`Graph: Clone`
+    /// in lenke-core), not a serialize→parse round-trip: element ids are preserved
+    /// exactly. `#[napi(factory)]` so it returns a new JS `Graph` wrapper.
+    #[napi(factory)]
+    pub fn clone_graph(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+
     /// Deserialize bytes in a named format (`pg-json | pg-text | graphson | csv |
     /// ndjson`) into a new graph.
     #[napi(factory)]

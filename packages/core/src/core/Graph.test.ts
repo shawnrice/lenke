@@ -224,6 +224,82 @@ describe('Graph Tests', () => {
       expect(clone.getVertexById('1')).toBeNull();
       expect(g.getVertexById('1')).not.toBeNull();
     });
+
+    describe('copy() — async, event-loop-friendly deep copy', () => {
+      test('is independent and preserves ids like clone()', async () => {
+        const g = createTestTinkerGraph();
+        const copy = await g.copy();
+
+        expect(copy.vertexCount).toBe(g.vertexCount);
+        expect(copy.edgeCount).toBe(g.edgeCount);
+        expect(copy.getVertexById('1')).not.toBe(g.getVertexById('1'));
+
+        copy.getVertexById('1')!.setProperty('name', 'CHANGED');
+        expect(g.getVertexById('1')!.properties.name).toBe('marko');
+      });
+
+      test('copies indexes (declared + functional) and every constraint kind', async () => {
+        const g = new Graph();
+
+        g.createVertexIndex('v');
+        g.createEdgeIndex('w');
+        g.createUniqueConstraint('P', 'id');
+        g.createRequiredConstraint('P', 'id');
+        g.createTypeConstraint('P', 'age', 'number');
+        g.createCardinalityConstraint('P', 'R', 'out', 0, 1);
+        g.addVertex({ id: 'a', labels: ['P'], properties: { id: 'a', v: 1, age: 30 } });
+        g.addVertex({ id: 'b', labels: ['P'], properties: { id: 'b', v: 2, age: 40 } });
+        g.addEdge({
+          from: g.getVertexById('a')!,
+          to: g.getVertexById('b')!,
+          labels: ['R'],
+          properties: { w: 5 },
+        });
+
+        const copy = await g.copy();
+
+        // Indexes: declared on the copy, and functional (a seek finds the row).
+        expect([...copy.vertexPropertyIndex.indexedKeys()]).toContain('v');
+        expect([...copy.edgePropertyIndex.indexedKeys()]).toContain('w');
+        expect([...copy.getVerticesByProperty('v', 1)].map((n) => n.id)).toEqual(['a']);
+
+        // Every constraint kind is enforced on the copy — not just unique.
+        expect(() =>
+          copy.addVertex({ id: 'dup', labels: ['P'], properties: { id: 'a' } }),
+        ).toThrow();
+        expect(() => copy.addVertex({ id: 'x', labels: ['P'], properties: { v: 9 } })).toThrow();
+        expect(() =>
+          copy.addVertex({ id: 'y', labels: ['P'], properties: { id: 'y', age: 'nope' } }),
+        ).toThrow();
+        expect(() =>
+          copy.addEdge({
+            from: copy.getVertexById('a')!,
+            to: copy.getVertexById('b')!,
+            labels: ['R'],
+            properties: {},
+          }),
+        ).toThrow();
+      });
+
+      test('yields the event loop while copying a large graph', async () => {
+        const g = new Graph();
+
+        for (let i = 0; i < 30_000; i += 1) {
+          g.addVertex({ id: `n${i}`, labels: ['P'], properties: { v: i } });
+        }
+
+        let timerFired = false;
+        const timer = setTimeout(() => {
+          timerFired = true;
+        }, 0);
+
+        const copy = await g.copy();
+        clearTimeout(timer);
+
+        expect(copy.vertexCount).toBe(30_000);
+        expect(timerFired).toBe(true);
+      });
+    });
   });
 
   describe('the property bag is frozen against external mutation', () => {
