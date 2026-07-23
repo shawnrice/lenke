@@ -78,11 +78,21 @@ backlog replay, apply-first rejection). The divergences found are all in _older_
   could drop a unique constraint's backing index, then a `dump → apply → re-dump` would differ
   (the replay re-created the index), and a snapshot would resurrect it on warm boot. Now moot:
   the drop itself is refused (see the HIGH fix above), so that state is unreachable.
-- **LOW · `log(x)` single-arg → `null`** — only 2-arg `LOG(base, value)` computes; `ln`/`log10`/
-  `exp` work. Wrong-arity returning `null` rather than an error, byte-identical. Verify vs ISO.
-- **LOW · min-cardinality forces atomic node+edge creation** — with `Airport LOCATED_IN out
-1..1`, a bare `INSERT (:Airport)` faults (0 < min) under per-statement atomicity; create
-  node+edge in one statement or a tx. Correct + byte-identical; worth a doc line.
+- **LOW · `log(x)` single-arg → `null`** — **NO-CHANGE (works as designed), documented.**
+  Verified vs ISO grammar (`/tmp/opengql_GQL.g4`): `generalLogarithmFunction` is strictly
+  two-arg `LOG(base, value)`; natural log is `LN`, base-10 is `LOG10` — there is **no** ISO
+  single-arg `log`. But returning `null` here is **not** a `log`-specific bug: lenke uses a
+  total-function arity model where a _known_ function with too few args returns `null` (only an
+  _unknown name_ throws `UnknownFunction`). Verified byte-identically across siblings —
+  `power(2)`, `mod(5)`, `atan2(1)` all → `null` too, and `sqrt(4, 9)` → `2` (extra arg
+  ignored). Making `log` alone throw would break that uniformity and single out one binary
+  function arbitrarily. Left the behavior unchanged; documented the arity model + the `ln`/
+  `log10` pointer in `packages/gql/README.md` (scalar-functions bullet).
+- **LOW · min-cardinality forces atomic node+edge creation** — **documented (docs-only, no
+  code change).** With `Airport LOCATED_IN out 1..1`, a bare `INSERT (:Airport)` faults
+  (0 < min) under per-statement atomicity; create node+edge in one statement or a
+  `graph.transaction(…)`. Correct + byte-identical. Doc line added to the Constraints section
+  of `packages/core/README.md` (under `createCardinalityConstraint`).
 
 ## Held up under pressure (worth recording)
 

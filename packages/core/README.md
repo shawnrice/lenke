@@ -119,7 +119,7 @@ graph.createTypeConstraint('User', 'age', 'number'); // age, if present, is a nu
 - `createUniqueConstraint(label, key)` — index-backed; null values are exempt (SQL semantics). It's also what `_MERGE` upserts on (see [`@lenke/gql`](../gql)).
 - `createRequiredConstraint(label, key)` — the key must be present.
 - `createTypeConstraint(label, key, type)` — `type` is a `ScalarTypeName` (`'string' | 'number' | 'boolean' | 'date' | 'datetime' | 'duration' | 'list'`).
-- `createCardinalityConstraint(label, edgeType, direction, min, max)` — bound a vertex's degree along an edge type (`direction` is `'out' | 'in'`; `max` may be `null` for unbounded).
+- `createCardinalityConstraint(label, edgeType, direction, min, max)` — bound a vertex's degree along an edge type (`direction` is `'out' | 'in'`; `max` may be `null` for unbounded). A **`min ≥ 1`** constraint makes node creation atomic with its required edges: under per-statement atomicity a bare `INSERT (:Airport)` faults immediately (0 edges `<` min), since each statement is its own transaction. Create the node and its required edge in **one** statement (`INSERT (:Airport)-[:LOCATED_IN]->(:City {…})`), or wrap both writes in a `graph.transaction(…)` — the min check runs once at the commit boundary, so the intermediate 0-edge state is allowed.
 
 Edge analogues exist too (`createEdgeUniqueConstraint`, `createEdgeRequiredConstraint`, `createEdgeTypeConstraint`), each with `drop*` / introspection companions. `@lenke/gql` layers two GQL-expression constraints on top — `createValidator(graph, label, varName, predicate)` (a per-element SQL-`CHECK`) and `createInvariant(graph, name, query)` (a whole-graph assertion re-checked at each commit).
 
