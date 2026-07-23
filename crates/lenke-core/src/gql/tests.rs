@@ -63,6 +63,15 @@ fn rows(g: &mut Graph, query: &str) -> Vec<Vec<Value>> {
     q(g, query).1
 }
 
+/// Run a query expected to fail at EXECUTION time (it must still parse), and
+/// report whether it did. Unlike [`q`], this does not panic on the error.
+fn exec_err(g: &mut Graph, query: &str) -> bool {
+    parse(query)
+        .unwrap_or_else(|e| panic!("parse error for `{query}`: {e}"))
+        .execute(g, &Params::new())
+        .is_err()
+}
+
 /// `EXISTS { (a)-[:T]->+/*(b …) }` reachability: the BFS fast path must agree with
 /// the enumerated answer. Cross-checked against a *bounded* `->{1,big}` EXISTS
 /// (which the fast path does NOT intercept, so it enumerates) — and covers a
@@ -4044,6 +4053,56 @@ fn traversal_from_indexed_anchor_is_independent_of_edge_type_size() {
          {ratio:.1}x more time ({small:.4}s -> {large:.4}s). The planner is scanning \
          the by_etype bucket instead of seeking the indexed anchor's adjacency."
     );
+}
+
+/// A statement that faults inside an explicit transaction must undo only its own
+/// writes and leave the transaction OPEN. Regression: `finish_statement` used to
+/// call `rollback_tx`, which resets `tx_depth` to 0 unconditionally — so an app
+/// that caught a statement error silently fell out of its transaction, every later
+/// write auto-committed, and the closing ROLLBACK became a no-op. Found by the
+/// round-16 dogfood sim (`_p16_repro.ts`); pure-TS `@lenke/core` was never affected.
+#[test]
+fn tx_statement_error_does_not_end_the_enclosing_transaction() {
+    let mut g = ndjson::decode("").unwrap();
+    q(&mut g, "START TRANSACTION");
+    q(&mut g, "INSERT (:Acct {id: 'a'})");
+
+    // An execution-time fault, of the kind an application legitimately catches.
+    assert!(exec_err(&mut g, "RETURN no_such_fn(1) AS x"));
+
+    // The transaction must still be open — this is the whole bug.
+    assert!(
+        g.in_transaction(),
+        "a faulting statement ended the enclosing transaction"
+    );
+
+    // A later write is still staged, not auto-committed...
+    q(&mut g, "INSERT (:Acct {id: 'b'})");
+    q(&mut g, "ROLLBACK");
+
+    // ...so ROLLBACK discards BOTH inserts. Before the fix, 'b' survived.
+    assert!(!g.in_transaction());
+    assert!(
+        acct_ids(&mut g).is_empty(),
+        "ROLLBACK left writes behind after a caught statement error"
+    );
+}
+
+/// The faulting statement's own partial writes are still undone (per-statement
+/// atomicity), while the enclosing transaction's earlier writes survive to be
+/// committed — the two halves the single `rollback_tx` call used to conflate.
+#[test]
+fn tx_statement_error_undoes_only_that_statement() {
+    let mut g = ndjson::decode("").unwrap();
+    q(&mut g, "START TRANSACTION");
+    q(&mut g, "INSERT (:Acct {id: 'keep'})");
+    // Writes, then faults, in one statement: the INSERT must leave no trace.
+    assert!(exec_err(
+        &mut g,
+        "INSERT (:Acct {id: 'gone'}) RETURN no_such_fn(1) AS x"
+    ));
+    q(&mut g, "COMMIT");
+    assert_eq!(acct_ids(&mut g), vec!["keep"]);
 }
 
 #[test]

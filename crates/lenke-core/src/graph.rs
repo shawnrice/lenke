@@ -2838,6 +2838,47 @@ impl Graph {
         }
     }
 
+    /// The current undo-log depth, for [`Graph::rollback_statement`]. Taken before
+    /// a statement's frame opens so its writes can be undone without touching the
+    /// writes an enclosing transaction already staged.
+    #[inline]
+    pub fn tx_undo_mark(&self) -> usize {
+        self.tx_undo.len()
+    }
+
+    /// Roll back only the writes recorded since `mark`, closing ONE frame and
+    /// leaving any enclosing transaction **open and usable**.
+    ///
+    /// This is what a failing *statement* inside an explicit transaction needs:
+    /// per-statement atomicity (a faulting statement leaves no trace) without
+    /// destroying the surrounding transaction. [`Graph::rollback_tx`] cannot serve
+    /// here — it resets `tx_depth` to 0 unconditionally, so an application that
+    /// caught a statement error (probing an optional feature, say) would silently
+    /// fall out of its transaction and auto-commit every subsequent write, and the
+    /// later `throw` that should roll everything back would find no frame open.
+    ///
+    /// The touched sets are deliberately not trimmed: a stale entry is harmless
+    /// (`run_deferred_checks` skips anything no longer live) and trimming would
+    /// need a parallel mark per set.
+    pub fn rollback_statement(&mut self, mark: usize) {
+        if self.tx_depth == 0 {
+            return;
+        }
+        self.applying_undo = true;
+        while self.tx_undo.len() > mark {
+            if let Some(u) = self.tx_undo.pop() {
+                self.apply_one_undo(u);
+            }
+        }
+        self.applying_undo = false;
+        self.tx_depth -= 1;
+        if self.tx_depth == 0 {
+            self.tx_undo.clear();
+            self.tx_touched.clear();
+            self.tx_touched_edges.clear();
+        }
+    }
+
     /// Replay the undo log newest-first and reset all transaction state to closed.
     fn apply_undo_and_reset(&mut self) {
         self.applying_undo = true;

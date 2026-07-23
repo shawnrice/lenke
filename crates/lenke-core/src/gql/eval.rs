@@ -10573,14 +10573,18 @@ fn tx_commit_error(e: TxCommitError) -> CodeError {
 /// constraint checks — a failure has already rolled the statement's writes back);
 /// on error roll the statement's partial writes back. This gives every top-level
 /// statement per-statement atomicity: a faulting INSERT/SET/DELETE leaves no trace.
-fn finish_statement<T>(graph: &mut Graph, result: CodeResult<T>) -> CodeResult<T> {
+fn finish_statement<T>(graph: &mut Graph, result: CodeResult<T>, mark: usize) -> CodeResult<T> {
     match result {
         Ok(v) => match graph.commit_tx() {
             Ok(()) | Err(TxCommitError::NoTx) => Ok(v),
             Err(e) => Err(tx_commit_error(e)),
         },
         Err(err) => {
-            graph.rollback_tx();
+            // Undo only this statement's writes and close only this frame. An
+            // enclosing explicit transaction stays open, so a caught error does not
+            // silently drop the caller out of its transaction (which would then
+            // auto-commit every later write and make the closing rollback a no-op).
+            graph.rollback_statement(mark);
             Err(err)
         }
     }
@@ -10591,9 +10595,10 @@ fn finish_statement<T>(graph: &mut Graph, result: CodeResult<T>) -> CodeResult<T
 /// joins an outer explicit transaction opened over the FFI boundary — the inner
 /// commit is a no-op and the outermost commit runs the deferred checks.
 fn run_cquery(plan: &CQuery, graph: &mut Graph, params: &[Val]) -> CodeResult<RowSet> {
+    let mark = graph.tx_undo_mark();
     graph.begin_tx();
     let result = run_cquery_body(plan, graph, params);
-    finish_statement(graph, result)
+    finish_statement(graph, result, mark)
 }
 
 /// The statement body — runs each linear part and combines set-op results. Its
