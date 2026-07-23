@@ -180,15 +180,20 @@ impl Graph {
         self.inner.create_edge_index(&key);
     }
 
-    /// Drop a vertex / edge property index (no-op if absent).
+    /// Drop a vertex / edge property index (no-op if absent). Rejected if the key
+    /// backs a unique constraint — drop the constraint first.
     #[napi]
-    pub fn drop_vertex_index(&mut self, key: String) {
-        self.inner.drop_vertex_index(&key);
+    pub fn drop_vertex_index(&mut self, key: String) -> Result<()> {
+        self.inner
+            .drop_vertex_index(&key)
+            .map_err(|e| coded("dropVertexIndex", e))
     }
 
     #[napi]
-    pub fn drop_edge_index(&mut self, key: String) {
-        self.inner.drop_edge_index(&key);
+    pub fn drop_edge_index(&mut self, key: String) -> Result<()> {
+        self.inner
+            .drop_edge_index(&key)
+            .map_err(|e| coded("dropEdgeIndex", e))
     }
 
     /// The currently-indexed vertex / edge property keys (sorted).

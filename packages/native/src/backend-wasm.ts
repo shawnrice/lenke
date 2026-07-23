@@ -707,21 +707,38 @@ export const createWasmBackend = async (source: WasmSource): Promise<Backend> =>
     dropVertexIndex: (handle, key) => {
       const k = encoder.encode(key);
       const p = writeBytes(k);
+      let r: number;
 
       try {
-        ex.lnk_drop_vertex_index(handle, p, k.byteLength);
+        r = ex.lnk_drop_vertex_index(handle, p, k.byteLength);
       } finally {
         ex.lnk_dealloc(p, k.byteLength);
+      }
+
+      // -2 == the key backs a unique constraint; refuse (matches the TS core).
+      if (r === -2) {
+        throw new LenkeError(
+          `lenke: cannot drop the vertex index on '${key}' — it backs a unique constraint; drop the constraint first`,
+          { code: ErrorCode.InvalidGraphOp },
+        );
       }
     },
     dropEdgeIndex: (handle, key) => {
       const k = encoder.encode(key);
       const p = writeBytes(k);
+      let r: number;
 
       try {
-        ex.lnk_drop_edge_index(handle, p, k.byteLength);
+        r = ex.lnk_drop_edge_index(handle, p, k.byteLength);
       } finally {
         ex.lnk_dealloc(p, k.byteLength);
+      }
+
+      if (r === -2) {
+        throw new LenkeError(
+          `lenke: cannot drop the edge index on '${key}' — it backs a unique constraint; drop the constraint first`,
+          { code: ErrorCode.InvalidGraphOp },
+        );
       }
     },
     beginTransaction: (handle) => {

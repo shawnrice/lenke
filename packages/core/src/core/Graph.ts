@@ -1032,6 +1032,18 @@ export class Graph {
   };
 
   public dropVertexIndex = (key: string): void => {
+    // A unique constraint is index-backed; dropping its index would silently
+    // downgrade enforcement (or lose it), so refuse — drop the constraint first.
+    // (Byte-identical to the Rust core, which rejects the same.)
+    for (const keys of this.vertexUniqueConstraints.values()) {
+      if (keys.has(key)) {
+        throw new LenkeError(
+          `lenke: cannot drop the vertex index on '${key}' — it backs a unique constraint; drop the constraint first`,
+          { code: ErrorCode.InvalidGraphOp },
+        );
+      }
+    }
+
     this.vertexPropertyIndex.dropIndex(key);
   };
 
@@ -1044,6 +1056,16 @@ export class Graph {
   };
 
   public dropEdgeIndex = (key: string): void => {
+    // See dropVertexIndex: an edge unique constraint is index-backed, so refuse.
+    for (const keys of this.edgeUniqueConstraints.values()) {
+      if (keys.has(key)) {
+        throw new LenkeError(
+          `lenke: cannot drop the edge index on '${key}' — it backs a unique constraint; drop the constraint first`,
+          { code: ErrorCode.InvalidGraphOp },
+        );
+      }
+    }
+
     this.edgePropertyIndex.dropIndex(key);
   };
 

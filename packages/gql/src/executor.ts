@@ -1692,12 +1692,16 @@ const compileAggregate = (expr: FuncExpr): CompiledExpr => {
       // `sum` over DURATIONs folds via the same `dur + dur` (overflow throws);
       // `avg` over any temporal, and `sum` over a non-DURATION, are loud data
       // exceptions rather than a silent NaN → null. Mirrors the native engine.
+      // A temporal ANYWHERE in the group (not just the first row) makes the
+      // aggregate unrepresentable — a heterogeneous numeric+temporal column must
+      // throw, not silently coerce the temporal to `NaN`→`null`. Native faults
+      // per-value, so we scan for any temporal to stay byte-identical.
       case 'sum':
-        return values.length > 0 && isTemporal(values[0])
+        return values.some(isTemporal)
           ? temporalSum(values)
           : values.reduce<number>((s, v) => s + Number(v), 0);
       case 'avg':
-        if (values.length > 0 && isTemporal(values[0])) {
+        if (values.some(isTemporal)) {
           throw unsupportedTemporalAgg();
         }
 

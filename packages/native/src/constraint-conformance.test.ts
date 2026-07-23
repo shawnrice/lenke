@@ -106,6 +106,52 @@ suite('unique-constraint differential (TS vs native)', () => {
     expect(native).toEqual(ts);
   });
 
+  // Round 15: dropping the index that backs a unique constraint would downgrade
+  // enforcement to a scan (native) or silently lose it (TS). Both engines now
+  // refuse it identically; a plain index still drops, and enforcement survives.
+  test('dropping a unique-constraint-backing index is refused, identically', () => {
+    const tsGraph = tsDeserialize(SEED, 'ndjson', new Graph());
+    const nativeGraph = graphFromFormat(createFfiBackend(LIB), SEED, 'ndjson');
+    const engines: Array<{
+      g: {
+        createUniqueConstraint: (l: string, k: string) => void;
+        createEdgeUniqueConstraint: (t: string, k: string) => void;
+        createVertexIndex: (k: string) => void;
+        dropVertexIndex: (k: string) => void;
+        dropEdgeIndex: (k: string) => void;
+      };
+      run: (sql: string) => unknown;
+    }> = [
+      { g: tsGraph, run: (sql) => tsQuery(tsGraph, sql) },
+      { g: nativeGraph, run: (sql) => nativeGraph.query(sql) },
+    ];
+
+    for (const { g } of engines) {
+      g.createUniqueConstraint('Acct', 'email');
+      g.createEdgeUniqueConstraint('LINK', 'id');
+      g.createVertexIndex('age'); // plain, droppable
+    }
+
+    for (const { g } of engines) {
+      // Backing a unique constraint → E_INVALID_GRAPH_OP on both.
+      expect(outcome(() => g.dropVertexIndex('email'))).toEqual({ code: 'E_INVALID_GRAPH_OP' });
+      expect(outcome(() => g.dropEdgeIndex('id'))).toEqual({ code: 'E_INVALID_GRAPH_OP' });
+      // A plain index still drops.
+      expect(outcome(() => g.dropVertexIndex('age'))).toEqual({ ok: true });
+    }
+
+    // Enforcement survived the refused drop — a duplicate still violates, identically.
+    const dup = `INSERT (:Acct {email: 'x@x.io'})`;
+    const [ts, native] = engines.map(({ run }) =>
+      outcome(() => {
+        run(dup);
+        run(dup);
+      }),
+    );
+    expect(native).toEqual(ts);
+    expect(native).toEqual({ code: 'E_CONSTRAINT_VIOLATION' });
+  });
+
   test('_MERGE outcomes and final state agree across engines', () => {
     // Exercises every disposition + WHERE-gate + the no-constraint error, run on
     // both engines, comparing each outcome and the final graph byte-for-byte.
@@ -778,4 +824,29 @@ suite('graph-level invariant differential (TS vs native)', () => {
     expect(native).toEqual(ts);
     expect(ts).toEqual({ code: 'E_SYNTAX' });
   });
+});
+
+// Round 15: a temporal value ANYWHERE in a numeric aggregate makes it
+// unrepresentable — a heterogeneous numeric+temporal column must throw, not
+// silently coerce the temporal to null (native faulted per-value; TS only checked
+// the first row). Both engines now throw E_DATA_EXCEPTION identically.
+suite('temporal-in-aggregate differential (TS vs native)', () => {
+  const MIXED = [
+    '{"type":"node","id":"a","labels":["P"],"properties":{"k":5}}',
+    '{"type":"node","id":"b","labels":["P"],"properties":{"k":{"@date":"2020-01-01"}}}',
+  ].join('\n');
+
+  for (const agg of ['sum', 'avg']) {
+    test(`${agg}() over a mixed numeric+temporal column throws on both engines`, () => {
+      const tsGraph = tsDeserialize(MIXED, 'ndjson', new Graph());
+      const nativeGraph = graphFromFormat(createFfiBackend(LIB), MIXED, 'ndjson');
+      const q = `MATCH (n:P) RETURN ${agg}(n.k) AS v`;
+
+      const ts = outcome(() => tsQuery(tsGraph, q));
+      const native = outcome(() => nativeGraph.query(q));
+
+      expect(native).toEqual(ts);
+      expect(native).toEqual({ code: 'E_DATA_EXCEPTION' });
+    });
+  }
 });

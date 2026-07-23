@@ -640,10 +640,10 @@ pub unsafe extern "C" fn lnk_drop_vertex_index(
         return -1;
     }
     match std::str::from_utf8(std::slice::from_raw_parts(name_ptr, name_len)) {
-        Ok(name) => {
-            (*g).drop_vertex_index(name);
-            0
-        }
+        Ok(name) => match (*g).drop_vertex_index(name) {
+            Ok(()) => 0,
+            Err(_) => -2, // backs a unique constraint (InvalidGraphOp)
+        },
         Err(_) => -1,
     }
 }
@@ -662,10 +662,10 @@ pub unsafe extern "C" fn lnk_drop_edge_index(
         return -1;
     }
     match std::str::from_utf8(std::slice::from_raw_parts(name_ptr, name_len)) {
-        Ok(name) => {
-            (*g).drop_edge_index(name);
-            0
-        }
+        Ok(name) => match (*g).drop_edge_index(name) {
+            Ok(()) => 0,
+            Err(_) => -2, // backs a unique constraint (InvalidGraphOp)
+        },
         Err(_) => -1,
     }
 }

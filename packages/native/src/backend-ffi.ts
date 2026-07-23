@@ -490,12 +490,24 @@ export const createFfiBackend = (libPath: string): Backend => {
     dropVertexIndex: (handle, key) => {
       const k = encoder.encode(key);
 
-      symbols.lnk_drop_vertex_index(asPtr(handle), ptr(k), k.byteLength);
+      // -2 == the key backs a unique constraint; dropping it is refused so
+      // enforcement can't be silently downgraded (matches the TS core).
+      if (symbols.lnk_drop_vertex_index(asPtr(handle), ptr(k), k.byteLength) === -2) {
+        throw new LenkeError(
+          `lenke: cannot drop the vertex index on '${key}' — it backs a unique constraint; drop the constraint first`,
+          { code: ErrorCode.InvalidGraphOp },
+        );
+      }
     },
     dropEdgeIndex: (handle, key) => {
       const k = encoder.encode(key);
 
-      symbols.lnk_drop_edge_index(asPtr(handle), ptr(k), k.byteLength);
+      if (symbols.lnk_drop_edge_index(asPtr(handle), ptr(k), k.byteLength) === -2) {
+        throw new LenkeError(
+          `lenke: cannot drop the edge index on '${key}' — it backs a unique constraint; drop the constraint first`,
+          { code: ErrorCode.InvalidGraphOp },
+        );
+      }
     },
     beginTransaction: (handle) => {
       if (symbols.lnk_begin_tx(asPtr(handle)) !== 0) {

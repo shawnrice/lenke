@@ -1271,13 +1271,38 @@ impl Graph {
         );
         self.eidx.insert(key.to_string(), map);
     }
-    /// Drop a vertex index.
-    pub fn drop_vertex_index(&mut self, key: &str) {
+    /// Drop a vertex index. Rejected (`InvalidGraphOp`) if the key backs a unique
+    /// constraint — dropping it would downgrade enforcement to a scan (or, on the
+    /// TS twin, silently lose it); drop the constraint first. Idempotent otherwise.
+    pub fn drop_vertex_index(&mut self, key: &str) -> CodeResult<()> {
+        if self
+            .v_unique
+            .values()
+            .any(|keys| keys.iter().any(|k| k == key))
+        {
+            return Err(CodeError::new(
+                ErrorCode::InvalidGraphOp,
+                "cannot drop the vertex index; it backs a unique constraint — drop the constraint first",
+            ));
+        }
         self.vidx.remove(key);
+        Ok(())
     }
-    /// Drop an edge index.
-    pub fn drop_edge_index(&mut self, key: &str) {
+    /// Drop an edge index. Edge analogue of [`drop_vertex_index`](Self::drop_vertex_index):
+    /// rejected if the key backs an edge unique constraint.
+    pub fn drop_edge_index(&mut self, key: &str) -> CodeResult<()> {
+        if self
+            .e_unique
+            .values()
+            .any(|keys| keys.iter().any(|k| k == key))
+        {
+            return Err(CodeError::new(
+                ErrorCode::InvalidGraphOp,
+                "cannot drop the edge index; it backs a unique constraint — drop the constraint first",
+            ));
+        }
         self.eidx.remove(key);
+        Ok(())
     }
 
     pub fn vertex_indexed(&self, key: &str) -> bool {
