@@ -59,11 +59,13 @@ import {
   label,
   math,
   order,
+  Order,
   out,
   PageRank,
   pageRank,
   peerPressure,
   type Plan,
+  project,
   regex,
   sum,
   toArray,
@@ -517,6 +519,21 @@ const CORPUS: Case[] = [
     name: "V().has('name', eq('marko')).as('x').select('x').values('name')",
     plan: traversal(V(), has('name', eq('marko')), as_('x'), select('x'), values('name')),
     verdict: { kind: 'agree', expected: ['marko'] },
+  },
+  // `select(key)` on a Map traverser (a `project()` row) projects the entry — so
+  // `project(...).order().by(select('age'),desc).select('name')` sorts the rows
+  // rather than silently no-op'ing (an untagged sub-`select` used to drop every
+  // row). Persons by age desc: peter 35, josh 32, marko 29, vadas 27.
+  {
+    name: "project('name','age').order().by(select('age'),desc).select('name')",
+    plan: traversal(
+      V(),
+      hasLabel('PERSON'),
+      project('name', 'age').by('name').by('age'),
+      order().by(select('age'), Order.desc),
+      select('name'),
+    ),
+    verdict: { kind: 'agree', expected: ['peter', 'josh', 'marko', 'vadas'] },
   },
   {
     name: 'inject(NaN).count()  [unreachable literal → tsOnly]',

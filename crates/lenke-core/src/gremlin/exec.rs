@@ -2122,7 +2122,25 @@ fn apply(graph: &mut Graph, ctx: &mut Ctx, step: &Step, stream: Vec<Trav>) -> Ve
         Step::Select { labels, pop, bys } => {
             let mut next = Vec::new();
             for t in &stream {
-                let vals: Vec<Option<GVal>> = labels.iter().map(|l| t.recall(l, *pop)).collect();
+                // A label resolves against the path tags first; failing that, if the
+                // current value is a Map (a `project()`/`valueMap()` row), `select(k)`
+                // projects the entry at that key — TinkerPop's `Scoping` semantics, and
+                // the reason `project(...).order().by(select('k'))` sorts rather than
+                // silently no-op'ing (the sub-`select` ran on a fresh, untagged root
+                // traverser, so a tag-only lookup dropped every row). Both engines apply
+                // the same fallback, so results stay byte-identical.
+                let vals: Vec<Option<GVal>> = labels
+                    .iter()
+                    .map(|l| {
+                        t.recall(l, *pop).or_else(|| match &t.val {
+                            GVal::Map(entries) => entries
+                                .iter()
+                                .find(|(k, _)| matches!(k, GVal::Str(s) if s.as_ref() == l.as_str()))
+                                .map(|(_, v)| v.clone()),
+                            _ => None,
+                        })
+                    })
+                    .collect();
                 if vals.iter().any(Option::is_none) {
                     continue;
                 }

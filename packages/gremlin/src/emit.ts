@@ -109,8 +109,13 @@ const emitBy = (by: By): string => {
       return by.direction
         ? `.by(${emitLiteral(by.key)}, ${by.direction})`
         : `.by(${emitLiteral(by.key)})`;
+    case 'traversal': {
+      const sub = emitSubPlan(by.plan);
+
+      return by.direction ? `.by(${sub}, ${by.direction})` : `.by(${sub})`;
+    }
     default:
-      // traversal / token by()s — extend as the corpus grows.
+      // token / column by()s — extend as the corpus grows.
       throw new EmitUnsupported('unsupported', `by(${by.kind})`);
   }
 };
