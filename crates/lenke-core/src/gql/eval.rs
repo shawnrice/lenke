@@ -1962,7 +1962,10 @@ fn call_scalar(graph: &Graph, func: ScalarFn, args: &[Val]) -> Val {
         },
         ElementId => match a {
             Some(Val::Node(i)) => Val::Str(graph.vid.arc(*i)),
-            Some(Val::Edge(i)) => vstr(format!("e{i}")),
+            // The edge's external id — an explicit id (set at INSERT / loaded from
+            // NDJSON) shadows the canonical `e{index}`. Previously hardcoded to
+            // `e{i}`, which ignored an assigned id and diverged from `toNdjson`.
+            Some(Val::Edge(i)) => vstr(graph.edge_id(*i).into_owned()),
             _ => Val::Null,
         },
         // --- graph functions --- (label/key order is unspecified → sorted for
@@ -10111,6 +10114,32 @@ fn insert_vertex_with_id(
     graph.add_vertex(labels, props)
 }
 
+/// Insert an edge, using a string `id` property as its external identity — the
+/// edge analogue of [`insert_vertex_with_id`]. Edge ids are unique among edges; a
+/// duplicate faults (rolled back with the throwaway edge). A rollback removes the
+/// edge and its id overlay together (`remove_edge` drops `eid_fwd`/`eid_rev`), so
+/// `add_edge` + `set_edge_id` needs no separate undo.
+fn insert_edge_with_id(
+    graph: &mut Graph,
+    ctx: &Ctx,
+    from: u32,
+    to: u32,
+    etype: &str,
+    props: Vec<(String, Value)>,
+) -> u32 {
+    if let Some((_, Value::Str(id))) = props.iter().find(|(k, _)| k == "id") {
+        let id = id.clone();
+        if graph.edge_by_id(&id).is_some() {
+            ctx.set_fault(FAULT_ID_DUP);
+            return graph.add_edge(from, to, etype, props); // synth; rolled back by the fault
+        }
+        let ei = graph.add_edge(from, to, etype, props);
+        graph.set_edge_id(ei, &id);
+        return ei;
+    }
+    graph.add_edge(from, to, etype, props)
+}
+
 /// Create a node from a pattern, reusing an already-bound variable.
 fn ensure_node(graph: &mut Graph, ctx: &Ctx, binding: &mut Binding, node: &CNode) -> u32 {
     if let Some(slot) = node.var_slot {
@@ -10173,7 +10202,7 @@ fn run_insert(
             });
             ctx.refresh_ids(graph, plan);
             let eprops = eval_props(graph, ctx, &rel.props, &out);
-            let ei = graph.add_edge(from, to, &etype, eprops);
+            let ei = insert_edge_with_id(graph, ctx, from, to, &etype, eprops);
             // Note the edge for the commit-time edge-constraint check (unique /
             // required / type), mirroring `ensure_node`'s vertex handling.
             graph.tx_note_touched_edge(ei);
@@ -10447,12 +10476,15 @@ fn run_set(graph: &mut Graph, ctx: &Ctx, items: &[CSetItem], binding: &Binding) 
                     val_to_value(graph, &eval(&env, value))
                 };
                 match el {
-                    // A node keyed by a string `id` has that id as its identity,
+                    // An element keyed by a string `id` has that id as its identity,
                     // fixed at creation — re-keying it would break `element_id` /
                     // round-trip stability, so reject the SET (the fault rolls the
                     // statement back). A numeric/absent `id` is an ordinary
                     // (possibly unique-constrained) property and stays SET-able.
                     Val::Node(vi) if key == "id" && graph.vertex_id_is_identity(vi) => {
+                        ctx.set_fault(FAULT_ID_IMMUTABLE);
+                    }
+                    Val::Edge(ei) if key == "id" && graph.edge_id_is_identity(ei) => {
                         ctx.set_fault(FAULT_ID_IMMUTABLE);
                     }
                     // Apply eagerly, then note the vertex — a SET that nulls a

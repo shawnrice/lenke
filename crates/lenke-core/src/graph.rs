@@ -3323,6 +3323,15 @@ impl Graph {
         )
     }
 
+    /// The edge analogue of [`Graph::vertex_id_is_identity`]: whether edge `ei`'s
+    /// `id` property IS its external id (a string `id` set at INSERT), and so fixed.
+    pub fn edge_id_is_identity(&self, ei: u32) -> bool {
+        matches!(
+            self.edge_props.value(ei as usize, "id", &self.strs),
+            Value::Str(s) if s.as_ref() == self.edge_id(ei).as_ref()
+        )
+    }
+
     pub fn set_vertex_prop(&mut self, vi: u32, key: &str, v: Value) {
         if self.tx_active() {
             let prior = if self.props.is_present(vi as usize, key) {

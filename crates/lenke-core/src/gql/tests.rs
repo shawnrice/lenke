@@ -2495,6 +2495,59 @@ fn string_id_property_is_the_element_identity() {
     );
 }
 
+/// The edge analogue: a string `id` on an INSERT edge is its identity —
+/// `element_id(r)` equals it, it's unique among edges, and SET on it is rejected.
+/// A numeric edge id is an ordinary, SET-able property. Byte-identical to TS.
+#[test]
+fn string_id_property_is_the_edge_identity() {
+    let mut g = ndjson::decode(
+        &[
+            r#"{"type":"node","id":"a","labels":["P"],"properties":{"id":"a"}}"#,
+            r#"{"type":"node","id":"b","labels":["P"],"properties":{"id":"b"}}"#,
+            r#"{"type":"node","id":"c","labels":["P"],"properties":{"id":"c"}}"#,
+        ]
+        .join("\n"),
+    )
+    .unwrap();
+    rows(
+        &mut g,
+        "MATCH (a:P {id: 'a'}), (b:P {id: 'b'}) INSERT (a)-[:R {id: 'e1', w: 5}]->(b)",
+    );
+
+    // element_id(r) == the domain id (not the synthetic `e{index}`), `id` readable.
+    assert_eq!(
+        rows(
+            &mut g,
+            "MATCH ()-[r:R]->() RETURN element_id(r) AS e, r.id AS p"
+        ),
+        vec![vec![s("e1"), s("e1")]]
+    );
+    // toNdjson uses the domain edge id.
+    let dumped = ndjson::encode(&g);
+    assert!(dumped.contains(r#""type":"edge","id":"e1""#));
+
+    // A duplicate edge id is rejected (edge ids are unique).
+    let dup = parse("MATCH (a:P {id: 'a'}), (c:P {id: 'c'}) INSERT (a)-[:R {id: 'e1'}]->(c)")
+        .unwrap()
+        .execute(&mut g, &Params::new())
+        .unwrap_err();
+    assert_eq!(dup.code, crate::error_codes::ErrorCode::ConstraintViolation);
+
+    // SET on the string-identity edge id is rejected.
+    let set_id = parse("MATCH ()-[r:R {id: 'e1'}]->() SET r.id = 'e2'")
+        .unwrap()
+        .execute(&mut g, &Params::new())
+        .unwrap_err();
+    assert_eq!(set_id.code, crate::error_codes::ErrorCode::InvalidGraphOp);
+
+    // A numeric edge id is an ordinary, SET-able property.
+    rows(
+        &mut g,
+        "MATCH (b:P {id: 'b'}), (c:P {id: 'c'}) INSERT (b)-[:R {id: 99}]->(c)",
+    );
+    rows(&mut g, "MATCH ()-[r:R {id: 99}]->() SET r.id = 100"); // allowed
+}
+
 /// Edge `_MERGE` with endpoints bound by a preceding MATCH — `MATCH (a), (b)
 /// _MERGE (a)-[:R]->(b)`, the natural way to upsert an edge between two known
 /// vertices. Regression: `resolve_merge_endpoint` ignored the binding and re-

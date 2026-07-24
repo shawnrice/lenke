@@ -4100,6 +4100,35 @@ const insertVertexWithId = (
   return graph.addVertex({ labels: [...labels], properties });
 };
 
+/**
+ * Insert an edge, using a string `id` property as its external identity — the edge
+ * analogue of {@link insertVertexWithId}. Edge ids are unique among edges; a
+ * duplicate string id throws. Mirrors native `insert_edge_with_id`.
+ */
+const insertEdgeWithId = (
+  graph: Graph,
+  from: Vertex,
+  to: Vertex,
+  labels: readonly string[],
+  properties: Record<string, unknown>,
+): Edge => {
+  const { id } = properties;
+
+  if (typeof id === 'string') {
+    if (graph.getEdgeById(id) !== null) {
+      throw new LenkeError(
+        `an element with id '${id}' already exists — a string \`id\` property is the ` +
+          `element's unique identity; use _MERGE to upsert, or a fresh id`,
+        { code: ErrorCode.ConstraintViolation },
+      );
+    }
+
+    return graph.addEdge({ id, from, to, labels: [...labels], properties });
+  }
+
+  return graph.addEdge({ from, to, labels: [...labels], properties });
+};
+
 /** Create a node from a pattern, reusing an already-bound variable. */
 const ensureNode = (
   graph: Graph,
@@ -4137,12 +4166,13 @@ const runInsert = (graph: Graph, clause: CInsert, binding: Binding, params: Para
     for (const { rel, node } of pattern.segments) {
       const next = ensureNode(graph, out, node, params);
       const [from, to] = rel.direction === 'in' ? [next, prev] : [prev, next];
-      const edge = graph.addEdge({
+      const edge = insertEdgeWithId(
+        graph,
         from,
         to,
-        labels: [...rel.labels],
-        properties: evalProps(rel.props, out, params, graph),
-      });
+        rel.labels,
+        evalProps(rel.props, out, params, graph),
+      );
 
       if (rel.variable) {
         out.set(rel.variable, edge);
@@ -4418,12 +4448,12 @@ const runSet = (graph: Graph, clause: CSet, binding: Binding, params: Params): v
       } else {
         graph.addLabelToVertex(item.label, el);
       }
-    } else if (item.key === 'id' && !isEdge(el) && el.id === el.properties.id) {
-      // A node keyed by a string `id` has that id as its identity (external id ===
-      // the `id` property), fixed at creation — re-keying it would break
+    } else if (item.key === 'id' && el.id === el.properties.id) {
+      // An element keyed by a string `id` has that id as its identity (external id
+      // === the `id` property), fixed at creation — re-keying it would break
       // `element_id` / round-trip stability, so reject the SET. A numeric/absent
       // `id` is an ordinary (possibly unique-constrained) property and stays
-      // SET-able. Mirrors native `vertex_id_is_identity`.
+      // SET-able. Mirrors native `vertex_id_is_identity` / `edge_id_is_identity`.
       throw new LenkeError(
         "cannot SET `id`: a string `id` is the element's identity and is fixed at " +
           'creation — insert a new element with the new id instead',

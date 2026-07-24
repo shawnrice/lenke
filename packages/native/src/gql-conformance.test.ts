@@ -713,6 +713,42 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     expect(code(() => tsQuery(ts, 'MATCH (n:Q {id: 7}) SET n.id = 8'))).toBe('ok');
   });
 
+  // --- edges have unique ids too: a string edge `id` is its identity (element_id
+  // === r.id, round-trips), unique, SET-rejected; numeric stays an ordinary prop.
+  // Must be byte-identical. --------------------------------------------------
+  test('string id property is the edge identity (TS vs native)', () => {
+    const seed = [
+      "INSERT (:P {id: 'a'}), (:P {id: 'b'}), (:P {id: 'c'})",
+      "MATCH (a:P {id: 'a'}), (b:P {id: 'b'}) INSERT (a)-[:R {id: 'e1', w: 5}]->(b)",
+    ];
+    const nat = graphFromFormat(backend, '', 'ndjson');
+    const ts = tsDeserialize('', 'ndjson', new Graph());
+
+    for (const q of seed) {
+      nat.query(q);
+      tsQuery(ts, q);
+    }
+
+    // element_id(r) === r.id, identical either side.
+    const q = 'MATCH ()-[r:R]->() RETURN element_id(r) AS e, r.id AS p';
+    expect(JSON.stringify(nat.query(q)), q).toBe(JSON.stringify(tsQuery(ts, q)));
+
+    const code = (fn: () => void): unknown => {
+      try {
+        fn();
+      } catch (e) {
+        return (e as { code?: unknown }).code;
+      }
+
+      return 'ok';
+    };
+    // dup edge id, SET on identity edge id → same coded rejection both engines.
+    const dupQ = "MATCH (a:P {id: 'a'}), (c:P {id: 'c'}) INSERT (a)-[:R {id: 'e1'}]->(c)";
+    expect(code(() => nat.query(dupQ))).toBe(code(() => tsQuery(ts, dupQ)));
+    const setQ = "MATCH ()-[r:R {id: 'e1'}]->() SET r.id = 'e2'";
+    expect(code(() => nat.query(setQ))).toBe(code(() => tsQuery(ts, setQ)));
+  });
+
   // --- fixed-length multi-hop with a per-hop WHERE + LIMIT: native routes this to
   // the scalar depth-first driver (filters during traversal, stops at the LIMIT)
   // instead of the breadth-first vectorized path (which materializes the whole
