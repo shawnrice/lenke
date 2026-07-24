@@ -309,8 +309,10 @@ describe('hardening: variable-length segment restrictions', () => {
   const g = createTestSocialGraph();
 
   test('rejects a bound edge variable on a quantified segment', () => {
+    // Native rejects this at parse time as a grammar restriction (E_SYNTAX); the
+    // TS engine matches that code so both engines fault byte-identically.
     const e = thrown(() => query(g, `MATCH (a)-[r:KNOWS]->*(b) RETURN b`));
-    expect(hasErrorCode(e, ErrorCode.Unsupported)).toBe(true);
+    expect(hasErrorCode(e, ErrorCode.Syntax)).toBe(true);
   });
 
   test('rejects a per-edge property predicate on a quantified segment', () => {

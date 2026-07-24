@@ -2639,9 +2639,11 @@ const compileRel = (rel: RelPattern): CRel => {
   // results), reject at compile time. ISO would bind a group variable / list of
   // edges here — not yet implemented.
   if (rel.quantifier && (rel.variable !== undefined || rel.properties?.length || rel.where)) {
+    // Native rejects this as a grammar restriction at parse time (E_SYNTAX); match
+    // that code so the two engines fault byte-identically on the same query.
     throw new LenkeError(
       'A variable-length relationship cannot bind an edge variable or carry a per-edge predicate (not yet supported)',
-      { code: ErrorCode.Unsupported },
+      { code: ErrorCode.Syntax },
     );
   }
 
