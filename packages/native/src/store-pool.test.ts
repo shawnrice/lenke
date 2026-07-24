@@ -18,6 +18,7 @@ const fakeStore = () => {
   const backend: Backend = {
     abiVersion: 10,
     graphFromNdjson: () => 1,
+    graphClone: () => 1,
     graphFree: () => {},
     vertexCount: () => 0,
     edgeCount: () => 0,

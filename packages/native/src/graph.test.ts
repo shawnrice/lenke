@@ -11,6 +11,7 @@ const countingBackend = (): { backend: Backend; freed: GraphHandle[] } => {
   const backend: Backend = {
     abiVersion: 10,
     graphFromNdjson: () => 1,
+    graphClone: () => 1,
     graphFree: (handle) => {
       freed.push(handle);
     },
