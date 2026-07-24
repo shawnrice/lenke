@@ -193,6 +193,8 @@ const FAULT_DATE_OVERFLOW: u8 = 12;
 const FAULT_TEMPORAL_AGG: u8 = 13;
 const FAULT_NONNUMERIC_AGG: u8 = 14;
 const FAULT_INTERMEDIATE: u8 = 15;
+const FAULT_ID_DUP: u8 = 16;
+const FAULT_ID_IMMUTABLE: u8 = 17;
 
 /// Per-expansion cap on trail-traversal steps; a guard against exponential blowup.
 const TRAIL_BUDGET: u64 = 1_000_000;
@@ -286,6 +288,16 @@ impl Ctx<'_> {
                 ErrorCode::ResourceExhausted,
                 "multi-hop pattern materialized too many intermediate rows; add selective \
                  per-hop predicates, anchor an endpoint, or shorten the chain",
+            )),
+            FAULT_ID_DUP => Err(CodeError::new(
+                ErrorCode::ConstraintViolation,
+                "an element with this id already exists — a string `id` property is the \
+                 element's unique identity; use _MERGE to upsert, or a fresh id",
+            )),
+            FAULT_ID_IMMUTABLE => Err(CodeError::new(
+                ErrorCode::InvalidGraphOp,
+                "cannot SET `id`: a string `id` is the element's identity and is fixed at \
+                 creation — insert a new element with the new id instead",
             )),
             FAULT_BAD_LABEL => Err(CodeError::new(
                 ErrorCode::InvalidGraphOp,
@@ -10073,6 +10085,32 @@ fn eval_props(
         .collect()
 }
 
+/// Insert a vertex, using a string `id` property as the element's external id.
+///
+/// A domain `id` (`INSERT (:P {id: 'alice'})`) becomes the engine's identity — so
+/// `element_id(n)` equals it and `toNdjson` round-trips by domain identity instead
+/// of a synthetic `_n{k}` — while `id` is still stored as an ordinary property
+/// (`RETURN n.id` works, exactly as an NDJSON top-level id + `properties.id` do).
+/// A non-string or absent id mints a synthetic one. A duplicate string id faults
+/// (ids are unique); the fault rolls the statement back, so the throwaway synthetic
+/// vertex created to keep evaluation well-formed leaves no trace.
+fn insert_vertex_with_id(
+    graph: &mut Graph,
+    ctx: &Ctx,
+    labels: &[String],
+    props: Vec<(String, Value)>,
+) -> u32 {
+    if let Some((_, Value::Str(id))) = props.iter().find(|(k, _)| k == "id") {
+        let id = id.clone();
+        if graph.vertex_by_id(&id).is_some() {
+            ctx.set_fault(FAULT_ID_DUP);
+            return graph.add_vertex(labels, props); // synth id; rolled back by the fault
+        }
+        return graph.add_vertex_with_id(&id, labels, props);
+    }
+    graph.add_vertex(labels, props)
+}
+
 /// Create a node from a pattern, reusing an already-bound variable.
 fn ensure_node(graph: &mut Graph, ctx: &Ctx, binding: &mut Binding, node: &CNode) -> u32 {
     if let Some(slot) = node.var_slot {
@@ -10095,7 +10133,7 @@ fn ensure_node(graph: &mut Graph, ctx: &Ctx, binding: &mut Binding, node: &CNode
     // key — is judged against the fully-staged graph, and a violation rolls the
     // whole statement back (per-statement atomicity) instead of leaving a partial
     // write. `_MERGE` reconciles instead; see docs/design/gql-extensions.md §3.
-    let vi = graph.add_vertex(&labels, props);
+    let vi = insert_vertex_with_id(graph, ctx, &labels, props);
     graph.tx_note_touched(vi);
     if let Some(slot) = node.var_slot {
         binding.set(slot, Val::Node(vi));
@@ -10409,6 +10447,14 @@ fn run_set(graph: &mut Graph, ctx: &Ctx, items: &[CSetItem], binding: &Binding) 
                     val_to_value(graph, &eval(&env, value))
                 };
                 match el {
+                    // A node keyed by a string `id` has that id as its identity,
+                    // fixed at creation — re-keying it would break `element_id` /
+                    // round-trip stability, so reject the SET (the fault rolls the
+                    // statement back). A numeric/absent `id` is an ordinary
+                    // (possibly unique-constrained) property and stays SET-able.
+                    Val::Node(vi) if key == "id" && graph.vertex_id_is_identity(vi) => {
+                        ctx.set_fault(FAULT_ID_IMMUTABLE);
+                    }
                     // Apply eagerly, then note the vertex — a SET that nulls a
                     // required key, breaks a type constraint, or collides under a
                     // unique constraint surfaces as ConstraintViolation at the

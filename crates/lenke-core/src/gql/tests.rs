@@ -2435,6 +2435,66 @@ fn edge_constraint_deferred_within_transaction() {
 // `_MERGE` keyed upsert (node form). Mirrors the TS `merge.test.ts` so the two
 // engines stay byte-identical. See docs/design/gql-extensions.md §2.
 
+/// A string `id` property in an INSERT becomes the element's external identity —
+/// so `element_id(n)` equals it and `toNdjson` round-trips by domain identity
+/// instead of a synthetic `_n{k}`, while `id` is still a stored property. A numeric
+/// `id` stays an ordinary (SET-able) property; a duplicate string id, or a SET on a
+/// string-identity id, is rejected. Byte-identical to the TS engine.
+#[test]
+fn string_id_property_is_the_element_identity() {
+    let mut g = ndjson::decode("").unwrap();
+    rows(&mut g, "INSERT (:P {id: 'alice', name: 'A'})");
+
+    // element_id == the domain id, and `id` is still a readable property.
+    assert_eq!(
+        rows(
+            &mut g,
+            "MATCH (n:P {id: 'alice'}) RETURN element_id(n) AS e, n.id AS p"
+        ),
+        vec![vec![s("alice"), s("alice")]]
+    );
+
+    // The whole point: toNdjson emits the domain id as the top-level id (not a
+    // synthetic `_n{k}`), so an independently-built graph round-trips by identity.
+    let dumped = ndjson::encode(&g);
+    assert!(dumped.contains(r#""id":"alice""#));
+    assert!(!dumped.contains("_n0"));
+    let mut reloaded = ndjson::decode(&dumped).unwrap();
+    assert_eq!(
+        rows(
+            &mut reloaded,
+            "MATCH (n:P {id: 'alice'}) RETURN element_id(n) AS e"
+        ),
+        vec![vec![s("alice")]]
+    );
+
+    // A duplicate string id is rejected (ids are unique).
+    let dup = parse("INSERT (:P {id: 'alice'})")
+        .unwrap()
+        .execute(&mut g, &Params::new())
+        .unwrap_err();
+    assert_eq!(dup.code, crate::error_codes::ErrorCode::ConstraintViolation);
+
+    // SET on the string-identity id is rejected — identity is fixed at creation.
+    let set_id = parse("MATCH (n:P {id: 'alice'}) SET n.id = 'bob'")
+        .unwrap()
+        .execute(&mut g, &Params::new())
+        .unwrap_err();
+    assert_eq!(set_id.code, crate::error_codes::ErrorCode::InvalidGraphOp);
+
+    // A numeric id is an ordinary property: not the identity, and SET-able.
+    rows(&mut g, "INSERT (:Q {id: 7})");
+    assert_ne!(
+        rows(&mut g, "MATCH (n:Q {id: 7}) RETURN element_id(n) AS e"),
+        vec![vec![s("7")]] // external id is synthetic, not "7"
+    );
+    rows(&mut g, "MATCH (n:Q {id: 7}) SET n.id = 8"); // allowed
+    assert_eq!(
+        rows(&mut g, "MATCH (n:Q) RETURN n.id AS i"),
+        vec![vec![n(8.0)]]
+    );
+}
+
 /// Edge `_MERGE` with endpoints bound by a preceding MATCH — `MATCH (a), (b)
 /// _MERGE (a)-[:R]->(b)`, the natural way to upsert an edge between two known
 /// vertices. Regression: `resolve_merge_endpoint` ignored the binding and re-

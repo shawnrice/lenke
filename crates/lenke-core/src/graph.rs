@@ -3312,6 +3312,17 @@ impl Graph {
         ei
     }
 
+    /// Whether vertex `vi`'s `id` property IS its identity — i.e. a string `id`
+    /// equal to the external id (as set by `INSERT (:P {id: 'x'})`). A numeric or
+    /// absent `id`, or an external id that diverges from it, is an ordinary
+    /// property and remains SET-able; a matching string `id` is fixed.
+    pub fn vertex_id_is_identity(&self, vi: u32) -> bool {
+        matches!(
+            self.props.value(vi as usize, "id", &self.strs),
+            Value::Str(s) if s.as_ref() == self.vid.text(vi)
+        )
+    }
+
     pub fn set_vertex_prop(&mut self, vi: u32, key: &str, v: Value) {
         if self.tx_active() {
             let prior = if self.props.is_present(vi as usize, key) {

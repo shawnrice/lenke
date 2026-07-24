@@ -4071,6 +4071,35 @@ const evalProps = (
   return out;
 };
 
+/**
+ * Insert a vertex, using a string `id` property as the element's identity — so
+ * `element_id(n)` equals it and serialization round-trips by domain identity
+ * instead of a random synthetic id, while `id` is still stored as an ordinary
+ * property. A non-string or absent id mints a synthetic one; a duplicate string id
+ * throws (ids are unique). Mirrors the native `insert_vertex_with_id`.
+ */
+const insertVertexWithId = (
+  graph: Graph,
+  labels: readonly string[],
+  properties: Record<string, unknown>,
+): Vertex => {
+  const { id } = properties;
+
+  if (typeof id === 'string') {
+    if (graph.getVertexById(id) !== null) {
+      throw new LenkeError(
+        `an element with id '${id}' already exists — a string \`id\` property is the ` +
+          `element's unique identity; use _MERGE to upsert, or a fresh id`,
+        { code: ErrorCode.ConstraintViolation },
+      );
+    }
+
+    return graph.addVertex({ id, labels: [...labels], properties });
+  }
+
+  return graph.addVertex({ labels: [...labels], properties });
+};
+
 /** Create a node from a pattern, reusing an already-bound variable. */
 const ensureNode = (
   graph: Graph,
@@ -4090,7 +4119,7 @@ const ensureNode = (
   // matches the native engine's R-TX deferred-check semantics; an eager check here
   // wrongly rejected `INSERT` + later `DELETE` of the dup within one transaction
   // (round-12 F3). `_MERGE` still reconciles instead (docs/design/gql-extensions.md §3).
-  const vertex = graph.addVertex({ labels: [...node.labels], properties });
+  const vertex = insertVertexWithId(graph, node.labels, properties);
 
   if (node.variable) {
     binding.set(node.variable, vertex);
@@ -4326,7 +4355,7 @@ const runMerge = (graph: Graph, clause: CMerge, binding: Binding, params: Params
   let vertex: Vertex;
 
   if (existing === undefined) {
-    vertex = graph.addVertex({ labels: [...node.labels], properties });
+    vertex = insertVertexWithId(graph, node.labels, properties);
 
     if (node.variable) {
       out.set(node.variable, vertex);
@@ -4389,6 +4418,17 @@ const runSet = (graph: Graph, clause: CSet, binding: Binding, params: Params): v
       } else {
         graph.addLabelToVertex(item.label, el);
       }
+    } else if (item.key === 'id' && !isEdge(el) && el.id === el.properties.id) {
+      // A node keyed by a string `id` has that id as its identity (external id ===
+      // the `id` property), fixed at creation — re-keying it would break
+      // `element_id` / round-trip stability, so reject the SET. A numeric/absent
+      // `id` is an ordinary (possibly unique-constrained) property and stays
+      // SET-able. Mirrors native `vertex_id_is_identity`.
+      throw new LenkeError(
+        "cannot SET `id`: a string `id` is the element's identity and is fixed at " +
+          'creation — insert a new element with the new id instead',
+        { code: ErrorCode.InvalidGraphOp },
+      );
     } else {
       const value = item.value({ binding, params, graph });
 

@@ -669,6 +669,50 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     }
   });
 
+  // --- string `id` as element identity: `INSERT (:P {id: 'x'})` makes 'x' the
+  // element id (so element_id === n.id and it round-trips), a numeric id stays an
+  // ordinary property, dup/SET-id are rejected. Must be byte-identical. ---------
+  test('string id property is the element identity (TS vs native)', () => {
+    const nat = graphFromFormat(backend, '', 'ndjson');
+    const ts = tsDeserialize('', 'ndjson', new Graph());
+
+    for (const q of [
+      "INSERT (:P {id: 'alice', name: 'A'})",
+      'INSERT (:Q {id: 7})', // numeric → ordinary property
+    ]) {
+      nat.query(q);
+      tsQuery(ts, q);
+    }
+
+    // element_id === the domain id, on both engines.
+    for (const q of [
+      "MATCH (n:P {id: 'alice'}) RETURN element_id(n) AS e, n.id AS p",
+      'MATCH (n:Q {id: 7}) RETURN n.id AS i',
+    ]) {
+      expect(JSON.stringify(nat.query(q)), q).toBe(JSON.stringify(tsQuery(ts, q)));
+    }
+
+    // Both reject a duplicate string id and a SET on the string-identity id, and
+    // both allow SET on the numeric id — same coded outcome either side.
+    const code = (fn: () => void): unknown => {
+      try {
+        fn();
+      } catch (e) {
+        return (e as { code?: unknown }).code;
+      }
+
+      return 'ok';
+    };
+    expect(code(() => nat.query("INSERT (:P {id: 'alice'})"))).toBe(
+      code(() => tsQuery(ts, "INSERT (:P {id: 'alice'})")),
+    );
+    expect(code(() => nat.query("MATCH (n:P {id: 'alice'}) SET n.id = 'bob'"))).toBe(
+      code(() => tsQuery(ts, "MATCH (n:P {id: 'alice'}) SET n.id = 'bob'")),
+    );
+    expect(code(() => nat.query('MATCH (n:Q {id: 7}) SET n.id = 8'))).toBe('ok');
+    expect(code(() => tsQuery(ts, 'MATCH (n:Q {id: 7}) SET n.id = 8'))).toBe('ok');
+  });
+
   // --- fixed-length multi-hop with a per-hop WHERE + LIMIT: native routes this to
   // the scalar depth-first driver (filters during traversal, stops at the LIMIT)
   // instead of the breadth-first vectorized path (which materializes the whole
