@@ -3029,60 +3029,94 @@ impl Graph {
     /// every vertex touched during the transaction, now that all writes are
     /// staged. A vertex added then removed within the transaction is skipped.
     fn run_deferred_checks(&self) -> Result<(), TxCommitError> {
-        for &vi in &self.tx_touched {
-            if !self.is_vertex_live(vi) {
-                continue; // added then removed within the transaction — nothing to check
-            }
-            let labels: Vec<String> = self.vlabels[vi as usize]
-                .iter()
-                .map(|&l| self.labels.text(l).to_string())
-                .collect();
-            let props = self.vertex_props(vi);
-            if self.missing_required(&labels, &props).is_some() {
-                return Err(TxCommitError::Required);
-            }
-            if self.type_violation(&labels, &props).is_some() {
-                return Err(TxCommitError::Type);
-            }
-            if self.unique_conflict(&labels, &props, Some(vi)).is_some() {
-                return Err(TxCommitError::Unique);
-            }
-            // Cardinality: a vertex is touched when added OR when an incident edge
-            // is added/removed (either endpoint's degree changed). This commit is
-            // where BOTH bounds land — max (also caught eagerly for a direct
-            // addEdge on the TS side) and min (commit-time only, since a single
-            // write can't satisfy a positive lower bound).
-            if self.cardinality_violation(vi) {
-                return Err(TxCommitError::Cardinality);
-            }
-            // Custom validators (a definite-false predicate, or an evaluation fault
-            // like an unknown function) — surfaced with their own carried error.
-            if let Err(e) = self.check_validators_vertex(vi) {
-                return Err(TxCommitError::Validator(e));
+        // `tx_touched` collects one entry PER write (a K-clause `SET` on a vertex
+        // pushes it K times), and each per-element check below hydrates the whole
+        // property row — O(row width). So a naive pass is O(touches × width), i.e.
+        // quadratic in the number of properties a wide `SET` writes. Two guards keep
+        // it linear without changing observable behaviour:
+        //   1. Skip a side entirely when no constraint of a kind it checks is
+        //      declared — the loop body could never return `Err`, so skipping it is
+        //      behaviour-identical (and the common no-constraint write pays nothing).
+        //   2. De-duplicate touched ids in FIRST-SEEN order — a vertex only needs
+        //      rechecking once, and keeping first-seen order means the *first*
+        //      violation encountered (hence the returned error) is unchanged.
+        // Validators live in `v_validators` keyed by label OR edge type, so both the
+        // vertex and edge passes gate on it.
+        let check_vertices = !self.v_required.is_empty()
+            || !self.v_type.is_empty()
+            || !self.v_unique.is_empty()
+            || !self.v_cardinality.is_empty()
+            || !self.v_validators.is_empty();
+        if check_vertices {
+            let mut seen = HashSet::with_capacity(self.tx_touched.len());
+            for &vi in &self.tx_touched {
+                if !seen.insert(vi) {
+                    continue; // already checked this vertex in this commit
+                }
+                if !self.is_vertex_live(vi) {
+                    continue; // added then removed within the transaction — nothing to check
+                }
+                let labels: Vec<String> = self.vlabels[vi as usize]
+                    .iter()
+                    .map(|&l| self.labels.text(l).to_string())
+                    .collect();
+                let props = self.vertex_props(vi);
+                if self.missing_required(&labels, &props).is_some() {
+                    return Err(TxCommitError::Required);
+                }
+                if self.type_violation(&labels, &props).is_some() {
+                    return Err(TxCommitError::Type);
+                }
+                if self.unique_conflict(&labels, &props, Some(vi)).is_some() {
+                    return Err(TxCommitError::Unique);
+                }
+                // Cardinality: a vertex is touched when added OR when an incident edge
+                // is added/removed (either endpoint's degree changed). This commit is
+                // where BOTH bounds land — max (also caught eagerly for a direct
+                // addEdge on the TS side) and min (commit-time only, since a single
+                // write can't satisfy a positive lower bound).
+                if self.cardinality_violation(vi) {
+                    return Err(TxCommitError::Cardinality);
+                }
+                // Custom validators (a definite-false predicate, or an evaluation fault
+                // like an unknown function) — surfaced with their own carried error.
+                if let Err(e) = self.check_validators_vertex(vi) {
+                    return Err(TxCommitError::Validator(e));
+                }
             }
         }
         // Edge constraints: re-check every edge touched during the transaction
         // against the fully-staged graph (edge analogue of the vertex loop above).
-        for &ei in &self.tx_touched_edges {
-            if !self.is_edge_live(ei) {
-                continue; // added then removed within the transaction — nothing to check
-            }
-            let etypes = self.edge_type_names(ei);
-            let props = self.edge_props_of(ei);
-            if self.edge_missing_required(&etypes, &props).is_some() {
-                return Err(TxCommitError::Required);
-            }
-            if self.edge_type_violation(&etypes, &props).is_some() {
-                return Err(TxCommitError::Type);
-            }
-            if self
-                .edge_unique_conflict(&etypes, &props, Some(ei))
-                .is_some()
-            {
-                return Err(TxCommitError::Unique);
-            }
-            if let Err(e) = self.check_validators_edge(ei) {
-                return Err(TxCommitError::Validator(e));
+        let check_edges = !self.e_required.is_empty()
+            || !self.e_type_constraints.is_empty()
+            || !self.e_unique.is_empty()
+            || !self.v_validators.is_empty();
+        if check_edges {
+            let mut seen = HashSet::with_capacity(self.tx_touched_edges.len());
+            for &ei in &self.tx_touched_edges {
+                if !seen.insert(ei) {
+                    continue; // already checked this edge in this commit
+                }
+                if !self.is_edge_live(ei) {
+                    continue; // added then removed within the transaction — nothing to check
+                }
+                let etypes = self.edge_type_names(ei);
+                let props = self.edge_props_of(ei);
+                if self.edge_missing_required(&etypes, &props).is_some() {
+                    return Err(TxCommitError::Required);
+                }
+                if self.edge_type_violation(&etypes, &props).is_some() {
+                    return Err(TxCommitError::Type);
+                }
+                if self
+                    .edge_unique_conflict(&etypes, &props, Some(ei))
+                    .is_some()
+                {
+                    return Err(TxCommitError::Unique);
+                }
+                if let Err(e) = self.check_validators_edge(ei) {
+                    return Err(TxCommitError::Validator(e));
+                }
             }
         }
         Ok(())

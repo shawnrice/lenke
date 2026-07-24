@@ -2181,6 +2181,46 @@ fn unique_constraint_enforced_on_insert_and_set() {
 }
 
 #[test]
+fn wide_multi_clause_set_still_defers_constraint_checks() {
+    // A K-clause `SET` pushes its vertex onto the touched list K times; the
+    // commit-time recheck de-duplicates it (checking each touched element once
+    // rather than once per clause) and skips the recheck entirely when no
+    // constraint of a kind it checks is declared. Neither shortcut may change
+    // observable behaviour — this pins that:
+    //
+    //  (a) with NO constraints, a wide multi-property SET commits and every value
+    //      is readable (the skipped recheck loop didn't drop the write); and
+    //  (b) with a UNIQUE constraint, the same wide SET whose LAST clause collides
+    //      still faults (de-dup must not swallow the check).
+    let mut g = modern();
+    rows(&mut g, "INSERT (:Acct {email: 'a@x.io', name: 'A'})");
+    rows(&mut g, "INSERT (:Acct {email: 'b@x.io', name: 'B'})");
+
+    // (a) No constraints: set 10 fresh properties in one statement.
+    let sets: Vec<String> = (0..10).map(|k| format!("n.f{k} = {k}")).collect();
+    rows(
+        &mut g,
+        &format!("MATCH (n:Acct {{email: 'b@x.io'}}) SET {}", sets.join(", ")),
+    );
+    let vals = rows(&mut g, "MATCH (n:Acct {email: 'b@x.io'}) RETURN n.f0, n.f9");
+    assert_eq!(vals, vec![vec![n(0.0), n(9.0)]]);
+
+    // (b) Declare the constraint, then a wide SET whose final clause collides on
+    // the constrained key must still surface ConstraintViolation.
+    g.create_unique_constraint("Acct", "email").unwrap();
+    let mut sets: Vec<String> = (0..10).map(|k| format!("n.g{k} = {k}")).collect();
+    sets.push("n.email = 'a@x.io'".to_string());
+    let err = parse(&format!(
+        "MATCH (n:Acct {{email: 'b@x.io'}}) SET {}",
+        sets.join(", ")
+    ))
+    .unwrap()
+    .execute(&mut g, &Params::new())
+    .unwrap_err();
+    assert_eq!(err.code, crate::error_codes::ErrorCode::ConstraintViolation);
+}
+
+#[test]
 fn unique_constraint_null_values_are_exempt() {
     // SQL semantics: NULLs are distinct, so multiple null-emails don't collide
     // (lenke stores null first-class, but uniqueness still exempts it — matching
