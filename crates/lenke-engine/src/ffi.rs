@@ -576,8 +576,15 @@ pub unsafe extern "C" fn lnk_query(
             crate::ffi_error::set("E_FFI", "Arrow output is only available for GQL queries");
             return std::ptr::null_mut();
         }
-        let plan = match crate::gql::parse_with_params(q, &params) {
-            Ok(plan) => crate::opt::optimize_indexed(plan, store),
+        // `guarded` so a panic in parse OR optimize becomes a coded error, not a host
+        // abort / wasm trap (the exec below is already guarded).
+        let plan = match guarded(|| {
+            Ok(crate::opt::optimize_indexed(
+                crate::gql::parse_with_params(q, &params)?,
+                store,
+            ))
+        }) {
+            Ok(plan) => plan,
             Err(e) => {
                 crate::ffi_error::set("E_SYNTAX", &e);
                 return std::ptr::null_mut();
@@ -607,7 +614,11 @@ pub unsafe extern "C" fn lnk_query(
     // Parse (E_SYNTAX on failure) → optimize → run (E_INVALID_VALUE on failure).
     let result = match lang {
         0 => {
-            let plan = match crate::gql::parse_with_params(q, &params) {
+            // `guarded` so a PANIC in parse/optimize (not just exec) becomes a coded
+            // error, never an unwind across the C boundary (a host abort on native, a
+            // trap that kills the REPL on wasm). A real parse error still flows through
+            // the prefix-code routing below unchanged.
+            let plan = match guarded(|| crate::gql::parse_with_params(q, &params)) {
                 Ok(plan) => plan,
                 Err(e) => {
                     // A genuine parse error is E_SYNTAX; a more specific code carried as a
@@ -646,7 +657,7 @@ pub unsafe extern "C" fn lnk_query(
                 );
                 return std::ptr::null_mut();
             }
-            let plan = match crate::gremlin::parse(q) {
+            let plan = match guarded(|| crate::gremlin::parse(q)) {
                 Ok(plan) => plan,
                 Err(e) => {
                     // A genuine parse error is E_SYNTAX; a more specific code carried as a
@@ -754,8 +765,22 @@ pub unsafe extern "C" fn lnk_schema_apply(
     };
     use crate::schema_op::SchemaError;
     // The exec layer is the single schema entry point: it handles validator /
-    // invariant ops (which need the query evaluator) and delegates the rest.
-    match crate::exec::apply_schema_op(store, json) {
+    // invariant ops (which need the query evaluator) and delegates the rest. Behind a
+    // panic backstop so a fault becomes a coded error, not a host abort / wasm trap.
+    let applied = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::exec::apply_schema_op(store, json)
+    }));
+    let applied = match applied {
+        Ok(r) => r,
+        Err(_) => {
+            crate::ffi_error::set(
+                "E_INVALID_VALUE",
+                "the engine panicked applying the schema op",
+            );
+            return -1;
+        }
+    };
+    match applied {
         Ok(()) => 0,
         Err(SchemaError::BadRequest(msg)) => {
             crate::ffi_error::set("E_FFI", &msg);
@@ -924,11 +949,14 @@ pub unsafe extern "C" fn lnk_command(
             // (e.g. two rows under one unique key) — a silent corruption, and it is also
             // the snapshot-reload path. Inside a user transaction the checks run at THEIR
             // commit, so we leave the frame open and don't nest a `begin`.
+            // `guarded` so a panic mid-merge becomes an Err (→ rollback below / the
+            // caller's frame) rather than unwinding across the C boundary with the tx
+            // frame torn open.
             let outcome = if store.in_transaction() {
-                crate::ndjson::merge_ndjson(store, text)
+                guarded(|| crate::ndjson::merge_ndjson(store, text))
             } else {
                 store.begin();
-                match crate::ndjson::merge_ndjson(store, text) {
+                match guarded(|| crate::ndjson::merge_ndjson(store, text)) {
                     // commit_with_deferred_checks rolls the whole merge back itself on a
                     // constraint violation, then returns the error.
                     Ok(report) => crate::exec::commit_with_deferred_checks(store).map(|()| report),
@@ -1110,7 +1138,8 @@ pub unsafe extern "C" fn lnk_command(
                     return std::ptr::null_mut();
                 }
             };
-            match run_algo_command(store, &fields) {
+            // `guarded` so a panic in an algorithm becomes a coded error, not a host abort.
+            match guarded(|| run_algo_command(store, &fields)) {
                 Ok(json) => unsafe { out_string(json, out_len) },
                 Err(e) => {
                     crate::ffi_error::set("E_INVALID_VALUE", &e);
