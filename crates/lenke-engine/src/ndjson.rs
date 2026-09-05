@@ -414,6 +414,7 @@ fn stage_lines(text: &str, line_offset: usize) -> Result<StagedNdjson, String> {
         let mut p = JsonParser {
             b: line.as_bytes(),
             i: 0,
+            depth: 0,
         };
         let rec = p.record().map_err(err)?;
         p.ws();
@@ -876,6 +877,7 @@ fn parse_line(line: &str) -> Result<Json, String> {
     let mut p = JsonParser {
         b: line.as_bytes(),
         i: 0,
+        depth: 0,
     };
     let v = p.value()?;
     p.ws();
@@ -885,9 +887,17 @@ fn parse_line(line: &str) -> Result<Json, String> {
     Ok(v)
 }
 
+/// Maximum object/array nesting depth this hand-rolled parser accepts. `value` recurses
+/// through `object`/`array`, so unbounded nesting (a crafted param, `mergeNdjson` /
+/// snapshot value, or algo config) overflows the stack — an uncatchable SIGSEGV on
+/// native and a trap on wasm. Far above any real property value (nested a handful deep),
+/// and safely below the overflow threshold on the smallest stack (the ~1 MB wasm CLI).
+const MAX_JSON_DEPTH: usize = 128;
+
 struct JsonParser<'a> {
     b: &'a [u8],
     i: usize,
+    depth: usize,
 }
 
 impl JsonParser<'_> {
@@ -900,14 +910,36 @@ impl JsonParser<'_> {
     fn value(&mut self) -> Result<Json, String> {
         self.ws();
         match self.b.get(self.i) {
-            Some(b'{') => self.object(),
-            Some(b'[') => self.array(),
+            // Charge one nesting level per container and release it after — a flat but
+            // deeply-nested value can't overflow the recursive descent (or a later
+            // recursive walk / Drop of the parsed tree).
+            Some(b'{') => self.nested(Self::object),
+            Some(b'[') => self.nested(Self::array),
             Some(b'"') => Ok(Json::Str(self.string()?)),
             Some(b't') | Some(b'f') => self.boolean(),
             Some(b'n') => self.keyword("null", Json::Null),
             Some(c) if *c == b'-' || c.is_ascii_digit() => self.number(),
             other => Err(format!("unexpected {other:?} at char {}", self.i)),
         }
+    }
+
+    /// Run a container parser one nesting level deeper, rejecting past [`MAX_JSON_DEPTH`]
+    /// before the stack overflows. Generic over the parsed type so BOTH recursive descents
+    /// — the `Json` path (`object`/`array`, for params) and the `Value` path
+    /// (`object_as_value`/`array_as_value`, for stored property values) — share the guard.
+    fn nested<T>(&mut self, f: impl FnOnce(&mut Self) -> Result<T, String>) -> Result<T, String> {
+        self.depth += 1;
+        if self.depth > MAX_JSON_DEPTH {
+            self.depth -= 1;
+
+            return Err(format!(
+                "E_RESOURCE_EXHAUSTED: JSON nesting exceeds the maximum depth of {MAX_JSON_DEPTH}"
+            ));
+        }
+        let r = f(self);
+        self.depth -= 1;
+
+        r
     }
 
     fn object(&mut self) -> Result<Json, String> {
@@ -1079,28 +1111,10 @@ impl JsonParser<'_> {
     fn value_as_value(&mut self) -> Result<Value, String> {
         self.ws();
         match self.b.get(self.i) {
-            Some(b'{') => self.object_as_value(),
-            Some(b'[') => {
-                self.i += 1; // '['
-                let mut items = Vec::new();
-                self.ws();
-                if self.b.get(self.i) == Some(&b']') {
-                    self.i += 1;
-                    return Ok(Value::List(items));
-                }
-                loop {
-                    items.push(self.value_as_value()?);
-                    self.ws();
-                    match self.b.get(self.i) {
-                        Some(b',') => self.i += 1,
-                        Some(b']') => {
-                            self.i += 1;
-                            return Ok(Value::List(items));
-                        }
-                        _ => return Err(format!("expected ',' or ']' at char {}", self.i)),
-                    }
-                }
-            }
+            // Charge one nesting level per container so a deeply-nested property value
+            // (a crafted `mergeNdjson` / snapshot line) can't overflow the stack.
+            Some(b'{') => self.nested(Self::object_as_value),
+            Some(b'[') => self.nested(Self::array_as_value),
             Some(b'"') => Ok(Value::Str(GStr::from(self.string()?.as_str()))),
             Some(b't') | Some(b'f') => Ok(Value::Bool(self.bool_raw()?)),
             Some(b'n') => {
@@ -1109,6 +1123,30 @@ impl JsonParser<'_> {
             }
             Some(c) if *c == b'-' || c.is_ascii_digit() => Ok(Value::Num(self.number_f64()?)),
             other => Err(format!("unexpected {other:?} at char {}", self.i)),
+        }
+    }
+
+    /// The `[…]` case of [`value_as_value`] — a list property value. Extracted so the
+    /// `nested` depth guard wraps it (the cursor is at `[`).
+    fn array_as_value(&mut self) -> Result<Value, String> {
+        self.i += 1; // '['
+        let mut items = Vec::new();
+        self.ws();
+        if self.b.get(self.i) == Some(&b']') {
+            self.i += 1;
+            return Ok(Value::List(items));
+        }
+        loop {
+            items.push(self.value_as_value()?);
+            self.ws();
+            match self.b.get(self.i) {
+                Some(b',') => self.i += 1,
+                Some(b']') => {
+                    self.i += 1;
+                    return Ok(Value::List(items));
+                }
+                _ => return Err(format!("expected ',' or ']' at char {}", self.i)),
+            }
         }
     }
 
@@ -1333,6 +1371,37 @@ mod tests {
 
     fn s(x: &str) -> Value {
         Value::Str(x.into())
+    }
+
+    /// A pathologically-nested JSON value (a crafted param / mergeNdjson / snapshot line)
+    /// is rejected with a coded error rather than overflowing the stack (SIGSEGV / wasm
+    /// trap). Covers BOTH recursive descents: the `Json` path (`parse_json`, for params)
+    /// and the `Value` path (`from_ndjson`/`merge_ndjson` property values).
+    #[test]
+    fn deeply_nested_json_rejects_instead_of_overflowing_the_stack() {
+        let n = super::MAX_JSON_DEPTH + 50;
+        let deep = format!("{}1{}", "[".repeat(n), "]".repeat(n));
+
+        // Json path (query params).
+        assert!(
+            super::parse_json(&format!("{{\"x\":{deep}}}")).is_err(),
+            "deeply-nested param JSON must be rejected, not overflow",
+        );
+
+        // Value path (property value on a decoded node).
+        let line = format!("{{\"id\":\"a\",\"labels\":[\"N\"],\"props\":{{\"x\":{deep}}}}}");
+        assert!(
+            from_ndjson(&line).is_err(),
+            "deeply-nested property value must be rejected, not overflow",
+        );
+
+        // A modestly-nested value still round-trips.
+        let ok = format!(
+            "{{\"id\":\"a\",\"labels\":[\"N\"],\"props\":{{\"x\":{}1{}}}}}",
+            "[".repeat(50),
+            "]".repeat(50)
+        );
+        assert!(from_ndjson(&ok).is_ok(), "depth 50 should decode fine");
     }
 
     #[test]
