@@ -1436,6 +1436,18 @@ impl Parser {
         self.current_is_element = matches!(head.to_ascii_lowercase().as_str(), "v" | "e" | "addv");
         while self.peek() == Some(&Tok::Dot) {
             self.pos += 1;
+            // Each step deepens the nested `Plan` (`out().out()…` builds an N-deep tree that
+            // a later recursive optimize / exec / `Drop` pass walks). The `nest` guard only
+            // covers recursive sub-traversal re-entry, not this linear chain — so charge the
+            // same depth budget here, or a long flat chain overflows the stack (SIGSEGV /
+            // wasm trap, uncatchable). No release: this is the top-level chain (no siblings),
+            // and it combines with sub-traversal `nest`ing along the deepest path.
+            self.depth += 1;
+            if self.depth > MAX_TRAVERSAL_DEPTH {
+                return Err(format!(
+                    "E_RESOURCE_EXHAUSTED: traversal exceeds the maximum depth of {MAX_TRAVERSAL_DEPTH}"
+                ));
+            }
             let step_name = match self.peek() {
                 Some(Tok::Ident(s)) => s.to_ascii_lowercase(),
                 _ => String::new(),

@@ -859,6 +859,27 @@ impl Parser {
         r
     }
 
+    /// Charge ONE level of left-recursive tree depth for a flat operator chain
+    /// (`a OP b OP c …`). Each appended operand deepens the left-nested `Expr` tree by
+    /// one, which a later recursive optimize / exec / `Drop` pass walks to that depth —
+    /// so a long flat chain overflows the stack exactly like deep nesting unless it is
+    /// counted here too (the iterative loops never re-enter `nest`). The caller MUST
+    /// release the charge (`self.depth -= charged`) once the chain's subtree is fully
+    /// parsed, so sibling breadth doesn't accumulate — mirroring `nest`. On the error
+    /// path the whole parse is abandoned, so a leaked charge is harmless.
+    fn deepen(&mut self) -> Result<(), String> {
+        self.depth += 1;
+        if self.depth > MAX_EXPR_DEPTH {
+            self.depth -= 1;
+
+            return Err(format!(
+                "E_RESOURCE_EXHAUSTED: expression nesting exceeds the maximum depth of {MAX_EXPR_DEPTH}"
+            ));
+        }
+
+        Ok(())
+    }
+
     fn eat(&mut self, t: &Tok) -> bool {
         if self.peek() == Some(t) {
             self.pos += 1;
@@ -4853,26 +4874,36 @@ impl Parser {
         // Binary left-nesting here is equivalent to the TS engine's flatten-same/nest-on-
         // switch: `a OR b XOR c` parses as `(a OR b) XOR c`.
         let mut left = self.and_expr()?;
+        let mut charged = 0usize;
         loop {
             if self.eat_kw("OR") {
+                self.deepen()?;
+                charged += 1;
                 let right = self.and_expr()?;
                 left = Expr::Or(Box::new(left), Box::new(right));
             } else if self.eat_kw("XOR") {
+                self.deepen()?;
+                charged += 1;
                 let right = self.and_expr()?;
                 left = Expr::Xor(Box::new(left), Box::new(right));
             } else {
                 break;
             }
         }
+        self.depth -= charged;
         Ok(left)
     }
 
     fn and_expr(&mut self) -> Result<Expr, String> {
         let mut left = self.not_expr()?;
+        let mut charged = 0usize;
         while self.eat_kw("AND") {
+            self.deepen()?;
+            charged += 1;
             let right = self.not_expr()?;
             left = Expr::And(Box::new(left), Box::new(right));
         }
+        self.depth -= charged;
         Ok(left)
     }
 
@@ -5098,6 +5129,7 @@ impl Parser {
     // add_expr := mul_expr ( ('+' | '-') mul_expr )*
     fn add_expr(&mut self) -> Result<Expr, String> {
         let mut left = self.mul_expr()?;
+        let mut charged = 0usize;
         loop {
             let op = match self.peek() {
                 Some(Tok::Plus) => crate::ir::ArithOp::Add,
@@ -5105,6 +5137,8 @@ impl Parser {
                 _ => break,
             };
             self.pos += 1;
+            self.deepen()?;
+            charged += 1;
             let right = self.mul_expr()?;
             left = Expr::Arith {
                 op,
@@ -5112,12 +5146,14 @@ impl Parser {
                 right: Box::new(right),
             };
         }
+        self.depth -= charged;
         Ok(left)
     }
 
     // mul_expr := unary ( ('*' | '/' | '%') unary )*
     fn mul_expr(&mut self) -> Result<Expr, String> {
         let mut left = self.unary()?;
+        let mut charged = 0usize;
         loop {
             let op = match self.peek() {
                 Some(Tok::Star) => crate::ir::ArithOp::Mul,
@@ -5126,6 +5162,8 @@ impl Parser {
                 _ => break,
             };
             self.pos += 1;
+            self.deepen()?;
+            charged += 1;
             let right = self.unary()?;
             left = Expr::Arith {
                 op,
@@ -5133,6 +5171,7 @@ impl Parser {
                 right: Box::new(right),
             };
         }
+        self.depth -= charged;
         Ok(left)
     }
 

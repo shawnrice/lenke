@@ -2856,4 +2856,18 @@ fn deeply_nested_subtraversals_reject_instead_of_overflowing_the_stack() {
         ")".repeat(50)
     );
     assert!(super::parse(&ok).is_ok(), "depth 50 should parse fine");
+
+    // A flat LINEAR step chain (`out().out().…`) also builds an N-deep Plan that a later
+    // recursive pass walks — the `nest` guard only covers sub-traversal re-entry, so the
+    // top-level step loop charges the depth budget too (else a long chain SIGSEGVs).
+    let flat = format!("g.V(){}", ".out()".repeat(super::MAX_TRAVERSAL_DEPTH + 50));
+    let err = super::parse(&flat).unwrap_err();
+    assert!(
+        err.contains("E_RESOURCE_EXHAUSTED"),
+        "expected a depth rejection for a flat step chain, got: {err}",
+    );
+    assert!(
+        super::parse(&format!("g.V(){}", ".identity()".repeat(50))).is_ok(),
+        "a 50-step chain should parse fine",
+    );
 }

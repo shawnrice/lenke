@@ -5474,4 +5474,28 @@ fn deeply_nested_expressions_reject_instead_of_overflowing_the_stack() {
     // A modest nest still parses (the cap is far above any real query).
     let ok = format!("RETURN {}1{}", "[".repeat(100), "]".repeat(100));
     assert!(super::parse(&ok).is_ok(), "depth 100 should parse fine");
+
+    // FLAT operator chains build a left-nested tree that a later recursive optimize/exec/
+    // Drop pass walks — so they must be bounded too, not just recursive nesting. The
+    // iterative precedence loops (`add_expr`/`mul_expr`/`or_expr`/`and_expr`) never
+    // re-enter `nest`, so without an explicit `deepen` charge a long chain SIGSEGVs.
+    let n = super::MAX_EXPR_DEPTH + 50;
+    let flat = [
+        format!("RETURN {} AS x", vec!["1"; n].join(" + ")),
+        format!("RETURN {} AS x", vec!["1"; n].join(" * ")),
+        format!("RETURN {} AS x", vec!["true"; n].join(" AND ")),
+        format!("RETURN {} AS x", vec!["true"; n].join(" OR ")),
+    ];
+    for q in &flat {
+        let err = super::parse(q).unwrap_err();
+        assert!(
+            err.contains("E_RESOURCE_EXHAUSTED"),
+            "expected a depth rejection for a flat chain, got: {err}",
+        );
+    }
+    // A modest flat chain still parses.
+    assert!(
+        super::parse(&format!("RETURN {} AS x", vec!["1"; 50].join(" + "))).is_ok(),
+        "a 50-long chain should parse fine",
+    );
 }
