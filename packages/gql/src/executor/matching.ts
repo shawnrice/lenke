@@ -595,8 +595,11 @@ export const matchPattern = function* (
     return;
   }
 
-  // Seed from whichever end is more selective, then walk from there.
-  const path = orient(graph, pattern, binding, params);
+  // Seed from whichever end is more selective, then walk from there — EXCEPT when a
+  // path variable is bound. `orient` flips a fixed-length pattern to seed from the
+  // selective end, which would reverse the walk; a named path must be materialized in
+  // the query's declared direction (byte-identical to native), so seed from the start.
+  const path = pattern.pathVar !== undefined ? pattern : orient(graph, pattern, binding, params);
 
   // Reuse an already-bound vertex if the start variable is known, otherwise
   // seed from an indexed constraint or a label-narrowed scan.
@@ -609,11 +612,23 @@ export const matchPattern = function* (
     const seeded = matchNode(binding, path.start, seed, params, graph);
 
     if (seeded) {
-      // A bound path variable over a single quantified segment binds each walk as
-      // a Path; otherwise the plain endpoint walk.
-      yield* path.pathVar !== undefined
-        ? allWalk(graph, path, seed, seeded, params)
-        : walkSegments(graph, path, 0, seed, seeded, params);
+      // A bound path variable over a single quantified segment binds each walk as a
+      // Path (`allWalk`); over a fixed-length pattern the walk itself is the path, so
+      // `walkSegments` accumulates its steps (`pathAcc`) and binds the Path at the end.
+      // Otherwise the plain endpoint walk.
+      const singleVarlen =
+        path.segments.length === 1 && path.segments[0].rel.quantifier !== undefined;
+
+      if (path.pathVar !== undefined && singleVarlen) {
+        yield* allWalk(graph, path, seed, seeded, params);
+      } else if (path.pathVar !== undefined) {
+        yield* walkSegments(graph, path, seed, seeded, params, {
+          index: 0,
+          pathAcc: { origin: seed, steps: [] },
+        });
+      } else {
+        yield* walkSegments(graph, path, seed, seeded, params);
+      }
     }
   }
 };
@@ -1380,16 +1395,29 @@ export const trailEndsUnit = function* (
   }
 };
 
+// A `walkSegments` cursor: the current segment `index`, plus (when a path variable is
+// bound over a fixed-length pattern) `pathAcc` — the walk so far, i.e. the
+// declared-direction origin and each hop's edge+vertex. The terminal binds `pathAcc` as a
+// `Path`; a plain endpoint walk leaves it absent.
+type WalkCursor = {
+  index: number;
+  pathAcc?: { origin: Vertex; steps: { edge: Edge; vertex: Vertex }[] };
+};
+
 export const walkSegments = function* (
   graph: Graph,
   pattern: CPath,
-  index: number,
   from: Vertex,
   binding: Binding,
   params: Params,
+  walk: WalkCursor = { index: 0 },
 ): Iterable<Binding> {
+  const { index, pathAcc } = walk;
+
   if (index >= pattern.segments.length) {
-    yield binding;
+    yield pathAcc !== undefined && pattern.pathVar !== undefined
+      ? withBinding(binding, pattern.pathVar, Path.fromSteps(pathAcc.origin, pathAcc.steps))
+      : binding;
 
     return;
   }
@@ -1421,7 +1449,20 @@ export const walkSegments = function* (
       const matched = matchNode(withGroups, node, end, params, graph);
 
       if (matched) {
-        yield* walkSegments(graph, pattern, index + 1, end, matched, params);
+        // Defensive: a path var never reaches a quantified segment today (the parser
+        // rejects a mixed fixed/variable-length named path), but if that changes,
+        // append the sub-walk's hops so the accumulated Path stays complete.
+        const nextAcc =
+          pathAcc &&
+          ({
+            origin: pathAcc.origin,
+            steps: [...pathAcc.steps, ...edges.map((e, i) => ({ edge: e, vertex: verts[i + 1] }))],
+          } satisfies typeof pathAcc);
+
+        yield* walkSegments(graph, pattern, end, matched, params, {
+          index: index + 1,
+          pathAcc: nextAcc,
+        });
       }
     }
 
@@ -1442,7 +1483,17 @@ export const walkSegments = function* (
     const matched = matchNode(withEdge, node, nextVertex, params, graph);
 
     if (matched) {
-      yield* walkSegments(graph, pattern, index + 1, nextVertex, matched, params);
+      const nextAcc =
+        pathAcc &&
+        ({
+          origin: pathAcc.origin,
+          steps: [...pathAcc.steps, { edge, vertex: nextVertex }],
+        } satisfies typeof pathAcc);
+
+      yield* walkSegments(graph, pattern, nextVertex, matched, params, {
+        index: index + 1,
+        pathAcc: nextAcc,
+      });
     }
   }
 };

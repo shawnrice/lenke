@@ -117,6 +117,59 @@ describe('ANY SHORTEST path patterns', () => {
     expect(() => parseQuery('MATCH SHORTEST 0 (a)-[]->*(b) RETURN b')).toThrow(); // k >= 1
     expect(() => parseQuery('MATCH ANY SHORTEST (a)-[]->(b) RETURN b')).toThrow();
     expect(() => parseQuery('MATCH ANY SHORTEST (a)-[]->{2,4}(b) RETURN b')).toThrow();
-    expect(() => parseQuery('MATCH p = (a)-[]->(b) RETURN p')).toThrow();
+    // A named path over a FIXED-length pattern is now supported (matches native); only a
+    // MIXED fixed/variable-length named path is still rejected.
+    expect(() => parseQuery('MATCH p = (a)-[]->(b) RETURN p')).not.toThrow();
+    expect(() => parseQuery('MATCH p = (a)-[]->(b)-[]->(c) RETURN p')).not.toThrow();
+    expect(() => parseQuery('MATCH p = (a)-[]->(b)-[]->{1,3}(c) RETURN p')).toThrow();
+  });
+});
+
+describe('named path over a fixed-length pattern (parity with native)', () => {
+  test('binds the walk as a Path in declared direction', () => {
+    const rows = query(
+      modern(),
+      "MATCH p = (a)-[]->(b) WHERE a.name = 'marko' AND b.name = 'lop' RETURN p",
+    );
+    expect(rows).toHaveLength(1);
+    const p = rows[0].p as Path;
+    expect(p).toBeInstanceOf(Path);
+    expect(p.hops).toBe(1);
+    expect(p.vertices.map((v) => v.id)).toEqual(['marko', 'lop']);
+    expect(p.edges).toHaveLength(1);
+  });
+
+  test('a multi-segment fixed pattern binds every node/edge of the walk', () => {
+    const rows = query(
+      modern(),
+      "MATCH p = (a)-[]->(b)-[]->(c) WHERE a.name = 'marko' AND c.name = 'ripple' " +
+        'RETURN path_length(p) AS len, nodes(p) AS ns',
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].len).toBe(2);
+    expect((rows[0].ns as Array<{ id: string }>).map((v) => v.id)).toEqual([
+      'marko',
+      'josh',
+      'ripple',
+    ]);
+  });
+
+  test('a zero-segment pattern binds the single-node (zero-length) path', () => {
+    const rows = query(
+      modern(),
+      "MATCH p = (a) WHERE a.name = 'marko' RETURN path_length(p) AS len",
+    );
+    expect(rows).toEqual([{ len: 0 }]);
+  });
+
+  test('declared direction is kept even when the end node is the selective seed', () => {
+    // `b` is uniquely selective, so the planner would seed from `b` and walk backwards;
+    // the bound path must still read start→end (a→lop), not the traversal order.
+    const rows = query(
+      modern(),
+      "MATCH p = (a)-[]->(b) WHERE b.name = 'ripple' RETURN nodes(p) AS ns",
+    );
+    expect(rows).toHaveLength(1);
+    expect((rows[0].ns as Array<{ id: string }>).map((v) => v.id)).toEqual(['josh', 'ripple']);
   });
 });

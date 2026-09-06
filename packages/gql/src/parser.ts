@@ -1171,12 +1171,19 @@ export const parse = (
           );
         }
       } else if (pathVar !== undefined && !singleVarlen) {
-        // Bare path binding (`p = (a)-[:R]->{m,n}(b)`) enumerates a single
-        // variable-length segment; the path value is that walk.
-        throw new GqlSyntaxError(
-          'a named path variable currently requires either a path selector (e.g. `p = ANY SHORTEST …`) or a single variable-length segment (e.g. `p = (a)-[:R]->{1,5}(b)`)',
-          selPos,
-        );
+        // Bare path binding accepts a FIXED-length pattern (`p = (a)-[:R]->(b)`,
+        // any number of unquantified segments — the path value is that walk) or a
+        // single variable-length segment (`p = (a)-[:R]->{m,n}(b)`). A MIXED
+        // fixed/variable-length pattern is not yet supported (its sub-walk
+        // materialization is not wired), so reject only that.
+        const allFixed = segments.every((s) => s.rel.quantifier === undefined);
+
+        if (!allFixed) {
+          throw new GqlSyntaxError(
+            'a named path variable currently supports a fixed-length pattern, a single variable-length segment (e.g. `p = (a)-[:R]->{1,5}(b)`), or a path selector (e.g. `p = ANY SHORTEST …`) — not a mixed fixed/variable-length pattern',
+            selPos,
+          );
+        }
       }
 
       return {
