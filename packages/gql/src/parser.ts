@@ -2167,9 +2167,16 @@ export const parse = (
 
     expect('rparen', "')' to close TRIM");
 
+    // The BOTH/default form WITH an explicit character set is the two-argument
+    // both-trim, which is `btrim` — the plain `trim` function is strictly 1-arg
+    // (whitespace only) in both engines, so desugaring `TRIM('x' FROM s)` to a 2-arg
+    // `trim` would be rejected by the arity check (and by the native parser). Without a
+    // char set it stays the 1-arg `trim`. (LEADING/TRAILING already map to ltrim/rtrim.)
+    const fn = name === 'trim' && charArg ? 'btrim' : name;
+
     return {
       kind: 'func',
-      name,
+      name: fn,
       args: charArg ? [source, charArg] : [source],
       distinct: false,
       star: false,
