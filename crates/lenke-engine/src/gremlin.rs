@@ -1217,6 +1217,38 @@ impl Parser {
                 args: vec![Expr::Slot(elem_slot)],
             });
         }
+        // Bare (no-navigation) projecting/reducing bodies over the current element:
+        //   by(values('k'))  → the element's property value (identical to `by('k')`)
+        //   by(count())      → the count of the single current traverser = always 1
+        //   by(constant(x))  → a constant value
+        // These are common TinkerPop forms the TS engine accepts; without them a
+        // `project('n').by(values('name'))` faults on native only.
+        if let Some(Tok::Ident(s)) = self.peek() {
+            let lname = s.to_ascii_lowercase();
+            let followed_by_lparen = self.toks.get(self.pos + 1) == Some(&Tok::LParen);
+            if lname == "values" && followed_by_lparen {
+                self.bump();
+                self.expect(&Tok::LParen)?;
+                let key = self.str_arg()?;
+                self.expect(&Tok::RParen)?;
+                return Ok(Expr::Prop {
+                    slot: elem_slot,
+                    key,
+                });
+            }
+            if lname == "count" && followed_by_lparen {
+                self.bump();
+                self.eat_empty_parens();
+                return Ok(Expr::Lit(Value::Num(1.0)));
+            }
+            if lname == "constant" && followed_by_lparen {
+                self.bump();
+                self.expect(&Tok::LParen)?;
+                let v = self.literal()?;
+                self.expect(&Tok::RParen)?;
+                return Ok(Expr::Lit(v));
+            }
+        }
         let hop = self.ident()?.to_ascii_lowercase();
         let (dir, is_edge) = match hop.as_str() {
             "out" => (Dir::Out, false),

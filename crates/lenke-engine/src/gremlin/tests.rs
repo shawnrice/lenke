@@ -1571,6 +1571,46 @@ fn gremlin_project_by_modulators() {
     assert!(super::parse("g.V().project('c').by(out().count())").is_ok());
 }
 
+/// `project().by(<bare body>)`: the no-navigation projecting/reducing forms that need no
+/// hop — `values('k')` (identical to `by('k')`), `count()` (one traverser → 1), and
+/// `constant(x)`. Standard TinkerPop that the TS engine accepts; the native parser used to
+/// reject any `by()` body that was not a key/id/label token or a single navigating hop.
+#[test]
+fn gremlin_project_by_bare_bodies() {
+    let store = social();
+    assert_eq!(
+        value_bag(&gremlin_rows(
+            "g.V().has('name','bob').project('n').by(values('name'))",
+            &store,
+        )),
+        vec!["Map([(Str(\"n\"), Str(\"bob\"))]);"],
+    );
+    assert_eq!(
+        value_bag(&gremlin_rows(
+            "g.V().has('name','bob').project('c').by(count())",
+            &store,
+        )),
+        vec!["Map([(Str(\"c\"), Num(1.0))]);"],
+    );
+    assert_eq!(
+        value_bag(&gremlin_rows(
+            "g.V().has('name','bob').project('k').by(constant(42))",
+            &store,
+        )),
+        vec!["Map([(Str(\"k\"), Num(42.0))]);"],
+    );
+    // The explicit `__.`-prefixed spelling parses the same.
+    assert!(super::parse("g.V().project('n').by(__.values('name'))").is_ok());
+    // A constant string body, too.
+    assert_eq!(
+        value_bag(&gremlin_rows(
+            "g.V().has('name','bob').project('k').by(constant('x'))",
+            &store,
+        )),
+        vec!["Map([(Str(\"k\"), Str(\"x\"))]);"],
+    );
+}
+
 /// `path()` over a pure vertex-hop chain yields the sequence of vertices visited,
 /// each rendered as its element map (not a bare id). Verified structurally: the
 /// path elements ARE node maps whose id sequence is the hop sequence; and every

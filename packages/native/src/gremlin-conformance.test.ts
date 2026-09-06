@@ -629,6 +629,24 @@ const CORPUS: Case[] = [
     plan: traversal(inject(Number.NaN), count()),
     verdict: { kind: 'tsOnly' },
   },
+  // `project().by(<bare body>)` — the no-navigation projecting/reducing forms. These are
+  // standard TinkerPop and the TS engine accepts them; the native engine used to reject
+  // any `by()` body that was not a key/id/label token or a single navigating hop.
+  {
+    name: "project('n').by(values('name')) — bare values() body",
+    plan: traversal(V(), has('name', 'marko'), project('n').by(values('name'))),
+    verdict: { kind: 'agree', expected: [{ n: 'marko' }] },
+  },
+  {
+    name: "project('c').by(count()) — bare count() over one traverser is 1",
+    plan: traversal(V(), has('name', 'marko'), project('c').by(count())),
+    verdict: { kind: 'agree', expected: [{ c: 1 }] },
+  },
+  {
+    name: "project('k').by(constant(42)) — constant body",
+    plan: traversal(V(), has('name', 'marko'), project('k').by(constant(42))),
+    verdict: { kind: 'agree', expected: [{ k: 42 }] },
+  },
 ];
 
 suite('gremlin conformance: TS engine ⟷ Rust engine (over ffi)', () => {
