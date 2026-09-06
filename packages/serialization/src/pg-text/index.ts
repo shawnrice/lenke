@@ -147,6 +147,18 @@ const encodeScalar = (value: Exclude<PropertyValue, readonly PropertyValue[]>): 
     );
   }
 
+  // Anything still here is a NESTED list (`[[1,2],[3]]`): a top-level list already
+  // expands to one token per element, but a list element that is itself a list has no
+  // flat token form. Reject with a coded error (mirrors the record case) rather than
+  // hit a raw `TypeError` on the string `.replace` below.
+  if (typeof value !== 'string') {
+    throw new LenkeError(
+      'a nested-list property cannot be serialized to pg-text (a flat format); ' +
+        'use ndjson, graphson, or pg-json',
+      { code: ErrorCode.Unsupported },
+    );
+  }
+
   return `"${value.replace(STR_ESCAPE, (c) => STR_ESCAPE_MAP[c])}"`;
 };
 

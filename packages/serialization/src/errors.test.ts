@@ -131,6 +131,29 @@ describe('serialization error codes', () => {
     ).toBe(true);
   });
 
+  test('a NESTED-list property is a coded error for pg-text, not a raw TypeError', () => {
+    // A top-level list expands to one pg-text token per element; a list-OF-lists has no
+    // flat token form. pg-text used to hit `value.replace is not a function` on the inner
+    // array — a raw TypeError with no code. It now rejects with a coded E_UNSUPPORTED,
+    // like its record case (and like the csv codec). The structured formats keep it.
+    const g = new Graph();
+    g.addVertex({ id: 'a', labels: ['N'], properties: { m: [[1, 2], [3]] } });
+
+    const caught = (fn: () => void): unknown => {
+      try {
+        fn();
+      } catch (e) {
+        return e;
+      }
+
+      return undefined;
+    };
+
+    expect(hasErrorCode(caught(() => serialize(g, 'pg-text')), ErrorCode.Unsupported)).toBe(true);
+    // ndjson / pg-json / graphson round-trip a nested list fine — only the flat formats reject.
+    expect(serialize(g, 'ndjson')).toContain('[[1,2],[3]]');
+  });
+
   test('a record whose key is a temporal tag round-trips as a record, not a temporal', () => {
     // `{'@date': '…'}` as a RECORD would, on the JSON wire, look exactly like a tagged
     // temporal; the codec escapes ONLY such temporal-shaped keys (`@date` → `@@date`) so
