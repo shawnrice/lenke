@@ -310,6 +310,7 @@ import {
   numOf,
   percentileOf,
   recordGet,
+  scalarArityOk,
   structuralEq,
   temporalSum,
   unsupportedTemporalAgg,
@@ -930,6 +931,19 @@ const compileFunc = (expr: FuncExpr): CompiledExpr => {
   // time, not declare time).
   if (unknownFnCollector && !isKnownScalarFn(name)) {
     unknownFnCollector.add(name);
+  }
+
+  // Reject the wrong argument count EAGERLY, while the query compiles — native
+  // rejects arity in its parser, before any row runs, so `abs(1, 2)` or `mod(1)`
+  // must fault identically over zero rows or inside a never-taken branch (not
+  // silently drop the extra arg / read the missing one as null, as the per-row
+  // dispatch otherwise would). `scalarArityOk` returns `undefined` for a name it
+  // does not govern (unknown fns, aggregates, path accessors) — those keep their
+  // own resolution path. E_SYNTAX matches native's parse-time classification.
+  if (scalarArityOk(name, expr.args.length) === false) {
+    throw new LenkeError(`${name}() called with the wrong number of arguments`, {
+      code: ErrorCode.Syntax,
+    });
   }
 
   return (env) =>

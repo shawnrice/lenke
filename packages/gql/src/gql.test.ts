@@ -327,6 +327,37 @@ describe('GQL: aggregation', () => {
   });
 });
 
+describe('GQL: scalar-function arity (matches native parse-time rejection)', () => {
+  const g = createTestSocialGraph();
+
+  // The native engine rejects a wrong argument count in its parser, before any row runs.
+  // TS mirrors that: it faults EAGERLY at compile time (not by silently dropping an extra
+  // arg or reading a missing one as null), so both engines accept/reject the same calls.
+  // Found and held in lockstep by the differential fuzzer's wrong-arity generator.
+  test('too few / too many arguments throw (over rows, zero rows, and dead branches)', () => {
+    // extra arg to a 1-arg fn; missing arg to a 2-arg fn
+    expect(() => query(g, `MATCH (n:Person) RETURN abs(n.age, 1) AS x`)).toThrow();
+    expect(() => query(g, `MATCH (n:Person) RETURN mod(n.age) AS x`)).toThrow();
+    // 0-arg constants reject any argument
+    expect(() => query(g, `MATCH (n:Person) RETURN pi(1) AS x`)).toThrow();
+    // rejection is reachability-independent: zero rows still faults...
+    expect(() => query(g, `MATCH (n:Robot) RETURN split() AS x`)).toThrow();
+    // ...and so does a never-taken CASE branch (native rejects at parse regardless).
+    expect(() =>
+      query(g, `MATCH (n:Person) RETURN CASE WHEN false THEN log() ELSE 1 END AS x`),
+    ).toThrow();
+  });
+
+  test('valid arities (including the variable-arity fns) still compile', () => {
+    expect(() => query(g, `MATCH (n:Person) RETURN round(n.age) AS x`)).not.toThrow(); // round(1)
+    expect(() => query(g, `MATCH (n:Person) RETURN round(n.age, 1) AS x`)).not.toThrow(); // round(2)
+    expect(() => query(g, `MATCH (n:Person) RETURN substring(n.name, 0) AS x`)).not.toThrow(); // substring(2)
+    expect(() => query(g, `MATCH (n:Person) RETURN substring(n.name, 0, 2) AS x`)).not.toThrow(); // substring(3)
+    expect(() => query(g, `MATCH (n:Person) RETURN coalesce(n.age) AS x`)).not.toThrow(); // coalesce(>=1)
+    expect(() => query(g, `MATCH (n:Person) RETURN coalesce(n.age, 0, -1) AS x`)).not.toThrow();
+  });
+});
+
 describe('GQL: OPTIONAL MATCH & WITH', () => {
   const g = createTestSocialGraph();
 

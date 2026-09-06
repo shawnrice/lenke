@@ -265,6 +265,36 @@ const BINARY_FN = [
 ] as const;
 
 const TERNARY_FN = ['substring', 'replace'] as const;
+
+// Arity-governed scalar functions shared by both engines. Emitting each with a
+// deliberately-varied argument count (0..4) drives the TS arity table and native's
+// parse-time arity check into lockstep: a wrong count must be rejected by BOTH, and a
+// coincidentally-valid count must still agree on the answer. `power` is absent for the
+// same reason it is absent from BINARY_FN — its known last-ulp value deviation would read
+// as a false divergence at its valid arity of 2. `range` also needs bounded literal args,
+// so it is not drawn here (its own generator branch keeps it bounded).
+const ARITY_FN = [
+  ...UNARY_FN, // 1-arg, plus round/btrim/ltrim/rtrim (1|2) and list_sort (1..3)
+  ...BINARY_FN, // 2-arg, plus coalesce (>=1); note: power is deliberately not in BINARY_FN
+  ...TERNARY_FN, // substring (2|3), replace (3)
+  'e',
+  'pi', // 0-arg
+] as const;
+
+// A known scalar function with a deliberately-varied argument count. Most draws land on
+// a WRONG count (the divergence being tested); a coincidentally-valid count is fine — it
+// just re-exercises the correct-arity path, which must already agree.
+const genArityCall = (r: () => number): string => {
+  const fn = pick(r, ARITY_FN);
+  const argc = Math.floor(r() * 5); // 0..4
+  const args: string[] = [];
+
+  for (let i = 0; i < argc; i += 1) {
+    args.push(genLeaf(r));
+  }
+
+  return `${fn}(${args.join(', ')})`;
+};
 const CAST_TYPES = ['INTEGER', 'FLOAT', 'STRING', 'BOOLEAN'] as const;
 const IS_TESTS = [
   'IS NULL',
@@ -278,6 +308,13 @@ const IS_TESTS = [
 const genExpr = (r: () => number, depth: number): string => {
   if (depth <= 0 || r() < 0.32) {
     return genLeaf(r);
+  }
+
+  // Wrong-arity probe: a known scalar function called with a varied argument count,
+  // nestable anywhere an expression can go (so arity is checked inside arithmetic, a
+  // CASE branch, etc. — matching native's eager, reachability-independent rejection).
+  if (r() < 0.06) {
+    return genArityCall(r);
   }
 
   const p = r();

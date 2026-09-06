@@ -351,6 +351,144 @@ export const AGGREGATES = new Set([
   'stddev_samp',
 ]);
 
+// Scalar-function arities, mirroring the native engine's parse-time arity table
+// (`crates/lenke-engine/src/gql.rs`). Kept byte-exact so the two engines accept and
+// reject the same calls: a call with the wrong argument count must fault on BOTH, not
+// silently drop extra args (or read a missing one as null) on the TS side. The
+// differential fuzzer generates wrong-arity calls to hold this in lockstep.
+//
+// Path accessors (`nodes`/`relationships`/`path_length`/`elements`) are intentionally
+// ABSENT — native resolves those against a path variable BEFORE the arity table, so
+// they are not arity-governed here either.
+const SCALAR_ARITY_1 = new Set([
+  'abs',
+  'sign',
+  'floor',
+  'ceil',
+  'ceiling',
+  'sqrt',
+  'exp',
+  'ln',
+  'log10',
+  'sin',
+  'cos',
+  'tan',
+  'asin',
+  'acos',
+  'atan',
+  'sinh',
+  'cosh',
+  'tanh',
+  'cot',
+  'degrees',
+  'radians',
+  'upper',
+  'lower',
+  'trim',
+  'size',
+  'cardinality',
+  'head',
+  'last',
+  '_year',
+  '_month',
+  '_day',
+  '_hour',
+  '_minute',
+  '_second',
+  '_is_nan',
+  '_is_infinite',
+  '_is_finite',
+  'date',
+  'local_time',
+  'datetime',
+  'local_datetime',
+  'zoned_time',
+  'zoned_datetime',
+  'duration',
+  'to_integer',
+  'tointeger',
+  'to_float',
+  'tofloat',
+  'to_string',
+  'tostring',
+  'to_boolean',
+  'toboolean',
+  'char_length',
+  'character_length',
+  'byte_length',
+  'octet_length',
+  'reverse',
+  'tail',
+  'keys',
+  'labels',
+  'type',
+  'property_names',
+  'element_id',
+  'to_list',
+  'tolist',
+]);
+const SCALAR_ARITY_2 = new Set([
+  'append',
+  'list_contains',
+  'list_union',
+  'difference',
+  'intersection',
+  'starts_with',
+  'ends_with',
+  'contains',
+  'duration_between',
+  'nullif',
+  'log',
+  'power',
+  'mod',
+  'left',
+  'right',
+  'split',
+  'atan2',
+]);
+
+/**
+ * Valid-arity check for a scalar function, mirroring native's parse-time table.
+ * Returns `true`/`false` for a governed name, or `undefined` for a name this table
+ * does not govern (an unknown function, an aggregate, or a path accessor) — the
+ * caller leaves those to their own resolution path.
+ */
+export const scalarArityOk = (name: string, argc: number): boolean | undefined => {
+  if (name === 'e' || name === 'pi') {
+    return argc === 0;
+  }
+
+  if (SCALAR_ARITY_1.has(name)) {
+    return argc === 1;
+  }
+
+  if (SCALAR_ARITY_2.has(name)) {
+    return argc === 2;
+  }
+
+  if (name === 'round' || name === 'ltrim' || name === 'rtrim' || name === 'btrim') {
+    return argc === 1 || argc === 2;
+  }
+
+  if (name === 'list_sort') {
+    return argc >= 1 && argc <= 3;
+  }
+
+  if (name === 'range' || name === 'substring') {
+    return argc === 2 || argc === 3;
+  }
+
+  if (name === 'replace') {
+    return argc === 3;
+  }
+
+  if (name === 'coalesce') {
+    return argc >= 1;
+  }
+
+  return undefined;
+};
+
 /**
  * ISO ordered-set percentile over a group's numeric values. `cont`
  * (`percentile_cont`) interpolates linearly between the two ranks bracketing
