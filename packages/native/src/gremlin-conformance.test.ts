@@ -28,6 +28,7 @@ import { Edge, Graph, isElement } from '@lenke/core';
 import { ErrorCode, hasErrorCode } from '@lenke/errors';
 import {
   V,
+  addV,
   as_,
   branch,
   connectedComponent,
@@ -959,6 +960,36 @@ suite('gremlin conformance: stored map property', () => {
       ]);
     } finally {
       backend!.graphFree(handle);
+    }
+  });
+
+  // TinkerPop: addV is NOT terminal — a read step observes the created vertex. Native used
+  // to reject any read after a write ("step `id` cannot follow a write step"); it now folds
+  // the read into an InsertReturn, matching TS. Uses fresh graphs per case (writes mutate)
+  // and reads that are byte-identical (label / a set-then-read property) — NOT id(), whose
+  // value is engine-assigned (native dense id vs TS uuid).
+  test('read-after-write: a read step after addV is byte-identical to native', () => {
+    const cases: [Plan, unknown[]][] = [
+      [traversal(addV('T'), label()), ['T']],
+      [traversal(addV('T'), property('name', 'x'), values('name')), ['x']],
+      [traversal(addV('T'), out('KNOWS')), []],
+    ];
+
+    for (const [plan, expected] of cases) {
+      const groovy = planToGremlin(plan);
+      const ts = toArray(plan, createTestTinkerGraph()).map(canonJson);
+      const handle = backend!.graphFromNdjson(new TextEncoder().encode(MODERN_NDJSON));
+
+      try {
+        const native = JSON.parse(
+          decoder.decode(backend!.gremlinJson(handle, groovy)),
+        ) as unknown[];
+
+        expect(ts).toEqual(expected);
+        expect(native).toEqual(expected);
+      } finally {
+        backend!.graphFree(handle);
+      }
     }
   });
 });

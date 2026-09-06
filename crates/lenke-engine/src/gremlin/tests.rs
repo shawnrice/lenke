@@ -2128,8 +2128,37 @@ fn gremlin_and_gql_writes_agree() {
 #[test]
 fn write_step_errors() {
     assert!(super::parse("g.addE('R')").is_err()); // no from/to
-    assert!(super::parse("g.V().drop().count()").is_err()); // read after write
-    assert!(super::parse("g.addV('P').out('R')").is_err()); // read after write
+    assert!(super::parse("g.V().drop().count()").is_err()); // read after drop stays terminal
+                                                            // A read step after addV is NOW allowed (TinkerPop: the created element is the new
+                                                            // frontier) — see `addv_read_after_write`.
+    assert!(super::parse("g.addV('P').out('R')").is_ok());
+}
+
+/// TinkerPop: `addV`/addE are not terminal — a read step may follow and observes the
+/// created element. `addV('T').id()`/`.label()`/`.property(k,v).values(k)` all read the
+/// new vertex; `out()` from it is simply empty (a fresh vertex has no edges). Writes need
+/// a MUTABLE store (via `exec::execute`), not the read-only `run` harness.
+#[test]
+fn addv_read_after_write() {
+    let nd = "{\"type\":\"node\",\"id\":\"a\",\"labels\":[\"P\"],\"properties\":{}}";
+    let run_mut = |q: &str| {
+        let mut st = crate::ndjson::from_ndjson(nd).unwrap();
+        crate::exec::execute(&super::parse(q).unwrap(), &mut st).unwrap()
+    };
+    // addV('T').label() → the created vertex's label.
+    assert_eq!(
+        value_bag(&run_mut("g.addV('T').label()")),
+        vec!["Str(\"T\");"]
+    );
+    // addV then set a property and read it back.
+    assert_eq!(
+        value_bag(&run_mut("g.addV('T').property('name','x').values('name')")),
+        vec!["Str(\"x\");"]
+    );
+    // A read that traverses OUT of the fresh (edgeless) vertex yields nothing.
+    assert!(run_mut("g.addV('T').out('KNOWS')").rows.is_empty());
+    // id() after addV parses and runs (the id value itself is engine-assigned).
+    assert!(super::parse("g.addV('T').id()").is_ok());
 }
 
 // --- addE (B6) ---

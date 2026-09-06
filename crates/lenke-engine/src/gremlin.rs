@@ -148,6 +148,7 @@ pub fn parse(query: &str) -> Result<Plan, String> {
         sack_slot: None,
         subgraph_caps: std::collections::HashMap::new(),
         pending_write: None,
+        pending_insert: None,
         current_is_map: false,
         current_is_element: false,
         current_is_path: false,
@@ -848,6 +849,13 @@ struct Parser {
     /// plan resets to `Row` (the seeded frontier) so the tail builds over it; `traversal`
     /// wraps the finished tail back into a [`Plan::UpdateReturn`].
     pending_write: Option<(Box<Plan>, Vec<crate::ir::SetOp>)>,
+    /// An `addV()` insert whose read tail we are now building — TinkerPop's
+    /// `addV('T').id()` (read-after-write): `addV`/`addE` are NOT terminal, the created
+    /// element is the new frontier. Set when a read step first follows the insert: the
+    /// `(nodes, edges)` is stashed and the working plan resets to `Row`, with the created
+    /// node bound at slot 0, so the tail builds over it; `traversal` wraps the finished
+    /// tail back into a [`Plan::InsertReturn`].
+    pending_insert: Option<(Vec<crate::ir::InsertNode>, Vec<crate::ir::InsertEdge>)>,
     /// True when the current traverser is a Map (a `project`/`group`/`valueMap`/…
     /// row), false on an element or scalar frontier. Gremlin's `select('k')` reads a
     /// Map ENTRY only on a Map; on a vertex/edge an unbound tag matches nothing and the
@@ -1548,6 +1556,15 @@ impl Parser {
                 tail: Box::new(plan),
             };
         }
+        // A folded `addV()` read tail (`addV('T').id()`): wrap it into an InsertReturn so
+        // the insert runs, then `plan` reads the created element (bound at slot 0).
+        if let Some((nodes, edges)) = self.pending_insert.take() {
+            plan = Plan::InsertReturn {
+                nodes,
+                edges,
+                tail: Box::new(plan),
+            };
+        }
         Ok(plan)
     }
 
@@ -1835,14 +1852,27 @@ impl Parser {
         // terminal for reads (a created/dropped element has no read frontier here).
         let is_property_update = matches!(&plan, Plan::Update { ops, .. }
             if ops.iter().all(|op| !matches!(op, crate::ir::SetOp::Delete { .. })));
+        let is_insert = matches!(&plan, Plan::Insert { .. });
         let plan = if is_property_update && self.pending_write.is_none() {
             let Plan::Update { input, ops } = plan else {
                 unreachable!()
             };
             self.pending_write = Some((input, ops));
             Plan::Row
+        } else if is_insert && self.pending_insert.is_none() {
+            // TinkerPop: addV/addE are NOT terminal — the created element is the new
+            // frontier, so read steps may follow (`addV('T').id()`). Stash the insert and
+            // build the read tail over `Row`; `InsertReturn` binds the created node at
+            // slot 0, so the tail reads it. `traversal` wraps it back into InsertReturn.
+            let Plan::Insert { nodes, edges } = plan else {
+                unreachable!()
+            };
+            self.pending_insert = Some((nodes, edges));
+            self.current = 0;
+            self.slots = 1;
+            Plan::Row
         } else if is_write(&plan) {
-            // drop() (an Update of Deletes) and addV/addE/Merge stay terminal for reads.
+            // drop() (an Update of Deletes) and Merge stay terminal for reads.
             return Err(format!("step `{lname}` cannot follow a write step"));
         } else {
             plan
