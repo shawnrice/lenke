@@ -1115,6 +1115,46 @@ fn call_inline_uncorrelated_empty_scope() {
     assert_eq!(iso.rows.len(), 0);
 }
 
+/// The ISO `<variable scope clause>` — the `(scope)` — is OPTIONAL, so a bare
+/// `CALL { … }` is the uncorrelated inline call, identical to `CALL () { … }`. It
+/// works both after a MATCH and as a top-level statement (seeded from one unit row),
+/// and the body's `<simple linear query statement>` (the MATCH part) is optional too,
+/// so a bare `RETURN` body is legal.
+#[test]
+fn call_inline_bare_braces_and_matchless_body() {
+    let store = social(); // 4 nodes: alice, bob, carol, graphdb
+                          // Bare `CALL { … }` after a MATCH — no `(scope)` — is the uncorrelated form.
+    let after = run(
+        &super::parse(
+            "MATCH (p:Person {name: 'alice'}) \
+                 CALL { MATCH (n) RETURN count(n) AS total } RETURN total",
+        )
+        .unwrap(),
+        &store,
+    );
+    assert_eq!(after.rows.len(), 1);
+    assert!(matches!(after.rows[0][0], crate::value::Value::Num(x) if x == 4.0));
+
+    // Top-level bare `CALL { … } RETURN` — seeded from a single unit row.
+    let top = run(
+        &super::parse("CALL { MATCH (n) RETURN count(n) AS total } RETURN total").unwrap(),
+        &store,
+    );
+    assert_eq!(top.rows.len(), 1);
+    assert!(matches!(top.rows[0][0], crate::value::Value::Num(x) if x == 4.0));
+
+    // A MATCH-less body — a bare `RETURN` — is a valid subquery body.
+    let matchless = run(
+        &super::parse("CALL { RETURN 1 AS y } RETURN y").unwrap(),
+        &store,
+    );
+    assert_eq!(matchless.rows.len(), 1);
+    assert!(matches!(matchless.rows[0][0], crate::value::Value::Num(x) if x == 1.0));
+
+    // A bare name after CALL is still the (deferred/unknown) named-procedure form.
+    assert!(super::parse("CALL nope() YIELD x RETURN x").is_err());
+}
+
 #[test]
 fn call_inline_subquery_where() {
     let store = social();

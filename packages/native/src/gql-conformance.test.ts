@@ -935,6 +935,28 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     expect(tsA).toBe(natA);
   });
 
+  test('inline subquery CALL: optional scope clause + optional MATCH (ISO) is byte-identical', () => {
+    // The ISO `<variable scope clause>` (the `(scope)`) is OPTIONAL — a bare
+    // `CALL { … }` is the uncorrelated form, identical to `CALL () { … }`, both after a
+    // MATCH and as a top-level statement. The body's MATCH part is optional too, so a
+    // bare `RETURN` body is legal. Native used to reject all of these; TS accepted them.
+    const cases = [
+      // Top-level bare braces vs explicit empty scope — same result.
+      'CALL { MATCH (n:Person) RETURN n.name AS x } RETURN x ORDER BY x',
+      'CALL () { MATCH (n:Person) RETURN n.name AS x } RETURN x ORDER BY x',
+      // MATCH-less body (bare RETURN) at top level and after a MATCH.
+      'CALL { RETURN 1 AS y } RETURN y',
+      'MATCH (p:Person) CALL { RETURN 1 AS y } RETURN p.name AS x, y ORDER BY x',
+      // A UNION body with a MATCH-less arm.
+      'CALL { MATCH (n:Person) RETURN n.name AS x UNION MATCH (m:Software) RETURN m.name AS x } RETURN x ORDER BY x',
+    ];
+
+    for (const q of cases) {
+      const [ts, nat] = both(q);
+      expect(ts).toBe(nat);
+    }
+  });
+
   test('inline subquery CALL with set operators is byte-identical', () => {
     // UNION (distinct) inside the correlated body: per person, KNOWS-neighbour
     // names ∪ CREATED-thing names. marko → {vadas, josh} ∪ {lop}; others empty.

@@ -987,10 +987,19 @@ impl Parser {
         if self.eat_kw("INSERT") {
             return self.insert();
         }
-        // A top-level named-procedure call: `CALL name(config) [YIELD …]` invoking a
-        // built-in graph algorithm. (The inline `CALL (scope) { … }` form only
-        // occurs after a MATCH, inside `query_tail`.)
+        // A top-level `CALL`. The inline subquery form `CALL [(scope)] { … }` may stand
+        // alone as a statement (seeded from a single unit row — the ISO scope clause is
+        // optional, so both `CALL { … }` and `CALL () { … }` are accepted); a bare
+        // procedure name is the named-procedure call invoking a built-in graph algorithm.
         if self.eat_kw("CALL") {
+            if matches!(self.peek(), Some(Tok::LBrace) | Some(Tok::LParen)) {
+                // Seed from a single unit row, exactly like a top-level `FOR`/`RETURN`:
+                // `Plan::Row` occupies slot 0, so the subquery's output columns (the
+                // cross-join right side) land at slot 1 onward.
+                self.slots = 1;
+                let plan = self.call_inline(Plan::Row, false)?;
+                return self.query_tail(plan);
+            }
             return self.call_procedure();
         }
         // A leading `FOR <var> IN <list>` — a list-unwind that seeds the query (no
@@ -4169,10 +4178,18 @@ impl Parser {
     /// deferred to the algorithms phase — its catalog is those procedures.
     fn call_inline(&mut self, plan: Plan, optional: bool) -> Result<Plan, String> {
         let outer_width = self.slots;
-        // The inline form opens with a `(scope)`; anything else (a bare name) is
-        // the deferred named-procedure call.
+        // The ISO `<variable scope clause>` — the `(scope)` — is OPTIONAL: a bare
+        // `CALL { … }` is the uncorrelated inline call (empty scope), exactly like
+        // `CALL () { … }`. Anything that is neither `(` nor `{` (a bare name) is the
+        // deferred named-procedure call.
         if !self.eat(&Tok::LParen) {
-            return Err("only the inline `CALL (scope) { … }` form is supported; \
+            if self.peek() == Some(&Tok::LBrace) {
+                if optional {
+                    return Err("OPTIONAL CALL { … } (uncorrelated) is not supported".into());
+                }
+                return self.call_inline_uncorrelated(plan, outer_width);
+            }
+            return Err("only the inline `CALL [(scope)] { … }` form is supported; \
                         named-procedure CALL is deferred to the algorithms phase"
                 .into());
         }
@@ -4387,9 +4404,6 @@ impl Parser {
     /// `)` are already consumed; the outer scope is intact in `self`.
     fn call_inline_uncorrelated(&mut self, plan: Plan, outer_width: usize) -> Result<Plan, String> {
         self.expect(&Tok::LBrace)?;
-        if !self.eat_kw("MATCH") {
-            return Err("a CALL subquery must begin with MATCH".into());
-        }
         // Parse the body in a FRESH slot space, with outer variables isolated to NULL
         // (a LET-style local shadowing any outer binding). A parse error discards the
         // whole parser, so the saved state need not be restored on the error paths.
@@ -4399,7 +4413,14 @@ impl Parser {
             self.lets.push((name.clone(), Expr::Lit(Value::Null)));
         }
         self.slots = 0;
-        let body = self.match_body()?;
+        // The `<simple linear query statement>` (the MATCH part) is OPTIONAL in ISO GQL —
+        // `<ambient linear query statement> ::= [ … ] <primitive result statement>` — so a
+        // body may be a bare `RETURN`. Without a MATCH the body is a single unit row.
+        let body = if self.eat_kw("MATCH") {
+            self.match_body()?
+        } else {
+            Plan::Row
+        };
         if !self.eat_kw("RETURN") {
             return Err("a CALL subquery needs a RETURN".into());
         }
@@ -4429,10 +4450,11 @@ impl Parser {
             self.group_node_slots = HashSet::new();
             self.group_edge_slots = HashSet::new();
             self.group_var_depth = HashMap::new();
-            if !self.eat_kw("MATCH") {
-                return Err("a CALL subquery must begin with MATCH".into());
-            }
-            let arm_body = self.match_body()?;
+            let arm_body = if self.eat_kw("MATCH") {
+                self.match_body()?
+            } else {
+                Plan::Row
+            };
             if !self.eat_kw("RETURN") {
                 return Err("a CALL subquery needs a RETURN".into());
             }
