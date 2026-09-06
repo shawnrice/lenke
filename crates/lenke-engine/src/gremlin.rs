@@ -627,7 +627,11 @@ fn unwrap_values_fold(plan: Plan, current: usize) -> (Plan, Expr) {
 fn is_write(plan: &Plan) -> bool {
     matches!(
         plan,
-        Plan::Insert { .. } | Plan::Update { .. } | Plan::Merge { .. } | Plan::AddEdge { .. }
+        Plan::Insert { .. }
+            | Plan::Update { .. }
+            | Plan::Merge { .. }
+            | Plan::AddEdge { .. }
+            | Plan::AddEdgeStep { .. }
     )
 }
 
@@ -1423,12 +1427,17 @@ impl Parser {
                 }
             }
             "adde" => {
-                // g.addE('T').from(V(a)).to(V(b)).property(...)
+                // g.addE('T').from(V(a)).to(V(b)) — a source addE over a single unit row;
+                // both endpoints must be explicit (there is no current traverser). Endpoints
+                // resolve at exec (string or numeric external ids), so it works on the
+                // ordinary string-id graphs too, not just numeric-id ones.
                 self.expect(&Tok::LParen)?;
                 let etype = self.str_arg()?;
                 check_write_name("edge label", &etype)?;
                 self.expect(&Tok::RParen)?;
-                self.finish_add_edge(None, None, etype)?
+                self.current = 0;
+                self.slots = 1;
+                self.finish_add_edge_step(Plan::Row, None, etype)?
             }
             "addv" => {
                 // addV('Label') creates one vertex; following property() steps
@@ -1815,7 +1824,24 @@ impl Parser {
         }
 
         // --- write steps ---
+        // Per-traverser `addE('L')` (mid-traversal): the current traverser is the default
+        // FROM, `.from(...)`/`.to(...)` set the endpoints, and one edge is created per row.
+        if lname == "adde" {
+            let etype = self.str_arg()?;
+            check_write_name("edge label", &etype)?;
+            self.expect(&Tok::RParen)?;
+            let from = crate::ir::EdgeEnd::Slot(self.current);
+            return self.finish_add_edge_step(plan, Some(from), etype);
+        }
         if lname == "property" {
+            // Read-after-write on a just-created EDGE (`addE(...).property(k, v)`) is not
+            // yet supported — reject cleanly rather than letting `apply_property` (which
+            // expects an Insert/Update frontier) index a write plan and panic.
+            if matches!(&plan, Plan::AddEdgeStep { .. }) {
+                return Err(
+                    "property() after addE (edge read-after-write) is not yet supported".into(),
+                );
+            }
             let key = self.str_arg()?;
             check_write_name("property key", &key)?;
             self.expect(&Tok::Comma)?;
@@ -5421,6 +5447,102 @@ impl Parser {
             to,
             etype,
             props,
+        })
+    }
+
+    /// One endpoint of a per-traverser `addE`: a `[__.]V('id')` / `V(<num>)` anchor (an
+    /// [`crate::ir::EdgeEnd::ExtId`] resolved at exec) or a tag string `'x'` recalling an
+    /// `as()`-bound node ([`crate::ir::EdgeEnd::Slot`]). The opening `(` is already eaten;
+    /// leaves the cursor AT the closing `)`.
+    fn parse_edge_endpoint(&mut self) -> Result<crate::ir::EdgeEnd, String> {
+        // A bare string is an as()-tag recall.
+        if let Some(Tok::Str(_)) = self.peek() {
+            let tag = self.str_arg()?;
+            let slot = self
+                .all_labels
+                .get(&tag)
+                .and_then(|slots| slots.first())
+                .copied()
+                .ok_or_else(|| format!("addE endpoint tag `{tag}` is not a bound as() label"))?;
+            return Ok(crate::ir::EdgeEnd::Slot(slot));
+        }
+        // An optional anonymous-traversal prefix, then `V(id)`.
+        if matches!(self.peek(), Some(Tok::Ident(s)) if s == "__") {
+            self.bump();
+            self.expect(&Tok::Dot)?;
+        }
+        let v = self.ident()?;
+        if !v.eq_ignore_ascii_case("V") {
+            return Err(format!(
+                "addE endpoint must be V(id) or an as() tag, got `{v}`"
+            ));
+        }
+        self.expect(&Tok::LParen)?;
+        let id = match self.bump() {
+            Some(Tok::Str(s)) => s,
+            Some(Tok::Num(n)) if n.fract() == 0.0 => format!("{}", n as i64),
+            other => {
+                return Err(format!(
+                    "addE endpoint V(id): expected an id, got {other:?}"
+                ))
+            }
+        };
+        self.expect(&Tok::RParen)?;
+        Ok(crate::ir::EdgeEnd::ExtId(id))
+    }
+
+    /// Finish a per-traverser `addE('L')` (the label + `(` already consumed and the `)`
+    /// eaten by the caller): consume the trailing `.from(...)` / `.to(...)` modulators and
+    /// build a [`Plan::AddEdgeStep`] over `input`. FROM defaults to `default_from` (the
+    /// current traverser for `V(x).addE(...)`, or `None` for the source `g.addE(...)`,
+    /// which then requires an explicit `.from(...)`). A trailing `.property(...)` or read
+    /// step is left in the stream — the read-after-write guard handles it (deferred for
+    /// edges), so `addE` stays terminal for reads in this version.
+    fn finish_add_edge_step(
+        &mut self,
+        input: Plan,
+        default_from: Option<crate::ir::EdgeEnd>,
+        etype: String,
+    ) -> Result<Plan, String> {
+        let mut from = default_from;
+        let mut to: Option<crate::ir::EdgeEnd> = None;
+        while self.peek() == Some(&Tok::Dot) {
+            let save = self.pos;
+            self.bump();
+            let m = self.ident()?.to_ascii_lowercase();
+            match m.as_str() {
+                "from" => {
+                    self.expect(&Tok::LParen)?;
+                    from = Some(self.parse_edge_endpoint()?);
+                    self.expect(&Tok::RParen)?;
+                }
+                "to" => {
+                    self.expect(&Tok::LParen)?;
+                    to = Some(self.parse_edge_endpoint()?);
+                    self.expect(&Tok::RParen)?;
+                }
+                // Anything else (property/read step) is not an addE modulator — rewind and
+                // let the step loop handle it (a write step there faults per the guard).
+                _ => {
+                    self.pos = save;
+                    break;
+                }
+            }
+        }
+        let from = from.ok_or("addE needs a from(...) endpoint (or a preceding V(...))")?;
+        let to = to.ok_or("addE needs a to(...) endpoint")?;
+        // The created edge is the new frontier (slot 0); the tail projects it.
+        let tail = Plan::Row.project(vec![("_".to_string(), Expr::Slot(0))]);
+        self.current = 0;
+        self.slots = 1;
+        self.on_edge = true;
+        self.edge_scope = Some(true);
+        Ok(Plan::AddEdgeStep {
+            input: Box::new(input),
+            from,
+            to,
+            etype,
+            tail: Box::new(tail),
         })
     }
 

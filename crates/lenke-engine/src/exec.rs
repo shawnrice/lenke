@@ -186,6 +186,7 @@ fn plan_has_varlen(plan: &Plan) -> bool {
         | Plan::Merge { .. }
         | Plan::MergeEdge { .. }
         | Plan::AddEdge { .. }
+        | Plan::AddEdgeStep { .. }
         | Plan::CallProcedure { .. } => false,
         Plan::Filter { input, .. }
         | Plan::Project { input, .. }
@@ -659,6 +660,70 @@ pub fn execute(plan: &Plan, store: &mut Store) -> Result<Rows, String> {
             }
             Ok(empty_rows())
         }
+        Plan::AddEdgeStep {
+            input,
+            from,
+            to,
+            etype,
+            tail,
+        } => {
+            use crate::ir::EdgeEnd;
+            // Read phase (store borrowed immutably): pull the input frontier, then resolve
+            // each row's endpoints — a `Slot` reads the row's node id, an `ExtId` resolves
+            // `V('id')` against the store. A constant `ExtId` resolves once; a missing
+            // vertex is a hard error (matching the TS engine), not a dropped row.
+            let batch = pull(input, store, false)?;
+            let resolve_ext = |s: &str| -> Result<u32, String> {
+                store
+                    .node_by_ext(s)
+                    .filter(|&id| store.is_alive(id))
+                    .ok_or_else(|| {
+                        format!(
+                            "E_MISSING_VERTEX: addE('{etype}'): endpoint vertex `{s}` not found"
+                        )
+                    })
+            };
+            let from_fixed = match from {
+                EdgeEnd::ExtId(s) => Some(resolve_ext(s)?),
+                EdgeEnd::Slot(_) => None,
+            };
+            let to_fixed = match to {
+                EdgeEnd::ExtId(s) => Some(resolve_ext(s)?),
+                EdgeEnd::Slot(_) => None,
+            };
+            let node_at = |end: &EdgeEnd, fixed: Option<u32>, i: usize| -> Option<u32> {
+                match end {
+                    EdgeEnd::ExtId(_) => fixed,
+                    EdgeEnd::Slot(n) => match batch.slot(*n) {
+                        Col::Nodes(ids) => ids.get(i).copied(),
+                        _ => None,
+                    },
+                }
+            };
+            let mut pairs: Vec<(u32, u32)> = Vec::with_capacity(batch.rows());
+            for i in 0..batch.rows() {
+                match (node_at(from, from_fixed, i), node_at(to, to_fixed, i)) {
+                    (Some(f), Some(t)) => pairs.push((f, t)),
+                    _ => {
+                        return Err(format!(
+                            "E_MISSING_VERTEX: addE('{etype}'): could not resolve endpoint vertices"
+                        ))
+                    }
+                }
+            }
+            drop(batch);
+            // Write phase: create one edge per resolved (from, to) pair.
+            let mut eids: Vec<u32> = Vec::with_capacity(pairs.len());
+            for (f, t) in pairs {
+                eids.push(store.add_edge(f, t, etype));
+            }
+            // Output: the created edges as the frontier (slot 0), then project the tail —
+            // so a following read (or the default element projection) observes the edge.
+            let seed = Batch::single(Col::Edges(eids));
+            let store_ref: &Store = store;
+            let batch = pull_body(tail, store_ref, &seed)?;
+            Ok(rows_from_batch(tail, &batch, store_ref))
+        }
         _ => try_run(plan, store),
     }
 }
@@ -734,6 +799,7 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
         | Plan::Merge { .. }
         | Plan::MergeEdge { .. }
         | Plan::AddEdge { .. }
+        | Plan::AddEdgeStep { .. }
         | Plan::TxControl { .. } => Batch::of(Vec::new()),
         Plan::PathRecord { input, value, tag } => {
             let mut batch = pull(input, store, track)?;

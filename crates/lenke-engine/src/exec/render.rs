@@ -505,6 +505,7 @@ pub(super) fn needs_lineage(plan: &Plan) -> bool {
         | Plan::Merge { .. }
         | Plan::MergeEdge { .. }
         | Plan::AddEdge { .. }
+        | Plan::AddEdgeStep { .. }
         | Plan::CallProcedure { .. }
         | Plan::TxControl { .. }
         | Plan::InsertFrom { .. } => false,

@@ -639,5 +639,6 @@ pub(crate) fn is_write(plan: &Plan) -> bool {
             | Plan::Merge { .. }
             | Plan::MergeEdge { .. }
             | Plan::AddEdge { .. }
+            | Plan::AddEdgeStep { .. }
     )
 }

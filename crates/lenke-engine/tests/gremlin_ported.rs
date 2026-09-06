@@ -1367,13 +1367,15 @@ fn marko_created_edge_weight() {
 
 #[test]
 fn add_vertex_and_property() {
-    // Deferred Gremlin form (the engine rejects it — an explicit "not yet supported"
-    // step or an addV/addE position the parser does not accept). Re-asserted as a
-    // rejection so it stays green AND flips the day the feature lands.
-    assert!(
-        rejects("g.addV('PERSON').property('name','newbie').property('age',40).values('name')"),
-        "expected the engine to reject add_vertex_and_property"
-    );
+    // NOW SUPPORTED (read-after-write on addV): create the vertex, set two properties, then
+    // read one back — the created vertex is the frontier, so `values('name')` sees 'newbie'.
+    let mut g = modern();
+    let r = exec_query(
+        "g.addV('PERSON').property('name','newbie').property('age',40).values('name')",
+        &mut g,
+    )
+    .unwrap();
+    assert_eq!(r, vec![GVal::Str("newbie".into())]);
 }
 
 // ===== null is a first-class property value (deliberate TinkerPop divergence) =====
@@ -1507,13 +1509,16 @@ fn dedup_by_label_dedupes_on_the_tagged_value() {
 
 #[test]
 fn drop_cannot_be_spoofed_by_a_project_map() {
-    // Deferred Gremlin form (the engine rejects it — an explicit "not yet supported"
-    // step or an addV/addE position the parser does not accept). Re-asserted as a
-    // rejection so it stays green AND flips the day the feature lands.
-    assert!(
-        rejects("g.V().project('key').by(constant('age')).drop()"),
-        "expected the engine to reject drop_cannot_be_spoofed_by_a_project_map"
-    );
+    // project() yields Map rows; `drop()` over a non-element frontier deletes NOTHING — it
+    // can't be spoofed into deleting vertices. Previously the whole query was rejected
+    // because project().by(constant) was unsupported; now it runs as a safe no-op, and the
+    // anti-spoofing invariant still holds: every vertex survives.
+    let mut g = modern();
+    let before = exec_query("g.V().count()", &mut g).unwrap();
+    exec_query("g.V().project('key').by(constant('age')).drop()", &mut g).unwrap();
+    let after = exec_query("g.V().count()", &mut g).unwrap();
+    assert_eq!(before, after);
+    assert_eq!(after, vec![GVal::Num(6.0)]);
 }
 
 #[test]
@@ -4693,45 +4698,46 @@ fn p2_flatmap_many_per_input() {
 
 #[test]
 fn p2_adde_to_subplan() {
-    // Deferred Gremlin form (the engine rejects it — an explicit "not yet supported"
-    // step or an addV/addE position the parser does not accept). Re-asserted as a
-    // rejection so it stays green AND flips the day the feature lands.
-    assert!(
-        rejects("g.V('1').addE('NEMESIS').to(__.V('6'))"),
-        "expected the engine to reject p2_adde_to_subplan"
-    );
+    // NOW SUPPORTED: a per-traverser `addE` creates the edge (current traverser FROM, a
+    // `V(id)`/`__.V(id)` TO) and returns it — one created edge.
+    let mut g = modern();
+    let r = exec_query("g.V('1').addE('NEMESIS').to(__.V('6'))", &mut g).unwrap();
+    assert_eq!(r.len(), 1);
 }
 
 #[test]
 fn p2_adde_from_tag() {
-    // Deferred Gremlin form (the engine rejects it — an explicit "not yet supported"
-    // step or an addV/addE position the parser does not accept). Re-asserted as a
-    // rejection so it stays green AND flips the day the feature lands.
-    assert!(
-        rejects("g.V('1').as('start').out('KNOWS').addE('META').from('start').to(__.V('6'))"),
-        "expected the engine to reject p2_adde_from_tag"
-    );
+    // NOW SUPPORTED: `from('start')` recalls the as()-tagged node; one edge is created per
+    // current traverser — marko KNOWS vadas + josh, so two edges FROM marko TO peter.
+    let mut g = modern();
+    let r = exec_query(
+        "g.V('1').as('start').out('KNOWS').addE('META').from('start').to(__.V('6'))",
+        &mut g,
+    )
+    .unwrap();
+    assert_eq!(r.len(), 2);
 }
 
 #[test]
 fn p2_adde_with_property() {
-    // Deferred Gremlin form (the engine rejects it — an explicit "not yet supported"
-    // step or an addV/addE position the parser does not accept). Re-asserted as a
-    // rejection so it stays green AND flips the day the feature lands.
+    // addE + from/to is supported (see p2_adde_to_subplan), but a `property()` (or any
+    // read) AFTER addE — read-after-write on the created EDGE — is still deferred: the
+    // read-after-write guard rejects it. Flips when edge read-after-write lands.
     assert!(
         rejects("g.V('1').addE('KNOWS').to(__.V('6')).property('weight', 0.42)"),
-        "expected the engine to reject p2_adde_with_property"
+        "expected the engine to reject p2_adde_with_property (property after addE deferred)"
     );
 }
 
 #[test]
 fn p2_add_e_unresolvable_endpoint_faults() {
-    // Deferred Gremlin form (the engine rejects it — an explicit "not yet supported"
-    // step or an addV/addE position the parser does not accept). Re-asserted as a
-    // rejection so it stays green AND flips the day the feature lands.
+    // addE to a non-existent endpoint now faults with E_MISSING_VERTEX (matching the TS
+    // engine) — a real endpoint-resolution error, not "unsupported step".
+    let mut g = modern();
+    let err = exec_query("g.V('1').addE('NEMESIS').to(__.V('999'))", &mut g).unwrap_err();
     assert!(
-        rejects("g.V('1').addE('NEMESIS').to(__.V('999'))"),
-        "expected the engine to reject p2_add_e_unresolvable_endpoint_faults"
+        err.contains("E_MISSING_VERTEX"),
+        "expected E_MISSING_VERTEX, got: {err}"
     );
 }
 

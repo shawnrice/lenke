@@ -28,6 +28,7 @@ import { Edge, Graph, isElement } from '@lenke/core';
 import { ErrorCode, hasErrorCode } from '@lenke/errors';
 import {
   V,
+  addE,
   addV,
   as_,
   branch,
@@ -990,6 +991,87 @@ suite('gremlin conformance: stored map property', () => {
       } finally {
         backend!.graphFree(handle);
       }
+    }
+  });
+
+  // Per-traverser `addE` — native was a parse-time-static, numeric-id-only construct that
+  // did not work on string-id graphs; it now creates one edge per row with runtime-resolved
+  // endpoints (current traverser / V(id) / as()-tag), byte-identical to TS. The created
+  // edge's id is engine-assigned (dense vs uuid), so compare from/to/labels only. Fresh
+  // graphs per case (writes mutate).
+  test('addE creates edges byte-identically to native (from/to/labels)', () => {
+    // drop the engine-assigned edge id; the rest of the edge shape must match.
+    const edges = (rows: unknown[]): unknown =>
+      rows
+        .map((r) => {
+          const { id, properties, ...rest } = canonJson(r) as Record<string, unknown>;
+
+          return rest;
+        })
+        .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+
+    const cases: [Plan, unknown][] = [
+      // current-traverser FROM + V(id) TO.
+      [
+        traversal(V('1'), addE('NEMESIS').to(V('6'))),
+        [{ from: '1', to: '6', labels: ['NEMESIS'] }],
+      ],
+      // source form: both endpoints explicit.
+      [traversal(addE('LINK').from(V('1')).to(V('6'))), [{ from: '1', to: '6', labels: ['LINK'] }]],
+      // as()-tag FROM, one edge per KNOWS neighbour (marko knows vadas + josh).
+      [
+        traversal(V('1'), as_('s'), out('KNOWS'), addE('META').from('s').to(V('6'))),
+        [
+          { from: '1', to: '6', labels: ['META'] },
+          { from: '1', to: '6', labels: ['META'] },
+        ],
+      ],
+    ];
+
+    for (const [plan, expected] of cases) {
+      const groovy = planToGremlin(plan);
+      const ts = edges(toArray(plan, createTestTinkerGraph()));
+      const handle = backend!.graphFromNdjson(new TextEncoder().encode(MODERN_NDJSON));
+
+      try {
+        const native = edges(
+          JSON.parse(decoder.decode(backend!.gremlinJson(handle, groovy))) as unknown[],
+        );
+
+        expect(ts).toEqual(expected);
+        expect(native).toEqual(expected);
+      } finally {
+        backend!.graphFree(handle);
+      }
+    }
+  });
+
+  test('addE to a missing endpoint faults with E_MISSING_VERTEX on both engines', () => {
+    const plan = traversal(V('1'), addE('L').to(V('999')));
+    const groovy = planToGremlin(plan);
+    const tsErr = (() => {
+      try {
+        toArray(plan, createTestTinkerGraph());
+      } catch (e) {
+        return e;
+      }
+    })();
+    expect(hasErrorCode(tsErr, ErrorCode.MissingVertex)).toBe(true);
+
+    const handle = backend!.graphFromNdjson(new TextEncoder().encode(MODERN_NDJSON));
+
+    try {
+      let natErr: unknown;
+
+      try {
+        backend!.gremlinJson(handle, groovy);
+      } catch (e) {
+        natErr = e;
+      }
+
+      expect(hasErrorCode(natErr, ErrorCode.MissingVertex)).toBe(true);
+    } finally {
+      backend!.graphFree(handle);
     }
   });
 });

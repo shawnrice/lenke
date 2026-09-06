@@ -39,6 +39,7 @@ fn bind_plan(plan: &mut Plan, params: &HashMap<&str, &Value>) -> Result<(), Stri
         | Plan::RangeSeek { .. }
         | Plan::Insert { .. }
         | Plan::AddEdge { .. }
+        | Plan::AddEdgeStep { .. }
         | Plan::CallProcedure { .. }
         | Plan::TxControl { .. } => {}
 

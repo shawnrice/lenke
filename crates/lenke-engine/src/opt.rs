@@ -302,6 +302,7 @@ fn map_children(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
         | Plan::Merge { .. }
         | Plan::MergeEdge { .. }
         | Plan::AddEdge { .. }
+        | Plan::AddEdgeStep { .. }
         | Plan::CallProcedure { .. }
         | Plan::TxControl { .. }) => (p, false),
         Plan::GroupToMap { input } => {
@@ -1713,6 +1714,7 @@ pub(crate) fn width(plan: &Plan) -> usize {
         | Plan::Merge { .. }
         | Plan::MergeEdge { .. }
         | Plan::AddEdge { .. }
+        | Plan::AddEdgeStep { .. }
         | Plan::TxControl { .. } => 0,
 
         // A bind_edge Expand appends TWO slots (edge then node).

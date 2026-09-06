@@ -2161,6 +2161,56 @@ fn addv_read_after_write() {
     assert!(super::parse("g.addV('T').id()").is_ok());
 }
 
+/// Per-traverser `addE` (Gremlin): the current traverser is the default FROM, `.from(...)`/
+/// `.to(...)` set endpoints (a `V('id')` external id or an `as()`-tag), one edge is created
+/// per input row, and a missing endpoint faults with E_MISSING_VERTEX (matching the TS
+/// engine). Runs on the ORDINARY string-id graph, not just numeric ids.
+#[test]
+fn gremlin_add_edge_per_traverser() {
+    let nd = "{\"type\":\"node\",\"id\":\"a\",\"labels\":[\"P\"],\"properties\":{\"n\":\"a\"}}\n\
+              {\"type\":\"node\",\"id\":\"b\",\"labels\":[\"P\"],\"properties\":{\"n\":\"b\"}}\n\
+              {\"type\":\"node\",\"id\":\"c\",\"labels\":[\"P\"],\"properties\":{\"n\":\"c\"}}";
+    let run_mut =
+        |q: &str, st: &mut Store| crate::exec::execute(&super::parse(q).unwrap(), st).unwrap();
+
+    // V(a).addE('L').to(V(b)) — current-traverser FROM, V(id) TO. Read the neighbour back.
+    let mut st = crate::ndjson::from_ndjson(nd).unwrap();
+    run_mut("g.V('a').addE('L').to(V('b'))", &mut st);
+    assert_eq!(
+        value_bag(&run_mut("g.V('a').out('L').values('n')", &mut st)),
+        vec!["Str(\"b\");"]
+    );
+
+    // Source form: addE('L').from(V(a)).to(V(c)) over a single unit row.
+    let mut st2 = crate::ndjson::from_ndjson(nd).unwrap();
+    run_mut("g.addE('L').from(V('a')).to(V('c'))", &mut st2);
+    assert_eq!(
+        value_bag(&run_mut("g.V('a').out('L').values('n')", &mut st2)),
+        vec!["Str(\"c\");"]
+    );
+
+    // Per-traverser: one edge created per input vertex (3 nodes → 3 edges).
+    let mut st3 = crate::ndjson::from_ndjson(nd).unwrap();
+    assert_eq!(
+        run_mut("g.V().addE('SELF').to(V('a'))", &mut st3)
+            .rows
+            .len(),
+        3
+    );
+
+    // A missing endpoint faults with E_MISSING_VERTEX (not a silently-dropped row).
+    let mut st4 = crate::ndjson::from_ndjson(nd).unwrap();
+    let err = crate::exec::execute(
+        &super::parse("g.V('a').addE('L').to(V('zzz'))").unwrap(),
+        &mut st4,
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("E_MISSING_VERTEX"),
+        "expected E_MISSING_VERTEX, got: {err}"
+    );
+}
+
 // --- addE (B6) ---
 
 /// `g.V(a).addE('T').to(V(b)).property(...)` creates one edge with props.

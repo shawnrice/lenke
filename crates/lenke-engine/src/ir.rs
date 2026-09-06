@@ -1086,6 +1086,19 @@ pub enum Plan {
         etype: String,
         props: Vec<(String, Value)>,
     },
+    /// Create one edge PER input row — Gremlin's per-traverser `addE` (`V(x).addE('L')
+    /// .to(V(y))`, `addE('L').from(V(x)).to(V(y))`). Each endpoint resolves at exec (an
+    /// [`EdgeEnd::Slot`] reads a node id from the row; an [`EdgeEnd::ExtId`] resolves a
+    /// `V('id')`). The created edge is bound at slot 0 of `tail` (a `Row`-rooted
+    /// projection), so a following read observes it — the edge twin of
+    /// [`Plan::InsertReturn`]. A write: run through `exec::execute`, never pulled.
+    AddEdgeStep {
+        input: Box<Plan>,
+        from: EdgeEnd,
+        to: EdgeEnd,
+        etype: String,
+        tail: Box<Plan>,
+    },
     /// Keyed upsert of ONE node (the `_MERGE` extension, spec
     /// docs/design/gql-extensions.md §2). The key is the subset of `props` named
     /// by a unique constraint on `label` (inferred at execution — the store holds
@@ -1221,6 +1234,17 @@ pub enum SetOp {
 pub struct InsertNode {
     pub labels: Vec<String>,
     pub props: Vec<(String, Value)>,
+}
+
+/// One endpoint of a per-row `AddEdgeStep`, resolved to a vertex at exec time.
+#[derive(Clone, Debug)]
+pub enum EdgeEnd {
+    /// Read the node id from this input-batch slot — the current traverser (the addE
+    /// FROM by default) or an `as()`-tagged node recalled by `from('tag')`/`to('tag')`.
+    Slot(usize),
+    /// A `V('id')` endpoint — resolve the external id against the store at exec (constant
+    /// across rows). An unknown/deleted id drops the row (no edge created).
+    ExtId(String),
 }
 
 /// An edge to create in an `Insert`: a typed relationship from `nodes[from]` to
