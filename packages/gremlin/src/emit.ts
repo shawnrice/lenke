@@ -147,20 +147,33 @@ const emitAlgoStep = (
  * Edge steps and the vertex steps that come back off them. Split out of
  * `emitStep` purely to keep any one function's branch count reasonable.
  */
-/** Steps that emit as a bare `name()` — no arguments, no modulators. */
+/** Steps that emit as a bare `name()` — no arguments, no modulators. NOTE: the
+ *  reducing aggregations (sum/min/max/mean/count) are NOT here — they carry an optional
+ *  `Scope.local`, emitted by `emitScopedAgg`; a bare `name()` would silently drop the
+ *  local scope and change the query's meaning on the round-trip. */
 const NILADIC: ReadonlySet<Step['kind']> = new Set([
   'id',
   'label',
   'value',
-  'sum',
-  'min',
-  'max',
-  'mean',
   'fold',
   'unfold',
   'identity',
-  'count',
 ] as const);
+
+/** A reducing aggregation that carries an optional `Scope.local` — emit the scope so a
+ *  local aggregation round-trips (`count(local)` ≠ global `count()`). */
+const emitScopedAgg = (step: Step): string | null => {
+  switch (step.kind) {
+    case 'sum':
+    case 'min':
+    case 'max':
+    case 'mean':
+    case 'count':
+      return step.scope === 'local' ? `${step.kind}(local)` : `${step.kind}()`;
+    default:
+      return null;
+  }
+};
 
 const emitEdgeStep = (step: Step): string | null => {
   switch (step.kind) {
@@ -310,7 +323,11 @@ const emitStep = (step: Step): string => {
   // Edge / slice / modulated / nested families first — each returns null for a
   // kind it does not own, so the switch below stays the simple-step case.
   const family =
-    emitEdgeStep(step) ?? emitSliceStep(step) ?? emitModulatedStep(step) ?? emitNestedStep(step);
+    emitEdgeStep(step) ??
+    emitSliceStep(step) ??
+    emitScopedAgg(step) ??
+    emitModulatedStep(step) ??
+    emitNestedStep(step);
 
   if (family !== null) {
     return family;
