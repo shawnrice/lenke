@@ -647,6 +647,11 @@ const CORPUS: Case[] = [
     plan: traversal(V(), has('name', 'marko'), project('k').by(constant(42))),
     verdict: { kind: 'agree', expected: [{ k: 42 }] },
   },
+  {
+    name: "values('age').math('_ / 0') — division by zero throws on both engines",
+    plan: traversal(V(), has('name', 'marko'), values('age'), math('_ / 0')),
+    verdict: { kind: 'bothThrow', code: ErrorCode.InvalidValue },
+  },
 ];
 
 suite('gremlin conformance: TS engine ⟷ Rust engine (over ffi)', () => {

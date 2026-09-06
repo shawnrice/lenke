@@ -176,6 +176,25 @@ describe('math tests', () => {
     expect(() => arr(run(traversal(V(), hasId('1'), math('a + b')), g))).toThrow();
   });
 
+  // Division / modulo by zero is a loud E_INVALID_VALUE, matching the native engine and
+  // GQL's own arithmetic — NOT a silent Infinity/NaN that egress renders as null.
+  test('math: division / modulo by zero throws E_INVALID_VALUE (parity with native)', () => {
+    for (const expr of ['_ / 0', '_ % 0', '10 / (_ - _)']) {
+      let code: unknown;
+
+      try {
+        arr(run(traversal(inject(5), math(expr)), g));
+      } catch (e) {
+        code = hasErrorCode(e, ErrorCode.InvalidValue) ? ErrorCode.InvalidValue : e;
+      }
+
+      expect(code).toBe(ErrorCode.InvalidValue);
+    }
+
+    // Non-zero divisors are unaffected.
+    expect(arr(run(traversal(inject(10), math('_ / 2')), g))).toEqual([5]);
+  });
+
   // Every malformed-math fault carries the same code as native: E_INVALID_VALUE.
   test('math: faults carry ErrorCode.InvalidValue', () => {
     for (const expr of ['_ +', 'nope(_)', 'atan2 _', '( _', 'sin _ )']) {

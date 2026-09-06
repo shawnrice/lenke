@@ -329,8 +329,19 @@ export const evalMath = (expr: string, resolve: (name: string) => number | undef
       if (op === '*') {
         left *= right;
       } else if (op === '/') {
+        // Division by zero is a loud error, matching the native engine and GQL's own
+        // arithmetic (both throw E_INVALID_VALUE) — not a silent Infinity that egress
+        // then renders as null. Keeps `math()` byte-identical across engines.
+        if (right === 0) {
+          throw mathFault('division by zero');
+        }
+
         left /= right;
       } else {
+        if (right === 0) {
+          throw mathFault('division by zero');
+        }
+
         left %= right;
       }
 
