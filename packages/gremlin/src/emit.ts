@@ -319,18 +319,24 @@ const emitNestedStep = (step: Step): string | null => {
   }
 };
 
-const emitStep = (step: Step): string => {
-  // Edge / slice / modulated / nested families first — each returns null for a
-  // kind it does not own, so the switch below stays the simple-step case.
-  const family =
-    emitEdgeStep(step) ??
-    emitSliceStep(step) ??
-    emitScopedAgg(step) ??
-    emitModulatedStep(step) ??
-    emitNestedStep(step);
+// Family sub-emitters tried in order; each returns null for a kind it does not own, so
+// the `emitStep` switch below stays the simple-step case. A loop (rather than a `??`
+// chain) keeps `emitStep`'s cyclomatic complexity off the dispatch switch.
+const FAMILY_EMITTERS: readonly ((step: Step) => string | null)[] = [
+  emitEdgeStep,
+  emitSliceStep,
+  emitScopedAgg,
+  emitModulatedStep,
+  emitNestedStep,
+];
 
-  if (family !== null) {
-    return family;
+const emitStep = (step: Step): string => {
+  for (const emit of FAMILY_EMITTERS) {
+    const family = emit(step);
+
+    if (family !== null) {
+      return family;
+    }
   }
 
   switch (step.kind) {

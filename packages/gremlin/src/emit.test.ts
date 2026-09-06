@@ -1,6 +1,18 @@
 import { describe, expect, test } from 'bun:test';
 
-import { count, fold, max, mean, min, planToGremlin, Scope, sum, traversal, V, values } from './index.js';
+import {
+  count,
+  fold,
+  max,
+  mean,
+  min,
+  planToGremlin,
+  Scope,
+  sum,
+  traversal,
+  V,
+  values,
+} from './index.js';
 
 // Regression: the reducing aggregations carry an optional `Scope.local`, and the emitter
 // must render it. Emitting a bare `count()` for `count(Scope.local)` silently turns a

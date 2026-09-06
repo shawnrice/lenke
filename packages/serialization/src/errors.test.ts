@@ -149,7 +149,12 @@ describe('serialization error codes', () => {
       return undefined;
     };
 
-    expect(hasErrorCode(caught(() => serialize(g, 'pg-text')), ErrorCode.Unsupported)).toBe(true);
+    expect(
+      hasErrorCode(
+        caught(() => serialize(g, 'pg-text')),
+        ErrorCode.Unsupported,
+      ),
+    ).toBe(true);
     // ndjson / pg-json / graphson round-trip a nested list fine — only the flat formats reject.
     expect(serialize(g, 'ndjson')).toContain('[[1,2],[3]]');
   });
