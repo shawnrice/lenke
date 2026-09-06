@@ -72,6 +72,7 @@ import {
   sum,
   toArray,
   traversal,
+  tree,
   values,
   withSack,
 } from '@lenke/gremlin';
@@ -651,6 +652,33 @@ const CORPUS: Case[] = [
     name: "values('age').math('_ / 0') — division by zero throws on both engines",
     plan: traversal(V(), has('name', 'marko'), values('age'), math('_ / 0')),
     verdict: { kind: 'bothThrow', code: ErrorCode.InvalidValue },
+  },
+  // `tree()` folds each traverser's vertex-hop path into a nested tree. It used to build a
+  // JS Map (→ `{}` under JSON) on the TS side; it now builds nested plain objects keyed
+  // exactly as native keys them (element canonical JSON, or the by-value), so the whole
+  // tree is byte-identical. (`toEqual` compares trees structurally, so the root-key order
+  // — which follows the unspecified V() iteration order — does not matter.)
+  {
+    name: "out().tree().by('name') — nested name-keyed tree",
+    plan: traversal(V(), out(), tree().by('name')),
+    verdict: {
+      kind: 'agree',
+      expected: [
+        {
+          marko: { lop: {}, vadas: {}, josh: {} },
+          josh: { ripple: {}, lop: {} },
+          peter: { lop: {} },
+        },
+      ],
+    },
+  },
+  {
+    name: "out().out().tree().by('name') — two-level nested tree",
+    plan: traversal(V(), out(), out(), tree().by('name')),
+    verdict: {
+      kind: 'agree',
+      expected: [{ marko: { josh: { ripple: {}, lop: {} } } }],
+    },
   },
 ];
 

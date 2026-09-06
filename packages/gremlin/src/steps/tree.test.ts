@@ -6,14 +6,20 @@ import { V, has, out, tree, values } from '../steps.js';
 import { traversal } from '../traversal.js';
 
 const arr = (r: Iterable<unknown>): unknown[] => [...r];
+// Normalize a (null-prototype) tree into a plain object for structural comparison — this
+// is also exactly what `JSON.stringify` produces, i.e. the observable output. (These tests
+// once asserted the internal `Map` — `.keys()`/`.get()`/`.size` — which hid a real bug:
+// the tree serialized to `{}` because `JSON.stringify(Map)` is `{}`. They now assert the
+// serializable structure the native engine round-trips against.)
+const norm = (x: unknown): unknown => structuredClone(x);
 
 describe('tree tests', () => {
   const tinkerGraph = createTestTinkerGraph();
 
-  // doc: g.V().has('name','josh').out('created').values('name').tree()
-  // — [v[4]:[v[3]:[lop:[]],v[5]:[ripple:[]]]]
-  test('tree builds a nested map of paths from josh to software names', () => {
-    const r = arr(
+  // g.V().has('name','josh').out('created').values('name').tree()
+  // josh created ripple + lop; the values('name') leaf keys the last level by name.
+  test('tree builds a nested map keyed by element JSON then leaf value', () => {
+    const [root] = arr(
       run(
         traversal(
           V(),
@@ -24,67 +30,49 @@ describe('tree tests', () => {
         ),
         tinkerGraph,
       ),
-    );
-    expect(r).toHaveLength(1);
-    const root = r[0] as Map<unknown, unknown>;
-    // Root has one entry: josh.
-    expect(root.size).toBe(1);
-    const joshKey = [...root.keys()][0] as { properties: { name: string } };
-    expect(joshKey.properties.name).toBe('josh');
-    // Josh -> two software vertices.
-    const joshChildren = root.get(joshKey) as Map<unknown, unknown>;
-    expect(joshChildren.size).toBe(2);
-    // Each software vertex maps to a child with one entry (its name).
-    const softwareNames: string[] = [];
+    ) as [Record<string, unknown>];
 
-    for (const [_v, sub] of joshChildren) {
-      const child = sub as Map<unknown, unknown>;
-      expect(child.size).toBe(1);
-      softwareNames.push([...child.keys()][0] as string);
-    }
+    // One root — josh — keyed by its canonical element JSON.
+    const joshKey = '{"id":"4","labels":["PERSON"],"properties":{"age":32,"name":"josh"}}';
+    expect(Object.keys(root)).toEqual([joshKey]);
 
-    softwareNames.sort();
-    expect(softwareNames).toEqual(['lop', 'ripple']);
+    // Josh -> two software elements -> each -> its name leaf (from values('name')).
+    const lopKey = '{"id":"3","labels":["SOFTWARE"],"properties":{"lang":"java","name":"lop"}}';
+    const rippleKey =
+      '{"id":"5","labels":["SOFTWARE"],"properties":{"lang":"java","name":"ripple"}}';
+    expect(norm(root)).toEqual({
+      [joshKey]: { [lopKey]: { lop: {} }, [rippleKey]: { ripple: {} } },
+    });
   });
 
-  // tree built across all persons->created software.
-  test('tree of person->created->software covers all creators', () => {
-    const r = arr(
+  test('bare tree() over a single 1-hop path keys each level by element JSON', () => {
+    const [root] = arr(
       run(
         traversal(V(), has('name', { op: 'eq', value: 'marko' }), out('CREATED'), tree()),
         tinkerGraph,
       ),
-    );
-    expect(r).toHaveLength(1);
-    const root = r[0] as Map<unknown, unknown>;
-    expect(root.size).toBe(1); // one root: marko
-    const markoChildren = [...root.values()][0] as Map<unknown, unknown>;
-    expect(markoChildren.size).toBe(1); // marko -> lop
+    ) as [Record<string, unknown>];
+
+    const markoKey = '{"id":"1","labels":["PERSON"],"properties":{"age":29,"name":"marko"}}';
+    const lopKey = '{"id":"3","labels":["SOFTWARE"],"properties":{"lang":"java","name":"lop"}}';
+    expect(norm(root)).toEqual({ [markoKey]: { [lopKey]: {} } });
   });
 
-  // doc: g.V().out().out().tree().by('name')
-  // — keys are name strings rather than vertex references; round-robin if
-  // multiple by()s.
+  // g.V().out().out().tree().by('name'): keys are name strings (round-robin by()).
   test("tree().by('name') keys nodes by their name property", () => {
-    const r = arr(run(traversal(V('1'), out(), out(), tree().by('name')), tinkerGraph));
-    expect(r).toHaveLength(1);
-    const root = r[0] as Map<unknown, unknown>;
-    // marko at root.
-    expect([...root.keys()]).toEqual(['marko']);
-    const markoChildren = root.get('marko') as Map<unknown, unknown>;
-    // marko's out: vadas, josh, lop. Only josh has further out (ripple, lop).
-    // Path elements are [v1, vN, vM] for tree built from 2-hop paths.
+    const [root] = arr(run(traversal(V('1'), out(), out(), tree().by('name')), tinkerGraph)) as [
+      Record<string, unknown>,
+    ];
+
     // 2-hop paths from marko: marko->josh->ripple, marko->josh->lop.
-    expect([...markoChildren.keys()]).toEqual(['josh']);
-    const joshChildren = markoChildren.get('josh') as Map<unknown, unknown>;
-    expect(new Set(joshChildren.keys())).toEqual(new Set(['ripple', 'lop']));
+    expect(norm(root)).toEqual({ marko: { josh: { ripple: {}, lop: {} } } });
   });
 
-  test('tree is empty when stream is empty', () => {
-    const r = arr(
+  test('tree is empty when the stream is empty', () => {
+    const [root] = arr(
       run(traversal(V(), has('name', { op: 'eq', value: 'nobody' }), tree()), tinkerGraph),
-    );
-    expect(r).toHaveLength(1);
-    expect((r[0] as Map<unknown, unknown>).size).toBe(0);
+    ) as [Record<string, unknown>];
+
+    expect(norm(root)).toEqual({});
   });
 });

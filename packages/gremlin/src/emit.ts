@@ -158,6 +158,8 @@ const NILADIC: ReadonlySet<Step['kind']> = new Set([
   'fold',
   'unfold',
   'identity',
+  // `drop()` removes the current element(s); no arguments, emits nothing.
+  'drop',
 ] as const);
 
 /** A reducing aggregation that carries an optional `Scope.local` — emit the scope so a
@@ -222,6 +224,10 @@ const emitModulatedStep = (step: Step): string | null => {
   switch (step.kind) {
     case 'path':
       return `path()${mods(step.bys)}`;
+    // `tree()` folds each traverser's vertex-hop path into one nested Map; the native
+    // engine accepts an optional single `.by('k')` naming the per-level key.
+    case 'tree':
+      return `tree()${mods(step.bys)}`;
     case 'valueMap': {
       const vmArgs = (step.keys ?? []).map(emitLiteral);
 
@@ -363,6 +369,10 @@ const emitStep = (step: Step): string => {
     }
     case 'constant':
       return `constant(${emitLiteral(step.value)})`;
+    // Write source: `addV('Label')` inserts one vertex (native requires the label);
+    // a label-less `addV()` is the TS superset (native rejects it on re-parse).
+    case 'addV':
+      return step.label !== undefined ? `addV(${emitLiteral(step.label)})` : 'addV()';
     case 'property': {
       // A traversal-induced value emits as an anonymous sub-traversal; a literal
       // as a Groovy literal. (cardinality is TS-superset — not emitted.)

@@ -1,15 +1,21 @@
 import { describe, expect, test } from 'bun:test';
 
 import {
+  addV,
   count,
+  drop,
   fold,
+  has,
+  id,
   max,
   mean,
   min,
+  out,
   planToGremlin,
   Scope,
   sum,
   traversal,
+  tree,
   V,
   values,
 } from './index.js';
@@ -36,5 +42,27 @@ describe('planToGremlin: local-scope aggregations keep their scope', () => {
   test('global aggregations stay bare (no scope argument)', () => {
     expect(planToGremlin(traversal(V(), values('age'), count()))).toEndWith('count()');
     expect(planToGremlin(traversal(V(), values('age'), sum()))).toEndWith('sum()');
+  });
+});
+
+// Write- and tree-family steps must round-trip through the emitter (the native engine
+// re-parses this text), so `planToGremlin` renders them instead of throwing "unsupported
+// step" — which previously blinded the differential fuzzer/conformance to them entirely.
+describe('planToGremlin: write / tree family steps', () => {
+  test('addV emits with and without a label', () => {
+    expect(planToGremlin(traversal(addV('T')))).toBe("g.addV('T')");
+    expect(planToGremlin(traversal(addV('T'), id()))).toBe("g.addV('T').id()");
+    expect(planToGremlin(traversal(addV()))).toBe('g.addV()');
+  });
+
+  test('drop emits as a bare terminal step', () => {
+    expect(planToGremlin(traversal(V(), has('name', 'marko'), drop()))).toEndWith('drop()');
+  });
+
+  test('tree emits, with an optional by-key', () => {
+    expect(planToGremlin(traversal(V(), tree()))).toBe('g.V().tree()');
+    expect(planToGremlin(traversal(V(), out(), tree().by('name')))).toBe(
+      "g.V().out().tree().by('name')",
+    );
   });
 });
