@@ -1,7 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 
 import {
+  addE,
   addV,
+  as_,
   count,
   drop,
   fold,
@@ -64,5 +66,20 @@ describe('planToGremlin: write / tree family steps', () => {
     expect(planToGremlin(traversal(V(), out(), tree().by('name')))).toBe(
       "g.V().out().tree().by('name')",
     );
+  });
+
+  test('addE emits its label and from/to endpoints', () => {
+    // current-traverser FROM (a preceding V(...)) + a V(id) TO.
+    expect(planToGremlin(traversal(V('1'), addE('KNOWS').to(V('6'))))).toBe(
+      "g.V('1').addE('KNOWS').to(V('6'))",
+    );
+    // explicit V(id) FROM and TO (source form).
+    expect(planToGremlin(traversal(addE('KNOWS').from(V('1')).to(V('6'))))).toBe(
+      "g.addE('KNOWS').from(V('1')).to(V('6'))",
+    );
+    // a tag endpoint (as()-recall) emits the bare tag — a TS superset native rejects.
+    expect(
+      planToGremlin(traversal(V('1'), as_('s'), out('KNOWS'), addE('M').from('s').to(V('6')))),
+    ).toBe("g.V('1').as('s').out('KNOWS').addE('M').from('s').to(V('6'))");
   });
 });

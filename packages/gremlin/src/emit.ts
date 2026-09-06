@@ -18,7 +18,7 @@
  */
 import { isTemporal, temporalLiteralParts } from '@lenke/core';
 
-import type { By, Plan, Predicate, Step } from './ast.js';
+import type { AddEEndpoint, By, Plan, Predicate, Step } from './ast.js';
 import { isPlan } from './steps/framework.js';
 
 //
@@ -325,6 +325,40 @@ const emitNestedStep = (step: Step): string | null => {
   }
 };
 
+// Write / value-producing steps (addV/addE/property/constant). Split out of `emitStep`
+// to keep its cyclomatic complexity within budget.
+const emitWriteStep = (step: Step): string | null => {
+  switch (step.kind) {
+    case 'constant':
+      return `constant(${emitLiteral(step.value)})`;
+    // Write source: `addV('Label')` inserts one vertex (native requires the label);
+    // a label-less `addV()` is the TS superset (native rejects it on re-parse).
+    case 'addV':
+      return step.label !== undefined ? `addV(${emitLiteral(step.label)})` : 'addV()';
+    // `addE('L').from(X).to(Y)`. Native accepts a `V(id)` anchor endpoint (`.from(V('a'))`)
+    // and the current-traverser FROM (a preceding `V(a).addE(...)`, emitted as an absent
+    // `.from(...)`). A tag endpoint (`from('start')`, an as()-recall) has no native form —
+    // it emits the bare tag and native rejects it on re-parse, so it stays a TS superset.
+    case 'addE': {
+      const endpoint = (e: AddEEndpoint): string =>
+        e.kind === 'plan' ? emitSubPlan(e.plan) : emitLiteral(e.label);
+      const from = step.from ? `.from(${endpoint(step.from)})` : '';
+      const to = step.to ? `.to(${endpoint(step.to)})` : '';
+
+      return `addE(${emitLiteral(step.label)})${from}${to}`;
+    }
+    case 'property': {
+      // A traversal-induced value emits as an anonymous sub-traversal; a literal
+      // as a Groovy literal. (cardinality is TS-superset — not emitted.)
+      const val = isPlan(step.value) ? emitSubPlan(step.value) : emitLiteral(step.value);
+
+      return `property(${emitLiteral(step.key)}, ${val})`;
+    }
+    default:
+      return null;
+  }
+};
+
 // Family sub-emitters tried in order; each returns null for a kind it does not own, so
 // the `emitStep` switch below stays the simple-step case. A loop (rather than a `??`
 // chain) keeps `emitStep`'s cyclomatic complexity off the dispatch switch.
@@ -334,6 +368,7 @@ const FAMILY_EMITTERS: readonly ((step: Step) => string | null)[] = [
   emitScopedAgg,
   emitModulatedStep,
   emitNestedStep,
+  emitWriteStep,
 ];
 
 const emitStep = (step: Step): string => {
@@ -366,19 +401,6 @@ const emitStep = (step: Step): string => {
       const bys = (step.bys ?? []).map(emitBy).join('');
 
       return `dedup(${(step.labels ?? []).map(emitLiteral).join(', ')})${bys}`;
-    }
-    case 'constant':
-      return `constant(${emitLiteral(step.value)})`;
-    // Write source: `addV('Label')` inserts one vertex (native requires the label);
-    // a label-less `addV()` is the TS superset (native rejects it on re-parse).
-    case 'addV':
-      return step.label !== undefined ? `addV(${emitLiteral(step.label)})` : 'addV()';
-    case 'property': {
-      // A traversal-induced value emits as an anonymous sub-traversal; a literal
-      // as a Groovy literal. (cardinality is TS-superset — not emitted.)
-      const val = isPlan(step.value) ? emitSubPlan(step.value) : emitLiteral(step.value);
-
-      return `property(${emitLiteral(step.key)}, ${val})`;
     }
     case 'withSack':
       return `withSack(${emitLiteral(step.init)})`;
