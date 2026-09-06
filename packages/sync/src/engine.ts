@@ -428,8 +428,16 @@ export const createSyncEngine = (options: SyncEngineOptions): SyncEngine => {
     states.set(match.stateKey, 'loading');
     loadErrors.delete(match.stateKey); // a fresh attempt clears the stale error → UI shows loading
 
-    return collections[match.name].load(match.scope).then(
-      (writes) => {
+    // `.then(onOk).catch(onErr)`, NOT `.then(onOk, onErr)`: a throw while APPLYING the
+    // loaded writes below (invalid GQL, a constraint violation, a `_MERGE` whose unique
+    // constraint isn't present — the warm-boot case) happens in the fulfillment handler,
+    // which a second `.then` argument cannot catch. It would then reject this load and
+    // escape as an unhandled rejection while the collection stays stuck in `loading`
+    // forever. Routing the apply through `.catch` funnels it into the same error/retry
+    // bookkeeping as a rejected `load()`.
+    return collections[match.name]
+      .load(match.scope)
+      .then((writes) => {
         // One mutate for the whole scope: subscribers hear a single version
         // bump, and epochs route it to exactly the affected live queries.
         store.mutate((g) => {
@@ -447,9 +455,10 @@ export const createSyncEngine = (options: SyncEngineOptions): SyncEngine => {
         // load and escape as an unhandled rejection (the scheduler runs it as
         // `void job.run().finally(...)`, with no `.catch`).
         safeNotify();
-      },
-      (e) => {
-        // The load failed. Record the error and — while attempts remain — hand the
+      })
+      .catch((e) => {
+        // The load failed — a rejected `load()` OR a throw applying its writes (above).
+        // Record the error and — while attempts remain — hand the
         // scheduler the NEXT attempt (timer-driven backoff) FIRST, so a throwing
         // `onLoadError` can't abort the retry/bookkeeping. This scheduled job is the
         // ONLY retry path: no refresh/push re-triggers a load, so a failure can never
@@ -476,8 +485,7 @@ export const createSyncEngine = (options: SyncEngineOptions): SyncEngine => {
         }
 
         safeNotify();
-      },
-    );
+      });
   };
 
   const schedule = (match: Match, attempt: number, priority: number): void => {

@@ -182,6 +182,43 @@ suite('demand-fill retry · storm safety', () => {
     expect(engine.collectionState('people')).toBe('error');
   });
 
+  test('a load that RESOLVES but whose writes fail to apply errors, not wedges in loading', async () => {
+    // The bug: `load()` fulfills, but applying its writes throws (invalid GQL here; also a
+    // constraint violation or a warm-boot `_MERGE` without its constraint). That throw is
+    // in the fulfillment handler, which `.then(onOk, onErr)` cannot catch — so it used to
+    // reject the load (an unhandled rejection) while the collection stayed stuck in
+    // `loading` forever. The apply now funnels into the same error/retry path.
+    const man = manualScheduler();
+    let calls = 0;
+    const engine = mkEngine({
+      collections: {
+        people: {
+          labels: ['Person'],
+          load: () => {
+            calls += 1;
+
+            return Promise.resolve([{ text: 'THIS IS NOT VALID GQL' }]);
+          },
+        },
+      },
+      loadRetry: { attempts: 3 },
+      loadScheduler: man.scheduler,
+      onLoadError: () => {},
+    });
+
+    engine.ensure(['Person']);
+
+    for (let i = 0; i < 20 && man.jobs.length > calls; i += 1) {
+      await man.jobs[man.jobs.length - 1].run().catch(() => {});
+    }
+
+    // Bounded retries then 'error' — NOT stuck 'loading', and every run() settled (no
+    // escaped rejection).
+    expect(calls).toBe(3);
+    expect(man.jobs.map((j) => j.attempt)).toEqual([0, 1, 2]);
+    expect(engine.collectionState('people')).toBe('error');
+  });
+
   test('pushes and refreshes never re-trigger a failed load (the storm footgun)', async () => {
     const man = manualScheduler();
     let calls = 0;
