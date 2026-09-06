@@ -1062,6 +1062,7 @@ const compileAggregate = (expr: FuncExpr): CompiledExpr => {
         return values.length === 0
           ? null
           : values.reduce((m, v) => (compareValues(v, m) > 0 ? v : m));
+      case 'collect':
       case 'collect_list':
         return values;
       case 'percentile_cont':

@@ -341,6 +341,10 @@ export const AGGREGATES = new Set([
   'min',
   'max',
   'collect_list',
+  // `collect` is the ISO/Cypher-familiar alias of `collect_list` — the native engine
+  // registers it as a superset alias, so accept it here too (both reduce to the group's
+  // value list).
+  'collect',
   'percentile_cont',
   'percentile_disc',
   'stddev_pop',

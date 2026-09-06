@@ -295,10 +295,13 @@ describe('GQL: aggregation', () => {
     ).toThrow();
   });
 
-  test('collect_list (ISO; Cypher collect is not a function here)', () => {
+  test('collect_list, and its collect alias (matches the native engine)', () => {
     const rows = query(g, `MATCH (n:Person) RETURN collect_list(n.name) AS names`);
     expect((rows[0].names as string[]).sort()).toEqual(['josh', 'marko', 'peter', 'vadas']);
-    expect(() => query(g, `MATCH (n:Person) RETURN collect(n.name) AS names`)).toThrow();
+    // `collect` is the Cypher/ISO-familiar alias of `collect_list`; the native engine
+    // registers it as a superset alias, so TS accepts it too (both engines agree).
+    const aliased = query(g, `MATCH (n:Person) RETURN collect(n.name) AS names`);
+    expect((aliased[0].names as string[]).sort()).toEqual(['josh', 'marko', 'peter', 'vadas']);
   });
 
   test('implicit grouping', () => {
