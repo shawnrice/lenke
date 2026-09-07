@@ -1015,6 +1015,46 @@ suite('gremlin conformance: stored map property', () => {
     }
   });
 
+  test('per-traverser addV creates one vertex per row + bare addV() (byte-identical)', () => {
+    // Terminal addV returns the created vertices; compare labels/properties (id is
+    // engine-assigned). A read AFTER a per-traverser addV is deferred, so not tested here.
+    const vshape = (rows: unknown[]): unknown =>
+      rows.map((r) => {
+        const { id, ...rest } = canonJson(r) as Record<string, unknown>;
+
+        return rest;
+      });
+    const cases: [Plan, unknown][] = [
+      // one SHADOW per PERSON (4 identical created vertices; V() order is unspecified but
+      // they are identical, so the multiset matches).
+      [
+        traversal(V(), hasLabel('PERSON'), addV('SHADOW')),
+        Array.from({ length: 4 }, () => ({ labels: ['SHADOW'], properties: {} })),
+      ],
+      // bare addV() → a label-less vertex (source form).
+      [traversal(addV()), [{ labels: [], properties: {} }]],
+      // trailing literal property folds onto the created vertex.
+      [traversal(addV('S'), property('via', 'x')), [{ labels: ['S'], properties: { via: 'x' } }]],
+    ];
+
+    for (const [plan, expected] of cases) {
+      const groovy = planToGremlin(plan);
+      const ts = vshape(toArray(plan, createTestTinkerGraph()));
+      const handle = backend!.graphFromNdjson(new TextEncoder().encode(MODERN_NDJSON));
+
+      try {
+        const native = vshape(
+          JSON.parse(decoder.decode(backend!.gremlinJson(handle, groovy))) as unknown[],
+        );
+
+        expect(ts).toEqual(expected);
+        expect(native).toEqual(expected);
+      } finally {
+        backend!.graphFree(handle);
+      }
+    }
+  });
+
   // Per-traverser `addE` — native was a parse-time-static, numeric-id-only construct that
   // did not work on string-id graphs; it now creates one edge per row with runtime-resolved
   // endpoints (current traverser / V(id) / as()-tag), byte-identical to TS. The created

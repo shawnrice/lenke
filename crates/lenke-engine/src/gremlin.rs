@@ -632,6 +632,7 @@ fn is_write(plan: &Plan) -> bool {
             | Plan::Merge { .. }
             | Plan::AddEdge { .. }
             | Plan::AddEdgeStep { .. }
+            | Plan::AddVertexStep { .. }
     )
 }
 
@@ -1440,15 +1441,20 @@ impl Parser {
                 self.finish_add_edge_step(Plan::Row, None, etype)?
             }
             "addv" => {
-                // addV('Label') creates one vertex; following property() steps
-                // fold into it (see `apply_property`).
+                // addV('Label') creates one vertex; following property() steps fold into it
+                // (see `apply_property`). A bare `addV()` creates a label-less vertex.
                 self.expect(&Tok::LParen)?;
-                let label = self.str_arg()?;
-                check_write_name("vertex label", &label)?;
+                let labels = if self.peek() == Some(&Tok::RParen) {
+                    Vec::new()
+                } else {
+                    let label = self.str_arg()?;
+                    check_write_name("vertex label", &label)?;
+                    vec![label]
+                };
                 self.expect(&Tok::RParen)?;
                 Plan::Insert {
                     nodes: vec![crate::ir::InsertNode {
-                        labels: vec![label],
+                        labels,
                         props: vec![],
                     }],
                     edges: vec![],
@@ -1832,6 +1838,20 @@ impl Parser {
             self.expect(&Tok::RParen)?;
             let from = crate::ir::EdgeEnd::Slot(self.current);
             return self.finish_add_edge_step(plan, Some(from), etype);
+        }
+        // Per-traverser `addV('L')` (mid-traversal): create one vertex per input row. A
+        // bare `addV()` creates a label-less vertex. Trailing literal `property(k, v)`
+        // modulators fold onto each created vertex.
+        if lname == "addv" {
+            let labels = if self.peek() == Some(&Tok::RParen) {
+                Vec::new()
+            } else {
+                let label = self.str_arg()?;
+                check_write_name("vertex label", &label)?;
+                vec![label]
+            };
+            self.expect(&Tok::RParen)?;
+            return self.finish_add_vertex_step(plan, labels);
         }
         if lname == "property" {
             // Read-after-write on a just-created EDGE (`addE(...).property(k, v)`) is not
@@ -5514,6 +5534,42 @@ impl Parser {
         };
         self.expect(&Tok::RParen)?;
         Ok(crate::ir::EdgeEnd::ExtId(id))
+    }
+
+    /// Finish a per-traverser `addV(['L'])` (label + parens already consumed): fold any
+    /// trailing literal `property(k, v)` modulators onto each created vertex and build a
+    /// [`Plan::AddVertexStep`] over `input`. A read/traversal-valued property after it is
+    /// left in the stream for the read-after-write guard (deferred).
+    fn finish_add_vertex_step(&mut self, input: Plan, labels: Vec<String>) -> Result<Plan, String> {
+        let mut props: Vec<(String, Value)> = Vec::new();
+        while self.peek() == Some(&Tok::Dot) {
+            let save = self.pos;
+            self.bump();
+            let m = self.ident()?.to_ascii_lowercase();
+            if m == "property" && self.property_is_literal() {
+                self.expect(&Tok::LParen)?;
+                let key = self.str_arg()?;
+                check_write_name("property key", &key)?;
+                self.expect(&Tok::Comma)?;
+                let val = self.literal()?;
+                self.expect(&Tok::RParen)?;
+                props.push((key, val));
+            } else {
+                self.pos = save;
+                break;
+            }
+        }
+        let tail = Plan::Row.project(vec![("_".to_string(), Expr::Slot(0))]);
+        self.current = 0;
+        self.slots = 1;
+        self.current_is_element = true;
+        self.on_edge = false;
+        Ok(Plan::AddVertexStep {
+            input: Box::new(input),
+            labels,
+            props,
+            tail: Box::new(tail),
+        })
     }
 
     /// Finish a per-traverser `addE('L')` (the label + `(` already consumed and the `)`

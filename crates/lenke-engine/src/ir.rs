@@ -1092,6 +1092,17 @@ pub enum Plan {
     /// `V('id')`). The created edge is bound at slot 0 of `tail` (a `Row`-rooted
     /// projection), so a following read observes it — the edge twin of
     /// [`Plan::InsertReturn`]. A write: run through `exec::execute`, never pulled.
+    /// Create one vertex PER input row — Gremlin's per-traverser `addV` (`V().addV('L')`
+    /// creates one L vertex for each current vertex). `labels`/`props` are the vertex's
+    /// labels and inline literal properties. The created vertices are the new frontier
+    /// (slot 0 of `tail`), so a following read observes them — the vertex twin of
+    /// [`Plan::AddEdgeStep`]. A write: run through `exec::execute`, never pulled.
+    AddVertexStep {
+        input: Box<Plan>,
+        labels: Vec<String>,
+        props: Vec<(String, Value)>,
+        tail: Box<Plan>,
+    },
     AddEdgeStep {
         input: Box<Plan>,
         from: EdgeEnd,

@@ -275,6 +275,7 @@ pub fn estimate(plan: &Plan, store: &Store) -> Card {
         | Plan::InsertReturn { .. }
         | Plan::AddEdge { .. }
         | Plan::AddEdgeStep { .. }
+            | Plan::AddVertexStep { .. }
         | Plan::Merge { .. }
         | Plan::MergeEdge { .. } => Card::approx(1.0),
     }

@@ -7769,23 +7769,26 @@ fn p6_addv_inserts_and_emits() {
 
 #[test]
 fn p6_addv_no_label() {
-    // Deferred Gremlin form (the engine rejects it — an explicit "not yet supported"
-    // step or an addV/addE position the parser does not accept). Re-asserted as a
-    // rejection so it stays green AND flips the day the feature lands.
-    assert!(
-        rejects("g.addV()"),
-        "expected the engine to reject p6_addv_no_label"
+    // NOW SUPPORTED: a bare `addV()` creates a label-less vertex.
+    let mut g = modern();
+    let before = one_num(exec_query("g.V().count()", &mut g).unwrap());
+    exec_query("g.addV()", &mut g).unwrap();
+    assert_eq!(
+        one_num(exec_query("g.V().count()", &mut g).unwrap()),
+        before + 1.0
     );
 }
 
 #[test]
 fn p6_addv_mid_traversal_per_traverser() {
-    // Deferred Gremlin form (the engine rejects it — an explicit "not yet supported"
-    // step or an addV/addE position the parser does not accept). Re-asserted as a
-    // rejection so it stays green AND flips the day the feature lands.
-    assert!(
-        rejects("g.V().hasLabel('PERSON').addV('SHADOW')"),
-        "expected the engine to reject p6_addv_mid_traversal_per_traverser"
+    // NOW SUPPORTED: mid-traversal addV creates one vertex per input traverser — modern has
+    // 4 PERSON, so 4 SHADOW vertices are created (and returned).
+    let mut g = modern();
+    let created = exec_query("g.V().hasLabel('PERSON').addV('SHADOW')", &mut g).unwrap();
+    assert_eq!(created.len(), 4);
+    assert_eq!(
+        one_num(exec_query("g.V().hasLabel('SHADOW').count()", &mut g).unwrap()),
+        4.0
     );
 }
 

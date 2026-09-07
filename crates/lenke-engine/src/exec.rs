@@ -187,6 +187,7 @@ fn plan_has_varlen(plan: &Plan) -> bool {
         | Plan::MergeEdge { .. }
         | Plan::AddEdge { .. }
         | Plan::AddEdgeStep { .. }
+        | Plan::AddVertexStep { .. }
         | Plan::CallProcedure { .. } => false,
         Plan::Filter { input, .. }
         | Plan::Project { input, .. }
@@ -660,6 +661,27 @@ pub fn execute(plan: &Plan, store: &mut Store) -> Result<Rows, String> {
             }
             Ok(empty_rows())
         }
+        Plan::AddVertexStep {
+            input,
+            labels,
+            props,
+            tail,
+        } => {
+            // Read phase: how many input rows? (one created vertex per traverser.)
+            let n = pull(input, store, false)?.rows();
+            // Write phase: create `n` identical vertices via the shared insert path (a
+            // transaction + constraint checks), reusing `run_insert` with `n` copies.
+            let spec = crate::ir::InsertNode {
+                labels: labels.clone(),
+                props: props.clone(),
+            };
+            let ids = run_insert(store, &vec![spec; n], &[])?;
+            // Output: the created vertices as the frontier (slot 0), then project the tail.
+            let seed = Batch::single(Col::Nodes(ids));
+            let store_ref: &Store = store;
+            let batch = pull_body(tail, store_ref, &seed)?;
+            Ok(rows_from_batch(tail, &batch, store_ref))
+        }
         Plan::AddEdgeStep {
             input,
             from,
@@ -806,6 +828,7 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
         | Plan::MergeEdge { .. }
         | Plan::AddEdge { .. }
         | Plan::AddEdgeStep { .. }
+        | Plan::AddVertexStep { .. }
         | Plan::TxControl { .. } => Batch::of(Vec::new()),
         Plan::PathRecord { input, value, tag } => {
             let mut batch = pull(input, store, track)?;

@@ -2161,6 +2161,37 @@ fn addv_read_after_write() {
     assert!(super::parse("g.addV('T').id()").is_ok());
 }
 
+/// Per-traverser `addV` (Gremlin): one vertex created per input row (`V().addV('L')`), a
+/// bare `addV()` creates a label-less vertex, and trailing literal `property(k, v)` folds
+/// onto each created vertex.
+#[test]
+fn gremlin_add_vertex_per_traverser() {
+    let nd = "{\"type\":\"node\",\"id\":\"a\",\"labels\":[\"P\"],\"properties\":{}}\n\
+              {\"type\":\"node\",\"id\":\"b\",\"labels\":[\"P\"],\"properties\":{}}";
+    let run_mut =
+        |q: &str, st: &mut Store| crate::exec::execute(&super::parse(q).unwrap(), st).unwrap();
+
+    // Mid-traversal: one SHADOW per input vertex (2 → 2), then count them.
+    let mut st = crate::ndjson::from_ndjson(nd).unwrap();
+    assert_eq!(run_mut("g.V().addV('SHADOW')", &mut st).rows.len(), 2);
+    assert_eq!(
+        value_bag(&run_mut("g.V().hasLabel('SHADOW').count()", &mut st)),
+        vec!["Num(2.0);"]
+    );
+
+    // Bare addV() creates a label-less vertex.
+    let mut st2 = crate::ndjson::from_ndjson(nd).unwrap();
+    assert_eq!(run_mut("g.addV()", &mut st2).rows.len(), 1);
+
+    // Trailing literal property folds onto each created vertex.
+    let mut st3 = crate::ndjson::from_ndjson(nd).unwrap();
+    run_mut("g.V().addV('S').property('via', 'x')", &mut st3);
+    assert_eq!(
+        value_bag(&run_mut("g.V().hasLabel('S').values('via')", &mut st3)),
+        vec!["Str(\"x\");", "Str(\"x\");"]
+    );
+}
+
 /// Per-traverser `addE` (Gremlin): the current traverser is the default FROM, `.from(...)`/
 /// `.to(...)` set endpoints (a `V('id')` external id or an `as()`-tag), one edge is created
 /// per input row, and a missing endpoint faults with E_MISSING_VERTEX (matching the TS

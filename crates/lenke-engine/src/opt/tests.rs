@@ -460,7 +460,7 @@ fn plan_contains_filter(p: &Plan) -> bool {
         Plan::UpdateReturn { input, tail, .. } => {
             plan_contains_filter(input) || plan_contains_filter(tail)
         }
-        Plan::AddEdgeStep { input, tail, .. } => {
+        Plan::AddEdgeStep { input, tail, .. } | Plan::AddVertexStep { input, tail, .. } => {
             plan_contains_filter(input) || plan_contains_filter(tail)
         }
         Plan::Scan { .. }
