@@ -2193,6 +2193,33 @@ fn gremlin_add_vertex_per_traverser() {
 }
 
 /// Per-traverser `addE` (Gremlin): the current traverser is the default FROM, `.from(...)`/
+/// Read-after-write on a per-traverser addE/addV: a read step after the write observes the
+/// created element in ONE query (`addE(…).inV()`, `addV('T').label()`).
+#[test]
+fn gremlin_read_after_per_step_write() {
+    let nd = "{\"type\":\"node\",\"id\":\"a\",\"labels\":[\"P\"],\"properties\":{\"n\":\"a\"}}\n\
+              {\"type\":\"node\",\"id\":\"b\",\"labels\":[\"P\"],\"properties\":{\"n\":\"b\"}}";
+    let run_mut =
+        |q: &str, st: &mut Store| crate::exec::execute(&super::parse(q).unwrap(), st).unwrap();
+
+    // addE then traverse INTO the new edge's target and read it, all in one query.
+    let mut st = crate::ndjson::from_ndjson(nd).unwrap();
+    assert_eq!(
+        value_bag(&run_mut(
+            "g.V('a').addE('L').to(V('b')).inV().values('n')",
+            &mut st
+        )),
+        vec!["Str(\"b\");"]
+    );
+
+    // addV then read its label in one query (one per input vertex → 2 SHADOW labels).
+    let mut st2 = crate::ndjson::from_ndjson(nd).unwrap();
+    assert_eq!(
+        value_bag(&run_mut("g.V().addV('SHADOW').label()", &mut st2)),
+        vec!["Str(\"SHADOW\");", "Str(\"SHADOW\");"]
+    );
+}
+
 /// `.to(...)` set endpoints (a `V('id')` external id or an `as()`-tag), one edge is created
 /// per input row, and a missing endpoint faults with E_MISSING_VERTEX (matching the TS
 /// engine). Runs on the ORDINARY string-id graph, not just numeric ids.

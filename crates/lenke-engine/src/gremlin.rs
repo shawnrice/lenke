@@ -149,6 +149,7 @@ pub fn parse(query: &str) -> Result<Plan, String> {
         subgraph_caps: std::collections::HashMap::new(),
         pending_write: None,
         pending_insert: None,
+        pending_step_write: None,
         current_is_map: false,
         current_is_element: false,
         current_is_path: false,
@@ -861,6 +862,13 @@ struct Parser {
     /// node bound at slot 0, so the tail builds over it; `traversal` wraps the finished
     /// tail back into a [`Plan::InsertReturn`].
     pending_insert: Option<(Vec<crate::ir::InsertNode>, Vec<crate::ir::InsertEdge>)>,
+    /// A per-traverser `AddEdgeStep`/`AddVertexStep` whose read tail we are now building —
+    /// read-after-write on the just-created edge/vertex (`addE(…).to(…).inV()`,
+    /// `addV('T').out()`). Set when a read step first follows the write: the write plan is
+    /// stashed here and the working plan resets to `Row` (the created element is bound at
+    /// slot 0 by the step's tail), so the read tail builds over it; `traversal` re-wraps it
+    /// as the write step's `tail`.
+    pending_step_write: Option<Plan>,
     /// True when the current traverser is a Map (a `project`/`group`/`valueMap`/…
     /// row), false on an element or scalar frontier. Gremlin's `select('k')` reads a
     /// Map ENTRY only on a Map; on a vertex/edge an unbound tag matches nothing and the
@@ -1580,6 +1588,40 @@ impl Parser {
                 tail: Box::new(plan),
             };
         }
+        // A folded read tail after a per-traverser addE/addV: re-wrap the stashed write
+        // step with the accumulated read plan as its tail (the created element is bound at
+        // slot 0). The write runs, then the tail reads it (read-after-write).
+        if let Some(write) = self.pending_step_write.take() {
+            plan = match write {
+                Plan::AddEdgeStep {
+                    input,
+                    from,
+                    to,
+                    etype,
+                    props,
+                    ..
+                } => Plan::AddEdgeStep {
+                    input,
+                    from,
+                    to,
+                    etype,
+                    props,
+                    tail: Box::new(plan),
+                },
+                Plan::AddVertexStep {
+                    input,
+                    labels,
+                    props,
+                    ..
+                } => Plan::AddVertexStep {
+                    input,
+                    labels,
+                    props,
+                    tail: Box::new(plan),
+                },
+                other => other,
+            };
+        }
         Ok(plan)
     }
 
@@ -1854,12 +1896,15 @@ impl Parser {
             return self.finish_add_vertex_step(plan, labels);
         }
         if lname == "property" {
-            // Read-after-write on a just-created EDGE (`addE(...).property(k, v)`) is not
-            // yet supported — reject cleanly rather than letting `apply_property` (which
-            // expects an Insert/Update frontier) index a write plan and panic.
-            if matches!(&plan, Plan::AddEdgeStep { .. }) {
+            // A further `property()` write on a just-created per-traverser edge/vertex (a
+            // non-inline / traversal-valued property) is not yet supported — reject cleanly
+            // rather than letting `apply_property` (which expects an Insert/Update frontier)
+            // index a write plan and panic. Inline literal props already fold in
+            // `finish_add_*_step`; READ steps after the write go through `pending_step_write`.
+            if matches!(&plan, Plan::AddEdgeStep { .. } | Plan::AddVertexStep { .. }) {
                 return Err(
-                    "property() after addE (edge read-after-write) is not yet supported".into(),
+                    "property() after a per-traverser addE/addV (further write) is not yet supported"
+                        .into(),
                 );
             }
             let key = self.str_arg()?;
@@ -1914,6 +1959,18 @@ impl Parser {
                 unreachable!()
             };
             self.pending_insert = Some((nodes, edges));
+            self.current = 0;
+            self.slots = 1;
+            Plan::Row
+        } else if matches!(&plan, Plan::AddEdgeStep { .. } | Plan::AddVertexStep { .. })
+            && self.pending_step_write.is_none()
+        {
+            // Read-after-write on a per-traverser addE/addV: the created element is bound
+            // at slot 0 by the step's tail, so a following read observes it. Stash the
+            // write; the read tail builds over Row (the frontier flags — on_edge /
+            // current_is_element — were set by finish_add_*_step), and `traversal` re-wraps
+            // it as the write step's tail.
+            self.pending_step_write = Some(plan);
             self.current = 0;
             self.slots = 1;
             Plan::Row

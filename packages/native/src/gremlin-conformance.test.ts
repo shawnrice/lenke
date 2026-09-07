@@ -1161,4 +1161,33 @@ suite('gremlin conformance: stored map property', () => {
       backend!.graphFree(handle);
     }
   });
+
+  test('read-after-write: a read step after a per-traverser addE/addV (byte-identical)', () => {
+    const cases: [Plan, unknown[]][] = [
+      // addE, then traverse into the new edge's target and read it — one query.
+      [traversal(V('1'), addE('L').to(V('6')), inV(), values('name')), ['peter']],
+      // addV per traverser, then read the created vertices' label in one query.
+      [
+        traversal(V(), hasLabel('PERSON'), addV('SHADOW'), label()),
+        ['SHADOW', 'SHADOW', 'SHADOW', 'SHADOW'],
+      ],
+    ];
+
+    for (const [plan, expected] of cases) {
+      const groovy = planToGremlin(plan);
+      const ts = toArray(plan, createTestTinkerGraph()).map(canonJson);
+      const handle = backend!.graphFromNdjson(new TextEncoder().encode(MODERN_NDJSON));
+
+      try {
+        const native = JSON.parse(
+          decoder.decode(backend!.gremlinJson(handle, groovy)),
+        ) as unknown[];
+
+        expect(ts).toEqual(expected);
+        expect(native).toEqual(expected);
+      } finally {
+        backend!.graphFree(handle);
+      }
+    }
+  });
 });
