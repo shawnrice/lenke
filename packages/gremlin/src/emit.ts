@@ -134,12 +134,12 @@ const emitAlgoStep = (
     case 'pageRank': {
       const base = step.alpha === undefined ? 'pageRank()' : `pageRank(${emitLiteral(step.alpha)})`;
 
-      return `${base}${emitWith('PageRank.propertyName', step.property)}${emitWith('PageRank.times', step.times)}`;
+      return `${base}${emitWith('PageRank.propertyName', step.property)}${emitWith('PageRank.times', step.times)}${emitWith('PageRank.edges', step.edgeLabel)}`;
     }
     case 'connectedComponent':
-      return `connectedComponent()${emitWith('ConnectedComponent.propertyName', step.property)}`;
+      return `connectedComponent()${emitWith('ConnectedComponent.propertyName', step.property)}${emitWith('ConnectedComponent.edges', step.edgeLabel)}`;
     case 'peerPressure':
-      return `peerPressure()${emitWith('PeerPressure.propertyName', step.property)}${emitWith('PeerPressure.times', step.times)}`;
+      return `peerPressure()${emitWith('PeerPressure.propertyName', step.property)}${emitWith('PeerPressure.times', step.times)}${emitWith('PeerPressure.edges', step.edgeLabel)}`;
   }
 };
 

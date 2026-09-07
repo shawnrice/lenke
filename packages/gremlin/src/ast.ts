@@ -385,9 +385,9 @@ export type Step =
   // (`.with(<Algo>.times, …)`); PageRank's `alpha` is the damping factor.
   // `withComputer()` is accepted upstream as a no-op — lenke always computes
   // in-process — so it leaves no step.
-  | { kind: 'pageRank'; property?: string; times?: number; alpha?: number }
-  | { kind: 'connectedComponent'; property?: string }
-  | { kind: 'peerPressure'; property?: string; times?: number }
+  | { kind: 'pageRank'; property?: string; times?: number; alpha?: number; edgeLabel?: string }
+  | { kind: 'connectedComponent'; property?: string; edgeLabel?: string }
+  | { kind: 'peerPressure'; property?: string; times?: number; edgeLabel?: string }
   // --- Mutation (graph-write) -------------------------------------------
   //
   // `addV(label?)` inserts a fresh vertex into the graph. The output stream

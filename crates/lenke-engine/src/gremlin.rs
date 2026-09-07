@@ -5208,6 +5208,27 @@ impl Parser {
                             }
                         }
                     }
+                    "edges" => {
+                        // with([X.]edges, 'LABEL'): restrict the algorithm to edges of that
+                        // label. lenke's convention is a label string (not a TinkerPop
+                        // edge-traversal); the exec already threads `edge_label` to every algo.
+                        let label = self.str_arg()?;
+                        self.expect(&Tok::RParen)?;
+                        match plan {
+                            Plan::AlgoAnnotate {
+                                input,
+                                algo,
+                                node_slot,
+                                ..
+                            } => Plan::AlgoAnnotate {
+                                input,
+                                algo,
+                                edge_label: Some(label),
+                                node_slot,
+                            },
+                            other => other,
+                        }
+                    }
                     other => return Err(format!("with({other}, …) is not yet supported")),
                 }
             }

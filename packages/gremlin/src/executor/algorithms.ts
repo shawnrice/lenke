@@ -42,6 +42,7 @@ export const pageRankStep = (
       writeProperty: step.property ?? DEFAULT_PAGE_RANK_PROPERTY,
       ...(step.times !== undefined ? { iterations: step.times } : {}),
       ...(step.alpha !== undefined ? { dampingFactor: step.alpha } : {}),
+      ...(step.edgeLabel !== undefined ? { edgeLabel: step.edgeLabel } : {}),
     },
     'pagerank',
     stream,
@@ -54,7 +55,10 @@ export const connectedComponentStep = (
 ): Iterable<Traverser<unknown>> =>
   algorithmStep(
     graph,
-    { writeProperty: step.property ?? DEFAULT_COMPONENT_PROPERTY },
+    {
+      writeProperty: step.property ?? DEFAULT_COMPONENT_PROPERTY,
+      ...(step.edgeLabel !== undefined ? { edgeLabel: step.edgeLabel } : {}),
+    },
     'connectedComponents',
     stream,
   );
@@ -69,6 +73,7 @@ export const peerPressureStep = (
     {
       writeProperty: step.property ?? DEFAULT_CLUSTER_PROPERTY,
       ...(step.times !== undefined ? { iterations: step.times } : {}),
+      ...(step.edgeLabel !== undefined ? { edgeLabel: step.edgeLabel } : {}),
     },
     'peerPressure',
     stream,

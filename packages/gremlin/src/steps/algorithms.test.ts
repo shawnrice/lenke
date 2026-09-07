@@ -120,7 +120,27 @@ describe('OLAP algorithm steps — computed locally', () => {
     expect(r).toHaveLength(6);
   });
 
-  test('the .edges modulator is rejected (not yet supported)', () => {
-    expect(() => pageRank().with(PageRank.edges, 'x')).toThrow(/edges modulator/);
+  test('the .edges modulator restricts the algorithm to that edge label', () => {
+    const g = createTestTinkerGraph();
+    const prop = 'gremlin.pageRankVertexProgram.pageRank';
+    // Restricting to KNOWS edges gives different scores than the all-edges default.
+    const all = arr(run(traversal(V(), pageRank(), values(prop)), g))
+      .slice()
+      .sort();
+    const knows = arr(
+      run(traversal(V(), pageRank().with(PageRank.edges, 'KNOWS'), values(prop)), g),
+    )
+      .slice()
+      .sort();
+    expect(knows).toHaveLength(6);
+    expect(knows.every((s) => typeof s === 'number' && Number.isFinite(s))).toBe(true);
+    expect(knows).not.toEqual(all);
+    // connectedComponent + peerPressure accept it too (no throw).
+    expect(() =>
+      arr(run(traversal(V(), connectedComponent().with(ConnectedComponent.edges, 'KNOWS')), g)),
+    ).not.toThrow();
+    expect(() =>
+      arr(run(traversal(V(), peerPressure().with(PeerPressure.edges, 'KNOWS')), g)),
+    ).not.toThrow();
   });
 });

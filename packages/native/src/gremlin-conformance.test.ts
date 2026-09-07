@@ -697,6 +697,24 @@ const CORPUS: Case[] = [
     },
   },
   {
+    // `.with(<Algo>.edges, 'LABEL')` restricts the algorithm to that edge label; byte-
+    // identical scores (ordered for determinism).
+    name: "pageRank().with(PageRank.edges, 'KNOWS') restricts to KNOWS edges",
+    plan: traversal(
+      V(),
+      pageRank().with(PageRank.edges, 'KNOWS'),
+      values('gremlin.pageRankVertexProgram.pageRank'),
+      order(Order.desc),
+    ),
+    verdict: {
+      kind: 'agree',
+      expected: [
+        0.208029197080292, 0.208029197080292, 0.14598540145985403, 0.14598540145985403,
+        0.14598540145985403, 0.14598540145985403,
+      ],
+    },
+  },
+  {
     // `has(k, not(<pred>))` negates the inner predicate — not(within(…)) ≡ without(…).
     // `.order()` makes the bag deterministic — values() order is otherwise unspecified.
     name: "has('name', not(within('vadas','marko'))).values('name').order()",

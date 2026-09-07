@@ -1,5 +1,3 @@
-import { ErrorCode, LenkeError } from '@lenke/errors';
-
 import { appendStep, type Plan } from '../ast.js';
 import type { StepFn } from './framework.js';
 
@@ -26,13 +24,6 @@ import type { StepFn } from './framework.js';
 // in-process, so it adds no step.
 export const withComputer = (): StepFn => (plan: Plan) => plan;
 
-const throwEdgesUnsupported = (): never => {
-  throw new LenkeError(
-    'with(<Algo>.edges, …): the edges modulator is not yet supported (defaults to all out-edges)',
-    { code: ErrorCode.InvalidValue },
-  );
-};
-
 // ---- pageRank ----
 
 /** `pageRank()` configuration tokens for `.with(option, value)`. */
@@ -41,11 +32,11 @@ export const PageRank = {
   propertyName: Symbol('PageRank.propertyName'),
   /** Iteration count. */
   times: Symbol('PageRank.times'),
-  /** Edge-set selector — not yet supported. */
+  /** Restrict the algorithm to edges of this label (default: all out-edges). */
   edges: Symbol('PageRank.edges'),
 } as const;
 
-type PageRankConfig = { property?: string; times?: number; alpha?: number };
+type PageRankConfig = { property?: string; times?: number; alpha?: number; edgeLabel?: string };
 
 /** A `pageRank()` step builder, configurable via `.with(...)`. */
 export type PageRankStep = StepFn & {
@@ -64,7 +55,7 @@ const makePageRank = (config: PageRankConfig): PageRankStep =>
       }
 
       if (option === PageRank.edges) {
-        return throwEdgesUnsupported();
+        return makePageRank({ ...config, edgeLabel: String(value) });
       }
 
       return makePageRank(config);
@@ -85,35 +76,34 @@ export const pageRank = (alpha?: number): PageRankStep =>
 export const ConnectedComponent = {
   /** Property the component id is written to (default `gremlin.connectedComponentVertexProgram.component`). */
   propertyName: Symbol('ConnectedComponent.propertyName'),
-  /** Edge-set selector — not yet supported. */
+  /** Restrict the algorithm to edges of this label (default: all edges). */
   edges: Symbol('ConnectedComponent.edges'),
 } as const;
+
+type ConnectedComponentConfig = { property?: string; edgeLabel?: string };
 
 /** A `connectedComponent()` step builder, configurable via `.with(...)`. */
 export type ConnectedComponentStep = StepFn & {
   readonly with: (option: symbol, value: string) => ConnectedComponentStep;
 };
 
-const makeConnectedComponent = (property?: string): ConnectedComponentStep =>
-  Object.assign(
-    appendStep({ kind: 'connectedComponent', ...(property ? { property } : {}) }) as StepFn,
-    {
-      with: (option: symbol, value: string): ConnectedComponentStep => {
-        if (option === ConnectedComponent.propertyName) {
-          return makeConnectedComponent(String(value));
-        }
+const makeConnectedComponent = (config: ConnectedComponentConfig): ConnectedComponentStep =>
+  Object.assign(appendStep({ kind: 'connectedComponent', ...config }) as StepFn, {
+    with: (option: symbol, value: string): ConnectedComponentStep => {
+      if (option === ConnectedComponent.propertyName) {
+        return makeConnectedComponent({ ...config, property: String(value) });
+      }
 
-        if (option === ConnectedComponent.edges) {
-          return throwEdgesUnsupported();
-        }
+      if (option === ConnectedComponent.edges) {
+        return makeConnectedComponent({ ...config, edgeLabel: String(value) });
+      }
 
-        return makeConnectedComponent(property);
-      },
+      return makeConnectedComponent(config);
     },
-  );
+  });
 
 /** Weakly-connected components over the whole graph. */
-export const connectedComponent = (): ConnectedComponentStep => makeConnectedComponent();
+export const connectedComponent = (): ConnectedComponentStep => makeConnectedComponent({});
 
 // ---- peerPressure ----
 
@@ -123,11 +113,11 @@ export const PeerPressure = {
   propertyName: Symbol('PeerPressure.propertyName'),
   /** Iteration count. */
   times: Symbol('PeerPressure.times'),
-  /** Edge-set selector — not yet supported. */
+  /** Restrict the algorithm to edges of this label (default: all edges). */
   edges: Symbol('PeerPressure.edges'),
 } as const;
 
-type PeerPressureConfig = { property?: string; times?: number };
+type PeerPressureConfig = { property?: string; times?: number; edgeLabel?: string };
 
 /** A `peerPressure()` step builder, configurable via `.with(...)`. */
 export type PeerPressureStep = StepFn & {
@@ -146,7 +136,7 @@ const makePeerPressure = (config: PeerPressureConfig): PeerPressureStep =>
       }
 
       if (option === PeerPressure.edges) {
-        return throwEdgesUnsupported();
+        return makePeerPressure({ ...config, edgeLabel: String(value) });
       }
 
       return makePeerPressure(config);
