@@ -8045,10 +8045,10 @@ fn repeat_emit_loops_predicate_offset() {
 /// code the TS engine raises from the same check.
 #[test]
 fn id_of_a_path_faults_from_the_plan() {
-    // The engine DEFERS `path()` over an E-source (edge steps / the E source), so
-    // `g.E().path().id()` is rejected from the plan. The now-removed lenke-core faulted here too — for a
-    // different reason (a path has no id) — so the "this is a plan fault" intent
-    // holds; re-asserted as the engine's rejection.
+    // PERMANENT (not a deferred feature): `id()`/`label()` on a PATH is a type error — a
+    // path is not an element, so it has no id/label — raised from the plan (see the doc
+    // above). `g.E().path()` itself works; only the element accessor on a path faults.
+    // Both engines raise the same DataException. (`count()`/`fold()` on a path are fine.)
     assert!(rejects("g.E().path().id()"));
     assert!(rejects("g.E().path().label()"));
     assert!(rejects("g.E().path().limit(2).id()"));
