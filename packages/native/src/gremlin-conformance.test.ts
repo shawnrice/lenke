@@ -77,6 +77,7 @@ import {
   traversal,
   tree,
   values,
+  within,
   withSack,
 } from '@lenke/gremlin';
 
@@ -694,6 +695,13 @@ const CORPUS: Case[] = [
         ['marko', 32, 'lop'],
       ],
     },
+  },
+  {
+    // `has(k, not(<pred>))` negates the inner predicate — not(within(…)) ≡ without(…).
+    // `.order()` makes the bag deterministic — values() order is otherwise unspecified.
+    name: "has('name', not(within('vadas','marko'))).values('name').order()",
+    plan: traversal(V(), has('name', not(within('vadas', 'marko'))), values('name'), order()),
+    verdict: { kind: 'agree', expected: ['josh', 'lop', 'peter', 'ripple'] },
   },
 ];
 

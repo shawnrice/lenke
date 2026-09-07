@@ -3827,13 +3827,17 @@ fn p1_not_haslabel_element_map() {
 
 #[test]
 fn p1_not_predicate_inside_has() {
-    // Deferred Gremlin form (the engine rejects it — an explicit "not yet supported"
-    // step or an addV/addE position the parser does not accept). Re-asserted as a
-    // rejection so it stays green AND flips the day the feature lands.
-    assert!(
-        rejects("g.V().has('name',not(within('vadas','marko'))).values('name')"),
-        "expected the engine to reject p1_not_predicate_inside_has"
-    );
+    // NOW SUPPORTED: `has(k, not(<pred>))` negates the inner predicate — `not(within(…))`
+    // ≡ `without(…)`, keeping non-members (and, per TinkerPop, elements lacking the key).
+    let mut g = modern();
+    let r = exec_query(
+        "g.V().has('name',not(within('vadas','marko'))).values('name')",
+        &mut g,
+    )
+    .unwrap();
+    let mut got = names(r);
+    got.sort();
+    assert_eq!(got, vec!["josh", "lop", "peter", "ripple"]);
 }
 
 #[test]

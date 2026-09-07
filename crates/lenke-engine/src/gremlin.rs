@@ -5751,7 +5751,7 @@ impl Parser {
         }
         let is_negated = matches!(self.toks.get(probe), Some(Tok::Ident(s)) if matches!(
             s.to_ascii_lowercase().as_str(),
-            "neq" | "without"
+            "neq" | "without" | "not"
         ));
         if is_negated {
             let pred = self.predicate_expr(left)?;
@@ -6805,6 +6805,16 @@ impl Parser {
         {
             let op_name = self.ident()?.to_ascii_lowercase();
             self.expect(&Tok::LParen)?;
+            // `not(<predicate>)` negates the inner predicate over the same element —
+            // `has('n', not(within('a','b')))` ≡ `has('n', without('a','b'))`. The inner
+            // parse yields the positive base (or an already-negated form), which `Not`
+            // wraps; `has_predicate` recognizes the `not(...)` as negated and applies the
+            // missing-key presence guard so a lacking property is kept (TinkerPop).
+            if op_name == "not" {
+                let inner = self.predicate_expr(left)?;
+                self.expect(&Tok::RParen)?;
+                return Ok(Expr::Not(Box::new(inner)));
+            }
             // within/without take a value LIST and desugar to an OR-of-equals.
             if op_name == "within" || op_name == "without" {
                 let vals = self.literal_list()?;
