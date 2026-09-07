@@ -65,6 +65,7 @@ import {
   PageRank,
   pageRank,
   Operator,
+  path,
   peerPressure,
   type Plan,
   project,
@@ -680,6 +681,18 @@ const CORPUS: Case[] = [
     verdict: {
       kind: 'agree',
       expected: [{ marko: { josh: { ripple: {}, lop: {} } } }],
+    },
+  },
+  {
+    // Multiple by() modulators on a vertex-hop path cycle positionally (name, age, name…).
+    name: "out().out().path().by('name').by('age') — round-robin by()",
+    plan: traversal(V(), out(), out(), path().by('name').by('age')),
+    verdict: {
+      kind: 'agree',
+      expected: [
+        ['marko', 32, 'ripple'],
+        ['marko', 32, 'lop'],
+      ],
     },
   },
 ];

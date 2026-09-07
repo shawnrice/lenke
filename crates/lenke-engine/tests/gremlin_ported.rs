@@ -7293,12 +7293,31 @@ fn p6_path_includes_values() {
 
 #[test]
 fn p6_path_multiple_by_round_robin() {
-    // Deferred Gremlin form (path() over value projections / with by() modulators / a
-    // simplePath() repeat body — the engine rejects it). Re-asserted as a rejection so it
-    // stays green AND flips the day the feature lands.
-    assert!(
-        rejects("g.V().out().out().path().by('name').by('age')"),
-        "expected the engine to reject p6_path_multiple_by_round_robin"
+    // NOW SUPPORTED: multiple `by()` modulators cycle positionally over the path elements
+    // (name, age, name…). marko→josh→ripple and marko→josh→lop.
+    let mut g = modern();
+    let r = exec_query("g.V().out().out().path().by('name').by('age')", &mut g).unwrap();
+    let paths: Vec<Vec<GVal>> = r
+        .into_iter()
+        .map(|v| match v {
+            GVal::List(xs) => xs,
+            other => panic!("expected a path list, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        paths,
+        vec![
+            vec![
+                GVal::Str("marko".into()),
+                GVal::Num(32.0),
+                GVal::Str("ripple".into())
+            ],
+            vec![
+                GVal::Str("marko".into()),
+                GVal::Num(32.0),
+                GVal::Str("lop".into())
+            ],
+        ]
     );
 }
 

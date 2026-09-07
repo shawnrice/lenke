@@ -3184,41 +3184,37 @@ impl Parser {
                     return Ok(p);
                 }
                 if self.path_ok {
-                    // Vertex-hop path — the node sequence; `.by('k')` projects each element.
-                    let call = if self.peek() == Some(&Tok::Dot)
-                        && matches!(self.toks.get(self.pos + 1), Some(Tok::Ident(s)) if s.eq_ignore_ascii_case("by"))
-                    {
-                        self.expect(&Tok::Dot)?;
-                        self.ident()?; // `by`
-                        self.expect(&Tok::LParen)?;
-                        if matches!(self.peek(), Some(Tok::Ident(s)) if s.eq_ignore_ascii_case("T"))
-                        {
-                            self.bump();
-                            self.expect(&Tok::Dot)?;
-                        }
-                        let key = match self.peek() {
-                            Some(Tok::Ident(s)) if s.eq_ignore_ascii_case("id") => {
-                                self.bump();
-                                self.eat_empty_parens();
-                                "\u{0}id".to_string()
-                            }
-                            Some(Tok::Ident(s)) if s.eq_ignore_ascii_case("label") => {
-                                self.bump();
-                                self.eat_empty_parens();
-                                "\u{0}label".to_string()
-                            }
-                            _ => self.str_arg()?,
-                        };
-                        self.expect(&Tok::RParen)?;
-                        Expr::Call {
-                            name: "path_values".to_string(),
-                            args: vec![Expr::Path, Expr::Lit(Value::Str(key.into()))],
-                        }
-                    } else {
-                        Expr::Call {
+                    // Vertex-hop path — the node sequence. Parse ALL `.by(...)` modulators:
+                    // zero/one keep the compact node-lineage render (`path_nodes` /
+                    // single-key `path_values`); TWO OR MORE cycle positionally over the
+                    // elements, which the full per-step render (`GremlinFullPath`) already
+                    // does — a pure vertex-hop chain's step history IS its node sequence, so
+                    // the result matches.
+                    let bys = self.parse_path_bys()?;
+                    let call = match bys.as_slice() {
+                        [] => Expr::Call {
                             name: "path_nodes".to_string(),
                             args: vec![Expr::Path],
+                        },
+                        // `by()` / `by(__.identity())` — the element itself: the plain node
+                        // sequence.
+                        [crate::ir::GPathBy::Element] => Expr::Call {
+                            name: "path_nodes".to_string(),
+                            args: vec![Expr::Path],
+                        },
+                        [single] => {
+                            let key = match single {
+                                crate::ir::GPathBy::Id => "\u{0}id".to_string(),
+                                crate::ir::GPathBy::Label => "\u{0}label".to_string(),
+                                crate::ir::GPathBy::Prop(k) => k.clone(),
+                                crate::ir::GPathBy::Element => unreachable!("handled above"),
+                            };
+                            Expr::Call {
+                                name: "path_values".to_string(),
+                                args: vec![Expr::Path, Expr::Lit(Value::Str(key.into()))],
+                            }
                         }
+                        _ => Expr::GremlinFullPath { bys },
                     };
                     let p = plan.project(vec![("path".to_string(), call)]);
                     self.current = 0;
