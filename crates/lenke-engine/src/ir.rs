@@ -1097,6 +1097,10 @@ pub enum Plan {
         from: EdgeEnd,
         to: EdgeEnd,
         etype: String,
+        /// Inline properties set on each created edge — the literal `property(k, v)`
+        /// modulators chained after `addE` (e.g. `addE('KNOWS').to(V(b)).property('weight',
+        /// 0.5)`). A traversal-valued property is still deferred.
+        props: Vec<(String, Value)>,
         tail: Box<Plan>,
     },
     /// Keyed upsert of ONE node (the `_MERGE` extension, spec

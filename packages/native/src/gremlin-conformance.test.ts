@@ -1046,6 +1046,32 @@ suite('gremlin conformance: stored map property', () => {
     }
   });
 
+  test('addE with a literal property() folds it onto the created edge (byte-identical)', () => {
+    const plan = traversal(V('1'), addE('KNOWS').to(V('6')), property('weight', 0.42));
+    const groovy = planToGremlin(plan);
+    // canonJson sorts property keys, so { weight } compares byte-identically.
+    const edge = (rows: unknown[]): unknown =>
+      rows.map((r) => {
+        const { id, ...rest } = canonJson(r) as Record<string, unknown>;
+
+        return rest;
+      });
+    const expected = [{ from: '1', to: '6', labels: ['KNOWS'], properties: { weight: 0.42 } }];
+    const ts = edge(toArray(plan, createTestTinkerGraph()));
+    const handle = backend!.graphFromNdjson(new TextEncoder().encode(MODERN_NDJSON));
+
+    try {
+      const native = edge(
+        JSON.parse(decoder.decode(backend!.gremlinJson(handle, groovy))) as unknown[],
+      );
+
+      expect(ts).toEqual(expected);
+      expect(native).toEqual(expected);
+    } finally {
+      backend!.graphFree(handle);
+    }
+  });
+
   test('addE to a missing endpoint faults with E_MISSING_VERTEX on both engines', () => {
     const plan = traversal(V('1'), addE('L').to(V('999')));
     const groovy = planToGremlin(plan);

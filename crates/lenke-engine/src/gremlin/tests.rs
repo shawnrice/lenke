@@ -2209,6 +2209,21 @@ fn gremlin_add_edge_per_traverser() {
         err.contains("E_MISSING_VERTEX"),
         "expected E_MISSING_VERTEX, got: {err}"
     );
+
+    // A literal `property(k, v)` after addE folds onto the created edge.
+    let mut st5 = crate::ndjson::from_ndjson(nd).unwrap();
+    run_mut(
+        "g.V('a').addE('L').to(V('b')).property('w', 0.5).property('k', 'x')",
+        &mut st5,
+    );
+    assert_eq!(
+        value_bag(&run_mut("g.V('a').outE('L').values('w')", &mut st5)),
+        vec!["Num(0.5);"]
+    );
+    assert_eq!(
+        value_bag(&run_mut("g.V('a').outE('L').values('k')", &mut st5)),
+        vec!["Str(\"x\");"]
+    );
 }
 
 // --- addE (B6) ---

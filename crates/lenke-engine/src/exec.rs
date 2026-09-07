@@ -665,6 +665,7 @@ pub fn execute(plan: &Plan, store: &mut Store) -> Result<Rows, String> {
             from,
             to,
             etype,
+            props,
             tail,
         } => {
             use crate::ir::EdgeEnd;
@@ -712,10 +713,15 @@ pub fn execute(plan: &Plan, store: &mut Store) -> Result<Rows, String> {
                 }
             }
             drop(batch);
-            // Write phase: create one edge per resolved (from, to) pair.
+            // Write phase: create one edge per resolved (from, to) pair, with any inline
+            // literal properties set on each.
             let mut eids: Vec<u32> = Vec::with_capacity(pairs.len());
             for (f, t) in pairs {
-                eids.push(store.add_edge(f, t, etype));
+                let eid = store.add_edge(f, t, etype);
+                for (k, v) in props {
+                    store.set_edge_prop(eid, k, v.clone());
+                }
+                eids.push(eid);
             }
             // Output: the created edges as the frontier (slot 0), then project the tail —
             // so a following read (or the default element projection) observes the edge.

@@ -5450,6 +5450,35 @@ impl Parser {
         })
     }
 
+    /// True when the upcoming `property(...)` (cursor at its `(`) has a LITERAL value —
+    /// `property('k', 'v'|5|true|null|[…]|date('…'))` — as opposed to a sub-traversal value
+    /// (`property('d', outE().count())`). Used to fold literal edge props into `addE` while
+    /// leaving traversal-valued (and read-after-write) forms deferred.
+    fn property_is_literal(&self) -> bool {
+        if self.toks.get(self.pos) != Some(&Tok::LParen)
+            || !matches!(self.toks.get(self.pos + 1), Some(Tok::Str(_)))
+            || self.toks.get(self.pos + 2) != Some(&Tok::Comma)
+        {
+            return false;
+        }
+        match self.toks.get(self.pos + 3) {
+            Some(Tok::Str(_) | Tok::Num(_) | Tok::LBracket) => true,
+            Some(Tok::Ident(s)) => matches!(
+                s.to_ascii_lowercase().as_str(),
+                "true"
+                    | "false"
+                    | "null"
+                    | "date"
+                    | "datetime"
+                    | "time"
+                    | "duration"
+                    | "zoned_time"
+                    | "zoned_datetime"
+            ),
+            _ => false,
+        }
+    }
+
     /// One endpoint of a per-traverser `addE`: a `[__.]V('id')` / `V(<num>)` anchor (an
     /// [`crate::ir::EdgeEnd::ExtId`] resolved at exec) or a tag string `'x'` recalling an
     /// `as()`-bound node ([`crate::ir::EdgeEnd::Slot`]). The opening `(` is already eaten;
@@ -5506,6 +5535,7 @@ impl Parser {
     ) -> Result<Plan, String> {
         let mut from = default_from;
         let mut to: Option<crate::ir::EdgeEnd> = None;
+        let mut props: Vec<(String, Value)> = Vec::new();
         while self.peek() == Some(&Tok::Dot) {
             let save = self.pos;
             self.bump();
@@ -5521,8 +5551,20 @@ impl Parser {
                     to = Some(self.parse_edge_endpoint()?);
                     self.expect(&Tok::RParen)?;
                 }
-                // Anything else (property/read step) is not an addE modulator — rewind and
-                // let the step loop handle it (a write step there faults per the guard).
+                // `property('k', <literal>)` sets a property on the created edge. A
+                // traversal-valued property (`property('d', outE().count())`) is not a
+                // literal, so rewind and let the step loop reject it (still deferred).
+                "property" if self.property_is_literal() => {
+                    self.expect(&Tok::LParen)?;
+                    let key = self.str_arg()?;
+                    check_write_name("property key", &key)?;
+                    self.expect(&Tok::Comma)?;
+                    let val = self.literal()?;
+                    self.expect(&Tok::RParen)?;
+                    props.push((key, val));
+                }
+                // Anything else (a read step, or a traversal-valued property) is not an addE
+                // modulator — rewind and let the step loop handle it (the write guard faults).
                 _ => {
                     self.pos = save;
                     break;
@@ -5542,6 +5584,7 @@ impl Parser {
             from,
             to,
             etype,
+            props,
             tail: Box::new(tail),
         })
     }

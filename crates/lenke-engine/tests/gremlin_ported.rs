@@ -4720,13 +4720,24 @@ fn p2_adde_from_tag() {
 
 #[test]
 fn p2_adde_with_property() {
-    // addE + from/to is supported (see p2_adde_to_subplan), but a `property()` (or any
-    // read) AFTER addE — read-after-write on the created EDGE — is still deferred: the
-    // read-after-write guard rejects it. Flips when edge read-after-write lands.
-    assert!(
-        rejects("g.V('1').addE('KNOWS').to(__.V('6')).property('weight', 0.42)"),
-        "expected the engine to reject p2_adde_with_property (property after addE deferred)"
-    );
+    // NOW SUPPORTED: a literal `property(k, v)` after addE folds onto the created edge.
+    let mut g = modern();
+    exec_query(
+        "g.V('1').addE('KNOWS').to(__.V('6')).property('weight', 0.42)",
+        &mut g,
+    )
+    .unwrap();
+    // Exactly the new edge carries weight 0.42 (the modern KNOWS edges are 0.5 / 1.0).
+    let n = exec_query(
+        "g.V('1').outE('KNOWS').has('weight', eq(0.42)).count()",
+        &mut g,
+    )
+    .unwrap();
+    assert_eq!(n, vec![GVal::Num(1.0)]);
+    // A TRAVERSAL-valued property after addE, or a read after it, is still deferred.
+    assert!(rejects(
+        "g.V('1').addE('KNOWS').to(__.V('6')).property('deg', __.outE().count())"
+    ));
 }
 
 #[test]
