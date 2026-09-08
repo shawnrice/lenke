@@ -789,6 +789,21 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     expect(ts).toContain('"b":"hixx"');
   });
 
+  test('ltrim/rtrim/btrim with a NULL char set propagate null (byte-identical)', () => {
+    // A 2-arg trim with an explicit NULL character set is null-propagation (SQL/native),
+    // NOT the 1-arg whitespace default. Surfaced by the differential fuzzer's wrong-arity
+    // generator (rtrim over an absent map field). `trim` is 1-arg only, so 2-arg trim is a
+    // separate arity error (covered elsewhere).
+    const [ts, native] = both(
+      `RETURN rtrim('inf', null) AS a, ltrim('inf', null) AS b, btrim('inf', null) AS c, ` +
+        `rtrim('inf  ') AS d`,
+    );
+
+    expect(ts).toBe(native);
+    expect(ts).toContain('"a":null');
+    expect(ts).toContain('"d":"inf"'); // 1-arg form still whitespace-trims
+  });
+
   test('explicit GROUP BY (RETURN) — byte-identical, incl. group-by-non-returned', () => {
     // marko/vadas/josh/peter are Person; group by age presence etc. Use a stable
     // grouping key (labels) over the modern graph.

@@ -711,13 +711,21 @@ export const callTrim = (name: string, a: unknown, b: unknown): unknown => {
 
   const s = str(a);
 
-  if (isNullish(b)) {
-    // whitespace default — unchanged JS behavior.
+  // No char-set ARGUMENT (`undefined` = the 1-arg form): whitespace default. A 2-arg form
+  // with an explicit NULL char set (`ltrim`/`rtrim`/`btrim(s, null)`) propagates null,
+  // matching the native engine and SQL (`trim` is 1-arg only, so it never reaches here
+  // with `b === null`). Distinguishing the two is why this checks `undefined`/`null`
+  // separately rather than `isNullish`.
+  if (b === undefined) {
     if (name === 'ltrim') {
       return s.replace(/^\s+/, '');
     }
 
     return name === 'rtrim' ? s.replace(/\s+$/, '') : s.trim();
+  }
+
+  if (b === null) {
+    return null;
   }
 
   return multiTrim(s, str(b), name !== 'rtrim', name !== 'ltrim');
