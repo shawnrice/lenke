@@ -5112,12 +5112,18 @@ fn p3_subplan_repeat_body_adds_vertices() {
 
 #[test]
 fn p3_subplan_map_body_adds_vertices() {
-    // Deferred Gremlin form (the engine rejects it — an explicit "not yet supported"
-    // step or an addV/addE position the parser does not accept). Re-asserted as a
-    // rejection so it stays green AND flips the day the feature lands.
-    assert!(
-        rejects("g.V().hasLabel('PERSON').map(__.addV('SHADOW').property('via', 'map'))"),
-        "expected the engine to reject p3_subplan_map_body_adds_vertices"
+    // NOW SUPPORTED: `map(<pure write>)` creates one element per input traverser (the
+    // input is snapshot first — no write-while-scan loop). modern has 4 PERSON → 4 SHADOW.
+    let mut g = modern();
+    let created = exec_query(
+        "g.V().hasLabel('PERSON').map(__.addV('SHADOW').property('via', 'map'))",
+        &mut g,
+    )
+    .unwrap();
+    assert_eq!(created.len(), 4);
+    assert_eq!(
+        one_num(exec_query("g.V().hasLabel('SHADOW').count()", &mut g).unwrap()),
+        4.0
     );
 }
 
@@ -6224,12 +6230,23 @@ fn p4_mut_repeat_addv_property_chain() {
 
 #[test]
 fn p4_mut_map_addv_property() {
-    // Deferred Gremlin form (the engine rejects it — an explicit "not yet supported"
-    // step or an addV/addE position the parser does not accept). Re-asserted as a
-    // rejection so it stays green AND flips the day the feature lands.
-    assert!(
-        rejects("g.V().hasLabel('PERSON').map(addV('SHADOW').property('via', 'map'))"),
-        "expected the engine to reject p4_mut_map_addv_property"
+    // NOW SUPPORTED: `map(addV(...).property(...))` — inline props fold onto each created
+    // vertex; one SHADOW per PERSON, each carrying via='map'.
+    let mut g = modern();
+    exec_query(
+        "g.V().hasLabel('PERSON').map(addV('SHADOW').property('via', 'map'))",
+        &mut g,
+    )
+    .unwrap();
+    assert_eq!(
+        one_num(
+            exec_query(
+                "g.V().hasLabel('SHADOW').has('via', eq('map')).count()",
+                &mut g
+            )
+            .unwrap()
+        ),
+        4.0
     );
 }
 

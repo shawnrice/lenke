@@ -4869,7 +4869,41 @@ impl Parser {
                 let is_count = matches!(self.toks.get(probe), Some(Tok::Ident(s)) if s.eq_ignore_ascii_case("count"))
                     && self.toks.get(probe + 1) == Some(&Tok::LParen)
                     && self.toks.get(probe + 2) == Some(&Tok::RParen);
-                if is_count {
+                // map(<pure write>): a write body (addV/addE, with inline props) creates one
+                // element per input traverser and yields it — exactly the per-traverser
+                // write step (map takes the body's first result; a write yields one). The
+                // input frontier is pulled first (snapshot), so no write-while-scan loop.
+                let is_write_body = matches!(self.toks.get(probe), Some(Tok::Ident(s)) if s.eq_ignore_ascii_case("addV") || s.eq_ignore_ascii_case("addE"));
+                if is_write_body {
+                    if matches!(self.peek(), Some(Tok::Ident(s)) if s == "__") {
+                        self.bump();
+                        self.expect(&Tok::Dot)?;
+                    }
+                    let kind = self.ident()?.to_ascii_lowercase();
+                    self.expect(&Tok::LParen)?;
+                    let built = if kind == "addv" {
+                        let labels = if self.peek() == Some(&Tok::RParen) {
+                            Vec::new()
+                        } else {
+                            let l = self.str_arg()?;
+                            check_write_name("vertex label", &l)?;
+                            vec![l]
+                        };
+                        self.expect(&Tok::RParen)?;
+                        self.finish_add_vertex_step(plan, labels)?
+                    } else {
+                        let etype = self.str_arg()?;
+                        check_write_name("edge label", &etype)?;
+                        self.expect(&Tok::RParen)?;
+                        self.finish_add_edge_step(
+                            plan,
+                            Some(crate::ir::EdgeEnd::Slot(from)),
+                            etype,
+                        )?
+                    };
+                    self.expect(&Tok::RParen)?; // close map(...)
+                    built
+                } else if is_count {
                     // Consume `[__.]count()` then close map(...).
                     if matches!(self.peek(), Some(Tok::Ident(s)) if s == "__") {
                         self.bump();

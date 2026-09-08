@@ -58,6 +58,7 @@ import {
   hasLabel,
   inject,
   label,
+  map,
   math,
   order,
   Order,
@@ -1175,6 +1176,35 @@ suite('gremlin conformance: stored map property', () => {
       }
 
       expect(hasErrorCode(natErr, ErrorCode.MissingVertex)).toBe(true);
+    } finally {
+      backend!.graphFree(handle);
+    }
+  });
+
+  test('map(<pure write>) creates one element per input traverser (byte-identical)', () => {
+    // `planToGremlin` cannot yet emit `map(<sub-plan>)`, so the native side is authored as
+    // Gremlin text directly (the TS side via the builder). map(write) lowers to the
+    // per-traverser write step; the input is snapshot first (no write-while-scan loop).
+    const plan = traversal(V(), hasLabel('PERSON'), map(addV('SHADOW')));
+    const groovy = "g.V().hasLabel('PERSON').map(addV('SHADOW'))";
+    const vshape = (rows: unknown[]): unknown =>
+      rows.map((r) => {
+        const { id, ...rest } = canonJson(r) as Record<string, unknown>;
+
+        return rest;
+      });
+    // modern has 4 PERSON → 4 identical SHADOW vertices.
+    const expected = Array.from({ length: 4 }, () => ({ labels: ['SHADOW'], properties: {} }));
+    const ts = vshape(toArray(plan, createTestTinkerGraph()));
+    const handle = backend!.graphFromNdjson(new TextEncoder().encode(MODERN_NDJSON));
+
+    try {
+      const native = vshape(
+        JSON.parse(decoder.decode(backend!.gremlinJson(handle, groovy))) as unknown[],
+      );
+
+      expect(ts).toEqual(expected);
+      expect(native).toEqual(expected);
     } finally {
       backend!.graphFree(handle);
     }
