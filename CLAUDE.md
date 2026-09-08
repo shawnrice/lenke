@@ -1,5 +1,51 @@
 # Working in this repo
 
+## The two surface languages: ISO-GQL and Gremlin
+
+lenke implements exactly two query languages, and both lower to one `ir::Plan` run by
+one `exec`:
+
+- **ISO-GQL** — the ISO/IEC 39075:2024 standard graph query language (`MATCH … RETURN`,
+  `INSERT`, `_MERGE`, `CALL`, …). This is **NOT Cypher.** Cypher is a _different_,
+  Neo4j-specific language that inspired GQL but diverges from it in syntax, semantics, and
+  scope. Do not reason about the GQL engine using Cypher knowledge, Cypher docs, or "how
+  Neo4j does it" — Cypher is at most a loose analogy, **never** the contract. When a GQL
+  question comes up ("is this valid?", "what does this mean?", "should this correlate
+  per-row?"), answer it from the ISO grammar/semantics, not from Cypher. (This has been
+  gotten wrong many times — GQL's `CALL` correlation, laterality, and procedure model in
+  particular are ISO's, not Cypher's.)
+- **Gremlin** — the Apache TinkerPop traversal language (`g.V().out()…`).
+
+The two are intentionally parallel (a user picks one); parallel names across them are by
+design, not a collision.
+
+### Authoritative grammars — consult for VERIFICATION, do not copy
+
+When you need to confirm a production, a keyword, or a syntactic shape, read the
+authoritative grammar rather than trusting memory, prose docs, or AI/search summaries
+(which confabulate GQL/Gremlin specifics). We implement these languages independently and
+lower them to our own IR — we do **not** copy grammar text, vendor code, or "features"
+into this repo. These are read-only references for checking that our surface syntax is
+faithful; nothing from them is vendored here.
+
+- **ISO-GQL grammar:**
+  - The ISO BNF digital artifact — FREE and authoritative (the spec _text_ is paywalled,
+    the grammar is not):
+    `https://standards.iso.org/iso-iec/39075/ed-1/en/ISO_IEC_39075(en).bnf.txt`
+  - TuGraph `gql-grammar` — an ANTLR4 rendering of 39075 (`GQLLexer.g4` / `GQLParser.g4`),
+    Apache-2.0, convenient to navigate: `https://github.com/TuGraph-family/gql-grammar`
+  - See also `docs/conformance/references.md` (Ultipa function-semantics docs, Microsoft
+    Fabric Graph as a GA'd ISO-GQL implementation, Neo4j's GQL-conformance appendix for
+    Feature IDs).
+- **Gremlin grammar:** Apache TinkerPop `Gremlin.g4`
+  (`gremlin-language/src/main/antlr4/Gremlin.g4`), Apache-2.0:
+  `https://github.com/apache/tinkerpop`. For runtime ground-truth semantics, run a real
+  TinkerPop console (`podman run -i tinkerpop/gremlin-console < script.groovy`).
+
+Both ANTLR grammars are Apache-2.0 (permissive); referencing them to verify syntax is
+fine. Do not paste their text into repo files, and do not treat "TinkerPop/TuGraph does X"
+as license to copy an implementation — verify the _shape_, then build it our way.
+
 ## Benchmarks: look before you build
 
 The engine's benchmarks live under `crates/lenke-engine/examples/`, indexed by
