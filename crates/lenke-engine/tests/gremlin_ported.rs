@@ -5101,12 +5101,18 @@ fn p3_subplan_choose_test_then_else() {
 
 #[test]
 fn p3_subplan_repeat_body_adds_vertices() {
-    // Deferred Gremlin form (the engine rejects it — an explicit "not yet supported"
-    // step or an addV/addE position the parser does not accept). Re-asserted as a
-    // rejection so it stays green AND flips the day the feature lands.
-    assert!(
-        rejects("g.V('1').repeat(__.addV('REP').property('via', 'rep')).times(2)"),
-        "expected the engine to reject p3_subplan_repeat_body_adds_vertices"
+    // NOW SUPPORTED: write-aware container (repeat body executes N times).
+    let mut g = modern();
+    let before = one_num(exec_query("g.V().count()", &mut g).unwrap());
+    let r = exec_query(
+        "g.V('1').repeat(__.addV('REP').property('via', 'rep')).times(2)",
+        &mut g,
+    )
+    .unwrap();
+    assert_eq!(r.len(), 1); // repeat emits the final frontier only
+    assert_eq!(
+        one_num(exec_query("g.V().count()", &mut g).unwrap()),
+        before + 2.0
     );
 }
 
@@ -6208,23 +6214,34 @@ fn otherv_after_branch_rehop_over_edge_scan() {
 
 #[test]
 fn p4_mut_repeat_addv_times() {
-    // Deferred Gremlin form (the engine rejects it — an explicit "not yet supported"
-    // step or an addV/addE position the parser does not accept). Re-asserted as a
-    // rejection so it stays green AND flips the day the feature lands.
-    assert!(
-        rejects("g.V('1').repeat(addV('PING')).times(3)"),
-        "expected the engine to reject p4_mut_repeat_addv_times"
+    // NOW SUPPORTED: write-aware container (repeat body executes N times).
+    let mut g = modern();
+    let before = one_num(exec_query("g.V().count()", &mut g).unwrap());
+    exec_query("g.V('1').repeat(addV('PING')).times(3)", &mut g).unwrap();
+    assert_eq!(
+        one_num(exec_query("g.V().count()", &mut g).unwrap()),
+        before + 3.0
     );
 }
 
 #[test]
 fn p4_mut_repeat_addv_property_chain() {
-    // Deferred Gremlin form (the engine rejects it — an explicit "not yet supported"
-    // step or an addV/addE position the parser does not accept). Re-asserted as a
-    // rejection so it stays green AND flips the day the feature lands.
-    assert!(
-        rejects("g.V('1').repeat(addV('CHAIN').property('seq', 1)).times(2)"),
-        "expected the engine to reject p4_mut_repeat_addv_property_chain"
+    // NOW SUPPORTED: write-aware container (repeat body executes N times).
+    let mut g = modern();
+    let before = one_num(exec_query("g.V().count()", &mut g).unwrap());
+    exec_query(
+        "g.V('1').repeat(addV('CHAIN').property('seq', 1)).times(2)",
+        &mut g,
+    )
+    .unwrap();
+    assert_eq!(
+        one_num(exec_query("g.V().count()", &mut g).unwrap()),
+        before + 2.0
+    );
+    // each created CHAIN vertex carries seq=1
+    assert_eq!(
+        one_num(exec_query("g.V().hasLabel('CHAIN').has('seq', eq(1)).count()", &mut g).unwrap()),
+        2.0
     );
 }
 
@@ -6287,12 +6304,17 @@ fn p4_mut_drop_inside_choose() {
 
 #[test]
 fn p4_mut_adde_repeat_smoke() {
-    // Deferred Gremlin form (the engine rejects it — an explicit "not yet supported"
-    // step or an addV/addE position the parser does not accept). Re-asserted as a
-    // rejection so it stays green AND flips the day the feature lands.
-    assert!(
-        rejects("g.V('1').repeat(addV('CHAIN').property('via', 'repeat')).times(3)"),
-        "expected the engine to reject p4_mut_adde_repeat_smoke"
+    // NOW SUPPORTED: write-aware container (repeat body executes N times).
+    let mut g = modern();
+    let before = one_num(exec_query("g.V().count()", &mut g).unwrap());
+    exec_query(
+        "g.V('1').repeat(addV('CHAIN').property('via', 'repeat')).times(3)",
+        &mut g,
+    )
+    .unwrap();
+    assert_eq!(
+        one_num(exec_query("g.V().count()", &mut g).unwrap()),
+        before + 3.0
     );
 }
 

@@ -68,6 +68,7 @@ import {
   Operator,
   path,
   peerPressure,
+  repeat,
   type Plan,
   project,
   property,
@@ -1176,6 +1177,33 @@ suite('gremlin conformance: stored map property', () => {
       }
 
       expect(hasErrorCode(natErr, ErrorCode.MissingVertex)).toBe(true);
+    } finally {
+      backend!.graphFree(handle);
+    }
+  });
+
+  test('repeat(<addV write>).times(N) creates N vertices, feeding forward (byte-identical)', () => {
+    // `repeat` emits the final frontier: one PING vertex (the 3rd). The id is engine-
+    // assigned, so compare labels/properties. (Emits via planToGremlin.)
+    const plan = traversal(V('1'), repeat(addV('PING')).times(3));
+    const groovy = planToGremlin(plan);
+    const vshape = (rows: unknown[]): unknown =>
+      rows.map((r) => {
+        const { id, ...rest } = canonJson(r) as Record<string, unknown>;
+
+        return rest;
+      });
+    const expected = [{ labels: ['PING'], properties: {} }];
+    const ts = vshape(toArray(plan, createTestTinkerGraph()));
+    const handle = backend!.graphFromNdjson(new TextEncoder().encode(MODERN_NDJSON));
+
+    try {
+      const native = vshape(
+        JSON.parse(decoder.decode(backend!.gremlinJson(handle, groovy))) as unknown[],
+      );
+
+      expect(ts).toEqual(expected);
+      expect(native).toEqual(expected);
     } finally {
       backend!.graphFree(handle);
     }

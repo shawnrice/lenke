@@ -2900,6 +2900,89 @@ impl Parser {
                     });
                     return Ok(plan);
                 }
+                // `repeat(<pure addV write>).times(N)`: create one vertex per current row,
+                // N times, feeding each iteration's created frontier into the next — built
+                // as N chained AddVertexSteps (write_frontier chains the writes). Requires a
+                // bounded `.times(N)` (an unbounded write-repeat would never terminate).
+                let is_addv_body = {
+                    let mut p = self.pos;
+                    if matches!(self.toks.get(p), Some(Tok::Ident(s)) if s == "__") {
+                        p += 1;
+                        if self.toks.get(p) == Some(&Tok::Dot) {
+                            p += 1;
+                        }
+                    }
+                    matches!(self.toks.get(p), Some(Tok::Ident(s)) if s.eq_ignore_ascii_case("addV"))
+                };
+                if is_addv_body {
+                    if matches!(self.peek(), Some(Tok::Ident(s)) if s == "__") {
+                        self.bump();
+                        self.expect(&Tok::Dot)?;
+                    }
+                    self.ident()?; // addV
+                    self.expect(&Tok::LParen)?;
+                    let labels = if self.peek() == Some(&Tok::RParen) {
+                        Vec::new()
+                    } else {
+                        let l = self.str_arg()?;
+                        check_write_name("vertex label", &l)?;
+                        vec![l]
+                    };
+                    self.expect(&Tok::RParen)?;
+                    // Inline literal `property(k, v)` modulators on the body.
+                    let mut props: Vec<(String, Value)> = Vec::new();
+                    while self.peek() == Some(&Tok::Dot)
+                        && matches!(self.toks.get(self.pos + 1), Some(Tok::Ident(s)) if s.eq_ignore_ascii_case("property"))
+                        && {
+                            self.pos += 2;
+                            let ok = self.property_is_literal();
+                            self.pos -= 2;
+                            ok
+                        }
+                    {
+                        self.expect(&Tok::Dot)?;
+                        self.ident()?; // property
+                        self.expect(&Tok::LParen)?;
+                        let key = self.str_arg()?;
+                        check_write_name("property key", &key)?;
+                        self.expect(&Tok::Comma)?;
+                        let val = self.literal()?;
+                        self.expect(&Tok::RParen)?;
+                        props.push((key, val));
+                    }
+                    self.expect(&Tok::RParen)?; // close repeat(...)
+                                                // Require `.times(n)`.
+                    if !(self.peek() == Some(&Tok::Dot)
+                        && matches!(self.toks.get(self.pos + 1), Some(Tok::Ident(s)) if s.eq_ignore_ascii_case("times")))
+                    {
+                        return Err(
+                            "repeat(<addV write>) requires a bounded .times(n) modulator".into(),
+                        );
+                    }
+                    self.expect(&Tok::Dot)?;
+                    self.ident()?; // times
+                    self.expect(&Tok::LParen)?;
+                    let n = self.usize_arg()?;
+                    self.expect(&Tok::RParen)?;
+                    // Build N chained AddVertexSteps (N == 0 leaves the frontier unchanged).
+                    let mut acc = plan;
+                    for _ in 0..n {
+                        let tail = Plan::Row.project(vec![("_".to_string(), Expr::Slot(0))]);
+                        acc = Plan::AddVertexStep {
+                            input: Box::new(acc),
+                            labels: labels.clone(),
+                            props: props.clone(),
+                            tail: Box::new(tail),
+                        };
+                    }
+                    if n > 0 {
+                        self.current = 0;
+                        self.slots = 1;
+                        self.current_is_element = true;
+                        self.on_edge = false;
+                    }
+                    return Ok(acc);
+                }
                 let (dir, label, bind_tag, body_filter, max_cap) = self.repeat_body()?;
                 self.expect(&Tok::RParen)?;
                 let from = self.current;

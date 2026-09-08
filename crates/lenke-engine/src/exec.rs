@@ -661,26 +661,47 @@ pub fn execute(plan: &Plan, store: &mut Store) -> Result<Rows, String> {
             }
             Ok(empty_rows())
         }
+        Plan::AddVertexStep { tail, .. } => {
+            // Run the write (and any nested writes in `input`) and bind the created
+            // vertices as the frontier (slot 0), then project the tail.
+            let seed = write_frontier(plan, store)?;
+            let store_ref: &Store = store;
+            let batch = pull_body(tail, store_ref, &seed)?;
+            Ok(rows_from_batch(tail, &batch, store_ref))
+        }
+        Plan::AddEdgeStep { tail, .. } => {
+            let seed = write_frontier(plan, store)?;
+            let store_ref: &Store = store;
+            let batch = pull_body(tail, store_ref, &seed)?;
+            Ok(rows_from_batch(tail, &batch, store_ref))
+        }
+        _ => try_run(plan, store),
+    }
+}
+
+/// Run a WRITE step (or a nested chain of them) and return the CREATED elements as a
+/// frontier batch (`Col::Nodes`/`Col::Edges` at slot 0) — WITHOUT rendering the tail. This
+/// is the write-aware counterpart of `pull`: it lets a write feed another write (`repeat`'s
+/// per-iteration chaining) or a container, and lets the write-step exec arms share one
+/// creation path. A non-write `plan` is a read input and is pulled. `store` is `&mut` (the
+/// writes mutate); a read input reborrows it immutably.
+fn write_frontier(plan: &Plan, store: &mut Store) -> Result<Batch, String> {
+    use crate::ir::EdgeEnd;
+    match plan {
         Plan::AddVertexStep {
             input,
             labels,
             props,
-            tail,
+            ..
         } => {
-            // Read phase: how many input rows? (one created vertex per traverser.)
-            let n = pull(input, store, false)?.rows();
-            // Write phase: create `n` identical vertices via the shared insert path (a
-            // transaction + constraint checks), reusing `run_insert` with `n` copies.
+            // One created vertex per input row (the input may itself be a write).
+            let n = write_frontier(input, store)?.rows();
             let spec = crate::ir::InsertNode {
                 labels: labels.clone(),
                 props: props.clone(),
             };
             let ids = run_insert(store, &vec![spec; n], &[])?;
-            // Output: the created vertices as the frontier (slot 0), then project the tail.
-            let seed = Batch::single(Col::Nodes(ids));
-            let store_ref: &Store = store;
-            let batch = pull_body(tail, store_ref, &seed)?;
-            Ok(rows_from_batch(tail, &batch, store_ref))
+            Ok(Batch::single(Col::Nodes(ids)))
         }
         Plan::AddEdgeStep {
             input,
@@ -688,15 +709,12 @@ pub fn execute(plan: &Plan, store: &mut Store) -> Result<Rows, String> {
             to,
             etype,
             props,
-            tail,
+            ..
         } => {
-            use crate::ir::EdgeEnd;
-            // Read phase (store borrowed immutably): pull the input frontier, then resolve
-            // each row's endpoints — a `Slot` reads the row's node id, an `ExtId` resolves
-            // `V('id')` against the store. A constant `ExtId` resolves once; a missing
-            // vertex is a hard error (matching the TS engine), not a dropped row.
-            let batch = pull(input, store, false)?;
-            let resolve_ext = |s: &str| -> Result<u32, String> {
+            // Resolve each row's endpoints (a `Slot` reads the input frontier, an `ExtId`
+            // resolves `V('id')`); a missing vertex is a hard error (matching TS).
+            let batch = write_frontier(input, store)?;
+            let resolve_ext = |s: &str, store: &Store| -> Result<u32, String> {
                 store
                     .node_by_ext(s)
                     .filter(|&id| store.is_alive(id))
@@ -707,11 +725,11 @@ pub fn execute(plan: &Plan, store: &mut Store) -> Result<Rows, String> {
                     })
             };
             let from_fixed = match from {
-                EdgeEnd::ExtId(s) => Some(resolve_ext(s)?),
+                EdgeEnd::ExtId(s) => Some(resolve_ext(s, store)?),
                 EdgeEnd::Slot(_) => None,
             };
             let to_fixed = match to {
-                EdgeEnd::ExtId(s) => Some(resolve_ext(s)?),
+                EdgeEnd::ExtId(s) => Some(resolve_ext(s, store)?),
                 EdgeEnd::Slot(_) => None,
             };
             let node_at = |end: &EdgeEnd, fixed: Option<u32>, i: usize| -> Option<u32> {
@@ -735,8 +753,6 @@ pub fn execute(plan: &Plan, store: &mut Store) -> Result<Rows, String> {
                 }
             }
             drop(batch);
-            // Write phase: create one edge per resolved (from, to) pair, with any inline
-            // literal properties set on each.
             let mut eids: Vec<u32> = Vec::with_capacity(pairs.len());
             for (f, t) in pairs {
                 let eid = store.add_edge(f, t, etype);
@@ -745,14 +761,10 @@ pub fn execute(plan: &Plan, store: &mut Store) -> Result<Rows, String> {
                 }
                 eids.push(eid);
             }
-            // Output: the created edges as the frontier (slot 0), then project the tail —
-            // so a following read (or the default element projection) observes the edge.
-            let seed = Batch::single(Col::Edges(eids));
-            let store_ref: &Store = store;
-            let batch = pull_body(tail, store_ref, &seed)?;
-            Ok(rows_from_batch(tail, &batch, store_ref))
+            Ok(Batch::single(Col::Edges(eids)))
         }
-        _ => try_run(plan, store),
+        // A read input: pull it (immutable reborrow).
+        _ => pull(plan, &*store, false),
     }
 }
 
