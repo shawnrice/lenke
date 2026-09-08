@@ -629,17 +629,21 @@ pub(super) fn run_insert_from(
 // Only the `capi` ffi layer consults it; without that feature it is unused.
 #[cfg_attr(not(feature = "capi"), allow(dead_code))]
 pub(crate) fn is_write(plan: &Plan) -> bool {
-    matches!(
-        plan,
+    match plan {
         Plan::Insert { .. }
-            | Plan::InsertFrom { .. }
-            | Plan::InsertReturn { .. }
-            | Plan::Update { .. }
-            | Plan::UpdateReturn { .. }
-            | Plan::Merge { .. }
-            | Plan::MergeEdge { .. }
-            | Plan::AddEdge { .. }
-            | Plan::AddEdgeStep { .. }
-            | Plan::AddVertexStep { .. }
-    )
+        | Plan::InsertFrom { .. }
+        | Plan::InsertReturn { .. }
+        | Plan::Update { .. }
+        | Plan::UpdateReturn { .. }
+        | Plan::Merge { .. }
+        | Plan::MergeEdge { .. }
+        | Plan::AddEdge { .. }
+        | Plan::AddEdgeStep { .. }
+        | Plan::AddVertexStep { .. } => true,
+        // A `union(<writes>)` (Gremlin `union(addV(...), addV(...))`, or a write `choose`
+        // lowered to `union(<write>, <passthrough>)`) is a write if EITHER arm is — the
+        // passthrough read arm rides along in `write_frontier`.
+        Plan::Union { left, right, .. } => is_write(left) || is_write(right),
+        _ => false,
+    }
 }

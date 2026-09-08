@@ -6269,23 +6269,31 @@ fn p4_mut_map_addv_property() {
 
 #[test]
 fn p4_mut_union_addv() {
-    // Deferred Gremlin form (the engine rejects it — an explicit "not yet supported"
-    // step or an addV/addE position the parser does not accept). Re-asserted as a
-    // rejection so it stays green AND flips the day the feature lands.
-    assert!(
-        rejects("g.V('1').union(addV('A'), addV('B'))"),
-        "expected the engine to reject p4_mut_union_addv"
+    // NOW SUPPORTED: union runs each write arm over the same input → A and B from marko.
+    let mut g = modern();
+    let before = one_num(exec_query("g.V().count()", &mut g).unwrap());
+    let r = exec_query("g.V('1').union(addV('A'), addV('B'))", &mut g).unwrap();
+    assert_eq!(r.len(), 2);
+    assert_eq!(
+        one_num(exec_query("g.V().count()", &mut g).unwrap()),
+        before + 2.0
     );
 }
 
 #[test]
 fn p4_mut_choose_gates_addv() {
-    // Deferred Gremlin form (the engine rejects it — an explicit "not yet supported"
-    // step or an addV/addE position the parser does not accept). Re-asserted as a
-    // rejection so it stays green AND flips the day the feature lands.
-    assert!(
-        rejects("g.V().hasLabel('PERSON').choose(identity(), addV('VISITED'))"),
-        "expected the engine to reject p4_mut_choose_gates_addv"
+    // NOW SUPPORTED: choose(identity(), addV) — identity passes all, so every PERSON
+    // gets a VISITED (modern has 4 PERSON).
+    let mut g = modern();
+    let r = exec_query(
+        "g.V().hasLabel('PERSON').choose(identity(), addV('VISITED'))",
+        &mut g,
+    )
+    .unwrap();
+    assert_eq!(r.len(), 4);
+    assert_eq!(
+        one_num(exec_query("g.V().hasLabel('VISITED').count()", &mut g).unwrap()),
+        4.0
     );
 }
 

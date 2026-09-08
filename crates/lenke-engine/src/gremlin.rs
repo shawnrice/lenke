@@ -2098,6 +2098,91 @@ impl Parser {
                 // so the union is a continuable node frontier.
                 let from = self.current;
                 let width = self.slots;
+                // A union of pure `addV` writes — `union(addV('A'), addV('B'))`: run each
+                // write arm over the SAME input frontier and concatenate the created
+                // vertices. Built as a Union of AddVertexSteps sharing `plan` as input;
+                // `write_frontier` concatenates them and `execute` routes it via the write
+                // path. (Mixed/addE/read arms use the ordinary hop-union path below.)
+                let first_is_addv = {
+                    let mut p = self.pos;
+                    if matches!(self.toks.get(p), Some(Tok::Ident(s)) if s == "__") {
+                        p += 1;
+                        if self.toks.get(p) == Some(&Tok::Dot) {
+                            p += 1;
+                        }
+                    }
+                    matches!(self.toks.get(p), Some(Tok::Ident(s)) if s.eq_ignore_ascii_case("addV"))
+                };
+                if first_is_addv {
+                    let mut arms: Vec<Plan> = Vec::new();
+                    loop {
+                        if matches!(self.peek(), Some(Tok::Ident(s)) if s == "__") {
+                            self.bump();
+                            self.expect(&Tok::Dot)?;
+                        }
+                        let kw = self.ident()?.to_ascii_lowercase();
+                        if kw != "addv" {
+                            return Err("union() write arms must all be addV(...)".into());
+                        }
+                        self.expect(&Tok::LParen)?;
+                        let labels = if self.peek() == Some(&Tok::RParen) {
+                            Vec::new()
+                        } else {
+                            let l = self.str_arg()?;
+                            check_write_name("vertex label", &l)?;
+                            vec![l]
+                        };
+                        self.expect(&Tok::RParen)?;
+                        let mut props: Vec<(String, Value)> = Vec::new();
+                        while self.peek() == Some(&Tok::Dot)
+                            && matches!(self.toks.get(self.pos + 1), Some(Tok::Ident(s)) if s.eq_ignore_ascii_case("property"))
+                            && {
+                                self.pos += 2;
+                                let ok = self.property_is_literal();
+                                self.pos -= 2;
+                                ok
+                            }
+                        {
+                            self.expect(&Tok::Dot)?;
+                            self.ident()?; // property
+                            self.expect(&Tok::LParen)?;
+                            let key = self.str_arg()?;
+                            check_write_name("property key", &key)?;
+                            self.expect(&Tok::Comma)?;
+                            let val = self.literal()?;
+                            self.expect(&Tok::RParen)?;
+                            props.push((key, val));
+                        }
+                        let tail = Plan::Row.project(vec![("_".to_string(), Expr::Slot(0))]);
+                        arms.push(Plan::AddVertexStep {
+                            input: Box::new(plan.clone()),
+                            labels,
+                            props,
+                            tail: Box::new(tail),
+                        });
+                        if self.peek() == Some(&Tok::Comma) {
+                            self.bump();
+                            continue;
+                        }
+                        break;
+                    }
+                    self.expect(&Tok::RParen)?;
+                    let mut it = arms.into_iter();
+                    let mut acc = it.next().ok_or("union() needs at least one arm")?;
+                    for a in it {
+                        acc = Plan::Union {
+                            left: Box::new(acc),
+                            right: Box::new(a),
+                            all: true,
+                            op: crate::ir::CombineOp::Union,
+                        };
+                    }
+                    self.current = 0;
+                    self.slots = 1;
+                    self.current_is_element = true;
+                    self.on_edge = false;
+                    return Ok(acc);
+                }
                 // Seed the arms with the outer edge hop so a leading `otherV()`/`inV()`
                 // off `V().outE()` resolves against its origin (see parse_sub_body_seeded).
                 self.edge_hop = prev_edge_hop;
@@ -2752,6 +2837,72 @@ impl Parser {
                             slot: from,
                             detach: true,
                         }],
+                    });
+                }
+                // An `addV` then-arm (no else): a WRITE, which the per-element read path
+                // cannot run. Lower to a UNION of the write over the guarded frontier
+                // (elements whose cond produces output → one created vertex each) and the
+                // passthrough of the rest (an absent else passes the source element through);
+                // `write_frontier` runs the write arm and pulls the passthrough arm.
+                if matches!(self.peek(), Some(Tok::Ident(s)) if s.eq_ignore_ascii_case("addV")) {
+                    self.bump(); // addV
+                    self.expect(&Tok::LParen)?;
+                    let labels = if self.peek() == Some(&Tok::RParen) {
+                        Vec::new()
+                    } else {
+                        let l = self.str_arg()?;
+                        check_write_name("vertex label", &l)?;
+                        vec![l]
+                    };
+                    self.expect(&Tok::RParen)?;
+                    let mut props: Vec<(String, Value)> = Vec::new();
+                    while self.peek() == Some(&Tok::Dot)
+                        && matches!(self.toks.get(self.pos + 1), Some(Tok::Ident(s)) if s.eq_ignore_ascii_case("property"))
+                        && {
+                            self.pos += 2;
+                            let ok = self.property_is_literal();
+                            self.pos -= 2;
+                            ok
+                        }
+                    {
+                        self.expect(&Tok::Dot)?;
+                        self.ident()?; // property
+                        self.expect(&Tok::LParen)?;
+                        let key = self.str_arg()?;
+                        check_write_name("property key", &key)?;
+                        self.expect(&Tok::Comma)?;
+                        let val = self.literal()?;
+                        self.expect(&Tok::RParen)?;
+                        props.push((key, val));
+                    }
+                    if self.peek() == Some(&Tok::Comma) {
+                        return Err(
+                            "choose(cond, addV(...), <else>) with a write then-arm is not yet supported"
+                                .into(),
+                        );
+                    }
+                    self.expect(&Tok::RParen)?; // close choose(...)
+                    let guard = Expr::Exists {
+                        body: Box::new(cond_body),
+                        outer_width: slots,
+                    };
+                    let tail = Plan::Row.project(vec![("_".to_string(), Expr::Slot(0))]);
+                    let then_step = Plan::AddVertexStep {
+                        input: Box::new(plan.clone().filter(guard.clone())),
+                        labels,
+                        props,
+                        tail: Box::new(tail),
+                    };
+                    let passthrough = plan.filter(Expr::Not(Box::new(guard)));
+                    self.current = 0;
+                    self.slots = 1;
+                    self.current_is_element = true;
+                    self.on_edge = false;
+                    return Ok(Plan::Union {
+                        left: Box::new(then_step),
+                        right: Box::new(passthrough),
+                        all: true,
+                        op: crate::ir::CombineOp::Union,
                     });
                 }
                 // The then arm.

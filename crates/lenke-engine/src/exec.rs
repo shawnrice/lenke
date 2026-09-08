@@ -675,6 +675,16 @@ pub fn execute(plan: &Plan, store: &mut Store) -> Result<Rows, String> {
             let batch = pull_body(tail, store_ref, &seed)?;
             Ok(rows_from_batch(tail, &batch, store_ref))
         }
+        // A `union(<writes>)` (Gremlin `union(addV(...), addV(...))`): the arms are writes,
+        // so run them via `write_frontier` (mutating) and render the concatenated created
+        // frontier. A read union stays on the pull path (`try_run`).
+        Plan::Union { .. } if is_write(plan) => {
+            let seed = write_frontier(plan, store)?;
+            let tail = Plan::Row.project(vec![("_".to_string(), crate::ir::Expr::Slot(0))]);
+            let store_ref: &Store = store;
+            let batch = pull_body(&tail, store_ref, &seed)?;
+            Ok(rows_from_batch(&tail, &batch, store_ref))
+        }
         _ => try_run(plan, store),
     }
 }
@@ -762,6 +772,27 @@ fn write_frontier(plan: &Plan, store: &mut Store) -> Result<Batch, String> {
                 eids.push(eid);
             }
             Ok(Batch::single(Col::Edges(eids)))
+        }
+        // A `union(<writes>)`: run each arm over the input and concatenate the created
+        // frontiers (Gremlin union runs every arm over the same incoming traversers).
+        Plan::Union { left, right, .. } => {
+            let l = write_frontier(left, store)?;
+            let r = write_frontier(right, store)?;
+            let lc = l.slots.into_iter().next().unwrap_or(Col::Nodes(Vec::new()));
+            let rc = r.slots.into_iter().next().unwrap_or(Col::Nodes(Vec::new()));
+            let merged = match (lc, rc) {
+                (Col::Nodes(mut a), Col::Nodes(b)) => {
+                    a.extend(b);
+                    Col::Nodes(a)
+                }
+                (Col::Edges(mut a), Col::Edges(b)) => {
+                    a.extend(b);
+                    Col::Edges(a)
+                }
+                // Mixed write frontiers (union(addV, addE)) are deferred.
+                _ => return Err("union of mixed addV/addE write arms is not yet supported".into()),
+            };
+            Ok(Batch::single(merged))
         }
         // A read input: pull it (immutable reborrow).
         _ => pull(plan, &*store, false),

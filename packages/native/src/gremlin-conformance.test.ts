@@ -32,8 +32,10 @@ import {
   addV,
   as_,
   branch,
+  choose,
   connectedComponent,
   constant,
+  identity,
   count,
   createTestTinkerGraph,
   dedupe,
@@ -1206,6 +1208,50 @@ suite('gremlin conformance: stored map property', () => {
       expect(native).toEqual(expected);
     } finally {
       backend!.graphFree(handle);
+    }
+  });
+
+  test('union / choose with write arms create + are byte-identical', () => {
+    const vshape = (rows: unknown[]): unknown =>
+      rows
+        .map((r) => {
+          const { id, ...rest } = canonJson(r) as Record<string, unknown>;
+
+          return rest;
+        })
+        .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+    const cases: [Plan, string, unknown][] = [
+      // union runs each write arm over the SAME input (marko) → one A and one B.
+      [
+        traversal(V('1'), union(addV('A'), addV('B'))),
+        "g.V('1').union(addV('A'), addV('B'))",
+        [
+          { labels: ['A'], properties: {} },
+          { labels: ['B'], properties: {} },
+        ],
+      ],
+      // choose(identity(), addV) — identity passes all 4 PERSON → 4 VISITED.
+      [
+        traversal(V(), hasLabel('PERSON'), choose(identity(), addV('VISITED'))),
+        "g.V().hasLabel('PERSON').choose(identity(), addV('VISITED'))",
+        Array.from({ length: 4 }, () => ({ labels: ['VISITED'], properties: {} })),
+      ],
+    ];
+
+    for (const [plan, groovy, expected] of cases) {
+      const ts = vshape(toArray(plan, createTestTinkerGraph()));
+      const handle = backend!.graphFromNdjson(new TextEncoder().encode(MODERN_NDJSON));
+
+      try {
+        const native = vshape(
+          JSON.parse(decoder.decode(backend!.gremlinJson(handle, groovy))) as unknown[],
+        );
+
+        expect(ts).toEqual(expected);
+        expect(native).toEqual(expected);
+      } finally {
+        backend!.graphFree(handle);
+      }
     }
   });
 
