@@ -3117,6 +3117,20 @@ impl Parser {
                         self.slots = saved_slots;
                         pred = and(pred, w);
                     }
+                    // A relationship variable on the var-length hop binds to the LIST of
+                    // the path's edges (the edge trail) — exactly the group-edge-var of the
+                    // equivalent subpath-group spelling `((x)-[r:R]->(m)){n,m}`. A single
+                    // flat hop is a k=1 group, so bind `r` at a new slot as `EdgeAt(0)` and
+                    // register it as a group-edge slot (so `r[i]`/`r[i].w`/`size(r)` resolve).
+                    // Equivalent spellings must produce the same plan — see CLAUDE.md.
+                    let mut group_binds: Vec<(crate::ir::GroupPos, usize)> = Vec::new();
+                    if let Some(ev) = &rel.var {
+                        let edge_slot = *slots;
+                        *slots += 1;
+                        scope.insert(ev.clone(), edge_slot);
+                        self.group_edge_slots.insert(edge_slot);
+                        group_binds.push((crate::ir::GroupPos::EdgeAt(0), edge_slot));
+                    }
                     plan = Plan::RepeatGroup {
                         input: Box::new(plan),
                         from,
@@ -3126,7 +3140,7 @@ impl Parser {
                         max,
                         mode: self.path_mode,
                         endpoint_slot: node_slot,
-                        group_binds: Vec::new(),
+                        group_binds,
                         k: 1,
                         per_rep_pred: pred.map(Box::new),
                     };

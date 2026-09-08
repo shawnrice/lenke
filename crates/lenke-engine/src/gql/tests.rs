@@ -5258,10 +5258,47 @@ fn rel_var_read_matches_hand_plan() {
     assert_same("MATCH (a:P)-[r:R]->(b) RETURN r.w AS w", &hand, &st);
 }
 
-/// A relationship variable on a variable-length pattern is rejected (deferred).
+/// A relationship variable on a variable-length pattern binds the LIST of the walk's
+/// edges (the edge trail). The flat `-[r:R]->{n,m}` spelling now produces the SAME result
+/// as the equivalent subpath group `((x)-[r:R]->(m)){n,m}` — equivalent spellings must
+/// cost the same (CLAUDE.md). Byte-identical to the TS engine (a rel-var over a var-length
+/// hop binds the edge list there too; see the @lenke/gql tests).
 #[test]
-fn rel_var_on_varlength_errors() {
-    assert!(super::parse("MATCH (a:P)-[r:R]->{1,2}(b) RETURN r.w AS w").is_err());
+fn rel_var_on_varlength_binds_edge_list() {
+    // v1 -R(w=5)-> v2 -R(w=7)-> v3, all label P.
+    let nd = "\
+{\"type\":\"node\",\"id\":\"1\",\"labels\":[\"P\"],\"properties\":{}}
+{\"type\":\"node\",\"id\":\"2\",\"labels\":[\"P\"],\"properties\":{}}
+{\"type\":\"node\",\"id\":\"3\",\"labels\":[\"P\"],\"properties\":{}}
+{\"type\":\"edge\",\"id\":\"10\",\"from\":\"1\",\"to\":\"2\",\"labels\":[\"R\"],\"properties\":{\"w\":5.0}}
+{\"type\":\"edge\",\"id\":\"11\",\"from\":\"2\",\"to\":\"3\",\"labels\":[\"R\"],\"properties\":{\"w\":7.0}}
+";
+    let store = crate::ndjson::from_ndjson(nd).unwrap();
+    // Each probe must give the SAME rows for the flat and the subpath-group spelling.
+    for probe in [
+        "RETURN size(r) AS x", // edge-list length: 1 or 2 per walk
+        "RETURN r[0].w AS x",  // first edge's weight
+        "RETURN r.w AS x",     // a bare property read on a LIST is null (both engines)
+    ] {
+        let flat = bag(&run(
+            &super::parse(&format!("MATCH (a:P)-[r:R]->{{1,2}}(b) {probe}")).unwrap(),
+            &store,
+        ));
+        let grp = bag(&run(
+            &super::parse(&format!("MATCH (a:P)((x)-[r:R]->(m)){{1,2}}(b) {probe}")).unwrap(),
+            &store,
+        ));
+        assert_eq!(
+            flat, grp,
+            "flat vs subpath-group spelling diverged on `{probe}`"
+        );
+    }
+    // Concrete: the walks are v1→v2 (size 1), v1→v2→v3 (size 2), v2→v3 (size 1).
+    let sizes = bag(&run(
+        &super::parse("MATCH (a:P)-[r:R]->{1,2}(b) RETURN size(r) AS x").unwrap(),
+        &store,
+    ));
+    assert_eq!(sizes, vec!["x=Num(1.0);", "x=Num(1.0);", "x=Num(2.0);"]);
 }
 
 /// Parsed `_MERGE` matches the hand-built `Plan::Merge` (create + on_update):

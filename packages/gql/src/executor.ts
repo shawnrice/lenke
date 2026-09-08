@@ -2551,6 +2551,20 @@ const compilePath = (pattern: PathPattern): CPath => {
 
       // A plain / abbreviated hop — no repetition unit.
       if (seg.hopFrom === undefined && seg.nested === undefined) {
+        // EXCEPT a FLAT quantified rel that binds a variable (`-[r:R]->{n,m}`): the
+        // variable binds the LIST of the walk's edges (the edge trail), exactly like the
+        // equivalent subpath spelling `((x)-[r:R]->(m)){n,m}`. Compile it to a single-hop
+        // unit (anonymous endpoints) so the edge var is exposed as a group (list) variable.
+        // Equivalent spellings must produce the same result — this mirrors native's
+        // RepeatGroup{k:1, EdgeAt(0)} routing in `gql::extend_chain`.
+        if (seg.rel.quantifier !== undefined && seg.rel.variable !== undefined) {
+          const unit: CUnit = {
+            elems: [{ hop: { rel: compileRel({ ...seg.rel, quantifier: undefined }) } }],
+          };
+
+          return { rel: crel, node: compileNode(seg.node), unit };
+        }
+
         return { rel: crel, node: compileNode(seg.node) };
       }
 

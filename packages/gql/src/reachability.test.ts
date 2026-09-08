@@ -78,6 +78,35 @@ describe('unbounded var-length + DISTINCT: BFS reachability (no trail-budget fau
     const g = ring(4, 4);
     expect(() => query(g, `MATCH (a)-[e:ROAD WHERE e.w > 5]->{1,4}(b) RETURN b`)).not.toThrow();
   });
+
+  test('a relationship variable on a var-length hop binds the edge-trail LIST', () => {
+    // v1 -R(w=5)-> v2 -R(w=7)-> v3. The flat `-[r:R]->{1,2}` spelling binds `r` to the
+    // LIST of the walk's edges — identical to the subpath group `((x)-[r:R]->(m)){1,2}`
+    // (equivalent spellings must agree) and byte-identical to the Rust engine.
+    const g = new Graph();
+    const a = g.addVertex({ labels: ['P'] });
+    const b = g.addVertex({ labels: ['P'] });
+    const c = g.addVertex({ labels: ['P'] });
+    g.addEdge({ from: a, to: b, labels: ['R'], properties: { w: 5 } });
+    g.addEdge({ from: b, to: c, labels: ['R'], properties: { w: 7 } });
+
+    const flat = (probe: string): unknown[] => query(g, `MATCH (a:P)-[r:R]->{1,2}(b) ${probe}`);
+    const grp = (probe: string): unknown[] =>
+      query(g, `MATCH (a:P)((x)-[r:R]->(m)){1,2}(b) ${probe}`);
+
+    for (const probe of ['RETURN size(r) AS x', 'RETURN r[0].w AS x', 'RETURN r.w AS x']) {
+      // Order is unspecified without ORDER BY — compare as multisets.
+      const norm = (rows: unknown[]): string[] => rows.map((r) => JSON.stringify(r)).sort();
+      expect(norm(flat(probe))).toEqual(norm(grp(probe)));
+    }
+
+    // Concrete: walk sizes are 1 (v1→v2), 2 (v1→v2→v3), 1 (v2→v3).
+    const sizes = flat('RETURN size(r) AS x').map((r) => (r as { x: number }).x);
+
+    expect(sizes.sort()).toEqual([1, 1, 2]);
+    // A bare property read on the edge LIST is null (not an error) in both engines.
+    expect(flat('RETURN r.w AS x')).toEqual([{ x: null }, { x: null }, { x: null }]);
+  });
 });
 
 describe('quantifier upper bound', () => {
