@@ -4779,35 +4779,55 @@ fn p2_label_on_property_returns_key() {
 
 #[test]
 fn p2_fail_throws_with_message() {
-    // Deferred Gremlin form (the engine rejects it — an explicit "not yet supported"
-    // step or an addV/addE position the parser does not accept). Re-asserted as a
-    // rejection so it stays green AND flips the day the feature lands.
-    assert!(
-        rejects("g.V().hasLabel('PERSON').has('name', eq('peter')).fold().fail('Test Fail')"),
-        "expected the engine to reject p2_fail_throws_with_message"
-    );
+    // NOW SUPPORTED: fail([msg]) is an assertion barrier — it throws the moment a
+    // traverser reaches it. `fold()` yields one (list) row, so fail() fires.
+    let mut g = modern();
+    let err = exec_query(
+        "g.V().hasLabel('PERSON').has('name', eq('peter')).fold().fail('Test Fail')",
+        &mut g,
+    )
+    .expect_err("fail() should throw when a traverser reaches it");
+    assert_eq!(err, "E_FAIL: Test Fail");
 }
 
 #[test]
 fn p2_fail_no_throw_on_empty_stream() {
-    // Deferred Gremlin form (the engine rejects it — an explicit "not yet supported"
-    // step or an addV/addE position the parser does not accept). Re-asserted as a
-    // rejection so it stays green AND flips the day the feature lands.
-    assert!(
-        rejects("g.V().has('name', eq('nobody')).fail('should not fire')"),
-        "expected the engine to reject p2_fail_no_throw_on_empty_stream"
-    );
+    // fail() never fires on an empty stream — no traverser reaches it, so it returns
+    // empty rather than throwing.
+    let mut g = modern();
+    let r = exec_query(
+        "g.V().has('name', eq('nobody')).fail('should not fire')",
+        &mut g,
+    )
+    .expect("an empty stream must not throw");
+    assert!(r.is_empty(), "empty stream + fail() should yield no rows");
 }
 
 #[test]
 fn p2_fail_default_message() {
-    // Deferred Gremlin form (the engine rejects it — an explicit "not yet supported"
-    // step or an addV/addE position the parser does not accept). Re-asserted as a
-    // rejection so it stays green AND flips the day the feature lands.
-    assert!(
-        rejects("g.V().fail()"),
-        "expected the engine to reject p2_fail_default_message"
-    );
+    // fail() with no message uses the default, byte-identical to the TS engine.
+    let mut g = modern();
+    let err = exec_query("g.V().fail()", &mut g)
+        .expect_err("a non-empty V() reaching fail() should throw");
+    assert_eq!(err, "E_FAIL: fail() reached");
+}
+
+#[test]
+fn p2_fail_after_hop_with_neighbors_throws() {
+    // marko (v1) KNOWS vadas + josh — the hop yields traversers, so fail() fires.
+    let mut g = modern();
+    let err = exec_query("g.V('1').out('KNOWS').fail('has neighbors')", &mut g)
+        .expect_err("a non-empty hop reaching fail() should throw");
+    assert_eq!(err, "E_FAIL: has neighbors");
+}
+
+#[test]
+fn p2_fail_after_empty_hop_no_throw() {
+    // vadas (v2) has no outgoing KNOWS — the hop is empty, so fail() never fires.
+    let mut g = modern();
+    let r = exec_query("g.V('2').out('KNOWS').fail('boom')", &mut g)
+        .expect("an empty hop must not reach fail()");
+    assert!(r.is_empty(), "empty hop + fail() should yield no rows");
 }
 
 #[test]

@@ -44,6 +44,8 @@ export const ErrorCode = {
   MissingParameter: 'E_MISSING_PARAMETER',
   /** A failure crossing the native/wasm FFI boundary. */
   Ffi: 'E_FFI',
+  /** A Gremlin `fail([message])` assertion step that a traverser reached. */
+  Fail: 'E_FAIL',
 } as const;
 
 /**

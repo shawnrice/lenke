@@ -644,6 +644,9 @@ pub(crate) fn is_write(plan: &Plan) -> bool {
         // lowered to `union(<write>, <passthrough>)`) is a write if EITHER arm is — the
         // passthrough read arm rides along in `write_frontier`.
         Plan::Union { left, right, .. } => is_write(left) || is_write(right),
+        // `fail()` is a read barrier, but it can wrap a write (`addV().fail()`); route on
+        // the input so the write still reaches `execute`.
+        Plan::Fail { input, .. } => is_write(input),
         _ => false,
     }
 }

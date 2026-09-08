@@ -521,6 +521,7 @@ pub(super) fn needs_lineage(plan: &Plan) -> bool {
         | Plan::NestedGroup { input, .. }
         | Plan::ShortestPath { input, .. }
         | Plan::Distinct { input }
+        | Plan::Fail { input, .. }
         | Plan::DistinctBy { input, .. }
         | Plan::Tail { input, .. }
         | Plan::NullPadIfEmpty { input, .. }

@@ -40,6 +40,8 @@ import {
   createTestTinkerGraph,
   dedupe,
   E,
+  fail,
+  fold,
   inE,
   gte,
   inV,
@@ -724,6 +726,26 @@ const CORPUS: Case[] = [
     name: "has('name', not(within('vadas','marko'))).values('name').order()",
     plan: traversal(V(), has('name', not(within('vadas', 'marko'))), values('name'), order()),
     verdict: { kind: 'agree', expected: ['josh', 'lop', 'peter', 'ripple'] },
+  },
+  {
+    // fail(msg) is an assertion barrier: a traverser reaching it throws E_FAIL in both
+    // engines. `fold()` yields one (list) row, so fail() fires.
+    name: "hasLabel('PERSON').has('name', eq('peter')).fold().fail('Test Fail')  [bothThrow E_FAIL]",
+    plan: traversal(V(), hasLabel('PERSON'), has('name', eq('peter')), fold(), fail('Test Fail')),
+    verdict: { kind: 'bothThrow', code: ErrorCode.Fail },
+  },
+  {
+    // fail() never fires on an empty stream — no traverser reaches it, so both engines
+    // return empty rather than throwing.
+    name: "has('name', eq('nobody')).fail('should not fire')  [empty → no throw]",
+    plan: traversal(V(), has('name', eq('nobody')), fail('should not fire')),
+    verdict: { kind: 'agree', expected: [] },
+  },
+  {
+    // fail() with no message uses the default; both engines throw E_FAIL.
+    name: 'V().fail()  [default message → bothThrow E_FAIL]',
+    plan: traversal(V(), fail()),
+    verdict: { kind: 'bothThrow', code: ErrorCode.Fail },
   },
 ];
 

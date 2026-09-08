@@ -944,6 +944,15 @@ pub enum Plan {
     /// two NaNs / two -0.0s collapse — the grouping notion, not predicate
     /// equality. Placed above a Project, it is `RETURN DISTINCT …`.
     Distinct { input: Box<Plan> },
+    /// Gremlin `fail([message])`: a barrier that throws the moment any traverser reaches
+    /// it (an assertion step). Pull the `input`; if it yields ANY row, raise `E_FAIL` with
+    /// `message` (defaulting to `fail() reached`); an empty input passes through empty
+    /// (never throws). Transparent to output shape — it never transforms the rows it lets
+    /// through (there are none, since a non-empty input is the throwing case).
+    Fail {
+        input: Box<Plan>,
+        message: Option<String>,
+    },
     /// Gremlin `dedup('a','b')`: keep the FIRST row per distinct tuple of values at
     /// `key_slots` (the tagged slots), preserving every other column — a keyed
     /// first-seen distinct, unlike `Distinct` which keys the whole row.

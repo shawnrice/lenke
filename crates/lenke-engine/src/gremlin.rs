@@ -1810,6 +1810,7 @@ impl Parser {
                 | "range"
                 | "as"
                 | "identity"
+                | "fail"
                 | "barrier"
                 | "aggregate"
                 | "store"
@@ -5034,6 +5035,21 @@ impl Parser {
                 // Pass-through — the current element is unchanged (Gremlin identity()).
                 self.expect(&Tok::RParen)?;
                 plan
+            }
+            "fail" => {
+                // fail([message]): a barrier that throws the moment any traverser reaches
+                // it (an assertion step). An empty stream never reaches it, so it does not
+                // throw. Transparent to the frontier shape (like identity, when it passes).
+                let message = if matches!(self.peek(), Some(Tok::Str(_))) {
+                    Some(self.str_arg()?)
+                } else {
+                    None
+                };
+                self.expect(&Tok::RParen)?;
+                Plan::Fail {
+                    input: Box::new(plan),
+                    message,
+                }
             }
             "sample" => {
                 // sample(n): a fixed-seed shuffle of the stream, truncated to n.

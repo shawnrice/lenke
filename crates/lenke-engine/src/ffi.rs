@@ -282,6 +282,11 @@ fn set_exec_error(e: &str) {
                 crate::ffi_error::set("E_RESOURCE_EXHAUSTED", rest);
                 return;
             }
+            // Gremlin `fail([message])` — an explicit assertion abort a traverser reached.
+            "E_FAIL" => {
+                crate::ffi_error::set("E_FAIL", rest);
+                return;
+            }
             _ => {}
         }
     }

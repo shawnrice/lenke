@@ -430,6 +430,7 @@ fn plan_contains_filter(p: &Plan) -> bool {
         | Plan::Update { input, .. }
         | Plan::CallInline { input, .. }
         | Plan::Distinct { input }
+        | Plan::Fail { input, .. }
         | Plan::DistinctBy { input, .. }
         | Plan::Tail { input, .. }
         | Plan::Sample { input, .. }

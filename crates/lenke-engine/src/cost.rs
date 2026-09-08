@@ -203,6 +203,8 @@ pub fn estimate(plan: &Plan, store: &Store) -> Card {
             // At most the input; without a cheap distinct count assume heavy overlap.
             estimate(input, store).scale(0.5, false)
         }
+        // `fail()` either throws or passes through empty — it never grows the row set.
+        Plan::Fail { input, .. } => estimate(input, store),
         Plan::DistinctBy { input, .. } => estimate(input, store).scale(0.5, false),
         Plan::OrderPage {
             input, skip, limit, ..

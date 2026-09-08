@@ -798,6 +798,16 @@ fn map_children(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
             let (i, c) = rewrite(*input, idx);
             (Plan::Distinct { input: Box::new(i) }, c)
         }
+        Plan::Fail { input, message } => {
+            let (i, c) = rewrite(*input, idx);
+            (
+                Plan::Fail {
+                    input: Box::new(i),
+                    message,
+                },
+                c,
+            )
+        }
         Plan::DistinctBy { input, key_slots } => {
             let (i, c) = rewrite(*input, idx);
             (
@@ -1751,6 +1761,7 @@ pub(crate) fn width(plan: &Plan) -> usize {
         | Plan::Filter { input, .. }
         | Plan::OrderPage { input, .. }
         | Plan::Distinct { input }
+        | Plan::Fail { input, .. }
         | Plan::DistinctBy { input, .. }
         | Plan::Tail { input, .. }
         | Plan::Sample { input, .. }

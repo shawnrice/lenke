@@ -160,6 +160,13 @@ pub fn run(plan: &Plan, store: &Store) -> Rows {
 /// graph can recurse far enough to overflow the default 8 MB stack (a stack overflow
 /// aborts the process — `catch_unwind` cannot recover it). Such a plan runs on a
 /// large-stack thread instead. Everything else keeps the cheap direct path.
+/// The `E_FAIL` error string for a `fail([message])` step that a traverser reached.
+/// The `E_FAIL:` prefix routes it through the FFI whitelist to the shared error code;
+/// the default message matches the TS engine byte-for-byte.
+fn fail_error(message: &Option<String>) -> String {
+    format!("E_FAIL: {}", message.as_deref().unwrap_or("fail() reached"))
+}
+
 // Only the non-wasm `on_big_stack` consults this; wasm runs traversals inline.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn plan_has_varlen(plan: &Plan) -> bool {
@@ -680,6 +687,19 @@ pub fn execute(plan: &Plan, store: &mut Store) -> Result<Rows, String> {
         // frontier. A read union stays on the pull path (`try_run`).
         Plan::Union { .. } if is_write(plan) => {
             let seed = write_frontier(plan, store)?;
+            let tail = Plan::Row.project(vec![("_".to_string(), crate::ir::Expr::Slot(0))]);
+            let store_ref: &Store = store;
+            let batch = pull_body(&tail, store_ref, &seed)?;
+            Ok(rows_from_batch(&tail, &batch, store_ref))
+        }
+        // `<write>.fail([msg])`: the barrier wraps a write. Run the write (mutating), then
+        // throw if it produced any traverser — `fail()`'s arrive-then-throw contract. An
+        // empty write frontier never reaches the barrier, so it returns empty (no throw).
+        Plan::Fail { input, message } if is_write(input) => {
+            let seed = write_frontier(input, store)?;
+            if seed.rows() > 0 {
+                return Err(fail_error(message));
+            }
             let tail = Plan::Row.project(vec![("_".to_string(), crate::ir::Expr::Slot(0))]);
             let store_ref: &Store = store;
             let batch = pull_body(&tail, store_ref, &seed)?;
@@ -1953,6 +1973,13 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
                 }
             }
             distinct_batch(pull(input, store, track)?)
+        }
+        Plan::Fail { input, message } => {
+            let b = pull(input, store, track)?;
+            if b.rows() > 0 {
+                return Err(fail_error(message));
+            }
+            b
         }
         Plan::DistinctBy { input, key_slots } => {
             // `values(<dict col>).dedup()`: dedup on the dict CODES (≤ dict size) in one
@@ -4405,6 +4432,13 @@ fn pull_body(plan: &Plan, store: &Store, seed: &Batch) -> Result<Batch, String> 
             order_page(&b, store, keys, *skip, *limit, *fault_on_element)?
         }
         Plan::Distinct { input } => distinct_batch(pull_body(input, store, seed)?),
+        Plan::Fail { input, message } => {
+            let b = pull_body(input, store, seed)?;
+            if b.rows() > 0 {
+                return Err(fail_error(message));
+            }
+            b
+        }
         // Gremlin `dedup()` / `dedup('a',…)` inside a branch arm — first-seen per distinct
         // key tuple over the seeded body (same as the main path's materialized fallback).
         Plan::DistinctBy { input, key_slots } => {

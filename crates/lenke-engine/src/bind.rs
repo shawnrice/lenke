@@ -54,6 +54,7 @@ fn bind_plan(plan: &mut Plan, params: &HashMap<&str, &Value>) -> Result<(), Stri
         | Plan::AlgoAnnotate { input, .. }
         | Plan::Tail { input, .. }
         | Plan::Distinct { input }
+        | Plan::Fail { input, .. }
         | Plan::DistinctBy { input, .. }
         | Plan::NullPadIfEmpty { input, .. }
         | Plan::ShortestPathEnum { input, .. }

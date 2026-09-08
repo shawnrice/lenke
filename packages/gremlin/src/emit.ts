@@ -395,6 +395,8 @@ const emitStep = (step: Step): string => {
       return `has(${emitLiteral(step.key)}, ${emitPredicate(step.pred)})`;
     case 'is':
       return `is(${emitPredicate(step.pred)})`;
+    case 'fail':
+      return step.message === undefined ? 'fail()' : `fail(${emitLiteral(step.message)})`;
     case 'values':
       return `values(${step.keys.map(emitLiteral).join(', ')})`;
     case 'dedupe': {

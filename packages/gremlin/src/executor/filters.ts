@@ -8,13 +8,14 @@ import { byOr, evalBy, hasAny, recallTag, type RunContext, type Traverser } from
 
 // `fail` throws as soon as the first traverser arrives. Useful as an
 // assertion: `traversal(V(), hasLabel('Person'), out('knows'), fail('expected no neighbors'))`.
+// The message and `E_FAIL` code match the Rust engine byte-for-byte.
 // eslint-disable-next-line require-yield -- throws before yielding; the generator shape is required by the step protocol
 export const failStep = function* (
   stream: Iterable<Traverser<unknown>>,
   message: string | undefined,
 ): Iterable<Traverser<unknown>> {
   for (const _ of stream) {
-    throw new Error(message ?? 'fail() reached');
+    throw new LenkeError(message ?? 'fail() reached', { code: ErrorCode.Fail });
   }
 };
 
