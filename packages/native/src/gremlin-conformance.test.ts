@@ -49,6 +49,7 @@ import {
   lte,
   bothE,
   not,
+  optional,
   otherV,
   outE,
   outV,
@@ -766,6 +767,29 @@ const CORPUS: Case[] = [
     name: "V('2').map(outE('KNOWS')).label()  [empty body → dropped]",
     plan: traversal(V('2'), map(traversal(outE('KNOWS'))), label()),
     verdict: { kind: 'agree', expected: [] },
+  },
+  {
+    // path() through a NESTED optional (a branch inside a branch arm). Each PERSON either
+    // extends its path through KNOWS (then optionally CREATED) or passes through unchanged.
+    // Exercises `pull_body`'s nested-PerElementBranch handling + lineage through two branches.
+    name: "hasLabel('PERSON').optional(out('KNOWS').optional(out('CREATED'))).path().by('name')",
+    plan: traversal(
+      V(),
+      hasLabel('PERSON'),
+      optional(traversal(out('KNOWS'), optional(traversal(out('CREATED'))))),
+      path().by('name'),
+    ),
+    verdict: {
+      kind: 'agree',
+      expected: [
+        ['marko', 'vadas'],
+        ['marko', 'josh', 'ripple'],
+        ['marko', 'josh', 'lop'],
+        ['vadas'],
+        ['josh'],
+        ['peter'],
+      ],
+    },
   },
 ];
 

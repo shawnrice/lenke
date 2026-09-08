@@ -7794,14 +7794,32 @@ fn p6_optional_yields_subtraversal() {
 
 #[test]
 fn p6_optional_nested_path() {
-    // Deferred Gremlin form (path() over value projections / with by() modulators / a
-    // simplePath() repeat body — the engine rejects it). Re-asserted as a rejection so it
-    // stays green AND flips the day the feature lands.
+    // NOW SUPPORTED: path() through a NESTED optional (a branch inside a branch arm). Each
+    // PERSON extends its path via KNOWS (then optionally CREATED) or passes through. Six
+    // paths: marko→vadas, marko→josh→{ripple,lop}, and the three lone PERSONs with no KNOWS.
+    let r = run(
+        "g.V().hasLabel('PERSON').optional(__.out('KNOWS').optional(__.out('CREATED'))).path().by('name')",
+    );
+    assert_eq!(r.len(), 6, "six paths through the nested optional");
+    // The count-over-branch agrees (a reducer above the nested branch).
+    assert_eq!(
+        one_num(run(
+            "g.V().hasLabel('PERSON').optional(__.out('KNOWS').optional(__.out('CREATED'))).count()"
+        )),
+        6.0
+    );
+}
+
+#[test]
+fn p6_optional_nested_coalesce_path() {
+    // A NESTED coalesce inside an optional arm also flows through pull_body now: marko
+    // extends via KNOWS then the FIRST of {CREATED, KNOWS}; lone PERSONs pass through.
+    let r = run(
+        "g.V().hasLabel('PERSON').optional(__.out('KNOWS').coalesce(__.out('CREATED'), __.identity())).path().by('name')",
+    );
     assert!(
-        rejects(
-            "g.V().hasLabel('PERSON').optional(__.out('KNOWS').optional(__.out('CREATED'))).path()"
-        ),
-        "expected the engine to reject p6_optional_nested_path"
+        !r.is_empty(),
+        "nested coalesce inside optional should execute, not reject"
     );
 }
 

@@ -1672,95 +1672,11 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
         } => {
             // TinkerPop coalesce/optional/choose are PER-TRAVERSER: each arm runs on ONE
             // incoming element, so a barrier/reducer inside an arm reduces that element's
-            // sub-stream, not the whole batch. Run each input row through the arms on a
-            // 1-row sub-batch and concatenate the per-row outputs in row order (the
-            // interleave TinkerPop/the TS engine produce).
+            // sub-stream, not the whole batch. Pull the input frontier, then route each row
+            // through the arms (the shared `per_element_branch_exec`, which `pull_body` also
+            // calls so a NESTED branch inside an arm evaluates the same way).
             let inb = pull(input, store, track)?;
-            // An EMPTY frontier: per element there are NO elements to route, so the result is
-            // empty — but `concat_batches(&[])` is a 0-slot batch and a downstream slot read
-            // would index a column that isn't there. Reproduce the arms' natural width-1 shape
-            // (typed column) and then take ZERO rows: running the arms whole-stream over the
-            // empty input yields the right column TYPE, and `gather(&[])` drops any row a
-            // reducer fabricated (`count()` over empty = [0]) so the output is truly empty.
-            if inb.rows() == 0 {
-                let subs: Vec<Batch> = arms
-                    .iter()
-                    .map(|b| pull_body(b, store, &inb))
-                    .collect::<Result<_, _>>()?;
-                return Ok(concat_batches(&subs, store).gather(&[]));
-            }
-            // The source element as a width-1 batch (the pass-through fallback), preserving
-            // the row's lineage so a following path() still answers.
-            let source_of = |sub: &Batch| -> Batch {
-                let col = sub
-                    .slots
-                    .get(*source_slot)
-                    .cloned()
-                    .unwrap_or_else(|| Col::Gen(vec![Value::Null; sub.rows()]));
-                let mut out = Batch::of(vec![col]);
-                out.lineage = sub.lineage.clone();
-                out
-            };
-            let mut outs: Vec<Batch> = Vec::with_capacity(inb.rows());
-            for i in 0..inb.rows() {
-                let sub = inb.gather(&[i]);
-                let row_out = match kind {
-                    crate::ir::PerElemKind::Coalesce => {
-                        let mut chosen: Option<Batch> = None;
-                        for arm in arms {
-                            let r = pull_body(arm, store, &sub)?;
-                            if r.rows() > 0 {
-                                chosen = Some(r);
-                                break;
-                            }
-                        }
-                        match chosen {
-                            Some(b) => b,
-                            // No arm produced — an EMPTY row shaped like an arm's WIDTH-1 output
-                            // (running arm[0] on the empty sub), NOT `sub.gather(&[])` which keeps
-                            // the sub's full width: a leading hop makes sub width-2, and the width
-                            // mismatch would desync the concat into a Gen column that a following
-                            // fused hop mishandles (`out('KNOWS').coalesce(...).outE()` → null).
-                            None => pull_body(&arms[0], store, &sub.gather(&[]))?,
-                        }
-                    }
-                    crate::ir::PerElemKind::Optional => {
-                        let r = pull_body(&arms[0], store, &sub)?;
-                        if r.rows() > 0 {
-                            r
-                        } else {
-                            source_of(&sub)
-                        }
-                    }
-                    crate::ir::PerElemKind::Choose { has_else } => {
-                        let c = pull_body(cond.as_ref().expect("choose has a cond"), store, &sub)?;
-                        if c.rows() > 0 {
-                            pull_body(&arms[0], store, &sub)?
-                        } else if *has_else {
-                            pull_body(&arms[1], store, &sub)?
-                        } else {
-                            source_of(&sub)
-                        }
-                    }
-                };
-                // A reducer arm (`count()`/`fold()`) collapses its sub-stream and drops the
-                // lineage; TinkerPop resets the path to the reduced value, so seed a per-row
-                // single-element step-history from the arm's output when a path() is read and the
-                // arm produced none. Without it, `coalesce(values('name').count(), …).path()`
-                // loses ALL lineage in the concat (all-or-nothing) and path() is [null].
-                let mut row_out = row_out;
-                if track && row_out.lineage.is_none() && !row_out.slots.is_empty() {
-                    let vals: Vec<Value> = (0..row_out.rows())
-                        .map(|i| row_out.slot(0).value_at(i))
-                        .collect();
-                    row_out.lineage = Some(crate::batch::Lineage::seed_steps(
-                        &vals,
-                        crate::batch::STEP_SCALAR,
-                    ));
-                }
-                outs.push(row_out);
-            }
-            concat_batches(&outs, store)
+            per_element_branch_exec(inb, kind, cond, arms, *source_slot, store, track)?
         }
         Plan::Reconverge { input, slot } => {
             // Collapse to the single element/value column at `slot` (cloned, so a
@@ -4162,6 +4078,107 @@ fn combine_call_groups(
     }
 }
 
+/// The per-element routing of a `PerElementBranch` (coalesce / optional / choose), over an
+/// ALREADY-PULLED input frontier `inb`. Shared by the main `pull` (input via `pull`) and
+/// `pull_body` (input via `pull_body`) so a NESTED branch inside a branch arm evaluates
+/// identically. Each row runs through the arms on a 1-row sub-batch — TinkerPop's
+/// per-traverser semantics — and the per-row outputs concatenate in row order.
+fn per_element_branch_exec(
+    inb: Batch,
+    kind: &crate::ir::PerElemKind,
+    cond: &Option<Box<Plan>>,
+    arms: &[Plan],
+    source_slot: usize,
+    store: &Store,
+    track: bool,
+) -> Result<Batch, String> {
+    // An EMPTY frontier: per element there are NO elements to route, so the result is
+    // empty — but `concat_batches(&[])` is a 0-slot batch and a downstream slot read would
+    // index a column that isn't there. Reproduce the arms' natural width-1 shape (typed
+    // column) and then take ZERO rows: running the arms whole-stream over the empty input
+    // yields the right column TYPE, and `gather(&[])` drops any row a reducer fabricated
+    // (`count()` over empty = [0]) so the output is truly empty.
+    if inb.rows() == 0 {
+        let subs: Vec<Batch> = arms
+            .iter()
+            .map(|b| pull_body(b, store, &inb))
+            .collect::<Result<_, _>>()?;
+        return Ok(concat_batches(&subs, store).gather(&[]));
+    }
+    // The source element as a width-1 batch (the pass-through fallback), preserving the
+    // row's lineage so a following path() still answers.
+    let source_of = |sub: &Batch| -> Batch {
+        let col = sub
+            .slots
+            .get(source_slot)
+            .cloned()
+            .unwrap_or_else(|| Col::Gen(vec![Value::Null; sub.rows()]));
+        let mut out = Batch::of(vec![col]);
+        out.lineage = sub.lineage.clone();
+        out
+    };
+    let mut outs: Vec<Batch> = Vec::with_capacity(inb.rows());
+    for i in 0..inb.rows() {
+        let sub = inb.gather(&[i]);
+        let row_out = match kind {
+            crate::ir::PerElemKind::Coalesce => {
+                let mut chosen: Option<Batch> = None;
+                for arm in arms {
+                    let r = pull_body(arm, store, &sub)?;
+                    if r.rows() > 0 {
+                        chosen = Some(r);
+                        break;
+                    }
+                }
+                match chosen {
+                    Some(b) => b,
+                    // No arm produced — an EMPTY row shaped like an arm's WIDTH-1 output
+                    // (running arm[0] on the empty sub), NOT `sub.gather(&[])` which keeps
+                    // the sub's full width: a leading hop makes sub width-2, and the width
+                    // mismatch would desync the concat into a Gen column that a following
+                    // fused hop mishandles (`out('KNOWS').coalesce(...).outE()` → null).
+                    None => pull_body(&arms[0], store, &sub.gather(&[]))?,
+                }
+            }
+            crate::ir::PerElemKind::Optional => {
+                let r = pull_body(&arms[0], store, &sub)?;
+                if r.rows() > 0 {
+                    r
+                } else {
+                    source_of(&sub)
+                }
+            }
+            crate::ir::PerElemKind::Choose { has_else } => {
+                let c = pull_body(cond.as_ref().expect("choose has a cond"), store, &sub)?;
+                if c.rows() > 0 {
+                    pull_body(&arms[0], store, &sub)?
+                } else if *has_else {
+                    pull_body(&arms[1], store, &sub)?
+                } else {
+                    source_of(&sub)
+                }
+            }
+        };
+        // A reducer arm (`count()`/`fold()`) collapses its sub-stream and drops the lineage;
+        // TinkerPop resets the path to the reduced value, so seed a per-row single-element
+        // step-history from the arm's output when a path() is read and the arm produced none.
+        // Without it, `coalesce(values('name').count(), …).path()` loses ALL lineage in the
+        // concat (all-or-nothing) and path() is [null].
+        let mut row_out = row_out;
+        if track && row_out.lineage.is_none() && !row_out.slots.is_empty() {
+            let vals: Vec<Value> = (0..row_out.rows())
+                .map(|i| row_out.slot(0).value_at(i))
+                .collect();
+            row_out.lineage = Some(crate::batch::Lineage::seed_steps(
+                &vals,
+                crate::batch::STEP_SCALAR,
+            ));
+        }
+        outs.push(row_out);
+    }
+    Ok(concat_batches(&outs, store))
+}
+
 fn pull_body(plan: &Plan, store: &Store, seed: &Batch) -> Result<Batch, String> {
     Ok(match plan {
         Plan::Row => seed.clone(),
@@ -4467,6 +4484,21 @@ fn pull_body(plan: &Plan, store: &Store, seed: &Batch) -> Result<Batch, String> 
             let mut out = Batch::of(vec![col]);
             out.lineage = b.lineage;
             out
+        }
+        // A NESTED branch inside a branch arm (`optional(out().optional(out()))`,
+        // `coalesce(choose(...), ...)`): pull the arm's input frontier here, then route it
+        // through the shared per-element executor. `track` follows the seed's lineage — path
+        // tracking is on iff the outer per-row sub-batch carries a lineage sidecar.
+        Plan::PerElementBranch {
+            input,
+            kind,
+            cond,
+            arms,
+            source_slot,
+        } => {
+            let inb = pull_body(input, store, seed)?;
+            let track = seed.lineage.is_some();
+            per_element_branch_exec(inb, kind, cond, arms, *source_slot, store, track)?
         }
         Plan::Tail { input, n } => {
             let b = pull_body(input, store, seed)?;
