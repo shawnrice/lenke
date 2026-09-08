@@ -303,6 +303,10 @@ const emitNestedStep = (step: Step): string | null => {
         : `choose(${emitSubPlan(step.test)}, ${emitSubPlan(step.thenPlan)}, ${emitSubPlan(step.elsePlan)})`;
     case 'not':
       return `not(${emitSubPlan(step.plan)})`;
+    case 'map':
+      // map(<sub-plan>): the native parser handles a navigating/value/write body
+      // uniformly, so a straight sub-plan emit round-trips.
+      return `map(${emitSubPlan(step.plan)})`;
     case 'repeat': {
       // Placement is semantic, not cosmetic: `until(c).repeat(b)` is while-do,
       // `repeat(b).until(c)` is do-while, and the same distinction applies to

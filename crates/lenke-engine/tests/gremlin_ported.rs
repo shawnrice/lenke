@@ -6023,12 +6023,37 @@ fn p4_map_values_single_name_each() {
 
 #[test]
 fn p4_map_drops_empty_subplan() {
-    // Deferred Gremlin form (the engine rejects it — an explicit "not yet supported"
-    // step or an addV/addE position the parser does not accept). Re-asserted as a
-    // rejection so it stays green AND flips the day the feature lands.
-    assert!(
-        rejects("g.V().map(outE('CREATED'))"),
-        "expected the engine to reject p4_map_drops_empty_subplan"
+    // NOW SUPPORTED: map(<navigating body>) takes the FIRST result per element and DROPS
+    // elements whose body is empty. marko/josh/peter each have ≥1 outgoing CREATED edge
+    // (→ their first one); vadas/lop/ripple have none (→ dropped). So 3 edges survive.
+    assert_eq!(one_num(run("g.V().map(outE('CREATED')).count()")), 3.0);
+    // Every survivor is a CREATED edge (drop worked, no spurious rows).
+    assert_eq!(
+        names(run("g.V().map(outE('CREATED')).label()")),
+        vec!["CREATED", "CREATED", "CREATED"]
+    );
+}
+
+#[test]
+fn p4_map_navigating_first_result_per_element() {
+    // marko (v1) has exactly ONE outgoing CREATED edge → lop, so the "first result" is
+    // deterministic regardless of adjacency order.
+    assert_eq!(
+        names(run("g.V('1').map(outE('CREATED')).inV().values('name')")),
+        vec!["lop"]
+    );
+    // vadas (v2) has no outgoing KNOWS → the body is empty → the element is dropped.
+    assert_eq!(one_num(run("g.V('2').map(outE('KNOWS')).count()")), 0.0);
+}
+
+#[test]
+fn p4_map_navigating_multi_hop_body() {
+    // A multi-step navigating body: marko KNOWS josh/vadas; map takes the FIRST neighbour
+    // of neighbours reached via out().out() — a single result (drop nothing here since
+    // josh CREATED lop/ripple). Deterministic count: exactly one row for marko.
+    assert_eq!(
+        one_num(run("g.V('1').map(out('KNOWS').out('CREATED')).count()")),
+        1.0
     );
 }
 

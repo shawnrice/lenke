@@ -747,6 +747,26 @@ const CORPUS: Case[] = [
     plan: traversal(V(), fail()),
     verdict: { kind: 'bothThrow', code: ErrorCode.Fail },
   },
+  {
+    // map(<navigating body>) takes the FIRST body result per element and DROPS elements
+    // whose body is empty. marko/josh/peter each have a CREATED out-edge (→ one each);
+    // vadas/lop/ripple have none (→ dropped). label() is order-insensitive to WHICH edge.
+    name: "V().map(outE('CREATED')).label()  [first-per-element, drop empties]",
+    plan: traversal(V(), map(traversal(outE('CREATED'))), label()),
+    verdict: { kind: 'agree', expected: ['CREATED', 'CREATED', 'CREATED'] },
+  },
+  {
+    // marko has exactly one CREATED out-edge → lop, so the "first result" is deterministic.
+    name: "V('1').map(outE('CREATED')).inV().values('name')  [single-hop body]",
+    plan: traversal(V('1'), map(traversal(outE('CREATED'))), inV(), values('name')),
+    verdict: { kind: 'agree', expected: ['lop'] },
+  },
+  {
+    // An empty body drops the element (vadas has no outgoing KNOWS).
+    name: "V('2').map(outE('KNOWS')).label()  [empty body → dropped]",
+    plan: traversal(V('2'), map(traversal(outE('KNOWS'))), label()),
+    verdict: { kind: 'agree', expected: [] },
+  },
 ];
 
 suite('gremlin conformance: TS engine ⟷ Rust engine (over ffi)', () => {

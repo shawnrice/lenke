@@ -5174,7 +5174,38 @@ impl Parser {
                     self.slots = 1;
                     p
                 } else {
-                    return Err("map(<navigating traversal>) is not yet supported".into());
+                    // map(<navigating body>): per element, run the body and take its FIRST
+                    // result, dropping the element if the body is empty. This is EXACTLY the
+                    // per-element Coalesce machinery with a SINGLE arm limited to one row:
+                    // `PerElementBranch` runs the arm on each 1-row sub-batch, the keyless
+                    // `limit(1)` keeps the first result in body order, and Coalesce's "no arm
+                    // produced" fallback drops the empty element. Byte-identical to TS mapStep
+                    // (which applies the body to `[t]` and yields its first output, break).
+                    let slots = self.slots;
+                    self.edge_hop = prev_edge_hop;
+                    let any_edge = self.peek_leading_is_edge();
+                    let (body, oc, _os) = self.parse_sub_body_seeded(Plan::Row, from, slots)?;
+                    let arm_edge_scope = self.last_arm_edge_scope;
+                    let arm = body.reconverge(oc).order_page(vec![], None, Some(1));
+                    self.expect(&Tok::RParen)?; // close map(...)
+                    self.current = 0;
+                    self.slots = 1;
+                    self.edge_hop = None;
+                    self.edge_scope = combine_edge_scope(&[arm_edge_scope]);
+                    self.current_is_element = false;
+                    self.current_is_scalar = false;
+                    self.current_is_path = false;
+                    self.on_edge = self.edge_scope == Some(true);
+                    self.edge_path_ok = false;
+                    if any_edge {
+                        self.path_has_edges = true;
+                    }
+                    return Ok(plan.per_element_branch(
+                        crate::ir::PerElemKind::Coalesce,
+                        None,
+                        vec![arm],
+                        from,
+                    ));
                 }
             }
             "flatmap" => {
