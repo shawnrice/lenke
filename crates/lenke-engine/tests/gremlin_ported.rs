@@ -6224,13 +6224,12 @@ fn p4_otherv_ids() {
 }
 
 #[test]
-#[ignore = "KNOWN BUG (gremlin-fuzz seeds 2977/3934): otherV() after a per-element branch \
-            whose arm re-hops (outV().inE()), sourced from E() SCAN, resolves against the \
-            edge's src default instead of the arm's outV arrival. E(<ids>) SEED and the \
-            non-branch form are both correct. Root cause: E() EdgeScan seeds an edge-only \
-            lineage (empty node path); the branch arm's node-lineage that otherV reads then \
-            records the wrong node. Deferred — a deep, byte-identity-sensitive lineage fix. \
-            Remove #[ignore] when fixed."]
+// FIXED (was gremlin-fuzz seeds 2977/3934): otherV() after a per-element branch whose arm
+// re-hops (outV().inE()), sourced from an E() SCAN, now resolves against the arm's outV
+// arrival — the node path records [v1, v6] so otherv_reference returns the arrival (v1 =
+// the edge's dst) and otherV yields the opposite endpoint (v6 = peter). The fix rode in on
+// this session's branch/lineage refactors (write-aware containers + the shared per-element
+// executor threading lineage through `pull_body`); seeds 2977/3934 now pass.
 fn otherv_after_branch_rehop_over_edge_scan() {
     // Two CREATED edges: 9 (v1->v3) and 14 (v6->v1). v1 therefore has an incoming CREATED
     // edge (14). For each scanned edge: outV()->its source, then inE('CREATED') on that
