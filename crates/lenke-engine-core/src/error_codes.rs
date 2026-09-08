@@ -42,6 +42,8 @@ pub enum ErrorCode {
     MissingParameter,
     /// A failure crossing the native/wasm FFI boundary.
     Ffi,
+    /// A Gremlin `fail([message])` assertion step that a traverser reached.
+    Fail,
 }
 
 #[allow(clippy::use_self)] // generated; the paths below spell out the explicit type name.
@@ -64,6 +66,7 @@ impl ErrorCode {
         ErrorCode::UnknownFunction,
         ErrorCode::MissingParameter,
         ErrorCode::Ffi,
+        ErrorCode::Fail,
     ];
 
     /// The stable `E_*` wire string. This is what crosses the FFI boundary.
@@ -85,6 +88,7 @@ impl ErrorCode {
             ErrorCode::UnknownFunction => "E_UNKNOWN_FUNCTION",
             ErrorCode::MissingParameter => "E_MISSING_PARAMETER",
             ErrorCode::Ffi => "E_FFI",
+            ErrorCode::Fail => "E_FAIL",
         }
     }
 }
