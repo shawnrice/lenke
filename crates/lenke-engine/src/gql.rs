@@ -1871,9 +1871,6 @@ impl Parser {
             return Err("a shortest path requires a `*`, `+`, or `{n,m}` quantifier".into());
         };
         let (vb, _lb, vb_props, vb_where, _vb_le) = self.node_plain()?;
-        if va_where.is_some() || vb_where.is_some() {
-            return Err("inline WHERE on a shortest-path node is not supported".into());
-        }
         // A per-hop edge `WHERE` (`-[e:R WHERE e.w > 5]->*`) filters which edges the
         // path may traverse — parse it against a SCALAR mini-scope (the edge at slot
         // 0), independent of the outer bindings, since it is evaluated per edge.
@@ -1894,8 +1891,16 @@ impl Parser {
         } else {
             None
         };
-        // Seed node: label + inline props seed the scan (slot 0).
+        // Seed node: label + inline props + an inline `WHERE` seed the scan (slot 0). The
+        // source predicate (ISO element-pattern predicate `(a WHERE …)`) is a plain filter
+        // on the seed — resolved against the seed's scope (`a` at slot 0).
         let mut plan = node_prop_filters(Plan::Scan { label: la }, 0, va_props);
+        if let Some(r) = va_where {
+            let saved = std::mem::replace(&mut self.scope, scope.clone());
+            let pred = self.parse_captured_where(r)?;
+            self.scope = saved;
+            plan = plan.filter(pred);
+        }
         plan = plan.shortest_path(0, rel.dir, &rel.etypes, min, max, selector, edge_pred);
         // Endpoint node at slot 1: inline props filter it; its label is ignored (as
         // for any landing node in this subset).
@@ -1911,6 +1916,14 @@ impl Parser {
             } else {
                 scope.insert(v.clone(), 1);
             }
+        }
+        // An inline `WHERE` on the endpoint node — a plain filter on slot 1, resolved
+        // against the scope now holding both `a` (0) and the endpoint var (1).
+        if let Some(r) = vb_where {
+            let saved = std::mem::replace(&mut self.scope, scope.clone());
+            let pred = self.parse_captured_where(r)?;
+            self.scope = saved;
+            plan = plan.filter(pred);
         }
         Ok((plan, scope, 2))
     }
@@ -3997,12 +4010,6 @@ impl Parser {
         let Some(v) = var else {
             return Err("a MATCH after WITH must start from a bound variable".into());
         };
-        if start_where.is_some() {
-            return Err(
-                "inline WHERE on a continuing MATCH's start variable is not supported; use WHERE"
-                    .into(),
-            );
-        }
         if label.is_some() {
             return Err(format!(
                 "bound variable `{v}` cannot be re-labeled in a continuing MATCH"
@@ -4019,6 +4026,15 @@ impl Parser {
                 "continuing MATCH must start from a carried variable; `{v}` is not in scope"
             ));
         };
+        // An inline `WHERE` on the (already-bound) start variable is a plain predicate on
+        // the working table — the exact equivalent of a trailing WHERE (ISO element-pattern
+        // predicate). Resolve it against the current scope (which holds `v`) BEFORE the
+        // scope is moved out for `extend_chain`.
+        let mut plan = plan;
+        if let Some(range) = start_where {
+            let pred = self.parse_captured_where(range)?;
+            plan = plan.filter(pred);
+        }
         // Move scope/slots out so `extend_chain` can borrow them while it also
         // borrows `self` (the parser cursor); restore them afterwards.
         let mut scope = std::mem::take(&mut self.scope);
@@ -4352,9 +4368,6 @@ impl Parser {
             .collect();
         let mut sub_slots = outer_width + 1;
         let (var, label, props, start_where, le) = self.node_plain()?;
-        if start_where.is_some() {
-            return Err("inline WHERE on a CALL subquery start node is not supported".into());
-        }
         // A start node naming a declared scope variable roots an Expand from it (and may
         // not be re-labeled or re-constrained); anything else is a fresh correlated Scan.
         let scope_root = match &var {
@@ -4397,6 +4410,13 @@ impl Parser {
 
         let outer_scope = std::mem::replace(&mut self.scope, sub_scope);
         self.slots = sub_slots;
+        // An inline `WHERE` on the start node (ISO element-pattern predicate) — a plain
+        // filter on the body, resolved against the subquery scope (which now holds the
+        // start variable, whether a scope root or a fresh-scan node).
+        if let Some(r) = start_where {
+            let pred = self.parse_captured_where(r)?;
+            body = body.filter(pred);
+        }
         if self.eat_kw("WHERE") {
             body = body.filter(self.bool_pred()?);
         }

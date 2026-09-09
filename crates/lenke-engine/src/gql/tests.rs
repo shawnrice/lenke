@@ -5258,6 +5258,87 @@ fn rel_var_read_matches_hand_plan() {
     assert_same("MATCH (a:P)-[r:R]->(b) RETURN r.w AS w", &hand, &st);
 }
 
+/// Inline element-pattern predicate `(n WHERE …)` — the ISO inline WHERE inside a node
+/// pattern — now works in the parser positions that used to reject it (byte-identical to
+/// the TS engine; see the differential fuzzer, which generates these). Each is a plain
+/// filter equivalent to a trailing WHERE.
+#[test]
+fn inline_where_on_continuing_match_start() {
+    let store = social();
+    // The bound start `p` re-referenced with an inline WHERE filters the working table:
+    // only alice(30)/carol(40) pass age>28; alice KNOWS bob+carol, carol knows no one.
+    let r = run(
+        &super::parse(
+            "MATCH (p:Person) MATCH (p WHERE p.age > 28)-[:KNOWS]->(x:Person) RETURN x.name AS n",
+        )
+        .unwrap(),
+        &store,
+    );
+    assert_eq!(bag(&r), vec!["n=Str(\"bob\");", "n=Str(\"carol\");"]);
+}
+
+#[test]
+fn inline_where_on_call_subquery_start() {
+    let store = social();
+    let r = run(
+        &super::parse(
+            "MATCH (p:Person) CALL (p) { MATCH (p WHERE p.age > 28)-[:KNOWS]->(x) \
+             RETURN x.name AS xn } RETURN p.name AS pn, xn",
+        )
+        .unwrap(),
+        &store,
+    );
+    assert_eq!(
+        bag(&r),
+        vec![
+            "pn=Str(\"alice\");xn=Str(\"bob\");",
+            "pn=Str(\"alice\");xn=Str(\"carol\");",
+        ]
+    );
+}
+
+#[test]
+fn inline_where_on_shortest_path_source() {
+    let store = social();
+    // Sources with age>28 (alice, carol) seed the shortest walk; only alice reaches anyone.
+    let r = run(
+        &super::parse(
+            "MATCH sp = ANY SHORTEST (a:Person WHERE a.age > 28)-[:KNOWS]->+(b:Person) \
+             RETURN a.name AS an, b.name AS bn",
+        )
+        .unwrap(),
+        &store,
+    );
+    assert_eq!(
+        bag(&r),
+        vec![
+            "an=Str(\"alice\");bn=Str(\"bob\");",
+            "an=Str(\"alice\");bn=Str(\"carol\");",
+        ]
+    );
+}
+
+#[test]
+fn inline_where_on_shortest_path_endpoint() {
+    let store = social();
+    // Endpoints with age>28 (only carol); reachable from alice and bob.
+    let r = run(
+        &super::parse(
+            "MATCH sp = ANY SHORTEST (a:Person)-[:KNOWS]->+(b:Person WHERE b.age > 28) \
+             RETURN a.name AS an, b.name AS bn",
+        )
+        .unwrap(),
+        &store,
+    );
+    assert_eq!(
+        bag(&r),
+        vec![
+            "an=Str(\"alice\");bn=Str(\"carol\");",
+            "an=Str(\"bob\");bn=Str(\"carol\");",
+        ]
+    );
+}
+
 /// A relationship variable on a variable-length pattern binds the LIST of the walk's
 /// edges (the edge trail). The flat `-[r:R]->{n,m}` spelling now produces the SAME result
 /// as the equivalent subpath group `((x)-[r:R]->(m)){n,m}` — equivalent spellings must

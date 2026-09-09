@@ -595,6 +595,32 @@ const genQuery = (r: () => number): string => {
     return `MATCH (n:T) ORDER BY ${genExpr(r, 2)}${dir}, n.n${page} RETURN ${genExpr(r, 2)} AS x, n.n AS t`;
   }
 
+  // ISO element-pattern predicate `(n WHERE <pred>)` — the inline WHERE inside a
+  // node pattern, equivalent to a trailing WHERE. Native supports it on a PLAIN
+  // MATCH node but historically rejected it in several other positions (a continuing
+  // MATCH's start, a shortest-path source node, a CALL-subquery start) while the TS
+  // engine accepts it — a byte-identity divergence the fuzzer never generated. The
+  // filtered node is always `n`, so `genExpr` (which reads `n.*`) builds a predicate
+  // over it; a non-boolean predicate is rejected by BOTH engines (the static
+  // boolean-context check — or lands in the accepted E_INVALID_VALUE-vs-empty
+  // residual), a boolean one must agree to the bit.
+  // (OPTIONAL MATCH landing/start inline WHERE is a separate pass — its null-fill
+  // semantics need an OptionalExpand predicate, not a plain filter.)
+  if (p < 0.84) {
+    const pred = genExpr(r, 2);
+
+    return pick(r, [
+      // A continuing MATCH's start variable (re-referencing the bound `n`).
+      `MATCH (n:T) MATCH (n WHERE ${pred})-[:E]->(b:T) RETURN b.n AS x, n.n AS t ORDER BY t, x`,
+      // A shortest-path source node.
+      `MATCH p = ANY SHORTEST (n:T WHERE ${pred})-[:E]->*(b:T) RETURN path_length(p) AS x, n.n AS t ORDER BY t, x`,
+      // A shortest-path endpoint node (`n` is the endpoint here).
+      `MATCH p = ANY SHORTEST (a:T)-[:E]->*(n:T WHERE ${pred}) RETURN path_length(p) AS x, n.n AS t ORDER BY t, x`,
+      // A CALL-subquery start node (the scoped variable).
+      `MATCH (n:T) CALL (n) { MATCH (n WHERE ${pred})-[:E]->(m) RETURN m.n AS mn } RETURN mn AS x ORDER BY x`,
+    ]);
+  }
+
   return `MATCH (n:T) RETURN ${genExpr(r, 3)} AS x, n.n AS t ORDER BY t`;
 };
 
