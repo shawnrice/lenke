@@ -724,7 +724,9 @@ fn lex(s: &str) -> Result<Vec<Tok>, String> {
 /// at `out_slot`) by `flush_repeat` when a non-modulator step or the end follows.
 struct RepeatCtx {
     dir: Dir,
-    label: Option<String>,
+    /// The body hop's edge types (empty = every type; may hold several —
+    /// `repeat(out('A','B'))`), threaded straight to the `VarLength` walk.
+    etypes: Vec<String>,
     /// the slot the loop hops FROM (the element repeat() was reached on).
     from: usize,
     /// the slot the walk's endpoint lands in (== the width at flush time).
@@ -3035,7 +3037,7 @@ impl Parser {
                     self.expect(&Tok::RParen)?; // close repeat(...)
                     self.pending_repeat = Some(RepeatCtx {
                         dir: Dir::Out,
-                        label: None,
+                        etypes: Vec::new(),
                         from: self.current,
                         out_slot: self.current,
                         times: None,
@@ -3135,14 +3137,14 @@ impl Parser {
                     }
                     return Ok(acc);
                 }
-                let (dir, label, bind_tag, body_filter, max_cap) = self.repeat_body()?;
+                let (dir, etypes, bind_tag, body_filter, max_cap) = self.repeat_body()?;
                 self.expect(&Tok::RParen)?;
                 let from = self.current;
                 let out_slot = self.slots; // endpoint == width at flush time
                 self.current = out_slot; // emit/until predicates read the endpoint
                 self.pending_repeat = Some(RepeatCtx {
                     dir,
-                    label,
+                    etypes,
                     from,
                     out_slot,
                     times: None,
@@ -7496,16 +7498,7 @@ impl Parser {
     #[allow(clippy::type_complexity)]
     fn repeat_body(
         &mut self,
-    ) -> Result<
-        (
-            Dir,
-            Option<String>,
-            Option<String>,
-            Option<Expr>,
-            Option<u32>,
-        ),
-        String,
-    > {
+    ) -> Result<(Dir, Vec<String>, Option<String>, Option<Expr>, Option<u32>), String> {
         // Optional `__.` anonymous-traversal prefix.
         if matches!(self.peek(), Some(Tok::Ident(s)) if s == "__") {
             self.bump();
@@ -7535,15 +7528,9 @@ impl Parser {
             }
         }
         self.expect(&Tok::RParen)?;
-        let label = match labels.len() {
-            0 => None,
-            1 => Some(labels.remove(0)),
-            _ => {
-                return Err(
-                    "repeat() body hop with multiple edge labels is not yet supported".into(),
-                )
-            }
-        };
+        // Zero labels = every edge type; one or more restrict to that set. The walk lowers
+        // to a `VarLength` whose `edge_label` is already a `Vec<String>`, so a multi-label
+        // body (`repeat(out('A','B'))`) threads straight through — no uniform-label limit.
         // An optional inner `.as('tag')` binds the tag to the walk's endpoint (the last
         // iteration's landing) — `repeat(out('CREATED').as('a')).times(1).select('a')`.
         let mut tag = None;
@@ -7595,7 +7582,7 @@ impl Parser {
                 }
             });
         }
-        Ok((dir, label, tag, body_filter, max_cap))
+        Ok((dir, labels, tag, body_filter, max_cap))
     }
 
     /// Close an open `repeat(...)` into a `VarLength` walk. `times(n)` alone is a
@@ -7636,7 +7623,7 @@ impl Parser {
         // and binds just the endpoint.
         if let (Some(tag), false, Some(n)) = (ctx.bind_tag.as_ref(), ctx.min_one, ctx.times) {
             if n >= 1 && ctx.until.is_none() && ctx.body_filter.is_none() && ctx.max_cap.is_none() {
-                let etypes = etypes_of(ctx.label.as_deref());
+                let etypes = ctx.etypes.clone();
                 let tag = tag.clone();
                 self.slots = ctx.out_slot; // reclaim the pre-allocated endpoint slot
                 let mut p = plan;
@@ -7685,7 +7672,7 @@ impl Parser {
         let p = plan.var_length_until(
             ctx.from,
             ctx.dir,
-            &etypes_of(ctx.label.as_deref()),
+            &ctx.etypes,
             min,
             max,
             PathMode::Walk,

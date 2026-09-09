@@ -791,6 +791,14 @@ const CORPUS: Case[] = [
       ],
     },
   },
+  {
+    // repeat() body hop with MULTIPLE edge labels — `out('KNOWS','CREATED')`. marko's
+    // 2-hop walk over {KNOWS,CREATED} lands on josh's creations {ripple, lop}. Order is
+    // adjacency-order, shared by both engines.
+    name: "V('1').repeat(out('KNOWS','CREATED')).times(2).values('name')  [multi-label repeat]",
+    plan: traversal(V('1'), repeat(traversal(out('KNOWS', 'CREATED'))).times(2), values('name')),
+    verdict: { kind: 'agree', expected: ['ripple', 'lop'] },
+  },
 ];
 
 suite('gremlin conformance: TS engine ⟷ Rust engine (over ffi)', () => {

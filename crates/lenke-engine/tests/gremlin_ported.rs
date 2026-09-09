@@ -4124,6 +4124,26 @@ fn p2_repeat_times_two() {
 }
 
 #[test]
+fn p2_repeat_multi_edge_label_body() {
+    // NOW SUPPORTED: a repeat() body hop with MULTIPLE edge labels (byte-identical to TS;
+    // the VarLength walk already carries a Vec of edge types). marko repeat(out(KNOWS,
+    // CREATED)).times(2): hop1 → vadas/josh/lop, hop2 from josh → ripple/lop (its CREATED).
+    assert_eq!(
+        ordered(qs_e(
+            "g.V('1').repeat(__.out('KNOWS','CREATED')).times(2).values('name')"
+        )),
+        vec!["ripple", "lop"]
+    );
+    // both() with multiple labels, one hop.
+    assert_eq!(
+        ordered(qs_e(
+            "g.V('1').repeat(__.both('KNOWS','CREATED')).times(1).values('name')"
+        )),
+        vec!["vadas", "josh", "lop"]
+    );
+}
+
+#[test]
 fn p2_repeat_until_software() {
     let r = qs_e("g.V('1').repeat(__.out()).until(__.hasLabel('SOFTWARE')).values('name')");
     assert_eq!(names(r), vec!["lop", "lop", "ripple"]);
