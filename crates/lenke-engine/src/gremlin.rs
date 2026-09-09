@@ -3843,7 +3843,11 @@ impl Parser {
                     let l = s.to_ascii_lowercase();
                     s == "__" || matches!(l.as_str(),
                         "out" | "in" | "both" | "oute" | "ine" | "bothe"
-                        | "not" | "and" | "or" | "has" | "hasnot" | "haslabel" | "haskey")
+                        | "not" | "and" | "or" | "has" | "hasnot" | "haslabel" | "haskey"
+                        // `values`/`value` is a sub-traversal (a presence/value test), never a
+                        // predicate op — route it to the filter-child machinery like TS does,
+                        // so bare `where(values('k', …))` matches `where(__.values(…))`.
+                        | "values" | "value")
                 });
                 if is_traversal {
                     let e = self.child_filter_expr()?;
@@ -6261,20 +6265,40 @@ impl Parser {
             // projection body — a projection collapses the batch and drops the
             // provenance column the Exists machinery reads.
             "values" => {
-                let key = self.str_arg()?;
-                if self.peek() == Some(&Tok::Comma) {
-                    return Err(
-                        "values() with multiple keys is not supported in a filter child".into(),
-                    );
+                // One or more keys. In filter position `values(k1, k2, …)` is a PRESENCE
+                // test — TinkerPop keeps the element when the child yields ≥1 value, i.e.
+                // when ANY key is present — so it lowers to `PropertyExists(k1) OR …`. A
+                // trailing `.is(pred)` narrows it, and (like TinkerPop) applies to a SINGLE
+                // key (a multi-key `.is` would need a per-value any-match, deferred).
+                let mut keys = vec![self.str_arg()?];
+                while self.peek() == Some(&Tok::Comma) {
+                    self.bump();
+                    keys.push(self.str_arg()?);
                 }
                 self.expect(&Tok::RParen)?;
-                let exists = Expr::PropertyExists {
+                let key = keys[0].clone();
+                let mut exists = Expr::PropertyExists {
                     slot: self.current,
                     key: key.clone(),
                 };
-                if self.peek() == Some(&Tok::Dot)
-                    && matches!(self.toks.get(self.pos + 1), Some(Tok::Ident(s)) if s.eq_ignore_ascii_case("is"))
-                {
+                for k in &keys[1..] {
+                    exists = Expr::Or(
+                        Box::new(exists),
+                        Box::new(Expr::PropertyExists {
+                            slot: self.current,
+                            key: k.clone(),
+                        }),
+                    );
+                }
+                let has_is = self.peek() == Some(&Tok::Dot)
+                    && matches!(self.toks.get(self.pos + 1), Some(Tok::Ident(s)) if s.eq_ignore_ascii_case("is"));
+                if keys.len() > 1 && has_is {
+                    return Err(
+                        "values(<multiple keys>).is(<pred>) in a filter child is not supported"
+                            .into(),
+                    );
+                }
+                if has_is {
                     self.expect(&Tok::Dot)?;
                     self.ident()?; // is
                     self.expect(&Tok::LParen)?;

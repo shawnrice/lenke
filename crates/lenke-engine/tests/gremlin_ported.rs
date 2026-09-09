@@ -3841,6 +3841,31 @@ fn p1_not_predicate_inside_has() {
 }
 
 #[test]
+fn p1_where_values_multiple_keys_is_presence_or() {
+    // NOW SUPPORTED: `where(values('a','b'))` (multi-key) in a filter child — a presence
+    // test that keeps an element when ANY key is present (`PropertyExists(a) OR …`),
+    // byte-identical to TS and to real TinkerPop. `values('name','age')` keeps all 6
+    // (every vertex has a name); `values('age','NOPE')` keeps the 4 with an age; both
+    // spellings (bare and `__.`-prefixed) agree.
+    assert_eq!(
+        one_num(run("g.V().where(values('name','age')).count()")),
+        6.0
+    );
+    assert_eq!(
+        one_num(run("g.V().where(__.values('name','age')).count()")),
+        6.0
+    );
+    assert_eq!(
+        one_num(run("g.V().where(values('age','NOPE')).count()")),
+        4.0
+    );
+    assert_eq!(
+        one_num(run("g.V().where(values('NOPE','ZZZ')).count()")),
+        0.0
+    );
+}
+
+#[test]
 fn p1_has_id_single() {
     assert_eq!(ordered(qs("g.V().hasId('1').id()")), vec!["1"]);
     assert_eq!(

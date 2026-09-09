@@ -812,6 +812,9 @@ const CORPUS: Case[] = [
     plan: traversal(E(9), count()),
     verdict: { kind: 'bothThrow', code: ErrorCode.InvalidValue },
   },
+  // (where(values(k1,k2,…)) multi-key presence is verified byte-identical native/TS/
+  // TinkerPop directly + in the ported tests; `planToGremlin` can't emit `where(<sub-plan>)`
+  // yet, so it isn't authored as a builder-plan conformance case here.)
 ];
 
 suite('gremlin conformance: TS engine ⟷ Rust engine (over ffi)', () => {
