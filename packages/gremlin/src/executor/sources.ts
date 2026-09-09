@@ -1,8 +1,24 @@
 import type { Graph } from '@lenke/core';
+import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { ID, Step } from '../ast.js';
 import { addEStep, addVStep } from './mutation.js';
 import { newContext, startTraverser, type Traverser } from './runtime.js';
+
+// Element ids in this engine are STRINGS. Looking one up by a NON-string id (`g.V(1)`
+// with a numeric literal) is a type error, NOT a silent coercion to `'1'` — this matches
+// Apache TinkerPop under its STRING id manager ("Expected an id convertible to String but
+// received Integer"), the ground truth for Gremlin semantics. The builder still accepts a
+// numeric literal in the AST; it faults here, at resolution, on a string-id graph.
+const asStringId = (id: ID): string => {
+  if (typeof id !== 'string') {
+    throw new LenkeError(`a vertex/edge id must be a string; got ${typeof id} \`${String(id)}\``, {
+      code: ErrorCode.InvalidValue,
+    });
+  }
+
+  return id;
+};
 
 export const applySource = (
   step: Step,
@@ -14,14 +30,14 @@ export const applySource = (
       return sourceFromIds(
         graph.vertices,
         step.ids,
-        (id) => graph.getVertexById(String(id)),
+        (id) => graph.getVertexById(asStringId(id)),
         tracksPath,
       );
     case 'E':
       return sourceFromIds(
         graph.edges,
         step.ids,
-        (id) => graph.getEdgeById(String(id)),
+        (id) => graph.getEdgeById(asStringId(id)),
         tracksPath,
       );
     case 'inject':

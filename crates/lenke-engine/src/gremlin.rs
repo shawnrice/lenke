@@ -1388,19 +1388,16 @@ impl Parser {
                 //   g.V()               — all vertices (Scan).
                 //   g.V('a', 'b', …)    — the vertices with those EXTERNAL ids, a
                 //                         read source resolved at exec time (NodeSeed).
-                //   g.V(<num>).addE(…)  — the numeric-id anchor of an addE write.
+                // Element ids are STRINGS: a NUMERIC id (`g.V(1)`) is a type error, not a
+                // coercion to `'1'` — matching Apache TinkerPop under its STRING id manager
+                // (the ground truth for Gremlin). Faults for every following step, including
+                // addE (TinkerPop errors on `g.V(1).addE(...)` too).
                 if matches!(self.peek(), Some(Tok::Num(_))) {
-                    let from = self.u_id()?;
-                    self.expect(&Tok::RParen)?;
-                    self.expect(&Tok::Dot)?;
-                    let step = self.ident()?;
-                    if !step.eq_ignore_ascii_case("addE") {
-                        return Err("g.V(<numeric id>) is only supported before addE()".into());
-                    }
-                    self.expect(&Tok::LParen)?;
-                    let etype = self.str_arg()?;
-                    self.expect(&Tok::RParen)?;
-                    self.finish_add_edge(Some(from), None, etype)?
+                    return Err(
+                        "E_INVALID_VALUE: a vertex id must be a string; a numeric g.V(<id>) does \
+                         not match string-id vertices"
+                            .into(),
+                    );
                 } else if matches!(self.peek(), Some(Tok::Str(_))) {
                     let mut ext_ids = vec![self.str_arg()?];
                     while self.peek() == Some(&Tok::Comma) {
@@ -1417,9 +1414,16 @@ impl Parser {
             "e" => {
                 self.expect(&Tok::LParen)?;
                 // `g.E()` seeds every live edge; `g.E('id', …)` seeds the edges with
-                // those external ids (in request order).
+                // those external ids (in request order). A NUMERIC id is a type error (edge
+                // ids are strings) — matching TinkerPop's STRING id manager.
                 self.path_ok = false;
-                if matches!(self.peek(), Some(Tok::Str(_))) {
+                if matches!(self.peek(), Some(Tok::Num(_))) {
+                    return Err(
+                        "E_INVALID_VALUE: an edge id must be a string; a numeric g.E(<id>) does \
+                         not match string-id edges"
+                            .into(),
+                    );
+                } else if matches!(self.peek(), Some(Tok::Str(_))) {
                     let mut ext_ids = vec![self.str_arg()?];
                     while self.peek() == Some(&Tok::Comma) {
                         self.bump();
@@ -5820,47 +5824,6 @@ impl Parser {
     /// Parse the trailing `.from(V(id))` / `.to(V(id))` / `.property('k', v)`
     /// modulators of an `addE` and build the edge write. `from`/`to` may already be
     /// set (the `g.V(a).addE(...)` anchor sets `from`).
-    fn finish_add_edge(
-        &mut self,
-        mut from: Option<u32>,
-        mut to: Option<u32>,
-        etype: String,
-    ) -> Result<Plan, String> {
-        let mut props = Vec::new();
-        while self.peek() == Some(&Tok::Dot) {
-            self.pos += 1;
-            let step = self.ident()?;
-            self.expect(&Tok::LParen)?;
-            match step.to_ascii_lowercase().as_str() {
-                "from" => {
-                    from = Some(self.v_id_arg()?);
-                    self.expect(&Tok::RParen)?;
-                }
-                "to" => {
-                    to = Some(self.v_id_arg()?);
-                    self.expect(&Tok::RParen)?;
-                }
-                "property" => {
-                    let key = self.str_arg()?;
-                    check_write_name("property key", &key)?;
-                    self.expect(&Tok::Comma)?;
-                    let val = self.literal()?;
-                    self.expect(&Tok::RParen)?;
-                    props.push((key, val));
-                }
-                other => return Err(format!("unsupported addE modulator `{other}`")),
-            }
-        }
-        let from = from.ok_or("addE needs a from(V(id)) or a g.V(id) anchor")?;
-        let to = to.ok_or("addE needs a to(V(id))")?;
-        Ok(Plan::AddEdge {
-            from,
-            to,
-            etype,
-            props,
-        })
-    }
-
     /// True when the upcoming `property(...)` (cursor at its `(`) has a LITERAL value —
     /// `property('k', 'v'|5|true|null|[…]|date('…'))` — as opposed to a sub-traversal value
     /// (`property('d', outE().count())`). Used to fold literal edge props into `addE` while
@@ -6034,26 +5997,6 @@ impl Parser {
             props,
             tail: Box::new(tail),
         })
-    }
-
-    /// A `V(<id>)` argument (the numeric node id).
-    fn v_id_arg(&mut self) -> Result<u32, String> {
-        let v = self.ident()?;
-        if !v.eq_ignore_ascii_case("V") {
-            return Err(format!("expected V(id), got `{v}`"));
-        }
-        self.expect(&Tok::LParen)?;
-        let id = self.u_id()?;
-        self.expect(&Tok::RParen)?;
-        Ok(id)
-    }
-
-    /// A non-negative integer node id.
-    fn u_id(&mut self) -> Result<u32, String> {
-        match self.bump() {
-            Some(Tok::Num(n)) if n >= 0.0 && n.fract() == 0.0 => Ok(n as u32),
-            other => Err(format!("expected a node id, got {other:?}")),
-        }
     }
 
     /// Apply a `property('k', v)` step. On an `addV` (a one-node `Insert`) it

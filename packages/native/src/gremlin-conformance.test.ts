@@ -799,6 +799,19 @@ const CORPUS: Case[] = [
     plan: traversal(V('1'), repeat(traversal(out('KNOWS', 'CREATED'))).times(2), values('name')),
     verdict: { kind: 'agree', expected: ['ripple', 'lop'] },
   },
+  {
+    // A NUMERIC vertex id is a type error in both engines — element ids are strings, so a
+    // numeric `V(1)` does not coerce to `'1'` (matches TinkerPop's STRING id manager).
+    name: 'V(1) [numeric id → bothThrow E_INVALID_VALUE]',
+    plan: traversal(V(1), values('name')),
+    verdict: { kind: 'bothThrow', code: ErrorCode.InvalidValue },
+  },
+  {
+    // Same for a numeric EDGE id.
+    name: 'E(9) [numeric id → bothThrow E_INVALID_VALUE]',
+    plan: traversal(E(9), count()),
+    verdict: { kind: 'bothThrow', code: ErrorCode.InvalidValue },
+  },
 ];
 
 suite('gremlin conformance: TS engine ⟷ Rust engine (over ffi)', () => {

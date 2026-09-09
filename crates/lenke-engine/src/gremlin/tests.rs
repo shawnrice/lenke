@@ -2286,13 +2286,16 @@ fn gremlin_add_edge_per_traverser() {
 
 // --- addE (B6) ---
 
-/// `g.V(a).addE('T').to(V(b)).property(...)` creates one edge with props.
+/// `g.addE('T').from(V(a)).to(V(b)).property(...)` creates one edge with props.
 #[test]
 fn add_edge_anchored() {
     let mut st = Builder::default().build();
     let a = st.add_node(&["P"], &[]);
     let b = st.add_node(&["P"], &[]);
-    exec("g.V(0).addE('R').to(V(1)).property('weight', 0.5)", &mut st);
+    exec(
+        "g.addE('R').from(V('0')).to(V('1')).property('weight', 0.5)",
+        &mut st,
+    );
     assert_eq!(st.out(a).len(), 1);
     assert_eq!(st.out(a)[0].nbr, b);
     let eid = st.out(a)[0].eid;
@@ -2312,14 +2315,19 @@ fn add_edge_from_to() {
 
 #[test]
 fn add_edge_errors() {
-    // Missing `to` is a parse error (finish_add_edge requires both endpoints).
-    assert!(super::parse("g.addE('R').from(V(0))").is_err());
+    // Missing `to` is a parse error (both endpoints are required).
+    assert!(super::parse("g.addE('R').from(V('0'))").is_err());
+    // A NUMERIC source id is a type error — element ids are strings (matches TinkerPop's
+    // STRING id manager, which rejects `g.V(1)` rather than coercing it to `'1'`).
+    assert!(super::parse("g.V(0).addE('R').to(V('1'))").is_err());
     // Out-of-range endpoint is a runtime error.
     let mut st = Builder::default().build();
     st.add_node(&["P"], &[]);
-    assert!(
-        crate::exec::execute(&super::parse("g.V(0).addE('R').to(V(9))").unwrap(), &mut st).is_err()
-    );
+    assert!(crate::exec::execute(
+        &super::parse("g.addE('R').from(V('0')).to(V('9'))").unwrap(),
+        &mut st
+    )
+    .is_err());
 }
 
 #[test]
