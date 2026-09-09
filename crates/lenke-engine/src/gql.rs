@@ -2963,7 +2963,23 @@ impl Parser {
                     from = nf;
                     continue;
                 }
-                let g = self.parse_subpath_group()?;
+                // A FLAT group whose hops disagree on direction or edge type
+                // (`((x)-[:E]->(m)<-[:E]-(y)){n,m}`) is NOT a uniform `RepeatGroup`, but the
+                // general nested-group machinery represents each hop independently
+                // (`GElem::Hop` carries its own dir/etypes). `parse_subpath_group` reports
+                // the mismatch; on that signal, rewind and re-parse via `parse_nested_group`.
+                let saved_pos = self.pos;
+                let g = match self.parse_subpath_group() {
+                    Ok(g) => g,
+                    Err(e) if e.contains("mixed hop") => {
+                        self.pos = saved_pos;
+                        let (p, nf) = self.parse_nested_group(plan, scope, slots, from)?;
+                        plan = p;
+                        from = nf;
+                        continue;
+                    }
+                    Err(e) => return Err(e),
+                };
                 let k = g.k;
                 // The endpoint `(t)` is OPTIONAL — `((x)-[e]->(y)){2}` (anonymous
                 // landing) is valid when only the group variables are used.

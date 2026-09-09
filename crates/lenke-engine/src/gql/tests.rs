@@ -5340,6 +5340,39 @@ fn inline_where_on_shortest_path_endpoint() {
 }
 
 #[test]
+fn mixed_direction_and_edge_type_subpath_group() {
+    // A quantified subpath group whose hops disagree on direction / edge type now works
+    // (routed to the per-hop nested-group machinery), byte-identical to TS. Fixture:
+    // n1 -E-> n2 -E,F-> n3.
+    let nd = "\
+{\"type\":\"node\",\"id\":\"1\",\"labels\":[\"T\"],\"properties\":{\"n\":3.0}}
+{\"type\":\"node\",\"id\":\"2\",\"labels\":[\"T\"],\"properties\":{\"n\":7.0}}
+{\"type\":\"node\",\"id\":\"3\",\"labels\":[\"T\"],\"properties\":{\"n\":5.0}}
+{\"type\":\"edge\",\"id\":\"e1\",\"labels\":[\"E\"],\"from\":\"1\",\"to\":\"2\",\"properties\":{}}
+{\"type\":\"edge\",\"id\":\"e2\",\"labels\":[\"E\",\"F\"],\"from\":\"2\",\"to\":\"3\",\"properties\":{}}
+";
+    let store = crate::ndjson::from_ndjson(nd).unwrap();
+    let count = |q: &str| {
+        let rows = run(&super::parse(q).unwrap(), &store);
+        assert_eq!(rows.rows.len(), 1, "expected one count row");
+        match rows.rows[0][0] {
+            Value::Num(x) => x,
+            ref o => panic!("expected count, got {o:?}"),
+        }
+    };
+    // Mixed EDGE TYPES: x -E-> m -F-> y. Only n1-E->n2-F->n3 qualifies (one rep).
+    assert_eq!(
+        count("MATCH (a:T)((x)-[:E]->(m)-[:F]->(y)){1,2}(b) RETURN count(*) AS c"),
+        1.0
+    );
+    // Mixed DIRECTIONS with no satisfying trail → zero (parses + runs, not rejected).
+    assert_eq!(
+        count("MATCH (a:T)((x)-[:E]->(m)<-[:F]-(y)){1,1}(b) RETURN count(*) AS c"),
+        0.0
+    );
+}
+
+#[test]
 fn compound_label_on_call_fresh_scan_start() {
     // A compound label expression (`:A&B`) on a CALL fresh-scan start node now works
     // (byte-identical to TS); it seeds one label and residual-filters the rest.

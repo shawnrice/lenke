@@ -657,11 +657,27 @@ const genQuery = (r: () => number): string => {
 
   // A NAMED path variable bound over a quantified subpath group — `path_length`/`nodes`
   // read the path the group walked.
-  if (p < 0.9) {
+  if (p < 0.88) {
     const q = pick(r, ['{1,2}', '{1,3}', '{2,2}', '+']);
     const acc = pick(r, ['path_length(pp)', 'size(nodes(pp))', 'size(relationships(pp))']);
 
     return `MATCH pp = (a:T)((x)-[:E]->(m))${q}(b:T) RETURN ${acc} AS x, b.n AS t ORDER BY t, x`;
+  }
+
+  // A quantified subpath group whose two hops DISAGREE on direction and/or edge type
+  // (`((x)-[d1:t1]->(m)-[d2:t2]->(y)){n,m}`). Native used to reject any non-uniform unit;
+  // it now routes to the per-hop nested-group machinery, byte-identical to TS. `count(*)`
+  // and the endpoint keep the comparison order-free / totalised.
+  if (p < 0.93) {
+    const h1 = pick(r, ['-[:E]->', '<-[:E]-', '-[:F]->', '<-[:F]-']);
+    const h2 = pick(r, ['-[:E]->', '<-[:E]-', '-[:F]->', '<-[:F]-']);
+    const q = pick(r, ['{1,2}', '{1,1}', '{1,3}', '+']);
+    const body = `(a:T)((x)${h1}(m)${h2}(y))${q}(b:T)`;
+
+    return pick(r, [
+      `MATCH ${body} RETURN count(*) AS x`,
+      `MATCH ${body} RETURN b.n AS x, a.n AS t ORDER BY t, x`,
+    ]);
   }
 
   return `MATCH (n:T) RETURN ${genExpr(r, 3)} AS x, n.n AS t ORDER BY t`;
