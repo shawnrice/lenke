@@ -492,6 +492,7 @@ fn map_children(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
             edge_label,
             keep_source,
             bind_edge,
+            landing_pred,
         } => {
             let (i, c) = rewrite(*input, idx);
             (
@@ -502,6 +503,7 @@ fn map_children(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
                     edge_label,
                     keep_source,
                     bind_edge,
+                    landing_pred,
                 },
                 c,
             )

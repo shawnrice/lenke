@@ -5339,6 +5339,55 @@ fn inline_where_on_shortest_path_endpoint() {
     );
 }
 
+#[test]
+fn inline_where_on_optional_match_landing() {
+    let store = social();
+    // OPTIONAL MATCH landing predicate: a source whose neighbours all FAIL it null-fills
+    // (the left-outer contract) rather than dropping. alice KNOWS bob(25)+carol(40); with
+    // `WHERE m.age > 30` only carol passes, so alice → carol. bob KNOWS carol (passes) →
+    // bob → carol. carol knows no one → carol → null. (A plain post-filter would wrongly
+    // drop alice's non-matching bob row AND every no-match source.)
+    let r = run(
+        &super::parse(
+            "MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(m WHERE m.age > 30) \
+             RETURN p.name AS pn, m.name AS mn",
+        )
+        .unwrap(),
+        &store,
+    );
+    assert_eq!(
+        bag(&r),
+        vec![
+            "pn=Str(\"alice\");mn=Str(\"carol\");",
+            "pn=Str(\"bob\");mn=Str(\"carol\");",
+            "pn=Str(\"carol\");mn=Null;",
+        ]
+    );
+}
+
+#[test]
+fn inline_where_on_optional_match_landing_all_miss_null_fills() {
+    let store = social();
+    // The critical case: a source HAS neighbours but NONE satisfy the predicate → the
+    // source is KEPT with a null landing (not dropped). No one KNOWS anyone older than 99.
+    let r = run(
+        &super::parse(
+            "MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(m WHERE m.age > 99) \
+             RETURN p.name AS pn, m.name AS mn",
+        )
+        .unwrap(),
+        &store,
+    );
+    assert_eq!(
+        bag(&r),
+        vec![
+            "pn=Str(\"alice\");mn=Null;",
+            "pn=Str(\"bob\");mn=Null;",
+            "pn=Str(\"carol\");mn=Null;",
+        ]
+    );
+}
+
 /// A relationship variable on a variable-length pattern binds the LIST of the walk's
 /// edges (the edge trail). The flat `-[r:R]->{n,m}` spelling now produces the SAME result
 /// as the equivalent subpath group `((x)-[r:R]->(m)){n,m}` — equivalent spellings must

@@ -1123,6 +1123,7 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
             edge_label,
             keep_source,
             bind_edge,
+            landing_pred,
         } => optional_expand(
             &pull(input, store, track)?,
             store,
@@ -1131,7 +1132,8 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
             edge_label,
             *keep_source,
             *bind_edge,
-        ),
+            landing_pred.as_deref(),
+        )?,
         Plan::IntervalExpand {
             input,
             from,
@@ -2650,6 +2652,10 @@ fn expand(
 /// [`expand`], but a source row with NO matching neighbour is KEPT, its appended
 /// node slot holding the `u32::MAX` null sentinel (read back as NULL everywhere).
 /// Node-only, no lineage. So every input row yields at least one output row.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "left-outer hop plus its optional landing predicate"
+)]
 fn optional_expand(
     batch: &Batch,
     store: &Store,
@@ -2658,7 +2664,8 @@ fn optional_expand(
     edge_label: &[String],
     keep_source: bool,
     bind_edge: bool,
-) -> Batch {
+    landing_pred: Option<&Expr>,
+) -> Result<Batch, String> {
     // The value a missed row lands: the source element (Gremlin optional) or the
     // null sentinel (GQL OPTIONAL MATCH). `miss(v)` picks per row.
     let miss = |v: u32| if keep_source { v } else { u32::MAX };
@@ -2679,24 +2686,61 @@ fn optional_expand(
     };
     let want = match want_etypes(store, edge_label) {
         Ok(w) => w,
-        Err(()) => return all_miss(), // unknown edge type → no match for any row
+        Err(()) => return Ok(all_miss()), // unknown edge type → no match for any row
     };
     let Col::Nodes(src) = batch.slot(from) else {
-        return all_miss();
+        return Ok(all_miss());
     };
+    // Pass 1: gather every candidate neighbour in source order, recording each
+    // source's candidate range so a landing predicate can be applied per source.
+    let mut cand_row = Vec::new();
+    let mut cand_nbr = Vec::new();
+    let mut cand_eid = Vec::new();
+    let mut ranges: Vec<(usize, usize)> = Vec::with_capacity(src.len());
+    for (row, &v) in src.iter().enumerate() {
+        let start = cand_nbr.len();
+        for_each_nbr(store, v, dir, &want, false, |nbr, eid| {
+            cand_row.push(row);
+            cand_nbr.push(nbr);
+            cand_eid.push(eid);
+        });
+        ranges.push((start, cand_nbr.len()));
+        let _ = v;
+    }
+    // A landing predicate (`OPTIONAL MATCH (a)-[:R]->(b WHERE …)`): build the candidate
+    // batch (source columns + [edge] + landing node) and mask it with the SAME
+    // three-valued evaluator a `Plan::Filter` uses, so the inline and trailing spellings
+    // agree. A candidate survives only when the predicate is TRUE (Kleene).
+    let mask: Option<Vec<bool>> = match landing_pred {
+        None => None,
+        Some(pred) => {
+            let mut cand: Vec<Col> = batch.slots.iter().map(|c| c.gather(&cand_row)).collect();
+            if bind_edge {
+                cand.push(Col::Edges(cand_eid.clone()));
+            }
+            cand.push(Col::Nodes(cand_nbr.clone()));
+            let cb = Batch::of(cand);
+            let m = eval_mask(pred, store, &cb)?;
+            Some(m.into_iter().map(|t| t == Some(true)).collect())
+        }
+    };
+    // Pass 2: per source, emit its surviving candidates in order; if none survive, land
+    // the miss value (source or null) so the source is kept — the left-outer contract.
     let mut keep = Vec::new();
     let mut nbrs = Vec::new();
     let mut eids = Vec::new();
     for (row, &v) in src.iter().enumerate() {
-        let before = nbrs.len();
-        for_each_nbr(store, v, dir, &want, false, |nbr, eid| {
-            keep.push(row);
-            nbrs.push(nbr);
-            eids.push(eid);
-        });
-        if nbrs.len() == before {
-            // No neighbour — keep the row, landing the miss value (source or null),
-            // and a null-sentinel edge if the edge is bound.
+        let (start, end) = ranges[row];
+        let mut any = false;
+        for i in start..end {
+            if mask.as_ref().is_none_or(|m| m[i]) {
+                keep.push(cand_row[i]);
+                nbrs.push(cand_nbr[i]);
+                eids.push(cand_eid[i]);
+                any = true;
+            }
+        }
+        if !any {
             keep.push(row);
             nbrs.push(miss(v));
             eids.push(u32::MAX);
@@ -2707,7 +2751,7 @@ fn optional_expand(
         slots.push(Col::Edges(eids)); // edge column BEFORE the node column
     }
     slots.push(Col::Nodes(nbrs));
-    Batch::of(slots)
+    Ok(Batch::of(slots))
 }
 
 /// Interval-overlap hop (`Plan::IntervalExpand`): like [`expand`], but keeps only

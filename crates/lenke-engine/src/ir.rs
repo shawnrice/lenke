@@ -668,6 +668,13 @@ pub enum Plan {
         /// `u32::MAX` null sentinel on a miss) BEFORE the node column — so
         /// `OPTIONAL MATCH (a)-[f:R]->(b)` binds `f` at `width` and `b` at `width+1`.
         bind_edge: bool,
+        /// An inline element-pattern predicate on the LANDING node
+        /// (`OPTIONAL MATCH (a)-[:R]->(b WHERE <pred>)`): the predicate is applied to
+        /// each candidate neighbour BEFORE the "any match?" decision, so a source whose
+        /// neighbours all fail it null-fills (rather than dropping the source). Evaluated
+        /// over the appended landing slot (the exec builds a candidate batch). `None` for a
+        /// plain optional hop.
+        landing_pred: Option<Box<Expr>>,
     },
     /// An interval-overlap hop: like `Expand`, but keeps only edges whose interval
     /// `[edge.lo_key, edge.hi_key]` overlaps `[qlo, qhi]` (`lo <= qhi AND hi >= qlo`).
@@ -1378,6 +1385,7 @@ impl Plan {
             edge_label: edge_label.to_vec(),
             keep_source,
             bind_edge,
+            landing_pred: None,
         }
     }
 

@@ -59,8 +59,20 @@ fn bind_plan(plan: &mut Plan, params: &HashMap<&str, &Value>) -> Result<(), Stri
         | Plan::NullPadIfEmpty { input, .. }
         | Plan::ShortestPathEnum { input, .. }
         | Plan::Expand { input, .. }
-        | Plan::OptionalExpand { input, .. }
         | Plan::SortLocal { input, .. } => bind_plan(input, params)?,
+
+        // A left-outer hop with an optional landing predicate (`OPTIONAL MATCH (a)-[:R]->(b
+        // WHERE b.k = $x)`): bind the input and any `$param` in the landing predicate.
+        Plan::OptionalExpand {
+            input,
+            landing_pred,
+            ..
+        } => {
+            bind_plan(input, params)?;
+            if let Some(p) = landing_pred {
+                bind_expr(p, params)?;
+            }
+        }
 
         // Single-input + one or more expressions.
         Plan::Unwind { input, list, .. } => {

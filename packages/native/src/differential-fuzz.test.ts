@@ -598,14 +598,12 @@ const genQuery = (r: () => number): string => {
   // ISO element-pattern predicate `(n WHERE <pred>)` — the inline WHERE inside a
   // node pattern, equivalent to a trailing WHERE. Native supports it on a PLAIN
   // MATCH node but historically rejected it in several other positions (a continuing
-  // MATCH's start, a shortest-path source node, a CALL-subquery start) while the TS
-  // engine accepts it — a byte-identity divergence the fuzzer never generated. The
-  // filtered node is always `n`, so `genExpr` (which reads `n.*`) builds a predicate
-  // over it; a non-boolean predicate is rejected by BOTH engines (the static
-  // boolean-context check — or lands in the accepted E_INVALID_VALUE-vs-empty
-  // residual), a boolean one must agree to the bit.
-  // (OPTIONAL MATCH landing/start inline WHERE is a separate pass — its null-fill
-  // semantics need an OptionalExpand predicate, not a plain filter.)
+  // MATCH's start, a shortest-path node, a CALL-subquery start, an OPTIONAL MATCH
+  // landing node) while the TS engine accepts it — a byte-identity divergence the
+  // fuzzer never generated. The filtered node is always `n`, so `genExpr` (which reads
+  // `n.*`) builds a predicate over it; a non-boolean predicate is rejected by BOTH
+  // engines (the static boolean-context check — or lands in the accepted
+  // E_INVALID_VALUE-vs-empty residual), a boolean one must agree to the bit.
   if (p < 0.84) {
     const pred = genExpr(r, 2);
 
@@ -618,6 +616,10 @@ const genQuery = (r: () => number): string => {
       `MATCH p = ANY SHORTEST (a:T)-[:E]->*(n:T WHERE ${pred}) RETURN path_length(p) AS x, n.n AS t ORDER BY t, x`,
       // A CALL-subquery start node (the scoped variable).
       `MATCH (n:T) CALL (n) { MATCH (n WHERE ${pred})-[:E]->(m) RETURN m.n AS mn } RETURN mn AS x ORDER BY x`,
+      // An OPTIONAL MATCH LANDING node — the predicate null-fills a source whose
+      // neighbours all fail it (rather than dropping the source): an OptionalExpand
+      // landing predicate, not a plain filter.
+      `MATCH (t:T) OPTIONAL MATCH (t)-[:E]->(n WHERE ${pred}) RETURN t.n AS x, n.n AS y ORDER BY x, y`,
     ]);
   }
 

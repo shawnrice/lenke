@@ -3932,12 +3932,6 @@ impl Parser {
             );
         }
         let (v2, _lbl2, v2_props, v2_where, _v2_le) = self.node_plain()?;
-        if !v2_props.is_empty() || v2_where.is_some() {
-            return Err(
-                "inline properties on the OPTIONAL MATCH landing node are not supported; use WHERE"
-                    .into(),
-            );
-        }
         // A bound edge variable binds the edge at `slots` and the landing node at
         // `slots+1` (matching a plain bound-edge hop); otherwise just the node.
         let bind_edge = rel.var.is_some();
@@ -3953,6 +3947,35 @@ impl Parser {
             self.scope.insert(nv, node_slot);
         }
         self.slots += 1;
+        // Inline props / an inline `WHERE` on the LANDING node (ISO element-pattern
+        // predicate) become a LANDING PREDICATE applied inside the optional expand: a
+        // source whose neighbours all fail it null-fills (a plain filter would wrongly
+        // drop it). Props are `k = v` equalities; the WHERE resolves against the scope now
+        // holding the landing var at `node_slot`. A trailing `WHERE` inside OPTIONAL MATCH
+        // is still deferred (it filters the whole optional row, not the landing).
+        let mut landing_pred: Option<Expr> = None;
+        let and = |acc: Option<Expr>, e: Expr| {
+            Some(match acc {
+                None => e,
+                Some(p) => Expr::And(Box::new(p), Box::new(e)),
+            })
+        };
+        for (k, val) in v2_props {
+            landing_pred = and(
+                landing_pred,
+                Expr::Compare {
+                    op: CompareOp::Eq,
+                    left: Box::new(Expr::Prop {
+                        slot: node_slot,
+                        key: k,
+                    }),
+                    right: Box::new(Expr::Lit(val)),
+                },
+            );
+        }
+        if let Some(r) = v2_where {
+            landing_pred = and(landing_pred, self.parse_captured_where(r)?);
+        }
         if self.peek_kw("WHERE") {
             return Err("WHERE inside OPTIONAL MATCH is not supported yet".into());
         }
@@ -3964,6 +3987,7 @@ impl Parser {
             // GQL OPTIONAL MATCH lands NULL for a node with no match.
             keep_source: false,
             bind_edge,
+            landing_pred: landing_pred.map(Box::new),
         })
     }
 
