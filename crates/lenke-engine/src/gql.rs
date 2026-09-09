@@ -4238,10 +4238,7 @@ impl Parser {
         // deferred named-procedure call.
         if !self.eat(&Tok::LParen) {
             if self.peek() == Some(&Tok::LBrace) {
-                if optional {
-                    return Err("OPTIONAL CALL { … } (uncorrelated) is not supported".into());
-                }
-                return self.call_inline_uncorrelated(plan, outer_width);
+                return self.call_inline_uncorrelated(plan, outer_width, optional);
             }
             return Err("only the inline `CALL [(scope)] { … }` form is supported; \
                         named-procedure CALL is deferred to the algorithms phase"
@@ -4258,10 +4255,7 @@ impl Parser {
         }
         self.expect(&Tok::RParen)?;
         if scope_vars.is_empty() {
-            if optional {
-                return Err("OPTIONAL CALL () { … } (uncorrelated) is not supported".into());
-            }
-            return self.call_inline_uncorrelated(plan, outer_width);
+            return self.call_inline_uncorrelated(plan, outer_width, optional);
         }
         for v in &scope_vars {
             if !self.scope.contains_key(v) {
@@ -4417,17 +4411,18 @@ impl Parser {
             // Fresh scan: the new node lands at `outer_width + 1`; when pull_body reaches
             // this leaf the prov-seed carries exactly `outer_width + 1` columns, so the
             // Scan cross-joins each seed row with every matching node.
-            if le.is_some() {
-                return Err(
-                    "a compound label on a CALL fresh-scan start node is not supported".into(),
-                );
-            }
             let node_slot = sub_slots; // outer_width + 1
             if let Some(v) = &var {
                 sub_scope.insert(v.clone(), node_slot);
             }
             sub_slots += 1;
-            let b = node_prop_filters(Plan::Scan { label }, node_slot, props);
+            let mut b = node_prop_filters(Plan::Scan { label }, node_slot, props);
+            // A compound label expression (`:T&U`, `:A|B`, `:!X`) seeds the scan on one
+            // positive label and residual-filters the rest — the same lowering a plain
+            // MATCH node uses (equivalent spellings).
+            if let Some(le) = le {
+                b = b.filter(lower_label_expr(&le, node_slot));
+            }
             (b, node_slot)
         };
         body = self.extend_chain(body, &mut sub_scope, &mut sub_slots, from)?;
@@ -4460,7 +4455,12 @@ impl Parser {
     /// ISOLATED — resolved to NULL (matching the TS engine's scope isolation), which lets a
     /// body like `WHERE c = a` compile and simply match nothing. The `CALL (` and
     /// `)` are already consumed; the outer scope is intact in `self`.
-    fn call_inline_uncorrelated(&mut self, plan: Plan, outer_width: usize) -> Result<Plan, String> {
+    fn call_inline_uncorrelated(
+        &mut self,
+        plan: Plan,
+        outer_width: usize,
+        optional: bool,
+    ) -> Result<Plan, String> {
         self.expect(&Tok::LBrace)?;
         // Parse the body in a FRESH slot space, with outer variables isolated to NULL
         // (a LET-style local shadowing any outer binding). A parse error discards the
@@ -4535,7 +4535,20 @@ impl Parser {
             self.scope.insert(name.clone(), outer_width + i);
         }
         self.slots = outer_width + out_names.len();
-        Ok(Plan::join(plan, body_out, Vec::new()))
+        // `OPTIONAL CALL { … }`: a LEFT-OUTER cross-join — when the (global) body yields no
+        // rows, each outer row still appears once with NULL-filled yields. `NullPadIfEmpty`
+        // turns an empty body into a single null row before the cross-join; a non-empty body
+        // is the ordinary cross-join. (A plain `CALL { … }` inner-joins, dropping outer rows
+        // when the body is empty.)
+        let right = if optional {
+            Plan::NullPadIfEmpty {
+                input: Box::new(body_out),
+                width: out_names.len(),
+            }
+        } else {
+            body_out
+        };
+        Ok(Plan::join(plan, right, Vec::new()))
     }
 
     /// A top-level named-procedure call `CALL name(config) [YIELD col [AS a], …]`.

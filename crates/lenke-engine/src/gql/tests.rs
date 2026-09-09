@@ -5340,6 +5340,54 @@ fn inline_where_on_shortest_path_endpoint() {
 }
 
 #[test]
+fn compound_label_on_call_fresh_scan_start() {
+    // A compound label expression (`:A&B`) on a CALL fresh-scan start node now works
+    // (byte-identical to TS); it seeds one label and residual-filters the rest.
+    let nd = "\
+{\"type\":\"node\",\"id\":\"1\",\"labels\":[\"T\"],\"properties\":{\"n\":3.0}}
+{\"type\":\"node\",\"id\":\"2\",\"labels\":[\"T\",\"U\"],\"properties\":{\"n\":5.0}}
+";
+    let store = crate::ndjson::from_ndjson(nd).unwrap();
+    // Each outer T (2 of them) cross-joins the single T&U node (n=5).
+    let r = run(
+        &super::parse("MATCH (a:T) CALL (a) { MATCH (q:T&U) RETURN q.n AS qn } RETURN qn AS x")
+            .unwrap(),
+        &store,
+    );
+    assert_eq!(bag(&r), vec!["x=Num(5.0);", "x=Num(5.0);"]);
+}
+
+#[test]
+fn optional_uncorrelated_call_null_fills() {
+    let nd = "\
+{\"type\":\"node\",\"id\":\"1\",\"labels\":[\"T\"],\"properties\":{\"n\":3.0}}
+{\"type\":\"node\",\"id\":\"2\",\"labels\":[\"T\"],\"properties\":{\"n\":7.0}}
+";
+    let store = crate::ndjson::from_ndjson(nd).unwrap();
+    // Non-empty body cross-joins (2 outer × 2 body = 4 rows).
+    let full = run(
+        &super::parse(
+            "MATCH (n:T) OPTIONAL CALL { MATCH (z:T) RETURN z.n AS zn } RETURN n.n AS x, zn",
+        )
+        .unwrap(),
+        &store,
+    );
+    assert_eq!(full.rows.len(), 4);
+    // Empty body ⇒ each outer row KEPT with a NULL yield (the OPTIONAL contract).
+    let empty = run(
+        &super::parse(
+            "MATCH (n:T) OPTIONAL CALL { MATCH (z:NOPE) RETURN z.n AS zn } RETURN n.n AS x, zn",
+        )
+        .unwrap(),
+        &store,
+    );
+    assert_eq!(
+        bag(&empty),
+        vec!["x=Num(3.0);zn=Null;", "x=Num(7.0);zn=Null;"]
+    );
+}
+
+#[test]
 fn inline_where_on_optional_match_landing() {
     let store = social();
     // OPTIONAL MATCH landing predicate: a source whose neighbours all FAIL it null-fills

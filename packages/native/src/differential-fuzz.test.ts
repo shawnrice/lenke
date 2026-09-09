@@ -475,6 +475,23 @@ const genCall = (r: () => number): string => {
     return `MATCH (a:T) ${opt}CALL (a) { ${arms} } RETURN a.n AS an, x`;
   }
 
+  if (k < 0.94) {
+    // Shapes that used to be rejected by native but accepted by TS: an UNCORRELATED
+    // OPTIONAL CALL (null-fills the outer row when the global body is empty), a compound
+    // label on a correlated-CALL fresh-scan start (`:T&U`), and an aggregating uncorrelated
+    // body. The `:U` filter can select nothing, exercising the OPTIONAL null-fill.
+    const lbl = pick(r, ['T', 'U', 'T&U', 'T|U', '!U']);
+
+    return pick(r, [
+      // Uncorrelated OPTIONAL CALL — empty body ⇒ null-filled yield, non-empty ⇒ cross-join.
+      `MATCH (a:T) ${opt}CALL { MATCH (z:${lbl}) RETURN z.n AS zn } RETURN a.n AS an, zn`,
+      // Compound label on a CALL fresh-scan start node.
+      `MATCH (a:T) CALL (a) { MATCH (q:${lbl}) RETURN q.n AS qn } RETURN a.n AS an, qn`,
+      // Aggregating uncorrelated body.
+      `MATCH (a:T) CALL { MATCH (z:${lbl}) RETURN count(*) AS c } RETURN a.n AS an, c`,
+    ]);
+  }
+
   // Uncorrelated global set-op cross-joined with a single outer row.
   const op = pick(r, ['UNION', 'UNION ALL', 'EXCEPT', 'INTERSECT']);
 
@@ -621,6 +638,30 @@ const genQuery = (r: () => number): string => {
       // landing predicate, not a plain filter.
       `MATCH (t:T) OPTIONAL MATCH (t)-[:E]->(n WHERE ${pred}) RETURN t.n AS x, n.n AS y ORDER BY x, y`,
     ]);
+  }
+
+  // `IS TYPED <type>` predicate — the closed-RECORD schema form over the stored map `m`
+  // (`{k, j}`), plus scalar type tests. All are deterministic per row; `n.n` totalises.
+  if (p < 0.87) {
+    const ty = pick(r, [
+      'RECORD { k :: INT }',
+      'RECORD { k :: INT, j :: STRING }',
+      'RECORD { k :: STRING }', // a wrong field type ⇒ false
+      'INT',
+      'RECORD NOT NULL',
+    ]);
+    const val = pick(r, ['n.m', 'n.n', 'n.s']);
+
+    return `MATCH (n:T) RETURN ${val} IS TYPED ${ty} AS x, n.n AS t ORDER BY t`;
+  }
+
+  // A NAMED path variable bound over a quantified subpath group — `path_length`/`nodes`
+  // read the path the group walked.
+  if (p < 0.9) {
+    const q = pick(r, ['{1,2}', '{1,3}', '{2,2}', '+']);
+    const acc = pick(r, ['path_length(pp)', 'size(nodes(pp))', 'size(relationships(pp))']);
+
+    return `MATCH pp = (a:T)((x)-[:E]->(m))${q}(b:T) RETURN ${acc} AS x, b.n AS t ORDER BY t, x`;
   }
 
   return `MATCH (n:T) RETURN ${genExpr(r, 3)} AS x, n.n AS t ORDER BY t`;
