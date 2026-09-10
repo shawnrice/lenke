@@ -1237,7 +1237,19 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
             let present: Vec<Option<Vec<bool>>> = if *omit_absent {
                 entries
                     .iter()
-                    .map(|(_, e)| prop_present_mask(e, store, batch))
+                    .enumerate()
+                    .map(|(j, (_, e))| match e {
+                        // A first-result subquery (project `by(<hop>.values('k'))`) is ABSENT
+                        // when the sub-traversal produced nothing — it evaluates to NULL, and
+                        // the key is OMITTED (TinkerPop `project` drops an empty by-result),
+                        // not kept as `{k: null}`. Derived from the already-computed value.
+                        Expr::ScalarSubquery { .. } => Some(
+                            (0..n)
+                                .map(|i| !matches!(cols[j].value_at(i), Value::Null))
+                                .collect(),
+                        ),
+                        _ => prop_present_mask(e, store, batch),
+                    })
                     .collect()
             } else {
                 Vec::new()

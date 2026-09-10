@@ -1303,14 +1303,32 @@ impl Parser {
         } else {
             Plan::Row.expand(elem_slot, dir, &labels)
         };
+        // A bare hop (`by(out())`, first-neighbour ELEMENT) is deferred — the element would
+        // land in the project map, and element-in-map rendering here is a separate concern;
+        // `by(<hop>.values('k'))` (a scalar first-value) and the reducing forms are covered.
         self.expect(&Tok::Dot)?;
         let reducer = self.ident()?.to_ascii_lowercase();
         // Optional `.values('k')` between the hop and `.fold()`.
         let mut val_key: Option<String> = None;
         let reducer = if reducer == "values" {
             self.expect(&Tok::LParen)?;
-            val_key = Some(self.str_arg()?);
+            let key = self.str_arg()?;
             self.expect(&Tok::RParen)?;
+            // `hop(...).values('k')` with NO trailing reducer is a FIRST-result again — the
+            // first neighbour's property value (values() skips neighbours lacking it), NULL
+            // if none. A trailing `.fold()`/`.count()` keeps the reducing path below.
+            if self.peek() != Some(&Tok::Dot) {
+                let filtered = body.filter(Expr::PropertyExists {
+                    slot: landed,
+                    key: key.clone(),
+                });
+                return Ok(Expr::ScalarSubquery {
+                    body: Box::new(filtered.distinct_by(vec![width])),
+                    scalar: Box::new(Expr::Prop { slot: landed, key }),
+                    outer_width: width,
+                });
+            }
+            val_key = Some(key);
             self.expect(&Tok::Dot)?;
             self.ident()?.to_ascii_lowercase()
         } else {

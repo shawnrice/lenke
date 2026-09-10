@@ -815,6 +815,10 @@ const CORPUS: Case[] = [
   // (where(values(k1,k2,…)) multi-key presence is verified byte-identical native/TS/
   // TinkerPop directly + in the ported tests; `planToGremlin` can't emit `where(<sub-plan>)`
   // yet, so it isn't authored as a builder-plan conformance case here.)
+  // (project().by(<hop>.values('k')) — navigating first-value + omit-when-empty — is
+  // verified byte-identical native/TS directly and against real TinkerPop, plus in the
+  // ported tests on a fresh graph; the shared-graph + canonJson/Map interaction makes it
+  // awkward to author as a builder-plan case here.)
 ];
 
 suite('gremlin conformance: TS engine ⟷ Rust engine (over ffi)', () => {

@@ -2225,6 +2225,38 @@ fn parse_nested_traversals() {
 }
 
 #[test]
+fn p4_project_by_navigating_first_value() {
+    // NOW SUPPORTED: project().by(<hop>.values('k')) — the FIRST result of a navigating
+    // by-body (first neighbour's value in adjacency order), and OMIT the key when the body
+    // is empty (TinkerPop `project` drops an empty by-result). marko→vadas, josh→ripple,
+    // peter→lop; vadas/lop/ripple have no out-neighbour → the key is omitted. Byte-identical
+    // to TS + real TinkerPop (which agree on structure; adjacency order is shared here).
+    let r = run("g.V().project('x').by(__.out().values('name'))");
+    let shapes: Vec<Option<String>> = r
+        .iter()
+        .map(|g| match g {
+            GVal::Map(m) => match m.values().first() {
+                None => None,
+                Some(GVal::Str(s)) => Some(s.clone()),
+                Some(other) => panic!("expected a string, got {other:?}"),
+            },
+            other => panic!("expected a map, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        shapes,
+        vec![
+            Some("vadas".to_string()),
+            None,
+            Some("ripple".to_string()),
+            Some("lop".to_string()),
+            None,
+            None,
+        ]
+    );
+}
+
+#[test]
 fn parse_select_and_as() {
     let r = qs("g.V().has('name','marko').as('a').out('CREATED').as('b').select('a','b').by('name').by('name')");
     let m = match &r[0] {
