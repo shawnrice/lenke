@@ -5744,7 +5744,16 @@ fn deeply_nested_expressions_reject_instead_of_overflowing_the_stack() {
     // overflowing the stack (SIGSEGV). Covers the three self-recursive descents that
     // do not funnel through a single point: nested list literals / parens (`expr`),
     // `NOT` chains (`not_expr`), and unary `-` chains (`unary`).
-    let over = super::MAX_EXPR_DEPTH + 50;
+    //
+    // The guard MECHANISM is exercised at a LOW explicit cap via
+    // `parse_with_params_limited`, not at the default: reaching the default 1024 needs
+    // ~1024 live recursion frames, which is close enough to cargo's ~2 MB test-thread
+    // stack ceiling to be flaky. The real runtimes have the headroom for the default
+    // (measured: TS descent faults ~1900, wasm ~3830, the bun 8 MB main stack ~32768),
+    // and the cap is set ~2× under the tightest so it fires cleanly; here we prove the
+    // same logic cheaply. `cap + 50` over a `cap` of 128 recurses only ~129 deep.
+    let cap = 128;
+    let over = cap + 50;
     let cases = [
         format!("RETURN {}1{}", "[".repeat(over), "]".repeat(over)),
         format!("RETURN {}1{}", "(".repeat(over), ")".repeat(over)),
@@ -5753,29 +5762,31 @@ fn deeply_nested_expressions_reject_instead_of_overflowing_the_stack() {
         format!("RETURN {}1", "- ".repeat(over)),
     ];
     for q in &cases {
-        let err = super::parse(q).unwrap_err();
+        let err = super::parse_with_params_limited(q, &[], cap).unwrap_err();
         assert!(
-            err.contains("E_RESOURCE_EXHAUSTED") && err.contains("nesting"),
+            err.contains("E_RESOURCE_EXHAUSTED") && err.contains("complexity"),
             "expected a nesting-depth rejection, got: {err}",
         );
     }
-    // A modest nest still parses (the cap is far above any real query).
+    // A modest nest (under the cap) still parses.
     let ok = format!("RETURN {}1{}", "[".repeat(100), "]".repeat(100));
-    assert!(super::parse(&ok).is_ok(), "depth 100 should parse fine");
+    assert!(
+        super::parse_with_params_limited(&ok, &[], cap).is_ok(),
+        "depth 100 should parse fine under a 128 cap",
+    );
 
     // FLAT operator chains build a left-nested tree that a later recursive optimize/exec/
-    // Drop pass walks — so they must be bounded too, not just recursive nesting. The
-    // iterative precedence loops (`add_expr`/`mul_expr`/`or_expr`/`and_expr`) never
-    // re-enter `nest`, so without an explicit `deepen` charge a long chain SIGSEGVs.
-    let n = super::MAX_EXPR_DEPTH + 50;
+    // Drop pass walks — so they charge the SAME unified counter, not just recursive
+    // nesting. The iterative precedence loops (`add_expr`/`mul_expr`/`or_expr`/`and_expr`)
+    // never re-enter `nest`, so without an explicit `deepen` charge a long chain SIGSEGVs.
     let flat = [
-        format!("RETURN {} AS x", vec!["1"; n].join(" + ")),
-        format!("RETURN {} AS x", vec!["1"; n].join(" * ")),
-        format!("RETURN {} AS x", vec!["true"; n].join(" AND ")),
-        format!("RETURN {} AS x", vec!["true"; n].join(" OR ")),
+        format!("RETURN {} AS x", vec!["1"; over].join(" + ")),
+        format!("RETURN {} AS x", vec!["1"; over].join(" * ")),
+        format!("RETURN {} AS x", vec!["true"; over].join(" AND ")),
+        format!("RETURN {} AS x", vec!["true"; over].join(" OR ")),
     ];
     for q in &flat {
-        let err = super::parse(q).unwrap_err();
+        let err = super::parse_with_params_limited(q, &[], cap).unwrap_err();
         assert!(
             err.contains("E_RESOURCE_EXHAUSTED"),
             "expected a depth rejection for a flat chain, got: {err}",
@@ -5783,7 +5794,16 @@ fn deeply_nested_expressions_reject_instead_of_overflowing_the_stack() {
     }
     // A modest flat chain still parses.
     assert!(
-        super::parse(&format!("RETURN {} AS x", vec!["1"; 50].join(" + "))).is_ok(),
+        super::parse_with_params_limited(
+            &format!("RETURN {} AS x", vec!["1"; 50].join(" + ")),
+            &[],
+            cap
+        )
+        .is_ok(),
         "a 50-long chain should parse fine",
     );
+
+    // The default ceiling is the shared cross-engine contract value (mirrors the TS
+    // `DEFAULT_CONFIG.limits.operatorChain`); `parse` uses it when unconfigured.
+    assert_eq!(super::DEFAULT_MAX_EXPR_DEPTH, 1024);
 }

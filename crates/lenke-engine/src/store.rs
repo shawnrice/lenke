@@ -1131,7 +1131,7 @@ impl Default for GraphLimits {
             range: 1_000_000,
             trail: 1_000_000,
             intermediate: 50_000_000,
-            operator_chain: 10_000,
+            operator_chain: 1_024,
             dict_max_distinct: 4096,
         }
     }

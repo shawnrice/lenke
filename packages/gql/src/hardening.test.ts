@@ -188,11 +188,14 @@ describe('hardening: deep nesting is a syntax error, not a stack overflow', () =
     expect(() => parse(`RETURN (((1 + 2)) * 3) AS r`)).not.toThrow();
   });
 
-  // The associative operator AST is n-ary (a flat array), so a long
+  // The pure-TS engine's operator AST is n-ary (a flat array), so a long
   // left-associative chain far past the old crash point evaluates without a stack
   // overflow (native SIGSEGV'd; TS threw an uncatchable RangeError) instead of
-  // aborting — given a ceiling that admits it. Only the anti-resource-abuse
-  // ceiling (default 10k, configurable per graph) rejects.
+  // aborting — GIVEN a ceiling raised to admit it. Only the shared
+  // expression-complexity ceiling (default 1024, configurable per graph) rejects.
+  // (This is a pure-TS capability: the native engine's left-nested tree could not
+  // safely reach 50k regardless of the configured ceiling — see the operatorChain
+  // JSDoc.)
   test('a long AND / arithmetic chain evaluates without a stack overflow', () => {
     const g = new Graph({ maxOperatorChain: 200_000 });
     expect(query(g, `RETURN ${Array(50_000).fill('true').join(' AND ')} AS r`)).toEqual([
@@ -202,19 +205,19 @@ describe('hardening: deep nesting is a syntax error, not a stack overflow', () =
   });
 
   test('an over-cap operator chain is a clean E_SYNTAX', () => {
-    // 10_001 operators > default ceiling (10k)
-    const e = thrown(() => parse(`RETURN ${Array(10_002).fill('true').join(' AND ')} AS r`));
+    // > default ceiling (1024)
+    const e = thrown(() => parse(`RETURN ${Array(1_026).fill('true').join(' AND ')} AS r`));
     expect(e).toBeInstanceOf(GqlSyntaxError);
     expect(hasErrorCode(e, ErrorCode.Syntax)).toBe(true);
-    expect(() => parse(`RETURN ${Array(10_002).fill('1').join(' + ')} AS r`)).toThrow(
+    expect(() => parse(`RETURN ${Array(1_026).fill('1').join(' + ')} AS r`)).toThrow(
       GqlSyntaxError,
     );
   });
 
   test('the operator-chain ceiling is configurable per graph', () => {
-    // default: 10_000 ops ok, 10_001 rejected
-    expect(() => parse(`RETURN ${Array(10_001).fill('true').join(' AND ')} AS r`)).not.toThrow();
-    expect(() => parse(`RETURN ${Array(10_002).fill('true').join(' AND ')} AS r`)).toThrow(
+    // default 1024 operators: 1025 operands (1024 ops) ok, 1026 operands (1025 ops) rejected
+    expect(() => parse(`RETURN ${Array(1_025).fill('true').join(' AND ')} AS r`)).not.toThrow();
+    expect(() => parse(`RETURN ${Array(1_026).fill('true').join(' AND ')} AS r`)).toThrow(
       GqlSyntaxError,
     );
     // a lower configured ceiling rejects sooner; a higher one admits more

@@ -112,6 +112,23 @@ fn parse_handle_field(fields: &[(String, crate::ndjson::Json)]) -> Result<u64, S
         .map_err(|_| format!("invalid prepared handle `{s}`"))
 }
 
+/// Parse a `prepare` payload `{"query":"…", "maxDepth": N?}` → (query, max_depth).
+/// `maxDepth` is the per-prepare operator-chain ceiling (a prepared statement is
+/// graph-independent, so this override — not any run-graph's limit — is what it is
+/// checked against); absent → the engine default.
+fn prepare_payload(input: &str) -> Result<(String, usize), String> {
+    let crate::ndjson::Json::Obj(fields) = crate::ndjson::parse_json(input)? else {
+        return Err("prepare payload must be a JSON object".into());
+    };
+    let query = crate::ndjson::json_string(crate::ndjson::req(&fields, "query")?)?;
+    let max_depth = match crate::ndjson::field(&fields, "maxDepth") {
+        Some(crate::ndjson::Json::Num(n)) if *n >= 1.0 => *n as usize,
+        Some(_) => return Err("prepare maxDepth must be a positive number".into()),
+        None => crate::gql::DEFAULT_MAX_EXPR_DEPTH,
+    };
+    Ok((query, max_depth))
+}
+
 /// A decoded `prepared_run` payload: the handle, its params, and the output format.
 type PreparedRun = (u64, Vec<(String, crate::value::Value)>, String);
 
@@ -589,9 +606,10 @@ pub unsafe extern "C" fn lnk_query(
         }
         // `guarded` so a panic in parse OR optimize becomes a coded error, not a host
         // abort / wasm trap (the exec below is already guarded).
+        let max_depth = store.limits().operator_chain as usize;
         let plan = match guarded(|| {
             Ok(crate::opt::optimize_indexed(
-                crate::gql::parse_with_params(q, &params)?,
+                crate::gql::parse_with_params_limited(q, &params, max_depth)?,
                 store,
             ))
         }) {
@@ -629,27 +647,29 @@ pub unsafe extern "C" fn lnk_query(
             // error, never an unwind across the C boundary (a host abort on native, a
             // trap that kills the REPL on wasm). A real parse error still flows through
             // the prefix-code routing below unchanged.
-            let plan = match guarded(|| crate::gql::parse_with_params(q, &params)) {
-                Ok(plan) => plan,
-                Err(e) => {
-                    // A genuine parse error is E_SYNTAX; a more specific code carried as a
-                    // prefix (unknown function, a supplied-but-missing `$param`, or a
-                    // static boolean-context type error from the plan-time check) is routed
-                    // to its own wire code.
-                    if let Some(rest) = e.strip_prefix("E_UNKNOWN_FUNCTION: ") {
-                        crate::ffi_error::set("E_UNKNOWN_FUNCTION", rest);
-                    } else if let Some(rest) = e.strip_prefix("E_MISSING_PARAMETER: ") {
-                        crate::ffi_error::set("E_MISSING_PARAMETER", rest);
-                    } else if let Some(rest) = e.strip_prefix("E_INVALID_VALUE: ") {
-                        crate::ffi_error::set("E_INVALID_VALUE", rest);
-                    } else if let Some(rest) = e.strip_prefix("E_RESOURCE_EXHAUSTED: ") {
-                        crate::ffi_error::set("E_RESOURCE_EXHAUSTED", rest);
-                    } else {
-                        crate::ffi_error::set("E_SYNTAX", &e);
+            let max_depth = store.limits().operator_chain as usize;
+            let plan =
+                match guarded(|| crate::gql::parse_with_params_limited(q, &params, max_depth)) {
+                    Ok(plan) => plan,
+                    Err(e) => {
+                        // A genuine parse error is E_SYNTAX; a more specific code carried as a
+                        // prefix (unknown function, a supplied-but-missing `$param`, or a
+                        // static boolean-context type error from the plan-time check) is routed
+                        // to its own wire code.
+                        if let Some(rest) = e.strip_prefix("E_UNKNOWN_FUNCTION: ") {
+                            crate::ffi_error::set("E_UNKNOWN_FUNCTION", rest);
+                        } else if let Some(rest) = e.strip_prefix("E_MISSING_PARAMETER: ") {
+                            crate::ffi_error::set("E_MISSING_PARAMETER", rest);
+                        } else if let Some(rest) = e.strip_prefix("E_INVALID_VALUE: ") {
+                            crate::ffi_error::set("E_INVALID_VALUE", rest);
+                        } else if let Some(rest) = e.strip_prefix("E_RESOURCE_EXHAUSTED: ") {
+                            crate::ffi_error::set("E_RESOURCE_EXHAUSTED", rest);
+                        } else {
+                            crate::ffi_error::set("E_SYNTAX", &e);
+                        }
+                        return std::ptr::null_mut();
                     }
-                    return std::ptr::null_mut();
-                }
-            };
+                };
             // The shared dispatcher handles transaction control, READ ONLY enforcement
             // and the write/read split (see `exec::run_query`); a returned read takes
             // the GQL streaming JSON path, everything else renders its materialized rows.
@@ -1028,11 +1048,18 @@ pub unsafe extern "C" fn lnk_command(
         // caller owns lifetime: prepare then N prepared_run then prepared_free — and a
         // host `using` / FinalizationRegistry reclaims a forgotten one.
         "prepare" => {
-            let Some(query) = input else {
-                crate::ffi_error::set("E_FFI", "prepare requires the query text as input");
+            let Some(payload) = input else {
+                crate::ffi_error::set("E_FFI", "prepare requires a {query, maxDepth?} payload");
                 return std::ptr::null_mut();
             };
-            match crate::gql::parse_prepared(query) {
+            let (query, max_depth) = match prepare_payload(payload) {
+                Ok(v) => v,
+                Err(e) => {
+                    crate::ffi_error::set("E_FFI", &e);
+                    return std::ptr::null_mut();
+                }
+            };
+            match crate::gql::parse_prepared_limited(&query, max_depth) {
                 Ok(plan) => {
                     let handle = crate::prepared::insert(plan);
                     // SAFETY: out_len is writable per this fn's contract.

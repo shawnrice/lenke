@@ -238,8 +238,9 @@ export type Backend = {
    * Compile a GQL query into a reusable prepared statement (lex/parse/lower
    * once). Graph-independent; execute it against any graph with fresh params via
    * {@link Backend.preparedQueryRows}. Throws a coded error on a syntax error.
-   * `maxOperatorChain` is the anti-resource-abuse operator-chain ceiling applied
-   * while parsing (default 10_000 when omitted).
+   * `maxOperatorChain` is the anti-resource-abuse expression-complexity ceiling
+   * (nesting depth and flat operator-chain length) applied while parsing (default
+   * 1024 when omitted).
    */
   prepare: (text: string, maxOperatorChain?: number) => PreparedHandle;
   /** Release a handle from {@link Backend.prepare}. */

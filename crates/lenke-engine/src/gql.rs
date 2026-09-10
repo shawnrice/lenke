@@ -309,13 +309,24 @@ struct Rel {
 /// and const-overflowed the wasm build.
 const AGG_SLOT_BASE: usize = 1 << 28;
 
-/// Maximum expression-nesting depth accepted by the parser (see [`Parser::depth`]).
-/// Far above any legitimate query (real expressions nest a handful deep) and safely
-/// below the stack-overflow threshold on the SMALLEST stack the parser runs on — the
-/// wasm CLI (~1 MB) and cargo's 2 MB test threads, not just the 8 MB native main
-/// stack. MUST match the TS `@lenke/gql` parser's cap so the two engines accept/reject
-/// the same queries.
-const MAX_EXPR_DEPTH: usize = 128;
+/// Default expression-complexity ceiling when a graph does not configure one (see
+/// [`Parser::max_depth`] and the `operatorChain` limit). This is ONE unified guard:
+/// nesting (`((…))`, `NOT`/unary chains) and flat left-nested operator chains
+/// (`a AND b AND …`) both charge the same counter, because native builds a
+/// left-nested `Expr` tree that a later recursive optimize/exec/`Drop` walks to that
+/// depth — so a long flat chain overflows the stack exactly like deep nesting.
+///
+/// 1024 is far above any legitimate query (real expressions nest a handful deep) yet
+/// safely below the stack-overflow threshold on the SMALLEST recursive path any engine
+/// runs — the TS `@lenke/gql` parser's recursive descent faults (`RangeError`) at
+/// ~1900-deep nesting, the wasm build's shadow-stack at ~3830, cargo's 2 MB test
+/// threads around ~2100; the guard must fire (a clean coded error) BEFORE any of those,
+/// so the cap sits ~2× under the tightest. The graph's `limits.operatorChain` overrides
+/// it (a higher value trades safety margin for longer chains and is honored only up to
+/// the runtime's structural ceiling — raising it past a runtime's recursion limit can
+/// fault before the configured cap is reached). MUST match the TS parser's default so
+/// the two engines accept/reject the same queries.
+pub(crate) const DEFAULT_MAX_EXPR_DEPTH: usize = 1024;
 
 /// A parsed RETURN item: a keyed expression (a grouping key / plain projection), a
 /// bare aggregate, or an expression that CONTAINS aggregates (`count(*) + 1`) — the
@@ -395,7 +406,18 @@ pub fn parse(query: &str) -> Result<Plan, String> {
 /// they are never spliced into the query text (no injection), and the planner sees
 /// literals (so `WHERE k = $p` / `{k: $p}` still seed an index).
 pub fn parse_with_params(query: &str, params: &[(String, Value)]) -> Result<Plan, String> {
-    parse_internal(query, params, false)
+    parse_internal(query, params, false, DEFAULT_MAX_EXPR_DEPTH)
+}
+
+/// Like [`parse_with_params`] but with an explicit expression-complexity ceiling —
+/// the query path passes the graph's `limits.operatorChain` so a per-graph
+/// `maxOperatorChain` is honored (both nesting and flat operator chains).
+pub fn parse_with_params_limited(
+    query: &str,
+    params: &[(String, Value)],
+    max_depth: usize,
+) -> Result<Plan, String> {
+    parse_internal(query, params, false, max_depth)
 }
 
 /// Parse a query in PREPARED mode: each `$name` becomes an unbound
@@ -404,10 +426,24 @@ pub fn parse_with_params(query: &str, params: &[(String, Value)]) -> Result<Plan
 /// [`crate::bind::bind_params`]). Params in `LIMIT`/`SKIP` and literal-only
 /// positions (INSERT / procedure config) are not supported in prepared mode.
 pub fn parse_prepared(query: &str) -> Result<Plan, String> {
-    parse_internal(query, &[], true)
+    // Prepared statements are parsed graph-independently (once, then run against any
+    // graph), so there is no per-graph limit to read here — use the safe default.
+    parse_internal(query, &[], true, DEFAULT_MAX_EXPR_DEPTH)
 }
 
-fn parse_internal(query: &str, params: &[(String, Value)], prepared: bool) -> Result<Plan, String> {
+/// Like [`parse_prepared`] but with an explicit expression-complexity ceiling — the
+/// per-`prepare` `maxOperatorChain`. Prepared statements are graph-independent, so this
+/// override (not the run-graph's limit) is what a prepared statement is checked against.
+pub fn parse_prepared_limited(query: &str, max_depth: usize) -> Result<Plan, String> {
+    parse_internal(query, &[], true, max_depth)
+}
+
+fn parse_internal(
+    query: &str,
+    params: &[(String, Value)],
+    prepared: bool,
+    max_depth: usize,
+) -> Result<Plan, String> {
     let toks = lex(query)?;
     let mut p = Parser {
         toks,
@@ -427,6 +463,7 @@ fn parse_internal(query: &str, params: &[(String, Value)], prepared: bool) -> Re
         prepared,
         no_next: false,
         depth: 0,
+        max_depth,
     };
     // ISO transaction-control command (`START TRANSACTION`/`COMMIT`/`ROLLBACK`)? A
     // linear query never begins with a bare START/COMMIT/ROLLBACK, so there is no
@@ -818,13 +855,17 @@ struct Parser {
     /// operator is a documented limitation (both engines reject it), so `query_tail`
     /// refuses to consume `NEXT` here rather than silently re-associating the union.
     no_next: bool,
-    /// Current expression-nesting depth, bounded by [`MAX_EXPR_DEPTH`] via [`Parser::nest`].
-    /// A recursive-descent parser recurses once per nested `(…)`/`[…]`/`NOT`/unary-`-`/`!`,
-    /// so an unbounded query string (`RETURN [[[[…]]]]`) would otherwise overflow the
-    /// native stack (SIGSEGV) or trap the wasm REPL — before any operator-chain limit,
-    /// which is only checked post-parse. The [`crate::ir::Expr`] tree the parser builds is
-    /// also walked recursively by `optimize`/`exec`, so the cap protects them too.
+    /// Current expression-nesting depth, bounded by [`Parser::max_depth`] via
+    /// [`Parser::nest`]/[`Parser::deepen`]. A recursive-descent parser recurses once per
+    /// nested `(…)`/`[…]`/`NOT`/unary-`-`/`!`, and a flat operator chain deepens the
+    /// left-nested [`crate::ir::Expr`] tree by one per operand — so an unbounded query
+    /// string (`RETURN [[[[…]]]]` or `a AND a AND …`) would otherwise overflow the native
+    /// stack (SIGSEGV) or trap the wasm REPL. The `Expr` tree is also walked recursively by
+    /// `optimize`/`exec`/`Drop`, so the cap protects them too.
     depth: usize,
+    /// The ceiling `depth` is checked against — the graph's `limits.operatorChain`, or
+    /// [`DEFAULT_MAX_EXPR_DEPTH`] when unconfigured. One knob for nesting AND flat chains.
+    max_depth: usize,
 }
 
 impl Parser {
@@ -840,17 +881,18 @@ impl Parser {
         t
     }
 
-    /// Run `f` one expression-nesting level deeper, rejecting past [`MAX_EXPR_DEPTH`]
+    /// Run `f` one expression-nesting level deeper, rejecting past [`Parser::max_depth`]
     /// before the stack overflows. Wraps each self-recursive descent (`expr`, `NOT`,
     /// unary `-`, `!`); the depth is decremented on every non-fatal return so sibling
     /// breadth (a wide list) never accumulates — only genuine nesting does.
     fn nest<T>(&mut self, f: impl FnOnce(&mut Self) -> Result<T, String>) -> Result<T, String> {
         self.depth += 1;
-        if self.depth > MAX_EXPR_DEPTH {
+        if self.depth > self.max_depth {
             self.depth -= 1;
 
             return Err(format!(
-                "E_RESOURCE_EXHAUSTED: expression nesting exceeds the maximum depth of {MAX_EXPR_DEPTH}"
+                "E_RESOURCE_EXHAUSTED: expression complexity exceeds the maximum depth of {}",
+                self.max_depth
             ));
         }
         let r = f(self);
@@ -869,11 +911,12 @@ impl Parser {
     /// path the whole parse is abandoned, so a leaked charge is harmless.
     fn deepen(&mut self) -> Result<(), String> {
         self.depth += 1;
-        if self.depth > MAX_EXPR_DEPTH {
+        if self.depth > self.max_depth {
             self.depth -= 1;
 
             return Err(format!(
-                "E_RESOURCE_EXHAUSTED: expression nesting exceeds the maximum depth of {MAX_EXPR_DEPTH}"
+                "E_RESOURCE_EXHAUSTED: expression complexity exceeds the maximum depth of {}",
+                self.max_depth
             ));
         }
 

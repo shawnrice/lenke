@@ -58,9 +58,18 @@ export type GraphLimits = {
    */
   intermediate: number;
   /**
-   * Max GQL operator-chain length (`a AND b AND …`, `x + y + …`), applied by the
-   * PARSER, so an over-long chain is `E_SYNTAX`. A `prepare()` call may override
-   * it for that statement.
+   * The unified GQL expression-complexity ceiling, applied by the PARSER: it bounds
+   * BOTH nesting depth (`((…))`, `NOT`/unary chains) and flat operator-chain length
+   * (`a AND b AND …`, `x + y + …`). One knob because the native engine builds a
+   * left-nested `Expr` tree that later recursive passes walk, so a long flat chain
+   * costs stack depth exactly like nesting; keeping one shared ceiling is what makes
+   * the two engines accept/reject the same queries. Defaults to 1024 — set ~2× under
+   * the tightest recursive path (the TS parser's own descent faults around ~1900-deep
+   * nesting) so the guard always fires as a clean coded error rather than a stack
+   * overflow. In the pure-TS engine an over-limit chain is `E_SYNTAX`; in the native
+   * engine it is `E_RESOURCE_EXHAUSTED`. Raising it trades safety margin for longer
+   * chains and is honored only up to each runtime's recursion ceiling. A `prepare()`
+   * call may override it for that statement.
    */
   operatorChain: number;
 };
@@ -111,7 +120,7 @@ export const DEFAULT_CONFIG: GraphConfig = {
     range: 1_000_000,
     trail: 1_000_000,
     intermediate: 50_000_000,
-    operatorChain: 10_000,
+    operatorChain: 1_024,
   },
   clock: null,
   parallelism: 1,
@@ -159,14 +168,18 @@ export type GraphOptions = {
   onError?: (error: unknown) => void;
 
   /**
-   * The maximum length of a single left-associative operator chain (`a AND b AND
-   * …`, `x + y + …`) a GQL query may contain before the parser rejects it with
-   * `E_SYNTAX`. The associative operator AST is n-ary, so a long chain never
-   * overflows the stack regardless of this value — it is a pure anti-resource-
-   * abuse ceiling (each operand is an allocation + an eval step). Defaults to
-   * 10_000, far beyond any hand- or machine-generated predicate; raise it only if
-   * a legitimate generated query needs longer chains. Mirrors the native engine's
-   * `createEmptyGraph(backend, { maxOperatorChain })`.
+   * The unified expression-complexity ceiling a GQL query may reach before the
+   * parser rejects it — it bounds BOTH nesting depth (`((…))`, `NOT`/unary chains)
+   * and flat operator-chain length (`a AND b AND …`, `x + y + …`). The pure-TS
+   * engine's operator AST is n-ary, so a flat chain stays shallow here; the native
+   * engine builds a left-nested tree that later recursive passes walk, so the same
+   * chain costs stack depth there — enforcing one shared ceiling is what keeps the
+   * two engines accepting/rejecting the same queries. Defaults to 1024, far beyond
+   * any hand- or machine-generated predicate; raise it only if a legitimate
+   * generated query needs longer chains, and note that a value above a runtime's
+   * recursion ceiling (the TS parser's own descent faults around ~1900-deep nesting;
+   * the wasm build around ~3800) is not safely reachable there. Mirrors the native
+   * engine's `createEmptyGraph(backend, { maxOperatorChain })`.
    *
    * Shorthand for `limits.operatorChain`; the two are the same setting.
    */

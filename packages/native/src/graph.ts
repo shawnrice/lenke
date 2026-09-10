@@ -906,8 +906,9 @@ export type RustGraph = {
    * syntax error throws here, at prepare time. `prepare` takes a plain string
    * with `$name` params (no tagged-template form — the text is fixed). Pass a
    * row shape to type `.query(params)`'s result. `maxOperatorChain` overrides the
-   * operator-chain ceiling for this parse (default 10_000; prepared statements are
-   * graph-independent, so this is a prepare-time option, not the graph's setting).
+   * unified expression-complexity ceiling for this parse (default 1024; prepared
+   * statements are graph-independent, so this is a prepare-time option, not the
+   * graph's setting).
    */
   prepare: <R extends Row = Row>(
     text: string,
@@ -1449,7 +1450,7 @@ export const graphFromNdjson = (
  * A fresh, empty {@link RustGraph} to `INSERT` / `mergeNdjson` into — the
  * self-documenting cold boot. (Equivalent to `graphFromNdjson(backend, <empty>)`
  * without the encode-an-empty-buffer incantation.) Pass `{ maxOperatorChain }` to
- * override the GQL operator-chain ceiling (default 10_000).
+ * override the unified GQL expression-complexity ceiling (default 1024).
  */
 export const createEmptyGraph = (backend: Backend, opts: GraphConfigOptions = {}): RustGraph =>
   graphFromNdjson(backend, new Uint8Array(0), opts);

@@ -498,7 +498,7 @@ describe('GQL: graph settings are constructor-only', () => {
 
   test('unnamed settings keep their defaults, and a bad ceiling is rejected', () => {
     expect(new Graph({ limits: { trail: 50 } }).config).toEqual({
-      limits: { range: 1_000_000, trail: 50, intermediate: 50_000_000, operatorChain: 10_000 },
+      limits: { range: 1_000_000, trail: 50, intermediate: 50_000_000, operatorChain: 1_024 },
       clock: null,
       parallelism: 1,
     });

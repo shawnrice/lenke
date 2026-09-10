@@ -28,7 +28,7 @@
  *   comment    = '//' line | '--' line | block comment
  */
 
-import { temporalParse } from '@lenke/core';
+import { DEFAULT_CONFIG, temporalParse } from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type {
@@ -76,6 +76,14 @@ import type {
 } from './ast.js';
 import { isTxControl } from './ast.js';
 import { GqlSyntaxError, isReserved, type Token, type TokenType, tokenize } from './lexer.js';
+
+/**
+ * The default expression-complexity ceiling (one unified guard over both nesting depth
+ * and flat operator-chain length) when a graph does not configure `operatorChain`.
+ * Sourced from `@lenke/core`'s {@link DEFAULT_CONFIG} — the single cross-engine contract
+ * value, mirrored by the native engine's `DEFAULT_MAX_EXPR_DEPTH` (gql.rs).
+ */
+const DEFAULT_OPERATOR_CHAIN = DEFAULT_CONFIG.limits.operatorChain;
 
 // --- Static boolean-context type check (mirrors the Rust engine's `check_bool_ctx`) ---
 //
@@ -516,10 +524,12 @@ export const parse = (
   // (`((((…))))`, `NOT NOT NOT …`, `!!!…`, nested lists / subqueries) would
   // otherwise overflow the JS stack with an uncaught `RangeError`. Wrapping the
   // recursive entry points in `descend` converts that into a clean
-  // `GqlSyntaxError` past a fixed bound, well below any real stack limit.
-  // Kept in lockstep with the native engine's `MAX_EXPR_DEPTH` (gql.rs) so the two
-  // engines accept/reject the same queries — the value is far above any real query.
-  const MAX_DEPTH = 128;
+  // `GqlSyntaxError` past a fixed bound, well below any real stack limit. It shares
+  // the one `operatorChain` knob with the flat-chain guard below (see `MAX_CHAIN`) —
+  // one unified expression-complexity ceiling — and defaults to 2048 in lockstep with
+  // the native engine's `DEFAULT_MAX_EXPR_DEPTH` (gql.rs) so the two engines
+  // accept/reject the same queries.
+  const MAX_DEPTH = opts?.maxOperatorChain ?? DEFAULT_OPERATOR_CHAIN;
   let depth = 0;
   // Whether a bare `IN` is the membership operator (default) or a structural
   // keyword. Suppressed only while parsing a `LET … IN … END` binding's RHS so
@@ -541,14 +551,14 @@ export const parse = (
     }
   };
 
-  // Operator-chain sanity ceiling. The associative operator nodes are n-ary (a
-  // flat array, see `ast.ts`), so a long chain like `true AND true AND … (500k)`
-  // is not a chain-deep tree and every walk (eval, analysis) is a loop — no stack
-  // overflow regardless of chain length. This is therefore a pure anti-resource-
-  // abuse guard (each operand is an allocation + an eval step), not crash-safety.
-  // Defaults to 10k; configurable per graph (`new Graph({ maxOperatorChain })`,
+  // Operator-chain sanity ceiling — the SAME `operatorChain` knob as the nesting
+  // guard above. TS's associative operator nodes are n-ary (a flat array, see
+  // `ast.ts`), so a long flat chain here is shallow and never overflows the JS
+  // stack; native builds a left-nested tree, so the same chain deepens its stack.
+  // Enforcing one shared ceiling keeps the two engines accepting/rejecting the same
+  // queries. Defaults to 2048; configurable per graph (`new Graph({ maxOperatorChain })`,
   // read by `query()`), which mirrors the native engine's per-graph setting.
-  const MAX_CHAIN = opts?.maxOperatorChain ?? 10_000;
+  const MAX_CHAIN = opts?.maxOperatorChain ?? DEFAULT_OPERATOR_CHAIN;
   const chainLimit = (count: number): void => {
     if (count > MAX_CHAIN) {
       throw new GqlSyntaxError('Operator chain too long', peek().pos);

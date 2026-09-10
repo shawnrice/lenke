@@ -145,10 +145,10 @@ describe('operator-chain semantics (n-ary refactor regression guard)', () => {
     }
   });
 
-  test('a prepared statement honours the operator-chain ceiling too (default 10k, configurable)', () => {
-    const over = `RETURN ${Array(10_002).fill('true').join(' AND ')} AS r`; // 10_001 ops
+  test('a prepared statement honours the operator-chain ceiling too (default 1024, configurable)', () => {
+    const over = `RETURN ${Array(1_026).fill('true').join(' AND ')} AS r`; // 1025 ops
 
-    expect(() => prepare(over)).toThrow(); // default 10k rejects
+    expect(() => prepare(over)).toThrow(); // default 1024 rejects
     const plan = prepare<{ r: boolean }>(
       `RETURN ${Array(50_000).fill('true').join(' AND ')} AS r`,
       {

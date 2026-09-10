@@ -387,8 +387,15 @@ export const buildEngineBackend = (abi: EngineAbi): Backend => {
       return unsupported(`deserialize('${format}')`);
     },
 
-    prepare: (text) => {
-      const { handle } = parseJson<{ handle: string }>(abi.command(scratch, 'prepare', text));
+    prepare: (text, maxOperatorChain) => {
+      // Payload carries the per-prepare operator-chain ceiling; a prepared statement is
+      // graph-independent, so this override (not any run-graph's limit) governs its parse.
+      const payload = JSON.stringify(
+        maxOperatorChain === undefined
+          ? { query: text }
+          : { query: text, maxDepth: maxOperatorChain },
+      );
+      const { handle } = parseJson<{ handle: string }>(abi.command(scratch, 'prepare', payload));
       const id = nextPrepared;
       nextPrepared += 1;
       prepared.set(id, handle);

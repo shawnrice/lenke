@@ -580,10 +580,10 @@ An in-memory graph takes **several times its NDJSON text size** in memory; a who
 
 **Resource ceilings** are set at construction and fixed for the graph's life — they are host policy, so a query can never raise its own:
 \`\`\`ts
-new Graph({ limits: { range: 5_000_000, operatorChain: 20_000 } });
+new Graph({ limits: { range: 5_000_000, operatorChain: 1_500 } });
 graphFromNdjson(backend, ndjson, { limits: { trail: 250_000 } });   // native, same shape
 \`\`\`
-\`operatorChain\` bounds \`AND\`/\`OR\`/arithmetic chains (default 10,000; \`maxOperatorChain\` is the shorthand), \`range\` bounds how many elements \`range(a, b)\` may build (default 1,000,000 — it is a materialized list), and \`trail\` bounds steps per variable-length expansion (default 1,000,000). Exceeding one is a loud \`E_RESOURCE_EXHAUSTED\`, never a truncated result.`,
+\`operatorChain\` bounds the unified GQL expression complexity — both nesting depth and \`AND\`/\`OR\`/arithmetic chain length (default 1,024; \`maxOperatorChain\` is the shorthand), \`range\` bounds how many elements \`range(a, b)\` may build (default 1,000,000 — it is a materialized list), and \`trail\` bounds steps per variable-length expansion (default 1,000,000). Exceeding one is a loud \`E_RESOURCE_EXHAUSTED\`, never a truncated result.`,
 };
 
 const recipesGuide: Guide = {
