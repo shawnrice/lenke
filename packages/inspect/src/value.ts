@@ -14,7 +14,9 @@ export const plain = (value: unknown): string => {
     return value;
   }
 
-  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+  // No `bigint` case: the value model is float64-only (bigint is rejected at every write),
+  // so a cell value is never a bigint.
+  if (typeof value === 'number' || typeof value === 'boolean') {
     return String(value);
   }
 

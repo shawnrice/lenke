@@ -1,9 +1,11 @@
 type TypedArray = ArrayBufferView & ArrayLike<number>;
 
-const isTypedArray = (x: unknown): x is TypedArray => {
-  // @ts-expect-error: this is a type check
-  return x && x.buffer instanceof ArrayBuffer && x.BYTES_PER_ELEMENT;
-};
+const isTypedArray = (x: unknown): x is TypedArray =>
+  // `ArrayBuffer.isView` is true for typed arrays AND DataView; DataView has no
+  // `BYTES_PER_ELEMENT`, so the second check keeps only the ArrayLike<number> typed arrays.
+  // (Returns a real boolean, not the `BYTES_PER_ELEMENT` number the old predicate leaked.)
+  ArrayBuffer.isView(x) &&
+  typeof (x as { BYTES_PER_ELEMENT?: unknown }).BYTES_PER_ELEMENT === 'number';
 
 const isString = (x: unknown): x is string => {
   return typeof x === 'string' || x instanceof String;

@@ -31,7 +31,9 @@ import { empty, from, isList, of } from './functions/index.js';
  * then it will be `Infinity`.
  */
 export class List<T> {
-  length: number;
+  // Set once at construction; `readonly` so `list.length = 0` can't silently corrupt the
+  // list's reported size (the value is descriptive, not a resize control).
+  readonly length: number;
 
   /** Alias of {@link length}, for Set/Map-style `.size` intuition (`Infinity` if unknown). */
   get size(): number {
@@ -147,7 +149,9 @@ export class List<T> {
    * Takes the last value
    */
   last(): T | undefined {
-    let val = this.head();
+    // Single pass: the loop overwrites `val` down to the final element (undefined for an
+    // empty list). Seeding with `head()` would iterate the source an extra time.
+    let val: T | undefined;
 
     for (const v of this) {
       val = v;

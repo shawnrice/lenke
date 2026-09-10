@@ -2,15 +2,13 @@
 /* eslint-disable @typescript-eslint/no-this-alias */
 
 import { ErrorCode, LenkeError } from '@lenke/errors';
+import type { BinaryFn, UnaryFn } from '@lenke/fp';
 import { equals } from '@lenke/fp/equals';
 import { rando } from '@lenke/utils';
 
 import { deserialize } from './deserialize.js';
 import { serialize } from './serialize.js';
 import type { SerializedTreeNode, TreeNodeJSON } from './types.js';
-
-type UnaryFn<T = any, R = T> = (x0: T) => R;
-type BinaryFn<A = any, B = A, R = A> = (x0: A, x1: B) => R;
 
 /**
  * A simple tree class with a few bells

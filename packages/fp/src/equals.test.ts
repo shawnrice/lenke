@@ -35,8 +35,9 @@ describe('functional iterator tests', () => {
     expect(equals(range(0, 10), range(0, 10))).toBe(true);
   });
 
-  test('overflow protection works', () => {
-    // We expect to give up before getting there and return false
-    expect(equals(range(0, 1_000_500), range(0, 1_000_500))).toBe(false);
+  test('overflow protection throws past the cap (rather than a wrong `false`)', () => {
+    // Past the 1M guard cap `equals` THROWS — reporting that the input exceeded the
+    // supported length — instead of silently returning `false` for two EQUAL sequences.
+    expect(() => equals(range(0, 1_000_500), range(0, 1_000_500))).toThrow(RangeError);
   });
 });

@@ -288,8 +288,14 @@ const metaInclude = (state: State, file: string, out: (s: string) => void): bool
     }
 
     if (line.startsWith('\\')) {
-      if (runMeta(state, line, out)) {
-        return true;
+      // Guard meta commands like query lines: a throwing `\c`/`\save`/`\o` prints its error
+      // and the include CONTINUES, rather than aborting the whole `\i` script.
+      try {
+        if (runMeta(state, line, out)) {
+          return true;
+        }
+      } catch (e) {
+        out((e as Error).message);
       }
 
       continue;

@@ -21,7 +21,8 @@ Options:
   -o, --out <file>          serialize the graph to a file, then exit (a codec converter)
       --out-format <fmt>    output codec (default: from the --out extension)
       --wasm <path>         path to lenke_engine.wasm ($LENKE_WASM, else the build output)
-      --no-color            disable colored output
+      --color               force colored output (default: on when stdout is a TTY)
+      --no-color            disable colored output (also respects $NO_COLOR)
   -h, --help                show this
 
 Examples:

@@ -50,8 +50,9 @@ export const applySource = (
       // endpoints are explicitly provided (no input traverser to default to).
       return addEStep([startTraverser(undefined, tracksPath)], graph, step, newContext());
     default:
-      throw new Error(
+      throw new LenkeError(
         `Plan must start with V(), E(), inject(), addV(), or addE(), got ${step.kind}`,
+        { code: ErrorCode.Syntax },
       );
   }
 };

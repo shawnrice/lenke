@@ -1,8 +1,9 @@
 import { EmitterEvent } from './EmitterEvent.js';
 
-type NullaryFn<T = any> = () => T;
-
-export type Listener<T extends EmitterEvent<string, any>> = (event: T) => any;
+// A listener is observation-only (it reacts, it can't veto — see `emit`), so its return is
+// ignored: type it `void` rather than leaking `any`. `void` still accepts a listener that
+// happens to return a value.
+export type Listener<T extends EmitterEvent<string, any>> = (event: T) => void;
 
 export type EmitterOptions = {
   enabled?: boolean;
@@ -75,7 +76,7 @@ export class Emitter<
   on<TType extends Key, TEvent extends TypeMap[TType]>(
     type: TType,
     listener: Listener<TEvent>,
-  ): NullaryFn {
+  ): () => void {
     const listeners = this.listenersFor(type);
     listeners.add(listener);
 
@@ -85,7 +86,7 @@ export class Emitter<
   once<TType extends Key, TEvent extends TypeMap[TType]>(
     type: TType,
     listener: Listener<TEvent>,
-  ): NullaryFn {
+  ): () => void {
     const listeners = this.listenersFor(type);
     const wrapped: StoredListener = (event) => {
       listeners.delete(wrapped);

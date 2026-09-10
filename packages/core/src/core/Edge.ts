@@ -1,4 +1,5 @@
 import { EmitterEvent } from '@lenke/emitter';
+import { ErrorCode, LenkeError } from '@lenke/errors';
 import { rando, sortedByKey } from '@lenke/utils';
 
 import type { Graph } from './Graph.js';
@@ -99,7 +100,15 @@ export class Edge {
     // value round-tripped out of the graph and back in stored as a plain object
     // and silently compared equal to nothing. Returns the same bag when nothing
     // moved, so the common case costs one pass and no allocation.
-    this.#graph!.elementProperties.set(this.#id, Object.freeze(normalizeProperties(bag)));
+    // A write to an edge no longer in a graph (removed/detached, `#graph === null`) is a
+    // coded error, matching Vertex — not a raw `TypeError` on the null deref.
+    if (!this.#graph) {
+      throw new LenkeError('cannot write to an Edge that is not in a graph (removed or detached)', {
+        code: ErrorCode.InvalidGraphOp,
+      });
+    }
+
+    this.#graph.elementProperties.set(this.#id, Object.freeze(normalizeProperties(bag)));
   }
 
   addLabel(label: string): Edge | null {

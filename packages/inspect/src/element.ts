@@ -13,7 +13,8 @@ const propValue = (value: unknown, style: Style): string => {
     return style.yellow(JSON.stringify(value));
   }
 
-  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+  // No `bigint` case: the value model is float64-only (bigint is rejected at every write).
+  if (typeof value === 'number' || typeof value === 'boolean') {
     return String(value);
   }
 

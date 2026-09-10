@@ -79,7 +79,13 @@ const PATH_DEPENDENT_KINDS: ReadonlySet<string> = new Set([
   'foldFn',
 ]);
 
-/** The sub-plans a step embeds, by their known plan-bearing field names. */
+/**
+ * The sub-plans a step embeds, by their known plan-bearing field names. This list must stay
+ * EXHAUSTIVE against every plan-bearing field on any `Step` variant: a missed field means
+ * `planReadsPath` can't see a `path()` inside that sub-plan and silently disables path
+ * tracking for the whole traversal. Keep it in sync when a new sub-plan-bearing step is
+ * added — `subPlansOf.test.ts` guards the current set.
+ */
 const subPlansOf = (step: Step): Plan[] => {
   const plans: Plan[] = [];
   const fields = step as Record<string, unknown>;

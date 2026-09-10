@@ -5,7 +5,10 @@ const defaultComparator = <T>(a: T, b: T): boolean => a === b;
 const MAX_ITERATIONS = 1_000_000;
 
 /**
- * This will only compare to 1m iterations. After that, it will fail
+ * Compares two iterables element-wise. Guards against an accidental infinite iterator by
+ * capping at {@link MAX_ITERATIONS} elements — but rather than silently returning `false`
+ * (which would report two EQUAL sequences as unequal), it THROWS past the cap, so the caller
+ * learns its input exceeded the supported length instead of getting a wrong answer.
  */
 export function equals<T>(
   x: Iterable<T>,
@@ -30,8 +33,9 @@ export function equals<T>(
     }
 
     if (++count > MAX_ITERATIONS) {
-      // Avoid accidental DDOS from infinite iterators
-      return false;
+      // Past the guard cap: throw rather than silently returning `false` for what may be
+      // two equal sequences (an accidental infinite iterator surfaces as a clear error).
+      throw new RangeError(`equals: iterables exceed the ${MAX_ITERATIONS}-element comparison cap`);
     }
   }
 
