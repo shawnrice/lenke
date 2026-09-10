@@ -1,6 +1,6 @@
 /**
  * The bun:ffi backend over the STANDALONE engine's 16-symbol C ABI
- * (`liblenke_engine.{so,dylib}`, built with `bun run engine:build:rust`). Mirrors
+ * (`liblenke_engine.{so,dylib}`, built with `bun run build:rust`). Mirrors
  * `backend-ffi.ts`'s marshalling, but loads the lean `lnk_*` surface and hands it
  * to {@link buildEngineBackend}, which maps the {@link Backend} contract onto it.
  */

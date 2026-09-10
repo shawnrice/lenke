@@ -1,6 +1,6 @@
 /**
  * The WebAssembly backend over the STANDALONE engine's 16-symbol C ABI
- * (`lenke_engine.wasm`, built with `bun run engine:build:wasm`). The wasm twin of
+ * (`lenke_engine.wasm`, built with `bun run build:wasm`). The wasm twin of
  * `backend-ffi-engine.ts`: everything is 32-bit linear-memory offsets, u64 returns
  * arrive as BigInt, and inputs are copied into the module's memory via `lnk_alloc`.
  * The marshalled ABI is handed to {@link buildEngineBackend}.
@@ -119,10 +119,14 @@ export const createWasmEngineBackend = async (source: WasmSource): Promise<Backe
       }
 
       const len = dv().getUint32(outLenPtr, true);
-      const json = decoder.decode(readBytes(errPtr, len, 'last-error'));
-      ex.lnk_free(errPtr, len);
 
-      return parseErrorReport(json);
+      // Free the crate error buffer in a finally: a throwing `readBytes` (a corrupt
+      // ptr/len escaping wasm memory) must not leak it. Mirrors the FFI twin.
+      try {
+        return parseErrorReport(decoder.decode(readBytes(errPtr, len, 'last-error')));
+      } finally {
+        ex.lnk_free(errPtr, len);
+      }
     } finally {
       ex.lnk_dealloc(outLenPtr, 4);
     }
