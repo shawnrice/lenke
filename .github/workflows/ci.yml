@@ -49,11 +49,16 @@ jobs:
       # Build first: each package exports its types from dist/, and the root
       # typecheck has no source-path mapping, so `check`'s tsc only resolves
       # @lenke/* once dist/ exists. nx caches any unchanged build work.
-      # `bun run build` builds the ffi cdylib (lenke-engine:build, uncached) and
-      # the napi addon (@lenke/node:build, cache-keyed on the crate src so a
-      # Rust-only change rebuilds it — see the `rustEngine` named input).
+      # `bun run build` builds the ffi cdylib (lenke-engine:build, uncached).
+      #
+      # @lenke/node is EXCLUDED here: `napi build --release` is a from-scratch
+      # release compile of the engine (~75s) that nothing else in this job depends
+      # on, and it was the lone tail of this step — every other project finished in
+      # ~70s and then this one ran by itself. The `node-addon` job below owns it, on
+      # Linux AND macOS, and runs its tests there. Excluding it in the workflow
+      # rather than in the root script keeps a local `bun run build` complete.
       - name: Build
-        run: bun run build
+        run: bunx nx run-many -t build --exclude @lenke/node
 
       # The wasm artifact is NOT part of the nx build graph (a per-platform
       # cargo target), so build it explicitly here — otherwise the wasm backend
@@ -66,12 +71,57 @@ jobs:
       - name: Check
         run: bun run check
 
+      # The TypeScript suites — all 20 projects together take ~2s, so this step is
+      # cheap once the Rust work is elsewhere. The cargo suites move to the `rust`
+      # job (which needs no bun build at all) so they run CONCURRENTLY with this
+      # job instead of after it; `lenke-engine:test` alone was ~115s of a ~116s
+      # step here. @lenke/node is excluded for the reason given at Build.
       - name: Test
-        run: bun run test
+        run: bunx nx run-many -t test --exclude @lenke/node,lenke-engine,lenke-engine-core
 
       # FFI canary: prove the cdylib built above loads and round-trips over bun:ffi.
       - name: FFI smoke test
         run: bun test packages/native/src/backend-engine.test.ts
+
+  # ===========================================================================
+  # The Rust test suites, in their own job so they run CONCURRENTLY with the
+  # TypeScript job above rather than as its tail. They need no bun install and no
+  # dist/ — only a toolchain — so there is nothing to wait for.
+  #
+  # (`cargo clippy` and `cargo fmt --check` stay in the other job's `check`: they
+  # are ~10s there, and keeping one job that fails on any lint is worth more than
+  # shaving that.)
+  # ===========================================================================
+  rust:
+    name: cargo test (engine)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@1.96.0
+
+      # `.cargo/config.toml` pins `-fuse-ld=mold` for x86_64-unknown-linux-gnu, so
+      # the linker must be present or every build fails at the link step.
+      - name: Install mold linker
+        run: sudo apt-get update && sudo apt-get install -y mold
+
+      # Note this buys little today: rust-cache caches dependency artifacts and
+      # cleans the workspace crate's own, and the engine is nearly dependency-free,
+      # so almost every run is a from-scratch compile. It is kept for the rayon /
+      # serde_json build and for whatever the crate grows.
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            crates/lenke-engine
+            crates/lenke-engine-core
+
+      - name: cargo test (lenke-engine)
+        run: cargo test --manifest-path crates/lenke-engine/Cargo.toml
+
+      - name: cargo test (lenke-engine-core)
+        run: cargo test --manifest-path crates/lenke-engine-core/Cargo.toml
 
   # ===========================================================================
   # Native Node addon (@lenke/node) — build + test on Linux and macOS (arm64).
