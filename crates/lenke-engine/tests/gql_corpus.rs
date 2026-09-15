@@ -321,19 +321,47 @@ fn load_snapshot(dir: &Path) -> HashMap<String, Outcome> {
     map
 }
 
-#[test]
-fn gql_corpus_engine_matches_snapshot() {
+/// The corpus directory, or `None` when it hasn't been created yet.
+fn corpus_dir() -> Option<PathBuf> {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/gql_corpus");
-    if !dir.exists() {
-        eprintln!("no corpus dir yet: {}", dir.display());
-        return;
-    }
-    let cases = load_cases(&dir);
+    dir.exists().then_some(dir)
+}
 
+/// The `*.jsonl` case files actually on disk (sorted; the snapshot oracle excluded).
+fn corpus_files_on_disk(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .expect("read corpus dir")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
+        .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+        .filter(|n| n != "snapshots.jsonl")
+        .collect();
+    names.sort();
+    names
+}
+
+/// One corpus file's cases checked against the recorded snapshot. Split per file
+/// (rather than one loop over all ~1200 cases) so the harness runs them across its
+/// threads instead of serially — the single test was the longest thing in `cargo
+/// test` by a wide margin, and on CI it was most of the test step's wall time. The
+/// split also names the offending file in the failure instead of burying it.
+fn check_corpus_file(fname: &str) {
+    // A regeneration pass rewrites `snapshots.jsonl` from a single sweep over every
+    // file; comparing against an oracle mid-rewrite would be meaningless, so these
+    // stand down and leave the work to `gql_corpus_snapshot_regenerate`.
     if std::env::var("CORPUS_SNAPSHOT").is_ok() {
-        regenerate_snapshot(&dir, &cases);
         return;
     }
+    let Some(dir) = corpus_dir() else {
+        eprintln!("no corpus dir yet");
+        return;
+    };
+    let prefix = format!("{fname}::");
+    let cases: Vec<Case> = load_cases(&dir)
+        .into_iter()
+        .filter(|c| c.key.starts_with(&prefix))
+        .collect();
+    assert!(!cases.is_empty(), "{fname}: no cases loaded");
 
     let snapshot = load_snapshot(&dir);
     let mut fails: Vec<String> = Vec::new();
@@ -370,17 +398,20 @@ fn gql_corpus_engine_matches_snapshot() {
     }
 
     if let Ok(dump) = std::env::var("CORPUS_DUMP") {
-        std::fs::write(&dump, fails.join("\n")).ok();
+        // One file per test now that they run concurrently — a shared path would have
+        // them overwrite each other.
+        std::fs::write(format!("{dump}.{fname}"), fails.join("\n")).ok();
     }
     eprintln!(
-        "gql corpus: {} cases, {} snapshot mismatches ({missing} missing snapshots)",
+        "gql corpus {fname}: {} cases, {} snapshot mismatches ({missing} missing snapshots)",
         cases.len(),
         fails.len(),
     );
     assert!(
         fails.is_empty(),
-        "{} corpus mismatches vs snapshot (a regression, or a new/changed case needing \
+        "{}: {} corpus mismatches vs snapshot (a regression, or a new/changed case needing \
          CORPUS_SNAPSHOT=1):\n{}",
+        fname,
         fails.len(),
         fails
             .iter()
@@ -389,4 +420,103 @@ fn gql_corpus_engine_matches_snapshot() {
             .collect::<Vec<_>>()
             .join("\n")
     );
+}
+
+/// Every corpus file, one test each. Kept honest against the directory by
+/// [`every_corpus_file_has_a_test`] — a new `.jsonl` with no test here would
+/// otherwise be silently unchecked, which is the failure mode a static list invites.
+const CORPUS_FILES: [&str; 11] = [
+    "_sample.jsonl",
+    "hardening.jsonl",
+    "language.jsonl",
+    "metamorphic.jsonl",
+    "tck.jsonl",
+    "tests_a.jsonl",
+    "tests_b.jsonl",
+    "tests_c.jsonl",
+    "tests_d.jsonl",
+    "tests_e.jsonl",
+    "tests_f.jsonl",
+];
+
+#[test]
+fn every_corpus_file_has_a_test() {
+    let Some(dir) = corpus_dir() else {
+        return;
+    };
+    assert_eq!(
+        corpus_files_on_disk(&dir),
+        CORPUS_FILES,
+        "a corpus file has no test (or a test names a file that is gone) — update CORPUS_FILES"
+    );
+}
+
+#[test]
+fn corpus_sample() {
+    check_corpus_file("_sample.jsonl");
+}
+
+#[test]
+fn corpus_hardening() {
+    check_corpus_file("hardening.jsonl");
+}
+
+#[test]
+fn corpus_language() {
+    check_corpus_file("language.jsonl");
+}
+
+#[test]
+fn corpus_metamorphic() {
+    check_corpus_file("metamorphic.jsonl");
+}
+
+#[test]
+fn corpus_tck() {
+    check_corpus_file("tck.jsonl");
+}
+
+#[test]
+fn corpus_tests_a() {
+    check_corpus_file("tests_a.jsonl");
+}
+
+#[test]
+fn corpus_tests_b() {
+    check_corpus_file("tests_b.jsonl");
+}
+
+#[test]
+fn corpus_tests_c() {
+    check_corpus_file("tests_c.jsonl");
+}
+
+#[test]
+fn corpus_tests_d() {
+    check_corpus_file("tests_d.jsonl");
+}
+
+#[test]
+fn corpus_tests_e() {
+    check_corpus_file("tests_e.jsonl");
+}
+
+#[test]
+fn corpus_tests_f() {
+    check_corpus_file("tests_f.jsonl");
+}
+
+/// `CORPUS_SNAPSHOT=1` rewrites the oracle from one sweep over every case — a
+/// deliberate, reviewable act. Inert otherwise.
+#[test]
+fn gql_corpus_snapshot_regenerate() {
+    if std::env::var("CORPUS_SNAPSHOT").is_err() {
+        return;
+    }
+    let Some(dir) = corpus_dir() else {
+        eprintln!("no corpus dir yet");
+        return;
+    };
+    let cases = load_cases(&dir);
+    regenerate_snapshot(&dir, &cases);
 }
