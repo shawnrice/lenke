@@ -496,6 +496,36 @@ fn bag(r: Vec<GVal>) -> Vec<String> {
     v
 }
 
+/// A libm value computed at RUN time. The `black_box` is load-bearing: written plainly,
+/// `0.7_f64.sinh()` is a call the compiler may fold into the binary at BUILD time, and a
+/// constant baked in at build time is not comparable with a number the engine computes at
+/// run time — they come from whatever libm was present at each moment. glibc 2.44
+/// (2026-09-12) moved `sinh(0.7)` by one ulp, and this test failed
+/// `0.7585837018395335` vs `…334` with nothing in the repo having changed: the engine
+/// called the new libm while a cached object still held the old folded constant. Forcing
+/// the argument opaque keeps both sides on the same libm, in this process.
+///
+/// (The engine's own agreement with the GQL kernel — the property this file is really
+/// asserting — is checked engine-to-engine in `math_functions_agree_with_the_gql_kernel`,
+/// which involves no libm value at all.)
+fn libm(f: fn(f64) -> f64, x: f64) -> f64 {
+    f(std::hint::black_box(x))
+}
+
+/// Evaluate a GQL scalar expression through the engine's own `call_scalar` kernel.
+fn gql_num(expr: &str) -> f64 {
+    let mut store = modern();
+    let plan = lenke_engine::gql::parse(&format!("RETURN {expr} AS r"))
+        .unwrap_or_else(|e| panic!("engine cannot parse GQL `{expr}`: {e}"));
+    let rows = match lenke_engine::exec::run_query(plan, &mut store).expect("gql runs") {
+        lenke_engine::exec::Executed::Rows(r) => r,
+        lenke_engine::exec::Executed::Read(p) => {
+            lenke_engine::exec::try_run(&p, &store).expect("gql read")
+        }
+    };
+    one_num(rows.rows.iter().flatten().map(to_gval).collect())
+}
+
 fn one_num(r: Vec<GVal>) -> f64 {
     match r.as_slice() {
         [GVal::Num(n)] => *n,
@@ -2935,33 +2965,73 @@ fn math_functions_use_the_shared_f64_kernel() {
     // Each function must call the SAME primitive as the GQL `call_scalar` kernel,
     // so `math()` stays bit-identical to GQL and to the TS engine.
     let f = |expr: &str| one_num(q(g().inject([GVal::Num(0.7)]).math(expr)));
-    assert_eq!(f("sin(_)"), 0.7_f64.sin());
-    assert_eq!(f("cos(_)"), 0.7_f64.cos());
-    assert_eq!(f("tan(_)"), 0.7_f64.tan());
-    assert_eq!(f("asin(_)"), 0.7_f64.asin());
-    assert_eq!(f("acos(_)"), 0.7_f64.acos());
-    assert_eq!(f("atan(_)"), 0.7_f64.atan());
-    assert_eq!(f("sinh(_)"), 0.7_f64.sinh());
-    assert_eq!(f("cosh(_)"), 0.7_f64.cosh());
-    assert_eq!(f("tanh(_)"), 0.7_f64.tanh());
-    assert_eq!(f("sqrt(_)"), 0.7_f64.sqrt());
+    assert_eq!(f("sin(_)"), libm(f64::sin, 0.7));
+    assert_eq!(f("cos(_)"), libm(f64::cos, 0.7));
+    assert_eq!(f("tan(_)"), libm(f64::tan, 0.7));
+    assert_eq!(f("asin(_)"), libm(f64::asin, 0.7));
+    assert_eq!(f("acos(_)"), libm(f64::acos, 0.7));
+    assert_eq!(f("atan(_)"), libm(f64::atan, 0.7));
+    assert_eq!(f("sinh(_)"), libm(f64::sinh, 0.7));
+    assert_eq!(f("cosh(_)"), libm(f64::cosh, 0.7));
+    assert_eq!(f("tanh(_)"), libm(f64::tanh, 0.7));
+    assert_eq!(f("sqrt(_)"), libm(f64::sqrt, 0.7));
     assert_eq!(f("abs(-_)"), 0.7_f64);
     assert_eq!(f("ceil(_)"), 1.0);
     assert_eq!(f("floor(_)"), 0.0);
-    assert_eq!(f("exp(_)"), 0.7_f64.exp());
-    assert_eq!(f("ln(_)"), 0.7_f64.ln());
-    assert_eq!(f("log10(_)"), 0.7_f64.log10());
+    assert_eq!(f("exp(_)"), libm(f64::exp, 0.7));
+    assert_eq!(f("ln(_)"), libm(f64::ln, 0.7));
+    assert_eq!(f("log10(_)"), libm(f64::log10, 0.7));
     assert_eq!(f("signum(_)"), 1.0);
     assert_eq!(f("signum(-_)"), -1.0);
+}
+
+/// The claim in the test above, asserted engine-to-engine: `math('sinh(_)')` and GQL
+/// `sinh(0.7)` must be the SAME f64, because both are meant to reach one `call_scalar`
+/// kernel. No libm constant is involved on either side, so this holds whatever the C
+/// library underneath does — it is the durable half of the "one kernel" contract, and
+/// the one that would actually catch `math()` growing its own arithmetic.
+#[test]
+fn math_functions_agree_with_the_gql_kernel() {
+    let m = |expr: &str| one_num(q(g().inject([GVal::Num(0.7)]).math(expr)));
+    for (math_expr, gql_expr) in [
+        ("sin(_)", "sin(0.7)"),
+        ("cos(_)", "cos(0.7)"),
+        ("tan(_)", "tan(0.7)"),
+        ("asin(_)", "asin(0.7)"),
+        ("acos(_)", "acos(0.7)"),
+        ("atan(_)", "atan(0.7)"),
+        ("sinh(_)", "sinh(0.7)"),
+        ("cosh(_)", "cosh(0.7)"),
+        ("tanh(_)", "tanh(0.7)"),
+        ("sqrt(_)", "sqrt(0.7)"),
+        ("exp(_)", "exp(0.7)"),
+        ("ln(_)", "ln(0.7)"),
+        ("log10(_)", "log10(0.7)"),
+        ("signum(_)", "sign(0.7)"),
+        ("ceil(_)", "ceiling(0.7)"),
+        ("floor(_)", "floor(0.7)"),
+        ("abs(-_)", "abs(-0.7)"),
+        ("cot(_)", "cot(0.7)"),
+        ("degrees(_)", "degrees(0.7)"),
+        ("radians(_)", "radians(0.7)"),
+        ("pow(_, 3)", "power(0.7, 3)"),
+        ("log(_, 8)", "log(0.7, 8)"),
+    ] {
+        assert_eq!(
+            m(math_expr),
+            gql_num(gql_expr),
+            "math('{math_expr}') vs GQL {gql_expr}"
+        );
+    }
 }
 
 #[test]
 fn math_two_arg_functions() {
     let f = |expr: &str| one_num(q(g().inject([GVal::Num(2.0)]).math(expr)));
     assert_eq!(f("pow(_, 10)"), 1024.0);
-    assert_eq!(f("atan2(_, 1)"), 2.0_f64.atan2(1.0));
+    assert_eq!(f("atan2(_, 1)"), std::hint::black_box(2.0_f64).atan2(1.0));
     // log(base, value): log base 2 of 8 == 3 (via value.ln()/base.ln()).
-    assert_eq!(f("log(_, 8)"), 8.0_f64.ln() / 2.0_f64.ln());
+    assert_eq!(f("log(_, 8)"), libm(f64::ln, 8.0) / libm(f64::ln, 2.0));
 }
 
 #[test]
@@ -3009,15 +3079,15 @@ fn math_bare_juxtaposition_function_form() {
     // `sin _` == `sin(_)`; binds tighter than binary ops; right-assoc chains;
     // unary arg (so `abs -3` works). Parity with TS `evalMath`.
     let n = |expr: &str, x: f64| one_num(q(g().inject([GVal::Num(x)]).math(expr)));
-    assert_eq!(n("sin _", 0.7), 0.7_f64.sin());
-    assert_eq!(n("sin(_)", 0.7), 0.7_f64.sin()); // agrees with paren form
-    assert_eq!(n("sin _ + 1", 0.7), 0.7_f64.sin() + 1.0);
-    assert_eq!(n("sin _ * 2", 0.7), 0.7_f64.sin() * 2.0);
-    assert_eq!(n("-sin _", 0.7), -(0.7_f64.sin()));
+    assert_eq!(n("sin _", 0.7), libm(f64::sin, 0.7));
+    assert_eq!(n("sin(_)", 0.7), libm(f64::sin, 0.7)); // agrees with paren form
+    assert_eq!(n("sin _ + 1", 0.7), libm(f64::sin, 0.7) + 1.0);
+    assert_eq!(n("sin _ * 2", 0.7), libm(f64::sin, 0.7) * 2.0);
+    assert_eq!(n("-sin _", 0.7), -libm(f64::sin, 0.7));
     assert_eq!(n("abs -3", 0.0), 3.0);
-    assert_eq!(n("sin cos _", 0.7), 0.7_f64.cos().sin()); // right-assoc
-    assert_eq!(n("sqrt _", 2.0), 2.0_f64.sqrt());
-    assert_eq!(n("sin (_ + 1)", 0.7), (0.7_f64 + 1.0).sin());
+    assert_eq!(n("sin cos _", 0.7), libm(f64::sin, libm(f64::cos, 0.7))); // right-assoc
+    assert_eq!(n("sqrt _", 2.0), libm(f64::sqrt, 2.0));
+    assert_eq!(n("sin (_ + 1)", 0.7), libm(f64::sin, 0.7 + 1.0));
 }
 
 #[test]
