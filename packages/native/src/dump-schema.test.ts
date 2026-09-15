@@ -26,7 +26,10 @@ const WASM = new URL(
 // the edge-unique below also proves an index-backed constraint dumps its auto-index.
 const declareAll = (g: RustGraph): void => {
   g.createIndex({ on: 'vertex', kind: 'hash', keys: ['handle'] });
+  g.createIndex({ on: 'vertex', kind: 'range', keys: ['score'] }); // ordered, for the inequalities
+  g.createIndex({ on: 'vertex', kind: 'range', keys: ['handle'] }); // BOTH kinds on one key
   g.createIndex({ on: 'edge', kind: 'interval', keys: ['vf', 'vt'] }); // RI-tree accelerator
+  g.createIndex({ on: 'edge', kind: 'type' }); // keyless edge-type index
   g.createUniqueConstraint('User', 'email');
   g.createRequiredConstraint('User', 'name');
   g.createTypeConstraint('User', 'age', 'number');
@@ -112,6 +115,20 @@ for (const { name, make, ok } of backends) {
       expect(by('createEdgeIntervalIndex')).toEqual([
         { op: 'createEdgeIntervalIndex', loKey: 'vf', hiKey: 'vt' },
       ]);
+      // A range index is a DIFFERENT structure from a hash index on the same key,
+      // so `kind` has to survive the dump: mapping both to `createVertexIndex`
+      // downgrades every range index to a hash one on replay — right answers, and a
+      // seek quietly turned back into a scan.
+      expect(by('createVertexIndex')).toEqual([{ op: 'createVertexIndex', key: 'handle' }]);
+      expect(by('createVertexRangeIndex')).toEqual([
+        { op: 'createVertexRangeIndex', key: 'handle' },
+        { op: 'createVertexRangeIndex', key: 'score' },
+      ]);
+      // Keyless, so it dumps as a bare op — and it is an accelerator no data can
+      // reconstruct, so it has to dump at all.
+      expect(by('createEdgeTypeIndex')).toEqual([{ op: 'createEdgeTypeIndex' }]);
+      // Two indexes, one key: `vertexIndexes()` answers which KEYS are indexed.
+      expect(g.vertexIndexes().filter((k) => k === 'handle')).toEqual(['handle']);
     });
 
     test('round-trips: applying the dump to a fresh graph reproduces it exactly', async () => {

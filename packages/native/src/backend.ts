@@ -24,11 +24,14 @@ export type PreparedHandle = number;
 export type IndexTarget = 'vertex' | 'edge';
 
 /**
- * The kind of secondary index (see {@link Backend.createIndex}): `'hash'` is an
- * equality seek over a single key; `'interval'` is an RI-tree over an edge
- * `[loKey, hiKey)` temporal pair for as-of / overlap seeks (edge-only).
+ * The kind of secondary index (see {@link Backend.createIndex}) — one member per
+ * arm the engine actually has: `'hash'` is an equality seek over a single key;
+ * `'range'` is an ordered index over a single key for `<` / `<=` / `>` / `>=`
+ * seeks (vertex-only); `'interval'` is an RI-tree over an edge `[loKey, hiKey)`
+ * temporal pair for as-of / overlap seeks (edge-only); `'type'` is the keyless
+ * opt-in edge-type index (edge-only).
  */
-export type IndexKind = 'hash' | 'interval';
+export type IndexKind = 'hash' | 'range' | 'interval' | 'type';
 
 /**
  * What a {@link Backend.mergeNdjson} applied vs. skipped — so a caller sees
@@ -89,11 +92,16 @@ export type Backend = {
    * current; idempotent). The single parametric index creator:
    *   - `on`: `'vertex'` or `'edge'` — which element the index covers.
    *   - `kind`: `'hash'` (equality seek, one key — turns `WHERE x.k = …` into a
-   *     seek) or `'interval'` (RI-tree over an edge `[k0, k1)` temporal pair — an
-   *     as-of `k0 <= v AND k1 > v` / overlap predicate seeds from it; two of them,
-   *     valid `[vf,vt)` + transaction `[tf,tt)`, cover a bitemporal as-of).
-   *   - `keys`: `[k]` for a hash index, `[loKey, hiKey]` for an interval index.
-   * An interval index is edge-only; a hash index takes exactly one key.
+   *     seek); `'range'` (ordered seek, one key — turns `WHERE x.k > …` and the
+   *     other inequalities into a bounded walk instead of a scan); `'interval'`
+   *     (RI-tree over an edge `[k0, k1)` temporal pair — an as-of
+   *     `k0 <= v AND k1 > v` / overlap predicate seeds from it; two of them,
+   *     valid `[vf,vt)` + transaction `[tf,tt)`, cover a bitemporal as-of); or
+   *     `'type'` (the keyless edge-type index).
+   *   - `keys`: `[k]` for a hash or range index, `[loKey, hiKey]` for an interval
+   *     index, `[]` for the edge-type index.
+   * Hash and range are vertex-only and take exactly one key; interval and type are
+   * edge-only. Any other `on`/`kind` pair is rejected by the engine.
    */
   createIndex: (handle: GraphHandle, on: IndexTarget, kind: IndexKind, keys: string[]) => void;
 

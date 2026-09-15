@@ -521,12 +521,19 @@ g.createIndex({ on: 'vertex', kind: 'hash', keys: ['meta.errorId'] });
 MATCH (e:Event) WHERE e.meta.errorId = $x RETURN e.id   -- seeks the dotted index
 \`\`\`
 
-## Hash is the default — use it for almost everything
-A \`hash\` index is an **ordered map** (a B-tree in the native engine) keyed by the property value, so **one** index serves BOTH:
-- **equality / IN** — \`{id: $x}\`, \`WHERE k = $x\`, \`WHERE k IN [...]\` → a direct bucket hit.
-- **range** — \`WHERE k >= $lo AND k < $hi\`, \`BETWEEN\`, prefix \`startsWith\` → a sorted slice.
+## Hash for equality, range for the inequalities
+Declare the kind that matches how you query the key:
+- \`kind: 'hash'\` — **equality / IN**: \`{id: $x}\`, \`WHERE k = $x\`, \`WHERE k IN [...]\` → a direct bucket hit.
+- \`kind: 'range'\` — **inequalities**: \`WHERE k >= $lo AND k < $hi\`, \`BETWEEN\`, prefix \`startsWith\` → a bounded walk over a sorted view.
 
-This holds for numbers, strings, booleans **and temporals** (dates/datetimes sort in order), so **a single date column is a hash index**: both a point probe (\`WHERE at = $d\`) and a window (\`WHERE at >= $d1 AND at < $d2\`) seek it. Reach for hash unless you specifically have the interval shape below.
+\`\`\`ts
+g.createIndex({ on: 'vertex', kind: 'hash', keys: ['email'] });   // WHERE u.email = $x
+g.createIndex({ on: 'vertex', kind: 'range', keys: ['score'] });  // WHERE u.score > $x
+\`\`\`
+
+Both work over numbers, strings, booleans **and temporals** (dates/datetimes sort in order), so a date column indexed \`range\` seeks a window (\`WHERE at >= $d1 AND at < $d2\`) and one indexed \`hash\` seeks a point probe (\`WHERE at = $d\`).
+
+**In the native engine these are two separate structures**: a hash index will not answer a range predicate, and a key you query both ways wants **both** declared — it is the same key, two indexes, and they are independent. In the pure-TS \`@lenke/core\` they are one structure, so either kind answers both and declaring both is redundant. Declaring the kind you actually query by works on both. \`dropVertexIndex(key)\` drops whichever kinds exist on the key.
 
 ## Interval indexes — for \`[lo, hi)\` containment / overlap (native engine only)
 When a row carries a **pair** of endpoints describing a half-open interval \`[lo, hi)\` — **lo inclusive, hi EXCLUSIVE** — and you ask "which rows' interval *contains* point v" (a stab) or "*overlaps* window [d1, d2)", that's a 2-D predicate a hash index can't do in one seek. An interval index (an RI-tree) does:
@@ -544,10 +551,16 @@ Half-open means \`hi\` is the first instant **not** covered: \`[10, 20)\` contai
 - **Reservations / calendars** — "bookings overlapping this night", "who was on-call at 03:14".
 - **Numeric ranges** (interval is not temporal-only) — price bands, version ranges \`[minVersion, maxVersion)\`, IP/port ranges: "which band contains 42".
 
-If a row stores a **single instant** (an event timestamp), not a \`[start, end)\` pair, that's a **hash** index — not interval.
+If a row stores a **single instant** (an event timestamp), not a \`[start, end)\` pair, that's a **hash** or **range** index — not interval.
+
+## The edge-type index (native engine only)
+\`\`\`ts
+g.createIndex({ on: 'edge', kind: 'type' });   // keyless — no \`keys\`
+\`\`\`
+An opt-in index over edge types. It earns its keep when a type-filtered expansion runs off **high-degree nodes whose edges span many types** — without it, expanding \`-[:PAYS]->\` from a node with thousands of edges of a dozen types scans the whole adjacency and filters. On low-degree or single-type data it can only cost.
 
 ## Notes
-- **hash** works on both engines and both elements. **interval** is **edge-only** and **native-only** — the pure-TS \`@lenke/core\` throws on \`kind: 'interval'\`.
+- **hash** and **range** work on both engines; hash/range are **vertex-only** in the native engine (the pure-TS engine also indexes edge properties). **interval** and **type** are **edge-only** and **native-only** — the pure-TS \`@lenke/core\` throws on both.
 - There is no GQL \`CREATE INDEX\` statement — index management is host-API only (ISO GQL, like SQL, leaves index DDL to the host). See the \`performance\` guide for anchoring traversals on an indexed key.`,
 };
 

@@ -315,3 +315,47 @@ describe('PropertyIndex snapshots and edges', () => {
     expect(ids(graph.getVerticesByProperty('age', 29))).toEqual(['z']);
   });
 });
+
+// `kind` is the portability contract with the native engine, which keeps a hash
+// and a range index as separate structures. Here they are ONE structure — buckets
+// plus a lazily built ordered view — so either kind serves both seeks; what
+// matters is that the vocabulary matches, so a spec written against one engine
+// isn't rejected by the other.
+describe('PropertyIndex kinds', () => {
+  test("kind: 'range' declares an index that answers both range and equality seeks", () => {
+    const graph = personGraph();
+    graph.createIndex({ on: 'vertex', kind: 'range', keys: ['age'] });
+
+    expect(graph.vertexPropertyIndex.isIndexed('age')).toBe(true);
+    expect(ids(graph.getVerticesByPropertyRange('age', { gt: 30 }))).toEqual(['c', 'd']);
+    expect(ids(graph.getVerticesByProperty('age', 29))).toEqual(['a']);
+  });
+
+  test("kind: 'range' backfills and stays current, like a hash index", () => {
+    const graph = personGraph();
+    graph.createIndex({ on: 'vertex', kind: 'range', keys: ['age'] });
+    graph.addVertex({ id: 'e', labels: ['Person'], properties: { name: 'ada', age: 31 } });
+    graph.getVertexById('b')!.setProperty('age', 99);
+
+    expect(ids(graph.getVerticesByPropertyRange('age', { gte: 31 }))).toEqual(['b', 'c', 'd', 'e']);
+  });
+
+  test("kind: 'range' on edges indexes the edge side", () => {
+    const graph = personGraph();
+    graph.createIndex({ on: 'edge', kind: 'range', keys: ['weight'] });
+
+    expect(graph.edgePropertyIndex.isIndexed('weight')).toBe(true);
+    expect(graph.vertexPropertyIndex.isIndexed('weight')).toBe(false);
+  });
+
+  test('the native-only kinds throw rather than silently building something else', () => {
+    const graph = personGraph();
+
+    expect(() => graph.createIndex({ on: 'edge', kind: 'interval', keys: ['vf', 'vt'] })).toThrow(
+      /interval indexes are only available in the native engine/,
+    );
+    expect(() => graph.createIndex({ on: 'edge', kind: 'type', keys: [] })).toThrow(
+      /type indexes are only available in the native engine/,
+    );
+  });
+});

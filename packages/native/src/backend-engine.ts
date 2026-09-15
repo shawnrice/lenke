@@ -144,26 +144,50 @@ const dumpLines = (bytes: Uint8Array): EngineSchemaLine[] =>
     .filter((l) => l.length > 0)
     .map((l) => JSON.parse(l) as EngineSchemaLine);
 
-/** The indexed property keys for `on`, from the engine's schema dump (sorted). */
+/**
+ * The indexed property keys for `on`, from the engine's schema dump (sorted,
+ * distinct). Deduplicated because one key can carry more than one index — a hash
+ * and a range index on the same vertex key dump as two lines — and this answers
+ * "which keys are indexed?", not "how many indexes are there?".
+ */
 const indexKeys = (bytes: Uint8Array, on: 'vertex' | 'edge'): string[] =>
-  dumpLines(bytes)
-    .filter((o) => o.op === 'createIndex' && o.on === on && Array.isArray(o.keys))
-    .flatMap((o) => o.keys as string[])
-    .sort();
+  Array.from(
+    new Set(
+      dumpLines(bytes)
+        .filter((o) => o.op === 'createIndex' && o.on === on && Array.isArray(o.keys))
+        .flatMap((o) => o.keys as string[]),
+    ),
+  ).sort();
 
 // Each engine `{op:…}` family maps to one core SchemaOp (or `[]` when it has no
-// core equivalent — e.g. the engine's opt-in edge-type index). Split per-op so
-// each mapper stays simple.
+// core equivalent). Split per-op so each mapper stays simple.
+// `kind` is load-bearing: a vertex hash and a vertex range index dump on the same
+// key and differ only there, so ignoring it silently downgrades a range index to a
+// hash one on every dump → apply (CDC replay, snapshot cold-boot) — correct
+// answers, a seek turned back into a scan. An unmapped kind throws rather than
+// guessing, so a future engine index kind surfaces as an error here instead of as
+// a silently wrong index on the replica.
 const indexOp = (o: EngineSchemaLine): SchemaOp[] => {
-  if (o.on === 'vertex' && o.keys?.[0] !== undefined) {
+  if (o.on === 'vertex' && o.kind === 'hash' && o.keys?.[0] !== undefined) {
     return [{ op: 'createVertexIndex', key: o.keys[0] }];
+  }
+
+  if (o.on === 'vertex' && o.kind === 'range' && o.keys?.[0] !== undefined) {
+    return [{ op: 'createVertexRangeIndex', key: o.keys[0] }];
   }
 
   if (o.on === 'edge' && o.kind === 'interval' && o.keys?.length === 2) {
     return [{ op: 'createEdgeIntervalIndex', loKey: o.keys[0], hiKey: o.keys[1] }];
   }
 
-  return [];
+  if (o.on === 'edge' && o.kind === 'type') {
+    return [{ op: 'createEdgeTypeIndex' }];
+  }
+
+  throw new LenkeError(
+    `lenke: unsupported index in the schema dump (on=${String(o.on)} kind=${String(o.kind)})`,
+    { code: ErrorCode.InvalidGraphOp },
+  );
 };
 
 const uniqueOp = (o: EngineSchemaLine): SchemaOp[] => {

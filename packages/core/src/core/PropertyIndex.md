@@ -21,10 +21,28 @@ graph.dropVertexIndex('age');
 ```
 
 `on` is `'vertex'` or `'edge'`; `keys` is the property name(s). **`kind: 'hash'`
-is what you want for almost everything** — it's an ordered map (a `BTreeMap` in
-the native engine; a bucket map + sorted distinct-value list here) that serves
-equality, `IN`, and range from one structure. The other kind, `'interval'`, is a
-specialized native-only index for `[lo, hi)` containment/overlap — see below.
+is what you want for almost everything** — equality and `IN`. Use
+`kind: 'range'` for a key you filter with the inequalities (`<`, `<=`, `>`, `>=`,
+or a `BETWEEN`-shaped pair of them):
+
+```ts
+graph.createIndex({ on: 'vertex', kind: 'range', keys: ['score'] });
+```
+
+The two kinds mean different things to the two engines, and that is the reason to
+say which you want. **Here** they build the same structure — one bucket map plus a
+lazily built sorted view of the distinct values — so either kind answers both
+seeks and declaring both on a key is redundant. **In the native engine they are
+separate structures** (a hash map and an ordered index); a hash index there cannot
+answer a range predicate, and a key queried both ways wants both declared.
+Declaring the kind you actually query by is therefore portable in both
+directions. `dropVertexIndex(key)` takes out every index on the key, whichever
+kinds were declared.
+
+The remaining two kinds are native-only and throw in this engine: `'interval'`,
+for `[lo, hi)` containment/overlap (see below), and `'type'`, a keyless edge-type
+index (`{ on: 'edge', kind: 'type' }`) that turns a type-filtered expansion over a
+high-degree, many-type node into a seek instead of an adjacency scan.
 
 **Nested / dotted keys.** Index a field _inside_ a map/record property by naming
 the dotted path; the whole path is the key:
@@ -107,7 +125,7 @@ Equality and `within` are always exact (`===`), so they're never affected.
 
 ## Interval indexes (native engine)
 
-A hash index answers "value = / < / IN". It cannot answer, in one seek, "which
+A hash or range index answers "value = / < / IN". Neither can answer, in one seek, "which
 rows' interval **contains** this point" or "**overlaps** this window" — that's a
 2-D predicate over a _pair_ of endpoints. When a row carries a half-open interval
 `[lo, hi)` (**lo inclusive, hi exclusive**) and you query it by containment or

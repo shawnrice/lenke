@@ -64,14 +64,17 @@ export type { IndexKind, IndexTarget } from './backend.js';
 
 /**
  * The spec passed to {@link RustGraph.createIndex}. A discriminated union of the
- * combinations the engine actually supports — a vertex `hash` index (`[k]`) or an
- * edge `interval` index (`[loKey, hiKey]`). Cross products the `on`/`kind` types
- * would otherwise allow (e.g. `edge` + `hash`) have no engine arm and are a
- * compile error here rather than a runtime throw.
+ * combinations the engine actually supports — a vertex `hash` (`[k]`) or `range`
+ * (`[k]`) index, an edge `interval` index (`[loKey, hiKey]`), or the keyless edge
+ * `type` index. Cross products the `on`/`kind` types would otherwise allow (e.g.
+ * `edge` + `hash`) have no engine arm and are a compile error here rather than a
+ * runtime throw.
  */
 export type IndexSpec =
   | { on: 'vertex'; kind: 'hash'; keys: string[] }
-  | { on: 'edge'; kind: 'interval'; keys: string[] };
+  | { on: 'vertex'; kind: 'range'; keys: string[] }
+  | { on: 'edge'; kind: 'interval'; keys: string[] }
+  | { on: 'edge'; kind: 'type'; keys?: readonly string[] };
 
 /**
  * The tagged wire form of a temporal — what `toJSON` emits and what comes back
@@ -93,7 +96,9 @@ export type TaggedTemporal = Readonly<Record<`@${string}`, string>>;
  */
 export type SchemaOp =
   | { op: 'createVertexIndex'; key: string }
+  | { op: 'createVertexRangeIndex'; key: string }
   | { op: 'createEdgeIntervalIndex'; loKey: string; hiKey: string }
+  | { op: 'createEdgeTypeIndex' }
   | { op: 'dropVertexIndex'; key: string }
   | { op: 'dropEdgeIndex'; key: string }
   | { op: 'createUniqueConstraint'; label: string; key: string }
@@ -124,8 +129,14 @@ export const applySchemaOp = (g: RustGraph, s: SchemaOp): void => {
     case 'createVertexIndex':
       g.createIndex({ on: 'vertex', kind: 'hash', keys: [s.key] });
       break;
+    case 'createVertexRangeIndex':
+      g.createIndex({ on: 'vertex', kind: 'range', keys: [s.key] });
+      break;
     case 'createEdgeIntervalIndex':
       g.createIndex({ on: 'edge', kind: 'interval', keys: [s.loKey, s.hiKey] });
+      break;
+    case 'createEdgeTypeIndex':
+      g.createIndex({ on: 'edge', kind: 'type' });
       break;
     case 'dropVertexIndex':
       g.dropVertexIndex(s.key);
@@ -626,18 +637,27 @@ export type RustGraph = {
    * current; idempotent). The single index-creation entry point:
    *   - `on`: `'vertex'` or `'edge'`.
    *   - `kind`: `'hash'` — an equality seek over one key, turning
-   *     `WHERE x.k = …` / `x.k IN […]` / range constraints into seeks instead of
-   *     scans (a large win for repeated point lookups, e.g. bulk edge inserts that
-   *     `MATCH` their endpoints by id); or `'interval'` — an RI-tree over an edge
-   *     `[loKey, hiKey)` temporal pair, so an as-of (`lo <= v AND hi > v`) /
+   *     `WHERE x.k = …` / `x.k IN […]` into seeks instead of scans (a large win
+   *     for repeated point lookups, e.g. bulk edge inserts that `MATCH` their
+   *     endpoints by id); `'range'` — an ordered index over one key, so the
+   *     inequalities (`<`, `<=`, `>`, `>=`, and a `BETWEEN`-shaped conjunction)
+   *     seek a bounded span instead of scanning; `'interval'` — an RI-tree over an
+   *     edge `[loKey, hiKey)` temporal pair, so an as-of (`lo <= v AND hi > v`) /
    *     overlap predicate seeds from it (two — valid `[vf,vt)` + transaction
-   *     `[tf,tt)` — cover a bitemporal as-of).
-   *   - `keys`: `[k]` for a hash index, `[loKey, hiKey]` for an interval index.
+   *     `[tf,tt)` — cover a bitemporal as-of); or `'type'` — the keyless opt-in
+   *     edge-type index, which turns a type-filtered expansion over a high-degree,
+   *     many-type node into a seek rather than an adjacency scan.
+   *   - `keys`: `[k]` for a hash or range index, `[loKey, hiKey]` for an interval
+   *     index, omitted for the edge-type index.
    *
-   * An interval index is edge-only.
+   * Hash and range are vertex-only; interval and type are edge-only. A range index
+   * is independent of a hash index on the same key — declare both if the key is
+   * queried both ways. `dropVertexIndex(key)` drops whichever exist on that key.
    *
    * @example g.createIndex({ on: 'vertex', kind: 'hash', keys: ['email'] })
+   * @example g.createIndex({ on: 'vertex', kind: 'range', keys: ['score'] })
    * @example g.createIndex({ on: 'edge', kind: 'interval', keys: ['vf', 'vt'] })
+   * @example g.createIndex({ on: 'edge', kind: 'type' })
    */
   createIndex: (spec: IndexSpec) => void;
   /**
@@ -1235,7 +1255,7 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
       return backend.version(live());
     },
     epoch: (name) => backend.epoch(live(), name),
-    createIndex: (spec) => backend.createIndex(live(), spec.on, spec.kind, spec.keys),
+    createIndex: (spec) => backend.createIndex(live(), spec.on, spec.kind, [...(spec.keys ?? [])]),
     createUniqueConstraint: (label, key) => backend.createUniqueConstraint(live(), label, key),
     createRequiredConstraint: (label, key) => backend.createRequiredConstraint(live(), label, key),
     createTypeConstraint: (label, key, type) =>

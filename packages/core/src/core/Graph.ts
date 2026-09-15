@@ -30,11 +30,16 @@ export type IndexTarget = 'vertex' | 'edge';
 
 /**
  * The kind of secondary index (see {@link Graph.createIndex}): `'hash'` is an
- * equality seek over a single key; `'interval'` is an RI-tree over an edge
- * `[loKey, hiKey)` temporal pair — native-engine-only (throws in the pure-TS
- * engine).
+ * equality seek over a single key; `'range'` is an ordered seek over a single key
+ * for the inequalities. Both engines have both — though here they are one
+ * structure (a `PropertyIndex` keeps buckets plus a lazily built ordered view, so
+ * either kind serves both seeks), while the native engine keeps them separate and
+ * wants whichever it will be asked for.
+ *
+ * `'interval'` (an RI-tree over an edge `[loKey, hiKey)` temporal pair) and
+ * `'type'` (the keyless edge-type index) are native-engine-only and throw here.
  */
-export type IndexKind = 'hash' | 'interval';
+export type IndexKind = 'hash' | 'range' | 'interval' | 'type';
 
 /**
  * Resource ceilings (see {@link GraphConfig}). These are ANTI-RUNAWAY bounds, not
@@ -147,8 +152,9 @@ export const PARALLELISM_CONFIG_ID = 5;
 
 /**
  * The spec passed to {@link Graph.createIndex}: which element (`on`), the index
- * `kind`, and the property `keys` (`[k]` for a hash index, `[loKey, hiKey]` for
- * an interval index).
+ * `kind`, and the property `keys` (`[k]` for a hash or range index, `[loKey,
+ * hiKey]` for an interval index). Required even for the kinds this engine
+ * rejects, since every kind it accepts is keyed.
  */
 export type IndexSpec = {
   on: IndexTarget;
@@ -1934,18 +1940,23 @@ export class Graph {
    * index-creation entry point:
    *   - `on`: `'vertex'` or `'edge'`.
    *   - `kind`: `'hash'` — an equality seek over one key (turns `WHERE x.k = …`
-   *     into a seek). `'interval'` is only available in the native engine
-   *     (`@lenke/native`) and throws here.
-   *   - `keys`: `[k]` for a hash index.
+   *     into a seek); `'range'` — an ordered seek over one key (turns the
+   *     inequalities into a bounded walk). Here these build the SAME structure —
+   *     one `PropertyIndex` serves both — so declaring either gets both; they are
+   *     distinct in the native engine, and a portable caller should declare the
+   *     kind it actually queries by. `'interval'` and `'type'` exist only in the
+   *     native engine (`@lenke/native`) and throw here.
+   *   - `keys`: `[k]` for a hash or range index.
    *
    * @example g.createIndex({ on: 'vertex', kind: 'hash', keys: ['email'] })
+   * @example g.createIndex({ on: 'vertex', kind: 'range', keys: ['score'] })
    */
   public createIndex = (spec: IndexSpec): void => {
     this.#snapshotSchemaForTx();
 
-    if (spec.kind === 'interval') {
+    if (spec.kind === 'interval' || spec.kind === 'type') {
       throw new LenkeError(
-        'lenke: interval indexes are only available in the native engine (@lenke/native), not the pure-TS engine',
+        `lenke: ${spec.kind} indexes are only available in the native engine (@lenke/native), not the pure-TS engine`,
         { code: ErrorCode.InvalidGraphOp },
       );
     }

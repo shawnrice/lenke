@@ -483,6 +483,62 @@ mod tests {
         assert!(s.has_edge_type_index());
     }
 
+    /// A hash and a range index on the SAME key are two independent structures.
+    /// They dump as two lines differing only in `kind`, so a reader that drops
+    /// `kind` collapses them into one — right answers, a seek turned back into a
+    /// scan on the replica.
+    #[test]
+    fn hash_and_range_on_one_key_coexist_through_a_roundtrip() {
+        let mut s = Store::default();
+        for op in [
+            r#"{"op":"createIndex","on":"vertex","kind":"hash","keys":["score"]}"#,
+            r#"{"op":"createIndex","on":"vertex","kind":"range","keys":["score"]}"#,
+        ] {
+            apply(&mut s, op).unwrap();
+        }
+        assert!(s.has_hash_index("score") && s.has_range_index("score"));
+
+        let mut s2 = Store::default();
+        for line in dump(&s).lines().filter(|l| !l.is_empty()) {
+            apply(&mut s2, line).unwrap();
+        }
+        assert!(s2.has_hash_index("score"), "the hash index survives");
+        assert!(s2.has_range_index("score"), "and the range index with it");
+    }
+
+    /// `dropIndex` is keyed, not kinded — it takes out every vertex index on the
+    /// key, so a caller needn't know which kinds were declared.
+    #[test]
+    fn drop_vertex_index_drops_both_kinds_on_the_key() {
+        let mut s = Store::default();
+        for op in [
+            r#"{"op":"createIndex","on":"vertex","kind":"hash","keys":["score"]}"#,
+            r#"{"op":"createIndex","on":"vertex","kind":"range","keys":["score"]}"#,
+        ] {
+            apply(&mut s, op).unwrap();
+        }
+        apply(&mut s, r#"{"op":"dropIndex","on":"vertex","key":"score"}"#).unwrap();
+
+        assert!(!s.has_hash_index("score"));
+        assert!(!s.has_range_index("score"));
+        assert_eq!(dump(&s), "", "and nothing is left to dump");
+    }
+
+    /// The `on`/`kind` cross products with no engine arm are rejected, not
+    /// silently mapped onto a neighbouring kind.
+    #[test]
+    fn unsupported_index_pairs_are_rejected() {
+        for op in [
+            r#"{"op":"createIndex","on":"edge","kind":"hash","keys":["w"]}"#,
+            r#"{"op":"createIndex","on":"vertex","kind":"interval","keys":["lo","hi"]}"#,
+            r#"{"op":"createIndex","on":"vertex","kind":"type"}"#,
+        ] {
+            let mut s = Store::default();
+            let err = apply(&mut s, op).unwrap_err();
+            assert!(matches!(err, SchemaError::BadRequest(_)), "rejected: {op}");
+        }
+    }
+
     #[test]
     fn full_schema_dump_roundtrips_indexes_and_constraints() {
         let mut s = Store::default();
