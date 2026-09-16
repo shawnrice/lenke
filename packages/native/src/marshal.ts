@@ -65,6 +65,35 @@ export const parseErrorReport = (json: string): ErrorReport | null => {
 };
 
 /**
+ * Build the `fail(op, fallback)` both engine backends throw through, given their
+ * own way of reading the crate's last-error slot.
+ *
+ * Only the SHAPING is shared. Reading the slot is genuinely per-backend — bun:ffi
+ * walks raw pointers and frees through `lnk_free`, wasm reads its linear memory
+ * through an allocated out-len cell — so each backend keeps its own
+ * `readLastError` and hands it here. What must not diverge is what a failure
+ * LOOKS like to a caller: the `lenke: <op>: <message>` prefix, the code and
+ * details carried over from the report, and the generic {@link ErrorCode} fallback
+ * when the slot is empty or malformed. `backend-parity-fuzz` compares the two
+ * backends' behavior, so a drift here is a fuzzer failure with a confusing cause;
+ * one implementation removes the possibility.
+ */
+export const makeFail =
+  (readLastError: () => ErrorReport | null) =>
+  (op: string, fallback: ErrorCode): never => {
+    const report = readLastError();
+
+    if (report) {
+      throw new LenkeError(`lenke: ${op}: ${report.message}`, {
+        code: report.code,
+        details: report.details ?? undefined,
+      });
+    }
+
+    throw new LenkeError(`lenke: ${op} failed`, { code: fallback });
+  };
+
+/**
  * Rebuild a {@link LenkeError} from the message an N-API exception carries. The
  * napi addon (`@lenke/node`) throws `lenke: <op>: <message> [E_CODE]`, with the
  * stable wire code in a trailing `[…]`; its adapter runs the message through here

@@ -6,13 +6,13 @@
  */
 import { dlopen, FFIType, type Pointer, ptr, toArrayBuffer } from 'bun:ffi';
 
-import { ErrorCode, LenkeError } from '@lenke/errors';
+import { ErrorCode } from '@lenke/errors';
 
 import { assertAbi } from './abi.js';
 import { buildEngineBackend, encodeInput, type EngineAbi } from './backend-engine.js';
 import type { GraphHandle } from './backend.js';
 import type { Backend } from './backend.js';
-import { asByteLength, type ErrorReport, parseErrorReport } from './marshal.js';
+import { asByteLength, type ErrorReport, makeFail, parseErrorReport } from './marshal.js';
 
 // usize / u64 on the native targets (arm64 / x86_64).
 const U = FFIType.u64_fast;
@@ -83,18 +83,7 @@ export const createFfiEngineBackend = (libPath: string): Backend => {
     return parseErrorReport(json);
   };
 
-  const fail = (op: string, fallback: ErrorCode): never => {
-    const report = readLastError();
-
-    if (report) {
-      throw new LenkeError(`lenke: ${op}: ${report.message}`, {
-        code: report.code,
-        details: report.details ?? undefined,
-      });
-    }
-
-    throw new LenkeError(`lenke: ${op} failed`, { code: fallback });
-  };
+  const fail = makeFail(readLastError);
 
   // A buffer-returning call: read the crate-owned (ptr, out_len) into a JS copy,
   // then hand the crate buffer back to `lnk_free`.

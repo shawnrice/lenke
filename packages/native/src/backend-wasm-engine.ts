@@ -10,7 +10,7 @@ import { ErrorCode, LenkeError } from '@lenke/errors';
 import { assertAbi } from './abi.js';
 import { buildEngineBackend, encodeInput, type EngineAbi } from './backend-engine.js';
 import type { Backend } from './backend.js';
-import { type ErrorReport, parseErrorReport } from './marshal.js';
+import { type ErrorReport, makeFail, parseErrorReport } from './marshal.js';
 
 export type WasmSource =
   | WebAssembly.Module
@@ -132,18 +132,7 @@ export const createWasmEngineBackend = async (source: WasmSource): Promise<Backe
     }
   };
 
-  const fail = (op: string, fallback: ErrorCode): never => {
-    const report = readLastError();
-
-    if (report) {
-      throw new LenkeError(`lenke: ${op}: ${report.message}`, {
-        code: report.code,
-        details: report.details ?? undefined,
-      });
-    }
-
-    throw new LenkeError(`lenke: ${op} failed`, { code: fallback });
-  };
+  const fail = makeFail(readLastError);
 
   // A result-returning call whose only marshalling is the 4-byte out_len slot
   // (the arg-free reads: schema dump, encode).

@@ -2078,6 +2078,14 @@ export class Graph {
     // backed, NaN not indexed) allows them, so the outcome depended on declare order.
     (typeof value === 'number' && !Number.isNaN(value));
 
+  /* ── Vertex constraints (UNIQUE / REQUIRED / TYPE, declared over `(label, key)`) ──
+   *
+   * KEEP IN SYNC with the edge constraint block below, which mirrors these methods
+   * almost line for line on the edge collections. A change here — a check, an error
+   * code, a message, validation order, what is recorded for rollback — needs the same
+   * change there, plus the matching test. See the note above the edge block.
+   */
+
   /**
    * Declare a UNIQUE constraint on `(label, key)`. Creates the backing vertex
    * index if absent, then registers it. Idempotent. Throws
@@ -2699,7 +2707,23 @@ export class Graph {
     return false;
   };
 
-  /* Edge UNIQUE constraints (declared over `(edge type, key)`) */
+  /* ── Edge constraints (UNIQUE / REQUIRED / TYPE, declared over `(edge type, key)`) ──
+   *
+   * KEEP IN SYNC with the vertex constraint block above. What follows to the end of
+   * the TYPE-constraint section mirrors the vertex methods almost line for line, on
+   * `edgesById` / `edgeUniqueConstraints` / `txTouchedEdges` instead of their vertex
+   * counterparts, and the native engine names the pair the same way on purpose (see
+   * `createUniqueConstraint` vs `createEdgeUniqueConstraint` in @lenke/native).
+   *
+   * The duplication is deliberate — the two are parallel by design, and collapsing
+   * them behind a shared generic would make each one harder to read than it is to
+   * maintain. The cost is drift: a correctness fix applied to one half and not the
+   * other is invisible, because each half is independently correct-looking and the
+   * tests for one say nothing about the other. So when you change ANYTHING in either
+   * block — a check, an error code, a message, the order of validation, what gets
+   * recorded for rollback — make the same change in its twin, and add the matching
+   * test on both sides.
+   */
 
   /**
    * Declare a UNIQUE constraint on `(edgeType, key)`. Creates the backing edge
