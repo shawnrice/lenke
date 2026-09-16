@@ -24,12 +24,12 @@ jobs:
         with:
           bun-version: 1.4.0 # matches "packageManager" in package.json
 
-      # Rust toolchain (cargo/clippy/rustfmt) + the wasm32 target, so the wasm
-      # backend can be built and its tests actually run (not silently skip).
+      # Rust toolchain + the wasm32 target, so the wasm backend can be built and its
+      # tests actually run (not silently skip). No clippy/rustfmt components: this
+      # job builds, the `rust` job lints.
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@1.96.0
         with:
-          components: clippy, rustfmt
           targets: wasm32-unknown-unknown
 
       # The mold linker — `.cargo/config.toml` pins `-fuse-ld=mold` for
@@ -57,19 +57,26 @@ jobs:
       # ~70s and then this one ran by itself. The `node-addon` job below owns it, on
       # Linux AND macOS, and runs its tests there. Excluding it in the workflow
       # rather than in the root script keeps a local `bun run build` complete.
+      #
+      # `build-wasm` runs in the SAME nx invocation rather than as its own step, so
+      # the wasm compile overlaps the TypeScript cascade instead of following it.
+      # That only works because the wasm build has its own `--target-dir`: cargo
+      # holds an exclusive lock on a target directory for the whole of a build, so
+      # sharing one with the cdylib build would serialize them regardless of nx.
+      # Without the wasm, the wasm-backend tests below skip themselves silently.
       - name: Build
-        run: bunx nx run-many -t build --exclude @lenke/node
+        run: bunx nx run-many -t build,build-wasm --exclude @lenke/node
 
-      # The wasm artifact is NOT part of the nx build graph (a per-platform
-      # cargo target), so build it explicitly here — otherwise the wasm backend
-      # tests in `bun run test` skip themselves for lack of the `.wasm`.
-      - name: Build wasm backend
-        run: bun run build:wasm
-
-      # typecheck + lint (oxlint + cargo clippy -D warnings) + format check
-      # (oxfmt + cargo fmt --check), across both stacks.
-      - name: Check
-        run: bun run check
+      # TypeScript only: tsc, oxlint, oxfmt. The cargo halves of `bun run check`
+      # (clippy -D warnings, cargo fmt --check) run in the `rust` job, which has the
+      # slack for them. Spelled out rather than `bun run check` because the root
+      # script deliberately covers BOTH stacks for local use — keep the two in step
+      # if that script changes.
+      - name: Check (TypeScript)
+        run: |
+          bun run typecheck
+          bunx oxlint --type-aware .
+          bunx oxfmt --check .
 
       # The TypeScript suites — all 20 projects together take ~2s, so this step is
       # cheap once the Rust work is elsewhere. The cargo suites move to the `rust`
@@ -84,22 +91,22 @@ jobs:
         run: bun test packages/native/src/backend-engine.test.ts
 
   # ===========================================================================
-  # The Rust test suites, in their own job so they run CONCURRENTLY with the
-  # TypeScript job above rather than as its tail. They need no bun install and no
-  # dist/ — only a toolchain — so there is nothing to wait for.
-  #
-  # (`cargo clippy` and `cargo fmt --check` stay in the other job's `check`: they
-  # are ~10s there, and keeping one job that fails on any lint is worth more than
-  # shaving that.)
+  # Everything cargo — tests, clippy, rustfmt — in its own job so it runs
+  # CONCURRENTLY with the TypeScript job above rather than as its tail. It needs no
+  # bun install and no dist/, only a toolchain, so there is nothing to wait for.
   # ===========================================================================
   rust:
-    name: cargo test (engine)
+    name: cargo test + clippy (engine)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
 
+      # `components:` is required — the action installs a MINIMAL profile, which has
+      # neither clippy nor rustfmt.
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          components: clippy, rustfmt
 
       # `.cargo/config.toml` pins `-fuse-ld=mold` for x86_64-unknown-linux-gnu, so
       # the linker must be present or every build fails at the link step.
@@ -122,6 +129,19 @@ jobs:
 
       - name: cargo test (lenke-engine-core)
         run: cargo test --manifest-path crates/lenke-engine-core/Cargo.toml
+
+      # `-D warnings`, as its own step: piping clippy into anything takes the exit
+      # status of the last command in the pipe, which has let broken lint through.
+      - name: cargo clippy (lenke-engine)
+        run: cargo clippy --all-targets --manifest-path crates/lenke-engine/Cargo.toml -- -D warnings
+
+      - name: cargo clippy (lenke-engine-core)
+        run: cargo clippy --all-targets --manifest-path crates/lenke-engine-core/Cargo.toml -- -D warnings
+
+      - name: cargo fmt --check
+        run: |
+          cargo fmt --check --manifest-path crates/lenke-engine/Cargo.toml
+          cargo fmt --check --manifest-path crates/lenke-engine-core/Cargo.toml
 
   # ===========================================================================
   # Native Node addon (@lenke/node) — build + test on Linux and macOS (arm64).
