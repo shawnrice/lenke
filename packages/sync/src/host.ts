@@ -39,7 +39,7 @@ import { ErrorCode, LenkeError } from '@lenke/errors';
 import { inferDeps } from '@lenke/native';
 import type { LiveQuery, QueryParams, Row, Store } from '@lenke/native';
 
-import type { DedupRegistry } from './dedup.js';
+import type { DedupRegistry, DedupTicket } from './dedup.js';
 import {
   isClientMessage,
   keyOf,
@@ -127,12 +127,29 @@ export type SyncHostOptions = {
    */
   scopeKey?: string;
   /**
-   * Shared server-side request-id dedupe for **exactly-once** writes. When
-   * present, a re-sent write (a lost-ack reconnect replay, identified by its
-   * globally-unique `req`) is re-acked without re-applying — no double-increment,
-   * no duplicate INSERT. All hosts on one server share one registry.
+   * Shared server-side dedupe for **exactly-once** writes. When present, a
+   * re-sent write (a lost-ack reconnect replay) is re-acked without re-applying —
+   * no double-increment, no duplicate INSERT. All hosts on one server share one
+   * registry.
    */
   dedup?: DedupRegistry;
+  /**
+   * This connection's AUTHENTICATED identity, from whatever the transport
+   * authenticates with (a session token, an mTLS subject, a signed cookie).
+   *
+   * It namespaces the dedupe window. The dedupe key has to come from the client —
+   * it must survive a reconnect onto a different host, so the server cannot mint
+   * it — which means an unnamespaced key is forgeable: a client that guesses
+   * another's client id and sequence gets that client's genuine write re-acked
+   * WITHOUT it being applied, i.e. silent data loss. Prefixing with an identity
+   * the client cannot choose confines every client to its own namespace.
+   *
+   * lenke's host is transport-agnostic and cannot authenticate anyone itself, so
+   * this is yours to supply; a host is per-connection, so pass the principal you
+   * authenticated when you accepted it. Omitted → one shared namespace, i.e.
+   * exactly-once holds only as far as the clients are trusted.
+   */
+  principal?: string;
 };
 
 type RowDiff = {
@@ -240,7 +257,7 @@ const writeTokens = (text: string, lang?: 'gql' | 'gremlin'): string[] | undefin
 let connCounter = 0;
 
 export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost => {
-  const { send, writeLog, dedup, scopeKey } = options;
+  const { send, writeLog, dedup, scopeKey, principal } = options;
   // The just-committed write's value-scope (distinct scope-key values across its
   // touched elements), read straight off the store — `undefined` when no scopeKey
   // is configured, so an unscoped host stays exactly as before. The store also
@@ -515,6 +532,38 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
     }
   };
 
+  /**
+   * The dedupe identity for one write, or `undefined` when there is nothing to
+   * dedupe on. The session is `principal :: clientId :: epoch`: the principal so
+   * one client cannot address another's window (the key itself has to come from
+   * the client, so namespacing is what makes it unforgeable), the client id so a
+   * reconnect lands in the same window, the epoch so a restarted client's re-used
+   * sequence numbers are not mistaken for the old ones.
+   *
+   * A legacy client sends no `dedup` block and keeps the old opaque-`req`
+   * behavior. If it identifies itself it gets its own window; if it doesn't, it
+   * shares one per principal — NOT one per connection, because the whole point is
+   * that a write replayed onto a *different* host still dedupes. That shared
+   * window is FIFO-evicting and cross-client, i.e. exactly as best-effort as the
+   * registry used to be for everyone.
+   */
+  const dedupTicket = (msg: MutateMessage): DedupTicket => {
+    const ns = principal ?? '';
+
+    if (msg.dedup) {
+      return {
+        session: `${ns}::${msg.clientId ?? myOrigin()}::${msg.dedup.epoch}`,
+        seq: msg.dedup.seq,
+        id: msg.req,
+      };
+    }
+
+    return {
+      session: msg.clientId ? `${ns}::${msg.clientId}::legacy` : `${ns}::legacy`,
+      id: msg.req,
+    };
+  };
+
   const mutate = (msg: MutateMessage): void => {
     // Wire-skew shim, mirroring the snapshot layer's: a pre-`lang` client (a
     // stale tab against an upgraded SharedWorker, an old app build against a
@@ -536,10 +585,25 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
 
       // Exactly-once: a re-sent write (a lost-ack reconnect replay) whose id was
       // already applied is re-acked WITHOUT re-running it — and not re-broadcast.
-      if (dedup?.seen(msg.req)) {
-        send({ type: 'ack', req: msg.req, ok: true });
+      const ticket = dedupTicket(msg);
 
-        return;
+      if (dedup) {
+        // The client's own ack is what frees window space; do it before admitting
+        // so a client that is keeping up never trips the capacity check.
+        if (msg.dedup) {
+          dedup.drain(ticket.session, msg.dedup.ackedThrough);
+        }
+
+        if (dedup.seen(ticket)) {
+          send({ type: 'ack', req: msg.req, ok: true });
+
+          return;
+        }
+
+        // Throws E_RESOURCE_EXHAUSTED when this session's window is full, which
+        // lands in the catch below as a NACK — loud backpressure instead of a
+        // silent eviction that would let a later replay double-apply.
+        dedup.admit(ticket);
       }
 
       applyMutation(text, msg.params, msg.lang);
@@ -555,7 +619,7 @@ export const createSyncHost = (store: Store, options: SyncHostOptions): SyncHost
         writeTokens(text, msg.lang),
         writeScope(),
       );
-      dedup?.mark(msg.req); // record only AFTER a successful apply
+      dedup?.mark(ticket); // record only AFTER a successful apply
       send({ type: 'ack', req: msg.req, ok: true });
     } catch (e) {
       send({ type: 'ack', req: msg.req, ok: false, error: toWireError(e) });

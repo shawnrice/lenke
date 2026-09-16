@@ -199,7 +199,13 @@ export type SyncEngine = {
   /** Loads and queue-length changes re-notify here (hosts refresh on it). */
   onChange: (cb: () => void) => () => void;
   /** A host for one client connection, wired into this loop. */
-  createHost: (options: Pick<SyncHostOptions, 'send'>) => SyncHost;
+  /**
+   * Wire a host onto this engine's store for one connection. `dedup` and
+   * `principal` are the connection's to supply — the registry is shared across
+   * every host on the server, the principal is whatever THIS connection
+   * authenticated as — so they are passed here rather than at engine level.
+   */
+  createHost: (options: Pick<SyncHostOptions, 'send' | 'dedup' | 'principal'>) => SyncHost;
 };
 
 const sleep = (ms: number): Promise<void> =>
@@ -677,9 +683,11 @@ export const createSyncEngine = (options: SyncEngineOptions): SyncEngine => {
         changeListeners.delete(cb);
       };
     },
-    createHost: ({ send }) => {
+    createHost: ({ send, dedup, principal }) => {
       const host = createSyncHost(store, {
         send,
+        dedup,
+        principal,
         applyMutation: mutate,
         isComplete,
         loadError,

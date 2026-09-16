@@ -39,7 +39,12 @@ export {
   type WriteLogEntry,
   type WriteLogOptions,
 } from './writelog.js';
-export { createDedupRegistry, type DedupRegistry, type DedupOptions } from './dedup.js';
+export {
+  createDedupRegistry,
+  type DedupOptions,
+  type DedupRegistry,
+  type DedupTicket,
+} from './dedup.js';
 // Port lifecycle helpers — collapse the per-tab `bye`/bfcache host boilerplate
 // a SharedWorker app otherwise hand-rolls on both sides.
 export {

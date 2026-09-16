@@ -440,7 +440,9 @@ suite('CDC write stream (TS vs native store)', () => {
 
     h.receive({ type: 'mutate', req: 'm-a-3', text: 'NOT VALID GQL' });
     expect(sent.some((m) => m.type === 'ack' && !m.ok)).toBe(true); // failed
-    expect(dedup.seen('m-a-3')).toBe(false); // not recorded → a retry can still apply
+    // Not recorded → a retry can still apply. (A legacy client with no `dedup`
+    // block lands in its own per-connection window, keyed by the opaque `req`.)
+    expect(dedup.seen({ session: '::legacy', id: 'm-a-3' })).toBe(false);
   });
 
   test('ephemeral: presence is torn down and broadcast on disconnect', async () => {

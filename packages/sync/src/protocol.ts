@@ -262,6 +262,29 @@ export type MutateMessage = {
    * fallback (echo-skip within one connection only).
    */
   clientId?: string;
+  /**
+   * Exactly-once bookkeeping. Absent from a legacy client, whose writes dedupe on
+   * the opaque `req` alone and cannot free window space (see `dedup.ts`).
+   */
+  dedup?: {
+    /**
+     * The client's per-instance epoch — ephemeral, regenerated on every
+     * `createSyncClient`, and deliberately NOT the durable `clientId`. A client
+     * that persists `clientId` but restarts its counter would otherwise re-issue
+     * sequence 1 and have its new writes deduped away as duplicates of the old.
+     */
+    epoch: string;
+    /** This write's sequence within the epoch, contiguous from 1. */
+    seq: number;
+    /**
+     * The highest sequence this client has contiguously RESOLVED — acked or
+     * rejected, either way never to be re-sent. The host drops its retained ids at
+     * or below this, which is what frees space in the dedupe window; a client that
+     * stops acking eventually gets `E_RESOURCE_EXHAUSTED` rather than having its
+     * ids silently evicted.
+     */
+    ackedThrough: number;
+  };
 };
 
 /**

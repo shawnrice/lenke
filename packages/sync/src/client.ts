@@ -448,6 +448,8 @@ type Pending = {
   kind: 'query' | 'gremlin' | 'mutate';
   /** The exact message sent, retained for replay across a reconnect. */
   msg: ClientMessage;
+  /** Per-session write sequence (mutates only) — see `writeSeq` below. */
+  seq?: number;
 };
 
 /** Replace an entry's snapshot and wake its subscribers. */
@@ -500,6 +502,43 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
     options.clientId ??
     (globalThis as { crypto?: { randomUUID?: () => string } }).crypto?.randomUUID?.() ??
     `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  // An EPHEMERAL per-instance epoch, regenerated on every construction and
+  // deliberately not the durable `clientId`. It scopes the server's exactly-once
+  // window: replay within this session reuses it (so a re-sent write still
+  // dedupes), while a restart gets a fresh one. Without that, a client that
+  // persists `clientId` — which it should, for origin-skip — and restarts its
+  // counter would re-issue sequence 1, 2, 3… and have its NEW writes silently
+  // dropped as duplicates of the previous session's.
+  const epoch =
+    (globalThis as { crypto?: { randomUUID?: () => string } }).crypto?.randomUUID?.() ??
+    `e${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  // Writes get their own contiguous counter (the shared `nextId` also numbers
+  // queries and subscriptions, which would leave gaps the server cannot reason
+  // about). Sequence numbers start at 1.
+  let writeSeq = 0;
+  // The highest sequence every write up to which has RESOLVED — acked or
+  // rejected, either way never to be re-sent. Sent with each write so the server
+  // can drop its retained ids at or below it; that drain is what frees window
+  // space, and a client that never advances it eventually gets a loud
+  // E_RESOURCE_EXHAUSTED instead of having its ids silently evicted.
+  let ackedThrough = 0;
+  // Resolved-but-not-yet-contiguous sequences (a later write acked before an
+  // earlier one — the host NACKs individually, and applies route through an async
+  // queue, so gaps and reordering are both normal).
+  const resolvedAhead = new Set<number>();
+
+  const resolveSeq = (seq: number | undefined): void => {
+    if (seq === undefined) {
+      return;
+    }
+
+    resolvedAhead.add(seq);
+
+    while (resolvedAhead.delete(ackedThrough + 1)) {
+      ackedThrough += 1;
+    }
+  };
+
   let status: { pendingWrites: number } | null = null;
   const statusListeners = new Set<() => void>();
 
@@ -673,9 +712,18 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
     }
 
     return new Promise<void>((resolve, reject) => {
-      const req = `m-${clientId}-${++nextId}`;
-      const msg: ClientMessage = { type: 'mutate', req, text, params, lang, clientId };
-      pending.set(req, { resolve: resolve, reject, kind: 'mutate', msg });
+      const seq = ++writeSeq;
+      const req = `m-${clientId}-${epoch}-${seq}`;
+      const msg: ClientMessage = {
+        type: 'mutate',
+        req,
+        text,
+        params,
+        lang,
+        clientId,
+        dedup: { epoch, seq, ackedThrough },
+      };
+      pending.set(req, { resolve: resolve, reject, kind: 'mutate', msg, seq });
       send(msg);
     });
   };
@@ -685,12 +733,20 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
     ...subs: unknown[]
   ): Promise<void> =>
     new Promise<void>((resolve, reject) => {
-      const req = `m-${clientId}-${++nextId}`;
+      const seq = ++writeSeq;
+      const req = `m-${clientId}-${epoch}-${seq}`;
       // Tagged-template subs are escaped into safe literals; a plain string
       // passes through (buildGremlin is @lenke/native's `gremlin` composer).
       const text = buildGremlin(traversal, ...subs);
-      const msg: ClientMessage = { type: 'mutate', req, text, lang: 'gremlin', clientId };
-      pending.set(req, { resolve: resolve, reject, kind: 'mutate', msg });
+      const msg: ClientMessage = {
+        type: 'mutate',
+        req,
+        text,
+        lang: 'gremlin',
+        clientId,
+        dedup: { epoch, seq, ackedThrough },
+      };
+      pending.set(req, { resolve: resolve, reject, kind: 'mutate', msg, seq });
       send(msg);
     });
 
@@ -913,6 +969,10 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
 
         if (p) {
           pending.delete(msg.req);
+          // Resolved either way: an accepted write is applied, a rejected one
+          // surfaces as a rejected `mutate()` and is never re-sent, so both let
+          // the server release the id.
+          resolveSeq(p.seq);
 
           if (msg.ok) {
             (p.resolve as () => void)();
@@ -1003,7 +1063,16 @@ export const createSyncClient = (options: SyncClientOptions): SyncClient => {
       }
 
       for (const p of pending.values()) {
-        send(p.msg);
+        // A replayed write keeps its `req` and sequence verbatim — that identity
+        // is what lets the server recognize it as the same logical write — but
+        // carries a FRESH `ackedThrough`: writes that resolved since this one was
+        // first sent can be released, and the replay is the first chance to tell
+        // the new host so.
+        send(
+          p.msg.type === 'mutate' && p.msg.dedup
+            ? { ...p.msg, dedup: { ...p.msg.dedup, ackedThrough } }
+            : p.msg,
+        );
       }
 
       // Resume the CDC write stream from the last applied cursor — the host
