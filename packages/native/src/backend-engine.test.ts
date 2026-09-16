@@ -15,7 +15,7 @@ const SO = new URL(
   import.meta.url,
 ).pathname;
 const WASM = new URL(
-  '../../../crates/lenke-engine/target/wasm32-unknown-unknown/release/lenke_engine.wasm',
+  '../../../crates/lenke-engine/target-wasm/wasm32-unknown-unknown/release/lenke_engine.wasm',
   import.meta.url,
 ).pathname;
 

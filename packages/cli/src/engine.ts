@@ -7,7 +7,7 @@ import { createWasmEngineBackend } from '@lenke/native/wasm-engine';
 
 type Backend = Awaited<ReturnType<typeof createWasmEngineBackend>>;
 
-const WASM_REL = 'crates/lenke-engine/target/wasm32-unknown-unknown/release/lenke_engine.wasm';
+const WASM_REL = 'crates/lenke-engine/target-wasm/wasm32-unknown-unknown/release/lenke_engine.wasm';
 
 // Locate the wasm engine: an explicit path / $LENKE_WASM, else walk up from this
 // module looking for the workspace build output. (A published CLI would bundle

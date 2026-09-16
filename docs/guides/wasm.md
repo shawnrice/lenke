@@ -42,6 +42,8 @@ bun run build:wasm      # the full engine: GQL, Gremlin, NDJSON, binary, textual
 
 This is `cargo build --release --target wasm32-unknown-unknown --features capi` (the `capi` feature exposes the C ABI the backend calls). wasm has no threads, so anything the native build parallelizes runs serially here.
 
+It builds into its own `--target-dir`, `crates/lenke-engine/target-wasm/`, rather than the default `target/` the native build uses. Cargo takes an exclusive lock on a target directory for the whole of a build, so sharing one would make the wasm and native builds wait for each other even though they compile for different targets and share nothing; separate directories let them run at the same time. The artifact is therefore at `crates/lenke-engine/target-wasm/wasm32-unknown-unknown/release/lenke_engine.wasm`.
+
 ### Trim the textual codecs
 
 The one size lever today is the `codecs` feature (on by default), which pulls in the pg-json / pg-text / graphson / csv serializers. Build with `--no-default-features --features capi` to drop them — a smaller module that still runs GQL, Gremlin, NDJSON, binary snapshots, and Arrow, just without the extra textual formats. Both query languages are always compiled in; there is no separate GQL-only or Gremlin-only build.

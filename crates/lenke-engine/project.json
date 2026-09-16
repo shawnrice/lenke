@@ -18,11 +18,11 @@
     "build-wasm": {
       "executor": "nx:run-commands",
       "options": {
-        "command": "cargo build --release --target wasm32-unknown-unknown --no-default-features --features capi,codecs",
+        "command": "cargo build --release --target wasm32-unknown-unknown --target-dir target-wasm --no-default-features --features capi,codecs",
         "cwd": "crates/lenke-engine"
       },
       "inputs": ["rustEngine"],
-      "outputs": ["{projectRoot}/target/wasm32-unknown-unknown/release/lenke_engine.wasm"],
+      "outputs": ["{projectRoot}/target-wasm/wasm32-unknown-unknown/release/lenke_engine.wasm"],
       "cache": true
     },
     "test": {

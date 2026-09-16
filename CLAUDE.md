@@ -181,5 +181,5 @@ surprises you, check the timestamps:
 
 ```
 stat -c '%y %n' crates/lenke-engine/target/release/liblenke_engine.so \
-  crates/lenke-engine/target/wasm32-unknown-unknown/release/lenke_engine.wasm
+  crates/lenke-engine/target-wasm/wasm32-unknown-unknown/release/lenke_engine.wasm
 ```

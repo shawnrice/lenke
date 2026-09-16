@@ -24,7 +24,7 @@ import {
 } from '@lenke/sync';
 
 // oxlint-disable-next-line boundaries/no-cross-package-relative-import -- Vite `?url` asset import of the compiled wasm build output; a build artifact has no package entry point.
-import wasmUrl from '../../crates/lenke-engine/target/wasm32-unknown-unknown/release/lenke_engine.wasm?url';
+import wasmUrl from '../../crates/lenke-engine/target-wasm/wasm32-unknown-unknown/release/lenke_engine.wasm?url';
 import { CLUSTERS } from './datagen.ts';
 
 const SERVER_URL = 'ws://localhost:8787';
