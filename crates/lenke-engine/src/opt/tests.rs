@@ -842,3 +842,139 @@ fn orient_declines_without_an_index() {
 
     assert_eq!(first_dir(&opt), Some(Dir::Out), "not reversed: {opt:?}");
 }
+
+/// Does `plan` contain a `RangeSeek` anywhere down its spine?
+fn has_range_seek(plan: &Plan) -> bool {
+    match plan {
+        Plan::RangeSeek { .. } => true,
+        Plan::Project { input, .. }
+        | Plan::Aggregate { input, .. }
+        | Plan::Distinct { input }
+        | Plan::Filter { input, .. }
+        | Plan::Expand { input, .. } => has_range_seek(input),
+        _ => false,
+    }
+}
+
+/// The ORDERING regression. A pattern written `(a:L)-[:T]->(b:M)` arrives as two
+/// STACKED filters, which the local rules merge into one `And`. Orientation used to
+/// run BEFORE that merge, so this — the only shape whose reversed seed can become a
+/// seek, since `RangeSeek` requires a label — never matched the rewrite at all, and
+/// measured 2.7x SLOWER than the same query with `(b)` left unlabelled.
+#[test]
+fn orient_seeds_when_the_far_node_carries_a_label() {
+    let store = social_indexed();
+    let plan = Plan::Project {
+        input: Box::new(
+            Plan::Scan {
+                label: Some("Person".into()),
+            }
+            .expand(0, Dir::Out, &["KNOWS".to_string()])
+            .filter(Expr::IsLabeled {
+                slot: 1,
+                labels: vec!["Person".into()],
+            })
+            .filter(cmp(CompareOp::Gt, prop(1, "age"), Expr::Lit(n(26.0)))),
+        ),
+        items: vec![("who".into(), prop(0, "name"))],
+    };
+
+    let before = bag(&run(&plan, &store));
+    let opt = optimize_indexed(plan, &store);
+
+    assert_eq!(
+        before,
+        bag(&run(&opt, &store)),
+        "orientation changed the rows"
+    );
+    assert!(
+        has_range_seek(&opt),
+        "the lifted label should let the reversed seed become a seek: {opt:?}"
+    );
+}
+
+/// `Scan` carries ONE label, so a multi-label check (`:A|B`) cannot be lifted onto it.
+/// The reversal may still happen — it just seeds a plain scan and keeps the check as a
+/// residual filter. What must NOT happen is lifting one arm and dropping the other,
+/// which would silently widen the answer.
+#[test]
+fn orient_does_not_lift_a_multi_label_check() {
+    let store = social_indexed();
+    let plan = Plan::Project {
+        input: Box::new(
+            Plan::Scan {
+                label: Some("Person".into()),
+            }
+            .expand(0, Dir::Out, &["KNOWS".to_string()])
+            .filter(Expr::And(
+                Box::new(Expr::IsLabeled {
+                    slot: 1,
+                    labels: vec!["Person".into(), "Robot".into()],
+                }),
+                Box::new(cmp(CompareOp::Gt, prop(1, "age"), Expr::Lit(n(26.0)))),
+            )),
+        ),
+        items: vec![("who".into(), prop(0, "name"))],
+    };
+
+    let before = bag(&run(&plan, &store));
+    let opt = optimize_indexed(plan, &store);
+
+    assert_eq!(
+        before,
+        bag(&run(&opt, &store)),
+        "orientation changed the rows"
+    );
+    assert!(
+        !has_range_seek(&opt),
+        "a two-label check is not liftable onto a one-label Scan: {opt:?}"
+    );
+}
+
+/// The label may be written on EITHER side of the conjunction — `b:Person AND b.age >
+/// 26` and `b.age > 26 AND b:Person` are the same query, and the equivalent-spellings
+/// rule says they must cost the same. `lift_seed_label` recurses both arms.
+#[test]
+fn orient_lifts_the_label_from_either_side_of_the_conjunction() {
+    let store = social_indexed();
+    let build = |label_first: bool| {
+        let lab = Expr::IsLabeled {
+            slot: 1,
+            labels: vec!["Person".into()],
+        };
+        let age = cmp(CompareOp::Gt, prop(1, "age"), Expr::Lit(n(26.0)));
+        let pred = if label_first {
+            Expr::And(Box::new(lab), Box::new(age))
+        } else {
+            Expr::And(Box::new(age), Box::new(lab))
+        };
+
+        Plan::Project {
+            input: Box::new(
+                Plan::Scan {
+                    label: Some("Person".into()),
+                }
+                .expand(0, Dir::Out, &["KNOWS".to_string()])
+                .filter(pred),
+            ),
+            items: vec![("who".into(), prop(0, "name"))],
+        }
+    };
+
+    let first = optimize_indexed(build(true), &store);
+    let second = optimize_indexed(build(false), &store);
+
+    assert!(
+        has_range_seek(&first),
+        "label first did not seek: {first:?}"
+    );
+    assert!(
+        has_range_seek(&second),
+        "label second did not seek: {second:?}"
+    );
+    assert_eq!(
+        bag(&run(&first, &store)),
+        bag(&run(&second, &store)),
+        "the two spellings disagree on the answer"
+    );
+}
