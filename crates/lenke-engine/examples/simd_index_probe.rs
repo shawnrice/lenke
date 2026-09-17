@@ -1122,38 +1122,37 @@ fn popcount(m: &[u64]) -> usize {
 fn main() {
     let cfg = Cfg::from_env();
     let rows = cfg.scale.unwrap_or(200_000);
+    let plain = harness::social_store(rows as u32, 8);
     let mut seeded = harness::social_store(rows as u32, 8);
     seeded.create_range_index("age");
 
-    section("E62: does the new orientation rewrite fire, and is it correct?");
-    let cases: [(&str, &str); 5] = [
+    section("E66: orientation with the far node's label lifted onto the seed");
+    let cases: [(&str, &str); 4] = [
         (
-            "far-side filter, count",
+            "far node UNLABELLED (b)",
             "MATCH (a:Person)-[:KNOWS]->(b) WHERE b.age > 98 RETURN count(*) AS c",
         ),
         (
-            "written backwards (reference)",
+            "far node LABELLED (b:Person)",
+            "MATCH (a:Person)-[:KNOWS]->(b:Person) WHERE b.age > 98 RETURN count(*) AS c",
+        ),
+        (
+            "hand-written backwards (the target)",
             "MATCH (b:Person)<-[:KNOWS]-(a) WHERE b.age > 98 RETURN count(*) AS c",
         ),
         (
-            "far-side filter, PROJECTS a",
-            "MATCH (a:Person)-[:KNOWS]->(b) WHERE b.age > 98 RETURN a.name AS n",
-        ),
-        (
-            "far-side filter, projects BOTH",
-            "MATCH (a:Person)-[:KNOWS]->(b) WHERE b.age > 98 RETURN a.name AS an, b.name AS bn",
-        ),
-        (
-            "far-side, anchor also filtered",
-            "MATCH (a:Person)-[:KNOWS]->(b) WHERE b.age > 98 AND a.age > 50 RETURN count(*) AS c",
+            "labelled, and projecting both ends",
+            "MATCH (a:Person)-[:KNOWS]->(b:Person) WHERE b.age > 98 RETURN a.name AS an, b.name AS bn",
         ),
     ];
 
     println!("  {:<38} {:>10} {:>10}", "query", "us", "rows");
 
     for (label, q) in cases {
-        let planned = lenke_engine::gql::parse(q).expect("parses");
-        let opt = lenke_engine::opt::optimize_indexed(planned, &seeded);
+        let opt = lenke_engine::opt::optimize_indexed(
+            lenke_engine::gql::parse(q).expect("parses"),
+            &seeded,
+        );
         let dbg = format!("{opt:?}");
         let mut chain: Vec<&str> = Vec::new();
 
@@ -1167,52 +1166,30 @@ fn main() {
             }
         }
 
-        let out = lenke_engine::exec::run(&opt, &seeded);
-        let n = out.rows.iter().flatten().count();
-
-        if let Ok((us, _)) = harness::time_query(q, false, &seeded, cfg.reps.min(5)) {
-            println!("  {label:<38} {us:>10.1} {n:>10}");
-            println!("  {:<38} {}", "", chain.join(" <- "));
-        }
-    }
-
-    section("E63: the ANSWERS must be identical to the unoriented plan");
-    // The optimizer without an index cannot orient (nothing to seed from), so the
-    // same query over an unindexed store is the control.
-    let plain = harness::social_store(rows as u32, 8);
-
-    for (label, q) in cases {
-        let a = lenke_engine::opt::optimize_indexed(
+        // Answers must match the unoriented plan exactly.
+        let ctrl = lenke_engine::opt::optimize_indexed(
             lenke_engine::gql::parse(q).expect("parses"),
             &plain,
         );
-        let b = lenke_engine::opt::optimize_indexed(
-            lenke_engine::gql::parse(q).expect("parses"),
-            &seeded,
-        );
-        let mut ra: Vec<String> = lenke_engine::exec::run(&a, &plain)
+        let mut want: Vec<String> = lenke_engine::exec::run(&ctrl, &plain)
             .rows
             .iter()
             .flatten()
             .map(|v| format!("{v:?}"))
             .collect();
-        let mut rb: Vec<String> = lenke_engine::exec::run(&b, &seeded)
+        let mut got: Vec<String> = lenke_engine::exec::run(&opt, &seeded)
             .rows
             .iter()
             .flatten()
             .map(|v| format!("{v:?}"))
             .collect();
-        ra.sort();
-        rb.sort();
-        println!(
-            "  {label:<38} {} rows  {}",
-            ra.len(),
-            if ra == rb {
-                "IDENTICAL"
-            } else {
-                "*** DIFFER ***"
-            }
-        );
-        assert_eq!(ra, rb, "orientation changed the answer for: {q}");
+        want.sort();
+        got.sort();
+        assert_eq!(want, got, "orientation changed the answer for: {q}");
+
+        if let Ok((us, _)) = harness::time_query(q, false, &seeded, cfg.reps.min(5)) {
+            println!("  {label:<38} {us:>10.1} {:>10}", got.len());
+            println!("  {:<38} {}", "", chain.join(" <- "));
+        }
     }
 }

@@ -77,15 +77,30 @@ pub fn optimize(plan: Plan) -> Plan {
 /// blind seek scans anyway). Bounded so a misbehaving rule cannot spin.
 #[must_use]
 pub fn optimize_indexed(plan: Plan, idx: &dyn IndexOracle) -> Plan {
-    // Orientation runs ONCE, before the local fixpoint, and on the whole tree: it
-    // renames slots, so it has to see a pattern together with everything reading it
-    // — which a node-local rewrite never can. Afterwards the ordinary rules (index
-    // seeding, pushdown) act on the reversed shape exactly as on any other.
-    let plan = if orient_eligible(&plan, idx) {
-        orient_apply(plan).0
+    // Orientation runs BETWEEN two fixpoints, and both halves matter.
+    //
+    // AFTER the first: it needs the plan tidied. A pattern written `(a:L)-[:T]->(b:M)`
+    // arrives as two stacked `Filter`s, which the local rules merge into one `And` —
+    // and the orientation matcher wants a single filter over the hop. Running first
+    // meant the labelled form (the idiomatic one) never matched at all.
+    //
+    // BEFORE a second: the reversal produces a fresh `Filter <- Scan` seed, and it is
+    // the ordinary seeding rule that turns that into a `RangeSeek`. Without the
+    // re-run the reversal saves the post-filter but still scans.
+    //
+    // It is also a whole-tree pass rather than a local rule, because renaming slots
+    // requires seeing a pattern together with everything that reads it.
+    let plan = fixpoint(plan, idx);
+    if orient_eligible(&plan, idx) {
+        fixpoint(orient_apply(plan).0, idx)
     } else {
         plan
-    };
+    }
+}
+
+/// Run the local rewrite rules to a fixpoint (bounded, so a rule that oscillates
+/// cannot hang the planner).
+fn fixpoint(plan: Plan, idx: &dyn IndexOracle) -> Plan {
     let mut plan = plan;
     for _ in 0..64 {
         let (next, changed) = rewrite(plan, idx);
@@ -1973,11 +1988,22 @@ fn reverse_one_hop(plan: Plan) -> Option<Plan> {
     // Reversed: seed the far node (slot 0), walk the relationship the other way to
     // reach the original anchor (slot 1), and re-apply the anchor's label there —
     // the original `Scan { label }` was what enforced it.
+    //
+    // The far node's OWN label, if the pattern gave it one, is lifted out of the
+    // predicate and onto the seed scan. That is what lets the ordinary seeding rule
+    // turn the seed into a `RangeSeek`/`IndexSeek` — those carry a label, so a seed
+    // left as `Filter <- Scan { label: None }` can never become a seek and the
+    // reversal saves only the post-filter, not the scan.
+    let (seed_label, residual) = lift_seed_label(seed_pred);
+    let seed = match residual {
+        Some(pred) => Plan::Filter {
+            input: Box::new(Plan::Scan { label: seed_label }),
+            pred,
+        },
+        None => Plan::Scan { label: seed_label },
+    };
     let reversed = Plan::Expand {
-        input: Box::new(Plan::Filter {
-            input: Box::new(Plan::Scan { label: None }),
-            pred: seed_pred,
-        }),
+        input: Box::new(seed),
         from: 0,
         dir: flip_dir(dir),
         edge_label,
@@ -1997,6 +2023,45 @@ fn reverse_one_hop(plan: Plan) -> Option<Plan> {
     };
 
     Some(out)
+}
+
+/// Split a single-label `IsLabeled(slot 0, [L])` out of a conjunction, returning the
+/// label and whatever predicate remains. A multi-label check (`:A|B`) stays in the
+/// predicate — `Scan` carries one label, not a set — and so does anything that is not
+/// a top-level conjunct.
+fn lift_seed_label(pred: Expr) -> (Option<String>, Option<Expr>) {
+    match pred {
+        Expr::IsLabeled { slot: 0, labels } if labels.len() == 1 => {
+            (labels.into_iter().next(), None)
+        }
+        Expr::And(a, b) => {
+            let (label, rest) = lift_seed_label(*a);
+
+            if label.is_some() {
+                return (
+                    label,
+                    Some(match rest {
+                        Some(rest) => Expr::And(Box::new(rest), b),
+                        None => *b,
+                    }),
+                );
+            }
+
+            // The left side kept its predicate whole (nothing was lifted), so it is
+            // always `Some` here; try the right.
+            let left = rest.expect("nothing lifted from the left, so it survives");
+            let (label, rest) = lift_seed_label(*b);
+
+            (
+                label,
+                Some(match rest {
+                    Some(rest) => Expr::And(Box::new(left), Box::new(rest)),
+                    None => left,
+                }),
+            )
+        }
+        other => (None, Some(other)),
+    }
 }
 
 /// The other end of a hop.
