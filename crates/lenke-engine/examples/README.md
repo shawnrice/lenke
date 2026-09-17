@@ -75,6 +75,11 @@ question in its module header — read the header before touching it.
   adjacency and filter by edge type (scales with degree × type spread).
 - `interval_bench` — what an "as of T" bitemporal query pays to post-filter all
   of a node's edges by validity interval, vs an interval-index seek.
+- `scan_layout_probe` — whether a different COLUMN LAYOUT would make predicate
+  scans faster, and whether it survives mutation (it prices each layout twice: the
+  scan, and what one point write costs to maintain it). The answer to "is SIMD
+  worth it here" runs through this: today's loop gathers, gates on a byte and
+  materializes ids, which defeats vectorization before the value layout matters.
 - `spelling_probe` — that equivalent query spellings optimize to the SAME plan
   and so cost the same (a plan mismatch is the real signal; time is the backstop).
 
