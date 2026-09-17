@@ -88,6 +88,52 @@
 //! it seed-then-filter wins by up to 1.6x. E19 shows a hybrid picking correctly with
 //! ~1-4% decision overhead — and `cost.rs` already estimates cardinality, so this is
 //! a routing decision the planner could make today without new statistics.
+//!
+//! ═══ SECOND HALF (E25-E36): ATTACKING DELIVERY, AND AGGREGATES ═══
+//!
+//! E20 left delivery as the dominant cost, so the campaign turned there — and found
+//! that the biggest wins come from NOT delivering at all.
+//!
+//! ```text
+//! E25  mask -> ids, AVX2 byte table       53.9% dense 288.6 -> 108.9us   2.7x
+//!        …but the crossover is DENSITY     4.5% dense  29.5 -> 250.9us   0.1x
+//! E28  sum(x) WHERE p, iterating set bits  327.2us vs 618.0us materialized  1.9x
+//!        …and 30.7 vs 51.9us at 3.9% dense — it wins at every density
+//! E27  GROUP BY count, popcounts vs hash   5757.5 -> 14.7us              393x
+//! E30  GROUP BY sum,   bitmaps vs hash     6106.9 -> 930.4us             6.6x
+//! E31  by group count  4: 796x · 8: 389x · 32: 100x · 128: 24.8x · 512: 4.5x · 2048: 0.9x
+//!        …memory is k x rows/8, so 128 groups is 15MB/M rows and 2048 is 250MB
+//! E32  maintained counters                 2.57ns/write, answer read in 0.010us
+//! E33  FILTERED group-by, AND + popcount   6181 -> 35.3us               175x
+//!        …and CONSTANT in the filter: 35.3us whether 539k rows pass or 1003
+//! E34  10x scale, 1M -> 10M rows           BSI 0.070 -> 0.045 ns/row (no cliff)
+//! E35  build cost, 10M rows                BSI 84ms · 8 bitmaps 127ms · counters 9ms
+//! E36  capstone: WHERE age > t GROUP BY dept
+//!        scan + hash group      1598.7us   1.0x   (what the engine does today)
+//!        BSI filter + hash       295.1us   5.4x   (half the change)
+//!        BSI filter + bitmaps     69.2us  23.1x   (all the way)
+//! ```
+//!
+//! **6. The answer is three tiers, not one structure.** An unfiltered
+//! `GROUP BY x COUNT(*)` should never touch a bitmap: maintained per-value counters
+//! answer it in 10 NANOSECONDS for 2.57ns per write (E32). Value bitmaps earn their
+//! place on the shapes counters cannot answer — a FILTERED group-by is 175x and,
+//! more importantly, CONSTANT in the filter's selectivity (E33) — but only up to
+//! ~128 groups, where memory (k x rows/8) overtakes the win long before the 2048
+//! break-even (E31). BSI covers what neither does: ranges, at a cost independent of
+//! cardinality.
+//!
+//! **7. The delivery tax is real but avoidable, and the SIMD trick for it is
+//! density-gated.** AVX2 extraction (a byte-indexed position table, widened and
+//! stored 8 ids at a time) is 2.7x on a dense mask and 10x WORSE on a sparse one,
+//! because a sparse mask still has most words non-zero while most of their bytes
+//! are empty. Pick by density. Better still, do not extract: an aggregate that
+//! walks the set bits beats materialize-then-gather at every density (E28).
+//!
+//! **8. Half the change gets a third of the win.** E36 is the number to quote: on a
+//! realistic dashboard query, indexing only the FILTER is 5.4x with no change to
+//! grouping, and the group-side bitmaps add another 4.3x on top. The first half
+//! needs no new query semantics and no new aggregate paths.
 
 // Experiments retire from `main` as the campaign moves on, but their code stays:
 // the point of a probe is the record of what was tried, including what failed.
@@ -798,6 +844,142 @@ fn block_counts(mask: &[u64], block_words: usize) -> Vec<u32> {
         .collect()
 }
 
+/// E25: extracting ids from a mask with SIMD. E20 made this the dominant cost —
+/// 288us to deliver 539k rows against 40us to find them — and the scalar loop is
+/// one unpredictable branch per set bit. The vector form processes a BYTE of the
+/// mask at a time: look up that byte's 8 positions, widen them to u32, add the
+/// base, store all 8 unaligned, then advance the write pointer by the byte's
+/// popcount. Branch-free per byte, and the store overlaps the next iteration.
+static POSITIONS: [[u8; 8]; 256] = build_positions();
+
+const fn build_positions() -> [[u8; 8]; 256] {
+    let mut table = [[0u8; 8]; 256];
+    let mut b = 0usize;
+
+    while b < 256 {
+        let mut n = 0usize;
+        let mut bit = 0usize;
+
+        while bit < 8 {
+            if b >> bit & 1 == 1 {
+                table[b][n] = bit as u8;
+                n += 1;
+            }
+
+            bit += 1;
+        }
+
+        b += 1;
+    }
+
+    table
+}
+
+#[cfg(target_arch = "x86_64")]
+fn ids_of_simd(mask: &[u64]) -> Vec<u32> {
+    use std::arch::x86_64::*;
+
+    let mut out: Vec<u32> = Vec::with_capacity(popcount(mask) + 8);
+    let mut len = 0usize;
+
+    // SAFETY: the crate targets x86-64-v3 (AVX2). `out` is reserved for every set
+    // bit plus 8 slack, so the 8-wide store at `len` never runs past the allocation.
+    unsafe {
+        let base_ptr = out.as_mut_ptr();
+
+        for (w, &word) in mask.iter().enumerate() {
+            if word == 0 {
+                continue;
+            }
+
+            for byte in 0..8usize {
+                let b = (word >> (byte * 8)) as u8;
+
+                if b == 0 {
+                    continue;
+                }
+
+                let base = (w * 64 + byte * 8) as u32;
+                // The byte's 8 candidate positions, widened 8-bit -> 32-bit.
+                let pos = _mm_loadl_epi64(POSITIONS[b as usize].as_ptr().cast());
+                let widened = _mm256_cvtepu8_epi32(pos);
+                let shifted = _mm256_add_epi32(widened, _mm256_set1_epi32(base as i32));
+                _mm256_storeu_si256(base_ptr.add(len).cast(), shifted);
+                len += b.count_ones() as usize;
+            }
+        }
+
+        out.set_len(len);
+    }
+
+    out
+}
+
+/// E26: aggregate straight off the mask. A `sum(x) WHERE p` never needs the rows —
+/// only the values under the set bits — so the delivery cost E20 measured is
+/// avoidable entirely for this shape. Branch-free: multiply by the bit rather than
+/// branch on it, so the loop stays vectorizable.
+fn masked_sum(mask: &[u64], data: &[f64]) -> f64 {
+    let mut acc = 0.0;
+
+    for (w, &word) in mask.iter().enumerate() {
+        let base = w * 64;
+        let lanes = 64.min(data.len() - base);
+
+        for k in 0..lanes {
+            acc += data[base + k] * f64::from((word >> k & 1) as u32);
+        }
+    }
+
+    acc
+}
+
+/// E28: the same aggregate, but skipping empty words. E26's branch-free form
+/// touched every row whatever the mask said, so it could not profit from a
+/// selective predicate — a fixed cost is only a win when the answer is broad. One
+/// zero-check per 64 rows restores the proportionality without reintroducing a
+/// branch per row.
+fn masked_sum_skip(mask: &[u64], data: &[f64]) -> f64 {
+    let mut acc = 0.0;
+
+    for (w, &word) in mask.iter().enumerate() {
+        if word == 0 {
+            continue;
+        }
+
+        let base = w * 64;
+        let lanes = 64.min(data.len() - base);
+
+        for k in 0..lanes {
+            acc += data[base + k] * f64::from((word >> k & 1) as u32);
+        }
+    }
+
+    acc
+}
+
+/// E28b: iterate only the SET bits — a gather, but without materializing ids.
+/// Where the mask is sparse this touches nothing else at all.
+fn masked_sum_bits(mask: &[u64], data: &[f64]) -> f64 {
+    let mut acc = 0.0;
+
+    for (w, &word) in mask.iter().enumerate() {
+        let mut bits = word;
+
+        while bits != 0 {
+            acc += data[w * 64 + bits.trailing_zeros() as usize];
+            bits &= bits - 1;
+        }
+    }
+
+    acc
+}
+
+/// The shape it replaces: materialize the ids, then gather.
+fn materialize_then_sum(mask: &[u64], data: &[f64]) -> f64 {
+    ids_of(mask).iter().map(|&i| data[i as usize]).sum()
+}
+
 fn popcount(m: &[u64]) -> usize {
     m.iter().map(|w| w.count_ones() as usize).sum()
 }
@@ -805,65 +987,101 @@ fn popcount(m: &[u64]) -> usize {
 fn main() {
     let cfg = Cfg::from_env();
     let rows = cfg.scale.unwrap_or(ROWS);
-    let distinct = 4096u32;
-    let c = zipfish(rows, distinct);
-    let bsi = Bsi::build(&c, 12);
-    let c2 = zipfish(rows / 3, distinct);
-    let keys2: Vec<u32> = (0..rows).map(|i| c2.keys[i % c2.keys.len()]).collect();
-    let bsi2 = Bsi::build(
-        &Col {
-            keys: keys2.clone(),
-            present: c.present.clone(),
-            rows,
-        },
-        12,
-    );
 
-    section("E23: block-wise conjunction — skip blocks the first predicate emptied");
+    section("E35: what the structures cost to BUILD at scale (the mutation question)");
     println!(
-        "  {:<30} {:>10} {:>12} {:>9}",
-        "x > t AND y = 1", "flat AND", "block-wise", "speedup"
+        "  {:<12} {:>14} {:>14} {:>14} {:>12}",
+        "rows", "BSI build ms", "8 bitmaps ms", "counters ms", "bitmap MB"
     );
 
-    for t in [0u32, 512, 2048, 4000] {
-        let left = bsi.gt(t);
-        let survivors = popcount(&left);
-        let want = and_masks(&left, &bsi2.eq_mask(1));
-        assert_eq!(
-            and_blockwise(&left, &bsi2, 1, 256),
-            want,
-            "block-wise disagrees"
-        );
+    for n in [1_000_000usize, 10_000_000] {
+        let c = zipfish(n, 4096);
+        let cat = zipfish(n, 8);
+        let bsi_ms = best_us(cfg.reps.min(3), || Bsi::build(&c, 12).slices.len()) / 1000.0;
+        let vb_ms = best_us(cfg.reps.min(3), || {
+            ValueBitmaps::build(&cat.keys, &cat.present, n, 8)
+                .maps
+                .len()
+        }) / 1000.0;
+        let ct_ms = best_us(cfg.reps.min(3), || {
+            let mut counters = [0u32; 8];
 
-        let flat = best_us(cfg.reps, || and_masks(&bsi.gt(t), &bsi2.eq_mask(1)));
-        let blk = best_us(cfg.reps, || and_blockwise(&bsi.gt(t), &bsi2, 1, 256));
+            for (i, &k) in cat.keys.iter().enumerate() {
+                if cat.present[i / 64] >> (i % 64) & 1 == 1 {
+                    counters[k as usize] += 1;
+                }
+            }
+
+            counters.iter().map(|&x| x as usize).sum::<usize>()
+        }) / 1000.0;
         println!(
-            "  t = {:<26} {:>10.1} {:>12.1} {:>8.1}x",
-            format!("{t} ({survivors} survive)"),
-            black_box(flat),
-            black_box(blk),
-            flat / blk
+            "  {:<12} {:>14.1} {:>14.1} {:>14.1} {:>12}",
+            n,
+            black_box(bsi_ms),
+            black_box(vb_ms),
+            black_box(ct_ms),
+            8 * n.div_ceil(64) * 8 / 1_048_576
         );
     }
 
-    section("E24: COUNT from precomputed per-block popcounts");
-    let mask = bsi.gt(64);
-    let counts = block_counts(&mask, 256);
-    let direct = best_us(cfg.reps, || popcount(&mask));
-    let summed = best_us(cfg.reps, || {
-        counts.iter().map(|&x| x as usize).sum::<usize>()
+    section("E36: capstone — a realistic analytical query, three ways");
+    // `MATCH (n:P) WHERE n.age > 30 RETURN n.dept, count(*)` — a range filter, a
+    // grouped count, no rows returned. The shape every dashboard query has.
+    let cat = zipfish(rows, 8);
+    let age = zipfish(rows, 4096);
+    let abs = Bsi::build(&age, 12);
+    let vb = ValueBitmaps::build(&cat.keys, &cat.present, rows, 8);
+    let t = 512u32;
+
+    // (a) what the engine does now: scan rows, test the predicate, hash the group.
+    let scan_us = best_us(cfg.reps, || {
+        let mut counts: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+
+        for (i, &k) in cat.keys.iter().enumerate() {
+            if cat.present[i / 64] >> (i % 64) & 1 == 1 && age.keys[i] > t {
+                *counts.entry(k).or_insert(0) += 1;
+            }
+        }
+
+        counts.values().map(|&v| v as usize).sum::<usize>()
     });
-    assert_eq!(
-        counts.iter().map(|&x| x as usize).sum::<usize>(),
-        popcount(&mask)
+
+    // (b) indexes for the filter, hashing for the group: the half-way house.
+    let half_us = best_us(cfg.reps, || {
+        let mask = abs.gt(t);
+        let mut counts: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+
+        for (w, &word) in mask.iter().enumerate() {
+            let mut bits = word;
+
+            while bits != 0 {
+                let row = w * 64 + bits.trailing_zeros() as usize;
+                *counts.entry(cat.keys[row]).or_insert(0) += 1;
+                bits &= bits - 1;
+            }
+        }
+
+        counts.values().map(|&v| v as usize).sum::<usize>()
+    });
+
+    // (c) all the way: the answer never leaves bitmap form.
+    let full_us = best_us(cfg.reps, || {
+        let mask = abs.gt(t);
+        vb.maps
+            .iter()
+            .map(|(_, m)| popcount(&and_masks(m, &mask)))
+            .sum::<usize>()
+    });
+
+    println!("  MATCH (n:P) WHERE n.age > t RETURN n.dept, count(*)   [{rows} rows]");
+    println!("    scan + hash group          {scan_us:>10.1} us   1.0x");
+    println!(
+        "    BSI filter + hash group    {half_us:>10.1} us  {:>4.1}x",
+        scan_us / half_us
     );
     println!(
-        "  popcount the mask {direct:.2} us · sum {} block counts {summed:.2} us  ({:.0}x)",
-        counts.len(),
-        direct / summed
+        "    BSI filter + bitmap group  {full_us:>10.1} us  {:>4.1}x",
+        scan_us / full_us
     );
-    println!(
-        "  (both are dwarfed by the {:.0} us the circuit spends producing the mask)",
-        best_us(cfg.reps, || bsi.gt(64))
-    );
+    println!("  (the middle row is the interesting one: half the change gets a third of the win)");
 }
