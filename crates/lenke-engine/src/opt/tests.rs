@@ -678,13 +678,16 @@ fn social_indexed() -> Store {
     store
 }
 
-/// A predicate on the FAR node reverses the hop, so the predicate seeds the walk
-/// instead of filtering its output. Rows must be identical either way.
+/// An UNLABELLED far node does not reverse, even though the predicate is seekable.
+/// Without a label the reversed seed is `Filter <- Scan { None }`, which no seeding
+/// rule can turn into a seek — so the reversal buys a pre-filter but pays a residual
+/// `IsLabeled` above the hop, and that residual defeats the `count(*)` degree-sum
+/// shortcut. Measured, it trades on selectivity and can lose badly: `b.age > 98` (1%
+/// pass) went 1652us -> 669us, but `b.age > -1` (100% pass) went 788us -> 3805us.
+/// Fire only on a provable win; the speculative case needs a cardinality estimate.
 #[test]
-fn orient_reverses_a_far_side_predicate() {
+fn orient_declines_an_unlabelled_far_node() {
     let store = social_indexed();
-    // A projection on top: without one the pattern's slots ARE the output columns
-    // and reversing them would reorder the result — see the next test.
     let plan = Plan::Project {
         input: Box::new(
             Plan::Scan {
@@ -698,15 +701,11 @@ fn orient_reverses_a_far_side_predicate() {
 
     let before = bag(&run(&plan, &store));
     let opt = optimize_indexed(plan, &store);
-    assert_eq!(
-        before,
-        bag(&run(&opt, &store)),
-        "orientation changed the rows"
-    );
 
-    // The hop now runs the other way, seeded by the predicate.
-    fn hop_dir(p: &Plan) -> Option<Dir> {
-        match p {
+    assert_eq!(before, bag(&run(&opt, &store)), "the rows changed");
+
+    fn hop_dir(plan: &Plan) -> Option<Dir> {
+        match plan {
             Plan::Expand { dir, .. } => Some(*dir),
             Plan::Filter { input, .. }
             | Plan::Project { input, .. }
@@ -717,8 +716,8 @@ fn orient_reverses_a_far_side_predicate() {
 
     assert_eq!(
         hop_dir(&opt),
-        Some(Dir::In),
-        "the hop was reversed: {opt:?}"
+        Some(Dir::Out),
+        "an unlabelled far node must keep its written direction: {opt:?}"
     );
 }
 
@@ -976,5 +975,92 @@ fn orient_lifts_the_label_from_either_side_of_the_conjunction() {
         bag(&run(&first, &store)),
         bag(&run(&second, &store)),
         "the two spellings disagree on the answer"
+    );
+}
+
+/// A MIXED conjunction over an `Expand` must split: the conjunct reading only the
+/// pre-hop slots goes below (where it can seed a seek), the rest stays above.
+///
+/// The all-or-nothing guard this replaces made an ordinary query 300x slower for a
+/// reason no user could see. Both ends of `(a:L)-[:T]->(b:M) WHERE a.k > v` lower to
+/// stacked filters; the merge rule fuses them into one `And`; and from then on the
+/// slot-1 label check pinned the slot-0 range predicate above the hop, so the walk
+/// ran from every `L`. Writing `(b)` instead of `(b:M)` was 300x faster.
+#[test]
+fn pushdown_splits_a_mixed_conjunction_below_an_expand() {
+    let store = social_indexed();
+    let plan = Plan::Project {
+        input: Box::new(
+            Plan::Scan {
+                label: Some("Person".into()),
+            }
+            .expand(0, Dir::Out, &["KNOWS".to_string()])
+            .filter(Expr::And(
+                // Reads the APPENDED slot — must stay above the hop.
+                Box::new(Expr::IsLabeled {
+                    slot: 1,
+                    labels: vec!["Person".into()],
+                }),
+                // Reads only the pre-hop slot — must go below, and seed.
+                Box::new(cmp(CompareOp::Gt, prop(0, "age"), Expr::Lit(n(26.0)))),
+            )),
+        ),
+        items: vec![("who".into(), prop(1, "name"))],
+    };
+
+    let before = bag(&run(&plan, &store));
+    let opt = optimize_indexed(plan, &store);
+
+    assert_eq!(
+        before,
+        bag(&run(&opt, &store)),
+        "the split changed the rows"
+    );
+    assert!(
+        has_range_seek(&opt),
+        "the slot-0 conjunct should have pushed below the hop and seeded: {opt:?}"
+    );
+
+    // And the slot-1 conjunct must NOT have gone with it.
+    fn filter_above_expand(plan: &Plan) -> bool {
+        match plan {
+            Plan::Filter { input, .. } if matches!(input.as_ref(), Plan::Expand { .. }) => true,
+            Plan::Project { input, .. }
+            | Plan::Aggregate { input, .. }
+            | Plan::Distinct { input }
+            | Plan::Filter { input, .. }
+            | Plan::Expand { input, .. } => filter_above_expand(input),
+            _ => false,
+        }
+    }
+
+    assert!(
+        filter_above_expand(&opt),
+        "the label check reads the appended slot and must stay above: {opt:?}"
+    );
+}
+
+/// The split must not starve the interval-overlap fusion arm, which matches the SAME
+/// `Expand` and whose predicate (reading the bound edge slot) is pushable by nothing.
+/// The first version of the split dropped its match guard and silently disabled
+/// interval seeks for every bitemporal query.
+#[test]
+fn pushdown_split_leaves_an_unpushable_predicate_for_a_later_arm() {
+    let store = social_indexed();
+    // Nothing here reads a pre-hop slot, so the pushdown arm must decline entirely
+    // and hand the operator on unchanged rather than rebuilding it.
+    let plan = Plan::Scan {
+        label: Some("Person".into()),
+    }
+    .expand(0, Dir::Out, &["KNOWS".to_string()])
+    .filter(cmp(CompareOp::Gt, prop(1, "age"), Expr::Lit(n(26.0))));
+
+    let before = bag(&run(&plan, &store));
+    let opt = optimize_indexed(plan.clone(), &store);
+
+    assert_eq!(
+        before,
+        bag(&run(&opt, &store)),
+        "the split changed the rows"
     );
 }

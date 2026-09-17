@@ -54,7 +54,12 @@ fn fixture(n: u32, deg: u32) -> Store {
             b.edge(i, rng.next(n), "KNOWS");
         }
     }
-    b.build()
+    let mut store = b.build();
+    // The far-side / seed-side groups are about whether a predicate reaches an INDEX,
+    // which needs one to exist. Without it those groups silently measured something
+    // else (pool size before the hop), and read as cliffs that indexing would fix.
+    store.create_range_index("age");
+    store
 }
 
 enum Lang {
@@ -169,7 +174,8 @@ fn main() {
             ],
         ),
         (
-            // NARROWED, still open. This used to be 43x (1% selective) / 52.7x (10%):
+            // NARROWED but still the widest cliff here (28x on this fixture). This used
+            // to be 43x (1% selective) / 52.7x (10%):
             // the engine did not score both ends of a fixed-length pattern, so a
             // predicate on the FAR end never reached an index and the walk ran from
             // every node and filtered after. `orient` in opt.rs now reverses a one-hop
@@ -185,6 +191,34 @@ fn main() {
             &[
                 (Gql, "MATCH (a:Person)-[:KNOWS]->(b) WHERE b.age > 98 RETURN count(*) AS c"),
                 (Gql, "MATCH (b:Person)<-[:KNOWS]-(a) WHERE b.age > 98 RETURN count(*) AS c"),
+            ],
+        ),
+        (
+            // Was a 300x cliff, and the nastiest kind: adding a LABEL made it slower.
+            // Both ends lower to stacked filters, the merge rule fuses them into one
+            // `And`, and the Expand pushdown arm was all-or-nothing — so the slot-1
+            // label check pinned the slot-0 range predicate above the hop and the walk
+            // ran from every Person. The pushdown now splits per conjunct, and all
+            // four spellings optimize to the same seek-then-expand plan.
+            "far-side predicate with BOTH ends labelled",
+            &[
+                (Gql, "MATCH (a:Person)-[:KNOWS]->(b:Person) WHERE b.age > 98 RETURN count(*) AS c"),
+                (Gql, "MATCH (b:Person)<-[:KNOWS]-(a:Person) WHERE b.age > 98 RETURN count(*) AS c"),
+            ],
+        ),
+        (
+            // The mirror of the group above, on the SEED side. Both spellings seed
+            // identically now that pushdown splits — what is left (8.5x) is NOT a
+            // seeding difference but a shortcut one: `count(*)` over a BARE `Expand`
+            // sums degrees and never walks an edge, and the `(b:Person)` spelling
+            // keeps a residual `IsLabeled` above the hop that makes the shortcut
+            // impossible, so it enumerates paths instead. See E68 in
+            // `simd_index_probe`, and audit item 11 — the fix is to teach the count
+            // shortcut to tolerate a far-end label check.
+            "seed-side predicate with BOTH ends labelled",
+            &[
+                (Gql, "MATCH (a:Person)-[:KNOWS]->(b:Person) WHERE a.age > 98 RETURN count(*) AS c"),
+                (Gql, "MATCH (a:Person)-[:KNOWS]->(b) WHERE a.age > 98 RETURN count(*) AS c"),
             ],
         ),
         (

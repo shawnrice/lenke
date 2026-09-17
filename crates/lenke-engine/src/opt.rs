@@ -1162,9 +1162,23 @@ fn apply_local(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
                 },
                 true,
             ),
-            // predicate pushdown below an Expand: legal when the predicate reads
-            // only slots that exist BELOW the expand (i.e. not the slot the expand
-            // appends). The appended slot index equals the input's width.
+            // predicate pushdown below an Expand: legal for any conjunct that reads
+            // only slots existing BELOW the expand (i.e. not the slot the expand
+            // appends, whose index equals the input's width).
+            //
+            // SPLIT, for the same reason VarLength splits below. An all-or-nothing
+            // guard refuses a MIXED conjunction outright, and a mixed conjunction is
+            // what the ordinary pattern `(a:L)-[:T]->(b:M) WHERE a.k > v` becomes:
+            // the two labels lower to two stacked filters, the merge rule fuses them
+            // into one `And` with the predicate, and from then on the slot-0 conjunct
+            // that could have SEEDED the scan is trapped above the hop by the slot-1
+            // label check sitting next to it. Measured (200k x 8, range index on
+            // `age`): 9382us against 31.6us for the same query with the far node left
+            // unlabelled — writing a label made it 300x slower.
+            //
+            // The `any_pushable` guard is load-bearing: without it this arm matches
+            // EVERY Expand and starves the interval-overlap fusion arm below, whose
+            // predicate reads the bound edge slot and is pushable by nothing.
             Plan::Expand {
                 input: ein,
                 from,
@@ -1172,17 +1186,40 @@ fn apply_local(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
                 edge_label,
                 bind_edge,
                 double_loops,
-            } if refs_below(&pred, width(&ein)) => (
-                Plan::Expand {
-                    input: Box::new(Plan::Filter { input: ein, pred }),
+            } if any_pushable(&pred, width(&ein)) => {
+                let (below, above) = split_pushable(pred, width(&ein));
+                let pushed = below.is_some();
+                let input = match below {
+                    Some(below) => Box::new(Plan::Filter {
+                        input: ein,
+                        pred: below,
+                    }),
+                    None => ein,
+                };
+                let ex = Plan::Expand {
+                    input,
                     from,
                     dir,
                     edge_label,
                     bind_edge,
                     double_loops,
-                },
-                true,
-            ),
+                };
+
+                match above {
+                    // Everything pushed.
+                    None => (ex, true),
+                    // A residual stays above. `changed` is true only when a conjunct
+                    // actually moved — otherwise this rebuilds the same plan forever
+                    // and the fixpoint spins to its iteration cap on every query.
+                    Some(above) => (
+                        Plan::Filter {
+                            input: Box::new(ex),
+                            pred: above,
+                        },
+                        pushed,
+                    ),
+                }
+            }
             // predicate pushdown below a VarLength / ShortestPath: both append the
             // reached endpoint at slot `width(input)`, keeping every input slot in
             // place, so any conjunct that reads only those input slots (the classic
@@ -1579,6 +1616,16 @@ fn prune_or_branches(e: Expr, bounds: &[(usize, String, CompareOp, f64)]) -> Exp
         return or_all(disj).expect("non-empty: nothing was pruned");
     }
     or_all(disj).unwrap_or(Expr::Lit(crate::value::Value::Bool(false)))
+}
+
+/// Does ANY top-level conjunct of `pred` read only slots `< bound`? The cheap
+/// non-consuming precheck [`split_pushable`] needs as a match guard, so an arm that
+/// would push nothing declines and lets a later arm match the same operator.
+fn any_pushable(e: &Expr, bound: usize) -> bool {
+    match e {
+        Expr::And(a, b) => any_pushable(a, bound) || any_pushable(b, bound),
+        other => refs_below(other, bound),
+    }
 }
 
 /// Split `pred`'s conjuncts into those referencing only slots `< bound` (pushable
@@ -1995,6 +2042,22 @@ fn reverse_one_hop(plan: Plan) -> Option<Plan> {
     // left as `Filter <- Scan { label: None }` can never become a seek and the
     // reversal saves only the post-filter, not the scan.
     let (seed_label, residual) = lift_seed_label(seed_pred);
+
+    // NO LABEL, NO REVERSAL. Without a label the seed is `Filter <- Scan { None }`,
+    // which no seeding rule can turn into a seek — so the reversal buys only a
+    // pre-filter, while COSTING a residual `IsLabeled` above the hop to re-check the
+    // original seed's label. That residual is not free: it defeats the `count(*)`
+    // degree-sum shortcut, which needs a bare `Expand`.
+    //
+    // Which way that trades depends entirely on selectivity, and the optimizer does
+    // not know it here. Measured both ends of it: `b.age > 98` (1% pass) went
+    // 1652us -> 669us reversed, but `b.age > -1` (100% pass) went 788us -> 3805us —
+    // a 4.8x REGRESSION on a predicate that filters nothing. So fire only when the
+    // reversal is a provable win: the far node carries a label, the seed becomes
+    // `Scan { Some(L) }`, and the ordinary rule emits a real seek. Gating the
+    // speculative case properly needs a cardinality estimate (cost.rs has one).
+    seed_label.as_ref()?;
+
     let seed = match residual {
         Some(pred) => Plan::Filter {
             input: Box::new(Plan::Scan { label: seed_label }),
@@ -2177,7 +2240,12 @@ fn orient_scan(plan: &Plan, idx: &dyn IndexOracle) -> Option<bool> {
                 } => (matches!(scan.as_ref(), Plan::Scan { .. })
                     && seedable(pred, idx)
                     // Reads the appended slot and nothing else — see `reverse_one_hop`.
-                    && swap_slots(pred, 0, 1).map(|p| max_slot(&p)) == Some(Some(0)))
+                    && swap_slots(pred, 0, 1).map(|p| max_slot(&p)) == Some(Some(0))
+                    // And the reversal must PROVABLY produce a seek — see
+                    // `reverse_one_hop`'s note on why an unlabelled far node is a
+                    // regression rather than a smaller win.
+                    && swap_slots(pred, 0, 1)
+                        .is_some_and(|p| lift_seed_label(p).0.is_some()))
                 .then_some(true),
                 _ => None,
             }
