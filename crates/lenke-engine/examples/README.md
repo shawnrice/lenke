@@ -84,6 +84,11 @@ question in its module header — read the header before touching it.
   than value comparisons (recursive frequency encoding; bit-sliced index), what
   each costs to mutate, and whether it reaches the vector units. It does: the
   circuits compile to `vandps`/`vorps`/`vandnps` over ymm with no intrinsics.
+- `simd_index_probe` — a 24-experiment campaign hunting speedups in bitmap indexes:
+  explicit AVX2 (nothing — LLVM already vectorizes), early exit (nothing), value
+  recoding (nothing), sparse containers (worse), against conjunctions (5.7x
+  end-to-end), counts (the mask IS the answer), and block skipping (up to 6.1x, but
+  only on clustered data). Read it before re-attempting any of the seven rejected ideas.
 - `spelling_probe` — that equivalent query spellings optimize to the SAME plan
   and so cost the same (a plan mismatch is the real signal; time is the backstop).
 
