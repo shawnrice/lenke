@@ -280,6 +280,7 @@
 mod harness;
 
 use harness::{section, Cfg, Lcg};
+use lenke_engine::ir::Plan;
 
 const ROWS: usize = 1_000_000;
 
@@ -1192,4 +1193,156 @@ fn main() {
             println!("  {:<38} {}", "", chain.join(" <- "));
         }
     }
+
+    // E67 ------------------------------------------------------------------
+    //
+    // E66 left a 15x residual: the oriented plan seeks and expands exactly like the
+    // hand-written backwards one, and was 499us against 32us. The obvious reading is
+    // that the `Filter` the oriented plan keeps above `Expand` costs 15x per edge,
+    // which would make a node-id bitmap the fix.
+    //
+    // Checking that reading first found a much larger and much dumber problem, so
+    // this section is what the check turned up and E68 is the original question.
+    //
+    // A PREDICATE STOPPED PUSHING BECAUSE A LABEL WAS WRITTEN NEXT TO IT. Both ends
+    // of `(a:Person)-[:KNOWS]->(b:Person) WHERE b.age > 98` lower to stacked filters;
+    // the merge rule fuses them into one `And`; and the Expand pushdown arm was
+    // all-or-nothing (`refs_below` over the WHOLE predicate), so one slot-1 label
+    // check next to the slot-0 range predicate pinned both above the hop. The seek
+    // never happened and the walk ran from every Person. Writing `(a)` instead of
+    // `(a:Person)` — no semantic difference on this fixture, where every node is a
+    // Person — was 300x faster.
+    //
+    // The fix is the split the VarLength/ShortestPath arms had already been given for
+    // exactly this reason (opt.rs's own comment: "otherwise a mixed `a.age = 1 AND
+    // b.age = 2` refuses to push at all and the walk runs from every node").
+    section("E67: the Expand pushdown, now split per conjunct");
+
+    let pairs: [(&str, &str, &str); 2] = [
+        (
+            "count(*)",
+            "MATCH (a:Person)-[:KNOWS]->(b:Person) WHERE b.age > 98 RETURN count(*) AS c",
+            "MATCH (b:Person)<-[:KNOWS]-(a:Person) WHERE b.age > 98 RETURN count(*) AS c",
+        ),
+        (
+            "both ends projected",
+            "MATCH (a:Person)-[:KNOWS]->(b:Person) WHERE b.age > 98 RETURN a.name AS an, b.name AS bn",
+            "MATCH (b:Person)<-[:KNOWS]-(a:Person) WHERE b.age > 98 RETURN a.name AS an, b.name AS bn",
+        ),
+    ];
+
+    println!(
+        "  {:<28} {:>10} {:>10} {:>8}  plan",
+        "shape", "forwards", "backwards", "ratio"
+    );
+
+    for (label, forwards, backwards) in pairs {
+        let f = harness::time_query(forwards, false, &seeded, cfg.reps.min(5));
+        let b = harness::time_query(backwards, false, &seeded, cfg.reps.min(5));
+        let opt = lenke_engine::opt::optimize_indexed(
+            lenke_engine::gql::parse(backwards).expect("parses"),
+            &seeded,
+        );
+
+        if let (Ok((fus, _)), Ok((bus, _))) = (f, b) {
+            let ratio = if bus > 0.0 { fus / bus } else { 0.0 };
+            println!(
+                "  {label:<28} {fus:>10.1} {bus:>10.1} {ratio:>7.2}x  {}",
+                chain_of(&opt)
+            );
+        }
+    }
+
+    println!("  (before the split: 9382us backwards, against 31.6us for the same");
+    println!("   query with the far node left unlabelled — a 300x spelling cliff)");
+
+    // E68 ------------------------------------------------------------------
+    //
+    // Now the original question, with a control that actually isolates it. E66's 32us
+    // reference was NOT an unfiltered expand — `count(*)` over a bare `Expand` sums
+    // DEGREES and never walks an edge, so comparing against it measures the count
+    // shortcut, which is the mistake E48 already made once in this file.
+    //
+    // The honest control is the same plan shape with and without the residual filter:
+    // same seek, same expand, same output rows (every node here is a Person, so the
+    // label check passes everything). The difference is the filter and nothing else.
+    //
+    // Measured, and the 15x turns out to be TWO costs that wanted separating:
+    //
+    //   count   NO filter (degree sum)     31.1us
+    //   count   residual IsLabeled        475.5us    15.3x
+    //   project NO filter                 320.7us
+    //   project residual IsLabeled        625.6us     1.95x
+    //
+    // MOST OF IT IS THE LOST COUNT SHORTCUT, NOT THE FILTER. `count(*)` over a bare
+    // `Expand` sums degrees and never walks an edge; put ANY filter above that Expand
+    // and the shortcut cannot fire, so the plan enumerates 16k paths to count them.
+    // That is where 14 of the 15x lives, and the fix is a planner one — teach the
+    // count shortcut to tolerate a far-end label check, which is a membership test
+    // against the adjacency list and still needs no path.
+    //
+    // THE FILTER ITSELF IS 1.95x, AND A MASK IS STILL THE RIGHT FIX FOR IT. 305us
+    // over 16,065 rows is ~19ns per row, which is what a binary search into a 200k-id
+    // label bucket costs — the evaluator builds a membership BITSET only for a large
+    // frontier, and 16k does not qualify. So the mask idea was right about the
+    // mechanism and wrong about the size of the prize: ~2x, not 15x.
+    section("E68: what does the residual frontier filter actually cost?");
+
+    let filt: [(&str, &str); 4] = [
+        (
+            "count   NO filter (degree sum)",
+            "MATCH (b:Person)<-[:KNOWS]-(a) WHERE b.age > 98 RETURN count(*) AS c",
+        ),
+        (
+            "count   residual IsLabeled",
+            "MATCH (b:Person)<-[:KNOWS]-(a:Person) WHERE b.age > 98 RETURN count(*) AS c",
+        ),
+        (
+            "project NO filter",
+            "MATCH (b:Person)<-[:KNOWS]-(a) WHERE b.age > 98 RETURN a.name AS an, b.name AS bn",
+        ),
+        (
+            "project residual IsLabeled",
+            "MATCH (b:Person)<-[:KNOWS]-(a:Person) WHERE b.age > 98 RETURN a.name AS an, b.name AS bn",
+        ),
+    ];
+
+    println!("  {:<34} {:>10} {:>10}  plan", "shape", "us", "rows");
+
+    for (label, q) in filt {
+        let opt = lenke_engine::opt::optimize_indexed(
+            lenke_engine::gql::parse(q).expect("parses"),
+            &seeded,
+        );
+        let rows = lenke_engine::exec::run(&opt, &seeded).rows.len();
+
+        if let Ok((us, _)) = harness::time_query(q, false, &seeded, cfg.reps.min(5)) {
+            println!("  {label:<34} {us:>10.1} {rows:>10}  {}", chain_of(&opt));
+        }
+    }
+}
+
+/// The optimized plan as an operator chain, for printing next to a measurement.
+fn chain_of(plan: &Plan) -> String {
+    let dbg = format!("{plan:?}");
+    let mut chain: Vec<&str> = Vec::new();
+
+    for tok in dbg.split(|c: char| !c.is_alphanumeric() && c != '_') {
+        if matches!(
+            tok,
+            "Scan"
+                | "Expand"
+                | "Filter"
+                | "Aggregate"
+                | "Project"
+                | "IndexSeek"
+                | "RangeSeek"
+                | "IntervalExpand"
+        ) && chain.last() != Some(&tok)
+        {
+            chain.push(tok);
+        }
+    }
+
+    chain.join(" <- ")
 }
