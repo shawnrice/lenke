@@ -1313,6 +1313,26 @@ pub struct InsertEdgeExpr {
 }
 
 impl Plan {
+    /// This operator's variant name alone — `"Branch"`, `"Aggregate"`, `"Row"` — for
+    /// an error that has to SAY which operator without printing the plan.
+    ///
+    /// Read off the `Debug` prefix rather than matched arm by arm. A match would be
+    /// ~60 arms whose only job is to repeat the variant name, and the compiler cannot
+    /// tell you when one falls out of date — it just keeps compiling while a new
+    /// operator reports the wrong name. The prefix is the variant name for every
+    /// derived `Debug` shape (`Branch { … }`, `Scan { … }`, a unit variant bare), so
+    /// this follows the enum for free.
+    #[must_use]
+    pub fn op_name(&self) -> String {
+        let rendered = format!("{self:?}");
+
+        rendered
+            .split(|c: char| !c.is_alphanumeric() && c != '_')
+            .next()
+            .unwrap_or("operator")
+            .to_string()
+    }
+
     #[must_use]
     pub fn expand(self, from: usize, dir: Dir, edge_label: &[String]) -> Self {
         Self::Expand {

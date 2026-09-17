@@ -304,6 +304,13 @@ fn set_exec_error(e: &str) {
                 crate::ffi_error::set("E_FAIL", rest);
                 return;
             }
+            // A shape the engine understands but cannot run in this position (e.g. a
+            // branching step inside a filter body). Not a bad value and not a parse
+            // error — the query is well-formed, the placement is what is unsupported.
+            "E_UNSUPPORTED" => {
+                crate::ffi_error::set("E_UNSUPPORTED", rest);
+                return;
+            }
             _ => {}
         }
     }

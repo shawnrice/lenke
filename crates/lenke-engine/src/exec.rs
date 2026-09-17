@@ -4551,7 +4551,17 @@ fn pull_body(plan: &Plan, store: &Store, seed: &Batch) -> Result<Batch, String> 
             b.gather(&(start..rows).collect::<Vec<usize>>())
         }
         other => {
-            return Err(format!("unsupported operator in EXISTS body: {other:?}"));
+            // Name the operator; do NOT print it. `{other:?}` here dumped the whole
+            // subtree — slots, predicates, the lot — at a user who wrote a traversal,
+            // which reads as a crash rather than as "that shape isn't supported here".
+            return Err(format!(
+                "E_UNSUPPORTED: this traversal is not supported inside a filter body \
+                 (Gremlin `where(…)` / `filter(…)`, GQL `EXISTS {{ … }}`): the \
+                 `{}` operator cannot run there. A filter body walks and tests; lift a \
+                 branching or reordering step (union/choose/order/local) out of it, or \
+                 end the body in count()/fold().",
+                other.op_name()
+            ));
         }
     })
 }

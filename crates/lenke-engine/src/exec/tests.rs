@@ -5477,6 +5477,46 @@ fn gql_order_by_desc_keeps_nulls_last() {
     );
 }
 
+/// An unsupported shape inside a filter body must NAME the operator, not PRINT the
+/// plan. The message used to be `{other:?}` — the whole IR subtree, slots, predicates
+/// and all, handed to someone who wrote a traversal. It reads as a crash, and it
+/// leaks internals that are free to change.
+#[test]
+fn unsupported_filter_body_names_the_operator_without_dumping_the_plan() {
+    let mut b = Builder::default();
+    b.node(&["P"], &[("name", s("a"))]);
+    let store = b.build();
+    // A `local(union(…))` body is a branch, which the sub-body executor (shared by
+    // EXISTS and the local/filter bodies) has no arm for.
+    let plan = crate::gremlin::parse("g.V().local(union(values('name'), out().count()).fold())")
+        .expect("parses — the shape is only unsupported at RUN time");
+    let err = try_run(&plan, &store).unwrap_err();
+
+    assert!(err.starts_with("E_UNSUPPORTED: "), "coded: {err}");
+    assert!(err.contains("`Branch`"), "names the operator: {err}");
+    assert!(err.contains("filter body"), "says where: {err}");
+    // The tells of a Debug dump of the plan.
+    assert!(!err.contains("input:"), "no IR internals: {err}");
+    assert!(!err.contains("slot:"), "no IR internals: {err}");
+    assert!(!err.contains("pred:"), "no IR internals: {err}");
+    // (The message does contain braces — it spells out `EXISTS { … }` as prose.)
+}
+
+/// `op_name` reports the variant, and nothing but the variant, for each Debug shape
+/// the enum uses (struct-like, and a plan built through the builder API).
+#[test]
+fn plan_op_name_is_just_the_variant() {
+    assert_eq!(Plan::Scan { label: None }.op_name(), "Scan");
+    assert_eq!(
+        Plan::Scan {
+            label: Some("P".into())
+        }
+        .expand(0, Dir::Out, &[])
+        .op_name(),
+        "Expand"
+    );
+}
+
 /// Gremlin's `order()` places a stored PRESENT null FIRST (the other language default) —
 /// the same shared OrderPage, driven by `SortKey.nulls_first`. An ABSENT property, by
 /// contrast, FILTERS the traverser (TinkerPop: a by() yielding no value drops the row) —

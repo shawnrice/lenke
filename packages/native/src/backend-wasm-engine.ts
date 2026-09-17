@@ -20,7 +20,7 @@ export type WasmSource =
   | Promise<Response>;
 
 /* eslint-disable max-params -- the wasm `lnk_*` declarations mirror the C ABI arity 1:1; lnk_query legitimately takes 8 offset args and can't drop params */
-type WasmExports = {
+export type WasmExports = {
   memory: WebAssembly.Memory;
   lnk_abi_version: () => number;
   lnk_alloc: (len: number) => number;
@@ -75,10 +75,82 @@ const instantiate = async (source: WasmSource): Promise<WebAssembly.Instance> =>
   return 'instance' in result ? result.instance : result;
 };
 
+const wasmAborted = (): LenkeError =>
+  new LenkeError(
+    'lenke: the wasm engine ran out of memory and aborted — the query needed more than ' +
+      'WebAssembly linear memory could give it. This instance cannot be used again; ' +
+      'create a fresh graph. To let the query through, bound it (a tighter `LIMIT`, a ' +
+      'dedup of the frontier, a shorter `repeat`), or run it on the native backend, ' +
+      'whose heap is not capped the same way.',
+    { code: ErrorCode.ResourceExhausted },
+  );
+
+/**
+ * Wrap every export so a wasm TRAP surfaces as a coded error instead of as
+ * `WebAssembly.RuntimeError: unreachable`.
+ *
+ * The engine's anti-runaway guards (the trail budget, the intermediate-frontier
+ * ceiling) stop a runaway query with a clear `E_RESOURCE_EXHAUSTED` — but they are
+ * counted in ROWS, and wasm's linear memory is far smaller than the native heap
+ * those thresholds were chosen for. A query whose working set fits on native can
+ * therefore exhaust wasm memory BEFORE reaching the row budget, and a failed
+ * allocation in wasm aborts the module: Rust cannot catch it, so the only thing
+ * reaching the caller is a bare `unreachable`. That reads as a crash, tells you
+ * nothing about which query did it, and gives no hint about what to change. The
+ * budgets stay identical to native on purpose — lowering them here would make the
+ * same query succeed on one backend and fail on the other, which is exactly what
+ * `backend-parity-fuzz` exists to catch.
+ *
+ * Exported for its own test: forcing a REAL out-of-memory abort takes minutes of
+ * fruitless graph walking, which is no way to guard a wrapper this small.
+ *
+ * A trapped module is also UNUSABLE afterwards: the abort happened wherever the
+ * allocator gave up, so the heap and any live graph handles are in an unknown
+ * state. Once one call traps, every later call fails the same way rather than
+ * reading whatever is left in memory.
+ */
+export const trapGuarded = (ex: WasmExports): WasmExports => {
+  let trapped = false;
+
+  const guard = <A extends unknown[], R>(fn: (...args: A) => R): ((...args: A) => R) => {
+    return (...args: A): R => {
+      if (trapped) {
+        throw wasmAborted();
+      }
+
+      try {
+        return fn(...args);
+      } catch (e) {
+        // A trap is a RuntimeError; anything else is a real JS-side fault and must
+        // keep its own identity (a coded LenkeError from a guard above, say).
+        if (e instanceof WebAssembly.RuntimeError) {
+          trapped = true;
+
+          throw wasmAborted();
+        }
+
+        throw e;
+      }
+    };
+  };
+
+  const out = { memory: ex.memory } as WasmExports;
+
+  for (const [name, value] of Object.entries(ex)) {
+    if (typeof value === 'function') {
+      (out as unknown as Record<string, unknown>)[name] = guard(
+        value as (...args: unknown[]) => unknown,
+      );
+    }
+  }
+
+  return out;
+};
+
 /** Instantiate the engine wasm backend from `lenke_engine.wasm`. */
 export const createWasmEngineBackend = async (source: WasmSource): Promise<Backend> => {
   const instance = await instantiate(source);
-  const ex = instance.exports as unknown as WasmExports;
+  const ex = trapGuarded(instance.exports as unknown as WasmExports);
 
   const abiVersion = ex.lnk_abi_version();
   assertAbi(abiVersion);
