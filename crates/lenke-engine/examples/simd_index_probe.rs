@@ -156,6 +156,59 @@
 //!        WHERE age > 98 ( 1% pass)   no index  303.2us · indexed   30.8us   9.8x
 //! ```
 //!
+//! ═══ WHY A FILTERED TRAVERSAL IS SLOW (E44-E54) ═══
+//!
+//! The campaign had only ever measured scan+filter. A graph query's distinguishing
+//! step is the EXPAND, so E44 asked where the time goes in one — and the answer was
+//! that a predicate costs 15x the traversal it sits on at one hop, 44x at two. The
+//! rest of the experiments took that apart. 200k `Person` nodes, 8 `KNOWS` edges
+//! each (1.6M edges):
+//!
+//! ```text
+//! count(*) over the expand                        453.2 us   0.28 ns/edge
+//! count(b.age) — reads one property per edge     6854.9 us   4.28 ns/edge
+//! WHERE b.age >  0  (99% pass)                   3019.4 us   1.89 ns/edge
+//! WHERE b.age > 49  (50% pass)                   8205.0 us   5.13 ns/edge
+//! WHERE b.age > 98  ( 1% pass)                   2824.3 us   1.77 ns/edge
+//! ```
+//!
+//! **10. The unfiltered count is a SHORTCUT, not a traversal.** 453us is 15.1x
+//! cheaper than merely READING a property per edge, so it never walks — which means
+//! "filtering costs 16x the expand" (my first reading of E48) was comparing against
+//! a number that was never traversal's price. Traversal's price is ~6.9ms; the
+//! shortcut's is 0.45ms; a predicate forfeits the shortcut and pays the walk.
+//!
+//! **11. Mid-selectivity costs 3.30 ns/edge in BRANCH MISPREDICTION.** 8205us at 50%
+//! against 2922us averaged over the predictable ends (99% and 1%) is the textbook
+//! signature, and it is precisely the premium a branch-free mask evaluation does not
+//! pay — `scan_layout_probe`'s variant C was FLAT in selectivity at 189us. This is
+//! the strongest argument in the whole campaign for mask-based predicate evaluation,
+//! and it appears only on the traversal path, which is where the cost is.
+//!
+//! **12. A NEGATED NUMERIC LITERAL WAS NOT FOLDED — 7x, FIXED.** `gql.rs` desugared
+//! unary minus to `Arith { Sub, Lit(0), x }` unconditionally, so `-1` never became a
+//! literal, the typed comparison fast paths (which match `prop <op> literal`)
+//! declined, and every row went through the boxed evaluator:
+//!
+//! ```text
+//!                            before     after
+//!   scan       n.age > -1   2354.3 ->   298.2 us   7.9x
+//!   traversal  b.age > -1  19652.2 ->  2743.7 us   7.2x   (level with `b.age >= 0`)
+//! ```
+//!
+//! Two spellings of one predicate differing by the plan alone — the exact class
+//! `spelling_probe` polices, which had no negative-literal group until now (it does
+//! now, and it reports a 5.71x cliff with the fold removed). Folded as `0.0 - x`
+//! rather than `-x`, so the constant is bitwise what the evaluator produced before
+//! and `-0.0` still folds to `+0.0`.
+//!
+//! **13. What the engine is NOT saving, priced.** Composing the stages it already
+//! runs, at their own measured speeds: an anchor filter leaves ~6.7x on the table and
+//! a far-side filter ~10.6x. Predicate pushdown below an Expand DOES fire (E45 prints
+//! the plan: `Expand <- Filter <- Scan`), so the gap is not a missing rewrite — it is
+//! per-path evaluation where per-distinct-endpoint would do, boxed reads where typed
+//! would do, and branch misprediction where a mask would not care.
+//!
 //! **9. THE RANGE INDEX HAS NO SELECTIVITY CHECK, AND THAT IS A LIVE FOOTGUN.** E40
 //! is the most actionable thing this campaign found, and it has nothing to do with
 //! bitmaps. The planner seeds a `RangeSeek` from a vertex range index whenever one
@@ -177,7 +230,7 @@
 #[allow(dead_code)]
 mod harness;
 
-use harness::{best_us, section, Cfg, Lcg};
+use harness::{section, Cfg, Lcg};
 
 const ROWS: usize = 1_000_000;
 
@@ -1019,154 +1072,87 @@ fn popcount(m: &[u64]) -> usize {
 
 fn main() {
     let cfg = Cfg::from_env();
-    let rows = cfg.scale.unwrap_or(ROWS);
+    let rows = cfg.scale.unwrap_or(200_000);
+    let store = harness::social_store(rows as u32, 8);
 
-    section("E37: against the REAL engine — does any of this survive contact?");
-    // Every number so far compares hand-written layouts against hand-written
-    // baselines. This runs the capstone query through the actual GQL path — parse,
-    // `optimize_indexed`, `exec::run` over a real `Store` — and then builds the
-    // bitmaps over the SAME store's data, so the comparison is against the engine
-    // rather than against my idea of it.
-    let store = harness::social_store(rows as u32, 0);
+    section("E52: equivalent spellings of the same predicate, timed");
+    // `age` is 0..99. Every predicate below admits EVERY row, so any difference is
+    // the plan, not the data — the exact class `spelling_probe` exists to police.
+    println!(
+        "  {:<38} {:>12} {:>10}",
+        "predicate (all admit every row)", "us", "vs best"
+    );
 
-    // `age` is 0..99 and `dept` is 5-way in the shared fixture; filter at 50 so
-    // roughly half the rows pass, which E12 says is bitmap territory.
-    let q = "MATCH (n:Person) WHERE n.age > 50 RETURN n.dept AS d, count(*) AS c";
-    let (engine_us, engine_rows) =
-        harness::time_query(q, false, &store, cfg.reps).expect("the capstone query runs");
+    let mut results: Vec<(String, f64)> = Vec::new();
 
-    // The same data, read out of the store, as the bitmap structures would hold it.
-    let mut ages: Vec<u32> = Vec::with_capacity(rows);
-    let mut depts: Vec<u32> = Vec::with_capacity(rows);
-    let mut present = vec![0u64; rows.div_ceil(64)];
+    for pred in [
+        "n.age > -1",
+        "n.age > -1.0",
+        "n.age >= 0",
+        "n.age > 0 OR n.age = 0",
+        "n.age < 100",
+        "n.age <= 99",
+        "n.age >= -5",
+    ] {
+        let q = format!("MATCH (n:Person) WHERE {pred} RETURN count(*) AS c");
 
-    for i in 0..rows {
-        let age = match store.prop(i as u32, "age") {
-            lenke_engine::value::Value::Num(x) => x as u32,
-            _ => 0,
-        };
-        let dept = match store.prop(i as u32, "dept") {
-            lenke_engine::value::Value::Str(s) => {
-                // Five departments, mapped to codes the way a Dict column would.
-                (s.as_bytes()[0] % 5) as u32
+        if let Ok((us, n)) = harness::time_query(&q, false, &store, cfg.reps.min(5)) {
+            assert_eq!(n, 1, "count query returns one row");
+            results.push((pred.to_string(), us));
+        }
+    }
+
+    let best = results
+        .iter()
+        .map(|(_, u)| *u)
+        .fold(f64::INFINITY, f64::min);
+
+    for (pred, us) in &results {
+        println!("  {pred:<38} {us:>12.1} {:>9.1}x", us / best);
+    }
+
+    section("E53: the same, on a traversal frontier (where it costs 8x more)");
+    println!("  {:<38} {:>12} {:>10}", "predicate", "us", "vs best");
+    let mut tr: Vec<(String, f64)> = Vec::new();
+
+    for pred in ["b.age > -1", "b.age >= 0", "b.age < 100", "b.age > 0"] {
+        let q = format!("MATCH (a:Person)-[:KNOWS]->(b) WHERE {pred} RETURN count(*) AS c");
+
+        if let Ok((us, _)) = harness::time_query(&q, false, &store, cfg.reps.min(5)) {
+            tr.push((pred.to_string(), us));
+        }
+    }
+
+    let tbest = tr.iter().map(|(_, u)| *u).fold(f64::INFINITY, f64::min);
+
+    for (pred, us) in &tr {
+        println!("  {pred:<38} {us:>12.1} {:>9.1}x", us / tbest);
+    }
+
+    section("E54: does the PLAN differ, or only the runtime?");
+    for pred in ["n.age > -1", "n.age >= 0", "n.age < 100"] {
+        let q = format!("MATCH (n:Person) WHERE {pred} RETURN count(*) AS c");
+        let plan = lenke_engine::gql::parse(&q).expect("parses");
+        let opt = lenke_engine::opt::optimize_indexed(plan, &store);
+        let dbg = format!("{opt:?}");
+        let mut chain: Vec<&str> = Vec::new();
+
+        for tok in dbg.split(|c: char| !c.is_alphanumeric() && c != '_') {
+            if matches!(
+                tok,
+                "Scan" | "Expand" | "Filter" | "Aggregate" | "Project" | "IndexSeek" | "RangeSeek"
+            ) && chain.last() != Some(&tok)
+            {
+                chain.push(tok);
             }
-            _ => 0,
-        };
-        ages.push(age);
-        depts.push(dept);
-        present[i / 64] |= 1u64 << (i % 64);
-    }
-
-    let abs = Bsi::build(
-        &Col {
-            keys: ages.clone(),
-            present: present.clone(),
-            rows,
-        },
-        7, // ages are 0..99 — seven bits, which is what E31 says to expect from real data
-    );
-    let vb = ValueBitmaps::build(&depts, &present, rows, 5);
-
-    let bitmap_us = best_us(cfg.reps, || {
-        let mask = abs.gt(50);
-        vb.maps
-            .iter()
-            .map(|(_, m)| popcount(&and_masks(m, &mask)))
-            .sum::<usize>()
-    });
-
-    // The engine's answer and the bitmap answer must agree on the total.
-    let bitmap_total: usize = {
-        let mask = abs.gt(50);
-        vb.maps
-            .iter()
-            .map(|(_, m)| popcount(&and_masks(m, &mask)))
-            .sum()
-    };
-    let scan_total = ages.iter().filter(|&&a| a > 50).count();
-    assert_eq!(
-        bitmap_total, scan_total,
-        "bitmap total disagrees with a plain scan"
-    );
-
-    println!("  {q}");
-    println!("    engine (parse+optimize hoisted, exec only)  {engine_us:>10.1} us  [{engine_rows} groups]");
-    println!(
-        "    BSI filter + bitmap group over the same data {bitmap_us:>8.1} us  [{:.1}x]",
-        engine_us / bitmap_us
-    );
-    println!("    rows passing the filter: {bitmap_total} of {rows}");
-
-    section("E38: where the engine's time goes on that query");
-    for (label, text) in [
-        (
-            "count(*), no filter, no group",
-            "MATCH (n:Person) RETURN count(*) AS c",
-        ),
-        (
-            "count(*) with the filter",
-            "MATCH (n:Person) WHERE n.age > 50 RETURN count(*) AS c",
-        ),
-        (
-            "group only, no filter",
-            "MATCH (n:Person) RETURN n.dept AS d, count(*) AS c",
-        ),
-        (
-            "filter + group (the capstone)",
-            "MATCH (n:Person) WHERE n.age > 50 RETURN n.dept AS d, count(*) AS c",
-        ),
-    ] {
-        match harness::time_query(text, false, &store, cfg.reps) {
-            Ok((us, n)) => println!("  {label:<32} {us:>10.1} us  [{n} rows]"),
-            Err(e) => println!("  {label:<32} n/a ({e})"),
         }
+
+        // The predicate's own shape, as the optimizer left it.
+        let pred_form = dbg
+            .find("pred:")
+            .map(|i| dbg[i..(i + 110).min(dbg.len())].replace('\n', " "))
+            .unwrap_or_else(|| "(no pred)".into());
+        println!("  {pred:<16} {}", chain.join(" <- "));
+        println!("  {:<16} {pred_form}", "");
     }
-
-    section("E40: does the engine's OWN range index already close the gap?");
-    // The engine gained a vertex RANGE index this week. If the planner seeds the
-    // filter from it, much of what the bitmaps offer is already available — so
-    // measure before proposing anything. Same store, same query, index added.
-    let mut indexed = harness::social_store(rows as u32, 0);
-    indexed.create_range_index("age");
-
-    for (label, text) in [
-        (
-            "count(*) with the filter",
-            "MATCH (n:Person) WHERE n.age > 50 RETURN count(*) AS c",
-        ),
-        (
-            "filter + group",
-            "MATCH (n:Person) WHERE n.age > 50 RETURN n.dept AS d, count(*) AS c",
-        ),
-        (
-            "a SELECTIVE filter",
-            "MATCH (n:Person) WHERE n.age > 98 RETURN count(*) AS c",
-        ),
-    ] {
-        let plain = harness::time_query(text, false, &store, cfg.reps);
-        let seeded = harness::time_query(text, false, &indexed, cfg.reps);
-
-        match (plain, seeded) {
-            (Ok((a, _)), Ok((b, n))) => println!(
-                "  {label:<26} no index {a:>9.1} us · range index {b:>9.1} us  [{:.1}x] ({n} rows)",
-                a / b
-            ),
-            _ => println!("  {label:<26} n/a"),
-        }
-    }
-
-    println!(
-        "  (for reference, the bitmap pipeline answered the middle one in {:.1} us)",
-        bitmap_us
-    );
-
-    section("E39: the decision table this campaign produced");
-    println!("  structure          when it pays                           write cost   memory");
-    println!("  counters           unfiltered GROUP BY count              2.6 ns       ~0");
-    println!("  value bitmaps      filtered group-by, equality, <=128 grp 5.5 ns       k*rows/8");
-    println!(
-        "  BSI                range predicates, any cardinality      30.7 ns      bits*rows/8"
-    );
-    println!("  block min/max      clustered columns only                 1.3 ns       ~0");
-    println!("  dense branch-free  everything else (the honest default)   0 ns         0");
 }

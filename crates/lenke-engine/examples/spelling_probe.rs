@@ -147,6 +147,28 @@ fn main() {
             ],
         ),
         (
+            // A negated numeric LITERAL used to survive as `Arith { Sub, 0, 1 }`, which
+            // the typed comparison fast paths decline — so `> -1` ran the boxed
+            // evaluator over every row at 7.0x the cost of `>= 0` on a scan and 6.8x on
+            // a traversal frontier. Nothing here tested a negative constant, which is
+            // why the cliff stood. Every spelling below admits the same rows (age is
+            // 0..99), so any spread is the plan.
+            "negative literal (four spellings of \"every row\")",
+            &[
+                (Gql, "MATCH (n:Person) WHERE n.age > -1 RETURN count(*) AS c"),
+                (Gql, "MATCH (n:Person) WHERE n.age > -1.0 RETURN count(*) AS c"),
+                (Gql, "MATCH (n:Person) WHERE n.age >= 0 RETURN count(*) AS c"),
+                (Gql, "MATCH (n:Person) WHERE n.age >= -5 RETURN count(*) AS c"),
+            ],
+        ),
+        (
+            "negative literal on a traversal frontier",
+            &[
+                (Gql, "MATCH (a:Person)-[:KNOWS]->(b) WHERE b.age > -1 RETURN count(*) AS c"),
+                (Gql, "MATCH (a:Person)-[:KNOWS]->(b) WHERE b.age >= 0 RETURN count(*) AS c"),
+            ],
+        ),
+        (
             "1-hop projection: GQL vs Gremlin",
             &[
                 (Gql, "MATCH (a:Person)-[:KNOWS]->(b) RETURN b.name AS n"),

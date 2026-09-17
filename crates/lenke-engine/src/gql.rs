@@ -5333,6 +5333,21 @@ impl Parser {
         if self.eat(&Tok::Minus) {
             // Unary `- - - …` recurses here (not through `expr`), so guard the re-entry.
             let e = self.nest(|p| p.unary())?;
+
+            // FOLD a negated numeric LITERAL instead of leaving `0 - x` in the tree.
+            // The typed comparison fast paths match `prop <op> literal` and decline
+            // anything else, so an unfolded negative constant sent every row through
+            // the boxed evaluator: `WHERE n.age > -1` measured 7.0x the cost of the
+            // equivalent `n.age >= 0` on a scan, and 6.8x on a traversal frontier
+            // (19.7ms vs 2.9ms over 1.6M edges) — two spellings of one predicate
+            // differing by the plan alone, which is the thing `spelling_probe` exists
+            // to catch. Folded as `0.0 - x`, NOT as `-x`, so the constant is bitwise
+            // what the evaluator produced before — in particular `-0.0` folds to
+            // `+0.0`, preserving the engine's no-negative-zero behaviour.
+            if let Expr::Lit(Value::Num(x)) = e {
+                return Ok(Expr::Lit(Value::Num(0.0 - x)));
+            }
+
             Ok(Expr::Arith {
                 op: crate::ir::ArithOp::Sub,
                 left: Box::new(Expr::Lit(Value::Num(0.0))),
