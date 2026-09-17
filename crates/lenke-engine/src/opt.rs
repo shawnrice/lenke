@@ -77,6 +77,15 @@ pub fn optimize(plan: Plan) -> Plan {
 /// blind seek scans anyway). Bounded so a misbehaving rule cannot spin.
 #[must_use]
 pub fn optimize_indexed(plan: Plan, idx: &dyn IndexOracle) -> Plan {
+    // Orientation runs ONCE, before the local fixpoint, and on the whole tree: it
+    // renames slots, so it has to see a pattern together with everything reading it
+    // — which a node-local rewrite never can. Afterwards the ordinary rules (index
+    // seeding, pushdown) act on the reversed shape exactly as on any other.
+    let plan = if orient_eligible(&plan, idx) {
+        orient_apply(plan).0
+    } else {
+        plan
+    };
     let mut plan = plan;
     for _ in 0..64 {
         let (next, changed) = rewrite(plan, idx);
@@ -1796,3 +1805,416 @@ pub(crate) fn width(plan: &Plan) -> usize {
 
 #[cfg(test)]
 mod tests;
+
+// ─────────────────────────────────────────────────────────── pattern orientation ───
+
+/// Swap two slot indices throughout an expression, or refuse.
+///
+/// Refuses (`None`) for anything whose slot references are not plainly local: a
+/// correlated subquery carries its own `outer_width` and a body that reads outer
+/// slots by index, and a path expression depends on the ORDER hops were taken, which
+/// a reversal changes. Refusing keeps [`orient_one_hop`] honest — it only reverses a
+/// pattern when every consumer above it can be renamed exactly.
+fn swap_slots(e: &Expr, a: usize, b: usize) -> Option<Expr> {
+    let sw = |s: usize| {
+        if s == a {
+            b
+        } else if s == b {
+            a
+        } else {
+            s
+        }
+    };
+    let rec = |x: &Expr| swap_slots(x, a, b);
+    let pair = |x: &Expr, y: &Expr| Some((Box::new(rec(x)?), Box::new(rec(y)?)));
+
+    Some(match e {
+        Expr::Slot(n) => Expr::Slot(sw(*n)),
+        Expr::Prop { slot, key } => Expr::Prop {
+            slot: sw(*slot),
+            key: key.clone(),
+        },
+        Expr::IsLabeled { slot, labels } => Expr::IsLabeled {
+            slot: sw(*slot),
+            labels: labels.clone(),
+        },
+        Expr::PropertyExists { slot, key } => Expr::PropertyExists {
+            slot: sw(*slot),
+            key: key.clone(),
+        },
+        Expr::Lit(_) | Expr::Param(_) => e.clone(),
+        Expr::Not(x) => Expr::Not(Box::new(rec(x)?)),
+        Expr::And(x, y) => {
+            let (l, r) = pair(x, y)?;
+            Expr::And(l, r)
+        }
+        Expr::Or(x, y) => {
+            let (l, r) = pair(x, y)?;
+            Expr::Or(l, r)
+        }
+        Expr::Xor(x, y) => {
+            let (l, r) = pair(x, y)?;
+            Expr::Xor(l, r)
+        }
+        Expr::In { needle, haystack } => {
+            let (l, r) = pair(needle, haystack)?;
+            Expr::In {
+                needle: l,
+                haystack: r,
+            }
+        }
+        Expr::Arith { op, left, right } => {
+            let (l, r) = pair(left, right)?;
+            Expr::Arith {
+                op: *op,
+                left: l,
+                right: r,
+            }
+        }
+        Expr::Compare { op, left, right } => {
+            let (l, r) = pair(left, right)?;
+            Expr::Compare {
+                op: *op,
+                left: l,
+                right: r,
+            }
+        }
+        Expr::Call { name, args } => Expr::Call {
+            name: name.clone(),
+            args: args.iter().map(rec).collect::<Option<Vec<_>>>()?,
+        },
+        Expr::GraphPred { op, args, negated } => Expr::GraphPred {
+            op: *op,
+            args: args.iter().map(rec).collect::<Option<Vec<_>>>()?,
+            negated: *negated,
+        },
+        Expr::List { items } => Expr::List {
+            items: items.iter().map(rec).collect::<Option<Vec<_>>>()?,
+        },
+        Expr::Cast { target, expr } => Expr::Cast {
+            target: *target,
+            expr: Box::new(rec(expr)?),
+        },
+        Expr::IsNull { expr, negated } => Expr::IsNull {
+            expr: Box::new(rec(expr)?),
+            negated: *negated,
+        },
+        Expr::Field { base, key } => Expr::Field {
+            base: Box::new(rec(base)?),
+            key: key.clone(),
+        },
+        // Everything else — records, maps, CASE, index reads, the subquery family,
+        // every path expression — is either structurally awkward to rename or
+        // order-dependent. A pattern carrying one simply does not get oriented.
+        _ => return None,
+    })
+}
+
+/// Reverse a ONE-HOP pattern whose selective predicate sits on the far node, so the
+/// predicate seeds the traversal instead of filtering its output.
+///
+/// `MATCH (a:L)-[:T]->(b) WHERE b.k > v` plans as `Filter(Expand(Scan L))`: it walks
+/// every edge of every `L` and then discards almost all of them. Reversed, it seeds
+/// from `b`'s index and walks the relationship backwards — the same answer from a
+/// pool the predicate has already shrunk. Measured on 200k nodes x 8 edges with a
+/// range index: 1652us forwards against 31.6us backwards at 1% selectivity (43x), and
+/// 52.7x at 10%. The TS engine has always done this (`orient`/`reversePath` in
+/// `@lenke/gql`'s matching.ts); this is the native engine catching up.
+///
+/// Deliberately narrow. It fires only for:
+///   - exactly one hop over a `Scan` (two slots, so the rename is a swap),
+///   - no bound edge variable and no `double_loops`,
+///   - a predicate reading ONLY the appended slot (seekability is checked by
+///     [`orient_eligible`], which owns every decision — this function only rewrites,
+///     so it can never decline after consumers have already been renamed),
+///   - consumers whose every expression can be renamed exactly (see [`swap_slots`]).
+///
+/// Anything else is left exactly as written. A wrong slot rename is a silently wrong
+/// answer, so the bar for firing is "provably the same query", not "probably".
+fn reverse_one_hop(plan: Plan) -> Option<Plan> {
+    // The pattern must be the immediate input, under consumers we can rename.
+    let Plan::Filter { input, pred } = plan else {
+        return None;
+    };
+    let Plan::Expand {
+        input: scan,
+        from,
+        dir,
+        edge_label,
+        bind_edge,
+        double_loops,
+    } = *input
+    else {
+        return None;
+    };
+
+    // Two slots only: the scan's node at 0, the hop's endpoint at 1.
+    let Plan::Scan { label } = scan.as_ref() else {
+        return None;
+    };
+    let label = label.clone();
+
+    if bind_edge || double_loops || from != 0 {
+        return None;
+    }
+
+    let seed_pred = swap_slots(&pred, 0, 1)?;
+
+    // The predicate must read the appended slot and NOTHING ELSE. `max_slot` alone
+    // does not say that — it is a maximum, so `b.k = 1 AND a.k = 2` passes it while
+    // reading slot 0 as well. Checking the SWAPPED predicate is exact: if the
+    // original read only slot 1, the swap reads only slot 0; if it read both, the
+    // swap still reads slot 1, which the seed does not have yet. (That mistake
+    // panicked the executor rather than answering wrongly, but only by luck.)
+    if max_slot(&seed_pred) != Some(0) {
+        return None;
+    }
+
+    // Reversed: seed the far node (slot 0), walk the relationship the other way to
+    // reach the original anchor (slot 1), and re-apply the anchor's label there —
+    // the original `Scan { label }` was what enforced it.
+    let reversed = Plan::Expand {
+        input: Box::new(Plan::Filter {
+            input: Box::new(Plan::Scan { label: None }),
+            pred: seed_pred,
+        }),
+        from: 0,
+        dir: flip_dir(dir),
+        edge_label,
+        bind_edge: false,
+        double_loops: false,
+    };
+
+    let out = match label {
+        Some(l) => Plan::Filter {
+            input: Box::new(reversed),
+            pred: Expr::IsLabeled {
+                slot: 1,
+                labels: vec![l],
+            },
+        },
+        None => reversed,
+    };
+
+    Some(out)
+}
+
+/// The other end of a hop.
+fn flip_dir(d: crate::ir::Dir) -> crate::ir::Dir {
+    match d {
+        crate::ir::Dir::Out => crate::ir::Dir::In,
+        crate::ir::Dir::In => crate::ir::Dir::Out,
+        crate::ir::Dir::Both => crate::ir::Dir::Both,
+    }
+}
+
+/// Is this predicate one the seeding rewrites can turn into an index seek? Mirrors
+/// what the existing seed rules accept: a property compared against a constant, on a
+/// key the oracle actually has an index for.
+fn seedable(pred: &Expr, idx: &dyn IndexOracle) -> bool {
+    match pred {
+        Expr::Compare { op, left, right } => {
+            let key = match (left.as_ref(), right.as_ref()) {
+                (Expr::Prop { key, .. }, Expr::Lit(_) | Expr::Param(_))
+                | (Expr::Lit(_) | Expr::Param(_), Expr::Prop { key, .. }) => key,
+                _ => return false,
+            };
+
+            match op {
+                crate::ir::CompareOp::Eq => idx.has_hash_index(key),
+                crate::ir::CompareOp::Lt
+                | crate::ir::CompareOp::Le
+                | crate::ir::CompareOp::Gt
+                | crate::ir::CompareOp::Ge => idx.has_range_index(key),
+                crate::ir::CompareOp::Ne => false,
+            }
+        }
+        // A conjunction seeds if either side does; the rest stays as a residual.
+        Expr::And(a, b) => seedable(a, idx) || seedable(b, idx),
+        _ => false,
+    }
+}
+
+/// Can this plan be oriented — pattern eligible AND every expression that reads the
+/// pattern's slots renameable? Checked BEFORE anything is rewritten, because a
+/// half-applied reversal leaves slot references pointing at the wrong node, and that
+/// is a silently wrong answer rather than a failure.
+///
+/// The subtlety that matters: SLOT INDICES ARE NOT GLOBAL. They name the columns of
+/// whatever operator produced them, so a `Project` or an `Aggregate` starts a fresh
+/// namespace — `Slot(0)` above an `Aggregate` is its first OUTPUT column, nothing to
+/// do with the pattern underneath. Only the operators between the pattern and the
+/// nearest enclosing projection see the pattern's slots, and only their expressions
+/// may be renamed. (Renaming past that boundary is how the first version of this
+/// rewrite turned `count(*)` into a read of a column that does not exist.)
+fn orient_eligible(plan: &Plan, idx: &dyn IndexOracle) -> bool {
+    // `Some(false)`, not merely `Some(_)`: the namespace must be CLOSED by a
+    // projection before the root. If the pattern's slots are still exposed at the
+    // top, they ARE the query's output columns — reversing would hand the caller
+    // `(b, a)` where it asked for `(a, b)`. That returns wrong rows rather than
+    // failing, which is the one outcome this rewrite must never risk.
+    orient_scan(plan, idx) == Some(false)
+}
+
+/// Walk to the pattern, verifying as we go. `Some(true)` means the subtree is
+/// orientable AND still exposes the pattern's slot namespace to its parent;
+/// `Some(false)` means orientable with the namespace already closed by a projection.
+fn orient_scan(plan: &Plan, idx: &dyn IndexOracle) -> Option<bool> {
+    match plan {
+        // A projection CLOSES the namespace: its own expressions read the pattern's
+        // slots (so they must be renameable), but everything above reads its outputs.
+        Plan::Project { input, items } => {
+            let inner = orient_scan(input, idx)?;
+
+            if !inner {
+                return Some(false);
+            }
+
+            items
+                .iter()
+                .all(|(_, e)| swap_slots(e, 0, 1).is_some())
+                .then_some(false)
+        }
+        Plan::Aggregate { input, keys, aggs } => {
+            let inner = orient_scan(input, idx)?;
+
+            if !inner {
+                return Some(false);
+            }
+
+            (keys.iter().all(|(_, e)| swap_slots(e, 0, 1).is_some())
+                && aggs
+                    .iter()
+                    .all(|a| a.arg.as_ref().is_none_or(|e| swap_slots(e, 0, 1).is_some())))
+            .then_some(false)
+        }
+        // Pass-through operators keep the namespace open.
+        Plan::Distinct { input } => orient_scan(input, idx),
+        // The pattern itself, or a residual filter over it.
+        Plan::Filter { input, pred } => {
+            if let Some(inner) = orient_scan(input, idx) {
+                // A filter ABOVE the pattern: renameable and keeps the namespace.
+                return if inner {
+                    swap_slots(pred, 0, 1).is_some().then_some(true)
+                } else {
+                    Some(false)
+                };
+            }
+
+            // Otherwise this may BE the pattern.
+            match input.as_ref() {
+                Plan::Expand {
+                    input: scan,
+                    from: 0,
+                    bind_edge: false,
+                    double_loops: false,
+                    ..
+                } => (matches!(scan.as_ref(), Plan::Scan { .. })
+                    && seedable(pred, idx)
+                    // Reads the appended slot and nothing else — see `reverse_one_hop`.
+                    && swap_slots(pred, 0, 1).map(|p| max_slot(&p)) == Some(Some(0)))
+                .then_some(true),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Apply the reversal, renaming only the expressions that read the pattern's slots.
+/// Mirrors [`orient_scan`] exactly; returns whether the rebuilt subtree still exposes
+/// the pattern's namespace.
+fn orient_apply(plan: Plan) -> (Plan, bool) {
+    match plan {
+        Plan::Project { input, items } => {
+            let (inner, open) = orient_apply(*input);
+            let items = if open {
+                items
+                    .into_iter()
+                    .map(|(n, e)| {
+                        let e = swap_slots(&e, 0, 1).expect("eligibility checked");
+                        (n, e)
+                    })
+                    .collect()
+            } else {
+                items
+            };
+
+            (
+                Plan::Project {
+                    input: Box::new(inner),
+                    items,
+                },
+                false,
+            )
+        }
+        Plan::Aggregate { input, keys, aggs } => {
+            let (inner, open) = orient_apply(*input);
+            let (keys, aggs) = if open {
+                (
+                    keys.into_iter()
+                        .map(|(n, e)| {
+                            let e = swap_slots(&e, 0, 1).expect("eligibility checked");
+                            (n, e)
+                        })
+                        .collect(),
+                    aggs.into_iter()
+                        .map(|mut a| {
+                            a.arg = a
+                                .arg
+                                .map(|e| swap_slots(&e, 0, 1).expect("eligibility checked"));
+                            a
+                        })
+                        .collect(),
+                )
+            } else {
+                (keys, aggs)
+            };
+
+            (
+                Plan::Aggregate {
+                    input: Box::new(inner),
+                    keys,
+                    aggs,
+                },
+                false,
+            )
+        }
+        Plan::Distinct { input } => {
+            let (inner, open) = orient_apply(*input);
+
+            (
+                Plan::Distinct {
+                    input: Box::new(inner),
+                },
+                open,
+            )
+        }
+        Plan::Filter { input, pred } => {
+            // The pattern is a Filter over an Expand over a Scan; anything else is a
+            // residual filter sitting above it.
+            if let Some(reversed) = reverse_one_hop(Plan::Filter {
+                input: input.clone(),
+                pred: pred.clone(),
+            }) {
+                return (reversed, true);
+            }
+
+            let (inner, open) = orient_apply(*input);
+            let pred = if open {
+                swap_slots(&pred, 0, 1).expect("eligibility checked")
+            } else {
+                pred
+            };
+
+            (
+                Plan::Filter {
+                    input: Box::new(inner),
+                    pred,
+                },
+                open,
+            )
+        }
+        other => (other, false),
+    }
+}

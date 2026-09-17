@@ -1122,13 +1122,38 @@ fn popcount(m: &[u64]) -> usize {
 fn main() {
     let cfg = Cfg::from_env();
     let rows = cfg.scale.unwrap_or(200_000);
-    let plain = harness::social_store(rows as u32, 8);
     let mut seeded = harness::social_store(rows as u32, 8);
     seeded.create_range_index("age");
 
-    let shape = |q: &str, store: &lenke_engine::store::Store| {
+    section("E62: does the new orientation rewrite fire, and is it correct?");
+    let cases: [(&str, &str); 5] = [
+        (
+            "far-side filter, count",
+            "MATCH (a:Person)-[:KNOWS]->(b) WHERE b.age > 98 RETURN count(*) AS c",
+        ),
+        (
+            "written backwards (reference)",
+            "MATCH (b:Person)<-[:KNOWS]-(a) WHERE b.age > 98 RETURN count(*) AS c",
+        ),
+        (
+            "far-side filter, PROJECTS a",
+            "MATCH (a:Person)-[:KNOWS]->(b) WHERE b.age > 98 RETURN a.name AS n",
+        ),
+        (
+            "far-side filter, projects BOTH",
+            "MATCH (a:Person)-[:KNOWS]->(b) WHERE b.age > 98 RETURN a.name AS an, b.name AS bn",
+        ),
+        (
+            "far-side, anchor also filtered",
+            "MATCH (a:Person)-[:KNOWS]->(b) WHERE b.age > 98 AND a.age > 50 RETURN count(*) AS c",
+        ),
+    ];
+
+    println!("  {:<38} {:>10} {:>10}", "query", "us", "rows");
+
+    for (label, q) in cases {
         let planned = lenke_engine::gql::parse(q).expect("parses");
-        let opt = lenke_engine::opt::optimize_indexed(planned, store);
+        let opt = lenke_engine::opt::optimize_indexed(planned, &seeded);
         let dbg = format!("{opt:?}");
         let mut chain: Vec<&str> = Vec::new();
 
@@ -1142,91 +1167,52 @@ fn main() {
             }
         }
 
-        // Which way the expand runs, if it runs at all.
-        let dir = if dbg.contains("dir: In") {
-            "In"
-        } else if dbg.contains("dir: Out") {
-            "Out"
-        } else {
-            "-"
-        };
+        let out = lenke_engine::exec::run(&opt, &seeded);
+        let n = out.rows.iter().flatten().count();
 
-        (chain.join(" <- "), dir)
-    };
-
-    section("E58: can a FAR-side predicate become an anchor-side seed?");
-    // `WHERE b.age > 98` cannot shrink the expansion if the walk starts at `a`. But
-    // `b` is 1% of the nodes and there is an index on `age` — so seeking `b` first
-    // and walking the relationship BACKWARDS answers the same question from a pool
-    // 100x smaller. The TS engine's notes describe exactly this ("score both ends,
-    // seed from whichever is more selective, walking the relationship backwards if
-    // needed"). Does the Rust engine do it?
-    let cases: [(&str, &str); 4] = [
-        (
-            "far-side filter, written forwards",
-            "MATCH (a:Person)-[:KNOWS]->(b) WHERE b.age > 98 RETURN count(*) AS c",
-        ),
-        (
-            "same query, written BACKWARDS",
-            "MATCH (b:Person)<-[:KNOWS]-(a) WHERE b.age > 98 RETURN count(*) AS c",
-        ),
-        (
-            "anchor-side filter (the reference)",
-            "MATCH (a:Person)-[:KNOWS]->(b) WHERE a.age > 98 RETURN count(*) AS c",
-        ),
-        (
-            "far-side, both ends labelled",
-            "MATCH (a:Person)-[:KNOWS]->(b:Person) WHERE b.age > 98 RETURN count(*) AS c",
-        ),
-    ];
-
-    println!(
-        "  {:<38} {:>10} {:>10} {:>7}",
-        "query", "no index", "range idx", "dir"
-    );
-
-    for (label, q) in cases {
-        let a = harness::time_query(q, false, &plain, cfg.reps.min(5));
-        let b = harness::time_query(q, false, &seeded, cfg.reps.min(5));
-        let (_, dir) = shape(q, &seeded);
-
-        if let (Ok((ua, na)), Ok((ub, nb))) = (a, b) {
-            assert_eq!(na, nb, "indexed and unindexed disagree on row count");
-            println!("  {label:<38} {ua:>10.1} {ub:>10.1} {dir:>7}");
+        if let Ok((us, _)) = harness::time_query(q, false, &seeded, cfg.reps.min(5)) {
+            println!("  {label:<38} {us:>10.1} {n:>10}");
+            println!("  {:<38} {}", "", chain.join(" <- "));
         }
     }
 
-    println!();
-    println!("  plans (with the range index present):");
+    section("E63: the ANSWERS must be identical to the unoriented plan");
+    // The optimizer without an index cannot orient (nothing to seed from), so the
+    // same query over an unindexed store is the control.
+    let plain = harness::social_store(rows as u32, 8);
 
     for (label, q) in cases {
-        let (chain, _) = shape(q, &seeded);
-        println!("    {label:<38} {chain}");
-    }
-
-    section("E59: the same, at a selectivity where orientation matters most");
-    // At 1% the far side is a 100x smaller pool; at 50% orientation should not
-    // matter, because neither end is selective. If the forward spelling is slow at
-    // BOTH, the engine is not scoring the ends at all.
-    println!("  {:<44} {:>12} {:>12}", "query", "us", "vs backwards");
-
-    for (t, pct) in [(98u32, 1u32), (89, 10), (49, 50)] {
-        let fwd = format!("MATCH (a:Person)-[:KNOWS]->(b) WHERE b.age > {t} RETURN count(*) AS c");
-        let bwd = format!("MATCH (b:Person)<-[:KNOWS]-(a) WHERE b.age > {t} RETURN count(*) AS c");
-        let f = harness::time_query(&fwd, false, &seeded, cfg.reps.min(5));
-        let r = harness::time_query(&bwd, false, &seeded, cfg.reps.min(5));
-
-        if let (Ok((uf, nf)), Ok((ur, nr))) = (f, r) {
-            assert_eq!(nf, nr, "the two spellings disagree on row count");
-            println!(
-                "  {:<44} {uf:>12.1} {:>11.1}x",
-                format!("far side admits {pct}%, written forwards"),
-                uf / ur
-            );
-            println!(
-                "  {:<44} {ur:>12.1}",
-                format!("                     written backwards")
-            );
-        }
+        let a = lenke_engine::opt::optimize_indexed(
+            lenke_engine::gql::parse(q).expect("parses"),
+            &plain,
+        );
+        let b = lenke_engine::opt::optimize_indexed(
+            lenke_engine::gql::parse(q).expect("parses"),
+            &seeded,
+        );
+        let mut ra: Vec<String> = lenke_engine::exec::run(&a, &plain)
+            .rows
+            .iter()
+            .flatten()
+            .map(|v| format!("{v:?}"))
+            .collect();
+        let mut rb: Vec<String> = lenke_engine::exec::run(&b, &seeded)
+            .rows
+            .iter()
+            .flatten()
+            .map(|v| format!("{v:?}"))
+            .collect();
+        ra.sort();
+        rb.sort();
+        println!(
+            "  {label:<38} {} rows  {}",
+            ra.len(),
+            if ra == rb {
+                "IDENTICAL"
+            } else {
+                "*** DIFFER ***"
+            }
+        );
+        assert_eq!(ra, rb, "orientation changed the answer for: {q}");
     }
 }

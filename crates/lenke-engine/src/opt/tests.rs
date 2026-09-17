@@ -666,3 +666,179 @@ fn stacked_orderpage_merge_preserves_rows_under_ties() {
         assert_rows_preserved(&plan, &store);
     }
 }
+
+// ─────────────────────────────────────────────────────── pattern orientation ───
+
+/// A store whose `age` carries a RANGE index, so the orientation rule has something
+/// to seed from. Without one it must decline — reversing a scan into a scan is no
+/// improvement, only churn.
+fn social_indexed() -> Store {
+    let mut store = social();
+    store.create_range_index("age");
+    store
+}
+
+/// A predicate on the FAR node reverses the hop, so the predicate seeds the walk
+/// instead of filtering its output. Rows must be identical either way.
+#[test]
+fn orient_reverses_a_far_side_predicate() {
+    let store = social_indexed();
+    // A projection on top: without one the pattern's slots ARE the output columns
+    // and reversing them would reorder the result — see the next test.
+    let plan = Plan::Project {
+        input: Box::new(
+            Plan::Scan {
+                label: Some("Person".into()),
+            }
+            .expand(0, Dir::Out, &["KNOWS".to_string()])
+            .filter(cmp(CompareOp::Gt, prop(1, "age"), Expr::Lit(n(26.0)))),
+        ),
+        items: vec![("who".into(), prop(0, "name"))],
+    };
+
+    let before = bag(&run(&plan, &store));
+    let opt = optimize_indexed(plan, &store);
+    assert_eq!(
+        before,
+        bag(&run(&opt, &store)),
+        "orientation changed the rows"
+    );
+
+    // The hop now runs the other way, seeded by the predicate.
+    fn hop_dir(p: &Plan) -> Option<Dir> {
+        match p {
+            Plan::Expand { dir, .. } => Some(*dir),
+            Plan::Filter { input, .. }
+            | Plan::Project { input, .. }
+            | Plan::Aggregate { input, .. } => hop_dir(input),
+            _ => None,
+        }
+    }
+
+    assert_eq!(
+        hop_dir(&opt),
+        Some(Dir::In),
+        "the hop was reversed: {opt:?}"
+    );
+}
+
+/// Slot indices are NOT global: an `Aggregate` starts a fresh namespace, so `Slot(0)`
+/// above one is its first OUTPUT column and must NOT be renamed with the pattern's
+/// slots. The first version of this rewrite renamed straight through the boundary and
+/// turned `count(*)` into a read of a column that does not exist.
+#[test]
+fn orient_does_not_rename_across_an_aggregate() {
+    let store = social_indexed();
+    let plan = Plan::Project {
+        input: Box::new(Plan::Aggregate {
+            input: Box::new(
+                Plan::Scan {
+                    label: Some("Person".into()),
+                }
+                .expand(0, Dir::Out, &["KNOWS".to_string()])
+                .filter(cmp(CompareOp::Gt, prop(1, "age"), Expr::Lit(n(26.0)))),
+            ),
+            keys: vec![],
+            aggs: vec![crate::ir::Agg {
+                func: crate::ir::AggFn::Count,
+                arg: None,
+                distinct: false,
+                name: "c".into(),
+                frac: None,
+                null_on_empty: false,
+                numeric_only: false,
+            }],
+        }),
+        // Reads the AGGREGATE's output column, not the pattern's slot 0.
+        items: vec![("c".into(), Expr::Slot(0))],
+    };
+
+    let before = bag(&run(&plan, &store));
+    let opt = optimize_indexed(plan, &store);
+    assert_eq!(
+        before,
+        bag(&run(&opt, &store)),
+        "orientation changed the count"
+    );
+}
+
+/// With the pattern's slots exposed at the root they are the query's OUTPUT columns,
+/// so reversing would return `(b, a)` for a query that asked for `(a, b)`. Caught by
+/// this test returning `carol, carol` where the answer is `alice, bob` — a wrong
+/// answer, not a crash, which is why the rule now requires a closing projection.
+#[test]
+fn orient_declines_when_the_pattern_is_the_output() {
+    let store = social_indexed();
+    let plan = Plan::Scan {
+        label: Some("Person".into()),
+    }
+    .expand(0, Dir::Out, &["KNOWS".to_string()])
+    .filter(cmp(CompareOp::Gt, prop(1, "age"), Expr::Lit(n(26.0))));
+
+    let before = bag(&run(&plan, &store));
+    let opt = optimize_indexed(plan, &store);
+    assert_eq!(
+        before,
+        bag(&run(&opt, &store)),
+        "orientation changed the rows"
+    );
+}
+
+/// A predicate that reads BOTH ends cannot be moved to the seed: the far half would
+/// arrive before the near slot exists. `max_slot` alone does not catch this (it is a
+/// maximum), so the rule checks the swapped predicate instead.
+#[test]
+fn orient_declines_a_predicate_reading_both_ends() {
+    let store = social_indexed();
+    let plan = Plan::Scan {
+        label: Some("Person".into()),
+    }
+    .expand(0, Dir::Out, &["KNOWS".to_string()])
+    .filter(Expr::And(
+        Box::new(cmp(CompareOp::Gt, prop(1, "age"), Expr::Lit(n(26.0)))),
+        Box::new(cmp(CompareOp::Gt, prop(0, "age"), Expr::Lit(n(20.0)))),
+    ));
+
+    let before = bag(&run(&plan, &store));
+    let opt = optimize_indexed(plan.clone(), &store);
+    assert_eq!(
+        before,
+        bag(&run(&opt, &store)),
+        "rows must survive either way"
+    );
+
+    // Still walking the written direction — the reversal declined.
+    fn first_dir(p: &Plan) -> Option<Dir> {
+        match p {
+            Plan::Expand { dir, .. } => Some(*dir),
+            Plan::Filter { input, .. } => first_dir(input),
+            _ => None,
+        }
+    }
+
+    assert_eq!(first_dir(&opt), Some(Dir::Out), "not reversed: {opt:?}");
+}
+
+/// With no index there is nothing to seed from, so reversing would trade one scan for
+/// another. The rule must leave the plan alone.
+#[test]
+fn orient_declines_without_an_index() {
+    let store = social(); // no range index
+    let plan = Plan::Scan {
+        label: Some("Person".into()),
+    }
+    .expand(0, Dir::Out, &["KNOWS".to_string()])
+    .filter(cmp(CompareOp::Gt, prop(1, "age"), Expr::Lit(n(26.0))));
+
+    let opt = optimize_indexed(plan, &store);
+
+    fn first_dir(p: &Plan) -> Option<Dir> {
+        match p {
+            Plan::Expand { dir, .. } => Some(*dir),
+            Plan::Filter { input, .. } => first_dir(input),
+            _ => None,
+        }
+    }
+
+    assert_eq!(first_dir(&opt), Some(Dir::Out), "not reversed: {opt:?}");
+}
