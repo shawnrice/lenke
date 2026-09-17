@@ -169,6 +169,21 @@ fn main() {
             ],
         ),
         (
+            // KNOWN GAP, not a regression: the native engine does not score both ends
+            // of a fixed-length pattern, so a predicate on the FAR end never reaches
+            // an index — the walk runs from every node and filters after. Writing the
+            // same pattern backwards seeds from the index instead. Measured at 43x
+            // (1% selective) and 52.7x (10%) with a range index on `age`. The TS
+            // engine reverses the pattern for exactly this reason (`orient` in
+            // gql/src/executor/matching.ts), and PropertyIndex.md documents the
+            // behaviour, so the two engines disagree on cost for identical answers.
+            "far-side predicate: forwards vs backwards (KNOWN 40x+ GAP)",
+            &[
+                (Gql, "MATCH (a:Person)-[:KNOWS]->(b) WHERE b.age > 98 RETURN count(*) AS c"),
+                (Gql, "MATCH (b:Person)<-[:KNOWS]-(a) WHERE b.age > 98 RETURN count(*) AS c"),
+            ],
+        ),
+        (
             "1-hop projection: GQL vs Gremlin",
             &[
                 (Gql, "MATCH (a:Person)-[:KNOWS]->(b) RETURN b.name AS n"),

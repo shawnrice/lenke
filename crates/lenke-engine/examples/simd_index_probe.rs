@@ -209,6 +209,55 @@
 //! per-path evaluation where per-distinct-endpoint would do, boxed reads where typed
 //! would do, and branch misprediction where a mask would not care.
 //!
+//! ═══ THE POOL, NOT THE PREDICATE (E55-E59) ═══
+//!
+//! The campaign spent itself making filtering FASTER — masks, bitmaps, branch-free
+//! evaluation, 5-8x. Shrinking the pool is worth 40-100x on the same query, and in
+//! a graph it COMPOUNDS, because a node removed at the anchor removes its edges and
+//! its edges' edges:
+//!
+//! ```text
+//! E57  all nodes             200,000      0.2 us   (a shortcut)
+//!      anchor admits 1%        2,000     30.1 us
+//!      1 hop from all      1,600,000    485.8 us
+//!      1 hop from the 1%      16,000     32.2 us   100x smaller pool
+//!      2 hops from all    12,800,000   4736.8 us
+//!      2 hops from the 1%    128,000    118.5 us   100x smaller pool, 40x less time
+//! ```
+//!
+//! **14. The seek threshold is not a property of the predicate.** E40 measured a
+//! range index making a SCAN 3.7x slower at 50% selectivity. E55 measures the SAME
+//! index making a 2-HOP TRAVERSAL 17.3x FASTER at the same 50%. So finding 9's
+//! "seed below ~2%" is right for a scan and badly wrong for a traversal: the
+//! threshold depends on the downstream FAN-OUT, not on the leaf alone.
+//!
+//! **15. THE NATIVE ENGINE DOES NOT ORIENT A FIXED-LENGTH PATTERN — 43x.** A
+//! predicate on the FAR end never reaches an index, because the optimizer does not
+//! score both ends and reverse:
+//!
+//! ```text
+//! E58  (a)-[:KNOWS]->(b) WHERE b.age > 98   1652.0 us   Filter <- Expand <- Scan
+//!      (b)<-[:KNOWS]-(a) WHERE b.age > 98     31.6 us   Expand <- RangeSeek
+//!      (a)-[:KNOWS]->(b) WHERE a.age > 98     32.1 us   Expand <- RangeSeek
+//!
+//! E59  forwards vs backwards:  1% -> 43.0x · 10% -> 52.7x · 50% -> 6.3x
+//! ```
+//!
+//! Identical answers, differing by the written DIRECTION alone. The TS engine
+//! already does this (`orient`/`reversePath` in gql/src/executor/matching.ts score
+//! both ends and reverse when the far end is more selective), and PropertyIndex.md
+//! documents the behaviour without marking it TS-only — so the two engines disagree
+//! on cost for the same query, and the docs side with the one that is faster.
+//! Logged as audit item 10 and guarded by a new `spelling_probe` group.
+//!
+//! **16. So the ranking flips.** Everything measured here says pool-shrinking beats
+//! predicate-speeding for traversal queries, which is what a graph query IS. The
+//! bitmap work remains the right answer for the shapes that CANNOT shrink — a scan
+//! with no selective anchor, a filtered GROUP BY, a count over a broad predicate —
+//! and the branch-misprediction premium (finding 11) is real wherever a predicate
+//! runs per row. But the first question about any slow graph query is how big a pool
+//! it started from, not how fast it filtered.
+//!
 //! **9. THE RANGE INDEX HAS NO SELECTIVITY CHECK, AND THAT IS A LIVE FOOTGUN.** E40
 //! is the most actionable thing this campaign found, and it has nothing to do with
 //! bitmaps. The planner seeds a `RangeSeek` from a vertex range index whenever one
@@ -1073,67 +1122,13 @@ fn popcount(m: &[u64]) -> usize {
 fn main() {
     let cfg = Cfg::from_env();
     let rows = cfg.scale.unwrap_or(200_000);
-    let store = harness::social_store(rows as u32, 8);
+    let plain = harness::social_store(rows as u32, 8);
+    let mut seeded = harness::social_store(rows as u32, 8);
+    seeded.create_range_index("age");
 
-    section("E52: equivalent spellings of the same predicate, timed");
-    // `age` is 0..99. Every predicate below admits EVERY row, so any difference is
-    // the plan, not the data — the exact class `spelling_probe` exists to police.
-    println!(
-        "  {:<38} {:>12} {:>10}",
-        "predicate (all admit every row)", "us", "vs best"
-    );
-
-    let mut results: Vec<(String, f64)> = Vec::new();
-
-    for pred in [
-        "n.age > -1",
-        "n.age > -1.0",
-        "n.age >= 0",
-        "n.age > 0 OR n.age = 0",
-        "n.age < 100",
-        "n.age <= 99",
-        "n.age >= -5",
-    ] {
-        let q = format!("MATCH (n:Person) WHERE {pred} RETURN count(*) AS c");
-
-        if let Ok((us, n)) = harness::time_query(&q, false, &store, cfg.reps.min(5)) {
-            assert_eq!(n, 1, "count query returns one row");
-            results.push((pred.to_string(), us));
-        }
-    }
-
-    let best = results
-        .iter()
-        .map(|(_, u)| *u)
-        .fold(f64::INFINITY, f64::min);
-
-    for (pred, us) in &results {
-        println!("  {pred:<38} {us:>12.1} {:>9.1}x", us / best);
-    }
-
-    section("E53: the same, on a traversal frontier (where it costs 8x more)");
-    println!("  {:<38} {:>12} {:>10}", "predicate", "us", "vs best");
-    let mut tr: Vec<(String, f64)> = Vec::new();
-
-    for pred in ["b.age > -1", "b.age >= 0", "b.age < 100", "b.age > 0"] {
-        let q = format!("MATCH (a:Person)-[:KNOWS]->(b) WHERE {pred} RETURN count(*) AS c");
-
-        if let Ok((us, _)) = harness::time_query(&q, false, &store, cfg.reps.min(5)) {
-            tr.push((pred.to_string(), us));
-        }
-    }
-
-    let tbest = tr.iter().map(|(_, u)| *u).fold(f64::INFINITY, f64::min);
-
-    for (pred, us) in &tr {
-        println!("  {pred:<38} {us:>12.1} {:>9.1}x", us / tbest);
-    }
-
-    section("E54: does the PLAN differ, or only the runtime?");
-    for pred in ["n.age > -1", "n.age >= 0", "n.age < 100"] {
-        let q = format!("MATCH (n:Person) WHERE {pred} RETURN count(*) AS c");
-        let plan = lenke_engine::gql::parse(&q).expect("parses");
-        let opt = lenke_engine::opt::optimize_indexed(plan, &store);
+    let shape = |q: &str, store: &lenke_engine::store::Store| {
+        let planned = lenke_engine::gql::parse(q).expect("parses");
+        let opt = lenke_engine::opt::optimize_indexed(planned, store);
         let dbg = format!("{opt:?}");
         let mut chain: Vec<&str> = Vec::new();
 
@@ -1147,12 +1142,91 @@ fn main() {
             }
         }
 
-        // The predicate's own shape, as the optimizer left it.
-        let pred_form = dbg
-            .find("pred:")
-            .map(|i| dbg[i..(i + 110).min(dbg.len())].replace('\n', " "))
-            .unwrap_or_else(|| "(no pred)".into());
-        println!("  {pred:<16} {}", chain.join(" <- "));
-        println!("  {:<16} {pred_form}", "");
+        // Which way the expand runs, if it runs at all.
+        let dir = if dbg.contains("dir: In") {
+            "In"
+        } else if dbg.contains("dir: Out") {
+            "Out"
+        } else {
+            "-"
+        };
+
+        (chain.join(" <- "), dir)
+    };
+
+    section("E58: can a FAR-side predicate become an anchor-side seed?");
+    // `WHERE b.age > 98` cannot shrink the expansion if the walk starts at `a`. But
+    // `b` is 1% of the nodes and there is an index on `age` — so seeking `b` first
+    // and walking the relationship BACKWARDS answers the same question from a pool
+    // 100x smaller. The TS engine's notes describe exactly this ("score both ends,
+    // seed from whichever is more selective, walking the relationship backwards if
+    // needed"). Does the Rust engine do it?
+    let cases: [(&str, &str); 4] = [
+        (
+            "far-side filter, written forwards",
+            "MATCH (a:Person)-[:KNOWS]->(b) WHERE b.age > 98 RETURN count(*) AS c",
+        ),
+        (
+            "same query, written BACKWARDS",
+            "MATCH (b:Person)<-[:KNOWS]-(a) WHERE b.age > 98 RETURN count(*) AS c",
+        ),
+        (
+            "anchor-side filter (the reference)",
+            "MATCH (a:Person)-[:KNOWS]->(b) WHERE a.age > 98 RETURN count(*) AS c",
+        ),
+        (
+            "far-side, both ends labelled",
+            "MATCH (a:Person)-[:KNOWS]->(b:Person) WHERE b.age > 98 RETURN count(*) AS c",
+        ),
+    ];
+
+    println!(
+        "  {:<38} {:>10} {:>10} {:>7}",
+        "query", "no index", "range idx", "dir"
+    );
+
+    for (label, q) in cases {
+        let a = harness::time_query(q, false, &plain, cfg.reps.min(5));
+        let b = harness::time_query(q, false, &seeded, cfg.reps.min(5));
+        let (_, dir) = shape(q, &seeded);
+
+        if let (Ok((ua, na)), Ok((ub, nb))) = (a, b) {
+            assert_eq!(na, nb, "indexed and unindexed disagree on row count");
+            println!("  {label:<38} {ua:>10.1} {ub:>10.1} {dir:>7}");
+        }
+    }
+
+    println!();
+    println!("  plans (with the range index present):");
+
+    for (label, q) in cases {
+        let (chain, _) = shape(q, &seeded);
+        println!("    {label:<38} {chain}");
+    }
+
+    section("E59: the same, at a selectivity where orientation matters most");
+    // At 1% the far side is a 100x smaller pool; at 50% orientation should not
+    // matter, because neither end is selective. If the forward spelling is slow at
+    // BOTH, the engine is not scoring the ends at all.
+    println!("  {:<44} {:>12} {:>12}", "query", "us", "vs backwards");
+
+    for (t, pct) in [(98u32, 1u32), (89, 10), (49, 50)] {
+        let fwd = format!("MATCH (a:Person)-[:KNOWS]->(b) WHERE b.age > {t} RETURN count(*) AS c");
+        let bwd = format!("MATCH (b:Person)<-[:KNOWS]-(a) WHERE b.age > {t} RETURN count(*) AS c");
+        let f = harness::time_query(&fwd, false, &seeded, cfg.reps.min(5));
+        let r = harness::time_query(&bwd, false, &seeded, cfg.reps.min(5));
+
+        if let (Ok((uf, nf)), Ok((ur, nr))) = (f, r) {
+            assert_eq!(nf, nr, "the two spellings disagree on row count");
+            println!(
+                "  {:<44} {uf:>12.1} {:>11.1}x",
+                format!("far side admits {pct}%, written forwards"),
+                uf / ur
+            );
+            println!(
+                "  {:<44} {ur:>12.1}",
+                format!("                     written backwards")
+            );
+        }
     }
 }
