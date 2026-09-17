@@ -130,10 +130,44 @@
 //! are empty. Pick by density. Better still, do not extract: an aggregate that
 //! walks the set bits beats materialize-then-gather at every density (E28).
 //!
-//! **8. Half the change gets a third of the win.** E36 is the number to quote: on a
-//! realistic dashboard query, indexing only the FILTER is 5.4x with no change to
-//! grouping, and the group-side bitmaps add another 4.3x on top. The first half
-//! needs no new query semantics and no new aggregate paths.
+//! **8. In the REAL engine the filter is not half the cost — it is 91% of it.** E36
+//! measured 5.4x for the filter side alone against a hand-written baseline, which
+//! implied grouping was the rest. E38, run through the actual GQL path, says
+//! otherwise: `count(*)` with no filter is 0.2us (the engine's existing count
+//! shortcut), `count(*)` WITH the filter is 340us, and adding the grouping takes it
+//! to 372us. The predicate is the cost; grouping is 9%. So the recommendation
+//! sharpens to: index the FILTER side.
+//!
+//! ═══ AGAINST THE REAL ENGINE (E37-E40) ═══
+//!
+//! ```text
+//! E37  MATCH (n:Person) WHERE n.age > 50 RETURN n.dept, count(*)   [200k rows]
+//!        engine, exec only (parse + optimize hoisted)      371.9 us
+//!        BSI filter + bitmap group, same data                6.6 us    56.4x
+//!
+//! E38  engine breakdown        count(*) alone            0.2 us  <- count shortcut
+//!                              count(*) + filter       340.4 us  <- shortcut dies
+//!                              group, no filter        371.2 us
+//!                              filter + group          372.4 us
+//!
+//! E40  the engine's OWN range index on `age`:
+//!        WHERE age > 50 (49% pass)   no index  320.9us · indexed 1184.2us   0.3x
+//!        WHERE age > 50, + group     no index  377.1us · indexed 1138.2us   0.3x
+//!        WHERE age > 98 ( 1% pass)   no index  303.2us · indexed   30.8us   9.8x
+//! ```
+//!
+//! **9. THE RANGE INDEX HAS NO SELECTIVITY CHECK, AND THAT IS A LIVE FOOTGUN.** E40
+//! is the most actionable thing this campaign found, and it has nothing to do with
+//! bitmaps. The planner seeds a `RangeSeek` from a vertex range index whenever one
+//! exists on the key: a 9.8x win at 1% selectivity, and a 3.7x LOSS at 49%, because
+//! seeking 98,000 rows through the index costs more than scanning 200,000. The
+//! engine behaviour is not new, but `IndexKind: "range"` only became expressible
+//! from TypeScript this week, so a user can now create the index and make their
+//! broad queries four times slower — with no way to see why. `cost.rs` already
+//! estimates cardinality; the seek decision needs to consult it, exactly as E19's
+//! hybrid does for the mask-vs-seed choice. Fix that BEFORE any of the bitmap work:
+//! it is smaller, it is a regression rather than an enhancement, and it is reachable
+//! today.
 
 // Experiments retire from `main` as the campaign moves on, but their code stays:
 // the point of a probe is the record of what was tried, including what failed.
@@ -144,7 +178,6 @@
 mod harness;
 
 use harness::{best_us, section, Cfg, Lcg};
-use std::hint::black_box;
 
 const ROWS: usize = 1_000_000;
 
@@ -988,100 +1021,152 @@ fn main() {
     let cfg = Cfg::from_env();
     let rows = cfg.scale.unwrap_or(ROWS);
 
-    section("E35: what the structures cost to BUILD at scale (the mutation question)");
-    println!(
-        "  {:<12} {:>14} {:>14} {:>14} {:>12}",
-        "rows", "BSI build ms", "8 bitmaps ms", "counters ms", "bitmap MB"
-    );
+    section("E37: against the REAL engine — does any of this survive contact?");
+    // Every number so far compares hand-written layouts against hand-written
+    // baselines. This runs the capstone query through the actual GQL path — parse,
+    // `optimize_indexed`, `exec::run` over a real `Store` — and then builds the
+    // bitmaps over the SAME store's data, so the comparison is against the engine
+    // rather than against my idea of it.
+    let store = harness::social_store(rows as u32, 0);
 
-    for n in [1_000_000usize, 10_000_000] {
-        let c = zipfish(n, 4096);
-        let cat = zipfish(n, 8);
-        let bsi_ms = best_us(cfg.reps.min(3), || Bsi::build(&c, 12).slices.len()) / 1000.0;
-        let vb_ms = best_us(cfg.reps.min(3), || {
-            ValueBitmaps::build(&cat.keys, &cat.present, n, 8)
-                .maps
-                .len()
-        }) / 1000.0;
-        let ct_ms = best_us(cfg.reps.min(3), || {
-            let mut counters = [0u32; 8];
+    // `age` is 0..99 and `dept` is 5-way in the shared fixture; filter at 50 so
+    // roughly half the rows pass, which E12 says is bitmap territory.
+    let q = "MATCH (n:Person) WHERE n.age > 50 RETURN n.dept AS d, count(*) AS c";
+    let (engine_us, engine_rows) =
+        harness::time_query(q, false, &store, cfg.reps).expect("the capstone query runs");
 
-            for (i, &k) in cat.keys.iter().enumerate() {
-                if cat.present[i / 64] >> (i % 64) & 1 == 1 {
-                    counters[k as usize] += 1;
-                }
+    // The same data, read out of the store, as the bitmap structures would hold it.
+    let mut ages: Vec<u32> = Vec::with_capacity(rows);
+    let mut depts: Vec<u32> = Vec::with_capacity(rows);
+    let mut present = vec![0u64; rows.div_ceil(64)];
+
+    for i in 0..rows {
+        let age = match store.prop(i as u32, "age") {
+            lenke_engine::value::Value::Num(x) => x as u32,
+            _ => 0,
+        };
+        let dept = match store.prop(i as u32, "dept") {
+            lenke_engine::value::Value::Str(s) => {
+                // Five departments, mapped to codes the way a Dict column would.
+                (s.as_bytes()[0] % 5) as u32
             }
-
-            counters.iter().map(|&x| x as usize).sum::<usize>()
-        }) / 1000.0;
-        println!(
-            "  {:<12} {:>14.1} {:>14.1} {:>14.1} {:>12}",
-            n,
-            black_box(bsi_ms),
-            black_box(vb_ms),
-            black_box(ct_ms),
-            8 * n.div_ceil(64) * 8 / 1_048_576
-        );
+            _ => 0,
+        };
+        ages.push(age);
+        depts.push(dept);
+        present[i / 64] |= 1u64 << (i % 64);
     }
 
-    section("E36: capstone — a realistic analytical query, three ways");
-    // `MATCH (n:P) WHERE n.age > 30 RETURN n.dept, count(*)` — a range filter, a
-    // grouped count, no rows returned. The shape every dashboard query has.
-    let cat = zipfish(rows, 8);
-    let age = zipfish(rows, 4096);
-    let abs = Bsi::build(&age, 12);
-    let vb = ValueBitmaps::build(&cat.keys, &cat.present, rows, 8);
-    let t = 512u32;
+    let abs = Bsi::build(
+        &Col {
+            keys: ages.clone(),
+            present: present.clone(),
+            rows,
+        },
+        7, // ages are 0..99 — seven bits, which is what E31 says to expect from real data
+    );
+    let vb = ValueBitmaps::build(&depts, &present, rows, 5);
 
-    // (a) what the engine does now: scan rows, test the predicate, hash the group.
-    let scan_us = best_us(cfg.reps, || {
-        let mut counts: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
-
-        for (i, &k) in cat.keys.iter().enumerate() {
-            if cat.present[i / 64] >> (i % 64) & 1 == 1 && age.keys[i] > t {
-                *counts.entry(k).or_insert(0) += 1;
-            }
-        }
-
-        counts.values().map(|&v| v as usize).sum::<usize>()
-    });
-
-    // (b) indexes for the filter, hashing for the group: the half-way house.
-    let half_us = best_us(cfg.reps, || {
-        let mask = abs.gt(t);
-        let mut counts: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
-
-        for (w, &word) in mask.iter().enumerate() {
-            let mut bits = word;
-
-            while bits != 0 {
-                let row = w * 64 + bits.trailing_zeros() as usize;
-                *counts.entry(cat.keys[row]).or_insert(0) += 1;
-                bits &= bits - 1;
-            }
-        }
-
-        counts.values().map(|&v| v as usize).sum::<usize>()
-    });
-
-    // (c) all the way: the answer never leaves bitmap form.
-    let full_us = best_us(cfg.reps, || {
-        let mask = abs.gt(t);
+    let bitmap_us = best_us(cfg.reps, || {
+        let mask = abs.gt(50);
         vb.maps
             .iter()
             .map(|(_, m)| popcount(&and_masks(m, &mask)))
             .sum::<usize>()
     });
 
-    println!("  MATCH (n:P) WHERE n.age > t RETURN n.dept, count(*)   [{rows} rows]");
-    println!("    scan + hash group          {scan_us:>10.1} us   1.0x");
-    println!(
-        "    BSI filter + hash group    {half_us:>10.1} us  {:>4.1}x",
-        scan_us / half_us
+    // The engine's answer and the bitmap answer must agree on the total.
+    let bitmap_total: usize = {
+        let mask = abs.gt(50);
+        vb.maps
+            .iter()
+            .map(|(_, m)| popcount(&and_masks(m, &mask)))
+            .sum()
+    };
+    let scan_total = ages.iter().filter(|&&a| a > 50).count();
+    assert_eq!(
+        bitmap_total, scan_total,
+        "bitmap total disagrees with a plain scan"
     );
+
+    println!("  {q}");
+    println!("    engine (parse+optimize hoisted, exec only)  {engine_us:>10.1} us  [{engine_rows} groups]");
     println!(
-        "    BSI filter + bitmap group  {full_us:>10.1} us  {:>4.1}x",
-        scan_us / full_us
+        "    BSI filter + bitmap group over the same data {bitmap_us:>8.1} us  [{:.1}x]",
+        engine_us / bitmap_us
     );
-    println!("  (the middle row is the interesting one: half the change gets a third of the win)");
+    println!("    rows passing the filter: {bitmap_total} of {rows}");
+
+    section("E38: where the engine's time goes on that query");
+    for (label, text) in [
+        (
+            "count(*), no filter, no group",
+            "MATCH (n:Person) RETURN count(*) AS c",
+        ),
+        (
+            "count(*) with the filter",
+            "MATCH (n:Person) WHERE n.age > 50 RETURN count(*) AS c",
+        ),
+        (
+            "group only, no filter",
+            "MATCH (n:Person) RETURN n.dept AS d, count(*) AS c",
+        ),
+        (
+            "filter + group (the capstone)",
+            "MATCH (n:Person) WHERE n.age > 50 RETURN n.dept AS d, count(*) AS c",
+        ),
+    ] {
+        match harness::time_query(text, false, &store, cfg.reps) {
+            Ok((us, n)) => println!("  {label:<32} {us:>10.1} us  [{n} rows]"),
+            Err(e) => println!("  {label:<32} n/a ({e})"),
+        }
+    }
+
+    section("E40: does the engine's OWN range index already close the gap?");
+    // The engine gained a vertex RANGE index this week. If the planner seeds the
+    // filter from it, much of what the bitmaps offer is already available — so
+    // measure before proposing anything. Same store, same query, index added.
+    let mut indexed = harness::social_store(rows as u32, 0);
+    indexed.create_range_index("age");
+
+    for (label, text) in [
+        (
+            "count(*) with the filter",
+            "MATCH (n:Person) WHERE n.age > 50 RETURN count(*) AS c",
+        ),
+        (
+            "filter + group",
+            "MATCH (n:Person) WHERE n.age > 50 RETURN n.dept AS d, count(*) AS c",
+        ),
+        (
+            "a SELECTIVE filter",
+            "MATCH (n:Person) WHERE n.age > 98 RETURN count(*) AS c",
+        ),
+    ] {
+        let plain = harness::time_query(text, false, &store, cfg.reps);
+        let seeded = harness::time_query(text, false, &indexed, cfg.reps);
+
+        match (plain, seeded) {
+            (Ok((a, _)), Ok((b, n))) => println!(
+                "  {label:<26} no index {a:>9.1} us · range index {b:>9.1} us  [{:.1}x] ({n} rows)",
+                a / b
+            ),
+            _ => println!("  {label:<26} n/a"),
+        }
+    }
+
+    println!(
+        "  (for reference, the bitmap pipeline answered the middle one in {:.1} us)",
+        bitmap_us
+    );
+
+    section("E39: the decision table this campaign produced");
+    println!("  structure          when it pays                           write cost   memory");
+    println!("  counters           unfiltered GROUP BY count              2.6 ns       ~0");
+    println!("  value bitmaps      filtered group-by, equality, <=128 grp 5.5 ns       k*rows/8");
+    println!(
+        "  BSI                range predicates, any cardinality      30.7 ns      bits*rows/8"
+    );
+    println!("  block min/max      clustered columns only                 1.3 ns       ~0");
+    println!("  dense branch-free  everything else (the honest default)   0 ns         0");
 }
