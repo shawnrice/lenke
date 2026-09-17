@@ -80,6 +80,10 @@ question in its module header — read the header before touching it.
   scan, and what one point write costs to maintain it). The answer to "is SIMD
   worth it here" runs through this: today's loop gathers, gates on a byte and
   materializes ids, which defeats vectorization before the value layout matters.
+- `bitmap_layout_probe` — whether a predicate can become BITMAP ARITHMETIC rather
+  than value comparisons (recursive frequency encoding; bit-sliced index), what
+  each costs to mutate, and whether it reaches the vector units. It does: the
+  circuits compile to `vandps`/`vorps`/`vandnps` over ymm with no intrinsics.
 - `spelling_probe` — that equivalent query spellings optimize to the SAME plan
   and so cost the same (a plan mismatch is the real signal; time is the backstop).
 
