@@ -1171,38 +1171,79 @@ fn orient_two_hop_flips_each_direction_independently() {
     );
 }
 
-/// THREE hops do not orient. The rename for an n-hop reversal maps slot `i` to
-/// `n - i`, which is a single swap only while n <= 2; at n = 3 it is two independent
-/// swaps and `swap_slots` cannot express it. Reversing anyway would rename slot 1 to
-/// slot 1 and leave the pattern crossed.
+/// THREE hops orient too, and this is the case that broke when the rename was a
+/// single swap: at n = 3 the permutation is 0<->3 AND 1<->2, so the two MIDDLE slots
+/// trade places. A swap of the ends alone leaves them crossed — which returns wrong
+/// rows whenever the middles are distinguishable, and silently correct ones when they
+/// are not. The fixture makes them distinguishable on purpose.
 #[test]
-fn orient_declines_three_hops() {
-    let store = social_indexed();
+fn orient_three_hops_does_not_cross_the_middle_slots() {
+    let mut b = Builder::default();
+    let a1 = b.node(&["Person"], &[("name", s("a1")), ("age", n(10.0))]);
+    // Second hop must land on a :Mid, third on a :Late. Cross them and no row matches.
+    let mid = b.node(&["Person", "Mid"], &[("name", s("mid")), ("age", n(11.0))]);
+    let late = b.node(
+        &["Person", "Late"],
+        &[("name", s("late")), ("age", n(12.0))],
+    );
+    let target = b.node(&["Person"], &[("name", s("target")), ("age", n(99.0))]);
+    b.edge(a1, mid, "KNOWS");
+    b.edge(mid, late, "KNOWS");
+    b.edge(late, target, "KNOWS");
+    // A decoy route with the labels the other way round.
+    let x = b.node(&["Person", "Late"], &[("name", s("x")), ("age", n(13.0))]);
+    let y = b.node(&["Person", "Mid"], &[("name", s("y")), ("age", n(14.0))]);
+    b.edge(a1, x, "KNOWS");
+    b.edge(x, y, "KNOWS");
+    b.edge(y, target, "KNOWS");
+    let mut store = b.build();
+    store.create_range_index("age");
+
+    // (a:Person)-[:KNOWS]->(b:Mid)-[:KNOWS]->(c:Late)-[:KNOWS]->(d:Person) WHERE d.age > 98
     let plan = Plan::Project {
         input: Box::new(
             Plan::Scan {
                 label: Some("Person".into()),
             }
             .expand(0, Dir::Out, &["KNOWS".to_string()])
+            .filter(Expr::IsLabeled {
+                slot: 1,
+                labels: vec!["Mid".into()],
+            })
             .expand(1, Dir::Out, &["KNOWS".to_string()])
+            .filter(Expr::IsLabeled {
+                slot: 2,
+                labels: vec!["Late".into()],
+            })
             .expand(2, Dir::Out, &["KNOWS".to_string()])
             .filter(Expr::And(
                 Box::new(Expr::IsLabeled {
                     slot: 3,
                     labels: vec!["Person".into()],
                 }),
-                Box::new(cmp(CompareOp::Gt, prop(3, "age"), Expr::Lit(n(26.0)))),
+                Box::new(cmp(CompareOp::Gt, prop(3, "age"), Expr::Lit(n(98.0)))),
             )),
         ),
         items: vec![("who".into(), prop(0, "name"))],
     };
 
     let before = bag(&run(&plan, &store));
+    // Exactly the :Mid-then-:Late route. The decoy has them reversed and must not count.
+    assert_eq!(
+        before.len(),
+        1,
+        "fixture: expected exactly one qualifying route"
+    );
+
     let opt = optimize_indexed(plan, &store);
 
-    assert_eq!(before, bag(&run(&opt, &store)), "the rows changed");
+    assert_eq!(
+        before,
+        bag(&run(&opt, &store)),
+        "the three-hop reversal crossed the middle slots: {opt:?}"
+    );
     assert!(
-        !has_range_seek(&opt),
-        "three hops must keep their written orientation: {opt:?}"
+        has_range_seek(&opt),
+        "three hops should now seed from the far end: {opt:?}"
     );
 }

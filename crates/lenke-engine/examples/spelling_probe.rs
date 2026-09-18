@@ -235,6 +235,18 @@ fn main() {
             ],
         ),
         (
+            // THREE hops, the widest gap ever measured in this repo: 263,502us written
+            // forwards against 37us written backwards (at 50k nodes — the forwards form
+            // did not finish at 200k). This is also where the rename stopped being a
+            // single swap: the permutation is 0<->3 AND 1<->2, so the two MIDDLE slots
+            // trade places too.
+            "three-hop far-side predicate: forwards vs backwards",
+            &[
+                (Gql, "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person)-[:KNOWS]->(d:Person) WHERE d.age > 99.5 RETURN count(*) AS n"),
+                (Gql, "MATCH (d:Person)<-[:KNOWS]-(c:Person)<-[:KNOWS]-(b:Person)<-[:KNOWS]-(a:Person) WHERE d.age > 99.5 RETURN count(*) AS n"),
+            ],
+        ),
+        (
             "1-hop projection: GQL vs Gremlin",
             &[
                 (Gql, "MATCH (a:Person)-[:KNOWS]->(b) RETURN b.name AS n"),

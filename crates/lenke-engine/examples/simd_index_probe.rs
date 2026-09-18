@@ -1526,20 +1526,30 @@ fn main() {
 
     // E72 ------------------------------------------------------------------
     //
-    // The last item the audit lists as open on orientation: TWO hops. `reverse_one_hop`
-    // requires an `Expand` directly over a `Scan`, so `(a)-[:T]->(b)-[:T]->(c) WHERE
-    // c.k > v` keeps its written direction and walks the whole two-hop frontier before
-    // filtering. An earlier pass put 83x on it — but that was BEFORE the pushdown split
-    // (E67), which changed what reaches an index in this exact shape, so the number has
-    // to be re-taken before anyone implements against it.
+    // Orientation past ONE hop. `reverse_one_hop` required an `Expand` directly over a
+    // `Scan`, so `(a)-[:T]->(b)-[:T]->(c) WHERE c.k > v` kept whatever direction it was
+    // written in and walked the whole frontier before filtering. An earlier pass put
+    // 83x on two hops, but that was BEFORE the pushdown split (E67) changed what
+    // reaches an index in this exact shape, so it was re-taken here before implementing.
     //
-    // The comparison is the same as E66's: what the engine plans, against the same
-    // query written backwards by hand, which is the best a perfect orientation could do.
-    section("E72: how much is still on the table at TWO hops?");
+    // The comparison is E66's: what the engine plans, against the same query written
+    // backwards by hand — the best a perfect orientation could do. Both now produce the
+    // SAME PLAN, which is a stronger result than two times that happen to agree.
+    //
+    // Measured before / after `reverse_chain`:
+    //
+    //   2 hops   178357us -> 2148us      83x   (at 200k nodes)
+    //   3 hops   263502us ->   59.5us  4429x   (at 50k nodes — it did not finish at 200k)
+    //
+    // Three hops is where the rename stopped being a single swap: the permutation is
+    // 0<->3 AND 1<->2, so swapping only the ends leaves the two middles crossed. That
+    // returns wrong rows exactly when the middle nodes are distinguishable — which the
+    // probe's fixture cannot show, so the guard for it is a unit test.
+    section("E72: orienting a multi-hop pattern onto its far-side predicate");
 
     println!("  {:<40} {:>10}  plan", "query", "us");
 
-    let two: [(&str, &str); 4] = [
+    let two: [(&str, &str); 6] = [
         (
             "1 hop  forwards (oriented)",
             "MATCH (a:Person)-[:KNOWS]->(b:Person) WHERE b.age > 98 RETURN count(*) AS c",
@@ -1549,12 +1559,20 @@ fn main() {
             "MATCH (b:Person)<-[:KNOWS]-(a:Person) WHERE b.age > 98 RETURN count(*) AS c",
         ),
         (
-            "2 hops forwards (NOT oriented)",
+            "2 hops forwards",
             "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) WHERE c.age > 98 RETURN count(*) AS n",
         ),
         (
             "2 hops backwards (hand)",
             "MATCH (c:Person)<-[:KNOWS]-(b:Person)<-[:KNOWS]-(a:Person) WHERE c.age > 98 RETURN count(*) AS n",
+        ),
+        (
+            "3 hops forwards",
+            "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person)-[:KNOWS]->(d:Person) WHERE d.age > 99.5 RETURN count(*) AS n",
+        ),
+        (
+            "3 hops backwards (hand)",
+            "MATCH (d:Person)<-[:KNOWS]-(c:Person)<-[:KNOWS]-(b:Person)<-[:KNOWS]-(a:Person) WHERE d.age > 99.5 RETURN count(*) AS n",
         ),
     ];
 

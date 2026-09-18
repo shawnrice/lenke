@@ -1869,38 +1869,29 @@ mod tests;
 
 // ─────────────────────────────────────────────────────────── pattern orientation ───
 
-/// Swap two slot indices throughout an expression, or refuse.
+/// Rewrite every slot index in an expression through `f`, or refuse.
 ///
 /// Refuses (`None`) for anything whose slot references are not plainly local: a
 /// correlated subquery carries its own `outer_width` and a body that reads outer
 /// slots by index, and a path expression depends on the ORDER hops were taken, which
-/// a reversal changes. Refusing keeps [`orient_one_hop`] honest — it only reverses a
+/// a reversal changes. Refusing keeps [`reverse_chain`] honest — it only reverses a
 /// pattern when every consumer above it can be renamed exactly.
-fn swap_slots(e: &Expr, a: usize, b: usize) -> Option<Expr> {
-    let sw = |s: usize| {
-        if s == a {
-            b
-        } else if s == b {
-            a
-        } else {
-            s
-        }
-    };
-    let rec = |x: &Expr| swap_slots(x, a, b);
+fn map_slots(e: &Expr, f: &dyn Fn(usize) -> usize) -> Option<Expr> {
+    let rec = |x: &Expr| map_slots(x, f);
     let pair = |x: &Expr, y: &Expr| Some((Box::new(rec(x)?), Box::new(rec(y)?)));
 
     Some(match e {
-        Expr::Slot(n) => Expr::Slot(sw(*n)),
+        Expr::Slot(n) => Expr::Slot(f(*n)),
         Expr::Prop { slot, key } => Expr::Prop {
-            slot: sw(*slot),
+            slot: f(*slot),
             key: key.clone(),
         },
         Expr::IsLabeled { slot, labels } => Expr::IsLabeled {
-            slot: sw(*slot),
+            slot: f(*slot),
             labels: labels.clone(),
         },
         Expr::PropertyExists { slot, key } => Expr::PropertyExists {
-            slot: sw(*slot),
+            slot: f(*slot),
             key: key.clone(),
         },
         Expr::Lit(_) | Expr::Param(_) => e.clone(),
@@ -2024,6 +2015,31 @@ fn peel_hops(plan: &Plan) -> Option<(Option<String>, Vec<Hop>)> {
     }
 }
 
+/// Exchange two slot indices, leaving the rest alone.
+fn swap_slots(e: &Expr, a: usize, b: usize) -> Option<Expr> {
+    map_slots(e, &move |s| {
+        if s == a {
+            b
+        } else if s == b {
+            a
+        } else {
+            s
+        }
+    })
+}
+
+/// The rename a reversal performs: slot `i` of an `n`-hop pattern becomes slot
+/// `n - i`. The ends trade places and, for an odd-length chain, the middle stays put.
+///
+/// This replaced a single `swap_slots(_, 0, n)`, which is the same permutation only
+/// while n <= 2 and silently the WRONG one above that — at three hops it would leave
+/// slots 1 and 2 crossed. Expressing the whole permutation is what lifts the hop
+/// limit, and three hops is where the largest measured gap on this branch lives
+/// (263,502us written forwards against 37.4us written backwards, at 50k nodes).
+fn reverse_slots(e: &Expr, far: usize) -> Option<Expr> {
+    map_slots(e, &move |s| if s <= far { far - s } else { s })
+}
+
 /// Reverse a fixed-length pattern whose selective predicate sits on the FAR node, so
 /// the predicate seeds the traversal instead of filtering its output.
 ///
@@ -2033,22 +2049,24 @@ fn peel_hops(plan: &Plan) -> Option<(Option<String>, Vec<Hop>)> {
 /// the predicate has already shrunk. The TS engine has always done this (`orient` /
 /// `reversePath` in `@lenke/gql`'s matching.ts); this is the native engine catching up.
 ///
-/// THE RENAME IS ALWAYS ONE SWAP, which is why this generalizes past one hop at all.
-/// Reversing an n-hop chain maps slot `i` to slot `n - i`, and for n ≤ 2 that is
-/// exactly `swap_slots(_, 0, n)` — the ends trade places and the middle stays put. At
-/// n = 3 it becomes two independent swaps and `swap_slots` no longer expresses it, so
-/// the chain length is capped here rather than in the caller.
+/// THE RENAME IS ONE PERMUTATION, which is what lets this work at any chain length:
+/// reversing an n-hop chain maps slot `i` to slot `n - i` (see [`reverse_slots`]).
+/// An earlier version used a single `swap_slots(_, 0, n)`, which is the same
+/// permutation only while n ≤ 2 and the wrong one above that, and so was capped at two
+/// hops. Three hops is where the largest gap on this branch lives.
 ///
 /// Measured on 200k nodes x 8 edges with a range index on `age`, `count(*)` with the
 /// predicate on the far node:
 ///
 /// ```text
-///   1 hop    written forwards   1652us   reversed                 499us
-///   2 hops   written forwards 178357us   hand-written backwards  2155us   82.7x
+///   1 hop    written forwards    1652us   reversed                  499us
+///   2 hops   written forwards  178357us   reversed                 2148us     83x
+///   3 hops   written forwards  263502us   hand-written backwards     37us   7045x
+///            (3 hops measured at 50k nodes, the others at 200k)
 /// ```
 ///
 /// Deliberately narrow. It fires only for:
-///   - one or two hops over a `Scan`, no bound edge, no `double_loops`,
+///   - a chain of plain hops over a `Scan`, no bound edge, no `double_loops`,
 ///   - an intermediate predicate (if any) reading ONLY its own hop's endpoint,
 ///   - a final predicate reading ONLY the far slot,
 ///   - a far node carrying a LIFTABLE label (see below),
@@ -2065,11 +2083,11 @@ fn reverse_chain(plan: Plan) -> Option<(Plan, usize)> {
     };
     let (seed_label, hops) = peel_hops(&input)?;
     let far = hops.len();
-    if far == 0 || far > 2 {
+    if far == 0 {
         return None;
     }
 
-    let seed_pred = swap_slots(&pred, 0, far)?;
+    let seed_pred = reverse_slots(&pred, far)?;
 
     // The predicate must read the far slot and NOTHING ELSE. `max_slot` alone does not
     // say that — it is a maximum, so `b.k = 1 AND a.k = 2` passes it while reading the
@@ -2292,7 +2310,7 @@ fn orient_scan(plan: &Plan, idx: &dyn IndexOracle) -> Option<(bool, usize)> {
 
             items
                 .iter()
-                .all(|(_, e)| swap_slots(e, 0, far).is_some())
+                .all(|(_, e)| reverse_slots(e, far).is_some())
                 .then_some((false, far))
         }
         Plan::Aggregate { input, keys, aggs } => {
@@ -2302,11 +2320,11 @@ fn orient_scan(plan: &Plan, idx: &dyn IndexOracle) -> Option<(bool, usize)> {
                 return Some((false, far));
             }
 
-            (keys.iter().all(|(_, e)| swap_slots(e, 0, far).is_some())
+            (keys.iter().all(|(_, e)| reverse_slots(e, far).is_some())
                 && aggs.iter().all(|a| {
                     a.arg
                         .as_ref()
-                        .is_none_or(|e| swap_slots(e, 0, far).is_some())
+                        .is_none_or(|e| reverse_slots(e, far).is_some())
                 }))
             .then_some((false, far))
         }
@@ -2317,7 +2335,7 @@ fn orient_scan(plan: &Plan, idx: &dyn IndexOracle) -> Option<(bool, usize)> {
             if let Some((open, far)) = orient_scan(input, idx) {
                 // A filter ABOVE the pattern: renameable and keeps the namespace.
                 return if open {
-                    swap_slots(pred, 0, far).is_some().then_some((true, far))
+                    reverse_slots(pred, far).is_some().then_some((true, far))
                 } else {
                     Some((false, far))
                 };
@@ -2356,7 +2374,7 @@ fn orient_apply(plan: Plan, far: usize) -> (Plan, bool) {
                 items
                     .into_iter()
                     .map(|(n, e)| {
-                        let e = swap_slots(&e, 0, far).expect("eligibility checked");
+                        let e = reverse_slots(&e, far).expect("eligibility checked");
                         (n, e)
                     })
                     .collect()
@@ -2378,7 +2396,7 @@ fn orient_apply(plan: Plan, far: usize) -> (Plan, bool) {
                 (
                     keys.into_iter()
                         .map(|(n, e)| {
-                            let e = swap_slots(&e, 0, far).expect("eligibility checked");
+                            let e = reverse_slots(&e, far).expect("eligibility checked");
                             (n, e)
                         })
                         .collect(),
@@ -2386,7 +2404,7 @@ fn orient_apply(plan: Plan, far: usize) -> (Plan, bool) {
                         .map(|mut a| {
                             a.arg = a
                                 .arg
-                                .map(|e| swap_slots(&e, 0, far).expect("eligibility checked"));
+                                .map(|e| reverse_slots(&e, far).expect("eligibility checked"));
                             a
                         })
                         .collect(),
@@ -2426,7 +2444,7 @@ fn orient_apply(plan: Plan, far: usize) -> (Plan, bool) {
 
             let (inner, open) = orient_apply(*input, far);
             let pred = if open {
-                swap_slots(&pred, 0, far).expect("eligibility checked")
+                reverse_slots(&pred, far).expect("eligibility checked")
             } else {
                 pred
             };
