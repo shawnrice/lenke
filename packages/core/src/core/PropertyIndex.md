@@ -106,12 +106,34 @@ slice — neither builds a set) and the **most selective** is seeded; the rest s
 as residual filters the engine re-applies. So the seed is always a _superset_ of
 the true matches and results are identical to the unindexed scan.
 
-GQL goes one step further: for a fixed-length path it scores **both ends** from
-those same counts and seeds from whichever is more selective, walking the
-relationship backwards if needed. `MATCH (a)-[:KNOWS]->(b:Person) WHERE b.name =
-'josh'` seeds from `josh` and walks back to `a`, rather than scanning every `a`.
-This is the only cardinality-driven _planning_ decision in the engine — there's
-no cost model or join-order search beyond picking the cheaper anchor.
+GQL goes one step further: for a fixed-length path it scores **both ends** and
+seeds from whichever is more selective, walking the relationship backwards if
+needed. `MATCH (a)-[:KNOWS]->(b:Person) WHERE b.name = 'josh'` seeds from `josh`
+and walks back to `a`, rather than scanning every `a`. This is the only
+cardinality-driven _planning_ decision in the engine — there's no cost model or
+join-order search beyond picking the cheaper anchor.
+
+**Both engines do this**, and neither needs the pattern written in a particular
+direction — two spellings of the same path optimize to the same plan, which is
+checked directly by the engine's `spelling_probe`. Three details worth knowing,
+because they decide whether the rewrite fires:
+
+- It applies to a chain of **fixed-length** hops of any length, with no bound edge
+  variable. A variable-length segment (`->*`) keeps its written orientation.
+- Both engines reverse when the far end is the **cheaper anchor**, but they decide
+  that differently, and the difference is a cost decision only — the rows are the
+  same either way. The pure-TS engine compares the two ends' estimated seeds and
+  takes the smaller. The native engine additionally requires the far predicate to
+  be selective in ABSOLUTE terms (under ~15% of the graph, read from the index with
+  an early-abort probe): reversing a predicate that matches almost everything
+  shrinks nothing there and still costs a check on the other end, which was
+  measured as a regression. When selectivity cannot be known ahead of time (a
+  parameter rather than a literal), the native engine reverses only if the far node
+  carries a label.
+- The far node does **not** need a label to reach an index. Both property indexes
+  are keyed by property, so `MATCH (a)-[:KNOWS]->(b) WHERE b.age > 98` seeks just
+  as `(b:Person)` would. (Before 2026-09-17 the native engine required one, and an
+  unlabelled pattern silently scanned.)
 
 ## The type-strict caveat
 
