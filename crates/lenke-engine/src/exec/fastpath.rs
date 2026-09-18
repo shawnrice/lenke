@@ -2836,6 +2836,43 @@ pub(super) fn try_3hop_product_count(
     Some(scalar_num(total as f64))
 }
 
+// REJECTED (2026-09-17, E68/E69): folding a filter on the hop's ENDPOINT into the
+// degree sum, so `count(*)` keeps its shortcut instead of enumerating paths.
+//
+// The premise looked airtight. `count(*)` over a bare `Expand` sums degrees and never
+// walks an edge; ANY filter above it stops that, and the residual-`IsLabeled` shape
+// measured 32us against 474us. Folding the predicate into the adjacency walk —
+// `simple_nbr_preds` + `nbr_pred_ok` per neighbour, no row materialized — should have
+// recovered most of the gap.
+//
+// It is SLOWER, every shape, and the reason generalizes: the filter it replaces is
+// evaluated COLUMNARLY over a batch (one gather, one vectorized compare), and a
+// per-neighbour scalar test cannot beat that, even with no row built. Measured at 200k
+// nodes x 8 edges with a range index, folded against the existing paths:
+//
+//   endpoint compare  a.age > 50        112.5us  ->  344.8us    3.1x WORSE
+//   endpoint exists   a.name            211.9us  ->  207.4us    noise
+//   endpoint conjunction                532.7us  ->  724.1us    1.4x WORSE
+//
+// And for a bare `IsLabeled` endpoint filter — the shape that started this —
+// `try_frontier_count` above already propagates a per-node count array and beats the
+// fold 474us to 560us, so there was nothing to win there either.
+//
+// The deeper reason nothing here could have worked (E71): the "fast" baseline this was
+// chasing sums adjacency LENGTHS. It is O(sources) and never looks at an edge — flat at
+// ~33us while the degree goes 2 -> 16 and the edge count goes 4k -> 32k. Any predicate
+// on the endpoint must visit every edge to know which endpoints to test, and that cost
+// scales with edges (196us -> 712us over the same sweep, ~21-40 ns/edge). They are not
+// the same question, so the gap between them is not a penalty to optimize away. Do not
+// re-open this without a way to answer an endpoint predicate WITHOUT visiting edges.
+//
+// Two things worth keeping from the attempt. `bind_edge: false` is essential to any
+// future version: a bound edge makes the hop append TWO slots, so the endpoint slot is
+// the EDGE, and `simple_nbr_pred` will cheerfully test node properties against an edge
+// id (four gql_corpus cases caught it). And the honest control for "the shortcut was
+// defeated" is the same plan shape with and without the filter — NOT a bare Expand,
+// whose degree sum never walks an edge at all.
+
 pub(super) fn try_fused_count(
     input: &Plan,
     keys: &[(String, Expr)],

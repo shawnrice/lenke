@@ -84,14 +84,32 @@ question in its module header — read the header before touching it.
   than value comparisons (recursive frequency encoding; bit-sliced index), what
   each costs to mutate, and whether it reaches the vector units. It does: the
   circuits compile to `vandps`/`vorps`/`vandnps` over ymm with no intrinsics.
-- `simd_index_probe` — a 36-experiment campaign hunting speedups in bitmap indexes:
-  explicit AVX2 (nothing — LLVM already vectorizes), early exit (nothing), value
+- `simd_index_probe` — a 71-experiment campaign: bitmap indexes first (E1-E36),
+  then the real planner (E37-E71). The bitmap half hunted speedups in explicit AVX2
+  (nothing — LLVM already vectorizes), early exit (nothing), value
   recoding (nothing), sparse containers (worse), against conjunctions (5.7x
   end-to-end), counts (the mask IS the answer), block skipping (up to 6.1x, but only
   on clustered data), and aggregates — filtered GROUP BY is 175x and a maintained
   counter table answers an unfiltered one in 10ns. The capstone (E36) is 23.1x on a
   realistic dashboard query, 5.4x of which needs only the filter side. Read it before
   re-attempting any of the eight rejected ideas.
+
+  E37-E71 then turn from bitmaps to the real planner, and most of that stretch is
+  about not fooling yourself. E58-E66 drove the one-hop `orient` rewrite (a far-side
+  predicate reaches an index only if the far node is WRITTEN with a label, since
+  `RangeSeek` requires one). E64-E65 give the seek-vs-scan rule: scan 1.88 ns/node,
+  seek 12.2 ns/row, so the crossover is 15.4% selectivity. E67 is the 300x pushdown
+  cliff where adding a label made a query slower.
+
+  **E68-E71 are one thread with a negative result, and the most useful part.** A
+  residual filter above an `Expand` appeared to cost `count(*)` 15x. It does not:
+  `count(*)` over a bare `Expand` sums adjacency LENGTHS — O(sources), never visiting
+  an edge — and any endpoint predicate must visit every edge. E71 proves it by
+  holding sources fixed and scaling the degree (unfiltered flat at ~33us, filtered
+  196->712us). Four attempts to "fix" the non-problem are recorded with their
+  numbers, including a fold that was 3.1x WORSE. Do not re-open without a way to
+  answer an endpoint predicate without visiting edges.
+
 - `spelling_probe` — that equivalent query spellings optimize to the SAME plan
   and so cost the same (a plan mismatch is the real signal; time is the backstop).
 

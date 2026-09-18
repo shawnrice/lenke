@@ -1274,18 +1274,17 @@ fn main() {
     //   project NO filter                 320.7us
     //   project residual IsLabeled        625.6us     1.95x
     //
-    // MOST OF IT IS THE LOST COUNT SHORTCUT, NOT THE FILTER. `count(*)` over a bare
-    // `Expand` sums degrees and never walks an edge; put ANY filter above that Expand
-    // and the shortcut cannot fire, so the plan enumerates 16k paths to count them.
-    // That is where 14 of the 15x lives, and the fix is a planner one — teach the
-    // count shortcut to tolerate a far-end label check, which is a membership test
-    // against the adjacency list and still needs no path.
+    // MOST OF IT IS NOT THE FILTER. The 1.95x on the projection is the filter; the
+    // 15.3x on the count is something else, and E69-E71 spend four attempts finding
+    // out what. The short version, which E71 proves: `count(*)` over a bare `Expand`
+    // sums adjacency LENGTHS — O(sources), never looking at a single edge — and any
+    // predicate on the endpoint must look at every edge to know which endpoints to
+    // test. The two are not the same question, so the 15x is not a penalty anyone can
+    // optimize away. Read E71 before treating this row as a target.
     //
-    // THE FILTER ITSELF IS 1.95x, AND A MASK IS STILL THE RIGHT FIX FOR IT. 305us
-    // over 16,065 rows is ~19ns per row, which is what a binary search into a 200k-id
-    // label bucket costs — the evaluator builds a membership BITSET only for a large
-    // frontier, and 16k does not qualify. So the mask idea was right about the
-    // mechanism and wrong about the size of the prize: ~2x, not 15x.
+    // THE FILTER ITSELF IS 1.95x. 305us over 16,065 rows is ~19ns per row, which is
+    // roughly what a binary search into a 200k-id label bucket costs. That one is
+    // real, and small.
     section("E68: what does the residual frontier filter actually cost?");
 
     let filt: [(&str, &str); 4] = [
@@ -1318,6 +1317,210 @@ fn main() {
 
         if let Ok((us, _)) = harness::time_query(q, false, &seeded, cfg.reps.min(5)) {
             println!("  {label:<34} {us:>10.1} {rows:>10}  {}", chain_of(&opt));
+        }
+    }
+
+    // E69 ------------------------------------------------------------------
+    //
+    // E68 named the count shortcut as the prize, so this is the attempt to claim it —
+    // and the record of it failing, because "obviously correct so it must be faster"
+    // is not evidence here and this is the second time on this branch.
+    //
+    // The attempt: make `try_fused_count` fold a filter on the hop's ENDPOINT into the
+    // degree sum (`simple_nbr_preds` + `nbr_pred_ok` per neighbour, no row built),
+    // instead of declining and letting the plan enumerate every path to count it.
+    //
+    // It is SLOWER, in every shape, and the reason generalizes: the filter it replaces
+    // is evaluated COLUMNARLY over a batch — one gather, one vectorized compare — and
+    // a per-neighbour scalar test cannot beat that even when it materializes no row.
+    //
+    //   endpoint compare  a.age > 50        112.5us -> 344.8us   3.1x WORSE
+    //   endpoint exists   a.name            211.9us -> 207.4us   noise
+    //   endpoint conjunction                532.7us -> 724.1us   1.4x WORSE
+    //
+    // For a bare `IsLabeled` endpoint filter — the shape that started this —
+    // `try_frontier_count` already propagates a per-node count array and beats the
+    // fold 474us to 560us, so there was nothing to win there either.
+    //
+    // Reverted; the full note lives next to `try_fused_count` in fastpath.rs. The rows
+    // below are the CURRENT (unfolded) costs, kept as the regression baseline and
+    // because they answer the question E68 actually asked: what an endpoint filter
+    // costs a count, by kind of predicate.
+    section("E69: folding a non-label endpoint filter into the degree sum");
+
+    let folded: [(&str, &str); 4] = [
+        (
+            "baseline: no endpoint filter",
+            "MATCH (b:Person)<-[:KNOWS]-(a) WHERE b.age > 98 RETURN count(*) AS c",
+        ),
+        (
+            "endpoint compare  a.age > 50",
+            "MATCH (b:Person)<-[:KNOWS]-(a) WHERE b.age > 98 AND a.age > 50 RETURN count(*) AS c",
+        ),
+        (
+            "endpoint exists   a.name",
+            "MATCH (b:Person)<-[:KNOWS]-(a) WHERE b.age > 98 AND a.name IS NOT NULL RETURN count(*) AS c",
+        ),
+        (
+            "endpoint conjunction",
+            "MATCH (b:Person)<-[:KNOWS]-(a:Person) WHERE b.age > 98 AND a.age > 50 RETURN count(*) AS c",
+        ),
+    ];
+
+    println!("  {:<34} {:>10} {:>14}  plan", "shape", "us", "answer");
+
+    for (label, q) in folded {
+        let opt = lenke_engine::opt::optimize_indexed(
+            lenke_engine::gql::parse(q).expect("parses"),
+            &seeded,
+        );
+        // The fold must not change the answer — check against the UNINDEXED store,
+        // which cannot take any of these paths.
+        let ctrl = lenke_engine::opt::optimize_indexed(
+            lenke_engine::gql::parse(q).expect("parses"),
+            &plain,
+        );
+        let want = format!("{:?}", lenke_engine::exec::run(&ctrl, &plain).rows);
+        let got = format!("{:?}", lenke_engine::exec::run(&opt, &seeded).rows);
+        assert_eq!(want, got, "the endpoint fold changed the answer for: {q}");
+
+        if let Ok((us, _)) = harness::time_query(q, false, &seeded, cfg.reps.min(5)) {
+            let n = lenke_engine::exec::run(&opt, &seeded)
+                .rows
+                .iter()
+                .flatten()
+                .next()
+                .map_or(String::new(), |v| format!("{v:?}"));
+            println!("  {label:<34} {us:>10.1} {n:>14}  {}", chain_of(&opt));
+        }
+    }
+
+    // E70 ------------------------------------------------------------------
+    //
+    // Everything E68 and E69 concluded about the cost of a far-end label check was
+    // measured against a label carried by EVERY node in the fixture and by nothing
+    // else — `social_store` gives all 200k nodes exactly `Person`. That is the
+    // degenerate case in both directions at once: the filter removes no rows, and its
+    // bucket is the largest one the graph can offer, so the membership bitset costs
+    // the most it ever could. "Match the fixture to the claim", and this one did not.
+    //
+    // So: same query, same shape, with the far-end label carried by a VARYING fraction
+    // of the graph. If the cost tracks the bucket, the 15x was an artefact of a
+    // degenerate label and a realistic one is far cheaper.
+    section("E70: does the far-end label cost track the label's size?");
+
+    println!(
+        "  {:>8} {:>10} {:>10} {:>10} {:>9}",
+        "labelled", "bucket", "no filter", "filtered", "delta"
+    );
+
+    for pct in [1u32, 10, 50, 100] {
+        let mut st = {
+            use lenke_engine::store::Builder;
+            use lenke_engine::value::Value;
+            let mut b = Builder::default();
+            let n = rows as u32;
+            for i in 0..n {
+                // Every node is a Person; a fraction also carries `Staff`.
+                let staff = i % 100 < pct;
+                let labels: &[&str] = if staff {
+                    &["Person", "Staff"]
+                } else {
+                    &["Person"]
+                };
+                b.node(
+                    labels,
+                    &[
+                        ("name", Value::Str(format!("name{i}").into())),
+                        ("age", Value::Num(f64::from(i % 100))),
+                    ],
+                );
+            }
+            let mut rng = Lcg(0x5EED_1234);
+            for i in 0..n {
+                for _ in 0..8 {
+                    b.edge(i, rng.next(n), "KNOWS");
+                }
+            }
+            b.build()
+        };
+        st.create_range_index("age");
+
+        let bare = "MATCH (b:Person)<-[:KNOWS]-(a) WHERE b.age > 98 RETURN count(*) AS c";
+        let filtered = "MATCH (b:Person)<-[:KNOWS]-(a:Staff) WHERE b.age > 98 RETURN count(*) AS c";
+        let bucket = st.nodes_with_label("Staff").len();
+
+        if let (Ok((bus, _)), Ok((fus, _))) = (
+            harness::time_query(bare, false, &st, cfg.reps.min(5)),
+            harness::time_query(filtered, false, &st, cfg.reps.min(5)),
+        ) {
+            println!(
+                "  {:>7}% {bucket:>10} {bus:>10.1} {fus:>10.1} {:>8.1}x",
+                pct,
+                fus / bus
+            );
+        }
+    }
+
+    // E71 ------------------------------------------------------------------
+    //
+    // E70 killed the "degenerate label" explanation: a 2000-node label costs almost
+    // as much as one covering the whole graph, so the cost is not the bucket. Nor is
+    // it the membership structure — a sparse binary-search path and three settings of
+    // the dense/sparse threshold all moved it by under 20%.
+    //
+    // Which leaves the possibility that the comparison was never about filtering at
+    // all. `count(*)` over a bare `Expand` sums adjacency LENGTHS: O(sources), and it
+    // never looks at an edge. Any predicate on the hop's endpoint must look at every
+    // edge to know which endpoints to test. If that is the real difference, the cost
+    // is proportional to EDGES, not to the filter, and holding the source count fixed
+    // while scaling the degree will show it directly.
+    section("E71: is the gap the filter, or is it visiting edges at all?");
+
+    println!(
+        "  {:>7} {:>9} {:>11} {:>10} {:>10} {:>11}",
+        "degree", "sources", "edges walked", "no filter", "filtered", "ns/edge"
+    );
+
+    for deg in [2u32, 4, 8, 16] {
+        let mut st = harness::social_store(rows as u32, deg);
+        st.create_range_index("age");
+
+        let bare = "MATCH (b:Person)<-[:KNOWS]-(a) WHERE b.age > 98 RETURN count(*) AS c";
+        let filtered =
+            "MATCH (b:Person)<-[:KNOWS]-(a:Person) WHERE b.age > 98 RETURN count(*) AS c";
+
+        // The edges the filtered plan must visit = the answer the bare count returns.
+        let edges = lenke_engine::exec::run(
+            &lenke_engine::opt::optimize_indexed(lenke_engine::gql::parse(bare).unwrap(), &st),
+            &st,
+        )
+        .rows
+        .iter()
+        .flatten()
+        .next()
+        .map_or(0.0, |v| {
+            format!("{v:?}")
+                .trim_start_matches("Num(")
+                .trim_end_matches(')')
+                .parse()
+                .unwrap_or(0.0)
+        });
+
+        if let (Ok((bus, _)), Ok((fus, _))) = (
+            harness::time_query(bare, false, &st, cfg.reps.min(5)),
+            harness::time_query(filtered, false, &st, cfg.reps.min(5)),
+        ) {
+            let per_edge = if edges > 0.0 {
+                (fus - bus) * 1000.0 / edges
+            } else {
+                0.0
+            };
+            println!(
+                "  {deg:>7} {:>9} {:>11.0} {bus:>10.1} {fus:>10.1} {per_edge:>10.2}",
+                (rows / 50).max(1),
+                edges
+            );
         }
     }
 }
