@@ -1077,7 +1077,7 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
             out
         }
         Plan::IndexSeek { label, key, value } => {
-            let ids = index_seek_ids(store, label, key, value);
+            let ids = index_seek_ids(store, label.as_deref(), key, value);
             let mut batch = Batch::single(Col::Nodes(ids.clone()));
             if track {
                 batch.lineage = Some(Lineage::seed(&ids));
@@ -1090,7 +1090,7 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
             op,
             value,
         } => {
-            let ids = range_seek_ids(store, label, key, *op, value);
+            let ids = range_seek_ids(store, label.as_deref(), key, *op, value);
             let mut batch = Batch::single(Col::Nodes(ids.clone()));
             if track {
                 batch.lineage = Some(Lineage::seed(&ids));
@@ -2212,7 +2212,7 @@ fn pull_capped(
             Some(b)
         }
         Plan::IndexSeek { label, key, value } => {
-            let ids: Vec<u32> = index_seek_ids(store, label, key, value)
+            let ids: Vec<u32> = index_seek_ids(store, label.as_deref(), key, value)
                 .into_iter()
                 .take(cap)
                 .collect();
@@ -2228,7 +2228,7 @@ fn pull_capped(
             op,
             value,
         } => {
-            let ids: Vec<u32> = range_seek_ids(store, label, key, *op, value)
+            let ids: Vec<u32> = range_seek_ids(store, label.as_deref(), key, *op, value)
                 .into_iter()
                 .take(cap)
                 .collect();
@@ -2267,15 +2267,19 @@ fn streaming_chain(plan: &Plan, store: &Store) -> Option<(Plan, Vec<u32>)> {
             };
             Some((Plan::Row, ids))
         }
-        Plan::IndexSeek { label, key, value } => {
-            Some((Plan::Row, index_seek_ids(store, label, key, value)))
-        }
+        Plan::IndexSeek { label, key, value } => Some((
+            Plan::Row,
+            index_seek_ids(store, label.as_deref(), key, value),
+        )),
         Plan::RangeSeek {
             label,
             key,
             op,
             value,
-        } => Some((Plan::Row, range_seek_ids(store, label, key, *op, value))),
+        } => Some((
+            Plan::Row,
+            range_seek_ids(store, label.as_deref(), key, *op, value),
+        )),
         Plan::Filter { input, pred } => {
             let (body, ids) = streaming_chain(input, store)?;
             Some((
@@ -2857,7 +2861,7 @@ fn interval_expand(
 /// `=` — the rows an `IndexSeek` produces. Uses a property index when present
 /// (candidates intersected with the label), else scans the label and filters by
 /// `value::equals`. A NaN/NULL literal matches nothing (as `=` does).
-fn index_seek_ids(store: &Store, label: &str, key: &str, value: &Value) -> Vec<u32> {
+fn index_seek_ids(store: &Store, label: Option<&str>, key: &str, value: &Value) -> Vec<u32> {
     if value.is_null() || matches!(value, Value::Num(x) if x.is_nan()) {
         return Vec::new();
     }
@@ -2868,6 +2872,11 @@ fn index_seek_ids(store: &Store, label: &str, key: &str, value: &Value) -> Vec<u
             // ascending, so binary-search each (usually few) candidate rather than
             // building a HashSet of the WHOLE label per query — that O(label) build
             // made an indexed seek SLOWER than the typed scan it was meant to beat.
+            //
+            // No label means no intersection: the index bucket IS the answer.
+            let Some(label) = label else {
+                return cands;
+            };
             let bucket = store.nodes_with_label(label);
             cands
                 .into_iter()
@@ -2875,7 +2884,16 @@ fn index_seek_ids(store: &Store, label: &str, key: &str, value: &Value) -> Vec<u
                 .collect()
         }
         None => {
-            let ids = store.nodes_with_label(label);
+            // Without an index the seek degrades to a scan — of the label when there
+            // is one, of every live node when there is not.
+            let all_nodes;
+            let ids = match label {
+                Some(l) => store.nodes_with_label(l),
+                None => {
+                    all_nodes = store.all_nodes();
+                    &all_nodes
+                }
+            };
             // Typed fast paths for a plain (non-dotted) key: compare the raw column
             // — a `&str`/`f64`/`bool` compare, no per-cell `Value` boxing or `Arc`
             // clone. Equality semantics match `value::equals` (a present cell of the
@@ -2995,7 +3013,13 @@ fn str_pred(op: CompareOp, a: &str, b: &str) -> bool {
     }
 }
 
-fn range_seek_ids(store: &Store, label: &str, key: &str, op: CompareOp, value: &Value) -> Vec<u32> {
+fn range_seek_ids(
+    store: &Store,
+    label: Option<&str>,
+    key: &str,
+    op: CompareOp,
+    value: &Value,
+) -> Vec<u32> {
     if value.is_null() {
         return Vec::new();
     }
@@ -3008,11 +3032,13 @@ fn range_seek_ids(store: &Store, label: &str, key: &str, op: CompareOp, value: &
             // index already narrowed to `cands`, then we'd rebuild a set of everything
             // to intersect back down). When the bucket covers ALL non-deleted nodes,
             // every candidate is in-label, so skip the test entirely.
-            let bucket = store.nodes_with_label(label);
-            let all_in_label = bucket.len() == store.live_node_count();
+            // No label to intersect with is the same case as a label covering the
+            // whole graph: every candidate qualifies.
+            let all_in_label =
+                label.is_none_or(|l| store.nodes_with_label(l).len() == store.live_node_count());
             cands
                 .into_iter()
-                .filter(|&id| all_in_label || store.is_labeled(id, label))
+                .filter(|&id| all_in_label || label.is_none_or(|l| store.is_labeled(id, l)))
                 // The index orders by the TOTAL order (cross-type by rank), but the
                 // OPERATOR is three-valued (cross-type → UNKNOWN → drop). Re-check
                 // each candidate with `range_pass` so an indexed seek returns
@@ -3022,7 +3048,14 @@ fn range_seek_ids(store: &Store, label: &str, key: &str, op: CompareOp, value: &
                 .collect()
         }
         None => {
-            let ids = store.nodes_with_label(label);
+            let all_nodes;
+            let ids = match label {
+                Some(l) => store.nodes_with_label(l),
+                None => {
+                    all_nodes = store.all_nodes();
+                    &all_nodes
+                }
+            };
             // Typed fast path: a Num column vs a Num bound compares RAW f64 (no
             // per-cell Value boxing) — the no-index scan is the common case.
             if let (Some(Column::Num { data, present, .. }), Value::Num(t)) =
@@ -3479,13 +3512,15 @@ fn frontier_ids(plan: &Plan, store: &Store) -> Option<Vec<u32>> {
             Some(l) => store.nodes_with_label(l).to_vec(),
             None => store.all_nodes(),
         }),
-        Plan::IndexSeek { label, key, value } => Some(index_seek_ids(store, label, key, value)),
+        Plan::IndexSeek { label, key, value } => {
+            Some(index_seek_ids(store, label.as_deref(), key, value))
+        }
         Plan::RangeSeek {
             label,
             key,
             op,
             value,
-        } => Some(range_seek_ids(store, label, key, *op, value)),
+        } => Some(range_seek_ids(store, label.as_deref(), key, *op, value)),
         Plan::Expand {
             input,
             from,
@@ -3636,7 +3671,7 @@ fn frontier_counts(plan: &Plan, store: &Store) -> Option<Counts> {
             }
         }
         Plan::IndexSeek { label, key, value } => Some(sparse_or_dense(
-            index_seek_ids(store, label, key, value),
+            index_seek_ids(store, label.as_deref(), key, value),
             n,
             dense_cut,
         )),
@@ -3646,7 +3681,7 @@ fn frontier_counts(plan: &Plan, store: &Store) -> Option<Counts> {
             op,
             value,
         } => Some(sparse_or_dense(
-            range_seek_ids(store, label, key, *op, value),
+            range_seek_ids(store, label.as_deref(), key, *op, value),
             n,
             dense_cut,
         )),

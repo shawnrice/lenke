@@ -33,11 +33,32 @@ fn pure_chain_width(plan: &Plan) -> Option<usize> {
 /// prefer a conjunct backed by a real index over one that would only scan. Kept
 /// abstract (not `&Store`) so the optimizer stays a pure `Plan -> Plan` transform and
 /// so callers with no store (plan-shape tests) can pass [`NoIndexes`].
+/// Orientation only pays when the far-side predicate actually SHRINKS the pool. E64
+/// and E65 measured where that turns over: a scan costs 1.88 ns per node scanned and a
+/// seek 12.2 ns per row returned, both flat in selectivity, so a seek stops being worth
+/// it at 1.88/12.2 = 15.4% of the graph.
+///
+/// Above this, reversing is a measured REGRESSION rather than a smaller win —
+/// `b.age > -1` (matching everything) went 788us to 3805us when orientation fired on
+/// it, because the reversal buys nothing and still pays a residual label check above
+/// the hop, which defeats the `count(*)` degree-sum shortcut.
+const ORIENT_MAX_FRACTION: f64 = 0.154;
+
 pub trait IndexOracle {
     /// A hash index exists on the exact (possibly dotted) property path `key`.
     fn has_hash_index(&self, key: &str) -> bool;
     /// A range index exists on property `key`.
     fn has_range_index(&self, key: &str) -> bool;
+
+    /// Roughly what FRACTION of the graph `key <op> value` selects, or `None` when
+    /// that cannot be answered cheaply (no index, or the answer is "a lot").
+    ///
+    /// Only orientation asks, and only to avoid a rewrite that is a win on a
+    /// selective predicate and a LOSS on an unselective one. Defaults to `None`, so
+    /// an oracle that cannot answer simply declines the rewrite.
+    fn seed_fraction(&self, _key: &str, _op: crate::ir::CompareOp, _value: &Value) -> Option<f64> {
+        None
+    }
 }
 
 /// The "no physical indexes" oracle: every seed becomes a scan-fallback seek, which
@@ -54,6 +75,25 @@ impl IndexOracle for NoIndexes {
 }
 
 impl IndexOracle for crate::store::Store {
+    fn seed_fraction(&self, key: &str, op: crate::ir::CompareOp, value: &Value) -> Option<f64> {
+        let live = self.live_node_count();
+        if live == 0 {
+            return None;
+        }
+        // Ask only up to the threshold the caller cares about, so an unselective
+        // predicate costs a bounded probe instead of a full index walk.
+        let cap = (live as f64 * ORIENT_MAX_FRACTION).ceil() as usize;
+        let n = match op {
+            crate::ir::CompareOp::Eq => self.index_bucket_len(key, value)?,
+            crate::ir::CompareOp::Lt
+            | crate::ir::CompareOp::Le
+            | crate::ir::CompareOp::Gt
+            | crate::ir::CompareOp::Ge => self.range_count_capped(key, op, value, cap)?,
+            crate::ir::CompareOp::Ne => return None,
+        };
+        Some(n as f64 / live as f64)
+    }
+
     fn has_hash_index(&self, key: &str) -> bool {
         Store::has_hash_index(self, key)
     }
@@ -1416,7 +1456,12 @@ fn apply_local(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
             // no-ops (the seek yields exactly Scan+Filter rows) and both spellings
             // are handled (see `seek_target`/`range_seek_target`) so neither
             // silently keeps scanning.
-            Plan::Scan { label: Some(l) } => {
+            // An UNLABELLED scan seeds too. The label was once required here, which
+            // meant `MATCH (n) WHERE n.age > 98` could never touch an index —
+            // measured 303us against 30.6us for the labelled spelling over the same
+            // rows. Both property indexes are global, so the label was only ever a
+            // post-filter on the seek's output (see `Plan::IndexSeek`).
+            Plan::Scan { label: l } => {
                 if let Some((key, value)) = seek_target(&pred) {
                     (
                         Plan::IndexSeek {
@@ -1476,7 +1521,7 @@ fn apply_local(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
                 } else {
                     (
                         Plan::Filter {
-                            input: Box::new(Plan::Scan { label: Some(l) }),
+                            input: Box::new(Plan::Scan { label: l }),
                             pred,
                         },
                         false,
@@ -2103,16 +2148,6 @@ fn reverse_chain(plan: Plan) -> Option<(Plan, usize)> {
     // `RangeSeek`/`IndexSeek` — those carry a label.
     let (lifted, residual) = lift_seed_label(seed_pred);
 
-    // NO LABEL, NO REVERSAL. Without one the seed is `Filter <- Scan { None }`, which
-    // no seeding rule can turn into a seek — so the reversal buys only a pre-filter,
-    // while COSTING a residual `IsLabeled` above the hop to re-check the original
-    // seed's label, and that residual defeats the `count(*)` degree-sum shortcut.
-    // Which way that trades is pure selectivity, which the optimizer does not know
-    // here: `b.age > 98` (1% pass) went 1652us -> 669us, but `b.age > -1` (100% pass)
-    // went 788us -> 3805us, a 4.8x REGRESSION. Fire only on a provable win; gating the
-    // speculative case needs a cardinality estimate (cost.rs has one).
-    lifted.as_ref()?;
-
     let mut out = match residual {
         Some(pred) => Plan::Filter {
             input: Box::new(Plan::Scan { label: lifted }),
@@ -2268,6 +2303,44 @@ fn seedable(pred: &Expr, idx: &dyn IndexOracle) -> bool {
     }
 }
 
+/// The estimated share of the graph selected by whichever conjunct would seed, or
+/// `None` when nothing can be estimated — no index, a bound that is a PARAMETER rather
+/// than a literal, or a count the oracle gave up on because it was large.
+fn seed_fraction_of(pred: &Expr, idx: &dyn IndexOracle) -> Option<f64> {
+    match pred {
+        Expr::Compare { op, left, right } => {
+            // The mirrored spelling (`98 < b.age`) means the same thing with the
+            // operator flipped — the equivalent-spellings rule applies to the COST
+            // model too, not just to which plan is chosen.
+            let (key, value, op) = match (left.as_ref(), right.as_ref()) {
+                (Expr::Prop { key, .. }, Expr::Lit(v)) => (key, v, *op),
+                (Expr::Lit(v), Expr::Prop { key, .. }) => (key, v, flip_cmp(*op)),
+                _ => return None,
+            };
+            idx.seed_fraction(key, op, value)
+        }
+        // Whichever side seeds; a conjunction only ever seeds from one of them.
+        Expr::And(a, b) => seed_fraction_of(a, idx).or_else(|| seed_fraction_of(b, idx)),
+        _ => None,
+    }
+}
+
+/// Is reversing this pattern worth it — does the far-side predicate actually shrink
+/// the pool?
+///
+/// When the pool can be measured, [`ORIENT_MAX_FRACTION`] decides, and that is the
+/// whole answer. When it CANNOT — a parameterized bound, or an oracle that declined —
+/// fall back to the older, blunter rule: reverse only if the far node carries a label
+/// that lifts onto the seed. That rule was never really about selectivity, but it
+/// correlates well enough, and keeping it means a parameterized query behaves exactly
+/// as it did before rather than silently losing orientation altogether.
+fn orient_is_worth_it(pred: &Expr, far: usize, idx: &dyn IndexOracle) -> bool {
+    match seed_fraction_of(pred, idx) {
+        Some(frac) => frac <= ORIENT_MAX_FRACTION,
+        None => reverse_slots(pred, far).is_some_and(|p| lift_seed_label(p).0.is_some()),
+    }
+}
+
 /// Can this plan be oriented — pattern eligible AND every expression that reads the
 /// pattern's slots renameable? Checked BEFORE anything is rewritten, because a
 /// half-applied reversal leaves slot references pointing at the wrong node, and that
@@ -2356,7 +2429,7 @@ fn orient_scan(plan: &Plan, idx: &dyn IndexOracle) -> Option<(bool, usize)> {
                 pred: pred.clone(),
             })?;
 
-            Some((true, far))
+            orient_is_worth_it(pred, far, idx).then_some((true, far))
         }
         _ => None,
     }

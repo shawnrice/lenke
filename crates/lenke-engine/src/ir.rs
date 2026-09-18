@@ -612,8 +612,16 @@ pub enum Plan {
     /// `value` under predicate `=`. Produces exactly the rows of
     /// `Scan(label) + Filter(key = value)`; uses a property index when one exists,
     /// otherwise scans the label. A NaN/NULL `value` matches nothing (as `=`).
+    ///
+    /// `label: None` means EVERY live node is a candidate — `Scan(None) + Filter(…)`.
+    /// The label was once required, which quietly meant an unlabelled pattern could
+    /// never use an index at all: `MATCH (n) WHERE n.age > 98` scanned where
+    /// `MATCH (n:Person) WHERE n.age > 98` sought, 303us against 30.6us on the same
+    /// rows. Nothing about the index needed it — both property indexes are GLOBAL
+    /// (keyed by property, not by label), and the label is applied afterwards as a
+    /// post-filter over the candidates.
     IndexSeek {
-        label: String,
+        label: Option<String>,
         key: String,
         value: Value,
     },
@@ -622,8 +630,10 @@ pub enum Plan {
     /// contract's total order. Same rows as `Scan(label)+Filter(key <op> value)`;
     /// uses a range index when one exists, else scans. A NULL `value` (or NULL
     /// property) matches nothing (predicate UNKNOWN).
+    ///
+    /// `label: None` is as for [`Plan::IndexSeek`]: every live node is a candidate.
     RangeSeek {
-        label: String,
+        label: Option<String>,
         key: String,
         op: CompareOp,
         value: Value,

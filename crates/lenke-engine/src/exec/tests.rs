@@ -4704,7 +4704,7 @@ fn indexed_store() -> Store {
 fn index_seek_matches_scan_filter() {
     let mut st = indexed_store();
     let seek = Plan::IndexSeek {
-        label: "P".into(),
+        label: Some("P".into()),
         key: "age".into(),
         value: n(30.0),
     }
@@ -4768,7 +4768,7 @@ fn index_seek_nan_and_null_match_nothing() {
     st.create_index("age");
     let seek = |v: Value| {
         Plan::IndexSeek {
-            label: "P".into(),
+            label: Some("P".into()),
             key: "age".into(),
             value: v,
         }
@@ -4795,7 +4795,7 @@ fn range_seek_matches_scan_filter_all_ops() {
         }
         for (op, v, want) in &ops {
             let seek = Plan::RangeSeek {
-                label: "P".into(),
+                label: Some("P".into()),
                 key: "age".into(),
                 op: *op,
                 value: n(*v),
@@ -4827,7 +4827,7 @@ fn range_seek_null_and_cross_type_match_filter() {
     st.create_range_index("v");
     let check = |st: &Store, op, val: Value| {
         let seek = Plan::RangeSeek {
-            label: "P".into(),
+            label: Some("P".into()),
             key: "v".into(),
             op,
             value: val.clone(),
@@ -4865,7 +4865,7 @@ fn count_over_index_seek() {
     let mut st = indexed_store();
     st.create_index("age");
     let plan = Plan::IndexSeek {
-        label: "P".into(),
+        label: Some("P".into()),
         key: "age".into(),
         value: n(30.0),
     }

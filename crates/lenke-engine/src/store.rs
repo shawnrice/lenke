@@ -3885,6 +3885,51 @@ impl Store {
         )
     }
 
+    /// How many ids a range seek on `key <op> value` would return, giving up (as
+    /// `None`) once the count passes `cap`.
+    ///
+    /// The cap is what makes this safe to call while PLANNING. An exact count walks
+    /// the BTree entries in range, which is O(distinct values in range) — fine for a
+    /// selective bound, O(the whole index) for one that matches everything, and the
+    /// unselective case is precisely the one a planner asks about. Aborting early
+    /// bounds the work to the cap, the same early-abort probe `dict_encode` uses to
+    /// decide cardinality without counting it.
+    ///
+    /// `None` therefore means "no index, or more than `cap`" — both of which a caller
+    /// should read as "not selective enough to be worth it". Deleted ids are counted,
+    /// so the result is an upper bound.
+    #[must_use]
+    pub fn range_count_capped(
+        &self,
+        key: &str,
+        op: crate::ir::CompareOp,
+        value: &Value,
+        cap: usize,
+    ) -> Option<usize> {
+        use crate::ir::CompareOp::{Ge, Gt, Le, Lt};
+        use std::ops::Bound::{Excluded, Included, Unbounded};
+        let ix = self.ranges.iter().find(|i| i.key == key)?;
+        if value.is_null() {
+            return Some(0);
+        }
+        let k = OrdVal(value.clone());
+        let bounds: (std::ops::Bound<OrdVal>, std::ops::Bound<OrdVal>) = match op {
+            Gt => (Excluded(k), Unbounded),
+            Ge => (Included(k), Unbounded),
+            Lt => (Unbounded, Excluded(k)),
+            Le => (Unbounded, Included(k)),
+            _ => return Some(0), // not a range op
+        };
+        let mut n = 0usize;
+        for (_, ids) in ix.map.range(bounds) {
+            n += ids.len();
+            if n > cap {
+                return None;
+            }
+        }
+        Some(n)
+    }
+
     /// Two-sided range seek: the ids whose `key` falls in the interval bounded by
     /// `lo` below and `hi` above. Seeds the exact intersection of two bounds on the
     /// same key (`k >= a AND k < b`) in one BTree walk. A contradictory or empty

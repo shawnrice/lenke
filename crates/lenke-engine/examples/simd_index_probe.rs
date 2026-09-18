@@ -1549,6 +1549,10 @@ fn main() {
 
     println!("  {:<40} {:>10}  plan", "query", "us");
 
+    let small_plain = harness::social_store(5_000, 8);
+    let mut small_seeded = harness::social_store(5_000, 8);
+    small_seeded.create_range_index("age");
+
     let two: [(&str, &str); 6] = [
         (
             "1 hop  forwards (oriented)",
@@ -1581,16 +1585,102 @@ fn main() {
             lenke_engine::gql::parse(q).expect("parses"),
             &seeded,
         );
-        // The unindexed store cannot seed, so it cannot orient — it is the control.
-        let ctrl = lenke_engine::opt::optimize_indexed(
-            lenke_engine::gql::parse(q).expect("parses"),
-            &plain,
+        // Correctness is checked on a SMALL store, perf on the big one. The control
+        // has to run unoriented by construction, and at 200k the unoriented three-hop
+        // form materializes 102 MILLION intermediate rows and trips the frontier limit
+        // — which is the cost this section is about, but makes it useless as an
+        // oracle. (The real answer guards are the unit tests; a uniform-label fixture
+        // cannot see a crossed middle slot at all.)
+        let want = format!(
+            "{:?}",
+            lenke_engine::exec::run(
+                &lenke_engine::opt::optimize_indexed(
+                    lenke_engine::gql::parse(q).expect("parses"),
+                    &small_plain,
+                ),
+                &small_plain,
+            )
+            .rows
         );
-        let want = format!("{:?}", lenke_engine::exec::run(&ctrl, &plain).rows);
-        let got = format!("{:?}", lenke_engine::exec::run(&opt, &seeded).rows);
+        let got = format!(
+            "{:?}",
+            lenke_engine::exec::run(
+                &lenke_engine::opt::optimize_indexed(
+                    lenke_engine::gql::parse(q).expect("parses"),
+                    &small_seeded,
+                ),
+                &small_seeded,
+            )
+            .rows
+        );
         assert_eq!(want, got, "orientation changed the answer for: {q}");
 
         if let Ok((us, _)) = harness::time_query(q, false, &seeded, cfg.reps.min(3)) {
+            println!("  {label:<40} {us:>10.1}  {}", chain_of(&opt));
+        }
+    }
+
+    // E73 ------------------------------------------------------------------
+    //
+    // `RangeSeek`/`IndexSeek` carry a REQUIRED label, and that requirement shows up in
+    // two places: a pattern written without one cannot seek, and orientation has to
+    // decline an unlabelled far node because the reversed seed could never become a
+    // seek. Both have been treated as facts of life.
+    //
+    // They may not be. The range index is GLOBAL — `store.range_lookup(key, op, value)`
+    // is keyed by property, and `range_seek_ids` applies the label afterwards as a
+    // post-filter over the candidates, with an explicit shortcut for when the label
+    // covers every live node. So the label is a filter on a seek's OUTPUT, not part of
+    // how the seek is performed.
+    //
+    // This priced what the requirement cost, and the answer was enough to remove it:
+    //
+    //   scan  labelled   (n:Person)     30.6us  ->   26.3us   (unchanged; it already sought)
+    //   scan  UNLABELLED (n)           303.1us  ->   26.3us   11.5x
+    //   hop   far node labelled        495.6us  ->  485.5us   (unchanged)
+    //   hop   far node UNLABELLED     1710.8us  ->  447.8us    3.8x
+    //
+    // `MATCH (n) WHERE n.age > 98` is not an exotic query, and it could not touch an
+    // index for no reason beyond the IR node demanding a label. Both seeks now carry
+    // `label: Option<String>`.
+    //
+    // The far-node row needed a second change. Removing the label requirement means an
+    // unlabelled far node CAN seed, so orientation's "no label, no reversal" gate lost
+    // its stated reason — but dropping it outright regressed the unselective case 2.6x
+    // (`b.age > -1` went 0.95ms to 2.44ms), because reversing something that filters
+    // nothing still pays a residual check above the hop. The gate is now the thing it
+    // was always standing in for: measured selectivity against E64/E65's 15.4%
+    // crossover, via a CAPPED index probe so an unselective predicate costs a bounded
+    // walk rather than a full one. Both cases now land right.
+    section("E73: what does the REQUIRED label on a seek cost?");
+
+    println!("  {:<40} {:>10}  plan", "query", "us");
+
+    let labelled: [(&str, &str); 4] = [
+        (
+            "scan  labelled   (n:Person)",
+            "MATCH (n:Person) WHERE n.age > 98 RETURN count(*) AS c",
+        ),
+        (
+            "scan  UNLABELLED (n)",
+            "MATCH (n) WHERE n.age > 98 RETURN count(*) AS c",
+        ),
+        (
+            "hop   far node labelled",
+            "MATCH (a:Person)-[:KNOWS]->(b:Person) WHERE b.age > 98 RETURN count(*) AS c",
+        ),
+        (
+            "hop   far node UNLABELLED",
+            "MATCH (a:Person)-[:KNOWS]->(b) WHERE b.age > 98 RETURN count(*) AS c",
+        ),
+    ];
+
+    for (label, q) in labelled {
+        let opt = lenke_engine::opt::optimize_indexed(
+            lenke_engine::gql::parse(q).expect("parses"),
+            &seeded,
+        );
+        if let Ok((us, _)) = harness::time_query(q, false, &seeded, cfg.reps.min(5)) {
             println!("  {label:<40} {us:>10.1}  {}", chain_of(&opt));
         }
     }

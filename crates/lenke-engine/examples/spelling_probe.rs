@@ -174,20 +174,23 @@ fn main() {
             ],
         ),
         (
-            // NARROWED but still the widest cliff here (28x on this fixture). This used
-            // to be 43x (1% selective) / 52.7x (10%):
+            // NARROWED TWICE and now down to ~9x, with a cause that is no longer a
+            // planning gap at all. This used to be 43x (1% selective) / 52.7x (10%):
             // the engine did not score both ends of a fixed-length pattern, so a
             // predicate on the FAR end never reached an index and the walk ran from
             // every node and filtered after. `orient` in opt.rs now reverses a one-hop
             // pattern so the predicated end seeds the walk, which closes most of it.
             //
-            // What is left is the shape below, and the cause is precise: `RangeSeek`
-            // carries a REQUIRED label, so the reversed seed can only become a seek if
-            // the far node was written with one. Here `(b)` has no label, so reversal
-            // buys the pre-filter but not the index, and the backwards spelling — where
-            // `b:Person` sits on the seed — still wins. Write it `(b:Person)` and the
-            // two spellings converge (E66 in `simd_index_probe`).
-            "far-side predicate: forwards vs backwards (NARROWED 40x -> ~4x)",
+            // The required label on `RangeSeek` was the second cause, and it is gone —
+            // both property indexes are keyed by PROPERTY, so the label was only ever a
+            // post-filter, and an unlabelled `(b)` now seeds like any other (E73).
+            //
+            // What is left is NOT a planning gap: both spellings seed identically now.
+            // The backwards form counts by summing adjacency lengths, which never looks
+            // at an edge, while the forwards form keeps a residual check above the hop
+            // and so must visit every edge. Those are different questions — see E71 and
+            // audit item 11, where four attempts to close it are recorded.
+            "far-side predicate: forwards vs backwards (~9x, and not a penalty)",
             &[
                 (Gql, "MATCH (a:Person)-[:KNOWS]->(b) WHERE b.age > 98 RETURN count(*) AS c"),
                 (Gql, "MATCH (b:Person)<-[:KNOWS]-(a) WHERE b.age > 98 RETURN count(*) AS c"),
@@ -322,6 +325,13 @@ fn main() {
         let tmin = ok.iter().map(|(_, t, _)| *t).fold(f64::MAX, f64::min);
         let tmax = ok.iter().map(|(_, t, _)| *t).fold(0.0, f64::max);
         let ratio = if tmin > 0.0 { tmax / tmin } else { 1.0 };
+        // Under ~1us the timer's own resolution dominates, and the ratio of two such
+        // numbers is noise — the operand-free count group reported a 1.57x "cliff"
+        // between two measurements that both printed as 0.000ms.
+        if tmax < 0.001 {
+            println!("  ✓ all variants below the timer's resolution — no cost to compare");
+            continue;
+        }
         // A group tagged ROWS_MAY_DIFFER returns the same answer in a different
         // CONTAINER (one Map vs one row per group), so both the row count and the
         // time are apples-to-oranges. Report it and move on rather than flagging it

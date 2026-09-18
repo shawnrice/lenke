@@ -90,7 +90,12 @@ pub fn estimate(plan: &Plan, store: &Store) -> Card {
             Card::exact,
         ),
         Plan::RangeSeek { label, .. } => {
-            Card::approx(store.nodes_with_label(label).len() as f64 * RANGE_SEL)
+            // No label means the whole graph is the candidate pool.
+            let base = label.as_ref().map_or_else(
+                || store.live_node_count(),
+                |l| store.nodes_with_label(l).len(),
+            );
+            Card::approx(base as f64 * RANGE_SEL)
         }
 
         // --- selectivity / fan-out propagation ----------------------------------

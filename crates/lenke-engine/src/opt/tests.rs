@@ -80,7 +80,11 @@ fn scan_filter_eq_seeds_index_both_spellings() {
         let Plan::IndexSeek { label, key, value } = input.as_ref() else {
             panic!("expected IndexSeek under Project, got {input:?}")
         };
-        (label.clone(), key.clone(), value.clone())
+        (
+            label.clone().expect("seeded with a label"),
+            key.clone(),
+            value.clone(),
+        )
     };
     let (la, ka, va) = target(&oa);
     let (lb, kb, vb) = target(&ob);
@@ -171,15 +175,27 @@ fn dotted_field_eq_seeds_index_both_spellings() {
 /// filter is preserved. (A labelled range filter now seeds — see the range
 /// seed test.)
 #[test]
-fn unlabelled_scan_not_seeded() {
+fn unlabelled_scan_seeds_too() {
     let store = social();
     let unlabelled = Plan::Scan { label: None }
         .filter(cmp(CompareOp::Eq, prop(0, "name"), Expr::Lit(s("alice"))))
         .project(vec![("name".into(), prop(0, "name"))]);
-    assert!(plan_contains_filter(&assert_rows_preserved(
-        &unlabelled,
-        &store
-    )));
+    let opt = assert_rows_preserved(&unlabelled, &store);
+
+    // This test asserted the OPPOSITE until 2026-09-17, when the seeks' required
+    // label became optional. Requiring one meant `MATCH (n) WHERE n.age > 98` could
+    // never touch an index — 303us against 30.6us for the labelled spelling over the
+    // same rows — and nothing about the index needed it: both property indexes are
+    // keyed by PROPERTY, and the label was only ever a post-filter on the candidates.
+    fn seeks(p: &Plan) -> bool {
+        match p {
+            Plan::IndexSeek { .. } | Plan::RangeSeek { .. } => true,
+            Plan::Project { input, .. } | Plan::Filter { input, .. } => seeks(input),
+            _ => false,
+        }
+    }
+
+    assert!(seeks(&opt), "an unlabelled scan should seed: {opt:?}");
 }
 
 /// A range filter over a labelled scan seeds to a `RangeSeek`, for BOTH
@@ -339,33 +355,40 @@ fn shortest_path_source_filter_pushes_down() {
 #[test]
 fn adjacent_filters_merge() {
     let store = social();
-    // Unlabelled scan so seeding (which needs a label) does not fire — this
-    // isolates the merge rule. social() is all-Person, so the rows match.
+    // An unlabelled scan used to be the way to keep seeding out of this test, since
+    // the seeks once required a label. They no longer do, so the merge is observed
+    // through its CONSEQUENCE instead: the two conjuncts must fuse before the seeding
+    // rule can take one as the seek and leave the other as a residual. Two filters
+    // that never merged would leave the outer one stranded above.
     let plan = Plan::Scan { label: None }
         .filter(cmp(CompareOp::Ge, prop(0, "age"), Expr::Lit(n(28.0))))
         .filter(cmp(CompareOp::Le, prop(0, "age"), Expr::Lit(n(35.0))));
     let opt = assert_rows_preserved(&plan, &store);
     // And the answer: only alice(30) is in [28,35].
     assert_eq!(run(&opt, &store).rows.len(), 1);
-    // Shape: one Filter (an And) over the Scan.
+    // Shape: ONE residual filter, directly over the seek — not two stacked.
     match &opt {
         Plan::Filter { input, pred } => {
-            assert!(matches!(pred, Expr::And(..)), "merged into an AND");
             assert!(
-                matches!(**input, Plan::Scan { .. }),
-                "single filter over scan"
+                !matches!(pred, Expr::And(..)),
+                "one conjunct should have become the seek, leaving a single residual"
+            );
+            assert!(
+                matches!(**input, Plan::RangeSeek { .. }),
+                "the merged conjunction seeded, got {input:?}"
             );
         }
-        other => panic!("expected a single Filter, got {other:?}"),
+        other => panic!("expected a single Filter over a seek, got {other:?}"),
     }
 }
 
 #[test]
 fn driver_reaches_fixpoint_merge_then_pushdown() {
     let store = social();
-    // Two filters (slot 0) above an Expand: the driver must MERGE them and
-    // then PUSH the merged filter below the Expand — two rules, to a fixpoint.
-    // Unlabelled scan so seeding does not fire, isolating merge + pushdown.
+    // Two filters (slot 0) above an Expand: the driver must MERGE them, PUSH the
+    // merged filter below the Expand, and then SEED from it — three rules, to a
+    // fixpoint. (Seeding used to be kept out of this by leaving the scan unlabelled;
+    // the seeks no longer require a label, so it is part of what is checked.)
     let plan = Plan::Scan { label: None }
         .expand(0, Dir::Out, &["KNOWS".to_string()])
         .filter(cmp(CompareOp::Le, prop(0, "age"), Expr::Lit(n(100.0))))
@@ -373,11 +396,18 @@ fn driver_reaches_fixpoint_merge_then_pushdown() {
     let opt = assert_rows_preserved(&plan, &store);
     match opt {
         Plan::Expand { input, .. } => match *input {
+            // Merged, pushed below the hop, and one conjunct consumed by the seek.
             Plan::Filter { input, pred } => {
-                assert!(matches!(pred, Expr::And(..)), "the two filters merged");
-                assert!(matches!(*input, Plan::Scan { .. }));
+                assert!(
+                    !matches!(pred, Expr::And(..)),
+                    "one conjunct should have become the seek"
+                );
+                assert!(
+                    matches!(*input, Plan::RangeSeek { .. }),
+                    "expected the pushed filter to seed, got {input:?}"
+                );
             }
-            other => panic!("expected merged Filter below Expand, got {other:?}"),
+            other => panic!("expected a residual Filter below Expand, got {other:?}"),
         },
         other => panic!("expected Expand at top, got {other:?}"),
     }
@@ -1196,6 +1226,13 @@ fn orient_three_hops_does_not_cross_the_middle_slots() {
     b.edge(a1, x, "KNOWS");
     b.edge(x, y, "KNOWS");
     b.edge(y, target, "KNOWS");
+    // Filler, so `age > 98` is genuinely SELECTIVE. Orientation is gated on the far
+    // predicate's measured share of the graph (`ORIENT_MAX_FRACTION`), and in a
+    // six-node fixture one matching node is 17% — above the threshold, so the rewrite
+    // would correctly decline and the test would be testing nothing.
+    for i in 0..60 {
+        b.node(&["Person"], &[("age", n(f64::from(i % 50)))]);
+    }
     let mut store = b.build();
     store.create_range_index("age");
 
@@ -1245,5 +1282,56 @@ fn orient_three_hops_does_not_cross_the_middle_slots() {
     assert!(
         has_range_seek(&opt),
         "three hops should now seed from the far end: {opt:?}"
+    );
+}
+
+/// Orientation is gated on what the far-side predicate actually SELECTS, not on how
+/// it is written. The same pattern, the same index, the same shape — one bound that
+/// matches almost nothing and one that matches everything — must plan differently.
+///
+/// Reversing an unselective predicate is a measured regression (788us -> 3805us for
+/// `b.age > -1`): the reversal shrinks nothing and still pays a residual label check
+/// above the hop, which defeats the `count(*)` degree-sum shortcut.
+#[test]
+fn orient_declines_an_unselective_far_predicate() {
+    let mut b = Builder::default();
+    for i in 0..200 {
+        b.node(&["Person"], &[("age", n(f64::from(i % 100)))]);
+    }
+    for i in 0..200u32 {
+        b.edge(i, (i + 7) % 200, "KNOWS");
+    }
+    let mut store = b.build();
+    store.create_range_index("age");
+
+    let pattern = |bound: f64| Plan::Project {
+        input: Box::new(
+            Plan::Scan {
+                label: Some("Person".into()),
+            }
+            .expand(0, Dir::Out, &["KNOWS".to_string()])
+            .filter(cmp(CompareOp::Gt, prop(1, "age"), Expr::Lit(n(bound)))),
+        ),
+        items: vec![("who".into(), prop(0, "age"))],
+    };
+
+    // > 98 matches 1% of the graph — worth seeding from.
+    let selective = pattern(98.0);
+    let before = bag(&run(&selective, &store));
+    let opt = optimize_indexed(selective, &store);
+    assert_eq!(before, bag(&run(&opt, &store)), "selective: rows changed");
+    assert!(
+        has_range_seek(&opt),
+        "a 1% far predicate should orient and seed: {opt:?}"
+    );
+
+    // > -1 matches everything — reversing buys nothing and costs a residual check.
+    let unselective = pattern(-1.0);
+    let before = bag(&run(&unselective, &store));
+    let opt = optimize_indexed(unselective, &store);
+    assert_eq!(before, bag(&run(&opt, &store)), "unselective: rows changed");
+    assert!(
+        !has_range_seek(&opt),
+        "a predicate matching the whole graph must not orient: {opt:?}"
     );
 }
