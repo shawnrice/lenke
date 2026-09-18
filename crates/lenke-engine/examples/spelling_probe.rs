@@ -222,6 +222,19 @@ fn main() {
             ],
         ),
         (
+            // TWO hops, the widest gap this probe has ever measured: 178,357us written
+            // forwards against 2,155us written backwards, because `reverse_chain` used
+            // to require an Expand directly over a Scan and so left every longer
+            // pattern in its written direction. Both spellings now produce the SAME
+            // plan, which is why this group reads "identical optimized plan" rather
+            // than two times that happen to agree.
+            "two-hop far-side predicate: forwards vs backwards",
+            &[
+                (Gql, "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) WHERE c.age > 98 RETURN count(*) AS n"),
+                (Gql, "MATCH (c:Person)<-[:KNOWS]-(b:Person)<-[:KNOWS]-(a:Person) WHERE c.age > 98 RETURN count(*) AS n"),
+            ],
+        ),
+        (
             "1-hop projection: GQL vs Gremlin",
             &[
                 (Gql, "MATCH (a:Person)-[:KNOWS]->(b) RETURN b.name AS n"),

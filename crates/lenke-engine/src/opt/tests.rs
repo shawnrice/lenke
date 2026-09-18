@@ -1064,3 +1064,145 @@ fn pushdown_split_leaves_an_unpushable_predicate_for_a_later_arm() {
         "the split changed the rows"
     );
 }
+
+/// A two-hop pattern reverses, and the MIDDLE node's label must survive the reversal.
+///
+/// This is the test the integration probe structurally cannot be: its fixture labels
+/// every node `Person`, so dropping an intermediate `(b:Person)` check changes no
+/// answer there. Here `b` is constrained to a label only some nodes carry, so a
+/// dropped check shows up immediately as extra rows.
+#[test]
+fn orient_two_hop_keeps_the_middle_label() {
+    let mut b = Builder::default();
+    let a1 = b.node(&["Person"], &[("name", s("a1")), ("age", n(10.0))]);
+    let hub = b.node(
+        &["Person", "Staff"],
+        &[("name", s("hub")), ("age", n(11.0))],
+    );
+    let plain = b.node(&["Person"], &[("name", s("plain")), ("age", n(12.0))]);
+    let target = b.node(&["Person"], &[("name", s("target")), ("age", n(99.0))]);
+    // Two routes a1 -> ? -> target; only the one through `hub` carries :Staff.
+    b.edge(a1, hub, "KNOWS");
+    b.edge(hub, target, "KNOWS");
+    b.edge(a1, plain, "KNOWS");
+    b.edge(plain, target, "KNOWS");
+    let mut store = b.build();
+    store.create_range_index("age");
+
+    // (a:Person)-[:KNOWS]->(b:Staff)-[:KNOWS]->(c:Person) WHERE c.age > 98
+    let plan = Plan::Project {
+        input: Box::new(
+            Plan::Scan {
+                label: Some("Person".into()),
+            }
+            .expand(0, Dir::Out, &["KNOWS".to_string()])
+            .filter(Expr::IsLabeled {
+                slot: 1,
+                labels: vec!["Staff".into()],
+            })
+            .expand(1, Dir::Out, &["KNOWS".to_string()])
+            .filter(Expr::And(
+                Box::new(Expr::IsLabeled {
+                    slot: 2,
+                    labels: vec!["Person".into()],
+                }),
+                Box::new(cmp(CompareOp::Gt, prop(2, "age"), Expr::Lit(n(98.0)))),
+            )),
+        ),
+        items: vec![("who".into(), prop(0, "name"))],
+    };
+
+    let before = bag(&run(&plan, &store));
+    // Exactly one route qualifies — if the middle label were dropped it would be two.
+    assert_eq!(before.len(), 1, "fixture: expected one qualifying route");
+
+    let opt = optimize_indexed(plan, &store);
+    assert_eq!(
+        before,
+        bag(&run(&opt, &store)),
+        "the two-hop reversal changed the rows: {opt:?}"
+    );
+}
+
+/// Mixed hop directions must each flip independently: `(a)-[:T]->(b)<-[:T]-(c)`
+/// reversed is `(c)-[:T]->(b)<-[:T]-(a)`, not both hops pointing one way.
+#[test]
+fn orient_two_hop_flips_each_direction_independently() {
+    let mut b = Builder::default();
+    let a1 = b.node(&["Person"], &[("name", s("a1")), ("age", n(10.0))]);
+    let mid = b.node(&["Person"], &[("name", s("mid")), ("age", n(11.0))]);
+    let c1 = b.node(&["Person"], &[("name", s("c1")), ("age", n(99.0))]);
+    let decoy = b.node(&["Person"], &[("name", s("decoy")), ("age", n(99.0))]);
+    b.edge(a1, mid, "KNOWS"); // a -> mid
+    b.edge(c1, mid, "KNOWS"); // c -> mid, so mid <- c
+    b.edge(mid, decoy, "KNOWS"); // wrong direction for the pattern
+    let mut store = b.build();
+    store.create_range_index("age");
+
+    // (a:Person)-[:KNOWS]->(b)<-[:KNOWS]-(c:Person) WHERE c.age > 98
+    let plan = Plan::Project {
+        input: Box::new(
+            Plan::Scan {
+                label: Some("Person".into()),
+            }
+            .expand(0, Dir::Out, &["KNOWS".to_string()])
+            .expand(1, Dir::In, &["KNOWS".to_string()])
+            .filter(Expr::And(
+                Box::new(Expr::IsLabeled {
+                    slot: 2,
+                    labels: vec!["Person".into()],
+                }),
+                Box::new(cmp(CompareOp::Gt, prop(2, "age"), Expr::Lit(n(98.0)))),
+            )),
+        ),
+        items: vec![
+            ("who".into(), prop(0, "name")),
+            ("far".into(), prop(2, "name")),
+        ],
+    };
+
+    let before = bag(&run(&plan, &store));
+    let opt = optimize_indexed(plan, &store);
+
+    assert_eq!(
+        before,
+        bag(&run(&opt, &store)),
+        "mixed directions reversed wrongly: {opt:?}"
+    );
+}
+
+/// THREE hops do not orient. The rename for an n-hop reversal maps slot `i` to
+/// `n - i`, which is a single swap only while n <= 2; at n = 3 it is two independent
+/// swaps and `swap_slots` cannot express it. Reversing anyway would rename slot 1 to
+/// slot 1 and leave the pattern crossed.
+#[test]
+fn orient_declines_three_hops() {
+    let store = social_indexed();
+    let plan = Plan::Project {
+        input: Box::new(
+            Plan::Scan {
+                label: Some("Person".into()),
+            }
+            .expand(0, Dir::Out, &["KNOWS".to_string()])
+            .expand(1, Dir::Out, &["KNOWS".to_string()])
+            .expand(2, Dir::Out, &["KNOWS".to_string()])
+            .filter(Expr::And(
+                Box::new(Expr::IsLabeled {
+                    slot: 3,
+                    labels: vec!["Person".into()],
+                }),
+                Box::new(cmp(CompareOp::Gt, prop(3, "age"), Expr::Lit(n(26.0)))),
+            )),
+        ),
+        items: vec![("who".into(), prop(0, "name"))],
+    };
+
+    let before = bag(&run(&plan, &store));
+    let opt = optimize_indexed(plan, &store);
+
+    assert_eq!(before, bag(&run(&opt, &store)), "the rows changed");
+    assert!(
+        !has_range_seek(&opt),
+        "three hops must keep their written orientation: {opt:?}"
+    );
+}

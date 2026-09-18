@@ -1523,6 +1523,59 @@ fn main() {
             );
         }
     }
+
+    // E72 ------------------------------------------------------------------
+    //
+    // The last item the audit lists as open on orientation: TWO hops. `reverse_one_hop`
+    // requires an `Expand` directly over a `Scan`, so `(a)-[:T]->(b)-[:T]->(c) WHERE
+    // c.k > v` keeps its written direction and walks the whole two-hop frontier before
+    // filtering. An earlier pass put 83x on it — but that was BEFORE the pushdown split
+    // (E67), which changed what reaches an index in this exact shape, so the number has
+    // to be re-taken before anyone implements against it.
+    //
+    // The comparison is the same as E66's: what the engine plans, against the same
+    // query written backwards by hand, which is the best a perfect orientation could do.
+    section("E72: how much is still on the table at TWO hops?");
+
+    println!("  {:<40} {:>10}  plan", "query", "us");
+
+    let two: [(&str, &str); 4] = [
+        (
+            "1 hop  forwards (oriented)",
+            "MATCH (a:Person)-[:KNOWS]->(b:Person) WHERE b.age > 98 RETURN count(*) AS c",
+        ),
+        (
+            "1 hop  backwards (hand)",
+            "MATCH (b:Person)<-[:KNOWS]-(a:Person) WHERE b.age > 98 RETURN count(*) AS c",
+        ),
+        (
+            "2 hops forwards (NOT oriented)",
+            "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) WHERE c.age > 98 RETURN count(*) AS n",
+        ),
+        (
+            "2 hops backwards (hand)",
+            "MATCH (c:Person)<-[:KNOWS]-(b:Person)<-[:KNOWS]-(a:Person) WHERE c.age > 98 RETURN count(*) AS n",
+        ),
+    ];
+
+    for (label, q) in two {
+        let opt = lenke_engine::opt::optimize_indexed(
+            lenke_engine::gql::parse(q).expect("parses"),
+            &seeded,
+        );
+        // The unindexed store cannot seed, so it cannot orient — it is the control.
+        let ctrl = lenke_engine::opt::optimize_indexed(
+            lenke_engine::gql::parse(q).expect("parses"),
+            &plain,
+        );
+        let want = format!("{:?}", lenke_engine::exec::run(&ctrl, &plain).rows);
+        let got = format!("{:?}", lenke_engine::exec::run(&opt, &seeded).rows);
+        assert_eq!(want, got, "orientation changed the answer for: {q}");
+
+        if let Ok((us, _)) = harness::time_query(q, false, &seeded, cfg.reps.min(3)) {
+            println!("  {label:<40} {us:>10.1}  {}", chain_of(&opt));
+        }
+    }
 }
 
 /// The optimized plan as an operator chain, for printing next to a measurement.
@@ -1541,8 +1594,7 @@ fn chain_of(plan: &Plan) -> String {
                 | "IndexSeek"
                 | "RangeSeek"
                 | "IntervalExpand"
-        ) && chain.last() != Some(&tok)
-        {
+        ) {
             chain.push(tok);
         }
     }
