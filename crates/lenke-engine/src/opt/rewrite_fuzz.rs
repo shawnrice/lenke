@@ -152,6 +152,31 @@
 //! has found is a slot index computed one way in one place and another way somewhere
 //! else, and a hop appending two slots is where such an assumption breaks first.
 //!
+//! # A fourth widening: paging, ordering and real aggregates
+//!
+//! `ORDER BY` / `LIMIT` needed a change to the ORACLE, not just the generator, and the
+//! reasoning is the interesting part. `OrderPage` sorts STABLY, so when sort keys tie,
+//! which rows survive a `LIMIT` depends on the order rows arrived in — and the arrival
+//! order is exactly what optimizing is allowed to change. Comparing sequences under
+//! ties would report differences the engine is free to have.
+//!
+//! The way out is to make the key TOTAL: every page sorts on a tuple of all slots'
+//! `name`, which is unique per node, so the only equal keys are identical rows. The
+//! window is then the same whatever the arrival order, and `check` can compare ORDER
+//! and not merely membership — strictly stronger, and it catches a top-k returning the
+//! right rows in the wrong sequence. Edges have no `name`, so a chain carrying a bound
+//! edge simply is not paged, rather than paged under a key that is only nearly total.
+//!
+//! This round found no engine bug. It found one in the FUZZER: the first version sorted
+//! `Prop{slot,"name"}` above a projection, where the slots already hold names, so every
+//! key was null, every key tied, and it reported a "failure" at seed 1461 that was the
+//! oracle's fault. Worth stating plainly because a generative test that reports a
+//! difference is persuasive, and the first question has to be whether the difference is
+//! real.
+//!
+//! Also added: aggregates beyond `count` (`Sum`/`Min`/`Max`/`Avg`, optionally
+//! `DISTINCT`, optionally grouped), each of which routes to a different fast path.
+//!
 //! # Reading an uncaught mutation
 //!
 //! It means one of two things, and they are opposite. Either the generator cannot reach
@@ -163,6 +188,15 @@
 //!
 //! When adding a rewrite, mutate it and check this catches it. A generative test whose
 //! teeth have never been verified is worse than no test, because it is believed.
+//!
+//! # Density falls as shapes are added; absolute coverage must not
+//!
+//! Every widening spends probability that used to go somewhere else, so the fraction of
+//! plans reaching any given rewrite drifts down — plans that seed an index went 659 per
+//! 2,000 to 245 across four widenings, with nothing wrong. The floors in the coverage
+//! test are on DENSITY and get recalibrated; what compensates is the sweep SIZE
+//! (`seed_count`, 4,000 by default). Lowering a floor without raising the sweep would
+//! be trading coverage for a green test.
 //!
 //! # Scope
 //!
@@ -560,6 +594,10 @@ fn gen_edge_pred(rng: &mut Lcg, slot: usize) -> Expr {
 struct Gen {
     plan: Plan,
     width: usize,
+    /// Whether any slot holds an EDGE rather than a node. Sorting needs to know: the
+    /// only property that is unique per element here is `name`, and edges do not have
+    /// one, so a chain with a bound edge cannot be given a TOTAL sort key.
+    bound_edge: bool,
 }
 
 /// How many hops to chain. Weighted hard toward the short patterns real queries are
@@ -589,6 +627,7 @@ fn gen_seed(rng: &mut Lcg) -> Gen {
     Gen {
         plan: Plan::Scan { label },
         width: 1,
+        bound_edge: false,
     }
 }
 
@@ -646,6 +685,7 @@ fn gen_chain(rng: &mut Lcg, hops: usize) -> Gen {
             // assumption breaks first. It also gates the interval-overlap fusion, and
             // orientation refuses it outright — so these plans exercise the decline.
             g.plan = g.plan.expand_edge(g.width - 1, dir, &etypes);
+            g.bound_edge = true;
             let edge_slot = g.width;
             g.width += 2;
             if rng.chance(2, 3) {
@@ -741,6 +781,56 @@ fn gen_cross_pred(rng: &mut Lcg, width: usize) -> Expr {
     }
 }
 
+/// A total sort key over `width` slots, plus a skip/limit window.
+///
+/// Totality is the whole point. `OrderPage` sorts STABLY, so under a LIMIT the
+/// surviving rows depend on the order rows arrived in — which is precisely what
+/// optimizing is allowed to change. A key that is total removes the ambiguity: the only
+/// equal keys are identical rows, so the window is the same whatever the arrival order
+/// and raw and optimized must agree exactly. `name` is unique per node, so a tuple of
+/// every slot's `name` is total; edges have no `name`, which is why a chain carrying a
+/// bound edge is not given a page at all.
+/// `projected` says what the slots hold. BELOW a projection they are elements, so each
+/// key reads `name` off one; ABOVE a projection they are already the names, and reading
+/// `name` off a string yields null — which makes every key tie, turns the window into a
+/// prefix of an unspecified order, and reports a difference that is the generator's
+/// fault rather than the optimizer's. The first version did exactly that and "found" a
+/// bug at seed 1461 that was not one.
+fn gen_page(
+    rng: &mut Lcg,
+    width: usize,
+    projected: bool,
+) -> (Vec<crate::ir::SortKey>, Option<usize>, Option<usize>) {
+    let keys = (0..width)
+        .map(|i| crate::ir::SortKey {
+            expr: if projected {
+                Expr::Slot(i)
+            } else {
+                Expr::Prop {
+                    slot: i,
+                    key: "name".into(),
+                }
+            },
+            descending: rng.chance(1, 3),
+            nulls_first: rng.chance(1, 2),
+        })
+        .collect();
+    // A bare page (no keys) would be a prefix of an unspecified order, so keys are
+    // always present. `limit` reaches 0 deliberately — the LIMIT-0 rule is its own
+    // documented edge case — and `skip` can run past the end.
+    let skip = if rng.chance(1, 3) {
+        Some(rng.below(4))
+    } else {
+        None
+    };
+    let limit = if rng.chance(3, 4) {
+        Some(rng.below(6))
+    } else {
+        None
+    };
+    (keys, skip, limit)
+}
+
 /// A random plan.
 fn gen_plan(rng: &mut Lcg) -> Plan {
     // A JOIN of two chains, sometimes. Both sides are kept SHALLOW: the join's output
@@ -756,6 +846,7 @@ fn gen_plan(rng: &mut Lcg) -> Plan {
         let mut j = Gen {
             plan: Plan::join(left.plan, right_raw.plan, on),
             width: lw + rw,
+            bound_edge: left.bound_edge || right_raw.bound_edge,
         };
         // DIRECTLY above the join, with nothing in between. The pushdown arm matches
         // `Filter` over `Join`, so a filter separated from it by a `Distinct` or a
@@ -787,6 +878,7 @@ fn gen_plan(rng: &mut Lcg) -> Plan {
         let keep = if keep.is_empty() { vec![0] } else { keep };
         g = Gen {
             width: keep.len(),
+            bound_edge: g.bound_edge,
             plan: Plan::Project {
                 input: Box::new(g.plan),
                 items: keep
@@ -827,6 +919,29 @@ fn gen_plan(rng: &mut Lcg) -> Plan {
         }
     }
 
+    // ORDER BY / LIMIT, which is the top-k fast path and was entirely unfuzzed.
+    //
+    // THE SORT KEY IS EVERY SLOT, and that is what makes the comparison sound rather
+    // than flaky. `OrderPage` sorts STABLY, so with ties the surviving rows under a
+    // LIMIT depend on the order the rows arrived in — which is exactly what optimizing
+    // is allowed to change. Sorting on a key that is TOTAL removes the ambiguity: the
+    // only equal keys are identical rows, so the window is the same whatever the
+    // arrival order, and raw and optimized must agree exactly.
+    //
+    // `name` is unique per node, so a tuple of every slot's `name` is total. Edges have
+    // no `name`, so a chain carrying a bound edge is skipped rather than compared under
+    // a key that is only nearly total.
+    // Placed BELOW the projection, this also happens to cover a real limitation:
+    // `orient_scan` has no arm for `OrderPage`, so a pattern under an `ORDER BY`
+    // declines to orient — safe (the sort keys reference pattern slots and would need
+    // renaming too) but a missed optimization. Kept rare for that reason, with the
+    // above-the-projection placement generated separately below, where it does not
+    // block the rewrite.
+    if !g.bound_edge && rng.chance(1, 8) {
+        let (keys, skip, limit) = gen_page(rng, g.width, false);
+        g.plan = g.plan.order_page(keys, skip, limit);
+    }
+
     let far = g.width - 1;
     let all_slots: Vec<(String, Expr)> = (0..g.width)
         .map(|i| {
@@ -859,7 +974,25 @@ fn gen_plan(rng: &mut Lcg) -> Plan {
         numeric_only: false,
     };
 
-    match rng.below(9) {
+    // Aggregates beyond `count`, each of which has its own fast path in `exec`
+    // (`try_scan_num_agg`, `try_frontier_prop_agg`, …). `Sum` and `Avg` are also where
+    // float summation ORDER shows up: they are only equal across two plans if the rows
+    // are folded in the same sequence or the sum is order-independent, so a rewrite
+    // that reorders rows under one is worth knowing about.
+    let numeric_agg = |rng: &mut Lcg, slot: usize| Agg {
+        func: *rng.pick(&[AggFn::Sum, AggFn::Min, AggFn::Max, AggFn::Avg]),
+        arg: Some(Expr::Prop {
+            slot,
+            key: (*rng.pick(&NUM_KEYS)).to_string(),
+        }),
+        distinct: rng.chance(1, 4),
+        name: "a".into(),
+        frac: None,
+        null_on_empty: false,
+        numeric_only: false,
+    };
+
+    match rng.below(11) {
         // THE CANARY, and deliberately the most common shape: every slot projected in
         // order, by a property unique per node. Any permutation of the pattern's slots
         // shows up here as a row mismatch. A generator weighted toward `count(*)`
@@ -874,6 +1007,18 @@ fn gen_plan(rng: &mut Lcg) -> Plan {
             input: Box::new(g.plan),
             items: vec![all_slots[0].clone(), all_slots[far].clone()],
         },
+        // A page ABOVE the projection, sorting on the projected columns. Structurally
+        // different from the other placement and, unlike it, does not stop the pattern
+        // beneath from being oriented — so this is the shape that exercises top-k and
+        // orientation at the same time.
+        9 if !g.bound_edge => {
+            let projected = Plan::Project {
+                input: Box::new(g.plan),
+                items: all_slots,
+            };
+            let (keys, skip, limit) = gen_page(rng, g.width, true);
+            projected.order_page(keys, skip, limit)
+        }
         // A projection with DISTINCT over it: dedup happens on the projected columns,
         // so a permutation that survives the projection can still change the count.
         5 => Plan::Distinct {
@@ -892,12 +1037,58 @@ fn gen_plan(rng: &mut Lcg) -> Plan {
         },
         // GROUP BY a pattern slot: an aggregate whose KEY reads the pattern, so the
         // rename has to reach the key and stop above it.
-        _ => Plan::Aggregate {
-            input: Box::new(g.plan),
-            keys: vec![all_slots[rng.below(g.width)].clone()],
-            aggs: vec![count("c")],
-        },
+        8 => {
+            let key = all_slots[rng.below(g.width)].clone();
+            Plan::Aggregate {
+                input: Box::new(g.plan),
+                keys: vec![key],
+                aggs: vec![count("c")],
+            }
+        }
+        // A NUMERIC aggregate, optionally grouped and optionally DISTINCT — every one
+        // of which routes to a different fast path than `count(*)`.
+        _ => {
+            let slot = rng.below(g.width);
+            let agg = numeric_agg(rng, slot);
+            let keys = if rng.chance(1, 2) {
+                vec![all_slots[rng.below(g.width)].clone()]
+            } else {
+                Vec::new()
+            };
+            Plan::Aggregate {
+                input: Box::new(g.plan),
+                keys,
+                aggs: vec![agg, count("c")],
+            }
+        }
     }
+}
+
+/// Is this plan's ROW ORDER part of its answer?
+///
+/// Only when a page sits at the root, seen through operators that preserve order.
+/// Everything else is unordered, and [[order-is-unspecified]] applies: comparing
+/// sequences there would flag differences the engine is free to have.
+///
+/// This is only sound because the generator gives every page a TOTAL sort key (see
+/// `gen_page`). With ties, a stable sort makes the output depend on the arrival order,
+/// which optimizing is allowed to change.
+fn ordered_output(plan: &Plan) -> bool {
+    match plan {
+        Plan::OrderPage { keys, .. } => !keys.is_empty(),
+        // Both preserve row order; an `Aggregate` does not, and anything else is not
+        // worth assuming about.
+        Plan::Project { input, .. } | Plan::Distinct { input } => ordered_output(input),
+        _ => false,
+    }
+}
+
+/// Rows in order, for a plan whose order is part of its answer.
+fn seq(rows: &Rows) -> Vec<String> {
+    rows.rows
+        .iter()
+        .map(|r| r.iter().map(|v| format!("{v:?};")).collect::<String>())
+        .collect()
 }
 
 /// Rows as a sorted multiset. Order is unspecified for an unordered query, so the
@@ -935,6 +1126,16 @@ fn check(seed: u64, store: &Store, indexed: bool) {
     let after = crate::exec::try_run(&opt, store);
 
     match (&before, &after) {
+        // An ORDERED comparison where the order is specified, a multiset comparison
+        // everywhere else. The ordered one is strictly stronger and catches a top-k
+        // that returns the right rows in the wrong sequence, which a bag cannot.
+        (Ok(b), Ok(a)) if ordered_output(&plan) => assert_eq!(
+            seq(b),
+            seq(a),
+            "\noptimizing changed the ORDER (seed {seed}, indexed {indexed})\
+             \n  raw:       {plan:?}\
+             \n  optimized: {opt:?}\n"
+        ),
         (Ok(b), Ok(a)) => assert_eq!(
             bag(b),
             bag(a),
@@ -957,7 +1158,7 @@ fn seed_count() -> u64 {
     std::env::var("LENKE_OPT_FUZZ_SEEDS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(2_000)
+        .unwrap_or(4_000)
 }
 
 /// The invariant, over an INDEXED store — where the seeding rules, the pushdown split
@@ -1045,6 +1246,7 @@ fn the_generator_actually_reaches_the_rewrites() {
     let (mut seeks, mut oriented, mut multi_hop, mut nonempty) = (0, 0, 0, 0);
     let (mut joins, mut varlen, mut deep, mut faults) = (0, 0, 0, 0);
     let (mut bound_edge, mut interval) = (0, 0);
+    let (mut paged, mut num_agg) = (0, 0);
     let n = 2_000;
 
     for seed in 0..n {
@@ -1103,6 +1305,15 @@ fn the_generator_actually_reaches_the_rewrites() {
         if plan_has(&opt, |p| matches!(p, Plan::IntervalExpand { .. })) {
             interval += 1;
         }
+        if plan_has(&plan, |p| matches!(p, Plan::OrderPage { .. })) {
+            paged += 1;
+        }
+        if plan_has(
+            &plan,
+            |p| matches!(p, Plan::Aggregate { aggs, .. } if aggs.iter().any(|a| a.func != AggFn::Count)),
+        ) {
+            num_agg += 1;
+        }
         match crate::exec::try_run(&plan, &store) {
             Ok(r) if !r.rows.is_empty() => nonempty += 1,
             Ok(_) => {}
@@ -1114,11 +1325,18 @@ fn the_generator_actually_reaches_the_rewrites() {
         "seeks {seeks}/{n}  oriented {oriented}/{n}  multi-hop {multi_hop}/{n}  \
          deep {deep}/{n}  joins {joins}/{n}  varlen {varlen}/{n}  \
          bound-edge {bound_edge}/{n}  interval {interval}/{n}  \
+         paged {paged}/{n}  num-agg {num_agg}/{n}  \
          non-empty {nonempty}/{n}  faulted {faults}/{n}"
     );
 
-    // FLOORS, calibrated against what the generator actually produces (the line above
-    // prints it) with room to spare — not aspirations. They guard one thing: the
+    // FLOORS on DENSITY, calibrated against what the generator actually produces (the
+    // line above prints it) with room to spare — not aspirations.
+    //
+    // They drift down as shapes are added, and that is fine and expected: probability
+    // spent on joins and pages is probability not spent on seeds. What must not drift
+    // is ABSOLUTE coverage, so `seed_count` rises to compensate (4,000 by default; the
+    // whole sweep still runs in well under a second). Lowering a floor and leaving the
+    // sweep the same size would be trading coverage for a green test. They guard one thing: the
     // generator silently drifting to trivia, which is invisible from the outside
     // because a vacuous generative test looks exactly like a working one.
     //
@@ -1127,7 +1345,7 @@ fn the_generator_actually_reaches_the_rewrites() {
     // seekable forms were diluted and two new keys had no index at all. Nothing else
     // would have noticed: every correctness test stayed green, on a corpus that had
     // quietly stopped exercising the rewrites it exists to test.
-    assert!(seeks > n / 8, "too few plans seed an index: {seeks}/{n}");
+    assert!(seeks > n / 10, "too few plans seed an index: {seeks}/{n}");
     assert!(oriented > n / 16, "too few plans orient: {oriented}/{n}");
     assert!(
         multi_hop > n / 4,
@@ -1143,6 +1361,14 @@ fn the_generator_actually_reaches_the_rewrites() {
     assert!(
         interval > n / 50,
         "too few interval fusions: {interval}/{n}"
+    );
+    assert!(
+        paged > n / 20,
+        "too few ORDER BY / LIMIT plans: {paged}/{n}"
+    );
+    assert!(
+        num_agg > n / 50,
+        "too few numeric aggregates: {num_agg}/{n}"
     );
     assert!(
         nonempty > n / 3,
