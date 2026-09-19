@@ -1335,3 +1335,82 @@ fn orient_declines_an_unselective_far_predicate() {
         "a predicate matching the whole graph must not orient: {opt:?}"
     );
 }
+
+/// An intermediate predicate that reads its hop's endpoint AND some other slot must
+/// not be treated as belonging to that hop.
+///
+/// FOUND BY `rewrite_fuzz`, in code shipped two days earlier, and it is the same
+/// "a maximum is not an only" mistake that `reverse_chain` already documents for the
+/// far-side predicate — where a maximum of 0 is sufficient only because 0 is also the
+/// minimum. A middle slot has no such luck: a predicate over slots {1, 4} has maximum
+/// 4, so `peel_hops` accepted it as hop 4's, and `shift_slot` then renamed it as
+/// though slot 1 were not there. The slot-1 conjunct came out reading slot 4 at a
+/// point in the chain where only slots 0 and 1 exist — an out-of-bounds column read,
+/// which panicked rather than answering wrongly, but only by luck.
+///
+/// A DISJUNCTION is what makes it reachable. An `And` over two slots is taken apart by
+/// the per-conjunct pushdown split long before orientation sees it; an `Or` cannot be
+/// split, so it arrives whole.
+#[test]
+fn orient_declines_an_intermediate_predicate_reading_two_slots() {
+    // Big enough that `age > 46` is ~6% of the graph. Orientation is gated on the far
+    // predicate selecting under ~15%, so a smaller fixture would make the rewrite
+    // decline and the test would guard nothing.
+    let mut b = Builder::default();
+    for i in 0..100 {
+        let mut labels: Vec<&str> = vec!["Node"];
+        if i % 2 == 0 {
+            labels.push("Half");
+        }
+        b.node(
+            &labels,
+            &[("name", s(&format!("n{i}"))), ("age", n(f64::from(i % 50)))],
+        );
+    }
+    for i in 0..100u32 {
+        b.edge(i, (i + 1) % 100, "T");
+        b.edge(i, (i + 3) % 100, "T");
+        b.edge(i, (i + 7) % 100, "T");
+    }
+    let mut store = b.build();
+    store.create_range_index("age");
+
+    // Three hops, with an Or spanning slot 1 and slot 3 sitting where the peeler would
+    // otherwise attribute it to the hop that appends slot 3.
+    let plan = Plan::Project {
+        input: Box::new(
+            Plan::Scan {
+                label: Some("Node".into()),
+            }
+            .expand(0, Dir::Out, &["T".to_string()])
+            .expand(1, Dir::Out, &["T".to_string()])
+            .expand(2, Dir::Out, &["T".to_string()])
+            // The two-slot `Or`, sitting where the peeler will attribute it to the hop
+            // that appends slot 3 — because 3 is its MAXIMUM slot. There must be hops
+            // ABOVE it: as the last filter it would merge into the top-level predicate
+            // instead, where a different (and correct) guard rejects it, and the bug
+            // would not reproduce.
+            .filter(Expr::Or(
+                Box::new(cmp(CompareOp::Gt, prop(1, "age"), Expr::Lit(n(40.0)))),
+                Box::new(Expr::IsLabeled {
+                    slot: 3,
+                    labels: vec!["Half".into()],
+                }),
+            ))
+            .expand(3, Dir::Out, &["T".to_string()])
+            .expand(4, Dir::Out, &["T".to_string()])
+            .filter(cmp(CompareOp::Gt, prop(5, "age"), Expr::Lit(n(46.0)))),
+        ),
+        items: vec![("a".into(), prop(0, "name")), ("f".into(), prop(5, "name"))],
+    };
+
+    let before = bag(&run(&plan, &store));
+    assert!(!before.is_empty(), "fixture: expected some rows to match");
+
+    let opt = optimize_indexed(plan, &store);
+    assert_eq!(
+        before,
+        bag(&run(&opt, &store)),
+        "a two-slot intermediate predicate was moved as if it read one: {opt:?}"
+    );
+}

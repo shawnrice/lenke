@@ -2032,7 +2032,7 @@ fn peel_hops(plan: &Plan) -> Option<(Option<String>, Vec<Hop>)> {
             let (label, mut hops) = peel_hops(input)?;
             let endpoint = hops.len();
             let last = hops.last_mut()?;
-            if last.above.is_some() || max_slot(pred) != Some(endpoint) {
+            if last.above.is_some() || !reads_only_slot(pred, endpoint) {
                 return None;
             }
             last.above = Some(pred.clone());
@@ -2074,6 +2074,22 @@ fn swap_slots(e: &Expr, a: usize, b: usize) -> Option<Expr> {
             s
         }
     })
+}
+
+/// Does `e` read slot `s` and NO OTHER slot?
+///
+/// `max_slot(e) == Some(s)` is NOT this, and the difference is a shipped bug: a
+/// predicate reading slots {1, 4} has a maximum of 4, so a check for "belongs to hop
+/// 4" accepted it and then renamed it as though slot 1 were not there. `reverse_chain`
+/// documents the same trap for the FAR predicate, where a maximum of 0 happens to be
+/// sufficient because 0 is also the minimum — the middle of a chain has no such luck.
+///
+/// Implemented by probing: map every slot that is not `s` to `usize::MAX` and ask for
+/// the maximum. Anything other than `s` present, or a path expression (which already
+/// claims `usize::MAX`), pushes the answer past `s`.
+fn reads_only_slot(e: &Expr, s: usize) -> bool {
+    map_slots(e, &move |x| if x == s { s } else { usize::MAX })
+        .is_some_and(|probe| max_slot(&probe) == Some(s))
 }
 
 /// The rename a reversal performs: slot `i` of an `n`-hop pattern becomes slot
@@ -2223,7 +2239,7 @@ fn reverse_chain(plan: Plan) -> Option<(Plan, usize)> {
 /// Rewrite every reference to slot `from` as slot `to`, leaving all others alone.
 /// Only valid when the expression reads NOTHING but `from`, which every caller checks.
 fn shift_slot(e: &Expr, from: usize, to: usize) -> Option<Expr> {
-    if max_slot(e) != Some(from) {
+    if !reads_only_slot(e, from) {
         return None;
     }
     // With only `from` present, exchanging `from` and `to` renames it and can touch

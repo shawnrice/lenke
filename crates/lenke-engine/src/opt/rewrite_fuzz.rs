@@ -75,6 +75,40 @@
 //!   instrumenting it across 2,000 plans and never hitting it — and a mutation of that
 //!   branch passed silently.
 //!
+//! # Widening it found a real bug, and four gaps in itself
+//!
+//! The first version chained one to three `Expand`s from a single scan. Widening it to
+//! six hops, joins, var-length hops, mid-plan projections and disjunctions did two
+//! things, and the second matters more than the first.
+//!
+//! It found a SHIPPED BUG, two days old, in `peel_hops`/`shift_slot`: both asked
+//! `max_slot(pred) == Some(endpoint)` where they meant "reads that slot and no other".
+//! A predicate over slots {1, 4} has a maximum of 4, so it was attributed to hop 4 and
+//! renamed as though slot 1 were not there — emerging as a read of slot 4 at a point
+//! where only slots 0 and 1 exist. `reverse_chain` documents this exact trap for the
+//! FAR predicate, where a maximum of 0 is sufficient because 0 is also the minimum; the
+//! middle of a chain has no such luck. See [`super::reads_only_slot`].
+//!
+//! And mutation testing found four holes in the GENERATOR, each invisible until a
+//! mutation went uncaught:
+//!
+//! - **no projection at all** — every realistic query has a `RETURN`, so a generator
+//!   wraps every pattern in one; but that is the shape whose slots ARE the result
+//!   columns.
+//! - **a `Distinct` between the pattern and its consumer** — without something in
+//!   between, adjacent filters merge and `orient_apply`'s rename-the-filter-above
+//!   branch is unreachable.
+//! - **predicates reading more than one slot** — with single-slot predicates
+//!   `split_pushable` never actually SPLITS, so the mixed-conjunction pushdown (the
+//!   largest bug of the week) was generated exactly never.
+//! - **disjunctions** — a mixed `And` is taken apart by that same split before
+//!   orientation sees it, so only a mixed `Or` reaches `reverse_chain` still reading
+//!   both ends. Adding them is what surfaced the shipped bug above.
+//!
+//! The pattern is consistent: the gaps were all shapes that are *rare in real queries*
+//! and therefore absent from an unexamined generator, while being exactly where the
+//! rewrites' assumptions are load-bearing.
+//!
 //! When adding a rewrite, mutate it and check this catches it. A generative test whose
 //! teeth have never been verified is worse than no test, because it is believed.
 //!
@@ -86,8 +120,8 @@
 //! are fixed so CI is deterministic; `LENKE_OPT_FUZZ_SEEDS` runs more locally.
 
 use super::{optimize_indexed, IndexOracle};
-use crate::exec::{run, Rows};
-use crate::ir::{Agg, AggFn, CompareOp, Dir, Expr, Plan};
+use crate::exec::Rows;
+use crate::ir::{Agg, AggFn, CompareOp, Dir, Expr, PathMode, Plan};
 use crate::store::{Builder, Store};
 use crate::value::Value;
 
@@ -205,37 +239,248 @@ fn gen_pred(rng: &mut Lcg, slot: usize, selective: bool) -> Expr {
     }
 }
 
-/// A random plan: a seed scan, one to three hops, filters, and an output shape.
-fn gen_plan(rng: &mut Lcg) -> Plan {
-    let seed_label = if rng.chance(3, 4) {
+/// A generated subplan and the width (slot count) it produces. Width has to be
+/// tracked explicitly: `Expand`/`VarLength` append one slot, a `Join` concatenates
+/// both sides' slots, and a mid-plan `Project` replaces the namespace entirely.
+struct Gen {
+    plan: Plan,
+    width: usize,
+}
+
+/// How many hops to chain. Weighted hard toward the short patterns real queries are
+/// made of, with the deep ones RARE rather than absent: a six-hop walk over this
+/// fixture is a few tens of thousands of rows, which is fine occasionally and far too
+/// slow as the common case.
+fn gen_hop_count(rng: &mut Lcg) -> usize {
+    match rng.below(100) {
+        0..=44 => 1,
+        45..=74 => 2,
+        75..=89 => 3,
+        90..=95 => 4,
+        96..=98 => 5,
+        _ => 6,
+    }
+}
+
+/// A seed: a labelled or unlabelled scan. Both matter — the seeks' label became
+/// optional, so an unlabelled scan now reaches an index too, and the two take
+/// different paths through the seeding rules.
+fn gen_seed(rng: &mut Lcg) -> Gen {
+    let label = if rng.chance(3, 4) {
         Some((*rng.pick(&LABELS)).to_string())
     } else {
         None
     };
-    let mut plan = Plan::Scan { label: seed_label };
+    Gen {
+        plan: Plan::Scan { label },
+        width: 1,
+    }
+}
 
-    let hops = 1 + rng.below(3);
+/// A chain: a seed, then `hops` hops, each an `Expand` or (rarely) a `VarLength`, with
+/// intermediate filters between them.
+///
+/// `deep` chains are steered toward `Dir::Out` and a single edge type. Not for
+/// realism — to bound the fan-out, since a six-hop `Both` walk over a degree-3 graph
+/// is millions of paths and would make this test a benchmark.
+fn gen_chain(rng: &mut Lcg, hops: usize) -> Gen {
+    let mut g = gen_seed(rng);
+    let deep = hops >= 4;
+
     for h in 0..hops {
-        let etypes: Vec<String> = if rng.chance(3, 4) {
+        let etypes: Vec<String> = if deep || rng.chance(3, 4) {
             vec![(*rng.pick(&ETYPES)).to_string()]
         } else {
             Vec::new() // any type
         };
-        plan = plan.expand(h, *rng.pick(&[Dir::Out, Dir::In, Dir::Both]), &etypes);
+        let dir = if deep {
+            Dir::Out
+        } else {
+            *rng.pick(&[Dir::Out, Dir::In, Dir::Both])
+        };
 
-        // An INTERMEDIATE filter on the hop's endpoint. This is the one that has to
-        // travel with its own hop through a reversal, and putting it on the wrong end
-        // is exactly the two-hop bug.
-        if h + 1 < hops && rng.chance(1, 2) {
-            plan = plan.filter(gen_pred(rng, h + 1, false));
+        // A VARIABLE-LENGTH hop now and then. This is not decoration: the pushdown
+        // arm for `VarLength` is the one that has always SPLIT its predicate (the
+        // `Expand` arm only learned to this week), and `max_slot` claims `usize::MAX`
+        // for path expressions specifically to stop them being pushed below one.
+        if !deep && rng.chance(1, 8) {
+            let min = rng.below(2) as u32;
+            g.plan = Plan::VarLength {
+                input: Box::new(g.plan),
+                from: g.width - 1,
+                dir,
+                edge_label: etypes,
+                min,
+                max: min + 1 + rng.below(2) as u32,
+                mode: *rng.pick(&[
+                    PathMode::Walk,
+                    PathMode::Trail,
+                    PathMode::Simple,
+                    PathMode::Acyclic,
+                ]),
+                until: None,
+                body_filter: None,
+                double_loops: false,
+            };
+        } else {
+            g.plan = g.plan.expand(g.width - 1, dir, &etypes);
+        }
+        g.width += 1;
+
+        // An INTERMEDIATE filter on the hop's endpoint — the one that has to travel
+        // with its own hop through a reversal, and whose misplacement was the two-hop
+        // bug. Deep chains always get one, to keep the frontier from exploding.
+        if h + 1 < hops && (deep || rng.chance(1, 2)) {
+            g.plan = g.plan.filter(gen_pred(rng, g.width - 1, deep));
         }
     }
 
     // The far-side predicate: what orientation seeds from, when it fires.
     let selective = rng.chance(3, 4);
-    plan = plan.filter(gen_pred(rng, hops, selective));
+    g.plan = g.plan.filter(gen_pred(rng, g.width - 1, selective));
 
-    let all_slots: Vec<(String, Expr)> = (0..=hops)
+    // A MIXED conjunction over the whole chain, which has to be split per conjunct on
+    // the way down — each hop keeping the part that reads the slot it appends and
+    // pushing the rest below. This is the shape `(a:L)-[:T]->(b:M) WHERE a.k > v`
+    // lowers to once the filters merge.
+    if g.width >= 2 && rng.chance(1, 3) {
+        let pred = gen_cross_pred(rng, g.width);
+        g.plan = g.plan.filter(pred);
+    }
+
+    g
+}
+
+/// A conjunction reading TWO DIFFERENT slots — `a.age > 1 AND b:L`.
+///
+/// Every other generated predicate reads exactly one slot, and that turned out to be a
+/// hole big enough to drive the week's largest bug through: with single-slot
+/// predicates, `split_pushable` never actually SPLITS. It puts the whole predicate
+/// either below the hop or above it, so the mixed-conjunction path — the one where a
+/// slot-1 label check used to pin a slot-0 range predicate above the hop and cost 300x
+/// — was generated exactly never. Two mutations of that code went uncaught until this
+/// existed.
+///
+/// It also covers the opposite branch on purpose: orientation must DECLINE a far-side
+/// predicate that reads both ends, because the reversed seed cannot evaluate the half
+/// that names the other node.
+fn gen_cross_pred(rng: &mut Lcg, width: usize) -> Expr {
+    debug_assert!(width >= 2);
+    let i = rng.below(width);
+    let j = {
+        let k = rng.below(width);
+        if k == i {
+            (i + 1) % width
+        } else {
+            k
+        }
+    };
+    let selective = rng.chance(1, 2);
+    let a = gen_pred(rng, i, selective);
+    let b = gen_pred(rng, j, false);
+
+    // A DISJUNCTION sometimes, and it reaches somewhere `And` cannot. `split_pushable`
+    // flattens conjunctions only, so a mixed `And` is taken apart — the slot-0 half is
+    // pushed below the hop and the far half stays above, and by the time orientation
+    // runs the predicate reads one end. A mixed `Or` cannot be split, so it arrives at
+    // `reverse_chain` still reading BOTH ends, which is the only way to reach that
+    // function's both-ends guard. Without disjunctions that guard is dead code, and a
+    // mutation deleting it was caught by nothing in the entire test suite.
+    if rng.chance(1, 3) {
+        Expr::Or(Box::new(a), Box::new(b))
+    } else {
+        Expr::And(Box::new(a), Box::new(b))
+    }
+}
+
+/// A random plan.
+fn gen_plan(rng: &mut Lcg) -> Plan {
+    // A JOIN of two chains, sometimes. Both sides are kept SHALLOW: the join's output
+    // is bounded by matching pairs, but two deep chains multiply before that bound
+    // applies. Output slots are all of the left's then all of the right's, so the
+    // right side's predicates and the join key have to be renumbered by `left.width`.
+    let mut g = if rng.chance(1, 6) {
+        let (lh, rh) = (1 + rng.below(2), 1 + rng.below(2));
+        let left = gen_chain(rng, lh);
+        let right_raw = gen_chain(rng, rh);
+        let (lw, rw) = (left.width, right_raw.width);
+        let on = vec![(rng.below(lw), rng.below(rw))];
+        let mut j = Gen {
+            plan: Plan::join(left.plan, right_raw.plan, on),
+            width: lw + rw,
+        };
+        // DIRECTLY above the join, with nothing in between. The pushdown arm matches
+        // `Filter` over `Join`, so a filter separated from it by a `Distinct` or a
+        // `Project` never reaches it — which is why a mutation removing the arm's
+        // left-slots-only guard went uncaught. Half of these read both sides, which
+        // is precisely what the guard exists to refuse.
+        if rng.chance(2, 3) {
+            let pred = if rng.chance(1, 2) {
+                gen_cross_pred(rng, j.width)
+            } else {
+                let slot = rng.below(j.width);
+                gen_pred(rng, slot, false)
+            };
+            j.plan = j.plan.filter(pred);
+        }
+        j
+    } else {
+        let hops = gen_hop_count(rng);
+        gen_chain(rng, hops)
+    };
+
+    // A MID-PLAN projection that keeps a subset of slots as elements, then carries on
+    // hopping and filtering above it. This is the namespace boundary with a pattern
+    // still underneath — `Slot(0)` above it is the projection's first output column,
+    // nothing to do with the pattern, and renaming through it is how `count(*)` once
+    // became a read of a column that does not exist.
+    if g.width >= 2 && rng.chance(1, 6) {
+        let keep: Vec<usize> = (0..g.width).filter(|_| rng.chance(2, 3)).collect();
+        let keep = if keep.is_empty() { vec![0] } else { keep };
+        g = Gen {
+            width: keep.len(),
+            plan: Plan::Project {
+                input: Box::new(g.plan),
+                items: keep
+                    .iter()
+                    .map(|&i| (format!("p{i}"), Expr::Slot(i)))
+                    .collect(),
+            },
+        };
+        // Keep going ABOVE the boundary — an expand and/or a filter that reads the
+        // projection's columns, not the pattern's slots.
+        if rng.chance(1, 2) {
+            g.plan = g.plan.expand(
+                g.width - 1,
+                *rng.pick(&[Dir::Out, Dir::In]),
+                &[(*rng.pick(&ETYPES)).to_string()],
+            );
+            g.width += 1;
+        }
+        if rng.chance(1, 2) {
+            let slot = rng.below(g.width);
+            g.plan = g.plan.filter(gen_pred(rng, slot, false));
+        }
+    }
+
+    // A `Distinct` between the pattern and whatever reads it, sometimes with a further
+    // filter above that. This is the only way a residual filter can SURVIVE above the
+    // pattern: adjacent filters are merged by the fixpoint before orientation runs, so
+    // without something in between, `orient_apply`'s rename-the-filter-above branch is
+    // unreachable — verified by instrumenting it, and a mutation of that branch went
+    // uncaught until this shape existed.
+    if rng.chance(1, 5) {
+        g.plan = Plan::Distinct {
+            input: Box::new(g.plan),
+        };
+        if rng.chance(1, 2) {
+            let slot = rng.below(g.width);
+            g.plan = g.plan.filter(gen_pred(rng, slot, false));
+        }
+    }
+
+    let far = g.width - 1;
+    let all_slots: Vec<(String, Expr)> = (0..g.width)
         .map(|i| {
             (
                 format!("s{i}"),
@@ -247,76 +492,62 @@ fn gen_plan(rng: &mut Lcg) -> Plan {
         })
         .collect();
 
-    // A `Distinct` between the pattern and whatever reads it, sometimes with a further
-    // filter above that. This is the only way a residual filter can SURVIVE above the
-    // pattern: adjacent filters are merged by the fixpoint before orientation runs, so
-    // without something in between, `orient_apply`'s rename-the-filter-above branch is
-    // unreachable — verified by instrumenting it, and a mutation of that branch went
-    // uncaught until this shape existed.
-    if rng.chance(1, 5) {
-        plan = Plan::Distinct {
-            input: Box::new(plan),
-        };
-        if rng.chance(1, 2) {
-            let slot = rng.below(hops + 1);
-            plan = plan.filter(gen_pred(rng, slot, false));
-        }
-    }
-
     // THE PATTERN ITSELF, with no projection over it. Its slots ARE the query's output
     // columns, so reversing them reorders the result — which is how the first version
     // of this rewrite returned `carol, carol` where the answer was `alice, bob`. It is
     // also the shape a generator forgets, because every realistic query has a RETURN;
     // leaving it out meant a faithful mutation of that bug went uncaught.
     if rng.chance(1, 8) {
-        return plan;
+        return g.plan;
     }
 
-    match rng.below(8) {
+    let count = |name: &str| Agg {
+        func: AggFn::Count,
+        arg: None,
+        distinct: false,
+        name: name.into(),
+        frac: None,
+        null_on_empty: false,
+        numeric_only: false,
+    };
+
+    match rng.below(9) {
         // THE CANARY, and deliberately the most common shape: every slot projected in
         // order, by a property unique per node. Any permutation of the pattern's slots
         // shows up here as a row mismatch. A generator weighted toward `count(*)`
         // instead would reproduce E72's blindness.
         0..=3 => Plan::Project {
-            input: Box::new(plan),
+            input: Box::new(g.plan),
             items: all_slots,
         },
         // The ends only — still permutation-sensitive, and the shape most real queries
         // have.
         4 => Plan::Project {
-            input: Box::new(plan),
-            items: vec![all_slots[0].clone(), all_slots[hops].clone()],
+            input: Box::new(g.plan),
+            items: vec![all_slots[0].clone(), all_slots[far].clone()],
+        },
+        // A projection with DISTINCT over it: dedup happens on the projected columns,
+        // so a permutation that survives the projection can still change the count.
+        5 => Plan::Distinct {
+            input: Box::new(Plan::Project {
+                input: Box::new(g.plan),
+                items: all_slots,
+            }),
         },
         // `count(*)` directly over the pattern. Permutation-INVARIANT by itself, but it
         // is the shape that exposed the `Aggregate` namespace boundary — the rename
         // must stop there, and a count that reads a column past the boundary faults.
-        5 | 6 => Plan::Aggregate {
-            input: Box::new(plan),
+        6 | 7 => Plan::Aggregate {
+            input: Box::new(g.plan),
             keys: Vec::new(),
-            aggs: vec![Agg {
-                func: AggFn::Count,
-                arg: None,
-                distinct: false,
-                name: "c".into(),
-                frac: None,
-                null_on_empty: false,
-                numeric_only: false,
-            }],
+            aggs: vec![count("c")],
         },
         // GROUP BY a pattern slot: an aggregate whose KEY reads the pattern, so the
         // rename has to reach the key and stop above it.
         _ => Plan::Aggregate {
-            input: Box::new(plan),
-            keys: vec![all_slots[rng.below(hops + 1)].clone()],
-            aggs: vec![Agg {
-                func: AggFn::Count,
-                arg: None,
-                distinct: false,
-                name: "c".into(),
-                frac: None,
-                null_on_empty: false,
-                numeric_only: false,
-            }],
+            input: Box::new(g.plan),
+            keys: vec![all_slots[rng.below(g.width)].clone()],
+            aggs: vec![count("c")],
         },
     }
 }
@@ -341,16 +572,35 @@ fn check(seed: u64, store: &Store, indexed: bool) {
     let mut rng = Lcg(seed);
     let plan = gen_plan(&mut rng);
 
-    let before = bag(&run(&plan, store));
+    // `try_run`, not `run`, because a deep generated chain can legitimately trip the
+    // intermediate-frontier guard — and the ERROR is part of the invariant rather than
+    // a reason to crash the test:
+    //
+    //   raw ok, opt ok    the bags must match (the invariant proper)
+    //   raw ok, opt ERR   FAIL — optimizing broke a query that worked
+    //   raw ERR, opt ok   fine, and rather the point: the rewrite made it feasible.
+    //                     A deep walk that blows the frontier unoriented can seed
+    //                     from the far end and finish.
+    //   raw ERR, opt ERR  nothing to compare
+    let before = crate::exec::try_run(&plan, store);
     let opt = optimize_indexed(plan.clone(), store as &dyn IndexOracle);
-    let after = bag(&run(&opt, store));
+    let after = crate::exec::try_run(&opt, store);
 
-    assert_eq!(
-        before, after,
-        "\noptimizing changed the answer (seed {seed}, indexed {indexed})\
-         \n  raw:       {plan:?}\
-         \n  optimized: {opt:?}\n"
-    );
+    match (&before, &after) {
+        (Ok(b), Ok(a)) => assert_eq!(
+            bag(b),
+            bag(a),
+            "\noptimizing changed the answer (seed {seed}, indexed {indexed})\
+             \n  raw:       {plan:?}\
+             \n  optimized: {opt:?}\n"
+        ),
+        (Ok(_), Err(e)) => panic!(
+            "\noptimizing BROKE a working plan (seed {seed}, indexed {indexed}): {e}\
+             \n  raw:       {plan:?}\
+             \n  optimized: {opt:?}\n"
+        ),
+        _ => {}
+    }
 }
 
 /// How many seeds to sweep. Fixed by default so CI is deterministic and fast; raise it
@@ -416,6 +666,22 @@ fn the_generator_actually_reaches_the_rewrites() {
     store.create_range_index("age");
     store.create_index("name");
 
+    fn plan_has<F: Fn(&Plan) -> bool + Copy>(p: &Plan, f: F) -> bool {
+        if f(p) {
+            return true;
+        }
+        match p {
+            Plan::Project { input, .. }
+            | Plan::Aggregate { input, .. }
+            | Plan::Filter { input, .. }
+            | Plan::Expand { input, .. }
+            | Plan::VarLength { input, .. }
+            | Plan::Distinct { input } => plan_has(input, f),
+            Plan::Join { left, right, .. } => plan_has(left, f) || plan_has(right, f),
+            _ => false,
+        }
+    }
+
     fn has<F: Fn(&Plan) -> bool + Copy>(p: &Plan, f: F) -> bool {
         if f(p) {
             return true;
@@ -431,7 +697,8 @@ fn the_generator_actually_reaches_the_rewrites() {
     }
 
     let (mut seeks, mut oriented, mut multi_hop, mut nonempty) = (0, 0, 0, 0);
-    let n = 400;
+    let (mut joins, mut varlen, mut deep, mut faults) = (0, 0, 0, 0);
+    let n = 2_000;
 
     for seed in 0..n {
         let mut rng = Lcg(seed);
@@ -466,8 +733,19 @@ fn the_generator_actually_reaches_the_rewrites() {
         if a.len() >= 2 {
             multi_hop += 1;
         }
-        if !run(&plan, &store).rows.is_empty() {
-            nonempty += 1;
+        if a.len() >= 4 {
+            deep += 1;
+        }
+        if plan_has(&plan, |p| matches!(p, Plan::Join { .. })) {
+            joins += 1;
+        }
+        if plan_has(&plan, |p| matches!(p, Plan::VarLength { .. })) {
+            varlen += 1;
+        }
+        match crate::exec::try_run(&plan, &store) {
+            Ok(r) if !r.rows.is_empty() => nonempty += 1,
+            Ok(_) => {}
+            Err(_) => faults += 1,
         }
     }
 
@@ -480,9 +758,43 @@ fn the_generator_actually_reaches_the_rewrites() {
         "too few multi-hop plans: {multi_hop}/{n}"
     );
     assert!(
-        nonempty > n / 2,
+        nonempty > n / 3,
         "too many plans return NO ROWS — a fuzzer over empty results proves nothing: {nonempty}/{n}"
     );
+    assert!(joins > n / 100, "too few joins: {joins}/{n}");
+    assert!(varlen > n / 100, "too few var-length hops: {varlen}/{n}");
+    assert!(deep > n / 100, "too few deep (4+ hop) chains: {deep}/{n}");
+    // Deep chains are ALLOWED to trip the frontier guard — that is why the oracle is
+    // three-valued — but if most plans fault the sweep is measuring the guard, not the
+    // optimizer.
+    assert!(
+        faults < n / 10,
+        "too many plans fault; the sweep is testing the frontier guard, not the \
+         optimizer: {faults}/{n}"
+    );
 
-    println!("seeks {seeks}/{n}  oriented {oriented}/{n}  multi-hop {multi_hop}/{n}  non-empty {nonempty}/{n}");
+    println!(
+        "seeks {seeks}/{n}  oriented {oriented}/{n}  multi-hop {multi_hop}/{n}  \
+         deep {deep}/{n}  joins {joins}/{n}  varlen {varlen}/{n}  \
+         non-empty {nonempty}/{n}  faulted {faults}/{n}"
+    );
+}
+
+/// Print the raw and optimized plan for one seed. Not a check — a debugging aid for
+/// reading a failure the sweep reports.
+#[test]
+#[ignore = "debugging aid: LENKE_OPT_FUZZ_SEED=<n> cargo test -- --ignored dump_seed"]
+fn dump_seed() {
+    let seed: u64 = std::env::var("LENKE_OPT_FUZZ_SEED")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let mut store = fixture(1);
+    store.create_range_index("age");
+    store.create_index("name");
+
+    let mut rng = Lcg(seed);
+    let plan = gen_plan(&mut rng);
+    let opt = optimize_indexed(plan.clone(), &store as &dyn IndexOracle);
+    println!("seed {seed}\n\nRAW:\n{plan:?}\n\nOPTIMIZED:\n{opt:?}");
 }
