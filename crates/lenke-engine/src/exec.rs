@@ -2820,6 +2820,16 @@ fn interval_expand(
         if can_seek {
             if let (Value::Num(qlo_n), Value::Num(qhi_n)) = (&qlo, &qhi) {
                 store.for_each_overlap(v, *qlo_n, *qhi_n, |eid, nbr| {
+                    // The EDGE TYPE still has to match. The RI-tree is keyed on the
+                    // interval alone and knows nothing about types, so without this
+                    // an `-[r:T]->` hop returned edges of every type as soon as an
+                    // interval index existed — i.e. CREATING AN INDEX CHANGED THE
+                    // ANSWER, silently, on exactly the bitemporal `as of` query the
+                    // index is for. The scan path below has always filtered by
+                    // `want` via `for_each_nbr`; this is the seek path catching up.
+                    if !eid_carries_wanted(store, eid, &want) {
+                        return;
+                    }
                     keep.push(row);
                     nbrs.push(nbr);
                     eids.push(eid);
@@ -3300,6 +3310,16 @@ fn want_etypes(store: &Store, edge_label: &[String]) -> Result<Vec<u32>, ()> {
 /// multi-label graph, the eid's secondary set. The one predicate every edge-type
 /// filter shares, so a `:Y` hop over a multi-label edge matches everywhere.
 #[inline]
+/// The same test as [`edge_carries_wanted`], from an edge id alone.
+///
+/// The adjacency walk has an `Adj` in hand (with its primary etype inline); a seek
+/// through the interval index has only the eid, so it has to ask the store. Both must
+/// consult the WHOLE label set, not just the primary type, or a multi-label edge
+/// matches one way and not the other.
+fn eid_carries_wanted(store: &Store, eid: u32, want: &[u32]) -> bool {
+    want.is_empty() || want.iter().any(|&w| store.edge_carries_type(eid, w))
+}
+
 fn edge_carries_wanted(store: &Store, a: &crate::store::Adj, want: &[u32]) -> bool {
     want.is_empty()
         || want.iter().any(|&w| {

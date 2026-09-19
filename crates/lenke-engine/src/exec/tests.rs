@@ -6423,3 +6423,70 @@ mod perf {
         }
     }
 }
+
+/// An interval-index SEEK must honour the hop's edge type, exactly as the scan does.
+///
+/// FOUND BY `opt::rewrite_fuzz` once it learned to generate bound edge variables. The
+/// RI-tree is keyed on the interval alone and knows nothing about edge types, and the
+/// seek path pushed every overlapping edge without consulting `want` — so
+/// `-[r:T]->` with an interval predicate returned edges of EVERY type the moment an
+/// interval index existed. Creating an index changed the answer, silently, on exactly
+/// the bitemporal "as of" query the index exists to serve.
+///
+/// The scan path never had the bug, which is why it went unnoticed: every test that
+/// covered interval overlap either had one edge type or no index.
+#[test]
+fn interval_seek_respects_the_edge_type() {
+    let mut b = Builder::default();
+    for i in 0..12u32 {
+        b.node(&["N"], &[("name", s(&format!("n{i}")))]);
+        let _ = i;
+    }
+    // Every pair gets BOTH an A-edge and a B-edge over the same interval, so a seek
+    // that ignores the type returns exactly twice the rows.
+    for i in 0..12u32 {
+        b.edge(i, (i + 1) % 12, "A");
+        b.edge(i, (i + 1) % 12, "B");
+    }
+    let mut store = b.build();
+    for eid in 0..store.edge_count() as u32 {
+        store.set_edge_prop(eid, "lo", Value::Num(0.0));
+        store.set_edge_prop(eid, "hi", Value::Num(10.0));
+    }
+
+    let plan = Plan::Scan {
+        label: Some("N".into()),
+    }
+    .expand_edge(0, Dir::Out, &["A".to_string()])
+    .filter(Expr::And(
+        Box::new(cmp(CompareOp::Le, prop(1, "lo"), Expr::Lit(n(5.0)))),
+        Box::new(cmp(CompareOp::Ge, prop(1, "hi"), Expr::Lit(n(5.0)))),
+    ));
+
+    // Without an index the plan scans and filters — the reference answer.
+    let want = run(&crate::opt::optimize_indexed(plan.clone(), &store), &store)
+        .rows
+        .len();
+    assert_eq!(want, 12, "fixture: one A-edge per node should overlap");
+
+    store.create_interval_index("lo", "hi");
+    let opt = crate::opt::optimize_indexed(plan, &store);
+    assert!(
+        matches!(seek_through(&opt), Some(true)),
+        "expected the interval fusion to fire: {opt:?}"
+    );
+    assert_eq!(
+        run(&opt, &store).rows.len(),
+        want,
+        "the interval SEEK ignored the edge type: {opt:?}"
+    );
+}
+
+/// Does this plan contain an `IntervalExpand`?
+fn seek_through(plan: &Plan) -> Option<bool> {
+    match plan {
+        Plan::IntervalExpand { .. } => Some(true),
+        Plan::Filter { input, .. } | Plan::Project { input, .. } => seek_through(input),
+        _ => None,
+    }
+}

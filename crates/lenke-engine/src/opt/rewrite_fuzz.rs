@@ -132,6 +132,26 @@
 //!   generating on purpose** — relying on one rewrite to set up another's test case is
 //!   a dependency nobody records and everybody breaks.
 //!
+//! # A third widening: bound edges, and an index that changed the answer
+//!
+//! Teaching the generator `bind_edge` hops — which append TWO slots, edge then node —
+//! turned it red on the FIRST run, and on a shipped feature rather than this week's
+//! work. An interval-index SEEK did not filter by edge type. The RI-tree is keyed on
+//! the interval alone and knows nothing about types, and the seek path pushed every
+//! overlapping edge without consulting `want`, while the SCAN path had always filtered
+//! correctly via `for_each_nbr`.
+//!
+//! So `-[r:T]->` with an interval predicate returned edges of every type the moment an
+//! interval index existed. **Creating an index changed the answer**, silently, on
+//! exactly the bitemporal "as of" query the index exists to serve. Nothing had caught
+//! it because every test covering interval overlap had either one edge type or no
+//! index — the bug needs both an index AND a type filter, and no hand-written fixture
+//! had ever combined them.
+//!
+//! Bound edges were picked deliberately rather than at random: every bug this fuzzer
+//! has found is a slot index computed one way in one place and another way somewhere
+//! else, and a hop appending two slots is where such an assumption breaks first.
+//!
 //! # Reading an uncaught mutation
 //!
 //! It means one of two things, and they are opposite. Either the generator cannot reach
@@ -248,6 +268,16 @@ fn fixture(seed: u64) -> Store {
 
     let mut store = b.build();
 
+    // EDGE PROPERTIES, so a BOUND edge variable has something to be predicated on.
+    // `lo`/`hi` are a half-open interval per edge, which is what the interval-overlap
+    // fusion rewrite exists for; `w` is an ordinary numeric for range predicates.
+    for eid in 0..store.edge_count() as u32 {
+        let lo = f64::from(eid % 10);
+        store.set_edge_prop(eid, "lo", Value::Num(lo));
+        store.set_edge_prop(eid, "hi", Value::Num(lo + f64::from(1 + eid % 5)));
+        store.set_edge_prop(eid, "w", Value::Num(f64::from(eid % 6)));
+    }
+
     // DELETED nodes. `range_seek_ids` filters them out explicitly and a plain scan
     // must agree — a seek that forgets the tombstone check returns rows the scan does
     // not, which is exactly the kind of divergence a hand-written fixture never has,
@@ -272,6 +302,10 @@ fn index_all(store: &mut Store) {
     store.create_index("tag");
     store.create_range_index("age");
     store.create_range_index("score");
+    // The RI-tree over each edge's half-open [lo, hi). Without it the interval-overlap
+    // rewrite still fires (`IntervalExpand` is seek-or-scan), but the seek half of it
+    // is never exercised.
+    store.create_interval_index("lo", "hi");
 }
 
 /// A predicate reading exactly `slot`, in one of the forms the planner recognizes.
@@ -465,6 +499,61 @@ fn flip_op(op: CompareOp) -> CompareOp {
     }
 }
 
+/// Edge property keys, for predicates on a BOUND edge variable.
+const EDGE_KEYS: [&str; 3] = ["w", "lo", "hi"];
+
+/// A predicate on a bound EDGE slot.
+///
+/// Edges are a separate namespace from nodes in every way that matters here: their
+/// properties are stored apart, `IsLabeled` on an edge compares the TYPE name rather
+/// than a label bucket, and a `bind_edge` hop appends the edge and the node as two
+/// slots, so any arithmetic that assumes one slot per hop is wrong by one and keeps
+/// being wrong further up the chain.
+fn gen_edge_pred(rng: &mut Lcg, slot: usize) -> Expr {
+    match rng.below(4) {
+        // The INTERVAL-OVERLAP shape: `r.lo <= qhi AND r.hi >= qlo`, which the planner
+        // fuses into an `IntervalExpand`. The operators are not interchangeable — `lo`
+        // takes the `<=` side and `hi` the `>=` side — so this is also a check that the
+        // fusion refuses the other spellings rather than quietly mixing up the axes.
+        0 | 1 => {
+            let qlo = f64::from(rng.below(8) as u32);
+            Expr::And(
+                Box::new(Expr::Compare {
+                    op: CompareOp::Le,
+                    left: Box::new(Expr::Prop {
+                        slot,
+                        key: "lo".into(),
+                    }),
+                    right: Box::new(Expr::Lit(Value::Num(qlo + 3.0))),
+                }),
+                Box::new(Expr::Compare {
+                    op: CompareOp::Ge,
+                    left: Box::new(Expr::Prop {
+                        slot,
+                        key: "hi".into(),
+                    }),
+                    right: Box::new(Expr::Lit(Value::Num(qlo))),
+                }),
+            )
+        }
+        // An ordinary range on an edge property — must NOT fuse, and must not be
+        // mistaken for a node predicate by anything that pushes filters around.
+        2 => Expr::Compare {
+            op: *rng.pick(&[CompareOp::Gt, CompareOp::Le]),
+            left: Box::new(Expr::Prop {
+                slot,
+                key: (*rng.pick(&EDGE_KEYS)).to_string(),
+            }),
+            right: Box::new(Expr::Lit(Value::Num(f64::from(rng.below(6) as u32)))),
+        },
+        // `IsLabeled` on an EDGE tests its type, not a node label.
+        _ => Expr::IsLabeled {
+            slot,
+            labels: vec![(*rng.pick(&ETYPES)).to_string()],
+        },
+    }
+}
+
 /// A generated subplan and the width (slot count) it produces. Width has to be
 /// tracked explicitly: `Expand`/`VarLength` append one slot, a `Join` concatenates
 /// both sides' slots, and a mid-plan `Project` replaces the namespace entirely.
@@ -548,6 +637,21 @@ fn gen_chain(rng: &mut Lcg, hops: usize) -> Gen {
                 body_filter: None,
                 double_loops: false,
             };
+        } else if !deep && rng.chance(1, 5) {
+            // A BOUND EDGE, which appends TWO slots (edge then node) instead of one.
+            //
+            // Worth generating for the arithmetic alone: every bug this fuzzer has
+            // found has been a slot index computed one way in one place and another
+            // way somewhere else, and a hop that appends two slots is where such an
+            // assumption breaks first. It also gates the interval-overlap fusion, and
+            // orientation refuses it outright — so these plans exercise the decline.
+            g.plan = g.plan.expand_edge(g.width - 1, dir, &etypes);
+            let edge_slot = g.width;
+            g.width += 2;
+            if rng.chance(2, 3) {
+                g.plan = g.plan.filter(gen_edge_pred(rng, edge_slot));
+            }
+            continue;
         } else {
             g.plan = g.plan.expand(g.width - 1, dir, &etypes);
         }
@@ -577,7 +681,9 @@ fn gen_chain(rng: &mut Lcg, hops: usize) -> Gen {
         }
     }
 
-    // The far-side predicate: what orientation seeds from, when it fires.
+    // The far-side predicate: what orientation seeds from, when it fires. The last
+    // slot is always a NODE — a bound-edge hop appends the edge first and the node
+    // second — so a node predicate is right here regardless of how the hop was made.
     let selective = rng.chance(3, 4);
     g.plan = g.plan.filter(gen_anchor_pred(rng, g.width - 1, selective));
 
@@ -938,6 +1044,7 @@ fn the_generator_actually_reaches_the_rewrites() {
 
     let (mut seeks, mut oriented, mut multi_hop, mut nonempty) = (0, 0, 0, 0);
     let (mut joins, mut varlen, mut deep, mut faults) = (0, 0, 0, 0);
+    let (mut bound_edge, mut interval) = (0, 0);
     let n = 2_000;
 
     for seed in 0..n {
@@ -982,6 +1089,20 @@ fn the_generator_actually_reaches_the_rewrites() {
         if plan_has(&plan, |p| matches!(p, Plan::VarLength { .. })) {
             varlen += 1;
         }
+        if plan_has(&plan, |p| {
+            matches!(
+                p,
+                Plan::Expand {
+                    bind_edge: true,
+                    ..
+                }
+            )
+        }) {
+            bound_edge += 1;
+        }
+        if plan_has(&opt, |p| matches!(p, Plan::IntervalExpand { .. })) {
+            interval += 1;
+        }
         match crate::exec::try_run(&plan, &store) {
             Ok(r) if !r.rows.is_empty() => nonempty += 1,
             Ok(_) => {}
@@ -992,6 +1113,7 @@ fn the_generator_actually_reaches_the_rewrites() {
     println!(
         "seeks {seeks}/{n}  oriented {oriented}/{n}  multi-hop {multi_hop}/{n}  \
          deep {deep}/{n}  joins {joins}/{n}  varlen {varlen}/{n}  \
+         bound-edge {bound_edge}/{n}  interval {interval}/{n}  \
          non-empty {nonempty}/{n}  faulted {faults}/{n}"
     );
 
@@ -1014,6 +1136,14 @@ fn the_generator_actually_reaches_the_rewrites() {
     assert!(deep > n / 20, "too few deep (4+ hop) chains: {deep}/{n}");
     assert!(joins > n / 10, "too few joins: {joins}/{n}");
     assert!(varlen > n / 10, "too few var-length hops: {varlen}/{n}");
+    assert!(
+        bound_edge > n / 20,
+        "too few bound-edge hops: {bound_edge}/{n}"
+    );
+    assert!(
+        interval > n / 50,
+        "too few interval fusions: {interval}/{n}"
+    );
     assert!(
         nonempty > n / 3,
         "too many plans return NO ROWS — a fuzzer over empty results proves nothing: \
