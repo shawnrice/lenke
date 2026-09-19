@@ -1784,8 +1784,16 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
             };
             let union_all_lineage = (matches!(op, CombineOp::Union) && *all && track)
                 .then(|| crate::batch::Lineage::concat(&[&arm_lin(&bl), &arm_lin(&br)]));
-            let variants_agree = (0..ncols).all(|j| same_col_variant(bl.slot(j), br.slot(j)));
-            if matches!(op, CombineOp::Union) && *all && br.slots.len() == ncols && variants_agree {
+            // The width check comes FIRST and short-circuits, because `variants_agree`
+            // indexes the right arm up to the LEFT arm's width. Computing it eagerly
+            // panicked with an out-of-range column read whenever the right arm was
+            // narrower — reachable from ordinary GQL (`… RETURN x, y UNION ALL …
+            // RETURN x`), and a panic rather than a coded error. The general path
+            // below has always handled that shape correctly, by padding the short row
+            // with NULLs; only this fast-path guard could not survive reaching it.
+            let variants_agree = br.slots.len() == ncols
+                && (0..ncols).all(|j| same_col_variant(bl.slot(j), br.slot(j)));
+            if matches!(op, CombineOp::Union) && *all && variants_agree {
                 let mut out = concat_batches(&[bl, br], store);
                 if let Some(l) = union_all_lineage {
                     out.lineage = Some(l);

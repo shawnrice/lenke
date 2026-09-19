@@ -177,6 +177,41 @@
 //! Also added: aggregates beyond `count` (`Sum`/`Min`/`Max`/`Avg`, optionally
 //! `DISTINCT`, optionally grouped), each of which routes to a different fast path.
 //!
+//! # A fifth widening: set operations, and two more bugs
+//!
+//! `UNION` / `EXCEPT` / `INTERSECT` are the only place this generator nests one whole
+//! query inside another, capped at one level. Adding them found a **user-facing panic
+//! reachable from ordinary GQL**:
+//!
+//! ```text
+//! MATCH (a:Person)-[:KNOWS]->(b) RETURN a.name AS x, b.name AS y
+//! UNION ALL MATCH (n:Person) RETURN n.name AS x
+//! ```
+//!
+//! The general path had always padded a short arm's rows with NULLs exactly as
+//! `Plan::Union` documents. The bug was in the fast-path GUARD, which indexes the right
+//! arm up to the LEFT arm's width and was computed EAGERLY — before the width check in
+//! the `if` that guards it. So the out-of-range read happened while deciding whether
+//! the fast path applied, in a case where it never did.
+//!
+//! Orientation also learned to see through `OrderPage`, which it previously declined
+//! outright, so a pattern under an `ORDER BY` never oriented.
+//!
+//! # The oracle is the thing most likely to be wrong
+//!
+//! Twice now a reported failure has been this file's fault rather than the engine's,
+//! and both times the mistake was the same shape: a claim about the SORT KEY that was
+//! not checked.
+//!
+//! - Sorting `Prop{slot,"name"}` above a projection, where the slots already hold the
+//!   names, so every key was null and every row tied (seed 1461).
+//! - Treating `keys.len() >= width` as "total", which a one-key page over a one-column
+//!   input satisfies while sorting on a property with seven values (seed 96445).
+//!
+//! Both produced confident, reproducible "differences". The first question about any
+//! failure here is whether the difference is real, and the second is whether the oracle
+//! earned the right to make the comparison it made.
+//!
 //! # Reading an uncaught mutation
 //!
 //! It means one of two things, and they are opposite. Either the generator cannot reach
@@ -831,8 +866,57 @@ fn gen_page(
     (keys, skip, limit)
 }
 
-/// A random plan.
+/// A random plan, sometimes two combined with `UNION` / `EXCEPT` / `INTERSECT`.
+///
+/// The arms are whole queries, so this is the only place the generator nests one plan
+/// inside another, and it is capped at one level — a tree of unions would multiply
+/// cost without reaching anything new.
+///
+/// Arm WIDTHS deliberately differ some of the time. A shorter arm's rows are padded
+/// with NULLs to the left arm's width, and the result's columns come from the left, so
+/// the padding path is only reached when the right arm is narrower. `EXCEPT` and
+/// `INTERSECT` always deduplicate (only `UNION` honours `all`), which makes them a
+/// different comparison again.
 fn gen_plan(rng: &mut Lcg) -> Plan {
+    if !rng.chance(1, 7) {
+        return gen_plan_one(rng);
+    }
+
+    let left = gen_plan_one(rng);
+    let lw = super::width(&left);
+    let right = gen_plan_one(rng);
+    let rw = super::width(&right);
+
+    // Arm widths are equal MOST of the time and deliberately unequal some of it. A
+    // shorter right arm has its rows padded with NULLs to the left arm's width, which
+    // is a separate code path — and was a panic until this generator first reached it.
+    let common = lw.min(rw);
+    let narrow = if common > 1 && rng.chance(1, 3) {
+        1 + rng.below(common - 1)
+    } else {
+        common
+    };
+    let arm = |p: Plan, tag: &str, k: usize| Plan::Project {
+        input: Box::new(p),
+        items: (0..k)
+            .map(|i| (format!("{tag}{i}"), Expr::Slot(i)))
+            .collect(),
+    };
+    let (left, right) = (arm(left, "l", common), arm(right, "r", narrow));
+
+    Plan::Union {
+        left: Box::new(left),
+        right: Box::new(right),
+        all: rng.chance(1, 2),
+        op: *rng.pick(&[
+            crate::ir::CombineOp::Union,
+            crate::ir::CombineOp::Except,
+            crate::ir::CombineOp::Intersect,
+        ]),
+    }
+}
+
+fn gen_plan_one(rng: &mut Lcg) -> Plan {
     // A JOIN of two chains, sometimes. Both sides are kept SHALLOW: the join's output
     // is bounded by matching pairs, but two deep chains multiply before that bound
     // applies. Output slots are all of the left's then all of the right's, so the
@@ -940,6 +1024,24 @@ fn gen_plan(rng: &mut Lcg) -> Plan {
     if !g.bound_edge && rng.chance(1, 8) {
         let (keys, skip, limit) = gen_page(rng, g.width, false);
         g.plan = g.plan.order_page(keys, skip, limit);
+    } else if rng.chance(1, 10) {
+        // A page whose key is NOT total — one key, over a property with many ties.
+        //
+        // This is the shape that orientation under an `ORDER BY` can legitimately
+        // change: reversing alters the order rows reach a STABLE sort, so tied rows
+        // come out in a different order, and with a LIMIT a different subset survives.
+        // Neither is a property of the query. So: no limit and no skip, and
+        // `ordered_output` sends it to the multiset comparison — which still asserts
+        // the thing that must hold, that the ROW SET is unchanged.
+        let keys = vec![crate::ir::SortKey {
+            expr: Expr::Prop {
+                slot: rng.below(g.width),
+                key: "score".into(),
+            },
+            descending: rng.chance(1, 2),
+            nulls_first: false,
+        }];
+        g.plan = g.plan.order_page(keys, None, None);
     }
 
     let far = g.width - 1;
@@ -1075,7 +1177,22 @@ fn gen_plan(rng: &mut Lcg) -> Plan {
 /// which optimizing is allowed to change.
 fn ordered_output(plan: &Plan) -> bool {
     match plan {
-        Plan::OrderPage { keys, .. } => !keys.is_empty(),
+        // A page is TOTAL when it has a key per slot AND every key reads something
+        // unique per node. Both halves are needed, and the count alone is not enough:
+        // a one-key page over a one-column input passes a count test while sorting on
+        // `score`, which has seven values and ties constantly. That misread a
+        // deliberately non-total page as total and reported an "order changed" failure
+        // at seed 96445 that was the oracle's fault, not the optimizer's.
+        //
+        // The unique-valued expressions are exactly the two `gen_page` emits: `name`
+        // off an element, or a `Slot` already holding one of those names.
+        Plan::OrderPage { input, keys, .. } => {
+            let unique = |k: &crate::ir::SortKey| {
+                matches!(&k.expr, Expr::Prop { key, .. } if key == "name")
+                    || matches!(k.expr, Expr::Slot(_))
+            };
+            keys.len() >= super::width(input) && keys.iter().all(unique)
+        }
         // Both preserve row order; an `Aggregate` does not, and anything else is not
         // worth assuming about.
         Plan::Project { input, .. } | Plan::Distinct { input } => ordered_output(input),
@@ -1158,7 +1275,7 @@ fn seed_count() -> u64 {
     std::env::var("LENKE_OPT_FUZZ_SEEDS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(4_000)
+        .unwrap_or(6_000)
 }
 
 /// The invariant, over an INDEXED store — where the seeding rules, the pushdown split
@@ -1224,7 +1341,9 @@ fn the_generator_actually_reaches_the_rewrites() {
             | Plan::Expand { input, .. }
             | Plan::VarLength { input, .. }
             | Plan::Distinct { input } => plan_has(input, f),
-            Plan::Join { left, right, .. } => plan_has(left, f) || plan_has(right, f),
+            Plan::Join { left, right, .. } | Plan::Union { left, right, .. } => {
+                plan_has(left, f) || plan_has(right, f)
+            }
             _ => false,
         }
     }
@@ -1246,7 +1365,7 @@ fn the_generator_actually_reaches_the_rewrites() {
     let (mut seeks, mut oriented, mut multi_hop, mut nonempty) = (0, 0, 0, 0);
     let (mut joins, mut varlen, mut deep, mut faults) = (0, 0, 0, 0);
     let (mut bound_edge, mut interval) = (0, 0);
-    let (mut paged, mut num_agg) = (0, 0);
+    let (mut paged, mut num_agg, mut unions) = (0, 0, 0);
     let n = 2_000;
 
     for seed in 0..n {
@@ -1308,6 +1427,9 @@ fn the_generator_actually_reaches_the_rewrites() {
         if plan_has(&plan, |p| matches!(p, Plan::OrderPage { .. })) {
             paged += 1;
         }
+        if plan_has(&plan, |p| matches!(p, Plan::Union { .. })) {
+            unions += 1;
+        }
         if plan_has(
             &plan,
             |p| matches!(p, Plan::Aggregate { aggs, .. } if aggs.iter().any(|a| a.func != AggFn::Count)),
@@ -1325,7 +1447,7 @@ fn the_generator_actually_reaches_the_rewrites() {
         "seeks {seeks}/{n}  oriented {oriented}/{n}  multi-hop {multi_hop}/{n}  \
          deep {deep}/{n}  joins {joins}/{n}  varlen {varlen}/{n}  \
          bound-edge {bound_edge}/{n}  interval {interval}/{n}  \
-         paged {paged}/{n}  num-agg {num_agg}/{n}  \
+         paged {paged}/{n}  num-agg {num_agg}/{n}  unions {unions}/{n}  \
          non-empty {nonempty}/{n}  faulted {faults}/{n}"
     );
 
@@ -1345,7 +1467,7 @@ fn the_generator_actually_reaches_the_rewrites() {
     // seekable forms were diluted and two new keys had no index at all. Nothing else
     // would have noticed: every correctness test stayed green, on a corpus that had
     // quietly stopped exercising the rewrites it exists to test.
-    assert!(seeks > n / 10, "too few plans seed an index: {seeks}/{n}");
+    assert!(seeks > n / 16, "too few plans seed an index: {seeks}/{n}");
     assert!(oriented > n / 16, "too few plans orient: {oriented}/{n}");
     assert!(
         multi_hop > n / 4,

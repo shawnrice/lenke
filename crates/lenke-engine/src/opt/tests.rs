@@ -880,6 +880,7 @@ fn has_range_seek(plan: &Plan) -> bool {
         | Plan::Aggregate { input, .. }
         | Plan::Distinct { input }
         | Plan::Filter { input, .. }
+        | Plan::OrderPage { input, .. }
         | Plan::Expand { input, .. } => has_range_seek(input),
         _ => false,
     }
@@ -1413,4 +1414,76 @@ fn orient_declines_an_intermediate_predicate_reading_two_slots() {
         bag(&run(&opt, &store)),
         "a two-slot intermediate predicate was moved as if it read one: {opt:?}"
     );
+}
+
+/// A pattern under an `ORDER BY` orients, and the page's SORT KEYS are renamed with it.
+///
+/// `orient_scan` had no arm for `OrderPage`, so the whole plan declined and a query
+/// with a far-side predicate and a sort scanned where the same query without the sort
+/// sought. Safe, but a missed optimization on a shape most real queries have.
+///
+/// Reversing changes the order rows reach the sort, which with tied keys and a stable
+/// sort changes their order out of it. That is already true of every seeding rewrite —
+/// a `RangeSeek` yields index order where a `Scan` yields id order — so a tie's
+/// position was never a property of the query. What must not change is the row set.
+#[test]
+fn orient_sees_through_an_order_by() {
+    let store = social_indexed();
+    let plan = Plan::Project {
+        input: Box::new(
+            Plan::Scan {
+                label: Some("Person".into()),
+            }
+            .expand(0, Dir::Out, &["KNOWS".to_string()])
+            .filter(Expr::And(
+                Box::new(Expr::IsLabeled {
+                    slot: 1,
+                    labels: vec!["Person".into()],
+                }),
+                Box::new(cmp(CompareOp::Gt, prop(1, "age"), Expr::Lit(n(26.0)))),
+            ))
+            .order_page(
+                vec![
+                    crate::ir::SortKey {
+                        expr: prop(0, "name"),
+                        descending: false,
+                        nulls_first: false,
+                    },
+                    crate::ir::SortKey {
+                        expr: prop(1, "name"),
+                        descending: false,
+                        nulls_first: false,
+                    },
+                ],
+                None,
+                None,
+            ),
+        ),
+        items: vec![("a".into(), prop(0, "name")), ("b".into(), prop(1, "name"))],
+    };
+
+    let before = bag(&run(&plan, &store));
+    assert!(!before.is_empty(), "fixture: expected rows");
+
+    let opt = optimize_indexed(plan, &store);
+    assert_eq!(
+        before,
+        bag(&run(&opt, &store)),
+        "orienting under a sort changed the rows: {opt:?}"
+    );
+    assert!(
+        has_range_seek(&opt),
+        "a pattern under ORDER BY should still orient and seed: {opt:?}"
+    );
+
+    // And the keys must have moved with the slots they name.
+    fn page_keys(p: &Plan) -> Option<&Vec<crate::ir::SortKey>> {
+        match p {
+            Plan::OrderPage { keys, .. } => Some(keys),
+            Plan::Project { input, .. } | Plan::Filter { input, .. } => page_keys(input),
+            _ => None,
+        }
+    }
+    let keys = page_keys(&opt).expect("the page survived");
+    assert_eq!(keys.len(), 2, "both keys kept: {opt:?}");
 }

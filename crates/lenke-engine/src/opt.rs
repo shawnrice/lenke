@@ -2422,6 +2422,38 @@ fn orient_scan(plan: &Plan, idx: &dyn IndexOracle) -> Option<(bool, usize)> {
         }
         // Pass-through operators keep the namespace open.
         Plan::Distinct { input } => orient_scan(input, idx),
+        // A page keeps the namespace open (its slots are its input's) but its SORT KEYS
+        // read them, so they have to be renameable like any other consumer. Without
+        // this arm the whole plan declined, and a pattern under an `ORDER BY` never
+        // oriented at all.
+        //
+        // Reversing changes the order rows reach the sort, which with TIED keys and a
+        // stable sort changes their order out of it. That is already true of every
+        // seeding rewrite on this page — a `RangeSeek` yields index order where a
+        // `Scan` yields id order — so a tie's position was never a property of the
+        // query, only of the chosen plan. What must not change is the row SET.
+        Plan::OrderPage { input, keys, .. } => {
+            let (open, far) = orient_scan(input, idx)?;
+
+            if !open {
+                return Some((false, far));
+            }
+
+            keys.iter()
+                .all(|k| reverse_slots(&k.expr, far).is_some())
+                .then_some((true, far))
+        }
+        // A page keeps the namespace open (its slots are its input's) but its SORT KEYS
+        // read them, so they have to be renameable like any other consumer. Without
+        // this arm the whole plan declined, and a pattern under an `ORDER BY` never
+        // oriented at all.
+        //
+        // Reversing changes the order rows reach the sort, which with TIED keys and a
+        // stable sort changes their order out of it. That is already true of every
+        // seeding rewrite on this page — a `RangeSeek` yields index order where a
+        // `Scan` yields id order — so a tie's position was never a property of the
+        // plan, only of the chosen plan. What must not change is the row SET, and that
+        // is what the fuzzer checks here.
         // The pattern itself, or a residual filter over it.
         Plan::Filter { input, pred } => {
             if let Some((open, far)) = orient_scan(input, idx) {
@@ -2520,6 +2552,36 @@ fn orient_apply(plan: Plan, far: usize) -> (Plan, bool) {
             (
                 Plan::Distinct {
                     input: Box::new(inner),
+                },
+                open,
+            )
+        }
+        Plan::OrderPage {
+            input,
+            keys,
+            skip,
+            limit,
+            fault_on_element,
+        } => {
+            let (inner, open) = orient_apply(*input, far);
+            let keys = if open {
+                keys.into_iter()
+                    .map(|mut k| {
+                        k.expr = reverse_slots(&k.expr, far).expect("eligibility checked");
+                        k
+                    })
+                    .collect()
+            } else {
+                keys
+            };
+
+            (
+                Plan::OrderPage {
+                    input: Box::new(inner),
+                    keys,
+                    skip,
+                    limit,
+                    fault_on_element,
                 },
                 open,
             )

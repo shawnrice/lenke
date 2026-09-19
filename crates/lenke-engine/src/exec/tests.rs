@@ -6490,3 +6490,68 @@ fn seek_through(plan: &Plan) -> Option<bool> {
         _ => None,
     }
 }
+
+/// `UNION ALL` whose right arm is NARROWER than its left pads the short rows with
+/// NULLs, as `Plan::Union` documents — rather than panicking.
+///
+/// FOUND while teaching `opt::rewrite_fuzz` to generate unions. The general path had
+/// always padded correctly (`row.resize(ncols, Value::Null)`); the bug was in the
+/// fast-path GUARD, which indexes the right arm up to the LEFT arm's width and was
+/// computed eagerly, before the width check in the `if` that guards it. So the
+/// out-of-range read happened while deciding whether the fast path applied, in a case
+/// where it never did.
+///
+/// Reachable from ordinary GQL, and a panic rather than a coded error:
+/// `… RETURN x, y UNION ALL … RETURN x`.
+#[test]
+fn union_pads_a_narrower_right_arm() {
+    let store = social();
+
+    let two = Plan::Scan {
+        label: Some("Person".into()),
+    }
+    .expand(0, Dir::Out, &["KNOWS".to_string()])
+    .project(vec![
+        ("a".into(), prop(0, "name")),
+        ("b".into(), prop(1, "name")),
+    ]);
+    let one = Plan::Scan {
+        label: Some("Person".into()),
+    }
+    .project(vec![("a".into(), prop(0, "name"))]);
+
+    let wide_then_narrow = Plan::Union {
+        left: Box::new(two.clone()),
+        right: Box::new(one.clone()),
+        all: true,
+        op: crate::ir::CombineOp::Union,
+    };
+    let got = run(&wide_then_narrow, &store);
+    assert_eq!(got.names.len(), 2, "columns come from the LEFT arm");
+    // 3 edges from the two-column arm + 3 nodes from the one-column arm.
+    assert_eq!(got.rows.len(), 6);
+
+    // The narrow arm's rows must be padded, not dropped or truncated: exactly three
+    // rows carry a NULL in the second column.
+    let nulls = (0..got.rows.len())
+        .filter(|&i| {
+            got.rows
+                .iter()
+                .nth(i)
+                .is_some_and(|r| r.get(1).is_some_and(Value::is_null))
+        })
+        .count();
+    assert_eq!(
+        nulls, 3,
+        "the short arm's rows should be NULL-padded: {got:?}"
+    );
+
+    // The mirror image already worked: a wider right arm is truncated to the left's.
+    let narrow_then_wide = Plan::Union {
+        left: Box::new(one),
+        right: Box::new(two),
+        all: true,
+        op: crate::ir::CombineOp::Union,
+    };
+    assert_eq!(run(&narrow_then_wide, &store).names.len(), 1);
+}
