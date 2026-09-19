@@ -1912,6 +1912,9 @@ pub(crate) fn width(plan: &Plan) -> usize {
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod rewrite_fuzz;
+
 // ─────────────────────────────────────────────────────────── pattern orientation ───
 
 /// Rewrite every slot index in an expression through `f`, or refuse.

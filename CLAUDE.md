@@ -155,6 +155,31 @@ its exit code — piping clippy into `grep -c` and chaining with `&&` takes the
 exit status from `grep`, which succeeds when it finds errors. That has let broken
 lint through twice.
 
+### Changing a planner rewrite
+
+The optimizer has its own invariant, separate from cross-engine byte-identity and
+guarded separately: **optimizing must not change the answer.** It is fuzzed in
+`crates/lenke-engine/src/opt/rewrite_fuzz.rs` — generated plans over a generated
+graph, raw vs optimized, compared as multisets.
+
+```
+cargo test --release --manifest-path crates/lenke-engine/Cargo.toml rewrite_fuzz
+LENKE_OPT_FUZZ_SEEDS=200000 cargo test --release ... rewrite_fuzz   # deeper sweep
+```
+
+Two rules when you add or change a rewrite, both learned the hard way:
+
+- **Mutate it and check the fuzzer catches it.** It passed on its first run, and so
+  does a test that checks nothing. Four historical wrong-answer bugs were
+  re-introduced to prove it had teeth; two of them needed the generator widened
+  first. A generative test whose teeth were never verified is worse than no test,
+  because it is believed.
+- **A passing integration probe is not evidence of correctness.** The probes in
+  `examples/` do assert answers, and they passed while the engine returned wrong
+  rows — three times. Their fixtures give every node the same label and ask for
+  `count(*)`, and a planner rewrite that permutes which slot holds which node is
+  invisible to both. Correctness lives in the unit tests and this fuzzer.
+
 Byte-identity between the TS and Rust engines is a hard invariant. Any change to
 storage, ordering or codecs needs the fuzzers, not just the unit tests. Run them
 through the unified runner (`packages/native/fuzz.ts`), which rebuilds exactly the
