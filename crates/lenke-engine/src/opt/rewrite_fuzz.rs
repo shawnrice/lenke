@@ -224,14 +224,25 @@
 //! When adding a rewrite, mutate it and check this catches it. A generative test whose
 //! teeth have never been verified is worse than no test, because it is believed.
 //!
-//! # Density falls as shapes are added; absolute coverage must not
+//! # Density falls as shapes are added, and that is fine
 //!
 //! Every widening spends probability that used to go somewhere else, so the fraction of
-//! plans reaching any given rewrite drifts down — plans that seed an index went 659 per
-//! 2,000 to 245 across four widenings, with nothing wrong. The floors in the coverage
-//! test are on DENSITY and get recalibrated; what compensates is the sweep SIZE
-//! (`seed_count`, 4,000 by default). Lowering a floor without raising the sweep would
-//! be trading coverage for a green test.
+//! plans reaching any given rewrite drifts down — plans that seed an index went 33% to
+//! 10% across five widenings. That is arithmetic, not decay: fixed probability mass
+//! spread over more shapes, while the total reachable SURFACE grows every time. The
+//! extra seeds are not buying back something lost; they are covering the shapes that
+//! did not exist before.
+//!
+//! So the answer is just to run more seeds, and seeds are nearly free — 25k in 2.2s,
+//! in parallel with the rest of the suite. The density floors in the coverage test
+//! still get recalibrated as shapes are added; their job is to catch the generator
+//! silently drifting to trivia, not to hold any particular mix. Lowering a floor while
+//! SHRINKING the sweep would be the thing to avoid.
+//!
+//! If density ever fell far enough that covering one rewrite needed a genuinely slow
+//! sweep, the answer would be weighted generation — bias the mix toward under-covered
+//! shapes — not a smaller generator. Nowhere near that: every mutation is still caught
+//! under seed 1,200.
 //!
 //! # Scope
 //!
@@ -1269,13 +1280,23 @@ fn check(seed: u64, store: &Store, indexed: bool) {
     }
 }
 
-/// How many seeds to sweep. Fixed by default so CI is deterministic and fast; raise it
-/// locally (`LENKE_OPT_FUZZ_SEEDS=100000`) when changing a rewrite.
+/// How many seeds to sweep. Fixed, so CI is deterministic; raise it with
+/// `LENKE_OPT_FUZZ_SEEDS` when changing a rewrite.
+///
+/// Sized by what iterations actually cost, which is almost nothing: 6k seeds run in
+/// 0.56s, 25k in 2.2s, 100k in 8.8s, against a whole-engine suite of 2.75s. 25k is
+/// four times the coverage for about two seconds, and noise in a CI job measured in
+/// minutes.
+///
+/// Per-shape DENSITY falls as the generator learns new shapes — plans reaching an index
+/// went 33% to 10% over five widenings — but that is arithmetic, not decay: fixed
+/// probability mass spread over more shapes, with the total reachable surface strictly
+/// growing each time. The answer is simply to run more seeds.
 fn seed_count() -> u64 {
     std::env::var("LENKE_OPT_FUZZ_SEEDS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(6_000)
+        .unwrap_or(25_000)
 }
 
 /// The invariant, over an INDEXED store — where the seeding rules, the pushdown split
