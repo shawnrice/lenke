@@ -212,6 +212,31 @@
 //! failure here is whether the difference is real, and the second is whether the oracle
 //! earned the right to make the comparison it made.
 //!
+//! # A sixth widening: shortest paths and quantified groups
+//!
+//! Both were picked for the same reason bound edges were: SLOT ARITHMETIC. Every bug
+//! this has found is an index computed one way in one place and another way somewhere
+//! else, and these two are where there is most room to get that wrong.
+//!
+//! `RepeatGroup` is the extreme case — it appends the endpoint FIRST and then one LIST
+//! column per `group_binds` entry, so a hop grows the row by `1 + binds` rather than by
+//! one. `ShortestPath` is tamer but has its own predicate-pushdown arm, built on the
+//! same `split_pushable` the `Expand` arm only learned to use this week.
+//!
+//! Both also carry a predicate over a MINI-SCOPE rather than the outer row —
+//! `ShortestPath`'s `edge_pred` reads the edge at scalar slot 0, `RepeatGroup`'s
+//! `per_rep_pred` reads source/edge/target at slots 0/1/2 — so anything renaming slots
+//! while walking a plan has to leave them alone. A generator that never emitted one
+//! could not tell whether that held.
+//!
+//! No engine bug this round, but not vacuous either: the `ShortestPath` pushdown arm is
+//! reached over 23,000 times in a default sweep, and a mutation that drops its residual
+//! is caught.
+//!
+//! One measurement fixed along the way: `multi_hop` counted only `Expand`s, so a chain
+//! whose second hop was var-length or shortest-path read as single-hop. Adding these
+//! operators looked like a 40% coverage LOSS that was entirely the metric's fault.
+//!
 //! # Reading an uncaught mutation
 //!
 //! It means one of two things, and they are opposite. Either the generator cannot reach
@@ -722,6 +747,101 @@ fn gen_chain(rng: &mut Lcg, hops: usize) -> Gen {
                 body_filter: None,
                 double_loops: false,
             };
+        } else if !deep && rng.chance(1, 9) {
+            // A SHORTEST-PATH hop: BFS emitting each reachable target once, appending
+            // it as one slot. It has its own predicate-pushdown arm in `opt`, built on
+            // the same `split_pushable` that the `Expand` arm only learned this week —
+            // and it is one of two operators that orientation must refuse, since
+            // `peel_hops` accepts nothing but plain hops.
+            //
+            // `edge_pred` is the interesting part: it reads the EDGE at scalar slot 0
+            // of a MINI-SCOPE, not the outer slot 0. Anything that renames slots while
+            // walking the plan has to leave it alone, and a generator that never emits
+            // one would never notice.
+            let edge_pred = rng.chance(1, 2).then(|| {
+                Box::new(Expr::Compare {
+                    op: CompareOp::Ge,
+                    left: Box::new(Expr::Prop {
+                        slot: 0,
+                        key: "w".into(),
+                    }),
+                    right: Box::new(Expr::Lit(Value::Num(f64::from(rng.below(4) as u32)))),
+                })
+            });
+            g.plan = Plan::ShortestPath {
+                input: Box::new(g.plan),
+                from: g.width - 1,
+                dir,
+                edge_label: etypes,
+                min: rng.below(2) as u32,
+                // Bounded: an unbounded BFS over this fixture reaches everything, which
+                // is slow and says little.
+                max: Some(1 + rng.below(3) as u32),
+                selector: *rng.pick(&[
+                    crate::ir::ShortestSelector::Any,
+                    crate::ir::ShortestSelector::All,
+                    crate::ir::ShortestSelector::ShortestK { k: 2, group: false },
+                    crate::ir::ShortestSelector::ShortestK { k: 2, group: true },
+                ]),
+                edge_pred,
+            };
+            g.width += 1;
+            continue;
+        } else if !deep && rng.chance(1, 9) {
+            // A quantified subpath GROUP: like a var-length hop, but it also binds the
+            // repetition's variables as LIST columns.
+            //
+            // This is the most intricate slot arithmetic in the IR — the endpoint is
+            // appended FIRST, then one list column per `group_binds` entry, so the hop
+            // grows the row by `1 + group_binds.len()` rather than by one. Every bug
+            // this fuzzer has found is a slot index computed one way in one place and
+            // another way somewhere else, and this is the operator with the most ways
+            // to get that wrong.
+            //
+            // `per_rep_pred` reads a MINI-SCOPE (source=0, edge=1, target=2), not the
+            // outer row, which is the same trap as `ShortestPath`'s `edge_pred`.
+            let endpoint_slot = g.width;
+            let all_binds = [
+                crate::ir::GroupPos::NodeAt(0),
+                crate::ir::GroupPos::EdgeAt(0),
+                crate::ir::GroupPos::NodeAt(1),
+            ];
+            let nbinds = 1 + rng.below(3);
+            let group_binds: Vec<(crate::ir::GroupPos, usize)> = all_binds
+                .iter()
+                .take(nbinds)
+                .enumerate()
+                .map(|(i, pos)| (*pos, endpoint_slot + 1 + i))
+                .collect();
+            let per_rep_pred = rng.chance(1, 3).then(|| {
+                Box::new(Expr::Compare {
+                    op: CompareOp::Ge,
+                    left: Box::new(Expr::Prop {
+                        slot: 2,
+                        key: "score".into(),
+                    }),
+                    right: Box::new(Expr::Lit(Value::Num(f64::from(rng.below(4) as u32)))),
+                })
+            });
+            g.width += 1 + group_binds.len();
+            g.plan = Plan::RepeatGroup {
+                input: Box::new(g.plan),
+                from: endpoint_slot - 1,
+                dir,
+                edge_label: etypes,
+                min: 1,
+                max: 1 + rng.below(3) as u32,
+                mode: *rng.pick(&[PathMode::Walk, PathMode::Trail, PathMode::Simple]),
+                endpoint_slot,
+                group_binds,
+                // Single-hop unit only; multi-hop bodies lower elsewhere.
+                k: 1,
+                per_rep_pred,
+            };
+            // A group column is a LIST, so it is not a node and the chain must not try
+            // to sort on it as if it were unique.
+            g.bound_edge = true;
+            continue;
         } else if !deep && rng.chance(1, 5) {
             // A BOUND EDGE, which appends TWO slots (edge then node) instead of one.
             //
@@ -1361,6 +1481,8 @@ fn the_generator_actually_reaches_the_rewrites() {
             | Plan::Filter { input, .. }
             | Plan::Expand { input, .. }
             | Plan::VarLength { input, .. }
+            | Plan::ShortestPath { input, .. }
+            | Plan::OrderPage { input, .. }
             | Plan::Distinct { input } => plan_has(input, f),
             Plan::Join { left, right, .. } | Plan::Union { left, right, .. } => {
                 plan_has(left, f) || plan_has(right, f)
@@ -1387,6 +1509,7 @@ fn the_generator_actually_reaches_the_rewrites() {
     let (mut joins, mut varlen, mut deep, mut faults) = (0, 0, 0, 0);
     let (mut bound_edge, mut interval) = (0, 0);
     let (mut paged, mut num_agg, mut unions) = (0, 0, 0);
+    let (mut shortest, mut repeat_group) = (0, 0);
     let n = 2_000;
 
     for seed in 0..n {
@@ -1400,15 +1523,26 @@ fn the_generator_actually_reaches_the_rewrites() {
             seeks += 1;
         }
         // Orientation is observable as the hop DIRECTIONS changing.
+        // Every HOP kind, not just `Expand` — a chain whose second hop is a
+        // var-length or shortest-path hop is still multi-hop, and counting only
+        // `Expand` made adding those look like a coverage loss when it was not.
+        // Orientation is still detectable here: it flips the hops it reverses, so the
+        // sequence changes either way.
         fn dirs(p: &Plan, out: &mut Vec<Dir>) {
-            if let Plan::Expand { dir, .. } = p {
-                out.push(*dir);
+            match p {
+                Plan::Expand { dir, .. }
+                | Plan::VarLength { dir, .. }
+                | Plan::ShortestPath { dir, .. } => out.push(*dir),
+                _ => {}
             }
             match p {
                 Plan::Project { input, .. }
                 | Plan::Aggregate { input, .. }
                 | Plan::Filter { input, .. }
                 | Plan::Expand { input, .. }
+                | Plan::VarLength { input, .. }
+                | Plan::ShortestPath { input, .. }
+                | Plan::OrderPage { input, .. }
                 | Plan::Distinct { input } => dirs(input, out),
                 _ => {}
             }
@@ -1451,6 +1585,12 @@ fn the_generator_actually_reaches_the_rewrites() {
         if plan_has(&plan, |p| matches!(p, Plan::Union { .. })) {
             unions += 1;
         }
+        if plan_has(&plan, |p| matches!(p, Plan::ShortestPath { .. })) {
+            shortest += 1;
+        }
+        if plan_has(&plan, |p| matches!(p, Plan::RepeatGroup { .. })) {
+            repeat_group += 1;
+        }
         if plan_has(
             &plan,
             |p| matches!(p, Plan::Aggregate { aggs, .. } if aggs.iter().any(|a| a.func != AggFn::Count)),
@@ -1469,6 +1609,7 @@ fn the_generator_actually_reaches_the_rewrites() {
          deep {deep}/{n}  joins {joins}/{n}  varlen {varlen}/{n}  \
          bound-edge {bound_edge}/{n}  interval {interval}/{n}  \
          paged {paged}/{n}  num-agg {num_agg}/{n}  unions {unions}/{n}  \
+         shortest {shortest}/{n}  repeat-group {repeat_group}/{n}  \
          non-empty {nonempty}/{n}  faulted {faults}/{n}"
     );
 
