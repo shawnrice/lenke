@@ -671,6 +671,12 @@ pub unsafe extern "C" fn lnk_query(
                             crate::ffi_error::set("E_INVALID_VALUE", rest);
                         } else if let Some(rest) = e.strip_prefix("E_RESOURCE_EXHAUSTED: ") {
                             crate::ffi_error::set("E_RESOURCE_EXHAUSTED", rest);
+                        } else if let Some(rest) = e.strip_prefix("E_NOT_IMPLEMENTED: ") {
+                            // RECOGNIZED but unbuilt — valid syntax the parser sees and
+                            // declines. Coding it `E_SYNTAX` would tell the user they
+                            // made a typo when they did not, and `E_UNSUPPORTED` would
+                            // say it is never coming.
+                            crate::ffi_error::set("E_NOT_IMPLEMENTED", rest);
                         } else {
                             crate::ffi_error::set("E_SYNTAX", &e);
                         }
@@ -709,6 +715,8 @@ pub unsafe extern "C" fn lnk_query(
                         crate::ffi_error::set("E_INVALID_VALUE", rest);
                     } else if let Some(rest) = e.strip_prefix("E_RESOURCE_EXHAUSTED: ") {
                         crate::ffi_error::set("E_RESOURCE_EXHAUSTED", rest);
+                    } else if let Some(rest) = e.strip_prefix("E_NOT_IMPLEMENTED: ") {
+                        crate::ffi_error::set("E_NOT_IMPLEMENTED", rest);
                     } else {
                         crate::ffi_error::set("E_SYNTAX", &e);
                     }

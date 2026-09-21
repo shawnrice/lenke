@@ -5807,3 +5807,47 @@ fn deeply_nested_expressions_reject_instead_of_overflowing_the_stack() {
     // `DEFAULT_CONFIG.limits.operatorChain`); `parse` uses it when unconfigured.
     assert_eq!(super::DEFAULT_MAX_EXPR_DEPTH, 1024);
 }
+
+/// `OPTIONAL` over a match BLOCK is valid ISO GQL that this engine does not implement,
+/// and it must say so — not accuse the user of a syntax error.
+///
+/// The ISO grammar admits three operands after `OPTIONAL`:
+///
+/// ```text
+/// <optional operand> ::= <simple match statement>
+///                      | <left brace> <match statement block> <right brace>
+///                      | <left paren> <match statement block> <right paren>
+/// ```
+///
+/// Only the first is built. The old message was "expected MATCH after OPTIONAL", which
+/// is wrong twice over: `{` IS what the grammar expects there, and the user had made no
+/// mistake.
+///
+/// The code is `E_NOT_IMPLEMENTED`, not `E_UNSUPPORTED`. The vocabulary distinguishes
+/// them — "recognized but not yet implemented" against "a feature that isn't supported"
+/// — and the difference tells a reader whether to work around it forever or wait.
+#[test]
+fn optional_over_a_match_block_says_not_implemented() {
+    for q in [
+        "MATCH (a:Person) OPTIONAL { MATCH (a)-[:KNOWS]->(x) } RETURN a.name AS n",
+        "MATCH (a:Person) OPTIONAL ( MATCH (a)-[:KNOWS]->(x) ) RETURN a.name AS n",
+        "OPTIONAL { MATCH (a:Person) } RETURN a.name AS n",
+    ] {
+        let err = super::parse(q).expect_err("the block form is not implemented");
+        assert!(
+            err.starts_with("E_NOT_IMPLEMENTED: "),
+            "expected a NOT_IMPLEMENTED code for {q}, got: {err}"
+        );
+        assert!(
+            err.contains("valid ISO GQL"),
+            "the message should say the query is well-formed: {err}"
+        );
+    }
+
+    // The implemented form still parses, and a genuine syntax error still reads as one.
+    super::parse("MATCH (a:Person) OPTIONAL MATCH (a)-[:KNOWS]->(x) RETURN a.name AS n")
+        .expect("the single-statement form is implemented");
+    let plain = super::parse("MATCH (a:Person) OPTIONAL RETURN a.name AS n")
+        .expect_err("OPTIONAL with no operand is a syntax error");
+    assert_eq!(plain, "expected MATCH after OPTIONAL");
+}

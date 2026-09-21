@@ -1059,7 +1059,7 @@ impl Parser {
         if self.peek_kw("OPTIONAL") {
             self.eat_kw("OPTIONAL");
             if !self.eat_kw("MATCH") {
-                return Err("expected MATCH after OPTIONAL".into());
+                return Err(self.optional_not_match_err());
             }
             let plan = self.match_body()?;
             let width = self.slots;
@@ -3898,13 +3898,49 @@ impl Parser {
         Ok((plan, node_slot))
     }
 
+    /// The error for a bare `OPTIONAL` that is not followed by `MATCH`.
+    ///
+    /// ISO allows `OPTIONAL` over a match BLOCK as well as a single match statement:
+    ///
+    /// ```text
+    /// <optional operand> ::= <simple match statement>
+    ///                      | <left brace> <match statement block> <right brace>
+    ///                      | <left paren> <match statement block> <right paren>
+    /// ```
+    ///
+    /// Only the single-statement form is implemented. Saying "expected MATCH" for the
+    /// block forms is actively wrong — `{` IS what the grammar expects there, so the
+    /// message accused the user of a typo they had not made.
+    ///
+    /// `E_NOT_IMPLEMENTED` rather than `E_SYNTAX`, because the query is well-formed;
+    /// and rather than `E_UNSUPPORTED`, because the vocabulary distinguishes them:
+    /// `E_UNSUPPORTED` is "a feature that isn't supported", `E_NOT_IMPLEMENTED` is
+    /// "recognized but not yet implemented". This is the latter — valid ISO the engine
+    /// intends to accept, just unbuilt. The difference is what a reader should do with
+    /// it: work around it forever, or wait for it.
+    ///
+    /// The distinction is not cosmetic. `OPTIONAL { MATCH a MATCH b }` is ONE
+    /// left-outer over the joint pattern, which two consecutive `OPTIONAL MATCH`es do
+    /// not express — those are two independent left-outers.
+    fn optional_not_match_err(&self) -> String {
+        if matches!(self.peek(), Some(Tok::LBrace) | Some(Tok::LParen)) {
+            "E_NOT_IMPLEMENTED: OPTIONAL over a braced or parenthesized match block \
+             is valid ISO GQL but is not implemented yet; use a single \
+             `OPTIONAL MATCH …` statement (note that two consecutive OPTIONAL MATCHes \
+             are two independent left-outers, not one over the joint pattern)"
+                .to_string()
+        } else {
+            "expected MATCH after OPTIONAL".to_string()
+        }
+    }
+
     /// `OPTIONAL MATCH (a)-[:R]->(x)` — a LEFT-OUTER single hop from a bound `a`. If
     /// `a` has no matching neighbour, the row is kept with `x` NULL. Single-hop,
     /// node-only, no bound edge; an inner `WHERE` is rejected (it filters the optional
     /// match, which is not yet modelled) rather than mis-applied as a top-level filter.
     fn optional_match(&mut self, plan: Plan) -> Result<Plan, String> {
         if !self.eat_kw("MATCH") {
-            return Err("expected MATCH after OPTIONAL".into());
+            return Err(self.optional_not_match_err());
         }
         // Parse the leading node MANUALLY so its inline props may be EXPRESSIONS
         // (`{name: name}` correlates on a bound variable) — `node()` only takes
