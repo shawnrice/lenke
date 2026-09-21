@@ -4785,6 +4785,9 @@ fn try_num_disjunction(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec<
         ids.iter()
             .enumerate()
             .filter(|&(_, &id)| {
+                if id == u32::MAX {
+                    return false; // NULL element → UNKNOWN → dropped
+                }
                 let i = id as usize;
                 specs
                     .iter()
@@ -4875,6 +4878,9 @@ fn try_num_conjunction(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec<
                         ($lo_cmp:tt, $hi_cmp:tt) => {{
                             let mut keep = Vec::new();
                             for (row, &id) in ids.iter().enumerate() {
+                                if id == u32::MAX {
+                                    continue; // NULL element → UNKNOWN → dropped
+                                }
                                 let i = id as usize;
                                 let x = d0[i];
                                 if p0[i] && x $lo_cmp lo && x $hi_cmp hi {
@@ -4899,6 +4905,9 @@ fn try_num_conjunction(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec<
         ids.iter()
             .enumerate()
             .filter(|&(_, &id)| {
+                if id == u32::MAX {
+                    return false; // NULL element → UNKNOWN → dropped
+                }
                 let i = id as usize;
                 specs
                     .iter()
@@ -4945,6 +4954,9 @@ fn try_keep_strsearch(
     match store.column(key) {
         Some(Column::Str { data, present, .. }) => {
             for (row, &id) in ids.iter().enumerate() {
+                if id == u32::MAX {
+                    continue; // NULL element → UNKNOWN → dropped
+                }
                 let i = id as usize;
                 if present[i] && (f(data[i].as_ref(), sub) != negate) {
                     keep.push(row);
@@ -4959,6 +4971,9 @@ fn try_keep_strsearch(
             ..
         }) => {
             for (row, &id) in ids.iter().enumerate() {
+                if id == u32::MAX {
+                    continue; // NULL element → UNKNOWN → dropped
+                }
                 let i = id as usize;
                 if present[i] && (f(dict[codes[i] as usize].as_ref(), sub) != negate) {
                     keep.push(row);
@@ -5007,6 +5022,11 @@ fn try_filter_keep(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec<usiz
                     eids.iter()
                         .enumerate()
                         .filter(|&(_, &eid)| {
+                            // A bound edge is the `u32::MAX` sentinel on an optional
+                            // miss, exactly as a landing node is.
+                            if eid == u32::MAX {
+                                return false;
+                            }
                             let i = eid as usize;
                             present[i] && num_pred(op, data[i], t)
                         })
@@ -5057,6 +5077,9 @@ fn try_filter_keep(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec<usiz
                         ids.iter()
                             .enumerate()
                             .filter(|&(_, &id)| {
+                                if id == u32::MAX {
+                                    return false; // NULL element → UNKNOWN → dropped
+                                }
                                 let i = id as usize;
                                 !present[i] || !num_pred(op, data[i], t)
                             })
@@ -5124,7 +5147,7 @@ fn try_filter_keep(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec<usiz
         return Some(
             ids.iter()
                 .enumerate()
-                .filter(|&(_, &id)| column.present_at(id as usize))
+                .filter(|&(_, &id)| id != u32::MAX && column.present_at(id as usize))
                 .map(|(row, _)| row)
                 .collect(),
         );
@@ -5161,6 +5184,13 @@ fn try_filter_keep(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec<usiz
     if let (Column::Num { data, present, .. }, Value::Num(t)) = (column, lit) {
         let t = *t;
         for (row, &id) in ids.iter().enumerate() {
+            // A NULL element (the `u32::MAX` sentinel an OPTIONAL hop lands on a
+            // miss) has no property, so the comparison is UNKNOWN and the row drops —
+            // the same answer the general `eval_mask` path gives. Without this the
+            // typed fast paths indexed the column BY the sentinel and panicked.
+            if id == u32::MAX {
+                continue;
+            }
             let i = id as usize;
             if !present[i] {
                 continue; // NULL → UNKNOWN → dropped
@@ -5187,6 +5217,13 @@ fn try_filter_keep(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec<usiz
     if let (Column::Str { data, present, .. }, Value::Str(t)) = (column, lit) {
         let t = t.as_ref();
         for (row, &id) in ids.iter().enumerate() {
+            // A NULL element (the `u32::MAX` sentinel an OPTIONAL hop lands on a
+            // miss) has no property, so the comparison is UNKNOWN and the row drops —
+            // the same answer the general `eval_mask` path gives. Without this the
+            // typed fast paths indexed the column BY the sentinel and panicked.
+            if id == u32::MAX {
+                continue;
+            }
             let i = id as usize;
             if !present[i] {
                 continue; // NULL → UNKNOWN → dropped
@@ -5228,6 +5265,13 @@ fn try_filter_keep(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec<usiz
         if matches!(op, CompareOp::Eq | CompareOp::Ne) {
             let target = dict.iter().position(|d| d.as_ref() == t);
             for (row, &id) in ids.iter().enumerate() {
+                // A NULL element (the `u32::MAX` sentinel an OPTIONAL hop lands on a
+                // miss) has no property, so the comparison is UNKNOWN and the row drops —
+                // the same answer the general `eval_mask` path gives. Without this the
+                // typed fast paths indexed the column BY the sentinel and panicked.
+                if id == u32::MAX {
+                    continue;
+                }
                 let i = id as usize;
                 if !present[i] {
                     continue;
@@ -5240,6 +5284,13 @@ fn try_filter_keep(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec<usiz
             return Some(keep);
         }
         for (row, &id) in ids.iter().enumerate() {
+            // A NULL element (the `u32::MAX` sentinel an OPTIONAL hop lands on a
+            // miss) has no property, so the comparison is UNKNOWN and the row drops —
+            // the same answer the general `eval_mask` path gives. Without this the
+            // typed fast paths indexed the column BY the sentinel and panicked.
+            if id == u32::MAX {
+                continue;
+            }
             let i = id as usize;
             if !present[i] {
                 continue;
@@ -5262,6 +5313,9 @@ fn try_filter_keep(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec<usiz
     // value contract. Ordering uses `cmp_partial` (3VL — cross-type/NaN → drop,
     // matching `compare`), NOT the total order.
     for (row, &id) in ids.iter().enumerate() {
+        if id == u32::MAX {
+            continue; // NULL element → UNKNOWN → dropped
+        }
         let v = column.read(id as usize);
         if v.is_null() {
             continue;
@@ -5431,6 +5485,13 @@ fn read_property(store: &Store, col: &Col, key: &str) -> Col {
     fn gather<T>(ids: &[u32], present: &[bool], data_at: impl Fn(usize) -> T) -> Option<Vec<T>> {
         let mut out = Vec::with_capacity(ids.len());
         for &id in ids {
+            // A NULL element (the `u32::MAX` sentinel an OPTIONAL hop lands on a
+            // miss) has no property, so the comparison is UNKNOWN and the row drops —
+            // the same answer the general `eval_mask` path gives. Without this the
+            // typed fast paths indexed the column BY the sentinel and panicked.
+            if id == u32::MAX {
+                continue;
+            }
             let i = id as usize;
             if !present[i] {
                 return None;
@@ -5642,6 +5703,10 @@ fn typed_num_mask(
             Some(
                 ids.iter()
                     .map(|&id| {
+                        // A NULL element is UNKNOWN, which is what `None` means here.
+                        if id == u32::MAX {
+                            return None;
+                        }
                         let i = id as usize;
                         present[i].then(|| num_pred(op, data[i], t))
                     })
@@ -5653,6 +5718,9 @@ fn typed_num_mask(
             Some(
                 eids.iter()
                     .map(|&eid| {
+                        if eid == u32::MAX {
+                            return None;
+                        }
                         let i = eid as usize;
                         present[i].then(|| num_pred(op, data[i], t))
                     })
@@ -5689,6 +5757,9 @@ fn typed_str_mask(
         Column::Str { data, present, .. } => Some(
             ids.iter()
                 .map(|&id| {
+                    if id == u32::MAX {
+                        return None;
+                    }
                     let i = id as usize;
                     present[i].then(|| str_pred(op, data[i].as_ref(), lit))
                 })
@@ -5707,6 +5778,9 @@ fn typed_str_mask(
             Some(
                 ids.iter()
                     .map(|&id| {
+                        if id == u32::MAX {
+                            return None; // NULL element → UNKNOWN → dropped
+                        }
                         let i = id as usize;
                         present[i].then(|| match lit_code {
                             Some(lc) => (codes[i] as usize == lc) == want_eq,
@@ -5724,6 +5798,9 @@ fn typed_str_mask(
         } => Some(
             ids.iter()
                 .map(|&id| {
+                    if id == u32::MAX {
+                        return None; // NULL element → UNKNOWN → dropped
+                    }
                     let i = id as usize;
                     present[i].then(|| str_pred(op, dict[codes[i] as usize].as_ref(), lit))
                 })
@@ -5769,6 +5846,9 @@ fn typed_strsearch_mask(
         Some(Column::Str { data, present, .. }) => Some(
             ids.iter()
                 .map(|&id| {
+                    if id == u32::MAX {
+                        return None;
+                    }
                     let i = id as usize;
                     present[i].then(|| f(data[i].as_ref(), sub))
                 })
@@ -5782,6 +5862,9 @@ fn typed_strsearch_mask(
         }) => Some(
             ids.iter()
                 .map(|&id| {
+                    if id == u32::MAX {
+                        return None; // NULL element → UNKNOWN → dropped
+                    }
                     let i = id as usize;
                     present[i].then(|| f(dict[codes[i] as usize].as_ref(), sub))
                 })

@@ -6555,3 +6555,85 @@ fn union_pads_a_narrower_right_arm() {
     };
     assert_eq!(run(&narrow_then_wide, &store).names.len(), 1);
 }
+
+/// A filter over a slot an OPTIONAL hop may have NULL-filled must drop those rows,
+/// not panic.
+///
+/// FOUND BY `opt::rewrite_fuzz` once it learned to generate `OptionalExpand`. A miss
+/// lands the `u32::MAX` null sentinel in the appended slot, and every TYPED fast path
+/// in `try_filter_keep` indexed its column by that id directly — `present[4294967295]`
+/// — where the general `eval_mask` path had always treated it as UNKNOWN and dropped
+/// the row. So the panic appeared only when the predicate was simple enough to take a
+/// fast path, which is the common case.
+///
+/// Reachable from ordinary GQL, in two spellings:
+///
+/// ```text
+/// MATCH (a:N) OPTIONAL MATCH (a)-[:T]->(x) FILTER x.age > 0 RETURN a.name AS n
+/// MATCH (a:N) OPTIONAL MATCH (a)-[:T]->(x) MATCH (a) WHERE x.age > 0 RETURN a.name AS n
+/// ```
+///
+/// (`WHERE` directly inside `OPTIONAL MATCH` is rejected by the parser, which is why
+/// the obvious spelling was safe and these were not.)
+#[test]
+fn filter_over_an_optional_null_slot_drops_rather_than_panics() {
+    let mut b = Builder::default();
+    for i in 0..6u32 {
+        b.node(
+            &["N"],
+            &[("name", s(&format!("n{i}"))), ("age", n(f64::from(i)))],
+        );
+    }
+    // Only node 0 has an out-edge, so five of the six rows null-fill.
+    b.edge(0, 1, "T");
+    let store = b.build();
+
+    let optional = Plan::OptionalExpand {
+        input: Box::new(Plan::Scan {
+            label: Some("N".into()),
+        }),
+        from: 0,
+        dir: Dir::Out,
+        edge_label: vec!["T".to_string()],
+        keep_source: false,
+        bind_edge: false,
+        landing_pred: None,
+    };
+    assert_eq!(run(&optional, &store).rows.len(), 6, "fixture: six sources");
+
+    // Every predicate shape with its own typed fast path, over the nullable slot.
+    for pred in [
+        cmp(CompareOp::Gt, prop(1, "age"), Expr::Lit(n(0.0))),
+        cmp(CompareOp::Eq, prop(1, "name"), Expr::Lit(s("n1"))),
+        Expr::PropertyExists {
+            slot: 1,
+            key: "age".into(),
+        },
+    ] {
+        let plan = optional.clone().filter(pred.clone());
+        assert_eq!(
+            run(&plan, &store).rows.len(),
+            1,
+            "only the one matched row survives: {pred:?}"
+        );
+    }
+
+    // And with the edge bound, where the EDGE slot carries the sentinel too.
+    let bound = Plan::OptionalExpand {
+        input: Box::new(Plan::Scan {
+            label: Some("N".into()),
+        }),
+        from: 0,
+        dir: Dir::Out,
+        edge_label: vec!["T".to_string()],
+        keep_source: false,
+        bind_edge: true,
+        landing_pred: None,
+    }
+    .filter(cmp(CompareOp::Ge, prop(1, "w"), Expr::Lit(n(0.0))));
+    assert_eq!(
+        run(&bound, &store).rows.len(),
+        0,
+        "no edge carries `w`, and a null edge must drop rather than panic"
+    );
+}

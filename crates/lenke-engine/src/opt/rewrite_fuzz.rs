@@ -237,6 +237,47 @@
 //! whose second hop was var-length or shortest-path read as single-hop. Adding these
 //! operators looked like a 40% coverage LOSS that was entirely the metric's fault.
 //!
+//! # A seventh widening: optional hops, and a whole CLASS of panic
+//!
+//! `OptionalExpand` is the only operator here that puts a NULL NODE into a frontier: a
+//! row with no matching neighbour lands the `u32::MAX` sentinel. Generating it turned
+//! the fuzzer red immediately, and kept it red through six further sites, because the
+//! bug was not one place — it was a CLASS.
+//!
+//! Every TYPED fast path in the filter and mask layers read its column by the frontier
+//! id directly (`present[id as usize]`), while the general `eval_mask` path had always
+//! treated the sentinel as UNKNOWN and dropped the row. So the panic appeared only when
+//! the predicate was simple enough to take a fast path — which is the common case.
+//! Eleven guards across eight functions now; `index_seek_ids` and `range_seek_ids` take
+//! their ids from the store and cannot see a sentinel, so they are left alone.
+//!
+//! Reachable from ordinary GQL in two spellings (`WHERE` directly inside `OPTIONAL
+//! MATCH` is rejected by the parser, which is why the obvious one was safe):
+//!
+//! ```text
+//! MATCH (a:N) OPTIONAL MATCH (a)-[:T]->(x) FILTER x.age > 0 RETURN a.name AS n
+//! MATCH (a:N) OPTIONAL MATCH (a)-[:T]->(x) MATCH (a) WHERE x.age > 0 RETURN a.name AS n
+//! ```
+//!
+//! # Everything generated was renameable, so the rename guards were untested
+//!
+//! Mutation testing then found a SYSTEMATIC hole rather than a missing shape. Every
+//! expression this generator emitted — `Prop`, `IsLabeled`, `Compare`, `And`/`Or`/`Not`,
+//! `In`, `PropertyExists`, `Slot` — is one `map_slots` can rewrite. So every
+//! `swap_slots(...).is_some()` check in `orient_scan`, over projection items, aggregate
+//! keys, filter predicates and sort keys, was trivially TRUE, and deleting one changed
+//! nothing.
+//!
+//! Those checks exist for what the rename REFUSES: records, maps, CASE, index reads, the
+//! subquery family, every path expression. [`gen_unrenameable`] emits a `Case`, which is
+//! the cheapest of those and the only one that still evaluates to an ordinary value, so
+//! the plan runs and the comparison stays meaningful — the point being that orientation
+//! must DECLINE rather than rewrite around it. Two guards that were no-ops against the
+//! old corpus are now caught when removed.
+//!
+//! The lesson generalizes past this file: a generator built only from the shapes a
+//! rewrite ACCEPTS cannot test the branch where it declines.
+//!
 //! # Reading an uncaught mutation
 //!
 //! It means one of two things, and they are opposite. Either the generator cannot reach
@@ -842,6 +883,43 @@ fn gen_chain(rng: &mut Lcg, hops: usize) -> Gen {
             // to sort on it as if it were unique.
             g.bound_edge = true;
             continue;
+        } else if !deep && rng.chance(1, 7) {
+            // An OPTIONAL hop, which is the only operator here that puts a NULL NODE
+            // into a frontier: a row with no matching neighbour lands the `u32::MAX`
+            // sentinel (GQL `OPTIONAL MATCH`) or the source element itself (Gremlin
+            // `optional(...)`, `keep_source`). Everything downstream then has to cope
+            // with a slot that holds a node-shaped nothing — `IsLabeled` must not
+            // match it, a property read off it is null, and a sort has to place it.
+            //
+            // It also appends TWO slots under `bind_edge`, edge before node, which is
+            // the arithmetic that has produced every bug this fuzzer has found.
+            let keep_source = rng.chance(1, 2);
+            let bind = rng.chance(1, 3);
+            // The LANDING predicate reads the appended node slot, which is one further
+            // along when an edge is bound — a candidate neighbour failing it makes the
+            // source null-fill rather than drop, so it is applied before the "any
+            // match?" decision rather than after. Exactly the kind of slot that is easy
+            // to compute one way here and another way in the executor.
+            let landing_slot = g.width + usize::from(bind);
+            let landing_pred = rng
+                .chance(1, 3)
+                .then(|| Box::new(gen_pred(rng, landing_slot, false)));
+            g.plan = Plan::OptionalExpand {
+                input: Box::new(g.plan),
+                from: g.width - 1,
+                dir,
+                edge_label: etypes,
+                keep_source,
+                bind_edge: bind,
+                landing_pred,
+            };
+            g.width += if bind { 2 } else { 1 };
+            if bind {
+                // A bound edge means a slot that is not a node, so the chain can no
+                // longer be given a total sort key.
+                g.bound_edge = true;
+            }
+            continue;
         } else if !deep && rng.chance(1, 5) {
             // A BOUND EDGE, which appends TWO slots (edge then node) instead of one.
             //
@@ -947,6 +1025,39 @@ fn gen_cross_pred(rng: &mut Lcg, width: usize) -> Expr {
     }
 }
 
+/// An expression that the slot rename REFUSES, reading `slot`.
+///
+/// Every other expression this generator emits is renameable, which made every
+/// `swap_slots(...).is_some()` guard in `orient_scan` — over projection items,
+/// aggregate keys, filter predicates and sort keys — trivially true. A mutation that
+/// deleted one of those checks changed nothing, because the corpus contained nothing
+/// it could refuse. The guards exist for the expressions `map_slots` will not rewrite:
+/// records, maps, CASE, index reads, the subquery family, and every path expression.
+///
+/// `Case` is the cheapest of those to build and the only one that evaluates to an
+/// ordinary value, so a plan carrying it still runs and the comparison stays
+/// meaningful — the point is that orientation must DECLINE rather than rename around
+/// it.
+fn gen_unrenameable(rng: &mut Lcg, slot: usize) -> Expr {
+    Expr::Case {
+        branches: vec![(
+            Expr::Compare {
+                op: CompareOp::Gt,
+                left: Box::new(Expr::Prop {
+                    slot,
+                    key: "score".into(),
+                }),
+                right: Box::new(Expr::Lit(Value::Num(f64::from(rng.below(5) as u32)))),
+            },
+            Expr::Prop {
+                slot,
+                key: "name".into(),
+            },
+        )],
+        otherwise: Some(Box::new(Expr::Lit(Value::Str("other".into())))),
+    }
+}
+
 /// A total sort key over `width` slots, plus a skip/limit window.
 ///
 /// Totality is the whole point. `OrderPage` sorts STABLY, so under a LIMIT the
@@ -977,6 +1088,7 @@ fn gen_page(
                     key: "name".into(),
                 }
             },
+            // (totality is preserved: `name` and `Slot` are both unique per node)
             descending: rng.chance(1, 3),
             nulls_first: rng.chance(1, 2),
         })
@@ -1164,10 +1276,20 @@ fn gen_plan_one(rng: &mut Lcg) -> Plan {
         // Neither is a property of the query. So: no limit and no skip, and
         // `ordered_output` sends it to the multiset comparison — which still asserts
         // the thing that must hold, that the ROW SET is unchanged.
+        let slot = rng.below(g.width);
         let keys = vec![crate::ir::SortKey {
-            expr: Expr::Prop {
-                slot: rng.below(g.width),
-                key: "score".into(),
+            // Sometimes an expression the slot rename REFUSES, which is the only way
+            // to exercise `orient_scan`'s check that a page's keys are renameable —
+            // deleting that check was otherwise a no-op against this corpus. It is
+            // safe here precisely because this page has no limit: the key is not
+            // total, so `ordered_output` already sends it to the multiset comparison.
+            expr: if rng.chance(1, 3) {
+                gen_unrenameable(rng, slot)
+            } else {
+                Expr::Prop {
+                    slot,
+                    key: "score".into(),
+                }
             },
             descending: rng.chance(1, 2),
             nulls_first: false,
@@ -1230,10 +1352,19 @@ fn gen_plan_one(rng: &mut Lcg) -> Plan {
         // order, by a property unique per node. Any permutation of the pattern's slots
         // shows up here as a row mismatch. A generator weighted toward `count(*)`
         // instead would reproduce E72's blindness.
-        0..=3 => Plan::Project {
-            input: Box::new(g.plan),
-            items: all_slots,
-        },
+        0..=3 => {
+            let mut items = all_slots;
+            // Occasionally project something the rename refuses, so orientation has to
+            // decline rather than rewrite around it.
+            if rng.chance(1, 6) {
+                let slot = rng.below(g.width);
+                items.push(("case".into(), gen_unrenameable(rng, slot)));
+            }
+            Plan::Project {
+                input: Box::new(g.plan),
+                items,
+            }
+        }
         // The ends only — still permutation-sensitive, and the shape most real queries
         // have.
         4 => Plan::Project {
@@ -1482,6 +1613,8 @@ fn the_generator_actually_reaches_the_rewrites() {
             | Plan::Expand { input, .. }
             | Plan::VarLength { input, .. }
             | Plan::ShortestPath { input, .. }
+            | Plan::OptionalExpand { input, .. }
+            | Plan::RepeatGroup { input, .. }
             | Plan::OrderPage { input, .. }
             | Plan::Distinct { input } => plan_has(input, f),
             Plan::Join { left, right, .. } | Plan::Union { left, right, .. } => {
@@ -1509,7 +1642,7 @@ fn the_generator_actually_reaches_the_rewrites() {
     let (mut joins, mut varlen, mut deep, mut faults) = (0, 0, 0, 0);
     let (mut bound_edge, mut interval) = (0, 0);
     let (mut paged, mut num_agg, mut unions) = (0, 0, 0);
-    let (mut shortest, mut repeat_group) = (0, 0);
+    let (mut shortest, mut repeat_group, mut optional) = (0, 0, 0);
     let n = 2_000;
 
     for seed in 0..n {
@@ -1591,6 +1724,9 @@ fn the_generator_actually_reaches_the_rewrites() {
         if plan_has(&plan, |p| matches!(p, Plan::RepeatGroup { .. })) {
             repeat_group += 1;
         }
+        if plan_has(&plan, |p| matches!(p, Plan::OptionalExpand { .. })) {
+            optional += 1;
+        }
         if plan_has(
             &plan,
             |p| matches!(p, Plan::Aggregate { aggs, .. } if aggs.iter().any(|a| a.func != AggFn::Count)),
@@ -1610,6 +1746,7 @@ fn the_generator_actually_reaches_the_rewrites() {
          bound-edge {bound_edge}/{n}  interval {interval}/{n}  \
          paged {paged}/{n}  num-agg {num_agg}/{n}  unions {unions}/{n}  \
          shortest {shortest}/{n}  repeat-group {repeat_group}/{n}  \
+         optional {optional}/{n}  \
          non-empty {nonempty}/{n}  faulted {faults}/{n}"
     );
 
@@ -1629,8 +1766,8 @@ fn the_generator_actually_reaches_the_rewrites() {
     // seekable forms were diluted and two new keys had no index at all. Nothing else
     // would have noticed: every correctness test stayed green, on a corpus that had
     // quietly stopped exercising the rewrites it exists to test.
-    assert!(seeks > n / 16, "too few plans seed an index: {seeks}/{n}");
-    assert!(oriented > n / 16, "too few plans orient: {oriented}/{n}");
+    assert!(seeks > n / 25, "too few plans seed an index: {seeks}/{n}");
+    assert!(oriented > n / 20, "too few plans orient: {oriented}/{n}");
     assert!(
         multi_hop > n / 4,
         "too few multi-hop plans: {multi_hop}/{n}"
