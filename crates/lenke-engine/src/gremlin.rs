@@ -1928,7 +1928,7 @@ impl Parser {
             // `finish_add_*_step`; READ steps after the write go through `pending_step_write`.
             if matches!(&plan, Plan::AddEdgeStep { .. } | Plan::AddVertexStep { .. }) {
                 return Err(
-                    "property() after a per-traverser addE/addV (further write) is not yet supported"
+                    "E_NOT_IMPLEMENTED: property() after a per-traverser addE/addV (further write) is not yet supported"
                         .into(),
                 );
             }
@@ -2902,7 +2902,7 @@ impl Parser {
                     }
                     if self.peek() == Some(&Tok::Comma) {
                         return Err(
-                            "choose(cond, addV(...), <else>) with a write then-arm is not yet supported"
+                            "E_NOT_IMPLEMENTED: choose(cond, addV(...), <else>) with a write then-arm is not yet supported"
                                 .into(),
                         );
                     }
@@ -3712,7 +3712,7 @@ impl Parser {
                         let key = keys
                             .first()
                             .cloned()
-                            .ok_or("value() after a multi-key properties() is not yet supported")?;
+                            .ok_or("E_NOT_IMPLEMENTED: value() after a multi-key properties() is not yet supported")?;
                         let p = plan.project(vec![(
                             "value".to_string(),
                             Expr::Prop {
@@ -3777,7 +3777,7 @@ impl Parser {
                     .as_ref()
                     .and_then(|ks| ks.first())
                     .cloned()
-                    .ok_or("hasValue() after a multi-key properties() is not yet supported")?;
+                    .ok_or("E_NOT_IMPLEMENTED: hasValue() after a multi-key properties() is not yet supported")?;
                 let mut vals = vec![self.literal()?];
                 while self.peek() == Some(&Tok::Comma) {
                     self.bump();
@@ -5572,7 +5572,11 @@ impl Parser {
                             other => other,
                         }
                     }
-                    other => return Err(format!("with({other}, …) is not yet supported")),
+                    other => {
+                        return Err(format!(
+                            "E_NOT_IMPLEMENTED: with({other}, …) is not yet supported"
+                        ))
+                    }
                 }
             }
             "barrier" => {

@@ -5851,3 +5851,35 @@ fn optional_over_a_match_block_says_not_implemented() {
         .expect_err("OPTIONAL with no operand is a syntax error");
     assert_eq!(plain, "expected MATCH after OPTIONAL");
 }
+
+/// The two error codes are not interchangeable, and the parser has to pick correctly:
+/// a recognized-but-unbuilt construct is `E_NOT_IMPLEMENTED`, a malformed one is
+/// `E_SYNTAX`. Confusing them tells the user to do the wrong thing — work around it
+/// forever, or go hunt for a typo that is not there.
+#[test]
+fn unbuilt_constructs_are_not_implemented_rather_than_syntax_errors() {
+    // Valid ISO / valid Gremlin the engine recognizes and has not built.
+    for q in [
+        "MATCH (a:Person) OPTIONAL { MATCH (a)-[:KNOWS]->(x) } RETURN a.name AS n",
+        "MATCH (a:Person) OPTIONAL MATCH (a)-[:KNOWS]->(x) WHERE x.name = 'b' RETURN a.name AS n",
+    ] {
+        let err = super::parse(q).expect_err("not built");
+        assert!(
+            err.starts_with("E_NOT_IMPLEMENTED: "),
+            "expected NOT_IMPLEMENTED for {q}, got: {err}"
+        );
+    }
+
+    // A genuine mistake stays a syntax error — the distinction is only useful if it
+    // holds in both directions.
+    for q in [
+        "MATCH (a:Person) RETRUN a.name AS n",
+        "MATCH (a:Person) OPTIONAL RETURN a.name AS n",
+    ] {
+        let err = super::parse(q).expect_err("malformed");
+        assert!(
+            !err.starts_with("E_NOT_IMPLEMENTED: "),
+            "a real syntax error must not claim to be unimplemented: {q} -> {err}"
+        );
+    }
+}

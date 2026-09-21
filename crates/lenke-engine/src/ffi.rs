@@ -307,8 +307,17 @@ fn set_exec_error(e: &str) {
             // A shape the engine understands but cannot run in this position (e.g. a
             // branching step inside a filter body). Not a bad value and not a parse
             // error — the query is well-formed, the placement is what is unsupported.
+            // Distinct from `E_NOT_IMPLEMENTED` below: this one is not coming, the
+            // caller has to restructure.
             "E_UNSUPPORTED" => {
                 crate::ffi_error::set("E_UNSUPPORTED", rest);
+                return;
+            }
+            // Recognized, well-formed, and simply not built yet. The distinction from
+            // `E_UNSUPPORTED` is what the caller should do about it: wait, or work
+            // around it forever.
+            "E_NOT_IMPLEMENTED" => {
+                crate::ffi_error::set("E_NOT_IMPLEMENTED", rest);
                 return;
             }
             _ => {}
@@ -696,8 +705,8 @@ pub unsafe extern "C" fn lnk_query(
             // does not accept parameters on the Gremlin path yet.
             if !params.is_empty() {
                 crate::ffi_error::set(
-                    "E_UNSUPPORTED",
-                    "Gremlin query parameters are not supported",
+                    "E_NOT_IMPLEMENTED",
+                    "Gremlin query parameters are not implemented yet",
                 );
                 return std::ptr::null_mut();
             }
@@ -1204,7 +1213,7 @@ pub unsafe extern "C" fn lnk_command(
         // are not yet built in the engine — each fills an arm here, never a new symbol.
         other => {
             crate::ffi_error::set(
-                "E_UNSUPPORTED",
+                "E_NOT_IMPLEMENTED",
                 &format!("command '{other}' is not yet implemented"),
             );
             std::ptr::null_mut()

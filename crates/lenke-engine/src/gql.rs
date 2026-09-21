@@ -3405,7 +3405,7 @@ impl Parser {
         let first = self.node_plain()?;
         if bad_inner(&first) {
             return Err(
-                "a label/property/WHERE on a subpath-group inner node is not supported yet".into(),
+                "E_NOT_IMPLEMENTED: a label/property/WHERE on a subpath-group inner node is not supported yet".into(),
             );
         }
         let mut node_vars: Vec<Option<String>> = vec![first.0.clone()];
@@ -3418,7 +3418,7 @@ impl Parser {
             let rel = self.rel(false)?;
             if !rel.props.is_empty() || rel.where_range.is_some() {
                 return Err(
-                    "edge properties / a per-hop WHERE on a subpath group are not supported yet"
+                    "E_NOT_IMPLEMENTED: edge properties / a per-hop WHERE on a subpath group are not supported yet"
                         .into(),
                 );
             }
@@ -3454,7 +3454,7 @@ impl Parser {
                     );
                 }
                 if node_vars.len() != 1 || rel.var.is_some() {
-                    return Err("a quantified subpath-group body with a bound inner edge \
+                    return Err("E_NOT_IMPLEMENTED: a quantified subpath-group body with a bound inner edge \
                                 or a preceding hop is not supported yet"
                         .into());
                 }
@@ -3486,9 +3486,11 @@ impl Parser {
                     });
                 }
                 if first.0.is_some() || n.0.is_some() {
-                    return Err("a variable-length subpath-group body with bound inner \
+                    return Err(
+                        "E_NOT_IMPLEMENTED: a variable-length subpath-group body with bound inner \
                                 variables is not supported yet"
-                        .into());
+                            .into(),
+                    );
                 }
                 node_vars.push(n.0.clone());
                 self.expect(&Tok::RParen)?;
@@ -3510,7 +3512,7 @@ impl Parser {
             let n = self.node_plain()?;
             if bad_inner(&n) {
                 return Err(
-                    "a label/property/WHERE on a subpath-group inner node is not supported yet"
+                    "E_NOT_IMPLEMENTED: a label/property/WHERE on a subpath-group inner node is not supported yet"
                         .into(),
                 );
             }
@@ -3981,7 +3983,10 @@ impl Parser {
         // Fresh-variable single node (no rel) → a left-outer correlated scan.
         if bound.is_none() && !has_rel {
             if inline_where {
-                return Err("inline WHERE inside OPTIONAL MATCH is not supported yet".into());
+                return Err(
+                    "E_NOT_IMPLEMENTED: inline WHERE inside OPTIONAL MATCH is not supported yet"
+                        .into(),
+                );
             }
             let node_slot = self.slots;
             if let Some(v) = var {
@@ -4001,7 +4006,9 @@ impl Parser {
             return Err("OPTIONAL MATCH must start from a bound variable".into());
         };
         if inline_where {
-            return Err("inline WHERE inside OPTIONAL MATCH is not supported yet".into());
+            return Err(
+                "E_NOT_IMPLEMENTED: inline WHERE inside OPTIONAL MATCH is not supported yet".into(),
+            );
         }
         if label.is_some() {
             return Err(format!(
@@ -4072,7 +4079,9 @@ impl Parser {
             landing_pred = and(landing_pred, self.parse_captured_where(r)?);
         }
         if self.peek_kw("WHERE") {
-            return Err("WHERE inside OPTIONAL MATCH is not supported yet".into());
+            return Err(
+                "E_NOT_IMPLEMENTED: WHERE inside OPTIONAL MATCH is not supported yet".into(),
+            );
         }
         Ok(Plan::OptionalExpand {
             input: Box::new(plan),
