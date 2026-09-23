@@ -1487,3 +1487,94 @@ fn orient_sees_through_an_order_by() {
     let keys = page_keys(&opt).expect("the page survived");
     assert_eq!(keys.len(), 2, "both keys kept: {opt:?}");
 }
+
+/// A range index is only seeded when it will actually FILTER. Declaring an index must
+/// not make a broad query slower.
+///
+/// Measured (`simd_index_probe` E40, 200k `Person` rows): `age > 98` (1% pass) is 9.8x
+/// faster with the index, 303us -> 31us; `age > 50` (49% pass) is 3.7x SLOWER,
+/// 321us -> 1184us — seeking 98,000 rows costs more than scanning 200,000. The engine
+/// seeded whenever an index existed, so a user could declare one and quietly lose 4x on
+/// their broad queries.
+///
+/// The threshold is the measured crossover (`SEEK_MAX_FRACTION`): a scan is 1.88 ns per
+/// node, a seek 12.2 ns per row returned, so a seek stops paying at 1.88/12.2 = 15.4%.
+#[test]
+fn a_range_index_is_seeded_only_when_it_is_selective() {
+    // Above `SEEK_FLOOR_NODES`, or the rule declines to decide.
+    let mut b = Builder::default();
+    for i in 0..8_000 {
+        b.node(
+            &["Person"],
+            &[
+                ("name", s(&format!("n{i}"))),
+                ("age", n(f64::from(i % 100))),
+            ],
+        );
+    }
+    let mut store = b.build();
+    store.create_range_index("age");
+
+    let q = |bound: f64| {
+        Plan::Scan {
+            label: Some("Person".into()),
+        }
+        .filter(cmp(CompareOp::Gt, prop(0, "age"), Expr::Lit(n(bound))))
+        .project(vec![("who".into(), prop(0, "name"))])
+    };
+
+    // 1% of the graph — the index earns its keep.
+    let selective = q(98.0);
+    let before = bag(&run(&selective, &store));
+    let opt = optimize_indexed(selective, &store);
+    assert_eq!(before, bag(&run(&opt, &store)), "selective: rows changed");
+    assert!(
+        has_range_seek(&opt),
+        "a 1% predicate should seed the index: {opt:?}"
+    );
+
+    // 49% — seeking costs more than scanning, so the filter stays a filter.
+    let broad = q(50.0);
+    let before = bag(&run(&broad, &store));
+    let opt = optimize_indexed(broad, &store);
+    assert_eq!(before, bag(&run(&opt, &store)), "broad: rows changed");
+    assert!(
+        !has_range_seek(&opt),
+        "a 49% predicate must not seed: {opt:?}"
+    );
+}
+
+/// Below the floor the rule declines to decide, keeping the planner's existing
+/// behaviour. A full scan of 1,000 nodes is ~1.9us and the worst seek over them ~6us,
+/// so choosing differently would churn plans over a difference nobody can measure.
+#[test]
+fn a_tiny_graph_still_seeds_whatever_the_selectivity() {
+    let mut b = Builder::default();
+    for i in 0..64 {
+        b.node(
+            &["Person"],
+            &[
+                ("name", s(&format!("n{i}"))),
+                ("age", n(f64::from(i % 100))),
+            ],
+        );
+    }
+    let mut store = b.build();
+    store.create_range_index("age");
+
+    // Selects everything — unselective by any measure, and still seeded, because at
+    // this size the decision is noise.
+    let plan = Plan::Scan {
+        label: Some("Person".into()),
+    }
+    .filter(cmp(CompareOp::Gt, prop(0, "age"), Expr::Lit(n(-1.0))))
+    .project(vec![("who".into(), prop(0, "name"))]);
+
+    let before = bag(&run(&plan, &store));
+    let opt = optimize_indexed(plan, &store);
+    assert_eq!(before, bag(&run(&opt, &store)), "rows changed");
+    assert!(
+        has_range_seek(&opt),
+        "below the floor, seed as before: {opt:?}"
+    );
+}

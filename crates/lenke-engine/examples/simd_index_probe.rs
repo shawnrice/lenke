@@ -1684,6 +1684,54 @@ fn main() {
             println!("  {label:<40} {us:>10.1}  {}", chain_of(&opt));
         }
     }
+
+    // E74 ------------------------------------------------------------------
+    //
+    // E40 found the planner seeding a range index whenever one existed, with no check
+    // on how much it would filter — so declaring an index made a BROAD query 3.7x
+    // slower (320.9us unindexed against 1184.2us indexed at 49% selectivity). The
+    // planner now consults the measured crossover before seeding. This is that
+    // measurement re-taken, on the same shape, against the same store with and
+    // without the index declared.
+    //
+    // What it must show: the selective query still seeds and still wins, and the broad
+    // one no longer loses. If declaring an index ever costs a query time again, this
+    // row goes red.
+    section("E74: does declaring a range index still cost a broad query?");
+
+    println!(
+        "  {:<34} {:>11} {:>11} {:>8}  plan",
+        "query", "no index", "indexed", "ratio"
+    );
+
+    for (label, q) in [
+        (
+            "age > 98   (1% pass, selective)",
+            "MATCH (n:Person) WHERE n.age > 98 RETURN n.name AS x",
+        ),
+        (
+            "age > 50   (49% pass, broad)",
+            "MATCH (n:Person) WHERE n.age > 50 RETURN n.name AS x",
+        ),
+        (
+            "age > 50, GROUP BY",
+            "MATCH (n:Person) WHERE n.age > 50 RETURN n.dept AS d, count(*) AS c",
+        ),
+    ] {
+        let bare = harness::time_query(q, false, &plain, cfg.reps.min(5));
+        let ixed = harness::time_query(q, false, &seeded, cfg.reps.min(5));
+        let opt = lenke_engine::opt::optimize_indexed(
+            lenke_engine::gql::parse(q).expect("parses"),
+            &seeded,
+        );
+        if let (Ok((b, _)), Ok((i, _))) = (bare, ixed) {
+            let ratio = if i > 0.0 { b / i } else { 0.0 };
+            println!(
+                "  {label:<34} {b:>11.1} {i:>11.1} {ratio:>7.2}x  {}",
+                chain_of(&opt)
+            );
+        }
+    }
 }
 
 /// The optimized plan as an operator chain, for printing next to a measurement.

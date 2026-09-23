@@ -33,22 +33,33 @@ fn pure_chain_width(plan: &Plan) -> Option<usize> {
 /// prefer a conjunct backed by a real index over one that would only scan. Kept
 /// abstract (not `&Store`) so the optimizer stays a pure `Plan -> Plan` transform and
 /// so callers with no store (plan-shape tests) can pass [`NoIndexes`].
-/// Orientation only pays when the far-side predicate actually SHRINKS the pool. E64
-/// and E65 measured where that turns over: a scan costs 1.88 ns per node scanned and a
-/// seek 12.2 ns per row returned, both flat in selectivity, so a seek stops being worth
-/// it at 1.88/12.2 = 15.4% of the graph.
+/// A seek only pays when the predicate actually SHRINKS the pool. E64 and E65 measured
+/// where that turns over: a scan costs 1.88 ns per node scanned and a seek 12.2 ns per
+/// row returned, both flat in selectivity, so a seek stops being worth it at
+/// 1.88/12.2 = 15.4% of the graph.
+///
+/// Two rules consult this — whether to REVERSE a pattern onto its far-side predicate,
+/// and whether to seed a `RangeSeek` at all — because it is the same question both
+/// times: is an index cheaper than a scan here?
 ///
 /// Above this, reversing is a measured REGRESSION rather than a smaller win —
 /// `b.age > -1` (matching everything) went 788us to 3805us when orientation fired on
 /// it, because the reversal buys nothing and still pays a residual label check above
 /// the hop, which defeats the `count(*)` degree-sum shortcut.
-const ORIENT_MAX_FRACTION: f64 = 0.154;
+const SEEK_MAX_FRACTION: f64 = 0.154;
 
 pub trait IndexOracle {
     /// A hash index exists on the exact (possibly dotted) property path `key`.
     fn has_hash_index(&self, key: &str) -> bool;
     /// A range index exists on property `key`.
     fn has_range_index(&self, key: &str) -> bool;
+
+    /// How many live nodes the store holds, when the oracle knows. `None` from an
+    /// oracle with no store behind it, which then takes the planner's existing
+    /// behaviour rather than a size-dependent one.
+    fn live_nodes(&self) -> Option<usize> {
+        None
+    }
 
     /// Roughly what FRACTION of the graph `key <op> value` selects, or `None` when
     /// that cannot be answered cheaply (no index, or the answer is "a lot").
@@ -75,6 +86,10 @@ impl IndexOracle for NoIndexes {
 }
 
 impl IndexOracle for crate::store::Store {
+    fn live_nodes(&self) -> Option<usize> {
+        Some(self.live_node_count())
+    }
+
     fn seed_fraction(&self, key: &str, op: crate::ir::CompareOp, value: &Value) -> Option<f64> {
         let live = self.live_node_count();
         if live == 0 {
@@ -82,7 +97,7 @@ impl IndexOracle for crate::store::Store {
         }
         // Ask only up to the threshold the caller cares about, so an unselective
         // predicate costs a bounded probe instead of a full index walk.
-        let cap = (live as f64 * ORIENT_MAX_FRACTION).ceil() as usize;
+        let cap = (live as f64 * SEEK_MAX_FRACTION).ceil() as usize;
         let n = match op {
             crate::ir::CompareOp::Eq => self.index_bucket_len(key, value)?,
             crate::ir::CompareOp::Lt
@@ -1471,8 +1486,9 @@ fn apply_local(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
                         },
                         true,
                     )
-                } else if let Some((key, op, value)) =
-                    range_seek_target(&pred).filter(|(k, _, _)| idx.has_range_index(k))
+                } else if let Some((key, op, value)) = range_seek_target(&pred)
+                    .filter(|(k, _, _)| idx.has_range_index(k))
+                    .filter(|(k, op, v)| seek_beats_scan(idx, k, *op, v))
                 {
                     // Only seed a RangeSeek when a range index can actually serve it.
                     // Without one, RangeSeek's fallback SCANS and BOXES each cell, which
@@ -2344,10 +2360,34 @@ fn seed_fraction_of(pred: &Expr, idx: &dyn IndexOracle) -> Option<f64> {
     }
 }
 
+/// Would a seek on `key <op> value` beat scanning?
+///
+/// `seed_fraction` measures the share of the graph the predicate selects, capped at
+/// [`SEEK_MAX_FRACTION`] — so `Some(_)` already means "within the threshold" and `None`
+/// means the probe gave up because the count ran past it. Parameters do not complicate
+/// this: `bind_params` runs BEFORE the optimizer, so a `$name` bound is an ordinary
+/// literal by the time this rule sees it.
+///
+/// A TINY graph always seeds, and that is not a fudge to keep plan-shape tests green.
+/// Below a few thousand nodes neither choice is measurable — a full scan of 1,000 nodes
+/// is 1.9us and the worst possible seek over them is ~6us — so the rule would be
+/// deciding nothing while changing plans, and churning plans that nobody can measure is
+/// how a planner acquires behaviour no one can explain.
+fn seek_beats_scan(idx: &dyn IndexOracle, key: &str, op: CompareOp, value: &Value) -> bool {
+    if idx.live_nodes().is_some_and(|n| n < SEEK_FLOOR_NODES) {
+        return true;
+    }
+    idx.seed_fraction(key, op, value).is_some()
+}
+
+/// Below this many live nodes the seek-vs-scan choice is unmeasurable, so the planner
+/// keeps its existing behaviour rather than churning the plan.
+const SEEK_FLOOR_NODES: usize = 4_096;
+
 /// Is reversing this pattern worth it — does the far-side predicate actually shrink
 /// the pool?
 ///
-/// When the pool can be measured, [`ORIENT_MAX_FRACTION`] decides, and that is the
+/// When the pool can be measured, [`SEEK_MAX_FRACTION`] decides, and that is the
 /// whole answer. When it CANNOT — a parameterized bound, or an oracle that declined —
 /// fall back to the older, blunter rule: reverse only if the far node carries a label
 /// that lifts onto the seed. That rule was never really about selectivity, but it
@@ -2355,7 +2395,7 @@ fn seed_fraction_of(pred: &Expr, idx: &dyn IndexOracle) -> Option<f64> {
 /// as it did before rather than silently losing orientation altogether.
 fn orient_is_worth_it(pred: &Expr, far: usize, idx: &dyn IndexOracle) -> bool {
     match seed_fraction_of(pred, idx) {
-        Some(frac) => frac <= ORIENT_MAX_FRACTION,
+        Some(frac) => frac <= SEEK_MAX_FRACTION,
         None => reverse_slots(pred, far).is_some_and(|p| lift_seed_label(p).0.is_some()),
     }
 }
