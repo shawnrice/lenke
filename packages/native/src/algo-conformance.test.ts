@@ -67,6 +67,56 @@ const MODERN_NDJSON = [
   '{"type":"edge","id":"12","from":"6","to":"3","labels":["CREATED"]}',
 ].join('\n');
 
+// An edge whose type set has more than one member. The native engine stores a PRIMARY
+// type plus secondaries, the TS engine an unordered `labels` set — so this is where the
+// two models are most likely to drift, and they did: the native algorithms compared the
+// primary type only, while native QUERIES (and all of TS) consult the whole set. One
+// edge labelled `[LIKES, KNOWS]` gave `MATCH ()-[:KNOWS]->()` 2, TS `degree` 2, and
+// native `degree` 1. No fixture here had a multi-label edge, which is why it stood.
+const MULTI_LABEL_NDJSON = [
+  '{"type":"node","id":"a","labels":["N"],"properties":{"name":"a"}}',
+  '{"type":"node","id":"b","labels":["N"],"properties":{"name":"b"}}',
+  '{"type":"node","id":"c","labels":["N"],"properties":{"name":"c"}}',
+  '{"type":"edge","id":"e0","from":"a","to":"b","labels":["KNOWS"]}',
+  '{"type":"edge","id":"e1","from":"a","to":"c","labels":["LIKES","KNOWS"]}',
+  '{"type":"edge","id":"e2","from":"b","to":"c","labels":["LIKES"]}',
+].join('\n');
+
+suite('graph-algorithm differential: multi-label edges (TS core vs native)', () => {
+  const backend = nativeBackend();
+  const nativeGraph = graphFromNdjson(backend, MULTI_LABEL_NDJSON);
+  const tsGraph = tsDeserialize(MULTI_LABEL_NDJSON, 'ndjson', new Graph());
+
+  for (const config of [
+    { direction: 'out', edgeLabel: 'KNOWS' } as const,
+    { direction: 'in', edgeLabel: 'KNOWS' } as const,
+    { direction: 'both', edgeLabel: 'KNOWS' } as const,
+    { direction: 'out', edgeLabel: 'LIKES' } as const,
+    { direction: 'both', edgeLabel: 'LIKES' } as const,
+  ]) {
+    test(`degree ${JSON.stringify(config)} — byte-identical`, async () => {
+      expect(JSON.stringify(await degree(config, tsGraph))).toBe(
+        JSON.stringify(await nativeGraph.degree(config)),
+      );
+    });
+
+    test(`connectedComponents ${JSON.stringify(config)} — byte-identical`, async () => {
+      expect(JSON.stringify(await connectedComponents(config, tsGraph))).toBe(
+        JSON.stringify(await nativeGraph.connectedComponents(config)),
+      );
+    });
+  }
+
+  // And the engine must agree with ITSELF: a secondary label is as good as a primary
+  // one to a query, so it has to be to an algorithm too.
+  test('a secondary edge label counts for an algorithm exactly as it does for a query', async () => {
+    const viaQuery = nativeGraph.query('MATCH (x:N)-[:KNOWS]->(y) RETURN count(*) AS c');
+    const viaAlgo = await nativeGraph.degree({ direction: 'out', edgeLabel: 'KNOWS' });
+    const total = viaAlgo.reduce((n, r) => n + (r as { degree: number }).degree, 0);
+    expect(total).toBe((viaQuery[0] as { c: number }).c);
+  });
+});
+
 suite('graph-algorithm differential: degree (TS core vs native)', () => {
   const backend = nativeBackend();
   const nativeGraph = graphFromNdjson(backend, MODERN_NDJSON);

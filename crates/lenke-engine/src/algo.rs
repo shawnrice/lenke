@@ -55,20 +55,35 @@ fn want_etype(store: &Store, edge_label: Option<&str>) -> Option<Option<u32>> {
     }
 }
 
+/// Does this edge carry the wanted type — as its PRIMARY type or, on a multi-label
+/// graph, as a SECONDARY one?
+///
+/// The algorithms compared `want == a.etype` and so saw the primary type only, while
+/// the query engine has always consulted the whole label set (`edge_carries_wanted` in
+/// `exec`). On a graph with multi-label edges that made the same edge visible to
+/// `MATCH ()-[:KNOWS]->()` and invisible to `degree(edgeLabel: 'KNOWS')` — and put the
+/// native algorithms out of step with the pure-TS ones, whose `Edge.labels` is a set
+/// with no primary at all. Measured on one edge labelled `[LIKES, KNOWS]`: query 2,
+/// TS degree 2, native degree 1.
+fn adj_wanted(store: &Store, a: &crate::store::Adj, want: Option<u32>) -> bool {
+    want.is_none_or(|w| {
+        w == a.etype || (store.has_multi_label_edges() && store.edge_has_label(a.eid, w))
+    })
+}
+
 /// Visit each `dir`/`want`-matching neighbour of `v`, calling `f(nbr)`. `want` is
 /// `None` for any type or `Some(id)` for a specific one.
 fn for_each_nbr(store: &Store, v: u32, dir: Dir, want: Option<u32>, mut f: impl FnMut(u32)) {
-    let ok = |et: u32| want.is_none_or(|w| w == et);
     if matches!(dir, Dir::Out | Dir::Both) {
         for a in store.out(v) {
-            if ok(a.etype) {
+            if adj_wanted(store, a, want) {
                 f(a.nbr);
             }
         }
     }
     if matches!(dir, Dir::In | Dir::Both) {
         for a in store.inc(v) {
-            if ok(a.etype) {
+            if adj_wanted(store, a, want) {
                 f(a.nbr);
             }
         }
@@ -922,7 +937,7 @@ fn pp_winner(
     energy.clear();
     let mut any = false;
     for a in store.inc(u) {
-        if want.is_none_or(|w| w == a.etype) {
+        if adj_wanted(store, a, want) {
             *energy.entry(cluster[a.nbr as usize]).or_insert(0.0) += vote[a.nbr as usize];
             any = true;
         }
@@ -1246,7 +1261,11 @@ fn betweenness_source(
     want: Option<Option<u32>>,
     weight_property: Option<&str>,
 ) -> Vec<(u32, f64)> {
-    let type_ok = |et: u32| want.is_some_and(|inner| inner.is_none_or(|t| t == et));
+    // By EDGE ID, not primary type: `edge_carries_type` consults the whole label
+    // set, so a multi-label edge matches the same way it does for a query (see
+    // `adj_wanted`). Comparing `t == a.etype` here saw primaries only.
+    let type_ok =
+        |eid: u32| want.is_some_and(|inner| inner.is_none_or(|t| store.edge_carries_type(eid, t)));
     let mut sigma = vec![0f64; n];
     let mut pred: Vec<Vec<u32>> = vec![Vec::new(); n];
     let mut dist = vec![f64::INFINITY; n];
@@ -1268,7 +1287,7 @@ fn betweenness_source(
             stack.push(v);
             let dv = dist[v as usize];
             for a in store.out(v) {
-                if !type_ok(a.etype) {
+                if !type_ok(a.eid) {
                     continue;
                 }
                 let to = a.nbr;
@@ -1442,7 +1461,11 @@ fn dijkstra_dist(
 ) -> Vec<f64> {
     let n = store.node_count();
     let want = want_etype(store, edge_label);
-    let type_ok = |et: u32| want.is_some_and(|inner| inner.is_none_or(|t| t == et));
+    // By EDGE ID, not primary type: `edge_carries_type` consults the whole label
+    // set, so a multi-label edge matches the same way it does for a query (see
+    // `adj_wanted`). Comparing `t == a.etype` here saw primaries only.
+    let type_ok =
+        |eid: u32| want.is_some_and(|inner| inner.is_none_or(|t| store.edge_carries_type(eid, t)));
 
     let mut dist = vec![f64::INFINITY; n];
     dist[src as usize] = 0.0;
@@ -1457,8 +1480,8 @@ fn dijkstra_dist(
         }
         // Relax the incident edges in the configured direction (out-adj then in-adj
         // for `both`), in adjacency (edge-insertion) order — the TS engine's visit_adj order.
-        let mut relax = |nbr: u32, eid: u32, etype: u32| {
-            if !type_ok(etype) {
+        let mut relax = |nbr: u32, eid: u32| {
+            if !type_ok(eid) {
                 return;
             }
             let nd = du + edge_weight(store, eid, weight);
@@ -1469,12 +1492,12 @@ fn dijkstra_dist(
         };
         if matches!(dir, Dir::Out | Dir::Both) {
             for a in store.out(u) {
-                relax(a.nbr, a.eid, a.etype);
+                relax(a.nbr, a.eid);
             }
         }
         if matches!(dir, Dir::In | Dir::Both) {
             for a in store.inc(u) {
-                relax(a.nbr, a.eid, a.etype);
+                relax(a.nbr, a.eid);
             }
         }
     }
@@ -1506,7 +1529,11 @@ fn astar_search(
     };
     let n = store.node_count();
     let want = want_etype(store, edge_label);
-    let type_ok = |et: u32| want.is_some_and(|inner| inner.is_none_or(|t| t == et));
+    // By EDGE ID, not primary type: `edge_carries_type` consults the whole label
+    // set, so a multi-label edge matches the same way it does for a query (see
+    // `adj_wanted`). Comparing `t == a.etype` here saw primaries only.
+    let type_ok =
+        |eid: u32| want.is_some_and(|inner| inner.is_none_or(|t| store.edge_carries_type(eid, t)));
     let h = |v: u32| -> f64 {
         heuristic.map_or(0.0, |k| match store.prop(v, k) {
             Value::Num(x) => x,
@@ -1531,8 +1558,8 @@ fn astar_search(
         if u == tgt {
             return vec![(tgt, g[u as usize])];
         }
-        let mut relax = |nbr: u32, eid: u32, etype: u32| {
-            if !type_ok(etype) || closed[nbr as usize] {
+        let mut relax = |nbr: u32, eid: u32| {
+            if !type_ok(eid) || closed[nbr as usize] {
                 return;
             }
             let ng = g[u as usize] + cost(eid);
@@ -1546,12 +1573,12 @@ fn astar_search(
         };
         if matches!(dir, Dir::Out | Dir::Both) {
             for a in store.out(u) {
-                relax(a.nbr, a.eid, a.etype);
+                relax(a.nbr, a.eid);
             }
         }
         if matches!(dir, Dir::In | Dir::Both) {
             for a in store.inc(u) {
-                relax(a.nbr, a.eid, a.etype);
+                relax(a.nbr, a.eid);
             }
         }
     }
@@ -1697,7 +1724,7 @@ fn neighbor_aggregate(
         let mut contrib: Vec<(u32, u32)> = Vec::new();
         if want_out {
             for a in store.out(v) {
-                if want.is_some_and(|w| w.is_none_or(|t| t == a.etype)) {
+                if want.is_some_and(|w| adj_wanted(store, a, w)) {
                     contrib.push((a.eid, a.nbr));
                 }
             }
@@ -1707,7 +1734,7 @@ fn neighbor_aggregate(
                 if want_out && a.nbr == v {
                     continue;
                 }
-                if want.is_some_and(|w| w.is_none_or(|t| t == a.etype)) {
+                if want.is_some_and(|w| adj_wanted(store, a, w)) {
                     contrib.push((a.eid, a.nbr));
                 }
             }
