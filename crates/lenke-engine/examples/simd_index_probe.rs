@@ -2030,6 +2030,97 @@ fn main() {
             }
         }
     }
+
+    // E79 ------------------------------------------------------------------
+    //
+    // The last `spelling_probe` cliff: `DISTINCT` against Gremlin `dedup()`. They lower to
+    // DIFFERENT plans, because `values(k)` drops an element whose property is absent while
+    // `RETURN DISTINCT n.k` treats the absence as a null — so Gremlin carries an extra
+    // `Filter(PropertyExists{k})` that GQL does not:
+    //
+    //   ```text
+    //   GQL  Distinct   { Project { Scan } }
+    //   GRM  DistinctBy { Project { Filter(PropertyExists) { Scan } } }
+    //   ```
+    //
+    // That filter was the entire gap, which hand-built plans showed before anything was
+    // changed: `DistinctBy { Project { Scan } }` ran the same answer in 86.9us against
+    // 270.1us with the filter. It is also REDUNDANT with work the dedup already does — the
+    // dict path tests `present[i]` per row anyway — so it is now folded in rather than run
+    // as a separate materializing pass.
+    //
+    // Two things this measures that a single ratio would hide: the `spotty` column (a third
+    // of its values absent) is where the filter is NOT redundant and the old code bailed off
+    // the fast path entirely, and `count(DISTINCT)` is the GQL spelling that was already
+    // fast, so it must not move.
+    section("E79: DISTINCT against Gremlin dedup, and the filter between them");
+
+    {
+        const N: u32 = 100_000;
+        let mut b = lenke_engine::store::Builder::default();
+        let depts = ["eng", "sales", "ops", "legal", "hr"];
+        for i in 0..N {
+            let mut props: Vec<(&str, lenke_engine::value::Value)> = vec![
+                (
+                    "name",
+                    lenke_engine::value::Value::Str(format!("n{i}").into()),
+                ),
+                (
+                    "dept",
+                    lenke_engine::value::Value::Str(depts[(i % 5) as usize].into()),
+                ),
+            ];
+            if i % 3 == 0 {
+                props.push((
+                    "spotty",
+                    lenke_engine::value::Value::Str(depts[(i % 5) as usize].into()),
+                ));
+            }
+            b.node(&["Person"], &props);
+        }
+        let store = b.build();
+
+        println!("  before, min of 3 at the same sizes:");
+        println!("    GRM dedup 253.5   dedup().count() 260.7   dedup(spotty) 176.9");
+        println!("    GQL DISTINCT 148.1   count(DISTINCT) 82.3   DISTINCT(spotty) 131.1");
+        println!("  {:<50} {:>9} {:>6}", "query", "us", "rows");
+        for (label, gremlin, q) in [
+            (
+                "GRM values('dept').dedup()",
+                true,
+                "g.V().hasLabel('Person').values('dept').dedup()",
+            ),
+            (
+                "GRM values('dept').dedup().count()",
+                true,
+                "g.V().hasLabel('Person').values('dept').dedup().count()",
+            ),
+            (
+                "GRM values('spotty').dedup()  [1/3 absent]",
+                true,
+                "g.V().hasLabel('Person').values('spotty').dedup()",
+            ),
+            (
+                "GQL RETURN DISTINCT n.dept",
+                false,
+                "MATCH (n:Person) RETURN DISTINCT n.dept AS d",
+            ),
+            (
+                "GQL count(DISTINCT n.dept)",
+                false,
+                "MATCH (n:Person) RETURN count(DISTINCT n.dept) AS c",
+            ),
+            (
+                "GQL RETURN DISTINCT n.spotty  [null is a value]",
+                false,
+                "MATCH (n:Person) RETURN DISTINCT n.spotty AS d",
+            ),
+        ] {
+            if let Ok((us, rows)) = harness::time_query(q, gremlin, &store, cfg.reps.min(3)) {
+                println!("  {label:<50} {us:>9.1} {rows:>6}");
+            }
+        }
+    }
 }
 
 /// The optimized plan as an operator chain, for printing next to a measurement.

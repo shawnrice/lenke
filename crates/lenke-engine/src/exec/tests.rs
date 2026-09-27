@@ -7042,3 +7042,115 @@ fn a_count_frontier_folds_duplicate_seek_ids_however_they_arrive() {
         "dense and sparse accumulation disagreed"
     );
 }
+
+/// `values(k)` drops an element whose property is absent, so Gremlin lowers it to
+/// `Project(Filter(PropertyExists{k}))`. The dict dedup fast path now recognizes that
+/// filter and folds it into its own `present[i]` test instead of running it as a separate
+/// materializing pass — 253.5us to 79.3us over 100k nodes (E79).
+///
+/// The fixture must be big enough to DICT-ENCODE `dept`, or none of this is exercised:
+/// `dict_encode` keeps a column as `Str` unless its distinct values are at most half the
+/// rows. A five-row fixture was the first attempt here and all three mutants survived it.
+#[cfg(test)]
+fn dedup_absent_fixture() -> Store {
+    let mut b = Builder::default();
+    let depts = ["eng", "sales", "ops"];
+    for i in 0..39u32 {
+        let d = depts[(i % 3) as usize];
+        let mut props: Vec<(&str, Value)> = vec![("dept", Value::Str(d.into()))];
+        // `gate` only on eng/ops, so a filter on it must change which depts are visible.
+        if d != "sales" {
+            props.push(("gate", Value::Num(1.0)));
+        }
+        b.node(&["P"], &props);
+    }
+    // One node with NO dept at all — a null for GQL, dropped by Gremlin.
+    b.node(&["P"], &[("gate", Value::Num(1.0))]);
+    b.build()
+}
+
+#[cfg(test)]
+fn first_col(store: &Store, q: &str, gremlin: bool) -> Vec<String> {
+    let raw = if gremlin {
+        crate::gremlin::parse(q)
+    } else {
+        crate::gql::parse(q)
+    }
+    .unwrap();
+    run(&crate::opt::optimize_indexed(raw, store), store)
+        .rows
+        .iter()
+        .map(|r| format!("{:?}", r[0]))
+        .collect()
+}
+
+#[test]
+fn dedup_drops_an_absent_property_and_distinct_keeps_it_as_null() {
+    let store = dedup_absent_fixture();
+    assert!(
+        matches!(store.column("dept"), Some(Column::Dict { .. })),
+        "the fixture must dict-encode `dept` or the fast path is never reached"
+    );
+
+    // Gremlin: the absent `dept` is dropped, and first-seen order is kept.
+    assert_eq!(
+        first_col(&store, "g.V().hasLabel('P').values('dept').dedup()", true),
+        vec![
+            "Str(\"eng\")".to_string(),
+            "Str(\"sales\")".to_string(),
+            "Str(\"ops\")".to_string()
+        ]
+    );
+    // GQL: the absent `dept` IS a value, so a null joins the distinct set.
+    let gql = first_col(&store, "MATCH (n:P) RETURN DISTINCT n.dept AS d", false);
+    assert_eq!(gql.len(), 4, "three depts plus one null: {gql:?}");
+    assert!(gql.contains(&"Null".to_string()), "{gql:?}");
+}
+
+/// The see-through is keyed on the filter testing the SAME property being deduped. A
+/// filter on a different property is a real row filter and must survive.
+#[test]
+fn a_dedup_does_not_swallow_a_filter_on_another_property() {
+    let store = dedup_absent_fixture();
+    // Only eng/ops nodes carry `gate`. If that filter were mistaken for the redundant
+    // one and dropped, `sales` would appear too.
+    assert_eq!(
+        first_col(
+            &store,
+            "g.V().hasLabel('P').has('gate').values('dept').dedup()",
+            true
+        ),
+        vec!["Str(\"eng\")".to_string(), "Str(\"ops\")".to_string()],
+        "a PropertyExists on another key must still filter"
+    );
+}
+
+/// The dict `DISTINCT` arm runs its loop locally for a whole-graph sweep and through
+/// `scan_visit` otherwise. Both must agree, so drive the same query down each branch — a
+/// deletion is what forces the second.
+#[test]
+fn distinct_agrees_whether_or_not_the_scan_covers_the_whole_graph() {
+    let mut store = dedup_absent_fixture();
+    let q = "MATCH (n:P) RETURN DISTINCT n.dept AS d";
+    let whole = first_col(&store, q, false);
+    assert_eq!(whole.len(), 4, "three depts plus a null: {whole:?}");
+
+    // Delete the only node without a `dept`. The label bucket no longer covers every
+    // node, so the sweep takes the other branch — and the null must be gone.
+    store.delete_node(39);
+    let partial = first_col(&store, q, false);
+    assert_eq!(
+        partial,
+        whole
+            .iter()
+            .filter(|v| *v != "Null")
+            .cloned()
+            .collect::<Vec<_>>(),
+        "the two sweep branches disagreed"
+    );
+    // Gremlin's spelling is unaffected either way — it never saw the absent node.
+    assert_eq!(
+        first_col(&store, "g.V().hasLabel('P').values('dept').dedup()", true).len(),
+        3
+    );
+}

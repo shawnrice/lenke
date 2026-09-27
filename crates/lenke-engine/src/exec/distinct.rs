@@ -763,17 +763,45 @@ pub(super) fn try_distinct_scan_prop(input: &Plan, store: &Store) -> Option<Batc
             // during the scan (NOT dict order, which can differ from scan order under
             // deletes / a label subset).
             let mut seen = vec![false; dict.len()];
-            scan_visit(store, label, |i| {
-                if present[i] {
-                    let c = codes[i] as usize;
-                    if !std::mem::replace(&mut seen[c], true) {
-                        out.push(Value::Str(dict[c].clone()));
+            // The whole-graph case runs the loop HERE rather than through `scan_visit`.
+            // Not a style choice: with the body in a closure the compiler keeps neither the
+            // `seen` bitset nor the bounds checks in hand, and `RETURN DISTINCT n.dept` over
+            // 100k nodes measured 148.1us against 85.8us for the identical loop written out
+            // (E79). Two tidier fixes were tried on `scan_visit` itself and REJECTED:
+            // rewriting its `for_each(&mut f)` as plain loops changed nothing (164.0us), and
+            // `#[inline(always)]` on it made `count(DISTINCT n.dept)` WORSE, 80.6us to
+            // ~148us. Only the local loop moves it, so only the local loop is here, and only
+            // on the `Dict` arm, which is the one measured.
+            let n = store.node_count();
+            let whole = store.live_node_count() == n
+                && label
+                    .as_ref()
+                    .is_none_or(|l| store.nodes_with_label(l).len() == n);
+            if whole {
+                for i in 0..n {
+                    if present[i] {
+                        let c = codes[i] as usize;
+                        if !std::mem::replace(&mut seen[c], true) {
+                            out.push(Value::Str(dict[c].clone()));
+                        }
+                    } else if !saw_null {
+                        saw_null = true;
+                        out.push(Value::Null);
                     }
-                } else if !saw_null {
-                    saw_null = true;
-                    out.push(Value::Null);
                 }
-            });
+            } else {
+                scan_visit(store, label, |i| {
+                    if present[i] {
+                        let c = codes[i] as usize;
+                        if !std::mem::replace(&mut seen[c], true) {
+                            out.push(Value::Str(dict[c].clone()));
+                        }
+                    } else if !saw_null {
+                        saw_null = true;
+                        out.push(Value::Null);
+                    }
+                });
+            }
         }
         Column::Num { data, present, .. } => {
             // Low-card integer fast path: recover the distinct values from a bitset
