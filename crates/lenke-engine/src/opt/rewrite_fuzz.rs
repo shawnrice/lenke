@@ -454,6 +454,58 @@ fn index_all(store: &mut Store) {
     store.create_interval_index("lo", "hi");
 }
 
+/// Put the store into one of the FOUR states `for_each_nbr` dispatches a single-type hop
+/// on. Which one it takes is decided by store configuration, not by the plan, so a fixture
+/// that is always in the same state tests one branch and silently skips three.
+///
+/// The fixture was in exactly that position: measured with a scratch probe, every fuzz run
+/// had `has_multi_label_edges() == false`, `has_edge_type_index() == false`, and
+/// `out_typed_csr(..) == None` — the overlay is dropped by `delete_node`, which the fixture
+/// does, and nothing rebuilt it. So the only path ever exercised was the flat scan, and the
+/// per-type CSR path — which is now the PRIMARY one — had no coverage at all.
+///
+/// The four states, in the order `for_each_nbr` tries them:
+///
+///   0. fresh CSR overlay          → the per-type CSR span
+///   1. stale CSR + edge-type index → the index bucket fallback
+///   2. stale CSR, no index         → the flat scan (what the fixture used to be, always)
+///   3. a multi-label edge          → the flat scan WITH the secondary-label probe
+///
+/// State 3 draws its secondary labels from `ETYPES`, so a generated `-[:T2]->` really can
+/// match an edge whose PRIMARY type is `T1`. Tagging them with a label no predicate asks
+/// for would exercise the branch without testing what it decides.
+fn configure_adjacency(store: &mut Store, state: u64) {
+    match state % 4 {
+        0 => store.rebuild_csr(),
+        1 => store.create_edge_type_index(),
+        2 => {}
+        _ => {
+            for eid in (0..store.edge_count() as u32).step_by(3) {
+                let extra = ETYPES[(eid as usize + 1) % ETYPES.len()];
+                store.set_edge_extra_labels(eid, &[extra]);
+            }
+            // Fresh overlay too, so the per-type structures are actually available to any
+            // path that reads them without checking `has_multi_label_edges` first.
+            store.rebuild_csr();
+
+            // HONEST LIMIT OF THIS STATE, measured rather than assumed. It RUNS code the
+            // fixture never ran before — the flat scan's secondary-label probe — but
+            // raw-vs-optimized cannot JUDGE that code, and two poisons confirm it:
+            // removing the secondary probe from `for_each_nbr`, and removing
+            // `slice_degree`'s multi-label bail, both leave every seed passing. The reason
+            // is structural: a bug in a primitive both plans share changes both answers
+            // identically, and a bug in a fast path that both plans qualify for does too.
+            // This oracle only sees a fast path disagreeing with ENUMERATION, which needs
+            // the optimizer to change which of the two applies.
+            //
+            // The multi-label class therefore belongs to the TS-vs-native byte-identity
+            // fuzzers, which is where the `algo.rs` primary-label bug was in fact found.
+            // Kept here anyway because exercising the branch costs nothing and a future
+            // fast path could well create the asymmetry this oracle can see.
+        }
+    }
+}
+
 /// A predicate reading exactly `slot`, in one of the forms the planner recognizes.
 ///
 /// The variety here is the point, and it targets the bug class this repo has been bitten
@@ -1601,6 +1653,9 @@ fn optimizing_preserves_rows_across_fixtures() {
         let mut store = fixture(fixture_seed);
         store.create_range_index("age");
         store.create_index("name");
+        // …and vary the ADJACENCY DISPATCH state, which the plan cannot reach: the four
+        // states cycle every four fixture seeds. See `configure_adjacency`.
+        configure_adjacency(&mut store, fixture_seed);
 
         for seed in 0..(seed_count() / 16).max(1) {
             check(
