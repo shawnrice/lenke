@@ -6791,3 +6791,123 @@ fn a_multi_hop_frontier_label_count_keeps_its_multiplicities() {
     assert_eq!(c, rows as f64, "count disagreed with enumeration");
     assert_eq!(c, 3.0, "a->m0->z0 twice (parallel a->m0) plus a->m1->z0");
 }
+
+/// The row evaluator's `IsLabeled` has two implementations — a membership bitset and a
+/// per-row `binary_search` of the label buckets — plus a short-circuit for a label every
+/// live node carries. All three must agree, so this compares each against the same
+/// reference (`store.is_labeled` per surviving row) at frontier sizes chosen to land on
+/// either side of the cost threshold, which is the only thing that picks between them.
+#[cfg(test)]
+fn label_threshold_fixture(seeds: usize) -> Store {
+    let mut b = Builder::default();
+    // 2,000 nodes so `node_count / 4` is a meaningful term in the bitset's cost; `Tag`
+    // covers half of them, `Node` all of them (the tautology case).
+    for i in 0..2_000u32 {
+        let labels: &[&str] = if i % 2 == 0 {
+            &["Node", "Tag"]
+        } else {
+            &["Node"]
+        };
+        b.node(
+            labels,
+            &[
+                ("n", Value::Num(f64::from(i))),
+                // Only the first `seeds` nodes are seedable, which sets the frontier size.
+                (
+                    "k",
+                    Value::Str(if (i as usize) < seeds { "go" } else { "no" }.into()),
+                ),
+            ],
+        );
+    }
+    // A deterministic spread of out-edges so the frontier is not all one label.
+    let mut x = 12_345u64;
+    for i in 0..2_000u32 {
+        for _ in 0..3 {
+            x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            b.edge(i, ((x >> 33) as u32) % 2_000, "R");
+        }
+    }
+    let mut store = b.build();
+    store.create_index("k");
+    store
+}
+
+#[test]
+fn both_is_labeled_implementations_agree_with_a_per_row_probe() {
+    // 5 seeds puts the frontier below the threshold (probe); 900 puts it well above
+    // (bitset). If the threshold ever moves, these still both have to be correct.
+    for seeds in [5usize, 900] {
+        let store = label_threshold_fixture(seeds);
+        for label in ["Tag", "Node"] {
+            let q = |frontier: &str| {
+                crate::opt::optimize_indexed(
+                    crate::gql::parse(&format!(
+                        "MATCH (a:Node)-[:R]->{frontier} WHERE a.k = 'go' RETURN b.n AS n"
+                    ))
+                    .unwrap(),
+                    &store,
+                )
+            };
+            let nums = |plan: &Plan| -> Vec<f64> {
+                let mut v: Vec<f64> = run(plan, &store)
+                    .rows
+                    .iter()
+                    .map(|r| match r[0] {
+                        Value::Num(x) => x,
+                        ref other => panic!("not numeric: {other:?}"),
+                    })
+                    .collect();
+                v.sort_by(|a, b| a.total_cmp(b));
+                v
+            };
+            // Reference: the UNLABELLED frontier, filtered per row by the store itself.
+            let want: Vec<f64> = {
+                let mut v: Vec<f64> = nums(&q("(b)"))
+                    .into_iter()
+                    .filter(|&x| store.is_labeled(x as u32, label))
+                    .collect();
+                v.sort_by(|a, b| a.total_cmp(b));
+                v
+            };
+            assert_eq!(
+                nums(&q(&format!("(b:{label})"))),
+                want,
+                "label {label} at {seeds} seeds disagreed with a per-row probe"
+            );
+            assert!(!want.is_empty(), "the case would pass vacuously");
+        }
+    }
+}
+
+/// The tautology short-circuit answers without consulting any bucket, so it has to keep
+/// the one thing the membership test did for free: an OPTIONAL miss carries the `u32::MAX`
+/// sentinel and is NOT labelled, whatever labels the graph has. Tested at the evaluator,
+/// because GQL has no `WHERE`-clause label predicate — `IsLabeled` reaches a slot that can
+/// hold a sentinel only through a lowered pattern label or Gremlin `hasLabel`, and building
+/// the batch directly is what actually pins the sentinel rule.
+#[test]
+fn a_universal_label_still_rejects_an_optional_miss() {
+    let mut b = Builder::default();
+    // Every live node carries `Node`, so `hasLabel('Node')` is a tautology and the
+    // short-circuit fires. `Tag` covers one, so the bucket path also gets a turn.
+    let a = b.node(&["Node", "Tag"], &[]);
+    let c = b.node(&["Node"], &[]);
+    let store = b.build();
+
+    // A frontier holding two real ids and one OPTIONAL miss.
+    let batch = Batch::of(vec![Col::Nodes(vec![a, c, u32::MAX])]);
+    for (label, want) in [
+        ("Node", vec![true, true, false]),
+        ("Tag", vec![true, false, false]),
+    ] {
+        let pred = Expr::IsLabeled {
+            slot: 0,
+            labels: vec![label.to_string()],
+        };
+        match crate::exec::evaluator::eval(&pred, &store, &batch).expect("evaluates") {
+            Col::Bool(got) => assert_eq!(got, want, "hasLabel({label}) over a padded frontier"),
+            other => panic!("expected Bool, got {other:?}"),
+        }
+    }
+}

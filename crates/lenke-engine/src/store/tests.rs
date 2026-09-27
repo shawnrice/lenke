@@ -1385,3 +1385,69 @@ fn rollback_reverts_schema_created_in_a_transaction() {
         "tx-created constraint reverted"
     );
 }
+
+/// `live_node_count` is now an O(1) read of a maintained counter rather than a sweep of
+/// the tombstone bitmap, because the row evaluator's `hasLabel` asks per ROW (spotting a
+/// label that covers the whole graph) and a 100k-bool scan there cost 3us a call.
+///
+/// A cached counter is wrong the moment a write path forgets to maintain it, so this
+/// walks the reachable write paths and compares the cache against a fresh recount after
+/// each step. What it actually pins, verified by mutation: the UNSET on rollback of a
+/// delete (dropping that decrement turns this test red). Two other sites cannot be
+/// reached — `delete_node` early-returns on an already-deleted node, so the increment
+/// there is unconditional, and undo replay clears a tombstone before the matching pop, so
+/// the pop never sees one. Both are noted at their sites rather than guarded blindly.
+#[test]
+fn the_cached_live_node_count_tracks_every_tombstone_write() {
+    let mut s = Store::default();
+    let check = |s: &Store, expect: usize, at: &str| {
+        assert_eq!(s.live_node_count(), expect, "live count at {at}");
+        assert_eq!(
+            s.live_node_count(),
+            s.recount_live_nodes(),
+            "cache disagreed with the bitmap at {at}"
+        );
+    };
+    check(&s, 0, "empty");
+
+    let a = s.add_node(&["N"], &[]);
+    let b = s.add_node(&["N"], &[]);
+    let c = s.add_node(&["N"], &[]);
+    check(&s, 3, "three added");
+
+    s.delete_node(b);
+    check(&s, 2, "one deleted");
+    // Deleting twice is a no-op (an early return), so the count must not move.
+    s.delete_node(b);
+    check(&s, 2, "deleted again");
+
+    // A ROLLED-BACK delete restores the node, which unsets a tombstone.
+    s.begin();
+    s.delete_node(a);
+    check(&s, 1, "inside the tx");
+    s.rollback();
+    check(&s, 2, "after rollback of a delete");
+
+    // A ROLLED-BACK insert pops a slot off the bitmap.
+    s.begin();
+    let d = s.add_node(&["N"], &[]);
+    check(&s, 3, "inside the tx, one added");
+    s.rollback();
+    check(&s, 2, "after rollback of an insert");
+
+    // And a rolled-back insert of a node that was then deleted in the same tx: the pop
+    // removes a slot whose tombstone was SET, so the counter has to come back down.
+    s.begin();
+    let e = s.add_node(&["N"], &[]);
+    s.delete_node(e);
+    check(&s, 2, "added then deleted inside the tx");
+    s.rollback();
+    check(&s, 2, "after rollback of add-then-delete");
+
+    // Committed work keeps the count.
+    s.begin();
+    s.delete_node(c);
+    s.commit();
+    check(&s, 1, "after a committed delete");
+    let _ = (d, e);
+}

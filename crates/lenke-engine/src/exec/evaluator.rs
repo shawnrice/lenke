@@ -1366,13 +1366,39 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
                 labels.iter().map(|l| store.nodes_with_label(l)).collect();
             match batch.slot(*slot) {
                 Col::Nodes(ids) => {
-                    // Large frontier (a mid-traversal `hasLabel` after a hop, often WITH
-                    // multiplicity): build a membership BITSET once — O(total wanted
-                    // membership) — and test each row O(1), instead of N cache-hostile
-                    // binary searches into the buckets. Small frontiers keep the probe
-                    // (building the bitset would cost more than a few searches).
+                    // `IsLabeled` is ANY-of, so a label that every LIVE node carries makes
+                    // this a tautology: no bitset, no probe, just the sentinel check that
+                    // an OPTIONAL miss (`u32::MAX`) is still not labelled. Buckets hold
+                    // only live ids, so the test is a length comparison. Measured
+                    // projecting a hop's frontier on a 100k-node graph where every node is
+                    // a `Person`: 148.7us -> 63.9us at a 1%-selective seed, 1194.0us ->
+                    // 508.1us at 10% (E78).
+                    let live = store.live_node_count();
+                    if live > 0 && node_buckets.iter().any(|b| b.len() == live) {
+                        return Ok(Col::Bool(ids.iter().map(|&id| id != u32::MAX).collect()));
+                    }
+                    // Otherwise: a membership BITSET, built once and tested O(1) a row,
+                    // against a `binary_search` of the label buckets per row. Which is
+                    // cheaper depends on three measured costs, not one ratio — the old rule
+                    // was `rows >= total_bucket`, which priced a probe as ONE fill entry and
+                    // so declined the bitset on frontiers where it wins by 2.2x:
+                    //
+                    //   ```text
+                    //   label covering 50%, 5,000-row frontier    122.4us -> 61.6us  2.0x
+                    //   label covering 50%, 45,000-row frontier  1393.7us -> 454.8us 3.1x
+                    //   label covering 1%, 55-row frontier         28.9us -> 29.6us  flat
+                    //   ```
+                    //
+                    // The 55-row row is the guard, not a win: it must keep probing. Forcing
+                    // the bitset there costs ~3us, which is the `vec![false; node_count]`
+                    // allocation alone — so the node count has to be in the estimate.
+                    // Costs below are in TENTHS of a nanosecond, each read off the rows
+                    // above at 100k nodes: a probe ~19ns a row; the allocation ~2.5us per
+                    // 100k nodes; a fill ~0.34ns an id.
                     let total_bucket: usize = node_buckets.iter().map(|b| b.len()).sum();
-                    if ids.len() >= 1024 && ids.len() >= total_bucket {
+                    let probe_cost = ids.len().saturating_mul(190);
+                    let bitset_cost = store.node_count() / 4 + total_bucket.saturating_mul(3);
+                    if probe_cost >= bitset_cost {
                         let mut member = vec![false; store.node_count()];
                         for b in &node_buckets {
                             for &id in *b {

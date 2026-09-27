@@ -1945,6 +1945,88 @@ fn main() {
             }
         }
     }
+
+    // E78 ------------------------------------------------------------------
+    //
+    // E77 folded the frontier `hasLabel` for a `count(*)`. This is the same label test on
+    // the PROJECTION path, which runs through the row evaluator and so covers every
+    // `hasLabel` the engine evaluates, not just counts.
+    //
+    // The evaluator has two implementations — a membership bitset, and a `binary_search`
+    // of the label buckets per row — and picked between them with `rows >= total_bucket`,
+    // which prices a probe as ONE bitset-fill entry. A probe is ~19ns a row; a fill entry
+    // is ~0.34ns. So the bitset was being declined on frontiers where it wins outright.
+    // On top of that, a label every LIVE node carries is a tautology and needs neither.
+    //
+    // Three label sizes, because they take three different paths and the fix for one is
+    // not the fix for another:
+    //
+    //   * `Person`   every node          -> the tautology short-circuit
+    //   * `Half`     50% of nodes        -> big enough that the old rule refused the bitset
+    //   * `Tagged`   1% of nodes         -> small frontier, probe is genuinely right
+    //
+    // The `Tagged` rows are the guard: they must NOT regress. An earlier attempt to force
+    // the bitset unconditionally cost them, and so did computing `live_node_count` per row
+    // before it became O(1).
+    section("E78: what does a mid-traversal hasLabel cost a projection?");
+
+    {
+        const N: u32 = 100_000;
+        let tagged = |every: u32| -> lenke_engine::store::Store {
+            let mut b = lenke_engine::store::Builder::default();
+            for i in 0..N {
+                let labels: &[&str] = if i % every == 0 {
+                    &["Person", "Tagged", "Half"]
+                } else {
+                    &["Person"]
+                };
+                b.node(
+                    labels,
+                    &[
+                        (
+                            "name",
+                            lenke_engine::value::Value::Str(format!("n{i}").into()),
+                        ),
+                        ("age", lenke_engine::value::Value::Num(f64::from(i % 100))),
+                    ],
+                );
+            }
+            let mut rng = harness::Lcg::seeded();
+            for i in 0..N {
+                for _ in 0..5 {
+                    b.edge(i, rng.next(N), "KNOWS");
+                }
+            }
+            let mut store = b.build();
+            store.create_range_index("age");
+            store
+        };
+        let sparse = tagged(100); // Tagged = 1%
+        let half = tagged(2); // Half = 50%
+
+        println!("  before this change, min of 3 at the same sizes:");
+        println!("    1% seed:   (b) 52.8   (b:Person) 148.7  (b:Half) 122.4   (b:Tagged) 28.9");
+        println!("    10% seed:  (b) 449.9  (b:Person) 1194.0 (b:Half) 1393.7  (b:Tagged) 232.1");
+        println!("  {:<46} {:>9} {:>9}", "query", "us", "rows");
+        for (seed, bound) in [("1% seed", 98.0), ("10% seed", 90.0), ("all", -1.0)] {
+            for frontier in ["(b)", "(b:Person)", "(b:Half)", "(b:Tagged)"] {
+                let store = if frontier == "(b:Half)" {
+                    &half
+                } else {
+                    &sparse
+                };
+                let q = format!(
+                    "MATCH (a:Person)-[:KNOWS]->{frontier} WHERE a.age > {bound} RETURN b.name AS n"
+                );
+                if let Ok((us, rows)) = harness::time_query(&q, false, store, cfg.reps.min(3)) {
+                    println!(
+                        "  {:<46} {us:>9.1} {rows:>9}",
+                        format!("{seed}: {frontier}")
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// The optimized plan as an operator chain, for printing next to a measurement.

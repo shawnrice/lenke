@@ -1240,6 +1240,13 @@ pub struct Store {
     /// dense and never reused) but is skipped by every scan and carries no edges
     /// or properties. `deleted.len() == node_count`.
     deleted: Vec<bool>,
+    /// how many entries of `deleted` are `true`, maintained on every write to it, so
+    /// [`Self::live_node_count`] is O(1). It used to count the bitmap on each call, which
+    /// is fine once a query but not once a ROW: the row evaluator's `hasLabel` asks for it
+    /// to spot a label covering the whole graph, and a 100k-bool scan there cost 3us a
+    /// call. `deleted` is written in exactly five places (two pushes, one set, one pop,
+    /// one init); each maintains this.
+    deleted_count: usize,
     /// the active transaction's undo log, or `None` outside a transaction
     /// (autocommit — mutations apply directly and record nothing).
     undo: Option<Vec<Undo>>,
@@ -1420,6 +1427,7 @@ impl Clone for Store {
             edge_ext: self.edge_ext.clone(),
             ext_to_node: self.ext_to_node.clone(),
             deleted: self.deleted.clone(),
+            deleted_count: self.deleted_count,
             undo: self.undo.clone(),
             changes: self.changes.clone(),
             last_commit: self.last_commit.clone(),
@@ -1844,10 +1852,22 @@ impl Store {
     }
 
     /// The number of LIVE nodes — `count(*)` over an unlabelled scan without
-    /// materializing the id vector. O(n) over the tombstone bitmap (no allocation);
-    /// deletions are rare, so the common all-live case is a fast bitmap sweep.
+    /// materializing the id vector. O(1): the tombstone count is maintained on every
+    /// write to the bitmap (see `deleted_count`), because this is asked per ROW on the
+    /// row evaluator's `hasLabel` path, not just once a query.
     #[must_use]
     pub fn live_node_count(&self) -> usize {
+        self.node_count - self.deleted_count
+    }
+
+    /// Recount the tombstone bitmap from scratch. Only for the invariant test that the
+    /// cached `deleted_count` still agrees with the bitmap it summarizes — a cached
+    /// counter is wrong the moment a write path forgets to maintain it, and this store
+    /// writes `deleted` in six places (two pushes, a set, an UNSET on transaction undo,
+    /// a pop, and the initializer).
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn recount_live_nodes(&self) -> usize {
         self.node_count - self.deleted.iter().filter(|&&d| d).count()
     }
 
@@ -4108,6 +4128,9 @@ impl Store {
         for col in self.props.values_mut() {
             col.set_absent(i);
         }
+        // Unconditional: the early return above already bailed if `deleted[i]` was set,
+        // so this transition is always false -> true.
+        self.deleted_count += 1;
         self.deleted[i] = true;
 
         if self.edge_type_index {
@@ -4480,6 +4503,9 @@ impl Store {
                 props,
             } => {
                 let i = id as usize;
+                if self.deleted[i] {
+                    self.deleted_count -= 1;
+                }
                 self.deleted[i] = false;
                 // Restore mirrors on OTHER nodes; self-loops live in id's own
                 // lists and are restored by the assignments below.
@@ -4564,7 +4590,13 @@ impl Store {
         if let Some(ext) = self.node_ext.pop() {
             self.ext_to_node.remove(&ext);
         }
-        self.deleted.pop();
+        // Undo replay runs in reverse, so a node added AND deleted inside the transaction
+        // has its `RestoreNode` undo clear the tombstone before this pop reaches it, which
+        // makes `Some(true)` unreachable today. Guarded anyway so the counter does not
+        // depend on that ordering — the cost is one comparison on a rollback.
+        if self.deleted.pop() == Some(true) {
+            self.deleted_count -= 1;
+        }
         self.node_count -= 1;
     }
 }
@@ -4667,6 +4699,7 @@ impl Builder {
             edge_ext,
             ext_to_node,
             deleted: vec![false; n],
+            deleted_count: 0,
             undo: None,
             changes: None,
             last_commit: Vec::new(),
