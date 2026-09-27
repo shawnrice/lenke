@@ -1689,40 +1689,91 @@ fn optimizing_preserves_rows_across_fixtures() {
     }
 }
 
-/// Above `SEEK_FLOOR_NODES` (4,096), where the seek-vs-scan gate actually decides.
+/// Sweep the GRAPH SIZE, straddling `SEEK_FLOOR_NODES`.
 ///
-/// DIVERSITY COVERAGE, and labelled as such. The gate changes which plans seed — measured,
-/// 318 plans per 2,000 contain a seek at 24 nodes against 158 at 5,000 — so the plan PAIRS
-/// compared here are different from the ones the small fixtures produce, and a rewrite that
-/// is wrong only when a seed is DECLINED can only be caught here. That is the same
-/// justification `optimizing_preserves_rows_across_fixtures` runs on: a single fixture can
-/// hide a rewrite that is only wrong at a particular density.
+/// This is not one more axis of variety — it is two different planners. Below the floor
+/// `seek_beats_scan` returns `true` unconditionally, so every seedable predicate seeds;
+/// above it the selectivity gate decides and roughly half of them are declined (measured:
+/// 318 plans per 2,000 contain a seek at 24 nodes against 158 at 5,000). The rewrites that
+/// fire, and therefore the plan pairs being compared, differ between the two regimes.
 ///
-/// WHAT IT DOES NOT COVER, established by injecting panics rather than assumed:
+/// Everything else in this file runs at `NODES` = 24, so before this test ~75,000 plans a
+/// run were checked BELOW the cutover and ~400 above it. Real graphs are above it.
 ///
-///   * the gate itself. Seeding and declining are both CORRECT, so raw-vs-optimized cannot
-///     judge the decision — only run the alternative shape.
-///   * the selectivity PROBE. `seed_fraction` is already reached by every other test,
-///     because `orient_is_worth_it` consults it with no floor.
+/// THE SIZES ARE CHOSEN BY LIVE COUNT, not by raw count, because that is what the gate
+/// reads — and the fixture deletes one node in eleven, so 4,000 raw nodes is 3,637 live and
+/// would sit on the wrong side while looking like the right one. The straddle is asserted
+/// below rather than assumed.
+///
+/// Costs ~1.1us per node per plan, so the budgets are per-size rather than shared: equal
+/// TIME at each size, not equal plans. At the default seed count the whole test is a few
+/// seconds; `LENKE_OPT_FUZZ_SEEDS` scales it.
+/// WHAT THIS SWEEP DOES AND DOES NOT BUY, measured rather than assumed.
+///
+/// It buys: a few hundred plans a run in the above-cutover regime instead of ~400 at one
+/// size, scaling with `LENKE_OPT_FUZZ_SEEDS`; sizes that straddle the floor closely (4,000
+/// live against 4,546) so an off-by-one in the floor check is visible; and the host for
+/// `a_seek_is_chosen_exactly_when_the_predicate_is_selective`, which needs to be above it.
+///
+/// It does NOT buy a demonstrated correctness bug the 24-node tests miss. That was tried:
+/// a poison that drops a conjunct when no seed is taken was caught by the 24-node tests too,
+/// because the no-seed branch is shared with "the predicate was never seekable". Every
+/// property of the floor itself is a PERFORMANCE choice — both sides return the same rows —
+/// so this oracle cannot judge it, and the decision test above is what does. Treat the size
+/// sweep as diversity in a genuinely different planner regime, not as a guard with a name.
+///
+/// WHAT THE LARGE SIZES DO NOT COVER, each established by injecting a panic rather than
+/// assumed, and recorded here so it is not re-derived:
+///
+///   * the gate's DECISION. Seeding and declining are both correct, so raw-vs-optimized
+///     cannot judge it — that is what
+///     `a_seek_is_chosen_exactly_when_the_predicate_is_selective` is for.
+///   * the selectivity PROBE. `seed_fraction` is reached by every test in this file at any
+///     size, because `orient_is_worth_it` consults it with no floor.
 ///   * `exec/order.rs`'s 2,048-row block-streamed dedup and `exec.rs`'s 8,192-row streamed
 ///     projection. Neither is reachable from generated plans at ANY size: the first needs
-///     `streaming_chain` to accept the chain, and it has no arms for the `ShortestPath` /
+///     `streaming_chain` to accept the chain and it has no arms for the `ShortestPath` /
 ///     `RepeatGroup` / `OptionalExpand` hops the generator mixes in; the second is
-///     cost-gated and never entered. Both are named coverage holes with a reason, not
-///     something a bigger fixture fixes.
-///
-/// Fewer seeds than the other tests on purpose — a 9,000-node graph makes each plan
-/// meaningfully more expensive, and the point here is the size, not the count.
+///     cost-gated and never entered. Named holes with a reason, not something size fixes.
 #[test]
-fn optimizing_preserves_rows_across_block_boundaries() {
-    let mut store = fixture_sized(1, 9_000);
-    index_all(&mut store);
-    store.rebuild_csr();
+fn optimizing_preserves_rows_across_sizes() {
+    // (raw nodes, plans at the default seed count). 4,400 -> 4,000 live, just BELOW the
+    // 4,096 floor; 5,000 -> 4,546, just above; 9,000 -> 8,182, well above. Straddling it
+    // closely is the point: an off-by-one in the floor check shows up between the first two
+    // and nowhere else.
+    let sizes: [(u32, u64); 3] = [(4_400, 110), (5_000, 110), (9_000, 55)];
+    let scale = (seed_count() as f64 / 25_000.0).max(0.02);
 
-    let budget = (seed_count() / 100).clamp(40, 400);
-    for seed in 0..budget {
-        check(seed.wrapping_mul(7).wrapping_add(11), &store, true);
+    let mut below = 0;
+    let mut above = 0;
+    for (nodes, base_plans) in sizes {
+        let mut store = fixture_sized(1, nodes);
+        index_all(&mut store);
+        store.rebuild_csr();
+
+        let live = store.live_node_count();
+        if live < super::SEEK_FLOOR_NODES {
+            below += 1;
+        } else {
+            above += 1;
+        }
+
+        let plans = ((base_plans as f64 * scale).round() as u64).max(10);
+        for seed in 0..plans {
+            check(
+                seed.wrapping_mul(31).wrapping_add(u64::from(nodes)),
+                &store,
+                true,
+            );
+        }
     }
+
+    // The straddle, asserted so a future tweak to the sizes or the deletion rate cannot
+    // quietly move every fixture to one side of the cutover.
+    assert!(
+        below >= 1 && above >= 2,
+        "the sizes must straddle SEEK_FLOOR_NODES: {below} below, {above} above"
+    );
 }
 
 /// COVERAGE, not correctness: a generative test that never triggers the rewrite it was
