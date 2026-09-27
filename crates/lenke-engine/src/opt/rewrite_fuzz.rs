@@ -1971,7 +1971,16 @@ fn the_generator_actually_reaches_the_rewrites() {
     // Deliberately `> 0` and not a fraction. This intersection is THIN — exactly 5 of
     // these 2,000 deterministic seeds, against 3 before `gen_chain` began omitting the
     // far-side predicate — so a proportional floor would be a number picked to pass rather
-    // than a measurement. What is worth catching is the coverage going to ZERO, which is a
+    // than a measurement.
+    //
+    // REJECTED (2026-09-27): raising that density by making an intermediate predicate
+    // SEEKABLE half the time, which is what creates an interior pivot. Measured 8/2000
+    // against 5/2000 — three more plans, for a generator change that widens every chain in
+    // the suite. The shape is already poison-verified by two unit tests in `opt/tests.rs`
+    // (`an_expand_rooted_pattern_re_seeds_at_its_middle` and its three-hop sibling), so what
+    // extra fuzz plans would buy is combinations those two do not have, and three of them is
+    // not that. The same change was measured and rejected once before against a different
+    // metric (58/2000 against 54/2000 for splits generally); it is the same answer. What is worth catching is the coverage going to ZERO, which is a
     // generator change quietly removing the only plans that exercise the planner's
     // `Expand`-rooted arm. The counts are here so the next reader knows how thin it is.
     assert!(
