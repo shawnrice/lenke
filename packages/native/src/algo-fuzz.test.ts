@@ -93,9 +93,25 @@ const randomGraph = (r: () => number): { ndjson: string; ids: string[] } => {
   const addEdge = (a: string, b: string): void => {
     const w = pick(r, WEIGHTS);
     const props = r() < 0.85 ? `,"properties":{"w":${w}}` : '';
+    // Sometimes a SECOND label, drawn from the same set the `edgeLabel` configs pick
+    // from — so a config asking for `LIKES` really can hit an edge whose PRIMARY type is
+    // `KNOWS`. That is the exact shape of a fixed bug: the native algorithms filtered
+    // `edgeLabel` against an edge's primary type only, while queries and the TS engine
+    // consult the whole set, so one edge was visible to a query and invisible to
+    // `degree()`. Nothing here could generate a multi-label edge, so the generative side
+    // could not have caught it — the conformance suite got a hand-written fixture at the
+    // time, and this closes the gap behind it.
+    const primary = pick(r, ETYPES);
+    const labels =
+      r() < 0.25
+        ? `["${primary}","${pick(
+            r,
+            ETYPES.filter((t) => t !== primary),
+          )}"]`
+        : `["${primary}"]`;
 
     edges.push(
-      `{"type":"edge","id":"e${edges.length}","labels":["${pick(r, ETYPES)}"],"from":"${a}","to":"${b}"${props}}`,
+      `{"type":"edge","id":"e${edges.length}","labels":${labels},"from":"${a}","to":"${b}"${props}}`,
     );
   };
 
@@ -192,10 +208,13 @@ suite('algorithm differential: random graphs agree across engines', () => {
   test(`${ITERATIONS} random graphs x every algorithm x every config`, async () => {
     const findings: string[] = [];
     let checks = 0;
+    let multiLabelEdges = 0;
 
     for (let i = 0; i < ITERATIONS && findings.length === 0; i++) {
       const r = mulberry32(caseSeed(SEED_BASE, i));
       const { ndjson, ids } = randomGraph(r);
+      multiLabelEdges += (ndjson.match(/"labels":\["[^"]+","[^"]+"\]/g) ?? []).length;
+
       const tsG = tsDeserialize(ndjson, 'ndjson', new Graph());
       const natG = graphFromNdjson(ffi!, ndjson);
 
@@ -231,6 +250,13 @@ suite('algorithm differential: random graphs agree across engines', () => {
     }
 
     expect(checks).toBeGreaterThan(0);
+    // A FLOOR on the shape, not decoration. The whole reason this fuzzer generates a
+    // second edge label is that the fixed `algo.rs` bug — filtering `edgeLabel` against an
+    // edge's primary type only — is invisible without one, and reintroducing that bug does
+    // turn this test red. If a future change to `addEdge` drops the shape, the fuzzer goes
+    // back to passing over the bug it exists to catch, silently. At a quarter of edges over
+    // 25 graphs this is dozens per run, so requiring a handful cannot flake.
+    expect(multiLabelEdges).toBeGreaterThan(5);
 
     const report = findings.length
       ? `FUZZ_SEED=${SEED_BASE} bun test <this file> to reproduce:\n\n${findings.join('\n\n')}`
