@@ -160,6 +160,13 @@ const NILADIC: ReadonlySet<Step['kind']> = new Set([
   'identity',
   // `drop()` removes the current element(s); no arguments, emits nothing.
   'drop',
+  // The path filters. Both are niladic, and both are fully implemented on BOTH sides —
+  // TS in `executor/dispatch.ts`, native in `gremlin.rs` — so the only thing that could
+  // not handle them was this emitter. That cost the gremlin differential fuzzer 28 of
+  // every 400 plans, silently: a plan containing either step failed to render and was
+  // counted as "unbuildable" rather than compared.
+  'simplePath',
+  'cyclicPath',
 ] as const);
 
 /** A reducing aggregation that carries an optional `Scope.local` — emit the scope so a

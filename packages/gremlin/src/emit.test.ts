@@ -1,6 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 
 import {
+  path,
+  simplePath,
+  cyclicPath,
   addE,
   addV,
   as_,
@@ -82,4 +85,23 @@ describe('planToGremlin: write / tree family steps', () => {
       planToGremlin(traversal(V('1'), as_('s'), out('KNOWS'), addE('M').from('s').to(V('6')))),
     ).toBe("g.V('1').as('s').out('KNOWS').addE('M').from('s').to(V('6'))");
   });
+});
+
+describe('planToGremlin: the niladic path filters render', () => {
+  // Both steps are implemented on BOTH engines — TS in `executor/dispatch.ts`, native in
+  // `gremlin.rs` — but the emitter had no case for either, so it threw
+  // `unsupported: step simplePath`. The cost was invisible: the gremlin differential fuzzer
+  // treats an unrenderable plan as "unbuildable" and skips it, so 28 of every 400 plans were
+  // dropped before either engine saw them and the steps were never compared.
+  const cases: [string, ReturnType<typeof traversal>, string][] = [
+    ['simplePath', traversal(V(), out(), simplePath()), 'simplePath()'],
+    ['cyclicPath', traversal(V(), out(), cyclicPath()), 'cyclicPath()'],
+    ['simplePath then path', traversal(V(), out(), simplePath(), path()), 'simplePath().path()'],
+  ];
+
+  for (const [name, plan, expected] of cases) {
+    test(name, () => {
+      expect(planToGremlin(plan)).toContain(expected);
+    });
+  }
 });

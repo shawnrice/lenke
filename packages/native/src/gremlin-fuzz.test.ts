@@ -18,6 +18,9 @@ import { existsSync } from 'node:fs';
 
 import { Edge, isElement } from '@lenke/core';
 import {
+  isTsOnly,
+  cyclicPath,
+  in_,
   V,
   E,
   both,
@@ -532,16 +535,26 @@ const step = (r: () => number): unknown => {
   }
 
   if (p < 0.88) {
-    return range(Math.floor(r() * 2), Math.floor(r() * 4));
+    // The high bound must be >= the low one, or the step throws at BUILD time and the
+    // plan is dropped before either engine sees it — 6 of every 400 were being wasted that
+    // way. A zero-width window (`hi == lo`) is kept on purpose: it is legal, and the
+    // `ZERO_SLICE` guard below has a principled reason for skipping those.
+    const lo = Math.floor(r() * 2);
+
+    return range(lo, lo + Math.floor(r() * 3));
   }
 
   if (p < 0.91) {
     return order(pick(r, [Order.asc, Order.desc]));
   }
 
-  if (p < 0.94) {
-    return simplePath();
-  }
+  // NOT `simplePath()` here. Native supports it only "over a pure vertex-hop chain
+  // (V-source + out/in/both)" and says so with a coded error; the general pool would place
+  // it after `inE`, inside `coalesce`, or after `path()`, where TS's superset accepts it and
+  // native rejects it. That is a capability gap already tracked in the deferred-feature
+  // backlog, not something this fuzzer can decide, and generating it would bury the step's
+  // real coverage under noise. `pureVertexChain` below generates it where BOTH engines
+  // implement it.
 
   if (p < 0.97) {
     return path();
@@ -585,7 +598,31 @@ const terminal = (r: () => number): unknown[] => {
   return [];
 };
 
+/**
+ * A V-source followed only by vertex hops, then `simplePath()` or `cyclicPath()` — the one
+ * position native implements those two in. Worth its own shape because they are otherwise
+ * untested end-to-end: the emitter could not render them at all until this pass, so 28 of
+ * every 400 plans were dropped before either engine saw them, and the step was never
+ * compared.
+ */
+const pureVertexChain = (r: () => number): Plan => {
+  const hops = 1 + Math.floor(r() * 3);
+  const steps = Array.from({ length: hops }, () =>
+    pick(r, [() => out(), () => in_(), () => both()])(),
+  );
+  const filter = r() < 0.5 ? simplePath() : cyclicPath();
+  const tail = r() < 0.5 ? [path()] : [count()];
+
+  return traversal(V(), ...(steps as never[]), filter, ...(tail as never[]));
+};
+
 const genPlan = (r: () => number): Plan => {
+  // One in eight plans is the pure vertex-hop shape, so the path filters get real
+  // end-to-end coverage without crowding out everything else.
+  if (r() < 0.125) {
+    return pureVertexChain(r);
+  }
+
   const start = r() < 0.8 ? V() : E();
   const n = 1 + Math.floor(r() * 4);
   // A branch step in about a fifth of plans. Kept to at most one per plan: two
@@ -649,14 +686,33 @@ suite('differential fuzz: gremlin (TS engine vs Rust ENGINE)', () => {
       try {
         plan = genPlan(r);
         text = planToGremlin(plan);
-      } catch {
-        // A kind that cannot cross the text boundary — by design. COUNTED,
-        // because this also swallows a step the builder simply refuses to
-        // construct, and those two are indistinguishable here. `order(desc)`
-        // threw for years ("Expected Scope.local or Scope.global"), so every
-        // plan the generator gave a direction to was dropped and the step was
-        // never compared against native at all.
-        skippedUnbuildable += 1;
+      } catch (e) {
+        // CLASSIFY, rather than swallow. Two very different things land here:
+        //
+        //   * a kind that cannot cross the text boundary by design — a closure, a
+        //     non-finite literal — which only exists in the TS superset and has no native
+        //     form. `isTsOnly` identifies exactly those, and the emitter exports it saying
+        //     "so the runner can classify (tsOnly) vs surface (emitter gap)". The runner
+        //     never did.
+        //   * an EMITTER GAP, or a step the builder refuses to construct. Those are lost
+        //     coverage wearing a skip's clothing. `order(desc)` threw for years ("Expected
+        //     Scope.local or Scope.global"), so every plan the generator gave a direction
+        //     to was dropped and the step was never compared against native at all. The
+        //     emitter was also missing `simplePath`/`cyclicPath` — both fully implemented
+        //     on BOTH sides — which cost 28 of every 400 plans until this check surfaced
+        //     them.
+        //
+        // So the first is a skip and the second is a FINDING.
+        if (isTsOnly(e)) {
+          skippedUnbuildable += 1;
+
+          continue;
+        }
+
+        divergences.push(
+          `[seed ${caseSeed(SEED, i)}] a plan could not be BUILT, which is a generator or ` +
+            `emitter gap rather than a skip: ${(e as Error).message}`,
+        );
 
         continue;
       }
