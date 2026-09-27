@@ -373,10 +373,16 @@ const NODES: u32 = 24;
 /// selecting under ~15% of the graph, so without tight bounds the rewrite under test
 /// would simply decline and the fuzzer would cover nothing.
 fn fixture(seed: u64) -> Store {
+    fixture_sized(seed, NODES)
+}
+
+/// The same fixture at an arbitrary node count, so a test can cross the size thresholds the
+/// 24-node default never reaches. See `optimizing_preserves_rows_across_block_boundaries`.
+fn fixture_sized(seed: u64, nodes: u32) -> Store {
     let mut rng = Lcg(seed ^ 0x9E37_79B9_7F4A_7C15);
     let mut b = Builder::default();
 
-    for i in 0..NODES {
+    for i in 0..nodes {
         let mut labels: Vec<&str> = vec!["Node"];
         if i % 2 == 0 {
             labels.push("Half"); // 50%
@@ -405,9 +411,9 @@ fn fixture(seed: u64) -> Store {
         b.node(&labels, &props);
     }
 
-    for i in 0..NODES {
+    for i in 0..nodes {
         for _ in 0..(2 + rng.below(2)) {
-            let dst = rng.below(NODES as usize) as u32;
+            let dst = rng.below(nodes as usize) as u32;
             b.edge(i, dst, ETYPES[rng.below(ETYPES.len())]);
         }
     }
@@ -428,7 +434,7 @@ fn fixture(seed: u64) -> Store {
     // must agree — a seek that forgets the tombstone check returns rows the scan does
     // not, which is exactly the kind of divergence a hand-written fixture never has,
     // because hand-written fixtures are freshly built.
-    for i in 0..NODES {
+    for i in 0..nodes {
         if i % 11 == 7 {
             store.delete_node(i);
         }
@@ -1307,6 +1313,22 @@ fn gen_plan_one(rng: &mut Lcg) -> Plan {
     // unreachable — verified by instrumenting it, and a mutation of that branch went
     // uncaught until this shape existed.
     if rng.chance(1, 5) {
+        // REJECTED (2026-09-27): also generating `Plan::DistinctBy`, Gremlin's
+        // `dedup('a','b')`, which the generator has never emitted. Two reasons, both
+        // measured:
+        //
+        //   * With a PARTIAL key it is order-sensitive — it keeps the first row per key, and
+        //     the optimizer may legitimately change arrival order — so the result is
+        //     genuinely unspecified and raw-vs-optimized reports FALSE failures. It did
+        //     immediately (seed 7220 returned group `n4` raw against `n3` optimized).
+        //     Confirmed as order-sensitivity and not a pushdown bug: with the key covering
+        //     every slot, which makes it content-stable, all seeds pass.
+        //   * With a FULL key it is oracle-invisible. `DistinctBy` is a node the optimizer
+        //     does not rewrite, so it appears identically on both sides and any bug in it
+        //     changes both answers equally — poisoning `distinct_by_keep` to dedup nothing
+        //     leaves every seed passing.
+        //
+        // The shape belongs to a differential (TS-vs-native) oracle, not to this one.
         g.plan = Plan::Distinct {
             input: Box::new(g.plan),
         };
@@ -1664,6 +1686,42 @@ fn optimizing_preserves_rows_across_fixtures() {
                 true,
             );
         }
+    }
+}
+
+/// Above `SEEK_FLOOR_NODES` (4,096), where the seek-vs-scan gate actually decides.
+///
+/// DIVERSITY COVERAGE, and labelled as such. The gate changes which plans seed — measured,
+/// 318 plans per 2,000 contain a seek at 24 nodes against 158 at 5,000 — so the plan PAIRS
+/// compared here are different from the ones the small fixtures produce, and a rewrite that
+/// is wrong only when a seed is DECLINED can only be caught here. That is the same
+/// justification `optimizing_preserves_rows_across_fixtures` runs on: a single fixture can
+/// hide a rewrite that is only wrong at a particular density.
+///
+/// WHAT IT DOES NOT COVER, established by injecting panics rather than assumed:
+///
+///   * the gate itself. Seeding and declining are both CORRECT, so raw-vs-optimized cannot
+///     judge the decision — only run the alternative shape.
+///   * the selectivity PROBE. `seed_fraction` is already reached by every other test,
+///     because `orient_is_worth_it` consults it with no floor.
+///   * `exec/order.rs`'s 2,048-row block-streamed dedup and `exec.rs`'s 8,192-row streamed
+///     projection. Neither is reachable from generated plans at ANY size: the first needs
+///     `streaming_chain` to accept the chain, and it has no arms for the `ShortestPath` /
+///     `RepeatGroup` / `OptionalExpand` hops the generator mixes in; the second is
+///     cost-gated and never entered. Both are named coverage holes with a reason, not
+///     something a bigger fixture fixes.
+///
+/// Fewer seeds than the other tests on purpose — a 9,000-node graph makes each plan
+/// meaningfully more expensive, and the point here is the size, not the count.
+#[test]
+fn optimizing_preserves_rows_across_block_boundaries() {
+    let mut store = fixture_sized(1, 9_000);
+    index_all(&mut store);
+    store.rebuild_csr();
+
+    let budget = (seed_count() / 100).clamp(40, 400);
+    for seed in 0..budget {
+        check(seed.wrapping_mul(7).wrapping_add(11), &store, true);
     }
 }
 
