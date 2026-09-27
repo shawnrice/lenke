@@ -944,6 +944,15 @@ fn gen_chain(rng: &mut Lcg, hops: usize) -> Gen {
         // An INTERMEDIATE filter on the hop's endpoint — the one that has to travel
         // with its own hop through a reversal, and whose misplacement was the two-hop
         // bug. Deep chains always get one, to keep the frontier from exploding.
+        //
+        //
+        // REJECTED (2026-09-27): also making this predicate SEEKABLE sometimes, to create
+        // an interior pivot for the mid-pattern split on purpose. It is not needed and it
+        // does not help — the shape already arrives via pushdown, which relocates a
+        // seekable conjunct of a mixed `And` onto an interior slot. Measured density of
+        // optimized plans containing a split, 58/2000 with the change against 54/2000
+        // without, and the poison that matters (crossing the split's right branch) is
+        // caught by this fuzzer either way.
         if h + 1 < hops && (deep || rng.chance(1, 2)) {
             g.plan = g.plan.filter(gen_pred(rng, g.width - 1, deep));
         }
@@ -1643,6 +1652,7 @@ fn the_generator_actually_reaches_the_rewrites() {
     let (mut bound_edge, mut interval) = (0, 0);
     let (mut paged, mut num_agg, mut unions) = (0, 0, 0);
     let (mut shortest, mut repeat_group, mut optional) = (0, 0, 0);
+    let mut split = 0;
     let n = 2_000;
 
     for seed in 0..n {
@@ -1685,6 +1695,44 @@ fn the_generator_actually_reaches_the_rewrites() {
         dirs(&opt, &mut b);
         if a != b {
             oriented += 1;
+        }
+        // A MID-PATTERN SPLIT, distinguishable from a plain reversal: re-seeding in the
+        // middle expands the seed slot TWICE (once leftward, once rightward), so two hops
+        // share a `from`. A linear chain never repeats one — each hop extends the frontier
+        // the one below it appended.
+        //
+        // Counted because the split's coverage is INCIDENTAL: nothing in the generator
+        // asks for an interior seekable predicate, and the shape arrives only because
+        // pushdown relocates a seekable conjunct of a mixed `And` onto a middle slot.
+        // That is worth 54/2000 plans today, and it is what catches a crossed branch —
+        // but it could be diluted away by an unrelated generator change without anyone
+        // noticing, which is precisely how a mutation for an earlier bug stopped being
+        // caught once. Hence a floor rather than trust.
+        //
+        // Note what this canNOT catch: DISABLING the split entirely preserves rows, so a
+        // row-comparing fuzzer is blind to it. The unit tests in `opt/tests.rs` are what
+        // hold that end.
+        fn from_slots(p: &Plan, out: &mut Vec<usize>) {
+            if let Plan::Expand { from, .. } = p {
+                out.push(*from);
+            }
+            match p {
+                Plan::Project { input, .. }
+                | Plan::Aggregate { input, .. }
+                | Plan::Filter { input, .. }
+                | Plan::Expand { input, .. }
+                | Plan::OrderPage { input, .. }
+                | Plan::Distinct { input } => from_slots(input, out),
+                _ => {}
+            }
+        }
+        let mut froms = Vec::new();
+        from_slots(&opt, &mut froms);
+        let mut seen = froms.clone();
+        seen.sort_unstable();
+        seen.dedup();
+        if seen.len() < froms.len() {
+            split += 1;
         }
         if a.len() >= 2 {
             multi_hop += 1;
@@ -1768,6 +1816,11 @@ fn the_generator_actually_reaches_the_rewrites() {
     // quietly stopped exercising the rewrites it exists to test.
     assert!(seeks > n / 25, "too few plans seed an index: {seeks}/{n}");
     assert!(oriented > n / 20, "too few plans orient: {oriented}/{n}");
+    assert!(
+        split > n / 200,
+        "too few plans re-seed at a MIDDLE slot (two hops sharing a `from`): {split}/{n} — \
+         without these the mid-pattern split rewrite has no fuzz coverage at all"
+    );
     assert!(
         multi_hop > n / 4,
         "too few multi-hop plans: {multi_hop}/{n}"

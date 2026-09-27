@@ -1783,3 +1783,195 @@ fn the_most_selective_indexed_conjunct_seeds_whatever_the_order() {
         "selective bound written first"
     );
 }
+
+/// A pattern whose selective predicate sits on a MIDDLE node cannot be helped by
+/// reversing — whichever end you start from, the predicate is still in the interior. It is
+/// helped by SPLITTING: seed the middle, walk backwards to the start, then forwards to the
+/// end. Measured 678.8us to 218.8us on 100k nodes x 5 edges (E81).
+///
+/// This is the third slot-permutation rewrite on this page, and the previous two each
+/// shipped a crossed-slot bug that a `count(*)` fixture could not see. So every case here
+/// projects ALL the pattern's slots and compares the optimized rows against the raw plan's
+/// as a multiset — a crossing changes the pairing, not the count.
+#[cfg(test)]
+fn split_fixture() -> Store {
+    let mut b = Builder::default();
+    // Two inbound and two outbound neighbours of the pivot, all distinguishable, so a
+    // left/right crossing produces different PAIRS rather than a different row count.
+    let pivot = b.node(&["N"], &[("name", s("pivot")), ("age", n(99.0))]);
+    let in0 = b.node(&["N"], &[("name", s("in0")), ("age", n(1.0))]);
+    let in1 = b.node(&["N"], &[("name", s("in1")), ("age", n(2.0))]);
+    let out0 = b.node(&["N"], &[("name", s("out0")), ("age", n(3.0))]);
+    let out1 = b.node(&["N"], &[("name", s("out1")), ("age", n(4.0))]);
+    // A decoy pivot with the same shape but a non-matching age, so the seek must filter.
+    let decoy = b.node(&["N"], &[("name", s("decoy")), ("age", n(5.0))]);
+    // Padding, and NOT decoration: orientation fires only when the pivot predicate's share
+    // of the graph is under `ORIENT_MAX_FRACTION` (15.4%). One matching node out of six is
+    // 16.7%, so the six-node version of this fixture declined every rewrite under test —
+    // including the plain far-end reversal, which is how the gate was identified rather
+    // than the split being blamed.
+    for i in 0..40u32 {
+        b.node(&["N"], &[("name", s(&format!("pad{i}"))), ("age", n(0.0))]);
+    }
+    b.edge(in0, pivot, "R");
+    b.edge(in1, pivot, "R");
+    b.edge(pivot, out0, "R");
+    b.edge(pivot, out1, "R");
+    b.edge(in0, decoy, "R");
+    b.edge(decoy, out0, "R");
+    let mut store = b.build();
+    store.create_range_index("age");
+    store
+}
+
+/// `(a)-[:R]->(b)-[:R]->(c)` with the predicate on `b`, projecting all three.
+#[cfg(test)]
+fn split_plan() -> Plan {
+    Plan::Scan {
+        label: Some("N".into()),
+    }
+    .expand(0, Dir::Out, &["R".to_string()])
+    .filter(cmp(CompareOp::Gt, prop(1, "age"), Expr::Lit(n(98.0))))
+    .expand(1, Dir::Out, &["R".to_string()])
+    // `(c:N)` in the surface syntax. Not incidental: `orient_scan` reaches a pattern
+    // through a residual Filter, so a chain with NOTHING above its last hop is rooted at an
+    // `Expand` and is not considered at all. See the note at `split_candidates`.
+    .filter(Expr::IsLabeled {
+        slot: 2,
+        labels: vec!["N".into()],
+    })
+    .project(vec![
+        ("a".into(), prop(0, "name")),
+        ("b".into(), prop(1, "name")),
+        ("c".into(), prop(2, "name")),
+    ])
+}
+
+#[test]
+fn a_middle_predicate_re_seeds_the_pattern_at_the_middle() {
+    let store = split_fixture();
+    let plan = split_plan();
+
+    // The answer first, independent of any plan: in0/in1 -> pivot -> out0/out1.
+    let raw = bag(&run(&plan, &store));
+    assert_eq!(raw.len(), 4, "two inbound x two outbound: {raw:?}");
+
+    let opt = optimize_indexed(plan, &store);
+    assert_eq!(
+        raw,
+        bag(&run(&opt, &store)),
+        "re-seeding at the middle changed the rows"
+    );
+    assert!(
+        has_range_seek(&opt),
+        "the middle predicate should have become the seed: {opt:?}"
+    );
+    // And the pairing specifically: `a` must be an inbound name and `c` an outbound one.
+    for row in &run(&opt, &store).rows {
+        let cell = |i: usize| format!("{:?}", row[i]);
+        assert!(cell(0).contains("in"), "slot a held {}", cell(0));
+        assert_eq!(cell(1), "Str(\"pivot\")", "slot b");
+        assert!(cell(2).contains("out"), "slot c held {}", cell(2));
+    }
+}
+
+/// The split must not disturb the case orientation already handles: a predicate on the FAR
+/// end still reverses the whole chain and keeps it LINEAR, because a linear chain is what
+/// the count and degree fast paths recognize. `split_candidates` returns the far end first
+/// for exactly this reason.
+#[test]
+fn a_far_predicate_still_reverses_rather_than_splitting() {
+    let store = split_fixture();
+    let plan = Plan::Scan {
+        label: Some("N".into()),
+    }
+    .expand(0, Dir::Out, &["R".to_string()])
+    .expand(1, Dir::Out, &["R".to_string()])
+    .filter(cmp(CompareOp::Gt, prop(2, "age"), Expr::Lit(n(98.0))))
+    .project(vec![
+        ("a".into(), prop(0, "name")),
+        ("c".into(), prop(2, "name")),
+    ]);
+    let raw = bag(&run(&plan, &store));
+    let opt = optimize_indexed(plan, &store);
+    assert_eq!(raw, bag(&run(&opt, &store)), "rows changed");
+    assert!(has_range_seek(&opt), "the far predicate seeds: {opt:?}");
+
+    // Linear means every Expand reads the slot the one below it appended. A split would
+    // give the seed two branches, so some `from` would repeat.
+    fn froms(p: &Plan, out: &mut Vec<usize>) {
+        match p {
+            Plan::Expand { input, from, .. } => {
+                froms(input, out);
+                out.push(*from);
+            }
+            Plan::Project { input, .. } | Plan::Filter { input, .. } => froms(input, out),
+            _ => {}
+        }
+    }
+    let mut got = Vec::new();
+    froms(&opt, &mut got);
+    assert_eq!(
+        got,
+        vec![0, 1],
+        "the reversed chain should stay linear: {opt:?}"
+    );
+}
+
+/// A split at a middle slot of a THREE-hop chain: the seed has one hop to its left and two
+/// to its right, so the right branch has to keep walking from the slot it just appended
+/// rather than from the seed. Getting that wrong crosses `c` and `d`.
+#[test]
+fn a_split_walks_both_branches_of_a_three_hop_chain() {
+    let mut b = Builder::default();
+    let start = b.node(&["N"], &[("name", s("start")), ("age", n(1.0))]);
+    let pivot = b.node(&["N"], &[("name", s("pivot")), ("age", n(99.0))]);
+    let mid = b.node(&["N"], &[("name", s("mid")), ("age", n(2.0))]);
+    let end = b.node(&["N"], &[("name", s("end")), ("age", n(3.0))]);
+    // Same padding, same reason: one match in four nodes is 25% and would decline.
+    for i in 0..40u32 {
+        b.node(&["N"], &[("name", s(&format!("pad{i}"))), ("age", n(0.0))]);
+    }
+    b.edge(start, pivot, "R");
+    b.edge(pivot, mid, "R");
+    b.edge(mid, end, "R");
+    let mut store = b.build();
+    store.create_range_index("age");
+
+    let plan = Plan::Scan {
+        label: Some("N".into()),
+    }
+    .expand(0, Dir::Out, &["R".to_string()])
+    .filter(cmp(CompareOp::Gt, prop(1, "age"), Expr::Lit(n(98.0))))
+    .expand(1, Dir::Out, &["R".to_string()])
+    .expand(2, Dir::Out, &["R".to_string()])
+    .filter(Expr::IsLabeled {
+        slot: 3,
+        labels: vec!["N".into()],
+    })
+    .project(vec![
+        ("a".into(), prop(0, "name")),
+        ("b".into(), prop(1, "name")),
+        ("c".into(), prop(2, "name")),
+        ("d".into(), prop(3, "name")),
+    ]);
+
+    let raw = bag(&run(&plan, &store));
+    assert_eq!(raw.len(), 1, "exactly one path: {raw:?}");
+    let opt = optimize_indexed(plan, &store);
+    assert_eq!(raw, bag(&run(&opt, &store)), "rows changed");
+    assert!(has_range_seek(&opt), "should re-seed: {opt:?}");
+    // Named explicitly, because a crossing of the two right-hand slots keeps the row COUNT.
+    let row = &run(&opt, &store).rows[0];
+    let cells: Vec<String> = row.iter().map(|v| format!("{v:?}")).collect();
+    assert_eq!(
+        cells,
+        vec![
+            "Str(\"start\")".to_string(),
+            "Str(\"pivot\")".to_string(),
+            "Str(\"mid\")".to_string(),
+            "Str(\"end\")".to_string()
+        ],
+        "slots crossed"
+    );
+}

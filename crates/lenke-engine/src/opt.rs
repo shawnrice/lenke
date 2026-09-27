@@ -2158,23 +2158,24 @@ fn reverse_slots(e: &Expr, far: usize) -> Option<Expr> {
     map_slots(e, &move |s| if s <= far { far - s } else { s })
 }
 
-/// Reverse a fixed-length pattern whose selective predicate sits on the FAR node, so
-/// the predicate seeds the traversal instead of filtering its output.
+/// Re-seed a fixed-length chain at slot `at`, walking OUTWARD from there — the
+/// generalization of [`reverse_chain`], which is the case `at == far`.
 ///
-/// `MATCH (a:L)-[:T]->(b:M) WHERE b.k > v` plans as `Filter(Expand(Scan L))`: it walks
-/// every edge of every `L` and then discards almost all of them. Reversed, it seeds
-/// from `b`'s index and walks the relationship backwards — the same answer from a pool
-/// the predicate has already shrunk. The TS engine has always done this (`orient` /
-/// `reversePath` in `@lenke/gql`'s matching.ts); this is the native engine catching up.
+/// When the selective predicate sits in the MIDDLE of a pattern, reversing the whole
+/// chain does not help: whichever end you start from, the predicate is still somewhere
+/// in the interior. Splitting does. `MATCH (a:L)-[:T]->(b:M)-[:T]->(c:N) WHERE b.k > v`
+/// seeds `b` from its index, walks BACKWARDS to `a`, then forwards to `c`. Measured on
+/// 100k nodes x 5 edges with a range index on `age`, `count(*)` with the predicate on the
+/// middle node:
 ///
-/// THE RENAME IS ONE PERMUTATION, which is what lets this work at any chain length:
-/// reversing an n-hop chain maps slot `i` to slot `n - i` (see [`reverse_slots`]).
-/// An earlier version used a single `swap_slots(_, 0, n)`, which is the same
-/// permutation only while n ≤ 2 and the wrong one above that, and so was capped at two
-/// hops. Three hops is where the largest gap on this branch lives.
+/// ```text
+///   written forwards                678.8us   Filter <- Expand <- Filter <- Expand <- Scan
+///   hand-split at the middle        209.7us   Filter <- Expand <- Filter <- Expand <- RangeSeek
+/// ```
 ///
-/// Measured on 200k nodes x 8 edges with a range index on `age`, `count(*)` with the
-/// predicate on the far node:
+/// The `at == far` case is plain ORIENTATION — reverse the whole chain so a far-side
+/// predicate seeds it — and carries its own measured history, on 200k nodes x 8 edges with a
+/// range index on `age`, `count(*)` with the predicate on the far node:
 ///
 /// ```text
 ///   1 hop    written forwards    1652us   reversed                  499us
@@ -2183,44 +2184,75 @@ fn reverse_slots(e: &Expr, far: usize) -> Option<Expr> {
 ///            (3 hops measured at 50k nodes, the others at 200k)
 /// ```
 ///
-/// Deliberately narrow. It fires only for:
-///   - a chain of plain hops over a `Scan`, no bound edge, no `double_loops`,
-///   - an intermediate predicate (if any) reading ONLY its own hop's endpoint,
-///   - a final predicate reading ONLY the far slot,
-///   - a far node carrying a LIFTABLE label (see below),
-///   - consumers whose every expression can be renamed exactly (see `swap_slots`).
+/// THE PERMUTATION IS THE SAME ONE. New position of original slot `s` is `at - s` for
+/// `s <= at` and `s` above it — which is exactly [`reverse_slots`] with `at` as its
+/// pivot. So every consumer rename in `orient_scan`/`orient_apply` works unchanged, and
+/// there is one definition of the rename rather than two that can drift.
 ///
-/// Anything else is left exactly as written. A wrong slot rename is a silently wrong
-/// answer, so the bar for firing is "provably the same query", not "probably".
+/// The emission order is the new positions in order: `at` first, then leftward to the
+/// original seed, then rightward to the far end. The left hops are flipped, the right
+/// hops keep their direction. The right branch expands from the SEED slot again (`from:
+/// 0` at a width of `at + 1`), which the executor supports.
 ///
-/// Returns the reversed plan and the far slot, which is the swap the CONSUMERS above
-/// the pattern must be renamed with.
-fn reverse_chain(plan: Plan) -> Option<(Plan, usize)> {
-    let Plan::Filter { input, pred } = plan else {
-        return None;
+/// Deliberately narrow, exactly as `reverse_chain` was: a chain of plain hops over a
+/// `Scan`, no bound edge, no `double_loops`, every predicate reading ONE slot, and a
+/// pivot predicate that survives being renamed onto slot 0. Anything else is left as
+/// written — a wrong slot rename is a silently wrong answer.
+fn split_chain(plan: Plan, at: usize) -> Option<(Plan, usize)> {
+    let (top_pred, chain) = match plan {
+        Plan::Filter { input, pred } => (Some(pred), *input),
+        other => (None, other),
     };
-    let (seed_label, hops) = peel_hops(&input)?;
+    let (seed_label, hops) = peel_hops(&chain)?;
     let far = hops.len();
-    if far == 0 {
-        return None;
+    if far == 0 || at == 0 || at > far {
+        return None; // nothing to re-seed, or it is already the seed
     }
 
-    let seed_pred = reverse_slots(&pred, far)?;
+    // Every predicate the pattern carries, keyed by the ORIGINAL slot it reads. One slot
+    // may carry at most one: two would need merging, and merging is not this rewrite's
+    // job.
+    let mut by_slot: Vec<Option<Expr>> = (0..=far).map(|_| None).collect();
+    if let Some(p) = top_pred {
+        // A residual filter above the pattern must read exactly one slot, or the rename
+        // cannot place it. `reads_only_slot` and not `max_slot` — see its docstring for
+        // the shipped bug that distinction cost.
+        let s = (0..=far).find(|&s| reads_only_slot(&p, s))?;
+        by_slot[s] = Some(p);
+    }
+    for (h, hop) in hops.iter().enumerate() {
+        if let Some(p) = &hop.above {
+            // `peel_hops` already checked this reads only slot `h + 1`.
+            if by_slot[h + 1].replace(p.clone()).is_some() {
+                return None;
+            }
+        }
+    }
+    if let Some(l) = seed_label {
+        // The original seed's label is just a predicate on slot 0; it travels with that
+        // slot like any other. (`peel_hops` declines a Filter directly over the `Scan`,
+        // so slot 0 cannot already be occupied — but a top-level filter reading slot 0
+        // could, and that is a decline rather than a merge.)
+        let lab = Expr::IsLabeled {
+            slot: 0,
+            labels: vec![l],
+        };
+        if by_slot[0].replace(lab).is_some() {
+            return None;
+        }
+    }
 
-    // The predicate must read the far slot and NOTHING ELSE. `max_slot` alone does not
-    // say that — it is a maximum, so `b.k = 1 AND a.k = 2` passes it while reading the
-    // seed as well. Checking the SWAPPED predicate is exact: if the original read only
-    // the far slot, the swap reads only slot 0. (That mistake panicked the executor
-    // rather than answering wrongly, but only by luck.)
+    // The pivot's own predicate becomes the seed, renamed onto slot 0.
+    let pivot = by_slot[at].take()?;
+    let seed_pred = reverse_slots(&pivot, at)?;
+    // Exact check that the pivot read ONLY its own slot: if it did, the renamed form
+    // reads only slot 0. `max_slot` is sufficient here because 0 is also the minimum.
     if max_slot(&seed_pred) != Some(0) {
         return None;
     }
-
-    // The far node's OWN label, if the pattern gave it one, is lifted out of the
-    // predicate and onto the seed scan, so the ordinary seeding rule can emit a
-    // `RangeSeek`/`IndexSeek` — those carry a label.
+    // The pivot node's own label is lifted onto the seed `Scan` so the ordinary seeding
+    // rule can emit a `RangeSeek`/`IndexSeek` over it.
     let (lifted, residual) = lift_seed_label(seed_pred);
-
     let mut out = match residual {
         Some(pred) => Plan::Filter {
             input: Box::new(Plan::Scan { label: lifted }),
@@ -2229,36 +2261,24 @@ fn reverse_chain(plan: Plan) -> Option<(Plan, usize)> {
         None => Plan::Scan { label: lifted },
     };
 
-    // Reversal maps original slot `i` to `far - i`, so an intermediate predicate on
-    // original slot `h + 1` ends up on slot `far - h - 1` — which, for the middle of a
-    // two-hop chain, is the SAME slot it started on. Place each one by the slot it
-    // ends up reading rather than by the hop it came from: the first version derived
-    // the position from the loop index, put the middle label on the far end, and
-    // silently dropped rows (caught by `orient_two_hop_keeps_the_middle_label`, not by
-    // the integration probe — whose fixture labels every node the same).
-    let mut at_slot: Vec<Option<Expr>> = (0..=far).map(|_| None).collect();
-    for (h, hop) in hops.iter().enumerate() {
-        let Some(p) = &hop.above else { continue };
-        let slot = far - h - 1;
-        let moved = shift_slot(p, h + 1, slot)?;
-        // Two predicates landing on one slot would need merging; decline instead.
-        if at_slot[slot].replace(moved).is_some() {
+    // Everything else, renamed to the slot it will occupy. Placed by the slot it ENDS UP
+    // reading, never by the hop it came from: deriving the position from a loop index is
+    // what once put a two-hop pattern's middle label on its far end and silently dropped
+    // rows.
+    let new_pos = |s: usize| if s <= at { at - s } else { s };
+    let mut placed: Vec<Option<Expr>> = (0..=far).map(|_| None).collect();
+    for (s, p) in by_slot.into_iter().enumerate() {
+        let Some(p) = p else { continue };
+        let np = new_pos(s);
+        let moved = shift_slot(&p, s, np)?;
+        if placed[np].replace(moved).is_some() {
             return None;
         }
     }
 
-    // A predicate on the SEED (reversed slot 0) applies before any hop.
-    if let Some(p) = at_slot[0].take() {
-        out = Plan::Filter {
-            input: Box::new(out),
-            pred: p,
-        };
-    }
-
-    // Re-emit the hops in REVERSE order, each flipped: walking c<-b<-a is the second
-    // hop backwards, then the first. Reversed hop `i` appends slot `i + 1`, so that
-    // slot's predicate is applied immediately after it.
-    for (i, hop) in hops.iter().rev().enumerate() {
+    // LEFT: new slots 1..=at, walking the original hops from `at - 1` down to 0, flipped.
+    for i in 0..at {
+        let hop = &hops[at - 1 - i];
         out = Plan::Expand {
             input: Box::new(out),
             from: i,
@@ -2267,7 +2287,7 @@ fn reverse_chain(plan: Plan) -> Option<(Plan, usize)> {
             bind_edge: false,
             double_loops: false,
         };
-        if let Some(p) = at_slot[i + 1].take() {
+        if let Some(p) = placed[i + 1].take() {
             out = Plan::Filter {
                 input: Box::new(out),
                 pred: p,
@@ -2275,19 +2295,64 @@ fn reverse_chain(plan: Plan) -> Option<(Plan, usize)> {
         }
     }
 
-    // Finally re-apply the ORIGINAL seed's label at the far end — the `Scan { label }`
-    // we replaced was what enforced it.
-    if let Some(l) = seed_label {
-        out = Plan::Filter {
+    // RIGHT: new slots at+1..=far, walking the original hops from `at` up, unflipped.
+    // The first of them expands from the seed slot, which the left branch left at 0.
+    for j in 0..(far - at) {
+        let hop = &hops[at + j];
+        out = Plan::Expand {
             input: Box::new(out),
-            pred: Expr::IsLabeled {
-                slot: far,
-                labels: vec![l],
-            },
+            from: new_pos(at + j),
+            dir: hop.dir,
+            edge_label: hop.edge_label.clone(),
+            bind_edge: false,
+            double_loops: false,
         };
+        if let Some(p) = placed[at + j + 1].take() {
+            out = Plan::Filter {
+                input: Box::new(out),
+                pred: p,
+            };
+        }
     }
 
-    Some((out, far))
+    Some((out, at))
+}
+
+/// The slots of a fixed-length pattern that carry a predicate of their own, paired with
+/// it — the pivots [`split_chain`] could re-seed at, FAR END FIRST.
+///
+/// Far-first is not arbitrary. Re-seeding at the far end leaves the chain linear, which
+/// is the shape every count/degree fast path recognizes; an interior split gives the seed
+/// two branches and some of those paths decline it. So a pattern that can orient the
+/// classic way should, and a split is what happens when it cannot.
+///
+/// Slot 0 is never a candidate: it is already the seed, and the ordinary seeding rule has
+/// had it since before orientation existed.
+fn split_candidates(plan: &Plan) -> Vec<(usize, Expr)> {
+    let (top_pred, chain) = match plan {
+        Plan::Filter { input, pred } => (Some(pred.clone()), input.as_ref()),
+        other => (None, other),
+    };
+    let Some((_, hops)) = peel_hops(chain) else {
+        return Vec::new();
+    };
+    let far = hops.len();
+    let mut out: Vec<(usize, Expr)> = Vec::new();
+    if let Some(p) = top_pred {
+        if let Some(s) = (1..=far).find(|&s| reads_only_slot(&p, s)) {
+            out.push((s, p));
+        }
+    }
+    for (h, hop) in hops.iter().enumerate() {
+        if let Some(p) = &hop.above {
+            out.push((h + 1, p.clone()));
+        }
+    }
+    // Far end first, then inward. A slot appearing twice cannot happen: the top predicate
+    // reads one slot and `peel_hops` gives each hop at most one `above`, and if both land
+    // on the same slot `split_chain` declines anyway.
+    out.sort_by_key(|(slot, _)| std::cmp::Reverse(*slot));
+    out
 }
 
 /// Rewrite every reference to slot `from` as slot `to`, leaving all others alone.
@@ -2577,16 +2642,24 @@ fn orient_scan(plan: &Plan, idx: &dyn IndexOracle) -> Option<(bool, usize)> {
             // were renamed around a pattern that never reversed — a half-applied
             // rename, which is a silently wrong answer). Asking `reverse_chain` itself
             // cannot drift, at the cost of one clone per candidate at plan time.
-            if !seedable(pred, idx) {
-                return None;
-            }
-
-            let (_, far) = reverse_chain(Plan::Filter {
+            let pattern = Plan::Filter {
                 input: input.clone(),
                 pred: pred.clone(),
-            })?;
+            };
 
-            orient_is_worth_it(pred, far, idx).then_some((true, far))
+            // Pivot candidates, in the order they are worth trying: the FAR end first
+            // (classic orientation, which keeps the chain linear), then any INTERIOR slot
+            // whose own predicate can seed — a mid-pattern split. Each is a trial rewrite
+            // through `split_chain`, never a re-derivation of its conditions.
+            for (slot, p) in split_candidates(&pattern) {
+                if !seedable(&p, idx) || !orient_is_worth_it(&p, slot, idx) {
+                    continue;
+                }
+                if split_chain(pattern.clone(), slot).is_some() {
+                    return Some((true, slot));
+                }
+            }
+            None
         }
         _ => None,
     }
@@ -2695,11 +2768,17 @@ fn orient_apply(plan: Plan, far: usize) -> (Plan, bool) {
         Plan::Filter { input, pred } => {
             // The pattern is a Filter over the hop chain; anything else is a residual
             // filter sitting above it.
-            if let Some((reversed, _)) = reverse_chain(Plan::Filter {
-                input: input.clone(),
-                pred: pred.clone(),
-            }) {
-                return (reversed, true);
+            // Re-seed at the pivot `orient_scan` settled on, rather than re-deriving one.
+            // The two used to be derived independently and drifted apart once, which
+            // renamed consumers around a pattern that never reversed.
+            if let Some((reseeded, _)) = split_chain(
+                Plan::Filter {
+                    input: input.clone(),
+                    pred: pred.clone(),
+                },
+                far,
+            ) {
+                return (reseeded, true);
             }
 
             let (inner, open) = orient_apply(*input, far);

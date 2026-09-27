@@ -2203,6 +2203,74 @@ fn main() {
             }
         }
     }
+
+    // E81 ------------------------------------------------------------------
+    //
+    // Audit item 10's last open piece: MID-PATTERN SPLITTING. Orientation reverses a chain
+    // so a FAR-side predicate can seed it, but a predicate in the MIDDLE is not helped by
+    // reversing — whichever end you start from it is still in the interior. It is helped by
+    // splitting: seed the middle, walk backwards to the start, then forwards to the end.
+    //
+    // The rows to watch in pairs. Each "forwards" spelling should now cost what the
+    // hand-written split of the same query costs; where it does not, the split declined and
+    // the note below says why.
+    section("E81: a selective predicate on a pattern's MIDDLE node");
+
+    {
+        const N: u32 = 100_000;
+        let mut store = harness::social_store(N, 5);
+        store.create_range_index("age");
+
+        println!("  before this change:");
+        println!("    middle-of-2 forwards 678.8   hand-split 209.7   (3.24x apart)");
+        println!("    middle-of-3 forwards 1523.3  hand-split 1135.6");
+        println!("  {:<44} {:>9} {:>8}", "query", "us", "rows");
+        for (label, q) in [
+            (
+                "middle-of-2, forwards",
+                "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) WHERE b.age > 98 RETURN count(*) AS n",
+            ),
+            (
+                "middle-of-2, hand-split",
+                "MATCH (b:Person)-[:KNOWS]->(c:Person), (b)<-[:KNOWS]-(a:Person) WHERE b.age > 98 RETURN count(*) AS n",
+            ),
+            (
+                "middle-of-3, forwards",
+                "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person)-[:KNOWS]->(d:Person) WHERE b.age > 98 RETURN count(*) AS n",
+            ),
+            (
+                "middle-of-3, hand-split",
+                "MATCH (b:Person)-[:KNOWS]->(c:Person)-[:KNOWS]->(d:Person), (b)<-[:KNOWS]-(a:Person) WHERE b.age > 98 RETURN count(*) AS n",
+            ),
+            // The far-end cases, which must NOT regress: they still reverse, keeping the
+            // chain linear for the count fast paths.
+            (
+                "far-end, forwards",
+                "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) WHERE c.age > 98 RETURN count(*) AS n",
+            ),
+            (
+                "far-end, hand-written backwards",
+                "MATCH (c:Person)<-[:KNOWS]-(b:Person)<-[:KNOWS]-(a:Person) WHERE c.age > 98 RETURN count(*) AS n",
+            ),
+            // The far node UNLABELLED leaves the pattern rooted at an `Expand`, which
+            // `orient_scan` does not reach — so this one still does not split. STILL OPEN.
+            (
+                "middle-of-2, far node unlabelled",
+                "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c) WHERE b.age > 98 RETURN count(*) AS n",
+            ),
+        ] {
+            let opt = lenke_engine::opt::optimize_indexed(
+                lenke_engine::gql::parse(q).expect("parses"),
+                &store,
+            );
+            if let Ok((us, rows)) = harness::time_query(q, false, &store, cfg.reps.min(3)) {
+                println!(
+                    "  {label:<44} {us:>9.1} {rows:>8}  {}",
+                    chain_of(&opt)
+                );
+            }
+        }
+    }
 }
 
 /// The optimized plan as an operator chain, for printing next to a measurement.
