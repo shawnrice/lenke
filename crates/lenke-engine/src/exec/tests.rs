@@ -7154,3 +7154,56 @@ fn distinct_agrees_whether_or_not_the_scan_covers_the_whole_graph() {
         3
     );
 }
+
+/// `RETURN DISTINCT` on a BOOL column runs its whole-graph sweep as a local loop rather
+/// than through `scan_visit`'s closure — 141.8us to 67.2us over 100k nodes (E80). Two
+/// branches now, so they have to agree: a deletion forces the `scan_visit` one.
+///
+/// A bool column also has the smallest possible value space, which makes it the easiest
+/// place to get null handling wrong: `DISTINCT` must emit true, false AND null, once each.
+#[test]
+fn distinct_on_a_bool_column_agrees_across_both_sweeps() {
+    let mut b = Builder::default();
+    // Both values plus an absent cell, and enough rows that first-seen order is meaningful.
+    for i in 0..30u32 {
+        let mut props: Vec<(&str, Value)> = Vec::new();
+        if i % 7 != 3 {
+            props.push(("flag", Value::Bool(i % 2 == 0)));
+        }
+        b.node(&["P"], &props);
+    }
+    let mut store = b.build();
+    let q = "MATCH (n:P) RETURN DISTINCT n.flag AS f";
+
+    let whole = first_col(&store, q, false);
+    assert_eq!(whole.len(), 3, "true, false and null: {whole:?}");
+    assert!(whole.contains(&"Bool(true)".to_string()), "{whole:?}");
+    assert!(whole.contains(&"Bool(false)".to_string()), "{whole:?}");
+    assert!(whole.contains(&"Null".to_string()), "{whole:?}");
+
+    // Delete every node that lacks `flag`, so the null goes away AND the label bucket stops
+    // covering the whole graph, which routes the sweep down the other branch.
+    for i in 0..30u32 {
+        if i % 7 == 3 {
+            store.delete_node(i);
+        }
+    }
+    let partial = first_col(&store, q, false);
+    assert_eq!(
+        partial,
+        whole
+            .iter()
+            .filter(|v| *v != "Null")
+            .cloned()
+            .collect::<Vec<_>>(),
+        "the two sweep branches disagreed"
+    );
+
+    // And an all-absent column still yields exactly one null, on either branch.
+    let mut b2 = Builder::default();
+    for _ in 0..8 {
+        b2.node(&["P"], &[("other", Value::Num(1.0))]);
+    }
+    let empty = b2.build();
+    assert_eq!(first_col(&empty, q, false), vec!["Null".to_string()]);
+}

@@ -2121,6 +2121,88 @@ fn main() {
             }
         }
     }
+
+    // E80 ------------------------------------------------------------------
+    //
+    // E79 gave `try_distinct_scan_prop`'s `Dict` arm a local whole-graph loop instead of
+    // `scan_visit`'s closure, worth 1.78x. This asks the obvious follow-up — do the sibling
+    // arms want the same? — for every column type, and the answer is NOT uniform:
+    //
+    //   * `Bool`  2.11x. Taken.
+    //   * `Str` and `Num`  1.05-1.07x, inside the noise floor. NOT taken; a version with all
+    //     four arms sharing a macro made the `Dict` arm 1.14x WORSE (83.6us -> 95.3us),
+    //     because four textual copies of the body inflate the function.
+    //   * low-card `Num` is served by `low_card_int_bitset`, which does its own two sweeps.
+    //     Inlining those measured 202.7us -> 196.0us — nothing. See the note at that
+    //     function, and the control that proves the bitset is worth keeping.
+    //
+    // The deep-chain `count(*)` rows are here for the same reason: the final hop's degree
+    // now goes through `matching_degree`, which measured NEUTRAL (the cost is propagating
+    // the intermediate frontier, not counting the last hop). Kept for consistency with the
+    // shallow branch, not as a win — if a future change makes it look like one, suspect the
+    // fixture.
+    section("E80: which DISTINCT column arms want an inline sweep, and the deep chains");
+
+    {
+        const N: u32 = 100_000;
+        let mut b = lenke_engine::store::Builder::default();
+        let depts = ["eng", "sales", "ops", "legal", "hr"];
+        for i in 0..N {
+            b.node(
+                &["Person"],
+                &[
+                    (
+                        "name",
+                        lenke_engine::value::Value::Str(format!("n{i}").into()),
+                    ),
+                    (
+                        "dept",
+                        lenke_engine::value::Value::Str(depts[(i % 5) as usize].into()),
+                    ),
+                    ("bucket", lenke_engine::value::Value::Num(f64::from(i % 50))),
+                    ("wide", lenke_engine::value::Value::Num(f64::from(i))),
+                    ("flag", lenke_engine::value::Value::Bool(i % 2 == 0)),
+                    ("age", lenke_engine::value::Value::Num(f64::from(i % 100))),
+                ],
+            );
+        }
+        let mut rng = harness::Lcg::seeded();
+        for i in 0..N {
+            for _ in 0..5 {
+                b.edge(i, rng.next(N), "KNOWS");
+            }
+        }
+        let mut store = b.build();
+        store.create_range_index("age");
+
+        println!("  before, min of 4 at the same sizes:");
+        println!("    flag 141.8   dept 83.6   bucket 202.7   wide 881.1   name 2572.3");
+        println!("    deep 2-hop 1% 44.5   3-hop 1% 491.7   2-hop all 1752.4   3-hop all 2323.7");
+        println!("  {:<48} {:>9} {:>8}", "query", "us", "rows");
+        for (label, q) in [
+            ("DISTINCT flag   [Bool]", "MATCH (n:Person) RETURN DISTINCT n.flag AS d"),
+            ("DISTINCT dept   [Dict, 5 vals]", "MATCH (n:Person) RETURN DISTINCT n.dept AS d"),
+            ("DISTINCT bucket [Num, 50 vals]", "MATCH (n:Person) RETURN DISTINCT n.bucket AS d"),
+            ("DISTINCT wide   [Num, 100k vals]", "MATCH (n:Person) RETURN DISTINCT n.wide AS d"),
+            ("DISTINCT name   [Str, unique]", "MATCH (n:Person) RETURN DISTINCT n.name AS d"),
+            (
+                "deep 2-hop count, 1% seed",
+                "MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(c) WHERE a.age > 98 RETURN count(*) AS c",
+            ),
+            (
+                "deep 3-hop count, 1% seed",
+                "MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(c)-[:KNOWS]->(d) WHERE a.age > 98 RETURN count(*) AS c",
+            ),
+            (
+                "deep 2-hop count, unseeded",
+                "MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(c) RETURN count(*) AS c",
+            ),
+        ] {
+            if let Ok((us, rows)) = harness::time_query(q, false, &store, cfg.reps.min(3)) {
+                println!("  {label:<48} {us:>9.1} {rows:>8}");
+            }
+        }
+    }
 }
 
 /// The optimized plan as an operator chain, for printing next to a measurement.

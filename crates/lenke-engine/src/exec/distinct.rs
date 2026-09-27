@@ -832,18 +832,46 @@ pub(super) fn try_distinct_scan_prop(input: &Plan, store: &Store) -> Option<Batc
             }
         }
         Column::Bool { data, present, .. } => {
+            // Same local whole-graph loop as the `Dict` arm above, and for the same reason:
+            // 141.8us to 66.8us, a 2.12x, on a two-valued column over 100k nodes (E80).
+            //
+            // The `Str` and `Num` arms deliberately do NOT have it. Measured, they gain
+            // 1.05-1.07x, which is inside this repo's noise floor, and a version that put
+            // the loop in all four arms through a macro made the `Dict` arm 1.14x WORSE
+            // (83.6us to 95.3us) — four textual copies of the body inflate the function
+            // enough to cost the arm that was already fast. Only the arms that measured a
+            // win have it.
             let mut seen = [false; 2];
-            scan_visit(store, label, |i| {
-                if present[i] {
-                    let b = data[i];
-                    if !std::mem::replace(&mut seen[usize::from(b)], true) {
-                        out.push(Value::Bool(b));
+            let n = store.node_count();
+            let whole = store.live_node_count() == n
+                && label
+                    .as_ref()
+                    .is_none_or(|l| store.nodes_with_label(l).len() == n);
+            if whole {
+                for i in 0..n {
+                    if present[i] {
+                        let b = data[i];
+                        if !std::mem::replace(&mut seen[usize::from(b)], true) {
+                            out.push(Value::Bool(b));
+                        }
+                    } else if !saw_null {
+                        saw_null = true;
+                        out.push(Value::Null);
                     }
-                } else if !saw_null {
-                    saw_null = true;
-                    out.push(Value::Null);
                 }
-            });
+            } else {
+                scan_visit(store, label, |i| {
+                    if present[i] {
+                        let b = data[i];
+                        if !std::mem::replace(&mut seen[usize::from(b)], true) {
+                            out.push(Value::Bool(b));
+                        }
+                    } else if !saw_null {
+                        saw_null = true;
+                        out.push(Value::Null);
+                    }
+                });
+            }
         }
         _ => return None, // Temporal / Gen → the general Distinct path
     }

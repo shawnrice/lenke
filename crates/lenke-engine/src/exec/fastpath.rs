@@ -2510,6 +2510,15 @@ pub(super) fn low_card_int_bitset(
     const MAX_SPAN: usize = 1 << 20; // cap the bitset at ~1M bits (128 KB)
     let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
     let (mut any, mut all_int, mut saw_absent) = (false, true, false);
+    // REJECTED (2026-09-27, E80): running this function's TWO sweeps inline for the
+    // whole-graph case instead of through `scan_visit`'s closure, the way the `DISTINCT`
+    // `Bool` and `Dict` arms do. Same shape of change, and it measured NOTHING here —
+    // `DISTINCT n.bucket` over a 50-value column on 100k nodes went 202.7us to 196.0us,
+    // inside the noise floor. The cost is the two passes over memory, not the call shape.
+    //
+    // The bitset itself is emphatically worth keeping: disabling it and falling back to the
+    // `FnvSet<u64>` path measured 575.8us for that same query, and 2052.6us against 879.6us
+    // for a 100k-distinct column.
     scan_visit(store, label, |i| {
         if present[i] {
             let x = data[i];
@@ -3038,11 +3047,15 @@ pub(super) fn try_fused_count(
         // space. The count is Σ_v counts[v] * matching-out-degree(v).
         if count_hops(inner) >= 2 {
             if let Some(counts) = frontier_counts(inner, store) {
+                // The final hop's degree comes from `matching_degree`, which reads it off a
+                // contiguous slice when it can (a trivial type filter, or a single wanted
+                // type on a graph without multi-label edges) rather than walking the
+                // adjacency to count it. The shallow branch below has done this for a while;
+                // this one kept walking.
+                let all_types = want_covers_all_etypes(store, &want);
                 let mut total = 0f64;
                 counts.for_each(|v, c| {
-                    let mut deg = 0f64;
-                    for_each_nbr(store, v, *dir, &want, dl, |_, _| deg += 1.0);
-                    total += c * deg;
+                    total += c * matching_degree(store, v, *dir, &want, dl, all_types);
                 });
                 return Some(scalar_num(total));
             }
