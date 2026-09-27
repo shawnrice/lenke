@@ -1732,6 +1732,128 @@ fn main() {
             );
         }
     }
+
+    // E75 ------------------------------------------------------------------
+    //
+    // E74's twin, for EQUALITY. The range seed is now gated on both "is there an
+    // index" and "will it filter"; the equality seed above it is gated on neither,
+    // and `seed_from_conjuncts` DOES gate its equality pick on `has_hash_index` — so
+    // `WHERE n.dept = 'eng'` and `WHERE n.dept = 'eng' AND n.age > 1` can disagree
+    // about whether to seek. Before changing either, measure whether equality has the
+    // same cliff range did.
+    //
+    // Two separate questions, deliberately not conflated:
+    //   * no index declared: does an `IndexSeek` that falls back to a scan cost
+    //     anything against the `Filter(Scan)` the planner would otherwise leave?
+    //     (`index_seek_ids`' None branch has its own typed fast paths, so it may not.)
+    //   * index declared, broad key: does seeding a 20%-selectivity bucket lose the
+    //     way a 49% range seed did?
+    section("E75: does an equality seed have the same cliff the range seed had?");
+
+    let mut hashed = harness::social_store(rows as u32, 8);
+    hashed.create_index("dept");
+    hashed.create_index("name");
+
+    println!(
+        "  {:<34} {:>11} {:>11} {:>8}  plan",
+        "query", "no index", "indexed", "ratio"
+    );
+
+    for (label, q) in [
+        (
+            "name = one row (unique)",
+            "MATCH (n:Person) WHERE n.name = 'name12345' RETURN n.age AS x",
+        ),
+        (
+            "dept = one of 5   (20% pass)",
+            "MATCH (n:Person) WHERE n.dept = 'eng' RETURN n.age AS x",
+        ),
+        (
+            "dept = one of 5, GROUP BY",
+            "MATCH (n:Person) WHERE n.dept = 'eng' RETURN n.city AS c, count(*) AS n",
+        ),
+        (
+            "dept =, AND a range conjunct",
+            "MATCH (n:Person) WHERE n.dept = 'eng' AND n.age > 1 RETURN n.age AS x",
+        ),
+    ] {
+        let bare = harness::time_query(q, false, &plain, cfg.reps.min(5));
+        let ixed = harness::time_query(q, false, &hashed, cfg.reps.min(5));
+        let bare_plan = lenke_engine::opt::optimize_indexed(
+            lenke_engine::gql::parse(q).expect("parses"),
+            &plain,
+        );
+        let ixed_plan = lenke_engine::opt::optimize_indexed(
+            lenke_engine::gql::parse(q).expect("parses"),
+            &hashed,
+        );
+        if let (Ok((b, _)), Ok((i, _))) = (bare, ixed) {
+            let ratio = if i > 0.0 { b / i } else { 0.0 };
+            println!(
+                "  {label:<34} {b:>11.1} {i:>11.1} {ratio:>7.2}x  {} | {}",
+                chain_of(&bare_plan),
+                chain_of(&ixed_plan)
+            );
+        }
+    }
+
+    // E76 ------------------------------------------------------------------
+    //
+    // E75 row 4 showed the multi-conjunct seed picking an UNINDEXED range when no
+    // better conjunct was available, and losing (255.4us as a `Filter(Scan)` against
+    // 651.0us once the range was seeded). That rung is being removed, but two plan-shape
+    // tests relied on it to observe filter-merging, and the case they use is a PURE
+    // two-sided range on one key — a different shape from row 4's. So measure that shape
+    // directly, on hand-built plans over a store with NO indexes, rather than assume the
+    // conclusion carries. If the seek wins here the rung is worth keeping under a
+    // narrower condition; if it loses, removing it is the whole answer.
+    section("E76: is an UNINDEXED range seed ever better than Filter(Scan)?");
+
+    {
+        use lenke_engine::ir::{CompareOp, Expr, Plan};
+        use lenke_engine::value::Value;
+
+        let prop = |key: &str| Expr::Prop {
+            slot: 0,
+            key: key.to_string(),
+        };
+        let cmp = |op, key: &str, v: f64| Expr::Compare {
+            op,
+            left: Box::new(prop(key)),
+            right: Box::new(Expr::Lit(Value::Num(v))),
+        };
+        let lo = 28.0;
+        let hi = 35.0;
+
+        let scan = Plan::Scan {
+            label: Some("Person".to_string()),
+        }
+        .filter(Expr::And(
+            Box::new(cmp(CompareOp::Ge, "age", lo)),
+            Box::new(cmp(CompareOp::Le, "age", hi)),
+        ));
+        let seeded_shape = Plan::RangeSeek {
+            label: Some("Person".to_string()),
+            key: "age".to_string(),
+            op: CompareOp::Ge,
+            value: Value::Num(lo),
+        }
+        .filter(cmp(CompareOp::Le, "age", hi));
+
+        println!("  {:<40} {:>11} {:>8}", "plan", "us", "rows");
+        for (label, plan) in [
+            ("Filter(AND) <- Scan", &scan),
+            ("Filter <- RangeSeek  (no index behind it)", &seeded_shape),
+        ] {
+            let mut rows = 0;
+            let us = harness::best_us(cfg.reps.min(5), || {
+                let r = lenke_engine::exec::run(plan, &plain);
+                rows = r.rows.len();
+                r
+            });
+            println!("  {label:<40} {us:>11.1} {rows:>8}");
+        }
+    }
 }
 
 /// The optimized plan as an operator chain, for printing next to a measurement.

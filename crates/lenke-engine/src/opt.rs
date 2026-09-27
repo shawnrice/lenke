@@ -1101,24 +1101,60 @@ fn seed_from_conjuncts(pred: &Expr, idx: &dyn IndexOracle) -> Option<(Seed, Opti
     if conjuncts.len() < 2 {
         return None; // not a conjunction — the single-comparison arms handle it
     }
-    // Selection priority (best first): an INDEXED equality, then an INDEXED range,
-    // then any equality (typed-scan fast path), then any range.
-    let eq_key = |c: &Expr| seek_target(c).map(|(k, _)| k);
-    let range_key = |c: &Expr| range_seek_target(c).map(|(k, _, _)| k);
-    let pick = conjuncts
-        .iter()
-        .position(|c| eq_key(c).is_some_and(|k| idx.has_hash_index(&k)))
-        .or_else(|| {
-            conjuncts
-                .iter()
-                .position(|c| range_key(c).is_some_and(|k| idx.has_range_index(&k)))
+    // Selection priority (best first): an INDEXED equality worth seeking, then an
+    // INDEXED range, then any UNINDEXED equality — whose seek degrades to a typed
+    // column scan, which is the cheapest of the three remaining shapes.
+    //
+    // There is deliberately no "any range" rung. An unindexed range seed makes
+    // `RangeSeek` fall back to scanning and BOXING every cell, which loses to leaving
+    // the conjunction as a `Filter(Scan)`: measured 255.4us for `dept = 'eng' AND
+    // age > 1` against 651.0us once an unindexed `age` range was seeded from it, and
+    // 3456.9us against 3873.0us for a pure two-sided range (E75, E76). The
+    // single-comparison arm in `apply` has gated its Range seed on `has_range_index`
+    // for exactly this reason; this path used to disagree.
+    let eq_worth_it = |c: &Expr| seek_target(c).is_some_and(|(k, v)| eq_seek_worth_it(idx, &k, &v));
+    // Within a rung, take the MOST SELECTIVE conjunct, not the first one written. Taking
+    // the first made conjunct ORDER change the plan: `age >= 30 AND age < 40` seeded the
+    // 70% bound and `age < 40 AND age >= 30` the 40% one, two spellings of one range at
+    // a measured 1.55x apart (`spelling_probe`, "range AND"). The Gremlin seed layer has
+    // ranked by selectivity since `the_more_selective_of_two_filters_seeds`; this path
+    // was the one still going by position.
+    //
+    // An oracle that declines to measure sorts last (`f64::MAX`) rather than dropping
+    // out, so a parameterized or unmeasurable bound is still seedable — and `min_by`
+    // keeps the first of equal ranks, so a store-less plan keeps its old pick.
+    let eq_cand = |i: usize, c: &Expr| -> Option<(usize, f64)> {
+        let (k, v) = seek_target(c)?;
+        (idx.has_hash_index(&k) && seek_beats_scan(idx, &k, CompareOp::Eq, &v)).then(|| {
+            (
+                i,
+                idx.seed_fraction(&k, CompareOp::Eq, &v).unwrap_or(f64::MAX),
+            )
         })
-        .or_else(|| conjuncts.iter().position(|c| seek_target(c).is_some()))
-        .or_else(|| {
-            conjuncts
+    };
+    let range_cand = |i: usize, c: &Expr| -> Option<(usize, f64)> {
+        let (k, op, v) = range_seek_target(c)?;
+        (idx.has_range_index(&k) && seek_beats_scan(idx, &k, op, &v))
+            .then(|| (i, idx.seed_fraction(&k, op, &v).unwrap_or(f64::MAX)))
+    };
+    let most_selective = |ranked: &mut dyn Iterator<Item = (usize, f64)>| {
+        ranked.min_by(|a, b| a.1.total_cmp(&b.1)).map(|(i, _)| i)
+    };
+    let pick = most_selective(
+        &mut conjuncts
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| eq_cand(i, c)),
+    )
+    .or_else(|| {
+        most_selective(
+            &mut conjuncts
                 .iter()
-                .position(|c| range_seek_target(c).is_some())
-        })?;
+                .enumerate()
+                .filter_map(|(i, c)| range_cand(i, c)),
+        )
+    })
+    .or_else(|| conjuncts.iter().position(|c| eq_worth_it(c)))?;
     let seed = if let Some((k, v)) = seek_target(conjuncts[pick]) {
         Seed::Index(k, v)
     } else {
@@ -1477,7 +1513,9 @@ fn apply_local(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
             // rows. Both property indexes are global, so the label was only ever a
             // post-filter on the seek's output (see `Plan::IndexSeek`).
             Plan::Scan { label: l } => {
-                if let Some((key, value)) = seek_target(&pred) {
+                if let Some((key, value)) =
+                    seek_target(&pred).filter(|(k, v)| eq_seek_worth_it(idx, k, v))
+                {
                     (
                         Plan::IndexSeek {
                             label: l,
@@ -2377,7 +2415,35 @@ fn seek_beats_scan(idx: &dyn IndexOracle, key: &str, op: CompareOp, value: &Valu
     if idx.live_nodes().is_some_and(|n| n < SEEK_FLOOR_NODES) {
         return true;
     }
-    idx.seed_fraction(key, op, value).is_some()
+    idx.seed_fraction(key, op, value)
+        .is_some_and(|frac| frac <= SEEK_MAX_FRACTION)
+}
+
+/// Should `key = value` seed an `IndexSeek`, or is a scan cheaper?
+///
+/// The two halves are NOT the same question, and only one of them needs the oracle:
+///
+///   * No hash index. Seed anyway, and not merely as the old behaviour: the seek
+///     degrades to a typed column scan inside `index_seek_ids`, which is the FASTEST
+///     of the three shapes here — 194.7us on a 20%-selectivity key, against 291.7us
+///     for the `Filter(Scan)` the planner would otherwise leave (E75). So there is
+///     nothing to decide, and declining would only give two spellings of one
+///     predicate different plans.
+///   * A hash index exists, on a key with few distinct values. Now it matters, and it
+///     is the same cliff the range seed had: the bucket is 20% of the graph, so the
+///     seek materializes 40k scattered ids and binary-searches each against the label
+///     bucket, where a scan streams the column. Measured 194.7us unindexed against
+///     526.5us seeded — declaring the index made the query 2.7x SLOWER, 2.9x under
+///     GROUP BY (E75).
+///
+/// Declining leaves `Filter(Scan)` at 291.7us, so the seeded regression is gone but a
+/// declared index still costs this query 1.5x. That residual is NOT an index problem:
+/// `Filter(Scan)` materializes the whole 200k-row batch and then compacts a keep list,
+/// where the seek's fallback filters as it walks the label bucket — about 0.5ns/row of
+/// batch overhead. Closing it wants a scan that takes a pushed-down predicate (which
+/// the scan-fallback seek effectively IS), not a different index decision; see E75.
+fn eq_seek_worth_it(idx: &dyn IndexOracle, key: &str, value: &Value) -> bool {
+    !idx.has_hash_index(key) || seek_beats_scan(idx, key, CompareOp::Eq, value)
 }
 
 /// Below this many live nodes the seek-vs-scan choice is unmeasurable, so the planner

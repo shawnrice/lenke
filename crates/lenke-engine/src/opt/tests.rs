@@ -360,11 +360,16 @@ fn adjacent_filters_merge() {
     // through its CONSEQUENCE instead: the two conjuncts must fuse before the seeding
     // rule can take one as the seek and leave the other as a residual. Two filters
     // that never merged would leave the outer one stranded above.
+    // One conjunct is an EQUALITY so the merged filter has something worth seeding:
+    // a range conjunct alone cannot seed here, because this store has no range index
+    // and an unindexed `RangeSeek` falls back to a scan that BOXES every cell —
+    // measured 3873.0us against 3456.9us for the `Filter(Scan)` it replaces (E76), so
+    // the planner no longer takes that rung.
     let plan = Plan::Scan { label: None }
         .filter(cmp(CompareOp::Ge, prop(0, "age"), Expr::Lit(n(28.0))))
-        .filter(cmp(CompareOp::Le, prop(0, "age"), Expr::Lit(n(35.0))));
+        .filter(cmp(CompareOp::Eq, prop(0, "name"), Expr::Lit(s("alice"))));
     let opt = assert_rows_preserved(&plan, &store);
-    // And the answer: only alice(30) is in [28,35].
+    // And the answer: alice is 30, so she passes both.
     assert_eq!(run(&opt, &store).rows.len(), 1);
     // Shape: ONE residual filter, directly over the seek — not two stacked.
     match &opt {
@@ -374,7 +379,7 @@ fn adjacent_filters_merge() {
                 "one conjunct should have become the seek, leaving a single residual"
             );
             assert!(
-                matches!(**input, Plan::RangeSeek { .. }),
+                matches!(**input, Plan::IndexSeek { .. }),
                 "the merged conjunction seeded, got {input:?}"
             );
         }
@@ -392,7 +397,7 @@ fn driver_reaches_fixpoint_merge_then_pushdown() {
     let plan = Plan::Scan { label: None }
         .expand(0, Dir::Out, &["KNOWS".to_string()])
         .filter(cmp(CompareOp::Le, prop(0, "age"), Expr::Lit(n(100.0))))
-        .filter(cmp(CompareOp::Ge, prop(0, "age"), Expr::Lit(n(0.0))));
+        .filter(cmp(CompareOp::Eq, prop(0, "name"), Expr::Lit(s("alice"))));
     let opt = assert_rows_preserved(&plan, &store);
     match opt {
         Plan::Expand { input, .. } => match *input {
@@ -403,7 +408,7 @@ fn driver_reaches_fixpoint_merge_then_pushdown() {
                     "one conjunct should have become the seek"
                 );
                 assert!(
-                    matches!(*input, Plan::RangeSeek { .. }),
+                    matches!(*input, Plan::IndexSeek { .. }),
                     "expected the pushed filter to seed, got {input:?}"
                 );
             }
@@ -1576,5 +1581,205 @@ fn a_tiny_graph_still_seeds_whatever_the_selectivity() {
     assert!(
         has_range_seek(&opt),
         "below the floor, seed as before: {opt:?}"
+    );
+}
+
+fn has_index_seek(plan: &Plan) -> bool {
+    match plan {
+        Plan::IndexSeek { .. } => true,
+        Plan::Project { input, .. }
+        | Plan::Aggregate { input, .. }
+        | Plan::Distinct { input }
+        | Plan::Filter { input, .. }
+        | Plan::OrderPage { input, .. }
+        | Plan::Expand { input, .. } => has_index_seek(input),
+        _ => false,
+    }
+}
+
+/// A store above the floor: `name` is unique, `dept` takes 5 values (20% each).
+fn indexed_departments(keys: &[&str]) -> Store {
+    let depts = ["eng", "sales", "ops", "legal", "hr"];
+    let mut b = Builder::default();
+    for i in 0..8_000 {
+        b.node(
+            &["Person"],
+            &[
+                ("name", s(&format!("n{i}"))),
+                ("dept", s(depts[i % depts.len()])),
+                ("age", n(f64::from(i as u32 % 100))),
+            ],
+        );
+    }
+    let mut store = b.build();
+    for k in keys {
+        store.create_index(k);
+    }
+    store
+}
+
+fn eq_plan(key: &str, value: &str) -> Plan {
+    Plan::Scan {
+        label: Some("Person".into()),
+    }
+    .filter(cmp(CompareOp::Eq, prop(0, key), Expr::Lit(s(value))))
+    .project(vec![("who".into(), prop(0, "name"))])
+}
+
+/// The equality twin of [`a_range_index_is_seeded_only_when_it_is_selective`]. It had
+/// the same bug for longer and hid it better: `seek_beats_scan` read as a selectivity
+/// test but, for `Eq`, `seed_fraction` answers `Some` for ANY bucket size (only the
+/// range probe aborts early), so the check was really just "is there an index".
+///
+/// Measured (`simd_index_probe` E75, 200k `Person` rows): declaring a hash index on a
+/// 5-value key made `dept = 'eng'` 2.7x SLOWER (194.7us -> 526.5us) and 2.9x under
+/// GROUP BY. The seek materializes 40k scattered ids and binary-searches each against
+/// the label bucket; the scan streams the column.
+#[test]
+fn an_unselective_equality_does_not_seed_its_index() {
+    let store = indexed_departments(&["dept", "name"]);
+
+    // 20% of the graph — the bucket costs more than the scan it replaces.
+    let broad = eq_plan("dept", "eng");
+    let before = bag(&run(&broad, &store));
+    let opt = optimize_indexed(broad, &store);
+    assert_eq!(before, bag(&run(&opt, &store)), "broad: rows changed");
+    assert!(
+        !has_index_seek(&opt),
+        "a 20% equality must not seed: {opt:?}"
+    );
+
+    // One row — the index is the whole point.
+    let selective = eq_plan("name", "n4096");
+    let before = bag(&run(&selective, &store));
+    let opt = optimize_indexed(selective, &store);
+    assert_eq!(before, bag(&run(&opt, &store)), "selective: rows changed");
+    assert!(
+        has_index_seek(&opt),
+        "a unique-key equality should seed: {opt:?}"
+    );
+}
+
+/// With NO index the decision does not arise, and the seed is still taken: an
+/// `IndexSeek` with nothing behind it degrades to a typed column scan inside
+/// `index_seek_ids`, which is the CHEAPEST of the shapes available here — 194.7us
+/// against 291.7us for the `Filter(Scan)` that declining would leave (E75). Declining
+/// would also give one predicate two plans depending on whether an index happens to
+/// exist on a key it cannot use.
+#[test]
+fn an_unindexed_equality_still_seeds_as_a_scan_fallback() {
+    let store = indexed_departments(&[]);
+    let plan = eq_plan("dept", "eng");
+    let before = bag(&run(&plan, &store));
+    let opt = optimize_indexed(plan, &store);
+    assert_eq!(before, bag(&run(&opt, &store)), "rows changed");
+    assert!(
+        has_index_seek(&opt),
+        "no index to consult, so seed as before: {opt:?}"
+    );
+}
+
+/// The same gate applies to the conjunct picker, which is where the two spellings of
+/// one predicate can part company: `WHERE dept = 'eng'` and `WHERE dept = 'eng' AND
+/// age > 1` must agree about whether the index is worth seeding.
+#[test]
+fn an_unselective_equality_conjunct_does_not_seed_either() {
+    let store = indexed_departments(&["dept"]);
+    let plan = Plan::Scan {
+        label: Some("Person".into()),
+    }
+    .filter(Expr::And(
+        Box::new(cmp(CompareOp::Eq, prop(0, "dept"), Expr::Lit(s("eng")))),
+        Box::new(cmp(CompareOp::Gt, prop(0, "age"), Expr::Lit(n(1.0)))),
+    ))
+    .project(vec![("who".into(), prop(0, "name"))]);
+
+    let before = bag(&run(&plan, &store));
+    let opt = optimize_indexed(plan, &store);
+    assert_eq!(before, bag(&run(&opt, &store)), "rows changed");
+    assert!(
+        !has_index_seek(&opt),
+        "the 20% conjunct must not seed: {opt:?}"
+    );
+    // And it must not fall through to seeding the UNINDEXED range instead, which is
+    // the worse of the two (651.0us against 374.4us as a plain filter, E75).
+    assert!(
+        !has_range_seek(&opt),
+        "no range index, so no range seed: {opt:?}"
+    );
+}
+
+/// A conjunction of RANGES with no range index behind them seeds nothing. The picker
+/// used to have an "any range" rung below its indexed ones, which made
+/// `RangeSeek` fall back to a scan that BOXES every cell — measured 3873.0us against
+/// 3456.9us for the `Filter(Scan)` it replaced (E76). The single-comparison arm had
+/// been gated on `has_range_index` for exactly this reason; the two disagreed.
+#[test]
+fn an_unindexed_range_conjunction_seeds_nothing() {
+    let store = indexed_departments(&[]);
+    let plan = Plan::Scan {
+        label: Some("Person".into()),
+    }
+    .filter(Expr::And(
+        Box::new(cmp(CompareOp::Ge, prop(0, "age"), Expr::Lit(n(28.0)))),
+        Box::new(cmp(CompareOp::Le, prop(0, "age"), Expr::Lit(n(35.0)))),
+    ))
+    .project(vec![("who".into(), prop(0, "name"))]);
+
+    let before = bag(&run(&plan, &store));
+    let opt = optimize_indexed(plan, &store);
+    assert_eq!(before, bag(&run(&opt, &store)), "rows changed");
+    assert!(!has_range_seek(&opt), "no range index, no seed: {opt:?}");
+    assert!(!has_index_seek(&opt), "and no equality to seed: {opt:?}");
+}
+
+/// Within a rung the picker takes the MOST SELECTIVE conjunct, not the first written.
+/// Going by position made conjunct ORDER change the plan: `age >= 30 AND age < 40`
+/// seeded the 70% bound while `age < 40 AND age >= 30` seeded the 40% one, two
+/// spellings of one range measured 1.55x apart (`spelling_probe`, "range AND"). The
+/// Gremlin seed layer has ranked by selectivity since
+/// `the_more_selective_of_two_filters_seeds`; this path still went by position.
+#[test]
+fn the_most_selective_indexed_conjunct_seeds_whatever_the_order() {
+    let mut store = indexed_departments(&[]);
+    store.create_range_index("age");
+
+    // Both bounds are indexed and both are selective enough to seed; `>= 99` takes 1%
+    // of the graph against `>= 90`'s 10%, so it must win from either position.
+    let seeded_bound = |lo: f64, hi: f64| -> f64 {
+        let plan = Plan::Scan {
+            label: Some("Person".into()),
+        }
+        .filter(Expr::And(
+            Box::new(cmp(CompareOp::Ge, prop(0, "age"), Expr::Lit(n(lo)))),
+            Box::new(cmp(CompareOp::Ge, prop(0, "age"), Expr::Lit(n(hi)))),
+        ))
+        .project(vec![("who".into(), prop(0, "name"))]);
+        let before = bag(&run(&plan, &store));
+        let opt = optimize_indexed(plan, &store);
+        assert_eq!(before, bag(&run(&opt, &store)), "rows changed");
+
+        fn bound(p: &Plan) -> Option<f64> {
+            match p {
+                Plan::RangeSeek {
+                    value: crate::value::Value::Num(x),
+                    ..
+                } => Some(*x),
+                Plan::Project { input, .. } | Plan::Filter { input, .. } => bound(input),
+                _ => None,
+            }
+        }
+        bound(&opt).unwrap_or_else(|| panic!("expected a RangeSeek: {opt:?}"))
+    };
+
+    assert_eq!(
+        seeded_bound(90.0, 99.0),
+        99.0,
+        "selective bound written last"
+    );
+    assert_eq!(
+        seeded_bound(99.0, 90.0),
+        99.0,
+        "selective bound written first"
     );
 }
