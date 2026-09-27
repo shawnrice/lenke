@@ -2039,3 +2039,115 @@ fn dump_seed() {
     let opt = optimize_indexed(plan.clone(), &store as &dyn IndexOracle);
     println!("seed {seed}\n\nRAW:\n{plan:?}\n\nOPTIMIZED:\n{opt:?}");
 }
+
+/// A SECOND ORACLE, and the only one here that can judge a PERFORMANCE decision.
+///
+/// `optimizing_preserves_rows_*` compares a plan against its optimized self, so it is blind
+/// to any choice where both branches are correct — and the seek-vs-scan gate is exactly
+/// that. Seeding an index and leaving a `Filter(Scan)` return the same rows, so the rewrite
+/// that added the gate (audit item 18) shipped with NO generative coverage at all: making
+/// `seek_beats_scan` return `true` unconditionally passes every seed.
+///
+/// This asserts the DECISION instead of the rows: a selective predicate must reach the
+/// index, an unselective one must not.
+///
+/// WHY IT IS NOT A TAUTOLOGY. The obvious way to write the expectation is to ask
+/// `seed_fraction` what the selectivity is — which is the planner's own estimator, so the
+/// test would only assert that the planner agrees with itself, and a miscounting
+/// `range_count_capped` would satisfy both sides. Instead the true selectivity is MEASURED
+/// BY EXECUTION: run the UNOPTIMIZED `Filter(Scan)` and count the rows it returns. That is
+/// ground truth by definition, it uses none of `seed_fraction` /
+/// `range_count_capped` / `index_bucket_len`, and it does not require reimplementing
+/// three-valued comparison here (where a mistake in the reimplementation would look like an
+/// engine bug).
+///
+/// The threshold constant itself is shared, deliberately: `SEEK_MAX_FRACTION` is a policy
+/// number, not a computation. What has to be independent is the measurement, and it is.
+#[test]
+fn a_seek_is_chosen_exactly_when_the_predicate_is_selective() {
+    let mut store = fixture_sized(1, 9_000);
+    index_all(&mut store);
+    let live = store.live_node_count();
+    // Below the floor `seek_beats_scan` returns `true` unconditionally and there is no
+    // decision to check — which is why the 24-node fixtures cannot host this test.
+    assert!(
+        live >= super::SEEK_FLOOR_NODES,
+        "the fixture must clear SEEK_FLOOR_NODES or the gate is bypassed: {live}"
+    );
+
+    // `(key, op, literal)` triples over the INDEXED keys, spanning selectivities from one
+    // row in 9,000 to nearly everything, so both sides of the threshold are hit repeatedly.
+    let num = |x: f64| Expr::Lit(Value::Num(x));
+    let str_lit = |s: &str| Expr::Lit(Value::Str(s.into()));
+    let mut cases: Vec<(&str, CompareOp, Expr)> = Vec::new();
+    for b in [0.0, 2.0, 5.0, 10.0, 15.0, 19.0] {
+        cases.push(("age", CompareOp::Gt, num(b)));
+        cases.push(("age", CompareOp::Lt, num(b)));
+        cases.push(("age", CompareOp::Ge, num(b)));
+    }
+    for b in [0.0, 1.0, 3.0, 5.0, 6.0] {
+        cases.push(("score", CompareOp::Gt, num(b)));
+        cases.push(("score", CompareOp::Le, num(b)));
+    }
+    for t in TAGS {
+        cases.push(("tag", CompareOp::Eq, str_lit(t)));
+    }
+    cases.push(("name", CompareOp::Eq, str_lit("n17")));
+    cases.push(("name", CompareOp::Eq, str_lit("nope")));
+
+    let mut checked = 0;
+    let mut near_threshold = 0;
+    for (key, op, lit) in cases {
+        let pred = Expr::Compare {
+            op,
+            left: Box::new(Expr::Prop {
+                slot: 0,
+                key: key.to_string(),
+            }),
+            right: Box::new(lit),
+        };
+        let plan = Plan::Scan {
+            label: Some("Node".into()),
+        }
+        .filter(pred)
+        .project(vec![(
+            "x".into(),
+            Expr::Prop {
+                slot: 0,
+                key: "name".into(),
+            },
+        )]);
+
+        // GROUND TRUTH: how many rows the predicate actually keeps, by running the plan
+        // the optimizer has not touched.
+        let kept = crate::exec::try_run(&plan, &store)
+            .expect("a plain Filter(Scan) cannot trip a guard")
+            .rows
+            .len();
+        let frac = kept as f64 / live as f64;
+
+        // The cap is a `ceil`, so a fraction sitting on the threshold can round either way.
+        // Skip that band rather than encode an off-by-one as the expectation.
+        if (frac - super::SEEK_MAX_FRACTION).abs() < 0.02 {
+            near_threshold += 1;
+            continue;
+        }
+
+        let opt = optimize_indexed(plan, &store as &dyn IndexOracle);
+        let dbg = format!("{opt:?}");
+        let seeks = dbg.contains("RangeSeek") || dbg.contains("IndexSeek");
+        let want = frac <= super::SEEK_MAX_FRACTION;
+        assert_eq!(
+            seeks, want,
+            "{key} {op:?} kept {kept}/{live} = {frac:.4}; expected seek={want}, got {seeks}\n  {dbg}"
+        );
+        checked += 1;
+    }
+
+    // Both verdicts must actually occur, or the assertion above is only ever checking one.
+    assert!(checked >= 20, "too few decisions checked: {checked}");
+    assert!(
+        near_threshold <= 4,
+        "too many cases landed in the skipped band: {near_threshold}"
+    );
+}
