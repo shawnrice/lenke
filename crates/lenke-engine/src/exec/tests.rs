@@ -6637,3 +6637,157 @@ fn filter_over_an_optional_null_slot_drops_rather_than_panics() {
         "no edge carries `w`, and a null edge must drop rather than panic"
     );
 }
+
+/// A frontier `hasLabel` feeding a scalar `count(*)` over a SEEK-seeded hop streams the
+/// last hop instead of building a per-node path-count map for it. The map cost ~16ns an
+/// insert and, for a 1%-seeded 1-hop count over 100k nodes, was 8x the rest of the
+/// query (143.9us against 16.4us for the same count with no label to check); folding it
+/// took that to 34.1us.
+///
+/// The seed must be a SEEK. A bare labelled `Scan` seed is claimed earlier in the
+/// aggregate ladder by `try_fused_hop_mask_agg`, which sweeps the whole edge type — the
+/// right strategy when the seed is everything and the wrong one when it is 1%, which is
+/// why the two coexist. Tests written against a `Scan` seed silently exercise the other
+/// path: the first draft of these did, and passed with this fold poisoned.
+///
+/// Streaming a hop is where multiplicity gets lost, so each case pins the count against
+/// ENUMERATING the same pattern, not against a constant.
+#[cfg(test)]
+fn seeded_frontier_fixture() -> Store {
+    let mut b = Builder::default();
+    // `k` is the seed key; only s0/s1 carry the seeded value, so the seek is selective.
+    let s0 = b.node(&["Src"], &[("k", Value::Str("go".into()))]);
+    let s1 = b.node(&["Src"], &[("k", Value::Str("go".into()))]);
+    let _skip = b.node(&["Src"], &[("k", Value::Str("no".into()))]);
+    let t0 = b.node(&["Tag"], &[("n", Value::Str("t0".into()))]);
+    let t1 = b.node(&["Other"], &[("n", Value::Str("t1".into()))]);
+    let t2 = b.node(&["Tag"], &[("n", Value::Str("t2".into()))]);
+    // t3 carries `Tag` as a SECOND label — a primary-label-only test would miss it.
+    let t3 = b.node(&["Other", "Tag"], &[("n", Value::Str("t3".into()))]);
+    // s0 reaches t2 TWICE (a parallel edge — two distinct paths).
+    b.edge(s0, t0, "R");
+    b.edge(s0, t1, "R");
+    b.edge(s0, t2, "R");
+    b.edge(s0, t2, "R");
+    b.edge(s1, t3, "R");
+    b.edge(s1, t1, "R");
+    b.edge(s1, t0, "OTHER");
+    b.edge(_skip, t0, "R"); // reachable only if the seek leaks a non-matching seed
+    let mut store = b.build();
+    store.create_index("k");
+    store
+}
+
+/// `(count(*), enumerated row count)` for a pattern, so a fold that loses multiplicity
+/// disagrees with the rows it claims to be counting.
+#[cfg(test)]
+fn seeded_count_and_rows(store: &Store, pattern: &str, project: &str) -> (f64, usize) {
+    let tail = "WHERE a.k = 'go'";
+    // OPTIMIZE, or there is no seek and the plan never reaches the folded path at all —
+    // a bare `Filter(Scan)` seed is served by `try_fused_hop_mask_agg` instead. The first
+    // draft of these tests skipped this and passed with the fold poisoned.
+    let plan = |q: String| crate::opt::optimize_indexed(crate::gql::parse(&q).unwrap(), store);
+    let c = plan(format!("MATCH {pattern} {tail} RETURN count(*) AS c"));
+    let rows = plan(format!("MATCH {pattern} {tail} RETURN {project} AS n"));
+    let got = match run(&c, store).rows[0][0] {
+        Value::Num(x) => x,
+        ref other => panic!("count not numeric: {other:?}"),
+    };
+    (got, run(&rows, store).rows.len())
+}
+
+#[test]
+fn a_seeded_frontier_label_count_matches_enumerating_the_same_pattern() {
+    let store = seeded_frontier_fixture();
+    let cnt = |pat: &str| seeded_count_and_rows(&store, pat, "b.n");
+
+    // Partial membership, a parallel edge, and a secondary label.
+    let (c, rows) = cnt("(a:Src)-[:R]->(b:Tag)");
+    assert_eq!(c, rows as f64, "count disagreed with enumeration");
+    assert_eq!(c, 4.0, "s0->t0, s0->t2 twice, s1->t3");
+
+    // The complement, to catch a fold that counts every neighbour.
+    let (c, rows) = cnt("(a:Src)-[:R]->(b:Other)");
+    assert_eq!(c, rows as f64);
+    assert_eq!(c, 3.0, "s0->t1, s1->t1, s1->t3");
+
+    // No frontier label: every :R edge out of a seeded Src.
+    let (c, rows) = cnt("(a:Src)-[:R]->(b)");
+    assert_eq!(c, rows as f64);
+    assert_eq!(c, 6.0);
+
+    // A label nothing carries, and an edge type nothing carries.
+    assert_eq!(cnt("(a:Src)-[:R]->(b:Nope)").0, 0.0);
+    assert_eq!(cnt("(a:Src)-[:NOPE]->(b:Tag)").0, 0.0);
+}
+
+/// `IsLabeled` is ANY-of, so a label every LIVE node carries is a tautology and the fold
+/// skips both the membership bitset and the per-neighbour test (80.1us to 34.1us). The
+/// short-circuit compares bucket length against the LIVE node count, so a deletion must
+/// not let a partial label pass as universal.
+#[test]
+fn a_universal_label_short_circuit_respects_deletions() {
+    let mut b = Builder::default();
+    let s = b.node(&["Every"], &[("k", Value::Str("go".into()))]);
+    let t0 = b.node(&["Every", "Tag"], &[("n", Value::Str("t0".into()))]);
+    let t1 = b.node(&["Every"], &[("n", Value::Str("t1".into()))]);
+    b.edge(s, t0, "R");
+    b.edge(s, t1, "R");
+    let mut store = b.build();
+    store.create_index("k");
+
+    let pat = |l: &str| format!("(a:Every)-[:R]->(b:{l})");
+    assert_eq!(
+        seeded_count_and_rows(&store, &pat("Every"), "b.n"),
+        (2.0, 2),
+        "a universal label counts every path"
+    );
+    assert_eq!(
+        seeded_count_and_rows(&store, &pat("Tag"), "b.n"),
+        (1.0, 1),
+        "a partial label is still tested"
+    );
+
+    // Delete the one target WITHOUT `Tag`. `Tag`'s bucket is now as long as
+    // `node_count - 1` — the arithmetic the short-circuit must not use in place of the
+    // live count, which is 2 (s and t0), not 1.
+    store.delete_node(t1);
+    assert_eq!(
+        seeded_count_and_rows(&store, &pat("Tag"), "b.n"),
+        (1.0, 1),
+        "Tag covers 1 of 2 live nodes and must not become universal"
+    );
+    assert_eq!(
+        seeded_count_and_rows(&store, &pat("Every"), "b.n"),
+        (1.0, 1),
+        "and Every is still universal"
+    );
+}
+
+/// Only the LAST hop is folded; every earlier hop keeps its per-node map, which is what
+/// stops a deep chain from enumerating an exploding path multiset. So a two-hop count
+/// has to carry path counts THROUGH the fold — `paths * matches`, not `matches`.
+#[test]
+fn a_multi_hop_frontier_label_count_keeps_its_multiplicities() {
+    let mut b = Builder::default();
+    let a = b.node(&["A"], &[("k", Value::Str("go".into()))]);
+    let m0 = b.node(&["M"], &[("n", Value::Str("m0".into()))]);
+    let m1 = b.node(&["M"], &[("n", Value::Str("m1".into()))]);
+    let z0 = b.node(&["Tag"], &[("n", Value::Str("z0".into()))]);
+    let z1 = b.node(&["Plain"], &[("n", Value::Str("z1".into()))]);
+    // TWO parallel a->m0 edges, so m0 carries a path count of 2 into the folded hop.
+    // Without one node holding more than one path, dropping the multiplier would still
+    // give the right answer and the test would not notice.
+    b.edge(a, m0, "R");
+    b.edge(a, m0, "R");
+    b.edge(a, m1, "R");
+    b.edge(m0, z0, "R");
+    b.edge(m0, z1, "R");
+    b.edge(m1, z0, "R");
+    let mut store = b.build();
+    store.create_index("k");
+
+    let (c, rows) = seeded_count_and_rows(&store, "(a:A)-[:R]->(m:M)-[:R]->(z:Tag)", "z.n");
+    assert_eq!(c, rows as f64, "count disagreed with enumeration");
+    assert_eq!(c, 3.0, "a->m0->z0 twice (parallel a->m0) plus a->m1->z0");
+}

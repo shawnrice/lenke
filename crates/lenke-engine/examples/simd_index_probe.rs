@@ -1854,6 +1854,97 @@ fn main() {
             println!("  {label:<40} {us:>11.1} {rows:>8}");
         }
     }
+
+    // E77 ------------------------------------------------------------------
+    //
+    // `spelling_probe` has flagged two 8.4x groups since it was written, and both turned
+    // out to be one thing: a frontier `hasLabel` above a hop, feeding `count(*)`. The
+    // labelled spelling took 143.9us where the unlabelled one took 16.4us, and the
+    // orientation work had blamed a residual label check for defeating the degree-sum
+    // shortcut. It was not the check. It was that the labelled shape routes to
+    // `try_frontier_count`, which built a per-node path-count map for the LAST hop and
+    // then summed it — a ~5,000-entry FnvMap scatter at ~16ns an insert, for a total the
+    // map was never needed to produce.
+    //
+    // This measures the three costs separately, because the first fix attempt aimed at
+    // the wrong one (the membership bitset, which barely moves the number):
+    //
+    //   * no frontier label at all, the degree-sum floor
+    //   * a frontier label covering EVERY live node (a tautology)
+    //   * a frontier label covering 1% (real work: a test per neighbour)
+    //
+    // If the label's size drives the cost, the bitset is to blame. If it does not, the
+    // map is. Rerun this before touching either.
+    section("E77: what does a frontier hasLabel cost a count(*)?");
+
+    {
+        // Pinned at 100k, NOT `rows`, so the numbers here are the same ones quoted in
+        // `try_frontier_count`'s comment and in the audit. A frontier-label count scales
+        // with the seeded fraction times the degree, so a different node count would
+        // print different absolute figures for the same code.
+        const N: u32 = 100_000;
+        let tagged = |every: u32| -> lenke_engine::store::Store {
+            let mut b = lenke_engine::store::Builder::default();
+            for i in 0..N {
+                let labels: &[&str] = if i % every == 0 {
+                    &["Person", "Tagged"]
+                } else {
+                    &["Person"]
+                };
+                b.node(
+                    labels,
+                    &[
+                        (
+                            "name",
+                            lenke_engine::value::Value::Str(format!("n{i}").into()),
+                        ),
+                        ("age", lenke_engine::value::Value::Num(f64::from(i % 100))),
+                    ],
+                );
+            }
+            let mut rng = harness::Lcg::seeded();
+            for i in 0..N {
+                for _ in 0..5 {
+                    b.edge(i, rng.next(N), "KNOWS");
+                }
+            }
+            let mut store = b.build();
+            store.create_range_index("age");
+            store
+        };
+
+        println!("  before the last-hop fold: 16.4 / 143.9 / 105.0us for the three rows below");
+        println!("  {:<58} {:>9} {:>8}", "query", "us", "vs floor");
+        for (label, every) in [("Tagged on EVERY node", 1u32), ("Tagged on 1%", 100)] {
+            let store = tagged(every);
+            let mut floor = 0.0;
+            for (what, q) in [
+                (
+                    "no frontier label (degree-sum floor)",
+                    "MATCH (a:Person)-[:KNOWS]->(b) WHERE a.age > 98 RETURN count(*) AS c",
+                ),
+                (
+                    "frontier label = all live nodes",
+                    "MATCH (a:Person)-[:KNOWS]->(b:Person) WHERE a.age > 98 RETURN count(*) AS c",
+                ),
+                (
+                    "frontier label = the Tagged bucket",
+                    "MATCH (a:Person)-[:KNOWS]->(b:Tagged) WHERE a.age > 98 RETURN count(*) AS c",
+                ),
+            ] {
+                if let Ok((us, _)) = harness::time_query(q, false, &store, cfg.reps.min(5)) {
+                    if floor == 0.0 {
+                        floor = us;
+                    }
+                    let ratio = us / floor;
+                    println!(
+                        "  {:<58} {us:>9.1} {ratio:>7.2}x",
+                        format!("{label}: {what}")
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// The optimized plan as an operator chain, for printing next to a measurement.

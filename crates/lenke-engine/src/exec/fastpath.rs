@@ -1737,6 +1737,90 @@ pub(super) fn try_frontier_count(
     ) {
         return None;
     }
+    // `count(*)` needs only the TOTAL, so building a per-node map for the LAST hop is
+    // pure waste — and it is where the time goes. Stream that hop instead: for each
+    // node still carrying paths, count its label-matching neighbours and accumulate
+    // `paths * matches`. Every earlier hop still needs its map (that is what keeps a
+    // deep chain from enumerating an exploding path multiset); only the last is folded.
+    //
+    // Measured, 100k `Person` nodes at degree 5, seeded on a 1%-selective range:
+    //
+    //   ```text
+    //   (a:Person)-[:KNOWS]->(b)          16.4us   no frontier label — try_fused_count
+    //   (a:Person)-[:KNOWS]->(b:Person)  143.9us   the map, then summed
+    //   (a:Person)-[:KNOWS]->(b:Tagged)  105.0us   same, with a 1%-sized label
+    //   ```
+    //
+    // The label's SIZE barely moves it (135.8us at 100% membership against 105.0us at
+    // 1%), so the membership bitset was never the cost: the ~5,000-entry `FnvMap`
+    // scatter was, at ~16ns an insert. Streaming the hop removes it.
+    //
+    // Byte-identical for the same reason the sparse/dense switch is: path counts are
+    // exact integers below 2^53, so `paths * matches` is exact and the f64 sum does not
+    // depend on the order it is accumulated in.
+    let streamable = match input {
+        Plan::Filter {
+            input: hop,
+            pred: Expr::IsLabeled { slot, labels },
+        } => match &**hop {
+            Plan::Expand {
+                input: below,
+                from,
+                dir,
+                edge_label,
+                double_loops,
+                ..
+            } if *slot + 1 == chain_width(hop)? && *from + 1 == chain_width(below)? => {
+                Some((below, *dir, edge_label, *double_loops, labels))
+            }
+            _ => None,
+        },
+        _ => None,
+    };
+    if let Some((below, dir, edge_label, double_loops, labels)) = streamable {
+        let want = match want_etypes(store, edge_label) {
+            Ok(w) => w,
+            Err(()) => return Some(scalar_num(0.0)), // unknown edge type → no paths
+        };
+        let prev = frontier_counts(below, store)?;
+        // A label that EVERY live node carries is a tautology — `IsLabeled` is ANY-of, so
+        // one such label is enough. Recognizing it costs a length comparison and removes
+        // both the bitset and the per-neighbour test: 80.1us to 34.1us on a graph whose
+        // nodes are all `Person`. Buckets hold only live ids, so the comparison is exact.
+        // (34.1us and not the 16.4us of the no-label count because this path still WALKS
+        // the adjacency, where `try_fused_count` reads a degree off the CSR offsets.)
+        //
+        // The alternative to a bitset for the non-universal case is a `binary_search` per
+        // neighbour, which the row evaluator switches to for a small frontier. Tried here
+        // and REJECTED: it took the 1%-selective 1-hop count from 142.3us to 259.0us,
+        // because ~5,000 cache-missing searches cost more than filling the bitset ever
+        // does (measured at both 1% and 100% label membership).
+        let live = store.live_node_count();
+        let universal = live > 0
+            && labels
+                .iter()
+                .any(|l| store.nodes_with_label(l).len() == live);
+        let mut member = Vec::new();
+        if !universal {
+            member = vec![false; store.node_count()];
+            for l in labels {
+                for &id in store.nodes_with_label(l) {
+                    member[id as usize] = true;
+                }
+            }
+        }
+        let mut total = 0f64;
+        prev.for_each(|v, c| {
+            let mut hits = 0f64;
+            for_each_nbr(store, v, dir, &want, double_loops, |nbr, _| {
+                if universal || member[nbr as usize] {
+                    hits += 1.0;
+                }
+            });
+            total += c * hits;
+        });
+        return Some(scalar_num(total));
+    }
     let counts = frontier_counts(input, store)?;
     let mut total = 0f64;
     counts.for_each(|_, c| total += c);
