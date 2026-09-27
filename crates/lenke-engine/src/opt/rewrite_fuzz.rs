@@ -977,8 +977,17 @@ fn gen_chain(rng: &mut Lcg, hops: usize) -> Gen {
     // The far-side predicate: what orientation seeds from, when it fires. The last
     // slot is always a NODE — a bound-edge hop appends the edge first and the node
     // second — so a node predicate is right here regardless of how the hop was made.
-    let selective = rng.chance(3, 4);
-    g.plan = g.plan.filter(gen_anchor_pred(rng, g.width - 1, selective));
+    //
+    // SOMETIMES OMITTED, and this one is load-bearing rather than tidying. With a far-side
+    // predicate always present, every generated pattern is rooted at a `Filter`, and the
+    // planner's `Expand`-rooted arm — which is what re-seeds
+    // `(a:L)-[:T]->(b:M)-[:T]->(c)`, the far node written with no label — had NO fuzz
+    // coverage at all. Verified both ways: poisoning that arm's pivot left every seed
+    // passing before this change and fails after it.
+    if rng.chance(3, 4) {
+        let selective = rng.chance(3, 4);
+        g.plan = g.plan.filter(gen_anchor_pred(rng, g.width - 1, selective));
+    }
 
     // A MIXED conjunction over the whole chain, which has to be split per conjunct on
     // the way down — each hop keeping the part that reads the slot it appends and
@@ -1653,6 +1662,7 @@ fn the_generator_actually_reaches_the_rewrites() {
     let (mut paged, mut num_agg, mut unions) = (0, 0, 0);
     let (mut shortest, mut repeat_group, mut optional) = (0, 0, 0);
     let mut split = 0;
+    let mut expand_rooted = 0;
     let n = 2_000;
 
     for seed in 0..n {
@@ -1726,6 +1736,35 @@ fn the_generator_actually_reaches_the_rewrites() {
                 _ => {}
             }
         }
+        // An EXPAND-ROOTED pattern: nothing above the last hop, so the planner reaches it
+        // through its `Expand` arm rather than a `Filter`. That arm had no coverage until
+        // `gen_chain` started sometimes omitting the far-side predicate — poisoning its
+        // pivot left every seed passing before that and fails after, which is the only
+        // reason to believe this counter matters.
+        fn pattern_root_is_expand(p: &Plan) -> bool {
+            match p {
+                Plan::Expand { .. } => true,
+                Plan::Project { input, .. }
+                | Plan::Aggregate { input, .. }
+                | Plan::OrderPage { input, .. }
+                | Plan::Distinct { input } => pattern_root_is_expand(input),
+                _ => false,
+            }
+        }
+        // Counted as the INTERSECTION that actually guards the arm — Expand-rooted AND
+        // re-seeded — not merely the shape. 69/2000 plans were already Expand-rooted before
+        // `gen_chain` started omitting the far predicate, and the poison still passed,
+        // because none of those 69 also had a seedable interior pivot that cleared the
+        // selectivity gate. A floor on the shape alone would have been satisfied by plans
+        // that exercise nothing.
+        if pattern_root_is_expand(&plan)
+            && has(&opt, |p| {
+                matches!(p, Plan::RangeSeek { .. } | Plan::IndexSeek { .. })
+            })
+        {
+            expand_rooted += 1;
+        }
+
         let mut froms = Vec::new();
         from_slots(&opt, &mut froms);
         let mut seen = froms.clone();
@@ -1816,6 +1855,17 @@ fn the_generator_actually_reaches_the_rewrites() {
     // quietly stopped exercising the rewrites it exists to test.
     assert!(seeks > n / 25, "too few plans seed an index: {seeks}/{n}");
     assert!(oriented > n / 20, "too few plans orient: {oriented}/{n}");
+    // Deliberately `> 0` and not a fraction. This intersection is THIN — exactly 5 of
+    // these 2,000 deterministic seeds, against 3 before `gen_chain` began omitting the
+    // far-side predicate — so a proportional floor would be a number picked to pass rather
+    // than a measurement. What is worth catching is the coverage going to ZERO, which is a
+    // generator change quietly removing the only plans that exercise the planner's
+    // `Expand`-rooted arm. The counts are here so the next reader knows how thin it is.
+    assert!(
+        expand_rooted > 0,
+        "NO Expand-rooted pattern re-seeds: {expand_rooted}/{n} — the planner's Expand arm \
+         is then completely unexercised by this fuzzer"
+    );
     assert!(
         split > n / 200,
         "too few plans re-seed at a MIDDLE slot (two hops sharing a `from`): {split}/{n} — \

@@ -1975,3 +1975,92 @@ fn a_split_walks_both_branches_of_a_three_hop_chain() {
         "slots crossed"
     );
 }
+
+/// A pattern with NOTHING above its last hop is rooted at an `Expand`, not a `Filter` —
+/// which is what `MATCH (a:N)-[:R]->(b:N)-[:R]->(c)` lowers to, the far node carrying no
+/// label. Until `orient_scan` grew an arm for that shape it was never considered at all:
+/// 648.8us against the 150.4us it gets now, a 4.31x (E81). It ends up FASTER than the
+/// labelled spelling, because there is no residual label check above the hop.
+#[test]
+fn an_expand_rooted_pattern_re_seeds_at_its_middle() {
+    let store = split_fixture();
+    // No filter above the last hop, so the plan's root below Project is an Expand.
+    let plan = Plan::Scan {
+        label: Some("N".into()),
+    }
+    .expand(0, Dir::Out, &["R".to_string()])
+    .filter(cmp(CompareOp::Gt, prop(1, "age"), Expr::Lit(n(98.0))))
+    .expand(1, Dir::Out, &["R".to_string()])
+    .project(vec![
+        ("a".into(), prop(0, "name")),
+        ("b".into(), prop(1, "name")),
+        ("c".into(), prop(2, "name")),
+    ]);
+
+    let raw = bag(&run(&plan, &store));
+    assert_eq!(raw.len(), 4, "two inbound x two outbound: {raw:?}");
+    let opt = optimize_indexed(plan, &store);
+    assert_eq!(raw, bag(&run(&opt, &store)), "rows changed");
+    assert!(has_range_seek(&opt), "should re-seed: {opt:?}");
+    for row in &run(&opt, &store).rows {
+        let cell = |i: usize| format!("{:?}", row[i]);
+        assert!(cell(0).contains("in"), "slot a held {}", cell(0));
+        assert_eq!(cell(1), "Str(\"pivot\")", "slot b");
+        assert!(cell(2).contains("out"), "slot c held {}", cell(2));
+    }
+}
+
+/// The same shape with the pivot one in from the START of a THREE-hop chain: one hop to
+/// its left and TWO to its right, so the right branch has to keep walking from the slot it
+/// just appended. Getting that wrong crosses the two right-hand slots while keeping the row
+/// count, which is why the names are asserted individually.
+#[test]
+fn an_expand_rooted_split_walks_two_hops_to_its_right() {
+    let mut b = Builder::default();
+    let start = b.node(&["N"], &[("name", s("start")), ("age", n(1.0))]);
+    let pivot = b.node(&["N"], &[("name", s("pivot")), ("age", n(99.0))]);
+    let mid = b.node(&["N"], &[("name", s("mid")), ("age", n(2.0))]);
+    let end = b.node(&["N"], &[("name", s("end")), ("age", n(3.0))]);
+    for i in 0..40u32 {
+        b.node(&["N"], &[("name", s(&format!("pad{i}"))), ("age", n(0.0))]);
+    }
+    b.edge(start, pivot, "R");
+    b.edge(pivot, mid, "R");
+    b.edge(mid, end, "R");
+    let mut store = b.build();
+    store.create_range_index("age");
+
+    let plan = Plan::Scan {
+        label: Some("N".into()),
+    }
+    .expand(0, Dir::Out, &["R".to_string()])
+    .filter(cmp(CompareOp::Gt, prop(1, "age"), Expr::Lit(n(98.0))))
+    .expand(1, Dir::Out, &["R".to_string()])
+    .expand(2, Dir::Out, &["R".to_string()])
+    .project(vec![
+        ("a".into(), prop(0, "name")),
+        ("b".into(), prop(1, "name")),
+        ("c".into(), prop(2, "name")),
+        ("d".into(), prop(3, "name")),
+    ]);
+
+    let raw = bag(&run(&plan, &store));
+    assert_eq!(raw.len(), 1, "exactly one path: {raw:?}");
+    let opt = optimize_indexed(plan, &store);
+    assert_eq!(raw, bag(&run(&opt, &store)), "rows changed");
+    assert!(has_range_seek(&opt), "should re-seed: {opt:?}");
+    let cells: Vec<String> = run(&opt, &store).rows[0]
+        .iter()
+        .map(|v| format!("{v:?}"))
+        .collect();
+    assert_eq!(
+        cells,
+        vec![
+            "Str(\"start\")".to_string(),
+            "Str(\"pivot\")".to_string(),
+            "Str(\"mid\")".to_string(),
+            "Str(\"end\")".to_string()
+        ],
+        "slots crossed"
+    );
+}

@@ -2646,23 +2646,35 @@ fn orient_scan(plan: &Plan, idx: &dyn IndexOracle) -> Option<(bool, usize)> {
                 input: input.clone(),
                 pred: pred.clone(),
             };
-
-            // Pivot candidates, in the order they are worth trying: the FAR end first
-            // (classic orientation, which keeps the chain linear), then any INTERIOR slot
-            // whose own predicate can seed — a mid-pattern split. Each is a trial rewrite
-            // through `split_chain`, never a re-derivation of its conditions.
-            for (slot, p) in split_candidates(&pattern) {
-                if !seedable(&p, idx) || !orient_is_worth_it(&p, slot, idx) {
-                    continue;
-                }
-                if split_chain(pattern.clone(), slot).is_some() {
-                    return Some((true, slot));
-                }
-            }
-            None
+            best_pivot(&pattern, idx).map(|slot| (true, slot))
         }
+        // A pattern with NOTHING above its last hop is rooted here rather than at a
+        // `Filter`. `MATCH (a:L)-[:T]->(b:M)-[:T]->(c) WHERE b.k > v` — far node written
+        // without a label — is exactly that shape, and until this arm existed it was never
+        // considered: 648.8us against the 203.0us the same query gets when `c` carries a
+        // label (E81).
+        Plan::Expand { .. } => best_pivot(plan, idx).map(|slot| (true, slot)),
         _ => None,
     }
+}
+
+/// The slot to re-seed this pattern at, or `None` to leave it as written.
+///
+/// Candidates come from [`split_candidates`], FAR END FIRST, and each is a TRIAL REWRITE
+/// through [`split_chain`] rather than a re-derivation of its conditions. Those two were
+/// once derived independently and drifted: the decision said yes, the rewrite declined,
+/// and the consumers above were renamed around a pattern that never moved — a half-applied
+/// rename, which is a silently wrong answer rather than a failure.
+fn best_pivot(pattern: &Plan, idx: &dyn IndexOracle) -> Option<usize> {
+    for (slot, p) in split_candidates(pattern) {
+        if !seedable(&p, idx) || !orient_is_worth_it(&p, slot, idx) {
+            continue;
+        }
+        if split_chain(pattern.clone(), slot).is_some() {
+            return Some(slot);
+        }
+    }
+    None
 }
 
 /// Apply the reversal, renaming only the expressions that read the pattern's slots.
@@ -2796,6 +2808,22 @@ fn orient_apply(plan: Plan, far: usize) -> (Plan, bool) {
                 open,
             )
         }
+        // The `Expand`-rooted pattern, mirroring `orient_scan`'s arm for it.
+        //
+        // The boundary between "the pattern" and "a residual filter above it" is now
+        // decided in opposite orders by the two functions — `orient_scan`'s `Filter` arm
+        // recurses first and treats itself as the pattern only if that fails, while this
+        // one tries the rewrite on itself first. That looked like a drift hazard worth
+        // refusing the arm over, and it is not one: whichever side absorbs the filter, the
+        // subtree comes back rebuilt with `open = true` and the parent renames only its OWN
+        // expressions, so the two decompositions differ in where the residual predicate
+        // sits and not in the rows or the rename. The fuzzer is the evidence, not this
+        // paragraph — `optimizing_preserves_rows_with_indexes` is what would show a
+        // mismatch, and a poisoned branch confirms it reaches here.
+        plan @ Plan::Expand { .. } => match split_chain(plan.clone(), far) {
+            Some((reseeded, _)) => (reseeded, true),
+            None => (plan, false),
+        },
         other => (other, false),
     }
 }

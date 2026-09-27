@@ -2221,9 +2221,10 @@ fn main() {
         let mut store = harness::social_store(N, 5);
         store.create_range_index("age");
 
-        println!("  before this change:");
+        println!("  before these changes:");
         println!("    middle-of-2 forwards 678.8   hand-split 209.7   (3.24x apart)");
         println!("    middle-of-3 forwards 1523.3  hand-split 1135.6");
+        println!("    middle-of-2 with an unlabelled far node 648.8 (no arm reached it)");
         println!("  {:<44} {:>9} {:>8}", "query", "us", "rows");
         for (label, q) in [
             (
@@ -2252,8 +2253,10 @@ fn main() {
                 "far-end, hand-written backwards",
                 "MATCH (c:Person)<-[:KNOWS]-(b:Person)<-[:KNOWS]-(a:Person) WHERE c.age > 98 RETURN count(*) AS n",
             ),
-            // The far node UNLABELLED leaves the pattern rooted at an `Expand`, which
-            // `orient_scan` does not reach — so this one still does not split. STILL OPEN.
+            // The far node UNLABELLED leaves the pattern rooted at an `Expand` rather than
+            // a `Filter`. That needed its own arm in `orient_scan`/`orient_apply`; with it,
+            // this is the FASTEST of the lot, because there is no residual label check
+            // above the hop. 648.8us before that arm existed.
             (
                 "middle-of-2, far node unlabelled",
                 "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c) WHERE b.age > 98 RETURN count(*) AS n",
