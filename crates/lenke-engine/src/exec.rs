@@ -3348,35 +3348,38 @@ fn for_each_nbr(
     // (`double_loops`) — the self-loop is an out-edge AND an in-edge. Directed walks
     // touch one index, so they keep it either way.
     let drop_loop = matches!(dir, Dir::Both) && !double_loops;
-    // A SINGLE-type hop over an indexed store seeks the type bucket directly
-    // (O(matching), not O(degree)) — the whole point of the opt-in edge-type index.
-    // A disjunction (`want.len() >= 2`) must NOT union buckets: that reorders vs the
-    // flat stored-order scan and would break byte-identity, so it falls through.
-    // The type-index bucket keys on an edge's PRIMARY label only, so it cannot see
-    // a `:Y` match on a multi-label edge whose first label is `X`. Skip it whenever
-    // the graph has any multi-label edge (rare) and fall to the flat scan below,
-    // which consults the secondary labels.
+    // A SINGLE-type hop can read just this node's type-`w` edges instead of filtering its
+    // whole adjacency. TWO structures can serve that, and the order between them matters:
+    //
+    //   1. the per-type CSR overlay — a contiguous slice of one shared array, addressed by
+    //      an offset pair;
+    //   2. the opt-in edge-type INDEX — a per-node `HashMap<etype, Vec<Adj>>`, so a hash
+    //      lookup plus a pointer chase into a small scattered allocation.
+    //
+    // The CSR wins, and the index used to be tried first, which meant DECLARING the index
+    // made a typed hop slower. Measured on 50k nodes at degree 32 across 8 edge types with
+    // the wanted type 1 in 32 (E82):
+    //
+    //   ```text
+    //   -[:RARE]-> count       no index 151.0us   indexed 306.8us   2.03x SLOWER
+    //   -[:RARE]-> projected   no index 279.7us   indexed 502.0us   1.79x SLOWER
+    //   ```
+    //
+    // Both are built by walking `out_adj` in order, so they yield the same edges in the same
+    // order and the precedence is a pure cost choice. The index is still the fallback, and
+    // not vestigially: the CSR overlay is dropped by any adjacency write and rebuilt in bulk,
+    // while the index is maintained incrementally — so on a write-heavy store the CSR returns
+    // `None` and the index is what keeps a typed hop off the flat scan.
+    //
+    // Two DELIBERATE declines, both measured before being left alone (E82):
+    //
+    //   * a type DISJUNCTION (`want.len() >= 2`) must not union buckets — that reorders
+    //     against the flat stored-order scan and would break byte-identity. It costs
+    //     nothing anyway: 963.0us against 953.5us indexed, because both walk the adjacency.
+    //   * a graph with ANY multi-label edge skips BOTH structures, since each keys on an
+    //     edge's primary label and would miss a `:Y` match on an `[X, Y]` edge. The flat
+    //     scan below consults the secondary set.
     if let [w] = want {
-        if store.has_edge_type_index() && !store.has_multi_label_edges() {
-            if matches!(dir, Dir::Out | Dir::Both) {
-                for a in store.out_typed(v, *w) {
-                    f(a.nbr, a.eid);
-                }
-            }
-            if matches!(dir, Dir::In | Dir::Both) {
-                for a in store.in_typed(v, *w) {
-                    if !(drop_loop && a.nbr == v) {
-                        f(a.nbr, a.eid);
-                    }
-                }
-            }
-            return;
-        }
-        // Per-type CSR fast path: a single-type hop over a single-label graph iterates ONLY
-        // this node's type-`w` edges (a contiguous slice in out_adj order — byte-identical to
-        // the flat scan filtering `etype == w`), so a sparse type does not pay the dense
-        // types' degree. Available once the CSR overlay is fresh; a stale overlay returns None
-        // and we fall through to the flat scan below.
         if !store.has_multi_label_edges() {
             match dir {
                 Dir::Out => {
@@ -3412,6 +3415,23 @@ fn for_each_nbr(
                         return;
                     }
                 }
+            }
+            // The CSR overlay is stale (an adjacency write since the last rebuild); the
+            // incrementally-maintained index still answers.
+            if store.has_edge_type_index() {
+                if matches!(dir, Dir::Out | Dir::Both) {
+                    for a in store.out_typed(v, *w) {
+                        f(a.nbr, a.eid);
+                    }
+                }
+                if matches!(dir, Dir::In | Dir::Both) {
+                    for a in store.in_typed(v, *w) {
+                        if !(drop_loop && a.nbr == v) {
+                            f(a.nbr, a.eid);
+                        }
+                    }
+                }
+                return;
             }
         }
     }
@@ -3518,6 +3538,18 @@ fn slice_degree(store: &Store, v: u32, dir: Dir, want: &[u32], all_types: bool) 
     if store.has_multi_label_edges() {
         return None; // a secondary label can match, and the per-type structures miss it
     }
+    // Same precedence as `for_each_nbr`: the CSR span first, the index bucket only when the
+    // overlay is stale. Reading them the other way round is what made declaring an edge-type
+    // index cost a typed hop 2x (E82), and this function must mirror that one exactly or it
+    // returns a degree for a different edge set.
+    let csr = if out {
+        store.out_typed_csr(v, *w)
+    } else {
+        store.in_typed_csr(v, *w)
+    };
+    if let Some(sl) = csr {
+        return Some(sl.len());
+    }
     if store.has_edge_type_index() {
         return Some(if out {
             store.out_typed(v, *w).len()
@@ -3525,11 +3557,7 @@ fn slice_degree(store: &Store, v: u32, dir: Dir, want: &[u32], all_types: bool) 
             store.in_typed(v, *w).len()
         });
     }
-    if out {
-        store.out_typed_csr(v, *w).map(<[_]>::len)
-    } else {
-        store.in_typed_csr(v, *w).map(<[_]>::len)
-    }
+    None
 }
 
 /// Slot count of a pure Scan/Expand chain; `None` for anything else (Filter,

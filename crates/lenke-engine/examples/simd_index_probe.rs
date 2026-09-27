@@ -2274,6 +2274,91 @@ fn main() {
             }
         }
     }
+
+    // E82 ------------------------------------------------------------------
+    //
+    // Does the EDGE-TYPE index earn its keep, and what do its two documented declines cost?
+    //
+    // A single-type hop can read its edges from the per-type CSR overlay (a contiguous slice
+    // of one shared array) or from the opt-in edge-type index (a per-node
+    // `HashMap<etype, Vec<Adj>>`, so a hash lookup plus a scattered allocation). The index
+    // used to be tried FIRST, which meant declaring it made a typed hop slower — the same
+    // shape as the range and hash index bugs earlier in this sweep, on a third index.
+    //
+    // The declines, both measured here rather than assumed:
+    //   * a type DISJUNCTION falls to the flat scan, to keep stored-order byte-identity.
+    //   * a graph with ANY multi-label edge skips BOTH structures, because each keys on an
+    //     edge's primary label and would miss a `:Y` match on an `[X, Y]` edge.
+    //
+    // The fixture is built to make a typed structure matter: high degree spanning 8 types
+    // with the wanted type 1 in 32. A low-degree single-type fixture can only show a loss.
+    section("E82: the edge-type index, and what its declines cost");
+
+    {
+        const N: u32 = 50_000;
+        const DEG: u32 = 32;
+        const TYPES: [&str; 8] = ["T0", "T1", "T2", "T3", "T4", "T5", "T6", "RARE"];
+        let build = |multi: bool, index: bool| -> lenke_engine::store::Store {
+            let mut b = lenke_engine::store::Builder::default();
+            for i in 0..N {
+                b.node(
+                    &["N"],
+                    &[("n", lenke_engine::value::Value::Num(f64::from(i)))],
+                );
+            }
+            let mut rng = harness::Lcg::seeded();
+            for i in 0..N {
+                for d in 0..DEG {
+                    let t = if (i * DEG + d).is_multiple_of(32) {
+                        "RARE"
+                    } else {
+                        TYPES[((i * DEG + d) % 7) as usize]
+                    };
+                    b.edge(i, rng.next(N), t);
+                }
+            }
+            let mut store = b.build();
+            if multi {
+                // ONE secondary label disables both structures for the WHOLE graph.
+                store.set_edge_extra_labels(0, &["EXTRA"]);
+            }
+            if index {
+                store.create_edge_type_index();
+            }
+            store
+        };
+
+        println!("  before preferring the CSR over the index bucket:");
+        println!("    -[:RARE]-> count      no index 151.0   indexed 306.8   (2.03x SLOWER)");
+        println!("    -[:RARE]-> projected  no index 279.7   indexed 502.0   (1.79x SLOWER)");
+        println!("  {:<50} {:>9} {:>9}", "query", "us", "rows");
+        for (tag, multi, index) in [
+            ("plain", false, false),
+            ("edge-type index", false, true),
+            ("a multi-label edge", true, false),
+            ("multi-label + index", true, true),
+        ] {
+            let store = build(multi, index);
+            for (label, q) in [
+                (
+                    "single want  -[:RARE]->",
+                    "MATCH (a:N)-[:RARE]->(b) RETURN count(*) AS c",
+                ),
+                (
+                    "disjunction  -[:RARE|T0]->",
+                    "MATCH (a:N)-[:RARE|T0]->(b) RETURN count(*) AS c",
+                ),
+                (
+                    "single want, projected",
+                    "MATCH (a:N)-[:RARE]->(b) RETURN b.n AS n",
+                ),
+            ] {
+                if let Ok((us, rows)) = harness::time_query(q, false, &store, cfg.reps.min(3)) {
+                    println!("  {:<50} {us:>9.1} {rows:>9}", format!("{tag}: {label}"));
+                }
+            }
+        }
+    }
 }
 
 /// The optimized plan as an operator chain, for printing next to a measurement.

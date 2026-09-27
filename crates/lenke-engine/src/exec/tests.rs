@@ -7207,3 +7207,99 @@ fn distinct_on_a_bool_column_agrees_across_both_sweeps() {
     let empty = b2.build();
     assert_eq!(first_col(&empty, q, false), vec!["Null".to_string()]);
 }
+
+/// A single-type hop can read its edges from the per-type CSR overlay or from the opt-in
+/// edge-type index, and `for_each_nbr` now prefers the CSR because the index is a hash
+/// lookup into a scattered per-node `Vec` — reading them the other way round made DECLARING
+/// the index cost a typed hop 2.03x (E82).
+///
+/// That swap is only sound while the two structures yield the same edges in the same ORDER.
+/// Both are built by walking `out_adj`, so they should; this pins it, because nothing else
+/// would notice if one of them changed. The CSR is made stale by an adjacency write, which
+/// is what routes the same query down the index instead.
+#[test]
+fn the_type_csr_and_the_edge_type_index_agree_edge_for_edge() {
+    let mut b = Builder::default();
+    for i in 0..24u32 {
+        b.node(&["N"], &[("n", Value::Num(f64::from(i)))]);
+    }
+    // Several types per node, a self-loop, and parallel edges of the same type — so
+    // per-node order within a type is observable.
+    let mut x = 555_555u64;
+    for i in 0..20u32 {
+        for d in 0..6u32 {
+            x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            let t = ["R", "S", "T"][((i + d) % 3) as usize];
+            b.edge(i, ((x >> 33) as u32) % 20, t);
+        }
+    }
+    b.edge(7, 7, "R");
+    b.edge(3, 4, "R");
+    b.edge(3, 4, "R");
+    let mut store = b.build();
+    store.create_edge_type_index();
+
+    let walk = |store: &Store, v: u32, dir: Dir, want: &[u32], dl: bool| -> Vec<(u32, u32)> {
+        let mut out = Vec::new();
+        for_each_nbr(store, v, dir, want, dl, |nbr, eid| out.push((nbr, eid)));
+        out
+    };
+    let types: Vec<u32> = ["R", "S", "T"]
+        .iter()
+        .map(|t| store.etype_id(t).expect("interned"))
+        .collect();
+
+    // With the overlay FRESH the CSR answers. Record everything.
+    store.rebuild_csr();
+    let mut fresh = Vec::new();
+    for &w in &types {
+        for dir in [Dir::Out, Dir::In, Dir::Both] {
+            for dl in [false, true] {
+                for v in 0..24u32 {
+                    fresh.push(walk(&store, v, dir, &[w], dl));
+                }
+            }
+        }
+    }
+
+    // An adjacency write drops the overlay, so the same queries now go through the INDEX.
+    // The results must be identical element for element, not merely as sets.
+    store.add_edge(21, 22, "R");
+    let mut stale = Vec::new();
+    for &w in &types {
+        for dir in [Dir::Out, Dir::In, Dir::Both] {
+            for dl in [false, true] {
+                for v in 0..24u32 {
+                    // Node 21 is the one the new edge touched; skip it, since the two runs
+                    // legitimately differ there.
+                    stale.push(if v == 21 || v == 22 {
+                        Vec::new()
+                    } else {
+                        walk(&store, v, dir, &[w], dl)
+                    });
+                }
+            }
+        }
+    }
+    let fresh_masked: Vec<Vec<(u32, u32)>> = fresh
+        .into_iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let v = (i % 24) as u32;
+            if v == 21 || v == 22 {
+                Vec::new()
+            } else {
+                r
+            }
+        })
+        .collect();
+    assert_eq!(
+        fresh_masked, stale,
+        "the per-type CSR and the edge-type index disagreed"
+    );
+    // And the fixture must actually exercise both: a query with no edges proves nothing.
+    assert!(
+        fresh_masked.iter().any(|r| r.len() >= 2),
+        "the fixture produced no multi-edge adjacency to compare"
+    );
+}
