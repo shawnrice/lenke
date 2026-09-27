@@ -925,10 +925,18 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
                 Some(l) => store.nodes_with_label(l).to_vec(),
                 None => store.all_nodes(),
             };
-            let mut batch = Batch::single(Col::Nodes(ids.clone()));
-            if track {
-                batch.lineage = Some(Lineage::seed(&ids));
-            }
+            // Lineage FIRST, off the slice, so `ids` can be moved into the batch rather than
+            // cloned into it. Every seed site here used to build its `Col` from a copy and
+            // then read the original for lineage, which on an untracked query — almost all of
+            // them — was a whole extra id vector copied for nothing: 800KB on a 200k scan.
+            //
+            // Worth 1-5% and no more (`Filter(Scan)` on a 20% predicate 289.0us -> 275.4us,
+            // a bare scan projection 1044.8us -> 1029.6us), which is AT this repo's noise
+            // floor. Kept because it is strictly less allocation and copying for identical
+            // output, not on the strength of those numbers — do not quote them as a win.
+            let lineage = track.then(|| Lineage::seed(&ids));
+            let mut batch = Batch::single(Col::Nodes(ids));
+            batch.lineage = lineage;
             batch
         }
         Plan::NodeSeed { ext_ids } => {
@@ -938,10 +946,9 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
                 .iter()
                 .filter_map(|e| store.node_by_ext(e).filter(|&id| store.is_alive(id)))
                 .collect();
-            let mut batch = Batch::single(Col::Nodes(ids.clone()));
-            if track {
-                batch.lineage = Some(Lineage::seed(&ids));
-            }
+            let lineage = track.then(|| Lineage::seed(&ids));
+            let mut batch = Batch::single(Col::Nodes(ids));
+            batch.lineage = lineage;
             batch
         }
         Plan::EdgeScan => {
@@ -949,10 +956,9 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
             // (`track`), seed the step-history with the source edge — `E().path()` yields
             // `[e]` per edge — so `PathRecord` can extend it with later steps.
             let ids = store.all_edges();
-            let mut batch = Batch::single(Col::Edges(ids.clone()));
-            if track {
-                batch.lineage = Some(Lineage::seed_edges(&ids));
-            }
+            let lineage = track.then(|| Lineage::seed_edges(&ids));
+            let mut batch = Batch::single(Col::Edges(ids));
+            batch.lineage = lineage;
             batch
         }
         Plan::EdgeSeed { ext_ids } => {
@@ -1078,10 +1084,9 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
         }
         Plan::IndexSeek { label, key, value } => {
             let ids = index_seek_ids(store, label.as_deref(), key, value);
-            let mut batch = Batch::single(Col::Nodes(ids.clone()));
-            if track {
-                batch.lineage = Some(Lineage::seed(&ids));
-            }
+            let lineage = track.then(|| Lineage::seed(&ids));
+            let mut batch = Batch::single(Col::Nodes(ids));
+            batch.lineage = lineage;
             batch
         }
         Plan::RangeSeek {
@@ -1091,10 +1096,9 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
             value,
         } => {
             let ids = range_seek_ids(store, label.as_deref(), key, *op, value);
-            let mut batch = Batch::single(Col::Nodes(ids.clone()));
-            if track {
-                batch.lineage = Some(Lineage::seed(&ids));
-            }
+            let lineage = track.then(|| Lineage::seed(&ids));
+            let mut batch = Batch::single(Col::Nodes(ids));
+            batch.lineage = lineage;
             batch
         }
         Plan::Expand {
@@ -2213,10 +2217,9 @@ fn pull_capped(
                     .take(cap)
                     .collect(),
             };
-            let mut b = Batch::single(Col::Nodes(ids.clone()));
-            if track {
-                b.lineage = Some(Lineage::seed(&ids));
-            }
+            let lineage = track.then(|| Lineage::seed(&ids));
+            let mut b = Batch::single(Col::Nodes(ids));
+            b.lineage = lineage;
             Some(b)
         }
         Plan::IndexSeek { label, key, value } => {
@@ -2224,10 +2227,9 @@ fn pull_capped(
                 .into_iter()
                 .take(cap)
                 .collect();
-            let mut b = Batch::single(Col::Nodes(ids.clone()));
-            if track {
-                b.lineage = Some(Lineage::seed(&ids));
-            }
+            let lineage = track.then(|| Lineage::seed(&ids));
+            let mut b = Batch::single(Col::Nodes(ids));
+            b.lineage = lineage;
             Some(b)
         }
         Plan::RangeSeek {
@@ -2240,10 +2242,9 @@ fn pull_capped(
                 .into_iter()
                 .take(cap)
                 .collect();
-            let mut b = Batch::single(Col::Nodes(ids.clone()));
-            if track {
-                b.lineage = Some(Lineage::seed(&ids));
-            }
+            let lineage = track.then(|| Lineage::seed(&ids));
+            let mut b = Batch::single(Col::Nodes(ids));
+            b.lineage = lineage;
             Some(b)
         }
         Plan::Project { input, items } => match pull_capped(input, store, track, cap)? {
