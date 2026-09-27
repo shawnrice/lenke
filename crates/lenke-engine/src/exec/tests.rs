@@ -6911,3 +6911,134 @@ fn a_universal_label_still_rejects_an_optional_miss() {
         }
     }
 }
+
+/// `slice_degree` reads a degree off a contiguous slice instead of walking the adjacency,
+/// which is only correct while it mirrors `for_each_nbr`'s dispatch exactly. That is a
+/// standing drift risk — `for_each_nbr` has four branches and picks between them on store
+/// configuration — so compare the two directly over every configuration, direction and
+/// want-set shape, rather than trusting the two functions to stay aligned by inspection.
+#[test]
+fn a_degree_read_agrees_with_walking_the_adjacency() {
+    // Four store shapes, because each flips a different branch of the dispatch.
+    for (shape, multi_label, type_index) in [
+        ("plain", false, false),
+        ("edge-type index", false, true),
+        ("multi-label edges", true, false),
+        ("multi-label + index", true, true),
+    ] {
+        let mut b = Builder::default();
+        for i in 0..40u32 {
+            b.node(&["N"], &[("n", Value::Num(f64::from(i)))]);
+        }
+        // Three edge types, a self-loop, parallel edges, and a node with no edges at all.
+        let mut x = 987_654_321u64;
+        for i in 0..36u32 {
+            x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            let t = ["R", "S", "T"][(i % 3) as usize];
+            let tgt = ((x >> 33) as u32) % 36;
+            b.edge(i, tgt, t);
+        }
+        b.edge(3, 3, "R"); // self-loop
+        b.edge(4, 5, "R"); // parallel pair with the next
+        b.edge(4, 5, "R");
+        let mut store = b.build();
+        if multi_label {
+            // A secondary label on some edges. This is what makes the per-type
+            // structures incomplete — an edge whose PRIMARY type is `R` but which also
+            // carries `EXTRA` is not in `EXTRA`'s bucket — so the degree read has to
+            // decline entirely on such a graph.
+            for eid in (0..store.edge_count() as u32).step_by(5) {
+                store.set_edge_extra_labels(eid, &["EXTRA"]);
+            }
+            assert!(
+                store.has_multi_label_edges(),
+                "{shape}: fixture is multi-label"
+            );
+        }
+        if type_index {
+            store.create_edge_type_index();
+        }
+
+        let etype = |t: &str| store.etype_id(t).expect("type interned");
+        let wants: Vec<Vec<u32>> = vec![
+            vec![],                                   // any type
+            vec![etype("R")],                         // single
+            vec![etype("S")],                         // single, different
+            vec![etype("R"), etype("S")],             // disjunction
+            vec![etype("R"), etype("S"), etype("T")], // covers every type
+        ];
+        for want in &wants {
+            let all_types = want_covers_all_etypes(&store, want);
+            for dir in [Dir::Out, Dir::In, Dir::Both] {
+                for double_loops in [false, true] {
+                    for v in 0..40u32 {
+                        let mut walked = 0f64;
+                        for_each_nbr(&store, v, dir, want, double_loops, |_, _| walked += 1.0);
+                        let read = matching_degree(&store, v, dir, want, double_loops, all_types);
+                        assert_eq!(
+                            read, walked,
+                            "{shape}: node {v} dir {dir:?} want {want:?} \
+                             double_loops {double_loops} — degree read disagreed with the walk"
+                        );
+                    }
+                }
+            }
+        }
+        // And the read must actually be taken for a single-type directed hop, or this test
+        // is only checking the walk against itself.
+        let single = vec![etype("R")];
+        let taken = slice_degree(&store, 4, Dir::Out, &single, false).is_some();
+        assert_eq!(
+            taken, !multi_label,
+            "{shape}: a single-type hop should read a slice unless edges are multi-label"
+        );
+    }
+}
+
+/// `sparse_or_dense` skips its `FnvMap` dedup when the seek's ids come back strictly
+/// increasing, which is the usual case (a range seek walks distinct values and a node holds
+/// one value per key) and was half the cost of a 1%-seeded 1-hop count. The fold still has
+/// to happen when they are NOT sorted-distinct, so pin all three shapes against the same
+/// expected multiset.
+#[test]
+fn a_count_frontier_folds_duplicate_seek_ids_however_they_arrive() {
+    let pairs = |c: Counts| -> Vec<(u32, f64)> {
+        let mut v = Vec::new();
+        c.for_each(|id, n| v.push((id, n)));
+        v.sort_by_key(|a| a.0);
+        v
+    };
+    let n = 64;
+    let cut = 1_000_000; // never dense, so this exercises the sparse branch
+
+    // Sorted and distinct — the fast path.
+    assert_eq!(
+        pairs(sparse_or_dense(vec![2, 5, 9], n, cut)),
+        vec![(2, 1.0), (5, 1.0), (9, 1.0)]
+    );
+    // Distinct but NOT sorted: must fall to the map and still be right.
+    assert_eq!(
+        pairs(sparse_or_dense(vec![9, 2, 5], n, cut)),
+        vec![(2, 1.0), (5, 1.0), (9, 1.0)]
+    );
+    // Duplicates: multiplicity has to survive, which is what the map is for.
+    assert_eq!(
+        pairs(sparse_or_dense(vec![5, 2, 5, 5], n, cut)),
+        vec![(2, 1.0), (5, 3.0)]
+    );
+    // A sorted run with an equal neighbour is not strictly increasing, so it folds too.
+    assert_eq!(
+        pairs(sparse_or_dense(vec![2, 5, 5, 9], n, cut)),
+        vec![(2, 1.0), (5, 2.0), (9, 1.0)]
+    );
+    // Degenerate inputs the windows(2) check has to handle.
+    assert!(pairs(sparse_or_dense(vec![], n, cut)).is_empty());
+    assert_eq!(pairs(sparse_or_dense(vec![7], n, cut)), vec![(7, 1.0)]);
+
+    // And the DENSE branch must agree with the sparse one on the same ids.
+    assert_eq!(
+        pairs(sparse_or_dense(vec![5, 2, 5, 5], n, 0)),
+        pairs(sparse_or_dense(vec![5, 2, 5, 5], n, cut)),
+        "dense and sparse accumulation disagreed"
+    );
+}

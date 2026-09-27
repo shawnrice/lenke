@@ -3459,10 +3459,15 @@ fn want_covers_all_etypes(store: &Store, want: &[u32]) -> bool {
 }
 
 /// `v`'s matching out/in degree as an f64 — the number of times `for_each_nbr`
-/// would fire for this node — WITHOUT walking each edge when `all_types` says the
-/// type filter is trivially satisfied: a directed hop is then the raw adjacency
-/// length (one read, no per-edge type check). `Dir::Both` keeps the walk (it dedups
-/// the in-side self-loop copy), as does any partial want. Byte-identical in VALUE.
+/// would fire for this node — WITHOUT walking each edge whenever the matching set is
+/// already a CONTIGUOUS SLICE, in which case its length is the answer. `Dir::Both`
+/// always walks (it dedups the in-side self-loop copy). Byte-identical in VALUE: a
+/// count, not an order, and exact (integers below 2^53).
+///
+/// This MIRRORS `for_each_nbr`'s dispatch and must keep mirroring it — if that function
+/// gains a branch, this one needs the matching arm or it silently returns a different
+/// degree. `a_degree_read_agrees_with_walking_the_adjacency` is the differential guard:
+/// it compares the two across every store configuration and direction.
 fn matching_degree(
     store: &Store,
     v: u32,
@@ -3471,16 +3476,60 @@ fn matching_degree(
     double_loops: bool,
     all_types: bool,
 ) -> f64 {
-    if all_types {
-        match dir {
-            Dir::Out => return store.out(v).len() as f64,
-            Dir::In => return store.inc(v).len() as f64,
-            Dir::Both => {}
-        }
+    if let Some(n) = slice_degree(store, v, dir, want, all_types) {
+        return n as f64;
     }
     let mut deg = 0f64;
     for_each_nbr(store, v, dir, want, double_loops, |_, _| deg += 1.0);
     deg
+}
+
+/// The length of the slice `for_each_nbr` would iterate for `v`, or `None` when it would
+/// not iterate exactly one slice (so the caller must walk).
+///
+/// Three cases, each matching a branch of `for_each_nbr`:
+///
+///   * the type filter is trivial (`all_types`) — the raw adjacency is the answer;
+///   * a SINGLE wanted type on a graph with no multi-label edges and an edge-type index
+///     — the index bucket is the answer;
+///   * the same without the index, once the per-type CSR overlay is fresh — the per-type
+///     span is the answer.
+///
+/// The single-type cases are the ones that matter in practice: a hop is spelled
+/// `-[:KNOWS]->` far more often than untyped, and walking 5,000 edges to learn a number
+/// the CSR already knows was costing a `count(*)` its whole advantage. `Dir::Both` is
+/// excluded throughout — it can visit a self-loop from both indexes, and whether it
+/// counts once or twice depends on `double_loops`, which is not a slice length.
+fn slice_degree(store: &Store, v: u32, dir: Dir, want: &[u32], all_types: bool) -> Option<usize> {
+    // `out` says which index to read; `Dir::Both` is excluded above.
+    let out = match dir {
+        Dir::Out => true,
+        Dir::In => false,
+        Dir::Both => return None,
+    };
+    if all_types {
+        return Some(if out {
+            store.out(v).len()
+        } else {
+            store.inc(v).len()
+        });
+    }
+    let [w] = want else { return None };
+    if store.has_multi_label_edges() {
+        return None; // a secondary label can match, and the per-type structures miss it
+    }
+    if store.has_edge_type_index() {
+        return Some(if out {
+            store.out_typed(v, *w).len()
+        } else {
+            store.in_typed(v, *w).len()
+        });
+    }
+    if out {
+        store.out_typed_csr(v, *w).map(<[_]>::len)
+    } else {
+        store.in_typed_csr(v, *w).map(<[_]>::len)
+    }
 }
 
 /// Slot count of a pure Scan/Expand chain; `None` for anything else (Filter,
@@ -3818,8 +3867,23 @@ fn sparse_or_dense(ids: Vec<u32>, n: usize, dense_cut: usize) -> Counts {
         }
         Counts::Dense(counts)
     } else {
-        // A seek CAN repeat an id (an index bucket with dups); fold so each node
-        // appears once with its multiplicity, matching the dense accumulation.
+        // A seek CAN repeat an id (an index bucket with dups); fold so each node appears
+        // once with its multiplicity, matching the dense accumulation.
+        //
+        // But it usually does NOT: a range seek walks a BTreeMap of distinct values and a
+        // node holds one value per key, so the ids come back strictly increasing. Checking
+        // that costs one comparison an id and skips the hashing entirely — measured 28.7us
+        // to 15.4us on a 1%-seeded 1-hop count, where the map was half the query (E77).
+        // The check is exact, so a bucket with dups still takes the map.
+        //
+        // The two branches produce the same (node, count) pairs in a DIFFERENT ORDER —
+        // ascending here, arbitrary from the map. That is already true of `Sparse` against
+        // `Dense`, so every consumer of a count frontier is order-insensitive by
+        // construction: they sum, take a min/max under a total order, or insert into a set.
+        // Nothing emits rows in frontier order. Do not add a consumer that does.
+        if ids.windows(2).all(|w| w[0] < w[1]) {
+            return Counts::Sparse(ids.into_iter().map(|v| (v, 1.0)).collect());
+        }
         let mut map: FnvMap<u32, f64> = FnvMap::default();
         for v in ids {
             *map.entry(v).or_insert(0.0) += 1.0;

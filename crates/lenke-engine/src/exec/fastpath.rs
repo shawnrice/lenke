@@ -1809,14 +1809,23 @@ pub(super) fn try_frontier_count(
                 }
             }
         }
+        // With a universal label nothing is being tested, so the hop's matching degree IS
+        // the hit count — and `matching_degree` can often read it off a contiguous slice
+        // instead of walking the adjacency.
+        let all_types = want_covers_all_etypes(store, &want);
         let mut total = 0f64;
         prev.for_each(|v, c| {
-            let mut hits = 0f64;
-            for_each_nbr(store, v, dir, &want, double_loops, |nbr, _| {
-                if universal || member[nbr as usize] {
-                    hits += 1.0;
-                }
-            });
+            let hits = if universal {
+                matching_degree(store, v, dir, &want, double_loops, all_types)
+            } else {
+                let mut h = 0f64;
+                for_each_nbr(store, v, dir, &want, double_loops, |nbr, _| {
+                    if member[nbr as usize] {
+                        h += 1.0;
+                    }
+                });
+                h
+            };
             total += c * hits;
         });
         return Some(scalar_num(total));

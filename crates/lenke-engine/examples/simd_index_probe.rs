@@ -1913,7 +1913,10 @@ fn main() {
             store
         };
 
-        println!("  before the last-hop fold: 16.4 / 143.9 / 105.0us for the three rows below");
+        println!("  before, for the three rows below:");
+        println!("    16.4 / 143.9 / 105.0us  original");
+        println!("    16.4 /  33.9 /  40.0us  after folding the last hop");
+        println!("    13.3 /  28.7 /  33.2us  after reading the degree off a slice");
         println!("  {:<58} {:>9} {:>8}", "query", "us", "vs floor");
         for (label, every) in [("Tagged on EVERY node", 1u32), ("Tagged on 1%", 100)] {
             let store = tagged(every);
