@@ -700,6 +700,22 @@ fn configure_adjacency(store: &mut Store, state: u64) {
     }
 }
 
+thread_local! {
+    /// The repetition cap for unbounded hops, as a thread-local so the generator stays a
+    /// pure function of its `Lcg` for a given cap. Default 3 (the historical behaviour);
+    /// `with_rep_cap` lowers it for large-graph tests.
+    static REP_CAP: std::cell::Cell<u32> = const { std::cell::Cell::new(3) };
+}
+
+/// Run `f` with a lower repetition cap — for tests whose graphs are large enough that an
+/// unbounded hop's fan-out, not the plan, dominates the runtime.
+fn with_rep_cap<T>(cap: u32, f: impl FnOnce() -> T) -> T {
+    let prev = REP_CAP.with(|c| c.replace(cap));
+    let out = f();
+    REP_CAP.with(|c| c.set(prev));
+    out
+}
+
 /// A predicate reading exactly `slot`, in one of the forms the planner recognizes.
 ///
 /// The variety here is the point, and it targets the bug class this repo has been bitten
@@ -998,6 +1014,15 @@ fn gen_seed(rng: &mut Lcg) -> Gen {
 fn gen_chain(rng: &mut Lcg, hops: usize) -> Gen {
     let mut g = gen_seed(rng);
     let deep = hops >= 4;
+    // How many repetitions an unbounded hop may take. `deep` already suppresses those hops
+    // entirely for long chains; this is the same reasoning applied to graph SIZE, which the
+    // chain length cannot see. A `VarLength`/`ShortestPath`/`RepeatGroup` hop over 25,000
+    // nodes explodes whatever the chain length: measured, a single
+    // `ShortestPath <- OptionalExpand <- OptionalExpand <- Scan` plan took 4.4 SECONDS at 25k
+    // nodes, and a handful like it were the entire reason a large-size sweep cost 31s where
+    // the same shape cost 2.3s at 12k. Capping the reps keeps the operators COVERED at scale
+    // instead of excluding them, which is the point of testing at scale at all.
+    let reps = REP_CAP.with(|c| c.get());
 
     for h in 0..hops {
         let etypes: Vec<String> = if deep || rng.chance(3, 4) {
@@ -1023,7 +1048,7 @@ fn gen_chain(rng: &mut Lcg, hops: usize) -> Gen {
                 dir,
                 edge_label: etypes,
                 min,
-                max: min + 1 + rng.below(2) as u32,
+                max: min + 1 + rng.below(2).min(reps as usize) as u32,
                 mode: *rng.pick(&[
                     PathMode::Walk,
                     PathMode::Trail,
@@ -1063,7 +1088,7 @@ fn gen_chain(rng: &mut Lcg, hops: usize) -> Gen {
                 min: rng.below(2) as u32,
                 // Bounded: an unbounded BFS over this fixture reaches everything, which
                 // is slow and says little.
-                max: Some(1 + rng.below(3) as u32),
+                max: Some(1 + rng.below(3).min(reps as usize) as u32),
                 selector: *rng.pick(&[
                     crate::ir::ShortestSelector::Any,
                     crate::ir::ShortestSelector::All,
@@ -1117,7 +1142,7 @@ fn gen_chain(rng: &mut Lcg, hops: usize) -> Gen {
                 dir,
                 edge_label: etypes,
                 min: 1,
-                max: 1 + rng.below(3) as u32,
+                max: 1 + rng.below(3).min(reps as usize) as u32,
                 mode: *rng.pick(&[PathMode::Walk, PathMode::Trail, PathMode::Simple]),
                 endpoint_slot,
                 group_binds,
@@ -1978,7 +2003,9 @@ fn optimizing_preserves_rows_across_sizes() {
     // 4,096 floor; 5,000 -> 4,546, just above; 9,000 -> 8,182, well above. Straddling it
     // closely is the point: an off-by-one in the floor check shows up between the first two
     // and nowhere else.
-    let sizes: [(u32, u64); 3] = [(4_400, 110), (5_000, 110), (9_000, 55)];
+    // A fourth size, affordable because of the repetition cap below: an unbounded hop's
+    // fan-out, not the plan, is what costs at these sizes.
+    let sizes: [(u32, u64); 4] = [(4_400, 110), (5_000, 110), (9_000, 55), (20_000, 25)];
     let scale = (seed_count() as f64 / 25_000.0).max(0.02);
 
     let mut below = 0;
@@ -1996,13 +2023,21 @@ fn optimizing_preserves_rows_across_sizes() {
         }
 
         let plans = ((base_plans as f64 * scale).round() as u64).max(10);
-        for seed in 0..plans {
-            check(
-                seed.wrapping_mul(31).wrapping_add(u64::from(nodes)),
-                &store,
-                true,
-            );
-        }
+        // CAP the repetitions. At these sizes a `VarLength` / `ShortestPath` / `RepeatGroup`
+        // hop explodes regardless of chain length — one
+        // `ShortestPath <- OptionalExpand <- OptionalExpand <- Scan` plan measured 4.4
+        // SECONDS at 25k nodes, and a handful like it made a 50k sweep cost 31s against 2.3s
+        // at 12k. Capping keeps those operators covered at scale rather than excluding them,
+        // and buys the fourth size above (measured 89.3s to 53.0s across a 12k/25k/50k hunt).
+        with_rep_cap(1, || {
+            for seed in 0..plans {
+                check(
+                    seed.wrapping_mul(31).wrapping_add(u64::from(nodes)),
+                    &store,
+                    true,
+                );
+            }
+        });
     }
 
     // The straddle, asserted so a future tweak to the sizes or the deletion rate cannot
