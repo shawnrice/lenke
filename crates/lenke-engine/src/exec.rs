@@ -3748,6 +3748,45 @@ impl Counts {
     }
 }
 
+// The sparse/dense switch for a count frontier, overridable under `cfg(test)`.
+//
+// Not for convenience: the DENSE representation is unreachable from generated plans at any
+// graph size, verified by assertion injection at every one of its entry points. It needs a
+// frontier larger than `max(n/16, 1024)`, and since the selectivity gate landed a seek is by
+// construction selective — so a large frontier can only come from a bare `Scan` with no
+// seedable predicate on the seed, which optimization almost always turns into a seek. The
+// switch is documented as byte-identical; the only way to test that claim is to run the same
+// plan both ways, which is what `the_sparse_and_dense_count_frontiers_agree` does.
+#[cfg(test)]
+thread_local! {
+    static DENSE_CUT: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// The active-set size past which a count frontier switches from a sparse list to a dense
+/// array. `Counts`' own doc explains why the switch exists; this is where it is decided.
+#[cfg(test)]
+fn dense_cut_for(n: usize) -> usize {
+    DENSE_CUT
+        .with(|c| c.get())
+        .unwrap_or_else(|| (n / 16).max(1024))
+}
+
+/// The active-set size past which a count frontier switches to a dense array.
+#[cfg(not(test))]
+fn dense_cut_for(n: usize) -> usize {
+    (n / 16).max(1024)
+}
+
+/// Run `f` with the sparse/dense switch forced, so a caller can compare the two
+/// representations on the same plan and store.
+#[cfg(test)]
+pub(crate) fn with_dense_cut<T>(cut: usize, f: impl FnOnce() -> T) -> T {
+    let prev = DENSE_CUT.with(|c| c.replace(Some(cut)));
+    let out = f();
+    DENSE_CUT.with(|c| c.set(prev));
+    out
+}
+
 /// The per-node PATH-COUNT frontier of a pure Scan/Expand chain: `counts[v]` is the
 /// number of chain paths whose last node is `v`. Propagated one hop at a time
 /// (`next[nbr] += counts[v]` over each matching edge) so it never materializes the
@@ -3759,7 +3798,7 @@ fn frontier_counts(plan: &Plan, store: &Store) -> Option<Counts> {
     // Go dense once the active set is a large fraction of the graph: past this a
     // dense array's O(1) scatter beats an FnvMap's hashing, and a full-scan seed is
     // dense from the start. Below it the sparse list wins by touching only live nodes.
-    let dense_cut = (n / 16).max(1024);
+    let dense_cut = dense_cut_for(n);
     match plan {
         Plan::Scan { label } => {
             let seed: &[u32] = match label {

@@ -2483,3 +2483,116 @@ fn a_seek_is_chosen_exactly_when_the_predicate_is_selective() {
         "too many cases landed in the skipped band: {near_threshold}"
     );
 }
+
+/// The sparse and dense count frontiers must agree, on the same plan and the same store.
+///
+/// `Counts` switches representation at `max(n/16, 1024)` active nodes and its own doc claims
+/// the switch is byte-identical: "counts are exact integers (< 2^53), so the f64 sums are
+/// order-independent and the representation switch is byte-identical". That claim had NO
+/// coverage. All three dense entry points — the `Scan` arm's `seed.len() > dense_cut`, the
+/// `Expand` arm's `est_next > dense_cut`, and `dense_from` for an unlabelled scan — were
+/// verified unreached by generated plans, at 24 nodes and at 20,000.
+///
+/// And the reason is an interaction worth writing down: a dense frontier needs a LARGE active
+/// set, but since the selectivity gate landed a seek is by construction selective, so the
+/// only remaining source of a large frontier is a bare `Scan` with no seedable predicate —
+/// which optimization almost always turns into a seek. The gate made the dense path nearly
+/// unreachable as a side effect.
+///
+/// So this drives the switch directly rather than hoping a plan lands on it: run each plan
+/// with the cut forced to 0 (always dense) and to `usize::MAX` (always sparse), and compare.
+#[test]
+fn the_sparse_and_dense_count_frontiers_agree() {
+    let mut store = fixture_shaped(
+        3,
+        Shape {
+            nodes: 3_000,
+            ..SHAPES[0]
+        },
+    );
+    index_all(&mut store);
+
+    let mut compared = 0;
+    for seed in 0..600u64 {
+        let mut rng = Lcg(seed.wrapping_mul(7919).wrapping_add(3));
+        let plan = gen_plan(&mut rng);
+        let opt = optimize_indexed(plan, &store as &dyn IndexOracle);
+
+        // Only the count/aggregate fast paths consult a count frontier at all, and they are
+        // the shapes where a wrong representation shows up as a wrong number.
+        let dense = crate::exec::with_dense_cut(0, || crate::exec::try_run(&opt, &store));
+        let sparse = crate::exec::with_dense_cut(usize::MAX, || crate::exec::try_run(&opt, &store));
+
+        match (dense, sparse) {
+            (Ok(d), Ok(s)) => {
+                assert_eq!(
+                    bag(&d),
+                    bag(&s),
+                    "the dense and sparse count frontiers disagree (seed {seed})\n  {opt:?}"
+                );
+                compared += 1;
+            }
+            // A guard that fires is fine, as long as it fires the same way for both.
+            (Err(_), Err(_)) => {}
+            (d, s) => panic!(
+                "one representation failed and the other did not (seed {seed}): \
+                 dense={:?} sparse={:?}\n  {opt:?}",
+                d.as_ref().err(),
+                s.as_ref().err()
+            ),
+        }
+    }
+    assert!(compared > 100, "too few plans compared: {compared}");
+
+    // The generated plans reach the `Expand` arm's dense branch and the seek arm's, but NOT
+    // the bare-`Scan` arm or `dense_from`: after optimization a chain's base is almost always
+    // a seek, so `frontier_counts` reaches its `Scan` arm only when the seed carries no
+    // seedable predicate at all. Verified by assertion injection — poisoning the `Scan` dense
+    // branch left every test above passing. These two plans are that shape, written out.
+    let counted = |label: Option<&str>| {
+        Plan::Scan {
+            label: label.map(str::to_string),
+        }
+        .expand(0, Dir::Out, &["T1".to_string()])
+        // The frontier LABEL FILTER is what routes this to `try_frontier_count`, which is the
+        // only count path that builds a `Counts` at all. Without it the plan takes the
+        // degree-sum shortcut, never touches `frontier_counts`, and the first version of this
+        // check compared two runs of code that was not under test — which the `Scan`-arm
+        // poison exposed by surviving.
+        .filter(Expr::IsLabeled {
+            slot: 1,
+            labels: vec!["Node".into()],
+        })
+        .aggregate(
+            vec![],
+            vec![Agg {
+                func: AggFn::Count,
+                arg: None,
+                distinct: false,
+                name: "c".into(),
+                frac: None,
+                null_on_empty: false,
+                numeric_only: false,
+            }],
+        )
+    };
+    for label in [Some("Node"), None] {
+        let plan = counted(label);
+        let dense = crate::exec::with_dense_cut(0, || crate::exec::try_run(&plan, &store))
+            .expect("a plain counted hop runs");
+        let sparse =
+            crate::exec::with_dense_cut(usize::MAX, || crate::exec::try_run(&plan, &store))
+                .expect("a plain counted hop runs");
+        assert_eq!(
+            bag(&dense),
+            bag(&sparse),
+            "dense and sparse disagree on a bare-Scan counted hop (label {label:?})"
+        );
+        // And the answer must be non-trivial, or this is comparing two zeroes.
+        assert!(
+            !bag(&dense).is_empty() && bag(&dense)[0] != "Num(0.0);",
+            "the counted hop returned nothing: {:?}",
+            bag(&dense)
+        );
+    }
+}
