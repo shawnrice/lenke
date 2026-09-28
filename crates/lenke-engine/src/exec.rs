@@ -4085,7 +4085,7 @@ use self::varlen::*;
 mod nested;
 use self::nested::*;
 
-mod evaluator;
+pub(crate) mod evaluator;
 use self::evaluator::*;
 
 /// Evaluate an `EXISTS` body against a correlated `seed` batch (the outer rows

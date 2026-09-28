@@ -2596,3 +2596,70 @@ fn the_sparse_and_dense_count_frontiers_agree() {
         );
     }
 }
+
+/// The three `IsLabeled` implementations must agree, on the same plan and store.
+///
+/// A node-column `hasLabel` is served by a tautology short-circuit (a label every live node
+/// carries), a membership bitset, or a per-row bucket probe — and which one runs is a COST
+/// decision, made from `rows * 190` against `node_count / 4 + bucket * 3`. Both the bitset
+/// and the probe are reached by the fuzz suite (verified by assertion injection: 6 tests hit
+/// the bitset, 2 the probe), but nothing ever forced them to be COMPARED. The suite ran
+/// whichever the estimate picked, so a divergence between them would surface only on the
+/// graphs and frontier sizes that happen to select the broken one.
+///
+/// The crossover also MOVES with graph size — the allocation term is `node_count / 4` — so a
+/// size that looks safe is not evidence about another. Forcing each path removes the
+/// question.
+///
+/// `exec/tests.rs` already compares both against `store.is_labeled` per row on a 2,000-node
+/// fixture at two frontier sizes. This is the generative counterpart: many plan shapes,
+/// including the frontier sentinels and multi-label nodes the hand-written cases do not have.
+#[test]
+fn the_three_is_labeled_implementations_agree() {
+    use crate::exec::evaluator::LabelMode;
+
+    let mut store = fixture_shaped(
+        5,
+        Shape {
+            nodes: 6_000,
+            ..SHAPES[0]
+        },
+    );
+    index_all(&mut store);
+
+    let mut compared = 0;
+    for seed in 0..400u64 {
+        let mut rng = Lcg(seed.wrapping_mul(104_729).wrapping_add(5));
+        let plan = gen_plan(&mut rng);
+        let opt = optimize_indexed(plan, &store as &dyn IndexOracle);
+
+        let run = |mode: LabelMode| {
+            crate::exec::evaluator::with_label_mode(mode, || crate::exec::try_run(&opt, &store))
+        };
+        let auto = run(LabelMode::Auto);
+        let bitset = run(LabelMode::Bitset);
+        let probe = run(LabelMode::Probe);
+
+        match (auto, bitset, probe) {
+            (Ok(a), Ok(b), Ok(p)) => {
+                let (a, b, p) = (bag(&a), bag(&b), bag(&p));
+                assert_eq!(
+                    a, b,
+                    "auto and forced-bitset disagree (seed {seed})\n  {opt:?}"
+                );
+                assert_eq!(b, p, "bitset and probe disagree (seed {seed})\n  {opt:?}");
+                compared += 1;
+            }
+            // A guard firing is fine, as long as it fires for all three.
+            (Err(_), Err(_), Err(_)) => {}
+            (a, b, p) => panic!(
+                "the implementations disagree about FAILING (seed {seed}): \
+                 auto={:?} bitset={:?} probe={:?}\n  {opt:?}",
+                a.is_ok(),
+                b.is_ok(),
+                p.is_ok()
+            ),
+        }
+    }
+    assert!(compared > 80, "too few plans compared: {compared}");
+}

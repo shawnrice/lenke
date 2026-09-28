@@ -124,6 +124,61 @@ fn eval_case_masked(
     Ok(Col::Gen(out))
 }
 
+// `IsLabeled` on a node column has THREE implementations — a tautology short-circuit, a
+// membership bitset, and a per-row bucket probe — and which one runs is a cost decision. All
+// three must produce identical answers, and nothing forced a comparison: the fuzzer simply
+// ran whichever the estimate picked. Under `cfg(test)` the choice can be forced, so the same
+// plan can be run down each path and the results compared. Same technique as `with_dense_cut`
+// for the count frontier, and for the same reason.
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum LabelMode {
+    /// Whatever the cost estimate picks.
+    Auto,
+    /// Skip the tautology short-circuit and force the bitset.
+    Bitset,
+    /// Skip the short-circuit and force the per-row probe.
+    Probe,
+}
+
+#[cfg(test)]
+thread_local! {
+    static LABEL_MODE: std::cell::Cell<LabelMode> = const { std::cell::Cell::new(LabelMode::Auto) };
+}
+
+/// Run `f` with the `IsLabeled` implementation forced.
+#[cfg(test)]
+pub(crate) fn with_label_mode<T>(mode: LabelMode, f: impl FnOnce() -> T) -> T {
+    let prev = LABEL_MODE.with(|c| c.replace(mode));
+    let out = f();
+    LABEL_MODE.with(|c| c.set(prev));
+    out
+}
+
+#[cfg(test)]
+fn label_mode_allows_shortcut() -> bool {
+    LABEL_MODE.with(|c| c.get()) == LabelMode::Auto
+}
+
+#[cfg(not(test))]
+fn label_mode_allows_shortcut() -> bool {
+    true
+}
+
+#[cfg(test)]
+fn label_mode_prefers_bitset(probe_cost: usize, bitset_cost: usize) -> bool {
+    match LABEL_MODE.with(|c| c.get()) {
+        LabelMode::Auto => probe_cost >= bitset_cost,
+        LabelMode::Bitset => true,
+        LabelMode::Probe => false,
+    }
+}
+
+#[cfg(not(test))]
+fn label_mode_prefers_bitset(probe_cost: usize, bitset_cost: usize) -> bool {
+    probe_cost >= bitset_cost
+}
+
 pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, String> {
     // No rows → no values to produce, and nothing to evaluate: a constant faulting
     // expression (`1/0` under `… LIMIT 0 RETURN 1/0`) must not error over an empty
@@ -1374,7 +1429,10 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
                     // a `Person`: 148.7us -> 63.9us at a 1%-selective seed, 1194.0us ->
                     // 508.1us at 10% (E78).
                     let live = store.live_node_count();
-                    if live > 0 && node_buckets.iter().any(|b| b.len() == live) {
+                    if label_mode_allows_shortcut()
+                        && live > 0
+                        && node_buckets.iter().any(|b| b.len() == live)
+                    {
                         return Ok(Col::Bool(ids.iter().map(|&id| id != u32::MAX).collect()));
                     }
                     // Otherwise: a membership BITSET, built once and tested O(1) a row,
@@ -1398,7 +1456,7 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
                     let total_bucket: usize = node_buckets.iter().map(|b| b.len()).sum();
                     let probe_cost = ids.len().saturating_mul(190);
                     let bitset_cost = store.node_count() / 4 + total_bucket.saturating_mul(3);
-                    if probe_cost >= bitset_cost {
+                    if label_mode_prefers_bitset(probe_cost, bitset_cost) {
                         let mut member = vec![false; store.node_count()];
                         for b in &node_buckets {
                             for &id in *b {
