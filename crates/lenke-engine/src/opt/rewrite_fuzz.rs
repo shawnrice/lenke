@@ -365,6 +365,181 @@ const NUM_KEYS: [&str; 2] = ["age", "score"];
 
 const NODES: u32 = 24;
 
+/// The STRUCTURAL shape of a fixture — every dimension that was previously a FIXED
+/// function of the node index, and therefore identical in all sixteen "different" fixtures.
+///
+/// Measured before this existed: `fixture(0)`, `fixture(1)`, `fixture(7)` and `fixture(15)`
+/// all had 22 live nodes, labels at 22/11/7/3, `age` present on 20, and 3 distinct tags.
+/// Only the edge wiring differed (63/62/58/57 edges). So
+/// `optimizing_preserves_rows_across_fixtures` claimed to vary "density or label
+/// distribution" and varied neither.
+///
+/// Each field is here because a THRESHOLD in the engine turns on it, not for variety's sake:
+///
+///   * `nodes` — `SEEK_FLOOR_NODES` (4,096) switches the seek-vs-scan gate on. Below it every
+///     seedable predicate seeds; above it about half are declined.
+///   * `label_every` — label density, which is what the `IsLabeled` bitset-vs-probe estimate
+///     weighs against the row count. (A period of 1 makes a label universal, but that alone
+///     was never the gap: `Node` is on every node in every shape, so the tautology
+///     short-circuits were always reachable.)
+///   * `age_absent_every` — three-valued logic. 0 means always present, which is the only
+///     shape where a seek and a scan cannot disagree about missing rows.
+///   * `tag_distinct` — `dict_encode` keeps a column as `Str` unless its distinct values are
+///     at most half the rows, and the `Dict` and `Str` arms are different code in `DISTINCT`,
+///     in the filter fast paths, and in the dedup fold.
+///   * `deg` / `hub` — degree drives every count and orientation decision, and a hub makes
+///     one node's adjacency dominate.
+///   * `delete_every` — 0 means no tombstones, so `live_node_count == node_count` and the
+///     whole-graph sweep shortcuts fire. Non-zero is the only way a seek and a scan can
+///     disagree about a deleted id.
+///   * `etypes` — one type makes every hop's type filter trivially satisfied
+///     (`want_covers_all_etypes`), which is a different branch from a partial want.
+#[derive(Clone, Copy)]
+struct Shape {
+    name: &'static str,
+    nodes: u32,
+    /// Periods for `Half` / `Wide` / `Rare`. A period of 1 makes the label universal.
+    label_every: [u32; 3],
+    /// `age` is absent when `i % this == 0`; 0 means always present.
+    age_absent_every: u32,
+    /// How many distinct `tag` values to spread over the nodes.
+    tag_distinct: u32,
+    /// Out-degree range, inclusive of the low bound.
+    deg: (u32, u32),
+    /// Give node 0 an edge to everything, so one adjacency dominates.
+    hub: bool,
+    /// Delete when `i % this == 7`; 0 means no deletions.
+    delete_every: u32,
+    /// How many of `ETYPES` to use. 1 makes every hop's type filter trivial.
+    etypes: usize,
+    /// MEASURED cost of one plan on this shape, relative to the baseline. Used to give each
+    /// shape an equal share of WALL CLOCK rather than an equal number of plans.
+    ///
+    /// Measured, not guessed, and the guess was badly wrong: edge count was tried as a proxy
+    /// first and barely moved the total, because cost scales with how far a chain fans out
+    /// per hop rather than with edges. `scratch_cost_by_shape` produced these; re-measure if
+    /// a shape changes.
+    cost: f64,
+}
+
+/// The shapes, each named for the threshold it is here to cross. Hand-picked rather than
+/// randomized: a random shape lands in the middle of every range, and the middle is where
+/// nothing switches over.
+const SHAPES: [Shape; 8] = [
+    // The historical fixture, kept first so its behaviour is still covered.
+    Shape {
+        name: "baseline",
+        nodes: 24,
+        label_every: [2, 3, 8],
+        age_absent_every: 9,
+        tag_distinct: 3,
+        deg: (2, 3),
+        hub: false,
+        delete_every: 11,
+        etypes: 3,
+        cost: 1.0,
+    },
+    // Every node carries `Half`. NOT for the universal-label short-circuits — `Node` is on
+    // every node in every shape, so those were already reachable, which is worth knowing
+    // before adding a shape "for" them. What this changes is label DENSITY: `Half` at 100%
+    // instead of 50% moves the bucket size the `IsLabeled` bitset-vs-probe estimate weighs
+    // against the row count.
+    Shape {
+        name: "universal Half",
+        nodes: 40,
+        label_every: [1, 3, 8],
+        age_absent_every: 9,
+        tag_distinct: 3,
+        deg: (2, 3),
+        hub: false,
+        delete_every: 11,
+        etypes: 3,
+        cost: 1.1,
+    },
+    // No tombstones: live == total, so the whole-graph sweep shortcuts fire.
+    Shape {
+        name: "no deletions",
+        nodes: 40,
+        label_every: [2, 3, 8],
+        age_absent_every: 9,
+        tag_distinct: 3,
+        deg: (2, 3),
+        hub: false,
+        delete_every: 0,
+        etypes: 3,
+        cost: 1.3,
+    },
+    // `age` on every node: a seek and a scan cannot disagree about missing rows.
+    Shape {
+        name: "no absent props",
+        nodes: 40,
+        label_every: [2, 3, 8],
+        age_absent_every: 0,
+        tag_distinct: 3,
+        deg: (2, 3),
+        hub: false,
+        delete_every: 11,
+        etypes: 3,
+        cost: 0.85,
+    },
+    // `tag` distinct on nearly every node, so `dict_encode` declines and the `Str` arms run.
+    Shape {
+        name: "high-card tag (no dict)",
+        nodes: 40,
+        label_every: [2, 3, 8],
+        age_absent_every: 9,
+        tag_distinct: 40,
+        deg: (2, 3),
+        hub: false,
+        delete_every: 11,
+        etypes: 3,
+        cost: 1.0,
+    },
+    // One edge type, so every hop's type filter is trivially satisfied.
+    Shape {
+        name: "single etype",
+        nodes: 40,
+        label_every: [2, 3, 8],
+        age_absent_every: 9,
+        tag_distinct: 3,
+        deg: (2, 3),
+        hub: false,
+        delete_every: 11,
+        etypes: 1,
+        cost: 0.8,
+    },
+    // A hub: one adjacency dominates. DELIBERATELY MODEST — the first version used degree
+    // 4-8 plus a hub to every node, which measured 95.8ms/plan against 0.1-0.2 for every
+    // other shape, because a 4-hop chain over degree 7 explodes. 600x the cost for one
+    // property is not a trade worth making; degree 2-4 with a hub to every third node keeps
+    // "one node's adjacency dominates" and costs ~1.5x the baseline.
+    Shape {
+        name: "hub",
+        nodes: 40,
+        label_every: [2, 3, 8],
+        age_absent_every: 9,
+        tag_distinct: 3,
+        deg: (2, 4),
+        hub: true,
+        delete_every: 11,
+        etypes: 3,
+        cost: 16.0,
+    },
+    // Sparse: many nodes reach nothing, so a hop empties the frontier.
+    Shape {
+        name: "sparse",
+        nodes: 40,
+        label_every: [2, 3, 8],
+        age_absent_every: 9,
+        tag_distinct: 3,
+        deg: (0, 1),
+        hub: false,
+        delete_every: 11,
+        etypes: 3,
+        cost: 0.65,
+    },
+];
+
 /// A graph where every node and every POSITION is distinguishable.
 ///
 /// Each node gets a unique `name`, so a projection of the pattern's slots is a
@@ -376,45 +551,55 @@ fn fixture(seed: u64) -> Store {
     fixture_sized(seed, NODES)
 }
 
-/// The same fixture at an arbitrary node count, so a test can cross the size thresholds the
-/// 24-node default never reaches. See `optimizing_preserves_rows_across_block_boundaries`.
+/// The same fixture at an arbitrary node count, at the baseline shape.
 fn fixture_sized(seed: u64, nodes: u32) -> Store {
+    fixture_shaped(seed, Shape { nodes, ..SHAPES[0] })
+}
+
+/// Build a fixture to a [`Shape`]. One definition, so a dimension cannot be varied in one
+/// test and quietly fixed in another.
+fn fixture_shaped(seed: u64, shape: Shape) -> Store {
     let mut rng = Lcg(seed ^ 0x9E37_79B9_7F4A_7C15);
     let mut b = Builder::default();
+    let nodes = shape.nodes;
 
     for i in 0..nodes {
         let mut labels: Vec<&str> = vec!["Node"];
-        if i % 2 == 0 {
-            labels.push("Half"); // 50%
+        for (l, every) in ["Half", "Wide", "Rare"].iter().zip(shape.label_every) {
+            if every > 0 && i % every == 0 {
+                labels.push(l);
+            }
         }
-        if i % 3 == 0 {
-            labels.push("Wide"); // 33%
-        }
-        if i % 8 == 0 {
-            labels.push("Rare"); // 12%
-        }
-        // Three property shapes on purpose. `name` is unique (the permutation
-        // fingerprint); `age` is numeric and SOMETIMES ABSENT, so a predicate over it
-        // is three-valued and a seek has to agree with a scan about the missing rows;
-        // `tag` is a low-cardinality string, which is what a hash seek is for.
+        // `name` is unique (the permutation fingerprint); `age` is numeric and sometimes
+        // absent, so a predicate over it is three-valued and a seek has to agree with a scan
+        // about the missing rows; `tag` is the string key an equality seek is for, at a
+        // cardinality the shape chooses so `dict_encode` can be pushed either way.
+        let tag = format!("t{}", i % shape.tag_distinct.max(1));
         let mut props: Vec<(&str, Value)> = vec![
             ("name", Value::Str(format!("n{i}").into())),
             ("score", Value::Num(f64::from(i % 7))),
-            (
-                "tag",
-                Value::Str(TAGS[(i % TAGS.len() as u32) as usize].into()),
-            ),
+            ("tag", Value::Str(tag.as_str().into())),
         ];
-        if i % 9 != 0 {
+        if shape.age_absent_every == 0 || i % shape.age_absent_every != 0 {
             props.push(("age", Value::Num(f64::from(i % 20))));
         }
         b.node(&labels, &props);
     }
 
+    let (lo, hi) = shape.deg;
+    let span = hi.saturating_sub(lo) + 1;
+    let etypes = &ETYPES[..shape.etypes.clamp(1, ETYPES.len())];
     for i in 0..nodes {
-        for _ in 0..(2 + rng.below(2)) {
+        for _ in 0..(lo + rng.below(span as usize) as u32) {
             let dst = rng.below(nodes as usize) as u32;
-            b.edge(i, dst, ETYPES[rng.below(ETYPES.len())]);
+            b.edge(i, dst, etypes[rng.below(etypes.len())]);
+        }
+    }
+    if shape.hub {
+        // Every third node, not every node: a full hub over a degree-4 graph is what made
+        // this shape 600x the cost of the others.
+        for dst in (0..nodes).step_by(3) {
+            b.edge(0, dst, etypes[0]);
         }
     }
 
@@ -424,19 +609,22 @@ fn fixture_sized(seed: u64, nodes: u32) -> Store {
     // `lo`/`hi` are a half-open interval per edge, which is what the interval-overlap
     // fusion rewrite exists for; `w` is an ordinary numeric for range predicates.
     for eid in 0..store.edge_count() as u32 {
-        let lo = f64::from(eid % 10);
-        store.set_edge_prop(eid, "lo", Value::Num(lo));
-        store.set_edge_prop(eid, "hi", Value::Num(lo + f64::from(1 + eid % 5)));
+        let elo = f64::from(eid % 10);
+        store.set_edge_prop(eid, "lo", Value::Num(elo));
+        store.set_edge_prop(eid, "hi", Value::Num(elo + f64::from(1 + eid % 5)));
         store.set_edge_prop(eid, "w", Value::Num(f64::from(eid % 6)));
     }
 
-    // DELETED nodes. `range_seek_ids` filters them out explicitly and a plain scan
-    // must agree — a seek that forgets the tombstone check returns rows the scan does
-    // not, which is exactly the kind of divergence a hand-written fixture never has,
-    // because hand-written fixtures are freshly built.
-    for i in 0..nodes {
-        if i % 11 == 7 {
-            store.delete_node(i);
+    // DELETED nodes. `range_seek_ids` filters them out explicitly and a plain scan must
+    // agree — a seek that forgets the tombstone check returns rows the scan does not, which
+    // is exactly the kind of divergence a hand-written fixture never has, because
+    // hand-written fixtures are freshly built. A shape with `delete_every == 0` is the
+    // control: there, `live_node_count == node_count` and the whole-graph shortcuts fire.
+    if shape.delete_every > 0 {
+        for i in 0..nodes {
+            if i % shape.delete_every == 7 {
+                store.delete_node(i);
+            }
         }
     }
 
@@ -1666,75 +1854,124 @@ fn optimizing_preserves_rows_without_indexes() {
     }
 }
 
-/// Vary the GRAPH as well as the plan. A single fixture can hide a rewrite that is only
-/// wrong at a particular density or label distribution — the two-hop bug needed a
-/// middle node whose label differed from its neighbours' to be visible at all.
+/// Vary the GRAPH'S SHAPE as well as the plan, over [`SHAPES`].
+///
+/// This test used to sweep `fixture(0..16)` and call that varying the graph. It was not:
+/// measured, every one of those sixteen had 22 live nodes, labels at 22/11/7/3, `age` on 20
+/// of them and 3 distinct tags — identical in every structural dimension, differing only in
+/// which node each edge happened to point at. Label density, property presence, cardinality,
+/// degree and the deletion rate were all fixed functions of the node index.
+///
+/// Now each shape crosses a named threshold: a universal label, no tombstones, no absent
+/// properties, a tag column too high-cardinality to dict-encode, a single edge type, a hub,
+/// and a sparse graph where hops empty the frontier. `assert_shapes_differ` below pins that
+/// they really do differ, so this cannot silently regress to sixteen copies again.
 #[test]
-fn optimizing_preserves_rows_across_fixtures() {
-    for fixture_seed in 0..16 {
-        let mut store = fixture(fixture_seed);
-        store.create_range_index("age");
-        store.create_index("name");
-        // …and vary the ADJACENCY DISPATCH state, which the plan cannot reach: the four
-        // states cycle every four fixture seeds. See `configure_adjacency`.
-        configure_adjacency(&mut store, fixture_seed);
+fn optimizing_preserves_rows_across_shapes() {
+    // EQUAL TIME per shape, not equal plans. A plan's cost scales with how far a chain can
+    // fan out, so the hub-and-high-degree shape is ~20x the baseline per plan: splitting the
+    // seed count evenly put this test at 39.7s where the old 24-node sweep was ~2s. Edge
+    // count is the proxy, and dividing the budget by it holds each shape to roughly the same
+    // wall-clock share. The expensive shapes get fewer plans, which is the honest trade —
+    // their value is the shape, not the count.
+    let built: Vec<Store> = SHAPES
+        .iter()
+        .enumerate()
+        .map(|(i, shape)| {
+            let mut store = fixture_shaped(i as u64, *shape);
+            index_all(&mut store);
+            configure_adjacency(&mut store, i as u64);
+            store
+        })
+        .collect();
+    let inv_total: f64 = SHAPES.iter().map(|s| 1.0 / s.cost).sum();
 
-        for seed in 0..(seed_count() / 16).max(1) {
-            check(
-                seed.wrapping_mul(31).wrapping_add(fixture_seed),
-                &store,
-                true,
-            );
+    for (i, store) in built.iter().enumerate() {
+        let share = (1.0 / SHAPES[i].cost) / inv_total;
+        let plans = ((seed_count() as f64 * share).round() as u64).max(20);
+        for seed in 0..plans {
+            check(seed.wrapping_mul(31).wrapping_add(i as u64), store, true);
         }
     }
 }
 
-/// Sweep the GRAPH SIZE, straddling `SEEK_FLOOR_NODES`.
-///
-/// This is not one more axis of variety — it is two different planners. Below the floor
-/// `seek_beats_scan` returns `true` unconditionally, so every seedable predicate seeds;
-/// above it the selectivity gate decides and roughly half of them are declined (measured:
-/// 318 plans per 2,000 contain a seek at 24 nodes against 158 at 5,000). The rewrites that
-/// fire, and therefore the plan pairs being compared, differ between the two regimes.
-///
-/// Everything else in this file runs at `NODES` = 24, so before this test ~75,000 plans a
-/// run were checked BELOW the cutover and ~400 above it. Real graphs are above it.
-///
-/// THE SIZES ARE CHOSEN BY LIVE COUNT, not by raw count, because that is what the gate
-/// reads — and the fixture deletes one node in eleven, so 4,000 raw nodes is 3,637 live and
-/// would sit on the wrong side while looking like the right one. The straddle is asserted
-/// below rather than assumed.
-///
-/// Costs ~1.1us per node per plan, so the budgets are per-size rather than shared: equal
-/// TIME at each size, not equal plans. At the default seed count the whole test is a few
-/// seconds; `LENKE_OPT_FUZZ_SEEDS` scales it.
-/// WHAT THIS SWEEP DOES AND DOES NOT BUY, measured rather than assumed.
-///
-/// It buys: a few hundred plans a run in the above-cutover regime instead of ~400 at one
-/// size, scaling with `LENKE_OPT_FUZZ_SEEDS`; sizes that straddle the floor closely (4,000
-/// live against 4,546) so an off-by-one in the floor check is visible; and the host for
-/// `a_seek_is_chosen_exactly_when_the_predicate_is_selective`, which needs to be above it.
-///
-/// It does NOT buy a demonstrated correctness bug the 24-node tests miss. That was tried:
-/// a poison that drops a conjunct when no seed is taken was caught by the 24-node tests too,
-/// because the no-seed branch is shared with "the predicate was never seekable". Every
-/// property of the floor itself is a PERFORMANCE choice — both sides return the same rows —
-/// so this oracle cannot judge it, and the decision test above is what does. Treat the size
-/// sweep as diversity in a genuinely different planner regime, not as a guard with a name.
-///
-/// WHAT THE LARGE SIZES DO NOT COVER, each established by injecting a panic rather than
-/// assumed, and recorded here so it is not re-derived:
-///
-///   * the gate's DECISION. Seeding and declining are both correct, so raw-vs-optimized
-///     cannot judge it — that is what
-///     `a_seek_is_chosen_exactly_when_the_predicate_is_selective` is for.
-///   * the selectivity PROBE. `seed_fraction` is reached by every test in this file at any
-///     size, because `orient_is_worth_it` consults it with no floor.
-///   * `exec/order.rs`'s 2,048-row block-streamed dedup and `exec.rs`'s 8,192-row streamed
-///     projection. Neither is reachable from generated plans at ANY size: the first needs
-///     `streaming_chain` to accept the chain and it has no arms for the `ShortestPath` /
-///     `RepeatGroup` / `OptionalExpand` hops the generator mixes in; the second is
-///     cost-gated and never entered. Named holes with a reason, not something size fixes.
+/// The shapes must actually DIFFER, and in the dimensions they claim to. Without this the
+/// list can decay back into copies of one another — which is exactly what the sixteen
+/// `fixture(n)` calls had silently become.
+#[test]
+fn the_shapes_differ_in_the_dimensions_they_name() {
+    use std::collections::BTreeSet;
+
+    let mut live = BTreeSet::new();
+    let mut label_fracs = BTreeSet::new();
+    let mut age_present = BTreeSet::new();
+    let mut tag_kinds = BTreeSet::new();
+    let mut degrees = BTreeSet::new();
+    let (mut universal, mut no_delete, mut all_present, mut str_tag, mut dict_tag) =
+        (0, 0, 0, 0, 0);
+
+    for (i, shape) in SHAPES.iter().enumerate() {
+        let store = fixture_shaped(i as u64, *shape);
+        let n = store.live_node_count();
+        live.insert(n);
+        label_fracs.insert(store.nodes_with_label("Half").len() * 100 / n.max(1));
+        age_present.insert(
+            (0..store.node_count() as u32)
+                .filter(|&x| store.is_alive(x) && !store.prop(x, "age").is_null())
+                .count()
+                * 100
+                / n.max(1),
+        );
+        degrees.insert(store.edge_count() * 10 / n.max(1));
+
+        if store.nodes_with_label("Half").len() == n {
+            universal += 1;
+        }
+        if store.live_node_count() == store.node_count() {
+            no_delete += 1;
+        }
+        if shape.age_absent_every == 0 {
+            all_present += 1;
+        }
+        match store.column("tag") {
+            Some(crate::store::Column::Dict { .. }) => {
+                dict_tag += 1;
+                tag_kinds.insert("dict");
+            }
+            Some(crate::store::Column::Str { .. }) => {
+                str_tag += 1;
+                tag_kinds.insert("str");
+            }
+            other => panic!("shape {} tag column is {other:?}", shape.name),
+        }
+    }
+
+    // Each of these is a threshold that only one side of exercises.
+    assert!(universal >= 1, "no shape gives a label to every live node");
+    assert!(no_delete >= 1, "no shape is free of tombstones");
+    assert!(all_present >= 1, "no shape has `age` on every node");
+    assert!(
+        dict_tag >= 1 && str_tag >= 1,
+        "`tag` must be dict-encoded in some shapes and not others, got \
+         {dict_tag} dict / {str_tag} str — `dict_encode` keeps a column as `Str` unless its \
+         distinct values are at most half the rows, and the two arms are different code"
+    );
+    // And the continuous dimensions must genuinely spread.
+    assert!(
+        live.len() >= 2,
+        "every shape has the same live node count: {live:?}"
+    );
+    assert!(
+        label_fracs.len() >= 2,
+        "every shape has the same label density: {label_fracs:?}"
+    );
+    assert!(
+        age_present.len() >= 2,
+        "every shape has the same property presence: {age_present:?}"
+    );
+    assert!(degrees.len() >= 3, "degree barely varies: {degrees:?}");
+}
+
 #[test]
 fn optimizing_preserves_rows_across_sizes() {
     // (raw nodes, plans at the default seed count). 4,400 -> 4,000 live, just BELOW the
