@@ -2663,3 +2663,74 @@ fn the_three_is_labeled_implementations_agree() {
     }
     assert!(compared > 80, "too few plans compared: {compared}");
 }
+
+/// The streamed and materialized top projections must agree.
+///
+/// `pull_top_output_streamed` projects in 8,192-row blocks and concatenates, instead of
+/// materializing the whole result — a win only once the fan-out is huge, so its gate is an
+/// estimate of a MILLION rows. Generated plans never clear that: verified by assertion
+/// injection at 20,000 nodes, where the path is never entered.
+///
+/// So the streamed projection, the block loop and `concat_batches` had no coverage at all,
+/// and they must produce exactly what the materialized path produces. Forcing the threshold
+/// both ways is the only way to check that without million-row fixtures.
+///
+/// The fixture is large ENOUGH to matter: at 20,000 nodes a scan seeds ~18,000 ids, so the
+/// block loop runs three times and `concat_batches` really concatenates. A small fixture
+/// would take the streamed path in one block and never test the concatenation.
+#[test]
+fn the_streamed_and_materialized_projections_agree() {
+    let mut store = fixture_shaped(
+        7,
+        Shape {
+            nodes: 20_000,
+            ..SHAPES[0]
+        },
+    );
+    index_all(&mut store);
+
+    let mut compared = 0;
+    let mut multi_block = 0;
+    with_rep_cap(1, || {
+        for seed in 0..250u64 {
+            let mut rng = Lcg(seed.wrapping_mul(31_337).wrapping_add(7));
+            let plan = gen_plan(&mut rng);
+            let opt = optimize_indexed(plan, &store as &dyn IndexOracle);
+
+            // 0.0 forces streaming for every projection; f64::INFINITY forbids it.
+            let streamed =
+                crate::exec::with_stream_threshold(0.0, || crate::exec::try_run(&opt, &store));
+            let materialized = crate::exec::with_stream_threshold(f64::INFINITY, || {
+                crate::exec::try_run(&opt, &store)
+            });
+
+            match (streamed, materialized) {
+                (Ok(s), Ok(m)) => {
+                    let (sb, mb) = (bag(&s), bag(&m));
+                    if sb.len() > 8_192 {
+                        multi_block += 1;
+                    }
+                    assert_eq!(
+                        sb, mb,
+                        "the streamed and materialized projections disagree (seed {seed})\n  {opt:?}"
+                    );
+                    compared += 1;
+                }
+                // A guard firing is fine, as long as it fires both ways.
+                (Err(_), Err(_)) => {}
+                (s, m) => panic!(
+                    "one projection failed and the other did not (seed {seed}): \
+                     streamed={:?} materialized={:?}\n  {opt:?}",
+                    s.as_ref().err(),
+                    m.as_ref().err()
+                ),
+            }
+        }
+    });
+    assert!(compared > 40, "too few plans compared: {compared}");
+    // And the BLOCK loop must actually loop, or `concat_batches` is never exercised.
+    assert!(
+        multi_block >= 1,
+        "no result exceeded one 8,192-row block, so the concatenation is untested"
+    );
+}

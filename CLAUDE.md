@@ -167,13 +167,66 @@ cargo test --release --manifest-path crates/lenke-engine/Cargo.toml rewrite_fuzz
 LENKE_OPT_FUZZ_SEEDS=200000 cargo test --release ... rewrite_fuzz   # deeper sweep
 ```
 
-Two rules when you add or change a rewrite, both learned the hard way:
+Three rules when you add or change a rewrite, all learned the hard way:
 
 - **Mutate it and check the fuzzer catches it.** It passed on its first run, and so
   does a test that checks nothing. Four historical wrong-answer bugs were
   re-introduced to prove it had teeth; two of them needed the generator widened
   first. A generative test whose teeth were never verified is worse than no test,
   because it is believed.
+- **Run every mutant under a timeout AND a memory cap.** A mutant is arbitrary broken
+  code, so it can hang or allocate without bound — treat that as the normal case, not
+  the exception. On 2026-09-28 an off-by-one on the block bound in
+  `pull_top_output_streamed` (`min(ids.len())` → `min(ids.len() - 1)`) made `start = end`
+  stop advancing: the loop pushed a `Batch` per iteration forever, filled RAM, then filled
+  the 192 GB swapfile, and nothing killed it. The machine needed a hard reboot. A loop
+  bound, a `while` condition and an index cap are where an off-by-one stops being a wrong
+  answer and becomes non-termination.
+
+  ```bash
+  # BUILD FIRST, uncapped — rustc and the linker want GBs, and a cold compile inside the
+  # cap would OOM for reasons that have nothing to do with the mutant.
+  cargo build --release --manifest-path crates/lenke-engine/Cargo.toml --tests
+
+  # Linux. Both limits are load-bearing and they catch DIFFERENT failures:
+  #   MemoryMax    — runaway allocation. Verified: a bomb dies in <1s, exit 137.
+  #   MemorySwapMax=0 — makes that kill immediate instead of an hours-long swap crawl.
+  #   timeout      — an infinite loop that does NOT allocate never trips MemoryMax at
+  #                  all. Verified: exit 124.
+  timeout 600 systemd-run --user --scope -q \
+    -p MemoryMax=16G -p MemorySwapMax=0 \
+    cargo test --release --manifest-path crates/lenke-engine/Cargo.toml <filter>
+
+  # macOS — no cgroups, so the timeout is the ONLY real protection. `timeout` is GNU
+  # coreutils (often installed as `gtimeout`); there is no portable RSS cap, and
+  # `ulimit -v` bounds ADDRESS SPACE, which Rust allocators over-reserve, so it
+  # false-positives more than it protects.
+  timeout 600 cargo test --release --manifest-path crates/lenke-engine/Cargo.toml <filter>
+  ```
+
+  **Why 16G and not less.** This is an in-memory database being fuzzed, so the tests
+  legitimately need room — but nowhere near the machine. Measured peak RSS via the cgroup's
+  `memory.peak`: **1.86 GB** for the whole suite (752 tests, including the 20,000-node
+  fixtures) and **1.53 GB** for `LENKE_OPT_FUZZ_SEEDS=200000`. So 16G is ~8x the real
+  ceiling — ample for an ad-hoc hunt at 50k-100k nodes — while leaving ~45 of this box's
+  61 GB free, which is what keeps the machine usable while it runs. If a run genuinely
+  needs more, RAISE the number deliberately and say why; do not drop the cap.
+
+  Four rules that follow:
+
+  - **A timeout (124) or an OOM kill (137) IS the mutant being caught.** Do not investigate
+    it as a harness failure — a mutant that cannot terminate is one the test would have
+    caught. Both codes are distinguishable from a test failure, so check them.
+  - **Keep the pristine copy under `target/`** (gitignored, and it survives the reboot that
+    a runaway mutant may force). `/tmp` does not: the scratchpad was wiped by the reboot
+    and the file had to be reconstructed by hand from `git diff`.
+  - **Restore before applying the next mutant, never only after the loop.** An interrupted
+    loop leaves the mutant in the tree, and `git diff` is then the only thing standing
+    between it and a commit.
+  - **Prove the harness kills before trusting it with a mutant.** One allocator bomb and
+    one bare `while true` under the cap, checking for 137 and 124, costs seconds and is the
+    difference between a safety net and the belief in one.
+
 - **A passing integration probe is not evidence of correctness.** The probes in
   `examples/` do assert answers, and they passed while the engine returned wrong
   rows — three times. Their fixtures give every node the same label and ask for

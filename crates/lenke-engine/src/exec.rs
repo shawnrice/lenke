@@ -2478,6 +2478,33 @@ fn pull_distinct_capped_stream(
     Ok(Some(concat_batches(&acc, store)))
 }
 
+// The estimated-row threshold past which the top projection streams in blocks instead of
+// materializing. See the note inside `pull_top_output_streamed`.
+#[cfg(test)]
+thread_local! {
+    static STREAM_ROWS: std::cell::Cell<Option<f64>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn stream_output_threshold() -> f64 {
+    STREAM_ROWS.with(|c| c.get()).unwrap_or(1_000_000.0)
+}
+
+#[cfg(not(test))]
+fn stream_output_threshold() -> f64 {
+    1_000_000.0
+}
+
+/// Run `f` with the streamed-projection threshold forced, so a caller can compare the
+/// streamed and materialized projections on the same plan and store.
+#[cfg(test)]
+pub(crate) fn with_stream_threshold<T>(rows: f64, f: impl FnOnce() -> T) -> T {
+    let prev = STREAM_ROWS.with(|c| c.replace(Some(rows)));
+    let out = f();
+    STREAM_ROWS.with(|c| c.set(prev));
+    out
+}
+
 /// The TOP-LEVEL output over a VERY large streamable chain (`<hops>.values(k)` /
 /// `.label()` / `.id()`): stream the source in blocks so the exploding per-hop
 /// intermediate frontiers are never materialized — expand + project fuse into one pass
@@ -2500,8 +2527,15 @@ fn pull_top_output_streamed(
     // A deliberately HIGH threshold: the win is avoiding the per-hop intermediate Cols,
     // which only matters once the fan-out is huge; below it the vectorized materialized
     // project is faster (the block/concat overhead would regress it).
-    const STREAM_OUTPUT_ROWS: f64 = 1_000_000.0;
-    if crate::cost::estimate(input, store).rows < STREAM_OUTPUT_ROWS {
+    //
+    // OVERRIDABLE UNDER `cfg(test)`. The threshold is high enough that generated plans never
+    // reach this path — verified by assertion injection at 20,000 nodes — so the streamed
+    // projection and the materialized one were never compared, and they must produce the same
+    // rows. Forcing the choice is the only way to check that without building million-row
+    // fixtures. Same technique as `with_dense_cut` and `with_label_mode`, and for the same
+    // reason: an alternative implementation picked by a cost estimate is untested for
+    // EQUIVALENCE even when it is reachable.
+    if crate::cost::estimate(input, store).rows < stream_output_threshold() {
         return Ok(None);
     }
     let Some((inner_body, ids)) = streaming_chain(input, store) else {
