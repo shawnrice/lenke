@@ -7070,6 +7070,82 @@ fn size_of_a_string_counts_utf16_units() {
     assert_eq!(got, vec![2.0, 2.0]);
 }
 
+/// List functions over a group-bound LIST column, which is the shape that pays the
+/// whole-column clone: their argument is a bare `Expr::Slot`, so `eval` used to copy the entire
+/// `Col::Gen` before the function ran. Measured over 599,998 rows: `head(b)` 142.1ms -> 97.8ms,
+/// `reverse(b)` 141.1ms -> 100.0ms.
+///
+/// Asserted through `size(...)` so the values are plain numbers: the inner function still takes
+/// the borrowed-slot path (its own argument is the slot), while the outer `size` sees a computed
+/// column and takes the generic one — so one query exercises both.
+#[test]
+fn list_functions_over_a_boxed_column_keep_their_answers() {
+    let store = chain_store(6);
+    let nums = |q: &str| -> Vec<f64> {
+        let mut v: Vec<f64> = crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .iter()
+            .map(|r| match r[0] {
+                Value::Num(x) => x,
+                ref o => panic!("{o:?}"),
+            })
+            .collect();
+        v.sort_by(f64::total_cmp);
+        v
+    };
+    let base = "MATCH ((a)-[:R]->(b)){1,2} RETURN ";
+    // `tail` drops the first element: a 1-rep list of 1 becomes empty, a 2-rep list of 2
+    // becomes 1. Five one-rep and four two-rep walks over a 6-node chain.
+    assert_eq!(
+        nums(&format!("{base}size(tail(b)) AS k")),
+        vec![0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]
+    );
+    // `reverse` preserves length.
+    assert_eq!(
+        nums(&format!("{base}size(reverse(b)) AS k")),
+        nums(&format!("{base}size(b) AS k"))
+    );
+}
+
+/// `head` and `last` return an ELEMENT, not a collection, and over a group list that element is
+/// a node — so this checks the borrowed-slot path hands back the right one rather than, say, the
+/// first row's. On a chain the two agree exactly when the list has one entry (a 1-rep walk) and
+/// differ on every 2-rep walk, so a path that returned the wrong element would collapse them.
+#[test]
+fn head_and_last_over_a_boxed_column_differ_where_they_should() {
+    let store = chain_store(6);
+    let strs = |q: &str| -> Vec<String> {
+        let mut v: Vec<String> = crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .iter()
+            .map(|r| format!("{:?}", r[0]))
+            .collect();
+        v.sort();
+        v
+    };
+    let base = "MATCH ((a)-[:R]->(b)){1,2} RETURN ";
+    let heads = strs(&format!("{base}head(b) AS k"));
+    let lasts = strs(&format!("{base}last(b) AS k"));
+    assert_eq!(heads.len(), 9);
+    assert_eq!(lasts.len(), 9);
+    assert_ne!(
+        heads, lasts,
+        "the 2-rep walks must disagree on first vs last"
+    );
+    // `a` is bound at a LOWER slot than `b`, and they hold different nodes (sources against
+    // targets). Without this, every query here referenced the LAST slot, so a path that
+    // borrowed "the last column" instead of slot `k` was indistinguishable — that mutant
+    // survived until this assertion existed.
+    let heads_a = strs(&format!("{base}head(a) AS k"));
+    assert_eq!(heads_a.len(), 9);
+    assert_ne!(
+        heads_a, heads,
+        "head(a) and head(b) read different slots and must differ"
+    );
+}
+
 // --- Lineage (path) ---
 
 /// Look up a key in a rich Path object `{vertices, edges, length}` (a `Value::Map`).

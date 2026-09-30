@@ -274,6 +274,15 @@ pub fn run(cfg: &Cfg) {
                     "repeat-group unread",
                     "MATCH ((a)-[:KNOWS]->(b)){1,2} (t) RETURN t.name AS n",
                 ),
+                // A list FUNCTION over the group's boxed list column. Its argument is a bare
+                // slot, which `eval` used to clone the whole column for — one `Vec`
+                // allocation per row, before the function ran. This is the guard for the
+                // borrowed-argument path: a pure performance change has no correctness test
+                // that fails when it stops firing, so a return to ~142,000us is the signal.
+                (
+                    "repeat-group head(b)",
+                    "MATCH ((a)-[:KNOWS]->(b)){1,2} RETURN head(b) AS h",
+                ),
                 // The valid comparison, and where the real finding was: both count the same
                 // 599,998 rows and return the identical number. A var-length hop shortcuts
                 // `count(*)`; a group had no such path, so it enumerated every row.

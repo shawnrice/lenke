@@ -1285,7 +1285,28 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
             // validated at parse time, so `call_scalar` can index its args. The row
             // count is the BATCH's, not the min over args — a niladic function
             // (`pi()`, `e()`) has no arg columns yet still yields one value per row.
-            let cols = eval_all(args, store, batch)?;
+            // BORROW an argument that is a bare slot. `eval` on an `Expr::Slot` is
+            // `batch.slot(n).clone()` — a whole-column copy, which for a `Col::Gen` of
+            // `Value::List` or `Value::Map` is one `Vec` allocation PER ROW, paid before the
+            // function does anything. Measured over a group-bound list column, 599,998 rows:
+            // `head(b)` 142.1ms -> 97.8ms, `reverse(b)` 141.1ms -> 100.0ms, `last(b)`
+            // 136.9ms -> 100.8ms, `tail(b)` 120.3ms -> 102.5ms.
+            //
+            // `Cow` rather than an all-or-nothing check so a MIXED argument list still borrows
+            // the slots in it (`substring(s, n)` with one slot and one literal, say) — the
+            // per-argument decision costs nothing and the all-Slots form would have skipped
+            // every such call.
+            //
+            // Borrowing is observationally identical: the `Slot` arm of `eval` does nothing
+            // but clone that column, and `batch.slot` is the same accessor either way, so a
+            // missing slot still panics in the same place.
+            let cols: Vec<std::borrow::Cow<'_, Col>> = args
+                .iter()
+                .map(|a| match a {
+                    Expr::Slot(k) => Ok(std::borrow::Cow::Borrowed(batch.slot(*k))),
+                    other => eval(other, store, batch).map(std::borrow::Cow::Owned),
+                })
+                .collect::<Result<_, String>>()?;
             let n = batch.rows();
             // Reuse ONE argument buffer across rows instead of heap-allocating a fresh
             // `Vec<Value>` per row — a general win for every multi-arg scalar function
