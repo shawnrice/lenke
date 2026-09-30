@@ -1522,6 +1522,7 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
                         .or_else(|| try_fused_hop_mask_agg(input, keys, aggs, store))
                         .or_else(|| try_edge_filtered_count(input, keys, aggs, store))
                         .or_else(|| try_varlen_count(input, keys, aggs, store))
+                        .or_else(|| try_group_count(input, keys, aggs, store))
                         .or_else(|| try_edge_cross_count(input, keys, aggs, store))
                         .or_else(|| try_frontier_count(input, keys, aggs, store))
                         .or_else(|| try_varlen_distinct_count(input, keys, aggs, store))

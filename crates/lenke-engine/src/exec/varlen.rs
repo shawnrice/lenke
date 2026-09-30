@@ -239,6 +239,73 @@ pub(super) trait VarlenEmit {
     fn should_stop(&self) -> bool;
 }
 
+/// A COUNTING emit: keeps a tally and nothing else.
+///
+/// The trail budget exists, in its own words, to stop a fan-out from "materializing billions of
+/// rows and OOM-killing the host". A bare `count(*)` materializes no rows, so the budget has
+/// nothing to protect and should not decide whether the query can run — measured on a random
+/// degree-3 graph, the count over `((x)-[:R]->(m)-[:R]->(y)){1,2}` is 1,796,808 at 20,000
+/// vertices, over the 1,000,000 default, and native returned `E_RESOURCE_EXHAUSTED` where the TS
+/// engine answered. `should_stop` is therefore always false: a TRAIL cannot reuse an edge, so the
+/// enumeration terminates on its own.
+struct CountEmit {
+    n: u64,
+}
+
+impl VarlenEmit for CountEmit {
+    fn emit(&mut self, _row: usize, _node_stack: &[u32], _edge_stack: &[u32]) {
+        self.n += 1;
+    }
+
+    fn should_stop(&self) -> bool {
+        false
+    }
+}
+
+/// How many rows `var_length` WOULD emit, without building any of them. Shares `run_varlen` with
+/// the materializing path, so every group semantic — the rep-boundary emission for `k > 1`, a
+/// per-repetition `WHERE`, the path mode — is the same code rather than a second derivation of it.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn var_length_count(
+    batch: &Batch,
+    store: &Store,
+    from: usize,
+    dir: Dir,
+    edge_label: &[String],
+    min: u32,
+    max: u32,
+    mode: PathMode,
+    per_rep_pred: Option<&Expr>,
+    k: u32,
+    double_loops: bool,
+) -> Option<u64> {
+    let want = match want_etypes(store, edge_label) {
+        Ok(w) => w,
+        Err(()) => return Some(0), // an unknown edge type matches no edge
+    };
+    let Col::Nodes(src) = batch.slot(from) else {
+        return None;
+    };
+    let mut sink = CountEmit { n: 0 };
+    run_varlen(
+        src,
+        store,
+        &want,
+        min,
+        max,
+        dir,
+        mode,
+        per_rep_pred,
+        k,
+        None,
+        None,
+        double_loops,
+        &mut sink,
+    );
+
+    Some(sink.n)
+}
+
 /// The materializing emit: reproduces exactly the old inline `keep`/`ends`/lineage/group
 /// pushes, so a batch built through it is byte-identical to before the refactor.
 struct CollectEmit<'a> {

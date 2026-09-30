@@ -7697,6 +7697,107 @@ fn a_path_above_a_join_carries_the_right_rows() {
     assert!(seen.contains(&"Num(1.0)".to_string()) && seen.contains(&"Num(3.0)".to_string()));
 }
 
+// --- Counting a quantified group without materializing it ---
+
+/// A small DENSE graph: every vertex gets `deg` out-edges, so a two-hop unit fans out and a
+/// `{1,2}` quantifier emits far more rows than there are vertices.
+fn dense_store(n: u32, deg: u32) -> Store {
+    let mut b = Builder::default();
+    for i in 0..n {
+        b.node(&["N"], &[("name", s(&format!("v{i}")))]);
+    }
+    for i in 0..n {
+        for d in 0..deg {
+            b.edge(i, (i * 7 + d * 3 + 1) % n, "R");
+        }
+    }
+    b.build()
+}
+
+/// `count(*)` over a MULTI-HOP unit must not be bounded by the trail budget. That budget exists
+/// to stop a fan-out from "materializing billions of rows and OOM-killing the host" — its own
+/// words — and a bare count materializes no rows at all. Item 47 flattens a single-hop group onto
+/// the var-length counting path, but a `k > 1` unit cannot be flattened (it emits only at rep
+/// boundaries, and the equivalent hop bounds would be `min * k ..= max * k`), so it fell through
+/// to the materializing walk and tripped the guard.
+///
+/// Measured before the fix on a random degree-3 graph: at 10,000 vertices the count is 898,497
+/// and native answered in 19ms against TS's 1376ms, but at 20,000 the count is 1,796,808 — over
+/// the 1,000,000 default — and native returned `E_RESOURCE_EXHAUSTED` while TS answered. A count
+/// TS gives and native refuses.
+#[test]
+fn a_group_count_is_not_bounded_by_the_trail_budget() {
+    let q = "MATCH ((x)-[:R]->(m)-[:R]->(y)){1,2} RETURN count(*) AS c";
+    let mut store = dense_store(60, 3);
+    store.set_limit(crate::store::ConfigId::LimitsTrail, 10_000_000);
+    let truth = match crate::exec::try_run(&opt_plan(q, &store), &store)
+        .unwrap()
+        .rows
+        .iter()
+        .next()
+        .expect("one row")[0]
+    {
+        Value::Num(x) => x,
+        ref o => panic!("{o:?}"),
+    };
+    assert!(truth > 100.0, "the fixture must fan out: {truth}");
+
+    // Now a budget well BELOW the emitted-row count. The count must still be exact.
+    store.set_limit(crate::store::ConfigId::LimitsTrail, (truth as u64) / 4);
+    let got = crate::exec::try_run(&opt_plan(q, &store), &store);
+    assert_eq!(
+        got.map(|r| format!("{:?}", r.rows.iter().next().expect("one row")[0])),
+        Ok(format!("Num({truth:?})")),
+        "a bare count must not be bounded by a materialization budget"
+    );
+}
+
+/// The counting path must APPLY the per-repetition `WHERE`, and a trivially-true predicate cannot
+/// show that: the count is the same whether such a filter runs or is dropped. Dropping
+/// `per_rep_pred` in `try_group_count` survived the whole suite until this test existed, because
+/// the only per-rep coverage over a `k = 2` count used an always-true predicate.
+#[test]
+fn a_group_count_applies_a_selective_per_rep_filter() {
+    let store = dense_store(60, 3);
+    let n = |q: &str| -> f64 {
+        match crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .iter()
+            .next()
+            .expect("one row")[0]
+        {
+            Value::Num(x) => x,
+            ref o => panic!("{o:?}"),
+        }
+    };
+    let all = n("MATCH ((x)-[:R]->(m)-[:R]->(y)){1,2} RETURN count(*) AS c");
+    // `x` is the unit's source, so excluding one vertex prunes every repetition starting there —
+    // selective, unlike an always-true predicate.
+    let some = n("MATCH ((x)-[:R]->(m)-[:R]->(y) WHERE x.name <> 'v0'){1,2} RETURN count(*) AS c");
+    assert!(all > 0.0, "the fixture must fan out");
+    assert!(
+        some < all,
+        "a selective per-rep filter must reduce the count: {some} vs {all}"
+    );
+    assert!(some > 0.0, "and must not prune everything: {some}");
+}
+
+/// The guard must STILL apply where rows really are materialized, or the fix would have turned a
+/// loud failure into an OOM. Same fixture, same low budget, but the query returns rows.
+#[test]
+fn a_group_that_returns_rows_still_trips_the_trail_budget() {
+    let mut store = dense_store(60, 3);
+    store.set_limit(crate::store::ConfigId::LimitsTrail, 50);
+    let err = try_gql(
+        "MATCH ((x)-[:R]->(m)-[:R]->(y)){1,2} (t) RETURN t.name AS n",
+        &store,
+    )
+    .expect_err("a row-returning group must still trip the budget");
+    assert!(err.starts_with("E_RESOURCE_EXHAUSTED"), "{err}");
+    assert!(err.contains("trail limit"), "{err}");
+}
+
 // --- Lineage (path) ---
 
 /// Look up a key in a rich Path object `{vertices, edges, length}` (a `Value::Map`).

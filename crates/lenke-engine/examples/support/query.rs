@@ -287,6 +287,17 @@ pub fn run(cfg: &Cfg) {
                 // `NestedGroup` rather than `RepeatGroup`. It appends one list column per bound
                 // inner variable and built them whether or not anything read them; a bare
                 // count reads none. The guard for that: ~665ms means the lists came back.
+                // A k = 2 unit: TWO hops per repetition over one edge type, which lowers to
+                // `RepeatGroup { k: 2 }` and CANNOT be flattened onto the var-length counting
+                // path (a multi-element unit emits only at rep boundaries). Before it had a
+                // counting sink of its own it materialized every emitted row to return one
+                // number, and past the trail budget it refused outright — 1,796,808 rows at
+                // 20,000 vertices, over the 1,000,000 default, where the TS engine answered.
+                // A time here rather than an error is the guard.
+                (
+                    "k2-group count",
+                    "MATCH ((x)-[:KNOWS]->(m)-[:KNOWS]->(y)){1,2} RETURN count(*) AS c",
+                ),
                 (
                     "nested-group count",
                     "MATCH ((x)-[:KNOWS]->(m)<-[:KNOWS]-(y)){1,2} RETURN count(*) AS c",

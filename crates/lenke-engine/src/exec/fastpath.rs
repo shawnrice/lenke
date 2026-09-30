@@ -947,6 +947,63 @@ pub(super) fn try_stream_num_count(
 /// filter and trail bookkeeping as `var_length`, so the count is exact and
 /// identical. `None` for a grouped / arg'd / DISTINCT aggregate or a non-`VarLength`
 /// input (handled elsewhere).
+/// `count(*)` over a quantified subpath GROUP, counted without materializing a row.
+///
+/// Item 47 flattens a single-hop group onto `try_varlen_count`, but a `k > 1` unit cannot be
+/// flattened — it emits only at rep boundaries, and the equivalent hop bounds would be
+/// `min * k ..= max * k` — so such a count fell through to the materializing walk and tripped the
+/// trail budget. That budget guards against materializing rows, which a bare count does not do,
+/// and the TS engine answers the same query: at 20,000 vertices of a random degree-3 graph the
+/// count is 1,796,808, over the 1,000,000 default, and native refused where TS did not.
+///
+/// A `per_rep_pred` is carried through rather than declined, because `run_varlen` applies it
+/// during the walk exactly as the materializing path does.
+pub(super) fn try_group_count(
+    input: &Plan,
+    keys: &[(String, Expr)],
+    aggs: &[Agg],
+    store: &Store,
+) -> Option<Batch> {
+    if !keys.is_empty() || aggs.len() != 1 {
+        return None;
+    }
+    let agg = &aggs[0];
+    if agg.func != AggFn::Count || agg.arg.is_some() || agg.distinct {
+        return None; // count(*) only — anything else reads a column
+    }
+    let Plan::RepeatGroup {
+        input: inner,
+        from,
+        dir,
+        edge_label,
+        min,
+        max,
+        mode,
+        k,
+        per_rep_pred,
+        ..
+    } = input
+    else {
+        return None;
+    };
+    let batch = pull(inner, store, false).ok()?;
+    let n = crate::exec::varlen::var_length_count(
+        &batch,
+        store,
+        *from,
+        *dir,
+        edge_label,
+        *min,
+        *max,
+        *mode,
+        per_rep_pred.as_deref(),
+        *k,
+        false,
+    )?;
+
+    Some(scalar_num(n as f64))
+}
+
 pub(super) fn try_varlen_count(
     input: &Plan,
     keys: &[(String, Expr)],
