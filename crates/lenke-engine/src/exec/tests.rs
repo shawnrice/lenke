@@ -8532,6 +8532,148 @@ fn a_zero_only_quantifier_counts_exactly_the_sources() {
     assert_eq!(none, 0.0, "no sources, no zero-length paths");
 }
 
+/// Every counting fast path over a var-length hop, asked the same question two ways: the count, and
+/// the number of rows the same pattern returns. On a fixture large enough to select the algebraic
+/// branch, and over a KNOWN and an UNKNOWN edge type.
+///
+/// An unknown edge type made three of them answer 0. That is right for the paths that traverse an
+/// edge and wrong for a `{0,n}` quantifier, which also emits the ZERO-LENGTH path — the source
+/// itself, one row per source row, needing no edge at all. So `MATCH (x:N)-[:Nope]->{0,2}(y)`
+/// returned 4,000 rows while `count(*)` over it said 0.
+///
+/// The fix is the idiom this module already used in four other places, including the aggregate twin
+/// whose comment explains it: a want-set holding one non-existent etype id matches nothing, so the
+/// walk traverses nothing and still emits what does not need an edge. The three broken sites
+/// answered the same question a second way, with an early `return 0`, and that spelling is simply
+/// wrong for `min == 0`.
+#[test]
+fn a_counting_fast_path_agrees_with_its_rows_for_an_unknown_edge_type() {
+    let store = dense_store(4000, 4);
+    let val = |q: &str| -> f64 {
+        match crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .iter()
+            .next()
+            .expect("one row")[0]
+        {
+            Value::Num(x) => x,
+            ref o => panic!("{o:?}"),
+        }
+    };
+    let rows = |q: &str| -> usize {
+        crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .len()
+    };
+    for ty in ["R", "Nope"] {
+        for quant in ["{0,2}", "{1,2}", "{0,1}"] {
+            assert_eq!(
+                val(&format!(
+                    "MATCH (x:N)-[:{ty}]->{quant}(y) RETURN count(*) AS c"
+                )),
+                rows(&format!(
+                    "MATCH (x:N)-[:{ty}]->{quant}(y) RETURN y.name AS n"
+                )) as f64,
+                "count(*) disagreed with its rows over [:{ty}]{quant}"
+            );
+            assert_eq!(
+                val(&format!(
+                    "MATCH (x:N)-[:{ty}]->{quant}(y) RETURN count(DISTINCT y) AS c"
+                )),
+                rows(&format!(
+                    "MATCH (x:N)-[:{ty}]->{quant}(y) RETURN DISTINCT y.name AS n"
+                )) as f64,
+                "count(DISTINCT) disagreed with its rows over [:{ty}]{quant}"
+            );
+            assert_eq!(
+                val(&format!(
+                    "MATCH ((a)-[:{ty}]->(b)){quant} (t) RETURN count(*) AS c"
+                )),
+                rows(&format!(
+                    "MATCH ((a)-[:{ty}]->(b)){quant} (t) RETURN t.name AS n"
+                )) as f64,
+                "a group count disagreed with its rows over [:{ty}]{quant}"
+            );
+        }
+    }
+}
+
+/// A TWO-hop unit cannot flatten onto a var-length hop, so it reaches the GROUP's own counting sink
+/// — a different want-set site from the one above, and the mutant there survived until this test
+/// existed: every group spelling in the sweep above is single-hop, and single-hop groups flatten.
+///
+/// A small fixture on purpose. The two-hop unit's row-returning form over a real edge type fans out
+/// past the trail budget on the 4,000-vertex one, and this site has nothing to do with the
+/// algebraic branch that needs a big graph.
+#[test]
+fn a_two_hop_group_count_agrees_with_its_rows_for_an_unknown_edge_type() {
+    let store = dense_store(40, 3);
+    for ty in ["R", "Nope"] {
+        for quant in ["{0,2}", "{1,2}", "{0,1}"] {
+            let counted = one_num(
+                &format!("MATCH ((x)-[:{ty}]->(m)-[:{ty}]->(y)){quant} (t) RETURN count(*) AS c"),
+                &store,
+            );
+            let rows = try_gql(
+                &format!("MATCH ((x)-[:{ty}]->(m)-[:{ty}]->(y)){quant} (t) RETURN t.name AS n"),
+                &store,
+            )
+            .unwrap();
+            assert_eq!(
+                counted, rows as f64,
+                "a two-hop group count disagreed with its rows over [:{ty}]{quant}"
+            );
+        }
+    }
+    // And absolutely: over an unknown type the zero-length paths are all there is.
+    assert_eq!(
+        one_num(
+            "MATCH ((x)-[:Nope]->(m)-[:Nope]->(y)){0,2} (t) RETURN count(*) AS c",
+            &store
+        ),
+        40.0
+    );
+}
+
+/// The zero-length path over an unknown edge type is the WHOLE answer, so the number is the source
+/// count exactly — an absolute assertion beside the relative one above, because a bug that made
+/// BOTH sides zero would satisfy the comparison.
+#[test]
+fn an_unknown_edge_type_still_counts_the_zero_length_paths() {
+    let store = dense_store(4000, 4);
+    let n = one_num("MATCH (x:N)-[:Nope]->{0,2}(y) RETURN count(*) AS c", &store);
+    assert_eq!(
+        n, 4000.0,
+        "one zero-length path per source, and nothing else"
+    );
+    assert_eq!(
+        one_num("MATCH (x:N)-[:Nope]->{1,2}(y) RETURN count(*) AS c", &store),
+        0.0,
+        "and with no zero-length path to emit, an unknown type really is nothing"
+    );
+}
+
+/// A NESTED group already handled this — its walker emits at each outer-rep boundary, and boundary
+/// zero is the source — so it is the control: the same query shape that was already right must stay
+/// right, and it is what said the bug was in the shared want-set handling rather than in the
+/// quantifier semantics.
+#[test]
+fn a_nested_group_count_over_an_unknown_edge_type_was_already_right() {
+    let store = dense_store(4000, 4);
+    let q = "MATCH ((a)-[:Nope]->(m)<-[:Nope]-(b)){0,2} (t) RETURN count(*) AS c";
+    assert_eq!(one_num(q, &store), 4000.0);
+    assert_eq!(
+        try_gql(
+            "MATCH ((a)-[:Nope]->(m)<-[:Nope]-(b)){0,2} (t) RETURN t.name AS n",
+            &store
+        )
+        .unwrap(),
+        4000
+    );
+}
+
 // --- Lineage (path) ---
 
 /// Look up a key in a rich Path object `{vertices, edges, length}` (a `Value::Map`).

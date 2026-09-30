@@ -370,7 +370,10 @@ pub(super) fn var_length_count(
 ) -> Option<()> {
     let want = match want_etypes(store, edge_label) {
         Ok(w) => w,
-        Err(()) => return Some(()), // an unknown edge type matches no edge
+        // The sentinel rather than an early return: an unknown edge type makes no edge
+        // traversable, which is not the same as no rows — a `{0,n}` quantifier still emits the
+        // zero-length path, one per source row (item 65).
+        Err(()) => vec![u32::MAX],
     };
     let Col::Nodes(src) = batch.slot(from) else {
         return None;

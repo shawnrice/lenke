@@ -1101,7 +1101,12 @@ pub(super) fn try_varlen_count(
     }
     let want = match want_etypes(store, edge_label) {
         Ok(w) => w,
-        Err(()) => return Some(scalar_num(0.0)), // unknown edge type → no paths
+        // Unknown edge type → no edge is traversable. A non-empty want of a non-existent id
+        // (etype ids are dense, so `u32::MAX` is none) matches nothing, which is NOT the same as
+        // "no rows": a `{0,n}` quantifier still emits the zero-length path, one per source row.
+        // Returning 0 here answered 0 where the pattern returns one row per source. The sentinel
+        // is the idiom the agg twin and `var_length` itself already use.
+        Err(()) => vec![u32::MAX],
     };
     let batch = pull(inner, store, false).ok()?;
     let Col::Nodes(src) = batch.slot(*from) else {
@@ -1437,7 +1442,12 @@ pub(super) fn try_varlen_distinct_count(
     }
     let want = match want_etypes(store, edge_label) {
         Ok(w) => w,
-        Err(()) => return Some(scalar_num(0.0)), // unknown edge type → no endpoints
+        // Unknown edge type → no edge is traversable. A non-empty want of a non-existent id
+        // (etype ids are dense, so `u32::MAX` is none) matches nothing, which is NOT the same as
+        // "no rows": a `{0,n}` quantifier still emits the zero-length path, one per source row.
+        // Returning 0 here answered 0 where the pattern returns one row per source. The sentinel
+        // is the idiom the agg twin and `var_length` itself already use.
+        Err(()) => vec![u32::MAX],
     };
     let batch = pull(inner, store, false).ok()?;
     // The endpoint the VarLength appends lands at the slot just past the inner width;
@@ -1528,7 +1538,8 @@ pub(super) fn try_varlen_distinctby_count(
     };
     let want = match want_etypes(store, edge_label) {
         Ok(w) => w,
-        Err(()) => return Some(scalar_num(0.0)),
+        // The sentinel, not an early 0 — see the note in `try_varlen_count`.
+        Err(()) => vec![u32::MAX],
     };
     let batch = pull(src_plan, store, false).ok()?;
     // The dedup key must be exactly the endpoint the hop appends (slot == inner width).
