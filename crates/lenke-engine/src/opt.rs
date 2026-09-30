@@ -150,7 +150,129 @@ pub fn optimize_indexed(plan: Plan, idx: &dyn IndexOracle) -> Plan {
         Some(far) => fixpoint(orient_apply(plan, far).0, idx),
         None => plan,
     };
+    let plan = drop_unread_group_binds(plan);
     set_path_need(plan)
+}
+
+/// A quantified subpath group appends one per-rep LIST column per inner variable it binds
+/// (`group_binds`). Building those lists is the group executor's whole extra cost over a plain
+/// var-length hop — measured on a 50,000-node degree-3 fixture, 599,998 rows: projecting a
+/// literal over `((a)-[:R]->(b)){1,2}` took 82.3ms against 13.6ms for the same projection over
+/// `(x)-[:R]->{1,2}(y)`, so the lists are **68.7ms** of it. When nothing reads them that is
+/// paid for nothing, and with them gone a single-hop group IS a var-length hop, which also
+/// unlocks the counting and frontier fast paths the group executor has none of (a bare
+/// `count(*)` over a group went 64,655us -> 606us).
+///
+/// Conservative by construction, because the failure direction is asymmetric: dropping a
+/// binding something reads is a WRONG ANSWER, whereas declining costs only time. So this walks
+/// down from the root through a SHORT whitelist, accumulating the highest slot any expression
+/// above reads via [`max_slot`] (itself exhaustive over `Expr`, and it already reports
+/// `usize::MAX` for a path read and `outer_width - 1` for a correlated subquery), and rewrites
+/// only when every one of the group's slots is above that high-water mark. Anything it does not
+/// recognise stops the walk.
+///
+/// `Distinct` and `OrderPage` are deliberately NOT in the whitelist even though they are
+/// harmless-looking: `Distinct` dedups on every column, so it reads the group lists whether or
+/// not an expression names them, and a page below the output would carry them into the result.
+fn drop_unread_group_binds(plan: Plan) -> Plan {
+    fn expr_max<'a>(es: impl Iterator<Item = &'a Expr>) -> Option<usize> {
+        es.fold(None, |acc, e| match (acc, max_slot(e)) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        })
+    }
+    /// `read_above` is the highest slot index any expression ABOVE `p` reads.
+    fn go(p: Plan, read_above: Option<usize>) -> Plan {
+        match p {
+            Plan::RepeatGroup {
+                input,
+                from,
+                dir,
+                edge_label,
+                min,
+                max,
+                mode,
+                endpoint_slot,
+                group_binds,
+                k,
+                per_rep_pred,
+            } => {
+                let unread = !group_binds.is_empty()
+                    && group_binds
+                        .iter()
+                        .all(|&(_, slot)| read_above.is_none_or(|hi| hi < slot));
+                if !unread {
+                    return Plan::RepeatGroup {
+                        input,
+                        from,
+                        dir,
+                        edge_label,
+                        min,
+                        max,
+                        mode,
+                        endpoint_slot,
+                        group_binds,
+                        k,
+                        per_rep_pred,
+                    };
+                }
+                // `k == 1` is required to flatten, and not incidentally: a multi-hop unit
+                // emits only at rep BOUNDARIES where a var-length hop emits at every hop, and
+                // the equivalent bounds would be `min * k ..= max * k` rather than
+                // `min ..= max` — two separate ways the row count would change. A
+                // `per_rep_pred` prunes hops the plain walk keeps, so it blocks too. Both
+                // shapes still get the LISTS dropped, which is the larger cost.
+                if k == 1 && per_rep_pred.is_none() && endpoint_slot == width(&input) {
+                    return Plan::VarLength {
+                        input,
+                        from,
+                        dir,
+                        edge_label,
+                        min,
+                        max,
+                        mode,
+                        until: None,
+                        body_filter: None,
+                        double_loops: false,
+                        path_need: crate::ir::PathNeed::Full,
+                    };
+                }
+                Plan::RepeatGroup {
+                    input,
+                    from,
+                    dir,
+                    edge_label,
+                    min,
+                    max,
+                    mode,
+                    endpoint_slot,
+                    group_binds: Vec::new(),
+                    k,
+                    per_rep_pred,
+                }
+            }
+            Plan::Project { input, items } => {
+                let hi = expr_max(items.iter().map(|(_, e)| e));
+                let input = Box::new(go(*input, merge_max(read_above, hi)));
+                Plan::Project { input, items }
+            }
+            Plan::Aggregate { input, keys, aggs } => {
+                let hi = merge_max(
+                    expr_max(keys.iter().map(|(_, e)| e)),
+                    expr_max(aggs.iter().filter_map(|a| a.arg.as_ref())),
+                );
+                let input = Box::new(go(*input, merge_max(read_above, hi)));
+                Plan::Aggregate { input, keys, aggs }
+            }
+            Plan::Filter { input, pred } => {
+                let hi = max_slot(&pred);
+                let input = Box::new(go(*input, merge_max(read_above, hi)));
+                Plan::Filter { input, pred }
+            }
+            other => other,
+        }
+    }
+    go(plan, None)
 }
 
 /// Mark every `ShortestPath` with how much of its path the plan reads. LAST, after every
@@ -846,85 +968,6 @@ fn map_children(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
                     {
                         agg.arg = None;
                     }
-                }
-            }
-            // A bare `count(*)` reads NO column, so a quantified subpath group's per-rep
-            // list columns are provably unread beneath one — and without them the group is
-            // exactly a var-length hop, which unlocks the counting fast paths the group
-            // executor has none of. Measured on a 50,000-node degree-3 fixture, 599,998
-            // matching rows: `count(*)` over `((a)-[:R]->(b)){1,2}` took 79.1ms against
-            // 0.8ms for the same count over `(x)-[:R]->{1,2}(y)`, an identical answer.
-            //
-            // `k == 1` is required, not incidental: a multi-element unit emits only at rep
-            // boundaries (`len % k == 0`) while a var-length hop emits at every hop, so the
-            // ROW COUNTS differ for `k > 1` and the rewrite would change the answer. A
-            // `per_rep_pred` must be absent for the same reason — it prunes hops the plain
-            // walk would keep.
-            let bare_count = keys.is_empty()
-                && !aggs.is_empty()
-                && aggs
-                    .iter()
-                    .all(|a| a.func == crate::ir::AggFn::Count && a.arg.is_none());
-            if bare_count {
-                if let Plan::RepeatGroup {
-                    input: gin,
-                    from,
-                    dir,
-                    edge_label,
-                    min,
-                    max,
-                    mode,
-                    endpoint_slot,
-                    group_binds,
-                    k: 1,
-                    per_rep_pred: None,
-                } = i
-                {
-                    // The endpoint must land where a var-length hop would put it, or the
-                    // shapes are not interchangeable.
-                    if endpoint_slot == width(&gin) {
-                        return (
-                            Plan::Aggregate {
-                                input: Box::new(Plan::VarLength {
-                                    input: gin,
-                                    from,
-                                    dir,
-                                    edge_label,
-                                    min,
-                                    max,
-                                    mode,
-                                    until: None,
-                                    body_filter: None,
-                                    double_loops: false,
-                                    path_need: crate::ir::PathNeed::Full,
-                                }),
-                                keys,
-                                aggs,
-                            },
-                            true,
-                        );
-                    }
-                    // Not interchangeable — rebuild the group unchanged.
-                    return (
-                        Plan::Aggregate {
-                            input: Box::new(Plan::RepeatGroup {
-                                input: gin,
-                                from,
-                                dir,
-                                edge_label,
-                                min,
-                                max,
-                                mode,
-                                endpoint_slot,
-                                group_binds,
-                                k: 1,
-                                per_rep_pred: None,
-                            }),
-                            keys,
-                            aggs,
-                        },
-                        c,
-                    );
                 }
             }
             (

@@ -265,6 +265,15 @@ pub fn run(cfg: &Cfg) {
                     "repeat-group + path",
                     "MATCH p = ((a)-[:KNOWS]->(b)){1,2} RETURN path_length(p) AS len",
                 ),
+                // The group's lists UNREAD: this names the endpoint and never touches `a` or
+                // `b`, so the per-rep list columns are built for nothing. That is the row
+                // that guards the unread-bindings rewrite — a pure performance change has no
+                // correctness test that can fail if it stops firing, so if this returns to
+                // ~82,000us the rewrite has silently stopped working.
+                (
+                    "repeat-group unread",
+                    "MATCH ((a)-[:KNOWS]->(b)){1,2} (t) RETURN t.name AS n",
+                ),
                 // The valid comparison, and where the real finding was: both count the same
                 // 599,998 rows and return the identical number. A var-length hop shortcuts
                 // `count(*)`; a group had no such path, so it enumerated every row.

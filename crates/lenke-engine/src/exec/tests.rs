@@ -6879,6 +6879,73 @@ fn a_grouped_count_over_a_group_keeps_the_group() {
     }
 }
 
+/// The general case behind the bare-`count(*)` one: a group whose per-rep LIST columns nothing
+/// reads. Naming the endpoint and projecting off it never touches `a` or `b`, so the lists are
+/// built for nothing — measured 69,478us -> 15,593us at 599,998 rows, which is the var-length
+/// control's 15,005us within 4%.
+#[test]
+fn a_group_whose_lists_are_unread_becomes_a_var_length() {
+    let store = chain_store(40);
+    let q = "MATCH ((a)-[:R]->(b)){1,2} (t) RETURN t.name AS n";
+    let plan = opt_plan(q, &store);
+    assert!(
+        !has_repeat_group(&plan),
+        "the group's lists are unread: {plan:?}"
+    );
+    // The answer is unchanged: 39 one-rep plus 38 two-rep walks over a 40-node chain.
+    assert_eq!(crate::exec::try_run(&plan, &store).unwrap().rows.len(), 77);
+}
+
+/// Reading a group list blocks it. `size(b)` names the list, so the bindings are live and the
+/// group must stay — this is the condition that keeps the rewrite from being a wrong answer.
+#[test]
+fn reading_a_group_list_keeps_the_group() {
+    let store = chain_store(40);
+    let plan = opt_plan("MATCH ((a)-[:R]->(b)){1,2} RETURN size(b) AS k", &store);
+    assert!(
+        has_repeat_group(&plan),
+        "a projection that reads the list must keep the group: {plan:?}"
+    );
+}
+
+/// A FILTER between the projection and the group counts as a reader too — the walk accumulates
+/// the high-water slot from every expression it passes, not just the outermost projection's.
+#[test]
+fn a_filter_reading_a_group_list_keeps_the_group() {
+    let store = chain_store(40);
+    let q = "MATCH ((a)-[:R]->(b)){1,2} (t) WHERE size(b) > 1 RETURN t.name AS n";
+    match crate::gql::parse(q) {
+        Ok(raw) => {
+            let plan = crate::opt::optimize_indexed(raw, &store);
+            assert!(
+                has_repeat_group(&plan),
+                "a filter reading the list must keep the group: {plan:?}"
+            );
+        }
+        Err(e) => assert!(e.contains("E_"), "{e}"),
+    }
+}
+
+/// `DISTINCT` is deliberately absent from the descent whitelist: it dedups on EVERY column, so
+/// it reads the group lists whether or not any expression names them. Dropping them under one
+/// would change which rows collapse.
+#[test]
+fn a_distinct_above_a_group_keeps_its_lists() {
+    let store = chain_store(40);
+    let q = "MATCH ((a)-[:R]->(b)){1,2} (t) RETURN DISTINCT t.name AS n";
+    match crate::gql::parse(q) {
+        Ok(raw) => {
+            let plan = crate::opt::optimize_indexed(raw, &store);
+            // Either the group survives, or DISTINCT sits ABOVE the projection that already
+            // narrowed the columns — in which case the lists are genuinely gone from the rows
+            // it dedups on. Assert the property that matters: the answer is right either way.
+            let n = crate::exec::try_run(&plan, &store).unwrap().rows.len();
+            assert_eq!(n, 39, "distinct endpoints of a 40-node chain: {plan:?}");
+        }
+        Err(e) => assert!(e.contains("E_"), "{e}"),
+    }
+}
+
 // --- Lineage (path) ---
 
 /// Look up a key in a rich Path object `{vertices, edges, length}` (a `Value::Map`).
