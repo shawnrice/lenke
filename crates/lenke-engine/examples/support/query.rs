@@ -325,6 +325,12 @@ pub fn run(cfg: &Cfg) {
                 // so the gap between the two rows WAS the bug. They now cost the same, and a
                 // return to ~89,000us on the label row means the canonicalization stopped
                 // firing.
+                //
+                // Both of these STILL materialize: a `{1,2}` single-direction unit flattens to
+                // `VarLength`, whose count has an ALGEBRAIC degree-sum path that does not take a
+                // predicate, so an endpoint filter drops it to enumeration. Measured floor with
+                // the filter ignored: 759us, so ~19x is still on the table here. The nested and
+                // `k = 2` rows below are the ones the endpoint peel reaches.
                 (
                     "group count :label",
                     "MATCH ((a)-[:KNOWS]->(b)){1,2} (t:Person) RETURN count(*) AS c",
@@ -333,20 +339,27 @@ pub fn run(cfg: &Cfg) {
                     "group count .prop",
                     "MATCH ((a)-[:KNOWS]->(b)){1,2} (t) WHERE t.age < 10 RETURN count(*) AS c",
                 ),
+                // The nested form of the same endpoint filter, which DOES reach the counting
+                // sink: 1,341,788us before the label test was canonicalized, 911,360us after
+                // that, and 155,479us once the sink applied the filter itself rather than
+                // declining on it — against a 147,550us floor measured with the filter ignored
+                // outright.
                 (
                     "nested count :label",
                     "MATCH ((x)-[:KNOWS]->(m)<-[:KNOWS]-(y)){1,2} (t:Person) RETURN count(*) AS c",
                 ),
-                // An ERROR row on purpose, like `unbounded (guarded)` above. The endpoint filter
-                // sits ABOVE the group, so `try_group_count` declines and the count goes back on
-                // the materializing walk — past the trail budget it refuses outright. A label
-                // that excludes NOTHING (every vertex here is a Person) turns an answer into a
-                // refusal, and the TS engine answers it: measured on one 12,000-vertex graph,
-                // 1,075,835 rows, TS 1,698ms vs native E_RESOURCE_EXHAUSTED, where the same
-                // count WITHOUT the label is native 13ms against TS 1,609ms. A TIME here rather
-                // than an error is the signal that the sink learned the endpoint predicate.
+                // This row used to be an ERROR on purpose. The endpoint filter sits ABOVE the
+                // group, so the count declined and went back on the materializing walk, and past
+                // the trail budget it refused outright — a label that excludes NOTHING (every
+                // vertex here is a Person) turned an answer into a refusal. Measured on one
+                // 12,000-vertex graph, 1,075,835 rows: TS 1,698ms against native
+                // E_RESOURCE_EXHAUSTED, where the same count WITHOUT the label was native 13ms
+                // against TS 1,609ms.
+                //
+                // The counting sink now applies an endpoint-only filter itself, so this answers:
+                // ERROR -> 63,585us. An error here again means the peel stopped firing.
                 (
-                    "k2 count :label (open)",
+                    "k2 count :label",
                     "MATCH ((x)-[:KNOWS]->(m)-[:KNOWS]->(y)){1,2} (t:Person) RETURN count(*) AS c",
                 ),
                 (

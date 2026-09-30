@@ -1182,17 +1182,7 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
                 return b;
             }
             let batch = pull(input, store, track)?;
-            // Fast path: `<prop> <cmp> <literal>` reads storage in one pass to
-            // keep-indices; otherwise evaluate the predicate as a full column.
-            let keep: Vec<usize> = match try_filter_keep(pred, store, &batch) {
-                Some(keep) => keep,
-                None => {
-                    // Complex predicate: vectorized three-valued mask (typed numeric leaves,
-                    // Kleene AND/OR/NOT), keep the rows that evaluate TRUE.
-                    let mask = eval_mask(pred, store, &batch)?;
-                    (0..mask.len()).filter(|&i| mask[i] == Some(true)).collect()
-                }
-            };
+            let keep = filter_keep(pred, store, &batch)?;
             batch.gather(&keep)
         }
         Plan::VarLength {
@@ -2162,6 +2152,21 @@ fn join_key(batch: &Batch, slots: impl Iterator<Item = usize>, row: usize) -> Ve
 /// declared `intermediate` ceiling so the failure is a catchable error, identical on
 /// every target (row count is the portable unit — column data is fixed-width u32/f64/i64
 /// on both 32- and 64-bit), rather than an OOM the CLI cannot survive.
+/// The rows a `Filter` keeps: those whose predicate evaluates TRUE.
+///
+/// Fast path: `<prop> <cmp> <literal>` reads storage in one pass to keep-indices; otherwise the
+/// predicate is evaluated as a vectorized three-valued mask (typed numeric leaves, Kleene
+/// AND/OR/NOT). Factored out because the counting fast paths apply an ENDPOINT-ONLY filter
+/// themselves, and a second derivation of "which rows does this predicate keep" is exactly the
+/// kind of drift that makes two spellings of one query disagree.
+pub(super) fn filter_keep(pred: &Expr, store: &Store, batch: &Batch) -> Result<Vec<usize>, String> {
+    if let Some(keep) = try_filter_keep(pred, store, batch) {
+        return Ok(keep);
+    }
+    let mask = eval_mask(pred, store, batch)?;
+    Ok((0..mask.len()).filter(|&i| mask[i] == Some(true)).collect())
+}
+
 fn guard_intermediate(batch: Batch, store: &Store) -> Result<Batch, String> {
     let cap = store.limits().intermediate;
     let rows = batch.rows() as u64;

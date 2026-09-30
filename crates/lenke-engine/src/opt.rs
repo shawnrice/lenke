@@ -394,7 +394,7 @@ fn fixpoint(plan: Plan, idx: &dyn IndexOracle) -> Plan {
 
 /// Output column count of a plan, when it is statically known — enough to locate the
 /// slot a hop APPENDS (its endpoint). `None` for shapes whose width isn't obvious.
-fn plan_out_width(p: &Plan) -> Option<usize> {
+pub(crate) fn plan_out_width(p: &Plan) -> Option<usize> {
     Some(match p {
         Plan::Scan { .. }
         | Plan::IndexSeek { .. }
@@ -2414,7 +2414,7 @@ fn swap_slots(e: &Expr, a: usize, b: usize) -> Option<Expr> {
 /// Implemented by probing: map every slot that is not `s` to `usize::MAX` and ask for
 /// the maximum. Anything other than `s` present, or a path expression (which already
 /// claims `usize::MAX`), pushes the answer past `s`.
-fn reads_only_slot(e: &Expr, s: usize) -> bool {
+pub(crate) fn reads_only_slot(e: &Expr, s: usize) -> bool {
     map_slots(e, &move |x| if x == s { s } else { usize::MAX })
         .is_some_and(|probe| max_slot(&probe) == Some(s))
 }

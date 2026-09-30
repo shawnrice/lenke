@@ -514,8 +514,8 @@ pub(super) fn nested_group_count(
     max: u32,
     mode: PathMode,
     per_rep_pred: Option<&Expr>,
-) -> Option<u64> {
-    let mut n: u64 = 0;
+    sink: &mut crate::exec::varlen::CountSink,
+) -> Option<()> {
     let ok = drive_nested(
         batch,
         store,
@@ -525,10 +525,10 @@ pub(super) fn nested_group_count(
         max,
         mode,
         per_rep_pred,
-        &mut |_slf, _row, _end| n += 1,
+        &mut |_slf, _row, end| sink.hit(end),
     );
     if ok {
-        Some(n)
+        Some(())
     } else {
         None
     }

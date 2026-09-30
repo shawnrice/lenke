@@ -8146,6 +8146,246 @@ fn a_label_on_a_hop_above_a_nested_group_finds_the_right_slot() {
     );
 }
 
+// --- An endpoint filter over a counted group ---
+
+/// `dense_store`, but with TWO labels alternating, so `(t:N)` on the endpoint is SELECTIVE. A
+/// single-label fixture cannot tell a filter that runs from one that was dropped — that is the
+/// mistake item 60 found in its own coverage, and it applies with double force here, where the
+/// whole change is about carrying a predicate into a fast path.
+fn dense_store_mixed(n: u32, deg: u32) -> Store {
+    let mut b = Builder::default();
+    for i in 0..n {
+        let label = if i % 2 == 0 { "N" } else { "M" };
+        b.node(&[label], &[("name", s(&format!("v{i}")))]);
+    }
+    for i in 0..n {
+        for d in 0..deg {
+            b.edge(i, (i * 7 + d * 3 + 1) % n, "R");
+        }
+    }
+    b.build()
+}
+
+/// The count with an endpoint filter must equal the number of ROWS the same pattern returns. The
+/// row-returning form applies the filter through `Plan::Filter` over a materialized batch; the
+/// count applies it inside the sink, per distinct reached endpoint. Two different mechanisms, one
+/// number.
+#[test]
+fn an_endpoint_filtered_group_count_matches_the_materialized_rows() {
+    let store = dense_store_mixed(30, 3);
+    for (count_q, rows_q) in [
+        (
+            "MATCH ((x)-[:R]->(m)-[:R]->(y)){1,2} (t:N) RETURN count(*) AS c",
+            "MATCH ((x)-[:R]->(m)-[:R]->(y)){1,2} (t:N) RETURN t.name AS n",
+        ),
+        (
+            "MATCH ((x)-[:R]->(m)<-[:R]-(y)){1,2} (t:N) RETURN count(*) AS c",
+            "MATCH ((x)-[:R]->(m)<-[:R]-(y)){1,2} (t:N) RETURN t.name AS n",
+        ),
+        (
+            "MATCH ((x)-[:R]->(m)-[:R]->(y)){1,2} (t) WHERE t.name <> 'v0' RETURN count(*) AS c",
+            "MATCH ((x)-[:R]->(m)-[:R]->(y)){1,2} (t) WHERE t.name <> 'v0' RETURN t.name AS n",
+        ),
+    ] {
+        let counted = one_num(count_q, &store);
+        let rows = try_gql(rows_q, &store).unwrap();
+        assert!(counted > 0.0, "the fixture must match something: {count_q}");
+        assert_eq!(
+            counted, rows as f64,
+            "the sink's filtered count disagreed with the materialized rows: {count_q}"
+        );
+    }
+}
+
+/// And the filter is APPLIED, not carried and forgotten: on a fixture where half the vertices
+/// carry the other label, the filtered count has to be strictly smaller than the unfiltered one.
+#[test]
+fn an_endpoint_filter_reduces_a_group_count() {
+    let store = dense_store_mixed(30, 3);
+    for unit in [
+        "((x)-[:R]->(m)-[:R]->(y)){1,2}",
+        "((x)-[:R]->(m)<-[:R]-(y)){1,2}",
+    ] {
+        let all = one_num(&format!("MATCH {unit} RETURN count(*) AS c"), &store);
+        let some = one_num(&format!("MATCH {unit} (t:N) RETURN count(*) AS c"), &store);
+        assert!(all > 0.0, "the fixture must fan out over {unit}");
+        assert!(
+            some < all,
+            "an endpoint label over a two-label fixture must prune: {some} vs {all} over {unit}"
+        );
+        assert!(some > 0.0, "and must not prune everything: {some}");
+    }
+}
+
+/// The parity case, and the reason this change exists. A label that excludes NOTHING used to turn
+/// an answer into a refusal, because the filter above the group made the count decline and go back
+/// on the materializing walk, where the trail budget applies.
+///
+/// Measured cross-engine on one 12,000-vertex degree-3 graph: without the label TS answered
+/// 1,075,835 in 1,609ms and native in 13ms; with `(t:Person)` TS answered in 1,698ms and native
+/// returned `E_RESOURCE_EXHAUSTED`.
+#[test]
+fn an_endpoint_filtered_count_is_not_bounded_by_the_trail_budget() {
+    let q = "MATCH ((x)-[:R]->(m)-[:R]->(y)){1,2} (t:N) RETURN count(*) AS c";
+    let mut store = dense_store_mixed(60, 3);
+    store.set_limit(crate::store::ConfigId::LimitsTrail, 10_000_000);
+    let truth = one_num(q, &store);
+    assert!(truth > 100.0, "the fixture must fan out: {truth}");
+
+    store.set_limit(crate::store::ConfigId::LimitsTrail, (truth as u64) / 4);
+    assert_eq!(
+        one_num(q, &store),
+        truth,
+        "an endpoint-filtered count must not be bounded by a materialization budget"
+    );
+}
+
+/// The peel is only sound for a predicate that reads NOTHING but the endpoint, because the sink
+/// evaluates it against a mini-batch that holds only that column. A predicate also reading a
+/// column from before the group must be left where it is — and the answer must stay right, which
+/// is what this asserts rather than the plan shape.
+#[test]
+fn a_filter_reading_more_than_the_endpoint_is_not_peeled() {
+    let store = dense_store_mixed(30, 3);
+    let count_q = "MATCH (s) ((x)-[:R]->(m)-[:R]->(y)){1,2} (t) WHERE t.name <> s.name \
+                   RETURN count(*) AS c";
+    let rows_q = "MATCH (s) ((x)-[:R]->(m)-[:R]->(y)){1,2} (t) WHERE t.name <> s.name \
+                  RETURN t.name AS n";
+    let counted = one_num(count_q, &store);
+    assert!(counted > 0.0, "the fixture must match something");
+    assert_eq!(
+        counted,
+        try_gql(rows_q, &store).unwrap() as f64,
+        "a filter reading the source as well must not be applied as an endpoint-only one"
+    );
+    // And the precise failure a wrong peel would produce: the sink evaluates its predicate against
+    // a mini-batch where every column but the endpoint is a PLACEHOLDER node 0, so peeling
+    // `t.name <> s.name` would silently answer `t.name <> 'v0'` instead. That is a different
+    // number, and this is the assertion that separates them.
+    assert_ne!(
+        counted,
+        one_num(
+            "MATCH (s) ((x)-[:R]->(m)-[:R]->(y)){1,2} (t) WHERE t.name <> 'v0' RETURN count(*) AS c",
+            &store
+        ),
+        "a peeled two-slot predicate would collapse to the placeholder's value"
+    );
+}
+
+/// A predicate that THROWS must still throw. The sink cannot report an error of its own — it
+/// returns a count — so it declines, and the general materializing path raises the error exactly as
+/// it did before. (A cross-type ORDERING does not throw here; `<=` between a string and a number,
+/// a boolean or a list all answer. Arithmetic on a non-number does.)
+#[test]
+fn an_endpoint_predicate_that_throws_still_throws() {
+    let store = dense_store_mixed(30, 3);
+    let err = try_gql(
+        "MATCH ((x)-[:R]->(m)-[:R]->(y)){1,2} (t) WHERE t.name + 1 <= 5 RETURN count(*) AS c",
+        &store,
+    )
+    .expect_err("arithmetic on a string must be rejected");
+    assert!(err.contains("arithmetic requires a number"), "{err}");
+}
+
+/// The property that makes the sink's lazy evaluation the RIGHT design rather than merely a fast
+/// one: the predicate is evaluated for the endpoints the walk actually reached, and for no others.
+///
+/// Precomputing it over every node would be simpler and is the obvious next step for the algebraic
+/// counting path — and it is NOT equivalent. Here every reachable vertex has a numeric `k`, so
+/// `t.k + 1 <= 5` is fine, while one ISOLATED vertex holds a string and would throw. A query that
+/// answers must keep answering.
+#[test]
+fn an_endpoint_predicate_is_evaluated_only_for_reached_nodes() {
+    let mut b = Builder::default();
+    for i in 0..12u32 {
+        b.node(&["N"], &[("k", Value::Num(f64::from(i)))]);
+    }
+    // Reachable from nothing and reaching nothing, and its `k` is a string.
+    b.node(&["N"], &[("k", s("not a number"))]);
+    for i in 0..12 {
+        b.edge(i, (i + 1) % 12, "R");
+    }
+    let store = b.build();
+    let got = try_gql(
+        "MATCH ((x)-[:R]->(m)-[:R]->(y)){1,2} (t) WHERE t.k + 1 <= 5 RETURN count(*) AS c",
+        &store,
+    );
+    assert_eq!(
+        got,
+        Ok(1),
+        "an unreachable vertex's value must not be evaluated"
+    );
+    let n = one_num(
+        "MATCH ((x)-[:R]->(m)-[:R]->(y)){1,2} (t) WHERE t.k + 1 <= 5 RETURN count(*) AS c",
+        &store,
+    );
+    assert!(n > 0.0, "and the predicate must still match something: {n}");
+}
+
+/// A fixture whose endpoint labels and SOURCE labels are deliberately disjoint, so counting by the
+/// wrong end of the path is visible. `0 -> 2`, `1 -> 2`, `2 -> 3`, and only vertex 3 carries `M`.
+fn skewed_label_store() -> Store {
+    let mut b = Builder::default();
+    for i in 0..4 {
+        let label = if i == 3 { "M" } else { "N" };
+        b.node(&[label], &[("name", s(&format!("v{i}")))]);
+    }
+    b.edge(0, 2, "R");
+    b.edge(1, 2, "R");
+    b.edge(2, 3, "R");
+    b.build()
+}
+
+/// The endpoint is the LAST node of the path, and this is the test that says so. Hand-derived on
+/// the fixture above: the two-hop unit `(x)-[:R]->(m)-[:R]->(y)` admits `0->2->3` and `1->2->3` and
+/// nothing extends (vertex 3 has no out-edge), so there are two paths, both ending at vertex 3 and
+/// starting at 0 and 1.
+///
+/// Every vertex but 3 is an `N`, so filtering the endpoint on `:N` counts NOTHING while filtering
+/// on `:M` counts both — and reading the path's START instead would report exactly the opposite.
+/// That mutation survived a regular alternating-label fixture, where the two sums coincide by
+/// symmetry: a graph regular enough to be convenient is regular enough to hide which end you read.
+#[test]
+fn an_endpoint_filter_reads_the_end_of_the_path() {
+    let store = skewed_label_store();
+    let q = |lab: &str| {
+        format!("MATCH ((x)-[:R]->(m)-[:R]->(y)){{1,2}} (t:{lab}) RETURN count(*) AS c")
+    };
+    assert_eq!(
+        one_num(&q("M"), &store),
+        2.0,
+        "both paths end at the M vertex"
+    );
+    assert_eq!(
+        one_num(&q("N"), &store),
+        0.0,
+        "no path ends at an N vertex — only STARTS at one"
+    );
+}
+
+/// More distinct reached endpoints than one evaluation block, so the block loop actually iterates.
+/// With `BLOCK = 4096` and the small fixtures above it never did: shrinking the constant to 4 left
+/// the whole suite green, which says the multi-block path was uncovered rather than that the
+/// constant does not matter.
+#[test]
+fn an_endpoint_filter_spans_more_than_one_evaluation_block() {
+    let store = dense_store_mixed(5000, 2);
+    let counted = one_num(
+        "MATCH ((x)-[:R]->(m)-[:R]->(y)){1,2} (t:N) RETURN count(*) AS c",
+        &store,
+    );
+    let rows = try_gql(
+        "MATCH ((x)-[:R]->(m)-[:R]->(y)){1,2} (t:N) RETURN t.name AS n",
+        &store,
+    )
+    .unwrap();
+    assert!(
+        rows > 4096,
+        "the fixture must reach more endpoints than one block holds: {rows}"
+    );
+    assert_eq!(counted, rows as f64);
+}
+
 // --- Lineage (path) ---
 
 /// Look up a key in a rich Path object `{vertices, edges, length}` (a `Value::Map`).

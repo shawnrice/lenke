@@ -248,13 +248,101 @@ pub(super) trait VarlenEmit {
 /// vertices, over the 1,000,000 default, and native returned `E_RESOURCE_EXHAUSTED` where the TS
 /// engine answered. `should_stop` is therefore always false: a TRAIL cannot reuse an edge, so the
 /// enumeration terminates on its own.
-struct CountEmit {
-    n: u64,
+/// Where a counting sink puts its tally, and how an ENDPOINT-ONLY predicate is applied to it.
+///
+/// A filter above a group reads only the group's endpoint, so its verdict depends on nothing but
+/// which node the path ended at. `Hits` exploits that: it counts paths PER ENDPOINT and evaluates
+/// the predicate once per DISTINCT reached node at the end, rather than once per emitted path.
+/// That keeps the evaluation vectorized (the same blocks the `Filter` would have seen) and bounds
+/// it by the node count instead of by the path count — 3,158,250 emitted paths over 50,000
+/// vertices was the measured shape.
+///
+/// Only REACHED nodes are evaluated, which matters beyond speed: a predicate may THROW on some
+/// node's value (a cross-type ordering is `E_INVALID_VALUE`), and evaluating one the walk never
+/// reaches would fail a query that answers today.
+pub(super) enum CountSink {
+    /// No predicate: one running total.
+    Total(u64),
+    /// An endpoint predicate: paths per endpoint node, resolved in `finish`.
+    Hits(Vec<u64>),
 }
 
-impl VarlenEmit for CountEmit {
-    fn emit(&mut self, _row: usize, _node_stack: &[u32], _edge_stack: &[u32]) {
-        self.n += 1;
+impl CountSink {
+    /// `Hits` when there is an endpoint predicate to apply, `Total` otherwise.
+    pub(super) fn new(store: &Store, has_pred: bool) -> Self {
+        if has_pred {
+            CountSink::Hits(vec![0; store.node_count()])
+        } else {
+            CountSink::Total(0)
+        }
+    }
+
+    pub(super) fn hit(&mut self, end: u32) {
+        match self {
+            CountSink::Total(n) => *n += 1,
+            // A node id past the end of the tally cannot satisfy a predicate about a stored
+            // node, so it is counted nowhere — the same outcome the `Filter` reaches.
+            CountSink::Hits(h) => {
+                if let Some(c) = h.get_mut(end as usize) {
+                    *c += 1;
+                }
+            }
+        }
+    }
+
+    /// The total, with the endpoint predicate applied. `pred` must read ONLY `endpoint_slot`.
+    pub(super) fn finish(
+        self,
+        pred: Option<&Expr>,
+        endpoint_slot: usize,
+        store: &Store,
+    ) -> Result<u64, String> {
+        let h = match self {
+            CountSink::Total(n) => return Ok(n),
+            CountSink::Hits(h) => h,
+        };
+        let pred = pred.expect("a Hits sink is only built for a predicate");
+        // Evaluate in blocks so the placeholder columns stay small; the predicate reads only the
+        // endpoint slot, so the other columns are never looked at.
+        const BLOCK: usize = 4096;
+        let mut total: u64 = 0;
+        let mut ids: Vec<u32> = Vec::with_capacity(BLOCK);
+        let mut reached = h
+            .iter()
+            .enumerate()
+            .filter(|(_, &c)| c > 0)
+            .map(|(v, _)| v as u32);
+        loop {
+            ids.clear();
+            for v in reached.by_ref().take(BLOCK) {
+                ids.push(v);
+            }
+            if ids.is_empty() {
+                return Ok(total);
+            }
+            let mut slots: Vec<Col> = (0..endpoint_slot)
+                .map(|_| Col::Nodes(vec![0; ids.len()]))
+                .collect();
+            slots.push(Col::Nodes(ids.clone()));
+            let mini = Batch::of(slots);
+            // The SAME keep computation the `Filter` performs, not a second derivation of it.
+            for i in crate::exec::filter_keep(pred, store, &mini)? {
+                total += h[ids[i] as usize];
+            }
+        }
+    }
+}
+
+struct CountEmit<'a> {
+    sink: &'a mut CountSink,
+}
+
+impl VarlenEmit for CountEmit<'_> {
+    fn emit(&mut self, _row: usize, node_stack: &[u32], _edge_stack: &[u32]) {
+        // The path's ENDPOINT is the last node on the stack; with no predicate the sink ignores it
+        // and just counts.
+        self.sink
+            .hit(node_stack.last().copied().unwrap_or(u32::MAX));
     }
 
     fn should_stop(&self) -> bool {
@@ -278,15 +366,16 @@ pub(super) fn var_length_count(
     per_rep_pred: Option<&Expr>,
     k: u32,
     double_loops: bool,
-) -> Option<u64> {
+    sink: &mut CountSink,
+) -> Option<()> {
     let want = match want_etypes(store, edge_label) {
         Ok(w) => w,
-        Err(()) => return Some(0), // an unknown edge type matches no edge
+        Err(()) => return Some(()), // an unknown edge type matches no edge
     };
     let Col::Nodes(src) = batch.slot(from) else {
         return None;
     };
-    let mut sink = CountEmit { n: 0 };
+    let mut emit = CountEmit { sink };
     run_varlen(
         src,
         store,
@@ -300,10 +389,10 @@ pub(super) fn var_length_count(
         None,
         None,
         double_loops,
-        &mut sink,
+        &mut emit,
     );
 
-    Some(sink.n)
+    Some(())
 }
 
 /// The materializing emit: reproduces exactly the old inline `keep`/`ends`/lineage/group

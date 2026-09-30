@@ -971,7 +971,15 @@ pub(super) fn try_group_count(
     if agg.func != AggFn::Count || agg.arg.is_some() || agg.distinct {
         return None; // count(*) only — anything else reads a column
     }
-    let n = match input {
+    // An endpoint filter sits ABOVE the group (`(t:Person)` and `WHERE t.age < 10` both lower
+    // that way), and declining on it put the count back on the materializing walk — measured on
+    // 50,000 vertices, 911,360us for the nested form and an outright `E_RESOURCE_EXHAUSTED` for
+    // the `k = 2` one, a count the TS engine answers. The filter cannot be dropped, so the sink
+    // applies it: see `CountSink`.
+    let (input, endpoint) = peel_endpoint_filter(input);
+    let pred = endpoint.map(|(p, _)| p);
+    let mut sink = crate::exec::varlen::CountSink::new(store, pred.is_some());
+    match input {
         Plan::RepeatGroup {
             input: inner,
             from,
@@ -997,7 +1005,8 @@ pub(super) fn try_group_count(
                 per_rep_pred.as_deref(),
                 *k,
                 false,
-            )?
+                &mut sink,
+            )?;
         }
         // A unit with mixed hop directions lowers to `NestedGroup`, which has its own
         // walker rather than `run_varlen` — so it needs its own counting sink, not a
@@ -1022,12 +1031,40 @@ pub(super) fn try_group_count(
                 *max,
                 *mode,
                 per_rep_pred.as_deref(),
-            )?
+                &mut sink,
+            )?;
         }
         _ => return None,
-    };
+    }
 
+    let n = sink
+        .finish(pred, endpoint.map_or(0, |(_, slot)| slot), store)
+        .ok()?;
     Some(scalar_num(n as f64))
+}
+
+/// Peel a `Filter` whose predicate reads ONLY the group's endpoint slot off a count's input,
+/// returning the group and that predicate with the slot it reads.
+///
+/// An endpoint-only predicate is a function of the node the path ended at and nothing else, which
+/// is what lets a counting sink apply it once per distinct reached node. Anything else — a
+/// predicate touching a source column, a bound list, or the endpoint AND something else — is left
+/// in place, so the count declines and the general path runs, exactly as before.
+fn peel_endpoint_filter(input: &Plan) -> (&Plan, Option<(&Expr, usize)>) {
+    let Plan::Filter { input: inner, pred } = input else {
+        return (input, None);
+    };
+    let endpoint = match inner.as_ref() {
+        Plan::RepeatGroup { endpoint_slot, .. } | Plan::NestedGroup { endpoint_slot, .. } => {
+            *endpoint_slot
+        }
+        _ => return (input, None),
+    };
+    if crate::opt::reads_only_slot(pred, endpoint) {
+        (inner, Some((pred, endpoint)))
+    } else {
+        (input, None)
+    }
 }
 
 pub(super) fn try_varlen_count(

@@ -24,6 +24,52 @@ import { deserialize as tsDeserialize } from '@lenke/serialization';
 import { nativeBackend, nativeReady, resultsEqual } from './conformance-harness.js';
 import { graphFromNdjson } from './graph.js';
 
+/// Coverage tallies for the shapes this fuzzer is supposed to keep generating. Kept out of the
+/// fuzz loop itself so that loop stays under the complexity gate; the floors it feeds are asserted
+/// at the end of the run.
+const tally = (
+  cov: Record<string, number>,
+  q: string,
+  ts: { ok: boolean; json?: string },
+): void => {
+  const nonEmpty = ts.ok && ts.json !== '[]' && ts.json !== '[{"x":0}]';
+
+  // `((x)` identifies a quantified subpath group (only two arms emit it, and only this one adds
+  // a `WHERE`). Matching a bare `) WHERE` instead over-counts by a factor of four, since an
+  // ordinary `MATCH (n:T) WHERE …` looks the same.
+  if (q.includes(' WHERE ') || q.includes(' FILTER ')) {
+    cov.predGenerated++;
+
+    if (ts.ok && ts.json !== '[]') {
+      cov.predRows++;
+    }
+  }
+
+  if (q.startsWith('MATCH (a:T)((x)') && q.includes('(b:U)') && q.includes('RETURN count(*)')) {
+    cov.peelGenerated++;
+
+    if (nonEmpty) {
+      cov.peelNonZero++;
+    }
+  }
+
+  if (q.startsWith('MATCH ((x)') && q.includes('RETURN count(*)')) {
+    cov.sinkGenerated++;
+
+    if (nonEmpty) {
+      cov.sinkNonZero++;
+    }
+  }
+
+  if (q.includes('((x)') && q.includes(' WHERE ')) {
+    cov.perRepGenerated++;
+
+    if (nonEmpty) {
+      cov.perRepNonEmpty++;
+    }
+  }
+};
+
 const suite = nativeReady ? describe : describe.skip;
 
 // A tiny two-vertex, one-edge graph so property access, record fields, edge
@@ -788,19 +834,29 @@ const genQuery = (r: () => number): string => {
       ' WHERE m.n <> x.n',
       ' WHERE x.n + e1.w > 4',
     ]);
-    const body = `(a:T)((x)${h1}(m)${h2}(y)${perRep})${q}(b:T)`;
+    // The endpoint pattern varies, and `U` is the load-bearing one: every vertex in this fixture
+    // carries `T`, so `(b:T)` is a filter that excludes nothing — native dropping the endpoint
+    // predicate entirely was invisible under it. Only vertex 3 carries `U` (item 63).
+    const end = pick(r, ['(b:T)', '(b:U)', '(b:U)', '(b)']);
+    const body = `(a:T)((x)${h1}(m)${h2}(y)${perRep})${q}${end}`;
 
-    return pick(r, [
-      `MATCH ${body} RETURN count(*) AS x`,
-      `MATCH ${body} RETURN b.n AS x, a.n AS t ORDER BY t, x`,
-      // UNANCHORED, and that is the point: a label on either endpoint lowers to a `Filter`
-      // between the `Aggregate` and the `NestedGroup`, and native's counting sink matches an
-      // aggregate sitting DIRECTLY on the group — so the two forms above never reach it. The
-      // sink is the only code that counts a nested group without materializing a row per
-      // emitted path, and until this spelling existed no cross-engine comparison ran through
-      // it at all (item 61).
-      `MATCH ((x)${h1}(m)${h2}(y)${perRep})${q} RETURN count(*) AS x`,
-    ]);
+    // UNANCHORED, kept at its own frequency: a label on either endpoint used to put the count
+    // back on the materializing path, so native's counting sink was reached only by this
+    // spelling, and until it existed no cross-engine comparison ran through the sink at all
+    // (item 61). The sink now applies an endpoint filter itself, so the ANCHORED forms reach it
+    // too — by a different route, which is why both spellings stay.
+    const unanchored = `MATCH ((x)${h1}(m)${h2}(y)${perRep})${q} RETURN count(*) AS x`;
+    // With no endpoint pattern there is no `b` to project.
+    const forms =
+      end === '(b)'
+        ? [`MATCH ${body} RETURN count(*) AS x`, unanchored]
+        : [
+            `MATCH ${body} RETURN count(*) AS x`,
+            `MATCH ${body} RETURN b.n AS x, a.n AS t ORDER BY t, x`,
+            unanchored,
+          ];
+
+    return pick(r, forms);
   }
 
   return `MATCH (n:T) RETURN ${genExpr(r, 3)} AS x, n.n AS t ORDER BY t`;
@@ -915,54 +971,38 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
     // Generation alone is not coverage — before the fixture gained a second in-edge into
     // vertex 3, the forward-then-reverse unit was generated and returned 0 rows every time,
     // so a wrong answer over it agreed with a wrong answer trivially (item 51).
-    let perRepGenerated = 0;
-    let perRepNonEmpty = 0;
+    const cov = {
+      perRepGenerated: 0,
+      perRepNonEmpty: 0,
+      predGenerated: 0,
+      predRows: 0,
+      sinkGenerated: 0,
+      sinkNonZero: 0,
+      peelGenerated: 0,
+      peelNonZero: 0,
+    };
     // The same GENERATION-IS-NOT-COVERAGE guard for PREDICATE arms. `genExpr` is
     // type-agnostic, so a `WHERE` / `FILTER` / inline-`(n WHERE …)` position used to be filled
     // with something non-boolean about 75% of the time and both engines rejected it at parse.
     // Measured per arm before `genPred` existed: 4-7% of those queries returned ROWS. After:
     // 46-49%. The floor keeps a future generator change from quietly returning them to
     // comparing error codes instead of predicate evaluation over data.
-    let predGenerated = 0;
-    let predRows = 0;
     // And the same guard for the UNANCHORED nested-group count — the only spelling that
     // reaches native's non-materializing counting sink. `startsWith` is what distinguishes it:
     // every other group query this generator emits opens with `MATCH (a:T)((x)` or
     // `MATCH pp = `, and those lower with a `Filter` above the group, which the sink declines.
-    let sinkGenerated = 0;
-    let sinkNonZero = 0;
+    // And for the sink reached through an ENDPOINT FILTER it applies itself. The non-zero
+    // counter is the load-bearing one here for a second reason: a filter that excludes nothing
+    // cannot show that the predicate is applied at all, and `(b:T)` over this fixture is exactly
+    // that — every vertex carries `T`. `(b:U)` is the selective one, and dropping the predicate
+    // was invisible until the generator drew it (item 63).
 
     for (let i = 0; i < ITERATIONS; i++) {
       const q = genQuery(mulberry32(caseSeed(SEED, i)));
       const ts = run('ts', q);
       const nat = run('native', q);
 
-      // `((x)` identifies a quantified subpath group (only two arms emit it, and only this
-      // one adds a `WHERE`). Matching a bare `) WHERE` instead over-counts by a factor of
-      // four, since an ordinary `MATCH (n:T) WHERE …` looks the same.
-      if (q.includes(' WHERE ') || q.includes(' FILTER ')) {
-        predGenerated++;
-
-        if (ts.ok && ts.json !== '[]') {
-          predRows++;
-        }
-      }
-
-      if (q.startsWith('MATCH ((x)') && q.includes('RETURN count(*)')) {
-        sinkGenerated++;
-
-        if (ts.ok && ts.json !== '[]' && ts.json !== '[{"x":0}]') {
-          sinkNonZero++;
-        }
-      }
-
-      if (q.includes('((x)') && q.includes(' WHERE ')) {
-        perRepGenerated++;
-
-        if (ts.ok && ts.json !== '[]' && ts.json !== '[{"x":0}]') {
-          perRepNonEmpty++;
-        }
-      }
+      tally(cov, q, ts);
 
       // Both errored → acceptable (both reject the input); a shape divergence is
       // when exactly one succeeds, or both succeed with different JSON.
@@ -1023,15 +1063,20 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
     // generates a shape passes exactly like one that does. The non-empty floor is the one
     // that matters most — generating a query that matches nothing compares nothing.
     console.log(
-      `PRED generated=${predGenerated} rows=${predRows} perRep=${perRepGenerated}/${perRepNonEmpty} sink=${sinkGenerated}/${sinkNonZero}`,
+      `PRED generated=${cov.predGenerated} rows=${cov.predRows} ` +
+        `perRep=${cov.perRepGenerated}/${cov.perRepNonEmpty} ` +
+        `sink=${cov.sinkGenerated}/${cov.sinkNonZero} peel=${cov.peelGenerated}/${cov.peelNonZero}`,
     );
     expect({
-      perRepGenerated: perRepGenerated > 350,
-      perRepNonEmpty: perRepNonEmpty > 175,
-      predGenerated: predGenerated > 2_000,
-      predRows: predRows > 1_000,
-      sinkGenerated: sinkGenerated > 200,
-      sinkNonZero: sinkNonZero > 100,
+      perRepGenerated: cov.perRepGenerated > 350,
+      perRepNonEmpty: cov.perRepNonEmpty > 175,
+      predGenerated: cov.predGenerated > 2_000,
+      predRows: cov.predRows > 1_000,
+      sinkGenerated: cov.sinkGenerated > 200,
+      sinkNonZero: cov.sinkNonZero > 100,
+      // Measured 150-186 generated and 30-44 of those non-zero, of 20,000.
+      peelGenerated: cov.peelGenerated > 75,
+      peelNonZero: cov.peelNonZero > 15,
     }).toEqual({
       perRepGenerated: true,
       perRepNonEmpty: true,
@@ -1039,6 +1084,8 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       predRows: true,
       sinkGenerated: true,
       sinkNonZero: true,
+      peelGenerated: true,
+      peelNonZero: true,
     });
     // 20 000 queries × two engines is well under a second locally but exceeds Bun's default
     // 5 s test timeout on the slower CI runners (~5.5–6 s) — give this heavy differential fuzz
