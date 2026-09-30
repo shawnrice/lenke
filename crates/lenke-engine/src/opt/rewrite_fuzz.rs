@@ -972,6 +972,11 @@ struct Gen {
     /// only property that is unique per element here is `name`, and edges do not have
     /// one, so a chain with a bound edge cannot be given a TOTAL sort key.
     bound_edge: bool,
+    /// Whether the plan contains an operator that PRODUCES a path (`VarLength`,
+    /// `ShortestPath`, `RepeatGroup`) — what makes `path_length(p)` projectable. Without
+    /// it the generator emitted no path projection at all, so nothing generative ever
+    /// compared lineage. See the terminal projection.
+    tracks_path: bool,
 }
 
 /// How many hops to chain. Weighted hard toward the short patterns real queries are
@@ -1002,6 +1007,7 @@ fn gen_seed(rng: &mut Lcg) -> Gen {
         plan: Plan::Scan { label },
         width: 1,
         bound_edge: false,
+        tracks_path: false,
     }
 }
 
@@ -1042,6 +1048,7 @@ fn gen_chain(rng: &mut Lcg, hops: usize) -> Gen {
         // for path expressions specifically to stop them being pushed below one.
         if !deep && rng.chance(1, 8) {
             let min = rng.below(2) as u32;
+            g.tracks_path = true;
             g.plan = Plan::VarLength {
                 input: Box::new(g.plan),
                 from: g.width - 1,
@@ -1080,6 +1087,7 @@ fn gen_chain(rng: &mut Lcg, hops: usize) -> Gen {
                     right: Box::new(Expr::Lit(Value::Num(f64::from(rng.below(4) as u32)))),
                 })
             });
+            g.tracks_path = true;
             g.plan = Plan::ShortestPath {
                 input: Box::new(g.plan),
                 from: g.width - 1,
@@ -1136,6 +1144,7 @@ fn gen_chain(rng: &mut Lcg, hops: usize) -> Gen {
                 })
             });
             g.width += 1 + group_binds.len();
+            g.tracks_path = true;
             g.plan = Plan::RepeatGroup {
                 input: Box::new(g.plan),
                 from: endpoint_slot - 1,
@@ -1463,6 +1472,10 @@ fn gen_plan_one(rng: &mut Lcg) -> Plan {
             plan: Plan::join(left.plan, right_raw.plan, on),
             width: lw + rw,
             bound_edge: left.bound_edge || right_raw.bound_edge,
+            // Deliberately FALSE regardless of the sides: a join's lineage handling is
+            // its own question, and projecting a path above one would be testing that
+            // rather than the path projection. Left for a widening that means to.
+            tracks_path: false,
         };
         // DIRECTLY above the join, with nothing in between. The pushdown arm matches
         // `Filter` over `Join`, so a filter separated from it by a `Distinct` or a
@@ -1495,6 +1508,8 @@ fn gen_plan_one(rng: &mut Lcg) -> Plan {
         g = Gen {
             width: keep.len(),
             bound_edge: g.bound_edge,
+            // A projection drops SLOTS, not the lineage beneath them.
+            tracks_path: g.tracks_path,
             plan: Plan::Project {
                 input: Box::new(g.plan),
                 items: keep
@@ -1664,6 +1679,19 @@ fn gen_plan_one(rng: &mut Lcg) -> Plan {
             if rng.chance(1, 6) {
                 let slot = rng.below(g.width);
                 items.push(("case".into(), gen_unrenameable(rng, slot)));
+            }
+            // Project the PATH's size when the plan produces one. This rides the canary
+            // rather than taking an arm of its own, so the slot-permutation sensitivity
+            // above stays in the same rows. Length and Cardinality only: both are plain
+            // numbers, so comparing them as a multiset cannot report a false difference
+            // the way comparing rendered element maps might.
+            if g.tracks_path && rng.chance(1, 3) {
+                let part = if rng.chance(1, 2) {
+                    crate::ir::PathPart::Length
+                } else {
+                    crate::ir::PathPart::Cardinality
+                };
+                items.push(("plen".into(), Expr::PathAccess { part }));
             }
             Plan::Project {
                 input: Box::new(g.plan),
@@ -2097,6 +2125,7 @@ fn the_generator_actually_reaches_the_rewrites() {
     let (mut bound_edge, mut interval) = (0, 0);
     let (mut paged, mut num_agg, mut unions) = (0, 0, 0);
     let (mut shortest, mut repeat_group, mut optional) = (0, 0, 0);
+    let mut path_proj = 0;
     let mut split = 0;
     let mut expand_rooted = 0;
     let n = 2_000;
@@ -2247,6 +2276,17 @@ fn the_generator_actually_reaches_the_rewrites() {
         if plan_has(&plan, |p| matches!(p, Plan::RepeatGroup { .. })) {
             repeat_group += 1;
         }
+        // A projection that reads the PATH's size. Counted because the whole point of
+        // generating it is that nothing generative compared lineage before, and a
+        // generator change that stopped emitting it would restore that blindness
+        // invisibly — every test would stay green over plans that no longer project a
+        // path at all.
+        if plan_has(&plan, |p| {
+            matches!(p, Plan::Project { items, .. }
+                if items.iter().any(|(_, e)| matches!(e, Expr::PathAccess { .. })))
+        }) {
+            path_proj += 1;
+        }
         if plan_has(&plan, |p| matches!(p, Plan::OptionalExpand { .. })) {
             optional += 1;
         }
@@ -2269,7 +2309,7 @@ fn the_generator_actually_reaches_the_rewrites() {
          bound-edge {bound_edge}/{n}  interval {interval}/{n}  \
          paged {paged}/{n}  num-agg {num_agg}/{n}  unions {unions}/{n}  \
          shortest {shortest}/{n}  repeat-group {repeat_group}/{n}  \
-         optional {optional}/{n}  \
+         optional {optional}/{n}  path-proj {path_proj}/{n}  \
          non-empty {nonempty}/{n}  faulted {faults}/{n}"
     );
 
@@ -2290,6 +2330,14 @@ fn the_generator_actually_reaches_the_rewrites() {
     // would have noticed: every correctness test stayed green, on a corpus that had
     // quietly stopped exercising the rewrites it exists to test.
     assert!(seeks > n / 25, "too few plans seed an index: {seeks}/{n}");
+    // Measured 80/2000 when this was added; the floor is set at half that. Before it, the
+    // generator emitted NO path projection of any kind, so the raw-vs-optimized oracle had
+    // never once compared lineage — a gap invisible from the outside, since a suite that
+    // never projects a path passes exactly like one that does.
+    assert!(
+        path_proj > n / 50,
+        "too few plans project the path's size: {path_proj}/{n}"
+    );
     assert!(oriented > n / 20, "too few plans orient: {oriented}/{n}");
     // Deliberately `> 0` and not a fraction. This intersection is THIN — exactly 5 of
     // these 2,000 deterministic seeds, against 3 before `gen_chain` began omitting the
