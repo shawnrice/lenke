@@ -197,6 +197,16 @@ pub fn run(cfg: &Cfg) {
                      RETURN count(*) AS c",
                 ),
                 (
+                    // The lineage-free control: SAME 47,007 rows as the two path rows
+                    // below, projecting an ordinary property instead of a path. The gap
+                    // between this and "anchored + path" is the cost of LINEAGE; the gap
+                    // to "anchored count" is mostly just output size, so comparing a
+                    // path projection against count(*) over-attributes to lineage.
+                    "anchored + y.name",
+                    "MATCH p = ANY SHORTEST (x:Person)-[:KNOWS]->*(y) WHERE x.name = 'name1' \
+                     RETURN y.name AS n",
+                ),
+                (
                     "anchored + path",
                     "MATCH p = ANY SHORTEST (x:Person)-[:KNOWS]->*(y) WHERE x.name = 'name1' \
                      RETURN path_length(p) AS len",
