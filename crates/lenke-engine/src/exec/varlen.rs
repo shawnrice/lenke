@@ -994,7 +994,7 @@ pub(super) fn shortest_path(
     // shortest paths and multiplicity) are byte-identical; only never-kept nodes beyond
     // the targets go unexplored. Applied only for `min == 0` (no `+`-cycle source cases).
     early_stop: Option<&[u32]>,
-) -> Batch {
+) -> Result<Batch, String> {
     use crate::ir::ShortestSelector;
     let empty = || {
         let mut slots: Vec<Col> = batch.slots.iter().map(|_| Col::Nodes(vec![])).collect();
@@ -1017,7 +1017,7 @@ pub(super) fn shortest_path(
         );
     }
     let Col::Nodes(src) = batch.slot(from) else {
-        return empty();
+        return Ok(empty());
     };
 
     // Target membership bitset for the early stop (only `min == 0`, so a target
@@ -1053,6 +1053,7 @@ pub(super) fn shortest_path(
     let mut ends = Vec::new();
 
     for (row, &start) in src.iter().enumerate() {
+        guard_path_growth(keep.len(), path_values.len() + path_edges.len(), store)?;
         // BFS from `start`: shortest distance per node, plus ALL predecessors that
         // lie on a shortest path (an edge prev->node with dist[prev] + 1 == dist[node]).
         // `order` is BFS discovery order — every node's predecessors precede it, so a
@@ -1284,7 +1285,7 @@ pub(super) fn shortest_path(
             step_off: vec![0; rows_plus1],
         });
     }
-    out
+    Ok(out)
 }
 
 /// A per-hop edge predicate (`-[e:R WHERE …]->`): TRUE (traverse) when there is no
@@ -1323,14 +1324,14 @@ pub(super) fn shortest_k_path(
     k: u32,
     group: bool,
     edge_pred: Option<&Expr>,
-) -> Batch {
+) -> Result<Batch, String> {
     let empty = || {
         let mut slots: Vec<Col> = batch.slots.iter().map(|_| Col::Nodes(vec![])).collect();
         slots.push(Col::Nodes(vec![]));
         Batch::of(slots)
     };
     let Col::Nodes(src) = batch.slot(from) else {
-        return empty();
+        return Ok(empty());
     };
     let track = batch.lineage.is_some();
     let cap = max.unwrap_or(u32::MAX);
@@ -1338,6 +1339,7 @@ pub(super) fn shortest_k_path(
     let mut ends = Vec::new();
     let mut bufs = PathBufs::new();
     for (row, &start) in src.iter().enumerate() {
+        guard_path_growth(keep.len(), bufs.values.len() + bufs.edges.len(), store)?;
         // endpoint -> its trails as (length, node chain, edge chain) in discovery
         // (DFS) order — the same order the stable length sort tie-breaks on.
         let mut per_end: TrailsByEnd = FnvMap::default();
@@ -1422,7 +1424,7 @@ pub(super) fn shortest_k_path(
             step_off: vec![0; rows_plus1],
         });
     }
-    out
+    Ok(out)
 }
 
 /// Enumerate every TRAIL (no edge reused) from the source, recording each at every
@@ -1571,6 +1573,41 @@ impl PathBufs {
             edge_offsets: vec![0],
         }
     }
+}
+
+/// Incremental anti-runaway guard for the shortest-path family. Unlike
+/// [`super::guard_intermediate`], which reads `batch.rows()` once the batch already
+/// exists, this is checked ONCE PER INPUT ROW while the output is still accumulating —
+/// because for these operators the batch *is* the allocation that fails. A whole-graph
+/// `ANY SHORTEST` emits one row per (source, reachable target), so its output is
+/// quadratic in node count; measured on a degree-3 fixture, 4,000 nodes peaked at
+/// 10.4 GB and 6,000 nodes was OOM-killed at 16 GB.
+///
+/// The unit is materialized VALUES, not rows, because rows badly mispredict the cost
+/// when a path is projected: at 4,000 nodes the same query was 15.1M rows but 110.5M
+/// path elements, and peak tracked the elements (~94 bytes each), not the rows. Row
+/// count alone would not even have reached the default 50,000,000 ceiling before the
+/// OOM (34M rows at the 6,000-node kill), so a row-counting guard could not fire in
+/// time. Counting values is just as portable a unit as counting rows — both are exact
+/// integers, identical on 32- and 64-bit targets.
+///
+/// Overshoot is bounded by one input row's contribution, which is why the check is at
+/// the top of the row loop rather than at every emit: one row costs a single source's
+/// reach, and checking per emit would put a branch on the hot path for no benefit.
+pub(super) fn guard_path_growth(rows: usize, values: usize, store: &Store) -> Result<(), String> {
+    let cap = store.limits().intermediate;
+    let total = rows as u64 + values as u64;
+    if total > cap {
+        return Err(format!(
+            "E_RESOURCE_EXHAUSTED: a shortest-path traversal materialized {total} values \
+             ({rows} rows plus {values} path elements), exceeding the limit of {cap}. An \
+             unbounded shortest path over every source emits one row per reachable target, \
+             which is quadratic in the graph size — anchor the source or the endpoint (a \
+             `WHERE` on either end bounds the search), project fewer path elements, or raise \
+             the intermediate limit."
+        ));
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]

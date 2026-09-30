@@ -37,7 +37,7 @@ pub(super) fn try_shortest_early_stop(
     input: &Plan,
     store: &Store,
     track: bool,
-) -> Option<Batch> {
+) -> Option<Result<Batch, String>> {
     let Plan::ShortestPath {
         input: sp_in,
         from,
@@ -59,7 +59,12 @@ pub(super) fn try_shortest_early_stop(
     if targets.is_empty() {
         return None; // no target → the normal path yields empty; nothing to accelerate
     }
-    let sp_batch = shortest_path(
+    // A resource-exhausted error is propagated, not swallowed. Swallowing would be
+    // OBSERVABLY equivalent — the general path accumulates strictly more than this bounded
+    // BFS, so it trips the same ceiling with the same message — but it would redo bounded
+    // work to reach the identical error. `None` stays reserved for "this optimization does
+    // not apply", which keeps the two meanings from blurring.
+    let sp_batch = match shortest_path(
         &pull(sp_in, store, track).ok()?,
         store,
         *from,
@@ -70,7 +75,10 @@ pub(super) fn try_shortest_early_stop(
         *selector,
         edge_pred.as_deref(),
         Some(&targets),
-    );
+    ) {
+        Ok(b) => b,
+        Err(e) => return Some(Err(e)),
+    };
     // Apply the endpoint filter exactly as the general path would — the early stop only
     // changed which never-kept rows were produced, so this reproduces the same result.
     let keep: Vec<usize> = match try_filter_keep(pred, store, &sp_batch) {
@@ -85,7 +93,7 @@ pub(super) fn try_shortest_early_stop(
             }
         }
     };
-    Some(sp_batch.gather(&keep))
+    Some(Ok(sp_batch.gather(&keep)))
 }
 
 /// The cardinality-approved decision for a reverse-seed: the hop chain (innermost-first,

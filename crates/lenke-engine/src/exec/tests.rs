@@ -6184,6 +6184,151 @@ fn shortest_path_terminates_on_a_cycle() {
     assert_eq!(got, vec!["a", "b", "c"]);
 }
 
+// --- ShortestPath resource ceiling ---
+
+/// A chain `v0 -> v1 -> ... -> v(n-1)` on label `N`, edge `R`, each node keyed by `name`.
+/// An unbounded all-pairs `ANY SHORTEST` over it emits `n*(n-1)/2` rows whose path
+/// lengths sum quadratically, which is what makes it the fixture for the growth ceiling.
+fn chain_store(n: u32) -> Store {
+    let mut b = Builder::default();
+    for i in 0..n {
+        b.node(&["N"], &[("name", s(&format!("v{i}")))]);
+    }
+    for i in 1..n {
+        b.edge(i - 1, i, "R");
+    }
+    b.build()
+}
+
+fn try_gql(q: &str, store: &Store) -> Result<usize, String> {
+    let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), store);
+    crate::exec::try_run(&plan, store).map(|r| r.rows.len())
+}
+
+const ALL_PAIRS: &str = "MATCH p = ANY SHORTEST (x:N)-[:R]->*(y:N) RETURN path_length(p) AS len";
+
+/// An unbounded all-pairs shortest path is quadratic in the node count, so on a big
+/// enough graph it must fail LOUDLY rather than allocating until the process dies.
+/// Measured before the guard existed: a degree-3 fixture peaked at 10.4 GB at 4,000
+/// nodes and was OOM-killed at 16 GB at 6,000.
+#[test]
+fn an_unbounded_shortest_path_trips_the_intermediate_ceiling() {
+    let mut store = chain_store(60);
+    store.set_limit(crate::store::ConfigId::LimitsIntermediate, 5_000);
+    let err = try_gql(ALL_PAIRS, &store).expect_err("60-node all-pairs must exceed a 5k ceiling");
+    assert!(err.starts_with("E_RESOURCE_EXHAUSTED"), "{err}");
+    assert!(err.contains("shortest-path"), "{err}");
+}
+
+/// The guard must not cost anything to a query that stays under the ceiling: the same
+/// plan with room returns every row. `*` is `min = 0`, so each of the 60 sources also
+/// reaches ITSELF at length 0 — 60 + 59 + ... + 1 = 1,830 rows, not 60*59/2.
+#[test]
+fn a_shortest_path_under_the_ceiling_returns_every_row() {
+    let mut store = chain_store(60);
+    store.set_limit(crate::store::ConfigId::LimitsIntermediate, 50_000_000);
+    assert_eq!(try_gql(ALL_PAIRS, &store), Ok(1_830));
+}
+
+/// THE reason the ceiling counts materialized VALUES and not rows. Two queries over the
+/// same fixture do the same BFS and keep the same 1,830 rows; only one projects a path.
+/// A ceiling set between the two must let the row-only query through and stop the
+/// path-projecting one — because it is the path elements, not the rows, that allocate.
+/// (Measured at 4,000 nodes: 15.1M rows but 110.5M path elements, ~94 bytes each. A
+/// row-counting guard would not have reached the 50M default before the OOM.)
+#[test]
+fn the_ceiling_counts_path_elements_not_just_rows() {
+    let mut store = chain_store(60);
+    store.set_limit(crate::store::ConfigId::LimitsIntermediate, 3_000);
+    // No path projected → no lineage → 1,830 rows is the whole cost, under 3,000.
+    assert_eq!(
+        try_gql(
+            "MATCH p = ANY SHORTEST (x:N)-[:R]->*(y:N) RETURN count(*) AS c",
+            &store
+        ),
+        Ok(1)
+    );
+    // Same rows, but each carries its path → tens of thousands of elements → trips.
+    let err = try_gql(ALL_PAIRS, &store).expect_err("the path projection must trip");
+    assert!(err.starts_with("E_RESOURCE_EXHAUSTED"), "{err}");
+}
+
+/// The ceiling is a catchable error, not a panic and not a truncated answer. A silent
+/// truncation would be the worst outcome: a wrong answer that looks right.
+#[test]
+fn the_shortest_path_ceiling_is_an_error_not_a_truncation() {
+    let mut store = chain_store(60);
+    store.set_limit(crate::store::ConfigId::LimitsIntermediate, 5_000);
+    let plan = crate::opt::optimize_indexed(crate::gql::parse(ALL_PAIRS).unwrap(), &store);
+    // `try_run` surfaces it as `Err`; nothing partial comes back.
+    assert!(crate::exec::try_run(&plan, &store).is_err());
+}
+
+/// `SHORTEST k` runs a different function (`shortest_k_path`, trail enumeration rather
+/// than the BFS), and it accumulates into the same kind of buffers — so it needs its own
+/// guard, and its own test. Without one it would be the unbounded path all over again.
+#[test]
+fn the_shortest_k_traversal_is_guarded_too() {
+    let mut store = chain_store(60);
+    store.set_limit(crate::store::ConfigId::LimitsIntermediate, 5_000);
+    let err = try_gql(
+        "MATCH p = SHORTEST 2 (x:N)-[:R]->*(y:N) RETURN path_length(p) AS len",
+        &store,
+    )
+    .expect_err("SHORTEST 2 all-pairs must exceed a 5k ceiling");
+    assert!(err.starts_with("E_RESOURCE_EXHAUSTED"), "{err}");
+}
+
+/// The endpoint-anchored early stop (`try_shortest_early_stop`) calls the BFS itself, on
+/// a route that skips the general `Plan::ShortestPath` arm — so it needs the ceiling
+/// enforced on its own call, which this covers. Verified by poisoning: with an index on
+/// `name`, this query really does take the early-stop route.
+///
+/// What this deliberately does NOT assert is propagate-vs-swallow. If the early stop
+/// returned `None` on the error and fell back, the general path accumulates strictly MORE
+/// (it produces every row and filters after, where the early stop bounds the BFS first),
+/// so it trips the same ceiling and reports the same error. The two differ only in doing
+/// bounded work twice — an efficiency property, not an observable one. A mutant that
+/// swaps propagation for a silent fallback survives the whole suite, so no assertion here
+/// would have teeth for it.
+#[test]
+fn the_endpoint_anchored_early_stop_is_also_guarded() {
+    let mut store = chain_store(60);
+    store.create_index("name");
+    assert!(
+        store.has_hash_index("name"),
+        "early stop needs the hash index"
+    );
+    store.set_limit(crate::store::ConfigId::LimitsIntermediate, 5_000);
+    let err = try_gql(
+        "MATCH p = ANY SHORTEST (x:N)-[:R]->*(y:N) WHERE y.name = 'v59' \
+         RETURN path_length(p) AS len",
+        &store,
+    )
+    .expect_err("the early-stop path must surface the ceiling, not swallow it");
+    assert!(err.starts_with("E_RESOURCE_EXHAUSTED"), "{err}");
+}
+
+/// An anchored source is the shape real queries have, and it must be unaffected by the
+/// guard: one source over the same chain is linear, not quadratic. Measured on a
+/// 200,000-node degree-3 fixture: 188,191 rows, 164 ms, 321 MB peak, well under the
+/// default ceiling.
+#[test]
+fn an_anchored_shortest_path_is_unaffected_by_the_ceiling() {
+    let mut store = chain_store(60);
+    store.set_limit(crate::store::ConfigId::LimitsIntermediate, 5_000);
+    // From v0 only: v0 itself at length 0 plus 59 downstream targets — linear, so
+    // comfortably under 5,000 even though the unanchored form trips it.
+    assert_eq!(
+        try_gql(
+            "MATCH p = ANY SHORTEST (x:N)-[:R]->*(y:N) WHERE x.name = 'v0' \
+             RETURN path_length(p) AS len",
+            &store
+        ),
+        Ok(60)
+    );
+}
+
 // --- Lineage (path) ---
 
 /// Look up a key in a rich Path object `{vertices, edges, length}` (a `Value::Map`).

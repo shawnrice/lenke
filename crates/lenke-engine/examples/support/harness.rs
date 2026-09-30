@@ -121,11 +121,20 @@ pub fn time_query(
     };
     let plan = lenke_engine::opt::optimize_indexed(raw, store);
     let mut rows = 0;
-    let us = best_us(reps, || {
-        let r = lenke_engine::exec::run(&plan, store);
-        rows = r.rows.len();
-        r
+    // `try_run`, not `run`: a plan can fault at runtime (a user CAST, or a shortest-path
+    // traversal tripping the `intermediate` ceiling), and `run` turns that into a panic
+    // that takes the whole benchmark binary down mid-table. Surfacing it as `Err` lets a
+    // case whose POINT is that it fails cleanly print the error in its row.
+    let mut err: Option<String> = None;
+    let us = best_us(reps, || match lenke_engine::exec::try_run(&plan, store) {
+        Ok(r) => {
+            rows = r.rows.len();
+        }
+        Err(e) => err = Some(e),
     });
+    if let Some(e) = err {
+        return Err(e);
+    }
     Ok((us, rows))
 }
 

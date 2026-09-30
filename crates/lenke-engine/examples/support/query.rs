@@ -13,6 +13,9 @@
 //!              per-row materialization cost by what is projected.
 //!   plan     — lex+parse+lower only, no graph, no exec: the cost of the text.
 //!   seeded   — an equality filter on an indexed key: seek vs full scan.
+//!   shortest — ANY SHORTEST: anchored cost, the cost of PROJECTING the path on top
+//!              of the same traversal, and the unbounded case (which reports
+//!              E_RESOURCE_EXHAUSTED by design, not a time).
 
 use crate::harness::{best_us, section, social_store, time_query, Cfg};
 use lenke_engine::store::Store;
@@ -162,6 +165,68 @@ pub fn run(cfg: &Cfg) {
             });
             println!("{name:30} {us:>11.2}");
         }
+    }
+
+    if cfg.want("query/shortest") {
+        // `ANY SHORTEST` had NO bench coverage until an OOM went looking for it, which is
+        // how a query that killed the process at 6,000 nodes stayed invisible. Three
+        // questions: what an anchored shortest path costs, what PROJECTING the path costs
+        // on top of the identical traversal, and what an unanchored one does now.
+        //
+        // The lineage row is the finding. Same BFS, same rows kept; the only difference is
+        // whether a path is materialized. Measured on a degree-3 fixture at 4,000 nodes:
+        // 15.1M rows but 110.5M path elements at ~94 bytes each, peaking at 10.4 GB — so
+        // the path projection, not the search, is what makes this operator expensive.
+        //
+        // The last row is expected to report E_RESOURCE_EXHAUSTED, not a time. An
+        // all-pairs shortest path emits one row per (source, reachable target), which is
+        // quadratic; before the ceiling existed it was OOM-killed at 16 GB on 6,000 nodes.
+        // If this row ever starts reporting a time, the ceiling stopped working.
+        let sp = social_store(cfg.nodes(50_000), 3);
+        let mut sp_ix = social_store(cfg.nodes(50_000), 3);
+        sp_ix.create_index("name");
+        table(
+            "query/shortest (anchored vs projected vs unbounded)",
+            &sp,
+            false,
+            cfg,
+            &[
+                (
+                    "anchored count",
+                    "MATCH p = ANY SHORTEST (x:Person)-[:KNOWS]->*(y) WHERE x.name = 'name1' \
+                     RETURN count(*) AS c",
+                ),
+                (
+                    "anchored + path",
+                    "MATCH p = ANY SHORTEST (x:Person)-[:KNOWS]->*(y) WHERE x.name = 'name1' \
+                     RETURN path_length(p) AS len",
+                ),
+                (
+                    "anchored + nodes(p)",
+                    "MATCH p = ANY SHORTEST (x:Person)-[:KNOWS]->*(y) WHERE x.name = 'name1' \
+                     RETURN nodes(p) AS ns",
+                ),
+                (
+                    "unbounded (guarded)",
+                    "MATCH p = ANY SHORTEST (x:Person)-[:KNOWS]->*(y) \
+                     RETURN path_length(p) AS len",
+                ),
+            ],
+        );
+        // The endpoint-anchored early stop needs the hash index to fire, so it gets its
+        // own store: with both ends pinned the BFS stops at the target's depth instead of
+        // sweeping the component.
+        table(
+            "query/shortest (endpoint-anchored early stop)",
+            &sp_ix,
+            false,
+            cfg,
+            &[(
+                "both ends anchored",
+                "MATCH p = ANY SHORTEST (x:Person)-[:KNOWS]->*(y) WHERE x.name = 'name1' \
+                 AND y.name = 'name4242' RETURN path_length(p) AS len",
+            )],
+        );
     }
 
     if cfg.want("query/seeded") {

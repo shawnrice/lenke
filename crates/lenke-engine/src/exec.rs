@@ -145,6 +145,11 @@ pub struct Rows {
 /// from the outermost naming operator (`Project` or `Aggregate`, seen through
 /// `Distinct`/`OrderPage`); a plan with none surfaces slot 0 under a single
 /// implicit column so partial plans stay runnable in tests.
+///
+/// Panics on a faulting plan, so it is for tests and benchmarks only — every production
+/// entry point goes through [`try_run`]. Two things fault: a user `CAST`, and a
+/// shortest-path traversal that trips the `intermediate` ceiling (see
+/// [`varlen::guard_path_growth`]).
 #[must_use]
 pub fn run(plan: &Plan, store: &Store) -> Rows {
     try_run(plan, store).expect("read plan evaluation faulted")
@@ -1174,7 +1179,7 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
             // target's distance (the outer filter here still runs, so this only skips
             // work the filter would discard).
             if let Some(b) = try_shortest_early_stop(pred, input, store, track) {
-                return Ok(b);
+                return b;
             }
             let batch = pull(input, store, track)?;
             // Fast path: `<prop> <cmp> <literal>` reads storage in one pass to
@@ -1286,7 +1291,7 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
             *selector,
             edge_pred.as_deref(),
             None,
-        ),
+        )?,
         Plan::GroupToMap { input } => {
             // Fold the grouped `[key, value]` rows into one Gremlin Map, first-seen
             // key order (the harness compares map content order-independently; the TS engine
