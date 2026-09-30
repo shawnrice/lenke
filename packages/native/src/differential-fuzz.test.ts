@@ -738,7 +738,21 @@ const genQuery = (r: () => number): string => {
   // read the path the group walked.
   if (p < 0.88) {
     const q = pick(r, ['{1,2}', '{1,3}', '{2,2}', '+']);
-    const acc = pick(r, ['path_length(pp)', 'size(nodes(pp))', 'size(relationships(pp))']);
+    // The RENDERED elements, not only their count. `size(nodes(pp))` reads a LENGTH, so a bug in
+    // how a path element is turned into its element map is invisible to it — and invisible to
+    // rewrite_fuzz too, which compares raw against optimized through the same renderer. Verified:
+    // making `path_node_values` drop its first element survives rewrite_fuzz entirely. Projecting
+    // the elements themselves is the only oracle that reads them, since the TS engine renders
+    // independently. Element-map key order is deterministic on both sides (labels sorted,
+    // properties in already-sorted `prop_keys()` order), so this cannot report a false
+    // difference from map ordering.
+    const acc = pick(r, [
+      'path_length(pp)',
+      'size(nodes(pp))',
+      'size(relationships(pp))',
+      'nodes(pp)',
+      'relationships(pp)',
+    ]);
 
     return `MATCH pp = (a:T)((x)-[:E]->(m))${q}(b:T) RETURN ${acc} AS x, b.n AS t ORDER BY t, x`;
   }

@@ -1734,11 +1734,20 @@ fn gen_plan_one(rng: &mut Lcg) -> Plan {
             // numbers, so comparing them as a multiset cannot report a false difference
             // the way comparing rendered element maps might.
             if g.tracks_path && rng.chance(1, 3) {
-                let part = if rng.chance(1, 2) {
-                    crate::ir::PathPart::Length
-                } else {
-                    crate::ir::PathPart::Cardinality
-                };
+                // Item 42 generated only the SIZE accessors, on the worry that comparing
+                // rendered element maps might report a false difference from map ordering. It
+                // cannot: `node_result_value` sorts the labels and keys the properties in
+                // `prop_keys()` order, which is already sorted, and the outer map is a fixed
+                // entry list — so an element map is byte-deterministic for a given element.
+                // With that settled, the ELEMENT accessors are generated too, which is what
+                // exercises the lineage's stored ids rather than just its lengths.
+                let part = *rng.pick(&[
+                    crate::ir::PathPart::Length,
+                    crate::ir::PathPart::Cardinality,
+                    crate::ir::PathPart::Nodes,
+                    crate::ir::PathPart::Relationships,
+                    crate::ir::PathPart::Elements,
+                ]);
                 items.push(("plen".into(), Expr::PathAccess { part }));
             }
             Plan::Project {
@@ -2174,6 +2183,7 @@ fn the_generator_actually_reaches_the_rewrites() {
     let (mut paged, mut num_agg, mut unions) = (0, 0, 0);
     let (mut shortest, mut repeat_group, mut optional) = (0, 0, 0);
     let mut path_proj = 0;
+    let mut path_elem_proj = 0;
     let mut split = 0;
     let mut expand_rooted = 0;
     let n = 2_000;
@@ -2335,6 +2345,23 @@ fn the_generator_actually_reaches_the_rewrites() {
         }) {
             path_proj += 1;
         }
+        // The ELEMENT accessors specifically, counted apart from the size ones. A size accessor
+        // reads a LENGTH and an element accessor reads the stored ids and renders them, so a
+        // generator that drifted back to sizes only would lose the half that exercises the
+        // lineage's contents while `path_proj` stayed healthy.
+        if plan_has(&plan, |p| {
+            matches!(p, Plan::Project { items, .. }
+            if items.iter().any(|(_, e)| matches!(
+                e,
+                Expr::PathAccess {
+                    part: crate::ir::PathPart::Nodes
+                        | crate::ir::PathPart::Relationships
+                        | crate::ir::PathPart::Elements
+                }
+            )))
+        }) {
+            path_elem_proj += 1;
+        }
         if plan_has(&plan, |p| matches!(p, Plan::OptionalExpand { .. })) {
             optional += 1;
         }
@@ -2358,6 +2385,7 @@ fn the_generator_actually_reaches_the_rewrites() {
          paged {paged}/{n}  num-agg {num_agg}/{n}  unions {unions}/{n}  \
          shortest {shortest}/{n}  repeat-group {repeat_group}/{n}  \
          optional {optional}/{n}  path-proj {path_proj}/{n}  \
+         path-elem {path_elem_proj}/{n}  \
          non-empty {nonempty}/{n}  faulted {faults}/{n}"
     );
 
@@ -2385,6 +2413,14 @@ fn the_generator_actually_reaches_the_rewrites() {
     assert!(
         path_proj > n / 50,
         "too few plans project the path's size: {path_proj}/{n}"
+    );
+    // Measured 56/2000 when the element accessors were added (3 of the 5 parts are element
+    // ones), floor at half. Kept apart from `path_proj` because a drift back to size-only
+    // accessors would leave that one healthy while losing every comparison that reads the
+    // lineage's stored ids.
+    assert!(
+        path_elem_proj > n / 80,
+        "too few plans project the path's ELEMENTS: {path_elem_proj}/{n}"
     );
     assert!(oriented > n / 20, "too few plans orient: {oriented}/{n}");
     // Deliberately `> 0` and not a fraction. This intersection is THIN — exactly 5 of
