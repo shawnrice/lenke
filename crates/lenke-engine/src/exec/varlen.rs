@@ -1051,6 +1051,10 @@ pub(super) fn shortest_path(
 
     let mut keep = Vec::new();
     let mut ends = Vec::new();
+    // Reused across every emitted row (and every source), so the chain walk allocates
+    // once for the whole traversal instead of twice per (source, target) pair.
+    let mut chain_buf: Vec<u32> = Vec::new();
+    let mut echain_buf: Vec<u32> = Vec::new();
 
     for (row, &start) in src.iter().enumerate() {
         guard_path_growth(keep.len(), path_values.len() + path_edges.len(), store)?;
@@ -1165,12 +1169,12 @@ pub(super) fn shortest_path(
                     keep.push(row);
                     ends.push(node);
                     if track {
-                        let (chain, echain) = first_pred_chain(node, start, &preds);
+                        first_pred_chain_into(node, start, &preds, &mut chain_buf, &mut echain_buf);
                         push_path(
                             batch,
                             row,
-                            &chain,
-                            &echain,
+                            &chain_buf,
+                            &echain_buf,
                             &mut path_values,
                             &mut path_offsets,
                             &mut path_edges,
@@ -1513,8 +1517,26 @@ pub(super) fn first_pred_chain(
     start: u32,
     preds: &FnvMap<u32, Vec<(u32, u32)>>,
 ) -> (Vec<u32>, Vec<u32>) {
-    let mut chain = vec![node];
+    let mut chain = Vec::new();
     let mut echain = Vec::new();
+    first_pred_chain_into(node, start, preds, &mut chain, &mut echain);
+    (chain, echain)
+}
+
+/// [`first_pred_chain`] writing into caller-owned buffers, so a per-row emit loop
+/// allocates once rather than twice per row. The BFS emits one row per reachable target,
+/// so on a whole-graph shortest path that was two `Vec`s per (source, target) pair —
+/// measured as the larger half of the path-projection cost.
+pub(super) fn first_pred_chain_into(
+    node: u32,
+    start: u32,
+    preds: &FnvMap<u32, Vec<(u32, u32)>>,
+    chain: &mut Vec<u32>,
+    echain: &mut Vec<u32>,
+) {
+    chain.clear();
+    echain.clear();
+    chain.push(node);
     let mut cur = node;
     while cur != start {
         let (prev, e) = preds[&cur][0];
@@ -1524,7 +1546,6 @@ pub(super) fn first_pred_chain(
     }
     chain.reverse();
     echain.reverse();
-    (chain, echain)
 }
 
 /// Every distinct shortest path start..node through the predecessor DAG, each as a

@@ -6184,6 +6184,83 @@ fn shortest_path_terminates_on_a_cycle() {
     assert_eq!(got, vec!["a", "b", "c"]);
 }
 
+// --- The chain walk's reusable-buffer form ---
+
+/// A predecessor map for a straight chain `0 -> 1 -> ... -> n-1`, edge id `i` joining
+/// `i-1` to `i`, which is the shape `first_pred_chain` walks backwards.
+fn chain_preds(n: u32) -> FnvMap<u32, Vec<(u32, u32)>> {
+    let mut preds: FnvMap<u32, Vec<(u32, u32)>> = FnvMap::default();
+    for i in 1..n {
+        preds.insert(i, vec![(i - 1, i)]);
+    }
+    preds
+}
+
+/// `first_pred_chain_into` exists so the per-row emit loop allocates once instead of twice
+/// per (source, target) pair — measured as 1.22x on `path_length(p)` over a 50,000-node
+/// fixture. It must produce EXACTLY what the allocating form produces, at every length.
+#[test]
+fn the_buffer_reusing_chain_walk_matches_the_allocating_one() {
+    let preds = chain_preds(200);
+    let mut chain = Vec::new();
+    let mut echain = Vec::new();
+    for target in 0..200u32 {
+        let (want_chain, want_echain) = crate::exec::varlen::first_pred_chain(target, 0, &preds);
+        crate::exec::varlen::first_pred_chain_into(target, 0, &preds, &mut chain, &mut echain);
+        assert_eq!(chain, want_chain, "node chain differs at target {target}");
+        assert_eq!(echain, want_echain, "edge chain differs at target {target}");
+    }
+}
+
+/// THE bug this shape invites: a reused buffer that is not cleared concatenates the
+/// previous row's chain onto this one. Walking LONG then SHORT is what exposes it — a
+/// short chain written into a dirty buffer would keep the long tail, and every path value
+/// after it would be wrong while still looking like a plausible path.
+#[test]
+fn the_reused_chain_buffer_does_not_inherit_the_previous_row() {
+    let preds = chain_preds(100);
+    let mut chain = Vec::new();
+    let mut echain = Vec::new();
+    // Longest first, so the buffer is full when the short walk reuses it.
+    crate::exec::varlen::first_pred_chain_into(99, 0, &preds, &mut chain, &mut echain);
+    assert_eq!(chain.len(), 100);
+    assert_eq!(echain.len(), 99);
+    crate::exec::varlen::first_pred_chain_into(2, 0, &preds, &mut chain, &mut echain);
+    assert_eq!(chain, vec![0, 1, 2], "the long chain's tail was inherited");
+    assert_eq!(
+        echain,
+        vec![1, 2],
+        "the long edge chain's tail was inherited"
+    );
+    // And the degenerate walk: target == start is a single node, no edges.
+    crate::exec::varlen::first_pred_chain_into(0, 0, &preds, &mut chain, &mut echain);
+    assert_eq!(chain, vec![0]);
+    assert!(echain.is_empty(), "a zero-length path has no edges");
+}
+
+/// Reuse must also be correct when the predecessor DAG BRANCHES — `first_pred_chain`
+/// takes `preds[cur][0]`, the first recorded predecessor, and the buffer form must make
+/// the same choice rather than a different equally-short one. Two shortest routes to `3`
+/// (via 1 and via 2); the first-recorded predecessor is what both forms must pick.
+#[test]
+fn the_reused_chain_buffer_picks_the_same_branch() {
+    let mut preds: FnvMap<u32, Vec<(u32, u32)>> = FnvMap::default();
+    preds.insert(1, vec![(0, 10)]);
+    preds.insert(2, vec![(0, 20)]);
+    preds.insert(3, vec![(1, 13), (2, 23)]); // two shortest routes; [0] wins
+    let (want_chain, want_echain) = crate::exec::varlen::first_pred_chain(3, 0, &preds);
+    let mut chain = Vec::new();
+    let mut echain = Vec::new();
+    crate::exec::varlen::first_pred_chain_into(3, 0, &preds, &mut chain, &mut echain);
+    assert_eq!(chain, want_chain);
+    assert_eq!(echain, want_echain);
+    assert_eq!(
+        chain,
+        vec![0, 1, 3],
+        "must follow the FIRST predecessor, not the last"
+    );
+}
+
 // --- ShortestPath resource ceiling ---
 
 /// A chain `v0 -> v1 -> ... -> v(n-1)` on label `N`, edge `R`, each node keyed by `name`.
