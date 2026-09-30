@@ -547,6 +547,13 @@ const SHAPES: [Shape; 8] = [
 /// predicate can be genuinely selective — orientation is gated on the far predicate
 /// selecting under ~15% of the graph, so without tight bounds the rewrite under test
 /// would simply decline and the fuzzer would cover nothing.
+fn zz_score(i: u32) -> f64 {
+    match i % 11 {
+        9 => f64::NAN,
+        _ => f64::from(i % 7),
+    }
+}
+
 fn fixture(seed: u64) -> Store {
     fixture_sized(seed, NODES)
 }
@@ -577,7 +584,7 @@ fn fixture_shaped(seed: u64, shape: Shape) -> Store {
         let tag = format!("t{}", i % shape.tag_distinct.max(1));
         let mut props: Vec<(&str, Value)> = vec![
             ("name", Value::Str(format!("n{i}").into())),
-            ("score", Value::Num(f64::from(i % 7))),
+            ("score", Value::Num(zz_score(i))),
             ("tag", Value::Str(tag.as_str().into())),
         ];
         if shape.age_absent_every == 0 || i % shape.age_absent_every != 0 {

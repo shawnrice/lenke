@@ -3941,7 +3941,18 @@ impl Store {
             _ => return Some(0), // not a range op
         };
         let mut n = 0usize;
-        for (_, ids) in ix.map.range(bounds) {
+        for (k, ids) in ix.map.range(bounds) {
+            // SKIP NaN. The index is ordered by the TOTAL order, where NaN sorts above every
+            // number, so an upward-unbounded range (`> 5`, `>= 5`) sweeps every NaN entry into
+            // the count — while the filter this estimate stands in for uses IEEE semantics,
+            // under which every comparison against NaN is FALSE and those rows are dropped. The
+            // seek itself already excludes them, so counting them only made the ESTIMATE
+            // disagree with both: on a fixture where 1/11 of a column is NaN the true keep was
+            // 1051/8182 = 12.9%, under the 15.4% crossover, but the inflated count crossed the
+            // cap and the planner declined a seek it should have taken.
+            if matches!(&k.0, Value::Num(x) if x.is_nan()) {
+                continue;
+            }
             n += ids.len();
             if n > cap {
                 return None;
