@@ -310,12 +310,28 @@ fn call_scalar(name: &str, args: &[Value]) -> Value {
         // the TS engine; the `(x*f).round()/f` form is bit-identical (do not reformulate).
         "round" => match value::num_of(&args[0]) {
             Some(x) => {
-                let digits = args
-                    .get(1)
-                    .and_then(value::num_of)
-                    .map_or(0, |d| d.trunc() as i32);
-                let f = 10f64.powi(digits);
-                Value::Num((x * f).round() / f)
+                let d = args.get(1).and_then(value::num_of);
+                // A NON-FINITE digit count makes the whole result NaN, which renders as null.
+                // It has to be named: the TS engine gets there by arithmetic — `Math.trunc(NaN)`
+                // is NaN, `10 ** NaN` is NaN, and NaN/NaN is NaN — whereas Rust's `as i32`
+                // SATURATES, turning NaN into 0 digits and an infinity into `i32::MAX`. So
+                // `round(3, <nan>)` answered 3 here and null there. Every FINITE count already
+                // agrees, including ones past `i32` range, because both sides reach an infinite
+                // or zero factor and divide to NaN.
+                //
+                // Only the NaN half of this test is load-bearing, and the mutation says so:
+                // narrowing it to `is_nan()` leaves the suite green, because an INFINITE count
+                // saturates to `i32::MAX`/`i32::MIN`, whose factor is infinite or zero, and that
+                // divides to NaN by itself. `!is_finite()` is kept because it states the rule —
+                // a non-finite count is not a digit count — instead of relying on that
+                // coincidence.
+                if d.is_some_and(|dv| !dv.is_finite()) {
+                    Value::Num(f64::NAN)
+                } else {
+                    let digits = d.map_or(0, |dv| dv.trunc() as i32);
+                    let f = 10f64.powi(digits);
+                    Value::Num((x * f).round() / f)
+                }
             }
             None => Value::Null,
         },

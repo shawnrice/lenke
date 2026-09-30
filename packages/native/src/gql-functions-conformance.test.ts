@@ -75,6 +75,16 @@ suite('GQL function differential (TS vs native)', () => {
     `pi()`,
     `e()`,
     `round(pi(), 4)`,
+    // round() with a NON-FINITE digit count. TS reaches NaN by arithmetic (`Math.trunc(NaN)` is
+    // NaN, `10 ** NaN` is NaN); Rust's `as i32` SATURATES, so native read a NaN count as "round
+    // to an integer" and answered 3 where TS answered null. `ln(-1)` and `exp(1000)` make the
+    // non-finite values without a string, which the numeric guard would reject outright.
+    `round(3.7, ln(-1))`,
+    `round(3.7, exp(1000))`,
+    `round(3.7, -exp(1000))`,
+    `round(3.7, null)`,
+    `round(3.7, 0.9)`,
+    `round(3.7, 400)`,
     // Slice 4 — string bool predicates + conversions.
     `contains(n.s, 'World')`,
     `contains(n.s, 'xyz')`,

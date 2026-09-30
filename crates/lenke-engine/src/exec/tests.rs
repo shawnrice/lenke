@@ -8674,6 +8674,100 @@ fn a_nested_group_count_over_an_unknown_edge_type_was_already_right() {
     );
 }
 
+// --- round() with a non-finite digit count ---
+
+/// `round(x, digits)` with a NON-FINITE digit count must yield NaN — which is `Num(NaN)` at this
+/// level and `null` at JSON egress, where the engine coerces it (the K4 rule).
+///
+/// The TS engine gets there by arithmetic: `Math.trunc(NaN)` is NaN, `10 ** NaN` is NaN, and
+/// NaN/NaN is NaN. Rust's `as i32` instead SATURATES — NaN becomes 0 and an infinity becomes
+/// `i32::MAX` — so native silently read a NaN digit count as "round to an integer" and answered
+/// `3` where TS answered null. Found by a random-seeded differential-fuzz run on
+/// `RETURN ['', round(n.n, n.nan)]`, reachable only since the fixture gained a stored NaN.
+///
+/// `ln(-1)` is the NaN here and `exp(1000)` the infinity, so the test needs no stored value and no
+/// string coercion — the numeric guard rejects a non-number argument to `round` outright.
+#[test]
+fn round_with_a_non_finite_digit_count_is_nan() {
+    let store = chain_store(3);
+    let one = |q: &str| -> String {
+        format!(
+            "{:?}",
+            crate::exec::try_run(&opt_plan(q, &store), &store)
+                .unwrap()
+                .rows
+                .iter()
+                .next()
+                .expect("one row")[0]
+        )
+    };
+    // A NaN digit count, both spellings of a non-finite one.
+    assert_eq!(
+        one("MATCH (n:N) RETURN round(3.7, ln(-1)) AS x LIMIT 1"),
+        "Num(NaN)"
+    );
+    assert_eq!(
+        one("MATCH (n:N) RETURN round(3.7, exp(1000)) AS x LIMIT 1"),
+        "Num(NaN)"
+    );
+    assert_eq!(
+        one("MATCH (n:N) RETURN round(3.7, -exp(1000)) AS x LIMIT 1"),
+        "Num(NaN)"
+    );
+    // And every FINITE count is untouched, including the fractional and the out-of-range ones
+    // that reach an infinite or zero factor on both sides.
+    assert_eq!(
+        one("MATCH (n:N) RETURN round(3.7) AS x LIMIT 1"),
+        "Num(4.0)"
+    );
+    assert_eq!(
+        one("MATCH (n:N) RETURN round(3.14159, 2) AS x LIMIT 1"),
+        "Num(3.14)"
+    );
+    assert_eq!(
+        one("MATCH (n:N) RETURN round(3.7, 0.9) AS x LIMIT 1"),
+        "Num(4.0)",
+        "a fractional digit count truncates toward zero"
+    );
+    assert_eq!(
+        one("MATCH (n:N) RETURN round(1234.5678, -2) AS x LIMIT 1"),
+        "Num(1200.0)"
+    );
+    assert_eq!(
+        one("MATCH (n:N) RETURN round(3.7, 400) AS x LIMIT 1"),
+        "Num(NaN)",
+        "a finite count whose factor overflows to infinity already divided to NaN"
+    );
+}
+
+/// A NULL digit count is NOT the same as a non-finite one: it means "no digits given", so the
+/// result is the integer rounding. The guard must test finiteness of a PRESENT value, not
+/// presence alone.
+#[test]
+fn round_with_a_null_digit_count_rounds_to_an_integer() {
+    let store = chain_store(3);
+    let one = |q: &str| -> String {
+        format!(
+            "{:?}",
+            crate::exec::try_run(&opt_plan(q, &store), &store)
+                .unwrap()
+                .rows
+                .iter()
+                .next()
+                .expect("one row")[0]
+        )
+    };
+    assert_eq!(
+        one("MATCH (n:N) RETURN round(3.7, null) AS x LIMIT 1"),
+        "Num(4.0)"
+    );
+    assert_eq!(
+        one("MATCH (n:N) RETURN round(null, 2) AS x LIMIT 1"),
+        "Null",
+        "a null VALUE is still null"
+    );
+}
+
 // --- Lineage (path) ---
 
 /// Look up a key in a rich Path object `{vertices, edges, length}` (a `Value::Map`).
