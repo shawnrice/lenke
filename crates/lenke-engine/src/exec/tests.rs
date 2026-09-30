@@ -7196,23 +7196,188 @@ fn reading_a_nested_group_list_keeps_it() {
     }
 }
 
-/// A per-rep `WHERE` BLOCKS the rewrite, and deliberately so rather than because it is known to
-/// matter: a `NestedGroup` needs a unit with a reversed hop, and on that shape a per-rep filter
-/// currently returns zero rows for ANY predicate — 26 rows unfiltered against 0 with a
-/// trivially true `WHERE x.name <> 'zz'`, while a forward-only unit and a single-hop unit both
-/// filter correctly. That is a separate pre-existing bug (identical with and without the pass),
-/// and until it is fixed there is no way to show the rewrite is safe here. So the conservative
-/// choice is pinned instead.
+/// With the per-rep bug fixed (the mini-batch now uses typed columns), the unread-bindings
+/// rewrite no longer has to decline under a per-rep filter — item 50 blocked it only because the
+/// safety could not be shown. The lists still go, AND the filtered answer is unchanged: the
+/// grouped form reads a list so keeps them, and the two counts must agree.
 #[test]
-fn a_per_rep_filtered_nested_group_keeps_its_lists() {
-    let store = chain_store(12);
-    let q = "MATCH ((x)-[e:R]->(m)<-[:R]-(y) WHERE e.w >= 0){1,2} RETURN count(*) AS c";
-    let raw = crate::gql::parse(q).expect("the per-rep spelling must parse");
-    let plan = crate::opt::optimize_indexed(raw, &store);
-    assert!(
-        nested_bind_count(&plan).is_some_and(|n| n > 0),
-        "a per-rep filter must keep the lists: {plan:?}"
+fn a_per_rep_filtered_nested_group_still_drops_unread_lists() {
+    let store = forked_store(10);
+    let q_bare = "MATCH ((x)-[e:R]->(m)<-[:R]-(y) WHERE e.w >= 0){1,2} RETURN count(*) AS c";
+    let q_kept =
+        "MATCH ((x)-[e:R]->(m)<-[:R]-(y) WHERE e.w >= 0){1,2} RETURN size(m) AS k, count(*) AS c";
+    let plan_bare = opt_plan(q_bare, &store);
+    let plan_kept = opt_plan(q_kept, &store);
+    assert_eq!(
+        nested_bind_count(&plan_bare),
+        Some(0),
+        "a bare count under a per-rep filter must still drop the lists: {plan_bare:?}"
     );
+    assert!(
+        nested_bind_count(&plan_kept).is_some_and(|n| n > 0),
+        "the grouped form reads a list, so it keeps them"
+    );
+    let total = |p: &Plan| -> f64 {
+        crate::exec::try_run(p, &store)
+            .unwrap()
+            .rows
+            .iter()
+            .map(|r| match r[r.len() - 1] {
+                Value::Num(x) => x,
+                ref o => panic!("{o:?}"),
+            })
+            .sum()
+    };
+    let bare = total(&plan_bare);
+    assert!(bare > 0.0, "the per-rep filter must not prune everything");
+    assert_eq!(
+        bare,
+        total(&plan_kept),
+        "dropping the lists changed the count"
+    );
+}
+
+// --- Per-repetition WHERE over a nested (multi-direction) unit ---
+
+/// Two out-edges per node so a REVERSE hop has a second in-edge to take. `Builder` cannot
+/// attach edge properties, hence NDJSON. A plain chain cannot satisfy a reverse-hop unit at all
+/// in Trail mode, which made an earlier attempt at these tests silently measure nothing.
+fn forked_store(n: u32) -> Store {
+    let mut nd = String::new();
+    for i in 0..n {
+        nd.push_str(&format!(
+            "{{\"id\":\"v{i}\",\"labels\":[\"N\"],\"props\":{{\"name\":\"v{i}\"}}}}\n"
+        ));
+    }
+    for i in 0..n.saturating_sub(2) {
+        for (to, w) in [(i + 1, i), (i + 2, i + 10)] {
+            nd.push_str(&format!(
+                "{{\"from\":\"v{i}\",\"to\":\"v{to}\",\"labels\":[\"R\"],\"props\":{{\"w\":{w}.0}}}}\n"
+            ));
+        }
+    }
+    crate::ndjson::from_ndjson(&nd).unwrap()
+}
+
+/// A per-repetition `WHERE` that is TRUE for every repetition must not change the count. It did:
+/// a unit containing a REVERSED hop lowers to `NestedGroup`, whose `rep_ok` built its per-rep
+/// mini-batch with `Col::Gen(Value::Num(id))` for node bindings where the working
+/// `RepeatGroup` path (`rep_pred_ok`) uses `Col::Nodes`. A bare `Num` in a boxed column is not
+/// recognised as a node, so `x.name` read NULL, NULL is not true, and EVERY repetition was
+/// pruned — for any predicate at all.
+#[test]
+fn a_trivially_true_per_rep_filter_over_a_reversed_unit_keeps_every_rep() {
+    let store = forked_store(10);
+    let n = |q: &str| -> f64 {
+        let plan = opt_plan(q, &store);
+        match crate::exec::try_run(&plan, &store)
+            .unwrap()
+            .rows
+            .iter()
+            .next()
+            .expect("one row")[0]
+        {
+            Value::Num(x) => x,
+            ref o => panic!("{o:?}"),
+        }
+    };
+    let bare = n("MATCH ((x)-[e:R]->(m)<-[:R]-(y)){1,2} RETURN count(*) AS c");
+    assert!(
+        bare > 0.0,
+        "the unfiltered reverse-hop unit must match something"
+    );
+    // Reading a NODE property, which is what was broken.
+    assert_eq!(
+        n("MATCH ((x)-[e:R]->(m)<-[:R]-(y) WHERE x.name <> 'zz'){1,2} RETURN count(*) AS c"),
+        bare,
+        "an always-true per-rep filter on a node must keep every rep"
+    );
+    // And an EDGE property, bound at an edge slot rather than a node slot.
+    assert_eq!(
+        n("MATCH ((x)-[e:R]->(m)<-[:R]-(y) WHERE e.w >= 0){1,2} RETURN count(*) AS c"),
+        bare,
+        "an always-true per-rep filter on an edge must keep every rep"
+    );
+}
+
+/// A SELECTIVE per-rep filter must prune exactly the right repetitions, hand-computed. Over
+/// `v0..v3` with edges v0->v1 (w=0), v0->v2 (w=10), v1->v2 (w=1), v1->v3 (w=11), the one-rep
+/// unit `(x)-[e:R]->(m)<-[:R]-(y)` needs `m` to have two distinct in-edges: only `v2` does,
+/// reached from `v0` (w=10) and from `v1` (w=1). So the reps are (x=v0,e=w10,m=v2,y=v1) and
+/// (x=v1,e=w1,m=v2,y=v0) — two of them. `e.w > 5` keeps exactly the first.
+#[test]
+fn a_selective_per_rep_filter_over_a_reversed_unit_prunes_exactly_those_reps() {
+    let mut nd = String::new();
+    for i in 0..4 {
+        nd.push_str(&format!(
+            "{{\"id\":\"v{i}\",\"labels\":[\"N\"],\"props\":{{\"name\":\"v{i}\"}}}}\n"
+        ));
+    }
+    for (f, t, w) in [(0, 1, 0), (0, 2, 10), (1, 2, 1), (1, 3, 11)] {
+        nd.push_str(&format!(
+            "{{\"from\":\"v{f}\",\"to\":\"v{t}\",\"labels\":[\"R\"],\"props\":{{\"w\":{w}.0}}}}\n"
+        ));
+    }
+    let store = crate::ndjson::from_ndjson(&nd).unwrap();
+    let n = |q: &str| -> f64 {
+        match crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .iter()
+            .next()
+            .expect("one row")[0]
+        {
+            Value::Num(x) => x,
+            ref o => panic!("{o:?}"),
+        }
+    };
+    assert_eq!(
+        n("MATCH ((x)-[e:R]->(m)<-[:R]-(y)){1,1} RETURN count(*) AS c"),
+        2.0
+    );
+    assert_eq!(
+        n("MATCH ((x)-[e:R]->(m)<-[:R]-(y) WHERE e.w > 5){1,1} RETURN count(*) AS c"),
+        1.0,
+        "only the rep whose first edge has w=10 survives"
+    );
+    assert_eq!(
+        n("MATCH ((x)-[e:R]->(m)<-[:R]-(y) WHERE e.w > 50){1,1} RETURN count(*) AS c"),
+        0.0,
+        "a filter nothing satisfies must prune everything"
+    );
+}
+
+/// The shapes that already worked must keep working — they take the `RepeatGroup` path, not
+/// `NestedGroup`, so they are the control for the fix rather than its subject.
+#[test]
+fn per_rep_filters_on_forward_and_single_hop_units_are_unchanged() {
+    let store = forked_store(10);
+    let n = |q: &str| -> f64 {
+        match crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .iter()
+            .next()
+            .expect("one row")[0]
+        {
+            Value::Num(x) => x,
+            ref o => panic!("{o:?}"),
+        }
+    };
+    for (bare, filtered) in [
+        (
+            "MATCH ((x)-[e:R]->(m)-[:R]->(y)){1,2} RETURN count(*) AS c",
+            "MATCH ((x)-[e:R]->(m)-[:R]->(y) WHERE x.name <> 'zz'){1,2} RETURN count(*) AS c",
+        ),
+        (
+            "MATCH ((x)-[e:R]->(m)){1,2} RETURN count(*) AS c",
+            "MATCH ((x)-[e:R]->(m) WHERE x.name <> 'zz'){1,2} RETURN count(*) AS c",
+        ),
+    ] {
+        let b = n(bare);
+        assert!(b > 0.0, "{bare} must match something");
+        assert_eq!(n(filtered), b, "{filtered} must keep every rep");
+    }
 }
 
 // --- Lineage (path) ---

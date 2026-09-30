@@ -261,18 +261,14 @@ fn drop_unread_group_binds(plan: Plan) -> Plan {
             // unit emits only at rep boundaries, so the row counts differ — so the lists are
             // all that can go.
             //
-            // A `per_rep_pred` BLOCKS it, conservatively rather than because it is known to
-            // matter. The evidence says it does not: `bind_slots` only sizes the output columns
-            // (exec/nested.rs) while the predicate is handed to the walker separately and
-            // evaluated on a per-rep mini-scope, and the parser says as much ("Independent of
-            // the group list bindings", gql.rs). But it cannot be TESTED today: a `NestedGroup`
-            // needs a unit with a reversed hop, and on that shape a per-rep `WHERE` currently
-            // returns zero rows for ANY predicate, including a trivially true one (26 rows
-            // unfiltered, 0 with `WHERE x.name <> 'zz'`; a forward-only unit and a single-hop
-            // unit both filter correctly). That is a separate pre-existing bug — verified
-            // identical with and without this pass — and until it is fixed there is no way to
-            // show the rewrite is safe under a per-rep filter. Declining costs only the
-            // performance on those queries.
+            // A `per_rep_pred` does NOT block it. `bind_slots` only sizes the output columns
+            // (exec/nested.rs), while the predicate is handed to the walker separately and
+            // evaluated on a per-rep mini-scope built from the unit's own bindings — the parser
+            // says as much ("Independent of the group list bindings", gql.rs). Item 50 blocked
+            // it anyway, because the per-rep filter over a reversed hop returned zero rows for
+            // any predicate and the safety was therefore untestable; that was a native-only bug
+            // (the TS engine had the right answers) and it is fixed, so the guard is lifted and
+            // `a_per_rep_filtered_nested_group_still_drops_unread_lists` pins the behaviour.
             Plan::NestedGroup {
                 input,
                 from,
@@ -285,7 +281,6 @@ fn drop_unread_group_binds(plan: Plan) -> Plan {
                 per_rep_pred,
             } => {
                 let unread = !bind_slots.is_empty()
-                    && per_rep_pred.is_none()
                     && bind_slots
                         .iter()
                         .all(|&slot| read_above.is_none_or(|hi| hi < slot));

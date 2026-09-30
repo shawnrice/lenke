@@ -81,6 +81,45 @@ impl Nest {
 /// A node/edge id is stored as `Value::Num(id)` (the group-variable convention; the
 /// `x[i].prop` element-typing reads it back). Mirrors the TS engine's `pathfind::bind_unit`
 /// with `key_start = 0`.
+/// Which of a unit's bound slots hold a NODE and which hold an EDGE, recursively through its
+/// nested sub-groups. Needed because a per-rep mini-batch has to present each binding in a
+/// column the evaluator can read it from: a node id in a `Col::Gen` is a bare `Value::Num`,
+/// which `Prop` does not recognise as an element, so `x.name` over one reads NULL.
+pub(super) fn unit_slot_kinds(
+    unit: &crate::ir::GUnit,
+    nodes: &mut Vec<usize>,
+    edges: &mut Vec<usize>,
+) {
+    use crate::ir::GElem;
+    if let Some(s) = unit.start_slot {
+        nodes.push(s);
+    }
+    for elem in &unit.elems {
+        match elem {
+            GElem::Hop {
+                edge_slot,
+                target_slot,
+                ..
+            } => {
+                if let Some(s) = edge_slot {
+                    edges.push(*s);
+                }
+                if let Some(s) = target_slot {
+                    nodes.push(*s);
+                }
+            }
+            GElem::Sub {
+                unit, target_slot, ..
+            } => {
+                if let Some(s) = target_slot {
+                    nodes.push(*s);
+                }
+                unit_slot_kinds(unit, nodes, edges);
+            }
+        }
+    }
+}
+
 pub(super) fn bind_nested(
     unit: &crate::ir::GUnit,
     tree_path: &[usize],
@@ -416,8 +455,19 @@ pub(super) fn nested_group(
             bind_nested(self.unit, &[], 1, &rep_steps, &mut pairs);
             let maxslot = pairs.iter().map(|(s, _)| *s).max().unwrap_or(0);
             let mut cols: Vec<Col> = (0..=maxslot).map(|_| Col::Gen(vec![Value::Null])).collect();
+            // A SCALAR binding goes in a TYPED column, matching what `rep_pred_ok` builds for
+            // the single-direction path. Without this a node id arrived as `Value::Num` in a
+            // `Col::Gen`, which `Prop` does not read as an element — so `x.name` was NULL, NULL
+            // is not true, and every repetition was pruned for ANY predicate. A binding one
+            // nesting level deeper is genuinely a LIST in the per-rep view and stays boxed.
+            let (mut node_slots, mut edge_slots) = (Vec::new(), Vec::new());
+            unit_slot_kinds(self.unit, &mut node_slots, &mut edge_slots);
             for (s, v) in pairs {
-                cols[s] = Col::Gen(vec![v]);
+                cols[s] = match &v {
+                    Value::Num(id) if node_slots.contains(&s) => Col::Nodes(vec![*id as u32]),
+                    Value::Num(id) if edge_slots.contains(&s) => Col::Edges(vec![*id as u32]),
+                    _ => Col::Gen(vec![v]),
+                };
             }
             let mini = Batch::of(cols);
             eval(pred, self.store, &mini)
