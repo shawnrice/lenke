@@ -366,6 +366,14 @@ pub fn run(cfg: &Cfg) {
                     "varlen count",
                     "MATCH (x:Person)-[:KNOWS]->{1,2}(y) RETURN count(*) AS c",
                 ),
+                // `{0,2}`, which nothing measured before: the algebraic degree-sum count omitted
+                // the ZERO-LENGTH path entirely, so it was short by one row per source. It has to
+                // come out 50,000 above the `{1,2}` row above, and cost the same — the zero-length
+                // term is one addition, not a pass.
+                (
+                    "varlen count {0,2}",
+                    "MATCH (x:Person)-[:KNOWS]->{0,2}(y) RETURN count(*) AS c",
+                ),
                 (
                     "shortest-k control",
                     "MATCH p = SHORTEST 2 (x:Person)-[:KNOWS]->{1,2}(y) RETURN y.name AS n",

@@ -8386,6 +8386,152 @@ fn an_endpoint_filter_spans_more_than_one_evaluation_block() {
     assert_eq!(counted, rows as f64);
 }
 
+// --- The algebraic var-length count ---
+
+/// `count(*)` over a var-length hop has an ALGEBRAIC path: for a bounded `OUT` walk or trail with
+/// `max <= 2` the answer follows from out-degrees in O(V+E), with no path enumerated. It is taken
+/// only when enumeration would be the more expensive option, which is why a big fixture is needed
+/// to reach it at all — `est_paths > 2 * (nodes + edges)`.
+///
+/// It counted only paths that TRAVERSE an edge. A `{0,n}` quantifier also emits the zero-length
+/// path — the source itself as its own endpoint, one row per source row — so the count was short by
+/// exactly the source count. Measured on 4,000 vertices of degree 4: `{0,2}` gave 79,996 where the
+/// materialized rows are 83,996.
+///
+/// Nothing had caught it: `rewrite_fuzz`'s graphs are far too small for the estimate to choose this
+/// branch, and the fixtures that are big enough live in the benches, which count rows rather than
+/// check them. It surfaced only when an endpoint filter could be peeled off a count, which put a
+/// `min = 0` plan on this branch for the first time.
+#[test]
+fn the_algebraic_count_includes_the_zero_length_path() {
+    let store = dense_store(4000, 4);
+    for (min, max) in [(0u32, 2u32), (1, 2), (0, 1), (1, 1), (2, 2)] {
+        let hop = Plan::VarLength {
+            input: Box::new(Plan::Scan { label: None }),
+            from: 0,
+            dir: Dir::Out,
+            edge_label: vec!["R".to_string()],
+            min,
+            max,
+            mode: PathMode::Trail,
+            until: None,
+            body_filter: None,
+            double_loops: false,
+            path_need: crate::ir::PathNeed::Full,
+        };
+        let counted = Plan::Aggregate {
+            input: Box::new(hop.clone()),
+            keys: vec![],
+            aggs: vec![Agg {
+                func: AggFn::Count,
+                arg: None,
+                distinct: false,
+                name: "c".to_string(),
+                frac: None,
+                null_on_empty: false,
+                numeric_only: false,
+            }],
+        };
+        let fast = match crate::exec::try_run(&counted, &store)
+            .unwrap()
+            .rows
+            .iter()
+            .next()
+            .expect("one row")[0]
+        {
+            Value::Num(x) => x,
+            ref o => panic!("{o:?}"),
+        };
+        let rows = crate::exec::try_run(&hop, &store).unwrap().rows.len();
+        assert_eq!(
+            fast, rows as f64,
+            "the counting fast path disagreed with the rows it counts, at {min}..={max}"
+        );
+    }
+}
+
+/// The zero-length path is one row per SOURCE ROW, not one per distinct node, so a source that
+/// repeats contributes twice. The fix adds `src.len()`, the row count; the node count would be
+/// right only for a bare scan, and a `UNION ALL` of two scans is the cheapest way to say so.
+#[test]
+fn the_zero_length_term_counts_source_rows_not_nodes() {
+    let store = dense_store(4000, 4);
+    let hop = |input: Plan| Plan::VarLength {
+        input: Box::new(input),
+        from: 0,
+        dir: Dir::Out,
+        edge_label: vec!["R".to_string()],
+        min: 0,
+        max: 2,
+        mode: PathMode::Trail,
+        until: None,
+        body_filter: None,
+        double_loops: false,
+        path_need: crate::ir::PathNeed::Full,
+    };
+    let counted = |input: Plan| Plan::Aggregate {
+        input: Box::new(hop(input)),
+        keys: vec![],
+        aggs: vec![Agg {
+            func: AggFn::Count,
+            arg: None,
+            distinct: false,
+            name: "c".to_string(),
+            frac: None,
+            null_on_empty: false,
+            numeric_only: false,
+        }],
+    };
+    let num = |p: &Plan| -> f64 {
+        match crate::exec::try_run(p, &store)
+            .unwrap()
+            .rows
+            .iter()
+            .next()
+            .expect("one row")[0]
+        {
+            Value::Num(x) => x,
+            ref o => panic!("{o:?}"),
+        }
+    };
+    let doubled_src = Plan::Union {
+        left: Box::new(Plan::Scan { label: None }),
+        right: Box::new(Plan::Scan { label: None }),
+        all: true,
+        op: crate::ir::CombineOp::Union,
+    };
+    let single = num(&counted(Plan::Scan { label: None }));
+    assert_eq!(
+        num(&counted(doubled_src.clone())),
+        single * 2.0,
+        "each duplicated source row must count its own zero-length path"
+    );
+    // And against the rows themselves, not only against twice the other number.
+    assert_eq!(
+        num(&counted(doubled_src.clone())),
+        crate::exec::try_run(&hop(doubled_src), &store)
+            .unwrap()
+            .rows
+            .len() as f64
+    );
+}
+
+/// The zero-length path is the WHOLE answer at `{0,0}`, and an empty source set has none of it.
+///
+/// This one does NOT guard the algebra — `{0,0}` has `max == 0`, which the algebraic gate excludes,
+/// so it runs the enumeration. It pins the semantic the algebra has to agree with.
+#[test]
+fn a_zero_only_quantifier_counts_exactly_the_sources() {
+    let store = dense_store(4000, 4);
+    let n = one_num("MATCH (a:N)-[:R]->{0,0}(b) RETURN count(*) AS c", &store);
+    assert_eq!(n, 4000.0, "one zero-length path per source");
+    let none = one_num(
+        "MATCH (a:Missing)-[:R]->{0,2}(b) RETURN count(*) AS c",
+        &store,
+    );
+    assert_eq!(none, 0.0, "no sources, no zero-length paths");
+}
+
 // --- Lineage (path) ---
 
 /// Look up a key in a rich Path object `{vertices, edges, length}` (a `Value::Map`).

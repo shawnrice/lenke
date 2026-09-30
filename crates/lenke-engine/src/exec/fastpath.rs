@@ -1141,6 +1141,14 @@ pub(super) fn try_varlen_count(
                 };
             }
             let mut total: u64 = 0;
+            // A ZERO-LENGTH path: `{0,n}` emits the source itself as an endpoint, one row per
+            // source row, and the degree algebra counted only paths that traverse an edge. Nothing
+            // reached this branch with `min == 0` until an endpoint filter could be peeled off the
+            // count, so it stood as a silent undercount by exactly the source count — measured on
+            // 4,000 vertices of degree 4, `{0,2}` gave 79,996 against 83,996 materialized rows.
+            if *min == 0 {
+                total += src.len() as u64;
+            }
             for &s in src {
                 for a in store.out(s) {
                     if !edge_carries_wanted(store, a, &want) {
