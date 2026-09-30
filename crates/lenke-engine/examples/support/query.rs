@@ -251,13 +251,30 @@ pub fn run(cfg: &Cfg) {
                 ),
                 // No label on the group's inner nodes: a label/property/WHERE there is
                 // E_NOT_IMPLEMENTED, so spelling it that way measures the error path.
+                //
+                // `size(b)`, NOT `b.name`. A group variable binds a LIST, and a bare `.prop`
+                // on a list is null by design — so `RETURN b.name` returns 599,998 NULLs and
+                // is no control at all. It was one here, and the "RepeatGroup is 6x the
+                // var-length hop at baseline" reading came from comparing it against a query
+                // doing real work.
                 (
                     "repeat-group control",
-                    "MATCH ((a)-[:KNOWS]->(b)){1,2} RETURN b.name AS n",
+                    "MATCH ((a)-[:KNOWS]->(b)){1,2} RETURN size(b) AS k",
                 ),
                 (
                     "repeat-group + path",
                     "MATCH p = ((a)-[:KNOWS]->(b)){1,2} RETURN path_length(p) AS len",
+                ),
+                // The valid comparison, and where the real finding was: both count the same
+                // 599,998 rows and return the identical number. A var-length hop shortcuts
+                // `count(*)`; a group had no such path, so it enumerated every row.
+                (
+                    "repeat-group count",
+                    "MATCH ((a)-[:KNOWS]->(b)){1,2} RETURN count(*) AS c",
+                ),
+                (
+                    "varlen count",
+                    "MATCH (x:Person)-[:KNOWS]->{1,2}(y) RETURN count(*) AS c",
                 ),
                 (
                     "shortest-k control",

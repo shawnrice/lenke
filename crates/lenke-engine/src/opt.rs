@@ -848,6 +848,85 @@ fn map_children(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
                     }
                 }
             }
+            // A bare `count(*)` reads NO column, so a quantified subpath group's per-rep
+            // list columns are provably unread beneath one — and without them the group is
+            // exactly a var-length hop, which unlocks the counting fast paths the group
+            // executor has none of. Measured on a 50,000-node degree-3 fixture, 599,998
+            // matching rows: `count(*)` over `((a)-[:R]->(b)){1,2}` took 79.1ms against
+            // 0.8ms for the same count over `(x)-[:R]->{1,2}(y)`, an identical answer.
+            //
+            // `k == 1` is required, not incidental: a multi-element unit emits only at rep
+            // boundaries (`len % k == 0`) while a var-length hop emits at every hop, so the
+            // ROW COUNTS differ for `k > 1` and the rewrite would change the answer. A
+            // `per_rep_pred` must be absent for the same reason — it prunes hops the plain
+            // walk would keep.
+            let bare_count = keys.is_empty()
+                && !aggs.is_empty()
+                && aggs
+                    .iter()
+                    .all(|a| a.func == crate::ir::AggFn::Count && a.arg.is_none());
+            if bare_count {
+                if let Plan::RepeatGroup {
+                    input: gin,
+                    from,
+                    dir,
+                    edge_label,
+                    min,
+                    max,
+                    mode,
+                    endpoint_slot,
+                    group_binds,
+                    k: 1,
+                    per_rep_pred: None,
+                } = i
+                {
+                    // The endpoint must land where a var-length hop would put it, or the
+                    // shapes are not interchangeable.
+                    if endpoint_slot == width(&gin) {
+                        return (
+                            Plan::Aggregate {
+                                input: Box::new(Plan::VarLength {
+                                    input: gin,
+                                    from,
+                                    dir,
+                                    edge_label,
+                                    min,
+                                    max,
+                                    mode,
+                                    until: None,
+                                    body_filter: None,
+                                    double_loops: false,
+                                    path_need: crate::ir::PathNeed::Full,
+                                }),
+                                keys,
+                                aggs,
+                            },
+                            true,
+                        );
+                    }
+                    // Not interchangeable — rebuild the group unchanged.
+                    return (
+                        Plan::Aggregate {
+                            input: Box::new(Plan::RepeatGroup {
+                                input: gin,
+                                from,
+                                dir,
+                                edge_label,
+                                min,
+                                max,
+                                mode,
+                                endpoint_slot,
+                                group_binds,
+                                k: 1,
+                                per_rep_pred: None,
+                            }),
+                            keys,
+                            aggs,
+                        },
+                        c,
+                    );
+                }
+            }
             (
                 Plan::Aggregate {
                     input: Box::new(i),

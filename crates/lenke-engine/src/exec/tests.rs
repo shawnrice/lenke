@@ -6755,6 +6755,130 @@ fn shortest_k_cardinality_agrees_in_both_representations() {
     assert_eq!(nums(counted), nums(material));
 }
 
+// --- A bare count over a quantified subpath group ---
+
+/// Does this plan still contain a `RepeatGroup`?
+fn has_repeat_group(p: &Plan) -> bool {
+    match p {
+        Plan::RepeatGroup { .. } => true,
+        Plan::Project { input, .. }
+        | Plan::Aggregate { input, .. }
+        | Plan::Filter { input, .. }
+        | Plan::Distinct { input }
+        | Plan::OrderPage { input, .. }
+        | Plan::VarLength { input, .. }
+        | Plan::Expand { input, .. } => has_repeat_group(input),
+        _ => false,
+    }
+}
+
+fn num1(q: &str, store: &Store) -> f64 {
+    let rows = crate::exec::try_run(&opt_plan(q, store), store).unwrap();
+    match rows.rows.iter().next().expect("one row")[0] {
+        Value::Num(x) => x,
+        ref o => panic!("{o:?}"),
+    }
+}
+
+/// A bare `count(*)` reads no column, so a single-hop group's per-rep list columns are
+/// provably unread and the group IS a var-length hop — which has counting fast paths the
+/// group executor lacks. Measured 79.1ms -> 0.8ms at 599,998 matching rows.
+#[test]
+fn a_bare_count_over_a_single_hop_group_becomes_a_var_length() {
+    let store = chain_store(40);
+    let q = "MATCH ((a)-[:R]->(b)){1,2} RETURN count(*) AS c";
+    let plan = opt_plan(q, &store);
+    assert!(
+        !has_repeat_group(&plan),
+        "the group should be gone: {plan:?}"
+    );
+    // And the answer is unchanged: a 40-node chain has 39 one-rep and 38 two-rep walks.
+    assert_eq!(num1(q, &store), 77.0);
+}
+
+/// The rewritten count must equal the count the equivalent var-length hop gives — the two
+/// spellings describe the same walk, so a rewrite that changed the number would be a
+/// wrong answer that still looks like a plausible count.
+#[test]
+fn a_group_count_matches_the_equivalent_var_length_count() {
+    let store = chain_store(40);
+    assert_eq!(
+        num1("MATCH ((a)-[:R]->(b)){1,2} RETURN count(*) AS c", &store),
+        num1("MATCH (x:N)-[:R]->{1,2}(y) RETURN count(*) AS c", &store),
+    );
+}
+
+/// `k > 1` is the condition that makes this unsound, not a detail, and it is REACHABLE: a
+/// two-hop unit over one edge type lowers to `RepeatGroup { k: 2 }`. Such a unit emits only
+/// at rep BOUNDARIES while a var-length hop emits at every hop, and the equivalent hop bounds
+/// would be `min * k ..= max * k` rather than `min ..= max` — so the row counts differ two
+/// ways and the group must survive.
+///
+/// (Spelling this with two DIFFERENT edge types instead lowers to `NestedGroup`, which the
+/// rewrite does not match at all. That is a different plan node, not this guard.)
+#[test]
+fn a_multi_hop_group_unit_keeps_its_group() {
+    let store = chain_store(12);
+    let q = "MATCH ((x)-[:R]->(m)-[:R]->(y)){1,2} RETURN count(*) AS c";
+    let plan = opt_plan(q, &store);
+    assert!(
+        has_repeat_group(&plan),
+        "a two-hop unit must NOT be flattened to a var-length hop: {plan:?}"
+    );
+    // The count a var-length hop with the SAME written bounds would give, which is what the
+    // rewrite would have produced. It must differ, or this guard is untestable.
+    let flattened = num1("MATCH (x:N)-[:R]->{1,2}(y) RETURN count(*) AS c", &store);
+    assert_ne!(
+        num1(q, &store),
+        flattened,
+        "if these agree the guard cannot be shown to matter"
+    );
+}
+
+/// A per-repetition `WHERE` prunes hops the plain walk would keep, so it also blocks the
+/// rewrite.
+#[test]
+fn a_per_rep_predicate_keeps_the_group() {
+    let mut b = Builder::default();
+    let x = b.node(&["N"], &[("name", s("a"))]);
+    let y = b.node(&["N"], &[("name", s("b"))]);
+    let z = b.node(&["N"], &[("name", s("c"))]);
+    b.edge(x, y, "R");
+    b.edge(y, z, "R");
+    let store = b.build();
+    let q = "MATCH ((p)-[e:R WHERE e.w > 0]->(q)){1,2} RETURN count(*) AS c";
+    match crate::gql::parse(q) {
+        Ok(raw) => {
+            let plan = crate::opt::optimize_indexed(raw, &store);
+            assert!(
+                has_repeat_group(&plan),
+                "a per-rep predicate must keep the group: {plan:?}"
+            );
+        }
+        // If this spelling is not accepted, the guard is still in the rewrite; nothing to
+        // assert here beyond not silently passing.
+        Err(e) => assert!(e.contains("E_"), "{e}"),
+    }
+}
+
+/// A count that is NOT bare reads a column, so the group's bindings may be live and the
+/// rewrite must not fire. `count(*)` GROUPED BY something is the case: the key reads a slot.
+#[test]
+fn a_grouped_count_over_a_group_keeps_the_group() {
+    let store = chain_store(40);
+    let q = "MATCH ((a)-[:R]->(b)){1,2} RETURN size(b) AS k, count(*) AS c";
+    match crate::gql::parse(q) {
+        Ok(raw) => {
+            let plan = crate::opt::optimize_indexed(raw, &store);
+            assert!(
+                has_repeat_group(&plan),
+                "a keyed aggregate reads a slot, so the group must stay: {plan:?}"
+            );
+        }
+        Err(e) => assert!(e.contains("E_"), "{e}"),
+    }
+}
+
 // --- Lineage (path) ---
 
 /// Look up a key in a rich Path object `{vertices, edges, length}` (a `Value::Map`).
