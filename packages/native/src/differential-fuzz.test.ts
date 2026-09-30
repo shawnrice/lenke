@@ -45,6 +45,13 @@ const NDJSON = [
   // edge single-typed the two are indistinguishable, which is how the TS count
   // shortcut double-counted for a long time with every fuzzer green.
   '{"type":"edge","id":"e2","labels":["E","F"],"from":"2","to":"3","properties":{"w":5}}',
+  // A SECOND in-edge into vertex 3. Without it no vertex has two distinct in-edges, and in
+  // Trail mode a unit whose second hop is REVERSED (`(x)-[:E]->(m)<-[:E]-(y)`) then has
+  // nowhere to go — it matched 0 rows for every quantifier. Measured: 4 of the 16
+  // direction-pair combinations below matched anything before this edge, 8 after, and the
+  // forward-then-reverse pair specifically went from 0 rows to 2. Coverage of those shapes
+  // was therefore vacuous, which is how a per-rep filter over one stayed broken (item 51).
+  '{"type":"edge","id":"e3","labels":["E"],"from":"1","to":"3","properties":{"w":9}}',
 ].join('\n');
 
 // --- seeded PRNG (mulberry32) -----------------------------------------------
@@ -669,10 +676,27 @@ const genQuery = (r: () => number): string => {
   // it now routes to the per-hop nested-group machinery, byte-identical to TS. `count(*)`
   // and the endpoint keep the comparison order-free / totalised.
   if (p < 0.93) {
-    const h1 = pick(r, ['-[:E]->', '<-[:E]-', '-[:F]->', '<-[:F]-']);
+    const h1 = pick(r, ['-[e1:E]->', '<-[e1:E]-', '-[e1:F]->', '<-[e1:F]-']);
     const h2 = pick(r, ['-[:E]->', '<-[:E]-', '-[:F]->', '<-[:F]-']);
     const q = pick(r, ['{1,2}', '{1,1}', '{1,3}', '+']);
-    const body = `(a:T)((x)${h1}(m)${h2}(y))${q}(b:T)`;
+    // A PER-REPETITION `WHERE`, after the unit and INSIDE the parens (inside the edge
+    // brackets is a per-HOP predicate, a different thing). Reads a NODE property and an
+    // EDGE property, because those land in different columns of the per-rep mini-batch and
+    // exactly that distinction was broken: native built the mini-batch boxed where the
+    // single-direction path builds it typed, so any predicate touching a node read NULL and
+    // pruned every repetition — a silent wrong answer against TS, on a shape this generator
+    // already produced but never filtered (item 51).
+    const perRep = pick(r, [
+      '',
+      '',
+      ' WHERE x.n >= 0',
+      ' WHERE x.n <> 999',
+      ' WHERE e1.w >= 0',
+      ' WHERE e1.w > 2',
+      ' WHERE m.n <> x.n',
+      ' WHERE x.n + e1.w > 4',
+    ]);
+    const body = `(a:T)((x)${h1}(m)${h2}(y)${perRep})${q}(b:T)`;
 
     return pick(r, [
       `MATCH ${body} RETURN count(*) AS x`,
@@ -717,11 +741,29 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
 
   test(`${ITERATIONS} random queries render byte-identically across engines`, () => {
     const divergences: string[] = [];
+    // Coverage counters for the per-repetition `WHERE` over a quantified group. Both are
+    // needed: the first says the shape is GENERATED, the second that it MATCHES SOMETHING.
+    // Generation alone is not coverage — before the fixture gained a second in-edge into
+    // vertex 3, the forward-then-reverse unit was generated and returned 0 rows every time,
+    // so a wrong answer over it agreed with a wrong answer trivially (item 51).
+    let perRepGenerated = 0;
+    let perRepNonEmpty = 0;
 
     for (let i = 0; i < ITERATIONS; i++) {
       const q = genQuery(mulberry32(caseSeed(SEED, i)));
       const ts = run('ts', q);
       const nat = run('native', q);
+
+      // `((x)` identifies a quantified subpath group (only two arms emit it, and only this
+      // one adds a `WHERE`). Matching a bare `) WHERE` instead over-counts by a factor of
+      // four, since an ordinary `MATCH (n:T) WHERE …` looks the same.
+      if (q.includes('((x)') && q.includes(' WHERE ')) {
+        perRepGenerated++;
+
+        if (ts.ok && ts.json !== '[]' && ts.json !== '[{"x":0}]') {
+          perRepNonEmpty++;
+        }
+      }
 
       // Both errored → acceptable (both reject the input); a shape divergence is
       // when exactly one succeeds, or both succeed with different JSON.
@@ -775,6 +817,16 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       ? `FUZZ_SEED=${SEED} bun test <this file> to reproduce:\n\n${divergences.join('\n\n')}`
       : 'no divergences';
     expect(report).toBe('no divergences');
+    // FLOORS on the per-rep coverage, at roughly half what was measured when it was added
+    // (measured 725-769 generated and 358-368 of those non-empty, of 20,000). They guard the same
+    // thing rewrite_fuzz's density floors guard: a generator drifting away from a shape it is
+    // supposed to cover, which is invisible from the outside because a suite that never
+    // generates a shape passes exactly like one that does. The non-empty floor is the one
+    // that matters most — generating a query that matches nothing compares nothing.
+    expect({
+      perRepGenerated: perRepGenerated > 350,
+      perRepNonEmpty: perRepNonEmpty > 175,
+    }).toEqual({ perRepGenerated: true, perRepNonEmpty: true });
     // 20 000 queries × two engines is well under a second locally but exceeds Bun's default
     // 5 s test timeout on the slower CI runners (~5.5–6 s) — give this heavy differential fuzz
     // a generous ceiling so it is not a wall-clock flake rather than trimming its coverage.
