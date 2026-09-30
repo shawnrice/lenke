@@ -9044,6 +9044,227 @@ fn an_unevaluable_endpoint_predicate_falls_through_rather_than_declining() {
     );
 }
 
+// --- Distinct-endpoint counting and the path mode ---
+
+/// Two nodes, one edge. Small enough that every answer below is derivable by hand.
+fn one_edge_store() -> Store {
+    let mut b = Builder::default();
+    b.node(&["N"], &[("name", s("a"))]);
+    b.node(&["N"], &[("name", s("b"))]);
+    b.edge(0, 1, "R");
+    b.build()
+}
+
+/// `count(DISTINCT <endpoint>)` has a shortcut that computes reachability with a BFS, and a BFS
+/// frontier permits re-crossing an edge — so what it computes is WALK reachability. Its gate
+/// admitted TRAIL as well, on the reasoning that a trail allows NODES to repeat; a trail forbids
+/// EDGE reuse, which is the constraint that matters here.
+///
+/// Hand-derived on `a -> b`: a trail of length 2 needs two distinct edges and there is only one, so
+/// `(x)-[:R]-{2,3}(y)` matches NOTHING. The BFS walks `a -> b -> a` and reported 2 distinct
+/// endpoints. Found by `fastpath_fuzz` at seed 3249 on a 300-vertex degree-1 fixture, and it
+/// reduces to this.
+#[test]
+fn a_distinct_endpoint_count_over_a_trail_matches_the_rows() {
+    let store = one_edge_store();
+    let val = |q: &str| -> f64 {
+        match crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .iter()
+            .next()
+            .expect("one row")[0]
+        {
+            Value::Num(x) => x,
+            ref o => panic!("{o:?}"),
+        }
+    };
+    // TRAIL (the GQL default) at two or more hops: no path exists at all.
+    assert_eq!(
+        try_gql("MATCH (x)-[:R]-{2,3}(y) RETURN y.name AS n", &store).unwrap(),
+        0,
+        "a trail of length 2 over a single edge has nowhere to go"
+    );
+    assert_eq!(
+        val("MATCH (x)-[:R]-{2,3}(y) RETURN count(DISTINCT y) AS a"),
+        0.0
+    );
+
+    // WALK may re-cross the edge, so both vertices are endpoints — and the shortcut is exact there.
+    assert_eq!(
+        try_gql("MATCH WALK (x)-[:R]-{2,3}(y) RETURN y.name AS n", &store).unwrap(),
+        4
+    );
+    assert_eq!(
+        val("MATCH WALK (x)-[:R]-{2,3}(y) RETURN count(DISTINCT y) AS a"),
+        2.0
+    );
+
+    // `{2,2}` pins the BOUND, not just the mode: it is the shape that separates a gate of
+    // `max <= 1` from one of `max <= 2`, and a trail of exactly two hops over one edge is still
+    // nothing.
+    assert_eq!(
+        try_gql("MATCH (x)-[:R]-{2,2}(y) RETURN y.name AS n", &store).unwrap(),
+        0
+    );
+    assert_eq!(
+        val("MATCH (x)-[:R]-{2,2}(y) RETURN count(DISTINCT y) AS a"),
+        0.0
+    );
+
+    // At most one hop, where a trail cannot reuse anything, so the shortcut still applies and is
+    // exact. `{0,1}` rather than `{1,1}`: the latter lowers to a plain `Expand` and never reaches
+    // the var-length shortcut at all, which is why a one-hop test written that way proved nothing.
+    assert_eq!(
+        val("MATCH (x)-[:R]-{0,1}(y) RETURN count(DISTINCT y) AS a"),
+        2.0
+    );
+}
+
+/// The same question over a fixture with some breadth, so the numbers are not all 0 and 2: a
+/// degree-1 ring traversed in BOTH directions, where a trail of two hops can only move along the
+/// ring while a walk can also come straight back.
+#[test]
+fn a_distinct_endpoint_count_over_a_trail_matches_the_rows_on_a_ring() {
+    let mut b = Builder::default();
+    for i in 0..30u32 {
+        b.node(&["N"], &[("name", s(&format!("v{i}")))]);
+    }
+    for i in 0..30u32 {
+        b.edge(i, (i + 1) % 30, "R");
+    }
+    let store = b.build();
+    let val = |q: &str| -> f64 {
+        match crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .iter()
+            .next()
+            .expect("one row")[0]
+        {
+            Value::Num(x) => x,
+            ref o => panic!("{o:?}"),
+        }
+    };
+    let distinct_rows = |q: &str| -> usize {
+        crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .len()
+    };
+    for (mode, quant) in [
+        ("", "{2,3}"),
+        ("", "{1,2}"),
+        ("WALK ", "{2,3}"),
+        ("", "{1,1}"),
+    ] {
+        assert_eq!(
+            val(&format!(
+                "MATCH {mode}(x)-[:R]-{quant}(y) RETURN count(DISTINCT y) AS a"
+            )),
+            distinct_rows(&format!(
+                "MATCH {mode}(x)-[:R]-{quant}(y) RETURN DISTINCT y.name AS n"
+            )) as f64,
+            "distinct-endpoint count disagreed over {mode}{quant}"
+        );
+    }
+}
+
+/// The shortcut must still FIRE for a walk — declining everywhere would also be "correct" and would
+/// quietly cost the set-reachability fusion. A pure performance property has no failing answer, so
+/// the observable is the trail budget: the materializing path counts rows and a budget below the row
+/// count refuses, while the BFS never materializes.
+#[test]
+fn a_walk_keeps_the_distinct_endpoint_shortcut() {
+    let mut store = dense_store(2000, 3);
+    let q = "MATCH WALK (x)-[:R]->{1,2}(y) RETURN count(DISTINCT y) AS a";
+    store.set_limit(crate::store::ConfigId::LimitsTrail, 100_000_000);
+    let truth = match crate::exec::try_run(&opt_plan(q, &store), &store)
+        .unwrap()
+        .rows
+        .iter()
+        .next()
+        .expect("one row")[0]
+    {
+        Value::Num(x) => x,
+        ref o => panic!("{o:?}"),
+    };
+    assert!(truth > 100.0, "the fixture must reach plenty: {truth}");
+
+    store.set_limit(crate::store::ConfigId::LimitsTrail, 100);
+    assert_eq!(
+        crate::exec::try_run(&opt_plan(q, &store), &store)
+            .map(|r| format!("{:?}", r.rows.iter().next().expect("one row")[0])),
+        Ok(format!("Num({truth:?})")),
+        "a walk's distinct-endpoint count must stay on the BFS, which materializes nothing"
+    );
+}
+
+/// And a ONE-HOP trail keeps it too, which is the whole safe region for a trail. Same observable.
+///
+/// `{0,1}`, not `{1,1}`: a `{1,1}` quantifier lowers to a plain `Expand`, so it never reaches this
+/// shortcut and a test written that way passes whatever the trail gate says — which is exactly how
+/// the first version of this test failed to catch a gate that declined every trail.
+#[test]
+fn a_one_hop_trail_keeps_the_distinct_endpoint_shortcut() {
+    let mut store = dense_store(2000, 3);
+    let q = "MATCH (x)-[:R]->{0,1}(y) RETURN count(DISTINCT y) AS a";
+    store.set_limit(crate::store::ConfigId::LimitsTrail, 100_000_000);
+    let truth = match crate::exec::try_run(&opt_plan(q, &store), &store)
+        .unwrap()
+        .rows
+        .iter()
+        .next()
+        .expect("one row")[0]
+    {
+        Value::Num(x) => x,
+        ref o => panic!("{o:?}"),
+    };
+    assert!(truth > 100.0, "{truth}");
+    store.set_limit(crate::store::ConfigId::LimitsTrail, 100);
+    assert_eq!(
+        crate::exec::try_run(&opt_plan(q, &store), &store)
+            .map(|r| format!("{:?}", r.rows.iter().next().expect("one row")[0])),
+        Ok(format!("Num({truth:?})"))
+    );
+}
+
+/// Gremlin's `dedup().count()` reaches the same BFS through `DistinctBy`, and its `repeat` is a
+/// WALK — so it keeps the shortcut and has to stay correct. This is the sibling gate, and without it
+/// the fix would have been applied to one of the two call sites.
+#[test]
+fn a_gremlin_dedup_count_over_a_repeat_is_unchanged() {
+    let store = dense_store(40, 3);
+    let gremlin = |q: &str| -> String {
+        let raw = crate::gremlin::parse(q).expect("parses");
+        let plan = crate::opt::optimize_indexed(raw, &store);
+        format!(
+            "{:?}",
+            crate::exec::try_run(&plan, &store)
+                .unwrap()
+                .rows
+                .iter()
+                .next()
+                .expect("one row")[0]
+        )
+    };
+    // The dedup'd endpoint set of a two-step repeat, against the same set enumerated by GQL over a
+    // WALK — the mode Gremlin's `repeat` uses.
+    let g = gremlin("g.V().repeat(out('R')).times(2).dedup().count()");
+    let expect = crate::exec::try_run(
+        &opt_plan(
+            "MATCH WALK (x)-[:R]->{2,2}(y) RETURN count(DISTINCT y) AS a",
+            &store,
+        ),
+        &store,
+    )
+    .unwrap();
+    assert_eq!(
+        g,
+        format!("{:?}", expect.rows.iter().next().expect("one row")[0])
+    );
+}
+
 // --- Lineage (path) ---
 
 /// Look up a key in a rich Path object `{vertices, edges, length}` (a `Value::Map`).

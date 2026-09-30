@@ -4149,6 +4149,9 @@ fn for_each_typed_out(
 }
 
 mod fastpath;
+
+#[cfg(test)]
+mod fastpath_fuzz;
 use self::fastpath::*;
 
 mod varlen;

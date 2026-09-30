@@ -1473,10 +1473,20 @@ pub(super) fn try_varlen_distinct_count(
     // either way. It is deliberately NOT a bail condition (unlike the multiplicity
     // counts).
     //
-    // The set-reachability fusion relies on nodes being allowed to repeat (Walk /
-    // Trail). SIMPLE / ACYCLIC forbid node reuse, so a distinct-endpoint count must
-    // enumerate — fall through.
-    if !matches!(mode, PathMode::Walk | PathMode::Trail) {
+    // The set-reachability fusion relies on nodes being allowed to repeat, which SIMPLE and
+    // ACYCLIC forbid — so those must enumerate. A TRAIL is the subtler one, and it was WRONG here:
+    // it forbids EDGE reuse, and this BFS permits it, so what the BFS computes is WALK
+    // reachability. A node reachable only by re-crossing an edge belongs to the walk set and NOT to
+    // the trail set, and the shortcut counted it.
+    //
+    // Two nodes and one edge, `(x)-[:R]-{2,3}(y)`: a trail of length 2 needs two distinct edges, so
+    // the pattern returns NO rows, while the BFS walks `a -> b -> a` and reports 2 distinct
+    // endpoints. Found by `fastpath_fuzz` at seed 3249 (item 68).
+    //
+    // `max <= 1` is the whole safe region for a trail: with at most one hop no edge can be reused,
+    // so walk and trail reachability coincide. Anything larger needs per-path edge sets, which is
+    // not a BFS.
+    if !set_reachability_is_exact(*mode, *max) {
         return None;
     }
     let want = match want_etypes(store, edge_label) {
@@ -1547,10 +1557,8 @@ pub(super) fn try_varlen_distinctby_count(
             double_loops: _, // a distinct endpoint set is blind to edge multiplicity
             ..
         } => {
-            if until.is_some()
-                || body_filter.is_some()
-                || !matches!(mode, PathMode::Walk | PathMode::Trail)
-            {
+            // See the note on `set_reachability_is_exact`: a TRAIL is only safe here at one hop.
+            if until.is_some() || body_filter.is_some() || !set_reachability_is_exact(*mode, *max) {
                 return None;
             }
             (vl_inner.as_ref(), *from, *dir, edge_label, *min, *max)
@@ -1607,6 +1615,20 @@ pub(super) fn try_varlen_distinctby_count(
 ///
 /// Blind to edge multiplicity (a set), so a both()-crossed self-loop needs no special
 /// casing. `min == 0` also counts the sources as their own 0-hop endpoints.
+/// Is BFS set-reachability the exact answer for this mode and hop bound?
+///
+/// [`varlen_distinct_endpoint_count`] computes the nodes reachable by a WALK, so it is exact for
+/// `Walk` at any bound. For a `Trail` it is exact only at `max <= 1`, where no edge can be reused;
+/// beyond that the walk set can strictly contain the trail set. `Simple` and `Acyclic` forbid node
+/// reuse, which a BFS frontier permits, so they never qualify.
+fn set_reachability_is_exact(mode: PathMode, max: u32) -> bool {
+    match mode {
+        PathMode::Walk => true,
+        PathMode::Trail => max <= 1,
+        PathMode::Simple | PathMode::Acyclic => false,
+    }
+}
+
 pub(super) fn varlen_distinct_endpoint_count(
     store: &Store,
     src: &[u32],
