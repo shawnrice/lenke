@@ -283,10 +283,6 @@ pub fn run(cfg: &Cfg) {
                     "repeat-group head(b)",
                     "MATCH ((a)-[:KNOWS]->(b)){1,2} RETURN head(b) AS h",
                 ),
-                // A NESTED group — a unit with a reversed hop, which is what lowers to
-                // `NestedGroup` rather than `RepeatGroup`. It appends one list column per bound
-                // inner variable and built them whether or not anything read them; a bare
-                // count reads none. The guard for that: ~665ms means the lists came back.
                 // A k = 2 unit: TWO hops per repetition over one edge type, which lowers to
                 // `RepeatGroup { k: 2 }` and CANNOT be flattened onto the var-length counting
                 // path (a multi-element unit emits only at rep boundaries). Before it had a
@@ -298,6 +294,13 @@ pub fn run(cfg: &Cfg) {
                     "k2-group count",
                     "MATCH ((x)-[:KNOWS]->(m)-[:KNOWS]->(y)){1,2} RETURN count(*) AS c",
                 ),
+                // A NESTED group — a unit with a reversed hop, which is what lowers to
+                // `NestedGroup` rather than `RepeatGroup`, and which has its own walker rather
+                // than `run_varlen`. Two guards in one row: the bound list columns were built
+                // whether or not anything read them (a bare count reads none), and the walk then
+                // appended a row per emitted path to return one number. 863,818us -> 146,402us
+                // once the walk got a counting sink of its own; ~665ms means the lists came back
+                // and ~860ms means the rows did.
                 (
                     "nested-group count",
                     "MATCH ((x)-[:KNOWS]->(m)<-[:KNOWS]-(y)){1,2} RETURN count(*) AS c",

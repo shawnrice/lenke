@@ -971,35 +971,61 @@ pub(super) fn try_group_count(
     if agg.func != AggFn::Count || agg.arg.is_some() || agg.distinct {
         return None; // count(*) only — anything else reads a column
     }
-    let Plan::RepeatGroup {
-        input: inner,
-        from,
-        dir,
-        edge_label,
-        min,
-        max,
-        mode,
-        k,
-        per_rep_pred,
-        ..
-    } = input
-    else {
-        return None;
+    let n = match input {
+        Plan::RepeatGroup {
+            input: inner,
+            from,
+            dir,
+            edge_label,
+            min,
+            max,
+            mode,
+            k,
+            per_rep_pred,
+            ..
+        } => {
+            let batch = pull(inner, store, false).ok()?;
+            crate::exec::varlen::var_length_count(
+                &batch,
+                store,
+                *from,
+                *dir,
+                edge_label,
+                *min,
+                *max,
+                *mode,
+                per_rep_pred.as_deref(),
+                *k,
+                false,
+            )?
+        }
+        // A unit with mixed hop directions lowers to `NestedGroup`, which has its own
+        // walker rather than `run_varlen` — so it needs its own counting sink, not a
+        // flattening onto the var-length one.
+        Plan::NestedGroup {
+            input: inner,
+            from,
+            unit,
+            min,
+            max,
+            mode,
+            per_rep_pred,
+            ..
+        } => {
+            let batch = pull(inner, store, false).ok()?;
+            crate::exec::nested::nested_group_count(
+                &batch,
+                store,
+                *from,
+                unit,
+                *min,
+                *max,
+                *mode,
+                per_rep_pred.as_deref(),
+            )?
+        }
+        _ => return None,
     };
-    let batch = pull(inner, store, false).ok()?;
-    let n = crate::exec::varlen::var_length_count(
-        &batch,
-        store,
-        *from,
-        *dir,
-        edge_label,
-        *min,
-        *max,
-        *mode,
-        per_rep_pred.as_deref(),
-        *k,
-        false,
-    )?;
 
     Some(scalar_num(n as f64))
 }

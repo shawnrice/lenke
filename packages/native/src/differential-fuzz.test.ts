@@ -793,6 +793,13 @@ const genQuery = (r: () => number): string => {
     return pick(r, [
       `MATCH ${body} RETURN count(*) AS x`,
       `MATCH ${body} RETURN b.n AS x, a.n AS t ORDER BY t, x`,
+      // UNANCHORED, and that is the point: a label on either endpoint lowers to a `Filter`
+      // between the `Aggregate` and the `NestedGroup`, and native's counting sink matches an
+      // aggregate sitting DIRECTLY on the group — so the two forms above never reach it. The
+      // sink is the only code that counts a nested group without materializing a row per
+      // emitted path, and until this spelling existed no cross-engine comparison ran through
+      // it at all (item 61).
+      `MATCH ((x)${h1}(m)${h2}(y)${perRep})${q} RETURN count(*) AS x`,
     ]);
   }
 
@@ -918,6 +925,12 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
     // comparing error codes instead of predicate evaluation over data.
     let predGenerated = 0;
     let predRows = 0;
+    // And the same guard for the UNANCHORED nested-group count — the only spelling that
+    // reaches native's non-materializing counting sink. `startsWith` is what distinguishes it:
+    // every other group query this generator emits opens with `MATCH (a:T)((x)` or
+    // `MATCH pp = `, and those lower with a `Filter` above the group, which the sink declines.
+    let sinkGenerated = 0;
+    let sinkNonZero = 0;
 
     for (let i = 0; i < ITERATIONS; i++) {
       const q = genQuery(mulberry32(caseSeed(SEED, i)));
@@ -932,6 +945,14 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
 
         if (ts.ok && ts.json !== '[]') {
           predRows++;
+        }
+      }
+
+      if (q.startsWith('MATCH ((x)') && q.includes('RETURN count(*)')) {
+        sinkGenerated++;
+
+        if (ts.ok && ts.json !== '[]' && ts.json !== '[{"x":0}]') {
+          sinkNonZero++;
         }
       }
 
@@ -1002,18 +1023,22 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
     // generates a shape passes exactly like one that does. The non-empty floor is the one
     // that matters most — generating a query that matches nothing compares nothing.
     console.log(
-      `PRED generated=${predGenerated} rows=${predRows} perRep=${perRepGenerated}/${perRepNonEmpty}`,
+      `PRED generated=${predGenerated} rows=${predRows} perRep=${perRepGenerated}/${perRepNonEmpty} sink=${sinkGenerated}/${sinkNonZero}`,
     );
     expect({
       perRepGenerated: perRepGenerated > 350,
       perRepNonEmpty: perRepNonEmpty > 175,
       predGenerated: predGenerated > 2_000,
       predRows: predRows > 1_000,
+      sinkGenerated: sinkGenerated > 200,
+      sinkNonZero: sinkNonZero > 100,
     }).toEqual({
       perRepGenerated: true,
       perRepNonEmpty: true,
       predGenerated: true,
       predRows: true,
+      sinkGenerated: true,
+      sinkNonZero: true,
     });
     // 20 000 queries × two engines is well under a second locally but exceeds Bun's default
     // 5 s test timeout on the slower CI runners (~5.5–6 s) — give this heavy differential fuzz

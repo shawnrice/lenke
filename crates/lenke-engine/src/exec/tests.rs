@@ -7798,6 +7798,162 @@ fn a_group_that_returns_rows_still_trips_the_trail_budget() {
     assert!(err.contains("trail limit"), "{err}");
 }
 
+// --- Counting a NESTED group without materializing it ---
+
+/// A tiny fixture whose nested-group counts are small enough to derive BY HAND: two sources
+/// into one middle vertex, and one more hop out of it.
+///
+/// `0 -> 2`, `1 -> 2`, `2 -> 3`.
+fn converge_store() -> Store {
+    let mut b = Builder::default();
+    for i in 0..4 {
+        b.node(&["N"], &[("name", s(&format!("v{i}")))]);
+    }
+    b.edge(0, 2, "R");
+    b.edge(1, 2, "R");
+    b.edge(2, 3, "R");
+    b.build()
+}
+
+fn one_num(q: &str, store: &Store) -> f64 {
+    match crate::exec::try_run(&opt_plan(q, store), store)
+        .unwrap()
+        .rows
+        .iter()
+        .next()
+        .expect("one row")[0]
+    {
+        Value::Num(x) => x,
+        ref o => panic!("{o:?}"),
+    }
+}
+
+/// The counting sink must agree with the walk that materializes the rows. Naming the group's
+/// endpoint produces one row per emitted path, so its ROW COUNT is the number the sink has to
+/// report — computed by entirely different code (gather + project) on the same traversal.
+///
+/// This is the test that fails if the tally is per-input-row rather than per-emitted-path, or
+/// double-counts, or stops early.
+#[test]
+fn a_nested_group_count_matches_the_materialized_row_count() {
+    for store in [converge_store(), forked_store(9), dense_store(24, 3)] {
+        let counted = one_num(
+            "MATCH ((x)-[:R]->(m)<-[:R]-(y)){1,2} RETURN count(*) AS c",
+            &store,
+        );
+        let rows = try_gql(
+            "MATCH ((x)-[:R]->(m)<-[:R]-(y)){1,2} (t) RETURN t.name AS n",
+            &store,
+        )
+        .unwrap();
+        assert!(counted > 0.0, "the fixture must emit rows: {counted}");
+        assert_eq!(
+            counted, rows as f64,
+            "the counting sink disagreed with the materialized walk"
+        );
+    }
+}
+
+/// An ABSOLUTE count on the hand-derivable fixture, because the equivalence test above compares
+/// two paths that now share one walker — a change to the walk itself (a reversed hop read
+/// forward, a mode ignored) moves BOTH numbers together and stays invisible there.
+///
+/// `0 -> 2`, `1 -> 2`, `2 -> 3`, unit `(x)-[:R]->(m)<-[:R]-(y)` repeated 1..2, default TRAIL
+/// (no edge reused within a path):
+///
+/// - `x = 0`: `m = 2` over `0->2`; `y -> 2` is 0 (that same edge, excluded) or 1 → endpoint 1.
+/// - `x = 1`: mirror of the above → endpoint 0.
+/// - `x = 2`: `m = 3`; the only `y -> 3` is 2 over the edge just used → nothing.
+/// - `x = 3`: no out-edge.
+///
+/// So two paths at one repetition, and neither extends: continuing from endpoint 1 needs `1->2`
+/// and from endpoint 0 needs `0->2`, both already used. **Two.**
+#[test]
+fn a_nested_group_count_is_the_hand_derived_number() {
+    let store = converge_store();
+    assert_eq!(
+        one_num(
+            "MATCH ((x)-[:R]->(m)<-[:R]-(y)){1,2} RETURN count(*) AS c",
+            &store
+        ),
+        2.0
+    );
+}
+
+/// The same fixture under WALK, where an edge may repeat — a different number from the same
+/// traversal, so a sink that ignored the path mode would be caught.
+///
+/// Repetition one: from 0 and from 1, `y` is 0 or 1 (2 each); from 2, `y = 2` (1); from 3,
+/// nothing — **5**. Repetition two continues from each of those endpoints: 0 and 1 give 2 apiece
+/// (four endpoints × 2 = 8) and endpoint 2 gives 1 — **9**. Fourteen in all.
+#[test]
+fn a_nested_group_count_follows_the_path_mode() {
+    let store = converge_store();
+    let walk = one_num(
+        "MATCH WALK ((x)-[:R]->(m)<-[:R]-(y)){1,2} RETURN count(*) AS c",
+        &store,
+    );
+    assert_eq!(walk, 14.0, "WALK admits the repeated edge");
+    let trail = one_num(
+        "MATCH ((x)-[:R]->(m)<-[:R]-(y)){1,2} RETURN count(*) AS c",
+        &store,
+    );
+    assert!(trail < walk, "TRAIL must be stricter: {trail} vs {walk}");
+}
+
+/// The nested counting path must APPLY the per-repetition `WHERE`. As in the `k = 2` case, an
+/// always-true predicate cannot show this — the count is identical whether such a filter runs or
+/// is dropped — so the predicate here prunes every repetition starting at one vertex.
+#[test]
+fn a_nested_group_count_applies_a_selective_per_rep_filter() {
+    let store = dense_store(24, 3);
+    let all = one_num(
+        "MATCH ((x)-[:R]->(m)<-[:R]-(y)){1,2} RETURN count(*) AS c",
+        &store,
+    );
+    let some = one_num(
+        "MATCH ((x)-[:R]->(m)<-[:R]-(y) WHERE x.name <> 'v0'){1,2} RETURN count(*) AS c",
+        &store,
+    );
+    assert!(all > 0.0, "the fixture must fan out");
+    assert!(
+        some < all,
+        "a selective per-rep filter must reduce the count: {some} vs {all}"
+    );
+    assert!(some > 0.0, "and must not prune everything: {some}");
+}
+
+/// Each emitted path must be attributed to ITS OWN input row. A nested group appends the
+/// endpoint beside the columns it gathered from the input, and attributing every path to row 0
+/// leaves the endpoint right and the preserved columns wrong — a plausible-looking answer.
+///
+/// Nothing caught that until this test: the existing nested-group coverage projects the endpoint
+/// or counts, and neither reads a column carried in from BEFORE the group. Naming the source
+/// vertex does, and on this fixture the two rows are mirror images, so the wrong attribution is
+/// visible as a repeated source.
+#[test]
+fn a_nested_group_keeps_each_path_with_its_own_input_row() {
+    let store = converge_store();
+    let out = crate::exec::try_run(
+        &opt_plan(
+            "MATCH (a) ((x)-[:R]->(m)<-[:R]-(y)){1,2} (t) RETURN a.name AS an, t.name AS tn",
+            &store,
+        ),
+        &store,
+    )
+    .unwrap();
+    let mut got: Vec<String> = out.rows.iter().map(|r| format!("{r:?}")).collect();
+    got.sort();
+    assert_eq!(
+        got,
+        vec![
+            "[Str(\"v0\"), Str(\"v1\")]".to_string(),
+            "[Str(\"v1\"), Str(\"v0\")]".to_string(),
+        ],
+        "each path must carry its own source vertex"
+    );
+}
+
 // --- Lineage (path) ---
 
 /// Look up a key in a rich Path object `{vertices, edges, length}` (a `Value::Map`).
