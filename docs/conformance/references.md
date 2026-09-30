@@ -76,6 +76,15 @@ Where they disagree, the feature is not carrying a single conformant form.
 - **Neo4j Cypher** (openCypher) — the largest deployed near-GQL dialect; its
   divergences (`.year` accessor, `relationships()`, `date.truncate()`) mark what
   is _Cypher-only, not GQL_.
+- **PyrrhoDB (Pyrrho V7/V8)** — Malcolm Crowe, University of the West of Scotland.
+  A small OPEN-SOURCE hybrid SQL/GQL server tracking 39075, so it is the one
+  implementation in this list whose source can be read when the docs are silent.
+  Useful precisely because it is not a commercial engine: no marketing layer
+  between the standard and the code. <https://github.com/MalcolmCrowe/ShareableDataStructures>
+  · notes/devlog: <https://pyrrhodb.blogspot.com>
+  Caveat: it carries its own extensions (see `TRUNCATING` in §4) and does not mark
+  them as such, so treat its SYNTAX as vendor-flavoured — the same caution as
+  Ultipa.
 
 ## 4. Academic / semantics
 
@@ -85,6 +94,35 @@ Where they disagree, the feature is not carrying a single conformant form.
   <https://drops.dagstuhl.de/storage/00lipics/lipics-vol255-icdt2023/LIPIcs.ICDT.2023.1/LIPIcs.ICDT.2023.1.pdf>
 - **"GQL and SQL/PGQ: Theoretical Models and Expressive Power."**
   <https://arxiv.org/html/2409.01102>
+- **"Implementing the draft Graph Query Language Standard: The Financial Benchmark"**
+  — Crowe & Laux, DBKDA 2024. <https://arxiv.org/pdf/2407.09566>
+  An implementation report, not a semantics paper. Checked for it and it contains
+  **nothing** on evaluation order, three-valued logic, or error/exception
+  semantics — worth recording so nobody re-reads it hoping for that.
+  What it does contain: a `TRUNCATING` clause for bounding pattern-match search,
+  from the LDBC Financial Benchmark's requirement to cap the edges followed when
+  traversing out of a vertex, with a MANDATORY sort order so results stay
+  deterministic:
+
+  ```
+  TRUNCATING Transfer("timestamp" DESC) = 1000
+  MATCH …
+  ```
+
+  **Not ISO** — verified against the published grammar, whose only `truncat` is
+  `<truncating whitespace>`, a lexical rule. The paper says "we have constructed a
+  syntax for this", so it is a Pyrrho extension; under our convention it would
+  wear the sigil (`_TRUNCATING`).
+
+  Why it is filed here rather than ignored: it is the same problem lenke solves
+  from the opposite end. Our answer to an exploding traversal is a hard limit that
+  REFUSES (`limits.trail` / `limits.intermediate` → `E_RESOURCE_EXHAUSTED`);
+  FinBench's is to DEGRADE deterministically. And its bound lives in the QUERY
+  rather than in store settings, which is the asymmetry behind audit items 60, 62
+  and 63 — a per-store limit made native refuse counts that the TS engine
+  answered, where a bound carried in the query text means the same thing on both
+  engines.
+
 - **GQL standards working group** portal: <https://www.gqlstandards.org/>
 
 ## 5. Adjacent standards (for the non-GQL engines)
@@ -103,9 +141,15 @@ Where they disagree, the feature is not carrying a single conformant form.
 - **Feature-ID status** → Neo4j `supported-optional.adoc` (§2) is the spine of the
   [checklist](./gql-feature-checklist.md).
 - **Function semantics / "is X conformant?"** → Ultipa (§2) for behavior, then
-  cross-checked against Spanner + Fabric (§3). If the three diverge, the feature
-  is implementation-defined and — if we add it — wears the sigil (see
+  cross-checked against Spanner + Fabric + Pyrrho (§3). If they diverge, the
+  feature is implementation-defined and — if we add it — wears the sigil (see
   `docs/design/gql-extensions.md`).
+- **Anything about EVALUATION ORDER or error semantics** → none of these sources
+  answer it. The free BNF gives associativity and nothing more (`AND` is
+  left-recursive, hence left-associative), and the prose that would settle whether
+  operand order is implementation-dependent is behind the paywall. The standard is
+  CHF 227 for 610 pages; audit item 69 is the first question where that has
+  actually blocked a decision.
 - **Pattern-matching edge cases** → the Researcher's Digest (§4).
 - Related engine-internal notes: `docs/design/gql-extensions.md` (the sigil
   convention), the memory `iso-gql-reference`.
