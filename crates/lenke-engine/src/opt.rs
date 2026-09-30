@@ -1989,13 +1989,39 @@ fn prune_or_branches(e: Expr, bounds: &[(usize, String, CompareOp, f64)]) -> Exp
     or_all(disj).unwrap_or(Expr::Lit(crate::value::Value::Bool(false)))
 }
 
-/// Does ANY top-level conjunct of `pred` read only slots `< bound`? The cheap
+/// Can evaluating this expression RAISE, rather than yield a value or NULL?
+///
+/// Conservative and deliberately narrow: arithmetic (a zero divisor, a non-numeric operand), a
+/// function call (the numeric and string guards fault rather than coerce), and a CAST. It does NOT
+/// claim a bare comparison is safe — a cross-type ORDERING faults too — because blocking those from
+/// pushdown would block index seeding, which is the pushdown's whole purpose.
+fn can_raise(e: &Expr) -> bool {
+    match e {
+        Expr::Arith { .. } | Expr::Call { .. } | Expr::Cast { .. } => true,
+        Expr::And(a, b) | Expr::Or(a, b) => can_raise(a) || can_raise(b),
+        Expr::Not(a) => can_raise(a),
+        Expr::Compare { left, right, .. } => can_raise(left) || can_raise(right),
+        Expr::In { needle, haystack } => can_raise(needle) || can_raise(haystack),
+        _ => false,
+    }
+}
+
+/// May this conjunct move BELOW an operator that appends slots `>= bound`?
+///
+/// Two conditions, and they are kept in one place because the second was added later: it must read
+/// only slots below the bound, and it must not be able to RAISE. Splitting the rule across the
+/// precheck and the split itself let a mutation of either survive, since the other still declined.
+fn pushable(e: &Expr, bound: usize) -> bool {
+    refs_below(e, bound) && !can_raise(e)
+}
+
+/// Does ANY top-level conjunct of `pred` read only slots `< bound` and not raise? The cheap
 /// non-consuming precheck [`split_pushable`] needs as a match guard, so an arm that
 /// would push nothing declines and lets a later arm match the same operator.
 fn any_pushable(e: &Expr, bound: usize) -> bool {
     match e {
         Expr::And(a, b) => any_pushable(a, bound) || any_pushable(b, bound),
-        other => refs_below(other, bound),
+        other => pushable(other, bound),
     }
 }
 
@@ -2005,8 +2031,7 @@ fn any_pushable(e: &Expr, bound: usize) -> bool {
 fn split_pushable(pred: Expr, bound: usize) -> (Option<Expr>, Option<Expr>) {
     let mut conj = Vec::new();
     flatten_and(pred, &mut conj);
-    let (below, above): (Vec<Expr>, Vec<Expr>) =
-        conj.into_iter().partition(|c| refs_below(c, bound));
+    let (below, above): (Vec<Expr>, Vec<Expr>) = conj.into_iter().partition(|c| pushable(c, bound));
     (and_all(below), and_all(above))
 }
 

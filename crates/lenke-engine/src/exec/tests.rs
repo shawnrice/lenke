@@ -9265,6 +9265,147 @@ fn a_gremlin_dedup_count_over_a_repeat_is_unchanged() {
     );
 }
 
+// --- Pushing a predicate that can RAISE ---
+
+/// The optimizer's contract is that optimizing must not change the answer, and a predicate that can
+/// THROW breaks it in a way no row comparison can express: the per-conjunct pushdown moves a filter
+/// BELOW a hop, where it is evaluated on rows the hop would have eliminated.
+///
+/// Three vertices, and only the third divides by zero — and the third has no outgoing `:E` edge, so
+/// the hop removes it. Before the guard: `raw = 2 rows`, `optimized = ERR division by zero`. An
+/// answer turned into an error by optimizing it.
+///
+/// `rewrite_fuzz` could not catch this: it compares row MULTISETS over generated predicates that
+/// never raise. Found instead by a random differential-fuzz seed, as a disagreement with the TS
+/// engine, which does not push.
+fn raising_pred_store() -> Store {
+    let mut b = Builder::default();
+    b.node(
+        &["T"],
+        &[
+            ("x", Value::Num(-1.0)),
+            ("n", Value::Num(3.0)),
+            ("t", Value::Num(1.0)),
+        ],
+    );
+    b.node(
+        &["T"],
+        &[
+            ("x", Value::Num(4.0)),
+            ("n", Value::Num(7.0)),
+            ("t", Value::Num(2.0)),
+        ],
+    );
+    // The vertex the hop ELIMINATES, and the only one that makes a predicate fault: `x` is zero
+    // (so `%` divides by zero) and `t` is a string (so an arithmetic operand, a numeric function
+    // argument and a numeric CAST all fault on it). Each guarded expression kind needs its own
+    // raiser, because most of them do NOT fault on a number: `2 / 0` is infinity, `sqrt(0)` is 0,
+    // and casting a number to a string always works. Testing them on numbers asserts nothing.
+    b.node(
+        &["T"],
+        &[
+            ("x", Value::Num(0.0)),
+            ("n", Value::Num(11.0)),
+            ("t", Value::Str("str".into())),
+        ],
+    );
+    b.edge(0, 1, "E");
+    b.edge(1, 0, "E");
+    b.edge(2, 0, "F"); // no :E out-edge, so the hop removes this row
+    b.build()
+}
+
+#[test]
+fn optimizing_does_not_push_a_predicate_that_can_raise() {
+    let store = raising_pred_store();
+    let both = |q: &str| -> (String, String) {
+        let raw = crate::gql::parse(q).unwrap();
+        let opt = crate::opt::optimize_indexed(raw.clone(), &store);
+        let fmt = |r: Result<crate::exec::Rows, String>| match r {
+            Ok(o) => format!("{} rows", o.rows.len()),
+            Err(e) => format!("ERR {}", e.chars().take(20).collect::<String>()),
+        };
+        (
+            fmt(crate::exec::try_run(&raw, &store)),
+            fmt(crate::exec::try_run(&opt, &store)),
+        )
+    };
+    let (raw, opt) = both("MATCH (n:T)-[:E]->(m) WHERE ((2 % n.x) IS NOT TRUE) RETURN m.n AS x");
+    assert_eq!(raw, "2 rows", "the unoptimized plan answers");
+    assert_eq!(opt, raw, "optimizing must not turn an answer into an error");
+
+    // One per guarded expression kind, each with an operand that actually faults on the
+    // eliminated vertex — verified by the `_still_raises_when_it_is_reached` test below, which
+    // runs the same predicates where every row reaches them.
+    for pred in [
+        "((n.t + 1) > 0)",            // Arith on a string
+        "(sqrt(n.t) >= 0)",           // Call with a string argument
+        "(CAST(n.t AS INTEGER) > 0)", // Cast of a non-numeric string
+    ] {
+        let (raw, opt) = both(&format!(
+            "MATCH (n:T)-[:E]->(m) WHERE {pred} RETURN m.n AS x"
+        ));
+        assert_eq!(raw, "2 rows", "the unoptimized plan answers for {pred}");
+        assert_eq!(opt, raw, "optimizing changed the answer for {pred}");
+    }
+}
+
+/// And the guard must NOT block ordinary pushdown, which is what index seeding is built on. A plain
+/// comparison against a literal still moves below the hop — asserted on the PLAN, because a pure
+/// optimization that stops firing changes no answer.
+///
+/// Deliberately not claiming a comparison cannot raise: a cross-type ORDERING does raise, and
+/// blocking those would block seeding. That residue is recorded rather than fixed.
+#[test]
+fn an_ordinary_comparison_is_still_pushed_below_a_hop() {
+    let store = raising_pred_store();
+    let plan = opt_plan(
+        "MATCH (n:T)-[:E]->(m) WHERE n.x > 0 RETURN m.n AS x",
+        &store,
+    );
+    let text = format!("{plan:?}");
+    let expand_at = text.find("Expand").expect("the hop is in the plan");
+    let filter_at = text.find("Filter").expect("the filter survives");
+    assert!(
+        filter_at > expand_at,
+        "a non-raising comparison must still sit BELOW the hop (deeper in the debug tree): {text}"
+    );
+}
+
+/// A raising predicate still RAISES when every row reaches it — the guard changes WHERE a filter
+/// runs, never whether it faults.
+#[test]
+fn a_raising_predicate_still_raises_when_it_is_reached() {
+    let store = raising_pred_store();
+    let err = try_gql(
+        "MATCH (n:T) WHERE ((2 % n.x) IS NOT TRUE) RETURN n.n AS x",
+        &store,
+    )
+    .expect_err("every row is evaluated, including the zero divisor");
+    assert!(err.contains("division by zero"), "{err}");
+    // And an inline predicate on the hop's SOURCE is evaluated before the hop by construction, so
+    // it raises there too — that spelling is not a pushdown and is not affected.
+    let err = try_gql(
+        "MATCH (n:T WHERE ((2 % n.x) IS NOT TRUE))-[:E]->(m) RETURN m.n AS x",
+        &store,
+    )
+    .expect_err("an inline source predicate runs before the hop");
+    assert!(err.contains("division by zero"), "{err}");
+
+    // And each guarded kind really does fault on this fixture when every row reaches it — without
+    // this the cases above would be asserting that two non-faulting plans agree.
+    for pred in [
+        "((n.t + 1) > 0)",
+        "(sqrt(n.t) >= 0)",
+        "(CAST(n.t AS INTEGER) > 0)",
+    ] {
+        assert!(
+            try_gql(&format!("MATCH (n:T) WHERE {pred} RETURN n.n AS x"), &store).is_err(),
+            "{pred} must fault when the string-valued vertex is evaluated"
+        );
+    }
+}
+
 // --- Lineage (path) ---
 
 /// Look up a key in a rich Path object `{vertices, edges, length}` (a `Value::Map`).
