@@ -507,6 +507,54 @@ const genCall = (r: () => number): string => {
 
 // A full query. Every ORDER BY ends with the distinct `n.n` so the row order is
 // total — an unordered tie is unspecified, not a divergence.
+/// A BOOLEAN-typed expression, for a PREDICATE position.
+///
+/// `genExpr` is type-agnostic, so in a `WHERE` / `FILTER` / inline-`(n WHERE …)` position it
+/// mostly produces something non-boolean, which both engines reject at parse (the static
+/// boolean-context check). Measured per generator arm: those three arms errored about 75% of the
+/// time and returned actual ROWS only 2-7% of the time, so they were comparing error codes far
+/// more than they were comparing predicate evaluation over data. A comparison here can still
+/// error — a cross-type `<=` is a data exception by policy — so the error path stays covered,
+/// and the callers keep a share of raw `genExpr` deliberately so the boolean-context rejection
+/// itself does not lose coverage.
+const genPred = (r: () => number, depth: number): string => {
+  const p = r();
+
+  // A ROW-DEPENDENT, TYPE-CONSISTENT comparison. Both halves matter. Row-dependent, because
+  // a predicate over constants is all-or-nothing and tells the oracle almost nothing about
+  // predicate evaluation; type-consistent, because a cross-type comparison is a data exception
+  // by policy, so mixing types spends the sample on the error path instead.
+  if (depth <= 0 || p < 0.5) {
+    const op = pick(r, CMP);
+
+    return pick(r, [
+      `(n.n ${op} ${pick(r, ['3', '5', '7', '0', '4.5', '-1'])})`,
+      `(n.x ${op} ${pick(r, ['-1', '2', '4', '0'])})`,
+      `(n.n ${op} n.x)`,
+      `(n.s ${op} ${pick(r, ["'a'", "'m'", "'z'", "'q'"])})`,
+      `(n.m.k ${op} ${pick(r, ['1', '2', '3'])})`,
+    ]);
+  }
+
+  if (p < 0.62) {
+    return `(${genExpr(r, 1)} ${pick(r, CMP)} ${genExpr(r, 1)})`;
+  }
+
+  if (p < 0.7) {
+    return `(${genExpr(r, 1)} ${pick(r, IS_TESTS)})`;
+  }
+
+  if (p < 0.78) {
+    return `NOT ${genPred(r, depth - 1)}`;
+  }
+
+  if (p < 0.9) {
+    return `(${genPred(r, depth - 1)} AND ${genPred(r, depth - 1)})`;
+  }
+
+  return `(${genPred(r, depth - 1)} OR ${genPred(r, depth - 1)})`;
+};
+
 const genQuery = (r: () => number): string => {
   const p = r();
 
@@ -546,7 +594,9 @@ const genQuery = (r: () => number): string => {
   }
 
   if (p < 0.48) {
-    return `MATCH (n:T) WHERE ${genExpr(r, 2)} RETURN n.n AS x ORDER BY x`;
+    const pred = r() < 0.75 ? genPred(r, 2) : genExpr(r, 2);
+
+    return `MATCH (n:T) WHERE ${pred} RETURN n.n AS x ORDER BY x`;
   }
 
   if (p < 0.54) {
@@ -558,7 +608,9 @@ const genQuery = (r: () => number): string => {
   }
 
   if (p < 0.64) {
-    return `MATCH (n:T) FILTER ${genExpr(r, 2)} RETURN n.n AS x ORDER BY x`;
+    const pred = r() < 0.75 ? genPred(r, 2) : genExpr(r, 2);
+
+    return `MATCH (n:T) FILTER ${pred} RETURN n.n AS x ORDER BY x`;
   }
 
   if (p < 0.68) {
@@ -629,7 +681,7 @@ const genQuery = (r: () => number): string => {
   // engines (the static boolean-context check — or lands in the accepted
   // E_INVALID_VALUE-vs-empty residual), a boolean one must agree to the bit.
   if (p < 0.84) {
-    const pred = genExpr(r, 2);
+    const pred = r() < 0.75 ? genPred(r, 2) : genExpr(r, 2);
 
     return pick(r, [
       // A continuing MATCH's start variable (re-referencing the bound `n`).
@@ -748,6 +800,14 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
     // so a wrong answer over it agreed with a wrong answer trivially (item 51).
     let perRepGenerated = 0;
     let perRepNonEmpty = 0;
+    // The same GENERATION-IS-NOT-COVERAGE guard for PREDICATE arms. `genExpr` is
+    // type-agnostic, so a `WHERE` / `FILTER` / inline-`(n WHERE …)` position used to be filled
+    // with something non-boolean about 75% of the time and both engines rejected it at parse.
+    // Measured per arm before `genPred` existed: 4-7% of those queries returned ROWS. After:
+    // 46-49%. The floor keeps a future generator change from quietly returning them to
+    // comparing error codes instead of predicate evaluation over data.
+    let predGenerated = 0;
+    let predRows = 0;
 
     for (let i = 0; i < ITERATIONS; i++) {
       const q = genQuery(mulberry32(caseSeed(SEED, i)));
@@ -757,6 +817,14 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       // `((x)` identifies a quantified subpath group (only two arms emit it, and only this
       // one adds a `WHERE`). Matching a bare `) WHERE` instead over-counts by a factor of
       // four, since an ordinary `MATCH (n:T) WHERE …` looks the same.
+      if (q.includes(' WHERE ') || q.includes(' FILTER ')) {
+        predGenerated++;
+
+        if (ts.ok && ts.json !== '[]') {
+          predRows++;
+        }
+      }
+
       if (q.includes('((x)') && q.includes(' WHERE ')) {
         perRepGenerated++;
 
@@ -823,10 +891,20 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
     // supposed to cover, which is invisible from the outside because a suite that never
     // generates a shape passes exactly like one that does. The non-empty floor is the one
     // that matters most — generating a query that matches nothing compares nothing.
+    console.log(
+      `PRED generated=${predGenerated} rows=${predRows} perRep=${perRepGenerated}/${perRepNonEmpty}`,
+    );
     expect({
       perRepGenerated: perRepGenerated > 350,
       perRepNonEmpty: perRepNonEmpty > 175,
-    }).toEqual({ perRepGenerated: true, perRepNonEmpty: true });
+      predGenerated: predGenerated > 2_000,
+      predRows: predRows > 1_000,
+    }).toEqual({
+      perRepGenerated: true,
+      perRepNonEmpty: true,
+      predGenerated: true,
+      predRows: true,
+    });
     // 20 000 queries × two engines is well under a second locally but exceeds Bun's default
     // 5 s test timeout on the slower CI runners (~5.5–6 s) — give this heavy differential fuzz
     // a generous ceiling so it is not a wall-clock flake rather than trimming its coverage.
