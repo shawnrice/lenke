@@ -1231,6 +1231,56 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
                     // A non-`Num` arg (nulls / mixed) falls through to the boxed path.
                 }
             }
+            // `size`/`cardinality` over a BOXED column, read by REFERENCE. The generic
+            // path below materializes each argument with `Col::value_at`, and
+            // `Col::Gen(v) => v[i].clone()` on a `Value::List(Vec<Value>)` DEEP-COPIES the
+            // whole list — allocating a fresh `Vec`, copying every element, reading `len()`,
+            // then dropping it. Measured on a quantified group's per-rep lists, 599,998 rows:
+            // 44.1ms, about 73ns a call, to read a length.
+            //
+            // The arms below must match `call_scalar_checked` EXACTLY, including that a
+            // non-null non-string non-list is an ERROR and not a null: `size()` on one throws
+            // `E_INVALID_VALUE: size() requires a string or list`. Returning null there would
+            // be a silent behaviour change that no perf test would notice.
+            if matches!(name.as_str(), "size" | "cardinality") && args.len() == 1 {
+                // BORROW the column when the argument is a bare slot. `eval` on an
+                // `Expr::Slot` is `batch.slot(n).clone()`, and cloning a `Col::Gen` of
+                // `Value::List` is one `Vec` allocation and copy PER ROW — so evaluating the
+                // argument at all cost more than the function does. (That clone is on the
+                // path of every function over a boxed column, not just this one.)
+                let owned;
+                let arg: &Col = if let Expr::Slot(k) = &args[0] {
+                    batch.slot(*k)
+                } else {
+                    owned = eval(&args[0], store, batch)?;
+                    &owned
+                };
+                if let Col::Gen(vals) = arg {
+                    // LISTS and nulls only. Anything else in the column — a string boxed into
+                    // a `Gen`, or a value that must raise `E_INVALID_VALUE` — falls through to
+                    // the generic path, which stays the single implementation of those cases.
+                    // Duplicating them here bought two arms that no query shape reached:
+                    // mutating the string length to count BYTES, and turning the type error
+                    // into a null, both survived the whole suite. The pre-scan is a
+                    // discriminant check per row with no allocation, against the ~42ns a row
+                    // the clone costs.
+                    if vals
+                        .iter()
+                        .all(|v| matches!(v, Value::List(_)) || v.is_null())
+                    {
+                        let out: Vec<Value> = vals
+                            .iter()
+                            .map(|v| match v {
+                                Value::List(l) => Value::Num(l.len() as f64),
+                                _ => Value::Null,
+                            })
+                            .collect();
+                        return Ok(Col::Gen(out));
+                    }
+                }
+                // Any other column kind falls through too: a `Col::Str` clones a cheap
+                // `Arc<str>`, so the generic path costs it nothing.
+            }
             // Evaluate each argument to a column, then dispatch per row. Arity is
             // validated at parse time, so `call_scalar` can index its args. The row
             // count is the BATCH's, not the min over args — a niladic function

@@ -6946,6 +6946,130 @@ fn a_distinct_above_a_group_keeps_its_lists() {
     }
 }
 
+// --- size()/cardinality() over a boxed column ---
+
+/// `size()` on a group's per-rep LIST, which is the shape that goes through the by-reference
+/// arm: the column is `Col::Gen` of `Value::List`. The generic path materialized each argument
+/// with `Col::value_at`, and `Col::Gen(v) => v[i].clone()` deep-copies the whole list to read
+/// its length — 44.1ms over 599,998 rows, about 73ns a call.
+#[test]
+fn size_of_a_group_list_is_its_length() {
+    let store = chain_store(6);
+    let plan = opt_plan("MATCH ((a)-[:R]->(b)){1,2} RETURN size(b) AS k", &store);
+    let mut got: Vec<f64> = crate::exec::try_run(&plan, &store)
+        .unwrap()
+        .rows
+        .iter()
+        .map(|r| match r[0] {
+            Value::Num(x) => x,
+            ref o => panic!("{o:?}"),
+        })
+        .collect();
+    got.sort_by(f64::total_cmp);
+    // A 6-node chain: 5 one-rep walks (list of 1) and 4 two-rep walks (list of 2).
+    assert_eq!(got, vec![1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0]);
+}
+
+/// `cardinality` is the ISO alias and shares the implementation, so it must take the same arm
+/// and give the same answer — a fast path added for one name only would silently leave the
+/// other on the slow route.
+#[test]
+fn cardinality_of_a_list_matches_size() {
+    let store = chain_store(6);
+    let nums = |q: &str| -> Vec<f64> {
+        let mut v: Vec<f64> = crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .iter()
+            .map(|r| match r[0] {
+                Value::Num(x) => x,
+                ref o => panic!("{o:?}"),
+            })
+            .collect();
+        v.sort_by(f64::total_cmp);
+        v
+    };
+    assert_eq!(
+        nums("MATCH ((a)-[:R]->(b)){1,2} RETURN size(b) AS k"),
+        nums("MATCH ((a)-[:R]->(b)){1,2} RETURN cardinality(b) AS k"),
+    );
+}
+
+/// `size()` of a NUMBER stays a type error, not a null. The by-reference arm has to reproduce
+/// `call_scalar_checked`'s behaviour here, and returning null instead would be a silent
+/// semantic change that no performance test could notice.
+///
+/// Note this particular spelling reaches the arm through the GENERIC path — a `Prop` argument
+/// evaluates to a `Col::Num`, which the fast path declines — so it guards that the fast path
+/// did not divert it, rather than the fast path's own error arm. Constructing a `Col::Gen`
+/// holding a non-null non-string non-list takes a mixed branch frontier, and no query shape
+/// here produces one, so that arm is defensive and stays untested.
+#[test]
+fn size_of_a_number_is_still_a_type_error() {
+    let store = chain_store(6);
+    let plan = opt_plan("MATCH (x:N) RETURN size(x.name) AS k", &store);
+    // A string IS valid for size(), so that one must succeed …
+    assert!(crate::exec::try_run(&plan, &store).is_ok());
+    // … while a number must not.
+    let bad = crate::gql::parse("MATCH (x:N) RETURN size(1 + 1) AS k").unwrap();
+    let err = crate::exec::try_run(&crate::opt::optimize_indexed(bad, &store), &store)
+        .expect_err("size() of a number is a data exception");
+    assert!(err.starts_with("E_INVALID_VALUE"), "{err}");
+    assert!(err.contains("string or list"), "{err}");
+}
+
+/// A BOXED column of strings must not take the lists-only fast path. A `CASE` yields
+/// `Col::Gen` of `Value::Str`, which is exactly the shape that reaches the pre-scan and must be
+/// turned away — without the pre-scan the arm maps every non-list to null, so these would come
+/// back NULL instead of 2 and 3. That is the mutation this test exists for.
+#[test]
+fn a_boxed_column_of_strings_still_gets_its_string_length() {
+    let store = chain_store(3);
+    let q = "MATCH (x:N) RETURN size(CASE WHEN x.name = 'v0' THEN 'ab' ELSE 'cde' END) AS k";
+    match crate::gql::parse(q) {
+        Ok(raw) => {
+            let plan = crate::opt::optimize_indexed(raw, &store);
+            let mut got: Vec<String> = crate::exec::try_run(&plan, &store)
+                .unwrap()
+                .rows
+                .iter()
+                .map(|r| format!("{:?}", r[0]))
+                .collect();
+            got.sort();
+            assert_eq!(
+                got,
+                vec!["Num(2.0)", "Num(3.0)", "Num(3.0)"],
+                "a boxed string column must still measure its strings, not return null"
+            );
+        }
+        Err(e) => panic!("the CASE spelling is needed to reach the pre-scan: {e}"),
+    }
+}
+
+/// A string's size is its length in UTF-16 units, and the by-reference arm must use the same
+/// counting as the generic one — a plain `str::len` would differ on any non-ASCII text.
+#[test]
+fn size_of_a_string_counts_utf16_units() {
+    let mut b = Builder::default();
+    // A 2-unit BMP char, then a NON-BMP char that is a surrogate PAIR (2 UTF-16 units, 4 bytes).
+    b.node(&["N"], &[("name", s("ab"))]);
+    b.node(&["N"], &[("name", s("\u{1F600}"))]);
+    let store = b.build();
+    let plan = opt_plan("MATCH (x:N) RETURN size(x.name) AS k", &store);
+    let mut got: Vec<f64> = crate::exec::try_run(&plan, &store)
+        .unwrap()
+        .rows
+        .iter()
+        .map(|r| match r[0] {
+            Value::Num(x) => x,
+            ref o => panic!("{o:?}"),
+        })
+        .collect();
+    got.sort_by(f64::total_cmp);
+    // Both are 2 UTF-16 units; the emoji is 4 BYTES, so a byte count would say 4.
+    assert_eq!(got, vec![2.0, 2.0]);
+}
+
 // --- Lineage (path) ---
 
 /// Look up a key in a rich Path object `{vertices, edges, length}` (a `Value::Map`).
