@@ -581,7 +581,12 @@ fn fixture_shaped(seed: u64, shape: Shape) -> Store {
         // absent, so a predicate over it is three-valued and a seek has to agree with a scan
         // about the missing rows; `tag` is the string key an equality seek is for, at a
         // cardinality the shape chooses so `dict_encode` can be pushed either way.
-        let tag = format!("t{}", i % shape.tag_distinct.max(1));
+        let tag = match i % 17 {
+            0 => "\u{1F600}\u{1F600}".to_string(), // surrogate pairs: 4 UTF-16 units, 8 bytes
+            1 => String::new(),
+            2 => "z".repeat(300), // long enough to cross any short-string threshold
+            _ => format!("t{}", i % shape.tag_distinct.max(1)),
+        };
         let mut props: Vec<(&str, Value)> = vec![
             ("name", Value::Str(format!("n{i}").into())),
             ("score", Value::Num(zz_score(i))),
