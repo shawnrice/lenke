@@ -408,6 +408,14 @@ fn plan_out_width(p: &Plan) -> Option<usize> {
         Plan::VarLength { input, .. } | Plan::ShortestPath { input, .. } => {
             plan_out_width(input)? + 1
         }
+        // A quantified group appends the endpoint plus one LIST column per bound inner
+        // variable.
+        Plan::RepeatGroup {
+            input, group_binds, ..
+        } => plan_out_width(input)? + 1 + group_binds.len(),
+        Plan::NestedGroup {
+            input, bind_slots, ..
+        } => plan_out_width(input)? + 1 + bind_slots.len(),
         Plan::Filter { input, .. }
         | Plan::OrderPage { input, .. }
         | Plan::Distinct { input }
@@ -440,6 +448,19 @@ fn slot_is_node(p: &Plan, slot: usize) -> bool {
                 _ => slot_is_node(input, slot),
             }
         }
+        // A quantified group's endpoint is a node, and it carries the slot explicitly. The
+        // trailing bind slots are LIST columns, so they fall through to the input, which does
+        // not claim a slot beyond its own width.
+        Plan::RepeatGroup {
+            input,
+            endpoint_slot,
+            ..
+        }
+        | Plan::NestedGroup {
+            input,
+            endpoint_slot,
+            ..
+        } => slot == *endpoint_slot || slot_is_node(input, slot),
         Plan::Filter { input, .. }
         | Plan::OrderPage { input, .. }
         | Plan::Distinct { input }

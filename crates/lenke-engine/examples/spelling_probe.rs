@@ -137,6 +137,33 @@ fn main() {
             ],
         ),
         (
+            // An endpoint LABEL on a quantified group. GQL emits `'Person' IN labels(t)` for
+            // `(t:Person)`, and the optimizer canonicalizes that to `IsLabeled` — but only for a
+            // slot it can PROVE holds a node, and it knew nothing about a group's endpoint, so
+            // the inline spelling ran the boxed evaluator and built a label list per row. On
+            // 50,000 vertices, degree 3, a `{1,2}` group: 89,017us -> 12,890us, 6.9x. A ONE-
+            // repetition group here because `{1,2}` over this 100,000-vertex fixture is past the
+            // trail budget; the shapes that need the bigger fixture are bench rows instead.
+            //
+            // This group could NOT have FOUND that bug, and it is worth being clear about why:
+            // before the fix both spellings lowered to the same boxed `In`-over-`Call`, so the
+            // probe read "identical plan, identical exec" at 75ms just as it now does at 9.6ms.
+            // A canonicalization that fails UNIFORMLY is invisible to an equivalence check. The
+            // guard for the absolute cost is the bench pair (`group count :label` against
+            // `group count .prop`, two different predicates over one shape, where the GAP is the
+            // signal); this group's job is the narrower invariant that the two LABEL spellings
+            // never diverge from each other.
+            "endpoint label on a group (inline vs IN labels())",
+            &[
+                (Gql, "MATCH ((a)-[:KNOWS]->(b)){1,1} (t:Person) RETURN count(*) AS c"),
+                (
+                    Gql,
+                    "MATCH ((a)-[:KNOWS]->(b)){1,1} (t) WHERE 'Person' IN labels(t) \
+                     RETURN count(*) AS c",
+                ),
+            ],
+        ),
+        (
             "IN list vs OR chain",
             &[
                 (Gql, "MATCH (n:Person) WHERE n.dept IN ['eng', 'sales'] RETURN count(*) AS c"),

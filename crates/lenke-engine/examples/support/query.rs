@@ -312,6 +312,43 @@ pub fn run(cfg: &Cfg) {
                     "repeat-group count",
                     "MATCH ((a)-[:KNOWS]->(b)){1,2} RETURN count(*) AS c",
                 ),
+                // The SAME counts with a LABEL on the group's endpoint — the shape a user
+                // actually writes, and the shape that showed `(t:Label)` was not reaching the
+                // label fast path. GQL emits `'Label' IN labels(slot)` for it and the optimizer
+                // canonicalizes that to `IsLabeled`, but only for a slot it can PROVE holds a
+                // node, and it knew nothing about a quantified group's endpoint. So the test ran
+                // the boxed evaluator, building a label list per row: 89,017us -> 12,890us here
+                // (6.9x) and 1,341,788us -> 899,127us on the nested form (1.49x).
+                //
+                // The pair below is the guard, and it is a PAIR on purpose: the property
+                // spelling of the same endpoint filter was always on the typed vectorized path,
+                // so the gap between the two rows WAS the bug. They now cost the same, and a
+                // return to ~89,000us on the label row means the canonicalization stopped
+                // firing.
+                (
+                    "group count :label",
+                    "MATCH ((a)-[:KNOWS]->(b)){1,2} (t:Person) RETURN count(*) AS c",
+                ),
+                (
+                    "group count .prop",
+                    "MATCH ((a)-[:KNOWS]->(b)){1,2} (t) WHERE t.age < 10 RETURN count(*) AS c",
+                ),
+                (
+                    "nested count :label",
+                    "MATCH ((x)-[:KNOWS]->(m)<-[:KNOWS]-(y)){1,2} (t:Person) RETURN count(*) AS c",
+                ),
+                // An ERROR row on purpose, like `unbounded (guarded)` above. The endpoint filter
+                // sits ABOVE the group, so `try_group_count` declines and the count goes back on
+                // the materializing walk — past the trail budget it refuses outright. A label
+                // that excludes NOTHING (every vertex here is a Person) turns an answer into a
+                // refusal, and the TS engine answers it: measured on one 12,000-vertex graph,
+                // 1,075,835 rows, TS 1,698ms vs native E_RESOURCE_EXHAUSTED, where the same
+                // count WITHOUT the label is native 13ms against TS 1,609ms. A TIME here rather
+                // than an error is the signal that the sink learned the endpoint predicate.
+                (
+                    "k2 count :label (open)",
+                    "MATCH ((x)-[:KNOWS]->(m)-[:KNOWS]->(y)){1,2} (t:Person) RETURN count(*) AS c",
+                ),
                 (
                     "varlen count",
                     "MATCH (x:Person)-[:KNOWS]->{1,2}(y) RETURN count(*) AS c",

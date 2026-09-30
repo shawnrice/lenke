@@ -7954,6 +7954,198 @@ fn a_nested_group_keeps_each_path_with_its_own_input_row() {
     );
 }
 
+// --- A label test on a quantified group's endpoint ---
+
+/// The predicate of the topmost `Filter` in a plan, as debug text.
+fn top_filter_pred(p: &Plan) -> Option<String> {
+    match p {
+        Plan::Filter { pred, .. } => Some(format!("{pred:?}")),
+        Plan::Project { input, .. }
+        | Plan::Aggregate { input, .. }
+        | Plan::Distinct { input }
+        | Plan::OrderPage { input, .. } => top_filter_pred(input),
+        _ => None,
+    }
+}
+
+/// `(t:Label)` on a group's endpoint emits `'Label' IN labels(slot)`, and `normalize_pred`
+/// canonicalizes that to `IsLabeled` — but only for a slot it can PROVE holds a node, and it
+/// knew nothing about a quantified group. So the label test stayed in its boxed `In`-over-`Call`
+/// form and ran the general evaluator, building a label list per row.
+///
+/// Measured on 50,000 vertices, degree 3, `((a)-[:KNOWS]->(b)){1,2} (t:Person) RETURN count(*)`:
+/// **89,017us -> 12,890us, 6.9x**, which brings it level with the property spelling of the same
+/// filter (`WHERE t.age < 10`, 11,465us) — that spelling was always on the typed vectorized path,
+/// and the gap between the two WAS the bug.
+#[test]
+fn a_label_on_a_repeat_group_endpoint_canonicalizes_to_is_labeled() {
+    let store = dense_store(24, 3);
+    let pred = top_filter_pred(&opt_plan(
+        "MATCH ((a)-[:R]->(b)){1,2} (t:N) RETURN count(*) AS c",
+        &store,
+    ))
+    .expect("the endpoint label is a filter above the group");
+    assert!(
+        pred.starts_with("IsLabeled"),
+        "an endpoint label must canonicalize: {pred}"
+    );
+}
+
+/// The same for a NESTED group (a unit with mixed hop directions), which `slot_is_node` did not
+/// know either. Measured: 1,341,788us -> 899,127us, 1.49x — smaller because that shape still
+/// materializes a row per emitted path, which is the separate lead.
+#[test]
+fn a_label_on_a_nested_group_endpoint_canonicalizes_to_is_labeled() {
+    let store = dense_store(24, 3);
+    let pred = top_filter_pred(&opt_plan(
+        "MATCH ((x)-[:R]->(m)<-[:R]-(y)){1,2} (t:N) RETURN count(*) AS c",
+        &store,
+    ))
+    .expect("the endpoint label is a filter above the group");
+    assert!(
+        pred.starts_with("IsLabeled"),
+        "an endpoint label must canonicalize: {pred}"
+    );
+}
+
+/// The precision that matters: a group binds its INNER variables as LIST columns, and only the
+/// endpoint is a node. `labels(<a list>)` is null, so `'N' IN labels(b)` matches nothing —
+/// whereas `IsLabeled` would ask the store about a node id, which a list column does not hold.
+/// Claiming every appended slot rather than the endpoint alone would rewrite this one.
+#[test]
+fn a_label_test_on_a_group_bind_list_is_not_canonicalized() {
+    let store = dense_store(24, 3);
+    let q = "MATCH ((a)-[:R]->(b)){1,2} (t) WHERE 'N' IN labels(b) RETURN count(*) AS c";
+    let plan = opt_plan(q, &store);
+    if let Some(pred) = top_filter_pred(&plan) {
+        assert!(
+            !pred.starts_with("IsLabeled"),
+            "a bound LIST is not a node: {pred}"
+        );
+    }
+    // And the answer is unchanged by the rewrite not firing: the list has no labels.
+    assert_eq!(
+        one_num(q, &store),
+        0.0,
+        "labels() of a list is null, so nothing matches"
+    );
+}
+
+/// The equivalent-spelling property, as an assertion rather than a hope: `(t:N)` and
+/// `WHERE 'N' IN labels(t)` mean the same thing, so after optimizing they must BE the same plan —
+/// which is what makes them cost the same. This is the test that fails if `slot_is_node` stops
+/// recognizing a group endpoint, and it fails on the plan rather than on a timing.
+#[test]
+fn the_two_spellings_of_an_endpoint_label_optimize_to_one_plan() {
+    let store = dense_store(24, 3);
+    for unit in [
+        "((a)-[:R]->(b)){1,2}",
+        // `{1,1}` too, because that is the form `spelling_probe` uses (a `{1,2}` group over its
+        // 100,000-vertex fixture is past the trail budget), and a one-repetition group takes a
+        // different lowering route.
+        "((a)-[:R]->(b)){1,1}",
+        "((x)-[:R]->(m)<-[:R]-(y)){1,2}",
+        "((x)-[:R]->(m)-[:R]->(y)){1,2}",
+    ] {
+        let inline = format!("MATCH {unit} (t:N) RETURN count(*) AS c");
+        let spelled = format!("MATCH {unit} (t) WHERE 'N' IN labels(t) RETURN count(*) AS c");
+        assert_eq!(
+            format!("{:?}", opt_plan(&inline, &store)),
+            format!("{:?}", opt_plan(&spelled, &store)),
+            "two spellings of one endpoint label optimized differently over {unit}"
+        );
+        let n = one_num(&inline, &store);
+        assert!(n > 0.0, "the fixture must match something over {unit}");
+        assert_eq!(n, one_num(&spelled, &store));
+    }
+}
+
+/// The other half of teaching the optimizer about a group: a plan node ABOVE one finds its own
+/// appended endpoint by the width of its input, so `plan_out_width` has to count a group's
+/// endpoint AND its bind columns. Understating the width by the binds makes the hop above it look
+/// for its endpoint at the wrong slot, and the label test there silently stays in its boxed form.
+///
+/// A mutation that dropped `group_binds.len()` from the width survived every other test here, so
+/// this one asserts the SLOT NUMBER rather than just the node kind — a width wrong in either
+/// direction names a different slot.
+#[test]
+fn a_label_on_a_hop_above_a_group_finds_the_right_slot() {
+    let store = dense_store(24, 3);
+    // `size(b)` reads the group's bound list, so the unread-bindings rewrite keeps it and the
+    // width genuinely includes a bind column.
+    let plan = opt_plan(
+        "MATCH ((a)-[:R]->(b)){1,2} (t)-[:R]->(u:N) RETURN size(b) AS k, u.name AS n",
+        &store,
+    );
+    let pred = top_filter_pred(&plan).expect("the hop endpoint label is a filter");
+    // Scan(1) + group endpoint(1) + the two bind lists for `a` and `b` = width 4, so the hop
+    // appends its endpoint at slot 4.
+    assert_eq!(
+        pred, "IsLabeled { slot: 4, labels: [\"N\"] }",
+        "the label above the group must canonicalize at the hop's endpoint slot"
+    );
+    // And the slot is the RIGHT one, not merely a node-shaped guess: the answer has to match the
+    // spelling that never needed the rewrite. A width off by the bind columns names a different
+    // slot, and testing the label of the wrong column is a wrong answer, not a slow one.
+    let rows = |q: &str| -> Vec<String> {
+        let mut r: Vec<String> = crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .iter()
+            .map(|row| format!("{row:?}"))
+            .collect();
+        r.sort();
+        r
+    };
+    let inline =
+        rows("MATCH ((a)-[:R]->(b)){1,2} (t)-[:R]->(u:N) RETURN size(b) AS k, u.name AS n");
+    assert!(!inline.is_empty(), "the fixture must match something");
+    assert_eq!(
+        inline,
+        rows(
+            "MATCH ((a)-[:R]->(b)){1,2} (t)-[:R]->(u) WHERE 'N' IN labels(u) \
+             RETURN size(b) AS k, u.name AS n"
+        )
+    );
+}
+
+/// The same for a NESTED group's width, which has its own arm and its own mutant: dropping
+/// `bind_slots.len()` from it survived every test above, including the RepeatGroup width one.
+#[test]
+fn a_label_on_a_hop_above_a_nested_group_finds_the_right_slot() {
+    let store = dense_store(24, 3);
+    let plan = opt_plan(
+        "MATCH ((x)-[:R]->(m)<-[:R]-(y)){1,2} (t)-[:R]->(u:N) RETURN size(m) AS k, u.name AS n",
+        &store,
+    );
+    let pred = top_filter_pred(&plan).expect("the hop endpoint label is a filter");
+    assert_eq!(
+        pred, "IsLabeled { slot: 5, labels: [\"N\"] }",
+        "a nested group's width must count its bind lists too"
+    );
+    let rows = |q: &str| -> Vec<String> {
+        let mut r: Vec<String> = crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .iter()
+            .map(|row| format!("{row:?}"))
+            .collect();
+        r.sort();
+        r
+    };
+    let inline = rows(
+        "MATCH ((x)-[:R]->(m)<-[:R]-(y)){1,2} (t)-[:R]->(u:N) RETURN size(m) AS k, u.name AS n",
+    );
+    assert!(!inline.is_empty(), "the fixture must match something");
+    assert_eq!(
+        inline,
+        rows(
+            "MATCH ((x)-[:R]->(m)<-[:R]-(y)){1,2} (t)-[:R]->(u) WHERE 'N' IN labels(u) \
+             RETURN size(m) AS k, u.name AS n"
+        )
+    );
+}
+
 // --- Lineage (path) ---
 
 /// Look up a key in a rich Path object `{vertices, edges, length}` (a `Value::Map`).
