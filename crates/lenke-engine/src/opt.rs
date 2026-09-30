@@ -146,10 +146,66 @@ pub fn optimize_indexed(plan: Plan, idx: &dyn IndexOracle) -> Plan {
     // It is also a whole-tree pass rather than a local rule, because renaming slots
     // requires seeing a pattern together with everything that reads it.
     let plan = fixpoint(plan, idx);
-    match orient_eligible(&plan, idx) {
+    let plan = match orient_eligible(&plan, idx) {
         Some(far) => fixpoint(orient_apply(plan, far).0, idx),
         None => plan,
+    };
+    set_path_need(plan)
+}
+
+/// Mark every `ShortestPath` with how much of its path the plan reads. LAST, after every
+/// rewrite: pushdown and orientation move expressions around, and the answer depends on what
+/// reads the path in the FINAL tree.
+///
+/// The decision is plan-global rather than per-node. A plan with two path-producing hops has
+/// one lineage sidecar flowing through it, so "only sizes are read" is a property of the whole
+/// tree; deciding per node would let one hop suppress elements another hop's reader needs.
+/// Conservative in the direction that matters: [`needs_path_elements`] returning true for
+/// anything it cannot classify as a size leaves the elements materialized, which is merely
+/// slower, whereas suppressing a path somebody reads is a wrong answer.
+fn set_path_need(plan: Plan) -> Plan {
+    use crate::exec::render::{needs_lineage, needs_path_elements};
+    if !needs_lineage(&plan) || needs_path_elements(&plan) {
+        return plan; // nothing reads the path, or something reads its elements
     }
+    // Descend ONLY through operators that leave the path alone or merely GATHER it, and mark
+    // the first `ShortestPath` reached that way. Anything else stops the descent, leaving the
+    // `ShortestPath` below it `Full`.
+    //
+    // The allow-list is short on purpose, and it is a whitelist rather than a blacklist
+    // because the failure direction is asymmetric: not marking costs performance, whereas
+    // marking under an operator that MATERIALIZES the path is a wrong answer. A lineage whose
+    // elements were suppressed has an empty `values`, so an operator that rebuilds the path
+    // through `path_at` reads an empty prefix and silently drops everything the shortest path
+    // contributed. That is exactly what the raw-vs-optimized fuzzer caught at seed 632
+    // (`VarLength` sitting above a `ShortestPath`): `cardinality(p)` came back 3/5/7 raw and
+    // 0/2 optimized, because only the `VarLength`'s own hops survived.
+    //
+    // `gather` is safe and therefore allowed: it reorders the counts when they are present
+    // (see `Lineage::gather`). `extend` / `extend_nodes` handle suppression too, but the
+    // operators that CALL them also build fresh lineage of their own, so they stay out.
+    fn mark(p: &mut Plan) {
+        match p {
+            Plan::ShortestPath { path_need, .. } => {
+                *path_need = crate::ir::PathNeed::CountOnly;
+                // Do NOT descend: a second, lower `ShortestPath` feeds this one, which
+                // materializes its input's path.
+            }
+            Plan::Project { input, .. }
+            | Plan::Filter { input, .. }
+            | Plan::Aggregate { input, .. }
+            | Plan::Distinct { input }
+            | Plan::OrderPage { input, .. }
+            | Plan::Tail { input, .. }
+            | Plan::Enumerate { input, .. }
+            | Plan::Sample { input, .. }
+            | Plan::DistinctBy { input, .. } => mark(input),
+            _ => {}
+        }
+    }
+    let mut plan = plan;
+    mark(&mut plan);
+    plan
 }
 
 /// Run the local rewrite rules to a fixpoint (bounded, so a rule that oscillates
@@ -733,6 +789,7 @@ fn map_children(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
             max,
             selector,
             edge_pred,
+            path_need,
         } => {
             let (i, c) = rewrite(*input, idx);
             (
@@ -745,6 +802,7 @@ fn map_children(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
                     max,
                     selector,
                     edge_pred,
+                    path_need,
                 },
                 c,
             )
@@ -1394,6 +1452,7 @@ fn apply_local(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
                 max,
                 selector,
                 edge_pred,
+                path_need,
             } => {
                 let (below, above) = split_pushable(pred, width(&sin));
                 match below {
@@ -1407,6 +1466,7 @@ fn apply_local(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
                             max,
                             selector,
                             edge_pred,
+                            path_need,
                         };
                         (
                             Plan::Filter {
@@ -1429,6 +1489,7 @@ fn apply_local(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
                             max,
                             selector,
                             edge_pred,
+                            path_need,
                         };
                         match above {
                             Some(a) => (

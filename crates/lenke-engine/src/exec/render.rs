@@ -437,43 +437,52 @@ pub(super) fn output_names(plan: &Plan) -> Option<Vec<String>> {
 
 /// Whether any expression in the plan reads the path (`Expr::Path`) — the signal
 /// that lineage must be tracked. Computed once, for the whole plan.
-pub(super) fn needs_lineage(plan: &Plan) -> bool {
-    fn reads_path(e: &Expr) -> bool {
+fn scan_path(plan: &Plan, leaf: &dyn Fn(&Expr) -> bool) -> bool {
+    fn reads_path_inner(e: &Expr, leaf: &dyn Fn(&Expr) -> bool) -> bool {
+        if leaf(e) {
+            return true;
+        }
         match e {
-            // Reading any part of the path needs the lineage, just like `Path`.
+            // Which path reads COUNT is the caller's `leaf`, checked above.
             Expr::Path
             | Expr::PathAccess { .. }
             | Expr::GremlinPath { .. }
-            | Expr::GremlinFullPath { .. } => true,
+            | Expr::GremlinFullPath { .. } => false,
             Expr::Compare { left, right, .. }
             | Expr::In {
                 needle: left,
                 haystack: right,
-            } => reads_path(left) || reads_path(right),
-            Expr::Not(x) => reads_path(x),
+            } => reads_path_inner(left, leaf) || reads_path_inner(right, leaf),
+            Expr::Not(x) => reads_path_inner(x, leaf),
             Expr::And(a, b)
             | Expr::Or(a, b)
             | Expr::Xor(a, b)
             | Expr::Arith {
                 left: a, right: b, ..
-            } => reads_path(a) || reads_path(b),
+            } => reads_path_inner(a, leaf) || reads_path_inner(b, leaf),
             Expr::Call { args, .. } | Expr::GraphPred { args, .. } | Expr::List { items: args } => {
-                args.iter().any(reads_path)
+                args.iter().any(|e| reads_path_inner(e, leaf))
             }
             Expr::Record { fields }
             | Expr::MapLit {
                 entries: fields, ..
-            } => fields.iter().any(|(_, e)| reads_path(e)),
-            Expr::Field { base, .. } => reads_path(base),
-            Expr::Index { base, index, .. } => reads_path(base) || reads_path(index),
+            } => fields.iter().any(|(_, e)| reads_path_inner(e, leaf)),
+            Expr::Field { base, .. } => reads_path_inner(base, leaf),
+            Expr::Index { base, index, .. } => {
+                reads_path_inner(base, leaf) || reads_path_inner(index, leaf)
+            }
             Expr::Case {
                 branches,
                 otherwise,
             } => {
-                branches.iter().any(|(c, v)| reads_path(c) || reads_path(v))
-                    || otherwise.as_deref().is_some_and(reads_path)
+                branches
+                    .iter()
+                    .any(|(c, v)| reads_path_inner(c, leaf) || reads_path_inner(v, leaf))
+                    || otherwise
+                        .as_deref()
+                        .is_some_and(|e| reads_path_inner(e, leaf))
             }
-            Expr::Cast { expr, .. } | Expr::IsNull { expr, .. } => reads_path(expr),
+            Expr::Cast { expr, .. } | Expr::IsNull { expr, .. } => reads_path_inner(expr, leaf),
             // An EXISTS body reads its OWN (sub-)path, never the outer one, and the
             // seed is built without lineage — so it never forces outer tracking.
             Expr::Slot(_)
@@ -511,7 +520,7 @@ pub(super) fn needs_lineage(plan: &Plan) -> bool {
         | Plan::TxControl { .. }
         | Plan::InsertFrom { .. } => false,
         // otherV off a bare edge reads the lineage reference vertex.
-        Plan::EdgeVertex { input, other, .. } => *other || needs_lineage(input),
+        Plan::EdgeVertex { input, other, .. } => *other || scan_path(input, leaf),
         Plan::Sample { input, .. }
         | Plan::Enumerate { input, .. }
         | Plan::Expand { input, .. }
@@ -527,55 +536,61 @@ pub(super) fn needs_lineage(plan: &Plan) -> bool {
         | Plan::NullPadIfEmpty { input, .. }
         | Plan::GroupToMap { input }
         | Plan::AlgoAnnotate { input, .. }
-        | Plan::SortLocal { input, .. } => needs_lineage(input),
+        | Plan::SortLocal { input, .. } => scan_path(input, leaf),
         // tree() reads the path lineage itself, so its INPUT must track it.
         Plan::Tree { .. } => true,
-        Plan::MapSlot { input, value, .. } => reads_path(value) || needs_lineage(input),
-        Plan::Subgraph { input, .. } => needs_lineage(input),
-        Plan::ShortestPathEnum { input, .. } => needs_lineage(input),
-        Plan::OptionalScan { input, filters, .. } => {
-            filters.iter().any(|(_, e)| reads_path(e)) || needs_lineage(input)
+        Plan::MapSlot { input, value, .. } => {
+            reads_path_inner(value, leaf) || scan_path(input, leaf)
         }
-        Plan::Unwind { input, list, .. } => reads_path(list) || needs_lineage(input),
-        Plan::Branch { input, bodies } => needs_lineage(input) || bodies.iter().any(needs_lineage),
+        Plan::Subgraph { input, .. } => scan_path(input, leaf),
+        Plan::ShortestPathEnum { input, .. } => scan_path(input, leaf),
+        Plan::OptionalScan { input, filters, .. } => {
+            filters.iter().any(|(_, e)| reads_path_inner(e, leaf)) || scan_path(input, leaf)
+        }
+        Plan::Unwind { input, list, .. } => reads_path_inner(list, leaf) || scan_path(input, leaf),
+        Plan::Branch { input, bodies } => {
+            scan_path(input, leaf) || bodies.iter().any(|p| scan_path(p, leaf))
+        }
         Plan::PerElementBranch {
             input, cond, arms, ..
         } => {
-            needs_lineage(input)
-                || cond.as_deref().is_some_and(needs_lineage)
-                || arms.iter().any(needs_lineage)
+            scan_path(input, leaf)
+                || cond.as_deref().is_some_and(|p| scan_path(p, leaf))
+                || arms.iter().any(|p| scan_path(p, leaf))
         }
-        Plan::Reconverge { input, .. } => needs_lineage(input),
+        Plan::Reconverge { input, .. } => scan_path(input, leaf),
         Plan::IntervalExpand {
             input, qlo, qhi, ..
-        } => reads_path(qlo) || reads_path(qhi) || needs_lineage(input),
-        Plan::Filter { input, pred } => reads_path(pred) || needs_lineage(input),
+        } => reads_path_inner(qlo, leaf) || reads_path_inner(qhi, leaf) || scan_path(input, leaf),
+        Plan::Filter { input, pred } => reads_path_inner(pred, leaf) || scan_path(input, leaf),
         // A `PathRecord` writes the step-history, so the plan must track lineage; the `input`
         // is walked for the same reason `Filter` walks its own (the decision is plan-global).
         Plan::PathRecord { .. } => true,
         Plan::Project { input, items } => {
-            items.iter().any(|(_, e)| reads_path(e)) || needs_lineage(input)
+            items.iter().any(|(_, e)| reads_path_inner(e, leaf)) || scan_path(input, leaf)
         }
         Plan::Aggregate { input, keys, aggs } => {
-            keys.iter().any(|(_, e)| reads_path(e))
-                || aggs.iter().any(|a| a.arg.as_ref().is_some_and(reads_path))
-                || needs_lineage(input)
+            keys.iter().any(|(_, e)| reads_path_inner(e, leaf))
+                || aggs
+                    .iter()
+                    .any(|a| a.arg.as_ref().is_some_and(|e| reads_path_inner(e, leaf)))
+                || scan_path(input, leaf)
         }
         Plan::OrderPage { input, keys, .. } => {
-            keys.iter().any(|k| reads_path(&k.expr)) || needs_lineage(input)
+            keys.iter().any(|k| reads_path_inner(&k.expr, leaf)) || scan_path(input, leaf)
         }
         Plan::Join { left, right, .. } | Plan::Union { left, right, .. } => {
-            needs_lineage(left) || needs_lineage(right)
+            scan_path(left, leaf) || scan_path(right, leaf)
         }
         // The subquery yields append columns; whether the OUTER plan needs a path
         // depends on its input (a path read inside the subquery is not surfaced).
         Plan::CallInline { input, yields, .. } => {
-            needs_lineage(input) || yields.iter().any(|(_, e)| reads_path(e))
+            scan_path(input, leaf) || yields.iter().any(|(_, e)| reads_path_inner(e, leaf))
         }
         Plan::Update { input, ops } => {
-            needs_lineage(input)
+            scan_path(input, leaf)
                 || ops.iter().any(|op| match op {
-                    crate::ir::SetOp::Set { value, .. } => reads_path(value),
+                    crate::ir::SetOp::Set { value, .. } => reads_path_inner(value, leaf),
                     crate::ir::SetOp::Remove { .. }
                     | crate::ir::SetOp::AddLabel { .. }
                     | crate::ir::SetOp::RemoveLabel { .. }
@@ -583,10 +598,10 @@ pub(super) fn needs_lineage(plan: &Plan) -> bool {
                 })
         }
         Plan::UpdateReturn { input, ops, tail } => {
-            needs_lineage(input)
-                || needs_lineage(tail)
+            scan_path(input, leaf)
+                || scan_path(tail, leaf)
                 || ops.iter().any(|op| match op {
-                    crate::ir::SetOp::Set { value, .. } => reads_path(value),
+                    crate::ir::SetOp::Set { value, .. } => reads_path_inner(value, leaf),
                     crate::ir::SetOp::Remove { .. }
                     | crate::ir::SetOp::AddLabel { .. }
                     | crate::ir::SetOp::RemoveLabel { .. }
@@ -594,4 +609,39 @@ pub(super) fn needs_lineage(plan: &Plan) -> bool {
                 })
         }
     }
+}
+
+/// Whether any expression in the plan reads the path (`Expr::Path`) — the signal that
+/// lineage must be tracked. Computed once, for the whole plan.
+pub(crate) fn needs_lineage(plan: &Plan) -> bool {
+    scan_path(plan, &|e| {
+        matches!(
+            e,
+            Expr::Path
+                | Expr::PathAccess { .. }
+                | Expr::GremlinPath { .. }
+                | Expr::GremlinFullPath { .. }
+        )
+    })
+}
+
+/// Whether any expression reads a path ELEMENT, as opposed to only its size. This is the
+/// complement of `path_length(p)` / `cardinality(p)`: false means every path read in the
+/// plan is a size, so the traversal can record sizes and skip building the chains.
+///
+/// It shares `scan_path` with [`needs_lineage`] deliberately. That walk enumerates every
+/// `Plan` and every `Expr` variant with no wildcard arm, so a variant added later fails to
+/// compile until it is classified here too — a second hand-written walk would instead go on
+/// silently returning "no element read" for the new shape, and suppressing a path somebody
+/// reads is a wrong answer, not a crash.
+pub(crate) fn needs_path_elements(plan: &Plan) -> bool {
+    scan_path(plan, &|e| match e {
+        Expr::PathAccess { part } => !matches!(
+            part,
+            crate::ir::PathPart::Length | crate::ir::PathPart::Cardinality
+        ),
+        // A bare path, and both Gremlin path forms, hand back the elements themselves.
+        Expr::Path | Expr::GremlinPath { .. } | Expr::GremlinFullPath { .. } => true,
+        _ => false,
+    })
 }

@@ -1089,6 +1089,10 @@ fn gen_chain(rng: &mut Lcg, hops: usize) -> Gen {
             });
             g.tracks_path = true;
             g.plan = Plan::ShortestPath {
+                // The RAW plan always materializes; `optimize_indexed` is what may mark it
+                // `CountOnly`. That asymmetry is the point: the raw-vs-optimized comparison
+                // then runs one side through each representation and demands the same rows.
+                path_need: crate::ir::PathNeed::Full,
                 input: Box::new(g.plan),
                 from: g.width - 1,
                 dir,

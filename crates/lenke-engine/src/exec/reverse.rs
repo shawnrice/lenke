@@ -47,6 +47,7 @@ pub(super) fn try_shortest_early_stop(
         max,
         selector,
         edge_pred,
+        path_need,
     } = input
     else {
         return None;
@@ -75,6 +76,7 @@ pub(super) fn try_shortest_early_stop(
         *selector,
         edge_pred.as_deref(),
         Some(&targets),
+        *path_need,
     ) {
         Ok(b) => b,
         Err(e) => return Some(Err(e)),

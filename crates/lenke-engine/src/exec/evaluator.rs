@@ -412,11 +412,15 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
                                 PathPart::Relationships => {
                                     Value::List(path_edge_values(store, edges))
                                 }
-                                // Hops == number of relationships.
-                                PathPart::Length => Value::Num(edges.len() as f64),
+                                // Hops == number of relationships. Read through the
+                                // accessor, not `edges.len()`: when the plan reads only
+                                // sizes the elements are never materialized, and the
+                                // accessor is the one place that knows which of the two
+                                // representations a lineage is in.
+                                PathPart::Length => Value::Num(lin.edge_count_at(i) as f64),
                                 // ISO cardinality of a path: every element (nodes + edges).
                                 PathPart::Cardinality => {
-                                    Value::Num((nodes.len() + edges.len()) as f64)
+                                    Value::Num((lin.node_count_at(i) + lin.edge_count_at(i)) as f64)
                                 }
                                 PathPart::Elements => {
                                     // n0, e0, n1, e1, …, nk — each a full element map.

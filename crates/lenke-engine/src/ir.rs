@@ -398,6 +398,24 @@ impl CastTarget {
     }
 }
 
+/// How much of a shortest path's lineage the plan actually reads — set by the optimizer,
+/// which is the only place that can see a `ShortestPath` together with everything above it.
+///
+/// `CountOnly` means every path read in the whole plan is `path_length(p)` or
+/// `cardinality(p)`, so the traversal records each row's path SIZE and skips reconstructing
+/// the chain. The BFS already knows the distance, so that is the whole hop count for free;
+/// walking the predecessor map to rebuild a chain nobody reads was measured as the larger
+/// half of a path projection's cost.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PathNeed {
+    /// The path's elements are read (`nodes(p)`, `edges(p)`, a bare path, a Gremlin
+    /// `path()`), so they must be materialized. The safe default: a plan that never went
+    /// through the optimizer has this.
+    Full,
+    /// Only the path's size is read, so only the size is recorded.
+    CountOnly,
+}
+
 /// Which part of a path an accessor returns. `Length` is the hop count (= number
 /// of relationships); `Elements` interleaves nodes and relationships
 /// (`n0, e0, n1, …, nk`).
@@ -813,6 +831,9 @@ pub enum Plan {
         /// A per-hop edge predicate (`-[e:R WHERE e.w > 5]->*`) over the edge at
         /// scalar slot 0; an edge failing it is not traversed. `None` = no filter.
         edge_pred: Option<Box<Expr>>,
+        /// How much of the path the plan reads. `Full` unless the optimizer proved
+        /// otherwise — see [`PathNeed`].
+        path_need: PathNeed,
     },
     /// Keep rows where `pred` is TRUE (three-valued: FALSE and NULL drop).
     Filter { input: Box<Plan>, pred: Expr },
@@ -1488,6 +1509,9 @@ impl Plan {
         edge_pred: Option<Box<Expr>>,
     ) -> Self {
         Self::ShortestPath {
+            // The builder is used by tests and by the lowerings, neither of which does the
+            // whole-plan analysis; the optimizer sets this. `Full` is the safe default.
+            path_need: PathNeed::Full,
             input: Box::new(self),
             from,
             dir,

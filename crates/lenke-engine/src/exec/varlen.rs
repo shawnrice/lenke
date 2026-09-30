@@ -136,6 +136,7 @@ pub(super) fn var_length(
             steps: Vec::new(),
             step_tag: Vec::new(),
             step_off: vec![0; rows_plus1],
+            elem_counts: Vec::new(),
         });
     }
     Ok(out)
@@ -260,6 +261,7 @@ impl VarlenEmit for CollectEmit<'_> {
                 &mut self.bufs.offsets,
                 &mut self.bufs.edges,
                 &mut self.bufs.edge_offsets,
+                None,
             );
         }
         if !self.group_binds.is_empty() {
@@ -994,6 +996,11 @@ pub(super) fn shortest_path(
     // shortest paths and multiplicity) are byte-identical; only never-kept nodes beyond
     // the targets go unexplored. Applied only for `min == 0` (no `+`-cycle source cases).
     early_stop: Option<&[u32]>,
+    // How much of the path the plan reads. `CountOnly` (the optimizer proved nothing reads a
+    // path ELEMENT) records each row's size and skips reconstructing the chain entirely: the
+    // BFS's `dist` already holds the hop count, so walking back through `preds` was rebuilding
+    // a chain nobody would look at.
+    path_need: crate::ir::PathNeed,
 ) -> Result<Batch, String> {
     use crate::ir::ShortestSelector;
     let empty = || {
@@ -1049,6 +1056,8 @@ pub(super) fn shortest_path(
     let mut path_edges: Vec<Value> = Vec::new();
     let mut path_edge_offsets: Vec<usize> = vec![0];
 
+    let count_only = matches!(path_need, crate::ir::PathNeed::CountOnly);
+    let mut elem_counts: Vec<(u32, u32)> = Vec::new();
     let mut keep = Vec::new();
     let mut ends = Vec::new();
     // Reused across every emitted row (and every source), so the chain walk allocates
@@ -1169,17 +1178,38 @@ pub(super) fn shortest_path(
                     keep.push(row);
                     ends.push(node);
                     if track {
-                        first_pred_chain_into(node, start, &preds, &mut chain_buf, &mut echain_buf);
-                        push_path(
-                            batch,
-                            row,
-                            &chain_buf,
-                            &echain_buf,
-                            &mut path_values,
-                            &mut path_offsets,
-                            &mut path_edges,
-                            &mut path_edge_offsets,
-                        );
+                        if count_only {
+                            // `dn` IS the hop count, so the size is known without walking back
+                            // through `preds` at all. The output path is the input row's path
+                            // plus `dn` nodes and `dn` edges.
+                            let lin = batch.lineage.as_ref().expect("track");
+                            push_counts(
+                                lin.node_count_at(row) + dn as usize,
+                                lin.edge_count_at(row) + dn as usize,
+                                &mut elem_counts,
+                                &mut path_offsets,
+                                &mut path_edge_offsets,
+                            );
+                        } else {
+                            first_pred_chain_into(
+                                node,
+                                start,
+                                &preds,
+                                &mut chain_buf,
+                                &mut echain_buf,
+                            );
+                            push_path(
+                                batch,
+                                row,
+                                &chain_buf,
+                                &echain_buf,
+                                &mut path_values,
+                                &mut path_offsets,
+                                &mut path_edges,
+                                &mut path_edge_offsets,
+                                count_only.then_some(&mut elem_counts),
+                            );
+                        }
                     }
                 }
                 ShortestSelector::All => {
@@ -1196,6 +1226,7 @@ pub(super) fn shortest_path(
                                 &mut path_offsets,
                                 &mut path_edges,
                                 &mut path_edge_offsets,
+                                count_only.then_some(&mut elem_counts),
                             );
                         }
                     } else {
@@ -1235,6 +1266,7 @@ pub(super) fn shortest_path(
                                     &mut path_offsets,
                                     &mut path_edges,
                                     &mut path_edge_offsets,
+                                    count_only.then_some(&mut elem_counts),
                                 );
                             }
                         }
@@ -1258,6 +1290,7 @@ pub(super) fn shortest_path(
                                             &mut path_offsets,
                                             &mut path_edges,
                                             &mut path_edge_offsets,
+                                            count_only.then_some(&mut elem_counts),
                                         );
                                     }
                                 } else {
@@ -1287,6 +1320,7 @@ pub(super) fn shortest_path(
             steps: Vec::new(),
             step_tag: Vec::new(),
             step_off: vec![0; rows_plus1],
+            elem_counts,
         });
     }
     Ok(out)
@@ -1408,6 +1442,7 @@ pub(super) fn shortest_k_path(
                         &mut bufs.offsets,
                         &mut bufs.edges,
                         &mut bufs.edge_offsets,
+                        None,
                     );
                 }
             }
@@ -1426,9 +1461,30 @@ pub(super) fn shortest_k_path(
             steps: Vec::new(),
             step_tag: Vec::new(),
             step_off: vec![0; rows_plus1],
+            elem_counts: Vec::new(),
         });
     }
     Ok(out)
+}
+
+/// Record row `i`'s path SIZE without its elements, keeping `offsets` / `edge_offsets`
+/// honest: they stay a prefix-sum over the EMPTY value vectors, so `path_at` / `edges_at`
+/// return an empty slice rather than slicing out of range. That is the difference between
+/// this and carrying the lengths IN the offsets, which would have made an ordinary `WHERE`
+/// after a shortest path panic inside `Lineage::gather`.
+fn push_counts(
+    nodes: usize,
+    edges: usize,
+    elem_counts: &mut Vec<(u32, u32)>,
+    path_offsets: &mut Vec<usize>,
+    path_edge_offsets: &mut Vec<usize>,
+) {
+    elem_counts.push((
+        u32::try_from(nodes).unwrap_or(u32::MAX),
+        u32::try_from(edges).unwrap_or(u32::MAX),
+    ));
+    path_offsets.push(0);
+    path_edge_offsets.push(0);
 }
 
 /// Enumerate every TRAIL (no edge reused) from the source, recording each at every
@@ -1641,8 +1697,24 @@ pub(super) fn push_path(
     path_offsets: &mut Vec<usize>,
     path_edges: &mut Vec<Value>,
     path_edge_offsets: &mut Vec<usize>,
+    // `Some(counts)` records the path's SIZE instead of its elements. Threaded here rather
+    // than branched at each call site on purpose: `shortest_path` emits from five places (the
+    // Any and All arms, plus three in the cycle-closing block), and a mode handled per site is
+    // a mode one site forgets. It did — `elem_counts` ran short of the row count and `gather`
+    // indexed out of bounds, caught by the raw-vs-optimized fuzzer on its first run.
+    counts: Option<&mut Vec<(u32, u32)>>,
 ) {
     let lin = batch.lineage.as_ref().expect("track");
+    if let Some(counts) = counts {
+        push_counts(
+            lin.node_count_at(row) + chain.len() - 1,
+            lin.edge_count_at(row) + echain.len(),
+            counts,
+            path_offsets,
+            path_edge_offsets,
+        );
+        return;
+    }
     path_values.extend_from_slice(lin.path_at(row));
     for &n in &chain[1..] {
         path_values.push(Value::Num(f64::from(n)));

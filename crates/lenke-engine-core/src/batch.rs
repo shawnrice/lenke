@@ -110,6 +110,24 @@ pub struct Lineage {
     pub steps: Vec<Value>,
     pub step_tag: Vec<u8>,
     pub step_off: Vec<usize>,
+    /// Row `i`'s path SIZE as `(node count, edge count)` — present only when the path's
+    /// elements were deliberately not materialized because the plan reads nothing but
+    /// `path_length(p)` / `cardinality(p)`. EMPTY is the ordinary case, where the sizes are
+    /// the `offsets` / `edge_offsets` spans and `values` / `edges` hold the elements.
+    ///
+    /// Read it through [`Lineage::node_count_at`] / [`Lineage::edge_count_at`], never
+    /// directly: they are the single place that knows which of the two representations is
+    /// in play, and every other reader should be unable to tell.
+    ///
+    /// Why an explicit count rather than carrying `offsets` as a length prefix-sum over an
+    /// empty `values`: `gather` (and `extend`, and `concat`) rebuild the path through
+    /// `path_at`, which slices `values[offsets[i]..offsets[i + 1]]`. Non-zero offsets over
+    /// an empty `values` is an out-of-range slice, not a compact encoding — and
+    /// `try_shortest_early_stop` gathers directly, so an ordinary `WHERE` after a shortest
+    /// path would panic. The counts also cannot be derived from one another: a
+    /// `seed_edges` lineage has neither a node nor an edge recorded, so "nodes == edges + 1"
+    /// is not an invariant to lean on.
+    pub elem_counts: Vec<(u32, u32)>,
 }
 
 /// Tag for a `Lineage::steps` history element.
@@ -131,6 +149,8 @@ impl Lineage {
             steps: nodes.iter().map(|&n| Value::Num(f64::from(n))).collect(),
             step_tag: vec![STEP_NODE; nodes.len()],
             step_off: (0..=nodes.len()).collect(),
+            // A seed materializes its own elements, so the sizes come from the spans.
+            elem_counts: Vec::new(),
         }
     }
 
@@ -146,6 +166,8 @@ impl Lineage {
             steps: vals.to_vec(),
             step_tag: vec![tag; vals.len()],
             step_off: (0..=vals.len()).collect(),
+            // A seed materializes its own elements, so the sizes come from the spans.
+            elem_counts: Vec::new(),
         }
     }
 
@@ -161,6 +183,8 @@ impl Lineage {
             steps: edges.iter().map(|&e| Value::Num(f64::from(e))).collect(),
             step_tag: vec![STEP_EDGE; edges.len()],
             step_off: (0..=edges.len()).collect(),
+            // A seed materializes its own elements, so the sizes come from the spans.
+            elem_counts: Vec::new(),
         }
     }
 
@@ -176,6 +200,8 @@ impl Lineage {
             steps: Vec::new(),
             step_tag: Vec::new(),
             step_off: vec![0],
+            // A seed materializes its own elements, so the sizes come from the spans.
+            elem_counts: Vec::new(),
         }
     }
 
@@ -215,6 +241,8 @@ impl Lineage {
             steps,
             step_tag,
             step_off,
+            // Appends to the STEP history only; the node/edge path is unchanged.
+            elem_counts: self.elem_counts.clone(),
         }
     }
 
@@ -230,6 +258,30 @@ impl Lineage {
         &self.edges[self.edge_offsets[i]..self.edge_offsets[i + 1]]
     }
 
+    /// How many NODES row `i`'s path has — from the materialized span, or from
+    /// `elem_counts` when the elements were suppressed. Prefer this over
+    /// `path_at(i).len()` anywhere only the size is wanted: it is correct in both
+    /// representations, and it is what makes the suppressed one invisible.
+    #[must_use]
+    pub fn node_count_at(&self, i: usize) -> usize {
+        if self.elem_counts.is_empty() {
+            self.offsets[i + 1] - self.offsets[i]
+        } else {
+            self.elem_counts[i].0 as usize
+        }
+    }
+
+    /// How many EDGES row `i`'s path traversed — the hop count. See
+    /// [`Lineage::node_count_at`].
+    #[must_use]
+    pub fn edge_count_at(&self, i: usize) -> usize {
+        if self.elem_counts.is_empty() {
+            self.edge_offsets[i + 1] - self.edge_offsets[i]
+        } else {
+            self.elem_counts[i].1 as usize
+        }
+    }
+
     /// Reorder/subset the paths by `idx` (parallel to a slot gather).
     #[must_use]
     pub fn gather(&self, idx: &[usize]) -> Self {
@@ -241,10 +293,19 @@ impl Lineage {
         let mut step_tag = Vec::new();
         let mut step_off = vec![0usize];
         let has_steps = self.step_off.len() > 1;
+        // Suppressed paths carry their sizes rather than their elements, so the gather
+        // reorders the counts instead of copying spans. `path_at` would slice an empty
+        // `values` here, which is why this branch exists rather than falling through.
+        let suppressed = !self.elem_counts.is_empty();
+        let mut elem_counts = Vec::new();
         for &i in idx {
-            values.extend_from_slice(self.path_at(i));
+            if suppressed {
+                elem_counts.push(self.elem_counts[i]);
+            } else {
+                values.extend_from_slice(self.path_at(i));
+                edges.extend_from_slice(self.edges_at(i));
+            }
             offsets.push(values.len());
-            edges.extend_from_slice(self.edges_at(i));
             edge_offsets.push(edges.len());
             if has_steps {
                 let (sv, st) = self.steps_at(i);
@@ -261,6 +322,7 @@ impl Lineage {
             steps,
             step_tag,
             step_off,
+            elem_counts,
         }
     }
 
@@ -281,12 +343,20 @@ impl Lineage {
         let mut step_tag = Vec::new();
         let mut step_off = vec![0usize];
         let has_steps = self.step_off.len() > 1;
+        let suppressed = !self.elem_counts.is_empty();
+        let mut elem_counts = Vec::new();
         for (i, &k) in keep.iter().enumerate() {
-            values.extend_from_slice(self.path_at(k));
-            values.push(Value::Num(f64::from(new_nodes[i])));
+            if suppressed {
+                // One node and one edge added to the row's size; the elements stay unstored.
+                let (n, e) = self.elem_counts[k];
+                elem_counts.push((n + 1, e + 1));
+            } else {
+                values.extend_from_slice(self.path_at(k));
+                values.push(Value::Num(f64::from(new_nodes[i])));
+                edges.extend_from_slice(self.edges_at(k));
+                edges.push(Value::Num(f64::from(new_edges[i])));
+            }
             offsets.push(values.len());
-            edges.extend_from_slice(self.edges_at(k));
-            edges.push(Value::Num(f64::from(new_edges[i])));
             edge_offsets.push(edges.len());
             if has_steps {
                 let (sv, st) = self.steps_at(k);
@@ -303,6 +373,7 @@ impl Lineage {
             steps,
             step_tag,
             step_off,
+            elem_counts,
         }
     }
 
@@ -325,11 +396,19 @@ impl Lineage {
         let mut step_tag = Vec::new();
         let mut step_off = vec![0usize];
         let has_steps = self.step_off.len() > 1;
+        let suppressed = !self.elem_counts.is_empty();
+        let mut elem_counts = Vec::new();
         for (i, &k) in keep.iter().enumerate() {
-            values.extend_from_slice(self.path_at(k));
-            values.push(Value::Num(f64::from(new_nodes[i])));
+            if suppressed {
+                // An endpoint MOVE: a node joins the path, no edge is traversed.
+                let (n, e) = self.elem_counts[k];
+                elem_counts.push((n + 1, e));
+            } else {
+                values.extend_from_slice(self.path_at(k));
+                values.push(Value::Num(f64::from(new_nodes[i])));
+                edges.extend_from_slice(self.edges_at(k));
+            }
             offsets.push(values.len());
-            edges.extend_from_slice(self.edges_at(k));
             edge_offsets.push(edges.len());
             if has_steps {
                 let (sv, st) = self.steps_at(k);
@@ -346,6 +425,7 @@ impl Lineage {
             steps,
             step_tag,
             step_off,
+            elem_counts,
         }
     }
 
@@ -361,13 +441,27 @@ impl Lineage {
         let mut steps = Vec::new();
         let mut step_tag = Vec::new();
         let mut step_off = vec![0usize];
+        // Branch arms can disagree about whether their paths are materialized. If ANY arm
+        // suppressed, the result is suppressed uniformly, taking the materialized arms'
+        // sizes from their spans through the accessors — mixing the two representations in
+        // one sidecar is what would make a later reader's answer depend on which arm a row
+        // came from.
+        let suppressed = parts.iter().any(|l| !l.elem_counts.is_empty());
+        let mut elem_counts = Vec::new();
         for lin in parts {
             let rows = lin.offsets.len().saturating_sub(1);
             let has_steps = lin.step_off.len() > 1;
             for i in 0..rows {
-                values.extend_from_slice(lin.path_at(i));
+                if suppressed {
+                    elem_counts.push((
+                        u32::try_from(lin.node_count_at(i)).unwrap_or(u32::MAX),
+                        u32::try_from(lin.edge_count_at(i)).unwrap_or(u32::MAX),
+                    ));
+                } else {
+                    values.extend_from_slice(lin.path_at(i));
+                    edges.extend_from_slice(lin.edges_at(i));
+                }
                 offsets.push(values.len());
-                edges.extend_from_slice(lin.edges_at(i));
                 edge_offsets.push(edges.len());
                 if has_steps {
                     let (sv, st) = lin.steps_at(i);
@@ -385,6 +479,7 @@ impl Lineage {
             steps,
             step_tag,
             step_off,
+            elem_counts,
         }
     }
 }

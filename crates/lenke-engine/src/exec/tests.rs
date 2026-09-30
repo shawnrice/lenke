@@ -6284,6 +6284,12 @@ fn try_gql(q: &str, store: &Store) -> Result<usize, String> {
 
 const ALL_PAIRS: &str = "MATCH p = ANY SHORTEST (x:N)-[:R]->*(y:N) RETURN path_length(p) AS len";
 
+/// The same traversal projecting the path's ELEMENTS. `path_length(p)` alone lets the
+/// optimizer mark the hop `PathNeed::CountOnly`, which records each row's size and never
+/// builds a chain — so it is deliberately NOT the query to use when the thing under test is
+/// what the materialized elements cost.
+const ALL_PAIRS_NODES: &str = "MATCH p = ANY SHORTEST (x:N)-[:R]->*(y:N) RETURN nodes(p) AS ns";
+
 /// An unbounded all-pairs shortest path is quadratic in the node count, so on a big
 /// enough graph it must fail LOUDLY rather than allocating until the process dies.
 /// Measured before the guard existed: a degree-3 fixture peaked at 10.4 GB at 4,000
@@ -6292,7 +6298,8 @@ const ALL_PAIRS: &str = "MATCH p = ANY SHORTEST (x:N)-[:R]->*(y:N) RETURN path_l
 fn an_unbounded_shortest_path_trips_the_intermediate_ceiling() {
     let mut store = chain_store(60);
     store.set_limit(crate::store::ConfigId::LimitsIntermediate, 5_000);
-    let err = try_gql(ALL_PAIRS, &store).expect_err("60-node all-pairs must exceed a 5k ceiling");
+    let err =
+        try_gql(ALL_PAIRS_NODES, &store).expect_err("60-node all-pairs must exceed a 5k ceiling");
     assert!(err.starts_with("E_RESOURCE_EXHAUSTED"), "{err}");
     assert!(err.contains("shortest-path"), "{err}");
 }
@@ -6326,7 +6333,7 @@ fn the_ceiling_counts_path_elements_not_just_rows() {
         Ok(1)
     );
     // Same rows, but each carries its path → tens of thousands of elements → trips.
-    let err = try_gql(ALL_PAIRS, &store).expect_err("the path projection must trip");
+    let err = try_gql(ALL_PAIRS_NODES, &store).expect_err("the path projection must trip");
     assert!(err.starts_with("E_RESOURCE_EXHAUSTED"), "{err}");
 }
 
@@ -6336,7 +6343,7 @@ fn the_ceiling_counts_path_elements_not_just_rows() {
 fn the_shortest_path_ceiling_is_an_error_not_a_truncation() {
     let mut store = chain_store(60);
     store.set_limit(crate::store::ConfigId::LimitsIntermediate, 5_000);
-    let plan = crate::opt::optimize_indexed(crate::gql::parse(ALL_PAIRS).unwrap(), &store);
+    let plan = crate::opt::optimize_indexed(crate::gql::parse(ALL_PAIRS_NODES).unwrap(), &store);
     // `try_run` surfaces it as `Err`; nothing partial comes back.
     assert!(crate::exec::try_run(&plan, &store).is_err());
 }
@@ -6378,8 +6385,7 @@ fn the_endpoint_anchored_early_stop_is_also_guarded() {
     );
     store.set_limit(crate::store::ConfigId::LimitsIntermediate, 5_000);
     let err = try_gql(
-        "MATCH p = ANY SHORTEST (x:N)-[:R]->*(y:N) WHERE y.name = 'v59' \
-         RETURN path_length(p) AS len",
+        "MATCH p = ANY SHORTEST (x:N)-[:R]->*(y:N) WHERE y.name = 'v59' RETURN nodes(p) AS ns",
         &store,
     )
     .expect_err("the early-stop path must surface the ceiling, not swallow it");
@@ -6404,6 +6410,165 @@ fn an_anchored_shortest_path_is_unaffected_by_the_ceiling() {
         ),
         Ok(60)
     );
+}
+
+// --- PathNeed::CountOnly (sizes recorded, chains never built) ---
+
+/// Is any `ShortestPath` in this plan marked `CountOnly`?
+fn any_count_only(p: &Plan) -> bool {
+    match p {
+        Plan::ShortestPath {
+            path_need, input, ..
+        } => matches!(path_need, crate::ir::PathNeed::CountOnly) || any_count_only(input),
+        Plan::Project { input, .. }
+        | Plan::Filter { input, .. }
+        | Plan::Aggregate { input, .. }
+        | Plan::Distinct { input }
+        | Plan::OrderPage { input, .. }
+        | Plan::VarLength { input, .. }
+        | Plan::Expand { input, .. }
+        | Plan::RepeatGroup { input, .. } => any_count_only(input),
+        _ => false,
+    }
+}
+
+fn opt_plan(q: &str, store: &Store) -> Plan {
+    crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), store)
+}
+
+/// THE correctness property of the mode: `path_length(p)` (which the optimizer marks
+/// `CountOnly`, so no chain is ever built) must equal `size(edges(p))` (which reads the
+/// elements, so every chain is built). Same traversal, same rows, two representations of the
+/// path — the numbers have to agree or the optimization is a wrong answer.
+#[test]
+fn a_size_only_path_read_agrees_with_reading_the_elements() {
+    let mut store = chain_store(40);
+    store.set_limit(crate::store::ConfigId::LimitsIntermediate, 50_000_000);
+    let counted = "MATCH p = ANY SHORTEST (x:N)-[:R]->*(y:N) RETURN path_length(p) AS n";
+    let material = "MATCH p = ANY SHORTEST (x:N)-[:R]->*(y:N) RETURN size(edges(p)) AS n";
+    assert!(
+        any_count_only(&opt_plan(counted, &store)),
+        "path_length must mark CountOnly"
+    );
+    assert!(
+        !any_count_only(&opt_plan(material, &store)),
+        "reading edges(p) must keep the elements"
+    );
+    let nums = |q: &str| -> Vec<f64> {
+        let mut v: Vec<f64> = crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .iter()
+            .map(|r| match r[0] {
+                Value::Num(x) => x,
+                ref o => panic!("{o:?}"),
+            })
+            .collect();
+        v.sort_by(f64::total_cmp);
+        v
+    };
+    assert_eq!(nums(counted), nums(material));
+}
+
+/// `cardinality(p)` is nodes PLUS edges, so it exercises the other half of the size
+/// bookkeeping — a mode that tracked only the hop count would pass the test above and fail
+/// this one.
+#[test]
+fn cardinality_agrees_in_both_representations() {
+    let mut store = chain_store(40);
+    store.set_limit(crate::store::ConfigId::LimitsIntermediate, 50_000_000);
+    let counted = "MATCH p = ANY SHORTEST (x:N)-[:R]->*(y:N) RETURN cardinality(p) AS n";
+    let material =
+        "MATCH p = ANY SHORTEST (x:N)-[:R]->*(y:N) RETURN size(nodes(p)) + size(edges(p)) AS n";
+    assert!(any_count_only(&opt_plan(counted, &store)));
+    let nums = |q: &str| -> Vec<f64> {
+        let mut v: Vec<f64> = crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .iter()
+            .map(|r| match r[0] {
+                Value::Num(x) => x,
+                ref o => panic!("{o:?}"),
+            })
+            .collect();
+        v.sort_by(f64::total_cmp);
+        v
+    };
+    assert_eq!(nums(counted), nums(material));
+}
+
+/// Anything that reads a path ELEMENT anywhere in the plan forces full lineage, even when a
+/// size is also read. Both reads share one sidecar, so suppressing for the size would strip
+/// the elements the other read needs.
+#[test]
+fn reading_an_element_anywhere_forces_full_lineage() {
+    let mut store = chain_store(20);
+    store.set_limit(crate::store::ConfigId::LimitsIntermediate, 50_000_000);
+    let both = "MATCH p = ANY SHORTEST (x:N)-[:R]->*(y:N) \
+                RETURN path_length(p) AS n, nodes(p) AS ns";
+    assert!(
+        !any_count_only(&opt_plan(both, &store)),
+        "a size read alongside an element read must NOT suppress"
+    );
+}
+
+/// The bug the raw-vs-optimized fuzzer caught at seed 632. A `VarLength` above the
+/// `ShortestPath` REBUILDS the path through `path_at`, which on a suppressed lineage reads an
+/// empty prefix — so everything the shortest path contributed vanished and `cardinality(p)`
+/// came back 0/2 where it should have been 3/5/7. Marking must stop at such an operator.
+#[test]
+fn an_operator_that_rebuilds_the_path_above_it_forces_full_lineage() {
+    let mut store = chain_store(20);
+    store.set_limit(crate::store::ConfigId::LimitsIntermediate, 50_000_000);
+    // A quantified hop ON TOP of the shortest path: the VarLength extends the same lineage.
+    let q = "MATCH p = ANY SHORTEST (x:N)-[:R]->*(y:N) \
+             MATCH (y)-[:R]->{0,1}(z:N) RETURN path_length(p) AS n";
+    let plan = opt_plan(q, &store);
+    assert!(
+        !any_count_only(&plan),
+        "a lineage-rebuilding operator above the hop must keep it Full: {plan:?}"
+    );
+}
+
+/// The mode legitimately raises the resource ceiling, and that is the point rather than a
+/// side effect: with the elements suppressed a row costs one `(u32, u32)` plus two offsets
+/// (~24 bytes) instead of ~94 bytes per path ELEMENT. So the same ceiling that a materialized
+/// all-pairs path trips is one a size-only read clears — the guard's unit tracks the memory
+/// actually held in both representations.
+#[test]
+fn a_size_only_path_clears_a_ceiling_the_materialized_one_trips() {
+    let mut store = chain_store(60);
+    store.set_limit(crate::store::ConfigId::LimitsIntermediate, 5_000);
+    // 1,830 rows, tens of thousands of path elements: materializing trips a 5,000 ceiling.
+    assert!(try_gql(ALL_PAIRS_NODES, &store).is_err());
+    // The identical traversal, size only: 1,830 rows is the whole cost, well under it.
+    assert_eq!(try_gql(ALL_PAIRS, &store), Ok(1_830));
+}
+
+/// `Lineage::gather` on a suppressed sidecar must reorder the SIZES. Getting this wrong is
+/// not a subtle wrong answer but a panic: `path_at` would slice `values[offsets[i]..]` on an
+/// empty `values`. `try_shortest_early_stop` gathers directly, so a plain `WHERE` on the
+/// endpoint after a shortest path is the query that would have hit it.
+#[test]
+fn gathering_a_suppressed_lineage_keeps_the_sizes() {
+    let mut store = chain_store(40);
+    store.create_index("name");
+    store.set_limit(crate::store::ConfigId::LimitsIntermediate, 50_000_000);
+    let q = "MATCH p = ANY SHORTEST (x:N)-[:R]->*(y:N) WHERE y.name = 'v9' \
+             RETURN path_length(p) AS n";
+    assert!(any_count_only(&opt_plan(q, &store)));
+    let mut got: Vec<f64> = crate::exec::try_run(&opt_plan(q, &store), &store)
+        .unwrap()
+        .rows
+        .iter()
+        .map(|r| match r[0] {
+            Value::Num(x) => x,
+            ref o => panic!("{o:?}"),
+        })
+        .collect();
+    got.sort_by(f64::total_cmp);
+    // v9 is reachable from v0..v9, at distances 9,8,…,0 — the gather must keep each row's own.
+    assert_eq!(got, vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
 }
 
 // --- Lineage (path) ---

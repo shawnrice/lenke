@@ -877,7 +877,7 @@ use self::ddl::*;
 pub use self::ddl::apply_schema_op;
 pub(crate) use self::ddl::{declare_invariant, declare_validator};
 
-mod render;
+pub(crate) mod render;
 use self::render::*;
 
 /// Pull a batch up through a (non-terminal) plan node. `track` is the plan-global
@@ -1280,6 +1280,7 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
             max,
             selector,
             edge_pred,
+            path_need,
         } => shortest_path(
             &pull(input, store, track)?,
             store,
@@ -1291,6 +1292,7 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
             *selector,
             edge_pred.as_deref(),
             None,
+            *path_need,
         )?,
         Plan::GroupToMap { input } => {
             // Fold the grouped `[key, value]` rows into one Gremlin Map, first-seen
