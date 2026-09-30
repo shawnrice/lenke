@@ -7495,6 +7495,133 @@ fn equality_is_still_negated_into_the_comparison() {
     );
 }
 
+/// The SECOND implementation of the same mistake. Item 53 fixed `normalize_pred`, which negates
+/// `NOT (l <op> r)` in the PLANNER; the executor has its own `invert_pred`, which does the same
+/// De Morgan + operator flip to push a `NOT` into the typed filter fast path. Item 53's tests
+/// used `sin(1e400)` — a `Call`, which `try_filter_keep` declines — so they never reached it.
+/// With the NaN arriving from a PROPERTY the fast path applies, inverts `<` to `>=`, and
+/// `NaN >= 3` is false where `NOT (NaN < 3)` is TRUE: the row vanishes.
+#[test]
+fn not_over_a_property_ordering_comparison_survives_the_typed_filter_path() {
+    let mut b = Builder::default();
+    b.node(
+        &["N"],
+        &[("name", s("nan")), ("score", Value::Num(f64::NAN))],
+    );
+    b.node(&["N"], &[("name", s("lo")), ("score", Value::Num(1.0))]);
+    b.node(&["N"], &[("name", s("hi")), ("score", Value::Num(9.0))]);
+    let store = b.build();
+    let names = |q: &str| -> Vec<String> {
+        let mut v: Vec<String> = crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .iter()
+            .map(|r| match &r[0] {
+                Value::Str(x) => x.to_string(),
+                o => panic!("{o:?}"),
+            })
+            .collect();
+        v.sort();
+        v
+    };
+    // NaN < 3 is FALSE, so NOT of it is TRUE and the NaN row is kept alongside `hi`.
+    assert_eq!(
+        names("MATCH (n:N) WHERE NOT (n.score < 3) RETURN n.name AS x"),
+        vec!["hi".to_string(), "nan".to_string()]
+    );
+    // The positive spelling must NOT keep it: NaN >= 3 is false. The two are not complements,
+    // which is the whole point.
+    assert_eq!(
+        names("MATCH (n:N) WHERE n.score >= 3 RETURN n.name AS x"),
+        vec!["hi".to_string()]
+    );
+    // And the other three orderings, each with its own complement.
+    for (neg, pos) in [("<=", ">"), (">", "<="), (">=", "<")] {
+        let a = names(&format!(
+            "MATCH (n:N) WHERE NOT (n.score {neg} 3) RETURN n.name AS x"
+        ));
+        let c = names(&format!(
+            "MATCH (n:N) WHERE n.score {pos} 3 RETURN n.name AS x"
+        ));
+        assert!(
+            a.contains(&"nan".to_string()),
+            "NOT (NaN {neg} 3) must be TRUE: {a:?}"
+        );
+        assert!(
+            !c.contains(&"nan".to_string()),
+            "NaN {pos} 3 must be FALSE: {c:?}"
+        );
+    }
+}
+
+/// Does a RANGE SEEK over a column containing NaN return the NaN rows? The range index is
+/// ordered by the TOTAL order (NaN last, so NaN sorts above every number), while a filter uses
+/// IEEE semantics where every comparison against NaN is FALSE. If the seek walks the index from
+/// the bound to the end it collects the NaN entries and the seek disagrees with the scan.
+///
+/// Under `SEEK_FLOOR_NODES` a seek is chosen unconditionally, so a small fixture forces the
+/// seeded plan and the comparison is between the two physical shapes for one predicate.
+#[test]
+fn a_range_seek_over_a_nan_column_agrees_with_the_scan() {
+    let mut b = Builder::default();
+    for i in 0..40u32 {
+        let score = if i % 8 == 7 {
+            f64::NAN
+        } else {
+            f64::from(i % 5)
+        };
+        b.node(
+            &["N"],
+            &[("name", s(&format!("v{i}"))), ("score", Value::Num(score))],
+        );
+    }
+    let mut indexed = b.build();
+    indexed.create_range_index("score");
+    let plain = {
+        let mut c = Builder::default();
+        for i in 0..40u32 {
+            let score = if i % 8 == 7 {
+                f64::NAN
+            } else {
+                f64::from(i % 5)
+            };
+            c.node(
+                &["N"],
+                &[("name", s(&format!("v{i}"))), ("score", Value::Num(score))],
+            );
+        }
+        c.build()
+    };
+    let names = |q: &str, st: &Store| -> Vec<String> {
+        let mut v: Vec<String> = crate::exec::try_run(&opt_plan(q, st), st)
+            .unwrap()
+            .rows
+            .iter()
+            .map(|r| match &r[0] {
+                Value::Str(x) => x.to_string(),
+                o => panic!("{o:?}"),
+            })
+            .collect();
+        v.sort();
+        v
+    };
+    for op in ["<", "<=", ">", ">="] {
+        let q = format!("MATCH (n:N) WHERE n.score {op} 3 RETURN n.name AS x");
+        assert_eq!(
+            names(&q, &indexed),
+            names(&q, &plain),
+            "the seeded and unseeded plans must agree: {q}"
+        );
+        // And neither may include a NaN row: every comparison against NaN is FALSE.
+        for got in [names(&q, &indexed), names(&q, &plain)] {
+            for n in &got {
+                let i: u32 = n[1..].parse().unwrap();
+                assert_ne!(i % 8, 7, "{q} returned the NaN row {n}");
+            }
+        }
+    }
+}
+
 // --- Lineage (path) ---
 
 /// Look up a key in a rich Path object `{vertices, edges, length}` (a `Value::Map`).

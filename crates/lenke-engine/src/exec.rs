@@ -4888,11 +4888,28 @@ fn invert_op(op: CompareOp) -> CompareOp {
 /// NaN cells stay dropped on both sides because every compare is UNKNOWN there.
 fn invert_pred(e: &Expr) -> Option<Expr> {
     Some(match e {
-        Expr::Compare { op, left, right } => Expr::Compare {
-            op: invert_op(*op),
-            left: left.clone(),
-            right: right.clone(),
-        },
+        // EQUALITY ONLY. `=` and `<>` are genuine complements even when an operand is NaN
+        // (`NaN = x` is false, `NaN <> x` is true), but the ORDERING operators are not: under
+        // IEEE unordered comparison a NaN operand makes `<`, `<=`, `>` and `>=` all FALSE, so
+        // `NOT (NaN < 3)` is TRUE while `NaN >= 3` is FALSE. Inverting one into the other
+        // dropped the row.
+        //
+        // This is the executor's copy of the mistake the planner's `normalize_pred` made (item
+        // 53). That one was found and fixed first, and its tests used `sin(1e400)` — a `Call`,
+        // which `try_filter_keep` declines — so they never reached this path at all. With the
+        // NaN arriving from a PROPERTY the fast path applies and the bug was still live. Two
+        // implementations of one idea, and fixing the first hid the second.
+        //
+        // Returning `None` for an ordering comparison costs the typed fast path on a negated
+        // range filter; the caller then evaluates the original `NOT` through the general boxed
+        // path, which is correct.
+        Expr::Compare { op, left, right } if matches!(op, CompareOp::Eq | CompareOp::Ne) => {
+            Expr::Compare {
+                op: invert_op(*op),
+                left: left.clone(),
+                right: right.clone(),
+            }
+        }
         Expr::And(a, b) => Expr::Or(Box::new(invert_pred(a)?), Box::new(invert_pred(b)?)),
         Expr::Or(a, b) => Expr::And(Box::new(invert_pred(a)?), Box::new(invert_pred(b)?)),
         Expr::Not(inner) => (**inner).clone(),
