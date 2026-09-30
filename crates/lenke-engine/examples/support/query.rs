@@ -326,11 +326,13 @@ pub fn run(cfg: &Cfg) {
                 // return to ~89,000us on the label row means the canonicalization stopped
                 // firing.
                 //
-                // Both of these STILL materialize: a `{1,2}` single-direction unit flattens to
-                // `VarLength`, whose count has an ALGEBRAIC degree-sum path that does not take a
-                // predicate, so an endpoint filter drops it to enumeration. Measured floor with
-                // the filter ignored: 759us, so ~19x is still on the table here. The nested and
-                // `k = 2` rows below are the ones the endpoint peel reaches.
+                // Both of these went through the materializing path until the degree algebra
+                // learned the endpoint predicate: a `{1,2}` single-direction unit flattens to
+                // `VarLength`, whose count is a degree sum, and folding the filter into a
+                // per-node PASSING out-degree keeps it there. 12,029us -> 1,032us on the label row
+                // and 11,073us -> 1,050us on the property one, against a 759us floor measured with
+                // the filter ignored outright. A return to ~12,000us means the peel or the fold
+                // stopped firing.
                 (
                     "group count :label",
                     "MATCH ((a)-[:KNOWS]->(b)){1,2} (t:Person) RETURN count(*) AS c",

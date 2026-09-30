@@ -320,17 +320,60 @@ impl CountSink {
             if ids.is_empty() {
                 return Ok(total);
             }
-            let mut slots: Vec<Col> = (0..endpoint_slot)
-                .map(|_| Col::Nodes(vec![0; ids.len()]))
-                .collect();
-            slots.push(Col::Nodes(ids.clone()));
-            let mini = Batch::of(slots);
-            // The SAME keep computation the `Filter` performs, not a second derivation of it.
-            for i in crate::exec::filter_keep(pred, store, &mini)? {
+            for i in endpoint_block_keep(pred, endpoint_slot, store, &ids)? {
                 total += h[ids[i] as usize];
             }
         }
     }
+}
+
+/// Which of `ids` an endpoint-only predicate keeps.
+///
+/// The mini-batch holds the endpoint column at its real slot and a PLACEHOLDER node column for
+/// every slot below it — safe precisely because the predicate reads nothing else, which is what
+/// `peel_endpoint_filter` checks before any of this runs. The keep computation itself is
+/// `exec::filter_keep`, the `Filter`'s own, rather than a second derivation of it.
+fn endpoint_block_keep(
+    pred: &Expr,
+    endpoint_slot: usize,
+    store: &Store,
+    ids: &[u32],
+) -> Result<Vec<usize>, String> {
+    let mut slots: Vec<Col> = (0..endpoint_slot)
+        .map(|_| Col::Nodes(vec![0; ids.len()]))
+        .collect();
+    slots.push(Col::Nodes(ids.to_vec()));
+    crate::exec::filter_keep(pred, store, &Batch::of(slots))
+}
+
+/// Which NODES an endpoint-only predicate keeps, for every node in the store.
+///
+/// The algebraic count needs this rather than the per-reached-endpoint form: it never walks a
+/// path, so it has no set of reached endpoints to ask about — it asks about every node that could
+/// be a hop's target. `Err` when the predicate cannot be evaluated over some node, which is why
+/// the caller must be able to fall back to enumeration: a predicate may THROW on a value the walk
+/// would never have reached (`t.k + 1 <= 5` where one unreachable vertex holds a string), and a
+/// query that answers today has to keep answering.
+pub(super) fn node_pass_mask(
+    pred: &Expr,
+    endpoint_slot: usize,
+    store: &Store,
+) -> Result<Vec<bool>, String> {
+    const BLOCK: usize = 4096;
+    let nc = store.node_count();
+    let mut ok = vec![false; nc];
+    let mut ids: Vec<u32> = Vec::with_capacity(BLOCK);
+    let mut v: usize = 0;
+    while v < nc {
+        let end = (v + BLOCK).min(nc);
+        ids.clear();
+        ids.extend((v..end).map(|x| x as u32));
+        for i in endpoint_block_keep(pred, endpoint_slot, store, &ids)? {
+            ok[ids[i] as usize] = true;
+        }
+        v = end;
+    }
+    Ok(ok)
 }
 
 struct CountEmit<'a> {

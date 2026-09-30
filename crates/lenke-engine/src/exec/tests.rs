@@ -143,7 +143,7 @@ fn iterative_varlen_matches_recursive() {
                         // materialized rows: count == #rows, agg-sum == sum of endpoints.
                         if k == 1 {
                             let node_unique = matches!(mode, PathMode::Simple | PathMode::Acyclic);
-                            let mut total = 0u64;
+                            let mut sink = crate::exec::varlen::CountSink::new(&store, false);
                             let mut used: Vec<u32> = Vec::new();
                             for src in 0..n_nodes {
                                 if node_unique {
@@ -160,13 +160,14 @@ fn iterative_varlen_matches_recursive() {
                                     mode,
                                     src,
                                     &mut used,
-                                    &mut total,
+                                    &mut sink,
                                     double_loops,
                                 );
                                 if node_unique {
                                     used.pop();
                                 }
                             }
+                            let total = sink.finish(None, 0, &store).unwrap();
                             assert_eq!(
                                     total as usize,
                                     itr.len(),
@@ -268,7 +269,7 @@ fn deep_varlen_walk_runs_on_a_tiny_stack() {
                 &mut sink,
             );
             // The count fast-path twin must ALSO be O(1) stack (it shares varlen_scan_walk).
-            let mut total = 0u64;
+            let mut csink = crate::exec::varlen::CountSink::new(&store, false);
             let mut used: Vec<u32> = Vec::new();
             varlen_count_dfs(
                 &store,
@@ -281,10 +282,10 @@ fn deep_varlen_walk_runs_on_a_tiny_stack() {
                 PathMode::Walk,
                 0,
                 &mut used,
-                &mut total,
+                &mut csink,
                 false,
             );
-            (sink.0, total)
+            (sink.0, csink.finish(None, 0, &store).unwrap())
         })
         .unwrap();
     assert_eq!(
@@ -8765,6 +8766,281 @@ fn round_with_a_null_digit_count_rounds_to_an_integer() {
         one("MATCH (n:N) RETURN round(null, 2) AS x LIMIT 1"),
         "Null",
         "a null VALUE is still null"
+    );
+}
+
+// --- An endpoint predicate inside the degree algebra ---
+
+/// `dense_store_mixed` at a size that SELECTS the algebraic branch. The gate is
+/// `est_paths > 2 * (nodes + edges)`, and at 4,000 vertices of degree 4 a `{1,2}` or `{0,2}`
+/// quantifier gives `4000 * 4^2 = 64,000` against `2 * 20,000 = 40,000` — so those two select it,
+/// while `{1,1}` (16,000) does not. Every test below relies on that, which is why the fixture size
+/// is not arbitrary.
+fn algebra_store() -> Store {
+    dense_store_mixed(4000, 4)
+}
+
+/// An endpoint filter over the ALGEBRAIC count must give the same number as the rows it counts.
+/// The algebra never walks a path, so it cannot ask "did this path's endpoint pass" — it folds the
+/// predicate into the per-node out-degree instead, counting a node's out-edges whose TARGET passes.
+/// That is a genuinely different derivation from the enumeration's, so the numbers agreeing is the
+/// property worth asserting.
+///
+/// Measured on the bench fixture (50,000 vertices, degree 3): `group count :label` went
+/// 12,029us -> 1,080us and `group count .prop` 11,073us -> 1,089us, against a 759us floor measured
+/// with the filter ignored outright.
+#[test]
+fn the_algebraic_count_applies_an_endpoint_filter() {
+    let store = algebra_store();
+    let val = |q: &str| -> f64 {
+        match crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .iter()
+            .next()
+            .expect("one row")[0]
+        {
+            Value::Num(x) => x,
+            ref o => panic!("{o:?}"),
+        }
+    };
+    let rows = |q: &str| -> usize {
+        crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .len()
+    };
+    for quant in ["{1,2}", "{0,2}"] {
+        for tail in ["(y:N)", "(y:M)", "(y) WHERE y.name <> 'v0'"] {
+            let q = format!("MATCH (x)-[:R]->{quant}{tail}");
+            assert_eq!(
+                val(&format!("{q} RETURN count(*) AS c")),
+                rows(&format!("{q} RETURN y.name AS n")) as f64,
+                "the algebraic count disagreed with its rows over {quant} {tail}"
+            );
+        }
+    }
+}
+
+/// And it is APPLIED: over a fixture where half the vertices carry the other label, the filtered
+/// count must be strictly between nothing and the unfiltered count. A label that excludes nothing
+/// cannot show the difference between a predicate folded in and one dropped.
+#[test]
+fn an_endpoint_filter_reduces_the_algebraic_count() {
+    let store = algebra_store();
+    let val = |q: &str| -> f64 {
+        match crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .iter()
+            .next()
+            .expect("one row")[0]
+        {
+            Value::Num(x) => x,
+            ref o => panic!("{o:?}"),
+        }
+    };
+    let all = val("MATCH (x)-[:R]->{1,2}(y) RETURN count(*) AS c");
+    let some = val("MATCH (x)-[:R]->{1,2}(y:N) RETURN count(*) AS c");
+    let other = val("MATCH (x)-[:R]->{1,2}(y:M) RETURN count(*) AS c");
+    assert!(all > 0.0);
+    assert!(some > 0.0 && some < all, "{some} vs {all}");
+    assert!(other > 0.0 && other < all, "{other} vs {all}");
+    assert_eq!(
+        some + other,
+        all,
+        "every endpoint carries exactly one of the two labels, so the parts must sum"
+    );
+}
+
+/// The ZERO-LENGTH path's endpoint is the SOURCE, so an endpoint predicate applies to the source
+/// rather than to any hop target. Counting all sources regardless would over-count by the sources
+/// that fail the filter — 2,000 of the 4,000 here.
+#[test]
+fn the_zero_length_term_applies_the_endpoint_filter() {
+    let store = algebra_store();
+    let val = |q: &str| -> f64 {
+        match crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .iter()
+            .next()
+            .expect("one row")[0]
+        {
+            Value::Num(x) => x,
+            ref o => panic!("{o:?}"),
+        }
+    };
+    // `{0,0}` would not reach the algebra (its gate needs `max >= 1`), so the zero-length term is
+    // isolated by DIFFERENCE instead: `{0,2}` minus `{1,2}` is exactly the zero-length paths.
+    let with_zero = val("MATCH (x)-[:R]->{0,2}(y:N) RETURN count(*) AS c");
+    let without = val("MATCH (x)-[:R]->{1,2}(y:N) RETURN count(*) AS c");
+    assert_eq!(
+        with_zero - without,
+        2000.0,
+        "one zero-length path per source that PASSES the filter, not per source"
+    );
+}
+
+/// A predicate that cannot be evaluated for every node must fall back to the enumeration, which
+/// evaluates only the endpoints the walk reaches. The algebra has no path to ask about, so it asks
+/// about every node — and here one UNREACHABLE vertex holds a string where the predicate does
+/// arithmetic, so asking about it throws.
+///
+/// The small-fixture twin of this (`an_endpoint_predicate_is_evaluated_only_for_reached_nodes`)
+/// never selects the algebraic branch, so it cannot exercise the fallback at all.
+#[test]
+fn the_algebraic_count_falls_back_when_a_predicate_cannot_be_evaluated_everywhere() {
+    let mut b = Builder::default();
+    for i in 0..4000u32 {
+        b.node(&["N"], &[("k", Value::Num(f64::from(i % 10)))]);
+    }
+    // Reachable from nothing and reaching nothing, and its `k` is a string.
+    b.node(&["N"], &[("k", s("not a number"))]);
+    for i in 0..4000u32 {
+        for d in 0..4 {
+            b.edge(i, (i * 7 + d * 3 + 1) % 4000, "R");
+        }
+    }
+    let store = b.build();
+    let q = "MATCH (x)-[:R]->{1,2}(y) WHERE y.k + 1 <= 5 RETURN count(*) AS c";
+    let counted = match crate::exec::try_run(&opt_plan(q, &store), &store)
+        .unwrap()
+        .rows
+        .iter()
+        .next()
+        .expect("one row")[0]
+    {
+        Value::Num(x) => x,
+        ref o => panic!("{o:?}"),
+    };
+    let rows = crate::exec::try_run(
+        &opt_plan(
+            "MATCH (x)-[:R]->{1,2}(y) WHERE y.k + 1 <= 5 RETURN y.k AS k",
+            &store,
+        ),
+        &store,
+    )
+    .unwrap()
+    .rows
+    .len();
+    assert!(counted > 0.0, "the query must answer, not throw: {counted}");
+    assert_eq!(counted, rows as f64);
+}
+
+/// The TRAIL correction with a predicate. A `{1,2}` trail excludes the one two-hop path that reuses
+/// a self-loop, `s -> s -> s`, which the out-degree term counted — and that exclusion applies only
+/// when the path's endpoint (which is `s`) would have passed the filter. Subtracting
+/// unconditionally under-counts by one for every self-loop whose vertex FAILS the filter.
+#[test]
+fn the_trail_self_loop_correction_respects_the_endpoint_filter() {
+    let mut b = Builder::default();
+    for i in 0..4000u32 {
+        let label = if i % 2 == 0 { "N" } else { "M" };
+        b.node(&[label], &[("name", s(&format!("v{i}")))]);
+    }
+    for i in 0..4000u32 {
+        // A SELF-LOOP on every vertex, plus enough other edges to select the algebra.
+        b.edge(i, i, "R");
+        for d in 0..3 {
+            b.edge(i, (i * 7 + d * 3 + 1) % 4000, "R");
+        }
+    }
+    let store = b.build();
+    let val = |q: &str| -> f64 {
+        match crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .iter()
+            .next()
+            .expect("one row")[0]
+        {
+            Value::Num(x) => x,
+            ref o => panic!("{o:?}"),
+        }
+    };
+    let rows = |q: &str| -> usize {
+        crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .len()
+    };
+    for tail in ["(y:N)", "(y:M)", "(y)"] {
+        let q = format!("MATCH (x)-[:R]->{{1,2}}{tail}");
+        assert_eq!(
+            val(&format!("{q} RETURN count(*) AS c")),
+            rows(&format!("{q} RETURN y.name AS n")) as f64,
+            "the self-loop correction disagreed with the rows over {tail}"
+        );
+    }
+}
+
+/// The peel must REACH a var-length hop, and a pure performance change has no failing test — so the
+/// observable used here is the trail budget. Without the peel the count declines, the general
+/// materializing path runs, and a budget below the row count refuses; with it the count answers.
+///
+/// That mutation (`endpoint_slot_of` returning `None` for a `VarLength`) survived every other test
+/// here: the measured 12,029us -> 1,080us on the bench fixture is real but invisible to an
+/// assertion.
+#[test]
+fn an_endpoint_filtered_varlen_count_is_not_bounded_by_the_trail_budget() {
+    let mut store = algebra_store();
+    let q = "MATCH (x)-[:R]->{1,2}(y:N) RETURN count(*) AS c";
+    store.set_limit(crate::store::ConfigId::LimitsTrail, 10_000_000);
+    let truth = match crate::exec::try_run(&opt_plan(q, &store), &store)
+        .unwrap()
+        .rows
+        .iter()
+        .next()
+        .expect("one row")[0]
+    {
+        Value::Num(x) => x,
+        ref o => panic!("{o:?}"),
+    };
+    assert!(truth > 1000.0, "the fixture must fan out: {truth}");
+
+    store.set_limit(crate::store::ConfigId::LimitsTrail, (truth as u64) / 4);
+    assert_eq!(
+        crate::exec::try_run(&opt_plan(q, &store), &store)
+            .map(|r| format!("{:?}", r.rows.iter().next().expect("one row")[0])),
+        Ok(format!("Num({truth:?})")),
+        "an endpoint-filtered count must not be bounded by a materialization budget"
+    );
+}
+
+/// The fallback must fall THROUGH to the enumerate-and-tally path, not decline. Declining gives the
+/// right answer too — the general materializing path re-evaluates the predicate per row — so the
+/// only way to tell them apart is the trail budget again: the tally ignores it, the materializing
+/// path does not.
+///
+/// The predicate here cannot be evaluated for every node (one unreachable vertex holds a string
+/// where it does arithmetic), which is what forces the fallback in the first place.
+#[test]
+fn an_unevaluable_endpoint_predicate_falls_through_rather_than_declining() {
+    let mut b = Builder::default();
+    for i in 0..4000u32 {
+        b.node(&["N"], &[("k", Value::Num(f64::from(i % 10)))]);
+    }
+    b.node(&["N"], &[("k", s("not a number"))]);
+    for i in 0..4000u32 {
+        for d in 0..4 {
+            b.edge(i, (i * 7 + d * 3 + 1) % 4000, "R");
+        }
+    }
+    let mut store = b.build();
+    let q = "MATCH (x)-[:R]->{1,2}(y) WHERE y.k + 1 <= 5 RETURN count(*) AS c";
+    let num = |st: &Store| -> Result<String, String> {
+        crate::exec::try_run(&opt_plan(q, st), st)
+            .map(|r| format!("{:?}", r.rows.iter().next().expect("one row")[0]))
+    };
+    store.set_limit(crate::store::ConfigId::LimitsTrail, 10_000_000);
+    let truth = num(&store).expect("must answer with a generous budget");
+
+    store.set_limit(crate::store::ConfigId::LimitsTrail, 1000);
+    assert_eq!(
+        num(&store),
+        Ok(truth),
+        "the fallback must be the counting tally, which no materialization budget bounds"
     );
 }
 

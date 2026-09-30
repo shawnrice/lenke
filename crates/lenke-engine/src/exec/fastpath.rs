@@ -1054,16 +1054,25 @@ fn peel_endpoint_filter(input: &Plan) -> (&Plan, Option<(&Expr, usize)>) {
     let Plan::Filter { input: inner, pred } = input else {
         return (input, None);
     };
-    let endpoint = match inner.as_ref() {
-        Plan::RepeatGroup { endpoint_slot, .. } | Plan::NestedGroup { endpoint_slot, .. } => {
-            *endpoint_slot
+    match endpoint_slot_of(inner) {
+        Some(endpoint) if crate::opt::reads_only_slot(pred, endpoint) => {
+            (inner, Some((pred, endpoint)))
         }
-        _ => return (input, None),
-    };
-    if crate::opt::reads_only_slot(pred, endpoint) {
-        (inner, Some((pred, endpoint)))
-    } else {
-        (input, None)
+        _ => (input, None),
+    }
+}
+
+/// Where a path-producing plan puts the endpoint its count is about.
+fn endpoint_slot_of(p: &Plan) -> Option<usize> {
+    match p {
+        Plan::RepeatGroup { endpoint_slot, .. } | Plan::NestedGroup { endpoint_slot, .. } => {
+            Some(*endpoint_slot)
+        }
+        // A var-length hop appends its endpoint after its input's columns. A `{1,2}`
+        // single-direction group flattens to one of these, which is the most ordinary shape a
+        // user writes.
+        Plan::VarLength { input: below, .. } => crate::opt::plan_out_width(below),
+        _ => None,
     }
 }
 
@@ -1080,6 +1089,10 @@ pub(super) fn try_varlen_count(
     if agg.func != AggFn::Count || agg.arg.is_some() || agg.distinct {
         return None; // count(*) only
     }
+    // An endpoint filter sits ABOVE the hop, and declining on it sent the count to the
+    // materializing path. The same peel the group counts use.
+    let (input, endpoint) = peel_endpoint_filter(input);
+    let pred = endpoint.map(|(p, _)| p);
     let Plan::VarLength {
         input: inner,
         from,
@@ -1133,48 +1146,71 @@ pub(super) fn try_varlen_count(
         let avg_deg = if nc == 0 { 0.0 } else { ec as f64 / nc as f64 };
         let est_paths = src.len() as f64 * avg_deg.powi(*max as i32);
         if est_paths > 2.0 * (nc + ec) as f64 {
-            let mut outdeg = vec![0u64; nc];
-            for (v, d) in outdeg.iter_mut().enumerate() {
-                *d = if want.is_empty() {
-                    store.out(v as u32).len() as u64
-                } else {
-                    store
-                        .out(v as u32)
-                        .iter()
-                        .filter(|a| edge_carries_wanted(store, a, &want))
-                        .count() as u64
+            // An endpoint predicate folds INTO the algebra rather than defeating it: a node's
+            // contribution as a hop TARGET is either counted or not, so the per-node out-degree
+            // becomes a per-node PASSING out-degree.
+            //
+            // The labelled block is the fallback. Unlike the per-endpoint sink, this asks the
+            // predicate about EVERY node rather than only the reached ones, so it can fail where
+            // the walk would not — see `an_endpoint_predicate_is_evaluated_only_for_reached_nodes`.
+            // On that it breaks out and the enumeration below answers.
+            'algebra: {
+                let ok: Option<Vec<bool>> = match pred {
+                    None => None,
+                    Some(p) => {
+                        let slot = endpoint.map_or(0, |(_, slot)| slot);
+                        match crate::exec::varlen::node_pass_mask(p, slot, store) {
+                            Ok(o) => Some(o),
+                            Err(_) => break 'algebra,
+                        }
+                    }
                 };
-            }
-            let mut total: u64 = 0;
-            // A ZERO-LENGTH path: `{0,n}` emits the source itself as an endpoint, one row per
-            // source row, and the degree algebra counted only paths that traverse an edge. Nothing
-            // reached this branch with `min == 0` until an endpoint filter could be peeled off the
-            // count, so it stood as a silent undercount by exactly the source count — measured on
-            // 4,000 vertices of degree 4, `{0,2}` gave 79,996 against 83,996 materialized rows.
-            if *min == 0 {
-                total += src.len() as u64;
-            }
-            for &s in src {
-                for a in store.out(s) {
-                    if !edge_carries_wanted(store, a, &want) {
-                        continue;
-                    }
-                    if *min <= 1 {
-                        total += 1; // the 1-hop path s -> a.nbr
-                    }
-                    if *max >= 2 {
-                        total += outdeg[a.nbr as usize]; // 2-hop paths s -> a.nbr -> z
-                        if is_trail && a.nbr == s {
-                            total -= 1; // a trail excludes the reused self-loop s -> s -> s
+                let passes = |v: u32| ok.as_ref().is_none_or(|o| o[v as usize]);
+                let mut outdeg = vec![0u64; nc];
+                for (v, d) in outdeg.iter_mut().enumerate() {
+                    let adj = store.out(v as u32);
+                    // The O(1) read stays for the common case; a wanted-type or predicate filter
+                    // is what forces the walk over the adjacency.
+                    *d = if want.is_empty() && ok.is_none() {
+                        adj.len() as u64
+                    } else {
+                        adj.iter()
+                            .filter(|a| edge_carries_wanted(store, a, &want) && passes(a.nbr))
+                            .count() as u64
+                    };
+                }
+                let mut total: u64 = 0;
+                // A ZERO-LENGTH path: `{0,n}` emits the source itself as an endpoint, one row per
+                // source row, and the degree algebra counted only paths that traverse an edge
+                // (item 64). Its endpoint is the SOURCE, so an endpoint predicate applies to that.
+                if *min == 0 {
+                    total += src.iter().filter(|&&s| passes(s)).count() as u64;
+                }
+                for &s in src {
+                    for a in store.out(s) {
+                        if !edge_carries_wanted(store, a, &want) {
+                            continue;
+                        }
+                        if *min <= 1 && passes(a.nbr) {
+                            total += 1; // the 1-hop path s -> a.nbr
+                        }
+                        if *max >= 2 {
+                            // 2-hop paths s -> a.nbr -> z
+                            total += outdeg[a.nbr as usize];
+                            // A trail excludes the one path that reuses this edge, `s -> s -> s`,
+                            // which `outdeg[s]` counted — and only if that endpoint passes.
+                            if is_trail && a.nbr == s && passes(s) {
+                                total -= 1;
+                            }
                         }
                     }
                 }
+                return Some(scalar_num(total as f64));
             }
-            return Some(scalar_num(total as f64));
         }
     }
 
-    let mut total: u64 = 0;
+    let mut sink = crate::exec::varlen::CountSink::new(store, pred.is_some());
     let mut used: Vec<u32> = Vec::new();
     let node_unique = matches!(mode, PathMode::Simple | PathMode::Acyclic);
     for &v in src {
@@ -1192,7 +1228,7 @@ pub(super) fn try_varlen_count(
             *mode,
             v,
             &mut used,
-            &mut total,
+            &mut sink,
             *double_loops,
         );
         if node_unique {
@@ -1200,6 +1236,9 @@ pub(super) fn try_varlen_count(
         }
         debug_assert!(used.is_empty());
     }
+    let total = sink
+        .finish(pred, endpoint.map_or(0, |(_, slot)| slot), store)
+        .ok()?;
     Some(scalar_num(total as f64))
 }
 
@@ -1316,9 +1355,11 @@ pub(super) fn varlen_count_dfs(
     mode: PathMode,
     start: u32,
     used: &mut Vec<u32>,
-    total: &mut u64,
+    sink: &mut crate::exec::varlen::CountSink,
     double_loops: bool,
 ) {
+    // `visit` is called once per row the materializing path would emit, with that row's
+    // ENDPOINT — which is exactly what an endpoint predicate is about.
     varlen_scan_walk(
         store,
         v,
@@ -1330,9 +1371,7 @@ pub(super) fn varlen_count_dfs(
         start,
         used,
         double_loops,
-        &mut |_| {
-            *total += 1;
-        },
+        &mut |end| sink.hit(end),
     );
 }
 
