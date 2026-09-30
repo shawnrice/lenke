@@ -857,14 +857,42 @@ fn gen_pred_kind(rng: &mut Lcg, slot: usize, selective: bool, kind: usize) -> Ex
 
         // NEGATION. `Not` is not seedable, so this covers the planner correctly
         // DECLINING to seed something that looks close to a seekable compare.
-        7 => Expr::Not(Box::new(Expr::Compare {
-            op: CompareOp::Lt,
-            left: Box::new(Expr::Prop {
-                slot,
-                key: "score".into(),
-            }),
-            right: Box::new(Expr::Lit(Value::Num(f64::from(rng.below(7) as u32)))),
-        })),
+        //
+        // One in three negates a comparison whose left operand is NaN (`ln(-1)`), and that is
+        // the case that matters rather than a flourish. `normalize_pred` used to rewrite
+        // `NOT (l <op> r)` to `l <negated op> r` for EVERY operator; under IEEE unordered
+        // comparison a NaN operand makes `<`, `<=`, `>` and `>=` all FALSE, so
+        // `NOT (NaN < k)` is TRUE while `NaN >= k` is FALSE — optimizing changed the answer.
+        // This arm already generated the SHAPE; what it never generated was a NaN VALUE, so the
+        // two spellings always agreed and the fuzzer stayed green through the whole life of the
+        // bug. The fixture's `score` is never NaN, hence the call rather than a property.
+        7 => {
+            let op = *rng.pick(&[
+                CompareOp::Lt,
+                CompareOp::Le,
+                CompareOp::Gt,
+                CompareOp::Ge,
+                CompareOp::Eq,
+                CompareOp::Ne,
+            ]);
+            let left: Expr = if rng.below(3) == 0 {
+                Expr::Call {
+                    name: "ln".into(),
+                    args: vec![Expr::Lit(Value::Num(-1.0))],
+                }
+            } else {
+                Expr::Prop {
+                    slot,
+                    key: "score".into(),
+                }
+            };
+
+            Expr::Not(Box::new(Expr::Compare {
+                op,
+                left: Box::new(left),
+                right: Box::new(Expr::Lit(Value::Num(f64::from(rng.below(7) as u32)))),
+            }))
+        }
 
         // TWO BOUNDS ON ONE KEY, which the planner coalesces into a single two-sided
         // range seek. Written in both directions so the coalescing has to normalize.

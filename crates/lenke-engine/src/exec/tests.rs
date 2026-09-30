@@ -7380,6 +7380,121 @@ fn per_rep_filters_on_forward_and_single_hop_units_are_unchanged() {
     }
 }
 
+// --- NOT over a comparison, and NaN ---
+
+/// `NOT (a <op> b)` was canonicalized to `a <negated op> b` for EVERY operator. That is sound
+/// under three-valued logic, which is what the rewrite's comment checked — but NOT under IEEE
+/// unordered comparison, which this engine uses: a NaN operand makes `<`, `<=`, `>` and `>=`
+/// ALL false, so `NOT (NaN >= 2)` is TRUE while `NaN < 2` is FALSE. The rewrite therefore
+/// turned a matching row into no rows.
+///
+/// Found by the differential fuzzer once its predicate arms started generating `NOT` over a
+/// comparison at a realistic rate — the TS engine had the right answer
+/// (`[{"x":5},{"x":7},{"x":3}]` against native's `[]`).
+#[test]
+fn not_over_an_ordering_comparison_is_true_when_an_operand_is_nan() {
+    let mut b = Builder::default();
+    b.node(&["N"], &[("name", s("v0")), ("neg", Value::Num(-1.0))]);
+    let store = b.build();
+    // sin(inf) is NaN, so every ordering comparison against it is FALSE and each NOT is TRUE.
+    for op in ["<", "<=", ">", ">="] {
+        let q = format!("MATCH (n:N) WHERE NOT (sin(1e400) {op} 2) RETURN n.name AS x");
+        let got = crate::exec::try_run(&opt_plan(&q, &store), &store).unwrap();
+        assert_eq!(got.rows.len(), 1, "NOT (NaN {op} 2) must be TRUE: {q}");
+    }
+    // And with the NaN arriving from a property rather than a literal: ln(-1) is NaN.
+    for op in ["<", "<=", ">", ">="] {
+        let q = format!("MATCH (n:N) WHERE NOT (ln(n.neg) {op} 0.1) RETURN n.name AS x");
+        let got = crate::exec::try_run(&opt_plan(&q, &store), &store).unwrap();
+        assert_eq!(got.rows.len(), 1, "NOT (NaN {op} 0.1) must be TRUE: {q}");
+    }
+}
+
+/// The projected form always agreed — `RETURN NOT (sin(1e400) >= 2)` gave TRUE. It was only the
+/// FILTER that disagreed, because only the filter's predicate went through the rewrite. Pinning
+/// both together is what makes the divergence visible in one place.
+#[test]
+fn a_projected_not_and_a_filtered_not_agree_on_nan() {
+    let mut b = Builder::default();
+    b.node(&["N"], &[("name", s("v0"))]);
+    let store = b.build();
+    let projected = crate::exec::try_run(
+        &opt_plan("MATCH (n:N) RETURN NOT (sin(1e400) >= 2) AS c", &store),
+        &store,
+    )
+    .unwrap();
+    assert_eq!(
+        format!("{:?}", projected.rows.iter().next().unwrap()[0]),
+        "Bool(true)"
+    );
+    let filtered = crate::exec::try_run(
+        &opt_plan(
+            "MATCH (n:N) WHERE NOT (sin(1e400) >= 2) RETURN n.name AS x",
+            &store,
+        ),
+        &store,
+    )
+    .unwrap();
+    assert_eq!(
+        filtered.rows.len(),
+        1,
+        "the filter must agree with the projection"
+    );
+}
+
+/// `=` and `<>` ARE safe to negate and must STAY canonicalized — that is the rewrite's whole
+/// purpose (it puts `NOT d.name <> 'x'` onto the same seekable path as `d.name = 'x'`, which the
+/// equivalent-spellings rule requires). NaN does not break these two: `NaN = 2` is false and
+/// `NaN <> 2` is true, so they are genuine complements.
+#[test]
+fn equality_is_still_negated_into_the_comparison() {
+    let mut b = Builder::default();
+    b.node(&["N"], &[("name", s("v0"))]);
+    let store = b.build();
+    // `NOT (k <> lit)` becomes `k = lit`, which then SEEDS an index — the negation disappears
+    // entirely and the plan is an `IndexSeek`. That collapse IS the point of the rewrite, so the
+    // assertion is that no `Not` survives, not that a `Compare` remains.
+    let seeking = format!(
+        "{:?}",
+        opt_plan(
+            "MATCH (n:N) WHERE NOT (n.name <> 'v0') RETURN n.name AS x",
+            &store
+        )
+    );
+    assert!(
+        !seeking.contains("Not("),
+        "the negation must be gone: {seeking}"
+    );
+    assert!(
+        seeking.contains("IndexSeek") || seeking.contains("op: Eq"),
+        "a negated `<>` must reach the same seekable path as `=`: {seeking}"
+    );
+    // `NOT (k = lit)` becomes `k <> lit`, which is not seekable, so the `Ne` stays visible.
+    let plain = format!(
+        "{:?}",
+        opt_plan(
+            "MATCH (n:N) WHERE NOT (n.name = 'v0') RETURN n.name AS x",
+            &store
+        )
+    );
+    assert!(
+        plain.contains("op: Ne") && !plain.contains("Not("),
+        "a negated `=` must canonicalize to a bare Ne: {plain}"
+    );
+    // An ordering op keeps its NOT, which is the fix.
+    let plan = format!(
+        "{:?}",
+        opt_plan(
+            "MATCH (n:N) WHERE NOT (n.name < 'zz') RETURN n.name AS x",
+            &store
+        )
+    );
+    assert!(
+        plan.contains("Not("),
+        "an ordering comparison must keep its NOT: {plan}"
+    );
+}
+
 // --- Lineage (path) ---
 
 /// Look up a key in a rich Path object `{vertices, edges, length}` (a `Value::Map`).

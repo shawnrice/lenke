@@ -536,17 +536,33 @@ fn normalize_pred(e: Expr, input: &Plan) -> Expr {
             match a {
                 // NOT NOT x -> x (double negation; collapses the fuzzer's `NOT NOT NOT …`).
                 Expr::Not(inner) => *inner,
-                // NOT (l <op> r) -> l <neg op> r. Sound under three-valued logic: a NULL
-                // operand leaves both spellings UNKNOWN, cross-type equality stays no-match,
-                // and cross-type ordering still throws either way. Canonicalizes the negated
-                // spelling onto the SAME fast/seed path as the positive one — so
-                // `NOT d.name <> 'n929'` becomes the seedable `d.name = 'n929'` (the
-                // equivalent-spellings rule: both must cost the same).
-                Expr::Compare { op, left, right } => Expr::Compare {
-                    op: negate_op(op),
-                    left,
-                    right,
-                },
+                // NOT (l = r) -> l <> r, and the reverse. EQUALITY ONLY. Canonicalizes the
+                // negated spelling onto the SAME fast/seed path as the positive one — so
+                // `NOT d.name <> 'n929'` becomes the seekable `d.name = 'n929'` (the
+                // equivalent-spellings rule: both must cost the same), which is the case this
+                // rewrite exists for.
+                //
+                // NOT sound for the ORDERING operators, which is what it used to do too. A NULL
+                // operand leaves both spellings UNKNOWN and cross-type ordering throws either
+                // way — those were checked — but **NaN** was not, and under IEEE unordered
+                // comparison a NaN operand makes `<`, `<=`, `>` and `>=` ALL false. So
+                // `NOT (NaN >= 2)` is TRUE while `NaN < 2` is FALSE, and the rewrite turned a
+                // matching row into no rows. Equality is unaffected because `NaN = x` is false
+                // and `NaN <> x` is true — genuine complements.
+                //
+                // The projected form always had it right (`RETURN NOT (sin(1e400) >= 2)` gave
+                // TRUE); only the filter went through here, so the two disagreed. Found by the
+                // differential fuzzer once its predicate arms generated `NOT` over a comparison
+                // at a realistic rate.
+                Expr::Compare { op, left, right }
+                    if matches!(op, CompareOp::Eq | CompareOp::Ne) =>
+                {
+                    Expr::Compare {
+                        op: negate_op(op),
+                        left,
+                        right,
+                    }
+                }
                 other => Expr::Not(Box::new(other)),
             }
         }
