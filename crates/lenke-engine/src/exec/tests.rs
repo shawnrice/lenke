@@ -7622,6 +7622,81 @@ fn a_range_seek_over_a_nan_column_agrees_with_the_scan() {
     }
 }
 
+// --- A path read above a JOIN ---
+
+/// A named path survives a JOIN. `hash_join` built its output with `Batch::of`, which sets
+/// `lineage: None`, so every path accessor above a comma-pattern join read NULL — a silent wrong
+/// answer on a shape that parses and runs. The TS engine returns the path, correctly: `p` is
+/// bound to the first pattern and joining on `b` has no business destroying it.
+///
+/// Measured across engines before the fix, on this fixture: TS gave `size(nodes(p))` = 2 per row
+/// and the full element list for `nodes(p)`, native gave `null` for both.
+#[test]
+fn a_named_path_survives_a_join() {
+    let nd = [
+        r#"{"id":"1","labels":["T"],"props":{"n":1}}"#,
+        r#"{"id":"2","labels":["T"],"props":{"n":2}}"#,
+        r#"{"id":"3","labels":["T"],"props":{"n":3}}"#,
+        r#"{"from":"1","to":"2","labels":["E"],"props":{}}"#,
+        r#"{"from":"3","to":"2","labels":["E"],"props":{}}"#,
+    ]
+    .join("\n");
+    let store = crate::ndjson::from_ndjson(&nd).unwrap();
+    let q = "MATCH p = (a:T)-[:E]->(b), (c:T)-[:E]->(b) \
+             RETURN path_length(p) AS x, a.n AS t ORDER BY t, x";
+    let plan = opt_plan(q, &store);
+    // The shape under test only exists if this really is a join.
+    assert!(format!("{plan:?}").contains("Join"), "not a join: {plan:?}");
+    let got: Vec<String> = crate::exec::try_run(&plan, &store)
+        .unwrap()
+        .rows
+        .iter()
+        .map(|r| format!("{:?}", r[0]))
+        .collect();
+    assert!(!got.is_empty(), "the join must match something");
+    assert!(
+        got.iter().all(|v| v == "Num(1.0)"),
+        "each path is one hop, not null: {got:?}"
+    );
+}
+
+/// The ELEMENTS, not just the length — a lineage carried with the wrong row indices would give a
+/// plausible length and the wrong nodes. Each row's path is `a -> b`, so the first element is `a`
+/// and the last is always vertex 2 (the join key).
+#[test]
+fn a_path_above_a_join_carries_the_right_rows() {
+    let nd = [
+        r#"{"id":"1","labels":["T"],"props":{"n":1}}"#,
+        r#"{"id":"2","labels":["T"],"props":{"n":2}}"#,
+        r#"{"id":"3","labels":["T"],"props":{"n":3}}"#,
+        r#"{"from":"1","to":"2","labels":["E"],"props":{}}"#,
+        r#"{"from":"3","to":"2","labels":["E"],"props":{}}"#,
+    ]
+    .join("\n");
+    let store = crate::ndjson::from_ndjson(&nd).unwrap();
+    let q = "MATCH p = (a:T)-[:E]->(b), (c:T)-[:E]->(b) \
+             RETURN nodes(p) AS ns, a.n AS t ORDER BY t";
+    let rows = crate::exec::try_run(&opt_plan(q, &store), &store).unwrap();
+    let mut seen: Vec<String> = Vec::new();
+    for r in rows.rows.iter() {
+        let ns = format!("{:?}", r[0]);
+        let t = format!("{:?}", r[1]);
+        // The path's FIRST node must be the row's own `a`, which is what a mis-gathered
+        // lineage would get wrong while still returning two elements.
+        let want_first = match t.as_str() {
+            "Num(1.0)" => "\"1\"",
+            "Num(3.0)" => "\"3\"",
+            other => panic!("unexpected a.n {other}"),
+        };
+        assert!(
+            ns.contains(want_first),
+            "row a.n={t} must start its path at {want_first}: {ns}"
+        );
+        seen.push(t);
+    }
+    assert!(seen.contains(&"Num(1.0)".to_string()) && seen.contains(&"Num(3.0)".to_string()));
+}
+
 // --- Lineage (path) ---
 
 /// Look up a key in a rich Path object `{vertices, edges, length}` (a `Value::Map`).

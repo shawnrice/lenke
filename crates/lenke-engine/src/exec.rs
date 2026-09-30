@@ -2200,7 +2200,26 @@ fn hash_join(lb: &Batch, rb: &Batch, on: &[(usize, usize)]) -> Batch {
     }
     let mut slots: Vec<Col> = lb.slots.iter().map(|c| c.gather(&keep_l)).collect();
     slots.extend(rb.slots.iter().map(|c| c.gather(&keep_r)));
-    Batch::of(slots)
+    let mut out = Batch::of(slots);
+    // CARRY THE LINEAGE. `Batch::of` sets `lineage: None`, so before this every path accessor
+    // above a comma-pattern join read NULL — a silent wrong answer on a shape that parses and
+    // runs, and one the TS engine gets right (it returns the path). `p` is bound to one pattern
+    // and joining on a shared variable has no business destroying it.
+    //
+    // The row indices are already to hand: `keep_l` and `keep_r` are exactly the gathers the
+    // slot columns use, so the lineage gathers by the same ones and each output row keeps ITS
+    // OWN path rather than some other row's.
+    //
+    // A `Batch` holds ONE lineage, so when BOTH sides carry one only the left survives. That is
+    // a real limit rather than a choice, and it is the left because a named path written before
+    // the comma (`MATCH p = <pattern>, <pattern2>`) lands there; two named paths across a join
+    // would need the sidecar keyed by path variable, which is a larger change than this fix.
+    out.lineage = match (lb.lineage.as_ref(), rb.lineage.as_ref()) {
+        (Some(l), _) => Some(l.gather(&keep_l)),
+        (None, Some(r)) => Some(r.gather(&keep_r)),
+        (None, None) => None,
+    };
+    out
 }
 
 /// Pull at most `cap` rows from a ROW-PRESERVING chain (Scan / IndexSeek /

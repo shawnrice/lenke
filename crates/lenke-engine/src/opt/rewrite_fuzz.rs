@@ -1520,10 +1520,12 @@ fn gen_plan_one(rng: &mut Lcg) -> Plan {
             plan: Plan::join(left.plan, right_raw.plan, on),
             width: lw + rw,
             bound_edge: left.bound_edge || right_raw.bound_edge,
-            // Deliberately FALSE regardless of the sides: a join's lineage handling is
-            // its own question, and projecting a path above one would be testing that
-            // rather than the path projection. Left for a widening that means to.
-            tracks_path: false,
+            // A join PRESERVES the lineage now (`hash_join` gathers it by the same row
+            // indices as the slot columns), so a path projected above one is meaningful. It was
+            // not before: `Batch::of` set `lineage: None` and every path accessor above a join
+            // read NULL, which is the bug this flag's old comment was quietly standing on.
+            // A batch holds ONE lineage, so the LEFT side's is what survives a two-sided join.
+            tracks_path: left.tracks_path || right_raw.tracks_path,
         };
         // DIRECTLY above the join, with nothing in between. The pushdown arm matches
         // `Filter` over `Join`, so a filter separated from it by a `Distinct` or a

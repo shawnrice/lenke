@@ -746,12 +746,18 @@ const genQuery = (r: () => number): string => {
     // independently. Element-map key order is deterministic on both sides (labels sorted,
     // properties in already-sorted `prop_keys()` order), so this cannot report a false
     // difference from map ordering.
+    // `edges(pp)`, NOT `relationships(pp)`: the accessor is spelled `edges` in this dialect
+    // (`gql.rs` maps "edges" to `PathPart::Relationships`), and `relationships()` is an unknown
+    // FUNCTION. Both engines rejected it identically, so the pre-existing
+    // `size(relationships(pp))` entry and the `relationships(pp)` one added in item 58 were both
+    // VACUOUS — an arm that looks like coverage, errors on both sides, and compares nothing.
     const acc = pick(r, [
       'path_length(pp)',
       'size(nodes(pp))',
-      'size(relationships(pp))',
+      'size(edges(pp))',
       'nodes(pp)',
-      'relationships(pp)',
+      'edges(pp)',
+      'elements(pp)',
     ]);
 
     return `MATCH pp = (a:T)((x)-[:E]->(m))${q}(b:T) RETURN ${acc} AS x, b.n AS t ORDER BY t, x`;
