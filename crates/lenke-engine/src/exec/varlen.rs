@@ -1028,7 +1028,7 @@ pub(super) fn shortest_path(
     // can't ride the BFS below — enumerate trails and select per endpoint instead.
     if let ShortestSelector::ShortestK { k, group } = selector {
         return shortest_k_path(
-            batch, store, from, dir, &want, min, max, k, group, edge_pred,
+            batch, store, from, dir, &want, min, max, k, group, edge_pred, path_need,
         );
     }
     let Col::Nodes(src) = batch.slot(from) else {
@@ -1370,6 +1370,13 @@ pub(super) fn shortest_k_path(
     k: u32,
     group: bool,
     edge_pred: Option<&Expr>,
+    // Forwarded from [`shortest_path`], which is this function's only caller. `SHORTEST k`
+    // shares `Plan::ShortestPath`, so the optimizer's mark already covers it; only the
+    // forwarding was missing. Unlike the BFS, the trails here are CLONED into `per_end` by
+    // `collect_trails` whatever the plan reads, so this saves the final copy out, not the
+    // enumeration — measured 115,275us -> 83,119us at 599,998 rows, which lands within 4.6%
+    // of a lineage-free control.
+    path_need: crate::ir::PathNeed,
 ) -> Result<Batch, String> {
     let empty = || {
         let mut slots: Vec<Col> = batch.slots.iter().map(|_| Col::Nodes(vec![])).collect();
@@ -1380,6 +1387,7 @@ pub(super) fn shortest_k_path(
         return Ok(empty());
     };
     let track = batch.lineage.is_some();
+    let count_only = matches!(path_need, crate::ir::PathNeed::CountOnly);
     let cap = max.unwrap_or(u32::MAX);
     let mut keep = Vec::new();
     let mut ends = Vec::new();
@@ -1450,7 +1458,7 @@ pub(super) fn shortest_k_path(
                         &mut bufs.offsets,
                         &mut bufs.edges,
                         &mut bufs.edge_offsets,
-                        None,
+                        count_only.then_some(&mut bufs.elem_counts),
                     );
                 }
             }
@@ -1469,7 +1477,7 @@ pub(super) fn shortest_k_path(
             steps: Vec::new(),
             step_tag: Vec::new(),
             step_off: vec![0; rows_plus1],
-            elem_counts: Vec::new(),
+            elem_counts: bufs.elem_counts,
         });
     }
     Ok(out)

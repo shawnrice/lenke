@@ -6355,8 +6355,10 @@ fn the_shortest_path_ceiling_is_an_error_not_a_truncation() {
 fn the_shortest_k_traversal_is_guarded_too() {
     let mut store = chain_store(60);
     store.set_limit(crate::store::ConfigId::LimitsIntermediate, 5_000);
+    // `nodes(p)`, not `path_length(p)`: the latter is marked `CountOnly`, which records sizes
+    // and so has no path elements to charge against the ceiling (see item 44's note).
     let err = try_gql(
-        "MATCH p = SHORTEST 2 (x:N)-[:R]->*(y:N) RETURN path_length(p) AS len",
+        "MATCH p = SHORTEST 2 (x:N)-[:R]->*(y:N) RETURN nodes(p) AS ns",
         &store,
     )
     .expect_err("SHORTEST 2 all-pairs must exceed a 5k ceiling");
@@ -6690,6 +6692,67 @@ fn only_the_topmost_path_producer_is_marked() {
         count_marked(&plan) <= 1,
         "at most the topmost producer may suppress: {plan:?}"
     );
+}
+
+/// `SHORTEST k` runs `shortest_k_path`, a trail enumerator rather than the BFS, and it shares
+/// `Plan::ShortestPath` — so the optimizer's mark already covered it and only the forwarding
+/// was missing. The same equivalence has to hold there: sizes recorded must equal sizes
+/// measured off materialized elements.
+#[test]
+fn a_size_only_shortest_k_read_agrees_with_reading_the_elements() {
+    let mut store = chain_store(40);
+    store.set_limit(crate::store::ConfigId::LimitsIntermediate, 50_000_000);
+    let counted = "MATCH p = SHORTEST 2 (x:N)-[:R]->*(y:N) RETURN path_length(p) AS n";
+    let material = "MATCH p = SHORTEST 2 (x:N)-[:R]->*(y:N) RETURN size(edges(p)) AS n";
+    assert!(
+        any_count_only(&opt_plan(counted, &store)),
+        "SHORTEST k must mark CountOnly"
+    );
+    let nums = |q: &str| -> Vec<f64> {
+        let mut v: Vec<f64> = crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .iter()
+            .map(|r| match r[0] {
+                Value::Num(x) => x,
+                ref o => panic!("{o:?}"),
+            })
+            .collect();
+        v.sort_by(f64::total_cmp);
+        v
+    };
+    let got = nums(counted);
+    assert_eq!(got, nums(material));
+    // Not vacuous: a 40-node chain gives a spread of lengths, including 0 for each source.
+    assert!(
+        got.len() > 100 && got.contains(&0.0) && got.contains(&5.0),
+        "{}",
+        got.len()
+    );
+}
+
+/// `cardinality(p)` over `SHORTEST k` — the node count as well as the hop count.
+#[test]
+fn shortest_k_cardinality_agrees_in_both_representations() {
+    let mut store = chain_store(40);
+    store.set_limit(crate::store::ConfigId::LimitsIntermediate, 50_000_000);
+    let counted = "MATCH p = SHORTEST 2 (x:N)-[:R]->*(y:N) RETURN cardinality(p) AS n";
+    let material =
+        "MATCH p = SHORTEST 2 (x:N)-[:R]->*(y:N) RETURN size(nodes(p)) + size(edges(p)) AS n";
+    let nums = |q: &str| -> Vec<f64> {
+        let mut v: Vec<f64> = crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .iter()
+            .map(|r| match r[0] {
+                Value::Num(x) => x,
+                ref o => panic!("{o:?}"),
+            })
+            .collect();
+        v.sort_by(f64::total_cmp);
+        v
+    };
+    assert_eq!(nums(counted), nums(material));
 }
 
 // --- Lineage (path) ---
