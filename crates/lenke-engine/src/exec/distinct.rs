@@ -358,6 +358,7 @@ fn distinct_chain_endpoints(chain: &Plan, store: &Store) -> Option<Vec<u32>> {
             until: None,
             body_filter: None,
             double_loops,
+            ..
         } => {
             if *from != chain_pull_width(input)?.checked_sub(1)? {
                 return None;

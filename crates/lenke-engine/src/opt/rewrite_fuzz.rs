@@ -1050,6 +1050,10 @@ fn gen_chain(rng: &mut Lcg, hops: usize) -> Gen {
             let min = rng.below(2) as u32;
             g.tracks_path = true;
             g.plan = Plan::VarLength {
+                // RAW always materializes; `optimize_indexed` is what may mark it
+                // `CountOnly`, so the raw-vs-optimized comparison runs one side through each
+                // representation and demands the same rows.
+                path_need: crate::ir::PathNeed::Full,
                 input: Box::new(g.plan),
                 from: g.width - 1,
                 dir,

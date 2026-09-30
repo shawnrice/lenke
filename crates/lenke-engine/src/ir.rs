@@ -760,6 +760,9 @@ pub enum Plan {
         /// (`false`); a Gremlin `both()` walk doubles it (`true`, only bites on
         /// `Dir::Both`) — matching the TS engine.
         double_loops: bool,
+        /// How much of the path the plan reads. `Full` unless the optimizer proved
+        /// otherwise — see [`PathNeed`].
+        path_need: PathNeed,
     },
     /// A quantified subpath group `((x)-[e]->(y)){min,max}` that BINDS its inner
     /// variables as GROUP variables — each becomes a LIST over the repetitions. Like
@@ -1461,6 +1464,9 @@ impl Plan {
             until: None,
             body_filter: None,
             double_loops: false,
+            // The builder is used by the lowerings and by tests, neither of which does the
+            // whole-plan analysis; the optimizer sets this. `Full` is the safe default.
+            path_need: PathNeed::Full,
         }
     }
 
@@ -1493,6 +1499,7 @@ impl Plan {
             until,
             body_filter,
             double_loops,
+            path_need: PathNeed::Full,
         }
     }
 

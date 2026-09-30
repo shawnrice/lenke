@@ -1206,6 +1206,7 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
             until,
             body_filter,
             double_loops,
+            path_need,
         } => var_length(
             &pull(input, store, track)?,
             store,
@@ -1221,6 +1222,7 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
             until.as_deref(),
             body_filter.as_deref(),
             *double_loops,
+            *path_need,
         )?,
         Plan::RepeatGroup {
             input,
@@ -1249,6 +1251,8 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
             None,
             None,
             false,
+            // `RepeatGroup` has no `path_need` of its own yet, so it materializes.
+            crate::ir::PathNeed::Full,
         )?,
         Plan::NestedGroup {
             input,
@@ -2338,6 +2342,7 @@ fn streaming_chain(plan: &Plan, store: &Store) -> Option<(Plan, Vec<u32>)> {
             until,
             body_filter,
             double_loops,
+            path_need,
         } => {
             let (body, ids) = streaming_chain(input, store)?;
             Some((
@@ -2352,6 +2357,7 @@ fn streaming_chain(plan: &Plan, store: &Store) -> Option<(Plan, Vec<u32>)> {
                     until: until.clone(),
                     body_filter: body_filter.clone(),
                     double_loops: *double_loops,
+                    path_need: *path_need,
                 },
                 ids,
             ))
@@ -4593,6 +4599,7 @@ fn pull_body(plan: &Plan, store: &Store, seed: &Batch) -> Result<Batch, String> 
             until,
             body_filter,
             double_loops,
+            path_need,
         } => var_length(
             &pull_body(input, store, seed)?,
             store,
@@ -4608,6 +4615,7 @@ fn pull_body(plan: &Plan, store: &Store, seed: &Batch) -> Result<Batch, String> 
             until.as_deref(),
             body_filter.as_deref(),
             *double_loops,
+            *path_need,
         )?,
         Plan::Filter { input, pred } => {
             let b = pull_body(input, store, seed)?;

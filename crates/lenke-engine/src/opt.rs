@@ -186,10 +186,13 @@ fn set_path_need(plan: Plan) -> Plan {
     // operators that CALL them also build fresh lineage of their own, so they stay out.
     fn mark(p: &mut Plan) {
         match p {
-            Plan::ShortestPath { path_need, .. } => {
+            // The path-PRODUCING operators. Both stop the descent rather than continuing:
+            // whatever feeds them materializes its input's path, so a lower producer stays
+            // `Full`. (`VarLength` still WALKS its chain either way — the DFS stacks are the
+            // traversal state — so what `CountOnly` saves there is copying them out, which
+            // measured 58,891us -> 22,662us at 599,998 rows.)
+            Plan::ShortestPath { path_need, .. } | Plan::VarLength { path_need, .. } => {
                 *path_need = crate::ir::PathNeed::CountOnly;
-                // Do NOT descend: a second, lower `ShortestPath` feeds this one, which
-                // materializes its input's path.
             }
             Plan::Project { input, .. }
             | Plan::Filter { input, .. }
@@ -680,6 +683,7 @@ fn map_children(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
             until,
             body_filter,
             double_loops,
+            path_need,
         } => {
             let (i, c) = rewrite(*input, idx);
             // `repeat(x).times(1)` — a VarLength of EXACTLY one hop with no until /
@@ -718,6 +722,7 @@ fn map_children(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
                     until,
                     body_filter,
                     double_loops,
+                    path_need,
                 },
                 c,
             )
@@ -1389,6 +1394,7 @@ fn apply_local(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
                 until,
                 body_filter,
                 double_loops,
+                path_need,
             } => {
                 let (below, above) = split_pushable(pred, width(&vin));
                 match below {
@@ -1405,6 +1411,7 @@ fn apply_local(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
                             until,
                             body_filter,
                             double_loops,
+                            path_need,
                         };
                         (
                             Plan::Filter {
@@ -1429,6 +1436,7 @@ fn apply_local(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
                             until,
                             body_filter,
                             double_loops,
+                            path_need,
                         };
                         match above {
                             Some(a) => (

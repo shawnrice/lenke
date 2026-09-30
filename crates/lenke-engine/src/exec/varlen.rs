@@ -45,6 +45,11 @@ pub(super) fn var_length(
     // Gremlin `both()` self-loop doubling — a self-loop is walked twice (see the
     // `double_loops` field on Plan::VarLength).
     double_loops: bool,
+    // `CountOnly` records each emitted path's SIZE instead of copying its elements out of
+    // the walk stacks. Unlike the shortest-path BFS the chain cannot be skipped here — the
+    // DFS's `node_stack`/`edge_stack` ARE the traversal state — so this saves the copy, not
+    // the walk. Measured 58,891us -> 22,662us at 599,998 rows.
+    path_need: crate::ir::PathNeed,
 ) -> Result<Batch, String> {
     // Anti-runaway budget: a per-path (WALK) `repeat`/var-length expansion fans out as
     // degree^depth, so on a dense graph it materializes billions of rows and OOM-kills
@@ -88,6 +93,7 @@ pub(super) fn var_length(
         group_binds,
         k,
         budget,
+        count_only: matches!(path_need, crate::ir::PathNeed::CountOnly),
     };
     run_varlen(
         src,
@@ -136,7 +142,7 @@ pub(super) fn var_length(
             steps: Vec::new(),
             step_tag: Vec::new(),
             step_off: vec![0; rows_plus1],
-            elem_counts: Vec::new(),
+            elem_counts: bufs.elem_counts,
         });
     }
     Ok(out)
@@ -244,6 +250,7 @@ struct CollectEmit<'a> {
     group_binds: &'a [(crate::ir::GroupPos, usize)],
     k: u32,
     budget: u64,
+    count_only: bool,
 }
 
 impl VarlenEmit for CollectEmit<'_> {
@@ -261,7 +268,7 @@ impl VarlenEmit for CollectEmit<'_> {
                 &mut self.bufs.offsets,
                 &mut self.bufs.edges,
                 &mut self.bufs.edge_offsets,
-                None,
+                self.count_only.then_some(&mut self.bufs.elem_counts),
             );
         }
         if !self.group_binds.is_empty() {
@@ -476,6 +483,7 @@ pub(super) fn try_stream_varlen_json(
         until,
         body_filter,
         double_loops,
+        ..
     } = vl
     else {
         return None;
@@ -1639,6 +1647,10 @@ struct PathBufs {
     offsets: Vec<usize>,
     edges: Vec<Value>,
     edge_offsets: Vec<usize>,
+    /// Non-empty when the plan reads only the path's SIZE: the chains are still walked (the
+    /// DFS's stacks ARE the chain), but they are never copied out. That copy is what a
+    /// size-only read was paying for — measured 58,891us -> 22,662us at 599,998 rows.
+    elem_counts: Vec<(u32, u32)>,
 }
 
 impl PathBufs {
@@ -1648,6 +1660,7 @@ impl PathBufs {
             offsets: vec![0],
             edges: Vec::new(),
             edge_offsets: vec![0],
+            elem_counts: Vec::new(),
         }
     }
 }

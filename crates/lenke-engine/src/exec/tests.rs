@@ -6414,10 +6414,13 @@ fn an_anchored_shortest_path_is_unaffected_by_the_ceiling() {
 
 // --- PathNeed::CountOnly (sizes recorded, chains never built) ---
 
-/// Is any `ShortestPath` in this plan marked `CountOnly`?
+/// Is any path-producing operator in this plan marked `CountOnly`?
 fn any_count_only(p: &Plan) -> bool {
     match p {
         Plan::ShortestPath {
+            path_need, input, ..
+        }
+        | Plan::VarLength {
             path_need, input, ..
         } => matches!(path_need, crate::ir::PathNeed::CountOnly) || any_count_only(input),
         Plan::Project { input, .. }
@@ -6425,10 +6428,27 @@ fn any_count_only(p: &Plan) -> bool {
         | Plan::Aggregate { input, .. }
         | Plan::Distinct { input }
         | Plan::OrderPage { input, .. }
-        | Plan::VarLength { input, .. }
         | Plan::Expand { input, .. }
         | Plan::RepeatGroup { input, .. } => any_count_only(input),
         _ => false,
+    }
+}
+
+/// The `path_need` of the plan's `ShortestPath`, specifically. `any_count_only` cannot say
+/// this any more now that `VarLength` is markable too: a plan with a marked var-length hop
+/// ABOVE an unmarked shortest path answers "yes" there while the shortest path is still Full.
+fn shortest_path_need(p: &Plan) -> Option<crate::ir::PathNeed> {
+    match p {
+        Plan::ShortestPath { path_need, .. } => Some(*path_need),
+        Plan::Project { input, .. }
+        | Plan::Filter { input, .. }
+        | Plan::Aggregate { input, .. }
+        | Plan::Distinct { input }
+        | Plan::OrderPage { input, .. }
+        | Plan::VarLength { input, .. }
+        | Plan::Expand { input, .. }
+        | Plan::RepeatGroup { input, .. } => shortest_path_need(input),
+        _ => None,
     }
 }
 
@@ -6524,9 +6544,10 @@ fn an_operator_that_rebuilds_the_path_above_it_forces_full_lineage() {
     let q = "MATCH p = ANY SHORTEST (x:N)-[:R]->*(y:N) \
              MATCH (y)-[:R]->{0,1}(z:N) RETURN path_length(p) AS n";
     let plan = opt_plan(q, &store);
-    assert!(
-        !any_count_only(&plan),
-        "a lineage-rebuilding operator above the hop must keep it Full: {plan:?}"
+    assert_eq!(
+        shortest_path_need(&plan),
+        Some(crate::ir::PathNeed::Full),
+        "a lineage-rebuilding operator above the shortest path must keep IT Full: {plan:?}"
     );
 }
 
@@ -6569,6 +6590,106 @@ fn gathering_a_suppressed_lineage_keeps_the_sizes() {
     got.sort_by(f64::total_cmp);
     // v9 is reachable from v0..v9, at distances 9,8,…,0 — the gather must keep each row's own.
     assert_eq!(got, vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
+}
+
+/// The same equivalence as for the shortest path, over a VARIABLE-LENGTH hop, which is a
+/// different executor: a DFS whose `node_stack` / `edge_stack` ARE the chain. So `CountOnly`
+/// there cannot skip the walk, only copying it out — which is still 2.56x (55,152us ->
+/// 21,530us at 599,998 rows).
+#[test]
+fn a_size_only_varlen_read_agrees_with_reading_the_elements() {
+    let mut store = chain_store(40);
+    store.set_limit(crate::store::ConfigId::LimitsIntermediate, 50_000_000);
+    let counted = "MATCH p = (x:N)-[:R]->{1,3}(y) RETURN path_length(p) AS n";
+    let material = "MATCH p = (x:N)-[:R]->{1,3}(y) RETURN size(edges(p)) AS n";
+    assert!(
+        any_count_only(&opt_plan(counted, &store)),
+        "path_length must mark CountOnly"
+    );
+    assert!(
+        !any_count_only(&opt_plan(material, &store)),
+        "reading edges(p) must keep the elements"
+    );
+    let nums = |q: &str| -> Vec<f64> {
+        let mut v: Vec<f64> = crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .iter()
+            .map(|r| match r[0] {
+                Value::Num(x) => x,
+                ref o => panic!("{o:?}"),
+            })
+            .collect();
+        v.sort_by(f64::total_cmp);
+        v
+    };
+    let got = nums(counted);
+    assert_eq!(got, nums(material));
+    // And it is not vacuously equal: a 40-node chain has hops of 1, 2 and 3.
+    assert!(
+        got.contains(&1.0) && got.contains(&2.0) && got.contains(&3.0),
+        "{got:?}"
+    );
+}
+
+/// `cardinality(p)` over a var-length hop: the node count and the edge count are tracked
+/// separately, so a mode that got only the hops right would pass the test above and fail here.
+#[test]
+fn varlen_cardinality_agrees_in_both_representations() {
+    let mut store = chain_store(40);
+    store.set_limit(crate::store::ConfigId::LimitsIntermediate, 50_000_000);
+    let counted = "MATCH p = (x:N)-[:R]->{1,3}(y) RETURN cardinality(p) AS n";
+    let material = "MATCH p = (x:N)-[:R]->{1,3}(y) RETURN size(nodes(p)) + size(edges(p)) AS n";
+    let nums = |q: &str| -> Vec<f64> {
+        let mut v: Vec<f64> = crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .iter()
+            .map(|r| match r[0] {
+                Value::Num(x) => x,
+                ref o => panic!("{o:?}"),
+            })
+            .collect();
+        v.sort_by(f64::total_cmp);
+        v
+    };
+    assert_eq!(nums(counted), nums(material));
+}
+
+/// Marking stops at the FIRST path producer reached from the root, so a lower producer keeps
+/// materializing. That is what makes a suppressed lineage never become the INPUT of an
+/// operator that would rebuild it — the case that produced the wrong answers at seed 632.
+/// Here a var-length hop sits above a shortest path: exactly one of them may be marked.
+#[test]
+fn only_the_topmost_path_producer_is_marked() {
+    let mut store = chain_store(20);
+    store.set_limit(crate::store::ConfigId::LimitsIntermediate, 50_000_000);
+    let q = "MATCH p = ANY SHORTEST (x:N)-[:R]->*(y:N) \
+             MATCH (y)-[:R]->{1,2}(z:N) RETURN path_length(p) AS n";
+    let plan = opt_plan(q, &store);
+    fn count_marked(p: &Plan) -> usize {
+        let here = match p {
+            Plan::ShortestPath { path_need, .. } | Plan::VarLength { path_need, .. } => {
+                usize::from(matches!(path_need, crate::ir::PathNeed::CountOnly))
+            }
+            _ => 0,
+        };
+        here + match p {
+            Plan::ShortestPath { input, .. }
+            | Plan::VarLength { input, .. }
+            | Plan::Project { input, .. }
+            | Plan::Filter { input, .. }
+            | Plan::Aggregate { input, .. }
+            | Plan::Distinct { input }
+            | Plan::Expand { input, .. }
+            | Plan::OrderPage { input, .. } => count_marked(input),
+            _ => 0,
+        }
+    }
+    assert!(
+        count_marked(&plan) <= 1,
+        "at most the topmost producer may suppress: {plan:?}"
+    );
 }
 
 // --- Lineage (path) ---

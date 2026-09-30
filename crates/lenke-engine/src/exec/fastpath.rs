@@ -971,6 +971,7 @@ pub(super) fn try_varlen_count(
         until,
         body_filter,
         double_loops,
+        ..
     } = input
     else {
         return None;
@@ -1287,6 +1288,7 @@ pub(super) fn try_varlen_distinct_count(
         until,
         body_filter,
         double_loops: _, // a distinct endpoint set is blind to edge multiplicity
+        ..
     } = input
     else {
         return None;
@@ -1366,6 +1368,7 @@ pub(super) fn try_varlen_distinctby_count(
             until,
             body_filter,
             double_loops: _, // a distinct endpoint set is blind to edge multiplicity
+            ..
         } => {
             if until.is_some()
                 || body_filter.is_some()
@@ -1567,6 +1570,7 @@ pub(super) fn try_varlen_agg(
         until,
         body_filter,
         double_loops,
+        ..
     } = input
     else {
         return None;

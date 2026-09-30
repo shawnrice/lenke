@@ -223,6 +223,53 @@ pub fn run(cfg: &Cfg) {
                 ),
             ],
         );
+        // The OTHER three path-producing operators, each asked for nothing but the path's
+        // SIZE. `ShortestPath` skips the chain walk for this (PathNeed::CountOnly); these
+        // three still materialize every chain. Whether that is worth fixing is what these
+        // rows answer — `shortest_k` ENUMERATES TRAILS rather than running one BFS, so its
+        // cost profile is different and the win may simply not be there.
+        //
+        // Each is paired with the same lineage-free control as above: a property projection
+        // over the same rows. The gap between a row and its control is the prize.
+        table(
+            "query/shortest (size-only reads that still materialize)",
+            &sp,
+            false,
+            cfg,
+            &[
+                // UNANCHORED, unlike the rows above. Anchoring one source and bounding the
+                // hops leaves 12 rows, where the `*` shortest path reaches 47,007 — far too
+                // few for the materialization cost to be visible at all. Every source, two
+                // hops, is the shape that makes these comparable.
+                (
+                    "varlen control",
+                    "MATCH (x:Person)-[:KNOWS]->{1,2}(y) RETURN y.name AS n",
+                ),
+                (
+                    "varlen + path",
+                    "MATCH p = (x:Person)-[:KNOWS]->{1,2}(y) RETURN path_length(p) AS len",
+                ),
+                // No label on the group's inner nodes: a label/property/WHERE there is
+                // E_NOT_IMPLEMENTED, so spelling it that way measures the error path.
+                (
+                    "repeat-group control",
+                    "MATCH ((a)-[:KNOWS]->(b)){1,2} RETURN b.name AS n",
+                ),
+                (
+                    "repeat-group + path",
+                    "MATCH p = ((a)-[:KNOWS]->(b)){1,2} RETURN path_length(p) AS len",
+                ),
+                (
+                    "shortest-k control",
+                    "MATCH p = SHORTEST 2 (x:Person)-[:KNOWS]->{1,2}(y) RETURN y.name AS n",
+                ),
+                (
+                    "shortest-k + path",
+                    "MATCH p = SHORTEST 2 (x:Person)-[:KNOWS]->{1,2}(y) \
+                     RETURN path_length(p) AS len",
+                ),
+            ],
+        );
         // The endpoint-anchored early stop needs the hash index to fire, so it gets its
         // own store: with both ends pinned the BFS stops at the target's depth instead of
         // sweeping the component.

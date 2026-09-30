@@ -392,6 +392,9 @@ pub(super) fn try_reverse_varlen(
         until,
         body_filter,
         double_loops,
+        // Irrelevant here: this whole function returns `None` when `track` is set, so it
+        // never runs for a query that reads a path at all.
+        path_need: _,
     } = input
     else {
         return None;
@@ -476,6 +479,9 @@ pub(super) fn try_reverse_varlen(
         None,
         None,
         false,
+        // The reverse walk's seed carries no lineage (it is an internal endpoint bucket, not
+        // the user's path), so nothing is materialized either way and the mode is moot.
+        crate::ir::PathNeed::Full,
     )
     .ok()?;
     // rev is [endpoint(c) gathered, ends(b = var-source = slot L)]. Build rows headed by
