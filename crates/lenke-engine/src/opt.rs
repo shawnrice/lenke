@@ -251,6 +251,56 @@ fn drop_unread_group_binds(plan: Plan) -> Plan {
                     per_rep_pred,
                 }
             }
+            // The multi-element-unit form of the same thing. A NESTED group appends one list
+            // column per bound inner variable (`bind_slots`) exactly as a `RepeatGroup`
+            // appends `group_binds`, and builds them whether or not anything reads them.
+            // Measured on a 20,000-node fixture, 1,261,238 rows, `count(*)` over
+            // `((x)-[:R]->(m)<-[:R]-(y)){1,2}`: 665.3ms -> 349.8ms, **1.90x**.
+            //
+            // Unlike `RepeatGroup` this never flattens to a var-length hop — a multi-element
+            // unit emits only at rep boundaries, so the row counts differ — so the lists are
+            // all that can go.
+            //
+            // A `per_rep_pred` BLOCKS it, conservatively rather than because it is known to
+            // matter. The evidence says it does not: `bind_slots` only sizes the output columns
+            // (exec/nested.rs) while the predicate is handed to the walker separately and
+            // evaluated on a per-rep mini-scope, and the parser says as much ("Independent of
+            // the group list bindings", gql.rs). But it cannot be TESTED today: a `NestedGroup`
+            // needs a unit with a reversed hop, and on that shape a per-rep `WHERE` currently
+            // returns zero rows for ANY predicate, including a trivially true one (26 rows
+            // unfiltered, 0 with `WHERE x.name <> 'zz'`; a forward-only unit and a single-hop
+            // unit both filter correctly). That is a separate pre-existing bug — verified
+            // identical with and without this pass — and until it is fixed there is no way to
+            // show the rewrite is safe under a per-rep filter. Declining costs only the
+            // performance on those queries.
+            Plan::NestedGroup {
+                input,
+                from,
+                unit,
+                min,
+                max,
+                mode,
+                endpoint_slot,
+                bind_slots,
+                per_rep_pred,
+            } => {
+                let unread = !bind_slots.is_empty()
+                    && per_rep_pred.is_none()
+                    && bind_slots
+                        .iter()
+                        .all(|&slot| read_above.is_none_or(|hi| hi < slot));
+                Plan::NestedGroup {
+                    input,
+                    from,
+                    unit,
+                    min,
+                    max,
+                    mode,
+                    endpoint_slot,
+                    bind_slots: if unread { Vec::new() } else { bind_slots },
+                    per_rep_pred,
+                }
+            }
             Plan::Project { input, items } => {
                 let hi = expr_max(items.iter().map(|(_, e)| e));
                 let input = Box::new(go(*input, merge_max(read_above, hi)));

@@ -283,6 +283,14 @@ pub fn run(cfg: &Cfg) {
                     "repeat-group head(b)",
                     "MATCH ((a)-[:KNOWS]->(b)){1,2} RETURN head(b) AS h",
                 ),
+                // A NESTED group — a unit with a reversed hop, which is what lowers to
+                // `NestedGroup` rather than `RepeatGroup`. It appends one list column per bound
+                // inner variable and built them whether or not anything read them; a bare
+                // count reads none. The guard for that: ~665ms means the lists came back.
+                (
+                    "nested-group count",
+                    "MATCH ((x)-[:KNOWS]->(m)<-[:KNOWS]-(y)){1,2} RETURN count(*) AS c",
+                ),
                 // The valid comparison, and where the real finding was: both count the same
                 // 599,998 rows and return the identical number. A var-length hop shortcuts
                 // `count(*)`; a group had no such path, so it enumerated every row.

@@ -7146,6 +7146,75 @@ fn head_and_last_over_a_boxed_column_differ_where_they_should() {
     );
 }
 
+/// Does this plan's `NestedGroup` still carry its bound list columns?
+fn nested_bind_count(p: &Plan) -> Option<usize> {
+    match p {
+        Plan::NestedGroup { bind_slots, .. } => Some(bind_slots.len()),
+        Plan::Project { input, .. }
+        | Plan::Aggregate { input, .. }
+        | Plan::Filter { input, .. }
+        | Plan::Distinct { input }
+        | Plan::OrderPage { input, .. } => nested_bind_count(input),
+        _ => None,
+    }
+}
+
+/// The multi-element-unit form of item 47. A NESTED group appends one list column per bound
+/// inner variable and built them whether or not anything read them. Measured on 1,261,238 rows:
+/// `count(*)` over a two-hop unit went 665.3ms -> 349.8ms, 1.90x.
+///
+/// Unlike a single-hop group this never flattens to a var-length hop (a multi-element unit emits
+/// only at rep boundaries, so the row counts differ), so the lists are all that can go.
+#[test]
+fn a_nested_group_whose_lists_are_unread_drops_them() {
+    let store = chain_store(12);
+    // A unit with a reverse hop, which is what lowers to `NestedGroup` rather than
+    // `RepeatGroup` — a two-hop unit over ONE direction stays a RepeatGroup with k = 2.
+    let q = "MATCH ((x)-[:R]->(m)<-[:R]-(y)){1,2} RETURN count(*) AS c";
+    let plan = opt_plan(q, &store);
+    assert_eq!(
+        nested_bind_count(&plan),
+        Some(0),
+        "a bare count reads no column, so the lists must go: {plan:?}"
+    );
+}
+
+/// Reading one of the lists blocks it, the same condition as for a single-hop group.
+#[test]
+fn reading_a_nested_group_list_keeps_it() {
+    let store = chain_store(12);
+    let q = "MATCH ((x)-[:R]->(m)<-[:R]-(y)){1,2} RETURN size(m) AS k";
+    match crate::gql::parse(q) {
+        Ok(raw) => {
+            let plan = crate::opt::optimize_indexed(raw, &store);
+            assert!(
+                nested_bind_count(&plan).is_some_and(|n| n > 0),
+                "a projection that reads a bound list must keep the lists: {plan:?}"
+            );
+        }
+        Err(e) => assert!(e.contains("E_"), "{e}"),
+    }
+}
+
+/// A per-rep `WHERE` BLOCKS the rewrite, and deliberately so rather than because it is known to
+/// matter: a `NestedGroup` needs a unit with a reversed hop, and on that shape a per-rep filter
+/// currently returns zero rows for ANY predicate — 26 rows unfiltered against 0 with a
+/// trivially true `WHERE x.name <> 'zz'`, while a forward-only unit and a single-hop unit both
+/// filter correctly. That is a separate pre-existing bug (identical with and without the pass),
+/// and until it is fixed there is no way to show the rewrite is safe here. So the conservative
+/// choice is pinned instead.
+#[test]
+fn a_per_rep_filtered_nested_group_keeps_its_lists() {
+    let store = chain_store(12);
+    let q = "MATCH ((x)-[e:R]->(m)<-[:R]-(y) WHERE e.w >= 0){1,2} RETURN count(*) AS c";
+    let raw = crate::gql::parse(q).expect("the per-rep spelling must parse");
+    let plan = crate::opt::optimize_indexed(raw, &store);
+    assert!(
+        nested_bind_count(&plan).is_some_and(|n| n > 0),
+        "a per-rep filter must keep the lists: {plan:?}"
+    );
+}
+
 // --- Lineage (path) ---
 
 /// Look up a key in a rich Path object `{vertices, edges, length}` (a `Value::Map`).
