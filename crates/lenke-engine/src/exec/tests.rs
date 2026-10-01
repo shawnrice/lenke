@@ -9406,6 +9406,227 @@ fn a_raising_predicate_still_raises_when_it_is_reached() {
     }
 }
 
+// --- Isolated predicate-cost harness (AND/OR elimination) ---
+
+/// How much does evaluating BOTH operands of an `AND`/`OR` over EVERY row cost, against
+/// evaluating the second only where the first is not already decisive?
+///
+/// Run it:
+///
+/// ```text
+/// cargo test --release --manifest-path crates/lenke-engine/Cargo.toml \
+///   -- --ignored --nocapture predicate_elimination_floor
+/// ```
+///
+/// # Why this is a test and not an example
+///
+/// The honest floor has to include the GATHER: elimination means building a smaller batch of the
+/// rows that survived the first operand and evaluating the second on that, so the gather is part
+/// of the cost, not an accounting detail. `eval_mask`, `pull` and `Batch::gather` are all
+/// crate-private, which an `examples/` binary cannot reach — the same wall that left the
+/// eval-vs-columnar floor unmeasured in `examples/README.md`. It is `#[ignore]`d and prints a
+/// table, in the shape of `rewrite_fuzz::dump_seed`.
+///
+/// # Why a whole-query bench could not answer it
+///
+/// Three attempts on 2026-09-30 each measured something else: an indexed cheap conjunct is pulled
+/// out by seek extraction whichever side it was written on (so index seeding already does
+/// cost-ordering), a `count(*)` form hits a count shortcut that bypasses the filter path, and the
+/// row-returning form had its conjuncts already normalized. In a whole query the predicate is a
+/// minority of the total, which is what the corpus README means by "anything under ~10% needs its
+/// own isolated harness".
+///
+/// # Reading the output
+///
+/// `both` is what the engine does today (`eval_mask` on the combined expression; its `And` arm
+/// evaluates both operands over the full batch). `elim` is the floor: operand A, then a gather,
+/// then operand B on the survivors only. `ratio` above 1.0 is the available win.
+///
+/// The `pass=100%` rows are the control and they are the point of the table as much as the wins:
+/// nothing is eliminated there, so `elim` pays the gather for nothing and the ratio should sit at
+/// or BELOW 1.0. A harness that only showed wins would not be worth trusting.
+#[test]
+#[ignore = "measurement harness: cargo test --release -- --ignored --nocapture predicate_elimination_floor"]
+fn predicate_elimination_floor() {
+    use std::time::Instant;
+
+    /// Min-of-N. The corpus README is explicit that a mean hides the floor and that several
+    /// conclusions here did not survive repetition.
+    const REPS: u32 = 7;
+    fn best(mut f: impl FnMut()) -> f64 {
+        let mut lo = f64::MAX;
+        for _ in 0..REPS {
+            let t = Instant::now();
+            f();
+            lo = lo.min(t.elapsed().as_secs_f64() * 1e6);
+        }
+        lo
+    }
+
+    // A LOCAL fixture, because the harness needs a numeric property and `dense_store` sets only
+    // `name`. The first version of this used it anyway, so `num` was absent, the cheap operand
+    // evaluated to UNKNOWN on every row, nothing was ever eliminated, and the pass-fraction
+    // labels were fiction — every ratio came out 1.00 for a reason that had nothing to do with
+    // the question. The assertion below is what makes that impossible to repeat.
+    fn harness_store(n: u32, deg: u32) -> Store {
+        let mut b = Builder::default();
+        for i in 0..n {
+            b.node(
+                &["N"],
+                &[
+                    ("name", s(&format!("v{i}"))),
+                    ("num", Value::Num(f64::from(i % 17))),
+                ],
+            );
+        }
+        for i in 0..n {
+            for d in 0..deg {
+                b.edge(i, (i * 7 + d * 3 + 1) % n, "R");
+            }
+        }
+        b.build()
+    }
+
+    // Sizes straddle the cache transition the README puts between 200k and 1M.
+    for &(nodes, degree) in &[
+        (10_000u32, 2u32),
+        (100_000, 2),
+        (100_000, 16),
+        (1_000_000, 2),
+    ] {
+        let store = harness_store(nodes, degree);
+        let batch = crate::exec::pull(&Plan::Scan { label: None }, &store, false)
+            .expect("a bare scan pulls");
+        assert_eq!(batch.rows(), nodes as usize, "the batch is the whole scan");
+
+        // The EXPENSIVE operand: a correlated EXISTS over the adjacency, which is the shape the
+        // bench measured at ~1.1ms per 200,000 rows. Also a string call and a typed compare, so
+        // the table shows the win against a range of second-operand costs rather than one.
+        let exists = Expr::Exists {
+            body: Box::new(Plan::Expand {
+                input: Box::new(Plan::Row),
+                from: 0,
+                dir: Dir::Out,
+                edge_label: vec!["R".to_string()],
+                bind_edge: false,
+                double_loops: false,
+            }),
+            outer_width: 1,
+        };
+        let strcall = Expr::Call {
+            name: "contains".to_string(),
+            args: vec![
+                Expr::Prop {
+                    slot: 0,
+                    key: "name".to_string(),
+                },
+                Expr::Lit(Value::Str("7".into())),
+            ],
+        };
+        let cheap_b = Expr::Compare {
+            op: CompareOp::Ne,
+            left: Box::new(Expr::Prop {
+                slot: 0,
+                key: "name".to_string(),
+            }),
+            right: Box::new(Expr::Lit(Value::Str("v0".into()))),
+        };
+        // A GENUINELY expensive operand. A bare `EXISTS { (n)-[:R]->() }` stops at the first
+        // neighbour, so over a degree-2 graph it is a degree check and costs less per row than
+        // the "cheap" compare beside it — which is why the first version of this harness showed
+        // elimination losing everywhere. An inner predicate that matches NOTHING forces the whole
+        // adjacency to be walked for every row, which is what makes B dominate A.
+        let deep_exists = Expr::Exists {
+            body: Box::new(Plan::Filter {
+                input: Box::new(Plan::Expand {
+                    input: Box::new(Plan::Row),
+                    from: 0,
+                    dir: Dir::Out,
+                    edge_label: vec!["R".to_string()],
+                    bind_edge: false,
+                    double_loops: false,
+                }),
+                pred: Expr::Compare {
+                    op: CompareOp::Eq,
+                    left: Box::new(Expr::Prop {
+                        slot: 1,
+                        key: "name".to_string(),
+                    }),
+                    right: Box::new(Expr::Lit(Value::Str("no-such-vertex".into()))),
+                },
+            }),
+            outer_width: 1,
+        };
+
+        println!("\n=== predicate elimination, {nodes} rows, degree {degree} ===");
+        println!(
+            "{:<10} {:>6} {:>10} {:>10} {:>10} {:>10} {:>7}",
+            "B", "pass", "t_a_us", "t_b_us", "both_us", "elim_us", "ratio"
+        );
+
+        for (bname, b) in [
+            ("EXISTS-deep", &deep_exists),
+            ("EXISTS", &exists),
+            ("contains", &strcall),
+            ("compare", &cheap_b),
+        ] {
+            // `num` is `i % 17`, so `< bound` passes `bound/17` of the rows.
+            for &(label, bound, want_frac) in &[
+                ("6%", 1.0f64, 1.0 / 17.0),
+                ("29%", 5.0, 5.0 / 17.0),
+                ("53%", 9.0, 9.0 / 17.0),
+                ("100%", 17.0, 1.0),
+            ] {
+                let a = Expr::Compare {
+                    op: CompareOp::Lt,
+                    left: Box::new(Expr::Prop {
+                        slot: 0,
+                        key: "num".to_string(),
+                    }),
+                    right: Box::new(Expr::Lit(Value::Num(bound))),
+                };
+                let both = Expr::And(Box::new(a.clone()), Box::new(b.clone()));
+
+                let t_a = best(|| {
+                    let _ = crate::exec::eval_mask(&a, &store, &batch).expect("a");
+                });
+                let t_b = best(|| {
+                    let _ = crate::exec::eval_mask(b, &store, &batch).expect("b");
+                });
+                let t_both = best(|| {
+                    let _ = crate::exec::eval_mask(&both, &store, &batch).expect("both");
+                });
+                // The floor, gather included: A over everything, then B over the survivors.
+                // Rows where A is FALSE are settled for an AND; UNKNOWN is not, so it must stay.
+                let t_elim = best(|| {
+                    let ma = crate::exec::eval_mask(&a, &store, &batch).expect("a");
+                    let keep: Vec<usize> =
+                        (0..ma.len()).filter(|&i| ma[i] != Some(false)).collect();
+                    let sub = batch.gather(&keep);
+                    let _ = crate::exec::eval_mask(b, &store, &sub).expect("b on survivors");
+                });
+                let survivors = {
+                    let ma = crate::exec::eval_mask(&a, &store, &batch).expect("a");
+                    ma.iter().filter(|&&m| m != Some(false)).count()
+                };
+                // The fixture must MATCH THE CLAIM. `survivors > 0` is not enough: with the
+                // property absent every row survives as UNKNOWN, which satisfies it while
+                // measuring nothing. Assert the actual fraction against the label.
+                let actual = survivors as f64 / batch.rows() as f64;
+                assert!(
+                    (actual - want_frac).abs() < 0.03,
+                    "pass fraction {actual:.3} does not match the label {label} \
+                     ({want_frac:.3}) — the fixture is not exercising this row's selectivity"
+                );
+                println!(
+                    "{bname:<10} {label:>6} {t_a:>10.1} {t_b:>10.1} {t_both:>10.1} {t_elim:>10.1} {:>7.2}",
+                    t_both / t_elim
+                );
+            }
+        }
+    }
+}
+
 // --- Lineage (path) ---
 
 /// Look up a key in a rich Path object `{vertices, edges, length}` (a `Value::Map`).
