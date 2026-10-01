@@ -5726,7 +5726,17 @@ fn read_property(store: &Store, col: &Col, key: &str) -> Col {
         }
         Some(out)
     }
-    let general = || Col::Gen(ids.iter().map(|&i| store.prop(i, key)).collect());
+    // The boxed fallback, for a column where ANY row's value is absent — `Col` has no nullable
+    // typed variant, so a partially-present property has to be boxed.
+    //
+    // It reads through the `column` already resolved above rather than calling `store.prop`, which
+    // re-resolves `key` through a hash map FOR EVERY ROW. That lookup was the whole cliff: a
+    // property present on half the rows cost 7.36ns a row against 1.05ns for one present on all of
+    // them, and the gather below is not the difference — it bails on the first absent row.
+    //
+    // No `u32::MAX` check is needed: a column carrying the OPTIONAL null sentinel returned far
+    // above, before `column` was resolved.
+    let general = || Col::Gen(ids.iter().map(|&i| column.read(i as usize)).collect());
     match column {
         Column::Num { data, present, .. } => {
             gather(ids, present, |i| data[i]).map_or_else(general, Col::Num)
@@ -6210,6 +6220,13 @@ pub(super) fn typed_num_mask(
     };
     match batch.slot(slot) {
         Col::Nodes(ids) => {
+            // A key NO node carries is every row UNKNOWN, which is the answer without touching a
+            // column — the same rule `read_property` applies when `store.column` is `None`.
+            // Without this the comparison declined to the boxed path and cost 9.04ns a row to
+            // produce a column of NULLs and compare each one.
+            if store.column(key).is_none() {
+                return Some(vec![None; ids.len()]);
+            }
             let Some(Column::Num { data, present, .. }) = store.column(key) else {
                 return None;
             };
@@ -6362,6 +6379,10 @@ pub(super) fn typed_str_mask(
     let Col::Nodes(ids) = batch.slot(slot) else {
         return None;
     };
+    // See the note in `typed_num_mask`: a key no node carries is every row UNKNOWN.
+    if store.column(key).is_none() {
+        return Some(vec![None; ids.len()]);
+    }
     let lit: &str = lit.as_ref();
     match store.column(key)? {
         Column::Str { data, present, .. } => Some(

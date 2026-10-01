@@ -622,6 +622,11 @@ const genPred = (r: () => number, depth: number): string => {
       `(n.nan ${op} n.n)`,
       `(n.s ${op} n.s)`,
       `(n.st ${op} n.s)`,
+      // A key NO vertex carries. The typed masks answer it as every row UNKNOWN without touching
+      // a column, which is a SEMANTIC claim — and every key above exists, so nothing here tested
+      // it. A mutant answering FALSE instead of UNKNOWN passed the whole suite (item 74).
+      `(n.zz ${op} ${pick(r, ['3', "'a'"])})`,
+      `(n.zz ${op} n.n)`,
     ]);
   }
 
@@ -890,8 +895,8 @@ const genQuery = (r: () => number): string => {
   // absent-on-either-side rule. Placed last, above the fallback, so it takes no other arm's band.
   if (p < 0.96) {
     const op = pick(r, CMP);
-    const k = pick(r, ['n', 'x', 's', 'nan', 'st']);
-    const k2 = pick(r, ['n', 'x', 's', 'nan', 'st']);
+    const k = pick(r, ['n', 'x', 's', 'nan', 'st', 'zz']);
+    const k2 = pick(r, ['n', 'x', 's', 'nan', 'st', 'zz']);
 
     return pick(r, [
       `MATCH (a:T)-[:E]->(b:T) WHERE (a.${k} ${op} b.${k}) RETURN a.n AS x, b.n AS t ORDER BY t, x`,

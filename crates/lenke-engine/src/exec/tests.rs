@@ -11192,3 +11192,145 @@ fn the_type_csr_and_the_edge_type_index_agree_edge_for_edge() {
         "the fixture produced no multi-edge adjacency to compare"
     );
 }
+
+// --- A key no node carries, and a property present on only some of them (item 74) ---
+
+/// A comparison against a key the store has NO column for is UNKNOWN on every row, not FALSE.
+/// The typed masks answer it without touching a column, and the distinction is only visible
+/// through `NOT`: an UNKNOWN stays UNKNOWN under negation and the row still drops, while a FALSE
+/// would flip to TRUE and every row would survive.
+///
+/// `try_filter_keep` has carried this rule for the plain `WHERE k = lit` shape since before the
+/// masks existed; these pin it for the shapes that reach the masks instead.
+#[test]
+fn a_comparison_against_an_absent_key_is_unknown_not_false() {
+    let mut b = Builder::default();
+    for i in 0..8u32 {
+        b.node(&["P"], &[("k", n(f64::from(i))), ("s", s("x"))]);
+    }
+    let store = b.build();
+
+    for q in [
+        "MATCH (u:P) WHERE NOT (u.gone = 5) RETURN u.k AS a",
+        "MATCH (u:P) WHERE NOT (u.gone < 5) RETURN u.k AS a",
+        "MATCH (u:P) WHERE NOT (u.gone = 'x') RETURN u.k AS a",
+        // Under an OR with a decided-false operand, so the absent side alone decides.
+        "MATCH (u:P) WHERE u.k < 0 OR NOT (u.gone = 5) RETURN u.k AS a",
+    ] {
+        assert_eq!(try_gql(q, &store).unwrap(), 0, "UNKNOWN under NOT: {q}");
+    }
+    // And the positive forms match nothing either — UNKNOWN is not TRUE.
+    for q in [
+        "MATCH (u:P) WHERE u.gone = 5 RETURN u.k AS a",
+        "MATCH (u:P) WHERE u.gone > 5 RETURN u.k AS a",
+        "MATCH (u:P) WHERE u.gone = 'x' RETURN u.k AS a",
+    ] {
+        assert_eq!(try_gql(q, &store).unwrap(), 0, "UNKNOWN is not TRUE: {q}");
+    }
+}
+
+/// The same comparison PROJECTED rather than filtered, which routes through `eval` and has no
+/// `WHERE`-side fast path to fall back on. Every row must read NULL.
+#[test]
+fn an_absent_key_comparison_projects_null() {
+    let mut b = Builder::default();
+    for i in 0..5u32 {
+        b.node(&["P"], &[("k", n(f64::from(i))), ("s", s("x"))]);
+    }
+    let store = b.build();
+    let col0 = |q: &str| -> Vec<Value> {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
+        run(&plan, &store)
+            .rows
+            .iter()
+            .map(|r| r[0].clone())
+            .collect()
+    };
+    for q in [
+        "MATCH (u:P) RETURN u.gone = 5 AS f",
+        "MATCH (u:P) RETURN u.gone < 5 AS f",
+        "MATCH (u:P) RETURN u.gone = 'x' AS f",
+        "MATCH (u:P) RETURN u.gone > 'x' AS f",
+    ] {
+        let got = col0(q);
+        assert_eq!(got.len(), 5, "{q}");
+        assert!(
+            got.iter().all(Value::is_null),
+            "every row is NULL: {q} {got:?}"
+        );
+    }
+}
+
+/// A property present on only SOME nodes has to be read through the boxed path — `Col` has no
+/// nullable typed variant — and the absent rows must read NULL while the present ones keep their
+/// own values. The fast reuse of the already-resolved column is invisible to a result, so this
+/// pins the values it produces rather than the path it takes.
+#[test]
+fn a_half_present_property_reads_its_own_values_and_null() {
+    let mut b = Builder::default();
+    for i in 0..10u32 {
+        if i % 2 == 0 {
+            b.node(
+                &["P"],
+                &[("i", n(f64::from(i))), ("half", n(f64::from(i * 10)))],
+            );
+        } else {
+            b.node(&["P"], &[("i", n(f64::from(i)))]);
+        }
+    }
+    let store = b.build();
+    let plan = crate::opt::optimize_indexed(
+        crate::gql::parse("MATCH (u:P) RETURN u.i AS i, u.half AS h ORDER BY u.i").unwrap(),
+        &store,
+    );
+    let rows = run(&plan, &store).rows;
+    assert_eq!(rows.len(), 10);
+    for (i, r) in rows.iter().enumerate() {
+        let want = f64::from(i as u32);
+        assert!(matches!(r[0], Value::Num(x) if x == want), "row {i}: {r:?}");
+        if i % 2 == 0 {
+            assert!(
+                matches!(r[1], Value::Num(x) if x == want * 10.0),
+                "a present cell keeps its value at row {i}: {r:?}"
+            );
+        } else {
+            assert!(
+                r[1].is_null(),
+                "an absent cell reads NULL at row {i}: {r:?}"
+            );
+        }
+    }
+    // The same column read as a STRING property, so the string side of the gather is covered too.
+    let mut b = Builder::default();
+    for i in 0..6u32 {
+        if i % 3 == 0 {
+            b.node(
+                &["P"],
+                &[("i", n(f64::from(i))), ("hs", s(&format!("v{i}")))],
+            );
+        } else {
+            b.node(&["P"], &[("i", n(f64::from(i)))]);
+        }
+    }
+    let store = b.build();
+    let plan = crate::opt::optimize_indexed(
+        crate::gql::parse("MATCH (u:P) RETURN u.hs AS h ORDER BY u.i").unwrap(),
+        &store,
+    );
+    let got: Vec<Value> = run(&plan, &store)
+        .rows
+        .iter()
+        .map(|r| r[0].clone())
+        .collect();
+    assert_eq!(got.len(), 6);
+    for (i, v) in got.iter().enumerate() {
+        if i % 3 == 0 {
+            assert!(
+                matches!(v, Value::Str(x) if **x == format!("v{i}")),
+                "row {i}: {v:?}"
+            );
+        } else {
+            assert!(v.is_null(), "row {i}: {v:?}");
+        }
+    }
+}

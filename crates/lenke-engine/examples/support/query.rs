@@ -92,6 +92,21 @@ pub fn run(cfg: &Cfg) {
                 // they also pay for the hop and for projecting ~496,000 rows — the predicate is a
                 // minority of the query. Both numbers are real; the harness prices the expression,
                 // these price a query that contains one.
+                // A comparison against a key NO vertex carries, PROJECTED — a typo, or a
+                // heterogeneous graph where only some labels have the key. Every row is UNKNOWN,
+                // which the typed masks now answer without touching a column; before, the
+                // comparison declined to the boxed path and built a column of NULLs to compare
+                // one at a time. It has to be projected to be measurable here: the `WHERE`
+                // spelling never reaches the masks, because `try_filter_keep` has carried the
+                // same rule for a plain `k <op> lit` since before they existed.
+                //
+                // The isolated harness prices the expression at 10.20ns a row before and 0.41ns
+                // after (25x); this row is 4,152us -> 819us (5.07x), the rest being the scan and
+                // the 200,000 projected rows.
+                (
+                    "project absent cmp",
+                    "MATCH (p:Person) RETURN p.no_such_key = 5 AS f",
+                ),
                 (
                     "cmp prop/prop",
                     "MATCH (p:Person)-[:KNOWS]->(q) WHERE p.age < q.age RETURN q.name AS n",
