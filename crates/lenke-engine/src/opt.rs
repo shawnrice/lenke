@@ -1509,10 +1509,24 @@ fn apply_local(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
     match plan {
         Plan::Filter { input, pred } => match *input {
             // filter-merge: `Filter(Filter(x, p2), p1)` -> `Filter(x, p1 AND p2)`.
+            //
+            // DECLINED when the OUTER predicate can raise. In the nested form the inner filter
+            // runs first and the outer one sees only its survivors; merged, both are evaluated on
+            // every row arriving at the filter — `AND` here is a vectorized three-valued fold, not
+            // control flow, so the order inside the conjunction does not change that. A raising
+            // outer predicate therefore faults on rows the inner filter had removed.
+            //
+            // It is the OUTER one that matters: the inner predicate was already being evaluated on
+            // every row that reached it, so merging cannot widen what it sees.
+            //
+            // NOT a conformance fix — see `can_raise`. This is the predictable behaviour, chosen
+            // because it costs nothing and because the nested form is the order the equivalent JS
+            // composition implies (`rows.flatMap(expand).filter(pred)` never shows `pred` a row
+            // the expand did not produce).
             Plan::Filter {
                 input: inner,
                 pred: p_inner,
-            } => (
+            } if !can_raise(&pred) => (
                 Plan::Filter {
                     input: inner,
                     pred: Expr::And(Box::new(pred), Box::new(p_inner)),
@@ -1767,7 +1781,9 @@ fn apply_local(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
             // reads only left slots (indices < left width; the join keeps the left
             // slots' indices, so no remap is needed). Right-side pushdown would
             // need a slot remap and is deferred.
-            Plan::Join { left, right, on } if refs_below(&pred, width(&left)) => (
+            // `pushable`, not `refs_below`: a raising predicate above the join sees only JOINED
+            // rows, and on the left side it sees every left row, including those the join drops.
+            Plan::Join { left, right, on } if pushable(&pred, width(&left)) => (
                 Plan::Join {
                     left: Box::new(Plan::Filter { input: left, pred }),
                     right,
@@ -1995,6 +2011,27 @@ fn prune_or_branches(e: Expr, bounds: &[(usize, String, CompareOp, f64)]) -> Exp
 /// function call (the numeric and string guards fault rather than coerce), and a CAST. It does NOT
 /// claim a bare comparison is safe — a cross-type ORDERING faults too — because blocking those from
 /// pushdown would block index seeding, which is the pushdown's whole purpose.
+///
+/// # This is a quality-of-implementation choice, not a conformance requirement
+///
+/// ISO/IEC 39075 makes both halves of this question implementation-dependent, in its FREE
+/// `-implementation-dependent.xml` artifact (see `research/iso-39075/`):
+///
+/// - **US008** — "The actual order of expression evaluation."
+/// - **UA004** — "Whether or not that exception condition is actually raised when the evaluation
+///   of an *inessential part* of an expression or search condition would cause an exception to be
+///   raised."
+///
+/// So a conforming implementation may relocate a raising predicate and surface an exception the
+/// unoptimized plan avoided. We decline to, for the two reasons the guards' comments give: it
+/// costs nothing measurable at these sites, and the unrelocated order is the one the equivalent JS
+/// composition implies.
+///
+/// Where it DOES cost something we do not pay it: pattern REVERSAL re-seeds from the far end, so
+/// every intermediate row set changes and no cheap guard exists — guarding it would decline
+/// reversal for any pattern containing one raising conjunct, against a measured 263,502us -> 37.4us.
+/// Errors from a reversed pattern are therefore plan-dependent, which US008/UA004 permit. Audit
+/// item 69 has the reasoning; the fuzzers' invariants are scoped to match.
 fn can_raise(e: &Expr) -> bool {
     match e {
         Expr::Arith { .. } | Expr::Call { .. } | Expr::Cast { .. } => true,

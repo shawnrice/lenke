@@ -319,7 +319,7 @@
 
 use super::{optimize_indexed, IndexOracle};
 use crate::exec::Rows;
-use crate::ir::{Agg, AggFn, CompareOp, Dir, Expr, PathMode, Plan};
+use crate::ir::{Agg, AggFn, ArithOp, CompareOp, Dir, Expr, PathMode, Plan};
 use crate::store::{Builder, Store};
 use crate::value::Value;
 
@@ -755,7 +755,7 @@ fn gen_anchor_pred(rng: &mut Lcg, slot: usize, selective: bool) -> Expr {
 }
 
 /// How many predicate forms [`gen_pred_kind`] knows.
-const KIND_COUNT: usize = 9;
+const KIND_COUNT: usize = 10;
 /// The forms a seek can serve: range compares (either operand order), string equality,
 /// and a two-sided range.
 const SEEKABLE_KINDS: [usize; 5] = [1, 2, 3, 4, 8];
@@ -904,6 +904,28 @@ fn gen_pred_kind(rng: &mut Lcg, slot: usize, selective: bool, kind: usize) -> Ex
                 left: Box::new(left),
                 right: Box::new(Expr::Lit(Value::Num(f64::from(rng.below(7) as u32)))),
             }))
+        }
+
+        // A predicate that can RAISE. `score` is zero on some vertices, so `2 % score` divides
+        // by zero, and `age` is absent on others, so an operand can be NULL.
+        //
+        // Every other kind here only ever COMPARES, so the whole raising class sat outside the
+        // generator and the invariant held vacuously over it — which is how a pushdown that
+        // turned an answer into an error shipped (audit item 69). The error arm of
+        // `assert_rows_preserved` is scoped for exactly this, so a raise that the standard does
+        // NOT excuse still fails.
+        9 => {
+            let key = (*rng.pick(&NUM_KEYS)).to_string();
+            let arith = Expr::Arith {
+                op: *rng.pick(&[ArithOp::Rem, ArithOp::Div]),
+                left: Box::new(Expr::Lit(Value::Num(2.0))),
+                right: Box::new(Expr::Prop { slot, key }),
+            };
+            Expr::Compare {
+                op: *rng.pick(&[CompareOp::Ge, CompareOp::Lt, CompareOp::Ne]),
+                left: Box::new(arith),
+                right: Box::new(Expr::Lit(Value::Num(num_bound(rng)))),
+            }
         }
 
         // TWO BOUNDS ON ONE KEY, which the planner coalesces into a single two-sided
@@ -1878,7 +1900,14 @@ fn bag(rows: &Rows) -> Vec<String> {
 
 /// Check the invariant for one seed against one store, and report richly on failure —
 /// the seed alone has to be enough to reproduce and read.
-fn check(seed: u64, store: &Store, indexed: bool) {
+///
+/// Returns true when the seed hit the one divergence the standard permits and we therefore
+/// forgive — see the `(Ok, Err)` arm. Callers SUM those and cap the total: the usual coverage
+/// floors are lower bounds on a shape being generated, and this is the mirror image, an UPPER
+/// bound on how much the fuzzer is letting through. If a guard in `opt.rs` silently stops firing
+/// the count climbs and the cap fails, which no lower bound would catch.
+#[must_use]
+fn check(seed: u64, store: &Store, indexed: bool) -> bool {
     let mut rng = Lcg(seed);
     let plan = gen_plan(&mut rng);
 
@@ -1914,11 +1943,113 @@ fn check(seed: u64, store: &Store, indexed: bool) {
              \n  raw:       {plan:?}\
              \n  optimized: {opt:?}\n"
         ),
+        // Raw answered, optimized raised. Normally this is the arm that catches a broken
+        // rewrite, and it stays that way — with ONE exception that the standard requires us to
+        // allow. ISO/IEC 39075 makes both of these implementation-dependent (its free
+        // `-implementation-dependent.xml`; see `research/iso-39075/`):
+        //
+        //   US008  "The actual order of expression evaluation."
+        //   UA004  "Whether or not that exception condition is actually raised when the
+        //           evaluation of an INESSENTIAL part of an expression or search condition
+        //           would cause an exception to be raised."
+        //
+        // A rewrite that relocates a predicate — pushdown, filter-merge, join pushdown, pattern
+        // REVERSAL — changes which rows reach it, so a predicate that can fault may fault after
+        // optimizing and not before. That is conformant, and `opt.rs` declines it where declining
+        // is free while reversal pays nothing for it (audit item 69).
+        //
+        // The exception is kept as narrow as it can be made:
+        //   * the error must be a DATA EXCEPTION — a resource limit, an internal error or
+        //     anything else is still a broken rewrite;
+        //   * the RAW plan must actually contain a predicate that can raise. Without this a slot
+        //     mis-mapping that makes some predicate read the wrong column and fault would be
+        //     waved through, which is precisely the class this fuzzer exists for.
+        (Ok(_), Err(e)) if is_data_exception(e) && plan_can_raise(&plan) => return true,
         (Ok(_), Err(e)) => panic!(
             "\noptimizing BROKE a working plan (seed {seed}, indexed {indexed}): {e}\
              \n  raw:       {plan:?}\
              \n  optimized: {opt:?}\n"
         ),
+        _ => {}
+    }
+    false
+}
+
+/// The cap on forgiven seeds. Measured at 44-50 per 200,000 (about 1 in 4,500) with the three
+/// `can_raise` guards in place; the residue is pattern REVERSAL, which is deliberately unguarded
+/// because guarding it would decline the rewrite for any pattern containing one raising conjunct.
+///
+/// 1 in 500 is an order of magnitude of headroom over what was measured, so ordinary generator
+/// drift will not trip it while a guard that stops firing will.
+fn assert_forgiveness_bounded(forgiven: u64, seeds: u64, who: &str) {
+    let cap = (seeds / 500).max(4);
+    assert!(
+        forgiven <= cap,
+        "{who}: {forgiven} of {seeds} seeds were forgiven for raising only after optimizing, over \
+         a cap of {cap}. Measured at 44-50 per 200,000 when this cap was set. A jump means a \
+         `can_raise` guard in opt.rs stopped firing — the rewrite is still CONFORMANT (US008 / \
+         UA004), so nothing else here will fail, which is why this cap exists."
+    );
+}
+
+/// Is this a GQL DATA EXCEPTION (ISO class 22) rather than a resource limit or an internal fault?
+///
+/// Matched on the message because that is what `exec` returns. Listed explicitly rather than by a
+/// prefix test so that adding a new error kind does not silently widen what the fuzzer forgives.
+fn is_data_exception(e: &str) -> bool {
+    const FAULTS: [&str; 4] = [
+        "division by zero",             // 22012
+        "arithmetic requires a number", // 22G03 / 22G12, invalid value type
+        "requires a number",            // the scalar-function numeric guards
+        "not comparable",               // 22G04
+    ];
+    FAULTS.iter().any(|f| e.contains(f))
+}
+
+/// Does any predicate anywhere in this plan contain an expression that can raise?
+///
+/// Mirrors `opt::can_raise`'s shape deliberately: if that function is widened and this is not, the
+/// exception above narrows rather than widens, which is the safe direction.
+fn plan_can_raise(p: &Plan) -> bool {
+    fn expr_raises(e: &Expr) -> bool {
+        match e {
+            Expr::Arith { .. } | Expr::Call { .. } | Expr::Cast { .. } => true,
+            Expr::And(a, b) | Expr::Or(a, b) => expr_raises(a) || expr_raises(b),
+            Expr::Not(a) => expr_raises(a),
+            Expr::Compare { left, right, .. } => expr_raises(left) || expr_raises(right),
+            Expr::In { needle, haystack } => expr_raises(needle) || expr_raises(haystack),
+            _ => false,
+        }
+    }
+    let mut found = false;
+    walk_plan(p, &mut |q| {
+        if let Plan::Filter { pred, .. } = q {
+            found = found || expr_raises(pred);
+        }
+    });
+    found
+}
+
+/// Visit every plan node, parents before children.
+fn walk_plan(p: &Plan, f: &mut dyn FnMut(&Plan)) {
+    f(p);
+    match p {
+        Plan::Filter { input, .. }
+        | Plan::Project { input, .. }
+        | Plan::Aggregate { input, .. }
+        | Plan::Expand { input, .. }
+        | Plan::OptionalExpand { input, .. }
+        | Plan::VarLength { input, .. }
+        | Plan::ShortestPath { input, .. }
+        | Plan::RepeatGroup { input, .. }
+        | Plan::NestedGroup { input, .. }
+        | Plan::Distinct { input }
+        | Plan::DistinctBy { input, .. }
+        | Plan::OrderPage { input, .. } => walk_plan(input, f),
+        Plan::Join { left, right, .. } | Plan::Union { left, right, .. } => {
+            walk_plan(left, f);
+            walk_plan(right, f);
+        }
         _ => {}
     }
 }
@@ -1949,9 +2080,11 @@ fn optimizing_preserves_rows_with_indexes() {
     let mut store = fixture(1);
     index_all(&mut store);
 
+    let mut forgiven = 0u64;
     for seed in 0..seed_count() {
-        check(seed, &store, true);
+        forgiven += u64::from(check(seed, &store, true));
     }
+    assert_forgiveness_bounded(forgiven, seed_count(), "with_indexes");
 }
 
 /// The same invariant with NO indexes. Most index-driven rewrites decline here, which
@@ -1961,9 +2094,11 @@ fn optimizing_preserves_rows_with_indexes() {
 fn optimizing_preserves_rows_without_indexes() {
     let store = fixture(1);
 
+    let mut forgiven = 0u64;
     for seed in 0..seed_count() {
-        check(seed, &store, false);
+        forgiven += u64::from(check(seed, &store, false));
     }
+    assert_forgiveness_bounded(forgiven, seed_count(), "without_indexes");
 }
 
 /// Vary the GRAPH'S SHAPE as well as the plan, over [`SHAPES`].
@@ -1998,13 +2133,21 @@ fn optimizing_preserves_rows_across_shapes() {
         .collect();
     let inv_total: f64 = SHAPES.iter().map(|s| 1.0 / s.cost).sum();
 
+    let mut forgiven = 0u64;
+    let mut seeds = 0u64;
     for (i, store) in built.iter().enumerate() {
         let share = (1.0 / SHAPES[i].cost) / inv_total;
         let plans = ((seed_count() as f64 * share).round() as u64).max(20);
+        seeds += plans;
         for seed in 0..plans {
-            check(seed.wrapping_mul(31).wrapping_add(i as u64), store, true);
+            forgiven += u64::from(check(
+                seed.wrapping_mul(31).wrapping_add(i as u64),
+                store,
+                true,
+            ));
         }
     }
+    assert_forgiveness_bounded(forgiven, seeds, "across_shapes");
 }
 
 /// The shapes must actually DIFFER, and in the dimensions they claim to. Without this the
@@ -2118,7 +2261,10 @@ fn optimizing_preserves_rows_across_sizes() {
         // and buys the fourth size above (measured 89.3s to 53.0s across a 12k/25k/50k hunt).
         with_rep_cap(1, || {
             for seed in 0..plans {
-                check(
+                // The across-SIZES sweep does not cap forgiveness: its point is the seek
+                // cutover, its plan mix is reshaped by `with_rep_cap`, and the other three
+                // tests already bound the rate on a stable mix.
+                let _ = check(
                     seed.wrapping_mul(31).wrapping_add(u64::from(nodes)),
                     &store,
                     true,
