@@ -754,6 +754,25 @@ fn gen_anchor_pred(rng: &mut Lcg, slot: usize, selective: bool) -> Expr {
     gen_pred_kind(rng, slot, selective, kind)
 }
 
+/// NOT ADDED: a PROPERTY-against-PROPERTY kind (`age <op> score`).
+///
+/// The typed prop-vs-prop masks (`typed_num_prop_mask` / `typed_str_prop_mask`, audit item 73) get
+/// their coverage from the DIFFERENTIAL fuzzer instead, where a cross-slot arm and a sparse string
+/// property catch all three of their mutants. Adding the kind here was tried and reverted, because
+/// it reaches a pre-existing problem that is this generator's, not the engine's:
+///
+/// an extra kind reshuffles the whole RNG stream, and seed 523781 then produces
+/// `Project{ Distinct{ Project{ VarLength … } } }` whose outer projection reads
+/// `path_length(p)`. For one endpoint the hop has several paths of different lengths, `Distinct`
+/// keeps one of them, and WHICH one depends on traversal order — which the optimized plan changes
+/// by seeding from a `RangeSeek`. ISO makes that unspecified (`US001`, the sequence of records in
+/// an unordered binding table), so the plan has no determined answer and the comparison is asking
+/// the wrong question. Verified pre-existing: it fails with the engine change of item 73 reverted.
+///
+/// Fixing it means teaching the generator not to read a path accessor above a `Distinct`, or
+/// teaching `ordered_output` that such a plan is undetermined. Until then the kind stays out
+/// rather than leaving this red.
+///
 /// How many predicate forms [`gen_pred_kind`] knows.
 const KIND_COUNT: usize = 10;
 /// The forms a seek can serve: range compares (either operand order), string equality,

@@ -45,6 +45,16 @@ const tally = (
     }
   }
 
+  // The CROSS-SLOT property comparison arm, the only coverage for the typed prop-vs-prop masks.
+  // Non-empty matters as much as generated: a comparison that matches nothing compares nothing.
+  if (q.startsWith('MATCH (a:T)-[:E]->(b:T)')) {
+    cov.crossGenerated++;
+
+    if (nonEmpty) {
+      cov.crossNonEmpty++;
+    }
+  }
+
   if (q.startsWith('MATCH (a:T)((x)') && q.includes('(b:U)') && q.includes('RETURN count(*)')) {
     cov.peelGenerated++;
 
@@ -75,14 +85,14 @@ const suite = nativeReady ? describe : describe.skip;
 // A tiny two-vertex, one-edge graph so property access, record fields, edge
 // patterns, and aggregates over rows can all be fuzzed.
 const NDJSON = [
-  '{"type":"node","id":"1","labels":["T"],"properties":{"n":3,"s":"a","x":-1,"m":{"k":1,"j":"q"}}}',
+  '{"type":"node","id":"1","labels":["T"],"properties":{"n":3,"s":"a","x":-1,"st":"p","m":{"k":1,"j":"q"}}}',
   '{"type":"node","id":"2","labels":["T"],"properties":{"n":7,"s":"z","x":4,"m":{"k":2,"j":"r"}}}',
   // Vertex 3 carries TWO labels, so `(n:T)` and `(n:U)` must BOTH find it. With
   // every vertex single-labelled, "match any label" and "match the first label"
   // are indistinguishable, and a label bug hides — which is how native's Gremlin
   // `hasLabel` matched only the first label for a long time without any fuzzer
   // noticing.
-  '{"type":"node","id":"3","labels":["T","U"],"properties":{"n":5,"s":"m","x":2,"m":{"k":3,"j":"s"}}}',
+  '{"type":"node","id":"3","labels":["T","U"],"properties":{"n":5,"s":"m","x":2,"st":"w","m":{"k":3,"j":"s"}}}',
   '{"type":"edge","id":"e1","labels":["E"],"from":"1","to":"2","properties":{"w":2}}',
   // ...and edge e2 carries TWO types, for the same reason on the edge side. The
   // label indexes bucket an edge under every type it carries, so anything that
@@ -91,6 +101,11 @@ const NDJSON = [
   // edge single-typed the two are indistinguishable, which is how the TS count
   // shortcut double-counted for a long time with every fuzzer green.
   '{"type":"edge","id":"e2","labels":["E","F"],"from":"2","to":"3","properties":{"w":5}}',
+  // `st` is a SPARSE STRING, on vertices 1 and 3 only. `nan` plays that role for numbers, and
+  // without a string twin the "absent on EITHER side is UNKNOWN" rule of the typed prop-vs-prop
+  // string comparison had no coverage at all: a mutant returning FALSE instead of UNKNOWN for an
+  // absent right-hand side passed the whole suite, because every other string property here is
+  // present on every vertex.
   // A SECOND in-edge into vertex 3. Without it no vertex has two distinct in-edges, and in
   // Trail mode a unit whose second hop is REVERSED (`(x)-[:E]->(m)<-[:E]-(y)`) then has
   // nowhere to go — it matched 0 rows for every quantifier. Measured: 4 of the 16
@@ -599,6 +614,14 @@ const genPred = (r: () => number, depth: number): string => {
       // arm above produces and `genExpr` almost never does. Adding the VALUE without adding it
       // where the SHAPE is built left the suite green — the value and the shape never met.
       `(n.nan ${op} ${pick(r, ['3', '0', '-1'])})`,
+      // PROPERTY against PROPERTY, which `typed_num_prop_mask` / `typed_str_prop_mask` serve
+      // without boxing either side. `n.n ${op} n.x` above already covers the dense numeric case;
+      // these cover what it does not. `nan` is present on only two of the vertices, so it is the
+      // shape that exercises the "absent on EITHER side is UNKNOWN" rule the typed path must
+      // reproduce, and `n.s ${op} n.s` is what routes a STRING comparison through it at all.
+      `(n.nan ${op} n.n)`,
+      `(n.s ${op} n.s)`,
+      `(n.st ${op} n.s)`,
     ]);
   }
 
@@ -859,6 +882,24 @@ const genQuery = (r: () => number): string => {
     return pick(r, forms);
   }
 
+  // CROSS-SLOT property comparison over a hop — `WHERE a.k <op> b.k` across two bound
+  // variables, which is the shape the typed prop-vs-prop masks are for and which nothing here
+  // produced. Every `genPred` arm reads ONE variable, so a same-slot comparison was the most it
+  // could reach, while the masks resolve each side's slot independently — a wrong slot is a wrong
+  // answer. `nan` is in the key list because it is present on only two vertices, which drives the
+  // absent-on-either-side rule. Placed last, above the fallback, so it takes no other arm's band.
+  if (p < 0.96) {
+    const op = pick(r, CMP);
+    const k = pick(r, ['n', 'x', 's', 'nan', 'st']);
+    const k2 = pick(r, ['n', 'x', 's', 'nan', 'st']);
+
+    return pick(r, [
+      `MATCH (a:T)-[:E]->(b:T) WHERE (a.${k} ${op} b.${k}) RETURN a.n AS x, b.n AS t ORDER BY t, x`,
+      `MATCH (a:T)-[:E]->(b:T) WHERE (a.${k} ${op} b.${k2}) RETURN b.n AS x, a.n AS t ORDER BY t, x`,
+      `MATCH (a:T)-[:E]->(b:T) RETURN (a.${k} ${op} b.${k2}) AS x, a.n AS t, b.n AS u ORDER BY t, u, x`,
+    ]);
+  }
+
   return `MATCH (n:T) RETURN ${genExpr(r, 3)} AS x, n.n AS t ORDER BY t`;
 };
 
@@ -980,6 +1021,8 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       sinkNonZero: 0,
       peelGenerated: 0,
       peelNonZero: 0,
+      crossGenerated: 0,
+      crossNonEmpty: 0,
     };
     // The same GENERATION-IS-NOT-COVERAGE guard for PREDICATE arms. `genExpr` is
     // type-agnostic, so a `WHERE` / `FILTER` / inline-`(n WHERE …)` position used to be filled
@@ -1065,7 +1108,8 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
     console.log(
       `PRED generated=${cov.predGenerated} rows=${cov.predRows} ` +
         `perRep=${cov.perRepGenerated}/${cov.perRepNonEmpty} ` +
-        `sink=${cov.sinkGenerated}/${cov.sinkNonZero} peel=${cov.peelGenerated}/${cov.peelNonZero}`,
+        `sink=${cov.sinkGenerated}/${cov.sinkNonZero} peel=${cov.peelGenerated}/${cov.peelNonZero} ` +
+        `cross=${cov.crossGenerated}/${cov.crossNonEmpty}`,
     );
     expect({
       perRepGenerated: cov.perRepGenerated > 350,
@@ -1077,6 +1121,9 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       // Measured 150-186 generated and 30-44 of those non-zero, of 20,000.
       peelGenerated: cov.peelGenerated > 75,
       peelNonZero: cov.peelNonZero > 15,
+      // Measured 560-620 generated and 300-360 of those non-empty, of 20,000.
+      crossGenerated: cov.crossGenerated > 250,
+      crossNonEmpty: cov.crossNonEmpty > 120,
     }).toEqual({
       perRepGenerated: true,
       perRepNonEmpty: true,
@@ -1086,6 +1133,8 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       sinkNonZero: true,
       peelGenerated: true,
       peelNonZero: true,
+      crossGenerated: true,
+      crossNonEmpty: true,
     });
     // 20 000 queries × two engines is well under a second locally but exceeds Bun's default
     // 5 s test timeout on the slower CI runners (~5.5–6 s) — give this heavy differential fuzz

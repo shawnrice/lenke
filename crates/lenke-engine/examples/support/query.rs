@@ -82,6 +82,28 @@ pub fn run(cfg: &Cfg) {
                 // because the filter fast paths absorb them (verified by instrumenting it: zero
                 // calls across this whole bench). A conjunction of cheap compares is already
                 // handled; it is the expensive operand that was not.
+                // PROPERTY against PROPERTY across two bound variables, which had no typed path
+                // at all — both evaluators boxed each side. A/B against the same binary without
+                // the masks: 20,518us -> 11,785us (1.74x) and, for strings, 39,360us -> 21,084us
+                // (1.87x). The literal form between them is the control and does not move.
+                //
+                // The isolated harness shows 4.2x and 3.6x for the same comparisons
+                // (`expression_cost_by_kind`, cross-slot section). These rows are lower because
+                // they also pay for the hop and for projecting ~496,000 rows — the predicate is a
+                // minority of the query. Both numbers are real; the harness prices the expression,
+                // these price a query that contains one.
+                (
+                    "cmp prop/prop",
+                    "MATCH (p:Person)-[:KNOWS]->(q) WHERE p.age < q.age RETURN q.name AS n",
+                ),
+                (
+                    "cmp prop/lit",
+                    "MATCH (p:Person)-[:KNOWS]->(q) WHERE p.age < 50 RETURN q.name AS n",
+                ),
+                (
+                    "cmp str prop/prop",
+                    "MATCH (p:Person)-[:KNOWS]->(q) WHERE p.city < q.city RETURN q.name AS n",
+                ),
                 // A boolean expression PROJECTED, not filtered — which routes through `eval`
                 // rather than `eval_mask`. Those are two evaluators answering the same question
                 // and only one had the typed comparison paths: measured per row over 200,000

@@ -9653,6 +9653,67 @@ fn expression_cost_by_kind() {
 
     // `eval` against `eval_mask` for the BOOLEAN kinds. They answer the same question — does this
     // row pass — by different routes, and the gap between them is a target if it is large.
+    // CROSS-SLOT comparisons, on a two-slot batch from a hop. `Compare Num/Num` in the table
+    // below uses one slot and one key, which is degenerate; the shape a query actually writes is
+    // `WHERE a.x < b.y` across two bound variables, and that is what the typed masks have to
+    // recognize. Measured separately because it needs a wider batch.
+    {
+        let hop = Plan::Expand {
+            input: Box::new(Plan::Scan { label: None }),
+            from: 0,
+            dir: Dir::Out,
+            edge_label: vec!["R".to_string()],
+            bind_edge: false,
+            double_loops: false,
+        };
+        let wide = crate::exec::pull(&hop, &store, false).expect("the hop pulls");
+        let rows = wide.rows();
+        assert!(rows > 0 && wide.slots.len() == 2, "two slots expected");
+        let p0 = Expr::Prop {
+            slot: 0,
+            key: "num".to_string(),
+        };
+        let p1 = Expr::Prop {
+            slot: 1,
+            key: "num".to_string(),
+        };
+        println!("\n=== cross-slot compare, {rows} rows (ns/row) ===");
+        println!(
+            "{:<24} {:>10} {:>12} {:>8}",
+            "predicate", "eval", "eval_mask", "gap"
+        );
+        for (nm, e) in &[
+            ("a.num < b.num", cmp(p0.clone(), p1.clone())),
+            ("a.num < lit", cmp(p0.clone(), lit_n())),
+            (
+                "a.name < b.name",
+                cmp(
+                    Expr::Prop {
+                        slot: 0,
+                        key: "name".to_string(),
+                    },
+                    Expr::Prop {
+                        slot: 1,
+                        key: "name".to_string(),
+                    },
+                ),
+            ),
+        ] {
+            let mut lo_e = f64::MAX;
+            let mut lo_m = f64::MAX;
+            for _ in 0..REPS {
+                let t = Instant::now();
+                let _ = crate::exec::eval(e, &store, &wide).expect("eval");
+                lo_e = lo_e.min(t.elapsed().as_secs_f64() * 1e6);
+                let t = Instant::now();
+                let _ = crate::exec::eval_mask(e, &store, &wide).expect("mask");
+                lo_m = lo_m.min(t.elapsed().as_secs_f64() * 1e6);
+            }
+            let (pe, pm) = (lo_e * 1000.0 / rows as f64, lo_m * 1000.0 / rows as f64);
+            println!("{nm:<24} {pe:>10.2} {pm:>12.2} {:>8.1}", pe / pm);
+        }
+    }
+
     println!("\n=== eval vs eval_mask, {ROWS} rows (ns/row) ===");
     println!(
         "{:<22} {:>10} {:>12} {:>8}",
