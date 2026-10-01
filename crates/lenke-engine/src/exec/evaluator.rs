@@ -442,29 +442,35 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
                 None => Col::Gen(vec![Value::Null; batch.rows()]),
             }
         }
-        Expr::Not(inner) => {
-            let c = eval(inner, store, batch)?;
-            map_bool(&c, |b| b.map(|x| !x))?
+        // The BOOLEAN connectives route through `eval_mask`, which carries typed comparison
+        // paths this one does not, and now also narrows an operand to the rows the other left
+        // undecided. Measured per row over 200,000 rows, the same expression through each:
+        //
+        //   Compare Num/lit      eval 7.93ns   eval_mask 0.90ns    8.8x
+        //   Compare Str/lit          15.68          3.17           4.9x
+        //   And(Cmp,Cmp)             21.88          1.78          12.3x
+        //
+        // Two evaluators were answering "does this row pass" and only one had been taught.
+        // `truth_to_col` produces the same representation `zip_bool` did — `Col::Bool` when every
+        // row is decided, `Col::Gen` with NULLs otherwise.
+        //
+        // These arms may delegate the WHOLE expression because `eval_mask` handles each of them
+        // itself and never falls back for them. `Compare` may NOT: `eval_mask`'s fallback is
+        // `eval`, so delegating a comparison would recurse forever. It tries the same typed masks
+        // inline instead and keeps the boxed path as its own fallback.
+        Expr::Not(_) | Expr::And(..) | Expr::Or(..) | Expr::Xor(..) => {
+            crate::exec::truth_to_col(crate::exec::eval_mask(expr, store, batch)?)
         }
-        Expr::And(l, r) => zip_bool(store, batch, l, r, |a, b| match (a, b) {
-            (Some(false), _) | (_, Some(false)) => Some(false),
-            (Some(true), Some(true)) => Some(true),
-            _ => None,
-        })?,
-        Expr::Or(l, r) => zip_bool(store, batch, l, r, |a, b| match (a, b) {
-            (Some(true), _) | (_, Some(true)) => Some(true),
-            (Some(false), Some(false)) => Some(false),
-            _ => None,
-        })?,
-        // Three-valued XOR: both known → `a != b`; any UNKNOWN operand → UNKNOWN.
-        Expr::Xor(l, r) => zip_bool(store, batch, l, r, |a, b| match (a, b) {
-            (Some(x), Some(y)) => Some(x != y),
-            _ => None,
-        })?,
         Expr::Compare { op, left, right } => {
-            let l = eval(left, store, batch)?;
-            let r = eval(right, store, batch)?;
-            compare(*op, &l, &r)
+            if let Some(m) = crate::exec::typed_num_mask(*op, left, right, store, batch) {
+                crate::exec::truth_to_col(m)
+            } else if let Some(m) = crate::exec::typed_str_mask(*op, left, right, store, batch) {
+                crate::exec::truth_to_col(m)
+            } else {
+                let l = eval(left, store, batch)?;
+                let r = eval(right, store, batch)?;
+                compare(*op, &l, &r)
+            }
         }
         Expr::In { needle, haystack } => {
             // Runtime three-valued membership (a literal list desugars to an

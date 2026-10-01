@@ -5825,7 +5825,7 @@ pub(crate) const TRUTH_TYPE_ERR: &str =
 
 /// Three-valued truth of each cell in a boolean context. A present non-null NON-boolean
 /// is a data exception (strict typing — no truthiness coercion); NULL is UNKNOWN (`None`).
-fn as_truth(col: &Col) -> Result<Vec<Option<bool>>, String> {
+pub(super) fn as_truth(col: &Col) -> Result<Vec<Option<bool>>, String> {
     match col {
         Col::Bool(bs) => Ok(bs.iter().map(|&b| Some(b)).collect()),
         other => (0..other.len())
@@ -5836,10 +5836,6 @@ fn as_truth(col: &Col) -> Result<Vec<Option<bool>>, String> {
             })
             .collect(),
     }
-}
-
-fn map_bool(col: &Col, f: impl Fn(Option<bool>) -> Option<bool>) -> Result<Col, String> {
-    Ok(truth_to_col(as_truth(col)?.into_iter().map(f).collect()))
 }
 
 /// A vectorized three-valued predicate mask over `batch` (`Some(true)`/`Some(false)`/
@@ -5891,39 +5887,60 @@ fn slots_read(e: &Expr, out: &mut Vec<usize>) -> bool {
     }
 }
 
-/// May this expression be evaluated on a SUBSET of the rows without changing which queries raise?
+/// May this expression be narrowed to a SUBSET of the rows without changing which queries raise?
 ///
-/// Also a whitelist, for a different reason from `slots_read`'s. Skipping rows where the other
-/// operand already decided the answer cannot change any VALUE — Kleene `AND` is false whenever
-/// either side is — but it does change whether a row that would RAISE is ever evaluated. ISO
-/// permits that (US008 / UA004; see `research/iso-39075/`), and the optimizer takes the latitude
-/// elsewhere. Here we decline it, because the TS engine does not narrow and cross-engine
-/// byte-identity is a stricter promise than conformance: a native-only skip would answer where TS
-/// raises.
+/// Two independent hazards, and the first version of this handled only one of them.
 ///
-/// So: arithmetic, calls, casts and anything unrecognized are excluded. What remains is the common
-/// shape — property compares, label tests, null tests and boolean combinations of them.
+/// 1. **Evaluation** can raise: arithmetic on a zero divisor or a non-number, a function or CAST
+///    that faults. ISO permits skipping those (US008 / UA004, see `research/iso-39075/`) and the
+///    optimizer takes that latitude elsewhere, but the TS engine does not narrow and cross-engine
+///    byte-identity is a stricter promise than conformance.
+/// 2. **Boolean coercion** can raise, independently of evaluation. An `AND`/`OR` operand is put
+///    through `as_truth`, which faults on a non-boolean — so a perfectly safe `Lit` or `Prop` as a
+///    direct operand is NOT narrowable: reducing it to zero rows makes `eval` short-circuit on the
+///    empty batch and the fault never happens.
+///
+/// Missing (2) was caught by the differential fuzzer on
+/// `RETURN ((NOT (3 IS UNKNOWN)) OR 'nan')`, where the first operand is true on every row: TS
+/// raised `E_INVALID_VALUE` and native answered. So the top-level operand must be something that
+/// definitely YIELDS a boolean, and only the inside of a comparison may be a plain read.
 fn narrowing_is_transparent(e: &Expr) -> bool {
     match e {
-        Expr::Lit(_) | Expr::Param(_) | Expr::Slot(_) => true,
-        Expr::Prop { .. } | Expr::PropertyExists { .. } | Expr::IsLabeled { .. } => true,
-        Expr::Not(a) | Expr::IsNull { expr: a, .. } => narrowing_is_transparent(a),
+        // Definitely boolean, and cannot fault.
+        Expr::IsLabeled { .. } | Expr::PropertyExists { .. } => true,
+        Expr::IsNull { expr, .. } => operand_cannot_raise(expr),
+        Expr::Compare { left, right, .. } => {
+            operand_cannot_raise(left) && operand_cannot_raise(right)
+        }
+        Expr::Not(a) => narrowing_is_transparent(a),
         Expr::And(a, b) | Expr::Or(a, b) | Expr::Xor(a, b) => {
             narrowing_is_transparent(a) && narrowing_is_transparent(b)
         }
-        // A cross-type ORDERING raises, so a compare is transparent only if both sides are
-        // literals or plain reads — which is what the arms above admit.
-        Expr::Compare { left, right, .. } => {
-            narrowing_is_transparent(left) && narrowing_is_transparent(right)
-        }
-        // An `EXISTS` raises only if its BODY does, and the body is where the prize is: a
-        // correlated subquery is the most expensive thing a predicate can hold, measured at 9.0x
-        // when its rows are eliminated rather than walked (audit item 70). It is also the shape
-        // that actually REACHES this code — an `AND` of two plain compares is absorbed by the
-        // filter fast paths and never gets here.
+        // An `EXISTS` yields a boolean by construction and raises only if its BODY does. It is
+        // also where the prize is: a correlated subquery is the most expensive thing a predicate
+        // can hold, measured at 9.0x when its rows are eliminated rather than walked (item 70),
+        // and it is the shape that actually REACHES this code — an `AND` of two plain compares is
+        // absorbed by the filter fast paths.
         Expr::Exists { body, .. } => plan_is_transparent(body),
         _ => false,
     }
+}
+
+/// Can this be evaluated without faulting, as the OPERAND OF A COMPARISON — where its value is
+/// compared rather than coerced to a boolean, so the hazard in (2) above does not apply?
+///
+/// A whitelist. Arithmetic, calls and casts are excluded because they fault; everything
+/// unrecognized is excluded because it has not been checked.
+fn operand_cannot_raise(e: &Expr) -> bool {
+    matches!(
+        e,
+        Expr::Lit(_)
+            | Expr::Param(_)
+            | Expr::Slot(_)
+            | Expr::Prop { .. }
+            | Expr::PropertyExists { .. }
+            | Expr::IsLabeled { .. }
+    )
 }
 
 /// Does this expression hold a correlated subquery — the one thing that makes an operand expensive
@@ -6057,7 +6074,11 @@ fn fold_operand(
     Ok(())
 }
 
-fn eval_mask(expr: &Expr, store: &Store, batch: &Batch) -> Result<Vec<Option<bool>>, String> {
+pub(super) fn eval_mask(
+    expr: &Expr,
+    store: &Store,
+    batch: &Batch,
+) -> Result<Vec<Option<bool>>, String> {
     Ok(match expr {
         Expr::Not(x) => eval_mask(x, store, batch)?
             .into_iter()
@@ -6114,7 +6135,7 @@ fn eval_mask(expr: &Expr, store: &Store, batch: &Batch) -> Result<Vec<Option<boo
 /// reading the Num column raw. `None` when the leaf is not a Num-column-vs-num-literal. A
 /// present Num cell is always finite (NaN/Inf are stored as NULL), so `num_pred` matches
 /// the boxed `compare`'s three-valued result exactly; an absent cell is UNKNOWN.
-fn typed_num_mask(
+pub(super) fn typed_num_mask(
     op: CompareOp,
     left: &Expr,
     right: &Expr,
@@ -6168,7 +6189,7 @@ fn typed_num_mask(
 /// `Str` columns compare the strings directly. `None` when not a string-column-vs-string-
 /// literal; an absent cell is UNKNOWN. Cross-type (`Str` prop vs non-`Str` lit) returns
 /// `None`, so the boxed `compare` keeps its cross-type semantics.
-fn typed_str_mask(
+pub(super) fn typed_str_mask(
     op: CompareOp,
     left: &Expr,
     right: &Expr,
@@ -6305,20 +6326,7 @@ fn typed_strsearch_mask(
     }
 }
 
-fn zip_bool(
-    store: &Store,
-    batch: &Batch,
-    l: &Expr,
-    r: &Expr,
-    f: impl Fn(Option<bool>, Option<bool>) -> Option<bool>,
-) -> Result<Col, String> {
-    let lc = as_truth(&eval(l, store, batch)?)?;
-    let rc = as_truth(&eval(r, store, batch)?)?;
-    let n = lc.len().min(rc.len());
-    Ok(truth_to_col((0..n).map(|i| f(lc[i], rc[i])).collect()))
-}
-
-fn truth_to_col(out: Vec<Option<bool>>) -> Col {
+pub(super) fn truth_to_col(out: Vec<Option<bool>>) -> Col {
     if out.iter().all(Option::is_some) {
         Col::Bool(out.into_iter().map(|o| o.expect("all some")).collect())
     } else {

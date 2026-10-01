@@ -82,6 +82,21 @@ pub fn run(cfg: &Cfg) {
                 // because the filter fast paths absorb them (verified by instrumenting it: zero
                 // calls across this whole bench). A conjunction of cheap compares is already
                 // handled; it is the expensive operand that was not.
+                // A boolean expression PROJECTED, not filtered — which routes through `eval`
+                // rather than `eval_mask`. Those are two evaluators answering the same question
+                // and only one had the typed comparison paths: measured per row over 200,000
+                // rows, `eval` cost 7.93ns against `eval_mask`'s 0.90ns for the same compare, and
+                // 21.88ns against 1.78ns for a conjunction of two. `eval`'s boolean arms now
+                // route through the mask.
+                //
+                // These are the standing guard for that, since a pure evaluator speedup breaks no
+                // test. A/B against the same binary without the routing: 1,627us -> 559us (2.91x)
+                // and 3,336us -> 920us (3.63x).
+                ("project bool", "MATCH (p:Person) RETURN p.age > 50 AS flag"),
+                (
+                    "project bool AND",
+                    "MATCH (p:Person) RETURN p.age > 50 AND p.age < 90 AS flag",
+                ),
                 (
                     "pred AND exists",
                     "MATCH (p:Person) WHERE p.age > 98 AND EXISTS { (p)-[:KNOWS]->() } \

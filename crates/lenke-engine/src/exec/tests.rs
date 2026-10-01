@@ -9471,6 +9471,321 @@ fn gather_cost_by_width() {
     }
 }
 
+/// What does each EXPRESSION KIND cost per row?
+///
+/// ```text
+/// cargo test --release --manifest-path crates/lenke-engine/Cargo.toml \
+///   -- --ignored --nocapture expression_cost_by_kind
+/// ```
+///
+/// The method is the one that paid off on the retired core engine: enumerate the enum's variants
+/// against the arms of whatever dispatches on them, and PRICE each so the next target is chosen
+/// rather than guessed. `eval` has an arm for all 35 `Expr` variants, so unlike that engine
+/// nothing here silently falls back — the question is which arms are expensive per row, because
+/// they box, allocate, or walk a generic path where a typed one exists.
+///
+/// Read it as a ratio to the `Prop (Num)` row, which is the cheapest useful read: anything an
+/// order of magnitude above it over the same rows is doing something per row that a column could
+/// do once.
+#[test]
+#[ignore = "measurement harness: cargo test --release -- --ignored --nocapture expression_cost_by_kind"]
+fn expression_cost_by_kind() {
+    use std::time::Instant;
+    const REPS: u32 = 7;
+    const ROWS: u32 = 200_000;
+
+    let mut b = Builder::default();
+    for i in 0..ROWS {
+        // `tag` is present on half the rows, so a PRESENT read and an ABSENT read of the same
+        // shape can be compared without changing anything else.
+        let mut props: Vec<(&str, Value)> = vec![
+            ("num", Value::Num(f64::from(i % 1000))),
+            ("name", s(&format!("v{i}"))),
+        ];
+        if i % 2 == 0 {
+            props.push(("tag", s("x")));
+        }
+        b.node(if i % 3 == 0 { &["N"] } else { &["M"] }, &props);
+    }
+    for i in 0..ROWS {
+        b.edge(i, (i * 7 + 1) % ROWS, "R");
+    }
+    let store = b.build();
+    let batch =
+        crate::exec::pull(&Plan::Scan { label: None }, &store, false).expect("a bare scan pulls");
+    assert_eq!(batch.rows(), ROWS as usize);
+
+    let num = || Expr::Prop {
+        slot: 0,
+        key: "num".to_string(),
+    };
+    let name = || Expr::Prop {
+        slot: 0,
+        key: "name".to_string(),
+    };
+    let missing = || Expr::Prop {
+        slot: 0,
+        key: "nope".to_string(),
+    };
+    let cmp = |l: Expr, r: Expr| Expr::Compare {
+        op: CompareOp::Lt,
+        left: Box::new(l),
+        right: Box::new(r),
+    };
+    let lit_n = || Expr::Lit(Value::Num(500.0));
+    let lit_s = || Expr::Lit(Value::Str("v500".into()));
+
+    let cases: Vec<(&str, Expr)> = vec![
+        ("Slot", Expr::Slot(0)),
+        ("Lit", lit_n()),
+        ("Prop (Num)", num()),
+        ("Prop (Str)", name()),
+        ("Prop (absent)", missing()),
+        (
+            "Prop (half)",
+            Expr::Prop {
+                slot: 0,
+                key: "tag".to_string(),
+            },
+        ),
+        ("Compare Num/lit", cmp(num(), lit_n())),
+        ("Compare Str/lit", cmp(name(), lit_s())),
+        ("Compare absent/lit", cmp(missing(), lit_n())),
+        ("Compare Num/Num", cmp(num(), num())),
+        (
+            "IsLabeled",
+            Expr::IsLabeled {
+                slot: 0,
+                labels: vec!["N".to_string()],
+            },
+        ),
+        (
+            "PropertyExists",
+            Expr::PropertyExists {
+                slot: 0,
+                key: "tag".to_string(),
+            },
+        ),
+        (
+            "IsNull",
+            Expr::IsNull {
+                expr: Box::new(num()),
+                negated: false,
+            },
+        ),
+        ("Not(Compare)", Expr::Not(Box::new(cmp(num(), lit_n())))),
+        (
+            "And(Cmp,Cmp)",
+            Expr::And(Box::new(cmp(num(), lit_n())), Box::new(cmp(num(), lit_n()))),
+        ),
+        (
+            "Or(Cmp,Cmp)",
+            Expr::Or(Box::new(cmp(num(), lit_n())), Box::new(cmp(num(), lit_n()))),
+        ),
+        (
+            "Arith(+)",
+            Expr::Arith {
+                op: crate::ir::ArithOp::Add,
+                left: Box::new(num()),
+                right: Box::new(lit_n()),
+            },
+        ),
+        (
+            "In (literal list)",
+            Expr::In {
+                needle: Box::new(num()),
+                haystack: Box::new(Expr::Lit(Value::List(vec![
+                    Value::Num(1.0),
+                    Value::Num(2.0),
+                    Value::Num(3.0),
+                ]))),
+            },
+        ),
+        (
+            "Call abs",
+            Expr::Call {
+                name: "abs".to_string(),
+                args: vec![num()],
+            },
+        ),
+        (
+            "Call upper",
+            Expr::Call {
+                name: "upper".to_string(),
+                args: vec![name()],
+            },
+        ),
+        (
+            "Call contains",
+            Expr::Call {
+                name: "contains".to_string(),
+                args: vec![name(), Expr::Lit(Value::Str("7".into()))],
+            },
+        ),
+        (
+            "Cast to STRING",
+            Expr::Cast {
+                target: crate::ir::CastTarget::String,
+                expr: Box::new(num()),
+            },
+        ),
+        (
+            "List [p,p]",
+            Expr::List {
+                items: vec![num(), num()],
+            },
+        ),
+        (
+            "Exists (degree)",
+            Expr::Exists {
+                body: Box::new(Plan::Expand {
+                    input: Box::new(Plan::Row),
+                    from: 0,
+                    dir: Dir::Out,
+                    edge_label: vec!["R".to_string()],
+                    bind_edge: false,
+                    double_loops: false,
+                }),
+                outer_width: 1,
+            },
+        ),
+    ];
+
+    // `eval` against `eval_mask` for the BOOLEAN kinds. They answer the same question — does this
+    // row pass — by different routes, and the gap between them is a target if it is large.
+    println!("\n=== eval vs eval_mask, {ROWS} rows (ns/row) ===");
+    println!(
+        "{:<22} {:>10} {:>12} {:>8}",
+        "predicate", "eval", "eval_mask", "gap"
+    );
+    for (name, e) in &[
+        ("Compare Num/lit", cmp(num(), lit_n())),
+        ("Compare Str/lit", cmp(name(), lit_s())),
+        (
+            "IsLabeled",
+            Expr::IsLabeled {
+                slot: 0,
+                labels: vec!["N".to_string()],
+            },
+        ),
+        (
+            "And(Cmp,Cmp)",
+            Expr::And(Box::new(cmp(num(), lit_n())), Box::new(cmp(num(), lit_n()))),
+        ),
+        (
+            "PropertyExists",
+            Expr::PropertyExists {
+                slot: 0,
+                key: "tag".to_string(),
+            },
+        ),
+    ] {
+        let mut lo_e = f64::MAX;
+        let mut lo_m = f64::MAX;
+        for _ in 0..REPS {
+            let t = Instant::now();
+            let _ = crate::exec::eval(e, &store, &batch).expect("eval");
+            lo_e = lo_e.min(t.elapsed().as_secs_f64() * 1e6);
+            let t = Instant::now();
+            let _ = crate::exec::eval_mask(e, &store, &batch).expect("mask");
+            lo_m = lo_m.min(t.elapsed().as_secs_f64() * 1e6);
+        }
+        let (pe, pm) = (
+            lo_e * 1000.0 / f64::from(ROWS),
+            lo_m * 1000.0 / f64::from(ROWS),
+        );
+        println!("{name:<22} {pe:>10.2} {pm:>12.2} {:>8.1}", pe / pm);
+    }
+
+    println!("\n=== expression cost per row, {ROWS} rows ===");
+    println!(
+        "{:<22} {:>10} {:>10} {:>8}",
+        "kind", "total_us", "ns/row", "xProp"
+    );
+    let mut base = 0.0f64;
+    for (name, e) in &cases {
+        let mut lo = f64::MAX;
+        for _ in 0..REPS {
+            let t = Instant::now();
+            let got = crate::exec::eval(e, &store, &batch);
+            lo = lo.min(t.elapsed().as_secs_f64() * 1e6);
+            assert!(got.is_ok(), "{name} must evaluate: {got:?}");
+        }
+        let per_row = lo * 1000.0 / f64::from(ROWS);
+        if *name == "Prop (Num)" {
+            base = per_row;
+        }
+        println!(
+            "{name:<22} {lo:>10.1} {per_row:>10.2} {:>8.1}",
+            if base > 0.0 { per_row / base } else { 0.0 }
+        );
+    }
+}
+
+// --- Boolean coercion is a second raising hazard ---
+
+/// A non-boolean operand of `AND`/`OR` faults when coerced, and narrowing must not skip that.
+///
+/// `fold_operand` evaluates the second operand only over the rows the first left undecided. When
+/// the first is true on EVERY row, an `OR`'s second operand is narrowed to a ZERO-ROW batch, and
+/// `eval` short-circuits on an empty batch — so the coercion never runs and never faults.
+///
+/// Caught by the differential fuzzer on `RETURN ((NOT (3 IS UNKNOWN)) OR 'nan')`: TS raised
+/// `E_INVALID_VALUE` and native answered. The first version of the transparency check reasoned
+/// only about whether EVALUATION raises, which a literal never does; the fix is that the operand
+/// must definitely YIELD a boolean, so a bare literal or property read is not narrowable even
+/// though evaluating it is perfectly safe.
+#[test]
+fn a_non_boolean_operand_still_faults_when_the_other_decides_every_row() {
+    let store = chain_store(8);
+    // The left operand is TRUE for every row, so the right is what narrowing would skip.
+    for q in [
+        "MATCH (n:N) RETURN ((NOT (3 IS UNKNOWN)) OR 'nan') AS x",
+        "MATCH (n:N) RETURN ((NOT (3 IS UNKNOWN)) OR n.name) AS x",
+        "MATCH (n:N) RETURN ((NOT (3 IS UNKNOWN)) OR 7) AS x",
+    ] {
+        let err = try_gql(q, &store).expect_err("a non-boolean OR operand must fault");
+        assert!(err.contains("E_INVALID_VALUE"), "{q} -> {err}");
+    }
+    // And the AND mirror: a FALSE left operand settles every row.
+    for q in [
+        "MATCH (n:N) RETURN ((3 IS UNKNOWN) AND 'nan') AS x",
+        "MATCH (n:N) RETURN ((3 IS UNKNOWN) AND n.name) AS x",
+    ] {
+        let err = try_gql(q, &store).expect_err("a non-boolean AND operand must fault");
+        assert!(err.contains("E_INVALID_VALUE"), "{q} -> {err}");
+    }
+}
+
+/// The shapes that ARE narrowable must still be, or the fix above would have bought correctness by
+/// turning the optimization off. A comparison and an `EXISTS` are the two that matter — the
+/// measured 9x lives on the second.
+#[test]
+fn a_comparison_and_an_exists_remain_narrowable() {
+    let store = dense_store(64, 3);
+    // Both answer, and the answers are what the unnarrowed plan gives — the fuzzers cover the
+    // general case; this pins that these two shapes did not get excluded by the tightening.
+    assert_eq!(
+        try_gql(
+            "MATCH (n:N) WHERE n.name < 'v1' OR n.name > 'v62' RETURN n.name AS x",
+            &store
+        )
+        .unwrap(),
+        try_gql(
+            "MATCH (n:N) WHERE n.name > 'v62' OR n.name < 'v1' RETURN n.name AS x",
+            &store
+        )
+        .unwrap(),
+        "an OR of comparisons is order-independent and narrowable either way"
+    );
+    let with_exists = try_gql(
+        "MATCH (n:N) WHERE n.name < 'v1' OR EXISTS { (n)-[:R]->() } RETURN n.name AS x",
+        &store,
+    )
+    .unwrap();
+    assert!(with_exists > 0, "the EXISTS shape must match something");
+}
+
 // --- Isolated predicate-cost harness (AND/OR elimination) ---
 
 /// How much does evaluating BOTH operands of an `AND`/`OR` over EVERY row cost, against
