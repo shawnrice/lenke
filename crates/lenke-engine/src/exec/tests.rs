@@ -11870,3 +11870,168 @@ fn element_render_cost() {
             .sum()
     });
 }
+
+// --- Asking the representation whether a cell is NULL (item 77) ---
+
+/// `Col::is_null_at` must be EXACTLY `value_at(i).is_null()` for every variant and every cell,
+/// since it replaces that call at the `count()` and `IS NULL` sites. The equivalence is the
+/// whole claim, so it is checked directly over one cell of each kind — including the two that
+/// are easy to get wrong: the `u32::MAX` OPTIONAL-MATCH sentinel in a `Nodes`/`Edges` column,
+/// and a `Num` cell holding NaN, which is NOT null.
+#[test]
+fn is_null_at_agrees_with_boxing_the_value_for_every_column_kind() {
+    let cols = [
+        Col::Nodes(vec![0, u32::MAX, 7]),
+        Col::Edges(vec![u32::MAX, 3]),
+        Col::Num(vec![0.0, -0.0, f64::NAN, f64::INFINITY, 5.5]),
+        Col::Bool(vec![true, false]),
+        Col::Str(vec![GStr::from("a"), GStr::from("")]),
+        Col::Gen(vec![
+            Value::Null,
+            Value::Num(1.0),
+            Value::Num(f64::NAN),
+            Value::Str("s".into()),
+            Value::Bool(false),
+            Value::List(vec![]),
+        ]),
+    ];
+    for col in &cols {
+        for i in 0..col.len() {
+            assert_eq!(
+                col.is_null_at(i),
+                col.value_at(i).is_null(),
+                "{col:?} row {i}"
+            );
+        }
+    }
+    // And the two specific claims, stated rather than inferred from the loop.
+    assert!(
+        Col::Nodes(vec![u32::MAX]).is_null_at(0),
+        "the sentinel is NULL"
+    );
+    assert!(!Col::Num(vec![f64::NAN]).is_null_at(0), "NaN is not NULL");
+    assert!(
+        !Col::Str(vec![GStr::from("")]).is_null_at(0),
+        "an empty string is not NULL"
+    );
+}
+
+/// `count(expr)` counts NON-NULL values, and which cells those are depends on the column's
+/// representation: a property present on every vertex builds a typed column where nothing is
+/// null, while one that is absent anywhere builds a `Gen` column where the absent cells are.
+#[test]
+fn count_of_a_property_counts_present_cells_only() {
+    let mut store = Builder::default().build();
+    execute(
+        &crate::gql::parse(
+            "INSERT (:P {all: 1, s: 'a', some: 1, sn: 'x', nn: null}), \
+             (:P {all: 2, s: 'b'}), \
+             (:P {all: 3, s: 'c', some: 3, sn: 'z', nn: 9})",
+        )
+        .unwrap(),
+        &mut store,
+    )
+    .unwrap();
+    let one = |q: &str| -> f64 {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
+        match run(&plan, &store).rows[0][0] {
+            Value::Num(x) => x,
+            ref other => panic!("count returns a number, got {other:?}"),
+        }
+    };
+    assert_eq!(one("MATCH (p:P) RETURN count(*) AS c"), 3.0);
+    assert_eq!(
+        one("MATCH (p:P) RETURN count(p.all) AS c"),
+        3.0,
+        "on every row"
+    );
+    assert_eq!(
+        one("MATCH (p:P) RETURN count(p.s) AS c"),
+        3.0,
+        "a string on every row"
+    );
+    assert_eq!(
+        one("MATCH (p:P) RETURN count(p.some) AS c"),
+        2.0,
+        "absent on one row"
+    );
+    assert_eq!(
+        one("MATCH (p:P) RETURN count(p.sn) AS c"),
+        2.0,
+        "a string absent on one row"
+    );
+    assert_eq!(
+        one("MATCH (p:P) RETURN count(p.nn) AS c"),
+        1.0,
+        "a stored present-NULL is not counted, and the absent row is not either"
+    );
+    assert_eq!(
+        one("MATCH (p:P) RETURN count(p.gone) AS c"),
+        0.0,
+        "a key nobody carries"
+    );
+    assert_eq!(
+        one("MATCH (p:P) RETURN count(DISTINCT p.some) AS c"),
+        2.0,
+        "DISTINCT skips the absent row too"
+    );
+}
+
+/// `IS NULL` over the same columns, which is the other site that now asks the representation.
+/// An OPTIONAL-MATCH miss is the sentinel case: the unmatched element IS null.
+#[test]
+fn is_null_reads_the_same_cells_count_skips() {
+    let mut store = Builder::default().build();
+    execute(
+        &crate::gql::parse("INSERT (:P {k: 1, s: 'a', some: 1, nn: null}), (:P {k: 2, s: 'b'})")
+            .unwrap(),
+        &mut store,
+    )
+    .unwrap();
+    let col0 = |q: &str| -> Vec<Value> {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
+        run(&plan, &store)
+            .rows
+            .iter()
+            .map(|r| r[0].clone())
+            .collect()
+    };
+    let as_bools = |q: &str| -> Vec<bool> {
+        col0(q)
+            .into_iter()
+            .map(|v| match v {
+                Value::Bool(b) => b,
+                other => panic!("IS NULL projects a definite bool, got {other:?}"),
+            })
+            .collect()
+    };
+    assert_eq!(
+        as_bools("MATCH (p:P) RETURN p.k IS NULL AS f ORDER BY p.k"),
+        [false, false]
+    );
+    assert_eq!(
+        as_bools("MATCH (p:P) RETURN p.s IS NULL AS f ORDER BY p.k"),
+        [false, false]
+    );
+    assert_eq!(
+        as_bools("MATCH (p:P) RETURN p.some IS NULL AS f ORDER BY p.k"),
+        [false, true],
+        "absent on the second row"
+    );
+    assert_eq!(
+        as_bools("MATCH (p:P) RETURN p.nn IS NULL AS f ORDER BY p.k"),
+        [true, true],
+        "a stored present-NULL IS null, and so is the absent row"
+    );
+    assert_eq!(
+        as_bools("MATCH (p:P) RETURN p.gone IS NOT NULL AS f ORDER BY p.k"),
+        [false, false],
+        "a key nobody carries is never NOT NULL"
+    );
+    // An OPTIONAL-MATCH miss binds the `u32::MAX` sentinel, which IS null.
+    assert_eq!(
+        as_bools("MATCH (p:P) OPTIONAL MATCH (p)-[:NOPE]->(q) RETURN q IS NULL AS f ORDER BY p.k"),
+        [true, true],
+        "an unmatched optional element IS NULL, not FALSE"
+    );
+}

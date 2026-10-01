@@ -157,6 +157,19 @@ pub fn run(cfg: &Cfg) {
                 // test. A/B against the same binary without the routing: 1,627us -> 559us (2.91x)
                 // and 3,336us -> 920us (3.63x).
                 ("project bool", "MATCH (p:Person) RETURN p.age > 50 AS flag"),
+                // The other site that boxed a cell to ask whether it was NULL, and the bigger
+                // one: `IS NULL` over a whole column. 1,367.1us -> 844.1us (1.62x) for the
+                // string, and 1,220.6us -> 594.1us (2.05x) for the number -- a LARGER gain than
+                // the string case, because a `Num` column cannot be NULL at all, so the answer
+                // is a constant the loop no longer has to index for.
+                (
+                    "project is null str",
+                    "MATCH (p:Person) RETURN p.name IS NULL AS f",
+                ),
+                (
+                    "project is null num",
+                    "MATCH (p:Person) RETURN p.age IS NULL AS f",
+                ),
                 (
                     "project bool AND",
                     "MATCH (p:Person) RETURN p.age > 50 AND p.age < 90 AS flag",
@@ -217,6 +230,29 @@ pub fn run(cfg: &Cfg) {
                     "MATCH (p:Person)-[:KNOWS]->()-[:KNOWS]->() RETURN count(*) AS c",
                 ),
                 ("grouped", "MATCH (p:Person) RETURN p.dept, count(*) AS c"),
+                // `count(expr)` counts NON-NULL values, and the old test boxed every cell to
+                // ask: a `Col::Str` cell became a `Value::Str` -- an `Arc` clone -- purely to
+                // call `is_null()`. The asymmetry was the tell, since the two rows ask the same
+                // question of the same 200,000 vertices: 1,048.4us for the string against
+                // 112.2us for the number, where boxing a `Value::Num` is free.
+                //
+                // `Col::is_null_at` asks the representation instead. The NUMERIC row is the
+                // CONTROL and must stay flat; the string row is 1,048.4us -> 853.7us (1.23x).
+                // What remains is the column materialization itself -- `read_property` builds
+                // the whole `Col::Str` before the aggregate runs -- which is a separate
+                // question, since a `count` of a plain property need not materialize at all.
+                (
+                    "count(prop) str",
+                    "MATCH (p:Person) RETURN count(p.name) AS c",
+                ),
+                (
+                    "count(prop) num",
+                    "MATCH (p:Person) RETURN count(p.age) AS c",
+                ),
+                (
+                    "count(DISTINCT prop)",
+                    "MATCH (p:Person) RETURN count(DISTINCT p.dept) AS c",
+                ),
             ],
         );
     }

@@ -65,6 +65,24 @@ impl Col {
         }
     }
 
+    /// Is row `i` NULL? Exactly `value_at(i).is_null()`, without boxing the value — which for
+    /// a `Str` column meant an `Arc` clone per row to ask a question the representation already
+    /// answers. The case analysis is the whole proof: `Num`, `Bool` and `Str` have no null
+    /// representation (a column that would need one is built as `Gen`, since there is no
+    /// nullable typed variant), so only the `u32::MAX` OPTIONAL-MATCH sentinel and a boxed
+    /// `Value::Null` can be null.
+    ///
+    /// A `Num` cell holding NaN is NOT null, matching `value_at` — `Value::Num(NaN).is_null()`
+    /// is false, and `count()` has always counted it.
+    #[must_use]
+    pub fn is_null_at(&self, i: usize) -> bool {
+        match self {
+            Self::Nodes(v) | Self::Edges(v) => v[i] == u32::MAX,
+            Self::Num(_) | Self::Bool(_) | Self::Str(_) => false,
+            Self::Gen(v) => v[i].is_null(),
+        }
+    }
+
     /// Gather the rows at `idx`, in that order — the primitive filter/reorder
     /// operators use to keep a subset without boxing.
     #[must_use]

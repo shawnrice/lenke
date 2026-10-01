@@ -625,10 +625,11 @@ fn fold_grouped(
             let mut sets: Vec<FnvSet<Vec<u8>>> = (0..n_groups).map(|_| FnvSet::default()).collect();
             let mut buf = Vec::new();
             for (i, &g) in group_of.iter().enumerate() {
-                let v = col.value_at(i);
-                if v.is_null() {
+                // Cheap null test first, so an all-null group never boxes a cell.
+                if col.is_null_at(i) {
                     continue;
                 }
+                let v = col.value_at(i);
                 buf.clear();
                 value::group_key_into(&v, &mut buf);
                 let set = &mut sets[g as usize];
@@ -639,10 +640,13 @@ fn fold_grouped(
             sets.iter().map(|s| Value::Num(s.len() as f64)).collect()
         }
         AggFn::Count => {
-            // count(arg): non-null values per group.
+            // count(arg): non-null values per group. `is_null_at` asks the representation
+            // instead of boxing each cell -- the boxed form cost an `Arc` clone per row for a
+            // `Str` column, which is why `count(p.name)` was 10x `count(p.age)` for the same
+            // question. Identical by case analysis; see `Col::is_null_at`.
             let mut tally = vec![0f64; n_groups];
             for (i, &g) in group_of.iter().enumerate() {
-                if !col.value_at(i).is_null() {
+                if !col.is_null_at(i) {
                     tally[g as usize] += 1.0;
                 }
             }

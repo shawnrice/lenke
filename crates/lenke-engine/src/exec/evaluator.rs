@@ -1490,7 +1490,7 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
             let col = eval(expr, store, batch)?;
             Col::Bool(
                 (0..col.len())
-                    .map(|i| col.value_at(i).is_null() != *negated)
+                    .map(|i| col.is_null_at(i) != *negated)
                     .collect(),
             )
         }
