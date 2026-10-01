@@ -9406,6 +9406,71 @@ fn a_raising_predicate_still_raises_when_it_is_reached() {
     }
 }
 
+/// What does the GATHER cost, as a function of batch WIDTH and column kind?
+///
+/// `predicate_elimination_floor` measures the elimination floor over a ONE-column batch, which is
+/// the best case: `Batch::gather` copies EVERY column, so a wide batch pays for slots the second
+/// operand never reads. That is what decides whether narrowing can be done unconditionally, with a
+/// reject-fraction threshold, or only on the slots the operand touches.
+///
+/// ```text
+/// cargo test --release --manifest-path crates/lenke-engine/Cargo.toml \
+///   -- --ignored --nocapture gather_cost_by_width
+/// ```
+///
+/// `Col::Nodes` is 4 bytes a row; `Col::Gen` is a `Value`, which is the width that matters for a
+/// projected property. Both are measured because a batch's cost is the sum of its column kinds,
+/// not its arity.
+#[test]
+#[ignore = "measurement harness: cargo test --release -- --ignored --nocapture gather_cost_by_width"]
+fn gather_cost_by_width() {
+    use std::time::Instant;
+    const REPS: u32 = 7;
+    fn best(mut f: impl FnMut()) -> f64 {
+        let mut lo = f64::MAX;
+        for _ in 0..REPS {
+            let t = Instant::now();
+            f();
+            lo = lo.min(t.elapsed().as_secs_f64() * 1e6);
+        }
+        lo
+    }
+
+    for &rows in &[100_000usize, 1_000_000] {
+        println!("\n=== gather cost, {rows} rows ===");
+        println!(
+            "{:<8} {:>6} {:>12} {:>12} {:>12}",
+            "kind", "width", "keep_6%_us", "keep_53%_us", "keep_100%_us"
+        );
+        for kind in ["Nodes", "Gen"] {
+            for &width in &[1usize, 4, 16] {
+                let slots: Vec<Col> = (0..width)
+                    .map(|_| {
+                        if kind == "Nodes" {
+                            Col::Nodes((0..rows as u32).collect())
+                        } else {
+                            Col::Gen((0..rows).map(|i| Value::Num(i as f64)).collect())
+                        }
+                    })
+                    .collect();
+                let batch = Batch::of(slots);
+                let mut times = Vec::new();
+                for &frac in &[0.06f64, 0.53, 1.0] {
+                    let step = (1.0 / frac).round() as usize;
+                    let keep: Vec<usize> = (0..rows).step_by(step.max(1)).collect();
+                    times.push(best(|| {
+                        let _ = batch.gather(&keep);
+                    }));
+                }
+                println!(
+                    "{kind:<8} {width:>6} {:>12.1} {:>12.1} {:>12.1}",
+                    times[0], times[1], times[2]
+                );
+            }
+        }
+    }
+}
+
 // --- Isolated predicate-cost harness (AND/OR elimination) ---
 
 /// How much does evaluating BOTH operands of an `AND`/`OR` over EVERY row cost, against
@@ -9443,8 +9508,13 @@ fn a_raising_predicate_still_raises_when_it_is_reached() {
 /// then operand B on the survivors only. `ratio` above 1.0 is the available win.
 ///
 /// The `pass=100%` rows are the control and they are the point of the table as much as the wins:
-/// nothing is eliminated there, so `elim` pays the gather for nothing and the ratio should sit at
-/// or BELOW 1.0. A harness that only showed wins would not be worth trusting.
+/// nothing is eliminated there, so `elim` pays the gather for nothing.
+///
+/// Once `fold_operand` shipped, `both` became ADAPTIVE — it narrows only when a sampled prefix says
+/// it will pay — while `elim` here is the fixed always-narrow strategy. So at `pass=100%` the ratio
+/// now reads BELOW 1.0 (0.73 measured) and that is the implementation beating the naive floor by
+/// declining, not a regression. Read the ratio as "how close is the implementation to the best
+/// fixed strategy" for the selective rows, and as "how much does declining save" for the control.
 #[test]
 #[ignore = "measurement harness: cargo test --release -- --ignored --nocapture predicate_elimination_floor"]
 fn predicate_elimination_floor() {

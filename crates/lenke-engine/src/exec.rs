@@ -5850,33 +5850,238 @@ fn map_bool(col: &Col, f: impl Fn(Option<bool>) -> Option<bool>) -> Result<Col, 
 /// exactly `as_truth(eval(expr))` — this removes allocation/boxing on the boolean spine
 /// and the numeric leaves, nothing more. Used by the filter keep-set (a complex predicate
 /// that `try_filter_keep` declines) and the reverse-seed residual.
+/// Which slots does this expression read? `false` means "could not determine", and the caller
+/// must then not narrow.
+///
+/// A WHITELIST, and that direction is load-bearing: narrowing replaces the slots this does not
+/// name with placeholders, so a MISSED slot is a wrong answer. Anything unrecognized returns
+/// false. An over-approximation is safe (more columns gathered than needed); an
+/// under-approximation is not.
+fn slots_read(e: &Expr, out: &mut Vec<usize>) -> bool {
+    match e {
+        Expr::Lit(_) | Expr::Param(_) => true,
+        Expr::Slot(s) => {
+            out.push(*s);
+            true
+        }
+        Expr::Prop { slot, .. }
+        | Expr::PropertyExists { slot, .. }
+        | Expr::IsLabeled { slot, .. } => {
+            out.push(*slot);
+            true
+        }
+        Expr::Not(a) | Expr::IsNull { expr: a, .. } => slots_read(a, out),
+        Expr::And(a, b) | Expr::Or(a, b) | Expr::Xor(a, b) => {
+            slots_read(a, out) && slots_read(b, out)
+        }
+        Expr::Compare { left, right, .. } => slots_read(left, out) && slots_read(right, out),
+        Expr::In { needle, haystack } => slots_read(needle, out) && slots_read(haystack, out),
+        Expr::Arith { left, right, .. } => slots_read(left, out) && slots_read(right, out),
+        Expr::Call { args, .. } => args.iter().all(|a| slots_read(a, out)),
+        Expr::List { items } => items.iter().all(|a| slots_read(a, out)),
+        Expr::Cast { expr, .. } => slots_read(expr, out),
+        // A correlated subquery may read ANY outer slot below its width, so claim all of them.
+        // An over-approximation is safe here (more columns gathered than needed); the opposite
+        // would substitute a placeholder for a column the body reads.
+        Expr::Exists { outer_width, .. } => {
+            out.extend(0..*outer_width);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// May this expression be evaluated on a SUBSET of the rows without changing which queries raise?
+///
+/// Also a whitelist, for a different reason from `slots_read`'s. Skipping rows where the other
+/// operand already decided the answer cannot change any VALUE — Kleene `AND` is false whenever
+/// either side is — but it does change whether a row that would RAISE is ever evaluated. ISO
+/// permits that (US008 / UA004; see `research/iso-39075/`), and the optimizer takes the latitude
+/// elsewhere. Here we decline it, because the TS engine does not narrow and cross-engine
+/// byte-identity is a stricter promise than conformance: a native-only skip would answer where TS
+/// raises.
+///
+/// So: arithmetic, calls, casts and anything unrecognized are excluded. What remains is the common
+/// shape — property compares, label tests, null tests and boolean combinations of them.
+fn narrowing_is_transparent(e: &Expr) -> bool {
+    match e {
+        Expr::Lit(_) | Expr::Param(_) | Expr::Slot(_) => true,
+        Expr::Prop { .. } | Expr::PropertyExists { .. } | Expr::IsLabeled { .. } => true,
+        Expr::Not(a) | Expr::IsNull { expr: a, .. } => narrowing_is_transparent(a),
+        Expr::And(a, b) | Expr::Or(a, b) | Expr::Xor(a, b) => {
+            narrowing_is_transparent(a) && narrowing_is_transparent(b)
+        }
+        // A cross-type ORDERING raises, so a compare is transparent only if both sides are
+        // literals or plain reads — which is what the arms above admit.
+        Expr::Compare { left, right, .. } => {
+            narrowing_is_transparent(left) && narrowing_is_transparent(right)
+        }
+        // An `EXISTS` raises only if its BODY does, and the body is where the prize is: a
+        // correlated subquery is the most expensive thing a predicate can hold, measured at 9.0x
+        // when its rows are eliminated rather than walked (audit item 70). It is also the shape
+        // that actually REACHES this code — an `AND` of two plain compares is absorbed by the
+        // filter fast paths and never gets here.
+        Expr::Exists { body, .. } => plan_is_transparent(body),
+        _ => false,
+    }
+}
+
+/// Does this expression hold a correlated subquery — the one thing that makes an operand expensive
+/// enough to be worth narrowing for even a small saving? See `fold_operand`'s threshold.
+fn contains_subquery(e: &Expr) -> bool {
+    match e {
+        Expr::Exists { .. } | Expr::CountSubquery { .. } => true,
+        Expr::Not(a) | Expr::IsNull { expr: a, .. } => contains_subquery(a),
+        Expr::And(a, b) | Expr::Or(a, b) | Expr::Xor(a, b) => {
+            contains_subquery(a) || contains_subquery(b)
+        }
+        Expr::Compare { left, right, .. } => contains_subquery(left) || contains_subquery(right),
+        _ => false,
+    }
+}
+
+/// Does no predicate anywhere in this plan raise?
+///
+/// A whitelist over the plan shapes a subquery body can take, for the same reason as
+/// `narrowing_is_transparent`: an unrecognized node returns false. A body that merely TRAVERSES is
+/// transparent — an `Expand` cannot fault — so it is the predicates inside it that decide.
+fn plan_is_transparent(p: &Plan) -> bool {
+    match p {
+        Plan::Row | Plan::Scan { .. } => true,
+        Plan::Filter { input, pred } => {
+            narrowing_is_transparent(pred) && plan_is_transparent(input)
+        }
+        Plan::Expand { input, .. } => plan_is_transparent(input),
+        Plan::Distinct { input } => plan_is_transparent(input),
+        _ => false,
+    }
+}
+
+/// A batch of the same ARITY holding only `keep`'s rows, with the columns `read` names gathered
+/// and the rest replaced by cheap same-length placeholders.
+///
+/// The arity is preserved so slot indices still resolve; the placeholders exist only to keep them
+/// aligned. `Batch::gather` copies EVERY column, which is what this avoids — measured at 1,000,000
+/// rows keeping 6%, gathering sixteen `Col::Gen` columns costs 11,554us against 159us for one, and
+/// the elimination it would pay for is worth ~1,600us for a cheap operand. Narrowing the whole
+/// batch would turn a 2.1x gain into a 7x loss.
+fn narrow_to_slots(batch: &Batch, keep: &[usize], read: &[usize]) -> Batch {
+    let slots = (0..batch.slots.len())
+        .map(|i| {
+            if read.contains(&i) {
+                batch.slot(i).gather(keep)
+            } else {
+                // Four bytes a row and never read. `Col::Gen` here would cost what the gather
+                // this avoids would have.
+                Col::Nodes(vec![0; keep.len()])
+            }
+        })
+        .collect();
+    Batch::of(slots)
+}
+
+/// Fold the second operand of an `AND`/`OR` into `a`, IN PLACE, evaluating it over only the rows
+/// the first operand left undecided.
+///
+/// `settled` is the value of `a` that already decides the combination — `false` for `AND`, `true`
+/// for `OR`. Two things follow from that and both are used here: a row holding it needs no second
+/// evaluation, and the value it holds IS the final answer, so those rows need no write either.
+/// `UNKNOWN` settles neither, which is why the test is `!= Some(settled)` and not
+/// `== Some(!settled)`.
+///
+/// Measured prize, by `predicate_elimination_floor` (audit item 70): with an expensive second
+/// operand and 6% of rows surviving the first, evaluating it over the survivors instead of over
+/// everything is worth 9.1x; with a plain compare, 2.1x. At 100% surviving — nothing eliminated —
+/// it is a LOSS of 2% to 16%, which is what the sampled decision below avoids paying.
+///
+/// Declines, and evaluates over the whole batch, unless all of:
+/// * the sampled prefix says at least half the rows are settled, so the gather is paid on at most
+///   half of them;
+/// * the slot set is KNOWN, because narrowing replaces unnamed slots with placeholders;
+/// * narrowing is TRANSPARENT — the operand cannot raise, so skipping rows cannot change which
+///   queries error. The TS engine does not narrow, and cross-engine byte-identity is a stricter
+///   promise than conformance (ISO's US008 / UA004 would permit the divergence).
+fn fold_operand(
+    a: &mut [Option<bool>],
+    r: &Expr,
+    store: &Store,
+    batch: &Batch,
+    settled: bool,
+    combine: impl Fn(Option<bool>, Option<bool>) -> Option<bool>,
+) -> Result<(), String> {
+    let n = a.len();
+    let mut read = Vec::new();
+    let narrowable = n > 0 && narrowing_is_transparent(r) && slots_read(r, &mut read);
+
+    // DECIDE FROM A SAMPLE, so the decision costs the same whichever way it goes. Counting the
+    // whole mask first cost a 10% regression on the DECLINED case (a cheap operand at 53%
+    // surviving: 32.1us against 35.2us), and bailing out of a partial build only halved it.
+    //
+    // The sample is POSITIONAL, not random: the first `SAMPLE` rows. That keeps the decision
+    // deterministic, which byte-identity needs, and an unrepresentative prefix costs only a worse
+    // choice, never a wrong answer.
+    const SAMPLE: usize = 1024;
+    // How much must be settled to pay for the gather? It depends on what the second operand
+    // costs, and the one thing known statically about that is whether it holds a SUBQUERY.
+    //
+    // Measured at 100,000 rows with 47% of rows settled: eliminating them saves ~1,442us of a
+    // correlated `EXISTS` for a ~20us gather of one column, so a half-settled bar leaves 1.76x on
+    // the floor. The same row with a plain compare as the operand saves ~70us for the same gather
+    // and comes out slightly BEHIND. One bar cannot serve both.
+    let min_settled = if contains_subquery(r) { 16 } else { 2 };
+    let worth_it = narrowable && {
+        let probe = n.min(SAMPLE);
+        a[..probe].iter().filter(|&&m| m == Some(settled)).count() * min_settled >= probe
+    };
+
+    if !worth_it {
+        let b = eval_mask(r, store, batch)?;
+        let n = n.min(b.len());
+        for i in 0..n {
+            a[i] = combine(a[i], b[i]);
+        }
+        return Ok(());
+    }
+
+    let keep: Vec<usize> = (0..n).filter(|&i| a[i] != Some(settled)).collect();
+    read.sort_unstable();
+    read.dedup();
+    let sub = narrow_to_slots(batch, &keep, &read);
+    let m = eval_mask(r, store, &sub)?;
+    // Only the undecided rows are written: a settled row already holds `Some(settled)`, which is
+    // the combination's answer whatever the second operand would have said. That is what lets this
+    // run with no second full-length allocation and no scatter.
+    for (j, &i) in keep.iter().enumerate() {
+        a[i] = combine(a[i], m[j]);
+    }
+    Ok(())
+}
+
 fn eval_mask(expr: &Expr, store: &Store, batch: &Batch) -> Result<Vec<Option<bool>>, String> {
     Ok(match expr {
         Expr::Not(x) => eval_mask(x, store, batch)?
             .into_iter()
             .map(|o| o.map(|b| !b))
             .collect(),
+        // The second operand is evaluated only over the rows the first left undecided, when that
+        // is worth the gather and cannot change which queries raise — see `operand_mask`.
         Expr::And(l, r) => {
-            let (a, b) = (eval_mask(l, store, batch)?, eval_mask(r, store, batch)?);
-            let n = a.len().min(b.len());
-            (0..n)
-                .map(|i| match (a[i], b[i]) {
-                    (Some(false), _) | (_, Some(false)) => Some(false),
-                    (Some(true), Some(true)) => Some(true),
-                    _ => None,
-                })
-                .collect()
+            let mut a = eval_mask(l, store, batch)?;
+            fold_operand(&mut a, r, store, batch, false, |x, y| match (x, y) {
+                (Some(false), _) | (_, Some(false)) => Some(false),
+                (Some(true), Some(true)) => Some(true),
+                _ => None,
+            })?;
+            a
         }
         Expr::Or(l, r) => {
-            let (a, b) = (eval_mask(l, store, batch)?, eval_mask(r, store, batch)?);
-            let n = a.len().min(b.len());
-            (0..n)
-                .map(|i| match (a[i], b[i]) {
-                    (Some(true), _) | (_, Some(true)) => Some(true),
-                    (Some(false), Some(false)) => Some(false),
-                    _ => None,
-                })
-                .collect()
+            let mut a = eval_mask(l, store, batch)?;
+            fold_operand(&mut a, r, store, batch, true, |x, y| match (x, y) {
+                (Some(true), _) | (_, Some(true)) => Some(true),
+                (Some(false), Some(false)) => Some(false),
+                _ => None,
+            })?;
+            a
         }
         Expr::Xor(l, r) => {
             let (a, b) = (eval_mask(l, store, batch)?, eval_mask(r, store, batch)?);

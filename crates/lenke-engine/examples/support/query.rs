@@ -65,6 +65,37 @@ pub fn run(cfg: &Cfg) {
                     "EXISTS",
                     "MATCH (p:Person) WHERE EXISTS { (p)-[:KNOWS]->() } RETURN count(*) AS c",
                 ),
+                // A CONJUNCTION with a selective predicate and an EXISTS, which is the shape
+                // `exec::fold_operand` narrows: the selective side keeps 1%, and the subquery used
+                // to be evaluated over all 200,000 rows regardless. Measured 1,030us -> 551us
+                // (1.87x) against the same binary without the narrowing.
+                //
+                // 1.87x and not the 9-15x the isolated harness shows, because THIS subquery stops
+                // at the first neighbour — `EXISTS { (p)-[:KNOWS]->() }` is close to a degree
+                // check. `predicate_elimination_floor` uses an inner predicate that matches
+                // nothing, so the whole adjacency is walked, and that is where the larger multiple
+                // lives. Both are real; the gain scales with what the subquery costs per row.
+                //
+                // `one pred` is the floor — the conjunction cannot beat it, and what remains is
+                // the subquery over the 1% that survive. `two preds` is the CONTROL and the more
+                // interesting row: two plain compares, which never reach `fold_operand` at all
+                // because the filter fast paths absorb them (verified by instrumenting it: zero
+                // calls across this whole bench). A conjunction of cheap compares is already
+                // handled; it is the expensive operand that was not.
+                (
+                    "pred AND exists",
+                    "MATCH (p:Person) WHERE p.age > 98 AND EXISTS { (p)-[:KNOWS]->() } \
+                     RETURN p.name AS n",
+                ),
+                (
+                    "two preds",
+                    "MATCH (p:Person) WHERE p.age > 98 AND p.city <> 'nowhere' \
+                     RETURN p.name AS n",
+                ),
+                (
+                    "one pred",
+                    "MATCH (p:Person) WHERE p.age > 98 RETURN p.name AS n",
+                ),
             ],
         );
     }
