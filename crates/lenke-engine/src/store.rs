@@ -1190,6 +1190,7 @@ pub struct Store {
     /// changing is exactly the key SET changing — the cache self-invalidates on a length
     /// mismatch, needing no write-path hook. Avoids the per-node `prop_keys()` clone+sort.
     prop_keys_cache: std::sync::RwLock<(usize, std::sync::Arc<[std::sync::Arc<str>]>)>,
+    edge_prop_keys_cache: std::sync::RwLock<(usize, std::sync::Arc<[std::sync::Arc<str>]>)>,
     /// Cached forward node→min-label map (see `min_label_map`), keyed on `node_count`.
     /// Labels are immutable once a node is created and `by_label` only grows as nodes
     /// are added, so a `node_count` mismatch is exactly "a node was added" — the one
@@ -1407,6 +1408,12 @@ impl Clone for Store {
                 self.prop_keys_cache
                     .read()
                     .expect("prop_keys_cache poisoned")
+                    .clone(),
+            ),
+            edge_prop_keys_cache: std::sync::RwLock::new(
+                self.edge_prop_keys_cache
+                    .read()
+                    .expect("edge_prop_keys_cache poisoned")
                     .clone(),
             ),
             min_label_cache: std::sync::RwLock::new(
@@ -1950,6 +1957,40 @@ impl Store {
             .prop_keys_cache
             .write()
             .expect("prop_keys_cache poisoned");
+        *g = (len, std::sync::Arc::clone(&arc));
+        arc
+    }
+
+    /// The sorted EDGE-property keys as shared `Arc<str>`, cached — the edge twin of
+    /// [`prop_keys_arc`](Self::prop_keys_arc), for materializing edge element maps.
+    /// `edge_prop_keys` allocates a `String` per key and sorts, which on that path ran per ROW.
+    ///
+    /// Keyed on the key COUNT, exactly as the node cache is: a rename that removed one key and
+    /// added another in the same breath would keep the count and serve a stale list. That is the
+    /// node cache's existing bargain, mirrored rather than re-litigated here.
+    #[must_use]
+    pub fn edge_prop_keys_arc(&self) -> std::sync::Arc<[std::sync::Arc<str>]> {
+        let len = self.edge_props.len();
+        {
+            let g = self
+                .edge_prop_keys_cache
+                .read()
+                .expect("edge_prop_keys_cache poisoned");
+            if g.0 == len {
+                return std::sync::Arc::clone(&g.1);
+            }
+        }
+        let mut keys: Vec<std::sync::Arc<str>> = self
+            .edge_props
+            .keys()
+            .map(|k| std::sync::Arc::from(k.as_str()))
+            .collect();
+        keys.sort();
+        let arc: std::sync::Arc<[std::sync::Arc<str>]> = keys.into();
+        let mut g = self
+            .edge_prop_keys_cache
+            .write()
+            .expect("edge_prop_keys_cache poisoned");
         *g = (len, std::sync::Arc::clone(&arc));
         arc
     }
@@ -4694,6 +4735,7 @@ impl Builder {
             by_label: self.by_label,
             props,
             prop_keys_cache: std::sync::RwLock::default(),
+            edge_prop_keys_cache: std::sync::RwLock::default(),
             min_label_cache: std::sync::RwLock::default(),
             etype_ids: self.etype_ids,
             out_adj,

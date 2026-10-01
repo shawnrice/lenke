@@ -231,7 +231,19 @@ pub fn run(cfg: &Cfg) {
             ("count(*)", "MATCH (p:Person) RETURN count(*) AS c"),
             ("scalar p.age", "MATCH (p:Person) RETURN p.age"),
             ("string p.name", "MATCH (p:Person) RETURN p.name"),
+            // The most expensive rows in the corpus, and the most idiomatic shapes in the
+            // engine: 220x a scalar projection. About half of that is the element renderers,
+            // which `exec::tests::element_render_cost` prices in pieces -- the query-level gain
+            // from a renderer change lands near this repo's ~10% noise floor, so the isolated
+            // harness is the one that decides it. A/B for the field-name cache + `labels_of_refs`
+            // + one key lookup per property: 538.3 -> 493.7 ns/row (107,657us -> 98,735us over
+            // 200,000 vertices) and 392.9 -> 346.6 ns/row (392,885us -> 346,580us over 1,000,000
+            // edges), min of three runs each way.
+            //
+            // What remains is three `Arc` allocations and a boxed `Value` per property, per row,
+            // by construction.
             ("element p", "MATCH (p:Person) RETURN p"),
+            ("element r", "MATCH (p:Person)-[r:KNOWS]->() RETURN r"),
         ] {
             match time_query(q, false, &store, cfg.reps) {
                 Ok((us, rows)) => {

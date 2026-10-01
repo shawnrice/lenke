@@ -11465,3 +11465,408 @@ fn a_range_seek_on_a_dotted_path_is_not_mistaken_for_an_absent_key() {
         );
     }
 }
+
+// --- The two element renderers must agree, cell for cell (item 76) ---
+
+/// A store with an absent property, a stored present-NULL, a multi-label vertex and a
+/// multi-label edge — every distinction the element maps have to keep.
+fn element_fixture() -> Store {
+    let mut store = Builder::default().build();
+    execute(
+        &crate::gql::parse(
+            "INSERT (:A:B {k: 1, s: 'x', nn: null}), (:A {k: 2}), (:B {s: 'y', nn: 3})",
+        )
+        .unwrap(),
+        &mut store,
+    )
+    .unwrap();
+    execute(
+        &crate::gql::parse(
+            "MATCH (a:A), (b:B) WHERE a.k = 1 AND b.s = 'y' INSERT (a)-[:R {w: 5, z: null}]->(b)",
+        )
+        .unwrap(),
+        &mut store,
+    )
+    .unwrap();
+    store
+}
+
+/// A node element map lists the vertex's PRESENT properties in sorted key order. An absent key
+/// is omitted; a stored present-NULL is NOT absent (it is a value — see the null-as-a-value
+/// policy) and must appear, with a NULL value.
+#[test]
+fn a_node_element_map_omits_absent_properties_and_keeps_present_nulls() {
+    let store = element_fixture();
+    let props = |id: u32| -> Vec<(String, Value)> {
+        let Value::Map(fields) = crate::exec::render::node_result_value(&store, id) else {
+            panic!("a node renders as a map")
+        };
+        let Some((_, Value::Map(props))) = fields
+            .iter()
+            .find(|(k, _)| matches!(k, Value::Str(s) if &**s == "properties"))
+        else {
+            panic!("a node map has a `properties` field")
+        };
+        props
+            .iter()
+            .map(|(k, v)| match k {
+                Value::Str(s) => (s.to_string(), v.clone()),
+                other => panic!("a property key is a string, got {other:?}"),
+            })
+            .collect()
+    };
+
+    // Vertex 0 carries k, s and a present-null nn. Sorted: k, nn, s.
+    let p0 = props(0);
+    assert_eq!(
+        p0.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
+        ["k", "nn", "s"],
+        "present keys, in sorted order"
+    );
+    assert!(p0[1].1.is_null(), "a stored present-null renders as NULL");
+
+    // Vertex 1 carries only k, though the store HAS columns for s and nn.
+    assert_eq!(
+        props(1).iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
+        ["k"],
+        "an absent key is omitted, not rendered as NULL"
+    );
+    assert_eq!(
+        props(2).iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
+        ["nn", "s"]
+    );
+}
+
+/// The same rule for an EDGE element map, which has its own renderer and its own key list.
+#[test]
+fn an_edge_element_map_omits_absent_properties_and_keeps_present_nulls() {
+    let mut store = element_fixture();
+    // A second edge carrying NEITHER property, so a key the store has a column for is absent
+    // on this edge.
+    execute(
+        &crate::gql::parse("MATCH (a:A), (b:B) WHERE a.k = 2 AND b.s = 'y' INSERT (a)-[:R]->(b)")
+            .unwrap(),
+        &mut store,
+    )
+    .unwrap();
+    let props = |eid: u32| -> Vec<(String, Value)> {
+        let Value::Map(fields) = crate::exec::render::edge_result_value(&store, eid) else {
+            panic!("an edge renders as a map")
+        };
+        let Some((_, Value::Map(props))) = fields
+            .iter()
+            .find(|(k, _)| matches!(k, Value::Str(s) if &**s == "properties"))
+        else {
+            panic!("an edge map has a `properties` field")
+        };
+        props
+            .iter()
+            .map(|(k, v)| match k {
+                Value::Str(s) => (s.to_string(), v.clone()),
+                other => panic!("a property key is a string, got {other:?}"),
+            })
+            .collect()
+    };
+    let p0 = props(0);
+    assert_eq!(
+        p0.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
+        ["w", "z"],
+        "present keys, in sorted order"
+    );
+    assert!(p0[1].1.is_null(), "a stored present-null renders as NULL");
+    assert!(
+        props(1).is_empty(),
+        "an edge carrying neither key renders an EMPTY property map, not two NULLs"
+    );
+}
+
+/// The batch renderer and the per-node one are two implementations of one map — a bare node
+/// frontier takes the batch path, while a `Gen` cell, a path and the JSON sinks take the
+/// per-node one. They must be byte-identical, which nothing pinned: the OPTIONAL-MATCH null
+/// sentinel included, since only the batch path knows about it.
+#[test]
+fn the_batch_and_per_node_element_renderers_agree() {
+    let store = element_fixture();
+    let ids: Vec<u32> = vec![0, 1, 2, u32::MAX, 2, 0];
+    let batch = crate::exec::render::render_nodes(&store, &ids);
+    assert_eq!(batch.len(), ids.len());
+    for (i, (&id, got)) in ids.iter().zip(&batch).enumerate() {
+        if id == u32::MAX {
+            assert!(got.is_null(), "the null sentinel renders NULL at {i}");
+            continue;
+        }
+        let want = crate::exec::render::node_result_value(&store, id);
+        assert_eq!(
+            format!("{got:?}"),
+            format!("{want:?}"),
+            "the two renderers disagree on vertex {id}"
+        );
+    }
+}
+
+/// The element maps' field names come from a cache now, so an index mix-up would rename a
+/// field or swap two of them silently — and the names are the wire format both engines agree
+/// on.
+#[test]
+fn the_cached_element_field_names_are_in_the_declared_order() {
+    use crate::exec::render::{field_key, Field};
+    for (f, want) in [
+        (Field::Id, "id"),
+        (Field::Labels, "labels"),
+        (Field::Properties, "properties"),
+        (Field::From, "from"),
+        (Field::To, "to"),
+    ] {
+        match field_key(f) {
+            Value::Str(s) => assert_eq!(&*s, want),
+            other => panic!("a field name is a string, got {other:?}"),
+        }
+    }
+    // And they are what the maps actually use, in order.
+    let store = element_fixture();
+    let keys = |v: &Value| -> Vec<String> {
+        let Value::Map(fields) = v else {
+            panic!("an element renders as a map")
+        };
+        fields
+            .iter()
+            .map(|(k, _)| match k {
+                Value::Str(s) => s.to_string(),
+                other => panic!("a field name is a string, got {other:?}"),
+            })
+            .collect()
+    };
+    assert_eq!(
+        keys(&crate::exec::render::node_result_value(&store, 0)),
+        ["id", "labels", "properties"]
+    );
+    assert_eq!(
+        keys(&crate::exec::render::edge_result_value(&store, 0)),
+        ["id", "from", "to", "labels", "properties"]
+    );
+}
+
+// --- Isolated harness: what does materializing an ELEMENT cost, and in what pieces? ---
+
+/// `RETURN p` is the most idiomatic shape there is and the most expensive row in the whole
+/// bench corpus — 530 ns/row against 2.4 for `RETURN p.age`, 220x. This prices the PIECES of
+/// that, so a change to the element renderers is judged against an isolated number rather than
+/// against a bench row where the renderer is half the query.
+///
+/// Run it:
+///
+/// ```text
+/// cargo test --release --manifest-path crates/lenke-engine/Cargo.toml \
+///   -- --ignored --nocapture element_render_cost
+/// ```
+///
+/// # Why this is a test and not an example
+///
+/// `render_nodes` and `node_result_value` are `pub(super)` — the batch renderer that a bare
+/// node frontier uses, and the per-node one that a `Gen` cell, a path and the JSON sinks use.
+/// An example can only reach them through a whole query, which is exactly the measurement
+/// that was too noisy to decide by: the renderer changes measured 5-8% at the query level,
+/// under this repo's ~10% noise floor.
+///
+/// # Reading it
+///
+/// Each row is a piece of the node element map, timed over the same vertices, so the pieces
+/// sum to roughly the whole. The two `whole` rows are the renderers as they stand.
+#[test]
+#[ignore = "measurement harness: cargo test --release -- --ignored --nocapture element_render_cost"]
+fn element_render_cost() {
+    use std::sync::Arc;
+    use std::time::Instant;
+    const REPS: u32 = 7;
+    const ROWS: u32 = 200_000;
+
+    let mut b = Builder::default();
+    for i in 0..ROWS {
+        b.node(
+            &[if i % 3 == 0 { "Person" } else { "Other" }],
+            &[
+                ("name", s(&format!("v{i}"))),
+                ("age", n(f64::from(i % 100))),
+                ("city", s(&format!("c{}", i % 50))),
+                ("dept", s(&format!("d{}", i % 5))),
+            ],
+        );
+    }
+    // One edge per vertex, each carrying two properties, so the edge renderer is priced over
+    // the same count as the node one.
+    let store = b.build();
+    let ids: Vec<u32> = (0..ROWS).collect();
+
+    let time = |label: &str, f: &dyn Fn() -> usize| {
+        let mut lo = f64::MAX;
+        let mut acc = 0;
+        for _ in 0..REPS {
+            let t = Instant::now();
+            acc = f();
+            lo = lo.min(t.elapsed().as_secs_f64() * 1e6);
+        }
+        assert!(acc > 0, "{label} measured nothing");
+        println!(
+            "{label:<36} {lo:>10.1}us {:>8.1}ns/row",
+            lo * 1000.0 / f64::from(ROWS)
+        );
+    };
+
+    println!("\n=== element render cost, {ROWS} vertices, 4 properties ===");
+    time("whole render_nodes (batch)", &|| {
+        crate::exec::render::render_nodes(&store, &ids).len()
+    });
+    time("whole node_result_value (per node)", &|| {
+        ids.iter()
+            .filter(|&&i| {
+                matches!(
+                    crate::exec::render::node_result_value(&store, i),
+                    Value::Map(_)
+                )
+            })
+            .count()
+    });
+    time("ext_id", &|| {
+        ids.iter()
+            .filter(|&&i| store.node_ext_id(i).is_some())
+            .count()
+    });
+    time("labels_of (String per label, sorts)", &|| {
+        ids.iter().map(|&i| store.labels_of(i).len()).sum()
+    });
+    time("labels_of_refs (&str, sorts once)", &|| {
+        ids.iter().map(|&i| store.labels_of_refs(i).len()).sum()
+    });
+    time("props: has_prop + prop (two lookups)", &|| {
+        let keys = store.prop_keys_arc();
+        ids.iter()
+            .map(|&i| {
+                let m: Vec<(Value, Value)> = keys
+                    .iter()
+                    .filter(|k| store.has_prop(i, k))
+                    .map(|k| (Value::Str(Arc::clone(k).into()), store.prop(i, k)))
+                    .collect();
+                m.len()
+            })
+            .sum()
+    });
+    time("props: one lookup per key", &|| {
+        let keys = store.prop_keys_arc();
+        ids.iter()
+            .map(|&i| {
+                let m: Vec<(Value, Value)> = keys
+                    .iter()
+                    .filter_map(|k| {
+                        let c = store.column(k)?;
+                        c.present_at(i as usize)
+                            .then(|| (Value::Str(Arc::clone(k).into()), c.read(i as usize)))
+                    })
+                    .collect();
+                m.len()
+            })
+            .sum()
+    });
+    time("props: columns hoisted out of the loop", &|| {
+        let keys = store.prop_keys_arc();
+        let cols: Vec<(&Arc<str>, &crate::store::Column)> = keys
+            .iter()
+            .filter_map(|k| store.column(k).map(|c| (k, c)))
+            .collect();
+        ids.iter()
+            .map(|&i| {
+                let m: Vec<(Value, Value)> = cols
+                    .iter()
+                    .filter(|(_, c)| c.present_at(i as usize))
+                    .map(|(k, c)| (Value::Str(Arc::clone(k).into()), c.read(i as usize)))
+                    .collect();
+                m.len()
+            })
+            .sum()
+    });
+    time("three field names from a literal", &|| {
+        ids.iter()
+            .map(|_| {
+                [
+                    Value::Str("id".into()),
+                    Value::Str("labels".into()),
+                    Value::Str("properties".into()),
+                ]
+                .len()
+            })
+            .sum()
+    });
+    time("three field names from the cache", &|| {
+        ids.iter()
+            .map(|_| {
+                [
+                    crate::exec::render::field_key(crate::exec::render::Field::Id),
+                    crate::exec::render::field_key(crate::exec::render::Field::Labels),
+                    crate::exec::render::field_key(crate::exec::render::Field::Properties),
+                ]
+                .len()
+            })
+            .sum()
+    });
+
+    // EDGES ON THEIR OWN STORE, deliberately. Adding edge properties to the fixture above moved
+    // `render_nodes` from 270 to 694 ns/row without touching a line of it — a bigger heap makes
+    // its 200,000-`Value` output allocation cost more. Two fixtures, two sections.
+    let mut b = Builder::default();
+    for i in 0..ROWS {
+        b.node(&["N"], &[("name", s(&format!("v{i}")))]);
+    }
+    for i in 0..ROWS {
+        b.edge(i, (i * 7 + 1) % ROWS, "R");
+    }
+    let mut estore = b.build();
+    for e in 0..ROWS {
+        estore.set_edge_prop(e, "w", n(f64::from(e % 10)));
+        estore.set_edge_prop(e, "tag", s("t"));
+    }
+    let estore = estore;
+
+    println!("\n=== edge element render cost, {ROWS} edges, 2 properties ===");
+    time("whole edge_result_value (per edge)", &|| {
+        ids.iter()
+            .filter(|&&e| {
+                matches!(
+                    crate::exec::render::edge_result_value(&estore, e),
+                    Value::Map(_)
+                )
+            })
+            .count()
+    });
+    time("edge props: two lookups, Vec+sort", &|| {
+        ids.iter()
+            .map(|&e| {
+                let mut props: Vec<(String, Value)> = estore
+                    .edge_prop_keys()
+                    .into_iter()
+                    .filter(|k| estore.has_edge_prop(e, k))
+                    .map(|k| {
+                        let v = estore.edge_prop(e, &k);
+                        (k, v)
+                    })
+                    .collect();
+                props.sort_by(|a, b| a.0.cmp(&b.0));
+                props.len()
+            })
+            .sum()
+    });
+    time("edge props: cached keys, one lookup", &|| {
+        let keys = estore.edge_prop_keys_arc();
+        ids.iter()
+            .map(|&e| {
+                let m: Vec<(Value, Value)> = keys
+                    .iter()
+                    .filter_map(|k| {
+                        let col = estore.edge_prop_map(k)?;
+                        col.get(&e)
+                            .map(|v| (Value::Str(Arc::clone(k).into()), v.clone()))
+                    })
+                    .collect();
+                m.len()
+            })
+            .sum()
+    });
+}
