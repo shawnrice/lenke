@@ -196,3 +196,8 @@ docs/sync-engine.md
 # committed.
 .dogfood/
 docs/dogfood/
+
+# ISO/IEC 39075 digital artifacts. ISO grants USE "in their original format without
+# any modifications", NOT redistribution, so these are fetched on demand by
+# research/iso-39075/fetch.sh and never committed.
+research/iso-39075/artifacts/
