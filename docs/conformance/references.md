@@ -6,12 +6,21 @@ deciding how lenke should implement features conformantly. The companion
 [gql-feature-checklist.md](./gql-feature-checklist.md) applies these sources to
 lenke's actual surface.
 
-> **Reliability lesson (read first).** The ISO standard itself is paywalled, so
-> most work here leans on _reproductions_. AI/search summaries of these pages
+> **Reliability lesson (read first).** AI/search summaries of these pages
 > **confabulate specifics** — during this research a summary asserted "GF04 =
 > datetime functions"; the primary source shows GF04 is _Enhanced path
 > functions_ (`path_length`). **Always resolve a Feature ID against a primary
-> reproduction (the Neo4j `.adoc` source), never a summary.**
+> source, never a summary.**
+>
+> **Second lesson, and the more expensive one (2026-09-30).** "The standard is
+> paywalled" was treated as "the facts are unavailable", and a lot of this file
+> was built on reproductions for facts ISO publishes for free. The
+> [digital-artifact directory](https://standards.iso.org/iso-iec/39075/ed-1/en/)
+> carries the Feature IDs, every condition code, and the
+> implementation-defined/dependent lists. Two open questions (audit items 69 and
+> the `sum`-of-empty policy) were argued from first principles while the answer to
+> one of them sat in `-implementation-dependent.xml`. **Check the directory
+> first.**
 
 ---
 
@@ -24,16 +33,34 @@ lenke's actual surface.
   a system conforms by supporting the data model + the **mandatory** features;
   **optional** features each carry a Feature ID (letter(s)+digits, e.g. `G035`,
   `GF07`, `GV39`). Mandatory features have **no** ID and are cited by subclause.
-  The prose + the **Feature-ID Annex** are behind the paywall.
+  The **prose** is behind the paywall (CHF 227, 610 pages). The Feature IDs, the
+  condition codes and the implementation-defined/dependent lists are **not** — see
+  the digital artifacts below.
 
-- **ISO GQL grammar (BNF) — FREE, authoritative.** ISO publishes the machine-readable
-  grammar as a "digital artifact," no paywall:
-  <https://standards.iso.org/iso-iec/39075/ed-1/en/ISO_IEC_39075(en).bnf.txt>
-  (~78 KB, `<GQL-program>` downward). This is the **primary** source for the full
-  _syntax_ surface — better than any vendor reproduction for "what productions
-  exist." It does **not** contain the Feature-ID taxonomy (that's in the paywalled
-  Annex), so pair it with §2 for IDs. The [TuGraph ANTLR grammar](#3-independent-vendor-implementations-cross-check-divergence)
-  is a convenient navigable rendering of the same grammar.
+- **ISO's FREE "digital artifacts" — the directory, not just the BNF.**
+  <https://standards.iso.org/iso-iec/39075/ed-1/en/>
+  Six files, all unpaywalled, and between them they answer far more than the
+  grammar alone. **Read this directory before paying for anything.**
+
+  | artifact                                                                                                                            | what it is                                                                                                             | what it settles                                                                                                                      |
+  | ----------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+  | [`.bnf.txt`](<https://standards.iso.org/iso-iec/39075/ed-1/en/ISO_IEC_39075(en).bnf.txt>)                                           | the grammar, `<GQL-program>` downward (~78 KB)                                                                         | the whole _syntax_ surface; better than any vendor reproduction for "what productions exist"                                         |
+  | [`.bnf.xml`](<https://standards.iso.org/iso-iec/39075/ed-1/en/ISO_IEC_39075(en).bnf.xml>)                                           | the same grammar, machine-readable                                                                                     | tooling                                                                                                                              |
+  | [`-features.xml`](<https://standards.iso.org/iso-iec/39075/ed-1/en/ISO_IEC_39075(en)-features.xml>)                                 | **every optional feature, with its ID and name**                                                                       | the Feature-ID taxonomy — `G011 Advanced path modes: TRAIL`, `G018 Any shortest path search`, …                                      |
+  | [`-conditions.xml`](<https://standards.iso.org/iso-iec/39075/ed-1/en/ISO_IEC_39075(en)-conditions.xml>)                             | every GQLSTATUS condition: 12 classes, 68 subclasses                                                                   | the error-code surface, e.g. `22012 division by zero`, `2201E invalid argument for natural logarithm`, `22G04 values not comparable` |
+  | [`-implementation-defined.xml`](<https://standards.iso.org/iso-iec/39075/ed-1/en/ISO_IEC_39075(en)-implementation-defined.xml>)     | what an implementation must DOCUMENT (codes start `D`)                                                                 | where we are allowed to choose, provided we say so                                                                                   |
+  | [`-implementation-dependent.xml`](<https://standards.iso.org/iso-iec/39075/ed-1/en/ISO_IEC_39075(en)-implementation-dependent.xml>) | what an implementation may do FREELY (codes start `U`; second letter = Actions/Defaults/Limits/Sequencing/Values/Ways) | where no answer is required at all                                                                                                   |
+
+  > **Correction (2026-09-30).** This file previously said twice that the
+  > Feature-ID Annex is "behind the paywall", and §2 below exists because of that
+  > belief. It is wrong: `-features.xml` is the taxonomy, free and authoritative.
+  > §2's reproductions are still useful for the _mapping_ to concrete engine
+  > capabilities and for prose, but the IDs themselves should come from here.
+  > `gql-feature-checklist.md` still takes Neo4j's list as its spine and should be
+  > re-based on this artifact.
+
+  The [TuGraph ANTLR grammar](#3-independent-vendor-implementations-cross-check-divergence)
+  remains a convenient navigable rendering of the same grammar.
 
 ## 2. Best FREE reproductions of the feature taxonomy
 
@@ -144,12 +171,29 @@ Where they disagree, the feature is not carrying a single conformant form.
   cross-checked against Spanner + Fabric + Pyrrho (§3). If they diverge, the
   feature is implementation-defined and — if we add it — wears the sigil (see
   `docs/design/gql-extensions.md`).
-- **Anything about EVALUATION ORDER or error semantics** → none of these sources
-  answer it. The free BNF gives associativity and nothing more (`AND` is
-  left-recursive, hence left-associative), and the prose that would settle whether
-  operand order is implementation-dependent is behind the paywall. The standard is
-  CHF 227 for 610 pages; audit item 69 is the first question where that has
-  actually blocked a decision.
+- **EVALUATION ORDER / "may an optimization change which errors surface?"** →
+  `-implementation-dependent.xml` (§1), and it is explicit:
+  - **US008** — "The actual order of expression evaluation."
+  - **UA004** — "Whether or not that exception condition is actually raised when
+    the evaluation of an **inessential part** of an expression or search condition
+    would cause an exception to be raised."
+  - **UA006** — which additional path bindings are probed to see whether they too
+    would raise, once a selective path pattern's evaluation has been terminated.
+  - **UV003** — which `‹value expression›` raises `22G12 invalid value type`.
+
+  So a conforming GQL implementation may evaluate operands in any order, and may
+  raise or not raise from a part whose value is not needed. Short-circuiting is
+  conformant; not short-circuiting is conformant; an optimizer that surfaces an
+  exception the unoptimized plan avoided is conformant. This resolves audit item
+  69 — see it for what that means for our own two invariants, which are stricter
+  than the standard requires and are ours to scope.
+
+  Also worth knowing from the same file: **US001** (the sequence of records in an
+  unordered binding table) is implementation-dependent, which is the standard's
+  backing for our "order is unspecified" policy; and **US007** covers the ordering
+  of items whose comparison is Unknown, which is where our NaN total-order rule
+  lives.
+
 - **Pattern-matching edge cases** → the Researcher's Digest (§4).
 - Related engine-internal notes: `docs/design/gql-extensions.md` (the sigil
   convention), the memory `iso-gql-reference`.
