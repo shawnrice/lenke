@@ -92,6 +92,33 @@ pub fn run(cfg: &Cfg) {
                 // they also pay for the hop and for projecting ~496,000 rows — the predicate is a
                 // minority of the query. Both numbers are real; the harness prices the expression,
                 // these price a query that contains one.
+                // The same absent key as an EQUALITY, which the planner lowers to an
+                // `IndexSeek` — and without an index its fallback scanned every vertex of the
+                // label, boxing each cell. A column the store does not have (and a typed column
+                // the literal's type cannot land in) matches nothing by the store's own schema.
+                // Two spellings of one question that differed by 570x -- 7,328us against the
+                // `Filter` spelling's 12.9us below -- and the seek is now FASTER than the filter
+                // (7,328us -> 0.2us), because it answers from the schema and never builds the
+                // scan the filter still has to discard.
+                (
+                    "pred absent key",
+                    "MATCH (p:Person) WHERE p.no_such_key = 5 RETURN p.name AS n",
+                ),
+                // The CONTROL, and what made the asymmetry visible: a range op on the same
+                // absent key stays a `Filter`, and `try_filter_keep` has dropped every row
+                // without reading one since long before this.
+                (
+                    "seek absent range",
+                    "MATCH (p:Person) WHERE p.no_such_key > 5 RETURN p.name AS n",
+                ),
+                // A key that DOES exist, against a literal of the wrong type. Same seek, same
+                // boxed fallback, and the same answer from the schema: a typed column promotes
+                // to `Gen` when a value of another type is written, so one that is still `Num`
+                // holds no strings. 7,427us -> 0.2us.
+                (
+                    "seek type mismatch",
+                    "MATCH (p:Person) WHERE p.age = 'fifty' RETURN p.name AS n",
+                ),
                 // A comparison against a key NO vertex carries, PROJECTED — a typo, or a
                 // heterogeneous graph where only some labels have the key. Every row is UNKNOWN,
                 // which the typed masks now answer without touching a column; before, the

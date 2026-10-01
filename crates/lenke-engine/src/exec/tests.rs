@@ -11334,3 +11334,134 @@ fn a_half_present_property_reads_its_own_values_and_null() {
         }
     }
 }
+
+// --- A seek with no index answers from the schema where it can (item 75) ---
+
+/// An equality the planner lowers to an `IndexSeek` on a key with NO index falls back to a scan,
+/// and the scan can be skipped entirely when the store's own schema says no cell can match: no
+/// column for the key at all, or a still-TYPED column that a value of this type could never have
+/// been written to (such a write promotes the column to `Gen`).
+///
+/// The shapes that must still be SCANNED are the point of the test — the guard says yes to `Gen`
+/// and to a same-kind `Temporal`, which are exactly the columns the typed arms do not cover.
+#[test]
+fn a_seek_with_no_index_skips_the_scan_only_when_the_schema_decides_it() {
+    let mut store = Builder::default().build();
+    execute(
+        &crate::gql::parse(
+            "INSERT (:P {k: 1, s: 'a', d: DATE '2024-01-01', g: 7, rec: {f: 3}}), \
+             (:P {k: 2, s: 'b', d: DATE '2024-06-01', g: 'seven', rec: {f: 4}})",
+        )
+        .unwrap(),
+        &mut store,
+    )
+    .unwrap();
+
+    // Decided by the schema: nothing can match, and nothing is read.
+    for q in [
+        "MATCH (p:P) WHERE p.no_such_key = 1 RETURN p.k AS a",
+        "MATCH (p:P) WHERE p.k = 'one' RETURN p.k AS a", // Num column, Str literal
+        "MATCH (p:P) WHERE p.s = 1 RETURN p.k AS a",     // Str/Dict column, Num literal
+        "MATCH (p:P) WHERE p.k = DATE '2024-01-01' RETURN p.k AS a",
+        "MATCH (p:P) WHERE p.d = 1 RETURN p.k AS a", // Temporal column, Num literal
+    ] {
+        assert_eq!(try_gql(q, &store).unwrap(), 0, "no cell can match: {q}");
+    }
+
+    // Must still be scanned, and must still find its row.
+    let one = |q: &str| try_gql(q, &store).unwrap();
+    assert_eq!(
+        one("MATCH (p:P) WHERE p.d = DATE '2024-06-01' RETURN p.k AS a"),
+        1,
+        "a same-kind temporal is not a mismatch"
+    );
+    assert_eq!(
+        one("MATCH (p:P) WHERE p.g = 7 RETURN p.k AS a"),
+        1,
+        "a Gen column (mixed writes) holds values of every type"
+    );
+    assert_eq!(
+        one("MATCH (p:P) WHERE p.g = 'seven' RETURN p.k AS a"),
+        1,
+        "the other type in the same Gen column"
+    );
+    assert_eq!(
+        one("MATCH (p:P) WHERE p.rec.f = 3 RETURN p.k AS a"),
+        1,
+        "a DOTTED path has no column of its own — the guard must not claim it is absent"
+    );
+    assert_eq!(one("MATCH (p:P) WHERE p.k = 2 RETURN p.k AS a"), 1);
+    assert_eq!(one("MATCH (p:P) WHERE p.s = 'b' RETURN p.k AS a"), 1);
+}
+
+/// The same questions with an INDEX on the key, so the seek takes its indexed path instead of the
+/// fallback. Indexed and unindexed must agree row for row — the equivalent-spellings invariant
+/// applies to a predicate that an index merely makes faster.
+#[test]
+fn an_indexed_seek_and_an_unindexed_one_agree_on_a_type_mismatch() {
+    let build = || {
+        let mut store = Builder::default().build();
+        execute(
+            &crate::gql::parse("INSERT (:P {k: 1, s: 'a'}), (:P {k: 2, s: 'b'})").unwrap(),
+            &mut store,
+        )
+        .unwrap();
+        store
+    };
+    let bare = build();
+    let mut indexed = build();
+    indexed.create_index("k");
+    indexed.create_index("s");
+
+    for q in [
+        "MATCH (p:P) WHERE p.k = 'one' RETURN p.k AS a",
+        "MATCH (p:P) WHERE p.s = 1 RETURN p.k AS a",
+        "MATCH (p:P) WHERE p.k = 2 RETURN p.k AS a",
+        "MATCH (p:P) WHERE p.s = 'b' RETURN p.k AS a",
+        "MATCH (p:P) WHERE p.no_such_key = 1 RETURN p.k AS a",
+    ] {
+        assert_eq!(
+            try_gql(q, &bare).unwrap(),
+            try_gql(q, &indexed).unwrap(),
+            "indexed and unindexed disagree: {q}"
+        );
+    }
+}
+
+/// The RANGE twin of the rule above: a plain key with no column is UNKNOWN on every row, so the
+/// seek is empty without reading one — but a DOTTED path has no column of its own and must still
+/// be resolved per row. Both with and without a range index on the base key, because which of
+/// `range_lookup`'s two paths runs depends on it and they have to agree.
+#[test]
+fn a_range_seek_on_a_dotted_path_is_not_mistaken_for_an_absent_key() {
+    let build = || {
+        let mut store = Builder::default().build();
+        execute(
+            &crate::gql::parse("INSERT (:P {k: 1, rec: {f: 3}}), (:P {k: 2, rec: {f: 9}})")
+                .unwrap(),
+            &mut store,
+        )
+        .unwrap();
+        store
+    };
+    let bare = build();
+    let mut indexed = build();
+    indexed.create_range_index("rec.f");
+
+    for store in [&bare, &indexed] {
+        assert_eq!(
+            try_gql("MATCH (p:P) WHERE p.rec.f > 3 RETURN p.k AS a", store).unwrap(),
+            1,
+            "a dotted field still resolves per row"
+        );
+        assert_eq!(
+            try_gql("MATCH (p:P) WHERE p.rec.f >= 3 RETURN p.k AS a", store).unwrap(),
+            2
+        );
+        assert_eq!(
+            try_gql("MATCH (p:P) WHERE p.no_such_key > 3 RETURN p.k AS a", store).unwrap(),
+            0,
+            "a plain absent key matches nothing"
+        );
+    }
+}

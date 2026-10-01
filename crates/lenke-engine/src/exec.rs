@@ -2990,6 +2990,36 @@ fn index_seek_ids(store: &Store, label: Option<&str>, key: &str, value: &Value) 
             // clone. Equality semantics match `value::equals` (a present cell of the
             // literal's type; a NULL cell — `present == false` — never equals).
             if !key.contains('.') {
+                // A column that CANNOT HOLD `value` matches nothing, so the seek is empty
+                // without reading a single node. Two cases, both decided by the store's own
+                // schema:
+                //
+                //   no column at all — nobody carries `key`, so every cell reads NULL, and
+                //   `value` is non-null here (checked at the top).
+                //
+                //   a TYPED column of another type — writing a value of a different type
+                //   promotes the column to `Gen` (`Column::set`), so a column that is still
+                //   typed has present cells of only its own type, and `value::equals` is false
+                //   across types. `accepts` is exactly that question, and it says yes for `Gen`
+                //   and for a same-kind `Temporal` — the two the typed arms below do not cover
+                //   and which must stay on the boxed path.
+                //
+                // `try_filter_keep` has carried the first case for the `Filter` spelling of the
+                // same predicate since before the typed masks existed; the seek's no-index
+                // fallback never got it, and the two spellings differed by 570x. Measured over
+                // 200,000 vertices: `WHERE p.no_such_key = 5` 7,328us against `WHERE
+                // p.no_such_key > 5` (which stays a `Filter`) 12.9us. Answering from the schema
+                // takes the equality spelling to 0.2us -- faster than the filter, which still
+                // builds the scan it then discards -- and `p.age = 'fifty'`, the type-mismatch
+                // case on a key that does exist, from 7,427us to the same 0.2us.
+                //
+                // Inside the non-dotted guard deliberately: for a DOTTED path `store.column`
+                // looks up the whole path and is `None` for a record sub-field that exists.
+                match store.column(key) {
+                    None => return Vec::new(),
+                    Some(col) if !col.accepts(value) => return Vec::new(),
+                    Some(_) => {}
+                }
                 match (store.column(key), value) {
                     (Some(Column::Str { data, present, .. }), Value::Str(t)) => {
                         let t: &str = t;
@@ -3139,6 +3169,15 @@ fn range_seek_ids(
                 .collect()
         }
         None => {
+            // NOT given `index_seek_ids`' schema shortcut, deliberately. The same rule holds
+            // here — a plain key with no column is UNKNOWN on every row — but this branch is
+            // not reachable with one: the planner emits a `RangeSeek` only where a range index
+            // can serve it, so a range on an absent key stays a `Filter`, which has dropped
+            // every row without reading one since long before this. Mutating the guard in and
+            // removing the dotted exclusion left the whole suite green (857 tests), which is
+            // what unreachable looks like, and an unmeasurable, untestable guard is worse than
+            // none. `a_range_seek_on_a_dotted_path_is_not_mistaken_for_an_absent_key` pins the
+            // behaviour either way.
             let all_nodes;
             let ids = match label {
                 Some(l) => store.nodes_with_label(l),

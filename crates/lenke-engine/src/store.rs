@@ -398,7 +398,7 @@ impl Column {
     /// Whether this column can store `v` without a type change. A typed column ACCEPTS a
     /// `Null` (stored as a present-null via the `nulls` bit — no de-opt). A temporal
     /// column accepts its OWN kind; a different temporal kind promotes to `Gen`.
-    fn accepts(&self, v: &Value) -> bool {
+    pub(crate) fn accepts(&self, v: &Value) -> bool {
         match (self, v) {
             (Self::Num { .. }, Value::Num(_) | Value::Null)
             | (Self::Str { .. }, Value::Str(_) | Value::Null)
