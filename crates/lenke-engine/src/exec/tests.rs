@@ -7753,6 +7753,65 @@ fn a_group_count_is_not_bounded_by_the_trail_budget() {
     );
 }
 
+/// The budget a count IS bounded by, and the reason it is that one.
+///
+/// `limits.trail` governs two different quantities in the two engines, and a comment in
+/// `varlen.rs` used to claim they were the same ("the TS engine's guard, same default"):
+/// native capped total emitted ROWS, the TS matcher caps per-SOURCE hop STEPS (`steps` is
+/// declared inside `trailEndsUnit`, which runs once per source). Same number, different
+/// thing, so the engines diverged in BOTH directions — TS answered a 1,796,508-path count
+/// native refused, and TS refuses a 1,007,435,520-path count native answered.
+///
+/// Native now counts the same hops TS counts, so a count is bounded by WORK rather than by
+/// rows. One source over the budget ends the query, exactly as the TS throw does.
+#[test]
+fn a_group_count_raises_when_one_source_exceeds_the_hop_budget() {
+    let q = "MATCH ((x)-[:R]->(m)-[:R]->(y)){1,2} RETURN count(*) AS c";
+    let mut store = dense_store(60, 3);
+    // Far below ANY single source's hop count on a degree-3 fixture walking up to 4 hops.
+    store.set_limit(crate::store::ConfigId::LimitsTrail, 8);
+    let got = crate::exec::try_run(&opt_plan(q, &store), &store);
+    let err = got.expect_err("over the hop budget, the count must not answer");
+    assert!(
+        err.starts_with("E_RESOURCE_EXHAUSTED"),
+        "and it must be the same code the TS engine raises: {err}"
+    );
+}
+
+/// The budget is PER SOURCE, which is the whole point: a query with many cheap sources must
+/// answer even though its TOTAL hop count is far over the limit. A global counter would
+/// refuse this, and refusing it is the original divergence — TS answers it.
+#[test]
+fn the_hop_budget_is_per_source_not_per_query() {
+    let q = "MATCH ((x)-[:R]->(m)-[:R]->(y)){1,2} RETURN count(*) AS c";
+    let mut store = dense_store(60, 3);
+    store.set_limit(crate::store::ConfigId::LimitsTrail, 10_000_000);
+    let truth = match crate::exec::try_run(&opt_plan(q, &store), &store)
+        .unwrap()
+        .rows
+        .iter()
+        .next()
+        .expect("one row")[0]
+    {
+        Value::Num(x) => x,
+        ref o => panic!("{o:?}"),
+    };
+
+    // 400 is comfortably ABOVE one source's hop count on this fixture (degree 3 to 4 hops is
+    // ~120) and far BELOW the whole query's, which is that times 60 sources.
+    store.set_limit(crate::store::ConfigId::LimitsTrail, 400);
+    let got = crate::exec::try_run(&opt_plan(q, &store), &store);
+    assert_eq!(
+        got.map(|r| format!("{:?}", r.rows.iter().next().expect("one row")[0])),
+        Ok(format!("Num({truth:?})")),
+        "many cheap sources must answer, however many there are"
+    );
+    assert!(
+        truth > 400.0,
+        "the fixture must exceed the budget in TOTAL for this to discriminate: {truth}"
+    );
+}
+
 /// The counting path must APPLY the per-repetition `WHERE`, and a trivially-true predicate cannot
 /// show that: the count is the same whether such a filter runs or is dropped. Dropping
 /// `per_rep_pred` in `try_group_count` survived the whole suite until this test existed, because

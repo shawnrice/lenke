@@ -93,6 +93,7 @@ pub(super) fn var_length(
         group_binds,
         k,
         budget,
+        steps: StepBudget::new(store),
         count_only: matches!(path_need, crate::ir::PathNeed::CountOnly),
     };
     run_varlen(
@@ -111,6 +112,17 @@ pub(super) fn var_length(
         &mut sink,
     );
 
+    // Two guards, two quantities, and they answer different questions. The per-source HOP
+    // budget mirrors the TS matcher exactly (see `VarlenEmit::note_step`), so the two engines
+    // agree on which queries raise. The emitted-ROW cap is native's own memory protection and
+    // has no TS twin; it can only make native stricter, which it already was.
+    if sink.steps.exhausted() {
+        return Err(format!(
+            "E_RESOURCE_EXHAUSTED: variable-length traversal exceeded the trail limit of \
+             {budget} hops from a single source; add a tighter bound/`LIMIT`, make the \
+             pattern more selective, or raise the limit (ConfigId::LimitsTrail)"
+        ));
+    }
     if sink.keep.len() as u64 > budget {
         return Err(format!(
             "E_RESOURCE_EXHAUSTED: variable-length traversal exceeded the trail limit of \
@@ -237,6 +249,28 @@ pub(super) trait VarlenEmit {
     fn emit(&mut self, row: usize, node_stack: &[u32], edge_stack: &[u32]);
     /// Stop descending — the emit budget (or a stream's output cap) is exhausted.
     fn should_stop(&self) -> bool;
+
+    /// A new source row's walk is starting. A per-source counter resets here.
+    fn start_seed(&mut self) {}
+
+    /// Count ONE HOP against a per-source WORK budget, mirroring the TS matcher's `steps`
+    /// counter in `trailEndsUnit` — which is declared inside that generator, so it is per
+    /// SOURCE, not per query.
+    ///
+    /// The two engines' guards were never the same quantity, though a comment here claimed
+    /// they were ("the TS engine's guard, same default"): native capped total emitted ROWS
+    /// and TS caps per-source hop STEPS, both at 1,000,000. Same number, different thing, so
+    /// they diverged in BOTH directions — on a random degree-3 graph at 20,000 vertices TS
+    /// answered a 1,796,508-path count that native refused, and on a 64-vertex complete
+    /// digraph TS refuses a 1,007,435,520-path count that native answered (in 6.5s).
+    ///
+    /// Counted at the hop points TS counts: after the edge-label filter and the
+    /// mark-collision test, and INCLUDING a closing hop and a hop whose per-repetition
+    /// `WHERE` failed (TS's `steps += 1` sits below `hopCollides` and below the `WHERE`,
+    /// which suppresses the emit but not the step). The two walkers explore the same tree in
+    /// the same order, so counting at the mirrored point makes the counts equal rather than
+    /// merely close — which matters, because the threshold decides WHICH queries raise.
+    fn note_step(&mut self) {}
 }
 
 /// A COUNTING emit: keeps a tally and nothing else.
@@ -376,8 +410,45 @@ pub(super) fn node_pass_mask(
     Ok(ok)
 }
 
+/// A per-SOURCE hop budget, shared by the sinks that need one. See `VarlenEmit::note_step`
+/// for why the quantity is per-source steps rather than total rows.
+#[derive(Clone, Copy)]
+pub(super) struct StepBudget {
+    steps: u64,
+    limit: u64,
+    exhausted: bool,
+}
+
+impl StepBudget {
+    pub(super) fn new(store: &Store) -> Self {
+        Self {
+            steps: 0,
+            limit: store.limits().trail,
+            exhausted: false,
+        }
+    }
+
+    /// Reset for a new source. `exhausted` is STICKY: once any source has blown the budget the
+    /// query is over, exactly as the TS matcher's throw ends it.
+    fn start_seed(&mut self) {
+        self.steps = 0;
+    }
+
+    fn note_step(&mut self) {
+        self.steps += 1;
+        if self.steps > self.limit {
+            self.exhausted = true;
+        }
+    }
+
+    pub(super) fn exhausted(self) -> bool {
+        self.exhausted
+    }
+}
+
 struct CountEmit<'a> {
     sink: &'a mut CountSink,
+    budget: StepBudget,
 }
 
 impl VarlenEmit for CountEmit<'_> {
@@ -389,7 +460,15 @@ impl VarlenEmit for CountEmit<'_> {
     }
 
     fn should_stop(&self) -> bool {
-        false
+        self.budget.exhausted
+    }
+
+    fn start_seed(&mut self) {
+        self.budget.start_seed();
+    }
+
+    fn note_step(&mut self) {
+        self.budget.note_step();
     }
 }
 
@@ -421,7 +500,10 @@ pub(super) fn var_length_count(
     let Col::Nodes(src) = batch.slot(from) else {
         return None;
     };
-    let mut emit = CountEmit { sink };
+    let mut emit = CountEmit {
+        sink,
+        budget: StepBudget::new(store),
+    };
     run_varlen(
         src,
         store,
@@ -438,6 +520,16 @@ pub(super) fn var_length_count(
         &mut emit,
     );
 
+    // Over the per-source hop budget: DECLINE, so the caller falls through to the materializing
+    // walk, which counts the same hops at the same points and raises `E_RESOURCE_EXHAUSTED` from
+    // the error channel the fast-path chain does not have. Declining rather than answering is
+    // what keeps the two engines agreeing on which queries raise; it costs the blown source's
+    // budget twice, which is bounded by `limits.trail` and only paid on a query that is about to
+    // fail anyway.
+    if emit.budget.exhausted() {
+        return None;
+    }
+
     Some(())
 }
 
@@ -452,6 +544,7 @@ struct CollectEmit<'a> {
     group_binds: &'a [(crate::ir::GroupPos, usize)],
     k: u32,
     budget: u64,
+    steps: StepBudget,
     count_only: bool,
 }
 
@@ -484,7 +577,15 @@ impl VarlenEmit for CollectEmit<'_> {
         }
     }
     fn should_stop(&self) -> bool {
-        self.keep.len() as u64 > self.budget
+        self.keep.len() as u64 > self.budget || self.steps.exhausted()
+    }
+
+    fn start_seed(&mut self) {
+        self.steps.start_seed();
+    }
+
+    fn note_step(&mut self) {
+        self.steps.note_step();
     }
 }
 
@@ -535,6 +636,7 @@ pub(super) fn run_varlen<S: VarlenEmit>(
     let node_unique = matches!(mode, PathMode::Simple | PathMode::Acyclic);
     let mut used: Vec<u32> = Vec::new();
     for (row, &v) in src.iter().enumerate() {
+        sink.start_seed();
         if node_unique {
             used.push(v);
         }
@@ -952,8 +1054,13 @@ pub(super) fn varlen_walk<S: VarlenEmit>(
                 continue;
             }
             let mark = match varlen_step(mode, start, &a, used) {
+                // A collision is NOT a step: TS's `hopCollides` continues above its
+                // `steps += 1`.
                 VarStep::Skip => continue,
                 VarStep::Close => {
+                    // A CLOSING hop is a step — TS's `isClose` bypasses the collision test but
+                    // still reaches `steps += 1`.
+                    sink.note_step();
                     // Closing hop (Simple cycle back to `start`): emit at a rep boundary,
                     // never descend. Push/emit/pop so the path is complete for the sink.
                     if len + 1 >= min && (len + 1).is_multiple_of(k) {
@@ -965,7 +1072,10 @@ pub(super) fn varlen_walk<S: VarlenEmit>(
                     }
                     continue;
                 }
-                VarStep::Go(mark) => mark,
+                VarStep::Go(mark) => {
+                    sink.note_step();
+                    mark
+                }
             };
             if let Some(m) = mark {
                 used.push(m);
