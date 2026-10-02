@@ -22,6 +22,7 @@ import { query as tsQuery } from '@lenke/gql';
 import { deserialize as tsDeserialize } from '@lenke/serialization';
 
 import { nativeBackend, nativeReady, resultsEqual } from './conformance-harness.js';
+import { accept, resetUsage, usageCounts } from './divergence-registry.js';
 import { graphFromNdjson } from './graph.js';
 
 /// Coverage tallies for the shapes this fuzzer is supposed to keep generating. Kept out of the
@@ -1045,6 +1046,8 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
     // that — every vertex carries `T`. `(b:U)` is the selective one, and dropping the predicate
     // was invisible until the generator drew it (item 63).
 
+    resetUsage();
+
     for (let i = 0; i < ITERATIONS; i++) {
       const q = genQuery(mulberry32(caseSeed(SEED, i)));
       const ts = run('ts', q);
@@ -1056,39 +1059,33 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       // when exactly one succeeds, or both succeed with different JSON.
       if (ts.ok && nat.ok) {
         if (!resultsEqual(ts.json, nat.json) && !numericTextTie(ts.json, nat.json)) {
-          divergences.push(
-            `[seed ${caseSeed(SEED, i)}] ${q}\n    ts:     ${ts.json}\n    native: ${nat.json}`,
-          );
+          // Routed through the registry like the one-sided case, so an `order` or
+          // `float-reduction` entry would apply here if one is ever declared. With none, this
+          // classifies and is reported exactly as before.
+          const verdict = accept({ query: q, ts, native: nat });
+
+          if (!verdict.accepted) {
+            divergences.push(
+              `[seed ${caseSeed(SEED, i)}] ${q}\n    ts:     ${ts.json}\n    native: ${nat.json}` +
+                `\n    (${verdict.observed}: ${verdict.why})`,
+            );
+          }
         }
       } else if (ts.ok !== nat.ok) {
-        // ACCEPTED DIVERGENCE — the schemaless dynamic-operand residual.
-        //
-        // Both engines run the SAME static (plan-time) boolean-context type check
-        // (Postgres-style): a value whose type is statically known to be non-boolean —
-        // a literal, arithmetic, a map/list constructor, a non-boolean CAST — is rejected
-        // wherever a truth value is required, before execution. That closes the whole
-        // family EXCEPT one irreducible case: a DYNAMICALLY-typed operand in a boolean
-        // context — a bare property (`n.s`), `NOT n.s`, or a function result whose type we
-        // do not classify (`duration('P1D')`) — AND'd with a comparison that a selective
-        // seek/filter narrows to zero rows. There the row-dependent `as_truth` reject fires
-        // on one engine (which evaluates the operand) but not the other (whose seek
-        // eliminated every row first). The engine is schemaless, so this operand's type is
-        // unknowable at parse; a perf-neutral fix is impossible without abandoning the seek.
-        //
-        // It is ALWAYS `E_INVALID_VALUE` on one side vs an EMPTY result on the other —
-        // "malformed predicate" vs "no rows", never wrong data — so it is accepted here.
-        // Any OTHER one-sided outcome (a non-empty result, or a different error code) is a
-        // real divergence and still reported.
-        const errsInvalidValue = (o: Outcome): boolean => !o.ok && o.code === 'E_INVALID_VALUE';
-        const isEmpty = (o: Outcome): boolean => o.ok && o.json === '[]';
-        const acceptedBoolResidual =
-          (errsInvalidValue(ts) && isEmpty(nat)) || (errsInvalidValue(nat) && isEmpty(ts));
+        // A DECLARED divergence, or a real one. `divergence-registry.ts` holds the list and
+        // the rules — notably that a VALUE difference is refused whatever the list says, so
+        // this cannot be used to turn a wrong answer green. The schemaless
+        // boolean-context/dynamic-operand residual that used to be an `if` here with a long
+        // comment is now an entry in that file, where it is narrow (an `E_INVALID_VALUE`
+        // against an EMPTY result, never against rows) and its usage is counted.
+        const verdict = accept({ query: q, ts, native: nat });
 
-        if (!acceptedBoolResidual) {
+        if (!verdict.accepted) {
           const tsSide = ts.ok ? `ok ${ts.json}` : `err ${(ts as { code: string }).code}`;
           const natSide = nat.ok ? `ok ${nat.json}` : `err ${(nat as { code: string }).code}`;
           divergences.push(
-            `[seed ${caseSeed(SEED, i)}] ${q}\n    ts:     ${tsSide}\n    native: ${natSide}`,
+            `[seed ${caseSeed(SEED, i)}] ${q}\n    ts:     ${tsSide}\n    native: ${natSide}` +
+              `\n    (${verdict.observed}: ${verdict.why})`,
           );
         }
       }
@@ -1099,6 +1096,15 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
         break;
       }
     }
+
+    // How often each DECLARED divergence was used. Visible on every run, because a declared
+    // divergence whose frequency moves is worth noticing, and one that drops to zero has
+    // outlived the behaviour it describes (see `unused` in the registry).
+    const declared = [...usageCounts().entries()]
+      .map(([id, n]) => `${id}=${n}`)
+      .sort()
+      .join(' ');
+    console.log(`DECLARED ${declared === '' ? 'none used' : declared}`);
 
     const report = divergences.length
       ? `FUZZ_SEED=${SEED} bun test <this file> to reproduce:\n\n${divergences.join('\n\n')}`
