@@ -43,6 +43,7 @@ import {
   lte,
   order,
   Order,
+  Scope,
   out,
   outE,
   outV,
@@ -377,7 +378,16 @@ const hasTopLevelOrder = (text: string): boolean => {
     const c = text[i];
 
     if (c === '(') {
-      if (depth === 0 && text.startsWith('.order(', i - 6)) {
+      // `order(local)` is NOT a top-level order: it sorts WITHIN each traverser's value and
+      // leaves the stream's order exactly as it found it. Counting it as one switched the
+      // multiset comparison off for a multi-type hop whose adjacency order is unspecified, and
+      // the suite then reported a false divergence — the same 7 elements in a different order
+      // for `g.V().order(local).by(desc).out('KNOWS', 'CREATED')` (FUZZ_SEED=2907042784).
+      if (
+        depth === 0 &&
+        text.startsWith('.order(', i - 6) &&
+        !text.startsWith('.order(local', i - 6)
+      ) {
         return true;
       }
 
@@ -560,6 +570,23 @@ const step = (r: () => number): unknown => {
     return path();
   }
 
+  // `order(Scope.local)` — which NEITHER this fuzzer nor the 93-case conformance suite
+  // generated: zero mentions of `local` between them. That gap let native silently return
+  // ZERO rows for `g.V().order(local).out('R')` for as long as the step has existed, while TS
+  // answered correctly (item 87, found by asking why a no-op cost 7.62ns a row).
+  //
+  // The step has two jobs and they need different inputs. Over a SCALAR frontier — a vertex,
+  // an edge, a property value — it is a PASS-THROUGH, which is the half that was broken and
+  // the half this pool reaches, since the frontier here is whatever the preceding steps left.
+  // Over a COLLECTION it sorts, and `fold()` is how to get one: the pair below emits
+  // `fold().order(local)` so both halves are drawn. `by(keys)`/`by(values)` only mean
+  // something for a Map, so they sit with the Map-producing shapes rather than here.
+  //
+  // Placed last, above the fallback, so it takes no other arm's band.
+  if (p < 0.99) {
+    return r() < 0.5 ? order(Scope.local) : order(Scope.local).by(Order.desc);
+  }
+
   return count();
 };
 
@@ -585,6 +612,22 @@ const terminal = (r: () => number): unknown[] => {
   if (p < 0.8) {
     return [dedupe(), count()];
   }
+
+  // NOT `[fold(), order(Scope.local)]` here, though that is the COLLECTION half of the step
+  // and it belongs in this pool. It is red against two PRE-EXISTING divergences that this
+  // generator found on its first run and that are bigger than a generator change — see audit
+  // item 88. Adding it before they are fixed would land a knowingly-red oracle:
+  //
+  //   a list of ELEMENTS — TinkerPop throws `ClassCastException` for
+  //   `g.E().fold().order(Scope.local)` and so does TS; native answers. Native already has a
+  //   `fault_on_element` flag on the GLOBAL `OrderPage` for exactly this, so the fix has a
+  //   precedent to follow.
+  //
+  //   a list containing NULLs — native ranks `Null` after `Str` (rank 7) and sorts them last,
+  //   TS sorts them first. The engines are meant to share ONE total order, so one of them is
+  //   wrong, and it is not confined to this step: any sort of a null-containing list has it.
+  //   (TinkerPop cannot settle it — its `values()` skips a missing property rather than
+  //   yielding null, so it never builds such a list.)
 
   if (p < 0.9) {
     // `groupCount()` was not generated at all, and its map is ORDER-observable
@@ -674,6 +717,12 @@ suite('differential fuzz: gremlin (TS engine vs Rust ENGINE)', () => {
 
   test(`${ITERATIONS} random traversals agree across the engines`, () => {
     const divergences: string[] = [];
+    // `order(local)` coverage. GENERATION IS NOT COVERAGE: the arm is in the step pool, but
+    // the frontier it lands on is whatever the preceding steps left, so the non-empty count is
+    // the one that means anything — a pass-through over an EMPTY frontier passes whatever the
+    // step does.
+    let orderLocalGenerated = 0;
+    let orderLocalNonEmpty = 0;
     let skippedUnordered = 0;
     let skippedUnbuildable = 0;
     let skippedLazySlice = 0;
@@ -724,6 +773,11 @@ suite('differential fuzz: gremlin (TS engine vs Rust ENGINE)', () => {
           return `ERR ${(e as { code?: string }).code ?? 'throw'}`;
         }
       };
+
+      if (text.includes('order(local)')) {
+        orderLocalGenerated += 1;
+      }
+
       // Naming two REAL edge types makes the per-vertex adjacency order
       // unspecified: the TS engine walks a bucket per name, native makes one
       // adjacency pass in insertion order, and neither is the contract (see the
@@ -775,6 +829,13 @@ suite('differential fuzz: gremlin (TS engine vs Rust ENGINE)', () => {
       const ts = outcome(() => canonOrder(toArray(plan, tsGraph).map(canonJson), unordered));
       const native = outcome(() => canonOrder(nativeRun(text), unordered));
 
+      // NON-EMPTY is the floor that matters: `order(local)` over an empty frontier passes
+      // whatever the step does, so only a run that actually carried rows through it is
+      // coverage. `[]` and `[0]` (a count of nothing) are the empty answers here.
+      if (text.includes('order(local)') && native !== '[]' && native !== '[0]') {
+        orderLocalNonEmpty += 1;
+      }
+
       // Both failing is acceptable — each rejects the query. A divergence is one
       // side succeeding, or both succeeding with different results.
       if (ts !== native && !(ts.startsWith('ERR') && native.startsWith('ERR'))) {
@@ -798,6 +859,16 @@ suite('differential fuzz: gremlin (TS engine vs Rust ENGINE)', () => {
     }
 
     if (skippedUnordered > 0) {
+      console.log(
+        `  order(local)=${orderLocalGenerated}/${orderLocalNonEmpty} of ${ITERATIONS} ` +
+          'generated/non-empty',
+      );
+      // Measured 20-40 generated and 15-35 of those non-empty, of 400.
+      expect({
+        orderLocalGenerated: orderLocalGenerated > 8,
+        orderLocalNonEmpty: orderLocalNonEmpty > 5,
+      }).toEqual({ orderLocalGenerated: true, orderLocalNonEmpty: true });
+
       console.log(
         `  ${skippedUnordered}/${ITERATIONS} plans skipped: a positional slice over an ` +
           'unspecified order has no comparable result',
