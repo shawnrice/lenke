@@ -679,11 +679,42 @@ pub(super) fn sort_local_key_is_element(v: &Value, by_key: bool) -> bool {
     }
 }
 
+/// Gremlin's orderability for ONE comparison: NULL is the least value, then the shared
+/// `cmp_total` for everything else.
+///
+/// `cmp_total`'s rank puts `Null` at 7 — nulls LAST — because that is the ISO `ORDER BY`
+/// default, and `ir::SortKey` records the split: GQL sets `nulls_first: false` for both ASC
+/// and DESC, Gremlin sets `nulls_first: !descending`. The GLOBAL `order()` honours that flag
+/// in `order::row_cmp`, which is why `g.V().values('k').order()` already agrees with TS and
+/// with TinkerPop. `order(local)` went straight to `cmp_total` and so sorted nulls last:
+/// native answered `[1, 2, null]` where TS and TinkerPop both say `[null, 1, 2]`.
+///
+/// Ranking null least and letting the caller's DESC reversal carry it to the end reproduces
+/// TinkerPop exactly, where DESC is a plain reversal of the whole comparator — verified in a
+/// real console on `createModern()`:
+///
+/// ```text
+/// g.inject(2, null, 1).order()                    -> [null, 1, 2]
+/// g.inject(2, null, 1).order().by(Order.desc)     -> [2, 1, null]
+/// g.inject(2, null, 1).fold().order(Scope.local)  -> [[null, 1, 2]]
+/// g.inject("b", null, "a").order()                -> [null, a, b]
+/// g.inject(2, null, "a").order()                  -> [null, 2, a]
+/// ```
+fn cmp_local_gremlin(a: &Value, b: &Value) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (a.is_null(), b.is_null()) {
+        (true, true) => Ordering::Equal,
+        (true, false) => Ordering::Less,
+        (false, true) => Ordering::Greater,
+        (false, false) => value::cmp_total(a, b),
+    }
+}
+
 pub(super) fn sort_local_cell(v: Value, descending: bool, by_key: bool) -> Value {
     let dir = |ord: std::cmp::Ordering| if descending { ord.reverse() } else { ord };
     match v {
         Value::List(mut items) => {
-            items.sort_by(|a, b| dir(value::cmp_total(a, b)));
+            items.sort_by(|a, b| dir(cmp_local_gremlin(a, b)));
             Value::List(items)
         }
         Value::Map(pairs) => {
@@ -691,7 +722,7 @@ pub(super) fn sort_local_cell(v: Value, descending: bool, by_key: bool) -> Value
             // `by(values)` (the default) sorts on the entry value; `by(keys)` on the key.
             pairs.sort_by(|a, b| {
                 let (l, r) = if by_key { (&a.0, &b.0) } else { (&a.1, &b.1) };
-                dir(value::cmp_total(l, r))
+                dir(cmp_local_gremlin(l, r))
             });
             Value::Map(std::sync::Arc::new(pairs))
         }

@@ -2102,6 +2102,97 @@ fn order_local_by_desc_on_numbers() {
     assert_eq!(fold_list(&out), dbg(&[n(40.0), n(30.0), n(25.0)]));
 }
 
+/// A store where one vertex's `k` is a STORED NULL — this engine keeps null as a present
+/// value, so `values('k')` yields it rather than skipping the vertex.
+fn with_a_null_prop() -> Store {
+    let mut b = Builder::default();
+    b.node(&["N"], &[("k", n(2.0))]);
+    b.node(&["N"], &[("k", Value::Null)]);
+    b.node(&["N"], &[("k", n(1.0))]);
+    b.build()
+}
+
+/// `order(local)` puts NULL FIRST, which is Gremlin's orderability and NOT `cmp_total`'s
+/// rank.
+///
+/// `cmp_total` ranks `Null` at 7 — nulls LAST — because that is the ISO `ORDER BY` default,
+/// and `ir::SortKey` records the split (GQL `nulls_first: false` always, Gremlin
+/// `nulls_first: !descending`). The GLOBAL `order()` honours the flag in `order::row_cmp`;
+/// `order(local)` went straight to `cmp_total` and so answered `[1, 2, null]` where TS and
+/// TinkerPop both say `[null, 1, 2]`.
+///
+/// Ground truth, a real `tinkerpop/gremlin-console` on `createModern()`:
+///
+/// ```text
+/// g.inject(2, null, 1).order()                    -> [null, 1, 2]
+/// g.inject(2, null, 1).fold().order(Scope.local)  -> [[null, 1, 2]]
+/// g.inject("b", null, "a").order()                -> [null, a, b]
+/// ```
+#[test]
+fn order_local_sorts_nulls_first() {
+    let store = with_a_null_prop();
+    let out = gremlin_rows("g.V().values('k').fold().order(local)", &store);
+    assert_eq!(fold_list(&out), dbg(&[Value::Null, n(1.0), n(2.0)]));
+}
+
+/// DESC is a PLAIN REVERSAL, so the null goes to the end — `[2, 1, null]`, not `[null, 2, 1]`.
+///
+/// This is why the null is ranked least and the direction applied on top, rather than the
+/// null being placed by a flag outside the reversal the way `order::row_cmp` does it for GQL.
+/// TinkerPop: `g.inject(2, null, 1).order().by(Order.desc)` -> `[2, 1, null]`.
+#[test]
+fn order_local_desc_sends_nulls_last() {
+    let store = with_a_null_prop();
+    let out = gremlin_rows("g.V().values('k').fold().order(local).by(desc)", &store);
+    assert_eq!(fold_list(&out), dbg(&[n(2.0), n(1.0), Value::Null]));
+}
+
+/// The GLOBAL `order()` was ALREADY right, in both directions — the bug was confined to the
+/// local scope. Here so a later "fix" to the shared `cmp_total` cannot quietly move this.
+#[test]
+fn the_global_gremlin_order_already_put_nulls_first() {
+    let store = with_a_null_prop();
+    let asc = gremlin_rows("g.V().values('k').order()", &store);
+    assert_eq!(
+        asc.rows
+            .iter()
+            .map(|r| format!("{:?}", r[0]))
+            .collect::<Vec<_>>(),
+        dbg(&[Value::Null, n(1.0), n(2.0)])
+    );
+    let desc = gremlin_rows("g.V().values('k').order().by(desc)", &store);
+    assert_eq!(
+        desc.rows
+            .iter()
+            .map(|r| format!("{:?}", r[0]))
+            .collect::<Vec<_>>(),
+        dbg(&[n(2.0), n(1.0), Value::Null])
+    );
+}
+
+/// GQL's `ORDER BY` keeps NULLS LAST, which is the ISO default and the OPPOSITE of Gremlin's.
+///
+/// Two surface languages, one `exec`, and deliberately two null placements — `ir::SortKey`
+/// carries the difference. This test exists because the Gremlin fix above is one `cmp_total`
+/// call away from the GQL path, and changing the SHARED comparator instead of the local
+/// Gremlin one would have broken this silently.
+#[test]
+fn gql_order_by_keeps_nulls_last() {
+    let store = with_a_null_prop();
+    let plan = crate::opt::optimize_indexed(
+        crate::gql::parse("MATCH (x:N) RETURN x.k AS k ORDER BY k").unwrap(),
+        &store,
+    );
+    let out = crate::exec::run(&plan, &store);
+    assert_eq!(
+        out.rows
+            .iter()
+            .map(|r| format!("{:?}", r[0]))
+            .collect::<Vec<_>>(),
+        dbg(&[n(1.0), n(2.0), Value::Null])
+    );
+}
+
 /// `Scope.local` is an accepted spelling of the local scope.
 #[test]
 fn order_scope_local_spelling() {

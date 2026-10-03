@@ -124,7 +124,15 @@ impl Value {
             // element-vs-scalar ORDER BY is exotic — refine against TS if the fuzzer flags it.
             Self::Node(_) => 8,
             Self::Edge(_) => 9,
-            // Null sorts LAST — it is the greatest in the total order.
+            // Null sorts after every SCALAR and compound kind (the ISO `ORDER BY` default is
+            // NULLS LAST), though not after the element refs above — it is not "the greatest".
+            //
+            // AND NOTHING OBSERVABLE DEPENDS ON THIS NUMBER. Every path that can see a null
+            // places it BEFORE consulting the rank: a global `ORDER BY`/`order()` via
+            // `SortKey::nulls_first` in `exec::order::row_cmp`, Gremlin's `order(local)` via
+            // `cmp_local_gremlin`, `min`/`max` by skipping nulls, and the label/key/scope
+            // sorts are strings. Moving `Null` to 0 passes all 1,635 engine tests; only
+            // `cross_type_ordering_is_total_never_a_throw`, in THIS crate, pins it.
             Self::Null => 7,
         }
     }

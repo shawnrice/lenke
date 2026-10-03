@@ -144,11 +144,20 @@ const backend = existsSync(LIB) ? createFfiEngineBackend(LIB) : null;
 const decoder = new TextDecoder();
 const MODERN = [
   '{"type":"node","id":"1","labels":["PERSON"],"properties":{"name":"marko","age":29}}',
-  '{"type":"node","id":"2","labels":["PERSON"],"properties":{"name":"vadas","age":27}}',
+  // The second stored null, on a DIFFERENT key, so more than one draw from `KEYS` can reach
+  // null placement. With only vertex 5's `age` null, `order(local)` saw a null in 1 run of
+  // 400 — present but too thin to be a floor.
+  '{"type":"node","id":"2","labels":["PERSON"],"properties":{"name":"vadas","age":27,"lang":null}}',
   '{"type":"node","id":"4","labels":["PERSON"],"properties":{"name":"josh","age":32}}',
   '{"type":"node","id":"6","labels":["PERSON"],"properties":{"name":"peter","age":35}}',
   '{"type":"node","id":"3","labels":["SOFTWARE"],"properties":{"name":"lop","lang":"java"}}',
-  '{"type":"node","id":"5","labels":["SOFTWARE"],"properties":{"name":"ripple","lang":"java"}}',
+  // A STORED NULL, which is not the same thing as an absent property and is the only way a
+  // null reaches a sort here. Measured on a 4-node probe: `g.V().count()` 4 against
+  // `g.V().values('k').count()` 3, so an ABSENT key SKIPS the row (TinkerPop's behaviour)
+  // while a stored null is YIELDED. Until this line the fixture had no stored null anywhere,
+  // so `order(local)`'s null placement -- where native sorted nulls LAST against TS and
+  // TinkerPop's FIRST -- was unreachable from this oracle no matter which key was drawn.
+  '{"type":"node","id":"5","labels":["SOFTWARE"],"properties":{"name":"ripple","lang":"java","age":null}}',
   // TWO labels. Every other vertex here carries exactly one, under which
   // "match any label" and "match the first label" are indistinguishable — which
   // is why this fuzzer ran for a long time without noticing that native's
@@ -590,6 +599,36 @@ const step = (r: () => number): unknown => {
   return count();
 };
 
+/**
+ * The COLLECTION half of `order(Scope.local)`.
+ */
+const orderLocalCollection = (r: () => number): unknown[] => {
+  // The COLLECTION half of `order(Scope.local)` — a `fold()` makes the list it sorts, which
+  // the step pool cannot reach on its own (its frontier is whatever came before, and that is
+  // a scalar). Withheld when the arm was added (item 88) because it was red against two
+  // pre-existing divergences; the element one is fixed (item 89) and `values(…)` keeps the
+  // list free of elements, so what remains is a list of property VALUES.
+  //
+  // NOT a bare `fold()`: that folds the frontier itself, which is a list of ELEMENTS, and
+  // both engines now correctly FAULT on ordering one — comparing two identical errors is no
+  // coverage. `values(…)` first is what makes the list orderable.
+  //
+  // The key is DRAWN, not fixed. It used to be pinned to `name` on the belief that other
+  // keys would inject nulls (then a live divergence) because some vertices lack them. That
+  // reasoning was wrong twice over: an ABSENT property SKIPS the row rather than yielding
+  // null, so a drawn key injected nothing; and the null divergence itself is fixed, with
+  // `age` on vertex 5 now a STORED null so this arm reaches null placement deliberately.
+  // BIASED toward the two keys that carry a stored null, because the unbiased draw did not
+  // reach null placement reliably: one key in five, times a frontier that has to include
+  // the right vertex, gave 2/0/1 nulls across seeds 1/7/42 — and a floor that a seed can
+  // miss is not a floor. Every key is still reachable; this only shifts the weight.
+  const k = r() < 0.6 ? pick(r, ['age', 'lang']) : pick(r, KEYS);
+
+  return r() < 0.5
+    ? [values(k), fold(), order(Scope.local)]
+    : [values(k), fold(), order(Scope.local).by(Order.desc)];
+};
+
 const terminal = (r: () => number): unknown[] => {
   const p = r();
 
@@ -614,24 +653,7 @@ const terminal = (r: () => number): unknown[] => {
   }
 
   if (p < 0.85) {
-    // The COLLECTION half of `order(Scope.local)` — a `fold()` makes the list it sorts, which
-    // the step pool cannot reach on its own (its frontier is whatever came before, and that is
-    // a scalar). Withheld when the arm was added (item 88) because it was red against two
-    // pre-existing divergences; the element one is fixed (item 89) and `values(…)` keeps the
-    // list free of elements, so what remains is a list of property VALUES.
-    //
-    // NOT a bare `fold()`: that folds the frontier itself, which is a list of ELEMENTS, and
-    // both engines now correctly FAULT on ordering one — comparing two identical errors is no
-    // coverage. `values(…)` first is what makes the list orderable.
-    //
-    // Still NOT reached from here: a list containing NULLs, where native ranks `Null` after
-    // `Str` and sorts them last while TS sorts them first. That is a contract question about
-    // our own total order, not this step's (item 88), and `values(pick(r, KEYS))` on this
-    // fixture draws keys that some vertices lack — so this arm deliberately takes `name`,
-    // which every vertex and edge-free row has.
-    return r() < 0.5
-      ? [values('name'), fold(), order(Scope.local)]
-      : [values('name'), fold(), order(Scope.local).by(Order.desc)];
+    return orderLocalCollection(r);
   }
 
   if (p < 0.9) {
@@ -641,6 +663,15 @@ const terminal = (r: () => number): unknown[] => {
     // property column when the prefix lowers, otherwise through the stream — so
     // this has to cross-check both against the TS engine.
     return [values(pick(r, KEYS)), groupCount()];
+  }
+
+  // A SECOND window for the collection arm, taken from the bare no-terminal tail and from
+  // nothing else — every other terminal's weight is unchanged. At one window (5%) the arm
+  // reached a list CONTAINING a null in 2/1/1 runs of 400 across seeds 1/7/42, because the
+  // key has to be the null-bearing one AND the frontier has to still hold that vertex. A
+  // floor a seed can miss is not a floor.
+  if (p < 0.95) {
+    return orderLocalCollection(r);
   }
 
   return [];
@@ -653,6 +684,27 @@ const terminal = (r: () => number): unknown[] => {
  * every 400 plans were dropped before either engine saw them, and the step was never
  * compared.
  */
+/**
+ * `V()` straight into `values(<a key with a stored null>)`, `fold()` and `order(Scope.local)`,
+ * with NOTHING in between.
+ *
+ * Its own shape for the reason `pureVertexChain` is: the general generator could not reach it
+ * reliably. Null placement in a locally-sorted list was the second of the two divergences the
+ * `order(local)` arm found, and it needs a list that actually CONTAINS a null — which needs
+ * the null-bearing vertex still in the frontier. Through the ordinary pipeline the 1-4
+ * intervening steps usually hop or filter it away: with the collection arm at twice its
+ * weight, a list containing a null turned up 2/2/1/4/4/0/1/2 times in 400 across seeds
+ * 1/7/42/2977/3/11/99/12345 — and seed 11 found NONE, so there was no floor to set. With no
+ * steps in between the null is always in the list.
+ */
+const nullOrderLocalChain = (r: () => number): Plan => {
+  const k = pick(r, ['age', 'lang']);
+
+  return r() < 0.5
+    ? traversal(V(), values(k), fold(), order(Scope.local))
+    : traversal(V(), values(k), fold(), order(Scope.local).by(Order.desc));
+};
+
 const pureVertexChain = (r: () => number): Plan => {
   const hops = 1 + Math.floor(r() * 3);
   const steps = Array.from({ length: hops }, () =>
@@ -669,6 +721,11 @@ const genPlan = (r: () => number): Plan => {
   // end-to-end coverage without crowding out everything else.
   if (r() < 0.125) {
     return pureVertexChain(r);
+  }
+
+  // One plan in twenty-five is the guaranteed-null local sort. See `nullOrderLocalChain`.
+  if (r() < 0.04) {
+    return nullOrderLocalChain(r);
   }
 
   const start = r() < 0.8 ? V() : E();
@@ -702,6 +759,11 @@ suite('differential fuzz: gremlin (TS engine vs Rust ENGINE)', () => {
   // than to it.
   const tsGraph = createTestTinkerGraph();
 
+  // Mirrors the stored null on vertex 5 in `MODERN`. ONE fixture for both engines, so this
+  // has to be patched on both sides or the drift itself reads as a divergence.
+  tsGraph.getVertexById('5')!.setProperty('age', null);
+  tsGraph.getVertexById('2')!.setProperty('lang', null);
+
   tsGraph.addVertex({
     id: '13',
     labels: ['PERSON', 'SOFTWARE'],
@@ -728,6 +790,12 @@ suite('differential fuzz: gremlin (TS engine vs Rust ENGINE)', () => {
     // step does.
     let orderLocalGenerated = 0;
     let orderLocalNonEmpty = 0;
+    // A third floor, because the other two can both be met without a single null in sight —
+    // which is exactly how the null placement stayed hidden while the arm was pinned to
+    // `name`. This one counts a locally-sorted result that actually CONTAINED a null.
+    // Measured 8-23 across thirteen seeds once both null bugs were fixed, so the floor
+    // below sits under the observed minimum rather than at it.
+    let orderLocalWithNull = 0;
     let skippedUnordered = 0;
     let skippedUnbuildable = 0;
     let skippedLazySlice = 0;
@@ -839,6 +907,10 @@ suite('differential fuzz: gremlin (TS engine vs Rust ENGINE)', () => {
       // coverage. `[]` and `[0]` (a count of nothing) are the empty answers here.
       if (text.includes('order(local)') && native !== '[]' && native !== '[0]') {
         orderLocalNonEmpty += 1;
+
+        if (native.includes('null')) {
+          orderLocalWithNull += 1;
+        }
       }
 
       // Both failing is acceptable — each rejects the query. A divergence is one
@@ -865,14 +937,19 @@ suite('differential fuzz: gremlin (TS engine vs Rust ENGINE)', () => {
 
     if (skippedUnordered > 0) {
       console.log(
-        `  order(local)=${orderLocalGenerated}/${orderLocalNonEmpty} of ${ITERATIONS} ` +
-          'generated/non-empty',
+        `  order(local)=${orderLocalGenerated}/${orderLocalNonEmpty}/${orderLocalWithNull} of ${ITERATIONS} ` +
+          'generated/non-empty/with-a-null',
       );
       // Measured 20-40 generated and 15-35 of those non-empty, of 400.
       expect({
         orderLocalGenerated: orderLocalGenerated > 8,
         orderLocalNonEmpty: orderLocalNonEmpty > 5,
-      }).toEqual({ orderLocalGenerated: true, orderLocalNonEmpty: true });
+        orderLocalWithNull: orderLocalWithNull > 5,
+      }).toEqual({
+        orderLocalGenerated: true,
+        orderLocalNonEmpty: true,
+        orderLocalWithNull: true,
+      });
 
       console.log(
         `  ${skippedUnordered}/${ITERATIONS} plans skipped: a positional slice over an ` +
