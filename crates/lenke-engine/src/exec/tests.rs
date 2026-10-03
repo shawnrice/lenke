@@ -13466,3 +13466,125 @@ fn order_local_still_sorts_a_real_collection() {
         "ascending must order a before c: {asc} / {desc}"
     );
 }
+
+/// `order(local)` over a list of ELEMENTS faults, because an element has no natural order —
+/// the same rule the global `order()` applies through `order_page`'s `fault_on_element`, which
+/// this step never had.
+///
+/// GROUND TRUTH (`tinkerpop/gremlin-console`, `createModern()`):
+///
+/// ```text
+/// g.E().fold().order(Scope.local)                -> THROWS ClassCastException
+/// g.V().fold().order(Scope.local)                -> THROWS ClassCastException
+/// g.V().values('name').fold().order(Scope.local) -> sorts
+/// ```
+///
+/// The TS engine already raised `E_SYNTAX` with this exact message for these shapes while
+/// native answered — the divergence the `order(local)` fuzzer arm found on its first run.
+#[test]
+fn order_local_over_a_list_of_elements_faults() {
+    let store = dense_store(6, 2);
+    let err = |q: &str| -> String {
+        crate::exec::try_run(
+            &crate::opt::optimize_indexed(crate::gremlin::parse(q).unwrap(), &store),
+            &store,
+        )
+        .expect_err(&format!("must fault: {q}"))
+    };
+    for q in [
+        "g.V().fold().order(local)",
+        "g.E().fold().order(local)",
+        "g.V().fold().order(local).by(desc)",
+    ] {
+        let e = err(q);
+        assert!(
+            e.contains("over graph elements is not supported"),
+            "and with the message the global order() uses: {q} -> {e}"
+        );
+    }
+    // The SAME message the global spelling produces, so the two do not drift apart. The global
+    // one is caught STATICALLY — `g.V().order()` is rejected by the parser, before any row —
+    // while the local one can only be caught at runtime, because whether a folded list holds
+    // elements is not knowable from the text. Different moment, one message.
+    let global = crate::gremlin::parse("g.V().order()")
+        .expect_err("a global order() over a raw frontier is rejected at parse time");
+    assert_eq!(
+        global,
+        err("g.V().fold().order(local)"),
+        "one message whether it is caught at parse time or at run time"
+    );
+}
+
+/// The CONTROL, and the reason the check looks at the keys ACTUALLY USED: a list of property
+/// values still sorts, and a Map sorted `by(keys)` still sorts even though its values are not
+/// orderable. TinkerPop agrees on both
+/// (`groupCount().by('name').order(Scope.local).by(keys)` sorts).
+#[test]
+fn order_local_still_sorts_what_has_an_order() {
+    let store = dense_store(6, 2);
+    let ok = |q: &str| -> String {
+        let rows = crate::exec::try_run(
+            &crate::opt::optimize_indexed(crate::gremlin::parse(q).unwrap(), &store),
+            &store,
+        )
+        .expect(q)
+        .rows;
+        format!("{:?}", rows.iter().next().map(|r| r[0].clone()))
+    };
+    let asc = ok("g.V().values('name').fold().order(local)");
+    let desc = ok("g.V().values('name').fold().order(local).by(desc)");
+    assert_ne!(
+        asc, desc,
+        "a list of property values still sorts, both directions"
+    );
+    assert!(asc.contains("v0"), "and holds the values: {asc}");
+    // A Map keyed by a string: orderable by its KEYS whatever its values are.
+    let by_keys = ok("g.V().groupCount().by('name').order(local).by(keys)");
+    assert!(
+        by_keys.contains("Map"),
+        "a Map by(keys) still sorts: {by_keys}"
+    );
+}
+
+/// The element check looks at the keys ACTUALLY USED, and the discriminating case is a Map
+/// whose VALUES are elements and whose KEYS are not: `by(keys)` can order it, the default
+/// cannot. No query in the Gremlin surface builds such a Map (`group().by(k)` gives
+/// `key -> [elements]`, a list value), so the helper is tested directly — the only thing that
+/// reaches the distinction.
+#[test]
+fn the_local_sort_element_check_reads_only_the_keys_it_will_use() {
+    use crate::exec::aggregation::sort_local_key_is_element;
+    use std::sync::Arc;
+    let node = Value::Node(3);
+    let name = Value::Str("a".into());
+
+    // Map of name -> vertex.
+    let m = Value::Map(Arc::new(vec![(name.clone(), node.clone())]));
+    assert!(
+        !sort_local_key_is_element(&m, true),
+        "by(keys) orders on the string keys, which have an order"
+    );
+    assert!(
+        sort_local_key_is_element(&m, false),
+        "the default orders on the values, which are elements"
+    );
+
+    // And the mirror: vertex keys, string values.
+    let m2 = Value::Map(Arc::new(vec![(node, name)]));
+    assert!(
+        sort_local_key_is_element(&m2, true),
+        "by(keys) on element keys faults"
+    );
+    assert!(
+        !sort_local_key_is_element(&m2, false),
+        "its values still have an order"
+    );
+
+    // A list is checked whichever way, since its elements ARE the keys.
+    let l = Value::List(vec![Value::Node(1)]);
+    assert!(sort_local_key_is_element(&l, true));
+    assert!(sort_local_key_is_element(&l, false));
+    // A list of scalars never faults.
+    let l2 = Value::List(vec![Value::Num(1.0), Value::Str("z".into())]);
+    assert!(!sort_local_key_is_element(&l2, false));
+}

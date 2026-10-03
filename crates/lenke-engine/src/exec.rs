@@ -1963,39 +1963,11 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
             descending,
             by_key,
         } => {
-            // Gremlin `order(local)`: sort inside each row's slot-0 cell, leaving
-            // the batch shape and every other slot untouched. Ordering is the value
-            // contract's `cmp_total` (the single home for order); DESC reverses it.
-            let batch = pull(input, store, track)?;
-            // NOTHING TO SORT, so leave the batch alone — which is what the line above
-            // promises and what the old code broke. `sort_local_cell` returns anything that is
-            // not a `List` or a `Map` unchanged, and ONLY a `Col::Gen` can hold one: every
-            // typed column (`Nodes`, `Edges`, `Num`, `Bool`, `Str`) holds scalars. So over a
-            // typed slot 0 this step was already the identity on the VALUES — while still
-            // replacing the column with `Col::Gen`.
-            //
-            // That de-opt was a WRONG ANSWER, not a slow path. `Col::Nodes` boxes to
-            // `Value::Num(id)`, so the frontier stopped being a frontier: measured on a
-            // 40-vertex degree-3 fixture, `g.V().out('R').count()` is 120 and
-            // `g.V().order(local).out('R').count()` was 0 — the hop found nothing, and
-            // `g.V().order(local).values('name').count()` was 0 for the same reason.
-            //
-            // It cost 7.62ns a row on a scalar slot for that privilege: a boxed `Value` per
-            // row, a 200,000-element `Vec`, and a clone of every slot column.
-            if !matches!(batch.slots.first(), Some(Col::Gen(_))) {
-                return Ok(batch);
-            }
-            let n = batch.rows();
-            let sorted: Vec<Value> = (0..n)
-                .map(|i| sort_local_cell(batch.slot(0).value_at(i), *descending, *by_key))
-                .collect();
-            let mut slots: Vec<Col> = batch.slots.clone();
-            if !slots.is_empty() {
-                slots[0] = Col::Gen(sorted);
-            }
-            let mut out = Batch::of(slots);
-            out.lineage = batch.lineage;
-            out
+            // Gremlin `order(local)`: sort inside each row's slot-0 cell, leaving the batch
+            // shape and every other slot untouched. Ordering is the value contract's
+            // `cmp_total` (the single home for order); DESC reverses it. The body is in
+            // `sort_local_batch` because code in THIS match moves every other arm — see there.
+            sort_local_batch(pull(input, store, track)?, *descending, *by_key)?
         }
         Plan::Join { left, right, on } => {
             hash_join(&pull(left, store, track)?, &pull(right, store, track)?, on)
@@ -4924,25 +4896,7 @@ fn pull_body(plan: &Plan, store: &Store, seed: &Batch) -> Result<Batch, String> 
             input,
             descending,
             by_key,
-        } => {
-            let b = pull_body(input, store, seed)?;
-            // See the `pull` arm: only a `Col::Gen` can hold a `List`/`Map`, so over a typed
-            // slot 0 this is the identity on the values — and replacing the column with
-            // `Col::Gen` anyway turned a frontier into boxed numbers and lost every
-            // downstream hop.
-            if !matches!(b.slots.first(), Some(Col::Gen(_))) {
-                return Ok(b);
-            }
-            let n = b.rows();
-            let sorted: Vec<Value> = (0..n)
-                .map(|i| sort_local_cell(b.slot(0).value_at(i), *descending, *by_key))
-                .collect();
-            let mut slots = b.slots.clone();
-            if !slots.is_empty() {
-                slots[0] = Col::Gen(sorted);
-            }
-            Batch::of(slots)
-        }
+        } => sort_local_body(pull_body(input, store, seed)?, *descending, *by_key)?,
         // An unwind inside a branch body (a union of fold/unfold, etc.).
         Plan::Unwind {
             input,

@@ -613,21 +613,26 @@ const terminal = (r: () => number): unknown[] => {
     return [dedupe(), count()];
   }
 
-  // NOT `[fold(), order(Scope.local)]` here, though that is the COLLECTION half of the step
-  // and it belongs in this pool. It is red against two PRE-EXISTING divergences that this
-  // generator found on its first run and that are bigger than a generator change — see audit
-  // item 88. Adding it before they are fixed would land a knowingly-red oracle:
-  //
-  //   a list of ELEMENTS — TinkerPop throws `ClassCastException` for
-  //   `g.E().fold().order(Scope.local)` and so does TS; native answers. Native already has a
-  //   `fault_on_element` flag on the GLOBAL `OrderPage` for exactly this, so the fix has a
-  //   precedent to follow.
-  //
-  //   a list containing NULLs — native ranks `Null` after `Str` (rank 7) and sorts them last,
-  //   TS sorts them first. The engines are meant to share ONE total order, so one of them is
-  //   wrong, and it is not confined to this step: any sort of a null-containing list has it.
-  //   (TinkerPop cannot settle it — its `values()` skips a missing property rather than
-  //   yielding null, so it never builds such a list.)
+  if (p < 0.85) {
+    // The COLLECTION half of `order(Scope.local)` — a `fold()` makes the list it sorts, which
+    // the step pool cannot reach on its own (its frontier is whatever came before, and that is
+    // a scalar). Withheld when the arm was added (item 88) because it was red against two
+    // pre-existing divergences; the element one is fixed (item 89) and `values(…)` keeps the
+    // list free of elements, so what remains is a list of property VALUES.
+    //
+    // NOT a bare `fold()`: that folds the frontier itself, which is a list of ELEMENTS, and
+    // both engines now correctly FAULT on ordering one — comparing two identical errors is no
+    // coverage. `values(…)` first is what makes the list orderable.
+    //
+    // Still NOT reached from here: a list containing NULLs, where native ranks `Null` after
+    // `Str` and sorts them last while TS sorts them first. That is a contract question about
+    // our own total order, not this step's (item 88), and `values(pick(r, KEYS))` on this
+    // fixture draws keys that some vertices lack — so this arm deliberately takes `name`,
+    // which every vertex and edge-free row has.
+    return r() < 0.5
+      ? [values('name'), fold(), order(Scope.local)]
+      : [values('name'), fold(), order(Scope.local).by(Order.desc)];
+  }
 
   if (p < 0.9) {
     // `groupCount()` was not generated at all, and its map is ORDER-observable

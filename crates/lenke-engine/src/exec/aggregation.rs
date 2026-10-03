@@ -545,6 +545,140 @@ fn group_by_arc(keys: &[GStr]) -> (Vec<u32>, Vec<usize>) {
 /// Sort one cell in place for `order(local)`: a `List` by its elements, a `Map`
 /// by its values (TinkerPop's default local map ordering), anything else
 /// unchanged. Order is the value contract's `cmp_total`; `descending` reverses.
+/// Does a locally-sorted cell's SORT KEY resolve to a graph element? Elements have no natural
+/// order, and `order(local)` over them FAULTS — the same rule the global `order()` applies via
+/// `order_page`'s `fault_on_element`, which this step never got.
+///
+/// GROUND TRUTH (`tinkerpop/gremlin-console`, `createModern()`):
+/// `g.V().fold().order(Scope.local)` and `g.E().fold().order(Scope.local)` both throw
+/// `ClassCastException`, while `g.V().values('name').fold().order(Scope.local)` sorts. The TS
+/// engine already throws `E_SYNTAX` with this message for the same shapes; native answered,
+/// which is the divergence the `order(local)` fuzzer arm found on its first run (item 88).
+///
+/// Only the keys ACTUALLY USED are checked: `by(keys)` sorts a Map on its keys, so a Map of
+/// `name -> vertex` is orderable that way and faults only on its values (TinkerPop agrees —
+/// `groupCount().by('name').order(Scope.local).by(keys)` sorts).
+/// The whole element check for one batch, OUT OF LINE.
+///
+/// It lives here rather than inline in `pull`'s `SortLocal` arm because that match has 54 arms
+/// and code added to one of them moves the rest: the inline version measured a REPRODUCIBLE
+/// 1.21x on `query/gql|filter age>50` (294.2us against 356.0us, min of three each way, ranges
+/// not overlapping) — a query with no local sort in it at all. One `#[cold]` call keeps the
+/// arm's footprint to nothing and the regression went away.
+#[cold]
+/// Gremlin `order(local)` over a whole batch: the ENTIRE body of the `SortLocal` arm,
+/// deliberately out of line.
+///
+/// `pull`'s match has 54 arms and code added to one of them moves the rest. Measured: the
+/// element check written INLINE in the arm cost a reproducible 1.21x on
+/// `query/gql|filter age>50` (303.8 -> 367.3 ns/row, min of three interleaved A/B rounds) —
+/// a counting query with no local sort anywhere in it. Removing just the call restored it,
+/// so it was layout, not work. Hoisting the whole arm out leaves `pull` SMALLER than before
+/// the check existed.
+///
+/// `lineage` is preserved here and dropped by [`sort_local_body`]; that difference is the
+/// pre-existing one between the `pull` and `pull_body` arms, not a new choice.
+pub(super) fn sort_local_batch(
+    batch: Batch,
+    descending: bool,
+    by_key: bool,
+) -> Result<Batch, String> {
+    let Some(sorted) = sort_local_slot(&batch, descending, by_key)? else {
+        return Ok(batch);
+    };
+    let mut slots: Vec<Col> = batch.slots.clone();
+    if !slots.is_empty() {
+        slots[0] = Col::Gen(sorted);
+    }
+    let mut out = Batch::of(slots);
+    out.lineage = batch.lineage;
+    Ok(out)
+}
+
+/// [`sort_local_batch`] for a branch body, which assembles with `Batch::of` and so does not
+/// carry lineage across.
+pub(super) fn sort_local_body(
+    batch: Batch,
+    descending: bool,
+    by_key: bool,
+) -> Result<Batch, String> {
+    let Some(sorted) = sort_local_slot(&batch, descending, by_key)? else {
+        return Ok(batch);
+    };
+    let mut slots: Vec<Col> = batch.slots.clone();
+    if !slots.is_empty() {
+        slots[0] = Col::Gen(sorted);
+    }
+    Ok(Batch::of(slots))
+}
+
+/// The sorted slot-0 cells, or `None` when the step is a pass-through.
+///
+/// NOTHING TO SORT, so leave the batch alone. `sort_local_cell` returns anything that is not
+/// a `List` or a `Map` unchanged, and ONLY a `Col::Gen` can hold one: every typed column
+/// (`Nodes`, `Edges`, `Num`, `Bool`, `Str`) holds scalars. So over a typed slot 0 this step
+/// was already the identity on the VALUES — while still replacing the column with `Col::Gen`.
+///
+/// That de-opt was a WRONG ANSWER, not a slow path. `Col::Nodes` boxes to `Value::Num(id)`,
+/// so the frontier stopped being a frontier: measured on a 40-vertex degree-3 fixture,
+/// `g.V().out('R').count()` is 120 and `g.V().order(local).out('R').count()` was 0 — the hop
+/// found nothing — and `g.V().order(local).values('name').count()` was 0 for the same reason.
+/// It cost 7.62ns a row on a scalar slot for that privilege.
+fn sort_local_slot(
+    batch: &Batch,
+    descending: bool,
+    by_key: bool,
+) -> Result<Option<Vec<Value>>, String> {
+    if !matches!(batch.slots.first(), Some(Col::Gen(_))) {
+        return Ok(None);
+    }
+    // An element has no natural order, so sorting a list/map OF elements faults — the same
+    // rule `order_page` applies to a global `order()`, with the same message, which this step
+    // never had. Checked before any sorting so the error does not depend on how far the loop
+    // got.
+    check_sort_local_elements(batch, by_key)?;
+    let n = batch.rows();
+    Ok(Some(
+        (0..n)
+            .map(|i| sort_local_cell(batch.slot(0).value_at(i), descending, by_key))
+            .collect(),
+    ))
+}
+
+pub(super) fn check_sort_local_elements(batch: &Batch, by_key: bool) -> Result<(), String> {
+    for i in 0..batch.rows() {
+        if sort_local_key_is_element(&batch.slot(0).value_at(i), by_key) {
+            return Err(
+                "order() over graph elements is not supported — elements have no \
+                        natural order; use order().by('<key>')"
+                    .into(),
+            );
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn sort_local_key_is_element(v: &Value, by_key: bool) -> bool {
+    // An element reaches a locally-sorted list in EITHER form. A `Gen` cell from a branch
+    // carries the unboxed `Value::Node`/`Value::Edge` ref, but `fold()` RENDERS first, so the
+    // common shape — `g.V().fold().order(local)` — is a list of element MAPS
+    // (`{id, labels, properties}`). Checking only the refs found nothing and the fault never
+    // fired; `vertex_map_ext_id`/`edge_map_ext_id` are the repo's existing test for the
+    // rendered form, keyed on the exact field set.
+    let is_elem = |x: &Value| {
+        matches!(x, Value::Node(_) | Value::Edge(_))
+            || super::render::vertex_map_ext_id(x).is_some()
+            || super::render::edge_map_ext_id(x).is_some()
+    };
+    match v {
+        Value::List(items) => items.iter().any(is_elem),
+        Value::Map(pairs) => pairs
+            .iter()
+            .any(|(k, val)| is_elem(if by_key { k } else { val })),
+        _ => false,
+    }
+}
+
 pub(super) fn sort_local_cell(v: Value, descending: bool, by_key: bool) -> Value {
     let dir = |ord: std::cmp::Ordering| if descending { ord.reverse() } else { ord };
     match v {
