@@ -12094,3 +12094,141 @@ fn is_null_reads_the_same_cells_count_skips() {
         "an unmatched optional element IS NULL, not FALSE"
     );
 }
+
+// --- An element-pattern WHERE in a CALL body filters before the hop (item 80) ---
+
+/// Three vertices, only ONE with an outgoing `R`, and `x` chosen so that `k % x` divides by
+/// zero on a vertex with NO edge (k=2) and not on the one with an edge (k=1).
+///
+/// That asymmetry is the whole fixture. A predicate that faults on EVERY vertex proves nothing
+/// here: the vertex with an edge reaches a filter placed either side of the hop, so it faults
+/// either way and the bug hides. The fault has to sit on a vertex the hop never yields.
+fn call_body_fixture() -> Store {
+    let mut store = Builder::default().build();
+    execute(
+        &crate::gql::parse(
+            "INSERT (:P {k: 1, s: 'a', x: 2}), (:P {k: 2, s: 'b', x: 0}), \
+             (:P {k: 3, s: 'c', x: 5})",
+        )
+        .unwrap(),
+        &mut store,
+    )
+    .unwrap();
+    // Only k=1 has an outgoing edge.
+    execute(
+        &crate::gql::parse("MATCH (a:P), (b:P) WHERE a.k = 1 AND b.k = 2 INSERT (a)-[:R]->(b)")
+            .unwrap(),
+        &mut store,
+    )
+    .unwrap();
+    store
+}
+
+/// `(n WHERE pred)` constrains THAT ELEMENT, so the predicate is evaluated for every `n` —
+/// including one whose hop matches nothing. Applying it above the `Expand` meant a node with
+/// no outgoing edge never had it evaluated, so a predicate that FAULTS on such a node faulted
+/// in the TS engine and answered here.
+///
+/// `n.k % n.x` divides by zero on vertex 2 ONLY, and vertex 2 has no outgoing edge — so the
+/// predicate faults exactly where the buggy placement never looked.
+#[test]
+fn a_call_body_element_predicate_is_evaluated_for_every_imported_row() {
+    let store = call_body_fixture();
+    // The predicate alone faults, which is the premise.
+    let direct = try_gql("MATCH (n:P) WHERE (n.k % n.x) > -1 RETURN n.k AS a", &store)
+        .expect_err("the fixture's predicate must fault, or this test proves nothing");
+
+    let err = try_gql(
+        "MATCH (n:P) CALL (n) { MATCH (n WHERE (n.k % n.x) > -1)-[:R]->(m) RETURN m.k AS mk } \
+         RETURN mk AS x",
+        &store,
+    )
+    .expect_err("the element predicate faults on a vertex with no edge too");
+    assert_eq!(
+        err, direct,
+        "and with the SAME error the plain spelling gives, which is the invariant"
+    );
+}
+
+/// The same predicate position must still FILTER, not merely fault — pushing it below the hop
+/// cannot be allowed to drop it. `k` is selective here and faults on nothing.
+#[test]
+fn a_call_body_element_predicate_still_filters() {
+    let store = call_body_fixture();
+    let rows = |q: &str| try_gql(q, &store).unwrap();
+
+    // Vertex 1 is the only one with an edge, so a predicate that admits it yields one row.
+    assert_eq!(
+        rows(
+            "MATCH (n:P) CALL (n) { MATCH (n WHERE n.k = 1)-[:R]->(m) RETURN m.k AS mk } \
+              RETURN mk AS x"
+        ),
+        1,
+        "the imported row that passes and has an edge yields its hop"
+    );
+    // A predicate that excludes the only edge-bearing vertex yields nothing.
+    assert_eq!(
+        rows(
+            "MATCH (n:P) CALL (n) { MATCH (n WHERE n.k = 2)-[:R]->(m) RETURN m.k AS mk } \
+              RETURN mk AS x"
+        ),
+        0,
+        "excluding the only vertex with an edge yields no rows"
+    );
+    // And a predicate admitting everything yields exactly the one hop that exists.
+    assert_eq!(
+        rows(
+            "MATCH (n:P) CALL (n) { MATCH (n WHERE n.k > 0)-[:R]->(m) RETURN m.k AS mk } \
+              RETURN mk AS x"
+        ),
+        1
+    );
+}
+
+/// EQUIVALENT SPELLINGS. The same pattern inside a `CALL` body and outside it must agree —
+/// which is what failed: three spellings filtered below the hop and the body's scope-rooted
+/// start node filtered above it.
+#[test]
+fn the_call_body_and_plain_spellings_of_an_element_predicate_agree() {
+    let store = call_body_fixture();
+    let outcome = |q: &str| match try_gql(q, &store) {
+        Ok(n) => format!("ok {n}"),
+        Err(e) => format!("err {}", e.split(':').next().unwrap_or("?")),
+    };
+    for pred in ["(n.k % n.x) > -1", "n.k = 1", "n.k = 2", "n.k > 0"] {
+        let in_call = outcome(&format!(
+            "MATCH (n:P) CALL (n) {{ MATCH (n WHERE {pred})-[:R]->(m) RETURN m.k AS mk }} \
+             RETURN mk AS x"
+        ));
+        let plain = outcome(&format!(
+            "MATCH (n:P) MATCH (n WHERE {pred})-[:R]->(m) RETURN m.k AS x"
+        ));
+        assert_eq!(in_call, plain, "the two spellings disagree on `{pred}`");
+    }
+}
+
+/// A FRESH start node in a CALL body (not a scope variable) takes a different lowering branch —
+/// a correlated `Scan` rather than a `Row` — and its element predicate must land below the hop
+/// too. Nothing covered this branch's predicate placement.
+#[test]
+fn a_fresh_call_body_start_node_also_filters_before_its_hop() {
+    let store = call_body_fixture();
+    let err = try_gql(
+        "MATCH (n:P) CALL (n) { MATCH (q:P WHERE (q.k % q.x) > -1)-[:R]->(m) RETURN m.k AS mk } \
+         RETURN mk AS x",
+        &store,
+    )
+    .expect_err("a fresh start node's element predicate faults on every candidate");
+    assert!(err.contains("division by zero"), "{err}");
+    // And it still filters: `q.k = 1` admits only the edge-bearing vertex, once per outer row.
+    assert_eq!(
+        try_gql(
+            "MATCH (n:P) CALL (n) { MATCH (q:P WHERE q.k = 1)-[:R]->(m) RETURN m.k AS mk } \
+             RETURN mk AS x",
+            &store,
+        )
+        .unwrap(),
+        3,
+        "three outer rows, each cross-joined with the one matching hop"
+    );
+}

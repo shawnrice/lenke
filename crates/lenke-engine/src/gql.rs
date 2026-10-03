@@ -4529,17 +4529,35 @@ impl Parser {
             }
             (b, node_slot)
         };
+        // An inline `WHERE` on the start node (ISO element-pattern predicate) constrains THAT
+        // ELEMENT, so it must filter the start node BEFORE the chain hops away from it.
+        //
+        // It used to be applied after `extend_chain`, which put the `Filter` ABOVE the
+        // `Expand` — and there a start node whose hop matched nothing never had the predicate
+        // evaluated at all. A predicate that FAULTS on such a node therefore faulted in the TS
+        // engine and answered here: `CALL (n) { MATCH (n WHERE (n.n % n.x) <> […])-[:E]->(m) …`
+        // raised `E_INVALID_VALUE` in TS and returned rows in native. Every OTHER spelling of
+        // the same pattern — the same `MATCH` outside a `CALL`, with or without a leading
+        // label — already filtered below the hop and already agreed; only the body's
+        // scope-rooted start node did not.
+        //
+        // The predicate resolves against the SUBQUERY scope, which already holds the start
+        // variable here (a scope root at its outer slot, a fresh scan at `outer_width + 1`),
+        // so the scope is installed for the parse and restored before the chain is built —
+        // `extend_chain` takes `sub_scope` explicitly and must not see the swap.
+        if let Some(r) = start_where {
+            let outer = std::mem::replace(&mut self.scope, sub_scope.clone());
+            let saved_slots = self.slots;
+            self.slots = sub_slots;
+            let pred = self.parse_captured_where(r);
+            self.scope = outer;
+            self.slots = saved_slots;
+            body = body.filter(pred?);
+        }
         body = self.extend_chain(body, &mut sub_scope, &mut sub_slots, from)?;
 
         let outer_scope = std::mem::replace(&mut self.scope, sub_scope);
         self.slots = sub_slots;
-        // An inline `WHERE` on the start node (ISO element-pattern predicate) — a plain
-        // filter on the body, resolved against the subquery scope (which now holds the
-        // start variable, whether a scope root or a fresh-scan node).
-        if let Some(r) = start_where {
-            let pred = self.parse_captured_where(r)?;
-            body = body.filter(pred);
-        }
         if self.eat_kw("WHERE") {
             body = body.filter(self.bool_pred()?);
         }
