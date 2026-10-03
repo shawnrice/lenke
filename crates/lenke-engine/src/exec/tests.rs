@@ -12451,3 +12451,403 @@ fn the_count_shortcut_declines_a_dotted_key() {
         "a plain key is still answered"
     );
 }
+
+/// What does each PLAN OPERATOR cost per row?
+///
+/// ```text
+/// cargo test --release --manifest-path crates/lenke-engine/Cargo.toml \
+///   -- --ignored --nocapture plan_cost_by_operator
+/// ```
+///
+/// The `Expr` twin of this (`expression_cost_by_kind`) found items 72 through 77 by
+/// enumerating that enum against the arms that dispatch on it and pricing each. `Plan` has 54
+/// variants and ONE `pull` that dispatches all of them, so the same question applies: which
+/// operators cost more per row than the work they describe?
+///
+/// Each row here wraps the SAME 200,000-row scan, so the numbers are comparable to each other
+/// and to the `Scan` baseline — what is being priced is the operator, not the input. Read it
+/// as a ratio to `Scan` (the floor: produce the frontier and nothing else).
+///
+/// Writes, DDL and transaction control are deliberately absent: they are not per-row read
+/// costs, and a bench that mixes them in measures the fixture rather than the operator.
+#[test]
+#[ignore = "measurement harness: cargo test --release -- --ignored --nocapture plan_cost_by_operator"]
+fn plan_cost_by_operator() {
+    use crate::ir::{CombineOp, SortKey};
+    use std::time::Instant;
+    const REPS: u32 = 7;
+    const ROWS: u32 = 200_000;
+
+    let mut b = Builder::default();
+    for i in 0..ROWS {
+        b.node(
+            &[if i % 3 == 0 { "N" } else { "M" }],
+            &[
+                ("num", n(f64::from(i % 1000))),
+                ("name", s(&format!("v{i}"))),
+            ],
+        );
+    }
+    // One edge per node, so a hop is 1:1 and its cost is per row rather than per fan-out.
+    for i in 0..ROWS {
+        b.edge(i, (i * 7 + 1) % ROWS, "R");
+    }
+    let store = b.build();
+
+    let scan = || Plan::Scan { label: None };
+    let num = || Expr::Prop {
+        slot: 0,
+        key: "num".to_string(),
+    };
+    let name = || Expr::Prop {
+        slot: 0,
+        key: "name".to_string(),
+    };
+    let hop = || Plan::Expand {
+        input: Box::new(scan()),
+        from: 0,
+        dir: Dir::Out,
+        edge_label: vec!["R".to_string()],
+        bind_edge: false,
+        double_loops: false,
+    };
+
+    let cases: Vec<(&str, Plan)> = vec![
+        ("Scan (the floor)", scan()),
+        (
+            "Filter (typed compare)",
+            Plan::Filter {
+                input: Box::new(scan()),
+                pred: Expr::Compare {
+                    op: CompareOp::Lt,
+                    left: Box::new(num()),
+                    right: Box::new(Expr::Lit(Value::Num(500.0))),
+                },
+            },
+        ),
+        (
+            "Project (1 scalar)",
+            Plan::Project {
+                input: Box::new(scan()),
+                items: vec![("a".to_string(), num())],
+            },
+        ),
+        (
+            "Project (3 scalars)",
+            Plan::Project {
+                input: Box::new(scan()),
+                items: vec![
+                    ("a".to_string(), num()),
+                    ("b".to_string(), name()),
+                    ("c".to_string(), Expr::Slot(0)),
+                ],
+            },
+        ),
+        (
+            "MapSlot",
+            Plan::MapSlot {
+                input: Box::new(scan()),
+                slot: 0,
+                value: Box::new(num()),
+                append: false,
+            },
+        ),
+        (
+            "Distinct (whole row)",
+            Plan::Distinct {
+                input: Box::new(scan()),
+            },
+        ),
+        (
+            "DistinctBy (slot 0)",
+            Plan::DistinctBy {
+                input: Box::new(scan()),
+                key_slots: vec![0],
+            },
+        ),
+        (
+            "Enumerate",
+            Plan::Enumerate {
+                input: Box::new(scan()),
+                slot: 0,
+            },
+        ),
+        (
+            "Sample (n = ROWS)",
+            Plan::Sample {
+                input: Box::new(scan()),
+                n: ROWS as usize,
+            },
+        ),
+        (
+            "Tail (n = ROWS)",
+            Plan::Tail {
+                input: Box::new(scan()),
+                n: ROWS as usize,
+            },
+        ),
+        (
+            "NullPadIfEmpty",
+            Plan::NullPadIfEmpty {
+                input: Box::new(scan()),
+                width: 1,
+            },
+        ),
+        (
+            "OrderPage (by num)",
+            Plan::OrderPage {
+                input: Box::new(scan()),
+                keys: vec![SortKey {
+                    expr: num(),
+                    descending: false,
+                    nulls_first: false,
+                }],
+                skip: None,
+                limit: None,
+                fault_on_element: false,
+            },
+        ),
+        (
+            "OrderPage (by num, LIMIT 10)",
+            Plan::OrderPage {
+                input: Box::new(scan()),
+                keys: vec![SortKey {
+                    expr: num(),
+                    descending: false,
+                    nulls_first: false,
+                }],
+                skip: None,
+                limit: Some(10),
+                fault_on_element: false,
+            },
+        ),
+        ("Expand (1:1 hop)", hop()),
+        (
+            "Expand then EdgeVertex",
+            Plan::EdgeVertex {
+                input: Box::new(Plan::Expand {
+                    input: Box::new(scan()),
+                    from: 0,
+                    dir: Dir::Out,
+                    edge_label: vec!["R".to_string()],
+                    bind_edge: true,
+                    double_loops: false,
+                }),
+                edge_slot: 1,
+                which: Dir::In,
+                other: false,
+            },
+        ),
+        (
+            "Aggregate count(*)",
+            Plan::Aggregate {
+                input: Box::new(scan()),
+                keys: vec![],
+                aggs: vec![crate::ir::Agg {
+                    func: AggFn::Count,
+                    arg: None,
+                    distinct: false,
+                    name: "c".into(),
+                    frac: None,
+                    null_on_empty: false,
+                    numeric_only: false,
+                }],
+            },
+        ),
+        (
+            "Aggregate GROUP BY num",
+            Plan::Aggregate {
+                input: Box::new(scan()),
+                keys: vec![("k".to_string(), num())],
+                aggs: vec![crate::ir::Agg {
+                    func: AggFn::Count,
+                    arg: None,
+                    distinct: false,
+                    name: "c".into(),
+                    frac: None,
+                    null_on_empty: false,
+                    numeric_only: false,
+                }],
+            },
+        ),
+        (
+            "Union ALL (scan, scan)",
+            Plan::Union {
+                left: Box::new(scan()),
+                right: Box::new(scan()),
+                all: true,
+                op: CombineOp::Union,
+            },
+        ),
+        (
+            "Join on slot 0",
+            Plan::Join {
+                left: Box::new(scan()),
+                right: Box::new(scan()),
+                on: vec![(0, 0)],
+            },
+        ),
+    ];
+
+    println!("\n=== plan operator cost, {ROWS} rows ===");
+    println!(
+        "{:<30} {:>10} {:>10} {:>8} {:>9}",
+        "operator", "total_us", "ns/row", "xScan", "rows"
+    );
+    let mut base = 0.0f64;
+    for (label, plan) in &cases {
+        let mut lo = f64::MAX;
+        let mut rows = 0usize;
+        for _ in 0..REPS {
+            let t = Instant::now();
+            let got = crate::exec::pull(plan, &store, false);
+            lo = lo.min(t.elapsed().as_secs_f64() * 1e6);
+            rows = got.as_ref().map(crate::batch::Batch::rows).unwrap_or(0);
+            assert!(got.is_ok(), "{label} must pull: {got:?}");
+        }
+        let per_row = lo * 1000.0 / f64::from(ROWS);
+        if *label == "Scan (the floor)" {
+            base = per_row;
+        }
+        println!(
+            "{label:<30} {lo:>10.1} {per_row:>10.2} {:>8.1} {rows:>9}",
+            if base > 0.0 { per_row / base } else { 0.0 }
+        );
+    }
+}
+
+// --- The dense join path must equal the boxed one, row for row (item 82) ---
+
+/// `hash_join`'s dense path keys on the raw `u32` of an element frontier; its general path
+/// boxes each cell and serializes a `Vec<u8>`. The claim is that they agree on BOTH the rows
+/// and their ORDER, and this checks it directly rather than asserting it in a comment.
+///
+/// The fixture is the equivalence: a `Col::Num` holding the same ids boxes to
+/// `Value::Num(id)` — exactly what `value_at` gives for a `Col::Nodes` cell — so joining two
+/// `Num` columns takes the general path over identical keys. Same ids, two paths, one answer.
+#[test]
+fn a_dense_join_matches_the_boxed_join_row_for_row() {
+    // Duplicates on BOTH sides (so a key fans out to a product), a left id absent from the
+    // right, and a right id absent from the left.
+    let lids: Vec<u32> = vec![3, 1, 7, 1, 9, 3];
+    let rids: Vec<u32> = vec![1, 3, 1, 4, 3, 3];
+    // A TAG column per side, distinct per row. Without it the order is unobservable: every
+    // output row of one bucket carries the same join VALUE, so reversing a bucket's fill order
+    // changes which input rows were paired and nothing in the result shows it. (Verified —
+    // that mutant passed a version of this test that compared only the join values.)
+    let ltag: Vec<f64> = (0..lids.len()).map(|i| i as f64).collect();
+    let rtag: Vec<f64> = (0..rids.len()).map(|j| 100.0 + j as f64).collect();
+
+    let dense = crate::exec::hash_join(
+        &Batch::of(vec![Col::Nodes(lids.clone()), Col::Num(ltag.clone())]),
+        &Batch::of(vec![Col::Nodes(rids.clone()), Col::Num(rtag.clone())]),
+        &[(0, 0)],
+    );
+    let boxed = crate::exec::hash_join(
+        &Batch::of(vec![
+            Col::Num(lids.iter().map(|&x| f64::from(x)).collect()),
+            Col::Num(ltag),
+        ]),
+        &Batch::of(vec![
+            Col::Num(rids.iter().map(|&x| f64::from(x)).collect()),
+            Col::Num(rtag),
+        ]),
+        &[(0, 0)],
+    );
+
+    assert_eq!(
+        dense.rows(),
+        boxed.rows(),
+        "the two paths must keep the same rows"
+    );
+    assert!(dense.rows() > 0, "the fixture must join something");
+    // The TAGS, which identify WHICH input rows were paired, in output order.
+    let tags = |b: &Batch| -> String {
+        (0..b.rows())
+            .map(|i| format!("{:?}/{:?}", b.slot(1).value_at(i), b.slot(3).value_at(i)))
+            .collect::<Vec<_>>()
+            .join(" ")
+            .replace("Num(", "")
+            .replace(".0)", "")
+    };
+    assert_eq!(
+        tags(&dense),
+        tags(&boxed),
+        "the two paths must pair the same ROWS in the same order"
+    );
+    // And the order is the documented one: left rows in input order, each one's right matches
+    // in input order. Left row 0 is id 3, whose right rows are j = 1, 4, 5 → tags 101, 104, 105.
+    assert_eq!(
+        tags(&dense),
+        "0/101 0/104 0/105 1/100 1/102 3/100 3/102 5/101 5/104 5/105",
+        "left ascending, each key's right rows ascending"
+    );
+}
+
+/// The `u32::MAX` OPTIONAL-MATCH sentinel keys as ITSELF, on both paths: `value_at` maps it to
+/// NULL, two NULLs serialize to the same bytes, and so two unmatched optional rows join. The
+/// dense path reproduces that by keying on the raw id. It must NOT match a real id, and the
+/// index must not be sized by four billion to hold it.
+#[test]
+fn a_dense_join_keys_the_optional_sentinel_as_itself() {
+    let j = |l: Vec<u32>, r: Vec<u32>| -> usize {
+        crate::exec::hash_join(
+            &Batch::of(vec![Col::Nodes(l)]),
+            &Batch::of(vec![Col::Nodes(r)]),
+            &[(0, 0)],
+        )
+        .rows()
+    };
+    assert_eq!(
+        j(vec![u32::MAX], vec![u32::MAX]),
+        1,
+        "two unmatched optionals join"
+    );
+    assert_eq!(
+        j(vec![u32::MAX], vec![5]),
+        0,
+        "a sentinel does not match a real id"
+    );
+    assert_eq!(j(vec![5], vec![u32::MAX]), 0, "nor the other way round");
+    assert_eq!(
+        j(vec![u32::MAX, 5], vec![5, u32::MAX]),
+        2,
+        "each matches its own kind"
+    );
+    // A right side of ONLY sentinels still sizes its index by the sentinel slot alone.
+    assert_eq!(j(vec![u32::MAX, u32::MAX], vec![u32::MAX]), 2);
+    // A left id ABOVE everything on the right matches nothing and must not index out of range.
+    assert_eq!(
+        j(vec![9_999_999], vec![1, 2]),
+        0,
+        "an id past the index is a miss"
+    );
+    assert_eq!(j(vec![1, 9_999_999, 2], vec![2, 1]), 2);
+}
+
+/// A join on a slot that is NOT an element frontier, and a join on SEVERAL slots, both stay on
+/// the general path — so the dense path cannot quietly answer a key it does not model.
+#[test]
+fn a_dense_join_declines_a_non_element_or_multi_slot_key() {
+    // Two slots: a node frontier and a string. Joining on the STRING pair must still work.
+    let left = Batch::of(vec![
+        Col::Nodes(vec![1, 2]),
+        Col::Str(vec![GStr::from("a"), GStr::from("b")]),
+    ]);
+    let right = Batch::of(vec![
+        Col::Nodes(vec![9, 8]),
+        Col::Str(vec![GStr::from("b"), GStr::from("a")]),
+    ]);
+    let on_str = crate::exec::hash_join(&left, &right, &[(1, 1)]);
+    assert_eq!(on_str.rows(), 2, "a string key joins on the general path");
+    // Pair (a) with (a) and (b) with (b): left row 0 is "a" → right row 1; left 1 is "b" → right 0.
+    assert_eq!(format!("{:?}", on_str.slot(2).value_at(0)), "Num(8.0)");
+    assert_eq!(format!("{:?}", on_str.slot(2).value_at(1)), "Num(9.0)");
+    // TWO slot pairs — the dense path takes one pair only.
+    let both = crate::exec::hash_join(&left, &right, &[(0, 0), (1, 1)]);
+    assert_eq!(
+        both.rows(),
+        0,
+        "no row agrees on both the node and the string"
+    );
+}

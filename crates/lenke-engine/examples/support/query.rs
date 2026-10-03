@@ -188,6 +188,22 @@ pub fn run(cfg: &Cfg) {
                     "one pred",
                     "MATCH (p:Person) WHERE p.age > 98 RETURN p.name AS n",
                 ),
+                // A hash JOIN, which a second MATCH clause sharing a variable builds (a comma
+                // pattern does not -- that lowers to a chain). `plan_cost_by_operator` priced
+                // the operator at 207.05ns a row, 282x the scan floor and the most expensive
+                // of the 19 it measures; keying an element frontier on its dense id instead of
+                // on serialized bytes took it to 5.60ns (37x), and this row 106,950us ->
+                // 4,561us (23.4x).
+                //
+                // THIS ROW is what caught the first attempt, which matched slot `[(0, 0)]`:
+                // the shared variable here is `q`, slot 1 on both sides, so the fast path fired
+                // in the isolated harness and never once in a real query. The harness was
+                // measuring a slot pairing the planner does not produce.
+                (
+                    "join on a shared var",
+                    "MATCH (p:Person)-[:KNOWS]->(q) MATCH (r:Person)-[:KNOWS]->(q) \
+                     WHERE p.age > 98 RETURN count(*) AS c",
+                ),
             ],
         );
     }

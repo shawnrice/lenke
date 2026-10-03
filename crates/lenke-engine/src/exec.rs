@@ -2186,22 +2186,93 @@ fn guard_intermediate(batch: Batch, store: &Store) -> Result<Batch, String> {
 }
 
 fn hash_join(lb: &Batch, rb: &Batch, on: &[(usize, usize)]) -> Batch {
-    // Index the right side by its join key.
-    let mut index: FnvMap<Vec<u8>, Vec<usize>> = FnvMap::default();
-    for j in 0..rb.rows() {
-        let k = join_key(rb, on.iter().map(|&(_, r)| r), j);
-        index.entry(k).or_default().push(j);
-    }
-    // Probe with the left side, emitting one combined row per match (a shared key
-    // with several matches on each side fans out to their product).
-    let mut keep_l = Vec::new();
-    let mut keep_r = Vec::new();
-    for i in 0..lb.rows() {
-        let k = join_key(lb, on.iter().map(|&(l, _)| l), i);
-        if let Some(js) = index.get(&k) {
-            for &j in js {
+    let (mut keep_l, mut keep_r) = (Vec::new(), Vec::new());
+    // A join on ONE slot of two ELEMENT frontiers keys on the dense id, not on bytes.
+    //
+    // `join_key` boxes each cell (`Col::Nodes` → `Value::Num(f64::from(id))`) and then
+    // serializes it into a fresh `Vec<u8>` — an allocation and a `Value` per row, on BOTH
+    // sides. For an element frontier the key IS a `u32`, which is the entire content of that
+    // byte string. Measured at 208.56ns a row over 200,000 rows, 284x the scan floor and the
+    // most expensive of the 19 operators `plan_cost_by_operator` prices.
+    //
+    // Byte-identical by construction rather than by argument: the key derivation agrees cell
+    // for cell (`value_at` maps the `u32::MAX` OPTIONAL sentinel to NULL on both sides, so
+    // sentinel-matches-sentinel either way, and every other id to its number), and the output
+    // order is the same because the right side is indexed with `j` ASCENDING and probed with
+    // `i` ascending — so each bucket's rows stay in input order.
+    //
+    // ANY single slot pair, not slot 0: the shared variable of `MATCH (p)-[:R]->(q) MATCH
+    // (r)-[:R]->(q)` is `q`, which is slot 1 on both sides. Written `[(0, 0)]` first, this
+    // fast path fired in the isolated harness and never once in the bench query — the harness
+    // was measuring a slot pairing the planner does not produce.
+    let dense = match on {
+        [(l, r)] => match (lb.slot(*l), rb.slot(*r)) {
+            (Col::Nodes(l) | Col::Edges(l), Col::Nodes(r) | Col::Edges(r)) => Some((l, r)),
+            _ => None,
+        },
+        _ => None,
+    };
+    if let Some((lids, rids)) = dense {
+        // A COUNTING index rather than a map of buckets: dense ids mean the bucket for an id
+        // can be a slice of one flat array, so the whole index is three allocations instead of
+        // one `Vec` per distinct key. (The map-of-buckets version measured 59.96ns a row —
+        // already 3.5x the byte keys, but 200,000 distinct keys is 200,000 allocations.)
+        //
+        // The `u32::MAX` OPTIONAL sentinel gets the slot just past the largest real id, so it
+        // keys as itself without sizing the index by 4 billion.
+        let maxid = rids.iter().copied().filter(|&x| x != u32::MAX).max();
+        let sentinel = maxid.map_or(0, |m| m as usize + 1);
+        let slot_of = |id: u32| -> usize {
+            if id == u32::MAX {
+                sentinel
+            } else {
+                id as usize
+            }
+        };
+        let mut counts = vec![0u32; sentinel + 2];
+        for &id in rids {
+            counts[slot_of(id)] += 1;
+        }
+        // Prefix sums, so `offs[k]..offs[k + 1]` is key `k`'s span.
+        let mut offs = vec![0u32; counts.len() + 1];
+        for k in 0..counts.len() {
+            offs[k + 1] = offs[k] + counts[k];
+        }
+        // Fill with `j` ASCENDING, so each bucket keeps input order — the byte-key path's
+        // buckets are built the same way, which is what makes the output order identical.
+        let mut cursor = offs.clone();
+        let mut flat = vec![0u32; rids.len()];
+        for (j, &id) in rids.iter().enumerate() {
+            let k = slot_of(id);
+            flat[cursor[k] as usize] = j as u32;
+            cursor[k] += 1;
+        }
+        for (i, &id) in lids.iter().enumerate() {
+            let k = slot_of(id);
+            if k >= counts.len() {
+                continue; // an id larger than anything on the right matches nothing
+            }
+            for &j in &flat[offs[k] as usize..offs[k + 1] as usize] {
                 keep_l.push(i);
-                keep_r.push(j);
+                keep_r.push(j as usize);
+            }
+        }
+    } else {
+        // Index the right side by its join key.
+        let mut index: FnvMap<Vec<u8>, Vec<usize>> = FnvMap::default();
+        for j in 0..rb.rows() {
+            let k = join_key(rb, on.iter().map(|&(_, r)| r), j);
+            index.entry(k).or_default().push(j);
+        }
+        // Probe with the left side, emitting one combined row per match (a shared key
+        // with several matches on each side fans out to their product).
+        for i in 0..lb.rows() {
+            let k = join_key(lb, on.iter().map(|&(l, _)| l), i);
+            if let Some(js) = index.get(&k) {
+                for &j in js {
+                    keep_l.push(i);
+                    keep_r.push(j);
+                }
             }
         }
     }
