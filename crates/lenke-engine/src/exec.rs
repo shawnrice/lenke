@@ -1519,6 +1519,7 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
                         .or_else(|| try_varlen_distinctby_count(input, keys, aggs, store))
                         .or_else(|| try_varlen_agg(input, keys, aggs, store))
                         .or_else(|| try_frontier_prop_agg(input, keys, aggs, store))
+                        .or_else(|| try_scan_count_prop(input, keys, aggs, store))
                         .or_else(|| try_scan_num_agg(input, keys, aggs, store))
                         .or_else(|| try_filtered_scan_num_agg(input, keys, aggs, store))
                         .or_else(|| try_scan_multi_agg(input, keys, aggs, store))

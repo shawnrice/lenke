@@ -12232,3 +12232,222 @@ fn a_fresh_call_body_start_node_also_filters_before_its_hop() {
         "three outer rows, each cross-joined with the one matching hop"
     );
 }
+
+// --- count(<property>) is a presence scan, whatever the column's type (item 81) ---
+
+/// A store whose columns span every representation a count has to handle, each with a value, an
+/// ABSENT cell and a stored present-NULL — the three outcomes `count` must distinguish.
+fn count_prop_fixture() -> Store {
+    let mut store = Builder::default().build();
+    execute(
+        &crate::gql::parse(
+            "INSERT (:P {k: 1, num: 1, str: 'aaa', dict: 'x', flag: true, gen: 1}), \
+             (:P {k: 2, num: 2, str: 'bbb', dict: 'x', flag: false, gen: 'mixed'}), \
+             (:P {k: 3})",
+        )
+        .unwrap(),
+        &mut store,
+    )
+    .unwrap();
+    // Vertex 2 gets a stored present-NULL in each typed column. Null is a VALUE here, but it is
+    // not a value `count` counts — so each column ends with exactly ONE counted cell.
+    execute(
+        &crate::gql::parse(
+            "MATCH (p:P) WHERE p.k = 2 \
+             SET p.num = null, p.str = null, p.dict = null, p.flag = null, p.gen = null",
+        )
+        .unwrap(),
+        &mut store,
+    )
+    .unwrap();
+    store
+}
+
+/// One counted cell per column: vertex 1 has a value, vertex 2 a stored NULL, vertex 3 nothing.
+/// The column's TYPE must not change the answer — which is the whole point, since the typed
+/// path used to exist for `Num` alone and every other column boxed its cells to ask.
+#[test]
+fn count_of_a_property_is_the_same_whatever_the_column_type() {
+    let store = count_prop_fixture();
+    let n = |q: &str| -> f64 {
+        match crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .iter()
+            .next()
+            .expect("one row")[0]
+        {
+            Value::Num(x) => x,
+            ref o => panic!("count returns a number, got {o:?}"),
+        }
+    };
+    for key in ["num", "str", "dict", "flag", "gen"] {
+        assert_eq!(
+            n(&format!("MATCH (p:P) RETURN count(p.{key}) AS c")),
+            1.0,
+            "one value, one stored null, one absent — for `{key}`"
+        );
+    }
+    assert_eq!(
+        n("MATCH (p:P) RETURN count(p.k) AS c"),
+        3.0,
+        "present on every row"
+    );
+    assert_eq!(
+        n("MATCH (p:P) RETURN count(p.gone) AS c"),
+        0.0,
+        "no column at all"
+    );
+    assert_eq!(
+        n("MATCH (p:P) RETURN count(*) AS c"),
+        3.0,
+        "count(*) counts rows, not values"
+    );
+
+    // A FILTERED count against ground truth, not against another representation. Vertices 2
+    // and 3 survive `k > 1`, and neither holds a `num` value (one stored null, one absent), so
+    // the answer is 0 where the unfiltered count is 1. An arm that matched through the
+    // `Filter` and counted the whole scan would say 1 — and comparing a typed column with its
+    // boxed twin cannot see that, because both take the same wrong path.
+    assert_eq!(
+        n("MATCH (p:P) WHERE p.k > 1 RETURN count(p.num) AS c"),
+        0.0,
+        "the filter must not be swallowed"
+    );
+    assert_eq!(
+        n("MATCH (p:P) WHERE p.k > 1 RETURN count(p.k) AS c"),
+        2.0,
+        "and the surviving rows are counted, not dropped"
+    );
+}
+
+/// The shortcut answers only for the shapes it declares, and the GENERAL path must give the same
+/// number for all of them — the equivalent-spellings invariant for a fast path. A `DISTINCT`
+/// count, a dotted path and a filtered scan each route elsewhere.
+#[test]
+fn the_count_shortcut_agrees_with_the_general_path() {
+    let mut store = count_prop_fixture();
+    execute(
+        &crate::gql::parse("MATCH (p:P) WHERE p.k = 1 SET p.rec = {f: 1}").unwrap(),
+        &mut store,
+    )
+    .unwrap();
+    // `force_gen` is the reference oracle: a typed column and its boxed twin must agree, so
+    // running the battery over both proves the typed `present` bit and the `Gen` null check are
+    // the same question.
+    let mut boxed = store.clone();
+    for key in ["num", "str", "dict", "flag", "k"] {
+        boxed.force_gen(key);
+    }
+    let one = |s: &Store, q: &str| format!("{:?}", run(&opt_plan(q, s), s).rows.iter().next());
+    for q in [
+        "MATCH (p:P) RETURN count(p.num) AS c",
+        "MATCH (p:P) RETURN count(p.str) AS c",
+        "MATCH (p:P) RETURN count(p.dict) AS c",
+        "MATCH (p:P) RETURN count(p.flag) AS c",
+        "MATCH (p:P) RETURN count(p.k) AS c",
+        "MATCH (p:P) RETURN count(DISTINCT p.dict) AS c",
+        "MATCH (p:P) RETURN count(p.rec.f) AS c",
+        "MATCH (p:P) WHERE p.k > 1 RETURN count(p.num) AS c",
+        "MATCH (p) RETURN count(p.num) AS c",
+    ] {
+        assert_eq!(
+            one(&store, q),
+            one(&boxed, q),
+            "typed and boxed disagree: {q}"
+        );
+    }
+}
+
+/// The scan the shortcut counts over must be the RIGHT set of nodes: a label that only some
+/// vertices carry, and a deleted vertex, both change the answer. Counting the whole column
+/// would get every one of these wrong.
+#[test]
+fn the_count_shortcut_respects_the_label_and_the_living() {
+    let mut store = Builder::default().build();
+    execute(
+        &crate::gql::parse(
+            "INSERT (:A {v: 1}), (:A {v: 2}), (:B {v: 3}), (:B {v: 4}), (:A:B {v: 5})",
+        )
+        .unwrap(),
+        &mut store,
+    )
+    .unwrap();
+    let n = |s: &Store, q: &str| -> f64 {
+        match crate::exec::try_run(&opt_plan(q, s), s)
+            .unwrap()
+            .rows
+            .iter()
+            .next()
+            .expect("row")[0]
+        {
+            Value::Num(x) => x,
+            ref o => panic!("{o:?}"),
+        }
+    };
+    assert_eq!(
+        n(&store, "MATCH (p:A) RETURN count(p.v) AS c"),
+        3.0,
+        "A covers 1, 2 and 5"
+    );
+    assert_eq!(
+        n(&store, "MATCH (p:B) RETURN count(p.v) AS c"),
+        3.0,
+        "B covers 3, 4 and 5"
+    );
+    assert_eq!(
+        n(&store, "MATCH (p) RETURN count(p.v) AS c"),
+        5.0,
+        "unlabelled covers all"
+    );
+
+    execute(
+        &crate::gql::parse("MATCH (p:A) WHERE p.v = 1 DETACH DELETE p").unwrap(),
+        &mut store,
+    )
+    .unwrap();
+    assert_eq!(
+        n(&store, "MATCH (p:A) RETURN count(p.v) AS c"),
+        2.0,
+        "a deleted vertex is gone"
+    );
+    assert_eq!(n(&store, "MATCH (p) RETURN count(p.v) AS c"), 4.0);
+}
+
+/// The shortcut's dotted-key guard, tested DIRECTLY because no query reaches it: a dotted
+/// access does not lower to `Expr::Prop` in an aggregate argument today, so removing the guard
+/// changes no query's answer. It still has to be there — `store.column("m.k")` is `None`
+/// (the column is `m`), and the absent-column rule would count a record field as ZERO.
+#[test]
+fn the_count_shortcut_declines_a_dotted_key() {
+    let mut store = Builder::default().build();
+    execute(
+        &crate::gql::parse("INSERT (:P {m: {k: 1}}), (:P {m: {k: 2}})").unwrap(),
+        &mut store,
+    )
+    .unwrap();
+    let scan = Plan::Scan {
+        label: Some("P".to_string()),
+    };
+    let agg = |key: &str| crate::ir::Agg {
+        func: crate::ir::AggFn::Count,
+        arg: Some(Expr::Prop {
+            slot: 0,
+            key: key.to_string(),
+        }),
+        distinct: false,
+        name: "c".into(),
+        frac: None,
+        null_on_empty: false,
+        numeric_only: false,
+    };
+    assert!(
+        crate::exec::fastpath::try_scan_count_prop(&scan, &[], &[agg("m.k")], &store).is_none(),
+        "a dotted key must decline, not read as an absent column"
+    );
+    // The plain key next to it, so the test cannot pass by declining everything.
+    assert!(
+        crate::exec::fastpath::try_scan_count_prop(&scan, &[], &[agg("m")], &store).is_some(),
+        "a plain key is still answered"
+    );
+}

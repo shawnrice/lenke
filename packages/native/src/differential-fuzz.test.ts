@@ -56,6 +56,18 @@ const tally = (
     }
   }
 
+  // `count(<property>)`. NON-ZERO is the floor that matters: a count whose answer is 0 cannot
+  // tell a present cell from an absent one, and a third of the drawn keys (`zz`, and `st`/`nan`
+  // on the vertices that lack them) count nothing by construction.
+  if (/RETURN count\(((DISTINCT )?[abn]\.)/.test(q)) {
+    cov.cntPropGenerated++;
+
+    // `nonEmpty` already excludes `[{"x":0}]`, which IS a zero count under this alias.
+    if (nonEmpty) {
+      cov.cntPropNonZero++;
+    }
+  }
+
   if (q.startsWith('MATCH (a:T)((x)') && q.includes('(b:U)') && q.includes('RETURN count(*)')) {
     cov.peelGenerated++;
 
@@ -906,6 +918,30 @@ const genQuery = (r: () => number): string => {
     ]);
   }
 
+  // `count(<property>)` — which NO fuzzer generated, in either engine: this one only ever
+  // emitted `count(*)`, and `rewrite_fuzz` builds `Count` with `arg: None` while its
+  // property-argument aggregates are Sum/Min/Max/Avg. So the whole "count the non-null values
+  // of a key" question was uncovered, and it has its own fast path.
+  //
+  // The key list is the point rather than the shape. `n`/`s` are on every vertex, `st` and
+  // `nan` on two of three, and `zz` on none — so the three outcomes a count must distinguish
+  // (a value, an absent cell, a key with no column at all) are all drawn. A `LET`-bound
+  // grouped form comes too, because the grouped fold is a different code path from the scalar
+  // one and only the scalar one has a shortcut.
+  //
+  // Placed last, above the fallback, so it takes no other arm's band.
+  if (p < 0.985) {
+    const k = pick(r, ['n', 'x', 's', 'nan', 'st', 'zz', 'm.k']);
+
+    return pick(r, [
+      `MATCH (n:T) RETURN count(n.${k}) AS x`,
+      `MATCH (n:T) RETURN count(DISTINCT n.${k}) AS x`,
+      `MATCH (n:T) WHERE n.n > 3 RETURN count(n.${k}) AS x`,
+      `MATCH (n:T) LET g = n.s RETURN g, count(n.${k}) AS x GROUP BY g ORDER BY g, x`,
+      `MATCH (a:T)-[:E]->(b:T) RETURN count(b.${k}) AS x`,
+    ]);
+  }
+
   return `MATCH (n:T) RETURN ${genExpr(r, 3)} AS x, n.n AS t ORDER BY t`;
 };
 
@@ -1029,6 +1065,8 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       peelNonZero: 0,
       crossGenerated: 0,
       crossNonEmpty: 0,
+      cntPropGenerated: 0,
+      cntPropNonZero: 0,
     };
     // The same GENERATION-IS-NOT-COVERAGE guard for PREDICATE arms. `genExpr` is
     // type-agnostic, so a `WHERE` / `FILTER` / inline-`(n WHERE …)` position used to be filled
@@ -1120,7 +1158,8 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       `PRED generated=${cov.predGenerated} rows=${cov.predRows} ` +
         `perRep=${cov.perRepGenerated}/${cov.perRepNonEmpty} ` +
         `sink=${cov.sinkGenerated}/${cov.sinkNonZero} peel=${cov.peelGenerated}/${cov.peelNonZero} ` +
-        `cross=${cov.crossGenerated}/${cov.crossNonEmpty}`,
+        `cross=${cov.crossGenerated}/${cov.crossNonEmpty} ` +
+        `cntProp=${cov.cntPropGenerated}/${cov.cntPropNonZero}`,
     );
     expect({
       perRepGenerated: cov.perRepGenerated > 350,
@@ -1135,6 +1174,9 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       // Measured 560-620 generated and 300-360 of those non-empty, of 20,000.
       crossGenerated: cov.crossGenerated > 250,
       crossNonEmpty: cov.crossNonEmpty > 120,
+      // Measured 410-433 generated and 359-376 of those non-zero, of 20,000.
+      cntPropGenerated: cov.cntPropGenerated > 200,
+      cntPropNonZero: cov.cntPropNonZero > 150,
     }).toEqual({
       perRepGenerated: true,
       perRepNonEmpty: true,
@@ -1146,6 +1188,8 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       peelNonZero: true,
       crossGenerated: true,
       crossNonEmpty: true,
+      cntPropGenerated: true,
+      cntPropNonZero: true,
     });
     // 20 000 queries × two engines is well under a second locally but exceeds Bun's default
     // 5 s test timeout on the slower CI runners (~5.5–6 s) — give this heavy differential fuzz

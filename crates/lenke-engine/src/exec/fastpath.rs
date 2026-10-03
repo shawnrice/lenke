@@ -2231,6 +2231,64 @@ pub(super) fn try_filtered_scan_num_agg(
     Some(Batch::single(Col::Gen(vec![result])))
 }
 
+/// `count(<property>)` over a bare `Scan` — a presence scan, with no column materialized.
+///
+/// `count(expr)` counts NON-NULL values, so for a plain `Prop` it never needs the values at
+/// all: the answer is how many of the scanned nodes hold one. `try_scan_num_agg` already did
+/// this, but only for a `Column::Num`, which is why the two spellings of one question cost
+/// 112us and 1,048us over the same 200,000 vertices — the string column fell through to the
+/// general path, which built a 200,000-element `Col::Str` (an `Arc` clone per row) and then
+/// asked each cell whether it was null.
+///
+/// The column's TYPE is irrelevant to a count, so this takes any of them. `has_value_at` is
+/// the question: present AND not a stored present-null, which is `present` for a typed
+/// variant and a discriminant check for `Gen`.
+pub(super) fn try_scan_count_prop(
+    input: &Plan,
+    keys: &[(String, Expr)],
+    aggs: &[Agg],
+    store: &Store,
+) -> Option<Batch> {
+    if !keys.is_empty() || aggs.len() != 1 {
+        return None;
+    }
+    let agg = &aggs[0];
+    // `count(*)` has its own shortcut; DISTINCT needs the values, so it stays on the general
+    // path. Only the plain `count(<prop>)`.
+    if agg.func != AggFn::Count || agg.distinct {
+        return None;
+    }
+    let Plan::Scan { label } = input else {
+        return None;
+    };
+    let Some(Expr::Prop { slot: 0, key }) = agg.arg.as_ref() else {
+        return None;
+    };
+    // A key NO node carries counts zero without touching anything — the same rule the typed
+    // masks and the seeks apply.
+    //
+    // A DOTTED path must NOT take that rule: `store.column("m.k")` is `None` because the
+    // column is `m`, so without this guard a record field would count ZERO instead of its
+    // values. The guard is a CONTRACT rather than a live branch — a dotted access does not
+    // reach `Expr::Prop` in an aggregate argument today, verified by removing the guard and
+    // seeing `count(n.m.k)` still answer correctly in both engines — so it is pinned by a
+    // direct unit test (`the_count_shortcut_declines_a_dotted_key`) rather than through a
+    // query, since no query currently reaches it.
+    if key.contains('.') {
+        return None;
+    }
+    let Some(col) = store.column(key) else {
+        return Some(scalar_num(0.0));
+    };
+    let mut cnt = 0u64;
+    scan_visit(store, label, |i| {
+        if col.has_value_at(i) {
+            cnt += 1;
+        }
+    });
+    Some(scalar_num(cnt as f64))
+}
+
 pub(super) fn try_scan_num_agg(
     input: &Plan,
     keys: &[(String, Expr)],
@@ -2241,7 +2299,9 @@ pub(super) fn try_scan_num_agg(
         return None;
     }
     let agg = &aggs[0];
-    if agg.distinct || !matches!(agg.func, AggFn::Sum | AggFn::Avg | AggFn::Count) {
+    // `Count` is NOT here: it does not read the values, so `try_scan_count_prop` answers it
+    // for a column of ANY type rather than this arm answering it for `Num` alone.
+    if agg.distinct || !matches!(agg.func, AggFn::Sum | AggFn::Avg) {
         return None;
     }
     let label = match input {
@@ -2294,7 +2354,6 @@ pub(super) fn try_scan_num_agg(
     let result = match agg.func {
         AggFn::Sum if agg.null_on_empty && cnt == 0 => Value::Null, // Gremlin sum() of nothing
         AggFn::Sum => Value::Num(total), // 0.0 over an empty/all-null set (K0a)
-        AggFn::Count => Value::Num(cnt as f64), // count(arg) = present count
         _ => {
             if cnt == 0 {
                 Value::Null // avg of nothing

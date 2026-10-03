@@ -1745,8 +1745,14 @@ fn gen_plan_one(rng: &mut Lcg) -> Plan {
     // float summation ORDER shows up: they are only equal across two plans if the rows
     // are folded in the same sequence or the sum is order-independent, so a rewrite
     // that reorders rows under one is worth knowing about.
+    // `Count` is in the pick list because `count(<prop>)` has its own fast path
+    // (`try_scan_count_prop`) and NOTHING generated it: `count` was only ever built with
+    // `arg: None` here, and the property-argument aggregates were Sum/Min/Max/Avg. A count
+    // does not read the values, so unlike its siblings it is well-defined over a key of ANY
+    // type — but the generator only has numeric keys to hand, and a count over a numeric key
+    // still exercises the presence scan, which is the whole of that path.
     let numeric_agg = |rng: &mut Lcg, slot: usize| Agg {
-        func: *rng.pick(&[AggFn::Sum, AggFn::Min, AggFn::Max, AggFn::Avg]),
+        func: *rng.pick(&[AggFn::Sum, AggFn::Min, AggFn::Max, AggFn::Avg, AggFn::Count]),
         arg: Some(Expr::Prop {
             slot,
             key: (*rng.pick(&NUM_KEYS)).to_string(),

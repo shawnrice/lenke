@@ -442,6 +442,26 @@ impl Column {
         }
     }
 
+    /// Does cell `i` hold a NON-NULL value? The question `count(<expr>)` asks, answered
+    /// without boxing the cell — which for a `Str`/`Dict` column means no `Arc` clone per
+    /// row just to discover that the value exists.
+    ///
+    /// This is NOT [`present_at`](Self::present_at): that one counts a stored present-null,
+    /// because `has('k')` / `PropertyExists` must. A value READ gates on `present` alone (a
+    /// present-null reads NULL), so for every typed variant the `present` bit IS this
+    /// question; only `Gen` keeps its null in `data` and has to look.
+    #[must_use]
+    pub fn has_value_at(&self, i: usize) -> bool {
+        match self {
+            Self::Num { present, .. }
+            | Self::Str { present, .. }
+            | Self::Dict { present, .. }
+            | Self::Bool { present, .. }
+            | Self::Temporal { present, .. } => present[i],
+            Self::Gen { data, present } => present[i] && !data[i].is_null(),
+        }
+    }
+
     /// Replace a `Dict` encoding with the equivalent `Str` column in place — the
     /// one-time cost a dictionary-encoded column pays on its first value write, so
     /// every mutator below can assume the plain `Str` representation. A no-op on any

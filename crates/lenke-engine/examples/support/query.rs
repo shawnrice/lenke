@@ -236,11 +236,17 @@ pub fn run(cfg: &Cfg) {
                 // question of the same 200,000 vertices: 1,048.4us for the string against
                 // 112.2us for the number, where boxing a `Value::Num` is free.
                 //
-                // `Col::is_null_at` asks the representation instead. The NUMERIC row is the
-                // CONTROL and must stay flat; the string row is 1,048.4us -> 853.7us (1.23x).
-                // What remains is the column materialization itself -- `read_property` builds
-                // the whole `Col::Str` before the aggregate runs -- which is a separate
-                // question, since a `count` of a plain property need not materialize at all.
+                // `Col::is_null_at` asks the representation instead: 1,048.4us -> 853.7us.
+                //
+                // Then the materialization itself went, which was the larger half. A `count`
+                // of a plain property never needs the VALUES, so `try_scan_count_prop` answers
+                // it as a presence scan over the column -- for a column of ANY type, where the
+                // old typed path existed for `Num` alone. 853.7us -> 93.0us, and the two rows
+                // are now the SAME number (93.0 and 93.4), which is the real result: one
+                // question, one cost, whatever the column holds.
+                //
+                // `count(DISTINCT …)` is the control. It needs the values, so it keeps the
+                // general path and must not move (166us).
                 (
                     "count(prop) str",
                     "MATCH (p:Person) RETURN count(p.name) AS c",
