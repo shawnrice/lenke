@@ -909,7 +909,12 @@ fn try_distinct_typed(batch: &Batch) -> Option<Vec<usize>> {
             }
         }
         Col::Nodes(v) | Col::Edges(v) => {
-            let mut seen: FnvSet<u32> = FnvSet::default();
+            // A bit per dense id rather than a hash per row — the same change item 83 made to
+            // `dedup`'s typed path, which was 15.58ns a row and became 4.77ns. This arm had
+            // the identical `FnvSet<u32>`, so a whole-row `DISTINCT` over one element column
+            // was paying a hash the ids make unnecessary. (The `Bool` arm below has always
+            // used a dense `[bool; 2]`; this is that idea at element width.)
+            let mut seen = SeenIds::default();
             for (i, &id) in v.iter().enumerate() {
                 if seen.insert(id) {
                     keep.push(i);

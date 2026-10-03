@@ -12963,3 +12963,67 @@ fn a_distinct_over_optional_misses_keeps_one_null() {
     assert_eq!(rows.len(), 1, "three misses collapse to one NULL row");
     assert!(rows.iter().next().expect("a row")[0].is_null());
 }
+
+/// `RETURN DISTINCT <element>` keeps the first occurrence of each element in first-seen order,
+/// and the OTHER typed arms of the same fast path must be untouched by the element one moving
+/// to a bitset. A `Bool` column already used a dense `[bool; 2]`; `Num` keys on group bits (so
+/// NaN payloads and signed zero collapse) and `Str` on the string, and neither can be a
+/// bitset — those are the control arms.
+#[test]
+fn a_whole_row_distinct_keeps_first_seen_order_for_every_typed_column() {
+    let mut store = Builder::default().build();
+    execute(
+        &crate::gql::parse(
+            "INSERT (:P {k: 1, g: 'x', b: true, f: 1.5}), (:P {k: 2, g: 'y', b: false, f: -0.0}), \
+             (:P {k: 3, g: 'x', b: true, f: 0.0})",
+        )
+        .unwrap(),
+        &mut store,
+    )
+    .unwrap();
+    // Edges make the element column repeat: both 1 and 2 point at 3.
+    execute(
+        &crate::gql::parse("MATCH (a:P), (b:P) WHERE a.k < 3 AND b.k = 3 INSERT (a)-[:R]->(b)")
+            .unwrap(),
+        &mut store,
+    )
+    .unwrap();
+
+    let col0 = |q: &str| -> Vec<Value> {
+        run(&opt_plan(q, &store), &store)
+            .rows
+            .iter()
+            .map(|r| r[0].clone())
+            .collect()
+    };
+    // The ELEMENT column: two rows reach vertex 3, and DISTINCT keeps one.
+    let elems = col0("MATCH (a:P)-[:R]->(q) RETURN DISTINCT q");
+    assert_eq!(
+        elems.len(),
+        1,
+        "both hops land on the same vertex: {elems:?}"
+    );
+
+    // The control arms, each with a duplicate to remove.
+    assert_eq!(
+        col0("MATCH (p:P) RETURN DISTINCT p.g").len(),
+        2,
+        "two distinct strings"
+    );
+    assert_eq!(
+        col0("MATCH (p:P) RETURN DISTINCT p.b").len(),
+        2,
+        "true and false"
+    );
+    // -0.0 and 0.0 share group bits, so they are ONE distinct value; 1.5 is the other.
+    assert_eq!(
+        col0("MATCH (p:P) RETURN DISTINCT p.f").len(),
+        2,
+        "signed zero collapses under the grouping contract"
+    );
+    assert_eq!(
+        col0("MATCH (p:P) RETURN DISTINCT p.k").len(),
+        3,
+        "all distinct"
+    );
+}

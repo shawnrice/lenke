@@ -156,6 +156,17 @@ pub fn run(cfg: &Cfg) {
                 // These are the standing guard for that, since a pure evaluator speedup breaks no
                 // test. A/B against the same binary without the routing: 1,627us -> 559us (2.91x)
                 // and 3,336us -> 920us (3.63x).
+                // GQL `RETURN DISTINCT <element>` reaches `Plan::Distinct`, whose typed
+                // single-column arm had the same `FnvSet<u32>` item 83 removed from `dedup`.
+                // The PROPERTY row is the control: a `Dict`/`Str` column still has to hash.
+                (
+                    "distinct node",
+                    "MATCH (p:Person)-[:KNOWS]->(q) RETURN DISTINCT q",
+                ),
+                (
+                    "distinct prop",
+                    "MATCH (p:Person)-[:KNOWS]->(q) RETURN DISTINCT q.city",
+                ),
                 ("project bool", "MATCH (p:Person) RETURN p.age > 50 AS flag"),
                 // The other site that boxed a cell to ask whether it was NULL, and the bigger
                 // one: `IS NULL` over a whole column. 1,367.1us -> 844.1us (1.62x) for the
