@@ -12687,6 +12687,122 @@ fn plan_cost_by_operator() {
                 on: vec![(0, 0)],
             },
         ),
+        // --- operators the first version of this harness did not price ---
+        //
+        // It covered 19 of `Plan`'s 54 variants, and an unpriced operator is where a missing
+        // path is likelier than in one already tuned. These are the ones constructible over
+        // this fixture; the rest need a temporal column, a lineage, a Gremlin branch frontier
+        // or a subquery body, and pricing them needs their own fixtures.
+        ("EdgeScan (every edge)", Plan::EdgeScan),
+        (
+            "OptionalExpand (1:1, GQL null)",
+            Plan::OptionalExpand {
+                input: Box::new(scan()),
+                from: 0,
+                dir: Dir::Out,
+                edge_label: vec!["R".to_string()],
+                keep_source: false,
+                bind_edge: false,
+                landing_pred: None,
+            },
+        ),
+        (
+            // `keep_source: true` is produced by NO query today — GQL `OPTIONAL MATCH` always
+            // sets `false`, and Gremlin's `optional()` lowers to the branch machinery rather
+            // than this operator (both verified). Priced anyway because the two arms share the
+            // loop, so a divergence between them would show here.
+            "OptionalExpand (passthru, unreachable)",
+            Plan::OptionalExpand {
+                input: Box::new(scan()),
+                from: 0,
+                dir: Dir::Out,
+                edge_label: vec!["R".to_string()],
+                keep_source: true,
+                bind_edge: false,
+                landing_pred: None,
+            },
+        ),
+        // `OptionalScan` is NOT here. It is a LEFT-OUTER correlated node scan, so over this
+        // fixture it is 200,000 input rows times every matching node — about 13 billion rows,
+        // which is not a per-row cost but a cross-product. Pricing it needs its own small
+        // fixture and its own row count; measuring it here would measure the fan-out.
+        //
+        // (Learned the direct way: the first version of this list included it and the harness
+        // had to be killed. A NEW harness case is an unbounded run until proven otherwise, so
+        // this whole test now gets the same `timeout` + cgroup cap a mutation run gets.)
+        (
+            // A REFERENCE POINT, not a target: `{1,1}` and `{1}` both flatten to an
+            // `Expand` in the optimizer (verified), so no query reaches the walker with these
+            // bounds. What it prices is the walker's own per-row cost for one hop — useful for
+            // judging a var-length row, useless as something to fix.
+            "VarLength {1,1} (walker, unreachable)",
+            Plan::VarLength {
+                input: Box::new(scan()),
+                from: 0,
+                dir: Dir::Out,
+                edge_label: vec!["R".to_string()],
+                min: 1,
+                max: 1,
+                mode: PathMode::Walk,
+                until: None,
+                body_filter: None,
+                double_loops: false,
+                path_need: crate::ir::PathNeed::CountOnly,
+            },
+        ),
+        (
+            "PathRecord",
+            Plan::PathRecord {
+                input: Box::new(scan()),
+                value: num(),
+                tag: 0,
+            },
+        ),
+        (
+            "SortLocal (scalar slot)",
+            Plan::SortLocal {
+                input: Box::new(scan()),
+                descending: false,
+                by_key: false,
+            },
+        ),
+        (
+            "Unwind (2-element list)",
+            Plan::Unwind {
+                input: Box::new(scan()),
+                list: Box::new(Expr::List {
+                    items: vec![num(), num()],
+                }),
+                var_slot: 1,
+                ordinal: None,
+            },
+        ),
+        (
+            "GroupToMap (over a grouped agg)",
+            Plan::GroupToMap {
+                input: Box::new(Plan::Aggregate {
+                    input: Box::new(scan()),
+                    keys: vec![("k".to_string(), num())],
+                    aggs: vec![crate::ir::Agg {
+                        func: AggFn::Count,
+                        arg: None,
+                        distinct: false,
+                        name: "c".into(),
+                        frac: None,
+                        null_on_empty: false,
+                        numeric_only: false,
+                    }],
+                }),
+            },
+        ),
+        (
+            "Tree",
+            Plan::Tree {
+                input: Box::new(scan()),
+                by: None,
+                leaf_value: None,
+            },
+        ),
     ];
 
     println!("\n=== plan operator cost, {ROWS} rows ===");
@@ -13114,5 +13230,165 @@ fn an_edge_endpoint_step_agrees_over_a_branched_frontier() {
         .len(),
         240,
         "two arms, one row per edge each"
+    );
+}
+
+// --- An optional hop with no landing predicate needs one pass (item 86) ---
+
+/// Three sources with 2, 0 and 1 out-edges, so the left-outer contract is visible: a source
+/// with neighbours yields one row each and NO miss row, a source without yields exactly one.
+fn optional_hop_fixture() -> Store {
+    let mut store = Builder::default().build();
+    execute(
+        &crate::gql::parse("INSERT (:P {k: 0}), (:P {k: 1}), (:P {k: 2}), (:P {k: 3})").unwrap(),
+        &mut store,
+    )
+    .unwrap();
+    // 0 -> 1, 0 -> 2 (two), 1 -> none, 2 -> 3 (one), 3 -> none.
+    for (a, b) in [(0, 1), (0, 2), (2, 3)] {
+        execute(
+            &crate::gql::parse(&format!(
+                "MATCH (x:P), (y:P) WHERE x.k = {a} AND y.k = {b} INSERT (x)-[:R]->(y)"
+            ))
+            .unwrap(),
+            &mut store,
+        )
+        .unwrap();
+    }
+    store
+}
+
+/// The ONE-PASS path and the two-pass path must agree, and an always-true landing predicate is
+/// how to make the same question take the other one: `q.k >= 0` holds for every vertex here
+/// and is not constant-foldable, so it keeps the masked path. Same rows, same order.
+#[test]
+fn an_optional_hop_agrees_with_and_without_a_landing_predicate() {
+    let store = optional_hop_fixture();
+    let pairs = |q: &str| -> Vec<String> {
+        run(&opt_plan(q, &store), &store)
+            .rows
+            .iter()
+            .map(|r| format!("{:?}/{:?}", r[0], r[1]))
+            .collect()
+    };
+    let one_pass =
+        pairs("MATCH (p:P) OPTIONAL MATCH (p)-[:R]->(q) RETURN p.k AS a, q.k AS b ORDER BY a, b");
+    let two_pass = pairs(
+        "MATCH (p:P) OPTIONAL MATCH (p)-[:R]->(q WHERE q.k >= 0) \
+         RETURN p.k AS a, q.k AS b ORDER BY a, b",
+    );
+    assert_eq!(
+        one_pass, two_pass,
+        "the two paths must give the same rows in the same order"
+    );
+    // And the left-outer contract, stated rather than inferred: 0 has two neighbours, 1 and 3
+    // have none (one NULL row each), 2 has one.
+    assert_eq!(
+        one_pass,
+        vec![
+            "Num(0.0)/Num(1.0)".to_string(),
+            "Num(0.0)/Num(2.0)".to_string(),
+            "Num(1.0)/Null".to_string(),
+            "Num(2.0)/Num(3.0)".to_string(),
+            "Num(3.0)/Null".to_string(),
+        ],
+        "one row per neighbour, and exactly one NULL row for a source with none"
+    );
+}
+
+/// Gremlin's `optional(<hop>)` semantics: a miss passes the traverser through unchanged.
+///
+/// NOTE this does NOT reach `Plan::OptionalExpand` — verified, `optional(out())` lowers to the
+/// branch machinery instead, so GQL's `OPTIONAL MATCH` is the only producer of that operator
+/// and it always sets `keep_source: false`. The `keep_source: true` branch is covered by
+/// `an_optional_expand_can_pass_the_source_through`, which builds the plan directly because
+/// nothing else reaches it.
+#[test]
+fn a_gremlin_optional_hop_passes_a_miss_through() {
+    let store = optional_hop_fixture();
+    let got = first_col(&store, "g.V().optional(out('R')).values('k')", true);
+    // 0 -> its two neighbours (k=1, k=2); 1 misses so it passes through as itself; 2 -> k=3;
+    // 3 misses and passes through.
+    let mut sorted = got.clone();
+    sorted.sort();
+    assert_eq!(
+        sorted,
+        ["Num(1.0)", "Num(1.0)", "Num(2.0)", "Num(3.0)", "Num(3.0)"],
+        "a miss passes the source through, a hit yields its neighbours: {got:?}"
+    );
+}
+
+/// With an edge bound, the appended edge column must hold the `u32::MAX` no-edge sentinel on a
+/// miss — a row that landed nothing cannot carry an edge. The one-pass loop writes that column
+/// itself, so it is its own claim.
+#[test]
+fn an_optional_hop_binding_an_edge_has_no_edge_on_a_miss() {
+    let store = optional_hop_fixture();
+    // `r` is bound; on a miss it must be NULL, and present otherwise.
+    let rows = run(
+        &opt_plan(
+            "MATCH (p:P) OPTIONAL MATCH (p)-[r:R]->(q) \
+             RETURN p.k AS a, r IS NULL AS no_edge ORDER BY a, no_edge",
+            &store,
+        ),
+        &store,
+    )
+    .rows;
+    let got: Vec<String> = rows
+        .iter()
+        .map(|r| format!("{:?}/{:?}", r[0], r[1]))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            "Num(0.0)/Bool(false)".to_string(),
+            "Num(0.0)/Bool(false)".to_string(),
+            "Num(1.0)/Bool(true)".to_string(),
+            "Num(2.0)/Bool(false)".to_string(),
+            "Num(3.0)/Bool(true)".to_string(),
+        ],
+        "an edge on every hit, none on either miss"
+    );
+}
+
+/// The `keep_source: true` arm, built DIRECTLY because no query produces it: GQL
+/// `OPTIONAL MATCH` always sets `false`, and Gremlin's `optional()` lowers to the branch
+/// machinery rather than this operator (both verified). The field is documented as Gremlin
+/// `optional(<hop>)`, so it is a contract the lowering may use later — and a mutant that lands
+/// NULL instead of the source passes the entire suite without this test.
+#[test]
+fn an_optional_expand_can_pass_the_source_through() {
+    let store = optional_hop_fixture();
+    let plan = |keep_source: bool| Plan::OptionalExpand {
+        input: Box::new(Plan::Scan {
+            label: Some("P".to_string()),
+        }),
+        from: 0,
+        dir: Dir::Out,
+        edge_label: vec!["R".to_string()],
+        keep_source,
+        bind_edge: false,
+        landing_pred: None,
+    };
+    let landed = |keep_source: bool| -> Vec<String> {
+        let b = crate::exec::pull(&plan(keep_source), &store, false).expect("pulls");
+        (0..b.rows())
+            .map(|i| format!("{:?}", b.slot(1).value_at(i)))
+            .collect()
+    };
+    // Sources 1 and 3 have no out-edge. With `keep_source` they land THEMSELVES; without, the
+    // `u32::MAX` sentinel, which reads back as NULL.
+    let passthru = landed(true);
+    let nulls = landed(false);
+    assert_eq!(passthru.len(), nulls.len(), "the same row count either way");
+    assert_eq!(
+        nulls.iter().filter(|v| v.as_str() == "Null").count(),
+        2,
+        "two sources miss, and without passthru each lands NULL: {nulls:?}"
+    );
+    assert_eq!(
+        passthru.iter().filter(|v| v.as_str() == "Null").count(),
+        0,
+        "with passthru NOTHING lands NULL: {passthru:?}"
     );
 }

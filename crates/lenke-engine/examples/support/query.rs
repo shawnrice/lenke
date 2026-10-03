@@ -199,6 +199,23 @@ pub fn run(cfg: &Cfg) {
                     "one pred",
                     "MATCH (p:Person) WHERE p.age > 98 RETURN p.name AS n",
                 ),
+                // `OPTIONAL MATCH` without a landing predicate — the common spelling, and the
+                // one that needed none of the two-pass candidate buffering it was paying for.
+                (
+                    "optional hop",
+                    "MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(q) RETURN count(*) AS c",
+                ),
+                (
+                    "optional hop + miss",
+                    "MATCH (p:Person) OPTIONAL MATCH (p)-[:NOPE]->(q) RETURN count(*) AS c",
+                ),
+                // The CONTROL: an inline landing predicate keeps the two-pass path, because
+                // the mask has to see every candidate before the left-outer decision is made.
+                (
+                    "optional hop + landing pred",
+                    "MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(q WHERE q.age > 50) \
+                     RETURN count(*) AS c",
+                ),
                 // A hash JOIN, which a second MATCH clause sharing a variable builds (a comma
                 // pattern does not -- that lowers to a chain). `plan_cost_by_operator` priced
                 // the operator at 207.05ns a row, 282x the scan floor and the most expensive

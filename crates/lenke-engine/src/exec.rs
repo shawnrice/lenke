@@ -2882,6 +2882,53 @@ fn optional_expand(
     let Col::Nodes(src) = batch.slot(from) else {
         return Ok(all_miss());
     };
+    // NO LANDING PREDICATE: one pass, and none of the candidate buffers.
+    //
+    // The two-pass shape below exists only so a landing predicate can be masked over the
+    // whole candidate set before the left-outer decision is made. Without one, pass 2 just
+    // re-emits every candidate in source order and pass 1's four buffers (`cand_row`,
+    // `cand_nbr`, `cand_eid`, `ranges`) are written and read once each for nothing — and
+    // `cand_eid`/`eids` are built even when no edge is bound.
+    //
+    // `plan_cost_by_operator` measured the cost: 18.10ns a row against `Expand`'s 9.14 for the
+    // SAME 1:1 hop, where every source matches and the only extra work the left-outer contract
+    // needs is noticing that a source had no neighbour.
+    //
+    // Emission order is unchanged — each source in order, its neighbours in adjacency order,
+    // and a single miss row when it has none — because that is the same loop, writing to the
+    // output instead of to a buffer.
+    if landing_pred.is_none() {
+        let mut keep = Vec::with_capacity(src.len());
+        let mut nbrs = Vec::with_capacity(src.len());
+        let mut eids = if bind_edge {
+            Vec::with_capacity(src.len())
+        } else {
+            Vec::new()
+        };
+        for (row, &v) in src.iter().enumerate() {
+            let before = keep.len();
+            for_each_nbr(store, v, dir, &want, false, |nbr, eid| {
+                keep.push(row);
+                nbrs.push(nbr);
+                if bind_edge {
+                    eids.push(eid);
+                }
+            });
+            if keep.len() == before {
+                keep.push(row);
+                nbrs.push(miss(v));
+                if bind_edge {
+                    eids.push(u32::MAX);
+                }
+            }
+        }
+        let mut slots: Vec<Col> = batch.slots.iter().map(|c| c.gather(&keep)).collect();
+        if bind_edge {
+            slots.push(Col::Edges(eids)); // edge column BEFORE the node column
+        }
+        slots.push(Col::Nodes(nbrs));
+        return Ok(Batch::of(slots));
+    }
     // Pass 1: gather every candidate neighbour in source order, recording each
     // source's candidate range so a landing predicate can be applied per source.
     let mut cand_row = Vec::new();
