@@ -9,11 +9,56 @@ use crate::value::{self, Value};
 /// slot (`typed`) deduplicates by raw `u32` id — no per-row byte-key serialization,
 /// which dominated `dedup()` over a big fan-out; `value_at(Col::Nodes)` is `Node(id)`
 /// so a node's group key IS its id, keeping it byte-identical.
+/// A first-seen set over DENSE element ids: a bit per id, plus one flag for the `u32::MAX`
+/// OPTIONAL sentinel (which would otherwise size the bitmap by four billion).
+///
+/// Replaces a `FnvSet<u32>`, whose hash-per-row WAS the cost of a typed `dedup` —
+/// `plan_cost_by_operator` measured 15.58ns a row over 200,000 rows, 21x the scan floor and
+/// indistinguishable from deduping the WHOLE row by serialized bytes (14.90ns). The byte keys
+/// had already been removed here; the hash had not.
+///
+/// `insert` returns true when the id is NEWLY seen, exactly as `FnvSet::insert` does, so
+/// first-seen order is unchanged. The bitmap grows on demand rather than being sized from the
+/// store, so it is correct for a node frontier and an edge frontier alike without being told
+/// which it has.
+///
+/// The sentinel flag is a RESOURCE guard, not a correctness one: keyed as a raw id, `u32::MAX`
+/// gives the same ANSWER (fresh once, then seen) while resizing the bitmap to 67 million words
+/// — 536 MB for one row. Removing the branch leaves every test green, which is why the thing
+/// pinned below is the word count rather than the answer.
+#[derive(Default)]
+pub(super) struct SeenIds {
+    bits: Vec<u64>,
+    sentinel: bool,
+}
+
+impl SeenIds {
+    /// How many 64-bit words the bitmap holds — the resource claim the sentinel flag makes.
+    #[cfg(test)]
+    pub(super) fn words(&self) -> usize {
+        self.bits.len()
+    }
+
+    pub(super) fn insert(&mut self, id: u32) -> bool {
+        if id == u32::MAX {
+            return !std::mem::replace(&mut self.sentinel, true);
+        }
+        let (word, bit) = (id as usize / 64, id as usize % 64);
+        if word >= self.bits.len() {
+            self.bits.resize(word + 1, 0);
+        }
+        let mask = 1u64 << bit;
+        let fresh = self.bits[word] & mask == 0;
+        self.bits[word] |= mask;
+        fresh
+    }
+}
+
 pub(super) fn distinct_by_keep(
     batch: &Batch,
     key_slots: &[usize],
     typed: bool,
-    seen_ids: &mut FnvSet<u32>,
+    seen_ids: &mut SeenIds,
     seen_bytes: &mut FnvSet<Vec<u8>>,
 ) -> Vec<usize> {
     let mut keep = Vec::new();
@@ -77,7 +122,7 @@ pub(super) fn try_distinct_by_streamed(
     // A fixed block bounds the peak intermediate (block × fan-out) without the
     // early-stop adaptive sizing the capped streamers need (here we scan everything).
     const BLOCK: usize = 2048;
-    let mut seen_ids: FnvSet<u32> = FnvSet::default();
+    let mut seen_ids = SeenIds::default();
     let mut seen_bytes: FnvSet<Vec<u8>> = FnvSet::default();
     let mut typed: Option<bool> = None;
     let mut acc: Vec<Batch> = Vec::new();

@@ -221,6 +221,24 @@ pub fn run(cfg: &Cfg) {
                 ("out.out", "g.V().out('KNOWS').out('KNOWS').count()"),
                 ("values", "g.V().values('name').count()"),
                 ("dedup city", "g.V().values('city').dedup().count()"),
+                // `dedup` over an ELEMENT frontier rather than over values. The typed path
+                // keyed on the raw `u32` already, so the whole per-row cost was the HASH:
+                // `plan_cost_by_operator` measured 15.58ns a row, 21x the scan floor and
+                // indistinguishable from deduping the whole row by serialized bytes. A bit per
+                // dense id removes the hashing: 15.58ns -> 4.77ns.
+                ("dedup out", "g.V().out('KNOWS').dedup().count()"),
+                (
+                    "dedup out.out",
+                    "g.V().out('KNOWS').out('KNOWS').dedup().count()",
+                ),
+                (
+                    "dedup then values",
+                    "g.V().out('KNOWS').dedup().values('name').count()",
+                ),
+                (
+                    "dedup then out",
+                    "g.V().out('KNOWS').dedup().out('KNOWS').count()",
+                ),
             ],
         );
     }

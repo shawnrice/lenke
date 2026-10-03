@@ -12851,3 +12851,115 @@ fn a_dense_join_declines_a_non_element_or_multi_slot_key() {
         "no row agrees on both the node and the string"
     );
 }
+
+// --- Deduping an element frontier by a bit per id (item 83) ---
+
+/// `SeenIds` replaces a `FnvSet<u32>`, so its contract is `FnvSet::insert`'s: true the FIRST
+/// time an id is offered, false afterwards. Checked directly against a hash set over a
+/// sequence that includes repeats, the `u32::MAX` OPTIONAL sentinel, and ids far apart enough
+/// to grow the bitmap several times.
+#[test]
+fn seen_ids_answers_exactly_what_a_hash_set_would() {
+    use crate::exec::order::SeenIds;
+    let seq: Vec<u32> = vec![
+        5,
+        5,
+        0,
+        63,
+        64,
+        65,
+        0,
+        u32::MAX,
+        1,
+        u32::MAX,
+        4096,
+        63,
+        4096,
+        1_000_003,
+        1_000_003,
+        64,
+    ];
+    let mut bits = SeenIds::default();
+    let mut set: FnvSet<u32> = FnvSet::default();
+    for &id in &seq {
+        assert_eq!(
+            bits.insert(id),
+            set.insert(id),
+            "the two disagree on id {id} in {seq:?}"
+        );
+    }
+    // And the sentinel really is deduped rather than skipped: offered twice, fresh once.
+    let mut b2 = SeenIds::default();
+    assert!(b2.insert(u32::MAX));
+    assert!(!b2.insert(u32::MAX));
+    // The sentinel flag is a RESOURCE guard, and this is the claim it makes. Keyed as a raw id
+    // the ANSWER above is unchanged — removing the branch leaves every other test green — but
+    // the bitmap would resize to 67 million words, 536 MB, for that one row.
+    assert_eq!(
+        b2.words(),
+        0,
+        "the sentinel must not size the bitmap by four billion"
+    );
+    let mut b3 = SeenIds::default();
+    b3.insert(63);
+    assert_eq!(
+        b3.words(),
+        1,
+        "a real id sizes the bitmap by its own index, not more"
+    );
+    b3.insert(64);
+    assert_eq!(b3.words(), 2);
+}
+
+/// `dedup` over an ELEMENT frontier keeps the first occurrence of each element, in first-seen
+/// order. The bit-per-id set must not change which rows survive or their order.
+#[test]
+fn an_element_dedup_keeps_first_seen_order() {
+    // A ring, so `out()` revisits vertices and the dedup has duplicates to remove.
+    let store = dense_store(64, 3);
+    let first = |q: &str| -> Vec<String> { first_col(&store, q, true) };
+
+    let deduped = first("g.V().out('R').dedup().values('name')");
+    let mut seen = std::collections::HashSet::new();
+    let expected: Vec<String> = first("g.V().out('R').values('name')")
+        .into_iter()
+        .filter(|v| seen.insert(v.clone()))
+        .collect();
+    assert_eq!(
+        deduped, expected,
+        "dedup keeps the first occurrence of each, in the order they first appeared"
+    );
+    assert!(
+        deduped.len() < expected.len() + 1 && deduped.len() > 1,
+        "{}",
+        deduped.len()
+    );
+    // And it really removed something, or the test proves nothing.
+    assert!(
+        first("g.V().out('R').values('name')").len() > deduped.len(),
+        "the fixture must contain duplicates"
+    );
+}
+
+/// An OPTIONAL miss binds the `u32::MAX` sentinel, and `DISTINCT` over a column holding it
+/// must treat it as ONE value rather than growing a bitmap by four billion or dropping it.
+#[test]
+fn a_distinct_over_optional_misses_keeps_one_null() {
+    let mut store = Builder::default().build();
+    execute(
+        &crate::gql::parse("INSERT (:P {k: 1}), (:P {k: 2}), (:P {k: 3})").unwrap(),
+        &mut store,
+    )
+    .unwrap();
+    // No `:R` edges at all, so every optional match misses and every row binds the sentinel.
+    let rows = run(
+        &opt_plan(
+            "MATCH (p:P) OPTIONAL MATCH (p)-[:R]->(q) RETURN DISTINCT q AS x",
+            &store,
+        ),
+        &store,
+    )
+    .rows;
+    assert_eq!(rows.len(), 1, "three misses collapse to one NULL row");
+    assert!(rows.iter().next().expect("a row")[0].is_null());
+}

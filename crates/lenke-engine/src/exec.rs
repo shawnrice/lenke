@@ -1940,7 +1940,7 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
                 return Ok(batch);
             }
             let typed = distinct_by_typed(&batch, key_slots);
-            let mut seen_ids: FnvSet<u32> = FnvSet::default();
+            let mut seen_ids = SeenIds::default();
             let mut seen_bytes: FnvSet<Vec<u8>> = FnvSet::default();
             let keep = distinct_by_keep(&batch, key_slots, typed, &mut seen_ids, &mut seen_bytes);
             batch.gather(&keep)
@@ -4891,7 +4891,7 @@ fn pull_body(plan: &Plan, store: &Store, seed: &Batch) -> Result<Batch, String> 
                 batch
             } else {
                 let typed = distinct_by_typed(&batch, key_slots);
-                let mut seen_ids: FnvSet<u32> = FnvSet::default();
+                let mut seen_ids = SeenIds::default();
                 let mut seen_bytes: FnvSet<Vec<u8>> = FnvSet::default();
                 let keep =
                     distinct_by_keep(&batch, key_slots, typed, &mut seen_ids, &mut seen_bytes);
