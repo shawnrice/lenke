@@ -13392,3 +13392,77 @@ fn an_optional_expand_can_pass_the_source_through() {
         "with passthru NOTHING lands NULL: {passthru:?}"
     );
 }
+
+// --- `order(local)` over a scalar frontier is the identity (item 87) ---
+
+/// `order(local)` sorts INSIDE each row's value. A vertex, an edge or a scalar has nothing
+/// inside it, so the step is a pass-through and the frontier must survive it.
+///
+/// It did not. The arm replaced slot 0 with a `Col::Gen` whatever it held, and a `Col::Nodes`
+/// boxes to `Value::Num(id)` — so the frontier stopped being a frontier and every later step
+/// found nothing. Measured on a 40-vertex degree-3 fixture before the fix:
+/// `g.V().out('R').count()` was 120 and `g.V().order(local).out('R').count()` was ZERO.
+///
+/// GROUND TRUTH from a real TinkerPop console (`tinkerpop/gremlin-console`, `createModern()`):
+/// `g.V().out('knows').count()` is 2 and `g.V().order(Scope.local).out('knows').count()` is
+/// ALSO 2; `g.V().order(Scope.local).values('name').count()` is 6, the vertex count. The step
+/// is transparent over a frontier, which is what these assert.
+#[test]
+fn order_local_over_a_scalar_frontier_is_transparent() {
+    let store = dense_store(40, 3);
+    let n = |q: &str| -> usize { first_col(&store, q, true).len() };
+    // A vertex frontier: the hop after it must see the same vertices.
+    assert_eq!(n("g.V().out('R').values('name')"), 120);
+    assert_eq!(
+        n("g.V().order(local).out('R').values('name')"),
+        120,
+        "order(local) must not consume the vertex frontier"
+    );
+    assert_eq!(
+        n("g.V().order(local).values('name')"),
+        40,
+        "nor stop a property read"
+    );
+    // An EDGE frontier, and a scalar one.
+    assert_eq!(n("g.V().outE('R').order(local).inV().values('name')"), 120);
+    assert_eq!(n("g.V().values('name').order(local)"), 40);
+    // DESC is the same pass-through — the flag must not make it sort something.
+    assert_eq!(
+        n("g.V().order(local).by(desc).out('R').values('name')"),
+        120
+    );
+}
+
+/// The CONTROL, and the point of the fix being narrow: over a slot that really does hold a
+/// collection, `order(local)` must still sort it. A `fold()` builds a list, which lands in a
+/// `Col::Gen` — the one representation that can hold one.
+#[test]
+fn order_local_still_sorts_a_real_collection() {
+    let mut store = Builder::default().build();
+    execute(
+        &crate::gql::parse("INSERT (:N {name: 'c'}), (:N {name: 'a'}), (:N {name: 'b'})").unwrap(),
+        &mut store,
+    )
+    .unwrap();
+    let one = |q: &str| -> String {
+        let got = first_col(&store, q, true);
+        got.join(",")
+    };
+    // Unsorted insertion order, then sorted, then reversed — so the step is doing work.
+    let raw = one("g.V().values('name').fold()");
+    let asc = one("g.V().values('name').fold().order(local)");
+    let desc = one("g.V().values('name').fold().order(local).by(desc)");
+    assert!(
+        raw.contains('a') && raw.contains('c'),
+        "the fold must produce a list: {raw}"
+    );
+    assert_ne!(
+        asc, desc,
+        "ASC and DESC must differ, or nothing is being sorted"
+    );
+    assert!(
+        asc.find("\\\"a\\\"").unwrap_or(usize::MAX) < asc.find("\\\"c\\\"").unwrap_or(0)
+            || asc < desc,
+        "ascending must order a before c: {asc} / {desc}"
+    );
+}

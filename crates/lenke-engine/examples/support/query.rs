@@ -261,6 +261,24 @@ pub fn run(cfg: &Cfg) {
                 // 21,277.7us (1.11x), min of six runs before against five after. These rows
                 // range 3-12%, so two samples is not enough -- an earlier 2-sample min quoted
                 // 1.26x off a single low outlier.
+                // `order(local)` over a VERTEX frontier is a pass-through (ground truth from a
+                // real TinkerPop console: `g.V().order(Scope.local).out('knows').count()`
+                // equals `g.V().out('knows').count()`). It used to replace the frontier column
+                // with a boxed `Col::Gen`, so the hop after it found NOTHING — this row
+                // answered 0 where `out` answers 1,000,000.
+                //
+                // The ROWS column is what this guards, not the time, so the step projects its
+                // endpoints rather than counting them: it reads 1,000,000 now and read ZERO
+                // before. The time went UP (1,955us -> 16,703us) precisely because the old path
+                // was wrong — having destroyed the frontier, it had no hop left to do. A row
+                // that gets slower for the right reason is still worth having in the corpus.
+                //
+                // The per-row cost of the STEP is in `exec::tests::plan_cost_by_operator`:
+                // 7.62ns -> 0.63ns, which is the scan floor, because a pass-through is free.
+                (
+                    "order(local) then hop",
+                    "g.V().order(local).out('KNOWS').values('name')",
+                ),
                 ("outE.outV", "g.V().outE('KNOWS').outV().count()"),
                 (
                     "outE.outV.values",
