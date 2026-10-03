@@ -49,6 +49,20 @@ pub fn run(cfg: &Cfg) {
                     "MATCH (p:Person) WHERE p.age > 50 RETURN count(*) AS c",
                 ),
                 ("project 3", "MATCH (p:Person) RETURN p.name, p.age, p.city"),
+                // A ROW-INVARIANT list for ISO `FOR x IN <list>` (NOT Cypher's UNWIND, which
+                // this engine does not have); `FOR id IN $ids` is the same shape. Both rows, because the counting one could in principle
+                // be answered by a shortcut that never enters the operator and the projecting
+                // one cannot. Min of three interleaved rounds: 31,388.5 -> 3,364.2us (9.3x) and
+                // 33,637.7 -> 5,659.4us. The projecting row is the noisier of the two (its
+                // after-side spans 5,474-9,451), so read the counting row as the headline.
+                (
+                    "for-in const x3",
+                    "MATCH (p:Person) FOR x IN [1, 2, 3] RETURN count(*) AS c",
+                ),
+                (
+                    "for-in const project",
+                    "MATCH (p:Person) FOR x IN [1, 2, 3] RETURN x",
+                ),
                 (
                     "1-hop",
                     "MATCH (p:Person)-[:KNOWS]->(q) RETURN count(*) AS c",

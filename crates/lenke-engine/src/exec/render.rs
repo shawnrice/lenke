@@ -115,7 +115,10 @@ pub(super) fn edge_map_ext_id(v: &Value) -> Option<&str> {
 /// bare VERTEX (or EDGE) element map (the fold().unfold() round-trip), resolve each
 /// `id` back to a live dense id and return a `Col::Nodes` (or `Col::Edges`) so
 /// downstream steps operate on the elements again. Otherwise keep the raw `Col::Gen`.
-pub(super) fn reunfold_elements(elems: &[Value], store: &Store) -> Col {
+/// Takes `elems` BY VALUE: both callers own the vector and drop it immediately, and the
+/// fallback is the common case (a list of plain scalars), where `elems.to_vec()` was copying
+/// every element for nothing — 400,000 `Value` clones on the 2-element-list bench.
+pub(super) fn reunfold_elements(elems: Vec<Value>, store: &Store) -> Col {
     if elems.is_empty() {
         return Col::Gen(Vec::new());
     }
@@ -142,7 +145,7 @@ pub(super) fn reunfold_elements(elems: &[Value], store: &Store) -> Col {
             return Col::Edges(eids);
         }
     }
-    Col::Gen(elems.to_vec())
+    Col::Gen(elems)
 }
 
 /// The canonical result map for an edge — `{id, from, to, labels(sorted),

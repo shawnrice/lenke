@@ -882,6 +882,30 @@ use self::render::*;
 
 /// Pull a batch up through a (non-terminal) plan node. `track` is the plan-global
 /// lineage decision: when true, row-producing operators build the path sidecar.
+///
+/// THIS FUNCTION'S CODEGEN IS LOAD-BEARING, AND NOT IN A WAY ANY EDIT CAN PRESERVE. The
+/// filtered-count bench cluster (`filtered`, `filter age>50`, `has age>50` — all the same
+/// `MATCH (p:Person) WHERE p.age > 50 RETURN count(*)`) sits on an alignment that ANY textual
+/// change to this function loses, by 1.08-1.24x, in every case measured and never in the
+/// favourable direction. Four perturbations, each min-of-three interleaved:
+///
+/// | perturbation | cluster |
+/// |---|---|
+/// | +3 lines inline in the `SortLocal` arm (item 89) | 1.21x slower |
+/// | -93 lines, the `CallInline` arm hoisted out (item 90) | 1.21-1.24x slower |
+/// | TWO ONE-CHARACTER call-site edits (`&elems` -> `elems`) | 1.22x slower |
+/// | ~20 lines replaced by a call, twice (item 91's unwind) | 1.10x slower |
+/// | a dead ~20-line fn added to this MODULE, never called | NO CHANGE |
+///
+/// So it is this function's own code, not the module's size, and the magnitude tracks neither
+/// the size nor the content of the edit. Two consequences, both practical:
+///
+/// - A ~10-24% move in that cluster alongside a change to `pull` is the cost of EDITING
+///   `pull`, not evidence about the change. Judge a change here on the rows its own operator
+///   touches, and report the cluster move as the toll.
+/// - There is a real ~20% sitting in that query shape for whoever can control the alignment
+///   deliberately. Nothing reachable from source did: see the two rejected levers recorded at
+///   the `CallInline` arm and at the aggregate fast-path chain.
 fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
     Ok(match plan {
         // A write plan is never pulled (a read sub-plan cannot contain one); it
@@ -1749,36 +1773,9 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
         } => {
             // For each input row, evaluate the list and emit one row per element
             // (NULL/empty → none; a non-list scalar → a one-element singleton),
-            // appending the element and, optionally, its ordinal counter.
-            let batch = pull(input, store, track)?;
-            let lists = eval(list, store, &batch)?;
-            let mut keep = Vec::new();
-            let mut elems: Vec<Value> = Vec::new();
-            let mut ords: Vec<Value> = Vec::new();
-            for i in 0..batch.rows() {
-                let items: Vec<Value> = match lists.value_at(i) {
-                    Value::List(v) => v,
-                    Value::Null => Vec::new(),
-                    scalar => vec![scalar], // a non-list value is a singleton list
-                };
-                for (j, e) in items.into_iter().enumerate() {
-                    keep.push(i);
-                    elems.push(e);
-                    if let Some((_, one_based)) = ordinal {
-                        ords.push(Value::Num((j + usize::from(*one_based)) as f64));
-                    }
-                }
-            }
-            let mut slots: Vec<Col> = batch.slots.iter().map(|c| c.gather(&keep)).collect();
-            // A folded VERTEX/EDGE round-trips through fold().unfold() as its element
-            // map; reconstitute a live element frontier by resolving the `id` field back
-            // to a dense id, so `values`/`out`/`order` operate on nodes again. Falls back
-            // to the raw map column if any element is not a resolvable element map.
-            slots.push(reunfold_elements(&elems, store));
-            if ordinal.is_some() {
-                slots.push(Col::Gen(ords));
-            }
-            Batch::of(slots)
+            // appending the element and, optionally, its ordinal counter. The body is in
+            // `unwind_batch`, leaving this arm pure dispatch — see item 89.
+            unwind_batch(pull(input, store, track)?, list, ordinal, store)?
         }
         Plan::Union {
             left,
@@ -4920,26 +4917,9 @@ fn pull_body(plan: &Plan, store: &Store, seed: &Batch) -> Result<Batch, String> 
             ..
         } => {
             let b = pull_body(input, store, seed)?;
-            let lists = eval(list, store, &b)?;
-            let mut keep = Vec::new();
-            let mut elems: Vec<Value> = Vec::new();
-            let mut ords: Vec<Value> = Vec::new();
-            for i in 0..b.rows() {
-                let items: Vec<Value> = match lists.value_at(i) {
-                    Value::List(v) => v,
-                    Value::Null => Vec::new(),
-                    scalar => vec![scalar],
-                };
-                for (j, e) in items.into_iter().enumerate() {
-                    keep.push(i);
-                    elems.push(e);
-                    if let Some((_, one_based)) = ordinal {
-                        ords.push(Value::Num((j + usize::from(*one_based)) as f64));
-                    }
-                }
-            }
+            let (keep, elems, ords) = unwind_rows(list, &b, ordinal, store)?;
             let mut slots: Vec<Col> = b.slots.iter().map(|c| c.gather(&keep)).collect();
-            slots.push(reunfold_elements(&elems, store));
+            slots.push(reunfold_elements(elems, store));
             if ordinal.is_some() {
                 slots.push(Col::Gen(ords));
             }
@@ -6057,6 +6037,101 @@ pub(super) fn as_truth(col: &Col) -> Result<Vec<Option<bool>>, String> {
 /// name with placeholders, so a MISSED slot is a wrong answer. Anything unrecognized returns
 /// false. An over-approximation is safe (more columns gathered than needed); an
 /// under-approximation is not.
+/// The `Plan::Unwind` body: expand each row's list into one row per element, gathering the
+/// other slots alongside.
+fn unwind_batch(
+    batch: Batch,
+    list: &Expr,
+    ordinal: &Option<(usize, bool)>,
+    store: &Store,
+) -> Result<Batch, String> {
+    let (keep, elems, ords) = unwind_rows(list, &batch, ordinal, store)?;
+    let mut slots: Vec<Col> = batch.slots.iter().map(|c| c.gather(&keep)).collect();
+    // A folded VERTEX/EDGE round-trips through fold().unfold() as its element map;
+    // reconstitute a live element frontier by resolving the `id` field back to a dense id, so
+    // `values`/`out`/`order` operate on nodes again. Falls back to the raw map column if any
+    // element is not a resolvable element map.
+    slots.push(reunfold_elements(elems, store));
+    if ordinal.is_some() {
+        slots.push(Col::Gen(ords));
+    }
+    Ok(Batch::of(slots))
+}
+
+/// The source row index, element and ordinal columns an unwind produces, before they are
+/// gathered into a `Batch`.
+type UnwoundRows = (Vec<usize>, Vec<Value>, Vec<Value>);
+
+/// The per-row expansion behind `Plan::Unwind`: for each input row, the list's elements, the
+/// row index each came from, and (optionally) its ordinal.
+///
+/// A ROW-INVARIANT list — `UNWIND $ids AS id`, `UNWIND [1, 2] AS x`, the common bulk-lookup
+/// spelling — is evaluated ONCE instead of once per row. `Expr::List` builds a separate
+/// `Value::List` per row and `value_at` then CLONES each one, so the old path paid two
+/// allocations per input row to carry a list that never changed: 400,000 of them on a
+/// 200,000-row scan of a 2-element constant list.
+///
+/// Invariance is `slots_read` reporting success with no slots touched, which is exactly
+/// "depends on no column". Every callable function in this engine is deterministic (the
+/// `localtime`/`datetime` family are TYPE CONSTRUCTORS over their arguments, not clock
+/// reads), so one evaluation and n evaluations cannot disagree. A 0-row batch evaluates
+/// NOTHING, which keeps the set of queries that raise exactly as it was.
+fn unwind_rows(
+    list: &Expr,
+    batch: &Batch,
+    ordinal: &Option<(usize, bool)>,
+    store: &Store,
+) -> Result<UnwoundRows, String> {
+    let n = batch.rows();
+    let mut keep = Vec::new();
+    let mut elems: Vec<Value> = Vec::new();
+    let mut ords: Vec<Value> = Vec::new();
+    let mut slots = Vec::new();
+    let invariant = n > 0 && slots_read(list, &mut slots) && slots.is_empty();
+    if invariant {
+        // One row in, one evaluation, one list — then the same elements for every row.
+        let probe = batch.gather(&[0]);
+        let once = eval(list, store, &probe)?;
+        let items: Vec<Value> = match once.value_at(0) {
+            Value::List(v) => v,
+            Value::Null => Vec::new(),
+            scalar => vec![scalar],
+        };
+        let k = items.len();
+        keep.reserve(n * k);
+        elems.reserve(n * k);
+        if ordinal.is_some() {
+            ords.reserve(n * k);
+        }
+        for i in 0..n {
+            for (j, e) in items.iter().enumerate() {
+                keep.push(i);
+                elems.push(e.clone());
+                if let Some((_, one_based)) = ordinal {
+                    ords.push(Value::Num((j + usize::from(*one_based)) as f64));
+                }
+            }
+        }
+        return Ok((keep, elems, ords));
+    }
+    let lists = eval(list, store, batch)?;
+    for i in 0..n {
+        let items: Vec<Value> = match lists.value_at(i) {
+            Value::List(v) => v,
+            Value::Null => Vec::new(),
+            scalar => vec![scalar], // a non-list value is a singleton list
+        };
+        for (j, e) in items.into_iter().enumerate() {
+            keep.push(i);
+            elems.push(e);
+            if let Some((_, one_based)) = ordinal {
+                ords.push(Value::Num((j + usize::from(*one_based)) as f64));
+            }
+        }
+    }
+    Ok((keep, elems, ords))
+}
+
 fn slots_read(e: &Expr, out: &mut Vec<usize>) -> bool {
     match e {
         Expr::Lit(_) | Expr::Param(_) => true,

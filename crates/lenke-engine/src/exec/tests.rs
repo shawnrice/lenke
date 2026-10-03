@@ -1787,6 +1787,91 @@ fn for_in_unwind() {
     assert_eq!(run(&plan, &store).rows.len(), 2);
 }
 
+/// A ROW-VARYING `FOR x IN <list>` is evaluated per row, not once.
+///
+/// `unwind_rows` evaluates a ROW-INVARIANT list a single time and reuses it, which is only
+/// sound because the list depends on no column. This is the other side of that test, and it
+/// needs a fixture with SEVERAL rows carrying DIFFERENT values — `for_in_unwind`'s one-node
+/// store cannot tell "evaluated per row" from "evaluated once at row 0", so it passed with
+/// the invariance check deleted.
+#[test]
+fn a_row_varying_unwind_list_is_evaluated_per_row() {
+    let mut b = Builder::default();
+    for v in [1.0, 2.0, 3.0] {
+        b.node(&["P"], &[("num", n(v))]);
+    }
+    let store = b.build();
+    let plan = crate::opt::optimize_indexed(
+        crate::gql::parse("MATCH (p:P) FOR x IN [p.num] RETURN x").unwrap(),
+        &store,
+    );
+    let mut got: Vec<f64> = run(&plan, &store)
+        .rows
+        .iter()
+        .map(|r| match r[0] {
+            Value::Num(x) => x,
+            ref o => panic!("{o:?}"),
+        })
+        .collect();
+    got.sort_by(f64::total_cmp);
+    // Collapsed to row 0's list, this is [1, 1, 1].
+    assert_eq!(got, vec![1.0, 2.0, 3.0]);
+}
+
+/// An invariant `FOR` list over a MATCH that found nothing yields nothing — and does not
+/// probe a row that is not there.
+///
+/// The one-evaluation path reads the list from a one-row probe of the input, so it is gated on
+/// the input being non-empty. Without the gate this indexes row 0 of an empty batch.
+#[test]
+fn an_invariant_unwind_list_over_no_rows_yields_no_rows() {
+    let mut b = Builder::default();
+    b.node(&["P"], &[("name", s("marko"))]);
+    let store = b.build();
+    let plan = crate::opt::optimize_indexed(
+        crate::gql::parse("MATCH (p:Absent) FOR x IN [1, 2, 3] RETURN x").unwrap(),
+        &store,
+    );
+    assert_eq!(run(&plan, &store).rows.len(), 0);
+}
+
+/// An invariant list multiplies EVERY row by its elements, and the ordinal restarts per row.
+///
+/// Three rows times a two-element constant list is six rows carrying `10, 20` three times
+/// over, with ORDINALITY `1, 2` three times over — not one running counter.
+#[test]
+fn an_invariant_unwind_list_repeats_for_every_row_with_per_row_ordinals() {
+    let mut b = Builder::default();
+    for v in [1.0, 2.0, 3.0] {
+        b.node(&["P"], &[("num", n(v))]);
+    }
+    let store = b.build();
+    let pairs = |q: &str| -> Vec<(f64, f64)> {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
+        let mut v: Vec<(f64, f64)> = run(&plan, &store)
+            .rows
+            .iter()
+            .map(|r| match (&r[0], &r[1]) {
+                (Value::Num(a), Value::Num(b)) => (*a, *b),
+                o => panic!("{o:?}"),
+            })
+            .collect();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        v
+    };
+    assert_eq!(
+        pairs("MATCH (p:P) FOR x IN [10, 20] WITH ORDINALITY i RETURN x, i"),
+        vec![
+            (10.0, 1.0),
+            (10.0, 1.0),
+            (10.0, 1.0),
+            (20.0, 2.0),
+            (20.0, 2.0),
+            (20.0, 2.0),
+        ]
+    );
+}
+
 /// A FOR-driven fresh-variable `OPTIONAL MATCH (p:Label {k: expr})` is a left-outer
 /// correlated scan: each unwound name finds the matching node (its age), or a NULL
 /// node when none matches.
@@ -12764,6 +12849,20 @@ fn plan_cost_by_operator() {
                 input: Box::new(scan()),
                 descending: false,
                 by_key: false,
+            },
+        ),
+        (
+            // The ROW-INVARIANT spelling, which is the common one: `UNWIND $ids AS id` and
+            // `UNWIND [1, 2] AS x` build the same list for every row, while the row below
+            // reads a property and genuinely varies.
+            "Unwind (2-element CONSTANT list)",
+            Plan::Unwind {
+                input: Box::new(scan()),
+                list: Box::new(Expr::List {
+                    items: vec![Expr::Lit(Value::Num(1.0)), Expr::Lit(Value::Num(2.0))],
+                }),
+                var_slot: 1,
+                ordinal: None,
             },
         ),
         (
