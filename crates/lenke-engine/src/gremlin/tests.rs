@@ -299,16 +299,46 @@ fn streaming_json_sink_matches_materialized_bytes() {
 fn fused_map_json_matches_value_tree_bytes() {
     let mut b = Builder::default();
     // Mixed graph: some nodes miss `age`/`city`; every 5th node is also VIP; a bool.
+    //
+    // AND SOME CARRY A PRESENT-NULL, which is NOT the same thing as missing the key. These
+    // exercise the writer's `Gen` arm: a `Builder` null write does not land in a TYPED
+    // column, so these rows route through `other => read(i)` and NOT through the `Num` /
+    // `Str` / `Dict` / `Bool` arms. VERIFIED, not assumed — removing the present-null guard
+    // in `write_col_cell_json` leaves all of these green, which is why
+    // `a_stored_null_property_serializes_as_null_not_as_a_zero` builds its store from NDJSON
+    // instead. Kept because a present-null in a `Gen` column is still a shape worth having in
+    // this matrix, not because it covers the typed arms.
     for i in 0..120u32 {
         let mut props: Vec<(&str, Value)> = vec![
             ("name", s(&format!("p{i}"))),
-            ("active", Value::Bool(i % 2 == 0)),
+            (
+                "active",
+                if i % 13 == 0 {
+                    Value::Null
+                } else {
+                    Value::Bool(i % 2 == 0)
+                },
+            ),
         ];
         if i % 3 != 0 {
-            props.push(("age", n(f64::from(i % 40 + 18))));
+            props.push((
+                "age",
+                if i % 7 == 0 {
+                    Value::Null
+                } else {
+                    n(f64::from(i % 40 + 18))
+                },
+            ));
         }
         if i % 4 != 0 {
-            props.push(("city", s(["oslo", "bergen", "tromso"][(i % 3) as usize])));
+            props.push((
+                "city",
+                if i % 11 == 0 {
+                    Value::Null
+                } else {
+                    s(["oslo", "bergen", "tromso"][(i % 3) as usize])
+                },
+            ));
         }
         let labels: &[&str] = if i % 5 == 0 { &["N", "VIP"] } else { &["N"] };
         b.node(labels, &props);
@@ -335,6 +365,56 @@ fn fused_map_json_matches_value_tree_bytes() {
         let fused = crate::exec::run_gremlin_json(&plan, &st);
         let tree = crate::json::gremlin_results_json(&run(&plan, &st));
         assert_eq!(fused, tree, "fused vs value-tree diverged for `{q}`");
+    }
+}
+
+/// A stored NULL property reaches Gremlin's JSON egress AS `null`, not as the zero value of
+/// whatever column it lives in.
+///
+/// The fused writer's guard is `present_at(i)` — `present || nulls` — while `Column::read`
+/// gates on `present` ALONE, so a present-null passed the guard and then had `data[i]` read
+/// out from under it. Measured through the FFI on a 4-node NDJSON graph: `g.V()` answered
+/// `{"k":0}` and `valueMap()` the same, while `values('k')` answered `[2,null,1]` and the TS
+/// engine, `render_nodes` and the `Value` tree all said `null`. A wrong VALUE, silently, on
+/// the path the FFI and the TS-facing API return.
+///
+/// AND IT LEAKS ANOTHER ROW'S VALUE, not just a zero. With the guard removed this fixture
+/// renders node 2 as `{"flag":false,"num":0,"txt":"x"}` — `txt` is `"x"`, node 1's string,
+/// because a `Dict` column reads `codes[i]` of 0 and hands back the first interned entry. A
+/// stored null could therefore expose a different record's value.
+///
+/// `fused_map_json_matches_value_tree_bytes` does NOT cover this (its `Builder` nulls land in
+/// a `Gen` column and take the already-correct `read` arm), so this test carries the typed
+/// arms alone, and asserts the bytes outright as well as against the value tree — so a future
+/// "both sides agree" cannot agree on the wrong thing.
+#[test]
+fn a_stored_null_property_serializes_as_null_not_as_a_zero() {
+    // BUILT FROM NDJSON ON PURPOSE. `Builder`'s own null write does not land in a TYPED
+    // column, so a `Builder` fixture routes through `write_col_cell_json`'s `other =>
+    // read(i)` arm, which was always correct — the first version of this test used one and
+    // PASSED with the fix removed. The bulk loader types the column from the first value it
+    // sees and records later nulls in the presence bitsets, which is the shape that breaks.
+    let nd = "{\"type\":\"node\",\"id\":\"1\",\"labels\":[\"N\"],\
+               \"properties\":{\"num\":2,\"txt\":\"x\",\"flag\":true}}\n\
+               {\"type\":\"node\",\"id\":\"2\",\"labels\":[\"N\"],\
+               \"properties\":{\"num\":null,\"txt\":null,\"flag\":null}}\n";
+    let st = crate::ndjson::from_ndjson(nd).unwrap();
+    for q in ["g.V()", "g.V().valueMap()", "g.V().elementMap()"] {
+        let plan = crate::opt::optimize_indexed(super::parse(q).unwrap(), &st);
+        let fused = crate::exec::run_gremlin_json(&plan, &st);
+        assert!(
+            fused.contains("\"num\":null")
+                && fused.contains("\"txt\":null")
+                && fused.contains("\"flag\":null"),
+            "`{q}` lost a stored null: {fused}"
+        );
+        // 0 / "" / false are the three wrong answers the typed arms produced.
+        assert!(
+            !fused.contains("\"num\":0") && !fused.contains("\"flag\":false"),
+            "`{q}` rendered a null as a zero value: {fused}"
+        );
+        // …and still byte-identical to the value tree, which is the standing invariant.
+        assert_eq!(fused, crate::json::gremlin_results_json(&run(&plan, &st)));
     }
 }
 

@@ -685,8 +685,23 @@ fn write_edge_value_map(
 /// Write one present property column cell straight to `out` (the caller guarantees
 /// `present_at(i)`), avoiding the `Arc`/`Value` a `Column::read` would build for the
 /// scalar cases. Byte-identical to `write_value(&col.read(i))`.
+///
+/// A PRESENT-NULL IS NOT A VALUE, and that is the whole reason for the first check.
+/// `present_at` is `present || nulls`, so the caller's guard passes for a stored null —
+/// while `Column::read` gates on `present` ALONE and yields `Null`. Without this the typed
+/// arms below read `data[i]` for a slot that holds nothing: `0` for `Num`, `false` for
+/// `Bool`, the default for `Str`/`Dict`. Measured on a 4-node NDJSON graph where one `k` is
+/// a stored null, `g.V()` answered `{"k":0}` and `g.V().valueMap()` the same, while
+/// `values('k')` (which goes through `read`) answered `[2,null,1]` and the TS engine, the
+/// `Value` tree and `render_nodes` all said `null`. This path is Gremlin's JSON egress, so
+/// it is what the FFI and the TS-facing API return.
 fn write_col_cell_json(out: &mut String, col: &crate::store::Column, i: usize) {
     use crate::store::Column;
+    if !col.has_value_at(i) {
+        out.push_str("null");
+
+        return;
+    }
     match col {
         Column::Str { data, .. } => crate::json::write_string(out, &data[i]),
         Column::Dict { dict, codes, .. } => {
