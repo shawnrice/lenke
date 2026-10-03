@@ -13027,3 +13027,92 @@ fn a_whole_row_distinct_keeps_first_seen_order_for_every_typed_column() {
         "all distinct"
     );
 }
+
+// --- Stepping from an edge to an endpoint, without boxing the id (item 85) ---
+
+/// `outE().outV()` is the one spelling that keeps a `Plan::EdgeVertex`: stepping from an
+/// out-edge BACK to its source cannot be rewritten to a plain hop, while `outE().inV()`,
+/// `otherV()` and `as('e').inV()` all are (verified — `EdgeVertex=false` for each). So this is
+/// the shape that exercises the typed id read, and it has to give the same answer as the
+/// vertices it started from.
+#[test]
+fn stepping_from_an_edge_to_its_source_returns_the_source() {
+    let store = dense_store(40, 3);
+    let names = |q: &str| -> Vec<String> {
+        let mut v = first_col(&store, q, true);
+        v.sort();
+        v
+    };
+    // Every edge's source, deduped, is exactly the set of vertices that have an out-edge —
+    // which on a degree-3 fixture is all of them.
+    assert_eq!(
+        names("g.V().outE('R').outV().dedup().values('name')"),
+        names("g.V().values('name')"),
+        "every vertex has an out-edge here, so every one is some edge's source"
+    );
+    // And the multiset is the out-degree: 3 per vertex, 120 edges.
+    assert_eq!(
+        first_col(&store, "g.V().outE('R').outV().values('name')", true).len(),
+        120,
+        "one row per edge"
+    );
+    // Two things a SORTED comparison cannot see, so this part asserts the UNSORTED sequence
+    // over an explicit CHAIN (v0->v1->v2->v3):
+    //
+    //   which endpoint is read — an out-edge's `inV` is its TARGET, never its source. A
+    //   regular digraph cannot show a swap (there every vertex has in-degree and out-degree 3,
+    //   so the two multisets coincide), which is how the first version of this assertion
+    //   passed on `dense_store`.
+    //
+    //   which ROW's id is read — a mutant reading `ids[(i + 1) % len]` permutes the rows, and
+    //   EVERY permutation preserves a sorted multiset. Five `gremlin_ported` cases caught that
+    //   mutant while this test did not, until it stopped sorting.
+    let mut b = Builder::default();
+    for i in 0..4u32 {
+        b.node(&["N"], &[("name", s(&format!("v{i}")))]);
+    }
+    for i in 0..3u32 {
+        b.edge(i, i + 1, "R");
+    }
+    let chain = b.build();
+    assert_eq!(
+        first_col(&chain, "g.V().outE('R').outV().values('name')", true),
+        [r#"Str("v0")"#, r#"Str("v1")"#, r#"Str("v2")"#],
+        "each edge's source, in edge order"
+    );
+    assert_eq!(
+        first_col(&chain, "g.V().outE('R').inV().values('name')", true),
+        [r#"Str("v1")"#, r#"Str("v2")"#, r#"Str("v3")"#],
+        "each edge's target, in edge order"
+    );
+}
+
+/// A MIXED/branch frontier carries its edges UNBOXED (`Value::Edge`) in a `Gen` column, which
+/// is the arm the typed read falls back to. Both arms must agree, so the same step over a
+/// branched frontier gives the same endpoints.
+#[test]
+fn an_edge_endpoint_step_agrees_over_a_branched_frontier() {
+    let store = dense_store(40, 3);
+    let sorted = |q: &str| -> Vec<String> {
+        let mut v = first_col(&store, q, true);
+        v.sort();
+        v
+    };
+    // `union` of two identical edge arms doubles every row; the endpoints are the same set.
+    let plain = sorted("g.V().outE('R').outV().dedup().values('name')");
+    let branched = sorted("g.V().union(outE('R'), outE('R')).outV().dedup().values('name')");
+    assert_eq!(
+        plain, branched,
+        "a branched edge frontier reaches the same sources"
+    );
+    assert_eq!(
+        first_col(
+            &store,
+            "g.V().union(outE('R'), outE('R')).outV().values('name')",
+            true
+        )
+        .len(),
+        240,
+        "two arms, one row per edge each"
+    );
+}

@@ -230,6 +230,25 @@ pub fn run(cfg: &Cfg) {
                 ("has age>50", "g.V().has('age', gt(50)).count()"),
                 ("out", "g.V().out('KNOWS').count()"),
                 ("out.out", "g.V().out('KNOWS').out('KNOWS').count()"),
+                // An EDGE frontier stepping BACK to its source vertex — the one spelling that
+                // keeps a `Plan::EdgeVertex`. `outE().inV()`, `otherV()` and `as('e').inV()`
+                // all rewrite to a plain hop -- verified `EdgeVertex=false` for each, plus
+                // `inE().outV()` and `bothE().otherV()`, and instrumenting the arm across this
+                // whole group gave ZERO calls. The numbers say it out loud too: `outE.inV` cost
+                // 594us and the plain `out` row 604us, the same hop. So none of those spellings
+                // guards this operator; only stepping back to the SOURCE does, because that
+                // cannot become a hop.
+                //
+                // A/B for reading the id out of the typed column instead of boxing a
+                // `Value::Num` per row: 15,026.9us -> 12,544.5us (1.20x) and 23,636.5us ->
+                // 21,277.7us (1.11x), min of six runs before against five after. These rows
+                // range 3-12%, so two samples is not enough -- an earlier 2-sample min quoted
+                // 1.26x off a single low outlier.
+                ("outE.outV", "g.V().outE('KNOWS').outV().count()"),
+                (
+                    "outE.outV.values",
+                    "g.V().outE('KNOWS').outV().values('name').count()",
+                ),
                 ("values", "g.V().values('name').count()"),
                 ("dedup city", "g.V().values('city').dedup().count()"),
                 // `dedup` over an ELEMENT frontier rather than over values. The typed path

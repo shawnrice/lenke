@@ -1024,13 +1024,26 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
             let n = b.rows();
             let mut keep: Vec<usize> = Vec::new();
             let mut nodes: Vec<u32> = Vec::new();
+            // Branch on the representation ONCE, not per row: a typed edge frontier reads
+            // its id straight out of the column. The boxed arm stays for a branch/mixed
+            // frontier, which is the only thing that needs it.
+            let ecol = b.slot(*edge_slot);
+            let typed = elem_ids(ecol);
             for i in 0..n {
-                let eid = match b.slot(*edge_slot).value_at(i) {
-                    Value::Num(x) if x >= 0.0 => x as u32,
-                    // A branch/mixed frontier carries edges UNBOXED; a non-edge cell (a
-                    // vertex/scalar from another arm) has no endpoint, so skip it.
-                    Value::Edge(e) => e,
-                    _ => continue,
+                let eid = match typed {
+                    // No `u32::MAX` check: the OPTIONAL sentinel is not a known eid, and
+                    // `edge_endpoints` below is a bounds-checked `.get()` that returns `None`
+                    // for it — so the row is skipped there, exactly as the boxed path skipped
+                    // it on `value_at`'s NULL. Mutating the check out leaves the whole suite
+                    // green BECAUSE it is redundant, not because nothing covers it.
+                    Some(ids) => ids[i],
+                    None => match ecol.value_at(i) {
+                        Value::Num(x) if x >= 0.0 => x as u32,
+                        // A branch/mixed frontier carries edges UNBOXED; a non-edge cell (a
+                        // vertex/scalar from another arm) has no endpoint, so skip it.
+                        Value::Edge(e) => e,
+                        _ => continue,
+                    },
                 };
                 let Some((src, dst)) = store.edge_endpoints(eid) else {
                     continue;
@@ -2183,6 +2196,27 @@ fn guard_intermediate(batch: Batch, store: &Store) -> Result<Batch, String> {
         ));
     }
     Ok(batch)
+}
+
+/// The raw ids of a TYPED element column, or `None` for any other representation.
+///
+/// Lets a per-row loop branch ONCE on the representation instead of boxing every cell: a
+/// `Col::Nodes`/`Col::Edges` cell IS a `u32`, but the loops that wanted an id read it as
+/// `value_at(i)` -> `Value::Num(f64::from(id))` -> `x as u32`, building a `Value` and taking a
+/// float round-trip per row to recover the number the column already held.
+///
+/// `plan_cost_by_operator` measured the cost on `EdgeVertex`: 9.87ns a row against `Expand`'s
+/// 3.98 for the same frontier, where the only extra work is reading one id and looking up its
+/// endpoints.
+///
+/// The caller keeps its own boxed match for the `None` case, because what a non-element cell
+/// means differs between them — `EdgeVertex` accepts an unboxed `Value::Edge` from a branch
+/// arm, while the shortest-path and subgraph readers take only `Value::Num`.
+fn elem_ids(col: &Col) -> Option<&[u32]> {
+    match col {
+        Col::Nodes(v) | Col::Edges(v) => Some(v),
+        _ => None,
+    }
 }
 
 fn hash_join(lb: &Batch, rb: &Batch, on: &[(usize, usize)]) -> Batch {
@@ -4673,13 +4707,21 @@ fn pull_body(plan: &Plan, store: &Store, seed: &Batch) -> Result<Batch, String> 
             let b = pull_body(input, store, seed)?;
             let mut keep: Vec<usize> = Vec::new();
             let mut nodes: Vec<u32> = Vec::new();
+            // See the `Plan::EdgeVertex` arm in `pull`: the representation is checked once,
+            // not boxed per row.
+            let ecol = b.slot(*edge_slot);
+            let typed = elem_ids(ecol);
             for i in 0..b.rows() {
-                let eid = match b.slot(*edge_slot).value_at(i) {
-                    Value::Num(x) if x >= 0.0 => x as u32,
-                    // A branch/mixed frontier carries edges UNBOXED; a non-edge cell (a
-                    // vertex/scalar from another arm) has no endpoint, so skip it.
-                    Value::Edge(e) => e,
-                    _ => continue,
+                let eid = match typed {
+                    // See the `pull` arm: `edge_endpoints` rejects the sentinel for us.
+                    Some(ids) => ids[i],
+                    None => match ecol.value_at(i) {
+                        Value::Num(x) if x >= 0.0 => x as u32,
+                        // A branch/mixed frontier carries edges UNBOXED; a non-edge cell (a
+                        // vertex/scalar from another arm) has no endpoint, so skip it.
+                        Value::Edge(e) => e,
+                        _ => continue,
+                    },
                 };
                 let Some((src, dst)) = store.edge_endpoints(eid) else {
                     continue;
