@@ -1507,6 +1507,13 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
             // never evaluate arbitrary expressions, so they cannot fault.)
             // A raw `order()` over a (possibly-element) frontier feeding the count carries a
             // runtime type-check the fast paths would elide — bail to general exec so it runs.
+            // REJECTED lever — `#[inline(never)]` on all 32 `try_*` fast paths below, to stop
+            // them being inlined into this arm and so make the layout above stable. It buys
+            // NOTHING: ~2-3% slower (`filtered` 289.6 -> 298.9, `filter age>50` 292.3 ->
+            // 299.0, min of three; only the 0.2ns `label` rows flagged), and it does not
+            // confer the immunity that was the whole point — re-applying item 89's inline
+            // perturbation on top of the pinned build reproduces the same 1.21x (366.6 min).
+            // So the sensitivity is not cross-module inlining of this chain.
             let shortcuts_ok = !plan_has_raw_element_order(input);
             let mut out = if let Some(b) = shortcuts_ok
                 .then(|| {
@@ -2024,6 +2031,14 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
             slots.push(Col::Nodes(nodes));
             Batch::of(slots)
         }
+        // REJECTED lever — hoisting this 93-line COLD arm out of `pull` into an
+        // `#[inline(never)] fn`, on item 89's finding that added code in one of these 45 arms
+        // moves the others. It is 1.21-1.24x SLOWER, not faster: min of three interleaved
+        // rounds over 68 query rows, `filter age>50` 303.9 -> 367.4, `filtered` 297.8 ->
+        // 362.5, `has age>50` 299.0 -> 371.5, every other row flat (sum 1.002x). The
+        // filtered-count cluster sits on an alignment that perturbing `pull` loses in EITHER
+        // direction — adding three lines costs the same 1.21x as removing ninety-three.
+        // Treat `pull`'s layout as load-bearing and measure that cluster after touching it.
         Plan::CallInline {
             input,
             body,
