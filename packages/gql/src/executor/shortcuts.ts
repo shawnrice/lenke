@@ -287,6 +287,44 @@ const inlineHolds = (
  * never have visited would RAISE where the general path returns 0 — a
  * byte-identity break, not just a different number.
  */
+// REJECTED levers — reordering or reseeding this walk. Both are recorded with their numbers
+// because the first one LOOKS like the biggest win available anywhere in the TS engine, and
+// re-deriving that it is forbidden is the expensive path (audit item 139).
+//
+// This walk is the per-vertex route for `(a:L)-[:T]->(x) WHERE <pred on a>`, the widest
+// TS/native ratio in the cross-engine bench (459x). Decomposed on 200,000 vertices /
+// 1,000,000 edges, with a predicate matching NOTHING:
+//
+//     bare node scan, same predicate     248ns a vertex   (the property-bag read, structural)
+//     this walk                          560ns a vertex
+//     this walk, ALL survivors           602ns a vertex
+//
+// So ~248ns is the structural property read and ~312ns is adjacency plumbing — and since
+// making every vertex a survivor adds only 42ns, the degree accumulation is not the cost.
+//
+// 1. TEST THE PREDICATE FIRST, seeding from the label bucket so a non-survivor costs one
+//    property read and no adjacency work. 111.94 -> 35.54ms, a 3.1x win — and ILLEGAL. A
+//    vertex with no matching edge contributes no rows, so the general path never evaluates
+//    the predicate on it; evaluating it anyway RAISES where the general path returns a count,
+//    and WHICH queries raise is part of the cross-engine invariant. Caught immediately by the
+//    two tests item 129 left for exactly this (`a start-only predicate never evaluates a
+//    vertex with no matching edge`, `a vertex whose only edges are of another type never
+//    reaches the predicate`), which failed with a data exception.
+//
+// 2. KEEP THE ORDER but seed from the label bucket anyway — `Vertex` objects, so no
+//    `getVertexById` and no `Map`-entry destructuring. Legal (all 36 tests pass) and 1.18x on
+//    the 0-survivor row, 1.30x when all survive. REJECTED on the adversarial fixture: the
+//    adjacency index holds only vertices WITH edges, so where most labelled vertices have
+//    none, a label-bucket seed iterates far more entries. At 200,000 `Person` with only
+//    10,000 carrying a KNOWS edge it is **3.5x SLOWER** (5.38 vs 1.54ms) — a bigger loss than
+//    the dense gain. A size-guarded version (seed from whichever collection is smaller) would
+//    be strictly better-or-equal, but it buys ~1.2x on a row whose remaining cost is the
+//    structural property read, at the price of a second duplicated walk and a cost heuristic;
+//    not taken, and recorded here so it can be picked up deliberately rather than rediscovered.
+//
+// The conclusion for this row: the plumbing cannot be reordered away without breaking raise
+// parity, so what is left is the property-bag read — structural, like the filtered scan of
+// item 132.
 const startOnlyHopCount = (scan: HopScan, startVar: string | undefined): number => {
   const { graph, params, pred, pa, out, types, inNear } = scan;
   const binding = new Map<string, unknown>();
