@@ -128,7 +128,10 @@ const graphDoc = (() => {
 })();
 
 const FORMATS = ['ndjson', 'pg-json', 'graphson', 'pg-text', 'csv'];
-const DECODABLE = ['pg-json', 'graphson', 'pg-text'];
+// `ndjson` has its own two dedicated decode rows above, so it is not repeated here. `csv` was
+// absent with no reason recorded, which left the only format still on the engine's `GraphData`
+// bridge in BOTH directions completely unmeasured.
+const DECODABLE = ['pg-json', 'graphson', 'pg-text', 'csv'];
 
 /**
  * One row. `setup` runs ONCE outside the timed region and its result is handed to `run`;
