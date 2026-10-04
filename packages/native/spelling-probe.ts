@@ -129,19 +129,24 @@ const GROUPS: [string, readonly string[]][] = [
     ],
   ],
   [
-    // `ORDER BY <alias>` IS `ORDER BY <the expression the alias names>`. For a PLAIN COLUMN
-    // alias the two are already one plan (`aliasDefinition` substitutes it, so the top-k keeps
-    // INPUT bindings and projects only the survivors). For a COMPUTED alias the substitution
-    // declines, the sort reads an OUTPUT column, the top-k is given up, and every row is
-    // projected — measured 154.8ms against the expression spelling's 89.3 at 200,000 rows,
-    // and 191.8 for an alias of a function (audit item 144).
+    // `ORDER BY <alias>` IS `ORDER BY <the expression the alias names>`. `aliasDefinition`
+    // substitutes it so the top-k keeps INPUT bindings and projects only the rows it emits.
     //
-    // It sits at ~1.7x, under the default 2x tolerance, so this group DOCUMENTS the gap rather
-    // than failing on it: `SPELL_TOL=1.5 bun run spelling` flags it. Closing it needs BOTH
-    // engines, because the two spellings differ in WHICH QUERIES RAISE — a faulting projection
-    // throws for the alias spelling and not for its twin, in native as well — so a one-sided
-    // fix would be a cross-engine divergence.
-    'ORDER BY alias vs its expression (item 144)',
+    // Item 144 found the COMPUTED case declining that substitution, measured the alias
+    // spelling at 154.8ms against the expression's 89.3 (191.8 for an alias of a function),
+    // and concluded it could not be fixed in one engine because the two spellings differ in
+    // WHICH QUERIES RAISE. That conclusion was WRONG, and the correction is the thing worth
+    // keeping: native projects only the emitted rows (`try_late_materialize`), so TS was the
+    // inconsistent engine and the difference was a LIVE cross-engine divergence, not a shared
+    // design. Item 145 fixed it in TS alone — 150.6 -> 86.1ms against the expression's 86.3.
+    //
+    // The pair stays as the regression guard. Note what it still PRINTS, though: ~1.9x, where
+    // an isolated harness at the same `SPELL_N` reads 6.66ms against 5.64 (1.18x) and 200,000
+    // rows read 86.1 against 86.3. This probe runs twenty-odd queries in one process, so each
+    // row's cache state depends on its predecessors and its absolute spread is inflated — the
+    // third time that has been confirmed (TS audit items 141, 143, 145). It is a FINDER: a
+    // group it flags is worth isolating, and a spread it prints is not a settled delta.
+    'ORDER BY alias vs its expression (items 144/145)',
     [
       'MATCH (n:P) RETURN n.k + 1 AS c ORDER BY c LIMIT 10',
       'MATCH (n:P) RETURN n.k + 1 AS c ORDER BY n.k + 1 LIMIT 10',

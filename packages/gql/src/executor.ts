@@ -1802,15 +1802,35 @@ const aliasDefinition = (
     return undefined;
   }
 
-  if (item.expr.kind === 'var') {
-    return outNames.has(item.expr.name) ? undefined : item.expr;
+  // ANY expression that reads only INPUT variables is substitutable, not just a direct
+  // column. `n.age + 1 AS a … ORDER BY a` is the same question as `ORDER BY n.age + 1`, and
+  // restricting this to `var`/`prop` left the computed case as a live CROSS-ENGINE
+  // DIVERGENCE, not merely a slow spelling (audit item 145):
+  //
+  //     RETURN n.age + 1 AS a, CAST(n.s AS INTEGER) AS b ORDER BY a LIMIT 2
+  //       ts      RAISED                     <- projected every row, so `b` faulted
+  //       native  [{a:2,b:1},{a:3,b:2}]      <- projected only the two emitted rows
+  //
+  // while the `ORDER BY n.age + 1` spelling returns those rows in BOTH. Native is the
+  // consistent one: it inlines the alias into the sort-key scope, keeps the top-k over INPUT
+  // bindings, and so never projects `b` for a row it does not emit.
+  //
+  // Substituting is sound exactly when no free name of the expression is an OUTPUT name — a
+  // shadowed name would resolve to the output column in the sort scope and mean something
+  // else. The `var` and `prop` cases are subsumed: their free sets are `{name}` and
+  // `{variable}`.
+  //
+  // It cannot change WHICH expressions are evaluated per row, only whether a row OBJECT is
+  // built: the substituted expression becomes the sort key, which is evaluated for every row
+  // either way. What changes is that OTHER projected items are no longer evaluated for rows
+  // the top-k discards — which is precisely what native already does.
+  for (const name of freePredicateVars(item.expr)) {
+    if (outNames.has(name)) {
+      return undefined;
+    }
   }
 
-  if (item.expr.kind === 'prop') {
-    return outNames.has(item.expr.variable) ? undefined : item.expr;
-  }
-
-  return undefined;
+  return item.expr;
 };
 
 /**

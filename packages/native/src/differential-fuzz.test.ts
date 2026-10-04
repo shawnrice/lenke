@@ -732,8 +732,19 @@ const genQuery = (r: () => number): string => {
   if (p < 0.42) {
     const dir = pick(r, ['ASC', 'DESC']);
     const nulls = pick(r, ['', ' NULLS FIRST', ' NULLS LAST']);
+    // A `LIMIT` plus a SECOND, independently fallible item is what tells an engine that
+    // projects only the EMITTED rows from one that projects them all: the discarded rows'
+    // projection can FAULT. `ORDER BY x` sorting by an ALIAS is the shape whose substitution
+    // decides that (it is what keeps the top-k over input bindings).
+    //
+    // Item 145 found this engine RAISING where native returned rows for exactly that query,
+    // and nothing here generated it: the band's second item (`n.n`) cannot fault, and it
+    // carried no `LIMIT`. Only the CONTENT of this shape changed, not its probability band,
+    // so no later boundary moved.
+    const paged = r() < 0.5 ? ` LIMIT ${1 + Math.floor(r() * 3)}` : '';
+    const fallible = r() < 0.5 ? `${genExpr(r, 2)} AS u, ` : '';
 
-    return `MATCH (n:T) RETURN ${genExpr(r, 2)} AS x, n.n AS t ORDER BY x ${dir}${nulls}, t`;
+    return `MATCH (n:T) RETURN ${fallible}${genExpr(r, 2)} AS x, n.n AS t ORDER BY x ${dir}${nulls}, t${paged}`;
   }
 
   if (p < 0.48) {
@@ -844,6 +855,24 @@ const genQuery = (r: () => number): string => {
       // has in-edges and no out-edges — so one direction counts and the other is 0.
       `MATCH (a:U)-[:${t}]->(b) WHERE a.n >= 0 RETURN count(*) AS x`,
       `MATCH (a:U)<-[:${t}]-(b) WHERE a.n >= 0 RETURN count(*) AS x`,
+      // TARGETED: `ORDER BY <COMPUTED alias>` with a LIMIT and a SECOND item that faults on
+      // exactly the rows the LIMIT DISCARDS. This is the one combination that distinguishes
+      // an engine projecting only the emitted rows from one projecting them all, and it was a
+      // live divergence — this engine RAISED where native returned rows (TS audit item 145).
+      //
+      // Every piece is load-bearing and none of it is reachable by the random draw:
+      //   - `st` exists ONLY on vertices 1 and 3, so `CAST(n.st AS INTEGER)` faults on those
+      //     two and is NULL (not a fault) on the rest. A fallible expression over a property
+      //     every vertex carries faults on the emitted rows too, and then BOTH engines raise.
+      //   - `0 - n.n` is a COMPUTED alias, so it is the substitution under test; a plain
+      //     column was already substituted and shows nothing.
+      //   - ascending `x` puts n = 17, 13, 11 first (vertices 6, 5, 4 — no `st`) and leaves
+      //     the two faulting rows outside `LIMIT 3`.
+      // The random band above now also emits a LIMIT and a second fallible item, but on a
+      // six-vertex fixture with `LIMIT 1-3` it reaches this coincidence too rarely to rely
+      // on: three seeds did not catch the reverted fix, which is why this is spelled out.
+      'MATCH (n:T) RETURN CAST(n.st AS INTEGER) AS u, 0 - n.n AS x, n.n AS t ORDER BY x, t LIMIT 3',
+      'MATCH (n:T) RETURN CAST(n.st AS INTEGER) AS u, 0 - n.n AS x, n.n AS t ORDER BY x, t SKIP 1 LIMIT 2',
       // UNTYPED and filtered, unconditionally rather than via the `rel` draw. This is the
       // spelling that was WRONG (item 114), so its density is pinned by its own shapes and a
       // coverage floor instead of being left to a 1-in-4 pick that later shapes dilute.
