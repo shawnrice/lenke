@@ -14,9 +14,12 @@
 //! neutralization. Temporal cells decode to `Value::Temporal{tag, iso}` WITHOUT
 //! validating the ISO string — the host validates when it builds its graph.
 
-use crate::model::{Edge, GraphData, Node, Value};
+use crate::model::{GraphData, Value};
 use crate::{is_intish, js_number};
 use std::borrow::Cow;
+
+use crate::decstream::{DecVal, GraphSink};
+use crate::CodeResult;
 use std::collections::{HashMap, HashSet};
 
 const NULL_TOKEN: &str = "\\N";
@@ -879,30 +882,51 @@ pub fn encode(g: &GraphData) -> String {
 /// well-formedness (batch CSV is strict: an edge endpoint must be a declared
 /// node) is the host's concern when it builds its graph.
 pub fn decode(input: &str) -> GraphData {
+    let mut sink = crate::decstream::GraphDataSink::default();
+    // Infallible: `decode_into` only propagates the sink's own errors, and this one never errs.
+    let _ = decode_into(input, &mut sink);
+
+    sink.data
+}
+
+/// Decode straight into a [`GraphSink`], with no `GraphData` in between.
+///
+/// csv was the LAST format on the engine's `from_graph_data` bridge, in either direction. Staged
+/// over the 6.2 MB / 200,000-node document the cross-engine bench decodes, the bridge was ~60ms
+/// of a 119ms decode — a second traversal over a `Vec<Node>` that the parse had just built and
+/// that nothing else needed.
+///
+/// `decode` is expressed THROUGH this walker, via `GraphDataSink`, so there is exactly one row
+/// walker rather than two implementations of the same row shape that can drift apart. The values
+/// handed to the sink are still built owned, per ROW, and viewed through `value_to_decval` — the
+/// per-cell allocation is unchanged, and what goes away is the whole-document materialization.
+pub fn decode_into(input: &str, sink: &mut dyn GraphSink) -> CodeResult<()> {
     let all_rows = parse_csv(input);
     let split = all_rows
         .iter()
         .position(|r| r.len() == 1 && !r[0].quoted && r[0].text == EDGES_MARKER);
-    let (node_rows, edge_rows): (&[Vec<Cell>], &[Vec<Cell>]) = match split {
+    let (node_rows, edge_rows): (&[Vec<Cell<'_>>], &[Vec<Cell<'_>>]) = match split {
         Some(i) => (&all_rows[..i], &all_rows[i + 1..]),
         None => (&all_rows, &[]),
     };
 
-    let mut nodes = Vec::new();
     if let Some(header) = node_rows.first() {
         let prop_cols = prop_cols_from_header(header, 2);
         for row in node_rows.iter().skip(1) {
             let id = unguard_field(row.first().map(|c| c.text.as_ref()).unwrap_or(""));
             let labels = split_labels(row.get(1).map(|c| c.text.as_ref()).unwrap_or(""));
-            nodes.push(Node {
-                id,
-                labels,
-                props: props_from_row(row, &prop_cols, 2),
-            });
+            let props = props_from_row(row, &prop_cols, 2);
+            // Borrowed views over the two locals, taken once both are final.
+            let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+            let prop_refs: Vec<(&str, DecVal<'_>)> = props
+                .iter()
+                .map(|(k, v)| (k.as_str(), crate::decstream::value_to_decval(v)))
+                .collect();
+
+            sink.node(&id, &label_refs, &prop_refs)?;
         }
     }
 
-    let mut edges = Vec::new();
     if let Some(header) = edge_rows.first() {
         let prop_cols = prop_cols_from_header(header, 4);
         for row in edge_rows.iter().skip(1) {
@@ -914,17 +938,18 @@ pub fn decode(input: &str) -> GraphData {
             let from = unguard_field(row.get(1).map(|c| c.text.as_ref()).unwrap_or(""));
             let to = unguard_field(row.get(2).map(|c| c.text.as_ref()).unwrap_or(""));
             let labels = split_labels(row.get(3).map(|c| c.text.as_ref()).unwrap_or(""));
-            edges.push(Edge {
-                id,
-                from,
-                to,
-                labels,
-                props: props_from_row(row, &prop_cols, 4),
-            });
+            let props = props_from_row(row, &prop_cols, 4);
+            let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+            let prop_refs: Vec<(&str, DecVal<'_>)> = props
+                .iter()
+                .map(|(k, v)| (k.as_str(), crate::decstream::value_to_decval(v)))
+                .collect();
+
+            sink.edge(id.as_deref(), &from, &to, &label_refs, &prop_refs)?;
         }
     }
 
-    GraphData { nodes, edges }
+    Ok(())
 }
 
 #[cfg(test)]

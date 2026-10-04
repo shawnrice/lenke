@@ -679,6 +679,47 @@ mod tests {
         }
     }
 
+    /// The streaming csv DECODER must build the same store the `GraphData` bridge did.
+    ///
+    /// csv was the LAST format on `from_graph_data`, in either direction, and the bridge was
+    /// ~60ms of a 119ms decode. `csv::decode` is now expressed THROUGH `csv::decode_into`, so
+    /// there is one row walker; this pins that routing the engine at the streaming entry gives
+    /// the same store as going round the houses. Covers a quoted id, an escaped quote, a
+    /// multi-label node, a typed numeric column, a list column (`;`-joined), an absent cell
+    /// (empty and unquoted), an explicit null token, and an edge with a secondary label.
+    #[test]
+    fn streaming_csv_decode_matches_the_graphdata_path() {
+        let src = concat!(
+            r#"{"id":"a b","labels":["P","Q"],"props":{"n":"ann","age":30,"tags":["x","y"]}}"#,
+            "\n",
+            r#"{"id":"c","labels":["P"],"props":{"age":41}}"#,
+            "\n",
+            r#"{"id":"e0","from":"a b","to":"c","labels":["KNOWS","BFF"],"props":{"since":2020}}"#,
+        );
+        let store = crate::ndjson::from_ndjson(src).unwrap();
+        let text = serialize(&store, "csv").unwrap();
+        let (strict, on_err) = policy("csv");
+        let streamed = deserialize(&text, "csv").unwrap();
+        let bridged = from_graph_data(
+            lenke_codec::deserialize(&text, "csv").unwrap(),
+            strict,
+            on_err,
+        )
+        .unwrap();
+
+        assert_eq!(
+            serialize(&streamed, "pg-json").unwrap(),
+            serialize(&bridged, "pg-json").unwrap(),
+            "csv: {text}"
+        );
+        assert_eq!(
+            serialize(&streamed, "csv").unwrap(),
+            serialize(&bridged, "csv").unwrap()
+        );
+        assert_eq!(streamed.node_count(), 2);
+        assert_eq!(streamed.edge_count(), 1);
+    }
+
     /// The streaming pg-text DECODER must build the same store the `GraphData` bridge did.
     ///
     /// pg-text had no streaming decoder, so `deserialize` materialized a whole owned
