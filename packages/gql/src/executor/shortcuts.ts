@@ -123,6 +123,130 @@ type HopPred = {
   relVar?: string;
 };
 
+/** Everything a filtered 1-hop walk needs, resolved for one call: the graph and
+ * params, the predicate, the endpoint labels AFTER the vacuous-label elision, the
+ * direction, and the edge types (`undefined` = every type). Built once per query,
+ * never per edge; the walks destructure it into locals up front. */
+type HopScan = {
+  graph: Graph;
+  params: Params;
+  pred: HopPred;
+  pa: LabelExpr | undefined;
+  pb: LabelExpr | undefined;
+  out: boolean;
+  types: string[] | undefined;
+};
+
+/**
+ * A start-only filtered 1-hop count: evaluate the predicate once per VERTEX and
+ * add that vertex's degree, instead of once per edge.
+ *
+ * `(a)-[:T]->(x) WHERE <reads only a>` does not need an edge to decide anything
+ * — it needs a vertex and then that vertex's degree. Walking the adjacency index
+ * rather than the edge bucket makes this O(V) predicate evaluations instead of
+ * O(E), so the win scales with the edge:node ratio rather than being a constant
+ * factor (CLAUDE.md's "match the fixture to the claim").
+ *
+ * THE DIVERGENCE THIS IS GUARDED AGAINST. The index's keys are exactly the
+ * vertices carrying at least one edge, and `deg === 0` is checked before the
+ * predicate. Both are load-bearing, not incidental: `asTruth` THROWS on a
+ * non-boolean, so evaluating the predicate for a vertex the per-edge walk would
+ * never have visited would RAISE where the general path returns 0 — a
+ * byte-identity break, not just a different number.
+ */
+const startOnlyHopCount = (scan: HopScan, startVar: string): number => {
+  const { graph, params, pred, pa, out, types } = scan;
+  const binding = new Map<string, unknown>();
+  const env: EvalEnv = { binding, params, graph };
+  const index = out ? graph.edgesFromByLabel : graph.edgesToByLabel;
+  let n = 0;
+
+  for (const [vid, byType] of index) {
+    let deg = 0;
+
+    if (types === undefined) {
+      // Every type. Sound only because the caller reaches this with no type list
+      // only when `multiTypeEdgeCount === 0`, so no edge sits in two of the
+      // buckets being summed.
+      for (const set of byType.values()) {
+        deg += set.size;
+      }
+    } else {
+      for (const t of types) {
+        deg += byType.get(t)?.size ?? 0;
+      }
+    }
+
+    if (deg === 0) {
+      continue;
+    }
+
+    const v = graph.getVertexById(vid);
+
+    if (v == null || !matchesLabel(v, pa)) {
+      continue;
+    }
+
+    binding.set(startVar, v);
+
+    if (asTruth(pred.fn(env)) === true) {
+      n += deg;
+    }
+  }
+
+  return n;
+};
+
+/**
+ * The general filtered 1-hop tally: walk the edge bucket and count, rather than
+ * build a binding and a row per edge and count those. The row pipeline costs
+ * ~487ns a row before it does any work (item 98), and a filtered count throws
+ * every row away.
+ *
+ * ONE binding `Map`, mutated per edge — building a fresh one per edge is most of
+ * what this exists to avoid. The predicate is applied exactly as the general path
+ * applies a match-level `WHERE` (`asTruth(…) === true`, so NULL and false both
+ * drop, ISO's three-valued filter), because it IS the same compiled expression.
+ *
+ * Kept at module scope, like `startOnlyHopCount`, so the closure
+ * `buildOneHopCount` returns stays dispatch-only. That is measured, not
+ * stylistic: with both walks inline, the closure grew enough that the far-endpoint
+ * shape it did not otherwise touch read 1.15x slower in three interleaved rounds.
+ */
+const tallyHopCount = (scan: HopScan): number => {
+  const { graph, params, pred, pa, pb, out, types } = scan;
+  const binding = new Map<string, unknown>();
+  const env: EvalEnv = { binding, params, graph };
+  let n = 0;
+
+  for (const edge of edgesOfTypes(graph.edgesByLabel, types)) {
+    const near = out ? edge.from : edge.to;
+    const far = out ? edge.to : edge.from;
+
+    if (!matchesLabel(near, pa) || !matchesLabel(far, pb)) {
+      continue;
+    }
+
+    if (pred.startVar !== undefined) {
+      binding.set(pred.startVar, near);
+    }
+
+    if (pred.farVar !== undefined) {
+      binding.set(pred.farVar, far);
+    }
+
+    if (pred.relVar !== undefined) {
+      binding.set(pred.relVar, edge);
+    }
+
+    if (asTruth(pred.fn(env)) === true) {
+      n += 1;
+    }
+  }
+
+  return n;
+};
+
 const buildOneHopCount = (
   seg: Segment,
   start: NodePattern,
@@ -155,49 +279,37 @@ const buildOneHopCount = (
     // match-level `WHERE` — `asTruth(...) === true`, so NULL and false both drop (ISO's
     // three-valued filter) — because it IS the same compiled expression.
     if (pred) {
-      const types2 = types;
-
-      if (!types2) {
-        return rowOf(0);
-      }
-
-      // A concrete `Map` (a `Binding` is a `ReadonlyMap`, so this satisfies the env while
-      // staying mutable here).
+      // `types` is `undefined` for an untyped relationship (`-[]->`), meaning EVERY
+      // type — which is exactly what `edgesOfTypes` already takes `undefined` to
+      // mean. This used to `return rowOf(0)` to satisfy the narrowing, so
+      // `MATCH (a:Person)-[]->(b) WHERE <anything> RETURN count(*)` answered 0
+      // whatever the graph held, while the unfiltered spelling of the same query
+      // answered correctly. A wrong answer, shipped and then caught by the
+      // start-only differential; see item 114.
+      //
       // The same elision the unfiltered path gets (see `vacuousLabel`): a label every vertex
       // carries costs 88ns an edge to re-confirm, and the general path never pays it at all
       // because it SEEDS from the label bucket.
       const pa = vacuousLabel(graph, aLabel) ? undefined : aLabel;
       const pb = vacuousLabel(graph, bLabel) ? undefined : bLabel;
-      const binding = new Map<string, unknown>();
-      const env: EvalEnv = { binding, params, graph };
-      let n = 0;
+      const { startVar } = pred;
+      const scan: HopScan = { graph, params, pred, pa, pb, out, types };
 
-      for (const edge of edgesOfTypes(graph.edgesByLabel, types2)) {
-        const near = out ? edge.from : edge.to;
-        const far = out ? edge.to : edge.from;
-
-        if (!matchesLabel(near, pa) || !matchesLabel(far, pb)) {
-          continue;
-        }
-
-        if (pred.startVar !== undefined) {
-          binding.set(pred.startVar, near);
-        }
-
-        if (pred.farVar !== undefined) {
-          binding.set(pred.farVar, far);
-        }
-
-        if (pred.relVar !== undefined) {
-          binding.set(pred.relVar, edge);
-        }
-
-        if (asTruth(pred.fn(env)) === true) {
-          n += 1;
-        }
+      // Summing per-type bucket sizes is sound under the same condition the
+      // unlabeled O(1) path below uses: one type cannot collide with itself, and
+      // `multiTypeEdgeCount === 0` rules out an edge sitting in two buckets.
+      // Otherwise a two-type edge would be counted twice.
+      if (
+        startVar !== undefined &&
+        pred.farVar === undefined &&
+        pred.relVar === undefined &&
+        pb === undefined &&
+        (types?.length === 1 || graph.multiTypeEdgeCount === 0)
+      ) {
+        return rowOf(startOnlyHopCount(scan, startVar));
       }
 
-      return rowOf(n);
+      return rowOf(tallyHopCount(scan));
     }
 
     // A label every vertex carries constrains nothing, so drop it and let the O(1) path
@@ -411,17 +523,31 @@ export const detectCountShortcut = (clauses: readonly Clause[]): CountFn | null 
       vars.set(seg.rel.variable, 'rel');
     }
 
-    for (const name of freePredicateVars(where)) {
+    const free = freePredicateVars(where);
+
+    for (const name of free) {
       if (!vars.has(name)) {
         return null;
       }
     }
 
+    // A slot is recorded only when the predicate actually READS it. These used to
+    // come straight from the pattern, so `MATCH (a:Person)-[r:KNOWS]->(x) WHERE
+    // a.age > 50` claimed all three — the tally then bound `x` and `r` a million
+    // times for a predicate that never looks at them, and no caller could tell a
+    // start-only predicate from one that needs an edge. `buildOneHopCount`'s
+    // per-vertex path depends on being able to tell.
+    //
+    // Sound because `freePredicateVars` does not under-report, which the
+    // exhaustiveness guard in it now enforces at compile time.
+    const reads = (v: string | undefined): string | undefined =>
+      v !== undefined && free.has(v) ? v : undefined;
+
     pred = {
       fn: compileExpr(where),
-      startVar: start.variable,
-      farVar: seg.node.variable,
-      relVar: seg.rel.variable,
+      startVar: reads(start.variable),
+      farVar: reads(seg.node.variable),
+      relVar: reads(seg.rel.variable),
     };
   }
 

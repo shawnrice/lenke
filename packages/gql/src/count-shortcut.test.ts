@@ -395,6 +395,152 @@ describe('count(*) shortcut correctness (vs independent enumeration)', () => {
     expect(query(g, q, { p: false })).toEqual([{ c: 0 }]);
   });
 
+  // REGRESSION. An untyped relationship (`-[]->`) means EVERY type, and the filtered tally used
+  // to read that as "no types" and answer 0 — for any predicate, over any graph, while the
+  // unfiltered spelling of the same query answered correctly. Shipped, then caught by the
+  // start-only differential. The filter is what must still be honoured here, so each case is
+  // checked against the general path AND against the known edge list.
+  test('an untyped relationship in a filtered count means every type, not none', () => {
+    const g = build();
+
+    for (const pred of [`a.n > 3`, `b.n > 3`, `r.w >= 0`, `a.n > 1000`]) {
+      const q = `MATCH (a:Person)-[r]->(b) WHERE ${pred} RETURN count(*) AS c`;
+
+      expect(query(g, q)).toEqual(query(g, `${q} ORDER BY c`));
+    }
+
+    // Every edge in the fixture is a KNOWS, so an untyped walk must agree with the typed one
+    // and with the independent enumeration — not answer zero.
+    expect(c(g, `MATCH (a:Person)-[]->(b) WHERE a.n >= 0 RETURN count(*) AS c`)).toBe(EDGES.length);
+    expect(c(g, `MATCH (a:Person)-[]->(b) WHERE a.n > 3 RETURN count(*) AS c`)).toBe(
+      oneHop((n) => n > 3, isPerson),
+    );
+    expect(c(g, `MATCH (a:Person)-[]->(b) WHERE b.n > 3 RETURN count(*) AS c`)).toBe(
+      oneHop(isPerson, (n) => n > 3),
+    );
+  });
+
+  // A predicate that reads only the START node is counted per-VERTEX (evaluate once, add that
+  // vertex's degree) instead of per-edge. Four things can go wrong, and each has a case here.
+  test('a start-only filtered count matches the general path', () => {
+    const g = build();
+
+    for (const pat of [
+      `(a:Person)-[:KNOWS]->(b)`,
+      `(a:Person)<-[:KNOWS]-(b)`,
+      // `r` named but unread: the slot must still be recognized as unused, or the per-vertex
+      // path is never reached for this spelling.
+      `(a:Person)-[r:KNOWS]->(b)`,
+      // no label on the start at all
+      `(a)-[:KNOWS]->(b)`,
+      // a label only SOME vertices carry, so the vacuous-label elision must not fire and the
+      // per-vertex walk has to apply the label itself
+      `(a:Admin)-[:KNOWS]->(b)`,
+    ]) {
+      for (const pred of [`a.n > 3`, `a.n >= 0`, `a.n > 1000`, `a.missing > 1`, `a.n = 3`]) {
+        const q = `MATCH ${pat} WHERE ${pred} RETURN count(*) AS c`;
+
+        expect(query(g, q)).toEqual(query(g, `${q} ORDER BY c`));
+      }
+    }
+  });
+
+  // THE divergence this path is guarded against. `asTruth` throws on a non-boolean, so the
+  // per-vertex walk must visit exactly the vertices the per-edge walk would have — a vertex
+  // with no matching edge must never reach the predicate, or a graph with nodes but no edges
+  // would RAISE where the general path returns 0.
+  test('a start-only predicate never evaluates a vertex with no matching edge', () => {
+    const noEdges = new Graph();
+
+    noEdges.addVertex({ id: 'p', labels: ['Person'], properties: { n: 1 } });
+
+    const q = `MATCH (a:Person)-[:KNOWS]->(b) WHERE a.n RETURN count(*) AS c`;
+
+    // `a.n` is a NUMBER in a truth context: a data exception for any vertex reached.
+    expect(query(noEdges, q)).toEqual([{ c: 0 }]);
+    expect(query(noEdges, `${q} ORDER BY c`)).toEqual([{ c: 0 }]);
+
+    // The build() fixture has 30 Person vertices but only some with outgoing KNOWS edges, so
+    // this also pins that the ones without are skipped rather than raising first.
+    const g = build();
+
+    expect(() => query(g, q)).toThrow(/boolean is required/);
+    expect(() => query(g, `${q} ORDER BY c`)).toThrow(/boolean is required/);
+  });
+
+  // The per-vertex path adds a whole DEGREE without looking at any far endpoint, so it is only
+  // available when the far endpoint is unconstrained. A label there must send the query back to
+  // the per-edge tally. Found by mutation: dropping the `pb === undefined` guard survived every
+  // other case in this file, because none of them put a label on the far node AND a start-only
+  // predicate at the same time.
+  test('a start-only predicate with a labelled far endpoint still filters the far end', () => {
+    const g = build();
+
+    for (const pred of [`a.n > 3`, `a.n >= 0`]) {
+      for (const far of [`(b:Admin)`, `(b:Person)`, `(b)`]) {
+        const q = `MATCH (a:Person)-[:KNOWS]->${far} WHERE ${pred} RETURN count(*) AS c`;
+
+        expect(query(g, q)).toEqual(query(g, `${q} ORDER BY c`));
+      }
+    }
+
+    // `Admin` is every third vertex, so the labelled far end is a strictly smaller count than
+    // the unlabelled one — without that the two spellings would be indistinguishable.
+    expect(c(g, `MATCH (a:Person)-[:KNOWS]->(b:Admin) WHERE a.n >= 0 RETURN count(*) AS c`)).toBe(
+      oneHop(isPerson, isAdmin),
+    );
+    expect(
+      c(g, `MATCH (a:Person)-[:KNOWS]->(b:Admin) WHERE a.n >= 0 RETURN count(*) AS c`),
+    ).toBeLessThan(EDGES.length);
+  });
+
+  // The other half of the degree-0 guard. A vertex absent from the adjacency index can't be
+  // reached at all, but one that HAS edges of a DIFFERENT type is in the index with a matching
+  // degree of zero — and must still not reach the predicate. Found by mutation: removing the
+  // `deg === 0` check survived, because the no-edge fixture leaves the index empty so the loop
+  // body never runs.
+  test('a vertex whose only edges are of another type never reaches the predicate', () => {
+    const g = new Graph();
+    const v0 = g.addVertex({ id: 'z0', labels: ['Person'], properties: { n: 1 } });
+    const v1 = g.addVertex({ id: 'z1', labels: ['Person'], properties: { n: 2 } });
+
+    // Only a LIKES edge exists, so both vertices are in the adjacency index while the KNOWS
+    // degree of each is 0.
+    g.addEdge({ from: v0, to: v1, labels: ['LIKES'], properties: {} });
+
+    // `a.n` is a NUMBER in a truth context: a data exception for any vertex the predicate
+    // reaches. No KNOWS edge exists, so it must reach none.
+    const q = `MATCH (a:Person)-[:KNOWS]->(b) WHERE a.n RETURN count(*) AS c`;
+
+    expect(query(g, q)).toEqual([{ c: 0 }]);
+    expect(query(g, `${q} ORDER BY c`)).toEqual([{ c: 0 }]);
+
+    // …and the LIKES query, which does have an edge, still raises — so the test above passes
+    // because of the type filter, not because the predicate stopped throwing.
+    const likes = `MATCH (a:Person)-[:LIKES]->(b) WHERE a.n RETURN count(*) AS c`;
+
+    expect(() => query(g, likes)).toThrow(/boolean is required/);
+    expect(() => query(g, `${likes} ORDER BY c`)).toThrow(/boolean is required/);
+  });
+
+  // Summing per-type bucket sizes double-counts an edge carrying two of the types, so the
+  // per-vertex path must decline when that is possible. Three spellings of the same question.
+  test('a start-only count over multi-type edges counts an edge once', () => {
+    const g = new Graph();
+    const v0 = g.addVertex({ id: 'm0', labels: ['Person'], properties: { n: 5 } });
+    const v1 = g.addVertex({ id: 'm1', labels: ['Person'], properties: { n: 6 } });
+
+    // ONE edge carrying BOTH types — it sits in two buckets.
+    g.addEdge({ from: v0, to: v1, labels: ['KNOWS', 'LIKES'], properties: {} });
+
+    for (const rel of [`[:KNOWS|LIKES]`, `[]`, `[:KNOWS]`]) {
+      const q = `MATCH (a:Person)-${rel}->(b) WHERE a.n > 0 RETURN count(*) AS c`;
+
+      expect(query(g, q)).toEqual(query(g, `${q} ORDER BY c`));
+      expect(c(g, q)).toBe(1);
+    }
+  });
+
   // The relaxation is for the ONE-segment shape only. A WHERE on any other shape must make the
   // detector decline, not be silently ignored — ignoring it would count every edge.
   test('a WHERE on a shape the tally cannot compute is declined', () => {

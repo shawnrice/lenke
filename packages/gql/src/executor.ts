@@ -1377,6 +1377,18 @@ export const freePredicateVars = (expr: Expr): Set<string> => {
         walkLetIn(e, bound);
 
         return;
+      default: {
+        // Exhaustiveness, and it is load-bearing rather than tidiness. Callers
+        // use this set in BOTH directions: the count shortcut REJECTS a predicate
+        // naming an unknown variable (safe if the set over-reports) and ELIDES a
+        // binding for a slot the predicate never mentions (safe only if it does
+        // not UNDER-report). A new `Expr` kind that nobody added a case for would
+        // report no free variables for its operands and silently break the second
+        // use. This turns that into a compile error.
+        const unhandled: never = e;
+
+        throw new Error(`freePredicateVars: unhandled expression ${JSON.stringify(unhandled)}`);
+      }
     }
   };
 

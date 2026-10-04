@@ -237,6 +237,20 @@ const CASES: Case[] = [
     ),
   },
   {
+    // The same question with the predicate on the START node instead of the far one. It looks
+    // like a near-duplicate of the row above and is a different COST CLASS: a start-only
+    // predicate can be decided once per vertex and multiplied by that vertex's degree, so it
+    // scales with the vertex count where the row above scales with the edge count. The table had
+    // no row of this shape, which is why the TS engine evaluated it per edge unnoticed (item
+    // 114). Keep both: a change can help one and not the other.
+    name: 'traverse 1-hop + start filter',
+    ...onGraph(
+      () => graphDoc,
+      (e, g) =>
+        void e.query(g, 'MATCH (a:Person)-[:KNOWS]->(x) WHERE a.age > 500 RETURN count(*) AS c'),
+    ),
+  },
+  {
     // The other half: the same walk, but PROJECTING an endpoint property, so 1,000,000 rows are
     // built. Traversal plus the row pipeline, which is the shape a user actually runs.
     name: 'traverse 1-hop project',
