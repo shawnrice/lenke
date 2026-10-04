@@ -3330,7 +3330,66 @@ const compileSetItem = (item: SetItem): CSetItem =>
     ? { variable: item.variable, label: item.label }
     : { variable: item.variable, key: item.key, value: compileExpr(item.value) };
 
-const compileClause = (clause: Clause): CClause => {
+/**
+ * Move a single-node MATCH's clause `WHERE` into the node pattern itself.
+ *
+ * `matchClauseBindings` applies a clause `WHERE` as a POST-FILTER over the binding
+ * stream, so it builds a binding for every vertex and then throws most of them
+ * away; an inline predicate is applied by `matchNode` DURING the scan and rejects
+ * before a binding exists. Measured on 20,000 vertices (audit item 126, found by
+ * the TS spelling probe): `MATCH (n:P) WHERE n.k = 2 RETURN count(*)` 11.85ms
+ * against the identical `MATCH (n:P WHERE n.k = 2)` at 4.08ms — 2.9x for one
+ * question spelled two ways.
+ *
+ * ONLY a pattern with NO segments, and that restriction is measured, not
+ * conservatism for its own sake. The same probe shows the relationship REVERSED on
+ * a hop's start node: `(a:P)-[:E]->(b) WHERE a.k = 2` is 3.11ms and the inline
+ * spellings are 5.20-5.26, so pushing there would make a hop 1.7x SLOWER. Which
+ * form wins is a plan-choice question per shape (the same distinction item 125
+ * drew between a seedable start and a non-seedable far endpoint), not a general
+ * rule.
+ *
+ * Byte-identical by construction: the result is literally the inline spelling, and
+ * for a single-node pattern the bindings are 1:1 with the scanned vertices, so the
+ * predicate is evaluated exactly once per vertex either way — same rows, and the
+ * same row raises. OPTIONAL is excluded because its clause `WHERE` must see the
+ * null-filled row.
+ */
+const pushWhereIntoNode = (clause: Extract<Clause, { kind: 'match' }>): typeof clause => {
+  const { where } = clause;
+
+  if (where === undefined || clause.optional || clause.patterns.length !== 1) {
+    return clause;
+  }
+
+  const [path] = clause.patterns;
+  const name = path.start.variable;
+
+  if (path.segments.length > 0 || name === undefined || path.pathVar !== undefined) {
+    return clause;
+  }
+
+  for (const free of freePredicateVars(where)) {
+    if (free !== name) {
+      return clause;
+    }
+  }
+
+  // AND with any predicate the node already carries, so the inline spelling of a
+  // query that had both is unchanged.
+  const merged: Expr =
+    path.start.where === undefined ? where : { kind: 'and', items: [path.start.where, where] };
+  const { where: _dropped, ...rest } = clause;
+
+  return {
+    ...rest,
+    patterns: [{ ...path, start: { ...path.start, where: merged } }],
+  };
+};
+
+const compileClause = (rawClause: Clause): CClause => {
+  const clause = rawClause.kind === 'match' ? pushWhereIntoNode(rawClause) : rawClause;
+
   switch (clause.kind) {
     case 'match': {
       const patterns = clause.patterns.map(compilePath);
