@@ -33,7 +33,8 @@
     "test:engine": "LENKE_ENGINE=1 bun test",
     "fuzz": "bun fuzz.ts",
     "bench": "bun bench.ts",
-    "bench:usage": "bun bench-usage.ts"
+    "bench:usage": "bun bench-usage.ts",
+    "spelling": "bun spelling-probe.ts"
   },
   "dependencies": {
     "@lenke/core": "workspace:*",

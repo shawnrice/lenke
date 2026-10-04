@@ -147,6 +147,22 @@ the canonicalized optimized plan and the measured time, and flags any group whos
 members disagree on either. A plan mismatch is the real signal; the time is the
 backstop. When adding a predicate form to the planner, add its spellings there.
 
+**The pure-TS engine needs its own check, and has one.** It is a separate
+implementation with no `ir::Plan` to canonicalize, so the same claim has to be
+measured there rather than read off a plan:
+
+```
+cd packages/native && bun run spelling      # flags any group whose spread > 2x
+SPELL_TOL=1.5 SPELL_REPS=7 bun run spelling # tighter, for a deliberate hunt
+```
+
+It is a PROBE, not a test — time is the only signal available, so a threshold in
+CI would be flaky. Run it when you touch the TS planner or add a predicate form,
+and add the new form's spellings to it. It has already earned itself twice: a
+4x gap between a clause `WHERE` and an inline `{k: v}` on a one-hop count (audit
+item 125), and a 2.9x gap between three spellings of a node count (item 126) that
+nobody had measured. Both returned the correct answer.
+
 ## Gates
 
 `bun run lint` and `cargo clippy --all-targets -- -D warnings` are separate from
