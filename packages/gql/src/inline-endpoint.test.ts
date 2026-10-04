@@ -129,3 +129,83 @@ describe('an inline far-endpoint constraint is applied, not ignored or declined'
     expect(c(g, `MATCH (a:P)-[:E]->(b) RETURN count(*) AS c`)).toBe(EDGES.length + 1);
   });
 });
+
+// A START-side inline constraint now routes to the per-VERTEX walk rather than declining
+// (audit item 129). Item 125 had measured routing it to the TALLY — a full edge scan — and
+// rightly rejected that; the per-vertex walk reads bucket SIZES, so degree costs nothing, and the
+// win grows with it (2.1x at degree 3, 5.7x at degree 9).
+describe('an inline START constraint is counted per vertex', () => {
+  test('every start spelling agrees with the general pipeline', () => {
+    const g = build();
+
+    for (const q of [
+      `MATCH (a:P {k: 1})-[:E]->(b)`,
+      `MATCH (a:P WHERE a.k = 1)-[:E]->(b)`,
+      `MATCH (a:P {k: 1})<-[:E]-(b)`,
+      // a key no vertex carries, and a key one vertex is MISSING
+      `MATCH (a:P {k: 99})-[:E]->(b)`,
+      `MATCH (a:P {missing: 1})-[:E]->(b)`,
+      // an ANONYMOUS start: the per-vertex walk has no variable to bind, which is why
+      // `startOnlyHopCount` takes `startVar` as optional.
+      `MATCH ({k: 1})-[:E]->(b)`,
+      // start inline PLUS a clause predicate on the same node
+      `MATCH (a:P {k: 1})-[:E]->(b) WHERE a.i > 0`,
+    ]) {
+      both(g, q);
+    }
+  });
+
+  // The per-vertex walk never visits the far endpoint, so anything constraining it must send
+  // the query elsewhere. If it did not, the far constraint would simply be ignored.
+  test('a far-side constraint keeps the start off the per-vertex walk', () => {
+    const g = build();
+
+    for (const q of [
+      `MATCH (a:P {k: 1})-[:E]->(b {k: 2})`,
+      `MATCH (a:P {k: 1})-[:E]->(b:Q)`,
+      `MATCH (a:P {k: 1})-[:E]->(b) WHERE b.k = 2`,
+    ]) {
+      both(g, q);
+    }
+
+    // …and the far constraint really does narrow: ignoring it would give a bigger answer.
+    expect(c(g, `MATCH (a:P {k: 1})-[:E]->(b {k: 2}) RETURN count(*) AS c`)).toBeLessThan(
+      c(g, `MATCH (a:P {k: 1})-[:E]->(b) RETURN count(*) AS c`),
+    );
+  });
+
+  // Summing per-type bucket sizes double-counts an edge carrying two of the types, so a
+  // multi-type graph must not reach the per-vertex walk.
+  test('a start constraint over multi-type edges counts an edge once', () => {
+    const g = new Graph();
+    const v0 = g.addVertex({ id: 'm0', labels: ['P'], properties: { k: 1, i: 0 } });
+    const v1 = g.addVertex({ id: 'm1', labels: ['P'], properties: { k: 2, i: 1 } });
+
+    g.addEdge({ from: v0, to: v1, labels: ['E', 'F'], properties: {} });
+
+    for (const rel of [`[:E|F]`, `[]`, `[:E]`]) {
+      const q = `MATCH (a:P {k: 1})-${rel}->(b) RETURN count(*) AS c`;
+
+      expect(c(g, q)).toBe(c(g, `${q} ORDER BY c`));
+      expect(c(g, q)).toBe(1);
+    }
+  });
+
+  // Degree is what the per-vertex walk reads, so a vertex with several edges must contribute
+  // all of them — the failure a degree-1 fixture cannot see.
+  test('a high-degree start vertex contributes its whole degree', () => {
+    const g = new Graph();
+    const hub = g.addVertex({ id: 'hub', labels: ['P'], properties: { k: 1, i: 0 } });
+    const other = g.addVertex({ id: 'other', labels: ['P'], properties: { k: 2, i: 1 } });
+
+    for (let i = 0; i < 5; i++) {
+      g.addEdge({ from: hub, to: other, labels: ['E'], properties: {} });
+    }
+
+    g.addEdge({ from: other, to: hub, labels: ['E'], properties: {} });
+
+    expect(c(g, `MATCH (a:P {k: 1})-[:E]->(b) RETURN count(*) AS c`)).toBe(5);
+    expect(c(g, `MATCH (a:P {k: 1})<-[:E]-(b) RETURN count(*) AS c`)).toBe(1);
+    both(g, `MATCH (a:P {k: 1})-[:E]->(b)`);
+  });
+});

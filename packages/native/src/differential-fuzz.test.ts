@@ -881,6 +881,15 @@ const genQuery = (r: () => number): string => {
       `MATCH (a:T)-[:${t}]->(b:T {n: ${pick(r, ['3', '7'])}}) RETURN count(*) AS x`,
       `MATCH (a:T)<-${pick(r, [`[:${t}]`, '[]'])}-(b {n: ${pick(r, ['3', '5'])}}) RETURN count(*) AS x`,
       `MATCH (a:T)-[:${t}]->(b {s: ${pick(r, ["'a'", "'z'"])}}) RETURN count(*) AS x`,
+      // An inline constraint on the START endpoint, which routes to the per-VERTEX walk rather
+      // than the edge tally (audit item 129) — a different code path from the far-endpoint
+      // shapes above, and one that adds a vertex's whole DEGREE at a time, so an off-by-a-degree
+      // would be invisible without it.
+      `MATCH (a:T {n: ${pick(r, ['3', '5', '7'])}})-[:${t}]->(b) RETURN count(*) AS x`,
+      `MATCH (a:T {n: ${pick(r, ['3', '7'])}})<-[:${t}]-(b) RETURN count(*) AS x`,
+      `MATCH (a:T WHERE a.n = ${pick(r, ['3', '5'])})-[:${t}]->(b) RETURN count(*) AS x`,
+      // …and with the far side ALSO constrained, which must send it off the per-vertex walk.
+      `MATCH (a:T {n: 3})-[:${t}]->(b {n: ${pick(r, ['5', '7'])}}) RETURN count(*) AS x`,
       // DELIBERATELY NOT GENERATED: a tail whose INLINE predicate reads another pattern's
       // variable — `(b:T {n: a.n})` or `(b:T WHERE b.n = a.n)`. TS accepts both; native
       // rejects both with E_SYNTAX while accepting the clause-level `WHERE b.n = a.n`. That

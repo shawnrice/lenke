@@ -28,6 +28,16 @@ import { deserialize as tsDeserialize } from '@lenke/serialization';
 const N = Number(process.env.SPELL_N ?? 20_000);
 const TOL = Number(process.env.SPELL_TOL ?? 2);
 const REPS = Number(process.env.SPELL_REPS ?? 5);
+/**
+ * A group whose SLOWEST member is under this many milliseconds is not compared.
+ *
+ * A ratio between two sub-millisecond timings is the clock's resolution, not a
+ * measurement — the mistake item 124 made against the native engine, which this
+ * probe then reproduced against its own O(1) groups: `label on start: redundant
+ * vs absent` flagged at 1.5-1.6x on members reading 0.02 and 0.03ms. Both are
+ * answered by a bucket-size read; neither is slow; the ratio means nothing.
+ */
+const FLOOR_MS = Number(process.env.SPELL_FLOOR ?? 1);
 
 const lines = Array.from(
   { length: N },
@@ -150,6 +160,7 @@ console.log(`${N} vertices / ${N * 3} edges, min of ${REPS}, flagging spread > $
 
 const wrong: string[] = [];
 const slow: string[] = [];
+const fast: string[] = [];
 
 for (const [name, spellings] of GROUPS) {
   const runs = spellings.map((q) => ({ q, ...timed(q) }));
@@ -157,10 +168,13 @@ for (const [name, spellings] of GROUPS) {
   const fastest = Math.min(...runs.map((r) => r.ms));
   const slowest = Math.max(...runs.map((r) => r.ms));
   const spread = slowest / Math.max(fastest, 0.01);
+  const tooFast = slowest < FLOOR_MS;
   let flag = '';
 
   if (answers.size > 1) {
     flag = 'ANSWERS DIFFER';
+  } else if (tooFast) {
+    flag = 'too fast';
   } else if (spread > TOL) {
     flag = `${spread.toFixed(1)}x`;
   }
@@ -177,8 +191,10 @@ for (const [name, spellings] of GROUPS) {
     for (const r of runs) {
       console.log(`                   -> ${r.answer.slice(0, 80)}`);
     }
-  } else if (spread > TOL) {
+  } else if (spread > TOL && !tooFast) {
     slow.push(`${name} (${spread.toFixed(1)}x)`);
+  } else if (tooFast) {
+    fast.push(name);
   }
 }
 
@@ -188,3 +204,6 @@ console.log(
 console.log(
   `${slow.length} group(s) over ${TOL}x${slow.length > 0 ? `:\n  - ${slow.join('\n  - ')}` : ''}`,
 );
+const fastTail = fast.length > 0 ? ` (raise SPELL_N to measure them): ${fast.join('; ')}` : '';
+
+console.log(`${fast.length} group(s) under ${FLOOR_MS}ms, not compared${fastTail}`);

@@ -237,7 +237,7 @@ const inlineHolds = (
  * never have visited would RAISE where the general path returns 0 — a
  * byte-identity break, not just a different number.
  */
-const startOnlyHopCount = (scan: HopScan, startVar: string): number => {
+const startOnlyHopCount = (scan: HopScan, startVar: string | undefined): number => {
   const { graph, params, pred, pa, out, types, inNear } = scan;
   const binding = new Map<string, unknown>();
   const env: EvalEnv = { binding, params, graph };
@@ -274,7 +274,9 @@ const startOnlyHopCount = (scan: HopScan, startVar: string): number => {
       continue;
     }
 
-    binding.set(startVar, v);
+    if (startVar !== undefined) {
+      binding.set(startVar, v);
+    }
 
     if (asTruth(pred.fn(env)) === true) {
       n += deg;
@@ -411,7 +413,12 @@ const buildOneHopCount = (
       // `multiTypeEdgeCount === 0` rules out an edge sitting in two buckets.
       // Otherwise a two-type edge would be counted twice.
       if (
-        startVar !== undefined &&
+        // A clause predicate on the start, an INLINE constraint on it, or both —
+        // any of them is decided per VERTEX. Item 125 carried only `inFar` because
+        // it measured routing a start constraint to the TALLY (a full edge scan)
+        // and rightly rejected that; the per-vertex path is the route that suits
+        // it, and this is it (item 129).
+        (startVar !== undefined || inNear !== undefined) &&
         pred.farVar === undefined &&
         pred.relVar === undefined &&
         pb === undefined &&
@@ -434,8 +441,22 @@ const buildOneHopCount = (
       const pa = vacuousLabel(graph, aLabel) ? undefined : aLabel;
       const pb = vacuousLabel(graph, bLabel) ? undefined : bLabel;
       const bare: HopPred = { fn: () => true };
+      const scan: HopScan = { graph, params, pred: bare, pa, pb, out, types, inNear, inFar };
 
-      return rowOf(tallyHopCount({ graph, params, pred: bare, pa, pb, out, types, inNear, inFar }));
+      // A START-only constraint is decided per VERTEX — degree then costs nothing,
+      // because the walk reads bucket SIZES rather than edges. Measured at 20,000
+      // vertices (item 129): the equivalent clause-`WHERE` spelling, which already
+      // took this route, is 2.62ms at degree 9 where the declining inline spelling
+      // is 10.82 and the tally would be worse still.
+      if (
+        inFar === undefined &&
+        pb === undefined &&
+        (types?.length === 1 || graph.multiTypeEdgeCount === 0)
+      ) {
+        return rowOf(startOnlyHopCount(scan, undefined));
+      }
+
+      return rowOf(tallyHopCount(scan));
     }
 
     // A label every vertex carries constrains nothing, so drop it and let the O(1) path
@@ -618,13 +639,25 @@ export const detectCountShortcut = (clauses: readonly Clause[]): CountFn | null 
   const rowOf = (count: number): Row => ({ [column]: count });
   const [{ start, segments }] = m.patterns;
 
-  // A START-side inline constraint keeps DECLINING, and that is a measured choice,
-  // not an oversight. The tally is a full edge scan, so it only wins where no
-  // seeding is possible. The general path seeds `(a:P {k: 2})-[:E]->(b)` from the
-  // label bucket and walks 1,200 edges; routing it to the tally walks all 60,000
-  // and measured 5.2 -> 6.2ms at 20k vertices and 11.9 -> 17.8 at 40k. The FAR
-  // endpoint has no such seed, which is why only `inFar` is carried.
-  if (!plainNode(start)) {
+  // The START node's inline constraint is carried for the ONE-HOP shape, where it
+  // routes to the per-VERTEX walk (item 129). The node-count and two-hop shapes
+  // keep declining as before: relaxing those would mean teaching the bucket-size
+  // path and the degree product to apply a predicate, and a shortcut that
+  // half-applies one is a wrong answer.
+  //
+  // Item 125 carried only `inFar`, on the measured grounds that routing a start
+  // constraint to the TALLY was slower than declining (5.2 -> 6.2ms). That stands
+  // for the tally; the per-vertex path is the right route and beats both.
+  let inStart: InlinePred | null | undefined;
+
+  if (segments.length === 1) {
+    inStart = inlineOf(start);
+  } else if (!plainNode(start)) {
+    // Node-count and two-hop shapes have no route that applies a predicate.
+    return null;
+  }
+
+  if (inStart === null) {
     return null;
   }
 
@@ -696,7 +729,7 @@ export const detectCountShortcut = (clauses: readonly Clause[]): CountFn | null 
       return null;
     }
 
-    return buildOneHopCount(seg, start, rowOf, pred, undefined, inFar);
+    return buildOneHopCount(seg, start, rowOf, pred, inStart, inFar);
   }
 
   if (segments.length === 2) {
