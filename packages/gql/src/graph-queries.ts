@@ -82,6 +82,36 @@ const inSteps = function* (graph: Graph, v: Vertex, label: LabelExpr | undefined
  * read order of an undirected pattern.
  */
 export const expand = function* (graph: Graph, v: Vertex, rel: Adjacency): Iterable<Step> {
+  // A DIRECTED hop with a single concrete edge type reads its bucket directly,
+  // instead of nesting `expand` -> `outSteps`/`inSteps` -> `edgesMatching` ->
+  // `yield* set`: three generator layers plus a delegation to produce one
+  // `{ edge, node }`. Identical output — `edgesMatching`'s own single-label fast
+  // path is `byLabel.get(label.name)` and yields that set in the same order.
+  //
+  // Item 114 priced this at 1.2% and REJECTED it, against an isolated
+  // micro-benchmark where a generator layer cost 8ns. That was the wrong
+  // measurement: in this pipeline a resume costs ~40ns (10 nested layers,
+  // megamorphic `next`), so the micro understated it 5x. Re-measured in situ in
+  // item 119. An isolated micro UNDERSTATES a layer in a deep polymorphic
+  // pipeline, the same way profiler self-time understates an allocation-heavy
+  // frame (item 117).
+  const { label } = rel;
+
+  if (rel.direction !== 'both' && label?.kind === 'label') {
+    const forward = rel.direction === 'out';
+    const bucket = (forward ? graph.edgesFromByLabel : graph.edgesToByLabel)
+      .get(v.id)
+      ?.get(label.name);
+
+    if (bucket) {
+      for (const edge of bucket) {
+        yield { edge, node: forward ? edge.to : edge.from };
+      }
+    }
+
+    return;
+  }
+
   if (rel.direction === 'out' || rel.direction === 'both') {
     yield* outSteps(graph, v, rel.label);
   }
