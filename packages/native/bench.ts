@@ -130,67 +130,92 @@ const graphDoc = (() => {
 const FORMATS = ['ndjson', 'pg-json', 'graphson', 'pg-text', 'csv'];
 const DECODABLE = ['pg-json', 'graphson', 'pg-text'];
 
-type Case = { name: string; run: (e: Engine) => void };
-
-/** Run `fn` against a freshly loaded graph, releasing it afterwards. */
-const withGraph = (e: Engine, doc: string, fn: (g: unknown) => void): void => {
-  const g = e.load(doc);
-
-  try {
-    fn(g);
-  } finally {
-    e.free(g);
-  }
+/**
+ * One row. `setup` runs ONCE outside the timed region and its result is handed to `run`;
+ * only `run` is timed; `teardown` releases afterwards.
+ *
+ * THE SETUP SPLIT IS THE WHOLE POINT. Every row here except the two `decode ndjson` ones
+ * used to load a graph INSIDE the timed body, so each one measured a decode plus the thing
+ * it was named for — and the decode dominated. `query: 1-hop traversal` read ts 3894.7 /
+ * ffi 764.3, a 5.1x ratio, while `decode ndjson (5 edges/node)` on its own was ts 2863.3 /
+ * ffi 755.8: about three quarters of the ts row and essentially ALL of the ffi row was the
+ * load they shared. The traversal underneath was ~1031ms against ~8.5ms. An `encode` row was
+ * ~76% decode, and a `decode <fmt>` row timed an ndjson decode AND an encode AND the decode
+ * it was named for, two of which are separate rows already.
+ *
+ * So the ratios this file printed were decode ratios wearing other rows' names, and they are
+ * where the "Rust is 1.5-4x pure-TS" range in CLAUDE.md came from. Numbers from before this
+ * change are not comparable with numbers after it.
+ */
+type Case = {
+  name: string;
+  setup?: (e: Engine) => unknown;
+  run: (e: Engine, ctx: unknown) => void;
+  teardown?: (e: Engine, ctx: unknown) => void;
 };
+
+/** A row that loads `doc` once, then times `fn` against that one warm graph. */
+const onGraph = (doc: () => string, fn: (e: Engine, g: unknown) => void): Omit<Case, 'name'> => ({
+  setup: (e) => e.load(doc()),
+  run: (e, g) => fn(e, g),
+  teardown: (e, g) => e.free(g),
+});
 
 const CASES: Case[] = [
   { name: 'decode ndjson (nodes)', run: (e) => e.free(e.load(nodesDoc)) },
   { name: 'decode ndjson (5 edges/node)', run: (e) => e.free(e.load(graphDoc)) },
   ...FORMATS.map((fmt) => ({
     name: `encode ${fmt}`,
-    run: (e: Engine) => withGraph(e, nodesDoc, (g) => void e.serialize(g, fmt)),
+    ...onGraph(
+      () => nodesDoc,
+      (e, g) => void e.serialize(g, fmt),
+    ),
   })),
   ...DECODABLE.map((fmt) => ({
     name: `decode ${fmt}`,
-    run: (e: Engine) => {
+    // The source text is produced in SETUP — timing it would make this row an ndjson decode
+    // plus an encode plus the decode it is named for, which is what it used to be.
+    setup: (e: Engine) => {
       const src = e.load(nodesDoc);
       const text = e.serialize(src, fmt);
 
       e.free(src);
-      e.free(e.loadFormat(text, fmt));
+
+      return text;
     },
+    run: (e: Engine, text: unknown) => e.free(e.loadFormat(text as string, fmt)),
   })),
   {
     name: 'query: count',
-    run: (e) =>
-      withGraph(e, nodesDoc, (g) => void e.query(g, 'MATCH (n:Person) RETURN count(*) AS c')),
+    ...onGraph(
+      () => nodesDoc,
+      (e, g) => void e.query(g, 'MATCH (n:Person) RETURN count(*) AS c'),
+    ),
   },
   {
     name: 'query: project 3 columns',
-    run: (e) =>
-      withGraph(
-        e,
-        nodesDoc,
-        (g) => void e.query(g, 'MATCH (n:Person) RETURN n.name AS n, n.city AS c, n.age AS a'),
-      ),
+    ...onGraph(
+      () => nodesDoc,
+      (e, g) => void e.query(g, 'MATCH (n:Person) RETURN n.name AS n, n.city AS c, n.age AS a'),
+    ),
   },
   {
     name: 'query: group + aggregate',
-    run: (e) =>
-      withGraph(
-        e,
-        nodesDoc,
-        (g) => void e.query(g, 'MATCH (n:Person) RETURN n.age AS a, count(*) AS c GROUP BY a'),
-      ),
+    // `GROUP BY` takes a BOUND NAME, not a RETURN alias, so this needs the `LET`. Written
+    // with the alias it raised `variable \`a\` is not defined` on BOTH engines and the harness
+    // printed a bare `n/a`, so this workload measured nothing at all.
+    ...onGraph(
+      () => nodesDoc,
+      (e, g) =>
+        void e.query(g, 'MATCH (n:Person) LET a = n.age RETURN a, count(*) AS c GROUP BY a'),
+    ),
   },
   {
     name: 'query: 1-hop traversal',
-    run: (e) =>
-      withGraph(
-        e,
-        graphDoc,
-        (g) => void e.query(g, 'MATCH (a:Person)-[:KNOWS]->(x) RETURN count(*) AS c'),
-      ),
+    ...onGraph(
+      () => graphDoc,
+      (e, g) => void e.query(g, 'MATCH (a:Person)-[:KNOWS]->(x) RETURN count(*) AS c'),
+    ),
   },
 ];
 
@@ -244,11 +269,16 @@ const base = engines[0].name;
 console.log(
   `\n${N} nodes, ${REPS} reps, best of each. Engines: ${engines.map((e) => e.name).join(', ')}`,
 );
-console.log(`Ratios are against ${base}.\n`);
+console.log(`Ratios are how many times faster each engine is than ${base}.\n`);
 
+// `ts/<engine>` — how many times FASTER that engine is than ts. The other direction
+// (`<engine>/ts`) printed `0.00x` for every row where the gap is large, which is exactly
+// where the number matters: once the shared decode came out of the timed region, the count
+// and traversal rows went to 0.0-1.1ms against ts's 94-633ms and the ratio column said
+// nothing at all.
 const ratioHeads = engines
   .slice(1)
-  .map((e) => `${e.name}/${base}`.padStart(12))
+  .map((e) => `${base}/${e.name}`.padStart(12))
   .join('');
 const header = `${['workload'.padEnd(30), ...engines.map((e) => e.name.padStart(11))].join('')}  ${ratioHeads}`;
 
@@ -256,21 +286,42 @@ console.log(header);
 console.log('-'.repeat(header.length));
 
 for (const c of CASES) {
+  // REPORT the reason, do not just blank the cell. `n/a` on its own cannot tell an engine
+  // that does not support a workload from a workload that is simply BROKEN — the group +
+  // aggregate row sat at `n/a` on every engine because its query was invalid, which looked
+  // exactly like "not supported here" and so measured nothing for as long as it was there.
+  const failures: string[] = [];
   const times = engines.map((e) => {
+    let ctx: unknown;
+
     try {
-      return best(() => c.run(e));
-    } catch {
+      ctx = c.setup?.(e);
+
+      return best(() => c.run(e, ctx));
+    } catch (err) {
+      failures.push(`${e.name}: ${(err as Error).message.trim().split('\n')[0]}`);
+
       return Number.NaN;
+    } finally {
+      try {
+        c.teardown?.(e, ctx);
+      } catch {
+        // a teardown failure must not be reported as a measurement failure
+      }
     }
   });
   const cells = times.map((t) => (Number.isNaN(t) ? 'n/a' : t.toFixed(1)).padStart(11));
-  const ratios = times
-    .slice(1)
-    .map((t) =>
-      Number.isNaN(t) || Number.isNaN(times[0])
-        ? ''.padStart(12)
-        : `${(t / times[0]).toFixed(2)}x`.padStart(12),
-    );
+  const ratios = times.slice(1).map((t) =>
+    Number.isNaN(t) || Number.isNaN(times[0])
+      ? ''.padStart(12)
+      : // A floored divisor: a row that lands under the clock's resolution would otherwise
+        // divide by zero and print `Infinityx`.
+        `${(times[0] / Math.max(t, 0.001)).toFixed(2)}x`.padStart(12),
+  );
 
   console.log(`${c.name.padEnd(30)}${cells.join('')}  ${ratios.join('')}`);
+
+  for (const f of failures) {
+    console.log(`${' '.repeat(30)}  ! ${f}`);
+  }
 }
