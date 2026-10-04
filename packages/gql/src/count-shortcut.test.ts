@@ -160,6 +160,48 @@ describe('count(*) shortcut correctness (vs independent enumeration)', () => {
     expect(c(g, `MATCH (a)-[:KNOWS]->(b) RETURN count(*) AS c`)).toBe(0);
   });
 
+  // GROUP BY and HAVING were MISSING from the shortcut's guard, and both are WRONG ANSWERS,
+  // not slow paths: the shortcut answers one global count, so a grouped count collapses to a
+  // single row and a HAVING that should drop the row never runs. Native is right in every one
+  // of these; the TS engine shipped wrong. The `gql-conformance` HAVING case did not catch it
+  // because it asks a bare node pattern, which has no shortcut and goes through general
+  // execution instead.
+  test('a grouped count is not collapsed to one global row', () => {
+    const g = build();
+    const rows = (q: string): number[] => (query(g, q) as { c: number }[]).map((r) => r.c);
+
+    // One row per distinct `a`, each counting that vertex's out-edges — not one row of 20.
+    const perSource = rows(`MATCH (a)-[:KNOWS]->(b) RETURN count(*) AS c GROUP BY a`);
+
+    expect(perSource.length).toBeGreaterThan(1);
+    expect(perSource.reduce((x, y) => x + y, 0)).toBe(EDGES.length);
+
+    const twoHopGrouped = rows(
+      `MATCH (a)-[:KNOWS]->(b)-[:KNOWS]->(cc) RETURN count(*) AS c GROUP BY a`,
+    );
+
+    expect(twoHopGrouped.length).toBeGreaterThan(1);
+    expect(twoHopGrouped.reduce((x, y) => x + y, 0)).toBe(twoHop(isPerson, isPerson, isPerson));
+  });
+
+  test('HAVING can drop the counted row', () => {
+    const g = build();
+    const run = (q: string): unknown[] => query(g, q);
+
+    // Over the bound, the row survives; over an impossible bound, no rows at all.
+    expect(run(`SELECT count(*) AS c FROM MATCH (a)-[:KNOWS]->(b) HAVING count(*) > 1`)).toEqual([
+      { c: EDGES.length },
+    ]);
+    expect(
+      run(`SELECT count(*) AS c FROM MATCH (a)-[:KNOWS]->(b) HAVING count(*) > 10000`),
+    ).toEqual([]);
+    expect(
+      run(
+        `SELECT count(*) AS c FROM MATCH (a)-[:KNOWS]->(b)-[:KNOWS]->(cc) HAVING count(*) > 10000`,
+      ),
+    ).toEqual([]);
+  });
+
   test('2-hop with a reversed first segment matches enumeration', () => {
     const g = build();
 

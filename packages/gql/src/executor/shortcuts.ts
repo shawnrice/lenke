@@ -241,9 +241,25 @@ export const detectCountShortcut = (clauses: readonly Clause[]): CountFn | null 
 
   const proj = ret.projection;
 
+  // `groupBy` and `having` were MISSING here, and both are silent wrong answers rather than
+  // slow paths — a shortcut answers one global count, so a grouped count collapses to a single
+  // row and a `HAVING` that should drop the row never runs. Measured against native, which is
+  // right in every case:
+  //
+  //   MATCH (a:Person)-[:KNOWS]->(b) RETURN count(*) AS c GROUP BY a
+  //     ts [{"c":4}]   native [[1],[1],[1],[1]]
+  //   SELECT count(*) AS c FROM MATCH (a:Person)-[:KNOWS]->(b) HAVING count(*) > 100
+  //     ts [{"c":4}]   native []
+  //
+  // The 1-hop and 2-hop shortcuts have shipped with this. The `gql-conformance` HAVING case
+  // does not catch it because it asks a BARE NODE pattern, which has no shortcut at all and so
+  // goes through general execution. A `LET` before the `RETURN` hides it too, by making
+  // `clauses.length !== 2` reject the shortcut outright.
   if (
     proj.star ||
     proj.distinct ||
+    proj.groupBy !== undefined ||
+    proj.having !== undefined ||
     (proj.orderBy?.length ?? 0) > 0 ||
     proj.skip !== undefined ||
     proj.limit !== undefined ||
