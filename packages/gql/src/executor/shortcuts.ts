@@ -44,6 +44,31 @@ import { matchesLabel } from '../graph-queries.js';
 import { matchNode, seedVertices } from './matching.js';
 import { isNullish } from './scalars.js';
 
+/**
+ * Is `expr` satisfied by EVERY vertex in `graph`, so that testing it per element is pure
+ * cost? Only the plain single-label form is answered; `and`/`or`/`not`/`%` fall through.
+ *
+ * WHY THIS EXISTS. The per-element label test is the whole cost of a labelled 1-hop count,
+ * and it is a cache-locality cost, not an interpretation one — each `edge.from.labels.has(L)`
+ * chases a pointer to a random `Vertex` and its `Set` across a large heap. Over the 1,000,000
+ * edges of the cross-engine bench: the walk WITHOUT the label test is 1.1ms, and WITH it
+ * 89.3ms (the generator the walk used to run through accounts for only ~7ms of that).
+ *
+ * AND IT IS THE REPO'S OWN INVARIANT, not a special case. When every vertex is a `Person`,
+ * `MATCH (a:Person)-[:KNOWS]->(x)` and `MATCH (a)-[:KNOWS]->(x)` are EQUIVALENT SPELLINGS of
+ * one question — and they cost 586ms against ~0ms, because only the unlabelled spelling
+ * reached the O(1) bucket-size path. The native engine already elides this, which is why it
+ * answers the same query in ~0.5ms.
+ *
+ * SOUNDNESS is the `===`: a bucket holding exactly as many vertices as the graph has must
+ * hold all of them, so `labels.has(name)` is universally true and dropping it cannot change a
+ * row. A stale over-count makes the comparison FAIL and simply leaves the optimization off,
+ * which is the safe direction. An empty graph compares `0 === 0` and is trivially vacuous —
+ * it has no edges to count either.
+ */
+const vacuousLabel = (graph: Graph, expr: LabelExpr | undefined): boolean =>
+  expr?.kind === 'label' && (graph.verticesByLabel.get(expr.name)?.size ?? 0) === graph.vertexCount;
+
 const plainNode = (n: NodePattern): boolean =>
   (n.properties?.length ?? 0) === 0 && n.where === undefined;
 const plainRel = (r: RelPattern): boolean =>
@@ -75,6 +100,11 @@ const buildOneHopCount = (
   const out = rel.direction === 'out';
 
   return (graph) => {
+    // A label every vertex carries constrains nothing, so drop it and let the O(1) path
+    // below take the query. See `vacuousLabel`.
+    const a = vacuousLabel(graph, aLabel) ? undefined : aLabel;
+    const b = vacuousLabel(graph, bLabel) ? undefined : bLabel;
+
     // Unlabeled endpoints → the bucket sizes. O(1) per type.
     //
     // Summing across types is only sound when no edge is in two of the buckets,
@@ -82,8 +112,8 @@ const buildOneHopCount = (
     // never collide with itself. Otherwise fall through to the deduping walk —
     // a two-type edge is still ONE edge.
     if (
-      aLabel === undefined &&
-      bLabel === undefined &&
+      a === undefined &&
+      b === undefined &&
       types &&
       (types.length === 1 || graph.multiTypeEdgeCount === 0)
     ) {
@@ -94,8 +124,7 @@ const buildOneHopCount = (
       countEdges(
         edgesOfTypes(graph.edgesByLabel, types),
         (edge) =>
-          matchesLabel(out ? edge.from : edge.to, aLabel) &&
-          matchesLabel(out ? edge.to : edge.from, bLabel),
+          matchesLabel(out ? edge.from : edge.to, a) && matchesLabel(out ? edge.to : edge.from, b),
       ),
     );
   };

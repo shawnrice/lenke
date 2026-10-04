@@ -117,6 +117,49 @@ describe('count(*) shortcut correctness (vs independent enumeration)', () => {
     ).toBe(twoHop(isPerson, isAdmin, isAdmin));
   });
 
+  // A label EVERY vertex carries constrains nothing, so the labelled and unlabelled spellings
+  // of one question must agree — and, per the repo's equivalent-spellings rule, cost the same.
+  // Before `vacuousLabel` only the unlabelled spelling reached the O(1) bucket-size path:
+  // on the 200,000-node / 1,000,000-edge cross-engine bench the labelled one took 586ms and
+  // the unlabelled one ~0ms, because the labelled walk paid `edge.from.labels.has('Person')`
+  // per edge — 88ms of pointer-chasing for a test that was universally true.
+  test('a universal label costs nothing and answers the same as no label', () => {
+    const g = build();
+
+    // Every vertex here is a Person, so all four spellings are the same question.
+    for (const q of [
+      `MATCH (a)-[:KNOWS]->(b) RETURN count(*) AS c`,
+      `MATCH (a:Person)-[:KNOWS]->(b) RETURN count(*) AS c`,
+      `MATCH (a)-[:KNOWS]->(b:Person) RETURN count(*) AS c`,
+      `MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN count(*) AS c`,
+    ]) {
+      expect(c(g, q)).toBe(EDGES.length);
+    }
+  });
+
+  // The other side of the elision: a label only SOME vertices carry must still be tested, and
+  // an absent label must not be mistaken for a universal one (its bucket is empty, and
+  // `0 === vertexCount` is false for any non-empty graph).
+  test('a partial or absent label is still enforced', () => {
+    const g = build();
+
+    expect(c(g, `MATCH (a:Admin)-[:KNOWS]->(b) RETURN count(*) AS c`)).toBe(
+      oneHop(isAdmin, isPerson),
+    );
+    expect(c(g, `MATCH (a:Admin)-[:KNOWS]->(b) RETURN count(*) AS c`)).not.toBe(EDGES.length);
+    expect(c(g, `MATCH (a:Absent)-[:KNOWS]->(b) RETURN count(*) AS c`)).toBe(0);
+    expect(c(g, `MATCH (a)-[:KNOWS]->(b:Absent) RETURN count(*) AS c`)).toBe(0);
+  });
+
+  // An EMPTY graph compares `0 === 0`, so every label is trivially vacuous there. It has no
+  // edges either, so the O(1) path must answer 0 rather than divide by anything.
+  test('an empty graph counts zero through the elided path', () => {
+    const g = new Graph();
+
+    expect(c(g, `MATCH (a:Person)-[:KNOWS]->(b) RETURN count(*) AS c`)).toBe(0);
+    expect(c(g, `MATCH (a)-[:KNOWS]->(b) RETURN count(*) AS c`)).toBe(0);
+  });
+
   test('2-hop with a reversed first segment matches enumeration', () => {
     const g = build();
 
