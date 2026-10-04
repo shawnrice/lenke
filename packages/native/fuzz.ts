@@ -25,7 +25,7 @@
  * each fuzzer randomizes its own (a broad sweep, as CI runs them).
  */
 
-type Artifact = 'rust' | 'wasm' | 'gremlin';
+type Artifact = 'rust' | 'wasm' | 'gremlin' | 'ts';
 
 type Fuzzer = {
   file: string;
@@ -42,12 +42,12 @@ const FUZZERS: Record<string, Fuzzer> = {
   },
   differential: {
     file: 'src/differential-fuzz.test.ts',
-    needs: ['rust'],
+    needs: ['rust', 'ts'],
     blurb: 'random GQL — the pure-TS engine vs the Rust engine',
   },
   write: {
     file: 'src/write-fuzz.test.ts',
-    needs: ['rust'],
+    needs: ['rust', 'ts'],
     blurb: 'random writes — TS vs the FFI build',
   },
   injection: {
@@ -57,7 +57,7 @@ const FUZZERS: Record<string, Fuzzer> = {
   },
   algo: {
     file: 'src/algo-fuzz.test.ts',
-    needs: ['rust'],
+    needs: ['rust', 'ts'],
     blurb: 'graph algorithms — TS vs the FFI build',
   },
   gremlin: {
@@ -81,9 +81,22 @@ const BUILD: Record<Artifact, { label: string; cmd: string[] }> = {
     label: 'nx build @lenke/gremlin (dist)',
     cmd: ['bunx', 'nx', 'build', '@lenke/gremlin'],
   },
+  // The pure-TS ENGINE is a built dist too. `@lenke/gql`, `@lenke/core` and
+  // `@lenke/serialization` all resolve through `exports` to `dist/esm/index.mjs`,
+  // so an edit to their `src` reaches a fuzzer only after an nx build — and
+  // nothing here declared them, while `gremlin` (the same situation) was
+  // declared. A TS-side change was therefore compared against whatever dist
+  // happened to be on disk: the exact trap in this file's own header, on the
+  // other side of the comparison. Found by a mutation run that reported a
+  // KNOWN wrong answer as survived (TS audit item 115). nx pulls `@lenke/core`
+  // in as a dependency of both, so naming the two leaves is enough.
+  ts: {
+    label: 'nx build @lenke/gql + @lenke/serialization (dists)',
+    cmd: ['bunx', 'nx', 'run-many', '-t', 'build', '-p', '@lenke/gql', '@lenke/serialization'],
+  },
 };
 
-const ARTIFACT_ORDER: Artifact[] = ['rust', 'wasm', 'gremlin'];
+const ARTIFACT_ORDER: Artifact[] = ['rust', 'wasm', 'gremlin', 'ts'];
 
 const list = (): void => {
   console.log('Fuzzers (name — needs — what it checks):\n');

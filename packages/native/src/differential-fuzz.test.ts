@@ -91,6 +91,42 @@ const tally = (
       cov.perRepNonEmpty++;
     }
   }
+
+  // TRAILING SKIP/LIMIT over an ORDER BY. Counted because the count-shortcut family above was
+  // widened at this band's expense (0.03 of the space to 0.015, the only band that paid), and a
+  // band with no counter is a band whose coverage can be halved again by the next person without
+  // anything noticing. `[{"x":0}]` is a legitimate answer here, so GENERATED is the floor that
+  // means something; `LIMIT 0` emits nothing by design.
+  if (/ SKIP \d+ LIMIT \d+$/.test(q)) {
+    cov.pageGenerated++;
+
+    if (ts.ok && ts.json !== '[]') {
+      cov.pageRows++;
+    }
+  }
+
+  // The FILTERED count-shortcut ladder: a one-hop `count(*)` carrying a `WHERE`. This whole
+  // half of the ladder was generated ZERO times until TS audit item 114 — a count never
+  // carried a predicate here — which is how a filtered count over an untyped `-[]->` answered
+  // 0 for two commits with this fuzzer green. The non-zero floor is what matters: a filtered
+  // count that matches nothing agrees with a broken one trivially.
+  if (/^MATCH \([ab]?[^)]*\)[-<]/.test(q) && q.includes(' WHERE ') && q.includes('count(*)')) {
+    cov.hopFilterGenerated++;
+
+    if (nonEmpty) {
+      cov.hopFilterNonZero++;
+    }
+
+    // An UNTYPED relationship specifically — the spelling that was wrong. `[]` and `[e]`
+    // reach the shortcut with `types === undefined`, which no other arm produces.
+    if (/-\[e?\]-/.test(q)) {
+      cov.hopUntypedGenerated++;
+
+      if (nonEmpty) {
+        cov.hopUntypedNonZero++;
+      }
+    }
+  }
 };
 
 const suite = nativeReady ? describe : describe.skip;
@@ -746,16 +782,85 @@ const genQuery = (r: () => number): string => {
     return shape;
   }
 
-  if (p < 0.69) {
+  if (p < 0.705) {
     // A type disjunction over a graph holding a two-type edge: `E`, `F` and
     // `E|F` all select edge e2, and it is ONE edge in every spelling. Routed
     // through both the count shortcuts and plain enumeration.
     const t = pick(r, ['E', 'F', 'E|F', 'F|E', 'E|ABSENT']);
+
+    // The count-shortcut ladder, spelled out. Every relationship this family drew
+    // used to be TYPED, no count ever carried a `WHERE`, and the direction was
+    // always `->` — so the whole FILTERED half of the ladder (the per-edge tally
+    // and the per-vertex start-only path) was generated zero times, and an
+    // UNTYPED relationship never at all. That is how `MATCH (a:T)-[]->(b) WHERE
+    // <anything> RETURN count(*)` answered 0 for two commits with this fuzzer
+    // green (TS audit item 114).
+    //
+    // The pieces are drawn independently so the cross-product is reached: the
+    // shortcut is chosen on the relationship spelling, the endpoint labels AND
+    // which slots the predicate reads, and a bug needs a particular combination
+    // (a far-endpoint label with a start-only predicate, say).
+    const rel = pick(r, [`[:${t}]`, `[e:${t}]`, '[]', '[e]']);
+    const dir = pick(r, ['out', 'in']);
+    const left = pick(r, ['(a:T)', '(a:U)', '(a)']);
+    const right = pick(r, ['(b:T)', '(b:U)', '(b)']);
+    const hop = dir === 'out' ? `${left}-${rel}->${right}` : `${left}<-${rel}-${right}`;
+    // Predicates over the start slot, the far slot, the edge, and both ends at
+    // once. `a.zz` is a key no vertex carries, so the comparison is NULL and the
+    // row drops — the three-valued arm. The edge predicates only apply when the
+    // relationship was spelled with a variable.
+    const preds = rel.includes('e')
+      ? ['a.n > 3', 'b.n > 3', 'e.w > 3', 'a.n > 3 AND b.n < 9', 'a.zz > 1', 'e.w >= 0']
+      : ['a.n > 3', 'b.n > 3', 'a.n > 3 AND b.n < 9', 'a.zz > 1', 'a.n >= 0', 'b.n = 7'];
     const shape = pick(r, [
       `MATCH ()-[:${t}]->() RETURN count(*) AS x`,
       `MATCH (a:T)-[:${t}]->(b:T) RETURN count(*) AS x`,
       `MATCH (a)-[:${t}]->(b)-[:${t}]->(c) RETURN count(*) AS x`,
       `MATCH (a)-[e:${t}]->(b) RETURN e.w AS x ORDER BY x`,
+      `MATCH ${hop} RETURN count(*) AS x`,
+      `MATCH ${hop} WHERE ${pick(r, preds)} RETURN count(*) AS x`,
+      // The same question with the paging the shortcut must NOT answer past, and
+      // a grouped count — the other two rungs of the ladder.
+      `MATCH ${hop} WHERE ${pick(r, preds)} RETURN count(*) AS x LIMIT 1`,
+      `MATCH ${hop} WHERE ${pick(r, preds)} RETURN count(*) AS x ORDER BY x`,
+      // TARGETED, because the random cross-product reaches these too rarely to rely on —
+      // both were mutants that survived this family once it existed (TS audit item 115).
+      //
+      // A NON-VACUOUS far label (`U` is on vertex 3 only; `T` is on every vertex, so the
+      // engine elides it) paired with a predicate reading ONLY the start slot. That is the
+      // one combination where a per-vertex shortcut can add a whole degree without ever
+      // looking at the far endpoint. `>= 0` holds for every vertex, which is what makes the
+      // over-count visible: with a selective predicate the right and wrong answers coincide
+      // on this fixture.
+      `MATCH (a:T)-[:${t}]->(b:U) WHERE ${pick(r, ['a.n >= 0', 'a.n > 3', 'a.x < 9'])} RETURN count(*) AS x`,
+      `MATCH (a:T)<-[:${t}]-(b:U) WHERE ${pick(r, ['a.n >= 0', 'a.n > 3'])} RETURN count(*) AS x`,
+      // A start vertex with DEGREE > 1 on the queried type (vertex 1 has two `E` out-edges)
+      // and an unconstrained far end. This is what distinguishes adding a vertex's degree
+      // from adding one per matching vertex — with every degree 1 the two are identical.
+      `MATCH (a:T)-[:${t}]->(b) WHERE ${pick(r, ['a.n >= 0', 'a.n > 3'])} RETURN count(*) AS x`,
+      // A NON-VACUOUS start label. `U` is on vertex 3 alone, so the per-vertex walk has to
+      // apply the label itself rather than inherit it from a seed; `T` is on every vertex
+      // and is elided, which makes it useless for this. Both directions, because vertex 3
+      // has in-edges and no out-edges — so one direction counts and the other is 0.
+      `MATCH (a:U)-[:${t}]->(b) WHERE a.n >= 0 RETURN count(*) AS x`,
+      `MATCH (a:U)<-[:${t}]-(b) WHERE a.n >= 0 RETURN count(*) AS x`,
+      // UNTYPED and filtered, unconditionally rather than via the `rel` draw. This is the
+      // spelling that was WRONG (item 114), so its density is pinned by its own shapes and a
+      // coverage floor instead of being left to a 1-in-4 pick that later shapes dilute.
+      // Note the fixture's two-type edge makes `multiTypeEdgeCount > 0`, so these route to
+      // the per-edge tally — which is exactly the path that answered 0.
+      `MATCH (a:T)-[]->(b) WHERE ${pick(r, ['a.n >= 0', 'a.n > 3', 'b.n > 3'])} RETURN count(*) AS x`,
+      `MATCH (a:T)<-[]-(b) WHERE ${pick(r, ['a.n >= 0', 'b.n = 7'])} RETURN count(*) AS x`,
+      `MATCH (a)-[e]->(b) WHERE e.w >= 0 RETURN count(*) AS x`,
+      // DELIBERATELY NOT GENERATED: a non-boolean predicate over an edge type carrying no
+      // edges (`MATCH (a:T)-[:ABSENT]->(b) WHERE a.n RETURN count(*)`). It is the only shape
+      // that could catch a shortcut evaluating a predicate for an element the general path
+      // never visits — and it also hits an UNSETTLED divergence: native raises
+      // `E_INVALID_VALUE` while TS answers 0, even though both agree when the empty match
+      // comes from an absent node LABEL instead. Generating it would make this suite red on
+      // a question about engine semantics rather than about any change. Written up with the
+      // repro table in TS audit item 115; the mutant it would catch is covered by
+      // `count-shortcut.test.ts` instead.
     ]);
 
     return shape;
@@ -1067,6 +1172,12 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       crossNonEmpty: 0,
       cntPropGenerated: 0,
       cntPropNonZero: 0,
+      hopFilterGenerated: 0,
+      hopFilterNonZero: 0,
+      hopUntypedGenerated: 0,
+      hopUntypedNonZero: 0,
+      pageGenerated: 0,
+      pageRows: 0,
     };
     // The same GENERATION-IS-NOT-COVERAGE guard for PREDICATE arms. `genExpr` is
     // type-agnostic, so a `WHERE` / `FILTER` / inline-`(n WHERE …)` position used to be filled
@@ -1159,7 +1270,10 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
         `perRep=${cov.perRepGenerated}/${cov.perRepNonEmpty} ` +
         `sink=${cov.sinkGenerated}/${cov.sinkNonZero} peel=${cov.peelGenerated}/${cov.peelNonZero} ` +
         `cross=${cov.crossGenerated}/${cov.crossNonEmpty} ` +
-        `cntProp=${cov.cntPropGenerated}/${cov.cntPropNonZero}`,
+        `cntProp=${cov.cntPropGenerated}/${cov.cntPropNonZero} ` +
+        `hopFilter=${cov.hopFilterGenerated}/${cov.hopFilterNonZero} ` +
+        `hopUntyped=${cov.hopUntypedGenerated}/${cov.hopUntypedNonZero} ` +
+        `page=${cov.pageGenerated}/${cov.pageRows}`,
     );
     expect({
       perRepGenerated: cov.perRepGenerated > 350,
@@ -1177,6 +1291,20 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       // Measured 410-433 generated and 359-376 of those non-zero, of 20,000.
       cntPropGenerated: cov.cntPropGenerated > 200,
       cntPropNonZero: cov.cntPropNonZero > 150,
+      // Measured over five seeds, of 20,000: 521-576 generated, 381-440 of those non-zero.
+      hopFilterGenerated: cov.hopFilterGenerated > 400,
+      hopFilterNonZero: cov.hopFilterNonZero > 300,
+      // The untyped spelling has its own shapes precisely so this floor can be meaningful:
+      // when it rode on a 1-in-4 relationship draw it measured 40/19 and ANY later shape
+      // added to this arm diluted it below the floor. Measured 98-120 generated, 91-108
+      // non-zero.
+      hopUntypedGenerated: cov.hopUntypedGenerated > 70,
+      hopUntypedNonZero: cov.hopUntypedNonZero > 60,
+      // Measured 263-311 generated and 109-128 of those with rows, AFTER this band gave half
+      // its width to the count-shortcut family. If a future change narrows it again, this is
+      // what says so.
+      pageGenerated: cov.pageGenerated > 200,
+      pageRows: cov.pageRows > 80,
     }).toEqual({
       perRepGenerated: true,
       perRepNonEmpty: true,
@@ -1190,6 +1318,12 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       crossNonEmpty: true,
       cntPropGenerated: true,
       cntPropNonZero: true,
+      hopFilterGenerated: true,
+      hopFilterNonZero: true,
+      hopUntypedGenerated: true,
+      hopUntypedNonZero: true,
+      pageGenerated: true,
+      pageRows: true,
     });
     // 20 000 queries × two engines is well under a second locally but exceeds Bun's default
     // 5 s test timeout on the slower CI runners (~5.5–6 s) — give this heavy differential fuzz
