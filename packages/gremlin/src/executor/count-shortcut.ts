@@ -1,6 +1,7 @@
-import type { Graph } from '@lenke/core';
+import type { Edge, Graph } from '@lenke/core';
 
 import type { Plan, Step } from '../ast.js';
+import { matches } from '../predicates.js';
 
 /**
  * `g.…count()` answered from the graph's counters instead of by enumerating.
@@ -42,11 +43,86 @@ export const countShortcut = (plan: Plan, graph: Graph): number | undefined => {
     return source.kind === 'V' ? graph.vertexCount : graph.edgeCount;
   }
 
-  if (mid.length !== 1) {
+  if (source.kind !== 'V') {
     return undefined;
   }
 
-  return source.kind === 'V' ? vertexStepCount(mid[0], graph) : undefined;
+  if (mid.length === 1) {
+    return vertexStepCount(mid[0], graph);
+  }
+
+  return mid.length === 2 ? filteredHopCount(mid[0], mid[1], graph) : undefined;
+};
+
+/**
+ * `V().out(T).has(k, pred).count()` — walk the edge bucket and tally, with no
+ * traversers at all.
+ *
+ * This shape is **86.7% generator plumbing**: five nested layers resumed per edge
+ * at ~60ns each, against a far-endpoint property read of only ~17ns (audit item
+ * 132 — the far vertices are a small, repeatedly-touched set, so they stay
+ * cache-warm, where the same read costs ~184ns on a cold single-pass SCAN). The
+ * GQL surface answers its spelling of this question the same way
+ * (`tallyHopCount`, items 112/125).
+ *
+ * `out(T)` emits one traverser per traversed EDGE, so iterating the type's bucket
+ * visits exactly the same far endpoints in the same multiset — the count cannot
+ * differ, only the cost.
+ */
+const filteredHopCount = (hop: Step, filter: Step, graph: Graph): number | undefined => {
+  if (hop.kind !== 'out' && hop.kind !== 'in') {
+    return undefined; // `both` double-counts a self-loop; see `vertexStepCount`
+  }
+
+  // A `has` with a predicate on ONE key, and nothing else. `hasLabel` and the
+  // other filters have their own semantics and are not this shape.
+  if (filter.kind !== 'has') {
+    return undefined;
+  }
+
+  const buckets = bucketsFor(hop.labels, graph);
+
+  if (buckets === undefined) {
+    return undefined;
+  }
+
+  const forward = hop.kind === 'out';
+  let n = 0;
+
+  for (const bucket of buckets) {
+    for (const edge of bucket) {
+      const far = forward ? edge.to : edge.from;
+
+      if (matches(filter.pred, far.properties[filter.key])) {
+        n += 1;
+      }
+    }
+  }
+
+  return n;
+};
+
+/**
+ * The edge buckets `out(labels)` / `in(labels)` traverse, or `undefined` when
+ * iterating them would not visit each edge exactly once.
+ *
+ * Same soundness condition as `adjacentCount`: a two-type edge sits in two
+ * buckets, so summing across types would visit it twice while the walk yields it
+ * once.
+ */
+const bucketsFor = (
+  labels: readonly string[],
+  graph: Graph,
+): readonly Iterable<Edge>[] | undefined => {
+  if (labels.length === 0) {
+    return [graph.edges];
+  }
+
+  if (labels.length > 1 && graph.multiTypeEdgeCount !== 0) {
+    return undefined;
+  }
+
+  return labels.map((l) => graph.edgesByLabel.get(l) ?? new Set<Edge>());
 };
 
 /** The one intermediate step whose count is a bucket size. */

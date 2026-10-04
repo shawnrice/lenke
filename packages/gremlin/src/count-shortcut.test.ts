@@ -10,6 +10,8 @@ import {
   count,
   dedupe,
   fold,
+  gt,
+  has,
   hasLabel,
   in_,
   out,
@@ -163,5 +165,97 @@ describe('count() answered from a counter or bucket', () => {
     expect(n(g, E(), count())).toBe(0);
     expect(n(g, V(), hasLabel('P'), count())).toBe(0);
     expect(n(g, V(), out('E'), count())).toBe(0);
+  });
+});
+
+// `V().out(T).has(k, pred).count()` walks the edge bucket and tallies, with no traversers
+// (audit item 132). That shape is 86.7% generator plumbing, so the tally is 1.66x.
+//
+// THE ORACLE is again a forced decline — a leading `hasLabel('P')` makes it three intermediate
+// steps, which the shortcut does not take, and the fixture's `P` is... NOT vacuous, so the
+// comparison needs a label every vertex carries. `hasLabel('ALL')` is added for exactly that:
+// a vacuous filter changes the route without changing the answer.
+describe('a filtered hop count tallies the edge bucket', () => {
+  const ages = [10, 20, 30, 40, 50, 60];
+  const hop = (): Graph => {
+    const g = new Graph();
+    const vs = ages.map((age, i) =>
+      g.addVertex({
+        // `ALL` is on every vertex so a leading `hasLabel('ALL')` is a vacuous filter — the
+        // forced-decline route has to answer the same question, not a narrower one.
+        id: `h${i}`,
+        labels: [...LABELS[i], 'ALL'],
+        properties: { age },
+      }),
+    );
+
+    for (const [a, b, label] of EDGES) {
+      g.addEdge({ from: vs[a], to: vs[b], labels: [label], properties: {} });
+    }
+
+    return g;
+  };
+
+  test('it matches the arithmetic and the forced-decline route', () => {
+    const g = hop();
+
+    for (const [t, bound] of [
+      ['E', 25],
+      ['E', 5],
+      ['E', 100],
+      ['F', 25],
+    ] as const) {
+      // out(T): the far endpoint is the edge's TARGET.
+      const wantOut = EDGES.filter(([, b, l]) => l === t && ages[b] > bound).length;
+
+      expect(n(g, V(), out(t), has('age', gt(bound)), count())).toBe(wantOut);
+      expect(n(g, V(), hasLabel('ALL'), out(t), has('age', gt(bound)), count())).toBe(wantOut);
+
+      // in(T): the far endpoint is the edge's SOURCE.
+      const wantIn = EDGES.filter(([a, , l]) => l === t && ages[a] > bound).length;
+
+      expect(n(g, V(), in_(t), has('age', gt(bound)), count())).toBe(wantIn);
+      expect(n(g, V(), hasLabel('ALL'), in_(t), has('age', gt(bound)), count())).toBe(wantIn);
+    }
+
+    // No type at all: every edge, filtered on its target.
+    expect(n(g, V(), out(), has('age', gt(25)), count())).toBe(
+      EDGES.filter(([, b]) => ages[b] > 25).length,
+    );
+  });
+
+  test('an absent key matches nothing', () => {
+    const g = hop();
+
+    expect(n(g, V(), out('E'), has('nope', gt(0)), count())).toBe(0);
+    expect(n(g, V(), hasLabel('ALL'), out('E'), has('nope', gt(0)), count())).toBe(0);
+  });
+
+  // Shapes the tally must decline, each checked against the same question another way.
+  test('shapes it declines still answer correctly', () => {
+    const g = hop();
+
+    // `both()` makes a self-loop incident twice, so it is not a bucket walk.
+    expect(n(g, V(), both('E'), has('age', gt(0)), count())).toBe(
+      n(g, V(), hasLabel('ALL'), both('E'), has('age', gt(0)), count()),
+    );
+    // The second step is not a `has`.
+    expect(n(g, V(), out('E'), hasLabel('Q'), count())).toBe(
+      n(g, V(), hasLabel('ALL'), out('E'), hasLabel('Q'), count()),
+    );
+  });
+
+  // One edge carrying two types is traversed ONCE by `out('E','F')`, so a bucket sum would
+  // double-count it.
+  test('a multi-type edge is counted once through the filter', () => {
+    const g = new Graph();
+    const a = g.addVertex({ id: 'a', labels: ['P'], properties: { age: 10 } });
+    const b = g.addVertex({ id: 'b', labels: ['P'], properties: { age: 90 } });
+
+    g.addEdge({ from: a, to: b, labels: ['E', 'F'], properties: {} });
+
+    expect(n(g, V(), out('E'), has('age', gt(50)), count())).toBe(1);
+    expect(n(g, V(), out('E', 'F'), has('age', gt(50)), count())).toBe(1);
+    expect(n(g, V(), out('E', 'F'), has('age', gt(95)), count())).toBe(0);
   });
 });
