@@ -352,6 +352,134 @@ const startOnlyHopCount = (scan: HopScan, startVar: string | undefined): number 
  * stylistic: with both walks inline, the closure grew enough that the far-endpoint
  * shape it did not otherwise touch read 1.15x slower in three interleaved rounds.
  */
+/**
+ * Can the START-side per-vertex walk answer this scan? One rule, asked by BOTH callers —
+ * the clause-`WHERE` branch and the inline-only branch — because they had near-duplicate
+ * condition sets and drift between two copies of one rule is precisely how the far
+ * endpoint ended up on the per-edge tally while the start endpoint had a walk.
+ *
+ * With the inline-only branch's bare predicate (`startVar`/`farVar`/`relVar` all unset)
+ * this reduces to exactly that branch's old condition, since it is reached only when one
+ * of the two inline constraints is present.
+ *
+ * Module scope, not inline in the returned closure: the closure is the hot one, and this
+ * file has measured a 1.17x cost on an unrelated shape from growing it (audit item 119).
+ * These are asked ONCE per query — unlike the `!== undefined` tests inside the tally,
+ * which are inline precisely because they run per EDGE.
+ */
+const startWalkFits = (scan: HopScan): boolean => {
+  const { graph, pred, pb, types, inNear, inFar } = scan;
+
+  return (
+    // A clause predicate on the start, an INLINE constraint on it, or both — any of them
+    // is decided per VERTEX.
+    (pred.startVar !== undefined || inNear !== undefined) &&
+    pred.farVar === undefined &&
+    pred.relVar === undefined &&
+    // The walk never visits the far endpoint, so it cannot apply the far label or a far
+    // constraint; and summing out-degree counts edges to ANY target.
+    pb === undefined &&
+    inFar === undefined &&
+    // Summing per-type bucket sizes is sound only when no edge sits in two of them.
+    (types?.length === 1 || graph.multiTypeEdgeCount === 0)
+  );
+};
+
+/** The FAR mirror of {@link startWalkFits}, on mirrored conditions. */
+const farWalkFits = (scan: HopScan): boolean => {
+  const { graph, pred, pa, types, inNear, inFar } = scan;
+
+  return (
+    (pred.farVar !== undefined || inFar !== undefined) &&
+    pred.startVar === undefined &&
+    pred.relVar === undefined &&
+    // An IN-degree counts edges from ANY source, so the start side must be unconstrained
+    // where the twin requires the far side to be.
+    pa === undefined &&
+    inNear === undefined &&
+    (types?.length === 1 || graph.multiTypeEdgeCount === 0)
+  );
+};
+
+/**
+ * The FAR mirror of {@link startOnlyHopCount}: when the predicate reads only the hop's
+ * far endpoint, it is decided once per FAR VERTEX rather than once per edge, and each
+ * survivor contributes its whole matching IN-degree.
+ *
+ * `Σ over edges [pred(far)]` and `Σ over far vertices satisfying pred (in-degree)` count
+ * the same edges, so this is the same question asked from the other end — O(V + survivor
+ * degree) instead of O(E), and it reads the far property ONCE per vertex instead of once
+ * per in-edge.
+ *
+ * This was the single widest gap in the cross-engine bench: `traverse 1-hop + filter`
+ * (`MATCH (a:Person)-[:KNOWS]->(x) WHERE x.age > 500 RETURN count(*)`) cost ts 571.7ms
+ * against native's 1.5ms, a 378x ratio, while the START-filtered spelling of the same
+ * shape cost 106.4ms — because item 129 gave THAT side this walk and left this one on the
+ * per-edge tally.
+ *
+ * Deliberately a separate module-scope function rather than a parameter on
+ * `startOnlyHopCount`: that walk is hot and proven, and this file has already measured a
+ * 1.17x cost on an UNRELATED shape from growing one hot closure (see the rejected lever
+ * in `Vertex.labels` and audit item 119). The twin is left byte-identical and acts as a
+ * control for this change.
+ *
+ * The caller guarantees what this cannot see: the START side is unconstrained (`pa`
+ * vacuous and no `inNear`), because an in-degree counts edges from ANY source; and no
+ * edge sits in two of the summed type buckets.
+ */
+const farOnlyHopCount = (scan: HopScan, farVar: string | undefined): number => {
+  const { graph, params, pred, pb, out, types, inFar } = scan;
+  const binding = new Map<string, unknown>();
+  const env: EvalEnv = { binding, params, graph };
+  // The far endpoint of an `out` hop is the edge's TARGET, so its edges are the ones the
+  // reverse index holds — the mirror of the twin's choice.
+  const index = out ? graph.edgesToByLabel : graph.edgesFromByLabel;
+  let n = 0;
+
+  for (const [vid, byType] of index) {
+    let deg = 0;
+
+    if (types === undefined) {
+      // Every type. Sound only because the caller reaches this with no type list
+      // only when `multiTypeEdgeCount === 0`, so no edge sits in two of the
+      // buckets being summed.
+      for (const set of byType.values()) {
+        deg += set.size;
+      }
+    } else {
+      for (const t of types) {
+        deg += byType.get(t)?.size ?? 0;
+      }
+    }
+
+    if (deg === 0) {
+      continue;
+    }
+
+    const v = graph.getVertexById(vid);
+
+    // `pb`, not `pa`: this walk visits the FAR endpoints, so the label it can apply is
+    // the far one. The start label has to be vacuous for the caller to route here.
+    if (v == null || !matchesLabel(v, pb)) {
+      continue;
+    }
+
+    if (inFar !== undefined && !inlineHolds(inFar, v, binding, params, graph)) {
+      continue;
+    }
+
+    if (farVar !== undefined) {
+      binding.set(farVar, v);
+    }
+
+    if (asTruth(pred.fn(env)) === true) {
+      n += deg;
+    }
+  }
+
+  return n;
+};
+
 const tallyHopCount = (scan: HopScan): number => {
   const { graph, params, pred, pa, pb, out, types, inNear, inFar } = scan;
   const binding = new Map<string, unknown>();
@@ -458,26 +586,15 @@ const buildOneHopCount = <T>(
       const { startVar } = pred;
       const scan: HopScan = { graph, params, pred, pa, pb, out, types, inNear, inFar };
 
-      // Summing per-type bucket sizes is sound under the same condition the
-      // unlabeled O(1) path below uses: one type cannot collide with itself, and
-      // `multiTypeEdgeCount === 0` rules out an edge sitting in two buckets.
-      // Otherwise a two-type edge would be counted twice.
-      if (
-        // A clause predicate on the start, an INLINE constraint on it, or both —
-        // any of them is decided per VERTEX. Item 125 carried only `inFar` because
-        // it measured routing a start constraint to the TALLY (a full edge scan)
-        // and rightly rejected that; the per-vertex path is the route that suits
-        // it, and this is it (item 129).
-        (startVar !== undefined || inNear !== undefined) &&
-        pred.farVar === undefined &&
-        pred.relVar === undefined &&
-        pb === undefined &&
-        // The per-vertex path never visits the far endpoint, so it cannot apply a
-        // constraint on it.
-        inFar === undefined &&
-        (types?.length === 1 || graph.multiTypeEdgeCount === 0)
-      ) {
+      // Item 125 carried only `inFar` because it measured routing a start constraint to
+      // the TALLY (a full edge scan) and rightly rejected that; the per-vertex path is the
+      // route that suits it (item 129), and its far mirror is item 137.
+      if (startWalkFits(scan)) {
         return rowOf(startOnlyHopCount(scan, startVar));
+      }
+
+      if (farWalkFits(scan)) {
+        return rowOf(farOnlyHopCount(scan, pred.farVar));
       }
 
       return rowOf(tallyHopCount(scan));
@@ -493,17 +610,22 @@ const buildOneHopCount = <T>(
       const bare: HopPred = { fn: () => true };
       const scan: HopScan = { graph, params, pred: bare, pa, pb, out, types, inNear, inFar };
 
-      // A START-only constraint is decided per VERTEX — degree then costs nothing,
-      // because the walk reads bucket SIZES rather than edges. Measured at 20,000
-      // vertices (item 129): the equivalent clause-`WHERE` spelling, which already
-      // took this route, is 2.62ms at degree 9 where the declining inline spelling
-      // is 10.82 and the tally would be worse still.
-      if (
-        inFar === undefined &&
-        pb === undefined &&
-        (types?.length === 1 || graph.multiTypeEdgeCount === 0)
-      ) {
+      // The SAME two rules as the clause-`WHERE` branch. A start-only constraint is
+      // decided per VERTEX — degree then costs nothing, because the walk reads bucket
+      // SIZES rather than edges. Measured at 20,000 vertices (item 129): the equivalent
+      // clause-`WHERE` spelling, which already took this route, is 2.62ms at degree 9
+      // where the declining inline spelling is 10.82 and the tally would be worse still.
+      //
+      // The far mirror matters for the same reason in reverse: without it the inline
+      // spelling `(b {k: 2})` would keep the per-edge tally while the clause spelling
+      // `WHERE b.k = 2` took the walk — one question costing two different amounts, which
+      // is the gap items 124-125 were about.
+      if (startWalkFits(scan)) {
         return rowOf(startOnlyHopCount(scan, undefined));
+      }
+
+      if (farWalkFits(scan)) {
+        return rowOf(farOnlyHopCount(scan, undefined));
       }
 
       return rowOf(tallyHopCount(scan));
