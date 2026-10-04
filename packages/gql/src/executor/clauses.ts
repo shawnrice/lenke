@@ -608,23 +608,39 @@ const tailIsUncorrelated = (
 };
 
 /**
- * Pull at most `TAIL_CACHE_CAP` bindings; `undefined` if there are more.
+ * Yield an uncorrelated tail while RECORDING it, so the cache costs nothing extra
+ * to fill and the first row still comes out after one match.
  *
- * Overflow discards what it pulled and the caller falls back to re-matching, so
- * the wasted work is bounded by the cap — once, not per outer row.
+ * The caller's `seen` array is filled as rows pass through, and the return value
+ * says whether it is a complete tail (`true`) or overflowed the cap (`false`, and
+ * `seen` must be discarded). A consumer that stops early — any `LIMIT` — abandons
+ * this generator mid-tail, so neither answer is reached and nothing is cached:
+ * incomplete is exactly what an abandoned tail is.
+ *
+ * This replaces filling the array FIRST and yielding from it afterwards, which
+ * made every leading `MATCH … LIMIT n` pay a full `min(bucket, cap)` match pass
+ * before its first row — 521x on `LIMIT 1` over a 20,000-vertex bucket, and a
+ * live divergence from the engine, which streams (audit item 150).
  */
-const cacheTail = (rows: Iterable<Binding>): Binding[] | undefined => {
-  const out: Binding[] = [];
+const recordTail = function* (
+  rows: Iterable<Binding>,
+  seen: Binding[],
+): Generator<Binding, boolean> {
+  let complete = true;
 
   for (const b of rows) {
-    if (out.length === TAIL_CACHE_CAP) {
-      return undefined;
+    if (complete) {
+      if (seen.length === TAIL_CACHE_CAP) {
+        complete = false;
+      } else {
+        seen.push(b);
+      }
     }
 
-    out.push(b);
+    yield b;
   }
 
-  return out;
+  return complete;
 };
 
 const visitRemaining = function* (
@@ -658,21 +674,50 @@ const visitRemaining = function* (
   // because `patternRank` differs between `binding` and `b` only on whether a
   // pattern continues an existing binding, which uncorrelatedness rules out.
   if (rest.length > 0 && tailIsUncorrelated(patterns, rest, pat)) {
-    const tail = cacheTail(visitRemaining(graph, patterns, rest, binding, params));
+    // The FIRST outer row streams the tail through `recordTail`, so its rows are
+    // yielded as they are matched and the cache fills as a by-product; later rows
+    // read the filled cache. Collecting the tail up front instead cost a whole
+    // tail pass before the first row — which a `LIMIT` then discarded (item 150,
+    // the same defect as in `hoistedMatch`).
+    const seen: Binding[] = [];
+    let complete = false;
+    let first = true;
 
-    if (tail !== undefined) {
-      for (const b of matchPattern(graph, pat, binding, params)) {
-        for (const t of tail) {
-          // `t` already carries `binding`; `b` carries `binding` plus `pat`'s own
-          // variables. Merging in this order reproduces the recursion's key order
-          // exactly — outer keys, then `pat`'s, then the tail's — which `RETURN *`
-          // projects in.
-          yield new Map([...b, ...t]);
+    for (const b of matchPattern(graph, pat, binding, params)) {
+      // `t` already carries `binding`; `b` carries `binding` plus `pat`'s own
+      // variables. Merging in this order reproduces the recursion's key order
+      // exactly — outer keys, then `pat`'s, then the tail's — which `RETURN *`
+      // projects in.
+      if (first) {
+        first = false;
+
+        const tail = recordTail(visitRemaining(graph, patterns, rest, binding, params), seen);
+        let next = tail.next();
+
+        while (next.done !== true) {
+          yield new Map([...b, ...next.value]);
+          next = tail.next();
         }
+
+        complete = next.value;
+        continue;
       }
 
-      return;
+      if (complete) {
+        for (const t of seen) {
+          yield new Map([...b, ...t]);
+        }
+
+        continue;
+      }
+
+      // The tail overflowed the cap, so there is nothing cached to form a product
+      // with — recurse for this row, exactly as the uncached path does. The first
+      // row's output is already correct and is not revisited.
+      yield* visitRemaining(graph, patterns, rest, b, params);
     }
+
+    return;
   }
 
   for (const b of matchPattern(graph, pat, binding, params)) {
@@ -806,6 +851,10 @@ const hoistedMatch = function* (
   params: Params,
 ): Iterable<Binding> {
   let cached: Binding[] | undefined;
+  // The tail overflowed the cap once, so it will again — remember it rather than
+  // re-pulling (and re-discarding) a capful per outer row. The comment on the cap
+  // already promised "once, not per outer row"; nothing recorded it.
+  let overflowed = false;
 
   for (const binding of bindings) {
     let shares = false;
@@ -822,21 +871,49 @@ const hoistedMatch = function* (
       continue;
     }
 
-    if (cached === undefined) {
-      // Matched against an EMPTY binding: `reads` is empty and no name is shared,
-      // so nothing in the clause can consult the row. The cache therefore holds
-      // only the clause's own variables, which is what makes the merge below
-      // reproduce `matchPattern` extending `binding`.
-      cached = cacheTail(matchOrOptional(graph, clause, new Map(), params));
-
-      if (cached === undefined) {
-        yield* matchOrOptional(graph, clause, binding, params);
-        continue;
+    if (cached !== undefined) {
+      for (const c of cached) {
+        yield new Map([...binding, ...c]);
       }
+
+      continue;
     }
 
-    for (const c of cached) {
-      yield new Map([...binding, ...c]);
+    if (overflowed) {
+      yield* matchOrOptional(graph, clause, binding, params);
+      continue;
+    }
+
+    // Matched against an EMPTY binding: `reads` is empty and no name is shared,
+    // so nothing in the clause can consult the row. The cache therefore holds
+    // only the clause's own variables, which is what makes the merge below
+    // reproduce `matchPattern` extending `binding`.
+    //
+    // The tail streams THROUGH `recordTail` rather than being collected first, so
+    // this row's own matches are yielded as they are found and the cache is a free
+    // by-product. Filling it first cost a whole match pass before the first row,
+    // which a `LIMIT` then threw away — and made TS raise on a candidate the
+    // engine never evaluates.
+    const seen: Binding[] = [];
+    const tail = recordTail(matchOrOptional(graph, clause, new Map(), params), seen);
+    // An EMPTY incoming binding — the leading MATCH of a query, which is the common
+    // case — has nothing to merge, so the matcher's own binding passes straight
+    // through. Copying it instead costs a Map per row and measured 1.93x on a
+    // 20,000-row scan. This is the same aliasing the previous overflow path had,
+    // which yielded `matchOrOptional` directly; later outer rows still read the
+    // cache through a copy below.
+    const bare = binding.size === 0;
+    let next = tail.next();
+
+    while (next.done !== true) {
+      yield bare ? next.value : new Map([...binding, ...next.value]);
+      next = tail.next();
+    }
+
+    if (next.value) {
+      cached = seen;
+    } else {
+      overflowed = true;
     }
   }
 };

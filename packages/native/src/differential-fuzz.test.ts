@@ -873,6 +873,25 @@ const genQuery = (r: () => number): string => {
       // on: three seeds did not catch the reverted fix, which is why this is spelled out.
       'MATCH (n:T) RETURN CAST(n.st AS INTEGER) AS u, 0 - n.n AS x, n.n AS t ORDER BY x, t LIMIT 3',
       'MATCH (n:T) RETURN CAST(n.st AS INTEGER) AS u, 0 - n.n AS x, n.n AS t ORDER BY x, t SKIP 1 LIMIT 2',
+      // TARGETED: a MATCH predicate that faults on a candidate the LIMIT never needs. The
+      // sibling of the two above — there the fault was in the PROJECTION, here it is in the
+      // clause itself, which is a different code path (the uncorrelated tail cache) and was
+      // its own live divergence: TS filled that cache eagerly, so it evaluated the predicate
+      // on candidates past the limit and RAISED where native, which streams, returned a row
+      // (TS audit item 150).
+      //
+      // Why it is spelled out rather than drawn: the fault must land AFTER the candidate that
+      // satisfies the limit, and on this fixture only `n` can place it there. `st` exists on
+      // vertices 1 and 3, and vertex 1 is FIRST in the bucket, so every `CAST(n.st …)`
+      // predicate faults on candidate one — which both engines must evaluate, making it read
+      // as agreement (the item-144 mistake). `n.n - 7` is zero on vertex 2 instead, and
+      // vertex 1 (n = 3) satisfies `< 0` and fills `LIMIT 1` before vertex 2 is reached.
+      //
+      // Verified to have teeth by reverting the fix: pre-fix TS raised here while native
+      // returned a row. The unlimited spelling is the control — both engines reach vertex 2
+      // and both must raise.
+      'MATCH (n:T) WHERE 1 / (n.n - 7) < 0 RETURN n.n AS x LIMIT 1',
+      'MATCH (n:T) WHERE 1 / (n.n - 7) < 0 RETURN n.n AS x',
       // UNTYPED and filtered, unconditionally rather than via the `rel` draw. This is the
       // spelling that was WRONG (item 114), so its density is pinned by its own shapes and a
       // coverage floor instead of being left to a 1-in-4 pick that later shapes dilute.
