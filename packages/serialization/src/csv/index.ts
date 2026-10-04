@@ -729,6 +729,22 @@ const computeColumns = (
 // Row builders
 // ---------------------------------------------------------------------------
 
+// REJECTED lever — pairing each key with its `ColumnType` ONCE and indexing the pair
+// positionally, so the row loop stops doing `types.get(key)` per CELL. That lookup is
+// loop-invariant across every row (the types are fixed before the header is written), so a
+// 200,000-node/3-column encode re-answers it 600,000 times, and the Rust encoder was given
+// exactly this treatment in audit item 108. It wins nothing here. Interleaved, rebuilding
+// both ways each round, min of THIRTEEN reps:
+//
+//     before  113.2 / 115.2 / 122.7 / 126.7 / 111.9
+//     after   118.0 / 122.7 / 115.1 / 118.1 / 117.4
+//
+// flat to marginally worse, rounds splitting 3-2 against it. An earlier three-round read at
+// 7 reps showed 1.11x and was noise — the rounds disagreed on the SIGN, which is the tell.
+// A 3-entry `Map` keyed by a repeated string is already about free (JSC caches the key's
+// hash), while the `{ key, type }` pair adds an object indirection and a destructure per
+// cell. The Rust win came from avoiding a HashMap over owned `String`s, which is a
+// different cost; do not port a Rust result here without measuring it.
 const buildRow = (
   fixed: readonly string[],
   keys: readonly string[],

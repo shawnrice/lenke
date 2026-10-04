@@ -56,6 +56,21 @@ export class Vertex {
     return this.#id;
   }
 
+  // REJECTED lever — reading `this.#id` here (and in `edgesFromByLabel`/`edgesToByLabel`
+  // below, and in `Edge`'s `labels`) instead of going through the public `id` getter. This
+  // getter is 11.8% of a TypeScript CSV encode by `bun --cpu-prof` and `get properties`
+  // already reads `this.#id` directly, so the extra hop looked like free money. It is not:
+  // interleaved min of three, rebuilding both ways each round,
+  //
+  //     encode csv      131.6 / 132.9 / 156.6   ->  127.8 / 136.5 / 140.2
+  //     encode pg-text  123.7 / 126.8 / 126.3   ->  122.5 / 128.2 / 123.7
+  //     encode ndjson    78.6 /  77.3 /  68.7   ->   77.7 /  78.5 /  79.4
+  //     IS LABELED scan  97.1 /  85.8 /  85.1   ->   92.4 /  84.9 /  91.8
+  //
+  // flat on every row, with the rounds disagreeing on the sign. JSC inlines a getter whose
+  // whole body is a private-field read, so there was no redundant work to remove. What this
+  // getter actually costs is the string-keyed `Map.get` and the `Set` the caller then
+  // iterates, neither of which the rewrite touched.
   get labels(): Set<string> {
     return this.#graph!.elementLabels.get(this.id) ?? new Set();
   }
