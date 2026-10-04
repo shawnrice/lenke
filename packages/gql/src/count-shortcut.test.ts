@@ -247,6 +247,101 @@ describe('count(*) shortcut correctness (vs independent enumeration)', () => {
     expect(c(g, `MATCH (x:Person) RETURN count(*) AS c`)).toBe(3);
   });
 
+  // The GROUPED count, against the GENERAL PATH as the oracle rather than a hand-written
+  // expectation. `WHERE true` is rejected by the detector (`m.where !== undefined`) and cannot
+  // change which rows match, so it is the same question computed the slow way — the strongest
+  // oracle available, since both fast spellings now take the shortcut.
+  test('a grouped node count matches the general path exactly', () => {
+    const g = new Graph();
+    // Deliberately nasty: a missing key, a STORED null (groups with missing), -0 and 0
+    // (one group), NaN (groups with itself), a string and a boolean (distinct kinds).
+    g.addVertex({ id: 'a', labels: ['P'], properties: { k: 2 } });
+    g.addVertex({ id: 'b', labels: ['P'], properties: {} });
+    g.addVertex({ id: 'c', labels: ['P'], properties: { k: null } });
+    g.addVertex({ id: 'd', labels: ['P'], properties: { k: 2 } });
+    g.addVertex({ id: 'e', labels: ['P'], properties: { k: -0 } });
+    g.addVertex({ id: 'f', labels: ['P'], properties: { k: 0 } });
+    g.addVertex({ id: 'h', labels: ['P'], properties: { k: Number.NaN } });
+    g.addVertex({ id: 'i', labels: ['P'], properties: { k: Number.NaN } });
+    g.addVertex({ id: 'j', labels: ['P'], properties: { k: 'two' } });
+    // A NUMBER and the STRING of that number are DIFFERENT groups. Without this pair the
+    // fixture cannot see the type prefix in `valueKey`: plain `String(raw)` unifies -0/0 and
+    // NaN on its own, so it passed every other case here.
+    g.addVertex({ id: 'k1', labels: ['P'], properties: { k: 7 } });
+    g.addVertex({ id: 'k2', labels: ['P'], properties: { k: '7' } });
+    g.addVertex({ id: 'l', labels: ['P'], properties: { k: true } });
+    g.addVertex({ id: 'm', labels: ['Q'], properties: { k: 9 } });
+
+    const pairs: readonly (readonly [string, string])[] = [
+      // implicit grouping
+      [
+        `MATCH (n:P) RETURN n.k AS a, count(*) AS c`,
+        `MATCH (n:P) WHERE true RETURN n.k AS a, count(*) AS c`,
+      ],
+      // column order follows the projection, not the shortcut
+      [
+        `MATCH (n:P) RETURN count(*) AS c, n.k AS a`,
+        `MATCH (n:P) WHERE true RETURN count(*) AS c, n.k AS a`,
+      ],
+      // the ISO `LET` + `GROUP BY` spelling — the same question, so the same answer
+      [
+        `MATCH (n:P) LET a = n.k RETURN a, count(*) AS c GROUP BY a`,
+        `MATCH (n:P) WHERE true RETURN n.k AS a, count(*) AS c`,
+      ],
+      // unlabelled: every vertex, including the Q
+      [
+        `MATCH (n) RETURN n.k AS a, count(*) AS c`,
+        `MATCH (n) WHERE true RETURN n.k AS a, count(*) AS c`,
+      ],
+    ];
+
+    for (const [fast, oracle] of pairs) {
+      expect(query(g, fast)).toEqual(query(g, oracle));
+    }
+
+    // And the group total is every matched vertex, once.
+    const rows = query(g, `MATCH (n:P) RETURN n.k AS a, count(*) AS c`) as { c: number }[];
+
+    expect(rows.reduce((x, r) => x + r.c, 0)).toBe(12);
+  });
+
+  // Shapes the grouped tally cannot compute must fall through, not answer wrongly.
+  test('a grouped count declines the shapes it cannot compute', () => {
+    const g = new Graph();
+
+    g.addVertex({ id: 'a', labels: ['P'], properties: { k: 1, j: 7 } });
+    g.addVertex({ id: 'b', labels: ['P'], properties: { k: 1, j: 8 } });
+
+    // HAVING must still filter; ORDER BY must still order; a key that is not a property of
+    // the matched node, and a GROUP BY naming something other than the LET, are not this
+    // shape at all.
+    expect(
+      query(g, `SELECT count(*) AS c, n.k AS a FROM MATCH (n:P) HAVING count(*) > 100`),
+    ).toEqual([]);
+    expect(query(g, `MATCH (n:P) RETURN n.j AS a, count(*) AS c ORDER BY a DESC`)).toEqual([
+      { a: 8, c: 1 },
+      { a: 7, c: 1 },
+    ]);
+    expect(query(g, `MATCH (n:P) LET a = n.k + 1 RETURN a, count(*) AS c GROUP BY a`)).toEqual([
+      { a: 2, c: 2 },
+    ]);
+    // A `GROUP BY` that names something OTHER than the LET groups by that instead — here one
+    // row per node, not one row per `k`. Both vertices share `k`, which is what makes the two
+    // groupings differ at all; with distinct keys the wrong answer is indistinguishable.
+    const shared = new Graph();
+
+    shared.addVertex({ id: 's1', labels: ['P'], properties: { k: 1 } });
+    shared.addVertex({ id: 's2', labels: ['P'], properties: { k: 1 } });
+
+    expect(query(shared, `MATCH (n:P) LET a = n.k RETURN a, count(*) AS c GROUP BY n`)).toEqual([
+      { a: 1, c: 1 },
+      { a: 1, c: 1 },
+    ]);
+    expect(query(shared, `MATCH (n:P) LET a = n.k RETURN a, count(*) AS c GROUP BY a`)).toEqual([
+      { a: 1, c: 2 },
+    ]);
+  });
+
   test('2-hop with a reversed first segment matches enumeration', () => {
     const g = build();
 

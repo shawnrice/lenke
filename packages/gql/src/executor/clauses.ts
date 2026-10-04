@@ -1076,6 +1076,12 @@ export const runLinearClauses = (
       return [linear.countShortcut(graph, params)];
     }
 
+    // Grouped `count(*)` off the label bucket — many rows, so its own hook. See
+    // `detectGroupedNodeCount`.
+    if (linear.groupCountShortcut) {
+      return linear.groupCountShortcut(graph, params);
+    }
+
     // Unbounded var-length + DISTINCT → BFS the reachable set instead of enumerating
     // trails (exponential, hits the trail budget). See `detectReachableShortcut`.
     if (linear.reachShortcut) {

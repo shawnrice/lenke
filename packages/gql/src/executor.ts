@@ -141,7 +141,7 @@ export const consistent = (binding: Binding, name: string | undefined, value: Bo
 // ISO GQL: accessing a property that is absent — or a property of a NULL element
 // (e.g. an unmatched OPTIONAL variable) — yields NULL, not `undefined`. Coalesce
 // here so the whole pipeline (output rows, IS NULL, arithmetic) sees ISO's NULL.
-const propOf = (bound: unknown, key: string): unknown =>
+export const propOf = (bound: unknown, key: string): unknown =>
   (bound as { properties?: Record<string, unknown> } | undefined)?.properties?.[key] ?? null;
 
 // Element identity, mirroring the Rust `val_eq`: nodes/edges are equal iff same
@@ -3411,6 +3411,8 @@ export type CLinear = {
   clauses: readonly CClause[];
   /** Precomputed direct-count closure for `MATCH … RETURN count(*)`; else null. */
   countShortcut: ((graph: Graph, params: Params) => Row) | null;
+  /** Precomputed grouped-count closure for `MATCH (n) RETURN n.k, count(*)`; else null. */
+  groupCountShortcut: ReachFn | null;
   /** BFS closure for unbounded var-length + DISTINCT; else null. */
   reachShortcut: ReachFn | null;
 };
@@ -3420,6 +3422,7 @@ const compileLinear = (linear: LinearQuery): CLinear => {
   return {
     clauses,
     countShortcut: detectCountShortcut(linear.clauses),
+    groupCountShortcut: detectGroupedNodeCount(linear.clauses),
     reachShortcut: detectReachableShortcut(linear.clauses, clauses),
   };
 };
@@ -3447,7 +3450,11 @@ import {
 // Count / reachability fast-paths (see executor/shortcuts.ts) — this back-edge and
 // the shortcuts' import of the trunk's bucket primitives form a safe function-level
 // cycle, matching the other executor submodules.
-import { detectCountShortcut, detectReachableShortcut } from './executor/shortcuts.js';
+import {
+  detectCountShortcut,
+  detectGroupedNodeCount,
+  detectReachableShortcut,
+} from './executor/shortcuts.js';
 import type { ReachFn } from './executor/shortcuts.js';
 
 // --- compile & execute -------------------------------------------------------

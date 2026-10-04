@@ -35,6 +35,7 @@ import {
   compileExpr,
   countEdges,
   outNeighbors,
+  propOf,
   relHasPredicate,
   relTypeNames,
   resolveCount,
@@ -336,6 +337,213 @@ export const detectCountShortcut = (clauses: readonly Clause[]): CountFn | null 
   }
 
   return null;
+};
+
+/**
+ * `MATCH (n[:L]) RETURN n.<key> AS k, count(*) AS c` — a grouped count, tallied straight off
+ * the label bucket. Returns MANY rows, so it is its own hook rather than a `CountFn`.
+ *
+ * The widest remaining row in the cross-engine bench after the plain counts were fixed: ts
+ * 144.9ms against native's 1.1ms. Native has `try_group_count`/`try_node_grouped_count`; TS
+ * had nothing, so a grouped count went through the general pipeline — and that pipeline costs
+ * ~487ns a row before it does any work (`MATCH (n:Person) RETURN 1` over 200,000 nodes is
+ * 97ms, and a CPU profile puts 37% of it in `generatorResume`). Tallying avoids all of it: no
+ * bindings, no rows, no generator layers.
+ *
+ * EVERY SEMANTIC HERE IS THE GENERAL PATH'S, not a re-derivation:
+ *   - the property read is `propOf`, the same function the compiled `prop` expression calls,
+ *     so a MISSING property and a STORED NULL both read as `null` and land in ONE group;
+ *   - the group key is `valueKey`, so `-0`/`0` share a group and `NaN` groups with itself;
+ *   - groups come out in FIRST-SEEN order, which a `Map`'s insertion order gives and which
+ *     the general path gets from its own `Map<string, Binding[]>`;
+ *   - the key column shows the FIRST row's raw value, as the general path projects it from the
+ *     group's representative binding;
+ *   - the two columns are emitted in the projection's item order, so
+ *     `RETURN count(*) AS c, n.k AS a` keeps `c` first.
+ */
+/** Is `e` exactly `count(*)` — no argument, no DISTINCT? */
+const isStarCount = (e: Expr): boolean =>
+  e.kind === 'func' && e.name === 'count' && e.star && !e.distinct;
+
+/** The `MATCH`, optional single `LET`, and `RETURN` of a 2- or 3-clause linear query. */
+type GroupedShape = {
+  match: Extract<Clause, { kind: 'match' }>;
+  ret: Extract<Clause, { kind: 'return' }>;
+  /** The lone `LET` item, or `undefined` for the two-clause form. */
+  let?: { var: string; expr: Expr };
+};
+
+const groupedClauses = (clauses: readonly Clause[]): GroupedShape | null => {
+  if (clauses.length !== 2 && clauses.length !== 3) {
+    return null;
+  }
+
+  const [m, mid, last] = clauses;
+  const ret = clauses.length === 2 ? mid : last;
+
+  if (m.kind !== 'match' || m.optional || m.where !== undefined || m.patterns.length !== 1) {
+    return null;
+  }
+
+  if (ret.kind !== 'return') {
+    return null;
+  }
+
+  if (clauses.length === 2) {
+    return { match: m, ret };
+  }
+
+  if (mid.kind !== 'let' || mid.items.length !== 1) {
+    return null;
+  }
+
+  return { match: m, ret, let: mid.items[0] };
+};
+
+/** The projection shapes this can answer: two items, one of them `count(*)`, nothing else on. */
+const groupedProjection = (
+  proj: Projection,
+  letName: string | undefined,
+): { countAt: number } | null => {
+  if (
+    proj.star ||
+    proj.distinct ||
+    proj.having !== undefined ||
+    (proj.orderBy?.length ?? 0) > 0 ||
+    proj.skip !== undefined ||
+    proj.limit !== undefined ||
+    proj.items.length !== 2
+  ) {
+    return null;
+  }
+
+  // `GROUP BY` is allowed ONLY in the `LET` form, naming the `LET` variable and nothing else.
+  if (proj.groupBy !== undefined) {
+    const keys = proj.groupBy;
+
+    if (letName === undefined || keys.length !== 1) {
+      return null;
+    }
+
+    const [k] = keys;
+
+    if (k.kind !== 'var' || k.name !== letName) {
+      return null;
+    }
+  }
+
+  const countAt = proj.items.findIndex((i) => isStarCount(i.expr));
+
+  return countAt === -1 ? null : { countAt };
+};
+
+/**
+ * `MATCH (n[:L]) RETURN n.<key> AS k, count(*) AS c` — a grouped count, tallied straight off
+ * the label bucket. Returns MANY rows, so it is its own hook rather than a `CountFn`.
+ *
+ * BOTH SPELLINGS, because they are one question and so must cost the same:
+ *
+ * ```text
+ * MATCH (n:P) RETURN n.k AS a, count(*) AS c                     -- implicit grouping
+ * MATCH (n:P) LET a = n.k RETURN a, count(*) AS c GROUP BY a     -- the ISO spelling
+ * ```
+ *
+ * Only the second can carry an explicit `GROUP BY`, since `GROUP BY` takes a BOUND NAME and
+ * not a `RETURN` alias — so a `LET` is the only way to name the key, and it is the form the
+ * cross-engine bench asks. Handling only the two-clause one left that bench row flat at ~168ms
+ * and would have made this look worthless.
+ *
+ * It was the widest remaining row after the plain counts were fixed: ts 144.9ms against
+ * native's 1.1ms. Native has `try_group_count`/`try_node_grouped_count`; TS had nothing, so a
+ * grouped count went through the general pipeline — which costs ~487ns a row before doing any
+ * work (`MATCH (n:Person) RETURN 1` over 200,000 nodes is 97ms, 37% of it in `generatorResume`
+ * by CPU profile). Tallying avoids all of it: no bindings, no rows, no generator layers.
+ *
+ * EVERY SEMANTIC HERE IS THE GENERAL PATH'S, not a re-derivation:
+ *   - the property read is `propOf`, the same function the compiled `prop` expression calls,
+ *     so a MISSING property and a STORED NULL both read as `null` and land in ONE group;
+ *   - the group key is `valueKey`, so `-0`/`0` share a group and `NaN` groups with itself;
+ *   - groups come out in FIRST-SEEN order, which a `Map`'s insertion order gives and which the
+ *     general path gets from its own `Map<string, Binding[]>`;
+ *   - the key column shows the FIRST row's raw value, as the general path projects it from the
+ *     group's representative binding;
+ *   - the columns are emitted in the projection's item order, so
+ *     `RETURN count(*) AS c, n.k AS a` keeps `c` first.
+ */
+export const detectGroupedNodeCount = (clauses: readonly Clause[]): ReachFn | null => {
+  const shape = groupedClauses(clauses);
+
+  if (!shape) {
+    return null;
+  }
+
+  const letName = shape.let?.var;
+  const picked = groupedProjection(shape.ret.projection, letName);
+
+  if (!picked) {
+    return null;
+  }
+
+  const { items } = shape.ret.projection;
+  const { countAt } = picked;
+  const [{ start, segments }] = shape.match.patterns;
+
+  if (segments.length !== 0 || !plainNode(start) || start.variable === undefined) {
+    return null;
+  }
+
+  const { label } = start;
+
+  if (label !== undefined && label.kind !== 'label') {
+    return null;
+  }
+
+  const keyItem = items[1 - countAt];
+  const keyExpr = keyItem.expr;
+  // Two-clause: the item IS the property. Three-clause: the item is the `LET` name and the
+  // property lives in the `LET`. Either way the grouped value must be one property of the
+  // matched node; anything else falls through to the general path.
+  let keySource: Expr | undefined = keyExpr;
+
+  if (shape.let !== undefined) {
+    keySource = keyExpr.kind === 'var' && keyExpr.name === letName ? shape.let.expr : undefined;
+  }
+
+  if (keySource?.kind !== 'prop' || keySource.variable !== start.variable) {
+    return null;
+  }
+
+  const { key } = keySource;
+  const countCol = items[countAt].alias ?? columnName(items[countAt].expr);
+  const keyCol = keyItem.alias ?? columnName(keyExpr);
+  const countFirst = countAt === 0;
+  const labelName = label?.name;
+
+  return (graph) => {
+    const vertices: Iterable<Vertex> =
+      labelName === undefined
+        ? graph.verticesById.values()
+        : (graph.verticesByLabel.get(labelName) ?? []);
+    const groups = new Map<string, { key: unknown; n: number }>();
+
+    for (const v of vertices) {
+      const raw = propOf(v, key);
+      const gk = valueKey(raw);
+      const slot = groups.get(gk);
+
+      if (slot) {
+        slot.n += 1;
+      } else {
+        groups.set(gk, { key: raw, n: 1 });
+      }
+    }
+
+    return [...groups.values()].map((slot) =>
+      countFirst
+        ? { [countCol]: slot.n, [keyCol]: slot.key }
+        : { [keyCol]: slot.key, [countCol]: slot.n },
+    );
+  };
 };
 
 export type ReachFn = (graph: Graph, params: Params) => Row[];
