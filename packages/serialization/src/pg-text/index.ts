@@ -74,6 +74,18 @@ const labelToken = (s: string): string =>
   LABEL_NEEDS_QUOTE.test(s) ? `"${s.replace(STR_ESCAPE, (c) => STR_ESCAPE_MAP[c])}"` : s;
 
 /** Read a quoted-or-bare token, unquoting + unescaping it if it was quoted. */
+/**
+ * Undo the string escapes — but only when there are any.
+ *
+ * `String.prototype.replace` with a global regex scans the whole string even when it cannot
+ * match, and an escape is the exception rather than the rule: every quoted id, key and value in
+ * a document pays for the scan. The guard makes the no-escape case a plain return, which is the
+ * same identity the Rust decoder relies on (`unescape` is the identity on a body with no
+ * backslash).
+ */
+const unescapeBody = (body: string): string =>
+  body.includes('\\') ? body.replace(/\\(.)/g, (_, c: string) => STR_UNESCAPE_MAP[c] ?? c) : body;
+
 const parseId = (raw: string): string => {
   if (!raw.startsWith('"')) {
     return raw;
@@ -81,7 +93,7 @@ const parseId = (raw: string): string => {
 
   const body = raw.endsWith('"') && raw.length >= 2 ? raw.slice(1, -1) : raw.slice(1);
 
-  return body.replace(/\\(.)/g, (_, c: string) => STR_UNESCAPE_MAP[c] ?? c);
+  return unescapeBody(body);
 };
 
 /**
@@ -270,7 +282,7 @@ const parseScalar = (raw: string): PropertyValue => {
   if (raw.startsWith('"')) {
     const body = raw.endsWith('"') && raw.length >= 2 ? raw.slice(1, -1) : raw.slice(1);
 
-    return body.replace(/\\(.)/g, (_, c: string) => STR_UNESCAPE_MAP[c] ?? c);
+    return unescapeBody(body);
   }
 
   if (raw === 'true') {
@@ -311,7 +323,18 @@ const parseLabelsAndProps = (
   tokens: string[],
 ): { labels: string[]; properties: Record<string, PropertyValue> } => {
   const labels: string[] = [];
-  const collected = new Map<string, PropertyValue[]>();
+  // Written STRAIGHT into the result object. This used to collect into a
+  // `Map<string, PropertyValue[]>` and then unwrap it in a second loop, which cost a Map per
+  // LINE plus a one-element array per PROPERTY — about eleven allocations a node on a
+  // three-property document — all to handle repeated keys, which are rare. 29.9% of a TS
+  // pg-text decode was in this function by CPU profile.
+  //
+  // `promoted` mirrors the Rust decoder's own list: a value that is ALREADY an array must not
+  // be appended to unless this parser is what made it one. `parseScalar` cannot return an array
+  // today, so `Array.isArray` would be a sound test — but it is sound only by that incidental
+  // fact, and this costs nothing until a key actually repeats.
+  const properties: Record<string, PropertyValue> = {};
+  let promoted: Set<string> | undefined;
 
   for (const token of tokens) {
     if (token.startsWith(':')) {
@@ -344,19 +367,20 @@ const parseLabelsAndProps = (
 
     const key = parseId(token.slice(0, sep)); // unquotes a quoted key, else verbatim
     const value = parseScalar(token.slice(sep + 1));
-    const list = collected.get(key);
 
-    if (list) {
-      list.push(value);
-    } else {
-      collected.set(key, [value]);
+    if (!Object.hasOwn(properties, key)) {
+      properties[key] = value;
+      continue;
     }
-  }
 
-  const properties: Record<string, PropertyValue> = {};
+    if (promoted?.has(key)) {
+      (properties[key] as PropertyValue[]).push(value);
+      continue;
+    }
 
-  for (const [key, values] of collected) {
-    properties[key] = values.length === 1 ? values[0]! : values;
+    properties[key] = [properties[key]!, value];
+    promoted ??= new Set();
+    promoted.add(key);
   }
 
   return { labels, properties };
