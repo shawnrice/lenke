@@ -182,7 +182,11 @@ export const applyStep = (
       return filterStream(stream, (v) => {
         // Element form: vertex/edge with one of the given property keys.
         if (isVertex(v) || isEdge(v)) {
-          return step.keys.some((k) => k in v.properties);
+          // Hoisted for the same reason as `evalBy`'s key case: `properties` is a
+          // getter over a Map, so re-reading it per key paid the lookup per key.
+          const bag = v.properties;
+
+          return step.keys.some((k) => k in bag);
         }
 
         // Property-object form: filter the stream produced by `properties()`,
@@ -418,7 +422,9 @@ export const applyStep = (
           return false;
         }
 
-        return step.keys.every((k) => !(k in v.properties));
+        const bag = v.properties;
+
+        return step.keys.every((k) => !(k in bag));
       });
 
     case 'value':

@@ -424,7 +424,13 @@ export const evalBy = (by: By, value: unknown, graph: Graph, ctx: RunContext): u
       // it, matching TinkerPop), and an inherited name (`toString`) never leaks a
       // prototype function — parity with the HashMap-backed native engine.
       if (isVertex(value) || isEdge(value)) {
-        return Object.hasOwn(value.properties, by.key) ? value.properties[by.key] : NO_VALUE;
+        // Read the bag ONCE. `properties` is not a field — it is a getter doing a
+        // string-keyed `Map.get` into the graph's whole property store, which costs
+        // ~225ns at 200,000 vertices with the store cold. Reading it twice doubled
+        // the dominant cost of every keyed grouping/ordering step.
+        const bag = value.properties;
+
+        return Object.hasOwn(bag, by.key) ? bag[by.key] : NO_VALUE;
       }
 
       // `by('k')` over a Map (`group`/`groupCount`) or a `project()` row object
