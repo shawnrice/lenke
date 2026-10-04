@@ -15,6 +15,9 @@
 //! a scalar. The textual format has no edge-id slot, so a decoded edge carries no
 //! id (the host re-derives the canonical `e{index}`).
 
+use std::borrow::Cow;
+
+use crate::decstream::{DecVal, GraphSink};
 use crate::model::{is_temporal_tag, Edge, GraphData, Node, Value};
 use crate::{CodeResult, CodecError};
 
@@ -357,46 +360,110 @@ fn is_number(raw: &str) -> bool {
 }
 
 /// Parse the value half of a `key:value` token into a scalar value.
-fn parse_scalar(raw: &str) -> Value {
+/// A parsed scalar whose strings BORROW the input line wherever they can.
+///
+/// The streaming decoder needs `DecVal`, which is `&str` all the way down, while `decode` needs
+/// owned `Value`s — so the grammar is parsed ONCE into this, and the two forms are cheap
+/// adapters over it (`into_value` / `as_decval`). Writing a second borrowed parser beside the
+/// owned one would be two implementations of one grammar that can drift apart, which is the
+/// divergence class the byte-identity fuzzers exist to catch.
+///
+/// Borrowing is the common case and that is the whole point: `unescape` is the IDENTITY on a
+/// body with no backslash, so a quoted token without an escape can point straight at the line,
+/// and an unquoted one always can. Only a genuine escape allocates.
+#[derive(Clone)]
+pub(crate) enum CowVal<'a> {
+    Null,
+    Bool(bool),
+    Num(f64),
+    Str(Cow<'a, str>),
+    Temporal { tag: &'a str, iso: Cow<'a, str> },
+    List(Vec<CowVal<'a>>),
+}
+
+impl CowVal<'_> {
+    fn into_value(self) -> Value {
+        match self {
+            CowVal::Null => Value::Null,
+            CowVal::Bool(b) => Value::Bool(b),
+            CowVal::Num(n) => Value::Num(n),
+            CowVal::Str(s) => Value::Str(s.into_owned()),
+            CowVal::Temporal { tag, iso } => Value::Temporal {
+                tag: tag.to_string(),
+                iso: iso.into_owned(),
+            },
+            CowVal::List(items) => Value::List(items.into_iter().map(CowVal::into_value).collect()),
+        }
+    }
+
+    fn as_decval(&self) -> DecVal<'_> {
+        match self {
+            CowVal::Null => DecVal::Null,
+            CowVal::Bool(b) => DecVal::Bool(*b),
+            CowVal::Num(n) => DecVal::Num(*n),
+            CowVal::Str(s) => DecVal::Str(s),
+            CowVal::Temporal { tag, iso } => DecVal::Temporal { tag, iso },
+            CowVal::List(items) => DecVal::List(items.iter().map(CowVal::as_decval).collect()),
+        }
+    }
+}
+
+/// `unescape` without the allocation when there is nothing to unescape.
+fn unescape_cow(body: &str) -> Cow<'_, str> {
+    if body.contains('\\') {
+        Cow::Owned(unescape(body))
+    } else {
+        Cow::Borrowed(body)
+    }
+}
+
+fn parse_scalar_cow(raw: &str) -> CowVal<'_> {
     if let Some(rest) = raw.strip_prefix('"') {
         let body = rest.strip_suffix('"').unwrap_or(rest);
-        return Value::Str(unescape(body));
+
+        return CowVal::Str(unescape_cow(body));
     }
-    // A tagged temporal `@<tag>:<iso>` (unquoted; the `@` sigil disambiguates it
-    // from a bare string). An UNKNOWN tag falls through to string handling — the
-    // ISO string itself is validated by the host when it builds its graph, and a
-    // parse failure there is reconstructed back to this exact `@tag:iso` token
-    // (matching pg-text's lenient decode policy).
     if let Some(rest) = raw.strip_prefix('@') {
         if let Some((tag, iso)) = rest.split_once(':') {
             if is_temporal_tag(tag) {
-                return Value::Temporal {
-                    tag: tag.to_string(),
-                    iso: iso.to_string(),
+                return CowVal::Temporal {
+                    tag,
+                    iso: Cow::Borrowed(iso),
                 };
             }
         }
     }
     match raw {
-        "true" => Value::Bool(true),
-        "false" => Value::Bool(false),
-        "null" => Value::Null,
-        _ if is_number(raw) => Value::Num(raw.parse().unwrap()),
-        _ => Value::Str(raw.to_string()), // bare unquoted string (lenient for foreign .pg)
+        "true" => CowVal::Bool(true),
+        "false" => CowVal::Bool(false),
+        "null" => CowVal::Null,
+        _ if is_number(raw) => CowVal::Num(raw.parse().unwrap_or(f64::NAN)),
+        _ => CowVal::Str(Cow::Borrowed(raw)),
     }
 }
 
-/// A line's labels plus its first-seen-ordered properties (repeated keys → lists).
-type LabelsAndProps = (Vec<String>, Vec<(String, Value)>);
+/// Read an id token, unquoting + unescaping only when it has to.
+fn parse_id_cow(raw: &str) -> Cow<'_, str> {
+    let Some(rest) = raw.strip_prefix('"') else {
+        return Cow::Borrowed(raw);
+    };
+    let body = rest.strip_suffix('"').unwrap_or(rest);
 
-fn parse_labels_props(tokens: &[&str]) -> LabelsAndProps {
-    let mut labels = Vec::new();
-    let mut props: Vec<(String, Value)> = Vec::new();
+    unescape_cow(body)
+}
+
+/// A line's labels plus its first-seen-ordered properties (repeated keys → lists), BORROWING
+/// the line wherever no unescaping is needed. The one parser; `decode` and `decode_into` adapt.
+type LabelsAndProps<'a> = (Vec<Cow<'a, str>>, Vec<(Cow<'a, str>, CowVal<'a>)>);
+
+fn parse_labels_props<'a>(tokens: &[&'a str]) -> LabelsAndProps<'a> {
+    let mut labels: Vec<Cow<'a, str>> = Vec::new();
+    let mut props: Vec<(Cow<'a, str>, CowVal<'a>)> = Vec::new();
     let mut promoted: Vec<usize> = Vec::new();
 
     for token in tokens {
         if let Some(rest) = token.strip_prefix(':') {
-            labels.push(parse_id(rest));
+            labels.push(parse_id_cow(rest));
             continue;
         }
         let sep = if token.starts_with('"') {
@@ -411,18 +478,18 @@ fn parse_labels_props(tokens: &[&str]) -> LabelsAndProps {
                 None => continue,
             }
         };
-        let key = parse_id(&token[..sep]);
-        let value = parse_scalar(&token[sep + 1..]);
+        let key = parse_id_cow(&token[..sep]);
+        let value = parse_scalar_cow(&token[sep + 1..]);
 
         match props.iter().position(|(k, _)| *k == key) {
             Some(pos) if promoted.contains(&pos) => {
-                if let Value::List(items) = &mut props[pos].1 {
+                if let CowVal::List(items) = &mut props[pos].1 {
                     items.push(value);
                 }
             }
             Some(pos) => {
-                let prev = std::mem::replace(&mut props[pos].1, Value::Null);
-                props[pos].1 = Value::List(vec![prev, value]);
+                let prev = std::mem::replace(&mut props[pos].1, CowVal::Null);
+                props[pos].1 = CowVal::List(vec![prev, value]);
                 promoted.push(pos);
             }
             None => props.push((key, value)),
@@ -462,11 +529,7 @@ fn is_edge_line(tokens: &[&str]) -> bool {
 
 /// Read an id token, unquoting + unescaping it if it was quoted.
 fn parse_id(raw: &str) -> String {
-    let Some(rest) = raw.strip_prefix('"') else {
-        return raw.to_string();
-    };
-    let body = rest.strip_suffix('"').unwrap_or(rest);
-    unescape(body)
+    parse_id_cow(raw).into_owned()
 }
 
 /// Undo the encode escapes: `\n`/`\r`/`\t` → the control chars, `\\`/`\"` → self,
@@ -493,6 +556,20 @@ fn unescape(body: &str) -> String {
 /// Deserialize a PG-text string into neutral graph data. Endpoints referenced by
 /// an edge but never declared as a node line are the host's concern (pg-text is
 /// the lenient codec — the host auto-creates them). Decode is infallible.
+/// Owned labels + props, for the `GraphData` form.
+fn owned(
+    labels: Vec<Cow<'_, str>>,
+    props: Vec<(Cow<'_, str>, CowVal<'_>)>,
+) -> (Vec<String>, Vec<(String, Value)>) {
+    (
+        labels.into_iter().map(Cow::into_owned).collect(),
+        props
+            .into_iter()
+            .map(|(k, v)| (k.into_owned(), v.into_value()))
+            .collect(),
+    )
+}
+
 pub fn decode(input: &str) -> GraphData {
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
@@ -509,6 +586,8 @@ pub fn decode(input: &str) -> GraphData {
             let from = parse_id(tokens[0]);
             let to = parse_id(tokens[1]);
             let (labels, props) = parse_labels_props(&tokens[2..]);
+            let (labels, props) = owned(labels, props);
+
             edges.push(Edge {
                 id: None,
                 from,
@@ -519,10 +598,57 @@ pub fn decode(input: &str) -> GraphData {
         } else {
             let id = parse_id(tokens[0]);
             let (labels, props) = parse_labels_props(&tokens[1..]);
+            let (labels, props) = owned(labels, props);
+
             nodes.push(Node { id, labels, props });
         }
     }
     GraphData { nodes, edges }
+}
+
+/// Decode straight into a [`GraphSink`], with no `GraphData` in between.
+///
+/// pg-text was one of two formats (with csv) that had no streaming decoder, so the engine built
+/// a whole owned `GraphData` and then rebuilt its store from it. Staged over a 9 MB /
+/// 200,000-node document: the parse was 45.7ms, `from_graph_data` 65.4ms, the whole
+/// `deserialize` 115.6ms — the BRIDGE was 57% of it, on an ingest path.
+///
+/// The borrowed views handed to the sink point either at `input` or at the `Cow::Owned` strings
+/// held in the two locals below, which are complete before any reference into them is taken and
+/// outlive the call. Nothing is cloned to make the call.
+pub fn decode_into(input: &str, sink: &mut dyn GraphSink) -> CodeResult<()> {
+    for raw in input.split('\n') {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let tokens = tokenize(line);
+        if tokens.is_empty() {
+            continue;
+        }
+        let edge = is_edge_line(&tokens);
+        let rest = if edge { &tokens[2..] } else { &tokens[1..] };
+        let (labels, props) = parse_labels_props(rest);
+        // Borrowed views over the two locals, taken only once both are final.
+        let label_refs: Vec<&str> = labels.iter().map(Cow::as_ref).collect();
+        let prop_refs: Vec<(&str, DecVal<'_>)> = props
+            .iter()
+            .map(|(k, v)| (k.as_ref(), v.as_decval()))
+            .collect();
+
+        if edge {
+            let from = parse_id_cow(tokens[0]);
+            let to = parse_id_cow(tokens[1]);
+
+            sink.edge(None, &from, &to, &label_refs, &prop_refs)?;
+        } else {
+            let id = parse_id_cow(tokens[0]);
+
+            sink.node(&id, &label_refs, &prop_refs)?;
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

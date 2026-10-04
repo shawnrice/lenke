@@ -82,6 +82,7 @@ pub fn deserialize_into(
     match format {
         "pg-json" => Some(crate::pg_json::decode_into(input, sink)),
         "graphson" => Some(crate::graphson::decode_into(input, sink)),
+        "pg-text" => Some(crate::pg_text::decode_into(input, sink)),
         _ => None,
     }
 }

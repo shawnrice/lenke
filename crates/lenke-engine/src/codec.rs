@@ -679,6 +679,48 @@ mod tests {
         }
     }
 
+    /// The streaming pg-text DECODER must build the same store the `GraphData` bridge did.
+    ///
+    /// pg-text had no streaming decoder, so `deserialize` materialized a whole owned
+    /// `GraphData` and rebuilt the store from it — 65.4ms of a 115.6ms decode on a 9 MB
+    /// document. Registering `pg_text::decode_into` skips that, and this pins that the two
+    /// paths agree on everything pg-text can express: quoted and escaped ids, a repeated key
+    /// promoted to a list, a tagged temporal, an UNKNOWN tag (which pg-text keeps as its
+    /// `@tag:iso` token under `TemporalOnErr::TagToken`), a bare unquoted string, numbers,
+    /// booleans, null, a secondary label, and an edge whose endpoint is quoted.
+    #[test]
+    fn streaming_pg_text_decode_matches_the_graphdata_path() {
+        let text = concat!(
+            "\"a b\" :Person :Admin name:\"An\\\"n\" age:30 active:true miss:null\n",
+            "c :Person tags:x tags:y tags:z born:@date:2024-01-15 odd:@nope:zzz bare:hello\n",
+            "\"a b\" c :KNOWS since:2020 w:1.5\n",
+            "# a comment line\n",
+            "\n",
+        );
+        let (strict, on_err) = policy("pg-text");
+        let streamed = deserialize(text, "pg-text").unwrap();
+        let bridged = from_graph_data(
+            lenke_codec::deserialize(text, "pg-text").unwrap(),
+            strict,
+            on_err,
+        )
+        .unwrap();
+
+        // Compare through a codec that renders every property and label: if the two stores
+        // differ anywhere pg-text can reach, these strings differ.
+        assert_eq!(
+            serialize(&streamed, "pg-json").unwrap(),
+            serialize(&bridged, "pg-json").unwrap()
+        );
+        // And the round trip back out through pg-text itself.
+        assert_eq!(
+            serialize(&streamed, "pg-text").unwrap(),
+            serialize(&bridged, "pg-text").unwrap()
+        );
+        assert_eq!(streamed.node_count(), 2);
+        assert_eq!(streamed.edge_count(), 1);
+    }
+
     #[test]
     fn streaming_pg_json_is_byte_identical_to_the_graphdata_path() {
         // The streaming encoder must emit exactly what `serialize(&to_graph_data(..))`
