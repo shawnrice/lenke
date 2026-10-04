@@ -614,10 +614,17 @@ export const matchClauseBindings = (
   params: Params,
 ): Iterable<Binding> => {
   // One pattern is the overwhelmingly common case and has nothing to choose
-  // between — keep it on the flat `flatMap` with no generator frame per row.
+  // between, so call it DIRECTLY.
+  //
+  // This used to be `flatMap(b => matchPattern(…), [binding])` — a flatMap over a
+  // ONE-element array, whose comment claimed it added "no generator frame per
+  // row". It did: `flatMap` is itself a `function*`, so every row's `next()` was
+  // threaded through a generator frame that existed only to iterate a single
+  // item. A resume in this pipeline costs ~40ns (item 119), so that frame was
+  // real money on a million-row traversal.
   const stream: Iterable<Binding> =
     clause.patterns.length === 1
-      ? flatMap((b: Binding) => matchPattern(graph, clause.patterns[0], b, params), [binding])
+      ? matchPattern(graph, clause.patterns[0], binding, params)
       : visitRemaining(
           graph,
           clause.patterns,
@@ -634,8 +641,8 @@ export const matchClauseBindings = (
       );
 };
 
-/** Per-incoming-binding: stream its matches, or (for OPTIONAL) one null-filled row. */
-export const matchOrOptional = function* (
+/** OPTIONAL MATCH: the binding's matches, or one null-filled row if there were none. */
+const optionalMatch = function* (
   graph: Graph,
   clause: CMatch,
   binding: Binding,
@@ -649,7 +656,7 @@ export const matchOrOptional = function* (
     yield m;
   }
 
-  if (!matched && clause.optional) {
+  if (!matched) {
     // No match: keep the row with the pattern's new variables set to null.
     const filled = new Map(binding);
 
@@ -662,6 +669,26 @@ export const matchOrOptional = function* (
     yield filled;
   }
 };
+
+/**
+ * Per-incoming-binding: stream its matches, or (for OPTIONAL) one null-filled row.
+ *
+ * A PLAIN MATCH returns the stream directly. This was one generator whose
+ * `!matched && clause.optional` tail can only fire for OPTIONAL, so for every
+ * other MATCH it was a pure pass-through — `for (const m of …) yield m` — costing
+ * a generator frame per row to forward each row unchanged. OPTIONAL keeps its
+ * own generator, byte-identical, because it genuinely has to know whether
+ * anything matched before it can emit.
+ */
+export const matchOrOptional = (
+  graph: Graph,
+  clause: CMatch,
+  binding: Binding,
+  params: Params,
+): Iterable<Binding> =>
+  clause.optional
+    ? optionalMatch(graph, clause, binding, params)
+    : matchClauseBindings(graph, clause, binding, params);
 
 /** Lazily expand a binding stream through a MATCH — no intermediate array. */
 export const runMatch = (
