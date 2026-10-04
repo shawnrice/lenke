@@ -184,6 +184,14 @@ const buildNodeCount = <T>(
  */
 type InlinePred = { pred: CPredicate; bindVar?: string };
 
+/** A composed per-element filter: every carried `InlinePred` must hold. */
+type InlineGate = (
+  element: Vertex,
+  binding: Map<string, unknown>,
+  params: Params,
+  graph: Graph,
+) => boolean;
+
 /**
  * The node's inline constraint as an `InlinePred`, or `null` if it must not be
  * carried.
@@ -1203,7 +1211,11 @@ const groupedClauses = (clauses: readonly Clause[]): GroupedShape | null => {
   const [m, mid, last] = clauses;
   const ret = clauses.length === 2 ? mid : last;
 
-  if (m.kind !== 'match' || m.optional || m.where !== undefined || m.patterns.length !== 1) {
+  // A clause `WHERE` used to be refused here. It is now carried into the tally (item 141),
+  // because `MATCH (n:L) WHERE <pred on n> RETURN n.k, count(*) GROUP BY n.k` — count by
+  // category over the rows matching a filter — is everyday work, and declining it cost
+  // 695ns a vertex against the tally's 124.
+  if (m.kind !== 'match' || m.optional || m.patterns.length !== 1) {
     return null;
   }
 
@@ -1310,9 +1322,53 @@ export const detectGroupedNodeCount = (clauses: readonly Clause[]): ReachFn | nu
   const { countAt } = picked;
   const [{ start, segments }] = shape.match.patterns;
 
-  if (segments.length !== 0 || !plainNode(start) || start.variable === undefined) {
+  if (segments.length !== 0 || start.variable === undefined) {
     return null;
   }
+
+  // The start node's INLINE constraint and the clause `WHERE` are the two spellings of one
+  // filter, so both are carried and both go through `inlineHolds` -> `satisfies` — the
+  // general path's own implementation — rather than being re-derived here. Exactly the
+  // arrangement `buildNodeCount` got in item 135; the grouped tally was left behind.
+  const preds: InlinePred[] = [];
+  const inStart = inlineOf(start);
+
+  if (inStart === null) {
+    return null;
+  }
+
+  if (inStart !== undefined) {
+    preds.push(inStart);
+  }
+
+  const { where } = shape.match;
+
+  if (where !== undefined) {
+    for (const nameRead of freePredicateVars(where)) {
+      if (nameRead !== start.variable) {
+        return null;
+      }
+    }
+
+    preds.push({ pred: compilePredicate(undefined, where), bindVar: start.variable });
+  }
+
+  // Fold the (at most two) predicates into ONE gate at compile time, or `undefined` when
+  // there is nothing to apply.
+  //
+  // This is not style. The tally's loop runs once per vertex whether or not a predicate
+  // exists, and written as `for (const ip of preds)` it allocated an iterator per vertex
+  // over an EMPTY array — which cost the UNFILTERED grouped count, a shape this change was
+  // not meant to touch, a consistent 34% (19.72 -> 26.4ms). Its control row caught that. An
+  // indexed loop fixed it but `prefer-for-of` then objects, and the rule is right in general
+  // and wrong here; composing instead removes the loop altogether, so there is no iterator
+  // for the common case and no suppression comment to out-live its reason.
+  const gate = preds.reduceRight<InlineGate | undefined>(
+    (rest, ip) => (v, binding, params, graph) =>
+      inlineHolds(ip, v, binding, params, graph) &&
+      (rest === undefined || rest(v, binding, params, graph)),
+    undefined,
+  );
 
   const { label } = start;
 
@@ -1341,14 +1397,21 @@ export const detectGroupedNodeCount = (clauses: readonly Clause[]): ReachFn | nu
   const countFirst = countAt === 0;
   const labelName = label?.name;
 
-  return (graph) => {
+  return (graph, params) => {
     const vertices: Iterable<Vertex> =
       labelName === undefined
         ? graph.verticesById.values()
         : (graph.verticesByLabel.get(labelName) ?? []);
     const groups = new Map<string, { key: unknown; n: number }>();
+    // One binding map, reused: `inlineHolds` overwrites the node's own variable per vertex
+    // and nothing else reads it, which is what `preds` being CLOSED buys.
+    const binding = new Map<string, unknown>();
 
     for (const v of vertices) {
+      if (gate !== undefined && !gate(v, binding, params, graph)) {
+        continue;
+      }
+
       const raw = propOf(v, key);
       const gk = valueKey(raw);
       const slot = groups.get(gk);
