@@ -125,6 +125,65 @@ describe('a single-node clause WHERE is pushed into the pattern', () => {
     );
   });
 
+  // A CORRELATED single-node predicate is pushed too (audit item 128): `matchNode` evaluates a
+  // node predicate against the incoming binding, so an outer reference resolves in the pattern
+  // exactly as it did in the clause filter.
+  //
+  // These PROJECT both sides rather than counting. Item 123's lesson: a `count(*)` cannot see
+  // that a row came back carrying the WRONG outer value, and a stale `z` is precisely the way a
+  // correlated push could go wrong while still totalling correctly.
+  test('a correlated single-node predicate keeps each outer row its own value', () => {
+    const g = build();
+    const want = query(
+      g,
+      `MATCH (z:P {k: 3}) MATCH (n:P) WHERE n.s = z.s RETURN z.k AS zk, n.s AS ns ORDER BY zk, ns`,
+    );
+
+    // Independent enumeration: k=3 is one vertex (index 8, s='b'), so every row must pair it
+    // with an s='b' vertex — and there are three of those.
+    expect(want).toEqual(SS.filter((x) => x === 'b').map(() => ({ zk: 3, ns: 'b' })));
+    expect(want.length).toBe(SS.filter((x) => x === 'b').length);
+
+    // …and the same question spelled inline, which is what the push produces.
+    expect(want).toEqual(
+      query(
+        g,
+        `MATCH (z:P {k: 3}) MATCH (n:P WHERE n.s = z.s) RETURN z.k AS zk, n.s AS ns ORDER BY zk, ns`,
+      ),
+    );
+  });
+
+  // Two outer rows with DIFFERENT values: a stale outer binding would give both the same inner
+  // set, which is the failure a single-outer-row fixture cannot see.
+  test('two outer rows with different values each filter correctly', () => {
+    const g = build();
+    const rows = query(
+      g,
+      `MATCH (z:P) WHERE z.k = 0 MATCH (n:P) WHERE n.s = z.s RETURN z.s AS zs, n.k AS nk ORDER BY zs, nk`,
+    ) as { zs: string; nk: number }[];
+
+    // k=0 is on two vertices, both s='c'; s='c' is on exactly those two. So 2 x 2 = 4 rows,
+    // every one with zs='c'.
+    expect(rows.length).toBe(4);
+    expect(new Set(rows.map((r) => r.zs))).toEqual(new Set(['c']));
+
+    // A second shape where the outer rows DO differ in `s`, so a stale binding is visible.
+    const mixed = query(
+      g,
+      `MATCH (z:P) WHERE z.k = 1 MATCH (n:P) WHERE n.s = z.s RETURN z.s AS zs, n.s AS ns ORDER BY zs, ns`,
+    ) as { zs: string; ns: string }[];
+
+    // Every row must pair like with like — a stale `z.s` would produce a mismatched pair.
+    for (const r of mixed) {
+      expect(r.ns).toBe(r.zs);
+    }
+
+    // k=1 sits on s='a','b','a','a' → the row count is the sum of |s| over those.
+    const counts = KS.map((k, i) => (k === 1 ? SS.filter((x) => x === SS[i]).length : 0));
+
+    expect(mixed.length).toBe(counts.reduce((a, b) => a + b, 0));
+  });
+
   // A bound path variable makes the pattern more than a bare node.
   test('a path variable is not pushed into', () => {
     const g = build();

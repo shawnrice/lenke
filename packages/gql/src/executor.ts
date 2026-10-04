@@ -3369,12 +3369,18 @@ const pushWhereIntoNode = (clause: Extract<Clause, { kind: 'match' }>): typeof c
     return clause;
   }
 
-  for (const free of freePredicateVars(where)) {
-    if (free !== name) {
-      return clause;
-    }
-  }
-
+  // The predicate's free variables are NOT restricted, and that is deliberate.
+  // Item 127 required it to be closed; mutation showed that guard was not
+  // load-bearing, because `matchNode` evaluates a node predicate against the
+  // INCOMING binding, which already holds every earlier clause's variables — so an
+  // outer reference resolves in the pattern exactly as it did in the clause
+  // filter. Measured on the shape it unlocks (item 128):
+  //
+  //   MATCH (z:P {k: 3}) MATCH (n:P) WHERE n.j = z.j   2217.1ms -> 1537.7ms
+  //
+  // both answering 1142857. The evaluation COUNT is unchanged either way: a
+  // single-node pattern's bindings are 1:1 with the vertices it scans, so the
+  // predicate runs once per vertex per incoming row in both spellings.
   // AND with any predicate the node already carries, so the inline spelling of a
   // query that had both is unchanged.
   const merged: Expr =
