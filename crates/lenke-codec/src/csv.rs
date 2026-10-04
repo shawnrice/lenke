@@ -16,6 +16,7 @@
 
 use crate::model::{Edge, GraphData, Node, Value};
 use crate::{is_intish, js_number};
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 const NULL_TOKEN: &str = "\\N";
@@ -464,8 +465,8 @@ fn decode_cell(column: ColType, cell: &Cell) -> Option<Value> {
 
 // -------------------------------------------------------- RFC-4180 plumbing ---
 
-struct Cell {
-    text: String,
+struct Cell<'a> {
+    text: Cow<'a, str>,
     quoted: bool,
 }
 
@@ -563,63 +564,146 @@ fn quote_field_into(out: &mut String, raw: &str) {
     out.push('"');
 }
 
-/// Single-pass RFC-4180 parser. Each cell carries whether it was quoted.
-fn parse_csv(input: &str) -> Vec<Vec<Cell>> {
-    let mut rows: Vec<Vec<Cell>> = Vec::new();
-    let mut row: Vec<Cell> = Vec::new();
-    let mut field = String::new();
+/// Single-pass RFC-4180 parser. Each cell carries whether it was quoted, and BORROWS the input
+/// whenever it can.
+///
+/// Two things were measured away here, and only the second one mattered:
+///
+/// - It began with `let chars: Vec<char> = input.chars().collect()`, materializing the whole
+///   document as four bytes a character before parsing started — ~25 MB for the 6.2 MB csv the
+///   cross-engine bench decodes. Removing it, and appending whole RUNS between structural bytes
+///   instead of one `char` at a time, measured FLAT: parse 79.7ms against 80.4ms. Kept anyway
+///   because it is the simpler shape and it is what makes the borrowing below possible.
+/// - Every cell owned a `String` (`std::mem::take(&mut field)`), so the parse allocated once per
+///   CELL — about a million for that document. THAT is the cost.
+///
+/// A field is borrowable when its content is exactly one contiguous run of the input: an
+/// unquoted field, or a quoted one with no `""` escape inside, which is nearly all of them (a
+/// `Str` column always quotes, and escapes are rare). A field assembled from several runs — one
+/// opening a quote mid-way, one with an escape, one with a `\r` dropped out of it — promotes to
+/// an owned `String` at the moment it stops being a single span, so the rare shape still costs
+/// exactly what it used to and nothing before that point is wasted.
+///
+/// Every structural character (`"`, `,`, `\r`, `\n`) is ASCII and a UTF-8 continuation byte is
+/// never ASCII, so scanning `input.as_bytes()` and slicing at those positions always lands on a
+/// char boundary. Semantics are unchanged, including the two odd ones: a `"` opening mid-field
+/// switches on quoting for the rest of that field, and a `\r` outside quotes is dropped wherever
+/// it appears.
+fn parse_csv(input: &str) -> Vec<Vec<Cell<'_>>> {
+    let b = input.as_bytes();
+    let n = b.len();
+    let mut rows: Vec<Vec<Cell<'_>>> = Vec::new();
+    let mut row: Vec<Cell<'_>> = Vec::new();
+    // The field under construction: at most one borrowable span, or an owned buffer once it
+    // stops being a single span.
+    let mut span: Option<(usize, usize)> = None;
+    let mut owned: Option<String> = None;
     let mut quoted = false;
     let mut in_quotes = false;
-    let chars: Vec<char> = input.chars().collect();
-    let mut i = 0;
+    let mut i = 0usize;
+
+    /// Append a run of the input to the field, borrowing while it is still one span.
+    macro_rules! push_run {
+        ($from:expr, $to:expr) => {{
+            let (from, to) = ($from, $to);
+            if from < to {
+                if let Some(buf) = owned.as_mut() {
+                    buf.push_str(&input[from..to]);
+                } else if span.is_none() {
+                    span = Some((from, to));
+                } else {
+                    let (s0, s1) = span.take().unwrap_or((0, 0));
+                    let mut buf = String::with_capacity((s1 - s0) + (to - from));
+                    buf.push_str(&input[s0..s1]);
+                    buf.push_str(&input[from..to]);
+                    owned = Some(buf);
+                }
+            }
+        }};
+    }
+
+    /// Force the field into an owned buffer — a `""` escape has to be rewritten.
+    macro_rules! push_char {
+        ($c:expr) => {{
+            let buf = owned.get_or_insert_with(|| {
+                let (s0, s1) = span.take().unwrap_or((0, 0));
+                let mut b = String::with_capacity((s1 - s0) + 1);
+                b.push_str(&input[s0..s1]);
+                b
+            });
+            buf.push($c);
+        }};
+    }
 
     macro_rules! end_field {
         () => {{
-            row.push(Cell {
-                text: std::mem::take(&mut field),
-                quoted,
-            });
+            let text = match owned.take() {
+                Some(buf) => Cow::Owned(buf),
+                None => match span.take() {
+                    Some((s0, s1)) => Cow::Borrowed(&input[s0..s1]),
+                    None => Cow::Borrowed(""),
+                },
+            };
+            row.push(Cell { text, quoted });
             quoted = false;
         }};
     }
 
-    while i < chars.len() {
-        let c = chars[i];
+    while i < n {
         if in_quotes {
-            if c == '"' {
-                if chars.get(i + 1) == Some(&'"') {
-                    field.push('"');
-                    i += 2;
-                    continue;
-                }
-                in_quotes = false;
+            let start = i;
+            while i < n && b[i] != b'"' {
                 i += 1;
-                continue;
             }
-            field.push(c);
-            i += 1;
+            push_run!(start, i);
+            if i < n {
+                if b.get(i + 1) == Some(&b'"') {
+                    push_char!('"');
+                    i += 2;
+                } else {
+                    in_quotes = false;
+                    i += 1;
+                }
+            }
             continue;
         }
-        match c {
-            '"' => {
+
+        let start = i;
+        while i < n && !matches!(b[i], b'"' | b',' | b'\r' | b'\n') {
+            i += 1;
+        }
+        push_run!(start, i);
+        if i >= n {
+            break;
+        }
+        match b[i] {
+            b'"' => {
                 quoted = true;
                 in_quotes = true;
             }
-            ',' => end_field!(),
-            '\r' => {}
-            '\n' => {
+            b',' => end_field!(),
+            b'\r' => {}
+            _ => {
+                // `\n`
                 end_field!();
                 rows.push(std::mem::take(&mut row));
             }
-            _ => field.push(c),
         }
         i += 1;
     }
-    if !field.is_empty() || quoted || !row.is_empty() {
-        row.push(Cell {
-            text: field,
-            quoted,
-        });
+    let pending = owned.is_some() || span.is_some();
+    if pending || quoted || !row.is_empty() {
+        // The trailing field, written out rather than via `end_field!` so the macro's
+        // `quoted` reset is not a dead store here — nothing reads it after the loop.
+        let text = match owned.take() {
+            Some(buf) => Cow::Owned(buf),
+            None => match span.take() {
+                Some((s0, s1)) => Cow::Borrowed(&input[s0..s1]),
+                None => Cow::Borrowed(""),
+            },
+        };
+
+        row.push(Cell { text, quoted });
         rows.push(row);
     }
     rows
@@ -808,8 +892,8 @@ pub fn decode(input: &str) -> GraphData {
     if let Some(header) = node_rows.first() {
         let prop_cols = prop_cols_from_header(header, 2);
         for row in node_rows.iter().skip(1) {
-            let id = unguard_field(row.first().map(|c| c.text.as_str()).unwrap_or(""));
-            let labels = split_labels(row.get(1).map(|c| c.text.as_str()).unwrap_or(""));
+            let id = unguard_field(row.first().map(|c| c.text.as_ref()).unwrap_or(""));
+            let labels = split_labels(row.get(1).map(|c| c.text.as_ref()).unwrap_or(""));
             nodes.push(Node {
                 id,
                 labels,
@@ -824,12 +908,12 @@ pub fn decode(input: &str) -> GraphData {
         for row in edge_rows.iter().skip(1) {
             let id = row
                 .first()
-                .map(|c| c.text.clone())
+                .map(|c| c.text.to_string())
                 .filter(|s| !s.is_empty())
                 .map(|s| unguard_field(&s));
-            let from = unguard_field(row.get(1).map(|c| c.text.as_str()).unwrap_or(""));
-            let to = unguard_field(row.get(2).map(|c| c.text.as_str()).unwrap_or(""));
-            let labels = split_labels(row.get(3).map(|c| c.text.as_str()).unwrap_or(""));
+            let from = unguard_field(row.get(1).map(|c| c.text.as_ref()).unwrap_or(""));
+            let to = unguard_field(row.get(2).map(|c| c.text.as_ref()).unwrap_or(""));
+            let labels = split_labels(row.get(3).map(|c| c.text.as_ref()).unwrap_or(""));
             edges.push(Edge {
                 id,
                 from,
@@ -1014,6 +1098,35 @@ mod tests {
             prop(&g2, "n1", "c_list"),
             Some(&Value::List(vec![Value::Num(1.0), Value::Num(2.0)])),
             "{enc}"
+        );
+    }
+
+    /// A field built from SEVERAL runs of the input, which is the one shape that cannot borrow.
+    ///
+    /// `parse_csv` hands back a `Cow` and borrows whenever a field's content is one contiguous
+    /// span — nearly always. The promotion path, where a second run forces an owned `String`,
+    /// is the genuinely new logic, and deleting it (keeping only the first run) passed all 31
+    /// other tests: nothing here produced a multi-run field. Two inputs do, and both are shapes
+    /// the decoder has always accepted from a foreign file:
+    ///
+    ///   - a quote that OPENS mid-field — `ab"cd"` is one field reading `abcd`, because the
+    ///     quote switches on quoting for the rest of it rather than starting a new field;
+    ///   - a bare CR outside quotes, which is dropped wherever it appears, so `ef\rgh` is `efgh`
+    ///     assembled from the run before it and the run after.
+    #[test]
+    fn a_field_made_of_several_runs_still_reads_whole() {
+        let doc = "id,:LABEL,k:string\nn1,L,ab\"cd\"\nn2,L,ef\rgh\n";
+        let g = decode(doc);
+
+        assert_eq!(
+            prop(&g, "n1", "k"),
+            Some(&Value::Str("abcd".into())),
+            "{doc:?}"
+        );
+        assert_eq!(
+            prop(&g, "n2", "k"),
+            Some(&Value::Str("efgh".into())),
+            "{doc:?}"
         );
     }
 
