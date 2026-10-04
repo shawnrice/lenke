@@ -18,6 +18,7 @@ mod pg_json;
 mod pg_text;
 mod stream;
 
+pub use csv::{CsvColumns, CsvWriter, EDGE_FIXED, NODE_FIXED, SEPARATOR as CSV_SEPARATOR};
 pub use decstream::{deserialize_into, DecVal, GraphSink};
 pub use graphson::{EProps, GraphsonSink, LabelJoin, VProps};
 pub use jsonfmt::{js_number, push_js_number, push_json_str, push_num, push_value};
@@ -160,13 +161,22 @@ fn unknown_format(format: &str) -> CodecError {
 }
 
 /// Serialize neutral graph data in the named format (`pg-json`; more to come).
+/// The rejection a FLAT format (pg-text, csv) gives for a map/record property.
+///
+/// One place for it, because there are now three callers: this module's up-front whole-graph
+/// check, `PgTextSink`, and the engine's streaming csv encoder. A streaming encoder cannot do an
+/// up-front scan, so it has to raise the same error when it meets the value.
+pub fn flat_map_property_error() -> CodecError {
+    CodecError::new(
+        E_UNSUPPORTED,
+        "a map/record property can't be serialized to a flat format (pg-text/csv); \
+         use a structured format: ndjson, graphson, or pg-json",
+    )
+}
+
 pub fn serialize(g: &GraphData, format: &str) -> CodeResult<String> {
     if matches!(format, "pg-text" | "csv") && has_map_property(g) {
-        return Err(CodecError::new(
-            E_UNSUPPORTED,
-            "a map/record property can't be serialized to a flat format (pg-text/csv); \
-             use a structured format: ndjson, graphson, or pg-json",
-        ));
+        return Err(flat_map_property_error());
     }
     match format {
         "pg-json" => Ok(pg_json::encode(g)),

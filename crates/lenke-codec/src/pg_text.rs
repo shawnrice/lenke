@@ -19,7 +19,7 @@ use std::borrow::Cow;
 
 use crate::decstream::{DecVal, GraphSink};
 use crate::model::{is_temporal_tag, Edge, GraphData, Node, Value};
-use crate::{CodeResult, CodecError};
+use crate::CodeResult;
 
 // ---------------------------------------------------------------------------
 // Encode
@@ -258,11 +258,7 @@ impl PgTextSink {
                 }
             }
             crate::ValueRef::Nested(_) => {
-                return Err(CodecError::new(
-                    crate::codes::UNSUPPORTED,
-                    "a map/record property can't be serialized to a flat format (pg-text/csv); \
-                     use a structured format: ndjson, graphson, or pg-json",
-                ));
+                return Err(crate::flat_map_property_error());
             }
             scalar => {
                 self.sep();

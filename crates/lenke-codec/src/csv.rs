@@ -27,7 +27,10 @@ const LIST_SEP: char = ';';
 const OVERRIDE_PREFIX: &str = "\\T";
 const NULL_ELEMENT_CODE: &str = "n";
 const EDGES_MARKER: &str = "=== EDGES ===";
-const SEPARATOR: &str = "\n=== EDGES ===\n";
+/// The marker between the nodes and edges sections. Public because a streaming caller encodes
+/// the two sections separately and has to join them; a generic wrapper that hid it could not be
+/// written without fighting higher-ranked lifetimes on the two emit callbacks.
+pub const SEPARATOR: &str = "\n=== EDGES ===\n";
 
 // --------------------------------------------------------------- column types ---
 
@@ -714,41 +717,13 @@ fn parse_csv(input: &str) -> Vec<Vec<Cell<'_>>> {
 
 // ---------------------------------------- column-set computation (encode) ---
 
-/// One element's properties, borrowed from the neutral graph data.
-type Bag<'a> = &'a [(String, Value)];
+/// One element's properties as BORROWED pairs. Both drivers — the `GraphData` one and the
+/// engine's store one — can produce this, which is what lets a single row writer and a single
+/// column discovery serve both without a second implementation of the csv layout.
+type Bag<'a> = &'a [(&'a str, &'a Value)];
 
 fn bag_get<'a>(bag: Bag<'a>, key: &str) -> Option<&'a Value> {
-    bag.iter().find(|(k, _)| k == key).map(|(_, v)| v)
-}
-
-fn compute_columns(bags: &[Bag<'_>]) -> (Vec<String>, HashMap<String, ColType>) {
-    let mut keys: Vec<String> = Vec::new();
-    let mut types: HashMap<String, ColType> = HashMap::new();
-    let mut seen = HashSet::new();
-    for bag in bags {
-        for (key, value) in *bag {
-            // BORROW BEFORE YOU CLONE. `HashSet<String>::insert` takes an owned value, so
-            // `seen.insert(key.clone())` allocated a String for EVERY CELL — 600,000 of them
-            // for the bench's 200,000 nodes at three properties each — to discover, after the
-            // first row, that the key was already there. `contains` answers the same question
-            // through `Borrow<str>` without allocating, so the clone now happens once per
-            // DISTINCT key.
-            if !seen.contains(key.as_str()) {
-                seen.insert(key.clone());
-                keys.push(key.clone());
-            }
-            if !matches!(value, Value::Null) && !types.contains_key(key) {
-                types.insert(key.clone(), infer_column(value));
-            }
-        }
-    }
-    for key in &keys {
-        types.entry(key.clone()).or_insert(ColType {
-            scalar: Scalar::Str,
-            list: false,
-        });
-    }
-    (keys, types)
+    bag.iter().find(|(k, _)| *k == key).map(|(_, v)| *v)
 }
 
 /// `types` arrives RESOLVED and positional, zipped with `keys`, rather than as the
@@ -772,7 +747,7 @@ fn write_row(out: &mut String, fixed: &[&str], keys: &[String], types: &[ColType
 }
 
 /// Join a label set into a `;`-separated cell, escaping `;`/`\`/formula per label.
-fn join_labels(labels: &[String]) -> String {
+fn join_labels(labels: &[&str]) -> String {
     labels
         .iter()
         .map(|l| guard_element(escape_element(l)))
@@ -815,62 +790,170 @@ fn props_from_row(
 
 // -------------------------------------------------- public nodes / edges ---
 
+/// Phase one of a csv encode: the column set.
+///
+/// csv is the one format whose header depends on EVERY element — the columns are the first-seen
+/// union of all property keys, and each column's type comes from the first non-null value — so
+/// an encoder cannot stream in a single pass. It can still avoid materializing anything: the
+/// CALLER walks its source twice, feeding this and then [`CsvWriter`].
+///
+/// A closure-based source was tried first and abandoned: `&[(&str, &Value)]` inside a
+/// `dyn FnMut` argument elides to independent higher-ranked lifetimes, and no spelling of the
+/// bound would unify across the wrapper and the function it called. A two-phase builder has no
+/// such problem, and the layout — fixed cells, label joining, field guarding, header spelling —
+/// still lives here rather than in the caller, which is the part that must not be duplicated.
+#[derive(Default)]
+pub struct CsvColumns {
+    keys: Vec<String>,
+    types: HashMap<String, ColType>,
+    seen: HashSet<String>,
+}
+
+impl CsvColumns {
+    /// Observe one property of one element.
+    pub fn observe(&mut self, key: &str, value: &Value) {
+        // BORROW BEFORE YOU CLONE: `HashSet<String>::insert` takes an owned value, so probing
+        // with `contains` first means the clone happens once per DISTINCT key rather than once
+        // per cell.
+        if !self.seen.contains(key) {
+            self.seen.insert(key.to_string());
+            self.keys.push(key.to_string());
+        }
+        if !matches!(value, Value::Null) && !self.types.contains_key(key) {
+            self.types.insert(key.to_string(), infer_column(value));
+        }
+    }
+
+    /// Close the column set and start the row writer, emitting the header.
+    pub fn writer(mut self, fixed_header: &[&str], hint: usize) -> CsvWriter {
+        for key in &self.keys {
+            self.types.entry(key.clone()).or_insert(ColType {
+                scalar: Scalar::Str,
+                list: false,
+            });
+        }
+
+        let header = {
+            let mut h: Vec<String> = fixed_header.iter().map(|x| (*x).to_string()).collect();
+            h.extend(self.keys.iter().map(|k| column_header(k, self.types[k])));
+            header_line(&h)
+        };
+        // Resolved ONCE, positionally, instead of a hash lookup per cell per row.
+        let coltypes: Vec<ColType> = self.keys.iter().map(|k| self.types[k]).collect();
+        let mut out = String::with_capacity(header.len() + hint * 64);
+
+        out.push_str(&header);
+
+        CsvWriter {
+            keys: self.keys,
+            types: coltypes,
+            out,
+        }
+    }
+}
+
+/// Phase two: the rows. Built by [`CsvColumns::writer`], which has already emitted the header.
+pub struct CsvWriter {
+    keys: Vec<String>,
+    types: Vec<ColType>,
+    out: String,
+}
+
+impl CsvWriter {
+    /// One nodes-section row. The id is field-guarded and the labels joined here, so a caller
+    /// needs to know neither rule.
+    pub fn node_row(&mut self, id: &str, labels: &[&str], props: &[(&str, &Value)]) {
+        let gid = guard_field(id);
+        let joined = join_labels(labels);
+
+        self.out.push('\n');
+        write_row(
+            &mut self.out,
+            &[&gid, &joined],
+            &self.keys,
+            &self.types,
+            props,
+        );
+    }
+
+    /// One edges-section row.
+    pub fn edge_row(
+        &mut self,
+        id: &str,
+        from: &str,
+        to: &str,
+        labels: &[&str],
+        props: &[(&str, &Value)],
+    ) {
+        let gid = guard_field(id);
+        let gfrom = guard_field(from);
+        let gto = guard_field(to);
+        let etype = join_labels(labels);
+
+        self.out.push('\n');
+        write_row(
+            &mut self.out,
+            &[&gid, &gfrom, &gto, &etype],
+            &self.keys,
+            &self.types,
+            props,
+        );
+    }
+
+    /// The finished section.
+    pub fn finish(self) -> String {
+        self.out
+    }
+}
+
+/// The fixed columns of each section, so a caller does not spell them.
+pub const NODE_FIXED: &[&str] = &["id", ":LABEL"];
+pub const EDGE_FIXED: &[&str] = &["id", ":START_ID", ":END_ID", ":TYPE"];
+
 /// Serialize just the nodes section.
 pub fn encode_nodes(g: &GraphData) -> String {
-    let bags: Vec<Bag<'_>> = g.nodes.iter().map(|n| n.props.as_slice()).collect();
-    let (keys, types) = compute_columns(&bags);
-
-    let header = {
-        let mut h = vec!["id".to_string(), ":LABEL".to_string()];
-        h.extend(keys.iter().map(|k| column_header(k, types[k])));
-        header_line(&h)
-    };
-    // Resolved ONCE, positionally, instead of a hash lookup per cell per row.
-    let coltypes: Vec<ColType> = keys.iter().map(|k| types[k]).collect();
-    let mut out = String::with_capacity(header.len() + g.nodes.len() * 64);
-    out.push_str(&header);
+    let mut cols = CsvColumns::default();
     for n in &g.nodes {
-        let labels = join_labels(&n.labels);
-        let id = guard_field(&n.id);
-        out.push('\n');
-        write_row(&mut out, &[&id, &labels], &keys, &coltypes, &n.props);
+        for (k, v) in &n.props {
+            cols.observe(k, v);
+        }
     }
-    out
+
+    let mut w = cols.writer(NODE_FIXED, g.nodes.len());
+    for n in &g.nodes {
+        let labels: Vec<&str> = n.labels.iter().map(String::as_str).collect();
+        let props: Vec<(&str, &Value)> = n.props.iter().map(|(k, v)| (k.as_str(), v)).collect();
+
+        w.node_row(&n.id, &labels, &props);
+    }
+
+    w.finish()
 }
 
 /// Serialize just the edges section.
 pub fn encode_edges(g: &GraphData) -> String {
-    let bags: Vec<Bag<'_>> = g.edges.iter().map(|e| e.props.as_slice()).collect();
-    let (keys, types) = compute_columns(&bags);
-
-    let header = {
-        let mut h = vec![
-            "id".to_string(),
-            ":START_ID".to_string(),
-            ":END_ID".to_string(),
-            ":TYPE".to_string(),
-        ];
-        h.extend(keys.iter().map(|k| column_header(k, types[k])));
-        header_line(&h)
-    };
-    let coltypes: Vec<ColType> = keys.iter().map(|k| types[k]).collect();
-    let mut out = String::with_capacity(header.len() + g.edges.len() * 64);
-    out.push_str(&header);
+    let mut cols = CsvColumns::default();
     for e in &g.edges {
-        let id = guard_field(e.id.as_deref().unwrap_or(""));
-        let from = guard_field(&e.from);
-        let to = guard_field(&e.to);
-        let etype = join_labels(&e.labels);
-        out.push('\n');
-        write_row(
-            &mut out,
-            &[&id, &from, &to, &etype],
-            &keys,
-            &coltypes,
-            &e.props,
+        for (k, v) in &e.props {
+            cols.observe(k, v);
+        }
+    }
+
+    let mut w = cols.writer(EDGE_FIXED, g.edges.len());
+    for e in &g.edges {
+        let labels: Vec<&str> = e.labels.iter().map(String::as_str).collect();
+        let props: Vec<(&str, &Value)> = e.props.iter().map(|(k, v)| (k.as_str(), v)).collect();
+
+        w.edge_row(
+            e.id.as_deref().unwrap_or(""),
+            &e.from,
+            &e.to,
+            &labels,
+            &props,
         );
     }
-    out
+
+    w.finish()
 }
 
 /// Encode neutral graph data to the combined single string.

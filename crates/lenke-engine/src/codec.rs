@@ -447,8 +447,121 @@ pub fn serialize(store: &Store, format: &str) -> Result<String, CodecError> {
         "pg-json" => Ok(serialize_pg_json(store)),
         "graphson" => Ok(serialize_graphson(store)),
         "pg-text" => serialize_pg_text(store),
+        "csv" => serialize_csv(store),
         _ => lenke_codec::serialize(&to_graph_data(store), format),
     }
+}
+
+/// Stream a store straight to csv, with no owned `GraphData` in between.
+///
+/// csv was the LAST format on the bridge in either direction, and the worst-priced codec path
+/// in the table at 0.055 MB/ms — ~72ms of a ~113ms encode was `to_graph_data`.
+///
+/// csv cannot encode in one pass: its header is the first-seen union of every element's property
+/// keys, with each column's type inferred from the first non-null value. So `encode_nodes_from` /
+/// `encode_edges_from` take a RE-ITERABLE source and walk it twice, which a `Store` is. The
+/// layout itself — fixed cells, label joining, field guarding, the header spelling — stays in
+/// `lenke-codec`, shared with the `GraphData` entry point, so there is one implementation of it.
+///
+/// The ORDER has to match `to_graph_data` exactly or the output is not byte-identical: nodes by
+/// dense id skipping dead, properties in `prop_keys()` order filtered by presence, edges by
+/// source then adjacency. `streaming_csv_matches_the_graphdata_path` pins that.
+fn serialize_csv(store: &Store) -> Result<String, CodecError> {
+    let node_keys = store.prop_keys();
+    let edge_keys = store.edge_prop_keys();
+    let count = u32::try_from(store.node_count()).unwrap_or(u32::MAX);
+
+    // Per-element values, read once and reused for both the column pass and the row pass. The
+    // reads are the ones the bridge already made; what is gone is the whole-document
+    // `Vec<CNode>` and the second traversal over it.
+    let node_vals: Vec<Vec<(String, CValue)>> = (0..count)
+        .filter(|id| store.is_alive(*id))
+        .map(|id| {
+            node_keys
+                .iter()
+                .filter(|k| store.has_prop(id, k))
+                .map(|k| (k.clone(), value_to_neutral(&store.prop(id, k))))
+                .collect()
+        })
+        .collect();
+    let mut cols = lenke_codec::CsvColumns::default();
+    for vals in &node_vals {
+        for (k, v) in vals {
+            // A flat format cannot carry a map/record. The `GraphData` path rejected this with
+            // one up-front whole-graph scan; a streaming encoder has no such moment, so it
+            // raises the SAME error when it meets the value.
+            if matches!(v, CValue::Map(_)) {
+                return Err(lenke_codec::flat_map_property_error());
+            }
+            cols.observe(k, v);
+        }
+    }
+
+    let mut w = cols.writer(lenke_codec::NODE_FIXED, store.node_count());
+    for (slot, id) in (0..count).filter(|id| store.is_alive(*id)).enumerate() {
+        let labels = store.labels_of(id);
+        let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+        let props: Vec<(&str, &CValue)> = node_vals[slot]
+            .iter()
+            .map(|(k, v)| (k.as_str(), v))
+            .collect();
+
+        w.node_row(store.node_ext_id_ref(id).unwrap_or(""), &label_refs, &props);
+    }
+    let nodes = w.finish();
+
+    // Edge order is `to_graph_data`'s: by source, then adjacency.
+    let edge_ids: Vec<(u32, u32, u32)> = (0..count)
+        .filter(|from| store.is_alive(*from))
+        .flat_map(|from| store.out(from).iter().map(move |a| (from, a.nbr, a.eid)))
+        .collect();
+    let edge_vals: Vec<Vec<(String, CValue)>> = edge_ids
+        .iter()
+        .map(|(_, _, eid)| {
+            edge_keys
+                .iter()
+                .filter(|k| store.has_edge_prop(*eid, k))
+                .map(|k| (k.clone(), value_to_neutral(&store.edge_prop(*eid, k))))
+                .collect()
+        })
+        .collect();
+    let mut cols = lenke_codec::CsvColumns::default();
+    for vals in &edge_vals {
+        for (k, v) in vals {
+            if matches!(v, CValue::Map(_)) {
+                return Err(lenke_codec::flat_map_property_error());
+            }
+            cols.observe(k, v);
+        }
+    }
+
+    let mut w = cols.writer(lenke_codec::EDGE_FIXED, store.edge_count());
+    for (slot, (from, to, eid)) in edge_ids.iter().enumerate() {
+        let labels = store.edge_labels_of(*eid);
+        let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+        let props: Vec<(&str, &CValue)> = edge_vals[slot]
+            .iter()
+            .map(|(k, v)| (k.as_str(), v))
+            .collect();
+        let eid_ext = store
+            .edge_ext_id(*eid)
+            .map(|x| x.to_string())
+            .unwrap_or_default();
+
+        w.edge_row(
+            &eid_ext,
+            store.node_ext_id_ref(*from).unwrap_or(""),
+            store.node_ext_id_ref(*to).unwrap_or(""),
+            &label_refs,
+            &props,
+        );
+    }
+
+    Ok(format!(
+        "{nodes}{}{}",
+        lenke_codec::CSV_SEPARATOR,
+        w.finish()
+    ))
 }
 
 /// Stream a store directly to PG-text. Returns `E_UNSUPPORTED` on a map/record
@@ -677,6 +790,43 @@ mod tests {
         for f in ["pg-json", "pg-text", "graphson", "csv"] {
             round_trip(f);
         }
+    }
+
+    /// The streaming csv ENCODER must emit exactly what `serialize(&to_graph_data(..), "csv")`
+    /// did — same columns, same order, same bytes.
+    ///
+    /// csv's header is the first-seen union of every element's property keys with per-column
+    /// types, so the column SET and its ORDER both depend on walking the elements in the same
+    /// sequence `to_graph_data` used: nodes by dense id skipping dead, properties in
+    /// `prop_keys()` order filtered by presence, edges by source then adjacency. A different
+    /// order is a different header, which is why this is asserted on the bytes.
+    #[test]
+    fn streaming_csv_encode_is_byte_identical_to_the_graphdata_path() {
+        // Properties deliberately uneven: `tags` only on the first node, `city` only on the
+        // second, so the first-seen column order is observable and a sorted-key implementation
+        // would differ. A multi-label node, a secondary edge label, and a quoted id too.
+        let src = concat!(
+            r#"{"id":"a b","labels":["P","Q"],"props":{"n":"ann","tags":["x","y"]}}"#,
+            "\n",
+            r#"{"id":"c","labels":["P"],"props":{"city":"oslo","n":"bo"}}"#,
+            "\n",
+            r#"{"id":"d","labels":[],"props":{}}"#,
+            "\n",
+            r#"{"id":"e0","from":"a b","to":"c","labels":["KNOWS","BFF"],"props":{"since":2020}}"#,
+            "\n",
+            r#"{"id":"e1","from":"c","to":"d","labels":["KNOWS"],"props":{"w":1.5}}"#,
+        );
+        let store = crate::ndjson::from_ndjson(src).unwrap();
+
+        assert_eq!(
+            serialize_csv(&store).unwrap(),
+            lenke_codec::serialize(&to_graph_data(&store), "csv").unwrap()
+        );
+        // And it still round-trips through the engine's own decode.
+        let back = deserialize(&serialize_csv(&store).unwrap(), "csv").unwrap();
+
+        assert_eq!(back.node_count(), 3);
+        assert_eq!(back.edge_count(), 2);
     }
 
     /// The streaming csv DECODER must build the same store the `GraphData` bridge did.
