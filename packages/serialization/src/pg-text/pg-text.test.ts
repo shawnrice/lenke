@@ -384,3 +384,37 @@ describe('pg-text: streaming', () => {
     expect([...back.edges]).toHaveLength(25000);
   });
 });
+
+// The line tokenizer finds each token's SPAN and slices it once rather than appending a character
+// at a time (audit item 117). These cases are the ones a span can get wrong, and they all pass
+// against the character-append version too — they pin the tokenizer's contract, not the rewrite.
+describe('the line tokenizer keeps quoted spans whole', () => {
+  const propsOf = (doc: string): PropertyValue | undefined =>
+    [...decode(doc, new Graph()).vertices][0]?.properties.s as PropertyValue | undefined;
+
+  test('a quoted value keeps its spaces and its quotes are consumed', () => {
+    expect(propsOf('n1 :T s:"a b c"')).toBe('a b c');
+    expect(propsOf('n1 :T s:"  leading and trailing  "')).toBe('  leading and trailing  ');
+    expect(propsOf('n1 :T s:""')).toBe('');
+  });
+
+  test('an escaped quote inside a quoted value does not end the token', () => {
+    expect(propsOf('n1 :T s:"a\\"b c"')).toBe('a"b c');
+    expect(propsOf('n1 :T s:"a\\\\b"')).toBe('a\\b');
+    // a tab inside quotes is content, not a separator
+    expect(propsOf('n1 :T s:"a\tb"')).toBe('a\tb');
+  });
+
+  test('runs of separators between tokens collapse and leading ones are skipped', () => {
+    expect(propsOf('n1 :T   s:"x"')).toBe('x');
+    expect(propsOf('   n1 :T s:"x"')).toBe('x');
+    expect(propsOf('n1\t:T\ts:"x"')).toBe('x');
+    expect(propsOf('n1 :T s:"x"   ')).toBe('x');
+  });
+
+  // A quote may open mid-token, so the characters before it belong to the same token — the case a
+  // naive "slice between separators" tokenizer and a naive "quoted fields only" one both miss.
+  test('a quote opening mid-token keeps one token', () => {
+    expect(propsOf('n1 :T s:a"b c"d')).toBe('a"b c"d');
+  });
+});

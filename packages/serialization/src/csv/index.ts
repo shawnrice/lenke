@@ -111,6 +111,8 @@ import type { PropertyValue } from '../value.js';
 
 const NULL_TOKEN = '\\N';
 const LIST_SEP = ';';
+const LIST_SEP_CODE = 59;
+const BACKSLASH = 92;
 
 /** A single column's inferred scalar type. */
 type ScalarType =
@@ -149,80 +151,111 @@ const quoteField = (raw: string): string => {
  */
 type Cell = { readonly text: string; readonly quoted: boolean };
 
+const QUOTE = 34;
+const COMMA = 44;
+const CR = 13;
+const LF = 10;
+
 const parseCsv = (input: string): Cell[][] => {
   const rows: Cell[][] = [];
   let row: Cell[] = [];
-  let field = '';
   let quoted = false; // whether the current field used quoting at all
   let inQuotes = false;
   let i = 0;
   const n = input.length;
 
-  const pushField = (): void => {
-    row.push({ text: field, quoted });
-    field = '';
-    quoted = false;
+  // A field's text is `pending` followed by the SPAN `input[segStart..end]`.
+  // Only four things interrupt a span — an opening quote, a closing quote, a
+  // doubled `""`, and a swallowed CR — so an ordinary field (quoted or not, with
+  // no inner quote and no CR) costs ONE slice and no concatenation. It used to
+  // cost one concatenation and one single-character string PER CHARACTER, which
+  // is ~9,000,000 of each over the cross-engine bench's 9.2MB document.
+  let segStart = 0;
+  let pending = '';
+
+  const flushTo = (end: number): void => {
+    if (end > segStart) {
+      pending += input.slice(segStart, end);
+    }
   };
-  const pushRow = (): void => {
-    pushField();
+  const textTo = (end: number): string =>
+    pending.length === 0 ? input.slice(segStart, end) : pending + input.slice(segStart, end);
+
+  const pushField = (end: number, next: number): void => {
+    row.push({ text: textTo(end), quoted });
+    quoted = false;
+    pending = '';
+    segStart = next;
+  };
+  const pushRow = (end: number, next: number): void => {
+    pushField(end, next);
     rows.push(row);
     row = [];
   };
 
   while (i < n) {
-    const c = input[i];
+    const c = input.charCodeAt(i);
 
     if (inQuotes) {
-      if (c === '"') {
-        if (input[i + 1] === '"') {
-          field += '"';
+      if (c === QUOTE) {
+        if (input.charCodeAt(i + 1) === QUOTE) {
+          flushTo(i);
+          pending += '"';
           i += 2;
+          segStart = i;
           continue;
         }
 
+        flushTo(i);
         inQuotes = false;
         i += 1;
+        segStart = i;
         continue;
       }
 
-      field += c;
       i += 1;
       continue;
     }
 
-    if (c === '"') {
+    if (c === QUOTE) {
+      // A quote may open mid-field (`a"b"c` is one field `abc`), so the text
+      // before it has to be banked rather than assumed to be the whole field.
+      flushTo(i);
       quoted = true;
       inQuotes = true;
       i += 1;
+      segStart = i;
       continue;
     }
 
-    if (c === ',') {
-      pushField();
+    if (c === COMMA) {
+      pushField(i, i + 1);
       i += 1;
       continue;
     }
 
-    if (c === '\r') {
+    if (c === CR) {
       // swallow CR; CRLF handled by the LF branch
+      flushTo(i);
+      i += 1;
+      segStart = i;
+      continue;
+    }
+
+    if (c === LF) {
+      pushRow(i, i + 1);
       i += 1;
       continue;
     }
 
-    if (c === '\n') {
-      pushRow();
-      i += 1;
-      continue;
-    }
-
-    field += c;
     i += 1;
   }
 
   // Flush trailing field/row unless input ended exactly on a newline boundary
-  // with nothing buffered.
-  if (field.length > 0 || quoted || row.length > 0) {
-    pushRow();
+  // with nothing buffered. `n > segStart || pending.length > 0` is the span form
+  // of the old `field.length > 0`.
+  if (n > segStart || pending.length > 0 || quoted || row.length > 0) {
+    pushRow(n, n);
   }
 
   return rows;
@@ -432,33 +465,45 @@ const sameType = (a: ColumnType, b: ColumnType): boolean =>
 // so string elements may contain a literal `;`.
 const escapeElement = (s: string): string => s.replaceAll('\\', '\\\\').replaceAll(LIST_SEP, '\\;');
 
-/** Split a list cell on unescaped `;` separators, unescaping `\;` and `\\` inline. */
+/**
+ * Split a list cell on unescaped `;` separators, unescaping `\;` and `\\` inline.
+ *
+ * Span-sliced like `parseCsv`: an element containing no backslash costs one
+ * slice, and only a real escape banks a partial.
+ */
 const splitList = (raw: string): string[] => {
   const out: string[] = [];
-  let cur = '';
+  const n = raw.length;
   let i = 0;
+  let segStart = 0;
+  let pending = '';
 
-  while (i < raw.length) {
-    const c = raw[i];
+  while (i < n) {
+    const c = raw.charCodeAt(i);
 
-    if (c === '\\' && i + 1 < raw.length) {
-      cur += raw[i + 1];
+    if (c === BACKSLASH && i + 1 < n) {
+      if (i > segStart) {
+        pending += raw.slice(segStart, i);
+      }
+
+      pending += raw[i + 1];
       i += 2;
+      segStart = i;
       continue;
     }
 
-    if (c === LIST_SEP) {
-      out.push(cur);
-      cur = '';
+    if (c === LIST_SEP_CODE) {
+      out.push(pending.length === 0 ? raw.slice(segStart, i) : pending + raw.slice(segStart, i));
+      pending = '';
       i += 1;
+      segStart = i;
       continue;
     }
 
-    cur += c;
     i += 1;
   }
 
-  out.push(cur);
+  out.push(pending.length === 0 ? raw.slice(segStart, n) : pending + raw.slice(segStart, n));
 
   return out;
 };

@@ -647,3 +647,83 @@ describe('streaming', () => {
     console.log(`csv stream throughput: 50k elements encode+decode in ${elapsed.toFixed(0)}ms`);
   });
 });
+
+// The RFC-4180 row parser is span-sliced rather than character-appended (audit item 117), so a
+// field's text is a slice of the input plus whatever a span interruption had to bank. Four things
+// interrupt a span, and each has a case here: an opening quote, a closing quote, a doubled `""`,
+// and a swallowed CR. Without these the rewrite is only covered by round-trips over documents the
+// ENCODER produced, which never emit a quote mid-field or a bare CR.
+describe('the row parser keeps span interruptions byte-exact', () => {
+  const cellsOf = (doc: string): unknown => {
+    const g = decodeNodes(doc, new Graph());
+
+    return [...g.vertices].map((v) => v.properties.s);
+  };
+
+  // `a"b c"d` is ONE field whose text is `ab cd` — a quote may open and close mid-field, so the
+  // text before it has to be banked rather than treated as the whole field.
+  test('a quote opening mid-field keeps the text on both sides', () => {
+    expect(cellsOf('id,:LABEL,s:s\nv1,T,a"b c"d\n')).toEqual(['ab cd']);
+    expect(cellsOf('id,:LABEL,s:s\nv1,T,"a"b\n')).toEqual(['ab']);
+    expect(cellsOf('id,:LABEL,s:s\nv1,T,a"b"\n')).toEqual(['ab']);
+  });
+
+  // A doubled quote inside a quoted span is one literal quote, and it splits the span in two.
+  test('a doubled quote collapses to one and does not end the field', () => {
+    expect(cellsOf('id,:LABEL,s:s\nv1,T,"a""b"\n')).toEqual(['a"b']);
+    expect(cellsOf('id,:LABEL,s:s\nv1,T,""""\n')).toEqual(['"']);
+    expect(cellsOf('id,:LABEL,s:s\nv1,T,"a""b""c"\n')).toEqual(['a"b"c']);
+    // a comma and a newline inside quotes are ordinary characters
+    expect(cellsOf('id,:LABEL,s:s\nv1,T,"a,b"\n')).toEqual(['a,b']);
+    expect(cellsOf('id,:LABEL,s:s\nv1,T,"a\nb"\n')).toEqual(['a\nb']);
+  });
+
+  // A bare CR outside quotes is swallowed, so `ab\rcd` is `abcd` — not expressible as one span.
+  test('a CR outside quotes is swallowed from the middle of a field', () => {
+    expect(cellsOf('id,:LABEL,s:s\nv1,T,ab\rcd\n')).toEqual(['abcd']);
+    // CRLF line endings still end the row exactly once
+    expect(cellsOf('id,:LABEL,s:s\r\nv1,T,ab\r\n')).toEqual(['ab']);
+    // ...and inside quotes a CR is kept
+    expect(cellsOf('id,:LABEL,s:s\nv1,T,"a\rb"\n')).toEqual(['a\rb']);
+  });
+
+  // An empty quoted field is not the same as an absent one, which is the whole reason a cell
+  // carries `quoted`. The final flush has to preserve that for a trailing field with no delimiter.
+  test('an empty quoted field at end of input stays distinct from an absent one', () => {
+    // An ABSENT cell omits the property, so it reads `undefined` — not a stored `null`, which
+    // is a present value in this engine. That distinction is what `quoted` exists to carry.
+    expect(cellsOf('id,:LABEL,s:s\nv1,T,""')).toEqual(['']);
+    expect(cellsOf('id,:LABEL,s:s\nv1,T,')).toEqual([undefined]);
+    expect(cellsOf('id,:LABEL,s:s\nv1,T,""\n')).toEqual(['']);
+    expect(cellsOf('id,:LABEL,s:s\nv1,T,\n')).toEqual([undefined]);
+  });
+
+  // The trailing flush fires on `quoted` as well as on text, and that disjunct is load-bearing:
+  // a final line that is ONLY a quoted-empty field has no text and no other cell, so without it
+  // the line is dropped and a malformed document decodes to nothing instead of raising. Found by
+  // mutation — removing `quoted` from that condition passed every other case here.
+  test('a final line that is only a quoted-empty field still raises', () => {
+    expect(() => decodeNodes('id,:LABEL\n""', new Graph())).toThrow();
+    expect(() => decodeNodes('id,:LABEL,s:s\n""', new Graph())).toThrow();
+  });
+
+  // An unterminated quote runs to end of input rather than throwing or dropping the text.
+  test('an unterminated quote runs to end of input', () => {
+    expect(cellsOf('id,:LABEL,s:s\nv1,T,"abc')).toEqual(['abc']);
+  });
+
+  // `splitList` is span-sliced the same way, and only a real backslash escape banks a partial.
+  test('list cells unescape separators and backslashes', () => {
+    const listOf = (doc: string): unknown => {
+      const g = decodeNodes(doc, new Graph());
+
+      return [...g.vertices].map((v) => v.properties.l);
+    };
+
+    expect(listOf('id,:LABEL,l:s[]\nv1,T,a;b;c\n')).toEqual([['a', 'b', 'c']]);
+    expect(listOf('id,:LABEL,l:s[]\nv1,T,"a\\;b;c"\n')).toEqual([['a;b', 'c']]);
+    expect(listOf('id,:LABEL,l:s[]\nv1,T,"a\\\\b;c"\n')).toEqual([['a\\b', 'c']]);
+    // an empty element at each position
+    expect(listOf('id,:LABEL,l:s[]\nv1,T,";a;"\n')).toEqual([['', 'a', '']]);
+  });
+});

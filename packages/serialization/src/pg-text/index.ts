@@ -224,52 +224,74 @@ export const encode = (graph: Graph): string => {
   return lines.join('\n');
 };
 
-/** Split a line into tokens, keeping double-quoted spans (with `\` escapes) whole. */
+const SPACE = 32;
+const TAB = 9;
+const QUOTE = 34;
+const BACKSLASH = 92;
+
+/**
+ * Split a line into tokens, keeping double-quoted spans (with `\` escapes) whole.
+ *
+ * Finds each token's SPAN and slices it once, rather than appending a character
+ * at a time. The previous version built every token with `current += line[i]`,
+ * which is one string concatenation AND one single-character string per character
+ * of input — about 12,000,000 of each for the 12.2MB document the cross-engine
+ * bench decodes, and 16% of that decode's profile. `charCodeAt` avoids the
+ * one-character strings; the slice avoids the concatenations.
+ *
+ * Byte-identical to the character-append version, including the awkward cases: a
+ * quote STARTS a token even mid-token (`a"b c"d` is one token), the quote
+ * characters themselves are kept, a backslash inside quotes escapes the next
+ * character so `\"` does not close the span, a trailing backslash is literal, and
+ * an unterminated quote runs to end-of-line.
+ */
 const tokenizeLine = (line: string): string[] => {
   const tokens: string[] = [];
-  let current = '';
-  let started = false;
-  let inQuote = false;
+  const n = line.length;
+  let i = 0;
 
-  for (let i = 0; i < line.length; i += 1) {
-    const c = line[i];
+  while (i < n) {
+    const c = line.charCodeAt(i);
 
-    if (inQuote) {
-      current += c;
+    if (c === SPACE || c === TAB) {
+      i += 1;
+      continue;
+    }
 
-      if (c === '\\' && i + 1 < line.length) {
-        current += line[i + 1];
+    const start = i;
+    let inQuote = false;
+
+    while (i < n) {
+      const ch = line.charCodeAt(i);
+
+      if (inQuote) {
+        if (ch === BACKSLASH && i + 1 < n) {
+          i += 2;
+          continue;
+        }
+
+        if (ch === QUOTE) {
+          inQuote = false;
+        }
+
         i += 1;
-      } else if (c === '"') {
-        inQuote = false;
+        continue;
       }
 
-      continue;
-    }
-
-    if (c === '"') {
-      inQuote = true;
-      started = true;
-      current += c;
-      continue;
-    }
-
-    if (c === ' ' || c === '\t') {
-      if (started) {
-        tokens.push(current);
-        current = '';
-        started = false;
+      if (ch === QUOTE) {
+        inQuote = true;
+        i += 1;
+        continue;
       }
 
-      continue;
+      if (ch === SPACE || ch === TAB) {
+        break;
+      }
+
+      i += 1;
     }
 
-    current += c;
-    started = true;
-  }
-
-  if (started) {
-    tokens.push(current);
+    tokens.push(line.slice(start, i));
   }
 
   return tokens;
