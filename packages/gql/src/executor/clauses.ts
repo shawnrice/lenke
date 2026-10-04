@@ -1268,6 +1268,12 @@ export const runLinearClauses = (
     if (linear.reachShortcut) {
       return linear.reachShortcut(graph, params);
     }
+
+    // A 1-hop projecting only the far endpoint: walk the hop and build rows directly,
+    // with one reused binding and no generator stack. See `detectHopProjection`.
+    if (linear.hopProjection) {
+      return linear.hopProjection(graph, params);
+    }
   }
 
   // Bindings flow as a lazy stream; only barriers (mutations, aggregation,

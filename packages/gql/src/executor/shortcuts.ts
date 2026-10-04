@@ -74,9 +74,9 @@ import { asTruth, isNullish } from './scalars.js';
 const vacuousLabel = (graph: Graph, expr: LabelExpr | undefined): boolean =>
   expr?.kind === 'label' && (graph.verticesByLabel.get(expr.name)?.size ?? 0) === graph.vertexCount;
 
-const plainNode = (n: NodePattern): boolean =>
+export const plainNode = (n: NodePattern): boolean =>
   (n.properties?.length ?? 0) === 0 && n.where === undefined;
-const plainRel = (r: RelPattern): boolean =>
+export const plainRel = (r: RelPattern): boolean =>
   (r.properties?.length ?? 0) === 0 && r.where === undefined && r.quantifier === undefined;
 
 type CountFn = (graph: Graph, params: Params) => Row;

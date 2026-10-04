@@ -1724,7 +1724,7 @@ type CSortItem = { fn: CompiledExpr; descending: boolean; nullsFirst?: boolean }
  * analysis — alias resolution, aggregate detection, picking the GROUP BY keys —
  * is done here, once.
  */
-type CProjection = {
+export type CProjection = {
   star: boolean;
   distinct: boolean;
   items: readonly CReturnItem[];
@@ -1948,7 +1948,12 @@ const projectBinding = (
  * in both a `Map` and an object, and `item.fn` is called in the same order, so a
  * projection that throws throws on the same row at the same point.
  */
-const projectRow = (proj: CProjection, binding: Binding, params: Params, graph: Graph): Row => {
+export const projectRow = (
+  proj: CProjection,
+  binding: Binding,
+  params: Params,
+  graph: Graph,
+): Row => {
   const row: Row = {};
 
   if (proj.star) {
@@ -3658,6 +3663,8 @@ export type CLinear = {
   groupCountShortcut: ReachFn | null;
   /** BFS closure for unbounded var-length + DISTINCT; else null. */
   reachShortcut: ReachFn | null;
+  /** Fused `MATCH (a)-[:T]->(x) RETURN <exprs over x>` row builder; else null. */
+  hopProjection: RowsFn | null;
 };
 const compileLinear = (linear: LinearQuery): CLinear => {
   const clauses = linear.clauses.map(compileClause);
@@ -3667,6 +3674,7 @@ const compileLinear = (linear: LinearQuery): CLinear => {
     countShortcut: detectCountShortcut(linear.clauses),
     groupCountShortcut: detectGroupedNodeCount(linear.clauses),
     reachShortcut: detectReachableShortcut(linear.clauses, clauses),
+    hopProjection: detectHopProjection(linear.clauses, clauses),
   };
 };
 
@@ -3691,6 +3699,10 @@ import {
   runLinear,
   runTxControl,
 } from './executor/clauses.js';
+// Imported at FUNCTION level like the other detectors — this module and `executor` import
+// each other, which the existing comment on the shortcuts import explains is safe.
+import { detectHopProjection } from './executor/hop-projection.js';
+import type { RowsFn } from './executor/hop-projection.js';
 // Count / reachability fast-paths (see executor/shortcuts.ts) — this back-edge and
 // the shortcuts' import of the trunk's bucket primitives form a safe function-level
 // cycle, matching the other executor submodules.
