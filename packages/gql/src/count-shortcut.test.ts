@@ -202,6 +202,51 @@ describe('count(*) shortcut correctness (vs independent enumeration)', () => {
     ).toEqual([]);
   });
 
+  // The bare node count had NO shortcut: `detectCountShortcut` handled one and two segments
+  // and fell through for zero, so this enumerated every vertex. 91.1ms against native's ~0.0ms
+  // on a 200,000-node graph.
+  test('a labelled node count counts only that label', () => {
+    const g = build();
+    const n = (q: string): number => c(g, q);
+
+    expect(n(`MATCH (x) RETURN count(*) AS c`)).toBe(N);
+    expect(n(`MATCH (x:Person) RETURN count(*) AS c`)).toBe(N);
+    expect(n(`MATCH (x:Admin) RETURN count(*) AS c`)).toBe(
+      Array.from({ length: N }, (_, i) => i).filter(isAdmin).length,
+    );
+    expect(n(`MATCH (x:Absent) RETURN count(*) AS c`)).toBe(0);
+    // A multi-label pattern has no single bucket and must fall through to enumeration.
+    expect(n(`MATCH (x:Person&Admin) RETURN count(*) AS c`)).toBe(
+      Array.from({ length: N }, (_, i) => i).filter(isAdmin).length,
+    );
+  });
+
+  // THE ASSUMPTION THE SHORTCUT RESTS ON, driven rather than asserted on a fresh graph.
+  // Reading `verticesByLabel.get(L).size` is only exact if the index carries no stale entry.
+  // Enumeration tolerates one — `candidateVertices` yields the bucket and `matchNode` re-checks
+  // each candidate's labels — so a stale EXTRA would be invisible everywhere except here.
+  test('a removed vertex and a removed label both leave the count exact', () => {
+    const g = new Graph();
+    const vs = Array.from({ length: 5 }, (_, i) =>
+      g.addVertex({ id: `r${i}`, labels: ['Person'], properties: {} }),
+    );
+
+    expect(c(g, `MATCH (x:Person) RETURN count(*) AS c`)).toBe(5);
+
+    g.removeVertex(vs[0]);
+    expect(c(g, `MATCH (x:Person) RETURN count(*) AS c`)).toBe(4);
+    expect(c(g, `MATCH (x) RETURN count(*) AS c`)).toBe(4);
+
+    vs[1].removeLabel('Person');
+    expect(c(g, `MATCH (x:Person) RETURN count(*) AS c`)).toBe(3);
+    // Still a vertex, just no longer a Person.
+    expect(c(g, `MATCH (x) RETURN count(*) AS c`)).toBe(4);
+
+    vs[2].addLabel('Admin');
+    expect(c(g, `MATCH (x:Admin) RETURN count(*) AS c`)).toBe(1);
+    expect(c(g, `MATCH (x:Person) RETURN count(*) AS c`)).toBe(3);
+  });
+
   test('2-hop with a reversed first segment matches enumeration', () => {
     const g = build();
 

@@ -76,6 +76,41 @@ const plainRel = (r: RelPattern): boolean =>
 
 type CountFn = (graph: Graph, params: Params) => Row;
 
+/**
+ * `MATCH (n[:L]) RETURN count(*)` — the node count, straight off the label bucket.
+ *
+ * This shape had NO shortcut: `detectCountShortcut` handled one and two segments and fell
+ * through to `null` for zero, so a bare labelled node count enumerated every vertex and built
+ * a row per match. On the cross-engine bench (200,000 `Person` nodes) that is ts 91.1ms
+ * against native's ~0.0ms, a 16125x gap — the single widest in the table after the 1-hop count
+ * was fixed.
+ *
+ * `verticesByLabel` is ALREADY load-bearing for correctness, which is what makes reading its
+ * size sound rather than optimistic: `candidateVertices` enumerates that same bucket for a
+ * plain label, so a bucket missing a vertex would already make `MATCH (n:Person)` miss rows.
+ * The one asymmetry is that enumeration re-checks each candidate through `matchNode` and so
+ * tolerates a stale EXTRA, where a size read would not — `a removed vertex and a removed label
+ * both leave the count exact` pins that the index has no such extras.
+ *
+ * Only the plain single-label form and the unlabelled form are answered. `and` (`(n:A:B)`),
+ * `or`, `not` and `%` have no single bucket, so they fall through to enumeration.
+ */
+const buildNodeCount = (start: NodePattern, rowOf: (n: number) => Row): CountFn | null => {
+  const { label } = start;
+
+  if (label === undefined) {
+    return (graph) => rowOf(graph.vertexCount);
+  }
+
+  if (label.kind !== 'label') {
+    return null;
+  }
+
+  const { name } = label;
+
+  return (graph) => rowOf(graph.verticesByLabel.get(name)?.size ?? 0);
+};
+
 /** 1-hop `(a)-[:T]->(b)` count: bucket sizes (unlabeled) or a filtered bucket
  * scan. `null` if the segment can't be bucket-counted (both/And/Not/wildcard). */
 const buildOneHopCount = (
@@ -252,9 +287,10 @@ export const detectCountShortcut = (clauses: readonly Clause[]): CountFn | null 
   //     ts [{"c":4}]   native []
   //
   // The 1-hop and 2-hop shortcuts have shipped with this. The `gql-conformance` HAVING case
-  // does not catch it because it asks a BARE NODE pattern, which has no shortcut at all and so
-  // goes through general execution. A `LET` before the `RETURN` hides it too, by making
-  // `clauses.length !== 2` reject the shortcut outright.
+  // did not catch it because it asks a BARE NODE pattern, which had no shortcut until
+  // `buildNodeCount` and so went through general execution — adding that shortcut is what
+  // turned the latent gap into a failing test. A `LET` before the `RETURN` also hid it, by
+  // making `clauses.length !== 2` reject the shortcut outright.
   if (
     proj.star ||
     proj.distinct ||
@@ -281,6 +317,10 @@ export const detectCountShortcut = (clauses: readonly Clause[]): CountFn | null 
 
   if (!plainNode(start)) {
     return null;
+  }
+
+  if (segments.length === 0) {
+    return buildNodeCount(start, rowOf);
   }
 
   if (segments.length === 1) {
