@@ -47,7 +47,8 @@ import {
 } from '../executor.js';
 import { candidateVertices, expand, matchesLabel } from '../graph-queries.js';
 import type { Adjacency } from '../graph-queries.js';
-import { matchNode, seedVertices } from './matching.js';
+import { indexCandidates, matchNode, seedVertices } from './matching.js';
+import type { SeedCandidate } from './matching.js';
 import { asTruth, isNullish } from './scalars.js';
 
 /**
@@ -115,6 +116,7 @@ const buildNodeCount = <T>(
   start: NodePattern,
   rowOf: (n: number) => T,
   preds: readonly InlinePred[] = [],
+  cstart?: CNode,
 ): CountOf<T> | null => {
   const { label } = start;
 
@@ -141,14 +143,68 @@ const buildNodeCount = <T>(
   // path's own implementation, so the two spellings of a constrained node count
   // agree by construction rather than by re-deriving inline-pattern semantics here.
   return (graph, params) => {
-    const vertices: Iterable<Vertex> =
-      name === undefined ? graph.verticesById.values() : (graph.verticesByLabel.get(name) ?? []);
     // One binding map, reused: `inlineHolds` overwrites the node's own variable per
     // vertex and nothing else reads it, which is what `preds` being CLOSED buys.
     const binding = new Map<string, unknown>();
+    const bucket =
+      name === undefined ? graph.verticesById.size : (graph.verticesByLabel.get(name)?.size ?? 0);
+    // AN INDEX SEEK, when the graph offers one and it is SMALLER than the label bucket.
+    //
+    // Without this the tally always scanned the bucket, so a filtered count ignored a
+    // property index the general path seeds from. Measured on 20,000 users with `score`
+    // indexed and 200 matches: this tally 0.91ms indexed against 0.93 unindexed — the index
+    // doing NOTHING — where the same query forced onto the general path went 5.66 -> 0.42ms.
+    // So the tally was 2.2x SLOWER than the path it replaced whenever an index existed, and
+    // `bun run bench:usage` had been showing it all along as a row whose indexed and
+    // unindexed columns were identical (audit item 149).
+    //
+    // `indexCandidates` is the general path's own enumerator, so the two agree on what is
+    // seekable, and its counts are O(1) estimates so choosing costs nothing. The seek is
+    // sound here for the reason it is sound there: a hint lifted from an AND-chain is a
+    // NECESSARY condition, so the set is a SUPERSET of the matches and `preds` re-validates
+    // every candidate below.
+    //
+    // `seedVertices` is not used despite doing the same choosing, because it hides WHETHER
+    // it seeded — and the label check below is needed only when it did. Applying that check
+    // unconditionally would tax the unindexed path, which is the common one.
+    let seeded: ReadonlySet<Vertex> | undefined;
+
+    // REJECTED lever — guarding this with a "does the graph have ANY index?" check, so an
+    // unindexed graph skips the enumeration entirely. It needed a new `PropertyIndex`
+    // accessor (`isIndexed` needs a key and `indexedKeys()` allocates) and bought NOTHING:
+    // the unindexed floor was 0.868/0.872/0.943ms without it and 0.930/0.928/0.934 with it.
+    // So the ~26% this path gives up is closure layout, not the enumeration — this file has
+    // measured that before (items 119 and 141) — and the public API was not worth adding for
+    // a reason that turned out to be wrong.
+    if (cstart !== undefined) {
+      let best: SeedCandidate | undefined;
+
+      for (const candidate of indexCandidates(graph, cstart, { binding, params, graph })) {
+        if (best === undefined || candidate.count < best.count) {
+          best = candidate;
+        }
+      }
+
+      // The general path always prefers a seek when one is offered; this additionally
+      // declines a seek WIDER than the bucket, which can happen when the indexed key is
+      // common outside this label. Both are correct — only the cost differs.
+      if (best !== undefined && best.count < bucket) {
+        seeded = best.build();
+      }
+    }
+
+    const vertices: Iterable<Vertex> =
+      seeded ??
+      (name === undefined ? graph.verticesById.values() : (graph.verticesByLabel.get(name) ?? []));
     let n = 0;
 
     for (const v of vertices) {
+      // A seek returns vertices by VALUE, not by label, so the label has to be applied here.
+      // The bucket path inherits it from the seed and must not pay for it again.
+      if (seeded !== undefined && !matchesLabel(v, label)) {
+        continue;
+      }
+
       let ok = true;
 
       for (const ip of preds) {
@@ -806,6 +862,7 @@ const patternCountOf = <T>(
   pattern: PathPattern,
   where: Expr | undefined,
   rowOf: (n: number) => T,
+  cstart?: CNode,
 ): CountOf<T> | null => {
   const { start, segments } = pattern;
 
@@ -860,7 +917,7 @@ const patternCountOf = <T>(
       preds.push({ pred: compilePredicate(undefined, where), bindVar: start.variable });
     }
 
-    return buildNodeCount(start, rowOf, preds);
+    return buildNodeCount(start, rowOf, preds, cstart);
   }
 
   // A clause `WHERE` is answerable ONLY by the 1-hop tally below, and only when it reads
@@ -1091,7 +1148,10 @@ const identityCount = (n: number): number => n;
  * needs anonymous rels and pairwise-distinct node variables (so the homomorphic
  * degree product is exact).
  */
-export const detectCountShortcut = (clauses: readonly Clause[]): CountFn | null => {
+export const detectCountShortcut = (
+  clauses: readonly Clause[],
+  compiled?: readonly CClause[],
+): CountFn | null => {
   if (clauses.length < 2) {
     return null;
   }
@@ -1164,7 +1224,13 @@ export const detectCountShortcut = (clauses: readonly Clause[]): CountFn | null 
   // ONE pattern in ONE `MATCH` keeps the original path, which is the only one that
   // can answer a clause `WHERE` (through the 1-hop tally).
   if (matches.length === 1 && m.patterns.length === 1) {
-    return patternCountOf(m.patterns[0], m.where, rowOf);
+    // The COMPILED start node carries the seed hints lifted from the `WHERE`, which is what
+    // lets the node tally seek an index instead of scanning the label bucket. Optional so a
+    // caller without the compiled clauses still gets the (bucket-scanning) shortcut.
+    const cm = compiled?.[0];
+    const cstart = cm?.kind === 'match' ? cm.patterns[0]?.start : undefined;
+
+    return patternCountOf(m.patterns[0], m.where, rowOf, cstart);
   }
 
   return productCountOf(matches, rowOf);

@@ -3695,7 +3695,7 @@ const compileLinear = (linear: LinearQuery): CLinear => {
 
   return {
     clauses,
-    countShortcut: detectCountShortcut(linear.clauses),
+    countShortcut: detectCountShortcut(linear.clauses, clauses),
     groupCountShortcut: detectGroupedNodeCount(linear.clauses),
     groupHopShortcut: detectGroupedHopCount(linear.clauses),
     reachShortcut: detectReachableShortcut(linear.clauses, clauses),
