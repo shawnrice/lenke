@@ -1575,6 +1575,10 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
                         .or_else(|| try_scan_dict_count(input, keys, aggs, store))
                         .or_else(|| try_frontier_dict_count(input, keys, aggs, store, track))
                         .or_else(|| try_scan_group_agg(input, keys, aggs, store))
+                        // Added LAST on purpose: `or_else` is lazy, so every shape an
+                        // earlier entry answers never calls this one, and a cartesian
+                        // `Join` root matches none of them.
+                        .or_else(|| try_join_product_count(input, keys, aggs, store))
                 })
                 .flatten()
             {

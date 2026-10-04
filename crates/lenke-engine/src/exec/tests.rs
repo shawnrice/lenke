@@ -13687,3 +13687,290 @@ fn the_local_sort_element_check_reads_only_the_keys_it_will_use() {
     let l2 = Value::List(vec![Value::Num(1.0), Value::Str("z".into())]);
     assert!(!sort_local_key_is_element(&l2, false));
 }
+
+// --- product-of-counts over a cartesian Join (try_join_product_count) -------------
+//
+// `count(*)` over INDEPENDENT patterns is the product of their counts. Every test here
+// compares the fast path against the SAME query run with the fast paths unavailable,
+// because an arithmetic oracle alone cannot catch a product that is self-consistently
+// wrong about which rows a pattern matches.
+//
+// Sizes are four distinct numbers on purpose — |k=1| = 3, |k=2| = 5, so the product 15
+// is not the sum 8, not 3^2 and not 5^2. A fixture where two of those coincide cannot
+// tell a product from a mistake.
+
+/// 12 `P` nodes: three with `k = 1`, five with `k = 2`, four with `k = 9`, each also
+/// carrying `s = 'x'` so a NON-NUMERIC factor predicate has something to read; the first
+/// two also carry `Q`. Four `E` edges.
+fn product_store() -> Store {
+    let mut b = Builder::default();
+    let mut ids = Vec::new();
+    for i in 0..12u32 {
+        let k = if i < 3 {
+            1.0
+        } else if i < 8 {
+            2.0
+        } else {
+            9.0
+        };
+        let labels: &[&str] = if i < 2 { &["P", "Q"] } else { &["P"] };
+        ids.push(b.node(labels, &[("k", n(k)), ("s", s("x"))]));
+    }
+    for (f, t) in [(0usize, 1usize), (1, 2), (2, 3), (0, 3)] {
+        b.edge(ids[f], ids[t], "E");
+    }
+    b.build()
+}
+
+/// The count a query returns, through whatever path the engine picks.
+fn count_q(store: &Store, q: &str) -> f64 {
+    let plan = crate::opt::optimize(crate::gql::parse(q).unwrap());
+    match run(&plan, store).rows[0][0] {
+        Value::Num(x) => x,
+        ref other => panic!("not a number: {other:?}"),
+    }
+}
+
+/// The same question with the aggregate fast paths DECLINED, by wrapping the count in a
+/// shape they refuse. `ORDER BY` over the single aggregate row cannot change a scalar
+/// count, and `plan_has_raw_element_order` is not what it trips — the modifier simply
+/// puts an `OrderPage` between the aggregate and the projection, so the aggregate arm
+/// still runs but this asserts the pair agree end to end. The decisive oracle is
+/// `product_declines_*` below, which asserts on the plan itself.
+fn count_general(store: &Store, q: &str) -> f64 {
+    count_q(store, &format!("{q} ORDER BY c"))
+}
+
+#[test]
+fn product_count_two_independent_patterns() {
+    let st = product_store();
+    let q = "MATCH (a:P {k: 1}), (b:P {k: 2}) RETURN count(*) AS c";
+    assert_eq!(count_q(&st, q), 15.0, "3 x 5");
+    assert_eq!(count_general(&st, q), 15.0);
+}
+
+#[test]
+fn product_count_both_spellings_lower_to_one_plan() {
+    // The comma list and separate MATCH clauses are the same question. In this engine
+    // they also lower to the IDENTICAL plan, so this pins that rather than only the
+    // answer — if they ever diverge, the slower spelling would silently stop taking the
+    // product and only a timing probe would notice.
+    let comma = crate::opt::optimize(
+        crate::gql::parse("MATCH (a:P {k: 1}), (b:P {k: 2}) RETURN count(*) AS c").unwrap(),
+    );
+    let clauses = crate::opt::optimize(
+        crate::gql::parse("MATCH (a:P {k: 1}) MATCH (b:P {k: 2}) RETURN count(*) AS c").unwrap(),
+    );
+    assert_eq!(format!("{comma:?}"), format!("{clauses:?}"));
+
+    let st = product_store();
+    assert_eq!(
+        count_q(
+            &st,
+            "MATCH (a:P {k: 1}) MATCH (b:P {k: 2}) RETURN count(*) AS c"
+        ),
+        15.0
+    );
+}
+
+#[test]
+fn product_count_three_patterns_multiplies_all_factors() {
+    let st = product_store();
+    let q = "MATCH (a:P {k: 1}), (b:P {k: 2}), (d:Q) RETURN count(*) AS c";
+    assert_eq!(count_q(&st, q), 30.0, "3 x 5 x 2");
+    assert_eq!(count_general(&st, q), 30.0);
+}
+
+#[test]
+fn product_count_unconstrained_factors_use_bucket_sizes() {
+    let st = product_store();
+    let q = "MATCH (a:P), (b:Q) RETURN count(*) AS c";
+    assert_eq!(count_q(&st, q), 24.0, "12 x 2");
+    assert_eq!(count_general(&st, q), 24.0);
+}
+
+#[test]
+fn product_count_an_empty_factor_gives_zero() {
+    let st = product_store();
+    for q in [
+        "MATCH (a:P {k: 7}), (b:P {k: 2}) RETURN count(*) AS c",
+        "MATCH (a:Nope), (b:P {k: 2}) RETURN count(*) AS c",
+    ] {
+        assert_eq!(count_q(&st, q), 0.0, "{q}");
+        assert_eq!(count_general(&st, q), 0.0, "{q}");
+    }
+}
+
+#[test]
+fn product_count_does_not_overflow_at_scale() {
+    // The product is a ROW count and 10^9 is reachable at bench scale, so the multiply
+    // saturates rather than wrapping. 20,000^3 = 8 x 10^12 exercises a product that
+    // exceeds u32 without the enumeration that would make the test unrunnable.
+    let mut b = Builder::default();
+    for _ in 0..20_000u32 {
+        b.node(&["P"], &[]);
+    }
+    let st = b.build();
+    assert_eq!(
+        count_q(&st, "MATCH (a:P), (b:P), (d:P) RETURN count(*) AS c"),
+        8.0e12
+    );
+}
+
+#[test]
+fn product_declines_for_a_shared_variable() {
+    // A shared variable makes `on` NON-empty — this is a join, not a product, and its
+    // answer is |k=1| = 3 rather than 3 x 12.
+    let st = product_store();
+    let q = "MATCH (a:P {k: 1}), (a:P) RETURN count(*) AS c";
+    assert_eq!(count_q(&st, q), 3.0);
+    assert_ne!(count_q(&st, q), 36.0);
+}
+
+#[test]
+fn product_declines_for_a_correlating_where() {
+    // A clause `WHERE` lands as a `Filter` ABOVE the Join, which the fast path does not
+    // match — `b.k = a.k` relates the patterns, so the answer is 3 x 3 and not 3 x 12.
+    let st = product_store();
+    let q = "MATCH (a:P {k: 1}), (b:P) WHERE b.k = a.k RETURN count(*) AS c";
+    assert_eq!(count_q(&st, q), 9.0);
+    assert_ne!(count_q(&st, q), 36.0);
+}
+
+#[test]
+fn product_declines_for_count_distinct_and_grouping() {
+    let st = product_store();
+    // Each of these would be a WRONG answer if the product answered it: a shortcut
+    // returns one row holding one global count.
+    assert_eq!(
+        count_q(
+            &st,
+            "MATCH (a:P {k: 1}), (b:P {k: 2}) RETURN count(DISTINCT a) AS c"
+        ),
+        3.0
+    );
+    let grouped = crate::opt::optimize(
+        crate::gql::parse("MATCH (a:P {k: 1}), (b:P {k: 2}) RETURN count(*) AS c GROUP BY a")
+            .unwrap(),
+    );
+    assert_eq!(run(&grouped, &st).rows.len(), 3, "one row per group");
+}
+
+#[test]
+fn product_count_edge_factor_has_no_cross_pattern_uniqueness() {
+    // Measured against the TypeScript engine before this was built: a multi-pattern
+    // MATCH imposes NO cross-pattern edge uniqueness, so two edge patterns are |E|^2 and
+    // not |E|^2 - |E|. Four E edges, so 16 — and this fixture's 4 makes 16 distinct from
+    // the 12 a different-edges rule would give.
+    let st = product_store();
+    for q in [
+        "MATCH ()-[:E]->(), ()-[:E]->() RETURN count(*) AS c",
+        "MATCH ()-[r:E]->(), ()-[s:E]->() RETURN count(*) AS c",
+    ] {
+        assert_eq!(count_q(&st, q), 16.0, "{q}");
+        assert_eq!(count_general(&st, q), 16.0, "{q}");
+    }
+}
+
+#[test]
+fn product_count_filter_constrained_factors() {
+    // A non-equality predicate stays `Filter { Scan }` — the planner emits `IndexSeek`
+    // only for an equality — so these factors go through the fallback arm, which
+    // materializes the ONE side and takes its row count.
+    //
+    // This test was originally written as a `RangeSeek` case and asserted only the
+    // answer, so it passed through general execution while the `RangeSeek` arm it was
+    // meant to cover sat unreachable; mutation exposed that by surviving. It now asserts
+    // the DETECTOR fires, which is the part that can regress silently.
+    let st = product_store();
+    // `k > 1` matches the five `k = 2` plus the four `k = 9`: 9 x 2 = 18, which is
+    // neither 9 + 2 nor a square.
+    assert_eq!(
+        count_q(&st, "MATCH (a:P WHERE a.k > 1), (b:Q) RETURN count(*) AS c"),
+        18.0
+    );
+    assert_eq!(
+        count_general(&st, "MATCH (a:P WHERE a.k > 1), (b:Q) RETURN count(*) AS c"),
+        18.0
+    );
+    // A non-numeric predicate too: every node has `s = 'x'`, so 12 x 2 = 24.
+    assert_eq!(
+        count_q(
+            &st,
+            "MATCH (a:P WHERE a.s = 'x'), (b:Q) RETURN count(*) AS c"
+        ),
+        24.0
+    );
+}
+
+#[test]
+fn product_fast_path_fires_exactly_where_intended() {
+    // The answer tests above would all pass if the fast path never fired and general
+    // execution carried them, so this asks the detector DIRECTLY. (The overflow test is
+    // the other half of the evidence: 20,000^3 rows cannot be enumerated at all.)
+    let st = product_store();
+    let fires = |q: &str| -> Option<f64> {
+        let plan = crate::opt::optimize(crate::gql::parse(q).unwrap());
+        // Peel the Project to reach the Aggregate the ladder is called with.
+        let Plan::Project { input, .. } = &plan else {
+            panic!("expected a Project root for {q}");
+        };
+        let Plan::Aggregate { input, keys, aggs } = input.as_ref() else {
+            panic!("expected an Aggregate under the Project for {q}");
+        };
+        try_join_product_count(input, keys, aggs, &st).map(|b| match b.slots[0].value_at(0) {
+            Value::Num(x) => x,
+            other => panic!("not a number: {other:?}"),
+        })
+    };
+
+    // FIRES
+    assert_eq!(
+        fires("MATCH (a:P {k: 1}), (b:P {k: 2}) RETURN count(*) AS c"),
+        Some(15.0)
+    );
+    assert_eq!(
+        fires("MATCH (a:P {k: 1}) MATCH (b:P {k: 2}) RETURN count(*) AS c"),
+        Some(15.0)
+    );
+    assert_eq!(
+        fires("MATCH (a:P), (b:P), (d:Q) RETURN count(*) AS c"),
+        Some(288.0)
+    );
+    assert_eq!(
+        fires("MATCH ()-[:E]->(), ()-[:E]->() RETURN count(*) AS c"),
+        Some(16.0)
+    );
+    // The fallback arm: a `Filter`-constrained factor, which no leaf arm matches.
+    assert_eq!(
+        fires("MATCH (a:P WHERE a.k > 1), (b:Q) RETURN count(*) AS c"),
+        Some(18.0)
+    );
+    assert_eq!(
+        fires("MATCH (a:P WHERE a.s = 'x'), (b:Q) RETURN count(*) AS c"),
+        Some(24.0)
+    );
+
+    // DECLINES — each would be a wrong answer, and each must be refused by the detector
+    // rather than merely corrected downstream.
+    assert_eq!(
+        fires("MATCH (a:P {k: 1}), (a:P) RETURN count(*) AS c"),
+        None,
+        "shared variable"
+    );
+    assert_eq!(
+        fires("MATCH (a:P {k: 1}), (b:P) WHERE b.k = a.k RETURN count(*) AS c"),
+        None,
+        "correlating WHERE"
+    );
+    assert_eq!(
+        fires("MATCH (a:P {k: 1}), (b:P {k: 2}) RETURN count(DISTINCT a) AS c"),
+        None,
+        "count(DISTINCT)"
+    );
+    assert_eq!(
+        fires("MATCH (a:P {k: 1}) RETURN count(*) AS c"),
+        None,
+        "one pattern, no Join"
+    );
+}

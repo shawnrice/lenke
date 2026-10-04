@@ -155,8 +155,14 @@ fn fixture(p: Params) -> Store {
                 }
             }
         };
+        // `Z` on exactly THREE nodes, as an ADDITIONAL label so no existing N/M count
+        // moves. It exists to be the small right-hand side of a comma pattern (see
+        // `gen_shape`): a cartesian `count(*)` is the PRODUCT of the sides' counts, and a
+        // factor of 3 tells a product from a sum and from a dropped factor. A factor of 1
+        // would do neither, since |P| x 1 = |P|.
+        let labels: &[&str] = if i < 3 { &[label, "Z"] } else { &[label] };
         b.node(
-            &[label],
+            labels,
             &[
                 ("name", Value::Str(format!("v{i}").into())),
                 ("num", Value::Num(f64::from(i % 17))),
@@ -229,7 +235,21 @@ fn gen_shape(r: &mut Lcg, nodes: u32, degree: u32) -> Shape {
         _ => ("(y) WHERE y.name <> x.name".to_string(), "y"),
     };
 
-    let pattern = format!("MATCH {mode}(x){dir}{quant}{tail}");
+    // A second, INDEPENDENT comma pattern on a third of the shapes. This is what reaches
+    // `try_join_product_count` (audit item 136): a comma list lowers to a `Join` with an
+    // empty `on`, and `count(*)` over it is answered as the product of the sides' counts
+    // without crossing them. Before this, nothing in this module generated a `Join` at
+    // all, so the module that exists to guard aggregate fast paths did not cover that one.
+    //
+    // The oracle needs no change and that is the point: `rows_q` carries the SAME comma
+    // pattern, so it materializes the cross and the expected aggregate is folded from
+    // those rows. |Z| = 3 keeps the materialized side affordable.
+    let cross = if r.next().is_multiple_of(3) {
+        ", (z:Z)"
+    } else {
+        ""
+    };
+    let pattern = format!("MATCH {mode}(x){dir}{quant}{tail}{cross}");
     let kind = *r.pick(&[
         Kind::Count,
         Kind::Count,

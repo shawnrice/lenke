@@ -3794,3 +3794,128 @@ pub(super) fn try_frontier_aggregate(
         .collect();
     Ok(Some(aggregate(&batch, store, &keys, &aggs)?))
 }
+
+/// `MATCH (a:P {k: 1}), (b:P {k: 2}) RETURN count(*)` — the product of the sides'
+/// counts, because a `Join` with an empty `on` is a cartesian product and `count(*)`
+/// of a product is the product of the counts.
+///
+/// A comma-pattern list lowers to `Plan::join(left, right, on)` where `on` pairs the
+/// SHARED variables' slots, so an empty `on` is exactly "these patterns are
+/// independent". Three patterns nest as `Join { left: Join { .. }, right }`, which the
+/// recursion handles.
+///
+/// This was a missing path in BOTH engines. On 20,000 vertices with |k=1| = 5,000 and
+/// |k=2| = 2,143 the answer is 10,715,000 rows, which this engine enumerated in 76ms
+/// and the TypeScript engine in 2,637ms; the TS side took the product first (audit item
+/// 135) and ran 95x faster than native here, which is what identified this gap. At the
+/// cross-engine bench's 200,000 vertices the same query is over a BILLION rows.
+///
+/// Both spellings reach it, and for free: `MATCH (a) MATCH (b)` and `MATCH (a), (b)`
+/// lower to the IDENTICAL optimized plan, so unlike the TypeScript side there is no
+/// second spelling to teach.
+///
+/// ### Why counting a side that can RAISE is safe here
+///
+/// The first cut accepted only non-faulting leaves (label buckets and seeks), reasoning
+/// that a side which evaluates expressions might be reached by the general path only
+/// when the OTHER side is non-empty — so taking the product could raise where general
+/// execution does not, and WHICH queries raise is part of the cross-engine invariant.
+///
+/// Reading the operator settles it the other way: `Plan::Join` executes as
+/// `hash_join(&pull(left)?, &pull(right)?, on)`, which pulls BOTH sides unconditionally
+/// and LEFT FIRST. So counting each side independently evaluates exactly what the
+/// general path evaluates, in the same order; the only thing skipped is the cross. Hence
+/// the fallback arm, which materializes one side and takes its row count — still
+/// O(|A|) + O(|B|) instead of O(|A| x |B|) — and hence `Filter`-constrained factors
+/// (any non-equality predicate, which stays a `Filter` rather than becoming a seek) are
+/// covered too.
+///
+/// Two things that follow and must not be "tidied":
+///
+/// - **No early return on a zero factor.** It would skip pulling the right side, which
+///   the general path always pulls, and so could drop a raise.
+/// - **An error becomes `None`, not a propagated failure.** Returning `None` lets general
+///   execution run and raise the identical error itself (the idiom the rest of this file
+///   already uses for `pull`). The side is pulled twice on that path, which only happens
+///   when the query is about to fail anyway.
+///
+/// `Filter` over the `Join` is NOT matched: a clause `WHERE` can CORRELATE the patterns
+/// (`MATCH (a:P {k: 1}), (b:P) WHERE b.k = a.k` is not a product), so it declines.
+pub(super) fn try_join_product_count(
+    input: &Plan,
+    keys: &[(String, Expr)],
+    aggs: &[Agg],
+    store: &Store,
+) -> Option<Batch> {
+    if !keys.is_empty() || aggs.len() != 1 {
+        return None;
+    }
+    let agg = &aggs[0];
+    if agg.func != AggFn::Count || agg.arg.is_some() || agg.distinct {
+        return None;
+    }
+    // Only a cartesian `Join` at the ROOT; anything else is some other shape's job.
+    let Plan::Join { on, .. } = input else {
+        return None;
+    };
+    if !on.is_empty() {
+        return None;
+    }
+    product_of_counts(input, keys, aggs, store).map(|n| scalar_num(n as f64))
+}
+
+/// The row count of a cartesian `Join` tree whose leaves are all non-faulting
+/// lookups, or `None` if any leaf is a shape that could evaluate an expression.
+///
+/// `keys`/`aggs` are the caller's, already checked to be one global `count(*)`, so an
+/// EDGE-pattern leaf can delegate to `try_fused_count` — the bare-hop counter — rather
+/// than re-deriving a degree sum here, with its direction, edge-type and
+/// `double_loops` (Gremlin `both()` over a self-loop) subtleties.
+fn product_of_counts(
+    plan: &Plan,
+    keys: &[(String, Expr)],
+    aggs: &[Agg],
+    store: &Store,
+) -> Option<u64> {
+    match plan {
+        Plan::Join { left, right, on } if on.is_empty() => {
+            // Saturating, not wrapping: the count is a row count, and 10^9 rows is
+            // reachable at bench scale, so a product of two large factors must not
+            // silently wrap into a small wrong answer.
+            Some(
+                product_of_counts(left, keys, aggs, store)?
+                    .saturating_mul(product_of_counts(right, keys, aggs, store)?),
+            )
+        }
+        Plan::Scan { label: Some(l) } => Some(store.nodes_with_label(l).len() as u64),
+        Plan::Scan { label: None } => Some(store.live_node_count() as u64),
+        Plan::EdgeScan => Some(store.all_edges().len() as u64),
+        Plan::IndexSeek { label, key, value } => {
+            Some(super::index_seek_ids(store, label.as_deref(), key, value).len() as u64)
+        }
+        // An edge pattern (`()-[:E]->()`) is an `Expand` over one of the leaves above.
+        // `try_fused_count` answers that chain from degree sums, so it is preferred over
+        // the fallback purely to avoid materializing a hop-sized batch; the fallback
+        // would be correct, just wider.
+        //
+        // There is no `RangeSeek` arm. A range predicate stays `Filter { Scan }` — the
+        // planner emits `IndexSeek` for an equality and leaves `>`/`<` alone — so such an
+        // arm was unreachable, which mutation exposed by surviving: the test that was
+        // supposed to cover it had been passing through general execution. The fallback
+        // below handles the `Filter` shape that is actually produced.
+        Plan::Expand { .. } => count_in_batch(try_fused_count(plan, keys, aggs, store)?),
+        // ANY other side: materialize just this one and take its row count. See the
+        // raise-parity argument on `try_join_product_count`.
+        other => Some(pull(other, store, false).ok()?.rows() as u64),
+    }
+}
+
+/// The scalar count a `try_*_count` fast path returns, as an exact `u64`.
+fn count_in_batch(b: Batch) -> Option<u64> {
+    match b.slots.first()?.value_at(0) {
+        Value::Num(x) if x >= 0.0 && x.fract() == 0.0 && x <= 9.007_199_254_740_992e15 => {
+            Some(x as u64)
+        }
+        _ => None,
+    }
+}
