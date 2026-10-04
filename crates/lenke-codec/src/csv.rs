@@ -475,6 +475,64 @@ fn quote_field(raw: &str) -> String {
     out
 }
 
+/// Append `s`, doubling any `"` — the RFC-4180 body of an already-quoted field.
+///
+/// The caller used to reach for `str::replace`, which ALLOCATES UNCONDITIONALLY: a fresh
+/// String per cell even when there was no quote to double, which is the common case. A `Str`
+/// column always sets `force_quote`, so on the cross-engine bench's two string columns that
+/// was 400,000 Strings per encode for nothing.
+fn push_doubling_quotes(out: &mut String, s: &str) {
+    if !s.as_bytes().contains(&b'"') {
+        out.push_str(s);
+
+        return;
+    }
+    for ch in s.chars() {
+        if ch == '"' {
+            out.push_str("\"\"");
+        } else {
+            out.push(ch);
+        }
+    }
+}
+
+/// One cell's quoted text, straight into `out`.
+///
+/// Byte-identical to the `encode_cell` + quote pair it replaces, with a fast path for the
+/// commonest cell there is: a string in a string column. That path used to allocate TWICE —
+/// `scalar_to_raw` cloned the value into `Encoded::raw`, then `replace` cloned it again — and
+/// now writes through. Everything else still goes through `encode_cell`, including the
+/// `actual != column` mismatch branch.
+fn write_cell(out: &mut String, t: ColType, v: &Value) {
+    if t.scalar == Scalar::Str && !t.list && !matches!(v, Value::Null) {
+        if let Value::Str(text) = v {
+            if infer_column(v) == t {
+                // `force_quote` is always true here, and the escape prefix goes on BEFORE the
+                // quote doubling — a `\\` is not a `"`, so prefix-then-double is the same
+                // bytes as the old build-then-double.
+                out.push('"');
+                if text.starts_with('\\') || starts_with_formula(text) {
+                    out.push('\\');
+                }
+                push_doubling_quotes(out, text);
+                out.push('"');
+
+                return;
+            }
+        }
+    }
+
+    let enc = encode_cell(t, v);
+
+    if enc.force_quote {
+        out.push('"');
+        push_doubling_quotes(out, &enc.raw);
+        out.push('"');
+    } else {
+        quote_field_into(out, &enc.raw);
+    }
+}
+
 /// `quote_field` straight into an existing buffer.
 ///
 /// The owned form allocated A STRING PER FIELD purely to be appended to `out`, and in the
@@ -621,16 +679,7 @@ fn write_row(out: &mut String, fixed: &[&str], keys: &[String], types: &[ColType
         out.push(',');
         match bag_get(bag, key) {
             None => {}
-            Some(v) => {
-                let enc = encode_cell(*t, v);
-                if enc.force_quote {
-                    out.push('"');
-                    out.push_str(&enc.raw.replace('"', "\"\""));
-                    out.push('"');
-                } else {
-                    quote_field_into(out, &enc.raw);
-                }
-            }
+            Some(v) => write_cell(out, *t, v),
         }
     }
 }
