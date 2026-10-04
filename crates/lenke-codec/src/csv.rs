@@ -470,14 +470,39 @@ struct Cell {
 }
 
 fn quote_field(raw: &str) -> String {
+    let mut out = String::new();
+    quote_field_into(&mut out, raw);
+    out
+}
+
+/// `quote_field` straight into an existing buffer.
+///
+/// The owned form allocated A STRING PER FIELD purely to be appended to `out`, and in the
+/// common case — no comma, quote, newline or list separator — that allocation was a verbatim
+/// copy (`raw.to_string()`). On the cross-engine bench's 200,000-node CSV encode that is on the
+/// order of a million Strings created and dropped for nothing, which is why native's `encode
+/// csv` sat at 1.03x against pure TypeScript while every other codec managed 1.8-5.2x, and why
+/// the wasm build was actually SLOWER than TypeScript there (0.89x).
+///
+/// Byte-for-byte the same output: the same `needs` test, the same doubling of `"`, the same
+/// surrounding quotes.
+fn quote_field_into(out: &mut String, raw: &str) {
     let needs = raw
         .bytes()
         .any(|b| b == b',' || b == b'"' || b == b'\n' || b == b'\r' || b == LIST_SEP as u8);
-    if needs {
-        format!("\"{}\"", raw.replace('"', "\"\""))
-    } else {
-        raw.to_string()
+    if !needs {
+        out.push_str(raw);
+        return;
     }
+    out.push('"');
+    for ch in raw.chars() {
+        if ch == '"' {
+            out.push_str("\"\"");
+        } else {
+            out.push(ch);
+        }
+    }
+    out.push('"');
 }
 
 /// Single-pass RFC-4180 parser. Each cell carries whether it was quoted.
@@ -557,7 +582,14 @@ fn compute_columns(bags: &[Bag<'_>]) -> (Vec<String>, HashMap<String, ColType>) 
     let mut seen = HashSet::new();
     for bag in bags {
         for (key, value) in *bag {
-            if seen.insert(key.clone()) {
+            // BORROW BEFORE YOU CLONE. `HashSet<String>::insert` takes an owned value, so
+            // `seen.insert(key.clone())` allocated a String for EVERY CELL — 600,000 of them
+            // for the bench's 200,000 nodes at three properties each — to discover, after the
+            // first row, that the key was already there. `contains` answers the same question
+            // through `Borrow<str>` without allocating, so the clone now happens once per
+            // DISTINCT key.
+            if !seen.contains(key.as_str()) {
+                seen.insert(key.clone());
                 keys.push(key.clone());
             }
             if !matches!(value, Value::Null) && !types.contains_key(key) {
@@ -574,31 +606,29 @@ fn compute_columns(bags: &[Bag<'_>]) -> (Vec<String>, HashMap<String, ColType>) 
     (keys, types)
 }
 
-fn write_row(
-    out: &mut String,
-    fixed: &[&str],
-    keys: &[String],
-    types: &HashMap<String, ColType>,
-    bag: Bag<'_>,
-) {
+/// `types` arrives RESOLVED and positional, zipped with `keys`, rather than as the
+/// `HashMap<String, ColType>` it is built in: the map form meant hashing a key string once per
+/// cell per row — 600,000 lookups for the bench's 200,000 nodes at three properties each — to
+/// re-derive something fixed for the whole encode.
+fn write_row(out: &mut String, fixed: &[&str], keys: &[String], types: &[ColType], bag: Bag<'_>) {
     for (i, f) in fixed.iter().enumerate() {
         if i > 0 {
             out.push(',');
         }
-        out.push_str(&quote_field(f));
+        quote_field_into(out, f);
     }
-    for key in keys {
+    for (key, t) in keys.iter().zip(types) {
         out.push(',');
         match bag_get(bag, key) {
             None => {}
             Some(v) => {
-                let enc = encode_cell(types[key], v);
+                let enc = encode_cell(*t, v);
                 if enc.force_quote {
                     out.push('"');
                     out.push_str(&enc.raw.replace('"', "\"\""));
                     out.push('"');
                 } else {
-                    out.push_str(&quote_field(&enc.raw));
+                    quote_field_into(out, &enc.raw);
                 }
             }
         }
@@ -659,13 +689,15 @@ pub fn encode_nodes(g: &GraphData) -> String {
         h.extend(keys.iter().map(|k| column_header(k, types[k])));
         header_line(&h)
     };
+    // Resolved ONCE, positionally, instead of a hash lookup per cell per row.
+    let coltypes: Vec<ColType> = keys.iter().map(|k| types[k]).collect();
     let mut out = String::with_capacity(header.len() + g.nodes.len() * 64);
     out.push_str(&header);
     for n in &g.nodes {
         let labels = join_labels(&n.labels);
         let id = guard_field(&n.id);
         out.push('\n');
-        write_row(&mut out, &[&id, &labels], &keys, &types, &n.props);
+        write_row(&mut out, &[&id, &labels], &keys, &coltypes, &n.props);
     }
     out
 }
@@ -685,6 +717,7 @@ pub fn encode_edges(g: &GraphData) -> String {
         h.extend(keys.iter().map(|k| column_header(k, types[k])));
         header_line(&h)
     };
+    let coltypes: Vec<ColType> = keys.iter().map(|k| types[k]).collect();
     let mut out = String::with_capacity(header.len() + g.edges.len() * 64);
     out.push_str(&header);
     for e in &g.edges {
@@ -697,7 +730,7 @@ pub fn encode_edges(g: &GraphData) -> String {
             &mut out,
             &[&id, &from, &to, &etype],
             &keys,
-            &types,
+            &coltypes,
             &e.props,
         );
     }
@@ -894,6 +927,86 @@ mod tests {
                 tag: "duration".into(),
                 iso: "P3M10DT90S".into()
             })
+        );
+    }
+
+    /// Columns of DIFFERENT types keep their own type when encoded.
+    ///
+    /// `write_row` takes the column types POSITIONALLY, zipped with `keys`, instead of hashing
+    /// each key per cell. A mis-zip is invisible unless the columns disagree about their type —
+    /// reversing the vector passed all 29 existing tests, because their fixtures use columns
+    /// that share one type. Here a number, a string and a list sit side by side, so a cell
+    /// encoded against the wrong column's type cannot round-trip.
+    #[test]
+    fn columns_of_different_types_keep_their_own() {
+        let g = crate::pg_json::decode(
+            r#"{"nodes":[{"id":"n1","labels":["L"],"properties":{"a_num":7,"b_str":"seven","c_list":[1,2]}}],"edges":[]}"#,
+        )
+        .unwrap();
+        let enc = encode(&g);
+        let g2 = decode(&enc);
+
+        // The BYTES, not just the round-trip: a cell encoded against the wrong column's type
+        // takes `encode_cell`'s mismatch branch, which writes a self-describing form that
+        // still decodes correctly — so a round-trip assertion alone cannot see a mis-zip.
+        let body = enc.lines().nth(1).unwrap_or_default();
+
+        assert!(
+            body.contains(",7,") && body.contains("seven"),
+            "typed cells not in their plain form: {enc}"
+        );
+        assert_eq!(prop(&g2, "n1", "a_num"), Some(&Value::Num(7.0)), "{enc}");
+        assert_eq!(
+            prop(&g2, "n1", "b_str"),
+            Some(&Value::Str("seven".into())),
+            "{enc}"
+        );
+        assert_eq!(
+            prop(&g2, "n1", "c_list"),
+            Some(&Value::List(vec![Value::Num(1.0), Value::Num(2.0)])),
+            "{enc}"
+        );
+    }
+
+    /// A `"` in a FIXED field — an id or a label — round-trips, doubled per RFC 4180.
+    ///
+    /// `quoting_labels_and_formulas` already puts a quote in a property VALUE, but a value
+    /// takes `encode_cell`'s `force_quote` branch, so the doubling loop inside
+    /// `quote_field_into` is reached only by the fixed columns. Nothing covered that: breaking
+    /// the doubling there (`""` emitted as `"`) passed all 29 codec tests and was caught only
+    /// by the random-seeded `codec` fuzzer.
+    #[test]
+    fn a_quote_in_an_id_or_label_round_trips() {
+        let g = crate::pg_json::decode(
+            r#"{"nodes":[{"id":"he said \"hi\"","labels":["lab\"el"],"properties":{"k":1}},{"id":"b","labels":[],"properties":{}}],"edges":[{"id":"e\"1","from":"he said \"hi\"","to":"b","labels":["R\"EL"],"properties":{}}]}"#,
+        )
+        .unwrap();
+        let enc = encode(&g);
+
+        // Doubled, not dropped: a bare `"` inside a quoted field would end the field.
+        assert!(
+            enc.contains("\"\"hi\"\"\""),
+            "embedded quote not doubled: {enc}"
+        );
+
+        let g2 = decode(&enc);
+
+        assert!(
+            g2.nodes.iter().any(|n| n.id == "he said \"hi\""),
+            "id did not survive: {:?}",
+            g2.nodes.iter().map(|n| &n.id).collect::<Vec<_>>()
+        );
+        assert!(
+            g2.nodes
+                .iter()
+                .any(|n| n.labels.iter().any(|l| l == "lab\"el")),
+            "label did not survive"
+        );
+        assert!(
+            g2.edges
+                .iter()
+                .any(|e| e.labels.iter().any(|l| l == "R\"EL")),
+            "edge type did not survive"
         );
     }
 
