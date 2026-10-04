@@ -129,6 +129,32 @@ const GROUPS: [string, readonly string[]][] = [
     ],
   ],
   [
+    // `ORDER BY <alias>` IS `ORDER BY <the expression the alias names>`. For a PLAIN COLUMN
+    // alias the two are already one plan (`aliasDefinition` substitutes it, so the top-k keeps
+    // INPUT bindings and projects only the survivors). For a COMPUTED alias the substitution
+    // declines, the sort reads an OUTPUT column, the top-k is given up, and every row is
+    // projected — measured 154.8ms against the expression spelling's 89.3 at 200,000 rows,
+    // and 191.8 for an alias of a function (audit item 144).
+    //
+    // It sits at ~1.7x, under the default 2x tolerance, so this group DOCUMENTS the gap rather
+    // than failing on it: `SPELL_TOL=1.5 bun run spelling` flags it. Closing it needs BOTH
+    // engines, because the two spellings differ in WHICH QUERIES RAISE — a faulting projection
+    // throws for the alias spelling and not for its twin, in native as well — so a one-sided
+    // fix would be a cross-engine divergence.
+    'ORDER BY alias vs its expression (item 144)',
+    [
+      'MATCH (n:P) RETURN n.k + 1 AS c ORDER BY c LIMIT 10',
+      'MATCH (n:P) RETURN n.k + 1 AS c ORDER BY n.k + 1 LIMIT 10',
+    ],
+  ],
+  [
+    'ORDER BY plain-column alias vs its expression',
+    [
+      'MATCH (n:P) RETURN n.k AS c ORDER BY c LIMIT 10',
+      'MATCH (n:P) RETURN n.k AS c ORDER BY n.k LIMIT 10',
+    ],
+  ],
+  [
     'label on start: redundant vs absent',
     ['MATCH (a:P)-[:E]->(b) RETURN count(*) AS c', 'MATCH (a)-[:E]->(b) RETURN count(*) AS c'],
   ],
