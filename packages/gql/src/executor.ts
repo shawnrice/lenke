@@ -2077,6 +2077,27 @@ export const applyProjection = (
     return map((r: Keyed) => projectBinding(proj, r.b, params, graph), take(limitBound, afterSkip));
   }
 
+  // No ORDER BY, no DISTINCT, no paging, no aggregation: every stage below this
+  // is a pass-through, and the `Keyed` round trip is pure overhead — a wrapper
+  // object and an empty `keys` array allocated per row, two generator layers to
+  // put them on and take them off again. Returning the projection directly is
+  // the same rows in the same order, projected just as lazily and faulting on
+  // exactly the same ones.
+  //
+  // Item 98 priced removing ONE of the ~11 layers at 5-8% and retracted it as
+  // under the noise floor. This removes two layers AND both allocations, which
+  // is why it is worth doing where that was not; the measured number is in item
+  // 113.
+  if (
+    !proj.aggregating &&
+    orderBy.length === 0 &&
+    !proj.distinct &&
+    skipBound === undefined &&
+    limitBound === undefined
+  ) {
+    return map((b: Binding) => projectBinding(proj, b, params, graph), bindings);
+  }
+
   let keyed: Iterable<Keyed>;
 
   if (proj.aggregating) {
