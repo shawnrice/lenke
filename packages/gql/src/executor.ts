@@ -3661,6 +3661,8 @@ export type CLinear = {
   countShortcut: ((graph: Graph, params: Params) => Row) | null;
   /** Precomputed grouped-count closure for `MATCH (n) RETURN n.k, count(*)`; else null. */
   groupCountShortcut: ReachFn | null;
+  /** The same over a HOP — `MATCH (a)-[:T]->(b) RETURN b.k, count(*)`; else null. */
+  groupHopShortcut: ReachFn | null;
   /** BFS closure for unbounded var-length + DISTINCT; else null. */
   reachShortcut: ReachFn | null;
   /** Fused `MATCH (a)-[:T]->(x) RETURN <exprs over x>` row builder; else null. */
@@ -3673,6 +3675,7 @@ const compileLinear = (linear: LinearQuery): CLinear => {
     clauses,
     countShortcut: detectCountShortcut(linear.clauses),
     groupCountShortcut: detectGroupedNodeCount(linear.clauses),
+    groupHopShortcut: detectGroupedHopCount(linear.clauses),
     reachShortcut: detectReachableShortcut(linear.clauses, clauses),
     hopProjection: detectHopProjection(linear.clauses, clauses),
   };
@@ -3708,6 +3711,7 @@ import type { RowsFn } from './executor/hop-projection.js';
 // cycle, matching the other executor submodules.
 import {
   detectCountShortcut,
+  detectGroupedHopCount,
   detectGroupedNodeCount,
   detectReachableShortcut,
 } from './executor/shortcuts.js';

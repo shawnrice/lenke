@@ -45,7 +45,8 @@ import {
   resolveCount,
   valueKey,
 } from '../executor.js';
-import { matchesLabel } from '../graph-queries.js';
+import { candidateVertices, expand, matchesLabel } from '../graph-queries.js';
+import type { Adjacency } from '../graph-queries.js';
 import { matchNode, seedVertices } from './matching.js';
 import { asTruth, isNullish } from './scalars.js';
 
@@ -1432,6 +1433,263 @@ export const detectGroupedNodeCount = (clauses: readonly Clause[]): ReachFn | nu
 };
 
 export type ReachFn = (graph: Graph, params: Params) => Row[];
+
+/**
+ * `MATCH (a:L)-[:T]->(b) RETURN <b.k or a.k>, count(*)` — a GROUPED count over a hop, the
+ * empty cell in the count matrix.
+ *
+ * | shape  | plain        | filtered     | grouped          |
+ * | ------ | ------------ | ------------ | ---------------- |
+ * | node   | O(1) bucket  | item 135     | items 99 + 141   |
+ * | 1-hop  | bucket sums  | items 129/137| **this**         |
+ *
+ * `detectGroupedNodeCount` requires `segments.length === 0`, so every grouped count over a hop
+ * fell to the general path: one binding and one row per EDGE, then grouping. Measured on
+ * 200,000 vertices / 1,000,000 edges, where the same hop counted globally is 0.1ms:
+ *
+ *     MATCH (a:Person)-[:KNOWS]->(b) RETURN b.age, count(*)   1065ms   (1065ns an edge)
+ *     MATCH (a:Person)-[:KNOWS]->(b) RETURN a.age, count(*)    951ms
+ *
+ * ### Two walks, because the key's END decides the shape
+ *
+ * - **Key on the FAR end**: one pass over the type's edge bucket, reading the far property per
+ *   edge. O(E), like `tallyHopCount`.
+ * - **Key on the START**: one pass over the start vertices, reading the property ONCE and
+ *   adding that vertex's whole matching degree to its group. O(V), like `startOnlyHopCount` —
+ *   so it reads 200,000 properties where the general path read 1,000,000.
+ *
+ * ### The filter comes with it, in the same change
+ *
+ * Items 135, 137 and 141 each had to go back and add the filter to a tally that refused one,
+ * at 2.5-6.4x a time. A filter is carried here if it reads ONLY the keyed end — the vertex is
+ * already in hand there, so it costs one gate call. A filter on the OTHER end declines.
+ *
+ * ### The start-key walk checks DEGREE before the filter, deliberately
+ *
+ * A start vertex with no matching edge contributes no rows, so the general path never
+ * evaluates the predicate on it. Evaluating it anyway RAISES where the general path returns
+ * groups, and which queries raise is part of the cross-engine invariant — the 3.1x that item
+ * 139 had to reject. Hence degree first, gate second.
+ */
+export const detectGroupedHopCount = (clauses: readonly Clause[]): ReachFn | null => {
+  const shape = groupedClauses(clauses);
+
+  if (!shape) {
+    return null;
+  }
+
+  const letName = shape.let?.var;
+  const picked = groupedProjection(shape.ret.projection, letName);
+
+  if (!picked) {
+    return null;
+  }
+
+  const { items } = shape.ret.projection;
+  const { countAt } = picked;
+  const [pattern] = shape.match.patterns;
+
+  if (pattern.pathVar !== undefined || pattern.segments.length !== 1) {
+    return null;
+  }
+
+  const { start } = pattern;
+  const [seg] = pattern.segments;
+  const { rel, node: far } = seg;
+
+  if (!plainRel(rel) || rel.direction === 'both' || rel.variable !== undefined) {
+    return null;
+  }
+
+  if (start.variable === undefined || far.variable === undefined) {
+    return null;
+  }
+
+  const types = relTypeNames(rel.label);
+
+  if (types === null) {
+    return null;
+  }
+
+  // Resolve the group key to a property of one END of the hop.
+  const keyItem = items[1 - countAt];
+  const keyExpr = keyItem.expr;
+  let keySource: Expr | undefined = keyExpr;
+
+  if (shape.let !== undefined) {
+    keySource = keyExpr.kind === 'var' && keyExpr.name === letName ? shape.let.expr : undefined;
+  }
+
+  if (keySource?.kind !== 'prop') {
+    return null;
+  }
+
+  const onStart = keySource.variable === start.variable;
+
+  if (!onStart && keySource.variable !== far.variable) {
+    return null;
+  }
+
+  const keyed = onStart ? start : far;
+  const other = onStart ? far : start;
+
+  // The NON-keyed end must be plain: the walks apply nothing to it beyond its label, and the
+  // start-key walk cannot apply even that (it adds a whole degree, not per-edge matches).
+  if (!plainNode(other) || (onStart && other.label !== undefined)) {
+    return null;
+  }
+
+  // The keyed end's inline constraint and the clause `WHERE` are the two spellings of one
+  // filter; both go through `inlineHolds` -> `satisfies`, as in item 141.
+  const inKeyed = inlineOf(keyed);
+
+  if (inKeyed === null) {
+    return null;
+  }
+
+  const preds: InlinePred[] = [];
+
+  if (inKeyed !== undefined) {
+    preds.push(inKeyed);
+  }
+
+  const { where } = shape.match;
+
+  if (where !== undefined) {
+    for (const nameRead of freePredicateVars(where)) {
+      if (nameRead !== keyed.variable) {
+        return null;
+      }
+    }
+
+    preds.push({ pred: compilePredicate(undefined, where), bindVar: keyed.variable });
+  }
+
+  const gate = preds.reduceRight<InlineGate | undefined>(
+    (rest, ip) => (v, binding, params, graph) =>
+      inlineHolds(ip, v, binding, params, graph) &&
+      (rest === undefined || rest(v, binding, params, graph)),
+    undefined,
+  );
+
+  // The start-key walk seeds from the label bucket, which `candidateVertices` fills exactly
+  // only for a SIMPLE label (see item 138).
+  const startLabel = start.label;
+
+  if (onStart && startLabel !== undefined && startLabel.kind !== 'label') {
+    return null;
+  }
+
+  const { key } = keySource;
+  const countCol = items[countAt].alias ?? columnName(items[countAt].expr);
+  const keyCol = keyItem.alias ?? columnName(keyExpr);
+  const countFirst = countAt === 0;
+  const out = rel.direction === 'out';
+  const farLabel = far.label;
+  const adjacency: Adjacency = {
+    direction: rel.direction,
+    ...(rel.label ? { label: rel.label } : {}),
+  };
+
+  return (graph, params) => {
+    const groups = new Map<string, { key: unknown; n: number }>();
+    const binding = new Map<string, unknown>();
+    const add = (raw: unknown, by: number): void => {
+      const gk = valueKey(raw);
+      const slot = groups.get(gk);
+
+      if (slot) {
+        slot.n += by;
+      } else {
+        groups.set(gk, { key: raw, n: by });
+      }
+    };
+
+    // Summing per-type bucket sizes is sound only when no edge sits in two of them, and that
+    // is a RUNTIME property of the graph — so the O(V) degree walk is chosen per call, with
+    // the O(E) walk below as the always-correct alternative rather than a decline. (A
+    // `ReachFn` returns rows; it has no way to decline once built.)
+    // Summing per-type bucket sizes is sound only when no edge sits in two of them, and that
+    // is a RUNTIME property of the graph — so the degree walk is chosen per call, with the
+    // per-edge walk as the always-correct alternative rather than a decline. (A `ReachFn`
+    // returns rows; it has no way to decline once built.)
+    const bucketSumSound = types?.length === 1 || graph.multiTypeEdgeCount === 0;
+    const index = out ? graph.edgesFromByLabel : graph.edgesToByLabel;
+    const farPb = vacuousLabel(graph, farLabel) ? undefined : farLabel;
+
+    // BOTH walks visit start vertices via `candidateVertices` and then that vertex's own
+    // bucket — the order the general path uses. Group order is FIRST-SEEN and observable, so
+    // it is not enough to count the right edges; they have to be met in the same order. See
+    // the rejected far-end degree walk recorded on this function.
+    for (const v of candidateVertices(graph, startLabel)) {
+      const byType = index.get(v.id);
+
+      if (byType === undefined) {
+        continue;
+      }
+
+      if (onStart && bucketSumSound && farPb === undefined) {
+        let deg = 0;
+
+        if (types === undefined) {
+          for (const set of byType.values()) {
+            deg += set.size;
+          }
+        } else {
+          for (const t of types) {
+            deg += byType.get(t)?.size ?? 0;
+          }
+        }
+
+        // DEGREE FIRST: a vertex with no matching edge must never reach the filter. See the
+        // raise-parity note above.
+        if (deg === 0) {
+          continue;
+        }
+
+        if (gate !== undefined && !gate(v, binding, params, graph)) {
+          continue;
+        }
+
+        add(propOf(v, key), deg);
+
+        continue;
+      }
+
+      // Per EDGE: either the key is on the far end (so each edge's own endpoint must be
+      // read), or a bucket sum would double-count a multi-type edge, or a far label has to
+      // be applied per edge.
+      //
+      // `expand` is the GENERAL PATH's own adjacency iterator, used rather than a hand-rolled
+      // bucket loop for two reasons it already gets right: it takes a single concrete type
+      // straight from its bucket, and for anything else it dedupes a multi-label edge across
+      // the per-type buckets with a `Set`. Hand-rolling the bucket loop counted a `T|S` edge
+      // TWICE under `-[:T|S]->` — caught by the multi-label test, which the general path
+      // answered correctly.
+      for (const step of expand(graph, v, adjacency)) {
+        const { node } = step;
+
+        if (farPb !== undefined && !matchesLabel(node, farPb)) {
+          continue;
+        }
+
+        const keyedNode = onStart ? v : node;
+
+        if (gate !== undefined && !gate(keyedNode, binding, params, graph)) {
+          continue;
+        }
+
+        add(propOf(keyedNode, key), 1);
+      }
+    }
+
+    return [...groups.values()].map((slot) =>
+      countFirst
+        ? { [countCol]: slot.n, [keyCol]: slot.key }
+        : { [keyCol]: slot.key, [countCol]: slot.n },
+    );
+  };
+};
 
 /** Whether `e` reads only variable `v` (a bare `v`, `v.key`, or a constant). */
 const refsOnlyVar = (e: Expr, v: string): boolean => {

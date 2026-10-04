@@ -1263,6 +1263,12 @@ export const runLinearClauses = (
       return linear.groupCountShortcut(graph, params);
     }
 
+    // The same over a hop — one pass over the start vertices adding each one's degree to its
+    // group, or one pass over the edge bucket. See `detectGroupedHopCount`.
+    if (linear.groupHopShortcut) {
+      return linear.groupHopShortcut(graph, params);
+    }
+
     // Unbounded var-length + DISTINCT → BFS the reachable set instead of enumerating
     // trails (exponential, hits the trail budget). See `detectReachableShortcut`.
     if (linear.reachShortcut) {
