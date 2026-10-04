@@ -214,10 +214,35 @@ const CASES: Case[] = [
     ),
   },
   {
-    name: 'query: 1-hop traversal',
+    // NOT a traversal measurement any more, and the name said otherwise for a while. Both
+    // engines now answer this from the edge bucket's size without walking anything (the 1-hop
+    // count shortcut), so it reads ~0ms on both. Kept, renamed, as the GUARD for that shortcut:
+    // if it ever returns to hundreds of ms the shortcut has stopped firing.
+    name: 'count 1-hop [shortcut]',
     ...onGraph(
       () => graphDoc,
       (e, g) => void e.query(g, 'MATCH (a:Person)-[:KNOWS]->(x) RETURN count(*) AS c'),
+    ),
+  },
+  {
+    // A REAL adjacency walk: a predicate on the far endpoint defeats the bucket-size shortcut,
+    // so every edge is visited, and the result is one row — so this measures traversal rather
+    // than row materialization. `age > 500` matches nothing (ages are 0..89), which does not
+    // reduce the work: the walk and the predicate still happen for every edge.
+    name: 'traverse 1-hop + filter',
+    ...onGraph(
+      () => graphDoc,
+      (e, g) =>
+        void e.query(g, 'MATCH (a:Person)-[:KNOWS]->(x) WHERE x.age > 500 RETURN count(*) AS c'),
+    ),
+  },
+  {
+    // The other half: the same walk, but PROJECTING an endpoint property, so 1,000,000 rows are
+    // built. Traversal plus the row pipeline, which is the shape a user actually runs.
+    name: 'traverse 1-hop project',
+    ...onGraph(
+      () => graphDoc,
+      (e, g) => void e.query(g, 'MATCH (a:Person)-[:KNOWS]->(x) RETURN x.name AS n'),
     ),
   },
 ];
