@@ -152,15 +152,24 @@ export const normalizePropertyValue = (value: unknown): unknown => {
 
 /** [`normalizePropertyValue`] across a property bag, reusing it when nothing moved. */
 export const normalizeProperties = (bag: Record<string, unknown>): Record<string, unknown> => {
-  let changed = false;
-  const out: Record<string, unknown> = {};
+  // The copy is built ONLY once a value actually moves. This is what the contract above
+  // already claimed — "the common case costs one pass and no allocation" — and what the code
+  // did not do: it allocated `out` and filled all K slots on every call, then returned `bag`
+  // and threw the copy away.
+  //
+  // It is on the hot write path. A single-property `SET` already pays an O(K) spread and an
+  // O(K) freeze, so a third full pass is a third of the per-write cost on a wide element, and
+  // nothing lifts a tagged temporal in the overwhelming majority of writes (audit item 147).
+  let out: Record<string, unknown> | undefined;
 
   for (const key of Object.keys(bag)) {
     const v = normalizePropertyValue(bag[key]);
 
-    changed ||= v !== bag[key];
-    out[key] = v;
+    if (v !== bag[key]) {
+      out ??= { ...bag };
+      out[key] = v;
+    }
   }
 
-  return changed ? out : bag;
+  return out ?? bag;
 };
