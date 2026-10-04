@@ -261,3 +261,25 @@ surprises you, check the timestamps:
 stat -c '%y %n' crates/lenke-engine/target/release/liblenke_engine.so \
   crates/lenke-engine/target-wasm/wasm32-unknown-unknown/release/lenke_engine.wasm
 ```
+
+### A plain `cargo build --release` clobbers the `.so` the fuzzers use
+
+The C ABI (`lnk_*`) is gated behind the `capi` feature, which is OFF by default, and the
+crate's `crate-type` includes `cdylib` — so a bare
+
+```
+cargo build --release --manifest-path crates/lenke-engine/Cargo.toml   # NO capi
+```
+
+overwrites `target/release/liblenke_engine.so` with a copy that has **no FFI symbols**. Every
+TS-side harness that `dlopen`s it then dies with `Symbol "lnk_abi_version" not found`, which
+reads like a broken build rather than a missing feature flag. Add the feature when you build
+that artifact by hand:
+
+```
+cargo build --release --manifest-path crates/lenke-engine/Cargo.toml --features capi
+```
+
+`bun run fuzz` and `bun run build` get this right on their own; it only bites when you rebuild
+the `.so` directly, which is easy to do while iterating on a Rust change and then re-running a
+TS probe against it.
