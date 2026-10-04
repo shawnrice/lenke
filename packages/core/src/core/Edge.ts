@@ -60,6 +60,23 @@ export class Edge {
     return this.#graph!.getVertexById(this.#to)!;
   }
 
+  /**
+   * The endpoint IDS, without materializing the vertices.
+   *
+   * `from`/`to` resolve through `getVertexById`, so `edge.from.id` round-trips an id the
+   * edge already holds into a `Map` lookup and back to the same string. The adjacency
+   * index is keyed by id and wants nothing else, and it did that round trip FOUR times per
+   * edge — 4,000,000 lookups to ingest a million edges, which is what `getVertexById` was
+   * doing at the top of an ingest profile (audit item 140).
+   */
+  get fromId(): string {
+    return this.#from;
+  }
+
+  get toId(): string {
+    return this.#to;
+  }
+
   get labels(): Set<string> {
     return this.#graph?.elementLabels.get(this.id) ?? new Set();
   }

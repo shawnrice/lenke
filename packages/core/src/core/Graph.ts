@@ -1657,7 +1657,14 @@ export class Graph {
     // rejected edge write leaves no trace. Inside a transaction the checks defer
     // to commit (record the touched edge); a rollback replay skips them entirely.
     if (!this.deferEdgeConstraint(edge)) {
-      const missing = this.edgeMissingRequired(edge.labels, edge.properties);
+      // Read the label set and the property bag ONCE. Both are getters over the graph element
+      // maps, and the three checks below took them as arguments — so SIX cold lookups were made
+      // per edge to feed three functions that each return on their first line when no
+      // constraint of their kind is registered. An argument is evaluated whether or not the
+      // body does anything with it. See audit item 140.
+      const { labels, properties } = edge;
+
+      const missing = this.edgeMissingRequired(labels, properties);
 
       if (missing) {
         throw new LenkeError(
@@ -1666,7 +1673,7 @@ export class Graph {
         );
       }
 
-      const badType = this.edgeTypeViolation(edge.labels, edge.properties);
+      const badType = this.edgeTypeViolation(labels, properties);
 
       if (badType) {
         throw new LenkeError(
@@ -1675,7 +1682,7 @@ export class Graph {
         );
       }
 
-      const dup = this.edgeUniqueConflict(edge.labels, edge.properties, edge);
+      const dup = this.edgeUniqueConflict(labels, properties, edge);
 
       if (dup) {
         throw new LenkeError(
@@ -1703,11 +1710,14 @@ export class Graph {
 
     this.edgesById.set(edge.id, edge);
 
-    for (const label of edge.labels) {
+    // One read for the loop AND the multi-type tally, which asked the getter twice more.
+    const { labels: edgeLabels } = edge;
+
+    for (const label of edgeLabels) {
       this.indexEdgeLabel(label, edge);
     }
 
-    if (edge.labels.size > 1) {
+    if (edgeLabels.size > 1) {
       this.multiTypeEdgeCount += 1;
     }
 
@@ -3830,7 +3840,12 @@ export class Graph {
         continue; // added then removed within the transaction — nothing to check
       }
 
-      const missing = this.edgeMissingRequired(edge.labels, edge.properties);
+      // Read each ONCE, as in `insertEdge` — these are getters over the graph element maps
+      // and the three checks' arguments are evaluated whether or not their bodies do
+      // anything. See audit item 140.
+      const { labels, properties } = edge;
+
+      const missing = this.edgeMissingRequired(labels, properties);
 
       if (missing) {
         throw new LenkeError(
@@ -3839,7 +3854,7 @@ export class Graph {
         );
       }
 
-      const badType = this.edgeTypeViolation(edge.labels, edge.properties);
+      const badType = this.edgeTypeViolation(labels, properties);
 
       if (badType) {
         throw new LenkeError(
@@ -3848,7 +3863,7 @@ export class Graph {
         );
       }
 
-      const dup = this.edgeUniqueConflict(edge.labels, edge.properties, edge);
+      const dup = this.edgeUniqueConflict(labels, properties, edge);
 
       if (dup) {
         throw new LenkeError(
@@ -3943,42 +3958,65 @@ export class Graph {
   // a `has` on the same key nearly free; what this function actually costs is the `Set`/`Map`
   // INSERTIONS and the inner containers allocated for a new vertex id, neither of which the
   // rewrite touched. `indexVertexLabel` below has the same shape and the same verdict.
+  /**
+   * The hottest write on the ingest path — 1,000,000 edges is 1,000,000 calls — so it is
+   * written to touch each `Map` ONCE.
+   *
+   * It used to ask `has` and then `get` on all three maps (six pairs, twelve lookups where
+   * six do) and to reach the endpoints through `edge.from.id` / `edge.to.id`, which resolve
+   * an id the edge already holds into a vertex and back again — four `getVertexById` calls
+   * per edge, 4,000,000 to ingest a million. `fromId`/`toId` read the stored id directly.
+   * See audit item 140 for the measurement.
+   */
   private readonly indexEdgeLabel = (label: string, edge: Edge) => {
-    if (!this.edgesByLabel.has(label)) {
-      this.edgesByLabel.set(label, new Set());
+    let byLabel = this.edgesByLabel.get(label);
+
+    if (byLabel === undefined) {
+      byLabel = new Set();
+      this.edgesByLabel.set(label, byLabel);
     }
 
-    this.edgesByLabel.get(label)!.add(edge);
+    byLabel.add(edge);
 
-    if (!this.edgesFromByLabel.has(edge.from.id)) {
-      this.edgesFromByLabel.set(edge.from.id, new Map());
+    const { fromId } = edge;
+    let edgesFrom = this.edgesFromByLabel.get(fromId);
+
+    if (edgesFrom === undefined) {
+      edgesFrom = new Map();
+      this.edgesFromByLabel.set(fromId, edgesFrom);
     }
 
-    const edgesFrom = this.edgesFromByLabel.get(edge.from.id)!;
+    let fromSet = edgesFrom.get(label);
 
-    if (!edgesFrom.has(label)) {
-      edgesFrom.set(label, new Set());
+    if (fromSet === undefined) {
+      fromSet = new Set();
+      edgesFrom.set(label, fromSet);
     }
 
-    edgesFrom.get(label)!.add(edge);
+    fromSet.add(edge);
 
-    if (!this.edgesToByLabel.has(edge.to.id)) {
-      this.edgesToByLabel.set(edge.to.id, new Map());
+    const { toId } = edge;
+    let edgesTo = this.edgesToByLabel.get(toId);
+
+    if (edgesTo === undefined) {
+      edgesTo = new Map();
+      this.edgesToByLabel.set(toId, edgesTo);
     }
 
-    const edgesTo = this.edgesToByLabel.get(edge.to.id)!;
+    let toSet = edgesTo.get(label);
 
-    if (!edgesTo.has(label)) {
-      edgesTo.set(label, new Set());
+    if (toSet === undefined) {
+      toSet = new Set();
+      edgesTo.set(label, toSet);
     }
 
-    edgesTo.get(label)!.add(edge);
+    toSet.add(edge);
   };
 
   private readonly deIndexEdgeLabel = (label: string, edge: Edge) => {
     this.edgesByLabel.get(label)?.delete(edge);
 
-    const fromId = edge.from.id;
+    const { fromId } = edge;
 
     if (
       this.edgesFromByLabel.get(fromId)?.get(label)?.delete(edge) &&
@@ -3987,7 +4025,7 @@ export class Graph {
       this.edgesFromByLabel.get(fromId)?.delete(label);
     }
 
-    const toId = edge.to.id;
+    const { toId } = edge;
 
     if (
       this.edgesToByLabel.get(toId)?.get(label)?.delete(edge) &&
