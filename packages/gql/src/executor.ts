@@ -689,6 +689,7 @@ const compileSubMatch = (sub: { patterns: readonly PathPattern[]; where?: Expr }
   patterns: sub.patterns.map(compilePath),
   where: sub.where ? compileExpr(sub.where) : undefined,
   nullVars: [],
+  ...matchVarSets(sub.patterns, sub.where),
 });
 
 /**
@@ -2667,6 +2668,40 @@ const patternVarSets = (pattern: PathPattern): { binds: Set<string>; reads: Set<
   return { binds, reads: freePredicateVars({ kind: 'exists', patterns: [pattern] }) };
 };
 
+/** The clause-level union of its patterns' sets, plus its own `WHERE`'s free variables. */
+const matchVarSets = (
+  patterns: readonly PathPattern[],
+  where: Expr | undefined,
+): { binds: Set<string>; reads: Set<string> } => {
+  const binds = new Set<string>();
+  const reads = new Set<string>();
+
+  for (const p of patterns) {
+    const sets = patternVarSets(p);
+
+    for (const n of sets.binds) {
+      binds.add(n);
+    }
+
+    for (const n of sets.reads) {
+      reads.add(n);
+    }
+  }
+
+  if (where !== undefined) {
+    for (const n of freePredicateVars(where)) {
+      reads.add(n);
+    }
+  }
+
+  // A name the clause binds itself is not an OUTER read.
+  for (const n of binds) {
+    reads.delete(n);
+  }
+
+  return { binds, reads };
+};
+
 const compilePath = (pattern: PathPattern): CPath => {
   const selector = pattern.selector ?? 'walk';
   const { binds, reads } = patternVarSets(pattern);
@@ -3155,6 +3190,19 @@ export type CMatch = {
   patterns: readonly CPath[];
   where?: CompiledExpr;
   nullVars: readonly string[];
+  /**
+   * What the whole clause BINDS, and which OUTER variables it READS — the
+   * clause-level twin of `CPath`'s pair, and compile-time for the same reason
+   * (`where` is a closure by the time the executor sees it).
+   *
+   * `reads` is the clause's patterns' reads plus its own `WHERE`'s free variables,
+   * minus what the clause binds itself, so `MATCH (a:P) WHERE a.k = 1` reads
+   * nothing outer. An EMPTY `reads` means the clause's matches cannot depend on
+   * the incoming row's VALUES; see `runMatch` for why that is not sufficient on
+   * its own.
+   */
+  binds: ReadonlySet<string>;
+  reads: ReadonlySet<string>;
 };
 type CWith = { kind: 'with'; projection: CProjection; where?: CompiledExpr };
 type CFilter = { kind: 'filter'; where: CompiledExpr };
@@ -3318,6 +3366,7 @@ const compileClause = (clause: Clause): CClause => {
         patterns,
         where: clause.where ? compileExpr(clause.where) : undefined,
         nullVars: clause.optional ? patternVars(clause.patterns) : [],
+        ...matchVarSets(clause.patterns, clause.where),
       };
     }
     case 'with':

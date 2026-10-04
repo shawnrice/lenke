@@ -776,6 +776,71 @@ export const matchOrOptional = (
     ? optionalMatch(graph, clause, binding, params)
     : matchClauseBindings(graph, clause, binding, params);
 
+/**
+ * A MATCH whose matches cannot depend on the incoming row, matched ONCE.
+ *
+ * Item 122 fixed this rescan WITHIN a clause (`visitRemaining`); separate MATCH
+ * clauses go through here instead and had the same shape — `ns/(outer x bucket)`
+ * measured 164 against the fixed path's 41, i.e. still re-running the second
+ * clause for every row of the first.
+ *
+ * TWO conditions, and `reads` alone is NOT enough. An empty `reads` says the
+ * clause's matches do not depend on the incoming row's VALUES. But a pattern
+ * variable that is ALREADY BOUND is an anchor, not a fresh scan —
+ * `MATCH (a:P) MATCH (a)-[:E]->(b)` reads nothing yet is a join — and pattern
+ * variables live in `binds`, not `reads`. So each incoming row is also checked for
+ * sharing a name with `binds`, and any row that does falls back.
+ *
+ * OPTIONAL is excluded outright, and that exclusion is a DEFENSIVE belt rather
+ * than a load-bearing guard: mutation shows that removing it changes no answer
+ * today, because a null-filled variable that is already bound would be caught by
+ * the `binds` check first. That equivalence rests on `nullVars` being a subset of
+ * `binds` — two sets computed by different functions (`patternVars` and
+ * `patternBoundVars`) — so the belt stays. If it ever drifts, a bound variable
+ * would be overwritten with null.
+ */
+const hoistedMatch = function* (
+  graph: Graph,
+  clause: CMatch,
+  bindings: Iterable<Binding>,
+  params: Params,
+): Iterable<Binding> {
+  let cached: Binding[] | undefined;
+
+  for (const binding of bindings) {
+    let shares = false;
+
+    for (const name of clause.binds) {
+      if (binding.has(name)) {
+        shares = true;
+        break;
+      }
+    }
+
+    if (shares) {
+      yield* matchOrOptional(graph, clause, binding, params);
+      continue;
+    }
+
+    if (cached === undefined) {
+      // Matched against an EMPTY binding: `reads` is empty and no name is shared,
+      // so nothing in the clause can consult the row. The cache therefore holds
+      // only the clause's own variables, which is what makes the merge below
+      // reproduce `matchPattern` extending `binding`.
+      cached = cacheTail(matchOrOptional(graph, clause, new Map(), params));
+
+      if (cached === undefined) {
+        yield* matchOrOptional(graph, clause, binding, params);
+        continue;
+      }
+    }
+
+    for (const c of cached) {
+      yield new Map([...binding, ...c]);
+    }
+  }
+};
+
 /** Lazily expand a binding stream through a MATCH — no intermediate array. */
 export const runMatch = (
   graph: Graph,
@@ -783,7 +848,9 @@ export const runMatch = (
   bindings: Iterable<Binding>,
   params: Params,
 ): Iterable<Binding> =>
-  flatMap((binding: Binding) => matchOrOptional(graph, clause, binding, params), bindings);
+  clause.optional || clause.reads.size > 0
+    ? flatMap((binding: Binding) => matchOrOptional(graph, clause, binding, params), bindings)
+    : hoistedMatch(graph, clause, bindings, params);
 
 /**
  * Lazily unwind a list per incoming binding — one row per element (ISO GQL's
