@@ -31,6 +31,7 @@ import type {
 } from '../executor.js';
 import {
   edgesOfTypes,
+  freePredicateVars,
   columnName,
   compileExpr,
   countEdges,
@@ -43,7 +44,7 @@ import {
 } from '../executor.js';
 import { matchesLabel } from '../graph-queries.js';
 import { matchNode, seedVertices } from './matching.js';
-import { isNullish } from './scalars.js';
+import { asTruth, isNullish } from './scalars.js';
 
 /**
  * Is `expr` satisfied by EVERY vertex in `graph`, so that testing it per element is pure
@@ -114,10 +115,19 @@ const buildNodeCount = (start: NodePattern, rowOf: (n: number) => Row): CountFn 
 
 /** 1-hop `(a)-[:T]->(b)` count: bucket sizes (unlabeled) or a filtered bucket
  * scan. `null` if the segment can't be bucket-counted (both/And/Not/wildcard). */
+/** A clause `WHERE` the 1-hop count can evaluate per edge, with the vars it reads. */
+type HopPred = {
+  fn: CompiledExpr;
+  startVar?: string;
+  farVar?: string;
+  relVar?: string;
+};
+
 const buildOneHopCount = (
   seg: Segment,
   start: NodePattern,
   rowOf: (n: number) => Row,
+  pred?: HopPred,
 ): CountFn | null => {
   const { rel, node } = seg;
 
@@ -135,7 +145,61 @@ const buildOneHopCount = (
   const bLabel = node.label;
   const out = rel.direction === 'out';
 
-  return (graph) => {
+  return (graph, params) => {
+    // A clause `WHERE` on the endpoints: walk the edge bucket and tally, rather than build a
+    // binding and a row per edge and count those. The row pipeline costs ~487ns a row before it
+    // does any work (see the audit's item 98), and a filtered count throws every row away.
+    //
+    // ONE binding `Map`, mutated per edge. Building a fresh one per edge is most of what this
+    // path exists to avoid. The predicate is applied exactly as the general path applies a
+    // match-level `WHERE` — `asTruth(...) === true`, so NULL and false both drop (ISO's
+    // three-valued filter) — because it IS the same compiled expression.
+    if (pred) {
+      const types2 = types;
+
+      if (!types2) {
+        return rowOf(0);
+      }
+
+      // A concrete `Map` (a `Binding` is a `ReadonlyMap`, so this satisfies the env while
+      // staying mutable here).
+      // The same elision the unfiltered path gets (see `vacuousLabel`): a label every vertex
+      // carries costs 88ns an edge to re-confirm, and the general path never pays it at all
+      // because it SEEDS from the label bucket.
+      const pa = vacuousLabel(graph, aLabel) ? undefined : aLabel;
+      const pb = vacuousLabel(graph, bLabel) ? undefined : bLabel;
+      const binding = new Map<string, unknown>();
+      const env: EvalEnv = { binding, params, graph };
+      let n = 0;
+
+      for (const edge of edgesOfTypes(graph.edgesByLabel, types2)) {
+        const near = out ? edge.from : edge.to;
+        const far = out ? edge.to : edge.from;
+
+        if (!matchesLabel(near, pa) || !matchesLabel(far, pb)) {
+          continue;
+        }
+
+        if (pred.startVar !== undefined) {
+          binding.set(pred.startVar, near);
+        }
+
+        if (pred.farVar !== undefined) {
+          binding.set(pred.farVar, far);
+        }
+
+        if (pred.relVar !== undefined) {
+          binding.set(pred.relVar, edge);
+        }
+
+        if (asTruth(pred.fn(env)) === true) {
+          n += 1;
+        }
+      }
+
+      return rowOf(n);
+    }
+
     // A label every vertex carries constrains nothing, so drop it and let the O(1) path
     // below take the query. See `vacuousLabel`.
     const a = vacuousLabel(graph, aLabel) ? undefined : aLabel;
@@ -267,7 +331,7 @@ export const detectCountShortcut = (clauses: readonly Clause[]): CountFn | null 
 
   const [m, ret] = clauses;
 
-  if (m.kind !== 'match' || m.optional || m.where !== undefined || m.patterns.length !== 1) {
+  if (m.kind !== 'match' || m.optional || m.patterns.length !== 1) {
     return null;
   }
 
@@ -320,6 +384,47 @@ export const detectCountShortcut = (clauses: readonly Clause[]): CountFn | null 
     return null;
   }
 
+  // A clause `WHERE` is answerable ONLY by the 1-hop tally below, and only when it reads
+  // nothing but the pattern's own variables — an outer variable cannot exist here (this shape
+  // is exactly two clauses) but an aggregate or a subquery could, and `freePredicateVars`
+  // reports those as free names it does not recognize.
+  const { where } = m;
+  let pred: HopPred | undefined;
+
+  if (where !== undefined) {
+    if (segments.length !== 1) {
+      return null;
+    }
+
+    const [seg] = segments;
+    const vars = new Map<string, 'start' | 'far' | 'rel'>();
+
+    if (start.variable !== undefined) {
+      vars.set(start.variable, 'start');
+    }
+
+    if (seg.node.variable !== undefined) {
+      vars.set(seg.node.variable, 'far');
+    }
+
+    if (seg.rel.variable !== undefined) {
+      vars.set(seg.rel.variable, 'rel');
+    }
+
+    for (const name of freePredicateVars(where)) {
+      if (!vars.has(name)) {
+        return null;
+      }
+    }
+
+    pred = {
+      fn: compileExpr(where),
+      startVar: start.variable,
+      farVar: seg.node.variable,
+      relVar: seg.rel.variable,
+    };
+  }
+
   if (segments.length === 0) {
     return buildNodeCount(start, rowOf);
   }
@@ -327,7 +432,7 @@ export const detectCountShortcut = (clauses: readonly Clause[]): CountFn | null 
   if (segments.length === 1) {
     const [seg] = segments;
 
-    return buildOneHopCount(seg, start, rowOf);
+    return buildOneHopCount(seg, start, rowOf, pred);
   }
 
   if (segments.length === 2) {

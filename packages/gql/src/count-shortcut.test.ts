@@ -42,12 +42,17 @@ const build = (): Graph => {
     g.addVertex({
       id: `v${i}`,
       labels: isAdmin(i) ? ['Person', 'Admin'] : ['Person'],
-      properties: {},
+      // `n` exists so an endpoint PREDICATE has something to be true or false about. Without it
+      // every `b.n > 3` compares against NULL, drops every row, and a differential test against
+      // the general path passes trivially with 0 === 0 — proving nothing. The label and edge
+      // counts the other tests assert are unaffected by a property.
+      properties: { n: i },
     }),
   );
 
   for (const [a, b] of EDGES) {
-    g.addEdge({ from: vs[a], to: vs[b], labels: ['KNOWS'], properties: {} });
+    // `w` likewise, for a predicate on the edge variable.
+    g.addEdge({ from: vs[a], to: vs[b], labels: ['KNOWS'], properties: { w: a } });
   }
 
   return g;
@@ -340,6 +345,67 @@ describe('count(*) shortcut correctness (vs independent enumeration)', () => {
     expect(query(shared, `MATCH (n:P) LET a = n.k RETURN a, count(*) AS c GROUP BY a`)).toEqual([
       { a: 1, c: 2 },
     ]);
+  });
+
+  // A clause WHERE on the endpoints, tallied instead of enumerated. Tested against the GENERAL
+  // PATH as oracle: adding `ORDER BY c` makes the detector decline (its projection guard rejects
+  // ordering), so the same question is computed the slow way — the strongest oracle available.
+  test('a filtered 1-hop count matches the general path', () => {
+    const g = build();
+    const pairs = (pred: string): readonly [string, string] => [
+      `MATCH (a:Person)-[r:KNOWS]->(b) WHERE ${pred} RETURN count(*) AS c`,
+      `MATCH (a:Person)-[r:KNOWS]->(b) WHERE ${pred} RETURN count(*) AS c ORDER BY c`,
+    ];
+
+    for (const pred of [
+      // the far endpoint, the source, and the EDGE variable
+      `b.n > 3`,
+      `a.n > 3`,
+      `r.w >= 0`,
+      // both ends at once, and a label on top of the predicate
+      `a.n > 1 AND b.n < 20`,
+      `b.n IS NOT NULL`,
+      // a key no vertex has: the comparison is NULL, which drops the row (three-valued)
+      `b.missing > 1`,
+      // a label only some vertices carry, so the elision must NOT fire
+      `a.n >= 0`,
+    ]) {
+      const [fast, oracle] = pairs(pred);
+
+      expect(query(g, fast)).toEqual(query(g, oracle));
+    }
+  });
+
+  // A non-boolean in a truth context is a DATA EXCEPTION, not a truthy coercion, and the
+  // shortcut must raise it exactly as the general path does — byte-identity is about which
+  // queries raise, not only about which rows come back.
+  //
+  // `asTruth` is what throws, so writing the filter as `if (pred.fn(env))` would quietly count
+  // rows instead. Nothing else in this file catches that: a WHERE can only evaluate to true,
+  // false or NULL, and on those three a truthy test agrees with `=== true`. It takes a
+  // PARAMETER to reach the fourth case, because a bare non-boolean is rejected at parse time
+  // while a param's value is only known at evaluation.
+  test('a non-boolean WHERE raises on the tally path too', () => {
+    const g = build();
+    const q = `MATCH (a:Person)-[:KNOWS]->(b) WHERE $p RETURN count(*) AS c`;
+
+    expect(() => query(g, q, { p: 5 })).toThrow(/boolean is required/);
+    // …and a boolean param still works, so the throw is about the VALUE, not the shape.
+    expect(query(g, q, { p: true })).toEqual([{ c: EDGES.length }]);
+    expect(query(g, q, { p: false })).toEqual([{ c: 0 }]);
+  });
+
+  // The relaxation is for the ONE-segment shape only. A WHERE on any other shape must make the
+  // detector decline, not be silently ignored — ignoring it would count every edge.
+  test('a WHERE on a shape the tally cannot compute is declined', () => {
+    const g = build();
+
+    // Zero segments (a node count) and two segments: both must honour the filter.
+    expect(c(g, `MATCH (x:Person) WHERE x.n > 1000 RETURN count(*) AS c`)).toBe(0);
+    expect(c(g, `MATCH (x:Person) WHERE x.n >= 0 RETURN count(*) AS c`)).toBe(N);
+    expect(
+      c(g, `MATCH (a)-[:KNOWS]->(b)-[:KNOWS]->(cc) WHERE cc.n > 1000 RETURN count(*) AS c`),
+    ).toBe(0);
   });
 
   test('2-hop with a reversed first segment matches enumeration', () => {
