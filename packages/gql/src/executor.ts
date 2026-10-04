@@ -2279,7 +2279,7 @@ export const applyProjection = (
 
 /** A compiled property map + inline WHERE (the ISO element-pattern predicate). */
 export type CProp = { key: string; value: CompiledExpr };
-type CPredicate = { props: readonly CProp[]; where?: CompiledExpr };
+export type CPredicate = { props: readonly CProp[]; where?: CompiledExpr };
 
 /** Range bounds whose endpoints are compiled value closures (resolved per seed). */
 export type CRangeBound = {
@@ -2371,7 +2371,7 @@ export type CPath = {
 const compileProps = (props: readonly PropertyConstraint[] | undefined): CProp[] =>
   (props ?? []).map(({ key, value }) => ({ key, value: compileExpr(value) }));
 
-const compilePredicate = (
+export const compilePredicate = (
   properties: readonly PropertyConstraint[] | undefined,
   where: Expr | undefined,
 ): CPredicate => ({

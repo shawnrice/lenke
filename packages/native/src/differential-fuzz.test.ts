@@ -866,6 +866,21 @@ const genQuery = (r: () => number): string => {
       `MATCH (a:T), (b:U), (d:T) RETURN count(*) AS x`,
       // ...and with ROWS rather than a count, so column order and values are compared too.
       `MATCH (a:T), (b:U) RETURN a.n AS x, b.n AS t ORDER BY x, t`,
+      // An INLINE constraint on a hop's FAR endpoint, which this generator also emitted zero
+      // times. The count shortcut used to DECLINE these and run the general pipeline; it now
+      // carries the constraint into its tally (audit item 125), so a shortcut that applied the
+      // predicate to the wrong end — or dropped it, and answered the whole bucket's count —
+      // would be invisible without these. The clause-`WHERE` twin is generated above, so the
+      // two spellings are compared against native independently.
+      // Two of these draw the relationship spelling (sometimes UNTYPED) rather than hard-coding
+      // `[:${t}]`, so they feed the `hopUntyped` floor as well as the inline one. Adding four
+      // shapes that all used a typed rel diluted every existing share in this arm and pushed
+      // `hopUntyped` under its floor — the same dilution item 115 hit, and the reason that
+      // spelling has dedicated shapes at all.
+      `MATCH (a:T)-${pick(r, [`[:${t}]`, '[]'])}->(b {n: ${pick(r, ['3', '5', '7'])}}) RETURN count(*) AS x`,
+      `MATCH (a:T)-[:${t}]->(b:T {n: ${pick(r, ['3', '7'])}}) RETURN count(*) AS x`,
+      `MATCH (a:T)<-${pick(r, [`[:${t}]`, '[]'])}-(b {n: ${pick(r, ['3', '5'])}}) RETURN count(*) AS x`,
+      `MATCH (a:T)-[:${t}]->(b {s: ${pick(r, ["'a'", "'z'"])}}) RETURN count(*) AS x`,
       // DELIBERATELY NOT GENERATED: a tail whose INLINE predicate reads another pattern's
       // variable — `(b:T {n: a.n})` or `(b:T WHERE b.n = a.n)`. TS accepts both; native
       // rejects both with E_SYNTAX while accepting the clause-level `WHERE b.n = a.n`. That
@@ -1328,15 +1343,18 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       // Measured 410-433 generated and 359-376 of those non-zero, of 20,000.
       cntPropGenerated: cov.cntPropGenerated > 200,
       cntPropNonZero: cov.cntPropNonZero > 150,
-      // Measured over five seeds, of 20,000: 521-576 generated, 381-440 of those non-zero.
-      hopFilterGenerated: cov.hopFilterGenerated > 400,
-      hopFilterNonZero: cov.hopFilterNonZero > 300,
-      // The untyped spelling has its own shapes precisely so this floor can be meaningful:
-      // when it rode on a 1-in-4 relationship draw it measured 40/19 and ANY later shape
-      // added to this arm diluted it below the floor. Measured 98-120 generated, 91-108
-      // non-zero.
-      hopUntypedGenerated: cov.hopUntypedGenerated > 70,
-      hopUntypedNonZero: cov.hopUntypedNonZero > 60,
+      // These floors are PER-SHAPE shares of one arm, so they fall whenever the arm gains
+      // shapes — adding the inline-endpoint shapes of item 125 dropped `hopUntyped` from
+      // 98-120 to 47-81 without anything getting worse. So: when this arm grows, RE-MEASURE
+      // these and say so, do not lower them until the suite goes green. Their job is to catch
+      // a shape silently falling to ZERO, which is what happened twice (items 115, 125).
+      //
+      // Measured over five seeds, of 20,000: hopFilter 429-477 generated / 293-354 non-zero,
+      // hopUntyped 47-81 / 44-73.
+      hopFilterGenerated: cov.hopFilterGenerated > 350,
+      hopFilterNonZero: cov.hopFilterNonZero > 250,
+      hopUntypedGenerated: cov.hopUntypedGenerated > 35,
+      hopUntypedNonZero: cov.hopUntypedNonZero > 30,
       // Measured 263-311 generated and 109-128 of those with rows, AFTER this band gave half
       // its width to the count-shortcut family. If a future change narrows it again, this is
       // what says so.

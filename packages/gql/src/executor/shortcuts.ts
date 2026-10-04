@@ -24,6 +24,7 @@ import type {
   CClause,
   CNode,
   CompiledExpr,
+  CPredicate,
   CReturnItem,
   EvalEnv,
   Params,
@@ -34,6 +35,8 @@ import {
   freePredicateVars,
   columnName,
   compileExpr,
+  compilePredicate,
+  satisfies,
   countEdges,
   outNeighbors,
   propOf,
@@ -115,6 +118,64 @@ const buildNodeCount = (start: NodePattern, rowOf: (n: number) => Row): CountFn 
 
 /** 1-hop `(a)-[:T]->(b)` count: bucket sizes (unlabeled) or a filtered bucket
  * scan. `null` if the segment can't be bucket-counted (both/And/Not/wildcard). */
+/**
+ * An endpoint's INLINE constraint, carried into the tally.
+ *
+ * `MATCH (a:P)-[:E]->(b {k: 2}) RETURN count(*)` is the same question as the
+ * clause-`WHERE` spelling and cost 4x more, because `plainNode` rejected the node
+ * and the whole shortcut declined (audit item 124). The predicate is the COMPILED
+ * one and it is applied through `satisfies` — the general path's own
+ * implementation of inline-pattern semantics (`structuralEq`, and a NULL on an
+ * absent key dropping the row) — so the two spellings agree by construction
+ * rather than because the equivalence was re-derived here.
+ *
+ * `bindVar` is the node's own variable, bound before `satisfies` runs so an inline
+ * `(b WHERE b.k = 2)` can see itself.
+ */
+type InlinePred = { pred: CPredicate; bindVar?: string };
+
+/**
+ * The node's inline constraint as an `InlinePred`, or `null` if it must not be
+ * carried.
+ *
+ * Only CLOSED constraints are accepted — every inline property VALUE must have no
+ * free variables, and an inline `WHERE` may read nothing but the node's own
+ * variable. `(b {k: 2})` and `(b {k: $p})` qualify; `(b {k: a.k})` does not,
+ * because the tally would have to bind `a` per edge and that is the correlation
+ * problem of items 121-123, not this one. `undefined` means the node is plain and
+ * there is nothing to carry.
+ */
+const inlineOf = (n: NodePattern): InlinePred | null | undefined => {
+  if (plainNode(n)) {
+    return undefined;
+  }
+
+  for (const c of n.properties ?? []) {
+    if (freePredicateVars(c.value).size > 0) {
+      return null;
+    }
+  }
+
+  if (n.where !== undefined) {
+    // An inline `WHERE` is evaluated with the node bound to its own variable, so
+    // it needs one, and it may read nothing else.
+    if (n.variable === undefined) {
+      return null;
+    }
+
+    for (const name of freePredicateVars(n.where)) {
+      if (name !== n.variable) {
+        return null;
+      }
+    }
+  }
+
+  return {
+    pred: compilePredicate(n.properties, n.where),
+    ...(n.variable !== undefined ? { bindVar: n.variable } : {}),
+  };
+};
+
 /** A clause `WHERE` the 1-hop count can evaluate per edge, with the vars it reads. */
 type HopPred = {
   fn: CompiledExpr;
@@ -135,6 +196,28 @@ type HopScan = {
   pb: LabelExpr | undefined;
   out: boolean;
   types: string[] | undefined;
+  /** Inline endpoint constraints, applied via `satisfies`. See `InlinePred`. */
+  inNear?: InlinePred;
+  inFar?: InlinePred;
+};
+
+/** Apply an endpoint's inline constraint, binding the node's own variable first. */
+const inlineHolds = (
+  ip: InlinePred | undefined,
+  element: Vertex,
+  binding: Map<string, unknown>,
+  params: Params,
+  graph: Graph,
+): boolean => {
+  if (ip === undefined) {
+    return true;
+  }
+
+  if (ip.bindVar !== undefined) {
+    binding.set(ip.bindVar, element);
+  }
+
+  return satisfies(element, ip.pred, binding, params, graph);
 };
 
 /**
@@ -155,7 +238,7 @@ type HopScan = {
  * byte-identity break, not just a different number.
  */
 const startOnlyHopCount = (scan: HopScan, startVar: string): number => {
-  const { graph, params, pred, pa, out, types } = scan;
+  const { graph, params, pred, pa, out, types, inNear } = scan;
   const binding = new Map<string, unknown>();
   const env: EvalEnv = { binding, params, graph };
   const index = out ? graph.edgesFromByLabel : graph.edgesToByLabel;
@@ -187,6 +270,10 @@ const startOnlyHopCount = (scan: HopScan, startVar: string): number => {
       continue;
     }
 
+    if (inNear !== undefined && !inlineHolds(inNear, v, binding, params, graph)) {
+      continue;
+    }
+
     binding.set(startVar, v);
 
     if (asTruth(pred.fn(env)) === true) {
@@ -214,7 +301,7 @@ const startOnlyHopCount = (scan: HopScan, startVar: string): number => {
  * shape it did not otherwise touch read 1.15x slower in three interleaved rounds.
  */
 const tallyHopCount = (scan: HopScan): number => {
-  const { graph, params, pred, pa, pb, out, types } = scan;
+  const { graph, params, pred, pa, pb, out, types, inNear, inFar } = scan;
   const binding = new Map<string, unknown>();
   const env: EvalEnv = { binding, params, graph };
   let n = 0;
@@ -224,6 +311,17 @@ const tallyHopCount = (scan: HopScan): number => {
     const far = out ? edge.to : edge.from;
 
     if (!matchesLabel(near, pa) || !matchesLabel(far, pb)) {
+      continue;
+    }
+
+    // The `!== undefined` tests are inline on purpose: a call per edge to a helper
+    // that immediately returns true cost the un-constrained tally ~10% (120,000
+    // calls over this fixture) and is what the control rows caught.
+    if (inNear !== undefined && !inlineHolds(inNear, near, binding, params, graph)) {
+      continue;
+    }
+
+    if (inFar !== undefined && !inlineHolds(inFar, far, binding, params, graph)) {
       continue;
     }
 
@@ -252,10 +350,23 @@ const buildOneHopCount = (
   start: NodePattern,
   rowOf: (n: number) => Row,
   pred?: HopPred,
+  inNear?: InlinePred,
+  inFar?: InlinePred,
 ): CountFn | null => {
   const { rel, node } = seg;
 
-  if (!plainRel(rel) || !plainNode(node) || rel.direction === 'both') {
+  // `plainNode(node)` is deliberately NOT required: an inline endpoint constraint
+  // is carried in `inFar` instead of declining the shortcut (item 124). The caller
+  // only supplies it after checking the constraint is CLOSED, and the rel must
+  // still be plain — a rel predicate would need its own treatment.
+  if (!plainRel(rel) || rel.direction === 'both') {
+    return null;
+  }
+
+  // An inline constraint that reached here but was not compiled into `inFar` would
+  // be silently IGNORED, which is a wrong answer rather than a slow one. This is
+  // the invariant the caller is trusted to uphold, asserted where it is cheap.
+  if (!plainNode(node) && inFar === undefined) {
     return null;
   }
 
@@ -293,7 +404,7 @@ const buildOneHopCount = (
       const pa = vacuousLabel(graph, aLabel) ? undefined : aLabel;
       const pb = vacuousLabel(graph, bLabel) ? undefined : bLabel;
       const { startVar } = pred;
-      const scan: HopScan = { graph, params, pred, pa, pb, out, types };
+      const scan: HopScan = { graph, params, pred, pa, pb, out, types, inNear, inFar };
 
       // Summing per-type bucket sizes is sound under the same condition the
       // unlabeled O(1) path below uses: one type cannot collide with itself, and
@@ -304,12 +415,27 @@ const buildOneHopCount = (
         pred.farVar === undefined &&
         pred.relVar === undefined &&
         pb === undefined &&
+        // The per-vertex path never visits the far endpoint, so it cannot apply a
+        // constraint on it.
+        inFar === undefined &&
         (types?.length === 1 || graph.multiTypeEdgeCount === 0)
       ) {
         return rowOf(startOnlyHopCount(scan, startVar));
       }
 
       return rowOf(tallyHopCount(scan));
+    }
+
+    // An inline endpoint constraint with NO clause `WHERE` still has to be applied,
+    // and neither the O(1) bucket-size path nor the label-only walk below can see
+    // it — so route those to the tally, which does. Letting the bucket path answer
+    // `(b {k: 2})` would return every edge's count.
+    if (inNear !== undefined || inFar !== undefined) {
+      const pa = vacuousLabel(graph, aLabel) ? undefined : aLabel;
+      const pb = vacuousLabel(graph, bLabel) ? undefined : bLabel;
+      const bare: HopPred = { fn: () => true };
+
+      return rowOf(tallyHopCount({ graph, params, pred: bare, pa, pb, out, types, inNear, inFar }));
     }
 
     // A label every vertex carries constrains nothing, so drop it and let the O(1) path
@@ -492,6 +618,12 @@ export const detectCountShortcut = (clauses: readonly Clause[]): CountFn | null 
   const rowOf = (count: number): Row => ({ [column]: count });
   const [{ start, segments }] = m.patterns;
 
+  // A START-side inline constraint keeps DECLINING, and that is a measured choice,
+  // not an oversight. The tally is a full edge scan, so it only wins where no
+  // seeding is possible. The general path seeds `(a:P {k: 2})-[:E]->(b)` from the
+  // label bucket and walks 1,200 edges; routing it to the tally walks all 60,000
+  // and measured 5.2 -> 6.2ms at 20k vertices and 11.9 -> 17.8 at 40k. The FAR
+  // endpoint has no such seed, which is why only `inFar` is carried.
   if (!plainNode(start)) {
     return null;
   }
@@ -558,7 +690,13 @@ export const detectCountShortcut = (clauses: readonly Clause[]): CountFn | null 
   if (segments.length === 1) {
     const [seg] = segments;
 
-    return buildOneHopCount(seg, start, rowOf, pred);
+    const inFar = inlineOf(seg.node);
+
+    if (inFar === null) {
+      return null;
+    }
+
+    return buildOneHopCount(seg, start, rowOf, pred, undefined, inFar);
   }
 
   if (segments.length === 2) {
