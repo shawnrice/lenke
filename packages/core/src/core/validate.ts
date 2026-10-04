@@ -119,16 +119,22 @@ export const normalizePropertyValue = (value: unknown): unknown => {
   }
 
   if (Array.isArray(value)) {
-    let changed = false;
-    const out = value.map((v) => {
-      const n = normalizePropertyValue(v);
+    // Lazy, for the reason item 147 gave for the bag itself: `.map` allocated a whole new
+    // array on every call and the result was thrown away whenever nothing moved — which is
+    // almost always, since a list that came OUT of the graph is already normalized. Every
+    // write to the element paid it, for every list it carries, however unrelated.
+    let out: unknown[] | undefined;
 
-      changed ||= n !== v;
+    for (let i = 0; i < value.length; i++) {
+      const n = normalizePropertyValue(value[i]);
 
-      return n;
-    });
+      if (n !== value[i]) {
+        out ??= [...value];
+        out[i] = n;
+      }
+    }
 
-    return changed ? out : value;
+    return out ?? value;
   }
 
   // An existing record re-normalizes its values (they may be tagged temporals
@@ -136,7 +142,33 @@ export const normalizePropertyValue = (value: unknown): unknown => {
   // instance (Temporal, Vertex/Edge/Path) is NOT a plain object, so it passes
   // through — only a bare `{…}` (or a record) is a map value.
   if (value instanceof LenkeRecord) {
-    return LenkeRecord.from([...value].map(([k, v]) => [k, normalizePropertyValue(v)]));
+    // An EXISTING record is already canonical — `LenkeRecord.from` deduped and sorted its
+    // keys when it was built — so when no value moves the record IS its own normalization.
+    // This had no `changed` check at all: it spread the record to pairs, mapped to fresh
+    // pairs, then deduped, RE-SORTED and reconstructed, unconditionally, on every write to
+    // the element. At 128 entries that was 16.3us a write for a map the write never touched,
+    // against a 232ns baseline (audit item 148).
+    //
+    // The rebuild path copies the Map directly rather than going back through `from`:
+    // iteration order is already sorted and `set` on an existing key keeps its position, so
+    // the copy stays canonical without re-sorting.
+    //
+    // That rests on EVERY `LenkeRecord` being sorted, which is checked rather than assumed:
+    // the class is constructed in exactly two places — `LenkeRecord.from`, which sorts, and
+    // the line below, which copies an already-sorted one. If a third construction site ever
+    // appears that does not sort, this copy inherits its order and `from` would have fixed it.
+    let out: LenkeRecord | undefined;
+
+    for (const [k, v] of value) {
+      const n = normalizePropertyValue(v);
+
+      if (n !== v) {
+        out ??= new LenkeRecord(value);
+        out.set(k, n);
+      }
+    }
+
+    return out ?? value;
   }
 
   if (
