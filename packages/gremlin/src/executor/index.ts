@@ -12,6 +12,7 @@ import type { Graph } from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { Plan, Step } from '../ast.js';
+import { countShortcut } from './count-shortcut.js';
 import { applyStep } from './dispatch.js';
 import { seedFromIndex } from './index-seed.js';
 import { newContext, planReadsPath, type Traverser, unwrap } from './runtime.js';
@@ -549,6 +550,15 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
   }
 
   const effective = head === 0 ? plan : { ...plan, steps: plan.steps.slice(head) };
+
+  // A `count()` the graph already keeps a counter or bucket for is a READ, not a
+  // walk — see `countShortcut`. Checked before seeding because it answers the
+  // whole plan rather than narrowing its start.
+  const shortcut = countShortcut(effective, graph);
+
+  if (shortcut !== undefined) {
+    return [shortcut];
+  }
 
   // If the plan opens `V()`/`E()` + a seedable `has` on an indexed key, seed
   // from the index and apply only the residual steps; otherwise scan as usual.
