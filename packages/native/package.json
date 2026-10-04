@@ -34,7 +34,8 @@
     "fuzz": "bun fuzz.ts",
     "bench": "bun bench.ts",
     "bench:usage": "bun bench-usage.ts",
-    "spelling": "bun spelling-probe.ts"
+    "spelling": "bun spelling-probe.ts",
+    "bench:gremlin": "bun bench-gremlin.ts"
   },
   "dependencies": {
     "@lenke/core": "workspace:*",
