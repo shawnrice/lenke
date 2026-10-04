@@ -3928,6 +3928,21 @@ export class Graph {
     }
   };
 
+  // REJECTED lever — collapsing the `has`-then-`get` pairs below into a single `get` with an
+  // undefined check. This function is the single largest cost in a TypeScript NDJSON decode of
+  // 1,000,000 edges (22.7% of self time by `bun --cpu-prof`, MORE than `JSON.parse` itself), and
+  // it probes five maps with `has` and then `get` — about ten hash lookups an edge where five
+  // would do, several of them on a vertex-id STRING. ~5,000,000 redundant lookups over that
+  // decode. It looks like free money and it is NOT: interleaved min of three, rebuilding both
+  // ways each round,
+  //
+  //     before 2845.9 / 2893.0 / 2766.1      after 2913.9 / 2872.7 / 2876.7
+  //
+  // so 2766.1 against 2872.7 at the minimum — flat to marginally WORSE inside a ~5% band, with
+  // no win to claim either way. JSC appears to cache the key's hash, making a `get` right after
+  // a `has` on the same key nearly free; what this function actually costs is the `Set`/`Map`
+  // INSERTIONS and the inner containers allocated for a new vertex id, neither of which the
+  // rewrite touched. `indexVertexLabel` below has the same shape and the same verdict.
   private readonly indexEdgeLabel = (label: string, edge: Edge) => {
     if (!this.edgesByLabel.has(label)) {
       this.edgesByLabel.set(label, new Set());
