@@ -31,6 +31,7 @@ import type {
 } from '../executor.js';
 import {
   applyProjection,
+  projectedRows,
   compareSort,
   isEdge,
   isElement,
@@ -1223,7 +1224,7 @@ export const runLinearClauses = (
       case 'finish':
         return [];
       case 'return':
-        return toArray(map(mapToRow, applyProjection(clause.projection, bindings, params, graph)));
+        return projectedRows(clause.projection, bindings, params, graph);
     }
   }
 

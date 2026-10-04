@@ -21,7 +21,7 @@ import { Graph } from '@lenke/core';
 import { query as tsQuery } from '@lenke/gql';
 import { deserialize as tsDeserialize } from '@lenke/serialization';
 
-import { nativeBackend, nativeReady, resultsEqual } from './conformance-harness.js';
+import { columnOrderOf, nativeBackend, nativeReady, resultsEqual } from './conformance-harness.js';
 import { accept, resetUsage, usageCounts } from './divergence-registry.js';
 import { graphFromNdjson } from './graph.js';
 
@@ -1207,6 +1207,20 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       // Both errored → acceptable (both reject the input); a shape divergence is
       // when exactly one succeeds, or both succeed with different JSON.
       if (ts.ok && nat.ok) {
+        // COLUMN order, which `resultsEqual` cannot see because it sorts keys. Checked
+        // before the value comparison so a column-order divergence is reported as itself
+        // rather than hiding behind an equal-after-canonicalization pass.
+        const tsCols = columnOrderOf(ts.json);
+        const natCols = columnOrderOf(nat.json);
+
+        if (tsCols !== natCols) {
+          divergences.push(
+            `[seed ${caseSeed(SEED, i)}] ${q}\n    ts cols:     ${tsCols}` +
+              `\n    native cols: ${natCols}` +
+              `\n    (column order: fixed by RETURN, so this is a value difference no registry entry may excuse)`,
+          );
+        }
+
         if (!resultsEqual(ts.json, nat.json) && !numericTextTie(ts.json, nat.json)) {
           // Routed through the registry like the one-sided case, so an `order` or
           // `float-reduction` entry would apply here if one is ever declared. With none, this

@@ -72,3 +72,33 @@ export const canonResult = (json: string): string => {
  * because the engine and pure-TS engine agree on the answer but not on unspecified
  * output order. */
 export const resultsEqual = (a: string, b: string): boolean => canonResult(a) === canonResult(b);
+
+/**
+ * The first row's COLUMN sequence, which {@link canonResult} deliberately sorts
+ * away and so cannot compare.
+ *
+ * Row order is unspecified and canonicalized out on purpose. Column order is not:
+ * it is fixed by the RETURN clause, both engines render it in declaration order
+ * (verified across projections, `*`, GROUP BY, ORDER BY and DISTINCT), and it is
+ * part of the bytes a caller sees. Sorting keys before comparing left it
+ * completely unguarded — a reversed projection order passed the differential
+ * fuzzer on every seed tried, and the unit suites too.
+ *
+ * The FIRST row is enough and is row-order independent: one projection produces
+ * one column list, so every row carries the same keys in the same order. Nested
+ * objects stay out of scope here — an element's `properties` order is a storage
+ * question, which is why `canonResult` sorts those and still should.
+ */
+export const columnOrderOf = (json: string): string | undefined => {
+  const parsed: unknown = JSON.parse(json);
+
+  if (!Array.isArray(parsed) || parsed.length === 0) {
+    return undefined;
+  }
+
+  const first: unknown = parsed[0];
+
+  return first !== null && typeof first === 'object' && !Array.isArray(first)
+    ? Object.keys(first).join('\u0001')
+    : undefined;
+};

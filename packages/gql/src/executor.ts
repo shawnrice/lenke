@@ -1933,6 +1933,68 @@ const projectBinding = (
 };
 
 /**
+ * `projectBinding`'s twin, writing the output ROW directly.
+ *
+ * The no-sort path built a projected `Map` and then had `mapToRow` copy it into a
+ * plain object — two allocations and two iterations per row where one of each will
+ * do. Nothing downstream of that path wants the `Map` form: it exists for the
+ * ORDER BY overlay and for DISTINCT's row keys, and neither is present here.
+ *
+ * BYTE-IDENTITY. Column order is the output's observable shape, and it is
+ * unchanged: `mapToRow` walks the `Map` in insertion order, which is
+ * `proj.items` order (or the input binding's, under `*`), and this writes the
+ * same keys in the same order. A repeated column name keeps its first position
+ * in both a `Map` and an object, and `item.fn` is called in the same order, so a
+ * projection that throws throws on the same row at the same point.
+ */
+const projectRow = (proj: CProjection, binding: Binding, params: Params, graph: Graph): Row => {
+  const row: Row = {};
+
+  if (proj.star) {
+    for (const [k, v] of binding) {
+      row[k] = v;
+    }
+
+    return row;
+  }
+
+  const env: EvalEnv = { binding, params, graph };
+
+  for (const item of proj.items) {
+    row[item.name] = item.fn(env);
+  }
+
+  return row;
+};
+
+/**
+ * `Row`s for the shape that needs no sort, no dedup and no paging — the same
+ * five conditions `applyProjection` fast-paths (item 113). `undefined` means
+ * "not this shape", and the caller falls back to the general
+ * `map(mapToRow, applyProjection(…))`.
+ *
+ * Lazy, like the path it replaces: a row is projected when it is pulled.
+ */
+export const projectedRows = (
+  proj: CProjection,
+  bindings: Iterable<Binding>,
+  params: Params,
+  graph: Graph,
+): Row[] => {
+  if (
+    proj.aggregating ||
+    proj.orderBy.length > 0 ||
+    proj.distinct ||
+    resolveCount(proj.skip, params) !== undefined ||
+    resolveCount(proj.limit, params) !== undefined
+  ) {
+    return toArray(map(mapToRow, applyProjection(proj, bindings, params, graph)));
+  }
+
+  return toArray(map((b: Binding) => projectRow(proj, b, params, graph), bindings));
+};
+
+/**
  * The `cap` rows that sort first under `cmp`, in sorted order — an O(n log cap)
  * bounded selection instead of sorting all n rows to keep a small prefix. Streams
  * its input (only `cap` rows are ever held). Ties break by original stream
@@ -3474,6 +3536,7 @@ export const isVertex = (v: unknown): v is Vertex => isVertexShaped(v);
 // Statement execution: writes, clause processing, set ops (see executor/clauses.ts).
 import {
   combineRows,
+  mapToRow,
   matchClauseBindings,
   procedureSpec,
   queryHasWrite,
