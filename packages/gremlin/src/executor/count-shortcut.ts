@@ -51,7 +51,90 @@ export const countShortcut = (plan: Plan, graph: Graph): number | undefined => {
     return vertexStepCount(mid[0], graph);
   }
 
-  return mid.length === 2 ? filteredHopCount(mid[0], mid[1], graph) : undefined;
+  if (mid.length !== 2) {
+    return undefined;
+  }
+
+  return filteredHopCount(mid[0], mid[1], graph) ?? distinctHopCount(mid[0], mid[1], graph);
+};
+
+/**
+ * `V().out(T).dedupe().count()` — the number of DISTINCT far endpoints, read off
+ * the REVERSE adjacency index instead of walking every edge.
+ *
+ * The distinct targets of the type-`T` edges are exactly the vertices holding at
+ * least one in-edge of type `T`, and `edgesToByLabel` is keyed by vertex. So this
+ * is O(V) where the walk is O(E) — 200,000 keys instead of 1,000,000 edges on the
+ * bench fixture — and it allocates no `Set` of its own, where `dedupe` builds one
+ * holding every distinct vertex.
+ *
+ * MULTI-TYPE NEEDS NO EXTRA CONDITION HERE, unlike the edge counts above: this
+ * counts VERTICES, and "has a non-empty bucket for any of these labels" is a
+ * UNION per vertex. An edge carrying two of the named types makes its target
+ * qualify once either way.
+ *
+ * A vertex whose last `T` edge was DELETED is still a key: `deIndexEdgeLabel`
+ * removes that label's entry but leaves the per-vertex entry behind. So the test
+ * is per-label, not a key count.
+ *
+ * The non-empty (`size > 0`) part of that test is DEFENSIVE, and mutation says so:
+ * `deIndexEdgeLabel` removes a label's entry as soon as its set empties, and
+ * `indexEdgeLabel` only ever creates a set it immediately fills, so an empty
+ * bucket does not persist today. Replacing the check with `byLabel.has(label)`
+ * changes no answer. It stays because that equivalence depends on two other
+ * functions keeping their invariant.
+ */
+const distinctHopCount = (hop: Step, filter: Step, graph: Graph): number | undefined => {
+  if (hop.kind !== 'out' && hop.kind !== 'in') {
+    return undefined; // `both` reaches a vertex from either side; not one index
+  }
+
+  // Only the BARE `dedupe()`. Path-label scoping (`dedupe('a')`) and by-modulators
+  // dedupe on something other than the element.
+  if (
+    filter.kind !== 'dedupe' ||
+    (filter.labels?.length ?? 0) > 0 ||
+    (filter.bys?.length ?? 0) > 0
+  ) {
+    return undefined;
+  }
+
+  // `out` lands on an edge's TARGET, so its distinct endpoints are the keys of the
+  // TO index; `in` lands on the source, so the FROM index.
+  const index = hop.kind === 'out' ? graph.edgesToByLabel : graph.edgesFromByLabel;
+  const { labels } = hop;
+  let n = 0;
+
+  for (const byLabel of index.values()) {
+    if (labels.length === 0 ? anyNonEmpty(byLabel) : hasAny(byLabel, labels)) {
+      n += 1;
+    }
+  }
+
+  return n;
+};
+
+const anyNonEmpty = (byLabel: ReadonlyMap<string, ReadonlySet<Edge>>): boolean => {
+  for (const set of byLabel.values()) {
+    if (set.size > 0) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+const hasAny = (
+  byLabel: ReadonlyMap<string, ReadonlySet<Edge>>,
+  labels: readonly string[],
+): boolean => {
+  for (const label of labels) {
+    if ((byLabel.get(label)?.size ?? 0) > 0) {
+      return true;
+    }
+  }
+
+  return false;
 };
 
 /**

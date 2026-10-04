@@ -259,3 +259,123 @@ describe('a filtered hop count tallies the edge bucket', () => {
     expect(n(g, V(), out('E', 'F'), has('age', gt(95)), count())).toBe(0);
   });
 });
+
+// `V().out(T).dedupe().count()` reads the DISTINCT far endpoints off the reverse adjacency
+// index — O(V) instead of O(E), and no Set of its own (audit item 133). 369.5 -> 6.8ms, 54x.
+describe('a distinct hop count reads the reverse index', () => {
+  const g = (): Graph => {
+    const graph = new Graph();
+    const vs = Array.from({ length: 6 }, (_, i) =>
+      graph.addVertex({ id: `d${i}`, labels: [...LABELS[i], 'ALL'], properties: { k: i } }),
+    );
+
+    for (const [a, b, label] of EDGES) {
+      graph.addEdge({ from: vs[a], to: vs[b], labels: [label], properties: {} });
+    }
+
+    return graph;
+  };
+  // Distinct targets / sources of the type-`t` edges, straight from the known edge list.
+  const targets = (t?: string): number =>
+    new Set(EDGES.filter(([, , l]) => t === undefined || l === t).map(([, b]) => b)).size;
+  const sources = (t?: string): number =>
+    new Set(EDGES.filter(([, , l]) => t === undefined || l === t).map(([a]) => a)).size;
+
+  test('it matches the arithmetic and the forced-decline route', () => {
+    const graph = g();
+
+    for (const t of ['E', 'F']) {
+      expect(n(graph, V(), out(t), dedupe(), count())).toBe(targets(t));
+      expect(n(graph, V(), in_(t), dedupe(), count())).toBe(sources(t));
+      // A vacuous leading `hasLabel('ALL')` makes it three intermediate steps, so the shortcut
+      // declines and the same question runs through `dedupe`'s own Set.
+      expect(n(graph, V(), hasLabel('ALL'), out(t), dedupe(), count())).toBe(targets(t));
+      expect(n(graph, V(), hasLabel('ALL'), in_(t), dedupe(), count())).toBe(sources(t));
+    }
+
+    // No type: every edge.
+    expect(n(graph, V(), out(), dedupe(), count())).toBe(targets());
+    expect(n(graph, V(), in_(), dedupe(), count())).toBe(sources());
+    expect(n(graph, V(), out(), dedupe(), count())).toBe(
+      n(graph, V(), hasLabel('ALL'), out(), dedupe(), count()),
+    );
+    // PARALLEL edges and SELF-LOOPS are in the fixture: `[0,1]` appears once but `[3,3]` and
+    // `[1,1]` are loops, so a vertex can be its own distinct target.
+    expect(targets('E')).toBeLessThan(EDGES.filter(([, , l]) => l === 'E').length);
+  });
+
+  // MULTI-TYPE needs no extra condition here, unlike the edge counts: this counts VERTICES, and
+  // "has an edge of any of these types" is a union per vertex. An edge carrying both types makes
+  // its target qualify once either way — which a bucket SUM would get wrong.
+  test('a multi-type edge does not double-count its endpoint', () => {
+    const graph = new Graph();
+    const a = graph.addVertex({ id: 'a', labels: ['P', 'ALL'], properties: {} });
+    const b = graph.addVertex({ id: 'b', labels: ['P', 'ALL'], properties: {} });
+
+    graph.addEdge({ from: a, to: b, labels: ['E', 'F'], properties: {} });
+
+    expect(n(graph, V(), out('E', 'F'), dedupe(), count())).toBe(1);
+    expect(n(graph, V(), out('E', 'F'), dedupe(), count())).toBe(
+      n(graph, V(), hasLabel('ALL'), out('E', 'F'), dedupe(), count()),
+    );
+  });
+
+  // THE SUBTLE ONE. `deIndexEdgeLabel` removes a label's entry when its set empties but leaves
+  // the per-vertex entry behind, so a vertex whose last `T` edge was DELETED is still a key in
+  // the index. Counting keys rather than NON-EMPTY buckets would over-count it.
+  test('a vertex whose last edge of that type was deleted is not counted', () => {
+    const graph = new Graph();
+    const a = graph.addVertex({ id: 'a', labels: ['ALL'], properties: {} });
+    const b = graph.addVertex({ id: 'b', labels: ['ALL'], properties: {} });
+    const c = graph.addVertex({ id: 'c', labels: ['ALL'], properties: {} });
+    const keep = graph.addEdge({ from: a, to: b, labels: ['E'], properties: {} });
+    const gone = graph.addEdge({ from: a, to: c, labels: ['E'], properties: {} });
+
+    expect(n(graph, V(), out('E'), dedupe(), count())).toBe(2);
+
+    graph.removeEdge(gone);
+
+    expect(n(graph, V(), out('E'), dedupe(), count())).toBe(1);
+    expect(n(graph, V(), out('E'), dedupe(), count())).toBe(
+      n(graph, V(), hasLabel('ALL'), out('E'), dedupe(), count()),
+    );
+
+    graph.removeEdge(keep);
+
+    expect(n(graph, V(), out('E'), dedupe(), count())).toBe(0);
+    expect(n(graph, V(), hasLabel('ALL'), out('E'), dedupe(), count())).toBe(0);
+    // The UNTYPED spelling walks a different branch (`anyNonEmpty`), so it gets the same
+    // after-deletion check rather than inheriting the typed one's coverage.
+    expect(n(graph, V(), out(), dedupe(), count())).toBe(0);
+    expect(n(graph, V(), hasLabel('ALL'), out(), dedupe(), count())).toBe(0);
+  });
+
+  test('shapes it declines still answer correctly', () => {
+    const graph = g();
+
+    // `both()` reaches a vertex from either side, so it is not one index.
+    expect(n(graph, V(), both('E'), dedupe(), count())).toBe(
+      n(graph, V(), hasLabel('ALL'), both('E'), dedupe(), count()),
+    );
+    // A by-modulator dedupes on something other than the element. The by-key must REPEAT or
+    // the case proves nothing: with `k: i` (unique per vertex) distinct-by-k equals
+    // distinct-vertex, and a mutant that took the shortcut anyway passed. `grp` is `k % 2`.
+    const grouped = new Graph();
+    const gv = Array.from({ length: 6 }, (_, i) =>
+      grouped.addVertex({ id: `g${i}`, labels: ['ALL'], properties: { grp: i % 2 } }),
+    );
+
+    for (const [a, b, label] of EDGES) {
+      grouped.addEdge({ from: gv[a], to: gv[b], labels: [label], properties: {} });
+    }
+
+    // Distinct targets of E is more than the distinct `grp` values among them (there are two),
+    // so the shortcut's answer and the by-modulated answer MUST differ.
+    expect(n(grouped, V(), out('E'), dedupe().by('grp'), count())).toBe(
+      n(grouped, V(), hasLabel('ALL'), out('E'), dedupe().by('grp'), count()),
+    );
+    expect(n(grouped, V(), out('E'), dedupe().by('grp'), count())).not.toBe(
+      n(grouped, V(), out('E'), dedupe(), count()),
+    );
+  });
+});
