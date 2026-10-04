@@ -573,6 +573,60 @@ const pickPattern = (patterns: readonly CPath[], remaining: readonly number[], b
  * so a shared mutable done-mask would be corrupted the moment a consumer
  * interleaved two of them.
  */
+/**
+ * How many tail bindings may be cached to avoid re-matching an uncorrelated
+ * pattern. Bounded on purpose: `matchClauseBindings` promises to stream, and this
+ * is the one place that holds rows. The pathology it fixes is worst when the tail
+ * is SMALL and the bucket it scans is LARGE (audit item 121: four tail rows cost
+ * 10.6ms because a 20,000-vertex bucket was rescanned per outer row), while a tail
+ * big enough to overflow this means a product big enough to be output-bound
+ * anyway — so the cap gives up nothing that mattered.
+ */
+const TAIL_CACHE_CAP = 4096;
+
+/** Do none of `rest`'s patterns bind or read anything `pat` binds? */
+const tailIsUncorrelated = (
+  patterns: readonly CPath[],
+  rest: readonly number[],
+  pat: CPath,
+): boolean => {
+  if (pat.binds.size === 0) {
+    return true; // binds nothing, so nothing downstream can depend on it
+  }
+
+  for (const i of rest) {
+    const r = patterns[i];
+
+    for (const name of pat.binds) {
+      if (r.binds.has(name) || r.reads.has(name)) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+};
+
+/**
+ * Pull at most `TAIL_CACHE_CAP` bindings; `undefined` if there are more.
+ *
+ * Overflow discards what it pulled and the caller falls back to re-matching, so
+ * the wasted work is bounded by the cap — once, not per outer row.
+ */
+const cacheTail = (rows: Iterable<Binding>): Binding[] | undefined => {
+  const out: Binding[] = [];
+
+  for (const b of rows) {
+    if (out.length === TAIL_CACHE_CAP) {
+      return undefined;
+    }
+
+    out.push(b);
+  }
+
+  return out;
+};
+
 const visitRemaining = function* (
   graph: Graph,
   patterns: readonly CPath[],
@@ -588,8 +642,40 @@ const visitRemaining = function* (
 
   const pick = pickPattern(patterns, remaining, binding);
   const rest = remaining.filter((_, i) => i !== pick);
+  const pat = patterns[remaining[pick]];
 
-  for (const b of matchPattern(graph, patterns[remaining[pick]], binding, params)) {
+  // An UNCORRELATED tail matches the same rows for every row of `pat`, so match it
+  // ONCE and form the product — instead of re-running it per outer row, which made
+  // the cost `outer x BUCKET` rather than `outer x tail` and put this 160x behind
+  // the native engine (audit item 121).
+  //
+  // The tail is matched against `binding`, NOT an empty binding: `binding` is fixed
+  // for this call, so the tail may still read anything bound at an OUTER level and
+  // only `pat`'s own bindings have to be absent from it.
+  //
+  // Row ORDER is unchanged — the nested loops enumerate exactly what the recursion
+  // did, in the same sequence — and so is `pickPattern`'s choice inside the tail,
+  // because `patternRank` differs between `binding` and `b` only on whether a
+  // pattern continues an existing binding, which uncorrelatedness rules out.
+  if (rest.length > 0 && tailIsUncorrelated(patterns, rest, pat)) {
+    const tail = cacheTail(visitRemaining(graph, patterns, rest, binding, params));
+
+    if (tail !== undefined) {
+      for (const b of matchPattern(graph, pat, binding, params)) {
+        for (const t of tail) {
+          // `t` already carries `binding`; `b` carries `binding` plus `pat`'s own
+          // variables. Merging in this order reproduces the recursion's key order
+          // exactly — outer keys, then `pat`'s, then the tail's — which `RETURN *`
+          // projects in.
+          yield new Map([...b, ...t]);
+        }
+      }
+
+      return;
+    }
+  }
+
+  for (const b of matchPattern(graph, pat, binding, params)) {
     yield* visitRemaining(graph, patterns, rest, b, params);
   }
 };

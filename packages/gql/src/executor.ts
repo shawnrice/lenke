@@ -2353,6 +2353,18 @@ export type CPath = {
   selector: PathSelector;
   /** The repeated-element restrictor on a var-length walk; defaults to `trail`. */
   mode: PathMode;
+  /**
+   * Every variable this pattern BINDS, and every OUTER variable its expressions
+   * READ. Both are computed at compile time because they have to be: by the time
+   * a `CPath` reaches the matcher its predicates are compiled closures, with no
+   * AST left to walk (see audit item 121).
+   *
+   * `reads` excludes the pattern's own bindings — `(n WHERE n.age > 30)` reads
+   * nothing outer — so `reads` is exactly the set that makes this pattern
+   * CORRELATED with something bound before it.
+   */
+  binds: ReadonlySet<string>;
+  reads: ReadonlySet<string>;
 };
 
 const compileProps = (props: readonly PropertyConstraint[] | undefined): CProp[] =>
@@ -2636,10 +2648,32 @@ const compileSubpathUnit = (seg: Segment): CUnit => {
   };
 };
 
+/**
+ * The variables a pattern binds, and the OUTER ones its expressions read.
+ *
+ * `reads` is delegated to `freePredicateVars` over a synthetic `EXISTS { pattern }`
+ * rather than re-walking the pattern here: that walker already visits exactly the
+ * inline property values and inline `WHERE`s at every depth (nodes, rels,
+ * repetition units), already adds the pattern's own bindings to its bound set
+ * before descending, and already carries an exhaustiveness guard so a new `Expr`
+ * kind cannot slip past it. A second traversal would be a second thing to keep
+ * in step with the grammar.
+ */
+const patternVarSets = (pattern: PathPattern): { binds: Set<string>; reads: Set<string> } => {
+  const binds = new Set<string>();
+
+  patternBoundVars(pattern, binds);
+
+  return { binds, reads: freePredicateVars({ kind: 'exists', patterns: [pattern] }) };
+};
+
 const compilePath = (pattern: PathPattern): CPath => {
   const selector = pattern.selector ?? 'walk';
+  const { binds, reads } = patternVarSets(pattern);
 
   return {
+    binds,
+    reads,
     start: compileNode(pattern.start),
     segments: pattern.segments.map((seg) => {
       const crel = compileRel(seg.rel);

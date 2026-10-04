@@ -852,6 +852,29 @@ const genQuery = (r: () => number): string => {
       `MATCH (a:T)-[]->(b) WHERE ${pick(r, ['a.n >= 0', 'a.n > 3', 'b.n > 3'])} RETURN count(*) AS x`,
       `MATCH (a:T)<-[]-(b) WHERE ${pick(r, ['a.n >= 0', 'b.n = 7'])} RETURN count(*) AS x`,
       `MATCH (a)-[e]->(b) WHERE e.w >= 0 RETURN count(*) AS x`,
+      // MULTI-PATTERN MATCH — a comma-separated product, which this generator emitted ZERO
+      // times before. That is how the per-outer-row rescan of audit item 121 went unnoticed,
+      // and the hoist that fixed it lands in the matching core with no fuzzer coverage at all
+      // until these shapes exist. The fixture is tiny, so a product is cheap.
+      //
+      // The pairs matter: an UNCORRELATED product may be hoisted, while a tail that READS the
+      // outer pattern (`{n: a.n}`) or SHARES its variable (`(a)-[:E]->`) must not be. A
+      // correlation test that is wrong in either direction answers differently on one of these.
+      `MATCH (a:T), (b:${pick(r, ['T', 'U'])}) RETURN count(*) AS x`,
+      `MATCH (a:T {n: ${pick(r, ['3', '5', '7'])}}), (b:T {n: ${pick(r, ['3', '7'])}}) RETURN count(*) AS x`,
+      `MATCH (a:T), (a)-[:${t}]->(b) RETURN count(*) AS x`,
+      `MATCH (a:T), (b:U), (d:T) RETURN count(*) AS x`,
+      // ...and with ROWS rather than a count, so column order and values are compared too.
+      `MATCH (a:T), (b:U) RETURN a.n AS x, b.n AS t ORDER BY x, t`,
+      // DELIBERATELY NOT GENERATED: a tail whose INLINE predicate reads another pattern's
+      // variable — `(b:T {n: a.n})` or `(b:T WHERE b.n = a.n)`. TS accepts both; native
+      // rejects both with E_SYNTAX while accepting the clause-level `WHERE b.n = a.n`. That
+      // is a pre-existing capability gap (no Rust changed when it was found), so generating
+      // it would make this suite red on a question about the engines rather than about any
+      // change. Written up in audit item 122. CONSEQUENCE: the `reads` half of
+      // `tailIsUncorrelated` has NO fuzzer coverage — there is no spelling of pattern-level
+      // correlation native will parse — so its only guard is
+      // `packages/gql/src/multi-pattern.test.ts`.
       // DELIBERATELY NOT GENERATED: a non-boolean predicate over an edge type carrying no
       // edges (`MATCH (a:T)-[:ABSENT]->(b) WHERE a.n RETURN count(*)`). It is the only shape
       // that could catch a shortcut evaluating a predicate for an element the general path

@@ -242,13 +242,16 @@ export const reversePath = (path: CPath): CPath => {
     });
   }
 
-  // Reversing swaps the endpoints but not what the path binds to.
+  // Reversing swaps the endpoints but not what the path binds to — nor which outer
+  // variables it reads, so both variable sets carry over unchanged.
   return {
     start: nodes[nodes.length - 1],
     segments,
     ...(path.pathVar !== undefined ? { pathVar: path.pathVar } : {}),
     selector: path.selector,
     mode: path.mode,
+    binds: path.binds,
+    reads: path.reads,
   };
 };
 
