@@ -82,6 +82,16 @@ const plainRel = (r: RelPattern): boolean =>
 type CountFn = (graph: Graph, params: Params) => Row;
 
 /**
+ * A count builder is generic in what it WRAPS its number into, so the same builder
+ * serves two callers: the single-pattern shortcut wraps the number into the result
+ * `Row`, and the product shortcut (`detectProductCount`) takes the number itself to
+ * multiply. Making the three builders generic rather than number-returning keeps
+ * every `return rowOf(...)` in their bodies untouched — the alternative was editing
+ * a dozen return sites in code whose arithmetic is the part that must not move.
+ */
+type CountOf<T> = (graph: Graph, params: Params) => T;
+
+/**
  * `MATCH (n[:L]) RETURN count(*)` — the node count, straight off the label bucket.
  *
  * This shape had NO shortcut: `detectCountShortcut` handled one and two segments and fell
@@ -100,20 +110,60 @@ type CountFn = (graph: Graph, params: Params) => Row;
  * Only the plain single-label form and the unlabelled form are answered. `and` (`(n:A:B)`),
  * `or`, `not` and `%` have no single bucket, so they fall through to enumeration.
  */
-const buildNodeCount = (start: NodePattern, rowOf: (n: number) => Row): CountFn | null => {
+const buildNodeCount = <T>(
+  start: NodePattern,
+  rowOf: (n: number) => T,
+  preds: readonly InlinePred[] = [],
+): CountOf<T> | null => {
   const { label } = start;
 
-  if (label === undefined) {
-    return (graph) => rowOf(graph.vertexCount);
-  }
-
-  if (label.kind !== 'label') {
+  if (label !== undefined && label.kind !== 'label') {
     return null;
   }
 
-  const { name } = label;
+  const name = label?.name;
 
-  return (graph) => rowOf(graph.verticesByLabel.get(name)?.size ?? 0);
+  // UNCONSTRAINED: the bucket's size IS the answer, so this stays O(1).
+  if (preds.length === 0) {
+    if (name === undefined) {
+      return (graph) => rowOf(graph.vertexCount);
+    }
+
+    return (graph) => rowOf(graph.verticesByLabel.get(name)?.size ?? 0);
+  }
+
+  // CONSTRAINED: tally the bucket. O(bucket) rather than O(1), but it is the same
+  // walk the general path makes with none of the row building — and it is what lets
+  // `productCountOf` take a constrained pattern as a factor at all.
+  //
+  // The predicate is applied through `inlineHolds` -> `satisfies`, the general
+  // path's own implementation, so the two spellings of a constrained node count
+  // agree by construction rather than by re-deriving inline-pattern semantics here.
+  return (graph, params) => {
+    const vertices: Iterable<Vertex> =
+      name === undefined ? graph.verticesById.values() : (graph.verticesByLabel.get(name) ?? []);
+    // One binding map, reused: `inlineHolds` overwrites the node's own variable per
+    // vertex and nothing else reads it, which is what `preds` being CLOSED buys.
+    const binding = new Map<string, unknown>();
+    let n = 0;
+
+    for (const v of vertices) {
+      let ok = true;
+
+      for (const ip of preds) {
+        if (!inlineHolds(ip, v, binding, params, graph)) {
+          ok = false;
+          break;
+        }
+      }
+
+      if (ok) {
+        n += 1;
+      }
+    }
+
+    return rowOf(n);
+  };
 };
 
 /** 1-hop `(a)-[:T]->(b)` count: bucket sizes (unlabeled) or a filtered bucket
@@ -347,14 +397,14 @@ const tallyHopCount = (scan: HopScan): number => {
   return n;
 };
 
-const buildOneHopCount = (
+const buildOneHopCount = <T>(
   seg: Segment,
   start: NodePattern,
-  rowOf: (n: number) => Row,
+  rowOf: (n: number) => T,
   pred?: HopPred,
   inNear?: InlinePred,
   inFar?: InlinePred,
-): CountFn | null => {
+): CountOf<T> | null => {
   const { rel, node } = seg;
 
   // `plainNode(node)` is deliberately NOT required: an inline endpoint constraint
@@ -509,12 +559,12 @@ const side = (
 /** 2-hop `(a)-[:T1]->(b)-[:T2]->(c)` count via the degree product
  * `Σ_b (edges reaching a valid a) × (edges reaching a valid c)`. `null` unless
  * both rels are anonymous + directed and the node variables are distinct. */
-const buildTwoHopCount = (
+const buildTwoHopCount = <T>(
   s1: Segment,
   s2: Segment,
   start: NodePattern,
-  rowOf: (n: number) => Row,
-): CountFn | null => {
+  rowOf: (n: number) => T,
+): CountOf<T> | null => {
   if (
     !plainRel(s1.rel) ||
     !plainRel(s2.rel) ||
@@ -576,68 +626,19 @@ const buildTwoHopCount = (
 };
 
 /**
- * If a linear query is exactly `MATCH <1- or 2-segment path> RETURN count(*)`,
- * return a closure computing the count directly (O(1)/O(E)) instead of
- * enumerating every match; `null` if the shape doesn't qualify. The conditions
- * match the native engine: 1-hop directed, no props/WHERE; 2-hop additionally
- * needs anonymous rels and pairwise-distinct node variables (so the homomorphic
- * degree product is exact).
+ * The count for ONE pattern, shared by the single-pattern shortcut and by
+ * `detectProductCount`. Generic in `rowOf` so the first wraps into a `Row` and the
+ * second takes the raw number to multiply.
+ *
+ * `where` is the clause `WHERE`, which only the 1-hop tally can answer; the product
+ * caller passes `undefined` because it refuses a clause `WHERE` outright.
  */
-export const detectCountShortcut = (clauses: readonly Clause[]): CountFn | null => {
-  if (clauses.length !== 2) {
-    return null;
-  }
-
-  const [m, ret] = clauses;
-
-  if (m.kind !== 'match' || m.optional || m.patterns.length !== 1) {
-    return null;
-  }
-
-  if (ret.kind !== 'return') {
-    return null;
-  }
-
-  const proj = ret.projection;
-
-  // `groupBy` and `having` were MISSING here, and both are silent wrong answers rather than
-  // slow paths — a shortcut answers one global count, so a grouped count collapses to a single
-  // row and a `HAVING` that should drop the row never runs. Measured against native, which is
-  // right in every case:
-  //
-  //   MATCH (a:Person)-[:KNOWS]->(b) RETURN count(*) AS c GROUP BY a
-  //     ts [{"c":4}]   native [[1],[1],[1],[1]]
-  //   SELECT count(*) AS c FROM MATCH (a:Person)-[:KNOWS]->(b) HAVING count(*) > 100
-  //     ts [{"c":4}]   native []
-  //
-  // The 1-hop and 2-hop shortcuts have shipped with this. The `gql-conformance` HAVING case
-  // did not catch it because it asks a BARE NODE pattern, which had no shortcut until
-  // `buildNodeCount` and so went through general execution — adding that shortcut is what
-  // turned the latent gap into a failing test. A `LET` before the `RETURN` also hid it, by
-  // making `clauses.length !== 2` reject the shortcut outright.
-  if (
-    proj.star ||
-    proj.distinct ||
-    proj.groupBy !== undefined ||
-    proj.having !== undefined ||
-    (proj.orderBy?.length ?? 0) > 0 ||
-    proj.skip !== undefined ||
-    proj.limit !== undefined ||
-    proj.items.length !== 1
-  ) {
-    return null;
-  }
-
-  const [item] = proj.items;
-  const e = item.expr;
-
-  if (e.kind !== 'func' || e.name !== 'count' || !e.star || e.distinct) {
-    return null;
-  }
-
-  const column = item.alias ?? columnName(e);
-  const rowOf = (count: number): Row => ({ [column]: count });
-  const [{ start, segments }] = m.patterns;
+const patternCountOf = <T>(
+  pattern: PathPattern,
+  where: Expr | undefined,
+  rowOf: (n: number) => T,
+): CountOf<T> | null => {
+  const { start, segments } = pattern;
 
   // The START node's inline constraint is carried for the ONE-HOP shape, where it
   // routes to the per-VERTEX walk (item 129). The node-count and two-hop shapes
@@ -650,10 +651,14 @@ export const detectCountShortcut = (clauses: readonly Clause[]): CountFn | null 
   // for the tally; the per-vertex path is the right route and beats both.
   let inStart: InlinePred | null | undefined;
 
-  if (segments.length === 1) {
+  if (segments.length <= 1) {
+    // The NODE-ONLY shape joined this in item 135: `buildNodeCount` can now tally a
+    // constrained bucket, which both answers `MATCH (a:P {k: 1}) RETURN count(*)`
+    // (previously 10.5ms against native's 0.04ms) and lets `productCountOf` use a
+    // constrained pattern as a factor.
     inStart = inlineOf(start);
   } else if (!plainNode(start)) {
-    // Node-count and two-hop shapes have no route that applies a predicate.
+    // The two-hop degree product has no route that applies a predicate.
     return null;
   }
 
@@ -661,14 +666,43 @@ export const detectCountShortcut = (clauses: readonly Clause[]): CountFn | null 
     return null;
   }
 
+  if (segments.length === 0) {
+    // A clause `WHERE` over the single node is the SAME question as the inline
+    // spelling, and tallying one while declining the other would create exactly the
+    // equivalent-spelling gap the probe exists to catch. It is carried as a second
+    // closed predicate rather than by splicing an `AND` into the AST.
+    const preds: InlinePred[] = [];
+
+    if (inStart !== undefined) {
+      preds.push(inStart);
+    }
+
+    if (where !== undefined) {
+      if (start.variable === undefined) {
+        return null;
+      }
+
+      for (const nameRead of freePredicateVars(where)) {
+        if (nameRead !== start.variable) {
+          return null;
+        }
+      }
+
+      preds.push({ pred: compilePredicate(undefined, where), bindVar: start.variable });
+    }
+
+    return buildNodeCount(start, rowOf, preds);
+  }
+
   // A clause `WHERE` is answerable ONLY by the 1-hop tally below, and only when it reads
   // nothing but the pattern's own variables — an outer variable cannot exist here (this shape
   // is exactly two clauses) but an aggregate or a subquery could, and `freePredicateVars`
   // reports those as free names it does not recognize.
-  const { where } = m;
   let pred: HopPred | undefined;
 
   if (where !== undefined) {
+    // The node shape returned above, having folded its clause `WHERE` into the
+    // tally; of what is left only the 1-hop tally can answer one.
     if (segments.length !== 1) {
       return null;
     }
@@ -716,10 +750,6 @@ export const detectCountShortcut = (clauses: readonly Clause[]): CountFn | null 
     };
   }
 
-  if (segments.length === 0) {
-    return buildNodeCount(start, rowOf);
-  }
-
   if (segments.length === 1) {
     const [seg] = segments;
 
@@ -739,6 +769,236 @@ export const detectCountShortcut = (clauses: readonly Clause[]): CountFn | null 
   }
 
   return null;
+};
+
+/**
+ * Every name a pattern BINDS. Used only to prove two patterns are independent, so it
+ * over-collects deliberately: a name this misses would be a wrong answer, while a
+ * name it reports that the pattern does not really bind only makes `productCountOf`
+ * decline. `hopFrom`/`hopTo` and the multi-element repetition hops belong to
+ * var-length units that `patternCountOf` already refuses, and are collected anyway.
+ */
+const patternVarsOf = (pattern: PathPattern): string[] => {
+  const out: string[] = [];
+  const add = (v: string | undefined): void => {
+    if (v !== undefined) {
+      out.push(v);
+    }
+  };
+
+  const walk = (seg: Segment): void => {
+    add(seg.rel.variable);
+    add(seg.node.variable);
+    add(seg.hopFrom?.variable);
+    add(seg.hopTo?.variable);
+
+    // `unitRest` and `nested` are themselves segments (a multi-element or nested
+    // repetition unit), so the inner variables need the same walk.
+    for (const inner of seg.unitRest ?? []) {
+      walk(inner);
+    }
+
+    if (seg.nested !== undefined) {
+      walk(seg.nested);
+    }
+  };
+
+  add(pattern.pathVar);
+  add(pattern.start.variable);
+  pattern.segments.forEach(walk);
+
+  return out;
+};
+
+/**
+ * `MATCH (a:P {k: 1}), (b:P {k: 2}) RETURN count(*)` — the product of the patterns'
+ * own counts, because independent patterns form a cartesian product and
+ * `count(*)` of a product is the product of the counts.
+ *
+ * This was the single widest row in the TS spelling probe (45-54ms where every
+ * other group was under 12ms) and it is the shape `detectCountShortcut` rejected
+ * outright, via `patterns.length !== 1`. It is also QUADRATIC: on a 20,000-vertex
+ * fixture with |k=1| = 5,000 and |k=2| = 2,143 the answer is 10,715,000 rows, which
+ * TS enumerated in 2,808ms and NATIVE enumerated in 77ms — a missing path in both
+ * engines, not a TS-only gap. At the cross-engine bench's 200,000 vertices the same
+ * query is over a BILLION rows.
+ *
+ * **Both spellings are handled together, deliberately.** `(a), (b)` in one `MATCH`
+ * and `MATCH (a) MATCH (b)` ask the identical question, measured at 2,808ms and
+ * 2,473ms; teaching one and not the other would manufacture exactly the
+ * equivalent-spelling asymmetry this repo treats as a bug class.
+ *
+ * ### Why the product is sound here, checked rather than assumed
+ *
+ * The risk was a cross-pattern uniqueness rule: if a multi-pattern `MATCH` required
+ * DIFFERENT EDGES across its patterns, two edge patterns would be |E|^2 - |E| and a
+ * product would silently overcount. Measured on a 6-vertex / 4-edge fixture, with
+ * both engines agreeing on every case:
+ *
+ *     MATCH (a:P), (b:P)                      36 = 6^2   (so no vertex uniqueness)
+ *     MATCH (a:P), (b:P), (c:P)              216 = 6^3
+ *     MATCH (a:P) MATCH (b:P)                 36 = 6^2
+ *     MATCH ()-[:E]->(), ()-[:E]->()          16 = 4^2   (so no edge uniqueness)
+ *     MATCH ()-[r:E]->(), ()-[s:E]->()        16 = 4^2   (named edges too)
+ *     MATCH ()-[:E]->(), (b:P)                24 = 4*6
+ *
+ * So the product matches what both engines already return, which is the oracle that
+ * matters — not an argument from what the shape ought to mean.
+ *
+ * ### Three refusals
+ *
+ * - **A shared variable is a JOIN, not a product.** `MATCH (a:P), (a:Q)` and
+ *   `MATCH (a:P) MATCH (a:P)` constrain one binding, so their count is not a
+ *   product. Disjointness is checked over `patternVarsOf`, which over-collects.
+ * - **A clause `WHERE` can CORRELATE the patterns.**
+ *   `MATCH (a:P {k: 1}), (b:P) WHERE b.k = a.k` is not a product (measured: 39,640ms
+ *   TS / 681ms native, and its answer is not |A| x |B|). A `WHERE` reading only one
+ *   pattern would still be a product, but that needs the predicate attributed to a
+ *   pattern, so every `WHERE` declines for now.
+ * - **Every pattern must have its own shortcut.** `patternCountOf` returning `null`
+ *   for any one of them declines the whole product rather than enumerating part of
+ *   it.
+ */
+const productCountOf = <T>(
+  matches: readonly Extract<Clause, { kind: 'match' }>[],
+  rowOf: (n: number) => T,
+): CountOf<T> | null => {
+  const counts: CountOf<number>[] = [];
+  const bound = new Set<string>();
+
+  for (const match of matches) {
+    if (match.where !== undefined) {
+      return null;
+    }
+
+    for (const pattern of match.patterns) {
+      for (const name of patternVarsOf(pattern)) {
+        if (bound.has(name)) {
+          return null;
+        }
+
+        bound.add(name);
+      }
+
+      const one = patternCountOf(pattern, undefined, identityCount);
+
+      if (one === null) {
+        return null;
+      }
+
+      counts.push(one);
+    }
+  }
+
+  if (counts.length < 2) {
+    return null;
+  }
+
+  return (graph, params) => {
+    let n = 1;
+
+    for (const count of counts) {
+      // A zero factor makes the product zero, and the remaining factors cannot
+      // change that — so an empty label bucket costs one lookup, not all of them.
+      n *= count(graph, params);
+
+      if (n === 0) {
+        return rowOf(0);
+      }
+    }
+
+    return rowOf(n);
+  };
+};
+
+/** `rowOf` for the product path, which wants the number itself. */
+const identityCount = (n: number): number => n;
+
+/**
+ * If a linear query is exactly `MATCH <1- or 2-segment path> RETURN count(*)`,
+ * return a closure computing the count directly (O(1)/O(E)) instead of
+ * enumerating every match; `null` if the shape doesn't qualify. The conditions
+ * match the native engine: 1-hop directed, no props/WHERE; 2-hop additionally
+ * needs anonymous rels and pairwise-distinct node variables (so the homomorphic
+ * degree product is exact).
+ */
+export const detectCountShortcut = (clauses: readonly Clause[]): CountFn | null => {
+  if (clauses.length < 2) {
+    return null;
+  }
+
+  // The last clause is the `RETURN`; everything before it must be a `MATCH`. This
+  // used to demand EXACTLY two clauses, which is why the two-clause spelling of a
+  // cartesian count (`MATCH (a:P {k: 1}) MATCH (b:P {k: 2})`) declined — see
+  // `productCountOf`. A `LET` anywhere still declines here, as it must: the
+  // shortcut answers the whole query, and a `LET` can rebind what `RETURN` reads.
+  const ret = clauses[clauses.length - 1];
+
+  if (ret.kind !== 'return') {
+    return null;
+  }
+
+  const matches: Extract<Clause, { kind: 'match' }>[] = [];
+
+  for (let i = 0; i < clauses.length - 1; i++) {
+    const c = clauses[i];
+
+    if (c.kind !== 'match' || c.optional) {
+      return null;
+    }
+
+    matches.push(c);
+  }
+
+  const [m] = matches;
+
+  const proj = ret.projection;
+
+  // `groupBy` and `having` were MISSING here, and both are silent wrong answers rather than
+  // slow paths — a shortcut answers one global count, so a grouped count collapses to a single
+  // row and a `HAVING` that should drop the row never runs. Measured against native, which is
+  // right in every case:
+  //
+  //   MATCH (a:Person)-[:KNOWS]->(b) RETURN count(*) AS c GROUP BY a
+  //     ts [{"c":4}]   native [[1],[1],[1],[1]]
+  //   SELECT count(*) AS c FROM MATCH (a:Person)-[:KNOWS]->(b) HAVING count(*) > 100
+  //     ts [{"c":4}]   native []
+  //
+  // The 1-hop and 2-hop shortcuts have shipped with this. The `gql-conformance` HAVING case
+  // did not catch it because it asks a BARE NODE pattern, which had no shortcut until
+  // `buildNodeCount` and so went through general execution — adding that shortcut is what
+  // turned the latent gap into a failing test. A `LET` before the `RETURN` also hid it, by
+  // making `clauses.length !== 2` reject the shortcut outright.
+  if (
+    proj.star ||
+    proj.distinct ||
+    proj.groupBy !== undefined ||
+    proj.having !== undefined ||
+    (proj.orderBy?.length ?? 0) > 0 ||
+    proj.skip !== undefined ||
+    proj.limit !== undefined ||
+    proj.items.length !== 1
+  ) {
+    return null;
+  }
+
+  const [item] = proj.items;
+  const e = item.expr;
+
+  if (e.kind !== 'func' || e.name !== 'count' || !e.star || e.distinct) {
+    return null;
+  }
+
+  const column = item.alias ?? columnName(e);
+  const rowOf = (count: number): Row => ({ [column]: count });
+
+  // ONE pattern in ONE `MATCH` keeps the original path, which is the only one that
+  // can answer a clause `WHERE` (through the 1-hop tally).
+  if (matches.length === 1 && m.patterns.length === 1) {
+    return patternCountOf(m.patterns[0], m.where, rowOf);
+  }
+
+  return productCountOf(matches, rowOf);
 };
 
 /**
