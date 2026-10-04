@@ -222,17 +222,13 @@ describe('fused hop projection declines where it must', () => {
     test(`${name} still answers correctly`, () => {
       const g = build();
 
-      // `ORDER BY`/`LIMIT`/`DISTINCT`/aggregate spellings cannot take the `viaGeneral`
-      // rewrite's place in the string, so they are compared against themselves run on a
-      // graph built twice — a weaker check, but these are decline cases: the point is that
-      // they do not crash or silently take the fused path's shape.
-      const rows = query(g, q);
-
-      expect(Array.isArray(rows)).toBe(true);
-
-      if (!/DISTINCT|ORDER BY|LIMIT|count\(/.test(q)) {
-        expect(rows).toEqual(viaGeneral(g, q));
-      }
+      // Compared against the general spelling for EVERY case, including `ORDER BY`, `LIMIT`,
+      // `DISTINCT` and aggregates. These were originally exempted on the belief that
+      // `viaGeneral`'s inserted `WHERE` could not sit in front of them — it can
+      // (`MATCH … WHERE … RETURN … ORDER BY x` is fine), and the exemption meant the
+      // projection guard for paging/ordering had NO teeth: mutation in item 143 removed it
+      // and nothing failed.
+      expect(query(g, q)).toEqual(viaGeneral(g, q));
     });
   }
 

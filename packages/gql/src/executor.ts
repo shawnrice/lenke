@@ -3667,6 +3667,8 @@ export type CLinear = {
   reachShortcut: ReachFn | null;
   /** Fused `MATCH (a)-[:T]->(x) RETURN <exprs over x>` row builder; else null. */
   hopProjection: RowsFn | null;
+  /** `RETURN DISTINCT <one expr>` deduped while walking; else null. */
+  distinctProjection: RowsFn | null;
 };
 const compileLinear = (linear: LinearQuery): CLinear => {
   const clauses = linear.clauses.map(compileClause);
@@ -3678,6 +3680,7 @@ const compileLinear = (linear: LinearQuery): CLinear => {
     groupHopShortcut: detectGroupedHopCount(linear.clauses),
     reachShortcut: detectReachableShortcut(linear.clauses, clauses),
     hopProjection: detectHopProjection(linear.clauses, clauses),
+    distinctProjection: detectDistinctProjection(linear.clauses, clauses),
   };
 };
 
@@ -3704,7 +3707,7 @@ import {
 } from './executor/clauses.js';
 // Imported at FUNCTION level like the other detectors — this module and `executor` import
 // each other, which the existing comment on the shortcuts import explains is safe.
-import { detectHopProjection } from './executor/hop-projection.js';
+import { detectDistinctProjection, detectHopProjection } from './executor/hop-projection.js';
 import type { RowsFn } from './executor/hop-projection.js';
 // Count / reachability fast-paths (see executor/shortcuts.ts) — this back-edge and
 // the shortcuts' import of the trunk's bucket primitives form a safe function-level

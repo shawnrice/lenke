@@ -1,9 +1,17 @@
 import type { Graph, Vertex } from '@lenke/core';
 
-import type { Clause, LabelExpr } from '../ast.js';
-import type { CClause, CProjection, Params, Row } from '../executor.js';
-import { freePredicateVars, projectRow, relTypeNames } from '../executor.js';
-import { candidateVertices, matchesLabel } from '../graph-queries.js';
+import type { Clause, Expr, LabelExpr } from '../ast.js';
+import type { CClause, CPredicate, CProjection, CReturnItem, Params, Row } from '../executor.js';
+import {
+  compilePredicate,
+  freePredicateVars,
+  projectRow,
+  relTypeNames,
+  satisfies,
+  valueKey,
+} from '../executor.js';
+import { candidateVertices, expand, matchesLabel } from '../graph-queries.js';
+import type { Adjacency } from '../graph-queries.js';
 import { plainNode, plainRel } from './shortcuts.js';
 
 /** Rows for a whole `MATCH … RETURN` query, or `null` if the shape does not fit. */
@@ -182,5 +190,225 @@ export const detectHopProjection = (
     }
 
     return rows;
+  };
+};
+
+/**
+ * Exactly one DISTINCT item, and nothing that needs the whole set in hand.
+ *
+ * ONE item is the load-bearing condition: the dedup key is then `valueKey` of that single
+ * value, so a duplicate costs neither a row object nor a `rowKey`. With two items the row
+ * itself is the key and there is nothing to save.
+ */
+const distinctOneItem = (proj: CProjection): boolean =>
+  proj.distinct &&
+  !proj.star &&
+  !proj.aggregating &&
+  proj.items.length === 1 &&
+  proj.orderBy.length === 0 &&
+  proj.skip === undefined &&
+  proj.limit === undefined;
+
+/** The far end named, and the relationship plain and unnamed (nothing to bind per edge). */
+const endsNamedAndPlainRel = (
+  hop: { rel: { variable?: string }; node: { variable?: string } } | undefined,
+): boolean =>
+  hop === undefined ||
+  (plainRel(hop.rel as never) && hop.rel.variable === undefined && hop.node.variable !== undefined);
+
+/** Does `where` read nothing but `only`? A name it does not recognize counts against it. */
+const whereReadsOnly = (where: Expr | undefined, only: string): boolean => {
+  if (where === undefined) {
+    return true;
+  }
+
+  for (const name of freePredicateVars(where)) {
+    if (name !== only) {
+      return false;
+    }
+  }
+
+  return true;
+};
+
+/**
+ * The pieces `detectDistinctProjection` needs, or `null` if the shape does not fit. Split out
+ * so the detector stays under the complexity gate — the same split `groupedClauses` has from
+ * its own detector, and for the same reason.
+ */
+type DistinctShape = {
+  item: CReturnItem;
+  keyedVar: string;
+  onStart: boolean;
+  startLabel: LabelExpr | undefined;
+  farLabel: LabelExpr | undefined;
+  adjacency: Adjacency | undefined;
+  gatePred: CPredicate | undefined;
+};
+
+const distinctShape = (
+  clauses: readonly Clause[],
+  compiled: readonly CClause[],
+): DistinctShape | null => {
+  if (clauses.length !== 2) {
+    return null;
+  }
+
+  const [m, ret] = clauses;
+  const [, cret] = compiled;
+
+  if (m.kind !== 'match' || m.optional || m.patterns.length !== 1 || ret.kind !== 'return') {
+    return null;
+  }
+
+  if (cret.kind !== 'return') {
+    return null;
+  }
+
+  const proj: CProjection = cret.projection;
+
+  if (!distinctOneItem(proj)) {
+    return null;
+  }
+
+  const [pattern] = m.patterns;
+
+  if (pattern.pathVar !== undefined || pattern.segments.length > 1) {
+    return null;
+  }
+
+  const { start } = pattern;
+  const hop = pattern.segments.length === 1 ? pattern.segments[0] : undefined;
+  const far = hop?.node;
+
+  if (start.variable === undefined || !endsNamedAndPlainRel(hop)) {
+    return null;
+  }
+
+  const startVar = start.variable;
+
+  // The projected expression must read exactly ONE end, which is the element the walk
+  // evaluates it against. A CONSTANT projection (no reads) dedupes to a single row and is
+  // left to the general path rather than reasoned about with an empty binding.
+  const reads = freePredicateVars(ret.projection.items[0].expr);
+  const onStart = reads.size === 1 && reads.has(startVar);
+  const onFar =
+    hop !== undefined && reads.size === 1 && far?.variable !== undefined && reads.has(far.variable);
+
+  if (!onStart && !onFar) {
+    return null;
+  }
+
+  const keyedVar = onStart ? startVar : (far?.variable as string);
+  const keyed = onStart ? start : (far as NonNullable<typeof far>);
+  const other = onStart ? far : start;
+
+  // The NON-keyed end is not visited by the evaluation, so it may carry nothing but a label.
+  if (other !== undefined && !plainNode(other)) {
+    return null;
+  }
+
+  if (!plainNode(keyed)) {
+    return null;
+  }
+
+  // A clause `WHERE` reading only the keyed end is carried; anything else declines.
+  const { where } = m;
+
+  if (!whereReadsOnly(where, keyedVar)) {
+    return null;
+  }
+
+  const gatePred = where === undefined ? undefined : compilePredicate(undefined, where);
+  const startLabel = start.label;
+
+  if (startLabel !== undefined && startLabel.kind !== 'label') {
+    return null;
+  }
+
+  const [item] = proj.items;
+  const adjacency: Adjacency | undefined =
+    hop === undefined
+      ? undefined
+      : { direction: hop.rel.direction, ...(hop.rel.label ? { label: hop.rel.label } : {}) };
+  const farLabel = far?.label;
+
+  return { item, keyedVar, onStart, startLabel, farLabel, adjacency, gatePred };
+};
+
+/**
+ * `MATCH <node or 1-hop> RETURN DISTINCT <one expression over one end>` — dedupe by the
+ * projected VALUE while walking, building a row only for each new one.
+ *
+ * ### Why
+ *
+ * `DISTINCT` is applied in `applyProjection` AFTER projection: every row is built, then
+ * `rowKey`'d, then filtered. So a hop that yields 1,000,000 rows and 90 distinct values built
+ * a million row objects and a million row keys to return ninety. Priced against native, which
+ * this pass had never compared on the dedup family:
+ *
+ *     MATCH (a:Person)-[:KNOWS]->(x) RETURN DISTINCT x.age    ts 1153.3ms   native   7.4ms
+ *     MATCH (n:Person) RETURN DISTINCT n.age                  ts  215.0ms   native   0.4ms
+ *
+ * A single projected item is the condition that makes this possible: the dedup key can then be
+ * `valueKey` of the one value, so neither the row object nor `rowKey` is needed for a
+ * duplicate. With two items the row itself is the key and nothing is saved, so it declines.
+ *
+ * Order is FIRST-SEEN in both paths — the general one keeps the first occurrence in stream
+ * order, and a `Map`'s insertion order gives the same thing provided the walk meets elements
+ * in the general path's order, which is `candidateVertices` then `expand` (item 142 had to
+ * learn that the hard way, with a 7.4x given back for getting the order wrong).
+ *
+ * The filter is carried in the same change, per item 141's lesson, when it reads only the same
+ * end as the projection.
+ */
+export const detectDistinctProjection = (
+  clauses: readonly Clause[],
+  compiled: readonly CClause[],
+): RowsFn | null => {
+  const shape = distinctShape(clauses, compiled);
+
+  if (shape === null) {
+    return null;
+  }
+
+  const { item, keyedVar, onStart, startLabel, farLabel, adjacency, gatePred } = shape;
+
+  return (graph, params) => {
+    const seen = new Map<string, Row>();
+    const binding = new Map<string, unknown>();
+    const env = { binding, params, graph };
+    const take = (el: Vertex): void => {
+      binding.set(keyedVar, el);
+
+      if (gatePred !== undefined && !satisfies(el, gatePred, binding, params, graph)) {
+        return;
+      }
+
+      const value = item.fn(env);
+      const k = valueKey(value);
+
+      if (!seen.has(k)) {
+        seen.set(k, { [item.name]: value });
+      }
+    };
+
+    for (const v of candidateVertices(graph, startLabel)) {
+      if (adjacency === undefined) {
+        take(v);
+
+        continue;
+      }
+
+      for (const step of expand(graph, v, adjacency)) {
+        if (farLabel !== undefined && !matchesLabel(step.node, farLabel)) {
+          continue;
+        }
+
+        take(onStart ? v : step.node);
+      }
+    }
+
+    return [...seen.values()];
   };
 };

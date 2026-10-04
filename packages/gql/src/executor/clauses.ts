@@ -1280,6 +1280,12 @@ export const runLinearClauses = (
     if (linear.hopProjection) {
       return linear.hopProjection(graph, params);
     }
+
+    // `RETURN DISTINCT <one expr>`: dedupe by the projected VALUE while walking, so a
+    // duplicate costs neither a row object nor a row key. See `detectDistinctProjection`.
+    if (linear.distinctProjection) {
+      return linear.distinctProjection(graph, params);
+    }
   }
 
   // Bindings flow as a lazy stream; only barriers (mutations, aggregation,
