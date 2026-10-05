@@ -14,6 +14,7 @@ import { ErrorCode, LenkeError } from '@lenke/errors';
 import type { Plan, Step } from '../ast.js';
 import { countShortcut } from './count-shortcut.js';
 import { applyStep } from './dispatch.js';
+import { hopValuesShortcut } from './hop-values.js';
 import { seedFromIndex } from './index-seed.js';
 import { newContext, planReadsPath, type Traverser, unwrap } from './runtime.js';
 import { applySource } from './sources.js';
@@ -558,6 +559,17 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
 
   if (shortcut !== undefined) {
     return [shortcut];
+  }
+
+  // `V().out(T).values(k)` likewise answers the whole plan — one walk instead of the traverser
+  // pipeline, 539ns/row down to 251 (see `hopValuesShortcut`). Only when nothing tracks path:
+  // the walk emits bare values and builds no traverser, so it has no path to carry.
+  if (!ctx.tracksPath) {
+    const projected = hopValuesShortcut(effective, graph);
+
+    if (projected !== undefined) {
+      return projected;
+    }
   }
 
   // If the plan opens `V()`/`E()` + a seedable `has` on an indexed key, seed
