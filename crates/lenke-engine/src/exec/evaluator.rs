@@ -6,6 +6,90 @@ use crate::ir::Expr;
 use crate::store::{Column, Store};
 use crate::value::{self, Value};
 
+/// Smallest haystack worth hashing. Below it the linear scan wins: building the set costs a
+/// `group_key` per element, and a two- or three-element scan is two or three `equals` calls.
+/// Measured in audit item 185.
+const fn items_min() -> usize {
+    8
+}
+
+/// A hashed membership set over a constant `IN` haystack, with the three-valued answer baked in.
+///
+/// Equivalence with the linear scan it replaces is the whole point, so the construction is
+/// deliberately narrow. `group_key` is a canonical hashable key, but it is NOT `equals`: it
+/// groups two NaNs together and `-0.0` with `0.0`, where predicate equality makes NaN equal to
+/// nothing. `-0.0 == 0.0` agrees with `equals` already; NaN does not, and a NaN nested inside a
+/// list or record element would differ too. So the set is built ONLY from `Bool`, `Str` and
+/// FINITE `Num` elements — the types an `IN` list actually carries — and ANY other element kind
+/// (a non-finite number, a list, record, map, temporal or element ref) makes the whole batch fall
+/// back to the scan. For the covered types `group_key` equality and `equals` coincide exactly.
+pub(super) struct InSet {
+    keys: std::collections::HashSet<Vec<u8>>,
+    /// Whether any element was null: with no match, that is the difference between FALSE and
+    /// UNKNOWN, which is the part of the three-valued answer a membership test cannot see.
+    has_null: bool,
+}
+
+impl InSet {
+    /// The three-valued answer for one needle: NULL if the needle is null (nothing can equal it),
+    /// TRUE on a hit, else NULL when the haystack held a null and FALSE otherwise.
+    fn contains(&self, needle: &Value, key: &mut Vec<u8>) -> Value {
+        if needle.is_null() {
+            return Value::Null;
+        }
+        // No NaN check here, deliberately. `group_key` hashes two NaNs alike where `equals`
+        // makes NaN equal to nothing — but a NaN ELEMENT makes `in_set` refuse the whole list,
+        // so `keys` can never hold one and a NaN needle simply misses, reaching the same answer.
+        // An explicit early return was DEAD CODE: a mutant deleting it changed nothing, which is
+        // how it was found.
+        key.clear();
+        value::group_key_into(needle, key);
+        if self.keys.contains(key) {
+            Value::Bool(true)
+        } else if self.has_null {
+            Value::Null
+        } else {
+            Value::Bool(false)
+        }
+    }
+}
+
+/// Build an [`InSet`] when `haystack` is a literal list of at least `min` elements whose every
+/// element is a type `group_key` and `equals` agree on. `None` leaves the caller on its scan.
+///
+/// `pub(super)` ONLY so the choice can be asserted directly. Taking the hashed path changes no
+/// answer — that is the point of it — so a mutant that never takes it passes every result-based
+/// test; the same wall items 172/173 hit, and the same escape.
+pub(super) fn in_set(haystack: &Expr, min: usize) -> Option<InSet> {
+    let Expr::Lit(Value::List(items)) = haystack else {
+        return None;
+    };
+    if items.len() < min {
+        return None;
+    }
+    let mut keys = std::collections::HashSet::with_capacity(items.len());
+    let mut has_null = false;
+    for el in items.iter() {
+        match el {
+            Value::Null => has_null = true,
+            Value::Bool(_) | Value::Str(_) => {
+                keys.insert(value::group_key(el));
+            }
+            // Only NaN disagrees. `equals` compares `Num`s with `==`, which makes `Inf == Inf`
+            // TRUE and NaN equal to nothing, and `group_key` agrees on both except NaN — so
+            // excluding every non-finite would be over-conservative, and was: a mutant
+            // accepting them changed no answer.
+            Value::Num(x) if !x.is_nan() => {
+                keys.insert(value::group_key(el));
+            }
+            // Anything else: hand the whole batch back to the scan rather than reason about
+            // whether `group_key` and `equals` agree on it.
+            _ => return None,
+        }
+    }
+    Some(InSet { keys, has_null })
+}
+
 /// Elementwise `l OP r` over two already-evaluated columns — the general arithmetic
 /// body, shared by `Expr::Arith` and its scalar fast path's non-numeric fallback.
 /// Raw f64 when both are `Col::Num`; otherwise per-cell via the value contract (a
@@ -479,8 +563,29 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
             // element is null (the answer can't be decided); else FALSE. A
             // non-list haystack is NULL.
             let nd = eval(needle, store, batch)?;
-            let hs = eval(haystack, store, batch)?;
             let n = batch.rows();
+            // A haystack that is the SAME list for every row gets a hashed membership
+            // set built ONCE, instead of a linear scan of it per row.
+            //
+            // The set path must be taken BEFORE the haystack is evaluated, and that is most of
+            // the win. `eval` on a `Lit` list BROADCASTS it across the batch — a 20,000-row
+            // batch gets 20,000 clones of the 100-element list, 2,000,000 `Value` clones — so
+            // evaluating it and then ignoring it left the cost exactly where it was. The first
+            // version of this fix did that and measured no change at all.
+            //
+            // `IN $names` reaches here as a `Lit` list — the parser substitutes params before
+            // `opt`/`exec`, and only a LITERAL list desugars to an OR-chain, so this arm is
+            // exactly the bound-array spelling. It was O(rows x list): a 100-name list over
+            // 20,000 users is 2,000,000 `equals` calls, measured at 38.1ms and identical with
+            // and without an index (audit item 185).
+            if let Some(set) = in_set(haystack, items_min()) {
+                let mut key = Vec::new();
+                let out: Vec<Value> = (0..n)
+                    .map(|i| set.contains(&nd.value_at(i), &mut key))
+                    .collect();
+                return Ok(Col::Gen(out));
+            }
+            let hs = eval(haystack, store, batch)?;
             let out: Vec<Value> = (0..n)
                 .map(|i| {
                     let needle = nd.value_at(i);

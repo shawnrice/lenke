@@ -14714,3 +14714,272 @@ fn a_property_named_like_an_outer_variable_still_answers() {
     assert_eq!(scope_count(&store, inline), scope_count(&store, oracle));
     assert_eq!(scope_count(&store, inline), 1.0);
 }
+
+/// The single `count(*)` for `MATCH (n:N) WHERE n.k IN $l RETURN count(*)`, with `l` bound as a
+/// PARAM — which is the ONLY spelling that reaches the hashed path, and the reason these tests
+/// look the way they do.
+///
+/// An inline literal list parses to `Expr::List`, and above `normalize_pred`'s 32-item gate it
+/// STAYS an `Expr::List` haystack; `in_set` matches `Expr::Lit(Value::List)`, which a param
+/// becomes when `parse_with_params` substitutes it. Written with an inline list these tests
+/// exercised the linear scan instead, and a mutation sweep caught it the only way it could:
+/// **0 of 8 mutants died**, including one that reported a hit as FALSE.
+fn in_set_count(values: Vec<Value>, st: &Store) -> f64 {
+    in_set_count_of("n.k IN $l", values, st)
+}
+
+/// `count(*)` for an arbitrary predicate over the bound list.
+///
+/// The NOT-wrapped form is what separates UNKNOWN from FALSE: a `WHERE` drops both, so a count
+/// alone cannot tell them apart and two mutants survived against it. `NOT UNKNOWN` is UNKNOWN
+/// (still dropped) while `NOT FALSE` is TRUE (kept), so the same fixture under `NOT` reports
+/// different numbers for the two.
+fn in_set_count_of(pred: &str, values: Vec<Value>, st: &Store) -> f64 {
+    let plan = crate::gql::parse_with_params(
+        &format!("MATCH (n:N) WHERE {pred} RETURN count(*) AS c"),
+        &[("l".to_string(), Value::List(values))],
+    )
+    .unwrap();
+    match &run(&plan, st).rows.iter().next().expect("one count row")[0] {
+        Value::Num(n) => *n,
+        other => panic!("not a number: {other:?}"),
+    }
+}
+
+/// 33 filler strings — one past `normalize_pred`'s `items.len() <= 32` OR-chain rewrite, so the
+/// predicate survives to exec as an `Expr::In`.
+fn in_set_pad() -> Vec<Value> {
+    (0..33).map(|i| s(&format!("p{i}"))).collect()
+}
+
+/// `extra` prepended to [`in_set_pad`], as the bound list.
+fn in_set_list(extra: &[Value]) -> Vec<Value> {
+    let mut v: Vec<Value> = extra.to_vec();
+    v.extend(in_set_pad());
+    v
+}
+
+/// A big `IN $list` takes the hashed membership path (`in_set`), and it must answer exactly as
+/// the per-row linear scan it replaces (audit item 185).
+#[test]
+fn in_set_matches_the_linear_scan_for_a_large_list() {
+    let mut b = Builder::default();
+    b.node(&["N"], &[("k", s("a"))]); // n0
+    b.node(&["N"], &[("k", s("b"))]); // n1
+    b.node(&["N"], &[("k", s("zz"))]); // n2: in no list below
+    let st = b.build();
+
+    assert_eq!(in_set_count(in_set_list(&[s("a"), s("b")]), &st), 2.0);
+    assert_eq!(in_set_count(in_set_list(&[s("a")]), &st), 1.0);
+    assert_eq!(in_set_count(in_set_list(&[s("nope")]), &st), 0.0);
+    // A duplicate value must not double-count the row it matches.
+    assert_eq!(
+        in_set_count(in_set_list(&[s("a"), s("a"), s("b")]), &st),
+        2.0
+    );
+}
+
+/// A NULL element in a large `IN` list makes a NON-matching row UNKNOWN, not FALSE — the one
+/// part of the three-valued answer a bare membership test cannot see, so `InSet` carries a
+/// `has_null` flag for it. A matching row is still TRUE.
+#[test]
+fn in_set_keeps_null_three_valued() {
+    let mut b = Builder::default();
+    b.node(&["N"], &[("k", s("a"))]); // n0: matches
+    b.node(&["N"], &[("k", s("zz"))]); // n1: no match
+    let st = b.build();
+
+    // A plain count cannot tell UNKNOWN from FALSE — a `WHERE` drops both — so each case is
+    // asserted BOTH ways. Under `NOT`, UNKNOWN stays dropped and FALSE becomes TRUE.
+    //
+    // With a null in the list: n0 TRUE, n1 UNKNOWN. So 1 either way, and 0 under NOT.
+    assert_eq!(in_set_count(in_set_list(&[s("a"), Value::Null]), &st), 1.0);
+    assert_eq!(
+        in_set_count_of("NOT (n.k IN $l)", in_set_list(&[s("a"), Value::Null]), &st),
+        0.0,
+        "a null in the list makes the non-matching row UNKNOWN, and NOT UNKNOWN is dropped"
+    );
+    // WITHOUT a null: n0 TRUE, n1 a clean FALSE. Same 1 — and 1 under NOT, where the FALSE row
+    // flips to TRUE. That difference is the whole observable effect of `has_null`.
+    assert_eq!(in_set_count(in_set_list(&[s("a")]), &st), 1.0);
+    assert_eq!(
+        in_set_count_of("NOT (n.k IN $l)", in_set_list(&[s("a")]), &st),
+        1.0,
+        "with no null, the non-matching row is FALSE and NOT FALSE is kept"
+    );
+    // With ONLY a null, nothing matches and every row is UNKNOWN: 0 both ways.
+    assert_eq!(in_set_count(in_set_list(&[Value::Null]), &st), 0.0);
+    assert_eq!(
+        in_set_count_of("NOT (n.k IN $l)", in_set_list(&[Value::Null]), &st),
+        0.0
+    );
+}
+
+/// A needle that is a STORED null is UNKNOWN, never a match — even when the list holds a null,
+/// where probing would otherwise find `group_key(null)` and report a hit. No node in the fixture
+/// above stores a null `k`, so that branch went unexercised and a mutant removing it survived.
+#[test]
+fn in_set_drops_a_stored_null_needle() {
+    let mut b = Builder::default();
+    b.node(&["N"], &[("k", s("a"))]); // n0: matches
+    b.node(&["N"], &[("k", Value::Null)]); // n1: a STORED null needle
+    let st = b.build();
+
+    assert_eq!(in_set_count(in_set_list(&[s("a"), Value::Null]), &st), 1.0);
+    // UNKNOWN rather than FALSE, so `NOT` does not resurrect it.
+    assert_eq!(
+        in_set_count_of("NOT (n.k IN $l)", in_set_list(&[s("a"), Value::Null]), &st),
+        0.0
+    );
+    // The list WITHOUT a null is the case that pins the early return. A null needle must still
+    // be UNKNOWN; probing instead would find nothing and report a clean FALSE, which `NOT`
+    // turns into a kept row. With the null in the list both paths agree, which is why the
+    // assertions above left a mutant alive.
+    assert_eq!(in_set_count(in_set_list(&[s("a")]), &st), 1.0);
+    assert_eq!(
+        in_set_count_of("NOT (n.k IN $l)", in_set_list(&[s("a")]), &st),
+        0.0,
+        "a null needle is UNKNOWN, so NOT leaves it dropped — not FALSE, which NOT would keep"
+    );
+}
+
+/// The CHOICE itself, asserted on `in_set` directly: taking the hashed path changes no answer, so
+/// a mutant that never takes it passes every result-based test. Each case differs from its
+/// neighbour in exactly one input.
+#[test]
+fn in_set_decides_when_to_hash() {
+    use crate::exec::evaluator::in_set;
+    let lit = |items: Vec<Value>| Expr::Lit(Value::List(items));
+    let strs = |k: usize| -> Vec<Value> { (0..k).map(|i| s(&format!("v{i}"))).collect() };
+
+    // Long enough, all scalars: hashed. The same list one under the minimum: left on the scan.
+    assert!(in_set(&lit(strs(33)), 8).is_some());
+    assert!(in_set(&lit(strs(7)), 8).is_none());
+    // A non-list haystack never hashes.
+    assert!(in_set(&Expr::Lit(s("a")), 8).is_none());
+    // An inline list EXPRESSION is not a `Lit` list — which is why these tests bind a param.
+    assert!(in_set(
+        &Expr::List {
+            items: vec![Expr::Lit(s("a"))]
+        },
+        1
+    )
+    .is_none());
+    // One unsupported element declines the whole list: a nested list, and a NaN.
+    let mut nested = strs(33);
+    nested.push(Value::List(vec![n(1.0)]));
+    assert!(in_set(&lit(nested), 8).is_none());
+    let mut nan = strs(33);
+    nan.push(n(f64::NAN));
+    assert!(in_set(&lit(nan), 8).is_none());
+    // Infinity is NOT excluded: `equals` makes `Inf == Inf` true and `group_key` agrees.
+    let mut inf = strs(33);
+    inf.push(n(f64::INFINITY));
+    assert!(in_set(&lit(inf), 8).is_some());
+    // A null element is carried, not refused — it decides FALSE vs UNKNOWN.
+    let mut with_null = strs(33);
+    with_null.push(Value::Null);
+    assert!(in_set(&lit(with_null), 8).is_some());
+}
+
+/// `group_key` (what `InSet` hashes) groups two NaNs together, where predicate equality makes
+/// NaN equal to NOTHING — the one place the two disagree. A NaN NEEDLE must match nothing, and
+/// `InSet::contains` returns before probing for exactly that reason.
+///
+/// A NaN ELEMENT is unreachable from the query surface: `0.0/0.0` RAISES (the division-by-zero
+/// rule) and a bound NaN param becomes null under the numeric policy. So the element-side
+/// exclusion is defensive; the needle side is reachable, because a NaN can be stored directly,
+/// which is what this fixture does.
+#[test]
+fn in_set_keeps_a_nan_needle_unequal() {
+    let mut b = Builder::default();
+    b.node(&["N"], &[("k", n(1.0))]); // n0: matches
+    b.node(&["N"], &[("k", n(f64::NAN))]); // n1: a stored NaN, matches nothing
+    let st = b.build();
+
+    assert_eq!(in_set_count(in_set_list(&[n(1.0)]), &st), 1.0);
+    // With a null in the list the NaN row is UNKNOWN rather than FALSE — still not a match.
+    assert_eq!(in_set_count(in_set_list(&[n(1.0), Value::Null]), &st), 1.0);
+}
+
+/// `-0.0` and `0.0` are equal under BOTH `equals` and `group_key`, so the hashed path must agree
+/// with the scan: a `0.0` needle matches a `-0.0` element.
+#[test]
+fn in_set_treats_minus_zero_as_zero() {
+    let mut b = Builder::default();
+    b.node(&["N"], &[("k", n(0.0))]);
+    let st = b.build();
+
+    assert_eq!(in_set_count(in_set_list(&[n(-0.0)]), &st), 1.0);
+}
+
+/// An element kind `InSet` does not cover — a nested LIST — hands the whole batch back to the
+/// linear scan, and the answer is unchanged. `equals` compares lists elementwise while
+/// `group_key` canonicalizes them, so the two could disagree on a nested NaN.
+#[test]
+fn in_set_declines_on_a_non_scalar_element() {
+    let mut b = Builder::default();
+    b.node(&["N"], &[("k", s("a"))]);
+    let st = b.build();
+    let nested = Value::List(vec![n(1.0), n(2.0)]);
+
+    assert_eq!(in_set_count(in_set_list(&[s("a"), nested]), &st), 1.0);
+}
+
+/// An INFINITE element is carried, not refused: `equals` compares `Num`s with `==`, so
+/// `Inf == Inf` is TRUE and `group_key` agrees. A stored infinity therefore matches, and
+/// excluding every non-finite would have been over-conservative — a mutant accepting them
+/// changed no answer, which is what pointed at it.
+#[test]
+fn in_set_matches_an_infinite_element() {
+    let mut b = Builder::default();
+    b.node(&["N"], &[("k", n(1.0))]); // n0
+    b.node(&["N"], &[("k", n(f64::INFINITY))]); // n1: matches the Inf element
+    let st = b.build();
+
+    assert_eq!(
+        in_set_count(in_set_list(&[n(1.0), n(f64::INFINITY)]), &st),
+        2.0
+    );
+    assert_eq!(in_set_count(in_set_list(&[n(1.0)]), &st), 1.0);
+}
+
+/// Cross-type membership stays FALSE: a string needle against numeric elements matches nothing,
+/// because `group_key` carries a type tag exactly as `equals` is type-strict.
+#[test]
+fn in_set_is_type_strict() {
+    let mut b = Builder::default();
+    b.node(&["N"], &[("k", s("1"))]); // the STRING "1", not the number
+    let st = b.build();
+
+    assert_eq!(in_set_count(in_set_list(&[n(1.0)]), &st), 0.0);
+}
+
+/// A needle whose property is ABSENT is UNKNOWN, never a match — the same as a null needle, and
+/// the hashed path returns before probing.
+#[test]
+fn in_set_drops_an_absent_needle() {
+    let mut b = Builder::default();
+    b.node(&["N"], &[("k", s("a"))]); // n0: matches
+    b.node(&["N"], &[("other", s("x"))]); // n1: no `k` at all
+    let st = b.build();
+
+    assert_eq!(in_set_count(in_set_list(&[s("a")]), &st), 1.0);
+}
+
+/// Each row is probed INDEPENDENTLY: the key buffer `InSet::contains` reuses must be cleared, or
+/// row two probes row one's key concatenated with its own. Needs several matching rows with
+/// DIFFERENT values to be visible at all.
+#[test]
+fn in_set_probes_each_row_independently() {
+    let mut b = Builder::default();
+    b.node(&["N"], &[("k", s("a"))]);
+    b.node(&["N"], &[("k", s("b"))]);
+    b.node(&["N"], &[("k", s("c"))]);
+    let st = b.build();
+
+    assert_eq!(
+        in_set_count(in_set_list(&[s("a"), s("b"), s("c")]), &st),
+        3.0
+    );
+}
