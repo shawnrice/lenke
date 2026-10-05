@@ -197,16 +197,27 @@ export const seedVertices = function* (
   yield* candidateVertices(graph, node.label);
 };
 
-/** The estimated number of seed vertices for starting a pattern at `node`. */
-export const estimateSeed = (
+/**
+ * The estimated number of seed vertices for starting a pattern at `node`, AND where the number
+ * came from.
+ *
+ * The provenance is the point. An INDEX SEEK (or an already-bound variable) reports a real,
+ * narrow count; a LABEL-BUCKET size reports only "how many carry this label", which says nothing
+ * about the predicates on that node — an unindexed one contributes nothing at all. Treating the
+ * two as interchangeable is what made `orient` reverse away from a selective start (audit items
+ * 172 and 173).
+ */
+type SeedEstimate = { readonly count: number; readonly indexed: boolean };
+
+const estimateSeedFrom = (
   graph: Graph,
   node: CNode,
   binding: Binding,
   params: Params,
-): number => {
-  // An already-bound variable seeds from exactly one vertex.
+): SeedEstimate => {
+  // An already-bound variable seeds from exactly one vertex — exact, not a guess.
   if (node.variable && binding.has(node.variable)) {
-    return 1;
+    return { count: 1, indexed: true };
   }
 
   const env: EvalEnv = { binding, params, graph };
@@ -216,8 +227,36 @@ export const estimateSeed = (
     best = Math.min(best, candidate.count);
   }
 
-  return best === Infinity ? candidateCount(graph, node.label) : best;
+  return best === Infinity
+    ? { count: candidateCount(graph, node.label), indexed: false }
+    : { count: best, indexed: true };
 };
+
+/** The estimated number of seed vertices for starting a pattern at `node`. */
+export const estimateSeed = (graph: Graph, node: CNode, binding: Binding, params: Params): number =>
+  estimateSeedFrom(graph, node, binding, params).count;
+
+/**
+ * Does this node carry a constraint beyond its label — an inline property anchor, an inline
+ * `WHERE`, or a lifted clause `WHERE`?
+ *
+ * Such a node is a better seed than its label-bucket size suggests, and by an amount nothing here
+ * can estimate: an unindexed predicate is invisible to {@link estimateSeedFrom}.
+ */
+const isConstrained = (node: CNode, prefilter: unknown): boolean =>
+  prefilter !== undefined || node.pred.props.length > 0 || node.pred.where !== undefined;
+
+/**
+ * Could this node possibly be reached by an INDEX SEEK?
+ *
+ * Only `pred.props` and `seedHints` can yield one — those are the two things `indexCandidates`
+ * reads — so a node with neither can ONLY ever be estimated from its label bucket. That is
+ * knowable from the compiled pattern alone, with no graph work, which is what lets `orient`
+ * decide the common case without estimating anything. An inline `WHERE` is deliberately not
+ * counted: it cannot be seeked on, only evaluated.
+ */
+const mightSeek = (node: CNode): boolean =>
+  node.pred.props.length > 0 || (node.seedHints?.length ?? 0) > 0;
 
 export const FLIP_DIRECTION: Record<RelPattern['direction'], RelPattern['direction']> = {
   out: 'in',
@@ -266,29 +305,46 @@ export const orient = (graph: Graph, pattern: CPath, binding: Binding, params: P
     return pattern;
   }
 
-  // A start-only clause `WHERE` gates the SEED LOOP (see `seedPrefilter`), and it can only gate
-  // the side it names. Reversing demotes it to a post-filter, so every seed it would have
-  // skipped gets expanded instead — and `estimateSeed` cannot see that, because an UNINDEXED
-  // predicate contributes nothing to its estimate. A smaller far label therefore won the
-  // comparison and the filter made the query SLOWER than no filter at all (audit item 172):
-  //
-  //   MATCH (u:User)-[:MEMBER_OF]->(gr:Team)-[:VIEWER]->(r:Resource)       6.77ms, 200,000 rows
-  //   ... the same WHERE u.name = $n                                      87.87ms,      10 rows
-  //   ... the same with the tail UNLABELLED, so no reversal                2.26ms,      10 rows
-  //
-  // The risk of staying put is bounded and the risk of reversing is not: if the predicate turns
-  // out to reject little, this scans the seeds it would have expanded anyway, which is the
-  // unfiltered plan's cost. Reversing when the predicate IS selective expands the whole far
-  // side instead of one seed.
-  if (pattern.prefilter !== undefined) {
+  const endNode = pattern.segments[pattern.segments.length - 1].node;
+  const constrained = isConstrained(pattern.start, pattern.prefilter);
+
+  // Decided with NO graph work: a label bucket may not outvote a constrained start, and a node
+  // that cannot seek has nothing but a label bucket to offer. Checking this first matters —
+  // asking it after the estimates cost the clause-`WHERE` shape item 172 had just fixed
+  // 2.00ms -> 2.33 and the indexed-far-anchor shape 0.11 -> 0.13, both reproducible, because
+  // where item 172 short-circuited this paid for two seed estimates.
+  if (constrained && !mightSeek(endNode)) {
     return pattern;
   }
 
-  const endNode = pattern.segments[pattern.segments.length - 1].node;
-  const startEst = estimateSeed(graph, pattern.start, binding, params);
-  const endEst = estimateSeed(graph, endNode, binding, params);
+  const endEst = estimateSeedFrom(graph, endNode, binding, params);
 
-  return endEst < startEst ? reversePath(pattern) : pattern;
+  // The far end looks cheaper — but a LABEL-BUCKET number is not evidence against a CONSTRAINED
+  // start. A start-side constraint (an inline anchor, an inline `WHERE`, or a lifted clause
+  // `WHERE`) seeds far more narrowly than its label bucket, and `estimateSeedFrom` cannot say by
+  // how much: an unindexed predicate contributes nothing. Reversing also demotes a seed
+  // pre-filter to a post-filter, because it can only gate the side it names.
+  //
+  // So a label bucket may not outvote a constrained start; an INDEX SEEK still may, because that
+  // number is real. Measured on a 20,000-user / 200-team / 2,000-resource authz shape, with the
+  // pattern `(u:User)-[:MEMBER_OF]->(gr:Team)-[:VIEWER]->(r:Resource)`:
+  //
+  //   no constraint anywhere                                     3.63ms, 200,000 rows
+  //   clause `WHERE u.name = $n`            87.87ms -> 2.00ms (audit item 172)
+  //   inline `(u:User {name: $n})`          42.67ms -> see item 173
+  //   inline start AND an INDEXED far anchor  0.12ms, and it must STAY there — reversing is
+  //                                           right when the far end is a genuine seek
+  //
+  // The asymmetry is what justifies this without a selectivity estimate: staying put costs the
+  // unfiltered plan's scan at worst, while reversing past a selective start expands the whole
+  // far side instead of one seed.
+  if (constrained && !endEst.indexed) {
+    return pattern;
+  }
+
+  const startEst = estimateSeedFrom(graph, pattern.start, binding, params);
+
+  return endEst.count < startEst.count ? reversePath(pattern) : pattern;
 };
 
 /** Whether `edge` passes a segment's per-hop predicate (inline props / WHERE). The

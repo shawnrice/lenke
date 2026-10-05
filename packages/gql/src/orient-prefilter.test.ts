@@ -289,3 +289,160 @@ describe('orient does not reverse away from a seed pre-filter', () => {
     );
   });
 });
+
+// Item 172 guarded only the CLAUSE spelling, because only that one produces a `prefilter`.
+// `pushWhereIntoNode` folds an INLINE anchor into the start node's predicate instead, so the
+// inline form kept reversing: 38.44ms against the clause form's 2.00 — a 21x spread between two
+// spellings of one query (audit item 173).
+//
+// The rule is now about PROVENANCE, not magnitude: a LABEL-BUCKET estimate may not outvote a
+// constrained start, while an INDEX SEEK still may, because that number is real.
+describe('orient weighs an estimate by where it came from', () => {
+  const node = (
+    variable: string,
+    label?: string,
+    props?: readonly { key: string; value: unknown }[],
+  ): CNode => ({
+    variable,
+    ...(label === undefined ? {} : { label: { kind: 'label' as const, name: label } }),
+    pred: {
+      props: (props ?? []).map((pr) => ({ key: pr.key, value: () => pr.value })),
+      where: undefined,
+    },
+  });
+
+  /** `(u:User …)-[:MEMBER_OF]->(gr:Team)-[:VIEWER]->(r:Resource …)`. */
+  const path = (
+    startProps: readonly { key: string; value: unknown }[],
+    endProps: readonly { key: string; value: unknown }[],
+  ): CPath =>
+    ({
+      start: node('u', 'User', startProps),
+      segments: [
+        {
+          rel: {
+            direction: 'out' as const,
+            label: { kind: 'label' as const, name: 'MEMBER_OF' },
+            pred: compilePredicate(undefined, undefined),
+          },
+          node: node('gr', 'Team'),
+        },
+        {
+          rel: {
+            direction: 'out' as const,
+            label: { kind: 'label' as const, name: 'VIEWER' },
+            pred: compilePredicate(undefined, undefined),
+          },
+          node: node('r', 'Resource', endProps),
+        },
+      ],
+      selector: 'walk',
+      mode: 'trail',
+      binds: new Set(['u', 'gr', 'r']),
+      reads: new Set<string>(),
+    }) as unknown as CPath;
+
+  test('an INLINE anchor on the start keeps the walk there', () => {
+    // 12 Users against 6 Resources, so without the rule the far label wins and it reverses.
+    const g = authz();
+
+    expect(
+      orient(g, path([{ key: 'name', value: 'user0' }], []), new Map(), {}).start.variable,
+    ).toBe('u');
+  });
+
+  test('an unconstrained start still reverses toward the smaller label', () => {
+    // The rule must not have become "never reverse" — that is a different change, and this is
+    // the mutant that would otherwise be invisible.
+    const g = authz();
+
+    expect(orient(g, path([], []), new Map(), {}).start.variable).toBe('r');
+  });
+
+  test('an INDEXED far anchor outvotes a constrained start', () => {
+    // The risk case, now a test: a real seek on the far end is a real number, so reversing is
+    // right even though the start is constrained. Measured 0.12ms, and it must stay there.
+    const g = authz();
+
+    g.createIndex({ on: 'vertex', kind: 'hash', keys: ['slug'] });
+
+    for (const [i, r] of [...g.vertices].filter((v) => v.labels.has('Resource')).entries()) {
+      r.setProperty('slug', `res${i}`);
+    }
+
+    const oriented = orient(
+      g,
+      path([{ key: 'name', value: 'user0' }], [{ key: 'slug', value: 'res0' }]),
+      new Map(),
+      {},
+    );
+
+    expect(oriented.start.variable).toBe('r');
+  });
+
+  test('a far-end seek from a lifted clause WHERE also outvotes it', () => {
+    // A clause `WHERE` on the FAR end is lifted into that node's `seedHints`, not its `props` —
+    // so a `mightSeek` that only looked at props stopped the reversal and SURVIVED every other
+    // test here, because orientation does not change answers. `seedHints` is the second of the
+    // two things `indexCandidates` reads, and it needs its own case.
+    const g = authz();
+
+    g.createIndex({ on: 'vertex', kind: 'hash', keys: ['kind'] });
+
+    const withHint = path([{ key: 'name', value: 'user0' }], []) as unknown as {
+      segments: { node: { seedHints?: unknown } }[];
+    };
+
+    withHint.segments[1].node.seedHints = [{ kind: 'eq', key: 'kind', value: () => 0 }];
+
+    expect(orient(g, withHint as unknown as CPath, new Map(), {}).start.variable).toBe('r');
+  });
+
+  test('an UNINDEXED far anchor does not', () => {
+    // Same shape, no index: the far end's anchor cannot produce a seek, so its estimate is still
+    // just the label bucket and the constrained start wins. This is the pair that shows the rule
+    // is about provenance and not about the presence of a far-side constraint.
+    const g = authz();
+    const oriented = orient(
+      g,
+      path([{ key: 'name', value: 'user0' }], [{ key: 'slug', value: 'res0' }]),
+      new Map(),
+      {},
+    );
+
+    expect(oriented.start.variable).toBe('u');
+  });
+});
+
+describe('the inline spelling now agrees with the clause spelling', () => {
+  test('all three spellings give the same rows', () => {
+    const g = authz();
+    const P = { n: 'user1' };
+    const shapes = [
+      'MATCH (u:User)-[:MEMBER_OF]->(gr:Team)-[:VIEWER]->(r:Resource) WHERE u.name = $n RETURN r.kind AS k',
+      'MATCH (u:User {name: $n})-[:MEMBER_OF]->(gr:Team)-[:VIEWER]->(r:Resource) RETURN r.kind AS k',
+      'MATCH (u:User WHERE u.name = $n)-[:MEMBER_OF]->(gr:Team)-[:VIEWER]->(r:Resource) RETURN r.kind AS k',
+    ];
+    const first = rows(g, shapes[0], P);
+
+    expect(first.length).toBe(2);
+
+    for (const q of shapes.slice(1)) {
+      expect(rows(g, q, P)).toEqual(first);
+    }
+  });
+
+  test('a far-end anchor still answers correctly with and without an index', () => {
+    // The reversal the rule still permits has to produce the right rows, indexed or not.
+    const bare = authz();
+    const withIndex = authz();
+
+    withIndex.createIndex({ on: 'vertex', kind: 'hash', keys: ['kind'] });
+
+    const q =
+      'MATCH (u:User {name: $n})-[:MEMBER_OF]->(gr:Team)-[:VIEWER]->(r:Resource {kind: 0}) RETURN count(*) AS c';
+
+    expect(count(withIndex, q, { n: 'user0' })).toBe(count(bare, q, { n: 'user0' }));
+    expect(count(bare, q, { n: 'user0' })).toBe(1);
+  });
+});
