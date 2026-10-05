@@ -152,3 +152,128 @@ describe('Graph subscriber notification', () => {
     expect(calls).toEqual(['a', 'b', 'c']); // snapshot taken before the pass
   });
 });
+
+// Since audit item 171 a write with NOBODY subscribed does not schedule a notification — there
+// is nothing to notify, and the `clearTimeout`/`setTimeout` pair per write was pure cost. A small
+// write went 461ns to 262ns (92.2ms to 52.3ms over 200,000 writes), with the SUBSCRIBED case flat
+// at 453 against 456ns as the control.
+//
+// What must not change: the reactive counters, which are public (`version`, `epoch`) and pollable
+// without ever subscribing; and a real subscriber's notification.
+describe('a write with no subscriber still tracks, and still notifies once one exists', () => {
+  test('version and epochs advance with NOBODY subscribed', () => {
+    // The guard skips only the notify SCHEDULING. If it skipped the bookkeeping, a caller
+    // polling `version` would never see a change — and nothing would fail except their code.
+    const graph = new Graph();
+
+    expect(graph.version).toBe(0);
+    graph.addVertex({ labels: ['Person'], properties: { name: 'ann' } });
+
+    return flush().then(() => {
+      expect(graph.version).toBeGreaterThan(0);
+      expect(graph.epoch('Person')).toBeGreaterThan(0);
+      expect(graph.epoch('name')).toBeGreaterThan(0);
+    });
+  });
+
+  test('a subscriber added AFTER a write is notified by the NEXT write', async () => {
+    // This is the behaviour the guard changes, pinned deliberately: the earlier write scheduled
+    // nothing, so the late subscriber is not told about it. That is owed to nobody — `subscribe`
+    // does not notify on subscribe, so a subscriber reads its first snapshot on subscribing and
+    // already sees that write. The next write must still reach it.
+    const graph = new Graph();
+
+    graph.addVertex({ id: 'early', labels: ['Person'], properties: {} });
+    await settle();
+
+    let calls = 0;
+
+    graph.subscribe(() => {
+      calls += 1;
+    });
+
+    // Nothing was pending for the write that happened before subscribing.
+    await settle();
+    expect(calls).toBe(0);
+
+    graph.addVertex({ id: 'later', labels: ['Person'], properties: {} });
+    await settle();
+    expect(calls).toBeGreaterThan(0);
+  });
+
+  test('a subscriber present BEFORE the write is notified, as always', async () => {
+    const graph = new Graph();
+    let calls = 0;
+
+    graph.subscribe(() => {
+      calls += 1;
+    });
+
+    graph.addVertex({ labels: ['Person'], properties: {} });
+    await settle();
+
+    expect(calls).toBeGreaterThan(0);
+  });
+
+  test('unsubscribing mid-stream stops the scheduling without losing the counters', async () => {
+    const graph = new Graph();
+    let calls = 0;
+    const off = graph.subscribe(() => {
+      calls += 1;
+    });
+
+    graph.addVertex({ id: 'a', labels: ['Person'], properties: {} });
+    await settle();
+
+    const seen = calls;
+
+    expect(seen).toBeGreaterThan(0);
+    off();
+
+    graph.addVertex({ id: 'b', labels: ['Person'], properties: {} });
+    await settle();
+
+    // No further notification, but the version kept moving.
+    expect(calls).toBe(seen);
+    expect(graph.version).toBeGreaterThan(0);
+    expect(graph.vertexCount).toBe(2);
+  });
+
+  test('a burst still coalesces into one notification', async () => {
+    // The debounce is the reason the scheduling exists at all; the guard must not have turned it
+    // into a notify-per-write for the subscribed case.
+    const graph = new Graph();
+    let calls = 0;
+
+    graph.subscribe(() => {
+      calls += 1;
+    });
+
+    for (let i = 0; i < 50; i++) {
+      graph.addVertex({ id: `b${i}`, labels: ['Person'], properties: {} });
+    }
+
+    await settle();
+
+    expect(calls).toBe(1);
+  });
+
+  test('two subscribers are both notified', async () => {
+    const graph = new Graph();
+    let a = 0;
+    let b = 0;
+
+    graph.subscribe(() => {
+      a += 1;
+    });
+    graph.subscribe(() => {
+      b += 1;
+    });
+
+    graph.addVertex({ labels: ['Person'], properties: {} });
+    await settle();
+
+    expect(a).toBeGreaterThan(0);
+    expect(b).toBeGreaterThan(0);
+  });
+});
