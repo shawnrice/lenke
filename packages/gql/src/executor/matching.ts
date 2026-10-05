@@ -266,6 +266,24 @@ export const orient = (graph: Graph, pattern: CPath, binding: Binding, params: P
     return pattern;
   }
 
+  // A start-only clause `WHERE` gates the SEED LOOP (see `seedPrefilter`), and it can only gate
+  // the side it names. Reversing demotes it to a post-filter, so every seed it would have
+  // skipped gets expanded instead — and `estimateSeed` cannot see that, because an UNINDEXED
+  // predicate contributes nothing to its estimate. A smaller far label therefore won the
+  // comparison and the filter made the query SLOWER than no filter at all (audit item 172):
+  //
+  //   MATCH (u:User)-[:MEMBER_OF]->(gr:Team)-[:VIEWER]->(r:Resource)       6.77ms, 200,000 rows
+  //   ... the same WHERE u.name = $n                                      87.87ms,      10 rows
+  //   ... the same with the tail UNLABELLED, so no reversal                2.26ms,      10 rows
+  //
+  // The risk of staying put is bounded and the risk of reversing is not: if the predicate turns
+  // out to reject little, this scans the seeds it would have expanded anyway, which is the
+  // unfiltered plan's cost. Reversing when the predicate IS selective expands the whole far
+  // side instead of one seed.
+  if (pattern.prefilter !== undefined) {
+    return pattern;
+  }
+
   const endNode = pattern.segments[pattern.segments.length - 1].node;
   const startEst = estimateSeed(graph, pattern.start, binding, params);
   const endEst = estimateSeed(graph, endNode, binding, params);
