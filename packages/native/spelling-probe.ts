@@ -194,8 +194,34 @@ const slow: string[] = [];
 const fast: string[] = [];
 
 for (const [name, spellings] of GROUPS) {
-  const runs = spellings.map((q) => ({ q, ...timed(q) }));
-  const answers = new Set(runs.map((r) => r.answer));
+  // TWO passes, the second in reverse order, keeping the min per spelling.
+  //
+  // Whichever member runs FIRST in a group pays a large position penalty, and it is the
+  // harness's, not the query's. On the `direction` group at N=200,000 the first member read
+  // 234.4 / 233.6 / 236.3ms and the second 152.1 / 142.9 / 154.0 — and SWAPPING the two made the
+  // penalty follow the POSITION, not the spelling (reversed-first 237.8 / 238.7 / 235.3, with
+  // forward then at 148.6 / 158.8 / 146.7). In a process running only that group both read
+  // 141.7 / 142.6. So the group had been reported at 1.5-2.1x across audit items 180 and 181
+  // with no engine cause at all; the two spellings compile to the same predicate, which is why
+  // item 181's fix could not move the number.
+  //
+  // Timing every spelling in both positions and taking its better reading removes the bias: a
+  // spelling that is genuinely slower is slower from either position. It doubles the probe's
+  // runtime, which is the right trade for an instrument whose whole output is a ratio.
+  const firstPass = spellings.map((q) => timed(q));
+  const secondPass: { ms: number; answer: string }[] = [];
+
+  for (let i = spellings.length - 1; i >= 0; i -= 1) {
+    secondPass[i] = timed(spellings[i]);
+  }
+
+  const runs = spellings.map((q, i) => ({
+    q,
+    ms: Math.min(firstPass[i].ms, secondPass[i].ms),
+    answer: firstPass[i].answer,
+  }));
+  // Both passes' answers, so a spelling that answers inconsistently is still caught.
+  const answers = new Set([...firstPass, ...secondPass].map((r) => r.answer));
   const fastest = Math.min(...runs.map((r) => r.ms));
   const slowest = Math.max(...runs.map((r) => r.ms));
   const spread = slowest / Math.max(fastest, 0.01);
