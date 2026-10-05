@@ -1431,12 +1431,26 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       // these and say so, do not lower them until the suite goes green. Their job is to catch
       // a shape silently falling to ZERO, which is what happened twice (items 115, 125).
       //
-      // Measured over five seeds, of 20,000: hopFilter 429-477 generated / 293-354 non-zero,
-      // hopUntyped 47-81 / 44-73.
-      hopFilterGenerated: cov.hopFilterGenerated > 350,
-      hopFilterNonZero: cov.hopFilterNonZero > 250,
-      hopUntypedGenerated: cov.hopUntypedGenerated > 35,
-      hopUntypedNonZero: cov.hopUntypedNonZero > 30,
+      // RE-MEASURED in audit item 169, and the reason is recorded rather than the number just
+      // lowered. Two things moved the band down since "429-477 / 293-354, 47-81 / 44-73":
+      //
+      //   1. Drift. Measured on the PRE-fix build over four runs, the band was already
+      //      hopFilter 386-445 / 269-302 and hopUntyped 46-58 / 43-54 — below the recorded
+      //      figures, from the arm gaining shapes over items 125-168 exactly as the note above
+      //      predicts.
+      //   2. Item 169 itself. These counters tally queries that PRODUCE ROWS, and that fix
+      //      makes native raise on a non-boolean predicate inside a `CALL`/`EXISTS` body where
+      //      it used to return rows. Those queries are now correctly errors, so they leave the
+      //      non-empty population. That is the fix working, not coverage being lost.
+      //
+      // Twelve post-fix observations: hopFilter 376-425 / 248-307, hopUntyped 35-59 / 26-53.
+      // `hopFilterNonZero > 250` became unreachable at the low end (248), which is what failed.
+      // The floors below sit ~15-25% under the observed minimum, the same margin the old ones
+      // had, and their job is unchanged: catch a shape falling silently to ZERO.
+      hopFilterGenerated: cov.hopFilterGenerated > 320,
+      hopFilterNonZero: cov.hopFilterNonZero > 210,
+      hopUntypedGenerated: cov.hopUntypedGenerated > 28,
+      hopUntypedNonZero: cov.hopUntypedNonZero > 20,
       // Measured 263-311 generated and 109-128 of those with rows, AFTER this band gave half
       // its width to the count-shortcut family. If a future change narrows it again, this is
       // what says so.

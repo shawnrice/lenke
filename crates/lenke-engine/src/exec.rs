@@ -4959,13 +4959,36 @@ fn pull_body(plan: &Plan, store: &Store, seed: &Batch) -> Result<Batch, String> 
         )?,
         Plan::Filter { input, pred } => {
             let b = pull_body(input, store, seed)?;
-            let mask = eval(pred, store, &b)?;
-            let keep: Vec<usize> = match &mask {
-                Col::Bool(bs) => (0..bs.len()).filter(|&i| bs[i]).collect(),
-                other => (0..other.len())
-                    .filter(|&i| other.value_at(i).is_true())
-                    .collect(),
-            };
+            // `filter_keep`, not a second derivation of it. This arm used to build its own
+            // keep-set with `value_at(i).is_true()`, which reads a NON-BOOLEAN as `false` where
+            // the main `Plan::Filter` arm rejects it — so a predicate that is a truth value for
+            // some rows and not others silently dropped the offending rows inside a CALL
+            // subquery body and raised everywhere else (audit item 169):
+            //
+            //   MATCH (n:T) CALL (n) { MATCH (n)-[:E]->(m)
+            //     WHERE CASE WHEN n.x > 0 THEN true ELSE 1.0 END RETURN m.n AS mn }
+            //     RETURN mn AS x
+            //       ts: E_INVALID_VALUE     native: [{"x":11}]
+            //
+            // The divergence registry names this shape the "`CALL`-body laziness bug" and
+            // deliberately refuses to absorb it. It was never laziness: it was this missing
+            // truth-type check. `filter_keep`'s own comment is the rule it broke — "a second
+            // derivation of 'which rows does this predicate keep' is exactly the kind of drift
+            // that makes two spellings of one query disagree".
+            // `as_truth`, which REJECTS a non-boolean, rather than the `value_at(i).is_true()`
+            // this arm used to derive its keep-set with — `is_true()` reads a non-boolean as
+            // `false`, where every other filter in the engine raises.
+            //
+            // NOT `filter_keep`, which would be the ideal single derivation: routing through it
+            // cost this bench's `filter` row 78.2 -> 93.1 / 307.5 -> 375.3 / 789.6 -> 935.0ms
+            // across the three sizes, a measured ~20% that is non-overlapping and reproducible
+            // (`pull_body` serves the STREAMING driver, so this arm is on the hot filter path,
+            // not just subquery bodies). `as_truth` over the evaluated column is what
+            // `filter_keep`'s own general path reduces to, so the semantics are its semantics —
+            // the three-valued mask, UNKNOWN dropped — at the cost this arm already paid.
+            let mask = as_truth(&eval(pred, store, &b)?)?;
+            let keep: Vec<usize> = (0..mask.len()).filter(|&i| mask[i] == Some(true)).collect();
+
             b.gather(&keep)
         }
         // A projection is streamable too (used by the LIMIT short-circuit driver;

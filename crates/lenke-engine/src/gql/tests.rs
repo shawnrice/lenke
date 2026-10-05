@@ -6137,3 +6137,142 @@ fn an_abbreviated_hop_is_untyped() {
         0.0
     );
 }
+
+// ---------------------------------------------------------------------------
+// A CALL/EXISTS body's filter rejects a non-boolean, as every other filter does
+// (audit item 169)
+// ---------------------------------------------------------------------------
+
+/// A truth-valued predicate is a truth value WHEREVER it sits. `pull_body`'s `Plan::Filter`
+/// arm derived its own keep-set with `value_at(i).is_true()`, which reads a non-boolean as
+/// `false` where the main arm rejects it — so a predicate that is boolean for some rows and
+/// not others silently dropped the offending rows inside a subquery body.
+///
+/// The divergence registry calls this shape the "`CALL`-body laziness bug" and refuses to
+/// absorb it. It was never laziness: it was a missing truth-type check.
+#[test]
+fn a_non_boolean_predicate_in_a_call_body_is_rejected() {
+    let mut st = Builder::default().build();
+    exec_gql(
+        &mut st,
+        "INSERT (:T {id:'a', x: -1}), (:T {id:'b', x: 4}), (:T {id:'c', x: 2})",
+    );
+    exec_gql(
+        &mut st,
+        "MATCH (p:T {id:'a'}), (q:T {id:'b'}) INSERT (p)-[:E]->(q)",
+    );
+    exec_gql(
+        &mut st,
+        "MATCH (p:T {id:'c'}), (q:T {id:'b'}) INSERT (p)-[:E]->(q)",
+    );
+
+    // Boolean for `x > 0` and a NUMBER otherwise, so vertex `a` (x = -1) is the row that must
+    // raise. Before item 169 this returned the `c` row and no error.
+    for q in [
+        "MATCH (n:T) CALL (n) { MATCH (n)-[:E]->(m) WHERE CASE WHEN n.x > 0 THEN true ELSE 1.0 END RETURN m.x AS mx } RETURN mx AS x",
+        "MATCH (n:T) CALL (n) { MATCH (n WHERE CASE WHEN n.x > 0 THEN true ELSE 1.0 END)-[:E]->(m) RETURN m.x AS mx } RETURN mx AS x",
+        "MATCH (n:T) CALL (n) { MATCH (n)-[:E]->(m WHERE CASE WHEN n.x > 0 THEN true ELSE 1.0 END) RETURN m.x AS mx } RETURN mx AS x",
+    ] {
+        let p = crate::opt::optimize_indexed(super::parse(q).unwrap(), &st);
+        let err = crate::exec::try_run(&p, &st)
+            .err()
+            .unwrap_or_else(|| panic!("a non-boolean predicate must be rejected: {q}"));
+        assert!(
+            err.contains("E_INVALID_VALUE"),
+            "expected a data exception for {q}, got: {err}"
+        );
+    }
+}
+
+/// An UNCONDITIONALLY non-boolean predicate in a subquery body was already rejected (the
+/// result was empty rather than wrong), and must stay rejected — the fix must not have
+/// narrowed to only the per-row case.
+#[test]
+fn an_always_non_boolean_predicate_in_a_call_body_is_still_rejected() {
+    let mut st = Builder::default().build();
+    exec_gql(&mut st, "INSERT (:T {id:'a', x: 1}), (:T {id:'b', x: 2})");
+    exec_gql(
+        &mut st,
+        "MATCH (p:T {id:'a'}), (q:T {id:'b'}) INSERT (p)-[:E]->(q)",
+    );
+
+    let q = "MATCH (n:T) CALL (n) { MATCH (n)-[:E]->(m) WHERE cos(0.0) RETURN m.x AS mx } RETURN mx AS x";
+    let p = crate::opt::optimize_indexed(super::parse(q).unwrap(), &st);
+    assert!(
+        crate::exec::try_run(&p, &st).is_err(),
+        "a constant non-boolean predicate must be rejected in a subquery body too"
+    );
+}
+
+/// A BOOLEAN predicate in a subquery body still filters, and still filters CORRECTLY — the
+/// fix replaced the keep-set derivation, so the rows it keeps are the thing most at risk.
+#[test]
+fn a_boolean_predicate_in_a_call_body_still_filters() {
+    let mut st = Builder::default().build();
+    exec_gql(
+        &mut st,
+        "INSERT (:T {id:'a', x: 1}), (:T {id:'b', x: 2}), (:T {id:'c', x: 3})",
+    );
+    exec_gql(
+        &mut st,
+        "MATCH (p:T {id:'a'}), (q:T {id:'b'}) INSERT (p)-[:E]->(q)",
+    );
+    exec_gql(
+        &mut st,
+        "MATCH (p:T {id:'a'}), (q:T {id:'c'}) INSERT (p)-[:E]->(q)",
+    );
+
+    let count = |sql: &str| -> f64 {
+        let p = crate::opt::optimize_indexed(super::parse(sql).unwrap(), &st);
+        match &run(&p, &st).rows[0][0] {
+            Value::Num(x) => *x,
+            other => panic!("expected a number, got {other:?}"),
+        }
+    };
+
+    // `a` has two out-edges, to x=2 and x=3. The body filter keeps one of them.
+    assert_eq!(
+        count(
+            "MATCH (n:T) CALL (n) { MATCH (n)-[:E]->(m) WHERE m.x > 2 RETURN m.x AS mx } RETURN count(*) AS c"
+        ),
+        1.0
+    );
+    assert_eq!(
+        count(
+            "MATCH (n:T) CALL (n) { MATCH (n)-[:E]->(m) WHERE m.x > 1 RETURN m.x AS mx } RETURN count(*) AS c"
+        ),
+        2.0
+    );
+    assert_eq!(
+        count(
+            "MATCH (n:T) CALL (n) { MATCH (n)-[:E]->(m) WHERE m.x > 9 RETURN m.x AS mx } RETURN count(*) AS c"
+        ),
+        0.0
+    );
+    // A three-valued UNKNOWN (a null operand) drops the row rather than raising, which is what
+    // `filter_keep` does everywhere else — the semantics the body now shares.
+    assert_eq!(
+        count(
+            "MATCH (n:T) CALL (n) { MATCH (n)-[:E]->(m) WHERE m.nope > 1 RETURN m.x AS mx } RETURN count(*) AS c"
+        ),
+        0.0
+    );
+}
+
+/// The same check in an EXISTS body, which shares `pull_body`.
+#[test]
+fn a_non_boolean_predicate_in_an_exists_body_is_rejected() {
+    let mut st = Builder::default().build();
+    exec_gql(&mut st, "INSERT (:T {id:'a', x: 1}), (:T {id:'b', x: 2})");
+    exec_gql(
+        &mut st,
+        "MATCH (p:T {id:'a'}), (q:T {id:'b'}) INSERT (p)-[:E]->(q)",
+    );
+
+    let q = "MATCH (n:T) WHERE EXISTS { MATCH (n)-[:E]->(m) WHERE cos(0.0) } RETURN n.x AS x";
+    let p = crate::opt::optimize_indexed(super::parse(q).unwrap(), &st);
+    assert!(
+        crate::exec::try_run(&p, &st).is_err(),
+        "an EXISTS body shares `pull_body`, so it must reject a non-boolean too"
+    );
+}
