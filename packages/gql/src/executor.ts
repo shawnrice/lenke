@@ -2515,6 +2515,31 @@ export const compilePredicate = (
 /** A value usable as a seek key without binding the node's own variable. */
 const isConstExpr = (e: Expr): boolean => e.kind === 'lit' || e.kind === 'param';
 
+/**
+ * Can this `IN` right-hand side seed an index — a list whose every item is closed, or a PARAM
+ * that will hold the whole array?
+ *
+ * The param case was missing, and it is the spelling applications actually write: binding the
+ * list keeps values out of the query text, so `IN $names` is the injection-safe form and
+ * `IN […]` with inline literals is the rare one. `WHERE k IN [$a, $b]` already seeded (a `list`
+ * node whose items are params); `WHERE k IN $names` did not, because the list node itself is a
+ * `param`. Measured on 20,000 users with `name` indexed, 100 names (audit item 184):
+ *
+ *   MATCH (u:User) WHERE u.name IN $names RETURN count(*)       4751.3us, 0 index hits
+ *   MATCH (u:User) WHERE u.name IN $names SET u.score = $v      5747.1us, 0 index hits
+ *   CONTROL the same with ONE name, `u.name = $one`               40.1us, 1 index hit
+ *
+ * Identical with and without the index (5745.3us unindexed against 5747.1 indexed), which is
+ * item 149's signature for an index doing nothing. This is also one of the four examples
+ * CLAUDE.md names for this engine's bug class: `k = $a OR k = $b` against `k IN [$a, $b]`.
+ *
+ * Nothing else had to change: `indexCandidates`'s `within` branch already resolves the values
+ * per execution and declines unless the result is an array of scalars, so a param bound to a
+ * non-array simply yields no candidate and the scan stands.
+ */
+const closedList = (e: Expr): boolean =>
+  e.kind === 'param' || (e.kind === 'list' && e.items.every(isConstExpr));
+
 /** Mirror a comparison operator when its operands are swapped (`30 < a.age`). */
 const FLIP: Record<CompareOp, CompareOp> = {
   '=': '=',
@@ -2605,12 +2630,7 @@ const collectHints = (where: Expr, into: HintMap): void => {
       return;
     }
     case 'in':
-      if (
-        !where.negated &&
-        where.expr.kind === 'prop' &&
-        where.list.kind === 'list' &&
-        where.list.items.every(isConstExpr)
-      ) {
+      if (!where.negated && where.expr.kind === 'prop' && closedList(where.list)) {
         pushHint(into, where.expr.variable, {
           kind: 'within',
           key: where.expr.key,
