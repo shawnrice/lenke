@@ -130,7 +130,7 @@ describe('GROUP BY with no aggregate is DISTINCT', () => {
     ]);
   });
 
-  test('ORDER BY declines and still sorts', () => {
+  test('ORDER BY sorts, and item 189 lets the walk do it', () => {
     expect(query(g, 'MATCH (n:P) LET a = n.a RETURN a GROUP BY a ORDER BY a DESC')).toEqual([
       { a: 2 },
       { a: 1 },

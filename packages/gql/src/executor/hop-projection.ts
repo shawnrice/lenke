@@ -14,6 +14,7 @@ import type {
 } from '../executor.js';
 import {
   compilePredicate,
+  compareSort,
   freePredicateVars,
   projectRow,
   relTypeNames,
@@ -649,12 +650,13 @@ const filteredHopWalk = (w: {
  * value, so a duplicate costs neither a row object nor a `rowKey`. With two items the row
  * itself is the key and there is nothing to save.
  */
+/**
+ * One projected item and no paging. `ORDER BY` is NOT refused here: a sort over a dedup's own
+ * projected value is a sort of the dedup's OUTPUT, which is at most as large as the answer, so
+ * the walk can do it afterwards (`sortOf` below decides). Paging stays refused — see `sortOf`.
+ */
 const oneItemNoWindow = (proj: CProjection): boolean =>
-  !proj.star &&
-  proj.items.length === 1 &&
-  proj.orderBy.length === 0 &&
-  proj.skip === undefined &&
-  proj.limit === undefined;
+  !proj.star && proj.items.length === 1 && proj.skip === undefined && proj.limit === undefined;
 
 const distinctOneItem = (proj: CProjection): boolean =>
   proj.distinct && !proj.aggregating && oneItemNoWindow(proj);
@@ -668,6 +670,65 @@ const distinctOneItem = (proj: CProjection): boolean =>
 const sameGroupingExpr = (a: Expr, b: Expr): boolean =>
   (a.kind === 'var' && b.kind === 'var' && a.name === b.name) ||
   (a.kind === 'prop' && b.kind === 'prop' && a.variable === b.variable && a.key === b.key);
+
+/**
+ * The single `ORDER BY` key this walk can honour, or `'decline'`.
+ *
+ * Sorting a dedup by its OWN projected value is a sort of the ANSWER — at most as many rows as
+ * the walk returns — so doing it afterwards is free, and the general path charged a full
+ * materialize-and-sort of every input row for it:
+ *
+ *     MATCH (n:P) RETURN DISTINCT n.age AS a                 13.90ms
+ *     MATCH (n:P) RETURN DISTINCT n.age AS a ORDER BY a     142.64ms   10.3x to sort 90 rows
+ *
+ * The two orders agree, and that is the whole argument for doing this: when the sort key IS the
+ * projected value, every row in a dedup group shares the key, so the general path's
+ * sort-then-dedup keeps the same representative (they are identical rows) and emits the groups in
+ * key order — which is what dedup-then-sort gives. A sort key the projection does NOT carry is a
+ * different question and declines: `RETURN DISTINCT n.age AS x ORDER BY n.name` sorts the INPUT
+ * rows by name and dedupes after, which no post-sort of the output can reproduce.
+ *
+ * The key is accepted when it is the output column by name — which also covers an alias that
+ * SHADOWS a pattern variable, since the output column wins there (`MATCH (a:P) RETURN DISTINCT
+ * a.age AS a ORDER BY a` sorts by the age) — or when it is structurally the projected expression,
+ * the `ORDER BY n.age` spelling of the same thing.
+ *
+ * Refused, each for its own measured reason:
+ *
+ *   - **more than one key.** A second key can only break ties between identical rows, so it
+ *     changes nothing — but it is unmeasured, and one key is the shape that was 10x off.
+ *   - **`SKIP`/`LIMIT`** (refused by `oneItemNoWindow`). Without an `ORDER BY` the general path
+ *     is LAZY and a `LIMIT` stops it after the first few distinct values — `RETURN DISTINCT
+ *     n.age AS a LIMIT 5` is 0.05ms against the walk's 13.90ms, because the walk scans the whole
+ *     bucket. Taking paging would be a 280x REGRESSION on that shape, so the window stays with
+ *     the general path. (`ORDER BY … LIMIT` cannot exit early either way and is left with it
+ *     too, rather than split the rule on which paging clause is present.)
+ */
+const sortOf = (
+  proj: CProjection,
+  projection: Projection,
+  source: Expr,
+): { descending: boolean; nullsFirst: boolean | undefined } | 'decline' | undefined => {
+  const keys = projection.orderBy;
+
+  if (keys === undefined || keys.length === 0) {
+    return undefined;
+  }
+
+  if (keys.length !== 1) {
+    return 'decline';
+  }
+
+  const [key] = keys;
+  const outName = proj.items[0].name;
+  const isOutputColumn = key.expr.kind === 'var' && key.expr.name === outName;
+
+  if (!isOutputColumn && !sameGroupingExpr(key.expr, source)) {
+    return 'decline';
+  }
+
+  return { descending: key.descending, nullsFirst: key.nullsFirst };
+};
 
 /**
  * `RETURN <k> GROUP BY <k>` with no aggregate IS `RETURN DISTINCT <k>` — one row per distinct
@@ -744,6 +805,8 @@ type DistinctShape = {
   farLabel: LabelExpr | undefined;
   adjacency: Adjacency | undefined;
   gatePred: CPredicate | undefined;
+  /** A single `ORDER BY` over the projected value, applied to the walk's own output. */
+  sort: { descending: boolean; nullsFirst: boolean | undefined } | undefined;
 };
 
 /**
@@ -864,6 +927,12 @@ const distinctShape = (
     return null;
   }
 
+  const sort = sortOf(proj, ret.projection, source);
+
+  if (sort === 'decline') {
+    return null;
+  }
+
   // The projected expression must read exactly ONE end, which is the element the walk
   // evaluates it against. A CONSTANT projection (no reads) dedupes to a single row and is
   // left to the general path rather than reasoned about with an empty binding.
@@ -922,6 +991,7 @@ const distinctShape = (
     farLabel,
     adjacency,
     gatePred,
+    sort,
   };
 };
 
@@ -961,7 +1031,8 @@ export const detectDistinctProjection = (
     return null;
   }
 
-  const { evalFn, outName, keyedVar, onStart, startLabel, farLabel, adjacency, gatePred } = shape;
+  const { evalFn, outName, keyedVar, onStart, startLabel, farLabel, adjacency, gatePred, sort } =
+    shape;
 
   return (graph, params) => {
     const seen = new Map<string, Row>();
@@ -998,6 +1069,15 @@ export const detectDistinctProjection = (
       }
     }
 
-    return [...seen.values()];
+    const rows = [...seen.values()];
+
+    if (sort !== undefined) {
+      // `compareSort` is the engine's own comparator, the one the general path's `cmp` calls per
+      // key — so DESC, the NULLS placement and the engine default all behave identically here.
+      // The rows are the ANSWER, so this sorts at most as many rows as it returns.
+      rows.sort((a, b) => compareSort(a[outName], b[outName], sort.descending, sort.nullsFirst));
+    }
+
+    return rows;
   };
 };

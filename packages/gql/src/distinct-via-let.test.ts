@@ -148,7 +148,7 @@ describe('DISTINCT over a LET-bound name', () => {
     expect(query(g, 'MATCH (n:P) LET a = 1 RETURN DISTINCT a')).toEqual([{ a: 1 }]);
   });
 
-  test('ORDER BY declines and still sorts', () => {
+  test('ORDER BY sorts, and item 189 lets the walk do it', () => {
     expect(query(g, 'MATCH (n:P) LET a = n.n RETURN DISTINCT a ORDER BY a')).toEqual([
       { a: 1 },
       { a: 2 },

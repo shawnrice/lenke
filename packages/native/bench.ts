@@ -227,6 +227,17 @@ const CASES: Case[] = [
     ),
   },
   {
+    // Adding `ORDER BY` to a dedup cost 12.6x until item 189 — 146.8ms to sort the NINETY rows
+    // the query returns, because every dedup fast path declined on `orderBy.length > 0` and the
+    // general path then materialized and sorted all 200,000 input rows. Sorting a dedup by its
+    // own projected value is a sort of the ANSWER, so this row guards that it stays one.
+    name: 'query: distinct + order by',
+    ...onGraph(
+      () => nodesDoc,
+      (e, g) => void e.query(g, 'MATCH (n:Person) RETURN DISTINCT n.age AS a ORDER BY a'),
+    ),
+  },
+  {
     // NOT a traversal measurement any more, and the name said otherwise for a while. Both
     // engines now answer this from the edge bucket's size without walking anything (the 1-hop
     // count shortcut), so it reads ~0ms on both. Kept, renamed, as the GUARD for that shortcut:
