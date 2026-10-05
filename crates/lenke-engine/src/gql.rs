@@ -2708,6 +2708,24 @@ impl Parser {
     /// predicate expression, with `self.scope` already carrying the element's
     /// binding. Restores the cursor afterward so pattern parsing continues where
     /// it left off.
+    /// Does a captured predicate's token span mention a variable that is in the OUTER scope and
+    /// not among `own` (the pattern's own bindings)?
+    ///
+    /// Used to decide WHERE such a predicate can be applied. One reading only its own variables
+    /// filters the pattern's seed, which prunes before the expansion; one that also reads an
+    /// outer variable spans two slot spaces and can only be evaluated after the join.
+    ///
+    /// Scanning tokens rather than parsing is deliberate: the span cannot be parsed against
+    /// either scope until the decision is made. A property NAME is also an `Ident`, so
+    /// `(b WHERE b.a = 1)` with an outer variable called `a` reports true and takes the
+    /// after-join route — slower, never wrong. The error is one-sided by construction.
+    fn captured_reads_outer(&self, range: (usize, usize), own: &HashMap<String, usize>) -> bool {
+        self.toks[range.0..range.1].iter().any(|t| match t {
+            Tok::Ident(n) => !own.contains_key(n) && self.scope.contains_key(n),
+            _ => false,
+        })
+    }
+
     fn parse_captured_where(&mut self, range: (usize, usize)) -> Result<Expr, String> {
         let saved = self.pos;
         self.pos = range.0;
@@ -4145,7 +4163,22 @@ impl Parser {
             if let Some(le) = label_expr {
                 seed = seed.filter(lower_label_expr(&le, 0));
             }
-            if let Some(r) = start_where {
+            // A predicate that also reads an OUTER variable spans two slot spaces — the
+            // pattern's own (0-based, what `seed` is in) and the working table's — so it cannot
+            // filter the seed at all. It is deferred to after the join, where `self.scope`
+            // already holds the outer names at their own slots and this pattern's shifted past
+            // them, so it needs no manual remapping. Native used to raise `unknown variable a`
+            // for `MATCH (a:P)-[:E]->(q:P) MATCH (b:P WHERE b.k = a.k)-[:E]->(q)`, which the TS
+            // engine answers (audit item 158).
+            //
+            // Keeping the own-variables-only case on the SEED is the point of the split: there
+            // the predicate prunes before the expansion, which is where it is worth most.
+            let deferred_where = match start_where {
+                Some(r) if self.captured_reads_outer(r, &sub_scope) => Some(r),
+                _ => None,
+            };
+
+            if let (Some(r), None) = (start_where, deferred_where) {
                 // The predicate is resolved in the SUB-pattern's slot space, because it is
                 // filtering that pattern's own seed — but the outer scope must be put BACK
                 // afterwards. Assigning `self.scope` and leaving it was a silent wrong answer:
@@ -4178,6 +4211,13 @@ impl Parser {
                 self.scope.entry(v.clone()).or_insert(width + r);
             }
             self.slots = width + sub_slots;
+
+            // The correlated predicate, now that both slot spaces are in one scope. Applied
+            // BEFORE any trailing clause `WHERE`, which is the order the two were written in.
+            if let Some(r) = deferred_where {
+                plan = plan.filter(self.parse_captured_where(r)?);
+            }
+
             if self.eat_kw("WHERE") {
                 plan = plan.filter(self.bool_pred()?);
             }

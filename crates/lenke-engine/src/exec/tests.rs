@@ -14573,3 +14573,144 @@ fn a_quantified_continuing_pattern_with_a_per_hop_edge_where() {
         "the fixture must produce rows"
     );
 }
+
+/// A continuing `MATCH` whose inline `WHERE` reads an OUTER variable (audit item 158). Item 157
+/// left this raising `unknown variable a`, because such a predicate spans two slot spaces — the
+/// pattern's own 0-based one and the working table's — so it cannot filter the pattern's seed.
+/// It is now deferred to after the join, where one scope holds both.
+///
+/// **The oracle is the trailing-`WHERE` spelling**, which expresses the same question and was
+/// always supported: `MATCH … MATCH (b:P)-[:E]->(q) WHERE b.k = a.k`. Every test below asserts
+/// the two agree, so none of them rests on arithmetic in a comment.
+#[test]
+fn a_correlated_inline_where_on_a_continuing_match() {
+    let store = scope_store();
+    let inline = "MATCH (a:P)-[:E]->(q:P) MATCH (b:P WHERE b.k = a.k)-[:E]->(q) \
+                  RETURN count(*) AS c";
+    let oracle =
+        "MATCH (a:P)-[:E]->(q:P) MATCH (b:P)-[:E]->(q) WHERE b.k = a.k RETURN count(*) AS c";
+    assert_eq!(scope_count(&store, inline), scope_count(&store, oracle));
+    // Three sources all reach the one shared vertex, and `b.k = a.k` keeps the diagonal.
+    assert_eq!(scope_count(&store, inline), 3.0);
+}
+
+#[test]
+fn a_correlated_inline_where_with_a_comparison() {
+    let store = scope_store();
+    for op in ["<", ">", "<>", "<=", ">="] {
+        let inline = format!(
+            "MATCH (a:P)-[:E]->(q:P) MATCH (b:P WHERE b.k {op} a.k)-[:E]->(q) RETURN count(*) AS c"
+        );
+        let oracle = format!(
+            "MATCH (a:P)-[:E]->(q:P) MATCH (b:P)-[:E]->(q) WHERE b.k {op} a.k RETURN count(*) AS c"
+        );
+        assert_eq!(
+            scope_count(&store, &inline),
+            scope_count(&store, &oracle),
+            "operator {op}"
+        );
+    }
+}
+
+#[test]
+fn a_correlated_conjunct_beside_an_own_variable_one() {
+    // Mixing the two kinds in one predicate: the whole thing goes after the join, because the
+    // token scan cannot split it and splitting is not what this fixes.
+    let store = scope_store();
+    let inline = "MATCH (a:P)-[:E]->(q:P) MATCH (b:P WHERE b.k = a.k AND b.k > 0)-[:E]->(q) \
+                  RETURN count(*) AS c";
+    let oracle = "MATCH (a:P)-[:E]->(q:P) MATCH (b:P)-[:E]->(q) WHERE b.k = a.k AND b.k > 0 \
+                  RETURN count(*) AS c";
+    assert_eq!(scope_count(&store, inline), scope_count(&store, oracle));
+    assert_eq!(
+        scope_count(&store, inline),
+        2.0,
+        "the k = 0 pair is dropped"
+    );
+}
+
+#[test]
+fn a_correlated_inline_where_plus_a_trailing_clause_where() {
+    // Both predicates must apply. The inline one is attached first, which is the order they
+    // appear in the query.
+    let store = scope_store();
+    let q = "MATCH (a:P)-[:E]->(q:P) MATCH (b:P WHERE b.k = a.k)-[:E]->(q) WHERE a.k > 0 \
+             RETURN count(*) AS c";
+    let oracle = "MATCH (a:P)-[:E]->(q:P) MATCH (b:P)-[:E]->(q) WHERE b.k = a.k AND a.k > 0 \
+                  RETURN count(*) AS c";
+    assert_eq!(scope_count(&store, q), scope_count(&store, oracle));
+    assert_eq!(scope_count(&store, q), 2.0);
+}
+
+#[test]
+fn a_correlated_predicate_may_read_the_outer_patterns_far_end() {
+    // `q` is the outer pattern's LANDING node, not its start — any outer variable will do.
+    let store = scope_store();
+    let inline = "MATCH (a:P)-[:E]->(q:P) MATCH (b:P WHERE b.k = q.k)-[:E]->(r:P) \
+                  RETURN count(*) AS c";
+    let oracle = "MATCH (a:P)-[:E]->(q:P) MATCH (b:P)-[:E]->(r:P) WHERE b.k = q.k \
+                  RETURN count(*) AS c";
+    assert_eq!(scope_count(&store, inline), scope_count(&store, oracle));
+}
+
+#[test]
+fn a_correlated_predicate_on_an_uncorrelated_pattern() {
+    // No SHARED variable, so the join is a cross product and the predicate is the only thing
+    // relating the two patterns — which is exactly what it could not do before.
+    let store = scope_store();
+    let inline = "MATCH (a:P)-[:E]->(q:P) MATCH (b:P WHERE b.k = a.k)-[:E]->(r:P) \
+                  RETURN count(*) AS c";
+    let oracle = "MATCH (a:P)-[:E]->(q:P) MATCH (b:P)-[:E]->(r:P) WHERE b.k = a.k \
+                  RETURN count(*) AS c";
+    assert_eq!(scope_count(&store, inline), scope_count(&store, oracle));
+}
+
+#[test]
+fn a_correlated_predicate_on_a_node_only_continuing_pattern() {
+    let store = scope_store();
+    let inline = "MATCH (a:P)-[:E]->(q:P) MATCH (b:P WHERE b.k = a.k) RETURN count(*) AS c";
+    let oracle = "MATCH (a:P)-[:E]->(q:P) MATCH (b:P) WHERE b.k = a.k RETURN count(*) AS c";
+    assert_eq!(scope_count(&store, inline), scope_count(&store, oracle));
+}
+
+#[test]
+fn a_correlated_predicate_after_a_with_boundary() {
+    // `WITH` rebinds the scope, so the outer names available to the predicate are its carried
+    // columns — a different route to the same deferral.
+    let store = scope_store();
+    let inline = "MATCH (a:P)-[:E]->(q:P) WITH a AS a, q AS q \
+                  MATCH (b:P WHERE b.k = a.k)-[:E]->(q) RETURN count(*) AS c";
+    let oracle = "MATCH (a:P)-[:E]->(q:P) WITH a AS a, q AS q \
+                  MATCH (b:P)-[:E]->(q) WHERE b.k = a.k RETURN count(*) AS c";
+    assert_eq!(scope_count(&store, inline), scope_count(&store, oracle));
+}
+
+#[test]
+fn an_own_variables_only_predicate_still_answers_identically() {
+    // The other side of the split: this one keeps filtering the SEED, which is where it prunes
+    // before the expansion. Only the answer is assertable here, and it must not have moved.
+    let store = scope_store();
+    let inline = "MATCH (a:P)-[:E]->(q:P) MATCH (b:P WHERE b.k > 1)-[:E]->(q) RETURN count(*) AS c";
+    let oracle = "MATCH (a:P)-[:E]->(q:P) MATCH (b:P)-[:E]->(q) WHERE b.k > 1 RETURN count(*) AS c";
+    assert_eq!(scope_count(&store, inline), scope_count(&store, oracle));
+    assert_eq!(scope_count(&store, inline), 3.0);
+}
+
+#[test]
+fn a_property_named_like_an_outer_variable_still_answers() {
+    // The token scan sees a bare `Ident` and cannot tell a property name from a variable, so
+    // `(b WHERE b.a = 1)` with an outer variable `a` is reported as an outer read and takes the
+    // after-join route. Slower, never wrong — and this pins the "never wrong" half.
+    let nd = concat!(
+        "{\"type\":\"node\",\"id\":\"x\",\"labels\":[\"P\"],\"properties\":{\"a\":1,\"k\":0}}\n",
+        "{\"type\":\"node\",\"id\":\"y\",\"labels\":[\"P\"],\"properties\":{\"a\":2,\"k\":9}}\n",
+        "{\"type\":\"edge\",\"id\":\"e0\",\"labels\":[\"E\"],\"from\":\"x\",\"to\":\"y\"}\n",
+    );
+    let store = crate::ndjson::from_ndjson(nd).unwrap();
+    let inline = "MATCH (a:P)-[:E]->(q:P) MATCH (b:P WHERE b.a = 1)-[:E]->(z:P) \
+                  RETURN count(*) AS c";
+    let oracle = "MATCH (a:P)-[:E]->(q:P) MATCH (b:P)-[:E]->(z:P) WHERE b.a = 1 \
+                  RETURN count(*) AS c";
+    assert_eq!(scope_count(&store, inline), scope_count(&store, oracle));
+    assert_eq!(scope_count(&store, inline), 1.0);
+}
