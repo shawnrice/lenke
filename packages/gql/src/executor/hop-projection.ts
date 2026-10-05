@@ -1084,9 +1084,55 @@ export const detectDistinctProjection = (
       }
     };
 
+    // A dedup over a HOP was ~300ns an edge where a FILTERED hop count over the same million
+    // edges is ~50ns, and the far-vertex lookup is not the difference — keying the far end
+    // (301.4ms) and the start end (286.1ms) measured within 5%, because `expand` resolves
+    // `edge.to` either way. What it costs is the layers: a generator resume, a `{ edge, node }`
+    // per edge, and that unconditional endpoint getter, which is a string-keyed `Map.get`.
+    //
+    // So the simple directed single-type hop reads its adjacency bucket directly, exactly as the
+    // count shortcuts' per-vertex walks do (items 129/137), and resolves the far vertex ONLY when
+    // something reads it — the projection, or a far-end label filter. Identical ORDER: `expand`'s
+    // own fast path yields that same bucket in that same order, which is what makes this a
+    // layer removal and not a different plan. Anything else (`both`, a type disjunction, no type)
+    // keeps `expand` (audit item 194).
+    const direct =
+      adjacency !== undefined && adjacency.direction !== 'both' && adjacency.label?.kind === 'label'
+        ? { forward: adjacency.direction === 'out', type: adjacency.label.name }
+        : undefined;
+    const needsFar = !onStart || farLabel !== undefined;
+
     for (const v of candidateVertices(graph, startLabel)) {
       if (adjacency === undefined) {
         take(v);
+
+        continue;
+      }
+
+      if (direct !== undefined) {
+        const bucket = (direct.forward ? graph.edgesFromByLabel : graph.edgesToByLabel)
+          .get(v.id)
+          ?.get(direct.type);
+
+        if (bucket === undefined) {
+          continue;
+        }
+
+        for (const edge of bucket) {
+          // `v` when nothing reads the far end: the endpoint getters are a string-keyed
+          // `Map.get` each, which is the ~190ns a far-keyed dedup still pays per edge.
+          let far = v;
+
+          if (needsFar) {
+            far = direct.forward ? edge.to : edge.from;
+          }
+
+          if (farLabel !== undefined && !matchesLabel(far, farLabel)) {
+            continue;
+          }
+
+          take(onStart ? v : far);
+        }
 
         continue;
       }
