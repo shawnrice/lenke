@@ -2,7 +2,7 @@ import { EmitterEvent } from '@lenke/emitter';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 import { rando, sortedByKey } from '@lenke/utils';
 
-import type { Graph } from './Graph.js';
+import type { Graph, PropBox } from './Graph.js';
 import { normalizeProperties, validatePropertyKey, validatePropertyValue } from './validate.js';
 import { Vertex } from './Vertex.js';
 
@@ -20,6 +20,11 @@ export class Edge {
   #from: string;
   #to: string;
   #graph: Graph | null;
+
+  // This element's property box, cached after the first read. A direct reference, so a property
+  // read costs a field load instead of a string-keyed `Map.get`; see `Graph.elementProperties`
+  // for why it is a box and not the bag.
+  #box: PropBox | undefined;
 
   /**
    * TypeCheck if something is an `Edge`
@@ -50,6 +55,9 @@ export class Edge {
 
   set graph(graph: Graph) {
     this.#graph = graph;
+    // The cached box belongs to the PREVIOUS graph's map, so moving graphs must drop it or the
+    // element would read the old graph's properties.
+    this.#box = undefined;
   }
 
   get from(): Vertex {
@@ -93,7 +101,16 @@ export class Edge {
    * (Freeze is shallow — nested array/object *values* are not protected.)
    */
   get properties(): Record<string, unknown> {
-    return this.#graph?.elementProperties.get(this.#id) ?? {};
+    if (!this.#graph) {
+      return {};
+    }
+
+    // The box is cached on FIRST read and then never looked up again. `??=` rather than a
+    // constructor assignment so an element built outside the normal path still shares the one
+    // box for its id — the whole point of the indirection (see `Graph.elementProperties`).
+    this.#box ??= this.#graph.elementProperties.get(this.#id);
+
+    return this.#box?.bag ?? {};
   }
 
   set properties(properties: Record<string, unknown>) {
@@ -125,7 +142,20 @@ export class Edge {
       });
     }
 
-    this.#graph.elementProperties.set(this.#id, Object.freeze(normalizeProperties(bag)));
+    // REPLACE the box's bag rather than the map entry, so every instance holding this box —
+    // there can be more than one for an id — sees the write. The bag itself stays frozen.
+    const frozen = Object.freeze(normalizeProperties(bag));
+    const box = this.#box ?? this.#graph.elementProperties.get(this.#id);
+
+    if (box === undefined) {
+      this.#box = { bag: frozen };
+      this.#graph.elementProperties.set(this.#id, this.#box);
+
+      return;
+    }
+
+    box.bag = frozen;
+    this.#box = box;
   }
 
   addLabel(label: string): Edge | null {

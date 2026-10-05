@@ -25,6 +25,16 @@ type AddEdgeArgs = {
   properties?: Record<string, unknown>;
 };
 
+/**
+ * A mutable holder for one element's property bag.
+ *
+ * `bag` is replaced, never mutated in place — it stays frozen, so a stray
+ * `v.properties.x = …` still throws rather than corrupting an index. The box exists only so an
+ * element can hold a direct reference to its own property state; see
+ * {@link Graph.elementProperties}.
+ */
+export type PropBox = { bag: Record<string, unknown> };
+
 /** Which element an index covers (see {@link Graph.createIndex}). */
 export type IndexTarget = 'vertex' | 'edge';
 
@@ -670,7 +680,23 @@ export class Graph {
   edgesToByLabel: Map<string, Map<string, Set<Edge>>>;
 
   elementLabels: Map<string, Set<string>>;
-  elementProperties: Map<string, Record<string, unknown>>;
+  /**
+   * Per-element property state, held in a BOX rather than as the bag itself.
+   *
+   * The indirection buys the read path everything: an element caches its own box, so
+   * `v.properties` is a field load plus one property read instead of a STRING-KEYED `Map.get`
+   * into a map with one entry per element. Measured over 200,000 vertices with 1,000,000 edges
+   * resident, reading one property from each — 16.17ms through the map against 0.23ms off a
+   * dense reference, with the `Map.get` alone accounting for 11.76ms of it (audit item 161).
+   * That lookup is what made three Gremlin rows profile as 73-80% "property-bag reads".
+   *
+   * A box and not a cached bag, because two attached `Vertex`/`Edge` INSTANCES can share one id
+   * (`new Vertex({ id, graph })` outside `addVertex` does it, as `Graph.test.ts` itself does) —
+   * caching the bag would let one go stale after the other wrote. Both instances take the same
+   * box from this map, and a write replaces `box.bag`, so there is still exactly ONE source of
+   * truth per id.
+   */
+  elementProperties: Map<string, PropBox>;
 
   /** Opt-in secondary indexes over property values (see {@link PropertyIndex}). */
   vertexPropertyIndex: PropertyIndex<Vertex>;
