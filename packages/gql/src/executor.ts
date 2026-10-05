@@ -2300,13 +2300,20 @@ export const applyProjection = (
     // Grouping is a barrier — it must see every binding before it can emit. We
     // still fold into per-group buckets with single `push`es (never a spread).
     const groups = new Map<string, Binding[]>();
+    // ONE grouping key is the overwhelmingly common shape, and for it the row key IS the
+    // value key: `valueKey` is already type-prefixed and injective, so `JSON.stringify([k])`
+    // is injective in exactly the same `k` that `k` itself is — the stringify, the
+    // intermediate array and the `.map` closure are pure cost, paid per ROW. Several keys
+    // keep the stringify, which stays injective across a boundary a plain join does not: a
+    // string cell may contain whatever separator the join picks.
+    const soleKey = proj.groupKeys.length === 1 ? proj.groupKeys[0] : undefined;
 
     for (const b of bindings) {
       assertGroupKeysBound(proj.groupKeyNames, b);
 
-      const key = JSON.stringify(
-        proj.groupKeys.map((fn) => valueKey(fn({ binding: b, params, graph }))),
-      );
+      const key = soleKey
+        ? valueKey(soleKey({ binding: b, params, graph }))
+        : JSON.stringify(proj.groupKeys.map((fn) => valueKey(fn({ binding: b, params, graph }))));
       const existing = groups.get(key);
 
       if (existing) {

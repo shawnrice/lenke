@@ -214,6 +214,19 @@ const CASES: Case[] = [
     ),
   },
   {
+    // The row above measures the grouped-count SHORTCUT, not the general grouping path: a
+    // property key plus `count(*)` is exactly the shape the tally answers, so it never
+    // reached the code that groups bindings, and item 186's 1.7-2.9x there was invisible to
+    // the whole corpus. Dropping the aggregate is enough to decline the tally (it wants two
+    // projection items, one of them a count) while asking the same grouping question — so
+    // this is the general path, and the pair of rows now covers both.
+    name: 'query: group, no aggregate',
+    ...onGraph(
+      () => nodesDoc,
+      (e, g) => void e.query(g, 'MATCH (n:Person) LET a = n.age RETURN a GROUP BY a'),
+    ),
+  },
+  {
     // NOT a traversal measurement any more, and the name said otherwise for a while. Both
     // engines now answer this from the edge bucket's size without walking anything (the 1-hop
     // count shortcut), so it reads ~0ms on both. Kept, renamed, as the GUARD for that shortcut:
