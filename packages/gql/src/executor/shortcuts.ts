@@ -1015,14 +1015,76 @@ const buildOneHopCount = <T>(
       return rowOf(types.reduce((n, t) => n + (graph.edgesByLabel.get(t)?.size ?? 0), 0));
     }
 
+    // TWO callbacks, chosen once per execution rather than a branch inside one — the shape this
+    // file has measured before (item 159: folding the choice into a single loop cost 1.6x).
+    //
+    // Built by MODULE-SCOPE factories, not written inline here. Written inline they grew this
+    // returned closure, and `analytic: fan-out spread 1-3 hops` — a query that cannot reach this
+    // code at all, its quantified rel making `plainRel` false — acquired a second mode at ~30k
+    // ops/sec against a tight 39.4-42.7k over nine observations. Hoisting them removed it. That
+    // is `ts-closure-size-is-load-bearing` for the third time in this file (items 119, 141).
     return rowOf(
       countEdges(
         edgesOfTypes(graph.edgesByLabel, types),
-        (edge) =>
-          matchesLabel(out ? edge.from : edge.to, a) && matchesLabel(out ? edge.to : edge.from, b),
+        selectiveFirst(graph, a, b) ? nearThenFar(out, a, b) : farThenNear(out, a, b),
       ),
     );
   };
+};
+
+/**
+ * The unfiltered label walk's two endpoint tests, in each order. Module scope so the closure
+ * `buildOneHopCount` returns stays small — see the note at the call site.
+ */
+const nearThenFar =
+  (out: boolean, a: LabelExpr | undefined, b: LabelExpr | undefined) =>
+  (edge: Edge): boolean =>
+    matchesLabel(out ? edge.from : edge.to, a) && matchesLabel(out ? edge.to : edge.from, b);
+
+/** The mirror of {@link nearThenFar}, for when the FAR label is the selective one. */
+const farThenNear =
+  (out: boolean, a: LabelExpr | undefined, b: LabelExpr | undefined) =>
+  (edge: Edge): boolean =>
+    matchesLabel(out ? edge.to : edge.from, b) && matchesLabel(out ? edge.from : edge.to, a);
+
+/**
+ * Should the unfiltered label walk test the START endpoint's label before the far one?
+ *
+ * Both checks must pass, so their order changes no row — only how many edges survive the first
+ * one. The callback's `&&` short-circuits, and the second check DEREFERENCES the other endpoint
+ * to read its labels, so putting the selective label first skips a cold vertex touch per
+ * rejected edge. Measured on 200,000 `P` against 2,000 `Q`, every `P` pointing at a `P` and
+ * 2,000 at a `Q` (audit item 181), three observations each:
+ *
+ *   (a:P)-[:E]->(b:Q)   start is the BIG label    13.28 / 13.38 / 14.00ms
+ *   (b:Q)<-[:E]-(a:P)   start is the SMALL label  11.09 / 11.34 / 12.18ms
+ *   (a:Q)-[:E]->(b:P)   start is the SMALL label  10.84 / 11.05 / 11.36ms
+ *   (b:P)<-[:E]-(a:Q)   start is the BIG label    13.74 / 14.05 / 14.25ms
+ *
+ * The MIRROR pair is what identifies the mechanism: it is not the arrow's direction but which
+ * label lands in the first check, so "always test the far end" would merely move the cost.
+ * `bun run spelling` reported the first pair at 1.51x and item 180 recorded it unfixed.
+ *
+ * Exported only so the choice can be asserted directly: no result-based test can tell the two
+ * orders apart — the wall items 167/168/172/173 hit, and the escape 172/173 found.
+ *
+ * A label that constrains nothing (absent, or one `vacuousLabel` has already folded to
+ * `undefined`) goes LAST: it rejects nobody, so leading with it wastes the short circuit.
+ */
+export const selectiveFirst = (
+  graph: Graph,
+  a: LabelExpr | undefined,
+  b: LabelExpr | undefined,
+): boolean => {
+  if (a === undefined) {
+    return false;
+  }
+
+  if (b === undefined) {
+    return true;
+  }
+
+  return candidateCount(graph, a) <= candidateCount(graph, b);
 };
 
 /** Edges out of / into `bId` (of `types`) whose far endpoint matches `far`. The
