@@ -214,7 +214,23 @@ const CASES: Case[] = [
     ),
   },
   {
-    // The row above measures the grouped-count SHORTCUT, not the general grouping path: a
+    // ISO's SELECT spelling of the row above, which is the same question written the way the
+    // standard writes it: the PROPERTY in `GROUP BY`, with no `LET` to name. It reached the tally
+    // only after item 199 — 69.5ms against the `LET` form's 4.1 — and `HAVING` is here because
+    // it is the clause the SELECT form exists to carry, and because it is the half of item 199
+    // that was measured first and turned out not to be the gap.
+    name: 'query: select group + having',
+    ...onGraph(
+      () => nodesDoc,
+      (e, g) =>
+        void e.query(
+          g,
+          'SELECT n.age AS a, count(*) AS c FROM MATCH (n:Person) GROUP BY n.age HAVING count(*) > 2',
+        ),
+    ),
+  },
+  {
+    // The `LET` row above measures the grouped-count SHORTCUT, not the general grouping path: a
     // property key plus `count(*)` is exactly the shape the tally answers, so it never
     // reached the code that groups bindings, and item 186's 1.7-2.9x there was invisible to
     // the whole corpus. Dropping the aggregate is enough to decline the tally (it wants two

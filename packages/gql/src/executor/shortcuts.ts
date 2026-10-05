@@ -57,7 +57,7 @@ import {
 import type { Adjacency } from '../graph-queries.js';
 import { indexCandidates, matchNode, seedVertices } from './matching.js';
 import type { SeedCandidate } from './matching.js';
-import { asTruth, isNullish } from './scalars.js';
+import { AGGREGATES, asTruth, isNullish } from './scalars.js';
 
 /**
  * Is `expr` satisfied by EVERY vertex in `graph`, so that testing it per element is pure
@@ -1871,11 +1871,87 @@ export const pageGroups = (
   return rows.slice(skipN, limitN === undefined ? undefined : skipN + limitN);
 };
 
+/**
+ * Is this `HAVING` one the tally can apply to its OWN rows?
+ *
+ * `HAVING` filters whole groups AFTER aggregation, and the tally's output is already one row per
+ * group — so the filter is a post-filter on those, where the general path builds every binding
+ * first. The tally alone is 3.95ms on 200,000 nodes and every `HAVING` spelling of it was
+ * 53.7-56.4ms, about 14x (audit item 199).
+ *
+ * The ONE condition: every aggregate in the predicate must be `count(*)`. That is what the tally
+ * has — a count and a representative row — and a `sum(n.k)` or `avg(n.k)` would need the group's
+ * members, which this path never materializes. A non-aggregate reference is fine whatever it
+ * reads: it is evaluated against the representative, exactly as the general path evaluates it
+ * against `group[0]`.
+ */
+const countOnlyAggregates = (e: Expr | undefined): boolean => {
+  if (e === undefined) {
+    return true;
+  }
+
+  if (e.kind === 'func' && AGGREGATES.has(e.name)) {
+    return isStarCount(e);
+  }
+
+  // Structural walk over every child, so a new `Expr` arm cannot slip an aggregate past this —
+  // the same reason `hasSubquery` in the executor is written as a generic walk.
+  return Object.values(e).every((child) => {
+    if (Array.isArray(child)) {
+      return child.every(
+        (c) => typeof c !== 'object' || c === null || countOnlyAggregates(c as Expr),
+      );
+    }
+
+    return typeof child !== 'object' || child === null || countOnlyAggregates(child as Expr);
+  });
+};
+
+/**
+ * Drop the groups a `HAVING` does not keep, before any sort or window — the order the general
+ * path applies them in.
+ *
+ * `count(*)` compiles to `group.length` and nothing else, which is why a `new Array(n)` stands in
+ * for the group: it is O(1) (a holey array has a length and no storage) and it is the minimal
+ * object with the one property that is read. THAT COUPLING IS REAL and is the reason
+ * `countOnlyAggregates` above refuses every other aggregate — one that iterated the group would
+ * see holes. The behaviour is pinned end-to-end by tests rather than by reading the fold.
+ *
+ * ISO's rule: keep a group only when the predicate is exactly TRUE. NULL and false both drop,
+ * which `asTruth(...) === true` gives.
+ */
+const keepGroups = (
+  slots: readonly GroupSlot[],
+  having: CompiledExpr | undefined,
+  repVar: string,
+  params: Params,
+  graph: Graph,
+): readonly GroupSlot[] => {
+  if (having === undefined) {
+    return slots;
+  }
+
+  const binding = new Map<string, unknown>();
+
+  return slots.filter((slot) => {
+    binding.set(repVar, slot.rep);
+
+    return asTruth(having({ binding, params, graph, group: new Array(slot.n) })) === true;
+  });
+};
+
 /** One `ORDER BY` key resolved to an output COLUMN of the tally's two-column row. */
 type ColSort = { col: string; descending: boolean; nullsFirst: boolean | undefined };
 
-/** One group's key value and running count. */
-type GroupSlot = { key: unknown; n: number };
+/**
+ * One group's key value, running count, and the vertex that OPENED it.
+ *
+ * The representative is what `HAVING` needs: ISO evaluates it against a row of the group, and the
+ * general path uses `group[0]` — the FIRST binding, which is the one that opened the group, and
+ * the tally visits vertices in the general path's order. So the two pick the same row, which is
+ * what lets a `HAVING` reading a non-key property agree (audit item 199).
+ */
+type GroupSlot = { key: unknown; n: number; rep: Vertex };
 
 /**
  * A SET of values under `valueKey`'s equivalence, keyed on the raw value wherever that is exact.
@@ -1942,28 +2018,28 @@ export const valueSet = (): { add: (v: unknown) => boolean } => {
  * `slots` array and not from either map's insertion order (audit item 192).
  */
 const groupIndex = (): {
-  bump: (raw: unknown, by: number) => void;
+  bump: (raw: unknown, by: number, rep: Vertex) => void;
   slots: readonly GroupSlot[];
 } => {
   const prim = new Map<unknown, GroupSlot>();
   const slots: GroupSlot[] = [];
   let structural: Map<string, GroupSlot> | undefined;
 
-  const open = (raw: unknown, by: number): GroupSlot => {
-    const slot = { key: raw, n: by };
+  const open = (raw: unknown, by: number, rep: Vertex): GroupSlot => {
+    const slot = { key: raw, n: by, rep };
     slots.push(slot);
 
     return slot;
   };
 
   return {
-    bump: (raw: unknown, by: number): void => {
+    bump: (raw: unknown, by: number, rep: Vertex): void => {
       // `null` is a primitive but `typeof null` is 'object', so it is tested first.
       if (raw === null || typeof raw !== 'object') {
         const hit = prim.get(raw);
 
         if (hit === undefined) {
-          prim.set(raw, open(raw, by));
+          prim.set(raw, open(raw, by, rep));
         } else {
           hit.n += by;
         }
@@ -1977,7 +2053,7 @@ const groupIndex = (): {
       const hit = structural.get(gk);
 
       if (hit === undefined) {
-        structural.set(gk, open(raw, by));
+        structural.set(gk, open(raw, by, rep));
       } else {
         hit.n += by;
       }
@@ -2136,7 +2212,7 @@ const groupedClauses = (clauses: readonly Clause[]): GroupedShape | null => {
 const groupedProjection = (
   proj: Projection,
   letName: string | undefined,
-): { countAt: number; sort: readonly ColSort[] } | null => {
+): { countAt: number; sort: readonly ColSort[]; having: CompiledExpr | undefined } | null => {
   // SKIP/LIMIT are NOT refused. A grouped count's rows come out in FIRST-SEEN group order,
   // which is the pinned contract both engines keep (a `Map`'s insertion order here, the
   // general path's own `Map<string, Binding[]>` there) — so a window over them is a slice of
@@ -2145,23 +2221,15 @@ const groupedProjection = (
   // `ORDER BY` used to decline here, because it reorders the groups BEFORE the window and the
   // tally did not sort. It sorts now (`colSortsOf` + `sortGroupRows`, item 190), which is that
   // same order, applied to one row per GROUP instead of one per input element.
-  if (proj.star || proj.distinct || proj.having !== undefined || proj.items.length !== 2) {
+  if (proj.star || proj.distinct || proj.items.length !== 2) {
     return null;
   }
 
-  // `GROUP BY` is allowed ONLY in the `LET` form, naming the `LET` variable and nothing else.
-  if (proj.groupBy !== undefined) {
-    const keys = proj.groupBy;
-
-    if (letName === undefined || keys.length !== 1) {
-      return null;
-    }
-
-    const [k] = keys;
-
-    if (k.kind !== 'var' || k.name !== letName) {
-      return null;
-    }
+  // `HAVING` used to decline here. It is applied to the tally's OWN rows now (item 199), which is
+  // where it belongs — one row per group already exists — provided every aggregate in it is
+  // `count(*)`, which is all the tally has.
+  if (!countOnlyAggregates(proj.having)) {
+    return null;
   }
 
   const countAt = proj.items.findIndex((i) => isStarCount(i.expr));
@@ -2171,6 +2239,33 @@ const groupedProjection = (
   }
 
   const keyItem = proj.items[1 - countAt];
+
+  // `GROUP BY` used to be accepted ONLY in the `LET` form, naming the bound variable. That left
+  // ISO's SELECT spelling — which writes the PROPERTY, `GROUP BY n.age`, and has no `LET` to name
+  // — declining the tally entirely:
+  //
+  //     MATCH (n:P) LET a = n.age RETURN a, count(*) AS c GROUP BY a            3.96ms
+  //     SELECT n.age AS a, count(*) AS c FROM MATCH (n:P) GROUP BY n.age       52.36ms
+  //
+  // One question, 13x apart, and `HAVING` had nothing to do with it — the SELECT form never
+  // reached the tally with or without one. The property spelling is accepted now, by the same
+  // `sameGroupingExpr` rule item 188 applied to the DISTINCT path one file over: the grouping
+  // element must BE the key item's expression (audit item 199).
+  if (proj.groupBy !== undefined) {
+    const keys = proj.groupBy;
+
+    if (keys.length !== 1) {
+      return null;
+    }
+
+    const [k] = keys;
+    const namesTheLet = letName !== undefined && k.kind === 'var' && k.name === letName;
+
+    if (!namesTheLet && !sameGroupingExpr(k, keyItem.expr)) {
+      return null;
+    }
+  }
+
   const sort =
     (proj.orderBy?.length ?? 0) === 0
       ? []
@@ -2181,7 +2276,17 @@ const groupedProjection = (
           keyItem.expr,
         );
 
-  return sort === null ? null : { countAt, sort };
+  if (sort === null) {
+    return null;
+  }
+
+  // Compiled HERE: this detector only ever sees the AST, so there is no compiled `having` to
+  // borrow from the projection the general path builds.
+  return {
+    countAt,
+    sort,
+    having: proj.having === undefined ? undefined : compileExpr(proj.having),
+  };
 };
 
 /**
@@ -2232,7 +2337,7 @@ export const detectGroupedNodeCount = (clauses: readonly Clause[]): ReachFn | nu
   }
 
   const { items, skip, limit } = shape.ret.projection;
-  const { countAt, sort } = picked;
+  const { countAt, sort, having } = picked;
   const [{ start, segments }] = shape.match.patterns;
 
   if (segments.length !== 0 || start.variable === undefined) {
@@ -2309,6 +2414,8 @@ export const detectGroupedNodeCount = (clauses: readonly Clause[]): ReachFn | nu
   const keyCol = keyItem.alias ?? columnName(keyExpr);
   const countFirst = countAt === 0;
   const labelName = label?.name;
+  // The variable a `HAVING` reads its representative through — the node this tally groups.
+  const repVar = start.variable;
 
   return (graph, params) => {
     if (pageIsEmpty(params, limit)) {
@@ -2329,12 +2436,12 @@ export const detectGroupedNodeCount = (clauses: readonly Clause[]): ReachFn | nu
         continue;
       }
 
-      groups.bump(propOf(v, key), 1);
+      groups.bump(propOf(v, key), 1, v);
     }
 
     return pageGroups(
       sortGroupRows(
-        groups.slots.map((slot) =>
+        keepGroups(groups.slots, having, repVar, params, graph).map((slot) =>
           countFirst
             ? { [countCol]: slot.n, [keyCol]: slot.key }
             : { [keyCol]: slot.key, [countCol]: slot.n },
@@ -2402,7 +2509,7 @@ export const detectGroupedHopCount = (clauses: readonly Clause[]): ReachFn | nul
   }
 
   const { items, skip, limit } = shape.ret.projection;
-  const { countAt, sort } = picked;
+  const { countAt, sort, having } = picked;
   const [pattern] = shape.match.patterns;
 
   if (pattern.pathVar !== undefined || pattern.segments.length !== 1) {
@@ -2500,6 +2607,9 @@ export const detectGroupedHopCount = (clauses: readonly Clause[]): ReachFn | nul
   const countCol = items[countAt].alias ?? columnName(items[countAt].expr);
   const keyCol = keyItem.alias ?? columnName(keyExpr);
   const countFirst = countAt === 0;
+  // The variable a `HAVING` reads its representative through: the KEYED end, which is the one
+  // this tally groups by and the one whose vertex each slot holds.
+  const repVar = keySource.variable;
   const out = rel.direction === 'out';
   const farLabel = far.label;
   const adjacency: Adjacency = {
@@ -2562,7 +2672,7 @@ export const detectGroupedHopCount = (clauses: readonly Clause[]): ReachFn | nul
           continue;
         }
 
-        add(propOf(v, key), deg);
+        add(propOf(v, key), deg, v);
 
         continue;
       }
@@ -2590,13 +2700,13 @@ export const detectGroupedHopCount = (clauses: readonly Clause[]): ReachFn | nul
           continue;
         }
 
-        add(propOf(keyedNode, key), 1);
+        add(propOf(keyedNode, key), 1, keyedNode);
       }
     }
 
     return pageGroups(
       sortGroupRows(
-        groups.slots.map((slot) =>
+        keepGroups(groups.slots, having, repVar, params, graph).map((slot) =>
           countFirst
             ? { [countCol]: slot.n, [keyCol]: slot.key }
             : { [keyCol]: slot.key, [countCol]: slot.n },

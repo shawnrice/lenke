@@ -144,6 +144,21 @@ const GROUPS: [string, readonly string[]][] = [
     ],
   ],
   [
+    // One grouped count, written the two ways ISO lets you write it. `GROUP BY` takes a BOUND
+    // NAME, so the `RETURN` form needs a `LET` to name the key; the `SELECT` form names the
+    // PROPERTY and has no `LET` at all. The tally accepted only the first, so the standard's own
+    // spelling went down the general grouping path: 69.5ms against 4.1 (audit item 199). The
+    // third member adds the `HAVING` the SELECT form exists to carry — it has no `RETURN`
+    // counterpart, since `HAVING` is SELECT-statement-only in ISO, so it is here as a member
+    // whose cost must stay beside the others rather than as a second spelling of them.
+    'a grouped count: the LET form vs ISO SELECT (item 199)',
+    [
+      'MATCH (n:P) LET a = n.k RETURN a, count(*) AS c GROUP BY a',
+      'SELECT n.k AS a, count(*) AS c FROM MATCH (n:P) GROUP BY n.k',
+      'SELECT n.k AS a, count(*) AS c FROM MATCH (n:P) GROUP BY n.k HAVING count(*) > 0',
+    ],
+  ],
+  [
     // `ORDER BY <alias>` IS `ORDER BY <the expression the alias names>`. `aliasDefinition`
     // substitutes it so the top-k keeps INPUT bindings and projects only the rows it emits.
     //
