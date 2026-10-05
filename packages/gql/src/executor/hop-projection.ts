@@ -1,6 +1,6 @@
 import type { Graph, Vertex } from '@lenke/core';
 
-import type { Clause, Expr, LabelExpr } from '../ast.js';
+import type { Clause, Expr, LabelExpr, Projection } from '../ast.js';
 import type {
   CClause,
   CNode,
@@ -649,14 +649,60 @@ const filteredHopWalk = (w: {
  * value, so a duplicate costs neither a row object nor a `rowKey`. With two items the row
  * itself is the key and there is nothing to save.
  */
-const distinctOneItem = (proj: CProjection): boolean =>
-  proj.distinct &&
+const oneItemNoWindow = (proj: CProjection): boolean =>
   !proj.star &&
-  !proj.aggregating &&
   proj.items.length === 1 &&
   proj.orderBy.length === 0 &&
   proj.skip === undefined &&
   proj.limit === undefined;
+
+const distinctOneItem = (proj: CProjection): boolean =>
+  proj.distinct && !proj.aggregating && oneItemNoWindow(proj);
+
+/**
+ * A grouping element is a bound name or the `n.key` property spelling — ISO's `groupingElement`
+ * is a `bindingVariableReference`, and the property form is what this engine accepts on top of
+ * it (see `CProjection.groupKeyNames`). Equality over those two shapes is all this needs, and
+ * anything else answers `false` and declines.
+ */
+const sameGroupingExpr = (a: Expr, b: Expr): boolean =>
+  (a.kind === 'var' && b.kind === 'var' && a.name === b.name) ||
+  (a.kind === 'prop' && b.kind === 'prop' && a.variable === b.variable && a.key === b.key);
+
+/**
+ * `RETURN <k> GROUP BY <k>` with no aggregate IS `RETURN DISTINCT <k>` — one row per distinct
+ * value of `k`, projecting `k`, in first-seen group order, which is the same first-seen order
+ * `DISTINCT` keeps. So it can take the same walk, and it was not:
+ *
+ *     MATCH (n:P) RETURN DISTINCT n.k AS a               1.12ms
+ *     MATCH (n:P) LET a = n.k RETURN a GROUP BY a        6.55ms
+ *
+ * 5.8x for the spelling ISO pushes you toward, since `GROUP BY` takes a BOUND NAME and a `LET`
+ * is the only way to give the key one (audit item 188).
+ *
+ * Three conditions are load-bearing, not conservative:
+ *
+ *   - **exactly ONE grouping element.** `RETURN a GROUP BY a, b` yields one row per `(a, b)`
+ *     pair, so the projected `a` REPEATS — that is not distinct and must not be rewritten.
+ *   - **the projected item IS that element.** `RETURN b GROUP BY a` projects a representative
+ *     row's `b`, which is not a dedup of anything.
+ *   - **no `HAVING`.** It filters whole groups after aggregation, and the walk has no groups to
+ *     filter. (`having` also forces `aggregating` on with no `GROUP BY` at all, which the
+ *     one-element requirement already excludes.)
+ */
+const groupingIsDistinct = (proj: CProjection, projection: Projection): boolean => {
+  if (!proj.aggregating || proj.distinct || proj.having !== undefined || !oneItemNoWindow(proj)) {
+    return false;
+  }
+
+  const keys = projection.groupBy;
+
+  if (keys?.length !== 1 || proj.items[0].isAgg) {
+    return false;
+  }
+
+  return sameGroupingExpr(keys[0], projection.items[0].expr);
+};
 
 /** The far end named, and the relationship plain and unnamed (nothing to bind per edge). */
 const endsNamedAndPlainRel = (
@@ -765,7 +811,12 @@ const distinctHead = (
     return null;
   }
 
-  if (cret?.kind !== 'return' || !distinctOneItem(cret.projection)) {
+  // Either spelling of the same question: an explicit `DISTINCT` over one item, or a `GROUP BY`
+  // with no aggregate whose one projected item IS the grouping element.
+  if (
+    cret?.kind !== 'return' ||
+    !(distinctOneItem(cret.projection) || groupingIsDistinct(cret.projection, ret.projection))
+  ) {
     return null;
   }
 

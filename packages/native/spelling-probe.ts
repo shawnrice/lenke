@@ -133,9 +133,9 @@ const GROUPS: [string, readonly string[]][] = [
     // the same order, which is why the `count(*)` spelling is not among them — it carries an
     // extra column and the probe compares answers. The LET spellings were 9.1x off the bare
     // one: `GROUP BY` takes a BOUND NAME, so a LET is the only way ISO lets you name a
-    // grouping key, and the DISTINCT spelling gets written the same way. Item 187 fixed the
-    // DISTINCT-via-LET one; GROUP-BY-without-an-aggregate is still out of line, so this group
-    // is EXPECTED to flag on time until that is closed too.
+    // grouping key, and the DISTINCT spelling gets written the same way. Item 187 routed
+    // DISTINCT-via-LET to the walk and item 188 did the same for a `GROUP BY` with no
+    // aggregate, which closed the group — 1.36 / 1.37 / 1.44ms, within 6%.
     'the distinct values of one property',
     [
       'MATCH (n:P) RETURN DISTINCT n.k AS a',
