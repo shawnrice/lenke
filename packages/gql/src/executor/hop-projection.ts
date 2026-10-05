@@ -62,6 +62,38 @@ export type RowsFn = (graph: Graph, params: Params) => Row[];
  * `candidateVertices` → `expand` does for a directed single-type hop.
  */
 /**
+ * Do the projected items read NOTHING but the pattern's two endpoints, and does any read the
+ * start?
+ *
+ * `null` declines. A name that is neither endpoint cannot be served by a walk that binds only
+ * those two, and `freePredicateVars` cannot tell a name it does not recognize from one it does —
+ * so anything else is refused rather than guessed at. The REL variable is already refused by the
+ * caller.
+ */
+const projectedEndsOnly = (
+  items: readonly CReturnItem[] | readonly { expr: Expr }[],
+  farVar: string,
+  startVar: string | undefined,
+): { readsStart: boolean } | null => {
+  let readsStart = false;
+
+  for (const item of items) {
+    for (const name of freePredicateVars((item as { expr: Expr }).expr)) {
+      if (name === startVar) {
+        readsStart = true;
+        continue;
+      }
+
+      if (name !== farVar) {
+        return null;
+      }
+    }
+  }
+
+  return { readsStart };
+};
+
+/**
  * Can this clause `WHERE` be carried into the fused walk, and does it need the start bound?
  *
  * `null` declines. It is carried only when it reads nothing but the pattern's two endpoints —
@@ -207,6 +239,7 @@ export const detectHopProjection = (
   }
 
   const startLabel = start.label;
+  const startVarName = start.variable;
 
   // `candidateVertices` seeds from the label bucket ONLY for a simple label; for anything
   // else it yields every vertex and leaves the filtering to its caller. Requiring a simple
@@ -231,18 +264,22 @@ export const detectHopProjection = (
     return null;
   }
 
-  // Every projected item may read ONLY the far variable — the restriction that lets the
-  // binding hold one entry. An item reading the start would need it bound too (cheap), but
-  // one reading the REL variable could not be served at all, and `freePredicateVars` does
-  // not distinguish a name it does not recognize from one it does, so the narrow rule is
-  // the sound one.
-  for (const item of ret.projection.items) {
-    for (const name of freePredicateVars(item.expr)) {
-      if (name !== farVar) {
-        return null;
-      }
-    }
+  // A projected item may read EITHER endpoint. Reading the far end alone keeps the binding at
+  // one entry; reading the start has it bound once per outer vertex, which is what that guard's
+  // own comment said would be needed and cheap. A name that is neither still declines, which is
+  // the safety that matters — `freePredicateVars` cannot tell a name it does not recognize from
+  // one it does, and the REL variable is already refused above.
+  //
+  // Refusing the start cost 3.5-4.7x on four shapes, including the very ordinary unfiltered
+  // `MATCH (u:L)-[:E]->(v) RETURN u.name`: 20.0ms against 5.7ms for the same query projecting
+  // `v.name` instead, with no semantic difference between them (audit item 160).
+  const projected = projectedEndsOnly(ret.projection.items, farVar, startVarName);
+
+  if (projected === null) {
+    return null;
   }
+
+  const itemsReadStart = projected.readsStart;
 
   // A clause `WHERE` is CARRIED rather than refused, as long as it reads nothing but the
   // pattern's two endpoints — which are exactly what the walk binds. Refusing it sent the
@@ -255,7 +292,7 @@ export const detectHopProjection = (
   // and it is applied at the same point: once per row, after both endpoints are bound. So the
   // evaluation count and the elements evaluated are unchanged — which is what items 139/142
   // require of a fast path.
-  const startVar = start.variable;
+  const startVar = startVarName;
   const carried = carriedWhere(m.where, farVar, startVar);
 
   if (carried === null) {
@@ -279,7 +316,8 @@ export const detectHopProjection = (
   }
 
   const gate = cm.where;
-  const { needsStart } = carried;
+  // The start is bound when the carried predicate reads it OR a projected item does.
+  const needsStart = carried.needsStart || itemsReadStart;
 
   const out = rel.direction === 'out';
   const farLabel: LabelExpr | undefined = node.label;
@@ -298,7 +336,12 @@ export const detectHopProjection = (
   // built per compile keeps its own. Destructuring the spec into locals did not recover it.
   // Here each returned closure holds ONE loop and its own captured constants, which is what
   // both effects want (audit item 159).
-  if (farPred === undefined && gate === undefined) {
+  // The PLAIN walk is for the far-end-only case and is byte-for-byte what it was before any of
+  // this; item 159 measured that adding even a branch to its inner loop costs the hot shape
+  // 1.6x. A start-reading projection goes to the FILTERED walk instead, which already binds the
+  // start per vertex — it pays two always-false predicate checks per edge, which is nothing
+  // against the 3.5x it gains.
+  if (farPred === undefined && gate === undefined && !needsStart) {
     return (graph, params) => {
       const rows: Row[] = [];
       // ONE binding, mutated per edge. This is the allocation the profile found.
