@@ -19,7 +19,6 @@ import {
   projectRow,
   relTypeNames,
   satisfies,
-  valueKey,
 } from '../executor.js';
 import {
   candidateCount,
@@ -38,6 +37,7 @@ import {
   plainRel,
   sameGroupingExpr,
   vacuousLabel,
+  valueSet,
 } from './shortcuts.js';
 
 /** Rows for a whole `MATCH … RETURN` query, or `null` if the shape does not fit. */
@@ -1061,7 +1061,13 @@ export const detectDistinctProjection = (
       return [];
     }
 
-    const seen = new Map<string, Row>();
+    // A `valueSet` rather than a `Map<string, Row>`: keying each element's value as a STRING was
+    // 40ns of a ~50ns-a-vertex walk — 200,000 strings to find the handful of distinct values the
+    // query returns (audit items 192, 193). `add` answers true for a NEW value, so the row is
+    // built only then and the output array IS the answer, which also drops the
+    // `[...seen.values()]` copy the map needed.
+    const seen = valueSet();
+    const rows: Row[] = [];
     const binding = new Map<string, unknown>();
     const env = { binding, params, graph };
     const take = (el: Vertex): void => {
@@ -1072,10 +1078,9 @@ export const detectDistinctProjection = (
       }
 
       const value = evalFn(env);
-      const k = valueKey(value);
 
-      if (!seen.has(k)) {
-        seen.set(k, { [outName]: value });
+      if (seen.add(value)) {
+        rows.push({ [outName]: value });
       }
     };
 
@@ -1094,8 +1099,6 @@ export const detectDistinctProjection = (
         take(onStart ? v : step.node);
       }
     }
-
-    const rows = [...seen.values()];
 
     if (sort !== undefined) {
       // `compareSort` is the engine's own comparator, the one the general path's `cmp` calls per

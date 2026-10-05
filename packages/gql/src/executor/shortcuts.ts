@@ -1878,6 +1878,47 @@ type ColSort = { col: string; descending: boolean; nullsFirst: boolean | undefin
 type GroupSlot = { key: unknown; n: number };
 
 /**
+ * A SET of values under `valueKey`'s equivalence, keyed on the raw value wherever that is exact.
+ *
+ * The same trade `groupIndex` makes below, for the callers that only need "have I seen this?" —
+ * `add` answers true when the value is NEW, so a first-wins dedup needs nothing else. See
+ * `groupIndex` for why a raw-keyed `Map`/`Set` is exactly `valueKey`'s equivalence on primitives
+ * (SameValueZero gives the `-0`/`0` and `NaN` rules it documents) and why non-primitives need a
+ * SECOND container rather than a shared one (audit item 193).
+ */
+export const valueSet = (): { add: (v: unknown) => boolean } => {
+  const prim = new Set<unknown>();
+  let structural: Set<string> | undefined;
+
+  return {
+    add: (v: unknown): boolean => {
+      // `null` is a primitive but `typeof null` is 'object', so it is tested first.
+      if (v === null || typeof v !== 'object') {
+        if (prim.has(v)) {
+          return false;
+        }
+
+        prim.add(v);
+
+        return true;
+      }
+
+      structural ??= new Set();
+
+      const k = valueKey(v);
+
+      if (structural.has(k)) {
+        return false;
+      }
+
+      structural.add(k);
+
+      return true;
+    },
+  };
+};
+
+/**
  * The tally's group index, keyed on the RAW value wherever that is exact.
  *
  * A tally built its index as `Map<string, slot>` with `valueKey(raw)` as the key, so a bucket of
