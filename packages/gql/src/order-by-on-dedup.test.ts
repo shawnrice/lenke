@@ -168,14 +168,10 @@ describe('ORDER BY over a dedup', () => {
       ]);
     });
 
-    test('ORDER BY with LIMIT still pages correctly', () => {
-      expect(query(g, 'MATCH (n:P) RETURN DISTINCT n.n AS a ORDER BY a LIMIT 2')).toEqual([
-        { a: 10 },
-        { a: 20 },
-      ]);
-    });
+    // ORDER BY + LIMIT and ORDER BY + OFFSET moved OUT of this block in item 191, which takes
+    // the window onto the walk when a sort is accepted. See `order-by-paged-dedup.test.ts`.
 
-    test('ORDER BY with OFFSET still pages correctly', () => {
+    test('ORDER BY with OFFSET, kept here as a second reading of the same answer', () => {
       expect(query(g, 'MATCH (n:P) RETURN DISTINCT n.n AS a ORDER BY a OFFSET 1')).toEqual([
         { a: 20 },
         { a: 30 },

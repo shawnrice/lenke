@@ -1,6 +1,6 @@
 import type { Graph, Vertex } from '@lenke/core';
 
-import type { Clause, Expr, LabelExpr, Projection } from '../ast.js';
+import type { Clause, CountValue, Expr, LabelExpr, Projection } from '../ast.js';
 import type {
   CClause,
   CNode,
@@ -31,7 +31,14 @@ import {
 import type { Adjacency } from '../graph-queries.js';
 import { indexCandidates } from './matching.js';
 import { asTruth } from './scalars.js';
-import { plainNode, plainRel, sameGroupingExpr, vacuousLabel } from './shortcuts.js';
+import {
+  pageGroups,
+  pageIsEmpty,
+  plainNode,
+  plainRel,
+  sameGroupingExpr,
+  vacuousLabel,
+} from './shortcuts.js';
 
 /** Rows for a whole `MATCH … RETURN` query, or `null` if the shape does not fit. */
 /**
@@ -651,15 +658,18 @@ const filteredHopWalk = (w: {
  * itself is the key and there is nothing to save.
  */
 /**
- * One projected item and no paging. `ORDER BY` is NOT refused here: a sort over a dedup's own
- * projected value is a sort of the dedup's OUTPUT, which is at most as large as the answer, so
- * the walk can do it afterwards (`sortOf` below decides). Paging stays refused — see `sortOf`.
+ * One projected item. Neither `ORDER BY` nor paging is refused here — both are decided together
+ * in `sortOf`, which needs the projected expression to judge them, and paging is allowed ONLY
+ * alongside an accepted sort (see the note there).
  */
-const oneItemNoWindow = (proj: CProjection): boolean =>
-  !proj.star && proj.items.length === 1 && proj.skip === undefined && proj.limit === undefined;
+const oneItemProjection = (proj: CProjection): boolean => !proj.star && proj.items.length === 1;
 
 const distinctOneItem = (proj: CProjection): boolean =>
-  proj.distinct && !proj.aggregating && oneItemNoWindow(proj);
+  proj.distinct && !proj.aggregating && oneItemProjection(proj);
+
+/** Is a window present at all? Paging is only ever taken alongside an accepted sort. */
+const hasWindow = (proj: CProjection): boolean =>
+  proj.skip !== undefined || proj.limit !== undefined;
 
 /**
  * The single `ORDER BY` key this walk can honour, or `'decline'`.
@@ -685,14 +695,23 @@ const distinctOneItem = (proj: CProjection): boolean =>
  *
  * Refused, each for its own measured reason:
  *
- *   - **more than one key.** A second key can only break ties between identical rows, so it
- *     changes nothing — but it is unmeasured, and one key is the shape that was 10x off.
- *   - **`SKIP`/`LIMIT`** (refused by `oneItemNoWindow`). Without an `ORDER BY` the general path
- *     is LAZY and a `LIMIT` stops it after the first few distinct values — `RETURN DISTINCT
- *     n.age AS a LIMIT 5` is 0.05ms against the walk's 13.90ms, because the walk scans the whole
- *     bucket. Taking paging would be a 280x REGRESSION on that shape, so the window stays with
- *     the general path. (`ORDER BY … LIMIT` cannot exit early either way and is left with it
- *     too, rather than split the rule on which paging clause is present.)
+ *   - **more than one key.** The order cannot differ — the output rows are already distinct in
+ *     the first key, so no tie exists for a later key to break — but a later key is still
+ *     EVALUATED per row and can RAISE (`ORDER BY a, 1/0` throws), and a walk that never
+ *     evaluates it would swallow that. The bound is raise parity.
+ *   - **`SKIP`/`LIMIT` WITHOUT an `ORDER BY`.** The general path is LAZY there, and a `LIMIT`
+ *     stops it after the first few distinct values: `RETURN DISTINCT n.age AS a LIMIT 5` is
+ *     0.05ms against the walk's 13.90ms, because the walk scans the whole bucket. Taking that
+ *     would be a ~280x REGRESSION, so an un-ordered window stays with the general path.
+ *
+ * With an accepted sort, paging IS taken (item 191): neither path can exit early once a sort is
+ * in the way, and the general path charged a full materialize-and-sort of every input row for it
+ * — `RETURN DISTINCT n.age AS a ORDER BY a LIMIT 5` was 138.83ms against the 14.11ms the same
+ * query without the `LIMIT` already costs. The window is applied AFTER the sort, by the tally's
+ * own `pageGroups`, and `pageIsEmpty` guards `LIMIT 0`: the general path returns `[]` from
+ * `applyProjection` BEFORE projecting anything, so a walk that ran first and sliced after would
+ * raise where the query does not — `LET a = 1/(n.n - 10) … LIMIT 0` is `[]` while the same query
+ * at `LIMIT 1` raises.
  */
 const sortOf = (
   proj: CProjection,
@@ -702,7 +721,9 @@ const sortOf = (
   const keys = projection.orderBy;
 
   if (keys === undefined || keys.length === 0) {
-    return undefined;
+    // No sort, so no window either — an un-ordered page stays with the lazy general path for
+    // the raise-parity reason above. The two decisions live together because they are one rule.
+    return hasWindow(proj) ? 'decline' : undefined;
   }
 
   if (keys.length !== 1) {
@@ -742,7 +763,7 @@ const sortOf = (
  *     one-element requirement already excludes.)
  */
 const groupingIsDistinct = (proj: CProjection, projection: Projection): boolean => {
-  if (!proj.aggregating || proj.distinct || proj.having !== undefined || !oneItemNoWindow(proj)) {
+  if (!proj.aggregating || proj.distinct || proj.having !== undefined || !oneItemProjection(proj)) {
     return false;
   }
 
@@ -797,6 +818,9 @@ type DistinctShape = {
   gatePred: CPredicate | undefined;
   /** A single `ORDER BY` over the projected value, applied to the walk's own output. */
   sort: { descending: boolean; nullsFirst: boolean | undefined } | undefined;
+  /** `SKIP`/`LIMIT`, present only alongside a sort, applied AFTER it. */
+  skip: CountValue | undefined;
+  limit: CountValue | undefined;
 };
 
 /**
@@ -982,6 +1006,8 @@ const distinctShape = (
     adjacency,
     gatePred,
     sort,
+    skip: proj.skip,
+    limit: proj.limit,
   };
 };
 
@@ -1023,8 +1049,18 @@ export const detectDistinctProjection = (
 
   const { evalFn, outName, keyedVar, onStart, startLabel, farLabel, adjacency, gatePred, sort } =
     shape;
+  const { skip, limit } = shape;
 
   return (graph, params) => {
+    // `LIMIT 0` emits nothing and must not EVALUATE: the general path returns `[]` from
+    // `applyProjection` before projecting anything, and the projected expression can fault
+    // (`LET a = 1/(n.n - 10) … LIMIT 0` is `[]` while the same query at `LIMIT 1` raises).
+    // Resolved per execution because a bound may be a `$param` — the tally's own rule, and its
+    // own helper.
+    if (pageIsEmpty(params, limit)) {
+      return [];
+    }
+
     const seen = new Map<string, Row>();
     const binding = new Map<string, unknown>();
     const env = { binding, params, graph };
@@ -1068,6 +1104,8 @@ export const detectDistinctProjection = (
       rows.sort((a, b) => compareSort(a[outName], b[outName], sort.descending, sort.nullsFirst));
     }
 
-    return rows;
+    // AFTER the sort, which is the whole reason an un-ordered window is refused: a page over
+    // first-seen order would be a different answer.
+    return pageGroups(rows, params, skip, limit);
   };
 };

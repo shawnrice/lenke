@@ -227,6 +227,17 @@ const CASES: Case[] = [
     ),
   },
   {
+    // The same dedup with a WINDOW on it. Item 189 sorted the walk's output but left paging
+    // with the general path, so adding `LIMIT 5` to the row below took it from 14.1ms back to
+    // 142.1ms — a cheap addition undoing the fix. Item 191 takes the window too, applied AFTER
+    // the sort. The pair of rows guards both halves.
+    name: 'query: top distinct values',
+    ...onGraph(
+      () => nodesDoc,
+      (e, g) => void e.query(g, 'MATCH (n:Person) RETURN DISTINCT n.age AS a ORDER BY a LIMIT 10'),
+    ),
+  },
+  {
     // `ORDER BY c DESC LIMIT n` over a grouped count is the top-categories-by-count shape, and
     // the tally declined every `ORDER BY` until item 190 — 65.0ms through the general path
     // against 8.6ms tallied, because the sort reorders the groups BEFORE the window and the

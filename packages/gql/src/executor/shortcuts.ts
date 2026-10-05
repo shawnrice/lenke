@@ -1855,7 +1855,7 @@ const pageOneRow = (
  * Unpaged returns the array untouched rather than slicing a copy of it, since that is the
  * common spelling. Bounds resolve per execution because either may be a `$param`.
  */
-const pageGroups = (
+export const pageGroups = (
   rows: Row[],
   params: Params,
   skip: CountValue | undefined,
@@ -1961,7 +1961,7 @@ const colSortsOf = (
  * first would raise. Same rule as items 139 and 142 — a fast path may not evaluate an
  * expression on an element the general path never reaches.
  */
-const pageIsEmpty = (params: Params, limit: CountValue | undefined): boolean =>
+export const pageIsEmpty = (params: Params, limit: CountValue | undefined): boolean =>
   resolveCount(limit, params) === 0;
 
 /**
