@@ -1355,12 +1355,19 @@ export const runLinearClauses = (
     // A 1-hop projecting only the far endpoint: walk the hop and build rows directly,
     // with one reused binding and no generator stack. See `detectHopProjection`.
     if (linear.hopProjection) {
-      return linear.hopProjection(graph, params);
+      // `null` is a DECLINE, not an empty result: the fast path discovered at execution time
+      // that the general loop has a better plan (an index seek on the end it does not drive).
+      const rows = linear.hopProjection(graph, params);
+
+      if (rows !== null) {
+        return rows;
+      }
     }
 
     // `RETURN DISTINCT <one expr>`: dedupe by the projected VALUE while walking, so a
     // duplicate costs neither a row object nor a row key. See `detectDistinctProjection`.
     if (linear.distinctProjection) {
+      // No decline branch: this detector's closure always answers (`AlwaysRowsFn`).
       return linear.distinctProjection(graph, params);
     }
   }

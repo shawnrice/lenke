@@ -3,10 +3,12 @@ import type { Graph, Vertex } from '@lenke/core';
 import type { Clause, Expr, LabelExpr } from '../ast.js';
 import type {
   CClause,
+  CNode,
   CompiledExpr,
   CPredicate,
   CProjection,
   CReturnItem,
+  EvalEnv,
   Params,
   Row,
 } from '../executor.js';
@@ -19,17 +21,32 @@ import {
   valueKey,
 } from '../executor.js';
 import {
+  candidateCount,
   candidateVertexSource,
   candidateVertices,
   expand,
   matchesLabel,
 } from '../graph-queries.js';
 import type { Adjacency } from '../graph-queries.js';
+import { indexCandidates } from './matching.js';
 import { asTruth } from './scalars.js';
 import { plainNode, plainRel, vacuousLabel } from './shortcuts.js';
 
 /** Rows for a whole `MATCH … RETURN` query, or `null` if the shape does not fit. */
-export type RowsFn = (graph: Graph, params: Params) => Row[];
+/**
+ * A fast-path row producer, or `null` to DECLINE at execution time and let the general clause
+ * loop answer instead. The decline is graph-dependent — whether an index seek exists is not
+ * knowable when the closure is built — which is why it lives here rather than in the detector.
+ */
+export type RowsFn = (graph: Graph, params: Params) => Row[] | null;
+
+/**
+ * A fast path that always answers. Kept separate from {@link RowsFn} so the DISTINCT detector
+ * carries no decline branch: it has no end to seek and never hands the query back, and a
+ * defensive `?? []` at its call site would be an untestable branch — a mutant replacing it is
+ * equivalent code, which is how a test suite comes to look like it has teeth it does not.
+ */
+export type AlwaysRowsFn = (graph: Graph, params: Params) => Row[];
 
 /**
  * `MATCH (a:L)-[:T]->(x) RETURN <expressions over x>` — walk the hop and build each row
@@ -398,6 +415,10 @@ export const detectHopProjection = (
     farPred,
     gate,
     startVar: needsStart ? startVar : undefined,
+    // The COMPILED far node carries both the inline equalities and the seed hints lifted from
+    // the clause `WHERE`, which are the two things `indexCandidates` reads — so one value
+    // answers "could the far end seek?" for both spellings.
+    cfar: compiledFarNode(cm),
   });
 };
 
@@ -501,6 +522,19 @@ const farDrivenHopWalk = (w: {
  * (destructuring the spec into locals did not recover that). A factory gives each compile its
  * own closure AND keeps the detect function small (audit item 159).
  */
+/**
+ * How much narrower than the start source a far-end seek must be before this path hands the
+ * query to the general one. Measured; see the table in `filteredHopWalk`.
+ */
+const SEEK_MARGIN = 8;
+
+/**
+ * The COMPILED far node of a single-hop pattern. Its own function because the optional chaining
+ * counts against `detectHopProjection`'s complexity gate, which it was already at the edge of.
+ */
+const compiledFarNode = (cm: CClause): CNode | undefined =>
+  cm.kind === 'match' ? cm.patterns[0]?.segments[0]?.node : undefined;
+
 const filteredHopWalk = (w: {
   startLabel: LabelExpr | undefined;
   typeName: string;
@@ -511,10 +545,63 @@ const filteredHopWalk = (w: {
   farPred: CPredicate | undefined;
   gate: CompiledExpr | undefined;
   startVar: string | undefined;
+  cfar: CNode | undefined;
 }): RowsFn => {
-  const { startLabel, typeName, out, farVar, farLabel, proj, farPred, gate, startVar } = w;
+  const { startLabel, typeName, out, farVar, farLabel, proj, farPred, gate, startVar, cfar } = w;
 
   return (graph, params) => {
+    // DECLINE when the FAR end can seek an index, and let the general path answer.
+    //
+    // `carriedWhere` accepts a clause `WHERE` only if it reads the far variable, so this walk
+    // takes precisely the filters it is worst at: a far-reading filter cannot reject a start
+    // vertex before expanding it, and the end it constrains — the seekable one — is not the end
+    // this walk drives. A filter reading only the START already declines here and reaches the
+    // general path's seed, which is why that spelling was fast all along. Measured on 20,000
+    // users, `name` indexed (audit item 177):
+    //
+    //   (u)-[:FOLLOWS]->(x:User) WHERE x.name = $n RETURN u.name     3966.1us  <- this walk
+    //   (u)-[:FOLLOWS]->(x:User {name: $n}) RETURN u.name            3531.5us  <- this walk
+    //   (x:User {name: $n})<-[:FOLLOWS]-(u) RETURN u.name              35.3us  <- general path
+    //   (x:User) WHERE x.name = $n MATCH (u)-[:FOLLOWS]->(x) …         40.7us  <- general path
+    //   (u:User)-[:FOLLOWS]->(x) WHERE u.name = $n RETURN x.name       49.6us  <- general path
+    //
+    // 97x between a query and the SAME query with its arrow flipped. Adding `LIMIT 1` also made
+    // it fast (43.3us) for the same reason: the projection guard rejects a paged projection, so
+    // the query fell through to the path that seeds.
+    //
+    // NARROWER BY A MARGIN, and the margin is measured rather than assumed. "Narrower than the
+    // source" is the guard `hopSeek` and `buildNodeCount` use, and it is WRONG here: those
+    // choose between two walks with the same per-element cost, while this chooses between a walk
+    // that builds no rows and a path that builds one per match. The fused walk is FLAT in the
+    // filter's selectivity (it visits every edge of the start source either way); the general
+    // path costs about 1.2us per matched far vertex. 20,000 users, 40,000 edges, each spelling
+    // forced both ways:
+    //
+    //   far matches   declining   fused walk
+    //             2        43.4      3871.8   decline, 89x
+    //            10        60.3      3897.0   decline, 65x
+    //           100       187.4      3827.5   decline, 20x
+    //          1000      1092.7      3970.4   decline, 3.6x
+    //         10000     13998.5      4527.5   FUSED, 3.1x
+    //
+    // So the crossover is near 3,250 of 20,000 and a plain `narrowest < source` guard sends the
+    // last row the wrong way — it was written that way first and measured 13430us against the
+    // 4272 it replaced, a 3.1x REGRESSION on an indexed-but-unselective filter. Dividing by 8
+    // puts the threshold at 2,500 for this source: inside the region where declining still wins
+    // by 3.6x, and clear of the one where it loses.
+    if (cfar !== undefined) {
+      const env: EvalEnv = { binding: new Map<string, unknown>(), params, graph };
+      let narrowest = Infinity;
+
+      for (const candidate of indexCandidates(graph, cfar, env)) {
+        narrowest = Math.min(narrowest, candidate.count);
+      }
+
+      if (narrowest * SEEK_MARGIN < candidateCount(graph, startLabel)) {
+        return null;
+      }
+    }
+
     const rows: Row[] = [];
     const binding = new Map<string, unknown>();
     const index = out ? graph.edgesFromByLabel : graph.edgesToByLabel;
@@ -727,7 +814,7 @@ const distinctShape = (
 export const detectDistinctProjection = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
-): RowsFn | null => {
+): AlwaysRowsFn | null => {
   const shape = distinctShape(clauses, compiled);
 
   if (shape === null) {
