@@ -701,13 +701,127 @@ const farOnlyHopCount = (scan: HopScan, farVar: string | undefined): number => {
   return n;
 };
 
+/**
+ * Every edge incident to `vertices` on the side `index` holds, restricted to `types`.
+ *
+ * ONE generator layer, not two: delegating to `edgesOfVertex` per vertex cost a nested frame per
+ * vertex and that is the whole margin on a wide seek — this file has measured a generator layer
+ * before (the 8ns-against-40ns reading behind `harness-must-resemble-caller`).
+ */
+const edgesOfVertices = function* (
+  vertices: Iterable<Vertex>,
+  index: Map<string, Map<string, Set<Edge>>>,
+  types: readonly string[] | undefined,
+): Iterable<Edge> {
+  for (const v of vertices) {
+    const byType = index.get(v.id);
+
+    if (byType === undefined) {
+      continue;
+    }
+
+    if (types === undefined) {
+      for (const set of byType.values()) {
+        yield* set;
+      }
+
+      continue;
+    }
+
+    for (const t of types) {
+      const set = byType.get(t);
+
+      if (set !== undefined) {
+        yield* set;
+      }
+    }
+  }
+};
+
+/**
+ * The edges the tally has to visit: every edge of the type, or — when either endpoint offers an
+ * index seek — only those incident to the seeded end.
+ *
+ * This is the shape items 176 and 178 could not reach. Both per-vertex walks decline a pattern
+ * with BOTH ends constrained by construction: `startWalkFits` needs `inFar === undefined` and
+ * `farWalkFits` needs `inNear === undefined`, because a walk summing bucket SIZES cannot apply a
+ * constraint on an end it never visits. So the query fell to this tally, which scanned the whole
+ * edge bucket and seeked nothing. Measured on 20,000 users, 40,000 edges, `name` indexed (audit
+ * item 179):
+ *
+ *   (u:User {name: $n})-[:FOLLOWS]->(x:User {name: $m}) RETURN count(*)             1187.3us
+ *   (u:User)-[:FOLLOWS]->(x:User) WHERE u.name = $n AND x.name = $m  count(*)       2300.4us
+ *   the same question as count(x.name), which the general path seeds                  41.4us
+ *
+ * Unlike item 177's decline, there is no cost model to get wrong here: both arms run the SAME
+ * per-edge body, and the seeded source visits a strict SUBSET of the edges the full scan does —
+ * every edge it skips is one whose seeded-end vertex fails a constraint the body re-checks. So
+ * `hopSeek`'s own guard (narrowest candidate, declining a seek wider than that end's bucket) is
+ * the whole decision, shared with both walks so the three routes cannot disagree.
+ *
+ * Both ends are asked and the NARROWER set wins. A candidate's `build()` returns the index's own
+ * stored set rather than a copy, so asking twice is O(1) and comparing sizes costs nothing.
+ *
+ * `hopSeek`'s own guard — narrower than that end's bucket — is necessary but not sufficient HERE,
+ * and this is the one place the three routes differ. The two per-vertex walks read bucket SIZES,
+ * so a seek that narrows the vertex set always wins; this source must WALK each seeded vertex's
+ * edges, paying an adjacency lookup per vertex to save the edges of the vertices it skips. At
+ * degree 2 that trade turns over well before the bucket is exhausted. Both arms forced, 20,000
+ * users and 40,000 edges:
+ *
+ *   seeded-end matches   seeded   full tally
+ *                    2     53.2       1328.8   seed, 25x
+ *                   10     52.8       1171.2   seed, 22x
+ *                  100     94.3       1207.6   seed, 13x
+ *                 1000    428.8       1229.8   seed, 2.9x
+ *                10000   2030.0       1422.3   TALLY, 1.43x
+ *
+ * So the crossover is near 7,000 of 20,000, and `hopSeek`'s guard alone sends the last row the
+ * wrong way — measured at 1946-2076us against the 1383 it replaced. A margin of 8 puts the
+ * threshold at 2,500 here, inside the region where seeding still wins about 1.8x by
+ * interpolation and clear of the one where it loses. (Item 177 landed on the same divisor for a
+ * different cost model; the number coinciding is not a shared rule, so it is measured and named
+ * separately.)
+ */
+const TALLY_SEEK_MARGIN = 8;
+
+const tallyEdges = (scan: HopScan, env: EvalEnv): Iterable<Edge> => {
+  const { graph, pa, pb, out, types, cstart, cfar } = scan;
+
+  // A per-vertex bucket can hold one edge under several labels, so this source is sound only
+  // where `degreeOfTypes` is: one concrete type, or no multi-type edge in the graph.
+  if (types?.length === 1 || graph.multiTypeEdgeCount === 0) {
+    const worthIt = (
+      set: ReadonlySet<Vertex> | undefined,
+      label: LabelExpr | undefined,
+    ): ReadonlySet<Vertex> | undefined =>
+      set !== undefined && set.size * TALLY_SEEK_MARGIN < candidateCount(graph, label)
+        ? set
+        : undefined;
+    const fromStart = worthIt(hopSeek(graph, cstart, pa, env), pa);
+    const fromFar = worthIt(hopSeek(graph, cfar, pb, env), pb);
+    const startNarrower =
+      fromStart !== undefined && (fromFar === undefined || fromStart.size <= fromFar.size);
+
+    if (startNarrower) {
+      return edgesOfVertices(fromStart, out ? graph.edgesFromByLabel : graph.edgesToByLabel, types);
+    }
+
+    if (fromFar !== undefined) {
+      return edgesOfVertices(fromFar, out ? graph.edgesToByLabel : graph.edgesFromByLabel, types);
+    }
+  }
+
+  return edgesOfTypes(graph.edgesByLabel, types);
+};
+
 const tallyHopCount = (scan: HopScan): number => {
-  const { graph, params, pred, pa, pb, out, types, inNear, inFar } = scan;
+  const { graph, params, pred, pa, pb, out, inNear, inFar } = scan;
   const binding = new Map<string, unknown>();
   const env: EvalEnv = { binding, params, graph };
   let n = 0;
 
-  for (const edge of edgesOfTypes(graph.edgesByLabel, types)) {
+  for (const edge of tallyEdges(scan, env)) {
     const near = out ? edge.from : edge.to;
     const far = out ? edge.to : edge.from;
 
