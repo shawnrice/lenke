@@ -197,6 +197,30 @@ const seedLabel = (expr: LabelExpr | undefined): string | null => {
 };
 
 /** Candidate seed vertices for a node pattern, narrowed by its label expression. */
+/**
+ * The same narrowing as {@link candidateVertices}, handing back the UNDERLYING iterable rather
+ * than wrapping it in a generator.
+ *
+ * `candidateVertices` pays a `yield*` frame per vertex, which is invisible in a micro and is not
+ * invisible across 200,000 of them (audit item 164, and the generator note in item 136). Use
+ * this where the consumer is a full-scan walk; `candidateVertices` stays for everything that
+ * wants a generator.
+ */
+export const candidateVertexSource = (
+  graph: Graph,
+  label: LabelExpr | undefined,
+): Iterable<Vertex> => {
+  const seed = seedLabel(label);
+
+  if (seed === null) {
+    return graph.verticesById.values();
+  }
+
+  return graph.verticesByLabel.get(seed) ?? EMPTY_VERTICES;
+};
+
+const EMPTY_VERTICES: readonly Vertex[] = [];
+
 export const candidateVertices = function* (
   graph: Graph,
   label: LabelExpr | undefined,

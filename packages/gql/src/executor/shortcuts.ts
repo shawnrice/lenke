@@ -4,7 +4,7 @@
 // instead of enumerating every match. They mirror the native engine
 // (`try_count_edges` / `try_count_two_hop` / `try_reachable_distinct`) and are
 // provably identical for the homomorphic shapes they accept.
-import type { Graph, Vertex } from '@lenke/core';
+import type { Edge, Graph, Vertex } from '@lenke/core';
 
 import type {
   Clause,
@@ -45,7 +45,12 @@ import {
   resolveCount,
   valueKey,
 } from '../executor.js';
-import { candidateVertices, expand, matchesLabel } from '../graph-queries.js';
+import {
+  candidateVertexSource,
+  candidateVertices,
+  expand,
+  matchesLabel,
+} from '../graph-queries.js';
 import type { Adjacency } from '../graph-queries.js';
 import { indexCandidates, matchNode, seedVertices } from './matching.js';
 import type { SeedCandidate } from './matching.js';
@@ -390,6 +395,41 @@ const inlineHolds = (
 // The conclusion for this row: the plumbing cannot be reordered away without breaking raise
 // parity, so what is left is the property-bag read — structural, like the filtered scan of
 // item 132.
+/**
+ * One vertex's degree summed across the hop's edge types, given its row of the edge index.
+ *
+ * Module scope and shared by both hop-count walks. The per-edge call cost this file records
+ * elsewhere does not apply: since item 164 this runs once per SURVIVING vertex (plus once per
+ * faulting one), not once per candidate.
+ */
+const degreeOfTypes = (
+  byType: Map<string, Set<Edge>> | undefined,
+  types: readonly string[] | undefined,
+): number => {
+  if (byType === undefined) {
+    return 0;
+  }
+
+  let deg = 0;
+
+  if (types === undefined) {
+    // Every type. Sound only because the caller reaches this with no type list
+    // only when `multiTypeEdgeCount === 0`, so no edge sits in two of the
+    // buckets being summed.
+    for (const set of byType.values()) {
+      deg += set.size;
+    }
+
+    return deg;
+  }
+
+  for (const t of types) {
+    deg += byType.get(t)?.size ?? 0;
+  }
+
+  return deg;
+};
+
 const startOnlyHopCount = (scan: HopScan, startVar: string | undefined): number => {
   const { graph, params, pred, pa, out, types, inNear } = scan;
   const binding = new Map<string, unknown>();
@@ -397,43 +437,51 @@ const startOnlyHopCount = (scan: HopScan, startVar: string | undefined): number 
   const index = out ? graph.edgesFromByLabel : graph.edgesToByLabel;
   let n = 0;
 
-  for (const [vid, byType] of index) {
-    let deg = 0;
+  // Driven from the VERTEX side, not the edge index. Both changes this buys are measured in
+  // audit item 164:
+  //
+  //   ORDER — the edge index is keyed by id, so iterating it touches 200,000 vertices and their
+  //   property bags in hash order. The same walk in creation order cost 29ns/vertex against
+  //   135ns, because every entry was a `getVertexById` plus two pointer chases into cold memory.
+  //   That locality, not the expression layer, was 135 of the 177ns item 163 had attributed to
+  //   the compiled accessor.
+  //
+  //   SHORT-CIRCUIT — the degree is now summed only for vertices the predicate KEEPS, so a
+  //   selective predicate never touches the edge index for the ones it rejects.
+  //
+  // Iterating vertices also removes the old `v == null` guard: the edge index can hold an id
+  // whose vertex is gone, and that entry contributed 0 either way.
+  for (const v of candidateVertexSource(graph, pa)) {
+    if (!matchesLabel(v, pa)) {
+      continue;
+    }
 
-    if (types === undefined) {
-      // Every type. Sound only because the caller reaches this with no type list
-      // only when `multiTypeEdgeCount === 0`, so no edge sits in two of the
-      // buckets being summed.
-      for (const set of byType.values()) {
-        deg += set.size;
+    try {
+      if (inNear !== undefined && !inlineHolds(inNear, v, binding, params, graph)) {
+        continue;
       }
-    } else {
-      for (const t of types) {
-        deg += byType.get(t)?.size ?? 0;
+
+      if (startVar !== undefined) {
+        binding.set(startVar, v);
       }
-    }
 
-    if (deg === 0) {
+      if (asTruth(pred.fn(env)) !== true) {
+        continue;
+      }
+    } catch (e) {
+      // Evaluating before the degree lookup would otherwise surface a fault on a vertex the
+      // old walk never reached (its `deg === 0` continue came first) — the raise-parity class
+      // of items 139, 142, 144 and 145. So on a fault, look the degree up and re-throw ONLY
+      // if the general path would have evaluated this vertex. The happy path pays nothing:
+      // the guarded loop measured 52.26ms against 51.81ms unguarded.
+      if (degreeOfTypes(index.get(v.id), types) > 0) {
+        throw e;
+      }
+
       continue;
     }
 
-    const v = graph.getVertexById(vid);
-
-    if (v == null || !matchesLabel(v, pa)) {
-      continue;
-    }
-
-    if (inNear !== undefined && !inlineHolds(inNear, v, binding, params, graph)) {
-      continue;
-    }
-
-    if (startVar !== undefined) {
-      binding.set(startVar, v);
-    }
-
-    if (asTruth(pred.fn(env)) === true) {
-      n += deg;
-    }
+    n += degreeOfTypes(index.get(v.id), types);
   }
 
   return n;
@@ -544,45 +592,38 @@ const farOnlyHopCount = (scan: HopScan, farVar: string | undefined): number => {
   const index = out ? graph.edgesToByLabel : graph.edgesFromByLabel;
   let n = 0;
 
-  for (const [vid, byType] of index) {
-    let deg = 0;
+  // The vertex-side drive, for the reasons spelled out on the twin above: creation order for
+  // locality, and the degree summed only for vertices the predicate keeps.
+  //
+  // `pb`, not `pa`: this walk visits the FAR endpoints, so the label it can apply is the far
+  // one. The start label has to be vacuous for the caller to route here.
+  for (const v of candidateVertexSource(graph, pb)) {
+    if (!matchesLabel(v, pb)) {
+      continue;
+    }
 
-    if (types === undefined) {
-      // Every type. Sound only because the caller reaches this with no type list
-      // only when `multiTypeEdgeCount === 0`, so no edge sits in two of the
-      // buckets being summed.
-      for (const set of byType.values()) {
-        deg += set.size;
+    try {
+      if (inFar !== undefined && !inlineHolds(inFar, v, binding, params, graph)) {
+        continue;
       }
-    } else {
-      for (const t of types) {
-        deg += byType.get(t)?.size ?? 0;
+
+      if (farVar !== undefined) {
+        binding.set(farVar, v);
       }
-    }
 
-    if (deg === 0) {
+      if (asTruth(pred.fn(env)) !== true) {
+        continue;
+      }
+    } catch (e) {
+      // See the twin: re-throw only where the old walk would have evaluated this vertex.
+      if (degreeOfTypes(index.get(v.id), types) > 0) {
+        throw e;
+      }
+
       continue;
     }
 
-    const v = graph.getVertexById(vid);
-
-    // `pb`, not `pa`: this walk visits the FAR endpoints, so the label it can apply is
-    // the far one. The start label has to be vacuous for the caller to route here.
-    if (v == null || !matchesLabel(v, pb)) {
-      continue;
-    }
-
-    if (inFar !== undefined && !inlineHolds(inFar, v, binding, params, graph)) {
-      continue;
-    }
-
-    if (farVar !== undefined) {
-      binding.set(farVar, v);
-    }
-
-    if (asTruth(pred.fn(env)) === true) {
-      n += deg;
-    }
+    n += degreeOfTypes(index.get(v.id), types);
   }
 
   return n;
