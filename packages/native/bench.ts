@@ -227,6 +227,19 @@ const CASES: Case[] = [
     ),
   },
   {
+    // The distinct far-end values over a HOP, with a sort. Item 194 made the start-keyed version
+    // 2.86x by resolving the far vertex only when read; this shape still needs it, so item 195
+    // asks the question from the FAR end instead — one adjacency lookup per far vertex rather
+    // than an endpoint resolution per edge, 293.7ms to 90.4ms. The sort is load-bearing: it is
+    // what makes the two walks' first-seen orders indistinguishable.
+    name: 'query: distinct over a hop',
+    ...onGraph(
+      () => graphDoc,
+      (e, g) =>
+        void e.query(g, 'MATCH (a:Person)-[:KNOWS]->(f) RETURN DISTINCT f.age AS x ORDER BY x'),
+    ),
+  },
+  {
     // The same dedup with a WINDOW on it. Item 189 sorted the walk's output but left paging
     // with the general path, so adding `LIMIT 5` to the row below took it from 14.1ms back to
     // 142.1ms — a cheap addition undoing the fix. Item 191 takes the window too, applied AFTER

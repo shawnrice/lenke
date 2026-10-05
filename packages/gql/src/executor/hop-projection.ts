@@ -1037,6 +1037,132 @@ const distinctShape = (
  * The filter is carried in the same change, per item 141's lesson, when it reads only the same
  * end as the projection.
  */
+/** A simple directed single-type hop, resolved once per query. */
+type DirectHop = { forward: boolean; type: string };
+
+/**
+ * The FAR-driven walk, and when it is allowed.
+ *
+ * `MATCH (a)-[:T]->(f) RETURN DISTINCT f.k` asks for the distinct `f.k` over every far vertex
+ * REACHED. Walking edges costs one endpoint resolution each — ~180ns, measured as the whole of
+ * the far-keyed dedup's remaining 284.5ms over a million edges (item 194). Asked from the far
+ * end instead, a far vertex is reached exactly when it has at least one in-edge of the type, so
+ * the question is one adjacency lookup per FAR VERTEX: 200,000 instead of 1,000,000, with the
+ * property read and the dedup once per vertex rather than once per edge.
+ *
+ * Two conditions, and they are `farWalkFits`'s own (see `shortcuts.ts`), for the same reasons:
+ *
+ *   - **the START side must be unconstrained.** An in-edge says a far vertex is reached from
+ *     SOME source; it cannot say the source matched a label. A vacuous start label — one every
+ *     vertex carries — is the case where that distinction does not exist, and it is a RUNTIME
+ *     property of the graph, so this is chosen per call exactly as the count walks are.
+ *   - **a sort must impose the order.** First-seen order differs between the two walks, and
+ *     that order is observable. Under a sort it is not: ties are rows with the same single
+ *     projected value, so they are identical rows.
+ *
+ * What it does NOT need, unlike the counting twin: single-type edges. That twin sums bucket
+ * SIZES, so an edge in two buckets would be counted twice; this one only asks whether a bucket
+ * exists (audit item 195).
+ */
+const farDrivenFits = (
+  graph: Graph,
+  direct: DirectHop | undefined,
+  onStart: boolean,
+  sorted: boolean,
+  startLabel: LabelExpr | undefined,
+): boolean =>
+  direct !== undefined &&
+  !onStart &&
+  sorted &&
+  (startLabel === undefined || vacuousLabel(graph, startLabel));
+
+/**
+ * Module scope, not inline in the returned closure, which is the hot one: this file has
+ * measured a 1.17x cost on an UNRELATED shape from growing that closure (item 119). The
+ * closure dispatches; the walks live out here.
+ */
+/**
+ * Everything the two walks read off the SHAPE, bundled: it is computed once per query, and one
+ * object beats threading eight arguments through both of them.
+ */
+type WalkPlan = {
+  startLabel: LabelExpr | undefined;
+  farLabel: LabelExpr | undefined;
+  adjacency: Adjacency | undefined;
+  direct: DirectHop | undefined;
+  needsFar: boolean;
+  onStart: boolean;
+};
+
+const walkFarSide = (graph: Graph, plan: WalkPlan, take: (el: Vertex) => void): void => {
+  const { farLabel } = plan;
+  const direct = plan.direct as DirectHop;
+  // The MIRROR index of the start-driven walk's: an out-hop's edges arrive at the far vertex,
+  // so they are in its IN-adjacency.
+  const index = direct.forward ? graph.edgesToByLabel : graph.edgesFromByLabel;
+
+  for (const far of candidateVertexSource(graph, farLabel)) {
+    const bucket = index.get(far.id)?.get(direct.type);
+
+    // A present bucket should never be empty — `deIndexEdgeLabel` drops the entry when its set
+    // empties — but the size test keeps this path from depending on that invariant holding
+    // somewhere else, and it is one property read per vertex.
+    if (bucket === undefined || bucket.size === 0) {
+      continue;
+    }
+
+    take(far);
+  }
+};
+
+const walkStartSide = (graph: Graph, plan: WalkPlan, take: (el: Vertex) => void): void => {
+  const { startLabel, farLabel, adjacency, direct, needsFar, onStart } = plan;
+
+  for (const v of candidateVertices(graph, startLabel)) {
+    if (adjacency === undefined) {
+      take(v);
+
+      continue;
+    }
+
+    if (direct !== undefined) {
+      const bucket = (direct.forward ? graph.edgesFromByLabel : graph.edgesToByLabel)
+        .get(v.id)
+        ?.get(direct.type);
+
+      if (bucket === undefined) {
+        continue;
+      }
+
+      for (const edge of bucket) {
+        // `v` when nothing reads the far end: the endpoint getters are a string-keyed
+        // `Map.get` each, which is the ~190ns a far-keyed dedup pays per edge.
+        let far = v;
+
+        if (needsFar) {
+          far = direct.forward ? edge.to : edge.from;
+        }
+
+        if (farLabel !== undefined && !matchesLabel(far, farLabel)) {
+          continue;
+        }
+
+        take(onStart ? v : far);
+      }
+
+      continue;
+    }
+
+    for (const step of expand(graph, v, adjacency)) {
+      if (farLabel !== undefined && !matchesLabel(step.node, farLabel)) {
+        continue;
+      }
+
+      take(onStart ? v : step.node);
+    }
+  }
+};
+
 export const detectDistinctProjection = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
@@ -1050,6 +1176,14 @@ export const detectDistinctProjection = (
   const { evalFn, outName, keyedVar, onStart, startLabel, farLabel, adjacency, gatePred, sort } =
     shape;
   const { skip, limit } = shape;
+  // Both decided ONCE per query, out here rather than per call and certainly not per row: they
+  // read the shape only. `expand` is kept for `both`, a type disjunction and an untyped hop.
+  const direct: DirectHop | undefined =
+    adjacency !== undefined && adjacency.direction !== 'both' && adjacency.label?.kind === 'label'
+      ? { forward: adjacency.direction === 'out', type: adjacency.label.name }
+      : undefined;
+  const needsFar = !onStart || farLabel !== undefined;
+  const plan: WalkPlan = { startLabel, farLabel, adjacency, direct, needsFar, onStart };
 
   return (graph, params) => {
     // `LIMIT 0` emits nothing and must not EVALUATE: the general path returns `[]` from
@@ -1084,66 +1218,13 @@ export const detectDistinctProjection = (
       }
     };
 
-    // A dedup over a HOP was ~300ns an edge where a FILTERED hop count over the same million
-    // edges is ~50ns, and the far-vertex lookup is not the difference — keying the far end
-    // (301.4ms) and the start end (286.1ms) measured within 5%, because `expand` resolves
-    // `edge.to` either way. What it costs is the layers: a generator resume, a `{ edge, node }`
-    // per edge, and that unconditional endpoint getter, which is a string-keyed `Map.get`.
-    //
-    // So the simple directed single-type hop reads its adjacency bucket directly, exactly as the
-    // count shortcuts' per-vertex walks do (items 129/137), and resolves the far vertex ONLY when
-    // something reads it — the projection, or a far-end label filter. Identical ORDER: `expand`'s
-    // own fast path yields that same bucket in that same order, which is what makes this a
-    // layer removal and not a different plan. Anything else (`both`, a type disjunction, no type)
-    // keeps `expand` (audit item 194).
-    const direct =
-      adjacency !== undefined && adjacency.direction !== 'both' && adjacency.label?.kind === 'label'
-        ? { forward: adjacency.direction === 'out', type: adjacency.label.name }
-        : undefined;
-    const needsFar = !onStart || farLabel !== undefined;
-
-    for (const v of candidateVertices(graph, startLabel)) {
-      if (adjacency === undefined) {
-        take(v);
-
-        continue;
-      }
-
-      if (direct !== undefined) {
-        const bucket = (direct.forward ? graph.edgesFromByLabel : graph.edgesToByLabel)
-          .get(v.id)
-          ?.get(direct.type);
-
-        if (bucket === undefined) {
-          continue;
-        }
-
-        for (const edge of bucket) {
-          // `v` when nothing reads the far end: the endpoint getters are a string-keyed
-          // `Map.get` each, which is the ~190ns a far-keyed dedup still pays per edge.
-          let far = v;
-
-          if (needsFar) {
-            far = direct.forward ? edge.to : edge.from;
-          }
-
-          if (farLabel !== undefined && !matchesLabel(far, farLabel)) {
-            continue;
-          }
-
-          take(onStart ? v : far);
-        }
-
-        continue;
-      }
-
-      for (const step of expand(graph, v, adjacency)) {
-        if (farLabel !== undefined && !matchesLabel(step.node, farLabel)) {
-          continue;
-        }
-
-        take(onStart ? v : step.node);
-      }
+    // Which walk answers this? Both live at module scope; the closure only dispatches. The
+    // FAR-driven one asks one adjacency lookup per far VERTEX where the start-driven one
+    // resolves an endpoint per EDGE — see `farDrivenFits` for the two conditions.
+    if (farDrivenFits(graph, direct, onStart, sort !== undefined, startLabel)) {
+      walkFarSide(graph, plan, take);
+    } else {
+      walkStartSide(graph, plan, take);
     }
 
     if (sort !== undefined) {
