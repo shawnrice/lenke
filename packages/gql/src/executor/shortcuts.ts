@@ -1874,6 +1874,77 @@ export const pageGroups = (
 /** One `ORDER BY` key resolved to an output COLUMN of the tally's two-column row. */
 type ColSort = { col: string; descending: boolean; nullsFirst: boolean | undefined };
 
+/** One group's key value and running count. */
+type GroupSlot = { key: unknown; n: number };
+
+/**
+ * The tally's group index, keyed on the RAW value wherever that is exact.
+ *
+ * A tally built its index as `Map<string, slot>` with `valueKey(raw)` as the key, so a bucket of
+ * 200,000 vertices with 90 distinct values built 200,000 STRINGS to find 90 slots. That string is
+ * the cost of the whole tally, not the property read:
+ *
+ *     iterate the bucket only                      1.6ns a vertex
+ *     + read the property                         10.3ns
+ *     + tally, STRING key                         50.7ns     <- and the real query is 45.6ns
+ *     + tally, RAW key                            12.5ns     4.1x
+ *
+ * A raw-keyed `Map` is EXACTLY `valueKey`'s equivalence for primitives, which is checked rather
+ * than assumed — `Map` uses SameValueZero, so `-0` and `0` are ONE key and `NaN` equals itself,
+ * which are precisely the two rules `valueKey` documents; and types stay distinct, so `1`, `'1'`
+ * and `true` are three keys there as they are three prefixes here.
+ *
+ * Non-primitives are NOT raw-keyable — two equal lists, records, temporals or elements are
+ * different objects — so they keep `valueKey` in a SECOND map. Two maps rather than one mixed
+ * one because the schemes would otherwise COLLIDE: a raw string `'n1'` and `valueKey(1)` are the
+ * same string. First-seen group order, which is the pinned contract, comes from the shared
+ * `slots` array and not from either map's insertion order (audit item 192).
+ */
+const groupIndex = (): {
+  bump: (raw: unknown, by: number) => void;
+  slots: readonly GroupSlot[];
+} => {
+  const prim = new Map<unknown, GroupSlot>();
+  const slots: GroupSlot[] = [];
+  let structural: Map<string, GroupSlot> | undefined;
+
+  const open = (raw: unknown, by: number): GroupSlot => {
+    const slot = { key: raw, n: by };
+    slots.push(slot);
+
+    return slot;
+  };
+
+  return {
+    bump: (raw: unknown, by: number): void => {
+      // `null` is a primitive but `typeof null` is 'object', so it is tested first.
+      if (raw === null || typeof raw !== 'object') {
+        const hit = prim.get(raw);
+
+        if (hit === undefined) {
+          prim.set(raw, open(raw, by));
+        } else {
+          hit.n += by;
+        }
+
+        return;
+      }
+
+      structural ??= new Map();
+
+      const gk = valueKey(raw);
+      const hit = structural.get(gk);
+
+      if (hit === undefined) {
+        structural.set(gk, open(raw, by));
+      } else {
+        hit.n += by;
+      }
+    },
+    slots,
+  };
+};
+
 /**
  * Sort the tally's own rows. Its output is ONE ROW PER GROUP — the answer — so this sorts at
  * most as many rows as it returns, where the general path sorted one row per input ELEMENT.
@@ -2207,7 +2278,7 @@ export const detectGroupedNodeCount = (clauses: readonly Clause[]): ReachFn | nu
       labelName === undefined
         ? graph.verticesById.values()
         : (graph.verticesByLabel.get(labelName) ?? []);
-    const groups = new Map<string, { key: unknown; n: number }>();
+    const groups = groupIndex();
     // One binding map, reused: `inlineHolds` overwrites the node's own variable per vertex
     // and nothing else reads it, which is what `preds` being CLOSED buys.
     const binding = new Map<string, unknown>();
@@ -2217,20 +2288,12 @@ export const detectGroupedNodeCount = (clauses: readonly Clause[]): ReachFn | nu
         continue;
       }
 
-      const raw = propOf(v, key);
-      const gk = valueKey(raw);
-      const slot = groups.get(gk);
-
-      if (slot) {
-        slot.n += 1;
-      } else {
-        groups.set(gk, { key: raw, n: 1 });
-      }
+      groups.bump(propOf(v, key), 1);
     }
 
     return pageGroups(
       sortGroupRows(
-        [...groups.values()].map((slot) =>
+        groups.slots.map((slot) =>
           countFirst
             ? { [countCol]: slot.n, [keyCol]: slot.key }
             : { [keyCol]: slot.key, [countCol]: slot.n },
@@ -2408,18 +2471,9 @@ export const detectGroupedHopCount = (clauses: readonly Clause[]): ReachFn | nul
       return [];
     }
 
-    const groups = new Map<string, { key: unknown; n: number }>();
+    const groups = groupIndex();
     const binding = new Map<string, unknown>();
-    const add = (raw: unknown, by: number): void => {
-      const gk = valueKey(raw);
-      const slot = groups.get(gk);
-
-      if (slot) {
-        slot.n += by;
-      } else {
-        groups.set(gk, { key: raw, n: by });
-      }
-    };
+    const { bump: add } = groups;
 
     // Summing per-type bucket sizes is sound only when no edge sits in two of them, and that
     // is a RUNTIME property of the graph — so the O(V) degree walk is chosen per call, with
@@ -2501,7 +2555,7 @@ export const detectGroupedHopCount = (clauses: readonly Clause[]): ReachFn | nul
 
     return pageGroups(
       sortGroupRows(
-        [...groups.values()].map((slot) =>
+        groups.slots.map((slot) =>
           countFirst
             ? { [countCol]: slot.n, [keyCol]: slot.key }
             : { [keyCol]: slot.key, [countCol]: slot.n },
