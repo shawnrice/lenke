@@ -379,3 +379,183 @@ describe('a distinct hop count reads the reverse index', () => {
     );
   });
 });
+
+// `V().out(T).has(k, pred).count()` is answered from the FAR side since audit item 168: one
+// predicate test per far VERTEX contributing that vertex's degree, instead of one per EDGE with
+// a vertex lookup to go with it. Measured 130.1ms -> 50.4ms on the 1,000,000-edge bench (3.06x
+// in isolation), because the per-edge far lookup was a random-order cache miss.
+//
+// THE ORACLE IS NOT `dedupe()` HERE, and that mistake is worth recording: the note at the top of
+// this file says `dedupe()` is the identity "over a frontier that is already distinct", and the
+// frontier after `out()` is NOT — vertex 2 is the target of two `E` edges, so `dedupe()` folds
+// 3 rows into 2 and reads as a wrong answer. The decline used instead is the SAME filter twice:
+// `countShortcut` takes only `mid.length === 2`, so a second `has` pushes the question through
+// the general walk, and an idempotent filter cannot change the count.
+const declined = (g: Graph, ...steps: Parameters<typeof traversal>): number => n(g, ...steps);
+
+describe('a filtered hop count is answered from the far side', () => {
+  // E edges: 0->1, 0->2, 1->2, 3->3.  F edges: 2->0, 3->1, 1->1.
+  // Far endpoints of out('E'): 1, 2, 2, 3 — so k = 1, 2, 2, 3 and `gt(1)` keeps three.
+  test('a single-type out hop matches the forced decline and the arithmetic', () => {
+    const g = build();
+
+    expect(n(g, V(), out('E'), has('k', gt(1)), count())).toBe(3);
+    expect(n(g, V(), out('E'), has('k', gt(1)), count())).toBe(
+      declined(g, V(), out('E'), has('k', gt(1)), has('k', gt(1)), count()),
+    );
+  });
+
+  test('a vertex with SEVERAL in-edges contributes its whole degree', () => {
+    // Vertex 2 is the far end of TWO `E` edges (0->2 and 1->2), and `gt(1)` keeps it. Counting
+    // the vertex once instead of twice is the one mistake the flip makes available, and it
+    // would read 2 here.
+    const g = build();
+
+    expect(n(g, V(), out('E'), has('k', gt(1)), count())).toBe(3);
+    // Only vertex 2 and vertex 3 pass; 2 brings two edges and 3 brings one.
+    expect(n(g, V(), out('E'), has('k', gt(2)), count())).toBe(1);
+  });
+
+  test('the IN direction reads the mirror index', () => {
+    // Sources of the `E` edges are 0, 0, 1, 3 — k = 0, 0, 1, 3, so `gt(1)` keeps one.
+    const g = build();
+
+    expect(n(g, V(), in_('E'), has('k', gt(1)), count())).toBe(1);
+    expect(n(g, V(), in_('E'), has('k', gt(1)), count())).toBe(
+      declined(g, V(), in_('E'), has('k', gt(1)), has('k', gt(1)), count()),
+    );
+  });
+
+  test('an UNTYPED hop sums every type', () => {
+    // All seven edges; far ends 1,2,2,0,3,1,1 — k the same, so `gt(1)` keeps three.
+    const g = build();
+
+    expect(n(g, V(), out(), has('k', gt(1)), count())).toBe(3);
+    expect(n(g, V(), out(), has('k', gt(1)), count())).toBe(
+      declined(g, V(), out(), has('k', gt(1)), has('k', gt(1)), count()),
+    );
+  });
+
+  test('an untyped hop sums every type OF ONE VERTEX, not just its first', () => {
+    // `gt(1)` above cannot see this: vertex 1 is the only far endpoint whose in-edges span TWO
+    // types ({E: 1, F: 2}), and k=1 FAILS `gt(1)`, so its degree never reaches the total. A
+    // mutant summing only the first type bucket survived every test until this one.
+    //
+    // `gt(0)` keeps vertices 1 (deg 3), 2 (deg 2) and 3 (deg 1) and drops vertex 0 (k=0), so
+    // the answer is 6 — and 4 if only the first bucket of vertex 1 counted.
+    const g = build();
+
+    expect(n(g, V(), out(), has('k', gt(0)), count())).toBe(6);
+    expect(n(g, V(), out(), has('k', gt(0)), count())).toBe(
+      declined(g, V(), out(), has('k', gt(0)), has('k', gt(0)), count()),
+    );
+  });
+
+  test('a MULTI-TYPE hop with no multi-type edge sums the named buckets', () => {
+    const g = build();
+
+    expect(n(g, V(), out('E', 'F'), has('k', gt(1)), count())).toBe(3);
+    expect(n(g, V(), out('E', 'F'), has('k', gt(1)), count())).toBe(
+      declined(g, V(), out('E', 'F'), has('k', gt(1)), has('k', gt(1)), count()),
+    );
+  });
+
+  test('a multi-type hop sums BOTH named types of one vertex', () => {
+    // The named-type mirror of the test above, and it caught the same class of mutant.
+    const g = build();
+
+    expect(n(g, V(), out('E', 'F'), has('k', gt(0)), count())).toBe(6);
+    // One type at a time, so the sum above cannot be a coincidence: E gives 4, F gives 3, and
+    // `gt(0)` drops vertex 0's single F edge — 4 + 2 = 6.
+    expect(n(g, V(), out('E'), has('k', gt(0)), count())).toBe(4);
+    expect(n(g, V(), out('F'), has('k', gt(0)), count())).toBe(2);
+  });
+
+  test('a multi-type hop WITH a two-type edge stays on the edge-driven walk', () => {
+    // Summing per-vertex buckets would count a two-type edge twice. The vertex-driven form is
+    // declined here, and the answer must still be the general walk's.
+    const g = build();
+    const vs = [...g.vertices];
+
+    g.addEdge({ from: vs[4], to: vs[2], labels: ['E', 'F'], properties: {} });
+
+    expect(g.multiTypeEdgeCount).toBeGreaterThan(0);
+    expect(n(g, V(), out('E', 'F'), has('k', gt(1)), count())).toBe(
+      declined(g, V(), out('E', 'F'), has('k', gt(1)), has('k', gt(1)), count()),
+    );
+  });
+
+  test('a self-loop is counted once', () => {
+    // 3->3 is an `E` self-loop and sits in BOTH adjacency indexes; the walk reads one, so it
+    // must contribute exactly 1. k=3 passes `gt(2)`, and nothing else does.
+    const g = build();
+
+    expect(n(g, V(), out('E'), has('k', gt(2)), count())).toBe(1);
+    expect(n(g, V(), out('E'), has('k', gt(2)), count())).toBe(
+      declined(g, V(), out('E'), has('k', gt(2)), has('k', gt(2)), count()),
+    );
+  });
+
+  test('`both` still declines, as it always did', () => {
+    // `both` double-counts a self-loop, which is why it was never on this path.
+    const g = build();
+
+    expect(n(g, V(), both('E'), has('k', gt(1)), count())).toBe(
+      declined(g, V(), both('E'), has('k', gt(1)), has('k', gt(1)), count()),
+    );
+  });
+});
+
+describe('the filtered hop count agrees with the general walk on a cross-type compare', () => {
+  /** `s` carries a STRING `k`, where every other vertex carries a number. */
+  const mixed = (withEdge: boolean): Graph => {
+    const g = new Graph();
+    const a = g.addVertex({ id: 'a', labels: ['P'], properties: { k: 1 } });
+    const b = g.addVertex({ id: 'b', labels: ['P'], properties: { k: 2 } });
+    const s = g.addVertex({ id: 's', labels: ['P'], properties: { k: 'text' } });
+
+    g.addEdge({ from: a, to: b, labels: ['E'], properties: {} });
+
+    if (withEdge) {
+      g.addEdge({ from: a, to: s, labels: ['E'], properties: {} });
+    }
+
+    return g;
+  };
+
+  // I expected `gt(0)` against `'text'` to THROW here (the note on the predicate comparator in
+  // `predicates.ts` says it does, mirroring TinkerPop's ClassCastException) and wrote two tests
+  // asserting a throw. Both failed: `has` filters the incomparable value out instead. So what
+  // is pinned is the behaviour the engine actually has, on BOTH paths — which is the parity that
+  // matters either way.
+  test('an incomparable value is filtered, not raised, on both paths', () => {
+    for (const withEdge of [false, true]) {
+      const g = mixed(withEdge);
+
+      expect(n(g, V(), out('E'), has('k', gt(0)), count())).toBe(1);
+      expect(n(g, V(), out('E'), has('k', gt(0)), count())).toBe(
+        declined(g, V(), out('E'), has('k', gt(0)), has('k', gt(0)), count()),
+      );
+    }
+  });
+
+  test('a string predicate against numbers agrees too', () => {
+    for (const withEdge of [false, true]) {
+      const g = mixed(withEdge);
+
+      expect(n(g, V(), out('E'), has('k', gt('aa')), count())).toBe(
+        declined(g, V(), out('E'), has('k', gt('aa')), has('k', gt('aa')), count()),
+      );
+    }
+  });
+
+  test('a vertex with no edge of the queried type is never tested', () => {
+    // `s` is not a far endpoint of any `E` edge when `withEdge` is false. The flip iterates
+    // VERTICES, so it could start evaluating it; the degree-0 skip is what prevents that. The
+    // observable consequence is only the count here, since nothing throws.
+    const g = mixed(false);
+
+    expect(n(g, V(), out('E'), has('k', gt(0)), count())).toBe(1);
+    expect(n(g, V(), out('E'), count())).toBe(1);
+  });
+});

@@ -163,13 +163,65 @@ const filteredHopCount = (hop: Step, filter: Step, graph: Graph): number | undef
     return undefined;
   }
 
+  const forward = hop.kind === 'out';
+
+  // Drive the FAR side where it is sound: one predicate test per far VERTEX, contributing that
+  // vertex's whole degree, instead of one per EDGE with a vertex lookup to go with it.
+  //
+  // The comment above says the far-endpoint read costs ~17ns because those vertices "stay
+  // cache-warm". That is true of the small unit fixture it was measured on and NOT of 200,000:
+  // at bench scale the read is a random-order lookup and a cold pointer chase, and this row was
+  // 130.1ms against native's 1.53ms. Measured over 1,000,000 edges (audit item 168):
+  //
+  //   selectivity          edge-driven   vertex-driven
+  //   gt(44), ~50% pass        104.2ms         34.1ms   3.06x
+  //   gt(85), 4.4% pass        101.7ms         29.8ms   3.41x
+  //   gt(500), none pass       101.3ms         25.3ms   4.00x
+  //
+  // `out(T)` emits one traverser per traversed EDGE, so summing each far vertex's degree of
+  // that type gives the identical total — the same argument the edge-driven walk relies on,
+  // read from the other end. A COUNT is order-free, so nothing observable moves.
+  //
+  // RAISE PARITY comes free here, unlike the GQL twin (item 164): `matches` can throw (a
+  // cross-type comparison, mirroring TinkerPop's `ClassCastException`), and the predicate is
+  // evaluated for exactly the vertices carrying at least one edge of the queried type — which
+  // is exactly the set of far endpoints the edge walk visits. No vertex gains or loses an
+  // evaluation, so no fault appears or disappears.
+  if (hop.labels.length === 1 || graph.multiTypeEdgeCount === 0) {
+    const index = forward ? graph.edgesToByLabel : graph.edgesFromByLabel;
+    let n = 0;
+
+    for (const v of graph.vertices) {
+      const byType = index.get(v.id);
+
+      if (byType === undefined) {
+        continue;
+      }
+
+      const deg = degreeOfTypes(byType, hop.labels);
+
+      // A vertex with no edge of this type is not a far endpoint of this hop, so it must not be
+      // tested — that is what keeps the evaluated set identical.
+      if (deg === 0) {
+        continue;
+      }
+
+      if (matches(filter.pred, v.properties[filter.key])) {
+        n += deg;
+      }
+    }
+
+    return n;
+  }
+
+  // Several named types AND an edge carrying two of them: summing per-vertex buckets would
+  // count that edge twice, so this stays on the edge-driven walk, which visits each edge once.
   const buckets = bucketsFor(hop.labels, graph);
 
   if (buckets === undefined) {
     return undefined;
   }
 
-  const forward = hop.kind === 'out';
   let n = 0;
 
   for (const bucket of buckets) {
@@ -183,6 +235,32 @@ const filteredHopCount = (hop: Step, filter: Step, graph: Graph): number | undef
   }
 
   return n;
+};
+
+/**
+ * One vertex's degree across the hop's edge types, given its row of the adjacency index. An
+ * EMPTY type list means an untyped hop and so every type — reached only where no edge carries
+ * two types, which is what makes summing the buckets safe.
+ */
+const degreeOfTypes = (
+  byType: ReadonlyMap<string, ReadonlySet<Edge>>,
+  types: readonly string[],
+): number => {
+  let deg = 0;
+
+  if (types.length === 0) {
+    for (const set of byType.values()) {
+      deg += set.size;
+    }
+
+    return deg;
+  }
+
+  for (const t of types) {
+    deg += byType.get(t)?.size ?? 0;
+  }
+
+  return deg;
 };
 
 /**
