@@ -1,7 +1,15 @@
 import type { Graph, Vertex } from '@lenke/core';
 
 import type { Clause, Expr, LabelExpr } from '../ast.js';
-import type { CClause, CPredicate, CProjection, CReturnItem, Params, Row } from '../executor.js';
+import type {
+  CClause,
+  CompiledExpr,
+  CPredicate,
+  CProjection,
+  CReturnItem,
+  Params,
+  Row,
+} from '../executor.js';
 import {
   compilePredicate,
   freePredicateVars,
@@ -12,6 +20,7 @@ import {
 } from '../executor.js';
 import { candidateVertices, expand, matchesLabel } from '../graph-queries.js';
 import type { Adjacency } from '../graph-queries.js';
+import { asTruth } from './scalars.js';
 import { plainNode, plainRel } from './shortcuts.js';
 
 /** Rows for a whole `MATCH … RETURN` query, or `null` if the shape does not fit. */
@@ -52,6 +61,76 @@ export type RowsFn = (graph: Graph, params: Params) => Row[];
  * and then the per-vertex type bucket, which is exactly what the general path's
  * `candidateVertices` → `expand` does for a directed single-type hop.
  */
+/**
+ * Can this clause `WHERE` be carried into the fused walk, and does it need the start bound?
+ *
+ * `null` declines. It is carried only when it reads nothing but the pattern's two endpoints —
+ * which are what the walk binds — AND reads the FAR one. A predicate on the START ALONE belongs
+ * to item 154's seed pre-filter, which evaluates it once per start VERTEX and skips the
+ * expansion entirely; carrying it here would evaluate it once per EDGE. Measured: intercepting
+ * that shape cost 4.047 -> 5.228ms, so this is a measured boundary between two fast paths
+ * rather than a conservative one.
+ */
+const carriedWhere = (
+  where: Expr | undefined,
+  farVar: string,
+  startVar: string | undefined,
+): { needsStart: boolean } | null => {
+  if (where === undefined) {
+    return { needsStart: false };
+  }
+
+  const vars = [...freePredicateVars(where)];
+
+  for (const name of vars) {
+    if (name !== farVar && name !== startVar) {
+      return null;
+    }
+  }
+
+  if (!vars.includes(farVar)) {
+    return null;
+  }
+
+  // The start is bound only when the predicate actually reads it: the single mutated binding is
+  // the allocation this path exists to avoid, so an extra `set` per vertex is not free.
+  return { needsStart: startVar !== undefined && vars.includes(startVar) };
+};
+
+/**
+ * The far node's own inline constraint, compiled — `undefined` when the node is plain, `null`
+ * when it must not be carried.
+ *
+ * CLOSED constraints only, the same rule `inlineOf` applies: every property VALUE must have no
+ * free variables and an inline `WHERE` may read nothing but the node's own variable.
+ * `(v {k: u.k})` is correlated and would need the start bound per edge — the correlation problem
+ * of items 121-123, not this one.
+ */
+const closedFarPred = (
+  node: { properties?: readonly { value: Expr }[]; where?: Expr; variable?: string },
+  farVar: string,
+): CPredicate | undefined | null => {
+  if (plainNode(node as never)) {
+    return undefined;
+  }
+
+  for (const c of node.properties ?? []) {
+    if (freePredicateVars(c.value).size > 0) {
+      return null;
+    }
+  }
+
+  if (node.where !== undefined) {
+    for (const name of freePredicateVars(node.where)) {
+      if (name !== farVar) {
+        return null;
+      }
+    }
+  }
+
+  return compilePredicate(node.properties as never, node.where);
+};
+
 export const detectHopProjection = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
@@ -66,12 +145,16 @@ export const detectHopProjection = (
   if (
     m.kind !== 'match' ||
     m.optional ||
-    // A clause `WHERE` would have to be evaluated per row, which is the general path's job.
-    m.where !== undefined ||
     m.patterns.length !== 1 ||
     ret.kind !== 'return' ||
     cret.kind !== 'return'
   ) {
+    return null;
+  }
+
+  const [cm] = compiled;
+
+  if (cm.kind !== 'match') {
     return null;
   }
 
@@ -104,7 +187,7 @@ export const detectHopProjection = (
     return null;
   }
 
-  if (!plainNode(start) || !plainNode(node)) {
+  if (!plainNode(start)) {
     return null;
   }
 
@@ -161,12 +244,138 @@ export const detectHopProjection = (
     }
   }
 
+  // A clause `WHERE` is CARRIED rather than refused, as long as it reads nothing but the
+  // pattern's two endpoints — which are exactly what the walk binds. Refusing it sent the
+  // query to the general path, making a FILTERED hop 3x the cost of the same hop UNFILTERED
+  // (24.3ms against 8.1ms over 20,000 edges) even though the filter cut 20,000 rows to 207.
+  // A filter that makes a query slower is a declined fast path, not the cost of filtering
+  // (audit item 159).
+  //
+  // The predicate is the COMPILED clause `WHERE` the general path uses, not a re-derivation,
+  // and it is applied at the same point: once per row, after both endpoints are bound. So the
+  // evaluation count and the elements evaluated are unchanged — which is what items 139/142
+  // require of a fast path.
+  const startVar = start.variable;
+  const carried = carriedWhere(m.where, farVar, startVar);
+
+  if (carried === null) {
+    return null;
+  }
+
+  // The FAR node's own inline constraint — `(v {score: 5})` or `(v WHERE v.score = 5)` — is
+  // carried rather than refused. Leaving it out made the two spellings of ONE question differ
+  // by 5x once the clause form became fast (2.5ms against 13ms), which is the gap this repo is
+  // named after. `satisfies` is the general path's own node check and needs no allocation,
+  // because the single mutated binding already holds the far end.
+  //
+  // CLOSED constraints only, the same rule `inlineOf` applies: every property VALUE must have
+  // no free variables and an inline `WHERE` may read nothing but the node's own variable.
+  // `(v {score: u.score})` is correlated and would need the start bound per edge — that is the
+  // correlation problem of items 121-123, not this one.
+  const farPred = closedFarPred(node, farVar);
+
+  if (farPred === null) {
+    return null;
+  }
+
+  const gate = cm.where;
+  const { needsStart } = carried;
+
   const out = rel.direction === 'out';
   const farLabel: LabelExpr | undefined = node.label;
 
+  // TWO closures, chosen once at compile time, and the unfiltered one is byte-for-byte what
+  // this path was before any filter was carried. The shape of this split was measured three
+  // ways, because the hot UNFILTERED hop notices all of them (2.5ms over 20,000 edges):
+  //
+  //   filter checks folded into the single existing loop   1.6x slower
+  //   two MODULE-SCOPE walks taking a spec object          1.29x slower
+  //   two closures built per compile (this)                flat
+  //
+  // The middle one is the interesting failure: `ts-closure-size-is-load-bearing` says to keep a
+  // walk at module scope, and that is right about closure SIZE — but a shared module-scope walk
+  // is called with every compile's shapes, so its call sites go polymorphic, while a closure
+  // built per compile keeps its own. Destructuring the spec into locals did not recover it.
+  // Here each returned closure holds ONE loop and its own captured constants, which is what
+  // both effects want (audit item 159).
+  if (farPred === undefined && gate === undefined) {
+    return (graph, params) => {
+      const rows: Row[] = [];
+      // ONE binding, mutated per edge. This is the allocation the profile found.
+      const binding = new Map<string, unknown>();
+      const index = out ? graph.edgesFromByLabel : graph.edgesToByLabel;
+
+      for (const v of candidateVertices(graph, startLabel)) {
+        const bucket = index.get(v.id)?.get(typeName);
+
+        if (bucket === undefined) {
+          continue;
+        }
+
+        for (const edge of bucket) {
+          const far: Vertex = out ? edge.to : edge.from;
+
+          if (farLabel !== undefined && !matchesLabel(far, farLabel)) {
+            continue;
+          }
+
+          binding.set(farVar, far);
+          rows.push(projectRow(proj, binding, params, graph));
+        }
+      }
+
+      return rows;
+    };
+  }
+
+  return filteredHopWalk({
+    startLabel,
+    typeName,
+    out,
+    farVar,
+    farLabel,
+    proj,
+    farPred,
+    gate,
+    startVar: needsStart ? startVar : undefined,
+  });
+};
+
+/**
+ * Build the FILTERED hop walk — the far end's own inline predicate and/or the carried clause
+ * `WHERE`, applied in that order, which is the order the general path applies them (matching,
+ * then filtering), so the rows and the faults are the general path's.
+ *
+ * A FACTORY at module scope rather than a closure inside `detectHopProjection`, and the
+ * distinction is measured. The hot UNFILTERED hop (2.4ms over 20,000 edges) notices all four
+ * arrangements tried:
+ *
+ *   filter checks folded into the one existing loop      1.6x slower
+ *   two module-scope walks taking a spec object          1.29x slower
+ *   two closures built inside the detect function        1.25x slower
+ *   this: unfiltered inline, filtered behind a factory   flat
+ *
+ * Two effects pull opposite ways and this is where they meet. `ts-closure-size-is-load-bearing`
+ * is right that a second hot loop inside the detect function costs the first one — but a SHARED
+ * module-scope walk is called with every compile's shapes, so its call sites go polymorphic
+ * (destructuring the spec into locals did not recover that). A factory gives each compile its
+ * own closure AND keeps the detect function small (audit item 159).
+ */
+const filteredHopWalk = (w: {
+  startLabel: LabelExpr | undefined;
+  typeName: string;
+  out: boolean;
+  farVar: string;
+  farLabel: LabelExpr | undefined;
+  proj: CProjection;
+  farPred: CPredicate | undefined;
+  gate: CompiledExpr | undefined;
+  startVar: string | undefined;
+}): RowsFn => {
+  const { startLabel, typeName, out, farVar, farLabel, proj, farPred, gate, startVar } = w;
+
   return (graph, params) => {
     const rows: Row[] = [];
-    // ONE binding, mutated per edge. This is the allocation the profile found.
     const binding = new Map<string, unknown>();
     const index = out ? graph.edgesFromByLabel : graph.edgesToByLabel;
 
@@ -177,6 +386,10 @@ export const detectHopProjection = (
         continue;
       }
 
+      if (startVar !== undefined) {
+        binding.set(startVar, v);
+      }
+
       for (const edge of bucket) {
         const far: Vertex = out ? edge.to : edge.from;
 
@@ -185,6 +398,15 @@ export const detectHopProjection = (
         }
 
         binding.set(farVar, far);
+
+        if (farPred !== undefined && !satisfies(far, farPred, binding, params, graph)) {
+          continue;
+        }
+
+        if (gate !== undefined && asTruth(gate({ binding, params, graph })) !== true) {
+          continue;
+        }
+
         rows.push(projectRow(proj, binding, params, graph));
       }
     }
