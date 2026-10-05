@@ -14371,3 +14371,205 @@ fn a_plain_expand_is_still_not_capped() {
     assert_eq!(whole.len(), 2, "only the two sources with edges");
     assert_windows(&store, base, PAGE_WINDOWS);
 }
+
+/// A continuing `MATCH` whose pattern carries an inline `WHERE` used to CLOBBER the parser's
+/// variable scope and never restore it (audit item 157). Five sites did
+/// `self.scope = scope.clone()` with no restore, and the damage was three-fold:
+///
+///  - the JOIN KEY computed just after looked each sub-pattern variable up in `self.scope`,
+///    which by then WAS the sub scope — so every sub slot matched itself and the key came out
+///    as `[(0, 0), (1, 1)]`, joining `a` to `b` as well as `q` to `q`;
+///  - later clauses could not see the outer names, raising a bogus `unknown variable a`;
+///  - one site mismatched the slot space badly enough to PANIC in `batch.rs`
+///    (`index out of bounds: the len is 2 but the index is 2`).
+///
+/// Each test pins an ANSWER, and the oracle is the equivalent spelling that never reached the
+/// clobbered line — the comma form, or the trailing-`WHERE` form. Those were always right,
+/// which is exactly why this survived so long.
+#[cfg(test)]
+fn scope_store() -> Store {
+    let mut b = Builder::default();
+    // Sources k = 0, 1, 2 — only k = 2 passes `k > 1`.
+    for k in 0..3 {
+        b.node(&["P"], &[("k", crate::value::Value::Num(f64::from(k)))]);
+    }
+    // One shared vertex with IN-DEGREE 3. A degree of 1 would make the right and wrong
+    // answers coincide, which is the whole reason the bug was invisible.
+    b.node(&["P"], &[("k", crate::value::Value::Num(9.0))]);
+    b.edge(0, 3, "E");
+    b.edge(1, 3, "E");
+    b.edge(2, 3, "E");
+    b.build()
+}
+
+#[cfg(test)]
+fn scope_count(store: &Store, q: &str) -> f64 {
+    let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), store);
+    let out = run(&plan, store);
+    match &out.rows[0][0] {
+        Value::Num(n) => *n,
+        other => panic!("expected a count, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_continuing_match_with_an_inline_where_keeps_the_outer_scope() {
+    // The headline wrong answer: 1 instead of 3. One is the number of pairs where `a` happened
+    // to EQUAL `b`, which is what the corrupted join key asked for.
+    let store = scope_store();
+    let q = "MATCH (a:P)-[:E]->(q:P) MATCH (b:P WHERE b.k > 1)-[:E]->(q) RETURN count(*) AS c";
+    assert_eq!(scope_count(&store, q), 3.0);
+    // The comma spelling never reached the clobber, so it is the oracle.
+    let comma = "MATCH (a:P)-[:E]->(q:P), (b:P WHERE b.k > 1)-[:E]->(q) RETURN count(*) AS c";
+    assert_eq!(scope_count(&store, comma), 3.0);
+    // And so is the trailing-WHERE spelling of the same question.
+    let trailing =
+        "MATCH (a:P)-[:E]->(q:P) MATCH (b:P)-[:E]->(q) WHERE b.k > 1 RETURN count(*) AS c";
+    assert_eq!(scope_count(&store, trailing), 3.0);
+}
+
+#[test]
+fn the_outer_variables_are_still_projectable_after_such_a_match() {
+    // This spelling did not merely answer wrongly — it RAISED `unknown variable a`, because the
+    // outer names were gone by the time RETURN was parsed.
+    let store = scope_store();
+    let q =
+        "MATCH (a:P)-[:E]->(q:P) MATCH (b:P WHERE b.k > 1)-[:E]->(q) RETURN a.k AS ak, b.k AS bk";
+    let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
+    let out = run(&plan, &store);
+    assert_eq!(out.rows.len(), 3);
+    // Every row pairs some `a` with the single qualifying `b` (k = 2).
+    for row in out.rows.iter() {
+        assert_eq!(format!("{:?}", row[1]), format!("{:?}", Value::Num(2.0)));
+    }
+}
+
+#[test]
+fn an_uncorrelated_continuing_match_with_an_inline_where() {
+    // No shared variable, so this is a 3 x 1 cross product. It used to raise `unknown variable`.
+    let store = scope_store();
+    let q = "MATCH (a:P)-[:E]->(q:P) MATCH (b:P WHERE b.k > 1)-[:E]->(r:P) RETURN count(*) AS c";
+    assert_eq!(scope_count(&store, q), 3.0);
+}
+
+#[test]
+fn an_inline_where_on_a_continuing_patterns_landing_node() {
+    // A different one of the five sites: the predicate sits on the LANDING node rather than the
+    // start. Same corruption, so the same 4-instead-of-16 shape.
+    let store = scope_store();
+    let q = "MATCH (a:P)-[:E]->(q:P) MATCH (b:P)-[:E]->(z:P WHERE z.k = 9) RETURN count(*) AS c";
+    assert_eq!(scope_count(&store, q), 9.0, "3 x 3, a full cross product");
+    let oracle = "MATCH (a:P)-[:E]->(q:P), (b:P)-[:E]->(z:P WHERE z.k = 9) RETURN count(*) AS c";
+    assert_eq!(scope_count(&store, oracle), 9.0);
+}
+
+#[test]
+fn an_inline_edge_where_in_a_continuing_match_does_not_panic() {
+    // This one PANICKED in `batch.rs` with an out-of-bounds slot index, which surfaced to the
+    // caller as a misleading `E_INVALID_VALUE`. The predicate was compiled against one slot
+    // space and evaluated against another.
+    let mut b = Builder::default();
+    b.node(&["P"], &[("k", crate::value::Value::Num(0.0))]);
+    b.node(&["P"], &[("k", crate::value::Value::Num(9.0))]);
+    b.edge(0, 1, "E");
+    let store = b.build();
+    let q = "MATCH (a:P)-[:E]->(q:P) MATCH (b:P)-[e:E WHERE e.w >= 0]->(z:P) RETURN count(*) AS c";
+    // `w` is absent on every edge, so the predicate selects nothing — the point is that it
+    // ANSWERS rather than panicking.
+    assert_eq!(scope_count(&store, q), 0.0);
+}
+
+#[test]
+fn an_inline_edge_where_in_a_continuing_match_selects_correctly() {
+    // The same site with the property present, so the predicate actually discriminates.
+    // Built from NDJSON because `Builder::edge` takes no properties.
+    let nd = concat!(
+        "{\"type\":\"node\",\"id\":\"s\",\"labels\":[\"P\"],\"properties\":{\"k\":0}}\n",
+        "{\"type\":\"node\",\"id\":\"h\",\"labels\":[\"P\"],\"properties\":{\"k\":9}}\n",
+        "{\"type\":\"edge\",\"id\":\"e0\",\"labels\":[\"E\"],\"from\":\"s\",\"to\":\"h\",\"properties\":{\"w\":5}}\n",
+    );
+    let store = crate::ndjson::from_ndjson(nd).unwrap();
+    let keep =
+        "MATCH (a:P)-[:E]->(q:P) MATCH (b:P)-[e:E WHERE e.w >= 0]->(z:P) RETURN count(*) AS c";
+    let drop =
+        "MATCH (a:P)-[:E]->(q:P) MATCH (b:P)-[e:E WHERE e.w >= 99]->(z:P) RETURN count(*) AS c";
+    assert_eq!(scope_count(&store, keep), 1.0);
+    assert_eq!(scope_count(&store, drop), 0.0);
+}
+
+#[test]
+fn three_clauses_each_with_an_inline_where_keep_the_scope() {
+    // The scope has to survive TWICE, and the third clause's variables must be projectable.
+    let store = scope_store();
+    let q = "MATCH (a:P)-[:E]->(q:P) MATCH (b:P WHERE b.k > 1)-[:E]->(q) \
+             MATCH (c:P WHERE c.k = 0)-[:E]->(q) RETURN a.k AS ak, c.k AS ck";
+    let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
+    let out = run(&plan, &store);
+    assert_eq!(out.rows.len(), 3);
+    for row in out.rows.iter() {
+        assert_eq!(format!("{:?}", row[1]), format!("{:?}", Value::Num(0.0)));
+    }
+}
+
+#[test]
+fn a_node_only_continuing_match_with_an_inline_where() {
+    // No segment at all on the continuing pattern — a bare node with a predicate.
+    let store = scope_store();
+    let q = "MATCH (a:P)-[:E]->(q:P) MATCH (b:P WHERE b.k > 1) RETURN count(*) AS c";
+    // 3 pattern rows x 2 qualifying nodes. TWO, not one: the shared vertex carries k = 9, which
+    // also passes `k > 1` — written as 1 first, and the test said so. The oracle below is what
+    // settles it rather than the arithmetic in this comment.
+    assert_eq!(scope_count(&store, q), 6.0);
+    let oracle = "MATCH (a:P)-[:E]->(q:P), (b:P WHERE b.k > 1) RETURN count(*) AS c";
+    assert_eq!(scope_count(&store, oracle), 6.0);
+}
+
+#[test]
+fn a_with_boundary_before_a_continuing_match_with_an_inline_where() {
+    // `WITH` rebinds the scope to its carried columns, a different path into the same site.
+    let store = scope_store();
+    let q = "MATCH (a:P)-[:E]->(q:P) WITH q AS q MATCH (b:P WHERE b.k > 1)-[:E]->(q) \
+             RETURN count(*) AS c";
+    assert_eq!(scope_count(&store, q), 3.0);
+}
+
+#[test]
+fn a_quantified_continuing_pattern_with_an_inline_where_keeps_the_scope() {
+    // Two of the five clobber sites are in the QUANTIFIED branches, and nothing reached them
+    // until this test existed: mutation showed both restores could be removed with the suite
+    // still green. A `{1,2}` continuing pattern with a predicate on its landing node.
+    let store = scope_store();
+    let q = "MATCH (a:P)-[:E]->(q:P) MATCH (b:P)-[:E]->{1,2}(z:P WHERE z.k = 9) \
+             RETURN count(*) AS c";
+    let comma = "MATCH (a:P)-[:E]->(q:P), (b:P)-[:E]->{1,2}(z:P WHERE z.k = 9) \
+                 RETURN count(*) AS c";
+    // The comma spelling never reached the clobber, so it is the oracle for whatever the right
+    // number is — the point is that the two spellings agree.
+    assert_eq!(scope_count(&store, q), scope_count(&store, comma));
+    assert!(
+        scope_count(&store, q) > 0.0,
+        "the fixture must produce rows"
+    );
+}
+
+#[test]
+fn a_quantified_continuing_pattern_with_a_per_hop_edge_where() {
+    // The other quantified site: a per-hop `WHERE` on the repeated edge.
+    let nd = concat!(
+        "{\"type\":\"node\",\"id\":\"s\",\"labels\":[\"P\"],\"properties\":{\"k\":0}}\n",
+        "{\"type\":\"node\",\"id\":\"m\",\"labels\":[\"P\"],\"properties\":{\"k\":1}}\n",
+        "{\"type\":\"node\",\"id\":\"h\",\"labels\":[\"P\"],\"properties\":{\"k\":9}}\n",
+        "{\"type\":\"edge\",\"id\":\"e0\",\"labels\":[\"E\"],\"from\":\"s\",\"to\":\"m\",\"properties\":{\"w\":5}}\n",
+        "{\"type\":\"edge\",\"id\":\"e1\",\"labels\":[\"E\"],\"from\":\"m\",\"to\":\"h\",\"properties\":{\"w\":5}}\n",
+    );
+    let store = crate::ndjson::from_ndjson(nd).unwrap();
+    let q = "MATCH (a:P)-[:E]->(q:P) MATCH (b:P)-[e:E WHERE e.w >= 0]->{1,2}(z:P) \
+             RETURN count(*) AS c";
+    let comma = "MATCH (a:P)-[:E]->(q:P), (b:P)-[e:E WHERE e.w >= 0]->{1,2}(z:P) \
+                 RETURN count(*) AS c";
+    assert_eq!(scope_count(&store, q), scope_count(&store, comma));
+    assert!(
+        scope_count(&store, q) > 0.0,
+        "the fixture must produce rows"
+    );
+}

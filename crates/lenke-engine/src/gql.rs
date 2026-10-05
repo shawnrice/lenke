@@ -3056,8 +3056,19 @@ impl Parser {
                     }
                     plan = node_prop_filters(plan, from, v2_props);
                     if let Some(r) = v2_where {
-                        self.scope = scope.clone();
-                        plan = plan.filter(self.parse_captured_where(r)?);
+                        // Resolve against the CHAIN's scope, then put the caller's back —
+                        // leaking it out joined the wrong slots (see `match_continue`, item 157).
+                        //
+                        // UNLIKE the three sites that fix a measured wrong answer, this one is
+                        // for CONSISTENCY: mutation could not reach it, so removing the restore
+                        // here leaves the whole suite green. It is kept because two of its
+                        // siblings are load-bearing and an inconsistent pattern is the thing
+                        // that produced this bug — not because a test proves it matters.
+                        let saved_scope = std::mem::replace(&mut self.scope, scope.clone());
+                        let pred = self.parse_captured_where(r);
+
+                        self.scope = saved_scope;
+                        plan = plan.filter(pred?);
                     }
                     continue;
                 }
@@ -3114,8 +3125,14 @@ impl Parser {
                 }
                 plan = node_prop_filters(plan, from, v2_props);
                 if let Some(r) = v2_where {
-                    self.scope = scope.clone();
-                    plan = plan.filter(self.parse_captured_where(r)?);
+                    // Same restore as above: an inline WHERE on a landing node must not leave
+                    // the chain's scope in `self.scope` for the caller to join on (item 157).
+                    // Also unreachable by mutation, and kept for the same consistency reason.
+                    let saved_scope = std::mem::replace(&mut self.scope, scope.clone());
+                    let pred = self.parse_captured_where(r);
+
+                    self.scope = saved_scope;
+                    plan = plan.filter(pred?);
                 }
                 continue;
             }
@@ -3263,8 +3280,14 @@ impl Parser {
                 // (and any variable bound so far), applied with both the edge and
                 // the landing node in scope.
                 if let Some(r) = rel.where_range {
-                    self.scope = scope.clone();
-                    plan = plan.filter(self.parse_captured_where(r)?);
+                    // Restore the caller's scope: see `match_continue` (item 157). Leaving the
+                    // chain's scope in `self.scope` made the caller's join key pair the chain's
+                    // own slots with themselves.
+                    let saved_scope = std::mem::replace(&mut self.scope, scope.clone());
+                    let pred = self.parse_captured_where(r);
+
+                    self.scope = saved_scope;
+                    plan = plan.filter(pred?);
                 }
                 from = node_slot;
                 if let Some(existing) = repeat_eq {
@@ -3312,8 +3335,15 @@ impl Parser {
             // Inline `WHERE` on the landing node — an arbitrary predicate, applied
             // with the node (and everything bound so far) in scope.
             if let Some(r) = v2_where {
-                self.scope = scope.clone();
-                plan = plan.filter(self.parse_captured_where(r)?);
+                // The LANDING node's inline WHERE — the site that made
+                // `MATCH (a:P)-[:E]->(q:P) MATCH (b:P)-[:E]->(z:P WHERE z.k = 9)` count 4
+                // instead of 16, by leaving the chain's scope behind for the caller's join
+                // key to match against itself (item 157).
+                let saved_scope = std::mem::replace(&mut self.scope, scope.clone());
+                let pred = self.parse_captured_where(r);
+
+                self.scope = saved_scope;
+                plan = plan.filter(pred?);
             }
         }
         Ok(plan)
@@ -4116,8 +4146,26 @@ impl Parser {
                 seed = seed.filter(lower_label_expr(&le, 0));
             }
             if let Some(r) = start_where {
-                self.scope = sub_scope.clone();
-                seed = seed.filter(self.parse_captured_where(r)?);
+                // The predicate is resolved in the SUB-pattern's slot space, because it is
+                // filtering that pattern's own seed — but the outer scope must be put BACK
+                // afterwards. Assigning `self.scope` and leaving it was a silent wrong answer:
+                // the join key three lines below looks each sub variable up in `self.scope`,
+                // so with the outer scope gone every sub slot matched ITSELF and the key came
+                // out as `[(0, 0), (1, 1)]` — joining `a` to `b` as well as `q` to `q`.
+                //
+                //   MATCH (a:P)-[:E]->(q:P) MATCH (b:P WHERE b.k > 1)-[:E]->(q) RETURN count(*)
+                //
+                // answered 1 instead of 3 (the pairs where `a` happened to equal `b`), and the
+                // enumerating spelling raised `unknown variable a` because the outer names were
+                // gone by the time RETURN was parsed. The comma spelling, the inline-props
+                // spelling and a predicate on the FIRST pattern were all unaffected, which is
+                // why it survived: only a continuing MATCH whose fresh start carries an inline
+                // WHERE reaches this line (audit item 157).
+                let saved_scope = std::mem::replace(&mut self.scope, sub_scope.clone());
+                let pred = self.parse_captured_where(r);
+
+                self.scope = saved_scope;
+                seed = seed.filter(pred?);
             }
             let p2 = self.extend_chain(seed, &mut sub_scope, &mut sub_slots, 0)?;
             let width = self.slots;
