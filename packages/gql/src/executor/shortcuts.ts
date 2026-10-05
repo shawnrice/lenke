@@ -46,6 +46,7 @@ import {
   valueKey,
 } from '../executor.js';
 import {
+  candidateCount,
   candidateVertexSource,
   candidateVertices,
   expand,
@@ -326,6 +327,8 @@ type HopScan = {
   /** Inline endpoint constraints, applied via `satisfies`. See `InlinePred`. */
   inNear?: InlinePred;
   inFar?: InlinePred;
+  /** The COMPILED start node, carrying the seed hints that let the start walk seek. */
+  cstart?: CNode;
 };
 
 /** Apply an endpoint's inline constraint, binding the node's own variable first. */
@@ -437,8 +440,40 @@ const degreeOfTypes = (
   return deg;
 };
 
+/**
+ * The start side's seed set for a per-vertex hop walk, or `undefined` to walk the label bucket.
+ *
+ * EXPORTED only so the choice can be tested directly. Seeking is answer-preserving — that is the
+ * point of it — so no result-based test can tell a seek from a walk, and a mutant that simply
+ * never seeks survives every one of them. Items 167, 168, 172 and 173 hit the same wall; 172 and
+ * 173 escaped it by testing an exported decision, which is what this is.
+ *
+ * Mirrors `buildNodeCount`'s chooser exactly, including declining a seek WIDER than the bucket
+ * (an indexed key can be common outside this label). Both are correct; only the cost differs.
+ */
+export const hopSeek = (
+  graph: Graph,
+  cstart: CNode | undefined,
+  pa: LabelExpr | undefined,
+  env: EvalEnv,
+): ReadonlySet<Vertex> | undefined => {
+  if (cstart === undefined) {
+    return undefined;
+  }
+
+  let best: SeedCandidate | undefined;
+
+  for (const candidate of indexCandidates(graph, cstart, env)) {
+    if (best === undefined || candidate.count < best.count) {
+      best = candidate;
+    }
+  }
+
+  return best !== undefined && best.count < candidateCount(graph, pa) ? best.build() : undefined;
+};
+
 const startOnlyHopCount = (scan: HopScan, startVar: string | undefined): number => {
-  const { graph, params, pred, pa, out, types, inNear } = scan;
+  const { graph, params, pred, pa, out, types, inNear, cstart } = scan;
   const binding = new Map<string, unknown>();
   const env: EvalEnv = { binding, params, graph };
   const index = out ? graph.edgesFromByLabel : graph.edgesToByLabel;
@@ -458,7 +493,24 @@ const startOnlyHopCount = (scan: HopScan, startVar: string | undefined): number 
   //
   // Iterating vertices also removes the old `v == null` guard: the edge index can hold an id
   // whose vertex is gone, and that entry contributed 0 either way.
-  for (const v of candidateVertexSource(graph, pa)) {
+  //
+  // AN INDEX SEEK FIRST, when the graph offers one narrower than the label bucket. Item 149
+  // found and fixed exactly this for the NODE tally, and recorded the signature it leaves in
+  // `bun run bench:usage`: a row whose indexed and unindexed columns are the same number.
+  // The one-hop walk was never given the same treatment, so an anchored hop count scanned the
+  // whole label while the general path seeded. Four spellings of one question, 20,000 users,
+  // `name` indexed (audit item 176):
+  //
+  //   (u:User)-[:FOLLOWS]->(x) WHERE u.name = $n RETURN count(*)       420.6us  <- this walk
+  //   (u:User)-[:FOLLOWS]->(x) WHERE u.name = $n RETURN x.name          15.5us
+  //   (u:User)-[:FOLLOWS]->(x) WHERE u.name = $n RETURN count(x.name)   17.8us
+  //   (a:User) WHERE a.name = $n MATCH (a)-[:FOLLOWS]->(x) count(*)     21.5us
+  //
+  // Sound for the reason it is sound in `buildNodeCount`: a hint lifted from an AND-chain is a
+  // NECESSARY condition, so the seeded set is a SUPERSET of the matches, and the label check,
+  // the inline constraint and the predicate below all re-validate every candidate — the same
+  // three tests the bucket walk applies, in the same order.
+  for (const v of hopSeek(graph, cstart, pa, env) ?? candidateVertexSource(graph, pa)) {
     if (!matchesLabel(v, pa)) {
       continue;
     }
@@ -686,9 +738,10 @@ const buildOneHopCount = <T>(
   start: NodePattern,
   rowOf: (n: number) => T,
   pred?: HopPred,
-  inNear?: InlinePred,
-  inFar?: InlinePred,
+  /** The endpoint extras, bundled: three separate parameters exceeded the arity limit. */
+  ends?: { inNear?: InlinePred; inFar?: InlinePred; cstart?: CNode },
 ): CountOf<T> | null => {
+  const { inNear, inFar, cstart } = ends ?? {};
   const { rel, node } = seg;
 
   // `plainNode(node)` is deliberately NOT required: an inline endpoint constraint
@@ -740,7 +793,7 @@ const buildOneHopCount = <T>(
       const pa = vacuousLabel(graph, aLabel) ? undefined : aLabel;
       const pb = vacuousLabel(graph, bLabel) ? undefined : bLabel;
       const { startVar } = pred;
-      const scan: HopScan = { graph, params, pred, pa, pb, out, types, inNear, inFar };
+      const scan: HopScan = { graph, params, pred, pa, pb, out, types, inNear, inFar, cstart };
 
       // Item 125 carried only `inFar` because it measured routing a start constraint to
       // the TALLY (a full edge scan) and rightly rejected that; the per-vertex path is the
@@ -764,7 +817,22 @@ const buildOneHopCount = <T>(
       const pa = vacuousLabel(graph, aLabel) ? undefined : aLabel;
       const pb = vacuousLabel(graph, bLabel) ? undefined : bLabel;
       const bare: HopPred = { fn: () => true };
-      const scan: HopScan = { graph, params, pred: bare, pa, pb, out, types, inNear, inFar };
+      // `cstart` here too, or the INLINE spelling of an anchored count scans the label while
+      // the clause-`WHERE` spelling seeks — one question costing two different amounts, which
+      // is the gap items 124-125 were about and the one this file keeps re-learning. Caught by
+      // the index-hit test, not by any timing: both spellings answer correctly either way.
+      const scan: HopScan = {
+        graph,
+        params,
+        pred: bare,
+        pa,
+        pb,
+        out,
+        types,
+        inNear,
+        inFar,
+        cstart,
+      };
 
       // The SAME two rules as the clause-`WHERE` branch. A start-only constraint is
       // decided per VERTEX — degree then costs nothing, because the walk reads bucket
@@ -1038,7 +1106,7 @@ const patternCountOf = <T>(
       return null;
     }
 
-    return buildOneHopCount(seg, start, rowOf, pred, inStart, inFar);
+    return buildOneHopCount(seg, start, rowOf, pred, { inNear: inStart, inFar, cstart });
   }
 
   if (segments.length === 2) {
