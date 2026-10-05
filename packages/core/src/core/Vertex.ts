@@ -3,7 +3,7 @@ import { ErrorCode, LenkeError } from '@lenke/errors';
 import { rando, sortedByKey } from '@lenke/utils';
 
 import type { Edge } from './Edge.js';
-import type { Graph, PropBox } from './Graph.js';
+import type { Graph, LabelBox, PropBox } from './Graph.js';
 import { normalizeProperties, validatePropertyKey, validatePropertyValue } from './validate.js';
 
 export type VertexParams = {
@@ -27,6 +27,11 @@ export class Vertex {
   // read costs a field load instead of a string-keyed `Map.get`; see `Graph.elementProperties`
   // for why it is a box and not the bag.
   #box: PropBox | undefined;
+
+  // This element's label box, cached after the first read, for the same reason as `#box`. Kept
+  // EMPTY whenever `#graph` is not the graph this box came from, which is what preserves the
+  // throw on a detached vertex — see `get labels`.
+  #lbox: LabelBox | undefined;
 
   static from(params: VertexParams): Vertex {
     return new Vertex(params);
@@ -55,9 +60,10 @@ export class Vertex {
 
   set graph(graph: Graph) {
     this.#graph = graph;
-    // The cached box belongs to the PREVIOUS graph's map, so moving graphs must drop it or the
-    // element would read the old graph's properties.
+    // The cached boxes belong to the PREVIOUS graph's maps, so moving graphs must drop them or
+    // the element would read the old graph's properties and labels.
     this.#box = undefined;
+    this.#lbox = undefined;
   }
 
   get id(): string {
@@ -80,11 +86,33 @@ export class Vertex {
   // getter actually costs is the string-keyed `Map.get` and the `Set` the caller then
   // iterates, neither of which the rewrite touched.
   get labels(): Set<string> {
-    return this.#graph!.elementLabels.get(this.id) ?? new Set();
+    // The label box, cached on first read exactly as `#box` is for properties, which is what
+    // takes the string-keyed `Map.get` off this path (audit item 162).
+    //
+    // A DETACHED vertex has no cache — `evict` and `set graph` both clear it — so it still
+    // dereferences a null graph here and throws the raw `TypeError` it always threw. `Edge`'s
+    // twin returns an empty set instead; the two have never agreed, and this keeps both.
+    this.#lbox ??= this.#graph!.elementLabels.get(this.id);
+
+    return this.#lbox?.set ?? new Set();
   }
 
   set labels(labels: string[] | Set<string>) {
-    this.#graph!.elementLabels.set(this.id, new Set(labels));
+    const next = new Set(labels);
+
+    // Already holding the box? Then there is nothing to look up — and the box is always the
+    // CURRENT graph's, because `set graph` and `evict` are the only ways to leave one and both
+    // clear it. This is what keeps a re-write off the map entirely (a 200,000-element re-write
+    // measured 32.0ms through the funnel against 29.9ms for the old single `Map.set`).
+    if (this.#lbox) {
+      this.#lbox.set = next;
+
+      return;
+    }
+
+    // Otherwise through the graph's funnel, which mutates the box rather than replacing the map
+    // entry, so another instance for this id that has already cached the box sees the write.
+    this.#graph!.commitElementLabels(this.id, next);
   }
 
   /**
@@ -328,6 +356,9 @@ export class Vertex {
 
   evict(): void {
     this.#graph = null;
+    // Dropping the label box is what keeps `get labels` throwing on an evicted vertex: with no
+    // cache it dereferences the now-null graph, exactly as it did before the box existed.
+    this.#lbox = undefined;
   }
 
   edgesFromByLabel(label: string): Set<Edge> {

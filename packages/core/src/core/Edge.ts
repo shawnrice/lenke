@@ -2,7 +2,7 @@ import { EmitterEvent } from '@lenke/emitter';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 import { rando, sortedByKey } from '@lenke/utils';
 
-import type { Graph, PropBox } from './Graph.js';
+import type { Graph, LabelBox, PropBox } from './Graph.js';
 import { normalizeProperties, validatePropertyKey, validatePropertyValue } from './validate.js';
 import { Vertex } from './Vertex.js';
 
@@ -25,6 +25,9 @@ export class Edge {
   // read costs a field load instead of a string-keyed `Map.get`; see `Graph.elementProperties`
   // for why it is a box and not the bag.
   #box: PropBox | undefined;
+
+  // This element's label box, cached after the first read, for the same reason as `#box`.
+  #lbox: LabelBox | undefined;
 
   /**
    * TypeCheck if something is an `Edge`
@@ -55,9 +58,10 @@ export class Edge {
 
   set graph(graph: Graph) {
     this.#graph = graph;
-    // The cached box belongs to the PREVIOUS graph's map, so moving graphs must drop it or the
-    // element would read the old graph's properties.
+    // The cached boxes belong to the PREVIOUS graph's maps, so moving graphs must drop them or
+    // the element would read the old graph's properties and labels.
     this.#box = undefined;
+    this.#lbox = undefined;
   }
 
   get from(): Vertex {
@@ -86,11 +90,27 @@ export class Edge {
   }
 
   get labels(): Set<string> {
-    return this.#graph?.elementLabels.get(this.id) ?? new Set();
+    // The label box, cached on first read exactly as `#box` is for properties (audit item 162).
+    // Unlike `Vertex`'s twin this tolerates a detached edge and reads as empty, which is what it
+    // has always done — the `?.` here is the whole difference between the two.
+    this.#lbox ??= this.#graph?.elementLabels.get(this.id);
+
+    return this.#lbox?.set ?? new Set();
   }
 
   set labels(labels: string[] | Set<string>) {
-    this.#graph!.elementLabels.set(this.id, new Set(labels));
+    const next = new Set(labels);
+
+    // Already holding the box? Then there is nothing to look up — see `Vertex`'s twin.
+    if (this.#lbox) {
+      this.#lbox.set = next;
+
+      return;
+    }
+
+    // Otherwise through the graph's funnel, which mutates the box rather than replacing the map
+    // entry, so another instance for this id that has already cached the box sees the write.
+    this.#graph!.commitElementLabels(this.id, next);
   }
 
   /**
@@ -315,6 +335,8 @@ export class Edge {
    */
   evict(): void {
     this.#graph = null;
+    // Symmetrical with `Vertex.evict`: the box belonged to a graph this edge has left.
+    this.#lbox = undefined;
   }
 
   toJSON(): Record<string, unknown> {

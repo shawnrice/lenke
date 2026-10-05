@@ -35,6 +35,16 @@ type AddEdgeArgs = {
  */
 export type PropBox = { bag: Record<string, unknown> };
 
+/**
+ * A mutable holder for one element's label set — the {@link PropBox} treatment for labels.
+ *
+ * `set` is replaced, never mutated in place by the write paths, which is what keeps a reference
+ * a caller took earlier behaving exactly as it did when the map entry itself was replaced: it
+ * goes stale. The box exists only so an element can hold a direct reference to its own label
+ * state; see {@link Graph.elementLabels}.
+ */
+export type LabelBox = { set: Set<string> };
+
 /** Which element an index covers (see {@link Graph.createIndex}). */
 export type IndexTarget = 'vertex' | 'edge';
 
@@ -679,7 +689,23 @@ export class Graph {
   edgesFromByLabel: Map<string, Map<string, Set<Edge>>>;
   edgesToByLabel: Map<string, Map<string, Set<Edge>>>;
 
-  elementLabels: Map<string, Set<string>>;
+  /**
+   * Per-element label state, held in a BOX rather than as the `Set` itself — the same
+   * indirection {@link Graph.elementProperties} carries, for the same reason.
+   *
+   * An element caches its own box, so `v.labels` is a field load instead of a STRING-KEYED
+   * `Map.get` into a map with one entry per element. Measured over 200,000 vertices with
+   * 1,000,000 edges resident, testing one label on each — 18.84ms through the map against
+   * 2.71ms off a cached reference, with the lookup alone accounting for 12.71ms of it
+   * (audit item 162). That is the cost this getter's own rejected-lever note had already
+   * named and left unexploited.
+   *
+   * Every write goes through {@link Graph.commitElementLabels}, which REPLACES `box.set`
+   * rather than the map entry. Replacing the set (not mutating it) is load-bearing: a caller
+   * that held an earlier `v.labels` keeps seeing the labels as of when it took the reference,
+   * which is what replacing the map entry did before.
+   */
+  elementLabels: Map<string, LabelBox>;
   /**
    * Per-element property state, held in a BOX rather than as the bag itself.
    *
@@ -1504,10 +1530,29 @@ export class Graph {
     return vertex;
   };
 
+  /**
+   * The single funnel for every label write — the two element setters and the four
+   * add/remove-label methods here.
+   *
+   * It mutates the BOX rather than the map entry, so an element holding a cached reference to
+   * its box (which is how `v.labels` avoids a lookup) sees the write. Two attached `Vertex`
+   * instances can share one id, so replacing the map entry instead would leave whichever of
+   * them read first reading a detached set — silently.
+   */
+  commitElementLabels = (id: string, next: Set<string>): void => {
+    const box = this.elementLabels.get(id);
+
+    if (box) {
+      box.set = next;
+    } else {
+      this.elementLabels.set(id, { set: next });
+    }
+  };
+
   public addLabelToVertex = (label: string, vertex: Vertex): Vertex => {
     validateLabel(label);
 
-    const hadLabel = (this.elementLabels.get(vertex.id) ?? new Set()).has(label);
+    const hadLabel = (this.elementLabels.get(vertex.id)?.set ?? new Set()).has(label);
 
     // Adding a label brings its required keys into force for this vertex. Inside
     // a transaction the check defers to commit (via the touched set).
@@ -1522,7 +1567,7 @@ export class Graph {
       // addLabelToVertex and one wrapped in a transaction agree. Checked BEFORE the
       // mutation, so a violation leaves the graph untouched (properties don't change,
       // so the existing labels' validators still hold — only the new label's apply).
-      const augmented = [...new Set([...(this.elementLabels.get(vertex.id) ?? []), label])];
+      const augmented = [...new Set([...(this.elementLabels.get(vertex.id)?.set ?? []), label])];
 
       const missing = this.missingRequired(augmented, vertex.properties);
 
@@ -1563,9 +1608,9 @@ export class Graph {
     this.emit(new EmitterEvent('@graph/LabelAddedToVertex', { label, vertex }));
 
     this.indexVertexLabel(label, vertex);
-    const next = new Set(this.elementLabels.get(vertex.id) ?? []);
+    const next = new Set(this.elementLabels.get(vertex.id)?.set ?? []);
     next.add(label);
-    this.elementLabels.set(vertex.id, next);
+    this.commitElementLabels(vertex.id, next);
 
     if (!hadLabel) {
       // Re-resolve by id at replay — never capture the instance. A later write may
@@ -1587,14 +1632,14 @@ export class Graph {
   };
 
   public removeLabelFromVertex = (label: string, vertex: Vertex): Vertex => {
-    const hadLabel = (this.elementLabels.get(vertex.id) ?? new Set()).has(label);
+    const hadLabel = (this.elementLabels.get(vertex.id)?.set ?? new Set()).has(label);
 
     this.emit(new EmitterEvent('@graph/LabelRemovedFromVertex', { label, vertex }));
 
     this.deIndexVertexLabel(label, vertex);
-    const next = new Set(this.elementLabels.get(vertex.id) ?? []);
+    const next = new Set(this.elementLabels.get(vertex.id)?.set ?? []);
     next.delete(label);
-    this.elementLabels.set(vertex.id, next);
+    this.commitElementLabels(vertex.id, next);
 
     if (hadLabel) {
       // Re-resolve by id at replay — never capture the instance. A later write may
@@ -1870,9 +1915,9 @@ export class Graph {
 
     this.emit(new EmitterEvent('@graph/LabelAddedToEdge', { label, edge }));
 
-    const next = new Set(this.elementLabels.get(edge.id) ?? []);
+    const next = new Set(this.elementLabels.get(edge.id)?.set ?? []);
     next.add(label);
-    this.elementLabels.set(edge.id, next);
+    this.commitElementLabels(edge.id, next);
 
     // 1 → 2 types: this edge is now in two buckets, so the O(1) sum is no
     // longer safe anywhere in the process.
@@ -1906,9 +1951,9 @@ export class Graph {
 
     this.emit(new EmitterEvent('@graph/LabelRemovedFromEdge', { label, edge }));
 
-    const next = new Set(this.elementLabels.get(edge.id) ?? []);
+    const next = new Set(this.elementLabels.get(edge.id)?.set ?? []);
     next.delete(label);
-    this.elementLabels.set(edge.id, next);
+    this.commitElementLabels(edge.id, next);
 
     // 2 → 1 types: this edge is back in a single bucket, re-arming the O(1) sum
     // once no other edge is multi-type.
