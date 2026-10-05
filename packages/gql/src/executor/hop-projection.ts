@@ -1157,9 +1157,16 @@ type DirectHop = { forward: boolean; type: string };
  *     SOME source; it cannot say the source matched a label. A vacuous start label — one every
  *     vertex carries — is the case where that distinction does not exist, and it is a RUNTIME
  *     property of the graph, so this is chosen per call exactly as the count walks are.
- *   - **a sort must impose the order.** First-seen order differs between the two walks, and
- *     that order is observable. Under a sort it is not: ties are rows with the same single
- *     projected value, so they are identical rows.
+ * Item 195 ALSO required a sort, because the two walks meet elements in different orders and an
+ * un-ordered query's row order was being treated as a contract. **That requirement is gone (item
+ * 198), by decision**: row order without an `ORDER BY` is UNSPECIFIED in this engine, the same as
+ * SQL without one — so the far walk may reorder an un-ordered dedup, and the tests that pinned
+ * that order now compare as multisets and say why. A query WITH a sort is unaffected either way,
+ * since the sort determines the order and ties are rows with the same single projected value.
+ *
+ * What this does NOT touch: the grouped count's FIRST-SEEN group order, which the code calls a
+ * pinned contract both engines keep, and a sorted query's order. Only the row order of an
+ * explicitly un-ordered dedup moved.
  *
  * What it does NOT need, unlike the counting twin: single-type edges. That twin sums bucket
  * SIZES, so an edge in two buckets would be counted twice; this one only asks whether a bucket
@@ -1169,13 +1176,9 @@ const farDrivenFits = (
   graph: Graph,
   direct: DirectHop | undefined,
   onStart: boolean,
-  sorted: boolean,
   startLabel: LabelExpr | undefined,
 ): boolean =>
-  direct !== undefined &&
-  !onStart &&
-  sorted &&
-  (startLabel === undefined || vacuousLabel(graph, startLabel));
+  direct !== undefined && !onStart && (startLabel === undefined || vacuousLabel(graph, startLabel));
 
 /**
  * Module scope, not inline in the returned closure, which is the hot one: this file has
@@ -1324,8 +1327,7 @@ export const detectDistinctCount = (
       }
     };
 
-    // `sorted: true` because a COUNT has no observable order for the far walk to change.
-    if (farDrivenFits(graph, direct, onStart, true, startLabel)) {
+    if (farDrivenFits(graph, direct, onStart, startLabel)) {
       walkFarSide(graph, plan, take);
     } else {
       walkStartSide(graph, plan, take);
@@ -1393,7 +1395,7 @@ export const detectDistinctProjection = (
     // Which walk answers this? Both live at module scope; the closure only dispatches. The
     // FAR-driven one asks one adjacency lookup per far VERTEX where the start-driven one
     // resolves an endpoint per EDGE — see `farDrivenFits` for the two conditions.
-    if (farDrivenFits(graph, direct, onStart, sort !== undefined, startLabel)) {
+    if (farDrivenFits(graph, direct, onStart, startLabel)) {
       walkFarSide(graph, plan, take);
     } else {
       walkStartSide(graph, plan, take);

@@ -121,12 +121,33 @@ describe('distinct projection', () => {
     expect(fast).toEqual(slow);
   });
 
-  test('a reversed hop and an untyped hop agree', () => {
+  test('a reversed hop and an untyped hop agree on the VALUES', () => {
     const g = build();
+    // Compared as a MULTISET, not in order. Item 198 let the far-driven walk take an un-ordered
+    // dedup, which meets the far vertices in a different order than the start-driven walk does —
+    // and row order without an `ORDER BY` is unspecified in this engine, the same as SQL without
+    // one. The reversed hop here is the spelling whose order actually moved.
+    //
+    // Where order IS specified it is still asserted in order: see the sorted cases below and in
+    // `order-by-on-dedup.test.ts`.
+    const sorted = (rows: unknown): unknown[] =>
+      (rows as Array<{ a: unknown }>).map((r) => JSON.stringify(r.a)).sort();
 
     for (const q of [
       'MATCH (x:P)<-[:T]-(w) RETURN DISTINCT w.k AS a',
       'MATCH (x:P)-[]->(w) RETURN DISTINCT w.k AS a',
+    ]) {
+      expect(sorted(query(g, q))).toEqual(sorted(viaGeneral(g, q)));
+    }
+  });
+
+  test('a sorted dedup over a hop still matches the general path IN ORDER', () => {
+    const g = build();
+    // The other half of item 198's decision: unspecified only means unspecified WITHOUT a sort.
+
+    for (const q of [
+      'MATCH (x:P)<-[:T]-(w) RETURN DISTINCT w.k AS a ORDER BY a',
+      'MATCH (x:P)-[:T]->(w) RETURN DISTINCT w.k AS a ORDER BY a DESC',
     ]) {
       expect(query(g, q)).toEqual(viaGeneral(g, q));
     }

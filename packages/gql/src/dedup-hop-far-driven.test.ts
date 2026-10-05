@@ -15,8 +15,9 @@ import { query } from './index.js';
 //   - the START side must be UNCONSTRAINED, because an in-edge says a far vertex is reached from
 //     SOME source and cannot say the source matched a label. A vacuous start label — one every
 //     vertex carries — is the case where that distinction does not exist.
-//   - a SORT must impose the order, because first-seen order differs between the two walks and
-//     that order is observable without one.
+//   - (item 195 also required a SORT; item 198 removed that by decision — row order without an
+//     `ORDER BY` is unspecified in this engine, so the far walk may reorder an un-ordered dedup.
+//     A sorted query is unaffected either way.)
 
 /** Every vertex carries `P`, so the start label is VACUOUS and the far-driven walk is allowed. */
 const vacuous = (): Graph => {
@@ -161,13 +162,23 @@ describe('the far-driven walk', () => {
   });
 
   describe('shapes that keep the start-driven walk', () => {
-    test('no sort: the order is first-seen, which the far walk would change', () => {
+    test('no sort: the far walk IS taken, and the VALUES are what is specified', () => {
+      // CORRECTED in item 198. This test used to pin the row order and assert the far walk was
+      // declined without a sort. Both halves are now wrong: by decision, row order without an
+      // `ORDER BY` is unspecified, so the far walk takes this too.
+      //
+      // Worth recording that the old assertion PASSED for the wrong reason even after the
+      // change: this fixture's far vertices happen to be visited in the same relative order by
+      // either walk, so pinning the order proved nothing here. Values as a multiset is the
+      // claim that actually holds.
       const q = 'MATCH (a:P)-[:T]->(f) RETURN DISTINCT f.n AS x';
+      const vals = (rows: unknown): unknown[] =>
+        (rows as Array<{ x: number }>).map((r) => r.x).sort((p, n) => p - n);
 
-      expect(query(g, q)).toEqual(viaGeneral(g, q));
-      // a is visited before b, and a's bucket is [y, z] — so 30 precedes 20, which is NOT the
-      // far-bucket order the far-driven walk would produce.
-      expect(query(g, q)).toEqual([{ x: 30 }, { x: 20 }]);
+      expect(vals(query(g, q))).toEqual([20, 30]);
+      expect(vals(query(g, q))).toEqual(vals(viaGeneral(g, q)));
+      // With a sort the order IS specified, and still asserted in order.
+      expect(query(g, `${q} ORDER BY x`)).toEqual([{ x: 20 }, { x: 30 }]);
     });
 
     test('keyed on the START end', () => {
