@@ -3658,6 +3658,67 @@ const pushWhereIntoNode = (clause: Extract<Clause, { kind: 'match' }>): typeof c
  * inline spelling made `plainNode` DECLINE the count shortcut (audit item 124) — a defect fixed
  * in item 125. The same comparison now reads 3.207 clause against 2.248 inline. See item 154.
  */
+/**
+ * Compile a seed gate that evaluates the SUBQUERY-FREE conjuncts first and stops at the first
+ * one that is not cleanly TRUE.
+ *
+ * The gate's only output is keep/skip, and it keeps only on a clean TRUE (`seedGate` in
+ * `executor/matching.ts`), so "stop at the first non-TRUE" is the gate's own semantics rather
+ * than a reordering of `AND`: a three-valued conjunction is TRUE only when every conjunct is.
+ * What the order buys is that a `EXISTS {…}` / `COUNT {…}` / `VALUE {…}` conjunct — which runs a
+ * correlated sub-pattern per START VERTEX here, and runs AGAIN per surviving row in the clause
+ * `WHERE`, since this is a prefilter and does not replace it — is not reached for a vertex a
+ * cheap conjunct already rejected. Measured on 20,000 users at degree 2:
+ *
+ *   MATCH (u:User)-[:FOLLOWS]->(w) WHERE u.name = $n AND EXISTS { (u)-[:FOLLOWS]->{2,4}(u) }
+ *
+ * ran 302.01ms against 2.83ms for the inline-anchor spelling — 107x, the hop twin of item 174.
+ *
+ * It is NOT free, and the cost is which row raises. Today a cleanly-FALSE cheap conjunct beside
+ * a FAULTING subquery propagates that fault, `seedGate` swallows it and KEEPS the seed, and the
+ * clause `WHERE` then raises per row. Skipping the seed instead stops that raise — and both
+ * cases it changes were already TS-vs-native divergences, measured on this shape:
+ *
+ *   selected vertex              TS before   TS after   native
+ *   none matches the cheap one   raises      []         []
+ *   a NON-faulting vertex        raises      1 row      1 row
+ *   the FAULTING vertex itself   raises      raises     raises
+ *
+ * The middle row is the one worth naming: TS raised while native returned a NON-EMPTY result,
+ * because an unrelated vertex's subquery faulted and the swallow pushed it into the clause
+ * `WHERE`. The divergence registry's single entry deliberately does not cover an error against a
+ * non-empty result, so that case was uncovered. Both now match native.
+ *
+ * The alternative — holding the subquery conjunct out of the prefilter altogether — was priced
+ * and rejected: a vertex the cheap conjunct accepts but the subquery rejects would pay `degree`
+ * clause evaluations in place of one prefilter evaluation, a regression by a factor of the degree
+ * on a non-selective cheap conjunct. Ordering costs that shape nothing, because a conjunct that
+ * is always TRUE never short-circuits anything.
+ */
+const gatePredicate = (where: Expr): CompiledExpr => {
+  const conjuncts: readonly Expr[] = where.kind === 'and' ? where.items : [where];
+  const cheap = conjuncts.filter((c) => !hasSubquery(c));
+  const costly = conjuncts.filter(hasSubquery);
+
+  // Nothing to order: no subquery to defer, or nothing cheap to defer it behind.
+  if (cheap.length === 0 || costly.length === 0) {
+    return compileExpr(where);
+  }
+
+  const parts = [...cheap, ...costly].map(compileExpr);
+
+  return (env) => {
+    for (const part of parts) {
+      // A fault propagates, exactly as it does today — `seedGate` catches it and keeps the seed.
+      if (asTruth(part(env)) !== true) {
+        return false;
+      }
+    }
+
+    return true;
+  };
+};
+
 const seedPrefilter = (
   clause: Extract<Clause, { kind: 'match' }>,
 ): { readonly var: string; readonly pred: CompiledExpr } | undefined => {
@@ -3683,7 +3744,7 @@ const seedPrefilter = (
     }
   }
 
-  return { var: name, pred: compileExpr(where) };
+  return { var: name, pred: gatePredicate(where) };
 };
 
 const compileClause = (rawClause: Clause): CClause => {
