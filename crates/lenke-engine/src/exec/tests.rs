@@ -14186,3 +14186,188 @@ fn cross_page_keeps_the_lineage_of_a_named_path() {
         );
     }
 }
+
+/// Two more row-MULTIPLYING operators learned to cap under a keyless page (audit item 153):
+/// `Unwind` over a single seed row (`FOR x IN [...]`, which plans as a cross join against the
+/// scan) and `OptionalExpand` (a left-outer hop). Both claim the cap returns the same PREFIX
+/// the uncapped plan would, so every test here compares against the unpaged query sliced.
+///
+/// `OptionalExpand`'s licence is its own documented contract — every input row yields at least
+/// one output row — so the fixtures below vary WHICH sources have neighbours. With every source
+/// matching, a left-outer hop and a plain `Expand` are indistinguishable and none of this is
+/// under test.
+#[cfg(test)]
+fn page_store(n: u32, edge_from: &[u32]) -> Store {
+    let mut b = Builder::default();
+    for i in 0..n {
+        b.node(&["User"], &[("k", crate::value::Value::Num(f64::from(i)))]);
+    }
+    for &i in edge_from {
+        b.edge(i, (i + 1) % n, "E");
+    }
+    b.build()
+}
+
+#[cfg(test)]
+fn page_rows(store: &Store, q: &str) -> Vec<String> {
+    let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), store);
+    // `Value` has no `PartialEq` (another crate), so rows compare by debug rendering — enough
+    // to catch a wrong pairing or a dropped row, which is what these guard.
+    run(&plan, store)
+        .rows
+        .iter()
+        .map(|r| format!("{r:?}"))
+        .collect()
+}
+
+#[cfg(test)]
+fn assert_windows(store: &Store, base: &str, windows: &[(usize, Option<usize>)]) {
+    let whole = page_rows(store, base);
+    for &(skip, limit) in windows {
+        let q = match limit {
+            Some(l) => format!("{base} SKIP {skip} LIMIT {l}"),
+            None => format!("{base} SKIP {skip}"),
+        };
+        let end = limit.map_or(whole.len(), |l| (skip + l).min(whole.len()));
+        let want = if skip >= whole.len() {
+            Vec::new()
+        } else {
+            whole[skip..end].to_vec()
+        };
+        assert_eq!(page_rows(store, &q), want, "{q}");
+    }
+}
+
+const PAGE_WINDOWS: &[(usize, Option<usize>)] = &[
+    (0, Some(1)),
+    (0, Some(2)),
+    (0, Some(3)),
+    (0, Some(7)),
+    (1, Some(1)),
+    (1, Some(4)),
+    (2, Some(3)),
+    (0, None),
+    (3, None),
+    (99, Some(2)),
+];
+
+#[test]
+fn unwind_cross_join_pages_to_the_same_prefix() {
+    let store = page_store(5, &[]);
+    assert_windows(
+        &store,
+        "FOR x IN [1, 2, 3] MATCH (u:User) RETURN x AS a, u.k AS b",
+        PAGE_WINDOWS,
+    );
+}
+
+#[test]
+fn unwind_cross_join_with_a_list_longer_than_the_page() {
+    // The list is longer than every window, so the cap binds on the UNWIND side rather than
+    // the scan side — the opposite regime from the test above.
+    let store = page_store(3, &[]);
+    assert_windows(
+        &store,
+        "FOR x IN [1, 2, 3, 4, 5, 6, 7, 8] MATCH (u:User) RETURN x AS a, u.k AS b",
+        PAGE_WINDOWS,
+    );
+}
+
+#[test]
+fn an_empty_list_yields_no_rows_paged_or_not() {
+    // The case that makes capping a GENERAL unwind input unsound: a row whose list is empty
+    // contributes nothing, so the first output row can come from an arbitrarily later input
+    // row. Here it means every window is empty, which a cap that assumed one-row-per-input
+    // would get wrong.
+    let store = page_store(4, &[]);
+    assert!(page_rows(&store, "FOR x IN [] MATCH (u:User) RETURN x AS a, u.k AS b").is_empty());
+    assert!(page_rows(
+        &store,
+        "FOR x IN [] MATCH (u:User) RETURN x AS a, u.k AS b LIMIT 3"
+    )
+    .is_empty());
+}
+
+#[test]
+fn an_unwind_over_a_non_row_input_is_not_capped_and_still_answers() {
+    // `MATCH … FOR …` puts rows under the unwind, so the `Plan::Row` guard declines. The point
+    // is that declining still answers correctly — a cap that fired here could drop rows.
+    let store = page_store(4, &[]);
+    assert_windows(
+        &store,
+        "MATCH (u:User) FOR x IN [1, 2] RETURN u.k AS a, x AS b",
+        PAGE_WINDOWS,
+    );
+}
+
+#[test]
+fn optional_expand_pages_when_the_first_source_hits() {
+    let store = page_store(5, &[0, 1]);
+    assert_windows(
+        &store,
+        "MATCH (u:User) OPTIONAL MATCH (u)-[:E]->(v) RETURN u.k AS a, v.k AS b",
+        PAGE_WINDOWS,
+    );
+}
+
+#[test]
+fn optional_expand_pages_when_the_first_source_has_no_neighbour() {
+    // The arrangement the contract is about: sources 0 and 1 have no neighbour, so the first
+    // two output rows are MISS rows carrying NULL. A cap that quietly dropped a miss row would
+    // shift the whole window, and only a fixture whose FIRST source misses can see it.
+    let store = page_store(5, &[2, 3]);
+    let base = "MATCH (u:User) OPTIONAL MATCH (u)-[:E]->(v) RETURN u.k AS a, v.k AS b";
+    let whole = page_rows(&store, base);
+    assert_eq!(whole.len(), 5, "one row per source, miss rows included");
+    assert_windows(&store, base, PAGE_WINDOWS);
+}
+
+#[test]
+fn optional_expand_pages_with_no_edges_at_all() {
+    // Every row is a miss row. If the cap leaned on there being matches, this is where it
+    // would return nothing.
+    let store = page_store(5, &[]);
+    let base = "MATCH (u:User) OPTIONAL MATCH (u)-[:E]->(v) RETURN u.k AS a, v.k AS b";
+    assert_eq!(page_rows(&store, base).len(), 5);
+    assert_windows(&store, base, PAGE_WINDOWS);
+}
+
+#[test]
+fn optional_expand_pages_through_a_landing_predicate() {
+    // `optional_expand` has a SECOND code path when a landing predicate is present (two
+    // passes, so the predicate can be masked over the whole candidate set before the
+    // left-outer decision). It upholds the same one-row-per-source contract, and the cap
+    // applies to it too — so it needs its own fixture, with the predicate excluding some
+    // matches and turning those sources into misses.
+    let store = page_store(5, &[0, 1, 2, 3, 4]);
+    assert_windows(
+        &store,
+        "MATCH (u:User) OPTIONAL MATCH (u)-[:E]->(v WHERE v.k > 2) RETURN u.k AS a, v.k AS b",
+        PAGE_WINDOWS,
+    );
+}
+
+#[test]
+fn optional_expand_pages_with_the_edge_bound() {
+    // Binding the edge adds a column before the node column, so a truncation that gathered the
+    // wrong number of slots would show up here and not in the unbound spelling.
+    let store = page_store(5, &[0, 2, 4]);
+    assert_windows(
+        &store,
+        "MATCH (u:User) OPTIONAL MATCH (u)-[e:E]->(v) RETURN u.k AS a, v.k AS b",
+        PAGE_WINDOWS,
+    );
+}
+
+#[test]
+fn a_plain_expand_is_still_not_capped() {
+    // A plain `Expand` DROPS a source with no neighbour, so its output row `k` can come from
+    // an arbitrarily later input row and the cap would be unsound. Guarded by answer: with
+    // only sources 3 and 4 carrying edges, the first output row comes from input row 3, which
+    // a one-row cap of the input would miss entirely.
+    let store = page_store(5, &[3, 4]);
+    let base = "MATCH (u:User)-[:E]->(v) RETURN u.k AS a, v.k AS b";
+    let whole = page_rows(&store, base);
+    assert_eq!(whole.len(), 2, "only the two sources with edges");
+    assert_windows(&store, base, PAGE_WINDOWS);
+}

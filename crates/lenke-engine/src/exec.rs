@@ -2436,23 +2436,82 @@ fn pull_capped(
                 // cost this avoids on the very shapes that need it most (a filtered side over
                 // a big bucket), and `pull_capped_stream` is not usable here: it caps by ROWS
                 // OUT of a chain, which for one side of a product is not the same bound.
-                (Some(lb), Some(rb)) => {
-                    let joined = hash_join(&lb, &rb, &[]);
-                    Some(if joined.rows() > cap {
-                        let keep: Vec<usize> = (0..cap).collect();
-                        let mut out =
-                            Batch::of(joined.slots.iter().map(|c| c.gather(&keep)).collect());
-                        out.lineage = joined.lineage.as_ref().map(|l| l.gather(&keep));
-                        out
-                    } else {
-                        joined
-                    })
-                }
+                (Some(lb), Some(rb)) => Some(truncate_batch(hash_join(&lb, &rb, &[]), cap)),
                 _ => None,
             }
         }
+        // `FOR x IN <list>` over a single seed row, for the shape `FOR x IN [...] MATCH (u:L)`:
+        // that plans as a CROSS JOIN of the unwind against the scan, and the join's cap needs
+        // BOTH sides cappable, so without this arm the whole product was built — 2.6ms to
+        // return one row (audit item 153).
+        //
+        // The unwind is evaluated IN FULL and then truncated. So the `Plan::Row` restriction is
+        // a COST guard, not a correctness one, and dropping it is answer-neutral — verified by
+        // mutation, which found the comment that used to claim otherwise. For a `Row` input the
+        // full pull is bounded by the list's own length; over a general input it would pull the
+        // whole upstream chain, which is the cost the cap exists to avoid.
+        //
+        // Why not cap the unwind's INPUT instead, which would bound it properly? Because that
+        // IS unsound: each input row contributes `len(list)` rows and a row whose list is EMPTY
+        // contributes none, so the first output row can come from an arbitrarily later input
+        // row. Bounding the work honestly means teaching `unwind_batch` a row budget, which is
+        // a bigger change than this shape has earned — `FOR x IN range(1, 1000000)` is then a
+        // million cheap rows instead of a million times the bucket, which is already the win.
+        Plan::Unwind { input, .. } if matches!(input.as_ref(), Plan::Row) => {
+            Some(truncate_batch(pull(plan, store, track)?, cap))
+        }
+        // A LEFT-OUTER hop keeps every source row — `optional_expand`'s own contract, in its
+        // words: "every input row yields at least one output row", upheld by both its fast
+        // path and its landing-predicate path, each emitting a miss row when a source has no
+        // neighbour. So output row `k` comes from input row `i <= k`, and capping the input to
+        // `cap` cannot drop a row the window needs. Without this a leading `OPTIONAL MATCH`
+        // under a `LIMIT` scanned the whole bucket: 0.208ms for one row against a 0.005ms
+        // scan floor.
+        //
+        // It is NOT sound for a plain `Expand`, which drops a source with no neighbour — there
+        // output row `k` can come from an arbitrarily later input row, exactly as for `Unwind`
+        // over a general input.
+        Plan::OptionalExpand {
+            input,
+            from,
+            dir,
+            edge_label,
+            keep_source,
+            bind_edge,
+            landing_pred,
+        } => match pull_capped(input, store, track, cap)? {
+            Some(batch) => Some(truncate_batch(
+                optional_expand(
+                    &batch,
+                    store,
+                    *from,
+                    *dir,
+                    edge_label,
+                    *keep_source,
+                    *bind_edge,
+                    landing_pred.as_deref(),
+                )?,
+                cap,
+            )),
+            None => None,
+        },
         _ => None, // Filter/Expand/Aggregate/Distinct/… change the row count
     })
+}
+
+/// Keep a batch's first `cap` rows, lineage included. Returns it untouched when it already
+/// fits, so the common case allocates nothing.
+///
+/// Row-multiplying arms of [`pull_capped`] need this: capping their inputs bounds the output
+/// but does not make it `cap` rows exactly, and `pull_capped` promises at most `cap`.
+fn truncate_batch(batch: Batch, cap: usize) -> Batch {
+    if batch.rows() <= cap {
+        return batch;
+    }
+    let keep: Vec<usize> = (0..cap).collect();
+    let mut out = Batch::of(batch.slots.iter().map(|c| c.gather(&keep)).collect());
+    out.lineage = batch.lineage.as_ref().map(|l| l.gather(&keep));
+    out
 }
 
 /// If `plan` is a STREAMABLE chain — Project/Filter/Expand/VarLength over a
