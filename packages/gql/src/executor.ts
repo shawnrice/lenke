@@ -2391,6 +2391,16 @@ export type CPath = {
    */
   binds: ReadonlySet<string>;
   reads: ReadonlySet<string>;
+  /**
+   * A fault-swallowing SEED filter: skip a start vertex this predicate cleanly rejects,
+   * so the walk never expands it. `var` is the start variable the predicate was lifted
+   * for — `orient` can flip which end a walk seeds from, and the predicate is only
+   * valid against the end it names.
+   *
+   * An optimization ONLY. The clause `WHERE` stays in place and remains the authority on
+   * both rows and faults. See `seedPrefilter` for why that is load-bearing.
+   */
+  prefilter?: { readonly var: string; readonly pred: CompiledExpr };
 };
 
 const compileProps = (props: readonly PropertyConstraint[] | undefined): CProp[] =>
@@ -3418,12 +3428,97 @@ const pushWhereIntoNode = (clause: Extract<Clause, { kind: 'match' }>): typeof c
   };
 };
 
+/**
+ * Lift a hop's clause `WHERE` into a fault-swallowing SEED FILTER, so a start vertex the
+ * predicate rejects is never expanded.
+ *
+ * `pushWhereIntoNode` above does the same job for a pattern with NO segments by moving the
+ * predicate into the node, which is exact there. **That is not available for a hop**, and the
+ * reason is not conservatism: the two spellings genuinely differ. A clause `WHERE` is evaluated
+ * once per ROW and so NOT AT ALL for a start vertex with no edges; an inline predicate is
+ * evaluated once per VERTEX. Both engines agree on that today —
+ *
+ *   MATCH (u:U)-[:E]->(v) WHERE CAST(u.st AS INTEGER) >= 1      rows, no fault
+ *   MATCH (u:U WHERE CAST(u.st AS INTEGER) >= 1)-[:E]->(v)      RAISES
+ *
+ * — with `u`'s faulting vertex edgeless. So moving the predicate would change which queries
+ * raise, in both engines' view. Hence a filter that SWALLOWS a fault and keeps the seed:
+ *
+ *   cleanly TRUE   seed kept; the clause `WHERE` re-decides per row, identically.
+ *   cleanly FALSE  seed skipped. Every row it would have produced is a row the clause
+ *                  `WHERE` would have dropped, so the result is unchanged — and no OTHER
+ *                  conjunct can fault on those rows, because of the `freePredicateVars`
+ *                  restriction below.
+ *   FAULTED        seed kept, and the clause `WHERE` faults per row exactly as before. If the
+ *                  vertex has no edges there are no rows and no fault — which is today's
+ *                  behaviour, and the whole reason the fault is swallowed here.
+ *
+ * **The whole `WHERE` must read nothing but the start variable.** That is what makes the
+ * cleanly-FALSE case safe: were another conjunct present, skipping the seed could suppress a
+ * fault that conjunct raises on a row TS currently evaluates (`FALSE AND <data exception>`
+ * raises in this engine — an open divergence, not something to quietly change here).
+ *
+ * Measured, 20,000 vertices, `(a:P)-[:E]->(b) WHERE a.k = <v>` against the inline spelling,
+ * which is the bound this reaches for:
+ *
+ *   deg  selectivity   clause   inline   inline/clause
+ *     1  1 of N        17.761    2.782      0.16x
+ *     1  1%            17.557    2.289      0.13x
+ *     1  50%           22.158   11.401      0.51x
+ *     1  100%          21.401   19.576      0.91x
+ *     5  1 of N        43.730    2.838      0.06x
+ *     5  1%            42.321    3.050      0.07x
+ *     5  50%           55.753   33.171      0.59x
+ *     5  100%          71.040   63.452      0.89x
+ *
+ * Faster at every degree and every selectivity, and never slower — at worst equal, when the
+ * predicate rejects nothing. `pushWhereIntoNode`'s comment claims the opposite ("pushing there
+ * would make a hop 1.7x SLOWER", from 3.11ms against 5.20-5.26). That measurement does not
+ * reproduce, and the reason it once held is gone: it was taken on a COUNT shape, where the
+ * inline spelling made `plainNode` DECLINE the count shortcut (audit item 124) — a defect fixed
+ * in item 125. The same comparison now reads 3.207 clause against 2.248 inline. See item 154.
+ */
+const seedPrefilter = (
+  clause: Extract<Clause, { kind: 'match' }>,
+): { readonly var: string; readonly pred: CompiledExpr } | undefined => {
+  const { where } = clause;
+
+  // OPTIONAL is excluded for the same reason it is above: its clause `WHERE` must see the
+  // null-filled row, so a seed it rejects is not a row that disappears.
+  if (where === undefined || clause.optional || clause.patterns.length !== 1) {
+    return undefined;
+  }
+
+  const [path] = clause.patterns;
+  const name = path.start.variable;
+
+  // No segments is `pushWhereIntoNode`'s case, which is exact and strictly better there.
+  if (path.segments.length === 0 || name === undefined) {
+    return undefined;
+  }
+
+  for (const free of freePredicateVars(where)) {
+    if (free !== name) {
+      return undefined;
+    }
+  }
+
+  return { var: name, pred: compileExpr(where) };
+};
+
 const compileClause = (rawClause: Clause): CClause => {
   const clause = rawClause.kind === 'match' ? pushWhereIntoNode(rawClause) : rawClause;
 
   switch (clause.kind) {
     case 'match': {
       const patterns = clause.patterns.map(compilePath);
+      // A hop whose clause WHERE constrains only the start: skip the seeds it rejects
+      // instead of expanding every one of them and filtering the rows (see `seedPrefilter`).
+      const prefilter = seedPrefilter(clause);
+
+      if (prefilter !== undefined) {
+        patterns[0] = { ...patterns[0], prefilter };
+      }
 
       // Lift seekable conjuncts of the clause WHERE onto every pattern node by
       // variable — not just the start — so either end of a pattern can be the

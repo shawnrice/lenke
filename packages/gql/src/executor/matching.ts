@@ -568,6 +568,69 @@ export const pickSeedDriver = (pattern: CPath, selector: PathSelector): SeedDriv
 };
 
 /** Yield every binding that extends `binding` by matching `pattern`. */
+/**
+ * How many seeds a seed filter may reject NOTHING from before it gives up.
+ *
+ * The filter costs one predicate evaluation per start vertex and saves expanding the vertices
+ * it rejects, so a predicate that rejects nothing is pure overhead — measured at 6-8% on a
+ * degree-1 fixture where `WHERE a.j = 1` holds for every vertex (1.057x and 1.077x, both
+ * after-readings above the before, so not noise). One that has rejected nothing in this many
+ * tries is not going to start paying for itself, and the clause `WHERE` is still the authority,
+ * so giving up changes no answer.
+ */
+const PREFILTER_GIVE_UP = 512;
+
+/**
+ * The pattern's fault-swallowing seed filter as a per-walk predicate, or `undefined` when there
+ * is nothing to apply.
+ *
+ * `undefined` when the pattern carries no filter, or when the walk seeds from an end the filter
+ * was not lifted for — `orient` can flip which end that is, and the predicate is only valid
+ * against the end it names.
+ *
+ * Only a CLEAN non-TRUE rejects a seed. A fault KEEPS it: see `seedPrefilter` in `executor.ts`
+ * for why that is the whole design, not a convenience. The clause `WHERE` still decides every
+ * row that gets through, which is what makes both the rejection and the give-up answer-neutral.
+ */
+const seedGate = (
+  pattern: CPath,
+  oriented: CPath,
+  params: Params,
+  graph: Graph,
+): ((seeded: Binding) => boolean) | undefined => {
+  const { prefilter } = pattern;
+
+  if (prefilter === undefined || oriented.start.variable !== prefilter.var) {
+    return undefined;
+  }
+
+  const { pred } = prefilter;
+  let seen = 0;
+  let rejected = 0;
+
+  return (seeded: Binding): boolean => {
+    if (seen === PREFILTER_GIVE_UP && rejected === 0) {
+      return true; // given up — every later seed passes without an evaluation
+    }
+
+    seen += 1;
+
+    try {
+      if (asTruth(pred({ binding: seeded, params, graph })) === true) {
+        return true;
+      }
+    } catch {
+      // Not this filter's business: the clause `WHERE` raises it per row, or the vertex has
+      // no rows and nothing raises — which is the behaviour being preserved.
+      return true;
+    }
+
+    rejected += 1;
+
+    return false;
+  };
+};
+
 export const matchPattern = function* (
   graph: Graph,
   pattern: CPath,
@@ -587,10 +650,12 @@ export const matchPattern = function* (
         ? [binding.get(pattern.start.variable) as Vertex]
         : seedVertices(graph, pattern.start, binding, params);
 
+    const gate = seedGate(pattern, pattern, params, graph);
+
     for (const seed of seeds) {
       const seeded = matchNode(binding, pattern.start, seed, params, graph);
 
-      if (seeded) {
+      if (seeded && (gate === undefined || gate(seeded))) {
         yield* seedDriver(graph, pattern, seed, seeded, params);
       }
     }
@@ -611,10 +676,12 @@ export const matchPattern = function* (
       ? [binding.get(path.start.variable) as Vertex]
       : seedVertices(graph, path.start, binding, params);
 
+  const gate = seedGate(pattern, path, params, graph);
+
   for (const seed of seeds) {
     const seeded = matchNode(binding, path.start, seed, params, graph);
 
-    if (seeded) {
+    if (seeded && (gate === undefined || gate(seeded))) {
       // A bound path variable over a single quantified segment binds each walk as a
       // Path (`allWalk`); over a fixed-length pattern the walk itself is the path, so
       // `walkSegments` accumulates its steps (`pathAcc`) and binds the Path at the end.
