@@ -686,7 +686,12 @@ const whereReadsOnly = (where: Expr | undefined, only: string): boolean => {
  * its own detector, and for the same reason.
  */
 type DistinctShape = {
-  item: CReturnItem;
+  /** Evaluates the projected value against the walked element. */
+  evalFn: CReturnItem['fn'];
+  /** The output column, which stays the RETURN item's name even when `evalFn` came from a `LET`. */
+  outName: string;
+  /** The expression `evalFn` was compiled from — what decides which end the walk visits. */
+  source: Expr;
   keyedVar: string;
   onStart: boolean;
   startLabel: LabelExpr | undefined;
@@ -695,31 +700,89 @@ type DistinctShape = {
   gatePred: CPredicate | undefined;
 };
 
+/**
+ * The lone `LET` of the three-clause form, resolved against its compiled twin — or `null` when
+ * the shape is not `MATCH / LET / RETURN` with exactly one bound name.
+ */
+const soleLet = (
+  mid: Clause | undefined,
+  cmid: CClause | undefined,
+): { var: string; expr: Expr; fn: CReturnItem['fn'] } | null => {
+  // ONE item, and that bound is load-bearing rather than merely conservative: a `LET` may bind
+  // the SAME name twice (`LET a = n.k, a = 1` is accepted and the LAST definition wins), so
+  // resolving a projected name against `items[0]` would evaluate a definition that has been
+  // overwritten. Relaxing this returns `n.k`'s values where the answer is `1` — and all 1098
+  // gql tests pass while it does, which is why the bound carries this note (audit item 187).
+  if (mid?.kind !== 'let' || mid.items.length !== 1 || cmid?.kind !== 'let') {
+    return null;
+  }
+
+  const [item] = mid.items;
+  const [citem] = cmid.items;
+
+  return citem === undefined ? null : { var: item.var, expr: item.expr, fn: citem.expr };
+};
+
+/**
+ * `MATCH [LET] RETURN` resolved to its three pieces, or `null`. Split out for the same reason
+ * `distinctShape` itself was split from its detector: the complexity gate.
+ *
+ * Two clauses, or three with a single `LET`. `groupedClauses` already accepts both, for the
+ * same reason: `GROUP BY` takes a BOUND NAME, so a `LET` is the only way ISO lets you name the
+ * key, and a reader who has written one naturally writes the DISTINCT spelling the same way.
+ * Measured, 200,000 nodes and 90 distinct values, spellings of ONE question:
+ *
+ *     RETURN DISTINCT n.age AS a                             11.91ms
+ *     LET a = n.age RETURN a, count(*) AS c GROUP BY a        8.61ms
+ *     LET a = n.age RETURN DISTINCT a                       108.17ms   <- this one
+ *
+ * 9.1x across spellings that must cost the same (audit item 187).
+ */
+const distinctHead = (
+  clauses: readonly Clause[],
+  compiled: readonly CClause[],
+): {
+  m: Extract<Clause, { kind: 'match' }>;
+  proj: CProjection;
+  ret: Extract<Clause, { kind: 'return' }>;
+  bound: ReturnType<typeof soleLet>;
+} | null => {
+  if (clauses.length !== 2 && clauses.length !== 3) {
+    return null;
+  }
+
+  const three = clauses.length === 3;
+  const [m, mid, last] = clauses;
+  const ret = three ? last : mid;
+  const cret = compiled[three ? 2 : 1];
+  const bound = three ? soleLet(mid, compiled[1]) : null;
+
+  if (three && bound === null) {
+    return null;
+  }
+
+  if (m.kind !== 'match' || m.optional || m.patterns.length !== 1 || ret?.kind !== 'return') {
+    return null;
+  }
+
+  if (cret?.kind !== 'return' || !distinctOneItem(cret.projection)) {
+    return null;
+  }
+
+  return { m, proj: cret.projection, ret, bound };
+};
+
 const distinctShape = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
 ): DistinctShape | null => {
-  if (clauses.length !== 2) {
+  const head = distinctHead(clauses, compiled);
+
+  if (head === null) {
     return null;
   }
 
-  const [m, ret] = clauses;
-  const [, cret] = compiled;
-
-  if (m.kind !== 'match' || m.optional || m.patterns.length !== 1 || ret.kind !== 'return') {
-    return null;
-  }
-
-  if (cret.kind !== 'return') {
-    return null;
-  }
-
-  const proj: CProjection = cret.projection;
-
-  if (!distinctOneItem(proj)) {
-    return null;
-  }
-
+  const { m, proj, ret, bound } = head;
   const [pattern] = m.patterns;
 
   if (pattern.pathVar !== undefined || pattern.segments.length > 1) {
@@ -736,10 +799,24 @@ const distinctShape = (
 
   const startVar = start.variable;
 
+  const projExpr = ret.projection.items[0].expr;
+  // Under a `LET` the projected item must be EXACTLY the bound name, and then the `LET`'s own
+  // expression is what reads the element — so that is what the walk evaluates and what decides
+  // which end it visits. Anything else declines: a projection mixing the bound name with
+  // another read (`RETURN DISTINCT a + n.age`) is not one expression over one end, and a
+  // projection that ignores the `LET` entirely keeps going to the general path, which is also
+  // what `distinct-projection.test.ts` relies on — its `viaGeneral` helper forces the general
+  // path by inserting a dead `LET _z = 1`, and that device has to keep working.
+  const source = bound === null ? projExpr : bound.expr;
+
+  if (bound !== null && !(projExpr.kind === 'var' && projExpr.name === bound.var)) {
+    return null;
+  }
+
   // The projected expression must read exactly ONE end, which is the element the walk
   // evaluates it against. A CONSTANT projection (no reads) dedupes to a single row and is
   // left to the general path rather than reasoned about with an empty binding.
-  const reads = freePredicateVars(ret.projection.items[0].expr);
+  const reads = freePredicateVars(source);
   const onStart = reads.size === 1 && reads.has(startVar);
   const onFar =
     hop !== undefined && reads.size === 1 && far?.variable !== undefined && reads.has(far.variable);
@@ -782,7 +859,19 @@ const distinctShape = (
       : { direction: hop.rel.direction, ...(hop.rel.label ? { label: hop.rel.label } : {}) };
   const farLabel = far?.label;
 
-  return { item, keyedVar, onStart, startLabel, farLabel, adjacency, gatePred };
+  // The column name comes from the RETURN item either way — the `LET` names a binding, not an
+  // output column, so `LET a = n.age RETURN DISTINCT a` yields a column `a` and not `n.age`.
+  return {
+    evalFn: bound === null ? item.fn : bound.fn,
+    outName: item.name,
+    source,
+    keyedVar,
+    onStart,
+    startLabel,
+    farLabel,
+    adjacency,
+    gatePred,
+  };
 };
 
 /**
@@ -821,7 +910,7 @@ export const detectDistinctProjection = (
     return null;
   }
 
-  const { item, keyedVar, onStart, startLabel, farLabel, adjacency, gatePred } = shape;
+  const { evalFn, outName, keyedVar, onStart, startLabel, farLabel, adjacency, gatePred } = shape;
 
   return (graph, params) => {
     const seen = new Map<string, Row>();
@@ -834,11 +923,11 @@ export const detectDistinctProjection = (
         return;
       }
 
-      const value = item.fn(env);
+      const value = evalFn(env);
       const k = valueKey(value);
 
       if (!seen.has(k)) {
-        seen.set(k, { [item.name]: value });
+        seen.set(k, { [outName]: value });
       }
     };
 

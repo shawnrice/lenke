@@ -129,6 +129,21 @@ const GROUPS: [string, readonly string[]][] = [
     ],
   ],
   [
+    // These three ask for the distinct values of one property and must answer the same ROWS in
+    // the same order, which is why the `count(*)` spelling is not among them — it carries an
+    // extra column and the probe compares answers. The LET spellings were 9.1x off the bare
+    // one: `GROUP BY` takes a BOUND NAME, so a LET is the only way ISO lets you name a
+    // grouping key, and the DISTINCT spelling gets written the same way. Item 187 fixed the
+    // DISTINCT-via-LET one; GROUP-BY-without-an-aggregate is still out of line, so this group
+    // is EXPECTED to flag on time until that is closed too.
+    'the distinct values of one property',
+    [
+      'MATCH (n:P) RETURN DISTINCT n.k AS a',
+      'MATCH (n:P) LET a = n.k RETURN DISTINCT a',
+      'MATCH (n:P) LET a = n.k RETURN a GROUP BY a',
+    ],
+  ],
+  [
     // `ORDER BY <alias>` IS `ORDER BY <the expression the alias names>`. `aliasDefinition`
     // substitutes it so the top-k keeps INPUT bindings and projects only the rows it emits.
     //
