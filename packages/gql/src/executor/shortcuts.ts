@@ -514,6 +514,11 @@ const farWalkFits = (scan: HopScan): boolean => {
  * degree) instead of O(E), and it reads the far property ONCE per vertex instead of once
  * per in-edge.
  *
+ * (Audit item 163 found that `age > 500` matches NOTHING in that fixture and re-measured both
+ * rows across selectivities. THIS row survives unchanged — native is flat at ~1.5ms whether 0 or
+ * 988,885 edges match, because it scans the `age` column once either way, so the ratio below is
+ * real. Its start-filtered twin did not survive; see the note in `bench.ts`.)
+ *
  * This was the single widest gap in the cross-engine bench: `traverse 1-hop + filter`
  * (`MATCH (a:Person)-[:KNOWS]->(x) WHERE x.age > 500 RETURN count(*)`) cost ts 571.7ms
  * against native's 1.5ms, a 378x ratio, while the START-filtered spelling of the same

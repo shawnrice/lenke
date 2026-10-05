@@ -227,13 +227,26 @@ const CASES: Case[] = [
   {
     // A REAL adjacency walk: a predicate on the far endpoint defeats the bucket-size shortcut,
     // so every edge is visited, and the result is one row — so this measures traversal rather
-    // than row materialization. `age > 500` matches nothing (ages are 0..89), which does not
-    // reduce the work: the walk and the predicate still happen for every edge.
+    // than row materialization.
+    //
+    // The threshold was `> 500` until audit item 163, which matched NOTHING (ages are `i % 90`,
+    // so 0..89) on the stated grounds that an empty result "does not reduce the work: the walk
+    // and the predicate still happen for every edge". That is true of the TS engine and NOT of
+    // native, and the ratio is this table's whole output. Measured across selectivities:
+    //
+    //            matches        ts   native    ratio
+    //   > 500          0      95.3     1.47      65x
+    //   > 85      44,440      94.4     1.51      63x
+    //   > 45     488,840      92.6     1.51      61x
+    //   >= 0     988,885     103.9     1.60      65x
+    //
+    // This row survives the correction — native is flat because it scans the `age` column once
+    // either way — but its TWIN below did not, so both move to `> 45` to keep them comparable.
     name: 'traverse 1-hop + filter',
     ...onGraph(
       () => graphDoc,
       (e, g) =>
-        void e.query(g, 'MATCH (a:Person)-[:KNOWS]->(x) WHERE x.age > 500 RETURN count(*) AS c'),
+        void e.query(g, 'MATCH (a:Person)-[:KNOWS]->(x) WHERE x.age > 45 RETURN count(*) AS c'),
     ),
   },
   {
@@ -243,11 +256,25 @@ const CASES: Case[] = [
     // scales with the vertex count where the row above scales with the edge count. The table had
     // no row of this shape, which is why the TS engine evaluated it per edge unnoticed (item
     // 114). Keep both: a change can help one and not the other.
+    //
+    // THIS is the row the `> 500` threshold was misreporting (audit item 163). Deciding a
+    // start-only predicate per vertex and multiplying by degree means native's cost scales with
+    // how many starts MATCH — so an empty predicate measured the cost of expanding nothing:
+    //
+    //            matches        ts   native    ratio
+    //   > 500          0      81.8     0.20     409x
+    //   > 85      44,440      82.6     0.41     201x
+    //   > 45     488,840      73.7     2.39      31x
+    //   >= 0     988,885    ~103.9     4.73     ~22x
+    //
+    // A 13x spread in the headline ratio from the threshold alone, and the empty end of it was
+    // quoted as "the single widest gap in the cross-engine bench" (item 129). `> 45` keeps
+    // roughly half the edges, so both engines do real work and the ratio means something.
     name: 'traverse 1-hop + start filter',
     ...onGraph(
       () => graphDoc,
       (e, g) =>
-        void e.query(g, 'MATCH (a:Person)-[:KNOWS]->(x) WHERE a.age > 500 RETURN count(*) AS c'),
+        void e.query(g, 'MATCH (a:Person)-[:KNOWS]->(x) WHERE a.age > 45 RETURN count(*) AS c'),
     ),
   },
   {
