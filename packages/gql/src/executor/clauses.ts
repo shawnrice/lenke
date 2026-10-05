@@ -1370,6 +1370,11 @@ export const runLinearClauses = (
       // No decline branch: this detector's closure always answers (`AlwaysRowsFn`).
       return linear.distinctProjection(graph, params);
     }
+
+    // `RETURN count(DISTINCT <one expr>)`: the SIZE of that same dedup, counted while walking.
+    if (linear.distinctCount) {
+      return linear.distinctCount(graph, params);
+    }
   }
 
   // Bindings flow as a lazy stream; only barriers (mutations, aggregation,

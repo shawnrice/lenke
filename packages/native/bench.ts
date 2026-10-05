@@ -227,6 +227,17 @@ const CASES: Case[] = [
     ),
   },
   {
+    // `count(DISTINCT e)` is the SIZE of the dedup the walk already builds, and it went through
+    // the general pipeline: 65.8ms against the rows walk's 5.1ms. The cost was the pipeline and
+    // not the aggregate — `count(*)` forced down the same path is 84.3ms with no map, filter or
+    // dedup in it at all — so item 196 gave it the walk.
+    name: 'query: count distinct',
+    ...onGraph(
+      () => nodesDoc,
+      (e, g) => void e.query(g, 'MATCH (n:Person) RETURN count(DISTINCT n.age) AS c'),
+    ),
+  },
+  {
     // The distinct far-end values over a HOP, with a sort. Item 194 made the start-keyed version
     // 2.86x by resolving the far vertex only when read; this shape still needs it, so item 195
     // asks the question from the FAR end instead — one adjacency lookup per far vertex rather

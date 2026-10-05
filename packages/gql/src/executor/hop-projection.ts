@@ -13,6 +13,7 @@ import type {
   Row,
 } from '../executor.js';
 import {
+  compileExpr,
   compilePredicate,
   compareSort,
   freePredicateVars,
@@ -29,7 +30,7 @@ import {
 } from '../graph-queries.js';
 import type { Adjacency } from '../graph-queries.js';
 import { indexCandidates } from './matching.js';
-import { asTruth } from './scalars.js';
+import { asTruth, isNullish } from './scalars.js';
 import {
   pageGroups,
   pageIsEmpty,
@@ -742,6 +743,46 @@ const sortOf = (
 };
 
 /**
+ * `RETURN count(DISTINCT <e>)` asks for the SIZE of the dedup the walk already builds, so it is
+ * the same question with the rows thrown away — and it went through the general pipeline instead:
+ *
+ *     MATCH (n:P) RETURN DISTINCT n.age AS x            5.1ms
+ *     MATCH (n:P) RETURN count(DISTINCT n.age) AS c    65.8ms     13x
+ *     MATCH (a:P)-[:KNOWS]->(f) RETURN count(DISTINCT f.age)   847ms against the walk's 88ms
+ *
+ * The cost is the PIPELINE, not the aggregate: `count(*)` forced down the same path is 84.3ms
+ * with no `map`, no `filter` and no dedup in it at all, which is MORE than the DISTINCT version.
+ * So optimizing the fold would have bought nothing and the walk is the whole answer (item 196).
+ *
+ * Returns the ARGUMENT expression, which is what the walk evaluates — the item's own compiled
+ * closure is the aggregate, and folds over a group this path never builds.
+ */
+const countDistinctArg = (proj: CProjection, projection: Projection): Expr | undefined => {
+  if (
+    proj.star ||
+    proj.distinct ||
+    proj.having !== undefined ||
+    projection.groupBy !== undefined ||
+    proj.items.length !== 1 ||
+    proj.orderBy.length !== 0 ||
+    proj.skip !== undefined ||
+    proj.limit !== undefined
+  ) {
+    return undefined;
+  }
+
+  const e = projection.items[0].expr;
+
+  // `count(DISTINCT e)` exactly: one argument, DISTINCT set, and not the `count(*)` star form —
+  // which has its own shortcut and a different answer (it counts rows, not distinct values).
+  if (e.kind !== 'func' || e.name !== 'count' || !e.distinct || e.star || e.args.length !== 1) {
+    return undefined;
+  }
+
+  return e.args[0];
+};
+
+/**
  * `RETURN <k> GROUP BY <k>` with no aggregate IS `RETURN DISTINCT <k>` — one row per distinct
  * value of `k`, projecting `k`, in first-seen group order, which is the same first-seen order
  * `DISTINCT` keeps. So it can take the same walk, and it was not:
@@ -864,11 +905,13 @@ const soleLet = (
 const distinctHead = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
+  mode: 'rows' | 'count',
 ): {
   m: Extract<Clause, { kind: 'match' }>;
   proj: CProjection;
   ret: Extract<Clause, { kind: 'return' }>;
   bound: ReturnType<typeof soleLet>;
+  countArg: Expr | undefined;
 } | null => {
   if (clauses.length !== 2 && clauses.length !== 3) {
     return null;
@@ -888,29 +931,90 @@ const distinctHead = (
     return null;
   }
 
-  // Either spelling of the same question: an explicit `DISTINCT` over one item, or a `GROUP BY`
-  // with no aggregate whose one projected item IS the grouping element.
-  if (
-    cret?.kind !== 'return' ||
+  if (cret?.kind !== 'return') {
+    return null;
+  }
+
+  // `count` mode has its own single acceptor; `rows` mode takes either spelling of the same
+  // question — an explicit `DISTINCT` over one item, or a `GROUP BY` with no aggregate whose one
+  // projected item IS the grouping element.
+  const countArg = mode === 'count' ? countDistinctArg(cret.projection, ret.projection) : undefined;
+
+  if (mode === 'count') {
+    if (countArg === undefined) {
+      return null;
+    }
+  } else if (
     !(distinctOneItem(cret.projection) || groupingIsDistinct(cret.projection, ret.projection))
   ) {
     return null;
   }
 
-  return { m, proj: cret.projection, ret, bound };
+  return { m, proj: cret.projection, ret, bound, countArg };
+};
+
+/**
+ * What the walk evaluates per element.
+ *
+ * Under a `LET` it is the bound expression, already compiled. In `count` mode it is the
+ * aggregate's ARGUMENT — `item.fn` there is the aggregate closure, which folds over a group this
+ * path never builds. Otherwise it is the projected item itself.
+ *
+ * Its own function because `distinctShape` is at the complexity gate; the three cases are one
+ * decision and belong together rather than spread through that function.
+ */
+/**
+ * The expression the walk evaluates against each element, or `null` to decline.
+ *
+ * In `count` mode the projected item is the AGGREGATE; what reads the element is its argument,
+ * and every rule from here on — which end is visited, the gate, the sort — applies to that
+ * argument exactly as it would to a bare projection.
+ *
+ * Under a `LET` the projected item must be EXACTLY the bound name, and then the `LET`'s own
+ * expression is the one that reads the element. Anything else declines: a projection mixing the
+ * bound name with another read (`RETURN DISTINCT a + n.age`) is not one expression over one end,
+ * and a projection that ignores the `LET` entirely keeps going to the general path — which is
+ * also what `distinct-projection.test.ts` relies on, since its `viaGeneral` helper forces that
+ * path by inserting a dead `LET _z = 1`.
+ */
+const sourceFor = (
+  ret: Extract<Clause, { kind: 'return' }>,
+  bound: ReturnType<typeof soleLet>,
+  countArg: Expr | undefined,
+): Expr | null => {
+  const projExpr = countArg ?? ret.projection.items[0].expr;
+
+  if (bound === null) {
+    return projExpr;
+  }
+
+  return projExpr.kind === 'var' && projExpr.name === bound.var ? bound.expr : null;
+};
+
+const evaluatorFor = (
+  item: CReturnItem,
+  bound: ReturnType<typeof soleLet>,
+  countArg: Expr | undefined,
+): CReturnItem['fn'] => {
+  if (bound !== null) {
+    return bound.fn;
+  }
+
+  return countArg === undefined ? item.fn : compileExpr(countArg);
 };
 
 const distinctShape = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
+  mode: 'rows' | 'count' = 'rows',
 ): DistinctShape | null => {
-  const head = distinctHead(clauses, compiled);
+  const head = distinctHead(clauses, compiled, mode);
 
   if (head === null) {
     return null;
   }
 
-  const { m, proj, ret, bound } = head;
+  const { m, proj, ret, bound, countArg } = head;
   const [pattern] = m.patterns;
 
   if (pattern.pathVar !== undefined || pattern.segments.length > 1) {
@@ -927,17 +1031,12 @@ const distinctShape = (
 
   const startVar = start.variable;
 
-  const projExpr = ret.projection.items[0].expr;
-  // Under a `LET` the projected item must be EXACTLY the bound name, and then the `LET`'s own
-  // expression is what reads the element — so that is what the walk evaluates and what decides
-  // which end it visits. Anything else declines: a projection mixing the bound name with
-  // another read (`RETURN DISTINCT a + n.age`) is not one expression over one end, and a
-  // projection that ignores the `LET` entirely keeps going to the general path, which is also
-  // what `distinct-projection.test.ts` relies on — its `viaGeneral` helper forces the general
-  // path by inserting a dead `LET _z = 1`, and that device has to keep working.
-  const source = bound === null ? projExpr : bound.expr;
+  // In `count` mode the projected item is the AGGREGATE; what the walk evaluates is its
+  // argument, and every rule below — the `LET` substitution, which end is read, the gate — then
+  // applies to that argument exactly as it applies to a bare projection.
+  const source = sourceFor(ret, bound, countArg);
 
-  if (bound !== null && !(projExpr.kind === 'var' && projExpr.name === bound.var)) {
+  if (source === null) {
     return null;
   }
 
@@ -987,6 +1086,8 @@ const distinctShape = (
   }
 
   const [item] = proj.items;
+  const evalFn = evaluatorFor(item, bound, countArg);
+
   const adjacency: Adjacency | undefined =
     hop === undefined
       ? undefined
@@ -996,7 +1097,7 @@ const distinctShape = (
   // The column name comes from the RETURN item either way — the `LET` names a binding, not an
   // output column, so `LET a = n.age RETURN DISTINCT a` yields a column `a` and not `n.age`.
   return {
-    evalFn: bound === null ? item.fn : bound.fn,
+    evalFn,
     outName: item.name,
     source,
     keyedVar,
@@ -1161,6 +1262,77 @@ const walkStartSide = (graph: Graph, plan: WalkPlan, take: (el: Vertex) => void)
       take(onStart ? v : step.node);
     }
   }
+};
+
+/**
+ * `MATCH <node or 1-hop> RETURN count(DISTINCT <one expression over one end>)` — the SIZE of the
+ * dedup the walk already builds, counted while walking so no row is ever materialized.
+ *
+ * Its own closure rather than a flag inside `detectDistinctProjection`'s, which is the hot one
+ * (`ts-closure-size-is-load-bearing`); the SHAPE RULE is shared, which is what matters, since
+ * two copies of one rule is how the far endpoint ended up on a per-edge tally once before.
+ *
+ * Two things differ from the rows path and both are answers this engine already gives:
+ *
+ *   - **NULLs do not count.** `count(DISTINCT n.k)` over `1, null, absent, 2, 1` is 2, where
+ *     `RETURN DISTINCT n.k` is three rows including the null. So nulls are dropped before the
+ *     set, and `count(DISTINCT n.missing)` is 0 rather than 1.
+ *   - **the FAR-driven walk needs no sort.** Item 195 gated it on one because first-seen order
+ *     is observable; a count has no order to observe, so only the vacuous-start condition
+ *     applies here.
+ */
+export const detectDistinctCount = (
+  clauses: readonly Clause[],
+  compiled: readonly CClause[],
+): AlwaysRowsFn | null => {
+  const shape = distinctShape(clauses, compiled, 'count');
+
+  if (shape === null) {
+    return null;
+  }
+
+  const { evalFn, outName, keyedVar, onStart, startLabel, farLabel, adjacency, gatePred } = shape;
+  const direct: DirectHop | undefined =
+    adjacency !== undefined && adjacency.direction !== 'both' && adjacency.label?.kind === 'label'
+      ? { forward: adjacency.direction === 'out', type: adjacency.label.name }
+      : undefined;
+  const needsFar = !onStart || farLabel !== undefined;
+  const plan: WalkPlan = { startLabel, farLabel, adjacency, direct, needsFar, onStart };
+
+  return (graph, params) => {
+    const seen = valueSet();
+    const binding = new Map<string, unknown>();
+    const env = { binding, params, graph };
+    let n = 0;
+    const take = (el: Vertex): void => {
+      binding.set(keyedVar, el);
+
+      if (gatePred !== undefined && !satisfies(el, gatePred, binding, params, graph)) {
+        return;
+      }
+
+      const value = evalFn(env);
+
+      // A null never counts, and it must not enter the set either — otherwise a later non-null
+      // would be the second distinct value where it is the first.
+      if (isNullish(value)) {
+        return;
+      }
+
+      if (seen.add(value)) {
+        n += 1;
+      }
+    };
+
+    // `sorted: true` because a COUNT has no observable order for the far walk to change.
+    if (farDrivenFits(graph, direct, onStart, true, startLabel)) {
+      walkFarSide(graph, plan, take);
+    } else {
+      walkStartSide(graph, plan, take);
+    }
+
+    return [{ [outName]: n }];
+  };
 };
 
 export const detectDistinctProjection = (
