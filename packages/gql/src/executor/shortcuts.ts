@@ -329,6 +329,8 @@ type HopScan = {
   inFar?: InlinePred;
   /** The COMPILED start node, carrying the seed hints that let the start walk seek. */
   cstart?: CNode;
+  /** Its FAR mirror, for the far-side walk. */
+  cfar?: CNode;
 };
 
 /** Apply an endpoint's inline constraint, binding the node's own variable first. */
@@ -643,7 +645,7 @@ const farWalkFits = (scan: HopScan): boolean => {
  * edge sits in two of the summed type buckets.
  */
 const farOnlyHopCount = (scan: HopScan, farVar: string | undefined): number => {
-  const { graph, params, pred, pb, out, types, inFar } = scan;
+  const { graph, params, pred, pb, out, types, inFar, cfar } = scan;
   const binding = new Map<string, unknown>();
   const env: EvalEnv = { binding, params, graph };
   // The far endpoint of an `out` hop is the edge's TARGET, so its edges are the ones the
@@ -656,7 +658,18 @@ const farOnlyHopCount = (scan: HopScan, farVar: string | undefined): number => {
   //
   // `pb`, not `pa`: this walk visits the FAR endpoints, so the label it can apply is the far
   // one. The start label has to be vacuous for the caller to route here.
-  for (const v of candidateVertexSource(graph, pb)) {
+  //
+  // And the same seek the twin got in item 176, for the same reason: this walk scanned the far
+  // label bucket while the general path seeded from an index, so a FAR-anchored hop count was
+  // the only spelling of its question that ignored the index (audit item 178):
+  //
+  //   (u)-[:FOLLOWS]->(x:User) WHERE x.name = $n RETURN count(*)       421.1us  <- this walk
+  //   (u)-[:FOLLOWS]->(x:User {name: $n}) RETURN count(*)              347.9us  <- this walk
+  //   (u)-[:FOLLOWS]->(x:User) WHERE x.name = $n RETURN count(u.name)   41.7us
+  //
+  // `hopSeek` is shared with the twin rather than mirrored, so the two sides cannot drift on
+  // what counts as seekable or on the width guard.
+  for (const v of hopSeek(graph, cfar, pb, env) ?? candidateVertexSource(graph, pb)) {
     if (!matchesLabel(v, pb)) {
       continue;
     }
@@ -739,9 +752,9 @@ const buildOneHopCount = <T>(
   rowOf: (n: number) => T,
   pred?: HopPred,
   /** The endpoint extras, bundled: three separate parameters exceeded the arity limit. */
-  ends?: { inNear?: InlinePred; inFar?: InlinePred; cstart?: CNode },
+  ends?: { inNear?: InlinePred; inFar?: InlinePred; cstart?: CNode; cfar?: CNode },
 ): CountOf<T> | null => {
-  const { inNear, inFar, cstart } = ends ?? {};
+  const { inNear, inFar, cstart, cfar } = ends ?? {};
   const { rel, node } = seg;
 
   // `plainNode(node)` is deliberately NOT required: an inline endpoint constraint
@@ -793,7 +806,19 @@ const buildOneHopCount = <T>(
       const pa = vacuousLabel(graph, aLabel) ? undefined : aLabel;
       const pb = vacuousLabel(graph, bLabel) ? undefined : bLabel;
       const { startVar } = pred;
-      const scan: HopScan = { graph, params, pred, pa, pb, out, types, inNear, inFar, cstart };
+      const scan: HopScan = {
+        graph,
+        params,
+        pred,
+        pa,
+        pb,
+        out,
+        types,
+        inNear,
+        inFar,
+        cstart,
+        cfar,
+      };
 
       // Item 125 carried only `inFar` because it measured routing a start constraint to
       // the TALLY (a full edge scan) and rightly rejected that; the per-vertex path is the
@@ -832,6 +857,7 @@ const buildOneHopCount = <T>(
         inNear,
         inFar,
         cstart,
+        cfar,
       };
 
       // The SAME two rules as the clause-`WHERE` branch. A start-only constraint is
@@ -984,6 +1010,7 @@ const patternCountOf = <T>(
   where: Expr | undefined,
   rowOf: (n: number) => T,
   cstart?: CNode,
+  cfar?: CNode,
 ): CountOf<T> | null => {
   const { start, segments } = pattern;
 
@@ -1106,7 +1133,7 @@ const patternCountOf = <T>(
       return null;
     }
 
-    return buildOneHopCount(seg, start, rowOf, pred, { inNear: inStart, inFar, cstart });
+    return buildOneHopCount(seg, start, rowOf, pred, { inNear: inStart, inFar, cstart, cfar });
   }
 
   if (segments.length === 2) {
@@ -1560,8 +1587,12 @@ export const detectCountShortcut = (
       // caller without the compiled clauses still gets the (bucket-scanning) shortcut.
       const cm = compiled?.[0];
       const cstart = cm?.kind === 'match' ? cm.patterns[0]?.start : undefined;
+      // Its FAR mirror, so the far-side walk can seek too (item 178). Item 176 wired only the
+      // start, which left the far-anchored spelling of one question scanning the far label
+      // bucket while its start-anchored twin seeked.
+      const cfar = cm?.kind === 'match' ? cm.patterns[0]?.segments[0]?.node : undefined;
 
-      return patternCountOf(m.patterns[0], m.where, rowOf, cstart);
+      return patternCountOf(m.patterns[0], m.where, rowOf, cstart, cfar);
     }
 
     // A product first — it is the cheaper answer and covers disjoint patterns. When it
