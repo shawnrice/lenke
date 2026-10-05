@@ -227,6 +227,22 @@ const CASES: Case[] = [
     ),
   },
   {
+    // `ORDER BY c DESC LIMIT n` over a grouped count is the top-categories-by-count shape, and
+    // the tally declined every `ORDER BY` until item 190 — 65.0ms through the general path
+    // against 8.6ms tallied, because the sort reorders the groups BEFORE the window and the
+    // tally did not sort. Its output is one row per GROUP, so this row guards that the sort
+    // stays over the groups rather than over the input.
+    name: 'query: top groups by count',
+    ...onGraph(
+      () => nodesDoc,
+      (e, g) =>
+        void e.query(
+          g,
+          'MATCH (n:Person) LET a = n.age RETURN a, count(*) AS c GROUP BY a ORDER BY c DESC LIMIT 5',
+        ),
+    ),
+  },
+  {
     // Adding `ORDER BY` to a dedup cost 12.6x until item 189 — 146.8ms to sort the NINETY rows
     // the query returns, because every dedup fast path declined on `orderBy.length > 0` and the
     // general path then materialized and sorted all 200,000 input rows. Sorting a dedup by its

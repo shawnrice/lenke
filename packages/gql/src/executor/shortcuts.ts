@@ -16,6 +16,7 @@ import type {
   Projection,
   RelPattern,
   Segment,
+  SortItem,
 } from '../ast.js';
 // The shortcuts read shared primitives + compiled types out of the executor
 // trunk, and the trunk imports the two detectors back — a safe function-level
@@ -34,6 +35,7 @@ import {
   edgesOfTypes,
   freePredicateVars,
   columnName,
+  compareSort,
   compileExpr,
   compilePredicate,
   satisfies,
@@ -1869,6 +1871,85 @@ const pageGroups = (
   return rows.slice(skipN, limitN === undefined ? undefined : skipN + limitN);
 };
 
+/** One `ORDER BY` key resolved to an output COLUMN of the tally's two-column row. */
+type ColSort = { col: string; descending: boolean; nullsFirst: boolean | undefined };
+
+/**
+ * Sort the tally's own rows. Its output is ONE ROW PER GROUP — the answer — so this sorts at
+ * most as many rows as it returns, where the general path sorted one row per input ELEMENT.
+ * Uses `compareSort`, the engine's own comparator, so DESC and the NULLS placement match it
+ * rather than being re-derived.
+ */
+const sortGroupRows = (rows: Row[], sort: readonly ColSort[]): Row[] => {
+  if (sort.length === 0) {
+    return rows;
+  }
+
+  return rows.sort((a, b) => {
+    for (const s of sort) {
+      const c = compareSort(a[s.col], b[s.col], s.descending, s.nullsFirst);
+
+      if (c !== 0) {
+        return c;
+      }
+    }
+
+    return 0;
+  });
+};
+
+/**
+ * Every `ORDER BY` key resolved to one of the tally's two output columns, or `null` to decline.
+ *
+ * The tally declined every `ORDER BY`, and its own note said why: the sort reorders the groups
+ * BEFORE the window and the tally does not sort. Sorting its output first is exactly that order,
+ * and the sort is over the groups rather than over the input:
+ *
+ *     LET a = n.age RETURN a, count(*) AS c GROUP BY a                   8.35ms
+ *     LET a = n.age RETURN a, count(*) AS c GROUP BY a ORDER BY a       69.89ms
+ *     LET a = n.age RETURN a, count(*) AS c GROUP BY a ORDER BY c DESC  75.67ms
+ *
+ * 8.4x, and the last of those is the top-categories-by-count shape (audit item 190).
+ *
+ * EVERY key must be an output column, which is what makes several keys safe here where item 189
+ * had to refuse them: an output column's value is already computed by the tally, so nothing is
+ * left unevaluated and no raise can be swallowed. A key that is any other expression declines.
+ *
+ * Accepted spellings per key: the count column by name, the key column by name (which covers
+ * `ORDER BY a` naming the `LET`, since the `LET` name IS the column), or the key EXPRESSION
+ * itself (`ORDER BY n.k` beside `RETURN n.k AS a`).
+ */
+const colSortsOf = (
+  keys: readonly SortItem[],
+  keyCol: string,
+  countCol: string,
+  keyExpr: Expr,
+): ColSort[] | null => {
+  // Two items sharing one output name would collapse into a single row key, so which column a
+  // name refers to is ambiguous. It cannot be resolved, so it is refused.
+  if (keyCol === countCol) {
+    return null;
+  }
+
+  const out: ColSort[] = [];
+
+  for (const k of keys) {
+    const byName =
+      k.expr.kind === 'var' && (k.expr.name === keyCol || k.expr.name === countCol)
+        ? k.expr.name
+        : undefined;
+    const col = byName ?? (sameGroupingExpr(k.expr, keyExpr) ? keyCol : undefined);
+
+    if (col === undefined) {
+      return null;
+    }
+
+    out.push({ col, descending: k.descending, nullsFirst: k.nullsFirst });
+  }
+
+  return out;
+};
+
 /**
  * Does this page keep NO rows whatever the data? Then the tally must not run at all.
  *
@@ -1882,6 +1963,19 @@ const pageGroups = (
  */
 const pageIsEmpty = (params: Params, limit: CountValue | undefined): boolean =>
   resolveCount(limit, params) === 0;
+
+/**
+ * A grouping element is a bound name or the `n.key` property spelling — ISO's `groupingElement`
+ * is a `bindingVariableReference`, and the property form is what this engine accepts on top of
+ * it (see `CProjection.groupKeyNames`). Equality over those two shapes is all this needs, and
+ * anything else answers `false` and declines.
+ *
+ * Lives here rather than in `hop-projection`, which already imports from this module — the other
+ * direction would be a cycle.
+ */
+export const sameGroupingExpr = (a: Expr, b: Expr): boolean =>
+  (a.kind === 'var' && b.kind === 'var' && a.name === b.name) ||
+  (a.kind === 'prop' && b.kind === 'prop' && a.variable === b.variable && a.key === b.key);
 
 /** Is `e` exactly `count(*)` — no argument, no DISTINCT? */
 const isStarCount = (e: Expr): boolean =>
@@ -1930,19 +2024,16 @@ const groupedClauses = (clauses: readonly Clause[]): GroupedShape | null => {
 const groupedProjection = (
   proj: Projection,
   letName: string | undefined,
-): { countAt: number } | null => {
+): { countAt: number; sort: readonly ColSort[] } | null => {
   // SKIP/LIMIT are NOT refused. A grouped count's rows come out in FIRST-SEEN group order,
   // which is the pinned contract both engines keep (a `Map`'s insertion order here, the
   // general path's own `Map<string, Binding[]>` there) — so a window over them is a slice of
-  // this list and equals the general path's window over its list. `ORDER BY` still declines,
-  // because that reorders the groups before the window and the tally does not sort.
-  if (
-    proj.star ||
-    proj.distinct ||
-    proj.having !== undefined ||
-    (proj.orderBy?.length ?? 0) > 0 ||
-    proj.items.length !== 2
-  ) {
+  // this list and equals the general path's window over its list.
+  //
+  // `ORDER BY` used to decline here, because it reorders the groups BEFORE the window and the
+  // tally did not sort. It sorts now (`colSortsOf` + `sortGroupRows`, item 190), which is that
+  // same order, applied to one row per GROUP instead of one per input element.
+  if (proj.star || proj.distinct || proj.having !== undefined || proj.items.length !== 2) {
     return null;
   }
 
@@ -1963,7 +2054,22 @@ const groupedProjection = (
 
   const countAt = proj.items.findIndex((i) => isStarCount(i.expr));
 
-  return countAt === -1 ? null : { countAt };
+  if (countAt === -1) {
+    return null;
+  }
+
+  const keyItem = proj.items[1 - countAt];
+  const sort =
+    (proj.orderBy?.length ?? 0) === 0
+      ? []
+      : colSortsOf(
+          proj.orderBy ?? [],
+          keyItem.alias ?? columnName(keyItem.expr),
+          proj.items[countAt].alias ?? columnName(proj.items[countAt].expr),
+          keyItem.expr,
+        );
+
+  return sort === null ? null : { countAt, sort };
 };
 
 /**
@@ -2014,7 +2120,7 @@ export const detectGroupedNodeCount = (clauses: readonly Clause[]): ReachFn | nu
   }
 
   const { items, skip, limit } = shape.ret.projection;
-  const { countAt } = picked;
+  const { countAt, sort } = picked;
   const [{ start, segments }] = shape.match.patterns;
 
   if (segments.length !== 0 || start.variable === undefined) {
@@ -2123,10 +2229,13 @@ export const detectGroupedNodeCount = (clauses: readonly Clause[]): ReachFn | nu
     }
 
     return pageGroups(
-      [...groups.values()].map((slot) =>
-        countFirst
-          ? { [countCol]: slot.n, [keyCol]: slot.key }
-          : { [keyCol]: slot.key, [countCol]: slot.n },
+      sortGroupRows(
+        [...groups.values()].map((slot) =>
+          countFirst
+            ? { [countCol]: slot.n, [keyCol]: slot.key }
+            : { [keyCol]: slot.key, [countCol]: slot.n },
+        ),
+        sort,
       ),
       params,
       skip,
@@ -2189,7 +2298,7 @@ export const detectGroupedHopCount = (clauses: readonly Clause[]): ReachFn | nul
   }
 
   const { items, skip, limit } = shape.ret.projection;
-  const { countAt } = picked;
+  const { countAt, sort } = picked;
   const [pattern] = shape.match.patterns;
 
   if (pattern.pathVar !== undefined || pattern.segments.length !== 1) {
@@ -2391,10 +2500,13 @@ export const detectGroupedHopCount = (clauses: readonly Clause[]): ReachFn | nul
     }
 
     return pageGroups(
-      [...groups.values()].map((slot) =>
-        countFirst
-          ? { [countCol]: slot.n, [keyCol]: slot.key }
-          : { [keyCol]: slot.key, [countCol]: slot.n },
+      sortGroupRows(
+        [...groups.values()].map((slot) =>
+          countFirst
+            ? { [countCol]: slot.n, [keyCol]: slot.key }
+            : { [keyCol]: slot.key, [countCol]: slot.n },
+        ),
+        sort,
       ),
       params,
       skip,

@@ -31,7 +31,7 @@ import {
 import type { Adjacency } from '../graph-queries.js';
 import { indexCandidates } from './matching.js';
 import { asTruth } from './scalars.js';
-import { plainNode, plainRel, vacuousLabel } from './shortcuts.js';
+import { plainNode, plainRel, sameGroupingExpr, vacuousLabel } from './shortcuts.js';
 
 /** Rows for a whole `MATCH … RETURN` query, or `null` if the shape does not fit. */
 /**
@@ -660,16 +660,6 @@ const oneItemNoWindow = (proj: CProjection): boolean =>
 
 const distinctOneItem = (proj: CProjection): boolean =>
   proj.distinct && !proj.aggregating && oneItemNoWindow(proj);
-
-/**
- * A grouping element is a bound name or the `n.key` property spelling — ISO's `groupingElement`
- * is a `bindingVariableReference`, and the property form is what this engine accepts on top of
- * it (see `CProjection.groupKeyNames`). Equality over those two shapes is all this needs, and
- * anything else answers `false` and declines.
- */
-const sameGroupingExpr = (a: Expr, b: Expr): boolean =>
-  (a.kind === 'var' && b.kind === 'var' && a.name === b.name) ||
-  (a.kind === 'prop' && b.kind === 'prop' && a.variable === b.variable && a.key === b.key);
 
 /**
  * The single `ORDER BY` key this walk can honour, or `'decline'`.
