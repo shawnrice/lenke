@@ -3678,7 +3678,7 @@ export const countEdges = (edges: Iterable<Edge>, keep: (e: Edge) => boolean): n
 export type CLinear = {
   clauses: readonly CClause[];
   /** Precomputed direct-count closure for `MATCH … RETURN count(*)`; else null. */
-  countShortcut: ((graph: Graph, params: Params) => Row) | null;
+  countShortcut: ((graph: Graph, params: Params) => Row[]) | null;
   /** Precomputed grouped-count closure for `MATCH (n) RETURN n.k, count(*)`; else null. */
   groupCountShortcut: ReachFn | null;
   /** The same over a HOP — `MATCH (a)-[:T]->(b) RETURN b.k, count(*)`; else null. */

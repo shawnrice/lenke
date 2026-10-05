@@ -892,6 +892,31 @@ const genQuery = (r: () => number): string => {
       // and both must raise.
       'MATCH (n:T) WHERE 1 / (n.n - 7) < 0 RETURN n.n AS x LIMIT 1',
       'MATCH (n:T) WHERE 1 / (n.n - 7) < 0 RETURN n.n AS x',
+      // TARGETED: a PAGED count over a FAULTING predicate. The count shortcuts now answer a
+      // SKIP/LIMIT themselves instead of declining it (TS audit item 152), which puts a
+      // tally where the general pipeline used to be — so `LIMIT 0`, which must emit nothing
+      // WITHOUT evaluating anything, becomes the case that can diverge: a tally that ran and
+      // then sliced to empty would raise where the other engine returns no rows.
+      //
+      // The fault has to be in the clause WHERE, not in a `LET`: an arithmetic `LET` makes
+      // the grouped shortcut DECLINE, so the query takes the general path and the assertion
+      // is vacuous. Mutation proved that — with the fault in a `LET`, removing the engine's
+      // guard changed nothing. The `WHERE` becomes the tally's per-vertex gate.
+      //
+      // `n.n - 7` is zero on vertex 2, so the predicate faults for both spellings below.
+      //
+      // THREE shapes, not the seven this started as. Every shape added to this `pick` list
+      // dilutes the density of all the others, and seven took `hopFilterNonZero` from its
+      // usual ~300 down to 248 against a floor of 250 — the fuzzer failed on COVERAGE, not on
+      // a divergence. Lowering a floor to admit new shapes trades a real guard for a new one,
+      // so the additions were trimmed instead, to the cases nothing else here reaches: the
+      // non-zero-limit spellings are already covered by the `count(*) AS x LIMIT 1` shape
+      // above, and an over-long SKIP adds nothing a LIMIT 0 does not already pin.
+      'MATCH (n:T) WHERE 1 / (n.n - 7) > 0 RETURN count(*) AS x LIMIT 0',
+      'MATCH (n:T) WHERE 1 / (n.n - 7) > 0 RETURN n.n AS g, count(*) AS x LIMIT 0',
+      // One paged count WITHOUT a fault, so the window itself is compared: a shortcut that
+      // windowed its groups in the wrong order answers this differently.
+      'MATCH (n:T) RETURN n.n AS g, count(*) AS x SKIP 1 LIMIT 2',
       // UNTYPED and filtered, unconditionally rather than via the `rel` draw. This is the
       // spelling that was WRONG (item 114), so its density is pinned by its own shapes and a
       // coverage floor instead of being left to a 1-in-4 pick that later shapes dilute.

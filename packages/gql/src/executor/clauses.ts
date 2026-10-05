@@ -1331,7 +1331,7 @@ export const runLinearClauses = (
     // enumerating every match. Only fires for the exact `MATCH … RETURN count(*)`
     // shapes `detectCountShortcut` accepts.
     if (linear.countShortcut) {
-      return [linear.countShortcut(graph, params)];
+      return linear.countShortcut(graph, params);
     }
 
     // Grouped `count(*)` off the label bucket — many rows, so its own hook. See

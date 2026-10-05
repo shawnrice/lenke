@@ -1151,7 +1151,7 @@ const identityCount = (n: number): number => n;
 export const detectCountShortcut = (
   clauses: readonly Clause[],
   compiled?: readonly CClause[],
-): CountFn | null => {
+): ((graph: Graph, params: Params) => Row[]) | null => {
   if (clauses.length < 2) {
     return null;
   }
@@ -1198,14 +1198,17 @@ export const detectCountShortcut = (
   // `buildNodeCount` and so went through general execution — adding that shortcut is what
   // turned the latent gap into a failing test. A `LET` before the `RETURN` also hid it, by
   // making `clauses.length !== 2` reject the shortcut outright.
+  // SKIP/LIMIT are NOT refused. An un-grouped `count(*)` with one item is exactly ONE row, so
+  // a page over it is arithmetic on a one-element list — and refusing it made `LIMIT 1`, which
+  // cannot change the answer, cost 380x the same query without it (0.021ms vs 7.979ms over
+  // 20,000 nodes, against native's 0.003ms either way). Two spellings of one question, one of
+  // them hundreds of times slower: the bug class this repo is named after. See `pageOneRow`.
   if (
     proj.star ||
     proj.distinct ||
     proj.groupBy !== undefined ||
     proj.having !== undefined ||
     (proj.orderBy?.length ?? 0) > 0 ||
-    proj.skip !== undefined ||
-    proj.limit !== undefined ||
     proj.items.length !== 1
   ) {
     return null;
@@ -1223,17 +1226,66 @@ export const detectCountShortcut = (
 
   // ONE pattern in ONE `MATCH` keeps the original path, which is the only one that
   // can answer a clause `WHERE` (through the 1-hop tally).
-  if (matches.length === 1 && m.patterns.length === 1) {
-    // The COMPILED start node carries the seed hints lifted from the `WHERE`, which is what
-    // lets the node tally seek an index instead of scanning the label bucket. Optional so a
-    // caller without the compiled clauses still gets the (bucket-scanning) shortcut.
-    const cm = compiled?.[0];
-    const cstart = cm?.kind === 'match' ? cm.patterns[0]?.start : undefined;
+  const one = ((): CountFn | null => {
+    if (matches.length === 1 && m.patterns.length === 1) {
+      // The COMPILED start node carries the seed hints lifted from the `WHERE`, which is what
+      // lets the node tally seek an index instead of scanning the label bucket. Optional so a
+      // caller without the compiled clauses still gets the (bucket-scanning) shortcut.
+      const cm = compiled?.[0];
+      const cstart = cm?.kind === 'match' ? cm.patterns[0]?.start : undefined;
 
-    return patternCountOf(m.patterns[0], m.where, rowOf, cstart);
+      return patternCountOf(m.patterns[0], m.where, rowOf, cstart);
+    }
+
+    return productCountOf(matches, rowOf);
+  })();
+
+  if (one === null) {
+    return null;
   }
 
-  return productCountOf(matches, rowOf);
+  // Unpaged is the overwhelmingly common spelling, so it returns the row with no window
+  // arithmetic and no array slice at all.
+  if (proj.skip === undefined && proj.limit === undefined) {
+    return (graph, params) => [one(graph, params)];
+  }
+
+  return (graph, params) => pageOneRow(one, graph, params, proj.skip, proj.limit);
+};
+
+/**
+ * Apply a `SKIP`/`LIMIT` window to a shortcut that produces exactly ONE row.
+ *
+ * The window is resolved per execution because either bound may be a `$param`. Three cases,
+ * and all three match what the general path does with a one-row projection:
+ *
+ *   - `LIMIT 0` — no rows, and the count is never computed. The general path returns `[]`
+ *     from `applyProjection` before projecting anything, for the reason recorded there: a
+ *     zero limit must not be the one limit that evaluates rows it discards.
+ *   - `SKIP n`, `n >= 1` — the single row is skipped, so no rows.
+ *   - otherwise the row survives, because a `LIMIT` of 1 or more over one row keeps it.
+ *
+ * A negative or non-integer bound is not reachable here: `noteCountParam` validates both
+ * up front, the same as for every other paged shape.
+ */
+const pageOneRow = (
+  one: CountFn,
+  graph: Graph,
+  params: Params,
+  skip: CountValue | undefined,
+  limit: CountValue | undefined,
+): Row[] => {
+  const limitN = resolveCount(limit, params);
+
+  if (limitN === 0) {
+    return [];
+  }
+
+  if ((resolveCount(skip, params) ?? 0) > 0) {
+    return [];
+  }
+
+  return [one(graph, params)];
 };
 
 /**
@@ -1258,6 +1310,43 @@ export const detectCountShortcut = (
  *   - the two columns are emitted in the projection's item order, so
  *     `RETURN count(*) AS c, n.k AS a` keeps `c` first.
  */
+/**
+ * Apply a `SKIP`/`LIMIT` window to a grouped shortcut's rows, which are in first-seen group
+ * order — the same order the general path emits, so the same window selects the same groups.
+ *
+ * Unpaged returns the array untouched rather than slicing a copy of it, since that is the
+ * common spelling. Bounds resolve per execution because either may be a `$param`.
+ */
+const pageGroups = (
+  rows: Row[],
+  params: Params,
+  skip: CountValue | undefined,
+  limit: CountValue | undefined,
+): Row[] => {
+  if (skip === undefined && limit === undefined) {
+    return rows;
+  }
+
+  const skipN = resolveCount(skip, params) ?? 0;
+  const limitN = resolveCount(limit, params);
+
+  return rows.slice(skipN, limitN === undefined ? undefined : skipN + limitN);
+};
+
+/**
+ * Does this page keep NO rows whatever the data? Then the tally must not run at all.
+ *
+ * `LIMIT 0` emits nothing, and the general path returns `[]` from `applyProjection` BEFORE
+ * projecting anything — so a shortcut that tallied first and sliced to empty afterwards would
+ * evaluate expressions on rows the general path never touches. That matters because the
+ * three-clause grouped form carries a `LET` whose expression CAN fault: with
+ * `LET s = 1 / (n.k - 7) … LIMIT 0` the general path returns no rows, and a tally that ran
+ * first would raise. Same rule as items 139 and 142 — a fast path may not evaluate an
+ * expression on an element the general path never reaches.
+ */
+const pageIsEmpty = (params: Params, limit: CountValue | undefined): boolean =>
+  resolveCount(limit, params) === 0;
+
 /** Is `e` exactly `count(*)` — no argument, no DISTINCT? */
 const isStarCount = (e: Expr): boolean =>
   e.kind === 'func' && e.name === 'count' && e.star && !e.distinct;
@@ -1306,13 +1395,16 @@ const groupedProjection = (
   proj: Projection,
   letName: string | undefined,
 ): { countAt: number } | null => {
+  // SKIP/LIMIT are NOT refused. A grouped count's rows come out in FIRST-SEEN group order,
+  // which is the pinned contract both engines keep (a `Map`'s insertion order here, the
+  // general path's own `Map<string, Binding[]>` there) — so a window over them is a slice of
+  // this list and equals the general path's window over its list. `ORDER BY` still declines,
+  // because that reorders the groups before the window and the tally does not sort.
   if (
     proj.star ||
     proj.distinct ||
     proj.having !== undefined ||
     (proj.orderBy?.length ?? 0) > 0 ||
-    proj.skip !== undefined ||
-    proj.limit !== undefined ||
     proj.items.length !== 2
   ) {
     return null;
@@ -1385,7 +1477,7 @@ export const detectGroupedNodeCount = (clauses: readonly Clause[]): ReachFn | nu
     return null;
   }
 
-  const { items } = shape.ret.projection;
+  const { items, skip, limit } = shape.ret.projection;
   const { countAt } = picked;
   const [{ start, segments }] = shape.match.patterns;
 
@@ -1465,6 +1557,10 @@ export const detectGroupedNodeCount = (clauses: readonly Clause[]): ReachFn | nu
   const labelName = label?.name;
 
   return (graph, params) => {
+    if (pageIsEmpty(params, limit)) {
+      return [];
+    }
+
     const vertices: Iterable<Vertex> =
       labelName === undefined
         ? graph.verticesById.values()
@@ -1490,10 +1586,15 @@ export const detectGroupedNodeCount = (clauses: readonly Clause[]): ReachFn | nu
       }
     }
 
-    return [...groups.values()].map((slot) =>
-      countFirst
-        ? { [countCol]: slot.n, [keyCol]: slot.key }
-        : { [keyCol]: slot.key, [countCol]: slot.n },
+    return pageGroups(
+      [...groups.values()].map((slot) =>
+        countFirst
+          ? { [countCol]: slot.n, [keyCol]: slot.key }
+          : { [keyCol]: slot.key, [countCol]: slot.n },
+      ),
+      params,
+      skip,
+      limit,
     );
   };
 };
@@ -1551,7 +1652,7 @@ export const detectGroupedHopCount = (clauses: readonly Clause[]): ReachFn | nul
     return null;
   }
 
-  const { items } = shape.ret.projection;
+  const { items, skip, limit } = shape.ret.projection;
   const { countAt } = picked;
   const [pattern] = shape.match.patterns;
 
@@ -1658,6 +1759,10 @@ export const detectGroupedHopCount = (clauses: readonly Clause[]): ReachFn | nul
   };
 
   return (graph, params) => {
+    if (pageIsEmpty(params, limit)) {
+      return [];
+    }
+
     const groups = new Map<string, { key: unknown; n: number }>();
     const binding = new Map<string, unknown>();
     const add = (raw: unknown, by: number): void => {
@@ -1749,10 +1854,15 @@ export const detectGroupedHopCount = (clauses: readonly Clause[]): ReachFn | nul
       }
     }
 
-    return [...groups.values()].map((slot) =>
-      countFirst
-        ? { [countCol]: slot.n, [keyCol]: slot.key }
-        : { [keyCol]: slot.key, [countCol]: slot.n },
+    return pageGroups(
+      [...groups.values()].map((slot) =>
+        countFirst
+          ? { [countCol]: slot.n, [keyCol]: slot.key }
+          : { [keyCol]: slot.key, [countCol]: slot.n },
+      ),
+      params,
+      skip,
+      limit,
     );
   };
 };
