@@ -277,6 +277,48 @@ fn node_prop_filters(mut plan: Plan, slot: usize, props: Vec<(String, Value)>) -
     plan
 }
 
+/// The direction an ISO `<abbreviated edge pattern>` carries on its own (audit item 166).
+///
+/// The three "or" forms collapse to `Dir::Both` because `~` already carries no direction in this
+/// engine, so left-or-undirected, undirected-or-right and left-or-right are each `In ∪ Out` over
+/// a store where every edge is directed — see the pairing table in `Parser::rel`.
+fn abbreviated_dir(open: &Tok) -> Result<Dir, String> {
+    match open {
+        Tok::RArrow => Ok(Dir::Out),                       // `->`  pointing right
+        Tok::LArrow => Ok(Dir::In),                        // `<-`  pointing left
+        Tok::Tilde                                         // `~`   undirected
+        | Tok::Minus                                       // `-`   any direction
+        | Tok::LTilde                                      // `<~`  left or undirected
+        | Tok::TildeR                                      // `~>`  undirected or right
+        | Tok::LrArrow => Ok(Dir::Both),                   // `<->` left or right
+        // Unreachable via `rel`, which only ever passes a delimiter it just consumed; kept as a
+        // loud error rather than a silent default so a new delimiter token cannot acquire a
+        // direction by accident.
+        other => Err(format!("`{other:?}` is not an edge-pattern delimiter")),
+    }
+}
+
+/// Does a relationship pattern start here? Any of the seven ISO edge-pattern delimiters opens
+/// one, abbreviated or bracketed.
+///
+/// One predicate because the three-token form of this test was duplicated at EIGHT call sites,
+/// and adding the four missing delimiters in item 166 would otherwise have meant getting all
+/// eight right by hand — a shape where one miss is a silently unreachable production.
+fn starts_rel(t: Option<&Tok>) -> bool {
+    matches!(
+        t,
+        Some(
+            Tok::Minus
+                | Tok::LArrow
+                | Tok::Tilde
+                | Tok::RArrow
+                | Tok::LrArrow
+                | Tok::LTilde
+                | Tok::TildeR
+        )
+    )
+}
+
 /// A parsed relationship pattern `-[var:Type {props}]->`: direction, edge type,
 /// an optional bound variable, and inline properties (a match filter in a
 /// pattern, edge properties to write in an INSERT).
@@ -530,13 +572,16 @@ enum Tok {
     Plus,
     Slash,
     Percent,
-    Concat, // ||
-    RArrow, // ->
-    LArrow, // <-
-    Tilde,  // ~ (undirected relationship delimiter)
-    Pipe,   // | (edge-type disjunction in `[:A|B]`)
-    Amp,    // & (multi-label conjunction in `INSERT (n:A&B)`)
-    Bang,   // ! (label negation in `(n:!A)`)
+    Concat,  // ||
+    RArrow,  // ->
+    LArrow,  // <-
+    Tilde,   // ~ (undirected relationship delimiter)
+    LrArrow, // <-> (ISO `<left minus right>`: left or right)
+    LTilde,  // <~ (ISO `<left arrow tilde>`: left or undirected)
+    TildeR,  // ~> (ISO `<tilde right arrow>`: undirected or right)
+    Pipe,    // | (edge-type disjunction in `[:A|B]`)
+    Amp,     // & (multi-label conjunction in `INSERT (n:A&B)`)
+    Bang,    // ! (label negation in `(n:!A)`)
     Eq,
     Ne,
     Lt,
@@ -597,7 +642,14 @@ fn lex(s: &str) -> Result<Vec<Tok>, String> {
             '+' => out.push(Tok::Plus),
             '/' => out.push(Tok::Slash),
             '%' => out.push(Tok::Percent),
-            '~' => out.push(Tok::Tilde),
+            '~' => {
+                if b.get(i + 1) == Some(&'>') {
+                    out.push(Tok::TildeR);
+                    i += 1;
+                } else {
+                    out.push(Tok::Tilde);
+                }
+            }
             '|' => {
                 if b.get(i + 1) == Some(&'|') {
                     out.push(Tok::Concat);
@@ -641,8 +693,18 @@ fn lex(s: &str) -> Result<Vec<Tok>, String> {
                     out.push(Tok::Le);
                     i += 1;
                 }
+                // `<->` before `<-`: the longer token wins, or `<->` would lex as `<-` plus a
+                // stray `>` (which is what it did until audit item 166).
+                Some('-') if b.get(i + 2) == Some(&'>') => {
+                    out.push(Tok::LrArrow);
+                    i += 2;
+                }
                 Some('-') => {
                     out.push(Tok::LArrow);
+                    i += 1;
+                }
+                Some('~') => {
+                    out.push(Tok::LTilde);
                     i += 1;
                 }
                 _ => out.push(Tok::Lt),
@@ -2158,7 +2220,7 @@ impl Parser {
         // An edge form `(a:A {..})-[m:R {..}]->(b:B {..})` — upsert the single edge
         // between the two key-matched endpoints. Detected by an edge delimiter after
         // the first node.
-        if matches!(self.peek(), Some(Tok::Minus | Tok::LArrow | Tok::Tilde)) {
+        if starts_rel(self.peek()) {
             return self.merge_edge(var, label, props);
         }
 
@@ -2563,7 +2625,7 @@ impl Parser {
         var_to_idx: &mut HashMap<String, usize>,
     ) -> Result<(), String> {
         let mut prev = self.insert_node_expr(nodes, var_to_idx)?;
-        while matches!(self.peek(), Some(Tok::Minus | Tok::LArrow | Tok::Tilde)) {
+        while starts_rel(self.peek()) {
             let rel = self.rel(true)?;
             if rel.where_range.is_some() {
                 return Err("inline WHERE on an INSERT relationship is not supported".into());
@@ -3006,9 +3068,7 @@ impl Parser {
         slots: &mut usize,
         mut from: usize,
     ) -> Result<Plan, String> {
-        while matches!(self.peek(), Some(Tok::Minus | Tok::LArrow | Tok::Tilde))
-            || self.is_subpath_group_start()
-        {
+        while starts_rel(self.peek()) || self.is_subpath_group_start() {
             // A parenthesized subpath group `((x)-[e:R]->(y)){n,m} (t)`. A SINGLE-edge
             // group with no per-rep predicate and no downstream group-variable use is
             // exactly a variable-length hop (same edge-distinct/path-mode reachability
@@ -3565,7 +3625,7 @@ impl Parser {
                 );
             }
             node_vars.push(n.0.clone());
-            if !matches!(self.peek(), Some(Tok::Minus | Tok::LArrow | Tok::Tilde)) {
+            if !starts_rel(self.peek()) {
                 break;
             }
         }
@@ -3722,7 +3782,7 @@ impl Parser {
                     etypes: rel.etypes,
                     epred,
                 });
-                if !matches!(self.peek(), Some(Tok::Minus | Tok::LArrow | Tok::Tilde)) {
+                if !starts_rel(self.peek()) {
                     break;
                 }
             }
@@ -3781,7 +3841,7 @@ impl Parser {
                         epred,
                     });
                 }
-                if !matches!(self.peek(), Some(Tok::Minus | Tok::LArrow | Tok::Tilde)) {
+                if !starts_rel(self.peek()) {
                     break;
                 }
             }
@@ -4025,7 +4085,7 @@ impl Parser {
         }
         let inline_where = self.eat_kw("WHERE");
         self.expect(&Tok::RParen)?;
-        let has_rel = matches!(self.peek(), Some(Tok::Minus | Tok::LArrow | Tok::Tilde));
+        let has_rel = starts_rel(self.peek());
         let bound = var.as_ref().and_then(|v| self.scope.get(v)).copied();
 
         // Fresh-variable single node (no rel) → a left-outer correlated scan.
@@ -4952,9 +5012,46 @@ impl Parser {
     // the undirected delimiter: like `-`, it carries NO direction, so `~[...]~`
     // (and any `-`/`~` mix) is `Dir::Both`, exactly as the TS engine resolves it.
     fn rel(&mut self, insert_ctx: bool) -> Result<Rel, String> {
-        let incoming = self.eat(&Tok::LArrow);
-        if !incoming && !self.eat(&Tok::Minus) && !self.eat(&Tok::Tilde) {
-            return Err(format!("expected `-`, `~`, or `<-` at token {}", self.pos));
+        let open = match self.peek() {
+            Some(
+                t @ (Tok::LArrow
+                | Tok::Minus
+                | Tok::Tilde
+                | Tok::RArrow
+                | Tok::LrArrow
+                | Tok::LTilde
+                | Tok::TildeR),
+            ) => {
+                let t = t.clone();
+                self.pos += 1;
+                t
+            }
+            _ => {
+                return Err(format!(
+                    "expected `-`, `~`, `<-`, `->`, `<->`, `<~`, or `~>` at token {}",
+                    self.pos
+                ))
+            }
+        };
+        // An ABBREVIATED edge pattern — no brackets, so no variable, no type and no
+        // properties, and the direction comes from this one token (audit item 166):
+        //
+        //   <abbreviated edge pattern> ::=
+        //       <left arrow> | <tilde> | <right arrow> | <left arrow tilde>
+        //     | <tilde right arrow> | <left minus right> | <minus sign>
+        //
+        // All seven raised `E_SYNTAX` here until item 166, while the TS engine answered every
+        // one and agreed with its own full-bracket spelling — the equivalent-spellings rule,
+        // violated across engines rather than within one.
+        if !matches!(self.peek(), Some(Tok::LBracket)) {
+            return Ok(Rel {
+                dir: abbreviated_dir(&open)?,
+                etypes: Vec::new(),
+                var: None,
+                props: Vec::new(),
+                prop_exprs: Vec::new(),
+                where_range: None,
+            });
         }
         self.expect(&Tok::LBracket)?;
         let var = if matches!(self.peek(), Some(Tok::Ident(_))) {
@@ -5021,20 +5118,67 @@ impl Parser {
             None
         };
         self.expect(&Tok::RBracket)?;
-        let dir = if incoming {
-            if !self.eat(&Tok::Minus) && !self.eat(&Tok::Tilde) {
-                return Err(format!(
-                    "expected `-` or `~` to close a relationship at token {}",
-                    self.pos
-                ));
+        // The opening and closing delimiters TOGETHER give the direction. ISO pairs each
+        // abbreviated form with a full one, and three of the seven were missing here until
+        // audit item 166 — `<~[…]~`, `~[…]~>` and `<-[…]->`:
+        //
+        //   <-[…]-   left              <~[…]~   left or undirected
+        //   ~[…]~    undirected        ~[…]~>   undirected or right
+        //   -[…]->   right             <-[…]->  left or right
+        //   -[…]-    any direction
+        //
+        // The three "or" forms all resolve to `Dir::Both`, and that follows from a convention
+        // this engine already had rather than being a new choice: `~` carries NO direction and
+        // already means `Both` here, so left-or-undirected, undirected-or-right and
+        // left-or-right are each `In ∪ Out` over a store where every edge is directed. The TS
+        // engine resolves all three to `Both` too, which is what keeps the two byte-identical.
+        //
+        // The `-`/`~` MIXES (`-[…]~`, `~[…]->`) are not ISO pairs but were already accepted
+        // here, so they stay accepted: tightening them unilaterally would diverge from TS,
+        // which accepts them as well. That is a separate question from this item.
+        let dir = match open {
+            Tok::LArrow => {
+                if self.eat(&Tok::RArrow) {
+                    Dir::Both // `<-[…]->` — left or right
+                } else if self.eat(&Tok::Minus) || self.eat(&Tok::Tilde) {
+                    Dir::In
+                } else {
+                    return Err(format!(
+                        "expected `-`, `~`, or `->` to close a relationship at token {}",
+                        self.pos
+                    ));
+                }
             }
-            Dir::In
-        } else if self.eat(&Tok::RArrow) {
-            Dir::Out
-        } else if self.eat(&Tok::Minus) || self.eat(&Tok::Tilde) {
-            Dir::Both
-        } else {
-            return Err(format!("malformed relationship at token {}", self.pos));
+            Tok::LTilde => {
+                if self.eat(&Tok::Tilde) || self.eat(&Tok::Minus) {
+                    Dir::Both // `<~[…]~` — left or undirected
+                } else {
+                    return Err(format!(
+                        "expected `~` to close a `<~` relationship at token {}",
+                        self.pos
+                    ));
+                }
+            }
+            Tok::Minus | Tok::Tilde => {
+                if self.eat(&Tok::RArrow) {
+                    Dir::Out
+                } else if self.eat(&Tok::TildeR) || self.eat(&Tok::Minus) || self.eat(&Tok::Tilde) {
+                    // `~[…]~>` is undirected-or-right; `~[…]~` and `-[…]-` carry no direction at
+                    // all. All three are `Both` here, which is why they share this arm (and why
+                    // clippy rejected spelling them as two).
+                    Dir::Both
+                } else {
+                    return Err(format!("malformed relationship at token {}", self.pos));
+                }
+            }
+            // `->[…]`, `<->[…]`, `~>[…]`: these forms are ABBREVIATED-only in ISO, so a
+            // bracket after one is malformed rather than a direction we have to name.
+            _ => {
+                return Err(format!(
+                    "`->`, `<->` and `~>` cannot open a bracketed relationship at token {}",
+                    self.pos
+                ))
+            }
         };
         Ok(Rel {
             dir,

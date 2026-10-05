@@ -5883,3 +5883,257 @@ fn unbuilt_constructs_are_not_implemented_rather_than_syntax_errors() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// ISO `<abbreviated edge pattern>` (audit item 166)
+// ---------------------------------------------------------------------------
+
+/// A two-vertex, one-edge store: `a -[:E]-> b`, plus an isolated `c` so a Both-direction
+/// pattern cannot be confused with "every vertex pair".
+fn arrow_fixture() -> Store {
+    let mut st = Builder::default().build();
+    exec_gql(
+        &mut st,
+        "INSERT (:L {id:'a'}), (:L {id:'b'}), (:L {id:'c'})",
+    );
+    exec_gql(
+        &mut st,
+        "MATCH (x:L {id:'a'}), (y:L {id:'b'}) INSERT (x)-[:E]->(y)",
+    );
+    st
+}
+
+fn arrow_count(st: &Store, sql: &str) -> f64 {
+    let p = crate::opt::optimize_indexed(super::parse(sql).unwrap(), st);
+    match &run(&p, st).rows[0][0] {
+        Value::Num(x) => *x,
+        other => panic!("expected a number, got {other:?} for `{sql}`"),
+    }
+}
+
+/// All seven ISO abbreviated edge patterns parse and give the direction the grammar names.
+///
+/// Every one raised `E_SYNTAX` before item 166 — the whole `<abbreviated edge pattern>`
+/// production was missing — while the TS engine answered all seven.
+#[test]
+fn every_abbreviated_edge_pattern_parses_with_its_direction() {
+    let st = arrow_fixture();
+    // One directed edge a->b, so: right = 1, left = 1 (seen from b), and anything that
+    // admits BOTH orientations = 2.
+    for (abbrev, want) in [
+        ("->", 1.0),  // pointing right
+        ("<-", 1.0),  // pointing left
+        ("~", 2.0),   // undirected
+        ("-", 2.0),   // any direction
+        ("<~", 2.0),  // left or undirected
+        ("~>", 2.0),  // undirected or right
+        ("<->", 2.0), // left or right
+    ] {
+        let sql = format!("MATCH (x:L){abbrev}(y:L) RETURN count(*) AS c");
+        assert_eq!(arrow_count(&st, &sql), want, "`{abbrev}` direction");
+    }
+}
+
+/// WHICH vertex an abbreviated hop binds — not how many it finds.
+///
+/// A mutant swapping `<-` to `Dir::Out` SURVIVED all 960 tests, and the reason is structural
+/// rather than a thin fixture: `count(*)` over `(x)->(y)` and over `(x)<-(y)` both count EDGES,
+/// so the two directions are indistinguishable by count at any size or shape. Only a bound
+/// endpoint tells them apart, which is what this test reads.
+#[test]
+fn an_abbreviated_hop_binds_the_endpoint_its_direction_names() {
+    let mut st = Builder::default().build();
+    exec_gql(&mut st, "INSERT (:L {id:'a'}), (:L {id:'b'})");
+    exec_gql(
+        &mut st,
+        "MATCH (x:L {id:'a'}), (y:L {id:'b'}) INSERT (x)-[:E]->(y)",
+    );
+
+    let ids = |sql: &str| -> Vec<String> {
+        let p = crate::opt::optimize_indexed(super::parse(sql).unwrap(), &st);
+        run(&p, &st)
+            .rows
+            .iter()
+            .map(|r| match &r[0] {
+                Value::Str(s) => s.to_string(),
+                other => panic!("expected a string id, got {other:?} for `{sql}`"),
+            })
+            .collect()
+    };
+
+    // From `a`, the OUT hop lands on `b`; the IN hop finds nothing, because nothing points at
+    // `a`. Swap the two directions and both assertions flip.
+    assert_eq!(
+        ids("MATCH (x:L {id:'a'})->(y:L) RETURN y.id AS i"),
+        vec!["b".to_string()],
+        "`->` from a lands on b"
+    );
+    assert!(
+        ids("MATCH (x:L {id:'a'})<-(y:L) RETURN y.id AS i").is_empty(),
+        "`<-` from a finds nothing: no edge points at a"
+    );
+    // And the mirror from `b`, so neither assertion can pass by the fixture being one-sided.
+    assert_eq!(
+        ids("MATCH (x:L {id:'b'})<-(y:L) RETURN y.id AS i"),
+        vec!["a".to_string()],
+        "`<-` from b lands on a"
+    );
+    assert!(
+        ids("MATCH (x:L {id:'b'})->(y:L) RETURN y.id AS i").is_empty(),
+        "`->` from b finds nothing"
+    );
+    // A Both-direction abbreviated hop sees it from either end.
+    assert_eq!(
+        ids("MATCH (x:L {id:'a'})-(y:L) RETURN y.id AS i"),
+        vec!["b".to_string()]
+    );
+    assert_eq!(
+        ids("MATCH (x:L {id:'b'})-(y:L) RETURN y.id AS i"),
+        vec!["a".to_string()]
+    );
+}
+
+/// Each abbreviated form must agree with its FULL-bracket equivalent — the repo's
+/// equivalent-spellings rule, which item 165 found violated ACROSS engines rather than
+/// within one.
+#[test]
+fn an_abbreviated_pattern_agrees_with_its_full_spelling() {
+    let st = arrow_fixture();
+    for (abbrev, full) in [
+        ("->", "-[]->"),
+        ("<-", "<-[]-"),
+        ("~", "~[]~"),
+        ("-", "-[]-"),
+        ("<~", "<~[]~"),
+        ("~>", "~[]~>"),
+        ("<->", "<-[]->"),
+    ] {
+        let a = arrow_count(
+            &st,
+            &format!("MATCH (x:L){abbrev}(y:L) RETURN count(*) AS c"),
+        );
+        let f = arrow_count(&st, &format!("MATCH (x:L){full}(y:L) RETURN count(*) AS c"));
+        assert_eq!(a, f, "`{abbrev}` must equal `{full}`");
+    }
+}
+
+/// The three FULL forms that were missing alongside the abbreviated ones: the
+/// "or"-direction pairings. `<~[…]~`, `~[…]~>` and `<-[…]->` all raised `E_SYNTAX`.
+#[test]
+fn the_or_direction_full_edge_patterns_parse() {
+    let st = arrow_fixture();
+    for full in ["<~[]~", "~[]~>", "<-[]->"] {
+        let sql = format!("MATCH (x:L){full}(y:L) RETURN count(*) AS c");
+        assert_eq!(arrow_count(&st, &sql), 2.0, "`{full}` is Both");
+    }
+}
+
+/// An abbreviated pattern carries no variable, type or properties, so a bracket after
+/// `->`, `<->` or `~>` is malformed rather than a direction to resolve.
+#[test]
+fn an_abbreviated_only_delimiter_cannot_open_a_bracket() {
+    for q in [
+        "MATCH (x:L)->[r:E]->(y:L) RETURN count(*) AS c",
+        "MATCH (x:L)<->[:E]-(y:L) RETURN count(*) AS c",
+        "MATCH (x:L)~>[:E]~(y:L) RETURN count(*) AS c",
+    ] {
+        let err = super::parse(q).expect_err("an abbreviated-only delimiter cannot take a bracket");
+        assert!(
+            !err.starts_with("E_NOT_IMPLEMENTED: "),
+            "a malformed pattern is a syntax error, not unimplemented: {q} -> {err}"
+        );
+    }
+}
+
+/// `-->` and `--` are Cypher, not ISO. They must not become reachable by accident now that
+/// `-` opens an abbreviated pattern — `--` is in fact the ISO SIMPLE COMMENT INTRODUCER, so
+/// the tail of such a query is a comment and the statement loses its RETURN.
+#[test]
+fn cypher_arrow_spellings_are_still_refused() {
+    for q in [
+        "MATCH (x:L)-->(y:L) RETURN count(*) AS c",
+        "MATCH (x:L)--(y:L) RETURN count(*) AS c",
+        "MATCH (x:L)<--(y:L) RETURN count(*) AS c",
+        "MATCH (x:L)<-->(y:L) RETURN count(*) AS c",
+    ] {
+        super::parse(q).expect_err("a Cypher arrow spelling is not ISO");
+    }
+}
+
+/// Adding `<->`, `<~` and `~>` to the lexer must not have stolen characters from the
+/// comparison operators that start the same way. `<>` / `<=` / `<` share a prefix with
+/// `<-` and `<->`, and this is the arm item 166 edited.
+#[test]
+fn the_new_delimiters_did_not_break_the_comparison_operators() {
+    let st = arrow_fixture();
+    for (wc, want) in [
+        ("x.id <> 'a'", 2.0),
+        ("x.id <= 'b'", 2.0),
+        ("x.id < 'c'", 2.0),
+        ("x.id >= 'b'", 2.0),
+        ("x.id > 'a'", 2.0),
+        ("x.id = 'a'", 1.0),
+    ] {
+        let sql = format!("MATCH (x:L) WHERE {wc} RETURN count(*) AS c");
+        assert_eq!(arrow_count(&st, &sql), want, "`{wc}` still lexes");
+    }
+}
+
+/// An abbreviated pattern works where a full one does: chained hops, and with a label on
+/// each node. A single-hop-only implementation would pass the tests above.
+#[test]
+fn abbreviated_patterns_chain_and_carry_node_labels() {
+    let mut st = Builder::default().build();
+    exec_gql(
+        &mut st,
+        "INSERT (:L {id:'a'}), (:L {id:'b'}), (:L {id:'c'})",
+    );
+    exec_gql(
+        &mut st,
+        "MATCH (x:L {id:'a'}), (y:L {id:'b'}) INSERT (x)-[:E]->(y)",
+    );
+    exec_gql(
+        &mut st,
+        "MATCH (y:L {id:'b'}), (z:L {id:'c'}) INSERT (y)-[:E]->(z)",
+    );
+
+    // a->b->c as one chain of abbreviated hops.
+    assert_eq!(
+        arrow_count(&st, "MATCH (x:L)->(y:L)->(z:L) RETURN count(*) AS c"),
+        1.0
+    );
+    // Mixed spellings in ONE pattern must agree with the all-abbreviated form.
+    assert_eq!(
+        arrow_count(&st, "MATCH (x:L)-[]->(y:L)->(z:L) RETURN count(*) AS c"),
+        1.0
+    );
+    assert_eq!(
+        arrow_count(&st, "MATCH (x:L)->(y:L)-[]->(z:L) RETURN count(*) AS c"),
+        1.0
+    );
+}
+
+/// An abbreviated hop is UNTYPED, so it traverses an edge of any type — the same
+/// semantics as `-[]->`, not "no edges".
+#[test]
+fn an_abbreviated_hop_is_untyped() {
+    let mut st = Builder::default().build();
+    exec_gql(&mut st, "INSERT (:L {id:'a'}), (:L {id:'b'})");
+    exec_gql(
+        &mut st,
+        "MATCH (x:L {id:'a'}), (y:L {id:'b'}) INSERT (x)-[:OTHER]->(y)",
+    );
+    // `:OTHER` is the only edge type present; an untyped hop must still find it.
+    assert_eq!(
+        arrow_count(&st, "MATCH (x:L)->(y:L) RETURN count(*) AS c"),
+        1.0
+    );
+    assert_eq!(
+        arrow_count(&st, "MATCH (x:L)-[:OTHER]->(y:L) RETURN count(*) AS c"),
+        1.0
+    );
+    assert_eq!(
+        arrow_count(&st, "MATCH (x:L)-[:NOPE]->(y:L) RETURN count(*) AS c"),
+        0.0
+    );
+}
