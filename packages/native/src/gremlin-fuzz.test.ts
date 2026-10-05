@@ -304,6 +304,24 @@ const SLICING_STEP = /(?:^|[.(,\s])(?:limit|skip|range|tail)\(/;
  * An `order()` that comes FIRST does make the slice deterministic, and those
  * plans stay compared.
  */
+/**
+ * A GLOBAL `order(...)`. `order(local)` is deliberately excluded: `Scope.local` sorts WITHIN each
+ * incoming element, so on a stream of scalars it is a NO-OP and leaves the stream order exactly
+ * as unspecified as it was. Verified against a real TinkerPop console rather than reasoned about
+ * (`podman run -i tinkerpop/gremlin-console`, `createModern()`):
+ *
+ *     V().id()                       -> [1, 2, 3, 4, 5, 6]
+ *     V().order(local).id()          -> [1, 2, 3, 4, 5, 6]
+ *     V().order(local).by(desc).id() -> [1, 2, 3, 4, 5, 6]
+ *
+ * Treating it as an ordering step made this gate INTERMITTENTLY red, roughly one full sweep in
+ * three, on `g.V().order(local).by(desc).bothE('CREATED', 'KNOWS').limit(2)` (seed 100286502):
+ * ts took edges 7 and 9, native 7 and 8. Both are correct — the slice is over an unspecified
+ * order, which is precisely what this skip exists for; the plan slipped through because
+ * `order(local)` LOOKED like it settled the sequence.
+ */
+const GLOBAL_ORDER = /\.order\((?!\s*local\s*\))/;
+
 const slicedBeforeOrdering = (text: string): boolean => {
   const slice = text.search(SLICING_STEP);
 
@@ -311,7 +329,7 @@ const slicedBeforeOrdering = (text: string): boolean => {
     return false;
   }
 
-  const ordered = text.indexOf('.order(');
+  const ordered = text.search(GLOBAL_ORDER);
 
   return ordered < 0 || slice < ordered;
 };

@@ -442,6 +442,22 @@ const attachSubpathWhere = (pat: PathPattern, cond: Expr): void => {
   target.where = target.where ? { kind: 'and', items: [target.where, cond] } : cond;
 };
 
+/**
+ * Does this clause WRITE? A statement containing one is a data-modifying statement, which ISO
+ * lets omit its result statement; a read-only one may not (see the check at the end of
+ * `parseLinearQuery`).
+ *
+ * Listed explicitly rather than as a negation of the read-only kinds, so a new clause kind
+ * defaults to needing a RETURN rather than silently becoming allowed to drop it. Module scope
+ * because it captures nothing, so `parse` need not rebuild it per call (`bun run lint` says so).
+ */
+const isWrite = (c: Clause): boolean =>
+  c.kind === 'insert' ||
+  c.kind === 'merge' ||
+  c.kind === 'set' ||
+  c.kind === 'remove' ||
+  c.kind === 'delete';
+
 // eslint-disable-next-line max-statements -- recursive-descent parser: the body is a suite of stateful closures over the token cursor; splitting them would only thread that state through parameters
 export const parse = (
   src: string,
@@ -2919,8 +2935,8 @@ export const parse = (
     return clauses;
   };
 
-  // A linear query: a sequence of clauses, optionally ending in RETURN or
-  // FINISH (a write-only query needs neither).
+  // A linear query: a sequence of clauses ending in RETURN or FINISH — except a write-only
+  // query, which needs neither (enforced at the end of this function since item 165).
   const parseLinearQuery = (): LinearQuery => {
     const clauses: Clause[] = [];
     let done = false;
@@ -2976,6 +2992,32 @@ export const parse = (
     if (clauses.length === 0) {
       throw new GqlSyntaxError(
         `Expected a clause (MATCH, INSERT, RETURN, …), got '${peek().value || peek().type}'`,
+        peek().pos,
+      );
+    }
+
+    // A query must END in a result statement; only a DATA-MODIFYING one may omit it. ISO:
+    //
+    //   <ambient linear query statement> ::=
+    //       [ <simple linear query statement> ] <primitive result statement>
+    //   <ambient linear data-modifying statement body> ::=
+    //       <simple linear data-accessing statement> [ <primitive result statement> ]
+    //
+    // where `<primitive result statement> ::= <return statement> [ … ] | FINISH`.
+    //
+    // Unenforced until audit item 165, which is why `MATCH (x)` returned `[]` rather than
+    // raising — a read with nothing to return read as an empty answer instead of a bad query.
+    // Ten shapes did it (a bare MATCH, a trailing WHERE / LET / WITH / FILTER / ORDER BY /
+    // LIMIT, a lone LET, a lone FOR, a hop), and native raised `E_SYNTAX` on every one.
+    //
+    // The comment above this function already described the rule; nothing checked it.
+    if (
+      !clauses.some((c) => c.kind === 'return' || c.kind === 'finish') &&
+      !clauses.some(isWrite)
+    ) {
+      throw new GqlSyntaxError(
+        'a query must end in RETURN or FINISH (only a writing statement — INSERT, SET, ' +
+          'REMOVE, DELETE, _MERGE — may omit it)',
         peek().pos,
       );
     }
@@ -3155,7 +3197,10 @@ export const parse = (
  * or a predicate that smuggles in extra clauses (e.g. a trailing `RETURN`).
  */
 export const parsePredicate = (src: string): Expr => {
-  const parsed = parse(`MATCH (_v) WHERE ${src}`);
+  // The `RETURN` is load-bearing, not decoration: since item 165 a query must END in a result
+  // statement, so the bare `MATCH (_v) WHERE …` wrapper this used to build is now itself a
+  // syntax error. Nine validator tests caught that immediately.
+  const parsed = parse(`MATCH (_v) WHERE ${src} RETURN 1 AS _r`);
 
   // The MATCH wrapper always yields a linear query, never a transaction-control
   // command — narrow so the `.parts` access below is well-typed.
@@ -3163,10 +3208,12 @@ export const parsePredicate = (src: string): Expr => {
     throw new GqlSyntaxError('a validator predicate must be a single boolean expression', 0);
   }
 
-  // Exactly one linear query, exactly one clause (the MATCH we wrapped it in) —
-  // anything more means the predicate carried extra clauses/set-operators.
+  // Exactly one linear query and exactly two clauses — the MATCH we wrapped it in plus the
+  // RETURN that makes the wrapper a legal query. Anything more means the predicate carried
+  // extra clauses or set operators, and a predicate smuggling its own RETURN/FINISH still
+  // fails: the wrapper's trailing RETURN then becomes trailing input.
   const clause =
-    parsed.parts.length === 1 && parsed.parts[0].clauses.length === 1
+    parsed.parts.length === 1 && parsed.parts[0].clauses.length === 2
       ? parsed.parts[0].clauses[0]
       : undefined;
 
