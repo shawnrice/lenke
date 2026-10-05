@@ -18,10 +18,15 @@ import {
   satisfies,
   valueKey,
 } from '../executor.js';
-import { candidateVertices, expand, matchesLabel } from '../graph-queries.js';
+import {
+  candidateVertexSource,
+  candidateVertices,
+  expand,
+  matchesLabel,
+} from '../graph-queries.js';
 import type { Adjacency } from '../graph-queries.js';
 import { asTruth } from './scalars.js';
-import { plainNode, plainRel } from './shortcuts.js';
+import { plainNode, plainRel, vacuousLabel } from './shortcuts.js';
 
 /** Rows for a whole `MATCH … RETURN` query, or `null` if the shape does not fit. */
 export type RowsFn = (graph: Graph, params: Params) => Row[];
@@ -342,7 +347,9 @@ export const detectHopProjection = (
   // start per vertex — it pays two always-false predicate checks per edge, which is nothing
   // against the 3.5x it gains.
   if (farPred === undefined && gate === undefined && !needsStart) {
-    return (graph, params) => {
+    // The START-driven walk, byte-for-byte what it was: item 159 measured that adding even a
+    // branch to this inner loop costs the hot shape 1.6x.
+    const startDriven = (graph: Graph, params: Params): Row[] => {
       const rows: Row[] = [];
       // ONE binding, mutated per edge. This is the allocation the profile found.
       const binding = new Map<string, unknown>();
@@ -369,6 +376,16 @@ export const detectHopProjection = (
 
       return rows;
     };
+
+    const farDriven = farDrivenHopWalk({ typeName, out, farVar, farLabel, proj });
+
+    // Which walk is chosen is a PER-CALL decision, not a per-row one, so the branch costs the
+    // inner loop nothing. The far-driven walk cannot apply a START label — it iterates the far
+    // end — so it runs only where no vertex could fail that label.
+    return (graph, params) =>
+      startLabel === undefined || vacuousLabel(graph, startLabel)
+        ? farDriven(graph, params)
+        : startDriven(graph, params);
   }
 
   return filteredHopWalk({
@@ -382,6 +399,86 @@ export const detectHopProjection = (
     gate,
     startVar: needsStart ? startVar : undefined,
   });
+};
+
+/**
+ * The FAR-driven hop projection: iterate the far endpoints and emit one row per incident edge,
+ * instead of iterating the start endpoints and resolving a far vertex per edge.
+ *
+ * Two things make it 2.3x (audit item 167), and the second is the larger:
+ *
+ *   LOCALITY — the start-driven walk reads a far vertex per EDGE, in edge order, which is random
+ *   with respect to how vertices sit in memory. Over a 1,000,000-edge fixture that lookup and
+ *   its pointer chase cost ~180ns, which is most of the 266ns a row took. Here the far vertices
+ *   are walked in creation order.
+ *
+ *   HOISTING — every item this path admits is a pure function of the far end (the guard refuses
+ *   a name that is neither endpoint, and `!needsStart` means no item reads the start), so all of
+ *   a far vertex's edges project the SAME cell values. `projectRow` therefore runs once per
+ *   VERTEX rather than once per edge — 200,000 times instead of 1,000,000 on that fixture — and
+ *   a wider projection costs almost nothing extra.
+ *
+ * Row ORDER changes, which is why this is allowed at all: an unordered result's order is
+ * unspecified in this engine, as in SQL without ORDER BY. A shape with ORDER BY or DISTINCT
+ * never reaches here.
+ *
+ * The rows are built FRESH per edge rather than pushing one shared object N times: callers may
+ * treat a row as their own, and aliasing a million of them would be a bug that no measurement
+ * would show. Measured over 1,000,000 rows: a shared-object push would be 91ns, a spread copy
+ * 126ns, and this key-loop form 116ns.
+ */
+const farDrivenHopWalk = (w: {
+  typeName: string;
+  out: boolean;
+  farVar: string;
+  farLabel: LabelExpr | undefined;
+  proj: CProjection;
+}): ((graph: Graph, params: Params) => Row[]) => {
+  const { typeName, out, farVar, farLabel, proj } = w;
+
+  return (graph, params) => {
+    const rows: Row[] = [];
+    const binding = new Map<string, unknown>();
+    // The OPPOSITE index from the start-driven walk: for an `out` hop the far end is the edge's
+    // TARGET, so the far endpoints are the keys of the reverse index.
+    const index = out ? graph.edgesToByLabel : graph.edgesFromByLabel;
+    let keys: string[] | undefined;
+
+    for (const far of candidateVertexSource(graph, farLabel)) {
+      const bucket = index.get(far.id)?.get(typeName);
+
+      if (bucket === undefined) {
+        continue;
+      }
+
+      if (farLabel !== undefined && !matchesLabel(far, farLabel)) {
+        continue;
+      }
+
+      binding.set(farVar, far);
+
+      const template = projectRow(proj, binding, params, graph);
+
+      // The column ORDER is observable (it is bytes), and `projectRow` fixes it; taking the keys
+      // from its own output and rebuilding in that order is what preserves it.
+      keys ??= Object.keys(template);
+
+      const vals = keys.map((k) => template[k]);
+
+      // The edges are never read — only counted — because the projection cannot reach them.
+      for (let n = bucket.size; n > 0; n -= 1) {
+        const row: Row = {};
+
+        for (let c = 0; c < keys.length; c += 1) {
+          row[keys[c]] = vals[c];
+        }
+
+        rows.push(row);
+      }
+    }
+
+    return rows;
+  };
 };
 
 /**

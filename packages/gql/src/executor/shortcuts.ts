@@ -78,7 +78,14 @@ import { asTruth, isNullish } from './scalars.js';
  * which is the safe direction. An empty graph compares `0 === 0` and is trivially vacuous —
  * it has no edges to count either.
  */
-const vacuousLabel = (graph: Graph, expr: LabelExpr | undefined): boolean =>
+/**
+ * Is `expr` carried by EVERY vertex, so testing it per element is pure cost?
+ *
+ * Exported since item 167: the fused hop projection needs the same question to decide whether
+ * it may drive the FAR side (a start label it cannot apply by iteration is only ignorable when
+ * no vertex fails it).
+ */
+export const vacuousLabel = (graph: Graph, expr: LabelExpr | undefined): boolean =>
   expr?.kind === 'label' && (graph.verticesByLabel.get(expr.name)?.size ?? 0) === graph.vertexCount;
 
 export const plainNode = (n: NodePattern): boolean =>

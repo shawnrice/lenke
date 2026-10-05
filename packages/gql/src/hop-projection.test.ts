@@ -70,12 +70,29 @@ const viaGeneral = (g: Graph, q: string) => {
 /** Fused rows and general rows, for an in-order comparison. */
 const bothWays = (g: Graph, q: string) => [query(g, q), viaGeneral(g, q)] as const;
 
+/**
+ * The same rows as a MULTISET — order canonicalized away.
+ *
+ * Row order is unspecified in this engine (as in SQL without ORDER BY), and the cross-engine
+ * harness canonicalizes it out on purpose: "Row order is unspecified and canonicalized out on
+ * purpose. Column order is not." Since item 167 the fused path may drive the FAR side when the
+ * start is unconstrained, which reorders rows and changes nothing else — so the tests whose
+ * subject is AGREEMENT compare multisets, while the ones whose subject is the row CONTENT still
+ * pin exact values.
+ */
+const asMultiset = (rows: readonly unknown[]): string[] =>
+  rows.map((r) => JSON.stringify(r)).sort();
+
 describe('fused hop projection', () => {
   test('rows and their ORDER match the general path', () => {
     const g = build();
     const [fast, slow] = bothWays(g, 'MATCH (a:P)-[:T]->(x) RETURN x.name AS n');
 
     // v0→v1, v0→v2, v0→v1 (parallel), then v1→v1 (self-loop), v1→v3, then v2→v5.
+    // This one still pins the exact ORDER after item 167, and the reason is specific: `P` is
+    // NOT vacuous in this fixture (v5 is not a `P`), so a start label has to be applied by
+    // iteration and the START-driven walk takes it. Do not read this as a general guarantee
+    // that row order is stable — an unconstrained start drives the far side instead.
     expect(fast).toEqual([{ n: 'b' }, { n: 'c' }, { n: 'b' }, { n: 'b' }, { n: 'd' }, { n: 'f' }]);
     expect(fast).toEqual(slow);
   });
@@ -183,16 +200,24 @@ describe('fused hop projection', () => {
     for (const mode of ['', 'WALK ', 'TRAIL ', 'SIMPLE ', 'ACYCLIC ']) {
       const q = `MATCH ${mode}(a:P)-[:T]->(x) RETURN x.name AS n`;
 
-      expect(query(g, q)).toEqual([{ n: 'b' }, { n: 'a' }]);
-      expect(query(g, q)).toEqual(viaGeneral(g, q));
+      // A multiset: the claim is that the self-loop row SURVIVES in both paths, which is
+      // independent of where it lands. This start is unlabelled, so item 167's far-driven walk
+      // takes it and the two paths enumerate in different orders.
+      expect(asMultiset(query(g, q))).toEqual(asMultiset([{ n: 'b' }, { n: 'a' }]));
+      expect(asMultiset(query(g, q))).toEqual(asMultiset(viaGeneral(g, q)));
     }
   });
 
-  test('an unlabelled start scans every vertex, in the same order as the general path', () => {
+  test('an unlabelled start scans every vertex, agreeing with the general path', () => {
+    // Was "in the same order as the general path" until item 167. An UNCONSTRAINED start is
+    // exactly the case that now drives the far side, so the orders differ by design; the rows
+    // are what this test is about.
     const g = build();
     const [fast, slow] = bothWays(g, 'MATCH (a)-[:T]->(x) RETURN x.name AS n');
 
-    expect(fast).toEqual(slow);
+    expect(asMultiset(fast)).toEqual(asMultiset(slow));
+    // And the count is unchanged: one row per edge, so a dropped or duplicated row shows here.
+    expect(fast.length).toBe(slow.length);
   });
 });
 
