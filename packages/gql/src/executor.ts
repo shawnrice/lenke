@@ -784,6 +784,96 @@ const existsReachable = (
   return false;
 };
 
+/**
+ * Existence fast path for a FIXED single hop: `EXISTS { (a)-[:T]->(b …) }` from an
+ * already-bound `a`.
+ *
+ * `existsReachable` above covers the QUANTIFIED spelling (`->+`, `->*`) and declines a plain
+ * hop — `if (!q) return undefined` — so the commonest shape of all went through
+ * `matchClauseBindings`. That short-circuits correctly (it takes one `next()`), but it pays the
+ * whole matcher to do it: seeds, `walkSegments`, the generator chain. Measured at roughly 1µs
+ * per outer vertex, against a 0.3µs scan floor and native's 0.04µs — and FLAT whether the
+ * subquery matches or not, which is the giveaway that the cost is the machinery rather than the
+ * search (audit item 155).
+ *
+ * Walking the adjacency directly and returning at the first accepted endpoint is the same
+ * question asked without the machinery. `hit` is the endpoint test — the node's label, inline
+ * props and predicate, plus the subquery's own `WHERE` — so it stays `matchNode`'s decision
+ * rather than a re-derivation.
+ *
+ * Returns `undefined` for every shape it does not cover, which the caller treats as "use the
+ * general path": an edge variable or edge predicate (the subquery `WHERE` could read them), a
+ * `both` direction, a start that is not bound or carries its own predicates, a path variable,
+ * or a non-default selector.
+ */
+const existsOneHop = (
+  graph: Graph,
+  sub: CMatch,
+  binding: Binding,
+  params: Params,
+): boolean | undefined => {
+  if (sub.patterns.length !== 1 || sub.patterns[0].segments.length !== 1) {
+    return undefined;
+  }
+
+  const [path] = sub.patterns;
+  const [{ rel, node }] = path.segments;
+  const startVar = path.start.variable;
+  const types = relTypeNames(rel.label);
+
+  if (
+    rel.quantifier !== undefined ||
+    rel.variable !== undefined ||
+    rel.direction === 'both' ||
+    rel.pred.props.length > 0 ||
+    rel.pred.where !== undefined ||
+    types === null ||
+    startVar === undefined ||
+    !binding.has(startVar) ||
+    path.pathVar !== undefined ||
+    path.selector !== 'walk' ||
+    path.start.pred.props.length > 0 ||
+    path.start.pred.where !== undefined
+  ) {
+    return undefined;
+  }
+
+  const startV = binding.get(startVar) as Vertex;
+  const out = rel.direction === 'out';
+  const byType = (out ? graph.edgesFromByLabel : graph.edgesToByLabel).get(startV.id);
+
+  if (byType === undefined) {
+    return false; // no edges in this direction at all
+  }
+
+  // An UNCONSTRAINED endpoint — no label, no props, no predicate, and no subquery `WHERE` —
+  // makes every neighbour an answer, so the question collapses to "is there an edge of these
+  // types". `EXISTS { (u)-[:E]->() }` is that shape, and it is the one this came for.
+  const free =
+    node.label === undefined &&
+    node.pred.props.length === 0 &&
+    node.pred.where === undefined &&
+    sub.where === undefined;
+
+  for (const e of edgesOfTypes(byType, types ?? undefined)) {
+    if (free) {
+      return true;
+    }
+
+    const landed = out ? e.to : e.from;
+    const bound = matchNode(binding, node, landed, params, graph);
+
+    if (
+      bound !== null &&
+      (sub.where === undefined || asTruth(sub.where({ binding: bound, params, graph })) === true)
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
 /** ISO EXISTS: TRUE iff the correlated sub-pattern has at least one match. */
 const compileExists = (expr: Extract<Expr, { kind: 'exists' }>): CompiledExpr => {
   const sub = compileSubMatch(expr);
@@ -793,6 +883,12 @@ const compileExists = (expr: Extract<Expr, { kind: 'exists' }>): CompiledExpr =>
 
     if (reach !== undefined) {
       return reach;
+    }
+
+    const one = existsOneHop(env.graph, sub, env.binding, env.params);
+
+    if (one !== undefined) {
+      return one;
     }
 
     const matches = matchClauseBindings(env.graph, sub, env.binding, env.params)[Symbol.iterator]();
