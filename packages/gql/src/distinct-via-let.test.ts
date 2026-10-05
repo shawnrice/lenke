@@ -46,7 +46,7 @@ const g = build();
  * not the bound name) — so this is the general path, and it is also the device
  * `distinct-projection.test.ts` uses.
  */
-const viaGeneral = (q: string): unknown => {
+const viaGeneral = (q: string) => {
   const i = q.indexOf(' RETURN ');
 
   return query(g, `${q.slice(0, i)} LET _z = 1${q.slice(i)}`);

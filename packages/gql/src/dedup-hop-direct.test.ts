@@ -47,7 +47,7 @@ const build = (): Graph => {
 const g = build();
 
 /** Forced to the general path by a dead `LET`, which the dedup walk declines. */
-const viaGeneral = (q: string): unknown => {
+const viaGeneral = (q: string) => {
   const i = q.indexOf(' RETURN ');
 
   return query(g, `${q.slice(0, i)} LET _z = 1${q.slice(i)}`);

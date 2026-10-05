@@ -27,5 +27,17 @@
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
-  }
+  },
+
+  // BUILD OUTPUT IS NOT A TYPECHECK ROOT, and leaving it in made the local gate useless rather
+  // than merely slow: `crates/*/target` holds Rust build output, and the mutation harnesses keep
+  // their pristine `.ts` copies there (CLAUDE.md says to, since it is gitignored and survives a
+  // reboot). `tsc` picked those up as roots and reported 864 errors in them — module paths that
+  // only resolve from their original directory — which BURIED the 34 real errors in
+  // `packages/`. CI never saw either number, because its checkout has no `target/` at all, so
+  // the local run and the CI run disagreed in both directions at once.
+  //
+  // Naming `exclude` REPLACES the default, so `node_modules` has to be listed again.
+  // This only drops these as typecheck ROOTS; imports still resolve through them.
+  "exclude": ["**/node_modules/**", "**/dist/**", "**/target/**"]
 }
