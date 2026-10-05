@@ -3485,7 +3485,65 @@ const compileSetItem = (item: SetItem): CSetItem =>
  * predicate is evaluated exactly once per vertex either way — same rows, and the
  * same row raises. OPTIONAL is excluded because its clause `WHERE` must see the
  * null-filled row.
+ *
+ * That 1:1 argument is why a SUBQUERY conjunct is held back (see the split below):
+ * it is still evaluated once per vertex, but "once per vertex" is the whole cost
+ * rather than a rounding error. Holding it back is also the one place this function
+ * changes which row raises, and it changes it TOWARD native — measured directly,
+ * with a faulting `EXISTS` body and a start predicate nothing matches:
+ *
+ *   MATCH (u:User) WHERE u.name = $n AND EXISTS { … (1.0 / 0.0) … }   TS raised / native []
+ *   MATCH (u:User {name: $n}) WHERE EXISTS { … (1.0 / 0.0) … }        TS []     / native []
+ *
+ * so TS's own inline spelling already agreed with native and the conjunction form
+ * was the outlier. The sibling case with a NON-subquery faulting conjunct still
+ * raises in TS and not in native; that one is untouched here and stays recorded as
+ * `and-chain-seeding-divergence` (audit item 115), because it needs a decision about
+ * seeding, not a filter-placement fix.
  */
+/** The three `Expr` variants that run a correlated sub-pattern per outer row. */
+const SUBQUERY_KINDS: ReadonlySet<string> = new Set(['exists', 'countSubquery', 'valueSubquery']);
+
+/**
+ * Does this expression run a correlated subquery anywhere inside it?
+ *
+ * A GENERIC structural walk rather than a per-variant match, and deliberately so:
+ * `Expr` is a wide union, and a walk that enumerated its arms would silently answer
+ * "no subquery" for any arm added later — the failure direction that costs
+ * `pushWhereIntoNode` below its whole reason to be careful. Object traversal cannot
+ * miss one. It runs once per query compile over a predicate-sized AST.
+ */
+const hasSubquery = (node: unknown): boolean => {
+  if (node === null || typeof node !== 'object') {
+    return false;
+  }
+
+  if (Array.isArray(node)) {
+    return node.some(hasSubquery);
+  }
+
+  const rec = node as Record<string, unknown>;
+
+  if (typeof rec.kind === 'string' && SUBQUERY_KINDS.has(rec.kind)) {
+    return true;
+  }
+
+  return Object.values(rec).some(hasSubquery);
+};
+
+/** `a AND b AND …` for two or more, the expression itself for one, nothing for none. */
+const conjoin = (items: readonly Expr[]): Expr | undefined => {
+  if (items.length === 0) {
+    return undefined;
+  }
+
+  if (items.length === 1) {
+    return items[0];
+  }
+
+  return { kind: 'and', items };
+};
+
 const pushWhereIntoNode = (clause: Extract<Clause, { kind: 'match' }>): typeof clause => {
   const { where } = clause;
 
@@ -3514,12 +3572,38 @@ const pushWhereIntoNode = (clause: Extract<Clause, { kind: 'match' }>): typeof c
   // predicate runs once per vertex per incoming row in both spellings.
   // AND with any predicate the node already carries, so the inline spelling of a
   // query that had both is unchanged.
-  const merged: Expr =
-    path.start.where === undefined ? where : { kind: 'and', items: [path.start.where, where] };
+  //
+  // Only the subquery-FREE conjuncts move, and the rest stay as the clause filter.
+  // A node predicate is evaluated once per SCANNED vertex; a clause filter once per
+  // SURVIVING binding. For an ordinary comparison those are the same count and the
+  // merge is free, but a conjunct carrying `EXISTS {…}` / `COUNT {…}` / `VALUE {…}`
+  // runs a correlated sub-pattern each time, so pushing it costs one subquery per
+  // vertex in the label — and a cheap conjunct beside it cannot gate it, because the
+  // evaluator does not short-circuit (`operator-chains.test.ts` pins that, and native
+  // raises on `false AND (1.0 / 0.0)` too, so it is a byte-identity contract, not an
+  // oversight). Measured on 20,000 users with a FOLLOWS ring (audit item 174):
+  //
+  //   MATCH (u:User) WHERE u.name = $n AND EXISTS { (u)-[:FOLLOWS]->{2,4}(u) }   265.48ms
+  //   MATCH (u:User {name: $n}) WHERE EXISTS { (u)-[:FOLLOWS]->{2,4}(u) }           2.38ms
+  //
+  // 111x for one question spelled two ways, which is the bug class this engine is
+  // named after. Splitting makes the first spelling plan as the second.
+  const conjuncts: readonly Expr[] = where.kind === 'and' ? where.items : [where];
+  const pushable = conjuncts.filter((c) => !hasSubquery(c));
+
+  if (pushable.length === 0) {
+    return clause;
+  }
+
+  const kept = conjuncts.filter(hasSubquery);
+  const all = path.start.where === undefined ? pushable : [path.start.where, ...pushable];
+  const merged: Expr = all.length === 1 ? all[0] : { kind: 'and', items: all };
+  const residual = conjoin(kept);
   const { where: _dropped, ...rest } = clause;
 
   return {
     ...rest,
+    ...(residual === undefined ? {} : { where: residual }),
     patterns: [{ ...path, start: { ...path.start, where: merged } }],
   };
 };
