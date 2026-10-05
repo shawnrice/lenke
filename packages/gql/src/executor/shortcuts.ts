@@ -1140,6 +1140,212 @@ const productCountOf = <T>(
 /** `rowOf` for the product path, which wants the number itself. */
 const identityCount = (n: number): number => n;
 
+/** One side of a keyed count: the hop into the shared variable, from its point of view. */
+type KeyedSide = {
+  /** Edge types to accept, or `undefined` for any. */
+  types: string[] | undefined;
+  /** Walk the shared vertex's OUT edges (`(x)<-[:T]-(q)`) or its IN edges (`(x)-[:T]->(q)`). */
+  out: boolean;
+  /** The far end's label, which each counted neighbour must carry. */
+  label: LabelExpr | undefined;
+  /** The far end's inline constraint, or `undefined` when it is plain. */
+  inFar: InlinePred | undefined;
+};
+
+/**
+ * `MATCH (a:P)-[:E]->(q:P) MATCH (b:P)-[:E]->(q) RETURN count(*)` — two single hops that SHARE
+ * their endpoint, counted without enumerating the pairs.
+ *
+ * This is the branch `productCountOf` refuses by design ("a shared variable is a JOIN, not a
+ * product"). A join is not a product of the two counts, but it IS a sum of products, one per
+ * value of the shared variable:
+ *
+ *     count = SUM over q of  c1(q) x c2(q)
+ *
+ * where `cN(q)` counts the edges of side N landing on `q` whose far end satisfies that side's
+ * own constraints. Unconstrained, that is SUM of indeg(q)^2 — and the pairs include the
+ * diagonal (`a` and `b` are distinct variables with no inequality between them), which the
+ * square gets right for free.
+ *
+ * **O(V + E) instead of O(pairs), so the win grows with degree**: on 60 hubs of in-degree
+ * 1..60 the pairs are 73,810 against 1,830 edges, and NEITHER engine had a closed form —
+ * native enumerates too, just faster (ts 30.245ms, native 0.945ms). Measured 32-53x against
+ * native, and unbounded against itself as degree rises (audit item 156).
+ *
+ * ### The oracle, and why the fixture matters
+ *
+ * `productCountOf`'s rule applies here too: the answer must match what both engines already
+ * return, not an argument from what the shape ought to mean. **A ring fixture cannot check
+ * this** — every in-degree is 1, so SUM d^2, SUM d and the edge count coincide and a wrong
+ * formula agrees with a right one. The degrees in the tests are uneven for that reason, and
+ * parallel edges are covered because a hop counts EDGES, not distinct neighbours.
+ *
+ * ### Refusals
+ *
+ * Everything outside the shape declines to the general path: anything but exactly two
+ * single-segment patterns, a clause `WHERE` (it can correlate the sides — the same refusal
+ * `productCountOf` makes), more or fewer than one shared variable, a shared variable that is
+ * not both patterns' ENDPOINT, an edge variable or edge predicate (a shared edge variable would
+ * be a second correlation, and an edge predicate would have to be applied per edge), an
+ * undirected hop, a quantifier, a path variable, and a non-default selector.
+ */
+const keyedCountOf = <T>(
+  matches: readonly Extract<Clause, { kind: 'match' }>[],
+  rowOf: (n: number) => T,
+): CountOf<T> | null => {
+  const patterns: PathPattern[] = [];
+
+  for (const match of matches) {
+    if (match.where !== undefined) {
+      return null; // a clause WHERE can correlate the two sides
+    }
+
+    patterns.push(...match.patterns);
+  }
+
+  if (patterns.length !== 2) {
+    return null;
+  }
+
+  // The shared variable must be the ONLY overlap, and must be each pattern's endpoint.
+  const [p0, p1] = patterns;
+  const vars0 = new Set(patternVarsOf(p0));
+  const shared = patternVarsOf(p1).filter((n) => vars0.has(n));
+
+  if (shared.length !== 1) {
+    return null;
+  }
+
+  const [key] = shared;
+  const sides: KeyedSide[] = [];
+  // Both patterns constrain the shared vertex, and BOTH constraints have to hold.
+  const keyPreds: InlinePred[] = [];
+  let keyLabel: LabelExpr | undefined;
+
+  for (const pattern of patterns) {
+    if (pattern.segments.length !== 1 || pattern.pathVar !== undefined) {
+      return null;
+    }
+
+    if (pattern.selector !== undefined && pattern.selector !== 'walk') {
+      return null;
+    }
+
+    const [{ rel, node }] = pattern.segments;
+
+    if (
+      rel.quantifier !== undefined ||
+      rel.variable !== undefined ||
+      rel.direction === 'both' ||
+      relHasPredicate(rel)
+    ) {
+      return null;
+    }
+
+    const types = relTypeNames(rel.label);
+
+    if (types === null) {
+      return null;
+    }
+
+    // The ENDPOINT must be the shared variable, and the far end must not be.
+    if (node.variable !== key || pattern.start.variable === key) {
+      return null;
+    }
+
+    const inFar = inlineOf(pattern.start);
+    const inKey = inlineOf(node);
+
+    if (inFar === null || inKey === null) {
+      return null;
+    }
+
+    if (inKey !== undefined) {
+      keyPreds.push(inKey);
+    }
+
+    // Either pattern may name the shared vertex's label; a second, DIFFERENT one would have to
+    // be intersected, so take the first and let `matchesLabel` apply it on top of the bucket.
+    if (node.label !== undefined) {
+      keyLabel ??= node.label;
+    }
+
+    sides.push({
+      types: types ?? undefined,
+      // `(x)-[:T]->(q)` is written out from `x`, so from `q` it is an IN edge.
+      out: rel.direction !== 'out',
+      label: pattern.start.label,
+      inFar,
+    });
+  }
+
+  const [s0, s1] = sides;
+  const keyName = keyLabel?.kind === 'label' ? keyLabel.name : undefined;
+  const keyLabels = patterns
+    .map((p) => p.segments[0].node.label)
+    .filter((l): l is LabelExpr => l !== undefined);
+
+  return (graph, params) => {
+    const binding = new Map<string, unknown>();
+    const candidates: Iterable<Vertex> =
+      keyName === undefined
+        ? graph.verticesById.values()
+        : (graph.verticesByLabel.get(keyName) ?? []);
+    // Count one side's edges landing on `q`, applying that side's far-end constraints. Edges,
+    // not distinct neighbours: two parallel `a->q` edges are two matches of the pattern.
+    const sideCount = (q: Vertex, sd: KeyedSide): number => {
+      const byType = (sd.out ? graph.edgesFromByLabel : graph.edgesToByLabel).get(q.id);
+      let n = 0;
+
+      for (const e of edgesOfTypes(byType, sd.types)) {
+        const far = sd.out ? e.to : e.from;
+
+        if (matchesLabel(far, sd.label) && inlineHolds(sd.inFar, far, binding, params, graph)) {
+          n += 1;
+        }
+      }
+
+      return n;
+    };
+    let total = 0;
+
+    for (const q of candidates) {
+      // Every label either pattern wrote for the shared vertex, plus both inline constraints.
+      let ok = true;
+
+      for (const l of keyLabels) {
+        if (!matchesLabel(q, l)) {
+          ok = false;
+          break;
+        }
+      }
+
+      if (ok) {
+        for (const kp of keyPreds) {
+          if (!inlineHolds(kp, q, binding, params, graph)) {
+            ok = false;
+            break;
+          }
+        }
+      }
+
+      if (!ok) {
+        continue;
+      }
+
+      const c0 = sideCount(q, s0);
+
+      // A zero on one side makes the product zero, so the other side is not walked at all —
+      // which is the common case for a vertex with edges of only one type.
+      if (c0 !== 0) {
+        total += c0 * sideCount(q, s1);
+      }
+    }
+
+    return rowOf(total);
+  };
+};
+
 /**
  * If a linear query is exactly `MATCH <1- or 2-segment path> RETURN count(*)`,
  * return a closure computing the count directly (O(1)/O(E)) instead of
@@ -1237,7 +1443,9 @@ export const detectCountShortcut = (
       return patternCountOf(m.patterns[0], m.where, rowOf, cstart);
     }
 
-    return productCountOf(matches, rowOf);
+    // A product first — it is the cheaper answer and covers disjoint patterns. When it
+    // declines for a SHARED variable, the keyed sum-of-products may still apply.
+    return productCountOf(matches, rowOf) ?? keyedCountOf(matches, rowOf);
   })();
 
   if (one === null) {
