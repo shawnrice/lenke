@@ -2404,6 +2404,53 @@ fn pull_capped(
             }
             None => None,
         },
+        // A CROSS product (`Join` with an empty `on`) is the one row-MULTIPLYING operator
+        // that can still be capped, because capping both sides bounds the output without
+        // disturbing its prefix. Without this a keyless page over a comma pattern built the
+        // whole product and sliced it: `MATCH (s:Tiny) MATCH (u:User) … LIMIT 1` cost 22ms to
+        // return ONE row over a 64 x 50,000 product — flat in the limit, and 12x behind the
+        // TS engine, which streams it (audit item 151).
+        //
+        // EXACT, not approximate. `hash_join` emits LEFT-MAJOR (`i` over left rows outer, `j`
+        // over the right's matches inner, both ascending), so output row `k` pairs left row
+        // `k / R` with right row `k % R` for a right side of `R` rows. Both indices are below
+        // `cap` for every `k < cap`, so neither cap can drop a row the window needs:
+        //
+        //   R <= cap   the right cap does not bind, so the right side is whole and the
+        //              enumeration is the full one; reaching output row `cap` needs only
+        //              left row `cap / R`, which the left cap keeps.
+        //   R > cap    the right cap keeps `cap` rows, so left row 0 alone supplies `cap`
+        //              output rows — and those are the product's first `cap`, because there
+        //              every one of them pairs with left row 0 too.
+        //
+        // So this does not lean on keyless page order being unspecified; it would hold even
+        // if that order were part of the contract. The product of two capped sides can be up
+        // to `cap * cap` rows, so it is truncated to keep this function's "at most `cap`"
+        // promise — both callers slice anyway, but the next one might not.
+        Plan::Join { left, right, on } if on.is_empty() => {
+            match (
+                pull_capped(left, store, track, cap)?,
+                pull_capped(right, store, track, cap)?,
+            ) {
+                // Both sides must cap. Pulling an uncappable side WHOLE would reintroduce the
+                // cost this avoids on the very shapes that need it most (a filtered side over
+                // a big bucket), and `pull_capped_stream` is not usable here: it caps by ROWS
+                // OUT of a chain, which for one side of a product is not the same bound.
+                (Some(lb), Some(rb)) => {
+                    let joined = hash_join(&lb, &rb, &[]);
+                    Some(if joined.rows() > cap {
+                        let keep: Vec<usize> = (0..cap).collect();
+                        let mut out =
+                            Batch::of(joined.slots.iter().map(|c| c.gather(&keep)).collect());
+                        out.lineage = joined.lineage.as_ref().map(|l| l.gather(&keep));
+                        out
+                    } else {
+                        joined
+                    })
+                }
+                _ => None,
+            }
+        }
         _ => None, // Filter/Expand/Aggregate/Distinct/… change the row count
     })
 }

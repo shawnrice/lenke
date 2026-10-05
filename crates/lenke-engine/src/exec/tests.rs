@@ -13974,3 +13974,215 @@ fn product_fast_path_fires_exactly_where_intended() {
         "one pattern, no Join"
     );
 }
+
+/// A keyless page over a CROSS product caps both sides instead of building the whole
+/// product and slicing it (audit item 151). The cap is claimed to be EXACT — the same
+/// prefix the full product yields — so every test here compares the paged query against
+/// the UNPAGED one sliced in the test, which is literally what the engine did before.
+///
+/// `hash_join` emits left-major, so output row `k` is left row `k / R` paired with right
+/// row `k % R`. The claim rests on both indices being below `cap` for `k < cap`, and that
+/// argument has two regimes — `R <= cap` and `R > cap` — which take different branches.
+/// A fixture with only one of them tests half of it, so the sizes below straddle the caps.
+#[cfg(test)]
+fn cross_page_store(tail: u32, outer: u32) -> Store {
+    let mut b = Builder::default();
+    // Written TAIL FIRST so the two labels do not share id order with their pattern
+    // position: a cap that truncated the wrong side would otherwise still line up.
+    for i in 0..tail {
+        b.node(
+            &["User"],
+            &[("name", crate::value::Value::Num(f64::from(i)))],
+        );
+    }
+    for i in 0..outer {
+        b.node(&["Tiny"], &[("k", crate::value::Value::Num(f64::from(i)))]);
+    }
+    b.build()
+}
+
+#[cfg(test)]
+fn cross_rows(store: &Store, q: &str) -> Vec<(f64, f64)> {
+    let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), store);
+    let out = run(&plan, store);
+    out.rows
+        .iter()
+        .map(|r| {
+            let num = |c: &Value| match c {
+                Value::Num(n) => *n,
+                other => panic!("expected a number, got {other:?}"),
+            };
+            (num(&r[0]), num(&r[1]))
+        })
+        .collect()
+}
+
+#[test]
+fn cross_page_prefix_matches_the_whole_product_when_the_right_side_is_small() {
+    // R = 3 <= every cap below, so the right cap never binds and the enumeration is the
+    // full one. Reaching output row `cap` needs left row `cap / 3`, which the left cap keeps.
+    let store = cross_page_store(3, 4);
+    let base = "MATCH (s:Tiny) MATCH (u:User) RETURN s.k AS k, u.name AS n";
+    let whole = cross_rows(&store, base);
+    assert_eq!(whole.len(), 12);
+    for limit in [1usize, 2, 3, 4, 5, 11, 12, 13] {
+        assert_eq!(
+            cross_rows(&store, &format!("{base} LIMIT {limit}")),
+            whole[..limit.min(whole.len())].to_vec(),
+            "LIMIT {limit} must be the product's first {limit} rows"
+        );
+    }
+}
+
+#[test]
+fn cross_page_prefix_matches_the_whole_product_when_the_right_side_is_large() {
+    // R = 50 > the small caps, so the right cap DOES bind and left row 0 alone supplies
+    // them all. This is the regime the other test cannot reach.
+    let store = cross_page_store(50, 4);
+    let base = "MATCH (s:Tiny) MATCH (u:User) RETURN s.k AS k, u.name AS n";
+    let whole = cross_rows(&store, base);
+    assert_eq!(whole.len(), 200);
+    for limit in [1usize, 2, 7, 49, 50, 51, 99, 200, 201] {
+        assert_eq!(
+            cross_rows(&store, &format!("{base} LIMIT {limit}")),
+            whole[..limit.min(whole.len())].to_vec(),
+            "LIMIT {limit} must be the product's first {limit} rows"
+        );
+    }
+}
+
+#[test]
+fn cross_page_honours_skip_as_well_as_limit() {
+    // SKIP is where an off-by-one in the cap becomes visible: the cap is `skip + limit`, so
+    // a cap one too small drops the window's LAST row while every LIMIT-only test still
+    // passes. The windows below sit either side of R = 7 for that reason.
+    let store = cross_page_store(7, 7);
+    let base = "MATCH (s:Tiny) MATCH (u:User) RETURN s.k AS k, u.name AS n";
+    let whole = cross_rows(&store, base);
+    assert_eq!(whole.len(), 49);
+    for (skip, limit) in [
+        (0usize, 1usize),
+        (1, 1),
+        (1, 5),
+        (6, 2),
+        (7, 3),
+        (8, 1),
+        (13, 4),
+        (47, 5),
+        (49, 2),
+    ] {
+        let want = if skip >= whole.len() {
+            Vec::new()
+        } else {
+            whole[skip..(skip + limit).min(whole.len())].to_vec()
+        };
+        assert_eq!(
+            cross_rows(&store, &format!("{base} SKIP {skip} LIMIT {limit}")),
+            want,
+            "SKIP {skip} LIMIT {limit}"
+        );
+    }
+}
+
+#[test]
+fn cross_page_caps_a_three_way_product_too() {
+    // Three patterns nest two Joins, so the cap has to recurse through the inner one. A cap
+    // that only handled a single Join would silently fall back to the full product here.
+    let mut b = Builder::default();
+    for i in 0..5 {
+        b.node(&["A"], &[("k", crate::value::Value::Num(f64::from(i)))]);
+    }
+    for i in 0..5 {
+        b.node(&["B"], &[("k", crate::value::Value::Num(f64::from(i)))]);
+    }
+    for i in 0..5 {
+        b.node(&["C"], &[("k", crate::value::Value::Num(f64::from(i)))]);
+    }
+    let store = b.build();
+    let base = "MATCH (a:A) MATCH (b:B) MATCH (c:C) RETURN a.k AS k, c.k AS n";
+    let whole = cross_rows(&store, base);
+    assert_eq!(whole.len(), 125);
+    for limit in [1usize, 3, 25, 26, 125] {
+        assert_eq!(
+            cross_rows(&store, &format!("{base} LIMIT {limit}")),
+            whole[..limit].to_vec(),
+            "three-way LIMIT {limit}"
+        );
+    }
+}
+
+#[test]
+fn cross_page_declines_a_keyed_join() {
+    // The cap is only sound for a CROSS product. A join ON a shared variable pairs
+    // selectively, so left row `i` does not contribute `R` output rows and the index
+    // arithmetic the proof rests on does not hold — it must not fire.
+    //
+    // This test CANNOT kill a mutant that drops the `on.is_empty()` guard, and says so rather
+    // than implying coverage it lacks: removing the guard leaves the whole suite green. The
+    // reason is that the cap also needs BOTH sides cap-safe, and the shared variable which
+    // makes `on` non-empty can only come from an EXPANSION — so a keyed join always has a
+    // Filter/Expand side, `pull_capped` declines there first, and the guard is never the thing
+    // that refuses. It stays as a stated precondition of the proof, not as a reachable branch.
+    // What this test does guard is the ANSWER for the shape, which is worth pinning either way.
+    let nd = concat!(
+        "{\"type\":\"node\",\"id\":\"p\",\"labels\":[\"N\"],\"properties\":{\"id\":\"p\"}}\n",
+        "{\"type\":\"node\",\"id\":\"q\",\"labels\":[\"N\"],\"properties\":{\"id\":\"q\"}}\n",
+        "{\"type\":\"node\",\"id\":\"r\",\"labels\":[\"N\"],\"properties\":{\"id\":\"r\"}}\n",
+        "{\"type\":\"edge\",\"id\":\"e0\",\"labels\":[\"E\"],\"from\":\"p\",\"to\":\"q\"}\n",
+        "{\"type\":\"edge\",\"id\":\"e1\",\"labels\":[\"E\"],\"from\":\"r\",\"to\":\"q\"}\n",
+    );
+    let store = crate::ndjson::from_ndjson(nd).unwrap();
+    let base = "MATCH (a:N)-[:E]->(q:N) MATCH (b:N)-[:E]->(q) RETURN a.id AS x, b.id AS y";
+    let plan = crate::opt::optimize_indexed(crate::gql::parse(base).unwrap(), &store);
+    // `Value` has no `PartialEq` (it lives in another crate), so rows are compared by their
+    // debug rendering — enough to catch a wrong pairing, which is what these guard.
+    let flat = |out: &Rows| -> Vec<String> { out.rows.iter().map(|r| format!("{r:?}")).collect() };
+    let whole = flat(&run(&plan, &store));
+    assert_eq!(whole.len(), 4, "p/r against p/r on the shared q");
+    for limit in [1usize, 2, 3, 4] {
+        let q = format!("{base} LIMIT {limit}");
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(&q).unwrap(), &store);
+        assert_eq!(
+            flat(&run(&plan, &store)),
+            whole[..limit].to_vec(),
+            "keyed join LIMIT {limit}"
+        );
+    }
+}
+
+#[test]
+fn cross_page_keeps_the_lineage_of_a_named_path() {
+    // `hash_join` carries the left side's lineage so a path accessor above a comma pattern
+    // does not read NULL. The cap gathers a PREFIX of the joined batch, and dropping the
+    // lineage in that gather would make the path NULL only under a LIMIT.
+    //
+    // The path has to be an EDGE-FREE single-node pattern (`p = (x:N)`), because the cap
+    // requires both join sides to be cap-safe and an expansion is not: written with
+    // `p = (x:N)-[:E]->(y:N)` the left side is a Filter over an Expand, `pull_capped` declines,
+    // and the whole query takes the general path — so the test passed while exercising none of
+    // this. Found by mutation: dropping the lineage gather left that version green.
+    let mut b = Builder::default();
+    for i in 0..4 {
+        b.node(&["N"], &[("k", crate::value::Value::Num(f64::from(i)))]);
+    }
+    for i in 0..4 {
+        b.node(&["M"], &[("k", crate::value::Value::Num(f64::from(i)))]);
+    }
+    let store = b.build();
+    // The LIMIT has to be above 1 to reach the gather at all. At `LIMIT 1` both sides cap to
+    // ONE row, their product is exactly one row, `joined.rows() > cap` is false and the
+    // truncating branch — the only place the lineage is re-gathered — never runs. Mutation
+    // found that too: with `LIMIT 1` a dropped lineage gather stayed green. `LIMIT 3` caps
+    // each side to 3, making a 9-row product that must be cut to 3.
+    let q = "MATCH p = (x:N), (m:M) RETURN size(nodes(p)) AS k, m.k AS n LIMIT 3";
+    let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
+    let got = run(&plan, &store);
+    assert_eq!(got.rows.len(), 3);
+    for row in 0..3 {
+        assert_eq!(
+            format!("{:?}", got.rows[row][0]),
+            format!("{:?}", Value::Num(1.0)),
+            "row {row}: a one-node path must still have its node after the prefix gather"
+        );
+    }
+}
