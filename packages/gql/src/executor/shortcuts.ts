@@ -2737,17 +2737,21 @@ const nodeWhereOf = (where: Expr, nodeVar: string): InlinePred | 'decline' => {
     }
   }
 
-  // `compilePredicate` lifts equality conjuncts into `props`, which `inlineHolds` then checks
-  // directly against the vertex instead of evaluating a compiled expression — a per-vertex
-  // shortcut, NOT a seeding one. (Seeding reads the compiled `CNode` through `indexCandidates`,
-  // which is independent of this; routing every predicate through `gatePredicate` and losing
-  // `props` entirely measured 95.4k → 80.8k ops/s on the indexed point lookup, an 18% cost and
-  // not the 50x a lost seek would be. The first version of this comment claimed `props` was
-  // what the seek reads, and the mutation measurement is what corrected it.)
+  // `props` is EMPTY on both branches here, and saying so is the THIRD version of this comment —
+  // the first two were wrong in different ways, and item 210 measured the truth.
+  // `compilePredicate(properties, where)` compiles the `properties` it is GIVEN into `props` and
+  // the `where` into an expression; it does not lift equalities out of the `where`. Called with
+  // `undefined` properties, as here, it yields `{ props: [], where: compileExpr(where) }`.
   //
-  // So the discrimination is worth keeping, and a subquery-bearing predicate simply has nothing
-  // to lift: `compilePredicate` does not know about subqueries, and a correlated sub-pattern is
-  // not a property equality.
+  // So the only difference between these two branches is `gatePredicate` against `compileExpr`,
+  // and the mutant that routes EVERY predicate through `gatePredicate` costs 18% on the indexed
+  // point lookup (95.4k -> 80.8k ops/s) because of that indirection — NOT because any `props`
+  // were lost, and not the 50x a lost SEEK would be (seeding reads the compiled `CNode` via
+  // `indexCandidates`, independently of this).
+  //
+  // The discrimination is still worth keeping for those 18%, and a subquery-bearing predicate has
+  // nothing else available anyway: `compilePredicate` does not know about subqueries, and a
+  // correlated sub-pattern is not a property equality.
   return {
     pred: hasSubqueryExpr(where)
       ? { props: [], where: gatePredicate(where) }
