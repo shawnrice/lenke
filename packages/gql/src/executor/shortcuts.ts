@@ -34,6 +34,7 @@ import type {
 import {
   edgesOfTypes,
   freePredicateVars,
+  gatePredicate,
   columnName,
   compareSort,
   compileExpr,
@@ -2689,6 +2690,73 @@ const hasSubqueryExpr = (e: unknown): boolean => {
 };
 
 /**
+ * The node scan's clause `WHERE`, compiled into one `InlinePred` — or `'decline'` when this path
+ * cannot carry it.
+ *
+ * Extracted because adding the subquery branch took `detectNodeProjection` to a complexity of 37
+ * against a limit of 35 (audit item 209). It is the natural seam: everything here is about the
+ * ONE predicate, and nothing in it touches the projection or the scan.
+ */
+const nodeWhereOf = (where: Expr, nodeVar: string): InlinePred | 'decline' => {
+  // A SUBQUERY is admissible in this predicate, unlike `detectHopProjection`'s, and the reason
+  // is the segment count. Here the pattern has ZERO segments, so every candidate vertex yields
+  // exactly ONE row — "once per vertex" and "once per complete match" are the same thing, and
+  // evaluating the predicate per vertex is exactly what the general path does per row. A HOP
+  // has neither property (one start can yield many rows or none), which is why item 207 keeps
+  // `rowLocal` there and refuses subqueries outright.
+  //
+  // The gate is `gatePredicate` — the general path's OWN prefilter, not a re-derivation — so
+  // the conjunct ORDER and the stop-at-first-non-TRUE semantics are identical by construction.
+  // That ordering is item 175's: a `EXISTS {…}` / `COUNT {…}` conjunct is not reached for a
+  // vertex a cheap conjunct already rejected. It is also the observable behaviour already,
+  // which was checked rather than assumed — `WHERE k = $miss AND EXISTS { … /0 … }` answers
+  // `[]` on the general path both indexed and unindexed, so deferring the subquery does not
+  // introduce a raise the general path lacks.
+  //
+  // Measured (20,000 users, the `analytic: cycle detection` shape), holding the scan fixed and
+  // varying the subquery's cost — the technique item 208 used:
+  //
+  //     no subquery at all                53ns a vertex
+  //     a TRIVIAL subquery in the WHERE   86ns
+  //     the 2-4 hop cycle subquery        98ns
+  //
+  // 33ns for merely HAVING a subquery against 12ns for the subquery's own extra work, so the
+  // cost was the general-path scan rather than the subquery (audit item 209).
+  if (!itemLocal(where)) {
+    return 'decline';
+  }
+
+  // Skipped for a subquery-bearing predicate for the reason given above the items' copy of this
+  // check: `freePredicateVars` reports the variables bound INSIDE a subquery, so it would
+  // refuse every one of them, and `nodeVar` is the only name anything here can be bound to.
+  if (!hasSubqueryExpr(where)) {
+    for (const nameRead of freePredicateVars(where)) {
+      if (nameRead !== nodeVar) {
+        return 'decline';
+      }
+    }
+  }
+
+  // `compilePredicate` lifts equality conjuncts into `props`, which `inlineHolds` then checks
+  // directly against the vertex instead of evaluating a compiled expression — a per-vertex
+  // shortcut, NOT a seeding one. (Seeding reads the compiled `CNode` through `indexCandidates`,
+  // which is independent of this; routing every predicate through `gatePredicate` and losing
+  // `props` entirely measured 95.4k → 80.8k ops/s on the indexed point lookup, an 18% cost and
+  // not the 50x a lost seek would be. The first version of this comment claimed `props` was
+  // what the seek reads, and the mutation measurement is what corrected it.)
+  //
+  // So the discrimination is worth keeping, and a subquery-bearing predicate simply has nothing
+  // to lift: `compilePredicate` does not know about subqueries, and a correlated sub-pattern is
+  // not a property equality.
+  return {
+    pred: hasSubqueryExpr(where)
+      ? { props: [], where: gatePredicate(where) }
+      : compilePredicate(undefined, where),
+    bindVar: nodeVar,
+  };
+};
+
+/**
  * `MATCH (n:L) WHERE <row-local pred> RETURN <row-local items>` — a label scan, a filter, and a
  * projection, with no hop, no aggregate and no window.
  *
@@ -2800,17 +2868,13 @@ export const detectNodeProjection = (
   // carried one, these are what would still refuse it. The same reasoning, and the same
   // wording, as `detectHopProjection`'s rel-variable and path-variable checks.
   if (where !== undefined) {
-    if (!rowLocal(where)) {
+    const carried = nodeWhereOf(where, nodeVar);
+
+    if (carried === 'decline') {
       return null;
     }
 
-    for (const nameRead of freePredicateVars(where)) {
-      if (nameRead !== nodeVar) {
-        return null;
-      }
-    }
-
-    preds.push({ pred: compilePredicate(undefined, where), bindVar: nodeVar });
+    preds.push(carried);
   }
 
   const gate = preds.reduceRight<InlineGate | undefined>(

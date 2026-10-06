@@ -3722,7 +3722,7 @@ const pushWhereIntoNode = (clause: Extract<Clause, { kind: 'match' }>): typeof c
  * on a non-selective cheap conjunct. Ordering costs that shape nothing, because a conjunct that
  * is always TRUE never short-circuits anything.
  */
-const gatePredicate = (where: Expr): CompiledExpr => {
+export const gatePredicate = (where: Expr): CompiledExpr => {
   const conjuncts: readonly Expr[] = where.kind === 'and' ? where.items : [where];
   const cheap = conjuncts.filter((c) => !hasSubquery(c));
   const costly = conjuncts.filter(hasSubquery);
