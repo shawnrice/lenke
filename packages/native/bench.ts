@@ -369,6 +369,23 @@ const CASES: Case[] = [
     ),
   },
   {
+    // A filtered node scan projecting a SUBQUERY. Item 204 applied one guard to both the
+    // predicate and the items, so a subquery ITEM declined the node-scan path and took the
+    // general pipeline — a whole-label scan to serve the surviving rows. The predicate must stay
+    // strict (item 175 orders its conjuncts so a faulting subquery is never reached), but an item
+    // is evaluated once per SURVIVING row on either path. 94.3ns a scanned vertex to 35.0, of
+    // which a one-hop COUNT{} item showed only ~4ns was the subquery itself (audit item 208).
+    name: 'query: subquery item',
+    ...onGraph(
+      () => graphDoc,
+      (e, g) =>
+        void e.query(
+          g,
+          'MATCH (n:Person) WHERE n.age > 60 RETURN COUNT { MATCH (n)-[:KNOWS]->(x) } AS c',
+        ),
+    ),
+  },
+  {
     // A START-FILTERED one-hop PROJECTION. `carriedWhere` refused a clause `WHERE` that did not
     // read the far end, so this declined the fused walk entirely and went to the general path —
     // correct while the walk did not seed (item 177 measured the walk at 3966us against the

@@ -2598,6 +2598,97 @@ const rowLocalChild = (child: unknown): boolean => {
 };
 
 /**
+ * Expression kinds that OPEN A NESTED SCOPE: a subquery. Admissible in a projected ITEM and never
+ * in the predicate.
+ *
+ * The three are `exists` (`EXISTS { … }`), `countSubquery` (`COUNT { … }`) and `valueSubquery`.
+ * `scalar` is NOT one — it is `{ kind: 'scalar', category }` — and the first version of this set
+ * said `['exists', 'scalar']`, which both admitted a non-subquery and missed the two that matter.
+ * The cause was a grep: `kind: '[a-z_]+'` over the AST silently skips every camelCase arm, so
+ * `countSubquery` and `valueSubquery` were never in the list I worked from. The measurement is
+ * what caught it — `EXISTS{}` went 91.4ns to 34.2 while `COUNT{}` did not move at all.
+ *
+ * The asymmetry is the point. The predicate is evaluated by the per-vertex gate, and item 175
+ * gave the seed gate a CHEAP-CONJUNCT-FIRST order precisely so
+ * `WHERE u.k = 'nope' AND <faulting subquery>` never reaches the subquery — a gate that evaluates
+ * the whole predicate at once loses that, which is why `rowLocal` refuses these outright.
+ *
+ * An ITEM is different: it is evaluated once per row that SURVIVES the filter, on either path, so
+ * a subquery there costs the same in both. And it is where the cost actually was —
+ * `MATCH (u:User) WHERE u.name = $n RETURN COUNT { (u)-[:FOLLOWS]->{1,3}(x) }` was 94.3ns a
+ * scanned vertex against the fast path's 38.2, and a ONE-HOP `COUNT{}` item measured 90.7ns, so
+ * the subquery itself is ~4ns of it and the rest is the general-path scan (audit item 208).
+ */
+const SUBQUERY_KINDS: ReadonlySet<string> = new Set(['exists', 'countSubquery', 'valueSubquery']);
+
+/**
+ * One projected ITEM: row-local, but allowed to contain a subquery.
+ *
+ * The walk STOPS at a subquery rather than descending into it, which is what makes this sound:
+ * the interior is a nested scope that the general path compiles and runs identically, and its
+ * variables are bound by its own patterns. Outside subqueries the `rowLocal` allowlist still
+ * applies in full, so a new `Expr` arm declines rather than slipping through.
+ *
+ * An aggregate is still refused — it needs the group this path never builds — and the check is
+ * only applied OUTSIDE subqueries, because `count(*)` inside a `COUNT { … }` belongs to that
+ * subquery, not to this projection.
+ */
+const itemLocal = (e: Expr | undefined): boolean => {
+  if (e === undefined) {
+    return true;
+  }
+
+  if (SUBQUERY_KINDS.has(e.kind)) {
+    return true;
+  }
+
+  if (!ROW_LOCAL_KINDS.has(e.kind)) {
+    return false;
+  }
+
+  if (e.kind === 'func' && AGGREGATES.has(e.name)) {
+    return false;
+  }
+
+  return Object.values(e).every(itemLocalChild);
+};
+
+const itemLocalChild = (child: unknown): boolean => {
+  if (Array.isArray(child)) {
+    return child.every(itemLocalChild);
+  }
+
+  if (typeof child !== 'object' || child === null) {
+    return true;
+  }
+
+  const rec = child as Record<string, unknown>;
+
+  return typeof rec.kind === 'string'
+    ? itemLocal(child as Expr)
+    : Object.values(rec).every(itemLocalChild);
+};
+
+/** Does this expression contain a subquery anywhere? */
+const hasSubqueryExpr = (e: unknown): boolean => {
+  if (Array.isArray(e)) {
+    return e.some(hasSubqueryExpr);
+  }
+
+  if (typeof e !== 'object' || e === null) {
+    return false;
+  }
+
+  const rec = e as Record<string, unknown>;
+
+  if (typeof rec.kind === 'string' && SUBQUERY_KINDS.has(rec.kind)) {
+    return true;
+  }
+
+  return Object.values(rec).some(hasSubqueryExpr);
+};
+
+/**
  * `MATCH (n:L) WHERE <row-local pred> RETURN <row-local items>` — a label scan, a filter, and a
  * projection, with no hop, no aggregate and no window.
  *
@@ -2733,13 +2824,24 @@ export const detectNodeProjection = (
   const fns: CompiledExpr[] = [];
 
   for (const item of proj.items) {
-    if (!rowLocal(item.expr)) {
+    if (!itemLocal(item.expr)) {
       return null;
     }
 
-    for (const nameRead of freePredicateVars(item.expr)) {
-      if (nameRead !== nodeVar) {
-        return null;
+    // The free-variable check is skipped for an item carrying a SUBQUERY, because
+    // `freePredicateVars` descends into one and reports the variables bound INSIDE it — the `x`
+    // of `COUNT { (u)-[:FOLLOWS]->(x) }` — so it would refuse every such item.
+    //
+    // Nothing is lost. With exactly two clauses, one pattern and no segments, `nodeVar` is the
+    // only name anything can be bound to, so both paths evaluate the SAME compiled expression
+    // against a binding holding exactly that one name: a reference to any other name resolves
+    // identically, or raises identically, on either. That is the same argument the check itself
+    // rests on (see above), and mutation confirms removing it changes no answer.
+    if (!hasSubqueryExpr(item.expr)) {
+      for (const nameRead of freePredicateVars(item.expr)) {
+        if (nameRead !== nodeVar) {
+          return null;
+        }
       }
     }
 
