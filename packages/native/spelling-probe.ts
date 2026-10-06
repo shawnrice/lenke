@@ -151,6 +151,15 @@ const GROUPS: [string, readonly string[]][] = [
     // third member adds the `HAVING` the SELECT form exists to carry — it has no `RETURN`
     // counterpart, since `HAVING` is SELECT-statement-only in ISO, so it is here as a member
     // whose cost must stay beside the others rather than as a second spelling of them.
+    // The same inline-vs-clause question as the node-count group below, but for a PROJECTION
+    // rather than a count — a different path (`detectNodeProjection`, item 204) and so a
+    // separate group. Measured in isolation at 20,000 vertices the two read 24.3ns and 34.8ns a
+    // vertex, so the inline spelling is ~1.4x ahead: `inlineHolds` -> `satisfies` against a
+    // compiled predicate over the same property.
+    'a filtered node projection: inline vs clause WHERE (item 204)',
+    ['MATCH (n:P) WHERE n.k = 2 RETURN n.s AS s', 'MATCH (n:P {k: 2}) RETURN n.s AS s'],
+  ],
+  [
     'a grouped count: the LET form vs ISO SELECT (item 199)',
     [
       'MATCH (n:P) LET a = n.k RETURN a, count(*) AS c GROUP BY a',

@@ -2322,6 +2322,278 @@ const groupedProjection = (
  *   - the columns are emitted in the projection's item order, so
  *     `RETURN count(*) AS c, n.k AS a` keeps `c` first.
  */
+/**
+ * Expression kinds whose value depends on the ROW and nothing else — no pattern to match, no
+ * subquery to run, no group to fold.
+ *
+ * An ALLOWLIST rather than a denylist, deliberately: a new `Expr` arm added later declines this
+ * fast path instead of silently taking it and answering from a shape it was never checked
+ * against. `countOnlyAggregates` above is written as a structural walk for the same reason, and
+ * this is the stricter version of that argument — a wrong answer here would be a wrong ROW, not
+ * a wrong count.
+ *
+ * `exists` and `scalar` are the subquery arms and are the reason the walk cannot simply trust
+ * `freePredicateVars`: that descends into a subquery and reports the variables INSIDE it, so an
+ * `EXISTS { (u)-[:T]->(x) }` reading only `u` passes a free-variable check while still needing
+ * the general matcher.
+ */
+const ROW_LOCAL_KINDS: ReadonlySet<string> = new Set([
+  'and',
+  'arith',
+  'case',
+  'compare',
+  'concat',
+  'field',
+  'func',
+  'in',
+  'index',
+  'label',
+  'list',
+  'lit',
+  'neg',
+  'not',
+  'or',
+  'param',
+  'prop',
+  'property_exists',
+  'record',
+  'var',
+  'xor',
+]);
+
+const rowLocal = (e: Expr | undefined): boolean => {
+  if (e === undefined) {
+    return true;
+  }
+
+  if (!ROW_LOCAL_KINDS.has(e.kind)) {
+    return false;
+  }
+
+  // An aggregate needs the group this path never builds.
+  if (e.kind === 'func' && AGGREGATES.has(e.name)) {
+    return false;
+  }
+
+  return Object.values(e).every((child) => {
+    if (Array.isArray(child)) {
+      return child.every((c) => typeof c !== 'object' || c === null || rowLocal(c as Expr));
+    }
+
+    return typeof child !== 'object' || child === null || rowLocal(child as Expr);
+  });
+};
+
+/**
+ * `MATCH (n:L) WHERE <row-local pred> RETURN <row-local items>` — a label scan, a filter, and a
+ * projection, with no hop, no aggregate and no window.
+ *
+ * This is the simplest query there is and it was the one shape in the file with no fast path.
+ * `detectCountShortcut` answered the `count(*)` form, `detectHopProjection` needs a hop
+ * (`segments.length !== 1` declines a bare node), `detectDistinctProjection` needs a `DISTINCT` —
+ * so a plain point lookup fell through to the general pipeline, which materializes a binding per
+ * SCANNED row. Measured on 20,000 vertices, one property equality, projecting one property:
+ *
+ *     a hand-written label-bucket loop            6.8ns a vertex
+ *     count(*) over the same scan (its shortcut)  30.6ns
+ *     the projection form                         83.3ns     <- 12.2x the floor
+ *
+ * `bench:usage` shows the consequence: every UNINDEXED read there is 60-82x behind native while
+ * the indexed ones are a healthy 3x, because an index turns the scan into a seek and hides this
+ * (audit item 204).
+ *
+ * The gate is built exactly as the grouped tally's is — the inline `{k: v}` constraint and the
+ * clause `WHERE` are two spellings of one filter, both funnelled through `inlineHolds` ->
+ * `satisfies`, which is the general path's own implementation rather than a re-derivation. The
+ * composition via `reduceRight` is load-bearing for the same measured reason recorded there: an
+ * `for (const ip of preds)` allocated an iterator per vertex over an empty array and cost an
+ * unfiltered scan 34%.
+ */
+export const detectNodeProjection = (
+  clauses: readonly Clause[],
+  compiled: readonly CClause[],
+): ((graph: Graph, params: Params) => Row[]) | null => {
+  if (clauses.length !== 2) {
+    return null;
+  }
+
+  const [m, ret] = clauses;
+  const [cm] = compiled;
+
+  if (m.kind !== 'match' || m.optional || m.patterns.length !== 1 || ret.kind !== 'return') {
+    return null;
+  }
+
+  if (cm.kind !== 'match') {
+    return null;
+  }
+
+  const proj = ret.projection;
+
+  // `star` needs the binding's whole shape; the rest each need a stage this path does not have.
+  //
+  // Two of these are belt-and-braces, and mutation says so rather than my reading it:
+  //
+  //   - `proj.star` is EQUIVALENT to the `items.length === 0` test below, because a `RETURN *`
+  //     carries no items. Removing it changes no answer.
+  //   - `proj.distinct` is reached only for a MULTI-item `DISTINCT`: `detectDistinctProjection`
+  //     runs earlier in the ladder and claims the one-item case. The multi-item case is real
+  //     though — nothing here dedupes — so it has a test with two vertices agreeing on BOTH
+  //     projected values, which is what a one-column fixture cannot see.
+  if (
+    proj.star ||
+    proj.distinct ||
+    proj.groupBy !== undefined ||
+    proj.having !== undefined ||
+    (proj.orderBy?.length ?? 0) > 0 ||
+    proj.skip !== undefined ||
+    proj.limit !== undefined ||
+    proj.items.length === 0
+  ) {
+    return null;
+  }
+
+  const [pattern] = m.patterns;
+
+  // A path variable has to build a `Path` per row; a segment makes this a hop.
+  if (pattern.pathVar !== undefined || pattern.segments.length !== 0) {
+    return null;
+  }
+
+  const { start } = pattern;
+  const nodeVar = start.variable;
+
+  if (nodeVar === undefined) {
+    return null;
+  }
+
+  const { label } = start;
+
+  if (label !== undefined && label.kind !== 'label') {
+    return null;
+  }
+
+  const preds: InlinePred[] = [];
+  const inStart = inlineOf(start);
+
+  if (inStart === null) {
+    return null;
+  }
+
+  if (inStart !== undefined) {
+    preds.push(inStart);
+  }
+
+  const { where } = m;
+
+  // The free-variable checks on the `WHERE` and on each item are DEFENSIVE, not load-bearing,
+  // and mutation confirms it: with exactly two clauses, one pattern and no segments, `nodeVar`
+  // is the ONLY name anything can be bound to — there is no earlier clause to bind another and
+  // no far end to introduce one, so a reference to any other name does not resolve at all.
+  // Removing either check changes no answer. They stay because that argument depends on the
+  // clause-count and segment-count guards above keeping their exact shape, and because
+  // `freePredicateVars` descends INTO a subquery: if the allowlist ever grew an arm that
+  // carried one, these are what would still refuse it. The same reasoning, and the same
+  // wording, as `detectHopProjection`'s rel-variable and path-variable checks.
+  if (where !== undefined) {
+    if (!rowLocal(where)) {
+      return null;
+    }
+
+    for (const nameRead of freePredicateVars(where)) {
+      if (nameRead !== nodeVar) {
+        return null;
+      }
+    }
+
+    preds.push({ pred: compilePredicate(undefined, where), bindVar: nodeVar });
+  }
+
+  const gate = preds.reduceRight<InlineGate | undefined>(
+    (rest, ip) => (v, binding, params, graph) =>
+      inlineHolds(ip, v, binding, params, graph) &&
+      (rest === undefined || rest(v, binding, params, graph)),
+    undefined,
+  );
+
+  const cols: string[] = [];
+  const fns: CompiledExpr[] = [];
+
+  for (const item of proj.items) {
+    if (!rowLocal(item.expr)) {
+      return null;
+    }
+
+    for (const nameRead of freePredicateVars(item.expr)) {
+      if (nameRead !== nodeVar) {
+        return null;
+      }
+    }
+
+    cols.push(item.alias ?? columnName(item.expr));
+    fns.push(compileExpr(item.expr));
+  }
+
+  const labelName = label?.name;
+  const width = cols.length;
+
+  const cstart = cm.patterns[0].start;
+
+  return (graph, params) => {
+    const out: Row[] = [];
+    // One binding map, reused across the scan. The general path allocates one per SCANNED row,
+    // which is the difference this path exists to remove: `inlineHolds` and the projection both
+    // overwrite the node's own variable per vertex, and `preds` and the items are CLOSED over
+    // that one name, so nothing can read a stale entry.
+    const binding = new Map<string, unknown>();
+    // SEED FROM THE INDEX when one is cheaper than the label bucket, via the SAME `hopSeek` the
+    // count shortcuts use. Written as a raw bucket walk first, this path made the INDEXED point
+    // lookup 50x SLOWER (80.9k -> 1.6k ops/s in `bench:usage`) while making the unindexed one
+    // 2x faster — it claimed the query ahead of the general path's index seek and then scanned.
+    // `count-shortcuts-must-seek` names that exact failure and its signature, which the bench
+    // showed verbatim: the indexed and unindexed columns became equal (1.2k against 1.6k).
+    // `hopSeek` returns a candidate set only when it is strictly smaller than the bucket, so an
+    // unindexed graph still walks and pays nothing for the attempt.
+    const seeded = hopSeek(graph, cstart, label, { binding, params, graph });
+    const vertices: Iterable<Vertex> =
+      seeded ??
+      (labelName === undefined
+        ? graph.verticesById.values()
+        : (graph.verticesByLabel.get(labelName) ?? []));
+
+    for (const v of vertices) {
+      // The label is re-checked because a SEEDED set is a SUPERSET: an index hint is a
+      // NECESSARY condition, not a sufficient one, so it can hand back a same-named vertex of
+      // the wrong label. The bucket walk gets this for free by construction and the seek does
+      // not — the same three tests in the same order as the hop seek's own loop. Two tests
+      // caught the omission as a WRONG ANSWER, not as a slow one. Guarded on `seeded` so the
+      // bucket walk — every unindexed graph — pays nothing for a test it satisfies by
+      // construction; the same idiom this file already uses at the far-side walk.
+      if (seeded !== undefined && !matchesLabel(v, label)) {
+        continue;
+      }
+
+      if (gate !== undefined && !gate(v, binding, params, graph)) {
+        continue;
+      }
+
+      // Only SURVIVORS reach here, so the row object and the item evaluations are paid per
+      // result rather than per scanned vertex.
+      binding.set(nodeVar, v);
+
+      const row: Row = {};
+
+      for (let i = 0; i < width; i++) {
+        row[cols[i]] = fns[i]({ binding, params, graph });
+      }
+
+      out.push(row);
+    }
+
+    return out;
+  };
+};
+
 export const detectGroupedNodeCount = (clauses: readonly Clause[]): ReachFn | null => {
   const shape = groupedClauses(clauses);
 

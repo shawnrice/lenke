@@ -1318,6 +1318,80 @@ export const runLinear = (linear: CLinear, graph: Graph, params: Params): Row[] 
   return graph.transaction(() => runLinearClauses(linear, graph, params));
 };
 
+/**
+ * The fast-path ladder, in order. Returns `undefined` when every detector declined and the
+ * general clause loop must run.
+ *
+ * Extracted from `runLinearClauses` because adding the eighth rung (`nodeProjection`, audit item
+ * 204) took that function to a complexity of 36 against a limit of 35. The ladder is the natural
+ * seam: it is a flat sequence of independent "did this detector claim the query?" tests, so
+ * pulling it out costs nothing in indirection and leaves `runLinearClauses` to be about the
+ * streaming loop.
+ *
+ * ORDER IS LOAD-BEARING. Each rung is more specific than the ones below it, and two pairs
+ * actually depend on that: `distinctProjection` must precede `nodeProjection` (which does not
+ * dedupe), and `countShortcut` must precede everything (it never materializes a row at all).
+ */
+const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefined => {
+  // Direct `count(*)` shortcut (edge-bucket size / degree product) — skips
+  // enumerating every match. Only fires for the exact `MATCH … RETURN count(*)`
+  // shapes `detectCountShortcut` accepts.
+  if (linear.countShortcut) {
+    return linear.countShortcut(graph, params);
+  }
+
+  // Grouped `count(*)` off the label bucket — many rows, so its own hook. See
+  // `detectGroupedNodeCount`.
+  if (linear.groupCountShortcut) {
+    return linear.groupCountShortcut(graph, params);
+  }
+
+  // The same over a hop — one pass over the start vertices adding each one's degree to its
+  // group, or one pass over the edge bucket. See `detectGroupedHopCount`.
+  if (linear.groupHopShortcut) {
+    return linear.groupHopShortcut(graph, params);
+  }
+
+  // Unbounded var-length + DISTINCT → BFS the reachable set instead of enumerating
+  // trails (exponential, hits the trail budget). See `detectReachableShortcut`.
+  if (linear.reachShortcut) {
+    return linear.reachShortcut(graph, params);
+  }
+
+  // A 1-hop projecting only the far endpoint: walk the hop and build rows directly,
+  // with one reused binding and no generator stack. See `detectHopProjection`.
+  if (linear.hopProjection) {
+    // `null` is a DECLINE, not an empty result: the fast path discovered at execution time
+    // that the general loop has a better plan (an index seek on the end it does not drive).
+    const rows = linear.hopProjection(graph, params);
+
+    if (rows !== null) {
+      return rows;
+    }
+  }
+
+  // `RETURN DISTINCT <one expr>`: dedupe by the projected VALUE while walking, so a
+  // duplicate costs neither a row object nor a row key. See `detectDistinctProjection`.
+  if (linear.distinctProjection) {
+    // No decline branch: this detector's closure always answers (`AlwaysRowsFn`).
+    return linear.distinctProjection(graph, params);
+  }
+
+  // `RETURN count(DISTINCT <one expr>)`: the SIZE of that same dedup, counted while walking.
+  if (linear.distinctCount) {
+    return linear.distinctCount(graph, params);
+  }
+
+  // `MATCH (n:L) WHERE <row-local pred> RETURN <row-local items>`: the plainest scan there is,
+  // and the last shape in this ladder to get a path. One reused binding for the whole scan,
+  // and a row object only for survivors. See `detectNodeProjection`.
+  if (linear.nodeProjection) {
+    return linear.nodeProjection(graph, params);
+  }
+
+  return undefined;
+};
+
 export const runLinearClauses = (
   linear: CLinear,
   graph: Graph,
@@ -1327,53 +1401,10 @@ export const runLinearClauses = (
   // The fast paths assume an empty start; a seeded (inline-subquery) run skips
   // them and takes the general clause loop.
   if (initial === undefined) {
-    // Direct `count(*)` shortcut (edge-bucket size / degree product) — skips
-    // enumerating every match. Only fires for the exact `MATCH … RETURN count(*)`
-    // shapes `detectCountShortcut` accepts.
-    if (linear.countShortcut) {
-      return linear.countShortcut(graph, params);
-    }
+    const fast = fastPath(linear, graph, params);
 
-    // Grouped `count(*)` off the label bucket — many rows, so its own hook. See
-    // `detectGroupedNodeCount`.
-    if (linear.groupCountShortcut) {
-      return linear.groupCountShortcut(graph, params);
-    }
-
-    // The same over a hop — one pass over the start vertices adding each one's degree to its
-    // group, or one pass over the edge bucket. See `detectGroupedHopCount`.
-    if (linear.groupHopShortcut) {
-      return linear.groupHopShortcut(graph, params);
-    }
-
-    // Unbounded var-length + DISTINCT → BFS the reachable set instead of enumerating
-    // trails (exponential, hits the trail budget). See `detectReachableShortcut`.
-    if (linear.reachShortcut) {
-      return linear.reachShortcut(graph, params);
-    }
-
-    // A 1-hop projecting only the far endpoint: walk the hop and build rows directly,
-    // with one reused binding and no generator stack. See `detectHopProjection`.
-    if (linear.hopProjection) {
-      // `null` is a DECLINE, not an empty result: the fast path discovered at execution time
-      // that the general loop has a better plan (an index seek on the end it does not drive).
-      const rows = linear.hopProjection(graph, params);
-
-      if (rows !== null) {
-        return rows;
-      }
-    }
-
-    // `RETURN DISTINCT <one expr>`: dedupe by the projected VALUE while walking, so a
-    // duplicate costs neither a row object nor a row key. See `detectDistinctProjection`.
-    if (linear.distinctProjection) {
-      // No decline branch: this detector's closure always answers (`AlwaysRowsFn`).
-      return linear.distinctProjection(graph, params);
-    }
-
-    // `RETURN count(DISTINCT <one expr>)`: the SIZE of that same dedup, counted while walking.
-    if (linear.distinctCount) {
-      return linear.distinctCount(graph, params);
+    if (fast !== undefined) {
+      return fast;
     }
   }
 
