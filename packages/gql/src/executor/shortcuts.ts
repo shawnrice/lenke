@@ -1106,6 +1106,162 @@ const side = (
   );
 };
 
+/** Everything `walkTwoHopFiltered` needs, decided once at compile time. */
+type TwoHopPlan = {
+  aLabel: LabelExpr | undefined;
+  midLabel: LabelExpr | undefined;
+  cLabel: LabelExpr | undefined;
+  firstOut: boolean;
+  fromCOut: boolean;
+  t1: string[] | undefined;
+  t2: string[] | undefined;
+  inStart: InlinePred | undefined;
+  pred: HopPred | undefined;
+  cstart: CNode | undefined;
+};
+
+/**
+ * The start-driven two-hop tally, AT MODULE SCOPE rather than inside the closure the builder
+ * returns.
+ *
+ * That placement is not style. Written inline in the returned closure, this walk gave TWO
+ * unrelated var-length queries a new slow mode — `analytic: fan-out spread 1-3 hops` and
+ * `analytic: cycle detection 2-4 hops`, neither of which this path can even claim (a quantified
+ * segment is refused upstream). Eight readings a side:
+ *
+ *     fan-out, before   563-625 ops/s      after, inline closure   334-593
+ *     cycle,   before   485-569            after, inline closure   279-548
+ *
+ * The top of each after-range matches the before, so it is a new MODE and not a shift — the
+ * signature `ts-closure-size-is-load-bearing` records, now for the fourth time. Hoisting the body
+ * out and leaving the closure to dispatch one call is the fix that file prescribes.
+ */
+const walkTwoHopFiltered = (graph: Graph, params: Params, plan: TwoHopPlan): number => {
+  const { aLabel, midLabel, cLabel, firstOut, fromCOut, t1, t2, inStart, pred, cstart } = plan;
+  const binding = new Map<string, unknown>();
+  const env: EvalEnv = { binding, params, graph };
+  const seeded = hopSeek(graph, cstart, aLabel, env);
+  const startVar = pred?.startVar;
+  let count = 0;
+
+  for (const a of seeded ?? candidateVertexSource(graph, aLabel)) {
+    if (seeded !== undefined && !matchesLabel(a, aLabel)) {
+      continue;
+    }
+
+    if (inStart !== undefined && !inlineHolds(inStart, a, binding, params, graph)) {
+      continue;
+    }
+
+    if (pred !== undefined) {
+      if (startVar !== undefined) {
+        binding.set(startVar, a);
+      }
+
+      if (asTruth(pred.fn(env)) !== true) {
+        continue;
+      }
+    }
+
+    // Only survivors expand. `outNeighbors` is not used here because the MIDDLE label has to be
+    // checked before the second leg is counted, so a rejected middle costs one label test rather
+    // than an array entry.
+    const byType = (firstOut ? graph.edgesFromByLabel : graph.edgesToByLabel).get(a.id);
+
+    for (const e of edgesOfTypes(byType, t1)) {
+      const b = firstOut ? e.to : e.from;
+
+      if (!matchesLabel(b, midLabel)) {
+        continue;
+      }
+
+      count += side(graph, b.id, fromCOut, t2, cLabel);
+    }
+  }
+
+  return count;
+};
+
+/**
+ * The START-FILTERED 2-hop count: `(a)-[:T1]->(b)-[:T2]->(c)` where a predicate reads only `a`.
+ *
+ * `buildTwoHopCount` below iterates the MIDDLE and multiplies the two sides, which is the right
+ * shape for an unfiltered count and the wrong one here: once a predicate selects which `a`s
+ * count, the start side's factor is no longer a plain degree. So this drives from the START, like
+ * the one-hop walk — gate a vertex, and only then expand it.
+ *
+ * That difference is the whole win. `patternCountOf` declined any predicate on a two-segment
+ * pattern ("the two-hop degree product has no route that applies a predicate"), so a filtered
+ * 2-hop count fell to the general pipeline, which binds a row per match. The one-hop shape got
+ * its per-vertex route in item 129 and the two-hop shape never did. Measured on 20,000 users at
+ * three `FOLLOWS` each (audit item 206):
+ *
+ *     1-hop count, filtered start      25.7ns a scanned vertex   <- has the walk
+ *     2-hop count, filtered start      97.7ns                    <- the general path
+ *
+ * Every condition `buildTwoHopCount` imposes is imposed here too, for the same reasons: anonymous
+ * directed rels (a rel variable or `both` needs the general matcher), plain MIDDLE and END nodes
+ * (an inline constraint there has no route), and distinct node variables (a shared one is a
+ * self-join neither counting shape can express). Only the START is allowed to carry a filter.
+ *
+ * The seed, the label re-check and their order are the one-hop walk's, not a re-derivation:
+ * `hopSeek` narrows to an index candidate set when the graph offers one smaller than the label
+ * bucket — `count-shortcuts-must-seek` records that omitting it leaves a walk scanning a whole
+ * label while the general path seeds, and that its signature is a row whose indexed and unindexed
+ * columns read the same. A seeded set is a SUPERSET, so the label is re-checked, guarded on
+ * `seeded` so the bucket walk pays nothing for a test it satisfies by construction.
+ */
+const buildFilteredTwoHopCount = <T>(
+  s1: Segment,
+  s2: Segment,
+  start: NodePattern,
+  rowOf: (n: number) => T,
+  w: { inStart: InlinePred | undefined; pred: HopPred | undefined; cstart: CNode | undefined },
+): CountOf<T> | null => {
+  if (
+    !plainRel(s1.rel) ||
+    !plainRel(s2.rel) ||
+    s1.rel.variable !== undefined ||
+    s2.rel.variable !== undefined ||
+    s1.rel.direction === 'both' ||
+    s2.rel.direction === 'both' ||
+    !plainNode(s1.node) ||
+    !plainNode(s2.node)
+  ) {
+    return null;
+  }
+
+  const vars = [start.variable, s1.node.variable, s2.node.variable].filter(
+    (v): v is string => v !== undefined,
+  );
+
+  if (new Set(vars).size !== vars.length) {
+    return null; // a shared node variable is a self-join this cannot express
+  }
+
+  const t1 = relTypeNames(s1.rel.label);
+  const t2 = relTypeNames(s2.rel.label);
+
+  if (t1 === null || t2 === null) {
+    return null;
+  }
+
+  const plan: TwoHopPlan = {
+    aLabel: start.label,
+    midLabel: s1.node.label,
+    cLabel: s2.node.label,
+    firstOut: s1.rel.direction === 'out',
+    fromCOut: s2.rel.direction === 'out',
+    t1,
+    t2,
+    inStart: w.inStart,
+    pred: w.pred,
+    cstart: w.cstart,
+  };
+
+  return (graph, params) => rowOf(walkTwoHopFiltered(graph, params, plan));
+};
+
 /** 2-hop `(a)-[:T1]->(b)-[:T2]->(c)` count via the degree product
  * `Σ_b (edges reaching a valid a) × (edges reaching a valid c)`. `null` unless
  * both rels are anonymous + directed and the node variables are distinct. */
@@ -1203,15 +1359,20 @@ const patternCountOf = <T>(
   // for the tally; the per-vertex path is the right route and beats both.
   let inStart: InlinePred | null | undefined;
 
-  if (segments.length <= 1) {
+  if (segments.length <= 2) {
     // The NODE-ONLY shape joined this in item 135: `buildNodeCount` can now tally a
     // constrained bucket, which both answers `MATCH (a:P {k: 1}) RETURN count(*)`
     // (previously 10.5ms against native's 0.04ms) and lets `productCountOf` use a
     // constrained pattern as a factor.
+    //
+    // The TWO-HOP shape joined in item 206. The note here used to read "the two-hop degree
+    // product has no route that applies a predicate", and that was true of the degree product —
+    // it iterates the MIDDLE and multiplies the two sides, so a predicate selecting which starts
+    // count has nowhere to go. It was not true of the engine: the one-hop shape has had a
+    // per-VERTEX route since item 129, which gates a start and only then expands it, and the
+    // two-hop shape simply never got the same treatment. `buildFilteredTwoHopCount` is that
+    // route; the product still answers the UNFILTERED case, which it does better.
     inStart = inlineOf(start);
-  } else if (!plainNode(start)) {
-    // The two-hop degree product has no route that applies a predicate.
-    return null;
   }
 
   if (inStart === null) {
@@ -1255,10 +1416,31 @@ const patternCountOf = <T>(
   if (where !== undefined) {
     // The node shape returned above, having folded its clause `WHERE` into the
     // tally; of what is left only the 1-hop tally can answer one.
-    if (segments.length !== 1) {
+    if (segments.length !== 1 && segments.length !== 2) {
       return null;
     }
 
+    // On a TWO-segment pattern only a START-reading predicate is admissible, because the walk
+    // gates a start vertex and then expands it — a predicate reading the middle or the end would
+    // have to be applied per expanded edge, which is the row pipeline this exists to avoid. The
+    // one-segment case still admits either end (`buildOneHopCount` has routes for both).
+    if (segments.length === 2) {
+      const startName = start.variable;
+
+      for (const name of freePredicateVars(where)) {
+        if (startName === undefined || name !== startName) {
+          return null;
+        }
+      }
+
+      pred = { fn: compileExpr(where), startVar: startName, farVar: undefined, relVar: undefined };
+    }
+  }
+
+  // The one-segment slot analysis, which must NOT run for two segments: it reads `segments[0]`'s
+  // node and rel as the predicate's far and rel ends and would overwrite the start-only `pred`
+  // built above with slots the two-hop walk does not bind.
+  if (where !== undefined && segments.length === 1) {
     const [seg] = segments;
     const vars = new Map<string, 'start' | 'far' | 'rel'>();
 
@@ -1317,7 +1499,12 @@ const patternCountOf = <T>(
   if (segments.length === 2) {
     const [s1, s2] = segments;
 
-    return buildTwoHopCount(s1, s2, start, rowOf);
+    // Unfiltered stays on the degree product: it iterates the MIDDLE once and multiplies two
+    // degrees, so it never touches a start vertex at all. The start-driven walk is strictly more
+    // work for that case and is taken only when there is a filter for it to apply early.
+    return inStart === undefined && pred === undefined
+      ? buildTwoHopCount(s1, s2, start, rowOf)
+      : buildFilteredTwoHopCount(s1, s2, start, rowOf, { inStart, pred, cstart });
   }
 
   return null;

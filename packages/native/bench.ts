@@ -369,6 +369,22 @@ const CASES: Case[] = [
     ),
   },
   {
+    // A START-FILTERED two-hop count. `patternCountOf` declined any predicate on a two-segment
+    // pattern, so this fell to the general pipeline while the one-hop form had had a per-vertex
+    // walk since item 129: 52.6ms against 14.0 on 20,000 users (audit item 206). The filter is
+    // selective on purpose — that is what the walk exploits, rejecting a start before it expands
+    // the start's adjacency at all.
+    name: 'count 2-hop + start filter',
+    ...onGraph(
+      () => graphDoc,
+      (e, g) =>
+        void e.query(
+          g,
+          'MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(c) WHERE a.age > 60 RETURN count(*) AS c',
+        ),
+    ),
+  },
+  {
     // The other half: the same walk, but PROJECTING an endpoint property, so 1,000,000 rows are
     // built. Traversal plus the row pipeline, which is the shape a user actually runs.
     name: 'traverse 1-hop project',
