@@ -2548,7 +2548,7 @@ const ROW_LOCAL_KINDS: ReadonlySet<string> = new Set([
   'xor',
 ]);
 
-const rowLocal = (e: Expr | undefined): boolean => {
+export const rowLocal = (e: Expr | undefined): boolean => {
   if (e === undefined) {
     return true;
   }
@@ -2562,13 +2562,39 @@ const rowLocal = (e: Expr | undefined): boolean => {
     return false;
   }
 
-  return Object.values(e).every((child) => {
-    if (Array.isArray(child)) {
-      return child.every((c) => typeof c !== 'object' || c === null || rowLocal(c as Expr));
-    }
+  return Object.values(e).every(rowLocalChild);
+};
 
-    return typeof child !== 'object' || child === null || rowLocal(child as Expr);
-  });
+/**
+ * One child of an `Expr`, which may be a nested ARRAY or a plain structural object rather than an
+ * `Expr` itself.
+ *
+ * The nesting is load-bearing and the first version got it wrong: an `arith` node is
+ * `{ head, tail: [['/', <Expr>]] }` — an array of ARRAYS — and a walk that only descended one
+ * array level called this on `['/', <Expr>]`, whose `kind` is `undefined`, so it rejected the
+ * node. The effect was silent and ONE-SIDED: every arithmetic expression declined item 204's node
+ * projection, and the test that was supposed to cover it ("a computed item, not just a bare
+ * property") compared the fast path against the general path and passed because BOTH were the
+ * general path. Found while investigating why a start-filtered hop with an arithmetic predicate
+ * never reached the walk (audit item 207).
+ *
+ * Descending into a non-`Expr` object is safe because every `Expr` carries a `kind`, so the
+ * allowlist still sees every expression on the way down — only the wrappers are passed through.
+ */
+const rowLocalChild = (child: unknown): boolean => {
+  if (Array.isArray(child)) {
+    return child.every(rowLocalChild);
+  }
+
+  if (typeof child !== 'object' || child === null) {
+    return true;
+  }
+
+  const rec = child as Record<string, unknown>;
+
+  return typeof rec.kind === 'string'
+    ? rowLocal(child as Expr)
+    : Object.values(rec).every(rowLocalChild);
 };
 
 /**

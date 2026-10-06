@@ -32,10 +32,12 @@ import type { Adjacency } from '../graph-queries.js';
 import { indexCandidates } from './matching.js';
 import { asTruth, isNullish } from './scalars.js';
 import {
+  hopSeek,
   pageGroups,
   pageIsEmpty,
   plainNode,
   plainRel,
+  rowLocal,
   sameGroupingExpr,
   vacuousLabel,
   valueSet,
@@ -138,9 +140,9 @@ const carriedWhere = (
   where: Expr | undefined,
   farVar: string,
   startVar: string | undefined,
-): { needsStart: boolean } | null => {
+): { needsStart: boolean; startOnly: boolean } | null => {
   if (where === undefined) {
-    return { needsStart: false };
+    return { needsStart: false, startOnly: false };
   }
 
   const vars = [...freePredicateVars(where)];
@@ -151,13 +153,34 @@ const carriedWhere = (
     }
   }
 
-  if (!vars.includes(farVar)) {
+  const readsStart = startVar !== undefined && vars.includes(startVar);
+
+  // A predicate reading ONLY the start used to be refused here, so it declined to the general
+  // path. That was not arbitrary: this walk did not SEED, so taking an anchored filter meant
+  // scanning a whole label while the general path went straight to the index — item 177
+  // measured the walk at 3966us against the general path's 49.6, and refusing it was the fix.
+  //
+  // The walk seeds now (`hopSeek`, below), which is the same answer items 176 and 206 reached
+  // for the one- and two-hop COUNTS: a walking fast path should not decline an indexed filter,
+  // it should seed from the index and keep walking. So a start-only predicate is accepted and
+  // gets its own closure, which applies it PER START VERTEX instead of per row — the whole point
+  // of carrying it, since the general path cannot reject a start before expanding it either.
+  if (!vars.includes(farVar) && !readsStart) {
+    return null;
+  }
+
+  // A start-only predicate is taken ONLY when it is row-local. `rowLocal` is item 204's
+  // allowlist and what it refuses here is the subquery arms: item 175 gave the seed gate a
+  // CHEAP-CONJUNCT-FIRST order precisely so `WHERE u.k = 'nope' AND <faulting subquery>` never
+  // reaches the subquery, and a walk that evaluates the whole predicate at once loses that. Five
+  // of its tests caught this, as raises rather than wrong rows.
+  if (!vars.includes(farVar) && !rowLocal(where)) {
     return null;
   }
 
   // The start is bound only when the predicate actually reads it: the single mutated binding is
   // the allocation this path exists to avoid, so an extra `set` per vertex is not free.
-  return { needsStart: startVar !== undefined && vars.includes(startVar) };
+  return { needsStart: readsStart, startOnly: readsStart && !vars.includes(farVar) };
 };
 
 /**
@@ -423,6 +446,8 @@ export const detectHopProjection = (
     proj,
     farPred,
     gate,
+    startOnly: carried.startOnly,
+    cstart: cm.patterns[0].start,
     startVar: needsStart ? startVar : undefined,
     // The COMPILED far node carries both the inline equalities and the seed hints lifted from
     // the clause `WHERE`, which are the two things `indexCandidates` reads — so one value
@@ -544,6 +569,44 @@ const SEEK_MARGIN = 8;
 const compiledFarNode = (cm: CClause): CNode | undefined =>
   cm.kind === 'match' ? cm.patterns[0]?.segments[0]?.node : undefined;
 
+/**
+ * Would any far end of this bucket have produced a row? Used ONLY from the fault path of the
+ * start-gated walk, to decide whether a predicate that threw would have been evaluated by the
+ * general path at all. Cold by construction, so it is shared rather than inlined per compile.
+ */
+const anyFarMatches = (
+  graph: Graph,
+  params: Params,
+  binding: Map<string, unknown>,
+  bucket: Iterable<{ to: Vertex; from: Vertex }>,
+  w: {
+    out: boolean;
+    farVar: string;
+    farLabel: LabelExpr | undefined;
+    farPred: CPredicate | undefined;
+  },
+): boolean => {
+  const { out, farVar, farLabel, farPred } = w;
+
+  for (const edge of bucket) {
+    const far: Vertex = out ? edge.to : edge.from;
+
+    if (farLabel !== undefined && !matchesLabel(far, farLabel)) {
+      continue;
+    }
+
+    binding.set(farVar, far);
+
+    if (farPred !== undefined && !satisfies(far, farPred, binding, params, graph)) {
+      continue;
+    }
+
+    return true;
+  }
+
+  return false;
+};
+
 const filteredHopWalk = (w: {
   startLabel: LabelExpr | undefined;
   typeName: string;
@@ -553,10 +616,95 @@ const filteredHopWalk = (w: {
   proj: CProjection;
   farPred: CPredicate | undefined;
   gate: CompiledExpr | undefined;
+  startOnly: boolean;
+  cstart: CNode | undefined;
   startVar: string | undefined;
   cfar: CNode | undefined;
 }): RowsFn => {
   const { startLabel, typeName, out, farVar, farLabel, proj, farPred, gate, startVar, cfar } = w;
+  const { startOnly, cstart } = w;
+
+  // A START-ONLY predicate gets its own walk, which gates a vertex BEFORE reading its adjacency.
+  // Its own closure rather than a branch in the loop below, for the reason item 159 recorded
+  // about this very function: adding even a branch to a hot inner loop cost the unfiltered shape
+  // 1.6x, and a shared module-scope walk cost 1.29x because its call sites go polymorphic across
+  // compiles. A closure per compile is what both effects want.
+  if (startOnly && gate !== undefined && startVar !== undefined) {
+    return (graph, params) => {
+      const rows: Row[] = [];
+      const binding = new Map<string, unknown>();
+      const env: EvalEnv = { binding, params, graph };
+      const index = out ? graph.edgesFromByLabel : graph.edgesToByLabel;
+      // SEED, do not decline. This is what lets the start-only filter be carried at all: without
+      // it the walk scans a whole label while the general path seeks (item 177's 3966us against
+      // 49.6). `hopSeek` hands back a candidate set only when it is strictly narrower than the
+      // label bucket, so an unindexed graph walks and pays nothing for asking.
+      const seeded = hopSeek(graph, cstart, startLabel, env);
+
+      for (const v of seeded ?? candidateVertices(graph, startLabel)) {
+        // A seeded set is a SUPERSET — an index hint is a necessary condition, not a sufficient
+        // one — so the label is re-checked, guarded on `seeded` so the bucket walk pays nothing.
+        if (seeded !== undefined && !matchesLabel(v, startLabel)) {
+          continue;
+        }
+
+        binding.set(startVar, v);
+
+        // The PREDICATE FIRST, then the adjacency — which is the whole point of gating per
+        // vertex. Reading the bucket first was the obvious order and it costs every rejected
+        // vertex an `index.get(id)?.get(type)`: on 20,000 users with a selective filter that is
+        // 19,999 adjacency lookups for one surviving start, and it measured 52ns a vertex
+        // against 34ns for the bare node scan the same filter drives. `startOnlyHopCount` had
+        // this right since item 164 — "the degree is now summed only for vertices the predicate
+        // KEEPS" — and this is the same order with the same fault handling.
+        try {
+          if (asTruth(gate(env)) !== true) {
+            continue;
+          }
+        } catch (e) {
+          // Raise parity (items 139, 142, 144, 145): the general path evaluates a clause `WHERE`
+          // once per COMPLETE match, so a start that yields no row never has it evaluated at
+          // all. On a fault, decide whether the general path would have reached this vertex —
+          // a non-empty bucket is necessary but not sufficient, since every far end may still
+          // fail the far label or the far predicate. The happy path never enters this branch.
+          const bucket = index.get(v.id)?.get(typeName);
+
+          if (
+            bucket !== undefined &&
+            anyFarMatches(graph, params, binding, bucket, { out, farVar, farLabel, farPred })
+          ) {
+            throw e;
+          }
+
+          continue;
+        }
+
+        const bucket = index.get(v.id)?.get(typeName);
+
+        if (bucket === undefined) {
+          continue;
+        }
+
+        for (const edge of bucket) {
+          const far: Vertex = out ? edge.to : edge.from;
+
+          if (farLabel !== undefined && !matchesLabel(far, farLabel)) {
+            continue;
+          }
+
+          binding.set(farVar, far);
+
+          if (farPred !== undefined && !satisfies(far, farPred, binding, params, graph)) {
+            continue;
+          }
+
+          rows.push(projectRow(proj, binding, params, graph));
+        }
+      }
+
+      return rows;
+    };
+  }
 
   return (graph, params) => {
     // DECLINE when the FAR end can seek an index, and let the general path answer.

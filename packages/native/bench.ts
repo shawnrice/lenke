@@ -369,6 +369,20 @@ const CASES: Case[] = [
     ),
   },
   {
+    // A START-FILTERED one-hop PROJECTION. `carriedWhere` refused a clause `WHERE` that did not
+    // read the far end, so this declined the fused walk entirely and went to the general path —
+    // correct while the walk did not seed (item 177 measured the walk at 3966us against the
+    // general path's 49.6 on an indexed graph), and wrong once it does. Item 207 seeds instead of
+    // declining and gates per START VERTEX: 51.8ms to 17.0 on 20,000 users, with the indexed case
+    // unchanged at 0.6ms.
+    name: 'traverse 1-hop project + start filter',
+    ...onGraph(
+      () => graphDoc,
+      (e, g) =>
+        void e.query(g, 'MATCH (a:Person)-[:KNOWS]->(x) WHERE a.age > 60 RETURN x.name AS n'),
+    ),
+  },
+  {
     // A START-FILTERED two-hop count. `patternCountOf` declined any predicate on a two-segment
     // pattern, so this fell to the general pipeline while the one-hop form had had a per-vertex
     // walk since item 129: 52.6ms against 14.0 on 20,000 users (audit item 206). The filter is
