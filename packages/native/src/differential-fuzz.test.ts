@@ -21,7 +21,13 @@ import { Graph } from '@lenke/core';
 import { query as tsQuery } from '@lenke/gql';
 import { deserialize as tsDeserialize } from '@lenke/serialization';
 
-import { columnOrderOf, nativeBackend, nativeReady, resultsEqual } from './conformance-harness.js';
+import {
+  columnOrderOf,
+  nativeBackend,
+  nativeReady,
+  resultsEqual,
+  resultsEqualInOrder,
+} from './conformance-harness.js';
 import { accept, resetUsage, usageCounts } from './divergence-registry.js';
 import { graphFromNdjson } from './graph.js';
 
@@ -641,7 +647,75 @@ const genCall = (r: () => number): string => {
 /// error — a cross-type `<=` is a data exception by policy — so the error path stays covered,
 /// and the callers keep a share of raw `genExpr` deliberately so the boolean-context rejection
 /// itself does not lose coverage.
-const genPred = (r: () => number, depth: number): string => {
+/**
+ * A correlated SUBQUERY over the outer `n` — `EXISTS { … }`, `COUNT { … }` or `VALUE { … }`.
+ *
+ * NOTHING in any of the seven fuzzers generated one of these. `EXISTS {`, `COUNT {` and `VALUE {`
+ * appeared zero times across every generator, while audit items 208 through 213 all worked on
+ * subquery paths — and item 213 turned out to be a live TS-vs-native DIVERGENCE that reached main
+ * because no fuzzer could produce the shape (audit item 214).
+ *
+ * `inner` is the far variable's name, and `collide` makes it equal the ALIAS the caller will use.
+ * That is not a curiosity: item 213's bug needed exactly that collision. `aliasDefinition`
+ * substitutes a sort alias with the expression it names, guarded on no FREE name of that
+ * expression being an output name — and `freePredicateVars` returns the EMPTY set for a subquery,
+ * so the guard could not see the collision, substituted, and the projected output overlaid on the
+ * binding then bound the alias to the COUNT VALUE, which the sub-pattern matched against a number.
+ */
+const genSubquery = (r: () => number, inner: string): string => {
+  const et = pick(r, ['E', 'F', 'E|F']);
+  const dir = r() < 0.5 ? `-[:${et}]->` : `<-[:${et}]-`;
+  const label = r() < 0.4 ? `${inner}:T` : inner;
+  const where = r() < 0.4 ? ` WHERE ${inner}.n ${pick(r, CMP)} ${pick(r, ['2', '5', '0'])}` : '';
+  const body = `MATCH (n)${dir}(${label})${where}`;
+  const k = r();
+
+  if (k < 0.45) {
+    return `COUNT { ${body} }`;
+  }
+
+  if (k < 0.8) {
+    return `EXISTS { ${body} }`;
+  }
+
+  // A scalar subquery must deliver at most one row, so its body is bounded — otherwise the
+  // generator would spend most of its sample on the cardinality error rather than on the value.
+  //
+  // `count(*)` and a bare property are the two bodies BOTH engines support. A NAMED aggregate is
+  // deliberately not generated, and that is a FEATURE GAP in native rather than a divergence to
+  // excuse — found by this generator on its very first seed:
+  //
+  //     MATCH (n:T) RETURN VALUE { MATCH (n)-[:E]->(x) RETURN max(x.n) } AS v
+  //       ts      [{v:2},{v:null}]
+  //       native  E_UNKNOWN_FUNCTION: unknown function `max`
+  //
+  // Native resolves `max` at the TOP level and `count(*)` inside a `VALUE` body, but a named
+  // aggregate inside one falls through to the scalar-function table in `gql.rs` and is rejected —
+  // so the body is not being lowered as an aggregating projection. The divergence registry cannot
+  // cover this and must not: it has no `value` axis, and `accept` refuses a value difference
+  // whatever an entry says, which is right — one engine answering and the other raising on a
+  // determinate question is a bug in one of them. Generating it every run would make the gate red
+  // for a missing feature rather than for a regression, so the shape waits for the feature
+  // (audit item 214).
+  return r() < 0.5 ? `VALUE { ${body} RETURN count(*) }` : `VALUE { ${body} RETURN ${inner}.n }`;
+};
+
+/**
+ * `allowSub` gates the SUBQUERY arm, and defaults to false so that with it unset this function is
+ * byte-for-byte what it was before item 214 — every existing seed keeps its meaning.
+ *
+ * It is set only for a clause `WHERE` and a `FILTER`. An INLINE node predicate must not carry one:
+ * native rejects a subquery there, which this generator found immediately —
+ *
+ *     MATCH p = ANY SHORTEST (a:T)-[:E]->*(n:T WHERE (n.n >= 4 AND EXISTS { MATCH (n)-[:E|F]->(b) }))
+ *       ts      9 rows
+ *       native  E_INVALID_VALUE
+ *
+ * — a second native FEATURE GAP beside the `VALUE { … RETURN max(…) }` one above, and recorded the
+ * same way rather than excused: generating it would make the gate red for a missing feature instead
+ * of a regression.
+ */
+const genPred = (r: () => number, depth: number, allowSub = false): string => {
   const p = r();
 
   // A ROW-DEPENDENT, TYPE-CONSISTENT comparison. Both halves matter. Row-dependent, because
@@ -688,14 +762,26 @@ const genPred = (r: () => number, depth: number): string => {
   }
 
   if (p < 0.78) {
-    return `NOT ${genPred(r, depth - 1)}`;
+    return `NOT ${genPred(r, depth - 1, allowSub)}`;
   }
 
   if (p < 0.9) {
-    return `(${genPred(r, depth - 1)} AND ${genPred(r, depth - 1)})`;
+    return `(${genPred(r, depth - 1, allowSub)} AND ${genPred(r, depth - 1, allowSub)})`;
   }
 
-  return `(${genPred(r, depth - 1)} OR ${genPred(r, depth - 1)})`;
+  // With `allowSub` unset this returns OR for the whole [0.9, 1) band, exactly as before.
+  if (p < 0.96 || !allowSub) {
+    return `(${genPred(r, depth - 1, allowSub)} OR ${genPred(r, depth - 1, allowSub)})`;
+  }
+
+  // A SUBQUERY predicate. Carved out of the OR fallback's tail rather than given its own band, so
+  // every boundary below 0.9 is untouched and existing seeds keep their meaning up to there.
+  //
+  // Both spellings matter and they take different paths: a bare `EXISTS { … }` and one behind a
+  // cheap conjunct, which is what item 175's seed gate orders and items 207/209 reasoned about.
+  const sub = genSubquery(r, pick(r, ['b', 'x', 'c']));
+
+  return r() < 0.5 ? `(${sub})` : `(n.n ${pick(r, CMP)} 4 AND ${sub})`;
 };
 
 const genQuery = (r: () => number): string => {
@@ -748,7 +834,7 @@ const genQuery = (r: () => number): string => {
   }
 
   if (p < 0.48) {
-    const pred = r() < 0.75 ? genPred(r, 2) : genExpr(r, 2);
+    const pred = r() < 0.75 ? genPred(r, 2, true) : genExpr(r, 2);
 
     return `MATCH (n:T) WHERE ${pred} RETURN n.n AS x ORDER BY x`;
   }
@@ -762,7 +848,7 @@ const genQuery = (r: () => number): string => {
   }
 
   if (p < 0.64) {
-    const pred = r() < 0.75 ? genPred(r, 2) : genExpr(r, 2);
+    const pred = r() < 0.75 ? genPred(r, 2, true) : genExpr(r, 2);
 
     return `MATCH (n:T) FILTER ${pred} RETURN n.n AS x ORDER BY x`;
   }
@@ -1167,11 +1253,52 @@ const genQuery = (r: () => number): string => {
     ]);
   }
 
+  // A SUBQUERY as a projected ITEM, half the time — taken from the generic fallback's share so no
+  // band boundary moves.
+  //
+  // This is the shape item 213's divergence needed and `genPred`'s arm cannot produce: a subquery
+  // in a projection item, under an `ORDER BY` on its ALIAS, where the alias may COLLIDE with a
+  // variable the subquery binds. `aliasDefinition` substituted the alias with the subquery, the
+  // projected output was then overlaid on the binding, and the alias — bound to the subquery's own
+  // VALUE — shadowed the pattern variable, so the sub-pattern matched against a number and counted
+  // 0 for every row. TS answered unsorted where native sorted.
+  //
+  // The collision is generated deliberately and often: without it the bug is unreachable, which is
+  // exactly why it reached main. `t` is carried as a final sort key for the usual reason (row order
+  // is otherwise unspecified), and the window is generated because a wrong sort key under one
+  // returns the wrong ROW rather than merely the wrong order.
+  if (r() < 0.5) {
+    const inner = r() < 0.6 ? 'b' : pick(r, ['x', 'c']);
+    // COLLIDE: the alias IS the subquery's far variable.
+    const alias = r() < 0.6 ? inner : 'q';
+    const dir = pick(r, ['', ' DESC']);
+    const paged = r() < 0.3 ? ` LIMIT ${1 + Math.floor(r() * 3)}` : '';
+
+    return `MATCH (n:T) RETURN ${genSubquery(r, inner)} AS ${alias}, n.n AS t ORDER BY ${alias}${dir}, t${paged}`;
+  }
+
   return `MATCH (n:T) RETURN ${genExpr(r, 3)} AS x, n.n AS t ORDER BY t`;
 };
 
 const codeOf = (e: unknown): string =>
   (e as { code?: string })?.code ?? (e instanceof Error ? e.name : 'unknown');
+
+/**
+ * Does this query's `ORDER BY` impose a TOTAL order, so the row SEQUENCE is comparable?
+ *
+ * `resultsEqual` sorts the rows away, which is correct for an unordered result and is why no
+ * generated shape could ever have caught audit item 213's `ORDER BY`-that-did-not-order. The fix is
+ * to compare sequences where the order is total — and only there, because a TIE leaves the sequence
+ * unspecified and comparing it would report the engines' free choice as a bug.
+ *
+ * The file's own convention is what makes this decidable: "Every ORDER BY ends with the distinct
+ * `n.n`", projected as `AS t`. So a query that projects `n.n AS t` and whose FINAL sort key is `t`
+ * is totally ordered, since `n` ranges over distinct vertices and `n.n` is distinct per vertex.
+ * Anything else — `ORDER BY k, c` over a grouped key, a sort over a non-unique expression — is left
+ * to the unordered comparison, which is what it was before.
+ */
+const totallyOrdered = (q: string): boolean =>
+  q.includes('n.n AS t') && /ORDER BY .*\bt\b(?: LIMIT \d+)?$/.test(q);
 
 type Outcome = { ok: true; json: string } | { ok: false; code: string };
 
@@ -1341,7 +1468,11 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
           );
         }
 
-        if (!resultsEqual(ts.json, nat.json) && !numericTextTie(ts.json, nat.json)) {
+        const agree = totallyOrdered(q)
+          ? resultsEqualInOrder(ts.json, nat.json)
+          : resultsEqual(ts.json, nat.json);
+
+        if (!agree && !numericTextTie(ts.json, nat.json)) {
           // Routed through the registry like the one-sided case, so an `order` or
           // `float-reduction` entry would apply here if one is ever declared. With none, this
           // classifies and is reported exactly as before.

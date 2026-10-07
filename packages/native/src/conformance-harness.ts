@@ -73,6 +73,29 @@ export const canonResult = (json: string): string => {
  * output order. */
 export const resultsEqual = (a: string, b: string): boolean => canonResult(a) === canonResult(b);
 
+/** Canonicalize a result JSON string WITHOUT sorting the rows — each row's keys are canonicalized
+ * (so column order is still compared separately by {@link columnOrderOf}) but the row SEQUENCE is
+ * preserved. */
+const canonResultOrdered = (json: string): string => {
+  const parsed: unknown = JSON.parse(json);
+
+  return JSON.stringify(Array.isArray(parsed) ? parsed.map(canonValue) : canonValue(parsed));
+};
+
+/**
+ * Whether two results agree AS SEQUENCES — for a query whose `ORDER BY` imposes a TOTAL order.
+ *
+ * {@link resultsEqual} sorts the outer rows array, which is right for an unordered result and means
+ * the differential fuzzer could not see a row-ORDER divergence at all. That is how audit item 213
+ * reached main: an `ORDER BY` that silently sorted by nothing was byte-identical to a correct one
+ * after canonicalization, so no generated shape could ever have caught it (audit item 214).
+ *
+ * Only safe where the order really is total — a tie makes the sequence unspecified, and comparing
+ * it would report the engines' free choice as a bug. The caller decides; see `totallyOrdered`.
+ */
+export const resultsEqualInOrder = (a: string, b: string): boolean =>
+  canonResultOrdered(a) === canonResultOrdered(b);
+
 /**
  * The first row's COLUMN sequence, which {@link canonResult} deliberately sorts
  * away and so cannot compare.
