@@ -1263,6 +1263,41 @@ const buildFilteredTwoHopCount = <T>(
   return (graph, params) => rowOf(walkTwoHopFiltered(graph, params, plan));
 };
 
+/** Everything the two-hop degree count needs beyond the anchor vertex. */
+export type TwoHopSide = {
+  firstOut: boolean;
+  t1: string[] | undefined;
+  midLabel: LabelExpr | undefined;
+  secondOut: boolean;
+  t2: string[] | undefined;
+  farLabel: LabelExpr | undefined;
+};
+
+/**
+ * The number of two-hop paths out of ONE vertex — `side`'s two-segment counterpart.
+ *
+ * Exactly `buildFilteredTwoHopCount`'s inner loop, lifted so a correlated
+ * `COUNT { (u)-[:T1]->(x)-[:T2]->(y) }` can use it without the executor trunk needing the
+ * adjacency primitives (audit item 212). The MIDDLE label is checked before the second leg is
+ * counted, so a rejected middle costs one label test rather than a `side` call.
+ */
+export const twoHopSide = (graph: Graph, id: string, w: TwoHopSide): number => {
+  const byType = (w.firstOut ? graph.edgesFromByLabel : graph.edgesToByLabel).get(id);
+  let n = 0;
+
+  for (const e of edgesOfTypes(byType, w.t1)) {
+    const mid = w.firstOut ? e.to : e.from;
+
+    if (!matchesLabel(mid, w.midLabel)) {
+      continue;
+    }
+
+    n += side(graph, mid.id, w.secondOut, w.t2, w.farLabel);
+  }
+
+  return n;
+};
+
 /** 2-hop `(a)-[:T1]->(b)-[:T2]->(c)` count via the degree product
  * `Σ_b (edges reaching a valid a) × (edges reaching a valid c)`. `null` unless
  * both rels are anonymous + directed and the node variables are distinct. */

@@ -369,6 +369,21 @@ const CASES: Case[] = [
     ),
   },
   {
+    // The TWO-hop form of the row below. A correlated `COUNT{}` ran the general matcher per outer
+    // row — 4943ns against 891 after item 212 answered it as a degree-of-degrees via `twoHopSide`,
+    // the same helper item 206's two-hop walk uses for its far leg. Three or more segments still
+    // decline, so this is the deepest shape the shortcut takes.
+    name: 'query: 2-hop subquery item',
+    ...onGraph(
+      () => graphDoc,
+      (e, g) =>
+        void e.query(
+          g,
+          'MATCH (n:Person) WHERE n.age > 60 RETURN COUNT { MATCH (n)-[:KNOWS]->(m)-[:KNOWS]->(f) } AS c',
+        ),
+    ),
+  },
+  {
     // A filtered node scan projecting a SUBQUERY. Item 204 applied one guard to both the
     // predicate and the items, so a subquery ITEM declined the node-scan path and took the
     // general pipeline — a whole-label scan to serve the surviving rows. The predicate must stay

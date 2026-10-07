@@ -933,11 +933,68 @@ const compileExists = (expr: Extract<Expr, { kind: 'exists' }>): CompiledExpr =>
  * Either failing falls back to the general count, so the fast path never answers a question it was
  * not handed.
  */
+/** One hop of a degree-shaped subquery, after the guards. */
+const hopOf = (
+  seg: Segment,
+): {
+  out: boolean;
+  types: string[] | undefined;
+  label: LabelExpr | undefined;
+  variable: string | undefined;
+} | null => {
+  const { rel, node } = seg;
+
+  // An anonymous DIRECTED rel. A rel variable is bindable — and bound OUTSIDE it correlates on
+  // that one edge, which is the far-variable hazard again (`(p)-[r:T]->(z)` answers 1, not the
+  // degree). `both` counts both directions, which `side` does not.
+  if (
+    !plainRel(rel) ||
+    rel.variable !== undefined ||
+    rel.direction === 'both' ||
+    !plainNode(node)
+  ) {
+    return null;
+  }
+
+  const types = relTypeNames(rel.label);
+
+  return types === null
+    ? null
+    : { out: rel.direction === 'out', types, label: node.label, variable: node.variable };
+};
+
+/**
+ * `COUNT { (u)-[:T]->(x) }` — or `(u)-[:T1]->(x)-[:T2]->(y)` — where `u` is already bound is a
+ * DEGREE, and answering it as one skips the matcher.
+ *
+ * A correlated subquery runs once per outer row, and `matchClauseBindings` is a general matcher: on
+ * 20,000 vertices at degree 3 the one-hop form cost **1614ns an outer row** to produce three
+ * bindings, where the same degrees via a grouped hop count cost **291ns**. Materializing the
+ * bindings was not the problem — removing the `[...spread]` bought 2% — the matcher invocation was
+ * (item 211). The two-hop form cost **4943ns** and is item 212.
+ *
+ * `null` unless the shape really is a degree. Each compile-time condition is in `hopOf` above or
+ * here because the alternative is a different question: ONE pattern, no path variable, one or two
+ * segments; plain nodes throughout; no sub-`WHERE`; and no repeated variable, since
+ * `COUNT { (u)-[:T]->(u) }` counts self-loops rather than degree.
+ *
+ * Conditions that can only be checked at RUN time, because the subquery's own text does not say
+ * which names the outer scope has bound:
+ *
+ *   - the START must BE bound. `COUNT { (z)-[:T]->(x) }` with `z` free scans every `z`, which is
+ *     not a degree of anything.
+ *   - every INNER variable must NOT be bound. `COUNT { (u)-[:T]->(w) }` with `w` bound outside
+ *     counts the edges from `u` to THAT `w`, not `u`'s degree — and the same applies to a two-hop
+ *     pattern's middle.
+ *
+ * Either failing falls back to the general count, so the fast path never answers a question it was
+ * not handed.
+ */
 const degreeCountSubquery = (
   expr: Extract<Expr, { kind: 'countSubquery' }>,
 ): {
   startVar: string;
-  farVar: string | undefined;
+  inner: readonly string[];
   count: (graph: Graph, id: string) => number;
 } | null => {
   if (expr.where !== undefined || expr.patterns.length !== 1) {
@@ -946,37 +1003,55 @@ const degreeCountSubquery = (
 
   const [path] = expr.patterns;
 
-  if (path.pathVar !== undefined || path.segments.length !== 1) {
+  if (path.pathVar !== undefined || path.segments.length < 1 || path.segments.length > 2) {
     return null;
   }
 
   const { start } = path;
-  const [seg] = path.segments;
-  const { rel, node } = seg;
   const startVar = start.variable;
 
   if (startVar === undefined || !plainNode(start) || start.label !== undefined) {
     return null;
   }
 
-  if (!plainRel(rel) || rel.variable !== undefined || rel.direction === 'both') {
+  const hops = path.segments.map(hopOf);
+
+  if (hops.some((h) => h === null)) {
     return null;
   }
 
-  const types = relTypeNames(rel.label);
+  const [h1, h2] = hops as {
+    out: boolean;
+    types: string[] | undefined;
+    label: LabelExpr | undefined;
+    variable: string | undefined;
+  }[];
+  const inner = hops.map((h) => h?.variable).filter((v): v is string => v !== undefined);
 
-  if (types === null || !plainNode(node) || node.variable === startVar) {
+  // A repeated variable is a self-join, not a degree: `(u)-[:T]->(u)` counts self-loops, and
+  // `(u)-[:T1]->(x)-[:T2]->(x)` counts triangles back to the middle.
+  if (new Set([startVar, ...inner]).size !== inner.length + 1) {
     return null;
   }
 
-  const out = rel.direction === 'out';
-  const farLabel = node.label;
+  if (h2 === undefined) {
+    return {
+      startVar,
+      inner,
+      count: (graph, id) => side(graph, id, h1.out, h1.types, h1.label),
+    };
+  }
 
-  return {
-    startVar,
-    farVar: node.variable,
-    count: (graph, id) => side(graph, id, out, types, farLabel),
+  const plan: TwoHopSide = {
+    firstOut: h1.out,
+    t1: h1.types,
+    midLabel: h1.label,
+    secondOut: h2.out,
+    t2: h2.types,
+    farLabel: h2.label,
   };
+
+  return { startVar, inner, count: (graph, id) => twoHopSide(graph, id, plan) };
 };
 
 const compileCountSubquery = (expr: Extract<Expr, { kind: 'countSubquery' }>): CompiledExpr => {
@@ -995,9 +1070,9 @@ const compileCountSubquery = (expr: Extract<Expr, { kind: 'countSubquery' }>): C
     if (degree !== null) {
       const anchor = env.binding.get(degree.startVar);
 
-      // The far variable being UNBOUND is what makes this a degree rather than a pair count, and
-      // `has` is the check — a variable bound to `null` is still bound.
-      if (isVertex(anchor) && (degree.farVar === undefined || !env.binding.has(degree.farVar))) {
+      // Every INNER variable being UNBOUND is what makes this a degree rather than a pair or
+      // triple count, and `has` is the check — a variable bound to `null` is still bound.
+      if (isVertex(anchor) && !degree.inner.some((v) => env.binding.has(v))) {
         return degree.count(env.graph, anchor.id);
       }
     }
@@ -4229,8 +4304,9 @@ import {
   plainNode,
   plainRel,
   side,
+  twoHopSide,
 } from './executor/shortcuts.js';
-import type { ReachFn } from './executor/shortcuts.js';
+import type { ReachFn, TwoHopSide } from './executor/shortcuts.js';
 
 // --- compile & execute -------------------------------------------------------
 

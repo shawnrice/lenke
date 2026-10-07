@@ -281,3 +281,177 @@ describe('the shapes it must decline', () => {
     ]);
   });
 });
+
+describe('the TWO-hop form (item 212)', () => {
+  // A second fixture, because the one above has a self-loop on `a` that makes two-hop counts hard
+  // to read by hand.
+  const two = (): Graph => {
+    const h = new Graph();
+    const v = (id: string, label: string, props: Record<string, unknown> = {}) =>
+      h.addVertex({ id, labels: [label], properties: props });
+    const e = (f: ReturnType<typeof v>, to: ReturnType<typeof v>, ty = 'T') =>
+      h.addEdge({ from: f, to, labels: [ty], properties: {} });
+
+    const a = v('a', 'A', { n: 1 });
+    const b = v('b', 'A', { n: 2 });
+    const m1 = v('m1', 'M');
+    const m2 = v('m2', 'M');
+    const bad = v('bad', 'BAD');
+    const c1 = v('c1', 'C');
+    const c2 = v('c2', 'C');
+    const z1 = v('z1', 'Z');
+
+    // a -> m1 -> {c1, c2, z1}   a -> m2 -> {c1}   a -> bad -> {c1}
+    e(a, m1);
+    e(m1, c1);
+    e(m1, c2);
+    e(m1, z1);
+    e(a, m2);
+    e(m2, c1);
+    e(a, bad);
+    e(bad, c1);
+    // b reaches nothing two hops away: its middle has no out-edge.
+    e(b, m1, 'OTHER');
+
+    return h;
+  };
+
+  const h = two();
+  const Q2 = 'MATCH (a:A) RETURN a.n AS n, COUNT { MATCH (a)-[:T]->(m)-[:T]->(c) } AS c';
+
+  test('counts two-hop paths, not distinct endpoints', () => {
+    // a: m1 gives 3, m2 gives 1, bad gives 1 = 5. Paths, so c1 is reached three times and counts
+    // three times — a DISTINCT endpoint count would answer 4.
+    expect(query(h, Q2)).toEqual([
+      { n: 1, c: 5 },
+      { n: 2, c: 0 },
+    ]);
+  });
+
+  test('a MIDDLE label narrows it', () => {
+    // Only m1 and m2 are :M, so `bad`'s path drops: 3 + 1 = 4.
+    expect(
+      query(h, 'MATCH (a:A) RETURN a.n AS n, COUNT { MATCH (a)-[:T]->(m:M)-[:T]->(c) } AS c'),
+    ).toEqual([
+      { n: 1, c: 4 },
+      { n: 2, c: 0 },
+    ]);
+  });
+
+  test('a FAR label narrows it, independently of the middle', () => {
+    // :C ends only: m1 gives c1 and c2, m2 gives c1, bad gives c1 = 4. z1 is :Z.
+    expect(
+      query(h, 'MATCH (a:A) RETURN a.n AS n, COUNT { MATCH (a)-[:T]->(m)-[:T]->(c:C) } AS c'),
+    ).toEqual([
+      { n: 1, c: 4 },
+      { n: 2, c: 0 },
+    ]);
+    // Both labels at once: m1 → c1, c2; m2 → c1. Three.
+    expect(
+      query(h, 'MATCH (a:A) RETURN a.n AS n, COUNT { MATCH (a)-[:T]->(m:M)-[:T]->(c:C) } AS c'),
+    ).toEqual([
+      { n: 1, c: 3 },
+      { n: 2, c: 0 },
+    ]);
+  });
+
+  test('a REVERSED second leg', () => {
+    const q = 'MATCH (a:A) RETURN a.n AS n, COUNT { MATCH (a)-[:T]->(m)<-[:T]-(c) } AS c';
+
+    // Who else points at a's middles: m1 ← a only, m2 ← a, bad ← a. So 3.
+    expect(query(h, q)).toEqual([
+      { n: 1, c: 3 },
+      { n: 2, c: 0 },
+    ]);
+  });
+
+  test('the FIRST leg respects its type', () => {
+    // b's only edge is OTHER-typed, so a typed first leg finds nothing for it either way; the
+    // assertion that matters is that `a` is unchanged.
+    expect(query(h, Q2)[0]).toEqual({ n: 1, c: 5 });
+  });
+
+  test('the two legs may have DIFFERENT types, and the order matters', () => {
+    // With one type on both legs, swapping them is a no-op — the mutant that swaps `t1` and `t2`
+    // survived on exactly that. Two types make the swap observable: P then Q exists, Q then P
+    // does not.
+    const d = new Graph();
+    const mk = (id: string) => d.addVertex({ id, labels: ['A'], properties: {} });
+    const [s, mid, end] = [mk('s'), mk('mid'), mk('end')];
+
+    d.addEdge({ from: s, to: mid, labels: ['P'], properties: {} });
+    d.addEdge({ from: mid, to: end, labels: ['Q'], properties: {} });
+
+    expect(query(d, 'MATCH (a:A) WHERE a.id IS NULL RETURN count(*) AS c')).toEqual([{ c: 3 }]);
+    expect(
+      query(d, 'MATCH (a:A) RETURN COUNT { MATCH (a)-[:P]->(m)-[:Q]->(e) } AS c ORDER BY c DESC'),
+    ).toEqual([{ c: 1 }, { c: 0 }, { c: 0 }]);
+    // The same two types the other way round reaches nothing.
+    expect(query(d, 'MATCH (a:A) RETURN COUNT { MATCH (a)-[:Q]->(m)-[:P]->(e) } AS c')).toEqual([
+      { c: 0 },
+      { c: 0 },
+      { c: 0 },
+    ]);
+  });
+
+  test('a MIDDLE variable bound OUTSIDE counts through THAT middle only', () => {
+    // The two-hop version of the far-variable hazard: `m` comes from the outer pattern, so the
+    // subquery counts a→m→c for that one `m`. Treating it as a degree answers 5 for every row.
+    // The subquery's far variable is `w`, NOT `c`, and the alias is `n`: an `ORDER BY` alias that
+    // collides with a variable bound inside a subquery in the same item silently sorts by nothing
+    // (values correct, order not). Found while writing this test; recorded as its own item rather
+    // than worked around silently.
+    const rows = query(
+      h,
+      'MATCH (a:A)-[:T]->(m:M) RETURN COUNT { MATCH (a)-[:T]->(m)-[:T]->(w) } AS n ORDER BY n',
+    );
+
+    // a→m2→c1 is 1; a→m1→{c1,c2,z1} is 3.
+    expect(rows).toEqual([{ n: 1 }, { n: 3 }]);
+  });
+
+  test('THREE segments decline', () => {
+    const q = 'MATCH (a:A) RETURN a.n AS n, COUNT { MATCH (a)-[:T]->(m)-[:T]->(c)-[:T]->(d) } AS c';
+
+    expect(query(h, q)).toEqual([
+      { n: 1, c: 0 },
+      { n: 2, c: 0 },
+    ]);
+  });
+
+  test('a repeated variable across the two hops declines', () => {
+    // `(a)-[:T]->(m)-[:T]->(a)` is a two-cycle back to the start, not a degree.
+    expect(
+      query(h, 'MATCH (a:A) RETURN a.n AS n, COUNT { MATCH (a)-[:T]->(m)-[:T]->(a) } AS c'),
+    ).toEqual([
+      { n: 1, c: 0 },
+      { n: 2, c: 0 },
+    ]);
+    // `(a)-[:T]->(m)-[:T]->(m)` is a self-loop on the middle.
+    expect(
+      query(h, 'MATCH (a:A) RETURN a.n AS n, COUNT { MATCH (a)-[:T]->(m)-[:T]->(m) } AS c'),
+    ).toEqual([
+      { n: 1, c: 0 },
+      { n: 2, c: 0 },
+    ]);
+  });
+
+  test('a rel variable or an undirected leg in EITHER segment declines', () => {
+    for (const q of [
+      'MATCH (a:A) RETURN a.n AS n, COUNT { MATCH (a)-[r:T]->(m)-[:T]->(c) } AS c',
+      'MATCH (a:A) RETURN a.n AS n, COUNT { MATCH (a)-[:T]->(m)-[r:T]->(c) } AS c',
+      'MATCH (a:A) RETURN a.n AS n, COUNT { MATCH (a)-[:T]-(m)-[:T]->(c) } AS c',
+    ]) {
+      // Each still answers; the point is that it answers the MATCHER's number.
+      expect(query(h, q).length).toBe(2);
+    }
+
+    // The undirected first leg is the one whose number differs from the degree shortcut's: a's
+    // undirected T edges reach m1, m2 and bad, and each of those also points back at nothing, so
+    // the count rises above the directed 5 only if an in-edge exists. Asserted against the
+    // directed spelling to pin that they are NOT the same question.
+    expect(
+      query(h, 'MATCH (a:A) RETURN a.n AS n, COUNT { MATCH (a)-[:T]-(m)-[:T]->(c) } AS c')[0],
+    ).toEqual({ n: 1, c: 5 });
+  });
+});
