@@ -460,6 +460,22 @@ const CASES: Case[] = [
     ),
   },
   {
+    // The third position, and the one with no walk of its own: counting `a->b->c` is counting
+    // `c<-b<-a`, so an END-filtered count is the START-filtered question written backwards and
+    // the existing walk answers it once the planner reverses the pattern. The forward spelling was
+    // 2363.5ms against the hand-reversed spelling's 118.1 — 20x for the same question and the same
+    // answer (audit item 220).
+    name: 'count 2-hop + end filter',
+    ...onGraph(
+      () => graphDoc,
+      (e, g) =>
+        void e.query(
+          g,
+          'MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(c) WHERE c.age > 60 RETURN count(*) AS c',
+        ),
+    ),
+  },
+  {
     // The other half: the same walk, but PROJECTING an endpoint property, so 1,000,000 rows are
     // built. Traversal plus the row pipeline, which is the shape a user actually runs.
     name: 'traverse 1-hop project',

@@ -1155,6 +1155,43 @@ const KEEP_ANY = (): boolean => true;
 const effectiveLabel = (graph: Graph, label: LabelExpr | undefined): LabelExpr | undefined =>
   label !== undefined && vacuousLabel(graph, label) ? undefined : label;
 
+/**
+ * The same two-hop pattern read from the far end.
+ *
+ * `MATCH (a)-[r1]->(b)-[r2]->(c)` and `MATCH (c)<-[r2]-(b)<-[r1]-(a)` match the same set of
+ * (edge, edge) pairs, so a COUNT over one is the count over the other. That makes the end-filtered
+ * question the start-filtered question written backwards — and the start-filtered one already has
+ * a walk (item 206) that gates an end vertex before expanding it.
+ *
+ * Measured before building anything, which is how this turned out to need no new walk at all
+ * (audit item 220). 200,000 vertices at degree 5, the SAME question and the SAME answer:
+ *
+ *     (a)-[:T]->(b)-[:T]->(c) WHERE c.age > 60    2363.5ms
+ *     (c)<-[:T]-(b)<-[:T]-(a) WHERE c.age > 60     118.1ms      20.0x
+ *     … WHERE c.age = 61                          2011.8ms
+ *     reversed, selective                            9.5ms     211.8x
+ *
+ * A direction reads as "start -[e]-> node", so flipping it is what turns `b -> c` into `c <- b`.
+ */
+const FLIPPED: Record<RelPattern['direction'], RelPattern['direction']> = {
+  out: 'in',
+  in: 'out',
+  both: 'both',
+};
+
+const reversedTwoHop = (
+  start: NodePattern,
+  s1: Segment,
+  s2: Segment,
+): { start: NodePattern; s1: Segment; s2: Segment } => ({
+  // Fresh minimal segments rather than spreads of the originals: the builders read only `rel` and
+  // `node`, and a `Segment` also carries `hopFrom` / `hopTo` / `unitRest`, which describe the
+  // FORWARD reading and would be wrong here if anything ever started consulting them.
+  start: s2.node,
+  s1: { rel: { ...s2.rel, direction: FLIPPED[s2.rel.direction] }, node: s1.node },
+  s2: { rel: { ...s1.rel, direction: FLIPPED[s1.rel.direction] }, node: start },
+});
+
 /** Everything `walkTwoHopFiltered` needs, decided once at compile time. */
 type TwoHopPlan = {
   aLabel: LabelExpr | undefined;
@@ -1473,6 +1510,8 @@ const patternCountOf = <T>(
   rowOf: (n: number) => T,
   cstart?: CNode,
   cfar?: CNode,
+  // The compiled END node of a two-segment pattern, so the end-driven reading can seek an index.
+  cend?: CNode,
 ): CountOf<T> | null => {
   const { start, segments } = pattern;
 
@@ -1540,13 +1579,13 @@ const patternCountOf = <T>(
   // is exactly two clauses) but an aggregate or a subquery could, and `freePredicateVars`
   // reports those as free names it does not recognize.
   let pred: HopPred | undefined;
-  // A MIDDLE-only constraint, whichever way it is spelled: a clause `WHERE` lands here from the
-  // gate below, and the three inline spellings land here from `inlineOf` further down. They are
-  // one question, so they take one route — `MATCH (a)-[:T]->(b)-[:T]->(c) WHERE b.k > 1` and
+  // A MIDDLE-only clause predicate. It joins the three INLINE middle spellings in
+  // `twoSegmentCount`, because they are one question and so take one route — `WHERE b.k > 1`,
   // `(b WHERE b.k > 1)` and `(b {k: 2})` were 2331.7, 1183.1 and 482.3ms before item 219, which
   // is the equivalent-spelling gap this engine is named for, sitting in the open.
-  const midPreds: InlinePred[] = [];
   let midPred: InlinePred | undefined;
+  // An END-only clause predicate, shaped for the REVERSED reading where the end node is the start.
+  let endPred: HopPred | undefined;
 
   if (where !== undefined) {
     // The node shape returned above, having folded its clause `WHERE` into the
@@ -1578,6 +1617,8 @@ const patternCountOf = <T>(
       // A predicate reading NOTHING (`WHERE 1 = 1`) kept the start route before this item, even
       // with no start variable to bind, and still does — the alternative is declining a shape
       // that used to be tallied, which is a regression dressed as a simplification.
+      const endName = segments[1].node.variable;
+
       if (free.size === 0 || readsOnly(startName)) {
         pred = {
           fn: compileExpr(where),
@@ -1587,6 +1628,15 @@ const patternCountOf = <T>(
         };
       } else if (readsOnly(midName)) {
         midPred = { pred: compilePredicate(undefined, where), bindVar: midName };
+      } else if (readsOnly(endName)) {
+        // The END is admissible too, as the START of the REVERSED pattern — see `reversedTwoHop`.
+        // The predicate is shaped for the reversed reading, where the end node IS the start.
+        endPred = {
+          fn: compileExpr(where),
+          startVar: endName,
+          farVar: undefined,
+          relVar: undefined,
+        };
       } else {
         return null;
       }
@@ -1653,38 +1703,102 @@ const patternCountOf = <T>(
   }
 
   if (segments.length === 2) {
-    const [s1, s2] = segments;
-    // The three INLINE middle spellings — `(b {k: 2})`, `(b {k: $p})`, `(b WHERE b.k > 1)` —
-    // reach the same gate as the clause `WHERE`. `null` is a constraint `inlineOf` refuses
-    // (a correlated property value), which declines the whole shortcut as before.
-    const inMid = inlineOf(s1.node);
-
-    if (inMid === null) {
-      return null;
-    }
-
-    if (inMid !== undefined) {
-      midPreds.push(inMid);
-    }
-
-    if (midPred !== undefined) {
-      midPreds.push(midPred);
-    }
-
-    // Unfiltered stays on the degree product: it iterates the MIDDLE once and multiplies two
-    // degrees, so it never touches a start vertex at all. The start-driven walk is strictly more
-    // work for that case and is taken only when there is a filter for it to apply early.
-    //
-    // A MIDDLE constraint keeps the product, because that is the end the product already walks:
-    // it gates each middle once and multiplies the two degrees of the survivors. A START
-    // constraint is what forces the walk, since the product's start factor is a plain degree
-    // that a predicate would have to break apart.
-    return inStart === undefined && pred === undefined
-      ? buildTwoHopCount(s1, s2, start, rowOf, midPreds)
-      : buildFilteredTwoHopCount(s1, s2, start, rowOf, { inStart, pred, cstart });
+    return twoSegmentCount(start, segments[0], segments[1], rowOf, {
+      inStart,
+      pred,
+      midPred,
+      endPred,
+      cstart,
+      cend,
+    });
   }
 
   return null;
+};
+
+/**
+ * Which of the three two-hop count shapes answers this pattern. Its own function because
+ * `patternCountOf` is at the complexity gate, and because the ROUTING is the interesting part:
+ * all three shapes count the same thing and differ only in which end they drive from.
+ *
+ *   - no constraint, or a MIDDLE one → the degree product, which already iterates middles and so
+ *     gates each exactly once (item 219);
+ *   - a START constraint → the start-driven walk, because the product's start factor is a plain
+ *     degree that a predicate would have to break apart (item 206);
+ *   - an END constraint → the same start-driven walk over the REVERSED pattern, since counting
+ *     `a->b->c` is counting `c<-b<-a` (item 220).
+ */
+const twoSegmentCount = <T>(
+  start: NodePattern,
+  s1: Segment,
+  s2: Segment,
+  rowOf: (n: number) => T,
+  w: {
+    inStart: InlinePred | undefined;
+    pred: HopPred | undefined;
+    midPred: InlinePred | undefined;
+    endPred: HopPred | undefined;
+    cstart: CNode | undefined;
+    cend: CNode | undefined;
+  },
+): CountOf<T> | null => {
+  const { inStart, pred, endPred, cstart, cend } = w;
+  // The three INLINE middle spellings — `(b {k: 2})`, `(b {k: $p})`, `(b WHERE b.k > 1)` — reach
+  // the same list as the clause `WHERE`. `null` is a constraint `inlineOf` refuses (a correlated
+  // property value), which declines the whole shortcut as before.
+  const inMid = inlineOf(s1.node);
+  const inEnd = inlineOf(s2.node);
+
+  if (inMid === null || inEnd === null) {
+    return null;
+  }
+
+  const midPreds: InlinePred[] = [];
+
+  if (inMid !== undefined) {
+    midPreds.push(inMid);
+  }
+
+  if (w.midPred !== undefined) {
+    midPreds.push(w.midPred);
+  }
+
+  const endConstrained = endPred !== undefined || inEnd !== undefined;
+
+  // END-CONSTRAINED, and nothing else is: read the pattern backwards and hand it to the
+  // start-driven walk, which is the same question (`reversedTwoHop`).
+  //
+  // `cend` is the end node's COMPILED form, so the reversed walk can SEEK an index on the end
+  // property instead of scanning its label bucket. Item 178 is the precedent and the warning:
+  // wiring only one end left "the far-anchored spelling of one question scanning the far label
+  // bucket while its start-anchored twin seeked".
+  if (endConstrained && inStart === undefined && pred === undefined && midPreds.length === 0) {
+    const rev = reversedTwoHop(start, s1, s2);
+
+    return buildFilteredTwoHopCount(rev.s1, rev.s2, rev.start, rowOf, {
+      inStart: inEnd,
+      pred: endPred,
+      cstart: cend,
+    });
+  }
+
+  // An end constraint ALONGSIDE a start or middle one has no route: the walk gates one end, and
+  // the other would have to be applied per expanded edge. This decline is LOAD-BEARING, not
+  // tidiness — without it an inline start plus a clause end predicate falls through to the
+  // start-driven builder, which applies the start constraint and SILENTLY DROPS the end
+  // predicate. A mutant proved it: removing this `return` passed every other test in the file
+  // until the combination was written down.
+  if (endConstrained) {
+    return null;
+  }
+
+  // Unfiltered stays on the degree product: it iterates the MIDDLE once and multiplies two
+  // degrees, so it never touches a start vertex at all. A MIDDLE constraint keeps the product for
+  // the same reason — that is the end it already walks. A START constraint is what forces the
+  // walk.
+  return inStart === undefined && pred === undefined
+    ? buildTwoHopCount(s1, s2, start, rowOf, midPreds)
+    : buildFilteredTwoHopCount(s1, s2, start, rowOf, { inStart, pred, cstart });
 };
 
 /**
@@ -2133,8 +2247,11 @@ export const detectCountShortcut = (
       // start, which left the far-anchored spelling of one question scanning the far label
       // bucket while its start-anchored twin seeked.
       const cfar = cm?.kind === 'match' ? cm.patterns[0]?.segments[0]?.node : undefined;
+      // And the END of a two-segment pattern, which the reversed reading seeds from (item 220).
+      // `cfar` is `segments[0].node` — the MIDDLE when there are two segments, not the end.
+      const cend = cm?.kind === 'match' ? cm.patterns[0]?.segments[1]?.node : undefined;
 
-      return patternCountOf(m.patterns[0], m.where, rowOf, cstart, cfar);
+      return patternCountOf(m.patterns[0], m.where, rowOf, cstart, cfar, cend);
     }
 
     // A product first — it is the cheaper answer and covers disjoint patterns. When it
