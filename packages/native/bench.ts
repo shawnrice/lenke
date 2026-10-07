@@ -444,6 +444,22 @@ const CASES: Case[] = [
     ),
   },
   {
+    // The MIDDLE-filtered sibling of the row above, and the cheaper question of the two: the
+    // degree product already iterates middles, so this gates each one ONCE and multiplies the two
+    // degrees of the survivors, where a start filter costs the product its start factor. It was
+    // refused for the start case's reason and fell to the row pipeline — 2331.7ms, 1447ns a
+    // counted path, the worst shape in the corpus (audit item 219).
+    name: 'count 2-hop + mid filter',
+    ...onGraph(
+      () => graphDoc,
+      (e, g) =>
+        void e.query(
+          g,
+          'MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(c) WHERE b.age > 60 RETURN count(*) AS c',
+        ),
+    ),
+  },
+  {
     // The other half: the same walk, but PROJECTING an endpoint property, so 1,000,000 rows are
     // built. Traversal plus the row pipeline, which is the shape a user actually runs.
     name: 'traverse 1-hop project',

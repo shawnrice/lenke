@@ -1368,6 +1368,11 @@ const buildTwoHopCount = <T>(
   s2: Segment,
   start: NodePattern,
   rowOf: (n: number) => T,
+  // REQUIRED, not optional, and that is the safety property: the only caller computes it from
+  // `s1.node` itself, so the relaxed `plainNode(s1.node)` guard below cannot be reached by a path
+  // that forgot to carry the middle's constraint. An optional parameter here would make
+  // "forgot to pass it" a silently wrong answer rather than a type error.
+  midPreds: readonly InlinePred[],
 ): CountOf<T> | null => {
   if (
     !plainRel(s1.rel) ||
@@ -1376,7 +1381,9 @@ const buildTwoHopCount = <T>(
     s2.rel.variable !== undefined ||
     s1.rel.direction === 'both' ||
     s2.rel.direction === 'both' ||
-    !plainNode(s1.node) ||
+    // `s1.node` — the MIDDLE — may now carry a constraint, because this walk visits middles and
+    // `midPreds` gates each one exactly once. `s2.node`, the END, still may not: the product
+    // reaches it only as a degree, so a constraint there has no once-per-element place to go.
     !plainNode(s2.node)
   ) {
     return null;
@@ -1403,8 +1410,17 @@ const buildTwoHopCount = <T>(
   // seg1 reaches `a` from b's reverse side; seg2 reaches `c` from b's forward side.
   const toAOut = s1.rel.direction === 'in';
   const fromCOut = s2.rel.direction === 'out';
+  // Composed once, the same `reduceRight` the node tally uses, so the clause and inline spellings
+  // of a middle constraint go through `inlineHolds` -> `satisfies` — the general path's own
+  // implementation — rather than re-deriving inline-pattern semantics here.
+  const gate = midPreds.reduceRight<InlineGate | undefined>(
+    (rest, ip) => (v, binding, params, graph) =>
+      inlineHolds(ip, v, binding, params, graph) &&
+      (rest === undefined || rest(v, binding, params, graph)),
+    undefined,
+  );
 
-  return (graph) => {
+  return (graph, params) => {
     const mids =
       midLabel?.kind === 'label'
         ? (graph.verticesByLabel.get(midLabel.name) ?? new Set<Vertex>())
@@ -1414,10 +1430,19 @@ const buildTwoHopCount = <T>(
     // being a per-edge scan wearing one's clothes — see `effectiveLabel`.
     const aEff = effectiveLabel(graph, aLabel);
     const cEff = effectiveLabel(graph, cLabel);
+    // One binding map reused across middles, the idiom `buildNodeCount` already uses:
+    // `inlineHolds` overwrites the node's own variable per element.
+    const binding = new Map<string, unknown>();
     let count = 0;
 
     for (const b of mids) {
       if (!matchesLabel(b, midLabel)) {
+        continue;
+      }
+
+      // Gated ONCE per middle, before either degree is read — the whole reason a middle
+      // constraint belongs on this shape rather than on the start-driven walk.
+      if (gate !== undefined && !gate(b, binding, params, graph)) {
         continue;
       }
 
@@ -1515,6 +1540,13 @@ const patternCountOf = <T>(
   // is exactly two clauses) but an aggregate or a subquery could, and `freePredicateVars`
   // reports those as free names it does not recognize.
   let pred: HopPred | undefined;
+  // A MIDDLE-only constraint, whichever way it is spelled: a clause `WHERE` lands here from the
+  // gate below, and the three inline spellings land here from `inlineOf` further down. They are
+  // one question, so they take one route — `MATCH (a)-[:T]->(b)-[:T]->(c) WHERE b.k > 1` and
+  // `(b WHERE b.k > 1)` and `(b {k: 2})` were 2331.7, 1183.1 and 482.3ms before item 219, which
+  // is the equivalent-spelling gap this engine is named for, sitting in the open.
+  const midPreds: InlinePred[] = [];
+  let midPred: InlinePred | undefined;
 
   if (where !== undefined) {
     // The node shape returned above, having folded its clause `WHERE` into the
@@ -1523,20 +1555,41 @@ const patternCountOf = <T>(
       return null;
     }
 
-    // On a TWO-segment pattern only a START-reading predicate is admissible, because the walk
-    // gates a start vertex and then expands it — a predicate reading the middle or the end would
-    // have to be applied per expanded edge, which is the row pipeline this exists to avoid. The
-    // one-segment case still admits either end (`buildOneHopCount` has routes for both).
+    // On a TWO-segment pattern a predicate reading exactly ONE of the start or the middle is
+    // admissible, and they route to different shapes.
+    //
+    // The note here used to admit only the start, "because the walk gates a start vertex and then
+    // expands it — a predicate reading the middle or the end would have to be applied per
+    // expanded edge". That is true of the start-driven walk and FALSE of the degree product,
+    // which iterates MIDDLES: a middle-reading predicate is the cheapest one in the family, gated
+    // exactly once per middle, where a start-reading one costs the product its start factor. So
+    // the middle was the easy case being refused for the hard case's reason (audit item 219).
+    //
+    // The END is still refused: `Σ_b indeg(b) · |out-edges of b whose target passes p|` is a
+    // correct formula, but its second factor is a per-EDGE predicate evaluation, which is a
+    // different cost class from a once-per-middle gate. Recorded as open rather than guessed at.
     if (segments.length === 2) {
       const startName = start.variable;
+      const midName = segments[0].node.variable;
+      const free = freePredicateVars(where);
+      const readsOnly = (name: string | undefined): boolean =>
+        name !== undefined && [...free].every((n) => n === name);
 
-      for (const name of freePredicateVars(where)) {
-        if (startName === undefined || name !== startName) {
-          return null;
-        }
+      // A predicate reading NOTHING (`WHERE 1 = 1`) kept the start route before this item, even
+      // with no start variable to bind, and still does — the alternative is declining a shape
+      // that used to be tallied, which is a regression dressed as a simplification.
+      if (free.size === 0 || readsOnly(startName)) {
+        pred = {
+          fn: compileExpr(where),
+          startVar: startName,
+          farVar: undefined,
+          relVar: undefined,
+        };
+      } else if (readsOnly(midName)) {
+        midPred = { pred: compilePredicate(undefined, where), bindVar: midName };
+      } else {
+        return null;
       }
-
-      pred = { fn: compileExpr(where), startVar: startName, farVar: undefined, relVar: undefined };
     }
   }
 
@@ -1601,12 +1654,33 @@ const patternCountOf = <T>(
 
   if (segments.length === 2) {
     const [s1, s2] = segments;
+    // The three INLINE middle spellings — `(b {k: 2})`, `(b {k: $p})`, `(b WHERE b.k > 1)` —
+    // reach the same gate as the clause `WHERE`. `null` is a constraint `inlineOf` refuses
+    // (a correlated property value), which declines the whole shortcut as before.
+    const inMid = inlineOf(s1.node);
+
+    if (inMid === null) {
+      return null;
+    }
+
+    if (inMid !== undefined) {
+      midPreds.push(inMid);
+    }
+
+    if (midPred !== undefined) {
+      midPreds.push(midPred);
+    }
 
     // Unfiltered stays on the degree product: it iterates the MIDDLE once and multiplies two
     // degrees, so it never touches a start vertex at all. The start-driven walk is strictly more
     // work for that case and is taken only when there is a filter for it to apply early.
+    //
+    // A MIDDLE constraint keeps the product, because that is the end the product already walks:
+    // it gates each middle once and multiplies the two degrees of the survivors. A START
+    // constraint is what forces the walk, since the product's start factor is a plain degree
+    // that a predicate would have to break apart.
     return inStart === undefined && pred === undefined
-      ? buildTwoHopCount(s1, s2, start, rowOf)
+      ? buildTwoHopCount(s1, s2, start, rowOf, midPreds)
       : buildFilteredTwoHopCount(s1, s2, start, rowOf, { inStart, pred, cstart });
   }
 
