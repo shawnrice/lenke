@@ -1093,7 +1093,7 @@ export const selectiveFirst = (
 /** Edges out of / into `bId` (of `types`) whose far endpoint matches `far`. The
  * two-hop degree product's per-`b` side count; hoisted to module scope since it
  * closes over nothing but the shared bucket primitives. */
-const side = (
+export const side = (
   graph: Graph,
   bId: string,
   out: boolean,

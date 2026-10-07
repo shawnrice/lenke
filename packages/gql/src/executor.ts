@@ -898,10 +898,125 @@ const compileExists = (expr: Extract<Expr, { kind: 'exists' }>): CompiledExpr =>
 };
 
 /** ISO count subquery: the number of matches of the correlated sub-pattern. */
+/**
+ * `COUNT { (u)-[:T]->(x) }` where `u` is already bound is a DEGREE, and answering it as one skips
+ * the matcher entirely.
+ *
+ * A correlated subquery runs once per outer row, and `matchClauseBindings` is a general matcher:
+ * on 20,000 vertices at degree 3 it cost **1614ns an outer row** to produce three bindings, where
+ * the same degrees computed by a grouped hop count cost **291ns**. Materializing the bindings was
+ * not the problem — removing the `[...spread]` bought 2% — the matcher invocation was (item 211).
+ *
+ * `null` unless the shape really is a degree. Every condition below exists because the alternative
+ * is a different question:
+ *
+ *   - ONE pattern, ONE segment, no path variable — anything else is not a single hop.
+ *   - an anonymous, DIRECTED rel. A rel variable would be bindable and `both` would count a
+ *     self-loop from both ends, which `side` does not do.
+ *   - a PLAIN start and far node (no inline constraint), because `side` applies a label and
+ *     nothing else. A far LABEL is fine — that is exactly `side`'s last argument.
+ *   - no sub-`WHERE`.
+ *   - the far variable must differ from the start's: `COUNT { (u)-[:T]->(u) }` counts self-loops,
+ *     not degree. This one is REDUNDANT with the runtime far-variable check below — the start is
+ *     bound by definition, so a far variable equal to it is bound too — and mutation confirms
+ *     removing it changes no answer. It stays as the cheaper, earlier statement of the rule, and
+ *     because it is the condition a reader expects to find at compile time.
+ *
+ * Two conditions can only be checked at RUN time, because the subquery's own text does not say
+ * which names the outer scope has bound:
+ *
+ *   - the START must BE bound. `COUNT { (z)-[:T]->(x) }` with `z` free scans every `z`, which is
+ *     not a degree of anything.
+ *   - the FAR variable must NOT be bound. `COUNT { (u)-[:T]->(w) }` with `w` bound outside counts
+ *     the edges from `u` to THAT `w`, not `u`'s degree.
+ *
+ * Either failing falls back to the general count, so the fast path never answers a question it was
+ * not handed.
+ */
+const degreeCountSubquery = (
+  expr: Extract<Expr, { kind: 'countSubquery' }>,
+): {
+  startVar: string;
+  farVar: string | undefined;
+  count: (graph: Graph, id: string) => number;
+} | null => {
+  if (expr.where !== undefined || expr.patterns.length !== 1) {
+    return null;
+  }
+
+  const [path] = expr.patterns;
+
+  if (path.pathVar !== undefined || path.segments.length !== 1) {
+    return null;
+  }
+
+  const { start } = path;
+  const [seg] = path.segments;
+  const { rel, node } = seg;
+  const startVar = start.variable;
+
+  if (startVar === undefined || !plainNode(start) || start.label !== undefined) {
+    return null;
+  }
+
+  if (!plainRel(rel) || rel.variable !== undefined || rel.direction === 'both') {
+    return null;
+  }
+
+  const types = relTypeNames(rel.label);
+
+  if (types === null || !plainNode(node) || node.variable === startVar) {
+    return null;
+  }
+
+  const out = rel.direction === 'out';
+  const farLabel = node.label;
+
+  return {
+    startVar,
+    farVar: node.variable,
+    count: (graph, id) => side(graph, id, out, types, farLabel),
+  };
+};
+
 const compileCountSubquery = (expr: Extract<Expr, { kind: 'countSubquery' }>): CompiledExpr => {
   const sub = compileSubMatch(expr);
+  const degree = degreeCountSubquery(expr);
 
-  return (env) => [...matchClauseBindings(env.graph, sub, env.binding, env.params)].length;
+  // COUNT the iterator; do not materialize it. `[...matches].length` built an ARRAY per outer row
+  // purely to read its length, and a correlated subquery runs once per row — so
+  // `RETURN COUNT { (u)-[:T]->(x) }` over 20,000 vertices at degree 3 allocated 20,000 arrays to
+  // hold 60,000 bindings it then threw away. `compileExists` above never had this: it pulls one
+  // with `matches.next()` and stops.
+  //
+  // Measured on exactly that shape (audit item 211): 1650ns an outer row against 262ns for the
+  // same degrees computed by a grouped hop count, which is the floor this should be near.
+  return (env) => {
+    if (degree !== null) {
+      const anchor = env.binding.get(degree.startVar);
+
+      // The far variable being UNBOUND is what makes this a degree rather than a pair count, and
+      // `has` is the check — a variable bound to `null` is still bound.
+      if (isVertex(anchor) && (degree.farVar === undefined || !env.binding.has(degree.farVar))) {
+        return degree.count(env.graph, anchor.id);
+      }
+    }
+
+    // `[Symbol.iterator]()` because `matchClauseBindings` is typed `Iterable<Binding>`, not
+    // `Iterator` — it is a generator at run time, so `.next()` WORKS and the tests passed, but
+    // only `bun run typecheck` catches that it is not typed. (Which is why typecheck is its own
+    // gate here: see the CI lesson in `local-gates-vs-ci`.)
+    const matches = matchClauseBindings(env.graph, sub, env.binding, env.params)[Symbol.iterator]();
+    let n = 0;
+
+    // `.next()` rather than `for…of` so there is no per-iteration binding to name and discard —
+    // the same loop shape `compileExists` uses.
+    while (!matches.next().done) {
+      n += 1;
+    }
+
+    return n;
+  };
 };
 
 /**
@@ -4111,6 +4226,9 @@ import {
   detectNodeProjection,
   detectGroupedNodeCount,
   detectReachableShortcut,
+  plainNode,
+  plainRel,
+  side,
 } from './executor/shortcuts.js';
 import type { ReachFn } from './executor/shortcuts.js';
 
