@@ -1096,10 +1096,64 @@ export const side = (
 ): number => {
   const byType = (out ? graph.edgesFromByLabel : graph.edgesToByLabel).get(bId);
 
+  // With no far label to test, nothing here wants the far ENDPOINT — so the answer is a bucket
+  // SIZE, and none of the three per-edge costs is owed: the `edgesOfTypes` generator frame, the
+  // `edge.to` / `edge.from` resolve (a string-keyed `Map.get`, ~190ns — item 194), and the label
+  // call itself. This is most of the two-hop count family: `side` ran the full per-edge loop even
+  // for an UNLABELLED endpoint, where `matchesLabel(x, undefined)` is true for every edge it
+  // resolved (audit item 218).
+  if (far === undefined) {
+    return bucketSize(byType, types);
+  }
+
   return countEdges(edgesOfTypes(byType, types), (edge) =>
     matchesLabel(out ? edge.to : edge.from, far),
   );
 };
+
+/**
+ * How many edges `edgesOfTypes` would yield, without yielding them.
+ *
+ * Mirrors that function's cases exactly, which is the whole requirement: a single named type, or
+ * a single bucket when every type is wanted, is one `size` read. Several buckets are NOT a sum —
+ * one edge can carry several labels and so sit in more than one of them, which is why
+ * `edgesOfTypes` keeps a `seen` set. That case has no size to read, so it still counts, but it
+ * counts without resolving an endpoint.
+ */
+const bucketSize = (
+  byType: Map<string, Set<Edge>> | undefined,
+  types: string[] | undefined,
+): number => {
+  if (byType === undefined) {
+    return 0;
+  }
+
+  if (types !== undefined) {
+    if (types.length === 1) {
+      return byType.get(types[0])?.size ?? 0;
+    }
+  } else if (byType.size === 1) {
+    for (const set of byType.values()) {
+      return set.size;
+    }
+  }
+
+  return countEdges(edgesOfTypes(byType, types), KEEP_ANY);
+};
+
+const KEEP_ANY = (): boolean => true;
+
+/**
+ * A label that constrains nothing — ABSENT, or carried by every vertex in the graph — collapsed to
+ * `undefined`, so the paths below can take their no-label route.
+ *
+ * Decided per EXECUTION and not at compile time, because vacuity is a property of the GRAPH. This
+ * is the third place the same reasoning pays: item 215 made the far-endpoint resolve conditional
+ * on it, item 217 removed a far-label test that a false `needsFar` had already made constant, and
+ * here it turns the two-hop degree product's per-edge scan back into a `size` read.
+ */
+const effectiveLabel = (graph: Graph, label: LabelExpr | undefined): LabelExpr | undefined =>
+  label !== undefined && vacuousLabel(graph, label) ? undefined : label;
 
 /** Everything `walkTwoHopFiltered` needs, decided once at compile time. */
 type TwoHopPlan = {
@@ -1133,6 +1187,9 @@ type TwoHopPlan = {
  */
 const walkTwoHopFiltered = (graph: Graph, params: Params, plan: TwoHopPlan): number => {
   const { aLabel, midLabel, cLabel, firstOut, fromCOut, t1, t2, inStart, pred, cstart } = plan;
+  // Once per execution, not per vertex and not per edge — see `effectiveLabel`.
+  const midEff = effectiveLabel(graph, midLabel);
+  const cEff = effectiveLabel(graph, cLabel);
   const binding = new Map<string, unknown>();
   const env: EvalEnv = { binding, params, graph };
   const seeded = hopSeek(graph, cstart, aLabel, env);
@@ -1164,13 +1221,24 @@ const walkTwoHopFiltered = (graph: Graph, params: Params, plan: TwoHopPlan): num
     const byType = (firstOut ? graph.edgesFromByLabel : graph.edgesToByLabel).get(a.id);
 
     for (const e of edgesOfTypes(byType, t1)) {
-      const b = firstOut ? e.to : e.from;
+      // The middle VERTEX is wanted for one thing only — its label — while the second leg counts
+      // from its ID, which the edge already holds. So when no label constrains the middle, read
+      // `toId` / `fromId` and skip resolving a whole vertex: `e.to` is a string-keyed `Map.get`
+      // into `verticesById` (~190ns, item 194), paid once per FIRST-LEG EDGE. Item 140 made the
+      // ingest path use these ids for exactly this reason.
+      if (midEff === undefined) {
+        count += side(graph, firstOut ? e.toId : e.fromId, fromCOut, t2, cEff);
 
-      if (!matchesLabel(b, midLabel)) {
         continue;
       }
 
-      count += side(graph, b.id, fromCOut, t2, cLabel);
+      const b = firstOut ? e.to : e.from;
+
+      if (!matchesLabel(b, midEff)) {
+        continue;
+      }
+
+      count += side(graph, b.id, fromCOut, t2, cEff);
     }
   }
 
@@ -1341,6 +1409,11 @@ const buildTwoHopCount = <T>(
       midLabel?.kind === 'label'
         ? (graph.verticesByLabel.get(midLabel.name) ?? new Set<Vertex>())
         : graph.verticesById.values();
+    // Once per execution. A VACUOUS end label costs `side` an endpoint resolve per edge to apply
+    // a test that cannot fail, which is the difference between this being a degree PRODUCT and
+    // being a per-edge scan wearing one's clothes — see `effectiveLabel`.
+    const aEff = effectiveLabel(graph, aLabel);
+    const cEff = effectiveLabel(graph, cLabel);
     let count = 0;
 
     for (const b of mids) {
@@ -1348,13 +1421,13 @@ const buildTwoHopCount = <T>(
         continue;
       }
 
-      const ways = side(graph, b.id, toAOut, t1, aLabel);
+      const ways = side(graph, b.id, toAOut, t1, aEff);
 
       if (ways === 0) {
         continue;
       }
 
-      count += ways * side(graph, b.id, fromCOut, t2, cLabel);
+      count += ways * side(graph, b.id, fromCOut, t2, cEff);
     }
 
     return rowOf(count);
