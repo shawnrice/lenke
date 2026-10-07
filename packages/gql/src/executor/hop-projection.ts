@@ -18,6 +18,7 @@ import {
   compareSort,
   freePredicateVars,
   projectRow,
+  propOf,
   relTypeNames,
   satisfies,
 } from '../executor.js';
@@ -1139,6 +1140,24 @@ const sourceFor = (
   return projExpr.kind === 'var' && projExpr.name === bound.var ? bound.expr : null;
 };
 
+/**
+ * The property key when the walked expression is exactly `<keyedVar>.<key>`, else undefined.
+ *
+ * `evalFn` is the GENERIC compiled expression, so it reads its element back out of the binding:
+ * `(env) => propOf(env.binding.get(variable), key)`. The walk has the element in hand, so that
+ * costs a `Map.set` here and a `Map.get` inside the evaluator per vertex, purely to hand the
+ * element over. For `RETURN DISTINCT n.age` — the overwhelmingly common shape, and the whole
+ * `count distinct` / `top distinct values` / `distinct + order by` bench family — the value is
+ * one property read and the binding is not otherwise wanted.
+ *
+ * Sound because `sourceFor` and `evaluatorFor` are exactly parallel: `source` IS the AST that
+ * `evalFn` was compiled from, in all three of their cases (a bare projection, a `LET`-bound
+ * expression, and a `count` argument). So for a `prop` over the keyed variable, `propOf(el, key)`
+ * is the same call the generic path makes, with the same undefined-to-null coalescing.
+ */
+const directPropKey = (source: Expr, keyedVar: string): string | undefined =>
+  source.kind === 'prop' && source.variable === keyedVar ? source.key : undefined;
+
 const evaluatorFor = (
   item: CReturnItem,
   bound: ReturnType<typeof soleLet>,
@@ -1500,6 +1519,9 @@ export const detectDistinctCount = (
       ? { forward: adjacency.direction === 'out', type: adjacency.label.name }
       : undefined;
   const planParts = { startLabel, farLabel, adjacency, direct, onStart };
+  // Same once-per-query decision as the rows path — see `directPropKey`.
+  const directKey = directPropKey(shape.source, keyedVar);
+  const needsBinding = gatePred !== undefined || directKey === undefined;
 
   return (graph, params) => {
     const seen = valueSet();
@@ -1507,13 +1529,15 @@ export const detectDistinctCount = (
     const env = { binding, params, graph };
     let n = 0;
     const take = (el: Vertex): void => {
-      binding.set(keyedVar, el);
+      if (needsBinding) {
+        binding.set(keyedVar, el);
+      }
 
       if (gatePred !== undefined && !satisfies(el, gatePred, binding, params, graph)) {
         return;
       }
 
-      const value = evalFn(env);
+      const value = directKey === undefined ? evalFn(env) : propOf(el, directKey);
 
       // A null never counts, and it must not enter the set either — otherwise a later non-null
       // would be the second distinct value where it is the first.
@@ -1549,6 +1573,11 @@ export const detectDistinctProjection = (
   const { evalFn, outName, keyedVar, onStart, startLabel, farLabel, adjacency, gatePred, sort } =
     shape;
   const { skip, limit } = shape;
+  // Both read the SHAPE only, so they are decided once per query. `binding` is wanted by the
+  // gate (which `satisfies` takes) and by the generic evaluator; when the value is a direct
+  // property read and there is no gate, nothing reads it and the Map round-trip goes away.
+  const directKey = directPropKey(shape.source, keyedVar);
+  const needsBinding = gatePred !== undefined || directKey === undefined;
   // Both decided ONCE per query, out here rather than per call and certainly not per row: they
   // read the shape only. `expand` is kept for `both`, a type disjunction and an untyped hop.
   const direct: DirectHop | undefined =
@@ -1577,13 +1606,15 @@ export const detectDistinctProjection = (
     const binding = new Map<string, unknown>();
     const env = { binding, params, graph };
     const take = (el: Vertex): void => {
-      binding.set(keyedVar, el);
+      if (needsBinding) {
+        binding.set(keyedVar, el);
+      }
 
       if (gatePred !== undefined && !satisfies(el, gatePred, binding, params, graph)) {
         return;
       }
 
-      const value = evalFn(env);
+      const value = directKey === undefined ? evalFn(env) : propOf(el, directKey);
 
       if (seen.add(value)) {
         rows.push({ [outName]: value });
