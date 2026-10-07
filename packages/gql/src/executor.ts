@@ -2084,6 +2084,14 @@ const aliasDefinition = (
   const item = projection.items.find((i) => (i.alias ?? columnName(i.expr)) === sortExpr.name);
 
   // An aggregate is defined over the GROUP, not over any one input row.
+  //
+  // DEFENSIVE, not load-bearing, and mutation says so: substituting an aggregate changes no answer,
+  // because the sort runs AFTER aggregation, so `count(*)` as a sort key still folds over the same
+  // group and gives the same number as the output column. Checked against groups of DIFFERENT sizes
+  // (1, 2, 3), since equal-sized groups make the two readings agree by luck. The two guards above —
+  // the `var` test and the `star` test — are equivalent for a related reason: with a non-`var` key
+  // `sortExpr.name` is undefined and with `RETURN *` there are no items, so the lookup below finds
+  // nothing either way. All three stay as the statement of intent (audit item 213).
   if (item === undefined || hasAggregate(item.expr)) {
     return undefined;
   }
@@ -2101,6 +2109,29 @@ const aliasDefinition = (
   // consistent one: it inlines the alias into the sort-key scope, keeps the top-k over INPUT
   // bindings, and so never projects `b` for a row it does not emit.
   //
+  // A SUBQUERY cannot be substituted, and the guard below cannot see why: `freePredicateVars`
+  // returns the EMPTY set for `exists` / `countSubquery` / `valueSubquery` — it does not descend
+  // into one at all — so a subquery's internal variables are invisible to the shadowing test.
+  //
+  // Substituting one is a wrong ANSWER, not a slow plan, and it was a live cross-engine
+  // divergence (audit item 213):
+  //
+  //     RETURN COUNT { MATCH (m)-[:T]->(c) } AS c ORDER BY c
+  //       ts      [2, 1]   <- unsorted
+  //       native  [1, 2]
+  //
+  // The sort key became the subquery itself; the output is then overlaid on the binding (see
+  // `orderNeedsOutput` below), which bound `c` to the COUNT VALUE, so the sub-pattern's `(c)`
+  // matched a number, counted 0 for every row, and every key compared equal. The alias need only
+  // collide with a variable the subquery binds — which no fuzzer generates, and which is why this
+  // survived to be found by hand.
+  //
+  // Declining sends it to the non-substituted path, which sorts by the output column and agrees
+  // with native. The cost is item 145's top-k-over-input-bindings for subquery items only.
+  if (hasSubquery(item.expr)) {
+    return undefined;
+  }
+
   // Substituting is sound exactly when no free name of the expression is an OUTPUT name — a
   // shadowed name would resolve to the output column in the sort scope and mean something
   // else. The `var` and `prop` cases are subsumed: their free sets are `{name}` and

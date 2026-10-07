@@ -196,8 +196,10 @@ describe('the shapes it must decline', () => {
   });
 
   test('a subquery in an item needs the general matcher', () => {
-    // `freePredicateVars` descends INTO a subquery and reports the variables inside it, so an
-    // EXISTS reading only `n` would pass a free-variable check. The allowlist is what stops it.
+    // The ALLOWLIST is what stops this, and it has to be: `freePredicateVars` returns the EMPTY
+    // set for a subquery — it does not descend into one — so a free-variable check sees nothing
+    // inside an `EXISTS { … }` at all. (An earlier version of this comment had that backwards;
+    // item 213 established the truth while tracking an `ORDER BY` bug caused by exactly it.)
     const h = new Graph();
     const a = h.addVertex({ id: 'a', labels: ['P'], properties: { k: 'a' } });
     const b = h.addVertex({ id: 'b', labels: ['P'], properties: { k: 'b' } });

@@ -2556,9 +2556,10 @@ const groupedProjection = (
  * a wrong count.
  *
  * `exists` and `scalar` are the subquery arms and are the reason the walk cannot simply trust
- * `freePredicateVars`: that descends into a subquery and reports the variables INSIDE it, so an
- * `EXISTS { (u)-[:T]->(x) }` reading only `u` passes a free-variable check while still needing
- * the general matcher.
+ * `freePredicateVars`: it returns the EMPTY set for a subquery — it does not descend into one at
+ * all, which item 213 established while tracking an `ORDER BY` bug caused by exactly that. So a
+ * free-variable check sees NOTHING inside an `EXISTS { … }` and cannot be what refuses it; the
+ * allowlist is.
  */
 const ROW_LOCAL_KINDS: ReadonlySet<string> = new Set([
   'and',
@@ -2903,8 +2904,10 @@ export const detectNodeProjection = (
   // no far end to introduce one, so a reference to any other name does not resolve at all.
   // Removing either check changes no answer. They stay because that argument depends on the
   // clause-count and segment-count guards above keeping their exact shape, and because
-  // `freePredicateVars` descends INTO a subquery: if the allowlist ever grew an arm that
-  // carried one, these are what would still refuse it. The same reasoning, and the same
+  // (An earlier version of this note claimed `freePredicateVars` descends into a subquery and so
+  // would catch one here. It does NOT — it returns the empty set for `exists` / `countSubquery` /
+  // `valueSubquery`, per item 213 — so the ALLOWLIST is the only thing refusing a subquery, and
+  // these checks are purely about outer names.) The same reasoning, and the same
   // wording, as `detectHopProjection`'s rel-variable and path-variable checks.
   if (where !== undefined) {
     const carried = nodeWhereOf(where, nodeVar);
@@ -2931,9 +2934,12 @@ export const detectNodeProjection = (
       return null;
     }
 
-    // The free-variable check is skipped for an item carrying a SUBQUERY, because
-    // `freePredicateVars` descends into one and reports the variables bound INSIDE it — the `x`
-    // of `COUNT { (u)-[:FOLLOWS]->(x) }` — so it would refuse every such item.
+    // The free-variable check is skipped for an item carrying a SUBQUERY. The reason first given
+    // here was that `freePredicateVars` reports the variables bound INSIDE one; it does NOT — it
+    // returns the empty set for a subquery, which item 213 established while tracking an
+    // `ORDER BY` bug caused by exactly that. So for a BARE subquery the skip is a no-op, and it
+    // matters only for a MIXED item such as `COUNT { … } + n.k`, where the arithmetic's own names
+    // are reported and the subquery's are not.
     //
     // Nothing is lost. With exactly two clauses, one pattern and no segments, `nodeVar` is the
     // only name anything can be bound to, so both paths evaluate the SAME compiled expression
