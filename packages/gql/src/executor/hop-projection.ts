@@ -22,13 +22,7 @@ import {
   relTypeNames,
   satisfies,
 } from '../executor.js';
-import {
-  candidateCount,
-  candidateVertexSource,
-  candidateVertices,
-  expand,
-  matchesLabel,
-} from '../graph-queries.js';
+import { candidateCount, candidateVertexSource, expand, matchesLabel } from '../graph-queries.js';
 import type { Adjacency } from '../graph-queries.js';
 import { indexCandidates } from './matching.js';
 import { asTruth, isNullish } from './scalars.js';
@@ -405,7 +399,7 @@ export const detectHopProjection = (
       const binding = new Map<string, unknown>();
       const index = out ? graph.edgesFromByLabel : graph.edgesToByLabel;
 
-      for (const v of candidateVertices(graph, startLabel)) {
+      for (const v of candidateVertexSource(graph, startLabel)) {
         const bucket = index.get(v.id)?.get(typeName);
 
         if (bucket === undefined) {
@@ -642,7 +636,7 @@ const filteredHopWalk = (w: {
       // label bucket, so an unindexed graph walks and pays nothing for asking.
       const seeded = hopSeek(graph, cstart, startLabel, env);
 
-      for (const v of seeded ?? candidateVertices(graph, startLabel)) {
+      for (const v of seeded ?? candidateVertexSource(graph, startLabel)) {
         // A seeded set is a SUPERSET — an index hint is a necessary condition, not a sufficient
         // one — so the label is re-checked, guarded on `seeded` so the bucket walk pays nothing.
         if (seeded !== undefined && !matchesLabel(v, startLabel)) {
@@ -764,7 +758,7 @@ const filteredHopWalk = (w: {
     const binding = new Map<string, unknown>();
     const index = out ? graph.edgesFromByLabel : graph.edgesToByLabel;
 
-    for (const v of candidateVertices(graph, startLabel)) {
+    for (const v of candidateVertexSource(graph, startLabel)) {
       const bucket = index.get(v.id)?.get(typeName);
 
       if (bucket === undefined) {
@@ -1420,7 +1414,13 @@ const planFor = (
 const walkStartSide = (graph: Graph, plan: WalkPlan, take: (el: Vertex) => void): void => {
   const { startLabel, farLabel, adjacency, direct, needsFar, onStart } = plan;
 
-  for (const v of candidateVertices(graph, startLabel)) {
+  // `candidateVertexSource`, not `candidateVertices`: the latter is a GENERATOR whose body is
+  // `yield* graph.verticesById.values()`, so a whole-graph scan pays a generator frame and a
+  // `.next()` per vertex to hand back the elements of an iterator it already had. The far-driven
+  // walk has always used the direct source; this one did not, and that alone was the 1.6x between
+  // two spellings of one question (audit item 217). Same elements, same order, same liveness —
+  // both are single-use views over the same underlying iterator.
+  for (const v of candidateVertexSource(graph, startLabel)) {
     if (adjacency === undefined) {
       take(v);
 
@@ -1433,6 +1433,33 @@ const walkStartSide = (graph: Graph, plan: WalkPlan, take: (el: Vertex) => void)
         ?.get(direct.type);
 
       if (bucket === undefined) {
+        continue;
+      }
+
+      // When the dedup is keyed on the START and the far end needs no resolve, this bucket's
+      // EMPTINESS is the entire question — so ask it the way the far-driven walk does, with a
+      // `size` read rather than an iterator.
+      //
+      // Why the loop has nothing left to do here: `needsFar` false means `far` stays `v` for
+      // every edge, so neither the label test nor `take` reads the edge, and item 215's `break`
+      // leaves after the first one regardless. What remained was therefore a `Set` iterator
+      // allocated per vertex to look at one element whose identity did not matter — 514ns a
+      // vertex against the forward spelling's 313ns for the SAME question (audit item 217).
+      //
+      // The far LABEL test goes too, and that is most of the win rather than a tidy-up: it was
+      // 189ns a vertex (494 against 305 for the unlabelled spelling of the same question), the
+      // random-order element lookup this engine pays everywhere.
+      //
+      // It is unnecessary here, not merely cheap to skip. Under `onStart`,
+      // `needsFar === (farLabel !== undefined && !vacuousLabel(graph, farLabel))`, so a FALSE
+      // `needsFar` says the far label is either ABSENT or VACUOUS — and a vacuous label is one
+      // every vertex in the graph carries, so the test cannot fail for any `v`. Either way there
+      // is nothing left to ask but whether this vertex is reached at all.
+      if (onStart && !needsFar) {
+        if (bucket.size > 0) {
+          take(v);
+        }
+
         continue;
       }
 

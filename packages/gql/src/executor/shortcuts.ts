@@ -48,13 +48,7 @@ import {
   resolveCount,
   valueKey,
 } from '../executor.js';
-import {
-  candidateCount,
-  candidateVertexSource,
-  candidateVertices,
-  expand,
-  matchesLabel,
-} from '../graph-queries.js';
+import { candidateCount, candidateVertexSource, expand, matchesLabel } from '../graph-queries.js';
 import type { Adjacency } from '../graph-queries.js';
 import { indexCandidates, matchNode, seedVertices } from './matching.js';
 import type { SeedCandidate } from './matching.js';
@@ -3338,7 +3332,7 @@ export const detectGroupedHopCount = (clauses: readonly Clause[]): ReachFn | nul
     // bucket — the order the general path uses. Group order is FIRST-SEEN and observable, so
     // it is not enough to count the right edges; they have to be met in the same order. See
     // the rejected far-end degree walk recorded on this function.
-    for (const v of candidateVertices(graph, startLabel)) {
+    for (const v of candidateVertexSource(graph, startLabel)) {
       const byType = index.get(v.id);
 
       if (byType === undefined) {
